@@ -1,6 +1,6 @@
 #!/bin/bash
 # MultiCC service manager — start/stop/restart/log
-# Usage: ./multicc start|stop|restart|status|log|update|install|uninstall
+# Usage: ./multicc start|stop|restart|status|log|update [--force]|install|uninstall
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LABEL="com.multicc.server"
@@ -210,6 +210,34 @@ do_log() {
 do_update() {
   cd "$SCRIPT_DIR" || { echo "Cannot cd to $SCRIPT_DIR"; return 1; }
 
+  # ── Flags ────────────────────────────────────────────────────────────
+  # A running server rewrites runtime-state files constantly, so the working
+  # tree is dirty far more often than not. The default path stashes and
+  # restores those changes; --force is for when that restore cannot succeed
+  # (conflicts with what upstream changed) and the user wants upstream's
+  # version regardless. Force still takes a backup — it discards the tree,
+  # not the ability to get it back.
+  local force=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -f|--force) force=1 ;;
+      -h|--help)
+        echo "Usage: ./multicc update [--force]"
+        echo ""
+        echo "  (no flag)   Stash local changes, fast-forward, restore them, restart."
+        echo "              Stops if the restore conflicts, leaving your work in the stash."
+        echo "  --force,-f  Update even when the working tree is dirty or has diverged."
+        echo "              Local changes are backed up to a git stash and NOT restored;"
+        echo "              the tree is reset to origin. Recover with: git stash list"
+        return 0 ;;
+      *)
+        echo "Unknown option for update: $1" >&2
+        echo "Usage: ./multicc update [--force]" >&2
+        return 1 ;;
+    esac
+    shift
+  done
+
   if [ ! -d .git ]; then
     echo "Not a git checkout ($SCRIPT_DIR) — cannot self-update."
     echo "Re-run the install script to update."
@@ -270,7 +298,10 @@ do_update() {
   # For stable channel: prefer the currently-checked-out tag (if on one).
   # For dev channel: use package.json version.
   local_version=""
-  local before after stashed=0 merge_base local_tip origin_tip
+  # forced_reset records that --force threw away on-disk changes. HEAD may not
+  # move in that case, but the files the server runs did — so it still needs a
+  # restart, and the "nothing to do" shortcut below must not fire.
+  local before after stashed=0 forced_reset=0 merge_base local_tip origin_tip
   before="$(git rev-parse HEAD 2>/dev/null)"
 
   if [ "$channel" = "stable" ]; then
@@ -303,10 +334,29 @@ do_update() {
       echo "Already on the latest release (${latest_tag})."
       return 0
     fi
-    # Update: checkout the tag.
-    if ! git checkout "$latest_tag" 2>/dev/null; then
+    # Update: checkout the tag. Under --force, back the tree up first and then
+    # let checkout overwrite it — the backup is what makes -f recoverable.
+    if [ "$force" = 1 ] && [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+      if git stash push --include-untracked -m "multicc-force-update-$(date +%Y%m%d-%H%M%S)" >/dev/null 2>&1; then
+        echo "Local changes backed up to a stash (recover with: git stash list)."
+      else
+        echo "Could not stash local changes — continuing, as --force was requested."
+      fi
+    fi
+    local checkout_ok=0
+    if [ "$force" = 1 ]; then
+      git checkout -f "$latest_tag" 2>/dev/null && checkout_ok=1
+    else
+      git checkout "$latest_tag" 2>/dev/null && checkout_ok=1
+    fi
+    if [ "$checkout_ok" != 1 ]; then
       echo "Could not checkout ${latest_tag} — the local tree may have conflicts."
-      echo "Run: git fetch origin --tags && git checkout ${latest_tag}"
+      if [ "$force" = 1 ]; then
+        echo "Run: git fetch origin --tags && git checkout -f ${latest_tag}"
+      else
+        echo "Run: git fetch origin --tags && git checkout ${latest_tag}"
+        echo "Or retry with: ./multicc update --force"
+      fi
       return 1
     fi
     echo "Switched to ${latest_tag}."
@@ -332,12 +382,25 @@ do_update() {
     # tree is almost never clean. Instead of aborting, stash local changes (tracked
     # + untracked), fast-forward, then restore them — no manual commit/stash needed.
     if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
-      echo "Working tree has local changes — stashing them before update..."
-      if ! git stash push --include-untracked -m "multicc-auto-update" >/dev/null 2>&1; then
-        echo "git stash failed — resolve your working tree manually, then retry."
-        return 1
+      if [ "$force" = 1 ]; then
+        # Force never restores the stash, so label it with a timestamp: it is a
+        # backup the user goes looking for, not a step in this run.
+        echo "Working tree has local changes — backing them up (force update)..."
+        if git stash push --include-untracked -m "multicc-force-update-$(date +%Y%m%d-%H%M%S)" >/dev/null 2>&1; then
+          echo "  Backed up. Recover with: git stash list / git stash pop"
+        else
+          echo "  Could not stash — continuing anyway, as --force was requested."
+        fi
+        forced_reset=1
+      else
+        echo "Working tree has local changes — stashing them before update..."
+        if ! git stash push --include-untracked -m "multicc-auto-update" >/dev/null 2>&1; then
+          echo "git stash failed — resolve your working tree manually, then retry."
+          echo "Or discard local changes and update anyway: ./multicc update --force"
+          return 1
+        fi
+        stashed=1
       fi
-      stashed=1
     fi
 
     echo "Updating MultiCC (branch: $branch)..."
@@ -353,7 +416,24 @@ do_update() {
     origin_tip="$(git rev-parse "origin/$branch" 2>/dev/null)"
     merge_base="$(git merge-base "$local_tip" "$origin_tip" 2>/dev/null)"
 
-    if [ "$merge_base" = "$local_tip" ]; then
+    if [ "$force" = 1 ]; then
+      # Force means "end on origin's tip", whatever the local history is: ahead,
+      # behind, or diverged. Anything worth keeping is already in the stash above.
+      if [ -z "$origin_tip" ]; then
+        echo "Could not resolve origin/$branch — check the network, then retry."
+        return 1
+      fi
+      if [ "$local_tip" = "$origin_tip" ]; then
+        echo "Already on origin/$branch — resetting the working tree to it."
+      else
+        echo "Force update — resetting to origin/$branch..."
+        echo "  (local: ${local_tip:0:7} → origin: ${origin_tip:0:7})"
+      fi
+      if ! git reset --hard "$origin_tip"; then
+        echo "git reset --hard failed — resolve the repository state manually."
+        return 1
+      fi
+    elif [ "$merge_base" = "$local_tip" ]; then
       # Local is an ancestor of origin — fast-forward is safe.
       if ! git pull --ff-only origin "$branch"; then
         echo "git pull failed (network issue) — retry later."
@@ -390,9 +470,12 @@ do_update() {
     fi
 
     after="$(git rev-parse HEAD 2>/dev/null)"
-    if [ "$before" = "$after" ]; then
+    if [ "$before" = "$after" ] && [ "$forced_reset" != 1 ]; then
       echo "Already up to date — nothing to restart."
       return 0
+    fi
+    if [ "$before" = "$after" ]; then
+      echo "Already on the latest commit — restarting anyway to drop the discarded local changes."
     fi
   fi
 
@@ -509,7 +592,7 @@ case "${1:-}" in
   restart)   do_restart ;;
   status)    do_status ;;
   log|logs)  do_log ;;
-  update)    do_update ;;
+  update)    shift; do_update "$@" ;;
   install)   do_install ;;
   uninstall) do_uninstall ;;
   *)
@@ -524,6 +607,8 @@ case "${1:-}" in
     echo "  status     Check if running"
     echo "  log        Tail live logs"
     echo "  update     Pull latest code, reinstall deps if needed, restart"
+    echo "             --force  Update even when the working tree is dirty or"
+    echo "                      diverged (local changes are stashed, not restored)"
     echo "  install    Install as login service (auto-start + auto-restart)"
     echo "  uninstall  Remove login service"
     ;;

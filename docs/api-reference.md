@@ -221,6 +221,37 @@ All three bridges share the same API structure (substitute the platform name):
 |--------|----------|-------------|
 | `GET` | `/api/server-info` | Server IP, port, protocol, URL, token |
 | `GET` | `/multicc.apk` | Latest Flutter APK (served from `public/multicc.apk`) |
+| `POST` | `/api/update` | Start `./multicc update` detached — body `{ "force": bool }` |
+| `GET` | `/api/update/status` | Progress of the running / last update |
+
+`POST /api/update` returns `202 { ok, status: "started", force, activeStreaming }`.
+`activeStreaming` is how many sessions were mid-turn — the update ends in a restart, so
+those turns get interrupted (partial output is saved). It returns `409` when an update is
+already running or the server is shutting down, and `503 { error, code }` when the update
+can't be started at all (`code` is one of `UPDATE_MANAGER_MISSING`,
+`UPDATE_NOT_A_GIT_CHECKOUT`, `UPDATE_BASH_MISSING`, … or `UPDATE_START_FAILED`).
+
+`GET /api/update/status` derives its answer from `logs/update.log` rather than memory —
+the process that starts an update is not the one that reports its outcome:
+
+```jsonc
+{
+  "state": "running",                   // idle | running | succeeded | failed | stale
+  "running": true,
+  "exitCode": null,                     // set once the run finishes
+  "force": true,
+  "startedAt": "2026-08-03T04:20:00Z",  // from the log's start marker
+  "updatedAt": "2026-08-03T04:20:12Z",  // log mtime — the last sign of life
+  "silentMs": 1200,                     // running/stale only: time since that write
+  "tail": "…last 8 KiB of update output…",
+  "logPath": "/path/to/MultiCC/logs/update.log"
+}
+```
+
+`stale` means the log went quiet for 15 minutes — the updater was probably killed
+mid-flight. Poll this endpoint through the restart: the connection failing is expected and
+means the server is coming back, not that the update failed. Both endpoints are
+`ACCESS_TOKEN`-gated exactly like `/api/restart`.
 
 ## WebSocket Protocol
 

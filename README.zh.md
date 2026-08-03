@@ -110,6 +110,17 @@ cd MultiCC
 
 然后在手机上打开同一个地址，或装上 [Flutter App](docs/installation.md#build-the-flutter-app)——会话就在那儿，对话还在半路上。
 
+### 4. 后续更新
+
+```bash
+./multicc update           # 拉最新代码、按需重装依赖、重启
+./multicc update --force   # 同上，但工作区脏了 / 历史分叉了也照更
+```
+
+不带参数的 `update` 遇到无法安全快进的工作区就会停下——你改过某个文件、留了个实验分支、或者上游 force-push 导致历史分叉。加 `--force` 就一定能更新到远端最新：它先把工作区的全部改动（**包括未跟踪文件**）备份进一个带标签的 `multicc-force-update-<时间戳>` stash，再把分支硬重置到远端。**不会删任何东西，但也不会自动恢复** —— 更新后你拿到的是一个干净的检出，本地改动请自己用 `git stash list` / `git stash pop` 取回。
+
+也可以在网页里点：`/manage` **左侧栏底部的版本号** → 弹窗显示当前版本、最新版本和一个「强制更新」勾选框 → 确认后 MultiCC 就在后台跑同一个更新，日志实时显示在弹窗里，跑完自动重启服务、服务回来后自动刷新页面。更新失败时弹窗会保留完整输出，并提供「强制更新重试」。
+
 **→ 安装参数、`./multicc` 服务管理命令、systemd 配置、App 编译：[Installation](docs/installation.md)**
 
 ---
