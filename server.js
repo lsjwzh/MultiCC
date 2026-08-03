@@ -134,6 +134,7 @@ const { createSessionBundleRoutes } = require('./src/routes/session-bundle');
 const { createSessionLifecycleRuntime } = require('./src/routes/session-lifecycle');
 const { createSessionMetaRuntime } = require('./src/routes/session-meta');
 const { createServerRestartRoute } = require('./src/routes/server-restart-route');
+const { createUpdateRoute } = require('./src/routes/update-route');
 const { createAuthRuntime } = require('./src/routes/auth');
 const { createStaticAssetsRoutes } = require('./src/routes/static-assets');
 const { createNotesStore } = require('./src/notes-store');
@@ -1872,6 +1873,16 @@ createSessionLifecycleRuntime({
 // root the manager script lives in), not the route module's directory. _shuttingDown
 // is forwarded lazily so the route reads the host's live shutdown flag at request time.
 createServerRestartRoute({
+  chatSessions,
+  spawn,
+  rootDir: __dirname,
+  getShuttingDown: () => _shuttingDown,
+}).mountRoutes(app);
+
+// ── One-click update (runs `./multicc update`, which restarts us at the end) ──
+// Run state lives in logs/update.log, not in memory: the process that starts the
+// update is not the one that reports its outcome. See src/routes/update-route.js.
+createUpdateRoute({
   chatSessions,
   spawn,
   rootDir: __dirname,
