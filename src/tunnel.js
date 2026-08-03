@@ -383,7 +383,14 @@ async function checkProvider(name, { probeFn = probe, restarter = RESTARTERS[nam
     st.lastHttpCode = code;
     st.healthy = healthy;
 
-    if (healthy) { st.consecutiveFails = 0; return; }
+    if (healthy) {
+      st.consecutiveFails = 0;
+      // A stale restart failure next to a healthy probe reads as a live error.
+      // Clear failure text only; guardrail notes (cooldown/cap) and success
+      // messages stay until the next decision overwrites them.
+      if (st.lastAction.startsWith('重启失败')) st.lastAction = '';
+      return;
+    }
     st.consecutiveFails++;
     if (st.consecutiveFails < config.failThreshold) return;
 
