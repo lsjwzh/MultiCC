@@ -396,6 +396,46 @@
     else if (next === 'codex') { codexQuotaLastErrorAt = 0; refreshCodexQuota(); }
   }
 
+  // ── Actionable quota states ─────────────────────────────────────────────
+  // Every CDP-backed quota bar (opencode / qoder / kimi) can come back with a
+  // top-level status the user can FIX in one click: `needs_login` (no session in
+  // the managed browser) and `chrome_unavailable` (no browser to attach to —
+  // opening a visible login window is also how a managed Chrome gets started).
+  // Each has a POST route that pops a visible login window.
+  //
+  // Two rules follow, and both were being broken:
+  //   1. A view carrying `action:'login'` must dispatch the login POST on click,
+  //      not a plain refetch — a refetch of a not-logged-in account just returns
+  //      the same failure, so the bar becomes a dead end.
+  //   2. A top-level actionable status OUTRANKS any per-site failure reason.
+  //      `sites[]` says WHICH account failed; the top-level status says what the
+  //      user can DO. Kimi's bar rendered sites[0].reason ('auth_rejected' →
+  //      "密钥不支持余额查询") over a perfectly actionable `needs_login`, telling
+  //      the user their key was unsupported when they simply had to log in.
+  const QUOTA_LOGIN_ROUTES = Object.freeze({
+    opencode: '/api/opencode/quota/login',
+    qoder: '/api/qoder/quota/login',
+    kimi: '/api/kimi/quota/login',
+  });
+
+  // The login window is opened by the server and then waited on by a human, so
+  // re-poll a few seconds later rather than immediately.
+  function requestQuotaLogin(kind, reFetch) {
+    const route = QUOTA_LOGIN_ROUTES[kind];
+    if (!route) { reFetch(); return; }
+    Promise.resolve()
+      .then(() => fetch(route, { method: 'POST', credentials: 'same-origin' }))
+      .catch(() => {})
+      .then(() => { global.setTimeout?.(() => reFetch(), 3000); });
+  }
+
+  // Click handler for a bar whose view may be actionable. `reFetch` is the
+  // bar's own forced refresh.
+  function quotaBarClick(kind, view, reFetch) {
+    if (view && view.action === 'login') requestQuotaLogin(kind, reFetch);
+    else reFetch();
+  }
+
   // ── OpenCode Go subscription usage (5h rolling / weekly / monthly). Sourced
   // by driving the user's local Chrome via CDP to opencode.ai/auth → /workspace/
   // <wsid>/go and regexing the SSR SolidStart hydration data. No REST API.
@@ -469,16 +509,18 @@
     if (!value) return formatQuotaIdle();
     if (value.status === 'needs_login') {
       return Object.freeze({
-        text: 'OpenCode Go：需登录 · ⟳ 重试',
+        text: 'OpenCode Go：需登录 · 点击打开登录窗口',
         color: '#f85149',
-        title: '你的 Chrome 里没有 opencode.ai 的登录态。请在浏览器打开 https://opencode.ai/auth 走完 OAuth，再点 bar 重新拉取。',
+        title: '你的 Chrome 里没有 opencode.ai 的登录态。点击将由 multicc 拉起一个 Chrome 登录窗口（opencode.ai/auth），走完 OAuth 后回来再点一次刷新。',
+        action: 'login',
       });
     }
     if (value.status === 'chrome_unavailable') {
       return Object.freeze({
-        text: 'OpenCode Go：无可连的 Chrome · ⟳ 重试',
+        text: 'OpenCode Go：无可连的 Chrome · 点击尝试打开登录窗口',
         color: '#d29922',
-        title: '需要一个开了调试端点的 Chrome（端口随意，用 --remote-debugging-port=0 即可，我们会从 DevToolsActivePort 找到它），并在其中登录 opencode.ai。',
+        title: '托管 Chrome 起不来，也没有可连的调试端点。点击会尝试拉起一个可见的 Chrome 登录窗口；也可以自己开一个带调试端点的 Chrome（--remote-debugging-port=0 即可，我们会从 DevToolsActivePort 找到它）并在其中登录 opencode.ai。',
+        action: 'login',
       });
     }
     if (value.status !== 'ok' || !value.usage) {
@@ -551,7 +593,7 @@
       if (view) element.style.color = view.color;
     }
     element.style.display = 'block';
-    element.onclick = () => { refreshOpenCodeQuota(true); };
+    element.onclick = () => quotaBarClick('opencode', view, () => refreshOpenCodeQuota(true));
   }
 
   async function fetchOpenCodeQuota() {
@@ -638,13 +680,17 @@
         text: 'Qoder CN：需登录 · 点击打开登录页',
         color: '#f85149',
         title: '你的 Chrome 里没有 qoder.com.cn 的登录态。点击将在 Chrome 中打开登录页，登录后再点刷新。',
+        action: 'login',
       });
     }
     if (value.status === 'chrome_unavailable') {
       return Object.freeze({
-        text: 'Qoder CN：无可连的 Chrome · ⟳ 重试',
+        text: 'Qoder CN：无可连的 Chrome · 点击尝试打开登录窗口',
         color: '#d29922',
-        title: '需要一个开了调试端点的 Chrome（端口随意，用 --remote-debugging-port=0 即可，我们会从 DevToolsActivePort 找到它），在其中登录 qoder.com.cn 一次；之后一周的刷新都走缓存 cookie，不再需要浏览器。',
+        // Opening the visible login window is also how the managed Chrome gets
+        // started, so this is a fix-it click, not just a retry.
+        title: '托管 Chrome 起不来，也没有可连的调试端点。点击会尝试拉起一个可见的 Chrome 登录窗口；在其中登录 qoder.com.cn 一次，之后一周的刷新都走缓存 cookie，不再需要浏览器。',
+        action: 'login',
       });
     }
     if (value.status !== 'ok' || !value.quota) {
@@ -699,14 +745,7 @@
       if (view) element.style.color = view.color;
     }
     element.style.display = 'block';
-    element.onclick = () => {
-      if (currentQoderQuota && currentQoderQuota.status === 'needs_login') {
-        fetch('/api/qoder/quota/login', { method: 'POST', credentials: 'same-origin' })
-          .then(() => setTimeout(() => refreshQoderQuota(true), 3000));
-      } else {
-        refreshQoderQuota(true);
-      }
-    };
+    element.onclick = () => quotaBarClick('qoder', view, () => refreshQoderQuota(true));
   }
 
   async function refreshQoderQuota(force) {
@@ -1449,6 +1488,60 @@
         title: '没有 baseUrl 指向 moonshot / kimi 的 provider，无法拉取余额',
       });
     }
+    // An actionable top-level status comes FIRST — ahead of both sites[0].reason
+    // and the stale cache. A Kimi-for-Coding key always 401s the balance API
+    // (that is the key type, not a fault), so the backend falls back to scraping
+    // the membership page and reports needs_login when that page has no session.
+    // Rendering 'auth_rejected' over it told the user their key was unsupported
+    // and left them clicking a refresh that could never succeed.
+    if (value.status === 'needs_login' || value.status === 'chrome_unavailable') {
+      const needsLogin = value.status === 'needs_login';
+      const titleParts = [value.error || (needsLogin
+        ? '托管浏览器中没有 kimi.com 登录态'
+        : '没有可用的浏览器来打开 kimi.com 订阅页')];
+      // The per-site reason is context now, not the headline.
+      const reason = kimiReasonText(value.sites);
+      if (reason) titleParts.push(`余额 API：${reason}`);
+      if (cachedOk.length) {
+        titleParts.push(`上次余额：${unifiedBalanceText(cachedOk[0].available, cachedOk[0].currency) || '—'}`);
+      }
+      titleParts.push('点击将由 multicc 拉起一个 Chrome 登录窗口；登录后回来再点一次刷新。');
+      return Object.freeze({
+        text: needsLogin ? 'Kimi：需登录 · 点击打开登录窗口' : 'Kimi：无可用浏览器 · 点击尝试打开登录窗口',
+        color: needsLogin ? '#f85149' : '#d29922',
+        title: titleParts.join('\n'),
+        action: 'login',
+      });
+    }
+    // Subscription keys have no balance to report; their usage lives on the
+    // membership page, which the backend scrapes into `summary`. Without this
+    // the sites-only path below would call a SUCCESSFUL scrape "余额暂不可用" —
+    // i.e. the login the bar just asked for would appear to have changed nothing.
+    if (value.status === 'ok' && value.source === 'subscription-page') {
+      const summary = (Array.isArray(value.summary) ? value.summary : [])
+        .filter((s) => s && Number.isFinite(s.percent));
+      const syncRel = relativeAgo(value.fetchedAt);
+      if (!summary.length) {
+        return Object.freeze({
+          text: 'Kimi 订阅：已登录，未解析出用量 · ⟳ 重试',
+          color: '#d29922',
+          title: `已抓到 kimi.com 会员页，但没解析出百分比。\n原文：${String(value.text || '').slice(0, 300)}`,
+        });
+      }
+      const maxPct = Math.max.apply(null, summary.map((s) => s.percent));
+      let text = summary.map((s) => unifiedWindowSeg(s.label || 'Kimi', s.percent, null) || `${s.label || 'Kimi'} ${s.percent}%`).join(' · ');
+      if (syncRel) text += ` · ${syncRel}`;
+      text += ' ⟳';
+      let title = 'Kimi 订阅用量（会员页抓取；订阅 key 无预付余额接口）';
+      for (const s of summary) title += `\n${s.label || 'Kimi'}: 已用 ${s.percent}%`;
+      if (syncRel) title += `\n同步于 ${syncRel}`;
+      title += '\n点击 bar 刷新';
+      return Object.freeze({
+        text,
+        color: unifiedColorFromRemaining(unifiedRemaining(maxPct)),
+        title,
+      });
+    }
     const okSites = (value.status === 'ok' && Array.isArray(value.sites))
       ? value.sites.filter((s) => s && s.ok && Number.isFinite(s.available))
       : [];
@@ -1508,7 +1601,7 @@
       if (view) element.style.color = view.color;
     }
     element.style.display = 'block';
-    element.onclick = () => { refreshKimiQuota(true); };
+    element.onclick = () => quotaBarClick('kimi', view, () => refreshKimiQuota(true));
   }
 
   async function refreshKimiQuota(force) {
@@ -1567,8 +1660,13 @@
     unifiedBalanceText,
     refreshOpenCodeQuota,
     restoreOpenCodeQuota,
+    // Exported so the actionable-state rendering (needs_login / chrome_unavailable
+    // must carry action:'login') can be asserted without a DOM.
+    formatOpenCodeQuota: formatQuota,
+    quotaBarClick,
     refreshQoderQuota,
     restoreQoderQuota,
+    formatQoderQuota,
     refreshCodexQuota,
     restoreCodexQuota,
     setProviderBaseUrl,
