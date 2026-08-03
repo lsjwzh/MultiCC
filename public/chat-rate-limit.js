@@ -184,7 +184,18 @@
   // stale Claude data) while letting GLM's own window bar render.
   function providerMatchesCli(provider, cli) {
     // GLM (5h) and Codex (weekly) both run under the codex CLI; Claude under claude.
-    if (provider === 'glm' || provider === 'codex') return cli === 'codex' || cli === 'opencode';
+    if (provider === 'glm' || provider === 'codex') {
+      if (cli === 'codex' || cli === 'opencode') return true;
+      // GLM is ALSO a first-class claude-appType provider: open.bigmodel.cn /
+      // z.ai speak the Anthropic protocol, so those sessions run under the
+      // claude CLI — and the usage poller still tags their window 'glm'
+      // (providers.js getProviderLimitTarget → strategy 'glm-monitor'). Gating
+      // on the CLI alone silently dropped that event, leaving such a session
+      // with no 5h bar at all. Under the codex CLI the same provider is reached
+      // through our local proxy, so the baseUrl is 127.0.0.1 — hence an extra
+      // allowance, never a tightening.
+      return provider === 'glm' && isZhipuBaseUrl(currentProviderBaseUrl);
+    }
     return cli === 'claude' || cli === 'opencode';
   }
 
@@ -309,9 +320,20 @@
 
   let currentBalance = null;
 
+  // Same asymmetry as providerMatchesCli: DeepSeek is normally reached through
+  // the codex proxy, but api.deepseek.com/anthropic is a claude-appType provider
+  // too, and the poller reports a balance for those sessions as well.
+  function isDeepseekBaseUrl(baseUrl) {
+    if (!baseUrl || typeof baseUrl !== 'string') return false;
+    try {
+      return /(^|\.)deepseek\.com$/i.test(new URL(baseUrl).hostname);
+    } catch (_) {
+      return /deepseek\.com/i.test(baseUrl);
+    }
+  }
+
   function balanceMatchesCli(cli) {
-    // DeepSeek is reached through the codex proxy.
-    return cli === 'codex' || cli === 'opencode';
+    return cli === 'codex' || cli === 'opencode' || isDeepseekBaseUrl(currentProviderBaseUrl);
   }
 
   function renderBalance() {
@@ -350,13 +372,28 @@
     return balance;
   }
 
+  let cliInitialized = false;
+
   function setCli(cli) {
-    currentCli = String(cli || 'claude');
+    const next = String(cli || 'claude');
+    // The first call is the page reporting which CLI it loaded, not a switch —
+    // page load must stay as cheap as it is today (restore from localStorage).
+    const changed = cliInitialized && next !== currentCli;
+    cliInitialized = true;
+    currentCli = next;
     renderCurrent();
     renderBalance();
     renderOpenCodeQuota();
     renderQoderQuota();
     renderCodexQuota();
+    // Switching CLI switches the account whose quota is on screen. These bars are
+    // fetch-on-demand — nothing polls them — so without this the new CLI's bar
+    // keeps showing whatever was last restored until the user clicks it. Exactly
+    // one fetch per real switch, for the one bar that just became visible.
+    if (!changed) return;
+    if (next === 'opencode') { quotaLastErrorAt = 0; refreshOpenCodeQuota(); }
+    else if (next === 'qoder') { qoderQuotaLastErrorAt = 0; refreshQoderQuota(); }
+    else if (next === 'codex') { codexQuotaLastErrorAt = 0; refreshCodexQuota(); }
   }
 
   // ── OpenCode Go subscription usage (5h rolling / weekly / monthly). Sourced
@@ -863,13 +900,20 @@
     const changed = next !== currentProviderBaseUrl;
     currentProviderBaseUrl = next;
     renderCurrent();
+    renderBalance();
     renderArkQuota();
     renderZhipuQuota();
     renderKimiQuota();
     // A provider switch must immediately reflect the new provider's quota: pull
     // fresh data for whichever vendor the new baseUrl points at. Each refresh is
-    // a no-op unless the baseUrl matches that vendor, and error backoff applies.
+    // a no-op unless the baseUrl matches that vendor. The error backoff exists to
+    // stop a broken endpoint from being hammered, not to stall an explicit user
+    // action, so clear it first; the in-flight guard still dedupes concurrent
+    // fetches, and an unchanged baseUrl still fetches nothing.
     if (changed) {
+      arkQuotaLastErrorAt = 0;
+      zhipuQuotaLastErrorAt = 0;
+      kimiQuotaLastErrorAt = 0;
       refreshArkQuota();
       refreshZhipuQuota();
       refreshKimiQuota();
