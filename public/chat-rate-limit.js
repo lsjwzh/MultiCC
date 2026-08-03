@@ -401,54 +401,6 @@
     return remH ? `${days} 天 ${remH} 小时` : `${days} 天`;
   }
 
-  function formatQuota(value) {
-    if (!value) return null;
-    if (value.status === 'needs_login') {
-      return Object.freeze({
-        text: 'OpenCode Go：需登录 →',
-        color: '#f85149',
-        title: '主 Chrome 9222 没登 opencode.ai/auth。点击开新标签去登录后回来这里点击重试。',
-      });
-    }
-    if (value.status === 'chrome_unavailable') {
-      return Object.freeze({
-        text: 'OpenCode Go：未开 Chrome 9222',
-        color: '#d29922',
-        title: '请在本机开主 Chrome（--remote-debugging-port=9222）并登 opencode.ai/auth',
-      });
-    }
-    if (value.status !== 'ok' || !value.usage) {
-      return Object.freeze({
-        text: 'OpenCode Go：用量暂不可用',
-        color: '#d29922',
-        title: value.error || '无法从 opencode.ai 拉取 Go 用量',
-      });
-    }
-    const u = value.usage;
-    const fmt = (n) => {
-      const r = Math.round(n);
-      return Number.isInteger(r) ? String(r) : (Math.round(n * 10) / 10).toString();
-    };
-    let text = 'OpenCode Go';
-    if (u.rolling && Number.isFinite(u.rolling.usagePercent))  text += ` · 5h ${fmt(u.rolling.usagePercent)}%`;
-    if (u.weekly  && Number.isFinite(u.weekly.usagePercent))   text += ` · 周 ${fmt(u.weekly.usagePercent)}%`;
-    if (u.monthly && Number.isFinite(u.monthly.usagePercent))  text += ` · 月 ${fmt(u.monthly.usagePercent)}%`;
-    const maxPct = Math.max(
-      u.rolling?.usagePercent ?? 0,
-      u.weekly?.usagePercent ?? 0,
-      u.monthly?.usagePercent ?? 0,
-    );
-    let color = '#58a6ff';
-    if (maxPct >= 90) color = '#f85149';
-    else if (maxPct >= 70) color = '#d29922';
-    let titleParts = ['OpenCode Go 订阅用量（CDP 抓 opencode.ai Zen console）'];
-    if (u.rolling)  titleParts.push(`5h: ${fmt(u.rolling.usagePercent)}% · 重置 ${formatResetRemaining(u.rolling.resetInSec)}`);
-    if (u.weekly)   titleParts.push(`周: ${fmt(u.weekly.usagePercent)}% · 重置 ${formatResetRemaining(u.weekly.resetInSec)}`);
-    if (u.monthly)  titleParts.push(`月: ${fmt(u.monthly.usagePercent)}% · 重置 ${formatResetRemaining(u.monthly.resetInSec)}`);
-    if (u.useBalance) titleParts.push('已启用：超额用余额兜底');
-    return Object.freeze({ text, color, title: titleParts.join('\n') });
-  }
-
   // Relative "N 分钟前" renderer for the fetchedAt timestamp.
   function relativeAgo(tsMs) {
     if (!tsMs || !Number.isFinite(tsMs)) return '';
@@ -482,14 +434,14 @@
       return Object.freeze({
         text: 'OpenCode Go：需登录 · ⟳ 重试',
         color: '#f85149',
-        title: '主 Chrome 9222 没登 opencode.ai/auth。点击 bar 重新拉取；登录后请先在主 Chrome 打开 https://opencode.ai/auth 走完 OAuth。',
+        title: '你的 Chrome 里没有 opencode.ai 的登录态。请在浏览器打开 https://opencode.ai/auth 走完 OAuth，再点 bar 重新拉取。',
       });
     }
     if (value.status === 'chrome_unavailable') {
       return Object.freeze({
-        text: 'OpenCode Go：未开 Chrome 9222 · ⟳ 重试',
+        text: 'OpenCode Go：无可连的 Chrome · ⟳ 重试',
         color: '#d29922',
-        title: '请在本机开主 Chrome（--remote-debugging-port=9222）并登 opencode.ai/auth',
+        title: '需要一个开了调试端点的 Chrome（端口随意，用 --remote-debugging-port=0 即可，我们会从 DevToolsActivePort 找到它），并在其中登录 opencode.ai。',
       });
     }
     if (value.status !== 'ok' || !value.usage) {
@@ -648,14 +600,14 @@
       return Object.freeze({
         text: 'Qoder CN：需登录 · 点击打开登录页',
         color: '#f85149',
-        title: 'Chrome 9222 未登录 qoder.com.cn。点击将在 Chrome 中打开登录页，登录后再点刷新。',
+        title: '你的 Chrome 里没有 qoder.com.cn 的登录态。点击将在 Chrome 中打开登录页，登录后再点刷新。',
       });
     }
     if (value.status === 'chrome_unavailable') {
       return Object.freeze({
-        text: 'Qoder CN：未开 Chrome 9222 · ⟳ 重试',
+        text: 'Qoder CN：无可连的 Chrome · ⟳ 重试',
         color: '#d29922',
-        title: '请在本机开主 Chrome（--remote-debugging-port=9222）并登录 qoder.com.cn',
+        title: '需要一个开了调试端点的 Chrome（端口随意，用 --remote-debugging-port=0 即可，我们会从 DevToolsActivePort 找到它），在其中登录 qoder.com.cn 一次；之后一周的刷新都走缓存 cookie，不再需要浏览器。',
       });
     }
     if (value.status !== 'ok' || !value.quota) {
