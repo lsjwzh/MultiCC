@@ -274,7 +274,12 @@ test('formatProviderQuotaBadge surfaces auth/config/unavailable fallbacks', () =
   assert.match(catalog.formatProviderQuotaBadge('zhipu', { status: 'not_configured' }).text, /未配置/);
   assert.match(catalog.formatProviderQuotaBadge('ark', { status: 'needs_auth' }).text, /需登录/);
   assert.match(catalog.formatProviderQuotaBadge('ark', { status: 'needs_install' }).text, /未安装/);
-  assert.match(catalog.formatProviderQuotaBadge('qoder', { status: 'chrome_unavailable' }).text, /Chrome 9222/);
+  // The badge must not name a port: we discover whatever port the browser
+  // picked (see src/chrome-cdp.js), so telling the user "9222" is telling them
+  // to reproduce a number that does not matter.
+  const noChrome = catalog.formatProviderQuotaBadge('qoder', { status: 'chrome_unavailable' });
+  assert.match(noChrome.text, /Chrome/);
+  assert.doesNotMatch(`${noChrome.text}\n${noChrome.title}`, /9222/);
   assert.match(catalog.formatProviderQuotaBadge('kimi', { status: 'unavailable' }).text, /暂不可用/);
   assert.equal(catalog.formatProviderQuotaBadge('kimi', null), null);
 });
