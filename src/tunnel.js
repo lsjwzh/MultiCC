@@ -33,11 +33,11 @@ const SAKURAFRP_DEFAULT_CMD = 'frpc -f {authtoken}';
 // Defaults — phddns prefilled with the legacy URL but DISABLED (it is currently
 // down; enabling a dead URL would just exercise the restart path on a loop).
 const DEFAULT_CONFIG = {
-  phddns:    { enabled: false, url: 'https://1129874apfc68.vicp.fun/manage' },
-  tailscale: { enabled: false, url: '', funnel: false, funnelPort: 3000 },
-  natapp:    { enabled: false, url: '', authtoken: '', port: 3000, startCmd: NATAPP_DEFAULT_CMD },
-  cpolar:    { enabled: false, url: '', authtoken: '', port: 3000, startCmd: CPOLAR_DEFAULT_CMD },
-  sakurafrp: { enabled: false, url: '', authtoken: '', port: 3000, startCmd: SAKURAFRP_DEFAULT_CMD },
+  phddns:    { enabled: false, monitorOnly: false, url: 'https://1129874apfc68.vicp.fun/manage' },
+  tailscale: { enabled: false, monitorOnly: false, url: '', funnel: false, funnelPort: 3000 },
+  natapp:    { enabled: false, monitorOnly: false, url: '', authtoken: '', port: 3000, startCmd: NATAPP_DEFAULT_CMD },
+  cpolar:    { enabled: false, monitorOnly: false, url: '', authtoken: '', port: 3000, startCmd: CPOLAR_DEFAULT_CMD },
+  sakurafrp: { enabled: false, monitorOnly: false, url: '', authtoken: '', port: 3000, startCmd: SAKURAFRP_DEFAULT_CMD },
   intervalSec: 30,
   failThreshold: 2,
   restartCooldownSec: 120,
@@ -354,16 +354,30 @@ async function restartNatapp() { return restartCliProvider('natapp'); }
 async function restartCpolar() { return restartCliProvider('cpolar'); }
 async function restartSakurafrp() { return restartCliProvider('sakurafrp'); }
 
+// Root-cause messages from a failed restart may embed the failed shell command
+// (execFile echoes it), which contains the rendered authtoken. Mask every
+// occurrence before the text leaves the server (API response / UI / logs).
+function redactRestartError(name, error) {
+  let text = (error && error.message) || 'unknown error';
+  if (error && error.cause) text += ': ' + error.cause;
+  const secret = (config[name] || {}).authtoken;
+  if (secret) text = text.split(secret).join('***');
+  if (text.length > 300) text = text.slice(0, 300) + '…';
+  return text;
+}
+
 const RESTARTERS = { phddns: restartPhddns, tailscale: restartTailscale, natapp: restartNatapp, cpolar: restartCpolar, sakurafrp: restartSakurafrp };
 
 // Decide+act for one provider. Returns nothing; mutates runtime[name].
-async function checkProvider(name) {
+// probeFn/restarter are injectable so isolated tests can drive the decision
+// path without real network requests or process launches.
+async function checkProvider(name, { probeFn = probe, restarter = RESTARTERS[name] } = {}) {
   const pc = config[name];
   const st = runtime[name];
   if (!pc || !pc.enabled || !pc.url || st.checking) return;
   st.checking = true;
   try {
-    const code = await probe(pc.url);
+    const code = await probeFn(pc.url);
     const healthy = code >= 200 && code < 400;
     st.lastCheckAt = Date.now();
     st.lastHttpCode = code;
@@ -372,6 +386,12 @@ async function checkProvider(name) {
     if (healthy) { st.consecutiveFails = 0; return; }
     st.consecutiveFails++;
     if (st.consecutiveFails < config.failThreshold) return;
+
+    // Monitor-only: probe and report, but never touch the client process.
+    if (pc.monitorOnly) {
+      st.lastAction = '仅监控：探活异常，按设置不自动重启';
+      return;
+    }
 
     // Guardrail: cooldown since last restart.
     const now = Date.now();
@@ -387,11 +407,14 @@ async function checkProvider(name) {
     }
 
     console.warn(`[multicc/tunnel] ${name} unreachable (HTTP ${code}), restarting...`);
-    st.restartTimes.push(now);
-    st.lastRestartAt = now;
-    try { st.lastAction = await RESTARTERS[name](); }
-    catch (e) {
-      st.lastAction = '重启失败';
+    try {
+      st.lastAction = await restarter();
+      // Count the restart only once it actually happened, so a permanently
+      // failing restart (e.g. client not installed) can't eat the hourly cap.
+      st.restartTimes.push(now);
+      st.lastRestartAt = now;
+    } catch (e) {
+      st.lastAction = '重启失败: ' + redactRestartError(name, e);
       console.error(`[multicc/tunnel] ${name} restart failed:`, e && (e.stack || e.message) || e);
     }
     console.log(`[multicc/tunnel] ${name}: ${st.lastAction}`);
@@ -498,19 +521,21 @@ function getStatus() {
 }
 
 // Force an immediate restart of one provider (UI "restart now" button).
-async function restartNow(name) {
+// restarter is injectable for isolated tests.
+async function restartNow(name, { restarter = RESTARTERS[name] } = {}) {
   if (!RESTARTERS[name]) return { ok: false, error: 'unknown provider' };
   const st = runtime[name];
-  const now = Date.now();
-  st.restartTimes.push(now);
-  st.lastRestartAt = now;
   try {
-    st.lastAction = await RESTARTERS[name]();
+    st.lastAction = await restarter();
+    const now = Date.now();
+    st.restartTimes.push(now);
+    st.lastRestartAt = now;
     return { ok: true, message: st.lastAction };
   } catch (e) {
-    st.lastAction = '重启失败';
+    const message = redactRestartError(name, e);
+    st.lastAction = '重启失败: ' + message;
     console.error(`[multicc/tunnel] manual ${name} restart failed:`, e && (e.stack || e.message) || e);
-    return { ok: false, error: 'restart_failed' };
+    return { ok: false, error: 'restart_failed', message };
   }
 }
 
@@ -520,6 +545,7 @@ module.exports = {
   applyConfig,
   getStatus,
   restartNow,
+  checkProvider,
   restartPhddns,
   restartNatapp,
   restartCpolar,
