@@ -160,6 +160,10 @@ const {
   DEFAULT_CHECK_INTERVAL_MS: CLAUDE_OAUTH_CHECK_INTERVAL_MS,
 } = require('./src/claude-oauth-refresh');
 const {
+  createCodexOAuthRefresher,
+  DEFAULT_CHECK_INTERVAL_MS: CODEX_OAUTH_CHECK_INTERVAL_MS,
+} = require('./src/codex-oauth-refresh');
+const {
   parseClassifyResult,
   buildClassifySystemPrompt,
   classifyDisplay,
@@ -1973,6 +1977,7 @@ const sessionDelivery = require('./src/session-delivery').createSessionDelivery(
 });
 let apiErrorAuxQueue = null;
 const claudeOAuthRefresh = createClaudeOAuthRefresher({ logger });
+const codexOAuthRefresh = createCodexOAuthRefresher({ logger });
 const apiErrorHost = createApiErrorHost({
   policy: apiErrorPolicy, logger, persistedSessions, getTaskState, setTaskState,
   chatBroadcast, workspaceBroadcast, sessionDelivery,
@@ -1980,7 +1985,8 @@ const apiErrorHost = createApiErrorHost({
   setSessionStatus, isShuttingDown: () => _shuttingDown,
   clearIncrementalSave: sessionId => chatHistoryRuntime?.clearIncrementalSave(sessionId),
   isCurrentTurnRunner: (...args) => isCurrentTurnRunner(...args),
-  onApiError: decision => claudeOAuthRefresh.onApiError(decision),
+  onApiError: decision =>
+    claudeOAuthRefresh.onApiError(decision) || codexOAuthRefresh.onApiError(decision),
 });
 const {
   recordApiError, recordApiSuccess, evaluateTurnApiError, meaningfulTurnOutput,
@@ -2967,6 +2973,11 @@ app.use(safeErrorHandler(logger));
     // as a check because a machine that was asleep wakes up with a stale token.
     claudeOAuthRefresh.check('boot');
     trackServiceTimer(setInterval(() => claudeOAuthRefresh.check(), CLAUDE_OAUTH_CHECK_INTERVAL_MS));
+    // Same job for the shared default codex login (~/.codex/auth.json): keep
+    // the one-hour access token fresh so concurrent provider-less codex turns
+    // never race over the single-use refresh token.
+    codexOAuthRefresh.check('boot');
+    trackServiceTimer(setInterval(() => codexOAuthRefresh.check(), CODEX_OAUTH_CHECK_INTERVAL_MS));
     serviceReady = true;
   });
 })();
