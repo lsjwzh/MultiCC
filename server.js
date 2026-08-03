@@ -154,6 +154,10 @@ const { mountShareRoutes } = require('./src/routes/share');
 const { createSessionAdminRuntime } = require('./src/routes/session-admin');
 const { createSessionTriggers } = require('./src/triggers');
 const {
+  createClaudeOAuthRefresher,
+  DEFAULT_CHECK_INTERVAL_MS: CLAUDE_OAUTH_CHECK_INTERVAL_MS,
+} = require('./src/claude-oauth-refresh');
+const {
   parseClassifyResult,
   buildClassifySystemPrompt,
   classifyDisplay,
@@ -1956,6 +1960,7 @@ const sessionDelivery = require('./src/session-delivery').createSessionDelivery(
   log: message => console.log('[multicc/delivery]', message),
 });
 let apiErrorAuxQueue = null;
+const claudeOAuthRefresh = createClaudeOAuthRefresher({ logger });
 const apiErrorHost = createApiErrorHost({
   policy: apiErrorPolicy, logger, persistedSessions, getTaskState, setTaskState,
   chatBroadcast, workspaceBroadcast, sessionDelivery,
@@ -1963,6 +1968,7 @@ const apiErrorHost = createApiErrorHost({
   setSessionStatus, isShuttingDown: () => _shuttingDown,
   clearIncrementalSave: sessionId => chatHistoryRuntime?.clearIncrementalSave(sessionId),
   isCurrentTurnRunner: (...args) => isCurrentTurnRunner(...args),
+  onApiError: decision => claudeOAuthRefresh.onApiError(decision),
 });
 const {
   recordApiError, recordApiSuccess, evaluateTurnApiError, meaningfulTurnOutput,
@@ -2938,6 +2944,12 @@ app.use(safeErrorHandler(logger));
     trackServiceTimer(setInterval(() => artifacts.cleanup(), 6 * 3600 * 1000));
     // ④: probe aux recovery every 5 min while unhealthy (no-op when healthy).
     trackServiceTimer(setInterval(() => auxHealthProbe(), AUX_HEALTH_PROBE_INTERVAL_MS));
+    // Keep the official OAuth credential alive. The check is a credential read;
+    // it only runs the CLI once the expiry is close, so the router never has to
+    // report "run `claude` once to refresh the Keychain" to a user. Boot counts
+    // as a check because a machine that was asleep wakes up with a stale token.
+    claudeOAuthRefresh.check('boot');
+    trackServiceTimer(setInterval(() => claudeOAuthRefresh.check(), CLAUDE_OAUTH_CHECK_INTERVAL_MS));
     serviceReady = true;
   });
 })();

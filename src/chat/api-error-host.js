@@ -18,6 +18,7 @@ function createApiErrorHost(options = {}) {
     clearIncrementalSave,
     isCurrentTurnRunner,
     isShuttingDown,
+    onApiError,
   } = options;
   const functionPorts = {
     getTaskState, setTaskState, chatBroadcast, workspaceBroadcast, getAuxQueue,
@@ -115,6 +116,15 @@ function createApiErrorHost(options = {}) {
 
   function recordApiError(raw, context = {}) {
     const decision = policy.evaluate(raw, context);
+    // Recovery hook for failures the host can act on by itself (today: an
+    // expired official-OAuth credential, which only a CLI run can refresh). It
+    // is deliberately fire-and-forget and deliberately cannot influence the
+    // decision — this turn has already failed, and repairing the credential is
+    // about the *next* one. A throwing or rejecting repair must never turn one
+    // API error into two.
+    if (onApiError && !decision.duplicate) {
+      try { Promise.resolve(onApiError(decision)).catch(() => {}); } catch (_) {}
+    }
     if (decision.duplicate || decision.error.category !== 'network') return decision;
     network.consecutiveFails += 1;
     network.lastFailAt = now();
