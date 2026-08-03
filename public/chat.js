@@ -2864,3 +2864,65 @@ connect();
 /* ════════════════════════════════════════════════════════════════════════════
  * 实时语音通话 — 结束
  * ════════════════════════════════════════════════════════════════════════════ */
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Codex ChatGPT 登录态横幅 — 开始
+ * 刷新器判定 refresh token 已被消费（needs_login）时，聊天页顶部出现横幅；
+ * 按钮一键打开跑 `codex login` 的交互终端（浏览器 OAuth 无法在非交互进程
+ * 完成）。重新登录后状态自愈，横幅在下次轮询时自动消失。
+ * ════════════════════════════════════════════════════════════════════════════ */
+(function codexLoginBanner() {
+  let banner = null;
+  let opening = false;
+  function setBanner(show) {
+    if (show && !banner) {
+      banner = document.createElement('div');
+      banner.id = 'codex-login-banner';
+      banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;display:flex;gap:10px;align-items:center;justify-content:center;padding:8px 12px;background:#8a3535;color:#fff;font-size:13px;box-shadow:0 2px 8px rgba(0,0,0,.35);';
+      const span = document.createElement('span');
+      span.textContent = tt('codexLoginBannerText');
+      const btn = document.createElement('button');
+      btn.textContent = tt('codexLoginBannerButton');
+      btn.style.cssText = 'padding:3px 14px;border-radius:6px;border:1px solid rgba(255,255,255,.6);background:transparent;color:#fff;cursor:pointer;font-weight:600;font-size:13px;';
+      btn.onclick = async () => {
+        if (opening) return;
+        opening = true;
+        btn.textContent = tt('codexLoginBannerOpening');
+        try {
+          const r = await fetch(withToken('/api/codex/oauth/login'), { method: 'POST' });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok || !d.ok) throw new Error((d && d.error) || ('HTTP ' + r.status));
+          window.open('/?id=' + encodeURIComponent(d.sessionId), '_blank');
+        } catch (e) {
+          btn.textContent = tt('codexLoginBannerFailed', { error: e.message }).slice(0, 60);
+          setTimeout(() => { if (banner) btn.textContent = tt('codexLoginBannerButton'); opening = false; }, 2500);
+          return;
+        }
+        opening = false;
+        btn.textContent = tt('codexLoginBannerButton');
+      };
+      banner.appendChild(span);
+      banner.appendChild(btn);
+      document.body.appendChild(banner);
+    } else if (!show && banner) {
+      banner.remove();
+      banner = null;
+    }
+  }
+  async function poll() {
+    try {
+      const r = await fetch(withToken('/api/codex/oauth/status'));
+      if (!r.ok) return;
+      const d = await r.json();
+      setBanner(!!d.needsLogin);
+    } catch (_) { /* server restarting or offline — banner state unchanged */ }
+  }
+  document.addEventListener('DOMContentLoaded', () => {
+    poll();
+    const timer = setInterval(poll, 30000);
+    if (timer && timer.unref) timer.unref();
+  });
+})();
+/* ════════════════════════════════════════════════════════════════════════════
+ * Codex ChatGPT 登录态横幅 — 结束
+ * ════════════════════════════════════════════════════════════════════════════ */

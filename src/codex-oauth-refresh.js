@@ -49,8 +49,21 @@ const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
 const CODEX_AUTH_FAILURE_PATTERN =
   /refresh token was already used|log out and sign in|failed to refresh token|authentication expired|not logged in|no login found/i;
 
+// Narrower than CODEX_AUTH_FAILURE_PATTERN on purpose: this matches only the
+// CLI's terminal verdict that no refresh can repair ("refresh token was
+// already used", "log out and sign in again"). A generic "failed to refresh
+// token" may still be transient, so it triggers a repair attempt but not the
+// needs_login state by itself. Tested against the CLI's own untruncated
+// output, never against a sanitized/truncated transport copy.
+const CODEX_LOGIN_REQUIRED_PATTERN =
+  /refresh token was already used|log out and sign in|not logged in|no login found/i;
+
 function looksLikeCodexAuthFailure(message) {
   return CODEX_AUTH_FAILURE_PATTERN.test(String(message || ''));
+}
+
+function looksLikeCodexLoginRequired(message) {
+  return CODEX_LOGIN_REQUIRED_PATTERN.test(String(message || ''));
 }
 
 function jwtExpMs(token) {
@@ -151,6 +164,8 @@ function createCodexOAuthRefresher(options = {}) {
   const isEnabled = typeof options.isEnabled === 'function'
     ? options.isEnabled
     : (() => process.env.CODEX_OAUTH_AUTO_REFRESH !== '0');
+  const onNeedsLogin = typeof options.onNeedsLogin === 'function' ? options.onNeedsLogin : null;
+  const onRecovered = typeof options.onRecovered === 'function' ? options.onRecovered : null;
 
   const state = {
     inFlight: null,
@@ -160,6 +175,10 @@ function createCodexOAuthRefresher(options = {}) {
     retryAfter: 0,
     consecutiveFailures: 0,
     refreshCount: 0,
+    // Set when the refresh token itself is dead (consumed by a rotation race
+    // or revoked). No invocation can repair this — only `codex login` by a
+    // human. Persists across cooldowns until the credential reads healthy.
+    needsLogin: null,
   };
 
   function childEnv() {
@@ -217,7 +236,28 @@ function createCodexOAuthRefresher(options = {}) {
     },
   ];
 
-  async function attempt(reason) {
+  function enterNeedsLogin(ts, reason) {
+    if (state.needsLogin) return;
+    state.needsLogin = { since: ts, reason };
+    logger.error('codex_oauth_needs_login', { reason });
+    if (onNeedsLogin) {
+      try { onNeedsLogin(status()); } catch (_) {}
+    }
+  }
+
+  function clearNeedsLogin(how) {
+    if (!state.needsLogin) return;
+    const since = state.needsLogin.since;
+    state.needsLogin = null;
+    state.consecutiveFailures = 0;
+    state.retryAfter = 0;
+    logger.info('codex_oauth_login_recovered', { how, downForMs: now() - since });
+    if (onRecovered) {
+      try { onRecovered(status()); } catch (_) {}
+    }
+  }
+
+  async function attempt(reason, { authFailureHint = false } = {}) {
     const startedAt = now();
     state.lastAttemptAt = startedAt;
     const before = await readCredentials();
@@ -227,6 +267,9 @@ function createCodexOAuthRefresher(options = {}) {
     // nothing to refresh, so spawning would be pure noise.
     if (!decision.due) {
       if (decision.outcome === 'fresh') {
+        // Self-heal: the user re-ran `codex login` (or another writer fixed
+        // the credential). Drop the terminal state and all backoff.
+        clearNeedsLogin('credential-fresh');
         state.consecutiveFailures = 0;
         state.retryAfter = 0;
       }
@@ -237,6 +280,7 @@ function createCodexOAuthRefresher(options = {}) {
 
     const env = childEnv();
     const steps = [];
+    let outputSaysLoginRequired = false;
     for (const rung of LADDER) {
       if (!rung.ready(before, now())) {
         steps.push({ step: rung.step, skipped: 'not_due_yet' });
@@ -245,10 +289,16 @@ function createCodexOAuthRefresher(options = {}) {
       // input:'' closes stdin immediately — `codex exec` otherwise waits for
       // more input and hangs the whole attempt until the kill timeout.
       const result = await run(codexBin, rung.args(), { timeoutMs: commandTimeoutMs, cwd, env, input: '' });
+      // The CLI's own untruncated output carries the terminal verdict; the
+      // transport copy may be sanitized and truncated, so never reuse it here.
+      // Only a boolean is kept — no output text is stored or logged.
+      const authDead = looksLikeCodexLoginRequired(`${result.stdout}\n${result.stderr}`);
+      if (authDead) outputSaysLoginRequired = true;
       const after = await readCredentials();
       const ok = refreshed(before, after, now());
-      steps.push({ step: rung.step, code: result.code, timedOut: !!result.timedOut, refreshed: ok });
+      steps.push({ step: rung.step, code: result.code, timedOut: !!result.timedOut, refreshed: ok, authDead });
       if (ok) {
+        clearNeedsLogin('refreshed');
         state.lastSuccessAt = now();
         state.consecutiveFailures = 0;
         state.retryAfter = 0;
@@ -276,17 +326,24 @@ function createCodexOAuthRefresher(options = {}) {
     // the user must run `codex login` once.
     const ts = now();
     const declined = before.expiresAt > ts;
+    const loginRequired = !declined && (outputSaysLoginRequired || authFailureHint);
     state.lastOutcome = declined
       ? { outcome: 'deferred', reason, at: ts, steps, expiresInMs: before.expiresAt - ts }
-      : { outcome: 'failed', reason, at: ts, steps, consecutiveFailures: state.consecutiveFailures + 1 };
+      : {
+        outcome: loginRequired ? 'needs_login' : 'failed',
+        reason, at: ts, steps,
+        consecutiveFailures: state.consecutiveFailures + 1,
+      };
     if (declined) {
       state.retryAfter = ts + deferCooldownMs;
       logger.info('codex_oauth_refresh_deferred', { reason, expiresInMs: before.expiresAt - ts });
     } else {
       state.consecutiveFailures += 1;
       state.retryAfter = ts + cooldownMs;
+      if (loginRequired) enterNeedsLogin(ts, reason);
       logger.error('codex_oauth_refresh_failed', {
         reason, steps, consecutiveFailures: state.consecutiveFailures,
+        needsLogin: !!state.needsLogin,
       });
     }
     return state.lastOutcome;
@@ -296,14 +353,34 @@ function createCodexOAuthRefresher(options = {}) {
   // cross-process refresh path is never contended — contending over the
   // single-use refresh token is exactly the outage this runtime exists to
   // prevent. `force` waives the failure backoff and nothing else.
-  function refresh({ reason = 'manual', force = false } = {}) {
+  function refresh({ reason = 'manual', force = false, authFailureHint = false } = {}) {
     if (!isEnabled()) return Promise.resolve({ outcome: 'disabled', reason });
     if (state.inFlight) return state.inFlight;
     const ts = now();
+    // The terminal state is a human-repair condition, not a transient fault:
+    // it must stay visible regardless of cooldown, and probing a consumed
+    // refresh token with CLI runs is pure noise. Re-read the credential (what
+    // `codex login` rewrites) instead; a healthy read self-heals on the spot.
+    if (!force && state.needsLogin) {
+      return (async () => {
+        const credentials = await readCredentials();
+        const decision = assess(credentials, ts);
+        if (!decision.due && decision.outcome === 'fresh') {
+          clearNeedsLogin('credential-fresh');
+          state.lastOutcome = { outcome: 'fresh', detail: decision.detail, at: ts, reason };
+          return state.lastOutcome;
+        }
+        state.lastOutcome = {
+          outcome: 'needs_login', reason, at: ts,
+          since: state.needsLogin.since, loginCommand: 'codex login',
+        };
+        return state.lastOutcome;
+      })();
+    }
     if (!force && state.retryAfter && ts < state.retryAfter) {
       return Promise.resolve({ outcome: 'cooldown', reason, retryInMs: state.retryAfter - ts });
     }
-    const running = attempt(reason)
+    const running = attempt(reason, { authFailureHint })
       .catch(error => {
         state.consecutiveFailures += 1;
         state.retryAfter = now() + cooldownMs;
@@ -321,12 +398,14 @@ function createCodexOAuthRefresher(options = {}) {
 
   // Reactive entry point: a codex turn already failed on auth. The wording
   // must match and the failing CLI must be codex — a third-party 401 must not
-  // refresh a ChatGPT login it never used.
+  // refresh a ChatGPT login it never used. The matched wording doubles as the
+  // needs_login hint: if the repair attempt then also fails on a dead token,
+  // the verdict is terminal instead of merely transient.
   function onApiError(decision) {
     const error = decision && decision.error;
     if (!error || !looksLikeCodexAuthFailure(error.sanitizedMessage)) return null;
     if (error.provider && !/codex/i.test(String(error.provider))) return null;
-    return refresh({ reason: 'api-error' });
+    return refresh({ reason: 'api-error', authFailureHint: true });
   }
 
   function status() {
@@ -339,6 +418,7 @@ function createCodexOAuthRefresher(options = {}) {
       consecutiveFailures: state.consecutiveFailures,
       refreshCount: state.refreshCount,
       inFlight: !!state.inFlight,
+      needsLogin: state.needsLogin ? { ...state.needsLogin } : null,
     };
   }
 
@@ -348,6 +428,7 @@ function createCodexOAuthRefresher(options = {}) {
 module.exports = {
   createCodexOAuthRefresher,
   looksLikeCodexAuthFailure,
+  looksLikeCodexLoginRequired,
   parseCodexAuth,
   stripOpenAiEnv,
   DEFAULT_CHECK_INTERVAL_MS,

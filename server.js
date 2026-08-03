@@ -126,6 +126,7 @@ const { mountSessionMemoryRoutes } = require('./src/routes/session-memory');
 const { createAgentResourcesRoutes } = require('./src/routes/agent-resources');
 const { createRoleWorkerService } = require('./src/session/role-worker');
 const { mountSessionCreateRoutes } = require('./src/routes/session-create');
+const { mountCodexOAuthRoutes } = require('./src/routes/codex-oauth');
 const { mountZcodeAuthRoutes } = require('./src/routes/zcode-auth');
 const { createOrchestrationRoutes } = require('./src/routes/orchestration');
 const { createChatTurnEngine } = require('./src/chat/turn-engine');
@@ -1201,7 +1202,11 @@ async function createSession(id) {
   if (!await tmuxHasSession(id)) {
     console.log(`[multicc] Creating tmux session: ${tmuxSessionName(id)} in ${cwd} (${provider.name} session: ${persisted.cliSessionId || '<pending>'})`);
     const launchSession = provEnv.qualifiedModel ? { ...persisted, model: provEnv.qualifiedModel } : persisted;
-    await tmuxCreateSession(id, cwd, 80, 24, provider.buildTerminalCmd(launchSession || {}), termEnv);
+    // codex-login flow: whitelisted interactive `codex login` terminal, not the TUI.
+    const terminalCmd = persisted.loginFlow === 'codex-login'
+      ? `${cliCommands.codex} login`
+      : provider.buildTerminalCmd(launchSession || {});
+    await tmuxCreateSession(id, cwd, 80, 24, terminalCmd, termEnv);
   } else {
     console.log(`[multicc] Attaching to existing tmux session: ${tmuxSessionName(id)}`);
     isRecovery = true;
@@ -1620,10 +1625,13 @@ memoModule.migrateLegacy().done.catch(error => console.log(`[memo] migration fai
 
 // Create + persist an isolated session record (its own git worktree + branch).
 // Shared creation boundary; an explicit id creates or reuses a named session.
-async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, effort = null, agent = null, rolePrompt = null, rolePresetId = null, type = null, elasticWorker = false, experimentalMode = null, persistence = 'bestEffort', persistenceSource = 'runtime.create-session' }) {
+async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, effort = null, agent = null, rolePrompt = null, rolePresetId = null, type = null, elasticWorker = false, experimentalMode = null, loginFlow = null, persistence = 'bestEffort', persistenceSource = 'runtime.create-session' }) {
   if (!dir) return { ok: false, error: 'directory not found' };
   if (!SUPPORTED_CHAT_CLIS.includes(cli)) return { ok: false, error: `cli must be ${SUPPORTED_CHAT_CLIS.join(', ')}` };
   if (!['terminal', 'chat'].includes(kind)) return { ok: false, error: 'kind must be terminal or chat' };
+  if (loginFlow && (loginFlow !== 'codex-login' || cli !== 'codex' || kind !== 'terminal')) {
+    return { ok: false, error: 'loginFlow only supports codex terminal sessions' };
+  }
   const experiment = validateExperimentalSession({ enabled: tuiChatMirrorEnabled(), cli, kind, experimentalMode });
   if (!experiment.ok) return experiment;
   // Model can be set for both Claude and Codex sessions. Claude terminal mode
@@ -1694,6 +1702,7 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
   if (rp) session.rolePrompt = rp;
   if (rolePresetId) session.rolePresetId = String(rolePresetId).trim();
   if (type) session.type = type;   // commander (and future roles) — round-trips via bootstrap/state + session-persistence
+  if (loginFlow) session.loginFlow = loginFlow; // whitelisted interactive login terminal (codex-login)
   if (type === 'worker' && elasticWorker) session.elasticWorker = true;
   if (ephemeral) session.ephemeral = true; if (experiment.mode) session.experimentalMode = experiment.mode;
   if (kind === 'chat') ensureCliStates(session);
@@ -2245,6 +2254,7 @@ mountQoderModelRoutes(app);
 // the chat rate-limit bar can prompt instead of degrading silently.
 mountOpenCodeQuotaRoutes(app); mountQoderQuotaRoutes(app); mountCodexQuotaRoutes(app);
 mountArkQuotaRoutes(app); mountZhipuQuotaRoutes(app); mountKimiQuotaRoutes(app);
+mountCodexOAuthRoutes(app, { getStatus: () => codexOAuthRefresh.status(), directories, createSessionRecord, persistedSessionExists: id => persistedSessions.has(id) });
 
 // Token APIs remain between the two Provider route phases so the established
 // route ordering stays byte-compatible while accounting lives in one runtime.
