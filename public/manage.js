@@ -2526,9 +2526,11 @@ function renderProviderList() {
       <div style="flex:1;min-width:0">
         <div style="font-size:13px;color:var(--text);font-weight:600">${escapeHtml(p.name)} <span style="font-weight:400;font-size:11px;color:var(--faint)">${p.source === 'ccswitch' ? '· 来自 cc-switch' : '· 本地'} · 可用于 ${(p.compatibleClis || []).map(x => x === 'claude' ? 'Claude' : x === 'codex' ? 'Codex' : 'OpenCode').join(' / ')}</span>${latBadge}</div>
         <div data-quota-id="${escapeHtml(p.id)}" style="font-size:11px;font-weight:600;margin-top:3px;color:var(--faint)">余量 —</div>
+        <div data-balance-id="${escapeHtml(p.id)}" style="display:none;font-size:11px;font-weight:600;margin-top:2px;color:var(--faint)"></div>
         ${statHtml ? `<div style="font-size:11px;color:var(--amber);margin-top:3px">${statHtml}</div>` : ''}
         <div style="font-size:11px;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.isOfficial ? '默认登录 / 订阅' : (p.baseUrl || ''))}${(p.modelOptions || []).length > 1 ? ' · ' + (p.modelOptions || []).length + ' models' : (p.model ? ' · ' + escapeHtml(p.model) : '')}${p.useChatResponsesProxy ? ' · proxy' : ''}${p.tokenMask ? ' · ' + escapeHtml(p.tokenMask) : ''}</div>
       </div>
+      <button class="btn" style="padding:4px 10px;font-size:12px" onclick="balanceProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}',this)">余量</button>
       <button class="btn" style="padding:4px 10px;font-size:12px" onclick="speedTestProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}',this)">测速</button>
       <button class="btn" style="padding:4px 10px;font-size:12px" onclick="editProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}')">编辑</button>
       <button class="btn" style="padding:4px 10px;font-size:12px" onclick="deleteProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}','${escapeHtml(p.name)}')">删除</button>
@@ -2547,10 +2549,11 @@ function renderProviderList() {
       box.innerHTML = `<span style="color:var(--faint);font-size:13px">${emptyMsg}</span>`;
       continue;
     }
-    const speedAll = `<div style="margin-top:2px"><button class="btn" style="padding:2px 8px;font-size:11px" onclick="speedTestGroup(this,'${escapeHtml(list.map(p => p.appType + '|' + p.id).join(','))}')">全部测速</button></div>`;
+    const speedAll = `<div style="margin-top:2px"><button class="btn" style="padding:2px 8px;font-size:11px" onclick="speedTestGroup(this,'${escapeHtml(list.map(p => p.appType + '|' + p.id).join(','))}')">全部测速</button> <button class="btn" style="padding:2px 8px;font-size:11px" onclick="balanceGroup(this)">全部查余量</button></div>`;
     box.innerHTML = list.map(cardHtml).join('') + speedAll;
   }
   providerCatalog.injectProviderQuotas(_providerData);
+  paintProviderBalances();
 }
 
 // ── Provider speed-test ──────────────────────────────────────────────
