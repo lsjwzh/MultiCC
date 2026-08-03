@@ -688,7 +688,9 @@
     <div class="nav-bottom">
       <!-- Version check: shown at the bottom of the sidebar, always visible -->
       <div id="version-bar" style="padding:10px 4px 6px;border-top:1px solid var(--line)">
-        <div style="display:flex;align-items:center;gap:8px" onclick="checkVersion()" title="点击检查更新">
+        <!-- Click = check, then offer to install. Falls back to a plain check if
+             manage-update.js failed to load, so the row is never a dead click. -->
+        <div style="display:flex;align-items:center;gap:8px;cursor:pointer" onclick="(window.onVersionBarClick||window.checkVersion)()" title="点击检查并安装更新">
           <span id="ver-icon" style="font-size:13px;opacity:.8">📦</span>
           <span style="flex:1;min-width:0">
             <div id="ver-current" style="font-family:var(--mono);font-size:11px;color:var(--text);line-height:1.3">v—</div>
@@ -1999,6 +2001,7 @@
   <script src="voice-launch-client.js"></script>
   <script src="manage-qwen-audio.js"></script>
   <script src="manage.js"></script>
+<script src="manage-update.js"></script>
   <script>
     /* ── Redesign shell: nav view switching, KPI row, search ── */
     (function () {

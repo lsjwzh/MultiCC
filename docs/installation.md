@@ -49,7 +49,17 @@ cd MultiCC && ./multicc start     # start the server
 cd MultiCC && ./multicc install   # install as macOS launchd background service
 ```
 
-**Update anytime:** `./multicc update` — pulls latest code, reinstalls deps if `package.json` changed, and restarts.
+**Update anytime:**
+
+```bash
+./multicc update           # pull latest code, reinstall deps if the manifests changed, restart
+./multicc update --force   # same, but don't stop for a dirty or diverged working tree
+./multicc update --help    # usage
+```
+
+On the stable channel (`.multicc_channel` = `stable`, written by the installer when you
+pass `--branch <tag>`) `update` checks out the newest release tag. On the dev channel it
+fast-forwards `main`.
 
 The v1 updater also verifies the independently packaged `cli-provider-router`
 (CPR) before starting the server. Provider credentials and defaults remain in
@@ -57,19 +67,46 @@ MultiCC's existing `providers.json` / data directory; no CPR data migration is
 required. If an interrupted upgrade leaves dependencies incomplete, rerun
 `./multicc update` and it will repair them with `npm install` before restarting.
 
-> **⚠️ If `./multicc update` fails** (e.g. after a server-side history rewrite / force-push, which can happen when sensitive files are purged from the repo), reset your local branch to match the remote:
-> ```bash
-> cd MultiCC
-> git fetch origin
-> git reset --hard origin/main
-> npm install
-> ./multicc restart
-> ```
-> Or as a one-liner:
-> ```bash
-> cd MultiCC && git fetch origin && git reset --hard origin/main && npm install && ./multicc restart
-> ```
-> **Note:** `git reset --hard` discards uncommitted local changes. If you have local modifications, stash them first with `git stash` and restore with `git stash pop` after the reset.
+### When the working tree is dirty or the history diverged
+
+A plain `update` stops rather than clobber your checkout. This is the common case after
+you've edited a file locally, or after a server-side history rewrite / force-push (which
+happens when sensitive files are purged from the repo). Add `--force`:
+
+```bash
+cd MultiCC && ./multicc update --force
+```
+
+`--force` never deletes anything, but it also never puts your changes back:
+
+1. Everything in the working tree, **including untracked files**, is stashed under a
+   labelled entry — `multicc-force-update-<timestamp>`.
+2. The checkout is forced onto the target commit — `origin/main` on the dev channel
+   (`git reset --hard`, so ahead / behind / diverged all end the same way), the newest
+   release tag on stable (`git checkout -f`).
+3. Dependencies are reinstalled if the manifests changed, and the server restarts. On the
+   dev channel that happens even when `HEAD` didn't move, because the files on disk did.
+
+The stash is **not** popped afterwards. Recover your work with `git stash list` and
+`git stash pop`, or leave it there forever — it costs nothing. Without `--force`, a dirty
+tree is stashed under `multicc-auto-update` and popped back after the fast-forward; only
+`--force` leaves you on a clean checkout.
+
+### One-click update from the browser
+
+Click the **version number at the bottom of the `/manage` sidebar**. The dialog shows your
+current version against the latest release, with a *强制更新* checkbox that maps to
+`--force`. Confirming runs the same `./multicc update` detached from the server process,
+tails its log into the dialog, and reloads the page once the restarted server answers
+again. A failed update keeps its full output in the dialog and offers a force retry.
+
+Because the update restarts the server, in-flight agent turns are interrupted (their
+partial output is saved). The dialog warns you when any session is mid-stream.
+
+Under the hood: `POST /api/update` with `{"force": true|false}` starts it, `GET
+/api/update/status` reports progress from `logs/update.log` — see the
+[API reference](api-reference.md#server-info--update). Both are `ACCESS_TOKEN`-gated like
+`/api/restart`.
 
 ## Prerequisites
 
@@ -108,6 +145,7 @@ Then open `http://<your-lan-ip>:3000?token=<ACCESS_TOKEN>`. Note that plain HTTP
 ./multicc status      # check if running
 ./multicc log         # tail live logs
 ./multicc update      # pull latest, reinstall deps, restart
+./multicc update -f   # ...even if the working tree is dirty or diverged (see above)
 ./multicc install     # install launchd agent (macOS auto-start on login)
 ./multicc uninstall   # remove launchd agent
 ```
