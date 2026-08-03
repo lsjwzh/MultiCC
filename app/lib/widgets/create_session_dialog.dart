@@ -11,6 +11,7 @@ import '../models/message.dart';
 import '../models/agent_preset.dart';
 import '../services/settings_service.dart';
 import '../services/manage_service.dart';
+import '../services/qoder_models_service.dart';
 import '../theme.dart';
 import '../services/agent_preset_service.dart';
 import '../widgets/agent_preset_picker_sheet.dart';
@@ -125,6 +126,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     if (_hasConcreteDefaultProvider) _pickedProvider = _defaultProviderId;
     _pickedEffort = _defaultEffort;
     _loadPresets();
+    if (_isQoder) _loadQoderModels();
     final opts = _currentModelOptions;
     _pickedModel = opts.isNotEmpty ? opts.first.key : null;
   }
@@ -136,6 +138,25 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     _agentCtrl.dispose();
     _customModelCtrl.dispose();
     super.dispose();
+  }
+
+  /// Fetch the signed-in Qoder account's catalog and re-seed the model field
+  /// once it lands. No-op when the list is already warm or unavailable — the
+  /// dropdown just keeps the built-in routing tiers.
+  Future<void> _loadQoderModels() async {
+    final before = QoderModelsService.cached.length;
+    try {
+      await QoderModelsService(settings: widget.settings).load();
+    } catch (_) {}
+    if (!mounted || !_isQoder || QoderModelsService.cached.length == before) {
+      return;
+    }
+    setState(() {
+      final opts = _currentModelOptions;
+      final current = _customModel ? null : _pickedModel;
+      if (current != null && opts.any((e) => e.key == current)) return;
+      _pickedModel = opts.isNotEmpty ? opts.first.key : null;
+    });
   }
 
   Future<void> _loadPresets() async {
@@ -151,7 +172,8 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
   /// Mirrors web rebuildModelOptions(): provider modelOptions if available,
   /// else CLAUDE_MODEL_OPTIONS for Claude only (empty list for Codex).
   List<MapEntry<String, String>> get _currentModelOptions {
-    if (_isQoder) return kQoderModelOptions;
+    // Live Qoder catalog once _loadQoderModels() lands; routing tiers until then.
+    if (_isQoder) return QoderModelsService.options();
     Map<String, dynamic>? prov;
     final providerId = _effectiveProviderId;
     for (final p in _providers) {
@@ -367,12 +389,14 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     });
     if (!cli.supportsProvider) {
       // Qoder owns its account/BYOK; no provider pool to fetch. Seed the model
-      // from the static option list (kQoderModelOptions).
+      // from whatever the option list currently offers, then pull the account's
+      // real catalog in the background (_loadQoderModels re-seeds on arrival).
       if (!mounted) return;
       setState(() {
         final opts = _currentModelOptions;
         _pickedModel = opts.isNotEmpty ? opts.first.key : null;
       });
+      if (cli == SessionCli.qoder) _loadQoderModels();
       return;
     }
     try {

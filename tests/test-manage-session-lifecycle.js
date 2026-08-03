@@ -112,7 +112,11 @@ test('session lifecycle classic script loads before manage facade and stays with
   const innerHtmlWrites = source.split(/\r?\n/).filter(line => line.includes('.innerHTML'));
   assert.deepEqual(innerHtmlWrites.map(line => line.trim()), ["modelSelect.innerHTML = '';"]);
   assert.match(source, /opt\.textContent\s*=/);
-  assert.match(source, /if \(cli === 'qoder'\) return QODER_MODEL_OPTIONS/);
+  // Qoder's dropdown reads the live catalog (/api/qoder/models, mirrored into
+  // localStorage by shared/models.js) and only falls back to the routing tiers.
+  assert.match(source, /if \(cli === 'qoder'\) return qoderModelOptions\(\)/);
+  assert.match(source, /root\.readQoderModelsSync/);
+  assert.match(source, /if \(!live\.length\) return QODER_MODEL_OPTIONS/);
   assert.match(source, /cli === 'zcode'\s*\?\s*\[\]\s*:\s*providerAliasTiers/);
   assert.match(source, /cli === 'zcode'\s*\?\s*'ZCode 原生 \/ Coding Plan（不覆盖）'/);
   assert.match(source, /cli === 'opencode' \|\| cli === 'zcode'/);

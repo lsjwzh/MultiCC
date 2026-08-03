@@ -100,10 +100,68 @@
     return opencodeModelsPromise;
   }
 
+  // ── Qoder CN live model list ────────────────────────────────────────────
+  // GET /api/qoder/models runs `qoderclicn --list-models` (cached server-side
+  // for 1 day) and returns the catalog entitled to the logged-in account.
+  // Mirrored here for 1 day too. Entries are {model, label}; see
+  // routes/qoder-models.js.
+  const QODER_MODELS_TTL_MS = 24 * 60 * 60 * 1000; // 1 day
+  const QODER_MODELS_KEY = 'multicc.qoder.models.v1';
+  let qoderModelsPromise = null;
+
+  function readQoderCache() {
+    try {
+      const raw = window.localStorage && window.localStorage.getItem(QODER_MODELS_KEY);
+      if (!raw) return null;
+      const obj = JSON.parse(raw);
+      if (!obj || typeof obj !== 'object') return null;
+      const at = Number(obj.at) || 0;
+      const models = Array.isArray(obj.models) ? obj.models : [];
+      if (!at || (Date.now() - at) >= QODER_MODELS_TTL_MS) return null;
+      if (!models.length) return null;
+      return { at, models };
+    } catch (_) { return null; }
+  }
+
+  function writeQoderCache(models) {
+    try {
+      if (window.localStorage) {
+        window.localStorage.setItem(QODER_MODELS_KEY, JSON.stringify({ at: Date.now(), models }));
+      }
+    } catch (_) { /* ignore quota / disabled storage */ }
+  }
+
+  // Synchronous cache peek for callers that build a <select> inline and cannot
+  // await (manage.html's session create/edit dialog). Returns [] on a miss.
+  function readQoderModelsSync() {
+    const cached = readQoderCache();
+    return cached ? cached.models : [];
+  }
+
+  async function loadQoderModels() {
+    const cached = readQoderCache();
+    if (cached) return cached.models;
+    if (qoderModelsPromise) return qoderModelsPromise;
+    qoderModelsPromise = (async () => {
+      try {
+        const data = await window.fetch('/api/qoder/models', { credentials: 'same-origin' })
+          .then(r => (r && r.ok ? r.json() : null));
+        const models = data && Array.isArray(data.models) ? data.models : [];
+        // Only persist the real catalog: caching the offline tier fallback for
+        // a day would hide the models once the CLI recovers.
+        if (models.length && data.source !== 'fallback') writeQoderCache(models);
+        return models;
+      } catch (_) { return []; } finally { qoderModelsPromise = null; }
+    })();
+    return qoderModelsPromise;
+  }
+
   window.CLAUDE_MODEL_OPTIONS = CLAUDE_MODEL_OPTIONS;
   window.ALIAS_TIERS = ALIAS_TIERS;
   window.modelShortName = modelShortName;
   window.aliasTiersFromMap = aliasTiersFromMap;
   window.formatAliasTierLabel = formatAliasTierLabel;
   window.loadOpenCodeModels = loadOpenCodeModels;
+  window.loadQoderModels = loadQoderModels;
+  window.readQoderModelsSync = readQoderModelsSync;
 })();
