@@ -1685,7 +1685,11 @@ modelBtn?.addEventListener('click', async () => {
     _sessionEffectiveModel = data.effectiveModel || data.model || '';
     _sessionEffort = data.effort || '';
     _sessionEffectiveEffort = data.effectiveEffort || _sessionEffort || defaultEffortForCurrentCli();
-    updateModelBtn();
+    // The quota bars key off the active provider's baseUrl, which only reaches
+    // them through updateProviderBtn(). This is the live provider-switch path
+    // (the standalone provider button is hidden), so without this call the bar
+    // kept showing the OLD provider until the next loadSessionModel().
+    updateProviderBtn(); // also calls updateModelBtn()
     const _savedModel = _sessionEffectiveModel || _sessionModel;
     const savedParts = [providerShortName(_sessionProvider), _savedModel ? modelDisplayName(_savedModel, _sessionProvider) : tt('default'), effortShortName(_sessionEffectiveEffort)];
     if ((_sessionCli === 'claude' || _sessionCli === 'opencode' || _sessionCli === 'qoder') && _sessionAgent) savedParts.push(`Agent ${_sessionAgent}`);
