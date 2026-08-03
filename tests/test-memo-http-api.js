@@ -41,18 +41,19 @@ test('isolated memo HTTP contract uses the safe boundary and fake turn port', as
     ['start-fail', { id: 'start-fail', dirId: 'dir-1', kind: 'chat' }],
   ]);
   const turns = [];
+  const memoRoot = path.join(dataDir, 'memories');
   const nativeFiles = createMemoFilePort();
   const files = {
     ...nativeFiles,
     readText(file) {
-      if (file.startsWith(failureProject)) {
+      if (file.startsWith(path.join(memoRoot, 'dir-io-failure'))) {
         throw new Error('EIO token=private at /Users/private/worktree/multicc.memo.md');
       }
       return nativeFiles.readText(file);
     },
   };
   const module = createMemoModule({
-    directories: { get: id => directories.get(id) },
+    directories: { get: id => directories.get(id), list: () => [...directories.values()] },
     sessions: { get: id => sessions.get(id) },
     runtime: {
       getChatSession: id => id === 'busy-1' ? { claudeProc: { pid: 1 } } : null,
@@ -62,6 +63,7 @@ test('isolated memo HTTP contract uses the safe boundary and fake turn port', as
       },
     },
     files,
+    memoRoot,
   });
 
   const app = express();
@@ -109,7 +111,7 @@ test('isolated memo HTTP contract uses the safe boundary and fake turn port', as
   response = await api('GET', '/api/directories/dir-1/memo');
   assert.equal(response.status, 200);
   assert.deepEqual(response.body, {
-    path: path.join(project, 'multicc.memo.md'), text: '', mtime: 0, exists: false,
+    path: path.join(memoRoot, 'dir-1', 'memo.md'), text: '', mtime: 0, exists: false,
   });
 
   response = await api('PUT', '/api/directories/dir-1/memo', {});
@@ -121,12 +123,27 @@ test('isolated memo HTTP contract uses the safe boundary and fake turn port', as
 
   response = await api('PUT', '/api/directories/dir-1/memo', { text: '# release\n' });
   assert.equal(response.status, 200);
-  assert.equal(response.body.path, path.join(project, 'multicc.memo.md'));
+  assert.equal(response.body.path, path.join(memoRoot, 'dir-1', 'memo.md'));
   assert.equal(typeof response.body.mtime, 'number');
   response = await api('GET', '/api/directories/dir-1/memo');
   assert.equal(response.status, 200);
   assert.equal(response.body.text, '# release\n');
   assert.equal(response.body.exists, true);
+  // The whole point of the move: writing a memo must not touch the project.
+  assert.deepEqual(fs.readdirSync(project), []);
+
+  // A memo written by an older build is copied out and the untracked original
+  // removed, so it can no longer show up as a dirty entry in that project.
+  fs.writeFileSync(path.join(project, 'multicc.memo.md'), '# legacy', 'utf8');
+  fs.writeFileSync(path.join(failureProject, 'multicc.memo.md'), '# other', 'utf8');
+  const report = await module.migrateLegacy().done;
+  assert.equal(report.found, 2);
+  assert.equal(fs.existsSync(path.join(failureProject, 'multicc.memo.md')), false);
+  assert.equal(fs.readFileSync(path.join(memoRoot, 'dir-io-failure', 'memo.md'), 'utf8'), '# other');
+  // dir-1 already had a different stored memo: keep both, report the conflict.
+  assert.deepEqual(report.conflicts.map(entry => entry.id), ['dir-1']);
+  assert.equal(fs.readFileSync(path.join(memoRoot, 'dir-1', 'memo.md'), 'utf8'), '# release\n');
+  fs.rmSync(path.join(project, 'multicc.memo.md'), { force: true });
 
   response = await api('GET', '/api/directories/dir-io-failure/memo');
   assertFailure(response, 500, 'internal_error');
@@ -142,16 +159,23 @@ test('isolated memo HTTP contract uses the safe boundary and fake turn port', as
   assertFailure(response, 400, 'session is not in this directory');
   response = await api('POST', '/api/directories/dir-1/memo/send', { text: 'go', sessionId: 'terminal-1' });
   assertFailure(response, 400, '只能发送到 chat 类型的会话');
-  response = await api('POST', '/api/directories/dir-1/memo/send', { text: 'go', sessionId: 'busy-1' });
-  assertFailure(response, 409, '目标会话正在跑回合，稍后再试');
   assert.deepEqual(turns, []);
+
+  // A busy session queues rather than 409s: admitChatWork owns the FIFO, so the
+  // memo host must not second-guess it (see the controller test's "queue me").
+  response = await api('POST', '/api/directories/dir-1/memo/send', { text: 'go', sessionId: 'busy-1' });
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.body, { ok: true, sentTo: 'busy-1' });
 
   response = await api('POST', '/api/directories/dir-1/memo/send', { text: '  ship it  ', sessionId: 'chat-1' });
   assert.equal(response.status, 200);
   assert.deepEqual(response.body, { ok: true, sentTo: 'chat-1' });
-  assert.deepEqual(turns, [{ id: 'chat-1', text: 'ship it', options: {} }]);
+  assert.deepEqual(turns, [
+    { id: 'busy-1', text: 'go', options: {} },
+    { id: 'chat-1', text: 'ship it', options: {} },
+  ]);
 
   response = await api('POST', '/api/directories/dir-1/memo/send', { text: 'fail', sessionId: 'start-fail' });
   assertFailure(response, 500, 'internal_error');
-  assert.equal(turns.length, 2);
+  assert.equal(turns.length, 3);
 });

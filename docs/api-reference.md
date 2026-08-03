@@ -14,7 +14,7 @@
 | `GET` | `/api/directories/:id/sessions` | List sessions in a directory with worktree and merge state |
 | `POST` | `/api/directories/:id/sessions` | Create a Claude/Codex terminal or chat session (`{ cli, kind, label?, model?, provider?, role? }`) |
 | `GET` | `/api/directories/:id/workspace` | Live workspace board snapshot |
-| `GET` / `PUT` | `/api/directories/:id/memo` | Read / write `<directory>/multicc.memo.md` |
+| `GET` / `PUT` | `/api/directories/:id/memo` | Read / write the directory memo (`<memoryStore>/<dirId>/memo.md`) |
 | `POST` | `/api/directories/:id/memo/send` | Send memo text to a chat session |
 | `GET` | `/api/directories/:id/events` | Directory event log (merges, dispatches, notes, provider changes) |
 

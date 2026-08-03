@@ -10,7 +10,7 @@ const providerApi = window.MultiCCApi;
 const providerCatalog = window.MultiCCProviderCatalog;
 const NOTIFY_EXISTING_SESSIONS_MIGRATION_KEY = 'multicc_notify_existing_sessions_opened_20260629';
 
-// ── Per-directory memo (multicc.memo.md, plain markdown) ──
+// ── Per-directory memo (plain markdown, stored in multicc's memory store) ──
 // Network/DTO/state handling lives in memo-controller.js; this file only
 // injects dashboard caches and exposes the legacy globals used by inline UI.
 const memoController = window.MultiCCMemo.createController({
