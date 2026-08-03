@@ -180,6 +180,7 @@ test('both routes mount without a browser anywhere in sight', () => {
   qoder.mountQoderQuotaRoutes(app);
   assert.deepEqual(routes, [
     ['GET', '/api/opencode/quota', 'function'],
+    ['POST', '/api/opencode/quota/login', 'function'],
     ['GET', '/api/qoder/quota', 'function'],
     ['POST', '/api/qoder/quota/login', 'function'],
     ['GET', '/api/qoder/quota/cookies', 'function'],
