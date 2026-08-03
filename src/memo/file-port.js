@@ -15,6 +15,14 @@ function createMemoFilePort({ fsImpl = fs } = {}) {
     exists(file) {
       return fsImpl.existsSync(file);
     },
+    // The memo store is created on demand: a directory registered before this
+    // module existed has no folder under the memory root until its first write.
+    ensureDir(dir) {
+      fsImpl.mkdirSync(dir, { recursive: true });
+    },
+    remove(file) {
+      fsImpl.rmSync(file, { force: true });
+    },
     writeAtomic(file, text) {
       const temporary = `${file}.tmp.${process.pid}.${temporaryCounter++}`;
       try {

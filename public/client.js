@@ -11,7 +11,7 @@ function escapeHtml(s) {
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-// Open the project's memo (multicc.memo.md) as an in-page popup.
+// Open the project memo (stored in multicc, not in the project) as a popup.
 async function openMemo() {
   const mm = document.getElementById('memo-modal');
   if (!mm) return;

@@ -267,7 +267,7 @@ class _TerminalAppBar extends StatelessWidget {
             ),
           ),
           Tooltip(
-            message: '项目备忘 (multicc.memo.md)',
+            message: '项目备忘',
             child: GestureDetector(
               onTap: () => _openMemoFromTerminal(context, session.id),
               child: const Padding(

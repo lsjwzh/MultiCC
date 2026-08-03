@@ -6,9 +6,19 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { presentError } = require('../src/http');
-const { MEMO_MAX_BYTES, createMemoController } = require('../src/memo');
+const {
+  MEMO_MAX_BYTES,
+  createMemoController,
+  createGitTrackPort,
+  migrateProjectMemos,
+} = require('../src/memo');
 
 const CONTEXT = Object.freeze({ requestId: 'memo_req_1', correlationId: 'memo_corr_1' });
+// Memos live under multicc's memory store, keyed by directory id — never in the
+// project itself, where an untracked file blocks that repository's merges.
+const MEMO_ROOT = '/state/memories';
+const MEMO_1 = '/state/memories/dir-1/memo.md';
+const LEGACY_1 = '/project/one/multicc.memo.md';
 
 function enoent() {
   return Object.assign(new Error('missing'), { code: 'ENOENT' });
@@ -31,6 +41,7 @@ function fixture() {
   const data = new Map();
   const mtimes = new Map();
   const directoriesOnDisk = new Set(['/project/one', '/project/two']);
+  const ensured = [];
   const calls = [];
   let readFailure = null;
   let writeFailure = null;
@@ -45,7 +56,9 @@ function fixture() {
       if (!data.has(file)) throw enoent();
       return { mtimeMs: mtimes.get(file) || 0 };
     },
-    exists(file) { return directoriesOnDisk.has(file); },
+    exists(file) { return directoriesOnDisk.has(file) || data.has(file); },
+    ensureDir(dir) { ensured.push(dir); directoriesOnDisk.add(dir); },
+    remove(file) { data.delete(file); mtimes.delete(file); },
     writeAtomic(file, text) {
       if (writeFailure) throw writeFailure;
       data.set(file, text);
@@ -65,10 +78,11 @@ function fixture() {
     sessions: { get: id => sessions.get(id) },
     runtime,
     files,
+    memoRoot: MEMO_ROOT,
     pathPort: path.posix,
   });
   return {
-    controller, calls, data, mtimes,
+    controller, calls, data, mtimes, ensured, files, directories,
     setReadFailure(error) { readFailure = error; },
     setWriteFailure(error) { writeFailure = error; },
   };
@@ -83,15 +97,15 @@ async function capture(action) {
   assert.fail('expected action to fail');
 }
 
-test('read preserves the legacy missing/existing memo payloads', async () => {
+test('read serves the memory-store memo and never the project tree', async () => {
   const f = fixture();
   assert.deepEqual(f.controller.read({ directoryId: 'dir-1' }), {
-    path: '/project/one/multicc.memo.md', text: '', mtime: 0, exists: false,
+    path: MEMO_1, text: '', mtime: 0, exists: false,
   });
-  f.data.set('/project/one/multicc.memo.md', '# memo');
-  f.mtimes.set('/project/one/multicc.memo.md', 17);
+  f.data.set(MEMO_1, '# memo');
+  f.mtimes.set(MEMO_1, 17);
   assert.deepEqual(f.controller.read({ directoryId: 'dir-1' }), {
-    path: '/project/one/multicc.memo.md', text: '# memo', mtime: 17, exists: true,
+    path: MEMO_1, text: '# memo', mtime: 17, exists: true,
   });
 
   const missing = await capture(() => f.controller.read({ directoryId: 'unknown' }));
@@ -135,9 +149,101 @@ test('write locks legacy validation statuses and performs one atomic write', asy
   assert.equal(pathMissing.body.error, 'directory path missing');
 
   assert.deepEqual(f.controller.write({ directoryId: 'dir-1', text: 'saved' }), {
-    path: '/project/one/multicc.memo.md', mtime: 99,
+    path: MEMO_1, mtime: 99,
   });
-  assert.equal(f.data.get('/project/one/multicc.memo.md'), 'saved');
+  assert.equal(f.data.get(MEMO_1), 'saved');
+  assert.deepEqual(f.ensured, ['/state/memories/dir-1']);
+  assert.equal(f.data.has(LEGACY_1), false);
+});
+
+test('migration copies legacy project memos out and clears untracked ones', async () => {
+  const f = fixture();
+  f.data.set(LEGACY_1, '# legacy');
+  const report = await migrateProjectMemos({
+    directories: [...f.directories.values()],
+    files: f.files,
+    memoRoot: MEMO_ROOT,
+    pathPort: path.posix,
+    git: { isTracked: async () => 'untracked' },
+  }).done;
+  assert.deepEqual(
+    { found: report.found, moved: report.moved, removed: report.removed },
+    { found: 1, moved: 1, removed: 1 },
+  );
+  assert.equal(f.data.get(MEMO_1), '# legacy');
+  assert.equal(f.data.has(LEGACY_1), false, 'untracked legacy memo must leave the project tree');
+  assert.deepEqual(f.controller.read({ directoryId: 'dir-1' }).text, '# legacy');
+
+  // Second pass is a no-op: nothing left to find.
+  assert.equal((await migrateProjectMemos({
+    directories: [...f.directories.values()],
+    files: f.files,
+    memoRoot: MEMO_ROOT,
+    pathPort: path.posix,
+    git: { isTracked: async () => 'untracked' },
+  }).done).found, 0);
+});
+
+test('migration never deletes a git-tracked memo and never overwrites a differing one', async () => {
+  const tracked = fixture();
+  tracked.data.set(LEGACY_1, '# legacy');
+  let report = await migrateProjectMemos({
+    directories: [...tracked.directories.values()],
+    files: tracked.files,
+    memoRoot: MEMO_ROOT,
+    pathPort: path.posix,
+    git: { isTracked: async () => 'tracked' },
+  }).done;
+  assert.equal(tracked.data.get(MEMO_1), '# legacy');
+  assert.equal(tracked.data.get(LEGACY_1), '# legacy', 'deleting a tracked file would dirty a clean repo');
+  assert.equal(report.removed, 0);
+  assert.deepEqual(report.keptTracked.map(entry => entry.id), ['dir-1']);
+
+  // An unclassifiable repository is treated as tracked: never delete on doubt.
+  const unknown = fixture();
+  unknown.data.set(LEGACY_1, '# legacy');
+  report = await migrateProjectMemos({
+    directories: [...unknown.directories.values()],
+    files: unknown.files,
+    memoRoot: MEMO_ROOT,
+    pathPort: path.posix,
+    git: { isTracked: async () => 'unknown' },
+  }).done;
+  assert.equal(unknown.data.get(LEGACY_1), '# legacy');
+  assert.equal(report.removed, 0);
+
+  const conflict = fixture();
+  conflict.data.set(LEGACY_1, '# legacy');
+  conflict.data.set(MEMO_1, '# already stored');
+  report = await migrateProjectMemos({
+    directories: [...conflict.directories.values()],
+    files: conflict.files,
+    memoRoot: MEMO_ROOT,
+    pathPort: path.posix,
+    git: { isTracked: async () => 'untracked' },
+  }).done;
+  assert.equal(conflict.data.get(MEMO_1), '# already stored');
+  assert.equal(conflict.data.get(LEGACY_1), '# legacy');
+  assert.deepEqual(report.conflicts.map(entry => entry.id), ['dir-1']);
+  assert.equal(report.moved, 0);
+});
+
+test('git track port classifies without deleting on doubt', async () => {
+  const fail = (stderr) => ({ error: Object.assign(new Error('git failed'), { code: 128 }), stdout: '', stderr });
+  const port = createGitTrackPort({
+    run: async (dir) => {
+      if (dir === '/tracked') return { error: null, stdout: 'multicc.memo.md\n', stderr: '' };
+      if (dir === '/untracked') return { error: null, stdout: '', stderr: '' };
+      if (dir === '/plain') return fail('fatal: not a git repository');
+      if (dir === '/broken') return fail('fatal: something else');
+      throw new Error('spawn failed');
+    },
+  });
+  assert.equal(await port.isTracked('/tracked', 'multicc.memo.md'), 'tracked');
+  assert.equal(await port.isTracked('/untracked', 'multicc.memo.md'), 'untracked');
+  assert.equal(await port.isTracked('/plain', 'multicc.memo.md'), 'untracked');
+  assert.equal(await port.isTracked('/broken', 'multicc.memo.md'), 'unknown');
+  assert.equal(await port.isTracked('/missing-git', 'multicc.memo.md'), 'unknown');
 });
 
 test('send locks missing, mismatch, kind and busy error semantics', async () => {
@@ -186,5 +292,9 @@ test('production server mounts only the injected memo module', () => {
   assert.doesNotMatch(source, /app\.(?:get|put|post)\('\/api\/directories\/:id\/memo/);
   assert.doesNotMatch(source, /const MEMO_(?:FILENAME|MAX_BYTES)/);
   assert.match(source, /runTurn: \(id, text, options\) => chatTurnEngine\.admitChatWork\(id, text, options\)/);
+  assert.match(source, /memoRoot: MEMORY_STORE_ROOT/);
+  assert.match(source, /memoModule\.migrateLegacy\(\)/);
   assert.doesNotMatch(controllerSource, /require\(['"]express['"]\)|server\.js/);
+  // The project tree is no longer a memo destination anywhere in the module.
+  assert.doesNotMatch(controllerSource, /join\(\s*value\.path/);
 });
