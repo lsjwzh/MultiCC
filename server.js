@@ -2231,11 +2231,11 @@ mountOpenCodeModelRoutes(app);
 // session pick its own model instead of sharing ~/.qoder-cn/settings.json.
 mountQoderModelRoutes(app);
 
-// GET /api/opencode/quota — drive the user's local Chrome (CDP 9222) to
-// scrape the OpenCode Zen console's Go subscription usage (5h rolling /
-// weekly / monthly). SSR'd hydration data, no REST API exists. Surfaces
-// chrome_unavailable / needs_login / unavailable states so the chat
-// rate-limit bar can prompt instead of degrading silently.
+// GET /api/opencode/quota — drive whatever Chrome the user already has open
+// (src/chrome-cdp.js) to scrape the OpenCode Zen console's Go subscription
+// usage (5h rolling / weekly / monthly). SSR'd hydration data, no REST API
+// exists. Surfaces chrome_unavailable / needs_login / unavailable states so
+// the chat rate-limit bar can prompt instead of degrading silently.
 mountOpenCodeQuotaRoutes(app); mountQoderQuotaRoutes(app); mountCodexQuotaRoutes(app);
 mountArkQuotaRoutes(app); mountZhipuQuotaRoutes(app); mountKimiQuotaRoutes(app);
 
