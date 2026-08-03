@@ -216,7 +216,11 @@ function readServerCode() {
     // mechanism is fully retired.
     const checks = [
       { name: 'centralized API-error policy host wired (createApiErrorHost)', pattern: /createApiErrorHost/ },
-      { name: 'classify E branch delegates to evaluateTurnApiError as legacy fallback', pattern: /if \(error\)[\s\S]{0,120}_lastApiErrorDecision[\s\S]{0,160}evaluateTurnApiError/ },
+      // The branch condition has since grown a guard (`error && !cancel`), so match
+      // the head of the condition rather than pinning its exact text — this check
+      // is about the delegation, not about how the branch is spelled.
+      { name: 'classify E branch delegates to evaluateTurnApiError as legacy fallback', pattern: /if \(error[^)]*\)[\s\S]{0,120}_lastApiErrorDecision[\s\S]{0,160}evaluateTurnApiError/ },
+      { name: 'a deterministic API-error verdict goes through the central applier', pattern: /cancelClassifyFor\(sessionName\)[\s\S]{0,400}applyClassifyResult\(/ },
       { name: 'retry vs fail_fast gated by policy decision .action', pattern: /_lastApiErrorDecision\?\.action/ },
       { name: 'wait message driven by retryNotice(decision), not injection', pattern: /retryNotice\(cs\._lastApiErrorDecision\)/ },
     ];

@@ -114,6 +114,7 @@ const skillConverter = require('./src/skill-converter');
 const { createProviderRoutes } = require('./src/routes/providers');
 const { mountOpenCodeModelRoutes } = require('./src/routes/opencode-models');
 const { mountOpenCodeQuotaRoutes } = require('./src/routes/opencode-quota');
+const { mountQoderModelRoutes } = require('./src/routes/qoder-models');
 const { mountQoderQuotaRoutes } = require('./src/routes/qoder-quota');
 const { mountCodexQuotaRoutes } = require('./src/routes/codex-quota');
 const { mountArkQuotaRoutes } = require('./src/routes/ark-quota');
@@ -2218,6 +2219,11 @@ providerRoutes.mountCatalogRoutes(app);
 // (provider/model strings, cached for 1 day). Used by the chat picker when an
 // opencode session has no multicc-managed provider's model list to render.
 mountOpenCodeModelRoutes(app);
+
+// GET /api/qoder/models — the Qoder CN catalog entitled to the logged-in
+// account (`qoderclicn --list-models`, cached for 1 day). Lets each qoder
+// session pick its own model instead of sharing ~/.qoder-cn/settings.json.
+mountQoderModelRoutes(app);
 
 // GET /api/opencode/quota — drive the user's local Chrome (CDP 9222) to
 // scrape the OpenCode Zen console's Go subscription usage (5h rolling /

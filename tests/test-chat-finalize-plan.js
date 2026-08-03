@@ -235,7 +235,8 @@ test('API stream classification wins; explicit kills never auto-resume', () => {
     resultDurable: false, apiError: true,
   })));
   assert.equal(types(api).includes('try-resume-interrupted'), false);
-  assert.equal(types(api).includes('classify-turn-end'), true);
+  assert.equal(api.effects.find(entry => entry.type === 'classify-turn-end').classification,
+    'api-error', 'the boundary names the outcome so classify need not infer it');
   assert.deepEqual(api.effects.find(entry => entry.type === 'freeze-interrupted'),
     { type: 'freeze-interrupted', reason: 'error' });
 
@@ -248,17 +249,22 @@ test('API stream classification wins; explicit kills never auto-resume', () => {
 });
 
 test('process API, adapter and nonzero failures freeze instead of advancing FIFO', () => {
-  for (const override of [
-    { apiError: true },
-    { adapterError: true },
-    { code: 1 },
-    { signal: 'SIGPIPE' },
+  for (const [override, classification] of [
+    // Only the API failure has a proven outcome: its retry budget was already
+    // spent above, so the boundary names it. The other three may still have
+    // produced a complete answer, so they keep asking the classifier.
+    [{ apiError: true }, 'api-error'],
+    [{ adapterError: true }, undefined],
+    [{ code: 1 }, undefined],
+    [{ signal: 'SIGPIPE' }, undefined],
   ]) {
     const resolved = resolveTurnFinalization(planTurnFinalization(base(override)), {
       appendPersisted: true,
       resultDurable: true,
     });
     assert.equal(types(resolved).includes('complete-session-turn'), false);
+    assert.equal(resolved.effects.find(entry => entry.type === 'classify-turn-end').classification,
+      classification);
     assert.deepEqual(resolved.effects.find(entry => entry.type === 'freeze-interrupted'),
       { type: 'freeze-interrupted', reason: 'error' });
   }
