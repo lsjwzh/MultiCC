@@ -423,6 +423,11 @@ function applyCliUi(cli) {
       try { window.MultiCCChatAiConfig && MultiCCChatAiConfig.showProviderPicker && MultiCCChatAiConfig.showProviderPicker(); } catch (_) {}
     });
   }
+  // Qoder CN: same warm-up. No rebuild callback — qoder has no provider picker
+  // to re-render, and the built-in tiers stay usable until the fetch lands.
+  if (next === 'qoder' && window.MultiCCChatAiConfig && typeof window.MultiCCChatAiConfig.refreshQoderModels === 'function') {
+    window.MultiCCChatAiConfig.refreshQoderModels();
+  }
 }
 let _mergeReady = false;
 let _syncConflict = false;

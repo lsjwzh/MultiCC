@@ -149,7 +149,15 @@
     if (state && state.cli === 'claude') {
       return (state.claudeModelOptions || []).map(option => option.value);
     }
-    if (state && state.cli === 'qoder') return [...QODER_MODEL_OPTIONS, '__custom__'];
+    if (state && state.cli === 'qoder') {
+      // Qoder CN's catalog is entitlement-scoped and renames models in place,
+      // so prefer the live `--list-models` result over the built-in tiers.
+      // Sync-read the 1-day cache filled by loadQoderModels(); the first picker
+      // open may miss, then refreshQoderModels() triggers a rebuild.
+      const cached = readQoderModelsSync();
+      if (cached.length) return ['', ...cached.map(m => m.model), '__custom__'];
+      return [...QODER_MODEL_OPTIONS, '__custom__'];
+    }
     if (state && state.cli === 'zcode') return [...ZCODE_MODEL_OPTIONS, '__custom__'];
     if (state && state.cli === 'opencode') {
       // No multicc-managed provider chosen: list the local opencode CLI's
@@ -164,14 +172,14 @@
     return ['', '__custom__'];
   }
 
-  // Synchronous read of the OpenCode model cache populated by
-  // loadOpenCodeModels() in shared/models.js. Returns [] when the cache is
+  // Synchronous read of a CLI model cache populated by shared/models.js
+  // (loadOpenCodeModels / loadQoderModels). Returns [] when the cache is
   // missing/stale so callers can render a placeholder option without blocking.
-  function readOpenCodeModelsSync() {
+  function readModelCacheSync(key) {
     try {
       const ls = root && root.localStorage;
       if (!ls) return [];
-      const raw = ls.getItem('multicc.opencode.models.v1');
+      const raw = ls.getItem(key);
       if (!raw) return [];
       const obj = JSON.parse(raw);
       if (!obj || typeof obj !== 'object') return [];
@@ -181,6 +189,14 @@
       if (!at || (Date.now() - at) >= TTL) return [];
       return models;
     } catch (_) { return []; }
+  }
+
+  function readOpenCodeModelsSync() {
+    return readModelCacheSync('multicc.opencode.models.v1');
+  }
+
+  function readQoderModelsSync() {
+    return readModelCacheSync('multicc.qoder.models.v1');
   }
 
   // Background-refresh the OpenCode model list (1-day cache, shared with
@@ -196,6 +212,20 @@
         try { rebuildCallback(); } catch (_) { /* noop */ }
       }
     } catch (_) { /* swallow — picker keeps the placeholder */ }
+  }
+
+  // Same contract as refreshOpenCodeModels, for the Qoder CN catalog. The chat
+  // page calls this on init when `cli === 'qoder'` so the picker upgrades from
+  // the built-in tiers to the account's real model list.
+  async function refreshQoderModels(rebuildCallback) {
+    try {
+      if (typeof loadQoderModels !== 'function') return;
+      const prev = readQoderModelsSync();
+      await loadQoderModels();
+      if (typeof rebuildCallback === 'function' && prev.length === 0) {
+        try { rebuildCallback(); } catch (_) { /* noop */ }
+      }
+    } catch (_) { /* swallow — picker keeps the tier fallback */ }
   }
 
   function stripModelSuffix(model) {
@@ -696,5 +726,6 @@
     loadSession,
     saveSession,
     refreshOpenCodeModels,
+    refreshQoderModels,
   };
 });
