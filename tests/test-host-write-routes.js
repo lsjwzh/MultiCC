@@ -782,13 +782,13 @@ test('tunnel config exposes natapp/cpolar/sakurafrp providers with default schem
     tunnel = require('../src/tunnel');
     const status = tunnel.getStatus();
     assert.deepEqual(status.config.natapp, {
-      enabled: false, url: '', authtoken: '', port: 3000, startCmd: 'natapp -authtoken={authtoken}',
+      enabled: false, monitorOnly: false, url: '', authtoken: '', port: 3000, startCmd: 'natapp -authtoken={authtoken}',
     });
     assert.deepEqual(status.config.cpolar, {
-      enabled: false, url: '', authtoken: '', port: 3000, startCmd: 'cpolar http {port}',
+      enabled: false, monitorOnly: false, url: '', authtoken: '', port: 3000, startCmd: 'cpolar http {port}',
     });
     assert.deepEqual(status.config.sakurafrp, {
-      enabled: false, url: '', authtoken: '', port: 3000, startCmd: 'frpc -f {authtoken}',
+      enabled: false, monitorOnly: false, url: '', authtoken: '', port: 3000, startCmd: 'frpc -f {authtoken}',
     });
     for (const name of ['natapp', 'cpolar', 'sakurafrp']) {
       assert.equal(typeof status.availability[name], 'boolean', `availability.${name}`);
@@ -822,6 +822,7 @@ test('SakuraFrp settings round-trip through the HTTP boundary and durable reload
     });
     const expected = {
       enabled: true,
+      monitorOnly: false,
       url: 'https://sakura.example.test/manage',
       authtoken: 'sakura-secret',
       port: 3300,

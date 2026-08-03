@@ -187,10 +187,16 @@
     if (!prov.url) return '未配置 URL';
     if (p.healthy === null || !p.lastCheckAt) return '等待首次探活…';
     const when = new Date(p.lastCheckAt).toLocaleTimeString();
-    let s = p.healthy ? `正常 (HTTP ${p.lastHttpCode})` : `异常 (HTTP ${p.lastHttpCode}，连续失败 ${p.consecutiveFails})`;
+    // URL 探活 与 客户端进程 是两个维度：URL 活着不代表本机的 frpc/natapp
+    // 在跑（这个 URL 可能根本是别家隧道的），措辞上必须分开。
+    let s = 'URL 探活 ' + (p.healthy ? `正常 (HTTP ${p.lastHttpCode})` : `异常 (HTTP ${p.lastHttpCode}，连续 ${p.consecutiveFails} 次)`);
     s += ` · ${when}`;
+    if (prov.monitorOnly) {
+      s += ' · 仅监控（不自动重启）';
+      return s;
+    }
     if (p.restartTimes && p.restartTimes.length) s += ` · 近1h重启 ${p.restartTimes.length} 次`;
-    if (p.lastAction) s += ` · ${p.lastAction}`;
+    if (p.lastAction) s += ` · 客户端: ${p.lastAction}`;
     return s;
   }
 
@@ -316,6 +322,18 @@
     }
   }
 
+  // Degrade「立即重启」instead of letting it fail opaquely: no client binary
+  // means there is nothing we can launch, and monitor-only mode deliberately
+  // never touches the client process.
+  function tnlGateRestart(btnId, available, monitorOnly) {
+    const btn = document.getElementById(btnId);
+    if (!btn) return;
+    if (monitorOnly) { btn.disabled = true; btn.title = '仅监控模式下不重启客户端'; return; }
+    if (available === false) { btn.disabled = true; btn.title = '未检测到客户端，请先安装'; return; }
+    btn.disabled = false;
+    btn.title = '';
+  }
+
   async function loadTunnelSettings() {
     loadAccessToken();
     loadProxySetting();
@@ -331,42 +349,52 @@
       if (tsAvail) tsAvail.textContent = av.tailscale ? '· CLI 可用' : '· 未检测到 tailscale CLI';
       // phddns
       document.getElementById('tnl-ph-enabled').checked = !!c.phddns.enabled;
+      document.getElementById('tnl-ph-monitoronly').checked = !!c.phddns.monitorOnly;
       document.getElementById('tnl-ph-url').value = c.phddns.url || '';
       document.getElementById('tnl-ph-status').textContent = tnlFmtStatus(pr.phddns || {}, c.phddns);
+      tnlGateRestart('tnl-ph-restart', av.phddns, !!c.phddns.monitorOnly);
       // tailscale
       document.getElementById('tnl-ts-enabled').checked = !!c.tailscale.enabled;
+      document.getElementById('tnl-ts-monitoronly').checked = !!c.tailscale.monitorOnly;
       document.getElementById('tnl-ts-url').value = c.tailscale.url || '';
       document.getElementById('tnl-ts-status').textContent = tnlFmtStatus(pr.tailscale || {}, c.tailscale);
+      tnlGateRestart('tnl-ts-restart', av.tailscale, !!c.tailscale.monitorOnly);
       document.getElementById('tnl-ts-funnel').checked = !!c.tailscale.funnel;
       document.getElementById('tnl-ts-funnelport').value = c.tailscale.funnelPort || 3000;
       // natapp (硬编码隧道)
       const na = c.natapp || {};
       document.getElementById('tnl-na-enabled').checked = !!na.enabled;
+      document.getElementById('tnl-na-monitoronly').checked = !!na.monitorOnly;
       document.getElementById('tnl-na-url').value = na.url || '';
       document.getElementById('tnl-na-authtoken').value = na.authtoken || '';
       document.getElementById('tnl-na-port').value = na.port || 3000;
       document.getElementById('tnl-na-startcmd').value = na.startCmd || '';
       document.getElementById('tnl-na-status').textContent = tnlFmtStatus(pr.natapp || {}, na);
+      tnlGateRestart('tnl-na-restart', av.natapp, !!na.monitorOnly);
       const naAvail = document.getElementById('tnl-na-avail');
       if (naAvail) naAvail.textContent = av.natapp ? '· 已安装' : '· 未检测到 natapp';
       // cpolar (硬编码隧道)
       const cp = c.cpolar || {};
       document.getElementById('tnl-cp-enabled').checked = !!cp.enabled;
+      document.getElementById('tnl-cp-monitoronly').checked = !!cp.monitorOnly;
       document.getElementById('tnl-cp-url').value = cp.url || '';
       document.getElementById('tnl-cp-authtoken').value = cp.authtoken || '';
       document.getElementById('tnl-cp-port').value = cp.port || 3000;
       document.getElementById('tnl-cp-startcmd').value = cp.startCmd || '';
       document.getElementById('tnl-cp-status').textContent = tnlFmtStatus(pr.cpolar || {}, cp);
+      tnlGateRestart('tnl-cp-restart', av.cpolar, !!cp.monitorOnly);
       const cpAvail = document.getElementById('tnl-cp-avail');
       if (cpAvail) cpAvail.textContent = av.cpolar ? '· 已安装' : '· 未检测到 cpolar';
       // sakurafrp (硬编码隧道)
       const sf = c.sakurafrp || {};
       document.getElementById('tnl-sf-enabled').checked = !!sf.enabled;
+      document.getElementById('tnl-sf-monitoronly').checked = !!sf.monitorOnly;
       document.getElementById('tnl-sf-url').value = sf.url || '';
       document.getElementById('tnl-sf-authtoken').value = sf.authtoken || '';
       document.getElementById('tnl-sf-port').value = sf.port || 3000;
       document.getElementById('tnl-sf-startcmd').value = sf.startCmd || '';
       document.getElementById('tnl-sf-status').textContent = tnlFmtStatus(pr.sakurafrp || {}, sf);
+      tnlGateRestart('tnl-sf-restart', av.sakurafrp, !!sf.monitorOnly);
       const sfAvail = document.getElementById('tnl-sf-avail');
       if (sfAvail) sfAvail.textContent = av.sakurafrp ? '· 已安装' : '· 未检测到 sakurafrp';
       loadFunnelStatus();
@@ -385,10 +413,12 @@
     const body = {
       phddns: {
         enabled: document.getElementById('tnl-ph-enabled').checked,
+        monitorOnly: document.getElementById('tnl-ph-monitoronly').checked,
         url: document.getElementById('tnl-ph-url').value.trim(),
       },
       tailscale: {
         enabled: document.getElementById('tnl-ts-enabled').checked,
+        monitorOnly: document.getElementById('tnl-ts-monitoronly').checked,
         url: document.getElementById('tnl-ts-url').value.trim(),
         funnel: document.getElementById('tnl-ts-funnel').checked,
       },
@@ -399,6 +429,7 @@
     // startCmd 留空时不放入 body，以免空串覆盖服务端默认模板（applyConfig 是浅 merge）。
     body.natapp = {
       enabled: document.getElementById('tnl-na-enabled').checked,
+      monitorOnly: document.getElementById('tnl-na-monitoronly').checked,
       url: document.getElementById('tnl-na-url').value.trim(),
       authtoken: document.getElementById('tnl-na-authtoken').value,
     };
@@ -410,6 +441,7 @@
     }
     body.cpolar = {
       enabled: document.getElementById('tnl-cp-enabled').checked,
+      monitorOnly: document.getElementById('tnl-cp-monitoronly').checked,
       url: document.getElementById('tnl-cp-url').value.trim(),
       authtoken: document.getElementById('tnl-cp-authtoken').value,
     };
@@ -421,6 +453,7 @@
     }
     body.sakurafrp = {
       enabled: document.getElementById('tnl-sf-enabled').checked,
+      monitorOnly: document.getElementById('tnl-sf-monitoronly').checked,
       url: document.getElementById('tnl-sf-url').value.trim(),
       authtoken: document.getElementById('tnl-sf-authtoken').value,
     };
@@ -457,7 +490,7 @@
       if (_urlToken) headers['X-Access-Token'] = _urlToken;
       const res = await fetch('/api/tunnel/restart/' + provider, { method: 'POST', headers });
       const data = await res.json();
-      if (!res.ok || data.error) throw new Error(data.error || ('HTTP ' + res.status));
+      if (!res.ok || data.error) throw new Error(data.message || data.error || ('HTTP ' + res.status));
       if (msg) { msg.textContent = data.message || '已触发重启'; msg.className = 'status-text ok'; }
       setTimeout(loadTunnelSettings, 1500);
     } catch (e) {
