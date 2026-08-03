@@ -9,6 +9,7 @@ import '../providers/session_manager.dart';
 import 'agent_preset_picker_sheet.dart';
 import '../services/agent_preset_service.dart';
 import '../services/manage_service.dart';
+import '../services/qoder_models_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
 
@@ -143,7 +144,8 @@ class AIConfigSheetState extends State<AIConfigSheet> {
 
   List<String> _modelChoices(String provider) {
     if (_isQoder) {
-      return kQoderModelOptions.map((option) => option.key).toList();
+      // Live catalog when openAIConfigSheet warmed it, built-in tiers otherwise.
+      return QoderModelsService.options().map((option) => option.key).toList();
     }
     // Alias-mapped relays: offer the tiers directly (opus/sonnet/haiku/fable) so
     // each option can read "alias → wire model (display name)".
@@ -597,6 +599,14 @@ Future<void> openAIConfigSheet(
   try {
     runtime = await mgr.fetchSessionCliConfig(sess.id);
   } catch (_) {}
+  // Qoder owns no provider pool; its model list comes from the host CLI's
+  // catalog instead. Warm it before the sheet builds so the dropdown opens on
+  // the real models rather than the routing-tier fallback.
+  if (runtime.cli == SessionCli.qoder) {
+    try {
+      await QoderModelsService(settings: settings).load();
+    } catch (_) {}
+  }
   List<Map<String, dynamic>> providers = const [];
   try {
     if (runtime.cli.supportsProvider) {
