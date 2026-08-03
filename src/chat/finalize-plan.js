@@ -233,7 +233,15 @@ function statusEffects(plan, durableAfterAppend) {
         || facts.exitKind === 'nonzero_exit' || facts.exitKind === 'signaled') {
       const effects = [
         effect('freeze-interrupted', { reason: 'error' }),
-        effect('classify-turn-end'),
+        // An API failure that reaches finalize has already exhausted its retry
+        // budget — a planned retry returns `retry-api` far above — so the
+        // outcome is known here and does not need to be inferred. Naming it
+        // lets the classify centre write E directly. The other members of this
+        // branch (adapter error, nonzero/signalled exit) may still carry a
+        // complete answer, so they keep asking the classifier.
+        facts.apiError
+          ? effect('classify-turn-end', { classification: 'api-error' })
+          : effect('classify-turn-end'),
       ];
       if (facts.auxUnhealthy) effects.push(effect('set-status', { status: 'idle', reason: 'aux-unhealthy' }));
       return effects;
