@@ -32,6 +32,7 @@
 //   unavailable       — any other error / parse timeout
 
 const { createChromeCdp, portsFromEnv, profileDirsFromEnv } = require('../chrome-cdp');
+const { getManagedQuotaBrowser } = require('../quota-managed-browser');
 
 const CDP_TIMEOUT_MS = Number(process.env.OPENCODE_QUOTA_TIMEOUT_MS || 10000);
 const OPENCODE_AUTH_URL = process.env.OPENCODE_QUOTA_URL || 'https://opencode.ai/auth';
@@ -164,22 +165,46 @@ async function readUsageFromPage(page) {
 }
 
 async function fetchOpenCodeUsage() {
-  let browser;
-  try { browser = await chrome.attach(); }
-  catch (err) {
-    if (err.code === 'chrome_unavailable') {
-      return { status: 'chrome_unavailable', error: '没有可连接的 Chrome 调试端点' };
-    }
-    return { status: 'unavailable', error: err.message };
-  }
+  const managed = getManagedQuotaBrowser();
+  const sources = [
+    {
+      label: 'managed',
+      run: async () => {
+        const browser = await managed.attachManaged();
+        try { return await managed.withPage(readUsageFromPage, { browser }); }
+        finally { browser.close(); }
+      },
+    },
+    {
+      label: 'user-chrome',
+      run: async () => {
+        const browser = await chrome.attach();
+        try { return await chrome.withPage(readUsageFromPage, { browser }); }
+        finally { browser.close(); }
+      },
+    },
+  ];
 
-  try {
-    return await chrome.withPage(readUsageFromPage, { browser });
-  } catch (err) {
-    return { status: 'unavailable', error: err.message };
-  } finally {
-    browser.close();
+  let lastNeedsLogin = null;
+  let lastUnavailable = null;
+  let anyAttached = false;
+  for (const source of sources) {
+    let result;
+    try { result = await source.run(); }
+    catch (err) {
+      if (err && err.code === 'chrome_unavailable') continue;
+      return { status: 'unavailable', error: err.message };
+    }
+    anyAttached = true;
+    if (result.status === 'ok') return { ...result, source: source.label };
+    if (result.status === 'needs_login') { lastNeedsLogin = result; continue; }
+    lastUnavailable = result;
   }
+  if (lastNeedsLogin) return lastNeedsLogin;
+  if (!anyAttached) {
+    return { status: 'chrome_unavailable', error: '托管浏览器启动失败且没有可连的 Chrome 调试端点' };
+  }
+  return lastUnavailable || { status: 'unavailable', error: '所有浏览器来源都未能取得用量' };
 }
 
 function mountOpenCodeQuotaRoutes(app) {
@@ -194,6 +219,18 @@ function mountOpenCodeQuotaRoutes(app) {
       res.status(httpStatus).json(result);
     } catch (err) {
       res.status(500).json({ status: 'unavailable', error: 'opencode quota fetch failed' });
+    }
+  });
+
+  // Visible login window on the managed profile — same pattern as qoder: the
+  // user logs in once, the session persists for later headless fetches.
+  app.post('/api/opencode/quota/login', async (req, res) => {
+    try {
+      await getManagedQuotaBrowser().openVisibleLogin(OPENCODE_AUTH_URL);
+      res.json({ ok: true, message: '已打开登录窗口：请在弹出的 Chrome 中登录 opencode.ai，完成后回来重新查询余量' });
+    } catch (err) {
+      const status = err && err.code === 'chrome_unavailable' ? 503 : 500;
+      res.status(status).json({ ok: false, error: (err && err.code) || 'login_window_failed', message: err && err.message });
     }
   });
 }
