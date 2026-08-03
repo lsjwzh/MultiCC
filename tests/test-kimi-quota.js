@@ -14,6 +14,9 @@ const {
 const {
   formatKimiQuota,
   isKimiBaseUrl,
+  formatQoderQuota,
+  formatOpenCodeQuota,
+  quotaBarClick,
 } = require('../public/chat-rate-limit');
 
 const MOONSHOT = { host: 'api.moonshot.cn', apiKey: 'k1', strategy: 'kimi-balance' };
@@ -318,4 +321,148 @@ test('fetchKimiSubscriptionPage scrapes usage text from the settled page', async
   assert.equal(result.source, 'subscription-page');
   assert.equal(result.summary.length, 2);
   assert.equal(result.summary[0].percent, 12);
+});
+
+// ── render priority: a top-level actionable status outranks sites[].reason ──
+//
+// The bug this pins: a Kimi-for-Coding key ALWAYS 401s the balance API, so the
+// live DTO is `{status:'needs_login', sites:[{reason:'auth_rejected'}]}`. The bar
+// rendered the site reason ("密钥不支持余额查询") over the top-level status,
+// telling the user their key was unsupported — a dead end — when one click on a
+// login window would have fixed it.
+
+const NEEDS_LOGIN_DTO = Object.freeze({
+  status: 'needs_login',
+  error: '托管浏览器中没有 kimi.com 登录态，点余量徽标可打开登录窗口',
+  loginUrl: 'https://www.kimi.com/membership/subscription',
+  sites: [{ host: 'api.kimi.com', site: 'Kimi', ok: false, httpStatus: 401, reason: 'auth_rejected' }],
+});
+
+test('formatKimiQuota renders needs_login over a per-site auth_rejected reason', () => {
+  const view = formatKimiQuota(NEEDS_LOGIN_DTO);
+  assert.match(view.text, /需登录/);
+  assert.doesNotMatch(view.text, /密钥不支持余额查询/, 'the site reason must not be the headline');
+  assert.doesNotMatch(view.text, /暂不可用/);
+  assert.equal(view.action, 'login', 'the click must open a login window, not refetch');
+  assert.equal(view.color, '#f85149');
+  // The site reason survives as secondary context in the tooltip.
+  assert.match(view.title, /Kimi-for-Coding/);
+  assert.match(view.title, /登录/);
+});
+
+test('formatKimiQuota keeps needs_login on top even when a stale cached balance exists', () => {
+  const cached = {
+    status: 'ok', fetchedAt: Date.now() - 3600000,
+    sites: [{ host: 'api.moonshot.cn', site: 'Moonshot', ok: true, available: 42.5, voucher: null, cash: 42.5, currency: 'CNY' }],
+  };
+  const view = formatKimiQuota(NEEDS_LOGIN_DTO, cached);
+  assert.match(view.text, /需登录/);
+  assert.equal(view.action, 'login');
+  // The cached number is context, not a reason to hide the actionable state.
+  assert.match(view.title, /42\.5/);
+});
+
+test('formatKimiQuota renders chrome_unavailable as an actionable state too', () => {
+  const view = formatKimiQuota({
+    status: 'chrome_unavailable', error: 'no Chrome binary found',
+    sites: [{ host: 'api.kimi.com', ok: false, reason: 'auth_rejected' }],
+  });
+  assert.match(view.text, /无可用浏览器/);
+  assert.doesNotMatch(view.text, /密钥不支持余额查询/);
+  assert.equal(view.action, 'login');
+  assert.equal(view.color, '#d29922');
+});
+
+test('formatKimiQuota renders a successful membership-page scrape as usage, not "余额暂不可用"', () => {
+  // Every balance site is still ok:false here — that is normal for a
+  // subscription key. Falling through to the sites-only path would make the
+  // login the bar just asked for look like it changed nothing.
+  const view = formatKimiQuota({
+    status: 'ok', source: 'subscription-page', fetchedAt: Date.now(),
+    summary: [{ label: '5小时窗口', percent: 12, line: '12%' }, { label: '周用量', percent: 90, line: '90%' }],
+    text: '12%\n90%',
+    sites: [{ host: 'api.kimi.com', ok: false, httpStatus: 401, reason: 'auth_rejected' }],
+  });
+  assert.doesNotMatch(view.text, /暂不可用/);
+  assert.doesNotMatch(view.text, /密钥不支持余额查询/);
+  // Unified convention: bars show REMAINING, so 90% used renders as 10%.
+  assert.match(view.text, /5小时窗口 88%/);
+  assert.match(view.text, /周用量 10%/);
+  // Coloured by the worst window's remaining (10% → red).
+  assert.equal(view.color, '#f85149');
+  assert.match(view.title, /已用 90%/);
+});
+
+test('formatKimiQuota says so when the scrape succeeds but parses to nothing', () => {
+  const view = formatKimiQuota({
+    status: 'ok', source: 'subscription-page', fetchedAt: Date.now(), summary: [], text: '会员中心',
+    sites: [{ host: 'api.kimi.com', ok: false, reason: 'auth_rejected' }],
+  });
+  assert.match(view.text, /已登录，未解析出用量/);
+  assert.match(view.title, /会员中心/);
+});
+
+test('the plain auth_rejected failure keeps its own reason when the top level is not actionable', () => {
+  // Regression guard for the other direction: sites[].reason is still the right
+  // thing to show when the top-level status carries no user-fixable action.
+  const view = formatKimiQuota({ status: 'unavailable', sites: [{ host: 'api.kimi.com', ok: false, reason: 'auth_rejected' }] });
+  assert.match(view.text, /密钥不支持余额查询/);
+  assert.equal(view.action, undefined);
+});
+
+test('qoder and opencode actionable states carry the same login action', () => {
+  for (const format of [formatQoderQuota, formatOpenCodeQuota]) {
+    const login = format({ status: 'needs_login' });
+    assert.match(login.text, /需登录/);
+    assert.equal(login.action, 'login');
+    assert.equal(login.color, '#f85149');
+
+    const noChrome = format({ status: 'chrome_unavailable' });
+    // Opening the visible login window is also how a managed Chrome gets started.
+    assert.equal(noChrome.action, 'login');
+    assert.match(noChrome.text, /点击/);
+  }
+});
+
+test('quotaBarClick posts to the login route for an actionable view and refetches otherwise', async () => {
+  const origFetch = globalThis.fetch;
+  const origSetTimeout = globalThis.setTimeout;
+  const calls = [];
+  const delayed = [];
+  globalThis.fetch = async (url, opts) => { calls.push({ url, method: opts && opts.method }); return { ok: true }; };
+  globalThis.setTimeout = (fn, ms) => { delayed.push({ fn, ms }); return 0; };
+  try {
+    let refetched = 0;
+    const reFetch = () => { refetched += 1; };
+
+    quotaBarClick('kimi', { action: 'login' }, reFetch);
+    await new Promise((resolve) => origSetTimeout(resolve, 0));
+    assert.deepEqual(calls, [{ url: '/api/kimi/quota/login', method: 'POST' }]);
+    assert.equal(refetched, 0, 'the re-poll waits for the human to finish logging in');
+    assert.equal(delayed.length, 1);
+    assert.equal(delayed[0].ms, 3000);
+    delayed[0].fn();
+    assert.equal(refetched, 1, 'and then re-fetches on its own');
+
+    // A non-actionable view is a plain forced refresh — no POST.
+    quotaBarClick('kimi', { text: 'Kimi ¥1.00' }, reFetch);
+    assert.equal(refetched, 2);
+    assert.equal(calls.length, 1);
+
+    // An unknown bar kind degrades to a refetch rather than posting nowhere.
+    quotaBarClick('zhipu', { action: 'login' }, reFetch);
+    assert.equal(refetched, 3);
+    assert.equal(calls.length, 1);
+  } finally {
+    globalThis.fetch = origFetch;
+    globalThis.setTimeout = origSetTimeout;
+  }
+});
+
+test('every bar kind that renders action:login has a login route', () => {
+  for (const format of [formatKimiQuota, formatQoderQuota, formatOpenCodeQuota]) {
+    for (const status of ['needs_login', 'chrome_unavailable']) {
+      assert.equal(format({ status }).action, 'login', `${status} must stay actionable`);
+    }
+  }
 });
