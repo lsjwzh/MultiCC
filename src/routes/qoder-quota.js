@@ -32,6 +32,7 @@ const {
   portsFromEnv,
   profileDirsFromEnv,
 } = require('../chrome-cdp');
+const { getManagedQuotaBrowser } = require('../quota-managed-browser');
 
 const SITE = 'qoder.com.cn';
 const QUOTA_URL = `https://${SITE}/api/v2/me/usages/big_model_credits`;
@@ -177,38 +178,49 @@ async function fetchQoderUsage() {
     } catch (_) { /* fall through to the browser */ }
   }
 
-  // 2. The live browser — which may hold a newer session than the file does.
-  let browser;
-  try { browser = await chrome.attach(); }
-  catch (err) {
-    if (err.code === 'chrome_unavailable') {
-      return { status: 'chrome_unavailable', error: '没有可连接的 Chrome 调试端点' };
-    }
-    return { status: 'unavailable', error: err.message };
-  }
+  // 2. A live browser — managed headless Chrome first (its profile keeps the
+  //    login between fetches), then the user's own debug Chrome as fallback.
+  const managed = getManagedQuotaBrowser();
+  const sources = [
+    { label: 'managed', attach: () => managed.attachManaged(), cookies: (b) => managed.getCookies(SITE, { browser: b }) },
+    { label: 'user-chrome', attach: () => chrome.attach(), cookies: (b) => chrome.getCookies(SITE, { browser: b }) },
+  ];
+  let lastNeedsLogin = null;
+  let anyAttached = false;
+  for (const source of sources) {
+    let browser;
+    try { browser = await source.attach(); }
+    catch (_) { continue; }
+    anyAttached = true;
+    try {
+      const cookies = await source.cookies(browser);
+      if (!cookies.length) {
+        lastNeedsLogin = { status: 'needs_login', error: '浏览器中没有 qoder.com.cn 的登录态，点余量徽标可打开登录窗口' };
+        continue;
+      }
+      const result = await fetchWithCookies(cookies);
+      if (result.status === 'ok') {
+        saveCookies(cookies);
+        return { ...result, source: `${source.label}-cookies` };
+      }
+      if (result.status === 'needs_login') { lastNeedsLogin = result; continue; }
 
-  try {
-    const cookies = await chrome.getCookies(SITE, { browser });
-    if (!cookies.length) {
-      return { status: 'needs_login', error: 'Chrome 中没有 qoder.com.cn 的登录态' };
+      // The cookie is good enough to be worth a page, so let the SPA make the
+      // call itself before we give up.
+      const viaPage = await fetchViaPage(browser);
+      if (viaPage.status === 'ok') { saveCookies(cookies); return { ...viaPage, source: `${source.label}-page` }; }
+      return viaPage;
+    } catch (err) {
+      return { status: 'unavailable', error: err.message };
+    } finally {
+      browser.close();
     }
-    const result = await fetchWithCookies(cookies);
-    if (result.status === 'ok') {
-      saveCookies(cookies);
-      return { ...result, source: 'chrome-cookies' };
-    }
-    if (result.status === 'needs_login') return result;
-
-    // The cookie is good enough to be worth a page, so let the SPA make the
-    // call itself before we give up.
-    const viaPage = await fetchViaPage(browser);
-    if (viaPage.status === 'ok') { saveCookies(cookies); return { ...viaPage, source: 'page' }; }
-    return viaPage;
-  } catch (err) {
-    return { status: 'unavailable', error: err.message };
-  } finally {
-    browser.close();
   }
+  if (lastNeedsLogin) return lastNeedsLogin;
+  if (!anyAttached) {
+    return { status: 'chrome_unavailable', error: '托管浏览器启动失败且没有可连的 Chrome 调试端点' };
+  }
+  return { status: 'unavailable', error: '所有浏览器来源都未能取得用量' };
 }
 
 function mountQoderQuotaRoutes(app) {
@@ -227,19 +239,17 @@ function mountQoderQuotaRoutes(app) {
     }
   });
 
-  // Open the login page for the user. This tab is deliberately left open —
-  // it is the one the user is about to type into.
+  // Open a visible login window on the managed profile. The headless instance
+  // is stopped first (one profile, one Chrome), and the window is left to the
+  // user — once they log in, the session persists in the profile for later
+  // headless fetches.
   app.post('/api/qoder/quota/login', async (req, res) => {
-    let browser;
-    try { browser = await chrome.attach(); }
-    catch (_) { return res.status(503).json({ ok: false, error: 'chrome_unavailable' }); }
     try {
-      await browser.send('Target.createTarget', { url: LOGIN_PAGE_URL });
-      res.json({ ok: true, message: '已在 Chrome 中打开 Qoder 登录页' });
+      await getManagedQuotaBrowser().openVisibleLogin(LOGIN_PAGE_URL);
+      res.json({ ok: true, message: '已打开登录窗口：请在弹出的 Chrome 中登录 qoder.com.cn，完成后回来重新查询余量' });
     } catch (err) {
-      res.status(500).json({ ok: false, error: err.message });
-    } finally {
-      browser.close();
+      const status = err && err.code === 'chrome_unavailable' ? 503 : 500;
+      res.status(status).json({ ok: false, error: (err && err.code) || 'login_window_failed', message: err && err.message });
     }
   });
 

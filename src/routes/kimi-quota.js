@@ -21,6 +21,14 @@
 
 const providers = require('../providers');
 const { keyHash } = require('../usage-limit-poller');
+const { getManagedQuotaBrowser } = require('../quota-managed-browser');
+
+// Kimi subscription ("Kimi For Coding") keys 401 on the prepaid balance API —
+// that account type's usage lives only on the logged-in membership page, so
+// we scrape it through the managed browser when every balance fetch is an
+// auth rejection.
+const KIMI_SUBSCRIPTION_URL = 'https://www.kimi.com/membership/subscription';
+const CONSOLE_TIMEOUT_MS = Number(process.env.KIMI_QUOTA_TIMEOUT_MS || 15000);
 
 function finite(v) {
   const n = Number(v);
@@ -104,6 +112,80 @@ async function fetchKimiBalance(target, timeoutMs = 6000) {
   }
 }
 
+// Pull `N%` figures plus a short label out of the membership page's text.
+// The page is a SPA with no stable DOM contract we can rely on across builds,
+// so the summary is heuristic: percentage lines are the usage signal, and the
+// nearest preceding non-numeric line is the most likely label (5-hour window
+// / weekly / monthly style wording).
+function summarizeSubscriptionText(text) {
+  const lines = String(text || '').split(/\n+/).map((s) => s.trim()).filter(Boolean);
+  const hits = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/(\d+(?:\.\d+)?)\s*%/);
+    if (!m) continue;
+    // The nearest preceding line is the likely label — unless it is itself
+    // another value. Labels like「5小时窗口」contain digits, so gate on `%`.
+    const label = i > 0 && !/%/.test(lines[i - 1]) ? lines[i - 1].slice(0, 24) : '';
+    hits.push({ label, percent: Number(m[1]), line: lines[i].slice(0, 80) });
+    if (hits.length >= 4) break;
+  }
+  return hits.length ? hits : null;
+}
+
+// Scrape the logged-in membership page through the managed browser. Returns
+// { status:'ok', summary, text } on success, needs_login when the profile has
+// no kimi.com session (or it expired mid-redirect), chrome_unavailable when no
+// browser can run at all.
+async function fetchKimiSubscriptionPage(managed = getManagedQuotaBrowser()) {
+  let browser;
+  try { browser = await managed.attachManaged(); }
+  catch (err) {
+    const unavailable = err && err.code === 'chrome_unavailable';
+    return { status: unavailable ? 'chrome_unavailable' : 'unavailable', error: (err && err.message) || 'managed browser attach failed' };
+  }
+  try {
+    const cookies = await managed.getCookies('kimi.com', { browser });
+    if (!cookies.length) {
+      return { status: 'needs_login', error: '托管浏览器中没有 kimi.com 登录态，点余量徽标可打开登录窗口' };
+    }
+    return await managed.withPage(async (page) => {
+      await page.enable(['Network', 'Page']);
+      await page.navigate(KIMI_SUBSCRIPTION_URL);
+
+      let hitLogin = false;
+      const settled = await page.waitFor(async () => {
+        const href = await page.evaluate('location.href');
+        if (typeof href !== 'string' || !href) return null;
+        if (/sign-?in|passport|\/login/i.test(href)) { hitLogin = true; return href; }
+        const ready = await page.evaluate('document.readyState');
+        return ready === 'complete' ? href : null;
+      }, { timeoutMs: CONSOLE_TIMEOUT_MS });
+      if (!settled) return { status: 'unavailable', error: 'kimi 订阅页加载超时' };
+      if (hitLogin) return { status: 'needs_login', error: 'kimi.com 登录态已失效，点余量徽标可重新登录' };
+
+      // Give the SPA a beat to render the subscription panel after load.
+      const text = await page.waitFor(async () => {
+        const t = await page.evaluate('document.body ? document.body.innerText : ""');
+        return typeof t === 'string' && /%|剩余|已用|额度|订阅|有效/.test(t) ? t : null;
+      }, { timeoutMs: CONSOLE_TIMEOUT_MS, intervalMs: 800 }) || '';
+
+      if (!String(text).trim()) return { status: 'unavailable', error: '订阅页无可读内容（可能未登录）' };
+      return {
+        status: 'ok',
+        fetchedAt: Date.now(),
+        source: 'subscription-page',
+        url: settled,
+        summary: summarizeSubscriptionText(text),
+        text: String(text).slice(0, 2000),
+      };
+    }, { browser });
+  } catch (err) {
+    return { status: 'unavailable', error: (err && err.message) || 'subscription page scrape failed' };
+  } finally {
+    browser.close();
+  }
+}
+
 async function fetchKimiUsage(preferHost, nowMs = Date.now(), deps = {}) {
   const targets = Array.isArray(deps.targets) ? deps.targets : collectKimiTargets();
   const poll = typeof deps.poll === 'function' ? deps.poll : fetchKimiBalance;
@@ -133,24 +215,70 @@ async function fetchKimiUsage(preferHost, nowMs = Date.now(), deps = {}) {
   }));
 
   if (!sites.some((s) => s.ok)) {
+    // Every site 401 = subscription keys, which the balance API will never
+    // accept. Their usage is on the membership page instead.
+    const consoleFallback = deps.console === undefined
+      ? () => fetchKimiSubscriptionPage()
+      : deps.console;
+    if (typeof consoleFallback === 'function' && sites.every((s) => s.reason === 'auth_rejected')) {
+      let scraped = null;
+      try { scraped = await consoleFallback(); } catch (err) { scraped = { status: 'unavailable', error: err && err.message }; }
+      if (scraped && scraped.status === 'ok') return { ...scraped, sites };
+      if (scraped && scraped.status === 'needs_login') {
+        return { status: 'needs_login', error: scraped.error, loginUrl: KIMI_SUBSCRIPTION_URL, sites };
+      }
+      return {
+        status: 'unavailable',
+        error: `余额 API 全部 401（疑似订阅 key），订阅页抓取也失败：${(scraped && scraped.error) || 'unknown'}`,
+        fetchedAt: nowMs,
+        sites,
+      };
+    }
     return { status: 'unavailable', error: 'all kimi fetches failed', fetchedAt: nowMs, sites };
   }
   return { status: 'ok', fetchedAt: nowMs, sites };
 }
 
-function mountKimiQuotaRoutes(app) {
+function mountKimiQuotaRoutes(app, options = {}) {
   if (!app || typeof app.get !== 'function') return;
+  const usageDeps = options.usageDeps || {};
   app.get('/api/kimi/quota', async (req, res) => {
     try {
       const preferHost = typeof req.query?.host === 'string' ? req.query.host : '';
-      const result = await fetchKimiUsage(preferHost);
+      const result = await fetchKimiUsage(preferHost, Date.now(), usageDeps);
       const status = result?.status || 'unavailable';
-      const httpStatus = status === 'ok' ? 200 : status === 'not_configured' ? 404 : 502;
+      const httpStatus = status === 'ok' ? 200
+        : status === 'not_configured' ? 404
+          : status === 'needs_login' ? 401
+            : status === 'chrome_unavailable' ? 503 : 502;
       res.status(httpStatus).json(result);
     } catch (_) {
       res.status(500).json({ status: 'unavailable', error: 'kimi quota fetch failed' });
     }
   });
+
+  // Visible login window on the managed profile — same pattern as qoder /
+  // opencode. The user logs into kimi.com once; the session then persists for
+  // headless membership-page scrapes.
+  app.post('/api/kimi/quota/login', async (req, res) => {
+    try {
+      await getManagedQuotaBrowser().openVisibleLogin(KIMI_SUBSCRIPTION_URL);
+      res.json({ ok: true, message: '已打开登录窗口：请在弹出的 Chrome 中登录 kimi.com，完成后回来重新查询余量' });
+    } catch (err) {
+      const status = err && err.code === 'chrome_unavailable' ? 503 : 500;
+      res.status(status).json({ ok: false, error: (err && err.code) || 'login_window_failed', message: err && err.message });
+    }
+  });
 }
 
-module.exports = { mountKimiQuotaRoutes, fetchKimiUsage, fetchKimiBalance, collectKimiTargets, siteLabel, balanceHost };
+module.exports = {
+  mountKimiQuotaRoutes,
+  fetchKimiUsage,
+  fetchKimiBalance,
+  fetchKimiSubscriptionPage,
+  summarizeSubscriptionText,
+  collectKimiTargets,
+  siteLabel,
+  balanceHost,
+  KIMI_SUBSCRIPTION_URL,
+};
