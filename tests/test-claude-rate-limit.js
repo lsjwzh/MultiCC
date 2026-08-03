@@ -423,3 +423,123 @@ test('switching provider baseUrl to a vendor endpoint immediately refreshes its 
     setProviderBaseUrl('');
   }
 });
+
+// The 60s backoff exists to stop a broken endpoint from being hammered by
+// automatic refreshes. A provider switch is the user asking for this vendor's
+// number right now, so it must not be swallowed by a failure a moment earlier.
+test('an explicit provider switch refetches inside the error-backoff window', async () => {
+  const calls = [];
+  const origFetch = global.fetch;
+  global.fetch = async (url) => {
+    calls.push(String(url));
+    throw new Error('vendor down');
+  };
+  try {
+    setProviderBaseUrl('');
+    setProviderBaseUrl('https://ark.cn-beijing.volces.com/api/coding/v3');
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(calls.length, 1, 'first switch fetches');
+
+    // Immediately switch again: still well inside ARK_QUOTA_BACKOFF_MS.
+    setProviderBaseUrl('https://ark.cn-beijing.volces.com/api/plan');
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(calls.length, 2, 'the backoff must yield to an explicit switch');
+  } finally {
+    global.fetch = origFetch;
+    setProviderBaseUrl('');
+  }
+});
+
+// The cli-gated bars are fetch-on-demand — nothing polls them — so a CLI switch
+// left the new CLI's bar showing whatever localStorage had until it was clicked.
+test('switching CLI refreshes the newly active cli-gated bar exactly once', async () => {
+  const calls = [];
+  const origFetch = global.fetch;
+  global.fetch = async (url) => {
+    calls.push(String(url));
+    return { ok: true, json: async () => ({ status: 'ok', fetchedAt: Date.now() }) };
+  };
+  try {
+    setCli('claude');
+    await new Promise((resolve) => setImmediate(resolve));
+    calls.length = 0;
+
+    setCli('codex');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(calls, ['/api/codex/quota'], 'the codex bar refreshes on the switch to codex');
+
+    // Re-applying the same CLI is not a switch.
+    calls.length = 0;
+    setCli('codex');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(calls.length, 0, 'unchanged cli must not refetch');
+  } finally {
+    global.fetch = origFetch;
+    setCli('codex');
+  }
+});
+
+// GLM speaks the Anthropic protocol at open.bigmodel.cn, so those sessions run
+// under the claude CLI while the poller still tags their window 'glm'. Gating on
+// the CLI alone dropped the event and the session showed no 5h bar at all.
+test('a GLM window renders under the claude CLI when the provider is a Zhipu endpoint', async () => {
+  const element = { style: {}, textContent: '', title: '' };
+  const values = new Map();
+  const origFetch = global.fetch;
+  global.fetch = async () => ({ ok: true, json: async () => ({ status: 'ok', fetchedAt: Date.now(), sites: [] }) });
+  global.document = { getElementById: id => id === 'claude-rate-limit-bar' ? element : null };
+  global.localStorage = {
+    getItem: key => values.get(key) || null,
+    setItem: (key, v) => values.set(key, v),
+    removeItem: key => values.delete(key),
+  };
+  try {
+    setCli('claude');
+    setProviderBaseUrl('https://open.bigmodel.cn/api/anthropic');
+    consumeRateLimitEvent({
+      status: 'allowed', rateLimitType: 'five_hour', utilization: 0.4, provider: 'glm',
+      resetsAt: Math.floor(Date.now() / 1000) + 3600,
+    }, 'glm-claude-sess');
+    assert.equal(element.style.display, 'block', 'GLM 5h shows on a claude-CLI Zhipu session');
+    assert.match(element.textContent, /^5h 60%/);
+
+    // Switching that session to another vendor must drop the GLM numbers rather
+    // than leaving them on screen attributed to the new provider.
+    setProviderBaseUrl('https://api.deepseek.com/anthropic');
+    assert.equal(element.style.display, 'none', 'GLM window hidden once the provider is not Zhipu');
+  } finally {
+    global.fetch = origFetch;
+    setProviderBaseUrl('');
+    setCli('codex');
+    delete global.document;
+    delete global.localStorage;
+  }
+});
+
+test('a DeepSeek balance renders under the claude CLI when the provider is api.deepseek.com', () => {
+  const element = { style: {}, textContent: '', title: '' };
+  const values = new Map();
+  global.document = { getElementById: id => id === 'usage-balance-bar' ? element : null };
+  global.localStorage = {
+    getItem: key => values.get(key) || null,
+    setItem: (key, v) => values.set(key, v),
+    removeItem: key => values.delete(key),
+  };
+  try {
+    setCli('claude');
+    setProviderBaseUrl('https://api.deepseek.com/anthropic');
+    consumeBalanceEvent({ kind: 'balance', available: true, currency: 'CNY', total: 42.5 }, 'ds-claude-sess');
+    assert.equal(element.style.display, 'block', 'balance shows on a claude-CLI DeepSeek session');
+    assert.equal(element.textContent, '¥42.50');
+
+    setProviderBaseUrl('https://api.anthropic.com');
+    assert.equal(element.style.display, 'none', 'balance hidden once the provider is not DeepSeek');
+  } finally {
+    setProviderBaseUrl('');
+    setCli('codex');
+    delete global.document;
+    delete global.localStorage;
+  }
+});
