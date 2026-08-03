@@ -15,9 +15,11 @@ const test = require('node:test');
 const {
   createCodexOAuthRefresher,
   looksLikeCodexAuthFailure,
+  looksLikeCodexLoginRequired,
   parseCodexAuth,
   stripOpenAiEnv,
 } = require('../src/codex-oauth-refresh');
+const { sanitizeMessage } = require('../src/chat/api-error-policy');
 
 const T0 = 1_700_000_000_000;
 const HOUR = 3600_000;
@@ -41,7 +43,7 @@ function authJson({ expiresIn = 8 * HOUR, refreshToken = 'rt-1', accessToken, ap
 
 // `refreshOn` names the ladder rung whose CLI run rewrites auth.json — that
 // is how a test says "login status was enough" or "only a real turn worked".
-function fixture({ stored = authJson(), refreshOn = null, ...rest } = {}) {
+function fixture({ stored = authJson(), refreshOn = null, runResult = null, ...rest } = {}) {
   const store = { value: stored };
   const calls = [];
   let clock = T0;
@@ -60,6 +62,7 @@ function fixture({ stored = authJson(), refreshOn = null, ...rest } = {}) {
       if (step === refreshOn) {
         store.value = authJson({ expiresIn: 9 * HOUR, accessToken: jwt(9 * HOUR) + '.new' });
       }
+      if (runResult) return typeof runResult === 'function' ? runResult(step) : runResult;
       return { code: 0, stdout: 'ok' };
     },
     ...rest,
@@ -254,4 +257,147 @@ test('a malformed auth.json never reads as a usable token', () => {
   assert.equal(parseCodexAuth('{}').ok, false);
   assert.equal(parseCodexAuth('{"tokens":{}}').ok, false);
   assert.equal(parseCodexAuth(JSON.stringify(authJson())).ok, true);
+});
+
+// ── needs_login: the terminal "refresh token consumed" state ────────────────
+
+// The exact message the user saw when the ChatGPT login died. It goes through
+// the same sanitize + truncate pipeline as every turn error, so the test runs
+// it through sanitizeMessage rather than asserting on the raw text.
+const REAL_CODEX_401_MESSAGE = 'Error: codex 无响应：websocket: HTTP error: 401 Unauthorized, url: wss://chatgpt.com/backend-api/codex/responses\n'
+  + '2026-08-03T14:51:33.171413Z ERROR codex_login::auth::manager: Failed to refresh token: [REDACTED] access token could not be refreshed because your refresh token was already used. Please log out and sign in again.';
+
+test('the real user-facing 401 message passes both onApiError gates for codex', async () => {
+  const sanitized = sanitizeMessage(REAL_CODEX_401_MESSAGE);
+  assert.equal(sanitized.length <= 240, true, 'the transport copy is truncated to 240 chars');
+  assert.equal(looksLikeCodexAuthFailure(sanitized), true,
+    'the truncated message must still read as a codex auth failure');
+
+  const h = fixture({ stored: authJson({ expiresIn: -HOUR }), refreshOn: null });
+  // A non-codex provider carrying the same wording must be ignored.
+  assert.equal(h.refresher.onApiError({ error: { sanitizedMessage: sanitized, provider: 'claude' } }), null);
+  assert.equal(h.calls.length, 0);
+
+  const fired = h.refresher.onApiError({ error: { sanitizedMessage: sanitized, provider: 'codex' } });
+  assert.notEqual(fired, null, 'the codex provider gate must let it through');
+  await fired;
+});
+
+test('a dead token with the consumed-refresh-token verdict is needs_login, not failed', async () => {
+  const h = fixture({
+    stored: authJson({ expiresIn: -HOUR }),
+    refreshOn: null,
+    runResult: () => ({
+      code: 1, stdout: '',
+      stderr: 'ERROR codex_login::auth::manager: Failed to refresh token: '
+        + 'access token could not be refreshed because your refresh token was already used. '
+        + 'Please log out and sign in again.',
+    }),
+  });
+  const result = await h.refresher.check();
+  assert.equal(result.outcome, 'needs_login');
+  assert.notEqual(h.refresher.status().needsLogin, null);
+  assert.equal(h.refresher.status().needsLogin.since, T0);
+});
+
+test('a dead token without the verdict stays plain failed', async () => {
+  const h = fixture({ stored: authJson({ expiresIn: -HOUR }), refreshOn: null });
+  const result = await h.refresher.check();
+  assert.equal(result.outcome, 'failed');
+  assert.equal(h.refresher.status().needsLogin, null);
+});
+
+test('the reactive hint alone escalates a dead-token failure to needs_login', async () => {
+  // The transport copy is truncated, so the verdict may be gone; the matched
+  // wording on a codex provider carries the hint instead.
+  const h = fixture({ stored: authJson({ expiresIn: -HOUR }), refreshOn: null });
+  const fired = h.refresher.onApiError({
+    error: { sanitizedMessage: sanitizeMessage(REAL_CODEX_401_MESSAGE), provider: 'codex' },
+  });
+  const result = await fired;
+  assert.equal(result.outcome, 'needs_login');
+});
+
+test('needs_login survives the cooldown and spawns no further CLI runs', async () => {
+  const h = fixture({
+    stored: authJson({ expiresIn: -HOUR }),
+    refreshOn: null,
+    runResult: () => ({ code: 1, stdout: '', stderr: 'refresh token was already used' }),
+  });
+  await h.refresher.check();
+  assert.equal(h.refresher.status().needsLogin != null, true);
+  const callsAfterEntry = h.calls.length;
+
+  h.advance(60_000);
+  const insideCooldown = await h.refresher.check();
+  assert.equal(insideCooldown.outcome, 'needs_login',
+    'the terminal state must not be masked by the cooldown outcome');
+  h.advance(30 * 60_000);
+  const afterCooldown = await h.refresher.check();
+  assert.equal(afterCooldown.outcome, 'needs_login');
+  assert.equal(h.calls.length, callsAfterEntry,
+    'probing a consumed refresh token is pointless — no CLI runs while needs_login holds');
+});
+
+test('a rewritten auth.json self-heals needs_login and clears the backoff', async () => {
+  const h = fixture({
+    stored: authJson({ expiresIn: -HOUR }),
+    refreshOn: null,
+    runResult: () => ({ code: 1, stdout: '', stderr: 'refresh token was already used' }),
+  });
+  await h.refresher.check();
+  assert.equal(h.refresher.status().needsLogin != null, true);
+
+  // The user ran `codex login`; the CLI rewrote auth.json with a fresh token.
+  h.store.value = authJson({ expiresIn: 9 * HOUR });
+  const healed = await h.refresher.check();
+  assert.equal(healed.outcome, 'fresh');
+  assert.equal(h.refresher.status().needsLogin, null);
+  assert.equal(h.refresher.status().retryAfter, null, 'the backoff must be cleared on recovery');
+  assert.equal(h.refresher.status().consecutiveFailures, 0);
+});
+
+test('needs_login lifecycle fires the onNeedsLogin/onRecovered callbacks once each', async () => {
+  const events = [];
+  const h = fixture({
+    stored: authJson({ expiresIn: -HOUR }),
+    refreshOn: null,
+    runResult: () => ({ code: 1, stdout: '', stderr: 'log out and sign in again' }),
+    onNeedsLogin: status => events.push(['needs_login', !!status.needsLogin]),
+    onRecovered: status => events.push(['recovered', status.needsLogin]),
+  });
+  await h.refresher.check();
+  await h.refresher.check(); // second failure must not re-fire the callback
+  h.store.value = authJson({ expiresIn: 9 * HOUR });
+  await h.refresher.check();
+  assert.deepEqual(events, [
+    ['needs_login', true],
+    ['recovered', null],
+  ]);
+});
+
+test('a forced refresh re-checks the ladder even while needs_login holds', async () => {
+  const h = fixture({
+    stored: authJson({ expiresIn: -HOUR }),
+    refreshOn: null,
+    runResult: () => ({ code: 1, stdout: '', stderr: 'refresh token was already used' }),
+  });
+  await h.refresher.check();
+  // The user re-logged in but the token is already inside the buffer window:
+  // only a real repair run can confirm. Force must waive the short-circuit.
+  h.store.value = authJson({ expiresIn: 60_000 });
+  h.advance(60_000); // token now expired → due
+  const before = h.calls.length;
+  const result = await h.refresher.refresh({ reason: 'manual', force: true });
+  assert.equal(h.calls.length > before, true, 'force must run the ladder');
+  assert.equal(result.outcome, 'needs_login', 'still dead without a successful refresh');
+});
+
+test('the login-required predicate is narrower than the auth-failure predicate', () => {
+  assert.equal(looksLikeCodexLoginRequired('refresh token was already used'), true);
+  assert.equal(looksLikeCodexLoginRequired('Please log out and sign in again.'), true);
+  assert.equal(looksLikeCodexLoginRequired('not logged in'), true);
+  assert.equal(looksLikeCodexLoginRequired('Failed to refresh token: upstream 500'), false,
+    'a generic refresh failure may still be transient');
+  assert.equal(looksLikeCodexLoginRequired('401 Unauthorized'), false);
 });
