@@ -69,11 +69,13 @@ function normalizeTunnelUpdate(body = {}) {
   if (body.phddns && typeof body.phddns === 'object') {
     update.phddns = {};
     if (typeof body.phddns.enabled === 'boolean') update.phddns.enabled = body.phddns.enabled;
+    if (typeof body.phddns.monitorOnly === 'boolean') update.phddns.monitorOnly = body.phddns.monitorOnly;
     if (typeof body.phddns.url === 'string') update.phddns.url = body.phddns.url.trim();
   }
   if (body.tailscale && typeof body.tailscale === 'object') {
     update.tailscale = {};
     if (typeof body.tailscale.enabled === 'boolean') update.tailscale.enabled = body.tailscale.enabled;
+    if (typeof body.tailscale.monitorOnly === 'boolean') update.tailscale.monitorOnly = body.tailscale.monitorOnly;
     if (typeof body.tailscale.url === 'string') update.tailscale.url = body.tailscale.url.trim();
     // Funnel is execution state. Only POST /api/tunnel/funnel may change it;
     // the ordinary config route deliberately ignores checkbox/port echoes.
@@ -83,6 +85,7 @@ function normalizeTunnelUpdate(body = {}) {
     if (!value || typeof value !== 'object') continue;
     const normalized = {};
     if (typeof value.enabled === 'boolean') normalized.enabled = value.enabled;
+    if (typeof value.monitorOnly === 'boolean') normalized.monitorOnly = value.monitorOnly;
     if (typeof value.url === 'string') {
       const url = value.url.trim();
       if (!validateNotifyUrl(url)) throw invalidTunnelSetting(`${provider}.url must be an http(s) URL`);
@@ -212,10 +215,13 @@ function createTunnelRestartHandler(deps) {
       const result = await deps.tunnel.restartNow(req.params.provider);
       if (result && result.ok) return res.json(result);
       const unknown = result && result.error === 'unknown provider';
-      return res.status(400).json({
-        ok: false,
-        error: unknown ? 'unknown provider' : 'tunnel_restart_failed',
-      });
+      const body = { ok: false, error: unknown ? 'unknown provider' : 'tunnel_restart_failed' };
+      // result.message is already redacted by the tunnel runtime (authtoken
+      // masked); surfacing it lets the UI show the root cause instead of the
+      // opaque error code. Never forward result.error itself — it may carry
+      // raw internal detail.
+      if (result && typeof result.message === 'string' && result.message) body.message = result.message;
+      return res.status(400).json(body);
     } catch (error) {
       return next(error);
     }
