@@ -295,6 +295,13 @@
     qoder: '/api/qoder/quota',
     opencode: '/api/opencode/quota',
   });
+  // Kinds backed by a web login: clicking their "需登录" badge asks the server
+  // to open a visible Chrome window (managed profile) for the user to log in.
+  const QUOTA_LOGIN_ROUTES = Object.freeze({
+    kimi: '/api/kimi/quota/login',
+    qoder: '/api/qoder/quota/login',
+    opencode: '/api/opencode/quota/login',
+  });
   const QUOTA_CACHE_KEY = 'multicc.providerQuota.v1';
   const QUOTA_GRAY = '#8b949e';
   const QUOTA_AMBER = '#d29922';
@@ -332,9 +339,10 @@
     if (!data || typeof data !== 'object') return null;
     const st = data.status;
     if (st === 'not_configured') return { text: '余量：未配置', color: QUOTA_GRAY, title: '未配置对应 provider' };
-    if (st === 'needs_auth' || st === 'needs_login') return { text: '余量：需登录', color: QUOTA_AMBER, title: data.error || '需要登录后才能查询余量' };
+    if (st === 'needs_auth') return { text: '余量：需登录', color: QUOTA_AMBER, title: data.error || '需要登录后才能查询余量' };
+    if (st === 'needs_login') return { text: '余量：需登录（点击登录）', color: QUOTA_AMBER, title: `${data.error || '需要登录后才能查询余量'}。${QUOTA_LOGIN_ROUTES[kind] ? '点击会由 multicc 拉起一个 Chrome 登录窗口，登录后回来重点一次即可' : '请先在浏览器中登录对应站点'}` };
     if (st === 'needs_install') return { text: '余量：未安装 arkcli', color: QUOTA_AMBER, title: data.error || 'arkcli 未安装' };
-    if (st === 'chrome_unavailable') return { text: '余量：无可连的 Chrome', color: QUOTA_AMBER, title: '需要一个开了调试端点的 Chrome 并在其中登录；端口随意（--remote-debugging-port=0），会自动发现' };
+    if (st === 'chrome_unavailable') return { text: '余量：浏览器不可用（点击重试）', color: QUOTA_AMBER, title: `托管 headless Chrome 启动失败且没有可连的调试 Chrome${QUOTA_LOGIN_ROUTES[kind] ? '。点击可尝试拉起登录窗口' : ''}` };
     if (st !== 'ok') return { text: '余量：暂不可用', color: QUOTA_AMBER, title: data.error || '查询失败' };
 
     if (kind === 'zhipu') {
@@ -350,6 +358,18 @@
       return { text: '余量 ' + parts.join(' · '), color: quotaPctColor(maxPct), title: 'Zhipu 窗口用量（5h / 周）' };
     }
     if (kind === 'kimi') {
+      // Subscription keys 401 on the balance API; their usage comes from the
+      // logged-in membership page scrape instead.
+      if (data.source === 'subscription-page') {
+        const sum = (data.summary || []).filter(s => s && Number.isFinite(s.percent));
+        if (!sum.length) return { text: '余量 Kimi 订阅（已抓取页面）', color: QUOTA_AMBER, title: `订阅页未解析出百分比。原文：${String(data.text || '').slice(0, 300)}` };
+        const maxPct = Math.max.apply(null, sum.map(s => s.percent));
+        return {
+          text: '余量 ' + sum.map(s => `${s.label || 'Kimi'} ${s.percent}%`).join(' · '),
+          color: quotaPctColor(maxPct),
+          title: `Kimi 订阅用量（会员页抓取，已用百分比）。原文：${String(data.text || '').slice(0, 300)}`,
+        };
+      }
       const sites = (data.sites || []).filter(s => s && s.ok && Number.isFinite(s.available));
       if (!sites.length) return { text: '余量：暂不可用', color: QUOTA_AMBER, title: '无有效余额数据' };
       const minAvail = Math.min.apply(null, sites.map(s => s.available));
@@ -413,6 +433,7 @@
     const cache = quotaCacheRead(root);
     const byId = new Map(providers.map(p => [p.id, p]));
     const pending = new Set();
+    let openLoginWindow = null;
 
     const paint = () => {
       root.document.querySelectorAll('[data-quota-id]').forEach(el => {
@@ -442,13 +463,33 @@
           el.title = '尚无余量数据；点击重新查询';
         }
         el.style.cursor = 'pointer';
-        el.onclick = () => fetchKind(kind, true);
+        const st = entry && entry.data ? entry.data.status : '';
+        const actionable = (st === 'needs_login' || st === 'chrome_unavailable') && QUOTA_LOGIN_ROUTES[kind] && openLoginWindow;
+        el.onclick = actionable ? () => openLoginWindow(kind, el) : () => fetchKind(kind, true);
       });
     };
     paint();
 
     const fetchFn = jsonFn || (root.MultiCCApi && typeof root.MultiCCApi.json === 'function' ? root.MultiCCApi.json.bind(root.MultiCCApi) : null);
     if (!fetchFn) return;
+
+    // Ask the server to pop a visible Chrome (managed profile) at the vendor
+    // login page. The server stops its headless instance first — one profile,
+    // one Chrome — and the window stays for the user to log into.
+    openLoginWindow = (kind, el) => {
+      el.textContent = '正在打开登录窗口…';
+      el.title = 'multicc 正在拉起 Chrome 登录窗口…';
+      Promise.resolve()
+        .then(() => fetchFn(QUOTA_LOGIN_ROUTES[kind], { method: 'POST' }))
+        .then((data) => {
+          el.textContent = '已打开登录窗口，登录后重点余量';
+          el.title = (data && data.message) || '登录完成后点击重新查询余量';
+        }, (err) => {
+          el.textContent = '登录窗口打开失败（点击重试）';
+          el.title = (err && err.message) || String(err);
+        });
+    };
+    paint();
 
     function fetchKind(kind, force) {
       const now = Date.now();

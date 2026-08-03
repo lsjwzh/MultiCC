@@ -5,6 +5,8 @@ const test = require('node:test');
 
 const {
   fetchKimiUsage,
+  fetchKimiSubscriptionPage,
+  summarizeSubscriptionText,
   siteLabel,
   balanceHost,
   mountKimiQuotaRoutes,
@@ -71,9 +73,15 @@ test('fetchKimiUsage is unavailable when every site fails', async () => {
 
 test('route maps status to HTTP code', async () => {
   const routes = {};
-  const app = { get: (path, handler) => { routes[path] = handler; } };
-  mountKimiQuotaRoutes(app);
+  const app = {
+    get: (path, handler) => { routes[path] = handler; },
+    post: (path, handler) => { routes[path] = handler; },
+  };
+  // console: null disables the membership-page fallback so this unit test
+  // never spawns a managed Chrome.
+  mountKimiQuotaRoutes(app, { usageDeps: { console: null } });
   assert.equal(typeof routes['/api/kimi/quota'], 'function');
+  assert.equal(typeof routes['/api/kimi/quota/login'], 'function');
 
   const captured = {};
   const res = {
@@ -141,6 +149,8 @@ test('fetchKimiUsage propagates httpStatus and reason in failed sites', async ()
   const result = await fetchKimiUsage('', 1, {
     targets: [KIMI],
     poll: async () => ({ error: true, httpStatus: 401, reason: 'auth_rejected' }),
+    // all-401 would otherwise fall back to the managed-browser scrape
+    console: null,
   });
   assert.equal(result.status, 'unavailable');
   assert.equal(result.sites[0].ok, false);
@@ -176,4 +186,136 @@ test('formatKimiQuota shows cached balance even when no live value exists yet', 
   assert.match(view.text, /Moonshot ¥12\.34/);
   assert.match(view.text, /上次/);
   assert.match(view.title, /缓存值/);
+});
+
+// ── subscription ("Kimi For Coding") membership-page fallback ─────────────
+
+test('summarizeSubscriptionText picks percent lines with their nearest label', () => {
+  const text = 'Kimi Code 会员\n5小时窗口\n12%\n周用量\n42.5%\n其他 99%';
+  const sum = summarizeSubscriptionText(text);
+  assert.equal(sum.length, 3);
+  assert.deepEqual(sum[0], { label: '5小时窗口', percent: 12, line: '12%' });
+  assert.deepEqual(sum[1], { label: '周用量', percent: 42.5, line: '42.5%' });
+  // The preceding line is itself a percentage value, so no label for this one.
+  assert.equal(sum[2].label, '');
+  assert.equal(sum[2].percent, 99);
+});
+
+test('summarizeSubscriptionText returns null when there is no percentage', () => {
+  assert.equal(summarizeSubscriptionText('请登录'), null);
+  assert.equal(summarizeSubscriptionText(''), null);
+});
+
+test('fetchKimiUsage falls back to the membership page when every site is 401', async () => {
+  const result = await fetchKimiUsage('', 1, {
+    targets: [KIMI],
+    poll: async () => ({ error: true, httpStatus: 401, reason: 'auth_rejected' }),
+    console: async () => ({
+      status: 'ok', fetchedAt: 2, source: 'subscription-page',
+      summary: [{ label: '5小时窗口', percent: 10, line: '10%' }], text: '10%',
+    }),
+  });
+  assert.equal(result.status, 'ok');
+  assert.equal(result.source, 'subscription-page');
+  assert.ok(Array.isArray(result.sites), 'the failed balance sites stay attached for context');
+});
+
+test('fetchKimiUsage surfaces needs_login with the loginUrl when the profile has no session', async () => {
+  const result = await fetchKimiUsage('', 1, {
+    targets: [KIMI],
+    poll: async () => ({ error: true, httpStatus: 401, reason: 'auth_rejected' }),
+    console: async () => ({ status: 'needs_login', error: 'no session' }),
+  });
+  assert.equal(result.status, 'needs_login');
+  assert.match(result.loginUrl, /kimi\.com\/membership\/subscription/);
+});
+
+test('fetchKimiUsage reports the combined failure when the scrape also fails', async () => {
+  const result = await fetchKimiUsage('', 1, {
+    targets: [KIMI],
+    poll: async () => ({ error: true, httpStatus: 401, reason: 'auth_rejected' }),
+    console: async () => ({ status: 'chrome_unavailable', error: 'no binary' }),
+  });
+  assert.equal(result.status, 'unavailable');
+  assert.match(result.error, /401/);
+  assert.match(result.error, /no binary/);
+});
+
+test('non-401 failures skip the console fallback entirely', async () => {
+  let called = false;
+  const result = await fetchKimiUsage('', 1, {
+    targets: [KIMI],
+    poll: async () => ({ error: true, httpStatus: 500, reason: 'http_error' }),
+    console: async () => { called = true; return { status: 'ok' }; },
+  });
+  assert.equal(result.status, 'unavailable');
+  assert.equal(called, false);
+});
+
+// A page stand-in matching the chrome-cdp page surface.
+function fakeKimiPage({ hrefs, text = '' }) {
+  let idx = 0;
+  return {
+    navigated: [],
+    enable: async () => {},
+    navigate: async (url) => {},
+    async evaluate(expression) {
+      if (expression.includes('location.href')) return hrefs[Math.min(idx++, hrefs.length - 1)];
+      if (expression.includes('readyState')) return 'complete';
+      if (expression.includes('innerText')) return text;
+      return '';
+    },
+    async waitFor(predicate, { timeoutMs = 500, intervalMs = 1 } = {}) {
+      const deadline = Date.now() + timeoutMs;
+      for (;;) {
+        let hit = null;
+        try { hit = await predicate(); } catch (_) { hit = null; }
+        if (hit) return hit;
+        if (Date.now() >= deadline) return null;
+        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      }
+    },
+    responses: [],
+  };
+}
+
+function fakeManaged({ cookies = [], page = null, attachError = null }) {
+  return {
+    attachManaged: async () => {
+      if (attachError) throw attachError;
+      return { close() {} };
+    },
+    getCookies: async () => cookies,
+    withPage: async (fn) => fn(page),
+  };
+}
+
+test('fetchKimiSubscriptionPage reports needs_login when the profile has no kimi session', async () => {
+  const result = await fetchKimiSubscriptionPage(fakeManaged({ cookies: [] }));
+  assert.equal(result.status, 'needs_login');
+});
+
+test('fetchKimiSubscriptionPage maps a browser failure to chrome_unavailable', async () => {
+  const err = new Error('no Chrome binary found');
+  err.code = 'chrome_unavailable';
+  const result = await fetchKimiSubscriptionPage(fakeManaged({ attachError: err }));
+  assert.equal(result.status, 'chrome_unavailable');
+});
+
+test('fetchKimiSubscriptionPage detects a session that expired into a login redirect', async () => {
+  const page = fakeKimiPage({ hrefs: ['https://www.kimi.com/login?next=/membership'] });
+  const result = await fetchKimiSubscriptionPage(fakeManaged({ cookies: [{ name: 'a', value: 'b' }], page }));
+  assert.equal(result.status, 'needs_login');
+});
+
+test('fetchKimiSubscriptionPage scrapes usage text from the settled page', async () => {
+  const page = fakeKimiPage({
+    hrefs: ['https://www.kimi.com/membership/subscription'],
+    text: 'Kimi Code 会员\n5小时窗口\n12%\n周用量\n3%',
+  });
+  const result = await fetchKimiSubscriptionPage(fakeManaged({ cookies: [{ name: 'a', value: 'b' }], page }));
+  assert.equal(result.status, 'ok');
+  assert.equal(result.source, 'subscription-page');
+  assert.equal(result.summary.length, 2);
+  assert.equal(result.summary[0].percent, 12);
 });

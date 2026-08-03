@@ -106,3 +106,52 @@ test('failed fetch renders the failure badge, never a stuck loading text', async
   assert.match(el.textContent, /暂不可用/);
   assert.match(el.title, /all fetches failed/);
 });
+
+test('kimi membership-page scrape renders the parsed percentages', () => {
+  const view = catalog.formatProviderQuotaBadge('kimi', {
+    status: 'ok', source: 'subscription-page', fetchedAt: 1,
+    summary: [
+      { label: '5小时窗口', percent: 12, line: '12%' },
+      { label: '周用量', percent: 81, line: '81%' },
+    ],
+    text: 'Kimi Code 会员\n5小时窗口\n12%',
+  });
+  assert.match(view.text, /5小时窗口 12%/);
+  assert.match(view.text, /周用量 81%/);
+  assert.match(view.title, /会员页抓取/);
+  // 81% used crosses the 70% warning threshold.
+  assert.equal(view.color, '#d29922');
+});
+
+test('needs_login badge invites a click and explains the login window', () => {
+  const view = catalog.formatProviderQuotaBadge('qoder', { status: 'needs_login', error: '没有登录态' });
+  assert.match(view.text, /点击登录/);
+  assert.match(view.title, /拉起一个 Chrome 登录窗口/);
+});
+
+test('clicking a needs_login badge opens the login window instead of refetching', async () => {
+  // Uses qoder (not kimi) — the throttle map is module-level and the kimi
+  // kind was already fetched by an earlier test in this process.
+  const el = makeEl('p-qoder');
+  const calls = [];
+  await withWindow([el], async () => {
+    catalog.injectProviderQuotas(
+      { providers: [{ id: 'p-qoder', appType: 'claude', baseUrl: 'https://www.qoder.com.cn/' }] },
+      async (url, options) => {
+        calls.push({ url, options });
+        if (options && options.method === 'POST') return { ok: true, message: '已打开' };
+        return { status: 'needs_login', error: '没有 qoder.com.cn 登录态' };
+      },
+    );
+    await flush();
+    assert.equal(calls.length, 1, 'the initial quota fetch');
+    assert.match(el.textContent, /需登录/);
+
+    el.onclick();
+    await flush();
+  });
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].url, '/api/qoder/quota/login');
+  assert.equal(calls[1].options.method, 'POST');
+  assert.match(el.textContent, /已打开登录窗口/);
+});
