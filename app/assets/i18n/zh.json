@@ -39,7 +39,7 @@
   "renameDirectory": "改名",
   "deleteDirectory": "删除目录",
   "gitPush": "Git 推送",
-  "projectMemo": "项目备忘 (multicc.memo.md)",
+  "projectMemo": "项目备忘",
   "moreActions": "更多操作",
   "renameSession": "改名",
   "merge": "合并",

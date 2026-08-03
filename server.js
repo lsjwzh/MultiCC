@@ -1591,14 +1591,21 @@ app.use(directoryModule.router);
 
 // Memo is a bounded host/controller. It owns validation and file I/O; errors
 // flow through src/http's branded mapping before the terminal safe handler.
-app.use(createMemoModule({
-  directories: { get: id => directories.get(id) },
+// Memos live under the memory store, never inside the user's project — a
+// multicc-owned file in the project tree left every worktree dirty and blocked
+// merges. migrateLegacy() moves memos written by older builds.
+const memoModule = createMemoModule({
+  directories: { get: id => directories.get(id), list: () => [...directories.values()] },
   sessions: { get: id => persistedSessions.get(id) },
   runtime: {
     getChatSession: id => chatSessions.get(id),
     runTurn: (id, text, options) => chatTurnEngine.admitChatWork(id, text, options),
   },
-}).router);
+  memoRoot: MEMORY_STORE_ROOT,
+  log: message => console.log(message),
+});
+app.use(memoModule.router);
+memoModule.migrateLegacy().done.catch(error => console.log(`[memo] migration failed: ${error.message}`));
 
 // Create + persist an isolated session record (its own git worktree + branch).
 // Shared creation boundary; an explicit id creates or reuses a named session.
