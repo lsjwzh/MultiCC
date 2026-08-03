@@ -120,6 +120,7 @@ const { mountCodexQuotaRoutes } = require('./src/routes/codex-quota');
 const { mountArkQuotaRoutes } = require('./src/routes/ark-quota');
 const { mountZhipuQuotaRoutes } = require('./src/routes/zhipu-quota');
 const { mountKimiQuotaRoutes } = require('./src/routes/kimi-quota');
+const { mountProviderBalanceRoutes } = require('./src/routes/provider-balance');
 const { mountMemoryBrowserRoutes } = require('./src/routes/memory-browser');
 const { mountSessionMemoryRoutes } = require('./src/routes/session-memory');
 const { createAgentResourcesRoutes } = require('./src/routes/agent-resources');
@@ -2250,6 +2251,11 @@ mountArkQuotaRoutes(app); mountZhipuQuotaRoutes(app); mountKimiQuotaRoutes(app);
 tokenUsageRuntime.mountRoutes(app);
 
 providerRoutes.mountManagementRoutes(app);
+
+// GET /api/providers/:appType/:id/balance + GET /api/providers/balances —
+// explicit per-provider and all-at-once quota/balance queries for the manage
+// page, reusing the usage-limit poller's vendor adapters.
+mountProviderBalanceRoutes(app, providers);
 
 // ZCode auth management (L1-L4: desktop key sync, manual key, OAuth login,
 // pre-turn auth check). Mounted after provider routes for logical grouping.
