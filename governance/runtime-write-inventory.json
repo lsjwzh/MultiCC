@@ -178,6 +178,16 @@
       "sources": [
         { "file": "plugins/cron/cron-tasks.js", "anchor": "const LEGACY_STORE = path.join(__dirname, 'scheduled_tasks.json');" }
       ]
+    },
+    {
+      "id": "quota-browser-profile",
+      "classification": "ephemeral",
+      "owner": "quota managed-browser runtime",
+      "rationale": "The disposable Chrome profile and cookies are regenerable by re-login and already honor MULTICC_DATA_DIR when set.",
+      "migrationStrategy": "Resolve the browser-profile root through createPaths when the data root becomes mandatory; no copy-forward of profiles or cookies is needed.",
+      "sources": [
+        { "file": "src/quota-managed-browser.js", "anchor": "const DATA_DIR = process.env.MULTICC_DATA_DIR || path.join(os.homedir(), '.multicc');" }
+      ]
     }
   ]
 }
