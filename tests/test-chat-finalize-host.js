@@ -22,7 +22,7 @@ function createHarness(options = {}) {
     clearIncrementalSave() { calls.push(['clear-timer']); },
     setStatus(sessionName, status) { calls.push(['status', status]); },
     completeSessionTurn() { calls.push(['complete-session-turn']); },
-    classifyTurnEnd() { calls.push(['classify']); },
+    classifyTurnEnd(cs, sessionName, opts) { calls.push(['classify', opts?.classification ?? null]); },
     resetInterrupted() { calls.push(['reset-interrupted']); },
     resumeInterrupted() { calls.push(['resume-interrupted']); return options.resumed === true; },
     freezeInterrupted(sessionName, reason) { calls.push(['freeze-interrupted', reason]); },
@@ -117,6 +117,34 @@ test('unknown stream interruption freezes and never invokes automatic resume', (
   assert.equal(harness.calls.some(call => call[0] === 'freeze-interrupted'), true);
   assert.deepEqual(harness.calls.find(call => call[0] === 'status'), ['status', 'waiting']);
   assert.equal(harness.calls.some(call => call[0] === 'broadcast' && call[1] === 'stream_end'), true);
+});
+
+test('the boundary verdict reaches the classify port instead of being dropped', () => {
+  const harness = createHarness();
+  const ctx = context({
+    runnerKind: 'stream',
+    cs: { ...context().cs, cli: 'claude', currentAssistantText: '', streamReplay: [] },
+    persisted: { cli: 'claude' },
+    runner: { resultEvent: false },
+  });
+  harness.executor.execute(planTurnFinalization({
+    current: true, runnerKind: 'stream', cli: 'claude',
+    hasOutput: false, resultEvent: false, resultDurable: false, apiError: true,
+  }), ctx);
+  assert.deepEqual(harness.calls.find(call => call[0] === 'classify'), ['classify', 'api-error']);
+
+  // Every branch labels its turn boundary; the host forwards the label verbatim
+  // and leaves it to the classify centre to decide which labels are conclusive.
+  const plain = createHarness();
+  plain.executor.execute(planTurnFinalization({
+    current: true, runnerKind: 'stream', cli: 'claude',
+    hasOutput: true, resultEvent: true, resultDurable: true,
+  }), context({
+    runnerKind: 'stream',
+    cs: { ...context().cs, cli: 'claude', streamReplay: [] },
+    persisted: { cli: 'claude' },
+  }));
+  assert.deepEqual(plain.calls.find(call => call[0] === 'classify'), ['classify', 'completed']);
 });
 
 test('finalize host fails closed when a required runtime port is absent', () => {
