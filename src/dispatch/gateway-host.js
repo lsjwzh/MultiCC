@@ -13,6 +13,7 @@
 
 const bus = require('../bus');
 const { sanitizeVoiceSpeech } = require('../voice-speech');
+const { recentTasksFor, routingStateFor } = require('./targeting');
 
 function assertFunction(value, name) {
   if (typeof value !== 'function') {
@@ -75,17 +76,29 @@ function createGatewayHost(rawDeps) {
   // "这个项目" resolve to one Fleet instead of being guessed. Commander and
   // system sessions are deliberately excluded above; the task board only
   // observes the resulting durable worker admission.
+  //
+  // The snapshot also carries the same bounded status digest the Commander
+  // routing preamble gets (routingState + recentTasks, src/dispatch/targeting.js).
+  // Without it the router could see only labels and a busy boolean, so every
+  // spoken "各会话执行情况如何" was unanswerable except by guessing — the
+  // reported "语音总是查询不到会话执行情况" gap.
   function voiceRouterPrompt(userText) {
-    const context = JSON.stringify(addressableSessions().map(s => ({
-      id: s.id,
-      label: s.label || '',
-      type: s.type || 'worker',
-      dirId: s.dirId || '',
-      cli: s.cli || 'claude',
-      kind: s.kind || 'terminal',
-      cwd: cwdForSession(s),
-      active: !!isTargetBusy(s.id),
-    })));
+    const context = JSON.stringify(addressableSessions().map(s => {
+      const dir = s.dirId ? directories.get(s.dirId) : null;
+      return {
+        id: s.id,
+        label: s.label || '',
+        type: s.type || 'worker',
+        fleet: (dir && (dir.label || dir.name)) || '',
+        dirId: s.dirId || '',
+        cli: s.cli || 'claude',
+        kind: s.kind || 'terminal',
+        cwd: cwdForSession(s),
+        active: !!isTargetBusy(s.id),
+        routingState: routingStateFor(s),
+        recentTasks: recentTasksFor(s),
+      };
+    }));
     return [
       '[MultiCC 实时语音 Router system prompt]',
       '你是 MultiCC 的全局实时语音 Router 会话。用户通过实时语音发起、且没有指定来源会话的请求都进入这里。',
@@ -95,7 +108,8 @@ function createGatewayHost(rawDeps) {
       '语音场景没有二次确认，所以只有用户确实要求干活时才调用工具。工具返回 admitted 后才可声称已提交。',
       '如果用户没说清是哪个项目或哪个会话，而请求又必须落到某一个上，就只用一句话反问，不要自己挑一个 id 投出去。',
       '纯聊天、答疑、澄清类回复不要调用分派工具。',
-      `当前可见 sessions: ${context}`,
+      '用户询问某个或全部会话的状态、进度、执行情况、在做什么时，直接依据下方快照中的 routingState 与 recentTasks 如实回答，不要为此调用 dispatch_master。快照没有的细节（如具体输出内容）不要编造，可以说明快照粒度有限。',
+      `当前可见 sessions 实时快照: ${context}`,
       '[Voice router system prompt end]',
       '',
       userText,

@@ -46,6 +46,10 @@ function baseRecords() {
     }],
     ['chat-1', {
       id: 'chat-1', dirId: 'dir-1', type: 'worker', kind: 'chat', label: '前端会话',
+      taskState: {
+        goal: '修复登录页样式', phase: 'implementing', classifyState: 'P',
+        classifyHistory: [{ goal: '旧任务', phase: 'done', state: 'D' }],
+      },
     }],
     ['term-1', {
       id: 'term-1', dirId: 'dir-1', type: 'worker', kind: 'terminal', label: '终端会话',
@@ -55,6 +59,10 @@ function baseRecords() {
     }],
     ['chat-2', {
       id: 'chat-2', dirId: 'dir-2', type: 'worker', kind: 'chat', label: '后端会话',
+      taskState: {
+        goal: '等待用户确认方案', phase: 'planning', classifyState: 'W',
+        pendingUserInput: { question: '这个方案敏感吗', resolved: false },
+      },
     }],
   ]);
 }
@@ -640,6 +648,25 @@ test('the voice router prompt routes by Fleet and asks instead of guessing', () 
   assert.equal(wechat.includes('实时语音 Router'), false, 'the WeChat prompt is untouched');
   assert.match(wechat, /等待用户明确回复「确认」/);
   assert.match(wechat, /dispatch_master，mode 必须是 async/);
+});
+
+test('the voice router snapshot carries live status so spoken status questions are answerable', () => {
+  const fixture = gatewayHostFixture();
+  const voice = fixture.host.buildGatewayPrompt('各个会话执行情况如何', VOICE_ROUTER_ID);
+  // Status questions are answered from the snapshot, never dispatched.
+  assert.match(voice, /直接依据下方快照中的 routingState 与 recentTasks 如实回答/);
+  assert.match(voice, /不要编造/);
+  // The digest mirrors the Commander routing preamble's bounded facts.
+  assert.match(voice, /"fleet":"Fleet 一"/, 'directory label resolves a spoken fleet name');
+  assert.match(voice, /"routingState":"processing"/, 'chat-1 classify P maps to processing');
+  assert.match(voice, /"routingState":"waiting_user"/, 'chat-2 pending input maps to waiting_user');
+  assert.match(voice, /修复登录页样式/, 'current goal is visible');
+  assert.match(voice, /"phase":"implementing"/, 'current phase is visible');
+  // The pending question text must never leak into the snapshot.
+  assert.equal(voice.includes('这个方案敏感吗'), false, 'pending question stays server-side');
+
+  const wechat = fixture.host.buildGatewayPrompt('各个会话执行情况如何');
+  assert.equal(wechat.includes('routingState'), false, 'the WeChat prompt stays free of the digest');
 });
 
 test('dispatch finalization keeps sync inline and requires dispatch_slave for async', async () => {
