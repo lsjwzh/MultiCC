@@ -70,6 +70,27 @@ function spawnKimiLogin() {
   return spawn(resolveKimiCmd(), ['login'], { env });
 }
 
+// L2: Manually set an API key for native Kimi Code usage (provider-less sessions).
+// Writes a credential file under KIMI_CODE_HOME/credentials/ so getKimiAuthStatus
+// picks it up. The key is also set in process.env so child processes inherit it.
+function setKimiApiKey(apiKey, opts = {}) {
+  const key = String(apiKey || '').trim();
+  if (!key) throw new Error('apiKey is required');
+  const baseURL = String(opts.baseURL || '').trim() || undefined;
+
+  const home = kimiHomeDir();
+  const credsDir = path.join(home, 'credentials');
+  fs.mkdirSync(credsDir, { recursive: true });
+
+  const entry = { apiKey: key };
+  if (baseURL) entry.baseURL = baseURL;
+
+  const filePath = path.join(credsDir, 'manual.json');
+  fs.writeFileSync(filePath, JSON.stringify(entry, null, 2), 'utf8');
+
+  return { ok: true, source: 'credentials' };
+}
+
 // Pre-turn gate (same shape as ensureZcodeAuth). Provider-backed sessions own
 // injected credentials and bypass the native gate.
 function ensureKimiAuth(session, env = process.env) {
@@ -92,5 +113,6 @@ module.exports = {
   getKimiAuthStatus,
   parseKimiLoginVerificationUrl,
   spawnKimiLogin,
+  setKimiApiKey,
   ensureKimiAuth,
 };

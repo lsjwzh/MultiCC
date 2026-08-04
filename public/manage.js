@@ -2993,3 +2993,91 @@ async function saveZcodeManualKey() {
 document.addEventListener('DOMContentLoaded', () => {
   setTimeout(() => loadZcodeAuth(), 500);
 });
+
+// ──────────────────────────────────────────────
+// Kimi Code auth panel
+// ──────────────────────────────────────────────
+
+async function loadKimiAuth() {
+  try {
+    const r = await fetch('/api/kimi/auth');
+    const d = await r.json();
+    const statusEl = document.getElementById('kimi-auth-status');
+    const actionsEl = document.getElementById('kimi-auth-actions');
+    if (!statusEl || !actionsEl) return;
+
+    if (d.configured) {
+      statusEl.innerHTML = '<span class="status-text ok">✓ 已配置</span> — 来源: <b>' + escapeHtml(d.source === 'env_key' ? '环境变量 KIMI_API_KEY' : '凭证文件') + '</b>';
+      actionsEl.style.display = 'flex';
+    } else {
+      statusEl.innerHTML = '<span class="status-text err">✗ 未配置</span> — 可登录 Kimi Code 或手动填写 API Key，也可为会话绑定上方 MultiCC Provider';
+      actionsEl.style.display = 'flex';
+    }
+
+    const loginBtn = document.getElementById('kimi-login-btn');
+    if (loginBtn) loginBtn.style.display = d.loginAvailable ? '' : 'none';
+  } catch (e) {
+    const el = document.getElementById('kimi-auth-status');
+    if (el) el.textContent = '加载失败: ' + e.message;
+  }
+}
+
+async function loginKimi() {
+  const btn = document.getElementById('kimi-login-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '登录中…（请在浏览器完成授权）'; }
+  try {
+    const r = await fetch('/api/kimi/auth/login', { method: 'POST' });
+    const d = await r.json();
+    if (d.ok) {
+      showToast('Kimi Code 登录成功', 'success');
+    } else if (d.code === 'login_timeout') {
+      showToast('登录超时，如浏览器已打开请完成授权', 'info');
+    } else {
+      showToast(d.message || '登录失败', 'error');
+    }
+  } catch (e) {
+    showToast('登录失败: ' + e.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '登录 Kimi Code'; }
+    loadKimiAuth();
+  }
+}
+
+function toggleKimiManualForm() {
+  const form = document.getElementById('kimi-manual-form');
+  if (form) form.style.display = form.style.display === 'none' ? 'flex' : 'none';
+}
+
+async function saveKimiManualKey() {
+  const apiKey = document.getElementById('kimi-manual-key')?.value?.trim();
+  const baseURL = document.getElementById('kimi-manual-baseurl')?.value?.trim() || undefined;
+  const statusEl = document.getElementById('kimi-manual-status');
+  if (!apiKey) {
+    if (statusEl) statusEl.textContent = '请填写 API Key';
+    return;
+  }
+  try {
+    const r = await fetch('/api/kimi/auth', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ apiKey, baseURL }),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      showToast('Kimi API Key 已保存', 'success');
+      document.getElementById('kimi-manual-key').value = '';
+      document.getElementById('kimi-manual-baseurl').value = '';
+      document.getElementById('kimi-manual-form').style.display = 'none';
+      loadKimiAuth();
+    } else {
+      if (statusEl) statusEl.textContent = d.error || '保存失败';
+    }
+  } catch (e) {
+    if (statusEl) statusEl.textContent = '保存失败: ' + e.message;
+  }
+}
+
+// Load Kimi auth status when provider view is shown
+document.addEventListener('DOMContentLoaded', () => {
+  setTimeout(() => loadKimiAuth(), 500);
+});

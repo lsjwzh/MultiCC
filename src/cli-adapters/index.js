@@ -53,7 +53,7 @@ function createCliAdapters(deps) {
     }),
     createZcodeAdapter({ cmd: commands.zcode }),
     createQoderAdapter({ cmd: commands.qoder, routerMcpNode, routerMcpScript }),
-    createKimiAdapter({ cmd: commands.kimi }),
+    createKimiAdapter({ cmd: commands.kimi, routerMcpNode, routerMcpScript }),
   ]);
 
   return { commands, registry };

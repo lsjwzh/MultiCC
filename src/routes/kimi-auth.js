@@ -9,7 +9,7 @@ const LOGIN_WAIT_MS = 5 * 60 * 1000;
 const URL_CAPTURE_MS = 30 * 1000;
 
 function assertApp(app) {
-  if (!app || typeof app.get !== 'function' || typeof app.post !== 'function') {
+  if (!app || typeof app.get !== 'function' || typeof app.post !== 'function' || typeof app.put !== 'function') {
     throw new TypeError('[kimi-auth] Express-compatible app is required');
   }
   return app;
@@ -63,6 +63,21 @@ function mountKimiAuthRoutes(app, deps = {}) {
       }
     } catch (_) {
       res.status(500).json({ ok: false, code: 'check_failed', message: 'Kimi 配置检查失败' });
+    }
+  });
+
+  // PUT /api/kimi/auth — L2: manually set API key (provider-less native auth).
+  app.put('/api/kimi/auth', (req, res) => {
+    try {
+      const apiKey = (req.body.apiKey || '').trim();
+      const baseURL = (req.body.baseURL || '').trim() || undefined;
+      if (!apiKey) {
+        return res.status(400).json({ error: 'apiKey is required' });
+      }
+      const result = kimiAuth.setKimiApiKey(apiKey, { baseURL });
+      res.json({ ok: true, ...result });
+    } catch (_) {
+      res.status(400).json({ error: 'Kimi API Key 配置失败' });
     }
   });
 

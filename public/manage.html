@@ -1005,6 +1005,7 @@
             <button class="prov-tab" data-ptab="openai_responses" onclick="setProvTab('openai_responses')">⚡ OpenAI Responses</button>
             <button class="prov-tab" data-ptab="openai_chat" onclick="setProvTab('openai_chat')">🔄 OpenAI Chat</button>
             <button class="prov-tab" data-ptab="zcode" onclick="setProvTab('zcode')">🔗 ZCode</button>
+            <button class="prov-tab" data-ptab="kimi" onclick="setProvTab('kimi')">🔗 Kimi</button>
             <button class="prov-tab" data-ptab="stats" onclick="setProvTab('stats')">📊 统计 / 用量</button>
           </div>
 
@@ -1059,6 +1060,37 @@
                 </div>
               </div>
             </div>
+            </div>
+          </div>
+
+          <div class="prov-pane" data-ptab="kimi" style="display:none">
+            <div class="settings-card">
+            <div class="sc-header">Kimi Code 原生连接</div>
+            <div class="sc-body" id="kimi-auth-body" style="gap:8px;">
+              <p style="font-size:12px;color:var(--faint);margin:0;line-height:1.55">这里管理会话选择「Kimi Code 原生」时使用的凭证。设置了 API Key 或完成登录后，Kimi Code 会话可以正常启动。若已绑定 MultiCC Provider，则忽略此原生配置。</p>
+              <div id="kimi-auth-status" style="font-size:13px;color:var(--faint)">检查中…</div>
+              <div id="kimi-auth-actions" style="display:none;flex-direction:column;gap:8px;">
+                <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                  <button class="btn btn-green" style="padding:4px 12px;font-size:12px" id="kimi-login-btn" onclick="loginKimi()">登录 Kimi Code</button>
+                  <button class="btn" style="padding:4px 12px;font-size:12px" onclick="toggleKimiManualForm()">配置 API Key</button>
+                </div>
+                <p style="font-size:11px;color:var(--faint);margin:0;line-height:1.5">Kimi Code 通过环境变量 KIMI_API_KEY 或 ~/.kimi-code/credentials/ 下的凭证文件鉴权。手动填写的 API Key 会保存在原生 KIMI_CODE_HOME 目录中，下次创建 Kimi Code 会话时自动生效。</p>
+                <div id="kimi-manual-form" style="display:none;flex-direction:column;gap:6px;padding:8px 0;">
+                  <div class="setting-row"><label>API Key</label>
+                    <input type="password" id="kimi-manual-key" placeholder="粘贴 Kimi API Key" style="min-width:300px;flex:1">
+                  </div>
+                  <div class="setting-row"><label>Base URL（可选）</label>
+                    <input type="text" id="kimi-manual-baseurl" placeholder="留空则使用 Kimi 默认端点" style="min-width:300px;flex:1">
+                  </div>
+                  <div style="display:flex;gap:8px;">
+                    <button class="btn btn-green" style="padding:4px 12px;font-size:12px" onclick="saveKimiManualKey()">保存</button>
+                    <span class="status-text" id="kimi-manual-status"></span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            </div>
+          </div>
             </div>
           </div>
 
