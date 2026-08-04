@@ -17,6 +17,9 @@
 // drop the kind rather than forcing it.
 
 const { getManagedQuotaBrowser } = require('../quota-managed-browser');
+// Same unified window shape as the kimi membership scrape: { window, label,
+// usedPercent, resetMs } so every quota surface renders through one template.
+const { windowTokenForLabel, parseResetAfter } = require('./kimi-quota');
 
 const ALIYUN_CONSOLE_URL = 'https://bailian.console.aliyun.com/';
 const CONSOLE_TIMEOUT_MS = Number(process.env.ALIYUN_QUOTA_TIMEOUT_MS || 15000);
@@ -47,13 +50,24 @@ function labelForPercent(lines, i) {
   return '';
 }
 
-function summarizeAliyunUsageText(text) {
+// Summary items use the unified window shape: { window, label, usedPercent,
+// resetMs, line } (`percent` mirrors usedPercent for pre-upgrade caches).
+// A window the mapper cannot classify keeps window:null — the frontend then
+// renders it as a plain label segment through the same template.
+function summarizeAliyunUsageText(text, nowMs = Date.now()) {
   const lines = String(text || '').split(/\n+/).map((s) => s.trim()).filter(Boolean);
   const hits = [];
   for (let i = 0; i < lines.length; i++) {
     const m = lines[i].match(/^(\d+(?:\.\d+)?)\s*%$/) || lines[i].match(/(\d+(?:\.\d+)?)\s*%/);
     if (!m) continue;
-    hits.push({ label: labelForPercent(lines, i), percent: Number(m[1]), line: lines[i].slice(0, 80) });
+    const label = labelForPercent(lines, i);
+    let resetMs = null;
+    for (let j = i + 1; j <= i + 3 && j < lines.length; j++) {
+      if (/%/.test(lines[j])) break;
+      if (/后重置|重置时间/.test(lines[j])) { resetMs = parseResetAfter(lines[j], nowMs); break; }
+    }
+    const usedPercent = Number(m[1]);
+    hits.push({ window: windowTokenForLabel(label), label, usedPercent, percent: usedPercent, resetMs, line: lines[i].slice(0, 80) });
     if (hits.length >= 6) break;
   }
   return hits.length ? hits : null;
