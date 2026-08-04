@@ -7,13 +7,13 @@
 | Mode | UI | Backend |
 |------|----|---------|
 | **Terminal** (`/`) | Full `xterm.js` — scrollback, colors, input, resize | `tmux` session, `pipe-pane` + named FIFO for reliable output |
-| **Chat** (`/chat`) | Message bubbles with streaming tool cards, image previews, in-place CLI switching | Claude Code, Codex, OpenCode, ZCode, or Qoder CN — events normalized over WebSocket |
+| **Chat** (`/chat`) | Message bubbles with streaming tool cards, image previews, in-place CLI switching | Claude Code, Codex, OpenCode, ZCode, Kimi Code, or Qoder CN — events normalized over WebSocket |
 
 Both modes share the same session registry, auth, and notifications. Reconnect replays the last 500 stream events so you never see a half-empty conversation.
 
 ## Multi-provider support
 
-Each session picks its own CLI (`claude`, `codex`, `opencode`, `zcode`, or `qoder`). Claude/Codex/OpenCode can use MultiCC provider routing; ZCode drives its own engine config (`~/.zcode/cli/config.json`); Qoder CN keeps its own signed-in account or BYOK configuration.
+Each session picks its own CLI (`claude`, `codex`, `opencode`, `zcode`, `kimi`, or `qoder`). Claude/Codex/OpenCode can use MultiCC provider routing; ZCode drives its own engine config (`~/.zcode/cli/config.json`); Kimi Code uses its native login or OpenAI-format provider credentials injected per session; Qoder CN keeps its own signed-in account or BYOK configuration.
 
 | CLI | Terminal mode | Chat mode | Provider isolation |
 |-----|---------------|-----------|--------------------|
@@ -21,11 +21,14 @@ Each session picks its own CLI (`claude`, `codex`, `opencode`, `zcode`, or `qode
 | **Codex** | `codex` / `codex resume <id>` inside `tmux` | `codex exec --json` | Per-provider `CODEX_HOME` under `~/.multicc/codex-homes`; local proxy for non-OpenAI endpoints |
 | **OpenCode** | `opencode --session <id>` inside `tmux` | `opencode run --format json` | Uses the Claude-compatible provider pool; native session id retained per logical chat |
 | **ZCode** | ZCode TUI (engine) inside `tmux` | in-tree bridge → `zcode.cjs --prompt --json` | Drives the headless engine inside the ZCode.app bundle; provider/auth owned by ZCode in `~/.zcode/cli/config.json`, located via `ZCODE_ENGINE` |
+| **Kimi Code** | `kimi` inside `tmux`, resumed by `--session <id>` | `kimi -p <prompt> --output-format stream-json --auto` | Native `kimi login` device-code flow, or an OpenAI-format MultiCC provider injected as `KIMI_API_KEY`/`KIMI_BASE_URL` inside a per-session `KIMI_CODE_HOME` under `~/.multicc/kimi-homes` |
 | **Qoder CN** | `qoderclicn --resume <id>` inside `tmux` | `qoderclicn -p --output-format stream-json` | Uses Qoder's own login/BYOK settings; native session id, model tier, reasoning effort, and agent retained per logical chat |
 
 For Qoder CN, install the official CLI (`curl -fsSL https://qoder.cn/install | bash`), then run `qoderclicn` once to sign in or set `QODERCN_PERSONAL_ACCESS_TOKEN`. MultiCC auto-detects the `qoderclicn` executable and deliberately leaves Qoder account/BYOK management to Qoder itself. See the [Qoder CN quick start](https://docs.qoder.cn/cli/qoder-cli-cn-get-started-quickly).
 
 For ZCode, install the official desktop app from [zcode.z.ai](https://zcode.z.ai), then point MultiCC at the headless engine bundled inside it: set `ZCODE_ENGINE` to `/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs` (the macOS default). ZCode owns its provider/auth in `~/.zcode/cli/config.json` — sign in via the desktop app or configure a provider (e.g. BigModel/GLM) there. In chat mode MultiCC does not invoke the Electron GUI; an in-tree bridge runs the engine headlessly and flattens its whole-JSON output into the streaming JSONL the chat UI consumes.
+
+For Kimi Code, install the official CLI (`npm install -g @moonshot-ai/kimi-code` — also one-click installable from the CLI switcher), then sign in once with `kimi login` (OAuth device-code flow: MultiCC can open the verification page in the managed browser via `POST /api/kimi/auth/login`). Alternatively bind the session to an OpenAI-format MultiCC provider: MultiCC injects the provider's API key and base URL into an isolated per-session `KIMI_CODE_HOME` and fails closed when the binding loses its credentials.
 
 - Providers are managed from `/manage` or the provider API — create, edit, import from `cc-switch`, set per-CLI defaults.
 - **Per-session model selection**: each session can override the provider's default model; the chat UI shows a model picker with provider-specific options.
@@ -42,7 +45,7 @@ For ZCode, install the official desktop app from [zcode.z.ai](https://zcode.z.ai
 - **Git worktree isolation.** Each normal session runs in `<repo>/.multicc-worktrees/<sessionId>` on branch `multicc/<sessionId>`. Parallel agents edit safely; merge/sync APIs move changes between session branches and the base branch.
 - **Agent Commander.** Every new directory is seeded with an Agent Commander chat session — a fleet conductor that can coordinate specialized sibling sessions. Comes with role presets for common agent profiles.
 - **MCP-only cross-session dispatch.** `route_task` is one-way. `dispatch_master` requires `mode="sync"` (stream safe, provider-emitted reasoning plus worker progress and return inline) or `mode="async"` (return after admission; `dispatch_slave` later inserts a result message and wakes the caller). The retired HTTP and text-marker paths are not executable.
-- **In-place cross-CLI handoff (chat sessions only).** A chat can switch among Claude, Codex, OpenCode, ZCode, and Qoder CN without changing its logical session or worktree. Terminal sessions are fixed to the CLI they were created with. See [Multi-CLI switching](cli-switching.md). Each CLI keeps an independent native session and settings snapshot; a bounded checkpoint of visible conversation, task state, and Git state bridges the semantic context. Vendor JSONL files are never rewritten or shared.
+- **In-place cross-CLI handoff (chat sessions only).** A chat can switch among Claude, Codex, OpenCode, ZCode, Kimi Code, and Qoder CN without changing its logical session or worktree. Terminal sessions are fixed to the CLI they were created with. See [Multi-CLI switching](cli-switching.md). Each CLI keeps an independent native session and settings snapshot; a bounded checkpoint of visible conversation, task state, and Git state bridges the semantic context. Vendor JSONL files are never rewritten or shared.
 - **Passive inter-agent notes.** Sessions leave notes for siblings in the same directory; notes are prepended to the target agent's next chat turn.
 - **Syntax-gated merges.** Merge is rejected if a session's changes introduce JS syntax errors — broken code can't reach the base branch.
 - **Auto-commit + auto-sync.** Sessions auto-commit before merging; after a successful merge, sibling worktrees in the same directory are synced to the new base automatically (conflicting ones are skipped and reported as `siblingsSynced` on the merge response).

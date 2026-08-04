@@ -9,7 +9,7 @@
     "id": { "type": "string", "minLength": 1, "maxLength": 160 },
     "dirId": { "type": ["string", "null"], "maxLength": 160 },
     "type": { "const": "session" },
-    "cli": { "enum": ["claude", "codex", "opencode", "zcode", "qoder"] },
+    "cli": { "enum": ["claude", "codex", "opencode", "zcode", "qoder", "kimi"] },
     "kind": { "enum": ["chat", "terminal"] },
     "label": { "type": ["string", "null"], "maxLength": 160 },
     "model": { "type": ["string", "null"], "maxLength": 160 },

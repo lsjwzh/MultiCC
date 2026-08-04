@@ -5,11 +5,11 @@
 <h1 align="center">MultiCC</h1>
 
 <p align="center">
-  <strong>一个对话，五个 AI 编程 CLI。任务进行到一半也能随时切换，上下文不丢。</strong>
+  <strong>一个对话，六个 AI 编程 CLI。任务进行到一半也能随时切换，上下文不丢。</strong>
 </p>
 
 <p align="center">
-  <em>Claude Code · Codex · OpenCode · ZCode · Qoder —— 同一个聊天、同一个仓库、同一件事。<br/>
+  <em>Claude Code · Codex · OpenCode · ZCode · Kimi Code · Qoder —— 同一个聊天、同一个仓库、同一件事。<br/>
   多个会话并行跑在互不干扰的 git worktree 里，桌面、手机、微信都能操控。</em>
 </p>
 
@@ -50,11 +50,11 @@ MultiCC **不会**把一家厂商的对话记录翻译成另一家的格式—�
 
 每个 CLI 都记着自己的原生会话 id、模型、思考强度、provider、子 agent 路由。Claude → Codex → Claude 切回来，回到的是**那个已经存在的 Claude 会话**，并补上一份涵盖这期间发生了什么的新 checkpoint —— 而不是一张白纸。想要白纸就传 `fresh: true`。
 
-清空对话会同时作废**全部五个** CLI 的原生会话，所以切换永远不会把你刚删掉的上下文又捞回来。
+清空对话会同时作废**全部六个** CLI 的原生会话，所以切换永远不会把你刚删掉的上下文又捞回来。
 
 ### 缺哪个 CLI，切换弹窗里一键装
 
-切换弹窗会显示：哪些 CLI 已安装、哪些已有会话，并为缺失的提供一键安装（`claude`、`codex`、`opencode`、`qoder`；ZCode 的 CLI 内置在其桌面版里，需要手动装）。
+切换弹窗会显示：哪些 CLI 已安装、哪些已有会话，并为缺失的提供一键安装（`claude`、`codex`、`opencode`、`kimi`、`qoder`；ZCode 的 CLI 内置在其桌面版里，需要手动装）。
 
 **→ 完整说明：[Multi-CLI switching](docs/cli-switching.md)**
 
@@ -66,7 +66,7 @@ MultiCC **不会**把一家厂商的对话记录翻译成另一家的格式—�
 
 | | |
 |---|---|
-| 🧵 **真并行** | 每个会话独占一个 git worktree，分支 `multicc/<会话id>`。五个 agent 同仓库互不打架，合回主分支时有语法校验把关，合并后自动同步兄弟 worktree。 |
+| 🧵 **真并行** | 每个会话独占一个 git worktree，分支 `multicc/<会话id>`。六个 agent 同仓库互不打架，合回主分支时有语法校验把关，合并后自动同步兄弟 worktree。 |
 | 💸 **子 agent 省钱** | 主 agent 用前沿模型，子 agent 通过本地 provider router 路由到 DeepSeek / GLM / Qwen。同一个仓库、并行跑、成本只有零头。 |
 | 📱 **会话比客户端活得久** | 合上笔记本，手机上接着看。终端会话跑在 `tmux` 里，聊天会话是有状态的轮次。 |
 | 🗣️ **语音，包括全双工** | 可以口述 prompt，也可以像打电话一样和 agent 实时语音对话（支持插话打断）。本地 ASR 用 sherpa-onnx SenseVoice，不走云端。 |
@@ -153,7 +153,7 @@ Provider、子 agent 路由、语音、TTS/ASR、通知都在 `/manage` 里配�
 `MediaRecorder` 需要安全上下文。本机用 `http://localhost:3000`，远程用 Tailscale Funnel / ngrok。直接用 `http://<局域网IP>:3000` 在任何现代浏览器里都拿不到麦克风权限。
 
 **不用 Claude Code 行不行？**
-行。五个支持的 CLI 里有任意一个就够了。
+行。六个支持的 CLI 里有任意一个就够了。
 
 **切换 CLI 会立刻消耗 token 吗？**
 不会。checkpoint 是排队等待的，随你的**下一条消息**一起送出。所以切完又反悔，一分钱不花。
@@ -192,5 +192,5 @@ MIT。
 ---
 
 <p align="center">
-  <sub>为 Claude Code、Codex、OpenCode、ZCode、Qoder 打造 · <a href="https://github.com/lsjwzh/MultiCC">github.com/lsjwzh/MultiCC</a></sub>
+  <sub>为 Claude Code、Codex、OpenCode、ZCode、Kimi Code、Qoder 打造 · <a href="https://github.com/lsjwzh/MultiCC">github.com/lsjwzh/MultiCC</a></sub>
 </p>

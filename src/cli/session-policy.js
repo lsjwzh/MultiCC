@@ -57,7 +57,7 @@ function createSessionPolicy(options) {
   function effectiveSessionModel(session) {
     if (!session) return null;
     const appType = providers.appTypeForCli(session.cli);
-    const globalProviderCli = session.cli === 'opencode' || session.cli === 'zcode';
+    const globalProviderCli = session.cli === 'opencode' || session.cli === 'zcode' || session.cli === 'kimi';
     if (!appType && !globalProviderCli) return session.model || session.reportedModel || null;
     const lookupType = globalProviderCli ? undefined : appType;
     if (session.model) {
@@ -120,7 +120,7 @@ function createSessionPolicy(options) {
     const providerId = session && session.provider;
     if (!providerId) return null;
     const appType = providers.appTypeForCli(session.cli);
-    const globalProviderCli = session.cli === 'opencode' || session.cli === 'zcode';
+    const globalProviderCli = session.cli === 'opencode' || session.cli === 'zcode' || session.cli === 'kimi';
     if (!appType && !globalProviderCli) return null;
     try {
       return providerRouter.getProviderSummary(
@@ -136,7 +136,7 @@ function createSessionPolicy(options) {
     const providerId = session && session.provider;
     if (!providerId) return null;
     const appType = providers.appTypeForCli(session.cli);
-    const globalProviderCli = session.cli === 'opencode' || session.cli === 'zcode';
+    const globalProviderCli = session.cli === 'opencode' || session.cli === 'zcode' || session.cli === 'kimi';
     if (!appType && !globalProviderCli) return null;
     try {
       return providerRouter.getProviderSummary(
@@ -165,7 +165,7 @@ function createSessionPolicy(options) {
       return CODEX_REASONING_LEVELS.has(effort) || CODEX_REASONING_56_LEVELS.has(effort);
     }
     if (cli === 'opencode') return OPENCODE_VARIANTS.has(effort);
-    if (cli === 'zcode') return false;
+    if (cli === 'zcode' || cli === 'kimi') return false;
     if (cli === 'qoder') return QODER_REASONING_LEVELS.has(effort);
     return EFFORT_LEVELS.has(effort);
   }
@@ -242,7 +242,7 @@ function createSessionPolicy(options) {
       const effort = normalizeEffort(session.effort);
       return effort && OPENCODE_VARIANTS.has(effort) ? effort : null;
     }
-    if (cli === 'zcode') return null;
+    if (cli === 'zcode' || cli === 'kimi') return null;
     if (cli === 'qoder') return qoderEffortLevel(session);
     const effort = normalizeEffort(session.effort);
     return effort && EFFORT_LEVELS.has(effort) ? effort : claudeDefaultEffort();

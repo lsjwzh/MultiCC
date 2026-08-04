@@ -128,7 +128,7 @@ const { createAgentResourcesRoutes } = require('./src/routes/agent-resources');
 const { createRoleWorkerService } = require('./src/session/role-worker');
 const { mountSessionCreateRoutes } = require('./src/routes/session-create');
 const { mountCodexOAuthRoutes } = require('./src/routes/codex-oauth');
-const { mountZcodeAuthRoutes } = require('./src/routes/zcode-auth');
+const { mountZcodeAuthRoutes } = require('./src/routes/zcode-auth'); const { mountKimiAuthRoutes } = require('./src/routes/kimi-auth');
 const { createOrchestrationRoutes } = require('./src/routes/orchestration');
 const { createChatTurnEngine } = require('./src/chat/turn-engine');
 const { createTuiChatMirrorRuntime, isEnabled: tuiChatMirrorEnabled, validateExperimentalSession } = require('./src/experiments/tui-chat-mirror-runtime');
@@ -2269,7 +2269,7 @@ mountProviderBalanceRoutes(app, providers);
 
 // ZCode auth management (L1-L4: desktop key sync, manual key, OAuth login,
 // pre-turn auth check). Mounted after provider routes for logical grouping.
-mountZcodeAuthRoutes(app);
+mountZcodeAuthRoutes(app); mountKimiAuthRoutes(app);
 
 // Temp artifacts produced by the multicc-artifact skill (served from
 // ~/.multicc/artifacts). Mounted before the public static handler so /artifacts

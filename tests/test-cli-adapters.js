@@ -6,6 +6,7 @@ const { createCodexAdapter } = require('../src/cli-adapters/codex');
 const { createOpencodeAdapter } = require('../src/cli-adapters/opencode');
 const { createZcodeAdapter } = require('../src/cli-adapters/zcode');
 const { createQoderAdapter } = require('../src/cli-adapters/qoder');
+const { createKimiAdapter } = require('../src/cli-adapters/kimi');
 
 const claude = createClaudeAdapter({
   cmd: 'claude', resolveSessionWireModel: model => model,
@@ -21,8 +22,9 @@ const codex = createCodexAdapter({
 const opencode = createOpencodeAdapter({ cmd: 'opencode' });
 const zcode = createZcodeAdapter({ cmd: 'zcode' });
 const qoder = createQoderAdapter({ cmd: 'qoderclicn' });
+const kimi = createKimiAdapter({ cmd: 'kimi' });
 
-for (const adapter of [claude, codex, opencode, zcode, qoder]) {
+for (const adapter of [claude, codex, opencode, zcode, qoder, kimi]) {
   assert.strictEqual(typeof adapter.buildInvocation, 'function', `${adapter.name} buildInvocation`);
   assert.strictEqual(typeof adapter.decodeEvent, 'function', `${adapter.name} decodeEvent`);
   assert.strictEqual(adapter.shape, undefined, `${adapter.name} has no shape API`);
@@ -400,5 +402,55 @@ assert.strictEqual(
   qoder.buildTerminalCmd({ model: 'performance', effort: 'xhigh', agent: 'reviewer', cliSessionId: 'qoder-1' }),
   'qoderclicn --model performance --reasoning-effort xhigh --agent reviewer --resume qoder-1',
 );
+
+// kimi：stream-json headless 协议。`-p` 必须保持最后一个 flag（multicc 把
+// payload 作为末尾 argv 追加）；续轮带 --session；首轮 rolePrompt 包裹。
+{
+  const firstTurn = kimi.buildInvocation(opencodeEnvelope);
+  assert.deepStrictEqual(firstTurn.args, ['--output-format', 'stream-json', '--auto', '--model', 'open/model', '-p']);
+  assert.strictEqual(firstTurn.cmd, 'kimi');
+  assert.strictEqual(firstTurn.payload, 'hello');
+  const withRole = kimi.buildInvocation({ ...opencodeEnvelope, rolePrompt: '你是审查者' });
+  assert.strictEqual(withRole.payload, '[角色设定]\n你是审查者\n[角色设定结束]\n\nhello');
+  const continuation = kimi.buildInvocation({
+    ...opencodeEnvelope,
+    historyHandle: { isFirstTurn: false, cliSessionId: 'kimi-sess-1' },
+  });
+  assert.deepStrictEqual(continuation.args, ['--output-format', 'stream-json', '--auto', '--model', 'open/model', '--session', 'kimi-sess-1', '-p']);
+  assert.strictEqual(continuation.payload, 'hello');
+
+  assert.deepStrictEqual(kimi.decodeEvent({ role: 'assistant', content: 'hello' }), [{ type: 'assistant_text', text: 'hello' }]);
+  assert.deepStrictEqual(
+    kimi.decodeEvent({
+      role: 'assistant',
+      tool_calls: [{ type: 'function', id: 'call_1', function: { name: 'read', arguments: '{"file":"a"}' } }],
+    }),
+    [{
+      type: 'tool_update', id: 'call_1', name: 'read', input: { file: 'a' },
+      currentFile: null, completed: false, content: '', isError: false,
+    }],
+  );
+  assert.deepStrictEqual(
+    kimi.decodeEvent({ role: 'tool', tool_call_id: 'call_1', content: 'ok' }),
+    [{
+      type: 'tool_update', id: 'call_1', name: 'tool', input: {},
+      currentFile: null, completed: true, content: 'ok', isError: false,
+    }],
+  );
+  assert.deepStrictEqual(
+    kimi.decodeEvent({ role: 'meta', type: 'session.resume_hint', session_id: 'kimi-sess-1', command: 'kimi -r kimi-sess-1' }),
+    [{ type: 'session_started', sessionId: 'kimi-sess-1' }],
+  );
+  assert.deepStrictEqual(
+    kimi.decodeEvent({ role: 'meta', type: 'turn.step.retrying', error_message: '429' }),
+    [{ type: 'status', status: 'thinking' }],
+  );
+  assert.deepStrictEqual(kimi.decodeEvent({ role: 'meta', type: 'system.version' }), []);
+  assert.strictEqual(
+    kimi.buildTerminalCmd({ model: 'k2', cliSessionId: 'kimi-sess-1' }),
+    'kimi --model k2 --session kimi-sess-1',
+  );
+  assert.strictEqual(kimi.needsAsyncSessionIdCapture, false);
+}
 
 console.log('CLI adapter contract and decoder tests passed');
