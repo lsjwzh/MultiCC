@@ -294,6 +294,7 @@
     codex: '/api/codex/quota',
     qoder: '/api/qoder/quota',
     opencode: '/api/opencode/quota',
+    aliyun: '/api/aliyun/quota',
   });
   // Kinds backed by a web login: clicking their "需登录" badge asks the server
   // to open a visible Chrome window (managed profile) for the user to log in.
@@ -301,6 +302,7 @@
     kimi: '/api/kimi/quota/login',
     qoder: '/api/qoder/quota/login',
     opencode: '/api/opencode/quota/login',
+    aliyun: '/api/aliyun/quota/login',
   });
   const QUOTA_CACHE_KEY = 'multicc.providerQuota.v1';
   const QUOTA_GRAY = '#8b949e';
@@ -322,8 +324,14 @@
   }
   function quotaFmt2(n) { return String(Number(Number(n).toFixed(2))); }
 
+  // Explicit opt-in wins: a provider record may carry quotaKind to force (or
+  // disable, via 'none') classification when its baseUrl sits behind a proxy
+  // host no hostname rule could recognize.
+  const QUOTA_KINDS = ['ark', 'zhipu', 'kimi', 'codex', 'qoder', 'opencode', 'aliyun'];
   function quotaKindForProvider(p) {
     if (!p) return null;
+    if (QUOTA_KINDS.includes(p.quotaKind)) return p.quotaKind;
+    if (p.quotaKind === 'none') return null;
     let host = '';
     try { host = p.baseUrl ? new URL(p.baseUrl).hostname.toLowerCase() : ''; } catch (_) { host = ''; }
     if (/(^|\.)volces\.com$/.test(host)) return 'ark';
@@ -331,7 +339,13 @@
     if (/(^|\.)(moonshot|kimi)\.(cn|com|ai)$/.test(host)) return 'kimi';
     if (/(^|\.)qoder\.com\.cn$/.test(host)) return 'qoder';
     if (/(^|\.)opencode\.ai$/.test(host)) return 'opencode';
+    if (/(^|\.)aliyuncs\.com$/.test(host)) return 'aliyun';
     if (p.appType === 'codex' && (p.isOfficial === true || /(^|\.)(chatgpt|openai)\.com$/.test(host))) return 'codex';
+    // Last resort: the provider NAME. Covers relays/proxies whose hostname
+    // says nothing about the vendor (users name them 火山/阿里 explicitly).
+    const name = String(p.name || '');
+    if (/火山|volc|方舟|\bark\b/i.test(name)) return 'ark';
+    if (/阿里|aliyun|阿里云|百炼|bailian|dashscope/i.test(name)) return 'aliyun';
     return null;
   }
 
@@ -412,6 +426,17 @@
       if (!parts.length) return { text: '余量：暂不可用', color: QUOTA_AMBER, title: '无用量窗口数据' };
       return { text: '余量 ' + parts.join(' · '), color: quotaPctColor(maxPct), title: 'OpenCode Go 窗口用量' };
     }
+    if (kind === 'aliyun') {
+      // Bailian console scrape: percent windows like the kimi membership page.
+      const sum = (data.summary || []).filter(s => s && Number.isFinite(s.percent));
+      if (!sum.length) return { text: '余量 阿里云（已抓取页面）', color: QUOTA_AMBER, title: `百炼控制台未解析出百分比。原文：${String(data.text || '').slice(0, 300)}` };
+      const maxPct = Math.max.apply(null, sum.map(s => s.percent));
+      return {
+        text: '余量 ' + sum.map(s => `${s.label || '百炼'} ${s.percent}%`).join(' · '),
+        color: quotaPctColor(maxPct),
+        title: `阿里云百炼用量（控制台抓取，已用百分比）。原文：${String(data.text || '').slice(0, 300)}`,
+      };
+    }
     return null;
   }
 
@@ -444,7 +469,7 @@
           el.style.color = QUOTA_GRAY;
           el.style.cursor = '';
           el.onclick = null;
-          el.title = '该服务商未提供余量查询接口（目前支持 ark / 智谱 / Kimi / Codex / Qoder / OpenCode 官方源）';
+          el.title = '该服务商未提供余量查询接口（目前支持 ark / 智谱 / Kimi / Codex / Qoder / OpenCode / 阿里云百炼 官方源）';
           return;
         }
         const entry = cache[kind];
