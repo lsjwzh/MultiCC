@@ -29,7 +29,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, execFile } = require('child_process');
 
 const { createChromeCdp } = require('./chrome-cdp');
 
@@ -37,7 +37,115 @@ const DATA_DIR = process.env.MULTICC_DATA_DIR || path.join(os.homedir(), '.multi
 const PROFILE_DIR = path.join(DATA_DIR, 'quota-browser-profile');
 const IDLE_MS = Number(process.env.QUOTA_BROWSER_IDLE_MS != null ? process.env.QUOTA_BROWSER_IDLE_MS : 5 * 60 * 1000);
 const STARTUP_TIMEOUT_MS = Number(process.env.QUOTA_BROWSER_STARTUP_MS || 12000);
+const VISIBLE_READY_MS = Number(process.env.QUOTA_BROWSER_VISIBLE_READY_MS || 8000);
 const CONNECT_TIMEOUT_MS = 2500;
+
+// --- Profile cleanup -------------------------------------------------------
+// Chrome only allows one process per user-data-dir. If the quota profile is
+// already held (an orphaned headless from before a restart, or an instance we
+// attached to instead of spawning), a second launch does not fail loudly:
+// Chrome's singleton handoff forwards the URL to the existing process and the
+// new one exits with code 0. A "visible login window" then opens nowhere while
+// the route happily reports success. So before opening a visible window we
+// clear every process that holds THIS profile — matched by the exact
+// --user-data-dir path, never the user's daily Chrome.
+
+function escapeRegExp(text) {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// True when a process command line claims this exact profile directory.
+// Handles bare, single-quoted and double-quoted forms, and refuses prefix
+// collisions like /a/profile matching /a/profile-backup.
+function commandLineOwnsProfile(commandLine, profileDir) {
+  if (typeof commandLine !== 'string' || !commandLine.includes('--user-data-dir=')) return false;
+  const pattern = new RegExp(`--user-data-dir=(["']?)${escapeRegExp(profileDir)}\\1(?:\\s|$)`);
+  return pattern.test(commandLine);
+}
+
+function execFileAsync(cmd, args, timeoutMs = 5000) {
+  return new Promise((resolve, reject) => {
+    execFile(cmd, args, { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) { err.stderr = stderr; return reject(err); }
+      resolve(stdout);
+    });
+  });
+}
+
+function pidAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch (_) { return false; }
+}
+
+// Pids of every process whose command line holds the given profile dir.
+async function listChromeProfilePids(profileDir, platform = process.platform) {
+  const pids = [];
+  if (platform === 'win32') {
+    const script = "@(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*--user-data-dir*' } | ForEach-Object { \"$($_.ProcessId)|$($_.CommandLine)\" }) | ConvertTo-Json -Compress";
+    const out = await execFileAsync('powershell', ['-NoProfile', '-Command', script], 8000);
+    const parsed = JSON.parse(out.trim() || '[]');
+    for (const line of (Array.isArray(parsed) ? parsed : [parsed])) {
+      const idx = String(line).indexOf('|');
+      if (idx <= 0) continue;
+      if (commandLineOwnsProfile(String(line).slice(idx + 1), profileDir)) pids.push(Number(String(line).slice(0, idx)));
+    }
+    return pids;
+  }
+  const out = await execFileAsync('ps', ['-A', '-ww', '-o', 'pid=,args='], 5000);
+  for (const line of out.split('\n')) {
+    const match = /^\s*(\d+)\s+(.+)$/.exec(line);
+    if (!match) continue;
+    const pid = Number(match[1]);
+    if (pid === process.pid) continue; // paranoia: never match ourselves
+    if (commandLineOwnsProfile(match[2], profileDir)) pids.push(pid);
+  }
+  return pids;
+}
+
+// Kill every process holding the profile, confirm they are gone, then clear
+// stale Singleton* markers. Throws profile_busy if holders refuse to die.
+async function releaseProfileDir(profileDir, options = {}) {
+  const {
+    listPids = () => listChromeProfilePids(profileDir),
+    pidIsAlive = pidAlive,
+    pollIntervalMs = 150,
+    termGraceMs = 2500,
+    deadlineMs = 6000,
+    sleep = delay,
+    now = () => Date.now(),
+  } = options;
+  let holders = [];
+  try { holders = await listPids(); } catch (_) { holders = []; }
+  const killed = [];
+  if (holders.length) {
+    for (const pid of holders) { try { process.kill(pid, 'SIGTERM'); } catch (_) {} }
+    const termDeadline = now() + termGraceMs;
+    let remaining = holders.filter(pidIsAlive);
+    while (remaining.length && now() < termDeadline) { await sleep(pollIntervalMs); remaining = holders.filter(pidIsAlive); }
+    for (const pid of remaining) { try { process.kill(pid, 'SIGKILL'); } catch (_) {} }
+    const hardDeadline = now() + deadlineMs;
+    remaining = holders.filter(pidIsAlive);
+    while (remaining.length && now() < hardDeadline) { await sleep(pollIntervalMs); remaining = holders.filter(pidIsAlive); }
+    if (remaining.length) {
+      const err = new Error(`could not free the browser profile: pids ${remaining.join(',')} still hold it`);
+      err.code = 'profile_busy';
+      throw err;
+    }
+    killed.push(...holders);
+  }
+  // With every holder gone, confirm via the process table one more time.
+  try {
+    const stragglers = await listPids();
+    if (stragglers.length) {
+      const err = new Error(`could not free the browser profile: new holders appeared (${stragglers.join(',')})`);
+      err.code = 'profile_busy';
+      throw err;
+    }
+  } catch (err) { if (err && err.code === 'profile_busy') throw err; }
+  for (const name of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
+    try { fs.unlinkSync(path.join(profileDir, name)); } catch (_) { /* absent is fine */ }
+  }
+  return { killed };
+}
 
 // Known install locations per platform. No PATH scan: shell lookups would need
 // a synchronous exec, which src/ is not allowed to use, and the defaults cover
@@ -90,6 +198,8 @@ function createManagedQuotaBrowser(options = {}) {
       detached: false,
       env: process.env,
     }),
+    releaseProfile = (dir) => releaseProfileDir(dir),
+    visibleReadyMs = VISIBLE_READY_MS,
     now = () => Date.now(),
   } = options;
 
@@ -172,8 +282,12 @@ function createManagedQuotaBrowser(options = {}) {
       if (await cdpAvailable()) { lastUseAt = now(); armIdleTimer(); return; }
       if (proc.exitCode !== null) {
         child = null; childMode = null;
-        const err = new Error(`managed Chrome exited early (code ${proc.exitCode})`);
-        err.code = 'chrome_unavailable';
+        let holders = [];
+        try { holders = await listChromeProfilePids(profileDir); } catch (_) { /* best effort */ }
+        const err = holders.length
+          ? new Error(`managed Chrome handed the profile off to an existing browser (pids ${holders.join(',')}) that exposes no DevTools port`)
+          : new Error(`managed Chrome exited early (code ${proc.exitCode})`);
+        err.code = holders.length ? 'profile_busy' : 'chrome_unavailable';
         throw err;
       }
       if (now() >= deadline) {
@@ -202,9 +316,11 @@ function createManagedQuotaBrowser(options = {}) {
     if (child && childMode === 'headless') armIdleTimer();
   }
 
-  // Open the vendor login page where the user can actually type. Stops our
-  // headless instance first — Chrome refuses a second process on the same
-  // profile — and leaves the window to the user.
+  // Open the vendor login page where the user can actually type. First clears
+  // EVERY process holding the profile — not just ones this module spawned —
+  // because a leftover holder makes Chrome hand the URL off to itself and the
+  // new process exits silently with code 0 (window opens nowhere). Then we
+  // verify the new window is really there before reporting success.
   async function openVisibleLogin(url) {
     if (!binary) {
       const err = new Error('no Chrome binary found (set MULTICC_CHROME_BIN)');
@@ -215,9 +331,7 @@ function createManagedQuotaBrowser(options = {}) {
       return { ok: true, reused: true, pid: child.pid };
     }
     stopManaged();
-    // Give the profile lock a moment to release before the second process
-    // claims it; a SingletonLock collision exits Chrome immediately.
-    await delay(600);
+    const release = await releaseProfile(profileDir);
     fs.mkdirSync(profileDir, { recursive: true });
     const proc = spawnChrome(binary, baseArgs(false, [String(url)]));
     child = proc;
@@ -225,7 +339,27 @@ function createManagedQuotaBrowser(options = {}) {
     proc.on('exit', () => {
       if (child === proc) { child = null; childMode = null; }
     });
-    return { ok: true, reused: false, pid: proc.pid };
+    // Proof of a real window: still alive (delegation exits almost instantly,
+    // usually code 0) AND answering CDP on the profile we cleared.
+    const deadline = now() + visibleReadyMs;
+    for (;;) {
+      if (proc.exitCode !== null) {
+        child = null; childMode = null;
+        const err = new Error(`login window exited immediately (code ${proc.exitCode}); the profile was likely still locked by another Chrome`);
+        err.code = 'login_window_failed';
+        throw err;
+      }
+      if (await cdpAvailable()) {
+        return { ok: true, reused: false, pid: proc.pid, cleared: release.killed.length };
+      }
+      if (now() >= deadline) {
+        stopManaged();
+        const err = new Error('login window did not become reachable in time');
+        err.code = 'login_window_failed';
+        throw err;
+      }
+      await delay(150);
+    }
   }
 
   function status() {
@@ -260,5 +394,8 @@ module.exports = {
   createManagedQuotaBrowser,
   getManagedQuotaBrowser,
   findChromeBinary,
+  commandLineOwnsProfile,
+  listChromeProfilePids,
+  releaseProfileDir,
   PROFILE_DIR,
 };
