@@ -49,14 +49,19 @@ test('aliyunPanelReady rejects the console chrome and accepts the usage panel', 
   assert.equal(aliyunPanelReady(''), false);
 });
 
-test('summarizeAliyunUsageText pairs labels across plan-name and reset lines', () => {
-  const sum = summarizeAliyunUsageText(ALIYUN_PANEL_TEXT);
+test('summarizeAliyunUsageText emits the unified window shape (token + usedPercent + resetMs)', () => {
+  const now = new Date(2026, 7, 4, 12, 0, 0).getTime();
+  const sum = summarizeAliyunUsageText(ALIYUN_PANEL_TEXT, now);
   assert.ok(sum, 'the panel fixture must parse');
   assert.deepEqual(
-    sum.map((h) => [h.label, h.percent]),
-    [['总额度', 12.5], ['本月用量', 80]],
+    sum.map((h) => [h.window, h.label, h.usedPercent]),
+    [['1m', '总额度', 12.5], ['1m', '本月用量', 80]],
     'plan-name (Coding) and reset lines must not become labels',
   );
+  assert.deepEqual(sum.map((h) => h.resetMs), [
+    new Date(2026, 8, 1).getTime(),
+    new Date(2026, 8, 1).getTime(),
+  ], '后重置 times must be parsed out for the countdown');
   assert.equal(summarizeAliyunUsageText('nothing here'), null);
 });
 

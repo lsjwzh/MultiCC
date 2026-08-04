@@ -107,17 +107,20 @@ test('failed fetch renders the failure badge, never a stuck loading text', async
   assert.match(el.title, /all fetches failed/);
 });
 
-test('kimi membership-page scrape renders the parsed percentages', () => {
+test('kimi membership-page scrape renders through the unified window template', () => {
+  const now = Date.now();
   const view = catalog.formatProviderQuotaBadge('kimi', {
     status: 'ok', source: 'subscription-page', fetchedAt: 1,
     summary: [
-      { label: '5小时窗口', percent: 12, line: '12%' },
-      { label: '周用量', percent: 81, line: '81%' },
+      { window: '5h', label: '5小时窗口', usedPercent: 12, percent: 12, resetMs: now + 2 * 3600000 + 60000, line: '12%' },
+      { window: '1wk', label: '周用量', usedPercent: 81, percent: 81, resetMs: now + 3 * 86400000 + 3600000, line: '81%' },
     ],
     text: 'Kimi Code 会员\n5小时窗口\n12%',
   });
-  assert.match(view.text, /5小时窗口 12%/);
-  assert.match(view.text, /周用量 81%/);
+  // Standard tokens + REMAINING percent + countdown, not raw labels/used%.
+  assert.match(view.text, /5h 88% 2h/);
+  assert.match(view.text, /1wk 19% 3d 1h/);
+  assert.doesNotMatch(view.text, /5小时窗口|周用量/);
   assert.match(view.title, /会员页抓取/);
   // 81% used crosses the 70% warning threshold.
   assert.equal(view.color, '#d29922');
