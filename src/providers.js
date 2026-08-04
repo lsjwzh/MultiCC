@@ -543,6 +543,10 @@ function summarize(p, opts = {}) {
       .filter(cli => cli !== 'zcode' || (!!baseUrl && !!token)),
     requiresConversionFor: apiFormat === API_FORMATS.OPENAI_CHAT ? ['codex'] : [],
     name: p.name,
+    // Optional explicit quota classification override (frontend quotaKindForProvider
+    // honors it; 'none' disables the badge) for proxy-hosted providers whose
+    // hostname reveals nothing about the vendor.
+    quotaKind: p.quotaKind || null,
     source: p.source || 'local', // 'local' | 'ccswitch'
     baseUrl,
     model,
