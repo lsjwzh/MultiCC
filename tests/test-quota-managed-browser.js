@@ -72,6 +72,9 @@ async function startFakeChrome() {
     writeActivePortFile(profileDir) {
       fs.writeFileSync(path.join(profileDir, 'DevToolsActivePort'), `${port}\n/devtools/browser/fake\n`);
     },
+    removeActivePortFile(profileDir) {
+      try { fs.unlinkSync(path.join(profileDir, 'DevToolsActivePort')); } catch (_) {}
+    },
   };
 }
 
@@ -210,15 +213,20 @@ test('openVisibleLogin stops the headless instance and spawns a window at the UR
   const fake = await startFakeChrome();
   const profileDir = tmpProfile();
   const spawned = [];
+  const released = [];
   const managed = createManagedQuotaBrowser({
     profileDir,
     binary: '/fake/chrome',
     spawnChrome: (bin, args) => {
       const proc = fakeProc(4100 + spawned.length);
       spawned.push({ bin, args, proc });
-      if (args.includes('--headless=new')) setTimeout(() => fake.writeActivePortFile(profileDir), 20);
+      // Chrome writes its port file shortly after starting; emulate that for
+      // both the headless scrape instance and the visible login window.
+      setTimeout(() => fake.writeActivePortFile(profileDir), 20);
       return proc;
     },
+    releaseProfile: async (dir) => { released.push(dir); return { killed: [] }; },
+    visibleReadyMs: 3000,
     startupTimeoutMs: 4000,
   });
   try {
@@ -228,6 +236,7 @@ test('openVisibleLogin stops the headless instance and spawns a window at the UR
 
     const result = await managed.openVisibleLogin('https://www.kimi.com/membership/subscription');
     assert.equal(result.ok, true);
+    assert.deepEqual(released, [profileDir], 'the profile is cleared through the release hook, not just our own ledger');
     assert.equal(spawned.length, 2);
     const visible = spawned[1];
     assert.ok(!visible.args.includes('--headless=new'), 'the login window must be visible');
@@ -258,4 +267,145 @@ test('stopManaged kills only what it spawned and reports it', async () => {
     spawnChrome: recorderSpawn([]),
   });
   assert.equal(managed.stopManaged(), false, 'nothing running, nothing to stop');
+});
+
+// --- profile cleanup (the false-ok fix) ---
+
+const {
+  commandLineOwnsProfile,
+  releaseProfileDir,
+} = require('../src/quota-managed-browser');
+
+test('commandLineOwnsProfile matches only the exact profile path', () => {
+  const dir = '/Users/someone/.multicc/quota-browser-profile';
+  assert.equal(commandLineOwnsProfile(`/Applications/Chrome --user-data-dir=${dir} --headless=new`, dir), true);
+  assert.equal(commandLineOwnsProfile(`chrome --user-data-dir='${dir}' about:blank`, dir), true);
+  assert.equal(commandLineOwnsProfile(`chrome --user-data-dir="${dir}"`, dir), true);
+  // Prefix collision: a different profile that merely starts with our path.
+  assert.equal(commandLineOwnsProfile(`chrome --user-data-dir=${dir}-backup`, dir), false, 'must not match a longer path');
+  assert.equal(commandLineOwnsProfile(`chrome --user-data-dir=${path.dirname(dir)}`, dir), false);
+  // The user's daily Chrome has no such flag at all.
+  assert.equal(commandLineOwnsProfile('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --type=renderer', dir), false);
+  assert.equal(commandLineOwnsProfile(null, dir), false);
+});
+
+test('releaseProfileDir kills a real orphan holder of the profile', async function () {
+  if (process.platform === 'win32') return this.skip();
+  const { spawn: spawnReal } = require('node:child_process');
+  const profileDir = tmpProfile();
+  // A stand-in orphan: any long-lived process whose argv carries the exact
+  // profile flag. BSD sleep rejects extra args, so use node itself.
+  const orphan = spawnReal(process.execPath, ['-e', 'setTimeout(() => {}, 60000)', '--', `--user-data-dir=${profileDir}`]);
+  // Attach BEFORE the kill: the exit event fires as soon as the signal lands.
+  const exited = new Promise((resolve) => orphan.on('exit', resolve));
+  try {
+    await new Promise((resolve, reject) => {
+      const check = async () => {
+        const pids = await require('../src/quota-managed-browser').listChromeProfilePids(profileDir);
+        if (pids.includes(orphan.pid)) return resolve();
+        reject(new Error(`orphan pid ${orphan.pid} not found via listing`));
+      };
+      setTimeout(check, 300);
+    });
+    fs.writeFileSync(path.join(profileDir, 'SingletonLock'), 'stale');
+    const release = await releaseProfileDir(profileDir);
+    assert.deepEqual(release.killed, [orphan.pid], 'the orphan holder is killed');
+    await exited;
+    assert.ok(!fs.existsSync(path.join(profileDir, 'SingletonLock')), 'stale lock is removed');
+  } finally {
+    try { orphan.kill('SIGKILL'); } catch (_) {}
+  }
+});
+
+test('releaseProfileDir refuses to claim success while a holder survives', async function () {
+  if (process.platform === 'win32') return this.skip();
+  const { spawn: spawnReal } = require('node:child_process');
+  const profileDir = tmpProfile();
+  // sh ignores SIGTERM; the SIGKILL escalation should still work, so to test
+  // the refusal path we inject an unkillable pid (pid 1) via a fake liveness.
+  const release = releaseProfileDir(profileDir, {
+    listPids: async () => [1], // pid 1 survives every signal we dare send
+    pollIntervalMs: 5,
+    termGraceMs: 20,
+    deadlineMs: 40,
+    sleep: () => new Promise((r) => setTimeout(r, 5)),
+  });
+  await assert.rejects(release, (err) => err.code === 'profile_busy');
+});
+
+test('openVisibleLogin no longer reports ok when the window silently delegates away', async () => {
+  const profileDir = tmpProfile();
+  const spawned = [];
+  const managed = createManagedQuotaBrowser({
+    profileDir,
+    binary: '/fake/chrome',
+    spawnChrome: (bin, args) => {
+      const proc = fakeProc(4200 + spawned.length);
+      spawned.push({ bin, args, proc });
+      // Singleton handoff: the new process forwards the URL to the existing
+      // headless owner and exits with code 0 almost immediately.
+      if (!args.includes('--headless=new')) setTimeout(() => proc.emitExit(0), 15);
+      return proc;
+    },
+    releaseProfile: async () => ({ killed: [] }),
+    visibleReadyMs: 2000,
+  });
+  await assert.rejects(
+    managed.openVisibleLogin('https://www.kimi.com/membership/subscription'),
+    (err) => err.code === 'login_window_failed' && /exited immediately/.test(err.message),
+    'a delegated window must surface as an error, never ok:true',
+  );
+  assert.equal(managed.status().running, false, 'the dead window is not kept in the ledger');
+});
+
+test('openVisibleLogin rejects when the window never becomes reachable', async () => {
+  const profileDir = tmpProfile();
+  const managed = createManagedQuotaBrowser({
+    profileDir,
+    binary: '/fake/chrome',
+    spawnChrome: recorderSpawn([]), // never writes DevToolsActivePort
+    releaseProfile: async () => ({ killed: [] }),
+    visibleReadyMs: 400,
+  });
+  await assert.rejects(
+    managed.openVisibleLogin('https://x'),
+    (err) => err.code === 'login_window_failed' && /reachable/.test(err.message),
+  );
+  assert.equal(managed.status().running, false, 'a wedged window is cleaned up before giving up');
+});
+
+test('after the user closes the login window, a fresh headless launches on demand', async () => {
+  const fake = await startFakeChrome();
+  const profileDir = tmpProfile();
+  const spawned = [];
+  const managed = createManagedQuotaBrowser({
+    profileDir,
+    binary: '/fake/chrome',
+    spawnChrome: (bin, args) => {
+      const proc = fakeProc(4300 + spawned.length);
+      spawned.push({ bin, args, proc });
+      setTimeout(() => fake.writeActivePortFile(profileDir), 20);
+      return proc;
+    },
+    releaseProfile: async () => ({ killed: [] }),
+    visibleReadyMs: 3000,
+    startupTimeoutMs: 4000,
+  });
+  try {
+    await managed.openVisibleLogin('https://login.example');
+    assert.equal(spawned.length, 1);
+    // The user closes the window: the process dies and its port file goes stale.
+    spawned[0].proc.emitExit(0);
+    fake.removeActivePortFile(profileDir);
+    assert.equal(managed.status().running, false);
+    // Next quota fetch relaunches headless lazily.
+    const browser = await managed.attachManaged();
+    browser.close();
+    assert.equal(spawned.length, 2);
+    assert.ok(spawned[1].args.includes('--headless=new'));
+    assert.equal(managed.status().mode, 'headless');
+  } finally {
+    managed.stopManaged();
+    await fake.close();
+  }
 });
