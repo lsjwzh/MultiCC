@@ -324,6 +324,55 @@
   }
   function quotaFmt2(n) { return String(Number(Number(n).toFixed(2))); }
 
+  // Console-scrape summaries (kimi membership page / aliyun Bailian console)
+  // render through the SAME unified window template as the chat rate-limit bar
+  // (chat-rate-limit.js unifiedWindowSeg): `<window> <remaining%> <countdown>`,
+  // standard tokens 5h/1wk/1m. On pages that load chat-rate-limit.js we call
+  // the real thing; on manage.html (catalog only) an identical-format fallback
+  // keeps the two surfaces visually consistent.
+  function unifiedWindowSegCompat(label, usedPercent, resetMs, root) {
+    const api = root && root.MultiCCChatRateLimit;
+    if (api && typeof api.unifiedWindowSeg === 'function') return api.unifiedWindowSeg(label, usedPercent, resetMs);
+    const used = Number(usedPercent);
+    if (!Number.isFinite(used)) return '';
+    const rem = Math.max(0, Math.min(100, Math.round(100 - used)));
+    let cd = '';
+    const total = Number(resetMs);
+    if (Number.isFinite(total) && total >= 0) {
+      const totalH = total / 3600000;
+      if (totalH < 1) cd = `${Math.max(1, Math.round(total / 60000))}m`;
+      else if (totalH < 24) {
+        const h = Math.round(totalH * 10) / 10;
+        cd = `${Number.isInteger(h) ? h.toFixed(0) : h.toFixed(1)}h`;
+      } else {
+        const d = Math.floor(totalH / 24);
+        const remH = Math.floor(totalH % 24);
+        cd = remH ? `${d}d ${remH}h` : `${d}d`;
+      }
+    }
+    return cd ? `${label} ${rem}% ${cd}` : `${label} ${rem}%`;
+  }
+
+  // Accepts both the unified shape { window, label, usedPercent, resetMs } and
+  // pre-upgrade caches { label, percent }; returns normalized segments.
+  function windowSummarySegments(summary, nowMs, root) {
+    const items = Array.isArray(summary) ? summary : [];
+    const segs = [];
+    let maxUsed = 0;
+    for (const s of items) {
+      if (!s) continue;
+      const used = Number.isFinite(s.usedPercent) ? s.usedPercent : Number(s.percent);
+      if (!Number.isFinite(used)) continue;
+      const label = s.window || s.label || '余量';
+      const cd = Number.isFinite(s.resetMs) ? Math.max(0, s.resetMs - nowMs) : null;
+      const seg = unifiedWindowSegCompat(label, used, cd, root);
+      if (!seg) continue;
+      maxUsed = Math.max(maxUsed, used);
+      segs.push(seg);
+    }
+    return { segs, maxUsed };
+  }
+
   // Explicit opt-in wins: a provider record may carry quotaKind to force (or
   // disable, via 'none') classification when its baseUrl sits behind a proxy
   // host no hostname rule could recognize.
@@ -375,13 +424,13 @@
       // Subscription keys 401 on the balance API; their usage comes from the
       // logged-in membership page scrape instead.
       if (data.source === 'subscription-page') {
-        const sum = (data.summary || []).filter(s => s && Number.isFinite(s.percent));
-        if (!sum.length) return { text: '余量 Kimi 订阅（已抓取页面）', color: QUOTA_AMBER, title: `订阅页未解析出百分比。原文：${String(data.text || '').slice(0, 300)}` };
-        const maxPct = Math.max.apply(null, sum.map(s => s.percent));
+        const root = typeof window !== 'undefined' ? window : null;
+        const { segs, maxUsed } = windowSummarySegments(data.summary, Date.now(), root);
+        if (!segs.length) return { text: '余量 Kimi 订阅（已抓取页面）', color: QUOTA_AMBER, title: `订阅页未解析出百分比。原文：${String(data.text || '').slice(0, 300)}` };
         return {
-          text: '余量 ' + sum.map(s => `${s.label || 'Kimi'} ${s.percent}%`).join(' · '),
-          color: quotaPctColor(maxPct),
-          title: `Kimi 订阅用量（会员页抓取，已用百分比）。原文：${String(data.text || '').slice(0, 300)}`,
+          text: '余量 ' + segs.join(' · '),
+          color: quotaPctColor(maxUsed),
+          title: `Kimi 订阅用量（会员页抓取，统一窗口模板：剩余% + 倒计时）。原文：${String(data.text || '').slice(0, 300)}`,
         };
       }
       const sites = (data.sites || []).filter(s => s && s.ok && Number.isFinite(s.available));
@@ -427,14 +476,14 @@
       return { text: '余量 ' + parts.join(' · '), color: quotaPctColor(maxPct), title: 'OpenCode Go 窗口用量' };
     }
     if (kind === 'aliyun') {
-      // Bailian console scrape: percent windows like the kimi membership page.
-      const sum = (data.summary || []).filter(s => s && Number.isFinite(s.percent));
-      if (!sum.length) return { text: '余量 阿里云（已抓取页面）', color: QUOTA_AMBER, title: `百炼控制台未解析出百分比。原文：${String(data.text || '').slice(0, 300)}` };
-      const maxPct = Math.max.apply(null, sum.map(s => s.percent));
+      // Bailian console scrape: same unified window template as kimi.
+      const root = typeof window !== 'undefined' ? window : null;
+      const { segs, maxUsed } = windowSummarySegments(data.summary, Date.now(), root);
+      if (!segs.length) return { text: '余量 阿里云（已抓取页面）', color: QUOTA_AMBER, title: `百炼控制台未解析出百分比。原文：${String(data.text || '').slice(0, 300)}` };
       return {
-        text: '余量 ' + sum.map(s => `${s.label || '百炼'} ${s.percent}%`).join(' · '),
-        color: quotaPctColor(maxPct),
-        title: `阿里云百炼用量（控制台抓取，已用百分比）。原文：${String(data.text || '').slice(0, 300)}`,
+        text: '余量 ' + segs.join(' · '),
+        color: quotaPctColor(maxUsed),
+        title: `阿里云百炼用量（控制台抓取，统一窗口模板：剩余% + 倒计时）。原文：${String(data.text || '').slice(0, 300)}`,
       };
     }
     return null;

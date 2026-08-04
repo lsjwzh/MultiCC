@@ -8,6 +8,8 @@ const {
   fetchKimiSubscriptionPage,
   summarizeSubscriptionText,
   subscriptionPanelReady,
+  windowTokenForLabel,
+  parseResetAfter,
   siteLabel,
   balanceHost,
   mountKimiQuotaRoutes,
@@ -18,6 +20,7 @@ const {
   formatQoderQuota,
   formatOpenCodeQuota,
   quotaBarClick,
+  unifiedWindowSeg,
 } = require('../public/chat-rate-limit');
 
 const MOONSHOT = { host: 'api.moonshot.cn', apiKey: 'k1', strategy: 'kimi-balance' };
@@ -198,11 +201,13 @@ test('summarizeSubscriptionText picks percent lines with their nearest label', (
   const text = 'Kimi Code 会员\n5小时窗口\n12%\n周用量\n42.5%\n其他 99%';
   const sum = summarizeSubscriptionText(text);
   assert.equal(sum.length, 3);
-  assert.deepEqual(sum[0], { label: '5小时窗口', percent: 12, line: '12%' });
-  assert.deepEqual(sum[1], { label: '周用量', percent: 42.5, line: '42.5%' });
-  // The preceding line is itself a percentage value, so no label for this one.
+  assert.deepEqual(sum[0], { window: '5h', label: '5小时窗口', usedPercent: 12, percent: 12, resetMs: null, line: '12%' });
+  assert.deepEqual(sum[1], { window: '1wk', label: '周用量', usedPercent: 42.5, percent: 42.5, resetMs: null, line: '42.5%' });
+  // The preceding line is itself a percentage value, so no label (and thus no
+  // window token) for this one.
   assert.equal(sum[2].label, '');
-  assert.equal(sum[2].percent, 99);
+  assert.equal(sum[2].window, null);
+  assert.equal(sum[2].usedPercent, 99);
 });
 
 test('summarizeSubscriptionText returns null when there is no percentage', () => {
@@ -262,6 +267,37 @@ test('summarizeSubscriptionText pairs window labels across plan-name and reset l
     [['总使用量', 29.1], ['5 小时用量', 1.31], ['7 天用量', 4.59]],
     'plan-name lines (Code) and reset lines must not become labels',
   );
+});
+
+test('windowTokenForLabel maps scraped labels onto the standard window tokens', () => {
+  assert.equal(windowTokenForLabel('总使用量'), '1m');
+  assert.equal(windowTokenForLabel('5 小时用量'), '5h');
+  assert.equal(windowTokenForLabel('7 天用量'), '1wk');
+  assert.equal(windowTokenForLabel('周用量'), '1wk');
+  assert.equal(windowTokenForLabel('本月用量'), '1m');
+  assert.equal(windowTokenForLabel('看不懂的行'), null);
+});
+
+test('parseResetAfter handles absolute dates, year-less times, and year rollover', () => {
+  const now = new Date(2026, 7, 4, 12, 0, 0).getTime(); // 2026-08-04 12:00 local
+  assert.equal(parseResetAfter('Kimi Code 2026-08-19 后重置', now), new Date(2026, 7, 19).getTime());
+  assert.equal(parseResetAfter('08-04 06:28 后重置', now), new Date(2026, 7, 4, 6, 28).getTime(), 'earlier same-day time stays in the current year');
+  assert.equal(parseResetAfter('08-10 21:28 后重置', now), new Date(2026, 7, 10, 21, 28).getTime());
+  // A year-less date already in the past rolls into next year.
+  assert.equal(parseResetAfter('01-05 06:00 后重置', now), new Date(2027, 0, 5, 6, 0).getTime());
+  assert.equal(parseResetAfter('没有重置信息'), null);
+});
+
+test('summarizeSubscriptionText emits standard window tokens with parsed resetMs', () => {
+  const now = new Date(2026, 7, 4, 12, 0, 0).getTime();
+  const sum = summarizeSubscriptionText(KIMI_PANEL_TEXT, now);
+  assert.deepEqual(sum.map((h) => h.window), ['1m', '5h', '1wk'], 'raw labels must map to standard tokens');
+  assert.deepEqual(sum.map((h) => h.usedPercent), [29.1, 1.31, 4.59]);
+  assert.deepEqual(sum.map((h) => h.resetMs), [
+    new Date(2026, 7, 19).getTime(),
+    new Date(2026, 7, 4, 6, 28).getTime(),
+    new Date(2026, 7, 10, 21, 28).getTime(),
+  ], '后重置 times must reach the frontend so countdowns render');
 });
 
 test('fetchKimiSubscriptionPage waits past the sidebar for the panel', async () => {
@@ -482,6 +518,37 @@ test('formatKimiQuota renders a successful membership-page scrape as usage, not 
   // Coloured by the worst window's remaining (10% → red).
   assert.equal(view.color, '#f85149');
   assert.match(view.title, /已用 90%/);
+});
+
+test('formatKimiQuota renders the unified window shape with standard tokens and countdown', () => {
+  const now = Date.now();
+  const view = formatKimiQuota({
+    status: 'ok', source: 'subscription-page', fetchedAt: now,
+    summary: [
+      { window: '1m', label: '总使用量', usedPercent: 29.1, percent: 29.1, resetMs: now + 15 * 86400000 + 3600000 },
+      { window: '5h', label: '5 小时用量', usedPercent: 1.31, percent: 1.31, resetMs: now + 5 * 3600000 + 120000 },
+      { window: '1wk', label: '7 天用量', usedPercent: 4.59, percent: 4.59, resetMs: now + 6 * 86400000 + 3600000 },
+    ],
+    text: '…',
+  });
+  // Standard tokens + REMAINING percent + humanized countdown — exactly the
+  // shared template every other provider renders through.
+  assert.match(view.text, /1m 71% 15d 1h/);
+  assert.match(view.text, /5h 99% 5h/);
+  assert.match(view.text, /1wk 95% 6d 1h/);
+  assert.doesNotMatch(view.text, /总使用量|小时用量/, 'raw scraped labels must not surface');
+  // Cross-check against the template itself.
+  assert.equal(unifiedWindowSeg('1m', 29.1, 15 * 86400000 + 3600000), '1m 71% 15d 1h');
+});
+
+test('formatKimiQuota still renders pre-upgrade {label, percent} cache entries without crashing', () => {
+  const view = formatKimiQuota({
+    status: 'ok', source: 'subscription-page', fetchedAt: Date.now(),
+    summary: [{ label: '总使用量', percent: 29.1, line: '29.1%' }],
+    text: '…',
+  });
+  assert.match(view.text, /总使用量 71%/);
+  assert.doesNotMatch(view.text, /NaN|undefined/);
 });
 
 test('formatKimiQuota says so when the scrape succeeds but parses to nothing', () => {
