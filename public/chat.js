@@ -396,6 +396,7 @@ const CLI_META = {
   opencode: { label: 'OpenCode', color: '#388bfd' },
   zcode: { label: 'ZCode', color: '#a371f7' },
   qoder: { label: 'Qoder CN', color: '#ff8a3d' },
+  kimi: { label: 'Kimi Code', color: '#13c2c2' },
 };
 
 function applyCliUi(cli) {

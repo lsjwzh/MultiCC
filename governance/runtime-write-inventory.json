@@ -67,6 +67,16 @@
       ]
     },
     {
+      "id": "provider-kimi-homes",
+      "classification": "migration-required",
+      "owner": "provider routing",
+      "rationale": "Per-session KIMI_CODE_HOME roots isolate provider-bound Kimi Code sessions from the user's native ~/.kimi-code login and persist kimi-code's own session/config state across restarts.",
+      "migrationStrategy": "Version the generated-home layout, preserve restrictive permissions, and add a per-session copy-forward/rollback operation before changing its root.",
+      "sources": [
+        { "file": "src/providers.js", "anchor": "const KIMI_HOMES_DIR = path.join(os.homedir(), '.multicc', 'kimi-homes');" }
+      ]
+    },
+    {
       "id": "qoder-quota-cookie-cache",
       "classification": "migration-required",
       "owner": "Qoder quota adapter",

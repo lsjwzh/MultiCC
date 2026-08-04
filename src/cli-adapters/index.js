@@ -8,6 +8,7 @@ const { createCodexAdapter } = require('./codex');
 const { createOpencodeAdapter } = require('./opencode');
 const { createZcodeAdapter } = require('./zcode');
 const { createQoderAdapter } = require('./qoder');
+const { createKimiAdapter } = require('./kimi');
 
 function createCliAdapters(deps) {
   const commands = resolveCliCommands({ isWindows: deps.isWindows });
@@ -17,6 +18,7 @@ function createCliAdapters(deps) {
   console.log(`[multicc] Using claude: ${commands.claude}`);
   console.log(`[multicc] Using codex: ${commands.codex}`);
   console.log(`[multicc] Using qoder: ${commands.qoder}`);
+  console.log(`[multicc] Using kimi: ${commands.kimi}`);
 
   const registry = createCliProviderRegistry([
     createClaudeAdapter({
@@ -51,6 +53,7 @@ function createCliAdapters(deps) {
     }),
     createZcodeAdapter({ cmd: commands.zcode }),
     createQoderAdapter({ cmd: commands.qoder, routerMcpNode, routerMcpScript }),
+    createKimiAdapter({ cmd: commands.kimi }),
   ]);
 
   return { commands, registry };

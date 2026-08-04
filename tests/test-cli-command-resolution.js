@@ -54,6 +54,7 @@ try {
     OPENCODE_CMD: '/custom/opencode',
     ZCODE_CMD: '/custom/zcode',
     QODER_CMD: '/custom/qoderclicn',
+    KIMI_CMD: '/custom/kimi',
   };
   assert.deepStrictEqual(resolveCliCommands({
     isWindows: false,
@@ -66,6 +67,7 @@ try {
     opencode: '/custom/opencode',
     zcode: '/custom/zcode',
     qoder: '/custom/qoderclicn',
+    kimi: '/custom/kimi',
   }, 'explicit command overrides are returned verbatim');
 
   const engineOverride = path.join(root, 'custom-zcode.cjs');
@@ -107,7 +109,7 @@ try {
     homeDir: path.join(root, 'missing-home'),
     logger: silentLogger(),
   }), {
-    claude: 'claude', codex: 'codex', opencode: 'opencode', zcode: 'zcode', qoder: 'qoderclicn',
+    claude: 'claude', codex: 'codex', opencode: 'opencode', zcode: 'zcode', qoder: 'qoderclicn', kimi: 'kimi',
   }, 'POSIX fallback names remain stable when no executable exists');
   assert.deepStrictEqual(resolveCliCommands({
     isWindows: true,
@@ -116,7 +118,7 @@ try {
     homeDir: path.join(root, 'missing-home'),
     logger: silentLogger(),
   }), {
-    claude: 'claude.exe', codex: 'codex.exe', opencode: 'opencode.exe', zcode: 'zcode.exe', qoder: 'qoderclicn.exe',
+    claude: 'claude.exe', codex: 'codex.exe', opencode: 'opencode.exe', zcode: 'zcode.exe', qoder: 'qoderclicn.exe', kimi: 'kimi.exe',
   }, 'Windows fallback names remain stable when no executable exists');
 
   const source = fs.readFileSync(require.resolve('../src/cli-adapters/commands'), 'utf8');

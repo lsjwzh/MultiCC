@@ -2,6 +2,7 @@
 
 const { runStateForFreezeReason } = require('./session-work-scheduler');
 const zcodeAuth = require('./cli-adapters/zcode-auth');
+const kimiAuth = require('./cli-adapters/kimi-auth');
 
 function requireFunction(deps, name) {
   if (typeof deps?.[name] !== 'function') {
@@ -26,6 +27,10 @@ function createSessionWorkHost(deps = {}) {
   const zcodeAuthRuntime = deps.zcodeAuth || zcodeAuth;
   if (typeof zcodeAuthRuntime.ensureZcodeAuth !== 'function') {
     throw new TypeError('[session-work-host] zcodeAuth.ensureZcodeAuth is required');
+  }
+  const kimiAuthRuntime = deps.kimiAuth || kimiAuth;
+  if (typeof kimiAuthRuntime.ensureKimiAuth !== 'function') {
+    throw new TypeError('[session-work-host] kimiAuth.ensureKimiAuth is required');
   }
   const turnClosures = new Map();
 
@@ -59,6 +64,20 @@ function createSessionWorkHost(deps = {}) {
         deps.broadcast(sessionId, {
           type: 'error',
           error: authCheck.message || 'ZCode 尚未配置 API Key。',
+          code: 'configuration_required',
+        });
+        return { ok: false, code: 'configuration_required', message: authCheck.message };
+      }
+    }
+    // Kimi Code native auth pre-check. Provider-bound sessions carry injected
+    // KIMI_API_KEY credentials and bypass the gate; provider-less sessions
+    // need the native `kimi login` device-code state (or KIMI_API_KEY env).
+    if (sessionRecord && sessionRecord.cli === 'kimi') {
+      const authCheck = kimiAuthRuntime.ensureKimiAuth(sessionRecord);
+      if (!authCheck.ok) {
+        deps.broadcast(sessionId, {
+          type: 'error',
+          error: authCheck.message || 'Kimi Code 尚未登录。',
           code: 'configuration_required',
         });
         return { ok: false, code: 'configuration_required', message: authCheck.message };

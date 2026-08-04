@@ -22,6 +22,8 @@ All settings are environment variables in `.env`. Voice and TTS settings hot-rel
 | `CODEX_ARGS` | *(none)* | Extra args passed to every `codex` spawn |
 | `QODER_CMD` | *(auto-detected)* | Override path to the Qoder CN `qoderclicn` binary (`QODERCN_CMD` is also accepted) |
 | `ZCODE_ENGINE` | *(macOS default inside `ZCode.app`)* | Path to the ZCode headless engine (`zcode.cjs`) driven via the in-tree bridge |
+| `KIMI_CMD` | *(auto-detected)* | Override path to the Kimi Code `kimi` binary |
+| `KIMI_API_KEY` / `KIMI_BASE_URL` | *(unset)* | Native Kimi Code credential fallback; provider-bound sessions get these injected per session instead |
 
 ## Providers
 
@@ -32,6 +34,7 @@ Provider config is stored locally and managed from `/manage`:
 | `providers.json` | MultiCC-owned provider store (API keys inside). Import from `~/.cc-switch/cc-switch.db`, but edits don't write back. |
 | `provider-defaults.json` | Default provider id per CLI for new sessions. |
 | `~/.multicc/codex-homes/<providerId>/` | Materialized `CODEX_HOME` per Codex provider — isolated auth/config. |
+| `~/.multicc/kimi-homes/<sessionId>/` | Isolated `KIMI_CODE_HOME` per Kimi session bound to a MultiCC provider — injected credentials never touch the native `~/.kimi-code` login. |
 
 MultiCC only reads the CC-Switch database during import; it never rewrites
 CC-Switch settings. If `/manage` reports that the database exists but the
