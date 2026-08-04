@@ -380,6 +380,10 @@ function validEffortForCli(cli, effort) {
   const tier1Sessions = [];
   // Track extra directories beyond the main one
   let extraDirs = [];
+  // A second directory some tiers create for cross-directory dispatch checks.
+  // Declared here so the shared cleanup below can see it regardless of which
+  // tier ran (it used to crash the whole run with a ReferenceError).
+  let secondDirId = null;
 
   // Pre-sweep: delete any leftover cross-cli-* test sessions from prior runs
   // that were killed before their cleanup (T1.18/T2.10) ran. Makes the test
@@ -623,6 +627,11 @@ function validEffortForCli(cli, effort) {
     const providers = provRes.status === 200 ? (provRes.body.providers || []) : [];
     const claudePoolIds = providers.filter(p => p.appType === 'claude').map(p => p.id);
     const codexPoolIds = providers.filter(p => p.appType === 'codex').map(p => p.id);
+    // The multi-protocol allow-assertions (d-g) need a *generic* codex-pool
+    // provider: the official ChatGPT login (isOfficial) is codex-CLI-specific,
+    // and the server rightly 400s when a zcode/opencode session tries to bind
+    // it. Picking providers[0] made this test depend on provider ordering.
+    const codexPoolGenericIds = providers.filter(p => p.appType === 'codex' && !p.isOfficial).map(p => p.id);
 
     if (claudePoolIds.length === 0 && codexPoolIds.length === 0) {
       skip('T1.17 Provider 池映射', '无 provider 可用于测试');
@@ -684,7 +693,7 @@ function validEffortForCli(cli, effort) {
 
       // (d-g) OpenCode and ZCode are multi-protocol clients: both pools are valid.
       for (const cli of ['opencode', 'zcode']) {
-        for (const [poolName, providerId] of [['claude', claudePoolIds[0]], ['codex', codexPoolIds[0]]]) {
+        for (const [poolName, providerId] of [['claude', claudePoolIds[0]], ['codex', codexPoolGenericIds[0] || codexPoolIds[0]]]) {
           const res = await createSession(dirId, cli, 'chat', { provider: providerId });
           const label = `${cli}+${poolName}池→允许`;
           if (res.status === 200 || res.status === 201) {
