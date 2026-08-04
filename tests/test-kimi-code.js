@@ -154,6 +154,7 @@ function createFakeApp() {
     routes,
     get: (route, handler) => { routes[`GET ${route}`] = handler; },
     post: (route, handler) => { routes[`POST ${route}`] = handler; },
+    put: (route, handler) => { routes[`PUT ${route}`] = handler; },
   };
 }
 

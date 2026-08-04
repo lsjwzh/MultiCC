@@ -14,6 +14,7 @@
 // (KIMI_API_KEY / KIMI_BASE_URL), injected by buildKimiCodeRoute.
 
 const { renderPrompt } = require('../message-composer');
+const { claudeLikeMcpArgs } = require('./router-mcp');
 
 const LABEL = 'Kimi Code';
 
@@ -28,10 +29,13 @@ function parseToolArguments(raw) {
   }
 }
 
-function createKimiAdapter({ cmd } = {}) {
+function createKimiAdapter({ cmd, routerMcpNode, routerMcpScript } = {}) {
+  const routerArgs = claudeLikeMcpArgs(routerMcpNode, routerMcpScript);
   return {
     name: 'kimi',
     cmd,
+    routerMcpNode,
+    routerMcpScript,
     buildTerminalCmd(session) {
       let command = cmd;
       if (session && session.model) command += ` --model ${session.model}`;
@@ -40,7 +44,7 @@ function createKimiAdapter({ cmd } = {}) {
     },
     buildInvocation(env) {
       const isFirstTurn = env.historyHandle.isFirstTurn;
-      const args = ['--output-format', 'stream-json', '--auto'];
+      const args = ['--output-format', 'stream-json', '--auto', ...routerArgs];
       if (env.spawnOpts.rawModel) args.push('--model', env.spawnOpts.rawModel);
       if (!isFirstTurn && env.historyHandle.cliSessionId) {
         args.push('--session', env.historyHandle.cliSessionId);

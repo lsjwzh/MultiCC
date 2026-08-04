@@ -1,5 +1,8 @@
 'use strict';
 
+const path = require('path');
+const fs = require('fs');
+
 function stdioServer(node, script) {
   return {
     command: String(node),
@@ -64,6 +67,30 @@ function applyRouterMcpEnv(env, cli, node, script) {
         },
       }),
     ));
+  }
+  if (cli === 'kimi' && env.KIMI_CODE_HOME) {
+    // Kimi Code reads MCP servers from its settings.json or mcp.json under
+    // KIMI_CODE_HOME. Write a minimal mcp.json so the spawned child can see
+    // the multicc_router tool server. Non-destructive: only sets the one key.
+    try {
+      const mcpDir = env.KIMI_CODE_HOME;
+      if (mcpDir && typeof mcpDir === 'string') {
+        fs.mkdirSync(mcpDir, { recursive: true });
+        const mcpPath = path.join(mcpDir, 'mcp.json');
+        let existing = {};
+        try {
+          const raw = fs.readFileSync(mcpPath, 'utf8');
+          existing = JSON.parse(raw);
+          if (typeof existing !== 'object' || Array.isArray(existing)) existing = {};
+        } catch (_) { /* no existing mcp.json — start fresh */ }
+        existing.multicc_router = {
+          command: String(node),
+          args: [String(script)],
+          env: {},
+        };
+        fs.writeFileSync(mcpPath, JSON.stringify(existing, null, 2), 'utf8');
+      }
+    } catch (_) { /* best effort — MCP injection failure should not crash the turn */ }
   }
   return env;
 }
