@@ -27,8 +27,24 @@ const { getManagedQuotaBrowser } = require('../quota-managed-browser');
 // that account type's usage lives only on the logged-in membership page, so
 // we scrape it through the managed browser when every balance fetch is an
 // auth rejection.
-const KIMI_SUBSCRIPTION_URL = 'https://www.kimi.com/membership/subscription';
+// The quota panel lives on the ?tab=quota tab; the default landing renders a
+// sidebar first and only paints the usage panel seconds later.
+const KIMI_SUBSCRIPTION_URL = 'https://www.kimi.com/membership/subscription?tab=quota';
 const CONSOLE_TIMEOUT_MS = Number(process.env.KIMI_QUOTA_TIMEOUT_MS || 15000);
+function panelTextTimeoutMs() {
+  return Number(process.env.KIMI_QUOTA_PANEL_TIMEOUT_MS || 30000);
+}
+
+// Gate for "the quota panel is actually on screen". The sidebar renders first
+// and already contains words like 订阅/额度/升级订阅, so those are NOT proof.
+// The panel always carries at least one real percentage (digits + %) plus one
+// of its own marker words.
+const PANEL_PERCENT_PATTERN = /\d+(?:\.\d+)?\s*%/;
+const PANEL_MARKER_PATTERN = /用量进度|总使用量|小时用量|7\s*天用量|周用量|月用量/;
+function subscriptionPanelReady(text) {
+  const t = String(text || '');
+  return PANEL_PERCENT_PATTERN.test(t) && PANEL_MARKER_PATTERN.test(t);
+}
 
 function finite(v) {
   const n = Number(v);
@@ -114,19 +130,31 @@ async function fetchKimiBalance(target, timeoutMs = 6000) {
 
 // Pull `N%` figures plus a short label out of the membership page's text.
 // The page is a SPA with no stable DOM contract we can rely on across builds,
-// so the summary is heuristic: percentage lines are the usage signal, and the
-// nearest preceding non-numeric line is the most likely label (5-hour window
-// / weekly / monthly style wording).
+// so the summary is heuristic. Real panel layout (observed, 2026-08):
+//   总使用量 / 29.1% / …重置… / 5 小时用量 / Code / 1.31% / 08-04 06:28 后重置 / …
+// i.e. between a window label and its percentage there may sit a plan-name
+// line (Code/Plus/…) — so the label is the nearest preceding line that is not
+// a value, not a plan name, and not reset boilerplate.
+const PLAN_NAME_LINE = /^(code|plus|pro|premium|standard|free|免费|会员|高级会员)$/i;
+const RESET_INFO_LINE = /后重置|重置时间|刷新/;
+function labelForPercent(lines, i) {
+  for (let j = i - 1, steps = 0; j >= 0 && steps < 6; j--, steps++) {
+    const cand = lines[j];
+    if (/%/.test(cand)) break;                    // another value: no label for us
+    if (PLAN_NAME_LINE.test(cand)) continue;      // plan name sits between label and value
+    if (RESET_INFO_LINE.test(cand)) continue;     // reset boilerplate
+    return cand.slice(0, 24);
+  }
+  return '';
+}
+
 function summarizeSubscriptionText(text) {
   const lines = String(text || '').split(/\n+/).map((s) => s.trim()).filter(Boolean);
   const hits = [];
   for (let i = 0; i < lines.length; i++) {
-    const m = lines[i].match(/(\d+(?:\.\d+)?)\s*%/);
+    const m = lines[i].match(/^(\d+(?:\.\d+)?)\s*%$/) || lines[i].match(/(\d+(?:\.\d+)?)\s*%/);
     if (!m) continue;
-    // The nearest preceding line is the likely label — unless it is itself
-    // another value. Labels like「5小时窗口」contain digits, so gate on `%`.
-    const label = i > 0 && !/%/.test(lines[i - 1]) ? lines[i - 1].slice(0, 24) : '';
-    hits.push({ label, percent: Number(m[1]), line: lines[i].slice(0, 80) });
+    hits.push({ label: labelForPercent(lines, i), percent: Number(m[1]), line: lines[i].slice(0, 80) });
     if (hits.length >= 4) break;
   }
   return hits.length ? hits : null;
@@ -163,13 +191,16 @@ async function fetchKimiSubscriptionPage(managed = getManagedQuotaBrowser()) {
       if (!settled) return { status: 'unavailable', error: 'kimi 订阅页加载超时' };
       if (hitLogin) return { status: 'needs_login', error: 'kimi.com 登录态已失效，点余量徽标可重新登录' };
 
-      // Give the SPA a beat to render the subscription panel after load.
+      // Wait for the quota panel itself, not the sidebar: the sidebar renders
+      // first and is full of words (订阅/额度/升级订阅) the old gate mistook
+      // for the panel. Only digits+% plus a panel marker count. The panel is
+      // an async SPA chunk, so it gets its own (larger) budget.
       const text = await page.waitFor(async () => {
         const t = await page.evaluate('document.body ? document.body.innerText : ""');
-        return typeof t === 'string' && /%|剩余|已用|额度|订阅|有效/.test(t) ? t : null;
-      }, { timeoutMs: CONSOLE_TIMEOUT_MS, intervalMs: 800 }) || '';
+        return typeof t === 'string' && subscriptionPanelReady(t) ? t : null;
+      }, { timeoutMs: panelTextTimeoutMs(), intervalMs: 800 }) || '';
 
-      if (!String(text).trim()) return { status: 'unavailable', error: '订阅页无可读内容（可能未登录）' };
+      if (!String(text).trim()) return { status: 'unavailable', error: '订阅页未渲染出用量面板（可能未登录或页面改版）' };
       return {
         status: 'ok',
         fetchedAt: Date.now(),
@@ -277,6 +308,7 @@ module.exports = {
   fetchKimiBalance,
   fetchKimiSubscriptionPage,
   summarizeSubscriptionText,
+  subscriptionPanelReady,
   collectKimiTargets,
   siteLabel,
   balanceHost,
