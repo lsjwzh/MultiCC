@@ -133,20 +133,53 @@ function normalizeItem(item) {
   };
 }
 
+// arkcli appends non-JSON chatter to the stream after its payload — e.g. the
+// "arkcli X.Y available" upgrade notice on stderr — so JSON.parse(wholeStream)
+// fails precisely on the error path, and a missing login was being misreported
+// as a bare `unavailable` instead of the actionable `needs_auth`. Extract the
+// first balanced {...} object instead (string-aware, so braces inside JSON
+// strings don't end the scan early).
+function parseArkcliJsonStream(stream) {
+  const s = String(stream || '');
+  const start = s.indexOf('{');
+  if (start === -1) return null;
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = start; i < s.length; i++) {
+    const c = s[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === '\\') esc = true;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') inStr = true;
+    else if (c === '{') depth += 1;
+    else if (c === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        try {
+          return JSON.parse(s.slice(start, i + 1));
+        } catch (_) {
+          return null;
+        }
+      }
+    }
+  }
+  return null;
+}
+
 async function fetchArkUsage(nowMs = Date.now()) {
   const { err, stdout, stderr } = await runArkcli(['usage', 'plan', '--format', 'json']);
 
   let parsed = null;
   for (const stream of [stdout, stderr]) {
     if (!stream.trim()) continue;
-    try {
-      const candidate = JSON.parse(stream);
-      if (candidate && typeof candidate === 'object') {
-        parsed = candidate;
-        break;
-      }
-    } catch (_) {
-      // try next stream
+    const candidate = parseArkcliJsonStream(stream);
+    if (candidate && typeof candidate === 'object') {
+      parsed = candidate;
+      break;
     }
   }
 
@@ -227,4 +260,4 @@ function mountArkQuotaRoutes(app) {
   });
 }
 
-module.exports = { mountArkQuotaRoutes, fetchArkUsage, resolveArkcliBin, installArkcli };
+module.exports = { mountArkQuotaRoutes, fetchArkUsage, resolveArkcliBin, installArkcli, parseArkcliJsonStream };
