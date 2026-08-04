@@ -12,9 +12,9 @@ multicc/
 ├── src/                          # Server-side modules
 │   ├── cli-switch.js             # Cross-CLI state machine + handoff checkpoint builder
 │   ├── cli/                      # switch-runtime.js (switch + install routes), session-policy.js
-│   ├── cli-adapters/             # One adapter per CLI: claude, codex, opencode, zcode, qoder
+│   ├── cli-adapters/             # One adapter per CLI: claude, codex, opencode, zcode, kimi, qoder
 │   │                             #   + commands.js (binary resolution), router-mcp.js,
-│   │                             #   zcode-bridge.cjs / zcode-engine.js / zcode-auth.js
+│   │                             #   zcode-bridge.cjs / zcode-engine.js / zcode-auth.js / kimi-auth.js
 │   ├── chat/                     # Turn engine, host coordinator, finalize plan, background tasks
 │   ├── chat-stream.js            # Claude stream-json / Codex exec --json event normalizer
 │   ├── message-composer.js       # Builds the prompt sent to a CLI (history, images, hints)

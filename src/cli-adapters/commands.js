@@ -178,6 +178,20 @@ function resolveZcode(context) {
   return findExecutableOnPath('zcode', context) || (isWindows ? 'zcode.exe' : 'zcode');
 }
 
+function resolveKimi(context) {
+  const { isWindows, env, homeDir } = context;
+  if (env.KIMI_CMD) return env.KIMI_CMD;
+  const directHit = firstRunnable([
+    '/opt/homebrew/bin/kimi',
+    '/usr/local/bin/kimi',
+    path.join(homeDir, '.local', 'bin', 'kimi'),
+    path.join(homeDir, '.npm-global', 'bin', 'kimi'),
+    path.join(homeDir, '.kimi-code', 'bin', 'kimi'),
+  ], context);
+  if (directHit) return directHit;
+  return findExecutableOnPath('kimi', context) || (isWindows ? 'kimi.exe' : 'kimi');
+}
+
 function resolveQoder(context) {
   const { isWindows, env, homeDir } = context;
   if (env.QODER_CMD) return env.QODER_CMD;
@@ -201,6 +215,7 @@ function resolveCliCommands(options = {}) {
     opencode: resolveOpencode(context),
     zcode: resolveZcode(context),
     qoder: resolveQoder(context),
+    kimi: resolveKimi(context),
   };
 }
 

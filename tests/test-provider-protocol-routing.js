@@ -49,7 +49,7 @@ test('CC-Switch import treats meta.apiFormat as the protocol source of truth', (
   const chat = providers.getProviderSummary('codex', 'cc-chat');
   assert.equal(chat.apiFormat, 'openai_chat');
   assert.equal(chat.wireApi, 'chat_completions');
-  assert.deepEqual(chat.compatibleClis, ['codex', 'opencode', 'zcode']);
+  assert.deepEqual(chat.compatibleClis, ['codex', 'opencode', 'zcode', 'kimi']);
   assert.deepEqual(chat.requiresConversionFor, ['codex']);
 
   const anthropic = providers.getProviderSummary('claude', 'cc-anthropic');

@@ -406,7 +406,7 @@ function validEffortForCli(cli, effort) {
 
   // ── T1.1: 所有合法 CLI 各创建 chat session ──
   hdr('T1.1 所有合法 CLI 创建会话');
-  const legalCLIs = ['claude', 'codex', 'opencode', 'zcode', 'qoder'];
+  const legalCLIs = ['claude', 'codex', 'opencode', 'zcode', 'qoder', 'kimi'];
   const createdSessions = {}; // cli → { id }
   for (const cli of legalCLIs) {
     const res = await createSession(dirId, cli, 'chat');
@@ -703,6 +703,29 @@ function validEffortForCli(cli, effort) {
           } else {
             fail(`T1.17 ${label}`, `status ${res.status} body=${JSON.stringify(res.body).slice(0, 80)}`);
           }
+        }
+      }
+
+      // (h) Kimi Code speaks the OpenAI wire only: codex-pool generic providers
+      // bind, anthropic-format claude-pool providers are rejected fail-closed.
+      {
+        const allowRes = await createSession(dirId, 'kimi', 'chat', { provider: codexPoolGenericIds[0] || codexPoolIds[0] });
+        if (allowRes.status === 200 || allowRes.status === 201) {
+          const sid = allowRes.body.id || allowRes.body.sessionId;
+          if (sid) tier1Sessions.push(sid);
+          ok('T1.17 kimi+codex池→允许', '201 — kimi 走 codex 池 OpenAI provider');
+        } else {
+          fail('T1.17 kimi+codex池→允许', `status ${allowRes.status} body=${JSON.stringify(allowRes.body).slice(0, 80)}`);
+        }
+        const denyRes = await createSession(dirId, 'kimi', 'chat', { provider: claudePoolIds[0] });
+        if (denyRes.status === 400) {
+          ok('T1.17 kimi+claude池→拒', `400 — anthropic 协议不在 kimi 兼容面`);
+        } else if (denyRes.status === 200 || denyRes.status === 201) {
+          const sid = denyRes.body.id || denyRes.body.sessionId;
+          if (sid) tier1Sessions.push(sid);
+          fail('T1.17 kimi+claude池→拒', `kimi session 接受了 anthropic 池 provider（status ${denyRes.status}）`);
+        } else {
+          fail('T1.17 kimi+claude池→拒', `期望 400，实际 ${denyRes.status}`);
         }
       }
     }

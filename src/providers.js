@@ -53,6 +53,9 @@ const CODEX_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-homes');
 // containing a native ~/.zcode/cli/config.json. The native/default route keeps
 // the real HOME and any official Coding Plan login maintained by ZCode itself.
 const ZCODE_HOMES_DIR = path.join(os.homedir(), '.multicc', 'zcode-homes');
+// Per-provider KIMI_CODE_HOME dirs so Kimi Code sessions bound to a MultiCC
+// provider never touch (or leak into) the user's native ~/.kimi-code login.
+const KIMI_HOMES_DIR = path.join(os.homedir(), '.multicc', 'kimi-homes');
 
 const APP_TYPES = ['claude', 'codex'];
 const API_FORMATS = Object.freeze({
@@ -73,17 +76,19 @@ function normalizeApiFormat(value, appType, cfg = {}) {
 
 function compatibleClisForFormat(apiFormat) {
   if (apiFormat === API_FORMATS.ANTHROPIC) return ['claude', 'opencode', 'zcode'];
-  return ['codex', 'opencode', 'zcode'];
+  // Kimi Code's provider endpoint speaks the OpenAI chat-completions wire, so it
+  // only joins the OpenAI-family pool (moonshot's own API is OpenAI-compatible).
+  return ['codex', 'opencode', 'zcode', 'kimi'];
 }
 
 function providerSupportsCli(provider, cli) {
   if (!provider || !cli) return false;
   const format = normalizeApiFormat(provider.apiFormat || provider.protocol, provider.appType, parseConfig(provider.settingsConfig));
   if (!compatibleClisForFormat(format).includes(String(cli))) return false;
-  if (cli !== 'zcode') return true;
+  if (cli !== 'zcode' && cli !== 'kimi') return true;
   // Claude/Codex OAuth subscriptions cannot be replayed by an unrelated CLI.
-  // ZCode-backed MultiCC providers must expose ordinary HTTP credentials;
-  // ZCode's own Coding Plan stays on the provider-less native route.
+  // ZCode/Kimi-backed MultiCC providers must expose ordinary HTTP credentials;
+  // their official logins stay on the provider-less native route.
   const summary = provider.settingsConfig ? summarize(provider) : provider;
   return !!(summary && summary.baseUrl && summary.hasToken);
 }
@@ -100,7 +105,7 @@ function appTypeForCli(cli) {
 }
 
 function appTypesForCli(cli) {
-  if (cli === 'opencode' || cli === 'zcode') return ['claude', 'codex'];
+  if (cli === 'opencode' || cli === 'zcode' || cli === 'kimi') return ['claude', 'codex'];
   const type = appTypeForCli(cli);
   return type ? [type] : [];
 }
@@ -540,7 +545,7 @@ function summarize(p, opts = {}) {
       ? 'messages'
       : (apiFormat === API_FORMATS.OPENAI_CHAT ? 'chat_completions' : 'responses'),
     compatibleClis: compatibleClisForFormat(apiFormat)
-      .filter(cli => cli !== 'zcode' || (!!baseUrl && !!token)),
+      .filter(cli => (cli !== 'zcode' && cli !== 'kimi') || (!!baseUrl && !!token)),
     requiresConversionFor: apiFormat === API_FORMATS.OPENAI_CHAT ? ['codex'] : [],
     name: p.name,
     // Optional explicit quota classification override (frontend quotaKindForProvider
@@ -951,6 +956,7 @@ function buildChildEnv(base, session, extra = {}) {
     providerName: spawn.providerName,
     codexHome: spawn.codexHome,
     zcodeHome: spawn.zcodeHome,
+    kimiHome: spawn.kimiHome,
     tools: spawn.tools,
   };
 }
@@ -1114,6 +1120,55 @@ function buildZcodeRoute(provider, session) {
   };
 }
 
+// Kimi Code route: run the child in an isolated KIMI_CODE_HOME (so the user's
+// native ~/.kimi-code OAuth login is never exposed to a managed provider) and
+// inject the provider credentials through kimi-code's documented env fallback:
+// KIMI_API_KEY (type:'kimi' provider credential) + KIMI_BASE_URL (endpoint).
+function kimiSessionHome(session) {
+  const rawId = session && (session.id || session.sessionId);
+  if (!rawId) throw new Error('Kimi provider routing requires a stable session id');
+  const raw = String(rawId);
+  const slug = raw.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 72)
+    || 'session';
+  const digest = crypto.createHash('sha256').update(raw).digest('hex').slice(0, 12);
+  return path.join(KIMI_HOMES_DIR, `${slug}-${digest}`);
+}
+
+function buildKimiCodeRoute(provider, session) {
+  const cfg = parseConfig(provider.settingsConfig);
+  const summary = summarize(provider);
+  const models = uniqueModels([session && session.model, summary.model, ...(summary.modelOptions || [])]);
+  let key = '';
+  let baseUrl = '';
+  if (summary.apiFormat === API_FORMATS.ANTHROPIC) {
+    // Anthropic-format relays are not part of Kimi Code's wire support; the
+    // compatibility matrix normally keeps them out, this is the fail-closed edge.
+    const src = cfg.env || {};
+    key = src.ANTHROPIC_AUTH_TOKEN || src.ANTHROPIC_API_KEY || '';
+    baseUrl = src.ANTHROPIC_BASE_URL || summary.baseUrl || '';
+  } else {
+    key = (cfg.proxyTarget && cfg.proxyTarget.apiKey)
+      || (cfg.auth && cfg.auth.OPENAI_API_KEY) || '';
+    baseUrl = (cfg.proxyTarget && cfg.proxyTarget.originalBaseUrl)
+      || summary.baseUrl || tomlValue(cfg.config, 'base_url') || '';
+  }
+  if (!key) throw new Error('Kimi Provider 缺少可用的 API Key');
+  const home = kimiSessionHome(session);
+  ensurePrivateDir(home);
+  return {
+    env: {
+      KIMI_CODE_HOME: home,
+      KIMI_API_KEY: key,
+      ...(baseUrl ? { KIMI_BASE_URL: baseUrl } : {}),
+    },
+    qualifiedModel: null,
+    providerModel: summary.model || null,
+    providerModels: models,
+    providerName: provider.name,
+    kimiHome: home,
+  };
+}
+
 // Compute env overrides + flags to apply when spawning a child for `session`.
 //   - env: object merged into the child's process env (only this child).
 //   - skipDefaultModel: claude routes elsewhere → don't force the global --model.
@@ -1121,7 +1176,7 @@ function resolveSpawnEnv(session) {
   const providerId = session && session.provider;
   if (!providerId) return { env: {}, skipDefaultModel: false, aliasOnly: false, providerModel: null, providerModels: [], providerName: null };
   const appType = appTypeForCli(session.cli);
-  const globalPoolCli = session.cli === 'opencode' || session.cli === 'zcode';
+  const globalPoolCli = session.cli === 'opencode' || session.cli === 'zcode' || session.cli === 'kimi';
   if (!appType && !globalPoolCli) return { env: {}, skipDefaultModel: false, aliasOnly: false, providerModel: null, providerModels: [], providerName: null };
   const p = getProvider(globalPoolCli ? undefined : appType, providerId);
   if (!p || !providerSupportsCli(p, session.cli)) {
@@ -1132,6 +1187,11 @@ function resolveSpawnEnv(session) {
       // this guard covers legacy/corrupt state at the final spawn boundary.
       throw new Error('ZCode Provider 不存在、协议不兼容或缺少可用的 HTTP 凭证');
     }
+    if (session.cli === 'kimi') {
+      // Same fail-closed boundary as ZCode: a broken managed binding must never
+      // silently degrade into the user's native Kimi login.
+      throw new Error('Kimi Provider 不存在、协议不兼容或缺少可用的 HTTP 凭证');
+    }
     return { env: {}, skipDefaultModel: false, aliasOnly: false, providerModel: null, providerModels: [], providerName: null };
   }
   if (session.cli === 'opencode') {
@@ -1141,6 +1201,9 @@ function resolveSpawnEnv(session) {
     // Fail closed: silently falling back to the native/Coding Plan config after
     // a materialization error would send the turn to the wrong account.
     return { ...buildZcodeRoute(p, session), skipDefaultModel: false, aliasOnly: false };
+  }
+  if (session.cli === 'kimi') {
+    return { ...buildKimiCodeRoute(p, session), skipDefaultModel: false, aliasOnly: false };
   }
   const cfg = p.appType === 'codex' ? effectiveCodexSettings(p) : parseConfig(p.settingsConfig);
 
@@ -1618,6 +1681,8 @@ module.exports = {
   ANTHROPIC_ROUTING_KEYS,
   CODEX_HOMES_DIR,
   ZCODE_HOMES_DIR,
+  KIMI_HOMES_DIR,
+  buildKimiCodeRoute,
   WIRE_DEFAULT_MODEL,
   probeRelayModels,
 };
