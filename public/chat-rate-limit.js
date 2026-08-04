@@ -1518,8 +1518,16 @@
     // the sites-only path below would call a SUCCESSFUL scrape "余额暂不可用" —
     // i.e. the login the bar just asked for would appear to have changed nothing.
     if (value.status === 'ok' && value.source === 'subscription-page') {
+      // Unified window shape: { window:'5h'|'1wk'|'1m', usedPercent, resetMs }.
+      // Old caches may still carry { label, percent } — accept both, render
+      // through the same template either way.
       const summary = (Array.isArray(value.summary) ? value.summary : [])
-        .filter((s) => s && Number.isFinite(s.percent));
+        .map((s) => ({
+          label: (s && s.window) || (s && s.label) || 'Kimi',
+          used: s && Number.isFinite(s.usedPercent) ? s.usedPercent : (s ? s.percent : NaN),
+          resetMs: s && Number.isFinite(s.resetMs) ? s.resetMs : null,
+        }))
+        .filter((s) => Number.isFinite(s.used));
       const syncRel = relativeAgo(value.fetchedAt);
       if (!summary.length) {
         return Object.freeze({
@@ -1528,12 +1536,15 @@
           title: `已抓到 kimi.com 会员页，但没解析出百分比。\n原文：${String(value.text || '').slice(0, 300)}`,
         });
       }
-      const maxPct = Math.max.apply(null, summary.map((s) => s.percent));
-      let text = summary.map((s) => unifiedWindowSeg(s.label || 'Kimi', s.percent, null) || `${s.label || 'Kimi'} ${s.percent}%`).join(' · ');
+      const maxPct = Math.max.apply(null, summary.map((s) => s.used));
+      let text = summary.map((s) => {
+        const cd = s.resetMs ? Math.max(0, s.resetMs - Date.now()) : null;
+        return unifiedWindowSeg(s.label, s.used, cd) || `${s.label} ${s.used}%`;
+      }).join(' · ');
       if (syncRel) text += ` · ${syncRel}`;
       text += ' ⟳';
       let title = 'Kimi 订阅用量（会员页抓取；订阅 key 无预付余额接口）';
-      for (const s of summary) title += `\n${s.label || 'Kimi'}: 已用 ${s.percent}%`;
+      for (const s of summary) title += `\n${s.label}: 已用 ${s.used}%`;
       if (syncRel) title += `\n同步于 ${syncRel}`;
       title += '\n点击 bar 刷新';
       return Object.freeze({

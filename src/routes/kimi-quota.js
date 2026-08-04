@@ -148,13 +148,58 @@ function labelForPercent(lines, i) {
   return '';
 }
 
-function summarizeSubscriptionText(text) {
+// Map the raw scraped window label to the standard window token every quota
+// surface renders through (chat-rate-limit unifiedWindowSeg). The frontend no
+// longer trusts the raw Chinese label.
+function windowTokenForLabel(label) {
+  const l = String(label || '');
+  if (/5\s*小时|小时用量/.test(l)) return '5h';
+  if (/7\s*天|天用量|周/.test(l)) return '1wk';
+  if (/总|月/.test(l)) return '1m';
+  return null;
+}
+
+// The panel prints reset times right under each percentage, in two shapes:
+//   2026-08-19 后重置        (absolute date)
+//   08-04 06:28 后重置       (year-less; assumed current year, rolled forward
+//                             if that would already be in the past)
+// Returns epoch ms or null.
+const RESET_DATE_RE = /(\d{4}-)?(\d{1,2})-(\d{1,2})(?:\s+(\d{1,2}):(\d{2}))?\s*后重置/;
+function parseResetAfter(text, nowMs = Date.now()) {
+  const m = String(text || '').match(RESET_DATE_RE);
+  if (!m) return null;
+  const now = new Date(nowMs);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  const hh = m[4] ? Number(m[4]) : 0;
+  const mm = m[5] ? Number(m[5]) : 0;
+  let year = m[1] ? Number(m[1].slice(0, 4)) : now.getFullYear();
+  let ts = new Date(year, month - 1, day, hh, mm).getTime();
+  if (!m[1] && ts < nowMs - 24 * 3600 * 1000) {
+    ts = new Date(year + 1, month - 1, day, hh, mm).getTime();
+  }
+  return ts;
+}
+
+// Summary items are the unified window shape every quota surface renders:
+// { window: '5h'|'1wk'|'1m'|null, label, usedPercent, resetMs, line }.
+// `percent` stays as a mirror of usedPercent so pre-upgrade caches keep working.
+function summarizeSubscriptionText(text, nowMs = Date.now()) {
   const lines = String(text || '').split(/\n+/).map((s) => s.trim()).filter(Boolean);
   const hits = [];
   for (let i = 0; i < lines.length; i++) {
     const m = lines[i].match(/^(\d+(?:\.\d+)?)\s*%$/) || lines[i].match(/(\d+(?:\.\d+)?)\s*%/);
     if (!m) continue;
-    hits.push({ label: labelForPercent(lines, i), percent: Number(m[1]), line: lines[i].slice(0, 80) });
+    const label = labelForPercent(lines, i);
+    // The reset line follows the value (occasionally with a plan-name line in
+    // between); only the first candidate that really carries 后重置 counts.
+    let resetMs = null;
+    for (let j = i + 1; j <= i + 3 && j < lines.length; j++) {
+      if (/%/.test(lines[j])) break;
+      if (/后重置/.test(lines[j])) { resetMs = parseResetAfter(lines[j], nowMs); break; }
+    }
+    const usedPercent = Number(m[1]);
+    hits.push({ window: windowTokenForLabel(label), label, usedPercent, percent: usedPercent, resetMs, line: lines[i].slice(0, 80) });
     if (hits.length >= 4) break;
   }
   return hits.length ? hits : null;
@@ -309,6 +354,8 @@ module.exports = {
   fetchKimiSubscriptionPage,
   summarizeSubscriptionText,
   subscriptionPanelReady,
+  windowTokenForLabel,
+  parseResetAfter,
   collectKimiTargets,
   siteLabel,
   balanceHost,
