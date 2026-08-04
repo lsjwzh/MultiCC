@@ -7,6 +7,7 @@ const {
   fetchKimiUsage,
   fetchKimiSubscriptionPage,
   summarizeSubscriptionText,
+  subscriptionPanelReady,
   siteLabel,
   balanceHost,
   mountKimiQuotaRoutes,
@@ -207,6 +208,96 @@ test('summarizeSubscriptionText picks percent lines with their nearest label', (
 test('summarizeSubscriptionText returns null when there is no percentage', () => {
   assert.equal(summarizeSubscriptionText('请登录'), null);
   assert.equal(summarizeSubscriptionText(''), null);
+});
+
+// ── real-panel fixtures (sanitized structure observed on ?tab=quota, 2026-08) ──
+// The sidebar renders first and already contains 订阅/额度 wording; the quota
+// panel arrives seconds later with the percentages. Session titles are
+// deliberately NOT part of this fixture.
+
+const KIMI_SIDEBAR_TEXT = [
+  '升级订阅',
+  '权益额度将按月刷新',
+  '订阅信息',
+  '我的额度',
+  '使用明细',
+  '账单与发票',
+].join('\n');
+
+const KIMI_PANEL_TEXT = [
+  '升级订阅',
+  '权益额度将按月刷新',
+  '下次自动续费时间：2026-08-19',
+  '订阅信息',
+  '我的额度',
+  '使用明细',
+  '账单与发票',
+  '用量进度',
+  '总使用量',
+  '29.1%',
+  'Kimi Code 2026-08-19 后重置',
+  '5 小时用量',
+  'Code',
+  '1.31%',
+  '08-04 06:28 后重置',
+  '7 天用量',
+  'Code',
+  '4.59%',
+  '08-10 21:28 后重置',
+  '额度加油包 暂未开启',
+].join('\n');
+
+test('subscriptionPanelReady rejects the sidebar but accepts the real panel', () => {
+  assert.equal(subscriptionPanelReady(KIMI_SIDEBAR_TEXT), false, 'sidebar words (订阅/额度) are not the panel');
+  assert.equal(subscriptionPanelReady('电池 80%'), false, 'a stray percentage without panel markers is not the panel');
+  assert.equal(subscriptionPanelReady('用量进度 暂无'), false, 'markers without any percentage are not the panel');
+  assert.equal(subscriptionPanelReady(KIMI_PANEL_TEXT), true);
+});
+
+test('summarizeSubscriptionText pairs window labels across plan-name and reset lines', () => {
+  const sum = summarizeSubscriptionText(KIMI_PANEL_TEXT);
+  assert.ok(sum, 'the real panel must parse');
+  assert.deepEqual(
+    sum.map((h) => [h.label, h.percent]),
+    [['总使用量', 29.1], ['5 小时用量', 1.31], ['7 天用量', 4.59]],
+    'plan-name lines (Code) and reset lines must not become labels',
+  );
+});
+
+test('fetchKimiSubscriptionPage waits past the sidebar for the panel', async () => {
+  let reads = 0;
+  const page = fakeKimiPage({
+    hrefs: ['https://www.kimi.com/membership/subscription?tab=quota'],
+    text: KIMI_SIDEBAR_TEXT,
+  });
+  const innerText = page.evaluate.bind(page);
+  page.evaluate = async (expression) => {
+    if (expression.includes('innerText')) {
+      reads += 1;
+      // First polls see only the sidebar; the panel paints later.
+      return reads <= 2 ? KIMI_SIDEBAR_TEXT : KIMI_PANEL_TEXT;
+    }
+    return innerText(expression);
+  };
+  const result = await fetchKimiSubscriptionPage(fakeManaged({ cookies: [{ name: 'a', value: 'b' }], page }));
+  assert.equal(result.status, 'ok');
+  assert.ok(reads >= 3, 'must keep polling after the sidebar text appears');
+  assert.deepEqual(result.summary.map((h) => h.percent), [29.1, 1.31, 4.59]);
+});
+
+test('fetchKimiSubscriptionPage reports unavailable when only the sidebar ever renders', async () => {
+  process.env.KIMI_QUOTA_PANEL_TIMEOUT_MS = '200';
+  try {
+    const page = fakeKimiPage({
+      hrefs: ['https://www.kimi.com/membership/subscription?tab=quota'],
+      text: KIMI_SIDEBAR_TEXT,
+    });
+    const result = await fetchKimiSubscriptionPage(fakeManaged({ cookies: [{ name: 'a', value: 'b' }], page }));
+    assert.equal(result.status, 'unavailable');
+    assert.match(result.error, /用量面板/);
+  } finally {
+    delete process.env.KIMI_QUOTA_PANEL_TIMEOUT_MS;
+  }
 });
 
 test('fetchKimiUsage falls back to the membership page when every site is 401', async () => {
