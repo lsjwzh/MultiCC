@@ -186,6 +186,33 @@ test('quotaKindForProvider routes providers to the matching quota route', () => 
   assert.equal(kind('https://api.deepseek.com/anthropic'), null);
   assert.equal(kind('not a url'), null);
   assert.equal(catalog.quotaKindForProvider(null), null);
+  // Aliyun Bailian: official gateway host…
+  assert.equal(kind('https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic'), 'aliyun');
+  // …explicit quotaKind override beats an unrecognizable proxy host…
+  assert.equal(kind('https://my-relay.example.com/v1', { quotaKind: 'ark' }), 'ark');
+  // …'none' disables the badge entirely…
+  assert.equal(kind('https://ark.cn-beijing.volces.com/api/v3', { quotaKind: 'none' }), null);
+  // …unknown/invalid kinds fall through to the normal rules…
+  assert.equal(kind('https://ark.cn-beijing.volces.com/api/v3', { quotaKind: 'bogus' }), 'ark');
+  // …and the vendor NAME is the last-resort classifier for relay-hosted providers.
+  assert.equal(kind('https://relay.internal:8080', { name: '火山Codingplan' }), 'ark');
+  assert.equal(kind('https://relay.internal:8080', { name: '阿里云token plan' }), 'aliyun');
+  assert.equal(kind('https://relay.internal:8080', { name: '百炼 DashScope 中转' }), 'aliyun');
+  assert.equal(kind('https://relay.internal:8080', { name: '随便一个中转' }), null);
+});
+
+test('formatProviderQuotaBadge renders the aliyun console scrape as percent windows', () => {
+  const view = catalog.formatProviderQuotaBadge('aliyun', {
+    status: 'ok',
+    source: 'console-page',
+    summary: [{ label: '总额度', percent: 12.5 }, { label: '本月', percent: 80 }],
+    text: '…',
+  });
+  assert.match(view.text, /总额度 12\.5%/);
+  assert.match(view.text, /本月 80%/);
+  assert.equal(view.color, '#d29922');
+  const unparseable = catalog.formatProviderQuotaBadge('aliyun', { status: 'ok', summary: null, text: 'oops' });
+  assert.match(unparseable.text, /已抓取页面/);
 });
 
 test('formatProviderQuotaBadge renders zhipu 5h + weekly periods', () => {

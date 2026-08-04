@@ -159,7 +159,11 @@ async function fetchArkUsage(nowMs = Date.now()) {
 
   if (parsed.ok === false) {
     const msg = (parsed.error && parsed.error.message) || 'unknown error';
-    if (AUTH_RE.test(msg) || AUTH_RE.test(stderr)) return { status: 'needs_auth', error: msg };
+    if (AUTH_RE.test(msg) || AUTH_RE.test(stderr)) {
+      // Say what the user must do — a bare "unavailable" hides that this is
+      // just a missing login, fixable with one command / the login button.
+      return { status: 'needs_auth', error: `需要先运行 arkcli auth login 登录火山账号后再查询（${msg}）` };
+    }
     return { status: 'unavailable', error: msg };
   }
 
