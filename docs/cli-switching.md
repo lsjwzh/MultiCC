@@ -1,6 +1,6 @@
 # Multi-CLI switching
 
-> One conversation, five coding CLIs. Switch mid-task without losing the thread, without changing directory, and without re-explaining what you are doing.
+> One conversation, six coding CLIs. Switch mid-task without losing the thread, without changing directory, and without re-explaining what you are doing.
 
 This is MultiCC's defining feature, so it is worth being precise about what it does — and what it deliberately does *not* do.
 
@@ -14,6 +14,7 @@ This is MultiCC's defining feature, so it is worth being precise about what it d
 | OpenAI Codex | `codex` | yes | `npm install -g @openai/codex` |
 | OpenCode | `opencode` | yes | `npm install -g opencode-ai` |
 | ZCode (GLM) | `zcode` | yes | manual — install the ZCode desktop app from <https://zcode.z.ai> (its bundled CLI is what MultiCC drives) |
+| Kimi Code (Moonshot) | `kimi` | yes — OpenAI-format providers only (`KIMI_API_KEY`/`KIMI_BASE_URL` injection) | `npm install -g @moonshot-ai/kimi-code` |
 | Qoder CN | `qoder` | **no** — provider and subagent are forced to `null` | `curl -fsSL https://qoder.cn/install \| bash` |
 
 Source of truth: `SUPPORTED_CHAT_CLIS` in `src/cli-switch.js`, install specs in `src/cli/switch-runtime.js`.
@@ -66,7 +67,7 @@ Pass `{"fresh": true}` to discard the saved native session for the target CLI an
 
 ### Clearing history clears *every* CLI
 
-Clearing a chat invalidates the native session of **all five** CLIs, not just the active one. Otherwise switching away and back after a clear would resurrect context you explicitly discarded. Per-CLI *configuration* (model, effort, provider) is preserved.
+Clearing a chat invalidates the native session of **all six** CLIs, not just the active one. Otherwise switching away and back after a clear would resurrect context you explicitly discarded. Per-CLI *configuration* (model, effort, provider) is preserved.
 
 ---
 
@@ -122,7 +123,7 @@ curl -X POST "$BASE/api/sessions/$SESSION_ID/switch-cli" \
 }
 ```
 
-Body fields: `cli` (required, one of the five) and `fresh` (optional boolean).
+Body fields: `cli` (required, one of the six) and `fresh` (optional boolean).
 
 Notable responses:
 

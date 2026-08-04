@@ -31,6 +31,11 @@ const OFFICIAL_INSTALL_SPECS = Object.freeze({
     auto: false,
     manual: 'ZCode 暂无官方 CLI 安装脚本, 请从官网 https://zcode.z.ai 下载安装 ZCode 桌面版(其内置 CLI)',
   },
+  kimi: {
+    auto: true,
+    command: 'npm install -g @moonshot-ai/kimi-code',
+    display: 'npm install -g @moonshot-ai/kimi-code',
+  },
 });
 
 const INSTALL_TIMEOUT_MS = 8 * 60 * 1000;

@@ -27,7 +27,7 @@ function test(name, fn) {
 console.log('\nCross-CLI state tests');
 
 test('supported CLI set covers every chat adapter', () => {
-  assert.deepStrictEqual(SUPPORTED_CHAT_CLIS, ['claude', 'codex', 'opencode', 'zcode', 'qoder']);
+  assert.deepStrictEqual(SUPPORTED_CHAT_CLIS, ['claude', 'codex', 'opencode', 'zcode', 'qoder', 'kimi']);
 });
 
 test('legacy active fields migrate into the current CLI state', () => {

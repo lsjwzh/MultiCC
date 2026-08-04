@@ -112,7 +112,7 @@ Under the hood: `POST /api/update` with `{"force": true|false}` starts it, `GET
 
 - **Node.js** >= 20.19 (required by `chokidar` 5 ESM — backported `require(ESM)` support landed in Node 20.19 / 22.12)
 - **tmux** (for terminal mode; chat mode works without it)
-- **At least one coding CLI** on your `PATH`, already logged in — `claude`, `codex`, `opencode`, `zcode`, or `qoder`. MultiCC can install the missing ones for you from the CLI switcher (see [Multi-CLI switching](cli-switching.md)).
+- **At least one coding CLI** on your `PATH`, already logged in — `claude`, `codex`, `opencode`, `zcode`, `kimi`, or `qoder`. MultiCC can install the missing ones for you from the CLI switcher (see [Multi-CLI switching](cli-switching.md)).
 - **Flutter** >= 3.8 (optional; only if building the native app yourself)
 
 ## Manual Install
