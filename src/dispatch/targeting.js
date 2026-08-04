@@ -176,4 +176,7 @@ function dispatchTargetHintFor(sessionId) {
   return { dispatchableSessionsFor, dispatchTargetHintFor, buildDispatchContextPrompt };
 }
 
-module.exports = { createDispatchTargeting };
+// The voice router's status snapshot (gateway-host.js) reuses the same bounded
+// per-session digest the Commander routing preamble carries, so a spoken
+// "各会话执行情况" is answered from identical ground truth.
+module.exports = { createDispatchTargeting, roleSummaryFor, recentTasksFor, routingStateFor };
