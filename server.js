@@ -127,7 +127,7 @@ const { mountSessionMemoryRoutes } = require('./src/routes/session-memory');
 const { createAgentResourcesRoutes } = require('./src/routes/agent-resources');
 const { createRoleWorkerService } = require('./src/session/role-worker');
 const { mountSessionCreateRoutes } = require('./src/routes/session-create');
-const { mountCodexOAuthRoutes } = require('./src/routes/codex-oauth');
+const { mountCodexOAuthRoutes } = require('./src/routes/codex-oauth'); const { createClaudeOAuthSurface } = require('./src/routes/claude-oauth');
 const { mountZcodeAuthRoutes } = require('./src/routes/zcode-auth'); const { mountKimiAuthRoutes } = require('./src/routes/kimi-auth');
 const { createOrchestrationRoutes } = require('./src/routes/orchestration');
 const { createChatTurnEngine } = require('./src/chat/turn-engine');
@@ -1203,10 +1203,10 @@ async function createSession(id) {
   if (!await tmuxHasSession(id)) {
     console.log(`[multicc] Creating tmux session: ${tmuxSessionName(id)} in ${cwd} (${provider.name} session: ${persisted.cliSessionId || '<pending>'})`);
     const launchSession = provEnv.qualifiedModel ? { ...persisted, model: provEnv.qualifiedModel } : persisted;
-    // codex-login flow: whitelisted interactive `codex login` terminal, not the TUI.
-    const terminalCmd = persisted.loginFlow === 'codex-login'
-      ? `${cliCommands.codex} login`
-      : provider.buildTerminalCmd(launchSession || {});
+    // Login flows run the CLI's own interactive login command, not the TUI.
+    const loginCmd = persisted.loginFlow === 'codex-login' ? `${cliCommands.codex} login`
+      : persisted.loginFlow === 'claude-auth-login' ? `${cliCommands.claude} auth login` : null;
+    const terminalCmd = loginCmd || provider.buildTerminalCmd(launchSession || {});
     await tmuxCreateSession(id, cwd, 80, 24, terminalCmd, termEnv);
   } else {
     console.log(`[multicc] Attaching to existing tmux session: ${tmuxSessionName(id)}`);
@@ -1630,9 +1630,8 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
   if (!dir) return { ok: false, error: 'directory not found' };
   if (!SUPPORTED_CHAT_CLIS.includes(cli)) return { ok: false, error: `cli must be ${SUPPORTED_CHAT_CLIS.join(', ')}` };
   if (!['terminal', 'chat'].includes(kind)) return { ok: false, error: 'kind must be terminal or chat' };
-  if (loginFlow && (loginFlow !== 'codex-login' || cli !== 'codex' || kind !== 'terminal')) {
-    return { ok: false, error: 'loginFlow only supports codex terminal sessions' };
-  }
+  const loginFlowCli = { 'codex-login': 'codex', 'claude-auth-login': 'claude' }[loginFlow] || null;
+  if (loginFlow && (loginFlowCli !== cli || kind !== 'terminal')) return { ok: false, error: 'loginFlow only supports whitelisted interactive login terminal sessions' };
   const experiment = validateExperimentalSession({ enabled: tuiChatMirrorEnabled(), cli, kind, experimentalMode });
   if (!experiment.ok) return experiment;
   // Model can be set for both Claude and Codex sessions. Claude terminal mode
@@ -2256,6 +2255,7 @@ mountQoderModelRoutes(app);
 mountOpenCodeQuotaRoutes(app); mountQoderQuotaRoutes(app); mountCodexQuotaRoutes(app);
 mountArkQuotaRoutes(app); mountZhipuQuotaRoutes(app); mountKimiQuotaRoutes(app); mountAliyunQuotaRoutes(app);
 mountCodexOAuthRoutes(app, { getStatus: () => codexOAuthRefresh.status(), directories, createSessionRecord, persistedSessionExists: id => persistedSessions.has(id) });
+const claudeOAuthSurface = createClaudeOAuthSurface({ refresher: claudeOAuthRefresh, directories, createSessionRecord, persistedSessions, destroySessionCascade, sessionPersistence, appendEvent }); claudeOAuthSurface.mountRoutes(app); // see src/routes/claude-oauth.js header
 // Token APIs remain between the two Provider route phases so the established
 // route ordering stays byte-compatible while accounting lives in one runtime.
 tokenUsageRuntime.mountRoutes(app);
@@ -2987,8 +2987,8 @@ app.use(safeErrorHandler(logger));
     // it only runs the CLI once the expiry is close, so the router never has to
     // report "run `claude` once to refresh the Keychain" to a user. Boot counts
     // as a check because a machine that was asleep wakes up with a stale token.
-    claudeOAuthRefresh.check('boot');
-    trackServiceTimer(setInterval(() => claudeOAuthRefresh.check(), CLAUDE_OAUTH_CHECK_INTERVAL_MS));
+    claudeOAuthRefresh.check('boot').then(() => claudeOAuthSurface.afterRefresh('boot'));
+    trackServiceTimer(setInterval(() => claudeOAuthRefresh.check().then(() => claudeOAuthSurface.afterRefresh('periodic')), CLAUDE_OAUTH_CHECK_INTERVAL_MS));
     // Same job for the shared default codex login (~/.codex/auth.json): keep
     // the one-hour access token fresh so concurrent provider-less codex turns
     // never race over the single-use refresh token.

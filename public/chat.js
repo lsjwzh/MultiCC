@@ -2931,3 +2931,68 @@ connect();
 /* ════════════════════════════════════════════════════════════════════════════
  * Codex ChatGPT 登录态横幅 — 结束
  * ════════════════════════════════════════════════════════════════════════════ */
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Claude 官方登录态横幅 — 开始
+ * 后台刷新器（定时 + 遇 502 反应式）总是先自己尝试刷新 Keychain 凭据；只有
+ * 它判定 needs-login（refresh token 死）或 failed（试了仍刷不动）时横幅才
+ * 出现。按钮一键打开跑 `claude auth login` 的交互终端；重新登录后服务端
+ * closer 检测到凭据变了会自动销毁该终端，横幅在下次轮询时消失。
+ * ════════════════════════════════════════════════════════════════════════════ */
+(function claudeLoginBanner() {
+  let banner = null;
+  let opening = false;
+  function setBanner(show) {
+    if (show && !banner) {
+      banner = document.createElement('div');
+      banner.id = 'claude-login-banner';
+      // Stack below the codex banner when both are up (same fixed top otherwise).
+      const belowCodex = document.getElementById('codex-login-banner') ? '36px' : '0';
+      banner.style.cssText = `position:fixed;top:${belowCodex};left:0;right:0;z-index:99998;display:flex;gap:10px;align-items:center;justify-content:center;padding:8px 12px;background:#8a3535;color:#fff;font-size:13px;box-shadow:0 2px 8px rgba(0,0,0,.35);`;
+      const span = document.createElement('span');
+      span.textContent = tt('claudeLoginBannerText');
+      const btn = document.createElement('button');
+      btn.textContent = tt('claudeLoginBannerButton');
+      btn.style.cssText = 'padding:3px 14px;border-radius:6px;border:1px solid rgba(255,255,255,.6);background:transparent;color:#fff;cursor:pointer;font-weight:600;font-size:13px;';
+      btn.onclick = async () => {
+        if (opening) return;
+        opening = true;
+        btn.textContent = tt('claudeLoginBannerOpening');
+        try {
+          const r = await fetch(withToken('/api/claude/oauth/login'), { method: 'POST' });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok || !d.ok) throw new Error((d && d.error) || ('HTTP ' + r.status));
+          window.open('/?id=' + encodeURIComponent(d.sessionId), '_blank');
+        } catch (e) {
+          btn.textContent = tt('claudeLoginBannerFailed', { error: e.message }).slice(0, 60);
+          setTimeout(() => { if (banner) btn.textContent = tt('claudeLoginBannerButton'); opening = false; }, 2500);
+          return;
+        }
+        opening = false;
+        btn.textContent = tt('claudeLoginBannerButton');
+      };
+      banner.appendChild(span);
+      banner.appendChild(btn);
+      document.body.appendChild(banner);
+    } else if (!show && banner) {
+      banner.remove();
+      banner = null;
+    }
+  }
+  async function poll() {
+    try {
+      const r = await fetch(withToken('/api/claude/oauth/status'));
+      if (!r.ok) return;
+      const d = await r.json();
+      setBanner(!!d.needsLogin);
+    } catch (_) { /* server restarting or offline — banner state unchanged */ }
+  }
+  document.addEventListener('DOMContentLoaded', () => {
+    poll();
+    const timer = setInterval(poll, 30000);
+    if (timer && timer.unref) timer.unref();
+  });
+})();
+/* ════════════════════════════════════════════════════════════════════════════
+ * Claude 官方登录态横幅 — 结束
+ * ════════════════════════════════════════════════════════════════════════════ */
