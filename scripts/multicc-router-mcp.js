@@ -4,7 +4,7 @@
 const readline = require('readline');
 
 const SERVER_NAME = 'multicc-router';
-const SERVER_VERSION = '1.4.0';
+const SERVER_VERSION = '1.5.0';
 const BASE_URL = String(process.env.MULTICC_BASE_URL || '').replace(/\/+$/, '');
 const CAPABILITY = String(process.env.MULTICC_ROUTER_CAPABILITY || '');
 
@@ -55,6 +55,30 @@ const DISPATCH_MASTER_SCHEMA = {
       minimum: 1,
       maximum: 21600,
       description: 'Maximum synchronous attachment time (up to 6 hours). Valid only for mode=sync.',
+    },
+  },
+};
+
+const DISPATCH_CANCEL_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['operation_id'],
+  properties: {
+    operation_id: {
+      type: 'string',
+      minLength: 1,
+      maxLength: 256,
+      description: 'Operation id (op_...) returned by this session\'s own route_task/dispatch_master call.',
+    },
+    reason: {
+      type: 'string',
+      maxLength: 500,
+      description: 'Optional cancellation reason recorded on the operation.',
+    },
+    cancel_running: {
+      type: 'boolean',
+      default: false,
+      description: 'Set true to also interrupt the target turn when the task already left the FIFO and is running.',
     },
   },
 };
@@ -212,6 +236,18 @@ const TOOLS = [
     annotations: {
       readOnlyHint: false,
       destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
+  {
+    name: 'dispatch_cancel',
+    title: 'Cancel a dispatched task',
+    description: 'Cancel a task this session previously queued via route_task/dispatch_master — the required first step before re-routing. A task still sitting in the target FIFO is removed silently (the worker never sees it); one already running needs cancel_running=true and interrupts the target turn. Idempotent; an already-terminal operation reports its real status.',
+    inputSchema: DISPATCH_CANCEL_SCHEMA,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
       idempotentHint: true,
       openWorldHint: false,
     },

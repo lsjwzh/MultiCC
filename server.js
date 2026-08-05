@@ -1087,7 +1087,7 @@ const {
   pushToGateway,
   handleGatewayControl,
   recordRouterAdmission,
-  dispatchToSession,
+  dispatchToSession, cancelDispatchRun,
 } = gatewayHost;
 
 // ── Session management ──
@@ -2765,10 +2765,9 @@ const processingWatchdog = createProcessingWatchdog({
   cancelTurn: (id, options) => sessionWorkHost.cancelActiveTurn(id, options),
   logger,
 });
-routerToolHost.configure({ records: persistedSessions, dispatchToSession,
-  orchestrationRuntime, taskBoard: taskBoardRuntime,
-  recordUserInput: signal => sessionWorkHost.recordInput(signal),
-  subscribeDispatchProgress, recordRouterAdmission });
+routerToolHost.configure({ records: persistedSessions, dispatchToSession, orchestrationRuntime, taskBoard: taskBoardRuntime,
+  recordUserInput: signal => sessionWorkHost.recordInput(signal), cancelActiveTurn: (id, opts) => sessionWorkHost.cancelActiveTurn(id, opts),
+  onDispatchCancelled: id => cancelDispatchRun(id), subscribeDispatchProgress, recordRouterAdmission });
 
 waitInjector.init({
   inject: (session, text, opts) => sessionDelivery.deliverContinuation(session, text, opts),

@@ -13,7 +13,7 @@ const TERMINAL_OPERATION_STATES = new Set([
 const TOOL_NAMES = new Set([
   'wait_for_user_answer', 'request_user_input',
   'wait_for_external_result', 'get_external_wait', 'cancel_external_wait',
-  'route_task', 'dispatch_master', 'dispatch_slave',
+  'route_task', 'dispatch_master', 'dispatch_slave', 'dispatch_cancel',
 ]);
 const MAX_MESSAGE_LENGTH = 256 * 1024;
 const MAX_RESULT_LENGTH = 512 * 1024;
@@ -181,6 +181,10 @@ function createRouterToolRuntime({
   listExternalWaits,
   cancelExternalWait,
   subscribeDispatchProgress = () => () => {},
+  schedulerStatus = async () => null,
+  cancelQueuedEntry = null,
+  cancelActiveTurnFn = null,
+  onDispatchCancelled = () => {},
 } = {}) {
   if (!records || typeof records.get !== 'function') {
     throw new TypeError('[router-tool-runtime] records map is required');
@@ -446,6 +450,25 @@ function createRouterToolRuntime({
     }
   }
 
+  // Where did the task actually land? dispatchToSession reports the target's
+  // scheduler disposition ('queued' with a FIFO position | 'started' |
+  // 'unknown'), and every receipt must carry it truthfully: a master deciding
+  // between "wait out the FIFO" and "cancel + re-route" needs exactly this.
+  function queueFields(admitted) {
+    const queue = admitted.queue && typeof admitted.queue === 'object'
+      ? admitted.queue
+      : { state: 'unknown' };
+    return {
+      queued: queue.state !== 'started',
+      queue_state: queue.state,
+      ...(queue.state === 'queued' && Number.isFinite(queue.position)
+        ? { queue_position: queue.position, queue_length: queue.length } : {}),
+      ...(queue.state === 'queued' ? {
+        instruction: 'The task sits in the target FIFO. To re-route it elsewhere, call dispatch_cancel with this operation_id first (a queued task is removed silently, the worker never sees it), then route to the new target — re-dispatching without cancelling runs the task twice. To keep waiting, do nothing.',
+      } : {}),
+    };
+  }
+
   async function routeTask(context, args) {
     const admitted = await admit(context, 'route_task', args, 'none');
     return {
@@ -456,7 +479,7 @@ function createRouterToolRuntime({
       execution_session_id: admitted.chatId || admitted.targetSessionId,
       task_id: admitted.taskId,
       duplicate: admitted.duplicate,
-      queued: true,
+      ...queueFields(admitted),
     };
   }
 
@@ -522,7 +545,7 @@ function createRouterToolRuntime({
         execution_session_id: admitted.chatId || admitted.targetSessionId,
         task_id: admitted.taskId,
         duplicate: admitted.duplicate,
-        queued: true,
+        ...queueFields(admitted),
         instruction: 'Do not poll, inspect, or wait on the worker. Continue only independent work, then end this turn naturally. MultiCC will inject the dispatch result as a new message and wake this session automatically.',
       };
     }
@@ -547,7 +570,7 @@ function createRouterToolRuntime({
           execution_session_id: admitted.chatId || admitted.targetSessionId,
           task_id: admitted.taskId,
           duplicate: admitted.duplicate,
-          queued: true,
+          ...queueFields(admitted),
           instruction: 'The worker is still running. Retry dispatch_master with the same idempotency_key and mode="sync" to reattach without creating a duplicate operation.',
         };
       }
@@ -555,6 +578,87 @@ function createRouterToolRuntime({
     } finally {
       try { unsubscribe(); } catch (_) {}
     }
+  }
+
+  // Cancel a task this session previously queued via route_task /
+  // dispatch_master — the missing half of re-routing. Without it, "send it to
+  // someone else" always meant "send a SECOND copy". Three dispositions:
+  //   queued      — still in the target's FIFO; removed silently, the worker
+  //                 never sees it. This is the clean re-route.
+  //   running     — already claimed and executing; needs cancel_running=true
+  //                 and interrupts the target's turn (it ends as a cancel).
+  //   untrackable — no queued or running trace remains (claim/finish race);
+  //                 nothing will execute, so only the operation record settles.
+  async function dispatchCancel(context, args) {
+    rejectUnknownArguments(args, new Set(['operation_id', 'reason', 'cancel_running']));
+    if (typeof cancelQueuedEntry !== 'function' || typeof operations.cancelDispatch !== 'function') {
+      throw new RouterToolError('cancel_unavailable', 'dispatch cancellation is not available on this host', 503);
+    }
+    const operationId = cleanId(args.operation_id, 'operation_id');
+    const reason = cleanOptionalText(args.reason, 'reason', 500) || 'cancelled by dispatcher';
+    const operation = await operations.get(operationId);
+    if (!operation) {
+      throw new RouterToolError('operation_not_found', 'dispatch operation not found', 404);
+    }
+    if (operation.kind !== 'dispatch') {
+      throw new RouterToolError('not_a_dispatch', 'operation is not a dispatch', 409);
+    }
+    // Ownership is the whole authorization model here: a session settles only
+    // its own dispatches. Targets and bystanders cannot reach this record.
+    if (operation.ownerSessionId !== context.sessionId) {
+      throw new RouterToolError('forbidden', 'only the dispatching session can cancel its own dispatch', 403);
+    }
+    if (TERMINAL_OPERATION_STATES.has(operation.status)) {
+      return {
+        ok: true,
+        operation_id: operationId,
+        status: operation.status,
+        already_terminal: true,
+        note: 'the operation already reached a terminal state; nothing was cancelled',
+      };
+    }
+    const chatId = operation.spec?.chatId || operation.spec?.targetId;
+    const entryId = operation.requestOutboxId || `operation:${operationId}:request`;
+    const settle = async (disposition, note) => {
+      const settled = await operations.cancelDispatch(operationId, { reason, disposition });
+      if (settled && settled.raced) {
+        return {
+          ok: true,
+          operation_id: operationId,
+          status: settled.status,
+          already_terminal: true,
+          note: 'the task reached a terminal state while the cancel was in flight',
+        };
+      }
+      try { onDispatchCancelled(operationId); } catch (_) {}
+      return { ok: true, operation_id: operationId, status: 'cancelled', disposition, note };
+    };
+
+    const removed = await cancelQueuedEntry(chatId, entryId, { actor: context.sessionId, reason });
+    if (removed.ok) {
+      return settle('queued', 'removed from the target FIFO before delivery; the worker never sees it');
+    }
+
+    const schedule = await schedulerStatus(chatId);
+    const active = schedule?.active || null;
+    const isRunningThis = active !== null
+      && (active.entryId === entryId || active.deliveryId === entryId);
+    if (isRunningThis) {
+      if (args.cancel_running !== true) {
+        throw new RouterToolError(
+          'already_running',
+          'the task already left the FIFO and is running on the target; pass cancel_running=true to interrupt that turn',
+          409,
+        );
+      }
+      if (typeof cancelActiveTurnFn !== 'function') {
+        throw new RouterToolError('cancel_unavailable', 'running-turn cancellation is not available on this host', 503);
+      }
+      await cancelActiveTurnFn(chatId, { source: 'dispatch_cancel', reason });
+      return settle('running', 'the running turn was interrupted on the target');
+    }
+
+    return settle('untrackable', 'no queued or running trace of the task remained; only the operation record was settled');
   }
 
   async function dispatchSlave(context, args) {
@@ -913,6 +1017,7 @@ function createRouterToolRuntime({
     }
     if (tool === 'route_task') return routeTask(context, args);
     if (tool === 'dispatch_master') return dispatchMaster(context, args, options);
+    if (tool === 'dispatch_cancel') return dispatchCancel(context, args);
     return dispatchSlave(context, args);
   }
 

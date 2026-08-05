@@ -29,12 +29,18 @@ function createRouterToolHost({
     recordUserInput,
     subscribeDispatchProgress,
     recordRouterAdmission,
+    cancelActiveTurn,
+    onDispatchCancelled,
   } = {}) {
     runtime = createRouterToolRuntime({
       records,
       dispatchToSession,
       operations: orchestrationRuntime?.operations,
       completeDispatch: (id, result) => orchestrationRuntime.completeDispatch(id, result),
+      schedulerStatus: id => orchestrationRuntime.sessionScheduler.status(id),
+      cancelQueuedEntry: (id, entryId, opts) => orchestrationRuntime.sessionScheduler.cancelQueued(id, entryId, opts),
+      cancelActiveTurnFn: typeof cancelActiveTurn === 'function' ? cancelActiveTurn : null,
+      onDispatchCancelled: typeof onDispatchCancelled === 'function' ? onDispatchCancelled : () => {},
       registerExternalWait: spec => orchestrationRuntime.register(spec),
       getExternalWait: id => orchestrationRuntime.waits.get(id),
       listExternalWaits: sessionId => orchestrationRuntime.listForSession(sessionId),
