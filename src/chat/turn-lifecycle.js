@@ -74,6 +74,28 @@ function assignKillReason(runner, reason) {
   return !!runner.killReason;
 }
 
+// A durable final result is only ever written for a non-error result
+// (persistFinalAssistantResult skips api-failure envelopes), so once a turn
+// has one, a clean close proves any error flagged mid-stream was recovered
+// from. codex surfaces its own housekeeping failures (model-list refresh,
+// skill loading) as stream error items and then finishes the turn normally;
+// without this veto the sticky flags classify a succeeded turn as an API
+// error at close. Returns true when flags were actually cleared.
+function clearErrorFlagsForSucceededTurn(turn, runner, cs, facts = {}) {
+  if (!turn || !runner || turn.resultDurable !== true) return false;
+  if (facts.killReason) return false;
+  if (facts.code !== undefined && facts.code !== null && facts.code !== 0) return false;
+  const hadErrorFlags = !!(runner.sawApiError || runner.apiErrorRaw || runner.adapterError);
+  runner.sawApiError = false;
+  runner.apiErrorRaw = null;
+  runner.adapterError = null;
+  if (cs) {
+    cs._sawApiError = false;
+    cs._adapterError = null;
+  }
+  return hadErrorFlags;
+}
+
 function recordResultEvent(turn, runner, facts = {}) {
   if (!turn || !runner || runner.turnId !== turn.turnId || facts.current !== true) {
     return Object.freeze({ ok: false, code: 'stale_runner', resultDurable: !!(turn && turn.resultDurable) });
@@ -167,6 +189,7 @@ module.exports = {
   createRunnerOwnership,
   ownsCurrentRunner,
   assignKillReason,
+  clearErrorFlagsForSucceededTurn,
   recordResultEvent,
   recordCloseResult,
   recordPartialCheckpoint,
