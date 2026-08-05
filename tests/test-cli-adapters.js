@@ -164,6 +164,27 @@ assert.deepStrictEqual(
     message: 'limited',
   },
 );
+// codex surfaces internal housekeeping failures as stream error items although
+// the turn finishes fine; mapping them to error events used to stick a bogus
+// API-error state onto succeeded turns (see clearErrorFlagsForSucceededTurn).
+assert.deepStrictEqual(
+  codex.decodeEvent({ type: 'error', message: 'ERROR codex_models_manager::manager: failed to refresh available models: timeout waiting for child process to exit' }),
+  [],
+);
+assert.deepStrictEqual(
+  codex.decodeEvent({ type: 'error', message: 'ERROR codex_core::session::session: failed to load skill [PATH] missing field `description`' }),
+  [],
+);
+// ...but a real provider error with a similar shape must still map through,
+// and turn.failed is never filtered even when its text matches the noise.
+assert.strictEqual(
+  codex.decodeEvent({ type: 'error', message: 'stream error: connection reset by peer' })[0].kind,
+  'provider',
+);
+assert.strictEqual(
+  codex.decodeEvent({ type: 'turn.failed', message: 'failed to refresh available models: timeout' })[0].type,
+  'error',
+);
 assert.strictEqual(codex.decodeEvent({ type: 'turn.completed', usage: { input_tokens: 3 } })[0].type, 'complete');
 assert.deepStrictEqual(
   codex.decodeEvent({
