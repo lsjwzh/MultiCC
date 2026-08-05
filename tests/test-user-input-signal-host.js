@@ -11,7 +11,7 @@ const {
 } = require('../src/classify/user-input-host');
 const { createCodexAdapter } = require('../src/cli-adapters/codex');
 
-function fixture() {
+function fixture(options = {}) {
   const states = new Map([['chat-1', {
     classifyState: 'C',
     goal: '发布版本',
@@ -32,6 +32,7 @@ function fixture() {
       return next;
     },
     now: () => 1234,
+    ...(options.onResolved ? { onResolved: options.onResolved } : {}),
   });
   return { host, sessions, states };
 }
@@ -74,6 +75,32 @@ test('real user turn clears pending signal while automatic continuation preserve
   assert.equal(states.get('chat-1').pendingUserInput, null);
   assert.equal(states.get('chat-1').classifyState, 'P');
   assert.equal(states.get('chat-1').userInputSignalTurnId, 'turn-user');
+});
+
+test('beginTurn supersedes an unanswered question with a resolved-style broadcast', () => {
+  const broadcasts = [];
+  const { host, states } = fixture({ onResolved: (sessionId, requestId, taskId, extra) => {
+    broadcasts.push({ sessionId, requestId, taskId, extra });
+  } });
+  states.get('chat-1').pendingUserInput = { requestId: 'usrq-9', taskId: 'task-9', resolved: false };
+  host.beginTurn('chat-1', { originContinue: false, turnId: 'turn-new' });
+  assert.deepEqual(broadcasts, [
+    { sessionId: 'chat-1', requestId: 'usrq-9', taskId: 'task-9', extra: { superseded: true } },
+  ]);
+  assert.equal(states.get('chat-1').pendingUserInput, null);
+});
+
+test('beginTurn stays silent for resolved questions and continuations', () => {
+  const broadcasts = [];
+  const { host, states } = fixture({ onResolved: (...args) => broadcasts.push(args) });
+  states.get('chat-1').pendingUserInput = { requestId: 'usrq-9', resolved: true };
+  host.beginTurn('chat-1', { originContinue: false, turnId: 'turn-new' });
+  states.get('chat-1').pendingUserInput = { requestId: 'usrq-10', resolved: false };
+  host.beginTurn('chat-1', { originContinue: true, turnId: 'turn-auto' });
+  assert.equal(states.get('chat-1').pendingUserInput.requestId, 'usrq-10', 'continuation keeps the pending question');
+  host.beginTurn('chat-1', { originContinue: false, turnId: 'turn-after' });
+  assert.equal(broadcasts.length, 1, 'only the genuine supersede fires');
+  assert.equal(broadcasts[0][1], 'usrq-10');
 });
 
 test('structured signal overrides Aux state and provides degraded W fallback', () => {

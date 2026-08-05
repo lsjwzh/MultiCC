@@ -146,6 +146,15 @@ function createUserInputSignalHost({
 
   function beginTurn(sessionId, { originContinue = false, turnId } = {}) {
     const current = getState(sessionId) || {};
+    const stale = current.pendingUserInput;
+    // A fresh turn supersedes an unanswered question: the user chose to drive
+    // on. Fire the same broadcast a resolve fires so every open window tears
+    // the card down instead of inviting an answer to a question that no longer
+    // exists — flagged superseded so clients can render the difference.
+    if (!originContinue && stale && stale.resolved !== true && stale.requestId) {
+      log(`[multicc/classify] ${sessionId} request_user_input superseded by new turn request=${stale.requestId}`);
+      onResolved(sessionId, stale.requestId, stale.taskId ?? null, { superseded: true });
+    }
     return setState(sessionId, {
       pendingUserInput: originContinue ? current.pendingUserInput || null : null,
       userInputSignalVersion: 1,
