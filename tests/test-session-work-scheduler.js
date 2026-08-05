@@ -169,6 +169,35 @@ test('direct input staged during P starts as soon as classify leaves P', async t
   assert.equal(bClaim && bClaim.id, b.entry.id);
 });
 
+test('released W with an unanswered question holds staged work until the user acts', async t => {
+  const h = fixture(t, {
+    getPendingUserInput: () => ({ requestId: 'usrq-1', resolved: false }),
+  });
+  // A is active (P); B is staged behind it while it runs.
+  const a = await h.scheduler.admit({ sessionId: 's1', text: 'A', idempotencyKey: 'A' });
+  await startClaim(h, await claimOne(h));
+  const b = await h.scheduler.admit({ sessionId: 's1', text: 'B', idempotencyKey: 'B' });
+  assert.equal(b.queued, true);
+
+  // A ends on an unanswered question: B must not fire ahead of the answer —
+  // otherwise the fresh turn's beginTurn discards the pending question and the
+  // user's answer lands on a busy session as plain FIFO work.
+  await h.scheduler.complete('s1', { classifyState: 'W', awaitingRequestId: 'usrq-1' });
+  assert.equal(await claimOne(h), null, 'staged work holds at rest behind the open question');
+  assert.equal((await h.outbox.get(b.entry.id)).directRun, false);
+
+  // A message admitted while the session is ALREADY waiting still runs at once.
+  const c = await h.scheduler.admit({ sessionId: 's1', text: 'C', idempotencyKey: 'C' });
+  const cClaim = await claimOne(h);
+  assert.equal(cClaim && cClaim.id, c.entry.id);
+
+  // Once that turn finishes done, the staged item drains in order.
+  await startClaim(h, cClaim);
+  await h.scheduler.complete('s1', { classifyState: 'D' });
+  const bClaim = await claimOne(h);
+  assert.equal(bClaim && bClaim.id, b.entry.id);
+});
+
 test('released W keeps ordinary FIFO staged but runs a correlated answer control entry', async t => {
   const h = fixture(t);
   const active = await h.scheduler.admit({
