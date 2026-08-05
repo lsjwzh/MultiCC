@@ -387,6 +387,45 @@ function createOperationService({
     });
   }
 
+  // Cancel a dispatch before (or while) the target runs it. Unlike
+  // completeDispatch this writes NO result outbox: only the operation's owner
+  // may cancel (enforced by the router tool), so injecting a "dispatch result"
+  // wake-up would be the owner interrupting itself with its own decision. A
+  // sync master blocked in waitForOperation still unblocks — it polls the
+  // status, which is terminal either way.
+  async function cancelDispatch(id, { reason = '', disposition = '' } = {}) {
+    return store.mutate(draft => {
+      const operation = draft.operations[id];
+      if (!operation || operation.kind !== 'dispatch') return { ok: false, code: 'not_found' };
+      if (TERMINAL_OPERATION_STATES.has(operation.status)) {
+        // Losing the race to a genuine completion is not an error: report the
+        // real terminal status so the caller surfaces the truth instead of a
+        // cancellation that did not happen.
+        return {
+          ok: true, idempotent: true, raced: true,
+          status: operation.status, operation: publicOperation(operation),
+        };
+      }
+      const at = Number(now());
+      const cleanReason = String(reason || 'cancelled by dispatcher').slice(0, 500);
+      operation.status = 'cancelled';
+      operation.cancelledAt = at;
+      operation.completedAt = at;
+      operation.updatedAt = at;
+      operation.lastError = cleanReason;
+      operation.result = normalizeJson({
+        status: 'cancelled',
+        reason: cleanReason,
+        disposition: String(disposition || '').slice(0, 40),
+      });
+      operation.resultHash = hashPayload(operation.result, cryptoImpl);
+      return {
+        ok: true, idempotent: false, raced: false,
+        status: 'cancelled', operation: publicOperation(operation),
+      };
+    });
+  }
+
   async function get(id) {
     return store.read(draft => publicOperation(draft.operations[id]));
   }
@@ -416,6 +455,7 @@ function createOperationService({
     markRunning,
     completeDetached,
     completeDispatch,
+    cancelDispatch,
     observeTask,
     interruptActiveTasks,
     get,
