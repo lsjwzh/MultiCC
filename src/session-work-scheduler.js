@@ -697,6 +697,17 @@ function createSessionWorkScheduler({
       // classifyState is the LETTER (D/W/B/E). D = terminal-done (drains FIFO);
       // W/B/E = released but at-rest (FIFO only drains on D, see selectSessionItem).
       schedule.classifyState = CLASSIFY_STATES.has(classifyState) ? classifyState : 'D';
+      // A turn ending on an unanswered question must not let work staged while
+      // it ran fire ahead of the user's answer. directRun exists for messages
+      // admitted while the session is ALREADY at rest; items that merely headed
+      // the FIFO when the question landed hold at rest until the user acts.
+      // Control kinds (the answer itself) keep their own selection path.
+      if (schedule.classifyState === 'W' && canonicalPendingUserInput(sessionId)) {
+        for (const item of Object.values(draft.outbox || {})) {
+          if (item && item.sessionId === sessionId && item.state === 'pending'
+              && !isControlItem(item)) item.directRun = false;
+        }
+      }
       schedule.lastDecision = {
         action: 'complete',
         reason,
