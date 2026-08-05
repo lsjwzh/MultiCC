@@ -159,6 +159,7 @@ function buildDispatchContextPrompt(sessionId) {
     '默认只选择 kind="chat"。任务正文出现“终端/terminal/CLI”不代表用户指定了 terminal session；只有用户原话点名某个 terminal 的完整 id 或完整 label 时，才可选择该 terminal id 并设置 allow_terminal=true。',
       '不要输出 <<route>> 或 <<dispatch>> 标记，也不要调用旧 HTTP dispatch 接口；跨 session 派发只调用 MCP 工具，queued/operation_id 回执才是有效派发。',
       '如果要并行派发多个独立子任务，可连续调用多个 route_task；派发是单向的，worker 结果不会回流给你。',
+      '回执的 queue_state/queue_position 会告诉你任务进了目标 FIFO 还是已开跑。改派前必须先取消：dispatch_cancel({"operation_id":"op_..."})（还在 FIFO 就静默移除、worker 永远看不到；已开跑需加 cancel_running=true），再派给新目标——不取消就重复派发会两条都执行。',
       '需要回执时改用 dispatch_master 并明确 mode：sync 会保持工具调用、持续显示 Slave 明确输出的 reasoning/thinking 与安全进度并原地返回最终结果；async 会登记即返，稍后以新消息自动唤醒本会话。',
       'async 后严禁自行轮询或查看目标会话；只可继续做无依赖工作，然后自然结束本轮。',
     `可用目标 sessions: ${JSON.stringify(targets)}`,

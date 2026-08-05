@@ -390,6 +390,7 @@ function createGatewayHost(rawDeps) {
       targetId,
       chatSessionId: chatId,
       replyTo: opts.replyTo || null,
+      ownerSessionId,
       createdAt: admitted.createdAt,
     });
     // Only a synchronous master is actually blocked on the worker. Async mode
@@ -419,14 +420,47 @@ function createGatewayHost(rawDeps) {
     if (wakeupError) {
       logger.warn('dispatch_wakeup_deferred', { operationId: dispatchId, targetId, error: wakeupError });
     }
+    // Tell the dispatcher WHERE its task landed: sitting in the target's FIFO
+    // (and at which position) or already running. A master that learns "queued
+    // behind three other tasks" can deliberately re-route; one told only
+    // "queued/operation_id" cannot, and re-dispatching blind duplicates work.
+    let queue = { state: 'unknown' };
+    try {
+      const schedule = await getOrchestrationRuntime().sessionScheduler.status(chatId);
+      const entryId = `operation:${dispatchId}:request`;
+      const queuedEntry = (schedule?.queued || []).find(item => item.entryId === entryId);
+      if (queuedEntry) {
+        queue = {
+          state: 'queued',
+          position: queuedEntry.position,
+          length: schedule.queued.length,
+        };
+      } else if (schedule?.active
+          && (schedule.active.entryId === entryId || schedule.active.deliveryId === entryId)) {
+        queue = { state: 'started' };
+      }
+    } catch (_) { /* the admission is durable; the hint is best-effort */ }
     return {
       ok: true,
       chatId,
       operationId: dispatchId,
       status: admitted.status,
       duplicate: !!admitted.idempotent,
+      queue,
       ...(wakeupError ? { wakeupError } : {}),
     };
+  }
+
+  // A cancelled dispatch must not keep its bookkeeping alive: the run entry
+  // would leak (finalizeDispatch never fires for a task that never ran) and
+  // the dispatcher's pending list would pin its phase at awaiting_workers for
+  // a worker that will never report back.
+  function cancelDispatchRun(dispatchId) {
+    const run = dispatchRuns.get(dispatchId);
+    if (!run) return false;
+    dispatchRuns.delete(dispatchId);
+    if (run.replyTo) removePendingDispatch(run.replyTo, dispatchId);
+    return true;
   }
 
   // ── Dispatch ↔ currentTask bridge (step 2, idle fix) ──────────────────────────
@@ -524,6 +558,7 @@ function createGatewayHost(rawDeps) {
     handleGatewayControl,
     recordRouterAdmission,
     dispatchToSession,
+    cancelDispatchRun,
     finalizeDispatch,
   };
 }

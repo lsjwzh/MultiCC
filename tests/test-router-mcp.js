@@ -104,7 +104,7 @@ test('stdio MCP advertises scoped tools and bridges calls with the capability', 
   assert.deepEqual(listed.result.tools.map(tool => tool.name), [
     'wait_for_user_answer', 'request_user_input',
     'wait_for_external_result', 'get_external_wait', 'cancel_external_wait',
-    'route_task', 'dispatch_master', 'dispatch_slave',
+    'route_task', 'dispatch_cancel', 'dispatch_master', 'dispatch_slave',
   ]);
   const questionTool = listed.result.tools[0];
   assert.deepEqual(questionTool.inputSchema.required, ['question']);
@@ -182,7 +182,7 @@ test('stdio MCP advertises scoped tools and bridges calls with the capability', 
   assert.deepEqual(dispatchedList.result.tools.map(tool => tool.name), [
     'wait_for_user_answer', 'request_user_input',
     'wait_for_external_result', 'get_external_wait', 'cancel_external_wait',
-    'route_task', 'dispatch_master', 'dispatch_slave',
+    'route_task', 'dispatch_cancel', 'dispatch_master', 'dispatch_slave',
   ]);
 });
 
