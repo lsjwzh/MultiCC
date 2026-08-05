@@ -23,6 +23,15 @@ function collabToolName(tool) {
   return `Agent ${tool || 'Task'}`;
 }
 
+// codex surfaces its own internal housekeeping failures as stream error items
+// even though the turn is unaffected. Observed on codex 0.x (rust core):
+// "failed to refresh available models: timeout waiting for child process to
+// exit" and "failed to load skill ...". These match the error text only, so
+// they never touch transport/disconnect classification or turn.failed.
+function isCodexInternalNoise(message) {
+  return /failed to refresh available models|failed to load skill/i.test(String(message || ''));
+}
+
 function collabResult(item) {
   const states = item.agents_states || {};
   const lines = Object.entries(states).map(([id, state]) => {
@@ -283,6 +292,13 @@ function createCodexAdapter(deps) {
         const kind = isResponseCompletedDisconnect(message)
           ? 'response_completed_disconnect'
           : isTransportDisconnect(message) ? 'transport_disconnect' : 'provider';
+        // codex reports its own background housekeeping failures (refreshing
+        // the model list, loading skills) as stream error items although the
+        // turn keeps running and finishes normally. They are not API errors
+        // and not user-actionable; mapping them to error events would stick
+        // sawApiError onto the turn and surface a bogus error bubble. A real
+        // turn failure arrives as turn.failed and is never filtered here.
+        if (event.type === 'error' && kind === 'provider' && isCodexInternalNoise(message)) return [];
         return [{
           type: 'error',
           label: 'Codex',
@@ -308,6 +324,7 @@ function createCodexAdapter(deps) {
 
 module.exports = {
   createCodexAdapter,
+  isCodexInternalNoise,
   mcpResultText,
   normalizeCodexUsage,
   routerMcpConfigArgs,

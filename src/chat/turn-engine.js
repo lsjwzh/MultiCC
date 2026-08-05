@@ -18,6 +18,7 @@ const {
   createTurnLifecycle,
   createRunnerOwnership,
   assignKillReason,
+  clearErrorFlagsForSucceededTurn,
   recordResultEvent,
   hasMatchingPartialCheckpoint,
   planTurnFinalization,
@@ -1094,6 +1095,16 @@ function createChatTurnEngine(deps) {
         console.log(`[multicc/chat] [${sessionName}] close kind=${kind} ${JSON.stringify(diag)}`);
         const partialOutput = meaningfulTurnOutput(cs);
         const sideEffects = turnHasSideEffects(cs);
+        // A durable result + clean close proves the turn succeeded; any error
+        // flagged mid-stream (codex emits internal housekeeping failures as
+        // stream error items, then finishes fine) was recovered from and must
+        // not classify this turn as an API error.
+        if (clearErrorFlagsForSucceededTurn(turn, runner, cs, { code, killReason })) {
+          logger.info?.('chat_error_flags_cleared_after_success', {
+            sessionId: sessionName,
+            provider: cs.cli,
+          });
+        }
         const shouldClassifyApiError = !!(
           runner.apiErrorRaw
           || runner.sawApiError
@@ -1522,6 +1533,9 @@ function createChatTurnEngine(deps) {
     if (!isCurrentTurnRunner(cs, turn, runner)) return;
     const partialOutput = meaningfulTurnOutput(cs);
     const sideEffects = turnHasSideEffects(cs);
+    // Same success veto as the process close path: a durable result proves a
+    // mid-stream error was recovered from (see the close handler above).
+    clearErrorFlagsForSucceededTurn(turn, runner, cs, { killReason: runner.killReason });
     const shouldClassifyApiError = !!(
       runner.apiErrorRaw
       || runner.sawApiError
