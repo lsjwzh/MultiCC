@@ -485,11 +485,18 @@ async function ensureDir(label) {
 
   await browserTest('版本检测可见', async (p) => {
     await navTo(p, `${BASE}/manage`);
-    await new Promise(r => setTimeout(r, 4000)); // wait for version-check fetch
-    const ver = await p.evaluate(() => {
-      const el = document.querySelector('#ver-current');
-      return el ? el.textContent : null;
-    });
+    // The page defers its first version check by 3s, then the fetch has to
+    // land — on a loaded server that exceeds any fixed wait. Poll instead:
+    // the assertion is that the indicator updates, not how fast it does.
+    let ver = null;
+    for (let i = 0; i < 20; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      ver = await p.evaluate(() => {
+        const el = document.querySelector('#ver-current');
+        return el ? el.textContent : null;
+      });
+      if (ver && ver !== 'v—') break;
+    }
     if (!ver || ver === 'v—') throw new Error('version indicator not updated');
     ok('版本检测', ver);
   });
