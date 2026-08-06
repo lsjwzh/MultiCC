@@ -64,6 +64,52 @@ tmux list-sessions | grep multicc | cut -d: -f1 | xargs -I{} tmux kill-session -
 
 Set a different `PORT` in `.env`. Automatic rollover to the next free port only happens in development mode (`NODE_ENV=development` or `MULTICC_DEV=true`); in normal operation an occupied port is a hard startup failure, so the port you configure is the port you get.
 
+## How do I update MultiCC?
+
+```bash
+cd MultiCC
+./multicc update
+```
+
+It pulls the latest code, reinstalls dependencies if the manifests changed, and restarts
+the server. You can also click the version number at the bottom of the `/manage` sidebar
+and let MultiCC do it for you.
+
+## `./multicc update` stopped, or reports "nothing to update" while I'm behind
+
+Use the force variant:
+
+```bash
+cd MultiCC
+./multicc update --force     # -f works too
+```
+
+An ordinary dirty tree does not need this — on the dev channel a plain `update` stashes
+your changes as `multicc-auto-update`, fast-forwards, and pops them back. `--force` is for
+the cases that plain `update` can't finish on its own:
+
+- the stash pop conflicts with what was just pulled (update stops, changes left in the stash);
+- on the stable channel, `git checkout <tag>` refuses because a local edit is in the way;
+- your branch has local commits, so `update` prints *Local branch is ahead of origin —
+  nothing to update* and leaves you off the release line.
+
+`--force` gets you onto the remote's code regardless.
+
+It does **not** delete anything: your changes (including untracked files) go into a stash
+labelled `multicc-force-update-<timestamp>` first. But it does **not** put them back
+either — you end up on a clean checkout, and you recover your work yourself:
+
+```bash
+git stash list          # find multicc-force-update-<timestamp>
+git stash pop           # or: git stash apply stash@{N}
+```
+
+The server restarts at the end, which interrupts any agent turn that is mid-stream
+(partial output is saved). In the web UI the same thing is the *强制更新* checkbox in the
+update dialog.
+
+Full detail: [Installation → when the working tree is dirty](installation.md#when-the-working-tree-is-dirty-or-the-history-diverged).
+
 ## How do I share a chat conversation?
 
 In the chat page, select messages and click "Share" — you'll get a read-only link. You can optionally set a password and allow viewers to operate. Shares are revoked when you delete the session.

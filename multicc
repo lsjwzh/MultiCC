@@ -332,6 +332,14 @@ do_update() {
       echo "Newer release available: ${latest_tag} → updating..."
     else
       echo "Already on the latest release (${latest_tag})."
+      if [ "$force" = 1 ]; then
+        # This gate runs before --force is consulted, so -f is a no-op here: there
+        # is no newer release to move to. Say so, or a user who ran it to get a
+        # clean checkout reads the early exit as "force silently did nothing".
+        echo "  --force has no newer release to update to."
+        echo "  To discard local changes and re-checkout this release:"
+        echo "    git checkout -f ${latest_tag}"
+      fi
       return 0
     fi
     # Update: checkout the tag. Under --force, back the tree up first and then
@@ -441,8 +449,11 @@ do_update() {
         return 1
       fi
     elif [ "$merge_base" = "$origin_tip" ]; then
-      # Local is ahead of origin — nothing to pull.
+      # Local is ahead of origin — nothing to pull. Say how to get onto origin
+      # anyway: someone who committed a local experiment reads "nothing to
+      # update" as "I am current", when in fact they are off the release line.
       echo "Local branch is ahead of origin — nothing to update."
+      echo "  To discard the local commits and take origin's code: ./multicc update --force"
       [ "$stashed" = 1 ] && git stash pop >/dev/null 2>&1
       return 0
     else
@@ -465,6 +476,8 @@ do_update() {
         echo "⚠️  Update pulled successfully, but your local changes conflict with it."
         echo "   Your changes are safe in 'git stash' (run: git stash list / git stash pop)."
         echo "   Resolve the conflict, then restart with './multicc restart'."
+        echo "   Or take the new code and keep the changes only as a stash:"
+        echo "     ./multicc update --force"
         return 1
       fi
     fi
