@@ -114,10 +114,10 @@ cd MultiCC
 
 ```bash
 ./multicc update           # 拉最新代码、按需重装依赖、重启
-./multicc update --force   # 同上，但工作区脏了 / 历史分叉了也照更
+./multicc update --force   # 无论工作区什么样，都落到远端那份代码上
 ```
 
-不带参数的 `update` 遇到无法安全快进的工作区就会停下——你改过某个文件、留了个实验分支、或者上游 force-push 导致历史分叉。加 `--force` 就一定能更新到远端最新：它先把工作区的全部改动（**包括未跟踪文件**）备份进一个带标签的 `multicc-force-update-<时间戳>` stash，再把分支硬重置到远端。**不会删任何东西，但也不会自动恢复** —— 更新后你拿到的是一个干净的检出，本地改动请自己用 `git stash list` / `git stash pop` 取回。
+日常的脏工作区不带参数的 `update` 自己就能处理：dev 渠道下它会先把改动 stash 成 `multicc-auto-update`，快进 `main`，再 pop 回来。`--force` 是给这样处理不了的情况准备的——pop 回来时和刚拉下来的代码冲突、stable 渠道的 `git checkout <tag>` 因为本地改动而拒绝、或者你的分支上有本地提交、不带参数的 `update` 只会说一句「nothing to update」。加上它就一定落到远端那份代码：工作区的全部改动（**包括未跟踪文件**）先备份进一个带标签的 `multicc-force-update-<时间戳>` stash，然后强制切换（dev 渠道是 `git reset --hard origin/main`，stable 渠道是 `git checkout -f <tag>`）。**不会删任何东西，但也不会自动恢复** —— 更新后你拿到的是一个干净的检出，本地改动请自己用 `git stash list` / `git stash pop` 取回。唯一的例外：stable 渠道下 `--force` 仍然只在有更新的 release 时才动手，已经在最新 tag 上时它会停下，并打印出让你手动执行的 `git checkout -f`。
 
 也可以在网页里点：`/manage` **左侧栏底部的版本号** → 弹窗显示当前版本、最新版本和一个「强制更新」勾选框 → 确认后 MultiCC 就在后台跑同一个更新，日志实时显示在弹窗里，跑完自动重启服务、服务回来后自动刷新页面。更新失败时弹窗会保留完整输出，并提供「强制更新重试」。
 
@@ -160,6 +160,15 @@ Provider、子 agent 路由、语音、TTS/ASR、通知都在 `/manage` 里配�
 
 **端口被占用了？**
 在 `.env` 里换一个 `PORT`。自动顺延到下一个空闲端口只在开发模式（`NODE_ENV=development` / `MULTICC_DEV=true`）下发生。
+
+**怎么更新？`update` 停下了 / 明明落后却说没得更新怎么办？**
+`cd MultiCC && ./multicc update`；它停下来（stash pop 冲突、stable 渠道 checkout 被拒），或者你本地有提交、它只回一句「nothing to update」时，加 `--force`（`-f` 亦可）：
+
+```bash
+cd MultiCC && ./multicc update --force
+```
+
+它不会删东西——本地改动（含未跟踪文件）先进一个叫 `multicc-force-update-<时间戳>` 的 stash；但也**不会自动恢复**，更新后你拿到干净检出，改动用 `git stash list` / `git stash pop` 自己取回。更新末尾会重启服务。详见 **[后续更新](#4-后续更新)**。
 
 **→ 完整 FAQ（英文）：[docs/faq.md](docs/faq.md)**
 

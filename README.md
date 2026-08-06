@@ -160,10 +160,10 @@ Then open the same URL on your phone, or install the [Flutter app](docs/installa
 
 ```bash
 ./multicc update           # pull latest, reinstall deps if they changed, restart
-./multicc update --force   # same, but don't stop for a dirty or diverged tree
+./multicc update --force   # land on the remote's code whatever the tree looks like
 ```
 
-Plain `update` refuses to touch a working tree it can't safely fast-forward — a local edit, a leftover experiment, a branch that diverged after an upstream force-push. `--force` gets you to the remote tip anyway: it first stashes everything, including untracked files, into a labelled `multicc-force-update-<timestamp>` stash, then hard-resets the branch. **Nothing is deleted, but the stash is not restored** — you land on a clean checkout and recover your work yourself with `git stash list` / `git stash pop`.
+A plain `update` already copes with an everyday dirty tree: on the dev channel it stashes your changes as `multicc-auto-update`, fast-forwards `main`, and pops them back. `--force` is for when that isn't enough — the pop conflicts with what was just pulled, the stable channel's `git checkout <tag>` refuses over a local edit, or your branch carries local commits and plain `update` just says *nothing to update*. It puts you on the remote's code regardless: everything in the tree, **including untracked files**, goes into a labelled `multicc-force-update-<timestamp>` stash first, then the checkout is forced (`git reset --hard origin/main` on dev, `git checkout -f <tag>` on stable). **Nothing is deleted, but the stash is not restored** — you land on a clean checkout and recover your work yourself with `git stash list` / `git stash pop`. One exception: on the stable channel `--force` still only acts when a newer release exists; at the newest tag it stops and prints the `git checkout -f` to run by hand.
 
 Or do it from the browser: click the **version number at the bottom of the `/manage` sidebar** → a dialog shows current vs. latest and a *强制更新* checkbox → confirm, and MultiCC runs the same update in the background, streams the log into the dialog, restarts itself, and reloads the page once it's back. If the update fails, the dialog keeps the full output and offers a force retry.
 
@@ -331,6 +331,7 @@ A few of the most common questions:
 - **Can I use it without Claude Code?** Yes. Any one of the six supported CLIs is enough.
 - **Does switching CLIs cost tokens immediately?** No. The checkpoint is queued and delivered with your *next* message.
 - **Port already in use?** Set a different `PORT` in `.env` — automatic rollover only happens in development mode.
+- **`./multicc update` stopped, or says "nothing to update" while I'm behind?** `./multicc update --force` puts you on the remote's code. Local changes are stashed as `multicc-force-update-<ts>` and not restored — see [Keep it up to date](#4-keep-it-up-to-date).
 
 **→ [Full FAQ](docs/faq.md)**
 
