@@ -2070,6 +2070,11 @@
           loadMemoryGraph();
         }
         if (v === 'voice') window.MultiCCManageQwenAudio?.loadPanel?.();
+        // Sync the active provider tab when the provider view is shown.
+        if (v === 'provider') {
+          const activeTab = document.querySelector('#prov-tabs .prov-tab.active');
+          if (activeTab) setProvTab(activeTab.dataset.ptab);
+        }
       };
       const requestedView = new URLSearchParams(location.search).get('view');
       const allowedViews = ['overview', 'memory', 'cron', 'voice', 'goal', 'provider', 'global', 'push', 'tunnel', 'bridges', 'resources', 'skillsync', 'storage'];
