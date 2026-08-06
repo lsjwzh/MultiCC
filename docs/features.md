@@ -183,6 +183,7 @@ A single operational surface for everything:
 - **Graceful shutdown**: drains in-flight chat turns on SIGTERM/SIGINT instead of dropping them.
 - **Crash recovery**: TTS service handles missing binaries gracefully; VAPID keys auto-generate on first run.
 - **Syntax-gated merges**: JS files are validated before merging into the base branch.
+- **Self-update**: `./multicc update` pulls, reinstalls dependencies if the manifests changed, and restarts — stashing and restoring local changes around the fast-forward, since the running server keeps the tree dirty by itself. `./multicc update --force` skips that dance and lands on the remote's code whatever the local history is, stashing local work to `multicc-force-update-<timestamp>` without restoring it. The same run is one click from the version number in the `/manage` sidebar, and its state lives in `logs/update.log` — so the restarted server can still report how the update it was launched by ended. See [Installation](installation.md#when-the-working-tree-is-dirty-or-the-history-diverged).
 
 ---
 
