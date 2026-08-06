@@ -53,7 +53,7 @@ cd MultiCC && ./multicc install   # install as macOS launchd background service
 
 ```bash
 ./multicc update           # pull latest code, reinstall deps if the manifests changed, restart
-./multicc update --force   # same, but don't stop for a dirty or diverged working tree
+./multicc update --force   # land on the remote's code whatever the local tree/history is
 ./multicc update --help    # usage
 ```
 
@@ -69,9 +69,22 @@ required. If an interrupted upgrade leaves dependencies incomplete, rerun
 
 ### When the working tree is dirty or the history diverged
 
-A plain `update` stops rather than clobber your checkout. This is the common case after
-you've edited a file locally, or after a server-side history rewrite / force-push (which
-happens when sensitive files are purged from the repo). Add `--force`:
+The running server rewrites runtime-state files constantly, so the working tree is almost
+never clean — and a plain `update` is built for that. On the dev channel it stashes local
+changes (tracked **and** untracked) under `multicc-auto-update`, fast-forwards, and pops
+them back. A dirty tree by itself is not what stops an update.
+
+What a plain `update` does in the awkward cases depends on the channel:
+
+| Situation | Dev channel (`main`) | Stable channel (release tag) |
+|---|---|---|
+| Dirty working tree | stash → fast-forward → pop back | `git checkout <tag>` carries the edits over, but **aborts** the update if one of them is in the way — nothing is stashed |
+| Restoring the stash conflicts with what was pulled | stops; your work stays in the `multicc-auto-update` stash | n/a |
+| Local commits ahead of origin | prints *Local branch is ahead of origin — nothing to update* and stops, leaving you off the release line | compares release versions, not commits — a `package.json` version ≥ the latest tag reads as *already on the latest release* |
+| Upstream force-pushed / history rewritten | hard-resets to `origin/<branch>` **without** `--force`, and leaves the auto-stash unpopped | n/a |
+
+So the honest summary is: plain `update` never clobbers your work silently, but it also
+doesn't always get you onto the remote's code. `--force` does:
 
 ```bash
 cd MultiCC && ./multicc update --force
@@ -88,9 +101,13 @@ cd MultiCC && ./multicc update --force
    dev channel that happens even when `HEAD` didn't move, because the files on disk did.
 
 The stash is **not** popped afterwards. Recover your work with `git stash list` and
-`git stash pop`, or leave it there forever — it costs nothing. Without `--force`, a dirty
-tree is stashed under `multicc-auto-update` and popped back after the fast-forward; only
-`--force` leaves you on a clean checkout.
+`git stash pop`, or leave it there forever — it costs nothing.
+
+One asymmetry to know about: on the **stable** channel the version check runs before
+`--force` is consulted, so at the newest release tag `update --force` reports *already on
+the latest release* and stops — no stash, no forced checkout, no restart. It prints the
+`git checkout -f <tag>` to run by hand if you wanted the clean checkout rather than the
+new version. On the dev channel `--force` at `origin`'s tip does reset and restart.
 
 ### One-click update from the browser
 
@@ -145,7 +162,7 @@ Then open `http://<your-lan-ip>:3000?token=<ACCESS_TOKEN>`. Note that plain HTTP
 ./multicc status      # check if running
 ./multicc log         # tail live logs
 ./multicc update      # pull latest, reinstall deps, restart
-./multicc update -f   # ...even if the working tree is dirty or diverged (see above)
+./multicc update -f   # ...forcibly, discarding local changes to a stash (see above)
 ./multicc install     # install launchd agent (macOS auto-start on login)
 ./multicc uninstall   # remove launchd agent
 ```
