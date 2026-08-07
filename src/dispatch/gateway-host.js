@@ -65,10 +65,40 @@ function createGatewayHost(rawDeps) {
     [appendChatMessage, 'appendChatMessage'], [chatBroadcast, 'chatBroadcast'],
   ]) assertFunction(fn, name);
 
-  function addressableSessions() {
+  function mentionKey(value) {
+    return String(value || '')
+      .normalize('NFKC')
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, '');
+  }
+
+  function mentionScore(session, userText) {
+    const query = mentionKey(userText);
+    if (!query) return 0;
+    const dir = session.dirId ? directories.get(session.dirId) : null;
+    const fields = [
+      [session.id, 400],
+      [session.label, 300],
+      [session.dirId, 200],
+      [dir && (dir.label || dir.name), 100],
+    ];
+    for (const [value, score] of fields) {
+      const key = mentionKey(value);
+      if (key.length >= 2 && query.includes(key)) return score;
+    }
+    return 0;
+  }
+
+  function addressableSessions(userText = '') {
     return [...persistedSessions.values()]
       .filter(s => s.type !== 'aux' && s.type !== 'gateway' && s.type !== 'commander')
-      .slice(0, 30);
+      .map((session, index) => ({ session, index, score: mentionScore(session, userText) }))
+      // The snapshot stays bounded, but an explicitly named id/label/Fleet is
+      // promoted before truncation. Otherwise a real target after item 30 is
+      // invisible and the Router cannot obey an otherwise unambiguous request.
+      .sort((a, b) => b.score - a.score || a.index - b.index)
+      .slice(0, 30)
+      .map(entry => entry.session);
   }
 
   // The voice router needs two fields the WeChat prompt does not carry: `type`
@@ -83,7 +113,7 @@ function createGatewayHost(rawDeps) {
   // spoken "各会话执行情况如何" was unanswerable except by guessing — the
   // reported "语音总是查询不到会话执行情况" gap.
   function voiceRouterPrompt(userText) {
-    const context = JSON.stringify(addressableSessions().map(s => {
+    const context = JSON.stringify(addressableSessions(userText).map(s => {
       const dir = s.dirId ? directories.get(s.dirId) : null;
       return {
         id: s.id,

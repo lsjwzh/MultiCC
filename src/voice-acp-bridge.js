@@ -14,9 +14,14 @@ const ADMISSION_VERSION = 1;
 const ADMISSION_OUTCOMES = new Set([
   'no_dispatch', 'admitted', 'rejected', 'failed', 'cancelled', 'unknown',
 ]);
-const ADMISSION_TIMEOUT_MIN_MS = 15_000;
-const ADMISSION_TIMEOUT_MAX_MS = 30_000;
-const ADMISSION_TIMEOUT_DEFAULT_MS = 20_000;
+// Qwen's generic ACP owner allows a coordinator turn up to 300 seconds. The
+// Voice Router must cover FIFO admission plus one real CLI turn and MCP
+// dispatch; production evidence includes valid 53–220 second turns. Keep our
+// uncertainty boundary just inside the owner's deadline instead of timing out
+// a healthy Router after the former 20-second fragment-join window.
+const ADMISSION_TIMEOUT_MIN_MS = 60_000;
+const ADMISSION_TIMEOUT_MAX_MS = 290_000;
+const ADMISSION_TIMEOUT_DEFAULT_MS = 270_000;
 const ADMISSION_UNCERTAIN = '这条任务的提交状态还没有确认，请稍后在 MultiCC 任务板上查看。';
 
 function boundedAdmissionTimeout(value) {
@@ -27,6 +32,20 @@ function boundedAdmissionTimeout(value) {
 
 function clean(value) {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+// Qwen Audio's ACP coordinator keeps both the raw utterance and its conservative
+// task summary inside the same envelope as the private launch ticket.  The
+// ticket must never enter Chat history, but deleting the whole envelope also
+// deletes the user's request.  Rebuild only the two user-facing fields instead
+// of forwarding the coordinator protocol or its private correlation metadata.
+function requestTextFromEnvelope(envelope) {
+  const finalAsr = clean(envelope?.input?.final_asr).slice(0, 12_000);
+  const objective = clean(envelope?.input?.objective).slice(0, 12_000);
+  if (finalAsr && objective && finalAsr !== objective) {
+    return `用户语音原话：${finalAsr}\n\n整理后的任务目标：${objective}`;
+  }
+  return finalAsr || objective;
 }
 
 function normalizeBaseUrl(value) {
@@ -67,19 +86,25 @@ function promptParts(blocks) {
   const raw = values.join('\n');
   const envelopes = [...raw.matchAll(QWEN_REQUEST_ENVELOPE)];
   let launchId = '';
+  let requestText = '';
   if (envelopes.length === 1) {
     try {
       const envelope = JSON.parse(envelopes[0][1]);
       launchId = clean(envelope?.voice_session_id).slice(0, 200);
+      requestText = requestTextFromEnvelope(envelope);
     } catch (_) {}
   }
+  const legacyText = raw
+    .replace(QWEN_REQUEST_ENVELOPE, '')
+    .replace(QWEN_INSTRUCTION_BLOCK, '')
+    .trim();
   return {
     envelopeCount: envelopes.length,
     launchId,
-    text: raw
-      .replace(QWEN_REQUEST_ENVELOPE, '')
-      .replace(QWEN_INSTRUCTION_BLOCK, '')
-      .trim(),
+    // An envelope is a protocol boundary. If it is malformed, duplicated, or
+    // lacks a user request, fail closed instead of accidentally forwarding the
+    // coordinator's generic instructions as though the user had spoken them.
+    text: envelopes.length ? requestText : legacyText,
   };
 }
 
@@ -539,6 +564,11 @@ function createVoiceAcpBridge({
           && message.role === 'user'
           && message.clientMsgId === active.clientMsgId) {
         active.started = true;
+        // Start the bounded outcome wait only after MultiCC has acknowledged
+        // this exact message. Connection setup and launch resolution are not a
+        // Router execution timeout, and an uncorrelated shared-socket frame is
+        // never sufficient to start it.
+        this.armOverallTimeout(active);
         if (active.cancelRequested && this.socket?.readyState === WebSocketImpl.OPEN) {
           this.socket.send(JSON.stringify({ type: 'cancel', operationId: active.clientMsgId }));
         }
@@ -654,7 +684,6 @@ function createVoiceAcpBridge({
         active.abortListener = () => this.cancel();
         signal?.addEventListener('abort', active.abortListener, { once: true });
         this.active = active;
-        this.armOverallTimeout(active);
         try {
           this.socket.send(JSON.stringify({
             type: 'user_message',
