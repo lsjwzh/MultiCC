@@ -7,7 +7,7 @@
 # ============================================================================
 # Usage:
 #   Stable release:
-#     curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v1.4.1/install.sh | bash -s -- --branch v1.4.0
+#     curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v1.4.1/install.sh | bash -s -- --branch v1.4.1
 #   Latest (main branch, may be ahead of the latest stable release):
 #     curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install.sh | bash
 #

@@ -267,7 +267,10 @@ function createHostLifecycle(deps) {
   shutdownCoordinator.onClose(() => {
     routerToolHost.clear();
     const orchestrationRuntime = getOrchestrationRuntime();
-    return orchestrationRuntime ? orchestrationRuntime.stop() : undefined;
+    if (!orchestrationRuntime) return undefined;
+    return typeof orchestrationRuntime.dispose === 'function'
+      ? orchestrationRuntime.dispose()
+      : orchestrationRuntime.stop();
   });
   shutdownCoordinator.onClose(() => sessionPersistence.stop());
 

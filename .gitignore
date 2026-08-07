@@ -12,6 +12,9 @@ memories/
 directories.json
 scheduled_tasks.json
 orchestration.json
+orchestration.sqlite
+orchestration.sqlite-wal
+orchestration.sqlite-shm
 task_board.json
 shares.json
 aux-config.json
