@@ -11,7 +11,9 @@ const fs = require('fs');
 const net = require('net');
 const os = require('os');
 const path = require('path');
+const Database = require('better-sqlite3');
 const { assertTestDir } = require('../src/paths');
+const { _loadDatabaseState } = require('../src/orchestration-sqlite-store');
 
 const ROOT = path.join(__dirname, '..');
 const ACCESS_TOKEN = 'durable-operations-api-test';
@@ -72,6 +74,11 @@ async function stopServer() {
     new Promise(resolve => setTimeout(() => resolve(false), 5000)),
   ]);
   if (!exited && server.exitCode === null) server.kill('SIGKILL');
+}
+
+function readOrchestration(file) {
+  const db = new Database(file, { readonly: true });
+  try { return _loadDatabaseState(db, file); } finally { db.close(); }
 }
 
 (async () => {
@@ -160,18 +167,18 @@ async function stopServer() {
   assert.equal(taskLedger.status, 200);
   assert.deepEqual(taskLedger.data, { tasks: [], count: 0 });
 
-  const orchestrationFile = path.join(dataDir, 'orchestration.json');
+  const orchestrationFile = path.join(dataDir, 'orchestration.sqlite');
   const detachedDir = path.join(dataDir, 'detached');
   assert.equal(fs.statSync(orchestrationFile).mode & 0o777, 0o600);
   assert.equal(fs.statSync(detachedDir).mode & 0o777, 0o700);
   assert.equal(fs.statSync(path.join(detachedDir, detached.data.taskId, 'meta.json')).mode & 0o777, 0o600);
-  const durableText = fs.readFileSync(orchestrationFile, 'utf8');
+  const durableText = JSON.stringify(readOrchestration(orchestrationFile));
   assert.equal(durableText.includes('raw-dispatch-capability'), false);
   assert.equal(durableText.includes('raw-detached-capability'), false);
 
   response = await api('DELETE', `/api/sessions/${parentId}?force=1`);
   assert.equal(response.status, 200);
-  const snapshot = JSON.parse(fs.readFileSync(orchestrationFile, 'utf8'));
+  const snapshot = readOrchestration(orchestrationFile);
   assert.equal(snapshot.operations[firstDispatch.data.operationId].status, 'cancelled');
   assert.equal(snapshot.operations[detached.data.operationId].status, 'cancelled');
   assert.equal(

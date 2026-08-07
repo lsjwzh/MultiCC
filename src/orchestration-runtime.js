@@ -7,6 +7,7 @@
 
 const crypto = require('crypto');
 const { createOrchestrationStore } = require('./orchestration-store');
+const { createOrchestrationSqliteStore } = require('./orchestration-sqlite-store');
 const { createOutbox } = require('./outbox');
 const { createWaitService } = require('./wait-service');
 const { createSessionWorkScheduler } = require('./session-work-scheduler');
@@ -61,6 +62,7 @@ function publicWait(wait) {
 
 function createOrchestrationRuntime({
   file,
+  databaseFile = null,
   runChatTurn,
   isBusy = () => false,
   hasPersistedDelivery = async () => false,
@@ -83,7 +85,10 @@ function createOrchestrationRuntime({
   outboxOptions = {},
   waitOptions = {},
 } = {}) {
-  if (!file || typeof file !== 'string') throw new TypeError('[orchestration-runtime] file is required');
+  if ((!file || typeof file !== 'string')
+      && (!databaseFile || typeof databaseFile !== 'string')) {
+    throw new TypeError('[orchestration-runtime] file or databaseFile is required');
+  }
   if (typeof runChatTurn !== 'function') {
     throw new TypeError('[orchestration-runtime] runChatTurn is required');
   }
@@ -91,7 +96,20 @@ function createOrchestrationRuntime({
     throw new TypeError('[orchestration-runtime] hasPersistedDelivery must be a function');
   }
 
-  const store = createOrchestrationStore({ file, now, ...storeOptions });
+  // Production selects the normalized SQLite backend. Keeping the JSON path
+  // injectable preserves isolated compatibility tests and provides a narrow
+  // rollback reader without making stale JSON an automatic runtime fallback.
+  const store = databaseFile
+    ? createOrchestrationSqliteStore({
+      file: databaseFile,
+      legacyFile: file || null,
+      now,
+      ...storeOptions,
+    })
+    : createOrchestrationStore({ file, now, ...storeOptions });
+  if (store.migration?.migrated) {
+    log(`[orchestration] migrated legacy JSON to SQLite (${store.file})`);
+  }
   const outbox = createOutbox({
     store,
     now,
@@ -325,15 +343,17 @@ function createOrchestrationRuntime({
   }
 
   async function stats() {
-    const snapshot = await store.snapshot();
-    const allWaits = Object.values(snapshot.waits);
-    const allOutbox = Object.values(snapshot.outbox);
-    return {
-      waits: allWaits.filter(wait => wait.status === 'pending').length,
-      resolvedWaits: allWaits.filter(wait => wait.status === 'resolved').length,
-      pendingDeliveries: allOutbox.filter(item => item.state === 'pending' || item.state === 'leased').length,
-      deadLetters: allOutbox.filter(item => item.state === 'dead-letter').length,
-    };
+    return store.read(snapshot => {
+      const allWaits = Object.values(snapshot.waits);
+      const allOutbox = Object.values(snapshot.outbox);
+      return {
+        backend: store.backend || 'json',
+        waits: allWaits.filter(wait => wait.status === 'pending').length,
+        resolvedWaits: allWaits.filter(wait => wait.status === 'resolved').length,
+        pendingDeliveries: allOutbox.filter(item => item.state === 'pending' || item.state === 'leased').length,
+        deadLetters: allOutbox.filter(item => item.state === 'dead-letter').length,
+      };
+    });
   }
 
   function matches(metadata, output) {
@@ -866,6 +886,12 @@ function createOrchestrationRuntime({
     await operations.interruptActiveTasks();
     await tickTail;
     await store.flush();
+    if (typeof store.exportLegacy === 'function') await store.exportLegacy();
+  }
+
+  async function dispose() {
+    await stop();
+    if (typeof store.close === 'function') await store.close({ exportRollback: false });
   }
 
   return Object.freeze({
@@ -876,6 +902,7 @@ function createOrchestrationRuntime({
     sessionScheduler,
     start,
     stop,
+    dispose,
     tick,
     register,
     resolveCallback,

@@ -396,10 +396,10 @@ app.get('/metrics', (req, res) => {
     multicc_ws_clients: wss.clients.size,
     multicc_git_queue_depth: gitQueueDepth(),
     multicc_active_waits: waitStats.waits + (orchestrationRuntime ? orchestrationRuntime.pendingCount() : 0),
+    ...(orchestrationRuntime?.store.metrics?.() || {}),
     multicc_ready: serviceReady && !_shuttingDown && commanderMigrationState.snapshot().ready ? 1 : 0,
   }));
 });
-
 let PORT = networkPolicy.port;
 const BIND_HOST = networkPolicy.host;
 const server = http.createServer(app);
@@ -2732,7 +2732,7 @@ bus.on('chat:run', (sessionName, text, opts) => {
 services.provide('chat.runTurn', chatTurnEngine.admitChatWork);
 
 orchestrationRuntime = createOrchestrationRuntime({
-  file: MULTICC_PATHS.orchestrationFile,
+  file: MULTICC_PATHS.orchestrationFile, databaseFile: MULTICC_PATHS.orchestrationDbFile,
   runChatTurn: chatTurnEngine.runChatTurn,
   isBusy: dispatchTargetBusy,
   hasPersistedDelivery: chatTurnEngine.persistedOrchestrationDelivery,

@@ -9,7 +9,9 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const Database = require('better-sqlite3');
 const { assertTestDir } = require('../src/paths');
+const { _loadDatabaseState } = require('../src/orchestration-sqlite-store');
 
 const ROOT = path.join(__dirname, '..');
 const PORT = 3996;
@@ -69,6 +71,11 @@ async function stopServer() {
   ]);
 }
 
+function readOrchestration(file) {
+  const db = new Database(file, { readonly: true });
+  try { return _loadDatabaseState(db, file); } finally { db.close(); }
+}
+
 (async () => {
   server = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
@@ -102,9 +109,9 @@ async function stopServer() {
   assert.equal(typeof registered.data.token, 'string');
   assert.match(registered.data.callbackUrl, /\/api\/wait\//);
 
-  const stateFile = path.join(dataDir, 'orchestration.json');
+  const stateFile = path.join(dataDir, 'orchestration.sqlite');
   assert.equal(fs.statSync(stateFile).mode & 0o777, 0o600);
-  assert.equal(fs.readFileSync(stateFile, 'utf8').includes(registered.data.token), false);
+  assert.equal(JSON.stringify(readOrchestration(stateFile)).includes(registered.data.token), false);
 
   const callbackRoute = new URL(registered.data.callbackUrl).pathname
     + new URL(registered.data.callbackUrl).search;
@@ -129,10 +136,11 @@ async function stopServer() {
   response = await api('GET', `/api/sessions/${sessionId}/waits`);
   assert.equal(response.status, 200);
   assert.deepEqual(response.data.waits, []);
+  assert.equal(response.data.stats.backend, 'sqlite');
   assert.equal(response.data.stats.resolvedWaits, 1);
   assert.equal(response.data.stats.pendingDeliveries, 1);
 
-  const durableText = fs.readFileSync(stateFile, 'utf8');
+  const durableText = JSON.stringify(readOrchestration(stateFile));
   assert.equal(durableText.includes(registered.data.token), false);
   assert.equal(durableText.includes('wrong'), false);
 
