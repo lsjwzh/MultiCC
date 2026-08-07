@@ -20,6 +20,10 @@ const {
   unifiedRemaining,
   unifiedWindowSeg,
   unifiedBalanceText,
+  sortWindowSegs,
+  formatClaudeUsageOnly,
+  refreshClaudeUsage,
+  restoreClaudeUsage,
 } = require('../public/chat-rate-limit');
 
 test('unified helpers: countdown buckets, remaining clamp, window seg, balance text', () => {
@@ -368,7 +372,8 @@ test('ark bar shows the active plan windows compactly, with all plans in the too
   assert.ok(agent.title.includes('Coding（当前 provider）') === false, 'coding not marked current');
 
   const coding = formatArkQuota(ARK_FIXTURE, 'https://ark.cn-beijing.volces.com/api/coding/v3');
-  assert.ok(coding.text.startsWith('会话 0% · 1wk 73% · 1m 2%'), coding.text);
+  // Canonical window order: 1wk/1m first, the ark-specific 会话 label last.
+  assert.ok(coding.text.startsWith('1wk 73% · 1m 2% · 会话 0%'), coding.text);
   assert.equal(coding.color, '#f85149', 'coding 会话 100% used → 0% remaining → red');
 
   const unknown = formatArkQuota(ARK_FIXTURE, 'https://ark.cn-beijing.volces.com/api/v3');
@@ -536,6 +541,209 @@ test('a DeepSeek balance renders under the claude CLI when the provider is api.d
 
     setProviderBaseUrl('https://api.anthropic.com');
     assert.equal(element.style.display, 'none', 'balance hidden once the provider is not DeepSeek');
+  } finally {
+    setProviderBaseUrl('');
+    setCli('codex');
+    delete global.document;
+    delete global.localStorage;
+  }
+});
+
+// ── 窗口顺序统一（5h → 1wk → 1m）──────────────────────────────────────────
+
+test('sortWindowSegs orders window segments short → long from any input order', () => {
+  const shuffled = [
+    unifiedWindowSeg('1m', 80, null),
+    unifiedWindowSeg('5h', 10, null),
+    unifiedWindowSeg('1wk', 30, null),
+  ];
+  const ordered = sortWindowSegs(shuffled).map((s) => s.split(' ')[0]);
+  assert.deepEqual(ordered, ['5h', '1wk', '1m']);
+});
+
+test('sortWindowSegs keeps unknown labels last and stable', () => {
+  const segs = [
+    unifiedWindowSeg('1wk', 30, null),
+    '会话 50%',
+    unifiedWindowSeg('5h', 10, null),
+    'Total 90%',
+  ];
+  const ordered = sortWindowSegs(segs);
+  assert.equal(ordered[0].startsWith('5h'), true);
+  assert.equal(ordered[1].startsWith('1wk'), true);
+  assert.equal(ordered[2], '会话 50%', 'unknown label order preserved among unknowns');
+  assert.equal(ordered[3], 'Total 90%');
+});
+
+test('sortWindowSegs is non-mutating and tolerates junk input', () => {
+  const segs = [unifiedWindowSeg('1m', 80, null)];
+  const copy = segs.slice();
+  const out = sortWindowSegs(segs);
+  assert.deepEqual(segs, copy, 'input array untouched');
+  assert.deepEqual(sortWindowSegs(null), []);
+  assert.deepEqual(sortWindowSegs(undefined), []);
+  assert.equal(out[0].startsWith('1m'), true);
+});
+
+// ── Claude 订阅 weekly 用量（/api/claude/quota 抓取）────────────────────────
+
+test('Claude formatter appends weekly/monthly usage windows in canonical order', () => {
+  const now = Date.now();
+  const value = normalizeFiveHourRateLimit({
+    status: 'allowed', rateLimitType: 'five_hour', utilization: 0.5,
+    resetsAt: Math.floor(now / 1000) + 3600,
+  }, now);
+  const usage = {
+    status: 'ok',
+    fetchedAt: now,
+    source: 'usage-page',
+    summary: [
+      { window: '1m', label: 'Monthly limit', usedPercent: 80, resetMs: now + 10 * 86400_000 },
+      { window: '5h', label: 'Current session', usedPercent: 20, resetMs: now + 3600_000 },
+      { window: '1wk', label: 'Weekly limit', usedPercent: 30, resetMs: now + 3 * 86400_000 },
+    ],
+  };
+  const view = formatFiveHourRateLimit(value, { usage, nowMs: now });
+  const tokens = view.text.split(' · ').map((s) => s.split(' ')[0]);
+  // The page's own 5h row is dropped (it duplicates the passive event); the
+  // weekly/monthly rows render in canonical 5h → 1wk → 1m order.
+  assert.deepEqual(tokens, ['5h', '1wk', '1m']);
+  assert.match(view.text, /^5h 50%/);
+  assert.match(view.text, /1wk 70%/);
+  assert.match(view.text, /1m 20%/);
+  assert.match(view.title, /周: 已用 30%/);
+  assert.match(view.title, /月: 已用 80%/);
+});
+
+test('Claude formatter ignores a usage payload without ok status', () => {
+  const now = 1_700_000_000_000;
+  // Direct DTO (exact resetsAtMs, no second-truncation) so the countdown is exact.
+  const limit = {
+    kind: 'five_hour',
+    status: 'allowed',
+    usedPercentage: 50,
+    resetsAtMs: now + 3_600_000,
+    provider: 'claude',
+  };
+  assert.equal(formatFiveHourRateLimit(limit, { usage: { status: 'needs_login' }, nowMs: now }).text, '5h 50% 1h');
+  assert.equal(formatFiveHourRateLimit(limit, { usage: null, nowMs: now }).text, '5h 50% 1h');
+});
+
+test('formatClaudeUsageOnly renders windows when no passive event has landed yet', () => {
+  const now = Date.now();
+  const usage = {
+    status: 'ok',
+    fetchedAt: now,
+    summary: [
+      { window: '5h', label: 'Current session', usedPercent: 60, resetMs: now + 3600_000 },
+      { window: '1wk', label: 'Weekly limit', usedPercent: 90, resetMs: now + 3 * 86400_000 },
+    ],
+  };
+  const view = formatClaudeUsageOnly(usage);
+  // The first two segments are the windows in canonical order; the trailing
+  // segment is the sync-age stamp (e.g. "刚刚").
+  assert.deepEqual(view.text.split(' · ').slice(0, 2).map((s) => s.split(' ')[0]), ['5h', '1wk']);
+  assert.match(view.text, /5h 40%/);
+  assert.match(view.text, /1wk 10%/);
+  assert.equal(view.color, '#f85149', '10% remaining for weekly is danger-colored');
+});
+
+test('formatClaudeUsageOnly surfaces the actionable states and the idle fallback', () => {
+  assert.equal(formatClaudeUsageOnly(null).text, '5h · — · ⟳ 刷新');
+  const needsLogin = formatClaudeUsageOnly({ status: 'needs_login', error: 'x' });
+  assert.equal(needsLogin.action, 'login');
+  assert.match(needsLogin.text, /需登录/);
+  const chromeDown = formatClaudeUsageOnly({ status: 'chrome_unavailable', error: 'x' });
+  assert.equal(chromeDown.action, 'login');
+  assert.match(chromeDown.text, /无可连的 Chrome/);
+  assert.match(formatClaudeUsageOnly({ status: 'unavailable', error: 'boom' }).text, /用量暂不可用/);
+  assert.match(formatClaudeUsageOnly({ status: 'ok', summary: [] }).text, /未解析出用量/);
+});
+
+test('refreshClaudeUsage stores ok data and surfaces fetch failures', async () => {
+  const element = { style: {}, textContent: '', title: '', onclick: null };
+  const values = new Map();
+  global.document = { getElementById: (id) => (id === 'claude-rate-limit-bar' ? element : null) };
+  global.localStorage = {
+    getItem: (k) => values.get(k) || null,
+    setItem: (k, v) => values.set(k, v),
+    removeItem: (k) => values.delete(k),
+  };
+  const calls = [];
+  global.fetch = async (url) => {
+    calls.push(url);
+    return { json: async () => ({ status: 'ok', fetchedAt: Date.now(), summary: [
+      { window: '1wk', label: 'Weekly limit', usedPercent: 30, resetMs: Date.now() + 86400_000 },
+    ] }) };
+  };
+  try {
+    // setCli('claude') triggers the fetch-on-switch; the mock is already in
+    // place, so let that auto-refresh settle before the explicit force call.
+    setCli('claude');
+    setProviderBaseUrl('');
+    await new Promise((r) => setTimeout(r, 0));
+    const data = await refreshClaudeUsage(true);
+    assert.equal(data.status, 'ok');
+    assert.equal(calls[0], '/api/claude/quota');
+    assert.equal(values.has('multicc.claude.usage.v1'), true, 'ok scrape persisted');
+    // The bar now merges the scrape's weekly window into the (absent) 5h event.
+    assert.match(element.textContent, /1wk 70%/);
+  } finally {
+    setProviderBaseUrl('');
+    setCli('codex');
+    delete global.document;
+    delete global.localStorage;
+    delete global.fetch;
+  }
+});
+
+test('refreshClaudeUsage records errors without persisting junk', async () => {
+  const element = { style: {}, textContent: '', title: '', onclick: null };
+  const values = new Map();
+  global.document = { getElementById: (id) => (id === 'claude-rate-limit-bar' ? element : null) };
+  global.localStorage = {
+    getItem: (k) => values.get(k) || null,
+    setItem: (k, v) => values.set(k, v),
+    removeItem: (k) => values.delete(k),
+  };
+  global.fetch = async () => ({ json: async () => ({ status: 'needs_login', error: 'no session' }) });
+  try {
+    setCli('claude');
+    setProviderBaseUrl('');
+    await new Promise((r) => setTimeout(r, 0));
+    const data = await refreshClaudeUsage(true);
+    assert.equal(data.status, 'needs_login');
+    assert.equal(values.has('multicc.claude.usage.v1'), false, 'non-ok scrape not persisted');
+    assert.match(element.textContent, /需登录/);
+    assert.equal(typeof element.onclick, 'function', 'bar stays a click target');
+  } finally {
+    setProviderBaseUrl('');
+    setCli('codex');
+    delete global.document;
+    delete global.localStorage;
+    delete global.fetch;
+  }
+});
+
+test('restoreClaudeUsage pulls the cached scrape back into the bar', () => {
+  const element = { style: {}, textContent: '', title: '', onclick: null };
+  const values = new Map();
+  values.set('multicc.claude.usage.v1', JSON.stringify({
+    status: 'ok',
+    fetchedAt: Date.now(),
+    summary: [{ window: '1wk', label: 'Weekly limit', usedPercent: 30, resetMs: null }],
+  }));
+  global.document = { getElementById: (id) => (id === 'claude-rate-limit-bar' ? element : null) };
+  global.localStorage = {
+    getItem: (k) => values.get(k) || null,
+    setItem: (k, v) => values.set(k, v),
+    removeItem: (k) => values.delete(k),
+  };
+  try {
+    setCli('claude');
+    setProviderBaseUrl('');
+    restoreClaudeUsage();
+    assert.match(element.textContent, /1wk 70%/);
   } finally {
     setProviderBaseUrl('');
     setCli('codex');
