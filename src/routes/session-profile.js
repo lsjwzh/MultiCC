@@ -262,7 +262,15 @@ function createSessionProfileRoutes(rawDeps) {
         const nextDefaultModel = globalProviderCli
           ? (providerSummary?.model || providerSummary?.modelOptions?.[0] || null)
           : providerDefaultModel(appType, v.value);
-        const validationAppType = providerSummary?.appType || appType;
+        // Provider-less OpenCode/ZCode sessions run on the CLI's native config
+        // (e.g. OpenCode Go in ~/.config/opencode/opencode.json); their model is
+        // a native `provider/model` id from /api/opencode/models, which the
+        // claude-pool validation below always rejects. Skipping it here stops
+        // every default-provider save from silently wiping the model to 默认.
+        const nativeCliDefault = globalProviderCli && !v.value;
+        const validationAppType = nativeCliDefault
+          ? null
+          : (providerSummary?.appType || appType);
         if ((appType || globalProviderCli) && req.body.model === undefined) {
           s.model = nextDefaultModel || null;
         } else if (validationAppType && !providers.modelValidForProvider(

@@ -464,7 +464,9 @@
       defaultProvider.value = '';
       defaultProvider.textContent = cli === 'zcode'
         ? 'ZCode 原生 / Coding Plan'
-        : translate(state, 'providerDefault');
+        : cli === 'opencode'
+          ? 'OpenCode 原生配置（OpenCode Go 等）'
+          : translate(state, 'providerDefault');
       providerSelect.appendChild(defaultProvider);
       for (const provider of providersOf(state)) {
         const option = document.createElement('option');
