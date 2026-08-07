@@ -183,6 +183,7 @@ const { createLivenessRuntime } = require('./src/liveness/runtime');
 const { createProcessProbe } = require('./src/liveness/process-probe');
 const { createProcessingWatchdog, PROCESS_WATCHDOG_INTERVAL_MS } = require('./src/chat/process-watchdog');
 const { createStalledTurnRecovery, STALLED_RECOVERY_INTERVAL_MS } = require('./src/chat/stalled-turn-recovery');
+const { createLogHousekeeping, LOG_HOUSEKEEPING_INTERVAL_MS } = require('./src/log-housekeeping');
 const { createPushRuntime } = require('./src/push-runtime');
 const { createWorkspaceRuntime } = require('./src/workspace/runtime');
 const { createChatHistoryFileRepository } = require('./src/session');
@@ -2725,10 +2726,7 @@ const chatTurnEngine = createChatTurnEngine({
 // Chat domain owns runChatTurn: bus 'chat:run' (fire-and-forget), registry 'chat.runTurn' (return value).
 bus.on('chat:run', (sessionName, text, opts) => {
   chatTurnEngine.admitChatWork(sessionName, text, opts).catch(error => {
-    logger.error('chat_work_admission_failed', {
-      sessionId: sessionName,
-      error: error.message,
-    });
+    logger.error('chat_work_admission_failed', { sessionId: sessionName, error: error.message });
   });
 });
 services.provide('chat.runTurn', chatTurnEngine.admitChatWork);
@@ -2768,6 +2766,9 @@ const stalledTurnRecovery = createStalledTurnRecovery({
   getStreamStatus: id => chatStream.status(id), assessLiveness: id => livenessRuntime.assess(id),
   stallSilentMs: livenessRuntime.thresholds.stallSilentMs, cancelTurn: (id, options) => sessionWorkHost.cancelActiveTurn(id, options), logger,
 });
+const logHousekeeping = createLogHousekeeping({ logsDir: path.join(__dirname, 'logs'), logger,
+  retainDays: process.env.MULTICC_LOG_RETAIN_DAYS ? Number(process.env.MULTICC_LOG_RETAIN_DAYS) : undefined,
+  keepTailBytes: process.env.MULTICC_LOG_KEEP_TAIL_BYTES ? Number(process.env.MULTICC_LOG_KEEP_TAIL_BYTES) : undefined });
 routerToolHost.configure({ records: persistedSessions, dispatchToSession, orchestrationRuntime, taskBoard: taskBoardRuntime,
   recordUserInput: signal => sessionWorkHost.recordInput(signal), cancelActiveTurn: (id, opts) => sessionWorkHost.cancelActiveTurn(id, opts),
   onDispatchCancelled: id => cancelDispatchRun(id), subscribeDispatchProgress, recordRouterAdmission });
@@ -2972,13 +2973,12 @@ app.use(safeErrorHandler(logger));
     // Periodic scan re-judges non-terminal sessions; first tick delayed 6s so aux warms up.
     trackServiceTimer(setTimeout(() => scanAndReclassify(), 6000));
     trackServiceTimer(setInterval(() => scanAndReclassify(), SCAN_INTERVAL_MS));
-    trackServiceTimer(setInterval(() => {
-      processingWatchdog.sweep().catch(error => {
-        logger.warn('processing_watchdog_sweep_failed', { error: error.message });
-      });
-    }, PROCESS_WATCHDOG_INTERVAL_MS));
+    trackServiceTimer(setInterval(() => processingWatchdog.sweep()
+      .catch(error => logger.warn('processing_watchdog_sweep_failed', { error: error.message })), PROCESS_WATCHDOG_INTERVAL_MS));
     trackServiceTimer(setInterval(() => stalledTurnRecovery.sweep()
       .catch(error => logger.warn('stalled_turn_recovery_sweep_failed', { error: error.message })), STALLED_RECOVERY_INTERVAL_MS));
+    logHousekeeping.runOnce().catch(err => logger.warn('log_housekeeping_failed', { error: err.message }));
+    trackServiceTimer(setInterval(() => logHousekeeping.runOnce().catch(err => logger.warn('log_housekeeping_failed', { error: err.message })), LOG_HOUSEKEEPING_INTERVAL_MS));
     artifacts.cleanup();
     trackServiceTimer(setInterval(() => artifacts.cleanup(), 6 * 3600 * 1000));
     // ④: probe aux recovery every 5 min while unhealthy (no-op when healthy).

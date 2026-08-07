@@ -184,11 +184,31 @@ class ChatProvider extends ChangeNotifier {
     return value;
   }
 
-  /// Always-visible Claude limit bar: when we're on the claude CLI but have no
-  /// active window limit, the panel shows an idle "—" placeholder instead of
-  /// disappearing (mirrors the web `renderCurrent` fixed-display fallback).
-  bool get showClaudeLimitIdle =>
-      _cli == SessionCli.claude && usageWindowLimit == null;
+  /// Claude subscription limit bar — merged 5h (passive rate_limit_event) +
+  /// weekly/monthly (claude.ai/settings/usage scrape), or the usage-only /
+  /// idle / actionable states. Always non-null under the claude CLI so the bar
+  /// stays a visible tap target (mirrors the web `renderCurrent` fixed-display
+  /// fallback); null under any other CLI. GLM/Codex windows are NOT routed
+  /// here — they keep the verbose limit view via [nonClaudeWindowLimit].
+  VendorQuotaView? get claudeLimitView {
+    if (_cli != SessionCli.claude) return null;
+    final usage = _claudeUsage;
+    final limit = usageWindowLimit;
+    if (_claudeUsageFetching && limit == null && usage == null) {
+      return const VendorQuotaView(
+        'Claude：抓取用量中…',
+        VendorQuotaColor.gray,
+        '正在通过 CDP 打开 claude.ai/settings/usage 解析窗口余量…',
+      );
+    }
+    if (limit != null) return formatClaudeLimit(limit, usage);
+    return formatClaudeUsageOnly(usage);
+  }
+
+  /// GLM/Codex window bars. Claude's bar is rendered via [claudeLimitView], so
+  /// its raw event is withheld here to avoid rendering the same limit twice.
+  UsageWindowLimit? get nonClaudeWindowLimit =>
+      _usageWindowLimit?.provider == 'claude' ? null : _usageWindowLimit;
 
   UsageBalance? _usageBalance;
   UsageBalance? get usageBalance => _usageBalance;
@@ -221,6 +241,15 @@ class ChatProvider extends ChangeNotifier {
   int _zhipuErrorAt = 0;
   int _kimiErrorAt = 0;
   static const int _vendorQuotaBackoffMs = 60000;
+
+  // Claude subscription usage (GET /api/claude/quota — CDP scrape of
+  // claude.ai/settings/usage). Fetched when the claude CLI is (re)connected;
+  // a 24h-fresh result is kept (mirrors the web localStorage staleness) so the
+  // system_init → applyCliConfig → cli_switched burst doesn't re-scrape.
+  Map<String, dynamic>? _claudeUsage;
+  bool _claudeUsageFetching = false;
+  int _claudeUsageErrorAt = 0;
+  static const int _claudeUsageFreshMs = 24 * 3600 * 1000;
 
   String _costText = '';
   String get costText => _costText;
@@ -389,6 +418,7 @@ class ChatProvider extends ChangeNotifier {
         if (msg['cli'] != null) {
           _cli = parseCli(msg['cli']?.toString());
         }
+        refreshClaudeUsage();
         _loadProviderBaseUrl();
 
         final model = msg['model']?.toString();
@@ -415,6 +445,7 @@ class ChatProvider extends ChangeNotifier {
         final next = parseCli(msg['cli']?.toString());
         final from = parseCli(msg['fromCli']?.toString());
         _cli = next;
+        refreshClaudeUsage();
         _setProviderBaseUrl(msg['providerBaseUrl']?.toString() ?? '');
         final model = msg['effectiveModel']?.toString();
         _statusText = model != null && model.isNotEmpty
@@ -708,6 +739,7 @@ class ChatProvider extends ChangeNotifier {
   /// still owns the user-facing handoff notice and is de-duplicated separately.
   void applyCliConfig(SessionCliConfig config) {
     _cli = config.cli;
+    refreshClaudeUsage();
     final model = config.effectiveModel ?? config.model;
     _statusText = model != null && model.isNotEmpty
         ? 'Connected · $model'
@@ -840,6 +872,50 @@ class ChatProvider extends ChangeNotifier {
       if (data['status'] == 'ok') _kimiLastOk = data;
     }
     notifyListeners();
+  }
+
+  /// Fetch the Claude subscription usage scrape. No-op off the claude CLI;
+  /// skips while one is in flight, after a recent error (vendor backoff) or
+  /// when the cached result is under 24h old (mirrors the web localStorage
+  /// staleness) unless [force]. Callers: connect / cli-switch hooks and the
+  /// bar's tap handler.
+  Future<void> refreshClaudeUsage({bool force = false}) async {
+    if (_cli != SessionCli.claude) return;
+    if (_claudeUsageFetching) return;
+    if (!force) {
+      final fetchedAt = (_claudeUsage?['fetchedAt'] as num?)?.toInt();
+      if (fetchedAt != null &&
+          _nowMs() - fetchedAt < _claudeUsageFreshMs) {
+        return;
+      }
+      if (_claudeUsageErrorAt != 0 &&
+          _nowMs() - _claudeUsageErrorAt < _vendorQuotaBackoffMs) {
+        return;
+      }
+    }
+    _claudeUsageFetching = true;
+    notifyListeners();
+    final data = await _quota.fetchClaudeUsage();
+    _claudeUsageFetching = false;
+    if (data == null) {
+      _claudeUsageErrorAt = _nowMs();
+    } else {
+      _claudeUsageErrorAt = 0;
+      _claudeUsage = data;
+    }
+    notifyListeners();
+  }
+
+  /// Tap on the Claude bar: open the server-side visible login window when the
+  /// scrape reports no session (needs_login / chrome_unavailable), otherwise
+  /// force a fresh scrape. Mirrors the web `quotaBarClick`.
+  Future<void> handleClaudeQuotaTap() async {
+    final status = _claudeUsage?['status']?.toString();
+    if (status == 'needs_login' || status == 'chrome_unavailable') {
+      await _quota.openClaudeLogin();
+      return;
+    }
+    await refreshClaudeUsage(force: true);
   }
 
   /// Remove a message from the local transcript by its server-side history id.
