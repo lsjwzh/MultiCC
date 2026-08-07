@@ -395,6 +395,11 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
     await prefs.setStringList(_dirOrderKey, order);
   }
 
+  // Number of scheduled tasks behind the workspace-bar cron tile. Stays null
+  // when the fetch fails or hasn't landed, which keeps the tile a plain link
+  // rather than claiming there are zero tasks.
+  int? _cronCount;
+
   Future<void> _loadProviders() async {
     try {
       final d = await ManageService(settings: widget.settings).fetchProviders();
@@ -407,10 +412,21 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
     } catch (_) {}
   }
 
+  Future<void> _loadCronCount() async {
+    try {
+      final tasks = await ManageService(
+        settings: widget.settings,
+      ).fetchCronTasks();
+      if (!mounted) return;
+      setState(() => _cronCount = tasks.length);
+    } catch (_) {}
+  }
+
   @override
   void initState() {
     super.initState();
     _loadProviders();
+    _loadCronCount();
   }
 
   // Machine-wide voice entry. No sourceSessionId is sent, which is exactly what
@@ -486,7 +502,10 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
           IconButton(
             icon: const Icon(Icons.refresh_rounded, size: 20),
             tooltip: t('refresh'),
-            onPressed: mgr.loadDashboard,
+            onPressed: () {
+              mgr.loadDashboard();
+              _loadCronCount();
+            },
           ),
           IconButton(
             icon: const Icon(Icons.settings_outlined, size: 20),
@@ -502,7 +521,12 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
           preferredSize: const Size.fromHeight(57),
           child: Column(
             children: [
-              _KpiRow(settings: widget.settings, providers: _providers),
+              _KpiRow(
+                settings: widget.settings,
+                providers: _providers,
+                cronCount: _cronCount,
+                onCronChanged: _loadCronCount,
+              ),
               const Divider(height: 1, color: Color(0xFF20242b)),
             ],
           ),
@@ -614,7 +638,8 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
             ),
             Expanded(
               child: RefreshIndicator(
-                onRefresh: mgr.loadDashboard,
+                onRefresh: () =>
+                    Future.wait([mgr.loadDashboard(), _loadCronCount()]),
                 color: const Color(0xFF6aa3ff),
                 backgroundColor: const Color(0xFF0f1115),
                 child: ListView.builder(
@@ -884,7 +909,16 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
 class _KpiRow extends StatelessWidget {
   final SettingsService settings;
   final List<Map<String, dynamic>> providers;
-  const _KpiRow({required this.settings, this.providers = const []});
+  // null while the first fetch is in flight — KpiTile then shows its chevron,
+  // so the tile still reads as a link instead of flashing a placeholder 0.
+  final int? cronCount;
+  final VoidCallback onCronChanged;
+  const _KpiRow({
+    required this.settings,
+    required this.onCronChanged,
+    this.providers = const [],
+    this.cronCount,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -928,11 +962,18 @@ class _KpiRow extends StatelessWidget {
           const SizedBox(width: 8),
           KpiTile(
             label: t('cronTasks'),
-            value: null,
+            value: cronCount?.toString(),
             color: const Color(0xFF6aa3ff),
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => CronScreen(settings: settings)),
-            ),
+            onTap: () async {
+              await Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => CronScreen(settings: settings),
+                ),
+              );
+              // Tasks may have been created or deleted in there — refetch
+              // rather than leave a stale number on the bar.
+              onCronChanged();
+            },
           ),
         ],
       ),

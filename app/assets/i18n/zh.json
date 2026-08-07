@@ -278,7 +278,6 @@
   "fontSize": "字体大小",
   "fontSizePreview": "预览：这段文字会随滑块即时缩放。",
   "management": "管理",
-  "cronNavHint": "到点自动唤起会话执行指令（cron）",
   "providerConfig": "Provider 配置",
   "providerConfigHint": "从 cc-switch 导入、增删改、设默认；会话可单独切换",
   "providerDeleteLocalConfirm": "仅删除 MultiCC 本地副本「{name}」，不会修改 CC-Switch；以后从 CC-Switch 同步时可能重新导入。是否继续？",
