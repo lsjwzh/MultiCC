@@ -130,6 +130,11 @@ function spawnProc(name, cfg) {
 function onStdout(name, chunk) {
   const s = sessions.get(name);
   if (!s) return;
+  // Turn-timing t3: the first stdout byte of the current turn, counted once.
+  if (s.current && !s.current.firstByteReported && typeof s.current.onTiming === 'function') {
+    s.current.firstByteReported = true;
+    try { s.current.onTiming('firstByte'); } catch (_) {}
+  }
   s.lineBuf += chunk.toString();
   let i;
   while ((i = s.lineBuf.indexOf('\n')) >= 0) {
@@ -311,9 +316,18 @@ function pump(name) {
   s.current = next;
   s.idleHeldSince = 0; // a real user turn is fresh activity; reset the hold clock
   clearIdle(s);
+  // Turn-timing: the process is ready for this message (fresh spawn above or a
+  // warm reuse) — this is t1 on the streaming path.
+  if (typeof next.onTiming === 'function') {
+    try { next.onTiming('spawned'); } catch (_) {}
+  }
   try {
     s.proc.stdin.write(userMessageLine(next.text));
     // NOTE: do NOT end() stdin — the process must stay open for future turns.
+    // Turn-timing: prompt line handed to the CLI — t2 on the streaming path.
+    if (typeof next.onTiming === 'function') {
+      try { next.onTiming('sent'); } catch (_) {}
+    }
   } catch (e) {
     s.busy = false;
     s.current = null;
@@ -403,13 +417,15 @@ function ensure(name, cfg) {
 /**
  * Send a user message and resolve when that turn completes (`result` event).
  * onEvent receives every stream-json event for live forwarding to the UI.
+ * opts.onTiming?.('spawned'|'sent') reports process-readiness and stdin-write
+ * instants for turn-timing instrumentation (see src/chat/turn-timing.js).
  * Turns are serialized per session: a send while a turn is in flight queues.
  */
-function send(name, text, onEvent) {
+function send(name, text, onEvent, opts = {}) {
   const s = sessions.get(name);
   if (!s) return Promise.reject(new Error(`stream session "${name}" not ensured`));
   return new Promise((resolve, reject) => {
-    s.queue.push({ text, onEvent, resolve, reject });
+    s.queue.push({ text, onEvent, resolve, reject, onTiming: opts.onTiming || null });
     pump(name);
   });
 }
@@ -419,8 +435,8 @@ function send(name, text, onEvent) {
  * separately so callers (the waiting-injector) read clearly. This is the API
  * the "data returned, continue" driver uses.
  */
-function inject(name, text, onEvent) {
-  return send(name, `${text}`, onEvent);
+function inject(name, text, onEvent, opts = {}) {
+  return send(name, `${text}`, onEvent, opts);
 }
 
 /**
