@@ -419,7 +419,12 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
       ).fetchCronTasks();
       if (!mounted) return;
       setState(() => _cronCount = tasks.length);
-    } catch (_) {}
+    } catch (_) {
+      // Drop back to unknown rather than leaving the last good number on the
+      // tile — a refetch that fails after a delete would otherwise keep
+      // claiming tasks that are gone.
+      if (mounted) setState(() => _cronCount = null);
+    }
   }
 
   @override
