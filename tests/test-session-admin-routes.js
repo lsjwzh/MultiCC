@@ -76,6 +76,7 @@ function createFixture(overrides = {}) {
   const enqueued = [];
   const dispatched = [];
   let classifyNow = 0;
+  let mergeStateReads = 0;
   const queue = {
     clients: new Set([{}]),
     processing: false,
@@ -95,7 +96,10 @@ function createFixture(overrides = {}) {
     effectiveSessionModel: record => record.model || 'effective-model',
     effectiveSessionEffort: () => 'high',
     serializeSubagent: value => value || null,
-    mergeStateCached: () => ({ ahead: 0, behind: 0, dirty: false }),
+    mergeStateCached: overrides.mergeStateCached || (() => {
+      mergeStateReads += 1;
+      return { ahead: 0, behind: 0, dirty: false };
+    }),
     cliStateSummary: () => ({ claude: { available: true } }),
     cliHandoffSummary: () => null,
     cliAvailabilitySummary: () => ({ claude: true, codex: true }),
@@ -124,6 +128,7 @@ function createFixture(overrides = {}) {
   return {
     app, runtime, records, chatSessions, queue, history,
     enqueued, dispatched, getClassifyNow: () => classifyNow,
+    getMergeStateReads: () => mergeStateReads,
   };
 }
 
@@ -167,6 +172,17 @@ test('session admin mounts the complete bounded route set once', () => {
     'GET /api/debug/classify-test-cases',
   ];
   assert.deepEqual([...app.routes.keys()].sort(), expected.sort());
+});
+
+test('dashboard polling does not start merge-state Git work', () => {
+  const fixture = createFixture();
+  invoke(fixture.app.routes.get('GET /api/dashboard/sessions'));
+  invoke(fixture.app.routes.get('GET /api/dashboard/stats'));
+  assert.equal(fixture.getMergeStateReads(), 0);
+
+  invoke(fixture.app.routes.get('GET /api/sessions'));
+  assert.ok(fixture.getMergeStateReads() > 0,
+    'the compatibility list retains its explicitly exposed mergeState field');
 });
 
 test('v1 responses stay bounded while legacy and dashboard fields remain compatible', () => {

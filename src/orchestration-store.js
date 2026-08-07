@@ -89,6 +89,7 @@ function validateState(input, file) {
 }
 
 function cloneJson(value) {
+  if (value === undefined) return undefined;
   return JSON.parse(JSON.stringify(value));
 }
 
@@ -223,36 +224,52 @@ function createOrchestrationStore({
     return result;
   }
 
+  async function applyMutation(mutator) {
+    const before = JSON.stringify(state);
+    const draft = cloneJson(state);
+    const result = await mutator(draft);
+    validateState(draft, file);
+
+    // Idempotent business operations may run through the mutation queue but
+    // leave the draft unchanged. Avoid an unnecessary revision and fsync.
+    if (JSON.stringify(draft) === before) return result;
+
+    draft.revision = state.revision + 1;
+    draft.updatedAt = Number(now());
+    validateState(draft, file);
+
+    try {
+      writeAtomic({ fsImpl, pathImpl, file, state: draft, now, hooks });
+      state = deepFreeze(draft);
+    } catch (error) {
+      // beforeRename means the old snapshot remains; afterRename means the
+      // new one landed but the caller did not observe success. Reloading
+      // handles both windows and keeps this process coherent for a retry.
+      state = deepFreeze(loadState({ fsImpl, file }));
+      throw error;
+    }
+    return result;
+  }
+
   async function mutate(mutator) {
     if (typeof mutator !== 'function') {
       throw new TypeError('[orchestration-store] mutate requires a function');
     }
+    return enqueue(() => applyMutation(mutator));
+  }
 
-    return enqueue(async () => {
-      const before = JSON.stringify(state);
-      const draft = cloneJson(state);
-      const result = await mutator(draft);
-      validateState(draft, file);
-
-      // Idempotent business operations may run through the mutation queue but
-      // leave the draft unchanged. Avoid an unnecessary revision and fsync.
-      if (JSON.stringify(draft) === before) return result;
-
-      draft.revision = state.revision + 1;
-      draft.updatedAt = Number(now());
-      validateState(draft, file);
-
-      try {
-        writeAtomic({ fsImpl, pathImpl, file, state: draft, now, hooks });
-        state = deepFreeze(draft);
-      } catch (error) {
-        // beforeRename means the old snapshot remains; afterRename means the
-        // new one landed but the caller did not observe success. Reloading
-        // handles both windows and keeps this process coherent for a retry.
-        state = deepFreeze(loadState({ fsImpl, file }));
-        throw error;
+  async function mutateIf(predicate, mutator, skippedResult) {
+    if (typeof predicate !== 'function' || typeof mutator !== 'function') {
+      throw new TypeError('[orchestration-store] mutateIf requires predicate and mutator functions');
+    }
+    return enqueue(() => {
+      // State is recursively frozen, so a cheap predicate can safely avoid the
+      // full snapshot stringify/clone path when a periodic worker has no work.
+      if (!predicate(state)) {
+        const skipped = typeof skippedResult === 'function' ? skippedResult() : skippedResult;
+        return cloneJson(skipped);
       }
-      return result;
+      return applyMutation(mutator);
     });
   }
 
@@ -260,15 +277,19 @@ function createOrchestrationStore({
     if (selector !== undefined && typeof selector !== 'function') {
       throw new TypeError('[orchestration-store] read selector must be a function');
     }
-    return enqueue(() => {
-      const snapshot = cloneJson(state);
-      return selector ? selector(snapshot) : snapshot;
+    return enqueue(async () => {
+      if (!selector) return cloneJson(state);
+      // Select from the immutable snapshot first, then clone only the bounded
+      // result. This preserves caller isolation without cloning the whole file
+      // for every get/list/status query.
+      return cloneJson(await selector(state));
     });
   }
 
   return Object.freeze({
     file,
     mutate,
+    mutateIf,
     read,
     snapshot: () => read(),
     flush: () => tail,
