@@ -182,6 +182,7 @@ const { createClassifyStateMachine } = require('./src/classify/state-machine');
 const { createLivenessRuntime } = require('./src/liveness/runtime');
 const { createProcessProbe } = require('./src/liveness/process-probe');
 const { createProcessingWatchdog, PROCESS_WATCHDOG_INTERVAL_MS } = require('./src/chat/process-watchdog');
+const { createStalledTurnRecovery, STALLED_RECOVERY_INTERVAL_MS } = require('./src/chat/stalled-turn-recovery');
 const { createPushRuntime } = require('./src/push-runtime');
 const { createWorkspaceRuntime } = require('./src/workspace/runtime');
 const { createChatHistoryFileRepository } = require('./src/session');
@@ -2486,7 +2487,6 @@ const pushOnInput = pushRuntime.onInput;
 const triggerPush = pushRuntime.notify;
 const cleanupPushMonitor = pushRuntime.cleanup;
 
-
 // ── Task state persistence (step ①) ───────────────────────────────────────────
 // persisted.taskState is the durable closed-loop task snapshot: it survives
 // restarts so the reconcile (②) can
@@ -2595,7 +2595,6 @@ sessionWorkHost = createSessionWorkHost({
 
 const AUX_HEALTH_PROBE_INTERVAL_MS = 5 * 60 * 1000;  // ④: probe aux recovery while unhealthy
 
-
 // GET /api/scan/history — debug: recent periodic-scan passes, newest first, each
 // with its per-session enqueue/skip decisions + reasons. In-memory ring only.
 //   ?limit=N   (default 20, capped at SCAN_HISTORY_MAX_PASSES)
@@ -2609,7 +2608,6 @@ mountScanRoutes(app, { scanHistory, maxPasses: SCAN_HISTORY_MAX_PASSES });
 // No in-turn loop — while streaming the output is incomplete and a mid-turn
 // verdict would be unreliable. On aux unhealthy: classify is suppressed; the
 // last-known goal/phase is frozen and the dashboard banner warns the user.
-
 
 // API recovery is decided at the owned runner boundary. Classify state E only
 // reflects that decision; it cannot inject a second retry turn.
@@ -2724,9 +2722,7 @@ const chatTurnEngine = createChatTurnEngine({
   CHAT_HISTORY_PAGE,
 });
 
-// Chat domain owns runChatTurn; other domains reach it without require()-ing chat:
-//  • fire-and-forget (triggers): bus event 'chat:run'
-//  • need the return value (gateway): registry service 'chat.runTurn'
+// Chat domain owns runChatTurn: bus 'chat:run' (fire-and-forget), registry 'chat.runTurn' (return value).
 bus.on('chat:run', (sessionName, text, opts) => {
   chatTurnEngine.admitChatWork(sessionName, text, opts).catch(error => {
     logger.error('chat_work_admission_failed', {
@@ -2736,7 +2732,6 @@ bus.on('chat:run', (sessionName, text, opts) => {
   });
 });
 services.provide('chat.runTurn', chatTurnEngine.admitChatWork);
-
 
 orchestrationRuntime = createOrchestrationRuntime({
   file: MULTICC_PATHS.orchestrationFile,
@@ -2765,6 +2760,13 @@ const processingWatchdog = createProcessingWatchdog({
   },
   cancelTurn: (id, options) => sessionWorkHost.cancelActiveTurn(id, options),
   logger,
+});
+// Companion to the watchdog above: it catches DEAD runners, while this consumes
+// the liveness `stalled` verdict (display-only before) to end wedged turns.
+const stalledTurnRecovery = createStalledTurnRecovery({
+  listRecords: () => persistedSessions.entries(), getTaskState, getChatSession: id => chatSessions.get(id),
+  getStreamStatus: id => chatStream.status(id), assessLiveness: id => livenessRuntime.assess(id),
+  stallSilentMs: livenessRuntime.thresholds.stallSilentMs, cancelTurn: (id, options) => sessionWorkHost.cancelActiveTurn(id, options), logger,
 });
 routerToolHost.configure({ records: persistedSessions, dispatchToSession, orchestrationRuntime, taskBoard: taskBoardRuntime,
   recordUserInput: signal => sessionWorkHost.recordInput(signal), cancelActiveTurn: (id, opts) => sessionWorkHost.cancelActiveTurn(id, opts),
@@ -2798,8 +2800,6 @@ createOrchestrationRoutes({
   // dropping them here is what made repeat clicks look like distinct cancels.
   cancelActiveTurn: (sessionId, options) => sessionWorkHost.cancelActiveTurn(sessionId, options),
 }).mountRoutes(app);
-
-
 
 // WebSocket authentication, endpoint routing, terminal attachment and keep-alive
 // live behind one transport boundary. Mutable auth/shutdown state stays lazy.
@@ -2969,9 +2969,7 @@ app.use(safeErrorHandler(logger));
     triggerRuntime.start();
     try { voiceHost.prepareBoot(); } catch (err) { logger.warn('voice_boot_prepare_failed', { error: err.message }); }
     qwenAudioSupervisor.reconcileAll().catch(err => logger.warn('voice_reconcile_failed', { error: err && err.message }));
-    // Periodic scan: re-judge non-terminal/junk sessions every minute. First
-    // tick delayed 6s so aux warms up and WS clients reconnect. Replaces the
-    // old one-shot startup reconcile - restart just means the first tick runs.
+    // Periodic scan re-judges non-terminal sessions; first tick delayed 6s so aux warms up.
     trackServiceTimer(setTimeout(() => scanAndReclassify(), 6000));
     trackServiceTimer(setInterval(() => scanAndReclassify(), SCAN_INTERVAL_MS));
     trackServiceTimer(setInterval(() => {
@@ -2979,6 +2977,8 @@ app.use(safeErrorHandler(logger));
         logger.warn('processing_watchdog_sweep_failed', { error: error.message });
       });
     }, PROCESS_WATCHDOG_INTERVAL_MS));
+    trackServiceTimer(setInterval(() => stalledTurnRecovery.sweep()
+      .catch(error => logger.warn('stalled_turn_recovery_sweep_failed', { error: error.message })), STALLED_RECOVERY_INTERVAL_MS));
     artifacts.cleanup();
     trackServiceTimer(setInterval(() => artifacts.cleanup(), 6 * 3600 * 1000));
     // ④: probe aux recovery every 5 min while unhealthy (no-op when healthy).
