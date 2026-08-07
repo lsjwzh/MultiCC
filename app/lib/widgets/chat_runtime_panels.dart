@@ -525,7 +525,8 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
   final UsageWindowLimit? limit;
   final UsageBalance? balance;
   final List<VendorQuotaView> vendorQuotas;
-  final bool showClaudeIdle;
+  final VendorQuotaView? claudeUsage;
+  final VoidCallback? onClaudeQuotaTap;
   final VoidCallback? onRetry;
 
   const ChatRuntimeNoticePanel({
@@ -534,7 +535,8 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
     this.limit,
     this.balance,
     this.vendorQuotas = const [],
-    this.showClaudeIdle = false,
+    this.claudeUsage,
+    this.onClaudeQuotaTap,
     this.onRetry,
   });
 
@@ -544,7 +546,7 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
         limit == null &&
         balance == null &&
         vendorQuotas.isEmpty &&
-        !showClaudeIdle) {
+        claudeUsage == null) {
       return const SizedBox.shrink();
     }
     return Container(
@@ -560,10 +562,9 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
         runSpacing: 6,
         crossAxisAlignment: WrapCrossAlignment.center,
         children: [
-          if (limit != null)
-            _limitView(context, limit!)
-          else if (showClaudeIdle)
-            _claudeIdleView(),
+          if (limit != null) _limitView(context, limit!),
+          if (claudeUsage != null)
+            _claudeUsageView(claudeUsage!, onTap: onClaudeQuotaTap),
           if (balance != null) _balanceView(balance!),
           for (final v in vendorQuotas) _vendorQuotaView(v),
           if (apiError != null) _errorView(apiError!),
@@ -624,11 +625,24 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
     );
   }
 
-  /// Idle placeholder for the always-visible Claude limit bar (no data yet).
-  Widget _claudeIdleView() {
-    return Text(
-      '${t('claudeFiveHourLimit')} · —',
-      style: const TextStyle(color: Color(0xFF8b949e), fontSize: 11),
+  /// Claude subscription limit bar — merged 5h + weekly/monthly windows (or an
+  /// idle / actionable placeholder). Tapping refreshes the usage scrape, or
+  /// opens the login window when the scrape reports no session.
+  Widget _claudeUsageView(VendorQuotaView v, {VoidCallback? onTap}) {
+    final chip = Semantics(
+      label: v.tooltip.isNotEmpty ? '${v.text}\n${v.tooltip}' : v.text,
+      button: true,
+      child: Text(
+        v.text,
+        style: TextStyle(color: Color(v.color), fontSize: 11),
+      ),
+    );
+    if (onTap == null) return chip;
+    return InkWell(
+      key: const Key('claude-quota-bar'),
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(4),
+      child: chip,
     );
   }
 

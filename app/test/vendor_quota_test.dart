@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:multicc_app/models/chat_runtime_state.dart';
 import 'package:multicc_app/models/vendor_quota.dart';
 
 void main() {
@@ -234,6 +235,175 @@ void main() {
       };
       expect(formatKimiQuota(bal(3), null).color, VendorQuotaColor.yellow);
       expect(formatKimiQuota(bal(0), null).color, VendorQuotaColor.red);
+    });
+  });
+
+  group('sortWindowSegs', () {
+    test('orders windows 5h → 1wk → 1m regardless of input order', () {
+      expect(
+        sortWindowSegs(['1wk 50%', '5h 20%', '1m 80%']),
+        ['5h 20%', '1wk 50%', '1m 80%'],
+      );
+      expect(
+        sortWindowSegs(['1m 80%', '1wk 50%', '5h 20%']),
+        ['5h 20%', '1wk 50%', '1m 80%'],
+      );
+    });
+
+    test('puts unknown labels last, keeping equal-rank input order', () {
+      expect(
+        sortWindowSegs(['会话 0%', '1wk 73%', '1m 2%', '5h 10%']),
+        ['5h 10%', '1wk 73%', '1m 2%', '会话 0%'],
+      );
+      // stable: two unknown segments keep their input order
+      expect(sortWindowSegs(['X 1%', 'Y 2%', '5h 3%']), ['5h 3%', 'X 1%', 'Y 2%']);
+    });
+
+    test('does not mutate the input and skips empties', () {
+      final input = ['1wk 50%', '', '5h 20%'];
+      final out = sortWindowSegs(input);
+      expect(input, ['1wk 50%', '', '5h 20%']);
+      expect(out, ['5h 20%', '1wk 50%']);
+    });
+  });
+
+  group('formatClaudeLimit', () {
+    // Pinned clock so the countdown branch (1h vs 60m) is deterministic.
+    const nowMs = 1_700_000_000_000;
+
+    UsageWindowLimit limit({
+      String status = 'allowed',
+      double? used = 50,
+    }) =>
+        UsageWindowLimit(
+          rateLimitType: 'five_hour',
+          status: status,
+          usedPercentage: used,
+          resetsAtMs: nowMs + 3600000,
+          provider: 'claude',
+        );
+
+    test('merges event 5h with weekly/monthly in canonical order', () {
+      final usage = {
+        'status': 'ok',
+        'fetchedAt': nowMs,
+        'summary': [
+          {'window': '1m', 'usedPercent': 80, 'label': 'Monthly limit'},
+          // the page's own 5h row duplicates the event and must be dropped
+          {'window': '5h', 'usedPercent': 42, 'label': 'Current session'},
+          {'window': '1wk', 'usedPercent': 30, 'label': 'Weekly limit'},
+        ],
+      };
+      final view = formatClaudeLimit(limit(), usage, nowMs: nowMs);
+      final segs = view.text
+          .split(' · ')
+          .map((s) => s.split(' ').first)
+          .toList();
+      expect(segs, ['5h', '1wk', '1m']);
+      expect(view.text, contains('1wk 70%'));
+      expect(view.text, contains('1m 20%'));
+      expect(view.text, isNot(contains('99%')));
+      expect(view.tooltip, contains('周: 已用 30%'));
+      expect(view.tooltip, contains('月: 已用 80%'));
+    });
+
+    test('ignores non-ok usage and renders the event 5h alone', () {
+      final usage = {'status': 'unavailable', 'error': 'boom'};
+      final view = formatClaudeLimit(limit(), usage, nowMs: nowMs);
+      final segs = view.text
+          .split(' · ')
+          .map((s) => s.split(' ').first)
+          .toList();
+      expect(segs, ['5h']);
+      expect(view.text, contains(' 50%'));
+      expect(view.tooltip, contains('五小时'));
+    });
+
+    test('skips the usage page 5h row (dedup vs the event)', () {
+      final usage = {
+        'status': 'ok',
+        'summary': [
+          {'window': '5h', 'usedPercent': 99, 'label': 'Current session'},
+        ],
+      };
+      final view = formatClaudeLimit(limit(), usage, nowMs: nowMs);
+      final segs = view.text.split(' · ');
+      expect(segs.length, 1);
+      expect(segs.first, startsWith('5h'));
+      expect(view.text, isNot(contains('99%')));
+    });
+
+    test('a rejected event forces 0% remaining', () {
+      final view = formatClaudeLimit(
+        limit(status: 'rejected', used: 100),
+        null,
+        nowMs: nowMs,
+      );
+      expect(view.text.split(' · ').first, startsWith('5h 0%'));
+    });
+
+    test('no usage leaves just the event 5h', () {
+      final view = formatClaudeLimit(limit(), null, nowMs: nowMs);
+      expect(
+        view.text
+            .split(' · ')
+            .map((s) => s.split(' ').first)
+            .toList(),
+        ['5h'],
+      );
+    });
+  });
+
+  group('formatClaudeUsageOnly', () {
+    test('null usage falls back to the idle placeholder', () {
+      final view = formatClaudeUsageOnly(null);
+      expect(view.text, '5h · — · ⟳ 刷新');
+      expect(view.color, VendorQuotaColor.gray);
+    });
+
+    test('needs_login surfaces the open-login affordance', () {
+      final view = formatClaudeUsageOnly({'status': 'needs_login'});
+      expect(view.text, contains('需登录'));
+      expect(view.text, contains('打开登录窗口'));
+      expect(view.color, VendorQuotaColor.red);
+    });
+
+    test('chrome_unavailable surfaces the login affordance too', () {
+      final view = formatClaudeUsageOnly({'status': 'chrome_unavailable'});
+      expect(view.text, contains('无可连的 Chrome'));
+      expect(view.color, VendorQuotaColor.yellow);
+    });
+
+    test('non-ok status renders unavailable with retry', () {
+      final view = formatClaudeUsageOnly({
+        'status': 'unavailable',
+        'error': 'cf blocked',
+      });
+      expect(view.text, contains('用量暂不可用'));
+      expect(view.text, contains('⟳ 重试'));
+      expect(view.tooltip, contains('cf blocked'));
+    });
+
+    test('ok windows render in canonical order', () {
+      final usage = {
+        'status': 'ok',
+        'fetchedAt': DateTime.now().millisecondsSinceEpoch,
+        'summary': [
+          {'window': '1m', 'usedPercent': 80},
+          {'window': '1wk', 'usedPercent': 30},
+          {'window': '5h', 'usedPercent': 42},
+        ],
+      };
+      final view = formatClaudeUsageOnly(usage);
+      // The first three segments are the windows (a sync suffix may follow).
+      final segs = view.text
+          .split(' · ')
+          .take(3)
+          .map((s) => s.split(' ').first)
+          .toList();
+      expect(segs, ['5h', '1wk', '1m']);
+      expect(view.tooltip, contains('5h: 已用 42%'));
+      expect(view.tooltip, contains('1wk: 已用 30%'));
     });
   });
 }
