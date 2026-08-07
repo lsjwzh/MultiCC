@@ -120,6 +120,7 @@ const { mountCodexQuotaRoutes } = require('./src/routes/codex-quota');
 const { mountArkQuotaRoutes } = require('./src/routes/ark-quota');
 const { mountZhipuQuotaRoutes } = require('./src/routes/zhipu-quota');
 const { mountKimiQuotaRoutes } = require('./src/routes/kimi-quota');
+const { mountClaudeUsageQuotaRoutes } = require('./src/routes/claude-usage-quota');
 const { mountAliyunQuotaRoutes } = require('./src/routes/aliyun-quota');
 const { mountProviderBalanceRoutes } = require('./src/routes/provider-balance');
 const { mountMemoryBrowserRoutes } = require('./src/routes/memory-browser');
@@ -2253,7 +2254,7 @@ mountQoderModelRoutes(app);
 // exists. Surfaces chrome_unavailable / needs_login / unavailable states so
 // the chat rate-limit bar can prompt instead of degrading silently.
 mountOpenCodeQuotaRoutes(app); mountQoderQuotaRoutes(app); mountCodexQuotaRoutes(app);
-mountArkQuotaRoutes(app); mountZhipuQuotaRoutes(app); mountKimiQuotaRoutes(app); mountAliyunQuotaRoutes(app);
+mountArkQuotaRoutes(app); mountZhipuQuotaRoutes(app); mountKimiQuotaRoutes(app); mountClaudeUsageQuotaRoutes(app); mountAliyunQuotaRoutes(app);
 mountCodexOAuthRoutes(app, { getStatus: () => codexOAuthRefresh.status(), directories, createSessionRecord, persistedSessionExists: id => persistedSessions.has(id) });
 const claudeOAuthSurface = createClaudeOAuthSurface({ refresher: claudeOAuthRefresh, directories, createSessionRecord, persistedSessions, destroySessionCascade, sessionPersistence, appendEvent }); claudeOAuthSurface.mountRoutes(app); // see src/routes/claude-oauth.js header
 // Token APIs remain between the two Provider route phases so the established

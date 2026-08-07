@@ -44,6 +44,22 @@
     return cd ? `${label} ${rem}% ${cd}` : `${label} ${rem}%`;
   }
 
+  // Canonical window-bar display order. Every bar that merges several windows
+  // (opencode 5h/1wk/1m, ark periods, zhipu 5h+1wk, kimi summary, claude 5h+
+  // weekly) renders short → long: 5h → 1wk → 1m. The leading token of each
+  // segment is its window label; rank by that. Unknown labels sort LAST but keep
+  // their relative order (Array#sort is stable), so a provider's idiosyncratic
+  // label never jumps ahead of the windows we standardize on.
+  const WINDOW_SEG_ORDER = Object.freeze({ '5h': 0, '1wk': 1, '1m': 2 });
+  function windowSegRank(seg) {
+    const m = String(seg || '').match(/^(\S+)/);
+    const label = m ? m[1] : '';
+    return WINDOW_SEG_ORDER[label] === undefined ? 3 : WINDOW_SEG_ORDER[label];
+  }
+  function sortWindowSegs(segs) {
+    return (Array.isArray(segs) ? segs : []).slice().sort((a, b) => windowSegRank(a) - windowSegRank(b));
+  }
+
   function unifiedColorFromRemaining(rem) {
     if (rem === null) return '#58a6ff';
     if (rem <= 10) return '#f85149';
@@ -96,10 +112,13 @@
     // (5h) and Codex (weekly) arrive from the poller carrying provider:'glm' /
     // 'codex'. It drives both the bar label and the source↔cli gate below.
     const provider = info.provider === 'glm' ? 'glm' : info.provider === 'codex' ? 'codex' : 'claude';
-    // Claude subscriptions have ONLY a 5h rolling window — no weekly/monthly
-    // quota exists upstream. A weekly-typed event that resolves to the claude
-    // provider is malformed (the poller always tags weekly with provider:
-    // 'codex'), so reject it rather than mislabel it as "Claude 5h".
+    // Claude's window data arrives through TWO sources: the 5h rolling window
+    // as a passive rate_limit_event, and the weekly/monthly limits via the
+    // claude.ai/settings/usage scrape (src/routes/claude-usage-quota.js). A
+    // WEEKLY-typed rate_limit_event that resolves to the claude provider is
+    // still malformed — the poller always tags weekly with provider:'codex',
+    // and Claude's weekly comes exclusively from the usage-page scrape, never
+    // from this event shape — so reject it rather than mislabel it.
     if (info.rateLimitType === 'weekly' && provider === 'claude') return null;
     return Object.freeze({
       schemaVersion: 1,
@@ -154,17 +173,47 @@
     const resetMs = reset === null ? null : Math.max(0, reset - nowMs);
     // Rejected = window exhausted → force 0% remaining.
     const effectiveUsed = rejected ? 100 : used;
-    let text = unifiedWindowSeg(windowLabel, effectiveUsed, resetMs);
-    if (!text) text = windowLabel;
+    const segs = [];
+    const first = unifiedWindowSeg(windowLabel, effectiveUsed, resetMs);
+    if (first) segs.push(first);
+    // Claude subscription: the weekly (and monthly, when the page shows one)
+    // limits come from the /api/claude/quota usage-page scrape. The page's own
+    // 5h row duplicates the passive event above, so only the longer windows
+    // are appended; the merge point normalizes order via sortWindowSegs.
+    const usage = options && options.usage;
+    if (value.provider === 'claude' && usage && usage.status === 'ok' && Array.isArray(usage.summary)) {
+      for (const s of usage.summary) {
+        if (!s || !Number.isFinite(s.usedPercent)) continue;
+        if (s.window === '5h' || (s.window !== '1wk' && s.window !== '1m')) continue;
+        const cd = s.resetMs ? Math.max(0, s.resetMs - nowMs) : null;
+        const seg = unifiedWindowSeg(s.window, s.usedPercent, cd);
+        if (seg) segs.push(seg);
+      }
+    }
+    let text = sortWindowSegs(segs).join(' · ') || first || windowLabel;
     const color = unifiedColorFromRemaining(unifiedRemaining(effectiveUsed));
+    const titleLines = [];
+    if (value.provider === 'glm') {
+      titleLines.push('GLM Coding Plan 五小时窗口用量（来自 open.bigmodel.cn 额度端点）');
+    } else if (value.provider === 'codex') {
+      titleLines.push('Codex 订阅周额度用量（来自 chatgpt.com/backend-api/wham/usage）');
+    } else {
+      titleLines.push('Claude 订阅五小时用量（来自 Claude Code 结构化 rate_limit_event）');
+      if (usage && usage.status === 'ok' && Array.isArray(usage.summary)) {
+        const zh = { '1wk': '周', '1m': '月' };
+        for (const s of usage.summary) {
+          if (!s || !Number.isFinite(s.usedPercent) || !s.window || s.window === '5h') continue;
+          const cd = s.resetMs ? Math.max(0, s.resetMs - nowMs) : null;
+          const pct = Math.round(s.usedPercent);
+          titleLines.push(`${zh[s.window] || s.window}: 已用 ${pct}%${cd ? ' · ' + humanizeCountdown(cd) + ' 后重置' : ''}`);
+        }
+        if (usage.fetchedAt) titleLines.push(`同步于 ${relativeAgo(usage.fetchedAt)}（claude.ai/settings/usage 抓取）`);
+      }
+    }
     return Object.freeze({
       text,
       color,
-      title: value.provider === 'glm'
-        ? 'GLM Coding Plan 五小时窗口用量（来自 open.bigmodel.cn 额度端点）'
-        : value.provider === 'codex'
-          ? 'Codex 订阅周额度用量（来自 chatgpt.com/backend-api/wham/usage）'
-          : 'Claude 订阅五小时用量（来自 Claude Code 结构化 rate_limit_event）',
+      title: titleLines.join('\n'),
     });
   }
 
@@ -214,14 +263,75 @@
   }
 
   // Idle placeholder for the always-visible Claude bar (mirrors the opencode
-  // formatQuotaIdle fixed-display pattern). Claude window data arrives only via
-  // passive WS rate_limit_event (there is no fetch endpoint), so there is no ⟳
-  // refresh affordance — just a "—" until the first event lands.
+  // formatQuotaIdle fixed-display pattern). Claude window data arrives via the
+  // passive WS rate_limit_event AND the /api/claude/quota usage scrape; until
+  // either lands the bar is a clickable "—" (click = fetch the scrape).
   function formatClaudeIdle() {
     return Object.freeze({
-      text: '5h · —',
+      text: '5h · — · ⟳ 刷新',
       color: '#8b949e',
-      title: 'Claude 订阅五小时用量（暂无数据，等待 Claude Code 上报 rate_limit_event）',
+      title: 'Claude 订阅窗口用量。点击从 claude.ai/settings/usage 抓取 5h / 周 / 月 余量；5h 也会由 Claude Code 上报的 rate_limit_event 实时更新。',
+    });
+  }
+
+  // Usage-page-only rendering for the Claude bar: no passive rate_limit_event
+  // has landed yet, but the /api/claude/quota scrape may already carry real
+  // windows — show them. With no scrape data at all, fall back to the idle
+  // placeholder so the bar stays a visible click target.
+  function formatClaudeUsageOnly(usage) {
+    if (!usage) return formatClaudeIdle();
+    if (usage.status === 'needs_login') {
+      return Object.freeze({
+        text: 'Claude：需登录 · 点击打开登录窗口',
+        color: '#f85149',
+        title: '你的浏览器里没有 claude.ai 的登录态。点击将由 multicc 拉起一个 Chrome 登录窗口（claude.ai/settings/usage），登录后回来再点一次刷新。',
+        action: 'login',
+      });
+    }
+    if (usage.status === 'chrome_unavailable') {
+      return Object.freeze({
+        text: 'Claude：无可连的 Chrome · 点击尝试打开登录窗口',
+        color: '#d29922',
+        title: '托管 Chrome 起不来，也没有可连的调试端点。点击会尝试拉起一个可见的 Chrome 登录窗口；也可以自己开一个带调试端点的 Chrome 并在其中登录 claude.ai。',
+        action: 'login',
+      });
+    }
+    if (usage.status !== 'ok' || !Array.isArray(usage.summary)) {
+      return Object.freeze({
+        text: 'Claude：用量暂不可用 · ⟳ 重试',
+        color: '#d29922',
+        title: (usage && usage.error) || '无法从 claude.ai/settings/usage 拉取窗口用量',
+      });
+    }
+    const summary = usage.summary.filter((s) => s && Number.isFinite(s.usedPercent));
+    if (!summary.length) {
+      return Object.freeze({
+        text: 'Claude：已登录，未解析出用量 · ⟳ 重试',
+        color: '#d29922',
+        title: `已抓到 claude.ai 用量页，但没解析出百分比。\n原文：${String(usage.text || '').slice(0, 300)}`,
+      });
+    }
+    const segs = [];
+    let maxUsed = 0;
+    for (const s of summary) {
+      if (s.usedPercent > maxUsed) maxUsed = s.usedPercent;
+      const label = s.window || s.label || '5h';
+      const cd = s.resetMs ? Math.max(0, s.resetMs - Date.now()) : null;
+      const seg = unifiedWindowSeg(label, s.usedPercent, cd);
+      if (seg) segs.push(seg);
+    }
+    let text = sortWindowSegs(segs).join(' · ') || '—';
+    const syncRel = relativeAgo(usage.fetchedAt);
+    if (syncRel) text += ` · ${syncRel}`;
+    text += ' ⟳';
+    let title = 'Claude 订阅窗口用量（claude.ai/settings/usage 抓取）';
+    for (const s of summary) title += `\n${s.window || s.label}: 已用 ${Math.round(s.usedPercent)}%`;
+    if (syncRel) title += `\n同步于 ${syncRel}`;
+    title += '\n点击 bar 刷新';
+    return Object.freeze({
+      text,
+      color: unifiedColorFromRemaining(unifiedRemaining(maxUsed)),
+      title,
     });
   }
 
@@ -231,30 +341,38 @@
     const claudeProvider = isClaudeProvider(currentProviderBaseUrl);
     const matches = currentLimit && providerMatchesCli(currentLimit.provider, currentCli)
       && (currentLimit.provider !== 'claude' || claudeProvider);
-    const view = matches ? formatFiveHourRateLimit(currentLimit) : null;
+    let view = matches ? formatFiveHourRateLimit(currentLimit, { usage: currentClaudeUsage }) : null;
+    let viewForClick = view;
     if (view) {
       element.style.display = 'block';
       element.textContent = view.text;
       element.title = view.title;
       element.style.color = view.color;
     } else if (currentCli === 'claude' && claudeProvider) {
-      // Always visible under the claude CLI on the Claude subscription: fall
-      // back to the idle placeholder rather than hiding, so the bar is a
-      // constant fixture (fixed display). Under another provider the item is
-      // hidden entirely — no empty "Claude 5h · —" placeholder.
-      const idle = formatClaudeIdle();
+      // Always visible under the claude CLI on the Claude subscription: show
+      // the CDP usage scrape when it came back with windows (even before any
+      // passive event), else the idle placeholder — the bar stays a constant
+      // fixture. Under another provider the item is hidden entirely.
+      const usageView = claudeUsageFetchInFlight && !currentClaudeUsage
+        ? { text: 'Claude：抓取用量中…', color: '#8b949e', title: '正在通过 CDP 打开 claude.ai/settings/usage 解析窗口余量…' }
+        : formatClaudeUsageOnly(currentClaudeUsage);
+      viewForClick = usageView;
       element.style.display = 'block';
-      element.textContent = idle.text;
-      element.title = idle.title;
-      element.style.color = idle.color;
+      element.textContent = usageView.text;
+      element.title = usageView.title;
+      element.style.color = usageView.color;
     } else {
       element.style.display = 'none';
       element.textContent = '';
       element.title = '';
     }
+    // Click = fetch the usage scrape (or open the login window when the scrape
+    // needs one). The bar was previously passive; the click target is what lets
+    // the weekly/monthly windows get pulled on demand.
+    element.onclick = () => quotaBarClick('claude', viewForClick, () => refreshClaudeUsage(true));
     if (expiryTimer) global.clearTimeout?.(expiryTimer);
     expiryTimer = null;
-    if (view && currentLimit.resetsAtMs) {
+    if (view && currentLimit && currentLimit.resetsAtMs) {
       const delay = Math.max(1, Math.min(2_147_000_000, currentLimit.resetsAtMs - Date.now() + 50));
       expiryTimer = global.setTimeout?.(() => {
         currentLimit = null;
@@ -280,6 +398,71 @@
     saveFiveHourRateLimit(browserStorage(), currentSession, limit);
     renderCurrent();
     return limit;
+  }
+
+  // ── Claude subscription usage scrape (weekly / monthly windows). Sourced by
+  // driving a browser via CDP to claude.ai/settings/usage and parsing the
+  // hydrated page text (src/routes/claude-usage-quota.js). The 5h window lives
+  // in the passive rate_limit_event above; this source only adds the longer
+  // windows that event never carries. Fetch-on-demand like the other CDP bars.
+  let currentClaudeUsage = null;
+  let claudeUsageFetchInFlight = false;
+  const CLAUDE_USAGE_BACKOFF_MS = 60_000;
+  let claudeUsageLastErrorAt = 0;
+
+  function claudeUsageStorageKey() { return 'multicc.claude.usage.v1'; }
+
+  function loadClaudeUsageFromStorage() {
+    const storage = browserStorage(); if (!storage) return null;
+    try {
+      const raw = storage.getItem(claudeUsageStorageKey());
+      if (!raw) return null;
+      const v = JSON.parse(raw);
+      if (!v || typeof v !== 'object') return null;
+      if (v.fetchedAt && (Date.now() - v.fetchedAt) > 24 * 60 * 60 * 1000) return null;
+      return v;
+    } catch (_) { return null; }
+  }
+
+  function saveClaudeUsageToStorage(data) {
+    const storage = browserStorage(); if (!storage || !data) return;
+    try { storage.setItem(claudeUsageStorageKey(), JSON.stringify(data)); } catch (_) {}
+  }
+
+  async function refreshClaudeUsage(force) {
+    if (claudeUsageFetchInFlight) return currentClaudeUsage;
+    if (!force && claudeUsageLastErrorAt && (Date.now() - claudeUsageLastErrorAt) < CLAUDE_USAGE_BACKOFF_MS) {
+      return currentClaudeUsage;
+    }
+    claudeUsageFetchInFlight = true;
+    renderCurrent();
+    try {
+      const res = await fetch('/api/claude/quota', { credentials: 'same-origin' });
+      let data = null;
+      try { data = await res.json(); } catch (_) { data = null; }
+      if (!data) data = { status: 'unavailable', error: 'invalid response' };
+      if (data.status === 'ok') {
+        currentClaudeUsage = data;
+        saveClaudeUsageToStorage(data);
+        claudeUsageLastErrorAt = 0;
+      } else {
+        currentClaudeUsage = data;
+        claudeUsageLastErrorAt = Date.now();
+      }
+    } catch (_) {
+      claudeUsageLastErrorAt = Date.now();
+      currentClaudeUsage = { status: 'unavailable', error: 'fetch failed' };
+    } finally {
+      claudeUsageFetchInFlight = false;
+    }
+    renderCurrent();
+    return currentClaudeUsage;
+  }
+
+  function restoreClaudeUsage() {
+    currentClaudeUsage = loadClaudeUsageFromStorage();
+    renderCurrent();
+    return currentClaudeUsage;
   }
 
   // ── Prepaid balance widget (DeepSeek). A DIFFERENT species from the window
@@ -394,6 +577,10 @@
     if (next === 'opencode') { quotaLastErrorAt = 0; refreshOpenCodeQuota(); }
     else if (next === 'qoder') { qoderQuotaLastErrorAt = 0; refreshQoderQuota(); }
     else if (next === 'codex') { codexQuotaLastErrorAt = 0; refreshCodexQuota(); }
+    // No claude auto-fetch here: the Claude bar is always visible and passive
+    // (its 5h comes from the live rate_limit_event), so an automatic scrape on
+    // switch would pop needs_login/unavailable states the user didn't ask for.
+    // The weekly/monthly scrape is fetch-on-click (⟳ 刷新) + restore.
   }
 
   // ── Actionable quota states ─────────────────────────────────────────────
@@ -416,6 +603,7 @@
     opencode: '/api/opencode/quota/login',
     qoder: '/api/qoder/quota/login',
     kimi: '/api/kimi/quota/login',
+    claude: '/api/claude/quota/login',
   });
 
   // The login window is opened by the server and then waited on by a human, so
@@ -545,7 +733,7 @@
     if (u.monthly && Number.isFinite(u.monthly.usagePercent)) {
       segs.push(unifiedWindowSeg('1m', u.monthly.usagePercent, u.monthly.resetInSec * 1000));
     }
-    let text = segs.filter(Boolean).join(' · ') || '—';
+    let text = sortWindowSegs(segs.filter(Boolean)).join(' · ') || '—';
     // Sync time: appended as "· N分钟前 ⟳" so users see how stale the data is
     // and have a visible refresh affordance.
     const syncRel = relativeAgo(value.fetchedAt);
@@ -1093,7 +1281,7 @@
       }
       titleLines.push(...itemTitle);
     }
-    let text = segs.filter(Boolean).join(' · ') || '—';
+    let text = sortWindowSegs(segs.filter(Boolean)).join(' · ') || '—';
     const syncRel = relativeAgo(value.fetchedAt);
     if (syncRel) text += ` · ${syncRel}`;
     text += ' ⟳';
@@ -1303,7 +1491,7 @@
       if (site.tier) line += ` · ${site.tier}`;
       titleLines.push(line);
     }
-    let text = segs.filter(Boolean).join(' · ') || '—';
+    let text = sortWindowSegs(segs.filter(Boolean)).join(' · ') || '—';
     const syncRel = relativeAgo(value.fetchedAt);
     if (syncRel) text += ` · ${syncRel}`;
     text += ' ⟳';
@@ -1537,10 +1725,10 @@
         });
       }
       const maxPct = Math.max.apply(null, summary.map((s) => s.used));
-      let text = summary.map((s) => {
+      let text = sortWindowSegs(summary.map((s) => {
         const cd = s.resetMs ? Math.max(0, s.resetMs - Date.now()) : null;
         return unifiedWindowSeg(s.label, s.used, cd) || `${s.label} ${s.used}%`;
-      }).join(' · ');
+      })).join(' · ');
       if (syncRel) text += ` · ${syncRel}`;
       text += ' ⟳';
       let title = 'Kimi 订阅用量（会员页抓取；订阅 key 无预付余额接口）';
@@ -1693,6 +1881,10 @@
     restoreKimiQuota,
     formatKimiQuota,
     isKimiBaseUrl,
+    sortWindowSegs,
+    formatClaudeUsageOnly,
+    refreshClaudeUsage,
+    restoreClaudeUsage,
     setCli,
   });
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
@@ -1707,5 +1899,6 @@
     restoreArkQuota();
     restoreZhipuQuota();
     restoreKimiQuota();
+    restoreClaudeUsage();
   }
 })(typeof window !== 'undefined' ? window : globalThis);
