@@ -417,12 +417,12 @@ function applyCliUi(cli) {
   document.title = `MultiCC Chat · ${meta.label}`;
   // OpenCode: kick off background refresh of the local opencode CLI's model
   // list so the AI-config picker dropdown is populated by the next open.
-  // loadOpenCodeModels() caches 1 day in localStorage (see shared/models.js);
-  // the rebuild callback re-resolves the picker once the fetch completes.
+  // loadOpenCodeModels() caches 1 day in localStorage (see shared/models.js).
   if (next === 'opencode' && window.MultiCCChatAiConfig && typeof window.MultiCCChatAiConfig.refreshOpenCodeModels === 'function') {
-    window.MultiCCChatAiConfig.refreshOpenCodeModels(() => {
-      try { window.MultiCCChatAiConfig && MultiCCChatAiConfig.showProviderPicker && MultiCCChatAiConfig.showProviderPicker(); } catch (_) {}
-    });
+    // No rebuild hook: the 1-day localStorage cache this fills is read the next
+    // time the AI-config picker opens. (The old callback opened a stray no-arg
+    // showProviderPicker() overlay once the fetch landed.)
+    window.MultiCCChatAiConfig.refreshOpenCodeModels();
   }
   // Qoder CN: same warm-up. No rebuild callback — qoder has no provider picker
   // to re-render, and the built-in tiers stay usable until the fetch lands.
