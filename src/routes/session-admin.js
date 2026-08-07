@@ -72,40 +72,51 @@ function latestStringAssistant(history, minLength = 20) {
 function createSessionAdminRuntime(rawDeps) {
   const deps = assertDependencies(rawDeps);
 
+  function readSessionRuntime(id, record, { includeMergeState = true } = {}) {
+    const terminal = deps.terminalSessions.get(id);
+    const chat = deps.chatSessions.get(id);
+    const kind = record.kind || 'terminal';
+    const isChat = kind === 'chat';
+    const chatActive = !!chat && (chat.clients.size > 0 || chat.isStreaming);
+    const chatActivity = isChat ? deps.chatLastActivity(id, chat) : null;
+    return {
+      cwd: isChat ? deps.cwdForSession(record) : (terminal ? terminal.cwd : record.cwd),
+      sessionCwd: deps.cwdForSession(record),
+      createdAt: terminal ? terminal.createdAt : record.createdAt,
+      terminalActive: !!terminal,
+      terminalLastActivity: terminal ? terminal.lastActivity : null,
+      terminalClients: terminal ? terminal.clients.size : 0,
+      chatActive,
+      chatLastActivity: chatActivity,
+      chatClients: chat ? chat.clients.size : 0,
+      effectiveModel: deps.effectiveSessionModel(record),
+      effectiveEffort: deps.effectiveSessionEffort(record),
+      subagent: deps.serializeSubagent(record.subagent),
+      lastActivity: isChat ? chatActivity : (terminal ? terminal.lastActivity : null),
+      clients: isChat ? (chat ? chat.clients.size : 0) : (terminal ? terminal.clients.size : 0),
+      active: isChat ? chatActive : !!terminal,
+      mergeState: includeMergeState && record.dirId
+        ? deps.mergeStateCached(deps.directories.get(record.dirId), record)
+        : null,
+    };
+  }
+
+  const recordsPort = {
+    list: () => deps.records.values(),
+    get: id => deps.records.get(id),
+  };
   const sessionQuery = createSessionQueryService({
-    records: {
-      list: () => deps.records.values(),
-      get: id => deps.records.get(id),
-    },
+    records: recordsPort,
     runtime: {
-      read: (id, record) => {
-        const terminal = deps.terminalSessions.get(id);
-        const chat = deps.chatSessions.get(id);
-        const kind = record.kind || 'terminal';
-        const isChat = kind === 'chat';
-        const chatActive = !!chat && (chat.clients.size > 0 || chat.isStreaming);
-        const chatActivity = isChat ? deps.chatLastActivity(id, chat) : null;
-        return {
-          cwd: isChat ? deps.cwdForSession(record) : (terminal ? terminal.cwd : record.cwd),
-          sessionCwd: deps.cwdForSession(record),
-          createdAt: terminal ? terminal.createdAt : record.createdAt,
-          terminalActive: !!terminal,
-          terminalLastActivity: terminal ? terminal.lastActivity : null,
-          terminalClients: terminal ? terminal.clients.size : 0,
-          chatActive,
-          chatLastActivity: chatActivity,
-          chatClients: chat ? chat.clients.size : 0,
-          effectiveModel: deps.effectiveSessionModel(record),
-          effectiveEffort: deps.effectiveSessionEffort(record),
-          subagent: deps.serializeSubagent(record.subagent),
-          lastActivity: isChat ? chatActivity : (terminal ? terminal.lastActivity : null),
-          clients: isChat ? (chat ? chat.clients.size : 0) : (terminal ? terminal.clients.size : 0),
-          active: isChat ? chatActive : !!terminal,
-          mergeState: record.dirId
-            ? deps.mergeStateCached(deps.directories.get(record.dirId), record)
-            : null,
-        };
-      },
+      read: (id, record) => readSessionRuntime(id, record),
+    },
+  });
+  // Dashboard DTOs do not expose mergeState. Keep their high-frequency list
+  // and stats polling side-effect free instead of spawning Git work per row.
+  const dashboardSessionQuery = createSessionQueryService({
+    records: recordsPort,
+    runtime: {
+      read: (id, record) => readSessionRuntime(id, record, { includeMergeState: false }),
     },
   });
 
@@ -401,7 +412,7 @@ function createSessionAdminRuntime(rawDeps) {
     app.get('/api/dashboard/sessions', (req, res) => {
       const { kind, active: activeParam } = req.query;
       const filterActive = activeParam === undefined ? null : activeParam === 'true';
-      const list = sessionQuery.list({
+      const list = dashboardSessionQuery.list({
         filter: record => !kind || (record.kind || 'terminal') === kind,
         presenter: dashboardSessionPresenter,
       }).filter(session => filterActive === null || session.active === filterActive);
@@ -409,7 +420,7 @@ function createSessionAdminRuntime(rawDeps) {
     });
 
     app.get('/api/dashboard/stats', (req, res) => {
-      const all = sessionQuery.listContexts();
+      const all = dashboardSessionQuery.listContexts();
       let active = 0;
       const byCli = {};
       const byKind = {};

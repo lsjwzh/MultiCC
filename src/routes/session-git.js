@@ -140,12 +140,19 @@ function createSessionGitRuntime(rawDeps) {
     : 1024 * 1024;
   const cacheTtlMs = Number.isFinite(deps.cacheTtlMs) && deps.cacheTtlMs >= 0
     ? deps.cacheTtlMs
-    : 4000;
+    : 30_000;
   const cacheJitterMs = Number.isFinite(deps.cacheJitterMs) && deps.cacheJitterMs >= 0
     ? deps.cacheJitterMs
-    : 3000;
+    : 30_000;
+  const maxRefreshConcurrency = Number.isSafeInteger(deps.maxRefreshConcurrency)
+      && deps.maxRefreshConcurrency > 0
+    ? deps.maxRefreshConcurrency
+    : 2;
   const mergeStateCache = new Map();
   const mergeStatePending = new Map();
+  const mergeStateQueue = [];
+  const activeMergeStateDirectories = new Set();
+  let activeMergeStateRefreshes = 0;
   const mountedApps = new WeakSet();
 
   function mergeStateKey(session) {
@@ -159,17 +166,77 @@ function createSessionGitRuntime(rawDeps) {
     return value;
   }
 
-  function mergeStateCached(dir, session) {
+  function mergeStateDirectoryKey(dir) {
+    return dir?.id || dir?.path || '__unknown_directory__';
+  }
+
+  function pumpMergeStateQueue() {
+    while (activeMergeStateRefreshes < maxRefreshConcurrency && mergeStateQueue.length > 0) {
+      // A repository actor serializes Git commands within one Fleet anyway.
+      // Do not let two waiting jobs from it occupy both global refresh slots.
+      const index = mergeStateQueue.findIndex(candidate => (
+        !activeMergeStateDirectories.has(candidate.directoryKey)
+      ));
+      if (index < 0) return;
+      const [job] = mergeStateQueue.splice(index, 1);
+      activeMergeStateRefreshes += 1;
+      activeMergeStateDirectories.add(job.directoryKey);
+      Promise.resolve()
+        .then(() => {
+          const current = mergeStateCache.get(job.key);
+          // An explicit refresh may have made this queued sweep redundant.
+          if (current && current.expiry > deps.now()) return current.value;
+          if (!deps.records.has(job.key)) return current ? current.value : null;
+          return Promise.resolve(deps.gitWorktreeMergeState(job.dir, job.session))
+            .then(value => rememberMergeState(job.key, value, true));
+        })
+        .catch(() => {
+          const current = mergeStateCache.get(job.key);
+          return current ? current.value : null;
+        })
+        .finally(() => {
+          if (mergeStatePending.get(job.key) === job.pending) {
+            mergeStatePending.delete(job.key);
+          }
+          activeMergeStateRefreshes -= 1;
+          activeMergeStateDirectories.delete(job.directoryKey);
+          job.resolve();
+          pumpMergeStateQueue();
+        });
+    }
+  }
+
+  function scheduleMergeStateRefresh(dir, session, key) {
+    let resolve;
+    const pending = new Promise(done => { resolve = done; });
+    const job = {
+      dir,
+      session,
+      key,
+      pending,
+      resolve,
+      directoryKey: mergeStateDirectoryKey(dir),
+    };
+    mergeStatePending.set(key, pending);
+    mergeStateQueue.push(job);
+    pumpMergeStateQueue();
+  }
+
+  function prioritizeMergeStateRefresh(key) {
+    const index = mergeStateQueue.findIndex(job => job.key === key);
+    if (index <= 0) return;
+    const [job] = mergeStateQueue.splice(index, 1);
+    mergeStateQueue.unshift(job);
+  }
+
+  function mergeStateCached(dir, session, { priority = false } = {}) {
     const key = mergeStateKey(session);
     if (!key) return LOADING_MERGE_STATE;
     const cached = mergeStateCache.get(key);
     if ((!cached || cached.expiry <= deps.now()) && !mergeStatePending.has(key)) {
-      const pending = Promise.resolve()
-        .then(() => deps.gitWorktreeMergeState(dir, session))
-        .then(value => rememberMergeState(key, value, true))
-        .catch(() => cached ? cached.value : null)
-        .finally(() => mergeStatePending.delete(key));
-      mergeStatePending.set(key, pending);
+      scheduleMergeStateRefresh(dir, session, key);
+    } else if (priority && mergeStatePending.has(key)) {
+      prioritizeMergeStateRefresh(key);
     }
     return cached ? cached.value : LOADING_MERGE_STATE;
   }
@@ -289,7 +356,7 @@ function createSessionGitRuntime(rawDeps) {
     app.get('/api/sessions/:id/merge-status', (req, res) => {
       const found = findSession(req, res);
       if (!found) return;
-      res.json(mergeStateCached(found.dir, found.persisted));
+      res.json(mergeStateCached(found.dir, found.persisted, { priority: true }));
     });
 
     app.get('/api/sessions/:id/diff', async (req, res) => {
