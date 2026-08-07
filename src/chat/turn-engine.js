@@ -35,6 +35,7 @@ const { buildReplayMessages } = require('../routes/chat-history');
 const chatStream = require('../chat-stream');
 const waitInjector = require('../wait-injector');
 const providers = require('../providers');
+const { createTurnTimingRecorder } = require('./turn-timing');
 
 function appendAdapterAssistantText(current, text) {
   const prior = String(current || '');
@@ -139,6 +140,21 @@ function createChatTurnEngine(deps) {
     MULTICC_IMG_HINT,
     CHAT_HISTORY_PAGE,
   } = deps;
+
+  // Shared [turn-timing] recorder: one instance for every adapter path (claude
+  // stream + per-turn spawn). See src/chat/turn-timing.js for the t0-t3 contract.
+  const turnTiming = createTurnTimingRecorder();
+  function turnTimingsField(sessionName, turnId) {
+    const record = turnTiming.get(sessionName, turnId);
+    if (!record || record.t3 === null) return undefined;
+    return {
+      t0: record.t0, t1: record.t1, t2: record.t2, t3: record.t3,
+      spawnMs: record.t1 - record.t0,
+      sendMs: record.t2 - record.t1,
+      firstByteMs: record.t3 - record.t2,
+      totalMs: record.t3 - record.t0,
+    };
+  }
 
   // Keep the claude transcript inside the context window before `--resume` replays
   // it. Claude Code auto-compacts on its own, so this is the second line of
@@ -291,6 +307,7 @@ function createChatTurnEngine(deps) {
           role: 'assistant', content: cs.currentAssistantText,
           tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
           cost: cs.currentCost, usage: Object.keys(usage).length ? usage : undefined, ts: Date.now(),
+          turnTimings: turnTimingsField(sessionName, turn.turnId),
         }, { resultEvent: true });
         if (resultDurable) {
           recordDurableTurnUsage(sessionName, runner, usage);
@@ -694,6 +711,13 @@ function createChatTurnEngine(deps) {
 
     const turnId = `turn_${crypto.randomBytes(12).toString('hex')}`;
     const turn = createTurnLifecycle(turnRequest, { turnId });
+    // t0 = when the server received the user message. The chat-send route entry
+    // stamps opts.receivedAt (survives the durable outbox via payload.options);
+    // trigger/continuation launches without it fall back to turn-start time.
+    turnTiming.begin(sessionName, turnId, {
+      t0: Number.isFinite(opts.receivedAt) ? opts.receivedAt : Date.now(),
+      cli: turnRequest.cli,
+    });
     const claimed = chatTurnPreparationRuntime.claim(sessionName, turnId, {
       cli: turnRequest.cli,
       transport: turnRequest.execution.transport,
@@ -998,6 +1022,12 @@ function createChatTurnEngine(deps) {
 
       const spawnTs = Date.now();
       console.log(`[multicc/chat] [${sessionName}] ${cs.cli} spawned pid=${proc.pid} turn=${cs.chatTurnCount} isRetry=${!!isRetry} clients=${cs.clients.size}`);
+      // Timing t1 = child spawned, t2 = prompt sent. On this path the prompt
+      // travels as argv at spawn time (stdio is ['ignore','pipe','pipe'] — no
+      // stdin), so t2 === t1. The real upstream HTTP request happens INSIDE the
+      // CLI process and is not observable from the server; t2 is our boundary.
+      turnTiming.markSpawned(sessionName, turn.turnId, spawnTs);
+      turnTiming.markSent(sessionName, turn.turnId, spawnTs);
       let stderrBuf = '';
       const isActiveProc = () => cs.claudeProc === proc && isCurrentTurnRunner(cs, turn, runner);
 
@@ -1021,6 +1051,8 @@ function createChatTurnEngine(deps) {
 
       proc.stdout.on('data', (chunk) => {
         if (!isActiveProc()) return;
+        // Timing t3 = first reply byte (earliest observable stdout signal).
+        turnTiming.markFirstByte(sessionName, turn.turnId);
         cs.lineBuf += chunk.toString();
         const lines = cs.lineBuf.split('\n');
         cs.lineBuf = lines.pop();
@@ -1042,6 +1074,7 @@ function createChatTurnEngine(deps) {
 
       proc.on('error', (err) => {
         if (!isActiveProc()) return;
+        turnTiming.abort(sessionName, turn.turnId, `spawn_error:${(err && err.code) || 'unknown'}`);
         runner.apiErrorRaw = {
           source: 'process_stderr',
           provider: cs.cli,
@@ -1168,6 +1201,14 @@ function createChatTurnEngine(deps) {
           retry: { limits: { codexDisconnect: CODEX_STREAM_DISCONNECT_CONTINUE_MAX } },
         });
 
+        // Timing: a terminal close with no first reply byte gets one abort line.
+        // Retry/continuation plans keep the record open — the next attempt may
+        // still deliver the first byte under the same turnId.
+        if (!['continue-codex', 'retry-api', 'retry-fresh'].includes(finalizePlan.action)) {
+          turnTiming.abort(sessionName, turn.turnId,
+            `closed_before_first_byte:code=${code}${signal ? `:signal=${signal}` : ''}`);
+        }
+
         if (finalizePlan.action === 'continue-codex') {
           cs._codexStreamContinuationCount = finalizePlan.retry.attempt;
           cs._codexRecoveredDisconnect = false;
@@ -1284,6 +1325,8 @@ function createChatTurnEngine(deps) {
         chatTurnPreparationRuntime.settle(sessionName, turnId, {
           status: 'failed', reason: preparationFailure,
         });
+        turnTiming.abort(sessionName, turnId, `preparation:${preparationFailure}`);
+        turnTiming.drop(sessionName, turnId);
       }
     }
   }
@@ -1442,12 +1485,25 @@ function createChatTurnEngine(deps) {
     };
 
     console.log(`[multicc/chat] [${sessionName}] (streaming) send turn=${cs.chatTurnCount} model=${persisted.model || 'default'} status=${JSON.stringify(chatStream.status(sessionName))}`);
+    // Timing hooks owned by chat-stream's pump(): 'spawned' fires when the
+    // process is ready for this message (fresh spawn or warm reuse), 'sent'
+    // after the prompt line is written to stdin. t3 is the first decoded
+    // stream event — the earliest reply signal observable on this path.
     chatStream.send(sessionName, invocation.payload, (evt) => {
       if (!isCurrentTurnRunner(cs, turn, runner)) return;
+      turnTiming.markFirstByte(sessionName, turn.turnId);
       applyAdapterChatEvent(provider, cs, persisted, sessionName, evt, forward, turn, runner);
+    }, {
+      onTiming: (phase) => {
+        if (phase === 'spawned') turnTiming.markSpawned(sessionName, turn.turnId);
+        else if (phase === 'sent') turnTiming.markSent(sessionName, turn.turnId);
+        else if (phase === 'firstByte') turnTiming.markFirstByte(sessionName, turn.turnId);
+      },
     })
       .then(() => finalizeStreamingTurn(sessionName, cs, persisted, mySeq, turn, runner, invocation, provider))
       .catch((err) => {
+        turnTiming.abort(sessionName, turn.turnId,
+          `stream_ended_before_first_byte:${(err && err.code) || 'exit'}`);
         if (!runner.killReason) {
           runner.sawApiError = true;
           runner.apiErrorRaw = {
@@ -1479,6 +1535,7 @@ function createChatTurnEngine(deps) {
         tools: context.cs.currentToolCalls.length ? context.cs.currentToolCalls : undefined,
         cost: context.cs.currentCost,
         ts: Date.now(),
+        turnTimings: turnTimingsField(context.sessionName, context.turn.turnId),
         ...(append.partial ? { partial: true } : {}),
       }, { final: append.final });
     },

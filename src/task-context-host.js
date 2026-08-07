@@ -202,6 +202,11 @@ function createTaskContextHost(options = {}) {
   async function deliverSessionMessage(sessionName, text, options = {}) {
     const persisted = getRecord(sessionName);
     if (!persisted) return { ok: false, code: 'session_not_found' };
+    // Turn-timing t0: every chat-send route (WS user_message, task-board HTTP
+    // sends) funnels through here. The stamp survives the durable outbox
+    // (payload.options) so runChatTurn can measure from true receipt, FIFO
+    // wait included. Callers may pre-stamp an earlier instant.
+    if (!Number.isFinite(options.receivedAt)) options.receivedAt = Date.now();
     const started = await runTurn(sessionName, text, options);
     if (started && typeof started === 'object') {
       return {
