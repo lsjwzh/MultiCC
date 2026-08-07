@@ -214,6 +214,37 @@ function createOutbox({
     return { recovered, deadLettered };
   }
 
+  function hasExpiredLease(draft, at) {
+    return Object.values(draft.outbox).some(item => (
+      // Mirror recoverExpiredDraft exactly. Legacy/corrupt-but-loadable leased
+      // records without a timestamp were previously recoverable, not immortal.
+      item.state === 'leased' && !(item.leasedUntil > at)
+    ));
+  }
+
+  function claimCandidates(draft, at, limit, selectSessionItem) {
+    // Only the oldest non-terminal item for a session may be admitted. A
+    // leased item or a retry in backoff blocks later items in that session,
+    // while another session remains independently claimable.
+    const itemsBySession = new Map();
+    const ordered = Object.values(draft.outbox).sort((a, b) => a.sequence - b.sequence);
+    for (const item of ordered) {
+      if (TERMINAL_STATES.has(item.state)) continue;
+      if (!itemsBySession.has(item.sessionId)) itemsBySession.set(item.sessionId, []);
+      itemsBySession.get(item.sessionId).push(item);
+    }
+
+    const selected = [...itemsBySession.values()]
+      .map(items => typeof selectSessionItem === 'function'
+        ? selectSessionItem(items, draft, at)
+        : items[0])
+      .filter(Boolean);
+    return selected
+      .filter(item => item.state === 'pending' && item.availableAt <= at)
+      .sort((a, b) => a.sequence - b.sequence)
+      .slice(0, limit);
+  }
+
   async function enqueue({ id = idFactory(), sessionId, payload, source, availableAt } = {}) {
     return store.mutate(draft => {
       const at = Number(now());
@@ -245,31 +276,10 @@ function createOutbox({
       throw new TypeError('[outbox] leaseForMs must be > 0');
     }
 
-    return store.mutate(draft => {
+    const mutateClaim = draft => {
       const at = Number(now());
       recoverExpiredDraft(draft, at);
-
-      // Only the oldest non-terminal item for a session may be admitted. A
-      // leased item or a retry in backoff blocks later items in that session,
-      // while another session remains independently claimable.
-      const itemsBySession = new Map();
-      const ordered = Object.values(draft.outbox).sort((a, b) => a.sequence - b.sequence);
-      for (const item of ordered) {
-        if (TERMINAL_STATES.has(item.state)) continue;
-        if (!itemsBySession.has(item.sessionId)) itemsBySession.set(item.sessionId, []);
-        itemsBySession.get(item.sessionId).push(item);
-      }
-
-      const selected = [...itemsBySession.values()]
-        .map(items => typeof selectSessionItem === 'function'
-          ? selectSessionItem(items, draft, at)
-          : items[0])
-        .filter(Boolean);
-      const candidates = selected
-        .filter(item => item.state === 'pending' && item.availableAt <= at)
-        .sort((a, b) => a.sequence - b.sequence)
-        .slice(0, limit);
-
+      const candidates = claimCandidates(draft, at, limit, selectSessionItem);
       return candidates.map(item => {
         const leaseToken = String(leaseTokenFactory());
         if (!leaseToken) throw new Error('[outbox] leaseTokenFactory returned an empty token');
@@ -282,7 +292,20 @@ function createOutbox({
         item.updatedAt = at;
         return { ...publicItem(item), leaseToken };
       });
-    });
+    };
+
+    if (typeof store.mutateIf === 'function') {
+      return store.mutateIf(
+        draft => {
+          const at = Number(now());
+          return hasExpiredLease(draft, at)
+            || claimCandidates(draft, at, limit, selectSessionItem).length > 0;
+        },
+        mutateClaim,
+        () => [],
+      );
+    }
+    return store.mutate(mutateClaim);
   }
 
   async function acknowledge(id, leaseToken) {
