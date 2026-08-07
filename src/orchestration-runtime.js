@@ -345,61 +345,87 @@ function createOrchestrationRuntime({
     return false;
   }
 
-  async function claimDuePolls() {
-    const result = await store.mutate(draft => {
-      const at = Number(now());
-      const claims = [];
-      const expired = [];
-      for (const wait of Object.values(draft.waits)) {
-        if (wait.status !== 'pending') continue;
-        const metadata = wait.metadata || {};
-        if (wait.mode === 'callback') {
-          if (Number.isFinite(metadata.expireAt) && metadata.expireAt <= at) {
-            wait.status = 'cancelled';
-            wait.cancelledAt = at;
-            wait.updatedAt = at;
-            expired.push({ sessionId: wait.sessionId, id: wait.id });
-          }
-          continue;
-        }
-        if (wait.mode === 'delay') {
-          const leaseActive = metadata.delayLeaseId
-            && Number.isFinite(metadata.delayLeasedUntil)
-            && metadata.delayLeasedUntil > at;
-          if (leaseActive || !Number.isFinite(metadata.dueAt) || metadata.dueAt > at) continue;
-          const delayLeaseId = crypto.randomBytes(16).toString('hex');
-          metadata.delayLeaseId = delayLeaseId;
-          metadata.delayLeasedUntil = at + pollLeaseMs;
-          wait.metadata = metadata;
+  function hasDueWaitWork(draft, at) {
+    return Object.values(draft.waits).some(wait => {
+      if (wait.status !== 'pending') return false;
+      const metadata = wait.metadata || {};
+      if (wait.mode === 'callback') {
+        return Number.isFinite(metadata.expireAt) && metadata.expireAt <= at;
+      }
+      if (wait.mode === 'delay') {
+        const leaseActive = metadata.delayLeaseId
+          && Number.isFinite(metadata.delayLeasedUntil)
+          && metadata.delayLeasedUntil > at;
+        return !leaseActive && Number.isFinite(metadata.dueAt) && metadata.dueAt <= at;
+      }
+      const leaseActive = metadata.pollLeaseId
+        && Number.isFinite(metadata.pollLeasedUntil)
+        && metadata.pollLeasedUntil > at;
+      return !leaseActive && Number.isFinite(metadata.nextAt) && metadata.nextAt <= at;
+    });
+  }
+
+  function claimDueWaitsDraft(draft) {
+    const at = Number(now());
+    const claims = [];
+    const expired = [];
+    for (const wait of Object.values(draft.waits)) {
+      if (wait.status !== 'pending') continue;
+      const metadata = wait.metadata || {};
+      if (wait.mode === 'callback') {
+        if (Number.isFinite(metadata.expireAt) && metadata.expireAt <= at) {
+          wait.status = 'cancelled';
+          wait.cancelledAt = at;
           wait.updatedAt = at;
-          claims.push({
-            id: wait.id,
-            mode: 'delay',
-            sessionId: wait.sessionId,
-            delayLeaseId,
-            metadata: JSON.parse(JSON.stringify(metadata)),
-          });
-          continue;
+          expired.push({ sessionId: wait.sessionId, id: wait.id });
         }
-        const leaseActive = metadata.pollLeaseId
-          && Number.isFinite(metadata.pollLeasedUntil)
-          && metadata.pollLeasedUntil > at;
-        if (leaseActive || !Number.isFinite(metadata.nextAt) || metadata.nextAt > at) continue;
-        const pollLeaseId = crypto.randomBytes(16).toString('hex');
-        metadata.pollLeaseId = pollLeaseId;
-        metadata.pollLeasedUntil = at + pollLeaseMs;
+        continue;
+      }
+      if (wait.mode === 'delay') {
+        const leaseActive = metadata.delayLeaseId
+          && Number.isFinite(metadata.delayLeasedUntil)
+          && metadata.delayLeasedUntil > at;
+        if (leaseActive || !Number.isFinite(metadata.dueAt) || metadata.dueAt > at) continue;
+        const delayLeaseId = crypto.randomBytes(16).toString('hex');
+        metadata.delayLeaseId = delayLeaseId;
+        metadata.delayLeasedUntil = at + pollLeaseMs;
         wait.metadata = metadata;
         wait.updatedAt = at;
         claims.push({
           id: wait.id,
-          mode: 'poll',
+          mode: 'delay',
           sessionId: wait.sessionId,
-          pollLeaseId,
+          delayLeaseId,
           metadata: JSON.parse(JSON.stringify(metadata)),
         });
+        continue;
       }
-      return { claims, expired };
-    });
+      const leaseActive = metadata.pollLeaseId
+        && Number.isFinite(metadata.pollLeasedUntil)
+        && metadata.pollLeasedUntil > at;
+      if (leaseActive || !Number.isFinite(metadata.nextAt) || metadata.nextAt > at) continue;
+      const pollLeaseId = crypto.randomBytes(16).toString('hex');
+      metadata.pollLeaseId = pollLeaseId;
+      metadata.pollLeasedUntil = at + pollLeaseMs;
+      wait.metadata = metadata;
+      wait.updatedAt = at;
+      claims.push({
+        id: wait.id,
+        mode: 'poll',
+        sessionId: wait.sessionId,
+        pollLeaseId,
+        metadata: JSON.parse(JSON.stringify(metadata)),
+      });
+    }
+    return { claims, expired };
+  }
+
+  async function claimDuePolls() {
+    const result = await store.mutateIf(
+      draft => hasDueWaitWork(draft, Number(now())),
+      claimDueWaitsDraft,
+      () => ({ claims: [], expired: [] }),
+    );
     // The in-memory guard is updated only after the atomic rename succeeds.
     for (const wait of result.expired) removePending(wait.sessionId, wait.id);
     return result.claims;
@@ -616,10 +642,16 @@ function createOrchestrationRuntime({
   }
 
   async function processOutbox() {
+    const selectRunnableSessionItem = (items, draft, at) => {
+      const item = sessionScheduler.selectSessionItem(items, draft, at);
+      // Do not create a durable lease merely to discover the host process is
+      // busy and immediately defer it. The next 1s tick will reconsider it.
+      return item && !isBusy(item.sessionId) ? item : null;
+    };
     const claimed = await outbox.claim({
       workerId,
       limit: claimLimit,
-      selectSessionItem: sessionScheduler.selectSessionItem,
+      selectSessionItem: selectRunnableSessionItem,
     });
     await Promise.all(claimed.map(deliver));
     return claimed.length;
