@@ -16,7 +16,6 @@ import '../widgets/model_picker.dart';
 import 'agent_resources_screen.dart';
 import 'aux_screen.dart';
 import 'bridge_settings_screen.dart';
-import 'cron_screen.dart';
 import 'dashboard_screen.dart';
 import 'events_screen.dart';
 import 'main_shell.dart';
@@ -28,7 +27,8 @@ import 'voice_settings_screen.dart';
 
 /// Unified in-app settings page. Covers app-local config (server connection,
 /// default model, notifications, appearance) and links out to the web
-/// dashboard for server-side settings (cron, voice keys, WeChat, …).
+/// dashboard for server-side settings (voice keys, WeChat, …). Scheduled
+/// tasks live on the home workspace bar, not here.
 class SettingsScreen extends StatefulWidget {
   final SettingsService settings;
   const SettingsScreen({super.key, required this.settings});
@@ -750,18 +750,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _Section(
             title: t('management'),
             children: [
-              _NavTile(
-                icon: Icons.alarm_rounded,
-                title: t('cronTasks'),
-                subtitle: t('cronNavHint'),
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute<void>(
-                    builder: (_) => CronScreen(settings: widget.settings),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 8),
               _NavTile(
                 icon: Icons.swap_horiz_rounded,
                 title: t('providerConfig'),
