@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:multicc_app/i18n.dart';
 import 'package:multicc_app/models/chat_runtime_state.dart';
+import 'package:multicc_app/models/vendor_quota.dart';
 import 'package:multicc_app/widgets/chat_runtime_panels.dart';
 
 Widget _host(Widget child) => MaterialApp(
@@ -182,6 +183,28 @@ void main() {
     await tester.pump();
     expect(find.byKey(const Key('insert-queued-queued-1')), findsNothing);
     expect(find.byKey(const Key('cancel-queued-queued-1')), findsOneWidget);
+  });
+
+  testWidgets('Claude usage bar renders and tapping it fires the refresh tap', (
+    tester,
+  ) async {
+    var taps = 0;
+    await tester.pumpWidget(
+      _host(
+        ChatRuntimeNoticePanel(
+          claudeUsage: const VendorQuotaView(
+            '5h 50% · 1wk 70%',
+            VendorQuotaColor.blue,
+            'Claude 订阅窗口用量 tooltip',
+          ),
+          onClaudeQuotaTap: () => taps++,
+        ),
+      ),
+    );
+    expect(find.text('5h 50% · 1wk 70%'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('claude-quota-bar')));
+    await tester.pump();
+    expect(taps, 1);
   });
 
   testWidgets('API error only offers manual retry when policy says safe', (
