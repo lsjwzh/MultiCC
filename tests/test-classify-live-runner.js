@@ -5,9 +5,9 @@ const test = require('node:test');
 
 const { createClassifyStateMachine } = require('../src/classify/state-machine');
 
-function fixture({ cli = 'opencode', goal = '已识别任务', isStreaming = true } = {}) {
+function fixture({ cli = 'opencode', goal = '已识别任务', isStreaming = true, type = 'worker' } = {}) {
   const record = {
-    id: 's1', kind: 'chat', cli,
+    id: 's1', kind: 'chat', cli, type,
     taskState: {
       classifyState: 'P', goal, phase: 'implementing',
       startedAt: Date.now() - 20 * 60_000,
@@ -30,11 +30,14 @@ function fixture({ cli = 'opencode', goal = '已识别任务', isStreaming = tru
   };
   const persistedSessions = new Map([['s1', record]]);
   const chatSessions = new Map([['s1', chatState]]);
-  const observed = { enqueued: 0, transitions: 0, transitionOptions: [], broadcasts: [] };
+  const observed = {
+    enqueued: 0, transitions: 0, transitionResults: [], transitionOptions: [], broadcasts: [],
+  };
   const auxQueue = {
     queue: [],
     isUnhealthy: () => false,
     hasPendingFor: () => false,
+    cancelClassifyFor() {},
     enqueue() {
       observed.enqueued += 1;
       return Promise.resolve({ text: '已识别任务\n实现中\nW' });
@@ -47,8 +50,9 @@ function fixture({ cli = 'opencode', goal = '已识别任务', isStreaming = tru
     logger: { info() {}, warn() {}, error() {} },
     getAuxQueue: () => auxQueue,
     getSessionWorkHost: () => ({
-      classifyTransition(_sessionId, _taskId, _result, options) {
+      classifyTransition(_sessionId, _taskId, result, options) {
         observed.transitions += 1;
+        observed.transitionResults.push(result);
         observed.transitionOptions.push(options);
       },
       classifyUnavailable() {},
@@ -138,4 +142,15 @@ test('unknown liveness fails closed before classify admission', () => {
   assert.equal(h.observed.enqueued, 0);
   assert.equal(h.observed.transitions, 0);
   assert.equal(h.record.taskState.classifyState, 'P');
+});
+
+test('a completed gateway turn deterministically reaches D without Aux classification', () => {
+  const h = fixture({ cli: 'claude', type: 'gateway', isStreaming: false });
+  h.chatState.claudeProc = null;
+  h.machine.classifyTurnEnd(h.chatState, 's1', { classification: 'completed' });
+  assert.equal(h.observed.enqueued, 0, 'gateway completion must not depend on Aux health');
+  assert.equal(h.observed.transitions, 1);
+  assert.equal(h.observed.transitionResults[0].state, 'D');
+  assert.equal(h.observed.transitionResults[0].evidence, 'gateway_turn_completed');
+  assert.equal(h.record.taskState.classifyState, 'D');
 });

@@ -703,13 +703,31 @@ function createClassifyStateMachine(rawDeps) {
   // only 'api-error' short-circuits the Aux judgement.
   function classifyTurnEnd(cs, sessionName, { classification } = {}) {
     cancelClassify(cs);
-    if (classification === 'api-error') {
+    const persisted = persistedSessions.get(sessionName);
+    const gatewayCompleted = persisted?.type === 'gateway'
+      && (!classification || classification === 'completed');
+    if (gatewayCompleted) {
+      // Gateway turns are independent message-routing transactions. Their
+      // authoritative outcome is the post-turn gateway/voice admission effect;
+      // they have no semantic P/W/B lifecycle for Aux to infer. Sending them to
+      // Aux created a permanent FIFO deadlock whenever classification was
+      // unavailable, because the periodic scanner intentionally skips gateways.
+      getAuxQueue().cancelClassifyFor(sessionName);
+      if (cs) cs._classifyTaskId = null;
+      const sessionId = persisted.id || sessionName;
+      applyClassifyResult(cs, sessionName, sessionId, {
+        state: 'D',
+        goal: cs?.currentTask?.goal || '',
+        phase: 'done',
+        evidence: 'gateway_turn_completed',
+      }, { cwd: cs?.cwd, source: 'multicc/gateway-turn' });
+    } else if (classification === 'api-error') {
       // Drop this session's queued/in-flight classify. Whatever it was judging
       // is now superseded, and letting it resolve would overwrite the
       // deterministic E with the guess this branch exists to avoid.
       getAuxQueue().cancelClassifyFor(sessionName);
       if (cs) cs._classifyTaskId = null;
-      const sessionId = persistedSessions.get(sessionName)?.id || sessionName;
+      const sessionId = persisted?.id || sessionName;
       applyClassifyResult(cs, sessionName, sessionId, apiErrorResult(cs, sessionName),
         { cwd: cs?.cwd, source: 'multicc/api-error' });
     } else {
