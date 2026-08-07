@@ -1,0 +1,241 @@
+'use strict';
+
+// GET /api/claude/quota — fetch the Claude subscription's usage windows
+// (5h session / weekly / monthly) from claude.ai/settings/usage.
+//
+// Claude's plan limits are NOT exposed through any REST API the CLI can reach:
+// the structured rate_limit_event only carries the 5h rolling window, and there
+// is no usage endpoint a cookie-only request could query. The authoritative
+// source is the /settings/usage SPA, which is behind Cloudflare — plain HTTP
+// scraping gets blocked (verified in the task brief: don't bother with a cookie
+// fallback). So we drive a browser that holds the user's session — see
+// ../quota-managed-browser.js (multicc-owned profile) and ../chrome-cdp.js
+// (any local Chrome) — render the page headlessly, wait for it to hydrate, and
+// parse `document.body.innerText` for the window percentages + reset times,
+// the same text-heuristic approach as the kimi membership page.
+//
+// Response (ok):
+//   { status:'ok', fetchedAt, source, url,
+//     summary:[ { window:'5h'|'1wk'|'1m'|null, label, usedPercent, resetMs, line } ] }
+// The 5h row on the page duplicates the passive rate_limit_event, so the
+// frontend keeps the event's 5h and appends the weekly/monthly rows from here.
+//
+// Failure modes surfaced to the frontend so the rate-limit bar can prompt the
+// user instead of silently degrading:
+//   chrome_unavailable — no browser we can reach over CDP
+//   needs_login       — page redirected to the login screen (no session)
+//   unavailable       — any other error / parse timeout (incl. Cloudflare)
+
+const { createChromeCdp, portsFromEnv, profileDirsFromEnv } = require('../chrome-cdp');
+const { getManagedQuotaBrowser } = require('../quota-managed-browser');
+
+const CDP_TIMEOUT_MS = Number(process.env.CLAUDE_QUOTA_TIMEOUT_MS || 15000);
+function panelTextTimeoutMs() {
+  return Number(process.env.CLAUDE_QUOTA_PANEL_TIMEOUT_MS || 30000);
+}
+const CLAUDE_USAGE_URL = process.env.CLAUDE_QUOTA_URL || 'https://claude.ai/settings/usage';
+
+const chrome = createChromeCdp({
+  ports: portsFromEnv(process.env, [process.env.CLAUDE_QUOTA_CDP_PORT].filter(Boolean)),
+  profileDirs: profileDirsFromEnv(process.env),
+  commandTimeoutMs: CDP_TIMEOUT_MS,
+});
+
+// Gate for "the usage panel is actually on screen". claude.ai renders a shell
+// first; the panel only appears after the SPA hydrates. Require a real
+// percentage plus one of the window markers the page uses (current session /
+// weekly / monthly / countdown boilerplate).
+const PANEL_PERCENT_PATTERN = /\d+(?:\.\d+)?\s*%/;
+const USAGE_MARKER_PATTERN = /current session|weekly|monthly|5\s*hour|7\s*day|30\s*day|resets?\s+in|会话|周用量|月用量|5 小时/i;
+function usagePanelReady(text) {
+  const t = String(text || '');
+  return PANEL_PERCENT_PATTERN.test(t) && USAGE_MARKER_PATTERN.test(t);
+}
+
+// Map the raw scraped window label to the standard window token every quota
+// surface renders through (chat-rate-limit unifiedWindowSeg). The frontend no
+// longer trusts the raw English label.
+function windowTokenForLabel(label) {
+  const l = String(label || '');
+  if (/session|hour|5\s*h/i.test(l)) return '5h';
+  if (/week|7\s*day/i.test(l)) return '1wk';
+  if (/month|30\s*day/i.test(l)) return '1m';
+  return null;
+}
+
+// The usage page prints reset times under each percentage. claude.ai shows a
+// live countdown ("Resets in 3h 20m" / "Resets in 2d 4h") rather than an
+// absolute date; a few variants are tolerated and everything else leaves
+// resetMs null (the frontend just omits the countdown).
+function parseClaudeReset(text, nowMs = Date.now()) {
+  const t = String(text || '');
+  const d = t.match(/resets?\s+in\s+(\d+)\s*d\s+(\d+)\s*h/i);
+  if (d) return nowMs + (Number(d[1]) * 86400 + Number(d[2]) * 3600) * 1000;
+  const dOnly = t.match(/resets?\s+in\s+(\d+)\s*d/i);
+  if (dOnly) return nowMs + Number(dOnly[1]) * 86400 * 1000;
+  const hm = t.match(/resets?\s+in\s+(\d+)\s*h\s+(\d+)\s*m/i);
+  if (hm) return nowMs + (Number(hm[1]) * 3600 + Number(hm[2]) * 60) * 1000;
+  const h = t.match(/resets?\s+in\s+(\d+)\s*h/i);
+  if (h) return nowMs + Number(h[1]) * 3600 * 1000;
+  const m = t.match(/resets?\s+in\s+(\d+)\s*m/i);
+  if (m) return nowMs + Number(m[1]) * 60 * 1000;
+  return null;
+}
+
+// Plan names sit between the window label and its percentage on this page, so
+// they are skipped while walking backwards for the label.
+const PLAN_NAME_LINE = /^(max|pro|team|enterprise|standard|plus|opus|sonnet|haiku|free)$/i;
+const RESET_INFO_LINE = /resets?\s+in|resets?\s+on|重置|remaining/i;
+function labelForPercent(lines, i) {
+  for (let j = i - 1, steps = 0; j >= 0 && steps < 6; j--, steps++) {
+    const cand = lines[j];
+    if (/%/.test(cand)) break;                 // another value: no label for us
+    if (PLAN_NAME_LINE.test(cand)) continue;   // plan name between label and value
+    if (RESET_INFO_LINE.test(cand)) continue;  // reset boilerplate
+    return cand.slice(0, 24);
+  }
+  return '';
+}
+
+// Summary items are the unified window shape every quota surface renders:
+// { window: '5h'|'1wk'|'1m'|null, label, usedPercent, resetMs, line }.
+// `percent` mirrors usedPercent so pre-upgrade caches keep working.
+function summarizeUsageText(text, nowMs = Date.now()) {
+  const lines = String(text || '').split(/\n+/).map((s) => s.trim()).filter(Boolean);
+  const hits = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^(\d+(?:\.\d+)?)\s*%$/) || lines[i].match(/(\d+(?:\.\d+)?)\s*%/);
+    if (!m) continue;
+    const label = labelForPercent(lines, i);
+    // The reset line follows the value; only the first candidate that really
+    // carries reset boilerplate counts.
+    let resetMs = null;
+    for (let j = i + 1; j <= i + 3 && j < lines.length; j++) {
+      if (/%/.test(lines[j])) break;
+      if (/resets?\s+in|resets?\s+on|重置/i.test(lines[j])) { resetMs = parseClaudeReset(lines[j], nowMs); break; }
+    }
+    const usedPercent = Number(m[1]);
+    hits.push({ window: windowTokenForLabel(label), label, usedPercent, percent: usedPercent, resetMs, line: lines[i].slice(0, 80) });
+    if (hits.length >= 4) break;
+  }
+  return hits.length ? hits : null;
+}
+
+async function readClaudeUsageFromPage(page) {
+  await page.enable(['Runtime', 'Page']);
+  await page.navigate(CLAUDE_USAGE_URL);
+
+  // 1. Wait for the redirect chain to settle — either into the usage page
+  //    (logged in) or onto the login screen. Half the deadline; the rest is for
+  //    the SPA hydration wait below.
+  let hitLogin = false;
+  const settled = await page.waitFor(async () => {
+    const href = await page.evaluate('location.href');
+    if (typeof href !== 'string' || !href) return null;
+    if (/\/login|sign-?in|auth\.claude\.ai/i.test(href)) { hitLogin = true; return href; }
+    const ready = await page.evaluate('document.readyState');
+    return ready === 'complete' ? href : null;
+  }, { timeoutMs: Math.floor(CDP_TIMEOUT_MS / 2) });
+  if (!settled) return { status: 'unavailable', error: 'usage page never settled' };
+  if (hitLogin) return { status: 'needs_login', error: 'claude.ai 登录态缺失，点余量徽标可打开登录窗口' };
+
+  // 2. Wait for the usage panel itself (percentages + window markers), not the
+  //    shell. The SPA hydrates asynchronously, so it gets the larger budget.
+  const text = await page.waitFor(async () => {
+    const t = await page.evaluate('document.body ? document.body.innerText : ""');
+    return typeof t === 'string' && usagePanelReady(t) ? t : null;
+  }, { timeoutMs: panelTextTimeoutMs(), intervalMs: 800 }) || '';
+
+  if (!String(text).trim()) return { status: 'unavailable', error: '用量面板未渲染（可能被 Cloudflare 拦截或页面改版）' };
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    source: 'usage-page',
+    url: settled,
+    summary: summarizeUsageText(text),
+    text: String(text).slice(0, 2000),
+  };
+}
+
+async function fetchClaudeUsage() {
+  const managed = getManagedQuotaBrowser();
+  const sources = [
+    {
+      label: 'managed',
+      run: async () => {
+        const browser = await managed.attachManaged();
+        try { return await managed.withPage(readClaudeUsageFromPage, { browser }); }
+        finally { browser.close(); }
+      },
+    },
+    {
+      label: 'user-chrome',
+      run: async () => {
+        const browser = await chrome.attach();
+        try { return await chrome.withPage(readClaudeUsageFromPage, { browser }); }
+        finally { browser.close(); }
+      },
+    },
+  ];
+
+  let lastNeedsLogin = null;
+  let lastUnavailable = null;
+  let anyAttached = false;
+  for (const source of sources) {
+    let result;
+    try { result = await source.run(); }
+    catch (err) {
+      if (err && err.code === 'chrome_unavailable') continue;
+      return { status: 'unavailable', error: err.message };
+    }
+    anyAttached = true;
+    if (result.status === 'ok') return { ...result, source: source.label };
+    if (result.status === 'needs_login') { lastNeedsLogin = result; continue; }
+    lastUnavailable = result;
+  }
+  if (lastNeedsLogin) return lastNeedsLogin;
+  if (!anyAttached) {
+    return { status: 'chrome_unavailable', error: '托管浏览器启动失败且没有可连的 Chrome 调试端点' };
+  }
+  return lastUnavailable || { status: 'unavailable', error: '所有浏览器来源都未能取得用量' };
+}
+
+function mountClaudeUsageQuotaRoutes(app) {
+  if (!app || typeof app.get !== 'function') return;
+  app.get('/api/claude/quota', async (req, res) => {
+    try {
+      const result = await fetchClaudeUsage();
+      const status = (result && result.status) || 'unavailable';
+      const httpStatus = status === 'ok' ? 200
+        : (status === 'needs_login' ? 401
+          : (status === 'chrome_unavailable' ? 503 : 500));
+      res.status(httpStatus).json(result);
+    } catch (err) {
+      res.status(500).json({ status: 'unavailable', error: 'claude quota fetch failed' });
+    }
+  });
+
+  // Visible login window on the managed profile — same pattern as qoder /
+  // opencode / kimi. The user logs into claude.ai once; the session then
+  // persists for headless usage-page scrapes.
+  app.post('/api/claude/quota/login', async (req, res) => {
+    try {
+      await getManagedQuotaBrowser().openVisibleLogin(CLAUDE_USAGE_URL);
+      res.json({ ok: true, message: '已打开登录窗口：请在弹出的 Chrome 中登录 claude.ai，完成后回来重新查询余量' });
+    } catch (err) {
+      const status = err && err.code === 'chrome_unavailable' ? 503 : 500;
+      res.status(status).json({ ok: false, error: (err && err.code) || 'login_window_failed', message: err && err.message });
+    }
+  });
+}
+
+module.exports = {
+  mountClaudeUsageQuotaRoutes,
+  fetchClaudeUsage,
+  summarizeUsageText,
+  usagePanelReady,
+  windowTokenForLabel,
+  parseClaudeReset,
+  // exposed for tests
+  readClaudeUsageFromPage,
+};
