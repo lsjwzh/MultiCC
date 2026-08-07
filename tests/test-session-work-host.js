@@ -590,6 +590,33 @@ test('recovery state exposes only unresolved request correlation to the schedule
   assert.equal(h.host.recoveryState('s1').pendingUserInput, null);
 });
 
+test('gateway recovery projects a durable ended P turn to D, but never invents an unproven end', () => {
+  const durable = fixture({
+    record: {
+      type: 'gateway',
+      taskState: { classifyState: 'P', startedAt: 100, endedAt: 200 },
+    },
+    chatState: { _currentTaskId: 'gateway-task' },
+  });
+  assert.deepEqual(durable.host.recoveryState('s1'), {
+    classifyState: 'D',
+    startedAt: 100,
+    endedAt: 200,
+    taskId: 'gateway-task',
+    pendingUserInput: null,
+  });
+
+  const interrupted = fixture({
+    record: { type: 'gateway', taskState: { classifyState: 'P', startedAt: 100 } },
+  });
+  assert.equal(interrupted.host.recoveryState('s1').classifyState, 'P');
+
+  const ordinary = fixture({
+    record: { type: 'worker', taskState: { classifyState: 'P', startedAt: 100, endedAt: 200 } },
+  });
+  assert.equal(ordinary.host.recoveryState('s1').classifyState, 'P');
+});
+
 test('classify W/B/E release the active slot (no freeze); unavailable leaves assessment pending', async () => {
   // Queue rule (T1): every turn-end verdict releases the active slot via
   // complete(). FIFO draining is D-only and lives in selectSessionItem, not

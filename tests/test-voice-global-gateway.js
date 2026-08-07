@@ -650,6 +650,39 @@ test('the voice router prompt routes by Fleet and asks instead of guessing', () 
   assert.match(wechat, /dispatch_master，mode 必须是 async/);
 });
 
+test('an explicitly named worker is visible even beyond the bounded snapshot window', () => {
+  const fixture = gatewayHostFixture();
+  for (let index = 0; index < 35; index += 1) {
+    fixture.records.set(`older-worker-${index}`, {
+      id: `older-worker-${index}`,
+      dirId: 'dir-1',
+      type: 'worker',
+      kind: 'chat',
+      label: `旧会话 ${index}`,
+    });
+  }
+  fixture.records.set('multicc-codex-chat-08', {
+    id: 'multicc-codex-chat-08',
+    dirId: 'dir-2',
+    type: 'worker',
+    kind: 'chat',
+    label: '架构安全与可观测性',
+  });
+
+  const voice = fixture.host.buildGatewayPrompt(
+    '把“构建已经完成”发给 multicc-codex-chat-08 会话',
+    VOICE_ROUTER_ID,
+  );
+  const match = voice.match(/当前可见 sessions 实时快照: (.+)\n\[Voice router system prompt end\]/);
+  assert.ok(match, 'voice snapshot must remain machine-readable JSON');
+  const snapshot = JSON.parse(match[1]);
+  assert.equal(snapshot.length, 30, 'the prompt budget remains bounded');
+  assert.ok(
+    snapshot.some(session => session.id === 'multicc-codex-chat-08'),
+    'an exact target is promoted before the 30-session truncation',
+  );
+});
+
 test('the voice router snapshot carries live status so spoken status questions are answerable', () => {
   const fixture = gatewayHostFixture();
   const voice = fixture.host.buildGatewayPrompt('各个会话执行情况如何', VOICE_ROUTER_ID);
@@ -708,6 +741,8 @@ test('the repo-owned frontend prompt carries identity only, never per-call conte
   const prompt = readRepoFile('src/voice/frontend-prompt/PROMPT.md');
   assert.match(prompt, /MultiCC/);
   assert.match(prompt, /spawn_thinking/);
+  assert.match(prompt, /用户明确点名的项目、会话、Commander 或 Worker/);
+  assert.match(prompt, /必须原样保留/);
   assert.match(prompt, /不要说：无法联系团队/);
   assert.match(prompt, /任务板/);
   // Dynamic routing context is injected per launch; baking it into a

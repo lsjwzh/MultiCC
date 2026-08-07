@@ -30,6 +30,7 @@ const {
   boundedAdmissionTimeout,
   createVoiceAcpBridge,
   speakableFromBuffer,
+  textFromPrompt,
 } = require('../src/voice-acp-bridge');
 
 const DISPATCH_MESSAGE = '检查登录接口 500 的原因并修复，然后跑一遍回归测试';
@@ -403,10 +404,10 @@ function launchHarness({ scope = 'global', queueStatus = 200, queueThrows = null
       let value = 0;
       return () => `h${instanceId}-uuid-${++value}`;
     })(),
-    // The real deadline is 15–30 s; firing it by hand is the only way to test it
-    // without waiting it out.
+    // The real deadline is minutes; firing it by hand is the only way to test
+    // the uncertainty path without waiting it out.
     admissionTimers: {
-      setTimeout: (fn) => { const entry = { fn }; timers.push(entry); return entry; },
+      setTimeout: (fn, delay) => { const entry = { fn, delay }; timers.push(entry); return entry; },
       clearTimeout: entry => { if (entry) entry.cancelled = true; },
     },
   });
@@ -419,12 +420,41 @@ function launchHarness({ scope = 'global', queueStatus = 200, queueThrows = null
   return { bridge, fetchImpl, fireTimeout, requests, timers };
 }
 
-function promptBlocks(text, launchId = 'launch-1') {
+function promptBlocks(text, launchId = 'launch-1', { objective = text } = {}) {
+  // Match qwen-audio-agent@1.1.1 buildCoordinatorPrompt: the actual user
+  // request lives only inside the request envelope. Text after it is generic
+  // coordinator protocol, not a duplicate of the utterance.
+  const envelope = {
+    protocol: 'qwen-audio-agent.coordination.v1',
+    request_id: 'qwen-request-1',
+    voice_session_id: launchId,
+    input: { final_asr: text, objective },
+  };
   return [{
     type: 'text',
-    text: `<qwen_audio_agent_request>${JSON.stringify({ voice_session_id: launchId })}</qwen_audio_agent_request>\n${text}`,
+    text: [
+      '<qwen_audio_agent_request>',
+      JSON.stringify(envelope, null, 2),
+      '</qwen_audio_agent_request>',
+      '<user_preferences>\n- 无\n</user_preferences>',
+      '<recent_voice_context>\n- 无\n</recent_voice_context>',
+      '返回一个 JSON 对象；这里只有最终完成结果。',
+    ].join('\n'),
   }];
 }
+
+test('Qwen request extraction is single-envelope, deduplicated and fail-closed', () => {
+  const request = '把结果发给 multicc-codex-chat-08';
+  assert.equal(textFromPrompt(promptBlocks(request)), request, 'equal ASR/objective is forwarded once');
+  assert.equal(textFromPrompt([{
+    type: 'text',
+    text: '<qwen_audio_agent_request>{bad json}</qwen_audio_agent_request>\n返回一个 JSON 对象',
+  }]), '', 'malformed protocol cannot turn coordinator prose into user input');
+  const one = `<qwen_audio_agent_request>${JSON.stringify({
+    voice_session_id: 'launch-1', input: { final_asr: request, objective: request },
+  })}</qwen_audio_agent_request>`;
+  assert.equal(textFromPrompt([{ type: 'text', text: `${one}\n${one}` }]), '', 'duplicate envelopes fail closed');
+});
 
 async function startTurn(harness, { text = '帮我修一下登录', scope } = {}) {
   const created = await harness.bridge.createSession({ cwd: '/tmp/project' });
@@ -475,13 +505,31 @@ function admissionFrame(turn, overrides = {}) {
   };
 }
 
-test('the launch ticket is consumed by the Bridge and never written into source Chat', async () => {
+test('a real Qwen coordinator envelope keeps the explicit target but strips private protocol', async () => {
   const harness = launchHarness({ scope: 'chat' });
-  const turn = await startTurn(harness, { text: '只把这一句话发到会话' });
-  assert.equal(turn.outgoing.text, '只把这一句话发到会话');
-  assert.doesNotMatch(JSON.stringify(turn.outgoing), /qwen_audio_agent_request|voice_session_id|launch-1/);
-  turn.socket.serverSend({ type: 'result' });
-  await turn.promise;
+  const original = '把“构建已经完成”发给 multicc-codex-chat-08 会话';
+  const objective = '向 multicc-codex-chat-08 会话发送消息“构建已经完成”';
+  const created = await harness.bridge.createSession({ cwd: '/tmp/project' });
+  const promise = harness.bridge.prompt(
+    { sessionId: created.sessionId, prompt: promptBlocks(original, 'launch-1', { objective }) },
+    () => {},
+  );
+  await new Promise(resolve => setImmediate(resolve));
+  const socket = FakeWebSocket.instances.at(-1);
+  const outgoing = socket.sent.find(message => message.type === 'user_message');
+  assert.equal(
+    outgoing.text,
+    `用户语音原话：${original}\n\n整理后的任务目标：${objective}`,
+  );
+  assert.match(outgoing.text, /multicc-codex-chat-08/);
+  assert.doesNotMatch(
+    JSON.stringify(outgoing),
+    /qwen_audio_agent_request|voice_session_id|launch-1|qwen-request-1|user_preferences|返回一个 JSON/,
+  );
+  socket.serverSend({ type: 'chat_msg_meta', role: 'user', clientMsgId: outgoing.clientMsgId });
+  await new Promise(resolve => setImmediate(resolve));
+  socket.serverSend({ type: 'result' });
+  await promise;
 });
 
 test('a globally routed turn never leaks a dispatch marker, character by character', async () => {
@@ -655,10 +703,33 @@ test('a bounded wait that expires reports uncertainty and never claims non-deliv
   assert.doesNotMatch(spoken, /<<|dispatch/i);
 });
 
-test('bounded wait stays inside the 15–30s window whatever it is configured with', () => {
+test('the Router outcome deadline starts only after the correlated MultiCC receipt', async () => {
+  const harness = launchHarness();
+  const created = await harness.bridge.createSession({ cwd: '/tmp/project' });
+  const promise = harness.bridge.prompt(
+    { sessionId: created.sessionId, prompt: promptBlocks('检查构建') },
+    () => {},
+  );
+  await new Promise(resolve => setImmediate(resolve));
+  const socket = FakeWebSocket.instances.at(-1);
+  const outgoing = socket.sent.find(message => message.type === 'user_message');
+  assert.equal(harness.timers.length, 0, 'sending alone is not proof MultiCC accepted the turn');
+  socket.serverSend({ type: 'chat_msg_meta', role: 'user', clientMsgId: 'another-request' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(harness.timers.length, 0, 'another call cannot start this deadline');
+  socket.serverSend({ type: 'chat_msg_meta', role: 'user', clientMsgId: outgoing.clientMsgId });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(harness.timers.length, 1);
+  assert.ok(harness.timers[0].delay > 220_000);
+  await harness.bridge.cancel({ sessionId: created.sessionId });
+  assert.equal((await promise).stopReason, 'cancelled');
+});
+
+test('the Router outcome window covers real CLI turns but stays inside Qwen ACP ownership', () => {
   assert.equal(boundedAdmissionTimeout(1), ADMISSION_TIMEOUT_MIN_MS);
   assert.equal(boundedAdmissionTimeout(999_999), ADMISSION_TIMEOUT_MAX_MS);
-  assert.equal(boundedAdmissionTimeout(18_000), 18_000);
+  assert.equal(boundedAdmissionTimeout(180_000), 180_000);
+  assert.ok(boundedAdmissionTimeout(undefined) > 220_000, 'observed healthy 220s turns must not time out');
   assert.equal(boundedAdmissionTimeout('nonsense') >= ADMISSION_TIMEOUT_MIN_MS, true);
   assert.equal(boundedAdmissionTimeout(undefined) <= ADMISSION_TIMEOUT_MAX_MS, true);
 });

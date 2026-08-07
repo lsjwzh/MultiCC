@@ -343,12 +343,24 @@ function createSessionWorkHost(deps = {}) {
   }
 
   function recoveryState(sessionId) {
-    const state = deps.getTaskState(deps.getRecord(sessionId));
+    const record = deps.getRecord(sessionId);
+    const state = deps.getTaskState(record);
     const pendingInput = deps.pendingUserInput(sessionId);
+    const endedAt = Number(state.lastTurnEndedAt || state.endedAt) || null;
+    // A successful gateway post-turn is already durable before classify runs.
+    // If a restart lands in that narrow P window, project D only when a durable
+    // end timestamp exists. The scheduler's recoveredSuccessProven() performs
+    // the final per-entry time and task-id check; an unproven interruption stays
+    // P and fails closed instead of being silently discarded.
+    const recoveredClassify = record?.type === 'gateway'
+      && state.classifyState === 'P'
+      && endedAt
+      ? 'D'
+      : state.classifyState;
     return {
-      classifyState: state.classifyState,
+      classifyState: recoveredClassify,
       startedAt: state.startedAt,
-      endedAt: state.endedAt,
+      endedAt,
       taskId: deps.getChatSession(sessionId)?._currentTaskId || null,
       // Scheduler recovery needs correlation only; question/options remain in
       // the task-state owner and are never duplicated into orchestration state.
