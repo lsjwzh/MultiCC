@@ -369,10 +369,11 @@ class _ChatViewState extends State<ChatView> {
             _CenteredChatLane(
               child: ChatRuntimeNoticePanel(
                 apiError: provider.apiErrorPolicy,
-                limit: provider.usageWindowLimit,
+                limit: provider.nonClaudeWindowLimit,
                 balance: provider.usageBalance,
                 vendorQuotas: provider.vendorQuotaViews,
-                showClaudeIdle: provider.showClaudeLimitIdle,
+                claudeUsage: provider.claudeLimitView,
+                onClaudeQuotaTap: () => provider.handleClaudeQuotaTap(),
                 onRetry: provider.apiErrorPolicy?.canManualRetry == true
                     ? () => _retryApiError(provider)
                     : null,

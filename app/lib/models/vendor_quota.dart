@@ -10,6 +10,11 @@
 //   kimi  → (moonshot|kimi).(cn|com|ai)
 //
 // Formatting below reproduces the web bar text/colors so all three ends agree.
+// The Claude subscription bar lives here too (formatClaudeLimit /
+// formatClaudeUsageOnly) — it consumes the passive rate_limit_event plus the
+// /api/claude/quota usage-page scrape, exactly like the web formatters.
+
+import 'chat_runtime_state.dart';
 
 /// ARGB color values matching the web bar palette.
 class VendorQuotaColor {
@@ -144,6 +149,39 @@ String unifiedWindowSeg(String label, num? usedPercent, num? resetMs) {
   if (rem == null) return '';
   final cd = humanizeCountdown(resetMs);
   return cd.isEmpty ? '$label $rem%' : '$label $rem% $cd';
+}
+
+/// Rank a window segment by its leading token: 5h → 1wk → 1m, unknown last.
+int windowSegRank(String? seg) {
+  final m = RegExp(r'^(\S+)').firstMatch(seg ?? '');
+  switch (m?.group(1)) {
+    case '5h':
+      return 0;
+    case '1wk':
+      return 1;
+    case '1m':
+      return 2;
+    default:
+      return 3;
+  }
+}
+
+/// Stable sort of window segments into the canonical display order
+/// (5h → 1wk → 1m, unknown labels last), applied at the single render merge
+/// point. Matches the web `sortWindowSegs`; the explicit index tiebreak keeps
+/// equal-rank segments in their input order.
+List<String> sortWindowSegs(Iterable<String> segs) {
+  final items = <(int, String)>[];
+  var i = 0;
+  for (final s in segs) {
+    if (s.isNotEmpty) items.add((i++, s));
+  }
+  items.sort(
+    (a, b) => windowSegRank(a.$2) != windowSegRank(b.$2)
+        ? windowSegRank(a.$2) - windowSegRank(b.$2)
+        : a.$1 - b.$1,
+  );
+  return [for (final e in items) e.$2];
 }
 
 int unifiedColorFromRemaining(int? rem) {
@@ -573,4 +611,177 @@ VendorQuotaView formatKimiQuota(
   title += '\n${titleLines.join('\n')}';
   if (syncRel.isNotEmpty) title += '\n同步于 $syncRel';
   return VendorQuotaView(text, color, title);
+}
+
+// ── Claude subscription (claude.ai/settings/usage) ──────────────────────────
+//
+// Claude's window data arrives through TWO sources, mirroring the web
+// formatFiveHourRateLimit + formatClaudeUsageOnly:
+//   1. the passive rate_limit_event → the 5h rolling window ([UsageWindowLimit]);
+//   2. the /api/claude/quota scrape of claude.ai/settings/usage (CDP) → the
+//      weekly (and monthly, when the page shows one) limits.
+// The scrape's own 5h row duplicates the event, so only 1wk/1m are appended;
+// the merge point normalises order via sortWindowSegs (5h → 1wk → 1m).
+
+/// Claude bar when a passive window limit is present: render the event's 5h
+/// window plus the weekly/monthly windows from the usage-page scrape (the
+/// scrape's own 5h row is skipped so the event stays the single 5h source).
+/// A rejected event forces 0% remaining, like the web.
+VendorQuotaView formatClaudeLimit(
+  UsageWindowLimit limit,
+  Map<String, dynamic>? usage, {
+  int? nowMs,
+}) {
+  final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
+  final used = limit.usedPercentage;
+  final rejected = limit.status == 'rejected';
+  final effectiveUsed = rejected ? 100.0 : used;
+  final resetMs = limit.resetsAtMs == null
+      ? null
+      : (limit.resetsAtMs! - now < 0 ? 0 : limit.resetsAtMs! - now);
+
+  final segs = <String>[];
+  final first = unifiedWindowSeg('5h', effectiveUsed, resetMs);
+  if (first.isNotEmpty) segs.add(first);
+
+  final summary = usage?['summary'];
+  final ok = usage != null && usage['status'] == 'ok' && summary is List;
+  if (ok) {
+    final List items = summary; // checked `is List` above; dynamic → List
+    for (final s in items) {
+      if (s is! Map) continue;
+      final window = s['window']?.toString();
+      final pct = (s['usedPercent'] as num?)?.toDouble();
+      if (pct == null || pct.isNaN) continue;
+      if (window != '1wk' && window != '1m') continue; // dedup vs the event 5h
+      final cd = (s['resetMs'] as num?)?.toDouble();
+      final cdMs = cd == null ? null : (cd - now < 0 ? 0 : cd - now);
+      final seg = unifiedWindowSeg(window!, pct, cdMs);
+      if (seg.isNotEmpty) segs.add(seg);
+    }
+  }
+
+  var text = sortWindowSegs(segs).join(' · ');
+  if (text.isEmpty) text = '—';
+  final color = unifiedColorFromRemaining(unifiedRemaining(effectiveUsed));
+
+  final titleLines = <String>[
+    'Claude 订阅五小时用量（来自 Claude Code 结构化 rate_limit_event）',
+  ];
+  if (ok) {
+    final List items = summary; // checked `is List` above; dynamic → List
+    const zh = {'1wk': '周', '1m': '月'};
+    for (final s in items) {
+      if (s is! Map) continue;
+      final window = s['window']?.toString();
+      final pct = (s['usedPercent'] as num?)?.toDouble();
+      if (pct == null || pct.isNaN || window == null || window == '5h') continue;
+      final cd = (s['resetMs'] as num?)?.toDouble();
+      final cdMs = cd == null ? null : (cd - now < 0 ? 0 : cd - now);
+      titleLines.add(
+        '${zh[window] ?? window}: 已用 ${pct.round()}%'
+        '${cdMs != null && cdMs > 0 ? ' · ${humanizeCountdown(cdMs)} 后重置' : ''}',
+      );
+    }
+    final fetchedAt = (usage['fetchedAt'] as num?)?.toInt();
+    if (fetchedAt != null) {
+      titleLines.add('同步于 ${quotaRelAgo(fetchedAt)}（claude.ai/settings/usage 抓取）');
+    }
+  }
+  return VendorQuotaView(text, color, titleLines.join('\n'));
+}
+
+/// Idle placeholder for the always-visible Claude bar (no data yet). Mirrors
+/// the web `formatClaudeIdle` — the bar stays a visible tap target.
+VendorQuotaView _claudeIdleView() => const VendorQuotaView(
+      '5h · — · ⟳ 刷新',
+      VendorQuotaColor.gray,
+      'Claude 订阅窗口用量。点击从 claude.ai/settings/usage 抓取 5h / 周 / 月 余量；'
+      '5h 也会由 Claude Code 上报的 rate_limit_event 实时更新。',
+    );
+
+/// Claude bar when no passive rate_limit_event has landed yet: render the
+/// usage-page scrape's windows, or an actionable state (needs_login /
+/// chrome_unavailable), else the idle placeholder. Mirrors the web
+/// `formatClaudeUsageOnly`.
+VendorQuotaView formatClaudeUsageOnly(Map<String, dynamic>? usage, {int? nowMs}) {
+  final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
+  if (usage == null) return _claudeIdleView();
+  final status = usage['status']?.toString();
+  if (status == 'needs_login') {
+    return const VendorQuotaView(
+      'Claude：需登录 · 点击打开登录窗口',
+      VendorQuotaColor.red,
+      '你的浏览器里没有 claude.ai 的登录态。点击将在服务端拉起一个 Chrome 登录窗口'
+      '（claude.ai/settings/usage），登录后回来再点一次刷新。',
+    );
+  }
+  if (status == 'chrome_unavailable') {
+    return const VendorQuotaView(
+      'Claude：无可连的 Chrome · 点击尝试打开登录窗口',
+      VendorQuotaColor.yellow,
+      '托管 Chrome 起不来，也没有可连的调试端点。点击会尝试在服务端拉起一个可见的'
+      ' Chrome 登录窗口。',
+    );
+  }
+  final summaryRaw = usage['summary'];
+  if (status != 'ok' || summaryRaw is! List) {
+    return VendorQuotaView(
+      'Claude：用量暂不可用 · ⟳ 重试',
+      VendorQuotaColor.yellow,
+      usage['error']?.toString() ?? '无法从 claude.ai/settings/usage 拉取窗口用量',
+    );
+  }
+  final summary = <Map>[];
+  for (final s in summaryRaw) {
+    if (s is! Map) continue;
+    final pct = (s['usedPercent'] as num?)?.toDouble();
+    if (pct == null || pct.isNaN) continue;
+    summary.add(s);
+  }
+  if (summary.isEmpty) {
+    final raw = usage['text']?.toString() ?? '';
+    return VendorQuotaView(
+      'Claude：已登录，未解析出用量 · ⟳ 重试',
+      VendorQuotaColor.yellow,
+      '已抓到 claude.ai 用量页，但没解析出百分比。\n原文：'
+      '${raw.length > 300 ? raw.substring(0, 300) : raw}',
+    );
+  }
+
+  final segs = <String>[];
+  var maxUsed = 0.0;
+  for (final s in summary) {
+    final pct = (s['usedPercent'] as num).toDouble();
+    if (pct > maxUsed) maxUsed = pct;
+    final window = s['window']?.toString();
+    final label = (window == null || window.isEmpty)
+        ? (s['label']?.toString() ?? '5h')
+        : window;
+    final cd = (s['resetMs'] as num?)?.toDouble();
+    final cdMs = cd == null ? null : (cd - now < 0 ? 0 : cd - now);
+    final seg = unifiedWindowSeg(label, pct, cdMs);
+    if (seg.isNotEmpty) segs.add(seg);
+  }
+  var text = sortWindowSegs(segs).join(' · ');
+  if (text.isEmpty) text = '—';
+  final syncRel = quotaRelAgo((usage['fetchedAt'] as num?)?.toInt());
+  if (syncRel.isNotEmpty) text += ' · $syncRel';
+  text += ' ⟳';
+
+  var title = 'Claude 订阅窗口用量（claude.ai/settings/usage 抓取）';
+  for (final s in summary) {
+    final window = s['window']?.toString();
+    final label = (window == null || window.isEmpty)
+        ? (s['label']?.toString() ?? '?')
+        : window;
+    title += '\n$label: 已用 ${(s['usedPercent'] as num).toDouble().round()}%';
+  }
+  if (syncRel.isNotEmpty) title += '\n同步于 $syncRel';
+  title += '\n点击 bar 刷新';
+  return VendorQuotaView(
+    text,
+    unifiedColorFromRemaining(unifiedRemaining(maxUsed)),
+    title,
+  );
 }
