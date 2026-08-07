@@ -11,8 +11,10 @@ const fs = require('node:fs');
 const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
+const Database = require('better-sqlite3');
 const WebSocket = require('ws');
 const { assertTestDir } = require('../src/paths');
+const { _loadDatabaseState } = require('../src/orchestration-sqlite-store');
 
 const ROOT = path.join(__dirname, '..');
 const TOKEN = 'dispatch-loop-isolated';
@@ -272,10 +274,12 @@ function sendWsMessage(port, sessionId, text) {
     assert.match(contentText(slaveHistory), /SLAVE_DONE:completed/, 'D1: slave completed');
 
     // (c) Backflow outbox entry emitted with correct format
-    const orchFile = path.join(dataRoot, 'orchestration.json');
+    const orchFile = path.join(dataRoot, 'orchestration.sqlite');
     const backflowEntry = await waitUntil(() => {
       if (!fs.existsSync(orchFile)) return null;
-      const state = JSON.parse(fs.readFileSync(orchFile, 'utf8'));
+      const db = new Database(orchFile, { readonly: true });
+      let state;
+      try { state = _loadDatabaseState(db, orchFile); } finally { db.close(); }
       const entries = Object.values(state.outbox || {}).filter(
         v => v.payload?.type === 'dispatch.result' && v.sessionId === master.id,
       );

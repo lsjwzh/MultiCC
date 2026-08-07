@@ -287,6 +287,7 @@ function createOrchestrationStore({
   }
 
   return Object.freeze({
+    backend: 'json',
     file,
     mutate,
     mutateIf,
@@ -300,5 +301,14 @@ module.exports = {
   SCHEMA_VERSION,
   OrchestrationStoreCorruptError,
   createOrchestrationStore,
+  // Shared with the SQLite backend so both persistence engines enforce the
+  // exact same logical state contract during migration and reconstruction.
+  // These remain internal exports: orchestration callers should use a store,
+  // not couple themselves to snapshot representation details.
+  _cloneJson: cloneJson,
+  _deepFreeze: deepFreeze,
   _initialState: initialState,
+  _loadState: loadState,
+  _validateState: validateState,
+  _writeAtomic: writeAtomic,
 };
