@@ -250,7 +250,7 @@ do_update() {
   echo "Verifying current runtime dependencies..."
   if ! check_runtime_dependencies; then
     echo "Runtime dependencies are incomplete or outdated — running npm install..."
-    if ! npm install 2>&1 || ! check_runtime_dependencies; then
+    if ! env PATH="$(dirname "$NODE"):$PATH" npm install 2>&1 || ! check_runtime_dependencies; then
       echo "Runtime dependency repair failed — update was not started."
       return 1
     fi
@@ -496,7 +496,7 @@ do_update() {
   if [ -n "${after:-}" ] && [ "$before" != "${after:-}" ]; then
     if git diff --name-only "$before" "${after:-}" | grep -qE '^package(-lock)?\.json$'; then
       echo "Dependencies changed — running npm install..."
-      if ! npm install 2>&1; then
+      if ! env PATH="$(dirname "$NODE"):$PATH" npm install 2>&1; then
         echo "npm install failed — fix the error above, then re-run './multicc update'."
         return 1
       fi
