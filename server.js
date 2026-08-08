@@ -1420,11 +1420,10 @@ const livenessRuntime = createLivenessRuntime({
   records: persistedSessions,
   chatSessions,
   chatStreamStatus: id => { try { return chatStream.status(id); } catch (_) { return null; } },
-  probeSession: async (sessionId, sig) => {
-    const rec = persistedSessions.get(sessionId);
-    const pid = sig && Number.isInteger(sig.pid) ? sig.pid : null;
-    return livenessProcessProbe.probe(pid, livenessRolloutPath(rec));
-  },
+  turnHeartbeatStatus: id => turnProgressHeartbeat.status(id),
+  thresholds: process.env.MULTICC_STALL_SILENT_MS ? { stallSilentMs: Number(process.env.MULTICC_STALL_SILENT_MS) } : {},
+  probeSession: async (sessionId, sig) => livenessProcessProbe.probe(
+    sig && Number.isInteger(sig.pid) ? sig.pid : null, livenessRolloutPath(persistedSessions.get(sessionId))),
 });
 
 const { createProxyBroadcasters } = require('./src/chat/proxy-broadcast');
@@ -2759,16 +2758,17 @@ const processingWatchdog = createProcessingWatchdog({
   cancelTurn: (id, options) => sessionWorkHost.cancelActiveTurn(id, options),
   logger,
 });
-// Companion to the watchdog above: it catches DEAD runners, while this consumes
-// the liveness `stalled` verdict (display-only before) to end wedged turns.
+// Companion to the dead-runner watchdog: consumes the liveness `stalled` verdict (display-only before) to end wedged turns.
+const envNumber = (value, fallback) => (value ? Number(value) : fallback);
 const stalledTurnRecovery = createStalledTurnRecovery({
   listRecords: () => persistedSessions.entries(), getTaskState, getChatSession: id => chatSessions.get(id),
-  getStreamStatus: id => chatStream.status(id), assessLiveness: id => livenessRuntime.assess(id),
-  stallSilentMs: livenessRuntime.thresholds.stallSilentMs, cancelTurn: (id, options) => sessionWorkHost.cancelActiveTurn(id, options), logger,
+  getStreamStatus: id => chatStream.status(id), assessLiveness: id => livenessRuntime.assess(id), getTurnStatus: id => turnProgressHeartbeat.status(id),
+  stallSilentMs: envNumber(process.env.MULTICC_STALL_SILENT_MS, livenessRuntime.thresholds.stallSilentMs), startingGraceMs: envNumber(process.env.MULTICC_STALLED_STARTING_GRACE_MS),
+  confirmations: envNumber(process.env.MULTICC_STALLED_CONFIRMATIONS), cooldownMs: envNumber(process.env.MULTICC_STALLED_COOLDOWN_MS),
+  cancelTurn: (id, options) => sessionWorkHost.cancelActiveTurn(id, options), logger,
 });
 const logHousekeeping = createLogHousekeeping({ logsDir: path.join(__dirname, 'logs'), logger,
-  retainDays: process.env.MULTICC_LOG_RETAIN_DAYS ? Number(process.env.MULTICC_LOG_RETAIN_DAYS) : undefined,
-  keepTailBytes: process.env.MULTICC_LOG_KEEP_TAIL_BYTES ? Number(process.env.MULTICC_LOG_KEEP_TAIL_BYTES) : undefined });
+  retainDays: envNumber(process.env.MULTICC_LOG_RETAIN_DAYS), keepTailBytes: envNumber(process.env.MULTICC_LOG_KEEP_TAIL_BYTES) });
 routerToolHost.configure({ records: persistedSessions, dispatchToSession, orchestrationRuntime, taskBoard: taskBoardRuntime,
   recordUserInput: signal => sessionWorkHost.recordInput(signal), cancelActiveTurn: (id, opts) => sessionWorkHost.cancelActiveTurn(id, opts),
   onDispatchCancelled: id => cancelDispatchRun(id), subscribeDispatchProgress, recordRouterAdmission });
@@ -2976,7 +2976,7 @@ app.use(safeErrorHandler(logger));
     trackServiceTimer(setInterval(() => processingWatchdog.sweep()
       .catch(error => logger.warn('processing_watchdog_sweep_failed', { error: error.message })), PROCESS_WATCHDOG_INTERVAL_MS));
     trackServiceTimer(setInterval(() => stalledTurnRecovery.sweep()
-      .catch(error => logger.warn('stalled_turn_recovery_sweep_failed', { error: error.message })), STALLED_RECOVERY_INTERVAL_MS));
+      .catch(error => logger.warn('stalled_turn_recovery_sweep_failed', { error: error.message })), envNumber(process.env.MULTICC_STALLED_INTERVAL_MS, STALLED_RECOVERY_INTERVAL_MS)));
     logHousekeeping.runOnce().catch(err => logger.warn('log_housekeeping_failed', { error: err.message }));
     trackServiceTimer(setInterval(() => logHousekeeping.runOnce().catch(err => logger.warn('log_housekeeping_failed', { error: err.message })), LOG_HOUSEKEEPING_INTERVAL_MS));
     artifacts.cleanup();

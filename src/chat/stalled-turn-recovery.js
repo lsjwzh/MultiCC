@@ -29,6 +29,11 @@
 //   • the verdict must persist for `confirmations` consecutive sweeps
 //     (default 2 × 30s on top of the existing 180s silence threshold — no
 //     new silence standard is invented, stallSilentMs is reused verbatim);
+//   • the `starting` phase (spawn → MCP handshake → rollout load → first
+//     token) legitimately runs longer than an established turn's silence
+//     budget, so while the turn-progress heartbeat reports phase=starting the
+//     silence threshold is extended by `startingGraceMs` (default +120s,
+//     covering the 60s MCP startup_timeout_sec plus rollout load);
 //   • after a recovery fires, a cooldown keeps the executor out while the
 //     cancel machinery (5s stop budget + classify transition) settles.
 //
@@ -43,6 +48,7 @@
 const DEFAULT_INTERVAL_MS = 30_000;
 const DEFAULT_CONFIRMATIONS = 2;
 const DEFAULT_COOLDOWN_MS = 120_000;
+const DEFAULT_STARTING_GRACE_MS = 120_000;
 
 function assertFunction(value, name) {
   if (typeof value !== 'function') {
@@ -55,12 +61,15 @@ function createStalledTurnRecovery(deps = {}) {
     'listRecords', 'getTaskState', 'getChatSession', 'getStreamStatus',
     'assessLiveness', 'cancelTurn',
   ]) assertFunction(deps[name], name);
+  if (deps.getTurnStatus != null) assertFunction(deps.getTurnStatus, 'getTurnStatus');
 
   const now = typeof deps.now === 'function' ? deps.now : Date.now;
   // Reuse the liveness runtime's existing silence standard; never invent one.
   const stallSilentMs = Number.isFinite(Number(deps.stallSilentMs)) && Number(deps.stallSilentMs) > 0
     ? Number(deps.stallSilentMs)
     : 180_000;
+  const startingGraceMs = Math.max(0, Number.isFinite(Number(deps.startingGraceMs))
+    ? Number(deps.startingGraceMs) : DEFAULT_STARTING_GRACE_MS);
   const confirmations = Math.max(1, Number(deps.confirmations) || DEFAULT_CONFIRMATIONS);
   const cooldownMs = Math.max(0, Number(deps.cooldownMs) || DEFAULT_COOLDOWN_MS);
   const logger = deps.logger || console;
@@ -105,11 +114,19 @@ function createStalledTurnRecovery(deps = {}) {
     // Cheap pre-filter: no point paying for a process probe (lsof) until the
     // silence alone already crosses the EXISTING stall threshold. This does
     // not judge anything — only the full assess() below can say `stalled`.
+    // The `starting` phase gets extra grace (MCP handshake / rollout load /
+    // first token legitimately take longer than an established turn's budget).
+    const turnStatus = (() => {
+      if (typeof deps.getTurnStatus !== 'function') return null;
+      try { return deps.getTurnStatus(sessionId) || null; } catch (_) { return null; }
+    })();
+    const turnPhase = turnStatus && turnStatus.phase ? turnStatus.phase : null;
+    const threshold = turnPhase === 'starting' ? stallSilentMs + startingGraceMs : stallSilentMs;
     const lastStreamAt = cs && Number.isFinite(cs.lastStreamAt) ? cs.lastStreamAt : null;
     const silentMs = lastStreamAt != null ? Math.max(0, at - lastStreamAt) : null;
-    if (silentMs == null || silentMs < stallSilentMs) {
+    if (silentMs == null || silentMs < threshold) {
       clearSuspect(sessionId);
-      return { sessionId, action: 'skip', reason: 'below_stall_threshold' };
+      return { sessionId, action: 'skip', reason: turnPhase === 'starting' ? 'starting_grace' : 'below_stall_threshold' };
     }
 
     let verdict;
@@ -147,6 +164,7 @@ function createStalledTurnRecovery(deps = {}) {
     logger.warn?.('stalled_turn_recovered', {
       sessionId,
       silentMs,
+      phase: turnPhase,
       reason: verdict.reason,
       confirmations: count,
       result: result?.code || (result?.ok ? 'ok' : 'unknown'),

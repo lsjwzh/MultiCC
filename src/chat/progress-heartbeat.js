@@ -183,6 +183,26 @@ class TurnProgressHeartbeat {
     return true;
   }
 
+  // Live snapshot of this session's active turn-progress entry (phase/silentMs).
+  // Read-only: liveness uses it to report the SAME phase the heartbeat emits,
+  // and stalled-turn recovery uses it to grant the `starting` phase extra grace.
+  status(sessionId) {
+    const session = sessionId == null ? '' : String(sessionId).trim();
+    if (!session) return null;
+    for (const active of this._turns.values()) {
+      if (active.sessionId !== session) continue;
+      return Object.freeze({
+        sessionId: session,
+        turnId: active.turnId,
+        phase: active.phase,
+        safeToolKind: active.safeToolKind,
+        startedAt: active.startedAt,
+        silentMs: Math.max(0, this._timestamp() - active.lastUserVisibleAt),
+      });
+    }
+    return null;
+  }
+
   stopAll() {
     const count = this._turns.size;
     for (const entry of this._turns.values()) this._clearTimer(entry);
