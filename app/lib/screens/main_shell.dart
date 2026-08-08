@@ -491,13 +491,6 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
           ],
         ),
         actions: [
-          // Global realtime voice: no session id, so the Host routes through the
-          // voice router rather than binding the call to any one session.
-          IconButton(
-            icon: const Icon(Icons.phone_in_talk_rounded, size: 20),
-            tooltip: t('globalVoiceCall'),
-            onPressed: _openGlobalVoice,
-          ),
           IconButton(
             icon: const Icon(Icons.add_rounded, size: 22),
             tooltip: t('newDirectory'),
@@ -522,7 +515,7 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
           ),
         ],
         bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(57),
+          preferredSize: const Size.fromHeight(104),
           child: Column(
             children: [
               _KpiRow(
@@ -531,6 +524,7 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
                 cronCount: _cronCount,
                 onCronChanged: _loadCronCount,
               ),
+              _VoiceBetaEntry(onTap: _openGlobalVoice),
               const Divider(height: 1, color: Color(0xFF20242b)),
             ],
           ),
@@ -890,6 +884,117 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
               child: const Text('Create'),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Global product action between the home health summary and the Fleet list.
+/// This is easier to discover than another unlabeled AppBar icon, without
+/// competing with the primary create action.
+class _VoiceBetaEntry extends StatelessWidget {
+  final VoidCallback onTap;
+  const _VoiceBetaEntry({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: const Color(0xFF0f1115),
+      padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+      child: Semantics(
+        button: true,
+        label: '${t('globalVoiceCall')}, BETA',
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: onTap,
+            borderRadius: BorderRadius.circular(10),
+            child: Ink(
+              height: 43,
+              padding: const EdgeInsets.symmetric(horizontal: 11),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: const Color(0xFF6aa3ff).withValues(alpha: 0.38),
+                ),
+                gradient: LinearGradient(colors: [
+                  const Color(0xFF3ad6c5).withValues(alpha: 0.11),
+                  const Color(0xFF6aa3ff).withValues(alpha: 0.06),
+                ]),
+              ),
+              child: Row(children: [
+                const Icon(
+                  Icons.graphic_eq_rounded,
+                  size: 20,
+                  color: Color(0xFF3ad6c5),
+                ),
+                const SizedBox(width: 9),
+                Expanded(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(children: [
+                        Flexible(
+                          child: Text(
+                            t('globalVoiceCall'),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Color(0xFFe7eaee),
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 7),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 5,
+                            vertical: 1,
+                          ),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF6aa3ff)
+                                .withValues(alpha: 0.14),
+                            borderRadius: BorderRadius.circular(999),
+                            border: Border.all(
+                              color: const Color(0xFF6aa3ff)
+                                  .withValues(alpha: 0.42),
+                            ),
+                          ),
+                          child: const Text(
+                            'BETA',
+                            style: TextStyle(
+                              color: Color(0xFFcfe1ff),
+                              fontSize: 8,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: 0.5,
+                            ),
+                          ),
+                        ),
+                      ]),
+                      Text(
+                        t('globalVoiceBetaHint'),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Color(0xFF8a909b),
+                          fontSize: 9.5,
+                          height: 1.2,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const Icon(
+                  Icons.chevron_right_rounded,
+                  size: 19,
+                  color: Color(0xFF6aa3ff),
+                ),
+              ]),
+            ),
+          ),
         ),
       ),
     );

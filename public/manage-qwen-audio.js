@@ -232,14 +232,27 @@
 
   // Same launch path as the Dashboard button: scope is global here, so the Host
   // routes through the voice router instead of binding to a session.
-  async function openGlobalVoice() {
+  async function openGlobalVoice(trigger) {
+    const button = trigger?.currentTarget || trigger;
     const client = global.MultiCCVoiceLaunch;
     if (!client || typeof client.launch !== 'function') {
       notify('语音模块未加载，请刷新页面后重试', true);
       return;
     }
-    const result = await client.launch({ withToken: path => authPath(path) });
-    if (!result.ok) reportError('打开语音界面失败', new Error(result.message || result.code));
+    if (button && 'disabled' in button) button.disabled = true;
+    try {
+      const result = await client.launch({ withToken: path => authPath(path) });
+      if (!result.ok) {
+        const error = new Error(result.message || result.code);
+        reportError('打开语音界面失败', error);
+        notify(`打开语音界面失败：${error.message}`, true);
+      }
+    } catch (error) {
+      reportError('打开语音界面失败', error);
+      notify(`打开语音界面失败：${error.message}`, true);
+    } finally {
+      if (button && 'disabled' in button) button.disabled = false;
+    }
   }
 
   function initialize(options = {}) {
@@ -252,5 +265,5 @@
   global.enableQwenAudioGlobal = enableGlobal;
   global.setQwenAudioGlobalEnabled = setGlobalEnabled;
   global.restartQwenAudioGlobal = restartGlobal;
-  global.MultiCCManageQwenAudio = Object.freeze({ initialize, loadPanel });
+  global.MultiCCManageQwenAudio = Object.freeze({ initialize, loadPanel, openGlobalVoice });
 })(window);
