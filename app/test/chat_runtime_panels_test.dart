@@ -225,6 +225,28 @@ void main() {
     expect(taps, 1);
   });
 
+  testWidgets('Qoder usage bar renders and tapping it fires the refresh tap', (
+    tester,
+  ) async {
+    var taps = 0;
+    await tester.pumpWidget(
+      _host(
+        ChatRuntimeNoticePanel(
+          qoderUsage: const VendorQuotaView(
+            '1m 40% 13d 8h · 刚刚 ⟳',
+            VendorQuotaColor.blue,
+            'Qoder CN 用量 tooltip\n重置: 2026/8/22 00:00（13d 8h 后）',
+          ),
+          onQoderQuotaTap: () => taps++,
+        ),
+      ),
+    );
+    expect(find.text('1m 40% 13d 8h · 刚刚 ⟳'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('qoder-quota-bar')));
+    await tester.pump();
+    expect(taps, 1);
+  });
+
   testWidgets('API error only offers manual retry when policy says safe', (
     tester,
   ) async {

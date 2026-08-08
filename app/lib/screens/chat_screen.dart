@@ -373,7 +373,9 @@ class _ChatViewState extends State<ChatView> {
                 balance: provider.usageBalance,
                 vendorQuotas: provider.vendorQuotaViews,
                 claudeUsage: provider.claudeLimitView,
+                qoderUsage: provider.qoderQuotaView,
                 onClaudeQuotaTap: () => provider.handleClaudeQuotaTap(),
+                onQoderQuotaTap: () => provider.handleQoderQuotaTap(),
                 onRetry: provider.apiErrorPolicy?.canManualRetry == true
                     ? () => _retryApiError(provider)
                     : null,

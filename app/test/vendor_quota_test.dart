@@ -358,6 +358,115 @@ void main() {
     });
   });
 
+  group('formatQoderQuota', () {
+    // Pinned clock; nextResetAt is the real top-level field the usage API
+    // returns (epoch ms). Mirrors the web formatQoderQuota.
+    const nowMs = 1_700_000_000_000;
+    const resetAtMs = 1_700_000_000_000 + 13 * 86400000 + 8 * 3600000;
+
+    Map<String, dynamic> okValue({
+      int? nextResetAt = resetAtMs,
+      Map? plan,
+      num used = 3688,
+      num limit = 6000,
+    }) => {
+      'status': 'ok',
+      'fetchedAt': nowMs,
+      'quota': {
+        'total_quota': {
+          'quota_summary': {
+            'used_value': used,
+            'limit_value': limit,
+            'remaining_value': limit - used,
+            'usage_percentage': (used / limit * 100).roundToDouble(),
+          },
+        },
+        'plan_quota': {
+          'quota_summary': {
+            'used_value': used,
+            'limit_value': limit,
+          },
+        },
+        'nextResetAt': nextResetAt,
+      },
+      'plan': plan ?? {
+        'plan_tier': 'PLAN_TIER_PRO_PLUS',
+        'end_date': resetAtMs,
+      },
+    };
+
+    test('renders 1m window with remaining% + countdown from nextResetAt', () {
+      final v = formatQoderQuota(okValue(used: 3600), nowMs: nowMs);
+      expect(v.text, startsWith('1m 40%'));
+      expect(v.text, contains('13d'));
+      expect(v.color, VendorQuotaColor.blue);
+      expect(v.tooltip, contains('重置:'));
+      expect(v.tooltip, contains('PRO_PLUS'));
+    });
+
+    test('low remaining turns amber/red via the shared scale', () {
+      expect(
+        formatQoderQuota(okValue(used: 5900), nowMs: nowMs).color,
+        VendorQuotaColor.red,
+      );
+      expect(
+        formatQoderQuota(okValue(used: 4500), nowMs: nowMs).color,
+        VendorQuotaColor.yellow,
+      );
+    });
+
+    test('falls back to plan.end_date when nextResetAt is absent', () {
+      final v = formatQoderQuota(
+        okValue(nextResetAt: null),
+        nowMs: nowMs,
+      );
+      expect(v.text, startsWith('1m 39%'));
+      expect(v.text, contains('13d'));
+    });
+
+    test('no reset source renders the bare window and flags it in the tooltip', () {
+      final v = formatQoderQuota(
+        okValue(
+          nextResetAt: null,
+          plan: {'plan_tier': 'PLAN_TIER_FREE'},
+        ),
+        nowMs: nowMs,
+      );
+      // Unified fallback: `<window> <remaining%>` without a countdown (same as
+      // every other bar when its reset field is missing).
+      expect(v.text, startsWith('1m 39%'));
+      expect(v.text, isNot(contains('d')));
+      expect(v.tooltip, contains('到期时间未知'));
+    });
+
+    test('surfaces needs_login / chrome_unavailable / unavailable states', () {
+      expect(
+        formatQoderQuota({'status': 'needs_login'}).text,
+        contains('需登录'),
+      );
+      expect(
+        formatQoderQuota({'status': 'chrome_unavailable'}).text,
+        contains('无可连的 Chrome'),
+      );
+      expect(
+        formatQoderQuota({'status': 'unavailable', 'error': 'boom'}).text,
+        contains('用量暂不可用'),
+      );
+      expect(
+        formatQoderQuota({'status': 'unavailable', 'error': 'boom'}).tooltip,
+        'boom',
+      );
+    });
+
+    test('null value shows the idle placeholder; loading shows loading', () {
+      expect(formatQoderQuota(null).text, contains('⟳ 刷新'));
+      expect(
+        formatQoderQuota(null, loading: true).text,
+        contains('加载中'),
+      );
+    });
+  });
+
   group('formatClaudeLimit', () {
     // Pinned clock so the countdown branch (1h vs 60m) is deterministic.
     const nowMs = 1_700_000_000_000;
