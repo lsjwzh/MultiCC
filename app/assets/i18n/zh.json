@@ -3,6 +3,7 @@
   "dirs_sessions": "{dirs} dirs · {sessions} sessions",
   "newDirectory": "新建目录",
   "globalVoiceCall": "全局实时语音",
+  "globalVoiceBetaHint": "直接说出需求，MultiCC 会选择合适的会话处理",
   "refresh": "刷新",
   "settings": "设置",
   "retry": "重试",
