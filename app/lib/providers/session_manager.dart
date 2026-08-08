@@ -42,6 +42,22 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
+  /// Registered by the mounted fleet panel so the Android back button can play
+  /// the same slide-down exit as the drag / X paths. Calling [closeFleetDir]
+  /// directly would unmount the panel mid-frame and it would blink out.
+  /// Not display state, so setting it deliberately does not notify.
+  VoidCallback? fleetCollapseHandler;
+
+  /// Close the fleet panel, animating it out when the panel is mounted.
+  void requestCloseFleetDir() {
+    final animateOut = fleetCollapseHandler;
+    if (animateOut != null) {
+      animateOut();
+    } else {
+      closeFleetDir();
+    }
+  }
+
   // ── Deep-link focus (task-board "jump to message") ─────────────────────────
   // A pending focus is stashed when a chat is opened from a task-board message
   // tap and consumed once by the freshly-mounted _ChatSheet, so the focus
