@@ -2,6 +2,7 @@
 
 const { sanitizePublicText } = require('./http/public-safety');
 const { isSettledLetter } = require('./classify/vocab');
+const { BusinessPushRequestError } = require('./business-push');
 
 const PUSH_ANSI_RE = /\x1b(?:\[[0-9;?]*[a-zA-Z~]|\][^\x07]*(?:\x07|\x1b\\)|[()][AB012]|.)/g;
 const DEFAULT_IDLE_MS = 6000;
@@ -60,6 +61,10 @@ function assertDependencies(options) {
   for (const name of ['saveSubscriptions', 'sendPushToAll', 'sendBarkNotification', 'sendWebhookNotification']) {
     if (typeof push[name] !== 'function') throw new TypeError(`push service missing: ${name}`);
   }
+  const businessPush = options.businessPush || push.businessPush;
+  if (!businessPush || typeof businessPush.notify !== 'function') {
+    throw new TypeError('push runtime missing business push service');
+  }
 }
 
 function createPushRuntime(options) {
@@ -69,6 +74,7 @@ function createPushRuntime(options) {
     getTaskState, setTaskState, parseClassifyResult, dispatchStateAction,
     chatSessions,
   } = options;
+  const businessPush = options.businessPush || push.businessPush;
   const logger = options.logger || console;
   const now = options.now || Date.now;
   const timers = options.timers || { setTimeout, clearTimeout };
@@ -328,6 +334,29 @@ function createPushRuntime(options) {
       await push.sendBarkNotification(payload.title, payload.body, payload.url);
       await push.sendWebhookNotification(payload);
       return res.json({ ok: true, subscribers: push.subscriptions.size });
+    }));
+    app.post('/api/push/notify', route(async (req, res) => {
+      if (typeof req.is !== 'function' || !req.is('application/json')) {
+        return res.status(415).json({
+          ok: false,
+          delivered: false,
+          deduped: false,
+          error: 'UNSUPPORTED_MEDIA_TYPE',
+        });
+      }
+      try {
+        const result = await businessPush.notify(req.body);
+        return res.status(result.statusCode).json(result.body);
+      } catch (error) {
+        if (!(error instanceof BusinessPushRequestError)) throw error;
+        return res.status(error.statusCode).json({
+          ok: false,
+          delivered: false,
+          deduped: false,
+          error: error.code,
+          ...(error.field ? { field: error.field } : {}),
+        });
+      }
     }));
     app.post('/api/push/test-bark', route(async (req, res) => {
       if (!push.cfg.BARK_URL) return res.status(400).json({ error: 'Bark URL not configured' });

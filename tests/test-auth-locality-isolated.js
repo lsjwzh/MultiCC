@@ -85,7 +85,7 @@ function waitDenied(url, options = {}) {
       ...process.env,
       NODE_ENV: 'test',
       PORT: String(port),
-      ACCESS_TOKEN: '',
+      ACCESS_TOKEN: 'isolated-access-token',
       MULTICC_DATA_DIR: dataDir,
       MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS: '60000',
     },
@@ -100,10 +100,51 @@ function waitDenied(url, options = {}) {
     const local = await connectSocket(`ws://127.0.0.1:${port}/ws/meta`);
     local.terminate();
 
+    const notification = {
+      title: '策略提醒测试',
+      body: '鉴权边界验收，不含真实交易建议',
+      type: 'strategy-test',
+      tag: 'strategy-auth-test',
+      url: '/manage',
+      dedupeKey: 'auth:test:2026-08-08T00:00:00+08:00',
+    };
+    const localNotify = await fetch(`${base}/api/push/notify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(notification),
+    });
+    assert.equal(localNotify.status, 503, 'true loopback reaches the route without a token');
+    assert.equal((await localNotify.json()).error, 'NO_PUSH_SUBSCRIBERS');
+
     const proxiedHttp = await fetch(`${base}/api/server-info`, {
       headers: { Host: 'localhost', 'X-Forwarded-For': '203.0.113.9' },
     });
     assert.equal(proxiedHttp.status, 403);
+
+    const deniedNotify = await fetch(`${base}/api/push/notify`, {
+      method: 'POST',
+      headers: {
+        Host: 'dashboard.example.test',
+        'Content-Type': 'application/json',
+        'X-Forwarded-For': '203.0.113.9',
+      },
+      body: JSON.stringify(notification),
+    });
+    assert.equal(deniedNotify.status, 403, 'public-host request without credentials is denied');
+
+    const authenticatedNotify = await fetch(`${base}/api/push/notify`, {
+      method: 'POST',
+      headers: {
+        Host: 'dashboard.example.test',
+        'Content-Type': 'application/json',
+        'X-Forwarded-For': '203.0.113.9',
+        'X-Access-Token': 'isolated-access-token',
+      },
+      body: JSON.stringify(notification),
+    });
+    assert.equal(authenticatedNotify.status, 503,
+      'authenticated non-local request reaches the notification route');
+    assert.equal((await authenticatedNotify.json()).error, 'NO_PUSH_SUBSCRIBERS');
 
     await waitDenied(`ws://127.0.0.1:${port}/ws/meta`, {
       headers: { Host: 'localhost', 'X-Forwarded-For': '203.0.113.9' },
@@ -112,7 +153,7 @@ function waitDenied(url, options = {}) {
       headers: { Host: 'dashboard.example.test' },
     });
 
-    console.log('isolated auth locality: local HTTP/WS allowed, forwarded/public-host requests denied');
+    console.log('isolated auth locality: local/authenticated notify allowed; forwarded/public-host denied');
   } finally {
     const exited = new Promise(resolve => child.once('exit', resolve));
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');

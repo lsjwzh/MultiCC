@@ -1,9 +1,20 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const test = require('node:test');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { after, test } = require('node:test');
 
+const { assertTestDir } = require('../src/paths');
+const testRoot = assertTestDir(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-push-localization-')));
+process.env.MULTICC_DATA_DIR = assertTestDir(path.join(testRoot, 'data'));
 const { resolvePushPayload } = require('../src/push');
+
+after(() => {
+  assertTestDir(testRoot);
+  fs.rmSync(testRoot, { recursive: true, force: true });
+});
 
 test('push payload factory receives each subscription locale', () => {
   const factory = (subscription) => ({

@@ -13,11 +13,13 @@
 const fs = require('fs');
 const { createPaths } = require('./paths');
 const { atomicWriteJson } = require('./runtime-security');
+const { createBusinessPushService } = require('./business-push');
 const http = require('http');
 const https = require('https');
 const webpush = require('web-push');
 
-const PUSH_SUBS_FILE = createPaths({ dataDir: process.env.MULTICC_DATA_DIR }).pushSubscriptionsFile;
+const PUSH_PATHS = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
+const PUSH_SUBS_FILE = PUSH_PATHS.pushSubscriptionsFile;
 
 // Hot-reloadable channel config (Bark / Webhook).
 const cfg = {
@@ -69,29 +71,45 @@ function resolvePushPayload(payload, subscription) {
 
 // Send push notification to all subscribers (async, properly handles stale cleanup)
 async function sendPushToAll(payload) {
-  if (subscriptions.size === 0) return;
   const entries = [...subscriptions.entries()];
-  const results = await Promise.allSettled(
-    entries.map(([endpoint, sub]) => {
+  if (entries.length === 0) {
+    return Object.freeze({
+      subscriberCount: 0,
+      deliveryCount: 0,
+      failureCount: 0,
+      staleCount: 0,
+      remainingSubscriberCount: 0,
+    });
+  }
+  const results = await Promise.all(entries.map(async ([endpoint, sub]) => {
+    try {
       const resolvedPayload = resolvePushPayload(payload, sub);
-      return webpush.sendNotification(sub, JSON.stringify(resolvedPayload)).then(
-        () => ({ endpoint, ok: true }),
-        err => ({ endpoint, ok: false, statusCode: err.statusCode, message: err.message })
-      );
-    })
-  );
+      await webpush.sendNotification(sub, JSON.stringify(resolvedPayload));
+      return { endpoint, ok: true };
+    } catch (error) {
+      return {
+        endpoint,
+        ok: false,
+        statusCode: error && error.statusCode,
+        message: error && error.message,
+      };
+    }
+  }));
 
   const stale = [];
-  for (const r of results) {
-    const v = r.status === 'fulfilled' ? r.value : { endpoint: '', ok: false, message: 'settled-rejected' };
+  let deliveryCount = 0;
+  let failureCount = 0;
+  for (const v of results) {
     const h = getHealthEntry(v.endpoint);
     globalStats.totalSent++;
     if (v.ok) {
+      deliveryCount++;
       h.successCount++;
       h.lastSuccessTime = Date.now();
       h.consecutiveFails = 0;
       globalStats.totalSuccess++;
     } else {
+      failureCount++;
       h.failCount++;
       h.lastFailTime = Date.now();
       h.lastFailReason = v.message || `HTTP ${v.statusCode}`;
@@ -107,9 +125,21 @@ async function sendPushToAll(payload) {
       subscriptions.delete(ep);
       healthStats.delete(ep);
     }
-    saveSubscriptions();
-    console.log(`[multicc/push] Cleaned ${stale.length} expired subscription(s)`);
+    try {
+      saveSubscriptions();
+      console.log(`[multicc/push] Cleaned ${stale.length} expired subscription(s)`);
+    } catch (_) {
+      // Delivery accounting remains authoritative even if stale cleanup could
+      // not be persisted. saveSubscriptions already emitted a redacted error.
+    }
   }
+  return Object.freeze({
+    subscriberCount: entries.length,
+    deliveryCount,
+    failureCount,
+    staleCount: stale.length,
+    remainingSubscriberCount: subscriptions.size,
+  });
 }
 
 // Bark push notification (iOS backup)
@@ -153,6 +183,11 @@ function sendWebhookNotification(payload) {
 
 // Load persisted subscriptions on first require (was loadPushSubscriptions() at startup).
 loadSubscriptions();
+const businessPush = createBusinessPushService({
+  sendPushToAll,
+  receiptsFile: PUSH_PATHS.pushNotificationReceiptsFile,
+  logger: console,
+});
 
 module.exports = {
   cfg,
@@ -162,6 +197,7 @@ module.exports = {
   globalStats,
   barkHealth,
   webhookHealth,
+  businessPush,
   getHealthEntry,
   loadSubscriptions,
   saveSubscriptions,
