@@ -866,6 +866,13 @@ function createChatTurnEngine(deps) {
     cs.lastStreamAt = cs.turnStartedAt;  // watchdog baseline: don't inherit prior turn's stale lastStreamAt
     cs.streamReplay = [];
     cs._resultSaved = false;
+    // Adapter CLIs (opencode/zcode/qoder/kimi) have no native message_start
+    // passthrough like claude's stream-json, so the browser's isStreaming would
+    // otherwise stay false for the whole live turn. stream_end already has a
+    // symmetric broadcast at finalize; give every turn a matching start frame.
+    // Deliberately NOT routed through forward()/streamReplay — reconnecting
+    // clients learn streaming state from the init is_streaming flag instead.
+    chatBroadcast(sessionName, { type: 'stream_start' });
     if (persisted.cli === 'claude') pruneTranscript(sessionName, persisted);
     cs._adapterError = null;
     cs._sawApiError = false;

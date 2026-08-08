@@ -361,6 +361,16 @@
           );
           break;
         }
+        case 'stream_start':
+          // Server-broadcast turn begin (all CLIs; adapter CLIs like opencode
+          // have no native message_start, so without this their isStreaming
+          // stayed false all turn and isStreaming-gated guards misfired).
+          state.isStreaming = true;
+          state.lastFinishedText = '';
+          liveUi.showThinking();
+          host.startTitleAnimation?.();
+          host.updateUI?.();
+          break;
         case 'stream_end':
           if (state.isStreaming) {
             state.isStreaming = false;
