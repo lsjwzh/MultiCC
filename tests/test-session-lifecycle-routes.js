@@ -31,7 +31,7 @@ async function invoke(handler, { params = {}, body = {}, query = {} } = {}) {
   return response;
 }
 
-function fixture({ chat, persisted, workHost = true, streamStatus, closeThrows = false } = {}) {
+function fixture({ chat, persisted, workHost = true, streamStatus, closeThrows = false, codexRolloutGuard } = {}) {
   const calls = [];
   const events = [];
   const chatSessions = new Map();
@@ -78,11 +78,12 @@ function fixture({ chat, persisted, workHost = true, streamStatus, closeThrows =
     cwdForSession: () => '/tmp/d1',
     cleanupPushMonitor: () => {},
     getSessionGitRuntime: () => ({}),
+    codexRolloutGuard,
   }).mountRoutes(app);
 
   const handler = app.routes.get('POST /api/sessions/:id/restart-spawn');
   assert.ok(handler, 'restart-spawn route is mounted');
-  return { handler, calls, events, chatSessions };
+  return { handler, calls, events, chatSessions, persistedSessions };
 }
 
 function liveChatSession() {
@@ -198,4 +199,50 @@ test('restart-spawn survives a failing stream close and still clears runtime', a
   const res = await invoke(handler, { params: { id: 's1' } });
   assert.equal(res.statusCode, 200);
   assert.equal(chat.isStreaming, false);
+});
+
+test('restart-spawn force-archives the codex rollout and drops cliSessionId', async () => {
+  // The restart-process button is the user's explicit "rebuild" action: the
+  // native rollout must be archived even when it is UNDER the size budget, or
+  // the lazy respawn resumes the same possibly-wedged history and the restart
+  // visibly "does nothing" (the incident this guard was written for).
+  const guardCalls = [];
+  const archivedInfo = [{ file: '/h/.codex/sessions/rollout-t.jsonl', sizeBytes: 16, archivedTo: '/h/.codex/multicc-archived-rollouts/rollout-t.jsonl' }];
+  const codexRolloutGuard = {
+    enforce: (record, options) => {
+      guardCalls.push([record.cli, options]);
+      return { action: 'archived', cliSessionId: record.cliSessionId, archived: archivedInfo };
+    },
+  };
+  const persisted = { id: 's1', kind: 'chat', dirId: 'd1', cli: 'codex', cliSessionId: 'thread-1' };
+  const { handler, persistedSessions } = fixture({
+    chat: { cli: 'codex', isStreaming: true }, persisted, codexRolloutGuard,
+  });
+  const res = await invoke(handler, { params: { id: 's1' } });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(guardCalls, [['codex', { force: true }]]);
+  assert.deepEqual(res.body.rolloutArchived, archivedInfo);
+  assert.equal(persisted.cliSessionId, null, 'memory record cleared');
+  assert.equal(persistedSessions.get('s1').cliSessionId, null, 'persisted store cleared via mutate');
+});
+
+test('restart-spawn leaves non-codex sessions and guard failures untouched', async () => {
+  // claude: the guard skips, so classic --resume behavior is preserved.
+  const claudePersisted = { id: 's1', kind: 'chat', dirId: 'd1', cli: 'claude', cliSessionId: 'uuid-1' };
+  const claudeRes = await invoke(fixture({
+    chat: liveChatSession(), persisted: claudePersisted,
+    codexRolloutGuard: { enforce: () => ({ action: 'skipped' }) },
+  }).handler, { params: { id: 's1' } });
+  assert.equal(claudeRes.body.rolloutArchived, null);
+  assert.equal(claudePersisted.cliSessionId, 'uuid-1');
+
+  // codex with a failing guard: restart still succeeds (fail-open).
+  const codexPersisted = { id: 's1', kind: 'chat', dirId: 'd1', cli: 'codex', cliSessionId: 'thread-1' };
+  const failRes = await invoke(fixture({
+    chat: { cli: 'codex', isStreaming: true }, persisted: codexPersisted,
+    codexRolloutGuard: { enforce: () => ({ action: 'error', error: 'boom' }) },
+  }).handler, { params: { id: 's1' } });
+  assert.equal(failRes.statusCode, 200);
+  assert.equal(failRes.body.rolloutArchived, null);
+  assert.equal(codexPersisted.cliSessionId, 'thread-1', 'a guard failure never clears the session id');
 });

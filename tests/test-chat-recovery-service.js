@@ -111,6 +111,25 @@ test('restart spawn escapes the session name', async () => {
   assert.equal(calls.fetched[0].url, '/api/sessions/a%2Fb%20c/restart-spawn?token=t');
 });
 
+test('restart spawn surfaces the codex rollout archive and passes it through', async () => {
+  const archived = [{ file: '/x/rollout-a.jsonl', sizeBytes: 440, archivedTo: '/x/archived/rollout-a.jsonl' }];
+  const { api, calls } = fixture({
+    response: okResponse({ ok: true, before: { pid: 9 }, rolloutArchived: archived }),
+  });
+  const result = await api.restartSpawn();
+  assert.deepEqual(result.rolloutArchived, archived);
+  assert.match(calls.messages[0], /^restartSpawnDone:/);
+  assert.match(calls.messages[1], /已归档/, 'the user learns the context will be rebuilt');
+  assert.deepEqual(calls.reconnect, ['restart-spawn']);
+});
+
+test('restart spawn without an archive stays a single message', async () => {
+  const { api, calls } = fixture({ response: okResponse({ ok: true, before: { pid: 9 } }) });
+  const result = await api.restartSpawn();
+  assert.deepEqual(result.rolloutArchived, []);
+  assert.equal(calls.messages.length, 1);
+});
+
 test('a rejected restart is reported and does not fake a resync', async () => {
   const { api, calls } = fixture({
     response: { ok: false, status: 400, json: async () => ({ error: 'terminal sessions use /restart' }) },
