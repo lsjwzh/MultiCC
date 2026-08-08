@@ -507,17 +507,6 @@ const _CLASSIFY_TITLE = {
   P: 'classifyProcessing',
 };
 
-// Status vocabulary for every session surface on this page. `cls` is now a
-// canonical status name (idle/queued/running/waiting/blocked/error/done/offline/
-// unknown) rather than the old ad-hoc active/waiting/completed triple, so callers
-// get the same glyph and tone as the task board.
-function wbStatusInfo(status) {
-  const reg = window.MultiCCStatusPresentation;
-  const canonical = reg.coerceStatus('session', status);
-  const spec = reg.presentation('session', canonical);
-  return { status: canonical, cls: canonical, text: tt(spec.labelKey), icon: spec.icon, tone: spec.tone };
-}
-
 // sessionCardStatusFor() — the one fold from live signals to a canonical status —
 // lives in manage-dashboard.js next to the `_sessionStatus` map it reads.
 
@@ -550,14 +539,12 @@ async function connectWorkspace(dirId) {
       updateEventTimelineDom(dirId);
       updateDirPreview(dirId);
       refreshAllCardBorders();
-      updateGlobalTaskScroller();
     } else if (msg.type === 'status') {
       _workspaceStatus.set(msg.sessionId, { status: msg.status, currentFile: msg.currentFile, lastActivity: msg.lastActivity, runStartedAt: msg.runStartedAt || null, runEndedAt: msg.runEndedAt || null, mergeState: msg.mergeState || _workspaceStatus.get(msg.sessionId)?.mergeState || null });
       updateSessionStatusDom(msg.sessionId);
       updateSessionMergeDom(msg.sessionId);
       updateSessionRuntimeDom(msg.sessionId);
       refreshAllCardBorders();
-      updateGlobalTaskScroller();
     } else if (msg.type === 'merge_status') {
       const prev = _workspaceStatus.get(msg.sessionId) || {};
       _workspaceStatus.set(msg.sessionId, { ...prev, mergeState: msg.mergeState || null });
@@ -576,7 +563,6 @@ async function connectWorkspace(dirId) {
       _workspaceSummaries.set(msg.sessionId, { summary: msg.summary, ts: msg.ts || 0 });
       updateSessionSummaryDom(msg.sessionId);
       updateDirPreviewForSession(msg.sessionId);
-      updateGlobalTaskScroller();
     } else if (msg.type === 'task_state') {
       _workspaceClassify.set(msg.sessionId, { classifyState: msg.classifyState || null, goal: msg.goal || '', phase: msg.phase || 'idle' });
       updateSessionClassifyDom(msg.sessionId);

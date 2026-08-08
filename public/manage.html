@@ -163,8 +163,18 @@
     #sidebar > .view.active{display:block}
 
     /* ── KPI row ── */
-    #kpi-row{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:24px}
-    body.has-focus #kpi-row{display:none}
+    /* Six columns, not five: the AI Assistant tile carries a status badge and two
+     * buttons on top of the usual label, and a 1/5 slot clips them at 1400px. It
+     * takes two columns, the four stat tiles keep one each, and the row still
+     * reads as a single line of tiles. */
+    #kpi-row{display:grid;grid-template-columns:repeat(6,1fr);gap:14px;margin-bottom:24px}
+    #kpi-row > .kpi.aux{grid-column:span 2}
+    /* Focus mode drops the stat tiles (the 300px column has no room for them) but
+     * keeps the AI Assistant tile: its 模型 / History buttons are the only entry
+     * to the aux config, and hiding them would strand that surface. */
+    body.has-focus #kpi-row{grid-template-columns:1fr;margin-bottom:16px}
+    body.has-focus #kpi-row > .kpi{display:none}
+    body.has-focus #kpi-row > .kpi.aux{display:block;grid-column:auto}
     .kpi{position:relative;overflow:hidden;background:linear-gradient(180deg,rgba(255,255,255,.025),transparent);border:1px solid var(--line);border-radius:var(--radius);padding:15px 17px}
     .kpi .k-top{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px;font-weight:500}
     .kpi .dot{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 8px var(--accent)}
@@ -176,6 +186,16 @@
     .kpi.grey .dot{background:var(--faint);box-shadow:none} .kpi.grey .k-bar{background:linear-gradient(90deg,var(--faint),transparent)}
     .kpi.clickable{cursor:pointer;transition:border-color .12s,transform .12s}
     .kpi.clickable:hover{border-color:var(--amber);transform:translateY(-1px)}
+    /* AI Assistant tile — keeps the aux card's purple identity now that it lives
+     * in the KPI row. The .purple.clickable:hover rule outranks the amber default
+     * on specificity, so the hover border stays purple wherever it is declared. */
+    .kpi.purple .dot{background:#8957e5;box-shadow:0 0 8px #8957e5} .kpi.purple .k-bar{background:linear-gradient(90deg,#8957e5,transparent)}
+    .kpi.purple .k-name{color:#d2a8ff;font-weight:650}
+    .kpi.purple.clickable:hover{border-color:#8957e5}
+    .kpi.aux .k-name,.kpi.aux .status-badge{white-space:nowrap}
+    .kpi .k-acts{margin-left:auto;display:flex;gap:5px;flex:0 0 auto}
+    .kpi .k-acts .btn{padding:2px 8px;font-size:11px;min-height:0;line-height:1.7}
+    .kpi .k-sub.ellipsis{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
     .sec-head{display:flex;align-items:center;gap:10px;margin:2px 0 16px}
     .sec-head h2{font-size:14px;font-weight:650;letter-spacing:.2px}
@@ -421,7 +441,9 @@
     .modal-card{background:var(--panel);border:1px solid var(--line-strong);border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,.6)}
 
     /* ── Responsive ── */
-    @media (max-width:1100px){#kpi-row{grid-template-columns:repeat(2,1fr)}}
+    /* 2×2 stat tiles; the AI Assistant tile takes a full row of its own rather
+     * than sitting alone in a half-width slot with two buttons crammed in. */
+    @media (max-width:1100px){#kpi-row{grid-template-columns:repeat(2,1fr)} #kpi-row > .kpi.aux{grid-column:1/-1}}
     @media (max-width:860px){
       /* Height ladder, worst → best. `inset:0 auto 0 0` (top+bottom) used to
          size the drawer, but on iOS Safari / Android Chrome a fixed element is
@@ -505,23 +527,6 @@
     .wb-events-list{margin:0 0 10px;padding:8px 10px;background:var(--panel-2);border:1px solid var(--line);border-radius:7px;font-size:11px;line-height:1.7;max-height:240px;overflow-y:auto}
     .wb-event-row .t{color:var(--muted);margin-right:4px}
     .wb-event-row.dim{color:var(--muted)}
-
-    /* 任务进度滚动展示器（与 AI Assist 等高 56px） */
-    .task-scroller-inner{animation:taskScroll 12s ease-in-out infinite}
-    .task-progress-card:hover{background:rgba(58,214,197,.08)}
-    @keyframes taskScroll{
-      0%,8%{transform:translateY(0)}
-      12%,20%{transform:translateY(-56px)}
-      24%,32%{transform:translateY(-112px)}
-      36%,44%{transform:translateY(-168px)}
-      48%,56%{transform:translateY(-224px)}
-      60%,68%{transform:translateY(-280px)}
-      72%,80%{transform:translateY(-336px)}
-      84%,92%{transform:translateY(-392px)}
-      96%,100%{transform:translateY(0)}
-    }
-    /* 只有 1 个任务时不滚动 */
-    .task-scroller-inner[data-count="1"]{animation:none}
 
     /* lean 2-line session card */
     .sess-card-grid{grid-template-columns:repeat(auto-fill,minmax(230px,1fr))}
@@ -745,7 +750,6 @@
         <section class="view active" data-view="overview">
           <div id="kpi-row"></div>
           <div class="sec-head"><h2 data-i18n="directories">Fleet</h2><span class="count" id="dir-count-pill">0</span><div class="line"></div></div>
-          <div id="aux-section"></div>
           <div id="directory-list"></div>
         </section>
 
@@ -2089,7 +2093,8 @@
         <div class="kpi clickable" title="${t('activeSessions')}" onclick="showActiveSessions(event)"><div class="k-top"><span class="dot"></span>${t('activeSessions')}</div><div class="k-num" id="kpi-active">0</div><div class="k-sub" id="kpi-active-sub">claude 0 · codex 0</div><div class="k-bar"></div></div>
         <div class="kpi alt clickable" title="${t('waitingInput')}" onclick="showWaitingSessions(event)"><div class="k-top"><span class="dot"></span>${t('waitingInput')}</div><div class="k-num" id="kpi-wait">0</div><div class="k-sub">${t('replyNeeded')}</div><div class="k-bar"></div></div>
         <div class="kpi blue"><div class="k-top"><span class="dot"></span>${t('directories')}</div><div class="k-num" id="kpi-dirs">0</div><div class="k-sub" id="kpi-sess-sub">${t('sessionCount', { n: 0 })}</div><div class="k-bar"></div></div>
-        <div class="kpi grey clickable" title="${t('scheduledTasks') || '定时任务'}" onclick="showCronTasks(event)"><div class="k-top"><span class="dot"></span>${t('scheduledTasks') || '定时任务'}</div><div class="k-num" id="kpi-cron">0</div><div class="k-sub">${t('registered')}</div><div class="k-bar"></div></div>`;
+        <div class="kpi grey clickable" title="${t('scheduledTasks') || '定时任务'}" onclick="showCronTasks(event)"><div class="k-top"><span class="dot"></span>${t('scheduledTasks') || '定时任务'}</div><div class="k-num" id="kpi-cron">0</div><div class="k-sub">${t('registered')}</div><div class="k-bar"></div></div>
+        <div class="kpi purple clickable aux" id="kpi-aux" title="AI Assistant" onclick="openAuxHistoryModal()"><div class="k-top"><span class="dot"></span><span class="k-name">AI Assistant</span><span class="status-badge idle" id="kpi-aux-status">空闲</span><span class="k-acts"><button class="btn btn-sm" onclick="event.stopPropagation(); openAuxModal()">模型</button><button class="btn btn-sm" onclick="event.stopPropagation(); openAuxHistoryModal()">History</button></span></div><div class="k-num"><span id="kpi-aux-num">0</span> <span id="kpi-aux-warm" title="进程未就绪" style="font-size:15px;color:#484f58;">○</span><span style="font-size:12px;font-weight:500;color:var(--faint);"> processed</span></div><div class="k-sub ellipsis" id="kpi-aux-sub" title="辅助 AI 当前模型">auxqueue</div><div class="k-bar"></div></div>`;
 
       function num(s) { const m = String(s || '').match(/\d+/); return m ? +m[0] : 0; }
       function updateKpis() {
@@ -2117,7 +2122,37 @@
           set('kpi-cron', num((document.getElementById('cron-count') || {}).textContent));
           set('nav-dir-count', dirs.length); set('dir-count-pill', dirs.length);
           set('nav-cron-count', num((document.getElementById('cron-count') || {}).textContent));
+          updateAuxKpi();
         } catch (e) { /* globals may not be ready yet */ }
+      }
+      // AI Assistant tile. It lives in the KPI row (not the Fleet grid) and is
+      // refreshed here rather than from renderDashboard, which only runs on load
+      // and focus changes — the 1s tick is what keeps the queue depth honest.
+      function updateAuxKpi() {
+        const tile = document.getElementById('kpi-aux');
+        if (!tile) return;
+        const all = (typeof _cachedSessions !== 'undefined' && _cachedSessions) ? _cachedSessions : [];
+        const s = all.find(x => x.type === 'aux');
+        const aux = (s && s.auxStatus) || {};
+        let cls = 'idle', text = aux.warmReady ? '就绪' : '空闲';
+        if (aux.processing) { cls = 'running'; text = '处理中'; }
+        else if (aux.queueDepth > 0) { cls = 'waiting'; text = `${aux.queueDepth} 排队`; }
+        const badge = document.getElementById('kpi-aux-status');
+        if (badge) { badge.className = 'status-badge ' + cls; badge.textContent = text; }
+        const numEl = document.getElementById('kpi-aux-num');
+        if (numEl) numEl.textContent = aux.totalProcessed || 0;
+        const warm = document.getElementById('kpi-aux-warm');
+        if (warm) {
+          warm.textContent = aux.warmReady ? '●' : '○';
+          warm.style.color = aux.warmReady ? '#3fb950' : '#484f58';
+          warm.title = aux.warmReady ? '进程已预热' : '进程未就绪';
+        }
+        const sub = document.getElementById('kpi-aux-sub');
+        if (sub) {
+          const model = (typeof _auxModelLabel === 'function') ? _auxModelLabel() : '';
+          const act = (s && s.lastActivity && typeof formatRelative === 'function') ? formatRelative(s.lastActivity) : 'N/A';
+          sub.textContent = `${model} · ${act}`;
+        }
       }
       setInterval(updateKpis, 1000);
       setTimeout(updateKpis, 300);
