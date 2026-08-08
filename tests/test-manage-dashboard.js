@@ -37,6 +37,7 @@ function createHarness(overrides = {}) {
     localStorage: {
       getItem(key) { return storage.has(key) ? storage.get(key) : null; },
       setItem(key, value) { storage.set(key, String(value)); },
+      removeItem(key) { storage.delete(key); },
     },
     document: {
       visibilityState: 'visible',
@@ -107,6 +108,11 @@ function createHarness(overrides = {}) {
   vm.runInContext(read('public/status-presentation.js'), context, {
     filename: 'status-presentation.js',
   });
+  // The saved drag-and-drop arrangement is a hard dependency of the dashboard's
+  // ordering now that it lives on the server, so load it in the page's order.
+  vm.runInContext(read('public/ui-layout-store.js'), context, {
+    filename: 'ui-layout-store.js',
+  });
   vm.runInContext(read('public/manage-dashboard.js'), context, {
     filename: 'manage-dashboard.js',
   });
@@ -145,8 +151,14 @@ test('dashboard module has no credential or token-query boundary', () => {
   assert.match(source, /_providerData\.providers/);
 });
 
-test('classic script preserves compatibility globals and pure formatting behavior', () => {
-  const { context, storage } = createHarness();
+test('classic script preserves compatibility globals and pure formatting behavior', async () => {
+  const puts = [];
+  const { context } = createHarness({
+    fetch: async (url, init) => {
+      puts.push({ url, body: JSON.parse(init.body) });
+      return { ok: true, json: async () => ({ ok: true, layout: { dirOrder: ['d2', 'd1'], sessionOrder: {} } }) };
+    },
+  });
   for (const name of [
     'loadSessions', 'loadDashboard', 'renderDashboard', 'renderDirectoryBlock',
     'renderSessionRow', 'openDirectoryDetail', 'openNewDirectoryModal',
@@ -164,8 +176,12 @@ test('classic script preserves compatibility globals and pure formatting behavio
   assert.equal(context.matchesWaiting('Would you like to proceed?'), true);
   assert.equal(context.isInProgress('Thinking…'), true);
 
-  context.reorderDirectories(['d2', 'd1']);
-  assert.equal(storage.get('multicc_dir_order'), '["d2","d1"]');
+  // The arrangement goes to the server, not to this browser's localStorage —
+  // that is what makes it survive a switch of browser or device.
+  await context.reorderDirectories(['d2', 'd1']);
+  assert.equal(puts.length, 1);
+  assert.equal(puts[0].url, '/api/ui-layout/dir-order');
+  assert.equal(JSON.stringify(puts[0].body.order), '["d2","d1"]');
   const order = context.getDirOrder();
   order.push('mutated-copy');
   assert.equal(JSON.stringify(context.getDirOrder()), '["d2","d1"]');
@@ -231,6 +247,83 @@ test('fleet session groups stay in creation order no matter what the live activi
   assert.deepEqual(idsIn(context.renderDirSessionGroups(tied)), ['a', 'b']);
 });
 
+test('a dragged fleet order overrides creation order without unpinning the commander', async () => {
+  const puts = [];
+  const { context } = createHarness({
+    fetch: async (url, init) => {
+      const body = init && init.body ? JSON.parse(init.body) : null;
+      puts.push({ url, order: body && body.order });
+      return { ok: true, json: async () => ({ ok: true, layout: { dirOrder: [], sessionOrder: { 'dir-1': body.order } } }) };
+    },
+  });
+  const iso = (day) => `2026-03-${String(day).padStart(2, '0')}T00:00:00.000Z`;
+  const sessions = [
+    { id: 'a', kind: 'chat', cli: 'claude', createdAt: iso(1) },
+    { id: 'b', kind: 'chat', cli: 'claude', createdAt: iso(2) },
+    { id: 'cmdr', kind: 'chat', cli: 'claude', type: 'commander', createdAt: iso(3) },
+  ];
+  const idsIn = (html) => (html.match(/data-id="([^"]+)"/g) || [])
+    .map(m => m.slice('data-id="'.length, -1));
+
+  // Without a saved order: commander pinned, the rest oldest-first.
+  assert.deepEqual(idsIn(context.renderDirSessionGroups(sessions, 'dir-1')), ['cmdr', 'a', 'b']);
+
+  await context.MultiCCUiLayout.saveSessionOrder('dir-1', ['b', 'a']);
+  assert.equal(puts[0].url, '/api/ui-layout/session-order/dir-1');
+  assert.deepEqual(idsIn(context.renderDirSessionGroups(sessions, 'dir-1')), ['cmdr', 'b', 'a']);
+
+  // A fleet the user never dragged is unaffected, and the grid carries the fleet
+  // id so a drop can only ever reorder within its own fleet.
+  assert.deepEqual(idsIn(context.renderDirSessionGroups(sessions, 'dir-2')), ['cmdr', 'a', 'b']);
+  assert.match(context.renderDirSessionGroups(sessions, 'dir-1'), /sess-card-grid" data-dir-id="dir-1"/);
+
+  // A session created after the last drag is unranked, so it lands at the end
+  // rather than at some arbitrary position.
+  const withNew = [...sessions, { id: 'fresh', kind: 'chat', cli: 'claude', createdAt: iso(9) }];
+  assert.deepEqual(idsIn(context.renderDirSessionGroups(withNew, 'dir-1')), ['cmdr', 'b', 'a', 'fresh']);
+});
+
+test('the pre-server localStorage arrangement is lifted once, then forgotten', async () => {
+  const puts = [];
+  const { context, storage } = createHarness({
+    fetch: async (url, init) => {
+      if (url === '/api/ui-layout') return { ok: true, json: async () => ({ ok: true, layout: { dirOrder: [], sessionOrder: {} } }) };
+      puts.push({ url, order: JSON.parse(init.body).order });
+      return { ok: true, json: async () => ({ ok: true, layout: { dirOrder: ['d9', 'd8'], sessionOrder: {} } }) };
+    },
+  });
+  storage.set('multicc_dir_order', '["d9","d8"]');
+
+  await context.MultiCCUiLayout.load();
+  assert.deepEqual(puts, [{ url: '/api/ui-layout/dir-order', order: ['d9', 'd8'] }]);
+  assert.equal(storage.has('multicc_dir_order'), false, 'the per-device copy must not linger');
+  assert.deepEqual(context.getDirOrder(), ['d9', 'd8']);
+});
+
+test('arranging one group in a fleet does not discard the other group order', () => {
+  const { context } = createHarness();
+  // A fleet stores ONE flat list for chats + terminals, so a drag inside the
+  // chat grid must carry the terminal ids over. Writing only the dragged
+  // group's order back would silently reset the other group to creation order.
+  assert.deepEqual(
+    context.MultiCCUiLayout.mergeGroupOrder(['t2', 't1'], ['c2', 'c1']),
+    ['c2', 'c1', 't2', 't1']);
+  // Re-dragging the same group replaces its entries rather than duplicating.
+  assert.deepEqual(context.MultiCCUiLayout.mergeGroupOrder(['c1', 'c2'], ['c2', 'c1']), ['c2', 'c1']);
+});
+
+test('a server arrangement wins over whatever this browser last had locally', async () => {
+  const { context, storage } = createHarness({
+    fetch: async (url) => {
+      assert.equal(url, '/api/ui-layout', 'nothing may be uploaded when the server already has an order');
+      return { ok: true, json: async () => ({ ok: true, layout: { dirOrder: ['from-server'], sessionOrder: {} } }) };
+    },
+  });
+  storage.set('multicc_dir_order', '["stale-local"]');
+  await context.MultiCCUiLayout.load();
+  assert.deepEqual(context.getDirOrder(), ['from-server']);
+});
+
 test('fleet session card shows bounded FIFO depth while waiting-user work stays queued', () => {
   const { context } = createHarness();
   context._workspaceQueues.set('session-queued', {
@@ -263,6 +356,7 @@ test('dashboard loader keeps the two legacy summary endpoints token-free', async
       if (url === '/api/directories') return { json: async () => [{ id: 'dir-1', name: 'Fleet' }] };
       if (url === '/api/sessions') return { json: async () => [{ id: 's1', dirId: 'dir-1', active: false }] };
       if (url === '/api/aux/config') return { ok: true, json: async () => ({ protocol: 'anthropic' }) };
+      if (url === '/api/ui-layout') return { ok: true, json: async () => ({ ok: true, layout: { dirOrder: [], sessionOrder: {} } }) };
       throw new Error('unexpected URL ' + url);
     },
   });

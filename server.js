@@ -925,7 +925,7 @@ const {
 loadNotes();
 
 const directoryModule = createDirectoryModule({
-  repository: { file: DIRECTORIES_FILE, map: _state.directories, store: directoriesStore },
+  repository: { file: DIRECTORIES_FILE, map: _state.directories, store: directoriesStore, uiLayoutFile: MULTICC_PATHS.uiLayoutFile },
   git: {
     baseBranch: gitBaseBranch,
     pushState: (p, b, o) => gitPush.directoryPushState(p, b, o),
