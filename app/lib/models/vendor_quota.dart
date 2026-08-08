@@ -677,6 +677,133 @@ VendorQuotaView formatKimiQuota(
   return VendorQuotaView(text, color, title);
 }
 
+// ── Qoder CN (credits) ──────────────────────────────────────────────────────
+//
+// Qoder's usage is a credits balance on a monthly billing cycle, published by
+// qoder.com.cn (CDP / cached-cookie, see /api/qoder/quota, mirroring the web
+// `formatQoderQuota`). The usage API exposes the next reset as top-level
+// `nextResetAt` (epoch ms) and the plan API carries end_date /
+// next_refresh_date — both feed the countdown so the bar shows an expiry
+// dimension like every other provider.
+
+VendorQuotaView formatQoderQuota(
+  Map<String, dynamic>? value, {
+  bool loading = false,
+  int? nowMs,
+}) {
+  final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
+  if (loading) {
+    return const VendorQuotaView('Qoder CN：加载中…', VendorQuotaColor.gray);
+  }
+  if (value == null) {
+    return const VendorQuotaView(
+      'Qoder CN 余量 · ⟳ 刷新',
+      VendorQuotaColor.gray,
+      '点击从 qoder.com.cn 拉取 credits 用量',
+    );
+  }
+  final status = value['status']?.toString();
+  if (status == 'needs_login') {
+    return const VendorQuotaView(
+      'Qoder CN：需登录 · 点击打开登录页',
+      VendorQuotaColor.red,
+      '你的 Chrome 里没有 qoder.com.cn 的登录态。点击将在 Chrome 中打开登录页，登录后再点刷新。',
+    );
+  }
+  if (status == 'chrome_unavailable') {
+    return const VendorQuotaView(
+      'Qoder CN：无可连的 Chrome · 点击尝试打开登录窗口',
+      VendorQuotaColor.yellow,
+      '托管 Chrome 起不来，也没有可连的调试端点。点击会尝试拉起一个可见的 Chrome 登录窗口；在其中登录 qoder.com.cn 一次，之后一周的刷新都走缓存 cookie，不再需要浏览器。',
+    );
+  }
+  final quota = value['quota'];
+  if (status != 'ok' || quota is! Map) {
+    return VendorQuotaView(
+      'Qoder CN：用量暂不可用 · ⟳ 重试',
+      VendorQuotaColor.yellow,
+      value['error']?.toString() ?? '无法从 qoder.com.cn 拉取用量',
+    );
+  }
+
+  final total = _qoderSummary(quota['total_quota']);
+  final planQ = _qoderSummary(quota['plan_quota']);
+  final pkg = _qoderSummary(quota['resource_package_quota']);
+  final used = _qoderNum(total, 'used_value') ?? 0;
+  final limit = _qoderNum(total, 'limit_value') ?? 0;
+  final remaining = _qoderNum(total, 'remaining_value') ?? 0;
+  var pct = _qoderNum(total, 'usage_percentage') ??
+      (limit > 0 ? (used / limit * 100).roundToDouble() : 0.0);
+
+  // Credits reset on the billing cycle. The usage API exposes the next reset
+  // as top-level `nextResetAt` (epoch ms); the plan API's end_date /
+  // next_refresh_date are the fallback when the usage response omits it.
+  final resetAt = _qoderEpochMs(quota['nextResetAt']) ??
+      _qoderEpochMs(_mapField(value['plan'], 'end_date')) ??
+      _qoderEpochMs(_mapField(value['plan'], 'next_refresh_date'));
+  final resetMs =
+      resetAt == null ? null : (resetAt - now < 0 ? 0 : resetAt - now);
+
+  var text = unifiedWindowSeg('1m', pct, resetMs);
+  if (text.isEmpty) text = '—';
+  final syncRel = quotaRelAgo((value['fetchedAt'] as num?)?.toInt());
+  if (syncRel.isNotEmpty) text += ' · $syncRel';
+  text += ' ⟳';
+
+  final color = unifiedColorFromRemaining(unifiedRemaining(pct));
+
+  final planTier = (value['plan'] is Map)
+      ? ((value['plan'] as Map)['plan_tier']
+              ?.toString()
+              .replaceFirst('PLAN_TIER_', '') ??
+          '')
+      : '';
+  var title =
+      'Qoder CN 用量（CDP 抓 qoder.com.cn）\n套餐: $planTier'
+      '\n总计: ${fmtQuotaNum(used)}/${fmtQuotaNum(limit)} · 剩余 ${fmtQuotaNum(remaining)}';
+  final planLimit = _qoderNum(planQ, 'limit_value');
+  if (planLimit != null && planLimit > 0) {
+    title +=
+        '\n套餐配额: ${fmtQuotaNum(_qoderNum(planQ, 'used_value') ?? 0)}/${fmtQuotaNum(planLimit)}';
+  }
+  final pkgLimit = _qoderNum(pkg, 'limit_value');
+  if (pkgLimit != null && pkgLimit > 0) {
+    title +=
+        '\n加油包: ${fmtQuotaNum(_qoderNum(pkg, 'used_value') ?? 0)}/${fmtQuotaNum(pkgLimit)} (剩 ${fmtQuotaNum(_qoderNum(pkg, 'remaining_value') ?? 0)})';
+  }
+  // 到期/重置维度与其它 bar 一致：有真实时间戳显示倒计时与绝对时间，
+  // 缺失时在 tooltip 如实标注（文本保持统一格式 <window> <remaining%>）。
+  if (resetAt != null) {
+    final cd = humanizeCountdown(resetMs);
+    final dt = DateTime.fromMillisecondsSinceEpoch(resetAt).toLocal();
+    title += '\n重置: ${dt.toString().substring(0, 16)}（$cd 后）';
+  } else {
+    title += '\n到期时间未知（API 未返回 nextResetAt/套餐到期日）';
+  }
+  if (syncRel.isNotEmpty) title += '\n同步于 $syncRel';
+  return VendorQuotaView(text, color, title);
+}
+
+Map? _qoderSummary(dynamic block) =>
+    block is Map ? (block['quota_summary'] is Map ? block['quota_summary'] as Map : null) : null;
+
+num? _qoderNum(dynamic summary, String key) {
+  if (summary is Map) {
+    final v = summary[key];
+    if (v is num) return v.toDouble();
+  }
+  return null;
+}
+
+dynamic _mapField(dynamic map, String key) => map is Map ? map[key] : null;
+
+/// Epoch seconds-or-ms → epoch ms (matches the web `normalizeResetTime`).
+int? _qoderEpochMs(dynamic v) {
+  if (v is! num || v <= 0) return null;
+  final ms = v < 10000000000 ? v * 1000 : v;
+  return ms.toInt();
+}
+
 // ── Claude subscription (claude.ai/settings/usage) ──────────────────────────
 //
 // Claude's window data arrives through TWO sources, mirroring the web
