@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/message.dart';
 import '../providers/chat_provider.dart';
@@ -16,6 +15,7 @@ import '../services/workspace_service.dart';
 import '../services/voice_launch_service.dart';
 import '../i18n.dart';
 import '../theme.dart';
+import '../utils/manual_order.dart';
 import '../utils/session_status_helpers.dart';
 import '../utils/status_presentation.dart';
 import '../widgets/directory_card.dart';
@@ -379,22 +379,9 @@ class _DirectoryListBody extends StatefulWidget {
 }
 
 class _DirectoryListBodyState extends State<_DirectoryListBody> {
-  // 从SharedPreferences加载目录顺序
-  static const String _dirOrderKey = 'directory_order';
-
   // Cached provider list (with aliasMap) so session model labels in the KPI
   // sheet can show an alias-mapped relay's real name (e.g. GLM5.2).
   List<Map<String, dynamic>> _providers = [];
-
-  Future<List<String>?> _loadDirOrder() async {
-    final prefs = await SharedPreferences.getInstance();
-    return prefs.getStringList(_dirOrderKey);
-  }
-
-  Future<void> _saveDirOrder(List<String> order) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList(_dirOrderKey, order);
-  }
 
   // Number of scheduled tasks behind the workspace-bar cron tile. Stays null
   // when the fetch fails or hasn't landed, which keeps the tile a plain link
@@ -600,36 +587,27 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
       );
     }
 
-    return FutureBuilder<List<String>?>(
-      future: _loadDirOrder(),
-      builder: (context, snapshot) {
-        final savedOrder = snapshot.data;
-        // 缓存到 _lastSavedOrder，供 _handleDragEnd → _buildVisualOrder 使用
-        _lastSavedOrder = savedOrder;
+    // 目录顺序来自服务端（mgr.uiLayout，与 loadDashboard 一起取），不再是本机的
+    // SharedPreferences —— 换台设备、换个浏览器不用重排一遍。没排过的目录按服务端
+    // 返回的顺序缀在后面。
+    final orderedDirectories = applyManualOrder(
+      mgr.directories,
+      mgr.uiLayout.dirOrder,
+      (d) => d.id,
+    );
 
-        final orderedDirectories = <Directory>[];
-
-        if (savedOrder != null && savedOrder.isNotEmpty) {
-          // 按保存的顺序排列，未保存的新目录追加到末尾
-          final dirMap = {for (var d in mgr.directories) d.id: d};
-          for (final id in savedOrder) {
-            if (dirMap.containsKey(id)) {
-              orderedDirectories.add(dirMap[id]!);
-              dirMap.remove(id);
-            }
-          }
-          // 添加新创建的目录
-          orderedDirectories.addAll(dirMap.values);
-        } else {
-          orderedDirectories.addAll(mgr.directories);
-        }
-
-        return Column(
-          children: [
-            Expanded(
-              child: RefreshIndicator(
-                onRefresh: () =>
-                    Future.wait([mgr.loadDashboard(), _loadCronCount()]),
+    return Column(
+      children: [
+        Expanded(
+          child: RefreshIndicator(
+                // reload() 排在 loadDashboard() 前面：loadDashboard 内部 await 的
+                // 是同一个 future，这样它的 notifyListeners 落在新排布之后，下拉
+                // 刷新才会真的把顺序画出来。
+                onRefresh: () => Future.wait([
+                  mgr.uiLayout.reload(),
+                  mgr.loadDashboard(),
+                  _loadCronCount(),
+                ]),
                 color: const Color(0xFF6aa3ff),
                 backgroundColor: const Color(0xFF0f1115),
                 child: ListView.builder(
@@ -692,59 +670,32 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
             ),
           ],
         );
-      },
-    );
   }
 
   /// 当前被拖拽悬停的目录 ID（用于显示插入指示器）
   String? _dragHoverDirId;
 
-  /// 构建与用户视觉一致的有序列表（savedOrder 优先，新目录追加末尾）
-  List<String> _buildVisualOrder(SessionManager mgr) {
-    final saved = _lastSavedOrder ?? [];
-    final dirIds = mgr.directories.map((d) => d.id).toSet();
-    final visual = <String>[];
-    for (final id in saved) {
-      if (dirIds.contains(id)) {
-        visual.add(id);
-        dirIds.remove(id);
-      }
-    }
-    // 新目录追加末尾
-    for (final d in mgr.directories) {
-      if (dirIds.contains(d.id)) visual.add(d.id);
-    }
-    return visual;
-  }
-
-  List<String>? _lastSavedOrder;
+  /// 屏幕上当前看到的目录顺序。写回服务端时存的是**完整**顺序而不只是被拖的那张
+  /// 卡：服务端第一次收到记录之前列表是空的，只存一个 id 会让它排第一、其余全部
+  /// 变成未排项挤在后面，用户看到的是整列洗牌而不是移动一张卡。
+  List<String> _buildVisualOrder(SessionManager mgr) => applyManualOrder(
+    mgr.directories,
+    mgr.uiLayout.dirOrder,
+    (d) => d.id,
+  ).map((d) => d.id).toList();
 
   Future<void> _handleDragEnd(String fromDirId, String toDirId) async {
     final mgr = context.read<SessionManager>();
 
     // 基于视觉顺序（而非 mgr.directories 服务端顺序）来重排
-    final visualOrder = _buildVisualOrder(mgr);
+    final next = reorderAround(_buildVisualOrder(mgr), fromDirId, toDirId);
 
-    final fromIdx = visualOrder.indexOf(fromDirId);
-    final toIdx = visualOrder.indexOf(toDirId);
-
-    if (fromIdx == -1 || toIdx == -1 || fromIdx == toIdx) {
-      if (mounted) setState(() => _dragHoverDirId = null);
-      return;
-    }
-
-    // 从原位置移除，插入到目标位置之前
-    visualOrder.removeAt(fromIdx);
-    final insertIdx = visualOrder.indexOf(toDirId);
-    visualOrder.insert(insertIdx, fromDirId);
-
-    _lastSavedOrder = visualOrder;
-    await _saveDirOrder(visualOrder);
-
-    // 清除拖拽状态 + 刷新UI
-    if (mounted) {
-      setState(() => _dragHoverDirId = null);
-    }
+    // 乐观写：先重绘再等请求落地，卡片才跟手；服务端的应答（已剔掉不存在的目录）
+    // 回来后覆盖内存值。
+    final write = mgr.uiLayout.saveDirOrder(next);
+    if (mounted) setState(() => _dragHoverDirId = null);
+    await write;
+    if (mounted) setState(() {});
   }
 
   void _showNewDirectoryDialog(BuildContext context, SessionManager mgr) async {
@@ -2072,6 +2023,7 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet>
                           sessions: groups['chat']!,
                           mgr: widget.mgr,
                           settings: widget.settings,
+                          dirId: dir.id,
                           statuses: workspace.statuses,
                           pendingNotes: workspace.pendingNotes,
                           providers: _providers,
@@ -2083,6 +2035,7 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet>
                           sessions: groups['terminal']!,
                           mgr: widget.mgr,
                           settings: widget.settings,
+                          dirId: dir.id,
                           statuses: workspace.statuses,
                           pendingNotes: workspace.pendingNotes,
                           providers: _providers,
@@ -2600,12 +2553,13 @@ class _EventTimelineState extends State<EventTimeline> {
 //  SESSION GROUP + CARD
 // ═══════════════════════════════════════════════════════════════════════════════
 
-class _SessionGroup extends StatelessWidget {
+class _SessionGroup extends StatefulWidget {
   final String title;
   final Color color;
   final List<Session> sessions;
   final SessionManager mgr;
   final SettingsService settings;
+  final String dirId;
   final Map<String, SessionStatus> statuses;
   final Map<String, int> pendingNotes;
   final List<Map<String, dynamic>> providers;
@@ -2617,6 +2571,7 @@ class _SessionGroup extends StatelessWidget {
     required this.sessions,
     required this.mgr,
     required this.settings,
+    required this.dirId,
     required this.statuses,
     required this.pendingNotes,
     this.providers = const [],
@@ -2624,8 +2579,36 @@ class _SessionGroup extends StatelessWidget {
   });
 
   @override
+  State<_SessionGroup> createState() => _SessionGroupState();
+}
+
+class _SessionGroupState extends State<_SessionGroup> {
+  // 长按拖起来的会话 id，以及当前悬停的目标。只在拖拽期间有值。
+  String? _draggingId;
+
+  /// 把这一组拖后的顺序写回服务端。
+  ///
+  /// 存的是**整组**的可见顺序（不是只存被拖的那一张），并用 [mergeGroupOrder] 把
+  /// 同一 fleet 里另一组（terminals / chats）已存的 id 原样带上——一个 fleet 只存
+  /// 一份平铺列表，不带就等于「排完聊天，终端的排布没了」。
+  Future<void> _handleDrop(List<Session> ordered, String targetId) async {
+    final draggedId = _draggingId;
+    setState(() => _draggingId = null);
+    if (draggedId == null || draggedId == targetId) return;
+    final visible = ordered.map((s) => s.id).toList();
+    if (!visible.contains(draggedId) || !visible.contains(targetId)) return;
+    await widget.mgr.saveFleetSessionOrder(
+      widget.dirId,
+      mergeGroupOrder(
+        widget.mgr.uiLayout.sessionOrderOf(widget.dirId),
+        reorderAround(visible, draggedId, targetId),
+      ),
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
-    if (sessions.isEmpty) return const SizedBox.shrink();
+    if (widget.sessions.isEmpty) return const SizedBox.shrink();
     return Padding(
       padding: const EdgeInsets.fromLTRB(14, 10, 14, 0),
       child: Column(
@@ -2634,9 +2617,9 @@ class _SessionGroup extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.only(bottom: 8, left: 2),
             child: Text(
-              '${title.toUpperCase()} · ${sessions.length}',
+              '${widget.title.toUpperCase()} · ${widget.sessions.length}',
               style: TextStyle(
-                color: color,
+                color: widget.color,
                 fontSize: 9,
                 fontWeight: FontWeight.w700,
                 letterSpacing: 0.6,
@@ -2649,13 +2632,14 @@ class _SessionGroup extends StatelessWidget {
               final columns = constraints.maxWidth >= 520 ? 2 : 1;
               final cardWidth =
                   (constraints.maxWidth - gap * (columns - 1)) / columns;
-              // Creation order, never activity order: `statuses` changes on
-              // every streamed token, and keying the sort off it made the cards
-              // trade places under the user's finger. SessionManager already
-              // hands these lists over in this exact order (same function), so
-              // this call is idempotent — it just keeps the widget from
-              // silently depending on its caller having sorted.
-              final sortedSessions = orderFleetSessions(sessions);
+              // 默认按创建时间，绝不按活跃度：`statuses` 每来一个流式 token 就变，
+              // 拿它当排序键会让卡片在用户手指底下互换位置。用户拖出来的手动顺序
+              // 盖在上面。SessionManager 交过来的列表已经是这个顺序（同一个函数），
+              // 这里再调一次是幂等的——只是不让 widget 默默依赖调用方排好了。
+              final sortedSessions = orderFleetSessions(
+                widget.sessions,
+                manualOrder: widget.mgr.uiLayout.sessionOrderOf(widget.dirId),
+              );
               return Wrap(
                 spacing: gap,
                 runSpacing: gap,
@@ -2663,14 +2647,28 @@ class _SessionGroup extends StatelessWidget {
                   for (final s in sortedSessions)
                     SizedBox(
                       width: cardWidth,
-                      child: SessionCard(
-                        session: s,
-                        mgr: mgr,
-                        settings: settings,
-                        liveStatus: statuses[s.id],
-                        pendingNotes: pendingNotes[s.id] ?? 0,
-                        providers: providers,
-                        onOpen: onOpen,
+                      child: _DraggableSessionCard(
+                        key: ValueKey('draggable-session-${s.id}'),
+                        sessionId: s.id,
+                        dragging: _draggingId == s.id,
+                        onDragStarted: () =>
+                            setState(() => _draggingId = s.id),
+                        onDragEnded: () {
+                          if (_draggingId != null) {
+                            setState(() => _draggingId = null);
+                          }
+                        },
+                        onDropped: (targetId) =>
+                            _handleDrop(sortedSessions, targetId),
+                        child: SessionCard(
+                          session: s,
+                          mgr: widget.mgr,
+                          settings: widget.settings,
+                          liveStatus: widget.statuses[s.id],
+                          pendingNotes: widget.pendingNotes[s.id] ?? 0,
+                          providers: widget.providers,
+                          onOpen: widget.onOpen,
+                        ),
                       ),
                     ),
                 ],
@@ -2678,6 +2676,74 @@ class _SessionGroup extends StatelessWidget {
             },
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// 会话卡的拖拽外壳：长按拖起、拖到另一张卡上放下。
+///
+/// 与首页目录卡同一套手势（[LongPressDraggable] + [DragTarget]），因为这两处对
+/// 用户是同一个动作。长按而不是直接拖：卡片本身要能点开会话，也在可滚动的
+/// fleet 面板里，短按/竖划都得留给它们。
+///
+/// 拖拽载荷是 `sessionId`，且 [DragTarget] 只接受同一组里的 id（组外拖进来的
+/// 会话不在 visible 里，[_SessionGroupState._handleDrop] 会直接丢弃）——跨组拖
+/// 意味着改 kind，那不是排序该做的事。
+class _DraggableSessionCard extends StatelessWidget {
+  final String sessionId;
+  final bool dragging;
+  final Widget child;
+  final VoidCallback onDragStarted;
+  final VoidCallback onDragEnded;
+  final ValueChanged<String> onDropped;
+
+  const _DraggableSessionCard({
+    super.key,
+    required this.sessionId,
+    required this.dragging,
+    required this.child,
+    required this.onDragStarted,
+    required this.onDragEnded,
+    required this.onDropped,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return LongPressDraggable<String>(
+      data: sessionId,
+      onDragStarted: onDragStarted,
+      onDraggableCanceled: (_, __) => onDragEnded(),
+      onDragEnd: (_) => onDragEnded(),
+      feedback: Material(
+        elevation: 6,
+        color: Colors.transparent,
+        child: Opacity(
+          opacity: 0.9,
+          child: SizedBox(
+            width: MediaQuery.of(context).size.width - 56,
+            child: child,
+          ),
+        ),
+      ),
+      childWhenDragging: Opacity(opacity: 0.35, child: child),
+      child: DragTarget<String>(
+        onWillAcceptWithDetails: (details) => details.data != sessionId,
+        onAcceptWithDetails: (_) => onDropped(sessionId),
+        builder: (context, candidateData, __) {
+          final hovering = candidateData.isNotEmpty;
+          return AnimatedContainer(
+            duration: const Duration(milliseconds: 160),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: hovering ? AppColors.accent : Colors.transparent,
+                width: 2,
+              ),
+            ),
+            child: Opacity(opacity: dragging ? 0.35 : 1, child: child),
+          );
+        },
       ),
     );
   }

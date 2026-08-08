@@ -8,15 +8,29 @@
 // directory deletion updates directories.json + sessions.json under one
 // journal entry. Omitting `tx` falls back to the pre-transaction save order —
 // unit tests use that path so they don't need a real filesystem.
+const path = require('path');
+
 const { createFsDirectoryRepository } = require('./repository');
 const { createDirectoryService } = require('./service');
 const { createDirectoryRouter } = require('./controller');
+const { createUiLayoutRuntime } = require('./ui-layout');
 
 function createDirectoryModule({ repository, git, sessions, events, fsPort, helpers, tx }) {
   const repo = createFsDirectoryRepository({ ...repository, realPathOf: helpers.realPathOf });
   const service = createDirectoryService({ repo, git, sessions, events, fsPort, helpers, tx });
   const router = createDirectoryRouter(service);
-  return { repo, service, router };
+  // The user's drag-and-drop arrangement of the grid and of each fleet's session
+  // list. Server-side on purpose: it used to live in localStorage /
+  // SharedPreferences, so every new browser or phone started from scratch.
+  // Defaults to sitting next to directories.json when the caller doesn't say.
+  const uiLayout = createUiLayoutRuntime({
+    file: repository.uiLayoutFile || path.join(path.dirname(repository.file), 'ui-layout.json'),
+    listDirIds: () => repo.map().keys(),
+    listSessionIds: dirId => (sessions && typeof sessions.listByDir === 'function'
+      ? sessions.listByDir(dirId) : []).map(s => s.id),
+  });
+  uiLayout.mountRoutes(router);
+  return { repo, service, router, uiLayout };
 }
 
 module.exports = { createDirectoryModule };
