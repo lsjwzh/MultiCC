@@ -33,6 +33,31 @@ class QuotaService {
   Future<Map<String, dynamic>?> fetchKimiQuota(String? host) =>
       _get('/api/kimi/quota${_hostQuery(host)}');
 
+  /// Qoder CN credit usage, scraped from qoder.com.cn via the backend's CDP /
+  /// cached-cookie path (`/api/qoder/quota`). `status` may be needs_login /
+  /// chrome_unavailable / unavailable / ok; the body carries `quota`
+  /// (total/plan/resource_package summaries + `nextResetAt`) and `plan`
+  /// (tier, end_date) — the same shape the web qoder bar renders.
+  Future<Map<String, dynamic>?> fetchQoderQuota() => _get('/api/qoder/quota');
+
+  /// Open a visible login window for qoder.com.cn on the server's managed
+  /// Chrome profile. Used when the credits scrape reports no session
+  /// (needs_login / chrome_unavailable). Returns false on any transport/HTTP
+  /// failure.
+  Future<bool> openQoderLogin() async {
+    try {
+      final res = await http
+          .post(
+            Uri.parse(_url('/api/qoder/quota/login')),
+            headers: _headers,
+          )
+          .timeout(const Duration(seconds: 20));
+      return res.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Claude subscription usage windows (5h / weekly / monthly) scraped from
   /// claude.ai/settings/usage via CDP — the same route the web claude bar
   /// reads. `status` in the body may be needs_login / chrome_unavailable /

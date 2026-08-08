@@ -897,7 +897,15 @@
     const remaining = total.remaining_value ?? 0;
     const pct = total.usage_percentage ?? (limit > 0 ? Math.round(used / limit * 100) : 0);
 
-    let text = unifiedWindowSeg('1m', pct, null) || '—';
+    // Credits reset on the billing cycle. The usage API exposes the next reset
+    // as top-level `nextResetAt` (epoch ms); the plan API's end_date /
+    // next_refresh_date are the fallback when the usage response omits it.
+    const resetAt = normalizeResetTime(q.nextResetAt)
+      ?? normalizeResetTime(value.plan && value.plan.end_date)
+      ?? normalizeResetTime(value.plan && value.plan.next_refresh_date);
+    const resetMs = resetAt === null ? null : Math.max(0, resetAt - Date.now());
+
+    let text = unifiedWindowSeg('1m', pct, resetMs) || '—';
     const syncRel = relativeAgo(value.fetchedAt);
     if (syncRel) text += ` · ${syncRel}`;
     text += ' ⟳';
@@ -908,6 +916,13 @@
     let title = `Qoder CN 用量（CDP 抓 qoder.com.cn）\n套餐: ${planTier}\n总计: ${used}/${limit} · 剩余 ${remaining}`;
     if (planQ.limit_value) title += `\n套餐配额: ${planQ.used_value}/${planQ.limit_value}`;
     if (pkg.limit_value) title += `\n加油包: ${pkg.used_value}/${pkg.limit_value} (剩 ${pkg.remaining_value})`;
+    // 到期/重置维度与其它 bar 一致：有真实时间戳显示倒计时与绝对时间，
+    // 缺失时在 tooltip 如实标注（文本保持统一格式 <window> <remaining%>）。
+    if (resetAt !== null) {
+      title += `\n重置: ${new Date(resetAt).toLocaleString()}（${humanizeCountdown(resetMs)} 后）`;
+    } else {
+      title += '\n到期时间未知（API 未返回 nextResetAt/套餐到期日）';
+    }
     if (syncRel) title += `\n同步于 ${syncRel}`;
     title += '\n点击 bar 刷新';
     return Object.freeze({ text, color, title });

@@ -231,15 +231,19 @@ class ChatProvider extends ChangeNotifier {
   Map<String, dynamic>? _zhipuQuota;
   Map<String, dynamic>? _kimiQuota;
   Map<String, dynamic>? _kimiLastOk; // cached fallback for error/no-data states
+  Map<String, dynamic>? _qoderQuota;
   bool _arkLoading = false;
   bool _zhipuLoading = false;
   bool _kimiLoading = false;
+  bool _qoderLoading = false;
   bool _arkInFlight = false;
   bool _zhipuInFlight = false;
   bool _kimiInFlight = false;
+  bool _qoderInFlight = false;
   int _arkErrorAt = 0;
   int _zhipuErrorAt = 0;
   int _kimiErrorAt = 0;
+  int _qoderErrorAt = 0;
   static const int _vendorQuotaBackoffMs = 60000;
 
   // Claude subscription usage (GET /api/claude/quota — CDP scrape of
@@ -444,6 +448,7 @@ class ChatProvider extends ChangeNotifier {
           _cli = parseCli(msg['cli']?.toString());
         }
         refreshClaudeUsage();
+        refreshQoderQuota();
         _loadProviderBaseUrl();
 
         final model = msg['model']?.toString();
@@ -471,6 +476,7 @@ class ChatProvider extends ChangeNotifier {
         final from = parseCli(msg['fromCli']?.toString());
         _cli = next;
         refreshClaudeUsage();
+        refreshQoderQuota();
         _setProviderBaseUrl(msg['providerBaseUrl']?.toString() ?? '');
         final model = msg['effectiveModel']?.toString();
         _statusText = model != null && model.isNotEmpty
@@ -765,6 +771,7 @@ class ChatProvider extends ChangeNotifier {
   void applyCliConfig(SessionCliConfig config) {
     _cli = config.cli;
     refreshClaudeUsage();
+    refreshQoderQuota();
     final model = config.effectiveModel ?? config.model;
     _statusText = model != null && model.isNotEmpty
         ? 'Connected · $model'
@@ -824,6 +831,16 @@ class ChatProvider extends ChangeNotifier {
       );
     }
     return views;
+  }
+
+  /// Qoder CN credits bar, gated on the CLI (its provider baseUrl is
+  /// qoder.com.cn and the session may route via a custom endpoint) — mirrors
+  /// the web `currentCli === 'qoder'` guard. Rendered through its own tappable
+  /// slot in [ChatRuntimeNoticePanel] (login window / force refresh), the same
+  /// way the Claude bar is.
+  VendorQuotaView? get qoderQuotaView {
+    if (_cli != SessionCli.qoder) return null;
+    return formatQoderQuota(_qoderQuota, loading: _qoderLoading);
   }
 
   int _nowMs() => DateTime.now().millisecondsSinceEpoch;
@@ -944,6 +961,44 @@ class ChatProvider extends ChangeNotifier {
       return;
     }
     await refreshClaudeUsage(force: true);
+  }
+
+  /// Fetch the Qoder CN credits bar. No-op off the qoder CLI; skips while one
+  /// is in flight or after a recent error (vendor backoff) unless [force].
+  /// Callers: connect / cli-switch hooks and the bar's tap handler.
+  Future<void> refreshQoderQuota({bool force = false}) async {
+    if (_cli != SessionCli.qoder) return;
+    if (_qoderInFlight) return;
+    if (!force &&
+        _qoderErrorAt != 0 &&
+        _nowMs() - _qoderErrorAt < _vendorQuotaBackoffMs) {
+      return;
+    }
+    _qoderInFlight = true;
+    _qoderLoading = true;
+    notifyListeners();
+    final data = await _quota.fetchQoderQuota();
+    _qoderInFlight = false;
+    _qoderLoading = false;
+    if (data == null) {
+      _qoderErrorAt = _nowMs();
+    } else {
+      _qoderErrorAt = 0;
+      _qoderQuota = data;
+    }
+    notifyListeners();
+  }
+
+  /// Tap on the Qoder bar: open the server-side visible login window when the
+  /// scrape reports no session (needs_login / chrome_unavailable), otherwise
+  /// force a fresh fetch. Mirrors the web `quotaBarClick`.
+  Future<void> handleQoderQuotaTap() async {
+    final status = _qoderQuota?['status']?.toString();
+    if (status == 'needs_login' || status == 'chrome_unavailable') {
+      await _quota.openQoderLogin();
+      return;
+    }
+    await refreshQoderQuota(force: true);
   }
 
   /// Remove a message from the local transcript by its server-side history id.

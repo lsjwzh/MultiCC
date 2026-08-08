@@ -526,7 +526,9 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
   final UsageBalance? balance;
   final List<VendorQuotaView> vendorQuotas;
   final VendorQuotaView? claudeUsage;
+  final VendorQuotaView? qoderUsage;
   final VoidCallback? onClaudeQuotaTap;
+  final VoidCallback? onQoderQuotaTap;
   final VoidCallback? onRetry;
 
   const ChatRuntimeNoticePanel({
@@ -536,7 +538,9 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
     this.balance,
     this.vendorQuotas = const [],
     this.claudeUsage,
+    this.qoderUsage,
     this.onClaudeQuotaTap,
+    this.onQoderQuotaTap,
     this.onRetry,
   });
 
@@ -546,7 +550,8 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
         limit == null &&
         balance == null &&
         vendorQuotas.isEmpty &&
-        claudeUsage == null) {
+        claudeUsage == null &&
+        qoderUsage == null) {
       return const SizedBox.shrink();
     }
     return Container(
@@ -565,6 +570,12 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
           if (limit != null) _limitView(context, limit!),
           if (claudeUsage != null)
             _claudeUsageView(claudeUsage!, onTap: onClaudeQuotaTap),
+          if (qoderUsage != null)
+            _quotaBarView(
+              qoderUsage!,
+              onTap: onQoderQuotaTap,
+              key: const Key('qoder-quota-bar'),
+            ),
           if (balance != null) _balanceView(balance!),
           for (final v in vendorQuotas) _vendorQuotaView(v),
           if (apiError != null) _errorView(apiError!),
@@ -595,7 +606,17 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
   /// Claude subscription limit bar — merged 5h + weekly/monthly windows (or an
   /// idle / actionable placeholder). Tapping refreshes the usage scrape, or
   /// opens the login window when the scrape reports no session.
-  Widget _claudeUsageView(VendorQuotaView v, {VoidCallback? onTap}) {
+  Widget _claudeUsageView(VendorQuotaView v, {VoidCallback? onTap}) =>
+      _quotaBarView(v, onTap: onTap, key: const Key('claude-quota-bar'));
+
+  /// A tappable quota bar: tapping refreshes, or opens the login window when
+  /// the underlying scrape reports no session. Shared by the Claude and Qoder
+  /// subscription bars (web: `quotaBarClick`).
+  Widget _quotaBarView(
+    VendorQuotaView v, {
+    VoidCallback? onTap,
+    Key? key,
+  }) {
     final chip = Semantics(
       label: v.tooltip.isNotEmpty ? '${v.text}\n${v.tooltip}' : v.text,
       button: true,
@@ -606,7 +627,7 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
     );
     if (onTap == null) return chip;
     return InkWell(
-      key: const Key('claude-quota-bar'),
+      key: key,
       onTap: onTap,
       borderRadius: BorderRadius.circular(4),
       child: chip,
