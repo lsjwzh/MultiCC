@@ -27,20 +27,16 @@ window.addEventListener('resize', () => {
   }
 });
 
-// Directory ordering with localStorage persistence
-let _dirOrder = JSON.parse(localStorage.getItem('multicc_dir_order') || '[]');
-
-function saveDirOrder() {
-  localStorage.setItem('multicc_dir_order', JSON.stringify(_dirOrder));
-}
-
+// Directory ordering. The arrangement itself lives on the server (see
+// public/ui-layout-store.js) so it follows the user to a second browser or a
+// phone instead of being re-done per device; these are thin pass-throughs kept
+// because half the file already calls them.
 function getDirOrder() {
-  return [..._dirOrder];
+  return window.MultiCCUiLayout.dirOrder();
 }
 
 function reorderDirectories(newOrder) {
-  _dirOrder = newOrder;
-  saveDirOrder();
+  return window.MultiCCUiLayout.saveDirOrder(newOrder);
 }
 
 /* ── Helpers ── */
@@ -433,9 +429,12 @@ async function loadSessions() { return loadDashboard(); }  // back-compat alias
 
 async function loadDashboard() {
   try {
+    // The saved arrangement has to be in hand before the first paint, or the
+    // grid renders in default order and then visibly jumps.
     const [dirRes, sessRes] = await Promise.all([
       fetch('/api/directories'),
       fetch('/api/sessions'),
+      window.MultiCCUiLayout.ready(),
     ]);
     const directories = await dirRes.json();
     const sessions = await sessRes.json();
@@ -608,20 +607,10 @@ function renderDashboard(directories, sessions) {
 
   const orphans = regularSessions.filter(s => !s.dirId);
 
-  // Sort directories by saved order
-  const dirOrder = getDirOrder();
-  const sortedDirs = [...directories].sort((a, b) => {
-    const idxA = dirOrder.indexOf(a.id);
-    const idxB = dirOrder.indexOf(b.id);
-    // If both are in the order, sort by order
-    if (idxA !== -1 && idxB !== -1) return idxA - idxB;
-    // If only a is in the order, a comes first
-    if (idxA !== -1) return -1;
-    // If only b is in the order, b comes first
-    if (idxB !== -1) return 1;
-    // Neither is in the order, keep original order
-    return 0;
-  });
+  // Dragged directories first, in the order the user chose; anything never
+  // dragged (a directory registered after the last drag) keeps the server's
+  // order behind them.
+  const sortedDirs = window.MultiCCUiLayout.applyOrder(directories, getDirOrder(), d => d.id);
 
   const dirHtml = sortedDirs.map(d => renderDirectoryBlock(d, byDir.get(d.id) || [])).join('');
   const orphanHtml = orphans.length ? renderOrphans(orphans) : '';
@@ -649,10 +638,10 @@ function renderDashboard(directories, sessions) {
   // If the detail modal is open, keep its content in sync with reloads.
   if (_detailModalOpen()) { renderDirectoryDetailBody(_detailDirId); updateDirDetailPush(_detailDirId); }
 
-  // Initialize drag-and-drop for directory cards (only in overview mode)
-  if (!_focusedSessionId) {
-    initDirCardDragDrop();
-  }
+  // Overview mode drags whole directories; focus mode shows the inline session
+  // lists, so that is where session cards become draggable.
+  if (!_focusedSessionId) initDirCardDragDrop();
+  else initSessionCardDragDrop(listEl);
 }
 
 // ── Drag and Drop for Directory Cards ─────────────────────────────────────────
@@ -701,50 +690,72 @@ function initDirCardDragDrop() {
       e.preventDefault();
       card.classList.remove('drag-over');
       const targetId = card.dataset.dirId;
-      if (_draggedDirId && targetId && _draggedDirId !== targetId) {
-        // Get current order, initializing with all directory IDs if empty
-        let currentOrder = getDirOrder();
+      if (!_draggedDirId || !targetId || _draggedDirId === targetId) return;
+      // Reorder against what is actually on screen, not against the stored list:
+      // the stored list is empty before the first drag and can lag behind a
+      // directory registered since. Everything visible is written back, so only
+      // directories added *after* this drag are left unranked.
+      const visible = [...document.querySelectorAll('#directory-list .dir-card')].map(c => c.dataset.dirId);
+      reorderDirectories(window.MultiCCUiLayout.reorderAround(visible, _draggedDirId, targetId));
+      renderSessions(_cachedSessions);
+    });
+  });
+}
 
-        // If order is empty, initialize with all current directory IDs
-        if (currentOrder.length === 0) {
-          document.querySelectorAll('#directory-list .dir-card').forEach(c => {
-            currentOrder.push(c.dataset.dirId);
-          });
-        }
+// ── Drag and drop for session cards inside one fleet ──────────────────────────
+// Same contract as the directory grid, scoped to a single fleet: a card can only
+// be dropped on a card in the same `.sess-card-grid`, and what gets saved is the
+// whole visible list of that grid.
+let _draggedSessionId = null;
 
-        const draggedIdx = currentOrder.indexOf(_draggedDirId);
-        const targetIdx = currentOrder.indexOf(targetId);
+function initSessionCardDragDrop(root) {
+  const scope = root || document;
+  scope.querySelectorAll('.sess-card-grid[data-dir-id]').forEach(grid => {
+    const dirId = grid.dataset.dirId;
+    grid.querySelectorAll('.lean[data-id]').forEach(card => {
+      card.setAttribute('draggable', 'true');
 
-        let newOrder = [...currentOrder];
+      card.addEventListener('dragstart', (e) => {
+        _draggedSessionId = card.dataset.id;
+        card.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', card.dataset.id);
+        e.stopPropagation();
+      });
 
-        if (draggedIdx === -1 && targetIdx === -1) {
-          // Both new - add target, then insert dragged before it
-          newOrder.push(targetId);
-          newOrder.push(_draggedDirId);
-          // Swap to put dragged before target
-          const tIdx = newOrder.length - 1;
-          const dIdx = newOrder.length - 2;
-          newOrder[dIdx] = targetId;
-          newOrder[tIdx] = _draggedDirId;
-        } else if (draggedIdx === -1) {
-          // Dragged is new - insert before target
-          newOrder.splice(targetIdx, 0, _draggedDirId);
-        } else if (targetIdx === -1) {
-          // Target is new - add at end, move dragged there
-          newOrder.splice(draggedIdx, 1);
-          newOrder.push(_draggedDirId);
-        } else {
-          // Both exist - move dragged to target position
-          newOrder.splice(draggedIdx, 1);
-          // Recalculate target index after removal
-          const newTargetIdx = newOrder.indexOf(targetId);
-          newOrder.splice(newTargetIdx, 0, _draggedDirId);
-        }
+      card.addEventListener('dragend', () => {
+        card.classList.remove('dragging');
+        _draggedSessionId = null;
+        scope.querySelectorAll('.lean.drag-over').forEach(el => el.classList.remove('drag-over'));
+      });
 
-        reorderDirectories(newOrder);
-        // Re-render the directory list
+      card.addEventListener('dragover', (e) => {
+        if (!_draggedSessionId || _draggedSessionId === card.dataset.id) return;
+        e.preventDefault();
+        e.stopPropagation();
+        e.dataTransfer.dropEffect = 'move';
+        card.classList.add('drag-over');
+      });
+
+      card.addEventListener('dragleave', () => card.classList.remove('drag-over'));
+
+      card.addEventListener('drop', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        card.classList.remove('drag-over');
+        const targetId = card.dataset.id;
+        if (!_draggedSessionId || !targetId || _draggedSessionId === targetId) return;
+        const visible = [...grid.querySelectorAll('.lean[data-id]')].map(c => c.dataset.id);
+        if (!visible.includes(_draggedSessionId)) return;  // dragged in from another fleet
+        // The fleet keeps one flat list for all its groups, so carry over the
+        // ids this grid does not contain — otherwise arranging the chats would
+        // silently discard the arrangement of the terminals.
+        window.MultiCCUiLayout.saveSessionOrder(dirId, window.MultiCCUiLayout.mergeGroupOrder(
+          window.MultiCCUiLayout.sessionOrder(dirId),
+          window.MultiCCUiLayout.reorderAround(visible, _draggedSessionId, targetId)));
         renderSessions(_cachedSessions);
-      }
+        if (_detailModalOpen()) renderDirectoryDetailBody(_detailDirId);
+      });
     });
   });
 }
@@ -1004,23 +1015,28 @@ function showCronTasks(ev) {
 // grouping axis — each card carries its own CLI chip (see renderSessionRow),
 // so mixed-CLI fleets stay readable inside two flat groups. Reused by the
 // focus-mode inline list and the directory-detail modal.
-function renderDirSessionGroups(dirSessions) {
+function renderDirSessionGroups(dirSessions, dirId) {
   const groups = { chat: [], terminal: [] };
   for (const s of dirSessions) {
     const kind = (s.kind || 'terminal') === 'chat' ? 'chat' : 'terminal';
     groups[kind].push(s);
   }
+  // One manual order per fleet, shared by both groups — a session is only ever
+  // in one of them, and the two clients (web + app) read the same list.
+  const manual = dirId ? window.MultiCCUiLayout.sessionOrder(dirId) : [];
   const renderGroup = (kind, label) => {
     const ss = groups[kind];
     if (!ss || !ss.length) return '';
-    // Commander stays pinned to the top of its group (D1 keeps it ≤1 per fleet);
-    // the rest are in creation order. Shared helpers keep every list consistent.
-    const ordered = sortSessionsPinningCommander(sortSessionsByCreation(ss));
+    // Cards the user dragged come first in the order they chose; the rest stay
+    // in creation order. Commander is then pinned to the top of its group (D1
+    // keeps it ≤1 per fleet) as a separate pass, so no drag can bury it.
+    const ordered = sortSessionsPinningCommander(
+      window.MultiCCUiLayout.applyOrder(sortSessionsByCreation(ss), manual, s => s.id));
     const rows = ordered.map(s => renderSessionRow(s)).join('');
     return `
       <div class="sess-group ${kind}">
         <div class="sess-group-label">${label} (${ss.length})</div>
-        <div class="sess-card-grid">${rows}</div>
+        <div class="sess-card-grid"${dirId ? ` data-dir-id="${escapeHtml(dirId)}"` : ''}>${rows}</div>
       </div>`;
   };
   return [
@@ -1242,7 +1258,7 @@ function renderDirectoryBlock(dir, dirSessions) {
       </div>
       <div class="dir-body">
         ${renderEventTimeline(id)}
-        ${renderDirSessionGroups(dirSessions)}
+        ${renderDirSessionGroups(dirSessions, id)}
       </div>
     </div>`;
   }
@@ -1330,8 +1346,9 @@ function renderDirectoryDetailBody(dirId) {
   const boardTabActive = hasBoard && _dirDetailTab === 'taskboard';
   const content = boardTabActive
     ? renderTaskBoardSection(dirId, { tabbed: true })
-    : renderEventTimeline(dirId) + renderDirSessionGroups(dirSessionsOf(dirId));
+    : renderEventTimeline(dirId) + renderDirSessionGroups(dirSessionsOf(dirId), dirId);
   body.innerHTML = tabs + content;
+  if (!boardTabActive) initSessionCardDragDrop(body);
   // The board composer sits outside this re-rendered body (static container in
   // the modal) so typed text/recording survive WS-driven redraws.
   if (typeof syncTaskBoardDirComposer === 'function') syncTaskBoardDirComposer(dirId, boardTabActive);
