@@ -88,6 +88,10 @@ function createPaths({ dataDir } = {}) {
     providerDefaultsFile: path.join(root, 'provider-defaults.json'),
     scheduledTasksFile: path.join(root, 'scheduled_tasks.json'),
     taskBoardFile: path.join(root, 'task_board.json'),
+    // The user's drag-and-drop arrangement of the dir grid and of each fleet's
+    // session list. Was per-device (localStorage / SharedPreferences) until it
+    // moved here; see src/ui-layout.js.
+    uiLayoutFile: path.join(root, 'ui-layout.json'),
     orchestrationDbFile: path.join(root, 'orchestration.sqlite'),
     // Kept as the one-time migration source and explicit rollback export
     // target. Once orchestration.sqlite exists it is the sole live authority.

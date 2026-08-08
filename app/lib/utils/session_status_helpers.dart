@@ -7,6 +7,7 @@ import '../i18n.dart';
 import '../models/message.dart';
 import '../services/workspace_service.dart';
 import '../theme.dart';
+import 'manual_order.dart';
 import 'status_presentation.dart';
 
 /// Brand color for a session's CLI.
@@ -192,13 +193,26 @@ List<Session> pinCommanderFirst(List<Session> sessions) {
   return [...commanders, ...rest];
 }
 
-/// fleet 内部会话列表的最终顺序：先按创建时间升序，再把 commander 钉到最前。
+/// fleet 内部会话列表的最终顺序：先按创建时间升序，叠上用户拖出来的手动顺序
+/// [manualOrder]，最后把 commander 钉到最前。
+///
+/// 三步的次序不是随意的，且与 web 的 renderDirSessionGroups 一字对齐：创建时间是
+/// **默认**顺序（用户没拖过的会话按它落位），手动顺序是叠在上面的覆盖层，
+/// commander 钉首则是单独一趟——把它塞进比较器会让「commander 也能被拖」变成一句
+/// 谎话，也会因为 Dart 的 [List.sort] 非稳定而在并列时抖动。
 ///
 /// provider（[SessionManager.sessionsByKind]）与 widget（_SessionGroup）都走它，
 /// 而不是各排各的——两处各写一遍比较器，就意味着改一处漏一处时无人报错。幂等，
 /// 重复调用不会改变结果。
-List<Session> orderFleetSessions(Iterable<Session> sessions) =>
-    pinCommanderFirst(sessions.toList()..sort(compareSessionsByCreation));
+List<Session> orderFleetSessions(
+  Iterable<Session> sessions, {
+  List<String> manualOrder = const [],
+}) {
+  final byCreation = sessions.toList()..sort(compareSessionsByCreation);
+  return pinCommanderFirst(
+    applyManualOrder(byCreation, manualOrder, (s) => s.id),
+  );
+}
 
 /// 把某个目录下的会话按 kind 分成 `{chat: [...], terminal: [...]}` 两组，各组
 /// 内部走 [orderFleetSessions]。对齐 web 的 renderDirSessionGroups 分组方式：
@@ -206,10 +220,16 @@ List<Session> orderFleetSessions(Iterable<Session> sessions) =>
 ///
 /// 抽成纯函数是为了能直接测：[SessionManager] 要连服务和轮询定时器才建得起来，
 /// 测不到就等于「排序 helper 有测试、真正决定渲染顺序的调用点没有」。
+///
+/// [manualOrder] 是该目录下用户拖出来的顺序，**一份平铺的 id 列表**覆盖两个分组
+/// ——一个会话只可能落在其中一组里，按组分开存反而要求客户端知道每个 id 属于哪
+/// 一组才能写回，而组归属会随 kind 变化。web 也是这么存的（sessionOrder[dirId]），
+/// 两侧共用同一份服务端数据，就必须共用这个形状。
 Map<String, List<Session>> groupFleetSessionsByKind(
   Iterable<Session> sessions,
-  String dirId,
-) {
+  String dirId, {
+  List<String> manualOrder = const [],
+}) {
   final chats = <Session>[];
   final terminals = <Session>[];
   for (final s in sessions) {
@@ -217,8 +237,8 @@ Map<String, List<Session>> groupFleetSessionsByKind(
     (s.isChat ? chats : terminals).add(s);
   }
   return {
-    'chat': orderFleetSessions(chats),
-    'terminal': orderFleetSessions(terminals),
+    'chat': orderFleetSessions(chats, manualOrder: manualOrder),
+    'terminal': orderFleetSessions(terminals, manualOrder: manualOrder),
   };
 }
 

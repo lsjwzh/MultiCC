@@ -13,6 +13,7 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:multicc_app/models/message.dart';
+import 'package:multicc_app/utils/manual_order.dart';
 import 'package:multicc_app/utils/session_status_helpers.dart';
 
 Session _s(
@@ -118,6 +119,86 @@ void main() {
       final groups = groupFleetSessionsByKind(fleet, 'nope');
       expect(groups['chat'], isEmpty);
       expect(groups['terminal'], isEmpty);
+    });
+
+    test('a dragged order overrides creation order, per group', () {
+      // One flat list covers both groups — that is how the server stores it
+      // (sessionOrder[dirId]), and a session only ever lives in one group.
+      final groups = groupFleetSessionsByKind(
+        fleet,
+        'd1',
+        manualOrder: ['chat-new', 'chat-old', 'term-new', 'term-old'],
+      );
+      // chat-new is the newest chat and now leads its group — but under the
+      // commander, which the drag does not get to displace.
+      expect(idsOf(groups, 'chat'), ['chat-cmdr', 'chat-new', 'chat-old']);
+      expect(idsOf(groups, 'terminal'), ['term-new', 'term-old']);
+    });
+
+    test('a session created after the last drag lands at the end', () {
+      final withNewcomer = [
+        ...fleet,
+        _s('chat-newcomer', '2026-03-01T00:00:00Z', dirId: 'd1'),
+      ];
+      // The newcomer is the OLDEST chat in the fleet, so creation order alone
+      // would put it first. It was not on screen when the user dragged, so it
+      // must not push into the arrangement they made.
+      final groups = groupFleetSessionsByKind(
+        withNewcomer,
+        'd1',
+        manualOrder: ['chat-new', 'chat-old', 'chat-cmdr'],
+      );
+      expect(idsOf(groups, 'chat'),
+          ['chat-cmdr', 'chat-new', 'chat-old', 'chat-newcomer']);
+    });
+
+    test('an order naming sessions that are gone still ranks the rest', () {
+      final groups = groupFleetSessionsByKind(
+        fleet,
+        'd1',
+        manualOrder: ['deleted-one', 'chat-new', 'other-fleet'],
+      );
+      expect(idsOf(groups, 'chat'), ['chat-cmdr', 'chat-new', 'chat-old']);
+    });
+  });
+
+  // The pure helpers the drag handlers call. They have a byte-for-byte twin in
+  // public/ui-layout-store.js: both clients read the same server document, so a
+  // divergence here means "arranged on the phone, looks different on the web".
+  group('manual order helpers', () {
+    test('applyManualOrder keeps unranked items in the caller order', () {
+      expect(
+        applyManualOrder(['a', 'b', 'c', 'd'], ['c', 'a'], (s) => s),
+        ['c', 'a', 'b', 'd'],
+      );
+      // No arrangement yet: the caller's order stands, untouched.
+      expect(applyManualOrder(['a', 'b'], const [], (s) => s), ['a', 'b']);
+      // Idempotent — the widget re-applies what the provider already applied.
+      final once = applyManualOrder(['a', 'b', 'c'], ['b'], (s) => s);
+      expect(applyManualOrder(once, ['b'], (s) => s), once);
+    });
+
+    test('reorderAround inserts after the target when dragging down', () {
+      // The adjacent-downward drag: inserting before the target would make this
+      // a no-op, which reads as "the drag did not take".
+      expect(reorderAround(['a', 'b', 'c'], 'a', 'b'), ['b', 'a', 'c']);
+      expect(reorderAround(['a', 'b', 'c'], 'c', 'a'), ['c', 'a', 'b']);
+      // Nothing to do, and nothing lost.
+      expect(reorderAround(['a', 'b'], 'a', 'a'), ['a', 'b']);
+      expect(reorderAround(['a', 'b'], 'ghost', 'a'), ['a', 'b']);
+    });
+
+    test('mergeGroupOrder does not discard the other group arrangement', () {
+      // The user arranges the terminals, then the chats. Writing only the chat
+      // group back would silently drop the terminal arrangement — one fleet,
+      // one flat list.
+      expect(
+        mergeGroupOrder(['t2', 't1'], ['c2', 'c1']),
+        ['c2', 'c1', 't2', 't1'],
+      );
+      // Re-dragging the same group replaces its own entries rather than
+      // duplicating them.
+      expect(mergeGroupOrder(['c1', 'c2'], ['c2', 'c1']), ['c2', 'c1']);
     });
   });
 }

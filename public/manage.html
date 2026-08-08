@@ -565,6 +565,10 @@
     .lean{display:flex;align-items:center;gap:9px;background:var(--panel-2);border:1px solid var(--line);border-radius:9px;padding:8px 10px;cursor:pointer;transition:border-color .12s,background .12s}
     .lean:hover{border-color:var(--accent-line);background:rgba(58,214,197,.05)}
     .lean.focused{background:var(--accent-dim);border-color:var(--accent-line)}
+    /* Session cards reorder by drag, same affordance as the directory grid. */
+    .lean[draggable="true"]{cursor:grab}
+    .lean.dragging{opacity:.5;cursor:grabbing}
+    .lean.drag-over{border-color:var(--accent);box-shadow:0 0 10px rgba(58,214,197,.3)}
     /* Session status: an icon badge, not a coloured dot. The colour-only circle
      * could not tell error from idle for colour-blind users and had no glyph at
      * all in the error state; tone colours now come from status-badge.css. */
@@ -2088,6 +2092,7 @@
   <script src="manage-host-settings.js"></script>
   <script src="manage-session-lifecycle.js"></script>
   <script src="status-presentation.js"></script>
+  <script src="ui-layout-store.js"></script>
   <script src="task-board-ui.js"></script>
   <script src="manage-taskboard.js"></script>
   <script src="manage-dashboard.js"></script>

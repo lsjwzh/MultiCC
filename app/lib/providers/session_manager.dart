@@ -7,6 +7,7 @@ import '../services/background_service.dart';
 import '../services/notification_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
+import '../services/ui_layout_service.dart';
 import '../services/workspace_service.dart';
 import '../utils/session_status_helpers.dart';
 import 'chat_provider.dart';
@@ -15,6 +16,12 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
   final SettingsService settings;
   late final SessionService _sessionService;
   SessionService get service => _sessionService;
+
+  /// 用户拖出来的排布（首页目录顺序 + 每个 fleet 的会话顺序），存在服务端。
+  /// 挂在 SessionManager 上，是因为决定顺序的两处——首页目录列表与
+  /// [sessionsByKind]——都已经在 watch 它；再引一个 provider 只会多一个需要保持
+  /// 同步的生命周期。
+  late final UiLayoutService uiLayout = UiLayoutService(settings: settings);
 
   /// Active ChatProviders keyed by session id (chat sessions only).
   final Map<String, ChatProvider> _providers = {};
@@ -291,9 +298,12 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> loadDashboard() async {
     try {
+      // 排布与目录/会话一起取：晚一步到就意味着列表先按创建顺序画一遍、再跳到
+      // 用户排好的顺序。它自己吞掉失败（拿不到 = 默认顺序），不会拖垮这次加载。
       final results = await Future.wait([
         _sessionService.fetchDirectories(),
         _sessionService.fetchSessions(),
+        uiLayout.ensureLoaded(),
       ]);
       _directories = results[0] as List<Directory>;
       _sessions = results[1] as List<Session>;
@@ -360,8 +370,24 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
   /// sortSessionsByCreation: a fleet list that reorders itself whenever a
   /// session streams is unreadable, so activity deliberately does not move
   /// cards.
+  /// 用户在这个 fleet 里拖过的顺序会盖在创建顺序之上；没拖过的会话（含拖拽之后
+  /// 新建的）仍按创建时间落位。
   Map<String, List<Session>> sessionsByKind(String dirId) =>
-      groupFleetSessionsByKind(_sessions, dirId);
+      groupFleetSessionsByKind(
+        _sessions,
+        dirId,
+        manualOrder: uiLayout.sessionOrderOf(dirId),
+      );
+
+  /// 把某个 fleet 里的会话顺序写回服务端并刷新列表。[orderedIds] 是拖拽后该组
+  /// 屏幕上的完整顺序（见 utils/manual_order.dart 的 reorderAround）。
+  Future<void> saveFleetSessionOrder(String dirId, List<String> orderedIds) async {
+    final write = uiLayout.saveSessionOrder(dirId, orderedIds);
+    // 乐观写已经改过内存里的排布，先重绘再等请求落地，卡片才跟手。
+    notifyListeners();
+    await write;
+    notifyListeners();
+  }
 
   /// The special `__aux__` session (voice refine / intent classifier), if loaded.
   Session? get auxSession {
