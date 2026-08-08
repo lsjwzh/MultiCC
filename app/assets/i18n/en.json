@@ -1,6 +1,7 @@
 {
   "newDirectory": "New Directory",
   "globalVoiceCall": "Global realtime voice",
+  "globalVoiceBetaHint": "Speak your request and MultiCC will route it to the right session",
   "refresh": "Refresh",
   "settings": "Settings",
   "retry": "Retry",

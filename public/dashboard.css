@@ -69,6 +69,22 @@ a:hover { text-decoration: underline; }
   display: inline-block;
 }
 .dash-header .hdr-btn:hover { background: #30363d; text-decoration: none; }
+.dash-header .voice-global-btn { display: inline-flex; align-items: center; gap: 6px; }
+.beta-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 999px;
+  color: #d8e8ff;
+  background: rgba(88,166,255,.14);
+  border: 1px solid rgba(88,166,255,.42);
+  font-family: var(--mono);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: .5px;
+  line-height: 1;
+}
 .dash-header .refresh-indicator {
   font-size: 12px;
   color: var(--muted);
@@ -352,6 +368,7 @@ table.sessions-table {
 @media (max-width: 390px) {
   .dash-header .title { display: none; }
   .dash-header .refresh-indicator { font-size: 11px; }
+  .dash-header .voice-label { display: none; }
   .filter-group { width: 100%; }
   .filter-group select { flex: 1; }
   .filter-group button { flex: 1; padding-inline: 6px; }

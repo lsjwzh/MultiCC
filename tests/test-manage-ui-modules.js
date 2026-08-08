@@ -156,6 +156,7 @@ test('manage facade stays below the migration ceiling and no longer owns extract
   assert.doesNotMatch(qwen, /\.innerHTML\s*=|insertAdjacentHTML|document\.write/);
   assert.match(qwen, /textContent\s*=/);
   assert.match(qwen, /MultiCCManageQwenAudio\s*=\s*Object\.freeze/);
+  assert.match(qwen, /Object\.freeze\(\{ initialize, loadPanel, openGlobalVoice \}\)/);
 });
 
 test('bridge controller keeps relative credential-free URLs and safe DOM log rendering', async () => {

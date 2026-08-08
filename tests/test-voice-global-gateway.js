@@ -769,13 +769,20 @@ test('every voice entry point goes through the one launch endpoint', () => {
 
   const dashboardHtml = readRepoFile('public/dashboard.html');
   assert.match(dashboardHtml, /voice-global-btn/);
+  assert.match(dashboardHtml, /BETA/, 'the secondary status dashboard labels realtime voice as beta');
   assert.match(dashboardHtml, /voice-launch-client\.js/);
   assert.match(readRepoFile('public/dashboard.js'), /MultiCCVoiceLaunch/);
 
   const manage = readRepoFile('public/manage-qwen-audio.js');
   assert.match(manage, /MultiCCVoiceLaunch/);
   assert.match(manage, /\/api\/v1\/voice-gateway/);
+  assert.match(manage, /Object\.freeze\(\{ initialize, loadPanel, openGlobalVoice \}\)/);
   assert.equal(/voice-gateway\/fleets|renderFleets/.test(manage), false, 'the Fleet list is gone');
+  const manageHtml = readRepoFile('public/manage.html');
+  assert.match(manageHtml, /id="overview-voice-beta"/);
+  assert.match(manageHtml, /data-i18n="globalVoiceBetaHint"/);
+  assert.match(manageHtml, /MultiCCManageQwenAudio\.openGlobalVoice/);
+  assert.match(manageHtml, />BETA</, 'the primary home entry clearly marks the feature as beta');
 
   const dart = readRepoFile('app/lib/services/voice_launch_service.dart');
   assert.match(dart, /\/api\/v1\/voice-gateway\/launch/);
@@ -790,8 +797,13 @@ test('every voice entry point goes through the one launch endpoint', () => {
 
   const mainShell = readRepoFile('app/lib/screens/main_shell.dart');
   assert.match(mainShell, /VoiceLaunchService\(settings: widget\.settings\)\.launch\(\)/);
+  assert.match(mainShell, /class _VoiceBetaEntry/);
+  assert.match(mainShell, /globalVoiceBetaHint/);
+  assert.match(mainShell, /'BETA'/);
   assert.match(readRepoFile('app/assets/i18n/zh.json'), /"globalVoiceCall"/);
   assert.match(readRepoFile('app/assets/i18n/en.json'), /"globalVoiceCall"/);
+  assert.match(readRepoFile('app/assets/i18n/zh.json'), /"globalVoiceBetaHint"/);
+  assert.match(readRepoFile('app/assets/i18n/en.json'), /"globalVoiceBetaHint"/);
 });
 
 test('plain microphone dictation is untouched by the realtime voice gateway', () => {
