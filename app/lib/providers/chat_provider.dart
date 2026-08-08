@@ -339,6 +339,20 @@ class ChatProvider extends ChangeNotifier {
     if (balance is Map) {
       _usageBalance = UsageBalance.fromJson(Map<String, dynamic>.from(balance));
     }
+    // Claude usage-page scrape (weekly / monthly windows). Restore a fresh
+    // successful scrape like the web localStorage cache — otherwise a cold start
+    // whose CDP re-fetch fails shows only the passive 5h window until the user
+    // taps the bar. The same 24h freshness governs restore and re-fetch.
+    final claudeUsage = cached['claudeUsage'];
+    if (claudeUsage is Map) {
+      final status = claudeUsage['status']?.toString();
+      final fetchedAt = (claudeUsage['fetchedAt'] as num?)?.toInt();
+      if (status == 'ok' &&
+          fetchedAt != null &&
+          _nowMs() - fetchedAt < _claudeUsageFreshMs) {
+        _claudeUsage = Map<String, dynamic>.from(claudeUsage);
+      }
+    }
   }
 
   void _persistRuntimeCache() {
@@ -346,6 +360,17 @@ class ChatProvider extends ChangeNotifier {
       settings.saveChatRuntimeCache(sessionName, {
         if (_usageWindowLimit != null) 'limit': _usageWindowLimit!.toJson(),
         if (_usageBalance != null) 'balance': _usageBalance!.toJson(),
+        // Only a successful scrape is cached (matches the web save-on-ok); the
+        // page text is dropped so the stored payload stays small.
+        if (_claudeUsage != null &&
+            _claudeUsage?['status'] == 'ok')
+          'claudeUsage': {
+            'status': 'ok',
+            if (_claudeUsage?['fetchedAt'] != null)
+              'fetchedAt': _claudeUsage!['fetchedAt'],
+            if (_claudeUsage?['summary'] is List)
+              'summary': _claudeUsage!['summary'],
+          },
       }),
     );
   }
@@ -902,6 +927,9 @@ class ChatProvider extends ChangeNotifier {
     } else {
       _claudeUsageErrorAt = 0;
       _claudeUsage = data;
+      // Persist only a successful scrape (web `saveClaudeUsageToStorage` does
+      // the same) so a later cold start can show weekly/monthly immediately.
+      if (data['status'] == 'ok') _persistRuntimeCache();
     }
     notifyListeners();
   }
