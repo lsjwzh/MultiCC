@@ -113,7 +113,7 @@ test('kimi membership-page scrape renders through the unified window template', 
     status: 'ok', source: 'subscription-page', fetchedAt: 1,
     summary: [
       { window: '5h', label: '5小时窗口', usedPercent: 12, percent: 12, resetMs: now + 2 * 3600000 + 60000, line: '12%' },
-      { window: '1wk', label: '周用量', usedPercent: 81, percent: 81, resetMs: now + 3 * 86400000 + 3600000, line: '81%' },
+      { window: '1wk', label: '周用量', usedPercent: 81, percent: 81, resetMs: now + 3 * 86400000 + 3660000, line: '81%' },
     ],
     text: 'Kimi Code 会员\n5小时窗口\n12%',
   });

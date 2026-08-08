@@ -401,6 +401,24 @@
           ? hostState.currentElement
           : Array.from(messagesEl.querySelectorAll('.msg.assistant:not([data-msg-id])')).pop() || null;
       }
+      if (!existing && source.role === 'assistant') {
+        // The reconnect retagged the live bubble with the interim id, so the
+        // unkeyed-bubble fallback above misses it. The final commit of that same
+        // turn carries the full text, which starts with the interim snapshot —
+        // adopt the latest keyed assistant node when its raw text is a strict
+        // prefix of the incoming commit (same turn, different durable id).
+        const incomingText = asText(source.content);
+        if (incomingText) {
+          const keyed = Array.from(messagesEl.querySelectorAll('.msg.assistant[data-msg-id]'));
+          const last = keyed[keyed.length - 1] || null;
+          if (last && last.dataset.msgId !== source.id
+              && (last.dataset.rawText || '').length >= 8
+              && incomingText.startsWith(last.dataset.rawText)
+              && stableToolsString(source.tools) === (last.dataset.rawTools || stableToolsString(null))) {
+            existing = last;
+          }
+        }
+      }
 
       const node = renderMessage(source);
       if (!existing) {
@@ -493,6 +511,27 @@
             // still owns the pre-disconnect id-less bubble; adopt and retag it
             // instead of appending a second cumulative assistant message.
             existing = currentElement;
+          }
+          if (!existing && operation.message?.role === 'assistant'
+              && !operation.message?.streaming && hostState.currentText) {
+            // Reconnect landing between turn finalize and the commit meta: the
+            // browser still holds the just-finished id-less live bubble while
+            // the authoritative page already carries that same message with its
+            // durable id. Adopt the live bubble when the texts agree (identical,
+            // or one is a long-enough prefix of the other) instead of appending
+            // a second copy beside it.
+            const liveBubble = currentElement?.classList.contains('assistant') && !currentElement.dataset.msgId
+              ? currentElement
+              : Array.from(messagesEl.querySelectorAll('.msg.assistant:not([data-msg-id])')).pop() || null;
+            if (liveBubble) {
+              const incoming = asText(operation.message.content);
+              const live = String(hostState.currentText || '');
+              if (incoming && live && (incoming === live
+                  || (live.length >= 16 && incoming.startsWith(live))
+                  || (incoming.length >= 16 && live.startsWith(incoming)))) {
+                existing = liveBubble;
+              }
+            }
           }
           const node = renderMessage(operation.message);
           if (existing) {

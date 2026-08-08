@@ -525,9 +525,9 @@ test('formatKimiQuota renders the unified window shape with standard tokens and 
   const view = formatKimiQuota({
     status: 'ok', source: 'subscription-page', fetchedAt: now,
     summary: [
-      { window: '1m', label: '总使用量', usedPercent: 29.1, percent: 29.1, resetMs: now + 15 * 86400000 + 3600000 },
+      { window: '1m', label: '总使用量', usedPercent: 29.1, percent: 29.1, resetMs: now + 15 * 86400000 + 3660000 },
       { window: '5h', label: '5 小时用量', usedPercent: 1.31, percent: 1.31, resetMs: now + 5 * 3600000 + 120000 },
-      { window: '1wk', label: '7 天用量', usedPercent: 4.59, percent: 4.59, resetMs: now + 6 * 86400000 + 3600000 },
+      { window: '1wk', label: '7 天用量', usedPercent: 4.59, percent: 4.59, resetMs: now + 6 * 86400000 + 3660000 },
     ],
     text: '…',
   });

@@ -207,8 +207,8 @@ test('formatProviderQuotaBadge renders the aliyun console scrape through the uni
     status: 'ok',
     source: 'console-page',
     summary: [
-      { window: '1m', label: '总额度', usedPercent: 12.5, percent: 12.5, resetMs: now + 28 * 86400000 + 3600000 },
-      { window: '1m', label: '本月用量', usedPercent: 80, percent: 80, resetMs: now + 28 * 86400000 + 3600000 },
+      { window: '1m', label: '总额度', usedPercent: 12.5, percent: 12.5, resetMs: now + 28 * 86400000 + 3660000 },
+      { window: '1m', label: '本月用量', usedPercent: 80, percent: 80, resetMs: now + 28 * 86400000 + 3660000 },
     ],
     text: '…',
   });
@@ -226,9 +226,9 @@ test('formatProviderQuotaBadge renders kimi subscription scrapes with tokens and
     status: 'ok',
     source: 'subscription-page',
     summary: [
-      { window: '1m', label: '总使用量', usedPercent: 29.1, percent: 29.1, resetMs: now + 15 * 86400000 + 3600000 },
+      { window: '1m', label: '总使用量', usedPercent: 29.1, percent: 29.1, resetMs: now + 15 * 86400000 + 3660000 },
       { window: '5h', label: '5 小时用量', usedPercent: 1.31, percent: 1.31, resetMs: now + 5 * 3600000 + 120000 },
-      { window: '1wk', label: '7 天用量', usedPercent: 4.59, percent: 4.59, resetMs: now + 6 * 86400000 + 3600000 },
+      { window: '1wk', label: '7 天用量', usedPercent: 4.59, percent: 4.59, resetMs: now + 6 * 86400000 + 3660000 },
     ],
     text: '…',
   });
