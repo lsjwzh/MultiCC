@@ -169,13 +169,14 @@ function fixture(options = {}) {
   return { app, calls, records, routes, runtime };
 }
 
-test('dependency and mount boundaries own exactly nine routes', () => {
+test('dependency and mount boundaries own exactly ten routes', () => {
   assert.throws(() => createOrchestrationRoutes({}), /records.get/);
   const current = fixture();
   assert.deepEqual([...current.app.routes.keys()].sort(), [
     'DELETE /api/wait/:wid',
     'GET /api/detached/:taskId',
     'GET /api/sessions/:id/detached',
+    'GET /api/sessions/:id/dispatches',
     'GET /api/sessions/:id/tasks',
     'GET /api/sessions/:id/waits',
     'GET /api/v1/sessions/:id/waits',
@@ -493,4 +494,56 @@ test('detached and task query routes preserve filtering and status enrichment', 
     params: { taskId: 'unknown' },
   });
   assert.equal(missing.response.statusCode, 404);
+});
+
+test('session dispatch query joins durable operations with authoritative FIFO state', async () => {
+  const operations = [
+    {
+      id: 'op-running', kind: 'dispatch', ownerSessionId: 's1', status: 'admitted',
+      requestOutboxId: 'operation:op-running:request', createdAt: 20, updatedAt: 21,
+      spec: { targetId: 'worker', chatId: 'worker', taskId: 'task-live', resultMode: 'sync' },
+    },
+    {
+      id: 'op-targeted', kind: 'dispatch', ownerSessionId: 'caller', status: 'completed',
+      requestOutboxId: 'operation:op-targeted:request', createdAt: 10, completedAt: 15,
+      spec: { targetId: 's1', chatId: 's1', taskId: 'task-old', resultMode: 'async' },
+    },
+    {
+      id: 'op-unrelated', kind: 'dispatch', ownerSessionId: 'other', status: 'running',
+      createdAt: 30, spec: { targetId: 'elsewhere', chatId: 'elsewhere' },
+    },
+  ];
+  const current = fixture({
+    scheduler: true,
+    operations,
+    queueStatus: {
+      active: { entryId: 'operation:op-running:request' }, queued: [],
+    },
+  });
+  const active = await invoke(current.app, 'GET', '/api/sessions/:id/dispatches', {
+    params: { id: 's1' }, query: {},
+  });
+  assert.equal(active.response.statusCode, 200);
+  assert.equal(active.response.body.authoritative, 'durable_operation_plus_target_fifo');
+  assert.equal(active.response.body.count, 1);
+  assert.deepEqual(active.response.body.dispatches[0], {
+    operationId: 'op-running', status: 'admitted', terminal: false,
+    relation: 'owner', ownerSessionId: 's1', targetSessionId: 'worker',
+    executionSessionId: 'worker', taskId: 'task-live', mode: 'sync',
+    queueState: 'started', createdAt: 20, startedAt: null,
+    completedAt: null, updatedAt: 21,
+  });
+  assert.match(active.response.body.note, /not dispatch completion/);
+
+  const allTargeted = await invoke(current.app, 'GET', '/api/sessions/:id/dispatches', {
+    params: { id: 's1' }, query: { relation: 'target', activeOnly: 'false' },
+  });
+  assert.equal(allTargeted.response.body.count, 1);
+  assert.equal(allTargeted.response.body.dispatches[0].operationId, 'op-targeted');
+  assert.equal(allTargeted.response.body.dispatches[0].queueState, 'terminal');
+
+  const invalid = await invoke(current.app, 'GET', '/api/sessions/:id/dispatches', {
+    params: { id: 's1' }, query: { relation: 'invalid' },
+  });
+  assert.equal(invalid.response.statusCode, 400);
 });

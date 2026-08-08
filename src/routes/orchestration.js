@@ -30,6 +30,41 @@ function createOrchestrationRoutes(rawDeps) {
   const deps = assertDependencies(rawDeps);
   let mounted = false;
 
+  const terminalDispatchStates = new Set([
+    'completed', 'failed', 'interrupted', 'cancelled',
+  ]);
+
+  function projectDispatch(operation, sessionId, schedule) {
+    const entryId = operation.requestOutboxId || `operation:${operation.id}:request`;
+    const queued = (schedule?.queued || []).find(item => item.entryId === entryId);
+    const started = !!schedule?.active
+      && (schedule.active.entryId === entryId || schedule.active.deliveryId === entryId);
+    const terminal = terminalDispatchStates.has(operation.status);
+    const queueState = terminal ? 'terminal'
+      : queued ? 'queued'
+        : started ? 'started'
+          : operation.status === 'running' ? 'running' : 'unknown';
+    return {
+      operationId: operation.id,
+      status: operation.status,
+      terminal,
+      relation: operation.ownerSessionId === sessionId
+        ? (operation.spec?.chatId === sessionId ? 'self' : 'owner') : 'target',
+      ownerSessionId: operation.ownerSessionId,
+      targetSessionId: operation.spec?.targetId || null,
+      executionSessionId: operation.spec?.chatId || operation.spec?.targetId || null,
+      taskId: operation.spec?.taskId || null,
+      mode: operation.spec?.resultMode || (operation.spec?.oneWay ? 'one_way' : null),
+      queueState,
+      ...(queued && Number.isFinite(queued.position)
+        ? { queuePosition: queued.position } : {}),
+      createdAt: operation.createdAt || null,
+      startedAt: operation.startedAt || null,
+      completedAt: operation.completedAt || null,
+      updatedAt: operation.updatedAt || null,
+    };
+  }
+
   function mountRoutes(app) {
     if (!app || typeof app.get !== 'function' || typeof app.post !== 'function'
         || typeof app.delete !== 'function') {
@@ -232,6 +267,60 @@ function createOrchestrationRoutes(rawDeps) {
         res.json({ tasks, count: tasks.length });
       } catch (error) {
         res.status(500).json({ error: error.message });
+      }
+    });
+
+    // Session process flags (active/streaming/clients) are not task truth. This
+    // recovery view joins the durable dispatch operation with the target FIFO
+    // so a human or Commander can distinguish queued, running and terminal work
+    // after a transport error without reading chat output or repository state.
+    app.get('/api/sessions/:id/dispatches', async (req, res) => {
+      const session = deps.records.get(req.params.id);
+      if (!session) return res.status(404).json({ error: 'session not found' });
+      try {
+        const relation = String(req.query.relation || 'both');
+        if (!['both', 'owner', 'target'].includes(relation)) {
+          return res.status(400).json({ error: 'invalid relation' });
+        }
+        const activeOnly = req.query.activeOnly !== 'false';
+        const operations = (await deps.runtime.operations.list({ kind: 'dispatch' }))
+          .filter(operation => {
+            const owner = operation.ownerSessionId === session.id;
+            const target = operation.spec?.chatId === session.id
+              || operation.spec?.targetId === session.id;
+            if (relation === 'owner') return owner;
+            if (relation === 'target') return target;
+            return owner || target;
+          })
+          .filter(operation => !activeOnly || !terminalDispatchStates.has(operation.status))
+          .sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id))
+          .slice(0, 100);
+        const schedules = new Map();
+        if (deps.runtime.sessionScheduler) {
+          const targets = [...new Set(operations
+            .map(operation => operation.spec?.chatId || operation.spec?.targetId)
+            .filter(Boolean))];
+          await Promise.all(targets.map(async targetId => {
+            try {
+              schedules.set(targetId, await deps.runtime.sessionScheduler.status(targetId));
+            } catch (_) { schedules.set(targetId, null); }
+          }));
+        }
+        const dispatches = operations.map(operation => {
+          const targetId = operation.spec?.chatId || operation.spec?.targetId;
+          return projectDispatch(operation, session.id, schedules.get(targetId));
+        });
+        return res.json({
+          ok: true,
+          sessionId: session.id,
+          activeOnly,
+          dispatches,
+          count: dispatches.length,
+          authoritative: 'durable_operation_plus_target_fifo',
+          note: 'active/streaming/clients are process-presence signals, not dispatch completion.',
+        });
+      } catch (error) {
+        return res.status(500).json({ error: error.message });
       }
     });
 
