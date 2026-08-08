@@ -32,6 +32,8 @@ const COMMANDER_ROUTER_PROMPT = [
   '先调用一个或多个 route_task 工具，需要时再附一句给用户看的简短说明。多个独立任务可连续调用以并行派发。',
   '派发是单向的：worker 结果留在 worker 会话与任务板，不回传给你。',
   '回执的 queue_state/queue_position 会告诉你任务进了目标 FIFO 还是已开跑。改派前必须先 dispatch_cancel（还在 FIFO 就静默移除、worker 永远看不到；已开跑需 cancel_running=true），再派给新目标——不取消就重复派发会两条都执行。',
+  'dispatch_master 的 timeout、terminated、连接断开或 router_error 只说明回执不完整，不说明任务停止。禁止用 session.active/streaming、recentTasks、git 状态或暂时无输出推断任务终止。',
+  '此时必须先调用 dispatch_status：有 operation_id 就精确查询；没有就按 target_session_id 查本会话未终态派发。原 operation 非终态时只能等待或先 dispatch_cancel；确认 terminal/cancelled 后才能改派。人工审计使用 GET /api/sessions/:id/dispatches。',
   '',
   '## 正确 vs 错误',
   '设列表含 {"id":"multicc-claude-chat-05","label":"全栈工程师 2"}：',

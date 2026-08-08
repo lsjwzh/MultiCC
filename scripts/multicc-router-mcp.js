@@ -4,7 +4,7 @@
 const readline = require('readline');
 
 const SERVER_NAME = 'multicc-router';
-const SERVER_VERSION = '1.5.0';
+const SERVER_VERSION = '1.6.0';
 const BASE_URL = String(process.env.MULTICC_BASE_URL || '').replace(/\/+$/, '');
 const CAPABILITY = String(process.env.MULTICC_ROUTER_CAPABILITY || '');
 
@@ -79,6 +79,36 @@ const DISPATCH_CANCEL_SCHEMA = {
       type: 'boolean',
       default: false,
       description: 'Set true to also interrupt the target turn when the task already left the FIFO and is running.',
+    },
+  },
+};
+
+const DISPATCH_STATUS_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    operation_id: {
+      type: 'string',
+      minLength: 1,
+      maxLength: 256,
+      description: 'Optional operation id. Omit it to recover/list dispatches owned by this session after an ambiguous tool interruption.',
+    },
+    target_session_id: {
+      type: 'string',
+      minLength: 1,
+      maxLength: 256,
+      description: 'Optional target filter when operation_id is unknown.',
+    },
+    active_only: {
+      type: 'boolean',
+      default: true,
+      description: 'List only non-terminal dispatches by default.',
+    },
+    limit: {
+      type: 'integer',
+      minimum: 1,
+      maximum: 100,
+      default: 20,
     },
   },
 };
@@ -253,9 +283,21 @@ const TOOLS = [
     },
   },
   {
+    name: 'dispatch_status',
+    title: 'Recover dispatch status',
+    description: 'Read authoritative durable dispatch and target FIFO/running state for operations owned by this session. Use this after any dispatch_master timeout, terminated stream, network error, or missing receipt. Such errors do not prove that the worker stopped. Never re-route the same task until dispatch_status shows a terminal operation or dispatch_cancel confirms cancellation.',
+    inputSchema: DISPATCH_STATUS_SCHEMA,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
+  {
     name: 'dispatch_master',
     title: 'Dispatch to worker',
-    description: 'Durably dispatch to a same-directory worker. mode=sync keeps this call pending, streams safe provider-emitted reasoning and worker dialogue progress, and returns the final worker result inline without dispatch_slave or a new chat message. mode=async returns after admission; do not poll or inspect the worker—continue only independent work and end naturally, then MultiCC wakes this session with the dispatch_slave result as a new message. Busy targets are queued and never interrupted.',
+    description: 'Durably dispatch to a same-directory worker. mode=sync keeps this call pending, streams safe provider-emitted reasoning and worker dialogue progress, and returns the final worker result inline without dispatch_slave or a new chat message. mode=async returns after admission; do not poll or inspect the worker—continue only independent work and end naturally, then MultiCC wakes this session with the dispatch_slave result as a new message. Busy targets are queued and never interrupted. A timeout, terminated stream, or transport error never proves that the admitted task stopped: recover with dispatch_status, then wait or cancel before re-routing.',
     inputSchema: DISPATCH_MASTER_SCHEMA,
     annotations: {
       readOnlyHint: false,
@@ -439,11 +481,21 @@ async function handle(message) {
       );
       write({ jsonrpc: '2.0', id, result: toolContent(result, false) });
     } catch (error) {
-      const code = typeof error.code === 'string' ? error.code : 'router_error';
-      const message = error.message || code;
+      const interrupted = error?.name === 'AbortError'
+        || error?.code === 'tool_call_cancelled'
+        || /terminated|abort|cancelled|stream ended without a result/i.test(String(error?.message || ''));
+      const code = interrupted
+        ? 'router_call_interrupted'
+        : (typeof error.code === 'string' ? error.code : 'router_error');
+      const message = interrupted
+        ? 'The router call ended without a terminal receipt. This does not cancel an admitted dispatch. Call dispatch_status (filter by target_session_id if operation_id is unknown); do not re-route until the original is terminal or dispatch_cancel succeeds.'
+        : (error.message || code);
       write({
         jsonrpc: '2.0', id,
-        result: toolContent({ ok: false, code, message }, true),
+        result: toolContent({
+          ok: false, code, message,
+          ...(interrupted ? { recovery_tool: 'dispatch_status' } : {}),
+        }, true),
       });
     } finally {
       inflight.delete(id);

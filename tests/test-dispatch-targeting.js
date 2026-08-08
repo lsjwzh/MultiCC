@@ -182,6 +182,10 @@ test('commander gets the dispatch prompt', () => {
   assert.match(p, /候选列表顺序不表示优先级/);
   assert.match(p, /不要根据 id、CLI 名称或最近活跃时间猜职责/);
   assert.match(p, /用户原话点名/);
+  assert.match(p, /dispatch_status/);
+  assert.match(p, /timeout、terminated/);
+  assert.match(p, /session\.active\/streaming/);
+  assert.match(p, /\/api\/sessions\/:id\/dispatches/);
   assert.doesNotMatch(p, /<<route target=/);
   assert.doesNotMatch(p, /\[MultiCC Ultracode workflow\]/);
   assert.match(p, /可用目标 sessions: \[/);
