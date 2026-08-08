@@ -197,6 +197,38 @@
     .kpi .k-acts .btn{padding:2px 8px;font-size:11px;min-height:0;line-height:1.7}
     .kpi .k-sub.ellipsis{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
+    /* Realtime voice is a global action, not a metric and not a setting. Keep it
+       directly below the home KPIs so it is discoverable without competing with
+       the primary "New Fleet" action in the topbar. */
+    .voice-beta-entry{
+      width:100%;min-height:54px;margin:-8px 0 22px;padding:9px 13px;
+      display:flex;align-items:center;gap:11px;text-align:left;
+      color:var(--text);font-family:var(--sans);cursor:pointer;
+      border:1px solid rgba(106,163,255,.34);border-radius:12px;
+      background:
+        radial-gradient(420px 80px at 0 50%,rgba(58,214,197,.12),transparent 72%),
+        linear-gradient(100deg,rgba(106,163,255,.08),rgba(58,214,197,.035));
+      transition:border-color .15s,background .15s,transform .15s;
+    }
+    .voice-beta-entry:hover{border-color:rgba(58,214,197,.6);background-color:rgba(58,214,197,.04);transform:translateY(-1px)}
+    .voice-beta-entry:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+    .voice-beta-entry:disabled{opacity:.55;cursor:wait;transform:none}
+    .voice-beta-icon{
+      width:34px;height:34px;flex:0 0 34px;display:grid;place-items:center;
+      border-radius:10px;background:linear-gradient(135deg,rgba(58,214,197,.2),rgba(106,163,255,.2));
+      border:1px solid rgba(58,214,197,.3);font-size:17px;
+    }
+    .voice-beta-copy{flex:1;min-width:0}
+    .voice-beta-title{display:flex;align-items:center;gap:7px;font-size:13px;font-weight:680;line-height:1.3}
+    .beta-badge{
+      display:inline-flex;align-items:center;height:17px;padding:0 6px;border-radius:999px;
+      color:#d8e8ff;background:rgba(106,163,255,.16);border:1px solid rgba(106,163,255,.42);
+      font-family:var(--mono);font-size:9px;font-weight:750;letter-spacing:.6px;line-height:1;
+    }
+    .voice-beta-sub{margin-top:3px;color:var(--muted);font-size:11px;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .voice-beta-arrow{flex:0 0 auto;color:var(--blue);font-size:18px;padding:0 4px}
+    body.has-focus .voice-beta-entry{display:none}
+
     .sec-head{display:flex;align-items:center;gap:10px;margin:2px 0 16px}
     .sec-head h2{font-size:14px;font-weight:650;letter-spacing:.2px}
     .sec-head .count{font-family:var(--mono);font-size:11px;color:var(--faint);background:rgba(255,255,255,.05);padding:2px 8px;border-radius:20px}
@@ -565,6 +597,7 @@
       #topbar-help,#topbar-refresh{display:none}
       #kpi-row{gap:8px;margin-bottom:18px}
       .kpi{padding:12px}
+      .voice-beta-entry{margin:-4px 0 18px;min-height:52px;padding:8px 11px}
       .settings-card .sc-body{padding:14px}
       .modal-card{max-width:calc(100vw - 24px)}
     }
@@ -749,6 +782,24 @@
         <!-- ─── Overview view ─── -->
         <section class="view active" data-view="overview">
           <div id="kpi-row"></div>
+          <button
+            id="overview-voice-beta"
+            class="voice-beta-entry"
+            type="button"
+            onclick="window.MultiCCManageQwenAudio.openGlobalVoice(this)"
+            data-i18n-title="globalVoiceCall"
+            title="全局实时语音"
+          >
+            <span class="voice-beta-icon" aria-hidden="true">🎙</span>
+            <span class="voice-beta-copy">
+              <span class="voice-beta-title">
+                <span data-i18n="globalVoiceCall">全局实时语音</span>
+                <span class="beta-badge">BETA</span>
+              </span>
+              <span class="voice-beta-sub" data-i18n="globalVoiceBetaHint">直接说出需求，MultiCC 会选择合适的会话处理</span>
+            </span>
+            <span class="voice-beta-arrow" aria-hidden="true">›</span>
+          </button>
           <div class="sec-head"><h2 data-i18n="directories">Fleet</h2><span class="count" id="dir-count-pill">0</span><div class="line"></div></div>
           <div id="directory-list"></div>
         </section>

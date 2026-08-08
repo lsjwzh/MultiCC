@@ -5,6 +5,7 @@ window.MULTICC_I18N_CATALOG = {
     "dirs_sessions": "{dirs} dirs · {sessions} sessions",
     "newDirectory": "新建目录",
     "globalVoiceCall": "全局实时语音",
+    "globalVoiceBetaHint": "直接说出需求，MultiCC 会选择合适的会话处理",
     "refresh": "刷新",
     "settings": "设置",
     "retry": "重试",
@@ -723,6 +724,7 @@ window.MULTICC_I18N_CATALOG = {
   "en": {
     "newDirectory": "New Directory",
     "globalVoiceCall": "Global realtime voice",
+    "globalVoiceBetaHint": "Speak your request and MultiCC will route it to the right session",
     "refresh": "Refresh",
     "settings": "Settings",
     "retry": "Retry",
