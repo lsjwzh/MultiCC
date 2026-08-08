@@ -236,6 +236,38 @@ void main() {
       expect(formatKimiQuota(bal(3), null).color, VendorQuotaColor.yellow);
       expect(formatKimiQuota(bal(0), null).color, VendorQuotaColor.red);
     });
+
+    test('subscription-page summary renders windows in canonical order', () {
+      final value = {
+        'status': 'ok',
+        'source': 'subscription-page',
+        'fetchedAt': DateTime.now().millisecondsSinceEpoch,
+        'summary': [
+          {'window': '1m', 'usedPercent': 80},
+          {'window': '5h', 'usedPercent': 42},
+          {'window': '1wk', 'usedPercent': 30},
+        ],
+      };
+      final view = formatKimiQuota(value, null);
+      final segs = view.text
+          .split(' · ')
+          .take(3)
+          .map((s) => s.split(' ').first)
+          .toList();
+      expect(segs, ['5h', '1wk', '1m']);
+      expect(view.text, contains('1wk 70%'));
+      expect(view.tooltip, contains('1wk: 已用 30%'));
+      expect(view.tooltip, contains('订阅 key 无预付余额接口'));
+    });
+
+    test('subscription-page with an empty summary reports parse failure', () {
+      final view = formatKimiQuota(
+        {'status': 'ok', 'source': 'subscription-page', 'summary': <Object>[]},
+        null,
+      );
+      expect(view.text, contains('未解析出用量'));
+      expect(view.color, VendorQuotaColor.yellow);
+    });
   });
 
   group('sortWindowSegs', () {
@@ -264,6 +296,65 @@ void main() {
       final out = sortWindowSegs(input);
       expect(input, ['1wk 50%', '', '5h 20%']);
       expect(out, ['5h 20%', '1wk 50%']);
+    });
+  });
+
+  group('formatWindowLimit (GLM/Codex unified)', () {
+    const nowMs = 1_700_000_000_000;
+
+    UsageWindowLimit limit({
+      String provider = 'glm',
+      String status = 'allowed',
+      double? used = 50,
+      int? resetsInMs = 3600000,
+    }) => UsageWindowLimit(
+      rateLimitType: 'five_hour',
+      status: status,
+      usedPercentage: used,
+      resetsAtMs: resetsInMs == null ? null : nowMs + resetsInMs,
+      provider: provider,
+    );
+
+    test('GLM renders a 5h window with remaining% + countdown', () {
+      final v = formatWindowLimit(limit(used: 50), nowMs: nowMs);
+      expect(v.text, '5h 50% 1h');
+      expect(v.color, VendorQuotaColor.blue);
+      expect(v.tooltip, contains('GLM Coding Plan'));
+    });
+
+    test('Codex renders a weekly (1wk) window', () {
+      final v = formatWindowLimit(
+        limit(provider: 'codex', used: 80, resetsInMs: 3 * 86400000),
+        nowMs: nowMs,
+      );
+      expect(v.text, startsWith('1wk 20%'));
+      expect(v.tooltip, contains('Codex 订阅周额度'));
+    });
+
+    test('rejected forces 0% remaining (red)', () {
+      final v = formatWindowLimit(
+        limit(status: 'rejected', used: 100),
+        nowMs: nowMs,
+      );
+      expect(v.text.split(' ').take(2), ['5h', '0%']);
+      expect(v.color, VendorQuotaColor.red);
+    });
+
+    test('low remaining turns amber/red via the shared scale', () {
+      expect(
+        formatWindowLimit(limit(used: 95), nowMs: nowMs).color,
+        VendorQuotaColor.red,
+      );
+      expect(
+        formatWindowLimit(limit(used: 75), nowMs: nowMs).color,
+        VendorQuotaColor.yellow,
+      );
+    });
+
+    test('missing percent degrades to the bare window label', () {
+      final v = formatWindowLimit(limit(used: null), nowMs: nowMs);
+      expect(v.text, '5h');
+      expect(v.color, VendorQuotaColor.blue);
     });
   });
 
