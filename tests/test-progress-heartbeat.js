@@ -205,6 +205,44 @@ test('a newer turn replaces a stale heartbeat for the same session', () => {
   assert.deepEqual(heartbeats.map(item => [item.turnId, item.toolKind]), [['new', 'subagent']]);
 });
 
+test('status() exposes the live phase/silence of the active turn for the session', () => {
+  const clock = createClock(1_000);
+  const heartbeats = [];
+  const manager = createHeartbeat(clock, heartbeats);
+
+  assert.equal(manager.status('s1'), null, 'no active turn → null');
+  assert.equal(manager.status(''), null);
+  assert.equal(manager.status(null), null);
+
+  manager.start('s1', 't1', { phase: 'starting' });
+  clock.advance(12_000);
+  let snap = manager.status('s1');
+  assert.deepEqual(snap, {
+    sessionId: 's1',
+    turnId: 't1',
+    phase: 'starting',
+    safeToolKind: null,
+    startedAt: 1_000,
+    silentMs: 12_000,
+  });
+  assert.throws(() => { snap.phase = 'x'; }, TypeError, 'snapshot is frozen');
+
+  manager.updatePhase('s1', 't1', { phase: 'tool', safeToolKind: 'bash' });
+  clock.advance(5_000);
+  snap = manager.status('s1');
+  assert.equal(snap.phase, 'tool');
+  assert.equal(snap.safeToolKind, 'process');
+  assert.equal(snap.silentMs, 17_000);
+
+  manager.stop('s1', 't1');
+  assert.equal(manager.status('s1'), null, 'stopped turn → null');
+
+  // A newer turn for the same session is the one status() reports.
+  manager.start('s1', 'old');
+  manager.start('s1', 'new');
+  assert.equal(manager.status('s1').turnId, 'new');
+});
+
 test('validates required dependencies and injected clock values', () => {
   assert.throws(() => new TurnProgressHeartbeat(), /onHeartbeat is required/);
   assert.throws(() => new TurnProgressHeartbeat({
