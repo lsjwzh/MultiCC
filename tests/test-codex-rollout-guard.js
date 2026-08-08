@@ -98,6 +98,24 @@ test('provider sessions live under codexHomesDir/<provider>', () => {
   assert.ok(fs.existsSync(path.join(codexHomesDir, 'prov1', ARCHIVE_DIRNAME, path.basename(file))));
 });
 
+test('force mode archives regardless of size (restart-spawn contract)', () => {
+  const { homeDir, sessionsDir } = setupHome();
+  const file = writeRollout(sessionsDir, 'thread-force', 16); // tiny, under any budget
+  const guard = createCodexRolloutGuard({ homeDir });
+  const plain = guard.enforce({ cli: 'codex', cliSessionId: 'thread-force' });
+  assert.equal(plain.action, 'ok', 'without force a tiny rollout stays');
+  assert.ok(fs.existsSync(file));
+
+  const forced = guard.enforce({ cli: 'codex', cliSessionId: 'thread-force' }, { force: true });
+  assert.equal(forced.action, 'archived');
+  assert.equal(forced.archived[0].sizeBytes, 16);
+  assert.equal(fs.existsSync(file), false);
+  assert.ok(fs.existsSync(path.join(homeDir, '.codex', ARCHIVE_DIRNAME, path.basename(file))));
+
+  const missing = guard.enforce({ cli: 'codex', cliSessionId: 'thread-force' }, { force: true });
+  assert.equal(missing.action, 'not_found', 'already archived → nothing left to do');
+});
+
 test('default budget is 10MB and configurable via dep', () => {
   const guard = createCodexRolloutGuard({});
   assert.equal(guard.maxBytes, DEFAULT_MAX_ROLLOUT_BYTES);

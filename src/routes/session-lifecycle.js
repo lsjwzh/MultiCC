@@ -1,5 +1,7 @@
 'use strict';
 
+const { createCodexRolloutGuard } = require('../chat/codex-rollout-guard');
+
 // Single-session lifecycle routes: DELETE /api/sessions/:id (cascades through
 // the session's worktree, tmux pane and chat process), POST .../relocate
 // (re-homes a session into a different directory with a fresh worktree), and
@@ -50,6 +52,11 @@ function createSessionLifecycleRuntime(rawDeps) {
     // other route here predates it and must keep composing without it.
     getSessionWorkHost,
   } = deps;
+
+  // restart-spawn force-archives the codex rollout of the restarted session so
+  // the respawn builds a fresh thread instead of resuming possibly-wedged
+  // history (injectable for tests).
+  const codexRolloutGuard = deps.codexRolloutGuard || createCodexRolloutGuard({});
 
   for (const [map, name] of [
     [sessions, 'sessions'], [chatSessions, 'chatSessions'],
@@ -254,10 +261,14 @@ function createSessionLifecycleRuntime(rawDeps) {
     // session reads as idle everywhere and still refuses every message. This
     // tears the spawn down for real.
     //
-    // The conversation is NOT lost. The vendor session id lives on the persisted
-    // record, so the next turn re-ensures and respawns with --resume <same id>.
-    // To start a genuinely blank conversation, clear the history first — that
-    // path already invalidates every CLI's native session — then restart here.
+    // For codex the native rollout is force-archived here, so the respawn starts
+    // a FRESH thread instead of resuming possibly oversized/wedged history —
+    // restarting the process alone never helps when the rollout itself is the
+    // bug (resume hangs deterministically). MultiCC's context layers recompose
+    // every turn, so the rebuilt conversation keeps its grounding. The archived
+    // file is preserved under <codex home>/multicc-archived-rollouts. Other CLIs
+    // keep the classic behavior: the vendor session id stays on the persisted
+    // record and the next turn respawns with --resume <same id>.
     //
     // The respawn is deliberately lazy. Only the turn engine can compute a spawn
     // (provider env, model args, subagent routing), so eagerly rebuilding the
@@ -321,9 +332,28 @@ function createSessionLifecycleRuntime(rawDeps) {
         cs._activeRunner = null;
       }
 
+      // 4. codex only, after the process is dead: force-archive the native
+      //    rollout (any size) and drop cliSessionId so the lazy respawn starts
+      //    a fresh thread. Fail-open: a guard error never fails the restart.
+      let rolloutArchived = null;
+      if (persisted) {
+        const guardResult = codexRolloutGuard.enforce(persisted, { force: true });
+        if (guardResult.action === 'archived') {
+          persisted.cliSessionId = null;
+          sessionPersistence.mutate('http.restart-spawn-rollout-archive', records => {
+            const rec = records.get(id);
+            if (rec) rec.cliSessionId = null;
+          });
+          rolloutArchived = guardResult.archived.map(item => ({
+            file: item.file, sizeBytes: item.sizeBytes, archivedTo: item.archivedTo,
+          }));
+          console.log(`[multicc] restart-spawn ${id}: codex rollout archived: ${JSON.stringify(rolloutArchived)}`);
+        }
+      }
+
       if (persisted) appendEvent(persisted.dirId, 'session_spawn_restarted', persisted.label || id, null);
       console.log(`[multicc] restart-spawn ${id}: ${JSON.stringify(before)}`);
-      res.json({ ok: true, before, cancelled, cli: persisted?.cli || cs?.cli || null });
+      res.json({ ok: true, before, cancelled, rolloutArchived, cli: persisted?.cli || cs?.cli || null });
     }));
   }
 

@@ -49,10 +49,16 @@
           return { ok: false, reason: 'http', status: res.status };
         }
         options.addSystemMsg(translate('restartSpawnDone', { pid: (data.before && data.before.pid) || '-' }));
+        const rolloutArchived = Array.isArray(data.rolloutArchived) ? data.rolloutArchived : [];
+        if (rolloutArchived.length) {
+          // codex only: the native history file was force-archived, so the next
+          // message rebuilds the context instead of resuming the old thread.
+          options.addSystemMsg('codex 原生会话历史已归档，下一条消息将重建上下文（旧历史保留在归档目录，未删除）');
+        }
         // The process this tab was talking to no longer exists; resync so the
         // header and status pill stop describing a runtime that is gone.
         reconnect('restart-spawn');
-        return { ok: true, before: data.before || null };
+        return { ok: true, before: data.before || null, rolloutArchived };
       } catch (error) {
         options.addSystemMsg(translate('restartSpawnFailed', { error: error.message }));
         return { ok: false, reason: 'network' };
