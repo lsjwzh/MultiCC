@@ -110,7 +110,9 @@ class _MainShellState extends State<MainShell> {
         if (active != null) {
           mgr.goToSessionList();
         } else if (fleetOpen) {
-          mgr.closeFleetDir();
+          // Routes through the panel's own collapse animation when it is
+          // mounted, so back exits the same way a drag-down does.
+          mgr.requestCloseFleetDir();
         }
       },
       child: Scaffold(
@@ -1354,9 +1356,19 @@ class _FleetDetailSheet extends StatefulWidget {
   State<_FleetDetailSheet> createState() => _FleetDetailSheetState();
 }
 
-class _FleetDetailSheetState extends State<_FleetDetailSheet> {
+class _FleetDetailSheetState extends State<_FleetDetailSheet>
+    with SingleTickerProviderStateMixin {
   late final ValueListenable<DirectoryWorkspaceSnapshot> _workspace;
   List<Map<String, dynamic>> _providers = const [];
+
+  // Sheet geometry, mirroring _ChatSheetState so the two layers of this Stack
+  // move identically. _anim.value == the fraction of the screen height the
+  // sheet covers, measured from the bottom edge (0 = fully off-screen).
+  late final AnimationController _anim;
+  bool _collapsing = false;
+
+  static const double _snapDefault = 0.9; // opened height (matches chat sheet)
+  static const double _dismissBelow = 0.5; // released below this → fall away
 
   // Tab selection for the fleet detail sheet: 0 = 会话 (sessions), 1 = 任务板
   // (task board). Kept across setState / WS-driven rebuilds so a status tick
@@ -1383,6 +1395,76 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
     widget.workspaceStore.ensureDirectory(widget.dirId);
     _workspace = widget.workspaceStore.listenableFor(widget.dirId)!;
     _loadProviders();
+    _anim = AnimationController(
+      vsync: this,
+      lowerBound: 0,
+      upperBound: 1,
+      duration: const Duration(milliseconds: 260),
+    );
+    // Entrance: slide up from the bottom edge to the default snap.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _anim.animateTo(_snapDefault, curve: Curves.easeOutCubic);
+    });
+    // Let the Android back button animate this panel out instead of yanking it
+    // out of the Stack (see SessionManager.requestCloseFleetDir).
+    widget.mgr.fleetCollapseHandler = _collapse;
+  }
+
+  @override
+  void dispose() {
+    // Only clear our own registration: switching directories rebuilds this
+    // widget under a new ValueKey, and the outgoing State is disposed AFTER the
+    // incoming one's initState, so an unconditional clear would drop the new
+    // panel's handler.
+    if (widget.mgr.fleetCollapseHandler == _collapse) {
+      widget.mgr.fleetCollapseHandler = null;
+    }
+    _anim.dispose();
+    super.dispose();
+  }
+
+  void _onDrag(double dy, double height) {
+    // Re-grabbing the sheet cancels a dismissal already in flight. Without this
+    // the latch would stay set and every later close — drag, X, back — would be
+    // swallowed by the `if (_collapsing) return` guard below.
+    _collapsing = false;
+    _anim.stop();
+    _anim.value = (_anim.value - dy / height).clamp(0.0, 1.0);
+  }
+
+  void _onDragEnd(double velocity, double height) {
+    final v = velocity / height; // fraction/sec; +down, -up
+    double target;
+    if (v > 1.3) {
+      // Flung down: from above the snap it settles there, otherwise it falls.
+      target = _anim.value < _snapDefault ? 0.0 : _snapDefault;
+    } else if (v < -1.3) {
+      target = 1.0;
+    } else if (_anim.value < _dismissBelow) {
+      target = 0.0;
+    } else if (_anim.value < (_snapDefault + 1.0) / 2) {
+      target = _snapDefault;
+    } else {
+      target = 1.0;
+    }
+    if (target == 0.0) {
+      _collapse();
+    } else {
+      _anim.animateTo(target, curve: Curves.easeOutCubic);
+    }
+  }
+
+  // Drop the sheet off the bottom, THEN clear the manager. Clearing first would
+  // unmount this widget mid-animation and the panel would vanish instantly.
+  void _collapse() {
+    if (_collapsing) return;
+    _collapsing = true;
+    _anim.animateTo(0.0, curve: Curves.easeInCubic).then((_) {
+      // A TickerFuture also completes when the animation is *cancelled* (the
+      // user grabbed the sheet again on its way down), so re-check that it
+      // really landed at the bottom before tearing the panel out of the Stack.
+      if (mounted && _anim.value == 0.0) widget.mgr.closeFleetDir();
+    });
   }
 
   Future<void> _loadProviders() async {
@@ -1616,55 +1698,136 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
   @override
   Widget build(BuildContext context) {
     final mq = MediaQuery.of(context);
-    return SafeArea(
-      bottom: false,
-      child: Container(
-        height: mq.size.height * 0.9 + mq.padding.bottom,
-        padding: EdgeInsets.only(bottom: mq.padding.bottom),
-        decoration: const BoxDecoration(
-          color: AppColors.panel,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
-        ),
-        child: AnimatedBuilder(
-          animation: Listenable.merge([_workspace, widget.mgr]),
-          builder: (context, _) {
-            final workspace = _workspace.value;
-            final dir = _dir;
-            final groups = widget.mgr.sessionsByKind(dir.id);
-            final hasSessions = dir.totalSessions > 0;
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
+    final h = mq.size.height;
+
+    return AnimatedBuilder(
+      animation: _anim,
+      builder: (context, sheet) {
+        final frac = _anim.value;
+        // Scrim tracks the entrance and fades back out as the sheet falls away.
+        // 0.5 at rest, same as the chat sheet stacked above it.
+        final scrimOp = (frac.clamp(0.0, _snapDefault) / _snapDefault) * 0.5;
+        final fullProg =
+            ((frac - _snapDefault) / (1 - _snapDefault)).clamp(0.0, 1.0);
+        final topInset = mq.padding.top * fullProg; // status-bar gap near full
+        final radius = (1 - fullProg) * 18;
+        final top = h * (1 - frac);
+        // Below the snap the sheet SLIDES off the bottom rather than shrinking:
+        // its box stays a full snap tall and simply hangs past the screen edge
+        // (the Stack clips it). Resizing instead would relayout the session list
+        // on every drag frame — visible reflow — and squeeze the Column past its
+        // handle height near zero, tripping a RenderFlex overflow on the way out.
+        final boxFrac = frac < _snapDefault ? _snapDefault : frac;
+
+        return Stack(
+          children: [
+            // Dim the dashboard behind; tap outside the sheet to dismiss it.
+            Positioned.fill(
+              child: IgnorePointer(
+                ignoring: scrimOp < 0.02,
+                child: GestureDetector(
+                  onTap: _collapse,
+                  child: Container(
+                    color: Colors.black.withValues(alpha: scrimOp),
+                  ),
+                ),
+              ),
+            ),
+            // At rest the sheet reaches the physical bottom edge of the screen
+            // (top = 0.1·h, height = 0.9·h). The previous version was an
+            // unpositioned Stack child, which pins to the TOP — which is what
+            // left a strip of dashboard showing through beneath it.
+            Positioned(
+              left: 0,
+              right: 0,
+              top: top,
+              height: h * boxFrac,
+              child: ClipRRect(
+                borderRadius: BorderRadius.vertical(
+                  top: Radius.circular(radius),
+                ),
+                child: Container(
+                  color: AppColors.panel,
+                  padding: EdgeInsets.only(top: topInset),
+                  child: sheet,
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+      // Built once and passed through as `sheet`: the body does not depend on
+      // the drag position, so it must not rebuild on every animation frame.
+      child: Column(
+        children: [
+          _SheetHandle(
+            onDrag: (dy) => _onDrag(dy, mq.size.height),
+            onDragEnd: (v) => _onDragEnd(v, mq.size.height),
+          ),
+          Expanded(child: _buildBody(mq)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBody(MediaQueryData mq) {
+    return Padding(
+      padding: EdgeInsets.only(bottom: mq.padding.bottom),
+      child: AnimatedBuilder(
+        animation: Listenable.merge([_workspace, widget.mgr]),
+        builder: (context, _) {
+          final workspace = _workspace.value;
+          final dir = _dir;
+          final groups = widget.mgr.sessionsByKind(dir.id);
+          final hasSessions = dir.totalSessions > 0;
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(18, 14, 8, 12),
+                  padding: const EdgeInsets.fromLTRB(18, 2, 8, 12),
                   child: Row(
                     children: [
+                      // The title block doubles as a drag surface so most of the
+                      // header width pulls the sheet — the handle alone is a thin
+                      // target. It must NOT wrap the buttons: a vertical drag
+                      // recognizer beats a child tap in the gesture arena as soon
+                      // as the pointer drifts past touch slop, which would eat
+                      // the memo / push / close taps.
                       Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              dir.name,
-                              style: const TextStyle(
-                                color: AppColors.textBright,
-                                fontSize: 16,
-                                fontWeight: FontWeight.w700,
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onVerticalDragUpdate: (d) =>
+                              _onDrag(d.delta.dy, mq.size.height),
+                          onVerticalDragEnd: (d) => _onDragEnd(
+                            d.velocity.pixelsPerSecond.dy,
+                            mq.size.height,
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                dir.name,
+                                style: const TextStyle(
+                                  color: AppColors.textBright,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
                               ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            const SizedBox(height: 3),
-                            Text(
-                              dir.path,
-                              style: const TextStyle(
-                                color: AppColors.blue,
-                                fontSize: 11,
-                                fontFamily: 'monospace',
+                              const SizedBox(height: 3),
+                              Text(
+                                dir.path,
+                                style: const TextStyle(
+                                  color: AppColors.blue,
+                                  fontSize: 11,
+                                  fontFamily: 'monospace',
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
                               ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
                       ),
                       IconButton(
@@ -1693,7 +1856,9 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
                       ),
                       IconButton(
                         tooltip: t('close'),
-                        onPressed: () => widget.mgr.closeFleetDir(),
+                        // Animate down like a drag-dismiss instead of blinking
+                        // out — same exit for both ways of closing.
+                        onPressed: _collapse,
                         icon: const Icon(
                           Icons.close_rounded,
                           color: AppColors.muted,
@@ -1839,7 +2004,6 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
             );
           },
         ),
-      ),
     );
   }
 }
