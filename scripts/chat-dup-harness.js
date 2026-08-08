@@ -225,6 +225,7 @@ function createRig(cli = 'claude') {
 /* ───────────────────────── 事件构造小工具 ───────────────────────── */
 
 const msgStart = () => ({ type: 'stream_event', event: { type: 'message_start', message: {} } });
+const streamStart = () => ({ type: 'stream_start' });
 const delta = text => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } });
 const result = () => ({ type: 'result', total_cost_usd: 0.001, usage: { input_tokens: 10, output_tokens: 5 } });
 const assistantSnapshot = text => ({
@@ -381,4 +382,4 @@ const SCENARIOS = [
 ];
 
 
-module.exports = { createRig, scanDuplicates, SCENARIOS, helpers: { msgStart, delta, result, assistantSnapshot, assistantBlock, commit, reconnectInit, chatHistory } };
+module.exports = { createRig, scanDuplicates, SCENARIOS, helpers: { msgStart, streamStart, delta, result, assistantSnapshot, assistantBlock, commit, reconnectInit, chatHistory } };
