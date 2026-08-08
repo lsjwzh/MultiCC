@@ -2649,15 +2649,13 @@ class _SessionGroup extends StatelessWidget {
               final columns = constraints.maxWidth >= 520 ? 2 : 1;
               final cardWidth =
                   (constraints.maxWidth - gap * (columns - 1)) / columns;
-              final sortedSessions = pinCommanderFirst(
-                [...sessions]
-                  ..sort(
-                    (a, b) => sessionLastInteractionAt(
-                      b,
-                      statuses[b.id],
-                    ).compareTo(sessionLastInteractionAt(a, statuses[a.id])),
-                  ),
-              );
+              // Creation order, never activity order: `statuses` changes on
+              // every streamed token, and keying the sort off it made the cards
+              // trade places under the user's finger. SessionManager already
+              // hands these lists over in this exact order (same function), so
+              // this call is idempotent — it just keeps the widget from
+              // silently depending on its caller having sorted.
+              final sortedSessions = orderFleetSessions(sessions);
               return Wrap(
                 spacing: gap,
                 runSpacing: gap,

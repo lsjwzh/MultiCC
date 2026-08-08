@@ -197,6 +197,40 @@ test('session card consumes provider summary fields without rendering credential
   assert.doesNotMatch(html, /must-not-render|nested-secret/);
 });
 
+test('fleet session groups stay in creation order no matter what the live activity says', () => {
+  const { context } = createHarness();
+  const iso = (day) => `2026-03-${String(day).padStart(2, '0')}T00:00:00.000Z`;
+  const sessions = [
+    { id: 'newest', kind: 'chat', cli: 'claude', createdAt: iso(3) },
+    { id: 'oldest', kind: 'chat', cli: 'claude', createdAt: iso(1) },
+    { id: 'cmdr', kind: 'chat', cli: 'claude', type: 'commander', createdAt: iso(9) },
+    { id: 'middle', kind: 'chat', cli: 'claude', createdAt: iso(2) },
+  ];
+  const idsIn = (html) => (html.match(/data-id="([^"]+)"/g) || [])
+    .map(m => m.slice('data-id="'.length, -1));
+
+  // Commander first (it is pinned and does not compete on age), then the rest
+  // oldest-first — the exact opposite of what recency ordering would produce.
+  const expected = ['cmdr', 'oldest', 'middle', 'newest'];
+  assert.deepEqual(idsIn(context.renderDirSessionGroups(sessions)), expected);
+
+  // The bug this replaces: activity used to drive the order, so a session that
+  // streamed one token jumped to the top. Now it must not move at all.
+  context._workspaceStatus.set('newest', { lastActivity: Date.now() });
+  context._workspaceStatus.set('oldest', { lastActivity: 1 });
+  assert.deepEqual(idsIn(context.renderDirSessionGroups(sessions)), expected);
+
+  // Nor does the input order leak through, and same-createdAt ties break on id
+  // rather than on whatever order the API happened to return.
+  const shuffled = [sessions[2], sessions[0], sessions[3], sessions[1]];
+  assert.deepEqual(idsIn(context.renderDirSessionGroups(shuffled)), expected);
+  const tied = [
+    { id: 'b', kind: 'chat', cli: 'claude', createdAt: iso(5) },
+    { id: 'a', kind: 'chat', cli: 'claude', createdAt: iso(5) },
+  ];
+  assert.deepEqual(idsIn(context.renderDirSessionGroups(tied)), ['a', 'b']);
+});
+
 test('fleet session card shows bounded FIFO depth while waiting-user work stays queued', () => {
   const { context } = createHarness();
   context._workspaceQueues.set('session-queued', {
