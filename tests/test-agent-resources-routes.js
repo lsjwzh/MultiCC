@@ -161,6 +161,9 @@ test('preset list strips prompts while detail preserves them and returns legacy 
   assert.match(detail.body.prompt, /相关性相近时优先选择非 waiting_user/);
   assert.match(detail.body.prompt, /相关性明显更高时仍可选择/);
   assert.match(detail.body.prompt, /列表顺序不表示优先级/);
+  assert.match(detail.body.prompt, /dispatch_status/);
+  assert.match(detail.body.prompt, /timeout、terminated/);
+  assert.match(detail.body.prompt, /\/api\/sessions\/:id\/dispatches/);
   assert.equal(current.reads(), 1);
   const missing = await invoke(current.app, 'GET', '/api/agent-presets/:id', {
     params: { id: 'missing' },

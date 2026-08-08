@@ -29,7 +29,13 @@ test('internal bridge requires loopback plus its scoped process capability', asy
   const waits = new Map();
   let syncProgressSink = null;
   const orchestrationRuntime = {
-    operations: { get: async id => operations.get(id) || null },
+    operations: {
+      get: async id => operations.get(id) || null,
+      list: async ({ kind, ownerSessionId, statuses } = {}) => [...operations.values()]
+        .filter(operation => !kind || operation.kind === kind)
+        .filter(operation => !ownerSessionId || operation.ownerSessionId === ownerSessionId)
+        .filter(operation => !statuses || statuses.includes(operation.status)),
+    },
     waits: { get: async id => waits.get(id) || null },
     completeDispatch: async () => ({ ok: true }),
     tick: async () => {},

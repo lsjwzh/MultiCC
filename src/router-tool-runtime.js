@@ -14,6 +14,7 @@ const TOOL_NAMES = new Set([
   'wait_for_user_answer', 'request_user_input',
   'wait_for_external_result', 'get_external_wait', 'cancel_external_wait',
   'route_task', 'dispatch_master', 'dispatch_slave', 'dispatch_cancel',
+  'dispatch_status',
 ]);
 const MAX_MESSAGE_LENGTH = 256 * 1024;
 const MAX_RESULT_LENGTH = 512 * 1024;
@@ -192,8 +193,9 @@ function createRouterToolRuntime({
   if (typeof dispatchToSession !== 'function') {
     throw new TypeError('[router-tool-runtime] dispatchToSession port is required');
   }
-  if (!operations || typeof operations.get !== 'function') {
-    throw new TypeError('[router-tool-runtime] operations port is required');
+  if (!operations || typeof operations.get !== 'function'
+      || typeof operations.list !== 'function') {
+    throw new TypeError('[router-tool-runtime] operations get/list ports are required');
   }
   if (typeof completeDispatch !== 'function') {
     throw new TypeError('[router-tool-runtime] completeDispatch port is required');
@@ -500,6 +502,104 @@ function createRouterToolRuntime({
       queued: false,
       result: text,
       ...(status === 'completed' ? {} : { error: text || status }),
+    };
+  }
+
+  async function dispatchOperationSummary(operation) {
+    const chatId = operation.spec?.chatId || operation.spec?.targetId || null;
+    const entryId = operation.requestOutboxId || `operation:${operation.id}:request`;
+    let queueState = TERMINAL_OPERATION_STATES.has(operation.status)
+      ? 'terminal' : 'unknown';
+    let queuePosition = null;
+    if (queueState !== 'terminal' && chatId) {
+      try {
+        const schedule = await schedulerStatus(chatId);
+        const queued = (schedule?.queued || []).find(item => item.entryId === entryId);
+        if (queued) {
+          queueState = 'queued';
+          queuePosition = Number.isFinite(queued.position) ? queued.position : null;
+        } else if (schedule?.active
+            && (schedule.active.entryId === entryId
+              || schedule.active.deliveryId === entryId)) {
+          queueState = 'started';
+        } else if (operation.status === 'running') {
+          queueState = 'running';
+        }
+      } catch (_) { /* the durable operation remains authoritative */ }
+    }
+    const result = operation.result && typeof operation.result === 'object'
+      ? operation.result : {};
+    const resultText = String(result.text || result.error || operation.lastError || '').trim();
+    return {
+      operation_id: operation.id,
+      status: operation.status,
+      terminal: TERMINAL_OPERATION_STATES.has(operation.status),
+      target_session_id: operation.spec?.targetId || null,
+      execution_session_id: chatId,
+      task_id: operation.spec?.taskId || null,
+      mode: operation.spec?.resultMode || (operation.spec?.oneWay ? 'one_way' : null),
+      queue_state: queueState,
+      ...(queuePosition == null ? {} : { queue_position: queuePosition }),
+      created_at: operation.createdAt || null,
+      started_at: operation.startedAt || null,
+      completed_at: operation.completedAt || null,
+      updated_at: operation.updatedAt || null,
+      ...(resultText ? { result: resultText } : {}),
+    };
+  }
+
+  async function dispatchStatus(context, args) {
+    rejectUnknownArguments(args, new Set([
+      'operation_id', 'target_session_id', 'active_only', 'limit',
+    ]));
+    const rawOperationId = args.operation_id == null
+      ? '' : String(args.operation_id).trim();
+    const targetId = args.target_session_id == null
+      ? '' : cleanId(args.target_session_id, 'target_session_id');
+    const activeOnly = args.active_only !== false;
+    const limit = args.limit == null ? 20 : Number(args.limit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new RouterToolError('invalid_arguments', 'limit must be an integer from 1 through 100');
+    }
+
+    if (rawOperationId) {
+      const operationId = cleanId(rawOperationId, 'operation_id');
+      const operation = await operations.get(operationId);
+      if (!operation || operation.kind !== 'dispatch'
+          || operation.ownerSessionId !== context.sessionId) {
+        throw new RouterToolError(
+          'dispatch_not_found',
+          `dispatch ${operationId} was not found for this session`,
+          404,
+        );
+      }
+      return {
+        ok: true,
+        dispatch: await dispatchOperationSummary(operation),
+        instruction: TERMINAL_OPERATION_STATES.has(operation.status)
+          ? 'This dispatch is terminal. Re-routing is safe only if the user still wants another execution.'
+          : 'This dispatch is still live. Do not re-dispatch the same task; wait, or call dispatch_cancel with this operation_id before re-routing.',
+      };
+    }
+
+    const statuses = activeOnly
+      ? ['admitted', 'queued', 'running', 'pending'] : undefined;
+    let owned = await operations.list({
+      kind: 'dispatch', ownerSessionId: context.sessionId, statuses,
+    });
+    if (targetId) owned = owned.filter(operation => operation.spec?.targetId === targetId);
+    owned = owned.sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id))
+      .slice(0, limit);
+    const dispatches = await Promise.all(owned.map(dispatchOperationSummary));
+    return {
+      ok: true,
+      active_only: activeOnly,
+      target_session_id: targetId || null,
+      dispatches,
+      count: dispatches.length,
+      instruction: dispatches.some(item => !item.terminal)
+        ? 'One or more dispatches are still live. Do not infer completion from session active/streaming flags or repository state. Wait, or cancel the original operation before re-routing.'
+        : 'No matching live dispatch owned by this session was found.',
     };
   }
 
@@ -1017,6 +1117,7 @@ function createRouterToolRuntime({
     }
     if (tool === 'route_task') return routeTask(context, args);
     if (tool === 'dispatch_master') return dispatchMaster(context, args, options);
+    if (tool === 'dispatch_status') return dispatchStatus(context, args);
     if (tool === 'dispatch_cancel') return dispatchCancel(context, args);
     return dispatchSlave(context, args);
   }

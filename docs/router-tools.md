@@ -17,10 +17,17 @@ queuing, idempotency, and result completion remain server-side.
 - `route_task(target_session_id, message, idempotency_key?)` admits a durable
   one-way dispatch and returns immediately. The target result is retained on
   the operation but is not returned to the caller.
-- `dispatch_master(target_session_id, message, idempotency_key?,
-  timeout_seconds?)` admits the same durable request and keeps the original MCP
-  tool call open until the operation reaches a terminal state. A timeout does
-  not cancel the operation; retrying with the same idempotency key reattaches.
+- `dispatch_master(target_session_id, message, idempotency_key?, mode,
+  timeout_seconds?)` admits the same durable request. Sync keeps the original
+  MCP call open; async returns after admission and wakes the caller later. A
+  timeout or interrupted transport does not cancel the operation.
+- `dispatch_status(operation_id?, target_session_id?, active_only?, limit?)`
+  recovers authoritative durable operation plus target FIFO/running state for
+  dispatches owned by the caller. It is the required recovery step after an
+  ambiguous `dispatch_master` result, including `terminated` and network loss.
+- `dispatch_cancel(operation_id, cancel_running?, reason?)` cancels an owned
+  queued/running dispatch. Re-routing is safe only after this succeeds or the
+  original operation is terminal.
 - `dispatch_slave(result, status?)` may complete only the dispatch that created
   the current turn. Natural post-turn completion remains the fallback when a
   model does not explicitly call the slave tool.
@@ -60,6 +67,11 @@ state and outbox items use the existing atomic orchestration store; no token is
 persisted. Restart recovery can deliver or complete admitted work independently
 of the MCP process. MCP cancellation aborts only the waiting tool request and
 does not discard the durable operation.
+
+Process-presence fields such as `active`, `streaming`, clients, recent task
+labels, and repository status are not dispatch completion evidence. Humans can
+query `GET /api/sessions/:id/dispatches`; it projects bounded metadata by
+joining durable operations with the target scheduler FIFO and active entry.
 
 `wait_for_user_answer` (and its legacy `request_user_input` alias) is
 deliberately not an interactive terminal prompt and
