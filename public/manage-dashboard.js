@@ -1014,9 +1014,8 @@ function renderDirSessionGroups(dirSessions) {
     const ss = groups[kind];
     if (!ss || !ss.length) return '';
     // Commander stays pinned to the top of its group (D1 keeps it ≤1 per fleet);
-    // the rest are recency-ordered. Shared helper keeps every list consistent.
-    const ordered = sortSessionsPinningCommander(
-      [...ss].sort((a, b) => sessionLastInteractionMs(b) - sessionLastInteractionMs(a)));
+    // the rest are in creation order. Shared helpers keep every list consistent.
+    const ordered = sortSessionsPinningCommander(sortSessionsByCreation(ss));
     const rows = ordered.map(s => renderSessionRow(s)).join('');
     return `
       <div class="sess-group ${kind}">
@@ -1050,10 +1049,31 @@ function sessionLastInteractionMs(s) {
   return best;
 }
 
+// 会话「创建时间」(ms)：fleet 内部列表的排序键。刻意只读 createdAt —— 不看
+// lastActivity，更不看实时 workspaceStatus，因为那两者每来一次流式回复就变，
+// 卡片会被不断抽到最前，列表跳来跳去。createdAt 写入后不再变化，顺序恒定。
+function sessionCreatedMs(s) {
+  if (!s) return 0;
+  const raw = s.createdAt;
+  if (raw == null) return 0;
+  const ms = typeof raw === 'number' ? raw : Date.parse(raw);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+// fleet 内部的会话排序：按创建时间升序（先建的排前面）。createdAt 相同、或都
+// 解析不出来时用 id 兜底，保证任意两次重渲染逐位同序——「稳定」在这里是硬要求，
+// 不是锦上添花：dashboard 每 5s 整表重渲染一次，比较器只要有并列就会抖。
+function sortSessionsByCreation(list) {
+  return [...list].sort((a, b) =>
+    sessionCreatedMs(a) - sessionCreatedMs(b) ||
+    String(a && a.id).localeCompare(String(b && b.id)));
+}
+
 // 会话列表统一排序：commander（type==='commander'）固定钉在最前、不参与其余
 // 会话的排序；其余会话保持调用方已排好的相对顺序（依赖稳定排序）。所有会话
 // 列表（活跃会话弹层、目录分组列表、目录预览取最近会话）都走它，保证 commander
-// 永远第一。调用方可先按自己的规则（如最近交互时间）排好再传入。
+// 永远第一。调用方可先按自己的规则（fleet 列表用创建时间、活跃会话弹层用最近
+// 交互时间）排好再传入。
 function sortSessionsPinningCommander(list) {
   return [...list].sort(
     (a, b) => (b.type === 'commander' ? 1 : 0) - (a.type === 'commander' ? 1 : 0));

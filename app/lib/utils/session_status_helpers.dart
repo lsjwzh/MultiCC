@@ -162,6 +162,24 @@ DateTime sessionLastInteractionAt(Session session, SessionStatus? live) {
   return best;
 }
 
+/// fleet 内部会话列表的排序键：创建时间升序（先建的排前面），createdAt 相同时
+/// 用 id 兜底。对齐 web 的 sortSessionsByCreation。
+///
+/// 刻意不看 lastActivity、更不看实时 [SessionStatus] —— 那两者每来一次流式回复
+/// 就变，卡片会被不断抽到最前，列表跳来跳去。createdAt 写入后不再变化，顺序恒定。
+/// id 兜底也不是锦上添花：Dart 的 [List.sort] 非稳定排序，比较器只要有并列，
+/// 每 5s 一次的 dashboard 轮询就可能把并列项换位。
+///
+/// 已知与 web 的差异：服务端 DTO 允许 createdAt 为 null（[Session.fromJson] 此时
+/// 兜底成 DateTime.now()，会排到组尾；web 的 sessionCreatedMs 兜底成 0，排到组
+/// 首）。两侧各自稳定，只是落位不同。当前 151/151 条会话都带 createdAt，够不着；
+/// 之所以不动 fromJson 的兜底，是因为 [sessionLastInteractionAt] 也读它，改成
+/// 纪元 0 会让「最后活动」显示成几十年前。
+int compareSessionsByCreation(Session a, Session b) {
+  final byCreation = a.createdAt.compareTo(b.createdAt);
+  return byCreation != 0 ? byCreation : a.id.compareTo(b.id);
+}
+
 /// 会话列表统一排序：commander（[Session.isCommander]）固定钉在最前、不参与其余
 /// 会话的排序；其余会话保持调用方已排好的相对顺序。对齐 web 的
 /// sortSessionsPinningCommander。Dart 的 List.sort 非稳定，故用「分区」而非
@@ -172,6 +190,36 @@ List<Session> pinCommanderFirst(List<Session> sessions) {
   if (commanders.isEmpty) return sessions;
   final rest = sessions.where((s) => !s.isCommander).toList();
   return [...commanders, ...rest];
+}
+
+/// fleet 内部会话列表的最终顺序：先按创建时间升序，再把 commander 钉到最前。
+///
+/// provider（[SessionManager.sessionsByKind]）与 widget（_SessionGroup）都走它，
+/// 而不是各排各的——两处各写一遍比较器，就意味着改一处漏一处时无人报错。幂等，
+/// 重复调用不会改变结果。
+List<Session> orderFleetSessions(Iterable<Session> sessions) =>
+    pinCommanderFirst(sessions.toList()..sort(compareSessionsByCreation));
+
+/// 把某个目录下的会话按 kind 分成 `{chat: [...], terminal: [...]}` 两组，各组
+/// 内部走 [orderFleetSessions]。对齐 web 的 renderDirSessionGroups 分组方式：
+/// 只按 kind 分，不再按 cli 分。缺 kind 的按 terminal 处理。
+///
+/// 抽成纯函数是为了能直接测：[SessionManager] 要连服务和轮询定时器才建得起来，
+/// 测不到就等于「排序 helper 有测试、真正决定渲染顺序的调用点没有」。
+Map<String, List<Session>> groupFleetSessionsByKind(
+  Iterable<Session> sessions,
+  String dirId,
+) {
+  final chats = <Session>[];
+  final terminals = <Session>[];
+  for (final s in sessions) {
+    if (s.dirId != dirId) continue;
+    (s.isChat ? chats : terminals).add(s);
+  }
+  return {
+    'chat': orderFleetSessions(chats),
+    'terminal': orderFleetSessions(terminals),
+  };
 }
 
 String formatRelativeTime(DateTime value, {DateTime? now}) {

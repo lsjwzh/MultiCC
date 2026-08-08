@@ -330,6 +330,8 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
   // ── Grouping helpers ──────────────────────────────────────────────────────
 
   /// Returns sessions scoped to a directory, split by (cli, kind).
+  /// Superseded by [sessionsByKind] when the fleet moved to kind-only grouping;
+  /// kept for callers that still want the cli split, and ordered the same way.
   Map<String, List<Session>> sessionsByCliKind(String dirId) {
     final groups = <String, List<Session>>{
       'claude_terminal': [],
@@ -348,40 +350,18 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
       final key = '${s.cli.name}_${s.kind.name}';
       groups.putIfAbsent(key, () => []).add(s);
     }
-    int sessionTs(Session s) =>
-        (s.lastActivity ?? s.createdAt).millisecondsSinceEpoch;
-    for (final ss in groups.values) {
-      ss.sort((a, b) => sessionTs(b).compareTo(sessionTs(a)));
-    }
-    return groups.map((key, ss) => MapEntry(key, pinCommanderFirst(ss)));
+    return groups.map((key, ss) => MapEntry(key, orderFleetSessions(ss)));
   }
 
   /// Returns sessions scoped to a directory, split by kind only
   /// (`{chat: [...], terminal: [...]}`) - aligned to the web fleet's new
   /// kind-only grouping. `kind` defaults to terminal when absent. Each group is
-  /// sorted by last interaction (live workspace activity wins, then REST
-  /// lastActivity, then createdAt) newest-first, mirroring
-  /// [sessionLastInteractionAt] / [_lastInteractionAt].
-  Map<String, List<Session>> sessionsByKind(String dirId) {
-    final chats = <Session>[];
-    final terminals = <Session>[];
-    for (final s in _sessions) {
-      if (s.dirId != dirId) continue;
-      if (s.isChat) {
-        chats.add(s);
-      } else {
-        terminals.add(s);
-      }
-    }
-    int cmp(Session a, Session b) =>
-        _lastInteractionAt(b).compareTo(_lastInteractionAt(a));
-    chats.sort(cmp);
-    terminals.sort(cmp);
-    return {
-      'chat': pinCommanderFirst(chats),
-      'terminal': pinCommanderFirst(terminals),
-    };
-  }
+  /// in creation order via [compareSessionsByCreation], mirroring web's
+  /// sortSessionsByCreation: a fleet list that reorders itself whenever a
+  /// session streams is unreadable, so activity deliberately does not move
+  /// cards.
+  Map<String, List<Session>> sessionsByKind(String dirId) =>
+      groupFleetSessionsByKind(_sessions, dirId);
 
   /// The special `__aux__` session (voice refine / intent classifier), if loaded.
   Session? get auxSession {
