@@ -19,6 +19,7 @@ task_board.json
 shares.json
 aux-config.json
 notes.json
+ui-layout.json
 chat_history/
 events/
 logs/
