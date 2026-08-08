@@ -174,12 +174,6 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
   /// (long absence — the OS has very likely frozen them).
   DateTime? _backgroundedAt;
 
-  /// A background shorter than this is treated as a glance (lock-screen peek,
-  /// app switch): keep the live sockets and just probe them, so unlocking
-  /// doesn't reconnect/reload every session. Longer absences force a (seamless)
-  /// reconnect. Mirrors the web client's hidden-duration gate.
-  static const _kKeepSocketBelow = Duration(seconds: 30);
-
   /// A notification tap arrived for a session not yet in [_sessions] (e.g. cold
   /// start). Consumed once the dashboard finishes loading.
   String? _pendingNotificationSessionId;
@@ -243,31 +237,22 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
       // Back in the foreground — the keep-alive foreground service (if it was
       // running) is no longer needed; drop its ongoing notification + wake lock.
       BackgroundKeepAlive.stop();
-      final away = _backgroundedAt != null
-          ? DateTime.now().difference(_backgroundedAt!)
-          : Duration.zero;
       _backgroundedAt = null;
       _isInBackground = false;
-      // A short absence (lock-screen glance, quick app switch) almost never
-      // kills the socket — tearing it down and reloading history on every
-      // unlock is exactly the "re-initialize every time" jank users hit. So
-      // only probe it (ensureAlive keeps a healthy socket, revives a dead one).
-      // After a long absence the OS has likely frozen the socket half-open, so
-      // force a reconnect — which is now seamless (the transcript is swapped in
-      // place, no blank flash). Mirrors the web client's hidden-duration gate.
-      //
-      // When keep-alive is on, the process (and its sockets) stayed alive in the
-      // background regardless of how long we were away, so we always just probe
-      // — ensureAlive still reconnects if a deep-doze actually killed the socket.
-      final forceReconnect =
-          !settings.keepAliveEnabled && away > _kKeepSocketBelow;
+      // Return to the foreground: we don't guess whether the OS froze the
+      // socket — ensureAlive probes the actual connection instead.
+      //  • Healthy socket (short glance, Android keep-alive) → stays up, zero
+      //    interruption, no "Connecting…" flash or history reload.
+      //  • Half-open (iOS froze it in the background) → ChatService's probe
+      //    window detects the missing pong within ~4s and reconnects; if it
+      //    already fell past the stale threshold it reconnects immediately.
+      //  • Already dropped → reconnect right away, skipping the backoff wait.
+      // Previously a background >30s unconditionally tore the socket down and
+      // reloaded history (p.reconnect), even when the OS had kept it alive —
+      // the "switch away and it re-initializes" jank this removes.
       for (final p in _providers.values) {
         p.isInBackground = false;
-        if (forceReconnect) {
-          p.reconnect();
-        } else {
-          p.ensureAlive();
-        }
+        p.ensureAlive();
       }
     } else if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.hidden) {

@@ -68,6 +68,12 @@ class ChatService {
   DateTime _lastActivity = DateTime.now();
   static const _pingInterval = Duration(seconds: 15);
   static const _staleThreshold = Duration(seconds: 35);
+  // Foreground-return probe: after ensureAlive() pings, give the socket a short
+  // window to answer. A frozen (half-open) socket yields no pong, and waiting
+  // for the 15s heartbeat cycle makes a post-background return feel broken —
+  // so if no frame arrives within the window we reconnect immediately.
+  Timer? _probeTimer;
+  static const _probeWindow = Duration(seconds: 4);
 
   Stream<ChatEvent> get events => _controller.stream;
 
@@ -104,6 +110,8 @@ class ChatService {
     _reconnectTimer = null;
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
+    _probeTimer?.cancel();
+    _probeTimer = null;
 
     _state = ChatConnectionState.connecting;
     _emit('state_change', _state);
@@ -230,9 +238,24 @@ class ChatService {
     try {
       _channel?.sink.add(jsonEncode({'type': 'ping'}));
       _startHeartbeat();
+      _armProbe();
     } catch (_) {
       _scheduleReconnect();
     }
+  }
+
+  /// Arms a short "did the probe ping get a pong?" window after a foreground
+  /// return. Any inbound frame (pong included) updates [_lastActivity]; if none
+  /// arrives within [_probeWindow] the socket is half-open and we reconnect
+  /// immediately instead of waiting for the next heartbeat cycle.
+  void _armProbe() {
+    _probeTimer?.cancel();
+    final lastActivityAt = _lastActivity;
+    _probeTimer = Timer(_probeWindow, () {
+      _probeTimer = null;
+      if (_disposed || _state != ChatConnectionState.connected) return;
+      if (_lastActivity == lastActivityAt) _scheduleReconnect();
+    });
   }
 
   void _handleMessage(Map<String, dynamic> msg) {
@@ -505,6 +528,8 @@ class ChatService {
     _wsAuth.invalidate();
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
+    _probeTimer?.cancel();
+    _probeTimer = null;
     // Dedup: onError + onDone (or ready failure) can fire for the same dead
     // socket — don't stack timers or double-bump the backoff counter.
     if (_reconnectTimer?.isActive ?? false) return;
@@ -633,6 +658,7 @@ class ChatService {
     _wsAuth.invalidate();
     _reconnectTimer?.cancel();
     _heartbeatTimer?.cancel();
+    _probeTimer?.cancel();
     _sub?.cancel();
     _channel?.sink.close();
     _controller.close();
