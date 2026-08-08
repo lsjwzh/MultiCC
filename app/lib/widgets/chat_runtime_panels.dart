@@ -586,43 +586,10 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
   }
 
   Widget _limitView(BuildContext context, UsageWindowLimit value) {
-    final used = value.usedPercentage;
-    final label = value.provider == 'codex'
-        ? t('codexWeeklyLimit')
-        : value.provider == 'glm'
-        ? t('glmFiveHourLimit')
-        : t('claudeFiveHourLimit');
-    final reset = value.resetsAtMs == null
-        ? ''
-        : TimeOfDay.fromDateTime(
-            DateTime.fromMillisecondsSinceEpoch(value.resetsAtMs!),
-          ).format(context);
-    final color = value.status == 'rejected'
-        ? const Color(0xFFff7b72)
-        : value.status == 'allowed_warning'
-        ? const Color(0xFFe3b341)
-        : const Color(0xFF7ee787);
-    final percent = used == null ? '—' : '${used.toStringAsFixed(1)}%';
-    final parts = <String>[label, percent];
-    // Staleness hint: window data arrives passively and is also restored from
-    // cache, so surface "更新于 HH:MM" once it's >1min old (matches the web bar).
-    final observed = value.observedAtMs;
-    if (observed != null &&
-        DateTime.now().millisecondsSinceEpoch - observed > 60_000) {
-      parts.add(t('updatedAt', {
-        'time': TimeOfDay.fromDateTime(
-          DateTime.fromMillisecondsSinceEpoch(observed),
-        ).format(context),
-      }));
-    }
-    if (reset.isNotEmpty) parts.add(t('resetsAt', {'time': reset}));
-    return Semantics(
-      label: '$label $percent',
-      child: Text(
-        parts.join(' · '),
-        style: TextStyle(color: color, fontSize: 11),
-      ),
-    );
+    // GLM/Codex window bars render in the web unified compact format
+    // (`<window> <remaining%> <countdown>` + shared remaining-percent color),
+    // not the old verbose label/percent/更新时间 view.
+    return _vendorQuotaView(formatWindowLimit(value));
   }
 
   /// Claude subscription limit bar — merged 5h + weekly/monthly windows (or an

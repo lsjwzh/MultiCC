@@ -185,6 +185,24 @@ void main() {
     expect(find.byKey(const Key('cancel-queued-queued-1')), findsOneWidget);
   });
 
+  testWidgets('GLM/Codex window bars render in the web unified format', (
+    tester,
+  ) async {
+    final glm = UsageWindowLimit(
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      usedPercentage: 50,
+      resetsAtMs: DateTime.now().millisecondsSinceEpoch + 3600000,
+      provider: 'glm',
+    );
+    await tester.pumpWidget(
+      _host(ChatRuntimeNoticePanel(limit: glm)),
+    );
+    // unified `<window> <remaining%> <countdown>`, not the old verbose view.
+    // (The countdown itself is pinned deterministically in vendor_quota_test.)
+    expect(find.textContaining('5h 50%'), findsOneWidget);
+  });
+
   testWidgets('Claude usage bar renders and tapping it fires the refresh tap', (
     tester,
   ) async {
