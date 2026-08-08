@@ -3,6 +3,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
+const { BusinessPushRequestError, browserPayloadOf } = require('../src/business-push');
 const { createPushRuntime, redactClassifierTail, stripAnsi } = require('../src/push-runtime');
 
 function createApp() {
@@ -11,7 +12,7 @@ function createApp() {
   return { routes, post: register('POST'), delete: register('DELETE') };
 }
 
-async function invoke(app, method, path, body = {}) {
+async function invoke(app, method, path, body = {}, options = {}) {
   const handler = app.routes.get(`${method} ${path}`);
   assert.equal(typeof handler, 'function', `missing ${method} ${path}`);
   let resolveResponse;
@@ -28,7 +29,11 @@ async function invoke(app, method, path, body = {}) {
       return this;
     },
   };
-  handler({ body }, response, error => { throw error; });
+  const contentType = options.contentType === undefined ? 'application/json' : options.contentType;
+  handler({
+    body,
+    is(type) { return type === contentType; },
+  }, response, error => { throw error; });
   await completed;
   return response;
 }
@@ -43,6 +48,7 @@ function createHarness(options = {}) {
     dispatches: [],
     taskWrites: [],
     pushCalls: [],
+    businessPushCalls: [],
     barkCalls: [],
     webhookCalls: [],
     saves: 0,
@@ -90,8 +96,30 @@ function createHarness(options = {}) {
     },
     clearTimeout(timer) { state.cleared.push(timer); },
   };
+  const defaultBusinessResult = {
+    statusCode: 200,
+    body: {
+      ok: true,
+      delivered: true,
+      deduped: false,
+      dedupe_persisted: true,
+      subscriber_count: 2,
+      delivery_count: 2,
+      failure_count: 0,
+      stale_count: 0,
+      remaining_subscriber_count: 2,
+    },
+  };
+  const businessPush = {
+    async notify(payload) {
+      state.businessPushCalls.push(payload);
+      if (options.businessPushError) throw options.businessPushError;
+      return options.businessPushResult || defaultBusinessResult;
+    },
+  };
   const runtime = createPushRuntime({
     push,
+    businessPush,
     sessions,
     persistedSessions,
     workspaceClients,
@@ -132,6 +160,15 @@ function flush() {
   return new Promise(resolve => setImmediate(resolve));
 }
 
+const VALID_BUSINESS_PUSH = Object.freeze({
+  title: '策略提醒测试',
+  body: '安全验收，不含真实交易建议',
+  type: 'strategy-test',
+  tag: 'strategy-test-us-AAPL',
+  url: '/manage',
+  dedupeKey: 'us:strategy:AAPL:BUY:2026-08-08T03:55:00+08:00',
+});
+
 test('mountRoutes preserves subscribe, delete, validate, test, Bark and Webhook DTOs', async () => {
   const harness = createHarness();
   const app = createApp();
@@ -141,6 +178,7 @@ test('mountRoutes preserves subscribe, delete, validate, test, Bark and Webhook 
     'DELETE /api/push/subscribe',
     'POST /api/push/validate',
     'POST /api/push/test',
+    'POST /api/push/notify',
     'POST /api/push/test-bark',
     'POST /api/push/test-webhook',
   ]);
@@ -173,6 +211,145 @@ test('mountRoutes preserves subscribe, delete, validate, test, Bark and Webhook 
   })).body, { ok: true });
   assert.equal(harness.push.subscriptions.size, 0);
   assert.equal(harness.state.saves, 2);
+});
+
+test('business notification route defaults to JSON, delegates once, and returns its delivery DTO', async () => {
+  const harness = createHarness();
+  const app = createApp();
+  harness.runtime.mountRoutes(app);
+
+  const response = await invoke(app, 'POST', '/api/push/notify', VALID_BUSINESS_PUSH);
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.body, {
+    ok: true,
+    delivered: true,
+    deduped: false,
+    dedupe_persisted: true,
+    subscriber_count: 2,
+    delivery_count: 2,
+    failure_count: 0,
+    stale_count: 0,
+    remaining_subscriber_count: 2,
+  });
+  assert.deepEqual(harness.state.businessPushCalls, [VALID_BUSINESS_PUSH]);
+  assert.equal(harness.state.pushCalls.length, 0,
+    'the route must not bypass the validated business push service');
+  assert.deepEqual(browserPayloadOf(harness.state.businessPushCalls[0]), {
+    title: VALID_BUSINESS_PUSH.title,
+    body: VALID_BUSINESS_PUSH.body,
+    type: VALID_BUSINESS_PUSH.type,
+    tag: VALID_BUSINESS_PUSH.tag,
+    url: VALID_BUSINESS_PUSH.url,
+  });
+  assert.equal(Object.hasOwn(browserPayloadOf(harness.state.businessPushCalls[0]), 'dedupeKey'), false,
+    'the idempotency key is server metadata, not browser-controlled notification data');
+});
+
+test('business notification route rejects non-JSON before invoking the service', async () => {
+  const harness = createHarness();
+  const app = createApp();
+  harness.runtime.mountRoutes(app);
+
+  const response = await invoke(app, 'POST', '/api/push/notify', VALID_BUSINESS_PUSH, {
+    contentType: 'text/plain',
+  });
+  assert.equal(response.statusCode, 415);
+  assert.deepEqual(response.body, {
+    ok: false,
+    delivered: false,
+    deduped: false,
+    error: 'UNSUPPORTED_MEDIA_TYPE',
+  });
+  assert.equal(harness.state.businessPushCalls.length, 0);
+});
+
+test('business notification route maps validation and idempotency errors without leaking details', async () => {
+  for (const expected of [
+    {
+      error: new BusinessPushRequestError('UNKNOWN_FIELD', 'actions'),
+      statusCode: 400,
+      body: {
+        ok: false,
+        delivered: false,
+        deduped: false,
+        error: 'UNKNOWN_FIELD',
+        field: 'actions',
+      },
+    },
+    {
+      error: new BusinessPushRequestError('IDEMPOTENCY_KEY_REUSE', 'dedupeKey'),
+      statusCode: 409,
+      body: {
+        ok: false,
+        delivered: false,
+        deduped: false,
+        error: 'IDEMPOTENCY_KEY_REUSE',
+        field: 'dedupeKey',
+      },
+    },
+  ]) {
+    const harness = createHarness({ businessPushError: expected.error });
+    const app = createApp();
+    harness.runtime.mountRoutes(app);
+    const response = await invoke(app, 'POST', '/api/push/notify', VALID_BUSINESS_PUSH);
+    assert.equal(response.statusCode, expected.statusCode);
+    assert.deepEqual(response.body, expected.body);
+    assert.equal(harness.state.businessPushCalls.length, 1);
+  }
+});
+
+test('business notification route preserves empty-subscriber and incomplete-delivery status', async () => {
+  for (const expected of [
+    {
+      statusCode: 503,
+      body: {
+        ok: false,
+        delivered: false,
+        deduped: false,
+        subscriber_count: 0,
+        delivery_count: 0,
+        failure_count: 0,
+        stale_count: 0,
+        remaining_subscriber_count: 0,
+        error: 'NO_PUSH_SUBSCRIBERS',
+      },
+    },
+    {
+      statusCode: 502,
+      body: {
+        ok: false,
+        delivered: false,
+        deduped: false,
+        subscriber_count: 4,
+        delivery_count: 3,
+        failure_count: 1,
+        stale_count: 0,
+        remaining_subscriber_count: 4,
+        error: 'PUSH_DELIVERY_INCOMPLETE',
+        partial: true,
+      },
+    },
+  ]) {
+    const harness = createHarness({ businessPushResult: expected });
+    const app = createApp();
+    harness.runtime.mountRoutes(app);
+    const response = await invoke(app, 'POST', '/api/push/notify', VALID_BUSINESS_PUSH);
+    assert.equal(response.statusCode, expected.statusCode);
+    assert.deepEqual(response.body, expected.body);
+  }
+});
+
+test('business notification route contains unknown failures behind a stable 500 response', async () => {
+  const harness = createHarness({
+    businessPushError: new Error('/Users/alice/private token=business-push-secret'),
+  });
+  const app = createApp();
+  harness.runtime.mountRoutes(app);
+  const response = await invoke(app, 'POST', '/api/push/notify', VALID_BUSINESS_PUSH);
+  assert.equal(response.statusCode, 500);
+  assert.deepEqual(response.body, { error: 'push request failed' });
+  assert.doesNotMatch(JSON.stringify(response.body), /business-push-secret|\/Users\/alice/);
+  assert.equal(harness.state.businessPushCalls.length, 1);
 });
 
 test('route sync and async failures are contained and redact paths and credentials', async () => {

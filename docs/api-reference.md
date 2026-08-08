@@ -142,8 +142,17 @@ curl -s "$MULTICC_BASE_URL/api/cron" \
 | `GET` | `/api/push/vapid-key` | VAPID public key |
 | `POST` / `DELETE` | `/api/push/subscribe` | Register / remove push subscription |
 | `POST` | `/api/push/test` | Fire a test push to all subscribers |
+| `POST` | `/api/push/notify` | Authenticated/local business WebPush with strict schema and idempotency |
 | `POST` | `/api/push/test-bark` | Fire a test Bark push |
 | `POST` | `/api/push/test-webhook` | Fire a test webhook |
+
+`POST /api/push/notify` accepts JSON with exactly `title`, `body`, `type`, `tag`,
+`url`, and `dedupeKey`. `type` is limited to `strategy-actionable` or
+`strategy-test`, and `url` must be `/manage`. A notification is reported as
+`delivered: true` only when every current WebPush subscription accepts it;
+responses include per-request subscriber, delivery, failure, and stale counts.
+Successful event keys are retained as hashed, bounded receipts for 30 days so a
+retry can be acknowledged without sending a second notification.
 
 ## Session Sharing
 
