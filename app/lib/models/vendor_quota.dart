@@ -552,6 +552,70 @@ VendorQuotaView formatKimiQuota(
     );
   }
 
+  // Kimi subscription keys 401 the prepaid balance API — the backend falls back
+  // to scraping the membership page into `summary` ({status:'ok',
+  // source:'subscription-page'}). Render those windows like the web
+  // `formatKimiQuota` subscription branch; without this a SUCCESSFUL scrape is
+  // mislabelled "余额暂不可用".
+  if (status == 'ok' && value['source'] == 'subscription-page') {
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    final rawSummary = value['summary'];
+    final summary = <Map>[];
+    if (rawSummary is List) {
+      for (final s in rawSummary) {
+        if (s is! Map) continue;
+        final label = (s['window'] ?? s['label'] ?? 'Kimi').toString();
+        final used = s['usedPercent'] ?? s['percent'];
+        if (used is! num || used.isNaN) continue;
+        final resetMs = s['resetMs'];
+        final resetRemaining = resetMs is num
+            ? (resetMs - nowMs < 0 ? 0 : resetMs - nowMs)
+            : null;
+        summary.add({
+          'label': label,
+          'used': used.toDouble(),
+          'resetMs': resetRemaining,
+        });
+      }
+    }
+    final syncRel = quotaRelAgo((value['fetchedAt'] as num?)?.toInt());
+    if (summary.isEmpty) {
+      final raw = value['text']?.toString() ?? '';
+      return VendorQuotaView(
+        'Kimi 订阅：已登录，未解析出用量 · ⟳ 重试',
+        VendorQuotaColor.yellow,
+        '已抓到 kimi.com 会员页，但没解析出百分比。\n原文：'
+        '${raw.length > 300 ? raw.substring(0, 300) : raw}',
+      );
+    }
+    var maxUsed = 0.0;
+    final segs = <String>[];
+    for (final s in summary) {
+      final used = (s['used'] as num).toDouble();
+      if (used > maxUsed) maxUsed = used;
+      final seg = unifiedWindowSeg(
+        s['label'] as String,
+        used,
+        s['resetMs'] as num?,
+      );
+      segs.add(seg.isNotEmpty ? seg : '${s['label']} $used%');
+    }
+    var text = sortWindowSegs(segs).join(' · ');
+    if (syncRel.isNotEmpty) text += ' · $syncRel';
+    text += ' ⟳';
+    var title = 'Kimi 订阅用量（会员页抓取；订阅 key 无预付余额接口）';
+    for (final s in summary) {
+      title += '\n${s['label']}: 已用 ${fmtQuotaNum((s['used'] as num).toDouble())}%';
+    }
+    if (syncRel.isNotEmpty) title += '\n同步于 $syncRel';
+    title += '\n点击 bar 刷新';
+    return VendorQuotaView(
+      text,
+      unifiedColorFromRemaining(unifiedRemaining(maxUsed)),
+      title,
+    );
+  }
+
   final okSites = <Map>[];
   if (status == 'ok' && value['sites'] is List) {
     for (final s in value['sites'] as List) {
@@ -622,6 +686,30 @@ VendorQuotaView formatKimiQuota(
 //      weekly (and monthly, when the page shows one) limits.
 // The scrape's own 5h row duplicates the event, so only 1wk/1m are appended;
 // the merge point normalises order via sortWindowSegs (5h → 1wk → 1m).
+
+/// GLM/Codex window bar from the passive rate_limit_event, in the web unified
+/// compact format (`formatFiveHourRateLimit`): 'window + remaining% +
+/// countdown' with the canonical window label (GLM → 5h, Codex → 1wk) and the
+/// shared remaining-percent color scale. Replaces the old verbose view
+/// (label + used% + 更新于/重置于) which never matched the web bar.
+VendorQuotaView formatWindowLimit(UsageWindowLimit limit, {int? nowMs}) {
+  final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
+  final rejected = limit.status == 'rejected';
+  final effectiveUsed = rejected ? 100.0 : limit.usedPercentage;
+  final resetMs = limit.resetsAtMs == null
+      ? null
+      : (limit.resetsAtMs! - now < 0 ? 0 : limit.resetsAtMs! - now);
+  final windowLabel = limit.provider == 'codex' ? '1wk' : '5h';
+  final seg = unifiedWindowSeg(windowLabel, effectiveUsed, resetMs);
+  final text = seg.isNotEmpty ? seg : windowLabel;
+  final color = unifiedColorFromRemaining(unifiedRemaining(effectiveUsed));
+  final title = limit.provider == 'glm'
+      ? 'GLM Coding Plan 五小时窗口用量（来自 open.bigmodel.cn 额度端点）'
+      : limit.provider == 'codex'
+          ? 'Codex 订阅周额度用量（来自 chatgpt.com/backend-api/wham/usage）'
+          : 'Claude 订阅五小时用量（来自 Claude Code 结构化 rate_limit_event）';
+  return VendorQuotaView(text, color, title);
+}
 
 /// Claude bar when a passive window limit is present: render the event's 5h
 /// window plus the weekly/monthly windows from the usage-page scrape (the
