@@ -12,11 +12,16 @@
 //
 // The guard runs at chat-turn admission, before the spawn decision: if the
 // rollout backing the persisted cliSessionId exceeds maxBytes (default 10MB),
-// the file is moved out of codex's sessions tree (archived, never deleted) and
+// the file is moved out of codex's sessions tree (archived, not deleted) and
 // the caller drops cliSessionId so the turn starts a fresh thread instead of
 // resuming. MultiCC's own context layers (system prompt, memory, notes) are
 // recomposed every turn, so the rebuilt conversation keeps its grounding; only
 // the native codex history is sacrificed.
+//
+// Archived files accumulate disk weight (hundreds of MB per pathological
+// thread), so the guard also sweeps the archive dir: entries older than the
+// TTL (MULTICC_CODEX_ROLLOUT_ARCHIVE_TTL_DAYS, default 30, 0 disables) are
+// deleted on each successful archive, throttled to one sweep per 6h.
 //
 // Fail-open by design: any filesystem error returns action 'error' and the
 // turn proceeds exactly as before — a guard hiccup must never block a turn.
@@ -29,10 +34,19 @@ const path = require('node:path');
 
 const DEFAULT_MAX_ROLLOUT_BYTES = 10 * 1024 * 1024;
 const ARCHIVE_DIRNAME = 'multicc-archived-rollouts';
+const DEFAULT_ARCHIVE_TTL_DAYS = 30;
+const SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 function toPositiveBytes(value, fallback) {
   const n = Number(value);
   return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+// Days → ms. Invalid input falls back to the default; <= 0 disables cleanup.
+function toArchiveTtlMs(value, fallbackDays) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallbackDays * 24 * 60 * 60 * 1000;
+  return n <= 0 ? 0 : n * 24 * 60 * 60 * 1000;
 }
 
 function createCodexRolloutGuard(deps = {}) {
@@ -85,6 +99,59 @@ function createCodexRolloutGuard(deps = {}) {
     return target;
   }
 
+  const archiveTtlMs = toArchiveTtlMs(
+    deps.archiveTtlDays !== undefined
+      ? deps.archiveTtlDays
+      : process.env.MULTICC_CODEX_ROLLOUT_ARCHIVE_TTL_DAYS,
+    DEFAULT_ARCHIVE_TTL_DAYS,
+  );
+
+  // Every codex home that can hold an archive dir: the default ~/.codex plus
+  // one per routed provider under codexHomesDir.
+  function candidateArchiveDirs() {
+    const homes = [path.join(homeDir, '.codex')];
+    let entries = [];
+    try { entries = fsImpl.readdirSync(codexHomesDir, { withFileTypes: true }); } catch (_) { entries = []; }
+    for (const entry of entries) {
+      if (entry.isDirectory()) homes.push(path.join(codexHomesDir, entry.name));
+    }
+    return homes.map(home => path.join(home, ARCHIVE_DIRNAME));
+  }
+
+  // Delete archived rollouts older than the TTL. Throttled (one pass per
+  // SWEEP_INTERVAL_MS unless options.force) and fail-open per file: cleanup
+  // is housekeeping, never a turn blocker.
+  let lastSweepAt = 0;
+  function sweepExpiredArchives(options = {}) {
+    if (archiveTtlMs <= 0) return Object.freeze({ deleted: [], freedBytes: 0, disabled: true });
+    const nowMs = options.nowMs !== undefined ? options.nowMs : Date.now();
+    if (!options.force && nowMs - lastSweepAt < SWEEP_INTERVAL_MS) {
+      return Object.freeze({ deleted: [], freedBytes: 0, throttled: true });
+    }
+    lastSweepAt = nowMs;
+    const deleted = [];
+    let freedBytes = 0;
+    for (const archiveDir of candidateArchiveDirs()) {
+      let entries;
+      try { entries = fsImpl.readdirSync(archiveDir, { withFileTypes: true }); } catch (_) { continue; }
+      for (const entry of entries) {
+        if (!entry.isFile()) continue;
+        const full = path.join(archiveDir, entry.name);
+        try {
+          const stats = fsImpl.statSync(full);
+          if (nowMs - stats.mtimeMs <= archiveTtlMs) continue;
+          fsImpl.unlinkSync(full);
+          deleted.push(full);
+          freedBytes += stats.size;
+        } catch (_) { /* one bad file must not stop the sweep */ }
+      }
+    }
+    if (deleted.length) {
+      try { logger.info?.('codex_rollout_archive_cleanup', { deleted: deleted.length, freedBytes, ttlDays: archiveTtlMs / 86400000 }); } catch (_) {}
+    }
+    return Object.freeze({ deleted, freedBytes });
+  }
+
   // Inspect the rollout backing record.cliSessionId and archive it. Returns a
   // frozen summary for logging/notification:
   //   action: 'skipped'  — not a codex record / no cliSessionId
@@ -114,6 +181,9 @@ function createCodexRolloutGuard(deps = {}) {
       if (!archived.length) {
         return Object.freeze({ action: 'ok', maxBytes, totalBytes, files: files.length });
       }
+      // Housekeeping: an archive just grew, so opportunist prune expired
+      // entries (throttled; failures here are swallowed inside the sweep).
+      try { sweepExpiredArchives(); } catch (_) {}
       return Object.freeze({
         action: 'archived', maxBytes, totalBytes, files: files.length,
         cliSessionId: String(record.cliSessionId), archived,
@@ -124,7 +194,12 @@ function createCodexRolloutGuard(deps = {}) {
     }
   }
 
-  return Object.freeze({ enforce, maxBytes });
+  return Object.freeze({ enforce, sweepExpiredArchives, maxBytes, archiveTtlMs });
 }
 
-module.exports = { createCodexRolloutGuard, DEFAULT_MAX_ROLLOUT_BYTES, ARCHIVE_DIRNAME };
+module.exports = {
+  createCodexRolloutGuard,
+  DEFAULT_MAX_ROLLOUT_BYTES,
+  DEFAULT_ARCHIVE_TTL_DAYS,
+  ARCHIVE_DIRNAME,
+};
