@@ -8,6 +8,7 @@ const path = require('node:path');
 const {
   createCodexRolloutGuard,
   DEFAULT_MAX_ROLLOUT_BYTES,
+  DEFAULT_ARCHIVE_TTL_DAYS,
   ARCHIVE_DIRNAME,
 } = require('../src/chat/codex-rollout-guard');
 
@@ -16,6 +17,7 @@ const {
 // These tests run against a real temp home so the walk/archive semantics are
 // exercised end to end.
 delete process.env.MULTICC_CODEX_ROLLOUT_MAX_BYTES;
+delete process.env.MULTICC_CODEX_ROLLOUT_ARCHIVE_TTL_DAYS;
 
 function setupHome() {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-rollout-guard-'));
@@ -141,4 +143,82 @@ test('filesystem failures fail open: action error, turn must proceed', () => {
   assert.match(result.error, /disk exploded/);
   assert.equal(warnings.length, 1);
   assert.equal(warnings[0][0], 'codex_rollout_guard_error');
+});
+
+// --- archive TTL cleanup -----------------------------------------------------
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function writeArchived(archiveDir, name, sizeBytes, ageDays) {
+  fs.mkdirSync(archiveDir, { recursive: true });
+  const file = path.join(archiveDir, name);
+  fs.writeFileSync(file, 'a'.repeat(sizeBytes));
+  const past = (Date.now() - ageDays * DAY_MS) / 1000;
+  fs.utimesSync(file, past, past);
+  return file;
+}
+
+test('sweep deletes archives older than the TTL and keeps fresh ones', () => {
+  const { homeDir } = setupHome();
+  const archiveDir = path.join(homeDir, '.codex', ARCHIVE_DIRNAME);
+  const old = writeArchived(archiveDir, 'rollout-old.jsonl', 5000, DEFAULT_ARCHIVE_TTL_DAYS + 10);
+  const fresh = writeArchived(archiveDir, 'rollout-fresh.jsonl', 300, 1);
+  const guard = createCodexRolloutGuard({ homeDir });
+  const result = guard.sweepExpiredArchives({ force: true });
+  assert.deepEqual(result.deleted, [old]);
+  assert.equal(result.freedBytes, 5000);
+  assert.equal(fs.existsSync(old), false);
+  assert.ok(fs.existsSync(fresh), 'fresh archive survives the sweep');
+});
+
+test('TTL defaults to 30 days, is configurable, and 0 disables cleanup', () => {
+  const guard = createCodexRolloutGuard({});
+  assert.equal(DEFAULT_ARCHIVE_TTL_DAYS, 30);
+  assert.equal(guard.archiveTtlMs, 30 * DAY_MS);
+  assert.equal(createCodexRolloutGuard({ archiveTtlDays: 7 }).archiveTtlMs, 7 * DAY_MS);
+  assert.equal(createCodexRolloutGuard({ archiveTtlDays: 0 }).archiveTtlMs, 0);
+  assert.equal(createCodexRolloutGuard({ archiveTtlDays: NaN }).archiveTtlMs, 30 * DAY_MS);
+
+  const { homeDir } = setupHome();
+  const archiveDir = path.join(homeDir, '.codex', ARCHIVE_DIRNAME);
+  const ancient = writeArchived(archiveDir, 'rollout-ancient.jsonl', 100, 999);
+  const disabled = createCodexRolloutGuard({ homeDir, archiveTtlDays: 0 });
+  const result = disabled.sweepExpiredArchives({ force: true });
+  assert.equal(result.disabled, true);
+  assert.ok(fs.existsSync(ancient), 'TTL 0 keeps every archive forever');
+
+  const shortTtl = createCodexRolloutGuard({ homeDir, archiveTtlDays: 1 });
+  const swept = shortTtl.sweepExpiredArchives({ force: true });
+  assert.deepEqual(swept.deleted, [ancient]);
+});
+
+test('sweep is throttled to one pass per 6h unless forced', () => {
+  const { homeDir } = setupHome();
+  const guard = createCodexRolloutGuard({ homeDir });
+  const t0 = Date.now();
+  assert.equal(guard.sweepExpiredArchives({ force: true, nowMs: t0 }).throttled, undefined);
+  assert.equal(guard.sweepExpiredArchives({ nowMs: t0 + 3600_000 }).throttled, true, '1h later: throttled');
+  const later = guard.sweepExpiredArchives({ nowMs: t0 + 7 * 3600_000 });
+  assert.equal(later.throttled, undefined, 'after the interval the sweep runs again');
+});
+
+test('sweep covers provider codex homes under codexHomesDir', () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-rollout-guard-'));
+  const codexHomesDir = path.join(homeDir, '.multicc', 'codex-homes');
+  const provArchive = path.join(codexHomesDir, 'prov1', ARCHIVE_DIRNAME);
+  const expired = writeArchived(provArchive, 'rollout-prov.jsonl', 700, 90);
+  const guard = createCodexRolloutGuard({ homeDir, codexHomesDir });
+  const result = guard.sweepExpiredArchives({ force: true });
+  assert.deepEqual(result.deleted, [expired]);
+});
+
+test('a successful archive opportunistically sweeps expired entries', () => {
+  const { homeDir, sessionsDir } = setupHome();
+  const archiveDir = path.join(homeDir, '.codex', ARCHIVE_DIRNAME);
+  const old = writeArchived(archiveDir, 'rollout-stale.jsonl', 900, DEFAULT_ARCHIVE_TTL_DAYS + 5);
+  writeRollout(sessionsDir, 'thread-sweeper', 2048);
+  const guard = createCodexRolloutGuard({ homeDir, maxBytes: 1024 });
+  const result = guard.enforce({ cli: 'codex', cliSessionId: 'thread-sweeper' });
+  assert.equal(result.action, 'archived');
+  assert.equal(fs.existsSync(old), false, 'enforce piggybacks the TTL sweep');
 });

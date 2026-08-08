@@ -149,6 +149,12 @@ function createChatTurnEngine(deps) {
   // resumes it (`codex exec resume` hangs internally on one — no request ever
   // leaves the process). See src/chat/codex-rollout-guard.js.
   const codexRolloutGuard = deps.codexRolloutGuard || createCodexRolloutGuard({ logger });
+  // One boot-time sweep so expired archives get pruned even if no turn ever
+  // archives again; delayed so it never touches startup critical path.
+  const rolloutArchiveSweepTimer = setTimeout(() => {
+    try { codexRolloutGuard.sweepExpiredArchives({ force: true }); } catch (_) {}
+  }, 10000);
+  rolloutArchiveSweepTimer.unref?.();
   function turnTimingsField(sessionName, turnId) {
     const record = turnTiming.get(sessionName, turnId);
     if (!record || record.t3 === null) return undefined;
