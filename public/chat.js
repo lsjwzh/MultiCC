@@ -876,6 +876,7 @@ function applyHistoryPlan(plan) {
   const viewPlan = chatHistoryView.applyPlan(plan, {
     currentElement: currentMsgEl,
     lastUserElement: _lastUserBubble,
+    currentText: currentTextContent || chatEventState.lastFinishedText,
   });
   currentMsgEl = viewPlan.currentElement;
   _lastUserBubble = viewPlan.lastUserElement;
