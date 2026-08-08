@@ -44,6 +44,7 @@ function createLivenessRuntime(deps = {}) {
     chatSessions,
     chatStreamStatus = () => null,
     probeSession = null,
+    turnHeartbeatStatus = null,
     thresholds = {},
   } = deps;
 
@@ -56,6 +57,7 @@ function createLivenessRuntime(deps = {}) {
   assertFn(now, 'now');
   assertFn(chatStreamStatus, 'chatStreamStatus');
   if (probeSession !== null) assertFn(probeSession, 'probeSession');
+  if (turnHeartbeatStatus !== null) assertFn(turnHeartbeatStatus, 'turnHeartbeatStatus');
 
   const cfg = { ...DEFAULTS, ...thresholds };
 
@@ -140,12 +142,21 @@ function createLivenessRuntime(deps = {}) {
     const turnStartedAt = cs && Number.isFinite(cs.turnStartedAt) ? cs.turnStartedAt : null;
     const proxy = proxyLedger.get(sessionId) || null;
     const proxyAgeMs = proxy ? Math.max(0, t - proxy.at) : null;
+    // Live turn-progress heartbeat: the authoritative phase/silence while a turn
+    // runs. cs.currentTask.phase is the CLASSIFY goal phase and goes stale
+    // (previous turn's "done") the moment a new turn starts — reporting it here
+    // made liveness say turn_done while the heartbeat said starting.
+    const heartbeat = (() => {
+      if (!turnHeartbeatStatus) return null;
+      try { return turnHeartbeatStatus(sessionId) || null; } catch (_) { return null; }
+    })();
     // silentMs: how long since the last user-visible byte for the in-flight turn.
     // Prefer an explicit host-provided heartbeat value on the chat session; fall
     // back to lastStreamAt.
     const heartbeatSilentMs = cs && Number.isFinite(cs.heartbeatSilentMs)
       ? cs.heartbeatSilentMs
-      : (lastStreamAt != null && (isStreaming || busy) ? Math.max(0, t - lastStreamAt) : null);
+      : heartbeat ? heartbeat.silentMs
+        : (lastStreamAt != null && (isStreaming || busy) ? Math.max(0, t - lastStreamAt) : null);
     const pid = (streamStatus && Number.isInteger(streamStatus.pid)) ? streamStatus.pid
       : (cs && cs.claudeProc && Number.isInteger(cs.claudeProc.pid)) ? cs.claudeProc.pid
         : null;
@@ -154,7 +165,9 @@ function createLivenessRuntime(deps = {}) {
       lastStreamAt, turnStartedAt, heartbeatSilentMs,
       proxyPhase: proxy ? proxy.phase : null,
       proxyAgeMs,
-      phase: cs && cs.currentTask && cs.currentTask.phase ? cs.currentTask.phase : null,
+      phase: heartbeat && heartbeat.phase
+        ? heartbeat.phase
+        : (cs && cs.currentTask && cs.currentTask.phase ? cs.currentTask.phase : null),
     };
   }
 

@@ -18,7 +18,7 @@ function clockFrom(start) {
   return now;
 }
 
-function make({ now, sessions = {}, chat = {}, streamStatus = {}, probeSession, thresholds } = {}) {
+function make({ now, sessions = {}, chat = {}, streamStatus = {}, probeSession, thresholds, turnHeartbeatStatus } = {}) {
   const records = new Map(Object.entries(sessions).map(([id, r]) => [id, { id, ...r }]));
   const chatSessions = new Map(Object.entries(chat));
   return createLivenessRuntime({
@@ -28,6 +28,7 @@ function make({ now, sessions = {}, chat = {}, streamStatus = {}, probeSession, 
     chatStreamStatus: id => streamStatus[id] || null,
     probeSession,
     thresholds,
+    turnHeartbeatStatus,
   });
 }
 
@@ -232,4 +233,91 @@ test('forget() clears a session ledger entry', () => {
 test('createLivenessRuntime validates its deps', () => {
   assert.throws(() => createLivenessRuntime({}), /records must be/);
   assert.throws(() => createLivenessRuntime({ records: new Map() }), /chatSessions must be/);
+});
+
+test('live heartbeat phase overrides the stale classify goal phase (starting vs turn_done)', () => {
+  // Reproduces the codex starting-stall incident: cs.currentTask.phase still
+  // held the PREVIOUS turn's "done" while the turn-progress heartbeat was in
+  // "starting", so liveness said reason=turn_done while heartbeats said
+  // phase=starting. signals/verdict must now report the heartbeat's phase.
+  const now = clockFrom(500_000);
+  const rt = make({
+    now,
+    sessions: { s1: {} },
+    chat: {
+      s1: {
+        isStreaming: true,
+        lastStreamAt: now() - 20_000,
+        currentTask: { phase: 'done' }, // stale classify goal phase
+      },
+    },
+    turnHeartbeatStatus: () => ({
+      sessionId: 's1', turnId: 't1', phase: 'starting',
+      safeToolKind: null, startedAt: now() - 25_000, silentMs: 20_000,
+    }),
+  });
+  const s = rt.signals('s1');
+  assert.equal(s.phase, 'starting');
+  assert.equal(s.heartbeatSilentMs, 20_000, 'silence comes from the live heartbeat');
+  const v = rt.verdict('s1');
+  assert.equal(v.state, 'working');
+  assert.equal(v.reason, 'turn_starting', 'reason must not contradict the heartbeat');
+});
+
+test('heartbeat silence feeds the stalled verdict when past threshold', () => {
+  const now = clockFrom(1_000_000);
+  const rt = make({
+    now,
+    sessions: { s1: {} },
+    chat: { s1: { isStreaming: true, lastStreamAt: now() - 300_000 } },
+    thresholds: { stallSilentMs: 180_000 },
+    turnHeartbeatStatus: () => ({
+      sessionId: 's1', turnId: 't1', phase: 'starting',
+      safeToolKind: null, startedAt: now() - 310_000, silentMs: 300_000,
+    }),
+  });
+  const v = rt.verdict('s1', { hasOutboundConnection: false, rolloutGrowing: false });
+  assert.equal(v.state, 'stalled');
+  assert.equal(v.reason, 'silent_300s');
+  assert.equal(v.phase, 'starting');
+});
+
+test('a throwing or null heartbeat status falls back to prior behavior', () => {
+  const now = clockFrom(500_000);
+  const throwing = make({
+    now,
+    sessions: { s1: {} },
+    chat: { s1: { isStreaming: true, lastStreamAt: now(), currentTask: { phase: 'implementing' } } },
+    turnHeartbeatStatus: () => { throw new Error('heartbeat exploded'); },
+  });
+  let v = throwing.verdict('s1');
+  assert.equal(v.reason, 'turn_implementing', 'falls back to currentTask.phase');
+
+  const absent = make({
+    now,
+    sessions: { s1: {} },
+    chat: { s1: { isStreaming: true, lastStreamAt: now() - 10_000 } },
+    turnHeartbeatStatus: () => null, // heartbeat has no active turn entry
+  });
+  v = absent.verdict('s1');
+  assert.equal(v.state, 'working');
+  assert.equal(v.reason, 'in_flight');
+  assert.equal(v.heartbeatSilentMs, 10_000, 'falls back to lastStreamAt-derived silence');
+});
+
+test('explicit cs.heartbeatSilentMs still wins over the live heartbeat', () => {
+  const now = clockFrom(1_000_000);
+  const rt = make({
+    now,
+    sessions: { s1: {} },
+    chat: { s1: { isStreaming: true, heartbeatSilentMs: 7_000, lastStreamAt: now() - 90_000 } },
+    thresholds: { stallSilentMs: 180_000 },
+    turnHeartbeatStatus: () => ({
+      sessionId: 's1', turnId: 't1', phase: 'thinking',
+      safeToolKind: null, startedAt: now() - 100_000, silentMs: 90_000,
+    }),
+  });
+  const v = rt.verdict('s1');
+  assert.equal(v.state, 'working', 'host-provided 7s silence is authoritative');
+  assert.equal(v.reason, 'turn_thinking');
 });

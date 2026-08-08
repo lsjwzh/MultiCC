@@ -14,6 +14,7 @@ const {
 
 function fixture(options = {}) {
   let at = options.at ?? 1_000_000;
+  const startedAt = at;
   const silentFor = options.silentFor ?? 400_000; // well past the 180s standard
   const record = {
     id: 's1',
@@ -36,7 +37,7 @@ function fixture(options = {}) {
     getTaskState: value => value.taskState,
     getChatSession: () => options.chat === null ? null : {
       isStreaming: options.isStreaming ?? true,
-      lastStreamAt: at - silentFor,
+      lastStreamAt: startedAt - silentFor, // fixed anchor: silence grows with advance()
     },
     getStreamStatus: () => options.stream || null,
     assessLiveness: async () => {
@@ -48,8 +49,10 @@ function fixture(options = {}) {
       cancelCalls.push([id, cancelOptions]);
       return { ok: true, code: 'cancelled' };
     },
+    getTurnStatus: options.turnStatus === undefined ? null : () => options.turnStatus,
     now: () => at,
     stallSilentMs: options.stallSilentMs ?? 180_000,
+    startingGraceMs: options.startingGraceMs,
     confirmations: options.confirmations ?? STALLED_RECOVERY_CONFIRMATIONS,
     cooldownMs: options.cooldownMs ?? 120_000,
     logger: { warn() {} },
@@ -212,4 +215,79 @@ test('an assess failure skips this sweep without poisoning the suspect count', a
   result = await recovery.sweep();
   assert.equal(result.results[0].action, 'cancelled');
   assert.equal(cancelCalls.length, 1);
+});
+
+test('the starting phase gets extra grace before recovery may fire', async () => {
+  // Silent 250s: past the 180s stall standard but inside starting grace
+  // (180s + default 120s). MCP handshake + rollout load + first token all
+  // happen in this phase, so a kill here would be a false positive.
+  const h = fixture({ silentFor: 250_000, turnStatus: { phase: 'starting' } });
+  let result = await h.recovery.sweep();
+  assert.equal(result.results[0].action, 'skip');
+  assert.equal(result.results[0].reason, 'starting_grace');
+  assert.equal(h.assessCallCount(), 0, 'grace skips before the probe');
+  assert.deepEqual(h.cancelCalls, []);
+
+  // Past grace the normal multi-signal chain applies.
+  h.advance(60_000); // silentFor now 310s > 180s + 120s
+  result = await h.recovery.sweep();
+  assert.equal(result.results[0].action, 'confirming');
+  h.advance(30_000);
+  result = await h.recovery.sweep();
+  assert.equal(result.results[0].action, 'cancelled');
+  assert.equal(h.cancelCalls.length, 1);
+});
+
+test('starting grace is configurable and zero disables it', async () => {
+  const custom = fixture({
+    silentFor: 200_000,
+    turnStatus: { phase: 'starting' },
+    startingGraceMs: 10_000, // 180s + 10s = 190s < 200s silent
+  });
+  let result = await custom.recovery.sweep();
+  assert.equal(result.results[0].action, 'confirming');
+
+  const zero = fixture({
+    silentFor: 200_000,
+    turnStatus: { phase: 'starting' },
+    startingGraceMs: 0,
+  });
+  result = await zero.recovery.sweep();
+  assert.equal(result.results[0].action, 'confirming');
+});
+
+test('non-starting phases keep the original threshold and a throwing status fn is tolerated', async () => {
+  for (const phase of ['thinking', 'tool', 'finalizing']) {
+    const h = fixture({ silentFor: 250_000, turnStatus: { phase } });
+    const result = await h.recovery.sweep();
+    assert.equal(result.results[0].action, 'confirming', phase);
+  }
+
+  let assessCalls = 0;
+  const recovery = createStalledTurnRecovery({
+    listRecords: () => new Map([['s1', {
+      id: 's1', kind: 'chat', type: 'chat',
+      taskState: { classifyState: 'P', cancelledAt: null },
+    }]]).entries(),
+    getTaskState: value => value.taskState,
+    getChatSession: () => ({ isStreaming: true, lastStreamAt: 600_000 }),
+    getStreamStatus: () => null,
+    assessLiveness: async () => { assessCalls += 1; return { state: 'stalled', reason: 'silent_400s' }; },
+    getTurnStatus: () => { throw new Error('heartbeat exploded'); },
+    cancelTurn: async () => ({ ok: true }),
+    now: () => 1_000_000,
+    logger: { warn() {} },
+  });
+  const result = await recovery.sweep();
+  assert.equal(result.results[0].action, 'confirming', 'status failure falls back to base threshold');
+  assert.equal(assessCalls, 1);
+});
+
+test('without a getTurnStatus dep the recovery behaves exactly as before', async () => {
+  const h = fixture({ silentFor: 250_000 }); // no turnStatus → getTurnStatus null
+  let result = await h.recovery.sweep();
+  assert.equal(result.results[0].action, 'confirming');
+  h.advance(30_000);
+  result = await h.recovery.sweep();
+  assert.equal(result.results[0].action, 'cancelled');
 });
