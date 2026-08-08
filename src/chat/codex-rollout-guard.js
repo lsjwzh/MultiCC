@@ -20,6 +20,8 @@
 //
 // Fail-open by design: any filesystem error returns action 'error' and the
 // turn proceeds exactly as before — a guard hiccup must never block a turn.
+// restart-spawn calls enforce(record, { force: true }) to archive the rollout
+// unconditionally: a manual process restart is an explicit context rebuild.
 
 const fs = require('node:fs');
 const os = require('node:os');
@@ -83,17 +85,20 @@ function createCodexRolloutGuard(deps = {}) {
     return target;
   }
 
-  // Inspect the rollout backing record.cliSessionId and archive it when it
-  // exceeds maxBytes. Returns a frozen summary for logging/notification:
+  // Inspect the rollout backing record.cliSessionId and archive it. Returns a
+  // frozen summary for logging/notification:
   //   action: 'skipped'  — not a codex record / no cliSessionId
   //   action: 'ok'       — rollout within budget (or none found: 'not_found')
-  //   action: 'archived' — oversized rollout(s) moved; caller must clear
+  //   action: 'archived' — rollout(s) moved; caller must clear
   //                        record.cliSessionId so the next spawn starts fresh
   //   action: 'error'    — guard failed; turn must proceed unchanged
-  function enforce(record) {
+  // options.force (used by restart-spawn): archive EVERY rollout of the thread
+  // regardless of size — the user explicitly asked to rebuild the context.
+  function enforce(record, options = {}) {
     if (!record || record.cli !== 'codex' || !record.cliSessionId) {
       return Object.freeze({ action: 'skipped' });
     }
+    const force = options.force === true;
     try {
       const sessionsDir = path.join(codexHome(record), 'sessions');
       const files = findRollouts(sessionsDir, String(record.cliSessionId));
@@ -104,7 +109,7 @@ function createCodexRolloutGuard(deps = {}) {
         let sizeBytes = 0;
         try { sizeBytes = fsImpl.statSync(file).size; } catch (_) { sizeBytes = 0; }
         totalBytes += sizeBytes;
-        if (sizeBytes > maxBytes) archived.push({ file, sizeBytes, archivedTo: archiveRollout(file, sessionsDir) });
+        if (force || sizeBytes > maxBytes) archived.push({ file, sizeBytes, archivedTo: archiveRollout(file, sessionsDir) });
       }
       if (!archived.length) {
         return Object.freeze({ action: 'ok', maxBytes, totalBytes, files: files.length });

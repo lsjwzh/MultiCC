@@ -714,8 +714,8 @@
   "statusAriaOffline": "Status: offline",
   "statusAriaUnknown": "Status: unknown",
   "restartSpawn": "Restart Process",
-  "restartSpawnHint": "Process-level restart: kill and rebuild this session CLI process, keeping the conversation (use when ↻ reconnect does not help)",
-  "restartSpawnConfirm": "Restart this session CLI process?\n\nThe turn in flight is interrupted. The conversation is kept — your next message respawns the process on the same native session.",
+  "restartSpawnHint": "Process-level restart: kill and rebuild this session CLI process. MultiCC context is kept; for codex the native history is archived and the context rebuilt (use when ↻ reconnect does not help)",
+  "restartSpawnConfirm": "Restart this session CLI process?\n\nThe turn in flight is interrupted. MultiCC context is kept; for codex sessions the native history is archived and the context rebuilt on your next message.",
   "restartSpawnDone": "✓ CLI process restarted (was pid {pid}). Send your next message to continue.",
   "restartSpawnFailed": "Restart process failed: {error}"
 }
