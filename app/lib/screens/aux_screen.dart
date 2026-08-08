@@ -6,7 +6,7 @@ import '../theme.dart';
 import 'aux_history_screen.dart';
 
 /// AI 助手 (aux) 面板。聚合 aux 的配置、健康状态、重跑操作和任务历史入口——
-/// 镜像网页管理台 manage.html 里的 aux-section + aux-modal 那一整套。
+/// 镜像网页管理台 manage.html 里的 #kpi-aux 磁贴 + aux-modal 那一整套。
 ///
 /// • 配置：选协议 / provider / model（POST /api/aux/config）
 /// • 健康：显示 aux 是否可用、连续失败次数（GET /api/aux/health）

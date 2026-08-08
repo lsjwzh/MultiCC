@@ -21,7 +21,6 @@ import '../utils/status_presentation.dart';
 import '../widgets/directory_card.dart';
 import '../widgets/session_card.dart';
 import '../widgets/session_badges.dart';
-import '../widgets/home_task_scroller.dart';
 import '../widgets/kpi_tile.dart';
 import '../widgets/task_board_view.dart';
 import '../widgets/create_session_dialog.dart';
@@ -631,16 +630,6 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
 
         return Column(
           children: [
-            // 首页全局任务滚动展示器（当天用过的会话，最近优先）
-            HomeTaskScroller(
-              sessions: mgr.sessions,
-              directories: mgr.directories,
-              liveStatusFor: mgr.liveStatus,
-              onSessionTap: (s) {
-                mgr.openSession(s);
-                mgr.switchToSession(s.id);
-              },
-            ),
             Expanded(
               child: RefreshIndicator(
                 onRefresh: () =>
