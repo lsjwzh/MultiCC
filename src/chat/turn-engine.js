@@ -36,6 +36,7 @@ const chatStream = require('../chat-stream');
 const waitInjector = require('../wait-injector');
 const providers = require('../providers');
 const { createTurnTimingRecorder } = require('./turn-timing');
+const { createCodexRolloutGuard } = require('./codex-rollout-guard');
 
 function appendAdapterAssistantText(current, text) {
   const prior = String(current || '');
@@ -144,6 +145,10 @@ function createChatTurnEngine(deps) {
   // Shared [turn-timing] recorder: one instance for every adapter path (claude
   // stream + per-turn spawn). See src/chat/turn-timing.js for the t0-t3 contract.
   const turnTiming = createTurnTimingRecorder();
+  // Pre-resume size guard: archive an oversized codex rollout before the turn
+  // resumes it (`codex exec resume` hangs internally on one — no request ever
+  // leaves the process). See src/chat/codex-rollout-guard.js.
+  const codexRolloutGuard = deps.codexRolloutGuard || createCodexRolloutGuard({ logger });
   function turnTimingsField(sessionName, turnId) {
     const record = turnTiming.get(sessionName, turnId);
     if (!record || record.t3 === null) return undefined;
@@ -623,6 +628,30 @@ function createChatTurnEngine(deps) {
       ? existingCs.chatTurnCount
       : (initialHistory = loadChatHistory(sessionName)).filter(message => message.role === 'assistant').length;
     const turnCli = (existingCs && existingCs.cli) || persisted.cli || 'claude';
+    // Pre-resume rollout size guard (codex only): an oversized rollout makes
+    // `codex exec resume` hang internally before its first upstream request.
+    // Archiving it here and clearing cliSessionId turns THIS turn into a fresh
+    // thread; MultiCC context layers are recomposed below by composeMessage.
+    if (turnCli === 'codex' && persisted.cliSessionId) {
+      const guardResult = codexRolloutGuard.enforce(persisted);
+      if (guardResult.action === 'archived') {
+        persisted.cliSessionId = null;
+        savePersistedSessionsBestEffort();
+        logger.warn('codex_rollout_archived', {
+          sessionId: sessionName,
+          archivedCliSessionId: guardResult.cliSessionId,
+          maxBytes: guardResult.maxBytes,
+          archived: guardResult.archived.map(item => ({ file: item.file, sizeBytes: item.sizeBytes, archivedTo: item.archivedTo })),
+        });
+        appendEvent(persisted.dirId, 'codex_rollout_archived',
+          `codex rollout 超过 ${(guardResult.maxBytes / 1048576).toFixed(0)}MB 已归档，本轮将重建上下文`, sessionName);
+        chatBroadcast(sessionName, {
+          type: 'system',
+          subtype: 'rollout_archived',
+          message: `codex 原生会话历史过大（rollout > ${Math.round(guardResult.maxBytes / 1048576)}MB），已归档并重建上下文；旧历史文件保留在归档目录，未删除。`,
+        });
+      }
+    }
     // Preserve the old host ordering without mutating a duplicate delivery: when
     // no WS state exists, Claude allocates its UUID during accepted preparation,
     // before deciding first-vs-resume. This future allocation is the only extra
