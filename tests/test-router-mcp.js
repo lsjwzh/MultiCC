@@ -104,7 +104,8 @@ test('stdio MCP advertises scoped tools and bridges calls with the capability', 
   assert.deepEqual(listed.result.tools.map(tool => tool.name), [
     'wait_for_user_answer', 'request_user_input',
     'wait_for_external_result', 'get_external_wait', 'cancel_external_wait',
-    'route_task', 'dispatch_cancel', 'dispatch_master', 'dispatch_slave',
+    'route_task', 'dispatch_cancel', 'dispatch_status', 'dispatch_master',
+    'dispatch_slave',
   ]);
   const questionTool = listed.result.tools[0];
   assert.deepEqual(questionTool.inputSchema.required, ['question']);
@@ -157,6 +158,11 @@ test('stdio MCP advertises scoped tools and bridges calls with the capability', 
   assert.deepEqual(masterTool.inputSchema.required, ['target_session_id', 'message', 'mode']);
   assert.deepEqual(masterTool.inputSchema.properties.mode.enum, ['sync', 'async']);
   assert.match(masterTool.description, /do not poll/i);
+  assert.match(masterTool.description, /dispatch_status/);
+  const dispatchStatusTool = listed.result.tools.find(tool => tool.name === 'dispatch_status');
+  assert.equal(dispatchStatusTool.annotations.readOnlyHint, true);
+  assert.equal(dispatchStatusTool.inputSchema.required, undefined);
+  assert.match(dispatchStatusTool.description, /terminated stream/);
   const sync = await plain.call('tools/call', {
     name: 'dispatch_master',
     arguments: {
@@ -182,8 +188,33 @@ test('stdio MCP advertises scoped tools and bridges calls with the capability', 
   assert.deepEqual(dispatchedList.result.tools.map(tool => tool.name), [
     'wait_for_user_answer', 'request_user_input',
     'wait_for_external_result', 'get_external_wait', 'cancel_external_wait',
-    'route_task', 'dispatch_cancel', 'dispatch_master', 'dispatch_slave',
+    'route_task', 'dispatch_cancel', 'dispatch_status', 'dispatch_master',
+    'dispatch_slave',
   ]);
+});
+
+test('an incomplete sync stream returns an explicit dispatch_status recovery contract', async t => {
+  const server = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.setHeader('content-type', 'application/x-ndjson');
+      res.end(`${JSON.stringify({
+        type: 'progress', progress: { kind: 'text', message: 'admitted then disconnected' },
+      })}\n`);
+    });
+  });
+  const port = await listen(server);
+  t.after(() => close(server));
+  const client = clientFor(port);
+  t.after(() => client.stop());
+  const response = await client.call('tools/call', {
+    name: 'dispatch_master',
+    arguments: { target_session_id: 'worker', message: 'long task', mode: 'sync' },
+  });
+  assert.equal(response.result.isError, true);
+  assert.equal(response.result.structuredContent.code, 'router_call_interrupted');
+  assert.equal(response.result.structuredContent.recovery_tool, 'dispatch_status');
+  assert.match(response.result.structuredContent.message, /does not cancel/);
 });
 
 test('host prompt prefers scoped durable wait tools and keeps raw polling privileged', () => {

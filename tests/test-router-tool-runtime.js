@@ -520,6 +520,59 @@ test('dispatch_master retry reattaches idempotently without duplicate operations
   assert.equal((await operations.list({ kind: 'dispatch' })).length, 1);
 });
 
+test('dispatch_status recovers ambiguous receipts from durable operation and FIFO state', async t => {
+  let admittedId = null;
+  const { operations, runtime } = fixture(t, {
+    schedulerStatus: async targetId => ({
+      active: admittedId ? {
+        entryId: `operation:${admittedId}:request`,
+        taskId: 'task-live',
+      } : null,
+      queued: [],
+      sessionId: targetId,
+    }),
+  });
+  const capability = runtime.issueContext({ sessionId: 'caller', turnId: 'turn-recover' });
+  const dispatched = await runtime.execute(capability, 'dispatch_master', {
+    target_session_id: 'worker-a',
+    message: 'ambiguous long task',
+    idempotency_key: 'recover-1',
+    mode: 'async',
+  });
+  admittedId = dispatched.operation_id;
+
+  const recovered = await runtime.execute(capability, 'dispatch_status', {
+    target_session_id: 'worker-a',
+  });
+  assert.equal(recovered.count, 1);
+  assert.equal(recovered.dispatches[0].operation_id, admittedId);
+  assert.equal(recovered.dispatches[0].queue_state, 'started');
+  assert.equal(recovered.dispatches[0].terminal, false);
+  assert.match(recovered.instruction, /Do not infer completion/);
+
+  const exact = await runtime.execute(capability, 'dispatch_status', {
+    operation_id: admittedId,
+  });
+  assert.equal(exact.dispatch.operation_id, admittedId);
+  assert.match(exact.instruction, /Do not re-dispatch/);
+
+  const bystander = runtime.issueContext({ sessionId: 'worker-a', turnId: 'turn-bystander' });
+  await assert.rejects(
+    runtime.execute(bystander, 'dispatch_status', { operation_id: admittedId }),
+    error => error.code === 'dispatch_not_found',
+  );
+
+  await operations.completeDispatch(admittedId, {
+    status: 'completed', sessionName: 'worker-a', text: 'finished safely',
+  });
+  const terminal = await runtime.execute(capability, 'dispatch_status', {
+    operation_id: admittedId,
+  });
+  assert.equal(terminal.dispatch.terminal, true);
+  assert.equal(terminal.dispatch.queue_state, 'terminal');
+  assert.equal(terminal.dispatch.result, 'finished safely');
+});
+
 test('target and slave lineage validation fail closed', async t => {
   const { operations, runtime } = fixture(t);
   const capability = runtime.issueContext({ sessionId: 'caller', turnId: 'turn-guard' });
