@@ -187,6 +187,7 @@
         const result = historyView.commitMessage(committed, {
           currentElement: state.currentMsgEl,
           lastUserElement: state.lastUserBubble,
+          currentText: state.currentTextContent,
         });
         state.currentMsgEl = result.currentElement;
         state.lastUserBubble = result.lastUserElement;
@@ -425,6 +426,7 @@
       switch (event.type) {
         case 'message_start':
           state.isStreaming = true;
+          state.lastFinishedText = '';
           liveUi.hideThinking();
           if (!state.currentMsgEl) state.currentMsgEl = createAssistantBubble();
           else if (state.currentTextContent && !state.currentTextContent.endsWith('\n\n')) state.currentTextContent += '\n\n';
@@ -505,9 +507,24 @@
       liveUi.hideThinking();
       for (const block of message.content) {
         if (block.type === 'text' && block.text) {
-          if (!state.currentMsgEl) state.currentMsgEl = createAssistantBubble();
+          if (!state.currentMsgEl) {
+            // Late/replayed full snapshot arriving after the turn finalized:
+            // the just-finished bubble already shows this exact text, so a
+            // fresh bubble here would render the reply twice (live-only
+            // duplicate; history stays clean).
+            if (message.textSnapshot === true && !state.isStreaming
+                && state.lastFinishedText && block.text === state.lastFinishedText) continue;
+            state.currentMsgEl = createAssistantBubble();
+          }
           if (message.textSnapshot === true) state.currentTextContent = block.text;
-          else if (state.currentCli === 'codex') state.currentTextContent += block.text;
+          else if (state.currentCli === 'codex') {
+            // A duplicated WS frame appends the same block twice; codex blocks
+            // are complete items, so an exact repeat of a long block at the
+            // current tail is a replay artifact, not new content.
+            if (block.text.length >= 16
+                && (state.currentTextContent || '').endsWith(block.text)) continue;
+            state.currentTextContent += block.text;
+          }
           else if (!state.currentTextContent) state.currentTextContent = block.text;
           host.renderCurrentText?.();
           host.maybeScrollToBottom?.();
@@ -592,6 +609,10 @@
           host.debug?.('event', 'render final failed [redacted]');
         }
       }
+      // Remember what the finalized bubble shows so a late/replayed snapshot of
+      // this same text can be recognized as a duplicate instead of opening a
+      // second bubble (cleared when the next turn starts streaming).
+      state.lastFinishedText = state.currentTextContent || state.lastFinishedText || '';
       state.currentMsgEl = null;
       state.currentTextContent = '';
       state.currentToolCards = new Map();
