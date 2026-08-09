@@ -717,3 +717,64 @@ test('queued insert events preserve the scheduler state in queue projections', (
     },
   ]);
 });
+
+// ── replayState: user-input reconnect replay ────────────────────────────────
+// user_input_resolved only reaches sockets online at answer time, so a client
+// that reconnects later must get the settlement replayed — otherwise its stale
+// choice card stays on screen forever (the reported app bug).
+
+function collectReplay(h) {
+  const sent = [];
+  h.host.replayState('s1', msg => sent.push(msg));
+  return sent;
+}
+
+test('replayState re-sends an unanswered card as user_input_required', () => {
+  const h = fixture();
+  h.setPending({
+    requestId: 'usrq-open', question: '选哪个？', reason: '', options: ['A', 'B'],
+    allowMultiple: false, taskId: 'task-9', resolved: false,
+  });
+  const sent = collectReplay(h);
+  const required = sent.find(msg => msg.type === 'user_input_required');
+  assert.ok(required);
+  assert.equal(required.requestId, 'usrq-open');
+  assert.deepEqual(required.options, ['A', 'B']);
+  assert.ok(!sent.some(msg => msg.type === 'user_input_resolved'));
+});
+
+test('replayState re-sends the settlement for an already-resolved card', () => {
+  const h = fixture({
+    record: { taskState: { lastResolvedUserInput: { requestId: 'usrq-done', at: 5, taskId: 'task-2' } } },
+  });
+  const sent = collectReplay(h);
+  const resolved = sent.find(msg => msg.type === 'user_input_resolved');
+  assert.ok(resolved, 'late reconnect must learn the card was settled');
+  assert.equal(resolved.requestId, 'usrq-done');
+  assert.equal(resolved.replay, true);
+  assert.ok(!sent.some(msg => msg.type === 'user_input_required'));
+});
+
+test('replayState falls back to a legacy resolved pending object', () => {
+  const h = fixture();
+  h.setPending({ requestId: 'usrq-legacy', taskId: 'task-3', resolved: true });
+  const sent = collectReplay(h);
+  const resolved = sent.find(msg => msg.type === 'user_input_resolved');
+  assert.ok(resolved);
+  assert.equal(resolved.requestId, 'usrq-legacy');
+});
+
+test('replayState flags superseded settlements so clients can render them', () => {
+  const h = fixture({
+    record: { taskState: { lastResolvedUserInput: { requestId: 'usrq-sup', at: 5, superseded: true } } },
+  });
+  const resolved = collectReplay(h).find(msg => msg.type === 'user_input_resolved');
+  assert.equal(resolved.superseded, true);
+});
+
+test('replayState sends no user-input events when no card ever existed', () => {
+  const h = fixture();
+  const sent = collectReplay(h);
+  assert.ok(!sent.some(msg => msg.type === 'user_input_required'));
+  assert.ok(!sent.some(msg => msg.type === 'user_input_resolved'));
+});

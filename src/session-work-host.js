@@ -435,6 +435,24 @@ function createSessionWorkHost(deps = {}) {
         options: pending.options || [],
         allowMultiple: pending.allowMultiple === true,
       });
+    } else {
+      // user_input_resolved is fire-and-forget: it only reached sockets online
+      // at answer time. A client that disconnected then (app backgrounded) still
+      // shows the stale card, so resend the settlement on (re)connect. Reading
+      // the resolved pending object itself covers resolutions recorded before
+      // lastResolvedUserInput existed.
+      const taskState = deps.getTaskState(deps.getRecord(sessionId)) || {};
+      const last = taskState.lastResolvedUserInput
+        || (pending && pending.resolved === true ? { requestId: pending.requestId, taskId: pending.taskId ?? null } : null);
+      if (last && last.requestId) {
+        send({
+          type: 'user_input_resolved',
+          requestId: last.requestId,
+          taskId: last.taskId ?? null,
+          ...(last.superseded ? { superseded: true } : {}),
+          replay: true,
+        });
+      }
     }
     Promise.resolve(scheduler()?.status(sessionId)).then(queue => {
       if (!queue) return;
