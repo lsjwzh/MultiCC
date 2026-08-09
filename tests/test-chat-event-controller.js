@@ -111,6 +111,7 @@ function controllerFixture() {
   };
   const calls = [];
   const debugCalls = [];
+  let pendingInputId = null;
   const content = new FakeElement('div');
   content.className = 'msg-content';
   const bubble = new FakeElement('div');
@@ -198,10 +199,14 @@ function controllerFixture() {
       return true;
     },
     consumeUserInputRequestId(requestId) { calls.push(['consume-input', requestId]); },
+    getUserInputRequestId: () => pendingInputId,
     rearmUnread() {},
   };
   const controller = eventApi.createEventController({ state, host, liveUi, historyStore, historyView });
-  return { controller, state, calls, debugCalls, progressCalls, tools, bubble, content, liveUi };
+  return {
+    controller, state, calls, debugCalls, progressCalls, tools, bubble, content, liveUi,
+    setPendingInputId(value) { pendingInputId = value; },
+  };
 }
 
 test('event module exports a frozen narrow API and codex reconnect classifier', () => {
@@ -853,6 +858,17 @@ test('turn end settles a spinner never confirmed as a background task (misclassi
   assert.equal(body.children[0].className, 'dm-row dm-start');
   liveUi.settleTurnScopedDanmaku();
   assert.equal(body.children[0].className, 'dm-row dm-stale');
+});
+
+test('dropStaleUserInput consumes the locally pending card id on socket close', () => {
+  const f = controllerFixture();
+  f.setPendingInputId('usrq-web-stale');
+  f.controller.dropStaleUserInput();
+  assert.deepEqual(f.calls.find(call => call[0] === 'consume-input'), ['consume-input', 'usrq-web-stale']);
+  f.setPendingInputId(null);
+  const before = f.calls.length;
+  f.controller.dropStaleUserInput();
+  assert.equal(f.calls.length, before, 'nothing to drop → no host calls');
 });
 
 test('chat host loads new controllers before chat and reaches the 3000-line budget', () => {
