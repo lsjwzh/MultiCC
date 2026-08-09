@@ -200,3 +200,48 @@ test('sync/rebase refuses clean unmerged commits unless forced and backs them up
   assert(forced.backup && fs.existsSync(forced.backup.bundle));
   assert.equal(await git(dir.path, ['rev-parse', forced.backup.ref]), branchBefore);
 });
+
+test('removal survives a wiped and re-inited base repo (stale fleet cleanup)', async t => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'multicc-git-'));
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const dir = await initRepo(root, 'repo');
+  const session = await sessionIn(dir, 'stale');
+
+  // Simulate the user deleting the directory contents on disk, after which
+  // something re-creates an empty repo shell: no commits, no session refs,
+  // no worktrees. Forced removal used to fatal in backupBeforeForce
+  // (update-ref on an unresolvable branch) and surface as a 500.
+  await fsp.rm(dir.path, { recursive: true, force: true });
+  await fsp.mkdir(dir.path, { recursive: true });
+  await git(dir.path, ['init', '-b', 'main']);
+
+  const forced = await gitWorktreeRemove(dir.path, session.worktreePath, session.branch, {
+    sessionId: session.id, baseBranch: dir.baseBranch, force: true,
+  });
+  assert.equal(forced.ok, true);
+  assert.equal(forced.backup, null);
+
+  const unforced = await gitWorktreeRemove(dir.path, session.worktreePath, session.branch, {
+    sessionId: session.id, baseBranch: dir.baseBranch,
+  });
+  assert.equal(unforced.ok, true);
+});
+
+test('removal tolerates a worktree dir the re-inited repo no longer tracks', async t => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'multicc-git-'));
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const dir = await initRepo(root, 'repo');
+  const session = await sessionIn(dir, 'stray');
+
+  // Wipe only the base .git and re-init: the worktree directory survives on
+  // disk but the fresh repo knows nothing about it. Removal must not throw;
+  // the stray directory is left for the user rather than force-deleted.
+  await fsp.rm(path.join(dir.path, '.git'), { recursive: true, force: true });
+  await git(dir.path, ['init', '-b', 'main']);
+
+  const forced = await gitWorktreeRemove(dir.path, session.worktreePath, session.branch, {
+    sessionId: session.id, baseBranch: dir.baseBranch, force: true,
+  });
+  assert.equal(forced.ok, true);
+  assert.equal(fs.existsSync(session.worktreePath), true);
+});
