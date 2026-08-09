@@ -114,6 +114,10 @@ function createUserInputSignalHost({
     return getState(sessionId)?.pendingUserInput || null;
   }
 
+  function lastResolved(sessionId) {
+    return getState(sessionId)?.lastResolvedUserInput || null;
+  }
+
   function record(signal = {}) {
     const sessionId = String(signal.sessionId || '');
     const turnId = String(signal.turnId || '');
@@ -155,8 +159,14 @@ function createUserInputSignalHost({
       log(`[multicc/classify] ${sessionId} request_user_input superseded by new turn request=${stale.requestId}`);
       onResolved(sessionId, stale.requestId, stale.taskId ?? null, { superseded: true });
     }
+    const supersededNow = !originContinue && stale && stale.resolved !== true && stale.requestId;
     return setState(sessionId, {
       pendingUserInput: originContinue ? current.pendingUserInput || null : null,
+      // Survives the nulling above: replayState uses it to tell a
+      // late-reconnecting client that its stale card was already settled.
+      lastResolvedUserInput: supersededNow
+        ? { requestId: stale.requestId, at: now(), superseded: true }
+        : current.lastResolvedUserInput || null,
       userInputSignalVersion: 1,
       userInputSignalTurnId: turnId || null,
       classifyState: 'P',
@@ -179,6 +189,7 @@ function createUserInputSignalHost({
         resolved: true,
         resolvedAt: now(),
       },
+      lastResolvedUserInput: { requestId, at: now(), taskId: current.taskId ?? null },
       userInputSignalVersion: 1,
     });
     log(`[multicc/classify] ${sessionId} request_user_input resolved request=${requestId}`);
@@ -198,7 +209,7 @@ function createUserInputSignalHost({
     };
   }
 
-  return Object.freeze({ apply, beginTurn, degradedResult, pending, record, resolve });
+  return Object.freeze({ apply, beginTurn, degradedResult, lastResolved, pending, record, resolve });
 }
 
 module.exports = {
