@@ -131,16 +131,19 @@ test('formats active five-hour state and hides expired state deterministically',
     usedPercentage: 72.4,
     resetsAtMs: now + 3_600_000,
   };
-  assert.deepEqual(formatFiveHourRateLimit(limit, { nowMs: now }), {
-    text: '5h 28% 1h',
-    color: '#d29922',
-    title: 'Claude 订阅五小时用量（来自 Claude Code 结构化 rate_limit_event）',
-  });
+  const view = formatFiveHourRateLimit(limit, { nowMs: now });
+  // The Claude bar is always a click target (⟳ = fetch the usage page), so the
+  // refresh affordance is part of every Claude rendering, not just the
+  // scrape-driven one.
+  assert.equal(view.text, '5h 28% 1h ⟳');
+  assert.equal(view.color, '#d29922');
+  assert.match(view.title, /^Claude 订阅窗口用量/);
+  assert.match(view.title, /5小时: 已用 72%/);
   assert.equal(formatFiveHourRateLimit(limit, { nowMs: now + 3_600_000 }), null);
   assert.equal(formatFiveHourRateLimit({
     ...limit,
     status: 'rejected',
-  }, { nowMs: now }).text, '5h 0% 1h');
+  }, { nowMs: now }).text, '5h 0% 1h ⟳');
 });
 
 test('structured event renders directly in the Claude chat bar and hides for another CLI', () => {
@@ -201,7 +204,7 @@ test('GLM window renders in the unified 5h format under codex, idle placeholder 
     assert.match(element.textContent, /^5h 56%/);
     setCli('claude');
     assert.equal(element.style.display, 'block', 'bar stays visible under claude (idle placeholder)');
-    assert.match(element.textContent, /^5h · —/, 'GLM window replaced by Claude idle placeholder');
+    assert.match(element.textContent, /^Claude 用量/, 'GLM window replaced by Claude idle placeholder');
   } finally {
     setCli('codex');
     delete global.document;
@@ -236,7 +239,7 @@ test('Codex weekly window renders in the unified 1wk format under codex, idle pl
     assert.match(element.textContent, /^1wk 36%/);
     setCli('claude');
     assert.equal(element.style.display, 'block', 'bar stays visible under claude (idle placeholder)');
-    assert.match(element.textContent, /^5h · —/, 'Codex weekly replaced by Claude idle placeholder');
+    assert.match(element.textContent, /^Claude 用量/, 'Codex weekly replaced by Claude idle placeholder');
   } finally {
     setCli('codex');
     delete global.document;
@@ -306,7 +309,7 @@ test('hides the Claude bar (data and idle placeholder) under a non-Claude provid
     setCli('claude');
     setProviderBaseUrl('');
     assert.equal(element.style.display, 'block', 'idle placeholder shows on the default Claude login');
-    assert.match(element.textContent, /^5h · —/);
+    assert.match(element.textContent, /^Claude 用量/);
 
     consumeRateLimitEvent({
       status: 'allowed', rateLimitType: 'five_hour', utilization: 0.23,
@@ -605,9 +608,9 @@ test('Claude formatter appends weekly/monthly usage windows in canonical order',
   };
   const view = formatFiveHourRateLimit(value, { usage, nowMs: now });
   const tokens = view.text.split(' · ').map((s) => s.split(' ')[0]);
-  // The page's own 5h row is dropped (it duplicates the passive event); the
-  // weekly/monthly rows render in canonical 5h → 1wk → 1m order.
-  assert.deepEqual(tokens, ['5h', '1wk', '1m']);
+  // Three slots in canonical 5h → 1wk → 1m order, then the sync-age stamp. The
+  // page's own 5h row loses to the passive event, which is fresher.
+  assert.deepEqual(tokens.slice(0, 3), ['5h', '1wk', '1m']);
   assert.match(view.text, /^5h 50%/);
   assert.match(view.text, /1wk 70%/);
   assert.match(view.text, /1m 20%/);
@@ -625,8 +628,64 @@ test('Claude formatter ignores a usage payload without ok status', () => {
     resetsAtMs: now + 3_600_000,
     provider: 'claude',
   };
-  assert.equal(formatFiveHourRateLimit(limit, { usage: { status: 'needs_login' }, nowMs: now }).text, '5h 50% 1h');
-  assert.equal(formatFiveHourRateLimit(limit, { usage: null, nowMs: now }).text, '5h 50% 1h');
+  // A failed scrape leaves the 1wk/1m slots blank — it never blanks or replaces
+  // the 5h number the passive event already supplied.
+  assert.equal(formatFiveHourRateLimit(limit, { usage: { status: 'needs_login' }, nowMs: now }).text, '5h 50% 1h ⟳');
+  assert.equal(formatFiveHourRateLimit(limit, { usage: null, nowMs: now }).text, '5h 50% 1h ⟳');
+});
+
+test('the Claude bar is one layout whether or not a passive event has landed', () => {
+  const now = 1_700_000_000_000;
+  const usage = {
+    status: 'ok',
+    fetchedAt: now,
+    summary: [
+      { window: '5h', label: 'Current session', usedPercent: 50, resetMs: now + 3_600_000 },
+      { window: '1wk', label: 'Weekly limit', usedPercent: 25, resetMs: now + 3 * 86_400_000 },
+    ],
+  };
+  const limit = {
+    kind: 'five_hour', status: 'allowed', usedPercentage: 50,
+    resetsAtMs: now + 3_600_000, provider: 'claude',
+  };
+  const withEvent = formatFiveHourRateLimit(limit, { usage, nowMs: now });
+  const scrapeOnly = formatClaudeUsageOnly(usage, { nowMs: now });
+  // Same numbers in, same bar out: the event only decides WHERE the 5h number
+  // comes from. Two sessions on one account must not render differently.
+  assert.equal(withEvent.text, scrapeOnly.text);
+  assert.match(withEvent.text, /^5h 50% 1h · 1wk 75% 3d/);
+});
+
+test('a window the scrape could not classify is left blank, never labelled with page text', () => {
+  const now = 1_700_000_000_000;
+  const usage = {
+    status: 'ok',
+    fetchedAt: now,
+    summary: [
+      { window: '5h', label: 'Current session', usedPercent: 7, resetMs: now + 3_600_000 },
+      // What an unparsed weekly row looks like: the reset line stood in for the
+      // window name. It must not reach the bar as a label.
+      { window: null, label: 'Resets Wed 2:00 PM', usedPercent: 25, resetMs: null },
+    ],
+  };
+  const view = formatClaudeUsageOnly(usage, { nowMs: now });
+  assert.equal(view.text.includes('Resets'), false, 'raw page text never becomes a window label');
+  assert.match(view.text, /^5h 93% 1h/);
+});
+
+test('two rows for one window keep the binding (more consumed) one', () => {
+  const now = 1_700_000_000_000;
+  const usage = {
+    status: 'ok',
+    fetchedAt: now,
+    summary: [
+      { window: '1wk', label: 'Weekly limit (all models)', usedPercent: 25, resetMs: now + 86_400_000 },
+      { window: '1wk', label: 'Weekly limit (Opus)', usedPercent: 90, resetMs: now + 86_400_000 },
+    ],
+  };
+  const view = formatClaudeUsageOnly(usage, { nowMs: now });
+  assert.match(view.text, /^1wk 10% 1d/, 'the window you will hit first is the one shown');
+  assert.equal(view.color, '#f85149');
 });
 
 test('formatClaudeUsageOnly renders windows when no passive event has landed yet', () => {
@@ -649,7 +708,7 @@ test('formatClaudeUsageOnly renders windows when no passive event has landed yet
 });
 
 test('formatClaudeUsageOnly surfaces the actionable states and the idle fallback', () => {
-  assert.equal(formatClaudeUsageOnly(null).text, '5h · — · ⟳ 刷新');
+  assert.equal(formatClaudeUsageOnly(null).text, 'Claude 用量 · ⟳ 刷新');
   const needsLogin = formatClaudeUsageOnly({ status: 'needs_login', error: 'x' });
   assert.equal(needsLogin.action, 'login');
   assert.match(needsLogin.text, /需登录/);
