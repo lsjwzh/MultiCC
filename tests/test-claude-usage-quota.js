@@ -54,6 +54,58 @@ test('parseClaudeReset parses the countdown shapes and ignores junk', () => {
   assert.equal(claude.parseClaudeReset(null, now), null);
 });
 
+test('parseClaudeReset resolves the absolute weekday form to the next such time', () => {
+  // The page prints a countdown for a window turning over soon and an absolute
+  // local weekday for one days away ("Resets Wed 2:00 PM"). Only the countdown
+  // used to be understood, so the weekly rows lost their reset time entirely —
+  // and worse, the unparsed line was mistaken for the window's own label.
+  const sunNoon = new Date(2026, 7, 9, 12, 0, 0, 0).getTime();   // a Sunday
+  const at = claude.parseClaudeReset('Resets Wed 2:00 PM', sunNoon);
+  const d = new Date(at);
+  assert.equal(d.getDay(), 3, 'Wednesday');
+  assert.equal(d.getHours(), 14);
+  assert.equal(d.getMinutes(), 0);
+  assert.equal(d.getDate(), 12, 'the coming Wednesday, not one in the past');
+
+  // Same weekday as today, at a time already gone → next week, never behind now.
+  const later = claude.parseClaudeReset('Resets Sun 9:00 AM', sunNoon);
+  assert.ok(later > sunNoon);
+  assert.equal(new Date(later).getDate(), 16);
+
+  // …and the same weekday at a time still ahead stays today.
+  assert.equal(new Date(claude.parseClaudeReset('Resets Sun 6 PM', sunNoon)).getDate(), 9);
+  assert.equal(claude.parseClaudeReset('Resets Funday 2:00 PM', sunNoon), null);
+});
+
+test('summarizeUsageText reads the current label / reset / percent layout', () => {
+  // The reset line now sits ABOVE its percentage. Each row must take its own
+  // reset time, not the neighbouring row's.
+  const sunNoon = new Date(2026, 7, 9, 12, 0, 0, 0).getTime();
+  const text = [
+    'Current session',
+    'Resets in 15m',
+    '7%',
+    'Weekly limit',
+    'Resets Wed 2:00 PM',
+    '25%',
+    'Weekly limit (Opus)',
+    'Resets Wed 2:00 PM',
+    '1%',
+  ].join('\n');
+  const summary = claude.summarizeUsageText(text, sunNoon);
+  assert.equal(summary.length, 3);
+  assert.deepEqual(summary.map((s) => s.window), ['5h', '1wk', '1wk']);
+  assert.deepEqual(summary.map((s) => s.usedPercent), [7, 25, 1]);
+  assert.equal(summary[0].resetMs, sunNoon + 15 * 60 * 1000, '5h keeps its own countdown');
+  const wed = new Date(summary[1].resetMs);
+  assert.equal(wed.getDay(), 3);
+  assert.equal(wed.getHours(), 14);
+  assert.equal(summary[2].resetMs, summary[1].resetMs);
+  // The reset line is boilerplate, never a window name — mistaking it for one
+  // is what put "Resets Wed 2:00 PM" on the bar where "1wk" belongs.
+  assert.equal(summary.some((s) => /Resets/i.test(s.label)), false);
+});
+
 test('usagePanelReady requires a percentage plus a window marker', () => {
   assert.ok(claude.usagePanelReady(USAGE_TEXT));
   assert.ok(claude.usagePanelReady('Current session\n42%\nResets in 2h'));
