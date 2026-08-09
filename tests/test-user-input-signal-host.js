@@ -295,3 +295,39 @@ test('codex adapter still passes through malformed ask arguments as text', () =>
   assert.equal(out[0].question, 'not json{');
   assert.match(out[0].fallbackText, /not json\{/);
 });
+
+// ── lastResolvedUserInput: reconnect replay contract ────────────────────────
+// user_input_resolved is fire-and-forget (only online sockets see it), so the
+// host must keep a durable "this card was settled" marker that replayState can
+// resend to a late-reconnecting client.
+
+test('resolve persists lastResolvedUserInput for reconnect replay', () => {
+  const { host, states } = fixture();
+  host.record({ requestId: 'usrq-r1', sessionId: 'chat-1', turnId: 'turn-1', question: '？' });
+  assert.equal(host.lastResolved('chat-1'), null);
+  assert.deepEqual(host.resolve('chat-1', 'usrq-r1'), { ok: true, duplicate: false });
+  assert.deepEqual(host.lastResolved('chat-1'), { requestId: 'usrq-r1', at: 1234, taskId: 'task-1' });
+  assert.equal(states.get('chat-1').lastResolvedUserInput.requestId, 'usrq-r1');
+});
+
+test('beginTurn keeps a superseded settlement after nulling the pending card', () => {
+  const { host, states } = fixture();
+  host.record({ requestId: 'usrq-s1', sessionId: 'chat-1', turnId: 'turn-1', question: '？' });
+  host.beginTurn('chat-1', { turnId: 'turn-2' });
+  assert.equal(states.get('chat-1').pendingUserInput, null);
+  assert.deepEqual(host.lastResolved('chat-1'), { requestId: 'usrq-s1', at: 1234, superseded: true });
+  // A later turn must not lose the marker either.
+  host.beginTurn('chat-1', { turnId: 'turn-3' });
+  assert.equal(host.lastResolved('chat-1').requestId, 'usrq-s1');
+});
+
+test('a fresh resolve overwrites the superseded marker', () => {
+  const { host } = fixture();
+  host.record({ requestId: 'usrq-a', sessionId: 'chat-1', turnId: 'turn-1', question: '？' });
+  host.beginTurn('chat-1', { turnId: 'turn-2' });
+  host.record({ requestId: 'usrq-b', sessionId: 'chat-1', turnId: 'turn-1', question: '？' });
+  host.resolve('chat-1', 'usrq-b');
+  const last = host.lastResolved('chat-1');
+  assert.equal(last.requestId, 'usrq-b');
+  assert.equal(last.superseded, undefined);
+});

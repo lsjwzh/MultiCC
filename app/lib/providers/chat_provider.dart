@@ -434,6 +434,9 @@ class ChatProvider extends ChangeNotifier {
 
       case 'reconnecting':
         _reconnectAttempt = evt.payload as int;
+        // Socket died: any resolve broadcast in the gap was lost. Drop the
+        // stale card; the connect-time replay re-sends required/resolved.
+        _pendingUserInput = null;
         final delay = (1 << (_reconnectAttempt - 1)).clamp(1, 15);
         _statusText = 'Reconnecting in ${delay}s…';
         notifyListeners();
@@ -1572,6 +1575,9 @@ class ChatProvider extends ChangeNotifier {
       _historyApplied = false;
       _replaceHistoryOnReconnect = true;
     }
+    // The pending card belongs to the torn-down socket's state; the fresh
+    // connection's connect-time replay re-delivers it if still open.
+    _pendingUserInput = null;
     _service.dispose();
     _initService();
   }

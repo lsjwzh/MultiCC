@@ -534,6 +534,10 @@ class ChatService {
     // socket — don't stack timers or double-bump the backoff counter.
     if (_reconnectTimer?.isActive ?? false) return;
     _state = ChatConnectionState.disconnected;
+    // Any user_input_resolved broadcast sent while we were dying was lost;
+    // drop the stale pending id — the connect-time replay re-delivers the
+    // authoritative card state (required if still open, resolved otherwise).
+    _pendingUserInputRequestId = null;
     _emit('state_change', _state);
 
     final delay = Duration(

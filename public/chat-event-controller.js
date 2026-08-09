@@ -46,6 +46,13 @@
 
     function beginGeneration() { generation += 1; return generation; }
     function invalidateGeneration() { generation += 1; return generation; }
+    // Dead-socket defense: a user_input_resolved broadcast sent while we were
+    // disconnected is lost, so drop the stale card — the server's connect-time
+    // replay re-delivers the authoritative state (required or resolved).
+    function dropStaleUserInput() {
+      const id = host.getUserInputRequestId?.();
+      if (id) host.consumeUserInputRequestId?.(id);
+    }
     function isOwned(expectedGeneration) {
       return Number.isInteger(expectedGeneration) && expectedGeneration === generation;
     }
@@ -633,6 +640,7 @@
     return Object.freeze({
       beginGeneration,
       invalidateGeneration,
+      dropStaleUserInput,
       currentGeneration: () => generation,
       handleEvent,
       handleStreamEvent,

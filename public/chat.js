@@ -613,7 +613,7 @@ const chatTransport = window.MultiCCChatTransport.createTransport({
     }
   },
   onClose({ event: e, seconds: secs }) {
-    chatEventController?.invalidateGeneration();
+    chatEventController?.invalidateGeneration(); chatEventController?.dropStaleUserInput?.();
     dbg('ws', `onclose — code=${e.code} (isStreaming=${isStreaming})`);
     if (_wasConnected && !_isDisconnected) {
       _isDisconnected = true;
