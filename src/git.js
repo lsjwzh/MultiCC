@@ -414,16 +414,36 @@ async function gitWorktreeRemove(dirPath, worktreePath, branch, opts = {}) {
     if (reasons.length && !opts.force) {
       return { ok: false, blocked: true, reasons, safety, error: `worktree removal refused: ${reasons.join(', ')}` };
     }
+    const resolvesToCommit = (ref) => execGit(dirPath, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`])
+      .then(out => out.length > 0).catch(() => false);
     let backup = null;
     if (opts.force) {
       progress('backup');
-      backup = await backupBeforeForce(execGit, dirPath, worktreePath, branch, sessionId, id);
+      // A wiped/re-inited base repo (user deleted the directory contents on
+      // disk) has none of the session's refs left; update-ref/bundle would
+      // fatal on the unresolvable source and turn fleet deletion into a 500.
+      // Nothing exists to back up in that state — skip instead of throw.
+      const source = branch || (worktreePath && fs.existsSync(worktreePath) ? 'HEAD' : null);
+      if (source && await resolvesToCommit(source)) {
+        backup = await backupBeforeForce(execGit, dirPath, worktreePath, branch, sessionId, id);
+      }
     }
     progress('remove');
     if (worktreePath && fs.existsSync(worktreePath)) {
-      await execGit(dirPath, ['worktree', 'remove', ...(opts.force ? ['--force'] : []), worktreePath]);
+      try {
+        await execGit(dirPath, ['worktree', 'remove', ...(opts.force ? ['--force'] : []), worktreePath]);
+      } catch (error) {
+        // Tolerate a worktree the repo no longer tracks (base .git re-created
+        // underneath us): leave the stray directory on disk and carry on so
+        // the stale session record can still be deleted. A worktree git DOES
+        // track failing to remove is still fatal.
+        const registered = await execGit(dirPath, ['worktree', 'list', '--porcelain'])
+          .then(out => out.split('\n').some(l => l === `worktree ${path.resolve(worktreePath)}`))
+          .catch(() => false);
+        if (registered) throw error;
+      }
     }
-    if (branch) {
+    if (branch && await resolvesToCommit(`refs/heads/${branch}`)) {
       try { await execGit(dirPath, ['branch', opts.force ? '-D' : '-d', branch]); } catch (error) {
         if (!opts.force) return { ok: false, blocked: true, reasons: ['unmerged'], backup, error: errorText(error) };
         throw error;
