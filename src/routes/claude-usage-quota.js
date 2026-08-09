@@ -63,10 +63,34 @@ function windowTokenForLabel(label) {
   return null;
 }
 
-// The usage page prints reset times under each percentage. claude.ai shows a
-// live countdown ("Resets in 3h 20m" / "Resets in 2d 4h") rather than an
-// absolute date; a few variants are tolerated and everything else leaves
-// resetMs null (the frontend just omits the countdown).
+// claude.ai prints the reset time in TWO forms: a live countdown for a window
+// that turns over soon ("Resets in 3h 20m"), and an absolute local weekday for
+// one days away ("Resets Wed 2:00 PM"). Only the countdown form used to be
+// understood, which is why the weekly rows lost both their countdown AND their
+// label — see RESET_INFO_LINE below.
+//
+// The absolute form resolves to the NEXT such weekday-and-time after now: a
+// window never resets in the past, and the page never says which week it means.
+const WEEKDAYS = Object.freeze(['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']);
+
+function parseAbsoluteReset(text, nowMs) {
+  const m = String(text || '').match(
+    /resets?\s+(?:on\s+)?(sun|mon|tue|wed|thu|fri|sat)[a-z]*\.?(?:\s+at)?(?:\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?)?/i,
+  );
+  if (!m) return null;
+  let hour = m[2] === undefined ? 0 : Number(m[2]);
+  const minute = m[3] === undefined ? 0 : Number(m[3]);
+  const meridiem = (m[4] || '').toLowerCase();
+  if (meridiem === 'pm' && hour < 12) hour += 12;
+  if (meridiem === 'am' && hour === 12) hour = 0;
+  if (hour > 23 || minute > 59) return null;
+  const at = new Date(nowMs);
+  at.setHours(hour, minute, 0, 0);
+  at.setDate(at.getDate() + ((WEEKDAYS.indexOf(m[1].toLowerCase()) - at.getDay() + 7) % 7));
+  if (at.getTime() <= nowMs) at.setDate(at.getDate() + 7);  // that time already passed today
+  return at.getTime();
+}
+
 function parseClaudeReset(text, nowMs = Date.now()) {
   const t = String(text || '');
   const d = t.match(/resets?\s+in\s+(\d+)\s*d\s+(\d+)\s*h/i);
@@ -79,13 +103,17 @@ function parseClaudeReset(text, nowMs = Date.now()) {
   if (h) return nowMs + Number(h[1]) * 3600 * 1000;
   const m = t.match(/resets?\s+in\s+(\d+)\s*m/i);
   if (m) return nowMs + Number(m[1]) * 60 * 1000;
-  return null;
+  return parseAbsoluteReset(t, nowMs);
 }
 
 // Plan names sit between the window label and its percentage on this page, so
 // they are skipped while walking backwards for the label.
 const PLAN_NAME_LINE = /^(max|pro|team|enterprise|standard|plus|opus|sonnet|haiku|free)$/i;
-const RESET_INFO_LINE = /resets?\s+in|resets?\s+on|重置|remaining/i;
+// ANY line mentioning a reset is boilerplate, never a window label. Matching
+// only the "resets in" phrasing let "Resets Wed 2:00 PM" through as the label
+// for the weekly rows, so windowTokenForLabel saw no week/month keyword and the
+// bar rendered a reset date where a window name belongs.
+const RESET_INFO_LINE = /resets?\b|重置|remaining/i;
 function labelForPercent(lines, i) {
   for (let j = i - 1, steps = 0; j >= 0 && steps < 6; j--, steps++) {
     const cand = lines[j];
@@ -95,6 +123,24 @@ function labelForPercent(lines, i) {
     return cand.slice(0, 24);
   }
   return '';
+}
+
+// The reset line sits next to its percentage — the page currently prints it
+// just ABOVE (label / reset / percent), earlier layouts printed it below. Both
+// are read, but each direction stops at the first line that reads like a label:
+// in the current layout the line below a value is the NEXT row's label, and
+// scanning past it would hand this row its neighbour's reset time.
+function resetNearPercent(lines, i, nowMs) {
+  for (const step of [1, -1]) {
+    for (let j = i + step; j >= 0 && j < lines.length && Math.abs(j - i) <= 3; j += step) {
+      if (/%/.test(lines[j])) break;              // the neighbouring row's value
+      if (PLAN_NAME_LINE.test(lines[j])) continue;
+      const at = parseClaudeReset(lines[j], nowMs);
+      if (at) return at;
+      break;                                      // a label: no reset this way
+    }
+  }
+  return null;
 }
 
 // Summary items are the unified window shape every quota surface renders:
@@ -107,14 +153,8 @@ function summarizeUsageText(text, nowMs = Date.now()) {
     const m = lines[i].match(/^(\d+(?:\.\d+)?)\s*%$/) || lines[i].match(/(\d+(?:\.\d+)?)\s*%/);
     if (!m) continue;
     const label = labelForPercent(lines, i);
-    // The reset line follows the value; only the first candidate that really
-    // carries reset boilerplate counts.
-    let resetMs = null;
-    for (let j = i + 1; j <= i + 3 && j < lines.length; j++) {
-      if (/%/.test(lines[j])) break;
-      if (/resets?\s+in|resets?\s+on|重置/i.test(lines[j])) { resetMs = parseClaudeReset(lines[j], nowMs); break; }
-    }
     const usedPercent = Number(m[1]);
+    const resetMs = resetNearPercent(lines, i, nowMs);
     hits.push({ window: windowTokenForLabel(label), label, usedPercent, percent: usedPercent, resetMs, line: lines[i].slice(0, 80) });
     if (hits.length >= 4) break;
   }
