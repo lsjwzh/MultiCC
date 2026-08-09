@@ -164,56 +164,23 @@
   function formatFiveHourRateLimit(value, options = {}) {
     const nowMs = finiteNumber(options.nowMs) ?? Date.now();
     if (!isActive(value, nowMs)) return null;
-
-    const used = finiteNumber(value.usedPercentage);
-    const rejected = value.status === 'rejected';
-    // Codex reports a WEEKLY window (no 5h); Claude/GLM report 5h.
+    // Anything not explicitly tagged is Claude — normalizeFiveHourRateLimit
+    // defaults the field that way, and the header-derived 5h event has none.
+    if (value.provider !== 'glm' && value.provider !== 'codex') {
+      return formatClaudeBar(value, options.usage, { nowMs });
+    }
+    // GLM (5h) and Codex (weekly) each report exactly one window and have no
+    // usage page behind them, so their bar is that single segment.
+    const used = value.status === 'rejected' ? 100 : finiteNumber(value.usedPercentage);
     const windowLabel = value.provider === 'codex' ? '1wk' : '5h';
     const reset = finiteNumber(value.resetsAtMs);
-    const resetMs = reset === null ? null : Math.max(0, reset - nowMs);
-    // Rejected = window exhausted → force 0% remaining.
-    const effectiveUsed = rejected ? 100 : used;
-    const segs = [];
-    const first = unifiedWindowSeg(windowLabel, effectiveUsed, resetMs);
-    if (first) segs.push(first);
-    // Claude subscription: the weekly (and monthly, when the page shows one)
-    // limits come from the /api/claude/quota usage-page scrape. The page's own
-    // 5h row duplicates the passive event above, so only the longer windows
-    // are appended; the merge point normalizes order via sortWindowSegs.
-    const usage = options && options.usage;
-    if (value.provider === 'claude' && usage && usage.status === 'ok' && Array.isArray(usage.summary)) {
-      for (const s of usage.summary) {
-        if (!s || !Number.isFinite(s.usedPercent)) continue;
-        if (s.window === '5h' || (s.window !== '1wk' && s.window !== '1m')) continue;
-        const cd = s.resetMs ? Math.max(0, s.resetMs - nowMs) : null;
-        const seg = unifiedWindowSeg(s.window, s.usedPercent, cd);
-        if (seg) segs.push(seg);
-      }
-    }
-    let text = sortWindowSegs(segs).join(' · ') || first || windowLabel;
-    const color = unifiedColorFromRemaining(unifiedRemaining(effectiveUsed));
-    const titleLines = [];
-    if (value.provider === 'glm') {
-      titleLines.push('GLM Coding Plan 五小时窗口用量（来自 open.bigmodel.cn 额度端点）');
-    } else if (value.provider === 'codex') {
-      titleLines.push('Codex 订阅周额度用量（来自 chatgpt.com/backend-api/wham/usage）');
-    } else {
-      titleLines.push('Claude 订阅五小时用量（来自 Claude Code 结构化 rate_limit_event）');
-      if (usage && usage.status === 'ok' && Array.isArray(usage.summary)) {
-        const zh = { '1wk': '周', '1m': '月' };
-        for (const s of usage.summary) {
-          if (!s || !Number.isFinite(s.usedPercent) || !s.window || s.window === '5h') continue;
-          const cd = s.resetMs ? Math.max(0, s.resetMs - nowMs) : null;
-          const pct = Math.round(s.usedPercent);
-          titleLines.push(`${zh[s.window] || s.window}: 已用 ${pct}%${cd ? ' · ' + humanizeCountdown(cd) + ' 后重置' : ''}`);
-        }
-        if (usage.fetchedAt) titleLines.push(`同步于 ${relativeAgo(usage.fetchedAt)}（claude.ai/settings/usage 抓取）`);
-      }
-    }
+    const seg = unifiedWindowSeg(windowLabel, used, reset === null ? null : Math.max(0, reset - nowMs));
     return Object.freeze({
-      text,
-      color,
-      title: titleLines.join('\n'),
+      text: seg || windowLabel,
+      color: unifiedColorFromRemaining(unifiedRemaining(used)),
+      title: value.provider === 'glm'
+        ? 'GLM Coding Plan 五小时窗口用量（来自 open.bigmodel.cn 额度端点）'
+        : 'Codex 订阅周额度用量（来自 chatgpt.com/backend-api/wham/usage）',
     });
   }
 
@@ -262,114 +229,142 @@
     }
   }
 
-  // Idle placeholder for the always-visible Claude bar (mirrors the opencode
-  // formatQuotaIdle fixed-display pattern). Claude window data arrives via the
-  // passive WS rate_limit_event AND the /api/claude/quota usage scrape; until
-  // either lands the bar is a clickable "—" (click = fetch the scrape).
-  function formatClaudeIdle() {
+  // ── The Claude bar: three slots, filled with whatever arrived ──────────────
+  // 5h · 1wk · 1m, always that order, each rendered `<window> <remaining>%
+  // <countdown>`. A slot with no number is simply absent — no placeholder, no
+  // alternate layout, and never a raw page label ("Resets Wed 2:00 PM") standing
+  // in for a window name.
+  //
+  // The 5h number has two possible sources: the passive WS rate_limit_event
+  // (live, per session) and the usage-page scrape (shared, minutes old); the
+  // event wins. 1wk and 1m come from the scrape alone. Which source filled a
+  // slot changes nothing about how the bar is built — the previous split
+  // between an event path and a scrape-only path is exactly why two sessions on
+  // the same account rendered differently.
+  const CLAUDE_WINDOWS = Object.freeze(['5h', '1wk', '1m']);
+  const CLAUDE_WINDOW_ZH = Object.freeze({ '5h': '5小时', '1wk': '周', '1m': '月' });
+
+  function claudeWindowSlots(limit, usage, nowMs) {
+    const slots = new Map();
+    const countdown = (at) => (finiteNumber(at) === null ? null : Math.max(0, at - nowMs));
+    if (usage && usage.status === 'ok' && Array.isArray(usage.summary)) {
+      for (const s of usage.summary) {
+        if (!s || !CLAUDE_WINDOWS.includes(s.window) || !Number.isFinite(s.usedPercent)) continue;
+        // The page can carry two rows for one window (weekly all-models and
+        // weekly Opus). The more consumed one is the binding limit, so that is
+        // the one worth the slot.
+        const prev = slots.get(s.window);
+        if (prev && prev.used >= s.usedPercent) continue;
+        slots.set(s.window, { used: s.usedPercent, resetMs: countdown(s.resetMs) });
+      }
+    }
+    if (isActive(limit, nowMs)) {
+      const used = limit.status === 'rejected' ? 100 : finiteNumber(limit.usedPercentage);
+      if (used !== null) slots.set('5h', { used, resetMs: countdown(limit.resetsAtMs) });
+    }
+    return slots;
+  }
+
+  // What the bar says when not one window number is in hand, keyed by the
+  // scrape's own status — a lookup instead of a chain of ifs.
+  const CLAUDE_EMPTY_STATES = Object.freeze({
+    needs_login: {
+      text: 'Claude：需登录 · 点击打开登录窗口',
+      color: '#f85149',
+      title: '你的浏览器里没有 claude.ai 的登录态。点击将由 multicc 拉起一个 Chrome 登录窗口（claude.ai/settings/usage），登录后回来再点一次刷新。',
+      action: 'login',
+    },
+    chrome_unavailable: {
+      text: 'Claude：无可连的 Chrome · 点击尝试打开登录窗口',
+      color: '#d29922',
+      title: '托管 Chrome 起不来，也没有可连的调试端点。点击会尝试拉起一个可见的 Chrome 登录窗口；也可以自己开一个带调试端点的 Chrome 并在其中登录 claude.ai。',
+      action: 'login',
+    },
+    ok: {
+      text: 'Claude：已登录，未解析出用量 · ⟳ 重试',
+      color: '#d29922',
+      title: '已抓到 claude.ai 用量页，但没解析出窗口百分比。',
+    },
+  });
+  const CLAUDE_UNAVAILABLE = Object.freeze({
+    text: 'Claude：用量暂不可用 · ⟳ 重试',
+    color: '#d29922',
+    title: '无法从 claude.ai/settings/usage 拉取窗口用量',
+  });
+  const CLAUDE_IDLE = Object.freeze({
+    text: 'Claude 用量 · ⟳ 刷新',
+    color: '#8b949e',
+    title: 'Claude 订阅窗口用量。点击从 claude.ai/settings/usage 抓取 5h / 周 / 月 余量；5h 也会由 Claude Code 上报的 rate_limit_event 实时更新。',
+  });
+
+  function claudeEmptyBar(usage, fetching) {
+    if (fetching) {
+      return Object.freeze({
+        text: 'Claude：抓取用量中…',
+        color: '#8b949e',
+        title: '正在通过 CDP 打开 claude.ai/settings/usage 解析窗口余量…',
+      });
+    }
+    if (!usage) return CLAUDE_IDLE;
+    const state = CLAUDE_EMPTY_STATES[usage.status] || CLAUDE_UNAVAILABLE;
+    const detail = usage.error || (usage.text ? `原文：${String(usage.text).slice(0, 300)}` : '');
+    return detail ? Object.freeze({ ...state, title: `${state.title}\n${detail}` }) : state;
+  }
+
+  // The one Claude renderer. `limit` is the passive event (may be null/stale),
+  // `usage` the scrape (may be null/failed); either, both, or neither.
+  function formatClaudeBar(limit, usage, options = {}) {
+    const nowMs = finiteNumber(options.nowMs) ?? Date.now();
+    const slots = claudeWindowSlots(limit, usage, nowMs);
+    if (!slots.size) return claudeEmptyBar(usage, options.fetching);
+    const filled = CLAUDE_WINDOWS.filter((w) => slots.has(w));
+    const age = relativeAgo(usage && usage.status === 'ok' ? usage.fetchedAt : 0);
+    const segs = filled.map((w) => unifiedWindowSeg(w, slots.get(w).used, slots.get(w).resetMs));
+    const worst = Math.max(...filled.map((w) => slots.get(w).used));
+    const title = ['Claude 订阅窗口用量（5h 来自 Claude Code 上报的 rate_limit_event，周/月来自 claude.ai/settings/usage 抓取）']
+      .concat(filled.map((w) => {
+        const s = slots.get(w);
+        const cd = humanizeCountdown(s.resetMs);
+        return `${CLAUDE_WINDOW_ZH[w]}: 已用 ${Math.round(s.used)}%${cd ? ` · ${cd} 后重置` : ''}`;
+      }))
+      .concat(age ? [`同步于 ${age}`] : [], ['点击 bar 刷新']);
     return Object.freeze({
-      text: '5h · — · ⟳ 刷新',
-      color: '#8b949e',
-      title: 'Claude 订阅窗口用量。点击从 claude.ai/settings/usage 抓取 5h / 周 / 月 余量；5h 也会由 Claude Code 上报的 rate_limit_event 实时更新。',
+      text: `${segs.concat(age ? [age] : []).join(' · ')} ⟳`,
+      color: unifiedColorFromRemaining(unifiedRemaining(worst)),
+      title: title.join('\n'),
     });
   }
 
-  // Usage-page-only rendering for the Claude bar: no passive rate_limit_event
-  // has landed yet, but the /api/claude/quota scrape may already carry real
-  // windows — show them. With no scrape data at all, fall back to the idle
-  // placeholder so the bar stays a visible click target.
-  function formatClaudeUsageOnly(usage) {
-    if (!usage) return formatClaudeIdle();
-    if (usage.status === 'needs_login') {
-      return Object.freeze({
-        text: 'Claude：需登录 · 点击打开登录窗口',
-        color: '#f85149',
-        title: '你的浏览器里没有 claude.ai 的登录态。点击将由 multicc 拉起一个 Chrome 登录窗口（claude.ai/settings/usage），登录后回来再点一次刷新。',
-        action: 'login',
-      });
-    }
-    if (usage.status === 'chrome_unavailable') {
-      return Object.freeze({
-        text: 'Claude：无可连的 Chrome · 点击尝试打开登录窗口',
-        color: '#d29922',
-        title: '托管 Chrome 起不来，也没有可连的调试端点。点击会尝试拉起一个可见的 Chrome 登录窗口；也可以自己开一个带调试端点的 Chrome 并在其中登录 claude.ai。',
-        action: 'login',
-      });
-    }
-    if (usage.status !== 'ok' || !Array.isArray(usage.summary)) {
-      return Object.freeze({
-        text: 'Claude：用量暂不可用 · ⟳ 重试',
-        color: '#d29922',
-        title: (usage && usage.error) || '无法从 claude.ai/settings/usage 拉取窗口用量',
-      });
-    }
-    const summary = usage.summary.filter((s) => s && Number.isFinite(s.usedPercent));
-    if (!summary.length) {
-      return Object.freeze({
-        text: 'Claude：已登录，未解析出用量 · ⟳ 重试',
-        color: '#d29922',
-        title: `已抓到 claude.ai 用量页，但没解析出百分比。\n原文：${String(usage.text || '').slice(0, 300)}`,
-      });
-    }
-    const segs = [];
-    let maxUsed = 0;
-    for (const s of summary) {
-      if (s.usedPercent > maxUsed) maxUsed = s.usedPercent;
-      const label = s.window || s.label || '5h';
-      const cd = s.resetMs ? Math.max(0, s.resetMs - Date.now()) : null;
-      const seg = unifiedWindowSeg(label, s.usedPercent, cd);
-      if (seg) segs.push(seg);
-    }
-    let text = sortWindowSegs(segs).join(' · ') || '—';
-    const syncRel = relativeAgo(usage.fetchedAt);
-    if (syncRel) text += ` · ${syncRel}`;
-    text += ' ⟳';
-    let title = 'Claude 订阅窗口用量（claude.ai/settings/usage 抓取）';
-    for (const s of summary) title += `\n${s.window || s.label}: 已用 ${Math.round(s.usedPercent)}%`;
-    if (syncRel) title += `\n同步于 ${syncRel}`;
-    title += '\n点击 bar 刷新';
-    return Object.freeze({
-      text,
-      color: unifiedColorFromRemaining(unifiedRemaining(maxUsed)),
-      title,
-    });
+  // Kept as a named entry point for callers that only have the scrape.
+  function formatClaudeUsageOnly(usage, options = {}) {
+    return formatClaudeBar(null, usage, options);
   }
 
   function renderCurrent() {
     const element = global.document?.getElementById?.('claude-rate-limit-bar');
     if (!element) return;
     const claudeProvider = isClaudeProvider(currentProviderBaseUrl);
-    const matches = currentLimit && providerMatchesCli(currentLimit.provider, currentCli)
-      && (currentLimit.provider !== 'claude' || claudeProvider);
-    let view = matches ? formatFiveHourRateLimit(currentLimit, { usage: currentClaudeUsage }) : null;
-    let viewForClick = view;
-    if (view) {
-      element.style.display = 'block';
-      element.textContent = view.text;
-      element.title = view.title;
-      element.style.color = view.color;
-    } else if (currentCli === 'claude' && claudeProvider) {
-      // Always visible under the claude CLI on the Claude subscription: show
-      // the CDP usage scrape when it came back with windows (even before any
-      // passive event), else the idle placeholder — the bar stays a constant
-      // fixture. Under another provider the item is hidden entirely.
-      const usageView = claudeUsageFetchInFlight && !currentClaudeUsage
-        ? { text: 'Claude：抓取用量中…', color: '#8b949e', title: '正在通过 CDP 打开 claude.ai/settings/usage 解析窗口余量…' }
-        : formatClaudeUsageOnly(currentClaudeUsage);
-      viewForClick = usageView;
-      element.style.display = 'block';
-      element.textContent = usageView.text;
-      element.title = usageView.title;
-      element.style.color = usageView.color;
-    } else {
-      element.style.display = 'none';
-      element.textContent = '';
-      element.title = '';
-    }
+    const limit = currentLimit
+      && providerMatchesCli(currentLimit.provider, currentCli)
+      && (currentLimit.provider !== 'claude' || claudeProvider)
+      ? currentLimit
+      : null;
+    // Claude's bar is a permanent fixture under the claude CLI on the Claude
+    // subscription — it renders from the scrape alone, before any event lands.
+    // Another provider's window bar appears only once its own event is in hand,
+    // and under a non-Claude provider the item is hidden entirely.
+    const claudeBar = (limit && limit.provider === 'claude') || (currentCli === 'claude' && claudeProvider);
+    const view = claudeBar
+      ? formatClaudeBar(limit, currentClaudeUsage, { fetching: claudeUsageFetchInFlight && !currentClaudeUsage })
+      : (limit ? formatFiveHourRateLimit(limit) : null);
+    element.style.display = view ? 'block' : 'none';
+    element.textContent = view ? view.text : '';
+    element.title = view ? view.title : '';
+    if (view) element.style.color = view.color;
     // Click = fetch the usage scrape (or open the login window when the scrape
     // needs one). The bar was previously passive; the click target is what lets
     // the weekly/monthly windows get pulled on demand.
-    element.onclick = () => quotaBarClick('claude', viewForClick, () => refreshClaudeUsage(true));
+    element.onclick = () => quotaBarClick('claude', view, () => refreshClaudeUsage(true));
     if (expiryTimer) global.clearTimeout?.(expiryTimer);
     expiryTimer = null;
     if (view && currentLimit && currentLimit.resetsAtMs) {
