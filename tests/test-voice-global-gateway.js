@@ -272,12 +272,19 @@ async function invoke(app, method, routePath, req = {}) {
   const handler = app.routes.get(`${method} ${routePath}`);
   assert.ok(handler, `${method} ${routePath} mounted`);
   const res = response();
-  await handler({ body: {}, params: {}, ...req }, res, error => { throw error; });
+  // A real browser on this machine reaches the server through loopback, so the
+  // launch handler sees Host: 127.0.0.1:<port>. Tests that want a remote caller
+  // override req.headers.host themselves.
+  const merged = { body: {}, params: {}, ...req };
+  merged.headers = { host: '127.0.0.1:3000', ...(req.headers || {}) };
+  await handler(merged, res, error => { throw error; });
   return res;
 }
 
 function launchIdFromUrl(url) {
-  return new URL(url).searchParams.get('session');
+  // The launch URL is root-relative (the page is reverse-proxied through this
+  // server); parse it against a dummy origin to read the session id.
+  return new URL(url, 'http://localhost').searchParams.get('session');
 }
 
 async function issueLaunch(app, body) {
@@ -297,7 +304,8 @@ test('chat and global launches resolve to their own targets and never each other
   assert.equal(chat.body.launch.display, '前端会话');
   assert.deepEqual(chat.body.launch.transport, { loopbackOnly: true });
   const chatId = launchIdFromUrl(chat.body.launch.url);
-  assert.equal(chat.body.launch.url, `http://127.0.0.1:32123/?session=${chatId}`);
+  assert.equal(chat.body.launch.url, `/voice-gateway/web/?session=${chatId}`);
+  assert.doesNotMatch(chat.body.launch.url, /127\.0\.0\.1/, 'the launch URL must never expose the child loopback address');
   assert.doesNotMatch(chat.body.launch.url, /token/i, 'a long-lived access token must never ride in the URL');
 
   const global = await issueLaunch(harness.app, {});
@@ -324,6 +332,22 @@ test('chat and global launches resolve to their own targets and never each other
   const chatAgain = (await resolveLaunch(harness.app, chatId)).body.context;
   assert.equal(chatAgain.targetSessionId, 'chat-1');
   assert.equal((await resolveLaunch(harness.app, globalId)).body.context.targetSessionId, VOICE_ROUTER_ID);
+});
+
+test('a remote caller (phone app / Funnel) gets a non-loopback transport flag', async () => {
+  const harness = launchHarness();
+  // The app reaches the server through its configured base URL - a LAN or
+  // Tailscale Funnel host, not loopback. The launch URL is still root-relative
+  // (the caller resolves it), but the transport flag must reflect that this URL
+  // is reachable from another machine.
+  const remote = await invoke(harness.app, 'POST', '/api/v1/voice-gateway/launch', {
+    body: { sourceSessionId: 'chat-1' },
+    headers: { host: 'macbook-air-pwy.tail94695a.ts.net' },
+  });
+  assert.equal(remote.statusCode, 200);
+  assert.deepEqual(remote.body.launch.transport, { loopbackOnly: false });
+  assert.equal(remote.body.launch.url, `/voice-gateway/web/?session=${launchIdFromUrl(remote.body.launch.url)}`);
+  assert.doesNotMatch(remote.body.launch.url, /127\.0\.0\.1/);
 });
 
 test('the client states scope and nothing else — target fields it sends are ignored', async () => {
