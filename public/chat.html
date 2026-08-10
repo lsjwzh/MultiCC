@@ -324,8 +324,52 @@
       font-weight: 700;
     }
     #pending-user-input-submit:disabled { opacity: .55; cursor: wait; }
+    .pending-input-collapse {
+      margin-left: auto;
+      min-height: 28px;
+      padding: 3px 10px;
+      border: 1px solid #574515;
+      border-radius: 7px;
+      background: #2d2108;
+      color: #f2cc60;
+      cursor: pointer;
+      font: inherit;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .pending-input-collapse:hover { background: #3a2b0b; border-color: #d29922; }
+    .pending-input-collapse:disabled { opacity: .55; cursor: wait; }
 
     /* Fixed overlay positioned by chat-scroll-controller against #messages. */
+    /* Collapsed-state floating bubble for the prompt card (also a fixed
+       overlay): frees the flex row so the user can scroll the conversation for
+       context while a question waits. Purely a UI state — the
+       wait_for_user_answer semantics on the server are unchanged. */
+    #pending-user-input-fab {
+      position: fixed;
+      right: 20px;
+      bottom: 88px;
+      width: 50px;
+      height: 50px;
+      border-radius: 50%;
+      background: #9e6a03;
+      border: 2px solid #d29922;
+      color: #fff;
+      cursor: pointer;
+      z-index: 60;
+      box-shadow: 0 6px 18px #00000088;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      animation: pending-input-fab-pulse 2s ease-in-out infinite;
+    }
+    #pending-user-input-fab[hidden] { display: none !important; }
+    #pending-user-input-fab:hover { background: #b8780f; }
+    @keyframes pending-input-fab-pulse {
+      0%, 100% { box-shadow: 0 6px 18px #00000088, 0 0 0 0 rgba(210, 153, 34, 0.45); }
+      50% { box-shadow: 0 6px 18px #00000088, 0 0 0 9px rgba(210, 153, 34, 0); }
+    }
     .new-msg-pill {
       position: fixed;
       left: 50%;
@@ -1584,6 +1628,8 @@
         max-height: 42vh;
         margin: 7px 8px 0;
       }
+      /* Keep the collapsed bubble clear of the taller mobile composer. */
+      #pending-user-input-fab { right: 14px; bottom: 104px; }
       .pending-input-answer-row { align-items: stretch; }
       #messages { padding: 12px; }
       .msg { max-width: 96%; }
@@ -2251,6 +2297,7 @@
     <div class="pending-input-head">
       <span aria-hidden="true">❓</span>
       <span id="pending-user-input-title">需要你的回答</span>
+      <button id="pending-user-input-collapse" type="button" class="pending-input-collapse" aria-label="收起为悬浮球" title="收起为悬浮球，可继续查看对话">收起</button>
     </div>
     <div id="pending-user-input-question"></div>
     <div id="pending-user-input-reason" hidden></div>
@@ -2260,6 +2307,11 @@
       <button id="pending-user-input-submit" type="button">提交</button>
     </div>
   </section>
+  <!-- Collapsed-state floating bubble (shown when the card above is collapsed
+       so the user can read conversation context; click to re-expand). -->
+  <button id="pending-user-input-fab" type="button" hidden aria-label="展开待答问题" title="有待答问题，点击展开">
+    <span aria-hidden="true">❓</span>
+  </button>
 
   <!-- Messages -->
   <div id="messages">

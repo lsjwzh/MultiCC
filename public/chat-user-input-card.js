@@ -13,6 +13,10 @@
     const submitButton = elements.submitButton || doc?.getElementById('pending-user-input-submit');
     const submitAnswer = opts.submitAnswer || (() => false);
     const isConnected = opts.isConnected || (() => true);
+    // Collapsed-state floating bubble affordances (optional — a host that does
+    // not ship the button/fab simply skips the collapse feature).
+    const collapseBtn = elements.collapseBtn || doc?.getElementById('pending-user-input-collapse');
+    const fab = elements.fab || doc?.getElementById('pending-user-input-fab');
     if (!doc || !root || !question || !reason || !optionsEl || !textInput || !submitButton) {
       throw new TypeError('[user-input-card] complete DOM elements are required');
     }
@@ -21,10 +25,13 @@
     let submitting = false;
     let optionInputs = [];
     let controls = [textInput, submitButton];
+    let lastMessage = null;     // last rendered message, for re-expand after collapse
+    let collapsed = false;      // true while the card is hidden and the fab is shown
 
     function setAvailability() {
       const disabled = submitting || !isConnected();
       for (const control of controls) control.disabled = disabled;
+      if (collapseBtn) collapseBtn.disabled = disabled;
       root.dataset.submitting = submitting ? '1' : '';
     }
 
@@ -34,7 +41,10 @@
       submitting = false;
       optionInputs = [];
       controls = [textInput, submitButton];
+      collapsed = false;
+      lastMessage = null;
       root.hidden = true;
+      if (fab) fab.hidden = true;
       root.dataset.requestId = '';
       question.textContent = '';
       reason.textContent = '';
@@ -59,8 +69,31 @@
       return accepted;
     }
 
+    // Collapse the card into the floating bubble so the flex row reflows and
+    // the user can scroll the conversation for context. Purely local UI state:
+    // the server still considers the prompt pending until an answer resolves
+    // it (which fires user_input_resolved → clear → hides the bubble too).
+    function collapse() {
+      if (!requestId || collapsed) return false;
+      collapsed = true;
+      root.hidden = true;
+      if (fab) fab.hidden = false;
+      return true;
+    }
+    function expand() {
+      if (!collapsed) return false;
+      collapsed = false;
+      if (fab) fab.hidden = true;
+      // Rebuild the card from the last rendered message (option inputs included).
+      if (lastMessage) render(lastMessage);
+      return true;
+    }
+
     function render(message) {
       if (!message || !message.requestId) return false;
+      lastMessage = message;
+      collapsed = false;
+      if (fab) fab.hidden = true;
       requestId = String(message.requestId);
       const values = Array.isArray(message.options)
         ? message.options.map(value => String(value).trim()).filter(Boolean)
@@ -116,9 +149,13 @@
         submitButton.click();
       }
     });
+    if (collapseBtn) collapseBtn.addEventListener('click', collapse);
+    if (fab) fab.addEventListener('click', expand);
 
     return Object.freeze({
       clear,
+      collapse,
+      expand,
       render,
       setConnected: setAvailability,
       submit,
