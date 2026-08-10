@@ -404,7 +404,15 @@ let PORT = networkPolicy.port;
 const BIND_HOST = networkPolicy.host;
 const server = http.createServer(app);
 
-const wss = new WebSocket.Server({ server });
+// The loopback voice child is reverse-proxied under this prefix (HTTP + WS);
+// its realtime socket is spliced by the proxy's own upgrade handler (wired
+// right after the voice host is created below), so the chat wss must not
+// claim those upgrades.
+const VOICE_WEB_PROXY_PREFIX = require('./src/routes/voice-gateway-proxy').PROXY_PREFIX;
+const wss = new WebSocket.Server({
+  server,
+  shouldHandle: (req) => !(req.url || '').startsWith(VOICE_WEB_PROXY_PREFIX),
+});
 const isWindows = process.platform === 'win32';
 
 const CLAUDE_ARGS = process.env.CLAUDE_ARGS ? process.env.CLAUDE_ARGS.split(' ') : [];
@@ -1961,6 +1969,13 @@ const voiceHost = createVoiceHost({
   log: logger,
 });
 const qwenAudioSupervisor = voiceHost.supervisor;
+// Splice the voice child's realtime WebSocket through this server (the chat
+// wss above already declines this prefix via shouldHandle).
+server.on('upgrade', (req, socket, head) => {
+  if ((req.url || '').startsWith(VOICE_WEB_PROXY_PREFIX)) {
+    voiceHost.webProxy.handleUpgrade(req, socket, head);
+  }
+});
 const vapidKeys = ensureVapidKeys();
 webpush.setVapidDetails('mailto:multicc@localhost', vapidKeys.pubKey, vapidKeys.privKey);
 

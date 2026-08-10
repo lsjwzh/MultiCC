@@ -109,6 +109,12 @@ function createVoiceHost({
   }).mountRoutes(app);
   createQwenAudioRuntimeRoutes({ installer, supervisor, log }).mountRoutes(app);
 
+  // The Qwen child binds loopback; proxy its page/API/WebSocket through this
+  // server so phones reach it via the same base URL they use for chat. The
+  // WebSocket half (handleUpgrade) is wired where the HTTP server lives.
+  const webProxy = createVoiceGatewayWebProxy({ runtime: supervisor, log });
+  webProxy.mountRoutes(app);
+
   const gatewayService = gatewayRoutes.service;
 
   // Idempotent boot migration. ensureGlobal only ever ran on an HTTP PUT before,
@@ -142,6 +148,7 @@ function createVoiceHost({
     launchRegistry,
     voiceRouter,
     supervisor,
+    webProxy,
     prepareBoot,
     reconcileAll: () => supervisor.reconcileAll(),
   });
