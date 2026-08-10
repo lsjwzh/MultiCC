@@ -4,6 +4,7 @@ const path = require('path');
 const { mountVoiceRoutes } = require('./routes/voice');
 const { createVoiceGatewayRoutes } = require('./routes/voice-gateway');
 const { createGlobalVoiceGatewayRoutes } = require('./routes/voice-gateway-global');
+const { createVoiceGatewayWebProxy } = require('./routes/voice-gateway-proxy');
 const { GLOBAL_VOICE_GATEWAY_ID, legacyGatewayProjection } = require('./voice-gateway');
 const { createQwenAudioRuntimeRoutes } = require('./routes/qwen-audio-runtime');
 const { createQwenAudioInstaller } = require('./qwen-audio-installer');

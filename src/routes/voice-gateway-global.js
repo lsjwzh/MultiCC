@@ -14,6 +14,7 @@
 
 const { createErrorDto, requestContext, withApiMeta } = require('../api-contract');
 const { publicBaseUrl } = require('./voice-gateway');
+const { PROXY_PREFIX } = require('./voice-gateway-proxy');
 
 const NOT_FOUND = new Set(['voice_gateway_not_found', 'voice_launch_source_not_found', 'voice_launch_unknown']);
 // voice_router_not_provisioned / voice_router_id_conflict fall through to 409.
@@ -40,10 +41,29 @@ function statusForCode(code) {
 // The Qwen web client reads `?session=` (max 200 chars) from its page URL and
 // carries it through to every ACP prompt as `voice_session_id`. That is the only
 // channel we need: the launch id *is* the Qwen voice session id.
+//
+// The child itself binds loopback, so its raw URL only opens on this machine
+// (on a phone, 127.0.0.1 is the phone). The launch URL therefore points at this
+// server's web proxy as a root-relative path: the browser resolves it against
+// the page origin and the app resolves it against its configured server base
+// URL, so the same response works for a local browser, LAN and the Tailscale
+// Funnel alike.
 function launchUrl(runtimeUrl, launchId) {
   const base = String(runtimeUrl || '').replace(/\/$/, '');
   if (!base) return null;
-  return `${base}/?session=${encodeURIComponent(launchId)}`;
+  return `${PROXY_PREFIX}/?session=${encodeURIComponent(launchId)}`;
+}
+
+// Whether the caller reached this server through a loopback address — i.e. the
+// resolved launch URL is only usable on this machine. Computed from the
+// request Host: a phone app configured with a LAN/Funnel address reports
+// loopbackOnly=false and can open the page.
+function requestIsLoopback(req) {
+  const host = String(req?.headers?.host || '').toLowerCase();
+  const hostname = host.startsWith('[')
+    ? host.slice(0, host.indexOf(']') + 1)
+    : host.split(':')[0];
+  return ['127.0.0.1', 'localhost', '[::1]', '::1'].includes(hostname);
 }
 
 function createGlobalVoiceGatewayRoutes({
@@ -194,9 +214,10 @@ function createGlobalVoiceGatewayRoutes({
           scope: issued.launch.scope,
           expiresAt: issued.launch.expiresAt,
           display: issued.launch.display,
-          // Honest about the current transport: the Qwen child binds to
-          // 127.0.0.1, so this URL only opens from this machine.
-          transport: { loopbackOnly: true },
+          // Honest about the transport: the launch URL resolves against the
+          // caller's own origin, so it is only machine-local when the caller
+          // itself reached this server through loopback.
+          transport: { loopbackOnly: requestIsLoopback(req) },
         },
       }, versioned);
     } catch (error) {
