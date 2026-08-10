@@ -163,18 +163,13 @@
     #sidebar > .view.active{display:block}
 
     /* ── KPI row ── */
-    /* Six columns, not five: the AI Assistant tile carries a status badge and two
-     * buttons on top of the usual label, and a 1/5 slot clips them at 1400px. It
-     * takes two columns, the four stat tiles keep one each, and the row still
-     * reads as a single line of tiles. */
-    #kpi-row{display:grid;grid-template-columns:repeat(6,1fr);gap:14px;margin-bottom:24px}
-    #kpi-row > .kpi.aux{grid-column:span 2}
-    /* Focus mode drops the stat tiles (the 300px column has no room for them) but
-     * keeps the AI Assistant tile: its 模型 / History buttons are the only entry
-     * to the aux config, and hiding them would strand that surface. */
-    body.has-focus #kpi-row{grid-template-columns:1fr;margin-bottom:16px}
-    body.has-focus #kpi-row > .kpi{display:none}
-    body.has-focus #kpi-row > .kpi.aux{display:block;grid-column:auto}
+    /* Four stat tiles; the AI Assistant moved to its own full-width band below
+     * (#aux-row) — cramming it into this row stretched the page vertically. */
+    #kpi-row{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:14px}
+    /* Focus mode drops the stat tiles (the 300px column has no room for them);
+     * the AI Assistant band below stays visible — its 模型 / History buttons are
+     * the only entry to the aux config, and hiding them would strand that surface. */
+    body.has-focus #kpi-row{display:none;margin-bottom:0}
     .kpi{position:relative;overflow:hidden;background:linear-gradient(180deg,rgba(255,255,255,.025),transparent);border:1px solid var(--line);border-radius:var(--radius);padding:15px 17px}
     .kpi .k-top{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px;font-weight:500}
     .kpi .dot{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 8px var(--accent)}
@@ -186,9 +181,9 @@
     .kpi.grey .dot{background:var(--faint);box-shadow:none} .kpi.grey .k-bar{background:linear-gradient(90deg,var(--faint),transparent)}
     .kpi.clickable{cursor:pointer;transition:border-color .12s,transform .12s}
     .kpi.clickable:hover{border-color:var(--amber);transform:translateY(-1px)}
-    /* AI Assistant tile — keeps the aux card's purple identity now that it lives
-     * in the KPI row. The .purple.clickable:hover rule outranks the amber default
-     * on specificity, so the hover border stays purple wherever it is declared. */
+    /* AI Assistant band — keeps the aux card's purple identity on its own row.
+     * The .purple.clickable:hover rule outranks the amber default on specificity,
+     * so the hover border stays purple wherever it is declared. */
     .kpi.purple .dot{background:#8957e5;box-shadow:0 0 8px #8957e5} .kpi.purple .k-bar{background:linear-gradient(90deg,#8957e5,transparent)}
     .kpi.purple .k-name{color:#d2a8ff;font-weight:650}
     .kpi.purple.clickable:hover{border-color:#8957e5}
@@ -196,6 +191,28 @@
     .kpi .k-acts{margin-left:auto;display:flex;gap:5px;flex:0 0 auto}
     .kpi .k-acts .btn{padding:2px 8px;font-size:11px;min-height:0;line-height:1.7}
     .kpi .k-sub.ellipsis{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+    /* ── AI Assistant band (#aux-row) ──
+     * One full-width row: the AI Assistant tile on the left, recent classify
+     * tasks (时间 / 任务 / 判定) in a compact grid on the right — same height
+     * as the tile so the overview doesn't grow taller. */
+    #aux-row{display:grid;grid-template-columns:minmax(230px,300px) 1fr;gap:14px;margin-bottom:24px}
+    #aux-row > .kpi.aux{padding:11px 14px;display:flex;flex-direction:column;justify-content:center}
+    #aux-row > .kpi.aux .k-num{font-size:22px;margin-top:6px}
+    #aux-row > .kpi.aux .k-sub{margin-top:4px}
+    body.has-focus #aux-row{grid-template-columns:1fr;margin-bottom:16px}
+    .aux-classify{background:linear-gradient(180deg,rgba(255,255,255,.025),transparent);border:1px solid var(--line);border-radius:var(--radius);padding:9px 14px;display:flex;flex-direction:column;min-width:0;overflow:hidden}
+    .aux-cls-head{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);font-weight:500;margin-bottom:2px}
+    .aux-cls-head .aux-cls-more{margin-left:auto;color:var(--faint);background:none;border:none;font-size:11px;cursor:pointer;font-family:inherit}
+    .aux-cls-head .aux-cls-more:hover{color:#d2a8ff}
+    .aux-cls-grid{display:grid;grid-template-columns:auto minmax(0,1fr) auto;column-gap:14px;row-gap:3px;align-items:center;flex:1}
+    .aux-cls-grid .aux-cls-empty{grid-column:1/-1;color:#484f58;font-size:11.5px;text-align:center;padding:10px 0}
+    .aux-cls-t{color:#484f58;font-family:var(--mono);font-size:11px;white-space:nowrap}
+    .aux-cls-m{color:#8b949e;font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .aux-cls-m b{color:#d2a8ff;font-weight:600}
+    .aux-cls-v{display:flex;align-items:center;gap:6px;white-space:nowrap}
+    .aux-cls-v .status-badge{font-size:10px}
+    .aux-cls-d{color:#484f58;font-size:10px;font-family:var(--mono)}
 
     /* Realtime voice is a global action, not a metric and not a setting. Keep it
        directly below the home KPIs so it is discoverable without competing with
@@ -473,9 +490,9 @@
     .modal-card{background:var(--panel);border:1px solid var(--line-strong);border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,.6)}
 
     /* ── Responsive ── */
-    /* 2×2 stat tiles; the AI Assistant tile takes a full row of its own rather
-     * than sitting alone in a half-width slot with two buttons crammed in. */
-    @media (max-width:1100px){#kpi-row{grid-template-columns:repeat(2,1fr)} #kpi-row > .kpi.aux{grid-column:1/-1}}
+    /* 2×2 stat tiles; the AI Assistant band stacks its tile above the classify
+     * grid so neither gets squeezed into a half-width slot. */
+    @media (max-width:1100px){#kpi-row{grid-template-columns:repeat(2,1fr)} #aux-row{grid-template-columns:1fr}}
     @media (max-width:860px){
       /* Height ladder, worst → best. `inset:0 auto 0 0` (top+bottom) used to
          size the drawer, but on iOS Safari / Android Chrome a fixed element is
@@ -786,6 +803,7 @@
         <!-- ─── Overview view ─── -->
         <section class="view active" data-view="overview">
           <div id="kpi-row"></div>
+          <div id="aux-row"></div>
           <button
             id="overview-voice-beta"
             class="voice-beta-entry"
@@ -2149,8 +2167,15 @@
         <div class="kpi clickable" title="${t('activeSessions')}" onclick="showActiveSessions(event)"><div class="k-top"><span class="dot"></span>${t('activeSessions')}</div><div class="k-num" id="kpi-active">0</div><div class="k-sub" id="kpi-active-sub">claude 0 · codex 0</div><div class="k-bar"></div></div>
         <div class="kpi alt clickable" title="${t('waitingInput')}" onclick="showWaitingSessions(event)"><div class="k-top"><span class="dot"></span>${t('waitingInput')}</div><div class="k-num" id="kpi-wait">0</div><div class="k-sub">${t('replyNeeded')}</div><div class="k-bar"></div></div>
         <div class="kpi blue"><div class="k-top"><span class="dot"></span>${t('directories')}</div><div class="k-num" id="kpi-dirs">0</div><div class="k-sub" id="kpi-sess-sub">${t('sessionCount', { n: 0 })}</div><div class="k-bar"></div></div>
-        <div class="kpi grey clickable" title="${t('scheduledTasks') || '定时任务'}" onclick="showCronTasks(event)"><div class="k-top"><span class="dot"></span>${t('scheduledTasks') || '定时任务'}</div><div class="k-num" id="kpi-cron">0</div><div class="k-sub">${t('registered')}</div><div class="k-bar"></div></div>
-        <div class="kpi purple clickable aux" id="kpi-aux" title="AI Assistant" onclick="openAuxHistoryModal()"><div class="k-top"><span class="dot"></span><span class="k-name">AI Assistant</span><span class="status-badge idle" id="kpi-aux-status">空闲</span><span class="k-acts"><button class="btn btn-sm" onclick="event.stopPropagation(); openAuxModal()">模型</button><button class="btn btn-sm" onclick="event.stopPropagation(); openAuxHistoryModal()">History</button></span></div><div class="k-num"><span id="kpi-aux-num">0</span> <span id="kpi-aux-warm" title="进程未就绪" style="font-size:15px;color:#484f58;">○</span><span style="font-size:12px;font-weight:500;color:var(--faint);"> processed</span></div><div class="k-sub ellipsis" id="kpi-aux-sub" title="辅助 AI 当前模型">auxqueue</div><div class="k-bar"></div></div>`;
+        <div class="kpi grey clickable" title="${t('scheduledTasks') || '定时任务'}" onclick="showCronTasks(event)"><div class="k-top"><span class="dot"></span>${t('scheduledTasks') || '定时任务'}</div><div class="k-num" id="kpi-cron">0</div><div class="k-sub">${t('registered')}</div><div class="k-bar"></div></div>`;
+
+      // AI Assistant band: the tile on its own row (it used to be a fat 2-col
+      // tile in the KPI row and stretched the page), plus a compact grid of the
+      // latest classify tasks painted by renderAuxClassifyGrid() (manage.js).
+      const auxRow = document.getElementById('aux-row');
+      if (auxRow) auxRow.innerHTML = `
+        <div class="kpi purple clickable aux" id="kpi-aux" title="AI Assistant" onclick="openAuxHistoryModal()"><div class="k-top"><span class="dot"></span><span class="k-name">AI Assistant</span><span class="status-badge idle" id="kpi-aux-status">空闲</span><span class="k-acts"><button class="btn btn-sm" onclick="event.stopPropagation(); openAuxModal()">模型</button><button class="btn btn-sm" onclick="event.stopPropagation(); openAuxHistoryModal()">History</button></span></div><div class="k-num"><span id="kpi-aux-num">0</span> <span id="kpi-aux-warm" title="进程未就绪" style="font-size:15px;color:#484f58;">○</span><span style="font-size:12px;font-weight:500;color:var(--faint);"> processed</span></div><div class="k-sub ellipsis" id="kpi-aux-sub" title="辅助 AI 当前模型">auxqueue</div><div class="k-bar"></div></div>
+        <div class="aux-classify"><div class="aux-cls-head"><span class="dot" style="width:6px;height:6px;border-radius:50%;background:#8957e5;box-shadow:0 0 8px #8957e5;"></span>最新 classify 任务<button class="aux-cls-more" onclick="openAuxHistoryModal()" title="查看全部">全部 ›</button></div><div class="aux-cls-grid" id="aux-cls-grid"><div class="aux-cls-empty">暂无任务记录</div></div></div>`;
 
       function num(s) { const m = String(s || '').match(/\d+/); return m ? +m[0] : 0; }
       function updateKpis() {

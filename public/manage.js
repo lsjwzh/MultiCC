@@ -1811,6 +1811,7 @@ async function auxConnect() {
         _auxHistory = msg.messages || [];
         if (_focusedSessionId === '__aux__') renderAuxPanel();
         if (_auxModalOpen()) renderAuxModal();
+        renderAuxClassifyGrid();
       } else if (msg.type === 'aux_init') {
         // status info on connect — will be refreshed via /api/sessions
         if (msg.health) handleAuxHealth(msg.health);
@@ -1824,6 +1825,7 @@ async function auxConnect() {
             _auxHistory = Array.isArray(data) ? data : _auxHistory;
             if (_focusedSessionId === '__aux__') renderAuxPanel();
             if (_auxModalOpen()) renderAuxModal();
+            renderAuxClassifyGrid();
           }).catch(() => {});
           loadSessions();
         }
@@ -1870,6 +1872,7 @@ function refreshAuxHistory() {
       _auxHistory = data;
       if (_focusedSessionId === '__aux__') renderAuxPanel();
       if (_auxModalOpen()) renderAuxModal();
+      renderAuxClassifyGrid();
     }
   }).catch(() => {});
 }
@@ -1952,6 +1955,47 @@ function renderAuxModal() {
         <div style="color:#8b949e;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${promptPreview}</div>
         <div id="${detailId}" style="display:none;">${detailHtml}</div>
       </div>`;
+  }).join('');
+}
+
+// Compact "latest classify tasks" grid on the right side of the overview's
+// AI Assistant band (#aux-row). Same task-pair grouping as renderAuxModal,
+// trimmed to 6 rows; clicking through opens the full history modal.
+function renderAuxClassifyGrid() {
+  const grid = document.getElementById('aux-cls-grid');
+  if (!grid) return;
+  const tasks = [];
+  for (let i = 0; i < _auxHistory.length; i++) {
+    const msg = _auxHistory[i];
+    if (msg.role === 'user' && i + 1 < _auxHistory.length && _auxHistory[i + 1].role === 'assistant') {
+      tasks.push({ input: msg, output: _auxHistory[i + 1] });
+      i++;
+    } else if (msg.role === 'user') {
+      tasks.push({ input: msg, output: null });
+    }
+  }
+  tasks.reverse();
+  const recent = tasks.slice(0, 6);
+  if (!recent.length) {
+    grid.innerHTML = '<div class="aux-cls-empty">暂无任务记录</div>';
+    return;
+  }
+  const _reg = window.MultiCCStatusPresentation;
+  grid.innerHTML = recent.map(t => {
+    const d = new Date(t.input.ts);
+    const p = n => String(n).padStart(2, '0');
+    const timeStr = `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+    const sessName = (t.input.meta && t.input.meta.sessionName) || '';
+    const preview = escapeHtml((t.input.content || '').split('\n').pop().slice(0, 60));
+    let badge = _reg ? _reg.statusBadgeHtml('task', 'running', { translate: tt }) : '';
+    let dur = '';
+    if (t.output) {
+      const outStatus = t.output.error ? 'error' : (t.output.cancelled ? 'cancelled' : 'done');
+      badge = _reg ? _reg.statusBadgeHtml('task', outStatus, { translate: tt }) : '';
+      if (t.output.durationMs) dur = `<span class="aux-cls-d">${(t.output.durationMs / 1000).toFixed(1)}s</span>`;
+    }
+    const title = escapeHtml((t.input.content || '') + (t.output ? '\n→ ' + (t.output.content || '') : ''));
+    return `<span class="aux-cls-t">${timeStr}</span><span class="aux-cls-m" title="${title}"><b>${escapeHtml(t.input.taskType || 'classify')}</b>${sessName ? ' · ' + escapeHtml(sessName) : ''} · ${preview}</span><span class="aux-cls-v">${badge}${dur}</span>`;
   }).join('');
 }
 
@@ -2754,6 +2798,9 @@ loadClaudeHistory();
 loadUploadStats();
 window.MultiCCManageBridges.initialize();
 auxConnect();
+// Fallback for the overview classify grid: /ws/aux pushes aux_history on
+// connect, but if the socket is slow this still paints the grid once.
+setTimeout(() => { if (_auxHistory.length === 0) refreshAuxHistory(); }, 1500);
 autoRefreshTimer = setInterval(loadDashboard, 5000);
 // Refresh push diagnostics periodically and on visibility change
 setInterval(loadPushDiagnostics, 30000);

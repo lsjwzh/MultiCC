@@ -469,8 +469,9 @@ syncMonitors(sessions);
   }
 }
 
-// The AI Assistant card now lives in the KPI row (manage.html #kpi-aux), refreshed
-// by updateAuxKpi() on the 1s tick. Nothing renders it from here any more.
+// The AI Assistant card lives in its own band below the KPI row (manage.html
+// #aux-row, next to the recent-classify grid), refreshed by updateAuxKpi() on
+// the 1s tick. Nothing renders it from here any more.
 
 // ── Aux AI model config ──
 let _auxConfig = null; // { protocol, providerId, model, providersByProtocol }
