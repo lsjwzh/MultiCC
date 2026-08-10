@@ -150,7 +150,25 @@ function createVoiceGatewayWebProxy({ runtime, log = console } = {}) {
   return Object.freeze({ PREFIX: PROXY_PREFIX, mountRoutes, handleUpgrade });
 }
 
+// Install the single HTTP 'upgrade' dispatcher. The chat wss is created in
+// noServer mode, so nothing else listens for 'upgrade'; this routes the voice
+// child's realtime socket to the proxy and every other upgrade to the chat wss
+// (emitting 'connection' exactly as ws's auto-server mode did).
+function wireUpgrade(server, wss, webProxy) {
+  if (!server || typeof server.on !== 'function') return;
+  server.on('upgrade', (req, socket, head) => {
+    if (webProxy && (req.url || '').startsWith(webProxy.PREFIX)) {
+      webProxy.handleUpgrade(req, socket, head);
+      return;
+    }
+    if (wss && typeof wss.handleUpgrade === 'function') {
+      wss.handleUpgrade(req, socket, head, (ws, req2) => wss.emit('connection', ws, req2));
+    }
+  });
+}
+
 module.exports = {
   PROXY_PREFIX,
   createVoiceGatewayWebProxy,
+  wireUpgrade,
 };

@@ -60,7 +60,10 @@ function addLegacyGateway(records, dirId, commanderSessionId, enabled = true) {
 function createApp() {
   const routes = new Map();
   const add = method => (routePath, handler) => routes.set(`${method} ${routePath}`, handler);
-  return { routes, get: add('GET'), post: add('POST'), put: add('PUT'), delete: add('DELETE') };
+  // The voice host now also mounts the web reverse-proxy with app.use(prefix).
+  // These tests do not exercise the proxy, so record it without acting.
+  const use = (routePath, handler) => { if (typeof handler === 'undefined') { /* no-op middleware */ } };
+  return { routes, get: add('GET'), post: add('POST'), put: add('PUT'), delete: add('DELETE'), use };
 }
 
 // The host composition under test. Only the ports prepareBoot actually touches
