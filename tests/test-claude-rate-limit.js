@@ -630,7 +630,7 @@ test('Claude formatter ignores a usage payload without ok status', () => {
   };
   // A failed scrape leaves the 1wk/1m slots blank — it never blanks or replaces
   // the 5h number the passive event already supplied.
-  assert.equal(formatFiveHourRateLimit(limit, { usage: { status: 'needs_login' }, nowMs: now }).text, '5h 50% 1h · 1wk - · ⟳ 刷新');
+  assert.equal(formatFiveHourRateLimit(limit, { usage: { status: 'needs_login' }, nowMs: now }).text, '5h 50% 1h · 1wk - · ⟳ 登录');
   assert.equal(formatFiveHourRateLimit(limit, { usage: null, nowMs: now }).text, '5h 50% 1h · 1wk - · ⟳ 刷新');
 });
 
@@ -734,7 +734,7 @@ test('scrape trouble routes the click to login and explains itself in the toolti
   const states = ['needs_login', 'chrome_unavailable', 'unavailable', 'ok'];
   for (const status of states) {
     const view = formatClaudeUsageOnly({ status, summary: [], error: 'x' });
-    assert.equal(view.text, '5h - · 1wk - · ⟳ 刷新', status);
+    assert.equal(view.text, `5h - · 1wk - · ${status === 'needs_login' || status === 'chrome_unavailable' ? '⟳ 登录' : '⟳ 刷新'}`, status);
   }
   assert.equal(formatClaudeUsageOnly({ status: 'needs_login' }).action, 'login');
   assert.match(formatClaudeUsageOnly({ status: 'needs_login' }).title, /没有 claude\.ai 的登录态/);
@@ -742,6 +742,31 @@ test('scrape trouble routes the click to login and explains itself in the toolti
   assert.equal(formatClaudeUsageOnly({ status: 'chrome_unavailable' }).action, 'login');
   assert.equal(formatClaudeUsageOnly({ status: 'unavailable', error: 'boom' }).action, undefined);
   assert.match(formatClaudeUsageOnly({ status: 'ok', summary: [] }).title, /没解析出窗口百分比/);
+});
+
+test('the trailing segment says what the click will do, and then what it is doing', () => {
+  const now = 1_700_000_000_000;
+  const usage = {
+    status: 'ok',
+    fetchedAt: now,
+    summary: [{ window: '1wk', label: 'All models', usedPercent: 25, resetMs: now + 86_400_000 }],
+  };
+  const seg = (o) => formatClaudeUsageOnly(o.usage === undefined ? usage : o.usage, { ...o, nowMs: now })
+    .text.split(' · ').pop();
+  // The scrape is a 30-40s browser drive. A trailing segment that reads the
+  // same before and during it makes the click look ignored — which is exactly
+  // how it looked when every state rendered '⟳ 刷新'.
+  assert.equal(seg({}), '⟳ 刷新');
+  assert.equal(seg({ fetching: true }), '⟳ 抓取中…', 'a click on fresh data still shows it landed');
+  assert.equal(seg({ usage: null, fetching: true }), '⟳ 抓取中…');
+  assert.equal(seg({ usage: { status: 'needs_login' } }), '⟳ 登录', 'the click opens a login window, so say so');
+  assert.equal(seg({ usage: { status: 'needs_login' }, loginPending: true }), '⟳ 等待登录…');
+  // …and the same flags survive the passive-event entry point.
+  const limit = {
+    kind: 'five_hour', status: 'allowed', usedPercentage: 7,
+    resetsAtMs: now + 42 * 60_000, provider: 'claude',
+  };
+  assert.match(formatFiveHourRateLimit(limit, { usage, fetching: true, nowMs: now }).text, /⟳ 抓取中…$/);
 });
 
 test('a live 5h event does not hide that the scrape still needs a login', () => {
@@ -754,7 +779,7 @@ test('a live 5h event does not hide that the scrape still needs a login', () => 
   // must still open the login window rather than re-running a scrape that will
   // fail the same way.
   const view = formatFiveHourRateLimit(limit, { usage: { status: 'needs_login' }, nowMs: now });
-  assert.equal(view.text, '5h 93% 42m · 1wk - · ⟳ 刷新');
+  assert.equal(view.text, '5h 93% 42m · 1wk - · ⟳ 登录');
   assert.equal(view.action, 'login');
 });
 
@@ -812,7 +837,7 @@ test('refreshClaudeUsage records errors without persisting junk', async () => {
     const data = await refreshClaudeUsage(true);
     assert.equal(data.status, 'needs_login');
     assert.equal(values.has('multicc.claude.usage.v1'), false, 'non-ok scrape not persisted');
-    assert.equal(element.textContent, '5h - · 1wk - · ⟳ 刷新');
+    assert.equal(element.textContent, '5h - · 1wk - · ⟳ 登录', 'the bar now offers the fix, not a retry');
     assert.match(element.title, /登录/, 'why the numbers are missing is in the tooltip');
     assert.equal(typeof element.onclick, 'function', 'bar stays a click target');
   } finally {
