@@ -106,6 +106,42 @@ test('summarizeUsageText reads the current label / reset / percent layout', () =
   assert.equal(summary.some((s) => /Resets/i.test(s.label)), false);
 });
 
+test('summarizeUsageText carries the section heading down to rows named by model', () => {
+  // Captured from the live page: the window is named ONCE, on a section
+  // heading, and the rows under it are labelled by what they meter. Reading the
+  // window off the row alone classified both weekly rows as null and dropped
+  // them — the bar showed 5h and nothing else.
+  const sunNoon = new Date(2026, 7, 9, 12, 0, 0, 0).getTime();
+  const text = [
+    'Current session',
+    'Resets in 1 hr 18 min',
+    '48%',
+    'Weekly limits',
+    'All models',
+    'Resets Wed 2:00 PM',
+    '46%',
+    'Fable',
+    'Resets Wed 1:59 PM',
+    '35%',
+  ].join('\n');
+  const summary = claude.summarizeUsageText(text, sunNoon);
+  assert.deepEqual(summary.map((s) => s.window), ['5h', '1wk', '1wk']);
+  assert.deepEqual(summary.map((s) => s.label), ['Current session', 'All models', 'Fable']);
+  assert.deepEqual(summary.map((s) => s.usedPercent), [48, 46, 35]);
+  // "1 hr 18 min" is 78 minutes. The old shape-ladder wanted a space where the
+  // page had the "r" of "hr", so it fell through to the plain-hours pattern and
+  // read a flat 60.
+  assert.equal(summary[0].resetMs, sunNoon + 78 * 60 * 1000);
+});
+
+test('parseClaudeReset sums whatever units the page spelled out', () => {
+  const now = 1_700_000_000_000;
+  assert.equal(claude.parseClaudeReset('Resets in 1 hr 18 min', now), now + 78 * 60 * 1000);
+  assert.equal(claude.parseClaudeReset('Resets in 45 minutes', now), now + 45 * 60 * 1000);
+  assert.equal(claude.parseClaudeReset('Resets in 2 hours 5 mins', now), now + 125 * 60 * 1000);
+  assert.equal(claude.parseClaudeReset('Resets in 3 days 4 hrs', now), now + (3 * 86400 + 4 * 3600) * 1000);
+});
+
 test('usagePanelReady requires a percentage plus a window marker', () => {
   assert.ok(claude.usagePanelReady(USAGE_TEXT));
   assert.ok(claude.usagePanelReady('Current session\n42%\nResets in 2h'));
