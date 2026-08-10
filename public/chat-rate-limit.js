@@ -229,109 +229,148 @@
     }
   }
 
-  // ── The Claude bar: three slots, filled with whatever arrived ──────────────
-  // 5h · 1wk · 1m, always that order, each rendered `<window> <remaining>%
-  // <countdown>`. A slot with no number is simply absent — no placeholder, no
-  // alternate layout, and never a raw page label ("Resets Wed 2:00 PM") standing
-  // in for a window name.
+  // ── The Claude bar ─────────────────────────────────────────────────────────
+  // Every window the account has, one segment each, always the same shape:
   //
-  // The 5h number has two possible sources: the passive WS rate_limit_event
-  // (live, per session) and the usage-page scrape (shared, minutes old); the
-  // event wins. 1wk and 1m come from the scrape alone. Which source filled a
-  // slot changes nothing about how the bar is built — the previous split
-  // between an event path and a scrape-only path is exactly why two sessions on
-  // the same account rendered differently.
-  const CLAUDE_WINDOWS = Object.freeze(['5h', '1wk', '1m']);
+  //   5h 93% 42m · 1wk-ALL 75% 3d · 1wk-Fable 88% 3d · 57s 前 · ⟳ 刷新
+  //
+  // Claude meters its weekly limit more than one way (all models, and one
+  // per premium model), so a weekly row is named by what it meters. Nothing is
+  // collapsed and nothing is hidden — every row the page shows gets shown.
+  //
+  // A window with no data renders `-` rather than vanishing, so the bar's shape
+  // does not change with the data and a missing number is visibly missing. The
+  // 刷新 affordance is always the last segment: the bar is always clickable, and
+  // when the scrape needs a login the click opens the CDP login window instead.
+  //
+  // Claude has no monthly limit, so only 5h and 1wk are placeheld; a 1m row is
+  // still rendered if one ever appears.
+  const CLAUDE_PLACEHOLDER_WINDOWS = Object.freeze(['5h', '1wk']);
+  const CLAUDE_WINDOW_RANK = Object.freeze({ '5h': 0, '1wk': 1, '1m': 2 });
   const CLAUDE_WINDOW_ZH = Object.freeze({ '5h': '5小时', '1wk': '周', '1m': '月' });
+  const CLAUDE_REFRESH = '⟳ 刷新';
 
-  function claudeWindowSlots(limit, usage, nowMs) {
-    const slots = new Map();
+  // "All models" → "1wk-ALL"; "Fable" → "1wk-Fable". A row whose label just
+  // names the window itself ("Weekly limit") needs no suffix — "1wk-Weekly"
+  // would say the same thing twice.
+  function claudeRowName(window, label) {
+    const l = String(label || '').trim();
+    if (!l || claudeLabelNamesWindow(l)) return window;
+    if (/^all\b/i.test(l)) return `${window}-ALL`;
+    return `${window}-${l.split(/[\s(（]/)[0].slice(0, 10)}`;
+  }
+  function claudeLabelNamesWindow(label) {
+    return /session|hour|week|month|\d+\s*(h|day)/i.test(String(label || ''));
+  }
+
+  // One entry per metered window, in canonical order: the 5h row (from the live
+  // event when there is one, else the scrape) then the weekly rows in page
+  // order. Rows the scrape could not classify are dropped — a raw page line
+  // ("Resets Wed 2:00 PM") is not a window name.
+  function claudeWindowRows(limit, usage, nowMs) {
     const countdown = (at) => (finiteNumber(at) === null ? null : Math.max(0, at - nowMs));
+    const rows = [];
     if (usage && usage.status === 'ok' && Array.isArray(usage.summary)) {
       for (const s of usage.summary) {
-        if (!s || !CLAUDE_WINDOWS.includes(s.window) || !Number.isFinite(s.usedPercent)) continue;
-        // The page can carry two rows for one window (weekly all-models and
-        // weekly Opus). The more consumed one is the binding limit, so that is
-        // the one worth the slot.
-        const prev = slots.get(s.window);
-        if (prev && prev.used >= s.usedPercent) continue;
-        slots.set(s.window, { used: s.usedPercent, resetMs: countdown(s.resetMs) });
+        if (!s || CLAUDE_WINDOW_RANK[s.window] === undefined || !Number.isFinite(s.usedPercent)) continue;
+        rows.push({
+          window: s.window,
+          name: claudeRowName(s.window, s.label),
+          label: String(s.label || ''),
+          used: s.usedPercent,
+          resetMs: countdown(s.resetMs),
+        });
       }
     }
     if (isActive(limit, nowMs)) {
+      // The live event is this session's own 5h window, seconds old; the
+      // scrape's 5h row is the same window, minutes old. Replace, never stack.
       const used = limit.status === 'rejected' ? 100 : finiteNumber(limit.usedPercentage);
-      if (used !== null) slots.set('5h', { used, resetMs: countdown(limit.resetsAtMs) });
+      if (used !== null) {
+        const i = rows.findIndex((r) => r.window === '5h');
+        const row = { window: '5h', name: '5h', label: '', used, resetMs: countdown(limit.resetsAtMs) };
+        if (i >= 0) rows[i] = row; else rows.push(row);
+      }
     }
-    return slots;
+    return rows.sort((a, b) => CLAUDE_WINDOW_RANK[a.window] - CLAUDE_WINDOW_RANK[b.window]);
   }
 
-  // What the bar says when not one window number is in hand, keyed by the
-  // scrape's own status — a lookup instead of a chain of ifs.
-  const CLAUDE_EMPTY_STATES = Object.freeze({
+  // Why a window has no number, said in the bar's own tooltip. The click action
+  // rides along: needs_login sends the click to the CDP login window.
+  const CLAUDE_SCRAPE_STATES = Object.freeze({
     needs_login: {
-      text: 'Claude：需登录 · 点击打开登录窗口',
-      color: '#f85149',
+      note: '未登录 claude.ai — 点击打开登录窗口',
       title: '你的浏览器里没有 claude.ai 的登录态。点击将由 multicc 拉起一个 Chrome 登录窗口（claude.ai/settings/usage），登录后回来再点一次刷新。',
       action: 'login',
     },
     chrome_unavailable: {
-      text: 'Claude：无可连的 Chrome · 点击尝试打开登录窗口',
-      color: '#d29922',
+      note: '无可连的 Chrome — 点击尝试登录',
       title: '托管 Chrome 起不来，也没有可连的调试端点。点击会尝试拉起一个可见的 Chrome 登录窗口；也可以自己开一个带调试端点的 Chrome 并在其中登录 claude.ai。',
       action: 'login',
     },
     ok: {
-      text: 'Claude：已登录，未解析出用量 · ⟳ 重试',
-      color: '#d29922',
-      title: '已抓到 claude.ai 用量页，但没解析出窗口百分比。',
+      note: '已登录但未解析出周用量',
+      title: '已抓到 claude.ai 用量页，但没解析出窗口百分比。点击重试。',
     },
   });
-  const CLAUDE_UNAVAILABLE = Object.freeze({
-    text: 'Claude：用量暂不可用 · ⟳ 重试',
-    color: '#d29922',
-    title: '无法从 claude.ai/settings/usage 拉取窗口用量',
+  const CLAUDE_SCRAPE_UNAVAILABLE = Object.freeze({
+    note: '用量抓取失败',
+    title: '无法从 claude.ai/settings/usage 拉取窗口用量。点击重试。',
   });
-  const CLAUDE_IDLE = Object.freeze({
-    text: 'Claude 用量 · ⟳ 刷新',
-    color: '#8b949e',
-    title: 'Claude 订阅窗口用量。点击从 claude.ai/settings/usage 抓取 5h / 周 / 月 余量；5h 也会由 Claude Code 上报的 rate_limit_event 实时更新。',
+  const CLAUDE_SCRAPE_IDLE = Object.freeze({
+    note: '尚未抓取',
+    title: 'Claude 订阅窗口用量。点击从 claude.ai/settings/usage 抓取周余量；5h 由 Claude Code 上报的 rate_limit_event 实时更新。',
+  });
+  const CLAUDE_SCRAPE_FETCHING = Object.freeze({
+    note: '抓取中…',
+    title: '正在通过 CDP 打开 claude.ai/settings/usage 解析窗口余量…',
   });
 
-  function claudeEmptyBar(usage, fetching) {
-    if (fetching) {
-      return Object.freeze({
-        text: 'Claude：抓取用量中…',
-        color: '#8b949e',
-        title: '正在通过 CDP 打开 claude.ai/settings/usage 解析窗口余量…',
-      });
-    }
-    if (!usage) return CLAUDE_IDLE;
-    const state = CLAUDE_EMPTY_STATES[usage.status] || CLAUDE_UNAVAILABLE;
-    const detail = usage.error || (usage.text ? `原文：${String(usage.text).slice(0, 300)}` : '');
-    return detail ? Object.freeze({ ...state, title: `${state.title}\n${detail}` }) : state;
+  function claudeScrapeState(usage, fetching) {
+    if (fetching) return CLAUDE_SCRAPE_FETCHING;
+    if (!usage) return CLAUDE_SCRAPE_IDLE;
+    return CLAUDE_SCRAPE_STATES[usage.status] || CLAUDE_SCRAPE_UNAVAILABLE;
   }
 
   // The one Claude renderer. `limit` is the passive event (may be null/stale),
   // `usage` the scrape (may be null/failed); either, both, or neither.
   function formatClaudeBar(limit, usage, options = {}) {
     const nowMs = finiteNumber(options.nowMs) ?? Date.now();
-    const slots = claudeWindowSlots(limit, usage, nowMs);
-    if (!slots.size) return claudeEmptyBar(usage, options.fetching);
-    const filled = CLAUDE_WINDOWS.filter((w) => slots.has(w));
+    const rows = claudeWindowRows(limit, usage, nowMs);
+    const state = claudeScrapeState(usage, options.fetching);
     const age = relativeAgo(usage && usage.status === 'ok' ? usage.fetchedAt : 0);
-    const segs = filled.map((w) => unifiedWindowSeg(w, slots.get(w).used, slots.get(w).resetMs));
-    const worst = Math.max(...filled.map((w) => slots.get(w).used));
-    const title = ['Claude 订阅窗口用量（5h 来自 Claude Code 上报的 rate_limit_event，周/月来自 claude.ai/settings/usage 抓取）']
-      .concat(filled.map((w) => {
-        const s = slots.get(w);
-        const cd = humanizeCountdown(s.resetMs);
-        return `${CLAUDE_WINDOW_ZH[w]}: 已用 ${Math.round(s.used)}%${cd ? ` · ${cd} 后重置` : ''}`;
+
+    // A placeholder for every window with no row, then the rows themselves,
+    // ordered by window so the bar reads 5h → 1wk → 1m whether or not the data
+    // arrived. Bar text and tooltip come off the same ordered list.
+    const missing = CLAUDE_PLACEHOLDER_WINDOWS.filter((w) => !rows.some((r) => r.window === w));
+    const entries = missing
+      .map((w) => ({
+        window: w,
+        seg: `${w} -`,
+        detail: `${CLAUDE_WINDOW_ZH[w]}: 无数据（${state.note}）`,
       }))
-      .concat(age ? [`同步于 ${age}`] : [], ['点击 bar 刷新']);
+      .concat(rows.map((r) => {
+        const cd = humanizeCountdown(r.resetMs);
+        const from = r.label && !claudeLabelNamesWindow(r.label) ? `（${r.label}）` : '';
+        return {
+          window: r.window,
+          seg: unifiedWindowSeg(r.name, r.used, r.resetMs),
+          detail: `${CLAUDE_WINDOW_ZH[r.window]}${from}: 已用 ${Math.round(r.used)}%${cd ? ` · ${cd} 后重置` : ''}`,
+        };
+      }))
+      .sort((a, b) => CLAUDE_WINDOW_RANK[a.window] - CLAUDE_WINDOW_RANK[b.window]);
+
+    const worst = rows.length ? Math.max(...rows.map((r) => r.used)) : null;
     return Object.freeze({
-      text: `${segs.concat(age ? [age] : []).join(' · ')} ⟳`,
-      color: unifiedColorFromRemaining(unifiedRemaining(worst)),
-      title: title.join('\n'),
+      text: entries.map((e) => e.seg).concat(age ? [age] : [], [CLAUDE_REFRESH]).join(' · '),
+      color: worst === null ? '#8b949e' : unifiedColorFromRemaining(unifiedRemaining(worst)),
+      action: state.action,
+      // The scrape's own status is worth a line only when it explains something
+      // — a missing window, or a failure. With every window in hand it is noise.
+      title: ['Claude 订阅窗口用量（5h 来自 Claude Code 上报的 rate_limit_event，周来自 claude.ai/settings/usage 抓取）']
+        .concat(entries.map((e) => e.detail), age ? [`同步于 ${age}`] : [], missing.length ? [state.title] : [])
+        .join('\n'),
     });
   }
 
