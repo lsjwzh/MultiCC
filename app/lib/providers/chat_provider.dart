@@ -621,6 +621,22 @@ class ChatProvider extends ChangeNotifier {
           // still-un-id'd bubble of that role so its delete button goes live
           // (matches web: tag last bubble of role that has no msgId yet).
           final p = evt.payload as Map<String, dynamic>;
+          // A user message that settles a wait_for_user_answer prompt carries
+          // the prompt's requestId as answeredQuestionId (inside `message`).
+          // Treat it as a teardown signal — the message-carried backup for the
+          // fire-and-forget user_input_resolved event, so a client that missed
+          // the event (or a fresh foreground) still closes the prompt when the
+          // committed answer message reaches it. Idempotent: requestId mismatch
+          // means this client already consumed it, no-op.
+          final answeredId =
+              (p['message'] as Map?)?['answeredQuestionId']?.toString();
+          if (answeredId != null &&
+              answeredId.isNotEmpty &&
+              _pendingUserInput != null &&
+              _pendingUserInput!.requestId == answeredId) {
+            _pendingUserInput = null;
+            notifyListeners();
+          }
           final id = p['id']?.toString();
           final role = p['role']?.toString();
           if (id != null && id.isNotEmpty && role != null) {
