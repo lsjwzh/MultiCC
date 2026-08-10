@@ -10,11 +10,16 @@ class PendingUserInputPanel extends StatefulWidget {
   final bool enabled;
   final ValueChanged<String> onAnswer;
 
+  /// 收起为漂浮球（可选；不传则不显示收起按钮）。收起纯属本地 UI，
+  /// 不改变「等待回答」的服务端语义。
+  final VoidCallback? onCollapse;
+
   const PendingUserInputPanel({
     super.key,
     required this.input,
     required this.enabled,
     required this.onAnswer,
+    this.onCollapse,
   });
 
   @override
@@ -96,6 +101,20 @@ class _PendingUserInputPanelState extends State<PendingUserInputPanel> {
                   ),
                 ),
               ),
+              if (widget.onCollapse != null)
+                IconButton(
+                  key: const Key('pending-collapse'),
+                  onPressed: widget.enabled ? widget.onCollapse : null,
+                  icon: const Icon(Icons.unfold_less_rounded, size: 18),
+                  tooltip: t('pendingInputCollapse'),
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(
+                    minWidth: 28,
+                    minHeight: 28,
+                  ),
+                  color: const Color(0xFFf2cc60),
+                ),
             ],
           ),
           const SizedBox(height: 6),
@@ -612,11 +631,7 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
   /// A tappable quota bar: tapping refreshes, or opens the login window when
   /// the underlying scrape reports no session. Shared by the Claude and Qoder
   /// subscription bars (web: `quotaBarClick`).
-  Widget _quotaBarView(
-    VendorQuotaView v, {
-    VoidCallback? onTap,
-    Key? key,
-  }) {
+  Widget _quotaBarView(VendorQuotaView v, {VoidCallback? onTap, Key? key}) {
     final chip = Semantics(
       label: v.tooltip.isNotEmpty ? '${v.text}\n${v.tooltip}' : v.text,
       button: true,
