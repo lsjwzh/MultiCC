@@ -123,11 +123,12 @@ test('formatZhipuQuota renders idle, not_configured and ok states', () => {
       { host: 'open.bigmodel.cn', site: 'BigModel', ok: true, period: '5h', usedPercent: 91.5, resetsAt: null, tier: 'pro' },
     ],
   });
-  // Period-labeled, 2-decimal display, trailing zeros dropped.
-  assert.match(ok.text, /Z\.ai 5h 12\.35%/);
-  assert.match(ok.text, /BigModel 5h 91\.5%/);
-  // >=90% trips the red color.
-  assert.equal(ok.color, '#f85149');
+  // Compact remaining-% bar: the caller's first site drives it (Z.ai 12.3456%
+  // used → 88% remaining); per-site detail moved to the tooltip.
+  assert.match(ok.text, /5h 88%/);
+  assert.match(ok.title, /BigModel \(open\.bigmodel\.cn\): 5h 91\.5% 已用/);
+  // First site's max window is only 12.35% used → 87.65% remaining → blue.
+  assert.equal(ok.color, '#58a6ff');
 });
 
 test('formatZhipuQuota shows both 5h and weekly windows with period labels', () => {
@@ -138,9 +139,9 @@ test('formatZhipuQuota shows both 5h and weekly windows with period labels', () 
       { host: 'api.z.ai', site: 'Z.ai', ok: true, period: '5h', usedPercent: 10, resetsAt: null, weeklyPeriod: 'weekly', weeklyUsedPercent: 75, weeklyResetsAt: null, tier: 'pro' },
     ],
   });
-  assert.match(view.text, /Z\.ai 5h 10%/);
-  assert.match(view.text, /周 75%/);
-  // Color driven by the higher (weekly) window: 75% → yellow.
+  assert.match(view.text, /5h 90%/);
+  assert.match(view.text, /1wk 25%/);
+  // Color driven by the higher (weekly) window: 75% used → 25% remaining → yellow.
   assert.equal(view.color, '#d29922');
   assert.match(view.title, /周 75% 已用/);
 });
