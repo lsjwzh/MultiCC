@@ -107,9 +107,9 @@ class VoiceLaunchService {
         message: '语音入口地址无效。',
       );
     }
-    // getUserMedia (the microphone) requires a secure context: HTTPS or a
-    // loopback host. A phone whose server address is http://<lan-ip> would load
-    // the page but the browser blocks the mic, so guide the user to an HTTPS
+    // The browser only grants microphone access in a secure context: HTTPS or
+    // a loopback host. A phone whose server address is http://<lan-ip> would
+    // load the page but the mic is blocked, so guide the user to an HTTPS
     // address instead of opening a page that cannot work.
     const loopback = ['127.0.0.1', 'localhost', '[::1]', '::1'];
     if (uri.scheme == 'http' && !loopback.contains(uri.host.toLowerCase())) {
