@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 
+import '../i18n.dart';
 import 'settings_service.dart';
 
 /// Result of asking the Host for a realtime-voice launch.
@@ -104,6 +105,18 @@ class VoiceLaunchService {
         ok: false,
         errorCode: 'voice_launch_url_invalid',
         message: '语音入口地址无效。',
+      );
+    }
+    // getUserMedia (the microphone) requires a secure context: HTTPS or a
+    // loopback host. A phone whose server address is http://<lan-ip> would load
+    // the page but the browser blocks the mic, so guide the user to an HTTPS
+    // address instead of opening a page that cannot work.
+    const loopback = ['127.0.0.1', 'localhost', '[::1]', '::1'];
+    if (uri.scheme == 'http' && !loopback.contains(uri.host.toLowerCase())) {
+      return VoiceLaunchResult(
+        ok: false,
+        errorCode: 'voice_launch_insecure_context',
+        message: I18n.of('voiceLaunchInsecureContext', {'host': uri.host}),
       );
     }
     final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);

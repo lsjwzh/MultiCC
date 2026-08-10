@@ -354,6 +354,7 @@
   "voiceTaskCompleted": "Task completed",
   "voiceWaitingAction": "Waiting for your action",
   "voiceWaitingBackground": "Waiting for a background task",
+  "voiceLaunchInsecureContext": "Realtime voice needs an HTTPS secure context to use the microphone. Your server address is http://{host}, so the phone browser will block the microphone. Set your server address to your Tailscale Funnel HTTPS URL (e.g. https://macbook-air-pwy.tail94695a.ts.net) in app settings, then try again.",
   "voiceApiInterrupted": "Interrupted by an API error; waiting to retry",
   "phasePlanning": "Planning",
   "phaseImplementing": "Implementing",
