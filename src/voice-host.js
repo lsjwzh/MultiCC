@@ -4,7 +4,7 @@ const path = require('path');
 const { mountVoiceRoutes } = require('./routes/voice');
 const { createVoiceGatewayRoutes } = require('./routes/voice-gateway');
 const { createGlobalVoiceGatewayRoutes } = require('./routes/voice-gateway-global');
-const { createVoiceGatewayWebProxy } = require('./routes/voice-gateway-proxy');
+const { createVoiceGatewayWebProxy, wireUpgrade } = require('./routes/voice-gateway-proxy');
 const { GLOBAL_VOICE_GATEWAY_ID, legacyGatewayProjection } = require('./voice-gateway');
 const { createQwenAudioRuntimeRoutes } = require('./routes/qwen-audio-runtime');
 const { createQwenAudioInstaller } = require('./qwen-audio-installer');
@@ -22,6 +22,8 @@ const DEFAULT_BASE_URL = 'wss://dashscope.aliyuncs.com/api-ws/v1/realtime';
 // only owns installation, lifecycle, settings and API route wiring.
 function createVoiceHost({
   app,
+  server,
+  wss,
   records,
   directories,
   sessionPersistence,
@@ -114,6 +116,10 @@ function createVoiceHost({
   // WebSocket half (handleUpgrade) is wired where the HTTP server lives.
   const webProxy = createVoiceGatewayWebProxy({ runtime: supervisor, log });
   webProxy.mountRoutes(app);
+  // Install the single 'upgrade' dispatcher: voice-child realtime sockets to
+  // the proxy, every chat socket to the wss. No-op when server/wss are absent
+  // (tests), and safe to call before the server listens.
+  wireUpgrade(server, wss, webProxy);
 
   const gatewayService = gatewayRoutes.service;
 
