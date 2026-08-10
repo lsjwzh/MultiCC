@@ -127,8 +127,9 @@ test('formatKimiQuota renders idle, not_configured and ok money states', () => {
       { host: 'api.moonshot.cn', site: 'Moonshot', ok: true, available: 49.58894, voucher: 46.58893, cash: 3.00001, currency: 'CNY' },
     ],
   });
-  // 2-decimal money display.
-  assert.match(ok.text, /Moonshot ¥49\.59/);
+  // Compact bar: 2-decimal money, no site prefix (per-site detail → tooltip).
+  assert.match(ok.text, /¥49\.59/);
+  assert.match(ok.title, /Moonshot \(api\.moonshot\.cn\): 可用 ¥/);
   // Healthy balance is blue.
   assert.equal(ok.color, '#58a6ff');
 });
@@ -171,7 +172,7 @@ test('formatKimiQuota shows cached value with stale indicator when fetch fails',
     sites: [{ host: 'api.moonshot.cn', site: 'Moonshot', ok: true, available: 42.5, voucher: null, cash: 42.5, currency: 'CNY' }],
   };
   const view = formatKimiQuota({ status: 'unavailable', error: 'all kimi fetches failed', sites: [{ host: 'api.kimi.com', ok: false, reason: 'auth_rejected' }] }, cached);
-  assert.match(view.text, /Moonshot ¥42\.5/);
+  assert.match(view.text, /¥42\.50/);
   assert.match(view.text, /上次/);
   assert.match(view.title, /缓存值/);
   assert.match(view.title, /Kimi-for-Coding/);
@@ -190,7 +191,7 @@ test('formatKimiQuota shows cached balance even when no live value exists yet', 
     sites: [{ host: 'api.moonshot.cn', site: 'Moonshot', ok: true, available: 12.34, voucher: null, cash: 12.34, currency: 'CNY' }],
   };
   const view = formatKimiQuota(null, cached);
-  assert.match(view.text, /Moonshot ¥12\.34/);
+  assert.match(view.text, /¥12\.34/);
   assert.match(view.text, /上次/);
   assert.match(view.title, /缓存值/);
 });
