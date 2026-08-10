@@ -297,6 +297,49 @@ test('user_input_resolved tears down the wait_user prompt in every window', () =
   );
 });
 
+test('chat_msg_meta carrying answeredQuestionId tears down the wait_user card from the message itself', () => {
+  const fixture = controllerFixture();
+  const generation = fixture.controller.beginGeneration();
+  fixture.controller.handleEvent({
+    type: 'user_input_required', requestId: 'usrq-7', question: '部署？', options: ['是', '否'],
+  }, generation);
+  assert.equal(fixture.state.pendingUserInputRequestId, 'usrq-7');
+
+  // The answering user message is broadcast with answeredQuestionId metadata.
+  // A window that missed the fire-and-forget user_input_resolved event still
+  // tears the card down when the committed answer message reaches it.
+  fixture.controller.handleEvent({
+    type: 'chat_msg_meta',
+    id: 'msg-1', role: 'user', ts: 1234, clientMsgId: 'c1',
+    message: {
+      id: 'msg-1', role: 'user', content: '是', ts: 1234,
+      clientMsgId: 'c1', answeredQuestionId: 'usrq-7',
+    },
+  }, generation);
+  assert.deepEqual(
+    fixture.calls.filter(call => Array.isArray(call) && call[0] === 'consume-input').at(-1),
+    ['consume-input', 'usrq-7'],
+  );
+});
+
+test('chat_msg_meta without answeredQuestionId leaves the wait_user card untouched', () => {
+  const fixture = controllerFixture();
+  const generation = fixture.controller.beginGeneration();
+  fixture.controller.handleEvent({
+    type: 'user_input_required', requestId: 'usrq-8', question: '继续？', options: ['ok'],
+  }, generation);
+  const before = fixture.calls
+    .filter(call => Array.isArray(call) && call[0] === 'consume-input').length;
+  fixture.controller.handleEvent({
+    type: 'chat_msg_meta',
+    id: 'msg-2', role: 'user', ts: 1234,
+    message: { id: 'msg-2', role: 'user', content: '普通消息', ts: 1234 },
+  }, generation);
+  const after = fixture.calls
+    .filter(call => Array.isArray(call) && call[0] === 'consume-input').length;
+  assert.equal(after, before);
+});
+
 test('structured user-input and FIFO events expose correlation and honest frozen state', () => {
   const fixture = controllerFixture();
   const generation = fixture.controller.beginGeneration();
