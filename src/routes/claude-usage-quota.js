@@ -91,18 +91,27 @@ function parseAbsoluteReset(text, nowMs) {
   return at.getTime();
 }
 
+// The relative form is a sum of whatever units the page felt like printing, in
+// whatever spelling: "3d 4h", "2h 15m", "1 hr 18 min", "45 minutes". Summing
+// every unit found beats a ladder of shape-specific patterns — the ladder
+// silently read "1 hr 18 min" as one hour, because its "h then m" pattern
+// wanted a space where the page had the "r" of "hr", and the plain-hours
+// pattern below it matched first.
+const RESET_UNIT_SECONDS = Object.freeze({ d: 86400, h: 3600, m: 60 });
+
 function parseClaudeReset(text, nowMs = Date.now()) {
   const t = String(text || '');
-  const d = t.match(/resets?\s+in\s+(\d+)\s*d\s+(\d+)\s*h/i);
-  if (d) return nowMs + (Number(d[1]) * 86400 + Number(d[2]) * 3600) * 1000;
-  const dOnly = t.match(/resets?\s+in\s+(\d+)\s*d/i);
-  if (dOnly) return nowMs + Number(dOnly[1]) * 86400 * 1000;
-  const hm = t.match(/resets?\s+in\s+(\d+)\s*h\s+(\d+)\s*m/i);
-  if (hm) return nowMs + (Number(hm[1]) * 3600 + Number(hm[2]) * 60) * 1000;
-  const h = t.match(/resets?\s+in\s+(\d+)\s*h/i);
-  if (h) return nowMs + Number(h[1]) * 3600 * 1000;
-  const m = t.match(/resets?\s+in\s+(\d+)\s*m/i);
-  if (m) return nowMs + Number(m[1]) * 60 * 1000;
+  const relative = t.match(/resets?\s+in\s+(.+)/i);
+  if (relative) {
+    let seconds = 0;
+    let matched = false;
+    const units = /(\d+)\s*(days?|d|hrs?|hours?|h|mins?|minutes?|m)\b/gi;
+    for (let u = units.exec(relative[1]); u; u = units.exec(relative[1])) {
+      seconds += Number(u[1]) * RESET_UNIT_SECONDS[u[2][0].toLowerCase()];
+      matched = true;
+    }
+    if (matched) return nowMs + seconds * 1000;
+  }
   return parseAbsoluteReset(t, nowMs);
 }
 
@@ -149,13 +158,23 @@ function resetNearPercent(lines, i, nowMs) {
 function summarizeUsageText(text, nowMs = Date.now()) {
   const lines = String(text || '').split(/\n+/).map((s) => s.trim()).filter(Boolean);
   const hits = [];
+  // The window name is not always on the row. The page groups its weekly rows
+  // under a "Weekly limits" heading and then labels each row by what it meters
+  // ("All models", "Fable"), so those rows name a model, not a window. The last
+  // heading that named a window is therefore carried down as the fallback — the
+  // rows under "Weekly limits" are weekly ones whatever they call themselves.
+  let section = null;
   for (let i = 0; i < lines.length; i++) {
     const m = lines[i].match(/^(\d+(?:\.\d+)?)\s*%$/) || lines[i].match(/(\d+(?:\.\d+)?)\s*%/);
-    if (!m) continue;
+    if (!m) {
+      section = windowTokenForLabel(lines[i]) || section;
+      continue;
+    }
     const label = labelForPercent(lines, i);
     const usedPercent = Number(m[1]);
     const resetMs = resetNearPercent(lines, i, nowMs);
-    hits.push({ window: windowTokenForLabel(label), label, usedPercent, percent: usedPercent, resetMs, line: lines[i].slice(0, 80) });
+    const window = windowTokenForLabel(label) || section;
+    hits.push({ window, label, usedPercent, percent: usedPercent, resetMs, line: lines[i].slice(0, 80) });
     if (hits.length >= 4) break;
   }
   return hits.length ? hits : null;

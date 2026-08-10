@@ -135,7 +135,7 @@ test('formats active five-hour state and hides expired state deterministically',
   // The Claude bar is always a click target (⟳ = fetch the usage page), so the
   // refresh affordance is part of every Claude rendering, not just the
   // scrape-driven one.
-  assert.equal(view.text, '5h 28% 1h ⟳');
+  assert.equal(view.text, '5h 28% 1h · 1wk - · ⟳ 刷新');
   assert.equal(view.color, '#d29922');
   assert.match(view.title, /^Claude 订阅窗口用量/);
   assert.match(view.title, /5小时: 已用 72%/);
@@ -143,7 +143,7 @@ test('formats active five-hour state and hides expired state deterministically',
   assert.equal(formatFiveHourRateLimit({
     ...limit,
     status: 'rejected',
-  }, { nowMs: now }).text, '5h 0% 1h ⟳');
+  }, { nowMs: now }).text, '5h 0% 1h · 1wk - · ⟳ 刷新');
 });
 
 test('structured event renders directly in the Claude chat bar and hides for another CLI', () => {
@@ -204,7 +204,7 @@ test('GLM window renders in the unified 5h format under codex, idle placeholder 
     assert.match(element.textContent, /^5h 56%/);
     setCli('claude');
     assert.equal(element.style.display, 'block', 'bar stays visible under claude (idle placeholder)');
-    assert.match(element.textContent, /^Claude 用量/, 'GLM window replaced by Claude idle placeholder');
+    assert.match(element.textContent, /^5h - · 1wk -/, 'GLM window replaced by Claude idle placeholder');
   } finally {
     setCli('codex');
     delete global.document;
@@ -239,7 +239,7 @@ test('Codex weekly window renders in the unified 1wk format under codex, idle pl
     assert.match(element.textContent, /^1wk 36%/);
     setCli('claude');
     assert.equal(element.style.display, 'block', 'bar stays visible under claude (idle placeholder)');
-    assert.match(element.textContent, /^Claude 用量/, 'Codex weekly replaced by Claude idle placeholder');
+    assert.match(element.textContent, /^5h - · 1wk -/, 'Codex weekly replaced by Claude idle placeholder');
   } finally {
     setCli('codex');
     delete global.document;
@@ -309,7 +309,7 @@ test('hides the Claude bar (data and idle placeholder) under a non-Claude provid
     setCli('claude');
     setProviderBaseUrl('');
     assert.equal(element.style.display, 'block', 'idle placeholder shows on the default Claude login');
-    assert.match(element.textContent, /^Claude 用量/);
+    assert.match(element.textContent, /^5h - · 1wk -/);
 
     consumeRateLimitEvent({
       status: 'allowed', rateLimitType: 'five_hour', utilization: 0.23,
@@ -630,8 +630,8 @@ test('Claude formatter ignores a usage payload without ok status', () => {
   };
   // A failed scrape leaves the 1wk/1m slots blank — it never blanks or replaces
   // the 5h number the passive event already supplied.
-  assert.equal(formatFiveHourRateLimit(limit, { usage: { status: 'needs_login' }, nowMs: now }).text, '5h 50% 1h ⟳');
-  assert.equal(formatFiveHourRateLimit(limit, { usage: null, nowMs: now }).text, '5h 50% 1h ⟳');
+  assert.equal(formatFiveHourRateLimit(limit, { usage: { status: 'needs_login' }, nowMs: now }).text, '5h 50% 1h · 1wk - · ⟳ 刷新');
+  assert.equal(formatFiveHourRateLimit(limit, { usage: null, nowMs: now }).text, '5h 50% 1h · 1wk - · ⟳ 刷新');
 });
 
 test('the Claude bar is one layout whether or not a passive event has landed', () => {
@@ -673,19 +673,39 @@ test('a window the scrape could not classify is left blank, never labelled with 
   assert.match(view.text, /^5h 93% 1h/);
 });
 
-test('two rows for one window keep the binding (more consumed) one', () => {
+test('every weekly row the page meters gets its own segment, named by what it meters', () => {
   const now = 1_700_000_000_000;
   const usage = {
     status: 'ok',
     fetchedAt: now,
     summary: [
-      { window: '1wk', label: 'Weekly limit (all models)', usedPercent: 25, resetMs: now + 86_400_000 },
-      { window: '1wk', label: 'Weekly limit (Opus)', usedPercent: 90, resetMs: now + 86_400_000 },
+      { window: '1wk', label: 'All models', usedPercent: 25, resetMs: now + 86_400_000 },
+      { window: '1wk', label: 'Fable', usedPercent: 90, resetMs: now + 86_400_000 },
     ],
   };
   const view = formatClaudeUsageOnly(usage, { nowMs: now });
-  assert.match(view.text, /^1wk 10% 1d/, 'the window you will hit first is the one shown');
-  assert.equal(view.color, '#f85149');
+  // Claude meters its weekly limit more than one way, so collapsing the rows
+  // throws away a number the account actually has. Show them all, each named
+  // by the model it meters.
+  assert.match(view.text, /^5h - · 1wk-ALL 75% 1d · 1wk-Fable 10% 1d/);
+  assert.equal(view.color, '#f85149', 'the bar takes its colour from the worst row');
+  assert.match(view.title, /周（All models）: 已用 25%/);
+  assert.match(view.title, /周（Fable）: 已用 90%/);
+});
+
+test('the bar keeps its shape when data is missing, and 刷新 is always the last segment', () => {
+  const now = 1_700_000_000_000;
+  // Nothing at all: both windows still render, blank rather than absent, so a
+  // missing number is visibly missing instead of silently dropping a segment.
+  assert.equal(formatClaudeUsageOnly(null, { nowMs: now }).text, '5h - · 1wk - · ⟳ 刷新');
+  // Claude has no monthly limit, so 1m is never placeheld…
+  assert.equal(formatClaudeUsageOnly(null, { nowMs: now }).text.includes('1m'), false);
+  // …but a monthly row is still rendered if the page ever grows one.
+  assert.match(formatClaudeUsageOnly({
+    status: 'ok',
+    fetchedAt: now,
+    summary: [{ window: '1m', label: 'Monthly limit', usedPercent: 20, resetMs: now + 15 * 86_400_000 }],
+  }, { nowMs: now }).text, /^5h - · 1wk - · 1m 80% 15d/);
 });
 
 test('formatClaudeUsageOnly renders windows when no passive event has landed yet', () => {
@@ -707,16 +727,35 @@ test('formatClaudeUsageOnly renders windows when no passive event has landed yet
   assert.equal(view.color, '#f85149', '10% remaining for weekly is danger-colored');
 });
 
-test('formatClaudeUsageOnly surfaces the actionable states and the idle fallback', () => {
-  assert.equal(formatClaudeUsageOnly(null).text, 'Claude 用量 · ⟳ 刷新');
-  const needsLogin = formatClaudeUsageOnly({ status: 'needs_login', error: 'x' });
-  assert.equal(needsLogin.action, 'login');
-  assert.match(needsLogin.text, /需登录/);
-  const chromeDown = formatClaudeUsageOnly({ status: 'chrome_unavailable', error: 'x' });
-  assert.equal(chromeDown.action, 'login');
-  assert.match(chromeDown.text, /无可连的 Chrome/);
-  assert.match(formatClaudeUsageOnly({ status: 'unavailable', error: 'boom' }).text, /用量暂不可用/);
-  assert.match(formatClaudeUsageOnly({ status: 'ok', summary: [] }).text, /未解析出用量/);
+test('scrape trouble routes the click to login and explains itself in the tooltip', () => {
+  // The bar itself stays the same row of windows in every state — why the
+  // numbers are missing belongs in the tooltip, not in the one line of text
+  // the user reads at a glance.
+  const states = ['needs_login', 'chrome_unavailable', 'unavailable', 'ok'];
+  for (const status of states) {
+    const view = formatClaudeUsageOnly({ status, summary: [], error: 'x' });
+    assert.equal(view.text, '5h - · 1wk - · ⟳ 刷新', status);
+  }
+  assert.equal(formatClaudeUsageOnly({ status: 'needs_login' }).action, 'login');
+  assert.match(formatClaudeUsageOnly({ status: 'needs_login' }).title, /没有 claude\.ai 的登录态/);
+  // No Chrome to talk to is also fixed by opening the login window.
+  assert.equal(formatClaudeUsageOnly({ status: 'chrome_unavailable' }).action, 'login');
+  assert.equal(formatClaudeUsageOnly({ status: 'unavailable', error: 'boom' }).action, undefined);
+  assert.match(formatClaudeUsageOnly({ status: 'ok', summary: [] }).title, /没解析出窗口百分比/);
+});
+
+test('a live 5h event does not hide that the scrape still needs a login', () => {
+  const now = 1_700_000_000_000;
+  const limit = {
+    kind: 'five_hour', status: 'allowed', usedPercentage: 7,
+    resetsAtMs: now + 42 * 60_000, provider: 'claude',
+  };
+  // The event fills 5h but says nothing about the weekly windows, so the click
+  // must still open the login window rather than re-running a scrape that will
+  // fail the same way.
+  const view = formatFiveHourRateLimit(limit, { usage: { status: 'needs_login' }, nowMs: now });
+  assert.equal(view.text, '5h 93% 42m · 1wk - · ⟳ 刷新');
+  assert.equal(view.action, 'login');
 });
 
 test('refreshClaudeUsage stores ok data and surfaces fetch failures', async () => {
@@ -773,7 +812,8 @@ test('refreshClaudeUsage records errors without persisting junk', async () => {
     const data = await refreshClaudeUsage(true);
     assert.equal(data.status, 'needs_login');
     assert.equal(values.has('multicc.claude.usage.v1'), false, 'non-ok scrape not persisted');
-    assert.match(element.textContent, /需登录/);
+    assert.equal(element.textContent, '5h - · 1wk - · ⟳ 刷新');
+    assert.match(element.title, /登录/, 'why the numbers are missing is in the tooltip');
     assert.equal(typeof element.onclick, 'function', 'bar stays a click target');
   } finally {
     setProviderBaseUrl('');
