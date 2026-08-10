@@ -193,6 +193,27 @@ test('append broadcasts metadata only after durable write and stamps assistant l
   assert.equal(eventNames(fx.events).at(-1), 'review:s1');
 });
 
+test('append surfaces answeredQuestionId so multi-window clients can settle the prompt from the message', () => {
+  const fx = fixture();
+  const message = {
+    role: 'user', content: '是', ts: 5000,
+    clientMsgId: 'c1', answeredQuestionId: 'usrq-7',
+  };
+  assert.equal(fx.runtime.appendMessage('s1', message), true);
+  const meta = fx.events
+    .find(event => event && event.payload && event.payload.type === 'chat_msg_meta');
+  assert.ok(meta, 'expected a chat_msg_meta broadcast');
+  assert.equal(meta.payload.message.answeredQuestionId, 'usrq-7');
+  assert.equal(meta.payload.message.content, '是');
+  // The marker is metadata-only and never reaches the model: a plain user
+  // message without it projects cleanly too.
+  fx.runtime.appendMessage('s1', { role: 'user', content: 'plain', ts: 5000 });
+  const plainMeta = fx.events
+    .filter(event => event && event.payload && event.payload.type === 'chat_msg_meta')
+    .at(-1);
+  assert.equal(plainMeta.payload.message.answeredQuestionId, undefined);
+});
+
 test('write failure has no broadcast proof and diagnostics redact paths and credentials', () => {
   const fx = fixture();
   fx.history.failNextWrite(new Error('token=secret /Users/private/chat.json'));

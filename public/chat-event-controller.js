@@ -190,6 +190,15 @@
 
     function handleCommittedMessage(event) {
       const committed = event && event.message;
+      // A user message that settles a wait_for_user_answer prompt carries the
+      // prompt's requestId as answeredQuestionId. Treat it as a card-teardown
+      // signal — the message-carried backup for the user_input_resolved event,
+      // so a window that missed the event (or a fresh tab) still closes the card
+      // when the answer message reaches it. consumeUserInputRequestId is
+      // idempotent, so the answering window's own copy is a harmless no-op.
+      if (committed && committed.answeredQuestionId) {
+        host.consumeUserInputRequestId?.(committed.answeredQuestionId);
+      }
       if (committed && committed.id && committed.role && typeof historyView.commitMessage === 'function') {
         const result = historyView.commitMessage(committed, {
           currentElement: state.currentMsgEl,

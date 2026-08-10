@@ -86,6 +86,12 @@ function publicCommittedMessage(message) {
   if (typeof message.clientMsgId === 'string' && message.clientMsgId) {
     projected.clientMsgId = message.clientMsgId.slice(0, 160);
   }
+  // Surface the wait_for_user_answer settlement marker so multi-window clients
+  // can close the prompt card from the message itself (live or replay), not just
+  // from the user_input_resolved event. Metadata-only; never reaches the model.
+  if (typeof message.answeredQuestionId === 'string' && message.answeredQuestionId) {
+    projected.answeredQuestionId = message.answeredQuestionId.slice(0, 160);
+  }
   if (Array.isArray(message.bgToolUseIds) && message.bgToolUseIds.length) {
     projected.bgToolUseIds = message.bgToolUseIds
       .filter(value => typeof value === 'string' && value)

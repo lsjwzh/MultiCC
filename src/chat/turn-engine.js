@@ -821,6 +821,14 @@ function createChatTurnEngine(deps) {
       clientMsgId: clientMsgId || undefined,
       deliveryId: deliveryId || undefined,
       originDispatchId: originDispatchId || undefined,
+      // Metadata-only marker that this user message settles a wait_for_user_answer
+      // prompt (answeredQuestionId === the prompt's requestId). The provider still
+      // receives only `content: text`, so the model never sees this — it is the
+      // message-carried backup for the fire-and-forget user_input_resolved event:
+      // any connection that receives this message (live chat_msg_meta or history
+      // replay) can tear the prompt card down without relying on the event
+      // arriving. Idempotent with consumeUserInputRequestId on the clients.
+      answeredQuestionId: opts.userInputRequestId || undefined,
       ...taskContextHost.messageMetadata(requestedTask, nextTaskId, { detached: taskDetached }),
       bgTaskIds: Array.isArray(bgTaskIds) && bgTaskIds.length ? bgTaskIds : undefined,
       bgToolUseIds: Array.isArray(bgToolUseIds) && bgToolUseIds.length ? bgToolUseIds : undefined,
