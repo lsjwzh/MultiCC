@@ -652,6 +652,8 @@
   "archiveCompletedDone": "Archived {n} completed tasks",
   "archiveCompletedFailed": "Clean up failed: {error}",
   "pendingInputTitle": "Waiting for your answer",
+  "pendingInputCollapse": "Collapse to bubble",
+  "pendingInputExpand": "Question pending — tap to expand",
   "pendingInputFallback": "Provide the information needed to continue",
   "pendingInputFreeTextHint": "You can also enter a custom answer below.",
   "submitAnswer": "Submit answer",

@@ -169,6 +169,30 @@ class ChatProvider extends ChangeNotifier {
 
   PendingUserInput? _pendingUserInput;
   PendingUserInput? get pendingUserInput => _pendingUserInput;
+  // 收起状态纯属本地 UI：服务端仍视作「等待回答」，仅本窗口把卡片折成漂浮球。
+  bool _pendingUserInputCollapsed = false;
+  bool get pendingUserInputCollapsed => _pendingUserInputCollapsed;
+
+  /// 设置/清空 pending 提示的唯一入口：任何一处赋值都同步重置 collapsed，
+  /// 保证新提示默认展开、提示消失时漂浮球一并隐藏。
+  void _setPendingUserInput(PendingUserInput? value) {
+    _pendingUserInput = value;
+    _pendingUserInputCollapsed = false;
+  }
+
+  /// 把问题卡收起为漂浮球（仅本地 UI；不改变服务端等待语义）。
+  void collapsePendingUserInput() {
+    if (_pendingUserInput == null || _pendingUserInputCollapsed) return;
+    _pendingUserInputCollapsed = true;
+    notifyListeners();
+  }
+
+  /// 从漂浮球重新展开问题卡作答。
+  void expandPendingUserInput() {
+    if (!_pendingUserInputCollapsed) return;
+    _pendingUserInputCollapsed = false;
+    notifyListeners();
+  }
 
   ApiErrorPolicyState? _apiErrorPolicy;
   ApiErrorPolicyState? get apiErrorPolicy => _apiErrorPolicy;
@@ -366,8 +390,7 @@ class ChatProvider extends ChangeNotifier {
         if (_usageBalance != null) 'balance': _usageBalance!.toJson(),
         // Only a successful scrape is cached (matches the web save-on-ok); the
         // page text is dropped so the stored payload stays small.
-        if (_claudeUsage != null &&
-            _claudeUsage?['status'] == 'ok')
+        if (_claudeUsage != null && _claudeUsage?['status'] == 'ok')
           'claudeUsage': {
             'status': 'ok',
             if (_claudeUsage?['fetchedAt'] != null)
@@ -436,7 +459,7 @@ class ChatProvider extends ChangeNotifier {
         _reconnectAttempt = evt.payload as int;
         // Socket died: any resolve broadcast in the gap was lost. Drop the
         // stale card; the connect-time replay re-sends required/resolved.
-        _pendingUserInput = null;
+        _setPendingUserInput(null);
         final delay = (1 << (_reconnectAttempt - 1)).clamp(1, 15);
         _statusText = 'Reconnecting in ${delay}s…';
         notifyListeners();
@@ -628,13 +651,13 @@ class ChatProvider extends ChangeNotifier {
           // the event (or a fresh foreground) still closes the prompt when the
           // committed answer message reaches it. Idempotent: requestId mismatch
           // means this client already consumed it, no-op.
-          final answeredId =
-              (p['message'] as Map?)?['answeredQuestionId']?.toString();
+          final answeredId = (p['message'] as Map?)?['answeredQuestionId']
+              ?.toString();
           if (answeredId != null &&
               answeredId.isNotEmpty &&
               _pendingUserInput != null &&
               _pendingUserInput!.requestId == answeredId) {
-            _pendingUserInput = null;
+            _setPendingUserInput(null);
             notifyListeners();
           }
           final id = p['id']?.toString();
@@ -701,7 +724,7 @@ class ChatProvider extends ChangeNotifier {
       case 'user_input_required':
         {
           final p = evt.payload as Map<String, dynamic>;
-          _pendingUserInput = PendingUserInput.fromJson(p);
+          _setPendingUserInput(PendingUserInput.fromJson(p));
           notifyListeners();
           break;
         }
@@ -710,11 +733,11 @@ class ChatProvider extends ChangeNotifier {
         {
           // 另一窗口消费了 wait_user：清掉本窗口的提示框（幂等：requestId 不匹配
           // 表示本窗口已先消费，no-op）。
-          final requestId =
-              (evt.payload as Map<String, dynamic>)['requestId']?.toString();
+          final requestId = (evt.payload as Map<String, dynamic>)['requestId']
+              ?.toString();
           if (_pendingUserInput != null &&
               _pendingUserInput!.requestId == requestId) {
-            _pendingUserInput = null;
+            _setPendingUserInput(null);
             notifyListeners();
           }
           break;
@@ -945,8 +968,7 @@ class ChatProvider extends ChangeNotifier {
     if (_claudeUsageFetching) return;
     if (!force) {
       final fetchedAt = (_claudeUsage?['fetchedAt'] as num?)?.toInt();
-      if (fetchedAt != null &&
-          _nowMs() - fetchedAt < _claudeUsageFreshMs) {
+      if (fetchedAt != null && _nowMs() - fetchedAt < _claudeUsageFreshMs) {
         return;
       }
       if (_claudeUsageErrorAt != 0 &&
@@ -1423,7 +1445,7 @@ class ChatProvider extends ChangeNotifier {
     // 还是进 FIFO。进队列的只在队列面板出现，不在这里占位（对齐 web
     // stagedUserBubbles）。_commitStaged 在收到裁决（或兜底超时）时才真正加气泡。
     _stageUserSend(clientMsgId, message);
-    _pendingUserInput = null;
+    _setPendingUserInput(null);
     _apiErrorPolicy = null;
     // User just sent a message -> resume auto-follow at the bottom, clear any
     // unread pill (mirrors the web client's forceScrollToBottom on send).
@@ -1593,7 +1615,7 @@ class ChatProvider extends ChangeNotifier {
     }
     // The pending card belongs to the torn-down socket's state; the fresh
     // connection's connect-time replay re-delivers it if still open.
-    _pendingUserInput = null;
+    _setPendingUserInput(null);
     _service.dispose();
     _initService();
   }

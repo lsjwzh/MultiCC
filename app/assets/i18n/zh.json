@@ -652,6 +652,8 @@
   "archiveCompletedDone": "已归档 {n} 个已完成任务",
   "archiveCompletedFailed": "一键清理失败：{error}",
   "pendingInputTitle": "等待你的回答",
+  "pendingInputCollapse": "收起为悬浮球",
+  "pendingInputExpand": "有待答问题，点击展开",
   "pendingInputFallback": "请补充继续任务所需的信息",
   "pendingInputFreeTextHint": "也可以在下方输入框中填写自定义回答。",
   "submitAnswer": "提交回答",

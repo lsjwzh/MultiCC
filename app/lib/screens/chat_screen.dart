@@ -309,114 +309,157 @@ class _ChatViewState extends State<ChatView> {
     return Scaffold(
       backgroundColor: const Color(0xFF070809),
       body: SafeArea(
-        child: Column(
+        child: Stack(
           children: [
-            ChatHeader(
-              settings: widget.settings,
-              onCollapse: widget.onCollapse,
-              mergeReady: mergeReady,
-              onMerge: () => _mergeCurrent(context, provider.sessionName),
-              onRole: () => _editRoleFromSession(context, provider.sessionName),
-              onMemory: () =>
-                  _editMemoryFromSession(context, provider.sessionName),
-              onMemo: () => _openMemoFromSession(context, provider.sessionName),
-              onShare: () => _shareFromSession(
-                context,
-                provider.sessionName,
-                widget.settings,
-              ),
-            ),
-            _CwdBar(mergeStatus: _mergeStatus),
-            if (provider.pendingUserInput != null)
-              _CenteredChatLane(
-                child: ConstrainedBox(
-                  constraints: BoxConstraints(
-                    maxHeight: MediaQuery.sizeOf(context).height * 0.38,
+            Column(
+              children: [
+                ChatHeader(
+                  settings: widget.settings,
+                  onCollapse: widget.onCollapse,
+                  mergeReady: mergeReady,
+                  onMerge: () => _mergeCurrent(context, provider.sessionName),
+                  onRole: () =>
+                      _editRoleFromSession(context, provider.sessionName),
+                  onMemory: () =>
+                      _editMemoryFromSession(context, provider.sessionName),
+                  onMemo: () =>
+                      _openMemoFromSession(context, provider.sessionName),
+                  onShare: () => _shareFromSession(
+                    context,
+                    provider.sessionName,
+                    widget.settings,
                   ),
-                  child: SingleChildScrollView(
-                    padding: const EdgeInsets.fromLTRB(10, 7, 10, 0),
-                    child: PendingUserInputPanel(
-                      input: provider.pendingUserInput!,
-                      enabled:
-                          provider.connectionState ==
-                          ChatConnectionState.connected,
-                      onAnswer: provider.sendMessage,
+                ),
+                _CwdBar(mergeStatus: _mergeStatus),
+                if (provider.pendingUserInput != null &&
+                    !provider.pendingUserInputCollapsed)
+                  _CenteredChatLane(
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        maxHeight: MediaQuery.sizeOf(context).height * 0.38,
+                      ),
+                      child: SingleChildScrollView(
+                        padding: const EdgeInsets.fromLTRB(10, 7, 10, 0),
+                        child: PendingUserInputPanel(
+                          input: provider.pendingUserInput!,
+                          enabled:
+                              provider.connectionState ==
+                              ChatConnectionState.connected,
+                          onAnswer: provider.sendMessage,
+                          onCollapse: provider.collapsePendingUserInput,
+                        ),
+                      ),
+                    ),
+                  ),
+                if (livenessBadge(_liveness?['state'] as String?) != null)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Padding(
+                      padding: const EdgeInsets.only(
+                        left: 12,
+                        right: 12,
+                        bottom: 2,
+                      ),
+                      child: livenessChip(_liveness),
+                    ),
+                  ),
+                if (provider.hasClassify)
+                  _AuxClassifyBar(
+                    goal: provider.classifyGoal,
+                    phase: provider.classifyPhase,
+                    classifyState: provider.classifyState,
+                    onMarkDone: provider.classifyState.toUpperCase() == 'W'
+                        ? () => _markTaskDone(provider)
+                        : null,
+                  ),
+                _CenteredChatLane(
+                  child: ChatRuntimeNoticePanel(
+                    apiError: provider.apiErrorPolicy,
+                    limit: provider.nonClaudeWindowLimit,
+                    balance: provider.usageBalance,
+                    vendorQuotas: provider.vendorQuotaViews,
+                    claudeUsage: provider.claudeLimitView,
+                    qoderUsage: provider.qoderQuotaView,
+                    onClaudeQuotaTap: () => provider.handleClaudeQuotaTap(),
+                    onQoderQuotaTap: () => provider.handleQoderQuotaTap(),
+                    onRetry: provider.apiErrorPolicy?.canManualRetry == true
+                        ? () => _retryApiError(provider)
+                        : null,
+                  ),
+                ),
+                if (_behindCount() > 0)
+                  _BehindMainBanner(
+                    behind: _behindCount(),
+                    baseBranch: _baseBranchName(),
+                    syncing: _syncing,
+                    onSync: () => _syncWorktree(provider.sessionName),
+                  ),
+                Expanded(
+                  child: _MessageList(
+                    scrollCtrl: _scrollCtrl,
+                    highlightId: _highlightId,
+                    focusKey: _focusKey,
+                    onHighlightDone: _clearHighlight,
+                  ),
+                ),
+                const _CenteredChatLane(child: _CostBar()),
+                if (mergeReady)
+                  _MergeReadyBanner(
+                    text: _mergeStatusText(_mergeStatus),
+                    onMerge: () => _mergeCurrent(context, provider.sessionName),
+                    onDiff: () => showSessionDiffDialog(
+                      context,
+                      settings: widget.settings,
+                      sessionId: provider.sessionName,
+                    ),
+                  ),
+                _CenteredChatLane(
+                  child: InputBar(
+                    onPickSubagent: () => openAIConfigSheet(
+                      context,
+                      settings: widget.settings,
+                      sessionId: provider.sessionName,
                     ),
                   ),
                 ),
-              ),
-            if (livenessBadge(_liveness?['state'] as String?) != null)
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Padding(
-                  padding: const EdgeInsets.only(
-                    left: 12,
-                    right: 12,
-                    bottom: 2,
-                  ),
-                  child: livenessChip(_liveness),
-                ),
-              ),
-            if (provider.hasClassify)
-              _AuxClassifyBar(
-                goal: provider.classifyGoal,
-                phase: provider.classifyPhase,
-                classifyState: provider.classifyState,
-                onMarkDone: provider.classifyState.toUpperCase() == 'W'
-                    ? () => _markTaskDone(provider)
-                    : null,
-              ),
-            _CenteredChatLane(
-              child: ChatRuntimeNoticePanel(
-                apiError: provider.apiErrorPolicy,
-                limit: provider.nonClaudeWindowLimit,
-                balance: provider.usageBalance,
-                vendorQuotas: provider.vendorQuotaViews,
-                claudeUsage: provider.claudeLimitView,
-                qoderUsage: provider.qoderQuotaView,
-                onClaudeQuotaTap: () => provider.handleClaudeQuotaTap(),
-                onQoderQuotaTap: () => provider.handleQoderQuotaTap(),
-                onRetry: provider.apiErrorPolicy?.canManualRetry == true
-                    ? () => _retryApiError(provider)
-                    : null,
-              ),
+              ],
             ),
-            if (_behindCount() > 0)
-              _BehindMainBanner(
-                behind: _behindCount(),
-                baseBranch: _baseBranchName(),
-                syncing: _syncing,
-                onSync: () => _syncWorktree(provider.sessionName),
+            if (provider.pendingUserInput != null &&
+                provider.pendingUserInputCollapsed)
+              Positioned(
+                right: 14,
+                bottom: 100,
+                child: _PendingInputFab(onTap: provider.expandPendingUserInput),
               ),
-            Expanded(
-              child: _MessageList(
-                scrollCtrl: _scrollCtrl,
-                highlightId: _highlightId,
-                focusKey: _focusKey,
-                onHighlightDone: _clearHighlight,
-              ),
-            ),
-            const _CenteredChatLane(child: _CostBar()),
-            if (mergeReady)
-              _MergeReadyBanner(
-                text: _mergeStatusText(_mergeStatus),
-                onMerge: () => _mergeCurrent(context, provider.sessionName),
-                onDiff: () => showSessionDiffDialog(
-                  context,
-                  settings: widget.settings,
-                  sessionId: provider.sessionName,
-                ),
-              ),
-            _CenteredChatLane(
-              child: InputBar(
-                onPickSubagent: () => openAIConfigSheet(
-                  context,
-                  settings: widget.settings,
-                  sessionId: provider.sessionName,
-                ),
-              ),
-            ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 问题卡收起后显示的漂浮球：点击重新展开问题卡作答。纯本地 UI，
+/// 不改变「等待回答」的服务端语义。Badge 红点 = 仍有未答问题。
+class _PendingInputFab extends StatelessWidget {
+  final VoidCallback onTap;
+  const _PendingInputFab({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      button: true,
+      label: t('pendingInputExpand'),
+      child: Badge(
+        backgroundColor: const Color(0xFFe5534b),
+        smallSize: 10,
+        alignment: const Alignment(0.4, -0.4),
+        child: FloatingActionButton.small(
+          heroTag: const Object(),
+          onPressed: onTap,
+          backgroundColor: const Color(0xFF211a08),
+          foregroundColor: const Color(0xFFf2cc60),
+          tooltip: t('pendingInputExpand'),
+          child: const Icon(Icons.help_outline_rounded),
         ),
       ),
     );
