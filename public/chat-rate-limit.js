@@ -167,7 +167,9 @@
     // Anything not explicitly tagged is Claude — normalizeFiveHourRateLimit
     // defaults the field that way, and the header-derived 5h event has none.
     if (value.provider !== 'glm' && value.provider !== 'codex') {
-      return formatClaudeBar(value, options.usage, { nowMs });
+      return formatClaudeBar(value, options.usage, {
+        nowMs, fetching: options.fetching, loginPending: options.loginPending,
+      });
     }
     // GLM (5h) and Codex (weekly) each report exactly one window and have no
     // usage page behind them, so their bar is that single segment.
@@ -323,13 +325,33 @@
   });
   const CLAUDE_SCRAPE_FETCHING = Object.freeze({
     note: '抓取中…',
-    title: '正在通过 CDP 打开 claude.ai/settings/usage 解析窗口余量…',
+    title: '正在通过 CDP 打开 claude.ai/settings/usage 解析窗口余量（要 30-40 秒）…',
+    action: 'fetching',
+  });
+  const CLAUDE_SCRAPE_LOGIN_PENDING = Object.freeze({
+    note: '等待登录…',
+    title: '已拉起 Chrome 登录窗口。在其中登录 claude.ai，然后回来再点一次。',
+    action: 'login_pending',
   });
 
-  function claudeScrapeState(usage, fetching) {
+  function claudeScrapeState(usage, fetching, loginPending) {
+    if (loginPending) return CLAUDE_SCRAPE_LOGIN_PENDING;
     if (fetching) return CLAUDE_SCRAPE_FETCHING;
     if (!usage) return CLAUDE_SCRAPE_IDLE;
     return CLAUDE_SCRAPE_STATES[usage.status] || CLAUDE_SCRAPE_UNAVAILABLE;
+  }
+
+  // The trailing segment is the bar's only feedback that a click landed. The
+  // scrape is a full browser drive — 30-40s — so a segment that reads the same
+  // before and during it makes the click look dead. It says what the click
+  // will do, and once clicked, what it is doing.
+  const CLAUDE_ACTION_SEG = Object.freeze({
+    fetching: '⟳ 抓取中…',
+    login_pending: '⟳ 等待登录…',
+    login: '⟳ 登录',
+  });
+  function claudeActionSeg(state) {
+    return CLAUDE_ACTION_SEG[state.action] || CLAUDE_REFRESH;
   }
 
   // The one Claude renderer. `limit` is the passive event (may be null/stale),
@@ -337,7 +359,7 @@
   function formatClaudeBar(limit, usage, options = {}) {
     const nowMs = finiteNumber(options.nowMs) ?? Date.now();
     const rows = claudeWindowRows(limit, usage, nowMs);
-    const state = claudeScrapeState(usage, options.fetching);
+    const state = claudeScrapeState(usage, options.fetching, options.loginPending);
     const age = relativeAgo(usage && usage.status === 'ok' ? usage.fetchedAt : 0);
 
     // A placeholder for every window with no row, then the rows themselves,
@@ -363,13 +385,15 @@
 
     const worst = rows.length ? Math.max(...rows.map((r) => r.used)) : null;
     return Object.freeze({
-      text: entries.map((e) => e.seg).concat(age ? [age] : [], [CLAUDE_REFRESH]).join(' · '),
+      text: entries.map((e) => e.seg).concat(age ? [age] : [], [claudeActionSeg(state)]).join(' · '),
       color: worst === null ? '#8b949e' : unifiedColorFromRemaining(unifiedRemaining(worst)),
       action: state.action,
       // The scrape's own status is worth a line only when it explains something
-      // — a missing window, or a failure. With every window in hand it is noise.
+      // — a missing window, a failure, or a fetch in flight. With every window
+      // in hand and nothing happening it is noise.
       title: ['Claude 订阅窗口用量（5h 来自 Claude Code 上报的 rate_limit_event，周来自 claude.ai/settings/usage 抓取）']
-        .concat(entries.map((e) => e.detail), age ? [`同步于 ${age}`] : [], missing.length ? [state.title] : [])
+        .concat(entries.map((e) => e.detail), age ? [`同步于 ${age}`] : [],
+          missing.length || state.action === 'fetching' || state.action === 'login_pending' ? [state.title] : [])
         .join('\n'),
     });
   }
@@ -394,7 +418,13 @@
     // and under a non-Claude provider the item is hidden entirely.
     const claudeBar = (limit && limit.provider === 'claude') || (currentCli === 'claude' && claudeProvider);
     const view = claudeBar
-      ? formatClaudeBar(limit, currentClaudeUsage, { fetching: claudeUsageFetchInFlight && !currentClaudeUsage })
+      ? formatClaudeBar(limit, currentClaudeUsage, {
+        // In flight is in flight whether or not there is stale data on screen —
+        // gating this on an empty bar meant every refresh of existing numbers
+        // ran its 30-40s scrape with no sign that the click had landed.
+        fetching: claudeUsageFetchInFlight,
+        loginPending: claudeLoginPending,
+      })
       : (limit ? formatFiveHourRateLimit(limit) : null);
     element.style.display = view ? 'block' : 'none';
     element.textContent = view ? view.text : '';
@@ -403,7 +433,8 @@
     // Click = fetch the usage scrape (or open the login window when the scrape
     // needs one). The bar was previously passive; the click target is what lets
     // the weekly/monthly windows get pulled on demand.
-    element.onclick = () => quotaBarClick('claude', view, () => refreshClaudeUsage(true));
+    element.style.cursor = view ? 'pointer' : '';
+    element.onclick = () => claudeBarClick(view);
     if (expiryTimer) global.clearTimeout?.(expiryTimer);
     expiryTimer = null;
     if (view && currentLimit && currentLimit.resetsAtMs) {
@@ -443,6 +474,22 @@
   let claudeUsageFetchInFlight = false;
   const CLAUDE_USAGE_BACKOFF_MS = 60_000;
   let claudeUsageLastErrorAt = 0;
+  let claudeLoginPending = false;
+
+  // The bar's click. Two destinations: the login window when the scrape has no
+  // session to work with, otherwise the scrape itself. Both are slow enough
+  // (a login window to fill in; a 30-40s browser drive) that the state has to
+  // land on the bar before the work starts, or the click reads as ignored.
+  function claudeBarClick(view) {
+    if (!view) return;
+    if (view.action === 'login' || view.action === 'login_pending') {
+      claudeLoginPending = true;
+      renderCurrent();
+      requestQuotaLogin('claude', () => { claudeLoginPending = false; refreshClaudeUsage(true); });
+      return;
+    }
+    refreshClaudeUsage(true);
+  }
 
   function claudeUsageStorageKey() { return 'multicc.claude.usage.v1'; }
 
@@ -469,6 +516,7 @@
       return currentClaudeUsage;
     }
     claudeUsageFetchInFlight = true;
+    claudeLoginPending = false;
     renderCurrent();
     try {
       const res = await fetch('/api/claude/quota', { credentials: 'same-origin' });
