@@ -92,8 +92,14 @@ class VoiceLaunchService {
   Future<VoiceLaunchResult> launch({String? sourceSessionId}) async {
     final result = await requestLaunch(sourceSessionId: sourceSessionId);
     if (!result.ok) return result;
-    final uri = Uri.tryParse(result.url!);
-    if (uri == null) {
+    // The Host returns a root-relative path (the voice page is reverse-proxied
+    // through the main server). Resolve it against the configured server base
+    // URL — the same origin chat uses — so a phone opens the page through its
+    // own server address (LAN or Tailscale Funnel), never a raw loopback URL.
+    final raw = result.url!;
+    final resolved = raw.startsWith('/') ? settings.buildHttpUrl(raw) : raw;
+    final uri = Uri.tryParse(resolved);
+    if (uri == null || !uri.hasScheme) {
       return const VoiceLaunchResult(
         ok: false,
         errorCode: 'voice_launch_url_invalid',
@@ -102,8 +108,6 @@ class VoiceLaunchService {
     }
     final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
     if (opened) return result;
-    // The child binds to loopback, so a phone that is not the host machine
-    // genuinely cannot open it. Say so instead of pretending it worked.
     return VoiceLaunchResult(
       ok: false,
       errorCode: 'voice_launch_open_failed',
