@@ -354,6 +354,7 @@
   "voiceTaskCompleted": "任务已完成",
   "voiceWaitingAction": "等待你的操作",
   "voiceWaitingBackground": "等待后台任务",
+  "voiceLaunchInsecureContext": "实时语音需要 HTTPS 安全上下文才能使用麦克风。当前服务器地址是 http://{host}，手机浏览器会拒绝麦克风权限。请在 app 设置里把服务器地址改为 Tailscale Funnel 的 HTTPS 地址（例如 https://macbook-air-pwy.tail94695a.ts.net）后再使用。",
   "voiceApiInterrupted": "API 异常中断，等待重试中",
   "phasePlanning": "规划中",
   "phaseImplementing": "实现中",
