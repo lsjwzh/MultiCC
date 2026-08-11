@@ -43,6 +43,9 @@ dependencies:
   # HTTP (REST API)
   http: ^1.2.2
 
+  # LAN server discovery (Bonjour on iOS, NsdManager on Android)
+  nsd: ^4.1.0
+
   # Local storage
   shared_preferences: ^2.3.2
 

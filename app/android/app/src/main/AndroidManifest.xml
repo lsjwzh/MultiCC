@@ -1,5 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Required by nsd while its bounded LAN discovery holds a multicast lock. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE"/>
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <!-- Background keep-alive: a foreground service holds the chat sockets open
          while the app is backgrounded (opt-in "后台保持连接" setting). -->

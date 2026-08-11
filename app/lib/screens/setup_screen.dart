@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../i18n.dart';
 import '../providers/session_manager.dart';
 import '../services/settings_service.dart';
+import '../widgets/lan_discovery_picker.dart';
 import 'main_shell.dart';
 
 class SetupScreen extends StatefulWidget {
@@ -180,6 +181,16 @@ class _SetupScreenState extends State<SetupScreen> {
                         controller: _hostCtrl,
                         hint: 'http://192.168.1.100:3456',
                         keyboardType: TextInputType.url,
+                      ),
+                      const SizedBox(height: 8),
+                      LanDiscoveryPicker(
+                        onSelected: (server) => setState(() {
+                          // Discovery only completes the address field. The
+                          // existing token and explicit Connect action remain
+                          // untouched.
+                          _hostCtrl.text = server.httpUrl;
+                          _error = null;
+                        }),
                       ),
                       const SizedBox(height: 16),
 
