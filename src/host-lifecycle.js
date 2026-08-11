@@ -38,6 +38,7 @@ function createHostLifecycle(deps) {
     skillSyncRuntime,
     triggerRuntime,
     pushRuntime,
+    lanDiscovery,
     // Messaging bridges.
     wechatBridge,
     feishuBridge,
@@ -124,6 +125,7 @@ function createHostLifecycle(deps) {
     try { await skillSyncRuntime.stop(); } catch (_) {}
     try { await triggerRuntime.stop(); } catch (_) {}
     try { pushRuntime.stop(); } catch (_) {}
+    try { await lanDiscovery?.stop?.(); } catch (_) {}
     const chatHistoryRuntime = getChatHistoryRuntime();
     try { if (chatHistoryRuntime) chatHistoryRuntime.stop(); } catch (_) {}
     clearServiceTimers();

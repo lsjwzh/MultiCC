@@ -12,6 +12,7 @@ import '../services/background_service.dart';
 import '../services/settings_service.dart';
 import '../services/update_service.dart';
 import '../theme.dart';
+import '../widgets/lan_discovery_picker.dart';
 import '../widgets/model_picker.dart';
 import 'agent_resources_screen.dart';
 import 'aux_screen.dart';
@@ -522,6 +523,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 controller: _hostCtrl,
                 hint: 'http://192.168.1.100:3456',
                 keyboardType: TextInputType.url,
+              ),
+              const SizedBox(height: 8),
+              LanDiscoveryPicker(
+                onSelected: (server) => setState(() {
+                  // Selecting a discovery result only fills the draft URL. It
+                  // never changes credentials or reconnects automatically.
+                  _hostCtrl.text = server.httpUrl;
+                  _serverStatus = null;
+                }),
               ),
               const SizedBox(height: 14),
               _Label('Access Token'),
