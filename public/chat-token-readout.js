@@ -74,5 +74,24 @@
     });
   }
 
-  return Object.freeze({ turnContext });
+  /**
+   * The context a single API request actually carried, in tokens.
+   *
+   * `message_start` reports the prompt side of one request before the reply
+   * exists: fresh input plus whatever was served from cache is, by definition,
+   * everything that sat in the window for that call. It needs no heuristic —
+   * one request cannot double-count its own prefix — so when the stream has
+   * given us one, it beats any turn-level arithmetic.
+   *
+   * @param {object|null} usage  one request's usage block
+   * @returns {number} resident prompt tokens, 0 when unknown
+   */
+  function requestContext(usage) {
+    if (!usage || typeof usage !== 'object') return 0;
+    return count(usage.input_tokens)
+      + count(usage.cache_read_input_tokens)
+      + count(usage.cache_creation_input_tokens);
+  }
+
+  return Object.freeze({ turnContext, requestContext });
 });

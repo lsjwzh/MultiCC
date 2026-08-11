@@ -132,15 +132,25 @@ test('the chat host loads the readout before the store that feeds it', () => {
   assert.ok(readoutTag < storeTag && storeTag < chatTag, 'readout must load first');
 });
 
-test('the context bar renders through the readout and labels the cumulative line', () => {
+test('one request block is the exact context; a turn total is only ever an estimate', () => {
+  // message_start reports the prompt of a single call, so nothing in it can
+  // repeat — this is a measurement, not the aggregate heuristic above.
+  assert.equal(readout.requestContext(claudeTurn), 196_000, 'output is not part of the prompt');
+  assert.equal(readout.requestContext({ input_tokens: 4, cache_read_input_tokens: 150_000 }), 150_004);
+  for (const value of [null, undefined, 'nope', 42, {}]) {
+    assert.equal(readout.requestContext(value), 0);
+  }
+});
+
+test('the context bar delegates to the readout instead of re-summing buckets', () => {
   const chat = readPublic('chat.js');
-  assert.ok(
-    chat.includes('window.MultiCCChatTokenReadout?.turnContext(_turnUsage, _contextWindow)'),
-    'the bar must not re-sum usage buckets on its own',
-  );
-  assert.ok(chat.includes('本轮 in ${k(ctx.input)}k / out ${k(ctx.output)}k'),
-    'an aggregated turn shows input and output separately');
-  assert.ok(chat.includes('会话累计 ${fmt(total)} tokens'), 'the cumulative line stays labelled 累计');
-  assert.ok(/title="[^"]*不是当前上下文占用[^"]*"[^>]*>会话累计/.test(chat),
+  assert.ok(!/turnContext\(|cache_read_input_tokens/.test(chat),
+    'chat.js must not do token arithmetic of its own');
+  const usageReadout = readPublic('chat-usage-readout.js');
+  assert.ok(usageReadout.includes('readout.requestContext(sources.requestUsage)'),
+    'the exact per-request figure wins when the stream has given us one');
+  assert.ok(usageReadout.includes('readout.turnContext(sources.turnUsage, window)'),
+    'history-only sessions still fall back to the aggregate heuristic');
+  assert.ok(usageReadout.includes('不是当前上下文占用'),
     'the cumulative line explains it is not context occupancy');
 });
