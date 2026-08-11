@@ -1026,7 +1026,7 @@ function updateContextBar(usage, modelUsage) {
       parts.push(`<span style="display:inline-block;width:60px;height:5px;background:#21262d;border-radius:3px;margin-left:4px;vertical-align:middle;"><span style="display:block;width:${pct}%;height:100%;background:${color};border-radius:3px;"></span></span>`);
     }
   }
-  if (parts.length) costBar.innerHTML = parts.join('');
+  costBar.innerHTML = parts.join('');
 }
 
 /* ── Mobile-safe scroll controller ── */
