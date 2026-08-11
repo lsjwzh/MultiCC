@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import '../i18n.dart';
 import '../utils/status_presentation.dart';
 import '../models/message.dart';
+import '../models/usage_readout.dart';
 import '../providers/chat_provider.dart';
 import '../providers/session_manager.dart';
 import '../services/chat_service.dart';
@@ -402,7 +403,7 @@ class _ChatViewState extends State<ChatView> {
                     onHighlightDone: _clearHighlight,
                   ),
                 ),
-                const _CenteredChatLane(child: _CostBar()),
+                const _CenteredChatLane(child: _ContextUsageBar()),
                 if (mergeReady)
                   _MergeReadyBanner(
                     text: _mergeStatusText(_mergeStatus),
@@ -1923,20 +1924,167 @@ class _MessageListState extends State<_MessageList> {
   }
 }
 
-class _CostBar extends StatelessWidget {
-  const _CostBar();
+/// The strip under the transcript. It answers one question — how full is the
+/// context — and hands everything else to a dialog on tap or long-press.
+///
+/// It used to print `$2.0314 | 248038ms | 13 turn(s)`. The money came from the
+/// CLI's own `result` frame, which prices with Anthropic's table no matter
+/// which provider actually served the request, so it was removed rather than
+/// relabelled. The web bar (public/chat-usage-readout.js) shows the same line
+/// and opens the same set of rows on hover.
+class _ContextUsageBar extends StatelessWidget {
+  const _ContextUsageBar();
+
+  static String _amount(int tokens) => formatCompactTokens(tokens);
+
+  static String _summary(ContextReadout ctx) {
+    final label = t('contextUsage');
+    // An aggregate that overflows even after de-duplication cannot honestly
+    // become a number, so it says so instead of clamping to 100%.
+    if (!ctx.usable) return '$label —';
+    final approx = ctx.exact ? '' : '≈';
+    if (ctx.window <= 0) return '$label $approx${_amount(ctx.tokens)}';
+    return '$label $approx${_amount(ctx.tokens)} / ${_amount(ctx.window)}'
+        ' · $approx${ctx.percent.toStringAsFixed(1)}%';
+  }
+
+  static List<List<String>> _detailRows(ChatProvider p) {
+    final rows = <List<String>>[];
+    final turn = p.turnUsage;
+    if (turn != null && !turn.isEmpty) {
+      rows.add([
+        t('usageTurnBilled'),
+        '${t('usageIn')} ${_amount(turn.inputTokens)}'
+            ' · ${t('usageCacheRead')} ${_amount(turn.cacheReadTokens)}'
+            ' · ${t('usageCacheWrite')} ${_amount(turn.cacheCreationTokens)}'
+            ' · ${t('usageOut')} ${_amount(turn.outputTokens)}',
+      ]);
+    }
+    if (p.turnDurationText.isNotEmpty || p.turnCount > 0) {
+      final parts = <String>[
+        if (p.turnDurationText.isNotEmpty) p.turnDurationText,
+        if (p.turnCount > 0) t('usageRounds', {'n': '${p.turnCount}'}),
+      ];
+      rows.add([t('usageTurnDuration'), parts.join(' · ')]);
+    }
+    if (p.sessionInputTokens > 0 || p.sessionOutputTokens > 0) {
+      rows.add([
+        t('usageSessionTotal'),
+        '${t('usageIn')} ${_amount(p.sessionInputTokens)}'
+            ' · ${t('usageOut')} ${_amount(p.sessionOutputTokens)}',
+      ]);
+    }
+    return rows;
+  }
+
+  void _showDetail(BuildContext context, ChatProvider p) {
+    final rows = _detailRows(p);
+    if (rows.isEmpty) return;
+    showDialog<void>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text(t('usageDetailTitle'), style: const TextStyle(fontSize: 15)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            for (final row in rows)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      row[0],
+                      style: const TextStyle(
+                        color: Color(0xFF7a828e),
+                        fontSize: 11,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      row[1],
+                      style: const TextStyle(
+                        color: Color(0xFFc6ccd4),
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            Text(
+              t('usageSessionHint'),
+              style: const TextStyle(color: Color(0xFF5b616c), fontSize: 11),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text(t('close')),
+          ),
+        ],
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
-    final costText = context.watch<ChatProvider>().costText;
-    if (costText.isEmpty) return const SizedBox.shrink();
-    return Container(
-      color: const Color(0xFF070809),
-      padding: const EdgeInsets.symmetric(vertical: 3),
-      child: Text(
-        costText,
-        textAlign: TextAlign.center,
-        style: const TextStyle(color: Color(0xFF5b616c), fontSize: 11),
+    final provider = context.watch<ChatProvider>();
+    final ctx = provider.contextReadout;
+    final hasDetail = _detailRows(provider).isNotEmpty;
+    // Nothing measured yet: show no strip at all rather than an empty one.
+    if (ctx.isEmpty && !hasDetail) return const SizedBox.shrink();
+
+    return GestureDetector(
+      onTap: hasDetail ? () => _showDetail(context, provider) : null,
+      onLongPress: hasDetail ? () => _showDetail(context, provider) : null,
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        color: const Color(0xFF070809),
+        padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            if (ctx.hasMeter) ...[
+              Container(
+                width: 56,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1b1f26),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+                alignment: Alignment.centerLeft,
+                child: FractionallySizedBox(
+                  widthFactor: ctx.fraction,
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: ctx.fraction >= 0.9
+                          ? const Color(0xFFd9822b)
+                          : const Color(0xFF3d7a5f),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+            ],
+            Flexible(
+              child: Text(
+                ctx.isEmpty ? t('contextUsage') : _summary(ctx),
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Color(0xFF5b616c), fontSize: 11),
+              ),
+            ),
+            if (hasDetail) ...[
+              const SizedBox(width: 6),
+              Text(
+                t('usageDetail'),
+                style: const TextStyle(color: Color(0xFF454b54), fontSize: 11),
+              ),
+            ],
+          ],
+        ),
       ),
     );
   }

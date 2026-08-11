@@ -1616,6 +1616,7 @@
        chips on one row. Keeping those two semantic levels in one component
        prevents every independent data source from claiming a full line. */
     #usage-summary {
+      position: relative;
       flex: 0 0 auto;
       width: min(100%, 980px);
       align-self: center;
@@ -1656,8 +1657,56 @@
       background: #161b22;
       border: 1px solid #21262d;
     }
-    #cost-bar { display: block; color: #6e7681; }
+    /* The context line is the one number worth reading without asking for it,
+       so it gets its own row, a pointer, and no chip chrome to compete with
+       the quota pills above. */
+    #cost-bar {
+      display: block;
+      color: #6e7681;
+      cursor: pointer;
+      user-select: none;
+      background: none;
+      border: none;
+    }
     #cost-bar:empty { display: none; }
+    #cost-bar:hover .usage-ctx-more, #cost-bar:focus-visible .usage-ctx-more { color: #58a6ff; }
+    .usage-ctx-meter {
+      display: inline-block;
+      width: 60px; height: 5px;
+      margin-left: 5px;
+      vertical-align: middle;
+      background: #21262d;
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .usage-ctx-meter > span { display: block; height: 100%; border-radius: 3px; }
+    .usage-ctx-more { margin-left: 7px; color: #484f58; font-weight: 500; }
+    /* Opens upward: the row sits directly above the composer, and a panel that
+       grew downward would land under the keyboard on a phone. */
+    .usage-detail-pop {
+      position: absolute;
+      left: 50%;
+      bottom: 100%;
+      transform: translateX(-50%);
+      z-index: 40;
+      width: max-content;
+      max-width: min(92vw, 560px);
+      margin-bottom: 6px;
+      padding: 8px 10px;
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(1, 4, 9, 0.7);
+      font-size: 11px;
+      line-height: 1.5;
+      color: #8b949e;
+      text-align: left;
+      white-space: normal;
+    }
+    .usage-detail-title { margin-bottom: 5px; color: #c9d1d9; font-weight: 600; }
+    .usage-detail-row { display: flex; gap: 8px; padding: 2px 0; }
+    .usage-detail-label { flex: 0 0 auto; min-width: 68px; color: #6e7681; }
+    .usage-detail-value { flex: 1 1 auto; min-width: 0; color: #adbac7; overflow-wrap: anywhere; }
 
     @media (max-width: 760px) {
       #messages, #attach-area, #pre-input-bar, #session-queue-dock, #input-bar, #usage-summary {
@@ -1674,10 +1723,13 @@
         white-space: normal;
         overflow-wrap: anywhere;
       }
-      .usage-summary-secondary {
+      .usage-summary-secondary,
+      .usage-summary-context {
         flex-wrap: wrap;
         overflow-x: visible;
       }
+      #cost-bar { white-space: normal; }
+      .usage-detail-pop { max-width: calc(100vw - 16px); }
       #pending-user-input-card {
         width: calc(100% - 16px);
         max-height: 42vh;
@@ -2391,8 +2443,15 @@
       <div id="ark-quota-bar" class="usage-summary-bar" data-usage-role="provider" role="button" tabindex="0" aria-live="polite" style="display:none;cursor:pointer"></div>
       <div id="zhipu-quota-bar" class="usage-summary-bar" data-usage-role="provider" role="button" tabindex="0" aria-live="polite" style="display:none;cursor:pointer"></div>
       <div id="kimi-quota-bar" class="usage-summary-bar" data-usage-role="provider" role="button" tabindex="0" aria-live="polite" style="display:none;cursor:pointer"></div>
-      <div id="cost-bar" class="usage-summary-bar" data-usage-role="cost"></div>
     </div>
+    <!-- Row 3 is this conversation, not any account: how full the context is.
+         Subscription windows measure an account over time and belong above;
+         mixing the two on one line made both unreadable. Everything else the
+         turn reports lives in the panel this row opens. -->
+    <div id="usage-context-row" class="usage-summary-row usage-summary-context" aria-label="本轮上下文占用">
+      <div id="cost-bar" class="usage-summary-bar" data-usage-role="cost" role="button" tabindex="0" aria-live="polite" aria-expanded="false" aria-controls="usage-detail-pop"></div>
+    </div>
+    <div id="usage-detail-pop" class="usage-detail-pop" role="dialog" aria-label="本轮与会话用量" aria-hidden="true" style="display:none"></div>
   </section>
 
   <!-- Attachments area -->
@@ -2712,6 +2771,7 @@
   <script src="chat-ai-config.js"></script>
   <script src="chat-transport.js"></script>
   <script src="chat-token-readout.js"></script>
+  <script src="chat-usage-readout.js"></script>
   <script src="chat-history-store.js"></script>
   <script src="chat-history-view.js"></script>
   <script src="chat-message-focus.js"></script>
