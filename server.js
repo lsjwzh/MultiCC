@@ -96,6 +96,7 @@ const { createSessionPersistence } = require('./src/session-persistence');
 const { createOrchestrationRuntime } = require('./src/orchestration-runtime');
 const { createRouterToolHost } = require('./src/router-tool-host');
 const { createHostLifecycle } = require('./src/host-lifecycle');
+const { createLanDiscoveryRuntime } = require('./src/lan-discovery');
 const { requestIdMiddleware, safeErrorHandler, asyncHandler } = require('./src/http-errors');
 const { createMemoModule } = require('./src/memo');
 const { mountScanRoutes } = require('./src/routes/scan');
@@ -403,7 +404,7 @@ app.get('/metrics', (req, res) => {
 let PORT = networkPolicy.port;
 const BIND_HOST = networkPolicy.host;
 const server = http.createServer(app);
-
+const lanDiscovery = createLanDiscoveryRuntime({ readState: () => ({ host: BIND_HOST, port: PORT, allowRemote: networkPolicy.allowRemote, accessToken: ACCESS_TOKEN, listening: server.listening, shuttingDown: _shuttingDown }), logger });
 const wss = new WebSocket.Server({ noServer: true }); // upgrades dispatched by voice-host wireUpgrade (voice WS -> proxy, chat WS -> wss)
 const isWindows = process.platform === 'win32';
 
@@ -2056,6 +2057,7 @@ mountHostWriteRoutes(app, {
   setAccessToken: (token) => {
     process.env.ACCESS_TOKEN = token;
     ACCESS_TOKEN = token;
+    void lanDiscovery.reconcile();
   },
   getAllowRemote: () => networkPolicy.allowRemote,
   isLocalRequest,
@@ -2886,11 +2888,7 @@ cronTasks.init({ directories, createSessionRecord, runChatTurn: chatTurnEngine.r
 // In-process external-tunnel monitor (replaces phtunnel-monitor.sh watchdog).
 tunnel.init();
 
-// ── Host process lifecycle: graceful shutdown + service timers ──
-// Shutdown coordinator, SIGINT/SIGTERM handlers, service timers, and the partial-
-// turn flush live in src/host-lifecycle.js; only host wiring stays here. The two
-// host lets it mutates (_shuttingDown, serviceReady) and the two late-initialized
-// lets it reads (chatHistoryRuntime, orchestrationRuntime) are forwarded as accessors.
+// Graceful shutdown and service timers live in src/host-lifecycle.js; mutable host state stays lazy via accessors.
 const { shutdownCoordinator, trackServiceTimer, gracefulShutdown } = createHostLifecycle({
   getShuttingDown: () => _shuttingDown,
   setShuttingDown: (v) => { _shuttingDown = v; },
@@ -2912,6 +2910,7 @@ const { shutdownCoordinator, trackServiceTimer, gracefulShutdown } = createHostL
   skillSyncRuntime,
   triggerRuntime,
   pushRuntime,
+  lanDiscovery,
   wechatBridge,
   feishuBridge,
   telegramBridge,
@@ -2961,6 +2960,7 @@ app.use(safeErrorHandler(logger));
   });
   server.listen(PORT, BIND_HOST, () => {
     logger.info('server_listening', { host: BIND_HOST, port: PORT, remote: !networkPolicy.allowRemote ? false : true, development: networkPolicy.development });
+    void lanDiscovery.reconcile();
     console.log(`\n  MultiCC is running at http://${BIND_HOST.includes(':') ? `[${BIND_HOST}]` : BIND_HOST}:${PORT}\n`);
     console.log(`  Manage sessions at http://${BIND_HOST.includes(':') ? `[${BIND_HOST}]` : BIND_HOST}:${PORT}/manage\n`);
     console.log(`  Use Tailscale / ngrok for HTTPS access from external devices.\n`);
