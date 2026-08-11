@@ -4,6 +4,7 @@ import 'package:flutter/widgets.dart';
 import '../i18n.dart';
 import '../models/chat_runtime_state.dart';
 import '../models/message.dart';
+import '../models/usage_readout.dart';
 import '../models/vendor_quota.dart';
 import '../services/chat_service.dart';
 import '../services/notification_service.dart';
@@ -279,8 +280,37 @@ class ChatProvider extends ChangeNotifier {
   int _claudeUsageErrorAt = 0;
   static const int _claudeUsageFreshMs = 24 * 3600 * 1000;
 
-  String _costText = '';
-  String get costText => _costText;
+  // ── What the usage bar under the transcript shows ─────────────────────────
+  // The bar itself shows context and nothing else; everything below it reaches
+  // the user through the tap/long-press detail sheet. Money is deliberately
+  // absent: `total_cost_usd` comes from the CLI, which prices every turn with
+  // Anthropic's table even when the request was routed to another provider, so
+  // it is not this session's cost and no label here could make it one.
+
+  /// Usage of the newest single API request (stream_event `message_start`).
+  /// One request cannot double-count its own cached prefix, so its prompt side
+  /// IS the context — see [ContextReadout].
+  MessageUsage? _requestUsage;
+
+  /// Usage of the whole turn (the `result` frame). A turn sums every request it
+  /// made, so this is only ever a fallback estimate for the context.
+  MessageUsage? _turnUsage;
+  int _contextWindow = 0;
+  int _sessionInputTokens = 0;
+  int _sessionOutputTokens = 0;
+  String _turnDurationText = '';
+  int _turnCount = 0;
+
+  ContextReadout get contextReadout => ContextReadout.of(
+    request: _requestUsage,
+    turn: _turnUsage,
+    window: _contextWindow,
+  );
+  MessageUsage? get turnUsage => _turnUsage;
+  String get turnDurationText => _turnDurationText;
+  int get turnCount => _turnCount;
+  int get sessionInputTokens => _sessionInputTokens;
+  int get sessionOutputTokens => _sessionOutputTokens;
 
   ChatMessage? _currentMsg;
   final Map<int, ToolCall> _activeTools = {};
@@ -550,7 +580,7 @@ class ChatProvider extends ChangeNotifier {
         break;
 
       case 'message_start':
-        _onMessageStart();
+        _onMessageStart(evt.payload as Map<String, dynamic>?);
         break;
 
       case 'content_block_start':
@@ -1051,7 +1081,13 @@ class ChatProvider extends ChangeNotifier {
     if (_messages.length != before) notifyListeners();
   }
 
-  void _onMessageStart() {
+  void _onMessageStart(Map<String, dynamic>? evt) {
+    // One request's own prompt accounting: the only context figure that needs
+    // no heuristic, so it supersedes whatever the last turn total implied.
+    final usage = (evt?['message'] as Map?)?['usage'];
+    if (usage is Map) {
+      _requestUsage = MessageUsage.fromJson(Map<String, dynamic>.from(usage));
+    }
     _ensureAssistantMsg();
     notifyListeners();
   }
@@ -1175,18 +1211,26 @@ class ChatProvider extends ChangeNotifier {
     _finishStreaming();
     if (msg['is_error'] != true) _apiErrorPolicy = null;
 
-    final cost = (msg['total_cost_usd'] as num?)?.toDouble();
+    // `total_cost_usd` is read and dropped on purpose — see the usage-bar state
+    // above. What stays is what this turn actually measured.
+    if (msg['usage'] is Map) {
+      _turnUsage = MessageUsage.fromJson(
+        Map<String, dynamic>.from(msg['usage'] as Map),
+      );
+      _sessionInputTokens += _turnUsage!.inputTokens;
+      _sessionOutputTokens += _turnUsage!.outputTokens;
+    }
+    final models = msg['modelUsage'];
+    if (models is Map) {
+      for (final entry in models.values) {
+        final window = entry is Map ? (entry['contextWindow'] as num?) : null;
+        if (window != null && window > 0) _contextWindow = window.toInt();
+      }
+    }
     final ms = (msg['durationMs'] as num?)?.toInt();
     final turns = (msg['num_turns'] as num?)?.toInt();
-
-    if (cost != null) {
-      _costText = '\$${cost.toStringAsFixed(4)}';
-      if (ms != null) _costText += ' · ${_fmtDuration(ms)}';
-      if (turns != null) _costText += ' · $turns turn(s)';
-    } else if (ms != null) {
-      _costText = _fmtDuration(ms);
-      if (turns != null) _costText += ' · $turns turn(s)';
-    }
+    if (ms != null) _turnDurationText = _fmtDuration(ms);
+    if (turns != null) _turnCount = turns;
 
     // Completion notification is NOT fired here: a `result` only means the
     // stream stopped, which during a multi-step agent run happens between
@@ -1247,6 +1291,7 @@ class ChatProvider extends ChangeNotifier {
       _currentMsg = liveTail;
       _activeTools.clear();
     }
+    _seedUsageFromHistory();
     notifyListeners();
   }
 
@@ -1270,10 +1315,41 @@ class ChatProvider extends ChangeNotifier {
       ..addAll(parsed);
     _currentMsg = streamingAssistantTail(parsed);
     _activeTools.clear();
+    _seedUsageFromHistory();
     // 历史已是权威：未裁决的暂存失去意义（已落盘的在历史里，未落盘的队列消息靠
     // 队列面板展示），取消它们的兜底定时器。
     _clearStaged();
     notifyListeners();
+  }
+
+  /// Re-derive the usage bar from the transcript we now hold.
+  ///
+  /// History records each turn's totals but no per-request block, so the exact
+  /// context reading cannot survive a reload — it is dropped rather than shown
+  /// against a turn it did not measure. A live streaming tail is the exception:
+  /// its `message_start` describes the turn still on screen.
+  void _seedUsageFromHistory() {
+    if (_currentMsg == null) _requestUsage = null;
+    var input = 0;
+    var output = 0;
+    for (final m in _messages) {
+      if (m.role != MessageRole.assistant || m.usage == null) continue;
+      input += m.usage!.inputTokens;
+      output += m.usage!.outputTokens;
+    }
+    _sessionInputTokens = input;
+    _sessionOutputTokens = output;
+    _turnUsage = null;
+    _turnDurationText = '';
+    _turnCount = 0;
+    for (var i = _messages.length - 1; i >= 0; i -= 1) {
+      final m = _messages[i];
+      if (m.role != MessageRole.assistant) continue;
+      _turnUsage = m.usage;
+      // Round count is a result-frame fact and is not persisted; the timing is.
+      if (m.durationMs != null) _turnDurationText = _fmtDuration(m.durationMs!);
+      break;
+    }
   }
 
   /// id of the oldest message currently held in [_messages] (pagination cursor).
@@ -1571,6 +1647,7 @@ class ChatProvider extends ChangeNotifier {
     }
     _currentMsg = null;
     _activeTools.clear();
+    _seedUsageFromHistory();
     _historyApplied = false;
     _clearStaged();
     _service.clearHistory(keep: keep);
@@ -1603,6 +1680,7 @@ class ChatProvider extends ChangeNotifier {
       _messages.clear();
       _currentMsg = null;
       _activeTools.clear();
+      _seedUsageFromHistory();
       _historyApplied = false;
       _clearStaged();
       notifyListeners();

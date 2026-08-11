@@ -157,7 +157,7 @@ function controllerFixture() {
     currentCli: 'claude',
     liveStreamUsage: null,
     turnStartMs: 0,
-    costText: '',
+    turnMeta: null,
     sessionTokens: { input: 0, output: 0 },
     lastUserBubble: null,
     lastInitInfoLine: '',

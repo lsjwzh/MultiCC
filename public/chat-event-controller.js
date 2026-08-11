@@ -152,13 +152,14 @@
       }
       state.turnStartMs = 0;
       host.stopTitleAnimation?.();
-      if (message.total_cost_usd) {
-        const duration = Number.isFinite(message.durationMs)
-          ? liveUi.fmtDuration(message.durationMs)
-          : (message.duration_ms ? `${message.duration_ms}ms` : '');
-        state.costText = `$${message.total_cost_usd.toFixed(4)}`;
-        if (duration) state.costText += ` | ${duration}`;
-        if (message.num_turns) state.costText += ` | ${message.num_turns} turn(s)`;
+      // total_cost_usd is deliberately dropped: the CLI prices every turn with
+      // Anthropic's table even when the request was routed elsewhere, so it is
+      // not this session's cost and nothing here can make it into one.
+      const durationText = Number.isFinite(message.durationMs)
+        ? liveUi.fmtDuration(message.durationMs)
+        : (message.duration_ms ? `${message.duration_ms}ms` : '');
+      if (durationText || message.num_turns) {
+        state.turnMeta = { durationText, turns: message.num_turns || 0 };
       }
       if (message.usage) {
         state.sessionTokens.input += message.usage.input_tokens || 0;
@@ -459,6 +460,8 @@
           host.startTitleAnimation?.();
           host.updateUI?.();
           if (event.message?.usage) {
+            // One request's own prompt accounting — the exact context size.
+            host.noteRequestUsage?.(event.message.usage);
             state.liveStreamUsage = liveUi.accumulateLiveUsage(event.message.usage, state.liveStreamUsage);
             liveUi.attachUsageLine(state.currentMsgEl, null, state.roleTokens.main
               ? state.roleTokens : { main: state.liveStreamUsage, sub: null, subByProvider: [] });

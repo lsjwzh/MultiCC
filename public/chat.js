@@ -364,7 +364,10 @@ let _contextWindow = 1000000;
 // chat-token-readout.js can tell a single-request block from a CLI that sums
 // every request in the turn — see the module header for why that matters.
 let _turnUsage = null;
-let _costText = '';  // latest cost summary string, kept separate from the context readout
+// Usage of the newest single API request (stream_event message_start). Unlike a
+// turn total it cannot double-count a cached prefix, so it is the exact context.
+let _requestUsage = null;
+let _turnMeta = null;  // { durationText, turns } — shown in the detail panel, never priced
 let _sessionTokens = { input: 0, output: 0 };  // per-session cumulative token usage
 let _turnStartMs = 0;  // wall-clock when the current turn was sent (live reply timing)
 // Per-turn main/sub role breakdown (from claude-proxy onUsage, via
@@ -888,6 +891,9 @@ function applyHistoryPlan(plan) {
     _sessionTokens = { ...plan.sessionTokens };
   }
   _turnUsage = plan.lastTurnUsage;
+  // History carries no per-request block; keeping a stale one would present
+  // another turn's measurement as this one's.
+  _requestUsage = null;
   updateContextBar();
 
   if (viewPlan.streamingTail) {
@@ -958,75 +964,37 @@ function updateUI() {
   inputEl.disabled = !connected;
   pendingUserInputController.setConnected();
 }
+// The bar shows context and only context; the provider's token windows, the
+// session's cumulative billing and the turn's timing move into the panel this
+// readout opens. See chat-usage-readout.js for why money is not among them.
+const usageReadout = window.MultiCCChatUsageReadout?.createUsageReadout({
+  bar: costBar, panel: document.getElementById('usage-detail-pop'), document,
+});
+function noteRequestUsage(usage) {
+  // One request's own report: the only context figure that needs no heuristic.
+  if (usage) _requestUsage = usage;
+  updateContextBar();
+}
 function updateContextBar(usage, modelUsage) {
-  // Extract context window from modelUsage if available
   if (modelUsage) {
     for (const key of Object.keys(modelUsage)) {
       if (modelUsage[key].contextWindow) _contextWindow = modelUsage[key].contextWindow;
     }
   }
   if (usage) _turnUsage = usage;
-
-  const parts = [];
-
-  const fmt = _providerCatalog.formatCompactTokens;
-  const windowFmt = _providerCatalog.formatUsageWindow;
-
-  // ── Provider time-window stats ──
-  if (_providerTokenWindows) {
-    const pw = _providerTokenWindows;
-    const label = _providerName || _providerId || 'Provider';
-    const entries = [];
-    if (pw.today) { const s = windowFmt(pw.today); if (s) entries.push(`日${s}`); }
-    if (pw.week) { const s = windowFmt(pw.week); if (s) entries.push(`周${s}`); }
-    if (pw.month) { const s = windowFmt(pw.month); if (s) entries.push(`月${s}`); }
-    // Fallback: if daily data hasn't accumulated yet, show all-time total.
-    // Prefixed 总 so it's clear this is lifetime, not today's, usage.
-    if (!entries.length && pw.all) {
-      const s = windowFmt(pw.all);
-      if (s) entries.push(`总${s}`);
-    }
-    if (entries.length) {
-      parts.push(`<span style="margin-right:10px;color:var(--amber);font-size:11px">[${escHtml(label)}] ${entries.join(' ')}</span>`);
-    }
-  }
-
-  // ── Cost text (USD) ──
-  if (_costText) parts.push(`<span style="margin-right:10px">${escHtml(_costText)}</span>`);
-
-  // ── Session cumulative tokens ──
-  const total = _sessionTokens.input + _sessionTokens.output;
-  if (total > 0) {
-    parts.push(`<span title="整个会话累计的计费用量（含每次请求重复计入的缓存读取），不是当前上下文占用" style="margin-right:10px;color:var(--faint);font-size:11px">会话累计 ${fmt(total)} tokens（in ${fmt(_sessionTokens.input)} / out ${fmt(_sessionTokens.output)}）</span>`);
-  }
-
-  // ── Current-turn context ──
-  // updateContextBar runs inside the history render on connect, so a missing
-  // readout module must degrade the bar rather than abort the whole page.
-  const ctx = window.MultiCCChatTokenReadout?.turnContext(_turnUsage, _contextWindow)
-    || { input: 0, output: 0, total: 0, billed: 0, aggregated: false, withinWindow: true };
-  if (ctx.total > 0) {
-    const totalK = (_contextWindow / 1000).toFixed(0);
-    const k = value => (value / 1000).toFixed(1);
-    const pct = Math.min(100, (ctx.total / _contextWindow) * 100);
-    const color = pct > 80 ? '#f85149' : pct > 50 ? '#d29922' : '#3fb950';
-    if (!ctx.aggregated) {
-      parts.push(`<span style="font-size:11px;color:${color}">本轮 ${k(ctx.total)}k/${totalK}k (${pct.toFixed(1)}%)</span>`);
-    } else if (ctx.withinWindow) {
-      // The CLI billed this turn across several requests. in/out are each
-      // counted once per request, so their sum still overstates the window a
-      // little — say「约」rather than pass an estimate off as a measurement.
-      parts.push(`<span title="Codex 按整轮所有 API 请求合计上报（计费 ${fmt(ctx.billed)} tokens），其中缓存读取被逐次重复计入，已剔除；此处为上下文占用的估算上限" style="font-size:11px;color:${color}">本轮 in ${k(ctx.input)}k / out ${k(ctx.output)}k（约 ${pct.toFixed(1)}%）</span>`);
-    } else {
-      // Even the once-per-request buckets exceed the window; there is nothing
-      // left to honestly turn into a percentage.
-      parts.push(`<span title="Codex 按整轮所有 API 请求合计上报（计费 ${fmt(ctx.billed)} tokens），无法据此折算单轮上下文占用" style="font-size:11px;color:var(--faint)">本轮 in ${k(ctx.input)}k / out ${k(ctx.output)}k（累计口径）</span>`);
-    }
-    if (!ctx.aggregated || ctx.withinWindow) {
-      parts.push(`<span style="display:inline-block;width:60px;height:5px;background:#21262d;border-radius:3px;margin-left:4px;vertical-align:middle;"><span style="display:block;width:${pct}%;height:100%;background:${color};border-radius:3px;"></span></span>`);
-    }
-  }
-  costBar.innerHTML = parts.join('');
+  // Runs inside the history render on connect, so a missing readout module must
+  // degrade the bar rather than abort the whole page.
+  usageReadout?.render({
+    requestUsage: _requestUsage,
+    turnUsage: _turnUsage,
+    contextWindow: _contextWindow,
+    sessionTokens: _sessionTokens,
+    providerWindows: _providerTokenWindows,
+    providerLabel: _providerName || _providerId || 'Provider',
+    turnMeta: _turnMeta,
+    formatTokens: _providerCatalog.formatCompactTokens,
+    formatWindow: _providerCatalog.formatUsageWindow,
+  });
 }
 
 /* ── Mobile-safe scroll controller ── */
@@ -2413,7 +2381,7 @@ const eventStateBindings = {
   currentCli: [() => currentCli, value => { currentCli = value; }],
   liveStreamUsage: [() => _liveStreamUsage, value => { _liveStreamUsage = value; }],
   turnStartMs: [() => _turnStartMs, value => { _turnStartMs = value; }],
-  costText: [() => _costText, value => { _costText = value; }],
+  turnMeta: [() => _turnMeta, value => { _turnMeta = value; }],
   sessionTokens: [() => _sessionTokens, value => { _sessionTokens = value; }],
   lastUserBubble: [() => _lastUserBubble, value => { _lastUserBubble = value; }],
   lastInitInfoLine: [() => _lastInitInfoLine, value => { _lastInitInfoLine = value; }],
@@ -2457,6 +2425,7 @@ chatEventController = window.MultiCCChatEventController.createEventController({
     applyCliSwitchState,
     cliMeta: CLI_META,
     updateContextBar,
+    noteRequestUsage,
     autoCommitIfNeeded,
     resetHistoryPagination,
     applyHistoryPlan,

@@ -108,23 +108,42 @@ test('OpenCode native formatter keeps its source label and degrades cleanly when
   }
 });
 
-test('usage summary DOM has exactly two semantic rows and keeps cost in the secondary row', () => {
-  assert.equal((CHAT_HTML.match(/class="usage-summary-row/g) || []).length, 2);
+test('account quota and this conversation\'s context are separate rows, never one line', () => {
+  assert.equal((CHAT_HTML.match(/class="usage-summary-row/g) || []).length, 3);
   const primaryStart = CHAT_HTML.indexOf('id="usage-primary-row"');
   const secondaryStart = CHAT_HTML.indexOf('id="usage-secondary-row"');
-  const summaryEnd = CHAT_HTML.indexOf('</section>', secondaryStart);
-  assert.ok(primaryStart > 0 && secondaryStart > primaryStart && summaryEnd > secondaryStart);
+  const contextStart = CHAT_HTML.indexOf('id="usage-context-row"');
+  const summaryEnd = CHAT_HTML.indexOf('</section>', contextStart);
+  assert.ok(primaryStart > 0 && secondaryStart > primaryStart && contextStart > secondaryStart
+    && summaryEnd > contextStart);
 
   const primary = CHAT_HTML.slice(primaryStart, secondaryStart);
-  const secondary = CHAT_HTML.slice(secondaryStart, summaryEnd);
+  const secondary = CHAT_HTML.slice(secondaryStart, contextStart);
+  const contextRow = CHAT_HTML.slice(contextStart, summaryEnd);
   for (const id of ['opencode-quota-bar', 'qoder-quota-bar', 'codex-quota-bar']) {
     assert.match(primary, new RegExp(`id="${id}"[^>]*data-usage-role="native"`));
   }
-  for (const id of ['claude-rate-limit-bar', 'usage-balance-bar', 'ark-quota-bar', 'zhipu-quota-bar', 'kimi-quota-bar', 'cost-bar']) {
+  for (const id of ['claude-rate-limit-bar', 'usage-balance-bar', 'ark-quota-bar', 'zhipu-quota-bar', 'kimi-quota-bar']) {
     assert.match(secondary, new RegExp(`id="${id}"`));
   }
-  assert.match(secondary, /id="cost-bar"[^>]*data-usage-role="cost"/);
-  assert.match(CHAT_JS, /costBar\.innerHTML = parts\.join\(''\);/, 'an empty update clears stale cost text');
+  // Subscription windows meter an account over time; the context bar meters
+  // this conversation. Sharing a row made both unreadable.
+  assert.doesNotMatch(secondary, /id="cost-bar"/);
+  assert.match(contextRow, /id="cost-bar"[^>]*data-usage-role="cost"/);
+  assert.match(contextRow, /id="cost-bar"[^>]*role="button"/, 'the context row opens the detail panel');
+  assert.match(CHAT_HTML, /id="usage-detail-pop"/, 'the secondary numbers live in a panel, not the row');
+});
+
+test('the context bar renders through the usage readout and prices nothing', () => {
+  assert.match(CHAT_JS, /usageReadout\?\.render\(\{/, 'the bar is rendered by chat-usage-readout.js');
+  assert.doesNotMatch(CHAT_JS, /total_cost_usd|costText/, 'chat.js keeps no cost string');
+  const controller = fs.readFileSync(path.join(ROOT, 'public', 'chat-event-controller.js'), 'utf8');
+  assert.doesNotMatch(controller, /state\.costText/, 'the result handler no longer builds a USD line');
+  assert.doesNotMatch(
+    fs.readFileSync(path.join(ROOT, 'public', 'chat-usage-readout.js'), 'utf8'),
+    /total_cost_usd|toFixed\(4\)|costUSD/,
+    'the readout has no pricing logic at all',
+  );
 });
 
 test('desktop quota layout is capped at two nowrap rows; narrow layout wraps only in controlled rows', () => {
@@ -132,7 +151,7 @@ test('desktop quota layout is capped at two nowrap rows; narrow layout wraps onl
   assert.match(CHAT_HTML, /\.usage-summary-row\s*\{[\s\S]*?flex-wrap:\s*nowrap;[\s\S]*?overflow-x:\s*auto;/);
   assert.match(CHAT_HTML, /@media \(max-width: 760px\)[\s\S]*?\.usage-summary-primary\s*\{[^}]*width:\s*100%;[^}]*overflow-x:\s*visible;/);
   assert.match(CHAT_HTML, /@media \(max-width: 760px\)[\s\S]*?\.usage-summary-primary \.usage-summary-bar\s*\{[\s\S]*?max-width:\s*calc\(100vw - 12px\);[\s\S]*?white-space:\s*normal;[\s\S]*?overflow-wrap:\s*anywhere;/);
-  assert.match(CHAT_HTML, /@media \(max-width: 760px\)[\s\S]*?\.usage-summary-secondary\s*\{[\s\S]*?flex-wrap:\s*wrap;[\s\S]*?overflow-x:\s*visible;/);
+  assert.match(CHAT_HTML, /@media \(max-width: 760px\)[\s\S]*?\.usage-summary-secondary,\s*\n\s*\.usage-summary-context\s*\{[\s\S]*?flex-wrap:\s*wrap;[\s\S]*?overflow-x:\s*visible;/);
   assert.equal((CHAT_HTML.match(/id="opencode-quota-bar"/g) || []).length, 1, 'narrow layout never mounts a duplicate native meter');
   assert.equal((CHAT_HTML.match(/id="claude-rate-limit-bar"/g) || []).length, 1, 'narrow layout never mounts a duplicate provider meter');
 });
