@@ -1610,18 +1610,73 @@
       height: 100%; width: 0%; background: #238636; transition: width 0.1s;
     }
 
-    /* ── Cost bar ── */
-    #cost-bar {
-      font-size: 11px; color: #6e7681; text-align: center;
+    /* ── Quota + cost summary ──
+       The active CLI's own subscription windows are the primary row. Routed
+       provider limits, prepaid balances and turn/session cost are secondary
+       chips on one row. Keeping those two semantic levels in one component
+       prevents every independent data source from claiming a full line. */
+    #usage-summary {
+      flex: 0 0 auto;
       width: min(100%, 980px);
       align-self: center;
-      padding: 3px; background: #0d1117; min-height: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      padding: 2px 8px 3px;
+      background: #0d1117;
     }
+    #usage-summary:not(:has(.usage-summary-bar:not(:empty))) { display: none; }
+    .usage-summary-row {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+    .usage-summary-row::-webkit-scrollbar { display: none; }
+    .usage-summary-bar {
+      display: none;
+      min-width: 0;
+      max-width: 100%;
+      padding: 0 5px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+      line-height: 16px;
+      text-align: center;
+      white-space: nowrap;
+    }
+    .usage-summary-primary .usage-summary-bar { font-weight: 650; }
+    .usage-summary-secondary .usage-summary-bar {
+      flex: 0 0 auto;
+      color: #8b949e;
+      background: #161b22;
+      border: 1px solid #21262d;
+    }
+    #cost-bar { display: block; color: #6e7681; }
+    #cost-bar:empty { display: none; }
 
     @media (max-width: 760px) {
-      #messages, #attach-area, #pre-input-bar, #session-queue-dock, #input-bar, #cost-bar {
+      #messages, #attach-area, #pre-input-bar, #session-queue-dock, #input-bar, #usage-summary {
         width: 100%;
         max-width: none;
+      }
+      #usage-summary { padding-inline: 6px; }
+      .usage-summary-row { justify-content: flex-start; }
+      .usage-summary-primary { width: 100%; overflow-x: visible; }
+      .usage-summary-primary .usage-summary-bar {
+        flex: 1 1 100%;
+        width: 100%;
+        max-width: calc(100vw - 12px);
+        white-space: normal;
+        overflow-wrap: anywhere;
+      }
+      .usage-summary-secondary {
+        flex-wrap: wrap;
+        overflow-x: visible;
       }
       #pending-user-input-card {
         width: calc(100% - 16px);
@@ -2318,20 +2373,27 @@
     <div class="msg system-msg">Chat mode — structured output rendering</div>
   </div>
 
-  <!-- Claude subscription usage + per-turn cost -->
-  <div id="claude-rate-limit-bar" role="button" tabindex="0" aria-live="polite" style="display:none;font-size:11px;font-weight:600;text-align:center;margin:2px auto 0;cursor:pointer;user-select:none"></div>
-  <div id="usage-balance-bar" aria-live="polite" style="display:none;font-size:11px;font-weight:600;text-align:center;margin:2px auto 0"></div>
-  <!-- OpenCode Go subscription usage (5h rolling / weekly / monthly) scraped
-       from the opencode.ai Zen console via CDP on the user's local Chrome.
-       Separate bar from Claude 5h because the source, fetch path, and failure
-       modes are different; rendered only under cli=opencode. -->
-  <div id="opencode-quota-bar" aria-live="polite" style="display:none;font-size:11px;font-weight:600;text-align:center;margin:2px auto 0;cursor:pointer"></div>
-  <div id="qoder-quota-bar" aria-live="polite" style="display:none;font-size:11px;font-weight:600;text-align:center;margin:2px auto 0;cursor:pointer"></div>
-  <div id="codex-quota-bar" aria-live="polite" style="display:none;font-size:11px;font-weight:600;text-align:center;margin:2px auto 0;cursor:pointer"></div>
-  <div id="ark-quota-bar" aria-live="polite" style="display:none;font-size:11px;font-weight:600;text-align:center;margin:2px auto 0;cursor:pointer"></div>
-  <div id="zhipu-quota-bar" aria-live="polite" style="display:none;font-size:11px;font-weight:600;text-align:center;margin:2px auto 0;cursor:pointer"></div>
-  <div id="kimi-quota-bar" aria-live="polite" style="display:none;font-size:11px;font-weight:600;text-align:center;margin:2px auto 0;cursor:pointer"></div>
-  <div id="cost-bar"></div>
+  <!-- Two semantic rows, regardless of how many independent quota sources are
+       available. Row 1 is the active CLI account; row 2 is the routed provider
+       plus balance/cost metadata. The source labels are rendered by
+       chat-rate-limit.js so equal-looking 5h windows cannot be confused. -->
+  <section id="usage-summary" aria-label="额度、余额与费用">
+    <div id="usage-primary-row" class="usage-summary-row usage-summary-primary" aria-label="当前 CLI 订阅限额">
+      <!-- OpenCode Go usage is scraped from opencode.ai; Qoder and Codex have
+           their own native account endpoints. Only the active CLI is shown. -->
+      <div id="opencode-quota-bar" class="usage-summary-bar" data-usage-role="native" role="button" tabindex="0" aria-live="polite" style="display:none;cursor:pointer"></div>
+      <div id="qoder-quota-bar" class="usage-summary-bar" data-usage-role="native" role="button" tabindex="0" aria-live="polite" style="display:none;cursor:pointer"></div>
+      <div id="codex-quota-bar" class="usage-summary-bar" data-usage-role="native" role="button" tabindex="0" aria-live="polite" style="display:none;cursor:pointer"></div>
+    </div>
+    <div id="usage-secondary-row" class="usage-summary-row usage-summary-secondary" aria-label="路由供应商额度、余额与本轮费用">
+      <div id="claude-rate-limit-bar" class="usage-summary-bar" data-usage-role="provider" role="button" tabindex="0" aria-live="polite" style="display:none;cursor:pointer;user-select:none"></div>
+      <div id="usage-balance-bar" class="usage-summary-bar" data-usage-role="provider-balance" aria-live="polite" style="display:none"></div>
+      <div id="ark-quota-bar" class="usage-summary-bar" data-usage-role="provider" role="button" tabindex="0" aria-live="polite" style="display:none;cursor:pointer"></div>
+      <div id="zhipu-quota-bar" class="usage-summary-bar" data-usage-role="provider" role="button" tabindex="0" aria-live="polite" style="display:none;cursor:pointer"></div>
+      <div id="kimi-quota-bar" class="usage-summary-bar" data-usage-role="provider" role="button" tabindex="0" aria-live="polite" style="display:none;cursor:pointer"></div>
+      <div id="cost-bar" class="usage-summary-bar" data-usage-role="cost"></div>
+    </div>
+  </section>
 
   <!-- Attachments area -->
   <div id="attach-area"></div>

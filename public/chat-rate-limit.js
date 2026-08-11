@@ -186,6 +186,29 @@
     });
   }
 
+  function providerLimitSourceName(provider) {
+    if (provider === 'glm') return 'GLM';
+    if (provider === 'codex') return 'Codex';
+    return 'Claude';
+  }
+
+  // OpenCode Go has its own account-level 5h/weekly/monthly limits while the
+  // provider routed underneath it may independently report another 5h/weekly
+  // window. Both are useful, but an unlabeled pair of `5h N%` values looks like
+  // one duplicated, contradictory meter. Decorate the provider view at the
+  // composition boundary; the underlying formatter remains reusable and its
+  // tooltip still explains the provider-specific source.
+  function labelProviderLimitView(view, provider, cli) {
+    if (!view) return null;
+    if (cli !== 'opencode') return view;
+    const source = providerLimitSourceName(provider);
+    return Object.freeze({
+      ...view,
+      text: `路由供应商 ${source} · ${view.text}`,
+      title: `${view.title || `${source} 额度`}\n此行是当前路由供应商额度，不是 OpenCode Go 订阅额度。`,
+    });
+  }
+
   let currentLimit = null;
   let currentSession = '';
   let currentCli = 'claude';
@@ -417,7 +440,7 @@
     // Another provider's window bar appears only once its own event is in hand,
     // and under a non-Claude provider the item is hidden entirely.
     const claudeBar = (limit && limit.provider === 'claude') || (currentCli === 'claude' && claudeProvider);
-    const view = claudeBar
+    const rawView = claudeBar
       ? formatClaudeBar(limit, currentClaudeUsage, {
         // In flight is in flight whether or not there is stale data on screen —
         // gating this on an empty bar meant every refresh of existing numbers
@@ -426,6 +449,9 @@
         loginPending: claudeLoginPending,
       })
       : (limit ? formatFiveHourRateLimit(limit) : null);
+    const view = rawView
+      ? labelProviderLimitView(rawView, limit?.provider || 'claude', currentCli)
+      : null;
     element.style.display = view ? 'block' : 'none';
     element.textContent = view ? view.text : '';
     element.title = view ? view.title : '';
@@ -548,9 +574,10 @@
   }
 
   // ── Prepaid balance widget (DeepSeek). A DIFFERENT species from the window
-  // bar: money remaining, not a rolling window %. Rendered in its own element so
-  // the two are never conflated. No reset timer (balance has no window); the
-  // value simply persists until the next poll overwrites it.
+  // bar: money remaining, not a rolling window %. It has its own semantic chip
+  // in the shared provider row, rather than claiming a third full-width line.
+  // No reset timer (balance has no window); the value simply persists until the
+  // next poll overwrites it.
   function normalizeBalance(info) {
     if (!info || typeof info !== 'object' || info.kind !== 'balance') return null;
     const total = finiteNumber(info.total);
@@ -604,7 +631,10 @@
   function renderBalance() {
     const element = global.document?.getElementById?.('usage-balance-bar');
     if (!element) return;
-    const view = (currentBalance && balanceMatchesCli(currentCli)) ? formatBalance(currentBalance) : null;
+    const rawView = (currentBalance && balanceMatchesCli(currentCli)) ? formatBalance(currentBalance) : null;
+    const view = rawView && currentCli === 'opencode'
+      ? Object.freeze({ ...rawView, text: `DeepSeek 余额 · ${rawView.text}` })
+      : rawView;
     element.style.display = view ? 'block' : 'none';
     element.textContent = view?.text || '';
     element.title = view?.title || '';
@@ -709,8 +739,8 @@
   // ── OpenCode Go subscription usage (5h rolling / weekly / monthly). Sourced
   // by driving the user's local Chrome via CDP to opencode.ai/auth → /workspace/
   // <wsid>/go and regexing the SSR SolidStart hydration data. No REST API.
-  // Rendered as a separate bar (id="opencode-quota-bar") so its 3 limit windows
-  // and `needs_login` call to action don't fight the Claude 5h field.
+  // Rendered as the primary row's native-account bar (id="opencode-quota-bar");
+  // routed-provider quota/balance is composed in the secondary row.
   let currentQuota = null; // { status, usage, fetchedAt, ... } or { status:'needs_login'|... }
   let quotaFetchInFlight = false;
   const QUOTA_BACKOFF_MS = 60_000;
@@ -815,7 +845,7 @@
     if (u.monthly && Number.isFinite(u.monthly.usagePercent)) {
       segs.push(unifiedWindowSeg('1m', u.monthly.usagePercent, u.monthly.resetInSec * 1000));
     }
-    let text = sortWindowSegs(segs.filter(Boolean)).join(' · ') || '—';
+    let text = `OpenCode Go · ${sortWindowSegs(segs.filter(Boolean)).join(' · ') || '—'}`;
     // Sync time: appended as "· N分钟前 ⟳" so users see how stale the data is
     // and have a visible refresh affordance.
     const syncRel = relativeAgo(value.fetchedAt);
