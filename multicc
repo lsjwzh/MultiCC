@@ -245,8 +245,8 @@ do_update() {
   fi
 
   # Repair incomplete installs even when git is already current. This covers
-  # both native bindings and the split-out cli-provider-router package, so an
-  # interrupted v1 upgrade can recover by simply rerunning `./multicc update`.
+  # native bindings, cli-provider-router and @homebridge/ciao, so an interrupted
+  # upgrade can recover by simply rerunning `./multicc update`.
   echo "Verifying current runtime dependencies..."
   if ! check_runtime_dependencies; then
     echo "Runtime dependencies are incomplete or outdated — running npm install..."
@@ -527,6 +527,18 @@ do_update() {
 }
 
 do_install() {
+  # `./multicc install` is also a supported entry point. Do not register a
+  # launchd service that will start without a required runtime package (notably
+  # the @homebridge/ciao responder used by app LAN discovery).
+  echo "Verifying runtime dependencies before service install..."
+  if ! check_runtime_dependencies; then
+    echo "Runtime dependencies are incomplete — running npm install..."
+    if ! (cd "$SCRIPT_DIR" && env PATH="$(dirname "$NODE"):$PATH" npm install 2>&1) || ! check_runtime_dependencies; then
+      echo "Runtime dependency installation failed — service was not installed."
+      return 1
+    fi
+  fi
+
   # Lay down every bundled skill so claude sessions can discover them immediately
   # (the server also re-syncs these on every startup). Any dir under skills/ that
   # contains a SKILL.md is installed — no need to list them here.
