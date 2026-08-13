@@ -541,13 +541,19 @@ class _QueueActionButton extends StatelessWidget {
 
 class ChatRuntimeNoticePanel extends StatelessWidget {
   final ApiErrorPolicyState? apiError;
-  final UsageWindowLimit? limit;
-  final UsageBalance? balance;
+  // GLM/Codex window bar and the DeepSeek balance bar arrive already resolved
+  // from the server render — the panel paints them verbatim.
+  final VendorQuotaView? limit;
+  final VendorQuotaView? balance;
   final List<VendorQuotaView> vendorQuotas;
   final VendorQuotaView? claudeUsage;
   final VendorQuotaView? qoderUsage;
+  final VendorQuotaView? opencodeUsage;
+  final VendorQuotaView? codexUsage;
   final VoidCallback? onClaudeQuotaTap;
   final VoidCallback? onQoderQuotaTap;
+  final VoidCallback? onOpenCodeQuotaTap;
+  final VoidCallback? onCodexQuotaTap;
   final VoidCallback? onRetry;
 
   const ChatRuntimeNoticePanel({
@@ -558,8 +564,12 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
     this.vendorQuotas = const [],
     this.claudeUsage,
     this.qoderUsage,
+    this.opencodeUsage,
+    this.codexUsage,
     this.onClaudeQuotaTap,
     this.onQoderQuotaTap,
+    this.onOpenCodeQuotaTap,
+    this.onCodexQuotaTap,
     this.onRetry,
   });
 
@@ -570,7 +580,9 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
         balance == null &&
         vendorQuotas.isEmpty &&
         claudeUsage == null &&
-        qoderUsage == null) {
+        qoderUsage == null &&
+        opencodeUsage == null &&
+        codexUsage == null) {
       return const SizedBox.shrink();
     }
     return Container(
@@ -586,7 +598,19 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
         runSpacing: 6,
         crossAxisAlignment: WrapCrossAlignment.center,
         children: [
-          if (limit != null) _limitView(context, limit!),
+          if (limit != null) _vendorQuotaView(limit!),
+          if (codexUsage != null)
+            _quotaBarView(
+              codexUsage!,
+              onTap: onCodexQuotaTap,
+              key: const Key('codex-quota-bar'),
+            ),
+          if (opencodeUsage != null)
+            _quotaBarView(
+              opencodeUsage!,
+              onTap: onOpenCodeQuotaTap,
+              key: const Key('opencode-quota-bar'),
+            ),
           if (claudeUsage != null)
             _claudeUsageView(claudeUsage!, onTap: onClaudeQuotaTap),
           if (qoderUsage != null)
@@ -595,7 +619,7 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
               onTap: onQoderQuotaTap,
               key: const Key('qoder-quota-bar'),
             ),
-          if (balance != null) _balanceView(balance!),
+          if (balance != null) _vendorQuotaView(balance!),
           for (final v in vendorQuotas) _vendorQuotaView(v),
           if (apiError != null) _errorView(apiError!),
           if (apiError?.canManualRetry == true && onRetry != null)
@@ -615,13 +639,6 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
     );
   }
 
-  Widget _limitView(BuildContext context, UsageWindowLimit value) {
-    // GLM/Codex window bars render in the web unified compact format
-    // (`<window> <remaining%> <countdown>` + shared remaining-percent color),
-    // not the old verbose label/percent/更新时间 view.
-    return _vendorQuotaView(formatWindowLimit(value));
-  }
-
   /// Claude subscription limit bar — merged 5h + weekly/monthly windows (or an
   /// idle / actionable placeholder). Tapping refreshes the usage scrape, or
   /// opens the login window when the scrape reports no session.
@@ -629,8 +646,8 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
       _quotaBarView(v, onTap: onTap, key: const Key('claude-quota-bar'));
 
   /// A tappable quota bar: tapping refreshes, or opens the login window when
-  /// the underlying scrape reports no session. Shared by the Claude and Qoder
-  /// subscription bars (web: `quotaBarClick`).
+  /// the underlying scrape reports no session. Shared by the Claude, Qoder,
+  /// OpenCode and Codex subscription bars (web: `quotaBarClick`).
   Widget _quotaBarView(VendorQuotaView v, {VoidCallback? onTap, Key? key}) {
     final chip = Semantics(
       label: v.tooltip.isNotEmpty ? '${v.text}\n${v.tooltip}' : v.text,
@@ -646,22 +663,6 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
       onTap: onTap,
       borderRadius: BorderRadius.circular(4),
       child: chip,
-    );
-  }
-
-  Widget _balanceView(UsageBalance value) {
-    final text = !value.available
-        ? t('balanceUnavailable')
-        : '${value.currency ?? ''} ${value.total?.toStringAsFixed(2) ?? '—'}'
-              .trim();
-    return Text(
-      '${t('deepSeekBalance')} · $text',
-      style: TextStyle(
-        color: value.available
-            ? const Color(0xFF7ee787)
-            : const Color(0xFFe3b341),
-        fontSize: 11,
-      ),
     );
   }
 

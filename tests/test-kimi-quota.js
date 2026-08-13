@@ -14,14 +14,25 @@ const {
   balanceHost,
   mountKimiQuotaRoutes,
 } = require('../src/routes/kimi-quota');
-const {
-  formatKimiQuota,
-  isKimiBaseUrl,
-  formatQoderQuota,
-  formatOpenCodeQuota,
-  quotaBarClick,
-  unifiedWindowSeg,
-} = require('../public/chat-rate-limit');
+const { renderQuotaBar } = require('../src/quota/quota-bar-view');
+const { resolveQuotaBar, humanizeCountdown } = require('../public/quota-bar-view');
+const { isKimiBaseUrl, quotaBarClick } = require('../public/chat-rate-limit');
+
+// The bars are rendered once on the server (src/quota/quota-bar-view.js); the
+// client only expands the {cd:}/{ago:} tokens. These helpers drive that same
+// path so the assertions still cover the words/colors/actions the user sees.
+const nowOf = (v, c) => (v && v.fetchedAt) || (c && c.fetchedAt) || Date.now();
+const formatKimiQuota = (value, cached) => resolveQuotaBar(renderQuotaBar('kimi', value, { cached }), { now: nowOf(value, cached) });
+const formatQoderQuota = (value) => resolveQuotaBar(renderQuotaBar('qoder', value), { now: nowOf(value) });
+const formatOpenCodeQuota = (value) => resolveQuotaBar(renderQuotaBar('opencode', value), { now: nowOf(value) });
+// The resolved `<label> <remaining>% <countdown>` segment every bar builds its
+// text from — remaining = 100 − used, countdown humanized from a ms duration.
+const unifiedWindowSeg = (label, usedPercent, resetMs) => {
+  if (!Number.isFinite(usedPercent)) return '';
+  const rem = Math.max(0, Math.min(100, Math.round(100 - usedPercent)));
+  const cd = humanizeCountdown(resetMs);
+  return cd ? `${label} ${rem}% ${cd}` : `${label} ${rem}%`;
+};
 
 const MOONSHOT = { host: 'api.moonshot.cn', apiKey: 'k1', strategy: 'kimi-balance' };
 const KIMI = { host: 'api.kimi.com', apiKey: 'k2', strategy: 'kimi-balance' };
@@ -566,7 +577,7 @@ test('the plain auth_rejected failure keeps its own reason when the top level is
   // thing to show when the top-level status carries no user-fixable action.
   const view = formatKimiQuota({ status: 'unavailable', sites: [{ host: 'api.kimi.com', ok: false, reason: 'auth_rejected' }] });
   assert.match(view.text, /密钥不支持余额查询/);
-  assert.equal(view.action, undefined);
+  assert.ok(!view.action, 'a non-actionable status carries no login action');
 });
 
 test('qoder and opencode actionable states carry the same login action', () => {

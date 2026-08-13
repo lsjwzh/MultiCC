@@ -1433,7 +1433,7 @@ providerRouterRuntime.mountProtocolProxies(app, {
   onUsageObserved: recordUsageObserved,
   onActivity: e => livenessRuntime.recordProxyActivity(e),
   // Token-level delta + Claude 5h rate-limit sidecars: see src/chat/proxy-broadcast.js.
-  ...createProxyBroadcasters(chatBroadcast),
+  ...createProxyBroadcasters(chatBroadcast, { resolveCli: name => (persistedSessions.get(name) || {}).cli }),
 });
 app.use(express.json({ limit: '50mb' }));
 
@@ -1444,7 +1444,7 @@ providerRouterRuntime.mountProtocolProxies(app, {
   getPort: () => PORT,
   onUsageObserved: recordUsageObserved,
   onActivity: e => livenessRuntime.recordProxyActivity(e),
-  ...createProxyBroadcasters(chatBroadcast),
+  ...createProxyBroadcasters(chatBroadcast, { resolveCli: name => (persistedSessions.get(name) || {}).cli }),
 });
 
 // Session query, dashboard, workspace and classify-admin routes share one
@@ -2257,7 +2257,7 @@ mountQoderModelRoutes(app);
 // exists. Surfaces chrome_unavailable / needs_login / unavailable states so
 // the chat rate-limit bar can prompt instead of degrading silently.
 mountOpenCodeQuotaRoutes(app); mountQoderQuotaRoutes(app); mountCodexQuotaRoutes(app);
-mountArkQuotaRoutes(app); mountZhipuQuotaRoutes(app); mountKimiQuotaRoutes(app); mountClaudeUsageQuotaRoutes(app); mountAliyunQuotaRoutes(app);
+mountArkQuotaRoutes(app); mountZhipuQuotaRoutes(app); mountKimiQuotaRoutes(app); mountClaudeUsageQuotaRoutes(app); mountAliyunQuotaRoutes(app); require('./src/routes/quota-bars').mountQuotaBarRoutes(app);
 mountCodexOAuthRoutes(app, { getStatus: () => codexOAuthRefresh.status(), directories, createSessionRecord, persistedSessionExists: id => persistedSessions.has(id) });
 const claudeOAuthSurface = createClaudeOAuthSurface({ refresher: claudeOAuthRefresh, directories, createSessionRecord, persistedSessions, destroySessionCascade, sessionPersistence, appendEvent }); claudeOAuthSurface.mountRoutes(app); // see src/routes/claude-oauth.js header
 // Token APIs remain between the two Provider route phases so the established

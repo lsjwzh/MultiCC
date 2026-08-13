@@ -1,0 +1,694 @@
+{
+  "now": 1700000000000,
+  "description": "Server-rendered quota bars + their resolved text/color/title/action at a fixed now. Generated from src/quota/quota-bar-view.js + public/quota-bar-view.js; both tests/test-quota-bar-parity.js (node) and app/test/quota_bar_render_test.dart (flutter) must reproduce `expected` from `bar`.",
+  "cases": [
+    {
+      "name": "claude-live-5h-warning",
+      "bar": {
+        "text": "5h 28% {cd:1700003600000} · 1wk - · ⟳ 刷新",
+        "color": "#d29922",
+        "title": "Claude 订阅窗口用量（5h 来自 Claude Code 上报的 rate_limit_event，周来自 claude.ai/settings/usage 抓取）\n5小时: 已用 72% · {cd:1700003600000} 后重置\n周: 无数据（尚未抓取）\nClaude 订阅窗口用量。点击从 claude.ai/settings/usage 抓取周余量；5h 由 Claude Code 上报的 rate_limit_event 实时更新。",
+        "action": null,
+        "states": {
+          "fetching": {
+            "text": "5h 28% {cd:1700003600000} · 1wk - · ⟳ 抓取中…",
+            "color": "#d29922",
+            "title": "Claude 订阅窗口用量（5h 来自 Claude Code 上报的 rate_limit_event，周来自 claude.ai/settings/usage 抓取）\n5小时: 已用 72% · {cd:1700003600000} 后重置\n周: 无数据（抓取中…）\n正在通过 CDP 打开 claude.ai/settings/usage 解析窗口余量（要 30-40 秒）…",
+            "action": "fetching"
+          },
+          "login_pending": {
+            "text": "5h 28% {cd:1700003600000} · 1wk - · ⟳ 等待登录…",
+            "color": "#d29922",
+            "title": "Claude 订阅窗口用量（5h 来自 Claude Code 上报的 rate_limit_event，周来自 claude.ai/settings/usage 抓取）\n5小时: 已用 72% · {cd:1700003600000} 后重置\n周: 无数据（等待登录…）\n已拉起 Chrome 登录窗口。在其中登录 claude.ai，然后回来再点一次。",
+            "action": "login_pending"
+          },
+          "unreachable": {
+            "text": "Claude · 请求失败 ⟳ 重试",
+            "color": "#8b949e",
+            "title": "无法连接 MultiCC 服务，未能取到Claude用量。点击重试。",
+            "action": null
+          }
+        }
+      },
+      "state": null,
+      "expected": {
+        "text": "5h 28% 1h · 1wk - · ⟳ 刷新",
+        "colorHex": "#d29922",
+        "title": "Claude 订阅窗口用量（5h 来自 Claude Code 上报的 rate_limit_event，周来自 claude.ai/settings/usage 抓取）\n5小时: 已用 72% · 1h 后重置\n周: 无数据（尚未抓取）\nClaude 订阅窗口用量。点击从 claude.ai/settings/usage 抓取周余量；5h 由 Claude Code 上报的 rate_limit_event 实时更新。",
+        "action": null
+      }
+    },
+    {
+      "name": "claude-idle",
+      "bar": {
+        "text": "5h - · 1wk - · ⟳ 刷新",
+        "color": "#8b949e",
+        "title": "Claude 订阅窗口用量（5h 来自 Claude Code 上报的 rate_limit_event，周来自 claude.ai/settings/usage 抓取）\n5小时: 无数据（尚未抓取）\n周: 无数据（尚未抓取）\nClaude 订阅窗口用量。点击从 claude.ai/settings/usage 抓取周余量；5h 由 Claude Code 上报的 rate_limit_event 实时更新。",
+        "action": null,
+        "states": {
+          "fetching": {
+            "text": "5h - · 1wk - · ⟳ 抓取中…",
+            "color": "#8b949e",
+            "title": "Claude 订阅窗口用量（5h 来自 Claude Code 上报的 rate_limit_event，周来自 claude.ai/settings/usage 抓取）\n5小时: 无数据（抓取中…）\n周: 无数据（抓取中…）\n正在通过 CDP 打开 claude.ai/settings/usage 解析窗口余量（要 30-40 秒）…",
+            "action": "fetching"
+          },
+          "login_pending": {
+            "text": "5h - · 1wk - · ⟳ 等待登录…",
+            "color": "#8b949e",
+            "title": "Claude 订阅窗口用量（5h 来自 Claude Code 上报的 rate_limit_event，周来自 claude.ai/settings/usage 抓取）\n5小时: 无数据（等待登录…）\n周: 无数据（等待登录…）\n已拉起 Chrome 登录窗口。在其中登录 claude.ai，然后回来再点一次。",
+            "action": "login_pending"
+          },
+          "unreachable": {
+            "text": "Claude · 请求失败 ⟳ 重试",
+            "color": "#8b949e",
+            "title": "无法连接 MultiCC 服务，未能取到Claude用量。点击重试。",
+            "action": null
+          }
+        }
+      },
+      "state": null,
+      "expected": {
+        "text": "5h - · 1wk - · ⟳ 刷新",
+        "colorHex": "#8b949e",
+        "title": "Claude 订阅窗口用量（5h 来自 Claude Code 上报的 rate_limit_event，周来自 claude.ai/settings/usage 抓取）\n5小时: 无数据（尚未抓取）\n周: 无数据（尚未抓取）\nClaude 订阅窗口用量。点击从 claude.ai/settings/usage 抓取周余量；5h 由 Claude Code 上报的 rate_limit_event 实时更新。",
+        "action": null
+      }
+    },
+    {
+      "name": "claude-needs-login",
+      "bar": {
+        "text": "5h 28% {cd:1700003600000} · 1wk - · ⟳ 登录",
+        "color": "#d29922",
+        "title": "Claude 订阅窗口用量（5h 来自 Claude Code 上报的 rate_limit_event，周来自 claude.ai/settings/usage 抓取）\n5小时: 已用 72% · {cd:1700003600000} 后重置\n周: 无数据（未登录 claude.ai — 点击打开登录窗口）\n你的浏览器里没有 claude.ai 的登录态。点击将由 multicc 拉起一个 Chrome 登录窗口（claude.ai/settings/usage），登录后回来再点一次刷新。",
+        "action": "login",
+        "states": {
+          "fetching": {
+            "text": "5h 28% {cd:1700003600000} · 1wk - · ⟳ 抓取中…",
+            "color": "#d29922",
+            "title": "Claude 订阅窗口用量（5h 来自 Claude Code 上报的 rate_limit_event，周来自 claude.ai/settings/usage 抓取）\n5小时: 已用 72% · {cd:1700003600000} 后重置\n周: 无数据（抓取中…）\n正在通过 CDP 打开 claude.ai/settings/usage 解析窗口余量（要 30-40 秒）…",
+            "action": "fetching"
+          },
+          "login_pending": {
+            "text": "5h 28% {cd:1700003600000} · 1wk - · ⟳ 等待登录…",
+            "color": "#d29922",
+            "title": "Claude 订阅窗口用量（5h 来自 Claude Code 上报的 rate_limit_event，周来自 claude.ai/settings/usage 抓取）\n5小时: 已用 72% · {cd:1700003600000} 后重置\n周: 无数据（等待登录…）\n已拉起 Chrome 登录窗口。在其中登录 claude.ai，然后回来再点一次。",
+            "action": "login_pending"
+          },
+          "unreachable": {
+            "text": "Claude · 请求失败 ⟳ 重试",
+            "color": "#8b949e",
+            "title": "无法连接 MultiCC 服务，未能取到Claude用量。点击重试。",
+            "action": null
+          }
+        }
+      },
+      "state": null,
+      "expected": {
+        "text": "5h 28% 1h · 1wk - · ⟳ 登录",
+        "colorHex": "#d29922",
+        "title": "Claude 订阅窗口用量（5h 来自 Claude Code 上报的 rate_limit_event，周来自 claude.ai/settings/usage 抓取）\n5小时: 已用 72% · 1h 后重置\n周: 无数据（未登录 claude.ai — 点击打开登录窗口）\n你的浏览器里没有 claude.ai 的登录态。点击将由 multicc 拉起一个 Chrome 登录窗口（claude.ai/settings/usage），登录后回来再点一次刷新。",
+        "action": "login"
+      }
+    },
+    {
+      "name": "claude-fetching-state",
+      "bar": {
+        "text": "5h 28% {cd:1700003600000} · 1wk - · ⟳ 刷新",
+        "color": "#d29922",
+        "title": "Claude 订阅窗口用量（5h 来自 Claude Code 上报的 rate_limit_event，周来自 claude.ai/settings/usage 抓取）\n5小时: 已用 72% · {cd:1700003600000} 后重置\n周: 无数据（尚未抓取）\nClaude 订阅窗口用量。点击从 claude.ai/settings/usage 抓取周余量；5h 由 Claude Code 上报的 rate_limit_event 实时更新。",
+        "action": null,
+        "states": {
+          "fetching": {
+            "text": "5h 28% {cd:1700003600000} · 1wk - · ⟳ 抓取中…",
+            "color": "#d29922",
+            "title": "Claude 订阅窗口用量（5h 来自 Claude Code 上报的 rate_limit_event，周来自 claude.ai/settings/usage 抓取）\n5小时: 已用 72% · {cd:1700003600000} 后重置\n周: 无数据（抓取中…）\n正在通过 CDP 打开 claude.ai/settings/usage 解析窗口余量（要 30-40 秒）…",
+            "action": "fetching"
+          },
+          "login_pending": {
+            "text": "5h 28% {cd:1700003600000} · 1wk - · ⟳ 等待登录…",
+            "color": "#d29922",
+            "title": "Claude 订阅窗口用量（5h 来自 Claude Code 上报的 rate_limit_event，周来自 claude.ai/settings/usage 抓取）\n5小时: 已用 72% · {cd:1700003600000} 后重置\n周: 无数据（等待登录…）\n已拉起 Chrome 登录窗口。在其中登录 claude.ai，然后回来再点一次。",
+            "action": "login_pending"
+          },
+          "unreachable": {
+            "text": "Claude · 请求失败 ⟳ 重试",
+            "color": "#8b949e",
+            "title": "无法连接 MultiCC 服务，未能取到Claude用量。点击重试。",
+            "action": null
+          }
+        }
+      },
+      "state": "fetching",
+      "expected": {
+        "text": "5h 28% 1h · 1wk - · ⟳ 抓取中…",
+        "colorHex": "#d29922",
+        "title": "Claude 订阅窗口用量（5h 来自 Claude Code 上报的 rate_limit_event，周来自 claude.ai/settings/usage 抓取）\n5小时: 已用 72% · 1h 后重置\n周: 无数据（抓取中…）\n正在通过 CDP 打开 claude.ai/settings/usage 解析窗口余量（要 30-40 秒）…",
+        "action": "fetching"
+      }
+    },
+    {
+      "name": "claude-login-pending-state",
+      "bar": {
+        "text": "5h 28% {cd:1700003600000} · 1wk - · ⟳ 登录",
+        "color": "#d29922",
+        "title": "Claude 订阅窗口用量（5h 来自 Claude Code 上报的 rate_limit_event，周来自 claude.ai/settings/usage 抓取）\n5小时: 已用 72% · {cd:1700003600000} 后重置\n周: 无数据（未登录 claude.ai — 点击打开登录窗口）\n你的浏览器里没有 claude.ai 的登录态。点击将由 multicc 拉起一个 Chrome 登录窗口（claude.ai/settings/usage），登录后回来再点一次刷新。",
+        "action": "login",
+        "states": {
+          "fetching": {
+            "text": "5h 28% {cd:1700003600000} · 1wk - · ⟳ 抓取中…",
+            "color": "#d29922",
+            "title": "Claude 订阅窗口用量（5h 来自 Claude Code 上报的 rate_limit_event，周来自 claude.ai/settings/usage 抓取）\n5小时: 已用 72% · {cd:1700003600000} 后重置\n周: 无数据（抓取中…）\n正在通过 CDP 打开 claude.ai/settings/usage 解析窗口余量（要 30-40 秒）…",
+            "action": "fetching"
+          },
+          "login_pending": {
+            "text": "5h 28% {cd:1700003600000} · 1wk - · ⟳ 等待登录…",
+            "color": "#d29922",
+            "title": "Claude 订阅窗口用量（5h 来自 Claude Code 上报的 rate_limit_event，周来自 claude.ai/settings/usage 抓取）\n5小时: 已用 72% · {cd:1700003600000} 后重置\n周: 无数据（等待登录…）\n已拉起 Chrome 登录窗口。在其中登录 claude.ai，然后回来再点一次。",
+            "action": "login_pending"
+          },
+          "unreachable": {
+            "text": "Claude · 请求失败 ⟳ 重试",
+            "color": "#8b949e",
+            "title": "无法连接 MultiCC 服务，未能取到Claude用量。点击重试。",
+            "action": null
+          }
+        }
+      },
+      "state": "login_pending",
+      "expected": {
+        "text": "5h 28% 1h · 1wk - · ⟳ 等待登录…",
+        "colorHex": "#d29922",
+        "title": "Claude 订阅窗口用量（5h 来自 Claude Code 上报的 rate_limit_event，周来自 claude.ai/settings/usage 抓取）\n5小时: 已用 72% · 1h 后重置\n周: 无数据（等待登录…）\n已拉起 Chrome 登录窗口。在其中登录 claude.ai，然后回来再点一次。",
+        "action": "login_pending"
+      }
+    },
+    {
+      "name": "glm-5h-routed",
+      "bar": {
+        "text": "路由供应商 GLM · 5h 56% {cd:1700003600000}",
+        "color": "#58a6ff",
+        "title": "GLM Coding Plan 五小时窗口用量（来自 open.bigmodel.cn 额度端点）\n此行是当前路由供应商额度，不是 OpenCode Go 订阅额度。",
+        "action": null
+      },
+      "state": null,
+      "expected": {
+        "text": "路由供应商 GLM · 5h 56% 1h",
+        "colorHex": "#58a6ff",
+        "title": "GLM Coding Plan 五小时窗口用量（来自 open.bigmodel.cn 额度端点）\n此行是当前路由供应商额度，不是 OpenCode Go 订阅额度。",
+        "action": null
+      }
+    },
+    {
+      "name": "codex-weekly",
+      "bar": {
+        "text": "1wk 36% {cd:1700003600000}",
+        "color": "#58a6ff",
+        "title": "Codex 订阅周额度用量（来自 chatgpt.com/backend-api/wham/usage）",
+        "action": null
+      },
+      "state": null,
+      "expected": {
+        "text": "1wk 36% 1h",
+        "colorHex": "#58a6ff",
+        "title": "Codex 订阅周额度用量（来自 chatgpt.com/backend-api/wham/usage）",
+        "action": null
+      }
+    },
+    {
+      "name": "zhipu-ok-two-site",
+      "bar": {
+        "text": "5h 88% · {ago:1699999970000} ⟳",
+        "color": "#58a6ff",
+        "title": "Zhipu 官方站点窗口用量（glm-monitor 额度端点）\nZ.ai (api.z.ai): 5h 12.35% 已用 · lite\nBigModel (open.bigmodel.cn): 5h 91.5% 已用 · pro\n同步于 {ago:1699999970000}\n点击 bar 刷新",
+        "action": null,
+        "states": {
+          "loading": {
+            "text": "Zhipu：加载中…",
+            "color": "#8b949e",
+            "title": "正在从 z.ai / bigmodel.cn 额度端点拉取窗口用量...",
+            "action": null
+          },
+          "unreachable": {
+            "text": "Zhipu · 请求失败 ⟳ 重试",
+            "color": "#8b949e",
+            "title": "无法连接 MultiCC 服务，未能取到Zhipu用量。点击重试。",
+            "action": null
+          }
+        }
+      },
+      "state": null,
+      "expected": {
+        "text": "5h 88% · 30s 前 ⟳",
+        "colorHex": "#58a6ff",
+        "title": "Zhipu 官方站点窗口用量（glm-monitor 额度端点）\nZ.ai (api.z.ai): 5h 12.35% 已用 · lite\nBigModel (open.bigmodel.cn): 5h 91.5% 已用 · pro\n同步于 30s 前\n点击 bar 刷新",
+        "action": null
+      }
+    },
+    {
+      "name": "zhipu-not-configured",
+      "bar": {
+        "text": "Zhipu：未配置 provider · ⟳ 刷新",
+        "color": "#8b949e",
+        "title": "没有 baseUrl 指向 z.ai / bigmodel.cn 的 provider，无法拉取用量",
+        "action": null,
+        "states": {
+          "loading": {
+            "text": "Zhipu：加载中…",
+            "color": "#8b949e",
+            "title": "正在从 z.ai / bigmodel.cn 额度端点拉取窗口用量...",
+            "action": null
+          },
+          "unreachable": {
+            "text": "Zhipu · 请求失败 ⟳ 重试",
+            "color": "#8b949e",
+            "title": "无法连接 MultiCC 服务，未能取到Zhipu用量。点击重试。",
+            "action": null
+          }
+        }
+      },
+      "state": null,
+      "expected": {
+        "text": "Zhipu：未配置 provider · ⟳ 刷新",
+        "colorHex": "#8b949e",
+        "title": "没有 baseUrl 指向 z.ai / bigmodel.cn 的 provider，无法拉取用量",
+        "action": null
+      }
+    },
+    {
+      "name": "kimi-ok",
+      "bar": {
+        "text": "Kimi：余额暂不可用 · ⟳ 重试",
+        "color": "#d29922",
+        "title": "无法从 api.moonshot.cn 拉取余额",
+        "action": null,
+        "states": {
+          "loading": {
+            "text": "Kimi：加载中…",
+            "color": "#8b949e",
+            "title": "正在从 api.moonshot.cn 拉取预付余额...",
+            "action": null
+          },
+          "unreachable": {
+            "text": "Kimi · 请求失败 ⟳ 重试",
+            "color": "#8b949e",
+            "title": "无法连接 MultiCC 服务，未能取到Kimi用量。点击重试。",
+            "action": null
+          }
+        }
+      },
+      "state": null,
+      "expected": {
+        "text": "Kimi：余额暂不可用 · ⟳ 重试",
+        "colorHex": "#d29922",
+        "title": "无法从 api.moonshot.cn 拉取余额",
+        "action": null
+      }
+    },
+    {
+      "name": "qoder-ok",
+      "bar": {
+        "text": "Qoder CN：用量暂不可用 · ⟳ 重试",
+        "color": "#d29922",
+        "title": "无法从 qoder.com.cn 拉取用量",
+        "action": null,
+        "states": {
+          "loading": {
+            "text": "Qoder CN：加载中…",
+            "color": "#8b949e",
+            "title": "正在通过 CDP 抓取 qoder.com.cn 用量...",
+            "action": null
+          },
+          "unreachable": {
+            "text": "Qoder CN · 请求失败 ⟳ 重试",
+            "color": "#8b949e",
+            "title": "无法连接 MultiCC 服务，未能取到Qoder CN用量。点击重试。",
+            "action": null
+          }
+        }
+      },
+      "state": null,
+      "expected": {
+        "text": "Qoder CN：用量暂不可用 · ⟳ 重试",
+        "colorHex": "#d29922",
+        "title": "无法从 qoder.com.cn 拉取用量",
+        "action": null
+      }
+    },
+    {
+      "name": "opencode-three-windows",
+      "bar": {
+        "text": "OpenCode Go · 5h 92% {cd:1700002310000} · 1wk 86% {cd:1700511170000} · 1m 69% {cd:1701684770000} · {ago:1699999970000} ⟳",
+        "color": "#58a6ff",
+        "title": "OpenCode Go 订阅用量（CDP 抓 opencode.ai Zen console）\n5h: 8% · 重置 {cd:1700002310000} 后\n周: 14% · 重置 {cd:1700511170000} 后\n月: 31% · 重置 {cd:1701684770000} 后\n同步于 {ago:1699999970000}\n点击 bar 刷新",
+        "action": null,
+        "states": {
+          "loading": {
+            "text": "OpenCode Go：加载中…",
+            "color": "#8b949e",
+            "title": "正在通过 CDP 抓取 opencode.ai/console ...",
+            "action": null
+          },
+          "unreachable": {
+            "text": "OpenCode Go · 请求失败 ⟳ 重试",
+            "color": "#8b949e",
+            "title": "无法连接 MultiCC 服务，未能取到OpenCode Go用量。点击重试。",
+            "action": null
+          }
+        }
+      },
+      "state": null,
+      "expected": {
+        "text": "OpenCode Go · 5h 92% 39m · 1wk 86% 5d 21h · 1m 69% 19d 11h · 30s 前 ⟳",
+        "colorHex": "#58a6ff",
+        "title": "OpenCode Go 订阅用量（CDP 抓 opencode.ai Zen console）\n5h: 8% · 重置 39m 后\n周: 14% · 重置 5d 21h 后\n月: 31% · 重置 19d 11h 后\n同步于 30s 前\n点击 bar 刷新",
+        "action": null
+      }
+    },
+    {
+      "name": "opencode-partial-weekly",
+      "bar": {
+        "text": "OpenCode Go · 1wk 86% {cd:1700511170000} · {ago:1699999970000} ⟳",
+        "color": "#58a6ff",
+        "title": "OpenCode Go 订阅用量（CDP 抓 opencode.ai Zen console）\n周: 14% · 重置 {cd:1700511170000} 后\n同步于 {ago:1699999970000}\n点击 bar 刷新",
+        "action": null,
+        "states": {
+          "loading": {
+            "text": "OpenCode Go：加载中…",
+            "color": "#8b949e",
+            "title": "正在通过 CDP 抓取 opencode.ai/console ...",
+            "action": null
+          },
+          "unreachable": {
+            "text": "OpenCode Go · 请求失败 ⟳ 重试",
+            "color": "#8b949e",
+            "title": "无法连接 MultiCC 服务，未能取到OpenCode Go用量。点击重试。",
+            "action": null
+          }
+        }
+      },
+      "state": null,
+      "expected": {
+        "text": "OpenCode Go · 1wk 86% 5d 21h · 30s 前 ⟳",
+        "colorHex": "#58a6ff",
+        "title": "OpenCode Go 订阅用量（CDP 抓 opencode.ai Zen console）\n周: 14% · 重置 5d 21h 后\n同步于 30s 前\n点击 bar 刷新",
+        "action": null
+      }
+    },
+    {
+      "name": "ark-ok",
+      "bar": {
+        "text": "火山方舟：无生效套餐 · ⟳ 刷新",
+        "color": "#8b949e",
+        "title": "当前身份名下没有已订阅的 AgentPlan / CodingPlan",
+        "action": null,
+        "states": {
+          "loading": {
+            "text": "火山方舟：加载中…",
+            "color": "#8b949e",
+            "title": "正在通过 arkcli 拉取火山方舟套餐额度...",
+            "action": null
+          },
+          "unreachable": {
+            "text": "火山方舟 · 请求失败 ⟳ 重试",
+            "color": "#8b949e",
+            "title": "无法连接 MultiCC 服务，未能取到火山方舟用量。点击重试。",
+            "action": null
+          },
+          "installing": {
+            "text": "火山方舟：正在安装 arkcli…",
+            "color": "#8b949e",
+            "title": "正在执行 npm install -g @volcengine/ark-cli，首次安装可能需要一两分钟...",
+            "action": null
+          }
+        }
+      },
+      "state": null,
+      "expected": {
+        "text": "火山方舟：无生效套餐 · ⟳ 刷新",
+        "colorHex": "#8b949e",
+        "title": "当前身份名下没有已订阅的 AgentPlan / CodingPlan",
+        "action": null
+      }
+    },
+    {
+      "name": "ark-installing-state",
+      "bar": {
+        "text": "火山方舟 余量 · ⟳ 刷新",
+        "color": "#8b949e",
+        "title": "点击通过 arkcli 拉取火山方舟套餐额度",
+        "action": null,
+        "states": {
+          "loading": {
+            "text": "火山方舟：加载中…",
+            "color": "#8b949e",
+            "title": "正在通过 arkcli 拉取火山方舟套餐额度...",
+            "action": null
+          },
+          "unreachable": {
+            "text": "火山方舟 · 请求失败 ⟳ 重试",
+            "color": "#8b949e",
+            "title": "无法连接 MultiCC 服务，未能取到火山方舟用量。点击重试。",
+            "action": null
+          },
+          "installing": {
+            "text": "火山方舟：正在安装 arkcli…",
+            "color": "#8b949e",
+            "title": "正在执行 npm install -g @volcengine/ark-cli，首次安装可能需要一两分钟...",
+            "action": null
+          }
+        }
+      },
+      "state": "installing",
+      "expected": {
+        "text": "火山方舟：正在安装 arkcli…",
+        "colorHex": "#8b949e",
+        "title": "正在执行 npm install -g @volcengine/ark-cli，首次安装可能需要一两分钟...",
+        "action": null
+      }
+    },
+    {
+      "name": "balance-ok-cny",
+      "bar": {
+        "text": "DeepSeek 余额 · ¥110.00",
+        "color": "#58a6ff",
+        "title": "DeepSeek 预付费账户余额（来自 api.deepseek.com/user/balance，非窗口配额）",
+        "action": null
+      },
+      "state": null,
+      "expected": {
+        "text": "DeepSeek 余额 · ¥110.00",
+        "colorHex": "#58a6ff",
+        "title": "DeepSeek 预付费账户余额（来自 api.deepseek.com/user/balance，非窗口配额）",
+        "action": null
+      }
+    },
+    {
+      "name": "balance-exhausted-usd",
+      "bar": {
+        "text": "DeepSeek 余额 · $0.00 · 余额不足",
+        "color": "#f85149",
+        "title": "DeepSeek 预付费账户余额（来自 api.deepseek.com/user/balance，非窗口配额）",
+        "action": null
+      },
+      "state": null,
+      "expected": {
+        "text": "DeepSeek 余额 · $0.00 · 余额不足",
+        "colorHex": "#f85149",
+        "title": "DeepSeek 预付费账户余额（来自 api.deepseek.com/user/balance，非窗口配额）",
+        "action": null
+      }
+    },
+    {
+      "name": "cd-past-deadline-reads-1m",
+      "bar": {
+        "text": "x {cd:1699999999000}",
+        "color": "#58a6ff",
+        "title": "",
+        "action": null
+      },
+      "state": null,
+      "expected": {
+        "text": "x 1m",
+        "colorHex": "#58a6ff",
+        "title": "",
+        "action": null
+      }
+    },
+    {
+      "name": "cd-30m",
+      "bar": {
+        "text": "{cd:1700001800000}",
+        "color": "#58a6ff",
+        "title": "",
+        "action": null
+      },
+      "state": null,
+      "expected": {
+        "text": "30m",
+        "colorHex": "#58a6ff",
+        "title": "",
+        "action": null
+      }
+    },
+    {
+      "name": "cd-3.5h",
+      "bar": {
+        "text": "{cd:1700012600000}",
+        "color": "#58a6ff",
+        "title": "",
+        "action": null
+      },
+      "state": null,
+      "expected": {
+        "text": "3.5h",
+        "colorHex": "#58a6ff",
+        "title": "",
+        "action": null
+      }
+    },
+    {
+      "name": "cd-3d-5h",
+      "bar": {
+        "text": "{cd:1700277200000}",
+        "color": "#58a6ff",
+        "title": "",
+        "action": null
+      },
+      "state": null,
+      "expected": {
+        "text": "3d 5h",
+        "colorHex": "#58a6ff",
+        "title": "",
+        "action": null
+      }
+    },
+    {
+      "name": "cd-exactly-1d",
+      "bar": {
+        "text": "{cd:1700086400000}",
+        "color": "#58a6ff",
+        "title": "",
+        "action": null
+      },
+      "state": null,
+      "expected": {
+        "text": "1d",
+        "colorHex": "#58a6ff",
+        "title": "",
+        "action": null
+      }
+    },
+    {
+      "name": "ago-just-now",
+      "bar": {
+        "text": "{ago:1700000000000}",
+        "color": "#8b949e",
+        "title": "",
+        "action": null
+      },
+      "state": null,
+      "expected": {
+        "text": "刚刚",
+        "colorHex": "#8b949e",
+        "title": "",
+        "action": null
+      }
+    },
+    {
+      "name": "ago-40s",
+      "bar": {
+        "text": "{ago:1699999960000}",
+        "color": "#8b949e",
+        "title": "",
+        "action": null
+      },
+      "state": null,
+      "expected": {
+        "text": "40s 前",
+        "colorHex": "#8b949e",
+        "title": "",
+        "action": null
+      }
+    },
+    {
+      "name": "ago-5min",
+      "bar": {
+        "text": "{ago:1699999700000}",
+        "color": "#8b949e",
+        "title": "",
+        "action": null
+      },
+      "state": null,
+      "expected": {
+        "text": "5 分钟前",
+        "colorHex": "#8b949e",
+        "title": "",
+        "action": null
+      }
+    },
+    {
+      "name": "ago-3h",
+      "bar": {
+        "text": "{ago:1699989200000}",
+        "color": "#8b949e",
+        "title": "",
+        "action": null
+      },
+      "state": null,
+      "expected": {
+        "text": "3 小时前",
+        "colorHex": "#8b949e",
+        "title": "",
+        "action": null
+      }
+    },
+    {
+      "name": "ago-2d",
+      "bar": {
+        "text": "{ago:1699827200000}",
+        "color": "#8b949e",
+        "title": "",
+        "action": null
+      },
+      "state": null,
+      "expected": {
+        "text": "2 天前",
+        "colorHex": "#8b949e",
+        "title": "",
+        "action": null
+      }
+    },
+    {
+      "name": "mixed-cd-and-ago",
+      "bar": {
+        "text": "{cd:1700003600000} · {ago:1699999943000}",
+        "color": "#d29922",
+        "title": "刷新于 {ago:1699999943000}",
+        "action": null
+      },
+      "state": null,
+      "expected": {
+        "text": "1h · 57s 前",
+        "colorHex": "#d29922",
+        "title": "刷新于 57s 前",
+        "action": null
+      }
+    },
+    {
+      "name": "no-tokens-pass-through",
+      "bar": {
+        "text": "plain text bar",
+        "color": "#58a6ff",
+        "title": "tip",
+        "action": null
+      },
+      "state": null,
+      "expected": {
+        "text": "plain text bar",
+        "colorHex": "#58a6ff",
+        "title": "tip",
+        "action": null
+      }
+    }
+  ]
+}

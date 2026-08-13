@@ -33,6 +33,42 @@ class QuotaService {
   Future<Map<String, dynamic>?> fetchKimiQuota(String? host) =>
       _get('/api/kimi/quota${_hostQuery(host)}');
 
+  /// OpenCode Go subscription usage (5h / weekly / monthly) scraped from the
+  /// opencode.ai Zen console via the backend's CDP path (`/api/opencode/quota`),
+  /// the same route the web opencode bar reads. The body carries a server-
+  /// rendered `bar` (as every quota route now does).
+  Future<Map<String, dynamic>?> fetchOpenCodeQuota() =>
+      _get('/api/opencode/quota');
+
+  /// Codex (ChatGPT) weekly subscription quota, read from the backend route that
+  /// mirrors the web codex bar. The body carries a server-rendered `bar`.
+  Future<Map<String, dynamic>?> fetchCodexQuota() => _get('/api/codex/quota');
+
+  /// Open a visible login window for opencode.ai on the server's managed Chrome
+  /// profile. Used when the Go subscription scrape reports no session
+  /// (needs_login / chrome_unavailable). Returns false on any transport/HTTP
+  /// failure.
+  Future<bool> openOpenCodeLogin() async {
+    try {
+      final res = await http
+          .post(
+            Uri.parse(_url('/api/opencode/quota/login')),
+            headers: _headers,
+          )
+          .timeout(const Duration(seconds: 20));
+      return res.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// The idle (no-data-yet) bar for every vendor, rendered once on the server.
+  /// The app caches these on connect so an unfetched bar shows the server's idle
+  /// placeholder verbatim — the app carries no vendor strings of its own.
+  /// Returns `{status:'ok', bars:{ark:{...}, zhipu:{...}, ...}}` or null.
+  Future<Map<String, dynamic>?> fetchIdleBars() =>
+      _get('/api/quota/bars/idle');
+
   /// Qoder CN credit usage, scraped from qoder.com.cn via the backend's CDP /
   /// cached-cookie path (`/api/qoder/quota`). `status` may be needs_login /
   /// chrome_unavailable / unavailable / ok; the body carries `quota`

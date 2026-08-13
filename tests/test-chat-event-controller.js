@@ -629,21 +629,26 @@ test('queue immediate insert handler executes the selected entry now', async () 
   assert.deepEqual(notices, [['已停止当前回复并直接执行所选消息', 'completed']]);
 });
 
-test('Claude five-hour limit consumes the structured SDK event without retaining billing fields', () => {
+test('rate_limit_event forwards the server bar to the quota module and stores {provider, bar}', () => {
   const fixture = controllerFixture();
   const generation = fixture.controller.beginGeneration();
+  // The bar is rendered server-side; the controller only forwards it together
+  // with the raw rate_limit_info (used for gating/timing). Billing-sensitive
+  // fields live only in rate_limit_info and are never retained on state — the
+  // server's renderer is what strips them before they reach a `bar`.
+  const bar = { kind: 'claude', text: '5h 28% 1h · 1wk - · ⟳ 刷新', color: '#d29922', title: '', action: null };
   fixture.controller.handleEvent({
     type: 'rate_limit_event',
     rate_limit_info: {
-      status: 'allowed_warning',
-      rateLimitType: 'five_hour',
-      utilization: 0.72,
-      resetsAt: Math.floor(Date.now() / 1000) + 60,
+      status: 'allowed_warning', rateLimitType: 'five_hour',
+      utilization: 0.72, resetsAt: Math.floor(Date.now() / 1000) + 60,
       overageDisabledReason: 'out_of_credits',
     },
+    bar,
   }, generation);
-  assert.equal(fixture.state.claudeFiveHourRateLimit.usedPercentage, 72);
-  assert.equal('overageDisabledReason' in fixture.state.claudeFiveHourRateLimit, false);
+  assert.deepEqual(fixture.state.claudeFiveHourRateLimit, { provider: 'claude', bar });
+  // No billing fields leak onto the stored state object.
+  assert.equal(JSON.stringify(fixture.state.claudeFiveHourRateLimit).includes('overageDisabledReason'), false);
 });
 
 test('Claude stream reuses one bubble and binds tool input/result without HTML interpretation', () => {

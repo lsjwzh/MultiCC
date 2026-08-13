@@ -365,6 +365,7 @@
           const limit = global.MultiCCChatRateLimit?.consumeRateLimitEvent(
             message.rate_limit_info,
             host.getSessionName?.(),
+            message.bar,
           );
           if (limit) {
             state.claudeFiveHourRateLimit = limit;
@@ -375,6 +376,7 @@
           global.MultiCCChatRateLimit?.consumeBalanceEvent(
             message.balance_info,
             host.getSessionName?.(),
+            message.bar,
           );
           break;
         }
