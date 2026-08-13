@@ -395,7 +395,7 @@ cd "$INSTALL_DIR"
 
 # ── Install dependencies ──────────────────────────────────────────────────
 step "Installing npm dependencies"
-info "Running npm install (full package.json; no devDependencies are required today, but this avoids omitting future runtime install hooks)"
+info "Running npm install (full package.json, including @homebridge/ciao for LAN discovery)"
 if npm install 2>&1; then
   ok "Dependencies installed"
 else
@@ -416,7 +416,7 @@ else
   exit 1
 fi
 
-step "Verifying runtime dependencies"
+step "Verifying runtime dependencies (including LAN discovery)"
 if check_runtime_dependencies; then
   ok "Runtime dependencies verified"
 else

@@ -9,6 +9,7 @@ const pkg = require('../package.json');
 const lock = require('../package-lock.json');
 const installer = fs.readFileSync(path.join(ROOT, 'install.sh'), 'utf8');
 const manager = fs.readFileSync(path.join(ROOT, 'multicc'), 'utf8');
+const runtimeCheck = fs.readFileSync(path.join(ROOT, 'scripts/check-runtime-deps.js'), 'utf8');
 const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
 
 const stableCommand = `curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v${pkg.version}/install.sh | bash -s -- --branch v${pkg.version}`;
@@ -25,6 +26,11 @@ assert.ok(stableAfter > stableBranch, 'stable updates must capture the new revis
 assert.ok(dependencyDiff > stableAfter, 'stable updates must install changed manifests before restart');
 assert.match(manager, /Runtime dependencies are incomplete or outdated — running npm install/);
 assert.match(manager, /scripts\/check-runtime-deps\.js/);
+assert.match(installer, /npm install \(full package\.json, including @homebridge\/ciao for LAN discovery\)/);
+assert.match(runtimeCheck, /requireFn\('@homebridge\/ciao'\)/);
+assert.match(manager, /Verifying runtime dependencies before service install/);
+assert.ok(manager.indexOf('Runtime dependencies are incomplete — running npm install') > manager.indexOf('do_install()'),
+  './multicc install must repair missing runtime packages before registering the service');
 assert.match(manager, /wait_for_ready\(\)/);
 assert.match(manager, /Waiting for startup migrations and readiness/);
 assert.ok(manager.indexOf('if ! wait_for_ready') > manager.indexOf('Restarting to apply update'),
@@ -35,5 +41,10 @@ assert.match(cprSpec, /^https:\/\/github\.com\/lsjwzh\/cli-provider-router\/arch
 assert.equal(lock.packages[''].dependencies['cli-provider-router'], cprSpec);
 assert.equal(lock.packages['node_modules/cli-provider-router'].resolved, cprSpec);
 assert.match(fs.readFileSync(path.join(ROOT, '.gitignore'), 'utf8'), /^cli-provider-router\/$/m);
+
+const ciaoSpec = pkg.dependencies['@homebridge/ciao'];
+assert.equal(ciaoSpec, '^1.3.10');
+assert.equal(lock.packages[''].dependencies['@homebridge/ciao'], ciaoSpec);
+assert.equal(lock.packages['node_modules/@homebridge/ciao'].version, '1.3.10');
 
 console.log('Release upgrade guard tests passed');
