@@ -185,22 +185,52 @@ void main() {
     expect(find.byKey(const Key('cancel-queued-queued-1')), findsOneWidget);
   });
 
-  testWidgets('GLM/Codex window bars render in the web unified format', (
+  testWidgets('GLM/Codex window bar paints the server-resolved view verbatim', (
     tester,
   ) async {
-    final glm = UsageWindowLimit(
-      rateLimitType: 'five_hour',
-      status: 'allowed',
-      usedPercentage: 50,
-      resetsAtMs: DateTime.now().millisecondsSinceEpoch + 3600000,
-      provider: 'glm',
-    );
+    // The provider resolves the server-rendered bar to a VendorQuotaView; the
+    // panel paints it as-is (no local formatting). The bar's words/countdown
+    // are pinned deterministically by the golden parity tests.
     await tester.pumpWidget(
-      _host(ChatRuntimeNoticePanel(limit: glm)),
+      _host(
+        ChatRuntimeNoticePanel(
+          limit: const VendorQuotaView(
+            '5h 50% 1h',
+            VendorQuotaColor.blue,
+            'GLM Coding Plan 五小时窗口用量',
+          ),
+        ),
+      ),
     );
-    // unified `<window> <remaining%> <countdown>`, not the old verbose view.
-    // (The countdown itself is pinned deterministically in vendor_quota_test.)
     expect(find.textContaining('5h 50%'), findsOneWidget);
+  });
+
+  testWidgets('OpenCode / Codex bars render and tap fires their handlers', (
+    tester,
+  ) async {
+    var openTaps = 0;
+    var codexTaps = 0;
+    await tester.pumpWidget(
+      _host(
+        ChatRuntimeNoticePanel(
+          opencodeUsage: const VendorQuotaView(
+            'OpenCode Go · 5h 92% 39m',
+            VendorQuotaColor.blue,
+          ),
+          codexUsage: const VendorQuotaView('1wk 75%', VendorQuotaColor.blue),
+          onOpenCodeQuotaTap: () => openTaps++,
+          onCodexQuotaTap: () => codexTaps++,
+        ),
+      ),
+    );
+    expect(find.textContaining('OpenCode Go'), findsOneWidget);
+    expect(find.text('1wk 75%'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('opencode-quota-bar')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('codex-quota-bar')));
+    await tester.pump();
+    expect(openTaps, 1);
+    expect(codexTaps, 1);
   });
 
   testWidgets('Claude usage bar renders and tapping it fires the refresh tap', (

@@ -33,6 +33,7 @@ const {
   profileDirsFromEnv,
 } = require('../chrome-cdp');
 const { getManagedQuotaBrowser } = require('../quota-managed-browser');
+const { renderQuotaBar } = require('../quota/quota-bar-view');
 
 const SITE = 'qoder.com.cn';
 const QUOTA_URL = `https://${SITE}/api/v2/me/usages/big_model_credits`;
@@ -233,9 +234,12 @@ function mountQoderQuotaRoutes(app) {
       const httpStatus = status === 'ok' ? 200
         : status === 'needs_login' ? 401
           : status === 'chrome_unavailable' ? 503 : 500;
-      res.status(httpStatus).json(result);
+      // The bar is rendered here, once, so the web and the app display the same
+      // string rather than each formatting this JSON their own way.
+      res.status(httpStatus).json({ ...result, bar: renderQuotaBar('qoder', result) });
     } catch (_) {
-      res.status(500).json({ status: 'unavailable', error: 'qoder quota fetch failed' });
+      const result = { status: 'unavailable', error: 'qoder quota fetch failed' };
+      res.status(500).json({ ...result, bar: renderQuotaBar('qoder', result) });
     }
   });
 

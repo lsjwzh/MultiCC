@@ -397,14 +397,25 @@ class ChatService {
       case 'rate_limit_event':
         final info = msg['rate_limit_info'];
         if (info is Map) {
-          _emit('rate_limit_event', Map<String, dynamic>.from(info));
+          // The server renders the bar once and ships it alongside the raw
+          // rate_limit_info as a sibling `bar` field (web controller forwards
+          // it as the 3rd arg to consumeRateLimitEvent). Carry it through so
+          // the provider can display the server-rendered text verbatim instead
+          // of re-formatting the info locally.
+          final payload = Map<String, dynamic>.from(info);
+          final bar = msg['bar'];
+          if (bar is Map) payload['bar'] = Map<String, dynamic>.from(bar);
+          _emit('rate_limit_event', payload);
         }
         break;
 
       case 'usage_balance_event':
         final info = msg['balance_info'];
         if (info is Map) {
-          _emit('usage_balance_event', Map<String, dynamic>.from(info));
+          final payload = Map<String, dynamic>.from(info);
+          final bar = msg['bar'];
+          if (bar is Map) payload['bar'] = Map<String, dynamic>.from(bar);
+          _emit('usage_balance_event', payload);
         }
         break;
 

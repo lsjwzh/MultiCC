@@ -209,31 +209,104 @@ class ChatProvider extends ChangeNotifier {
     return value;
   }
 
-  /// Claude subscription limit bar — merged 5h (passive rate_limit_event) +
-  /// weekly/monthly (claude.ai/settings/usage scrape), or the usage-only /
-  /// idle / actionable states. Always non-null under the claude CLI so the bar
-  /// stays a visible tap target (mirrors the web `renderCurrent` fixed-display
-  /// fallback); null under any other CLI. GLM/Codex windows are NOT routed
-  /// here — they keep the verbose limit view via [nonClaudeWindowLimit].
+  // ── Server-rendered quota bars ────────────────────────────────────────────
+  // Every bar below is the server's render, resolved here at paint time. The
+  // provider holds the raw route responses (for tap-action `status` checks) and
+  // the bars carried by WS events; it formats nothing.
+
+  /// The server-rendered `bar` field on a route response (or null).
+  Map<String, dynamic>? _barOf(Map<String, dynamic> data) {
+    final b = data['bar'];
+    return b is Map ? Map<String, dynamic>.from(b) : null;
+  }
+
+  /// The idle bar for [key] from the cached /api/quota/bars/idle payload.
+  Map<String, dynamic>? _idleBar(String key) {
+    final bars = _idleBars?['bars'];
+    if (bars is Map) {
+      final b = bars[key];
+      if (b is Map) return Map<String, dynamic>.from(b);
+    }
+    return null;
+  }
+
+  /// Resolve a vendor's route response to a view, falling back to the server's
+  /// idle bar (or its `loading` state) when there is no data yet. The idle bar
+  /// is fetched on connect so an unfetched bar shows the server's placeholder
+  /// verbatim — the app carries no idle text of its own.
+  VendorQuotaView _vendorOrIdle(
+    Map<String, dynamic>? data,
+    String idleKey, {
+    bool loading = false,
+  }) {
+    if (data != null) {
+      final v = vendorViewFromBar(_barOf(data));
+      if (v != null) return v;
+    }
+    final idle = _idleBar(idleKey);
+    final v = vendorViewFromBar(idle, state: loading ? 'loading' : null);
+    return v ?? const VendorQuotaView('…', VendorQuotaColor.gray);
+  }
+
+  /// Claude subscription bar — the scrape's server-rendered bar (already a
+  /// 5h + weekly + monthly merge), with the passive 5h event bar as a live
+  /// stand-in before the first scrape lands. Always non-null under the claude
+  /// CLI so the bar stays a visible tap target (mirrors the web fixed-display
+  /// fallback); null under any other CLI.
   VendorQuotaView? get claudeLimitView {
     if (_cli != SessionCli.claude) return null;
     final usage = _claudeUsage;
-    final limit = usageWindowLimit;
-    if (_claudeUsageFetching && limit == null && usage == null) {
-      return const VendorQuotaView(
-        'Claude：抓取用量中…',
-        VendorQuotaColor.gray,
-        '正在通过 CDP 打开 claude.ai/settings/usage 解析窗口余量…',
-      );
+    if (usage != null) {
+      final v = vendorViewFromBar(_barOf(usage));
+      if (v != null) return v;
     }
-    if (limit != null) return formatClaudeLimit(limit, usage);
-    return formatClaudeUsageOnly(usage);
+    if (_rateLimitBar != null) {
+      final v = vendorViewFromBar(_rateLimitBar);
+      if (v != null) return v;
+    }
+    final idle = _idleBar('claude');
+    final v = vendorViewFromBar(idle, state: _claudeUsageFetching ? 'fetching' : null);
+    return v ?? const VendorQuotaView('…', VendorQuotaColor.gray);
   }
 
-  /// GLM/Codex window bars. Claude's bar is rendered via [claudeLimitView], so
-  /// its raw event is withheld here to avoid rendering the same limit twice.
-  UsageWindowLimit? get nonClaudeWindowLimit =>
-      _usageWindowLimit?.provider == 'claude' ? null : _usageWindowLimit;
+  /// GLM/Codex window bar from the passive rate_limit_event — the server's
+  /// provider-tagged render (`路由供应商 GLM · 5h…` / `1wk…`). Claude's event
+  /// is routed to [claudeLimitView], so it is withheld here. Gated on the same
+  /// active + cli-matches rules that used to drive nonClaudeWindowLimit.
+  VendorQuotaView? get limitView {
+    final limit = _usageWindowLimit;
+    if (limit == null || limit.provider == 'claude') return null;
+    if (!limit.isActiveAt(DateTime.now()) || !limit.matchesCli(_cli.name)) {
+      return null;
+    }
+    return vendorViewFromBar(_rateLimitBar);
+  }
+
+  /// DeepSeek balance bar from the passive usage_balance_event.
+  VendorQuotaView? get balanceView => vendorViewFromBar(_balanceBar);
+
+  /// OpenCode Go subscription bar (5h / weekly / monthly), under the opencode
+  /// CLI. Source: GET /api/opencode/quota.
+  VendorQuotaView? get opencodeQuotaView {
+    if (_cli != SessionCli.opencode) return null;
+    return _vendorOrIdle(_opencodeQuota, 'opencode', loading: _opencodeLoading);
+  }
+
+  /// Codex weekly subscription bar, under the codex CLI. Source: GET
+  /// /api/codex/quota, with the passive rate_limit_event bar as a live
+  /// stand-in before the first fetch lands.
+  VendorQuotaView? get codexQuotaView {
+    if (_cli != SessionCli.codex) return null;
+    final v = vendorViewFromBar(_codexQuota != null ? _barOf(_codexQuota!) : null);
+    if (v != null) return v;
+    if (_rateLimitBar != null && _usageWindowLimit?.provider == 'codex') {
+      final ev = vendorViewFromBar(_rateLimitBar);
+      if (ev != null) return ev;
+    }
+    final idle = _idleBar('codex');
+    final cv = vendorViewFromBar(idle, state: _codexLoading ? 'loading' : null);
+    return cv ?? const VendorQuotaView('…', VendorQuotaColor.gray);
+  }
 
   UsageBalance? _usageBalance;
   UsageBalance? get usageBalance => _usageBalance;
@@ -255,7 +328,6 @@ class ChatProvider extends ChangeNotifier {
   Map<String, dynamic>? _arkQuota;
   Map<String, dynamic>? _zhipuQuota;
   Map<String, dynamic>? _kimiQuota;
-  Map<String, dynamic>? _kimiLastOk; // cached fallback for error/no-data states
   Map<String, dynamic>? _qoderQuota;
   bool _arkLoading = false;
   bool _zhipuLoading = false;
@@ -279,6 +351,34 @@ class ChatProvider extends ChangeNotifier {
   bool _claudeUsageFetching = false;
   int _claudeUsageErrorAt = 0;
   static const int _claudeUsageFreshMs = 24 * 3600 * 1000;
+
+  // OpenCode Go subscription usage (GET /api/opencode/quota — CDP scrape of the
+  // opencode.ai Zen console). Fetched when the opencode CLI is (re)connected.
+  Map<String, dynamic>? _opencodeQuota;
+  bool _opencodeLoading = false;
+  bool _opencodeInFlight = false;
+  int _opencodeErrorAt = 0;
+
+  // Codex (ChatGPT) weekly subscription quota (GET /api/codex/quota). Fetched
+  // when the codex CLI is (re)connected; the passive rate_limit_event also
+  // carries a codex bar, so the REST fetch is mainly for an initial value and
+  // a manual refresh.
+  Map<String, dynamic>? _codexQuota;
+  bool _codexLoading = false;
+  bool _codexInFlight = false;
+  int _codexErrorAt = 0;
+
+  // Server-rendered bars carried by the passive WS events. The structured
+  // [UsageWindowLimit] / [_usageWindowLimit] still drives expiry + cli gating
+  // + cache; these bars are what the panel actually paints.
+  Map<String, dynamic>? _rateLimitBar;
+  Map<String, dynamic>? _balanceBar;
+
+  // Idle (no-data-yet) bars for every vendor, rendered once on the server
+  // (GET /api/quota/bars/idle → {status:'ok', bars:{ark,zhipu,kimi,...}}).
+  // Cached on connect so an unfetched bar shows the server's idle placeholder
+  // verbatim — the app holds no hardcoded idle text of its own.
+  Map<String, dynamic>? _idleBars;
 
   // ── What the usage bar under the transcript shows ─────────────────────────
   // The bar itself shows context and nothing else; everything below it reaches
@@ -397,6 +497,17 @@ class ChatProvider extends ChangeNotifier {
     if (balance is Map) {
       _usageBalance = UsageBalance.fromJson(Map<String, dynamic>.from(balance));
     }
+    // Server-rendered bars carried by the passive WS events. Restored verbatim
+    // so a cold start paints the same bar the user last saw (the tokens are
+    // re-expanded at paint time, so an old bar's countdown refreshes itself).
+    final limitBar = cached['limitBar'];
+    if (limitBar is Map) {
+      _rateLimitBar = Map<String, dynamic>.from(limitBar);
+    }
+    final balanceBar = cached['balanceBar'];
+    if (balanceBar is Map) {
+      _balanceBar = Map<String, dynamic>.from(balanceBar);
+    }
     // Claude usage-page scrape (weekly / monthly windows). Restore a fresh
     // successful scrape like the web localStorage cache — otherwise a cold start
     // whose CDP re-fetch fails shows only the passive 5h window until the user
@@ -418,6 +529,8 @@ class ChatProvider extends ChangeNotifier {
       settings.saveChatRuntimeCache(sessionName, {
         if (_usageWindowLimit != null) 'limit': _usageWindowLimit!.toJson(),
         if (_usageBalance != null) 'balance': _usageBalance!.toJson(),
+        if (_rateLimitBar != null) 'limitBar': _rateLimitBar,
+        if (_balanceBar != null) 'balanceBar': _balanceBar,
         // Only a successful scrape is cached (matches the web save-on-ok); the
         // page text is dropped so the stored payload stays small.
         if (_claudeUsage != null && _claudeUsage?['status'] == 'ok')
@@ -505,7 +618,10 @@ class ChatProvider extends ChangeNotifier {
         }
         refreshClaudeUsage();
         refreshQoderQuota();
+        refreshOpenCodeQuota();
+        refreshCodexQuota();
         _loadProviderBaseUrl();
+        _loadIdleBars();
 
         final model = msg['model']?.toString();
         _statusText = model != null
@@ -804,11 +920,12 @@ class ChatProvider extends ChangeNotifier {
 
       case 'rate_limit_event':
         {
-          final parsed = UsageWindowLimit.fromEvent(
-            evt.payload as Map<String, dynamic>,
-          );
+          final payload = evt.payload as Map<String, dynamic>;
+          final parsed = UsageWindowLimit.fromEvent(payload);
           if (parsed == null) break;
           _usageWindowLimit = parsed;
+          final bar = payload['bar'];
+          if (bar is Map) _rateLimitBar = Map<String, dynamic>.from(bar);
           _armUsageExpiry();
           _persistRuntimeCache();
           notifyListeners();
@@ -817,11 +934,12 @@ class ChatProvider extends ChangeNotifier {
 
       case 'usage_balance_event':
         {
-          final parsed = UsageBalance.fromJson(
-            evt.payload as Map<String, dynamic>,
-          );
+          final payload = evt.payload as Map<String, dynamic>;
+          final parsed = UsageBalance.fromJson(payload);
           if (parsed == null) break;
           _usageBalance = parsed;
+          final bar = payload['bar'];
+          if (bar is Map) _balanceBar = Map<String, dynamic>.from(bar);
           _persistRuntimeCache();
           notifyListeners();
           break;
@@ -844,6 +962,8 @@ class ChatProvider extends ChangeNotifier {
     _cli = config.cli;
     refreshClaudeUsage();
     refreshQoderQuota();
+    refreshOpenCodeQuota();
+    refreshCodexQuota();
     final model = config.effectiveModel ?? config.model;
     _statusText = model != null && model.isNotEmpty
         ? 'Connected · $model'
@@ -885,22 +1005,20 @@ class ChatProvider extends ChangeNotifier {
     if (isKimiBaseUrl(baseUrl)) _fetchKimiQuota();
   }
 
-  /// Formatted vendor quota bars for the current provider, in display order.
-  /// Empty when the active baseUrl points at no known vendor.
+  /// Vendor quota bars for the current provider, in display order. Each
+  /// resolves the server-rendered bar from its route response, falling back to
+  /// the server's idle bar while unfetched. Empty when the active baseUrl
+  /// points at no known vendor.
   List<VendorQuotaView> get vendorQuotaViews {
     final views = <VendorQuotaView>[];
     if (isArkBaseUrl(_providerBaseUrl)) {
-      views.add(
-        formatArkQuota(_arkQuota, _providerBaseUrl, loading: _arkLoading),
-      );
+      views.add(_vendorOrIdle(_arkQuota, 'ark', loading: _arkLoading));
     }
     if (isZhipuBaseUrl(_providerBaseUrl)) {
-      views.add(formatZhipuQuota(_zhipuQuota, loading: _zhipuLoading));
+      views.add(_vendorOrIdle(_zhipuQuota, 'zhipu', loading: _zhipuLoading));
     }
     if (isKimiBaseUrl(_providerBaseUrl)) {
-      views.add(
-        formatKimiQuota(_kimiQuota, _kimiLastOk, loading: _kimiLoading),
-      );
+      views.add(_vendorOrIdle(_kimiQuota, 'kimi', loading: _kimiLoading));
     }
     return views;
   }
@@ -912,7 +1030,7 @@ class ChatProvider extends ChangeNotifier {
   /// way the Claude bar is.
   VendorQuotaView? get qoderQuotaView {
     if (_cli != SessionCli.qoder) return null;
-    return formatQoderQuota(_qoderQuota, loading: _qoderLoading);
+    return _vendorOrIdle(_qoderQuota, 'qoder', loading: _qoderLoading);
   }
 
   int _nowMs() => DateTime.now().millisecondsSinceEpoch;
@@ -983,9 +1101,73 @@ class ChatProvider extends ChangeNotifier {
     } else {
       _kimiErrorAt = 0;
       _kimiQuota = data;
-      if (data['status'] == 'ok') _kimiLastOk = data;
     }
     notifyListeners();
+  }
+
+  /// Fetch the OpenCode Go subscription usage (5h / weekly / monthly) from
+  /// opencode.ai's Zen console via the backend's CDP route. No-op off the
+  /// opencode CLI; skips while one is in flight or after a recent error
+  /// (vendor backoff) unless [force]. Callers: cli-switch hooks + the bar's
+  /// tap handler.
+  Future<void> refreshOpenCodeQuota({bool force = false}) async {
+    if (_cli != SessionCli.opencode) return;
+    if (_opencodeInFlight) return;
+    if (!force &&
+        _opencodeErrorAt != 0 &&
+        _nowMs() - _opencodeErrorAt < _vendorQuotaBackoffMs) {
+      return;
+    }
+    _opencodeInFlight = true;
+    _opencodeLoading = true;
+    notifyListeners();
+    final data = await _quota.fetchOpenCodeQuota();
+    _opencodeInFlight = false;
+    _opencodeLoading = false;
+    if (data == null) {
+      _opencodeErrorAt = _nowMs();
+    } else {
+      _opencodeErrorAt = 0;
+      _opencodeQuota = data;
+    }
+    notifyListeners();
+  }
+
+  /// Fetch the Codex (ChatGPT) weekly subscription quota. No-op off the codex
+  /// CLI; skips while one is in flight or after a recent error (vendor backoff)
+  /// unless [force]. Callers: cli-switch hooks + the bar's tap handler.
+  Future<void> refreshCodexQuota({bool force = false}) async {
+    if (_cli != SessionCli.codex) return;
+    if (_codexInFlight) return;
+    if (!force &&
+        _codexErrorAt != 0 &&
+        _nowMs() - _codexErrorAt < _vendorQuotaBackoffMs) {
+      return;
+    }
+    _codexInFlight = true;
+    _codexLoading = true;
+    notifyListeners();
+    final data = await _quota.fetchCodexQuota();
+    _codexInFlight = false;
+    _codexLoading = false;
+    if (data == null) {
+      _codexErrorAt = _nowMs();
+    } else {
+      _codexErrorAt = 0;
+      _codexQuota = data;
+    }
+    notifyListeners();
+  }
+
+  /// Cache the server's idle bars once on connect so every unfetched quota bar
+  /// shows the server's placeholder verbatim (the app holds no idle text).
+  Future<void> _loadIdleBars() async {
+    if (_idleBars != null) return;
+    final data = await _quota.fetchIdleBars();
+    if (data != null) {
+      _idleBars = data;
+      notifyListeners();
+    }
   }
 
   /// Fetch the Claude subscription usage scrape. No-op off the claude CLI;
@@ -1070,6 +1252,24 @@ class ChatProvider extends ChangeNotifier {
       return;
     }
     await refreshQoderQuota(force: true);
+  }
+
+  /// Tap on the OpenCode Go bar: open the server-side visible login window
+  /// when the scrape reports no session (needs_login / chrome_unavailable),
+  /// otherwise force a fresh fetch.
+  Future<void> handleOpenCodeQuotaTap() async {
+    final status = _opencodeQuota?['status']?.toString();
+    if (status == 'needs_login' || status == 'chrome_unavailable') {
+      await _quota.openOpenCodeLogin();
+      return;
+    }
+    await refreshOpenCodeQuota(force: true);
+  }
+
+  /// Tap on the Codex bar: force a fresh fetch (the codex route has no login
+  /// window — it reads chatgpt.com/backend-api with the browser's session).
+  Future<void> handleCodexQuotaTap() async {
+    await refreshCodexQuota(force: true);
   }
 
   /// Remove a message from the local transcript by its server-side history id.

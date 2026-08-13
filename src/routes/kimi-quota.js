@@ -22,6 +22,20 @@
 const providers = require('../providers');
 const { keyHash } = require('../usage-limit-poller');
 const { getManagedQuotaBrowser } = require('../quota-managed-browser');
+const { renderQuotaBar } = require('../quota/quota-bar-view');
+
+// The last response that actually carried a balance. A Kimi balance fetch fails
+// for reasons that say nothing about the money (a Kimi-for-Coding key 401s the
+// balance API by design), and a bar that blanks on those reads as "you have no
+// balance". Holding the last real figure here — rather than in each client's
+// own storage — means the web and the app fall back to the same number.
+let lastKimiWithBalance = null;
+function rememberKimiBalance(result) {
+  const hasBalance = result && result.status === 'ok' && Array.isArray(result.sites)
+    && result.sites.some((s) => s && s.ok && Number.isFinite(s.available));
+  if (hasBalance) lastKimiWithBalance = result;
+  return lastKimiWithBalance;
+}
 
 // Kimi subscription ("Kimi For Coding") keys 401 on the prepaid balance API —
 // that account type's usage lives only on the logged-in membership page, so
@@ -327,9 +341,13 @@ function mountKimiQuotaRoutes(app, options = {}) {
         : status === 'not_configured' ? 404
           : status === 'needs_login' ? 401
             : status === 'chrome_unavailable' ? 503 : 502;
-      res.status(httpStatus).json(result);
+      // The bar is rendered here, once, so the web and the app display the same
+      // string rather than each formatting this JSON their own way.
+      const cached = rememberKimiBalance(result);
+      res.status(httpStatus).json({ ...result, bar: renderQuotaBar('kimi', result, { cached }) });
     } catch (_) {
-      res.status(500).json({ status: 'unavailable', error: 'kimi quota fetch failed' });
+      const result = { status: 'unavailable', error: 'kimi quota fetch failed' };
+      res.status(500).json({ ...result, bar: renderQuotaBar('kimi', result, { cached: lastKimiWithBalance }) });
     }
   });
 
