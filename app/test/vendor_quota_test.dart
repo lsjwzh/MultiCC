@@ -48,6 +48,35 @@ void main() {
       expect(hostFromBaseUrl(''), '');
       expect(hostFromBaseUrl(null), '');
     });
+
+    test('deepseek matches *.deepseek.com', () {
+      expect(isDeepseekBaseUrl('https://api.deepseek.com/v1'), true);
+      expect(isDeepseekBaseUrl('https://deepseek.com'), true);
+      expect(isDeepseekBaseUrl('https://api.z.ai'), false);
+      expect(isDeepseekBaseUrl(''), false);
+      expect(isDeepseekBaseUrl(null), false);
+    });
+  });
+
+  group('balanceBarVisibleFor', () {
+    test('shows under codex / opencode regardless of baseUrl', () {
+      expect(balanceBarVisibleFor('codex', ''), true);
+      expect(balanceBarVisibleFor('opencode', null), true);
+      expect(balanceBarVisibleFor('codex', 'https://api.z.ai'), true);
+    });
+
+    test('shows under any CLI when the provider points at DeepSeek', () {
+      expect(balanceBarVisibleFor('zcode', 'https://api.deepseek.com/v1'), true);
+      expect(balanceBarVisibleFor('claude', 'https://deepseek.com'), true);
+    });
+
+    test('hides under claude / qoder / zcode with a non-DeepSeek provider', () {
+      // This is the residue the gate exists to kill: a DeepSeek balance bar must
+      // not linger after switching to a CLI/provider that has no such balance.
+      expect(balanceBarVisibleFor('claude', 'https://api.anthropic.com'), false);
+      expect(balanceBarVisibleFor('qoder', ''), false);
+      expect(balanceBarVisibleFor('zcode', 'https://open.bigmodel.cn'), false);
+    });
   });
 
   group('vendorViewFromBar', () {
