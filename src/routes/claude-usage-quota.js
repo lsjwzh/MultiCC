@@ -28,6 +28,7 @@
 
 const { createChromeCdp, portsFromEnv, profileDirsFromEnv } = require('../chrome-cdp');
 const { getManagedQuotaBrowser } = require('../quota-managed-browser');
+const { rememberClaudeScrape, renderClaudeBar } = require('../quota/claude-bar-state');
 
 const CDP_TIMEOUT_MS = Number(process.env.CLAUDE_QUOTA_TIMEOUT_MS || 15000);
 function panelTextTimeoutMs() {
@@ -268,9 +269,17 @@ function mountClaudeUsageQuotaRoutes(app) {
       const httpStatus = status === 'ok' ? 200
         : (status === 'needs_login' ? 401
           : (status === 'chrome_unavailable' ? 503 : 500));
-      res.status(httpStatus).json(result);
+      // The bar is rendered here, once, merged with whatever 5h window this
+      // session's turns have already reported — so the web and the app get the
+      // combined bar instead of each merging the two sources themselves.
+      const session = typeof req.query?.session === 'string' ? req.query.session : '';
+      rememberClaudeScrape(result);
+      res.status(httpStatus).json({ ...result, bar: renderClaudeBar(session) });
     } catch (err) {
-      res.status(500).json({ status: 'unavailable', error: 'claude quota fetch failed' });
+      const session = typeof req.query?.session === 'string' ? req.query.session : '';
+      const result = { status: 'unavailable', error: 'claude quota fetch failed' };
+      rememberClaudeScrape(result);
+      res.status(500).json({ ...result, bar: renderClaudeBar(session) });
     }
   });
 

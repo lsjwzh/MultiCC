@@ -8,10 +8,16 @@ const {
   siteLabel,
   mountZhipuQuotaRoutes,
 } = require('../src/routes/zhipu-quota');
-const {
-  formatZhipuQuota,
-  isZhipuBaseUrl,
-} = require('../public/chat-rate-limit');
+const { renderQuotaBar } = require('../src/quota/quota-bar-view');
+const { resolveQuotaBar } = require('../public/quota-bar-view');
+const { isZhipuBaseUrl } = require('../public/chat-rate-limit');
+
+// The Zhipu bar is rendered once on the server (src/quota/quota-bar-view.js);
+// the client only expands its time-relative tokens. Tests drive the same path.
+const formatZhipuQuota = (value) => resolveQuotaBar(
+  renderQuotaBar('zhipu', value),
+  { now: (value && value.fetchedAt) || Date.now() },
+);
 
 const ZAI = { host: 'api.z.ai', apiKey: 'k1', strategy: 'glm-monitor' };
 const BIG = { host: 'open.bigmodel.cn', apiKey: 'k2', strategy: 'glm-monitor' };

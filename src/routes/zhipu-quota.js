@@ -21,6 +21,7 @@
 
 const providers = require('../providers');
 const { pollGlmMonitor, keyHash } = require('../usage-limit-poller');
+const { renderQuotaBar } = require('../quota/quota-bar-view');
 
 function finite(v) {
   const n = Number(v);
@@ -105,9 +106,12 @@ function mountZhipuQuotaRoutes(app) {
       const result = await fetchZhipuUsage(preferHost);
       const status = result?.status || 'unavailable';
       const httpStatus = status === 'ok' ? 200 : status === 'not_configured' ? 404 : 502;
-      res.status(httpStatus).json(result);
+      // The bar is rendered here, once, so the web and the app display the same
+      // string rather than each formatting this JSON their own way.
+      res.status(httpStatus).json({ ...result, bar: renderQuotaBar('zhipu', result) });
     } catch (_) {
-      res.status(500).json({ status: 'unavailable', error: 'zhipu quota fetch failed' });
+      const result = { status: 'unavailable', error: 'zhipu quota fetch failed' };
+      res.status(500).json({ ...result, bar: renderQuotaBar('zhipu', result) });
     }
   });
 }

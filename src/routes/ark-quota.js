@@ -23,6 +23,7 @@
 const fs = require('fs');
 const path = require('path');
 const { execFile, spawn } = require('child_process');
+const { renderQuotaBar } = require('../quota/quota-bar-view');
 
 const TIMEOUT_MS = 45000;
 const INSTALL_TIMEOUT_MS = 240000;
@@ -221,9 +222,15 @@ function mountArkQuotaRoutes(app) {
         : status === 'needs_auth' ? 401
         : status === 'needs_install' ? 404
         : 500;
-      res.status(httpStatus).json(result);
+      // The bar is rendered here, once, so the web and the app display the same
+      // string. `baseUrl` is the one thing only the caller knows — which Ark
+      // plan the session it is looking at actually routes through — so the
+      // caller passes it in rather than re-picking the plan itself.
+      const baseUrl = typeof req.query?.baseUrl === 'string' ? req.query.baseUrl : '';
+      res.status(httpStatus).json({ ...result, bar: renderQuotaBar('ark', result, { baseUrl }) });
     } catch (_) {
-      res.status(500).json({ status: 'unavailable', error: 'ark quota fetch failed' });
+      const result = { status: 'unavailable', error: 'ark quota fetch failed' };
+      res.status(500).json({ ...result, bar: renderQuotaBar('ark', result) });
     }
   });
 

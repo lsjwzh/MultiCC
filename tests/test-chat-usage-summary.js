@@ -10,6 +10,13 @@ const RATE_LIMIT_PATH = path.join(ROOT, 'public', 'chat-rate-limit.js');
 const CHAT_HTML = fs.readFileSync(path.join(ROOT, 'public', 'chat.html'), 'utf8');
 const CHAT_JS = fs.readFileSync(path.join(ROOT, 'public', 'chat.js'), 'utf8');
 
+// Bars are rendered once on the server (src/quota/quota-bar-view.js); the client
+// only resolves their time-relative tokens. The harness seeds/restores the same
+// `{status, fetchedAt, usage, bar}` shape the live routes return.
+const Renderer = require('../src/quota/quota-bar-view');
+const { resolveQuotaBar } = require('../public/quota-bar-view');
+const opencodeView = (value) => resolveQuotaBar(Renderer.renderQuotaBar('opencode', value), { now: (value && value.fetchedAt) || Date.now() });
+
 function element() {
   return { style: {}, textContent: '', innerHTML: '', title: '', onclick: null };
 }
@@ -54,15 +61,25 @@ test('OpenCode composes native windows, routed-provider quota and balance with d
   const now = Date.now();
   const native = {
     status: 'ok',
-    fetchedAt: now - 5_000,
+    fetchedAt: now,
     usage: {
       rolling: { usagePercent: 8, resetInSec: 39 * 60 },
       weekly: { usagePercent: 14, resetInSec: (5 * 24 + 22) * 3600 },
       monthly: { usagePercent: 31, resetInSec: (19 * 24 + 12) * 3600 },
     },
   };
+  // Seed the opencode cache with the same `{...response, bar}` shape the live
+  // /api/opencode/quota route returns; the routed-provider and balance bars
+  // arrive as WS events, so they are passed straight through consume*.
+  const glmBar = Renderer.labelRoutedProvider(
+    Renderer.windowEventBar(Renderer.normalizeWindowEvent({
+      rateLimitType: 'five_hour', provider: 'glm', status: 'allowed',
+      utilization: 0, resetsAt: now + 39 * 60_000,
+    }, now)), 'glm');
+  const balNorm = Renderer.normalizeBalance({ kind: 'balance', available: true, currency: 'CNY', total: 87.69 });
+  const balBar = Renderer.labelRoutedBalance(Renderer.balanceBar(balNorm), balNorm);
   const h = rateLimitHarness({
-    'multicc.opencode.quota.v1': JSON.stringify(native),
+    'multicc.opencode.quota.v1': JSON.stringify({ ...native, bar: Renderer.renderQuotaBar('opencode', native) }),
   });
   try {
     h.api.setCli('opencode');
@@ -70,17 +87,22 @@ test('OpenCode composes native windows, routed-provider quota and balance with d
     h.api.consumeRateLimitEvent({
       rateLimitType: 'five_hour', provider: 'glm', status: 'allowed',
       utilization: 0, resetsAt: now + 39 * 60_000,
-    }, 'opencode-layout');
+    }, 'opencode-layout', glmBar);
     h.api.consumeBalanceEvent({
       kind: 'balance', available: true, currency: 'CNY', total: 87.69,
-    }, 'opencode-layout');
+    }, 'opencode-layout', balBar);
 
     const own = h.elements['opencode-quota-bar'];
     const routed = h.elements['claude-rate-limit-bar'];
     const balance = h.elements['usage-balance-bar'];
     assert.equal(own.style.display, 'block');
-    assert.match(own.textContent, /^OpenCode Go · 5h 92% 39m · 1wk 86% 5d 22h · 1m 69% 19d 12h/);
-    assert.match(routed.textContent, /^路由供应商 GLM · 5h 100% 39m/);
+    // Three native windows compose under one OpenCode Go label; percentages are
+    // stable, the countdowns are time-relative so only the labels/percentages
+    // are pinned here (exact countdown text is the golden parity test's job).
+    assert.match(own.textContent, /^OpenCode Go · 5h 92%/);
+    assert.match(own.textContent, /1wk 86%/);
+    assert.match(own.textContent, /1m 69%/);
+    assert.match(routed.textContent, /^路由供应商 GLM · 5h 100%/);
     assert.match(routed.title, /不是 OpenCode Go 订阅额度/);
     assert.equal(balance.textContent, 'DeepSeek 余额 · ¥87.69');
     assert.equal((own.textContent.match(/\b5h\b/g) || []).length, 1);
@@ -91,21 +113,17 @@ test('OpenCode composes native windows, routed-provider quota and balance with d
 });
 
 test('OpenCode native formatter keeps its source label and degrades cleanly when windows are missing', () => {
-  const h = rateLimitHarness();
-  try {
-    const partial = h.api.formatOpenCodeQuota({
-      status: 'ok', fetchedAt: Date.now(),
-      usage: { weekly: { usagePercent: 14 } },
-    });
-    assert.match(partial.text, /^OpenCode Go · 1wk 86%/);
-    assert.doesNotMatch(partial.text, /undefined|NaN|5h|1m/);
+  // The formatter is the server renderer now; the client carries no vendor text.
+  const partial = opencodeView({
+    status: 'ok', fetchedAt: Date.now(),
+    usage: { weekly: { usagePercent: 14 } },
+  });
+  assert.match(partial.text, /^OpenCode Go · 1wk 86%/);
+  assert.doesNotMatch(partial.text, /undefined|NaN|5h|1m/);
 
-    const empty = h.api.formatOpenCodeQuota({ status: 'ok', fetchedAt: Date.now(), usage: {} });
-    assert.match(empty.text, /^OpenCode Go · —/);
-    assert.doesNotMatch(empty.text, /undefined|NaN/);
-  } finally {
-    h.cleanup();
-  }
+  const empty = opencodeView({ status: 'ok', fetchedAt: Date.now(), usage: {} });
+  assert.match(empty.text, /^OpenCode Go · —/);
+  assert.doesNotMatch(empty.text, /undefined|NaN/);
 });
 
 test('account quota and this conversation\'s context are separate rows, never one line', () => {
@@ -157,10 +175,16 @@ test('desktop quota layout is capped at two nowrap rows; narrow layout wraps onl
 });
 
 test('non-OpenCode CLIs preserve their existing quota text and hide the OpenCode native row', () => {
+  const now = Date.now();
+  const codexBar = Renderer.windowEventBar(Renderer.normalizeWindowEvent({
+    rateLimitType: 'weekly', provider: 'codex', status: 'allowed',
+    utilization: 0.25, resetsAt: now + 3600_000,
+  }, now));
   const h = rateLimitHarness({
     'multicc.opencode.quota.v1': JSON.stringify({
-      status: 'ok', fetchedAt: Date.now(),
+      status: 'ok', fetchedAt: now,
       usage: { rolling: { usagePercent: 8, resetInSec: 60 } },
+      bar: Renderer.renderQuotaBar('opencode', { status: 'ok', fetchedAt: now, usage: { rolling: { usagePercent: 8, resetInSec: 60 } } }),
     }),
   });
   try {
@@ -169,8 +193,8 @@ test('non-OpenCode CLIs preserve their existing quota text and hide the OpenCode
     assert.equal(h.elements['opencode-quota-bar'].style.display, 'none');
     h.api.consumeRateLimitEvent({
       rateLimitType: 'weekly', provider: 'codex', status: 'allowed',
-      utilization: 0.25, resetsAt: Date.now() + 3600_000,
-    }, 'codex-layout');
+      utilization: 0.25, resetsAt: now + 3600_000,
+    }, 'codex-layout', codexBar);
     assert.match(h.elements['claude-rate-limit-bar'].textContent, /^1wk 75%/);
     assert.doesNotMatch(h.elements['claude-rate-limit-bar'].textContent, /路由供应商/);
   } finally {

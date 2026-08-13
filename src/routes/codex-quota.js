@@ -13,6 +13,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { renderQuotaBar } = require('../quota/quota-bar-view');
 
 const USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage';
 const TIMEOUT_MS = 10000;
@@ -128,9 +129,12 @@ function mountCodexQuotaRoutes(app) {
       const result = await fetchCodexUsage();
       const status = result?.status || 'unavailable';
       const httpStatus = status === 'ok' ? 200 : status === 'no_auth' ? 401 : 500;
-      res.status(httpStatus).json(result);
+      // The bar is rendered here, once, so the web and the app display the same
+      // string rather than each formatting this JSON their own way.
+      res.status(httpStatus).json({ ...result, bar: renderQuotaBar('codex', result) });
     } catch (_) {
-      res.status(500).json({ status: 'unavailable', error: 'codex quota fetch failed' });
+      const result = { status: 'unavailable', error: 'codex quota fetch failed' };
+      res.status(500).json({ ...result, bar: renderQuotaBar('codex', result) });
     }
   });
 }
