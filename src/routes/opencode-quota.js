@@ -33,6 +33,7 @@
 
 const { createChromeCdp, portsFromEnv, profileDirsFromEnv } = require('../chrome-cdp');
 const { getManagedQuotaBrowser } = require('../quota-managed-browser');
+const { renderQuotaBar } = require('../quota/quota-bar-view');
 
 const CDP_TIMEOUT_MS = Number(process.env.OPENCODE_QUOTA_TIMEOUT_MS || 10000);
 const OPENCODE_AUTH_URL = process.env.OPENCODE_QUOTA_URL || 'https://opencode.ai/auth';
@@ -216,9 +217,12 @@ function mountOpenCodeQuotaRoutes(app) {
       const httpStatus = status === 'ok' ? 200
         : (status === 'needs_login' ? 401
           : (status === 'chrome_unavailable' ? 503 : 500));
-      res.status(httpStatus).json(result);
+      // The bar is rendered here, once, so the web and the app display the same
+      // string rather than each formatting this JSON their own way.
+      res.status(httpStatus).json({ ...result, bar: renderQuotaBar('opencode', result) });
     } catch (err) {
-      res.status(500).json({ status: 'unavailable', error: 'opencode quota fetch failed' });
+      const result = { status: 'unavailable', error: 'opencode quota fetch failed' };
+      res.status(500).json({ ...result, bar: renderQuotaBar('opencode', result) });
     }
   });
 
