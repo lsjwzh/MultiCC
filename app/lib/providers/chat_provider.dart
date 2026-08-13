@@ -282,8 +282,14 @@ class ChatProvider extends ChangeNotifier {
     return vendorViewFromBar(_rateLimitBar);
   }
 
-  /// DeepSeek balance bar from the passive usage_balance_event.
-  VendorQuotaView? get balanceView => vendorViewFromBar(_balanceBar);
+  /// DeepSeek balance bar from the passive usage_balance_event. Gated by the
+  /// active CLI + provider (mirrors the web balanceMatchesCli) so the bar swaps
+  /// instantly on a cli/provider switch instead of lingering from the previous
+  /// context.
+  VendorQuotaView? get balanceView {
+    if (!balanceBarVisibleFor(_cli.name, _providerBaseUrl)) return null;
+    return vendorViewFromBar(_balanceBar);
+  }
 
   /// OpenCode Go subscription bar (5h / weekly / monthly), under the opencode
   /// CLI. Source: GET /api/opencode/quota.
@@ -649,6 +655,12 @@ class ChatProvider extends ChangeNotifier {
         _cli = next;
         refreshClaudeUsage();
         refreshQoderQuota();
+        // Parity with system_init / applyCliConfig / the web setCli: switching
+        // CLI switches the account whose quota is on screen, so fetch the one
+        // bar that just became relevant (no-op off its CLI; in-flight guard
+        // dedupes the applyCliConfig that often precedes this broadcast).
+        refreshOpenCodeQuota();
+        refreshCodexQuota();
         _setProviderBaseUrl(msg['providerBaseUrl']?.toString() ?? '');
         final model = msg['effectiveModel']?.toString();
         _statusText = model != null && model.isNotEmpty

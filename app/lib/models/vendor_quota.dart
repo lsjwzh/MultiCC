@@ -86,6 +86,24 @@ bool isKimiBaseUrl(String? baseUrl) {
   return RegExp(r'(^|\.)(moonshot|kimi)\.(cn|com|ai)$').hasMatch(h);
 }
 
+bool isDeepseekBaseUrl(String? baseUrl) {
+  if (baseUrl == null || baseUrl.isEmpty) return false;
+  final h = hostFromBaseUrl(baseUrl);
+  if (h.isNotEmpty) return h == 'deepseek.com' || h.endsWith('.deepseek.com');
+  return baseUrl.contains('deepseek.com');
+}
+
+/// Whether the routed-provider balance bar (DeepSeek 余额) is visible for this
+/// CLI + provider. The balance event is provider-specific (a DeepSeek prepaid
+/// balance), so the bar is hidden unless the active CLI is one that routes
+/// through it, or the provider baseUrl points at DeepSeek — mirroring the web
+/// `balanceMatchesCli`. This is the gate that makes the bar swap instantly on a
+/// cli/provider switch instead of lingering from the previous context.
+bool balanceBarVisibleFor(String cliName, String? providerBaseUrl) {
+  if (cliName == 'codex' || cliName == 'opencode') return true;
+  return isDeepseekBaseUrl(providerBaseUrl);
+}
+
 /// Host to pass as `?host=` so the backend puts the current site first.
 String zhipuHostFromBaseUrl(String? baseUrl) => hostFromBaseUrl(baseUrl);
 String kimiHostFromBaseUrl(String? baseUrl) => hostFromBaseUrl(baseUrl);
