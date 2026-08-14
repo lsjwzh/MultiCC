@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 enum MessageRole { user, assistant, system }
 
 /// Token usage information for a message (mirrors Anthropic's usage shape)
@@ -44,6 +46,14 @@ class ToolCall {
   bool isError;
   bool isDone;
 
+  /// Wall-clock epoch ms stamped by the live event handlers (mirror of the
+  /// web's chat-event-controller): startedAt at content_block_start, endedAt
+  /// at the matching tool_result. History replay has neither (the server
+  /// persists no tool timing), so [durationMs] stays null there — unknown,
+  /// never fabricated.
+  int? startedAt;
+  int? endedAt;
+
   ToolCall({
     required this.id,
     required this.name,
@@ -51,12 +61,25 @@ class ToolCall {
     this.result,
     this.isError = false,
     this.isDone = false,
+    this.startedAt,
+    this.endedAt,
   });
+
+  /// Measured wall-clock span when both stamps exist; null (unknown) otherwise,
+  /// including a clock skew where endedAt lands before startedAt.
+  int? get durationMs {
+    final a = startedAt, b = endedAt;
+    if (a == null || b == null || b < a) return null;
+    return b - a;
+  }
 
   Map<String, dynamic>? get parsedInput {
     try {
       if (inputJson.isEmpty) return null;
-      return _jsonDecode(inputJson);
+      final decoded = jsonDecode(inputJson);
+      return decoded is Map<String, dynamic>
+          ? decoded
+          : Map<String, dynamic>.from(decoded as Map);
     } catch (_) {
       return null;
     }
@@ -72,11 +95,6 @@ class ToolCall {
             '')
         .toString();
   }
-}
-
-Map<String, dynamic> _jsonDecode(String s) {
-  // Simple wrapper — dart:convert is imported at use site
-  return {};
 }
 
 class ChatMessage {
