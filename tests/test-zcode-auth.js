@@ -84,6 +84,34 @@ test('turn admission never auto-copies a desktop key into the native CLI config'
   assert.equal(result.cliConfigCreated, false);
 });
 
+test('native model catalog offers glm-5.3 on both zai and bigmodel without changing the glm-5.2 default', t => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-zcode-auth-models-'));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+
+  const result = runWithHome(home, `
+    const assert = require('node:assert/strict');
+    const auth = require(process.env.ZCODE_AUTH_MODULE);
+    const expected = ['glm-5.3', 'glm-5.2', 'glm-5-turbo'];
+    for (const providerId of ['zai', 'bigmodel']) {
+      for (const model of expected) {
+        assert.equal(auth.PROVIDER_MODELS[providerId][model].id, model);
+      }
+    }
+    // Writing a key seeds the native config with the full catalog and keeps
+    // the provider-prefixed glm-5.2 default (no silent migration to 5.3).
+    for (const providerId of ['zai', 'bigmodel']) {
+      auth.setZcodeApiKey(providerId, 'test-key');
+      const config = auth.readCliConfig();
+      assert.equal(config.model, providerId + '/glm-5.2');
+      const models = config.provider[providerId].models;
+      assert.deepEqual(Object.keys(models), expected);
+      assert.equal(models['glm-5.3'].id, 'glm-5.3');
+    }
+    process.stdout.write(JSON.stringify({ ok: true }));
+  `);
+  assert.equal(result.ok, true);
+});
+
 function routeHarness(zcodeAuth) {
   const handlers = new Map();
   const app = {};
