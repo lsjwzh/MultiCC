@@ -651,21 +651,22 @@ function normalizeWindowEvent(info, nowMs) {
     ? null
     : Math.round(Math.max(0, Math.min(100, utilization * 100)) * 1000) / 1000;
   // Claude 5h arrives from the proxy's response-header extraction (no provider
-  // field → 'claude'); GLM Coding Plan (5h) and Codex (weekly) arrive from the
-  // poller carrying provider:'glm' / 'codex'.
-  const provider = info.provider === 'glm' ? 'glm' : info.provider === 'codex' ? 'codex' : 'claude';
+  // field → 'claude'); GLM/Codex/OpenCode events carry explicit providers.
+  const provider = info.provider === 'glm' ? 'glm'
+    : info.provider === 'codex' ? 'codex'
+      : info.provider === 'opencode' ? 'opencode' : 'claude';
   // Claude's weekly limit comes exclusively from the usage-page scrape, and the
   // poller always tags weekly with provider:'codex' — so a weekly event that
   // resolves to Claude is malformed. Reject it rather than mislabel it.
   if (info.rateLimitType === 'weekly' && provider === 'claude') return null;
   return Object.freeze({
     schemaVersion: 1,
-    kind: 'five_hour',
+    kind: info.rateLimitType === 'weekly' ? 'weekly' : 'five_hour',
     status: info.status,
     usedPercentage,
     resetsAtMs: normalizeResetTime(info.resetsAt),
     observedAtMs: Math.trunc(finiteNumber(nowMs) ?? Date.now()),
-    source: 'claude_code',
+    source: provider === 'opencode' ? 'opencode_log' : 'claude_code',
     provider,
   });
 }
@@ -676,17 +677,22 @@ function normalizeWindowEvent(info, nowMs) {
 
 function windowEventBar(info) {
   if (!info) return null;
-  const provider = info.provider === 'glm' ? 'glm' : info.provider === 'codex' ? 'codex' : 'claude';
+  const provider = info.provider === 'glm' ? 'glm'
+    : info.provider === 'codex' ? 'codex'
+      : info.provider === 'opencode' ? 'opencode' : 'claude';
   if (provider === 'claude') return null; // Claude's bar is the merged one below
   const used = info.status === 'rejected' ? 100 : finiteNumber(info.usedPercentage);
-  const token = provider === 'codex' ? '1wk' : '5h';
+  const token = info.kind === 'weekly' || provider === 'codex' ? '1wk' : '5h';
   const seg = windowSeg(token, used, info.resetsAtMs);
+  const label = provider === 'opencode' ? 'OpenCode Go · ' : '';
   return view(
-    seg || token,
+    `${label}${seg || token}`,
     unifiedColorFromRemaining(unifiedRemaining(used)),
     provider === 'glm'
       ? 'GLM Coding Plan 五小时窗口用量（来自 open.bigmodel.cn 额度端点）'
-      : 'Codex 订阅周额度用量（来自 chatgpt.com/backend-api/wham/usage）',
+      : provider === 'opencode'
+        ? 'OpenCode Go 订阅窗口用量（来自 opencode 日志中的 provider limit 错误）'
+        : 'Codex 订阅周额度用量（来自 chatgpt.com/backend-api/wham/usage）',
   );
 }
 

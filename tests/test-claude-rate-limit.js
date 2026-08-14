@@ -73,11 +73,13 @@ test('the Claude bar renders every window, "-" for missing data, and is always c
   assert.equal(resolve(Renderer.claudeBar({ status: 'needs_login' }, live)).action, 'login');
 });
 
-test('GLM 5h and Codex weekly render as single window segments', () => {
+test('GLM 5h, Codex weekly and OpenCode weekly render as single window segments', () => {
   const glm = Renderer.normalizeWindowEvent({ status: 'allowed', rateLimitType: 'five_hour', utilization: 0.44, resetsAt: (NOW + 3_600_000) / 1000, provider: 'glm' }, NOW);
   const codex = Renderer.normalizeWindowEvent({ status: 'allowed', rateLimitType: 'weekly', utilization: 0.64, resetsAt: (NOW + 3_600_000) / 1000, provider: 'codex' }, NOW);
+  const opencode = Renderer.normalizeWindowEvent({ status: 'rejected', rateLimitType: 'weekly', utilization: 1, resetsAt: (NOW + 86_400_000) / 1000, provider: 'opencode' }, NOW);
   assert.match(resolve(Renderer.windowEventBar(glm)).text, /^5h 56% 1h$/);
   assert.match(resolve(Renderer.windowEventBar(codex)).text, /^1wk 36% 1h$/);
+  assert.match(resolve(Renderer.windowEventBar(opencode)).text, /^OpenCode Go · 1wk 0% 1d$/);
 });
 
 test('the OpenCode routed-provider label says whose window it is', () => {
@@ -188,6 +190,20 @@ test('a GLM 5h window bar shows under codex (provider matches that CLI)', () => 
     f.C.setCli('codex');
     assert.equal(f.element('claude-rate-limit-bar').style.display, 'block');
     assert.match(f.element('claude-rate-limit-bar').textContent, /^5h 56%/);
+  } finally { f.cleanup(); }
+});
+
+test('an OpenCode weekly limit event shows only under opencode', () => {
+  const f = freshClient();
+  try {
+    const info = { status: 'rejected', rateLimitType: 'weekly', utilization: 1, resetsAt: (NOW + 86_400_000) / 1000, provider: 'opencode' };
+    const bar = Renderer.windowEventBar(Renderer.normalizeWindowEvent(info, NOW));
+    f.C.consumeRateLimitEvent(info, 'opencode-sess', bar);
+    f.C.setCli('opencode');
+    assert.equal(f.element('claude-rate-limit-bar').style.display, 'block');
+    assert.match(f.element('claude-rate-limit-bar').textContent, /^OpenCode Go · 1wk 0%/);
+    f.C.setCli('codex');
+    assert.equal(f.element('claude-rate-limit-bar').style.display, 'none');
   } finally { f.cleanup(); }
 });
 

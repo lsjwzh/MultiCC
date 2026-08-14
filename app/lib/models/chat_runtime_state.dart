@@ -244,6 +244,7 @@ class UsageWindowLimit {
       resetsAtMs == null || resetsAtMs! > now.millisecondsSinceEpoch;
 
   bool matchesCli(String cli) {
+    if (provider == 'opencode') return cli == 'opencode';
     if (provider == 'glm' || provider == 'codex') {
       return cli == 'codex' || cli == 'opencode';
     }
@@ -271,7 +272,7 @@ class UsageWindowLimit {
         ? null
         : (utilization.clamp(0, 1).toDouble() * 100);
     final rawProvider = (json['provider'] ?? 'claude').toString();
-    final provider = const {'glm', 'codex'}.contains(rawProvider)
+    final provider = const {'glm', 'codex', 'opencode'}.contains(rawProvider)
         ? rawProvider
         : 'claude';
     return UsageWindowLimit(
@@ -291,7 +292,7 @@ class UsageWindowLimit {
     final provider = (json['provider'] ?? '').toString();
     if (!const {'five_hour', 'weekly'}.contains(rateLimitType) ||
         !const {'allowed', 'allowed_warning', 'rejected'}.contains(status) ||
-        !const {'claude', 'glm', 'codex'}.contains(provider) ||
+        !const {'claude', 'glm', 'codex', 'opencode'}.contains(provider) ||
         (percentage != null && (percentage < 0 || percentage > 100))) {
       return null;
     }

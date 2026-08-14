@@ -97,8 +97,10 @@
   }
   // A window limit shows only under a CLI that could have produced it: Claude 5h
   // under claude/opencode, GLM 5h under codex/opencode (and the claude CLI when
-  // pointed at a Zhipu endpoint), Codex weekly under codex/opencode.
+  // pointed at a Zhipu endpoint), Codex weekly under codex/opencode, and
+  // OpenCode Go's own window only under opencode.
   function providerMatchesCli(provider, cli) {
+    if (provider === 'opencode') return cli === 'opencode';
     if (provider === 'glm' || provider === 'codex') {
       if (cli === 'codex' || cli === 'opencode') return true;
       return provider === 'glm' && isZhipuBaseUrl(currentProviderBaseUrl);
@@ -314,7 +316,7 @@
   function limitProvider() {
     if (!currentLimitInfo) return null;
     const p = currentLimitInfo.provider;
-    return p === 'glm' ? 'glm' : p === 'codex' ? 'codex' : 'claude';
+    return p === 'glm' ? 'glm' : p === 'codex' ? 'codex' : p === 'opencode' ? 'opencode' : 'claude';
   }
 
   function renderCurrent() {
