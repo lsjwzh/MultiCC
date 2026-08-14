@@ -241,8 +241,28 @@ function createChatHistoryRuntime(rawDeps) {
     return service.read(sessionId);
   }
 
+  // Read-only transcript for callers that only measure it (token totals,
+  // context level) and never hand the messages on. load()'s deep clone buys
+  // them nothing: summarizing a codex session's usage on every WS connect was
+  // cloning the whole transcript to add up numbers.
+  function viewHistory(sessionId) {
+    return service.view(sessionId);
+  }
+
+  // Deep-copy a page before it leaves this module, so a caller can never reach
+  // back into the service cache through the messages it was handed. Cloning one
+  // page is bounded work; cloning the transcript it came from was not.
+  function isolate(messages) {
+    return JSON.parse(JSON.stringify(messages));
+  }
+
+  // Read-only: the result may share messages with the service cache, so every
+  // caller must clone whatever it hands out. Projection is copy-on-write, and
+  // paginate() clones only the page it returns — deep-cloning the whole
+  // transcript here to then slice five messages out of it was the single
+  // hottest thing the WS replay did.
   function projectedMessages(sessionId) {
-    const messages = service.read(sessionId);
+    const messages = service.view(sessionId);
     if (!deps.projectMessages) return messages;
     try {
       const projected = deps.projectMessages(String(sessionId), messages);
@@ -269,7 +289,7 @@ function createChatHistoryRuntime(rawDeps) {
       const end = Math.min(messages.length, start + pageSize);
       start = Math.max(0, end - pageSize);
       return Object.freeze({
-        messages: messages.slice(start, end),
+        messages: isolate(messages.slice(start, end)),
         hasMore: start > 0,
         before: start > 0 ? messages[start].id : null,
         found: true,
@@ -284,7 +304,7 @@ function createChatHistoryRuntime(rawDeps) {
     }
     const start = Math.max(0, end - pageSize);
     return Object.freeze({
-      messages: messages.slice(start, end),
+      messages: isolate(messages.slice(start, end)),
       hasMore: start > 0,
       before: start > 0 ? messages[start].id : null,
     });
@@ -691,6 +711,7 @@ function createChatHistoryRuntime(rawDeps) {
     lastActivity,
     latestAssistantAt,
     load,
+    viewHistory,
     mountRoutes,
     paginate,
     rotateNativeContext,

@@ -191,6 +191,20 @@ function createChatHistoryService({
     return jsonClone(current(sessionId));
   }
 
+  // Read-only view of the committed transcript, without the deep clone read()
+  // pays for. For a caller that only inspects messages, or that isolates just
+  // the slice it hands out, cloning the whole transcript is pure cost: the WS
+  // replay on connect used read() twice per connection — once to page out five
+  // messages, once to total token usage — and reconnects run at a few per
+  // second, so those clones alone could saturate a core.
+  //
+  // The returned array and its messages are shared with the cache and with
+  // every other viewer. Callers must not mutate either; anything that hands
+  // messages outside this module must clone what it hands out (see paginate).
+  function view(sessionId) {
+    return current(sessionId);
+  }
+
   // The mutators below need an array they may push/pop/splice without disturbing
   // the cache — they do not need private copies of the messages themselves, and
   // never mutate one that is already in the transcript (each builds its own new
@@ -428,6 +442,7 @@ function createChatHistoryService({
     remove,
     replace,
     upsertInterim,
+    view,
   });
 }
 
