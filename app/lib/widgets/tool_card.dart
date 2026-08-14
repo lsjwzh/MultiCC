@@ -1,7 +1,7 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
 
 import '../models/message.dart';
+import '../models/tool_input_view.dart';
 
 const Map<String, String> _kToolIcons = {
   'Bash': '>_',
@@ -18,11 +18,20 @@ const Map<String, String> _kToolIcons = {
 String toolIconFor(String name) => _kToolIcons[name] ?? '⚙️';
 
 /// Short status/description line for a tool call, shared by the card and the
-/// compact rows in [ToolCallGroup].
+/// compact rows in [ToolCallGroup]. Mirrors the web tool-desc lifecycle: while
+/// running the input summary (command / file_path / …) is shown; once done it
+/// is replaced by the outcome plus the measured wall-clock duration — "done ·
+/// 1.5s" — and only when both timing stamps exist. History replay has no tool
+/// timing, so it degrades to the bare "done"/"failed" (never a fabricated 0ms).
 String toolDescriptionFor(ToolCall tc, {int max = 60}) {
-  final d = tc.description;
-  if (d.isNotEmpty) return d.length > max ? '${d.substring(0, max)}…' : d;
-  return tc.isDone ? (tc.isError ? 'failed' : 'done') : 'running…';
+  if (!tc.isDone) {
+    final d = tc.description;
+    if (d.isNotEmpty) return d.length > max ? '${d.substring(0, max)}…' : d;
+    return 'running…';
+  }
+  final base = tc.isError ? 'failed' : 'done';
+  final dur = humanizeToolDuration(tc.durationMs);
+  return dur.isEmpty ? base : '$base · $dur';
 }
 
 class ToolCardWidget extends StatefulWidget {
@@ -41,12 +50,12 @@ class _ToolCardWidgetState extends State<ToolCardWidget> {
   String get _description => toolDescriptionFor(widget.toolCall);
 
   String _prettyInput() {
-    try {
-      final parsed = jsonDecode(widget.toolCall.inputJson);
-      return const JsonEncoder.withIndent('  ').convert(parsed);
-    } catch (_) {
-      return widget.toolCall.inputJson;
-    }
+    // Typed preview (Bash → "$ cmd", Read → file path, Edit → old/new diff,
+    // …) mirroring the web's renderToolInput; raw text when the JSON is
+    // incomplete (mid-stream) or unparsable.
+    final parsed = widget.toolCall.parsedInput;
+    if (parsed != null) return renderToolInput(widget.toolCall.name, parsed);
+    return widget.toolCall.inputJson;
   }
 
   @override
