@@ -185,6 +185,7 @@ const { createProcessProbe } = require('./src/liveness/process-probe');
 const { createRolloutPathResolver } = require('./src/liveness/rollout-path');
 const { createProcessingWatchdog, PROCESS_WATCHDOG_INTERVAL_MS } = require('./src/chat/process-watchdog');
 const { createStalledTurnRecovery, STALLED_RECOVERY_INTERVAL_MS } = require('./src/chat/stalled-turn-recovery');
+const { createProviderLogWatchdog } = require('./src/chat/provider-log-watchdog');
 const { createLogHousekeeping, LOG_HOUSEKEEPING_INTERVAL_MS } = require('./src/log-housekeeping');
 const { createPushRuntime } = require('./src/push-runtime');
 const { createWorkspaceRuntime } = require('./src/workspace/runtime');
@@ -2760,6 +2761,11 @@ const stalledTurnRecovery = createStalledTurnRecovery({
   confirmations: envNumber(process.env.MULTICC_STALLED_CONFIRMATIONS), cooldownMs: envNumber(process.env.MULTICC_STALLED_COOLDOWN_MS),
   cancelTurn: (id, options) => sessionWorkHost.cancelActiveTurn(id, options), logger,
 });
+// Swallowed provider errors (opencode quota/auth: no stdout/stderr/exit) get
+// surfaced + the wedged turn ended by a correlated provider-log scan.
+const providerLogWatchdog = createProviderLogWatchdog({ listRecords: () => persistedSessions.entries(), getChatSession: id => chatSessions.get(id),
+  broadcast: (id, evt) => chatBroadcast(id, evt), cancelTurn: (id, options) => sessionWorkHost.cancelActiveTurn(id, options),
+  intervalMs: envNumber(process.env.MULTICC_PROVIDER_LOG_INTERVAL_MS), minSilenceMs: envNumber(process.env.MULTICC_PROVIDER_LOG_MIN_SILENCE_MS), logger });
 const logHousekeeping = createLogHousekeeping({ logsDir: path.join(__dirname, 'logs'), logger,
   retainDays: envNumber(process.env.MULTICC_LOG_RETAIN_DAYS), keepTailBytes: envNumber(process.env.MULTICC_LOG_KEEP_TAIL_BYTES) });
 routerToolHost.configure({ records: persistedSessions, dispatchToSession, orchestrationRuntime, taskBoard: taskBoardRuntime,
@@ -2968,6 +2974,8 @@ app.use(safeErrorHandler(logger));
       .catch(error => logger.warn('processing_watchdog_sweep_failed', { error: error.message })), PROCESS_WATCHDOG_INTERVAL_MS));
     trackServiceTimer(setInterval(() => stalledTurnRecovery.sweep()
       .catch(error => logger.warn('stalled_turn_recovery_sweep_failed', { error: error.message })), envNumber(process.env.MULTICC_STALLED_INTERVAL_MS, STALLED_RECOVERY_INTERVAL_MS)));
+    trackServiceTimer(setInterval(() => providerLogWatchdog.sweep()
+      .catch(error => logger.warn('provider_log_watchdog_sweep_failed', { error: error.message })), providerLogWatchdog.PROVIDER_LOG_WATCHDOG_INTERVAL_MS));
     logHousekeeping.runOnce().catch(err => logger.warn('log_housekeeping_failed', { error: err.message }));
     trackServiceTimer(setInterval(() => logHousekeeping.runOnce().catch(err => logger.warn('log_housekeeping_failed', { error: err.message })), LOG_HOUSEKEEPING_INTERVAL_MS));
     artifacts.cleanup();
