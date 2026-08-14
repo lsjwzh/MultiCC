@@ -9,7 +9,13 @@
 //   file               — task_board.json path (from createPaths)
 //   auxQueue           — { enqueue, cancel, isUnhealthy } from mountAuxGoalRoutes
 //   records            — persistedSessions Map (sessionId → record)
-//   loadHistory        — sessionId → message[] (deep copy)
+//   loadHistory        — sessionId → message[] (READ-ONLY view, NOT a copy: the
+//                        array and its messages are shared with the chat history
+//                        cache. Board code may only read them; anything kept
+//                        beyond the call must be a copied primitive, which is
+//                        why refs store ids and timestamps rather than messages.
+//                        This route scans a transcript per task, so cloning here
+//                        cost O(tasks × sessions × transcript) per board load.)
 //   dispatchToSession  — durable dispatch; Commander access requires an internal flag
 //   sendSessionMessage  — canonical per-session ingress used by WebSocket and task board
 //   workspaceBroadcast — (dirId, payload) → void (reaches /ws/meta clients)

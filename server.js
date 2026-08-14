@@ -1493,6 +1493,7 @@ const classifyStateMachine = createClassifyStateMachine({
   turnHasSideEffects: (...args) => turnHasSideEffects(...args),
   retryNotice: (...args) => retryNotice(...args),
   loadChatHistory: (...args) => loadChatHistory(...args),
+  viewChatHistory: (...args) => viewChatHistory(...args),
   appendChatMessage: (...args) => appendChatMessage(...args),
 });
 const {
@@ -2163,7 +2164,11 @@ const taskBoardRuntime = createTaskBoardRuntime({
   file: MULTICC_PATHS.taskBoardFile,
   auxQueue,
   records: persistedSessions,
-  loadHistory: sessionId => loadChatHistory(sessionId),
+  // Read-only view, not the cloning load(): the board resolves each task's
+  // canonical body by scanning its sessions' transcripts, so GET /api/task-board
+  // cloned every referenced transcript once per task. That was the single most
+  // expensive thing the server did — see the port note in routes/task-board.js.
+  loadHistory: sessionId => viewChatHistory(sessionId),
   dispatchToSession,
   routeCommanderTask: commanderRouter.route, sendSessionMessage: (...args) => taskContextHost.deliverSessionMessage(...args),
   workspaceBroadcast: (dirId, payload) => workspaceBroadcast(dirId, payload),
@@ -2327,6 +2332,9 @@ chatHistoryRuntime.mountRoutes(app);
 // Compatibility wrappers keep earlier host composition (Aux, dispatch and
 // session queries) independent of the runtime's later construction point.
 function loadChatHistory(sessionId) { return chatHistoryRuntime.load(sessionId); }
+// Read-only twin of loadChatHistory for callers that only measure the
+// transcript; skips the deep clone. Never hand its messages to a mutator.
+function viewChatHistory(sessionId) { return chatHistoryRuntime.viewHistory(sessionId); }
 function chatLastActivity(sessionId, activeChat) {
   return chatHistoryRuntime.lastActivity(sessionId, activeChat);
 }
@@ -2680,6 +2688,7 @@ const chatTurnEngine = createChatTurnEngine({
   buildGoalLimitNote,
   appendChatMessage,
   loadChatHistory,
+  viewChatHistory,
   scheduleIncrementalSave,
   chatBroadcast,
   sendWs,

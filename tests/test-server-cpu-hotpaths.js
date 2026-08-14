@@ -70,6 +70,30 @@ test('transcript writes reuse the stored messages instead of deep-cloning them',
   assert.equal(afterInterim[0], afterThird[0], 'an interim save does not re-clone the transcript');
 });
 
+test('reading the transcript to page or measure it does not clone the whole thing', () => {
+  // The WS replay on connect paged out five messages and totalled a codex
+  // session's token usage; both went through read(), which deep-clones the
+  // entire transcript. Reconnects arrive at a few per second across a fleet, so
+  // two full clones per connect was enough to saturate a core on its own.
+  // view() is the read-only path that makes those callers cheap — and its
+  // contract is exactly that it does NOT copy.
+  const { service } = historyServiceHarness();
+  service.append('s1', { role: 'user', content: 'first' });
+  service.append('s1', { role: 'assistant', content: 'second' });
+
+  const view = service.view('s1');
+  const copy = service.read('s1');
+  assert.deepEqual(view, copy, 'the view sees the same transcript read() does');
+  assert.equal(view[0], service.view('s1')[0], 'view returns the cached messages, uncopied');
+  assert.notEqual(copy[0], view[0], 'read() still hands back an isolated clone');
+
+  // The isolation callers rely on has to come from somewhere: a mutation must
+  // not be visible through a view someone already took, or a paged response
+  // could change under a client mid-request.
+  service.append('s1', { role: 'user', content: 'third' });
+  assert.equal(view.length, 2, 'an existing view is not extended by later writes');
+});
+
 test('a mutation result still exposes an isolated transcript, but only if read', () => {
   const { service } = historyServiceHarness();
   service.append('s1', { role: 'user', content: 'first' });

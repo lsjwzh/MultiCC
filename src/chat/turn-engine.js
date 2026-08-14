@@ -107,6 +107,9 @@ function createChatTurnEngine(deps) {
     buildGoalLimitNote,
     appendChatMessage,
     loadChatHistory,
+    // Read-only transcript view; see the WS replay below for why the cloning
+    // load() is the wrong tool for a caller that only measures.
+    viewChatHistory = loadChatHistory,
     scheduleIncrementalSave,
     chatBroadcast,
     sendWs,
@@ -1812,8 +1815,11 @@ function createChatTurnEngine(deps) {
     // Until an operator performs a controlled on-disk rebuild, derive the chat
     // header from non-mutating history projection so it agrees with the fixed
     // per-message footers immediately after upgrade.
+    // summarizeHistoryUsage only totals numbers, so it reads the transcript
+    // rather than cloning it: this runs on every WS connect, and reconnects
+    // arrive at a few per second across a fleet.
     const sessionTokenUsage = persisted.cli === 'codex'
-      ? summarizeHistoryUsage(loadChatHistory(sessionName))
+      ? summarizeHistoryUsage(viewChatHistory(sessionName))
       : tokenUsage[sessionName] || null;
     if (replayMessages.length > 0 || sessionTokenUsage) {
       sendWs(ws, { type: 'chat_history', messages: replayMessages, tokenUsage: sessionTokenUsage, hasMore: page.hasMore });

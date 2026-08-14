@@ -57,6 +57,12 @@ function createClassifyStateMachine(rawDeps) {
     turnHasSideEffects,
     retryNotice,
     loadChatHistory,
+    // Classify only ever reads the transcript — it pulls the last assistant
+    // reply and builds a prompt string out of recent turns. Cloning every
+    // session's history once per scan, purely to read a few fields off the end
+    // of it, is the most expensive thing the scan does. Defaults to
+    // loadChatHistory so an older host composition still works.
+    viewChatHistory = loadChatHistory,
     appendChatMessage,
   } = deps;
 
@@ -504,7 +510,7 @@ function createClassifyStateMachine(rawDeps) {
       // Pull last assistant reply from chat history to classify against
       let reply = '';
       try {
-        const history = loadChatHistory(sid);
+        const history = viewChatHistory(sid);
         for (let i = history.length - 1; i >= 0; i--) {
           const m = history[i];
           if (m.role === 'assistant' && typeof m.content === 'string' && m.content.length >= 20) {
@@ -573,7 +579,7 @@ function createClassifyStateMachine(rawDeps) {
   // Build the classify user prompt (conversation data only, no instructions).
   // Returns the conversation block as a plain string of labelled turns.
   function buildClassifyConversation(sessionName, reply) {
-    const history = loadChatHistory(sessionName);
+    const history = viewChatHistory(sessionName);
     const MAX_TURNS = 20;
     const MAX_PER_MSG = 400;
     const RECENT_NO_TRUNC = 5;  // keep the most recent N messages in full
