@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:multicc_app/models/message.dart';
 import 'package:multicc_app/models/tool_input_view.dart';
+import 'package:multicc_app/widgets/tool_card.dart';
 
 // Mirrors the web fixture in tests/test-chat-history-view.js ("typed tool
 // input renders by tool name" + "tool duration is shown only when start and
@@ -131,6 +132,38 @@ void main() {
         inputJson: '{"command":"pwd"}',
       );
       expect(tc.description, 'pwd');
+    });
+  });
+
+  group('history replay parses server-stamped tools (ChatMessage.fromHistory)', () {
+    ChatMessage replay(List<Map<String, dynamic>> tools) => ChatMessage.fromHistory({
+      'role': 'assistant',
+      'content': 'hi',
+      'tools': tools,
+    });
+
+    test('stamped tools replay as measured, with real JSON input', () {
+      final msg = replay([
+        {
+          'id': 't1', 'name': 'Bash', 'input': {'command': 'pwd'},
+          'result': 'ok', 'is_error': false,
+          'startedAt': 1000, 'endedAt': 2500,
+        },
+        {
+          'id': 't2', 'name': 'Read', 'input': {'file_path': '/a'},
+          'result': 'x', 'is_error': true,
+        },
+      ]);
+      final t1 = msg.toolCalls[0];
+      expect(t1.durationMs, 1500);
+      expect(toolDescriptionFor(t1), 'done · 1.5s');
+      // input is JSON-encoded (not Dart toString "{command: pwd}"), so the
+      // typed preview and description work on replay.
+      expect(t1.description, 'pwd');
+      // A tool persisted before stamping stays unknown — bare label.
+      final t2 = msg.toolCalls[1];
+      expect(t2.durationMs, isNull);
+      expect(toolDescriptionFor(t2), 'failed');
     });
   });
 }
