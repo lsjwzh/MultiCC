@@ -1,3 +1,4 @@
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:multicc_app/providers/chat_provider.dart';
@@ -99,6 +100,141 @@ void main() {
         expect(verdict.resolution, StagedResolution.keep);
         expect(verdict.target, isNull);
       }
+    });
+
+    test('a replayed queued event (same entryId) never re-binds another staged send', () {
+      // 重放幂等：entry-a 已绑 app-1，重复的 queued 事件不能绑到 app-2 上。
+      final staged = [_send('app-1', entryId: 'entry-a'), _send('app-2')];
+      final verdict = resolveStagedQueueEvent(staged, 'queued', {
+        'queued': true,
+        'entryId': 'entry-a',
+      });
+      expect(verdict.target, isNull);
+      expect(verdict.resolution, StagedResolution.keep);
+    });
+  });
+
+  group('StagedSendTracker (FIFO verdict timing semantics)', () {
+    // 每个用例都跑在 FakeAsync 里：真实 Timer 被接管，可以精确推过 4 秒兜底。
+    StagedSendTracker _tracker(List<String> committed) =>
+        StagedSendTracker(onCommit: (s) => committed.add(s.clientMsgId));
+
+    test('queued:true cancels the fallback — no bubble even after 10s (the bug)', () {
+      fakeAsync((async) {
+        final committed = <String>[];
+        final t = _tracker(committed);
+        t.stage('app-1', 'hello');
+        t.reconcile('queued', {'queued': true, 'entryId': 'entry-a'});
+        async.elapse(const Duration(seconds: 10));
+        // 修复点：权威 queued 裁决后，兜底定时器绝不能把队列消息画进对话区。
+        expect(committed, isEmpty);
+        // 仍在等 started，且已封死。
+        expect(t.pending.single.clientMsgId, 'app-1');
+        expect(t.pending.single.entryId, 'entry-a');
+        expect(t.pending.single.queuedVerdict, isTrue);
+        expect(t.pending.single.fallbackTimer, isNull);
+      });
+    });
+
+    test('queued:false commits immediately, without waiting for the fallback', () {
+      fakeAsync((async) {
+        final committed = <String>[];
+        final t = _tracker(committed);
+        t.stage('app-1', 'run now');
+        t.reconcile('queued', {'queued': false, 'entryId': 'entry-1'});
+        expect(committed, ['app-1']);
+        expect(t.pending, isEmpty);
+        async.elapse(const Duration(seconds: 10));
+        expect(committed, ['app-1']); // 不重复
+      });
+    });
+
+    test('queued:true → started commits exactly once; duplicate started is a no-op', () {
+      fakeAsync((async) {
+        final committed = <String>[];
+        final t = _tracker(committed);
+        t.stage('app-1', 'queued msg');
+        t.reconcile('queued', {'queued': true, 'entryId': 'entry-a'});
+        async.elapse(const Duration(seconds: 10)); // 兜底窗口早已超时
+        expect(committed, isEmpty);
+        t.reconcile('started', {'entryId': 'entry-a'});
+        expect(committed, ['app-1']); // 此时且仅此时回填
+        t.reconcile('started', {'entryId': 'entry-a'}); // WS 重放
+        t.reconcile('claimed', {'entryId': 'entry-a'});
+        expect(committed, ['app-1']);
+        expect(t.pending, isEmpty);
+      });
+    });
+
+    test('queued:true → queued_cancelled never enters the transcript', () {
+      fakeAsync((async) {
+        final committed = <String>[];
+        final t = _tracker(committed);
+        t.stage('app-1', 'cancelled msg');
+        t.reconcile('queued', {'queued': true, 'entryId': 'entry-a'});
+        t.reconcile('queued_cancelled', {'entryId': 'entry-a'});
+        expect(t.pending, isEmpty);
+        async.elapse(const Duration(seconds: 10));
+        expect(committed, isEmpty);
+      });
+    });
+
+    test('with no verdict at all, the original disconnect fallback still commits', () {
+      fakeAsync((async) {
+        final committed = <String>[];
+        final t = _tracker(committed);
+        t.stage('app-1', 'lost socket');
+        async.elapse(const Duration(milliseconds: 3900));
+        expect(committed, isEmpty); // 兜底窗口内
+        async.elapse(const Duration(milliseconds: 200));
+        expect(committed, ['app-1']); // 4s 到点乐观显示
+      });
+    });
+
+    test('two sends — first queued, second immediate — never cross-bind', () {
+      fakeAsync((async) {
+        final committed = <String>[];
+        final t = _tracker(committed);
+        t.stage('app-1', 'first (will queue)');
+        t.stage('app-2', 'second (immediate)');
+        t.reconcile('queued', {'queued': true, 'entryId': 'entry-a'}); // → app-1 隐藏
+        t.reconcile('queued', {'queued': false, 'entryId': 'entry-b'}); // → app-2 立即
+        expect(committed, ['app-2']);
+        t.reconcile('started', {'entryId': 'entry-a'}); // app-1 开始执行
+        expect(committed, ['app-2', 'app-1']);
+        expect(t.pending, isEmpty);
+        async.elapse(const Duration(seconds: 10));
+        expect(committed, ['app-2', 'app-1']); // 无兜底复画
+      });
+    });
+
+    test('a replayed queued verdict for a bound entryId never binds the next staged send', () {
+      fakeAsync((async) {
+        final committed = <String>[];
+        final t = _tracker(committed);
+        t.stage('app-1', 'one');
+        t.stage('app-2', 'two');
+        t.reconcile('queued', {'queued': true, 'entryId': 'entry-a'}); // 绑 app-1
+        t.reconcile('queued', {'queued': true, 'entryId': 'entry-a'}); // 重放
+        expect(t.pending[1].entryId, isNull); // app-2 未被串绑
+        t.reconcile('queued', {'queued': true, 'entryId': 'entry-b'}); // 真裁决
+        expect(t.pending[1].entryId, 'entry-b');
+        t.reconcile('started', {'entryId': 'entry-b'});
+        expect(committed, ['app-2']);
+      });
+    });
+
+    test('clear() cancels every fallback timer (dispose / authoritative rebuild)', () {
+      fakeAsync((async) {
+        final committed = <String>[];
+        final t = _tracker(committed);
+        t.stage('app-1', 'a');
+        t.stage('app-2', 'b');
+        t.clear();
+        expect(t.pending, isEmpty);
+        async.elapse(const Duration(seconds: 10));
+        expect(committed, isEmpty);
+      });
     });
   });
 }
