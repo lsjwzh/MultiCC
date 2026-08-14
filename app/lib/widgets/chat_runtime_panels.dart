@@ -545,7 +545,11 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
   // from the server render — the panel paints them verbatim.
   final VendorQuotaView? limit;
   final VendorQuotaView? balance;
-  final List<VendorQuotaView> vendorQuotas;
+  // Vendor bars gated on the provider baseUrl (ark/zhipu/kimi), each tappable
+  // like its web counterpart (install / auth / login / refetch).
+  final VendorQuotaView? arkUsage;
+  final VendorQuotaView? zhipuUsage;
+  final VendorQuotaView? kimiUsage;
   final VendorQuotaView? claudeUsage;
   final VendorQuotaView? qoderUsage;
   final VendorQuotaView? opencodeUsage;
@@ -554,6 +558,9 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
   final VoidCallback? onQoderQuotaTap;
   final VoidCallback? onOpenCodeQuotaTap;
   final VoidCallback? onCodexQuotaTap;
+  final VoidCallback? onArkQuotaTap;
+  final VoidCallback? onZhipuQuotaTap;
+  final VoidCallback? onKimiQuotaTap;
   final VoidCallback? onRetry;
 
   const ChatRuntimeNoticePanel({
@@ -561,7 +568,9 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
     this.apiError,
     this.limit,
     this.balance,
-    this.vendorQuotas = const [],
+    this.arkUsage,
+    this.zhipuUsage,
+    this.kimiUsage,
     this.claudeUsage,
     this.qoderUsage,
     this.opencodeUsage,
@@ -570,6 +579,9 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
     this.onQoderQuotaTap,
     this.onOpenCodeQuotaTap,
     this.onCodexQuotaTap,
+    this.onArkQuotaTap,
+    this.onZhipuQuotaTap,
+    this.onKimiQuotaTap,
     this.onRetry,
   });
 
@@ -578,7 +590,9 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
     if (apiError == null &&
         limit == null &&
         balance == null &&
-        vendorQuotas.isEmpty &&
+        arkUsage == null &&
+        zhipuUsage == null &&
+        kimiUsage == null &&
         claudeUsage == null &&
         qoderUsage == null &&
         opencodeUsage == null &&
@@ -593,34 +607,54 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
         color: Color(0xFF0a0c0f),
         border: Border(bottom: BorderSide(color: Color(0xFF20242b))),
       ),
+      // Slot order matches the web chat.html bar row: opencode, qoder, codex,
+      // claude-rate-limit (subscription or routed window), balance, ark,
+      // zhipu, kimi — then the api-error row the web shows in the same panel.
       child: Wrap(
         spacing: 10,
         runSpacing: 6,
         crossAxisAlignment: WrapCrossAlignment.center,
         children: [
-          if (limit != null) _vendorQuotaView(limit!),
-          if (codexUsage != null)
-            _quotaBarView(
-              codexUsage!,
-              onTap: onCodexQuotaTap,
-              key: const Key('codex-quota-bar'),
-            ),
           if (opencodeUsage != null)
             _quotaBarView(
               opencodeUsage!,
               onTap: onOpenCodeQuotaTap,
               key: const Key('opencode-quota-bar'),
             ),
-          if (claudeUsage != null)
-            _claudeUsageView(claudeUsage!, onTap: onClaudeQuotaTap),
           if (qoderUsage != null)
             _quotaBarView(
               qoderUsage!,
               onTap: onQoderQuotaTap,
               key: const Key('qoder-quota-bar'),
             ),
+          if (codexUsage != null)
+            _quotaBarView(
+              codexUsage!,
+              onTap: onCodexQuotaTap,
+              key: const Key('codex-quota-bar'),
+            ),
+          if (claudeUsage != null)
+            _claudeUsageView(claudeUsage!, onTap: onClaudeQuotaTap),
+          if (limit != null) _vendorQuotaView(limit!),
           if (balance != null) _vendorQuotaView(balance!),
-          for (final v in vendorQuotas) _vendorQuotaView(v),
+          if (arkUsage != null)
+            _quotaBarView(
+              arkUsage!,
+              onTap: onArkQuotaTap,
+              key: const Key('ark-quota-bar'),
+            ),
+          if (zhipuUsage != null)
+            _quotaBarView(
+              zhipuUsage!,
+              onTap: onZhipuQuotaTap,
+              key: const Key('zhipu-quota-bar'),
+            ),
+          if (kimiUsage != null)
+            _quotaBarView(
+              kimiUsage!,
+              onTap: onKimiQuotaTap,
+              key: const Key('kimi-quota-bar'),
+            ),
           if (apiError != null) _errorView(apiError!),
           if (apiError?.canManualRetry == true && onRetry != null)
             OutlinedButton.icon(
