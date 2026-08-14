@@ -230,6 +230,57 @@ test('repeated tool results replace the owned result block', () => {
   assert.equal(card.querySelector('.tool-desc').textContent, 'failed');
 });
 
+test('tool duration is shown only when start and settle are measured', () => {
+  const { view } = fixture();
+  // Live tool: content_block_start stamped startedAt, tool_result stamped endedAt.
+  // The wall-clock span is shown as a measured suffix (DSH provenance state).
+  const live = { card: view.createToolCard('Bash', 'tool-1'), id: 'tool-1',
+    inputJson: '{"command":"sleep 1"}', startedAt: 1000, endedAt: 2500 };
+  view.addToolResult(live, 'ok', false);
+  assert.equal(live.card.querySelector('.tool-desc').textContent, 'done · 1.5s');
+
+  // A failure still tags its measured duration.
+  const fast = { card: view.createToolCard('Bash', 'tool-2'), id: 'tool-2',
+    inputJson: '{}', startedAt: 5000, endedAt: 5120 };
+  view.addToolResult(fast, 'boom', true);
+  assert.equal(fast.card.querySelector('.tool-desc').textContent, 'failed · 120ms');
+
+  // Replay/hydrateTool has no timing — never fabricate "0ms"; show the bare label.
+  const replay = { card: view.createToolCard('Read', 'r1'), id: 'r1', inputJson: '{}' };
+  view.addToolResult(replay, 'ok', false);
+  assert.equal(replay.card.querySelector('.tool-desc').textContent, 'done');
+
+  // A clock skew (endedAt before startedAt) degrades to the unknown label.
+  const skew = { card: view.createToolCard('Bash', 's1'), id: 's1', inputJson: '{}',
+    startedAt: 9000, endedAt: 1000 };
+  view.addToolResult(skew, 'ok', false);
+  assert.equal(skew.card.querySelector('.tool-desc').textContent, 'done');
+});
+
+test('typed tool input renders by tool name, not as a JSON blob', () => {
+  const { view } = fixture();
+  function inputFor(name, input) {
+    const card = view.createToolCard(name, 'x');
+    const state = { card, name, id: 'x', inputJson: JSON.stringify(input) };
+    view.updateToolInput(state);
+    return card.querySelector('.tool-input').textContent;
+  }
+  assert.equal(inputFor('Bash', { command: 'ls -la' }), '$ ls -la');
+  assert.equal(inputFor('Read', { file_path: '/a/b.ts' }), '/a/b.ts');
+  assert.equal(inputFor('Read', { file_path: '/a', offset: 10, limit: 5 }), '/a\n(offset: 10, limit: 5)');
+  assert.equal(inputFor('Grep', { pattern: 'foo', path: 'src', include: '*.js' }), '/foo/  src --include=*.js');
+  assert.equal(inputFor('Glob', { pattern: '**/*.md', path: 'docs' }), '**/*.md\nin docs');
+  assert.equal(inputFor('WebFetch', { url: 'http://x', prompt: 'sum' }), 'http://x\nsum');
+  assert.equal(inputFor('Edit', { file_path: '/a', old_string: 'x', new_string: 'y' }), '/a\n--- old\nx\n+++ new\ny');
+  assert.equal(inputFor('Write', { file_path: '/a', content: 'hi' }), '/a\nhi');
+  assert.equal(inputFor('Agent', { description: 'find bugs', prompt: 'go' }), 'find bugs\ngo');
+  // Unknown tool name still falls back to pretty JSON.
+  assert.equal(inputFor('MysteryTool', { a: 1 }), JSON.stringify({ a: 1 }, null, 2));
+  // Markup in tool content stays text — never parsed as HTML (XSS guard).
+  assert.equal(inputFor('Bash', { command: '<b>hi</b>' }), '$ <b>hi</b>');
+  assert.equal(inputFor('Write', { file_path: '/a', content: '<img onerror=boom>' }), '/a\n<img onerror=boom>');
+});
+
 test('streaming-tail reconciliation owns one bubble and hydrates tool identity', () => {
   const { messagesEl, view } = fixture();
   const plan = {

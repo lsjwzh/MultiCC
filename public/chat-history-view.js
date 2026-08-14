@@ -19,6 +19,74 @@
     try { return JSON.stringify(value); } catch (_) { return String(value); }
   }
 
+  // Render a wall-clock span as the short suffix shown after "done"/"failed".
+  // Mirrors DSH's measured-state tag — the real elapsed time of a tool call,
+  // never a fabricated 0ms. <1s shows ms, <60s shows seconds (1 decimal under
+  // 10s), ≥60s shows "1m 5s". Returns '' for anything unmeasurable.
+  function humanizeDuration(ms) {
+    if (!Number.isFinite(ms) || ms < 0) return '';
+    if (ms < 1000) return ms + 'ms';
+    const s = ms / 1000;
+    if (s < 60) return (s < 10 ? s.toFixed(1) : String(Math.round(s))) + 's';
+    const m = Math.floor(s / 60);
+    const rs = Math.round(s - m * 60);
+    return rs > 0 ? m + 'm ' + rs + 's' : m + 'm';
+  }
+
+  // Render a tool's input as a typed, human-readable preview instead of a raw
+  // JSON blob (DSH ToolRow: terminal / file / diff / web / agent views). Every
+  // field is coerced through asText and the result is assigned to textContent,
+  // so model-generated or file content (which may carry markup) is shown as
+  // text, never parsed as HTML. Unknown tool names fall back to pretty JSON.
+  function renderToolInput(name, parsed) {
+    const p = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    const file = asText(p.file_path || p.path);
+    switch (name) {
+      case 'Bash':
+        return '$ ' + asText(p.command || p.cmd || '');
+      case 'Read':
+        return file + rangeSuffix(p);
+      case 'Glob':
+        return asText(p.pattern || '') + (file ? '\nin ' + file : '');
+      case 'Grep':
+        return '/' + asText(p.pattern || '') + '/' + (file ? '  ' + file : '')
+          + (p.include ? ' --include=' + asText(p.include) : '')
+          + (p['-i'] || p.case_insensitive ? ' -i' : '');
+      case 'Write':
+        return file + (p.content != null ? '\n' + asText(p.content) : '');
+      case 'Edit':
+        return file + diffBlock(asText(p.old_string), asText(p.new_string))
+          + (p.replace_all ? '\n(replace all)' : '');
+      case 'MultiEdit': {
+        const edits = Array.isArray(p.edits) ? p.edits : [];
+        let out = file;
+        edits.forEach((e, i) => {
+          out += diffBlock(asText(e && e.old_string), asText(e && e.new_string), 'edit ' + (i + 1));
+        });
+        return out || '{}';
+      }
+      case 'WebFetch':
+      case 'WebSearch':
+        return asText(p.url || p.query || '') + (p.prompt ? '\n' + asText(p.prompt) : '');
+      case 'Agent':
+      case 'Task':
+        return asText(p.description || '') + (p.prompt ? '\n' + asText(p.prompt) : '');
+      default:
+        return JSON.stringify(parsed, null, 2);
+    }
+  }
+
+  function rangeSuffix(p) {
+    const o = p.offset, l = p.limit;
+    if (o == null && l == null) return '';
+    return '\n(offset: ' + asText(o) + (l != null ? ', limit: ' + asText(l) : '') + ')';
+  }
+
+  function diffBlock(oldStr, newStr, tag) {
+    const t = tag ? tag + ' ' : '';
+    return '\n--- ' + t + 'old\n' + oldStr + '\n+++ ' + t + 'new\n' + newStr;
+  }
+
   function createHistoryView(options) {
     const settings = options && typeof options === 'object' ? options : {};
     const document = settings.document;
@@ -163,7 +231,7 @@
         }
         const summary = parsed.description || parsed.command || parsed.pattern || parsed.file_path || '';
         if (summary && description) description.textContent = truncate(summary, 60);
-        input.textContent = JSON.stringify(parsed, null, 2);
+        input.textContent = renderToolInput(toolState.name, parsed);
       } catch (_) {
         input.textContent = asText(toolState.inputJson);
       }
@@ -184,7 +252,20 @@
       body.appendChild(label);
       body.appendChild(result);
       const description = toolState.card.querySelector('.tool-desc');
-      if (description) description.textContent = isError ? 'failed' : 'done';
+      if (description) {
+        // Timing provenance (DSH-style three-state):
+        //   measured — real wall-clock when both startedAt and endedAt are set
+        //              (a live tool: content_block_start → tool_result).
+        //   unknown  — replay/hydrateTool. The server never persists tool
+        //              start/settle timestamps, so we never fabricate "0ms";
+        //              we show the plain label with no duration rather than lie.
+        const baseLabel = isError ? 'failed' : 'done';
+        const ms = (toolState.startedAt && toolState.endedAt)
+          ? toolState.endedAt - toolState.startedAt : null;
+        description.textContent = humanizeDuration(ms)
+          ? baseLabel + ' · ' + humanizeDuration(ms)
+          : baseLabel;
+      }
     }
 
     function hydrateTool(tool, contentEl) {
