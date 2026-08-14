@@ -26,11 +26,12 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { sanitizeMessage } = require('./api-error-policy');
+const { normalizeWindowEvent, windowEventBar } = require('../quota/quota-bar-view');
 
-const DEFAULT_INTERVAL_MS = 10_000;
+const DEFAULT_INTERVAL_MS = 5_000;
 // A scan only starts after the turn has been this silent — but silence alone
 // never triggers an action; a correlated ERROR line is the sole trigger.
-const DEFAULT_MIN_SILENCE_MS = 20_000;
+const DEFAULT_MIN_SILENCE_MS = 10_000;
 const DEFAULT_TAIL_BYTES = 512 * 1024;
 // Log timestamps come from the CLI's own clock; tolerate a small skew when
 // matching lines to the current turn window.
@@ -60,6 +61,39 @@ function sanitizeWithUrls(rawMessage) {
   let sanitized = sanitizeMessage(masked, '');
   sanitized = sanitized.replace(/\u0000URL(\d+)\u0000/g, (_, i) => urls[Number(i)] || '');
   return sanitized.trim();
+}
+
+function parseResetDelayMs(text) {
+  const raw = String(text || '');
+  const match = /resets?\s+in\s+([^.;\n]+)/i.exec(raw);
+  if (!match) return null;
+  let total = 0;
+  const unitRe = /(\d+(?:\.\d+)?)\s*(d|day|days|h|hr|hrs|hour|hours|m|min|mins|minute|minutes)\b/ig;
+  for (const part of match[1].matchAll(unitRe)) {
+    const value = Number(part[1]);
+    if (!Number.isFinite(value) || value < 0) continue;
+    const unit = part[2].toLowerCase();
+    if (unit === 'd' || unit.startsWith('day')) total += value * 86_400_000;
+    else if (unit === 'h' || unit.startsWith('hr') || unit.startsWith('hour')) total += value * 3_600_000;
+    else total += value * 60_000;
+  }
+  return total > 0 ? Math.round(total) : null;
+}
+
+function opencodeRateLimitInfoFromError(message, nowMs = Date.now()) {
+  const text = String(message || '');
+  let rateLimitType = null;
+  if (/\bweekly\s+usage\s+limit\s+reached\b/i.test(text)) rateLimitType = 'weekly';
+  else if (/\b(?:5\s*h(?:our)?|five[-\s]?hour|rolling)\s+usage\s+limit\s+reached\b/i.test(text)) rateLimitType = 'five_hour';
+  if (!rateLimitType) return null;
+  const resetMs = parseResetDelayMs(text);
+  return Object.freeze({
+    rateLimitType,
+    status: 'rejected',
+    utilization: 1,
+    resetsAt: resetMs == null ? null : Math.trunc((Number(nowMs) + resetMs) / 1000),
+    provider: 'opencode',
+  });
 }
 
 function parseLine(line) {
@@ -209,6 +243,18 @@ function createProviderLogWatchdog(deps = {}) {
         message: hit.text,
       };
     }
+    const limitInfo = record.cli === 'opencode' ? opencodeRateLimitInfoFromError(hit.text, at) : null;
+    if (limitInfo) {
+      const bar = windowEventBar(normalizeWindowEvent(limitInfo, at));
+      const limitEvt = { type: 'rate_limit_event', sessionId, rate_limit_info: limitInfo, bar };
+      try {
+        if (Array.isArray(cs.streamReplay)) {
+          cs.streamReplay.push(limitEvt);
+          if (cs.streamReplay.length > 500) cs.streamReplay.shift();
+        }
+      } catch (_) {}
+      deps.broadcast(sessionId, limitEvt);
+    }
     const evt = { type: 'error', error: `${provider.label} 出错：${sanitized}` };
     try {
       if (Array.isArray(cs.streamReplay)) {
@@ -268,6 +314,8 @@ module.exports = {
   createProviderLogWatchdog,
   sanitizeWithUrls,
   extractErrorText,
+  parseResetDelayMs,
+  opencodeRateLimitInfoFromError,
   PROVIDER_LOG_WATCHDOG_INTERVAL_MS: DEFAULT_INTERVAL_MS,
   PROVIDER_LOG_WATCHDOG_MIN_SILENCE_MS: DEFAULT_MIN_SILENCE_MS,
 };
