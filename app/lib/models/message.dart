@@ -161,10 +161,16 @@ class ChatMessage {
       final tc = ToolCall(
         id: (t['id'] ?? '').toString(),
         name: (t['name'] ?? '').toString(),
-        inputJson: t['input'] != null ? t['input'].toString() : '',
+        // jsonEncode, not toString(): parsedInput feeds jsonDecode, and a Dart
+        // map's "{command: pwd}" toString is not JSON.
+        inputJson: t['input'] != null ? jsonEncode(t['input']) : '',
         result: t['result']?.toString(),
         isError: t['is_error'] == true,
         isDone: true,
+        // Server-stamped timing (turns persisted after the tool-stamp change)
+        // makes replay durations measured; older sessions have neither.
+        startedAt: (t['startedAt'] as num?)?.toInt(),
+        endedAt: (t['endedAt'] as num?)?.toInt(),
       );
       return tc;
     }).toList();
