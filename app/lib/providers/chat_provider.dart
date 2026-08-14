@@ -238,23 +238,31 @@ class ChatProvider extends ChangeNotifier {
     Map<String, dynamic>? data,
     String idleKey, {
     bool loading = false,
+    String? state,
   }) {
     if (data != null) {
-      final v = vendorViewFromBar(_barOf(data));
+      final v = vendorViewFromBar(_barOf(data), state: state);
       if (v != null) return v;
     }
     final idle = _idleBar(idleKey);
-    final v = vendorViewFromBar(idle, state: loading ? 'loading' : null);
+    final v = vendorViewFromBar(
+      idle,
+      state: state ?? (loading ? 'loading' : null),
+    );
     return v ?? const VendorQuotaView('…', VendorQuotaColor.gray);
   }
 
   /// Claude subscription bar — the scrape's server-rendered bar (already a
   /// 5h + weekly + monthly merge), with the passive 5h event bar as a live
-  /// stand-in before the first scrape lands. Always non-null under the claude
-  /// CLI so the bar stays a visible tap target (mirrors the web fixed-display
-  /// fallback); null under any other CLI.
+  /// stand-in before the first scrape lands. Only under the claude CLI AND on
+  /// a Claude provider context (empty baseUrl = official login, or an
+  /// anthropic/claude host — mirrors the web `isClaudeProvider` gate): on a
+  /// non-Claude provider (e.g. Zhipu) the subscription bar hides and the
+  /// routed window bar shows instead. Always non-null when gated in, so the
+  /// bar stays a visible tap target (mirrors the web fixed-display fallback).
   VendorQuotaView? get claudeLimitView {
     if (_cli != SessionCli.claude) return null;
+    if (!isClaudeProviderBaseUrl(_providerBaseUrl)) return null;
     final usage = _claudeUsage;
     if (usage != null) {
       final v = vendorViewFromBar(_barOf(usage));
@@ -265,18 +273,34 @@ class ChatProvider extends ChangeNotifier {
       if (v != null) return v;
     }
     final idle = _idleBar('claude');
-    final v = vendorViewFromBar(idle, state: _claudeUsageFetching ? 'fetching' : null);
+    final v = vendorViewFromBar(
+      idle,
+      state: _claudeUsageFetching
+          ? 'fetching'
+          : _claudeLoginPending
+          ? 'login_pending'
+          : null,
+    );
     return v ?? const VendorQuotaView('…', VendorQuotaColor.gray);
   }
 
-  /// GLM/Codex window bar from the passive rate_limit_event — the server's
-  /// provider-tagged render (`路由供应商 GLM · 5h…` / `1wk…`). Claude's event
-  /// is routed to [claudeLimitView], so it is withheld here. Gated on the same
-  /// active + cli-matches rules that used to drive nonClaudeWindowLimit.
+  /// GLM/Codex/Claude window bar from the passive rate_limit_event — the
+  /// server's provider-tagged render (`路由供应商 GLM · 5h…` / `1wk…`).
+  /// Gated by [providerMatchesCli] (the web `providerMatchesCli` mirror,
+  /// baseUrl-aware: a GLM window also shows under the claude CLI when the
+  /// provider points at Zhipu, and a Claude window shows under opencode).
+  /// Under the claude CLI on a Claude provider the event bar is already the
+  /// live stand-in inside [claudeLimitView] — showing it here too would paint
+  /// the same window twice.
   VendorQuotaView? get limitView {
     final limit = _usageWindowLimit;
-    if (limit == null || limit.provider == 'claude') return null;
-    if (!limit.isActiveAt(DateTime.now()) || !limit.matchesCli(_cli.name)) {
+    if (limit == null) return null;
+    if (!providerMatchesCli(limit.provider, _cli.name, _providerBaseUrl)) {
+      return null;
+    }
+    if (limit.provider == 'claude' &&
+        _cli == SessionCli.claude &&
+        isClaudeProviderBaseUrl(_providerBaseUrl)) {
       return null;
     }
     return vendorViewFromBar(_rateLimitBar);
@@ -336,6 +360,7 @@ class ChatProvider extends ChangeNotifier {
   Map<String, dynamic>? _kimiQuota;
   Map<String, dynamic>? _qoderQuota;
   bool _arkLoading = false;
+  bool _arkInstalling = false;
   bool _zhipuLoading = false;
   bool _kimiLoading = false;
   bool _qoderLoading = false;
@@ -355,6 +380,7 @@ class ChatProvider extends ChangeNotifier {
   // system_init → applyCliConfig → cli_switched burst doesn't re-scrape.
   Map<String, dynamic>? _claudeUsage;
   bool _claudeUsageFetching = false;
+  bool _claudeLoginPending = false;
   int _claudeUsageErrorAt = 0;
   static const int _claudeUsageFreshMs = 24 * 3600 * 1000;
 
@@ -494,7 +520,10 @@ class ChatProvider extends ChangeNotifier {
       final parsed = UsageWindowLimit.fromCache(
         Map<String, dynamic>.from(limit),
       );
-      if (parsed?.isActiveAt(DateTime.now()) == true) {
+      // Restored unconditionally (the web localStorage limit bar has no
+      // staleness filter either): a past 5h reset still leaves the weekly
+      // windows on the bar, and paint-time {cd} tokens clamp themselves.
+      if (parsed != null) {
         _usageWindowLimit = parsed;
         _armUsageExpiry();
       }
@@ -528,7 +557,34 @@ class ChatProvider extends ChangeNotifier {
         _claudeUsage = Map<String, dynamic>.from(claudeUsage);
       }
     }
+    // Fetch-based quota slots (ark/zhipu/kimi/qoder/opencode/codex): restore a
+    // fresh (<24h) successful response like the web per-slot localStorage
+    // caches, so a cold start paints the last bar instead of the idle
+    // placeholder. Only ok responses were ever persisted.
+    for (final entry in _vendorQuotaCacheSlots.entries) {
+      final raw = cached[entry.key];
+      if (raw is! Map) continue;
+      final fetchedAt = (raw['fetchedAt'] as num?)?.toInt();
+      final data = raw['data'];
+      if (fetchedAt == null ||
+          data is! Map ||
+          _nowMs() - fetchedAt >= _claudeUsageFreshMs) {
+        continue;
+      }
+      entry.value(Map<String, dynamic>.from(data));
+    }
   }
+
+  // The fetch-based quota slots that participate in the runtime cache, keyed
+  // by their cache field. Mirrors the web per-slot localStorage keys.
+  Map<String, void Function(Map<String, dynamic>)> get _vendorQuotaCacheSlots => {
+    'arkQuota': (v) => _arkQuota = v,
+    'zhipuQuota': (v) => _zhipuQuota = v,
+    'kimiQuota': (v) => _kimiQuota = v,
+    'qoderQuota': (v) => _qoderQuota = v,
+    'opencodeQuota': (v) => _opencodeQuota = v,
+    'codexQuota': (v) => _codexQuota = v,
+  };
 
   void _persistRuntimeCache() {
     unawaited(
@@ -547,8 +603,31 @@ class ChatProvider extends ChangeNotifier {
             if (_claudeUsage?['summary'] is List)
               'summary': _claudeUsage!['summary'],
           },
+        // Vendor quota slots: same save-on-ok + 24h freshness contract as the
+        // web per-slot localStorage caches. fetchedAt is the SERVER's stamp on
+        // the ok response, so an unrelated persist never extends freshness.
+        for (final entry in _vendorQuotaCacheSlots.entries)
+          if (_quotaDataOf(entry.key) case final Map<String, dynamic> data)
+            if ((data['fetchedAt'] as num?)?.toInt() case final fetchedAt?)
+              entry.key: {'fetchedAt': fetchedAt, 'data': data},
       }),
     );
+  }
+
+  /// The live fetch response behind a vendor quota cache slot, or null when
+  /// the slot is empty or its last response was not ok.
+  Map<String, dynamic>? _quotaDataOf(String cacheKey) {
+    final Map<String, dynamic>? data = switch (cacheKey) {
+      'arkQuota' => _arkQuota,
+      'zhipuQuota' => _zhipuQuota,
+      'kimiQuota' => _kimiQuota,
+      'qoderQuota' => _qoderQuota,
+      'opencodeQuota' => _opencodeQuota,
+      'codexQuota' => _codexQuota,
+      _ => null,
+    };
+    if (data == null || data['status']?.toString() != 'ok') return null;
+    return data;
   }
 
   void _armUsageExpiry() {
@@ -557,15 +636,18 @@ class ChatProvider extends ChangeNotifier {
     if (reset == null) return;
     final delayMs = reset - DateTime.now().millisecondsSinceEpoch + 50;
     if (delayMs <= 0) {
-      _usageWindowLimit = null;
-      _persistRuntimeCache();
+      // Already past the reset: just re-render (the {cd} tokens clamp), the way
+      // the web expiry timer does. The limit is NOT cleared — its bar still
+      // shows the windows that have not reset (e.g. weekly).
+      notifyListeners();
       return;
     }
     _usageExpiryTimer = Timer(
       Duration(milliseconds: delayMs.clamp(1, 2147000000).toInt()),
       () {
-        _usageWindowLimit = null;
-        _persistRuntimeCache();
+        // Mirrors the web scheduleExpiry: re-render at the 5h reset so a stale
+        // countdown refreshes; the bar itself is not cleared (weekly windows
+        // have not reset).
         notifyListeners();
       },
     );
@@ -652,6 +734,7 @@ class ChatProvider extends ChangeNotifier {
         final msg = evt.payload as Map<String, dynamic>;
         final next = parseCli(msg['cli']?.toString());
         final from = parseCli(msg['fromCli']?.toString());
+        if (next != _cli) _clearCliQuotaBackoff();
         _cli = next;
         refreshClaudeUsage();
         refreshQoderQuota();
@@ -976,6 +1059,7 @@ class ChatProvider extends ChangeNotifier {
   /// Apply the authoritative REST response immediately. The matching WS event
   /// still owns the user-facing handoff notice and is de-duplicated separately.
   void applyCliConfig(SessionCliConfig config) {
+    if (config.cli != _cli) _clearCliQuotaBackoff();
     _cli = config.cli;
     refreshClaudeUsage();
     refreshQoderQuota();
@@ -996,7 +1080,25 @@ class ChatProvider extends ChangeNotifier {
     final next = baseUrl.trim();
     final changed = next != _providerBaseUrl;
     _providerBaseUrl = next;
-    if (changed) refreshVendorQuotas();
+    if (changed) {
+      // An explicit switch means the user is looking at a different vendor —
+      // drop any error backoff so the new bar fetches immediately (web
+      // setProviderBaseUrl clears backoff the same way).
+      _arkErrorAt = 0;
+      _zhipuErrorAt = 0;
+      _kimiErrorAt = 0;
+      refreshVendorQuotas();
+    }
+  }
+
+  /// An explicit CLI switch resets the per-CLI fetch backoffs: the account on
+  /// screen changed, so its bars should refresh right away instead of waiting
+  /// out an error backoff earned by the previous CLI.
+  void _clearCliQuotaBackoff() {
+    _claudeUsageErrorAt = 0;
+    _qoderErrorAt = 0;
+    _opencodeErrorAt = 0;
+    _codexErrorAt = 0;
   }
 
   /// Learn the active provider baseUrl on connect (system_init carries no
@@ -1022,22 +1124,32 @@ class ChatProvider extends ChangeNotifier {
     if (isKimiBaseUrl(baseUrl)) _fetchKimiQuota();
   }
 
-  /// Vendor quota bars for the current provider, in display order. Each
-  /// resolves the server-rendered bar from its route response, falling back to
-  /// the server's idle bar while unfetched. Empty when the active baseUrl
-  /// points at no known vendor.
-  List<VendorQuotaView> get vendorQuotaViews {
-    final views = <VendorQuotaView>[];
-    if (isArkBaseUrl(_providerBaseUrl)) {
-      views.add(_vendorOrIdle(_arkQuota, 'ark', loading: _arkLoading));
-    }
-    if (isZhipuBaseUrl(_providerBaseUrl)) {
-      views.add(_vendorOrIdle(_zhipuQuota, 'zhipu', loading: _zhipuLoading));
-    }
-    if (isKimiBaseUrl(_providerBaseUrl)) {
-      views.add(_vendorOrIdle(_kimiQuota, 'kimi', loading: _kimiLoading));
-    }
-    return views;
+  /// Ark quota bar, visible only when the active provider baseUrl points at
+  /// Volcano (volces.com). Tappable: install / auth / refetch (see
+  /// [handleArkQuotaTap]); while the arkcli install runs it renders the
+  /// server's 'installing' state.
+  VendorQuotaView? get arkQuotaView {
+    if (!isArkBaseUrl(_providerBaseUrl)) return null;
+    return _vendorOrIdle(
+      _arkQuota,
+      'ark',
+      loading: _arkLoading,
+      state: _arkInstalling ? 'installing' : null,
+    );
+  }
+
+  /// Zhipu quota bar, visible only when the provider baseUrl points at
+  /// z.ai / bigmodel.cn. Tappable: force refetch (no login window).
+  VendorQuotaView? get zhipuQuotaView {
+    if (!isZhipuBaseUrl(_providerBaseUrl)) return null;
+    return _vendorOrIdle(_zhipuQuota, 'zhipu', loading: _zhipuLoading);
+  }
+
+  /// Kimi quota bar, visible only when the provider baseUrl points at
+  /// moonshot/kimi. Tappable: login (action 'login') or force refetch.
+  VendorQuotaView? get kimiQuotaView {
+    if (!isKimiBaseUrl(_providerBaseUrl)) return null;
+    return _vendorOrIdle(_kimiQuota, 'kimi', loading: _kimiLoading);
   }
 
   /// Qoder CN credits bar, gated on the CLI (its provider baseUrl is
@@ -1070,6 +1182,7 @@ class ChatProvider extends ChangeNotifier {
     } else {
       _arkErrorAt = 0;
       _arkQuota = data;
+      if (data['status'] == 'ok') _persistRuntimeCache();
     }
     notifyListeners();
   }
@@ -1094,6 +1207,7 @@ class ChatProvider extends ChangeNotifier {
     } else {
       _zhipuErrorAt = 0;
       _zhipuQuota = data;
+      if (data['status'] == 'ok') _persistRuntimeCache();
     }
     notifyListeners();
   }
@@ -1118,6 +1232,7 @@ class ChatProvider extends ChangeNotifier {
     } else {
       _kimiErrorAt = 0;
       _kimiQuota = data;
+      if (data['status'] == 'ok') _persistRuntimeCache();
     }
     notifyListeners();
   }
@@ -1146,6 +1261,7 @@ class ChatProvider extends ChangeNotifier {
     } else {
       _opencodeErrorAt = 0;
       _opencodeQuota = data;
+      if (data['status'] == 'ok') _persistRuntimeCache();
     }
     notifyListeners();
   }
@@ -1172,6 +1288,7 @@ class ChatProvider extends ChangeNotifier {
     } else {
       _codexErrorAt = 0;
       _codexQuota = data;
+      if (data['status'] == 'ok') _persistRuntimeCache();
     }
     notifyListeners();
   }
@@ -1221,13 +1338,29 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Tap on the Claude bar: open the server-side visible login window when the
-  /// scrape reports no session (needs_login / chrome_unavailable), otherwise
-  /// force a fresh scrape. Mirrors the web `quotaBarClick`.
+  /// Tap on the Claude bar: when the server render carries action 'login' (or
+  /// the scrape status is needs_login / chrome_unavailable), POST the login
+  /// route, hold a `login_pending` render, then force a fresh scrape 3s later —
+  /// mirroring the web `claudeBarClick` + `requestQuotaLogin` pair. Any other
+  /// tap is just a force-scrape.
   Future<void> handleClaudeQuotaTap() async {
+    final view = claudeLimitView;
     final status = _claudeUsage?['status']?.toString();
-    if (status == 'needs_login' || status == 'chrome_unavailable') {
+    final needsLogin =
+        view?.action == 'login' ||
+        view?.action == 'login_pending' ||
+        status == 'needs_login' ||
+        status == 'chrome_unavailable';
+    if (needsLogin) {
+      _claudeLoginPending = true;
+      notifyListeners();
       await _quota.openClaudeLogin();
+      // The pending render stays up until the delayed scrape clears it, the
+      // same way the web keeps claudeLoginPending until its reFetch callback.
+      Future.delayed(const Duration(seconds: 3), () {
+        _claudeLoginPending = false;
+        refreshClaudeUsage(force: true);
+      });
       return;
     }
     await refreshClaudeUsage(force: true);
@@ -1255,29 +1388,48 @@ class ChatProvider extends ChangeNotifier {
     } else {
       _qoderErrorAt = 0;
       _qoderQuota = data;
+      if (data['status'] == 'ok') _persistRuntimeCache();
     }
     notifyListeners();
   }
 
-  /// Tap on the Qoder bar: open the server-side visible login window when the
-  /// scrape reports no session (needs_login / chrome_unavailable), otherwise
-  /// force a fresh fetch. Mirrors the web `quotaBarClick`.
+  /// Tap on the Qoder bar: action 'login' (or needs_login /
+  /// chrome_unavailable status) dispatches the login POST and re-fetches 3s
+  /// later; any other tap force-refreshes. Mirrors the web `quotaBarClick`.
   Future<void> handleQoderQuotaTap() async {
+    final view = qoderQuotaView;
     final status = _qoderQuota?['status']?.toString();
-    if (status == 'needs_login' || status == 'chrome_unavailable') {
+    final needsLogin =
+        view?.action == 'login' ||
+        status == 'needs_login' ||
+        status == 'chrome_unavailable';
+    if (needsLogin) {
       await _quota.openQoderLogin();
+      Future.delayed(
+        const Duration(seconds: 3),
+        () => refreshQoderQuota(force: true),
+      );
       return;
     }
     await refreshQoderQuota(force: true);
   }
 
-  /// Tap on the OpenCode Go bar: open the server-side visible login window
-  /// when the scrape reports no session (needs_login / chrome_unavailable),
-  /// otherwise force a fresh fetch.
+  /// Tap on the OpenCode Go bar: action 'login' (or needs_login /
+  /// chrome_unavailable status) dispatches the login POST and re-fetches 3s
+  /// later; any other tap force-refreshes. Mirrors the web `quotaBarClick`.
   Future<void> handleOpenCodeQuotaTap() async {
+    final view = opencodeQuotaView;
     final status = _opencodeQuota?['status']?.toString();
-    if (status == 'needs_login' || status == 'chrome_unavailable') {
+    final needsLogin =
+        view?.action == 'login' ||
+        status == 'needs_login' ||
+        status == 'chrome_unavailable';
+    if (needsLogin) {
       await _quota.openOpenCodeLogin();
+      Future.delayed(
+        const Duration(seconds: 3),
+        () => refreshOpenCodeQuota(force: true),
+      );
       return;
     }
     await refreshOpenCodeQuota(force: true);
@@ -1287,6 +1439,70 @@ class ChatProvider extends ChangeNotifier {
   /// window — it reads chatgpt.com/backend-api with the browser's session).
   Future<void> handleCodexQuotaTap() async {
     await refreshCodexQuota(force: true);
+  }
+
+  /// Tap on the Zhipu balance/quota bar: the zhipu route has no login window
+  /// (the web slot passes no loginKind), so every tap is a force refetch.
+  Future<void> handleZhipuQuotaTap() async {
+    await _fetchZhipuQuota(force: true);
+  }
+
+  /// Tap on the Kimi bar: action 'login' dispatches the kimi login POST and
+  /// re-fetches 3s later; any other tap force-refreshes.
+  Future<void> handleKimiQuotaTap() async {
+    final view = kimiQuotaView;
+    if (view?.action == 'login') {
+      await _quota.openKimiLogin();
+      Future.delayed(
+        const Duration(seconds: 3),
+        () => _fetchKimiQuota(force: true),
+      );
+      return;
+    }
+    await _fetchKimiQuota(force: true);
+  }
+
+  /// Tap on the Ark bar — three destinations, mirroring the web `arkClick`:
+  /// needs_install kicks off the server-side arkcli install (with its own
+  /// 'installing' render and a failure fallback bar), needs_auth opens the auth
+  /// window then re-fetches after 4s, anything else force-refreshes.
+  Future<void> handleArkQuotaTap() async {
+    final status = _arkQuota?['status']?.toString();
+    if (status == 'needs_install' && !_arkInstalling) {
+      _arkInstalling = true;
+      notifyListeners();
+      final res = await _quota.installArk();
+      _arkInstalling = false;
+      final body = res?['body'];
+      if (res != null &&
+          res['httpOk'] == true &&
+          body is Map &&
+          body['status'] == 'ok') {
+        await _fetchArkQuota(force: true);
+      } else {
+        // Same fallback bar the web paints when the install route fails (the
+        // one client-held failure string the web arkClick carries).
+        final err = body is Map ? body['error']?.toString() : null;
+        _arkQuota = {
+          'status': 'unavailable',
+          'error': err?.isNotEmpty == true
+              ? err
+              : '自动安装失败，请手动运行 npm install -g @volcengine/ark-cli',
+        };
+        _arkErrorAt = 0;
+        notifyListeners();
+      }
+      return;
+    }
+    if (status == 'needs_auth') {
+      await _quota.openArkLogin();
+      Future.delayed(
+        const Duration(seconds: 4),
+        () => _fetchArkQuota(force: true),
+      );
+      return;
+    }
+    await _fetchArkQuota(force: true);
   }
 
   /// Remove a message from the local transcript by its server-side history id.
