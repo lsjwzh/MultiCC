@@ -139,6 +139,11 @@
     function handleResult(message) {
       state.isStreaming = false;
       const resultBubble = state.currentMsgEl;
+      // finishStreaming() clears the tool-card registry, so snapshot the
+      // measured spans first — the trajectory strip is the turn's tool timing
+      // made visible, and it only exists for live turns (replay has no stamps).
+      const trajTools = Array.from(state.currentToolCards.values())
+        .map(t => ({ name: t.name, startedAt: t.startedAt, endedAt: t.endedAt, isError: t.isError }));
       finishStreaming();
       if (message.usage || state.roleTokens.main) liveUi.attachUsageLine(resultBubble, message.usage, state.roleTokens);
       if (resultBubble) {
@@ -149,6 +154,7 @@
           const timing = liveUi.buildTimingLine({ role: 'assistant', ts: Date.now(), durationMs: duration });
           if (timing) content.appendChild(timing);
         }
+        if (content) historyView.renderToolTrajectory?.(content, trajTools);
       }
       state.turnStartMs = 0;
       host.stopTitleAnimation?.();
@@ -524,6 +530,7 @@
               ? result.content.map(item => item.text || '').join('')
               : JSON.stringify(result.content);
           tool.endedAt = Date.now();
+          tool.isError = !!result.is_error;
           historyView.addToolResult(tool, text, result.is_error);
           break;
         }
