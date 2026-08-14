@@ -19,6 +19,20 @@
     try { return JSON.stringify(value); } catch (_) { return String(value); }
   }
 
+  // Render a wall-clock span as the short suffix shown after "done"/"failed".
+  // Mirrors DSH's measured-state tag — the real elapsed time of a tool call,
+  // never a fabricated 0ms. <1s shows ms, <60s shows seconds (1 decimal under
+  // 10s), ≥60s shows "1m 5s". Returns '' for anything unmeasurable.
+  function humanizeDuration(ms) {
+    if (!Number.isFinite(ms) || ms < 0) return '';
+    if (ms < 1000) return ms + 'ms';
+    const s = ms / 1000;
+    if (s < 60) return (s < 10 ? s.toFixed(1) : String(Math.round(s))) + 's';
+    const m = Math.floor(s / 60);
+    const rs = Math.round(s - m * 60);
+    return rs > 0 ? m + 'm ' + rs + 's' : m + 'm';
+  }
+
   function createHistoryView(options) {
     const settings = options && typeof options === 'object' ? options : {};
     const document = settings.document;
@@ -184,7 +198,20 @@
       body.appendChild(label);
       body.appendChild(result);
       const description = toolState.card.querySelector('.tool-desc');
-      if (description) description.textContent = isError ? 'failed' : 'done';
+      if (description) {
+        // Timing provenance (DSH-style three-state):
+        //   measured — real wall-clock when both startedAt and endedAt are set
+        //              (a live tool: content_block_start → tool_result).
+        //   unknown  — replay/hydrateTool. The server never persists tool
+        //              start/settle timestamps, so we never fabricate "0ms";
+        //              we show the plain label with no duration rather than lie.
+        const baseLabel = isError ? 'failed' : 'done';
+        const ms = (toolState.startedAt && toolState.endedAt)
+          ? toolState.endedAt - toolState.startedAt : null;
+        description.textContent = humanizeDuration(ms)
+          ? baseLabel + ' · ' + humanizeDuration(ms)
+          : baseLabel;
+      }
     }
 
     function hydrateTool(tool, contentEl) {

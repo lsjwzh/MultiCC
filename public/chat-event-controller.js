@@ -477,6 +477,7 @@
             const card = historyView.createToolCard(event.content_block.name, event.content_block.id);
             state.currentToolCards.set(event.index, {
               card, inputJson: '', name: event.content_block.name, id: event.content_block.id,
+              startedAt: Date.now(),
             });
             historyView.appendToolCard(state.currentMsgEl.querySelector('.msg-content'), card);
           }
@@ -522,6 +523,7 @@
             : Array.isArray(result.content)
               ? result.content.map(item => item.text || '').join('')
               : JSON.stringify(result.content);
+          tool.endedAt = Date.now();
           historyView.addToolResult(tool, text, result.is_error);
           break;
         }

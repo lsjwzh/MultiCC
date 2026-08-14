@@ -230,6 +230,33 @@ test('repeated tool results replace the owned result block', () => {
   assert.equal(card.querySelector('.tool-desc').textContent, 'failed');
 });
 
+test('tool duration is shown only when start and settle are measured', () => {
+  const { view } = fixture();
+  // Live tool: content_block_start stamped startedAt, tool_result stamped endedAt.
+  // The wall-clock span is shown as a measured suffix (DSH provenance state).
+  const live = { card: view.createToolCard('Bash', 'tool-1'), id: 'tool-1',
+    inputJson: '{"command":"sleep 1"}', startedAt: 1000, endedAt: 2500 };
+  view.addToolResult(live, 'ok', false);
+  assert.equal(live.card.querySelector('.tool-desc').textContent, 'done · 1.5s');
+
+  // A failure still tags its measured duration.
+  const fast = { card: view.createToolCard('Bash', 'tool-2'), id: 'tool-2',
+    inputJson: '{}', startedAt: 5000, endedAt: 5120 };
+  view.addToolResult(fast, 'boom', true);
+  assert.equal(fast.card.querySelector('.tool-desc').textContent, 'failed · 120ms');
+
+  // Replay/hydrateTool has no timing — never fabricate "0ms"; show the bare label.
+  const replay = { card: view.createToolCard('Read', 'r1'), id: 'r1', inputJson: '{}' };
+  view.addToolResult(replay, 'ok', false);
+  assert.equal(replay.card.querySelector('.tool-desc').textContent, 'done');
+
+  // A clock skew (endedAt before startedAt) degrades to the unknown label.
+  const skew = { card: view.createToolCard('Bash', 's1'), id: 's1', inputJson: '{}',
+    startedAt: 9000, endedAt: 1000 };
+  view.addToolResult(skew, 'ok', false);
+  assert.equal(skew.card.querySelector('.tool-desc').textContent, 'done');
+});
+
 test('streaming-tail reconciliation owns one bubble and hydrates tool identity', () => {
   const { messagesEl, view } = fixture();
   const plan = {
