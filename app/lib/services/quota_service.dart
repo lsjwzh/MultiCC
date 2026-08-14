@@ -118,6 +118,62 @@ class QuotaService {
     }
   }
 
+  /// Open a visible login window for moonshot/kimi on the server's managed
+  /// Chrome profile — the same POST the web kimi bar dispatches when its
+  /// server-rendered action is 'login'. Returns false on any transport/HTTP
+  /// failure.
+  Future<bool> openKimiLogin() async {
+    try {
+      final res = await http
+          .post(
+            Uri.parse(_url('/api/kimi/quota/login')),
+            headers: _headers,
+          )
+          .timeout(const Duration(seconds: 20));
+      return res.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Kick off the server-side `npm install -g @volcengine/ark-cli` when the ark
+  /// scrape reports needs_install. Long-running; the caller keeps an
+  /// 'installing' state until this resolves. Returns null on transport
+  /// failure, otherwise the parsed body (status/error).
+  Future<Map<String, dynamic>?> installArk() async {
+    try {
+      final res = await http
+          .post(
+            Uri.parse(_url('/api/ark/quota/install')),
+            headers: _headers,
+          )
+          .timeout(const Duration(seconds: 300));
+      final body = jsonDecode(res.body);
+      return {
+        'httpOk': res.statusCode == 200,
+        'body': body is Map<String, dynamic> ? body : <String, dynamic>{},
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Open the ark auth window (needs_auth) — the POST behind the web ark
+  /// three-state click. Returns false on any transport/HTTP failure.
+  Future<bool> openArkLogin() async {
+    try {
+      final res = await http
+          .post(
+            Uri.parse(_url('/api/ark/quota/login')),
+            headers: _headers,
+          )
+          .timeout(const Duration(seconds: 20));
+      return res.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// The active session provider's baseUrl, read from the session detail
   /// endpoint (GET /api/sessions/:id → providerBaseUrl). Used on connect to
   /// learn which vendor bar to show before any CLI switch happens.

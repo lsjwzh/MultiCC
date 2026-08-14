@@ -186,5 +186,73 @@ void main() {
       )!;
       expect(v.color, VendorQuotaColor.gray);
     });
+
+    test('the server action field passes through for the tap dispatch', () {
+      final login = vendorViewFromBar(
+        const {'text': 'Claude 订阅 · 需登录', 'color': '#d29922', 'title': '', 'action': 'login'},
+      )!;
+      expect(login.action, 'login');
+      final plain = vendorViewFromBar(
+        const {'text': 'Claude 5h 50%', 'color': '#58a6ff', 'title': '', 'action': null},
+      )!;
+      expect(plain.action, isNull);
+    });
+  });
+
+  group('isClaudeProviderBaseUrl (web isClaudeProvider mirror)', () {
+    test('empty baseUrl means the official login — a Claude provider', () {
+      expect(isClaudeProviderBaseUrl(null), isTrue);
+      expect(isClaudeProviderBaseUrl(''), isTrue);
+      expect(isClaudeProviderBaseUrl('   '), isTrue);
+    });
+
+    test('anthropic / claude hosts are Claude providers', () {
+      expect(isClaudeProviderBaseUrl('https://api.anthropic.com'), isTrue);
+      expect(isClaudeProviderBaseUrl('https://api.claude.ai/v1'), isTrue);
+      expect(isClaudeProviderBaseUrl('https://EU.api.anthropic.com'), isTrue);
+    });
+
+    test('other vendors are not', () {
+      expect(isClaudeProviderBaseUrl('https://open.bigmodel.cn/api/anthropic'), isFalse);
+      expect(isClaudeProviderBaseUrl('https://ark.cn-beijing.volces.com/api/v3'), isFalse);
+      expect(isClaudeProviderBaseUrl('https://api.moonshot.cn/anthropic'), isFalse);
+    });
+  });
+
+  group('providerMatchesCli (web mirror, table-driven)', () {
+    const zhipu = 'https://open.bigmodel.cn/api/anthropic';
+    const cases = <List<Object>>[
+      // opencode windows only show under the opencode CLI.
+      ['opencode', 'opencode', zhipu, true],
+      ['opencode', 'claude', zhipu, false],
+      ['opencode', 'codex', zhipu, false],
+      ['opencode', 'qoder', zhipu, false],
+      // codex windows show under codex + opencode.
+      ['codex', 'codex', zhipu, true],
+      ['codex', 'opencode', '', true],
+      ['codex', 'claude', '', false],
+      // glm windows: codex/opencode anywhere; under any other CLI only via a
+      // Zhipu baseUrl (the web rule is cli-agnostic for glm + Zhipu — even the
+      // qoder CLI shows the window when the provider routes through Zhipu).
+      ['glm', 'codex', '', true],
+      ['glm', 'opencode', '', true],
+      ['glm', 'claude', zhipu, true],
+      ['glm', 'qoder', zhipu, true],
+      ['glm', 'claude', 'https://api.deepseek.com/anthropic', false],
+      ['glm', 'claude', '', false],
+      // claude windows: claude + opencode, never codex/qoder.
+      ['claude', 'claude', '', true],
+      ['claude', 'opencode', '', true],
+      ['claude', 'codex', '', false],
+      ['claude', 'qoder', '', false],
+    ];
+    for (final c in cases) {
+      test('${c[0]} window under ${c[1]} cli (baseUrl ${c[2] == '' ? "(none)" : c[2]}) → ${c[3]}', () {
+        expect(
+          providerMatchesCli(c[0] as String, c[1] as String, c[2] as String?),
+          c[3] as bool,
+        );
+      });
+    }
   });
 }

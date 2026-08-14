@@ -2157,7 +2157,7 @@ let _providerData = { available: false, providers: [], defaults: { claude: null,
 const PROVIDER_PRESETS = [
   { key: 'claude-subscription', label: 'Claude 官方订阅', appType: 'claude', baseUrl: '', model: '', note: '无需 key，留空 Key 直接创建=走本地登录/订阅' },
   { key: 'claude-api', label: 'Claude 官方 API', appType: 'claude', baseUrl: 'https://api.anthropic.com', model: '' },
-  { key: 'claude-glm', label: '智谱 GLM', appType: 'claude', baseUrl: 'https://open.bigmodel.cn/api/anthropic', model: 'glm-4.6', models: 'glm-5.3\nglm-5.2\nglm-5-turbo' },
+  { key: 'claude-glm', label: '智谱 GLM', appType: 'claude', baseUrl: 'https://open.bigmodel.cn/api/anthropic', model: 'glm-4.6', models: 'glm-5.3\nglm-5.2\nglm-5-turbo', aliasMap: { fable: { model: 'glm-5.3', name: 'GLM5.3' } } },
   { key: 'claude-deepseek', label: 'DeepSeek', appType: 'claude', baseUrl: 'https://api.deepseek.com/anthropic', model: 'deepseek-chat' },
   { key: 'claude-minimax', label: 'MiniMax', appType: 'claude', baseUrl: 'https://api.minimaxi.com/anthropic', model: 'MiniMax-M2' },
   { key: 'claude-qwen', label: 'Qwen 通义千问', appType: 'claude', baseUrl: 'https://dashscope.aliyuncs.com/apps/anthropic', model: 'qwen3-coder-plus' },
@@ -2230,6 +2230,9 @@ function applyProviderPreset() {
     baseUrl.value = '';
     model.value = '';
     if (models) models.value = '';
+    // Clear the model-mapping rows too — a stale preset's aliases must not
+    // leak into a hand-filled provider.
+    fillAliasMapFields('prov-new-alias', document, null);
     if (format) format.value = appType.value === 'claude' ? 'anthropic' : 'openai_responses';
     if (status) { status.textContent = ''; status.className = 'status-text'; }
     return;
@@ -2241,6 +2244,10 @@ function applyProviderPreset() {
   baseUrl.value = preset.baseUrl;
   model.value = preset.model;
   if (models) models.value = preset.models || preset.model || '';
+  // Prefill the model-mapping editor (e.g. 智谱 GLM → fable=glm-5.3) so the
+  // alias tiers are visible in the form before the first save; the server
+  // also applies a bounded fable fill for Zhipu base URLs.
+  fillAliasMapFields('prov-new-alias', document, preset.aliasMap || null);
   if (format) format.value = preset.apiFormat || (preset.useChatResponsesProxy ? 'openai_chat' : (preset.appType === 'claude' ? 'anthropic' : 'openai_responses'));
   token.value = '';
   if (status) {
