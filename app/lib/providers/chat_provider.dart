@@ -727,6 +727,11 @@ class ChatProvider extends ChangeNotifier {
         _onPartDelta(evt.payload as Map<String, dynamic>);
         break;
 
+      case 'user':
+        // tool_result frames (the paired completion of each tool call).
+        _onUserToolResult(evt.payload as Map<String, dynamic>);
+        break;
+
       case 'content_block_stop':
         break;
 
@@ -1325,12 +1330,46 @@ class ChatProvider extends ChangeNotifier {
       final tc = ToolCall(
         id: (block?['id'] ?? '').toString(),
         name: (block?['name'] ?? '').toString(),
+        // Live timing stamp (mirror of the web's chat-event-controller): the
+        // tool's real wall-clock start, paired with endedAt at tool_result.
+        startedAt: DateTime.now().millisecondsSinceEpoch,
       );
       _activeTools[idx] = tc;
       _ensureAssistantMsg();
       _currentMsg!.toolCalls.add(tc);
       notifyListeners();
     }
+  }
+
+  /// A `user` role frame carrying tool_result blocks — one per finished tool.
+  /// Mirrors the web's handleToolResult: match by tool_use_id, attach the
+  /// result text, mark done, and stamp endedAt for the measured duration.
+  void _onUserToolResult(Map<String, dynamic> msg) {
+    final inner = msg['message'];
+    final content = inner is Map ? inner['content'] : msg['content'];
+    if (content is! List) return;
+    var changed = false;
+    for (final raw in content) {
+      if (raw is! Map || raw['type'] != 'tool_result') continue;
+      final id = raw['tool_use_id']?.toString() ?? '';
+      if (id.isEmpty) continue;
+      final tools = _currentMsg?.toolCalls ?? const <ToolCall>[];
+      for (final tc in tools) {
+        if (tc.id != id) continue;
+        final c = raw['content'];
+        tc.result = c is String
+            ? c
+            : c is List
+            ? c.map((item) => item is Map ? (item['text'] ?? '').toString() : '').join('')
+            : c?.toString();
+        tc.isError = raw['is_error'] == true;
+        tc.isDone = true;
+        tc.endedAt = DateTime.now().millisecondsSinceEpoch;
+        changed = true;
+        break;
+      }
+    }
+    if (changed) notifyListeners();
   }
 
   void _onContentBlockDelta(Map<String, dynamic> evt) {

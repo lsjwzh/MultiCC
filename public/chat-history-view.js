@@ -268,6 +268,45 @@
       }
     }
 
+    // Turn-internal tool trajectory (DSH-style lightweight timeline): one strip
+    // under the finished assistant bubble, each measured tool placed at its
+    // real start offset and sized by its real duration within the turn's
+    // tool-active window. Only measured tools participate — replay has no tool
+    // timing, and a turn with no measured tool renders no strip at all (never a
+    // fabricated flat bar). Everything is textContent/style, no HTML parsing.
+    function renderToolTrajectory(contentEl, tools) {
+      if (!contentEl || !contentEl.appendChild) return null;
+      const measured = (Array.isArray(tools) ? tools : []).filter(t =>
+        t && Number.isFinite(t.startedAt) && Number.isFinite(t.endedAt) && t.endedAt >= t.startedAt);
+      if (measured.length < 2) return null; // one tool adds nothing a duration suffix doesn't
+      for (const old of Array.from(contentEl.querySelectorAll('.tool-trajectory'))) old.remove();
+      const t0 = Math.min(...measured.map(t => t.startedAt));
+      const t1 = Math.max(...measured.map(t => t.endedAt));
+      const span = Math.max(t1 - t0, 1);
+      const wrap = document.createElement('div');
+      wrap.className = 'tool-trajectory';
+      const track = document.createElement('div');
+      track.className = 'tool-trajectory-track';
+      measured.forEach(t => {
+        const seg = document.createElement('span');
+        seg.className = 'tool-trajectory-seg' + (t.isError ? ' error' : '');
+        const left = ((t.startedAt - t0) / span) * 100;
+        const width = Math.max(((t.endedAt - t.startedAt) / span) * 100, 0.75);
+        seg.style.left = left + '%';
+        seg.style.width = Math.min(width, 100 - left) + '%';
+        seg.title = asText(t.name) + ' · ' + (humanizeDuration(t.endedAt - t.startedAt) || '?');
+        track.appendChild(seg);
+      });
+      wrap.appendChild(track);
+      const label = document.createElement('div');
+      label.className = 'tool-trajectory-label';
+      label.textContent = '⏱ ' + measured.length + ' tools · '
+        + humanizeDuration(t1 - t0) + ' wall-clock';
+      wrap.appendChild(label);
+      contentEl.appendChild(wrap);
+      return wrap;
+    }
+
     function hydrateTool(tool, contentEl) {
       const id = tool.id || tool.tool_use_id || '';
       const card = createToolCard(tool.name || 'Tool', id);
@@ -728,6 +767,7 @@
       removeById,
       renderCurrentText,
       renderMessage,
+      renderToolTrajectory,
       tagLatestMessage,
       updateToolInput,
       visibleIds,
