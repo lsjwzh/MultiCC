@@ -289,7 +289,8 @@
       track.className = 'tool-trajectory-track';
       measured.forEach(t => {
         const seg = document.createElement('span');
-        seg.className = 'tool-trajectory-seg' + (t.isError ? ' error' : '');
+        // Live snapshots use isError, persisted tools use is_error — accept both.
+        seg.className = 'tool-trajectory-seg' + ((t.isError || t.is_error) ? ' error' : '');
         const left = ((t.startedAt - t0) / span) * 100;
         const width = Math.max(((t.endedAt - t.startedAt) / span) * 100, 0.75);
         seg.style.left = left + '%';
@@ -315,6 +316,11 @@
         inputJson: tool.input == null ? '{}' : JSON.stringify(tool.input),
         name: tool.name || 'Tool',
         id,
+        // Server-stamped timing (present on turns persisted after the
+        // tool-stamp change): makes replay durations measured instead of
+        // unknown. Older sessions have neither — same as before.
+        startedAt: Number.isFinite(tool.startedAt) ? tool.startedAt : null,
+        endedAt: Number.isFinite(tool.endedAt) ? tool.endedAt : null,
       };
       updateToolInput(state);
       if (tool.result !== undefined) addToolResult(state, tool.result, !!tool.is_error);
@@ -408,6 +414,8 @@
       }
       const timing = buildTimingLine(message);
       if (timing) contentEl.appendChild(timing);
+      // Trajectory on replay too, whenever the persisted tools carry stamps.
+      renderToolTrajectory(contentEl, message.tools);
       node.appendChild(contentEl);
       attachMessageActions(node, message);
       return node;
