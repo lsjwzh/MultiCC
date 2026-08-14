@@ -277,6 +277,73 @@ void main() {
     expect(taps, 1);
   });
 
+  testWidgets('Ark / Zhipu / Kimi bars render as tappable slots in web order', (
+    tester,
+  ) async {
+    var arkTaps = 0;
+    var zhipuTaps = 0;
+    var kimiTaps = 0;
+    await tester.pumpWidget(
+      _host(
+        ChatRuntimeNoticePanel(
+          opencodeUsage: const VendorQuotaView('OpenCode Go · 5h 92%', VendorQuotaColor.blue),
+          qoderUsage: const VendorQuotaView('1m 40%', VendorQuotaColor.blue),
+          codexUsage: const VendorQuotaView('1wk 75%', VendorQuotaColor.blue),
+          claudeUsage: const VendorQuotaView('5h 50% · 1wk 70%', VendorQuotaColor.blue),
+          limit: const VendorQuotaView('5h 50% 1h', VendorQuotaColor.blue),
+          balance: const VendorQuotaView('DeepSeek 余额 ¥1.2', VendorQuotaColor.blue),
+          arkUsage: const VendorQuotaView('Coding 5h 30%', VendorQuotaColor.blue),
+          zhipuUsage: const VendorQuotaView('GLM 用量 60%', VendorQuotaColor.blue),
+          kimiUsage: const VendorQuotaView('Kimi 1wk 20%', VendorQuotaColor.blue),
+          onOpenCodeQuotaTap: () {},
+          onQoderQuotaTap: () {},
+          onCodexQuotaTap: () {},
+          onClaudeQuotaTap: () {},
+          onArkQuotaTap: () => arkTaps++,
+          onZhipuQuotaTap: () => zhipuTaps++,
+          onKimiQuotaTap: () => kimiTaps++,
+        ),
+      ),
+    );
+    // Slot order matches the web chat.html bar row.
+    final order = tester
+        .widgetList<Wrap>(
+          find.descendant(
+            of: find.byKey(const Key('chat-runtime-notice-panel')),
+            matching: find.byType(Wrap),
+          ),
+        )
+        .first
+        .children
+        .whereType<Widget>()
+        .toList();
+    final keys = [
+      'opencode-quota-bar',
+      'qoder-quota-bar',
+      'codex-quota-bar',
+      'claude-quota-bar',
+      'ark-quota-bar',
+      'zhipu-quota-bar',
+      'kimi-quota-bar',
+    ];
+    final seen = [
+      for (final w in order)
+        if (w is InkWell && w.key is ValueKey<String>)
+          (w.key as ValueKey<String>).value,
+    ].where((k) => keys.contains(k)).toList();
+    expect(seen, keys);
+
+    await tester.tap(find.byKey(const Key('ark-quota-bar')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('zhipu-quota-bar')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('kimi-quota-bar')));
+    await tester.pump();
+    expect(arkTaps, 1);
+    expect(zhipuTaps, 1);
+    expect(kimiTaps, 1);
+  });
+
   testWidgets('API error only offers manual retry when policy says safe', (
     tester,
   ) async {

@@ -29,12 +29,16 @@ class VendorQuotaColor {
 }
 
 /// A renderable vendor quota bar (text + color + optional long tooltip).
+/// [action] is the server-rendered tap action ('login' when the bar is a
+/// needs-login dead end, null for a plain refetch) — the same field the web
+/// `quotaBarClick` dispatches on.
 class VendorQuotaView {
   final String text;
   final int color;
   final String tooltip;
+  final String? action;
 
-  const VendorQuotaView(this.text, this.color, [this.tooltip = '']);
+  const VendorQuotaView(this.text, this.color, [this.tooltip = '', this.action]);
 }
 
 /// Resolve a server-rendered bar to the strings to paint right now.
@@ -50,7 +54,12 @@ VendorQuotaView? vendorViewFromBar(
 }) {
   final resolved = resolveQuotaBar(bar, state: state, now: now);
   if (resolved == null) return null;
-  return VendorQuotaView(resolved.text, resolved.color, resolved.title);
+  return VendorQuotaView(
+    resolved.text,
+    resolved.color,
+    resolved.title,
+    resolved.action,
+  );
 }
 
 // ── baseUrl host gating ─────────────────────────────────────────────────────
@@ -102,6 +111,36 @@ bool isDeepseekBaseUrl(String? baseUrl) {
 bool balanceBarVisibleFor(String cliName, String? providerBaseUrl) {
   if (cliName == 'codex' || cliName == 'opencode') return true;
   return isDeepseekBaseUrl(providerBaseUrl);
+}
+
+/// Whether the Claude subscription bar's provider context holds: an empty
+/// baseUrl (official login) or an anthropic/claude host. Mirrors the web
+/// `isClaudeProvider` — under the claude CLI on a NON-Claude provider (e.g.
+/// Zhipu) the subscription bar must hide and the routed window bar shows
+/// instead.
+bool isClaudeProviderBaseUrl(String? baseUrl) {
+  final trimmed = (baseUrl ?? '').trim();
+  if (trimmed.isEmpty) return true;
+  final h = hostFromBaseUrl(trimmed);
+  if (h.isEmpty) return false;
+  return RegExp(r'(^|\.)(anthropic|claude)\.(com|ai)$').hasMatch(h);
+}
+
+/// Whether a passive rate-limit window bar produced by [provider] can be on
+/// screen while the given CLI is active. Mirrors the web `providerMatchesCli`
+/// byte for byte in rule form:
+///   • opencode's own window → only under the opencode CLI;
+///   • glm / codex windows → under codex/opencode, and glm additionally under
+///     any CLI while the provider baseUrl points at Zhipu (the claude CLI can
+///     route through a Zhipu endpoint);
+///   • everything else (claude windows) → under claude/opencode.
+bool providerMatchesCli(String provider, String cliName, String? providerBaseUrl) {
+  if (provider == 'opencode') return cliName == 'opencode';
+  if (provider == 'glm' || provider == 'codex') {
+    if (cliName == 'codex' || cliName == 'opencode') return true;
+    return provider == 'glm' && isZhipuBaseUrl(providerBaseUrl);
+  }
+  return cliName == 'claude' || cliName == 'opencode';
 }
 
 /// Host to pass as `?host=` so the backend puts the current site first.
