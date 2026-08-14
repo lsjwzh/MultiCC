@@ -328,6 +328,39 @@ test('turn trajectory is absent unless two tools are measured', () => {
   assert.equal(view.renderToolTrajectory(content, null), null);
 });
 
+test('history replay shows measured durations and a trajectory when the server stamped tools', () => {
+  const { view } = fixture();
+  // Turn persisted after the server-side stamping: each tool carries
+  // startedAt/endedAt, so replay upgrades from unknown to measured.
+  const stamped = view.renderMessage({
+    id: 'a1', role: 'assistant', content: 'done',
+    tools: [
+      { id: 't1', name: 'Bash', input: { command: 'ls' }, result: 'ok', is_error: false, startedAt: 1000, endedAt: 2500 },
+      { id: 't2', name: 'Read', input: { file_path: '/a' }, result: 'x', is_error: true, startedAt: 3000, endedAt: 3120 },
+    ],
+  });
+  const descs = stamped.querySelectorAll('.tool-desc');
+  assert.equal(descs[0].textContent, 'done · 1.5s');
+  assert.equal(descs[1].textContent, 'failed · 120ms');
+  // Two measured tools also render the trajectory strip on replay.
+  const strip = stamped.querySelector('.tool-trajectory');
+  assert.ok(strip, 'stamped replay renders the trajectory');
+  assert.equal(strip.querySelectorAll('.tool-trajectory-seg').length, 2);
+  assert.ok(strip.querySelectorAll('.tool-trajectory-seg')[1].classList.contains('error'));
+
+  // Turns persisted before stamping keep the bare label and no strip — the
+  // unknown state, never a fabricated duration.
+  const legacy = view.renderMessage({
+    id: 'a2', role: 'assistant', content: 'old',
+    tools: [
+      { id: 't3', name: 'Bash', input: { command: 'ls' }, result: 'ok', is_error: false },
+      { id: 't4', name: 'Read', input: { file_path: '/a' }, result: 'x', is_error: false },
+    ],
+  });
+  assert.equal(legacy.querySelectorAll('.tool-desc')[0].textContent, 'done');
+  assert.equal(legacy.querySelector('.tool-trajectory'), null);
+});
+
 test('typed tool input renders by tool name, not as a JSON blob', () => {
   const { view } = fixture();
   function inputFor(name, input) {

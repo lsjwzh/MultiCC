@@ -702,3 +702,22 @@ test('chat turn ports are narrow and pure modules import no runtime I/O dependen
     assert.equal(/require\(['"](?:fs|child_process|express|ws)['"]\)/.test(source), false, `${file} must stay pure`);
   }
 });
+
+test('tool timing stamps ride in the persisted tools array (replay upgrade)', () => {
+  // The DSH timing arc's last gap was server-side: currentToolCalls carried
+  // no timing, so every replayed tool was "unknown" forever. The stamps are
+  // applied where every claude-shaped event (spawn path, streaming path, and
+  // the adapter-synthesized ones) funnels through — applyClaudeChatEvent.
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
+  // tool_use arrival stamps startedAt on the pushed call…
+  assert.match(
+    source,
+    /currentToolCalls\.push\(\{ name: block\.name, input: block\.input, id: block\.id, startedAt: Date\.now\(\) \}\)/,
+  );
+  // …and the matching tool_result stamps endedAt right where result/is_error
+  // land, so the persisted tools array carries measured spans for replay.
+  assert.match(
+    source,
+    /tc\.is_error = r\.is_error \|\| false;\s*\n\s*tc\.endedAt = Date\.now\(\);/,
+  );
+});

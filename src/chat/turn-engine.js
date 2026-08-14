@@ -259,7 +259,11 @@ function createChatTurnEngine(deps) {
         }
         if (block.type === 'tool_use') {
           turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'tool', block.name);
-          cs.currentToolCalls.push({ name: block.name, input: block.input, id: block.id });
+          // startedAt/endedAt ride in the persisted tools array: replay clients
+          // (web + app) read them to show measured durations and the trajectory
+          // strip. Sessions persisted before this field simply have neither —
+          // the clients' unknown state, never a fabricated 0ms.
+          cs.currentToolCalls.push({ name: block.name, input: block.input, id: block.id, startedAt: Date.now() });
           getBackgroundTaskRuntime().recordMainToolUseId(sessionName, block.id);
           if (block.name === 'TaskOutput') getBackgroundTaskRuntime().markTaskOutputAwaiting(sessionName, block.input);
           const editTools = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'];
@@ -283,6 +287,7 @@ function createChatTurnEngine(deps) {
               Array.isArray(r.content) ? r.content.map(c => c.text || '').join('') :
               JSON.stringify(r.content);
             tc.is_error = r.is_error || false;
+            tc.endedAt = Date.now();
             if (tc.result && tc.result.length > 1000) tc.result = tc.result.slice(0, 1000) + '...';
           }
         }
