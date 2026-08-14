@@ -257,6 +257,77 @@ test('tool duration is shown only when start and settle are measured', () => {
   assert.equal(skew.card.querySelector('.tool-desc').textContent, 'done');
 });
 
+test('turn trajectory places each measured tool at its real offset', () => {
+  const { document, view } = fixture();
+  const content = document.createElement('div');
+
+  // Two measured tools in a 0–10s window: tool A covers the first half,
+  // tool B covers the last quarter. Positions are proportional facts, not
+  // decorations — a mis-placed segment is a lying timeline.
+  const strip = view.renderToolTrajectory(content, [
+    { name: 'Bash', startedAt: 0, endedAt: 5000 },
+    { name: 'Read', startedAt: 7500, endedAt: 10000, isError: true },
+  ]);
+  assert.ok(strip, 'two measured tools render a strip');
+  const segs = strip.querySelectorAll('.tool-trajectory-seg');
+  assert.equal(segs.length, 2);
+  assert.equal(segs[0].style.left, '0%');
+  assert.equal(segs[0].style.width, '50%');
+  assert.equal(segs[1].style.left, '75%');
+  assert.equal(segs[1].style.width, '25%');
+  assert.ok(segs[1].classList.contains('error'), 'a failed tool marks its segment');
+  assert.equal(segs[0].title, 'Bash · 5.0s');
+  assert.equal(strip.querySelector('.tool-trajectory-label').textContent, '⏱ 2 tools · 10s wall-clock');
+
+  // Re-render is an upsert, not an append — one bubble, one strip.
+  const again = view.renderToolTrajectory(content, [
+    { name: 'Bash', startedAt: 0, endedAt: 5000 },
+    { name: 'Read', startedAt: 7500, endedAt: 10000, isError: true },
+  ]);
+  assert.equal(content.querySelectorAll('.tool-trajectory').length, 1);
+  assert.equal(again, content.querySelector('.tool-trajectory'));
+
+  // A sub-1% span stays visible as a sliver, and a sliver pushed against the
+  // track's right edge is clamped so it never overflows past 100%.
+  const sliver = view.renderToolTrajectory(content, [
+    { name: 'A', startedAt: 0, endedAt: 1 },
+    { name: 'B', startedAt: 4000, endedAt: 5000 },
+  ]);
+  const sliverSegs = sliver.querySelectorAll('.tool-trajectory-seg');
+  assert.equal(sliverSegs[0].style.left, '0%');
+  assert.equal(sliverSegs[0].style.width, '0.75%');
+  assert.equal(sliverSegs[1].style.left, '80%');
+  assert.equal(sliverSegs[1].style.width, '20%');
+  const edge = view.renderToolTrajectory(content, [
+    { name: 'A', startedAt: 0, endedAt: 1 },
+    { name: 'B', startedAt: 9999, endedAt: 10000 },
+  ]);
+  const edgeSegs = edge.querySelectorAll('.tool-trajectory-seg');
+  assert.ok(parseFloat(edgeSegs[1].style.width) < 0.76, 'right-edge sliver is clamped, not overflowing');
+});
+
+test('turn trajectory is absent unless two tools are measured', () => {
+  const { document, view } = fixture();
+  const content = document.createElement('div');
+
+  // Replay has no tool timing — no strip, never a fabricated flat bar.
+  assert.equal(view.renderToolTrajectory(content, [
+    { name: 'Read' }, { name: 'Bash' },
+  ]), null);
+  // A lone measured tool adds nothing the "done · Xs" suffix doesn't say.
+  assert.equal(view.renderToolTrajectory(content, [
+    { name: 'Bash', startedAt: 0, endedAt: 500 }, { name: 'Read' },
+  ]), null);
+  // Clock-skewed stamps are unmeasurable, same as replay.
+  assert.equal(view.renderToolTrajectory(content, [
+    { name: 'A', startedAt: 0, endedAt: 100 }, { name: 'B', startedAt: 900, endedAt: 100 },
+  ]), null);
+  assert.equal(content.querySelectorAll('.tool-trajectory').length, 0);
+  // Defensive: null container / null list never throw.
+  assert.equal(view.renderToolTrajectory(null, [{ name: 'A', startedAt: 0, endedAt: 1 }]), null);
+  assert.equal(view.renderToolTrajectory(content, null), null);
+});
+
 test('typed tool input renders by tool name, not as a JSON blob', () => {
   const { view } = fixture();
   function inputFor(name, input) {

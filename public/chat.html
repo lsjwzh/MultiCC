@@ -599,6 +599,20 @@
     }
     .tool-result-label { font-size: 11px; color: #3fb950; margin-top: 8px; margin-bottom: 4px; font-weight: 600; }
     .tool-result-label.error { color: #f85149; }
+    /* Turn-internal tool trajectory: one strip under a finished assistant
+       bubble, each measured tool at its real offset/duration. Live turns only
+       (replay has no tool timing → the strip is simply absent). */
+    .tool-trajectory { margin: 6px 0 2px; }
+    .tool-trajectory-track {
+      position: relative; height: 8px; border-radius: 4px;
+      background: #21262d; overflow: hidden;
+    }
+    .tool-trajectory-seg {
+      position: absolute; top: 1px; bottom: 1px; min-width: 2px;
+      border-radius: 2px; background: #2f81f7; opacity: 0.85;
+    }
+    .tool-trajectory-seg.error { background: #f85149; }
+    .tool-trajectory-label { font-size: 11px; color: #6e7681; margin-top: 3px; }
 
     /* ── Per-message token usage line ── */
     .msg-usage {
