@@ -381,6 +381,33 @@ function applyAliasMapToEnv(env, aliasMap) {
   }
 }
 
+// Official Zhipu (GLM) claude providers: bounded fable-tier alias fill. The
+// fable tier maps to GLM-5.3 (wire id glm-5.3, confirmed on
+// docs.z.ai/devpack/latest-model); a Zhipu provider with an unmapped fable
+// tier would leave Claude Code resolving `fable` to a claude-* wire name that
+// open.bigmodel.cn / api.z.ai reject. The fill is strictly additive: it only
+// applies when the base URL is a Zhipu host AND the fable mapping is absent
+// or empty — never overwrites a non-empty custom value, other tiers, or
+// non-Zhipu providers.
+const ZHIPU_FABLE_ALIAS = { model: 'glm-5.3', name: 'GLM5.3' };
+
+function isZhipuBaseUrl(baseUrl) {
+  const host = String(baseUrl || '').replace(/^https?:\/\//, '').split('/')[0].toLowerCase();
+  return host === 'open.bigmodel.cn' || host === 'api.z.ai'
+    || host.endsWith('.bigmodel.cn') || host.endsWith('.z.ai');
+}
+
+// Fill the fable alias on an env object (in place) when the bounded
+// conditions hold. Returns true when the fill was applied.
+function ensureZhipuFableAlias(env) {
+  if (!env || typeof env !== 'object') return false;
+  if (!isZhipuBaseUrl(env.ANTHROPIC_BASE_URL)) return false;
+  if (String(env.ANTHROPIC_DEFAULT_FABLE_MODEL || '').trim()) return false;
+  env.ANTHROPIC_DEFAULT_FABLE_MODEL = ZHIPU_FABLE_ALIAS.model;
+  env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME = ZHIPU_FABLE_ALIAS.name;
+  return true;
+}
+
 // Build a cc-switch-shaped settingsConfig from simple fields.
 function buildSettingsConfig(appType, { baseUrl, authToken, model, models, providerId, apiFormat, useChatResponsesProxy, aliasMap }) {
   const modelOptions = parseModelList(models, model);
@@ -390,6 +417,9 @@ function buildSettingsConfig(appType, { baseUrl, authToken, model, models, provi
     if (authToken) env.ANTHROPIC_AUTH_TOKEN = authToken;
     if (model) env.ANTHROPIC_MODEL = model;
     applyAliasMapToEnv(env, aliasMap);
+    // Persist the bounded Zhipu fable fill so newly created/edited providers
+    // carry ANTHROPIC_DEFAULT_FABLE_MODEL=glm-5.3 in their stored config.
+    ensureZhipuFableAlias(env);
     return { env, modelCatalog: { models: modelOptions.map(m => ({ model: m })) } };
   }
   const provName = 'custom';
@@ -509,6 +539,14 @@ function summarize(p, opts = {}) {
       if (!m) continue;
       const tier = k.replace('ANTHROPIC_DEFAULT_', '').replace('_MODEL', '').toLowerCase();
       aliasMap[tier] = { model: m, name: env[k + '_NAME'] || '' };
+    }
+    // Project the bounded Zhipu fable fill for legacy configs that predate it
+    // (e.g. opus→glm-5.2 / sonnet+haiku→glm-5.1 with no fable row): the model
+    // mapping editor and picker see fable→glm-5.3 immediately, without a
+    // data migration. The first edit-save persists it via updateProvider.
+    if (!aliasMap.fable && isZhipuBaseUrl(baseUrl)) {
+      aliasMap.fable = { ...ZHIPU_FABLE_ALIAS };
+      modelOptions = uniqueModels([...modelOptions, ZHIPU_FABLE_ALIAS.model]);
     }
   } else {
     baseUrl = (cfg.proxyTarget && cfg.proxyTarget.originalBaseUrl) || tomlValue(cfg.config, 'base_url');
@@ -752,6 +790,10 @@ function updateProvider(appType, id, { name, baseUrl, authToken, model, models, 
       cfg.modelCatalog = { models: parseModelList(models, model !== undefined ? model : cfg.env.ANTHROPIC_MODEL).map(m => ({ model: m })) };
     }
     if (aliasMap !== undefined) applyAliasMapToEnv(cfg.env, aliasMap);
+    // Bounded Zhipu fable fill on edit-save (also fires when aliasMap is not
+    // part of the update — e.g. a legacy provider whose editor only touched
+    // the model list). Never overwrites a non-empty custom fable mapping.
+    ensureZhipuFableAlias(cfg.env);
   } else {
     const currentBaseUrl = (cfg.proxyTarget && cfg.proxyTarget.originalBaseUrl) || tomlValue(cfg.config, 'base_url');
     const requestedFormat = apiFormat || (useChatResponsesProxy === true
@@ -916,6 +958,7 @@ const ANTHROPIC_ROUTING_KEYS = [
   'ANTHROPIC_DEFAULT_OPUS_MODEL',
   'ANTHROPIC_DEFAULT_SONNET_MODEL',
   'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+  'ANTHROPIC_DEFAULT_FABLE_MODEL',
 ];
 // Full set stripped from a child env before re-applying the per-session
 // provider. Includes CLAUDE_CODE_SIMPLE: multicc never SETS it (leaving it
@@ -1213,6 +1256,9 @@ function resolveSpawnEnv(session) {
     for (const k of Object.keys(src)) {
       if (/^ANTHROPIC_/.test(k) && typeof src[k] === 'string') env[k] = src[k];
     }
+    // Bounded Zhipu fable fill at the final spawn boundary: legacy/cc-switch
+    // configs that were never re-saved still route `fable` sessions to glm-5.3.
+    ensureZhipuFableAlias(env);
     // Claude CLI v2.1.199+ auth precedence: when ANTHROPIC_AUTH_TOKEN is set,
     // it takes precedence over OAuth/keychain WITHOUT needing CLAUDE_CODE_SIMPLE=1.
     // (CLI prints "connectors are disabled" warning but routes to the API key.)
