@@ -157,6 +157,18 @@ void main() {
       expect(value?.resetsAtMs, 2000000000000);
       expect(value?.matchesCli('codex'), isTrue);
       expect(value?.matchesCli('claude'), isFalse);
+      final opencode = UsageWindowLimit.fromEvent({
+        'rateLimitType': 'weekly',
+        'status': 'rejected',
+        'utilization': 1,
+        'resetsAt': 2000003600,
+        'provider': 'opencode',
+      });
+
+      expect(opencode?.provider, 'opencode');
+      expect(opencode?.matchesCli('opencode'), isTrue);
+      expect(opencode?.matchesCli('codex'), isFalse);
+      expect(UsageWindowLimit.fromCache(opencode!.toJson())?.provider, 'opencode');
       expect(
         UsageWindowLimit.fromEvent({
           'rateLimitType': 'daily',

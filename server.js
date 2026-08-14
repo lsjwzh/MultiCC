@@ -168,14 +168,8 @@ const {
   createCodexOAuthRefresher,
   DEFAULT_CHECK_INTERVAL_MS: CODEX_OAUTH_CHECK_INTERVAL_MS,
 } = require('./src/codex-oauth-refresh');
-const {
-  parseClassifyResult,
-  buildClassifySystemPrompt,
-  classifyDisplay,
-  phaseLabel,
-} = require('./src/classify/vocab');
-const { USER_INPUT_SIGNAL_PROMPT, buildCodexUserInputConstraint,
-  recordAdapterUserInput, createUserInputSignalHost } = require('./src/classify/user-input-host');
+const { parseClassifyResult, buildClassifySystemPrompt, classifyDisplay, phaseLabel } = require('./src/classify/vocab');
+const { USER_INPUT_SIGNAL_PROMPT, buildCodexUserInputConstraint, recordAdapterUserInput, createUserInputSignalHost } = require('./src/classify/user-input-host');
 const { createDispatchTargeting } = require('./src/dispatch/targeting');
 const { createGatewayHost } = require('./src/dispatch/gateway-host');
 const { createSafeProgressReducer } = require('./src/dispatch/progress');
@@ -2770,8 +2764,6 @@ const stalledTurnRecovery = createStalledTurnRecovery({
   confirmations: envNumber(process.env.MULTICC_STALLED_CONFIRMATIONS), cooldownMs: envNumber(process.env.MULTICC_STALLED_COOLDOWN_MS),
   cancelTurn: (id, options) => sessionWorkHost.cancelActiveTurn(id, options), logger,
 });
-// Swallowed provider errors (opencode quota/auth: no stdout/stderr/exit) get
-// surfaced + the wedged turn ended by a correlated provider-log scan.
 const providerLogWatchdog = createProviderLogWatchdog({ listRecords: () => persistedSessions.entries(), getChatSession: id => chatSessions.get(id),
   broadcast: (id, evt) => chatBroadcast(id, evt), cancelTurn: (id, options) => sessionWorkHost.cancelActiveTurn(id, options),
   intervalMs: envNumber(process.env.MULTICC_PROVIDER_LOG_INTERVAL_MS), minSilenceMs: envNumber(process.env.MULTICC_PROVIDER_LOG_MIN_SILENCE_MS), logger });
