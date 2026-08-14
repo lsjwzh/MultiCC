@@ -26,7 +26,9 @@ bool _isRecoverableCodexReconnectErrorText(String text) {
 // 先暂存，等服务端的 session_queue 事件裁决这条是「立即执行」还是「进 FIFO 队列」。
 // 进队列的不在对话区占位（只在队列面板出现），等它真正开始执行（event=started）再
 // 回填气泡；被取消（event=queued_cancelled）则丢弃。一个兜底定时器保证服务端迟迟
-// 不回裁决（断连/丢事件）时消息也不会凭空消失。
+// 不回裁决（断连/丢事件）时消息也不会凭空消失 —— 但它只在「从未收到任何权威裁决」
+// 时生效：queued:true 一旦到达，这条已确定进了 durable FIFO，兜底被取消并封死，
+// 永远不会把它画进对话区。
 
 /// 一条已发送、等待 FIFO 裁决的用户消息。
 @visibleForTesting
@@ -38,6 +40,10 @@ class StagedUserSend {
   String? entryId;
 
   bool resolved = false;
+
+  /// 服务端已权威裁决「进 durable FIFO」（event=queued 且 queued!=false）。
+  /// 置位后兜底定时器被取消且永久失效 —— 队列消息只属于队列面板。
+  bool queuedVerdict = false;
 
   /// 兜底：服务端没在合理时间内裁决时，回退乐观显示，避免消息消失。
   Timer? fallbackTimer;
@@ -90,6 +96,11 @@ StagedVerdict resolveStagedQueueEvent(
 
   switch (event) {
     case 'queued':
+      // 重放幂等：这个 entryId 已绑过一条暂存（同一事件重复到达 / WS 重放），
+      // 不再绑到下一条未绑定的暂存上，避免串条。
+      if (entryId != null && byEntryId(entryId) != null) {
+        return StagedVerdict.keep;
+      }
       // admit 裁决按发送顺序到达：绑到最早一条还没绑 entryId 的暂存。
       final target = firstUnbound();
       // queued:false = 立即执行 → 显示气泡；queued:true = 进队列 → 暂存等 started。
@@ -114,6 +125,93 @@ StagedVerdict resolveStagedQueueEvent(
       );
     default:
       return StagedVerdict.keep;
+  }
+}
+
+/// Staged send 生命周期持有者：暂存、断连兜底定时器与权威 FIFO 裁决
+/// （[resolveStagedQueueEvent]）收在一处，让时序语义可以脱离真实 socket 单测。
+///
+/// 契约（与 web stagedUserBubbles 一致）：
+///   • queued:false   → 立即 commit（画气泡）；
+///   • queued:true    → 绑 entryId、取消并封死兜底；保持隐藏，只在队列面板出现；
+///   • started/claimed 同 entryId → 此时且仅此时 commit 一次；
+///   • queued_cancelled → discard，永不出现；
+///   • 一直没有任何裁决 → 兜底定时器到点乐观 commit（断连时不让消息凭空消失）。
+@visibleForTesting
+class StagedSendTracker {
+  StagedSendTracker({
+    required this.onCommit,
+    Duration fallbackTimeout = const Duration(seconds: 4),
+  }) : _fallbackTimeout = fallbackTimeout;
+
+  /// 把一条暂存画成对话区用户气泡 —— 每条被 commit 的暂存恰好回调一次；
+  /// 进队列后被取消的永不回调。
+  final void Function(StagedUserSend staged) onCommit;
+  final Duration _fallbackTimeout;
+  final List<StagedUserSend> _staged = [];
+
+  /// 还没走完生命周期的暂存（只读视图，供断言）。
+  List<StagedUserSend> get pending => List.unmodifiable(_staged);
+
+  void stage(String clientMsgId, String text) {
+    final staged = StagedUserSend(clientMsgId, text);
+    _staged.add(staged);
+    // 兜底只在「从未收到任何权威 FIFO 裁决」时生效：queuedVerdict 一旦置位
+    // （且定时器已被取消）就绝不能再 commit。
+    staged.fallbackTimer = Timer(_fallbackTimeout, () {
+      if (!staged.resolved && !staged.queuedVerdict) commit(staged);
+    });
+  }
+
+  /// 用一个 session_queue 事件裁决暂存消息：绑 entryId、按需 commit / discard。
+  void reconcile(String event, Map<String, dynamic> payload) {
+    final verdict = resolveStagedQueueEvent(_staged, event, payload);
+    if (verdict.target != null && verdict.bindEntryId != null) {
+      verdict.target!.entryId = verdict.bindEntryId;
+    }
+    if (verdict.target == null) return;
+    switch (verdict.resolution) {
+      case StagedResolution.commit:
+        commit(verdict.target!);
+      case StagedResolution.discard:
+        discard(verdict.target!);
+      case StagedResolution.keep:
+        // keep + 有目标 = queued:true 的权威裁决：这条确实进了 durable FIFO。
+        // 取消并封死兜底定时器 —— 气泡保持隐藏，等 started 才回填。
+        final s = verdict.target!;
+        s.queuedVerdict = true;
+        s.fallbackTimer?.cancel();
+        s.fallbackTimer = null;
+    }
+  }
+
+  /// 把一条暂存落成对话区里的用户气泡（幂等）。
+  void commit(StagedUserSend staged) {
+    if (staged.resolved) return;
+    staged.resolved = true;
+    staged.fallbackTimer?.cancel();
+    staged.fallbackTimer = null;
+    _staged.remove(staged);
+    onCommit(staged);
+  }
+
+  /// 用户在队列面板取消了这条暂存消息：丢弃，不显示气泡（幂等）。
+  void discard(StagedUserSend staged) {
+    if (staged.resolved) return;
+    staged.resolved = true;
+    staged.fallbackTimer?.cancel();
+    staged.fallbackTimer = null;
+    _staged.remove(staged);
+  }
+
+  /// 放弃所有未裁决的暂存（重连用权威历史重建、清空对话、dispose 时调用）。
+  void clear() {
+    for (final s in _staged) {
+      s.fallbackTimer?.cancel();
+      s.fallbackTimer = null;
+      s.resolved = true;
+    }
+    _staged.clear();
   }
 }
 
@@ -448,10 +546,10 @@ class ChatProvider extends ChangeNotifier {
   final Map<int, ToolCall> _activeTools = {};
   int _reconnectAttempt = 0;
 
-  /// 已发送、等服务端 FIFO 裁决的用户消息。空 = 没有占位暂存（对齐 web
-  /// stagedUserBubbles：进队列的不在对话区占位）。
-  final List<StagedUserSend> _stagedUserSends = [];
-  static const Duration _stagedFallbackTimeout = Duration(seconds: 4);
+  /// 已发送、等服务端 FIFO 裁决的用户消息（对齐 web stagedUserBubbles：进队列的
+  /// 不在对话区占位，started 才回填气泡）。pending 为空 = 没有占位暂存。
+  late final StagedSendTracker _stagedTracker =
+      StagedSendTracker(onCommit: _commitStagedBubble);
   bool _historyApplied = false;
 
   // Lazy history pagination state. The initial WS chat_history push carries
@@ -998,7 +1096,7 @@ class ChatProvider extends ChangeNotifier {
             previous: _sessionQueue,
           );
           // 裁决暂存消息：立即执行则显示气泡，进队列则继续暂存，取消则丢弃。
-          _reconcileStaged(event, p);
+          _stagedTracker.reconcile(event, p);
           if (event == 'queued') {
             final position = p['queuePosition'];
             _statusText = position == null ? '消息已持久排队' : '消息已排队（第 $position 位）';
@@ -1785,7 +1883,7 @@ class ChatProvider extends ChangeNotifier {
     _seedUsageFromHistory();
     // 历史已是权威：未裁决的暂存失去意义（已落盘的在历史里，未落盘的队列消息靠
     // 队列面板展示），取消它们的兜底定时器。
-    _clearStaged();
+    _stagedTracker.clear();
     notifyListeners();
   }
 
@@ -1987,7 +2085,7 @@ class ChatProvider extends ChangeNotifier {
     // 不立刻把气泡画进对话区：先暂存，等服务端 session_queue 裁决这条是立即执行
     // 还是进 FIFO。进队列的只在队列面板出现，不在这里占位（对齐 web
     // stagedUserBubbles）。_commitStaged 在收到裁决（或兜底超时）时才真正加气泡。
-    _stageUserSend(clientMsgId, message);
+    _stagedTracker.stage(clientMsgId, message);
     _setPendingUserInput(null);
     _apiErrorPolicy = null;
     // User just sent a message -> resume auto-follow at the bottom, clear any
@@ -1998,23 +2096,11 @@ class ChatProvider extends ChangeNotifier {
   }
 
   // ── Staged user sends: 等服务端 FIFO 裁决的暂存消息 ──────────────────────────
+  // 生命周期（暂存、兜底定时器、裁决应用）在 [StagedSendTracker]；这里只剩
+  // 「把被 commit 的暂存画成气泡」这唯一一个 UI 落点。
 
-  void _stageUserSend(String clientMsgId, String text) {
-    final staged = StagedUserSend(clientMsgId, text);
-    _stagedUserSends.add(staged);
-    // 兜底：服务端没在合理时间内裁决（断连 / 丢事件）→ 回退乐观显示，绝不让用户
-    // 消息凭空消失。正常路径下 session_queue 事件会先到并取消这个定时器。
-    staged.fallbackTimer = Timer(_stagedFallbackTimeout, () {
-      if (!staged.resolved) _commitStaged(staged);
-    });
-  }
-
-  /// 把一条暂存消息落成对话区里的用户气泡。
-  void _commitStaged(StagedUserSend staged) {
-    if (staged.resolved) return;
-    staged.resolved = true;
-    staged.fallbackTimer?.cancel();
-    _stagedUserSends.remove(staged);
+  /// StagedSendTracker.onCommit 的落点：把一条暂存消息画成对话区用户气泡。
+  void _commitStagedBubble(StagedUserSend staged) {
     _messages.add(
       ChatMessage(
         role: MessageRole.user,
@@ -2023,40 +2109,6 @@ class ChatProvider extends ChangeNotifier {
       ),
     );
     notifyListeners();
-  }
-
-  /// 用户在队列面板取消了这条暂存消息：丢弃，不显示气泡。
-  void _discardStaged(StagedUserSend staged) {
-    if (staged.resolved) return;
-    staged.resolved = true;
-    staged.fallbackTimer?.cancel();
-    _stagedUserSends.remove(staged);
-  }
-
-  /// 放弃所有未裁决的暂存（重连用权威历史重建、清空对话、dispose 时调用）。
-  void _clearStaged() {
-    for (final s in _stagedUserSends) {
-      s.fallbackTimer?.cancel();
-      s.resolved = true;
-    }
-    _stagedUserSends.clear();
-  }
-
-  /// 用一个 session_queue 事件裁决暂存消息：绑 entryId、按需 commit / discard。
-  void _reconcileStaged(String event, Map<String, dynamic> payload) {
-    final verdict = resolveStagedQueueEvent(_stagedUserSends, event, payload);
-    if (verdict.target != null && verdict.bindEntryId != null) {
-      verdict.target!.entryId = verdict.bindEntryId;
-    }
-    if (verdict.target == null) return;
-    switch (verdict.resolution) {
-      case StagedResolution.commit:
-        _commitStaged(verdict.target!);
-      case StagedResolution.discard:
-        _discardStaged(verdict.target!);
-      case StagedResolution.keep:
-        break;
-    }
   }
 
   /// Explicit scheduler control. The APP never mutates or advances the queue
@@ -2116,7 +2168,7 @@ class ChatProvider extends ChangeNotifier {
     _activeTools.clear();
     _seedUsageFromHistory();
     _historyApplied = false;
-    _clearStaged();
+    _stagedTracker.clear();
     _service.clearHistory(keep: keep);
     notifyListeners();
   }
@@ -2149,7 +2201,7 @@ class ChatProvider extends ChangeNotifier {
       _activeTools.clear();
       _seedUsageFromHistory();
       _historyApplied = false;
-      _clearStaged();
+      _stagedTracker.clear();
       notifyListeners();
     } else {
       // Seamless resume: stop feeding a stale streaming bubble, then let the
@@ -2174,7 +2226,7 @@ class ChatProvider extends ChangeNotifier {
   @override
   void dispose() {
     _usageExpiryTimer?.cancel();
-    _clearStaged();
+    _stagedTracker.clear();
     _eventSub?.cancel();
     _service.dispose();
     super.dispose();
