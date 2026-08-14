@@ -2157,7 +2157,7 @@ let _providerData = { available: false, providers: [], defaults: { claude: null,
 const PROVIDER_PRESETS = [
   { key: 'claude-subscription', label: 'Claude 官方订阅', appType: 'claude', baseUrl: '', model: '', note: '无需 key，留空 Key 直接创建=走本地登录/订阅' },
   { key: 'claude-api', label: 'Claude 官方 API', appType: 'claude', baseUrl: 'https://api.anthropic.com', model: '' },
-  { key: 'claude-glm', label: '智谱 GLM', appType: 'claude', baseUrl: 'https://open.bigmodel.cn/api/anthropic', model: 'glm-4.6' },
+  { key: 'claude-glm', label: '智谱 GLM', appType: 'claude', baseUrl: 'https://open.bigmodel.cn/api/anthropic', model: 'glm-4.6', models: 'glm-5.3\nglm-5.2\nglm-5-turbo' },
   { key: 'claude-deepseek', label: 'DeepSeek', appType: 'claude', baseUrl: 'https://api.deepseek.com/anthropic', model: 'deepseek-chat' },
   { key: 'claude-minimax', label: 'MiniMax', appType: 'claude', baseUrl: 'https://api.minimaxi.com/anthropic', model: 'MiniMax-M2' },
   { key: 'claude-qwen', label: 'Qwen 通义千问', appType: 'claude', baseUrl: 'https://dashscope.aliyuncs.com/apps/anthropic', model: 'qwen3-coder-plus' },
