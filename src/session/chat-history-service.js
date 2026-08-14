@@ -6,6 +6,34 @@ function jsonClone(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 }
 
+// Attach the post-write transcript to a mutation result without paying for it.
+//
+// Every mutation used to return `messages: jsonClone(messages)` — a deep clone
+// of the entire transcript — and the two hot callers discard it: chat-history's
+// append path ignores the result, and the streaming interim timer fires
+// upsertInterim on a debounce for the whole length of a turn. On a multi-MB
+// history that clone is a full serialize + parse per keystroke-sized update, on
+// the event loop, thrown away.
+//
+// The array is snapshotted eagerly (a pointer copy — message objects are never
+// mutated once they are in the transcript, only the array structure is) and
+// deep-cloned lazily on first access, memoized so repeated reads keep returning
+// the same array. Callers that do read `.messages` therefore see exactly what
+// they saw before: an isolated deep copy of the state at return time.
+function withLazyMessages(result, messages) {
+  const snapshot = messages.slice();
+  let cloned;
+  Object.defineProperty(result, 'messages', {
+    get() {
+      if (cloned === undefined) cloned = jsonClone(snapshot);
+      return cloned;
+    },
+    enumerable: true,
+    configurable: false,
+  });
+  return Object.freeze(result);
+}
+
 function stableTools(value) {
   return JSON.stringify(value || null);
 }
@@ -163,6 +191,17 @@ function createChatHistoryService({
     return jsonClone(current(sessionId));
   }
 
+  // The mutators below need an array they may push/pop/splice without disturbing
+  // the cache — they do not need private copies of the messages themselves, and
+  // never mutate one that is already in the transcript (each builds its own new
+  // message object first). read()'s deep clone is the public contract for
+  // callers outside this module and stays as it is; internally, isolating the
+  // array alone turns a full serialize + parse of the whole history into a
+  // pointer copy.
+  function workingCopy(sessionId) {
+    return current(sessionId).slice();
+  }
+
   function emitPostPersist(event, afterCommit) {
     const committed = freezeEvent(jsonClone(event));
     for (const callback of [postPersist, afterCommit]) {
@@ -176,7 +215,12 @@ function createChatHistoryService({
 
   function persist(sessionId, messages, event, afterCommit) {
     const key = String(sessionId);
-    const snapshot = jsonClone(messages);
+    // `messages` is always an array this module built for the caller (a working
+    // copy or a freshly normalized one), and its messages are immutable once
+    // stored, so the cache only needs its own array — not a deep clone of every
+    // message, which on a large transcript was a second full serialize on top of
+    // the one history.write() already performs.
+    const snapshot = messages.slice();
     history.write(key, snapshot);
     cache.set(key, snapshot);
     emitPostPersist({ sessionId: key, ...event }, afterCommit);
@@ -213,7 +257,7 @@ function createChatHistoryService({
 
   function append(sessionId, value, { afterCommit } = {}) {
     if (!value || typeof value !== 'object') throw new TypeError('[session] chat message must be an object');
-    const messages = read(sessionId);
+    const messages = workingCopy(sessionId);
     const message = cleanThinkingBlocks(jsonClone(value));
     if (!message.id) message.id = String(idFactory());
     if (!message.ts) message.ts = Number(clock());
@@ -232,12 +276,11 @@ function createChatHistoryService({
         messages.push(message);
         const trimmedDropped = trim(sessionId, messages);
         const allDropped = Object.freeze([jsonClone(prev), ...jsonClone(trimmedDropped)]);
-        const result = Object.freeze({
+        const result = withLazyMessages({
           deduplicated: true,
           dropped: allDropped,
           message: jsonClone(message),
-          messages: jsonClone(messages),
-        });
+        }, messages);
         persist(sessionId, messages, {
           type: 'append',
           deduplicated: true,
@@ -250,12 +293,11 @@ function createChatHistoryService({
 
     messages.push(message);
     const dropped = trim(sessionId, messages);
-    const result = Object.freeze({
+    const result = withLazyMessages({
       deduplicated: false,
       dropped: jsonClone(dropped),
       message: jsonClone(message),
-      messages: jsonClone(messages),
-    });
+    }, messages);
     persist(sessionId, messages, {
       type: 'append',
       deduplicated: false,
@@ -267,7 +309,7 @@ function createChatHistoryService({
 
   function upsertInterim(sessionId, value, { afterCommit } = {}) {
     if (!value || typeof value !== 'object') throw new TypeError('[session] interim message must be an object');
-    const messages = read(sessionId);
+    const messages = workingCopy(sessionId);
     const message = cleanThinkingBlocks(jsonClone(value));
     if (message.role !== undefined && message.role !== 'assistant') {
       throw new TypeError('[session] interim message must have assistant role');
@@ -281,13 +323,12 @@ function createChatHistoryService({
     const latest = messages.at(-1);
     if (latest?.role === 'assistant' && !latest._interim
         && sameAssistantPayload(latest, message)) {
-      return Object.freeze({
+      return withLazyMessages({
         ignored: true,
         replaced: false,
         dropped: Object.freeze([]),
         message: jsonClone(latest),
-        messages: jsonClone(messages),
-      });
+      }, messages);
     }
 
     // Collapse a trailing run left by an older implementation into one entry.
@@ -307,12 +348,11 @@ function createChatHistoryService({
     else messages.push(message);
 
     const dropped = trim(sessionId, messages);
-    const result = Object.freeze({
+    const result = withLazyMessages({
       replaced,
       dropped: jsonClone(dropped),
       message: jsonClone(message),
-      messages: jsonClone(messages),
-    });
+    }, messages);
     persist(sessionId, messages, {
       type: 'interim',
       replaced,
@@ -325,7 +365,7 @@ function createChatHistoryService({
   function replace(sessionId, values, { afterCommit, reason = null } = {}) {
     const messages = normalize(values);
     const dropped = trim(sessionId, messages);
-    const result = Object.freeze({ messages: jsonClone(messages), dropped: jsonClone(dropped) });
+    const result = withLazyMessages({ dropped: jsonClone(dropped) }, messages);
     persist(sessionId, messages, {
       type: 'replace',
       reason: reason == null ? null : String(reason).slice(0, 80),
@@ -335,11 +375,11 @@ function createChatHistoryService({
   }
 
   function remove(sessionId, messageId, { afterCommit } = {}) {
-    const messages = read(sessionId);
+    const messages = workingCopy(sessionId);
     const index = messages.findIndex(message => message.id === messageId);
-    if (index < 0) return Object.freeze({ removed: false, messages: jsonClone(messages) });
+    if (index < 0) return withLazyMessages({ removed: false }, messages);
     const [removed] = messages.splice(index, 1);
-    const result = Object.freeze({ removed: true, message: jsonClone(removed), messages: jsonClone(messages) });
+    const result = withLazyMessages({ removed: true, message: jsonClone(removed) }, messages);
     persist(sessionId, messages, {
       type: 'remove',
       message: result.message,

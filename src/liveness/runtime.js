@@ -214,17 +214,47 @@ function createLivenessRuntime(deps = {}) {
     return { state: 'idle', reason: 'no_recent_activity', ...s, probe };
   }
 
+  // Would the probe result change anything verdict() reports? The probe is the
+  // only expensive input here (it shells out to lsof and stats the rollout), and
+  // verdict() reads it in just three places, so running it unconditionally spent
+  // that cost on answers it then threw away — for a proxy-backed session that is
+  // actively streaming, the `proxyActive` branch returns before `probe` is ever
+  // touched, which is the common case. This predicate mirrors verdict()'s own
+  // branching exactly, including the branch where the probe only supplies the
+  // `reason` string, so skipping a probe it rejects cannot change the output.
+  function probeWouldMatter(s) {
+    const proxyActive = s.proxyAgeMs != null && s.proxyPhase !== 'end' && s.proxyAgeMs <= cfg.proxyActiveMs;
+    // Fresh proxy traffic already proves work; verdict() returns on it first.
+    if (proxyActive) return false;
+    if (s.isStreaming || s.busy) {
+      // In flight: the probe decides working-vs-stalled once past the threshold,
+      // and otherwise only distinguishes the `outbound_connection` reason from
+      // `in_flight` when no heartbeat phase is available.
+      const silent = s.heartbeatSilentMs;
+      if (silent != null && silent >= cfg.stallSilentMs) return true;
+      return !s.phase;
+    }
+    // No turn and no proxy traffic: only the probe can tell a direct-login
+    // session that is working from one that is idle.
+    return true;
+  }
+
   // Convenience: assess with an async process probe when available.
   async function assess(sessionId, { probe = probeSession !== null } = {}) {
     let probeResult = null;
-    if (probe && probeSession) {
+    if (probe && probeSession && records.get(sessionId)) {
       const s = signals(sessionId);
-      try { probeResult = await probeSession(sessionId, s); } catch (_) { probeResult = null; }
+      if (probeWouldMatter(s)) {
+        try { probeResult = await probeSession(sessionId, s); } catch (_) { probeResult = null; }
+      }
     }
     return verdict(sessionId, probeResult);
   }
 
-  return { recordProxyActivity, forget, signals, ownership, verdict, assess, thresholds: cfg };
+  return {
+    recordProxyActivity, forget, signals, ownership, verdict, assess,
+    probeWouldMatter, thresholds: cfg,
+  };
 }
 
 module.exports = { createLivenessRuntime, LIVENESS_DEFAULTS: DEFAULTS };

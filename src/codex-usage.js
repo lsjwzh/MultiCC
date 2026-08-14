@@ -128,24 +128,36 @@ function normalizeCodexTurnUsage({ usage, history, cliSessionId } = {}) {
   });
 }
 
-function clone(value) {
-  return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
-}
-
 // Historical Codex messages contain cumulative snapshots in `usage`. Project
 // them to per-message deltas for API/WS display without rewriting production
 // history. New messages carry a private cumulative baseline and already store
 // their public per-turn delta in `usage`.
+//
+// The projection is read-mostly: only assistant messages carrying Codex usage
+// change, and only in their small `usage` / private-baseline fields — message
+// content is never touched. Isolating the output with a whole-transcript deep
+// clone (JSON.parse(JSON.stringify(messages))) therefore serialized megabytes of
+// content to rewrite kilobytes of counters, and it ran on every history read:
+// one GET /api/sessions/:id/history over a large transcript blocked the event
+// loop for seconds, stalling every other request behind it. Copy on write
+// instead — untouched messages pass through by reference and a message we must
+// change is shallow-copied first — so the persisted history is still never
+// mutated (pinned by tests/test-codex-usage.js).
 function projectHistoryUsage(messages) {
-  const projected = clone(Array.isArray(messages) ? messages : []);
+  const source = Array.isArray(messages) ? messages : [];
+  const projected = new Array(source.length);
   const baselines = new Map();
-  for (const message of projected) {
+  for (let index = 0; index < source.length; index += 1) {
+    const message = source[index];
+    projected[index] = message;
     if (!message || message.role !== 'assistant') continue;
     const explicitEpoch = message.usageEpoch || 'legacy';
     if (message.usageCumulative) {
       const cumulative = normalizeCodexCumulative(message.usageCumulative);
       if (cumulative) baselines.set(explicitEpoch, cumulative);
-      for (const key of PRIVATE_USAGE_FIELDS) delete message[key];
+      const stripped = { ...message };
+      for (const key of PRIVATE_USAGE_FIELDS) delete stripped[key];
+      projected[index] = stripped;
       continue;
     }
     if (!looksLikeCodexUsage(message.usage)) continue;
@@ -157,7 +169,9 @@ function projectHistoryUsage(messages) {
     const delta = previous && monotonic(current, previous)
       ? subtract(current, previous)
       : current;
-    message.usage = usageFromVector(delta, message.usage);
+    // usageFromVector always returns a fresh object, so this never aliases the
+    // source message's usage.
+    projected[index] = { ...message, usage: usageFromVector(delta, message.usage) };
     baselines.set(explicitEpoch, current);
   }
   return projected;

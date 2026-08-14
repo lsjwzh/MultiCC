@@ -182,6 +182,7 @@ const { createSafeProgressReducer } = require('./src/dispatch/progress');
 const { createClassifyStateMachine } = require('./src/classify/state-machine');
 const { createLivenessRuntime } = require('./src/liveness/runtime');
 const { createProcessProbe } = require('./src/liveness/process-probe');
+const { createRolloutPathResolver } = require('./src/liveness/rollout-path');
 const { createProcessingWatchdog, PROCESS_WATCHDOG_INTERVAL_MS } = require('./src/chat/process-watchdog');
 const { createStalledTurnRecovery, STALLED_RECOVERY_INTERVAL_MS } = require('./src/chat/stalled-turn-recovery');
 const { createLogHousekeeping, LOG_HOUSEKEEPING_INTERVAL_MS } = require('./src/log-housekeeping');
@@ -1395,28 +1396,18 @@ const livenessProcessProbe = createProcessProbe({
   statMtimeMs: p => { try { return fs.statSync(p).mtimeMs; } catch (_) { return null; } },
 });
 // Best-effort resolve a codex session's rollout file (for the growth signal).
-function livenessRolloutPath(rec) {
-  try {
-    if (!rec || rec.cli !== 'codex' || !rec.cliSessionId) return null;
-    const home = rec.provider
+// The walk is memoized inside the resolver — see src/liveness/rollout-path.js.
+const livenessRolloutResolver = createRolloutPathResolver({
+  fs,
+  path,
+  sessionsDirFor: rec => path.join(
+    rec.provider
       ? path.join(providers.CODEX_HOMES_DIR, rec.provider)
-      : path.join(os.homedir(), '.codex');
-    const dir = path.join(home, 'sessions');
-    if (!fs.existsSync(dir)) return null;
-    const stack = [dir];
-    while (stack.length) {
-      const d = stack.pop();
-      let entries;
-      try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { continue; }
-      for (const e of entries) {
-        const p = path.join(d, e.name);
-        if (e.isDirectory()) stack.push(p);
-        else if (e.isFile() && e.name.includes(rec.cliSessionId) && e.name.endsWith('.jsonl')) return p;
-      }
-    }
-  } catch (_) {}
-  return null;
-}
+      : path.join(os.homedir(), '.codex'),
+    'sessions',
+  ),
+});
+const livenessRolloutPath = rec => livenessRolloutResolver.resolve(rec);
 const livenessRuntime = createLivenessRuntime({
   records: persistedSessions,
   chatSessions,
