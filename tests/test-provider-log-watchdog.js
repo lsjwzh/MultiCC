@@ -6,6 +6,8 @@ const {
   createProviderLogWatchdog,
   sanitizeWithUrls,
   extractErrorText,
+  parseResetDelayMs,
+  opencodeRateLimitInfoFromError,
 } = require('../src/chat/provider-log-watchdog');
 
 // Regression suite for the provider-log watchdog: opencode swallows provider
@@ -70,8 +72,19 @@ test('quota error without stdout/exit is surfaced once and the turn is ended', a
   });
   const { results } = await watchdog.sweep();
   assert.equal(results[0].action, 'surfaced_and_cancelled');
-  assert.equal(broadcasts.length, 1);
-  const [id, evt] = broadcasts[0];
+  assert.equal(broadcasts.length, 2);
+  const [limitId, limitEvt] = broadcasts[0];
+  assert.equal(limitId, 's1');
+  assert.equal(limitEvt.type, 'rate_limit_event');
+  assert.deepEqual(limitEvt.rate_limit_info, {
+    rateLimitType: 'weekly',
+    status: 'rejected',
+    utilization: 1,
+    resetsAt: Math.trunc((at + 2 * 86_400_000) / 1000),
+    provider: 'opencode',
+  });
+  assert.ok(limitEvt.bar.text.includes('OpenCode Go · 1wk 0%'), 'weekly OpenCode bar visible');
+  const [id, evt] = broadcasts[1];
   assert.equal(id, 's1');
   assert.equal(evt.type, 'error');
   assert.ok(evt.error.includes('Weekly usage limit reached'), 'quota text visible');
@@ -119,7 +132,7 @@ test('the same error is shown exactly once across sweeps', async () => {
   const second = await watchdog.sweep();
   assert.equal(second.results[0].action, 'skip');
   assert.equal(second.results[0].reason, 'already_surfaced');
-  assert.equal(broadcasts.length, 1);
+  assert.equal(broadcasts.length, 2);
   assert.equal(cancelCalls.length, 1);
 });
 
@@ -162,7 +175,9 @@ test('first turn without native session id correlates via cwd + run id', async (
   const hitRun = await hit.watchdog.sweep();
   assert.equal(hitRun.results[0].action, 'surfaced_and_cancelled');
   assert.equal(hitRun.results[0].reason, 'correlated_error');
-  assert.equal(hit.broadcasts.length, 1);
+  assert.equal(hit.broadcasts.length, 2);
+  assert.equal(hit.broadcasts[0][1].type, 'rate_limit_event');
+  assert.equal(hit.broadcasts[1][1].type, 'error');
 });
 
 test('active streaming (recent output) does not trigger a scan', async () => {
@@ -212,4 +227,18 @@ test('extractErrorText parses quoted and unquoted error fields', () => {
   const unquoted = 'timestamp=x level=ERROR run=a error.error=boom';
   assert.equal(extractErrorText(unquoted), 'boom');
   assert.equal(extractErrorText('timestamp=x level=ERROR run=a message=plain'), '');
+});
+
+test('OpenCode weekly limit text becomes a rejected weekly quota event', () => {
+  assert.equal(parseResetDelayMs('Weekly usage limit reached. Resets in 2 days.'), 2 * 86_400_000);
+  assert.equal(parseResetDelayMs('Resets in 1 day 3 hours 30 minutes.'), 99_000_000);
+  const info = opencodeRateLimitInfoFromError(QUOTA_ERROR, AT);
+  assert.deepEqual(info, {
+    rateLimitType: 'weekly',
+    status: 'rejected',
+    utilization: 1,
+    resetsAt: Math.trunc((AT + 2 * 86_400_000) / 1000),
+    provider: 'opencode',
+  });
+  assert.equal(opencodeRateLimitInfoFromError('plain auth error', AT), null);
 });
