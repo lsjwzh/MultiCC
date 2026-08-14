@@ -42,10 +42,19 @@ const PROVIDER_BASE_URLS = {
   bigmodel: 'https://open.bigmodel.cn/api/anthropic',
 };
 
-// Model catalog for each provider (GLM-5.2 is the current default).
+// Model catalog for each provider (GLM-5.2 remains the default; GLM-5.3 is
+// available as an option, wire id per docs.z.ai/devpack/latest-model).
 const PROVIDER_MODELS = {
-  zai: { 'glm-5.2': { id: 'glm-5.2' }, 'glm-5-turbo': { id: 'glm-5-turbo' } },
-  bigmodel: { 'glm-5.2': { id: 'glm-5.2' }, 'glm-5-turbo': { id: 'glm-5-turbo' } },
+  zai: {
+    'glm-5.3': { id: 'glm-5.3' },
+    'glm-5.2': { id: 'glm-5.2' },
+    'glm-5-turbo': { id: 'glm-5-turbo' },
+  },
+  bigmodel: {
+    'glm-5.3': { id: 'glm-5.3' },
+    'glm-5.2': { id: 'glm-5.2' },
+    'glm-5-turbo': { id: 'glm-5-turbo' },
+  },
 };
 
 function readJsonSafe(filePath) {
@@ -292,4 +301,5 @@ module.exports = {
   CREDENTIALS_PATH,
   CLI_CONFIG_PATH,
   PROVIDER_BASE_URLS,
+  PROVIDER_MODELS,
 };
