@@ -5,6 +5,7 @@ import 'package:flutter/widgets.dart';
 import '../i18n.dart';
 import '../models/background_task_board.dart';
 import '../models/chat_runtime_state.dart';
+import '../models/dispatch_queue.dart';
 import '../models/message.dart';
 import '../models/role_tokens.dart';
 import '../models/usage_readout.dart';
@@ -686,6 +687,16 @@ class ChatProvider extends ChangeNotifier {
   final BackgroundTaskBoard _backgroundTasks = BackgroundTaskBoard();
   Timer? _bgSweepTimer;
 
+  /// Dispatch FIFO (durable operations owned by or targeting this session).
+  /// The contract has NO WS push — this is event-triggered + bounded polling
+  /// over GET /dispatches (refreshDispatchQueue). Distinct from
+  /// [_sessionQueue] (staged user messages) and from background tasks.
+  List<DispatchQueueEntry> _dispatchQueue = const [];
+  List<DispatchQueueEntry> get dispatchQueue =>
+      List.unmodifiable(_dispatchQueue);
+  Timer? _dispatchQueueTimer;
+  bool _dispatchQueueInFlight = false;
+
   /// aux classify verdict for THIS session — what the helper AI thinks the
   /// current goal/phase is. Updated by the `task_state` WS event; rendered as
   /// a status bar at the top of the chat (mirrors web #aux-classify-bar).
@@ -861,9 +872,16 @@ class ChatProvider extends ChangeNotifier {
     );
   }
 
-  void setDisplayName(String value) {
-    if (displayName == value) return;
+  void setDisplayName(String value, {String? dirName}) {
+    if (displayName == value &&
+        (dirName == null || this.dirName == dirName)) {
+      return;
+    }
     displayName = value;
+    // Directory names arrive with the dashboard load — potentially after this
+    // provider was constructed (e.g. opened from a notification before the
+    // list resolved, when _dirNameFor could only return '').
+    if (dirName != null) this.dirName = dirName;
     notifyListeners();
   }
 
@@ -879,6 +897,8 @@ class ChatProvider extends ChangeNotifier {
     _eventSub?.cancel();
     _eventSub = _service.events.listen(_onEvent);
     _service.connect();
+    // Fresh socket = reconnect reconcile for the polled dispatch snapshot.
+    unawaited(refreshDispatchQueue());
   }
 
   // ── Event handling ─────────────────────────────────────────────────────────
@@ -1039,6 +1059,9 @@ class ChatProvider extends ChangeNotifier {
 
       case 'result':
         _onResult(evt.payload as Map<String, dynamic>);
+        // A finished turn may have admitted the next dispatch out of the
+        // target FIFO — re-poll the authoritative projection.
+        unawaited(refreshDispatchQueue());
         break;
 
       case 'stream_end':
@@ -1223,7 +1246,27 @@ class ChatProvider extends ChangeNotifier {
           } else if (event == 'started') {
             _statusText = '正在执行队首任务';
           }
+          // Queue advanced (something queued/started/frozen) — dispatches
+          // waiting on this FIFO may have moved too.
+          unawaited(refreshDispatchQueue());
           notifyListeners();
+          break;
+        }
+
+      case 'session_updated':
+        {
+          // Live rename (PATCH /api/sessions/:id {label}) pushed by the server
+          // on this session's own chat socket. Without it a rename made on the
+          // web client never reached an open App chat until a full restart.
+          // label == null means cleared → fall back to the session id.
+          final p = evt.payload as Map<String, dynamic>;
+          final sid = (p['sessionId'] ?? '').toString();
+          if (sid == sessionName) {
+            final label = p['label']?.toString();
+            setDisplayName(
+              label != null && label.isNotEmpty ? label : sessionName,
+            );
+          }
           break;
         }
 
@@ -2118,6 +2161,66 @@ class ChatProvider extends ChangeNotifier {
     });
   }
 
+  // ── Dispatch FIFO (polled projection; no WS push in the contract) ─────────
+
+  /// Pull the authoritative dispatch snapshot. Callers: connect/reconnect,
+  /// session_queue events (queue advanced → dispatches move), turn results.
+  /// Failures keep the last snapshot — the next trigger re-polls, so a flaky
+  /// network can't blank the panel, and a session that truly emptied just
+  /// stops being re-listed by the server.
+  Future<void> refreshDispatchQueue() async {
+    if (_dispatchQueueInFlight) return;
+    _dispatchQueueInFlight = true;
+    try {
+      final rows = await SessionService(
+        settings: settings,
+      ).fetchDispatchQueue(sessionName);
+      final next = mergeDispatchQueue(rows);
+      _armDispatchQueueTimer(next);
+      if (_listEqualsById(_dispatchQueue, next)) return;
+      _dispatchQueue = next;
+      notifyListeners();
+    } catch (_) {
+      // Transport error: keep the last snapshot, keep the timer armed while
+      // rows exist so it retries on the next tick.
+      _armDispatchQueueTimer(_dispatchQueue);
+    } finally {
+      _dispatchQueueInFlight = false;
+    }
+  }
+
+  /// Poll while entries exist (the server has no push for dispatch state);
+  /// park the timer when the queue drains. The tick only refreshes sessions
+  /// the user is actually looking at — background providers ride the
+  /// event triggers instead of polling forever.
+  void _armDispatchQueueTimer(List<DispatchQueueEntry> next) {
+    if (next.isEmpty) {
+      _dispatchQueueTimer?.cancel();
+      _dispatchQueueTimer = null;
+      return;
+    }
+    _dispatchQueueTimer ??= Timer.periodic(const Duration(seconds: 10), (_) {
+      if (isActive) refreshDispatchQueue();
+    });
+  }
+
+  bool _listEqualsById(
+    List<DispatchQueueEntry> a,
+    List<DispatchQueueEntry> b,
+  ) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i].operationId != b[i].operationId ||
+          a[i].queueState != b[i].queueState ||
+          a[i].queuePosition != b[i].queuePosition ||
+          a[i].queueLength != b[i].queueLength ||
+          a[i].status != b[i].status) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   void _replayHistory(List history) {
     final parsed = history
         .map((m) {
@@ -2516,6 +2619,7 @@ class ChatProvider extends ChangeNotifier {
   void dispose() {
     _usageExpiryTimer?.cancel();
     _bgSweepTimer?.cancel();
+    _dispatchQueueTimer?.cancel();
     _stagedTracker.clear();
     _eventSub?.cancel();
     _service.dispose();

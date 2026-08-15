@@ -1183,6 +1183,13 @@ class _InputBarState extends State<InputBar> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // 双向派发队列（本会话派出 + 派给本会话）。空队列自动隐藏，
+            // 不与下方暂存消息队列（SessionQueuePanel）混排。
+            DispatchQueuePanel(
+              entries: provider.dispatchQueue,
+              resolveName: smgr.sessionDisplayName,
+              onRefresh: provider.refreshDispatchQueue,
+            ),
             SessionQueuePanel(
               queue: provider.sessionQueue,
               enabled: isConnected,

@@ -62,130 +62,162 @@ class ChatHeader extends StatelessWidget {
       child: LayoutBuilder(
         builder: (context, constraints) {
           final narrow = constraints.maxWidth < 500;
-          return Row(
-            children: [
-              // Collapse the chat sheet back down to the home dashboard.
-              GestureDetector(
-                onTap: onCollapse,
-                child: Container(
-                  padding: const EdgeInsets.all(6),
-                  child: const Icon(
-                    Icons.keyboard_arrow_down_rounded,
-                    color: Color(0xFFe7eaee),
-                    size: 24,
-                  ),
-                ),
-              ),
-              const SizedBox(width: 4),
-              RichText(
-                text: const TextSpan(
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                  children: [
-                    TextSpan(
-                      text: 'Multi',
-                      style: TextStyle(color: Color(0xFF3ad6c5)),
-                    ),
-                    TextSpan(
-                      text: 'CC',
-                      style: TextStyle(color: Color(0xFF6aa3ff)),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 6),
-              _ChatCliBadge(
-                cli: provider.cli,
-                onTap: () => openCliSwitchSheet(
-                  context,
-                  sessionId: provider.sessionName,
-                ),
-              ),
-              const SizedBox(width: 6),
-              Flexible(
-                child: Text(
-                  provider.titleLabel,
-                  style: const TextStyle(
-                    color: Color(0xFFe7eaee),
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    fontFamily: 'monospace',
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              // Connection dot — tap to manually reconnect when disconnected.
-              GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTap: state == ChatConnectionState.connected
-                    ? null
-                    : provider.reconnect,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 2,
-                    vertical: 4,
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
+          // The title must own real estate. In the old single-row layout the
+          // title sat in a Flexible between fixed-width chrome (collapse,
+          // brand, CLI badge) and a fixed action cluster — on a narrow phone
+          // the fixed parts alone filled the row and the Flexible collapsed
+          // to zero width, i.e. no visible title at all. Wide screens keep
+          // the single row (title Expanded, action cluster right); narrow
+          // screens move the title to its own full-width second line.
+          final title = _SessionTitle(label: provider.titleLabel);
+          // On narrow screens the fixed chrome above alone was wider than the
+          // row (brand + labelled clear-context button ≈ +170px), so the brand
+          // wordmark is dropped — the collapse arrow and the CLI badge still
+          // identify the sheet — and the clear-context button collapses to an
+          // icon-only form (tooltip keeps the meaning).
+          final brand = narrow
+              ? const SizedBox.shrink()
+              : RichText(
+                  text: const TextSpan(
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                     children: [
-                      Icon(Icons.circle, size: 8, color: statusColor),
-                      if (state != ChatConnectionState.connected) ...[
-                        const SizedBox(width: 4),
-                        const Icon(
-                          Icons.refresh_rounded,
-                          size: 15,
-                          color: Color(0xFF8a909b),
-                        ),
-                      ],
+                      TextSpan(
+                        text: 'Multi',
+                        style: TextStyle(color: Color(0xFF3ad6c5)),
+                      ),
+                      TextSpan(
+                        text: 'CC',
+                        style: TextStyle(color: Color(0xFF6aa3ff)),
+                      ),
                     ],
                   ),
+                );
+          final leading = <Widget>[
+            // Collapse the chat sheet back down to the home dashboard.
+            GestureDetector(
+              onTap: onCollapse,
+              child: Container(
+                padding: const EdgeInsets.all(6),
+                child: const Icon(
+                  Icons.keyboard_arrow_down_rounded,
+                  color: Color(0xFFe7eaee),
+                  size: 24,
                 ),
               ),
-              const Spacer(),
-              // Manual reconnect
-              _HeaderBtn(
-                icon: Icons.sync_rounded,
-                tooltip: t('reconnect'),
-                onTap: () => _forceReconnect(context, provider),
-              ),
-              // Provider / Model / Effort unified chip.
-              const SizedBox(width: 4),
-              ModelChip(
+            ),
+            const SizedBox(width: 4),
+            brand,
+            // One spacing slot whether or not the brand renders, so the CLI
+            // badge never kisses the collapse arrow.
+            const SizedBox(width: 6),
+            _ChatCliBadge(
+              cli: provider.cli,
+              onTap: () => openCliSwitchSheet(
+                context,
                 sessionId: provider.sessionName,
-                cli: provider.cli,
-                settings: settings,
-                compact: narrow,
               ),
-              const SizedBox(width: 4),
-              _ClearCtxButton(provider: provider),
-              const SizedBox(width: 4),
-              _HeaderOverflowMenu(
-                mergeReady: mergeReady,
-                onRole: onRole,
-                onMemory: onMemory,
-                onMemo: onMemo,
-                onMerge: onMerge,
-                onSettings: () => _openSettings(context, settings),
-                onShare: onShare,
-                onShareMessages: () => Navigator.push(
-                  context,
-                  MaterialPageRoute<void>(
-                    builder: (_) => ShareMessagesScreen(
-                      sessionId: provider.sessionName,
-                      settings: settings,
+            ),
+          ];
+          // Connection dot — tap to manually reconnect when disconnected.
+          final connectionDot = GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: state == ChatConnectionState.connected
+                ? null
+                : provider.reconnect,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 4),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.circle, size: 8, color: statusColor),
+                  if (state != ChatConnectionState.connected) ...[
+                    const SizedBox(width: 4),
+                    const Icon(
+                      Icons.refresh_rounded,
+                      size: 15,
+                      color: Color(0xFF8a909b),
                     ),
+                  ],
+                ],
+              ),
+            ),
+          );
+          final actions = <Widget>[
+            // Manual reconnect
+            _HeaderBtn(
+              icon: Icons.sync_rounded,
+              tooltip: t('reconnect'),
+              onTap: () => _forceReconnect(context, provider),
+            ),
+            // Provider / Model / Effort unified chip.
+            const SizedBox(width: 4),
+            ModelChip(
+              sessionId: provider.sessionName,
+              cli: provider.cli,
+              settings: settings,
+              compact: narrow,
+            ),
+            const SizedBox(width: 4),
+            _ClearCtxButton(provider: provider, compact: narrow),
+            const SizedBox(width: 4),
+            _HeaderOverflowMenu(
+              mergeReady: mergeReady,
+              onRole: onRole,
+              onMemory: onMemory,
+              onMemo: onMemo,
+              onMerge: onMerge,
+              onSettings: () => _openSettings(context, settings),
+              onShare: onShare,
+              onShareMessages: () => Navigator.push(
+                context,
+                MaterialPageRoute<void>(
+                  builder: (_) => ShareMessagesScreen(
+                    sessionId: provider.sessionName,
+                    settings: settings,
                   ),
                 ),
-                onFiles: () => Navigator.push(
-                  context,
-                  MaterialPageRoute<void>(
-                    builder: (_) => FileBrowserScreen(
-                      sessionId: provider.sessionName,
-                      settings: settings,
-                    ),
+              ),
+              onFiles: () => Navigator.push(
+                context,
+                MaterialPageRoute<void>(
+                  builder: (_) => FileBrowserScreen(
+                    sessionId: provider.sessionName,
+                    settings: settings,
                   ),
                 ),
-                onRestart: () => _confirmRestartSpawn(context, provider),
               ),
+              onRestart: () => _confirmRestartSpawn(context, provider),
+            ),
+          ];
+          if (narrow) {
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    ...leading,
+                    const SizedBox(width: 6),
+                    connectionDot,
+                    const Spacer(),
+                    ...actions,
+                  ],
+                ),
+                const SizedBox(height: 2),
+                // Full-width title line: never squeezed by the chrome above.
+                title,
+              ],
+            );
+          }
+          return Row(
+            children: [
+              ...leading,
+              const SizedBox(width: 6),
+              // Expanded (not Flexible) so the title always keeps whatever
+              // space the fixed chrome leaves — never collapses to zero.
+              Expanded(child: title),
+              connectionDot,
+              ...actions,
             ],
           );
         },
@@ -336,7 +368,11 @@ class _HeaderBtn extends StatelessWidget {
 /// no-op (the running CLI process gets killed first).
 class _ClearCtxButton extends StatefulWidget {
   final ChatProvider provider;
-  const _ClearCtxButton({required this.provider});
+  /// Icon-only form for the narrow (phone) header, where the text label
+  /// alone is ~60px wider than the row can spare. The tooltip still carries
+  /// the full meaning for both pointer and semantics users.
+  final bool compact;
+  const _ClearCtxButton({required this.provider, this.compact = false});
 
   @override
   State<_ClearCtxButton> createState() => _ClearCtxButtonState();
@@ -395,7 +431,10 @@ class _ClearCtxButtonState extends State<_ClearCtxButton> {
         child: GestureDetector(
           onTap: _openMenu,
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+            padding: EdgeInsets.symmetric(
+              horizontal: widget.compact ? 7 : 8,
+              vertical: 6,
+            ),
             decoration: BoxDecoration(
               color: const Color(0xFF14171c),
               border: Border.all(color: const Color(0xFF20242b)),
@@ -409,15 +448,17 @@ class _ClearCtxButtonState extends State<_ClearCtxButton> {
                   color: const Color(0xFFff6b63),
                   size: 16,
                 ),
-                const SizedBox(width: 4),
-                Text(
-                  t('clearCtx'),
-                  style: const TextStyle(
-                    color: Color(0xFFff6b63),
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
+                if (!widget.compact) ...[
+                  const SizedBox(width: 4),
+                  Text(
+                    t('clearCtx'),
+                    style: const TextStyle(
+                      color: Color(0xFFff6b63),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
-                ),
+                ],
               ],
             ),
           ),
@@ -735,6 +776,38 @@ class _HeaderOverflowMenu extends StatelessWidget {
           const SizedBox(width: 12),
           Text(label, style: TextStyle(color: color, fontSize: 14)),
         ],
+      ),
+    );
+  }
+}
+
+/// The chat header's session title. Ellipsized when long, but the full
+/// `directory / name` is always available — via long-press tooltip for sighted
+/// users and via the semantic label for screen readers, which announce the
+/// whole string regardless of visual truncation.
+class _SessionTitle extends StatelessWidget {
+  final String label;
+  const _SessionTitle({required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: label,
+      waitDuration: const Duration(milliseconds: 350),
+      child: Semantics(
+        label: label,
+        excludeSemantics: true,
+        child: Text(
+          label,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(
+            color: Color(0xFFe7eaee),
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+            fontFamily: 'monospace',
+          ),
+        ),
       ),
     );
   }

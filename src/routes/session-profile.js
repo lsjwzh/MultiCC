@@ -138,6 +138,14 @@ function createSessionProfileRoutes(rawDeps) {
         if (label.length > 80) return rejectMutation(400, { error: 'label too long (max 80)' });
         s.label = label || null;
         appendEvent(s.dirId, 'session_renamed', s.label || s.id, s.id);
+        // Renames used to be write-only: the PATCH persisted + audited but no
+        // socket heard about it, so every client kept showing the old title
+        // until its next full list reload. Push the new label on both planes —
+        // workspace (fleet lists/dashboards) and the session's own chat socket
+        // (open chat headers).
+        const labelEvent = { type: 'session_updated', sessionId: s.id, label: s.label || null };
+        workspaceBroadcast(s.dirId, labelEvent);
+        chatBroadcast(s.id, labelEvent);
       }
       if (req.body.model !== undefined) {
         const model = (req.body.model || '').toString().trim();
