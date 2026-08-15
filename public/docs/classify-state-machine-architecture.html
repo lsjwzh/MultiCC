@@ -368,12 +368,12 @@
     <header>
       <p class="kicker">MultiCC / Architecture Audit</p>
       <h1>Classify 状态机<br>输入、输出、时序与重构边界</h1>
-      <p class="lede">当前 Chat 状态已由结构化事实决定，Aux 只做任务归集；但 turn outcome、task lifecycle、scheduler commit 和 UI 投影仍共享同一组字母，造成语义错位与部分提交。</p>
+      <p class="lede">当前 Chat 状态已由结构化事实决定，Aux 只做任务归集；turn outcome 与 task lifecycle 已拆分，D 只发布“执行成功”，任务完成完全由用户操作。其余 scheduler commit 与多写者问题仍待后续治理。</p>
       <div class="meta">
         <span class="pill">2026-08-15</span>
-        <span class="pill">baseline 92b3776</span>
+        <span class="pill">semantic split implemented</span>
         <span class="pill">P / D / W / B / E</span>
-        <span class="pill">159 / 159 focused + isolated pass</span>
+        <span class="pill">288 / 288 focused pass</span>
       </div>
     </header>
 
@@ -382,9 +382,9 @@
         <span class="value">确定性</span>
         <p>Chat turn 状态来自 boundary、ownership、pending user/background facts，不再由摘要模型猜测。</p>
       </article>
-      <article class="metric bad">
-        <span class="value">P0 · D</span>
-        <p>D 只证明本轮成功结束，却被任务看板与通知解释成整项任务完成。</p>
+      <article class="metric good">
+        <span class="value">已修复 · D</span>
+        <p>D 现在显式发布 turn.succeeded /“执行成功”；TaskBoard done 只来自用户手动操作。</p>
       </article>
       <article class="metric warn">
         <span class="value">非原子</span>
@@ -479,7 +479,7 @@
 
           <rect x="1285" y="455" width="215" height="92" rx="13" class="node-amber"/>
           <text x="1392" y="490" text-anchor="middle" class="label">TaskBoard</text>
-          <text x="1392" y="518" text-anchor="middle" class="small muted">D → done</text>
+          <text x="1392" y="518" text-anchor="middle" class="small muted">turn succeeded ≠ task done</text>
 
           <path d="M380 501 H445" class="arrow-amber"/>
           <path d="M380 525 H725" class="arrow-amber"/>
@@ -499,7 +499,7 @@
           <text x="1382" y="706" class="small muted">红色：一致性风险</text>
         </svg>
       </div>
-      <div class="callout"><strong>关键错位：</strong>正常 durable assistant result 只证明 turn succeeded；当前链路却把它渲染为“任务完成”，并把 TaskBoard 设为 done。</div>
+      <div class="callout"><strong>已落地：</strong>正常 durable assistant result 只产生显式 <code>turnOutcome=succeeded</code>，展示“执行成功”；TaskBoard 保持 active，直到用户点击完成。</div>
     </section>
 
     <section id="states">
@@ -507,7 +507,7 @@
       <p class="section-note">字母本身不是问题；问题是一个字母同时承担 turn、task、scheduler 和 presentation 四种语义。</p>
       <div class="state-grid">
         <article class="state p"><strong>P</strong><span>runner active，或 ownership unknown。调度不放行普通旧 FIFO。</span></article>
-        <article class="state d"><strong>D</strong><span>completed boundary。实际是 turn 成功；当前展示和任务看板却当作 task 完成。</span></article>
+        <article class="state d"><strong>D</strong><span>succeeded boundary。本轮执行成功；TaskBoard lifecycle 不随之改变。</span></article>
         <article class="state w"><strong>W</strong><span>存在未解决的结构化用户问题。释放 active，等 answer / direct input。</span></article>
         <article class="state b"><strong>B</strong><span>后台 callback 未回流。释放 active，等 callback / continuation。</span></article>
         <article class="state e"><strong>E</strong><span>异常、中断、持久化失败、用户/看门狗取消的合集；必须靠 reason 区分。</span></article>
@@ -518,7 +518,7 @@
           <tr><td>1</td><td><code>ownership = active/unknown</code></td><td>P</td><td>close 候选不可提交；unknown 也 fail-closed。</td></tr>
           <tr><td>2</td><td><code>pendingUserInput</code></td><td>W</td><td>结构化问题证据优先于 clean close。</td></tr>
           <tr><td>3</td><td><code>backgroundPending</code></td><td>B</td><td>后台任务仍会回流。</td></tr>
-          <tr><td>4</td><td><code>boundary = completed</code></td><td>D</td><td>只代表本轮结果正常持久化。</td></tr>
+          <tr><td>4</td><td><code>boundary = succeeded</code></td><td>D</td><td>只代表本轮结果正常持久化；兼容旧 completed 输入。</td></tr>
           <tr><td>5</td><td>abnormal / unknown boundary</td><td>E</td><td>未知 boundary fail-closed，不误判成功。</td></tr>
         </tbody>
       </table>
@@ -560,7 +560,7 @@
           <path d="M750 345 H330" fill="none" stroke="#e5b454" stroke-width="2" stroke-dasharray="8 5" marker-end="url(#arrow2)"/>
           <text x="540" y="335" text-anchor="middle" class="small">5 · completeSessionTurn() fire-and-forget</text>
           <path d="M750 395 H960" fill="none" stroke="#54d6a1" stroke-width="2" marker-end="url(#arrow2)"/>
-          <text x="855" y="385" text-anchor="middle" class="small">6 · classifyTurnEnd(completed)</text>
+          <text x="855" y="385" text-anchor="middle" class="small">6 · classifyTurnEnd(succeeded)</text>
           <rect x="895" y="420" width="130" height="78" rx="10" class="node-green"/>
           <text x="960" y="449" text-anchor="middle" class="small">facts + reducer</text>
           <text x="960" y="476" text-anchor="middle" class="label">→ D</text>
@@ -568,7 +568,7 @@
           <path d="M960 530 H330" fill="none" stroke="#ff6b8a" stroke-width="2" stroke-dasharray="8 5" marker-end="url(#arrow2red)"/>
           <text x="645" y="520" text-anchor="middle" class="small">7 · classifyTransition(D) · not awaited</text>
           <path d="M960 575 H1180" fill="none" stroke="#ff6b8a" stroke-width="2" marker-end="url(#arrow2red)"/>
-          <text x="1070" y="565" text-anchor="middle" class="small">8 · publish D / “任务完成”</text>
+          <text x="1070" y="565" text-anchor="middle" class="small">8 · publish D / “执行成功”</text>
           <path d="M330 620 H1180" fill="none" stroke="#e5b454" stroke-width="2" marker-end="url(#arrow2)"/>
           <text x="755" y="610" text-anchor="middle" class="small muted">9 · scheduler complete(D) eventually settles</text>
           <path d="M960 670 H1410" fill="none" stroke="#b594ff" stroke-width="2" stroke-dasharray="8 5" marker-end="url(#arrow2)"/>
@@ -583,7 +583,7 @@
       <h2>4. 审计发现与优先级</h2>
       <p class="section-note">优先处理跨层语义与一致性；目录拆分排在后面，避免只是搬运错误模型。</p>
       <div class="findings">
-        <article class="finding"><h3><span class="sev p0">P0</span>D 的证据层级错误</h3><p>completed boundary 证明 turn 成功，不证明整个用户任务完成；当前却自动 phase=done、TaskBoard=done、推送“任务完成”。</p></article>
+        <article class="finding"><h3><span class="sev p0">已修复</span>D 的证据层级</h3><p>succeeded boundary 只投影为运行态 succeeded 与“执行成功”；TaskBoard status=done 和批量归档只接受用户显式生命周期操作。</p></article>
         <article class="finding"><h3><span class="sev p1">P1</span>guard 前已有写入</h3><p>history、goal/phase、TaskBoard 在 liveness guard 之前写入。直接调用者可形成部分提交。</p></article>
         <article class="finding"><h3><span class="sev p1">P1</span>scheduler transition 不 await</h3><p>普通 D/W/B/E 先投影后等待调度；scheduler reject 时没有 rollback。取消路径单独补 await，主路径缺失。</p></article>
         <article class="finding"><h3><span class="sev p1">P1</span>Terminal 复用 Chat ownership</h3><p>Terminal 没有 chat runtime，ownership=unknown；旧模型结果被 hold，日志、TaskBoard 和 persisted state 可分裂。</p></article>
@@ -738,7 +738,7 @@ src/terminal/
       <h2>8. 最小迁移顺序</h2>
       <p class="section-note">先修语义和提交一致性，再做目录重构；每一步都能独立验收和回滚。</p>
       <div class="steps">
-        <article class="step"><strong>D 改为 turn succeeded</strong><span>保持协议字母兼容；展示“本轮完成”，停止 D → TaskBoard done，增加显式 task.complete。</span></article>
+        <article class="step"><strong>✓ D 改为 turn succeeded</strong><span>已保持协议字母兼容；展示“执行成功”，停止 D → TaskBoard done，完成按钮成为唯一 task.complete 入口。</span></article>
         <article class="step"><strong>引入 coordinator</strong><span>guard 前零写入；await scheduler；提交成功后再统一驱动 taskState、UI、TaskBoard 和 push。</span></article>
         <article class="step"><strong>迁移 Terminal</strong><span>使用 terminal process/monitor boundary，不复用 Chat ownership，删除 idle-tail 状态模型的写权限。</span></article>
         <article class="step"><strong>限制 Aux 成本</strong><span>总 prompt budget、prompt hash、attempt/result 时间、指数退避和失败上限。</span></article>
@@ -748,7 +748,7 @@ src/terminal/
 
     <section id="evidence">
       <h2>9. 证据与验收</h2>
-      <p class="section-note">现有 focused unit tests 159/159 与 starting-stall isolated integration 均通过，说明实现符合当前测试；审计指出的是当前测试尚未表达的跨层语义和原子性缺口。</p>
+      <p class="section-note">语义拆分聚焦测试 288/288、架构 53/53、Web 状态面 84/84 与 i18n 契约均通过；其余审计项仍按下表验收。</p>
       <table>
         <thead><tr><th>关注点</th><th>主要证据</th><th>目标验收</th></tr></thead>
         <tbody>

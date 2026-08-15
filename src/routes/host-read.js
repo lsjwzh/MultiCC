@@ -10,7 +10,7 @@ const EMPTY_HEALTH = Object.freeze({
   lastFailReason: '',
   consecutiveFails: 0,
 });
-const SAFE_PUSH_TYPES = Object.freeze(new Set(['completed', 'waiting', 'error']));
+const SAFE_PUSH_TYPES = Object.freeze(new Set(['succeeded', 'completed', 'waiting', 'error']));
 
 function finiteNonNegative(value) {
   return Number.isFinite(value) && value >= 0 ? value : 0;

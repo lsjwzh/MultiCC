@@ -8,7 +8,7 @@ import 'ws_ticket_service.dart';
 
 /// Live status of one agent/session in the workspace status board.
 class SessionStatus {
-  /// idle | thinking | editing | running | waiting | completed | error
+  /// idle | thinking | editing | running | waiting | succeeded | error
   final String status;
   final String? currentFile;
   final int lastActivity;
@@ -24,7 +24,7 @@ class SessionStatus {
 
   /// Live classify/task state from the aux-AI intent classifier, broadcast by
   /// the server over /ws/workspace (snapshot fields + `task_state` events).
-  /// classifyState ∈ D=done · W=wait-user · B=wait-bg · E=error · P=processing.
+  /// classifyState ∈ D=succeeded · W=wait-user · B=wait-bg · E=error · P=processing.
   /// Legacy C may still arrive from old servers and is displayed as W.
   final String? classifyState;
 

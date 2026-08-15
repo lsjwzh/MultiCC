@@ -449,9 +449,8 @@ function createSessionAdminRuntime(rawDeps) {
       return res.json({ ok: true, note: 'reclassify enqueued; 状态更新会通过 WS 异步到达' });
     });
 
-    // Manual "mark task done": let the user flip a waiting-for-user (W) task to
-    // completed (D) from the chat classify bar. Reuses the canonical completed
-    // dispatch path so notify/setTaskState/setSessionStatus all stay consistent.
+    // Back-compatible endpoint for a manual TURN verdict. It flips W to
+    // D/succeeded, but deliberately does not mutate TaskBoard lifecycle status.
     app.post('/api/sessions/:id/mark-task-done', (req, res) => {
       const id = req.params.id;
       const record = deps.records.get(id);
@@ -461,11 +460,14 @@ function createSessionAdminRuntime(rawDeps) {
       }
       const task = deps.getTaskState(record);
       if (isTerminalLetter(task.classifyState)) {
-        return res.json({ ok: true, alreadyDone: true, classifyState: 'D' });
+        return res.json({
+          ok: true, alreadySucceeded: true, alreadyDone: true,
+          classifyState: 'D', turnOutcome: 'succeeded',
+        });
       }
       const cs = deps.chatSessions.get(id);
       if (cs && cs.isStreaming) {
-        return res.status(409).json({ error: 'session is streaming', note: '会话正在执行，无法标记完成' });
+        return res.status(409).json({ error: 'session is streaming', note: '会话正在执行，无法标记执行成功' });
       }
       // 'D' — the LETTER, not the pre-letter word 'completed'. dispatchStateAction
       // compares against letters: any other value falls through to the W/B/E arm,
@@ -476,7 +478,7 @@ function createSessionAdminRuntime(rawDeps) {
         { state: 'D', goal: task.goal || '', phase: task.phase || '' },
         { sessionName: id, sessionId: id, cs: cs || null, isTerminal: record.kind !== 'chat' },
       );
-      return res.json({ ok: true, classifyState: 'D' });
+      return res.json({ ok: true, classifyState: 'D', turnOutcome: 'succeeded' });
     });
 
     app.post('/api/reclassify-all', (req, res) => {

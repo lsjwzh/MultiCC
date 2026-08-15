@@ -197,7 +197,7 @@ function createSessionProfileRoutes(rawDeps) {
         s.autoContinue = true;
       }
       if (req.body.autoCommit !== undefined) {
-        // Auto-commit and merge worktree back to base branch after task completion.
+        // Auto-commit and merge worktree back to base branch after a successful turn.
         s.autoCommit = !!req.body.autoCommit;
         appendEvent(s.dirId, 'session_autocommit_changed', `${s.label || s.id} → ${s.autoCommit ? '自动提交合并' : '关闭'}`, s.id);
       }

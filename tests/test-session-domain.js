@@ -132,7 +132,7 @@ test('legacy and v1 workspace views consume the same canonical session and facts
     listContexts: () => [{ record, runtime }],
     presentContext: () => bounded,
   };
-  const facts = { status: 'running', lastActivity: 99, pendingNotes: 4 };
+  const facts = { status: 'succeeded', lastActivity: 99, pendingNotes: 4 };
   const service = createWorkspaceService({
     sessionQuery: query,
     directories: { get: () => ({ id: 'd1', label: 'D' }), list: () => [{ id: 'd1', label: 'D' }] },
@@ -148,6 +148,7 @@ test('legacy and v1 workspace views consume the same canonical session and facts
     { id: legacy.id, active: legacy.active, clients: legacy.clients, status: legacy.status, pendingNotes: legacy.pendingNotes },
     { id: v1.id, active: v1.active, clients: v1.clients, status: v1.status, pendingNotes: v1.pendingNotes },
   );
+  assert.equal(v1.status, 'succeeded', 'turn success remains distinct from task lifecycle completion');
 });
 
 test('session state transitions preserve run segments and pending work forces waiting', () => {
@@ -155,7 +156,7 @@ test('session state transitions preserve run segments and pending work forces wa
   assert.deepEqual(started.state, { status: 'thinking', lastActivity: 100, runStartedAt: 100, runEndedAt: null });
   const editing = transitionSessionState(started.state, { status: 'editing' }, { now: 120 });
   assert.equal(editing.state.runStartedAt, 100);
-  const waiting = transitionSessionState(editing.state, { status: 'completed' }, { now: 150, pendingWork: true });
+  const waiting = transitionSessionState(editing.state, { status: 'succeeded' }, { now: 150, pendingWork: true });
   assert.deepEqual(waiting.state, { status: 'waiting', lastActivity: 150, runStartedAt: 100, runEndedAt: 150 });
   const service = createSessionStateService({ clock: () => 200, hasPendingWork: id => id === 's1' });
   assert.equal(service.transition('s1', waiting.state, { status: 'idle' }).state.status, 'waiting');

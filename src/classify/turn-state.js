@@ -35,11 +35,11 @@ function resolveTurnState(input = {}) {
   if (input.backgroundPending === true || boundary === 'background-pending') {
     return { state: 'B', evidence: 'background_pending' };
   }
-  if (boundary === 'completed') {
+  if (boundary === 'succeeded' || boundary === 'completed') {
     return {
       state: 'D',
       evidence: input.sessionType === 'gateway'
-        ? 'gateway_turn_completed' : 'turn_completed',
+        ? 'gateway_turn_succeeded' : 'turn_succeeded',
     };
   }
   if (ABNORMAL_BOUNDARIES.has(boundary)) {

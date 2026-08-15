@@ -28,6 +28,7 @@ enum CanonicalStatus {
   waiting,
   blocked,
   error,
+  succeeded,
   done,
   cancelled,
   archived,
@@ -130,6 +131,16 @@ const Map<CanonicalStatus, StatusSpec> statusPresentation = {
     labelKey: 'statusError',
     ariaKey: 'statusAriaError',
   ),
+  CanonicalStatus.succeeded: StatusSpec(
+    status: CanonicalStatus.succeeded,
+    icon: '✅',
+    tone: 'success',
+    spinner: false,
+    terminal: true,
+    priority: 30,
+    labelKey: 'statusSucceeded',
+    ariaKey: 'statusAriaSucceeded',
+  ),
   CanonicalStatus.done: StatusSpec(
     status: CanonicalStatus.done,
     icon: '✅',
@@ -193,7 +204,7 @@ const Set<CanonicalStatus> sessionStatuses = {
   CanonicalStatus.waiting,
   CanonicalStatus.blocked,
   CanonicalStatus.error,
-  CanonicalStatus.done,
+  CanonicalStatus.succeeded,
   CanonicalStatus.cancelled,
   CanonicalStatus.offline,
   CanonicalStatus.unknown,
@@ -206,6 +217,7 @@ const Set<CanonicalStatus> taskStatuses = {
   CanonicalStatus.waiting,
   CanonicalStatus.blocked,
   CanonicalStatus.error,
+  CanonicalStatus.succeeded,
   CanonicalStatus.done,
   CanonicalStatus.cancelled,
   CanonicalStatus.archived,
@@ -215,12 +227,13 @@ const Set<CanonicalStatus> taskStatuses = {
 /// 历史 / 相邻词表的单点兼容映射。别在各页面自己写别名判断——那正是 `error`
 /// 在会话卡上渲染成记事本图标的成因。
 const Map<String, CanonicalStatus> statusAliases = {
-  // → done
-  'completed': CanonicalStatus.done,
-  'complete': CanonicalStatus.done,
-  'success': CanonicalStatus.done,
-  'succeeded': CanonicalStatus.done,
-  'finished': CanonicalStatus.done,
+  // → succeeded（turn outcome；不能解释成 TaskBoard lifecycle done）
+  'completed': CanonicalStatus.succeeded,
+  'complete': CanonicalStatus.succeeded,
+  'done': CanonicalStatus.succeeded,
+  'success': CanonicalStatus.succeeded,
+  'succeeded': CanonicalStatus.succeeded,
+  'finished': CanonicalStatus.succeeded,
   // → running
   'thinking': CanonicalStatus.running,
   'editing': CanonicalStatus.running,
@@ -285,7 +298,7 @@ const Map<String, CanonicalStatus> freezeReasonStatus = {
 /// 「异常必须带统一错误图标、不得继续转圈」要求读者一眼看出出错，故取 barTint。
 /// C 已退役（parseClassifyResult 会把 C 折成 W），保留仅为渲染历史记录。
 const Map<String, CanonicalStatus> classifyLetterStatus = {
-  'D': CanonicalStatus.done,
+  'D': CanonicalStatus.succeeded,
   'C': CanonicalStatus.running,
   'W': CanonicalStatus.waiting,
   'B': CanonicalStatus.waiting,
@@ -403,14 +416,17 @@ CanonicalStatus sessionCardStatusOf({
   return active == false ? CanonicalStatus.offline : CanonicalStatus.idle;
 }
 
-/// 任务状态。归档/完成这类显式生命周期决定优先于派生的 runState；其余一律由
-/// runState 决定，而 runState 内部以 error 领先，故障不会被「还在跑」埋掉。
+/// 任务状态。归档/完成这类显式生命周期决定优先于派生的 runState；执行成功只
+/// 是 turn outcome，不能把 active 任务自动变成 done。
 CanonicalStatus taskStatusOf({String? status, String? runState}) {
   final lifecycle = _norm(status);
   if (lifecycle == 'archived') return CanonicalStatus.archived;
   if (lifecycle == 'done') return CanonicalStatus.done;
   if (_norm(runState).isEmpty) {
     return lifecycle == 'active' ? CanonicalStatus.idle : CanonicalStatus.unknown;
+  }
+  if (<String>{'done', 'completed'}.contains(_norm(runState))) {
+    return CanonicalStatus.succeeded;
   }
   return coerceStatus(StatusDomain.task, runState);
 }

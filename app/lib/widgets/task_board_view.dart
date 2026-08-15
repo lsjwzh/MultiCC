@@ -458,10 +458,7 @@ class _TaskBoardViewState extends State<TaskBoardView> {
                         // Bulk archive completed tasks (mirrors web)
                         Builder(builder: (_) {
                           final completedCount = tasks
-                              .where((t) =>
-                                  t.status == 'done' ||
-                                  t.runState == 'done' ||
-                                  t.runState == 'completed')
+                              .where((t) => t.status == 'done')
                               .length;
                           return TextButton.icon(
                             onPressed: completedCount > 0

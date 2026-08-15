@@ -94,7 +94,7 @@ class SettingsService {
   /// Default Claude model for newly created chats ('' = follow Claude default).
   String get defaultModel => _prefs.getString(_keyDefaultModel) ?? '';
 
-  /// Whether local push notifications are shown on task completion.
+  /// Whether local push notifications are shown for turn outcomes.
   bool get notificationsEnabled => _prefs.getBool(_keyNotify) ?? true;
 
   /// Whether the Android foreground keep-alive service runs while backgrounded,
