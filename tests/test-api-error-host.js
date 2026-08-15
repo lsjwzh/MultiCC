@@ -96,6 +96,7 @@ function harness(options = {}) {
     },
     clearInterval: timer => { timer.cleared = true; },
     networkThreshold: 3,
+    probeTimeoutMs: options.probeTimeoutMs,
   });
   return {
     host, logs, taskWrites, broadcasts, workspaceEvents, injections, statuses,
@@ -203,7 +204,14 @@ test('Aux recovery probe skips permanent authentication/configuration failures',
   const h = harness();
   let enqueued = 0;
   h.auxQueue.enqueue = () => { enqueued += 1; return Promise.resolve({}); };
-  h.auxQueue.getStatus = () => ({ health: { unhealthy: true, retryable: false } });
+  h.auxQueue.getStatus = () => ({
+    health: { unhealthy: true, retryable: false, category: 'authentication_permission' },
+  });
+  h.host.auxHealthProbe();
+  assert.equal(enqueued, 0);
+  h.auxQueue.getStatus = () => ({
+    health: { unhealthy: true, retryable: false, category: 'adapter_configuration' },
+  });
   h.host.auxHealthProbe();
   assert.equal(enqueued, 0);
   h.auxQueue.getStatus = () => ({
@@ -216,4 +224,39 @@ test('Aux recovery probe skips permanent authentication/configuration failures',
   });
   h.host.auxHealthProbe();
   assert.equal(enqueued, 1);
+});
+
+test('Aux recovery probe retries external billing quota and clears health on success', async () => {
+  const h = harness({ probeTimeoutMs: 12_345 });
+  let enqueuedTask = null;
+  let successes = 0;
+  h.auxQueue.getStatus = () => ({
+    health: { unhealthy: true, retryable: false, category: 'billing_quota', retryAt: null },
+  });
+  h.auxQueue.enqueue = task => {
+    enqueuedTask = task;
+    return Promise.resolve({ text: 'ok', cancelled: false });
+  };
+  h.auxQueue.recordSuccess = () => { successes += 1; };
+  h.host.auxHealthProbe();
+  await Promise.resolve();
+  assert.equal(enqueuedTask.type, 'health_probe');
+  assert.deepEqual(enqueuedTask.meta, { probe: true, timeout: 12_345 });
+  assert.equal(successes, 1);
+});
+
+test('Aux recovery probe does not enqueue a second health probe while one is active', () => {
+  const h = harness();
+  let enqueued = 0;
+  h.auxQueue.getStatus = () => ({
+    health: { unhealthy: true, retryable: false, category: 'billing_quota', retryAt: null },
+  });
+  h.auxQueue.enqueue = () => { enqueued += 1; return Promise.resolve({ text: 'ok' }); };
+  h.auxQueue.queue = [{ type: 'health_probe' }];
+  h.host.auxHealthProbe();
+  assert.equal(enqueued, 0);
+  h.auxQueue.queue = [];
+  h.auxQueue.currentTask = { type: 'health_probe' };
+  h.host.auxHealthProbe();
+  assert.equal(enqueued, 0);
 });
