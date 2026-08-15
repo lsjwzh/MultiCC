@@ -11,7 +11,9 @@ test('structured turn facts cover the complete P/D/W/B/E vocabulary without Aux'
     { state: 'P', evidence: 'owned' });
   assert.equal(resolveTurnState({ liveness: inactive, boundary: 'completed' }).state, 'D');
   assert.equal(resolveTurnState({ liveness: inactive, boundary: 'completed', pendingUserInput: true }).state, 'W');
-  assert.equal(resolveTurnState({ liveness: inactive, boundary: 'background-pending' }).state, 'B');
+  assert.equal(resolveTurnState({
+    liveness: inactive, boundary: 'completed', backgroundPending: true,
+  }).state, 'B');
   assert.equal(resolveTurnState({ liveness: inactive, boundary: 'api-error' }).state, 'E');
 });
 

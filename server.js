@@ -1488,6 +1488,7 @@ const classifyStateMachine = createClassifyStateMachine({
   appendChatMessage: (...args) => appendChatMessage(...args),
   annotateChatTurn: (...args) => chatHistoryRuntime?.annotateTurn(...args) || [],
   getAuxRunLog: () => auxRunLog,
+  hasBackgroundPending: sessionName => backgroundTaskRuntime.hasLiveBackgroundTasks(sessionName),
 });
 const {
   recordTaskBoardGoal,
@@ -2584,17 +2585,10 @@ const AUX_HEALTH_PROBE_INTERVAL_MS = 5 * 60 * 1000;  // ④: probe aux recovery 
 //   ?limit=N   (default 20, capped at SCAN_HISTORY_MAX_PASSES)
 mountScanRoutes(app, { scanHistory, maxPasses: SCAN_HISTORY_MAX_PASSES });
 
-// ── Unified classify — the single source of truth for task state ────────────
-// goal/phase/D/C/W/E/P all come from ONE aux call per invocation. Call sites:
-//   · turn-end:   immediately after a turn ends to finalise goal + D/C/W/E/P
-//   · scan:       every 60s, re-judges any session not yet D/W (system-side
-//                 events: API recovered, interrupted resume, goal resolution)
-// No in-turn loop — while streaming the output is incomplete and a mid-turn
-// verdict would be unreliable. On aux unhealthy: classify is suppressed; the
-// last-known goal/phase is frozen and the dashboard banner warns the user.
-
-// API recovery is decided at the owned runner boundary. Classify state E only
-// reflects that decision; it cannot inject a second retry turn.
+// ── Turn state + task attribution ───────────────────────────────────────────
+// Structured finalization facts are the sole source of chat turn state. Aux is
+// best-effort task naming/grouping at turn end, with a 60s unresolved-name scan;
+// Aux health cannot hold or rewrite the P/D/W/B/E scheduler transition.
 
 const backgroundTaskRuntime = createBackgroundTaskRuntime({
   broadcast: chatBroadcast,
@@ -2956,7 +2950,7 @@ app.use(safeErrorHandler(logger));
     triggerRuntime.start();
     try { voiceHost.prepareBoot(); } catch (err) { logger.warn('voice_boot_prepare_failed', { error: err.message }); }
     qwenAudioSupervisor.reconcileAll().catch(err => logger.warn('voice_reconcile_failed', { error: err && err.message }));
-    // Periodic scan re-judges non-terminal sessions; first tick delayed 6s so aux warms up.
+    // Periodic scan retries unresolved task attribution; first tick waits for Aux warm-up.
     trackServiceTimer(setTimeout(() => scanAndReclassify(), 6000));
     trackServiceTimer(setInterval(() => scanAndReclassify(), SCAN_INTERVAL_MS));
     trackServiceTimer(setInterval(() => processingWatchdog.sweep()
