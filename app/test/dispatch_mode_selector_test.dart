@@ -20,27 +20,29 @@ Widget _host({
 void main() {
   test('每一档都有自己的图标与三条文案 key', () {
     final all = DispatchMode.values.map(dispatchModeUi).toList();
-    expect(all.map((u) => u.icon).toSet().length, 3);
-    expect(all.map((u) => u.shortKey).toSet().length, 3);
-    expect(all.map((u) => u.labelKey).toSet().length, 3);
-    expect(all.map((u) => u.descKey).toSet().length, 3);
-    // 「不派发」是唯一一档不往外发的，配色也得和两档派发区分开。
+    expect(all.map((u) => u.icon).toSet().length, 4);
+    expect(all.map((u) => u.shortKey).toSet().length, 4);
+    expect(all.map((u) => u.labelKey).toSet().length, 4);
+    expect(all.map((u) => u.descKey).toSet().length, 4);
+    // 「不派发」是唯一一档不往外发的，配色也得和三档派发区分开。
     final none = dispatchModeUi(DispatchMode.none).accent;
-    expect(none, isNot(dispatchModeUi(DispatchMode.dispatchMaster).accent));
+    expect(none, isNot(dispatchModeUi(DispatchMode.dispatchMasterSync).accent));
+    expect(none, isNot(dispatchModeUi(DispatchMode.dispatchMasterAsync).accent));
     expect(none, isNot(dispatchModeUi(DispatchMode.routeTask).accent));
   });
 
-  testWidgets('胶囊只显示当前档位，不平铺三个选项', (tester) async {
+  testWidgets('胶囊只显示当前档位，不平铺四个选项', (tester) async {
     await tester.pumpWidget(
       _host(mode: DispatchMode.routeTask, onChanged: (_) {}),
     );
     expect(find.text('dispatchModeRouteShort'), findsOneWidget);
-    // 另外两档在收起状态下不该占位置。
-    expect(find.text('dispatchModeMasterShort'), findsNothing);
+    // 另外三档在收起状态下不该占位置。
+    expect(find.text('dispatchModeMasterSyncShort'), findsNothing);
+    expect(find.text('dispatchModeMasterAsyncShort'), findsNothing);
     expect(find.text('dispatchModeNoneShort'), findsNothing);
   });
 
-  testWidgets('点胶囊弹出 BottomSheet，三档齐全且当前档打勾', (tester) async {
+  testWidgets('点胶囊弹出 BottomSheet，四档齐全且当前档打勾', (tester) async {
     await tester.pumpWidget(
       _host(mode: DispatchMode.none, onChanged: (_) {}),
     );
@@ -53,7 +55,8 @@ void main() {
         findsOneWidget,
       );
     }
-    expect(find.text('dispatchModeMasterLabel'), findsOneWidget);
+    expect(find.text('dispatchModeMasterSyncLabel'), findsOneWidget);
+    expect(find.text('dispatchModeMasterAsyncLabel'), findsOneWidget);
     expect(find.text('dispatchModeRouteDesc'), findsOneWidget);
     // 勾只给当前那一档。
     expect(find.byIcon(Icons.check), findsOneWidget);
@@ -62,7 +65,7 @@ void main() {
   testWidgets('选中一档后回调新值并关掉 sheet', (tester) async {
     final picked = <DispatchMode>[];
     await tester.pumpWidget(
-      _host(mode: DispatchMode.dispatchMaster, onChanged: picked.add),
+      _host(mode: DispatchMode.dispatchMasterAsync, onChanged: picked.add),
     );
     await tester.tap(find.byType(DispatchModePill));
     await tester.pumpAndSettle();
@@ -89,7 +92,7 @@ void main() {
   testWidgets('空手关掉 sheet 不改档位', (tester) async {
     final picked = <DispatchMode>[];
     await tester.pumpWidget(
-      _host(mode: DispatchMode.dispatchMaster, onChanged: picked.add),
+      _host(mode: DispatchMode.dispatchMasterAsync, onChanged: picked.add),
     );
     await tester.tap(find.byType(DispatchModePill));
     await tester.pumpAndSettle();
@@ -103,7 +106,7 @@ void main() {
 
   testWidgets('sheet 每行的可点高度不低于 44px', (tester) async {
     await tester.pumpWidget(
-      _host(mode: DispatchMode.dispatchMaster, onChanged: (_) {}),
+      _host(mode: DispatchMode.dispatchMasterAsync, onChanged: (_) {}),
     );
     await tester.tap(find.byType(DispatchModePill));
     await tester.pumpAndSettle();

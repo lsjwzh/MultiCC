@@ -1,6 +1,6 @@
-/// Commander 会话的分发模式选择器：一枚显示当前选择的胶囊 + 点开的 BottomSheet。
+/// Commander 会话的分派模式选择器：一枚显示当前选择的胶囊 + 点开的 BottomSheet。
 ///
-/// 三个选项平铺在输入框上方会把本来就窄的手机输入区挤掉，所以这里跟 web 窄屏
+/// 四个选项平铺在输入框上方会把本来就窄的手机输入区挤掉，所以这里跟 web
 /// 走同一套形态：胶囊只显示「现在是哪一档」，要改再弹 sheet。文案与 web 共用
 /// i18n key（[dispatchModeUi]），派发后缀逻辑仍在 utils/dispatch_hint.dart，
 /// 这里只管外壳。
@@ -11,7 +11,7 @@ import 'package:flutter/material.dart';
 import '../i18n.dart';
 import '../utils/dispatch_hint.dart';
 
-/// 一档分发模式在 UI 上的样子。图标语义与 web 的 ⇄ / ➤ / ⊘ 对齐。
+/// 一档分派模式在 UI 上的样子。图标语义与 web 对齐。
 class DispatchModeUi {
   const DispatchModeUi({
     required this.icon,
@@ -33,12 +33,20 @@ const Color _kAccentNone = Color(0xFFd29922);
 
 DispatchModeUi dispatchModeUi(DispatchMode mode) {
   switch (mode) {
-    case DispatchMode.dispatchMaster:
+    case DispatchMode.dispatchMasterSync:
       return const DispatchModeUi(
         icon: Icons.sync_alt,
-        shortKey: 'dispatchModeMasterShort',
-        labelKey: 'dispatchModeMasterLabel',
-        descKey: 'dispatchModeMasterDesc',
+        shortKey: 'dispatchModeMasterSyncShort',
+        labelKey: 'dispatchModeMasterSyncLabel',
+        descKey: 'dispatchModeMasterSyncDesc',
+        accent: _kAccentDispatch,
+      );
+    case DispatchMode.dispatchMasterAsync:
+      return const DispatchModeUi(
+        icon: Icons.notifications_active_outlined,
+        shortKey: 'dispatchModeMasterAsyncShort',
+        labelKey: 'dispatchModeMasterAsyncLabel',
+        descKey: 'dispatchModeMasterAsyncDesc',
         accent: _kAccentDispatch,
       );
     case DispatchMode.routeTask:
@@ -60,7 +68,7 @@ DispatchModeUi dispatchModeUi(DispatchMode mode) {
   }
 }
 
-/// 当前分发模式的胶囊。点一下弹 sheet，选完回调 [onChanged]；
+/// 当前分派模式的胶囊。点一下弹 sheet，选完回调 [onChanged]；
 /// 用户空手退出 sheet 时不回调，模式保持不变。
 class DispatchModePill extends StatelessWidget {
   const DispatchModePill({
@@ -121,7 +129,7 @@ class DispatchModePill extends StatelessWidget {
   }
 }
 
-/// 三选一的 BottomSheet。返回用户选的那一档；点背景/返回键关掉则返回 null。
+/// 四选一的 BottomSheet。返回用户选的那一档；点背景/返回键关掉则返回 null。
 Future<DispatchMode?> showDispatchModeSheet(
   BuildContext context,
   DispatchMode current,
