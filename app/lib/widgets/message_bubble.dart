@@ -305,6 +305,7 @@ class _AssistantBubble extends StatelessWidget {
                       isStreaming: message.isStreaming,
                     ),
                   if (hasTools) ToolCallGroup(toolCalls: message.toolCalls),
+                  if (hasTools) ToolTrajectory(toolCalls: message.toolCalls),
                   if (!hasText && !hasTools && message.isStreaming)
                     const _StreamingDot(),
                   // Token usage line
