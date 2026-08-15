@@ -2,7 +2,8 @@
 
 > 审计日期：2026-08-15  
 > 代码基线：`92b3776`  
-> 范围：Chat / Terminal 的 turn 收尾、P/D/W/B/E 状态、Session FIFO、任务看板、Aux 任务归集、静默卡住检测。
+> 范围：Chat / Terminal 的 turn 收尾、P/D/W/B/E 状态、Session FIFO、任务看板、Aux 任务归集、静默卡住检测。  
+> 可视化版：运行中的 MultiCC 服务上访问 `/docs/classify-state-machine-architecture`（例如 <http://127.0.0.1:3000/docs/classify-state-machine-architecture>），源文件 `public/docs/classify-state-machine-architecture.html`。
 
 ## 结论先行
 
