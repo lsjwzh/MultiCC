@@ -115,10 +115,119 @@ function sanitizeMessage(value, fallback = 'Upstream API request failed') {
 // Provider-owned fallback only: distinguishes a short error envelope rendered
 // as assistant text from meaningful partial output. It is never applied to user
 // input and never decides the category by itself.
+const ERROR_ONLY_PREFIX_RE = /^(?:api\s*error|failed to authenticate|error:|codex\s*(?:error|出错)|claude\s*(?:error|出错)|opencode\s*(?:error|出错)|qoder\s*(?:error|出错)|zcode\s*(?:error|出错)|stream disconnected|connection (?:closed|reset|refused)|request (?:failed|timed out)|rate limit|overloaded|internal server error|service unavailable|timeout|timed out)/i;
+
 function isErrorOnlyText(value) {
   const text = String(value || '').trim();
   if (!text || text.length > 600) return false;
-  return /^(?:api\s*error|error:|codex\s*(?:error|出错)|claude\s*(?:error|出错)|opencode\s*(?:error|出错)|qoder\s*(?:error|出错)|zcode\s*(?:error|出错)|stream disconnected|connection (?:closed|reset|refused)|request (?:failed|timed out)|rate limit|overloaded|internal server error|service unavailable|timeout|timed out)/i.test(text);
+  return ERROR_ONLY_PREFIX_RE.test(text);
+}
+
+// Canonical "what an API fault looks like in text" signature list. Every
+// surface that needs to DESCRIBE the vocabulary (classify prompt E-state
+// definition in src/classify/vocab.js, push prompt in src/push-runtime.js)
+// renders from this single list instead of hand-maintaining a copy that drifts
+// away from ERROR_ONLY_PREFIX_RE / textFallbackCategory above.
+const API_ERROR_SIGNATURES = Object.freeze([
+  'API Error', '503', 'Connection closed', 'Overloaded',
+  'Internal server error', 'The system is busy',
+]);
+
+function apiErrorSignaturesQuoted() {
+  return API_ERROR_SIGNATURES.map(sig => `“${sig}”`).join('、');
+}
+
+// Some CLIs append the error envelope to the END of an otherwise complete
+// assistant turn ("…正文：API Error: Request rejected (429)…"). The whole-message
+// predicate above cannot see that shape, so the error text used to land in the
+// transcript verbatim. This splitter recognizes exactly one trailing envelope:
+// it must sit at the very end, on its own or after a sentence/line boundary,
+// and be short. Anything ambiguous stays untouched.
+const TRAILING_ERROR_ENVELOPE_RE = /(?:^|[\n。：:；;])\s*(failed to authenticate\b[^\n]{0,80}?api\s*error\s*:|api\s*error\s*:)[^\n。！？]{0,400}\s*$/i;
+
+function splitTrailingErrorEnvelope(value) {
+  const text = String(value || '').trim();
+  if (!text || isErrorOnlyText(text)) return null;
+  const matched = TRAILING_ERROR_ENVELOPE_RE.exec(text);
+  if (!matched) return null;
+  const body = text.slice(0, matched.index).trim();
+  if (!body) return null; // whole-message case — handled by isErrorOnlyText callers
+  return Object.freeze({ body, envelope: matched[0].trim() });
+}
+
+// Unified turn-boundary detector: recognizes BOTH the whole-message envelope
+// ("API Error: …" is the entire assistant text) and the trailing envelope
+// appended after real output. Returns null or { source, provider, message,
+// body } — body is null for the whole-message form and the stripped partial
+// output for the trailing form. Source is always a TRUSTED_TEXT_SOURCES member
+// so the envelope message may be classified by text evidence.
+function envelopeSourceFor(provider) {
+  const name = String(provider || 'claude').toLowerCase();
+  if (name === 'qoder') return 'qoder_result';
+  if (name === 'codex') return 'codex_event';
+  if (name === 'opencode') return 'opencode_event';
+  if (name === 'zcode') return 'zcode_event';
+  return 'claude_result';
+}
+
+// The CLI boundary swallows upstream response headers, so the HTTP status a
+// relay returned (the CPR proxy forwards it verbatim) survives only inside the
+// envelope text ("API Error: 503 …"). Recover it here as structured evidence:
+// normalizeApiError then classifies from httpStatus first instead of pure text
+// matching, and taskState.apiError.httpStatus reaches the App UI.
+const ENVELOPE_STATUS_RE = /\b([45]\d\d)\b/;
+
+function envelopeHttpStatus(message) {
+  const matched = ENVELOPE_STATUS_RE.exec(String(message || ''));
+  if (!matched) return null;
+  const status = Number(matched[1]);
+  return status >= 400 && status <= 599 ? status : null;
+}
+
+// Known-harmless provider stderr lines (measured from multicc-error.log noise):
+// codex skill-loading complaints (108+/log), background model-refresh timeouts
+// (15+/log), mid-stream delta warnings after a turn switch, and pure
+// informational notices. They never affect turn outcome, so the turn engine
+// drops them instead of logging warns and polluting the stderr tail used for
+// close-time diagnosis. Deliberately NOT filtered: tool router failures and
+// MCP transport errors — those can be the real signal.
+const HARMLESS_STDERR_LINE_RES = [
+  /failed to load skill \[[^\]]*\] missing /i,
+  /codex_core::util: \w+ without active item\b/i,
+  /codex_core::util: Custom tool call output is missing for call id:/i,
+  /failed to refresh available models/i,
+  /failed to renew cache TTL/i,
+  /state db returned stale rollout path for thread/i,
+  /^Reading additional input from stdin\.\.\.$/i,
+];
+
+function isKnownHarmlessStderrLine(line) {
+  const text = String(line || '').trim();
+  if (!text) return true;
+  return HARMLESS_STDERR_LINE_RES.some(re => re.test(text));
+}
+
+function detectErrorEnvelope(provider, text) {
+  const trimmed = String(text || '').trim();
+  if (!trimmed) return null;
+  if (isErrorOnlyText(trimmed)) {
+    return Object.freeze({
+      source: envelopeSourceFor(provider),
+      provider: String(provider || 'claude').toLowerCase(),
+      message: trimmed,
+      httpStatus: envelopeHttpStatus(trimmed),
+      body: null,
+    });
+  }
+  const split = splitTrailingErrorEnvelope(trimmed);
+  if (!split) return null;
+  return Object.freeze({
+    source: envelopeSourceFor(provider),
+    provider: String(provider || 'claude').toLowerCase(),
+    message: split.envelope,
+    httpStatus: envelopeHttpStatus(split.envelope),
+    body: split.body,
+  });
 }
 
 // Claude CLI (2.1.x) stream watchdog: when a stream stalls, errors, or the
@@ -220,15 +329,19 @@ function structuredCategory(status, code, rawCategory) {
 
 function textFallbackCategory(message) {
   const text = String(message || '').toLowerCase();
+  // Billing wording outranks a bare 401/403: providers transport quota
+  // exhaustion as HTTP 403 ("用户额度不足", "usage limit"), and telling the
+  // user to re-login would be the wrong remedy. Mirrors structuredCategory's
+  // 403 refinement below.
+  if (/\b402\b|insufficient (?:balance|quota)|billing|usage limit|credit balance|额度不足|余额不足|剩余额度/.test(text)) return 'billing_quota';
   if (/\b(?:401|403)\b|unauthori[sz]ed|forbidden|authentication failed|authorization failed|invalid api key|insufficient scope/.test(text)) return 'authentication_permission';
-  if (/\b402\b|insufficient (?:balance|quota)|billing|usage limit|credit balance/.test(text)) return 'billing_quota';
   if (/\b429\b|rate limit|too many requests/.test(text)) return 'rate_limit';
   if (/context (?:window|length)|too many tokens|maximum context|max(?:imum)? output tokens?|token limit/.test(text)) return 'context_token_limit';
   if (/invalid tool|tool (?:schema|arguments?|protocol)|mcp (?:error|failed)|function (?:arguments?|call) error/.test(text)) return 'tool_protocol';
   if (/cancelled by user|canceled by user|server (?:is )?shutting down|sigterm|sigint/.test(text)) return 'cancel_shutdown';
   if (/provider (?:config|configuration).*(?:missing|invalid)|missing (?:provider|base url)|cli not installed|spawn failed|\b(?:eacces|enoent|enoexec)\b|\bexit(?:ed)?(?:\s+(?:code|status))?\s*[:=]?\s*-13\b/.test(text)) return 'adapter_configuration';
   if (/etimedout|timed? out|timeout|deadline exceeded|response stalled|stream idle/.test(text)) return 'timeout';
-  if (/enotfound|dns|tls|certificate|econnreset|connection reset|connection closed|connection refused|socket hang|network error|fetch failed|stream disconnected/.test(text)) return 'network';
+  if (/enotfound|dns|tls|certificate|econnreset|connection reset|connection closed|connection ?refused|unable to connect|socket hang|network error|fetch failed|stream disconnected/.test(text)) return 'network';
   if (/\b(?:500|502|503|504|529)\b|overloaded|server error|internal server error|service unavailable|bad gateway|system is busy/.test(text)) return 'provider_transient';
   if (/\b(?:400|404|409|422)\b|invalid request|validation error|unsupported model|model not found|unprocessable/.test(text)) return 'invalid_request_model';
   return 'unknown';
@@ -282,6 +395,21 @@ function normalizeApiError(raw = {}, context = {}, deps = {}) {
         && explicit === 'invalid_request_model'
         && trustedTextCategory === 'context_token_limit') {
       category = 'context_token_limit';
+    }
+    // A bare 5xx only says "the relay returned an error". When the trusted
+    // envelope text names a more specific root cause (DNS failure, TLS
+    // disconnect, timeout), that diagnosis outranks the generic bucket —
+    // relays commonly transport network faults as 500/502. Only applies when
+    // the status was the sole structured evidence; a real provider error code
+    // still wins.
+    const codeDerivedCategory = AUTH_CODES.has(code) || BILLING_CODES.has(code)
+      || RATE_CODES.has(code) || PROVIDER_TRANSIENT_CODES.has(code)
+      || CONTEXT_CODES.has(code) || TOOL_CODES.has(code) || CONFIG_CODES.has(code)
+      || NETWORK_CODES.has(code) || TIMEOUT_CODES.has(code);
+    if (!codeDerivedCategory
+        && httpStatus != null && [500, 502, 503, 504, 529].includes(httpStatus)
+        && (trustedTextCategory === 'network' || trustedTextCategory === 'timeout')) {
+      category = trustedTextCategory;
     }
   }
   const partialOutput = context.partialOutput === true || raw.partialOutput === true;
@@ -551,5 +679,12 @@ module.exports = {
   retryNotice,
   sanitizeMessage,
   isErrorOnlyText,
+  ERROR_ONLY_PREFIX_RE,
+  TRAILING_ERROR_ENVELOPE_RE,
+  splitTrailingErrorEnvelope,
+  detectErrorEnvelope,
   claudeErrorEnvelope,
+  isKnownHarmlessStderrLine,
+  API_ERROR_SIGNATURES,
+  apiErrorSignaturesQuoted,
 };
