@@ -741,6 +741,78 @@ test('context level reports the transcript water level read-only and without lea
     assert.equal(otherRes.body.supported, false);
     assert.equal(otherRes.body.reason, 'cli-not-claude');
 
+    // OpenCode: supported=true with the water level of the EXACT native session
+    // the logical session captured — a sibling session sharing the cwd is never
+    // consulted. No filesystem path may reach the client here either.
+    const readCalls = [];
+    const opencodeFixture = ({
+      native,
+      persistedExtra = {},
+    } = {}) => fixture({
+      persistedSessions: new Map([['s1', {
+        id: 's1', kind: 'chat', cli: 'opencode', model: 'deepseek-v4-flash',
+        cliSessionId: 'native-a', ...persistedExtra,
+      }]]),
+      deps: {
+        cwdForSession: () => cwd,
+        opencodeContextReader: {
+          read(sessionId, modelId) {
+            readCalls.push({ sessionId, modelId });
+            return native;
+          },
+        },
+      },
+    });
+    const okFixture = opencodeFixture({ native: {
+      found: true, sessionId: 'native-a',
+      tokens: { total: 897243, input: 178, output: 41, reasoning: 0, cacheRead: 897024, cacheWrite: 0 },
+      limit: { context: 1000000, output: 32768, source: 'models.dev' },
+      threshold: 0.85, ratio: 0.897, wouldRotate: true,
+    } });
+    const okApp = createFakeApp();
+    okFixture.runtime.mountRoutes(okApp);
+    const okRes = createResponse();
+    okApp.routes.get('GET /api/sessions/:id/context-level')(
+      { params: { id: 's1' }, query: {} }, okRes, () => {},
+    );
+    assert.equal(okRes.statusCode, 200);
+    assert.equal(okRes.body.supported, true);
+    assert.equal(okRes.body.cli, 'opencode');
+    assert.equal(okRes.body.native.tokens.total, 897243);
+    assert.equal(okRes.body.native.limit.context, 1000000);
+    assert.equal(okRes.body.native.wouldRotate, true);
+    assert.deepEqual(readCalls, [{ sessionId: 'native-a', modelId: 'deepseek-v4-flash' }],
+      'the query is scoped to the captured native session id, not the cwd');
+    assert.equal(JSON.stringify(okRes.body).includes('/Users/'), false);
+
+    // Missing native session / unreadable db stay supported with a reason.
+    for (const native of [{ found: false, reason: 'no-native-session' }, { found: false, reason: 'db-unavailable' }]) {
+      const missing = opencodeFixture({ native });
+      const mApp = createFakeApp();
+      missing.runtime.mountRoutes(mApp);
+      const mRes = createResponse();
+      mApp.routes.get('GET /api/sessions/:id/context-level')(
+        { params: { id: 's1' }, query: {} }, mRes, () => {},
+      );
+      assert.equal(mRes.body.supported, true);
+      assert.equal(mRes.body.native.reason, native.reason);
+    }
+    // The streaming-path native id wins over the per-turn fallback, matching
+    // which session `--session` actually resumes.
+    readCalls.length = 0;
+    const streamed = opencodeFixture({
+      native: { found: false, reason: 'session-not-found' },
+      persistedExtra: { _streamSessionId: 'native-stream' },
+    });
+    const sApp = createFakeApp();
+    streamed.runtime.mountRoutes(sApp);
+    const sRes = createResponse();
+    sApp.routes.get('GET /api/sessions/:id/context-level')(
+      { params: { id: 's1' }, query: {} }, sRes, () => {},
+    );
+    assert.equal(sRes.body.supported, true);
+    assert.deepEqual(readCalls, [{ sessionId: 'native-stream', modelId: 'deepseek-v4-flash' }]);
+
     // A host that never supplied a cwd resolver degrades to unsupported, not a 500.
     const noResolver = fixture({
       persistedSessions: new Map([['s1', { id: 's1', kind: 'chat', cli: 'claude' }]]),

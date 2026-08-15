@@ -193,6 +193,29 @@ test('manual native rotation renders a context checkpoint without a fake CLI swi
   assert.doesNotMatch(prompt, /logical conversation switched/);
 });
 
+test('auto native rotation renders its own checkpoint text, distinct from manual', () => {
+  const checkpoint = buildHandoffCheckpoint({
+    session: {}, fromCli: 'opencode', toCli: 'opencode',
+    history: [{ role: 'user', content: 'rotate me', ts: 1 }],
+  });
+  checkpoint.reason = 'auto_native_context_rotate';
+  const prompt = renderHandoffPrompt({
+    id: 'checkpoint-auto', fromCli: 'opencode', toCli: 'opencode',
+    reason: 'auto_native_context_rotate', checkpoint,
+  });
+  assert.match(prompt, /MultiCC context checkpoint v1/);
+  assert.match(prompt, /approached its model context limit/);
+  assert.match(prompt, /rotate me/);
+  assert.doesNotMatch(prompt, /logical conversation switched/);
+  // The manual-rotate wording stays byte-stable for its own reason.
+  const manual = renderHandoffPrompt({
+    id: 'checkpoint-manual', fromCli: 'opencode', toCli: 'opencode',
+    reason: 'manual_native_context_rotate',
+    checkpoint: { ...checkpoint, reason: 'manual_native_context_rotate' },
+  });
+  assert.match(manual, /The user started a fresh native CLI context/);
+});
+
 test('checkpoint contains bounded visible transcript and no native ids', () => {
   const session = {
     summary: 'summary',
