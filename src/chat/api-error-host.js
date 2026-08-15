@@ -145,12 +145,15 @@ function createApiErrorHost(options = {}) {
   function auxHealthProbe() {
     const auxQueue = getAuxQueue();
     const health = auxQueue?.getStatus().health;
-    if (!health?.unhealthy || (health.retryAt && health.retryAt > now())
-        || (health.retryable === false && !health.retryAt)) return;
+    if (!health?.unhealthy || (health.retryAt && health.retryAt > now())) return;
+    const externallyRecoverable = health.category === 'billing_quota';
+    if (health.retryable === false && !externallyRecoverable) return;
+    if (auxQueue.queue.some(task => task.type === 'health_probe')
+        || auxQueue.currentTask?.type === 'health_probe') return;
     auxQueue.enqueue({
       type: 'health_probe',
       prompt: '回复一个字：ok',
-      meta: { probe: true },
+      meta: { probe: true, timeout: probeTimeoutMs },
     }).then(result => {
       if (result && !result.cancelled) auxQueue.recordSuccess();
     }).catch(() => {});
