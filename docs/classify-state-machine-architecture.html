@@ -1,0 +1,771 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MultiCC Classify 状态机审计</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #071019;
+      --panel: rgba(12, 25, 37, .92);
+      --panel-2: rgba(16, 34, 48, .88);
+      --line: #294257;
+      --line-soft: rgba(78, 112, 139, .34);
+      --text: #eaf3f8;
+      --muted: #94aabc;
+      --blue: #56b4e9;
+      --green: #54d6a1;
+      --amber: #e5b454;
+      --red: #ff6b8a;
+      --violet: #b594ff;
+      --cyan: #62d9e8;
+      --shadow: 0 18px 55px rgba(0, 0, 0, .28);
+    }
+
+    * { box-sizing: border-box; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      margin: 0;
+      min-width: 320px;
+      color: var(--text);
+      font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      line-height: 1.55;
+      background-color: var(--bg);
+      background-image:
+        linear-gradient(rgba(77, 112, 139, .08) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(77, 112, 139, .08) 1px, transparent 1px),
+        radial-gradient(circle at 15% 0%, rgba(86, 180, 233, .12), transparent 34%),
+        radial-gradient(circle at 88% 12%, rgba(181, 148, 255, .10), transparent 28%);
+      background-size: 28px 28px, 28px 28px, auto, auto;
+    }
+
+    a { color: #87d4ff; }
+
+    .shell {
+      width: min(1500px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 48px 0 64px;
+    }
+
+    header {
+      position: relative;
+      overflow: hidden;
+      padding: 42px 46px;
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      background: linear-gradient(135deg, rgba(15, 39, 57, .98), rgba(16, 25, 42, .96));
+      box-shadow: var(--shadow);
+    }
+
+    header::after {
+      content: "P  D  W  B  E";
+      position: absolute;
+      right: 38px;
+      top: 18px;
+      color: rgba(98, 217, 232, .08);
+      font: 800 72px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: .08em;
+      transform: rotate(-4deg);
+      pointer-events: none;
+    }
+
+    .kicker {
+      margin: 0 0 10px;
+      color: var(--cyan);
+      font: 700 12px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      position: relative;
+      z-index: 1;
+      max-width: 900px;
+      margin: 0;
+      font-size: clamp(32px, 5vw, 64px);
+      line-height: 1.06;
+      letter-spacing: -.035em;
+    }
+
+    .lede {
+      position: relative;
+      z-index: 1;
+      max-width: 950px;
+      margin: 18px 0 0;
+      color: #bfd0dc;
+      font-size: 17px;
+    }
+
+    .meta {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 9px;
+      margin-top: 22px;
+    }
+
+    .pill {
+      padding: 7px 11px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: #b9ccda;
+      background: rgba(6, 15, 24, .48);
+      font: 600 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      margin: 18px 0;
+    }
+
+    .metric {
+      min-height: 155px;
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--panel);
+      box-shadow: 0 12px 32px rgba(0, 0, 0, .18);
+    }
+
+    .metric .value {
+      display: block;
+      margin-bottom: 10px;
+      color: var(--blue);
+      font: 800 26px/1.15 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    .metric.warn .value { color: var(--amber); }
+    .metric.bad .value { color: var(--red); }
+    .metric.good .value { color: var(--green); }
+    .metric p { margin: 0; color: var(--muted); font-size: 14px; }
+
+    section {
+      margin-top: 18px;
+      padding: 30px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+
+    section > h2 {
+      margin: 0 0 6px;
+      font-size: 25px;
+      letter-spacing: -.02em;
+    }
+
+    .section-note {
+      max-width: 1000px;
+      margin: 0 0 22px;
+      color: var(--muted);
+    }
+
+    .diagram {
+      width: 100%;
+      overflow-x: auto;
+      border: 1px solid var(--line-soft);
+      border-radius: 14px;
+      background: rgba(4, 12, 20, .64);
+    }
+
+    svg {
+      display: block;
+      width: 100%;
+      height: auto;
+      min-width: 940px;
+    }
+
+    svg text {
+      fill: var(--text);
+      font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+    }
+
+    svg .muted { fill: var(--muted); }
+    svg .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    svg .small { font-size: 13px; }
+    svg .body { font-size: 15px; }
+    svg .label { font-size: 16px; font-weight: 750; }
+    svg .title { font-size: 20px; font-weight: 800; }
+    svg .lane { stroke: rgba(120, 155, 180, .28); stroke-width: 1.5; stroke-dasharray: 7 7; }
+    svg .arrow { fill: none; stroke: #7898ad; stroke-width: 2; marker-end: url(#arrow); }
+    svg .arrow-green { fill: none; stroke: var(--green); stroke-width: 2.3; marker-end: url(#arrowGreen); }
+    svg .arrow-red { fill: none; stroke: var(--red); stroke-width: 2.3; marker-end: url(#arrowRed); }
+    svg .arrow-amber { fill: none; stroke: var(--amber); stroke-width: 2.3; marker-end: url(#arrowAmber); }
+    svg .node { fill: #102536; stroke: #36576d; stroke-width: 1.6; }
+    svg .node-blue { fill: #102b40; stroke: var(--blue); stroke-width: 1.8; }
+    svg .node-green { fill: #123128; stroke: var(--green); stroke-width: 1.8; }
+    svg .node-amber { fill: #362a12; stroke: var(--amber); stroke-width: 1.8; }
+    svg .node-red { fill: #3b1723; stroke: var(--red); stroke-width: 1.8; }
+    svg .node-violet { fill: #281f3c; stroke: var(--violet); stroke-width: 1.8; }
+
+    .state-grid {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 18px;
+    }
+
+    .state {
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-top-width: 4px;
+      border-radius: 13px;
+      background: var(--panel-2);
+    }
+
+    .state.p { border-top-color: var(--blue); }
+    .state.d { border-top-color: var(--green); }
+    .state.w { border-top-color: var(--amber); }
+    .state.b { border-top-color: var(--violet); }
+    .state.e { border-top-color: var(--red); }
+    .state strong { font: 800 27px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .state span { display: block; margin-top: 7px; color: var(--muted); font-size: 13px; }
+
+    .callout {
+      margin-top: 18px;
+      padding: 16px 18px;
+      border-left: 4px solid var(--red);
+      border-radius: 8px;
+      background: rgba(255, 107, 138, .08);
+      color: #ffd7e0;
+    }
+
+    .callout.good {
+      border-left-color: var(--green);
+      background: rgba(84, 214, 161, .08);
+      color: #d9ffef;
+    }
+
+    .findings {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .finding {
+      padding: 18px 19px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--panel-2);
+    }
+
+    .finding h3 { margin: 0 0 8px; font-size: 16px; }
+    .finding p { margin: 0; color: var(--muted); font-size: 14px; }
+    .sev {
+      display: inline-block;
+      min-width: 37px;
+      margin-right: 8px;
+      padding: 4px 7px;
+      border-radius: 6px;
+      text-align: center;
+      font: 800 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .sev.p0 { color: #fff; background: #b7274c; }
+    .sev.p1 { color: #2b1800; background: var(--amber); }
+    .sev.p2 { color: #071019; background: var(--blue); }
+    .sev.p3 { color: #071019; background: #93a8b8; }
+
+    .columns {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .code-tree {
+      margin: 0;
+      padding: 20px;
+      overflow-x: auto;
+      border: 1px solid var(--line-soft);
+      border-radius: 12px;
+      color: #c9dce8;
+      background: #050d14;
+      font: 13px/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      white-space: pre;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 16px;
+      font-size: 14px;
+    }
+
+    th, td {
+      padding: 11px 12px;
+      border-bottom: 1px solid var(--line-soft);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th { color: #cce3f0; background: rgba(86, 180, 233, .07); }
+    td { color: #aebfca; }
+    td code { color: #d9f4ff; }
+
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+      counter-reset: migration;
+    }
+
+    .step {
+      counter-increment: migration;
+      position: relative;
+      min-height: 165px;
+      padding: 52px 16px 16px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--panel-2);
+    }
+
+    .step::before {
+      content: counter(migration, decimal-leading-zero);
+      position: absolute;
+      top: 15px;
+      left: 16px;
+      color: var(--cyan);
+      font: 800 23px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    .step strong { display: block; margin-bottom: 7px; }
+    .step span { color: var(--muted); font-size: 13px; }
+
+    footer {
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      margin-top: 18px;
+      padding: 19px 22px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      color: var(--muted);
+      background: rgba(7, 16, 25, .88);
+      font-size: 13px;
+    }
+
+    @media (max-width: 1050px) {
+      .summary, .state-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
+    @media (max-width: 720px) {
+      .shell { width: min(100% - 18px, 1500px); padding-top: 10px; }
+      header, section { padding: 22px 18px; border-radius: 14px; }
+      header::after { display: none; }
+      .summary, .state-grid, .findings, .columns, .steps { grid-template-columns: 1fr; }
+      footer { flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <p class="kicker">MultiCC / Architecture Audit</p>
+      <h1>Classify 状态机<br>输入、输出、时序与重构边界</h1>
+      <p class="lede">当前 Chat 状态已由结构化事实决定，Aux 只做任务归集；但 turn outcome、task lifecycle、scheduler commit 和 UI 投影仍共享同一组字母，造成语义错位与部分提交。</p>
+      <div class="meta">
+        <span class="pill">2026-08-15</span>
+        <span class="pill">baseline 92b3776</span>
+        <span class="pill">P / D / W / B / E</span>
+        <span class="pill">159 / 159 focused + isolated pass</span>
+      </div>
+    </header>
+
+    <div class="summary" aria-label="审计摘要">
+      <article class="metric good">
+        <span class="value">确定性</span>
+        <p>Chat turn 状态来自 boundary、ownership、pending user/background facts，不再由摘要模型猜测。</p>
+      </article>
+      <article class="metric bad">
+        <span class="value">P0 · D</span>
+        <p>D 只证明本轮成功结束，却被任务看板与通知解释成整项任务完成。</p>
+      </article>
+      <article class="metric warn">
+        <span class="value">非原子</span>
+        <p>scheduler transition 未 await；历史、TaskBoard、taskState、WebSocket 可先后分裂。</p>
+      </article>
+      <article class="metric good">
+        <span class="value">Observe</span>
+        <p>静默卡住默认只观察；显式 opt-in 才允许自动取消，避免长推理误杀。</p>
+      </article>
+    </div>
+
+    <section id="current-map">
+      <h2>1. 当前输入 → 判定 → 输出大图</h2>
+      <p class="section-note">绿色部分是已经正确拆出的纯规则；红色节点同时做 guard、调度和多路投影，是当前复杂度与一致性风险的中心。</p>
+      <div class="diagram">
+        <svg viewBox="0 0 1560 760" role="img" aria-labelledby="current-title current-desc">
+          <title id="current-title">当前 classify 数据流</title>
+          <desc id="current-desc">从客户端、FIFO 和 runner 到结构化 turn resolver，再到 scheduler、taskState、TaskBoard 和 Aux 任务归集。</desc>
+          <defs>
+            <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7898ad"/></marker>
+            <marker id="arrowGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#54d6a1"/></marker>
+            <marker id="arrowRed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#ff6b8a"/></marker>
+            <marker id="arrowAmber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#e5b454"/></marker>
+          </defs>
+
+          <text x="55" y="54" class="title">输入与运行</text>
+          <rect x="45" y="78" width="220" height="88" rx="13" class="node-blue"/>
+          <text x="155" y="112" text-anchor="middle" class="label">Web / App / Gateway</text>
+          <text x="155" y="138" text-anchor="middle" class="small muted">typed input / callback</text>
+
+          <rect x="325" y="78" width="220" height="88" rx="13" class="node-blue"/>
+          <text x="435" y="112" text-anchor="middle" class="label">Session FIFO</text>
+          <text x="435" y="138" text-anchor="middle" class="small muted">claim → started / P</text>
+
+          <rect x="605" y="78" width="220" height="88" rx="13" class="node-blue"/>
+          <text x="715" y="112" text-anchor="middle" class="label">Provider Runner</text>
+          <text x="715" y="138" text-anchor="middle" class="small muted">stream / tool / result</text>
+
+          <rect x="885" y="78" width="220" height="88" rx="13" class="node-blue"/>
+          <text x="995" y="112" text-anchor="middle" class="label">Finalize Plan</text>
+          <text x="995" y="138" text-anchor="middle" class="small muted">structured boundary</text>
+
+          <path d="M265 122 H325" class="arrow"/>
+          <path d="M545 122 H605" class="arrow"/>
+          <path d="M825 122 H885" class="arrow"/>
+
+          <text x="55" y="247" class="title">结构化事实</text>
+          <rect x="45" y="270" width="235" height="78" rx="12" class="node"/>
+          <text x="162" y="301" text-anchor="middle" class="label">ownership</text>
+          <text x="162" y="326" text-anchor="middle" class="small muted">active / inactive / unknown</text>
+
+          <rect x="315" y="270" width="235" height="78" rx="12" class="node"/>
+          <text x="432" y="301" text-anchor="middle" class="label">boundary</text>
+          <text x="432" y="326" text-anchor="middle" class="small muted">completed / abnormal</text>
+
+          <rect x="585" y="270" width="235" height="78" rx="12" class="node"/>
+          <text x="702" y="301" text-anchor="middle" class="label">pending user</text>
+          <text x="702" y="326" text-anchor="middle" class="small muted">structured request</text>
+
+          <rect x="855" y="270" width="235" height="78" rx="12" class="node"/>
+          <text x="972" y="301" text-anchor="middle" class="label">background</text>
+          <text x="972" y="326" text-anchor="middle" class="small muted">pending callback</text>
+
+          <rect x="1160" y="238" width="340" height="142" rx="16" class="node-green"/>
+          <text x="1330" y="278" text-anchor="middle" class="title">resolveTurnState()</text>
+          <text x="1330" y="309" text-anchor="middle" class="body">纯函数：facts → P / D / W / B / E</text>
+          <text x="1330" y="338" text-anchor="middle" class="small muted">Aux 不参与 · unknown fail-closed</text>
+          <path d="M280 309 H1134" class="arrow-green"/>
+          <path d="M550 321 H1134" class="arrow-green"/>
+          <path d="M820 333 H1134" class="arrow-green"/>
+          <path d="M1090 345 H1134" class="arrow-green"/>
+          <path d="M995 166 V218 H1245" class="arrow"/>
+
+          <text x="55" y="450" class="title">提交与投影</text>
+          <rect x="45" y="475" width="335" height="128" rx="16" class="node-red"/>
+          <text x="212" y="511" text-anchor="middle" class="title">dispatchStateAction()</text>
+          <text x="212" y="542" text-anchor="middle" class="body">history / goal / TaskBoard 先写</text>
+          <text x="212" y="569" text-anchor="middle" class="body">再 guard；scheduler 不 await</text>
+          <path d="M1330 380 V430 H212 V475" class="arrow-red"/>
+
+          <rect x="445" y="455" width="240" height="92" rx="13" class="node-amber"/>
+          <text x="565" y="490" text-anchor="middle" class="label">Scheduler commit</text>
+          <text x="565" y="518" text-anchor="middle" class="small muted">complete + tick (async)</text>
+
+          <rect x="725" y="455" width="240" height="92" rx="13" class="node-amber"/>
+          <text x="845" y="490" text-anchor="middle" class="label">taskState / history</text>
+          <text x="845" y="518" text-anchor="middle" class="small muted">durable session projection</text>
+
+          <rect x="1005" y="455" width="240" height="92" rx="13" class="node-amber"/>
+          <text x="1125" y="490" text-anchor="middle" class="label">Web / App / Push</text>
+          <text x="1125" y="518" text-anchor="middle" class="small muted">task_state + notify</text>
+
+          <rect x="1285" y="455" width="215" height="92" rx="13" class="node-amber"/>
+          <text x="1392" y="490" text-anchor="middle" class="label">TaskBoard</text>
+          <text x="1392" y="518" text-anchor="middle" class="small muted">D → done</text>
+
+          <path d="M380 501 H445" class="arrow-amber"/>
+          <path d="M380 525 H725" class="arrow-amber"/>
+          <path d="M380 549 H1005" class="arrow-amber"/>
+          <path d="M380 573 H1285" class="arrow-amber"/>
+
+          <rect x="445" y="632" width="420" height="82" rx="13" class="node-violet"/>
+          <text x="655" y="664" text-anchor="middle" class="label">Aux task attribution</text>
+          <text x="655" y="691" text-anchor="middle" class="small muted">taskName / phase / taskId · best effort</text>
+          <rect x="930" y="632" width="420" height="82" rx="13" class="node-violet"/>
+          <text x="1140" y="664" text-anchor="middle" class="label">rename / reassign / annotate</text>
+          <text x="1140" y="691" text-anchor="middle" class="small muted">不应拥有 turn 状态写权限</text>
+          <path d="M995 166 V632 H445" class="arrow"/>
+          <path d="M865 673 H930" class="arrow"/>
+
+          <text x="1382" y="683" class="small muted">绿色：纯规则</text>
+          <text x="1382" y="706" class="small muted">红色：一致性风险</text>
+        </svg>
+      </div>
+      <div class="callout"><strong>关键错位：</strong>正常 durable assistant result 只证明 turn succeeded；当前链路却把它渲染为“任务完成”，并把 TaskBoard 设为 done。</div>
+    </section>
+
+    <section id="states">
+      <h2>2. 当前字母的实际含义</h2>
+      <p class="section-note">字母本身不是问题；问题是一个字母同时承担 turn、task、scheduler 和 presentation 四种语义。</p>
+      <div class="state-grid">
+        <article class="state p"><strong>P</strong><span>runner active，或 ownership unknown。调度不放行普通旧 FIFO。</span></article>
+        <article class="state d"><strong>D</strong><span>completed boundary。实际是 turn 成功；当前展示和任务看板却当作 task 完成。</span></article>
+        <article class="state w"><strong>W</strong><span>存在未解决的结构化用户问题。释放 active，等 answer / direct input。</span></article>
+        <article class="state b"><strong>B</strong><span>后台 callback 未回流。释放 active，等 callback / continuation。</span></article>
+        <article class="state e"><strong>E</strong><span>异常、中断、持久化失败、用户/看门狗取消的合集；必须靠 reason 区分。</span></article>
+      </div>
+      <table>
+        <thead><tr><th>优先级</th><th>事实</th><th>结果</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td><code>ownership = active/unknown</code></td><td>P</td><td>close 候选不可提交；unknown 也 fail-closed。</td></tr>
+          <tr><td>2</td><td><code>pendingUserInput</code></td><td>W</td><td>结构化问题证据优先于 clean close。</td></tr>
+          <tr><td>3</td><td><code>backgroundPending</code></td><td>B</td><td>后台任务仍会回流。</td></tr>
+          <tr><td>4</td><td><code>boundary = completed</code></td><td>D</td><td>只代表本轮结果正常持久化。</td></tr>
+          <tr><td>5</td><td>abnormal / unknown boundary</td><td>E</td><td>未知 boundary fail-closed，不误判成功。</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="sequence">
+      <h2>3. 正常 Chat turn 的真实时序</h2>
+      <p class="section-note">`completeSessionTurn()` 以 fire-and-forget 启动；classify writer 发起 scheduler transition 后也不等待。取消路径会补等 pending transition，普通路径不会。</p>
+      <div class="diagram">
+        <svg viewBox="0 0 1560 750" role="img" aria-labelledby="seq-title seq-desc">
+          <title id="seq-title">正常 Chat turn 时序</title>
+          <desc id="seq-desc">客户端输入进入 FIFO，runner 结束，finalize、scheduler、classify、投影和 Aux 的实际顺序。</desc>
+          <defs>
+            <marker id="arrow2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10z" fill="#7898ad"/></marker>
+            <marker id="arrow2red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10z" fill="#ff6b8a"/></marker>
+          </defs>
+          <g>
+            <rect x="35" y="35" width="170" height="55" rx="10" class="node-blue"/><text x="120" y="68" text-anchor="middle" class="label">Client</text>
+            <rect x="245" y="35" width="170" height="55" rx="10" class="node-blue"/><text x="330" y="68" text-anchor="middle" class="label">FIFO</text>
+            <rect x="455" y="35" width="170" height="55" rx="10" class="node-blue"/><text x="540" y="68" text-anchor="middle" class="label">Runner</text>
+            <rect x="665" y="35" width="170" height="55" rx="10" class="node"/><text x="750" y="68" text-anchor="middle" class="label">Finalize</text>
+            <rect x="875" y="35" width="170" height="55" rx="10" class="node-green"/><text x="960" y="68" text-anchor="middle" class="label">Classify</text>
+            <rect x="1085" y="35" width="190" height="55" rx="10" class="node-amber"/><text x="1180" y="68" text-anchor="middle" class="label">Persist / UI</text>
+            <rect x="1315" y="35" width="190" height="55" rx="10" class="node-violet"/><text x="1410" y="68" text-anchor="middle" class="label">Aux</text>
+          </g>
+          <g>
+            <path d="M120 90 V700 M330 90 V700 M540 90 V700 M750 90 V700 M960 90 V700 M1180 90 V700 M1410 90 V700" class="lane"/>
+          </g>
+
+          <path d="M120 140 H330" fill="none" stroke="#7898ad" stroke-width="2" marker-end="url(#arrow2)"/>
+          <text x="225" y="130" text-anchor="middle" class="small muted">1 · typed input</text>
+          <path d="M330 190 H540" fill="none" stroke="#7898ad" stroke-width="2" marker-end="url(#arrow2)"/>
+          <text x="435" y="180" text-anchor="middle" class="small muted">2 · claim + started</text>
+          <path d="M330 235 H1180" fill="none" stroke="#56b4e9" stroke-width="2" marker-end="url(#arrow2)"/>
+          <text x="755" y="225" text-anchor="middle" class="small">3 · P / running</text>
+          <path d="M540 290 H750" fill="none" stroke="#7898ad" stroke-width="2" marker-end="url(#arrow2)"/>
+          <text x="645" y="280" text-anchor="middle" class="small muted">4 · durable result + close</text>
+
+          <path d="M750 345 H330" fill="none" stroke="#e5b454" stroke-width="2" stroke-dasharray="8 5" marker-end="url(#arrow2)"/>
+          <text x="540" y="335" text-anchor="middle" class="small">5 · completeSessionTurn() fire-and-forget</text>
+          <path d="M750 395 H960" fill="none" stroke="#54d6a1" stroke-width="2" marker-end="url(#arrow2)"/>
+          <text x="855" y="385" text-anchor="middle" class="small">6 · classifyTurnEnd(completed)</text>
+          <rect x="895" y="420" width="130" height="78" rx="10" class="node-green"/>
+          <text x="960" y="449" text-anchor="middle" class="small">facts + reducer</text>
+          <text x="960" y="476" text-anchor="middle" class="label">→ D</text>
+
+          <path d="M960 530 H330" fill="none" stroke="#ff6b8a" stroke-width="2" stroke-dasharray="8 5" marker-end="url(#arrow2red)"/>
+          <text x="645" y="520" text-anchor="middle" class="small">7 · classifyTransition(D) · not awaited</text>
+          <path d="M960 575 H1180" fill="none" stroke="#ff6b8a" stroke-width="2" marker-end="url(#arrow2red)"/>
+          <text x="1070" y="565" text-anchor="middle" class="small">8 · publish D / “任务完成”</text>
+          <path d="M330 620 H1180" fill="none" stroke="#e5b454" stroke-width="2" marker-end="url(#arrow2)"/>
+          <text x="755" y="610" text-anchor="middle" class="small muted">9 · scheduler complete(D) eventually settles</text>
+          <path d="M960 670 H1410" fill="none" stroke="#b594ff" stroke-width="2" stroke-dasharray="8 5" marker-end="url(#arrow2)"/>
+          <text x="1185" y="660" text-anchor="middle" class="small">10 · best-effort task attribution</text>
+          <rect x="1040" y="548" width="300" height="104" rx="11" fill="none" stroke="#ff6b8a" stroke-width="2" stroke-dasharray="6 5"/>
+          <text x="1190" y="684" text-anchor="middle" class="small muted">风险窗口：UI 已 D，scheduler 仍 assessing/P</text>
+        </svg>
+      </div>
+    </section>
+
+    <section id="audit">
+      <h2>4. 审计发现与优先级</h2>
+      <p class="section-note">优先处理跨层语义与一致性；目录拆分排在后面，避免只是搬运错误模型。</p>
+      <div class="findings">
+        <article class="finding"><h3><span class="sev p0">P0</span>D 的证据层级错误</h3><p>completed boundary 证明 turn 成功，不证明整个用户任务完成；当前却自动 phase=done、TaskBoard=done、推送“任务完成”。</p></article>
+        <article class="finding"><h3><span class="sev p1">P1</span>guard 前已有写入</h3><p>history、goal/phase、TaskBoard 在 liveness guard 之前写入。直接调用者可形成部分提交。</p></article>
+        <article class="finding"><h3><span class="sev p1">P1</span>scheduler transition 不 await</h3><p>普通 D/W/B/E 先投影后等待调度；scheduler reject 时没有 rollback。取消路径单独补 await，主路径缺失。</p></article>
+        <article class="finding"><h3><span class="sev p1">P1</span>Terminal 复用 Chat ownership</h3><p>Terminal 没有 chat runtime，ownership=unknown；旧模型结果被 hold，日志、TaskBoard 和 persisted state 可分裂。</p></article>
+        <article class="finding"><h3><span class="sev p1">P1</span>Aux prompt 与重试成本无界</h3><p>最近 20 条完整内容没有总 budget；归集失败的 session 在 throttle 过期后可能每 60 秒再入队。</p></article>
+        <article class="finding"><h3><span class="sev p2">P2</span>多写者 + 非法 P 隐藏</h3><p>多个模块直接写 P；turn-end P 又被静默变 W，违规 transition 没有暴露。</p></article>
+        <article class="finding"><h3><span class="sev p2">P2</span>live / recovery 形态不同</h3><p>运行时 W/B/E 释放 active；重启恢复可制造 legacy-active/frozen，相同事实不同内部形态。</p></article>
+        <article class="finding"><h3><span class="sev p3">P3</span>legacy 与展示漂移</h3><p>旧三行状态模型、C、旧文档仍在；App phase switch 缺 implementing/wrapping。</p></article>
+      </div>
+    </section>
+
+    <section id="stalled">
+      <h2>5. 静默卡住：当前安全判断</h2>
+      <p class="section-note">静默是负证据，默认不能获得 kill 权限。只有显式 opt-in 才会把连续 stalled 观察升级为取消。</p>
+      <div class="diagram">
+        <svg viewBox="0 0 1500 480" role="img" aria-labelledby="stall-title stall-desc">
+          <title id="stall-title">静默卡住保护流程</title>
+          <desc id="stall-desc">30秒扫描，180秒静默门槛，启动阶段额外120秒，liveness综合检查，连续两次确认，默认只观察。</desc>
+          <defs>
+            <marker id="arrow3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10z" fill="#7898ad"/></marker>
+          </defs>
+          <rect x="45" y="175" width="170" height="88" rx="14" class="node-blue"/>
+          <text x="130" y="208" text-anchor="middle" class="label">30s sweep</text><text x="130" y="237" text-anchor="middle" class="small muted">chat · P · in-flight</text>
+          <rect x="265" y="175" width="205" height="88" rx="14" class="node-amber"/>
+          <text x="367" y="208" text-anchor="middle" class="label">silence gate</text><text x="367" y="237" text-anchor="middle" class="small muted">180s · starting +120s</text>
+          <rect x="520" y="155" width="250" height="128" rx="14" class="node-amber"/>
+          <text x="645" y="192" text-anchor="middle" class="label">assessLiveness</text><text x="645" y="221" text-anchor="middle" class="small muted">fresh proxy?</text><text x="645" y="245" text-anchor="middle" class="small muted">outbound? rollout growth?</text>
+          <rect x="820" y="175" width="205" height="88" rx="14" class="node-amber"/>
+          <text x="922" y="208" text-anchor="middle" class="label">2 confirmations</text><text x="922" y="237" text-anchor="middle" class="small muted">activity resets count</text>
+          <rect x="1075" y="175" width="170" height="88" rx="14" class="node-green"/>
+          <text x="1160" y="208" text-anchor="middle" class="label">observe only</text><text x="1160" y="237" text-anchor="middle" class="small muted">default policy</text>
+          <rect x="1300" y="175" width="160" height="88" rx="14" class="node-red"/>
+          <text x="1380" y="208" text-anchor="middle" class="label">cancel</text><text x="1380" y="237" text-anchor="middle" class="small muted">explicit opt-in</text>
+          <path d="M215 219 H265 M470 219 H520 M770 219 H820 M1025 219 H1075" fill="none" stroke="#7898ad" stroke-width="2" marker-end="url(#arrow3)"/>
+          <path d="M1245 219 H1300" fill="none" stroke="#ff6b8a" stroke-width="2" stroke-dasharray="7 5" marker-end="url(#arrow3)"/>
+          <text x="1272" y="203" text-anchor="middle" class="small" fill="#ff6b8a">env=1</text>
+
+          <rect x="530" y="340" width="230" height="72" rx="12" class="node-green"/>
+          <text x="645" y="370" text-anchor="middle" class="label">working</text><text x="645" y="394" text-anchor="middle" class="small muted">任一正活动证据即保活</text>
+          <path d="M645 283 V340" fill="none" stroke="#54d6a1" stroke-width="2" marker-end="url(#arrow3)"/>
+          <text x="674" y="319" class="small muted">yes</text>
+
+          <rect x="45" y="30" width="550" height="72" rx="12" class="node-green"/>
+          <text x="320" y="60" text-anchor="middle" class="label">安全不变量：没有输出 ≠ 已卡死 ≠ 可以终止</text>
+          <text x="320" y="84" text-anchor="middle" class="small muted">positive failure evidence 由 process / provider watchdog 单独处理</text>
+          <rect x="900" y="30" width="560" height="72" rx="12" class="node-violet"/>
+          <text x="1180" y="60" text-anchor="middle" class="label">MULTICC_STALLED_AUTO_CANCEL=1</text>
+          <text x="1180" y="84" text-anchor="middle" class="small muted">仅适合明确接受长推理误判风险的运营环境</text>
+        </svg>
+      </div>
+      <div class="callout good"><strong>已修复：</strong>默认策略不再依据负证据自动结束 turn；静默误杀保护提交为 <code>024f3cd</code>，已包含在本审计基线。</div>
+    </section>
+
+    <section id="target">
+      <h2>6. 目标：两个状态域 + 一个提交协调器</h2>
+      <p class="section-note">调度只关心 turn outcome；TaskBoard 只关心 task lifecycle。二者通过显式事件关联，不能再把 turn.succeeded 当 task.completed。</p>
+      <div class="diagram">
+        <svg viewBox="0 0 1500 620" role="img" aria-labelledby="target-title target-desc">
+          <title id="target-title">目标状态机与提交架构</title>
+          <desc id="target-desc">左侧是 turn execution，右侧是 task lifecycle，中间 coordinator 原子提交 scheduler 后产生 committed event，投影与 Aux 在提交后消费。</desc>
+          <defs>
+            <marker id="arrow4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10z" fill="#7898ad"/></marker>
+            <marker id="arrow4g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10z" fill="#54d6a1"/></marker>
+          </defs>
+          <text x="50" y="50" class="title">TurnExecution · 调度事实</text>
+          <rect x="50" y="80" width="155" height="66" rx="11" class="node-blue"/><text x="127" y="120" text-anchor="middle" class="label">idle</text>
+          <rect x="250" y="80" width="155" height="66" rx="11" class="node-blue"/><text x="327" y="120" text-anchor="middle" class="label">running</text>
+          <rect x="450" y="80" width="155" height="66" rx="11" class="node-green"/><text x="527" y="120" text-anchor="middle" class="label">settling</text>
+          <path d="M205 113 H250 M405 113 H450" fill="none" stroke="#7898ad" stroke-width="2" marker-end="url(#arrow4)"/>
+
+          <rect x="50" y="220" width="155" height="66" rx="11" class="node-green"/><text x="127" y="260" text-anchor="middle" class="label">succeeded</text>
+          <rect x="225" y="220" width="155" height="66" rx="11" class="node-amber"/><text x="302" y="260" text-anchor="middle" class="label">waiting_user</text>
+          <rect x="400" y="220" width="180" height="66" rx="11" class="node-violet"/><text x="490" y="260" text-anchor="middle" class="label">waiting_background</text>
+          <rect x="50" y="330" width="155" height="66" rx="11" class="node-red"/><text x="127" y="370" text-anchor="middle" class="label">failed</text>
+          <rect x="225" y="330" width="155" height="66" rx="11" class="node-red"/><text x="302" y="370" text-anchor="middle" class="label">cancelled</text>
+          <path d="M527 146 V184 H127 V220 M527 184 H302 V220 M527 184 H490 V220 M527 184 V310 H127 V330 M527 310 H302 V330" fill="none" stroke="#54d6a1" stroke-width="2" marker-end="url(#arrow4g)"/>
+          <text x="50" y="445" class="body" fill="#54d6a1">turn.succeeded 只释放调度与表示本轮已结算</text>
+          <text x="50" y="474" class="small muted">兼容期 D → succeeded；不再触发 TaskBoard done</text>
+
+          <rect x="650" y="64" width="260" height="365" rx="18" class="node-green"/>
+          <text x="780" y="110" text-anchor="middle" class="title">Verdict Coordinator</text>
+          <rect x="690" y="140" width="180" height="54" rx="9" class="node"/><text x="780" y="173" text-anchor="middle" class="body">1 · prepare facts</text>
+          <rect x="690" y="218" width="180" height="54" rx="9" class="node"/><text x="780" y="251" text-anchor="middle" class="body">2 · pure reduce</text>
+          <rect x="690" y="296" width="180" height="54" rx="9" class="node-amber"/><text x="780" y="329" text-anchor="middle" class="body">3 · await scheduler</text>
+          <rect x="690" y="374" width="180" height="54" rx="9" class="node-green"/><text x="780" y="407" text-anchor="middle" class="body">4 · committed event</text>
+          <path d="M780 194 V218 M780 272 V296 M780 350 V374" fill="none" stroke="#7898ad" stroke-width="2" marker-end="url(#arrow4)"/>
+          <text x="780" y="469" text-anchor="middle" class="small muted">guard 前零写入</text>
+          <text x="780" y="492" text-anchor="middle" class="small muted">operationId 幂等</text>
+
+          <text x="970" y="50" class="title">TaskLifecycle · 产品事实</text>
+          <rect x="970" y="80" width="145" height="66" rx="11" class="node-violet"/><text x="1042" y="120" text-anchor="middle" class="label">open</text>
+          <rect x="1160" y="80" width="145" height="66" rx="11" class="node-violet"/><text x="1232" y="120" text-anchor="middle" class="label">active</text>
+          <rect x="1160" y="220" width="145" height="66" rx="11" class="node-amber"/><text x="1232" y="260" text-anchor="middle" class="label">blocked</text>
+          <rect x="970" y="330" width="145" height="66" rx="11" class="node-green"/><text x="1042" y="370" text-anchor="middle" class="label">completed</text>
+          <rect x="1350" y="330" width="115" height="66" rx="11" class="node-red"/><text x="1407" y="370" text-anchor="middle" class="label">cancelled</text>
+          <path d="M1115 113 H1160 M1232 146 V220 M1160 253 H1135 V113 H1160 M1232 146 V310 H1042 V330 M1305 113 H1407 V330 M1305 253 H1407 V330" fill="none" stroke="#b594ff" stroke-width="2" marker-end="url(#arrow4)"/>
+          <text x="970" y="445" class="body" fill="#b594ff">completed 只接受显式 task.complete 证据</text>
+          <text x="970" y="474" class="small muted">用户操作或明确领域事件；Aux 不拥有这个 transition</text>
+
+          <rect x="650" y="535" width="815" height="58" rx="12" class="node"/>
+          <text x="1057" y="559" text-anchor="middle" class="label">Committed event → taskState / Web / App / TaskBoard / push / bounded Aux</text>
+          <text x="1057" y="581" text-anchor="middle" class="small muted">所有业务投影只消费提交成功的同一事件</text>
+          <path d="M780 428 V535" fill="none" stroke="#54d6a1" stroke-width="2" marker-end="url(#arrow4g)"/>
+        </svg>
+      </div>
+      <div class="callout good"><strong>目标不变量：</strong><code>turn.succeeded ≠ task.completed</code>；liveness 只决定“能否 commit”，不决定业务结果；Aux 只命名，不写运行状态。</div>
+    </section>
+
+    <section id="structure">
+      <h2>7. 代码结构：当前与目标</h2>
+      <p class="section-note">当前一个 state-machine 文件横跨多个域；目标结构把纯 reducer、事务协调、任务生命周期和归集服务分开。</p>
+      <div class="columns">
+        <pre class="code-tree" aria-label="当前代码结构">CURRENT
+src/classify/
+├── turn-state.js        facts → letter
+├── state-machine.js     1000+ lines
+│   ├── liveness guard
+│   ├── scheduler bridge
+│   ├── persistence / push / UI
+│   ├── 60s scan
+│   └── task attribution orchestration
+├── task-attribution.js  unbounded prompt
+├── vocab.js             legacy model state + UI
+└── user-input-host.js
+
+src/push-runtime.js      terminal legacy classifier
+src/session-work-host.js letter → scheduler
+src/routes/task-board.js letter → task runState</pre>
+        <pre class="code-tree" aria-label="目标代码结构">TARGET
+src/turn-lifecycle/
+├── facts.js             normalize inputs
+├── reducer.js           exhaustive pure table
+├── coordinator.js       await atomic commit
+├── event-store.js       operationId / idempotency
+└── projector.js         one committed projection
+
+src/task-lifecycle/
+├── reducer.js           explicit task transitions
+└── projector.js         TaskBoard only
+
+src/task-attribution/
+├── prompt.js            hard budget
+├── parser.js
+├── service.js           backoff / prompt hash
+└── scan.js              naming only
+
+src/terminal/
+└── turn-boundary-adapter.js</pre>
+      </div>
+    </section>
+
+    <section id="migration">
+      <h2>8. 最小迁移顺序</h2>
+      <p class="section-note">先修语义和提交一致性，再做目录重构；每一步都能独立验收和回滚。</p>
+      <div class="steps">
+        <article class="step"><strong>D 改为 turn succeeded</strong><span>保持协议字母兼容；展示“本轮完成”，停止 D → TaskBoard done，增加显式 task.complete。</span></article>
+        <article class="step"><strong>引入 coordinator</strong><span>guard 前零写入；await scheduler；提交成功后再统一驱动 taskState、UI、TaskBoard 和 push。</span></article>
+        <article class="step"><strong>迁移 Terminal</strong><span>使用 terminal process/monitor boundary，不复用 Chat ownership，删除 idle-tail 状态模型的写权限。</span></article>
+        <article class="step"><strong>限制 Aux 成本</strong><span>总 prompt budget、prompt hash、attempt/result 时间、指数退避和失败上限。</span></article>
+        <article class="step"><strong>统一 recovery</strong><span>无 durable active delivery 不制造 legacy active；修订 FIFO/status/cancel 文档与契约测试。</span></article>
+      </div>
+    </section>
+
+    <section id="evidence">
+      <h2>9. 证据与验收</h2>
+      <p class="section-note">现有 focused unit tests 159/159 与 starting-stall isolated integration 均通过，说明实现符合当前测试；审计指出的是当前测试尚未表达的跨层语义和原子性缺口。</p>
+      <table>
+        <thead><tr><th>关注点</th><th>主要证据</th><th>目标验收</th></tr></thead>
+        <tbody>
+          <tr><td>turn rules</td><td><code>src/classify/turn-state.js</code></td><td>纯函数、穷尽表、unknown fail-closed。</td></tr>
+          <tr><td>commit ordering</td><td><code>src/classify/state-machine.js:126–224</code></td><td>scheduler reject 时无终态投影；重复 operation 幂等。</td></tr>
+          <tr><td>task semantics</td><td><code>finalize-plan.js</code> + <code>task-board.js:667–695</code></td><td>normal turn 不自动关闭任务；只有 task.complete 能 completed。</td></tr>
+          <tr><td>terminal</td><td><code>push-runtime.js:133–168</code> + Chat ownership</td><td>Terminal D/W/E 不依赖 chatSessions，能持久化并释放调度。</td></tr>
+          <tr><td>Aux cost</td><td><code>task-attribution.js:94–109</code></td><td>确定总 budget；同 prompt 失败不会每分钟重试。</td></tr>
+          <tr><td>silent safety</td><td><code>stalled-turn-recovery.js:63–196</code></td><td>默认任意纯静默都不 kill；正活动证据立即保活。</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <footer>
+      <span>MultiCC classify state-machine audit · static standalone artifact</span>
+      <span>详细文字版：<a href="classify-state-machine-audit.md">classify-state-machine-audit.md</a></span>
+    </footer>
+  </main>
+</body>
+</html>
