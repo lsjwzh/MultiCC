@@ -124,6 +124,12 @@ class WorkspaceService extends ChangeNotifier {
   /// grouping updates without waiting for the 5s REST poll.
   void Function()? onSessionCliChanged;
 
+  /// Fired when a session's label changes (server `session_updated`, pushed by
+  /// PATCH /api/sessions/:id). Lets fleet lists/cards retitle immediately for
+  /// sessions whose chat socket this app never opened. label == null means the
+  /// label was cleared — fall back to the session id.
+  void Function(String sessionId, String? label)? onSessionUpdated;
+
   WorkspaceService({
     required this.settings,
     required this.dirId,
@@ -328,6 +334,15 @@ class WorkspaceService extends ChangeNotifier {
       // chips) comes from the REST session list, not this socket - so ask the
       // host to reload it immediately instead of waiting for the 5s poll.
       onSessionCliChanged?.call();
+    } else if (type == 'session_updated') {
+      // A session was renamed (label PATCHed anywhere — web, another client,
+      // this one). Titles on cards and open chats must follow without waiting
+      // for the next REST poll.
+      final id = msg['sessionId'];
+      if (id is String) {
+        final raw = msg['label'];
+        onSessionUpdated?.call(id, raw is String ? raw : null);
+      }
     } else if (type == 'notify') {
       final id = msg['sessionId'];
       if (id is String) {

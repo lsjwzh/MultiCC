@@ -547,3 +547,45 @@ test('session dispatch query joins durable operations with authoritative FIFO st
   });
   assert.equal(invalid.response.statusCode, 400);
 });
+
+test('queued dispatch carries queuePosition and queueLength; non-queued omits both', async () => {
+  const operations = [
+    {
+      id: 'op-q1', kind: 'dispatch', ownerSessionId: 's1', status: 'registered',
+      requestOutboxId: 'operation:op-q1:request', createdAt: 40, updatedAt: 41,
+      spec: { targetId: 'worker', chatId: 'worker', taskId: 'task-q1', resultMode: 'sync' },
+    },
+    {
+      id: 'op-live', kind: 'dispatch', ownerSessionId: 's1', status: 'running',
+      requestOutboxId: 'operation:op-live:request', createdAt: 30, updatedAt: 31,
+      spec: { targetId: 'worker', chatId: 'worker', taskId: 'task-live', resultMode: 'async' },
+    },
+  ];
+  const current = fixture({
+    scheduler: true,
+    operations,
+    queueStatus: {
+      active: { entryId: 'operation:op-live:request' },
+      queued: [
+        { entryId: 'operation:op-q1:request', position: 2 },
+        { entryId: 'entry-other', position: 3 },
+      ],
+    },
+  });
+  const list = await invoke(current.app, 'GET', '/api/sessions/:id/dispatches', {
+    params: { id: 's1' }, query: {},
+  });
+  assert.equal(list.response.statusCode, 200);
+  const queued = list.response.body.dispatches.find(d => d.operationId === 'op-q1');
+  assert.equal(queued.queueState, 'queued');
+  assert.equal(queued.queuePosition, 2);
+  // Depth counts every queued entry, not just dispatch-backed ones — the FIFO
+  // is the session's whole queue and the user needs the true backlog size.
+  assert.equal(queued.queueLength, 2);
+  const running = list.response.body.dispatches.find(d => d.operationId === 'op-live');
+  // active.entryId matches → the authoritative FIFO says this op owns the
+  // turn ('started'), which outranks the operation status' 'running'.
+  assert.equal(running.queueState, 'started');
+  assert.equal('queueLength' in running, false, 'queueLength only while queued');
+  assert.equal(running.queuePosition, undefined);
+});

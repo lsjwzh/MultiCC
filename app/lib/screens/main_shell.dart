@@ -63,6 +63,7 @@ class _MainShellState extends State<MainShell> {
       readDirectoryIds: () => mgr.directories.map((dir) => dir.id),
       onNotify: mgr.handleWorkspaceNotify,
       onSessionCliChanged: () => mgr.loadDashboard(),
+      onSessionUpdated: mgr.applySessionLabel,
       onDirectorySnapshot: (dirId, snapshot) {
         mgr.applyWorkspaceSnapshot(dirId, snapshot.statuses);
       },
