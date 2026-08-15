@@ -172,7 +172,7 @@ const { parseClassifyResult, buildClassifySystemPrompt, classifyDisplay, phaseLa
 const { USER_INPUT_SIGNAL_PROMPT, buildCodexUserInputConstraint, recordAdapterUserInput, createUserInputSignalHost } = require('./src/classify/user-input-host');
 const { createDispatchTargeting } = require('./src/dispatch/targeting');
 const { createGatewayHost } = require('./src/dispatch/gateway-host');
-const { createSafeProgressReducer } = require('./src/dispatch/progress');
+const { createSafeProgressReducer, createDispatchProgressSubscription } = require('./src/dispatch/progress');
 const { createClassifyStateMachine } = require('./src/classify/state-machine');
 const { createLivenessRuntime } = require('./src/liveness/runtime');
 const { createProcessProbe } = require('./src/liveness/process-probe');
@@ -186,6 +186,7 @@ const { createWorkspaceRuntime } = require('./src/workspace/runtime');
 const { createChatHistoryFileRepository } = require('./src/session');
 const { TurnProgressHeartbeat } = require('./src/chat/progress-heartbeat');
 const { createBackgroundTaskRuntime } = require('./src/chat/background-task-runtime');
+const { sharedTurnEventJournal } = require('./src/chat/turn-event-journal');
 const { createTaskContextHost } = require('./src/task-context-host');
 const { createSessionWorkHost } = require('./src/session-work-host');
 const {
@@ -234,6 +235,7 @@ const { createHostEnv } = require('./src/host-env');
 const MULTICC_PATHS = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
 const MEMORY_STORE_ROOT = process.env.MULTICC_MEMORY_ROOT || path.join(__dirname, 'memories');
 const chatHistoryRepository = createChatHistoryFileRepository({ dataDir: MULTICC_PATHS.root });
+const turnEventJournal = sharedTurnEventJournal(MULTICC_PATHS);
 const chatSessions = new Map();
 let chatHistoryRuntime = null;
 let chatHistoryService = null;
@@ -2376,36 +2378,21 @@ const codexUsageHost = createCodexUsageHost({
 });
 
 function chatBroadcast(sessionName, payload) {
-  // The sync dispatch bridge observes the same normalized stream as Web/App,
-  // but only through an operation-lineage filter and a redacting reducer.
+  // #110: journal every client-visible event (never blocks or throws)…
+  turnEventJournal.note(sessionName, payload);
+  // …then fan out. The sync dispatch bridge observes the same normalized
+  // stream as Web/App, but only through an operation-lineage filter and a
+  // redacting reducer.
   bus.emit('chat:stream-progress', sessionName, payload);
   taskContextHost.broadcast(sessionName, payload);
 }
 
-function subscribeDispatchProgress({ operationId, targetSessionId, onProgress } = {}) {
-  const reducer = createSafeProgressReducer(onProgress, {
-    cli: persistedSessions.get(targetSessionId)?.cli || '',
-  });
-  const belongsToOperation = () => {
-    const turn = chatSessions.get(targetSessionId)?._activeTurn;
-    return turn?.lineage?.kind === 'dispatch'
-      && turn.lineage.operationId === operationId;
-  };
-  const handle = (sessionId, payload) => {
-    if (sessionId !== targetSessionId || !belongsToOperation()) return;
-    try { reducer.push(payload); } catch (_) {}
-  };
-  bus.on('chat:stream-progress', handle);
-
-  // Admission may start an idle worker before dispatch_master has returned far
-  // enough to attach this listener. Replay the bounded current-turn stream once
-  // so the first deltas are not lost; the reducer suppresses duplicates.
-  const current = chatSessions.get(targetSessionId);
-  if (belongsToOperation() && Array.isArray(current?.streamReplay)) {
-    for (const event of current.streamReplay) reducer.push(event);
-  }
-  return () => bus.off('chat:stream-progress', handle);
-}
+const subscribeDispatchProgress = createDispatchProgressSubscription({
+  bus,
+  cliOf: id => persistedSessions.get(id)?.cli || '',
+  activeTurnOf: id => chatSessions.get(id)?._activeTurn,
+  streamReplayOf: id => chatSessions.get(id)?.streamReplay,
+});
 
 // Usage-limit poller — the active-poll half of the limit subsystem. Claude 5h /
 // ChatGPT-codex report limits in response headers (extracted passively by the
