@@ -99,4 +99,47 @@ function diffToolTiming(derivedTools, blobTools, { toleranceMs = DEFAULT_TOLERAN
   return mismatches;
 }
 
-module.exports = Object.freeze({ deriveToolTiming, diffToolTiming, DEFAULT_TOLERANCE_MS });
+// Background/subagent task trajectory from the journal: which tasks were
+// still open when the journal ends (a monitor_started with progress but no
+// monitor_done). After a restart those processes died with the server — this
+// is the list the reconnect replay tells the danmaku about, honestly labelled
+// as interrupted instead of silently disappearing or spinning forever.
+//
+// monitor_started/progress/done are the runtime's broadcast shapes; the
+// authoritative background_tasks snapshots only refresh lastTs for tasks we
+// already know (a start line that rotated away is not fabricated back —
+// same first-sighting discipline as deriveToolTiming).
+function deriveOpenTasks(records) {
+  const tasks = new Map();
+  const order = [];
+  const touch = (id, fields) => {
+    if (!tasks.has(id)) {
+      tasks.set(id, { task_id: id, description: '', lastTs: null, ...fields });
+      order.push(id);
+    } else {
+      Object.assign(tasks.get(id), fields);
+    }
+  };
+  for (const record of Array.isArray(records) ? records : []) {
+    if (!record || !record.event) continue;
+    const { event, ts } = record;
+    if (event.type === 'monitor_started' && event.task_id) {
+      touch(event.task_id, {
+        description: event.description || event.command || '',
+        lastTs: ts,
+      });
+    } else if (event.type === 'monitor_progress' && event.task_id && tasks.has(event.task_id)) {
+      touch(event.task_id, { lastTs: ts });
+    } else if (event.type === 'monitor_done' && event.task_id) {
+      tasks.delete(event.task_id);
+    } else if (event.type === 'background_tasks' && Array.isArray(event.tasks)) {
+      for (const t of event.tasks) {
+        const id = t && (t.task_id || t.id);
+        if (id && tasks.has(id)) touch(id, { lastTs: ts });
+      }
+    }
+  }
+  return order.map(id => tasks.get(id)).filter(Boolean);
+}
+
+module.exports = Object.freeze({ deriveToolTiming, diffToolTiming, deriveOpenTasks, DEFAULT_TOLERANCE_MS });
