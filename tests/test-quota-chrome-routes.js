@@ -49,6 +49,37 @@ test('parseUsage returns null when there is nothing to parse', () => {
   assert.equal(opencode.parseUsage('<html>a login page</html>'), null);
 });
 
+// Verified on the live Zen console: a window the account has exhausted reports
+// status:"rate-limited" (hyphen!). The original `[a-z]+` status charset missed
+// it, so a rate-limited weekly window silently vanished from the bar — the
+// exact state a user most needs to see.
+test('parseUsage keeps a rate-limited window instead of dropping it to null', () => {
+  const usage = opencode.parseUsage(`
+    rollingUsage:$R[33]={status:"ok",resetInSec:18000,usagePercent:0},
+    weeklyUsage:$R[34]={status:"rate-limited",resetInSec:126381,usagePercent:100},
+    monthlyUsage:$R[35]={status:"ok",resetInSec:1300584,usagePercent:74}
+  `);
+  assert.deepEqual(usage.weekly, { status: 'rate-limited', resetInSec: 126381, usagePercent: 100 });
+  assert.deepEqual(usage.rolling, { status: 'ok', resetInSec: 18000, usagePercent: 0 });
+});
+
+test('a rate-limited weekly window renders as a red 1wk segment with a tooltip marker', () => {
+  const { renderQuotaBar } = require('../src/quota/quota-bar-view');
+  const bar = renderQuotaBar('opencode', {
+    status: 'ok',
+    fetchedAt: 1700000000000,
+    usage: {
+      rolling: { status: 'ok', resetInSec: 18000, usagePercent: 0 },
+      weekly: { status: 'rate-limited', resetInSec: 126381, usagePercent: 100 },
+      monthly: { status: 'ok', resetInSec: 1300584, usagePercent: 74 },
+    },
+  });
+  // Segment present (1wk 0% remaining) and the whole bar red at 100%.
+  assert.match(bar.text, /1wk 0%/);
+  assert.equal(bar.color, '#f85149');
+  assert.match(bar.title, /周: 100%.*已限流/);
+});
+
 // A page stand-in with the same surface src/chrome-cdp.js hands to callers.
 // `script` is the state machine: each evaluate consumes the next answer.
 function fakePage({ urls, bodyText = '', scripts = [] }) {
