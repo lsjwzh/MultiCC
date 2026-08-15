@@ -1,15 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:markdown/markdown.dart' as md;
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../i18n.dart';
 import '../models/message.dart';
+import '../models/role_tokens.dart';
 import '../providers/chat_provider.dart';
 import '../services/download_ticket_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
+import '../utils/code_highlight.dart';
 import 'tool_card.dart';
 
 /// Resolve a markdown link href and open it externally.
@@ -359,6 +362,7 @@ class _TokenUsageLine extends StatelessWidget {
     final cr = usage.cacheReadTokens;
     final cw = usage.cacheCreationTokens;
     final saved = usage.savedMainTokens;
+    final breakdown = usage.roleBreakdown;
 
     return Padding(
       padding: const EdgeInsets.only(top: 6),
@@ -383,6 +387,195 @@ class _TokenUsageLine extends StatelessWidget {
               color: const Color(0xFF2ea043),
             ),
           ],
+          // Per-role detail (main / sub / by-provider) — the mobile counterpart
+          // of the web usage-line tooltip. Only present for live turns that
+          // received a role_token_stats event; history replay has no split.
+          if (breakdown != null && !breakdown.isEmpty) ...[
+            const SizedBox(width: 6),
+            _RoleDetailChip(breakdown: breakdown),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// Opens the role-token breakdown sheet. Kept tiny — the usage line must not
+/// overflow on narrow screens, so this is an icon, not a text badge.
+class _RoleDetailChip extends StatelessWidget {
+  final RoleTokenBreakdown breakdown;
+  const _RoleDetailChip({required this.breakdown});
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      button: true,
+      label: t('roleTokenDetailTitle'),
+      child: GestureDetector(
+        onTap: () => _openSheet(context),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+          decoration: BoxDecoration(
+            color: const Color(0xFF6aa3ff).withValues(alpha: 0.15),
+            borderRadius: BorderRadius.circular(4),
+          ),
+          child: const Icon(
+            Icons.data_usage_rounded,
+            size: 13,
+            color: Color(0xFF6aa3ff),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _openSheet(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF0f1115),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(14)),
+      ),
+      builder: (_) => SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 18),
+          child: _RoleTokenSheetBody(breakdown: breakdown),
+        ),
+      ),
+    );
+  }
+}
+
+/// Sheet body: main bucket, sub bucket, per-provider split of the sub work.
+/// Numbers are full (comma-grouped) — this is the detail view, not the bar.
+class _RoleTokenSheetBody extends StatelessWidget {
+  final RoleTokenBreakdown breakdown;
+  const _RoleTokenSheetBody({required this.breakdown});
+
+  @override
+  Widget build(BuildContext context) {
+    final sub = breakdown.sub;
+    final providers = breakdown.subByProvider;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                t('roleTokenDetailTitle'),
+                style: const TextStyle(
+                  color: Color(0xFFf2f4f7),
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            IconButton(
+              onPressed: () => Navigator.pop(context),
+              icon: const Icon(Icons.close, color: Color(0xFF8a909b)),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        _RoleBucketView(
+          title: t('roleTokenMain'),
+          accent: const Color(0xFF58a6ff),
+          bucket: breakdown.main,
+        ),
+        if (sub != null && !sub.isEmpty) ...[
+          const SizedBox(height: 10),
+          _RoleBucketView(
+            title: t('roleTokenSub'),
+            accent: const Color(0xFF3fb950),
+            bucket: sub,
+          ),
+        ],
+        if (providers.isNotEmpty) ...[
+          const SizedBox(height: 14),
+          Text(
+            t('roleTokenByProvider'),
+            style: const TextStyle(
+              color: Color(0xFF8a909b),
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 6),
+          for (final p in providers)
+            if (!p.bucket.isEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: _RoleBucketView(
+                  title: '${p.label}${p.model.isNotEmpty ? ' · ${p.model}' : ''}',
+                  accent: const Color(0xFFa371f7),
+                  bucket: p.bucket,
+                  compact: true,
+                ),
+              ),
+        ],
+        if ((sub == null || sub.isEmpty) && providers.isEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text(
+              t('roleTokenNoSub'),
+              style: const TextStyle(color: Color(0xFF6e7681), fontSize: 12),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+/// One bucket row: label plus the four token counts, laid out to fit narrow
+/// screens (label line on top, counts below).
+class _RoleBucketView extends StatelessWidget {
+  final String title;
+  final Color accent;
+  final RoleTokenBucket bucket;
+  final bool compact;
+  const _RoleBucketView({
+    required this.title,
+    required this.accent,
+    required this.bucket,
+    this.compact = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    String group(int n) => n.toString().replaceAllMapped(
+          RegExp(r'\B(?=(\d{3})+(?!\d))'),
+          (m) => ',',
+        );
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF14171c),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: TextStyle(
+              color: accent,
+              fontSize: compact ? 12 : 13,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '${t('roleTokenInput')} ${group(bucket.inputTokens)}'
+            '  ${t('roleTokenOutput')} ${group(bucket.outputTokens)}'
+            '  ${t('roleTokenCacheRead')} ${group(bucket.cacheRead)}'
+            '  ${t('roleTokenCacheWrite')} ${group(bucket.cacheWrite)}',
+            style: const TextStyle(
+              color: Color(0xFF8a909b),
+              fontSize: 12,
+              fontFamily: 'monospace',
+            ),
+          ),
         ],
       ),
     );
@@ -496,6 +689,7 @@ class _MarkdownContent extends StatelessWidget {
       children: [
         MarkdownBody(
           data: text,
+          builders: {'code': _FencedCodeBuilder()},
           sizedImageBuilder: (config) {
             final raw = config.uri.toString();
             final isLocal = _localImgRe.hasMatch(raw);
@@ -544,6 +738,61 @@ class _MarkdownContent extends StatelessWidget {
         ),
         if (isStreaming) const _StreamingDot(),
       ],
+    );
+  }
+}
+
+/// Renders fenced code blocks with syntax highlighting (web highlight.js
+/// parity). Registered for the `code` element: fenced blocks carry a
+/// `language-*` class and/or newlines; inline code returns null and keeps the
+/// default chip rendering. `highlightCode` returns null for unknown languages
+/// / oversized blocks / tokenizer failure — then this builder also returns
+/// null and the default plain monospace block renders (safe fallback).
+class _FencedCodeBuilder extends MarkdownElementBuilder {
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final cls = element.attributes['class'] ?? '';
+    final langMatch = RegExp(r'language-([\w+#.-]+)').firstMatch(cls);
+    final code = element.textContent;
+    final isBlock = langMatch != null || code.contains('\n');
+    if (!isBlock) return null;
+    final language = langMatch?.group(1) ?? '';
+    final spans = highlightCode(code, language);
+    if (spans == null) return null;
+    return _FencedCodeBlock(spans: spans);
+  }
+}
+
+/// One highlighted code block. The surrounding `pre` container already paints
+/// the codeblock background/border, so this supplies only the padding and the
+/// horizontal scroll the default renderer had. Text.rich participates in the
+/// ancestor SelectionArea — select/copy is preserved on both paths.
+class _FencedCodeBlock extends StatelessWidget {
+  final List<CodeSpan> spans;
+  const _FencedCodeBlock({required this.spans});
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      padding: const EdgeInsets.all(12),
+      child: Text.rich(
+        buildHighlightedSpan(
+          spans,
+          const TextStyle(
+            color: Color(0xFFe7eaee),
+            fontFamily: 'monospace',
+            fontSize: 13,
+            height: 1.5,
+          ),
+        ),
+        softWrap: false,
+      ),
     );
   }
 }

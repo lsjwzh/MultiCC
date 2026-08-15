@@ -419,6 +419,25 @@ class ChatService {
         }
         break;
 
+      // Per-role token accounting (main vs sub agents, per-provider split) —
+      // consumed by the usage detail sheet and the 省主 badge. Without this
+      // passthrough the provider handler never fired, so savedMainTokens was
+      // silently never computed on the app.
+      case 'role_token_stats':
+        _emit('role_token_stats', msg);
+        break;
+
+      // Background-task / turn-progress broadcast channel (same payloads the
+      // web danmaku consumes): monitor lifecycle, phase heartbeat, and the
+      // authoritative background_tasks snapshot for reconnect reconciliation.
+      case 'monitor_started':
+      case 'monitor_progress':
+      case 'monitor_done':
+      case 'progress_heartbeat':
+      case 'background_tasks':
+        _emit(msg['type']?.toString() ?? 'monitor_event', msg);
+        break;
+
       default:
         break;
     }
