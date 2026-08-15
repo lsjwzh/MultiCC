@@ -149,6 +149,9 @@ function createChatHistoryRuntime(rawDeps) {
   const droppedForMemory = new Map();
   const incrementalSaveTimers = new Map();
   let stopped = false;
+  // Lazy: the OpenCode SQLite reader is only constructed when an opencode
+  // session actually asks for its context water level.
+  let opencodeContextReader = null;
 
   function logFailure(event, error, sessionId) {
     const payload = {
@@ -651,6 +654,21 @@ function createChatHistoryRuntime(rawDeps) {
       try {
         if (typeof deps.cwdForSession !== 'function') {
           return res.json({ ok: true, supported: false, reason: 'no-cwd-resolver' });
+        }
+        // OpenCode native context lives in its SQLite store, not a transcript
+        // file. The water level is the latest message's token usage for the
+        // EXACT native session id MultiCC captured — never a sibling session
+        // that merely shares the working directory.
+        if (persisted.cli === 'opencode') {
+          if (!opencodeContextReader) {
+            opencodeContextReader = deps.opencodeContextReader
+              || require('../chat/opencode-context').createOpencodeContextReader({
+                logger: deps.logger,
+              });
+          }
+          const cliSessionId = persisted._streamSessionId || persisted.cliSessionId || null;
+          const usage = opencodeContextReader.read(cliSessionId, persisted.model || null);
+          return res.json({ ok: true, supported: true, cli: 'opencode', native: usage });
         }
         if (persisted.cli !== 'claude') {
           return res.json({ ok: true, supported: false, reason: 'cli-not-claude', cli: persisted.cli || null });

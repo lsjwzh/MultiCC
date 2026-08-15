@@ -112,6 +112,31 @@ test('OpenCode maps all three protocols to their native AI SDK packages', () => 
   }
 });
 
+test('OpenCode custom-provider models carry real limits (models.dev cache, safe fallback)', () => {
+  const cacheDir = path.join(fakeHome, '.cache', 'opencode');
+  fs.mkdirSync(cacheDir, { recursive: true });
+  // Fixture mirrors the models.dev cache shape. Two providers expose the same
+  // model id with different context sizes — the smaller must win (conservative).
+  fs.writeFileSync(path.join(cacheDir, 'models.json'), JSON.stringify({
+    'deepseek': { models: { 'deepseek-v4-flash': { limit: { context: 1000000, output: 384000 } } } },
+    'other-relay': { models: { 'deepseek-v4-flash': { limit: { context: 512000, output: 16000 } } } },
+    'gpt-host': { models: { 'gpt-test': { limit: { context: 200000, output: 32000 } } } },
+  }));
+
+  const spawn = providers.resolveSpawnEnv({ cli: 'opencode', provider: 'cc-chat', model: 'deepseek-v4-flash' });
+  const config = JSON.parse(spawn.env.OPENCODE_CONFIG_CONTENT);
+  const routeId = config.enabled_providers[0];
+  const models = config.provider[routeId].models;
+  // Catalogued model: exact conservative limits reach the generated config, so
+  // OpenCode's auto-compaction has a real window to work with.
+  assert.deepEqual(models['deepseek-v4-flash'].limit, { context: 512000, output: 16000 });
+  // Unknown model: understated fallback, never a fabricated capability.
+  assert.deepEqual(models['chat-model'].limit, { context: 128000, output: 8192 });
+  // Model entries carry exactly {name, limit} — no credential material.
+  assert.deepEqual(Object.keys(models['chat-model']).sort(), ['limit', 'name']);
+  assert.equal(JSON.stringify(models).includes('chat-secret'), false);
+});
+
 test('ZCode maps all three protocols to isolated native provider kinds', () => {
   const responsesId = providers.createProvider({
     appType: 'codex', name: 'ZCode Responses', baseUrl: 'https://responses-zcode.example/v1',
