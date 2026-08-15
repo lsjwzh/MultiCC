@@ -25,6 +25,17 @@ All settings are environment variables in `.env`. Voice and TTS settings hot-rel
 | `KIMI_CMD` | *(auto-detected)* | Override path to the Kimi Code `kimi` binary |
 | `KIMI_API_KEY` / `KIMI_BASE_URL` | *(unset)* | Native Kimi Code credential fallback; provider-bound sessions get these injected per session instead |
 
+### Turn liveness and recovery
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MULTICC_STALL_SILENT_MS` | `180000` | Silence duration before an in-flight turn is reported as suspected stalled. This is a diagnostic threshold, not proof that the runner is dead. |
+| `MULTICC_STALLED_STARTING_GRACE_MS` | `120000` | Extra silence grace while a turn is still in its startup phase. |
+| `MULTICC_STALLED_CONFIRMATIONS` | `2` | Consecutive liveness sweeps required before reporting a suspected stall. |
+| `MULTICC_STALLED_INTERVAL_MS` | `30000` | Suspected-stall sweep interval. |
+| `MULTICC_STALLED_COOLDOWN_MS` | `120000` | Cooldown after a confirmed observation or recovery. |
+| `MULTICC_STALLED_AUTO_CANCEL` | *(unset; observe only)* | Dangerous opt-in. Set to `1` to cancel a live turn using silence plus absent network/rollout activity. Leave unset to prevent silent false-positive kills. Dead runners and correlated provider errors are still recovered automatically. |
+
 ## Providers
 
 Provider config is stored locally and managed from `/manage`:
