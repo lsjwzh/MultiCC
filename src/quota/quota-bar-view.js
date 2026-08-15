@@ -193,7 +193,10 @@ function openCodeBar(value) {
     const w = u[key];
     if (!w) continue;
     const at = resetAt(w.resetInSec);
-    lines.push(`${zh}: ${fmt(w.usagePercent)}%${at ? ` · 重置 ${cdTag(at)} 后` : ''}`);
+    // An exhausted window reports status:"rate-limited" — say so, because a
+    // segment sitting at "0% 余量" alone reads like a glitch.
+    const limited = w.status === 'rate-limited' ? ' · 已限流' : '';
+    lines.push(`${zh}: ${fmt(w.usagePercent)}%${at ? ` · 重置 ${cdTag(at)} 后` : ''}${limited}`);
   }
   if (ago) lines.push(`同步于 ${ago}`);
   lines.push('点击 bar 刷新');

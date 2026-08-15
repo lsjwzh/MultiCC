@@ -63,7 +63,10 @@ function parseUsage(scriptText) {
   // survives either SolidStart build shape.
   const grab = (key) => {
     const re = new RegExp(
-      `${key}\\s*:\\s*(?:\\$R\\[\\d+\\]\\s*=\\s*)?\\{\\s*status\\s*:\\s*["']([a-z]+)["']\\s*,\\s*resetInSec\\s*:\\s*(\\d+)\\s*,\\s*usagePercent\\s*:\\s*(\\d+)\\s*\\}`,
+      // Status is not always "ok": a window the account has exhausted reports
+      // status:"rate-limited" (verified on the live Zen console), so the status
+      // charset must accept hyphens or that window silently drops to null.
+      `${key}\\s*:\\s*(?:\\$R\\[\\d+\\]\\s*=\\s*)?\\{\\s*status\\s*:\\s*["']([a-z][a-z-]*)["']\\s*,\\s*resetInSec\\s*:\\s*(\\d+)\\s*,\\s*usagePercent\\s*:\\s*(\\d+)\\s*\\}`,
     );
     const m = scriptText.match(re);
     if (!m) return null;
