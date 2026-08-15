@@ -1,10 +1,12 @@
 import 'dart:async';
-import 'dart:convert' show jsonEncode;
+import 'dart:convert' show jsonDecode, jsonEncode;
 import 'package:flutter/widgets.dart';
 
 import '../i18n.dart';
+import '../models/background_task_board.dart';
 import '../models/chat_runtime_state.dart';
 import '../models/message.dart';
+import '../models/role_tokens.dart';
 import '../models/usage_readout.dart';
 import '../models/vendor_quota.dart';
 import '../services/chat_service.dart';
@@ -214,6 +216,99 @@ class StagedSendTracker {
     }
     _staged.clear();
   }
+}
+
+// ── 非 Claude CLI 的 part_delta 边车（web chat-event-controller.js handlePartDelta）──
+//
+// codex/opencode 没有 Anthropic 式的 content_block_* 流，正文/推理/工具参数都以
+// part_delta 增量到达，权威快照则由 `assistant` 帧事后覆盖。三个纯函数只做增量
+// 应用，收敛交给 `_onAssistantSnapshot` 的权威覆盖 —— 语义与 web 相同，可脱离
+// socket 单测。
+
+/// 找到消息里指定 id 的工具卡（sidecar Thinking 卡也走它）。
+@visibleForTesting
+ToolCall? toolCallById(ChatMessage msg, String id) {
+  for (final tc in msg.toolCalls) {
+    if (tc.id == id) return tc;
+  }
+  return null;
+}
+
+/// 应用一帧 reasoning 增量：落到会话唯一的 Thinking 卡（id =
+/// `sidecar-reasoning-<sessionId>`，与 web 同键），文本追加进 `{text:…}`。
+/// 无 startedAt —— 推理没有真实的工具计时，不伪造时长也不进轨迹条。
+/// 返回消息是否变化（调用方据此 notifyListeners）。
+@visibleForTesting
+bool applyReasoningDelta(ChatMessage msg, String sessionId, String text) {
+  if (text.isEmpty) return false;
+  final id = 'sidecar-reasoning-$sessionId';
+  final existing = toolCallById(msg, id);
+  if (existing == null) {
+    msg.toolCalls.add(ToolCall(
+      id: id,
+      name: 'Thinking',
+      inputJson: jsonEncode({'text': text}),
+    ));
+    return true;
+  }
+  var buffer = text;
+  final prev = existing.parsedInput?['text'];
+  // 只有当已积累内容确实来自本卡（{text:…} 键齐全）才在其后追加，防畸形 JSON 丢字。
+  if (prev is String) {
+    buffer = prev + text;
+  }
+  existing.inputJson = jsonEncode({'text': buffer});
+  return true;
+}
+
+/// 从卡片当前 inputJson 还原原始参数流缓冲：wrapper 形态
+/// `{"arguments":"…"}` 取回内串；已能 parse 的形态本身即原始串。
+String _rawToolArgsBuffer(ToolCall tc) {
+  final parsed = tc.parsedInput;
+  if (parsed != null &&
+      parsed.length == 1 &&
+      parsed['arguments'] is String) {
+    return parsed['arguments'] as String;
+  }
+  return tc.inputJson;
+}
+
+/// 与 web 相同的规范化：能整体 parse 就用规范化 JSON；否则包成
+/// `{"arguments": <raw>}`，保证 inputJson 始终是合法 JSON 可被 pretty 渲染。
+String _normalizeToolArgs(String raw) {
+  try {
+    final decoded = jsonDecode(raw);
+    return jsonEncode(decoded);
+  } catch (_) {
+    return jsonEncode({'arguments': raw});
+  }
+}
+
+/// 应用一帧工具参数增量：按 toolId 找卡追加参数片段；卡片不存在则创建
+/// （此刻打真实 startedAt —— 工具参数开始流出的时间就是工具开始时间，
+/// 与 web 边车创建时戳一致）。返回消息是否变化。
+@visibleForTesting
+bool applyToolArgsDelta(
+  ChatMessage msg,
+  String toolId,
+  String toolName,
+  String argsFragment, {
+  int now = 0,
+}) {
+  if (toolId.isEmpty || argsFragment.isEmpty) return false;
+  final existing = toolCallById(msg, toolId);
+  if (existing != null) {
+    final raw = _rawToolArgsBuffer(existing) + argsFragment;
+    existing.inputJson = _normalizeToolArgs(raw);
+    return true;
+  }
+  msg.toolCalls.add(ToolCall(
+    id: toolId,
+    name: toolName.isNotEmpty ? toolName : 'Tool',
+    inputJson: _normalizeToolArgs(argsFragment),
+    startedAt: now,
+  ));
+  return true;
 }
 
 class ChatProvider extends ChangeNotifier {
@@ -577,6 +672,20 @@ class ChatProvider extends ChangeNotifier {
   /// arrived before the result. See the WS timing note in `_onResult`.
   Map<String, dynamic>? _lastRoleTokens;
 
+  /// Parsed view of the same event — feeds the usage detail sheet (main /
+  /// sub / per-provider split) instead of re-reading the raw map in widgets.
+  RoleTokenBreakdown? _lastRoleBreakdown;
+
+  /// The most recent assistant message, kept alive across _finishStreaming —
+  /// a role_token_stats arriving just after `result` (common ordering) still
+  /// targets this turn's bubble instead of being dropped on the floor.
+  ChatMessage? _lastAssistantMsg;
+
+  /// Background-task danmaku state machine (web chat-live-ui.js parity).
+  /// Fed by monitor_* / progress_heartbeat / background_tasks events.
+  final BackgroundTaskBoard _backgroundTasks = BackgroundTaskBoard();
+  Timer? _bgSweepTimer;
+
   /// aux classify verdict for THIS session — what the helper AI thinks the
   /// current goal/phase is. Updated by the `task_state` WS event; rendered as
   /// a status bar at the top of the chat (mirrors web #aux-classify-bar).
@@ -790,6 +899,14 @@ class ChatProvider extends ChangeNotifier {
         // Socket died: any resolve broadcast in the gap was lost. Drop the
         // stale card; the connect-time replay re-sends required/resolved.
         _setPendingUserInput(null);
+        // Spinning background rows can no longer be trusted to finish on
+        // their own — mark stale now; the background_tasks snapshot after
+        // reconnect reconciles what is real.
+        if (_backgroundTasks.hasSpinning) {
+          _backgroundTasks.markStaleAll(
+            now: DateTime.now().millisecondsSinceEpoch,
+          );
+        }
         final delay = (1 << (_reconnectAttempt - 1)).clamp(1, 15);
         _statusText = 'Reconnecting in ${delay}s…';
         notifyListeners();
@@ -1150,6 +1267,62 @@ class ChatProvider extends ChangeNotifier {
         _lastRoleTokens =
             (evt.payload as Map<String, dynamic>)['role']
                 as Map<String, dynamic>?;
+        {
+          final breakdown =
+              RoleTokenBreakdown.fromEvent(evt.payload as Map<String, dynamic>);
+          if (breakdown != null) {
+            _lastRoleBreakdown = breakdown;
+            // Attach live so the detail chip appears during streaming; a
+            // post-result arrival falls back to the kept-alive last bubble.
+            final target = _currentMsg ?? _lastAssistantMsg;
+            if (target != null) {
+              target.usage ??= MessageUsage();
+              target.usage!.roleBreakdown = breakdown;
+            }
+          }
+        }
+        notifyListeners();
+        break;
+
+      case 'monitor_started':
+        _backgroundTasks.onMonitorStarted(
+          evt.payload as Map<String, dynamic>,
+          now: DateTime.now().millisecondsSinceEpoch,
+        );
+        _armBgSweep();
+        notifyListeners();
+        break;
+
+      case 'monitor_progress':
+        _backgroundTasks.onMonitorProgress(
+          evt.payload as Map<String, dynamic>,
+          now: DateTime.now().millisecondsSinceEpoch,
+        );
+        notifyListeners();
+        break;
+
+      case 'monitor_done':
+        _backgroundTasks.onMonitorDone(
+          evt.payload as Map<String, dynamic>,
+          now: DateTime.now().millisecondsSinceEpoch,
+        );
+        notifyListeners();
+        break;
+
+      case 'progress_heartbeat':
+        _backgroundTasks.onHeartbeat(
+          evt.payload as Map<String, dynamic>,
+          now: DateTime.now().millisecondsSinceEpoch,
+        );
+        notifyListeners();
+        break;
+
+      case 'background_tasks':
+        // Authoritative snapshot — reconnect reconcile ground truth.
+        _backgroundTasks.onBackgroundTasksSnapshot(
+          evt.payload as Map<String, dynamic>,
+          now: DateTime.now().millisecondsSinceEpoch,
+        );
         notifyListeners();
         break;
     }
@@ -1628,6 +1801,7 @@ class ChatProvider extends ChangeNotifier {
     if (_currentMsg == null) {
       _currentMsg = ChatMessage(role: MessageRole.assistant, isStreaming: true);
       _messages.add(_currentMsg!);
+      _lastAssistantMsg = _currentMsg;
       _activeTools.clear();
       // A new assistant turn started. If the user is up reading history, count
       // it as one unread new message (drives the "↓ N new" pill). One bump per
@@ -1750,7 +1924,12 @@ class ChatProvider extends ChangeNotifier {
             startedAt: DateTime.now().millisecondsSinceEpoch,
           ));
           changed = true;
-        } else if (input != null && existing.inputJson.isEmpty) {
+        } else if (input != null && existing.inputJson != jsonEncode(input)) {
+          // Authoritative convergence (web finalizeAssistantMsg parity): the
+          // snapshot carries the COMPLETE input, so it overwrites whatever
+          // the part_delta sidecar streamed so far — never the reverse. The
+          // sidecar reasoning card (id `sidecar-reasoning-*`) never matches a
+          // snapshot block id, so it is untouched here.
           existing.inputJson = jsonEncode(input);
           changed = true;
         }
@@ -1762,12 +1941,43 @@ class ChatProvider extends ChangeNotifier {
   void _onPartDelta(Map<String, dynamic> message) {
     if (_cli == SessionCli.claude) return;
     final delta = message['delta'];
-    if (delta is! Map || delta['type'] != 'text') return;
-    final text = delta['text']?.toString() ?? '';
-    if (text.isEmpty) return;
-    _ensureAssistantMsg();
-    _currentMsg!.content += text;
-    notifyListeners();
+    if (delta is! Map) return;
+    final dType = delta['type']?.toString() ?? '';
+
+    if (dType == 'text') {
+      final text = delta['text']?.toString() ?? '';
+      if (text.isEmpty) return;
+      _ensureAssistantMsg();
+      _currentMsg!.content += text;
+      notifyListeners();
+    } else if (dType == 'reasoning') {
+      // Live reasoning streams into the session's single Thinking sidecar
+      // card (web handlePartDelta parity). No startedAt: reasoning has no
+      // real tool timing — must not fabricate durations or trajectory rows.
+      final text = delta['text']?.toString() ?? '';
+      if (text.isEmpty) return;
+      _ensureAssistantMsg();
+      if (applyReasoningDelta(_currentMsg!, _sessionId ?? '', text)) {
+        notifyListeners();
+      }
+    } else if (dType == 'tool') {
+      // Progressive tool-argument fragments: keyed by delta.toolId, args
+      // accumulate at delta.tool.arguments. The authoritative `assistant`
+      // snapshot later overwrites with the complete input.
+      final toolId = delta['toolId']?.toString() ?? '';
+      final tool = delta['tool'];
+      if (toolId.isEmpty || tool is! Map) return;
+      _ensureAssistantMsg();
+      if (applyToolArgsDelta(
+        _currentMsg!,
+        toolId,
+        tool['name']?.toString() ?? 'Tool',
+        tool['arguments']?.toString() ?? '',
+        now: DateTime.now().millisecondsSinceEpoch,
+      )) {
+        notifyListeners();
+      }
+    }
   }
 
   void _onResult(Map<String, dynamic> msg) {
@@ -1798,6 +2008,15 @@ class ChatProvider extends ChangeNotifier {
             _currentMsg!.usage!.savedMainTokens = saved;
           }
         }
+      }
+
+      // Attach the parsed role split for the detail sheet. Same ordering
+      // contract as above: the live event usually set it already, but the
+      // result-first race resolves through the cached breakdown.
+      final breakdown = _lastRoleBreakdown;
+      if (breakdown != null && !breakdown.isEmpty) {
+        _currentMsg!.usage ??= MessageUsage();
+        _currentMsg!.usage!.roleBreakdown = breakdown;
       }
 
       // Server-stamped wall-clock duration: user submit → AI reply complete.
@@ -1859,6 +2078,44 @@ class ChatProvider extends ChangeNotifier {
       _currentMsg = null;
     }
     _activeTools.clear();
+    // Turn end: settle turn-scoped background rows (heartbeat + any
+    // still-unconfirmed spinning row). Confirmed background tasks keep
+    // spinning — they outlive the turn by design (web parity).
+    if (_backgroundTasks.hasSpinning) {
+      _backgroundTasks.settleAtTurnEnd(
+        now: DateTime.now().millisecondsSinceEpoch,
+      );
+    }
+  }
+
+  // ── Background tasks (mobile danmaku) ───────────────────────────────────────
+
+  /// Rows for the floating background-task panel, newest first. Finished rows
+  /// beyond the auto-hide window drop out automatically.
+  List<BackgroundTaskRow> backgroundTaskRows() => _backgroundTasks.rows(
+        now: DateTime.now().millisecondsSinceEpoch,
+      );
+
+  bool get hasBackgroundTaskRows => _backgroundTasks.rows().isNotEmpty;
+
+  /// User dismissed a row via its ✕ — stays hidden even if refreshed later.
+  void dismissBackgroundTask(String key) {
+    _backgroundTasks.dismiss(key);
+    notifyListeners();
+  }
+
+  /// Lazily arm the stale-sweep timer while anything spins; it parks itself
+  /// again once the board goes quiet (web's 180s stale watchdog).
+  void _armBgSweep() {
+    _bgSweepTimer ??= Timer.periodic(const Duration(seconds: 15), (_) {
+      if (_backgroundTasks.sweep(now: DateTime.now().millisecondsSinceEpoch)) {
+        notifyListeners();
+      }
+      if (!_backgroundTasks.hasSpinning) {
+        _bgSweepTimer?.cancel();
+        _bgSweepTimer = null;
+      }
+    });
   }
 
   void _replayHistory(List history) {
@@ -2258,6 +2515,7 @@ class ChatProvider extends ChangeNotifier {
   @override
   void dispose() {
     _usageExpiryTimer?.cancel();
+    _bgSweepTimer?.cancel();
     _stagedTracker.clear();
     _eventSub?.cancel();
     _service.dispose();

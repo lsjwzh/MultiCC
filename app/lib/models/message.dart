@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'role_tokens.dart';
+
 enum MessageRole { user, assistant, system }
 
 /// Token usage information for a message (mirrors Anthropic's usage shape)
@@ -15,12 +17,21 @@ class MessageUsage {
   /// result arrives. Null until injected; absent when the turn had no sub-role work.
   int? savedMainTokens;
 
+  /// Main/sub-agent token split from the same `role_token_stats` event — the
+  /// mobile counterpart of the web usage-line tooltip (chat-live-ui.js
+  /// buildUsageLine roleBreakdown branch). Live-updated while a turn streams
+  /// and re-attached to the final usage on result. History replay rebuilds
+  /// messages without it (the server does not persist the split), which is
+  /// the same "totals only" shape history always had.
+  RoleTokenBreakdown? roleBreakdown;
+
   MessageUsage({
     this.inputTokens = 0,
     this.outputTokens = 0,
     this.cacheReadTokens = 0,
     this.cacheCreationTokens = 0,
     this.savedMainTokens,
+    this.roleBreakdown,
   });
 
   int get total =>
