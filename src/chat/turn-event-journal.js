@@ -86,6 +86,20 @@ function createTurnEventJournal(deps = {}) {
       .catch(() => {});
   }
 
+  // Append with lazy directory creation: the turn-events dir does not exist
+  // on first boot after upgrade, and an appendFile into a missing parent
+  // ENOENTs — without this recovery the journal would silently drop every
+  // event of a session forever. One retry after mkdir, then it's a real drop.
+  function appendLine(sessionId, line) {
+    const attempt = () => fs.promises.appendFile(fileFor(sessionId), line + '\n');
+    return attempt().catch(err => {
+      if (err && err.code === 'ENOENT') {
+        return fs.promises.mkdir(dirFor(), { recursive: true }).then(attempt);
+      }
+      throw err;
+    });
+  }
+
   function note(sessionId, event) {
     if (!dirFor || !event || typeof event !== 'object') return;
     if (skip(event.type)) return;
@@ -102,7 +116,7 @@ function createTurnEventJournal(deps = {}) {
       line = JSON.stringify(record);
       if (line.length > MAX_LINE_BYTES) return;
     }
-    enqueue(sessionId, () => fs.promises.appendFile(fileFor(sessionId), line + '\n')
+    enqueue(sessionId, () => appendLine(sessionId, line)
       .catch(() => { dropped += 1; })
       .then(() => {
         // Byte accounting lives with the appends that cause it, inside the
