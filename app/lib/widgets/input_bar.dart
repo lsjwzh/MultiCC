@@ -54,7 +54,7 @@ class _InputBarState extends State<InputBar> {
   VoiceDictationService? _dictation;
   bool _legacyFallbackArmed = false;
 
-  // Commander 专属的「派发方式」三选一，按会话记住（web 端同一组单选）。
+  // Commander 专属的「派发方式」四选一，按会话记住（web 端同一组下拉）。
   DispatchMode _dispatchMode = DispatchMode.defaultMode;
   String _dispatchModeSessionId = '';
 
@@ -538,7 +538,7 @@ class _InputBarState extends State<InputBar> {
 
   /// 切到别的会话时把选中项对齐到那个会话记住的值。读是同步的（
   /// SharedPreferences 早已加载），所以直接在 build 里调用，不用等下一帧；
-  /// 没写过的会话回落默认（dispatch_master），不回写默认值。
+  /// 没写过的会话回落默认（dispatch_master async），不回写默认值。
   void _syncDispatchMode(ChatProvider provider) {
     final sessionId = provider.sessionName;
     if (sessionId == _dispatchModeSessionId) return;
@@ -1294,9 +1294,9 @@ class _InputBarState extends State<InputBar> {
                 ),
               ),
 
-            // Commander 专属：这一轮怎么派发。三个选项平铺会把手机上的输入区
+            // Commander 专属：这一轮怎么派发。四个选项平铺会把手机上的输入区
             // 挤掉，所以只留一枚显示当前档位的胶囊，改档去 BottomSheet 里选 ——
-            // 与 web 窄屏同一形态。位置跟在子任务 pill 之后、输入框之上，和
+            // 与 web 同一形态。位置跟在子任务 pill 之后、输入框之上，和
             // web 的 #pre-input-bar 顺序一致。
             if (isCommander)
               Padding(

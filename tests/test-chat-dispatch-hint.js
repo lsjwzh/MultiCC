@@ -1,6 +1,6 @@
 'use strict';
 
-// The commander-only dispatch-mode radio group: it must stay invisible and inert
+// The commander-only dispatch-mode dropdown: it must stay invisible and inert
 // in ordinary sessions, and when it is live the sentence it appends has to reach
 // both the staged bubble and the WebSocket payload as one identical string.
 
@@ -14,11 +14,12 @@ const ROOT = path.join(__dirname, '..');
 const HINT_SRC = fs.readFileSync(path.join(ROOT, 'public/chat-dispatch-hint.js'), 'utf8');
 const COMPOSER_SRC = fs.readFileSync(path.join(ROOT, 'public/chat-composer.js'), 'utf8');
 
-const MODE_VALUES = ['dispatch_master', 'route_task', 'none'];
+const MODE_VALUES = ['dispatch_master_sync', 'dispatch_master_async', 'route_task', 'none'];
 
 const MODE_UI = {
-  dispatch_master: { icon: '⇄', short: '需回执', key: 'dispatchModeMasterShort' },
-  route_task: { icon: '➤', short: '免回执', key: 'dispatchModeRouteShort' },
+  dispatch_master_sync: { icon: '⇄', short: '双向·同步', key: 'dispatchModeMasterSyncShort' },
+  dispatch_master_async: { icon: '↪', short: '双向·异步', key: 'dispatchModeMasterAsyncShort' },
+  route_task: { icon: '➤', short: '单向', key: 'dispatchModeRouteShort' },
   none: { icon: '⊘', short: '不派发', key: 'dispatchModeNoneShort' },
 };
 
@@ -72,12 +73,12 @@ function hintDocument({ bare = false } = {}) {
       return selector === 'input[name="dispatch-mode"]' ? radios.slice() : [];
     },
   });
-  const pillIcon = fakeNode({ textContent: '⇄' });
-  const pillLabel = fakeNode({ textContent: '需回执', dataset: { i18n: 'dispatchModeMasterShort' } });
+  const pillIcon = fakeNode({ textContent: '↪' });
+  const pillLabel = fakeNode({ textContent: '双向·异步', dataset: { i18n: 'dispatchModeMasterAsyncShort' } });
   const pill = fakeNode({ attributes: { 'aria-expanded': 'false' } });
   const sheetOpts = MODE_VALUES.map(value => fakeNode({
     className: 'dm-sheet-opt',
-    attributes: { 'data-mode': value, 'aria-checked': value === 'dispatch_master' ? 'true' : 'false' },
+    attributes: { 'data-mode': value, 'aria-checked': value === 'dispatch_master_async' ? 'true' : 'false' },
   }));
   const backdrop = fakeNode({ attributes: { 'data-dm-close': '' } });
   const sheet = fakeNode({
@@ -127,20 +128,25 @@ function loadHint(extraWindow = {}) {
   return { api: window.MultiCCChatDispatchHint, window, document };
 }
 
-test('module exposes a frozen API and the three routing suffixes', () => {
+test('module exposes a frozen API and the four routing suffixes', () => {
   const { api } = loadHint();
   assert.equal(Object.isFrozen(api), true);
   // Suffixes are English on purpose — the model obeys English routing
   // instructions more reliably — and each names the exact tool to call.
-  assert.match(api.SUFFIX_DISPATCH_MASTER, /dispatch_master/);
-  assert.match(api.SUFFIX_DISPATCH_MASTER, /mode="async"/i);
-  assert.match(api.SUFFIX_DISPATCH_MASTER, /do not poll/i);
-  assert.match(api.SUFFIX_DISPATCH_MASTER, /new message.*wake/i);
+  assert.match(api.SUFFIX_DISPATCH_MASTER_SYNC, /dispatch_master/);
+  assert.match(api.SUFFIX_DISPATCH_MASTER_SYNC, /mode="sync"/i);
+  assert.match(api.SUFFIX_DISPATCH_MASTER_SYNC, /keep this turn open/i);
+  assert.match(api.SUFFIX_DISPATCH_MASTER_ASYNC, /dispatch_master/);
+  assert.match(api.SUFFIX_DISPATCH_MASTER_ASYNC, /mode="async"/i);
+  assert.match(api.SUFFIX_DISPATCH_MASTER_ASYNC, /do not poll/i);
+  assert.match(api.SUFFIX_DISPATCH_MASTER_ASYNC, /new message.*wake/i);
   assert.match(api.SUFFIX_ROUTE_TASK, /route_task/);
   assert.match(api.SUFFIX_ROUTE_TASK, /fire-and-forget/i);
   assert.match(api.SUFFIX_NONE, /do not dispatch/i);
   // The "no dispatch" wording must not name a tool the model could then call.
   assert.equal(/dispatch_master|route_task/.test(api.SUFFIX_NONE), false);
+  assert.equal(api.MODE_DISPATCH_MASTER_SYNC, 'dispatch_master_sync');
+  assert.equal(api.MODE_DISPATCH_MASTER_ASYNC, 'dispatch_master_async');
   assert.equal(api.MODE_DISPATCH_MASTER, 'dispatch_master');
   assert.equal(api.MODE_ROUTE_TASK, 'route_task');
   assert.equal(api.MODE_NONE, 'none');
@@ -162,7 +168,7 @@ test('an ordinary session keeps the group hidden and never rewrites the prompt',
   assert.equal(hint.decorate('修一下 diff 面板'), '修一下 diff 面板');
 });
 
-test('a commander session shows the group and defaults to dispatch_master', async () => {
+test('a commander session shows the dropdown and defaults to async two-way dispatch', async () => {
   const { api } = loadHint();
   const doc = hintDocument();
   const hint = api.createDispatchHint({
@@ -173,11 +179,12 @@ test('a commander session shows the group and defaults to dispatch_master', asyn
   });
   assert.equal(await hint.mount(), true);
   assert.equal(doc.group.hidden, false);
-  assert.equal(hint.getMode(), 'dispatch_master');
-  assert.equal(doc.radio('dispatch_master').checked, true);
+  assert.equal(hint.getMode(), 'dispatch_master_async');
+  assert.equal(doc.radio('dispatch_master_sync').checked, false);
+  assert.equal(doc.radio('dispatch_master_async').checked, true);
   assert.equal(doc.radio('route_task').checked, false);
   assert.equal(doc.radio('none').checked, false);
-  assert.equal(hint.decorate('部署新版本'), '部署新版本' + api.SUFFIX_DISPATCH_MASTER);
+  assert.equal(hint.decorate('部署新版本'), '部署新版本' + api.SUFFIX_DISPATCH_MASTER_ASYNC);
 });
 
 test('picking a mode swaps the appended sentence, exclusively, and persists it', async () => {
@@ -203,10 +210,15 @@ test('picking a mode swaps the appended sentence, exclusively, and persists it',
   assert.equal(storage.getItem('multicc.dispatchMode.multicc-commander-01'), 'none');
   assert.deepEqual(doc.radios.filter(r => r.checked).map(r => r.value), ['none']);
 
-  doc.pick('dispatch_master');
-  assert.equal(hint.decorate('部署新版本'), '部署新版本' + api.SUFFIX_DISPATCH_MASTER);
-  assert.equal(storage.getItem('multicc.dispatchMode.multicc-commander-01'), 'dispatch_master');
-  assert.deepEqual(doc.radios.filter(r => r.checked).map(r => r.value), ['dispatch_master']);
+  doc.pick('dispatch_master_sync');
+  assert.equal(hint.decorate('部署新版本'), '部署新版本' + api.SUFFIX_DISPATCH_MASTER_SYNC);
+  assert.equal(storage.getItem('multicc.dispatchMode.multicc-commander-01'), 'dispatch_master_sync');
+  assert.deepEqual(doc.radios.filter(r => r.checked).map(r => r.value), ['dispatch_master_sync']);
+
+  doc.pick('dispatch_master_async');
+  assert.equal(hint.decorate('部署新版本'), '部署新版本' + api.SUFFIX_DISPATCH_MASTER_ASYNC);
+  assert.equal(storage.getItem('multicc.dispatchMode.multicc-commander-01'), 'dispatch_master_async');
+  assert.deepEqual(doc.radios.filter(r => r.checked).map(r => r.value), ['dispatch_master_async']);
 });
 
 test('a stored choice is restored on the next load of the same session only', async () => {
@@ -228,7 +240,7 @@ test('a stored choice is restored on the next load of the same session only', as
     loadSession: async () => ({ type: 'commander' }),
   });
   await fresh.mount();
-  assert.equal(fresh.getMode(), 'dispatch_master');
+  assert.equal(fresh.getMode(), 'dispatch_master_async');
 });
 
 test('the legacy boolean switch migrates to the matching mode', async () => {
@@ -248,7 +260,22 @@ test('the legacy boolean switch migrates to the matching mode', async () => {
     loadSession: async () => ({ type: 'commander' }),
   });
   await spreader.mount();
-  assert.equal(spreader.getMode(), 'dispatch_master');
+  assert.equal(spreader.getMode(), 'dispatch_master_async');
+});
+
+test('the former dispatch_master storage value migrates to async', async () => {
+  const { api } = loadHint();
+  const doc = hintDocument();
+  const storage = fakeStorage({ 'multicc.dispatchMode.c': 'dispatch_master' });
+  const hint = api.createDispatchHint({
+    document: doc, sessionId: 'c', storage,
+    loadSession: async () => ({ type: 'commander' }),
+  });
+  await hint.mount();
+  assert.equal(hint.getMode(), 'dispatch_master_async');
+  assert.equal(hint.decorate('x'), 'x' + api.SUFFIX_DISPATCH_MASTER_ASYNC);
+  assert.equal(storage.getItem('multicc.dispatchMode.c'), 'dispatch_master',
+    'read-time migration must not rewrite storage');
 });
 
 test('an unknown stored value falls back to the default instead of throwing', async () => {
@@ -259,8 +286,8 @@ test('an unknown stored value falls back to the default instead of throwing', as
     loadSession: async () => ({ type: 'commander' }),
   });
   await hint.mount();
-  assert.equal(hint.getMode(), 'dispatch_master');
-  assert.equal(hint.decorate('x'), 'x' + api.SUFFIX_DISPATCH_MASTER);
+  assert.equal(hint.getMode(), 'dispatch_master_async');
+  assert.equal(hint.decorate('x'), 'x' + api.SUFFIX_DISPATCH_MASTER_ASYNC);
 });
 
 test('an unreadable session role fails closed: hidden group, untouched prompt', async () => {
@@ -294,7 +321,7 @@ test('a transient boot-time failure retries and then reveals the group', async (
   assert.equal(doc.group.hidden, false);
 });
 
-test('the narrow-screen pill mirrors the segment that is selected', async () => {
+test('the dropdown pill mirrors the hidden state option that is selected', async () => {
   const { api } = loadHint();
   const doc = hintDocument();
   const hint = api.createDispatchHint({
@@ -302,9 +329,9 @@ test('the narrow-screen pill mirrors the segment that is selected', async () => 
     loadSession: async () => ({ type: 'commander' }),
   });
   await hint.mount();
-  assert.equal(doc.pill.getAttribute('data-mode'), 'dispatch_master');
-  assert.equal(doc.pillIcon.textContent, '⇄');
-  assert.equal(doc.pillLabel.textContent, '需回执');
+  assert.equal(doc.pill.getAttribute('data-mode'), 'dispatch_master_async');
+  assert.equal(doc.pillIcon.textContent, '↪');
+  assert.equal(doc.pillLabel.textContent, '双向·异步');
 
   doc.pick('none');
   assert.equal(doc.pill.getAttribute('data-mode'), 'none');
@@ -329,15 +356,15 @@ test('the pill opens the sheet and a sheet choice applies everywhere at once', a
   assert.equal(doc.sheet.hidden, false);
   assert.equal(doc.pill.getAttribute('aria-expanded'), 'true');
 
-  doc.sheetOpt('route_task').fire('click');
-  assert.equal(hint.getMode(), 'route_task');
-  assert.equal(hint.decorate('部署'), '部署' + api.SUFFIX_ROUTE_TASK);
+  doc.sheetOpt('dispatch_master_sync').fire('click');
+  assert.equal(hint.getMode(), 'dispatch_master_sync');
+  assert.equal(hint.decorate('部署'), '部署' + api.SUFFIX_DISPATCH_MASTER_SYNC);
   // One choice, three surfaces: sheet ticks, segmented radios, and the pill.
-  assert.equal(doc.sheetOpt('route_task').getAttribute('aria-checked'), 'true');
-  assert.equal(doc.sheetOpt('dispatch_master').getAttribute('aria-checked'), 'false');
-  assert.deepEqual(doc.radios.filter(r => r.checked).map(r => r.value), ['route_task']);
-  assert.equal(doc.pillLabel.textContent, '免回执');
-  assert.equal(storage.getItem('multicc.dispatchMode.c'), 'route_task');
+  assert.equal(doc.sheetOpt('dispatch_master_sync').getAttribute('aria-checked'), 'true');
+  assert.equal(doc.sheetOpt('dispatch_master_async').getAttribute('aria-checked'), 'false');
+  assert.deepEqual(doc.radios.filter(r => r.checked).map(r => r.value), ['dispatch_master_sync']);
+  assert.equal(doc.pillLabel.textContent, '双向·同步');
+  assert.equal(storage.getItem('multicc.dispatchMode.c'), 'dispatch_master_sync');
   assert.equal(doc.sheet.hidden, true);
   assert.equal(doc.pill.getAttribute('aria-expanded'), 'false');
 });
@@ -354,7 +381,7 @@ test('the sheet dismisses on the scrim and on Escape without changing the mode',
   doc.pill.fire('click');
   doc.sheet.fire('click', { target: doc.backdrop });
   assert.equal(doc.sheet.hidden, true);
-  assert.equal(hint.getMode(), 'dispatch_master');
+  assert.equal(hint.getMode(), 'dispatch_master_async');
 
   doc.pill.fire('click');
   doc.fire('keydown', { key: 'Escape' });
@@ -500,7 +527,7 @@ test('a session without the hint module keeps the prompt byte-identical', () => 
   assert.equal(sent[0].text, 'hello');
 });
 
-test('the chat host ships the radio group: markup, hidden rule, and script order', () => {
+test('the chat host ships the four-option dropdown, hidden gate, and script order', () => {
   const html = fs.readFileSync(path.join(ROOT, 'public/chat.html'), 'utf8');
   const scripts = [...html.matchAll(/<script\s+src="([^"]+)"/g)].map(match => match[1]);
   assert.ok(scripts.indexOf('chat-dispatch-hint.js') > scripts.indexOf('chat-ai-config.js'));
@@ -513,11 +540,12 @@ test('the chat host ships the radio group: markup, hidden rule, and script order
   for (const value of MODE_VALUES) {
     assert.match(bar, new RegExp(`type="radio"\\s+name="dispatch-mode"\\s+value="${value}"`));
   }
-  assert.match(bar, /value="dispatch_master"\s+checked/);
-  // Segments read as one picker: a caption plus a labelled radiogroup.
+  assert.match(bar, /value="dispatch_master_async"\s+checked/);
+  // The radios are a hidden state mirror; the pill is the visible dropdown.
   assert.match(bar, /class="dm-title" data-i18n="dispatchModeTitle"/);
   assert.match(bar, /class="dm-segments" role="radiogroup"/);
-  for (const key of ['dispatchModeMasterShort', 'dispatchModeRouteShort', 'dispatchModeNoneShort']) {
+  for (const key of ['dispatchModeMasterSyncShort', 'dispatchModeMasterAsyncShort',
+    'dispatchModeRouteShort', 'dispatchModeNoneShort']) {
     assert.match(bar, new RegExp(`class="dm-text" data-i18n="${key}"`));
   }
   assert.match(bar, /id="dispatch-mode-pill"[^>]*aria-haspopup="dialog"/);
@@ -525,20 +553,16 @@ test('the chat host ships the radio group: markup, hidden rule, and script order
   assert.match(html, /#dispatch-mode-group\[hidden\]\s*\{\s*display:\s*none;\s*\}/);
 });
 
-test('the narrow-screen layout swaps the segments for the pill', () => {
+test('the App-style pill dropdown is the only visible picker at every width', () => {
   const html = fs.readFileSync(path.join(ROOT, 'public/chat.html'), 'utf8');
-  // The swap has to sit inside a narrow-screen media query, not at top level.
-  const swap = html.indexOf('#dispatch-mode-pill { display: inline-flex; }');
-  assert.ok(swap > 0, 'the pill must be revealed somewhere');
-  const query = html.lastIndexOf('@media (max-width: 760px)', swap);
-  assert.ok(query > 0 && html.indexOf('@media', query + 10) > swap,
-    'the swap must live inside the max-width:760px query');
-  assert.match(html.slice(query, swap), /#dispatch-mode-group \.dm-segments \{ display: none; \}/);
-  // Off the narrow layout the pill must stay out of the way.
-  assert.match(html, /#dispatch-mode-pill \{\s*display: none;/);
+  assert.match(html, /#dispatch-mode-group \.dm-title \{[^}]*display:\s*none;/);
+  assert.match(html, /#dispatch-mode-group \.dm-segments \{[^}]*display:\s*none;/);
+  assert.match(html, /#dispatch-mode-pill \{\s*display:\s*inline-flex;/);
+  assert.equal(/@media[^}]+#dispatch-mode-pill \{ display: inline-flex; \}/s.test(html), false,
+    'the dropdown must not be mobile-only');
 });
 
-test('the bottom sheet offers all three modes with tappable rows', () => {
+test('the selection sheet offers all four modes with tappable rows', () => {
   const html = fs.readFileSync(path.join(ROOT, 'public/chat.html'), 'utf8');
   const start = html.indexOf('<div id="dispatch-mode-sheet"');
   assert.ok(start > 0, 'the sheet markup must exist');
@@ -549,8 +573,9 @@ test('the bottom sheet offers all three modes with tappable rows', () => {
     assert.match(sheet, new RegExp(`role="radio"[^>]*\\n?[^>]*data-mode="${value}"`));
   }
   // Long label + one-line description, per mode.
-  for (const key of ['dispatchModeMasterLabel', 'dispatchModeRouteLabel', 'dispatchModeNoneLabel',
-    'dispatchModeMasterDesc', 'dispatchModeRouteDesc', 'dispatchModeNoneDesc']) {
+  for (const key of ['dispatchModeMasterSyncLabel', 'dispatchModeMasterAsyncLabel',
+    'dispatchModeRouteLabel', 'dispatchModeNoneLabel', 'dispatchModeMasterSyncDesc',
+    'dispatchModeMasterAsyncDesc', 'dispatchModeRouteDesc', 'dispatchModeNoneDesc']) {
     assert.match(sheet, new RegExp(`data-i18n="${key}"`));
   }
   assert.match(sheet, /data-dm-close/);
@@ -563,8 +588,12 @@ test('every new dispatch string is translated in both locales', () => {
   const zh = JSON.parse(fs.readFileSync(path.join(ROOT, 'app/assets/i18n/zh.json'), 'utf8'));
   const en = JSON.parse(fs.readFileSync(path.join(ROOT, 'app/assets/i18n/en.json'), 'utf8'));
   const keys = ['dispatchModeTitle', 'dispatchModeSheetTitle',
-    'dispatchModeMasterShort', 'dispatchModeRouteShort', 'dispatchModeNoneShort',
-    'dispatchModeMasterDesc', 'dispatchModeRouteDesc', 'dispatchModeNoneDesc'];
+    'dispatchModeMasterSyncShort', 'dispatchModeMasterAsyncShort',
+    'dispatchModeRouteShort', 'dispatchModeNoneShort',
+    'dispatchModeMasterSyncLabel', 'dispatchModeMasterAsyncLabel',
+    'dispatchModeMasterSyncDesc', 'dispatchModeMasterAsyncDesc',
+    'dispatchModeMasterSyncHint', 'dispatchModeMasterAsyncHint',
+    'dispatchModeRouteDesc', 'dispatchModeNoneDesc'];
   for (const key of keys) {
     assert.ok(zh[key], `zh.json is missing ${key}`);
     assert.ok(en[key], `en.json is missing ${key}`);
