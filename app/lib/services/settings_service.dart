@@ -40,7 +40,7 @@ class SettingsService {
   static const _keyServerHistory = 'multicc_server_history';
   static const _keyChatRuntimePrefix = 'multicc_chat_runtime_';
   static const _keyDispatchModePrefix = 'multicc_dispatch_mode_';
-  /// 三选一之前的布尔开关；只在还没写过新键时读一次做迁移。
+  /// 多选项模式之前的布尔开关；只在还没写过新键时读一次做迁移。
   static const _keyNoDispatchPrefix = 'multicc_no_dispatch_';
 
   /// How many past server connections to remember.
@@ -168,7 +168,8 @@ class SettingsService {
 
   /// Commander 会话选定的派发方式，按会话记住（web 端存在 localStorage 的
   /// `multicc.dispatchMode.<id>`）。没写过就读一次旧的布尔开关做迁移，
-  /// 再没有就是默认的 dispatch_master。读不回写，免得给没碰过的会话凭空造记录。
+  /// 再没有就是默认的 dispatch_master async。旧 `dispatch_master` 值会在读取时
+  /// 兼容为 async；读不回写，免得给没碰过的会话凭空造记录。
   DispatchMode readDispatchMode(String sessionId) {
     if (sessionId.isEmpty) return DispatchMode.defaultMode;
     final stored = _prefs.getString('$_keyDispatchModePrefix$sessionId');

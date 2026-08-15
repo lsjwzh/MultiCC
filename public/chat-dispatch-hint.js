@@ -1,11 +1,9 @@
 /* ── chat-dispatch-hint.js ───────────────────────────────────────────────────
- * Commander-only dispatch-mode radio group on #pre-input-bar. Evolves the old
- * two-state「不派发」checkbox into a three-way choice the user pins from the UI:
- *   dispatch_master (default) → dispatch via mode=async; finish naturally and
- *                                let the result wake the next turn.
- *   route_task                → dispatch via route_task, fire-and-forget
- *                                (one-way / no callback).
- *   none                      → no dispatch; finish in this session.
+ * Commander-only dispatch-mode dropdown on #pre-input-bar. The four choices are:
+ *   dispatch_master_sync        → mode=sync; keep this turn open for the result.
+ *   dispatch_master_async       → mode=async; result wakes a later turn (default).
+ *   route_task                  → one-way / fire-and-forget.
+ *   none                        → no dispatch; finish in this session.
  *
  * Exposes: window.MultiCCChatDispatchHint = { createDispatchHint, decorate, … }
  * chat-composer.js calls decorate(text) right before staging + sending, so the
@@ -20,22 +18,32 @@
   var STORE_PREFIX = 'multicc.dispatchMode.';
   var LEGACY_PREFIX = 'multicc.noDispatch.'; // old boolean switch — migrated once
 
-  var MODE_DISPATCH_MASTER = 'dispatch_master';
+  var LEGACY_MODE_DISPATCH_MASTER = 'dispatch_master';
+  var MODE_DISPATCH_MASTER_SYNC = 'dispatch_master_sync';
+  var MODE_DISPATCH_MASTER_ASYNC = 'dispatch_master_async';
   var MODE_ROUTE_TASK = 'route_task';
   var MODE_NONE = 'none';
-  var MODES = [MODE_DISPATCH_MASTER, MODE_ROUTE_TASK, MODE_NONE];
-  var DEFAULT_MODE = MODE_DISPATCH_MASTER;
+  var MODES = [MODE_DISPATCH_MASTER_SYNC, MODE_DISPATCH_MASTER_ASYNC, MODE_ROUTE_TASK, MODE_NONE];
+  var DEFAULT_MODE = MODE_DISPATCH_MASTER_ASYNC;
 
   // English on purpose — the model obeys English tool-routing instructions more
   // reliably. Each suffix names the exact tool so the constraint is unambiguous.
-  var SUFFIX_DISPATCH_MASTER = '\n\n[Dispatch] After a brief analysis, call dispatch_master with mode="async". Do not poll, inspect, or wait on the worker; continue only independent work, then end naturally. MultiCC will inject the result as a new message and wake this session.';
+  var SUFFIX_DISPATCH_MASTER_SYNC = '\n\n[Dispatch] After a brief analysis, call dispatch_master with mode="sync". Keep this turn open until the worker returns, then incorporate the result before responding.';
+  var SUFFIX_DISPATCH_MASTER_ASYNC = '\n\n[Dispatch] After a brief analysis, call dispatch_master with mode="async". Do not poll, inspect, or wait on the worker; continue only independent work, then end naturally. MultiCC will inject the result as a new message and wake this session.';
   var SUFFIX_ROUTE_TASK = '\n\n[Dispatch] After a brief analysis, dispatch this to another session via the route_task tool (fire-and-forget, no callback needed).';
   var SUFFIX_NONE = '\n\n[Dispatch] Do not dispatch to other sessions this turn. Handle it entirely within the current session.';
 
   function suffixFor(mode) {
     if (mode === MODE_NONE) return SUFFIX_NONE;
     if (mode === MODE_ROUTE_TASK) return SUFFIX_ROUTE_TASK;
-    return SUFFIX_DISPATCH_MASTER;
+    if (mode === MODE_DISPATCH_MASTER_SYNC) return SUFFIX_DISPATCH_MASTER_SYNC;
+    return SUFFIX_DISPATCH_MASTER_ASYNC;
+  }
+
+  function normalizeMode(value) {
+    // The former three-way UI stored `dispatch_master`, which always meant async.
+    if (value === LEGACY_MODE_DISPATCH_MASTER) return MODE_DISPATCH_MASTER_ASYNC;
+    return MODES.indexOf(value) >= 0 ? value : DEFAULT_MODE;
   }
 
   function defaultStorage(win) {
@@ -70,8 +78,8 @@
 
     var groupEl = null;
     var radios = [];
-    // The narrow-screen face: a pill showing the current choice, plus the sheet
-    // it opens. Both are optional — a page without them still works.
+    // The App-style face: a pill showing the current choice, plus the sheet it
+    // opens at every width. Both are optional — a page without them still works.
     var pillEl = null;
     var pillIconEl = null;
     var pillLabelEl = null;
@@ -128,7 +136,7 @@
     }
 
     function setMode(value, persist) {
-      var next = MODES.indexOf(value) >= 0 ? value : DEFAULT_MODE;
+      var next = normalizeMode(value);
       mode = next;
       if (persist !== false && sessionId) writeStore(storage, storeKey(), next);
       render();
@@ -191,12 +199,12 @@
       // then the default. Restore never writes back, so an untouched session
       // keeps an empty slot rather than a synthesised default.
       var stored = sessionId ? readStore(storage, storeKey()) : null;
-      if (MODES.indexOf(stored) >= 0) {
+      if (MODES.indexOf(stored) >= 0 || stored === LEGACY_MODE_DISPATCH_MASTER) {
         setMode(stored, false);
       } else {
         var legacy = sessionId ? readStore(storage, LEGACY_PREFIX + sessionId) : null;
         if (legacy === '1') setMode(MODE_NONE, false);
-        else if (legacy === '0') setMode(MODE_DISPATCH_MASTER, false);
+        else if (legacy === '0') setMode(MODE_DISPATCH_MASTER_ASYNC, false);
       }
       render();
     }
@@ -270,10 +278,15 @@
     decorate: decorate,
     boot: boot,
     current: function () { return active; },
-    SUFFIX_DISPATCH_MASTER: SUFFIX_DISPATCH_MASTER,
+    SUFFIX_DISPATCH_MASTER_SYNC: SUFFIX_DISPATCH_MASTER_SYNC,
+    SUFFIX_DISPATCH_MASTER_ASYNC: SUFFIX_DISPATCH_MASTER_ASYNC,
+    // Compatibility aliases for integrations built against the three-way UI.
+    SUFFIX_DISPATCH_MASTER: SUFFIX_DISPATCH_MASTER_ASYNC,
     SUFFIX_ROUTE_TASK: SUFFIX_ROUTE_TASK,
     SUFFIX_NONE: SUFFIX_NONE,
-    MODE_DISPATCH_MASTER: MODE_DISPATCH_MASTER,
+    MODE_DISPATCH_MASTER_SYNC: MODE_DISPATCH_MASTER_SYNC,
+    MODE_DISPATCH_MASTER_ASYNC: MODE_DISPATCH_MASTER_ASYNC,
+    MODE_DISPATCH_MASTER: LEGACY_MODE_DISPATCH_MASTER,
     MODE_ROUTE_TASK: MODE_ROUTE_TASK,
     MODE_NONE: MODE_NONE,
     STORE_PREFIX: STORE_PREFIX,

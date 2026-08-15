@@ -4,7 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:multicc_app/utils/dispatch_hint.dart';
 
-/// web 端同一组单选的权威实现，两端后缀必须逐字相同，否则 commander 在手机上
+/// web 端同一组选择的权威实现，两端后缀必须逐字相同，否则 commander 在手机上
 /// 收到的指令和网页上不是一句话。
 String _webSource() {
   for (final candidate in [
@@ -31,9 +31,17 @@ void main() {
       decorateDispatchHint(
         '查一下队列',
         enabled: true,
-        mode: DispatchMode.dispatchMaster,
+        mode: DispatchMode.dispatchMasterSync,
       ),
-      '查一下队列$kDispatchHintSuffixDispatchMaster',
+      '查一下队列$kDispatchHintSuffixDispatchMasterSync',
+    );
+    expect(
+      decorateDispatchHint(
+        '查一下队列',
+        enabled: true,
+        mode: DispatchMode.dispatchMasterAsync,
+      ),
+      '查一下队列$kDispatchHintSuffixDispatchMasterAsync',
     );
     expect(
       decorateDispatchHint(
@@ -50,8 +58,12 @@ void main() {
   });
 
   test('each suffix names exactly the tool it wants — and none names two', () {
-    expect(kDispatchHintSuffixDispatchMaster, contains('dispatch_master'));
-    expect(kDispatchHintSuffixDispatchMaster, isNot(contains('route_task')));
+    expect(kDispatchHintSuffixDispatchMasterSync, contains('dispatch_master'));
+    expect(kDispatchHintSuffixDispatchMasterSync, contains('mode="sync"'));
+    expect(kDispatchHintSuffixDispatchMasterSync, isNot(contains('route_task')));
+    expect(kDispatchHintSuffixDispatchMasterAsync, contains('dispatch_master'));
+    expect(kDispatchHintSuffixDispatchMasterAsync, contains('mode="async"'));
+    expect(kDispatchHintSuffixDispatchMasterAsync, isNot(contains('route_task')));
     expect(kDispatchHintSuffixRouteTask, contains('route_task'));
     expect(kDispatchHintSuffixRouteTask, isNot(contains('dispatch_master')));
     // 「别派发」那条要是提了工具名，模型反而可能去调它。
@@ -73,7 +85,7 @@ void main() {
       decorateDispatchHint(
         '   ',
         enabled: true,
-        mode: DispatchMode.dispatchMaster,
+        mode: DispatchMode.dispatchMasterAsync,
       ),
       '   ',
     );
@@ -87,11 +99,22 @@ void main() {
     for (final mode in DispatchMode.values) {
       expect(DispatchMode.fromWireName(mode.wireName), mode);
     }
-    expect(DispatchMode.defaultMode, DispatchMode.dispatchMaster);
-    expect(DispatchMode.fromWireName(null), DispatchMode.dispatchMaster);
-    expect(DispatchMode.fromWireName('broadcast'), DispatchMode.dispatchMaster);
+    expect(DispatchMode.defaultMode, DispatchMode.dispatchMasterAsync);
+    expect(DispatchMode.fromWireName(null), DispatchMode.dispatchMasterAsync);
+    expect(DispatchMode.fromWireName('broadcast'), DispatchMode.dispatchMasterAsync);
+    expect(
+      DispatchMode.fromWireName('dispatch_master'),
+      DispatchMode.dispatchMasterAsync,
+    );
     // 存的字符串和 web 端 localStorage 里的一套词汇。
-    expect(DispatchMode.dispatchMaster.wireName, 'dispatch_master');
+    expect(
+      DispatchMode.dispatchMasterSync.wireName,
+      'dispatch_master_sync',
+    );
+    expect(
+      DispatchMode.dispatchMasterAsync.wireName,
+      'dispatch_master_async',
+    );
     expect(DispatchMode.routeTask.wireName, 'route_task');
     expect(DispatchMode.none.wireName, 'none');
   });
@@ -103,15 +126,19 @@ void main() {
     expect(isCommanderSessionType(null), isFalse);
   });
 
-  test('all three suffixes match the web implementation verbatim', () {
+  test('all four suffixes match the web implementation verbatim', () {
     final source = _webSource();
     if (source.isEmpty) {
       // app/ 被单独拷出来跑时读不到 web 源码；此时跳过而不是假绿。
       return;
     }
     expect(
-      _webSuffix(source, 'SUFFIX_DISPATCH_MASTER'),
-      kDispatchHintSuffixDispatchMaster,
+      _webSuffix(source, 'SUFFIX_DISPATCH_MASTER_SYNC'),
+      kDispatchHintSuffixDispatchMasterSync,
+    );
+    expect(
+      _webSuffix(source, 'SUFFIX_DISPATCH_MASTER_ASYNC'),
+      kDispatchHintSuffixDispatchMasterAsync,
     );
     expect(
       _webSuffix(source, 'SUFFIX_ROUTE_TASK'),
