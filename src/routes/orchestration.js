@@ -58,6 +58,10 @@ function createOrchestrationRoutes(rawDeps) {
       queueState,
       ...(queued && Number.isFinite(queued.position)
         ? { queuePosition: queued.position } : {}),
+      // Queue depth when this operation is itself queued — the UI shows
+      // 「第 N 位（共 M 条）」 so the user can tell a deep queue from position 1.
+      // Only present while queued; absent otherwise keeps the DTO minimal.
+      ...(queued ? { queueLength: (schedule?.queued || []).length } : {}),
       createdAt: operation.createdAt || null,
       startedAt: operation.startedAt || null,
       completedAt: operation.completedAt || null,

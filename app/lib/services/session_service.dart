@@ -773,6 +773,33 @@ class SessionService {
     }
   }
 
+  /// Fetch this session's dispatch FIFO snapshot (durable operations joined
+  /// with the target session's queue state — the authoritative projection).
+  /// relation=both covers both directions: dispatches this session owns (sent
+  /// to workers) and dispatches targeting it (received from commanders).
+  /// Throws on transport/HTTP failure; the caller keeps the last snapshot.
+  Future<List<Map<String, dynamic>>> fetchDispatchQueue(String id) async {
+    final res = await http
+        .get(
+          Uri.parse(
+            _url('/api/sessions/$id/dispatches?activeOnly=true&relation=both'),
+          ),
+          headers: _headers,
+        )
+        .timeout(const Duration(seconds: 10));
+    if (res.statusCode >= 400) {
+      final err = _tryParseError(res.body);
+      throw Exception(err ?? '${res.statusCode}');
+    }
+    final body = jsonDecode(res.body);
+    final list = body is Map<String, dynamic> ? body['dispatches'] : null;
+    if (list is! List) return const [];
+    return list
+        .whereType<Map>()
+        .map((m) => Map<String, dynamic>.from(m))
+        .toList();
+  }
+
   // ── Directories ──────────────────────────────────────────────────────────
 
   Future<List<Directory>> fetchDirectories() async {

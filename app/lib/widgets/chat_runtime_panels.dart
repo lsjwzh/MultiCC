@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../i18n.dart';
 import '../models/chat_runtime_state.dart';
+import '../models/dispatch_queue.dart';
 import '../models/vendor_quota.dart';
 import '../utils/status_presentation.dart';
 
@@ -729,6 +730,178 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
           fontSize: 11,
           height: 1.35,
         ),
+      ),
+    );
+  }
+}
+
+/// 派发队列面板（任务A）：展示本会话的双向 dispatch FIFO——本会话派出去的
+/// （owner）和别人派给本会话的（target）。数据来自轮询的权威投影
+/// （ChatProvider.refreshDispatchQueue），与 SessionQueuePanel（暂存消息队列）、
+/// 后台任务/TaskBoard 语义互斥，不混排。
+///
+/// 展示约束：不显示任务 prompt 文本（服务端 DTO 也不带，天然合规）；
+/// 队列为空时整个面板隐藏（空态不打扰）；terminal 条目在 merge 层已收敛消失。
+class DispatchQueuePanel extends StatelessWidget {
+  final List<DispatchQueueEntry> entries;
+  final String Function(String sessionId) resolveName;
+  final Future<void> Function()? onRefresh;
+
+  /// 单屏最多直出的行数，超过显示「还有 N 条」——防长队列顶飞输入区。
+  static const int _maxRows = 6;
+
+  const DispatchQueuePanel({
+    super.key,
+    required this.entries,
+    required this.resolveName,
+    this.onRefresh,
+  });
+
+  String _modeLabel(String? mode) {
+    switch (mode) {
+      case 'sync':
+        return t('dispatchModeSync');
+      case 'async':
+        return t('dispatchModeAsync');
+      case 'one_way':
+        return t('dispatchModeOneWay');
+      default:
+        return '';
+    }
+  }
+
+  String _stateLabel(DispatchQueueEntry e) {
+    switch (e.queueState) {
+      case 'queued':
+        final pos = e.queuePosition;
+        if (pos == null) return t('dispatchStateQueuedNoPos');
+        final len = e.queueLength;
+        return (len != null && len > 1)
+            ? t('dispatchStateQueuedLen', {'pos': '$pos', 'len': '$len'})
+            : t('dispatchStateQueued', {'pos': '$pos'});
+      case 'started':
+      case 'running':
+        return t('dispatchStateRunning');
+      default:
+        return t('dispatchStateUnknown');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (entries.isEmpty) return const SizedBox.shrink();
+    final shown = entries.take(_maxRows).toList(growable: false);
+    final rest = entries.length - shown.length;
+    return Container(
+      key: const Key('dispatch-queue-panel'),
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 7),
+      padding: const EdgeInsets.fromLTRB(10, 8, 8, 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF141a24),
+        border: Border.all(color: const Color(0xFF2d4a6e)),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(
+                Icons.swap_vert_rounded,
+                size: 15,
+                color: Color(0xFF6aa3ff),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  t('dispatchQueueTitle', {'n': '${entries.length}'}),
+                  style: const TextStyle(
+                    color: Color(0xFF6aa3ff),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              if (onRefresh != null)
+                IconButton(
+                  onPressed: () => onRefresh!(),
+                  icon: const Icon(Icons.refresh_rounded, size: 15),
+                  tooltip: t('dispatchQueueRefresh'),
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(
+                    minWidth: 28,
+                    minHeight: 28,
+                  ),
+                  color: const Color(0xFF8a909b),
+                ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          for (final e in shown) _DispatchRow(entry: e, panel: this),
+          if (rest > 0)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                t('dispatchQueueMore', {'n': '$rest'}),
+                style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DispatchRow extends StatelessWidget {
+  final DispatchQueueEntry entry;
+  final DispatchQueuePanel panel;
+
+  const _DispatchRow({required this.entry, required this.panel});
+
+  @override
+  Widget build(BuildContext context) {
+    final incoming = entry.relation == 'target';
+    final rawName = entry.counterpartId;
+    final name = rawName.isEmpty ? t('dispatchUnknownSession') : panel.resolveName(rawName);
+    final mode = panel._modeLabel(entry.mode);
+    final state = panel._stateLabel(entry);
+    final dirText = incoming
+        ? t('dispatchDirIn', {'name': name})
+        : t('dispatchDirOut', {'name': name});
+    return Padding(
+      key: Key('dispatch-row-${entry.operationId}'),
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        children: [
+          Icon(
+            incoming ? Icons.south_west_rounded : Icons.north_east_rounded,
+            size: 14,
+            color: incoming ? const Color(0xFFa78bfa) : const Color(0xFF6aa3ff),
+          ),
+          const SizedBox(width: 5),
+          Expanded(
+            child: Text(
+              mode.isEmpty ? dirText : '$dirText · $mode',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 12),
+            ),
+          ),
+          const SizedBox(width: 6),
+          // 队列状态右侧对齐：排队位次/运行中一目了然。
+          Text(
+            state,
+            style: TextStyle(
+              color: entry.isQueued
+                  ? const Color(0xFFe3b341)
+                  : const Color(0xFF7fd49a),
+              fontSize: 11,
+            ),
+          ),
+        ],
       ),
     );
   }

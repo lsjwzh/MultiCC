@@ -664,6 +664,46 @@ class Session {
   }
 
   bool get isAux => type == 'aux';
+
+  /// Standard copyWith. Today used for live label updates (session_updated
+  /// pushes a new label for a session already rendered in the fleet lists) —
+  /// the model is immutable so a rename replaces the list entry instead of
+  /// mutating it.
+  Session copyWith({
+    String? label,
+    String? dirId,
+    String? model,
+    String? effort,
+    String? provider,
+    String? agent,
+  }) {
+    return Session(
+      id: id,
+      dirId: dirId ?? this.dirId,
+      cli: cli,
+      kind: kind,
+      cliSessionId: cliSessionId,
+      label: label ?? this.label,
+      model: model ?? this.model,
+      effectiveModel: effectiveModel,
+      effort: effort ?? this.effort,
+      effectiveEffort: effectiveEffort,
+      rolePrompt: rolePrompt,
+      provider: provider ?? this.provider,
+      subagent: subagent,
+      agent: agent ?? this.agent,
+      cliStates: cliStates,
+      pendingCliHandoff: pendingCliHandoff,
+      streaming: streaming,
+      cwd: cwd,
+      createdAt: createdAt,
+      active: active,
+      clients: clients,
+      lastActivity: lastActivity,
+      type: type,
+      auxLabel: label ?? this.label,
+    );
+  }
   bool get isCommander => type == 'commander';
   bool get isChat => kind == SessionKind.chat;
   bool get isTerminal => kind == SessionKind.terminal;
