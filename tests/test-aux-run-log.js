@@ -18,6 +18,7 @@ test('records a run and reads it back verbatim', () => {
   log.record('s1', {
     runId: 'run-1',
     taskId: 'tsk-1',
+    priorTaskId: 'tsk-old',
     anchorMessageId: 'msg-9',
     source: 'turn-end',
     turnId: 'turn-7',
@@ -32,6 +33,7 @@ test('records a run and reads it back verbatim', () => {
   const stored = log.get('s1', 'run-1');
   assert.equal(stored.runId, 'run-1');
   assert.equal(stored.taskId, 'tsk-1');
+  assert.equal(stored.priorTaskId, 'tsk-old');
   assert.equal(stored.anchorMessageId, 'msg-9');
   assert.equal(stored.source, 'turn-end');
   assert.equal(stored.turnId, 'turn-7');

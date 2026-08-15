@@ -46,4 +46,47 @@ async function runHistoryBacktest(cases, model, { parse = parseTaskAttribution }
   });
 }
 
-module.exports = { createFakeAuxModel, runHistoryBacktest };
+function expectedFromRun(run = {}) {
+  const parsed = run.parsed && typeof run.parsed === 'object' ? run.parsed : {};
+  const relation = parsed.relation === 'new' ? 'new' : 'same';
+  const expected = {
+    taskName: String(parsed.taskName || parsed.goal || '').trim(),
+    phase: parsed.phase || null,
+    relation,
+    taskId: relation === 'new' ? null : parsed.taskId || run.taskId || null,
+  };
+  return expected;
+}
+
+// Convert durable aux-run JSONL records into the same deterministic fake-model
+// corpus used by hand-authored cases. This replays parser/normalisation changes
+// against exactly what the historical model returned; it does not call a model.
+function corpusFromAuxRuns(runs) {
+  const cases = [];
+  const responses = {};
+  for (const [index, run] of (Array.isArray(runs) ? runs : []).entries()) {
+    if (!run || typeof run.rawText !== 'string' || !run.rawText.trim()) continue;
+    const id = String(run.runId || `aux-run-${index}`);
+    const expected = expectedFromRun(run);
+    const allowedTaskIds = [...new Set([
+      run.priorTaskId, run.taskId, expected.taskId,
+    ].filter(Boolean))];
+    cases.push({
+      id,
+      systemPrompt: run.systemPrompt || '',
+      prompt: run.prompt || '',
+      fallbackTaskId: run.priorTaskId || run.taskId || null,
+      allowedTaskIds,
+      expected,
+    });
+    responses[id] = run.rawText;
+  }
+  return { cases, responses };
+}
+
+module.exports = {
+  corpusFromAuxRuns,
+  createFakeAuxModel,
+  expectedFromRun,
+  runHistoryBacktest,
+};

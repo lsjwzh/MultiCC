@@ -27,6 +27,7 @@ function fixture({
   retryPlanned = false,
   auxReply = '定位 codex 冷启瓶颈\n规划中\nP',
   auxUnhealthy = false,
+  backgroundPending = false,
 } = {}) {
   const record = {
     id: 's1', kind: 'chat', cli: 'qoder',
@@ -110,6 +111,7 @@ function fixture({
     getAuxRunLog: () => ({
       record: (_sessionId, run) => { observed.auxRuns.push(run); return run; },
     }),
+    hasBackgroundPending: () => backgroundPending,
   });
   return { machine, record, chatState, observed, releaseAux: () => releaseAux() };
 }
@@ -160,6 +162,22 @@ test('a classify already in flight cannot overwrite the deterministic E when it 
     'the superseded verdict must not even be recorded');
 });
 
+test('a new-task Aux result indexes its run by the resolved task, not the prior task', async () => {
+  const h = fixture({
+    auxReply: '{"taskName":"账单下载","phase":"planning","relation":"new","taskId":null}',
+  });
+  h.machine.classifyTurnEnd(h.chatState, 's1', {
+    classification: 'completed', turnId: 'turn-new-task',
+  });
+  h.releaseAux();
+  await new Promise(resolve => setImmediate(resolve));
+  const run = h.observed.auxRuns.at(-1);
+  assert.equal(run.priorTaskId, 'task-1');
+  assert.match(run.taskId, /^tsk_[a-f0-9]{32}$/);
+  assert.notEqual(run.taskId, 'task-1');
+  assert.equal(h.record.taskState.taskId, run.taskId);
+});
+
 test('a turn end without a boundary verdict fails closed and still attributes the task', () => {
   const h = fixture();
   h.machine.classifyTurnEnd(h.chatState, 's1');
@@ -190,6 +208,14 @@ test('clean completion reaches D even when Aux task attribution is unavailable',
     'the turn still receives an inspectable auxRunId when Aux is unavailable');
 });
 
+test('clean turn with authoritative background work reaches B without Aux', () => {
+  const h = fixture({ auxUnhealthy: true, backgroundPending: true });
+  h.machine.classifyTurnEnd(h.chatState, 's1', { classification: 'completed' });
+  assert.equal(h.record.taskState.classifyState, 'B');
+  assert.equal(h.record.taskState.classifyHistory.at(-1).evidence, 'background_pending');
+  assert.equal(h.observed.enqueued, 0);
+});
+
 test('a legacy API error with no policy decision still records one before publishing E', () => {
   const h = fixture({ lastDecision: null });
   h.machine.classifyTurnEnd(h.chatState, 's1', { classification: 'api-error' });
@@ -197,11 +223,11 @@ test('a legacy API error with no policy decision still records one before publis
   assert.equal(h.record.taskState.classifyState, 'E');
 });
 
-test('the periodic scan leaves a fail_fast E alone instead of re-judging it back to W', () => {
+test('the naming scan cannot rewrite a fail_fast E', () => {
   const h = fixture({ classifyState: 'E', apiError: FAIL_FAST });
   h.machine.scanAndReclassify();
   const decision = h.machine.scanHistory.passes[0].decisions.find(entry => entry.sid === 's1');
-  assert.equal(decision.decision, 'skipped-api-error');
+  assert.equal(decision.decision, 'skipped-goal-resolved');
   assert.equal(h.observed.enqueued, 0);
   assert.equal(h.record.taskState.classifyState, 'E');
 });
