@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
   createSafeProgressReducer,
+  createDispatchProgressSubscription,
   reasoningDeltaFromPart,
   textDeltaFromPart,
 } = require('../src/dispatch/progress');
@@ -128,4 +129,49 @@ test('Claude sync progress uses native stream events and drops duplicate proxy s
   assert.deepEqual(progress, [
     { kind: 'reasoning', message: 'native thought' },
   ]);
+});
+
+test('dispatch progress subscription filters by session and operation lineage, then unsubscribes', () => {
+  const handlers = new Set();
+  const bus = {
+    on: (topic, fn) => handlers.add(fn),
+    off: (topic, fn) => handlers.delete(fn),
+  };
+  const turns = new Map([
+    ['worker-1', { lineage: { kind: 'dispatch', operationId: 'op-9' } }],
+    ['worker-2', { lineage: { kind: 'chat' } }],
+  ]);
+  const replays = new Map([
+    ['worker-1', [{ type: 'assistant', message: { content: [{ type: 'text', text: 'early' }] } }]],
+  ]);
+  const subscribe = createDispatchProgressSubscription({
+    bus,
+    cliOf: () => 'claude',
+    activeTurnOf: id => turns.get(id),
+    streamReplayOf: id => replays.get(id),
+  });
+
+  const progress = [];
+  const unsubscribe = subscribe({ operationId: 'op-9', targetSessionId: 'worker-1', onProgress: u => progress.push(u) });
+  // Replay: the turn already belonged to op-9 when the listener attached, so
+  // the buffered early deltas are delivered before any live event.
+  assert.deepEqual(progress.map(u => u.message), ['early']);
+
+  const emit = payload => { for (const h of handlers) h('worker-1', payload); };
+  emit({ type: 'assistant', message: { content: [{ type: 'text', text: 'live' }] } });
+  assert.deepEqual(progress.map(u => u.message), ['early', 'live']);
+
+  // Cross-session and cross-operation events never reach the reducer.
+  turns.set('worker-1', { lineage: { kind: 'dispatch', operationId: 'op-other' } });
+  emit({ type: 'assistant', message: { content: [{ type: 'text', text: 'not mine' }] } });
+  assert.deepEqual(progress.map(u => u.message), ['early', 'live']);
+
+  unsubscribe();
+  turns.set('worker-1', { lineage: { kind: 'dispatch', operationId: 'op-9' } });
+  emit({ type: 'assistant', message: { content: [{ type: 'text', text: 'after detach' }] } });
+  assert.deepEqual(progress.map(u => u.message), ['early', 'live']);
+});
+
+test('dispatch progress subscription requires a real bus', () => {
+  assert.throws(() => createDispatchProgressSubscription({}), /requires a bus/);
 });
