@@ -25,7 +25,10 @@ const MAX_TITLE_LEN = 40;
 const MAX_MODULE_LEN = 20;
 const CLASSIFY_PENDING_MODULE_NAME = '待归类';
 const PENDING_TASK_TITLE = '新任务';
-const TASK_RUN_STATES = new Set(['queued', 'running', 'waiting', 'done', 'error', 'idle']);
+// Runtime projection is deliberately separate from task.status lifecycle.
+// `succeeded` says the latest turn succeeded; only explicit user action writes
+// task.status = 'done'. Legacy runState done/completed is migrated below.
+const TASK_RUN_STATES = new Set(['queued', 'running', 'waiting', 'succeeded', 'error', 'idle']);
 const MAX_ROUTING_ATTEMPTS = 50;
 
 function safeClassificationError(value) {
@@ -91,7 +94,8 @@ function normalizeBoard(raw) {
           })).slice(-MAX_REFS_PER_TASK)
         : [],
     };
-    if (TASK_RUN_STATES.has(t.runState)) task.runState = t.runState;
+    const runState = ['done', 'completed'].includes(t.runState) ? 'succeeded' : t.runState;
+    if (TASK_RUN_STATES.has(runState)) task.runState = runState;
     // Monotonic stamp of the queue event that produced runState. Survives a
     // reload so a heartbeat replayed after restart cannot un-cancel a card.
     if (Number(t.runStateAt) > 0) task.runStateAt = Number(t.runStateAt);
@@ -956,17 +960,18 @@ function messageText(msg) {
   return '';
 }
 
-// Aggregate classify run-state from a task's sessions: running > waiting > error > idle;
-// done only when all sessions are done. getSessionRunState(sid) → 'running'|'waiting'|'done'|'error'|'idle'|null.
+// Aggregate turn run-state from a task's sessions: running > waiting > error > idle;
+// succeeded only when all sessions succeeded. This never mutates task.status.
 function aggregateTaskRunState(sessionIds, getSessionRunState) {
   if (!getSessionRunState || !sessionIds.length) return 'idle';
-  const states = sessionIds.map(sid => getSessionRunState(sid)).filter(Boolean);
+  const states = sessionIds.map(sid => getSessionRunState(sid)).filter(Boolean)
+    .map(state => ['done', 'completed'].includes(state) ? 'succeeded' : state);
   if (!states.length) return 'idle';
   if (states.some(s => s === 'running')) return 'running';
   if (states.some(s => s === 'queued')) return 'queued';
   if (states.some(s => s === 'waiting')) return 'waiting';
   if (states.some(s => s === 'error')) return 'error';
-  if (states.every(s => s === 'done')) return 'done';
+  if (states.every(s => s === 'succeeded')) return 'succeeded';
   return 'idle';
 }
 

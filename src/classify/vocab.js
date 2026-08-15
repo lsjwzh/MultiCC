@@ -75,11 +75,11 @@ function parseClassifyResult(text) {
 // renders across ALL channels: classify bar, push notification, voice/TTS,
 // toast, card status. Every display path MUST read from here — no inline maps.
 const CLASSIFY_DISPLAY = {
-  D: {  // Done — task genuinely finished (terminal)
-    label: '已完成',
-    pushType: 'completed', pushTitle: '完成',
-    voiceText: '任务已完成', ding: 'completed',
-    cardStatus: 'completed', barTint: 'completed',
+  D: {  // Succeeded — this turn executed successfully (terminal turn outcome)
+    label: '执行成功',
+    pushType: 'succeeded', pushTitle: '执行成功',
+    voiceText: '本轮执行成功', ding: 'succeeded',
+    cardStatus: 'succeeded', barTint: 'succeeded',
   },
   C: {  // Continue — RETIRED. parseClassifyResult collapses C→W, so no new C is
         // ever produced. Retained ONLY so a legacy persisted 'C' (older taskState /
@@ -135,11 +135,28 @@ function phaseLabel(ph) { return PHASE_LABELS[ph] || ''; }
 // Semantic predicates over the classify LETTER — the single source for "what
 // does this state mean for my subsystem?". Downstream code MUST use these
 // instead of inline `=== 'D'` / `=== 'W'` checks, so the meaning lives here.
-//   isTerminalLetter: D — task genuinely finished (the only terminal state).
+//   isTerminalLetter: D — the current turn executed successfully (terminal).
 //   isSettledLetter:  D or W — won't change without new user input; safe to skip
 //                     for re-classify/push (the user is in charge either way).
 function isTerminalLetter(cls) { return cls === 'D'; }
 function isSettledLetter(cls) { return cls === 'D' || cls === 'W'; }
+
+// Scheduler events carry this explicit outcome alongside the classify letter.
+// Consumers may project it onto runtime UI, but MUST NOT reinterpret
+// `succeeded` as TaskBoard lifecycle `done`; only a user action changes
+// task.status to done.
+const CLASSIFY_TURN_OUTCOME = Object.freeze({
+  D: 'succeeded',
+  C: 'running',
+  W: 'waiting_user',
+  B: 'waiting_background',
+  E: 'failed',
+  P: 'running',
+});
+
+function turnOutcomeForClassify(cls) {
+  return CLASSIFY_TURN_OUTCOME[cls] || 'waiting_user';
+}
 
 // Structured tool evidence is authoritative for "waiting on user". The Aux
 // classifier still owns goal/phase and remains the legacy fallback when no
@@ -177,13 +194,13 @@ function buildClassifySystemPrompt(priorGoal) {
        最新用户消息如果提出了新的具体需求，即使 AI 还没开始做，也应判「规划中」而非「已完成」。
 
 第3行：仅一个字母，判断【当前任务段】接下来该谁行动：
-       D = 任务已完成（助手把当前任务的所有要求都做完了，正常收尾、没有反问、也不需要再继续；用户可以验收）
+       D = 本轮执行成功（助手完成了本轮要求，正常收尾、没有反问、也不需要再继续；这只描述 turn outcome，不代表任务板任务已完成）
        W = 等用户（本轮助手已停下，主动权在用户手里）：助手在反问/征求意见/让用户做选择；或用户表达了犹豫；或任务还没全部做完但助手这一轮已结束——本系统不会自动替用户续接，未完成的部分一律等用户明确指示再继续，所以都判 W
        E = API 异常中断（助手回复末尾含 ${apiErrorSignaturesQuoted()} 等故障信息，回答被截断而非正常完成）
        P = AI 还在处理中（回复为空、或明显话没说完，还没到判断的时候）
 
 关键区分 D vs W：
-  · 助手已把任务所有要求做完、正常收尾、没有后续动作 → D（完成，用户可验收）
+  · 助手已把本轮要求做完、正常收尾、没有后续动作 → D（执行成功；任务板仍由用户手动标记完成）
   · 任务还没全部做完、但助手这一轮已经停下（在反问、阶段性停顿、或等用户指示）→ W（交回用户；系统不自动续接）
   · 最新一条是用户的推进消息、AI 还没回应 → 判 P（还在处理），不要判 D
 判断时看当前任务段的整体走向，不是看最后一句有没有问号。回复为空/话没说完判 P。API故障截断判 E。
@@ -206,6 +223,8 @@ module.exports = {
   applyUserInputEvidence,
   isTerminalLetter,
   isSettledLetter,
+  turnOutcomeForClassify,
   CLASSIFY_DISPLAY,
+  CLASSIFY_TURN_OUTCOME,
   PHASE_LABELS,
 };

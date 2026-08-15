@@ -167,7 +167,7 @@ test('a new-task Aux result indexes its run by the resolved task, not the prior 
     auxReply: '{"taskName":"账单下载","phase":"planning","relation":"new","taskId":null}',
   });
   h.machine.classifyTurnEnd(h.chatState, 's1', {
-    classification: 'completed', turnId: 'turn-new-task',
+    classification: 'succeeded', turnId: 'turn-new-task',
   });
   h.releaseAux();
   await new Promise(resolve => setImmediate(resolve));
@@ -193,14 +193,14 @@ test('a planned retry owns the turn, so no premature E is published', () => {
   assert.equal(h.observed.transitions, 0);
 });
 
-test('clean completion reaches D even when Aux task attribution is unavailable', () => {
+test('clean turn success reaches D even when Aux task attribution is unavailable', () => {
   const h = fixture({ auxUnhealthy: true });
   h.machine.classifyTurnEnd(h.chatState, 's1', {
-    classification: 'completed', turnId: 'turn-offline',
+    classification: 'succeeded', turnId: 'turn-offline',
   });
   assert.equal(h.record.taskState.classifyState, 'D');
   assert.equal(h.observed.enqueued, 0);
-  assert.equal(h.record.taskState.classifyHistory.at(-1).evidence, 'turn_completed');
+  assert.equal(h.record.taskState.classifyHistory.at(-1).evidence, 'turn_succeeded');
   assert.equal(h.observed.auxRuns.length, 1);
   assert.equal(h.observed.auxRuns[0].error, 'aux_unhealthy');
   assert.equal(h.observed.auxRuns[0].turnId, 'turn-offline');
@@ -210,7 +210,7 @@ test('clean completion reaches D even when Aux task attribution is unavailable',
 
 test('clean turn with authoritative background work reaches B without Aux', () => {
   const h = fixture({ auxUnhealthy: true, backgroundPending: true });
-  h.machine.classifyTurnEnd(h.chatState, 's1', { classification: 'completed' });
+  h.machine.classifyTurnEnd(h.chatState, 's1', { classification: 'succeeded' });
   assert.equal(h.record.taskState.classifyState, 'B');
   assert.equal(h.record.taskState.classifyHistory.at(-1).evidence, 'background_pending');
   assert.equal(h.observed.enqueued, 0);

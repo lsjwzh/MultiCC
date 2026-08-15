@@ -5,7 +5,7 @@
 //   1. LISTENING  — 连续 PCM16 流采集 → 自适应 RMS VAD（静音=说完）→ 整句 WAV → /api/voice/stt
 //   2. CONFIRMING — /api/voice/confirm 把口语需求拆成可逐项确认的条目 → TTS 念出 → 用户语音确认（可多轮）
 //   3. EXECUTING  — allConfirmed 后经 chat WS 分发任务 → 进入等待，监听 chat 事件
-//   4. REPORTING  — 周期性 /api/voice/progress-summary → TTS 播报；任务完成播报最终结果 → 回到 LISTENING
+//   4. REPORTING  — 周期性 /api/voice/progress-summary → TTS 播报；本轮结束播报最终结果 → 回到 LISTENING
 //
 // 全双工: 麦克风始终开（PCM 流），TTS 播放期间 VAD 检测到用户开口 → 立即 stop TTS（barge-in）。
 //         依赖 AVAudioSession PlayAndRecord + VoiceChat 做回声消除，避免 AI 自激。
@@ -706,12 +706,12 @@ class VoiceCallService extends ChangeNotifier {
         break;
       case 'result':
         _pushEvent('result', '任务回合完成');
-        // 不立即判定完成：server 的 notify 才是 done/waiting 的唯一裁决（见 chat_provider 注释）。
+        // 不提前猜测结果：server notify 是 succeeded/waiting 的唯一裁决。
         break;
       case 'notify':
-        final st = ((evt.payload as Map?)?['state'] ?? 'completed').toString();
-        if (st == 'completed' || st == 'waiting') {
-          _onTaskComplete(st == 'waiting');
+        final st = ((evt.payload as Map?)?['state'] ?? 'succeeded').toString();
+        if (st == 'succeeded' || st == 'completed' || st == 'waiting') {
+          _onTurnSettled(st == 'waiting');
         }
         break;
       default:
@@ -725,7 +725,7 @@ class VoiceCallService extends ChangeNotifier {
     _progressEvents.add({'type': type, 'summary': summary});
   }
 
-  Future<void> _onTaskComplete(bool waiting) async {
+  Future<void> _onTurnSettled(bool waiting) async {
     if (_taskCompleted) return;
     _taskCompleted = true;
     _progressTimer?.cancel();
@@ -733,10 +733,10 @@ class VoiceCallService extends ChangeNotifier {
     _idleHintTimer?.cancel();
     _idleHintTimer = null;
     _setState(VoiceCallState.reporting);
-    _setStatus('任务完成，整理汇报…');
+    _setStatus(waiting ? '等待操作，整理汇报…' : '执行成功，整理汇报…');
     notifyListeners();
 
-    final fallback = waiting ? '任务已完成，等待你的下一步指示。' : '任务已完成。';
+    final fallback = waiting ? '正在等待你的下一步指示。' : '本轮执行成功。';
     String summary = fallback;
     final eventsSnapshot = _progressEvents.toList();
     if (eventsSnapshot.isNotEmpty) {

@@ -864,10 +864,11 @@ class ManageService {
         .cast<String, dynamic>();
   }
 
-  /// POST /api/sessions/:id/mark-task-done -> manually mark a waiting-for-user
-  /// task as completed from the classify bar. Returns {ok, classifyState}.
+  /// Back-compatible endpoint: manually mark a waiting turn as succeeded.
+  /// It does not complete the TaskBoard lifecycle. Returns {ok, classifyState,
+  /// turnOutcome}.
   /// 409 = session is streaming; 404 = session not found.
-  Future<Map<String, dynamic>> markTaskDone(String sessionId) async {
+  Future<Map<String, dynamic>> markTurnSucceeded(String sessionId) async {
     final res = await http
         .post(Uri.parse(_url('/api/sessions/$sessionId/mark-task-done')),
             headers: _headers)

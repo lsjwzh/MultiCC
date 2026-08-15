@@ -664,12 +664,19 @@ function createTaskBoardRuntime(deps) {
     }
   }
 
-  // Classify letter → task run state. Same fold as session-work-host.getRunState
+  // Classify letter → turn run state. Same fold as session-work-host.getRunState
   // and task-context-host.runState, so the task card, the session card and the
   // chat bar cannot disagree about what one verdict means.
   function runStateForClassify(classifyState) {
-    const cardStatus = classifyDisplay(classifyState || 'D').cardStatus;
-    return cardStatus === 'completed' ? 'done' : cardStatus;
+    return classifyDisplay(classifyState || 'D').cardStatus;
+  }
+
+  function runStateForTurnOutcome(turnOutcome, classifyState) {
+    if (turnOutcome === 'succeeded') return 'succeeded';
+    if (turnOutcome === 'failed') return 'error';
+    if (turnOutcome === 'waiting_user' || turnOutcome === 'waiting_background') return 'waiting';
+    if (turnOutcome === 'running') return 'running';
+    return runStateForClassify(classifyState);
   }
 
   function onQueueEvent(event = {}) {
@@ -684,9 +691,10 @@ function createTaskBoardRuntime(deps) {
     if (type === 'queued' || type === 'claim_released') runState = 'queued';
     else if (type === 'claimed' || type === 'started' || type === 'resumed') runState = 'running';
     else if (type === 'completed') {
-      // NOT hard-coded `done`. `completed` only means "the active slot was
-      // released"; D/W/B/E says whether that was a finish, a wait or an abort.
-      runState = runStateForClassify(event.classifyState);
+      // `completed` is scheduler bookkeeping: the active slot was released.
+      // The explicit turnOutcome drives this runtime projection; it NEVER
+      // changes task.status. Only handleStatus's user action can mark done.
+      runState = runStateForTurnOutcome(event.turnOutcome, event.classifyState);
     } else if (type === 'reconcile') {
       // Formal re-publish: the canonical state was recomputed elsewhere (e.g. a
       // cancel that found no active scheduler entry). Always notifies, even when
@@ -1320,16 +1328,12 @@ function createTaskBoardRuntime(deps) {
     const dirId = String(req.body?.dirId || '').trim() || null;
     const taskIds = [];
     const now = Date.now();
-    const displayStateByTaskId = new Map(
-      core.buildBoardDto(board, getSessionRunState).tasks.map(task => [task.id, task.runState]),
-    );
     for (const task of Object.values(board.tasks)) {
       if (task.status === 'archived') continue;
       if (dirId && core.taskDirId(board, task) !== dirId) continue;
-      // Keep this predicate aligned with taskDisplayState(): an explicit
-      // completed status wins, while canonical classify state may also finish
-      // a still-active card.
-      if (task.status !== 'done' && displayStateByTaskId.get(task.id) !== 'done') continue;
+      // Archive is a lifecycle operation. A succeeded turn is not a completed
+      // task, so only an explicit user-set `done` status is eligible.
+      if (task.status !== 'done') continue;
       task.status = 'archived';
       task.updatedAt = now;
       taskIds.push(task.id);

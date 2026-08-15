@@ -144,7 +144,7 @@ test('the boundary verdict reaches the classify port instead of being dropped', 
     cs: { ...context().cs, cli: 'claude', streamReplay: [] },
     persisted: { cli: 'claude' },
   }));
-  assert.deepEqual(plain.calls.find(call => call[0] === 'classify'), ['classify', 'completed']);
+  assert.deepEqual(plain.calls.find(call => call[0] === 'classify'), ['classify', 'succeeded']);
 });
 
 test('finalize host fails closed when a required runtime port is absent', () => {

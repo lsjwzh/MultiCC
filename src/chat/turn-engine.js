@@ -373,7 +373,7 @@ function createChatTurnEngine(deps) {
       // Final classification and all post-turn effects run from the owned
       // close/finalize boundary. The result event alone is not enough: history
       // persistence may have failed or a retry may still be planned.
-      setSessionStatus(sessionName, { status: cs._resultSaved ? 'completed' : 'idle', currentFile: null });
+      setSessionStatus(sessionName, { status: cs._resultSaved ? 'succeeded' : 'idle', currentFile: null });
       // Turn boundary: refresh this session's provider usage limit if it exposes a
       // poll-only quota surface (GLM window %, DeepSeek balance). Fire-and-forget,
       // TTL-throttled and account-deduped inside the poller; never blocks the turn.

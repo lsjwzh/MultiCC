@@ -5,6 +5,7 @@ const {
   admitOutboxItem,
   normalizeJson,
 } = require('./outbox');
+const { turnOutcomeForClassify } = require('./classify/vocab');
 
 const ACTIVE_STATES = new Set(['starting', 'running', 'assessing', 'frozen']);
 const CONTROL_KINDS = new Set(['answer', 'approval', 'callback', 'continuation', 'retry', 'resume']);
@@ -17,7 +18,7 @@ const CLASSIFY_STATES = new Set(['P', 'D', 'W', 'B', 'E']);
 // which collapsed EVERY non-"error" freeze into "Waiting for user" — falsely
 // telling the user to act when the session was actually mid-recovery, settling a
 // durable ack, or interrupted. runState vocabulary is the fixed renderable set
-// {queued, running, waiting, error, done, idle}. A reason not listed here falls
+// {queued, running, waiting, error, succeeded, idle}. A reason not listed here falls
 // back to the old heuristic so a future scheduler reason never crashes the UI.
 const FREEZE_REASON_RUN_STATE = Object.freeze({
   // Genuinely handed back to the user / an external party.
@@ -344,7 +345,7 @@ function createSessionWorkScheduler({
       }
       // At-rest verdicts (W/E/B) leave stale FIFO items untouched — the queue
       // does nothing until the user's next direct admit or a D verdict. Every
-      // other state (D done, never-classified, P exhausted) drains in FIFO order.
+      // other state (D succeeded, never-classified, P exhausted) drains FIFO.
       if (cls === 'W' || cls === 'E' || cls === 'B') return null;
       if (cls === 'P') return null;
       return ordered[0];
@@ -694,7 +695,7 @@ function createSessionWorkScheduler({
         ? String(awaitingRequestId)
         : null;
       if (schedule.priorityEntryId === completed.entryId) schedule.priorityEntryId = null;
-      // classifyState is the LETTER (D/W/B/E). D = terminal-done (drains FIFO);
+      // classifyState is the LETTER (D/W/B/E). D = turn succeeded (drains FIFO);
       // W/B/E = released but at-rest (FIFO only drains on D, see selectSessionItem).
       schedule.classifyState = CLASSIFY_STATES.has(classifyState) ? classifyState : 'D';
       // A turn ending on an unanswered question must not let work staged while
@@ -723,14 +724,16 @@ function createSessionWorkScheduler({
         schedule: publicSchedule(schedule, queueForDraft(draft, sessionId)),
       };
     });
-    // The verdict letter travels WITH the event. Without it every consumer had
-    // to guess what "completed" meant and the task board hard-coded `done`, so a
-    // cancelled (E) turn rendered as ✅. Projections map the letter, not the type.
+    // The explicit turn outcome travels WITH the scheduler bookkeeping event.
+    // `completed` means only that the active slot was released; it is never a
+    // TaskBoard lifecycle decision. Projections may render `succeeded`, while
+    // only a user action may write task.status = done.
     if (result.ok) emit('completed', {
       sessionId,
       entryId: result.completed.entryId,
       taskId: result.completed.taskId || null,
       classifyState: result.schedule.classifyState || null,
+      turnOutcome: turnOutcomeForClassify(result.schedule.classifyState),
       reason,
       queued: result.schedule.queued.length,
       queuedItems: result.schedule.queued,
@@ -1122,6 +1125,8 @@ function createSessionWorkScheduler({
             sessionId,
             entryId: completed.entryId,
             taskId: completed.taskId || null,
+            classifyState: 'D',
+            turnOutcome: 'succeeded',
             queued: queueForDraft(draft, sessionId).length,
             queuedItems: publicSchedule(schedule, queueForDraft(draft, sessionId)).queued,
           });
@@ -1159,6 +1164,8 @@ function createSessionWorkScheduler({
       queued: event.queued == null ? null : event.queued,
       queuedItems: event.queuedItems || [],
       freezeReason: event.type === 'frozen' ? event.reason : null,
+      classifyState: event.classifyState || null,
+      turnOutcome: event.turnOutcome || null,
       queueSummary: summaries.get(event.sessionId) || null,
       recovered: true,
     });

@@ -173,6 +173,6 @@ test('Codex host sends one delta to history, ledger, role tracker and live resul
     durationMs: 100, num_turns: 5,
   }]);
   assert.deepEqual(calls.at(-1), [
-    'status', 'session-a', { status: 'completed', currentFile: null },
+    'status', 'session-a', { status: 'succeeded', currentFile: null },
   ]);
 });

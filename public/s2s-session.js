@@ -9,7 +9,7 @@
  *   3. EXECUTING  — 确认后发送到 chat WS → 用户进入等待
  *   4. REPORTING  — 监控 chat 事件 → aux AI 总结 → TTS 播报;
  *                   超过 60s 无响应 → "任务还在进行中"
- *   5. 任务完成 → TTS 播报结果 → 回到 IDLE
+ *   5. 本轮执行成功/等待 → TTS 播报结果 → 回到 IDLE
  *
  * 依赖: VoiceOutput (TTS), VadMonitor (静音检测), chat.js 的 ws 连接
  * 使用 /api/voice/stt (Whisper) 做语音识别 — 与现有 mic 按钮同一通道
@@ -505,7 +505,7 @@ class S2SSession {
         break;
       }
       case 'notify': {
-        if (msg.state === 'completed' || msg.state === 'waiting') {
+        if (msg.state === 'succeeded' || msg.state === 'completed' || msg.state === 'waiting') {
           this._onTaskComplete(msg);
         }
         break;
@@ -514,7 +514,7 @@ class S2SSession {
         if (this.state === 'EXECUTING' || this.state === 'REPORTING') {
           setTimeout(() => {
             if (this.state === 'EXECUTING' || this.state === 'REPORTING') {
-              this._onTaskComplete({ state: 'completed' });
+              this._onTaskComplete({ state: 'succeeded' });
             }
           }, 2000);
         }
@@ -529,7 +529,7 @@ class S2SSession {
     this._clearTimers();
 
     const isWaiting = notifyMsg.state === 'waiting';
-    const finalText = isWaiting ? '任务已完成，等待你的下一步指示。' : '任务已完成。';
+    const finalText = isWaiting ? '正在等待你的下一步指示。' : '本轮执行成功。';
 
     if (this.progressEvents.length > 0) {
       this._reportFinalProgress(finalText);

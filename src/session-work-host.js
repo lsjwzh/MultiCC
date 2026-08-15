@@ -182,8 +182,7 @@ function createSessionWorkHost(deps = {}) {
     const state = record.taskState;
     const classifyState = state?.classifyState;
     if (classifyState) {
-      const cardStatus = deps.classifyDisplay(classifyState).cardStatus;
-      return cardStatus === 'completed' ? 'done' : cardStatus;
+      return deps.classifyDisplay(classifyState).cardStatus;
     }
     if (state?.queueState === 'queued') return 'queued';
     if (state?.queueState === 'running') return 'running';
