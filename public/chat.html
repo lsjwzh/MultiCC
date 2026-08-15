@@ -1222,7 +1222,8 @@
      * nuance is page-local. Class names are canonical statuses, not a second
      * vocabulary. */
     #aux-classify-bar.st-running .ac-state { border-color: #1f6feb55; }
-    #aux-classify-bar.st-done    .ac-state { border-color: #23863655; background: #0f2417; }
+    #aux-classify-bar.st-done    .ac-state,
+    #aux-classify-bar.st-succeeded .ac-state { border-color: #23863655; background: #0f2417; }
     #aux-classify-bar.st-waiting .ac-state { border-color: #e3b34155; background: #241c08; }
     #aux-classify-bar.st-error   .ac-state { border-color: #da363355; background: #2a1213; }
     #aux-classify-bar .ac-mark-done {
@@ -1475,7 +1476,8 @@
       text-overflow: ellipsis;
     }
     #notify-toast.waiting { background: #d29922; }
-    #notify-toast.completed { background: #238636; }
+    #notify-toast.completed,
+    #notify-toast.succeeded { background: #238636; }
     #notify-toast.running { background: #1f6feb; }
     #notify-toast.error { background: #da3633; }
     #notify-toast .toast-close {
@@ -2367,7 +2369,7 @@
     <button class="hdr-btn" id="provider-btn" data-i18n-title="switchProvider" title="切换该会话使用的 Provider（下一轮对话生效）" style="display:none"></button>
     <button class="hdr-btn" id="role-btn" data-i18n-title="editRolePrompt" title="设置该会话的角色提示词（下一轮对话生效）" data-i18n="role">🎭 角色</button>
     <button class="hdr-btn" id="memory-btn" data-i18n-title="openMemoryLibrary" title="会话记忆库" data-i18n="memory">🧠 记忆</button>
-    <button class="hdr-btn" id="auto-commit-btn" data-i18n-title="autoCommitTitle" title="任务完成后自动提交代码并合并回基分支" data-i18n="autoCommit">🚀 自动提交</button>
+    <button class="hdr-btn" id="auto-commit-btn" data-i18n-title="autoCommitTitle" title="每轮执行成功后自动提交代码并合并回基分支" data-i18n="autoCommit">🚀 自动提交</button>
     <button class="hdr-btn" id="share-btn" data-i18n-title="shareSessionHint" title="把此会话分享到外部" data-i18n="share">🔗 分享</button>
     <button class="hdr-btn" id="restart-spawn-btn" data-i18n-title="restartSpawnHint" title="进程级重启：杀掉并重建该会话的 CLI 进程，保留对话上下文（↻ 重连无效时用）" data-i18n="restartSpawn">♻️ 重启进程</button>
     <span id="header-more-wrap">
@@ -2408,7 +2410,7 @@
     <span class="ac-state" id="ac-state"></span>
     <span class="ac-phase" id="ac-phase"></span>
     <button type="button" class="ac-cancel-task" id="ac-cancel-task" title="立即取消正在执行的任务">✕ 取消</button>
-    <button type="button" class="ac-mark-done" id="ac-mark-done" title="把当前等待中的任务手动标记为完成">✓ 完成</button>
+    <button type="button" class="ac-mark-done" id="ac-mark-done" data-i18n="markTurnSucceeded" data-i18n-title="markTurnSucceededTitle" title="把当前等待中的一轮手动标记为执行成功；不会完成任务板任务">✓ 执行成功</button>
   </div>
 
   <!-- Top answer card for a structured request_user_input signal. It stays

@@ -264,7 +264,7 @@ function createCodexUsageHost(deps = {}) {
       num_turns: cs.chatTurnCount,
     });
     deps.setSessionStatus(sessionName, {
-      status: cs._resultSaved ? 'completed' : 'idle',
+      status: cs._resultSaved ? 'succeeded' : 'idle',
       currentFile: null,
     });
     return normalized;

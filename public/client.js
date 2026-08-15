@@ -327,7 +327,7 @@ function currentNotifySessionId() {
 let _notifyEnabled = typeof getTaskNotifyEnabled === 'function'
   ? getTaskNotifyEnabled(currentNotifySessionId())
   : true;
-let _notifyLastCompleted = 0;
+let _notifyLastSucceeded = 0;
 let _notifyLastAction = 0;
 let _notifyConnectedAt = 0;
 let _notifyToastTimer = null;
@@ -435,9 +435,10 @@ function speakNotify(text, type) {
   // Page is in foreground — user can see the terminal, no need to notify
   if (document.visibilityState === 'visible') return;
 
-  if (type === 'completed') {
-    if (now - _notifyLastCompleted < NOTIFY_COOLDOWN) return;
-    _notifyLastCompleted = now;
+  const succeeded = type === 'succeeded' || type === 'completed';
+  if (succeeded) {
+    if (now - _notifyLastSucceeded < NOTIFY_COOLDOWN) return;
+    _notifyLastSucceeded = now;
   } else {
     if (now - _notifyLastAction < NOTIFY_COOLDOWN) return;
     _notifyLastAction = now;
@@ -448,11 +449,11 @@ function speakNotify(text, type) {
 
   if (typeof showLocalTaskNotification === 'function') {
     const sid = sessionId || _params.get('id') || 'terminal';
-    const isWaiting = type !== 'completed';
+    const isWaiting = !succeeded;
     showLocalTaskNotification({
       sessionId: sid,
-      type: isWaiting ? 'waiting' : 'completed',
-      title: isWaiting ? `MultiCC #${sid}: 等待操作` : `MultiCC #${sid}: 完成`,
+      type: isWaiting ? 'waiting' : 'succeeded',
+      title: isWaiting ? `MultiCC #${sid}: 等待操作` : `MultiCC #${sid}: 执行成功`,
       body: text,
       url: location.pathname + location.search,
     });
@@ -633,9 +634,9 @@ async function connect() {
           });
         }
       } else if (msg.type === 'notify') {
-        // Server-side aux-AI verdict (single judge): turn finished / waiting.
+        // Server-side aux-AI verdict (single judge): turn succeeded / waiting.
         const waiting = msg.state === 'waiting';
-        speakNotify(waiting ? '正在等待您的操作' : '任务已完成', waiting ? 'action' : 'completed');
+        speakNotify(waiting ? '正在等待您的操作' : '本轮执行成功', waiting ? 'action' : 'succeeded');
       } else if (msg.type === 'exit') {
         term.write(msg.data);
         _sessionExited = true;

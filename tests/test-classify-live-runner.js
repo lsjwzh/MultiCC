@@ -140,13 +140,13 @@ test('unknown liveness fails closed before classify admission', () => {
   assert.equal(h.record.taskState.classifyState, 'P');
 });
 
-test('a completed gateway turn deterministically reaches D without Aux classification', () => {
+test('a succeeded gateway turn deterministically reaches D without Aux classification', () => {
   const h = fixture({ cli: 'claude', type: 'gateway', isStreaming: false });
   h.chatState.claudeProc = null;
-  h.machine.classifyTurnEnd(h.chatState, 's1', { classification: 'completed' });
+  h.machine.classifyTurnEnd(h.chatState, 's1', { classification: 'succeeded' });
   assert.equal(h.observed.enqueued, 0, 'gateway completion must not depend on Aux health');
   assert.equal(h.observed.transitions, 1);
   assert.equal(h.observed.transitionResults[0].state, 'D');
-  assert.equal(h.observed.transitionResults[0].evidence, 'gateway_turn_completed');
+  assert.equal(h.observed.transitionResults[0].evidence, 'gateway_turn_succeeded');
   assert.equal(h.record.taskState.classifyState, 'D');
 });

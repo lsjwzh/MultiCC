@@ -930,9 +930,9 @@ class ChatProvider extends ChangeNotifier {
         break;
 
       case 'notify':
-        // The server's aux-AI reports turn status: running / waiting / completed.
+        // The server's aux-AI reports turn outcome: running / waiting / succeeded.
         final p = evt.payload as Map<String, dynamic>;
-        final notifyState = (p['state'] ?? 'completed').toString();
+        final notifyState = (p['state'] ?? 'succeeded').toString();
         final notifyMsg = (p['message'] ?? '').toString();
         if (notifyState == 'running') {
           // In-progress summary: update status text (visible in chat header)
@@ -951,7 +951,7 @@ class ChatProvider extends ChangeNotifier {
           String outcome;
           switch (cls) {
             case 'D':
-              outcome = t('taskCompleted');
+              outcome = t('classifySucceeded');
               break;
             case 'E':
               outcome = t('apiError');
@@ -968,7 +968,7 @@ class ChatProvider extends ChangeNotifier {
                   ? t('waitingInteraction')
                   : notifyState == 'error'
                   ? t('errorOccurred')
-                  : t('taskCompleted');
+                  : t('classifySucceeded');
           }
           _maybeNotify(outcome, notifyMsg);
         }

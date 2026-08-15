@@ -74,8 +74,8 @@ const pendingTimers = new Set(); // busy retries + delayed system injections
 const TICK_MS = 1000;
 const DEFAULTS = { intervalSec: 15, maxChecks: 40, timeoutSec: 1800 };
 const MIN_INTERVAL_SEC = 3;
-// autoContinue (D/C→continue) is UNCAPPED — only the classify verdict 'D' (done)
-// is terminal, so the loop keeps pushing until the task is genuinely complete
+// autoContinue (D/C→continue) is UNCAPPED — only classify D (turn succeeded)
+// is terminal, so the loop keeps pushing until the current execution settles
 // (scan is the backstop). resumeInterrupted (G) now has MAX_RESUME_INTERRUPTED:
 // a CLI that keeps dying mid-flight via a NON-API crash (chokepoint only covers
 // API-unhealthy, not a crashed CLI with a healthy upstream) would otherwise loop
@@ -280,8 +280,8 @@ function matches(w, out) {
 
 // ── Auto-continue fallback (D) ──
 // Called from the post-turn classifier when state === 'background' (B) or
-// 'continue' (C). UNCAPPED — only 'D' (done) is terminal, so we keep nudging the
-// session forward until classify judges it complete; the periodic scan is the
+// 'continue' (C). UNCAPPED — only D (turn succeeded) is terminal, so we keep
+// nudging the session forward until classify judges this execution settled; scan is the
 // backstop. Skipped only if an explicit wait (A/B) already covers the session.
 // The count is kept purely for observability (log "#N"), not as a give-up cap.
 function autoContinue(session, opts = {}) {
@@ -300,7 +300,7 @@ function autoContinue(session, opts = {}) {
 }
 
 // Reset the auto-continue counter — call on a real user message, or when the
-// turn ends "done" / "waiting on user".
+// turn ends "succeeded" / "waiting on user".
 function resetAuto(session) { autoState.delete(session); }
 
 // ── Unknown-interruption resume (G) ──
@@ -308,8 +308,8 @@ function resetAuto(session) { autoState.delete(session); }
 // stream has ALREADY ended — i.e. the turn died mid-flight (network drop,
 // crashed CLI, truncated event stream) rather than genuinely still running.
 // A dropped turn is a fault to recover, same class as apiRetry (F): it does NOT
-// respect the autoContinue toggle, and is UNCAPPED — only 'D' (done) is terminal,
-// so we keep nudging until the task actually completes; the periodic scan is the
+// respect the autoContinue toggle, and is UNCAPPED — only D (turn succeeded) is
+// terminal, so we keep nudging until this execution settles; the periodic scan is the
 // backstop. Count is kept purely for observability. Skipped if an explicit wait
 // already covers the session.
 function resumeInterrupted(session, opts = {}) {

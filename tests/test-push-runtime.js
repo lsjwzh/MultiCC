@@ -450,19 +450,19 @@ test('input invalidates late Aux classification and classifier prompts redact cr
 test('notify enforces cooldown and produces localized Web Push plus Bark/Webhook payloads', async () => {
   const harness = createHarness();
   harness.push.subscriptions.set('en', { endpoint: 'en', locale: 'en' });
-  const first = harness.runtime.notify('term', 'completed', '任务完成');
-  assert.equal(first.title, 'MultiCC #term: 完成');
+  const first = harness.runtime.notify('term', 'succeeded', '执行成功');
+  assert.equal(first.title, 'MultiCC #term: 执行成功');
   assert.equal(first.locale, 'zh');
-  assert.match(first.body, /任务完成\n\.\.\./);
+  assert.match(first.body, /执行成功\n\.\.\./);
   const payloadFactory = harness.state.pushCalls[0];
   assert.equal(typeof payloadFactory, 'function');
-  assert.equal(payloadFactory({ locale: 'en' }).title, 'MultiCC #term: Completed');
-  assert.equal(payloadFactory({ locale: 'zh' }).title, 'MultiCC #term: 完成');
+  assert.equal(payloadFactory({ locale: 'en' }).title, 'MultiCC #term: Execution succeeded');
+  assert.equal(payloadFactory({ locale: 'zh' }).title, 'MultiCC #term: 执行成功');
   assert.equal(harness.state.barkCalls.length, 1);
   assert.equal(harness.state.webhookCalls.length, 1);
   assert.deepEqual(harness.push.globalStats, {
     lastPushTime: 10_000,
-    lastPushType: 'completed',
+    lastPushType: 'succeeded',
     lastPushSessionId: 'term',
   });
 

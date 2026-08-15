@@ -158,24 +158,26 @@ async function main() {
   assert.strictEqual(controller.isEnabled(), true);
   assert.ok(notifyBtn.title.includes('点击开启系统通知'));
 
-  assert.strictEqual(controller.speak('任务完成', 'completed'), true);
+  assert.strictEqual(api.normalizeNotificationType('completed'), 'succeeded',
+    'legacy completed is a turn outcome, never task lifecycle done');
+  assert.strictEqual(controller.speak('执行成功', 'succeeded'), true);
   assert.strictEqual(localNotifications.length, 1);
   assert.strictEqual(localNotifications[0].sessionId, 'beta');
   assert.strictEqual(localNotifications[0].url, '/chat.html?session=safe-session&cwd=%2Ftmp%2Ffleet');
   assert.strictEqual(spoken.length, 1);
-  assert.strictEqual(spoken[0].text, '任务完成');
+  assert.strictEqual(spoken[0].text, '执行成功');
   assert.strictEqual(spoken[0].lang, 'zh-CN');
   assert.strictEqual(notifyToast.style.display, 'block');
-  assert.strictEqual(notifyToast.className, 'completed');
+  assert.strictEqual(notifyToast.className, 'succeeded');
   assert.ok([...scheduled.values()].some(timer => timer.delay === 15000));
 
-  assert.strictEqual(controller.speak('重复完成', 'completed'), false, 'same-kind notification observes cooldown');
+  assert.strictEqual(controller.speak('重复执行成功', 'succeeded'), false, 'same-kind notification observes cooldown');
   assert.strictEqual(localNotifications.length, 1);
   assert.strictEqual(controller.speak('接口异常', 'error'), true, 'error has an independent cooldown bucket');
   assert.strictEqual(localNotifications[1].type, 'error');
   assert.ok(localNotifications[1].title.includes('任务异常'));
   clock += api.NOTIFY_COOLDOWN + 1;
-  assert.strictEqual(controller.speak('再次完成', 'completed'), true);
+  assert.strictEqual(controller.speak('再次执行成功', 'succeeded'), true);
   assert.strictEqual(localNotifications.length, 3);
 
   document.visibilityState = 'visible';

@@ -248,7 +248,7 @@ test('manual reclassify keeps D/W guard and fire-and-forget completion semantics
   assert.equal(unavailable.statusCode, 503);
 });
 
-test('manual mark-task-done flips a waiting task to completed through dispatchStateAction', () => {
+test('manual mark-task-done compatibility route flips only the waiting turn outcome', () => {
   const fixture = createFixture();
   const handler = fixture.app.routes.get('POST /api/sessions/:id/mark-task-done');
 
@@ -258,21 +258,24 @@ test('manual mark-task-done flips a waiting task to completed through dispatchSt
   const aux = invoke(handler, { params: { id: '__aux__' } });
   assert.equal(aux.statusCode, 400);
 
-  // s1 starts as D -> already done, no dispatch side effect
+  // s1 starts as D -> already succeeded, no dispatch side effect
   const done = invoke(handler, { params: { id: 's1' } });
   assert.equal(done.statusCode, 200);
   assert.equal(done.body.alreadyDone, true);
+  assert.equal(done.body.alreadySucceeded, true);
+  assert.equal(done.body.turnOutcome, 'succeeded');
   assert.equal(fixture.dispatched.length, 0);
 
-  // waiting chat session -> completed dispatch, non-terminal
+  // waiting chat session -> succeeded turn dispatch, non-terminal session kind
   fixture.records.get('s1').taskState = { classifyState: 'W', goal: 'wait goal', phase: 'verifying' };
   const ok = invoke(handler, { params: { id: 's1' } });
   assert.equal(ok.statusCode, 200);
   assert.equal(ok.body.classifyState, 'D');
+  assert.equal(ok.body.turnOutcome, 'succeeded');
   assert.equal(fixture.dispatched.length, 1);
   // The LETTER, and a terminal one: dispatchStateAction routes on letters, and
   // anything non-terminal here would be re-judged by the 60s scan, quietly
-  // undoing the manual "done" the user just asked for.
+  // undoing the manual turn verdict the user just asked for.
   assert.equal(fixture.dispatched[0].result.state, 'D');
   assert.equal(isTerminalLetter(fixture.dispatched[0].result.state), true);
   assert.equal(fixture.dispatched[0].result.state, ok.body.classifyState);

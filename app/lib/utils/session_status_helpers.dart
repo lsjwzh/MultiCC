@@ -35,10 +35,10 @@ String wbStatusIcon(String? status) => wbStatusSpec(status).icon;
 /// classify 字母的专用文案（比通用状态名更具体：「等待用户」而非「等待中」）。
 /// 图标与色彩仍取自 registry，保证与其它展示面同源。返回 null 表示尚无判定，
 /// 徽章直接隐藏。
-///   D=done · W=wait-user · B=wait-bg · E=api-error · P=processing
+///   D=succeeded · W=wait-user · B=wait-bg · E=api-error · P=processing
 /// Legacy C 保留仅为渲染历史记录；它不得暗示客户端自行续跑。
 const Map<String, String> _classifyLabelKey = {
-  'D': 'classifyDone',
+  'D': 'classifySucceeded',
   'C': 'classifyContinuing',
   'W': 'classifyWaitingUser',
   'B': 'classifyWaitingBackground',

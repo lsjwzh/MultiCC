@@ -325,10 +325,10 @@ async function showLocalTaskNotification(payload) {
   if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return false;
 
   const sessionId = payload.sessionId || 'general';
-  const type = payload.type || 'completed';
+  const type = payload.type || 'succeeded';
   const title = payload.title || (typeof t === 'function'
-    ? t(type === 'waiting' ? 'notificationWaitingTitle' : 'notificationCompletedTitle', { session: sessionId })
-    : `MultiCC #${sessionId}: ${type === 'waiting' ? 'Action Required' : 'Completed'}`);
+    ? t(type === 'waiting' ? 'notificationWaitingTitle' : 'notificationSucceededTitle', { session: sessionId })
+    : `MultiCC #${sessionId}: ${type === 'waiting' ? 'Action Required' : 'Execution succeeded'}`);
   const options = {
     body: payload.body || payload.message || '',
     icon: '/icon.svg',

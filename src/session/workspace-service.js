@@ -4,7 +4,7 @@ const { assertDtoSafe, sanitizePublicText } = require('../session-dto');
 const { assertDirectoryRecordsPort, assertWorkspaceFactsPort } = require('./ports');
 
 const WORKSPACE_STATUSES = new Set([
-  'idle', 'thinking', 'editing', 'running', 'waiting', 'completed', 'error',
+  'idle', 'thinking', 'editing', 'running', 'waiting', 'succeeded', 'completed', 'error',
 ]);
 
 function boundedString(value, max, fallback = null) {

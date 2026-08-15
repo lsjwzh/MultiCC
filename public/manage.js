@@ -497,9 +497,9 @@ const _workspaceSummaries = new Map(); // sessionId → { summary, ts } — 最�
 
 // Per-letter tooltip copy for the classify badge. The glyph, colour and label all
 // come from the shared registry (window.MultiCCStatusPresentation) — only the
-// "why" sentence is classify-specific, so this table holds nothing but titles.
+// "why" sentence is classify-specific, so this table holds only titles.
 const _CLASSIFY_TITLE = {
-  D: 'classifyDone',
+  D: 'classifySucceeded',
   C: 'classifyContinuing',
   W: 'classifyWaitingUser',
   B: 'classifyWaitingBackground',

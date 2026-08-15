@@ -438,7 +438,7 @@
             if (display.voice) host.speakNotify?.(display.voice, display.ding);
             else {
               const waiting = message.state === 'waiting';
-              host.speakNotify?.(waiting ? '等待操作' : '任务已完成', waiting ? 'waiting' : 'completed');
+              host.speakNotify?.(waiting ? '等待操作' : '本轮执行成功', waiting ? 'waiting' : 'succeeded');
             }
           }
           break;

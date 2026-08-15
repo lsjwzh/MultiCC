@@ -243,7 +243,7 @@ function statusEffects(plan, durableAfterAppend) {
     if (durableAfterAppend) {
       const effects = [
         effect('complete-session-turn'),
-        effect('classify-turn-end', { classification: 'completed' }),
+        effect('classify-turn-end', { classification: 'succeeded' }),
       ];
       if (facts.auxUnhealthy) effects.push(effect('set-status', { status: 'idle', reason: 'aux-unhealthy' }));
       return effects;
@@ -272,8 +272,8 @@ function statusEffects(plan, durableAfterAppend) {
     return [
       effect('reset-interrupted-resume'),
       effect('complete-session-turn'),
-      effect('classify-turn-end', { classification: 'completed' }),
-      effect('emit-turn-outcome', { status: 'completed', notifyState: 'completed' }),
+      effect('classify-turn-end', { classification: 'succeeded' }),
+      effect('emit-turn-outcome', { status: 'succeeded', notifyState: 'succeeded' }),
     ];
   }
   if (facts.resultEvent) {

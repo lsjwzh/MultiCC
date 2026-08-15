@@ -531,9 +531,7 @@ function renderTaskBoardDetail(d) {
             : ''}
           ${t.status !== 'active'
             ? `<button class="btn btn-sm" onclick="setTaskBoardStatus('${_tbEsc(t.id)}','active',event)">♻️ 重开</button>`
-            : display.key === 'done'
-              ? ''   // classify already shows「已完成」— a second 完成 button would be a contradiction
-              : `<button class="btn btn-sm" onclick="setTaskBoardStatus('${_tbEsc(t.id)}','done',event)">✅ 完成</button>`}
+            : `<button class="btn btn-sm" onclick="setTaskBoardStatus('${_tbEsc(t.id)}','done',event)">✅ 完成</button>`}
           <button class="btn btn-sm" onclick="archiveTaskBoardTask(event,'${_tbEsc(t.id)}',this)">🗄 归档</button>
         </span>
       </div>

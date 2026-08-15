@@ -207,18 +207,19 @@ function createClassifyStateMachine(rawDeps) {
       },
     );
     if (state === 'D') {
-      // D — task genuinely finished. This is the ONLY terminal state.
-      const msg = finalGoal ? `任务完成：${finalGoal}` : '任务完成';
+      // D — this turn executed successfully. TaskBoard completion is a separate
+      // user-owned lifecycle action and is never inferred here.
+      const msg = finalGoal ? `执行成功：${finalGoal}` : '执行成功';
       if (isTerminal) {
-        triggerPush(sessionId, 'completed', msg);
-        terminalBroadcast(sessionId, { type: 'notify', state: 'completed', classifyState: 'D', message: msg });
+        triggerPush(sessionId, 'succeeded', msg);
+        terminalBroadcast(sessionId, { type: 'notify', state: 'succeeded', classifyState: 'D', message: msg });
       } else {
-        triggerPush(sessionId, 'completed', `[Chat] ${msg}`);
-        chatBroadcast(sessionName, { type: 'notify', state: 'completed', classifyState: 'D', message: msg });
+        triggerPush(sessionId, 'succeeded', `[Chat] ${msg}`);
+        chatBroadcast(sessionName, { type: 'notify', state: 'succeeded', classifyState: 'D', message: msg });
       }
       const dirId = persistedSessions.get(sessionName)?.dirId;
-      if (dirId) workspaceBroadcast(dirId, { type: 'notify', sessionId, state: 'completed', classifyState: 'D', message: msg });
-      setSessionStatus(sessionName, { status: 'completed' });
+      if (dirId) workspaceBroadcast(dirId, { type: 'notify', sessionId, state: 'succeeded', classifyState: 'D', message: msg });
+      setSessionStatus(sessionName, { status: 'succeeded' });
       // D triggers no later state write, so persist it immediately. Otherwise a
       // crash before the next durable operation restores a stale P/W/E snapshot.
       setTaskState(sessionName, { classifyState: 'D', endedAt: Date.now() });
@@ -927,8 +928,8 @@ function createClassifyStateMachine(rawDeps) {
   }
 
   // Terminal outcome of a chat turn. Fired immediately at turn end so the card
-  // moves from the in-progress "处理中：xxx" to the completed label:
-  //   • status badge → completed / error  (status event)
+  // moves from the in-progress "处理中：xxx" to the turn-outcome label:
+  //   • status badge → succeeded / error  (status event)
   //   • summary line → the outcome label   (summary event) — replaces 处理中：xxx
   // Both are display-only (no user-facing alert). The lock-screen push / voice /
   // app notification (the `notify` event) only fires when `alert` is set — true
@@ -939,11 +940,11 @@ function createClassifyStateMachine(rawDeps) {
     if (!persisted) return;
     const sessionId = persisted.id || sessionName;
     if (getUserInputSignalHost().pending(sessionName)) { setTaskState(sessionName, { lastTurnEndedAt: Date.now(), endedAt: Date.now() }); return; }
-    // Enrich bare "任务完成" with the stable task name so the
-    // dashboard / chat shows "任务完成：memo图片更换" instead of a dry "任务完成".
+    // Enrich bare "执行成功" with the stable task name so the dashboard / chat
+    // shows "执行成功：memo图片更换" instead of a dry "执行成功".
     // Prefer the current turn's stored task name; fall back to the last
     // session summary (from a prior intent_classify).
-    if (message === '任务完成') {
+    if (message === '执行成功') {
       const cs = chatSessions.get(sessionName);
       // Prefer the closed-loop task goal (noun-phrase, model-generated); fall
       // back to the legacy currentTaskName, then to the last session summary.
@@ -952,13 +953,13 @@ function createClassifyStateMachine(rawDeps) {
       // next turn (rather than continuing a finished one).
       if (cs?.currentTask) cs.currentTask.phase = 'done';
       if (goal) {
-        message = `任务完成：${goal}`;
+        message = `执行成功：${goal}`;
       } else {
         const sm = getSessionSummaries().get(sessionId);
         const raw = sm?.summary || '';
         // Strip any status label prefix plus optional " · subAction" / " — subAction" suffix
-        const clean = raw.replace(/^(正在处理：|处理中：|任务完成：)/, '').replace(/\s*[·—]\s*.+$/, '').trim();
-        if (clean) message = `任务完成：${clean}`;
+        const clean = raw.replace(/^(正在处理：|处理中：|执行成功：|任务完成：)/, '').replace(/\s*[·—]\s*.+$/, '').trim();
+        if (clean) message = `执行成功：${clean}`;
       }
     }
 
