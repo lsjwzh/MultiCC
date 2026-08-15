@@ -558,7 +558,7 @@ const chatLiveUi = window.MultiCCChatLiveUi.createLiveUi({
   isRestarting: () => _isRestarting,
   getBaseTitle: () => _baseTitle,
   debug: dbg,
-  onMarkTaskDone: markTaskDone,
+  onMarkTurnSucceeded: markTurnSucceeded,
   onCancelTask: cancelTaskFromBar,
 });
 let chatEventController = null;
@@ -761,21 +761,22 @@ function renderAuxClassify(goal, phase, classifyState) {
   return chatLiveUi.renderAuxClassify(goal, phase, classifyState);
 }
 
-// Manual "mark task done" from the classify bar. The bar only shows the button
-// while aux thinks the session is waiting-for-user; the server flips it to D and
-// the resulting WS task_state hides the button again.
-async function markTaskDone() {
-  if (!_sessionName) { addSystemMsg('无 session id，无法标记完成'); return; }
+// Manual turn verdict from the classify bar. This changes only the turn outcome
+// to D/succeeded; it never marks the TaskBoard lifecycle complete.
+async function markTurnSucceeded() {
+  if (!_sessionName) { addSystemMsg('无 session id，无法标记执行成功'); return; }
   try {
     const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/mark-task-done`), { method: 'POST' });
     const data = await res.json().catch(() => ({}));
     if (res.ok) {
-      addSystemMsg(data.alreadyDone ? '✓ 任务已是完成状态' : '✓ 已手动标记当前任务为完成');
+      addSystemMsg(data.alreadySucceeded || data.alreadyDone
+        ? '✓ 本轮已是执行成功状态'
+        : '✓ 已手动标记本轮执行成功');
     } else {
-      addSystemMsg(`⚠️ 标记完成失败：${data.note || data.error || res.status}`);
+      addSystemMsg(`⚠️ 标记执行成功失败：${data.note || data.error || res.status}`);
     }
   } catch (e) {
-    addSystemMsg(`⚠️ 标记完成异常：${e && e.message ? e.message : e}`);
+    addSystemMsg(`⚠️ 标记执行成功异常：${e && e.message ? e.message : e}`);
   } finally {
     const b = document.getElementById('ac-mark-done');
     if (b) b.disabled = false;
@@ -1356,7 +1357,7 @@ async function requestMerge() {
 mergeBtn?.addEventListener('click', requestMerge);
 mergeHintBtn?.addEventListener('click', requestMerge);
 
-/* ── Auto-commit after task completion ── */
+/* ── Auto-commit after a successful turn ── */
 // Called after an assistant turn completes. If the per-message auto-commit
 // checkbox is checked and the worktree has mergeable changes, silently
 // trigger commit + merge.
@@ -2114,7 +2115,7 @@ memoryBtn?.addEventListener('click', () => { openMemoryEditor(); });
 // Live update when the aux AI distills new memory for this session.
 function applyMemoryEvent(memory) { _sessionMemory = memoryToText(memory); updateMemoryBtn(); }
 
-/* ── Per-session auto-commit (auto commit & merge after task completion) ── */
+/* ── Per-session auto-commit (auto commit & merge after a successful turn) ── */
 const autoCommitBtn = document.getElementById('auto-commit-btn');
 let _sessionAutoCommit = false;
 
@@ -2138,7 +2139,7 @@ autoCommitBtn?.addEventListener('click', async () => {
     if (!res.ok) { addSystemMsg('保存失败：' + (data.error || `HTTP ${res.status}`)); return; }
     _sessionAutoCommit = !!data.autoCommit;
     updateAutoCommitBtn();
-    addSystemMsg(_sessionAutoCommit ? '✓ 已开启「任务完成后自动提交合并」，每轮完成后将自动 commit 并合并回基分支' : '✓ 已关闭「任务完成后自动提交合并」');
+    addSystemMsg(_sessionAutoCommit ? '✓ 已开启「本轮执行成功后自动提交合并」，每轮执行成功后将自动 commit 并合并回基分支' : '✓ 已关闭「本轮执行成功后自动提交合并」');
   } catch (e) {
     addSystemMsg('保存失败：' + e.message);
   }

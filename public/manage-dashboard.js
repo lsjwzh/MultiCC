@@ -156,7 +156,7 @@ async function startMonitor(sessionId) {
   ws.onmessage = ({ data }) => {
     try {
       const msg = JSON.parse(data);
-      // Completion/waiting is no longer judged from raw output here. The server
+      // Turn success/waiting is no longer judged from raw output here. The server
       // runs the aux-AI on idle and pushes a `notify` verdict (single judge,
       // consistent with chat). We just render it.
       if (msg.type === 'notify') {
@@ -168,11 +168,11 @@ async function startMonitor(sessionId) {
           return;
         }
         const st = msg.state === 'waiting' ? 'waiting'
-          : msg.state === 'error' ? 'error' : 'completed';
+          : msg.state === 'error' ? 'error' : 'succeeded';
         alertSession(
           sessionId,
           st,
-          msg.message || (st === 'waiting' ? '等待交互' : st === 'error' ? '出现异常' : '任务完成'),
+          msg.message || (st === 'waiting' ? '等待交互' : st === 'error' ? '出现异常' : '执行成功'),
         );
         return;
       }
@@ -224,7 +224,7 @@ function openBellForExistingSessionsOnce(sessions) {
 }
 
 /* ── Session status (persistent badge on card) ── */
-// Tracks each session's display status: 'waiting' | 'completed' | null
+// Tracks each session's display status: 'waiting' | 'succeeded' | 'error' | null
 const _sessionStatus = new Map();
 
 // Fold every live signal we hold for a session into one canonical status, using
@@ -399,7 +399,9 @@ function alertSession(sessionId, type, message) {
     showLocalTaskNotification({
       sessionId,
       type,
-      title: type === 'waiting' ? `MultiCC #${sessionId}: 等待操作` : `MultiCC #${sessionId}: 完成`,
+      title: type === 'waiting' ? `MultiCC #${sessionId}: 等待操作`
+        : type === 'error' ? `MultiCC #${sessionId}: 出现异常`
+          : `MultiCC #${sessionId}: 执行成功`,
       body: message,
       url: location.pathname + location.search,
     });
@@ -1487,7 +1489,7 @@ function fifoQueueHint(sessionId, queue) {
     return `${depth} 条任务已派发并在 FIFO 中等待；目标会话当前暂停，需先恢复`;
   }
   if (classifyState === 'P' || ['starting', 'running', 'assessing'].includes(queue?.state)) {
-    return `${depth} 条任务已派发；将在目标会话当前任务完成后按 FIFO 执行`;
+    return `${depth} 条任务已派发；将在目标会话当前轮次结束并释放执行槽后按 FIFO 执行`;
   }
   return `${depth} 条任务已派发，正在目标会话的 FIFO 中等待执行`;
 }

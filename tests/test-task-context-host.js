@@ -36,7 +36,7 @@ function fixture() {
     emitClients: (clients, event) => events.push({ clients, event }),
     getTaskBoard: () => board,
     containsDelivery: (sessionId, id) => deliveries.has(`${sessionId}:${id}`),
-    classifyDisplay: state => ({ cardStatus: state === 'D' ? 'completed' : 'running' }),
+    classifyDisplay: state => ({ cardStatus: state === 'D' ? 'succeeded' : 'running' }),
     randomUUID: () => 'uuid',
     getRecord: sessionId => records.get(sessionId),
     runTurn: (sessionId, text, options) => {

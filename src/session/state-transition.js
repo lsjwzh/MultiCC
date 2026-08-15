@@ -2,7 +2,7 @@
 
 const RUNNING_STATUSES = new Set(['thinking', 'editing', 'running']);
 const SESSION_STATUSES = new Set([
-  ...RUNNING_STATUSES, 'idle', 'waiting', 'completed', 'error',
+  ...RUNNING_STATUSES, 'idle', 'waiting', 'succeeded', 'completed', 'error',
 ]);
 
 function initialSessionState() {

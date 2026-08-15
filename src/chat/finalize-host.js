@@ -133,7 +133,7 @@ function createTurnFinalizationExecutor(rawPorts) {
         ports.emitTurnOutcome(sessionName, {
           status: entry.status,
           notifyState: entry.notifyState,
-          message: '任务完成',
+          message: '执行成功',
           alert: false,
         });
         break;

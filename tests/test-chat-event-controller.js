@@ -857,7 +857,7 @@ test('live UI progress refreshes one stable row until the terminal update', () =
   assert.equal(body.children[0].className, 'dm-row dm-done');
 });
 
-test('classify bar reveals mark-done for W and cancel-task for P', () => {
+test('classify bar reveals turn-success for W and cancel-task for P', () => {
   const { document, ids } = fakeDocument();
   const bar = new FakeElement('div'); ids.set('aux-classify-bar', bar);
   ids.set('ac-goal', new FakeElement('span'));
@@ -870,7 +870,7 @@ test('classify bar reveals mark-done for W and cancel-task for P', () => {
   const liveUi = liveUiApi.createLiveUi({
     document,
     messagesEl: new FakeElement('div'),
-    onMarkTaskDone: () => marks.push(1),
+    onMarkTurnSucceeded: () => marks.push(1),
     onCancelTask: () => cancels.push(1),
   });
 

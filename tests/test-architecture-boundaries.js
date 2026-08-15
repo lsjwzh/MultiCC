@@ -144,7 +144,8 @@ test('liveness never becomes a display state and never completes work', () => {
   // The liveness verdict (working|idle|stalled|unknown) has its own pill and must
   // never leak into the run-state vocabulary the cards and bars render from.
   assert.doesNotMatch(workHost, /'(?:working|stalled)'/);
-  // Only classify may mark work done: 'done' comes from a D verdict, never from
-  // a process exiting or a stream ending.
-  assert.match(runState, /cardStatus === 'completed' \? 'done' : cardStatus/);
+  // Classify publishes only a turn projection. A D verdict returns succeeded
+  // directly and cannot manufacture TaskBoard lifecycle done.
+  assert.match(runState, /return deps\.classifyDisplay\(classifyState\)\.cardStatus/);
+  assert.doesNotMatch(runState, /\bdone\b|completed/);
 });

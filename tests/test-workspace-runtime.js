@@ -85,7 +85,7 @@ test('startup hydration preserves summary and classify-state mapping', () => {
   const { runtime } = createHarness();
   assert.deepEqual(runtime.summaries.get('done'), { summary: 'finished', ts: 10 });
   assert.equal(runtime.summaries.get('aux').summary, 'aux summary');
-  assert.equal(runtime.status.get('done').status, 'completed');
+  assert.equal(runtime.status.get('done').status, 'succeeded');
   assert.equal(runtime.status.get('working').status, 'running');
   assert.equal(runtime.status.has('plain'), false);
   assert.equal(runtime.status.has('aux'), false);

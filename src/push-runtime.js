@@ -18,13 +18,13 @@ const CLASSIFY_PROMPT = `你是一个意图分析器。下面是一个命令行 
 第1行：当前任务目标，用一个简短的名词性短语（中文≤20字，英文≤10词）。如果没有任务则输出「—」。
 第2行：当前阶段，必须是以下五个词之一：规划中 / 实现中 / 验证中 / 收尾中 / 已完成
 第3行：仅一个字母，表示当前状态——
-  D = 任务已完成（终端回到空闲提示符、汇报结果后正常收尾，不需要用户操作、也不需要再继续）
+  D = 本轮执行成功（终端回到空闲提示符、汇报结果后正常收尾；只描述本轮结果，不代表任务板任务已完成）
   C = AI 应继续（任务还没做完，但可以直接接着跑，不需要用户操作；没有反问/等待迹象）
   W = 正在等待用户回复、确认或选择（如 y/n、Allow/Deny、编号选项、问题待答）
   B = 正在等待后台任务/子进程/外部数据返回后才能继续（如 Monitor 监控进度、nohup 后台跑、等部署/API）
   E = API 异常中断（输出末尾出现 ${apiErrorSignaturesQuoted()} 等错误信息，说明 AI 并非正常完成而是被故障截断）
 
-判断时看整体走向：终端回到提示符、汇报结果后没有反问 → D（完成）；任务没做完但能接着跑 → C；有明确反问/让用户选 → W。
+判断时看整体走向：终端回到提示符、汇报结果后没有反问 → D（执行成功）；任务没做完但能接着跑 → C；有明确反问/让用户选 → W。
 
 只输出这三行。不要加序号、解释、引号、空行。
 
@@ -249,10 +249,10 @@ function createPushRuntime(options) {
       title: locale === 'en'
         ? type === 'waiting' ? `MultiCC #${sessionId}: Action Required`
           : type === 'error' ? `MultiCC #${sessionId}: Error`
-            : `MultiCC #${sessionId}: Completed`
+            : `MultiCC #${sessionId}: Execution succeeded`
         : type === 'waiting' ? `MultiCC #${sessionId}: 等待操作`
           : type === 'error' ? `MultiCC #${sessionId}: 出现异常`
-            : `MultiCC #${sessionId}: 完成`,
+            : `MultiCC #${sessionId}: 执行成功`,
       body: `${message}\n${shortCwd}`,
       sessionId,
       type,

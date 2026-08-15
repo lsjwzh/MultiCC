@@ -35,7 +35,7 @@ class TaskModuleAssignment {
 }
 
 /// One task on the board. `runState` aggregates the live run state of every
-/// session that has a ref on this task (running | waiting | error | done | idle).
+/// session that has a ref on this task (running | waiting | error | succeeded | idle).
 /// `status` is the user-facing lifecycle (active | done | archived).
 class TaskBoardTask {
   final String id;

@@ -151,7 +151,10 @@ test('task board display state follows classify runState for icon and status tex
   // table. `label` is an i18n key here because no translator is installed in the
   // node lane; tests/test-status-presentation.js proves the keys exist in zh+en.
   const cases = [
-    [{ status: 'active', runState: 'done' }, ['done', '✅', 'statusDone', 'success', true, false]],
+    [{ status: 'active', runState: 'succeeded' }, ['succeeded', '✅', 'statusSucceeded', 'success', false, false]],
+    // Rolling-upgrade compatibility: old runtime done means turn succeeded,
+    // never a user lifecycle completion.
+    [{ status: 'active', runState: 'done' }, ['succeeded', '✅', 'statusSucceeded', 'success', false, false]],
     [{ status: 'active', runState: 'running' }, ['running', '🔄', 'statusRunning', 'running', false, true]],
     [{ status: 'active', runState: 'queued' }, ['queued', '📥', 'statusQueued', 'info', false, false]],
     [{ status: 'active', runState: 'waiting' }, ['waiting', '⏸️', 'statusWaiting', 'waiting', false, false]],
@@ -196,7 +199,7 @@ test('task board display state follows classify runState for icon and status tex
   // the old `includes('error')` substring heuristic.
   assert.match(runStateAdapter, /runStateForFreezeReason\(state\.queueFreezeReason\)/);
   assert.doesNotMatch(runStateAdapter, /queueFreezeReason \|\| ''\)\.includes\('error'\)/);
-  assert.match(runStateAdapter, /cardStatus === 'completed' \? 'done' : cardStatus/);
+  assert.doesNotMatch(runStateAdapter, /cardStatus === 'completed' \? 'done' : cardStatus/);
   assert.doesNotMatch(runStateAdapter, /classifyState === 'D' \|\| classifyState === 'C'/);
   // A task card must follow the session's persisted classify verdict, never a
   // momentary session-busy flag. The `if (sessionBusy(sid)) return 'running'`
@@ -457,6 +460,7 @@ test('normalizeBoard drops malformed entries and survives garbage', () => {
     tasks: {
       t1: {
         title: 'T', moduleId: 'm1', refs: [{ sessionId: 's1', ts: 5 }, { bad: true }],
+        runState: 'done',
         classification: { state: 'waiting_reply', lastError: '/tmp/private token=secret' },
       },
       bad: { refs: [] },
@@ -466,6 +470,8 @@ test('normalizeBoard drops malformed entries and survives garbage', () => {
   assert.deepEqual(Object.keys(board.tasks), ['t1']);
   assert.equal(board.tasks.t1.refs.length, 1);
   assert.equal(board.tasks.t1.status, 'active');
+  assert.equal(board.tasks.t1.runState, 'succeeded',
+    'legacy turn done migrates without completing the active task lifecycle');
   assert.equal(board.tasks.t1.classification, undefined);
   assert.equal(board.tasks.t1.moduleAssignment.running, false);
   assert.equal(board.tasks.t1.moduleAssignment.lastError, 'classification_failed');
@@ -611,9 +617,10 @@ test('Commander one-way card status follows the executing worker classify only',
   assert.equal(dto.runState, 'running');
   assert.equal(dto.moduleAssignment.running, false);
 
-  states.set('worker-1', 'done');
+  states.set('worker-1', 'succeeded');
   dto = core.buildBoardDto(board, sid => states.get(sid) || null).tasks[0];
-  assert.equal(dto.runState, 'done');
+  assert.equal(dto.runState, 'succeeded');
+  assert.equal(dto.status, 'active', 'turn success cannot complete task lifecycle');
 });
 
 // ── runtime (integration with fake deps) ────────────────────────────────────
@@ -1000,7 +1007,7 @@ test('REST: board, messages, send and status flow', async () => {
   assert.equal(badRes.code, 400);
 });
 
-test('bulk cleanup archives only completed tasks in scope and is idempotent', () => {
+test('bulk cleanup archives only user-completed tasks in scope and is idempotent', () => {
   const { runtime, broadcasts } = mkRuntime({
     getSessionRunState: sid => sid === 'session-done-by-session' ? 'done' : 'idle',
   });
@@ -1034,13 +1041,10 @@ test('bulk cleanup archives only completed tasks in scope and is idempotent', ()
   const first = response();
   routes.get('POST /api/task-board/archive-completed')(
     { body: { dirId: 'dir-1' } }, first);
-  assert.equal(first.body.archivedCount, 3);
-  assert.deepEqual(
-    new Set(first.body.taskIds),
-    new Set([byClassify.id, bySession.id, byStatus.id]),
-  );
-  assert.equal(byClassify.status, 'archived');
-  assert.equal(bySession.status, 'archived');
+  assert.equal(first.body.archivedCount, 1);
+  assert.deepEqual(first.body.taskIds, [byStatus.id]);
+  assert.equal(byClassify.status, 'active');
+  assert.equal(bySession.status, 'active');
   assert.equal(byStatus.status, 'archived');
   assert.equal(waiting.status, 'active');
   assert.equal(otherDir.status, 'active');

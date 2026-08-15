@@ -12,7 +12,7 @@
   // THIS FILE IS NOT A SOURCE OF TRUTH FOR STATE. The server owns state:
   //   · session run state  — src/session-work-host.js getRunState(), whose
   //     vocabulary is src/task-board.js TASK_RUN_STATES
-  //     {queued,running,waiting,error,done,idle}
+  //     {queued,running,waiting,error,succeeded,idle}
   //   · freeze reasons     — src/session-work-scheduler.js FREEZE_REASON_RUN_STATE
   //   · classify letters   — src/classify/vocab.js CLASSIFY_DISPLAY (D/W/B/E/P)
   //   · task lifecycle     — src/task-board.js task.status {active,done,archived}
@@ -22,9 +22,9 @@
   // verdict {working,idle,stalled,unknown} has its own pill and is deliberately
   // NOT a business status.
   //
-  // The two domains are kept separate on purpose. A session's lifecycle and a
-  // board task's lifecycle answer different questions ("is this agent free?" vs
-  // "is this piece of work finished?") and must not be fused into one enum.
+  // The two domains are kept separate on purpose. A turn outcome and a board
+  // task lifecycle answer different questions ("did this execution succeed?"
+  // vs "did the user mark this work complete?") and must not be fused.
 
   // ── Domain vocabularies ─────────────────────────────────────────────────────
 
@@ -32,14 +32,14 @@
   //   blocked — frozen on something the user must go fix elsewhere (not a reply)
   //   offline — no run state at all (record absent / session not active)
   const SESSION_STATUSES = Object.freeze([
-    'idle', 'queued', 'running', 'waiting', 'blocked', 'error', 'done', 'cancelled',
+    'idle', 'queued', 'running', 'waiting', 'blocked', 'error', 'succeeded', 'cancelled',
     'offline', 'unknown',
   ]);
 
   // Task lifecycle. task.status {active,done,archived} refined by the aggregated
   // task.runState the server computes in src/task-board.js.
   const TASK_STATUSES = Object.freeze([
-    'idle', 'queued', 'running', 'waiting', 'blocked', 'error', 'done', 'cancelled',
+    'idle', 'queued', 'running', 'waiting', 'blocked', 'error', 'succeeded', 'done', 'cancelled',
     'archived', 'unknown',
   ]);
 
@@ -82,6 +82,10 @@
       icon: '❌', tone: 'danger', spinner: false, terminal: false, priority: 90,
       labelKey: 'statusError', ariaKey: 'statusAriaError',
     }),
+    succeeded: Object.freeze({
+      icon: '✅', tone: 'success', spinner: false, terminal: true, priority: 30,
+      labelKey: 'statusSucceeded', ariaKey: 'statusAriaSucceeded',
+    }),
     done: Object.freeze({
       icon: '✅', tone: 'success', spinner: false, terminal: true, priority: 30,
       labelKey: 'statusDone', ariaKey: 'statusAriaDone',
@@ -116,14 +120,15 @@
   // logic is a bug: it drifts, and drift is how `error` ended up rendering as a
   // notepad glyph on the session card.
   //
-  //   · classify cardStatus     — completed
+  //   · legacy turn outcome     — completed / done / success
   //   · workspace agent status  — thinking / editing / completed
   //   · scheduler queueState    — starting / assessing / frozen
   //   · task lifecycle          — active
   //   · aux job status          — processing / cancelled
   const STATUS_ALIASES = Object.freeze({
-    // → done
-    completed: 'done', complete: 'done', success: 'done', succeeded: 'done', finished: 'done',
+    // → succeeded (turn outcome; never TaskBoard lifecycle done)
+    completed: 'succeeded', complete: 'succeeded', done: 'succeeded',
+    success: 'succeeded', succeeded: 'succeeded', finished: 'succeeded',
     // → running
     thinking: 'running', editing: 'running', working: 'running', processing: 'running',
     starting: 'running', assessing: 'running', busy: 'running', active: 'running',
@@ -177,7 +182,7 @@
   // persisted old payload still renders instead of falling to unknown.
   // tests/test-status-presentation.js pins this against the server table.
   const CLASSIFY_LETTER_STATUS = Object.freeze({
-    D: 'done', C: 'running', W: 'waiting', B: 'waiting', E: 'error', P: 'running',
+    D: 'succeeded', C: 'running', W: 'waiting', B: 'waiting', E: 'error', P: 'running',
   });
 
   /** classify letter (D/C/W/B/E/P) → canonical session status. */
@@ -244,7 +249,7 @@
     const base = coerceStatus('session', raw);
     // The single freeze-reason refinement. Applied only on top of `waiting`, so a
     // stale reason left over from an earlier freeze can never override a live
-    // running/done verdict.
+    // running/succeeded verdict.
     if (base === 'waiting' && FREEZE_REASON_STATUS[normalizeKey(input.freezeReason)] === 'blocked') {
       return 'blocked';
     }
@@ -298,9 +303,9 @@
   /**
    * Task lifecycle status.
    * @param {{status?: string, runState?: string}} task
-   * Precedence: an explicit archived/done lifecycle decision (made by a human or
-   * by the archive sweep) outranks the derived run state — but everything below
-   * it is led by `error`, so a fault is never buried under "still running".
+   * Precedence: an explicit archived/done lifecycle decision made by a human
+   * outranks the derived turn run state. A succeeded turn remains succeeded and
+   * never becomes lifecycle done here.
    */
   function taskStatus(task = {}) {
     const lifecycle = normalizeKey(task.status);
@@ -308,6 +313,7 @@
     if (lifecycle === 'done') return 'done';
     const raw = task.runState;
     if (normalizeKey(raw) === '') return lifecycle === 'active' ? 'idle' : 'unknown';
+    if (['done', 'completed'].includes(normalizeKey(raw))) return 'succeeded';
     return coerceStatus('task', raw);
   }
 

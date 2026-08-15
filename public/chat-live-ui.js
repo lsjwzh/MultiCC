@@ -98,15 +98,15 @@
     // danmaku row, notify the host with its task id so it can (best-effort)
     // request a real cancel. Absent → the ✕ button just clears the row locally.
     const onDanmakuDismiss = opts.onDanmakuDismiss || null;
-    // Optional host hook: manual "mark task done" from the classify bar. The bar
-    // only reveals the button while the aux state is waiting-for-user (W).
-    const onMarkTaskDone = opts.onMarkTaskDone || null;
+    // Optional host hook: manually declare this waiting turn succeeded. This is
+    // a turn outcome, not a TaskBoard lifecycle mutation.
+    const onMarkTurnSucceeded = opts.onMarkTurnSucceeded || null;
     const onCancelTask = opts.onCancelTask || null;
     const _markDoneBtn = doc.getElementById('ac-mark-done');
     if (_markDoneBtn) {
       _markDoneBtn.addEventListener('click', () => {
         _markDoneBtn.disabled = true;
-        try { if (onMarkTaskDone) onMarkTaskDone(); } catch (_) {}
+        try { if (onMarkTurnSucceeded) onMarkTurnSucceeded(); } catch (_) {}
       });
     }
     const _cancelTaskBtn = doc.getElementById('ac-cancel-task');
@@ -251,7 +251,7 @@
     // from the session card and the task board.
     function classifyDisplay(classifyState) {
       const map = {
-        D: { label: translate('classifyDone'), voice: translate('voiceTaskCompleted'), ding: 'completed' },
+        D: { label: translate('classifySucceeded'), voice: translate('voiceExecutionSucceeded'), ding: 'succeeded' },
         C: { label: translate('classifyContinuing'), voice: null, ding: null },
         W: { label: translate('classifyWaitingUser'), voice: translate('voiceWaitingAction'), ding: 'waiting' },
         B: { label: translate('classifyWaitingBackground'), voice: translate('voiceWaitingBackground'), ding: 'waiting' },
@@ -282,7 +282,7 @@
       if (phaseEl) { phaseEl.textContent = phaseLabel; phaseEl.style.display = phaseLabel ? '' : 'none'; }
       const display = classifyDisplay(classifyState || 'P');
       bar.classList.remove('lc-running', 'lc-completed', 'lc-waiting', 'lc-interrupted',
-        'st-running', 'st-completed', 'st-waiting', 'st-error', 'st-done', 'st-idle',
+        'st-running', 'st-completed', 'st-succeeded', 'st-waiting', 'st-error', 'st-done', 'st-idle',
         'st-blocked', 'st-cancelled', 'st-unknown');
       if (stateEl) {
         // Idempotent badge: an E turn drops the spinner and gains ❌ + an

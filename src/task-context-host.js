@@ -90,8 +90,7 @@ function createTaskContextHost(options = {}) {
 
   function runState(classifyState) {
     if (classifyState === 'A') return 'running';
-    const cardStatus = classifyDisplay(classifyState || 'P').cardStatus;
-    return cardStatus === 'completed' ? 'done' : cardStatus;
+    return classifyDisplay(classifyState || 'P').cardStatus;
   }
 
   function recordGoal(sessionName, goal, phase, state, classifyState = 'P') {

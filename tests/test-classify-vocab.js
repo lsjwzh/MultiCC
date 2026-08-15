@@ -125,7 +125,8 @@ test('CLASSIFY_DISPLAY is complete and self-consistent for every state', () => {
     assert.ok('pushType' in d && 'cardStatus' in d && 'barTint' in d, `${letter} fields`);
   }
   // Terminal/attention states carry a card status matching their intent.
-  assert.equal(CLASSIFY_DISPLAY.D.cardStatus, 'completed');
+  assert.equal(CLASSIFY_DISPLAY.D.cardStatus, 'succeeded');
+  assert.equal(CLASSIFY_DISPLAY.D.label, '执行成功');
   assert.equal(CLASSIFY_DISPLAY.W.cardStatus, 'waiting');
   assert.equal(CLASSIFY_DISPLAY.E.barTint, 'error');
 });

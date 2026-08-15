@@ -4,14 +4,16 @@
 > 代码基线：`92b3776`  
 > 范围：Chat / Terminal 的 turn 收尾、P/D/W/B/E 状态、Session FIFO、任务看板、Aux 任务归集、静默卡住检测。  
 > 可视化版：运行中的 MultiCC 服务上访问 `/docs/classify-state-machine-architecture`（例如 <http://127.0.0.1:3000/docs/classify-state-machine-architecture>），源文件 `public/docs/classify-state-machine-architecture.html`。
+>
+> 实施状态（2026-08-15）：P0 的 turn/task 语义拆分已落地。D 保持协议兼容但只表示 `turn.succeeded`，展示“执行成功”；TaskBoard `status=done` 与批量归档只接受用户显式操作。其余 P1/P2 项仍是后续治理范围。
 
 ## 结论先行
 
 当前 Chat 主路径已经不再让模型决定运行状态：`resolveTurnState()` 根据结构化事实产生 P/D/W/B/E，Aux 只负责任务命名和归集。这一方向正确，也已经切断“摘要/归集模型故障导致 turn 永远卡在 P”的旧耦合。
 
-但它还不是一个语义闭合、单写者、原子提交的状态机，核心问题有五个：
+它仍不是单写者、原子提交的状态机；最初五个核心问题中，P0 已修复，其余四类仍存在：
 
-1. **`D` 的证据只是“本轮结果正常持久化并结束”，却被 UI 和任务看板解释成“整项任务完成”。** 这是当前最高优先级的语义错误。
+1. **已修复：`D` 只解释为本轮“执行成功”，不再自动完成任务板任务。** Scheduler 事件显式携带 `turnOutcome=succeeded`；任务完成由用户点击写入 `task.status=done`。
 2. **状态、调度、任务看板和通知不是一次原子提交。** `dispatchStateAction()` 先写历史和任务看板，再检查 liveness；随后又异步触发 scheduler transition，但不等待就写 task state、推送和广播。
 3. **Terminal 仍走旧模型分类器，而且复用了 Chat 专用 liveness。** Terminal 没有 `chatSessions` runtime，ownership 返回 `unknown/no_chat_runtime`，使 D/W/E 候选被挡住。
 4. **Aux 的 prompt 无字符/token 上限，失败后的扫描节流又没有自己的成功/尝试时间戳。** 一个长会话可以构造约 20 万字符的归集 prompt，失败时还可能每分钟重试。
@@ -28,7 +30,7 @@
 | 输入 | 来源 | 取值 | 用途 |
 |---|---|---|---|
 | `liveness.state` | `livenessRuntime.ownership()` | `active / inactive / unknown` | 判断 close 候选是否允许提交 |
-| `boundary` | `finalize-plan` | `completed / api-error / interrupted / unknown-interruption / result-not-durable / handoff-resume-failed / background-pending` | 本轮结束事实 |
+| `boundary` | `finalize-plan` | `succeeded / api-error / interrupted / unknown-interruption / result-not-durable / handoff-resume-failed / background-pending` | 本轮结束事实；兼容旧 `completed` |
 | `pendingUserInput` | `userInputSignalHost.pending()` | boolean | 是否有结构化待用户问题 |
 | `backgroundPending` | background runtime | boolean | 是否仍有后台结果待回流 |
 | `sessionType` | persisted session | chat / gateway 等 | 只影响 evidence 文案 |
@@ -39,7 +41,7 @@
 active / unknown liveness
         > pending user input
         > pending background
-        > completed boundary
+        > succeeded boundary
         > abnormal boundary
         > unknown boundary
 ```
@@ -49,7 +51,7 @@ active / unknown liveness
 | 字母 | resolver 的实际证据 | scheduler 行为 | 当前 UI / TaskBoard 文案 | 审计判断 |
 |---|---|---|---|---|
 | `P` | runner active，或 ownership unknown | 不放行旧 FIFO | 处理中 / running | 基本一致；unknown 与 active 被合并，诊断信息靠 evidence 才能区分 |
-| `D` | `boundary === completed` | 释放 active，普通 FIFO 可继续 | 任务已完成 / done | **不一致：这里只证明 turn succeeded，不证明 task completed** |
+| `D` | `boundary === succeeded` | 释放 active，普通 FIFO 可继续 | 执行成功 / succeeded | **已一致：TaskBoard lifecycle 保持 active，等待用户手动完成** |
 | `W` | 有未解决的结构化用户问题 | 释放 active，等待 answer/新 direct input | 等待用户 | 一致 |
 | `B` | 有后台结果待回流 | 释放 active，等待 callback/continuation | 后台等待 | 基本一致 |
 | `E` | API/中断/未持久化/取消 | 释放 active，等待 retry/resume/新 direct input | API 异常；取消时由 envelope 修正文案 | 字母过载，必须始终携带 reason/kind |
@@ -120,7 +122,7 @@ stateDiagram-v2
     P --> P: ownership active or unknown
     P --> W: inactive + pendingUserInput
     P --> B: inactive + backgroundPending
-    P --> D: inactive + boundary completed
+    P --> D: inactive + boundary succeeded
     P --> E: inactive + abnormal boundary
     W --> P: answer / new direct input
     B --> P: callback / continuation / new direct input
@@ -168,11 +170,11 @@ sequenceDiagram
     R->>F: process close + durable assistant result
     F--)H: completeSessionTurn() (not awaited)
     H->>Q: turnEnded → assessing/P
-    F->>M: classifyTurnEnd(completed)
+    F->>M: classifyTurnEnd(succeeded)
     M->>M: ownership + pending facts
     M->>M: resolveTurnState() = D
     M--)H: classifyTransition(D) (not awaited by writer)
-    M->>P: history, taskState D, notify “任务完成”, TaskBoard done
+    M->>P: history, taskState D, notify “执行成功”, TaskBoard runState succeeded
     H->>Q: await turn closure, complete(D), tick
     M--)A: enqueue best-effort task attribution
     A->>P: rename/reassign task + phase
@@ -272,7 +274,7 @@ src/
 | turn outcome | `turn-state.js` | Terminal 仍由 `vocab.js` 模型输出 |
 | commit guard | `state-machine.js` + `liveness/runtime.js` | guard 前已有 history/TaskBoard 写入 |
 | scheduler commit | `session-work-host.js` | 调用方通常不 await |
-| task lifecycle | TaskBoard | 从 turn letter 直接派生，D 自动变 done |
+| task lifecycle | TaskBoard | `status=done` 只由用户操作；显式 turnOutcome 仅更新独立 runState |
 | task identity/phase | Aux | 和 turn state orchestration 同处 `state-machine.js` |
 | presentation | server vocab + Web registry + App helpers | E、phase、legacy C 仍有多份映射 |
 
@@ -325,22 +327,22 @@ flowchart TD
 
 ## 七、审计发现
 
-### P0 — `D` 把 turn 成功误当成 task 完成
+### 已修复 P0 — `D` 把 turn 成功误当成 task 完成
 
 **证据**
 
-- `finalize-plan` 在正常 durable result 后固定产生 `classification: completed`；
-- `turn-state` 把 completed boundary 固定映射为 D；
+- `finalize-plan` 在正常 durable result 后产生 `classification: succeeded`；
+- `turn-state` 把 succeeded boundary 映射为 D，并兼容旧 completed boundary；
 - `classifyTurnEnd` 又把 D 的 phase 固定改为 `done`；
-- `dispatchStateAction` 发“任务完成”，TaskBoard 把 D 映射为 `runState=done`。
+- `dispatchStateAction` 现在发“执行成功”，TaskBoard 把 D 映射为 `runState=succeeded`，不会写 lifecycle `status=done`。
 
 **影响**
 
 任何“阶段性完成一轮，但用户目标还有后续步骤”的场景都会被错误关闭。规则化之后，系统不再有旧模型曾尝试提供的“整个任务是否完成”证据，却保留了旧字母的任务级文案。
 
-**建议**
+**实施结果**
 
-把 scheduler 的 D 重命名/重新定义为 `TURN_SUCCEEDED`（兼容期仍可传 D），展示为“本轮完成/空闲”；TaskBoard 的 `done` 必须来自独立、显式的 `task.complete` 事件或用户操作。
+协议字母 D 保留；scheduler 事件显式携带 `turnOutcome=succeeded`。Web/App 统一展示“执行成功”/“Execution succeeded”，旧运行态 done/completed 加载时迁移为 succeeded。TaskBoard 的 `done` 只来自完成按钮，active+succeeded 不计入完成数，也不能被批量归档。
 
 ### P1 — commit guard 后置，存在部分提交
 
@@ -350,7 +352,7 @@ flowchart TD
 - 更新 goal/phase；
 - 调用 `recordTaskBoardGoal(..., state)`。
 
-随后才在 active/unknown 时 return。Chat 主路径外层通常会先挡住，但 Terminal 是直接调用者，因此会产生 TaskBoard=done、taskState=P 的分裂状态。
+随后才在 active/unknown 时 return。Chat 主路径外层通常会先挡住，但 Terminal 是直接调用者，因此仍可能产生 TaskBoard runState=succeeded、taskState=P 的投影分裂（不会再误写 lifecycle done）。
 
 **建议**：把 guard 变成纯 `prepareVerdict()` 的返回值；只有 `commit=true` 才进入任何写操作。
 
@@ -531,7 +533,7 @@ src/presentation/
 
 ## 十、最小迁移顺序
 
-1. **修语义，不改协议字母**：D 改展示为“本轮完成”，停止 D → TaskBoard done；增加显式 `task.complete`。
+1. **✓ 已完成：修语义，不改协议字母**：D 展示“执行成功”，停止 D → TaskBoard done；完成按钮是显式 `task.complete`。
 2. **修原子性**：把 `dispatchStateAction` 改成 async coordinator，guard 前零写入，await scheduler 成功后再投影。
 3. **修 Terminal**：接入 Terminal 专用 boundary/ownership，删除 idle-tail 状态模型。
 4. **降 Aux 成本**：prompt budget、attempt/result timestamp、prompt hash、退避与上限。
@@ -609,12 +611,12 @@ node tests/test-starting-stall-recovery-isolated.js
 | Aux 与状态写入分离 | [`src/classify/state-machine.js`](../src/classify/state-machine.js) 688–869 |
 | scan throttle | [`src/classify/state-machine.js`](../src/classify/state-machine.js) 530–605 |
 | 20 条完整消息 prompt | [`src/classify/task-attribution.js`](../src/classify/task-attribution.js) 94–109 |
-| durable result → completed boundary | [`src/chat/finalize-plan.js`](../src/chat/finalize-plan.js) 246、275 |
+| durable result → succeeded boundary | [`src/chat/finalize-plan.js`](../src/chat/finalize-plan.js) 246、275 |
 | finalize effect 并发顺序 | [`src/chat/finalize-host.js`](../src/chat/finalize-host.js) 115–128 |
 | P turn-end → W fallback | [`src/session-work-host.js`](../src/session-work-host.js) 303–327 |
 | scheduler release / FIFO gate | [`src/session-work-scheduler.js`](../src/session-work-scheduler.js) 321–350、676–719 |
 | Terminal 旧 classifier | [`src/push-runtime.js`](../src/push-runtime.js) 133–168 |
 | Chat-only ownership | [`src/liveness/runtime.js`](../src/liveness/runtime.js) 93–129 |
-| TaskBoard D → done | [`src/routes/task-board.js`](../src/routes/task-board.js) 667–695 |
+| turnOutcome → TaskBoard runtime projection（不改 lifecycle） | [`src/routes/task-board.js`](../src/routes/task-board.js) 667–705 |
 | cancel reason WebSocket | [`src/routes/task-state-store.js`](../src/routes/task-state-store.js) 25–46 |
 | 静默 observe-only / opt-in cancel | [`src/chat/stalled-turn-recovery.js`](../src/chat/stalled-turn-recovery.js) 14–42、63–196 |

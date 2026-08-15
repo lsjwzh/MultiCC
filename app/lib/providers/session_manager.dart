@@ -407,7 +407,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
   /// two by id, so this and ChatProvider._maybeNotify never double-fire.
   void handleWorkspaceNotify(String sessionId, String state, String message) {
     // Running = in-progress status update. Don't fire a push notification —
-    // it's a status update, not an alert. Only completed/waiting warrant
+    // it's a status update, not an alert. Only succeeded/waiting warrant
     // interrupting the user.
     if (state == 'running') return;
     if (!_isInBackground && sessionId == _activeSessionId) return;
@@ -416,7 +416,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
         ? t('waitingInteraction')
         : state == 'error'
         ? t('errorOccurred')
-        : t('taskCompleted');
+        : t('classifySucceeded');
     NotificationService.show(
       title: 'MultiCC · $who: $outcome',
       body: message.isNotEmpty ? message : who,

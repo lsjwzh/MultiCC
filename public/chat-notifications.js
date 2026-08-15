@@ -7,11 +7,11 @@
   const NOTIFY_COOLDOWN = 8000;
 
   function normalizeNotificationType(type) {
-    return type === 'waiting' || type === 'error' ? type : 'completed';
+    return type === 'waiting' || type === 'error' ? type : 'succeeded';
   }
 
   function dingFrequencies(type) {
-    if (type === 'completed') return [1046.5, 1567.98];
+    if (type === 'succeeded' || type === 'completed') return [1046.5, 1567.98];
     if (type === 'error') return [783.99, 622.25];
     return [659.25];
   }
@@ -21,7 +21,7 @@
     const normalizedType = normalizeNotificationType(type);
     const titleSuffix = normalizedType === 'waiting'
       ? '等待操作'
-      : normalizedType === 'error' ? '任务异常' : '完成';
+      : normalizedType === 'error' ? '任务异常' : '执行成功';
     return {
       sessionId: sid,
       type: normalizedType,
@@ -66,7 +66,7 @@
     let enabled = typeof opts.getTaskNotifyEnabled === 'function'
       ? opts.getTaskNotifyEnabled(getSessionId())
       : true;
-    const lastNotificationAt = { completed: 0, waiting: 0, error: 0 };
+    const lastNotificationAt = { succeeded: 0, waiting: 0, error: 0 };
     let toastTimer = null;
     let togglePromise = null;
 

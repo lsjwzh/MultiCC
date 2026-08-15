@@ -267,13 +267,13 @@ test('process API, adapter and nonzero failures freeze instead of advancing FIFO
   }
 });
 
-test('clean process completion names the structured completed boundary', () => {
+test('clean process completion names the structured succeeded boundary', () => {
   const resolved = resolveTurnFinalization(planTurnFinalization(base()), {
     appendPersisted: true,
     resultDurable: true,
   });
   assert.equal(resolved.effects.find(entry => entry.type === 'classify-turn-end').classification,
-    'completed');
+    'succeeded');
 });
 
 test('unknown stream interruption freezes instead of automatically resuming', () => {
