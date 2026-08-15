@@ -1,9 +1,11 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const fs = require('fs');
+const path = require('path');
 const test = require('node:test');
 
-const { deriveToolTiming, diffToolTiming } = require('../src/chat/turn-event-replay');
+const { deriveToolTiming, diffToolTiming, deriveOpenTasks } = require('../src/chat/turn-event-replay');
 
 // Journal-line helpers: the derivation consumes {seq, ts, event} records.
 const line = (seq, ts, event) => ({ seq, ts, event });
@@ -114,4 +116,42 @@ test('derivation covers the adapter path too (same normalized broadcast shape)',
   assert.deepEqual(tools, [
     { id: 'call_1', name: 'shell', startedAt: 100, endedAt: 900, isError: false },
   ]);
+});
+
+test('deriveOpenTasks returns tasks with no terminal event, latest witness ts', () => {
+  const open = deriveOpenTasks([
+    { seq: 1, ts: 1_000, event: { type: 'monitor_started', task_id: 'a', description: '子任务 A', background: true } },
+    { seq: 2, ts: 2_000, event: { type: 'monitor_started', task_id: 'b', description: 'Monitor x', background: true } },
+    { seq: 3, ts: 3_000, event: { type: 'monitor_progress', task_id: 'a', status: 'running', background: true } },
+    { seq: 4, ts: 4_000, event: { type: 'monitor_done', task_id: 'b', status: 'completed', background: true } },
+    { seq: 5, ts: 5_000, event: { type: 'background_tasks', tasks: [{ task_id: 'a', status: 'running' }] } },
+  ]);
+  // b closed; a survived to the journal cutoff — exactly what a restart killed.
+  assert.deepEqual(open, [
+    { task_id: 'a', description: '子任务 A', lastTs: 5_000 },
+  ]);
+});
+
+test('deriveOpenTasks is robust to repeats, orphans, and empty input', () => {
+  assert.deepEqual(deriveOpenTasks([]), []);
+  assert.deepEqual(deriveOpenTasks(null), []);
+  // Replayed started/progress must not duplicate; an orphan progress (start
+  // line rotated away) is not fabricated into a task.
+  const open = deriveOpenTasks([
+    { seq: 1, ts: 1_000, event: { type: 'monitor_started', task_id: 'a', description: 'A' } },
+    { seq: 2, ts: 9_000, event: { type: 'monitor_started', task_id: 'a', description: 'A' } },
+    { seq: 3, ts: 5_000, event: { type: 'monitor_progress', task_id: 'ghost', status: 'running' } },
+  ]);
+  assert.deepEqual(open, [{ task_id: 'a', description: 'A', lastTs: 9_000 }]);
+});
+
+test('turn-engine replays journal open tasks on reconnect only when the live set is empty', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
+  assert.match(source, /deriveOpenTasks\(turnEventJournal\.readAll\(sessionName\)\)/,
+    'reconnect path derives open tasks from the journal');
+  assert.match(source, /activeTasks\.length === 0 && turnEventJournal/,
+    'replay only when the in-memory runtime knows nothing (post-restart)');
+  assert.match(source, /RECONNECT_REPLAY_WINDOW_MS/, 'replay is time-bounded');
+  const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  assert.match(serverSource, /sendWs,\s*\n\s*turnEventJournal,/, 'server wires the journal into the turn engine');
 });

@@ -161,6 +161,37 @@ test('missing parent dir is created lazily instead of dropping every event', asy
   assert.equal(journal.stats().dropped, 0);
 });
 
+test('readAll stitches generations oldest-first with ascending seq', async () => {
+  const dir = tmpDir();
+  const journal = createTurnEventJournal({ dir: () => dir, maxFileBytes: 300, keep: 2 });
+  for (let i = 0; i < 16; i++) {
+    journal.note('s', { type: 'monitor_started', task_id: 't' + i, description: 'p'.repeat(20) });
+  }
+  await until(() => fs.existsSync(path.join(dir, 's.events.jsonl.1')), 'first rotation');
+  // Wait until the rename chain quiesces before asserting on stitched state.
+  await new Promise(r => setTimeout(r, 30));
+  let prev = journal.readAll('s').map(r => r.seq).join(',');
+  await until(() => {
+    const cur = journal.readAll('s').map(r => r.seq).join(',');
+    if (cur === prev) return true;
+    prev = cur;
+    return false;
+  }, 'readAll quiescence');
+
+  const all = journal.readAll('s');
+  const active = journal.read('s');
+  // Stitching reads strictly more than the active file alone (older
+  // generations included), yet within the keep bound (rotated-away excluded).
+  assert.ok(all.length > active.length, 'stitches older generations: ' + all.length + ' vs ' + active.length);
+  for (let i = 1; i < all.length; i++) {
+    assert.ok(all[i].seq > all[i - 1].seq, 'seq ascending across stitched files at ' + i);
+  }
+  assert.equal(all[0].seq >= 1, true);
+  // The newest task is present (not lost to an overwritten generation).
+  const ids = all.map(r => r.event.task_id).filter(Boolean);
+  assert.ok(ids.includes('t15'), 'newest task survives');
+});
+
 test('fs failures are swallowed and counted, note() never throws', async () => {
   // Point the journal at a path occupied by a regular file: every append
   // fails with ENOTDIR, but the broadcast path must stay unaffected.

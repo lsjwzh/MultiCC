@@ -2669,6 +2669,7 @@ const chatTurnEngine = createChatTurnEngine({
   scheduleIncrementalSave,
   chatBroadcast,
   sendWs,
+  turnEventJournal,
   persistFinalAssistantResult,
   recordDurableTurnUsage,
   runDurablePostTurn,
