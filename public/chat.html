@@ -798,7 +798,7 @@
       align-self: center;
       display: flex;
       align-items: center;
-      /* Wraps instead of overflowing once the commander radio group is shown. */
+      /* Wraps instead of overflowing once the commander picker is shown. */
       flex-wrap: wrap;
       gap: 4px 12px;
       padding: 2px 12px;
@@ -807,11 +807,10 @@
       background: #0d1117;
       border-top: 1px solid #30363d;
     }
-    /* ── Commander-only dispatch mode (three-way, mutually exclusive) ──
-       Wide screens get a segmented control so the three choices read as one
-       picker; narrow screens collapse to a single pill that opens a bottom
-       sheet, which keeps the input area from being squeezed. Both drive the
-       same native radios, so keyboard + screen readers keep working. */
+    /* ── Commander-only dispatch mode (four-way dropdown) ──
+       Web and App both show one pill for the current choice; opening it reveals
+       the complete option list. Hidden radios remain as a compatibility/state
+       mirror for the controller, but are never the visible picker. */
     #dispatch-mode-group {
       display: inline-flex;
       align-items: center;
@@ -821,12 +820,13 @@
     /* `display:inline-flex` above would otherwise beat [hidden]. */
     #dispatch-mode-group[hidden] { display: none; }
     #dispatch-mode-group .dm-title {
+      display: none;
       color: #6e7681;
       font-size: 11px;
       white-space: nowrap;
     }
     #dispatch-mode-group .dm-segments {
-      display: inline-flex;
+      display: none;
       align-items: stretch;
       gap: 2px;
       padding: 2px;
@@ -877,10 +877,10 @@
       box-shadow: inset 0 0 0 1px rgba(210, 153, 34, .55);
     }
     .dm-icon { font-size: 12px; line-height: 1; }
-    /* The pill is the narrow-screen face of the same control (see the media
-       query below); on wide screens the segments carry the choice. */
+    /* Same current-choice pill as App; it is the sole visible control at every
+       viewport width and opens the four-option selection sheet. */
     #dispatch-mode-pill {
-      display: none;
+      display: inline-flex;
       align-items: center;
       gap: 5px;
       font: inherit;
@@ -900,7 +900,7 @@
     }
     #dispatch-mode-pill .dm-caret { font-size: 9px; opacity: .7; }
 
-    /* Bottom sheet: the narrow-screen expansion of the pill. */
+    /* Selection sheet opened by the pill. */
     #dispatch-mode-sheet {
       position: fixed;
       inset: 0;
@@ -1763,11 +1763,6 @@
       #memo-text,
       #voice-panel textarea { font-size: 16px; }
       #debug-panel { width: 100vw; max-width: 100vw; }
-      /* Three segments plus a caption would eat the row above the input; show
-         the current choice as one pill and move the picking into the sheet. */
-      #dispatch-mode-group .dm-title,
-      #dispatch-mode-group .dm-segments { display: none; }
-      #dispatch-mode-pill { display: inline-flex; }
     }
 
     @media (max-width: 420px) {
@@ -2540,24 +2535,30 @@
   <div id="pre-input-bar">
     <button id="subagent-pill" type="button" title="子任务 (subagent) 用的 provider+model，点击修改" style="margin-left:10px;font-size:12px;color:#8b949e;background:#0d1117;border:1px solid #30363d;border-radius:999px;padding:3px 10px;cursor:pointer;">子任务: <span id="subagent-pill-label">随主</span></button>
     <!-- Commander only: shown once /api/sessions/:id reports type==='commander'.
-         Three-way, mutually exclusive; each choice appends its own English
-         dispatch instruction to the prompt (see chat-dispatch-hint.js). -->
+         Four-way, mutually exclusive dropdown; each choice appends its own
+         English dispatch instruction (see chat-dispatch-hint.js). -->
     <div id="dispatch-mode-group" hidden>
-      <span class="dm-title" data-i18n="dispatchModeTitle">分发模式</span>
-      <!-- Wide screens: the segmented control is the picker. -->
+      <span class="dm-title" data-i18n="dispatchModeTitle">分派模式</span>
+      <!-- Hidden state mirror retained for controller/backward compatibility. -->
       <div class="dm-segments" role="radiogroup"
-           data-i18n-aria-label="dispatchModeTitle" aria-label="分发模式">
-        <label class="dispatch-mode-opt" data-i18n-title="dispatchModeMasterHint"
-               title="用 dispatch_master async 派发；结果消息会自动唤醒本会话">
-          <input type="radio" name="dispatch-mode" value="dispatch_master" checked />
+           data-i18n-aria-label="dispatchModeTitle" aria-label="分派模式">
+        <label class="dispatch-mode-opt" data-i18n-title="dispatchModeMasterSyncHint"
+               title="用 dispatch_master mode=sync 双向分派；本轮同步等待结果">
+          <input type="radio" name="dispatch-mode" value="dispatch_master_sync" />
           <span class="dm-icon" aria-hidden="true">⇄</span>
-          <span class="dm-text" data-i18n="dispatchModeMasterShort">需回执</span>
+          <span class="dm-text" data-i18n="dispatchModeMasterSyncShort">双向·同步</span>
+        </label>
+        <label class="dispatch-mode-opt" data-i18n-title="dispatchModeMasterAsyncHint"
+               title="用 dispatch_master mode=async 双向分派；结果稍后回调唤醒">
+          <input type="radio" name="dispatch-mode" value="dispatch_master_async" checked />
+          <span class="dm-icon" aria-hidden="true">↪</span>
+          <span class="dm-text" data-i18n="dispatchModeMasterAsyncShort">双向·异步</span>
         </label>
         <label class="dispatch-mode-opt" data-i18n-title="dispatchModeRouteHint"
                title="用 route_task 单向派发给其它会话，不等回执（fire-and-forget）">
           <input type="radio" name="dispatch-mode" value="route_task" />
           <span class="dm-icon" aria-hidden="true">➤</span>
-          <span class="dm-text" data-i18n="dispatchModeRouteShort">免回执</span>
+          <span class="dm-text" data-i18n="dispatchModeRouteShort">单向</span>
         </label>
         <label class="dispatch-mode-opt" data-i18n-title="dispatchModeNoneHint"
                title="强制在当前会话内完成，不派发给其它会话">
@@ -2566,11 +2567,11 @@
           <span class="dm-text" data-i18n="dispatchModeNoneShort">不派发</span>
         </label>
       </div>
-      <!-- Narrow screens: this pill shows the current choice and opens the sheet. -->
+      <!-- Same pill/dropdown shape as App, used at every viewport width. -->
       <button id="dispatch-mode-pill" type="button" aria-haspopup="dialog" aria-expanded="false"
-              data-i18n-title="dispatchModeTitle" title="分发模式">
-        <span class="dm-icon" id="dispatch-mode-pill-icon" aria-hidden="true">⇄</span>
-        <span id="dispatch-mode-pill-label" data-i18n="dispatchModeMasterShort">需回执</span>
+              data-i18n-title="dispatchModeTitle" title="分派模式">
+        <span class="dm-icon" id="dispatch-mode-pill-icon" aria-hidden="true">↪</span>
+        <span id="dispatch-mode-pill-label" data-i18n="dispatchModeMasterAsyncShort">双向·异步</span>
         <span class="dm-caret" aria-hidden="true">▾</span>
       </button>
     </div>
@@ -2628,22 +2629,31 @@
   <!-- The realtime voice call now runs in the global Qwen gateway window, so the
        old in-page S2S panel is gone. Plain microphone dictation is unaffected. -->
 
-  <!-- Narrow-screen expansion of #dispatch-mode-pill. The buttons here drive the
-       same radios as the segmented control, so both faces stay in sync. -->
+  <!-- Four-option expansion of #dispatch-mode-pill. The hidden radios mirror
+       selection state so legacy controller integrations remain compatible. -->
   <div id="dispatch-mode-sheet" hidden>
     <div class="dm-sheet-backdrop" data-dm-close></div>
     <div class="dm-sheet-panel" role="dialog" aria-modal="true"
-         data-i18n-aria-label="dispatchModeSheetTitle" aria-label="选择分发模式">
+         data-i18n-aria-label="dispatchModeSheetTitle" aria-label="选择分派模式">
       <div class="dm-sheet-handle" aria-hidden="true"></div>
-      <div class="dm-sheet-title" data-i18n="dispatchModeSheetTitle">选择分发模式</div>
+      <div class="dm-sheet-title" data-i18n="dispatchModeSheetTitle">选择分派模式</div>
       <div class="dm-sheet-list" role="radiogroup"
-           data-i18n-aria-label="dispatchModeTitle" aria-label="分发模式">
-        <button class="dm-sheet-opt" type="button" role="radio" aria-checked="true"
-                data-mode="dispatch_master">
+           data-i18n-aria-label="dispatchModeTitle" aria-label="分派模式">
+        <button class="dm-sheet-opt" type="button" role="radio" aria-checked="false"
+                data-mode="dispatch_master_sync">
           <span class="dm-icon" aria-hidden="true">⇄</span>
           <span class="dm-sheet-text">
-            <b data-i18n="dispatchModeMasterLabel">优先分发给其他会话且需要回执</b>
-            <small data-i18n="dispatchModeMasterDesc">异步派发，结果消息自动唤醒</small>
+            <b data-i18n="dispatchModeMasterSyncLabel">双向分派 · 同步等待</b>
+            <small data-i18n="dispatchModeMasterSyncDesc">本轮同步等待 Worker 返回，再继续处理</small>
+          </span>
+          <span class="dm-tick" aria-hidden="true">✓</span>
+        </button>
+        <button class="dm-sheet-opt" type="button" role="radio" aria-checked="true"
+                data-mode="dispatch_master_async">
+          <span class="dm-icon" aria-hidden="true">↪</span>
+          <span class="dm-sheet-text">
+            <b data-i18n="dispatchModeMasterAsyncLabel">双向分派 · 异步回调</b>
+            <small data-i18n="dispatchModeMasterAsyncDesc">立即结束等待，结果回调后自动唤醒</small>
           </span>
           <span class="dm-tick" aria-hidden="true">✓</span>
         </button>
@@ -2651,7 +2661,7 @@
                 data-mode="route_task">
           <span class="dm-icon" aria-hidden="true">➤</span>
           <span class="dm-sheet-text">
-            <b data-i18n="dispatchModeRouteLabel">优先分发给其他会话且不需要回执</b>
+            <b data-i18n="dispatchModeRouteLabel">单向分派 · 不等回执</b>
             <small data-i18n="dispatchModeRouteDesc">用 route_task 单向派出去，不等回执</small>
           </span>
           <span class="dm-tick" aria-hidden="true">✓</span>
@@ -2660,7 +2670,7 @@
                 data-mode="none">
           <span class="dm-icon" aria-hidden="true">⊘</span>
           <span class="dm-sheet-text">
-            <b data-i18n="dispatchModeNoneLabel">不派发给其他会话</b>
+            <b data-i18n="dispatchModeNoneLabel">不派发 · 当前会话处理</b>
             <small data-i18n="dispatchModeNoneDesc">留在当前会话自己做完</small>
           </span>
           <span class="dm-tick" aria-hidden="true">✓</span>
