@@ -17,12 +17,16 @@ const { SYSTEM_PREFIX } = require('../session-delivery');
 
 const crypto = require('crypto');
 const {
-  parseClassifyResult,
-  buildClassifySystemPrompt,
   classifyDisplay,
   phaseLabel,
-  isSettledLetter,
 } = require('./vocab');
+const {
+  buildTaskAttributionConversation,
+  buildTaskAttributionSystemPrompt,
+  parseTaskAttribution,
+  recentTaskContext,
+} = require('./task-attribution');
+const { resolveTurnState } = require('./turn-state');
 
 function assertFunction(value, name) {
   if (typeof value !== 'function') {
@@ -64,6 +68,14 @@ function createClassifyStateMachine(rawDeps) {
     // loadChatHistory so an older host composition still works.
     viewChatHistory = loadChatHistory,
     appendChatMessage,
+    // Atomically stamps the messages belonging to one completed turn with the
+    // canonical task identity and the Aux run that attributed them.
+    annotateChatTurn = () => [],
+    // Aux evidence sink. Defaults to a no-op so a host composition that predates
+    // provenance still builds and every test stays off the real filesystem; the
+    // server wires the JSONL-backed log in explicitly. Recording is diagnostic,
+    // so a missing sink degrades observability and nothing else.
+    getAuxRunLog = () => ({ record: () => null }),
   } = deps;
 
   if (!persistedSessions || typeof persistedSessions.get !== 'function') {
@@ -125,8 +137,13 @@ function createClassifyStateMachine(rawDeps) {
     // ── Classify history (persisted, last 7 days) ────────────────────────
     const now = Date.now();
     const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+    // `runId` links this history entry to the raw Aux request/response in
+    // aux-run-log, so a state in the timeline can always be traced to the exact
+    // prompt and untrimmed model text that produced it. Structured verdicts
+    // (api-error, gateway, cancellation) have no Aux call and carry none.
     const entry = { at: now, goal: goal || '', phase: phase || '', state,
-      error: !!error, evidence: result.evidence || undefined };
+      error: !!error, evidence: result.evidence || undefined,
+      runId: ctx.runId || undefined };
     const persisted = persistedSessions.get(sessionName);
     if (persisted) {
       const ts = persisted.taskState || {};
@@ -359,8 +376,7 @@ function createClassifyStateMachine(rawDeps) {
 
   // Shared turn-end/scan classify handler. Mid-stream only goal/phase is trusted;
   // once the turn ends dispatchStateAction owns the definitive state verdict.
-  function applyClassifyResult(cs, sessionName, sessionId, res, { cwd, source } = {}) {
-    res = getUserInputSignalHost().apply(sessionName, res);
+  function applyClassifyResult(cs, sessionName, sessionId, res, { cwd, source, runId } = {}) {
     const liveness = turnLivenessForClassify(sessionName);
     const currentState = getTaskState(persistedSessions.get(sessionName));
     // Explicit user/watchdog cancellation owns the turn boundary. An Aux job
@@ -370,6 +386,8 @@ function createClassifyStateMachine(rawDeps) {
       logger.info('classify_result_ignored_after_cancel', { sessionId: sessionName, source });
       return;
     }
+    const userInputHost = getUserInputSignalHost();
+    if (typeof userInputHost.apply === 'function') res = userInputHost.apply(sessionName, res);
     if (liveness.state !== 'inactive') {
       if (cs?.currentTask) {
         cs.currentTask.goal = (res.goal && res.goal !== '-') ? res.goal : '';
@@ -391,9 +409,66 @@ function createClassifyStateMachine(rawDeps) {
     // Classify supplied the semantic candidate and liveness independently proved
     // the owned runner inactive. The scan path may now repair a lost turn_end.
     dispatchStateAction(res, {
-      sessionName, sessionId, cs, isTerminal: false, cwd, source, liveness,
+      sessionName, sessionId, cs, isTerminal: false, cwd, source, liveness, runId,
     });
     console.log(`[${source}] Classify RESULT for ${sessionName}: state=${res.state} goal="${res.goal}" phase=${res.phase || '?'}${res.state === 'E' ? ' (API error)' : ''}${res.evidence ? ` evidence=${res.evidence}` : ''}`);
+  }
+
+  // Aux owns task identity only. It may rename/re-group the turn and attach its
+  // replay provenance, but it never calls dispatchStateAction and therefore can
+  // neither finish a turn nor keep one stuck in processing.
+  function applyTaskAttributionResult(cs, sessionName, result, context = {}) {
+    if (!cs) return null;
+    const previousTaskId = context.taskId || cs._currentTaskId || null;
+    const sameTaskId = result.relation === 'same' ? (result.taskId || previousTaskId) : null;
+    const taskId = sameTaskId || `tsk_${crypto.randomUUID().replace(/-/g, '')}`;
+    const taskName = result.taskName || cs.currentTask?.goal || '新任务';
+    const phase = result.phase || cs.currentTask?.phase || 'planning';
+    const changedIdentity = taskId !== previousTaskId;
+
+    cs._currentTaskId = taskId;
+    if (!cs.currentTask) cs.currentTask = newCurrentTask(taskName);
+    cs.currentTask.goal = taskName;
+    cs.currentTask.phase = phase;
+    setTaskState(sessionName, {
+      goal: taskName,
+      phase,
+      taskId,
+      auxRunId: context.runId || null,
+    });
+
+    let annotated = [];
+    try {
+      annotated = annotateChatTurn(sessionName, context.turnId, {
+        taskId,
+        taskName,
+        auxRunId: context.runId || null,
+        taskStart: result.relation === 'new' ? true : undefined,
+        taskSource: result.relation === 'new' ? 'aux' : undefined,
+        taskText: result.relation === 'new' ? String(cs.currentUserText || '') : undefined,
+      }, { anchorMessageId: context.anchorMessageId || null });
+    } catch (error) {
+      logger.warn?.('aux_message_annotation_failed', { sessionId: sessionName, error: error.message });
+    }
+
+    const board = getTaskBoardRuntime();
+    if (changedIdentity && typeof board.reassignTurnTask === 'function') {
+      board.reassignTurnTask(sessionName, previousTaskId, taskId, annotated, {
+        taskName,
+        taskText: String(cs.currentUserText || ''),
+      });
+    } else if (typeof board.onMessagePersisted === 'function') {
+      for (const message of annotated) board.onMessagePersisted(sessionName, message);
+    }
+
+    const currentState = getTaskState(persistedSessions.get(sessionName)).classifyState || 'P';
+    recordTaskBoardGoal(sessionName, taskName, phase, cs, currentState);
+    if (taskName) setSessionSummary(persistedSessions.get(sessionName)?.id || sessionName, taskName);
+    if (turnLivenessForClassify(sessionName).state === 'active') {
+      const ph = phaseLabel(phase);
+      emitRunningNotify(sessionName, `处理中：${taskName}${ph ? ` · ${ph}` : ''}`);
+    }
+    return { taskId, taskName, phase, changedIdentity, annotated };
   }
 
   function scanAndReclassify() {
@@ -426,17 +501,6 @@ function createClassifyStateMachine(rawDeps) {
       if (!p || p.type === 'aux' || p.type === 'gateway' || p.kind !== 'chat') continue;
       const ts = getTaskState(p);
 
-      // Skip states that only change on NEW USER INPUT — re-judging the same
-      // history just re-derives the same verdict (waste, and can't self-correct):
-      //   D = done (terminal)      W = waiting on user
-      // A real user message flips classifyState to 'P' (ensureCurrentTask) and
-      // re-enters the turn flow, so W naturally leaves without scan's help.
-      // Only C/B/E/P/null need re-judging — those advance on SYSTEM-side events
-      // (auto-continue, background done, API recovered, interrupted resume).
-      if (isSettledLetter(ts.classifyState)) {
-        note(sid, ts.classifyState, 'skipped-DW-guard', ts.classifyState === 'D' ? 'done (terminal)' : 'waiting on user');
-        continue;
-      }
       if (ts.classifyState === 'E' && ts.cancelledAt) {
         note(sid, ts.classifyState, 'skipped-cancelled', 'explicit cancellation remains authoritative until next user turn');
         continue;
@@ -526,8 +590,13 @@ function createClassifyStateMachine(rawDeps) {
       // last activity time - used to order newest-first
       const ref = ts.lastTurnEndedAt || ts.lastSummaryAt
         || (p.lastActivity ? new Date(p.lastActivity).getTime() : 0) || lastAt || 0;
-      const cleanPrior = isInjectedOrJunkGoal(ts.goal) ? '' : (ts.goal || '');
-      candidates.push({ sid, cleanPrior, reply, ref, classifyState: ts.classifyState });
+      // The scan is now only a naming backstop. A resolved name cannot improve
+      // without a new user message, and turn state is never re-judged by Aux.
+      if (isGoalResolved(ts.goal)) {
+        note(sid, ts.classifyState, 'skipped-goal-resolved', 'task identity already resolved');
+        continue;
+      }
+      candidates.push({ sid, reply, ref, classifyState: ts.classifyState });
     }
     // Newest first: most recently active sessions are judged before stale ones.
     candidates.sort((a, b) => (b.ref || 0) - (a.ref || 0));
@@ -539,20 +608,45 @@ function createClassifyStateMachine(rawDeps) {
         note(c.sid, c.classifyState, 'skipped-queue-full', `SCAN_MAX_QUEUE (${SCAN_MAX_QUEUE}) reached mid-loop`);
         continue;
       }
-      const { sid, cleanPrior, reply } = c;
+      const { sid, reply } = c;
+      const runId = crypto.randomUUID();
+      const history = viewChatHistory(sid);
+      const csAtStart = chatSessions.get(sid);
+      const taskId = csAtStart?._currentTaskId || null;
+      const recentTasks = recentTaskContext(history);
+      const systemPrompt = buildTaskAttributionSystemPrompt({
+        recentTasks, currentTaskId: taskId,
+      });
+      const prompt = buildClassifyConversation(sid, reply);
+      const anchorMessageId = classifyAnchorMessageId(sid);
+      const startedAt = Date.now();
       getAuxQueue().enqueue({
         type: 'intent_classify',
-        systemPrompt: buildClassifySystemPrompt(cleanPrior),
-        prompt: buildClassifyConversation(sid, reply),
-        meta: { sid, startup: true }
+        systemPrompt,
+        prompt,
+        meta: { sid, startup: true, runId }
       }).then(result => {
-        if (result.cancelled) return;
-        const res = parseClassifyResult(result.text);
+        if (result.cancelled) {
+          recordAuxRun(sid, { runId, anchorMessageId, cancelled: true, source: 'scan' });
+          return;
+        }
+        const res = parseTaskAttribution(result.text, {
+          fallbackTaskId: taskId,
+          allowedTaskIds: recentTasks.map(task => task.taskId),
+        });
         const cs = chatSessions.get(sid);
-        const sessionId = persistedSessions.get(sid)?.id || sid;
-        applyClassifyResult(cs, sid, sessionId, res, { source: 'multicc/scan' });
+        recordAuxRun(sid, {
+          runId, anchorMessageId, systemPrompt, prompt,
+          taskId,
+          rawText: result.text, parsed: res, source: 'scan',
+          latencyMs: Date.now() - startedAt,
+        });
+        applyTaskAttributionResult(cs, sid, res, {
+          source: 'multicc/scan', runId, taskId, anchorMessageId,
+        });
       }).catch(e => {
         if (e && e.cancelled) return;
+        recordAuxRun(sid, { runId, anchorMessageId, error: e.message, source: 'scan' });
         console.warn(`[multicc/scan] classify ${sid} failed: ${e.message}`);
       });
       note(sid, c.classifyState, 'enqueued');
@@ -569,57 +663,52 @@ function createClassifyStateMachine(rawDeps) {
     // The .then() handler now always applies the latest result unconditionally.
   }
 
-  // Build the CHAT classify prompt (system + conversation). Output is the same
-  // unified 3-line format parsed by parseClassifyResult above (shared with the
-  // terminal path).
-  // Line 1: goal — noun-phrase in the conversation's language (中文 ≤20 字 / EN ≤10 words)
-  // Line 2: phase ∈ 规划中|实现中|验证中|收尾中|已完成 (Chinese codes; EN synonyms tolerated)
-  // Line 3: D(done) | C(continue) | W(wait user) | E(api error) | P(processing)  (chat prompt does not emit B)
-  // Tolerant of blank lines, prefixes, and model cruft.
-  // Build the classify user prompt (conversation data only, no instructions).
-  // Returns the conversation block as a plain string of labelled turns.
+  // Compatibility name retained for route composition; the content is now the
+  // task-attribution conversation and carries task ids/names with each message.
   function buildClassifyConversation(sessionName, reply) {
-    const history = viewChatHistory(sessionName);
-    const MAX_TURNS = 20;
-    const MAX_PER_MSG = 400;
-    const RECENT_NO_TRUNC = 5;  // keep the most recent N messages in full
-    const parts = [];
-
-    // Walk backwards, collect up to MAX_TURNS user+assistant messages.
-    // Skip consecutive duplicates (chat_history may have _interim + final copies
-    // of the same assistant message from incremental saves).
-    let count = 0;
-    let lastContent = '';
-    for (let i = history.length - 1; i >= 0 && count < MAX_TURNS; i--) {
-      const m = history[i];
-      if (!m || !m.content) continue;
-      if (m.role !== 'user' && m.role !== 'assistant') continue;
-      if (isSystemInjectedMsg(m.content)) continue;
-      // Don't truncate the most recent few messages - the model needs the full
-      // latest reply to judge state. A truncated reply looks mid-sentence and
-      // gets misjudged as P (still processing).
-      const snippet = count < RECENT_NO_TRUNC
-        ? String(m.content)
-        : String(m.content).slice(0, MAX_PER_MSG);
-      if (m.role === 'assistant' && snippet === lastContent) continue;
-      lastContent = snippet;
-      const label = m.role === 'user' ? '用户' : '助手';
-      parts.unshift(`${label}：${snippet}`);
-      count++;
-    }
-
-    // Live assistant output not yet in chat_history (the newest - keep full).
-    if (reply) {
-      const liveSnippet = String(reply);
-      if (liveSnippet !== lastContent) {
-        parts.push(`助手：${liveSnippet}`);
-      }
-    }
-
-    return `对话记录：\n${parts.join('\n\n')}`;
+    const history = viewChatHistory(sessionName)
+      .filter(message => !isSystemInjectedMsg(message?.content));
+    return buildTaskAttributionConversation(history, reply);
   }
 
-  function runClassifyNow(cs, sessionName) {
+  // The newest message the classifier will actually see — same filter as
+  // buildClassifyConversation's walk, so the anchor is always a message that
+  // was really in the prompt. Recording it is what lets a rendered message be
+  // traced back to the verdict that judged it (aux-run-log.byAnchor).
+  //
+  // Kept separate from buildClassifyConversation rather than folded into its
+  // return value: that function is exported and three other call sites depend
+  // on it returning a plain string.
+  function classifyAnchorMessageId(sessionName) {
+    try {
+      const history = viewChatHistory(sessionName);
+      for (let i = history.length - 1; i >= 0; i--) {
+        const m = history[i];
+        if (!m || !m.content) continue;
+        if (m.role !== 'user' && m.role !== 'assistant') continue;
+        if (isSystemInjectedMsg(m.content)) continue;
+        return m.id || null;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  // Evidence recording is best-effort by construction: a classify verdict must
+  // never fail because its audit trail could not be written.
+  function recordAuxRun(sessionName, run) {
+    try {
+      return getAuxRunLog().record(sessionName, run);
+    } catch (error) {
+      logger.warn?.('aux_run_record_failed', { sessionId: sessionName, error: error.message });
+      return null;
+    }
+  }
+
+  function runClassifyNow(cs, sessionName, {
+    turnId = null,
+    skipCancel = false,
+    manual = false,
+  } = {}) {
     const reply = cs.currentAssistantText || '';
     const userMsg = cs.currentUserText || '';
     // Need at least a user message (turn-start) or some AI reply (mid/end) to work with.
@@ -636,121 +725,155 @@ function createClassifyStateMachine(rawDeps) {
       logger.info('classify_skipped_after_cancel', { sessionId: sessionName });
       return;
     }
-    const priorGoal = cs.currentTask?.goal || '';
-    // Structured W remains available while Aux is degraded.
+    const history = viewChatHistory(sessionName);
+    const currentTaskId = cs._currentTaskId || null;
+    const recentTasks = recentTaskContext(history);
+    const requestId = crypto.randomUUID();
+    const runId = requestId;
+    const runSource = manual ? 'manual' : 'turn-end';
+    const systemPrompt = buildTaskAttributionSystemPrompt({
+      recentTasks, currentTaskId,
+    });
+    const prompt = buildClassifyConversation(sessionName, reply);
+    const anchorMessageId = classifyAnchorMessageId(sessionName);
+    const startedAt = Date.now();
+    // State has already been committed by resolveTurnState. Aux degradation now
+    // costs naming/attribution only and cannot hold scheduler progress. Still
+    // record the attempt and stamp its run id on the turn: "unavailable" is
+    // provenance too, and must be inspectable from every affected message.
     if (getAuxQueue().isUnhealthy()) {
-      const structured = getUserInputSignalHost().degradedResult(sessionName, cs.currentTask);
-      if (structured) applyClassifyResult(cs, sessionName, sessionId, structured,
-        { cwd: cs.cwd, source: 'multicc/structured' });
-      else getSessionWorkHost().classifyUnavailable(
-        sessionName, cs._currentTaskId || null, 'classification_unavailable');
+      recordAuxRun(sessionName, {
+        runId, turnId, anchorMessageId, systemPrompt, prompt,
+        taskId: currentTaskId, error: 'aux_unhealthy', source: runSource,
+      });
+      annotateChatTurn(sessionName, turnId, {
+        taskId: currentTaskId || undefined,
+        auxRunId: runId,
+      }, { anchorMessageId });
+      logger.warn?.('task_attribution_unavailable', { sessionId: sessionName, turnId });
       return;
     }
     // Dedup: drop this session's older queued/in-flight classify before enqueuing
     // the fresh one — a session only needs its single latest judgement. Without
     // this, rapid turns pile up near-duplicate classifies that then supersede each
     // other's .then() and drop the real verdict (goal/state never persist).
-    getAuxQueue().cancelClassifyFor(sessionName);
-    const taskId = crypto.randomUUID();
-    cs._classifyTaskId = taskId;
+    if (!skipCancel) getAuxQueue().cancelClassifyFor(sessionName);
+    // Note: this id names the *classify request*, not the business task. The
+    // business task is cs._currentTaskId, recorded separately on every run so
+    // verdicts can be grouped by the task they judged.
+    cs._classifyTaskId = requestId;
 
     getAuxQueue().enqueue({
-      id: taskId,
+      id: requestId,
       type: 'intent_classify',
-      systemPrompt: buildClassifySystemPrompt(priorGoal),
-      prompt: buildClassifyConversation(sessionName, reply),
-      meta: { sessionName, sessionId },
+      systemPrompt,
+      prompt,
+      meta: { sessionName, sessionId, runId, turnId, manual },
     }).then(result => {
-      if (cs._classifyTaskId !== taskId) return; // superseded by a newer classify
-      cs._classifyTaskId = null;
-      if (result.cancelled) return;
-      const res = parseClassifyResult(result.text);
-      applyClassifyResult(cs, sessionName, sessionId, res, { cwd: cs.cwd, source: 'multicc/aux' });
+      const superseded = cs._classifyTaskId !== requestId;
+      if (!superseded) cs._classifyTaskId = null;
+      if (result.cancelled) {
+        recordAuxRun(sessionName, {
+          runId, turnId, anchorMessageId, cancelled: true, source: runSource,
+          taskId: currentTaskId,
+        });
+        annotateChatTurn(sessionName, turnId, {
+          taskId: currentTaskId || undefined,
+          auxRunId: runId,
+        }, { anchorMessageId });
+        return;
+      }
+      const res = parseTaskAttribution(result.text, {
+        fallbackTaskId: currentTaskId,
+        allowedTaskIds: recentTasks.map(task => task.taskId),
+      });
+      recordAuxRun(sessionName, {
+        runId, turnId, anchorMessageId, systemPrompt, prompt,
+        taskId: currentTaskId,
+        rawText: result.text, parsed: res, source: runSource,
+        latencyMs: Date.now() - startedAt,
+      });
+      if (superseded) {
+        annotateChatTurn(sessionName, turnId, {
+          taskId: currentTaskId || undefined,
+          auxRunId: runId,
+        }, { anchorMessageId });
+        return;
+      }
+      applyTaskAttributionResult(cs, sessionName, res, {
+        source: 'multicc/aux', runId, turnId,
+        taskId: currentTaskId, anchorMessageId,
+      });
     }).catch((e) => {
-      if (cs._classifyTaskId === taskId) cs._classifyTaskId = null;
+      if (cs._classifyTaskId === requestId) cs._classifyTaskId = null;
       // A cancelled task (new turn started / user typing) rejects with {cancelled:true}
       // and no .message — that's normal churn, not a failure. Don't log it as FAILED.
-      if (e && e.cancelled) return;
+      if (e && e.cancelled) {
+        recordAuxRun(sessionName, {
+          runId, turnId, anchorMessageId, systemPrompt, prompt,
+          taskId: currentTaskId, cancelled: true, source: runSource,
+        });
+        annotateChatTurn(sessionName, turnId, {
+          taskId: currentTaskId || undefined,
+          auxRunId: runId,
+        }, { anchorMessageId });
+        return;
+      }
+      recordAuxRun(sessionName, {
+        runId, turnId, anchorMessageId, systemPrompt, prompt,
+        error: e.message, source: runSource, taskId: currentTaskId,
+      });
+      annotateChatTurn(sessionName, turnId, {
+        taskId: currentTaskId || undefined,
+        auxRunId: runId,
+      }, { anchorMessageId });
       console.log(`[multicc/aux] Classify FAILED for ${sessionName}: ${e.message}`);
-      // Route the failure through the centralized API error policy so classify
+      // Route the failure through the centralized API error policy so Aux
       // transport errors (ECONNRESET/timeout/5xx) land in the same taxonomy,
       // metrics and provider circuit as every other aux/upstream failure —
       // before this they were only a console line (1397 occurrences in one
-      // production log window). Evaluated for classification only: no task
-      // state is written, the degraded classifyUnavailable path below still
-      // owns the session-visible outcome.
+      // production log window). This is observability only: task attribution
+      // may degrade, but rule-based turn state has already committed and must
+      // never be rewritten by Aux availability.
       try {
         getApiErrorHost().recordApiError(
           { source: 'aux_http', provider: 'aux', message: String(e && e.message || 'classify failed') },
           { source: 'aux_http', provider: 'aux', sessionId: sessionName },
         );
       } catch (_) {}
-      getSessionWorkHost().classifyUnavailable(
-        sessionName, cs._currentTaskId || null, 'classification_error');
+      logger.warn?.('task_attribution_failed', { sessionId: sessionName, turnId, error: e.message });
     });
   }
 
-  // A turn that ended on an exhausted API failure has a KNOWN outcome: the
-  // runner boundary already ran the centralized policy and chose fail_fast (a
-  // planned retry never reaches finalize). Asking Aux to re-derive that from the
-  // transcript is both wasteful and wrong — such a turn usually died before its
-  // first token, and the classify prompt's own rule ("回复为空判 P") then answers
-  // P, which dispatchStateAction's waiting branch renders as W. That is how an
-  // API error surfaced to the dispatcher as「等待用户操作」instead of「异常」.
-  //
-  // So build the verdict from the structured decision and hand it to the SAME
-  // central applier every other verdict goes through: liveness admission, cancel
-  // precedence, the pending-user-input override, history, persistence and the
-  // notify fan-out all stay in one place. This is a new *source* of a classify
-  // result, not a new writer of classifyState.
-  function apiErrorResult(cs, sessionName) {
-    const ts = getTaskState(persistedSessions.get(sessionName));
-    return {
-      state: 'E',
-      goal: cs?.currentTask?.goal || ts.goal || '',
-      phase: cs?.currentTask?.phase || ts.phase || 'planning',
-      evidence: 'api_error_policy',
-    };
-  }
-
-  // Fire classify immediately after a turn ends — classify is the ONLY decider of
-  // C/W/E/P/D. No in-turn loop: while streaming the output is still changing so a
-  // mid-turn verdict would be judged against an incomplete reply. We judge once at
-  // turn end (definitive) and the periodic scan re-judges anything not yet D/W.
-  // runClassifyNow handles the empty-reply case itself (falls back to user msg).
-  // `classification` is the turn boundary's own verdict when it has one; today
-  // only 'api-error' short-circuits the Aux judgement.
-  function classifyTurnEnd(cs, sessionName, { classification } = {}) {
+  // Commit the rule verdict first, then enqueue best-effort task attribution.
+  // The two paths deliberately share no state writer.
+  function classifyTurnEnd(cs, sessionName, { classification, turnId = null } = {}) {
     cancelClassify(cs);
     const persisted = persistedSessions.get(sessionName);
-    const gatewayCompleted = persisted?.type === 'gateway'
-      && (!classification || classification === 'completed');
-    if (gatewayCompleted) {
-      // Gateway turns are independent message-routing transactions. Their
-      // authoritative outcome is the post-turn gateway/voice admission effect;
-      // they have no semantic P/W/B lifecycle for Aux to infer. Sending them to
-      // Aux created a permanent FIFO deadlock whenever classification was
-      // unavailable, because the periodic scanner intentionally skips gateways.
-      getAuxQueue().cancelClassifyFor(sessionName);
-      if (cs) cs._classifyTaskId = null;
-      const sessionId = persisted.id || sessionName;
-      applyClassifyResult(cs, sessionName, sessionId, {
-        state: 'D',
-        goal: cs?.currentTask?.goal || '',
-        phase: 'done',
-        evidence: 'gateway_turn_completed',
-      }, { cwd: cs?.cwd, source: 'multicc/gateway-turn' });
-    } else if (classification === 'api-error') {
-      // Drop this session's queued/in-flight classify. Whatever it was judging
-      // is now superseded, and letting it resolve would overwrite the
-      // deterministic E with the guess this branch exists to avoid.
-      getAuxQueue().cancelClassifyFor(sessionName);
-      if (cs) cs._classifyTaskId = null;
-      const sessionId = persisted?.id || sessionName;
-      applyClassifyResult(cs, sessionName, sessionId, apiErrorResult(cs, sessionName),
-        { cwd: cs?.cwd, source: 'multicc/api-error' });
-    } else {
-      runClassifyNow(cs, sessionName);
+    getAuxQueue().cancelClassifyFor(sessionName);
+    if (cs) cs._classifyTaskId = null;
+    const sessionId = persisted?.id || sessionName;
+    const liveness = turnLivenessForClassify(sessionName);
+    const userInputHost = getUserInputSignalHost();
+    const verdict = resolveTurnState({
+      liveness,
+      boundary: classification || 'unknown-interruption',
+      sessionType: persisted?.type || null,
+      pendingUserInput: typeof userInputHost.pending === 'function'
+        && !!userInputHost.pending(sessionName),
+    });
+    applyClassifyResult(cs, sessionName, sessionId, {
+      ...verdict,
+      goal: cs?.currentTask?.goal || getTaskState(persisted).goal || '',
+      phase: verdict.state === 'D'
+        ? 'done' : cs?.currentTask?.phase || getTaskState(persisted).phase || 'planning',
+    }, { cwd: cs?.cwd, source: 'multicc/turn-rules' });
+
+    // Gateway turns are routing transactions and do not participate in task
+    // naming. Every other turn gets best-effort Aux attribution after state has
+    // already committed.
+    if (persisted?.type !== 'gateway') {
+      runClassifyNow(cs, sessionName, { turnId, skipCancel: true });
     }
     getTaskBoardRuntime().onTurnEnd(cs, sessionName);
   }
@@ -870,6 +993,7 @@ function createClassifyStateMachine(rawDeps) {
     isSystemInjectedMsg,
     isGoalResolved,
     applyClassifyResult,
+    applyTaskAttributionResult,
     scanAndReclassify,
     cancelClassify,
     buildClassifyConversation,

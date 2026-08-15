@@ -174,6 +174,7 @@ const { createDispatchTargeting } = require('./src/dispatch/targeting');
 const { createGatewayHost } = require('./src/dispatch/gateway-host');
 const { createSafeProgressReducer, createDispatchProgressSubscription } = require('./src/dispatch/progress');
 const { createClassifyStateMachine } = require('./src/classify/state-machine');
+const { createAuxRunLog, createAuxRunRoutes } = require('./src/routes/aux-runs');
 const { createLivenessRuntime } = require('./src/liveness/runtime');
 const { createProcessProbe } = require('./src/liveness/process-probe');
 const { createRolloutPathResolver } = require('./src/liveness/rollout-path');
@@ -236,6 +237,7 @@ const MULTICC_PATHS = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
 const MEMORY_STORE_ROOT = process.env.MULTICC_MEMORY_ROOT || path.join(__dirname, 'memories');
 const chatHistoryRepository = createChatHistoryFileRepository({ dataDir: MULTICC_PATHS.root });
 const turnEventJournal = sharedTurnEventJournal(MULTICC_PATHS);
+const auxRunLog = createAuxRunLog({ dir: MULTICC_PATHS.auxRunsDir, log: (event, detail) => console.warn(`[multicc/aux-run-log] ${event}`, detail) });
 const chatSessions = new Map();
 let chatHistoryRuntime = null;
 let chatHistoryService = null;
@@ -1457,14 +1459,6 @@ const sessionGitRuntime = createSessionGitRuntime({
   logger: console,
 });
 const mergeStateCached = sessionGitRuntime.mergeStateCached;
-// ── Classify state machine ───────────────────────────────────────────────
-// The unified classify loop (turn-end hook + 60s scan + current-task model +
-// notify/outcome broadcasts) lives in src/classify/state-machine.js. All of its
-// host dependencies are injected as getters/wrappers because most (auxQueue,
-// sessionWorkHost, taskContextHost, taskBoardRuntime, userInputSignalHost,
-// apiErrorHost, waitInjector, the push/broadcast helpers) are composed further
-// down this file — the bindings below are destructured before the by-value
-// consumers (sessionAdmin, pushRuntime, turn finalization, WS handlers).
 const classifyStateMachine = createClassifyStateMachine({
   persistedSessions,
   chatSessions,
@@ -1492,6 +1486,8 @@ const classifyStateMachine = createClassifyStateMachine({
   loadChatHistory: (...args) => loadChatHistory(...args),
   viewChatHistory: (...args) => viewChatHistory(...args),
   appendChatMessage: (...args) => appendChatMessage(...args),
+  annotateChatTurn: (...args) => chatHistoryRuntime?.annotateTurn(...args) || [],
+  getAuxRunLog: () => auxRunLog,
 });
 const {
   recordTaskBoardGoal,
@@ -2329,6 +2325,7 @@ chatHistoryRuntime = createChatHistoryRuntime({
 });
 chatHistoryService = chatHistoryRuntime.service;
 chatHistoryRuntime.mountRoutes(app);
+createAuxRunRoutes({ records: persistedSessions, getLog: () => auxRunLog }).mountRoutes(app);
 
 // Compatibility wrappers keep earlier host composition (Aux, dispatch and
 // session queries) independent of the runtime's later construction point.

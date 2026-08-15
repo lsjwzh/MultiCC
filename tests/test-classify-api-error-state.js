@@ -26,6 +26,7 @@ function fixture({
   lastDecision = { action: 'fail_fast', error: FAIL_FAST },
   retryPlanned = false,
   auxReply = '定位 codex 冷启瓶颈\n规划中\nP',
+  auxUnhealthy = false,
 } = {}) {
   const record = {
     id: 's1', kind: 'chat', cli: 'qoder',
@@ -50,11 +51,12 @@ function fixture({
   const observed = {
     enqueued: 0, cancelledFor: [], transitions: 0,
     broadcasts: [], pushes: [], evaluated: 0, boardTurnEnds: 0,
+    auxRuns: [], annotations: [],
   };
   let releaseAux = () => {};
   const auxQueue = {
     queue: [],
-    isUnhealthy: () => false,
+    isUnhealthy: () => auxUnhealthy,
     hasPendingFor: () => false,
     enqueue() {
       observed.enqueued += 1;
@@ -104,15 +106,19 @@ function fixture({
     retryNotice: () => '上游 API 请求失败，未自动重试。检查错误详情后决定是否手动重试',
     loadChatHistory: () => [{ role: 'assistant', content: 'x'.repeat(40) }],
     appendChatMessage() {},
+    annotateChatTurn: (...args) => { observed.annotations.push(args); return []; },
+    getAuxRunLog: () => ({
+      record: (_sessionId, run) => { observed.auxRuns.push(run); return run; },
+    }),
   });
   return { machine, record, chatState, observed, releaseAux: () => releaseAux() };
 }
 
-test('an exhausted API failure publishes E from the policy, never from an Aux guess', () => {
+test('an exhausted API failure publishes E from rules before best-effort Aux naming', () => {
   const h = fixture();
   h.machine.classifyTurnEnd(h.chatState, 's1', { classification: 'api-error' });
 
-  assert.equal(h.observed.enqueued, 0, 'the classifier must not be asked about a known outcome');
+  assert.equal(h.observed.enqueued, 1, 'Aux still records task attribution for the message');
   assert.equal(h.record.taskState.classifyState, 'E');
   assert.equal(h.observed.transitions, 1, 'the verdict still crosses the scheduler boundary');
   assert.equal(h.observed.boardTurnEnds, 1, 'the task board turn-end hook still runs');
@@ -133,7 +139,8 @@ test('the same turn cancels this session queued and in-flight classify work', ()
   const h = fixture();
   h.machine.classifyTurnEnd(h.chatState, 's1', { classification: 'api-error' });
   assert.deepEqual(h.observed.cancelledFor, ['s1']);
-  assert.equal(h.chatState._classifyTaskId, null);
+  assert.equal(typeof h.chatState._classifyTaskId, 'string',
+    'the cancelled stale request is replaced by one naming-only request for this turn');
 });
 
 test('a classify already in flight cannot overwrite the deterministic E when it lands', async () => {
@@ -153,11 +160,12 @@ test('a classify already in flight cannot overwrite the deterministic E when it 
     'the superseded verdict must not even be recorded');
 });
 
-test('a turn end without a boundary verdict still goes through the classifier', () => {
+test('a turn end without a boundary verdict fails closed and still attributes the task', () => {
   const h = fixture();
   h.machine.classifyTurnEnd(h.chatState, 's1');
   assert.equal(h.observed.enqueued, 1);
   assert.deepEqual(h.observed.cancelledFor, ['s1'], 'runClassifyNow owns its own dedup');
+  assert.equal(h.record.taskState.classifyState, 'E');
 });
 
 test('a planned retry owns the turn, so no premature E is published', () => {
@@ -165,6 +173,21 @@ test('a planned retry owns the turn, so no premature E is published', () => {
   h.machine.classifyTurnEnd(h.chatState, 's1', { classification: 'api-error' });
   assert.equal(h.record.taskState.classifyState, 'P', 'liveness holds the candidate');
   assert.equal(h.observed.transitions, 0);
+});
+
+test('clean completion reaches D even when Aux task attribution is unavailable', () => {
+  const h = fixture({ auxUnhealthy: true });
+  h.machine.classifyTurnEnd(h.chatState, 's1', {
+    classification: 'completed', turnId: 'turn-offline',
+  });
+  assert.equal(h.record.taskState.classifyState, 'D');
+  assert.equal(h.observed.enqueued, 0);
+  assert.equal(h.record.taskState.classifyHistory.at(-1).evidence, 'turn_completed');
+  assert.equal(h.observed.auxRuns.length, 1);
+  assert.equal(h.observed.auxRuns[0].error, 'aux_unhealthy');
+  assert.equal(h.observed.auxRuns[0].turnId, 'turn-offline');
+  assert.equal(h.observed.annotations.length, 1,
+    'the turn still receives an inspectable auxRunId when Aux is unavailable');
 });
 
 test('a legacy API error with no policy decision still records one before publishing E', () => {
@@ -183,10 +206,10 @@ test('the periodic scan leaves a fail_fast E alone instead of re-judging it back
   assert.equal(h.record.taskState.classifyState, 'E');
 });
 
-test('the scan guard is scoped to fail_fast and does not freeze every E', () => {
+test('the naming scan skips any already-resolved goal regardless of turn state', () => {
   const h = fixture({ classifyState: 'E', apiError: null });
   h.machine.scanAndReclassify();
   const decision = h.machine.scanHistory.passes[0].decisions.find(entry => entry.sid === 's1');
-  assert.notEqual(decision.decision, 'skipped-api-error');
-  assert.equal(h.observed.enqueued, 1, 'an E with no standing policy is still re-judged');
+  assert.equal(decision.decision, 'skipped-goal-resolved');
+  assert.equal(h.observed.enqueued, 0);
 });

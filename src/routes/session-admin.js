@@ -322,28 +322,17 @@ function createSessionAdminRuntime(rawDeps) {
   }
 
   function enqueueClassification(sessionId, record, reply) {
-    const queue = auxRuntime().queue;
-    const task = deps.getTaskState(record);
-    const cleanPrior = deps.isInjectedOrJunkGoal(task.goal) ? '' : (task.goal || '');
-    queue.enqueue({
-      type: 'intent_classify',
-      systemPrompt: deps.buildClassifySystemPrompt(cleanPrior),
-      prompt: deps.buildClassifyConversation(sessionId, reply),
-      meta: { sid: sessionId, manual: true },
-    }).then(result => {
-      if (result.cancelled) return;
-      const parsed = deps.parseClassifyResult(result.text);
-      const chat = deps.chatSessions.get(sessionId);
-      const persistedId = deps.records.get(sessionId)?.id || sessionId;
-      deps.dispatchStateAction(parsed, {
-        sessionName: sessionId,
-        sessionId: persistedId,
-        cs: chat,
-        isTerminal: false,
-      });
-    }).catch(error => {
-      if (error && error.cancelled) return;
-    });
+    const chat = deps.chatSessions.get(sessionId);
+    if (!chat) return;
+    const previous = chat.currentAssistantText;
+    chat.currentAssistantText = reply;
+    try {
+      // Legacy endpoint name retained. The action now replays task attribution
+      // only; turn state remains owned by structured finalization rules.
+      deps.runClassifyNow(chat, sessionId, { manual: true });
+    } finally {
+      chat.currentAssistantText = previous;
+    }
   }
 
   function classificationReply(sessionId) {
