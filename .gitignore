@@ -18,6 +18,7 @@ orchestration.sqlite-shm
 task_board.json
 shares.json
 aux-config.json
+aux_runs/
 notes.json
 ui-layout.json
 chat_history/
