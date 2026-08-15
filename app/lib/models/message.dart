@@ -48,9 +48,9 @@ class ToolCall {
 
   /// Wall-clock epoch ms stamped by the live event handlers (mirror of the
   /// web's chat-event-controller): startedAt at content_block_start, endedAt
-  /// at the matching tool_result. History replay has neither (the server
-  /// persists no tool timing), so [durationMs] stays null there — unknown,
-  /// never fabricated.
+  /// at the matching tool_result. New history persists both stamps; legacy
+  /// messages have neither, so [durationMs] stays null there — unknown, never
+  /// fabricated.
   int? startedAt;
   int? endedAt;
 
