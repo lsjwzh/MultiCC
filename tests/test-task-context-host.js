@@ -106,7 +106,16 @@ test('production detaches every new untracked scheduler task from the prior task
   assert.match(turnEngine,
     /const detachTaskContext = \(!requestedTask\.id && opts\.schedulerWorkKind === 'task'\)\s*\|\| \(!!originDispatchId && !requestedTask\.id\)/);
   assert.match(turnEngine, /beginTurn\(cs,\s*requestedTask,\s*\{\s*detach:\s*detachTaskContext\s*\}\)/);
-  assert.match(turnEngine, /messageMetadata\(requestedTask,\s*nextTaskId,\s*\{\s*detached:\s*taskDetached\s*\}\)/);
+  assert.match(turnEngine, /messageMetadata\(messageTask,\s*nextTaskId,\s*\{\s*detached:\s*taskDetached\s*\}\)/);
+});
+
+test('ordinary chat gets a canonical task id on its first turn', () => {
+  const { host, states } = fixture();
+  const state = states.get('worker');
+  assert.deepEqual(host.beginTurn(state, {}), {
+    taskId: 'tsk_uuid', boundaryChanged: true, detached: false,
+  });
+  assert.equal(state._currentTaskId, 'tsk_uuid');
 });
 
 test('Commander input routes once, persists a standard source message, and emits no assistant copy', async () => {

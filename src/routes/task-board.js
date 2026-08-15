@@ -559,6 +559,61 @@ function createTaskBoardRuntime(deps) {
     }
   }
 
+  // Aux may discover after persistence that the latest turn starts a genuinely
+  // new task (or continues an older task in this session). Move the exact turn
+  // ref between canonical task ids; title similarity never merges identity.
+  function reassignTurnTask(sessionName, oldTaskId, newTaskId, messages = [], meta = {}) {
+    try {
+      if (!newTaskId || oldTaskId === newTaskId) return false;
+      const rec = records.get(sessionName);
+      if (!rec || rec.type === 'aux' || rec.type === 'gateway' || rec.type === 'commander') return false;
+      const userMsg = messages.find(message => message?.role === 'user') || null;
+      const assistantMsg = [...messages].reverse().find(message => message?.role === 'assistant') || null;
+      const messageIds = new Set(messages.map(message => message?.id).filter(Boolean));
+      const oldTask = oldTaskId ? board.tasks[oldTaskId] : null;
+      let oldChanged = false;
+      if (oldTask && messageIds.size) {
+        const before = oldTask.refs.length;
+        oldTask.refs = oldTask.refs.filter(ref =>
+          !messageIds.has(ref.userMsgId) && !messageIds.has(ref.assistantMsgId));
+        oldChanged = oldTask.refs.length !== before;
+        if (oldChanged) oldTask.updatedAt = Date.now();
+      }
+
+      const indexed = ensureTaskIndex({
+        taskId: newTaskId,
+        dirId: rec.dirId || null,
+        sessionId: sessionName,
+        taskText: meta.taskText || userMsg?.content || '',
+        now: userMsg?.ts || Date.now(),
+      });
+      const task = indexed.task;
+      if (!task) return false;
+      const now = Date.now();
+      let changed = core.addRefToTask(task, {
+        sessionId: sessionName,
+        dirId: rec.dirId || null,
+        userMsgId: userMsg?.id || null,
+        assistantMsgId: assistantMsg?.id || null,
+        ts: assistantMsg?.ts || userMsg?.ts || now,
+        excerpt: '',
+      }, now);
+      const title = String(meta.taskName || '').trim().slice(0, 40);
+      if (title && task.title !== title) {
+        task.title = title;
+        task.updatedAt = now;
+        changed = true;
+      }
+      if (!changed && !oldChanged && !indexed.created) return false;
+      save();
+      notify(rec.dirId || null, [newTaskId, ...(oldTaskId ? [oldTaskId] : [])]);
+      return true;
+    } catch (error) {
+      logger.log(`[multicc/taskboard] reassignTurnTask error: ${error?.message || error}`);
+      return false;
+    }
+  }
+
   // classify enriches the already-indexed task selected by canonical taskId.
   // It never creates a task for marker-less/ordinary chat.
   function onClassifyGoal(sessionName, goal, phase, turn = {}) {
@@ -1369,6 +1424,7 @@ function createTaskBoardRuntime(deps) {
     recordRouterAdmission,
     onTurnEnd,
     onClassifyGoal,
+    reassignTurnTask,
     scanPendingClassifications,
     routeCommanderInput: async (commanderId, text, options = {}) => {
       const commander = records.get(commanderId);

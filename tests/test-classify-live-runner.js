@@ -121,18 +121,14 @@ test('mid-turn goal discovery is observational and cannot publish a W verdict', 
   assert.equal(h.chatState.isStreaming, true);
 });
 
-test('scan commits a candidate only after inactive liveness and requests lost-boundary recovery', async () => {
+test('scan never re-judges turn state after the runner is inactive', async () => {
   const h = fixture({ cli: 'opencode', isStreaming: false });
   h.chatState.claudeProc = null;
   h.machine.scanAndReclassify();
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(h.observed.enqueued, 1);
-  assert.equal(h.observed.transitions, 1);
-  assert.deepEqual(h.observed.transitionOptions, [{
-    recoverMissingBoundary: true,
-    livenessReason: 'fixture_idle',
-  }]);
-  assert.equal(h.record.taskState.classifyState, 'W');
+  assert.equal(h.observed.enqueued, 0);
+  assert.equal(h.observed.transitions, 0);
+  assert.equal(h.record.taskState.classifyState, 'P');
 });
 
 test('unknown liveness fails closed before classify admission', () => {

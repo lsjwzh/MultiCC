@@ -98,6 +98,11 @@ function publicCommittedMessage(message) {
       .slice(0, 64)
       .map(value => value.slice(0, 160));
   }
+  for (const field of ['turnId', 'taskId', 'taskName', 'auxRunId']) {
+    if (typeof message[field] === 'string' && message[field]) {
+      projected[field] = message[field].slice(0, 160);
+    }
+  }
   return Object.freeze(projected);
 }
 
@@ -327,6 +332,19 @@ function createChatHistoryRuntime(rawDeps) {
   function appendMessage(sessionId, message) {
     if (!message || typeof message !== 'object') return false;
     if (!message.id) message.id = deps.idFactory();
+    // Stamp the task this message belongs to. The interim save path has always
+    // done this; doing it here covers user messages and finals too, which is
+    // what makes a transcript groupable by task instead of only by session.
+    // An explicit taskId on the message wins — callers replaying or importing
+    // history know better than the live session pointer.
+    if (message.taskId == null) {
+      const owner = deps.chatSessions.get(sessionId);
+      if (owner && owner._currentTaskId) message.taskId = owner._currentTaskId;
+    }
+    if (message.turnId == null) {
+      const owner = deps.chatSessions.get(sessionId);
+      if (owner?._activeTurn?.turnId) message.turnId = owner._activeTurn.turnId;
+    }
     let afterCommit;
     if (message.role === 'assistant') {
       const stamp = Number(message.ts);
@@ -353,6 +371,60 @@ function createChatHistoryRuntime(rawDeps) {
     clearTimeoutFn(timer);
     incrementalSaveTimers.delete(key);
     return true;
+  }
+
+  function annotateTurn(sessionId, turnId, patch = {}, { anchorMessageId = null } = {}) {
+    const history = service.read(sessionId);
+    let selected = new Set();
+    if (turnId) {
+      selected = new Set(history.filter(message => message?.turnId === turnId).map(message => message.id));
+    }
+    // Legacy/fallback path for a just-finished turn that predates turnId: anchor
+    // on the judged assistant and include the nearest preceding user message.
+    if (!selected.size && anchorMessageId) {
+      const anchor = history.findIndex(message => message?.id === anchorMessageId);
+      if (anchor !== -1) {
+        let start = anchor;
+        while (start >= 0 && history[start]?.role !== 'user') start -= 1;
+        for (let index = Math.max(0, start); index <= anchor; index += 1) {
+          if (history[index]?.id) selected.add(history[index].id);
+        }
+      }
+    }
+    if (!selected.size) return [];
+
+    const changed = [];
+    const next = history.map(message => {
+      if (!selected.has(message?.id)) return message;
+      const updated = { ...message };
+      for (const field of ['taskId', 'taskName', 'auxRunId']) {
+        if (patch[field] !== undefined) updated[field] = patch[field];
+      }
+      if (message.role === 'user') {
+        for (const field of ['taskStart', 'taskSource', 'taskText']) {
+          if (patch[field] !== undefined) updated[field] = patch[field];
+        }
+      }
+      changed.push(updated);
+      return updated;
+    });
+    try {
+      service.replace(sessionId, next, { reason: 'aux-task-attribution' });
+      deps.chatBroadcast(String(sessionId), {
+        type: 'chat_history_annotation',
+        messages: changed.map(message => ({
+          id: message.id,
+          turnId: message.turnId || null,
+          taskId: message.taskId || null,
+          taskName: message.taskName || null,
+          auxRunId: message.auxRunId || null,
+        })),
+      });
+      return changed;
+    } catch (error) {
+      logFailure('chat_history_annotation_failed', error, sessionId);
+      return [];
+    }
   }
 
   function clearAllIncrementalSaves() {
@@ -704,6 +776,7 @@ function createChatHistoryRuntime(rawDeps) {
 
   return Object.freeze({
     appendMessage,
+    annotateTurn,
     clearAllIncrementalSaves,
     clearHistory,
     clearIncrementalSave,

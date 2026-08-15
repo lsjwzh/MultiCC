@@ -835,10 +835,19 @@ function createChatTurnEngine(deps) {
       taskId: nextTaskId, boundaryChanged: taskBoundaryChanged,
       detached: taskDetached,
     } = taskContextHost.beginTurn(cs, requestedTask, { detach: detachTaskContext });
+    const inferredTaskStart = !requestedTask.id && taskBoundaryChanged
+      && !taskDetached && !!nextTaskId;
+    const messageTask = inferredTaskStart ? {
+      id: nextTaskId,
+      start: true,
+      source: 'aux',
+      text,
+    } : requestedTask;
 
     // Persist the canonical user event before any provider execution.
     const userMessageSaved = appendChatMessage(sessionName, {
       role: 'user', content: text, ts: Date.now(),
+      turnId,
       clientMsgId: clientMsgId || undefined,
       deliveryId: deliveryId || undefined,
       originDispatchId: originDispatchId || undefined,
@@ -850,7 +859,7 @@ function createChatTurnEngine(deps) {
       // replay) can tear the prompt card down without relying on the event
       // arriving. Idempotent with consumeUserInputRequestId on the clients.
       answeredQuestionId: opts.userInputRequestId || undefined,
-      ...taskContextHost.messageMetadata(requestedTask, nextTaskId, { detached: taskDetached }),
+      ...taskContextHost.messageMetadata(messageTask, nextTaskId, { detached: taskDetached }),
       bgTaskIds: Array.isArray(bgTaskIds) && bgTaskIds.length ? bgTaskIds : undefined,
       bgToolUseIds: Array.isArray(bgToolUseIds) && bgToolUseIds.length ? bgToolUseIds : undefined,
     });
