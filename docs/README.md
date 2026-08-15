@@ -30,7 +30,7 @@ contributors and integrators.
 | [API contracts](api-contracts.md) | The versioned `v1` HTTP + WebSocket contract surface and its stability rules. |
 | [API error policy](api-error-policy.md) | How provider failures are classified once at the owned turn boundary (`429`, `5xx`, timeouts). |
 | [Cancel state flow](cancel-state-flow.md) | How a manual Cancel (web stop button, app stop, task-card cancel) propagates to the running CLI. |
-| [Classify state-machine audit](classify-state-machine-audit.md) ([visual map](classify-state-machine-architecture.html)) | Current P/D/W/B/E inputs, outputs and sequences; semantic/atomicity audit; target split between turn execution and task lifecycle. |
+| [Classify state-machine audit](classify-state-machine-audit.md) (visual map: served at `/docs/classify-state-machine-architecture`, source [`public/docs/classify-state-machine-architecture.html`](../public/docs/classify-state-machine-architecture.html)) | Current P/D/W/B/E inputs, outputs and sequences; semantic/atomicity audit; target split between turn execution and task lifecycle. |
 | [Codex subagent provider routing](codex-subagent-provider-routing.md) | Routing Codex parent vs. child threads through separate provider/model endpoints. |
 | [Fleet Commander migration](commander-migration.md) | Startup invariant that every registered directory is valid, and the upgrade migration that enforces it. |
 | [Session FIFO scheduler](session-fifo-scheduler.md) | The single durable per-session queue that admits every unit of chat work. |
