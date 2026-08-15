@@ -310,7 +310,6 @@
   "activityLogHint": "查看 Fleet 级事件流（完成 / 合并 / 推送等）",
   "contextUsage": "上下文",
   "usageDetail": "详情",
-  "usageDetailTitle": "本轮与会话用量",
   "usageTurnBilled": "本轮计费",
   "usageTurnDuration": "本轮耗时",
   "usageSessionTotal": "会话累计",
@@ -757,5 +756,17 @@
   "restartSpawnHint": "进程级重启：杀掉并重建该会话的 CLI 进程。MultiCC 对话上下文保留；codex 会归档原生历史并重建上下文（↻ 重连无效时用）",
   "restartSpawnConfirm": "重启该会话的 CLI 进程？\n\n进行中的这一轮会被中断。MultiCC 对话上下文保留；codex 会话的原生历史将被归档，下一条消息重建上下文。",
   "restartSpawnDone": "✓ CLI 进程已重启（原 pid {pid}）。发下一条消息即可继续。",
-  "restartSpawnFailed": "重启进程失败：{error}"
+  "restartSpawnFailed": "重启进程失败：{error}",
+  "backgroundTasks": "后台任务",
+  "backgroundTaskUnnamed": "后台任务",
+  "roleTokenDetailTitle": "Token 明细",
+  "roleTokenMain": "主 Agent",
+  "roleTokenSub": "辅 Agent",
+  "roleTokenByProvider": "按 Provider 分布",
+  "roleTokenInput": "输入",
+  "roleTokenOutput": "输出",
+  "roleTokenCacheRead": "缓存读",
+  "roleTokenCacheWrite": "缓存写",
+  "roleTokenNoSub": "本轮无辅 Agent 消耗",
+  "usageDetailTitle": "本轮与会话用量"
 }
