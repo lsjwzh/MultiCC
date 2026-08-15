@@ -2,6 +2,7 @@
 
 const { sanitizePublicText } = require('./http/public-safety');
 const { isSettledLetter } = require('./classify/vocab');
+const { apiErrorSignaturesQuoted } = require('./chat/api-error-policy');
 const { BusinessPushRequestError } = require('./business-push');
 
 const PUSH_ANSI_RE = /\x1b(?:\[[0-9;?]*[a-zA-Z~]|\][^\x07]*(?:\x07|\x1b\\)|[()][AB012]|.)/g;
@@ -9,6 +10,10 @@ const DEFAULT_IDLE_MS = 6000;
 const DEFAULT_MIN_CHARS = 80;
 const DEFAULT_COOLDOWN_MS = 8000;
 
+// The E-state error vocabulary below renders from the canonical signature
+// list in the API error policy (single source shared with the classify
+// prompt), so the words the classifier looks for cannot drift away from what
+// the error pipeline actually recognizes.
 const CLASSIFY_PROMPT = `你是一个意图分析器。下面是一个命令行 AI 编码助手(Claude Code / Codex)终端会话的最近输出。请严格输出三行：
 第1行：当前任务目标，用一个简短的名词性短语（中文≤20字，英文≤10词）。如果没有任务则输出「—」。
 第2行：当前阶段，必须是以下五个词之一：规划中 / 实现中 / 验证中 / 收尾中 / 已完成
@@ -17,7 +22,7 @@ const CLASSIFY_PROMPT = `你是一个意图分析器。下面是一个命令行 
   C = AI 应继续（任务还没做完，但可以直接接着跑，不需要用户操作；没有反问/等待迹象）
   W = 正在等待用户回复、确认或选择（如 y/n、Allow/Deny、编号选项、问题待答）
   B = 正在等待后台任务/子进程/外部数据返回后才能继续（如 Monitor 监控进度、nohup 后台跑、等部署/API）
-  E = API 异常中断（输出末尾出现 “API Error”、503、”Connection closed”、”Overloaded”、”Internal server error”、”The system is busy” 等错误信息，说明 AI 并非正常完成而是被故障截断）
+  E = API 异常中断（输出末尾出现 ${apiErrorSignaturesQuoted()} 等错误信息，说明 AI 并非正常完成而是被故障截断）
 
 判断时看整体走向：终端回到提示符、汇报结果后没有反问 → D（完成）；任务没做完但能接着跑 → C；有明确反问/让用户选 → W。
 

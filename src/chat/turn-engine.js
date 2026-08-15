@@ -23,7 +23,8 @@ const {
   hasMatchingPartialCheckpoint,
   planTurnFinalization,
   createTurnFinalizationExecutor,
-  claudeErrorEnvelope,
+  detectErrorEnvelope,
+  isKnownHarmlessStderrLine,
   sanitizeMessage: sanitizeApiErrorMessage,
 } = require('./index');
 const { createWsEnvelope } = require('../api-contract');
@@ -297,7 +298,14 @@ function createChatTurnEngine(deps) {
       turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'finalizing');
       cs.currentCost = evt.total_cost_usd || null;
       const apiFailure = evt.is_error === true || (evt.subtype && evt.subtype !== 'success' && /error|abort|timeout/i.test(evt.subtype));
-      const envelopeError = apiFailure ? null : claudeErrorEnvelope(providerName, cs.currentAssistantText);
+      const envelopeError = apiFailure ? null : detectErrorEnvelope(providerName, cs.currentAssistantText);
+      if (envelopeError && envelopeError.body != null) {
+        // Trailing envelope appended after real output: strip the error text so
+        // it never reaches the transcript; the meaningful body below is still
+        // checkpointed as a partial by the close finalizer (finalize-plan's
+        // append.required path fires on apiError + hasOutput).
+        cs.currentAssistantText = envelopeError.body;
+      }
       if (apiFailure || envelopeError) {
         getChatHistoryRuntime().clearIncrementalSave(sessionName);
         cs._sawApiError = true;
@@ -1092,6 +1100,7 @@ function createChatTurnEngine(deps) {
       turnTiming.markSpawned(sessionName, turn.turnId, spawnTs);
       turnTiming.markSent(sessionName, turn.turnId, spawnTs);
       let stderrBuf = '';
+      let stderrPending = '';
       const isActiveProc = () => cs.claudeProc === proc && isCurrentTurnRunner(cs, turn, runner);
 
       // Normalize a single JSONL line into the claude-shaped event stream the frontend
@@ -1127,12 +1136,23 @@ function createChatTurnEngine(deps) {
 
       proc.stderr.on('data', (chunk) => {
         if (!isActiveProc()) return;
-        stderrBuf += chunk.toString();
-        logger.warn('chat_provider_stderr', {
-          sessionId: sessionName,
-          provider: cs.cli,
-          message: sanitizeApiErrorMessage(chunk.toString()),
-        });
+        // Buffer to whole lines before judging: a harmless-looking prefix must
+        // not be dropped when the rest of the line (possibly the real error)
+        // has not arrived yet. Known-harmless provider chatter (codex skill
+        // load warnings, model-refresh timeouts, …) never enters the warn log
+        // or the close-time stderr tail.
+        stderrPending += chunk.toString();
+        const lines = stderrPending.split('\n');
+        stderrPending = lines.pop();
+        for (const line of lines) {
+          if (isKnownHarmlessStderrLine(line)) continue;
+          stderrBuf += line + '\n';
+          logger.warn('chat_provider_stderr', {
+            sessionId: sessionName,
+            provider: cs.cli,
+            message: sanitizeApiErrorMessage(line),
+          });
+        }
       });
 
       proc.on('error', (err) => {
@@ -1160,6 +1180,10 @@ function createChatTurnEngine(deps) {
           try { handleLine(cs.lineBuf); } catch (_) {}
         }
         cs.lineBuf = '';
+        if (stderrPending.trim() && !isKnownHarmlessStderrLine(stderrPending)) {
+          stderrBuf += stderrPending + '\n';
+        }
+        stderrPending = '';
         const durMs = Date.now() - spawnTs;
         const killReason = runner.killReason || null;
         const pendingStreamError = cs._codexPendingStreamError || '';

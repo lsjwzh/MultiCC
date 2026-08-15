@@ -6,6 +6,8 @@
 // (CLASSIFY_DISPLAY) and phase labels (PHASE_LABELS); and the classifier
 // system prompt. No I/O and no host state -- deterministic given its inputs.
 
+const { apiErrorSignaturesQuoted } = require('../chat/api-error-policy');
+
 // Normalize the shared goal/phase/state classifier response.
 function parseClassifyResult(text) {
   // DeepSeek thinking-block guard: strip everything before the marker.
@@ -177,7 +179,7 @@ function buildClassifySystemPrompt(priorGoal) {
 第3行：仅一个字母，判断【当前任务段】接下来该谁行动：
        D = 任务已完成（助手把当前任务的所有要求都做完了，正常收尾、没有反问、也不需要再继续；用户可以验收）
        W = 等用户（本轮助手已停下，主动权在用户手里）：助手在反问/征求意见/让用户做选择；或用户表达了犹豫；或任务还没全部做完但助手这一轮已结束——本系统不会自动替用户续接，未完成的部分一律等用户明确指示再继续，所以都判 W
-       E = API 异常中断（助手回复末尾含 "API Error"、"503"、"Connection closed"、"Overloaded"、"Internal server error"、"The system is busy" 等故障信息，回答被截断而非正常完成）
+       E = API 异常中断（助手回复末尾含 ${apiErrorSignaturesQuoted()} 等故障信息，回答被截断而非正常完成）
        P = AI 还在处理中（回复为空、或明显话没说完，还没到判断的时候）
 
 关键区分 D vs W：

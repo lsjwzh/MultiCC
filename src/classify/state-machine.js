@@ -672,6 +672,19 @@ function createClassifyStateMachine(rawDeps) {
       // and no .message — that's normal churn, not a failure. Don't log it as FAILED.
       if (e && e.cancelled) return;
       console.log(`[multicc/aux] Classify FAILED for ${sessionName}: ${e.message}`);
+      // Route the failure through the centralized API error policy so classify
+      // transport errors (ECONNRESET/timeout/5xx) land in the same taxonomy,
+      // metrics and provider circuit as every other aux/upstream failure —
+      // before this they were only a console line (1397 occurrences in one
+      // production log window). Evaluated for classification only: no task
+      // state is written, the degraded classifyUnavailable path below still
+      // owns the session-visible outcome.
+      try {
+        getApiErrorHost().recordApiError(
+          { source: 'aux_http', provider: 'aux', message: String(e && e.message || 'classify failed') },
+          { source: 'aux_http', provider: 'aux', sessionId: sessionName },
+        );
+      } catch (_) {}
       getSessionWorkHost().classifyUnavailable(
         sessionName, cs._currentTaskId || null, 'classification_error');
     });
