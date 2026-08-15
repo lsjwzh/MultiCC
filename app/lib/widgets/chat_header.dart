@@ -105,8 +105,8 @@ class ChatHeader extends StatelessWidget {
                 child: Text(
                   provider.titleLabel,
                   style: const TextStyle(
-                    color: Color(0xFF6aa3ff),
-                    fontSize: 13,
+                    color: Color(0xFFe7eaee),
+                    fontSize: 14,
                     fontWeight: FontWeight.w600,
                     fontFamily: 'monospace',
                   ),
