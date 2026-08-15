@@ -55,6 +55,7 @@ function fixture(options = {}) {
     startingGraceMs: options.startingGraceMs,
     confirmations: options.confirmations ?? STALLED_RECOVERY_CONFIRMATIONS,
     cooldownMs: options.cooldownMs ?? 120_000,
+    autoCancel: options.autoCancel,
     logger: { warn() {} },
   });
   return {
@@ -66,12 +67,28 @@ function fixture(options = {}) {
   };
 }
 
-test('persistent stalled verdict across consecutive sweeps cancels via the manual-cancel path', async () => {
+test('persistent silence is observed but never cancels a live turn by default', async () => {
   const h = fixture();
   let result = await h.recovery.sweep();
   assert.equal(result.results[0].action, 'confirming');
   assert.deepEqual(h.cancelCalls, []);
 
+  h.advance(30_000);
+  result = await h.recovery.sweep();
+  assert.equal(result.results[0].action, 'observed');
+  assert.equal(result.results[0].autoCancel, false);
+  assert.deepEqual(h.cancelCalls, []);
+
+  h.advance(30_000);
+  result = await h.recovery.sweep();
+  assert.equal(result.results[0].reason, 'recovery_cooldown');
+  assert.deepEqual(h.cancelCalls, []);
+});
+
+test('explicit opt-in may cancel a confirmed stalled verdict via the canonical path', async () => {
+  const h = fixture({ autoCancel: true });
+  let result = await h.recovery.sweep();
+  assert.equal(result.results[0].action, 'confirming');
   h.advance(30_000);
   result = await h.recovery.sweep();
   assert.equal(result.results[0].action, 'cancelled');
@@ -145,7 +162,7 @@ test('non-P, already-cancelled and non-in-flight sessions are never touched', as
 });
 
 test('busy persistent stream counts as in-flight even without cs.isStreaming', async () => {
-  const h = fixture({ isStreaming: false, stream: { busy: true } });
+  const h = fixture({ isStreaming: false, stream: { busy: true }, autoCancel: true });
   let result = await h.recovery.sweep();
   assert.equal(result.results[0].action, 'confirming');
   h.advance(30_000);
@@ -155,7 +172,7 @@ test('busy persistent stream counts as in-flight even without cs.isStreaming', a
 });
 
 test('after firing, a cooldown suppresses refire until it expires', async () => {
-  const h = fixture({ cooldownMs: 120_000 });
+  const h = fixture({ cooldownMs: 120_000, autoCancel: true });
   await h.recovery.sweep();
   h.advance(30_000);
   await h.recovery.sweep(); // fires
@@ -203,6 +220,7 @@ test('an assess failure skips this sweep without poisoning the suspect count', a
     },
     cancelTurn: async (id, opts) => { cancelCalls.push([id, opts]); return { ok: true }; },
     now: () => at,
+    autoCancel: true,
     logger: { warn() {} },
   });
   let result = await recovery.sweep();
@@ -221,7 +239,7 @@ test('the starting phase gets extra grace before recovery may fire', async () =>
   // Silent 250s: past the 180s stall standard but inside starting grace
   // (180s + default 120s). MCP handshake + rollout load + first token all
   // happen in this phase, so a kill here would be a false positive.
-  const h = fixture({ silentFor: 250_000, turnStatus: { phase: 'starting' } });
+  const h = fixture({ silentFor: 250_000, turnStatus: { phase: 'starting' }, autoCancel: true });
   let result = await h.recovery.sweep();
   assert.equal(result.results[0].action, 'skip');
   assert.equal(result.results[0].reason, 'starting_grace');
@@ -283,8 +301,8 @@ test('non-starting phases keep the original threshold and a throwing status fn i
   assert.equal(assessCalls, 1);
 });
 
-test('without a getTurnStatus dep the recovery behaves exactly as before', async () => {
-  const h = fixture({ silentFor: 250_000 }); // no turnStatus → getTurnStatus null
+test('without a getTurnStatus dep the opt-in recovery keeps prior threshold behavior', async () => {
+  const h = fixture({ silentFor: 250_000, autoCancel: true }); // no turnStatus → getTurnStatus null
   let result = await h.recovery.sweep();
   assert.equal(result.results[0].action, 'confirming');
   h.advance(30_000);

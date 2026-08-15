@@ -11,21 +11,21 @@
 // through as 'alive'. The result was sessions spinning forever with a new
 // message unable to get in.
 //
-// This component periodically re-assesses in-flight chat sessions and, when
-// the authoritative `stalled` verdict persists across consecutive sweeps,
-// ends the turn through the SAME path a manual cancel uses
-// (sessionWorkHost.cancelActiveTurn): SIGTERM→SIGKILL the runner, submit the
-// canonical E verdict through classify (single writer), release the scheduler
-// slot so the next user message is admitted again.
+// This component periodically re-assesses in-flight chat sessions. A `stalled`
+// verdict is useful operational evidence, but it is built entirely from the
+// ABSENCE of observable activity. That cannot prove a live runner is wedged:
+// long local reasoning, an upstream request owned by a proxy process, or a
+// provider that emits no intermediate bytes all look identical. Therefore the
+// default policy is OBSERVE ONLY. It logs a confirmed suspect but never ends the
+// turn. Destructive recovery is retained behind an explicit opt-in for operators
+// who accept that tradeoff.
 //
-// False-positive protection is layered, mirroring b2dced7's "never fail a
-// succeeded turn" direction from the opposite side:
+// Detection noise protection is layered:
 //   • sessions must be in classifyState P with an in-flight runner;
-//   • silence alone never kills: the cheap pre-filter only opens the door,
-//     the full liveness assess() must say `stalled`, which additionally
-//     requires NO outbound HTTPS connection and NO rollout growth (a long
-//     tool call that is still talking to an upstream or writing its rollout
-//     stays `working`);
+//   • silence opens suspicion only: the full liveness assess() must also see
+//     NO outbound HTTPS connection and NO rollout growth (a long tool call
+//     that is still talking to an upstream or writing its rollout stays
+//     `working`); the resulting negative evidence is observe-only by default;
 //   • the verdict must persist for `confirmations` consecutive sweeps
 //     (default 2 × 30s on top of the existing 180s silence threshold — no
 //     new silence standard is invented, stallSilentMs is reused verbatim);
@@ -34,10 +34,14 @@
 //     budget, so while the turn-progress heartbeat reports phase=starting the
 //     silence threshold is extended by `startingGraceMs` (default +120s,
 //     covering the 60s MCP startup_timeout_sec plus rollout load);
-//   • after a recovery fires, a cooldown keeps the executor out while the
-//     cancel machinery (5s stop budget + classify transition) settles.
+//   • after a confirmed observation (or an opt-in recovery), a cooldown avoids
+//     repeating the same report while the turn remains quiet.
 //
-// Note on the cancelled kill landing: stopRunner detaches cs.claudeProc
+// Truly actionable failures use positive evidence elsewhere: the processing
+// watchdog handles a dead runner, and provider-log watchdogs handle a current-
+// turn correlated provider error. Neither relies on silence alone.
+//
+// Note on the opt-in cancelled kill landing: stopRunner detaches cs.claudeProc
 // BEFORE the process dies, so the turn-engine close handler sees a stale
 // proc and skips close-time classification entirely — the E verdict comes
 // solely from runCancel's structured result. clearErrorFlagsForSucceededTurn
@@ -72,6 +76,9 @@ function createStalledTurnRecovery(deps = {}) {
     ? Number(deps.startingGraceMs) : DEFAULT_STARTING_GRACE_MS);
   const confirmations = Math.max(1, Number(deps.confirmations) || DEFAULT_CONFIRMATIONS);
   const cooldownMs = Math.max(0, Number(deps.cooldownMs) || DEFAULT_COOLDOWN_MS);
+  // Safety default: negative evidence (silence + no observed traffic/growth) is
+  // never sufficient authority to kill a live turn.
+  const autoCancel = deps.autoCancel === true;
   const logger = deps.logger || console;
 
   // sessionId -> { count, reason, firstAt }
@@ -154,6 +161,23 @@ function createStalledTurnRecovery(deps = {}) {
 
     suspects.delete(sessionId);
     cooldowns.set(sessionId, at + cooldownMs);
+    if (!autoCancel) {
+      logger.warn?.('stalled_turn_observed', {
+        sessionId,
+        silentMs,
+        phase: turnPhase,
+        reason: verdict.reason,
+        confirmations: count,
+        action: 'observe_only',
+      });
+      return {
+        sessionId,
+        action: 'observed',
+        reason: verdict.reason,
+        autoCancel: false,
+      };
+    }
+
     const result = await deps.cancelTurn(sessionId, {
       reason: `stalled_${verdict.reason}`,
       killReason: 'stalled_recovery',

@@ -73,6 +73,9 @@ async function main() {
       MULTICC_STALLED_STARTING_GRACE_MS: '3000',
       MULTICC_STALLED_CONFIRMATIONS: '1',
       MULTICC_STALLED_INTERVAL_MS: '1000',
+      // Destructive recovery is intentionally off in production by default;
+      // this isolated test explicitly exercises the operator opt-in path.
+      MULTICC_STALLED_AUTO_CANCEL: '1',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

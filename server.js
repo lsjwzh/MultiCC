@@ -2737,13 +2737,15 @@ const processingWatchdog = createProcessingWatchdog({
   cancelTurn: (id, options) => sessionWorkHost.cancelActiveTurn(id, options),
   logger,
 });
-// Companion to the dead-runner watchdog: consumes the liveness `stalled` verdict (display-only before) to end wedged turns.
+// Companion to the dead-runner watchdog: observes the liveness `stalled` verdict.
+// Silence is negative evidence, so destructive recovery is explicit opt-in only.
 const envNumber = (value, fallback) => (value ? Number(value) : fallback);
 const stalledTurnRecovery = createStalledTurnRecovery({
   listRecords: () => persistedSessions.entries(), getTaskState, getChatSession: id => chatSessions.get(id),
   getStreamStatus: id => chatStream.status(id), assessLiveness: id => livenessRuntime.assess(id), getTurnStatus: id => turnProgressHeartbeat.status(id),
   stallSilentMs: envNumber(process.env.MULTICC_STALL_SILENT_MS, livenessRuntime.thresholds.stallSilentMs), startingGraceMs: envNumber(process.env.MULTICC_STALLED_STARTING_GRACE_MS),
   confirmations: envNumber(process.env.MULTICC_STALLED_CONFIRMATIONS), cooldownMs: envNumber(process.env.MULTICC_STALLED_COOLDOWN_MS),
+  autoCancel: process.env.MULTICC_STALLED_AUTO_CANCEL === '1',
   cancelTurn: (id, options) => sessionWorkHost.cancelActiveTurn(id, options), logger,
 });
 const providerLogWatchdog = createProviderLogWatchdog({ listRecords: () => persistedSessions.entries(), getChatSession: id => chatSessions.get(id),
