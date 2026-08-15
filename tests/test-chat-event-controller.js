@@ -706,6 +706,17 @@ test('Codex assistant path appends text and materializes tool cards without Clau
   assert.equal(fixture.state.currentTextContent, 'done');
   assert.equal(fixture.tools.length, 1);
   assert.equal(fixture.state.currentToolCards.get('id:codex-tool').inputJson, '{"cmd":"pwd"}');
+  // Timing parity with the claude path: codex tools skip content_block_start,
+  // so their creation site must stamp startedAt and tool_result stamps endedAt
+  // — otherwise live codex tool durations are unknown until history reload.
+  const t0 = fixture.state.currentToolCards.get('id:codex-tool').startedAt;
+  assert.ok(Number.isFinite(t0), 'codex tool creation stamps startedAt');
+  fixture.controller.handleEvent({
+    type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'codex-tool', content: 'ok' }] },
+  }, generation);
+  const tool = fixture.state.currentToolCards.get('id:codex-tool');
+  assert.ok(Number.isFinite(tool.endedAt) && tool.endedAt >= t0, 'tool_result stamps endedAt');
+  assert.equal(tool.isError, false);
 });
 
 test('OpenCode cumulative assistant snapshots render every text part without a refresh', () => {
