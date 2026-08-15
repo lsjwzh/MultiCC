@@ -40,6 +40,7 @@ const chatStream = require('../chat-stream');
 const waitInjector = require('../wait-injector');
 const providers = require('../providers');
 const { createTurnTimingRecorder } = require('./turn-timing');
+const { deriveOpenTasks } = require('./turn-event-replay');
 const { createCodexRolloutGuard } = require('./codex-rollout-guard');
 const { createOpencodeContextGuard } = require('./opencode-context-guard');
 
@@ -58,6 +59,12 @@ function adapterReasoningProgressEvent(event) {
     snapshot: true,
   };
 }
+
+// How long after a restart the reconnect replay keeps surfacing tasks that
+// the restart killed. Long enough to cover a reconnect right after the
+// restart plus a couple of page refreshes; short enough that yesterday's
+// interruptions don't pop up on every visit.
+const RECONNECT_REPLAY_WINDOW_MS = 15 * 60 * 1000;
 
 function createChatTurnEngine(deps) {
   const {
@@ -118,6 +125,9 @@ function createChatTurnEngine(deps) {
     scheduleIncrementalSave,
     chatBroadcast,
     sendWs,
+    // Turn event journal (#110): absent only in unit tests that never
+    // exercise the reconnect replay.
+    turnEventJournal = null,
     persistFinalAssistantResult,
     recordDurableTurnUsage,
     runDurablePostTurn,
@@ -1963,7 +1973,25 @@ function createChatTurnEngine(deps) {
     // frontend can settle any danmaku spinner whose one-shot `monitor_done` was
     // lost during a disconnect (it never enters streamReplay).
     try {
-      sendWs(ws, { type: 'background_tasks', tasks: getBackgroundTaskRuntime().listActiveBackgroundTasks(sessionName) });
+      const activeTasks = getBackgroundTaskRuntime().listActiveBackgroundTasks(sessionName);
+      sendWs(ws, { type: 'background_tasks', tasks: activeTasks });
+      // After a restart the in-memory runtime is empty and those processes
+      // died with the old server. The turn event journal is the only record
+      // of what was still open — replay each as an honest `interrupted` row
+      // instead of letting the danmaku go silent. Bounded to tasks whose last
+      // journal witness is recent, so this fades out instead of replaying
+      // ancient history on every page refresh.
+      if (activeTasks.length === 0 && turnEventJournal && typeof turnEventJournal.readAll === 'function') {
+        const cutoff = Date.now() - RECONNECT_REPLAY_WINDOW_MS;
+        for (const task of deriveOpenTasks(turnEventJournal.readAll(sessionName))) {
+          if (!Number.isFinite(task.lastTs) || task.lastTs < cutoff) continue;
+          sendWs(ws, {
+            type: 'monitor_done', task_id: task.task_id, status: 'interrupted',
+            summary: `重启前运行中 · 已随服务重启中断${task.description ? '：' + task.description : ''}`,
+            background: true, replayed: true,
+          });
+        }
+      }
     } catch (_) {}
     try {
       getSessionWorkHost().replayState(sessionName, event => sendWs(ws, event));

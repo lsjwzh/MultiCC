@@ -271,8 +271,12 @@
           break;
         case 'monitor_done':
           if (message.background !== false) {
+            // Interrupted (restart killed the process, reap, or the
+            // post-restart journal replay) is not success and not failure —
+            // render it as the neutral historical state, never a spinner.
             liveUi.pushDanmaku(
-              message.status === 'error' || message.status === 'failed' ? 'fail' : 'done',
+              message.status === 'error' || message.status === 'failed' ? 'fail'
+                : message.status === 'interrupted' ? 'stale' : 'done',
               message.summary || message.description || '后台任务', message.task_id,
             );
           }

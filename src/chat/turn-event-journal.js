@@ -145,7 +145,27 @@ function createTurnEventJournal(deps = {}) {
     return { sessions: sessions.size, dropped };
   }
 
-  return Object.freeze({ note, read, stats });
+  // All generations, oldest first, so seq is ascending across files — the
+  // full-history view derivation (open tasks at cutoff) needs. Same parse
+  // rules as read(); a corrupt line stops that file but not the rest.
+  function readAll(sessionId) {
+    if (!dirFor) return [];
+    const suffixes = [];
+    for (let i = keep; i >= 1; i--) suffixes.push('.' + i);
+    suffixes.push('');
+    const out = [];
+    for (const suffix of suffixes) {
+      let raw;
+      try { raw = fs.readFileSync(fileFor(sessionId, suffix), 'utf8'); } catch (_) { continue; }
+      for (const line of raw.split('\n')) {
+        if (!line) continue;
+        try { out.push(JSON.parse(line)); } catch (_) { break; }
+      }
+    }
+    return out;
+  }
+
+  return Object.freeze({ note, read, readAll, stats });
 }
 
 let shared = null;
