@@ -51,8 +51,10 @@ function createTaskContextHost(options = {}) {
   function beginTurn(state, requested = {}, options = {}) {
     const previous = state?._currentTaskId || null;
     const detached = options.detach === true;
-    const taskId = detached ? null : requested.id || previous;
-    const boundaryChanged = detached || (!!requested.id
+    const generated = !detached && !requested.id && !previous;
+    const taskId = detached ? null : requested.id || previous
+      || `tsk_${String(randomUUID()).replace(/-/g, '')}`;
+    const boundaryChanged = detached || generated || (!!requested.id
       && (requested.start === true || requested.id !== previous));
     if (state) state._currentTaskId = taskId || null;
     return { taskId, boundaryChanged, detached };

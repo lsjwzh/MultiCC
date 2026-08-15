@@ -239,10 +239,9 @@ test('manual reclassify keeps D/W guard and fire-and-forget completion semantics
 
   const forced = invoke(handler, { params: { id: 's1' }, query: { force: 'true' } });
   assert.equal(forced.statusCode, 200);
-  assert.equal(fixture.enqueued.length, 1);
+  assert.equal(fixture.getClassifyNow(), 1);
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(fixture.dispatched.length, 1);
-  assert.equal(fixture.dispatched[0].context.sessionName, 's1');
+  assert.equal(fixture.dispatched.length, 0, 'manual replay cannot write turn state');
 
   fixture.queue.unhealthy = true;
   const unavailable = invoke(handler, { params: { id: 't1' } });
