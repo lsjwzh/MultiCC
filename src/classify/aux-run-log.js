@@ -131,6 +131,9 @@ function createAuxRunLog(options = {}) {
       // The business task this verdict belongs to — the same value carried on
       // `message.taskId`, which is what makes runs groupable by task.
       taskId: run.taskId || null,
+      // The task pointer before attribution. It differs when Aux starts a new
+      // task or reconnects the turn to an older task.
+      priorTaskId: run.priorTaskId || null,
       // The last message the classifier saw. Reverse lookup from a rendered
       // message back to the verdict that judged it goes through this field.
       anchorMessageId: run.anchorMessageId || null,
@@ -144,6 +147,7 @@ function createAuxRunLog(options = {}) {
       parsed: run.parsed || null,
       error: run.error ? String(run.error) : null,
       cancelled: run.cancelled === true,
+      superseded: run.superseded === true,
     };
     if (!ensureDir()) return entry;
     try {

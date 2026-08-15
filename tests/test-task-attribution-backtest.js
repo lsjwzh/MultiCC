@@ -2,13 +2,21 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const {
   buildTaskAttributionConversation,
   buildTaskAttributionSystemPrompt,
   parseTaskAttribution,
   recentTaskContext,
 } = require('../src/classify/task-attribution');
-const { createFakeAuxModel, runHistoryBacktest } = require('../src/classify/history-backtest');
+const {
+  corpusFromAuxRuns,
+  createFakeAuxModel,
+  runHistoryBacktest,
+} = require('../src/classify/history-backtest');
+const { loadCorpus } = require('../scripts/backtest-task-attribution');
 
 const history = [
   { id: 'm1', role: 'user', content: '把登录页按钮改成蓝色', taskId: 'tsk-login', taskName: '登录页样式调整' },
@@ -91,4 +99,35 @@ test('legacy raw Aux text remains replayable as same-task naming evidence', () =
   }), {
     taskName: '登录页样式调整', phase: 'verifying', relation: 'same', taskId: 'tsk-login',
   });
+});
+
+test('durable aux-run JSONL records become a replayable fake-model corpus', async () => {
+  const corpus = corpusFromAuxRuns([{
+    runId: 'run-history-1',
+    priorTaskId: 'tsk-old',
+    taskId: 'tsk-export',
+    rawText: '{"taskName":"CSV 导出","phase":"implementing","relation":"same","taskId":"tsk-export"}',
+    parsed: { taskName: 'CSV 导出', phase: 'implementing', relation: 'same', taskId: 'tsk-export' },
+  }]);
+  assert.equal(corpus.cases.length, 1);
+  assert.deepEqual(corpus.cases[0].allowedTaskIds, ['tsk-old', 'tsk-export']);
+  const report = await runHistoryBacktest(corpus.cases, createFakeAuxModel(corpus.responses));
+  assert.equal(report.failed, 0);
+});
+
+test('CLI corpus loader accepts the JSONL shape written by aux-run-log', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-aux-backtest-'));
+  const file = path.join(dir, 'runs.jsonl');
+  fs.writeFileSync(file, [
+    JSON.stringify({
+      runId: 'r1', priorTaskId: 'tsk-old', taskId: 'tsk-old',
+      rawText: '{"taskName":"旧任务","relation":"same","taskId":"tsk-old"}',
+      parsed: { taskName: '旧任务', relation: 'same', taskId: 'tsk-old' },
+    }),
+    JSON.stringify({ runId: 'r2', error: 'aux_unhealthy', rawText: null }),
+  ].join('\n'));
+  const corpus = loadCorpus(file);
+  assert.equal(corpus.cases.length, 1);
+  assert.equal(corpus.cases[0].id, 'r1');
+  assert.match(corpus.responses.r1, /旧任务/);
 });

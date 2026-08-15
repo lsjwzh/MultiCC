@@ -76,6 +76,9 @@ function createClassifyStateMachine(rawDeps) {
     // server wires the JSONL-backed log in explicitly. Recording is diagnostic,
     // so a missing sink degrades observability and nothing else.
     getAuxRunLog = () => ({ record: () => null }),
+    // Structured background-task ownership. Optional for older hosts/tests;
+    // production wires the authoritative background runtime.
+    hasBackgroundPending = () => false,
   } = deps;
 
   if (!persistedSessions || typeof persistedSessions.get !== 'function') {
@@ -102,14 +105,14 @@ function createClassifyStateMachine(rawDeps) {
     [getSessionSummaries, 'getSessionSummaries'],
   ]) assertFunction(fn, name);
 
-  // Map classifier states to their runtime actions; D/W are scan-terminal states.
+  // Map rule-resolved turn states to their runtime actions.
 
   function recordTaskBoardGoal(sessionName, goal, phase, cs, classifyState = 'P') {
     getTaskContextHost().recordGoal(sessionName, goal, phase, cs, classifyState);
   }
 
-  // Classify owns the semantic letter; liveness only validates whether that
-  // candidate may commit. The shared runtime returns active/inactive/unknown so
+  // Structured turn rules own the letter; liveness validates whether that
+  // verdict may commit. The shared runtime returns active/inactive/unknown so
   // missing or contradictory ownership facts fail closed instead of masquerading
   // as an ended turn.
   function turnLivenessForClassify(sessionName) {
@@ -128,7 +131,7 @@ function createClassifyStateMachine(rawDeps) {
     const error = state === 'E';
     const background = state === 'B';
     // An explicit cancellation arrives here as a structured result rather than a
-    // classifier verdict: same letter, same transition, same writer — the extra
+    // ordinary rule verdict: same letter, same transition, same writer — the extra
     // envelope only records who asked and whether the runner actually stopped.
     const cancel = result.cancel && typeof result.cancel === 'object' ? result.cancel : null;
     const { sessionName, sessionId, cs, isTerminal, source } = ctx;
@@ -137,13 +140,10 @@ function createClassifyStateMachine(rawDeps) {
     // ── Classify history (persisted, last 7 days) ────────────────────────
     const now = Date.now();
     const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
-    // `runId` links this history entry to the raw Aux request/response in
-    // aux-run-log, so a state in the timeline can always be traced to the exact
-    // prompt and untrimmed model text that produced it. Structured verdicts
-    // (api-error, gateway, cancellation) have no Aux call and carry none.
+    // Turn-state history contains only structured rule evidence. Aux provenance
+    // lives on messages and in aux-run-log, never on a state transition.
     const entry = { at: now, goal: goal || '', phase: phase || '', state,
-      error: !!error, evidence: result.evidence || undefined,
-      runId: ctx.runId || undefined };
+      error: !!error, evidence: result.evidence || undefined };
     const persisted = persistedSessions.get(sessionName);
     if (persisted) {
       const ts = persisted.taskState || {};
@@ -167,8 +167,8 @@ function createClassifyStateMachine(rawDeps) {
 
     recordTaskBoardGoal(sessionName, finalGoal, finalPhase, cs, state);
 
-    // Mid-stream reclassify only observes goal/phase. Turn-end owns state and
-    // side effects; persisting a provisional classifyState poisons scan guards.
+    // An active/unknown owner holds a stale close candidate. Turn-end owns state
+    // and side effects; persisting it early would poison scheduler guards.
     // A cancel is exempt: it *is* the turn boundary, and the runner it stopped
     // may not have flipped isStreaming yet on every adapter.
     if (liveness.state !== 'inactive' && state !== 'P' && !cancel) {
@@ -219,10 +219,8 @@ function createClassifyStateMachine(rawDeps) {
       const dirId = persistedSessions.get(sessionName)?.dirId;
       if (dirId) workspaceBroadcast(dirId, { type: 'notify', sessionId, state: 'completed', classifyState: 'D', message: msg });
       setSessionStatus(sessionName, { status: 'completed' });
-      // D is the ONLY terminal state and triggers no follow-up action to persist it
-      // later — so it must flush to disk NOW. Otherwise a crash before the next
-      // save:true op loses the D; restart hydrates a stale non-D letter and scan
-      // (L7407 only skips D/W) re-judges it → possible false wake. save:true (default).
+      // D triggers no later state write, so persist it immediately. Otherwise a
+      // crash before the next durable operation restores a stale P/W/E snapshot.
       setTaskState(sessionName, { classifyState: 'D', endedAt: Date.now() });
       getWaitInjector().resetAuto(sessionName);
       // Clear the resume-interrupted counter so any future P-misclassify restarts from
@@ -299,11 +297,8 @@ function createClassifyStateMachine(rawDeps) {
     const dirId2 = persistedSessions.get(sessionName)?.dirId;
     if (dirId2) workspaceBroadcast(dirId2, { type: 'notify', sessionId, state: pushType, classifyState: cls, message: waitMsg });
     setSessionStatus(sessionName, { status: 'waiting' });
-    // Persist the accurate letter for observability. scan re-judges C/B/E/P and
-    // skips D/W; C never reaches this branch merely because auto-inject is off.
-    // cancelledAt/cancelReason are written HERE, by classify, and nowhere else —
-    // they are what applyClassifyResult and scanAndReclassify read to stop a late
-    // Aux verdict from resurrecting a cancelled turn.
+    // Persist the accurate rule letter. Cancellation metadata remains the guard
+    // against stale finalizers and late task-attribution work.
     setTaskState(sessionName, cancel
       ? {
         classifyState: cls,
@@ -320,12 +315,9 @@ function createClassifyStateMachine(rawDeps) {
     }
   }
 
-  // ── Periodic scan (replaces the old startup-only reconcile) ────────────────
-  // Every minute, sweep sessions whose classifyState is not D or W (i.e. still
-  // C/B/E/P or never classified). D=terminal (done), W=waiting on user — both are
-  // scan-skipped. Dedup against the queue, throttle recently-judged
-  // sessions, and bail if the queue is backed up. On restart the first tick picks
-  // up everything that isn't definitively done — no special boot logic needed.
+  // ── Periodic task-attribution backstop ────────────────────────────────────
+  // Every minute, sweep sessions whose task name is still unresolved. This is a
+  // naming/grouping retry only; it never re-judges turn state.
   const SCAN_INTERVAL_MS = 60 * 1000;
   const SCAN_MAX_QUEUE = 20;        // skip the whole sweep if the queue is already this long
   const SCAN_RETHROTTLE_MS = 2 * 60 * 1000;  // skip a session judged < 2min ago
@@ -374,9 +366,8 @@ function createClassifyStateMachine(rawDeps) {
     return !isInjectedOrJunkGoal(g);
   }
 
-  // Shared turn-end/scan classify handler. Mid-stream only goal/phase is trusted;
-  // once the turn ends dispatchStateAction owns the definitive state verdict.
-  function applyClassifyResult(cs, sessionName, sessionId, res, { cwd, source, runId } = {}) {
+  // Shared structured-verdict applier. Only an inactive owned turn may commit.
+  function applyClassifyResult(cs, sessionName, sessionId, res, { cwd, source } = {}) {
     const liveness = turnLivenessForClassify(sessionName);
     const currentState = getTaskState(persistedSessions.get(sessionName));
     // Explicit user/watchdog cancellation owns the turn boundary. An Aux job
@@ -406,10 +397,9 @@ function createClassifyStateMachine(rawDeps) {
       console.log(`[${source}] Classify observational for ${sessionName}: liveness=${liveness.state}/${liveness.reason || 'unknown'} goal="${goal}" phase=${cs.currentTask?.phase || '?'}`);
       return;
     }
-    // Classify supplied the semantic candidate and liveness independently proved
-    // the owned runner inactive. The scan path may now repair a lost turn_end.
+    // Liveness independently proved the structured verdict may commit.
     dispatchStateAction(res, {
-      sessionName, sessionId, cs, isTerminal: false, cwd, source, liveness, runId,
+      sessionName, sessionId, cs, isTerminal: false, cwd, source, liveness,
     });
     console.log(`[${source}] Classify RESULT for ${sessionName}: state=${res.state} goal="${res.goal}" phase=${res.phase || '?'}${res.state === 'E' ? ' (API error)' : ''}${res.evidence ? ` evidence=${res.evidence}` : ''}`);
   }
@@ -421,7 +411,8 @@ function createClassifyStateMachine(rawDeps) {
     if (!cs) return null;
     const previousTaskId = context.taskId || cs._currentTaskId || null;
     const sameTaskId = result.relation === 'same' ? (result.taskId || previousTaskId) : null;
-    const taskId = sameTaskId || `tsk_${crypto.randomUUID().replace(/-/g, '')}`;
+    const taskId = context.resolvedTaskId || sameTaskId
+      || `tsk_${crypto.randomUUID().replace(/-/g, '')}`;
     const taskName = result.taskName || cs.currentTask?.goal || '新任务';
     const phase = result.phase || cs.currentTask?.phase || 'planning';
     const changedIdentity = taskId !== previousTaskId;
@@ -505,19 +496,6 @@ function createClassifyStateMachine(rawDeps) {
         note(sid, ts.classifyState, 'skipped-cancelled', 'explicit cancellation remains authoritative until next user turn');
         continue;
       }
-      // Same reasoning for an E the API-error policy decided: `fail_fast` means
-      // the boundary already ruled out an automatic retry, so no system-side
-      // event is coming and the transcript the scan would judge has not changed.
-      // Without this the 60s sweep re-judged the failed turn, Aux saw an empty
-      // reply, answered P, and the P-fallthrough below republished it as W —
-      // silently converting「异常」back into「等待用户操作」one minute later.
-      // ensureCurrentTask flips the letter to P on the next real user turn,
-      // which is what lets a session leave this state.
-      if (ts.classifyState === 'E' && ts.apiError && ts.apiError.action === 'fail_fast') {
-        note(sid, ts.classifyState, 'skipped-api-error', 'API 策略已判定 fail_fast，等待用户手动处理');
-        continue;
-      }
-
       // Skip sessions parked by the degrade防线 (held for API recovery). Re-judging a
       // held session every 60s is pure waste — its history hasn't changed (no new turn
       // ran while held), so the verdict can't self-correct. Worse, a fresh classify
@@ -549,11 +527,11 @@ function createClassifyStateMachine(rawDeps) {
         // Unresolved goal falls through to the in-progress classify path.
       }
 
-      // throttle: don't re-judge a session judged in the last SCAN_RETHROTTLE_MS,
+      // throttle: don't re-run attribution in the last SCAN_RETHROTTLE_MS,
       // BUT only within the same task. lastAt comes from classifyHistory (the prior
       // verdict), which may belong to the PREVIOUS task; a brand-new task writes a
       // later ts.startedAt via ensureCurrentTask. So gate the throttle on
-      // lastAt >= startedAt: same-task redundant re-judge → still throttled (anti-flush);
+      // lastAt >= startedAt: same-task redundant attribution → still throttled;
       // cross-task boundary (lastAt < startedAt) → fall through, classify immediately so
       // the goal card refreshes from "新任务" to the real name within seconds instead of
       // waiting up to SCAN_RETHROTTLE_MS. startedAt null/0 (legacy) → lastAt >= 0 always
@@ -634,15 +612,18 @@ function createClassifyStateMachine(rawDeps) {
           fallbackTaskId: taskId,
           allowedTaskIds: recentTasks.map(task => task.taskId),
         });
+        const resolvedTaskId = res.relation === 'same'
+          ? (res.taskId || taskId)
+          : `tsk_${crypto.randomUUID().replace(/-/g, '')}`;
         const cs = chatSessions.get(sid);
         recordAuxRun(sid, {
           runId, anchorMessageId, systemPrompt, prompt,
-          taskId,
+          taskId: resolvedTaskId, priorTaskId: taskId,
           rawText: result.text, parsed: res, source: 'scan',
           latencyMs: Date.now() - startedAt,
         });
         applyTaskAttributionResult(cs, sid, res, {
-          source: 'multicc/scan', runId, taskId, anchorMessageId,
+          source: 'multicc/scan', runId, taskId, resolvedTaskId, anchorMessageId,
         });
       }).catch(e => {
         if (e && e.cancelled) return;
@@ -654,7 +635,7 @@ function createClassifyStateMachine(rawDeps) {
     }
     passRecord.enqueued = enqueued;
     scanHistory.push(passRecord);
-    if (enqueued) console.log(`[multicc/scan] enqueued ${enqueued} session(s) for re-judge (newest first)`);
+    if (enqueued) console.log(`[multicc/scan] enqueued ${enqueued} session(s) for task attribution (newest first)`);
   }
 
   function cancelClassify(cs) {
@@ -787,10 +768,15 @@ function createClassifyStateMachine(rawDeps) {
         fallbackTaskId: currentTaskId,
         allowedTaskIds: recentTasks.map(task => task.taskId),
       });
+      const resolvedTaskId = res.relation === 'same'
+        ? (res.taskId || currentTaskId)
+        : `tsk_${crypto.randomUUID().replace(/-/g, '')}`;
       recordAuxRun(sessionName, {
         runId, turnId, anchorMessageId, systemPrompt, prompt,
-        taskId: currentTaskId,
+        taskId: superseded ? currentTaskId : resolvedTaskId,
+        priorTaskId: currentTaskId,
         rawText: result.text, parsed: res, source: runSource,
+        superseded,
         latencyMs: Date.now() - startedAt,
       });
       if (superseded) {
@@ -802,7 +788,7 @@ function createClassifyStateMachine(rawDeps) {
       }
       applyTaskAttributionResult(cs, sessionName, res, {
         source: 'multicc/aux', runId, turnId,
-        taskId: currentTaskId, anchorMessageId,
+        taskId: currentTaskId, resolvedTaskId, anchorMessageId,
       });
     }).catch((e) => {
       if (cs._classifyTaskId === requestId) cs._classifyTaskId = null;
@@ -855,12 +841,18 @@ function createClassifyStateMachine(rawDeps) {
     const sessionId = persisted?.id || sessionName;
     const liveness = turnLivenessForClassify(sessionName);
     const userInputHost = getUserInputSignalHost();
+    let backgroundPending = false;
+    try { backgroundPending = hasBackgroundPending(sessionName) === true; }
+    catch (error) {
+      logger.warn?.('background_state_unavailable', { sessionId: sessionName, error: error.message });
+    }
     const verdict = resolveTurnState({
       liveness,
       boundary: classification || 'unknown-interruption',
       sessionType: persisted?.type || null,
       pendingUserInput: typeof userInputHost.pending === 'function'
         && !!userInputHost.pending(sessionName),
+      backgroundPending,
     });
     applyClassifyResult(cs, sessionName, sessionId, {
       ...verdict,

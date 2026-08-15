@@ -982,10 +982,9 @@ function createChatTurnEngine(deps) {
     cs._codexTransportError = '';
     cs._codexStreamContinuationCount = 0;
 
-    // Task start: show a neutral placeholder instantly. We do NOT classify here —
-    // the turn's output hasn't been produced yet, so a mid-turn verdict would be
-    // judged against an empty/partial reply. The real goal + C/W/E/P/D are decided
-    // once at turn end (classifyTurnEnd); the periodic scan re-judges non-D/W.
+    // Task start: show a neutral placeholder instantly. Structured finalization
+    // decides P/D/W/B/E at turn end; best-effort Aux attribution names/groups the
+    // task afterward and the periodic scan only retries unresolved names.
     cancelClassify(cs);
     emitRunningNotify(sessionName, `处理中：${(cs.currentTask && cs.currentTask.goal) || '新任务'}`);
     // Trigger/dispatch lineage is owned by `turn`; no session-global origin flag
