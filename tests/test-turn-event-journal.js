@@ -147,6 +147,20 @@ test('files rotate at maxFileBytes and keep the configured generations', async (
   }
 });
 
+test('missing parent dir is created lazily instead of dropping every event', async () => {
+  // First boot after upgrade: chat_history exists, turn-events does not.
+  // appendFile ENOENTs into the missing parent; the journal must recover.
+  const dir = tmpDir();
+  const nested = path.join(dir, 'turn-events');
+  const journal = createTurnEventJournal({ dir: () => nested });
+
+  journal.note('s', { type: 'assistant', text: 'first' });
+  journal.note('s', { type: 'result' });
+  await until(() => journal.read('s').length === 2, 'lazy dir creation');
+  assert.ok(fs.statSync(nested).isDirectory());
+  assert.equal(journal.stats().dropped, 0);
+});
+
 test('fs failures are swallowed and counted, note() never throws', async () => {
   // Point the journal at a path occupied by a regular file: every append
   // fails with ENOTDIR, but the broadcast path must stay unaffected.
