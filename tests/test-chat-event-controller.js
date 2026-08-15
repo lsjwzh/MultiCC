@@ -246,6 +246,26 @@ test('turn and monitor progress update stable rows and terminal events close the
   ]);
 });
 
+test('interrupted monitor_done (incl. post-restart journal replay) renders stale, not done', () => {
+  const fixture = controllerFixture();
+  const generation = fixture.controller.beginGeneration();
+  fixture.controller.handleEvent({
+    type: 'monitor_done', task_id: 'task-r', status: 'interrupted',
+    summary: '重启前运行中 · 已随服务重启中断：子任务 B', background: true, replayed: true,
+  }, generation);
+  fixture.controller.handleEvent({
+    type: 'monitor_done', task_id: 'task-f', status: 'failed', summary: 'x', background: true,
+  }, generation);
+  fixture.controller.handleEvent({
+    type: 'monitor_done', task_id: 'task-ok', status: 'completed', summary: 'y', background: true,
+  }, generation);
+  assert.deepEqual(fixture.progressCalls, [
+    ['stale', '重启前运行中 · 已随服务重启中断：子任务 B', 'task-r'],
+    ['fail', 'x', 'task-f'],
+    ['done', 'y', 'task-ok'],
+  ]);
+});
+
 test('connection generation rejects stale late events before any host mutation', () => {
   const fixture = controllerFixture();
   assert.equal(fixture.controller.handleEvent({ type: 'system', message: 'missing-generation' }), false);
