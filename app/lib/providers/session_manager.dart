@@ -310,6 +310,10 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
       for (final s in _sessions) {
         _providers[s.id]?.setDisplayName(
           s.label?.isNotEmpty == true ? s.label! : s.id,
+          // Directory names load with this same dashboard fetch — a provider
+          // opened before that (e.g. from a notification tap) was constructed
+          // with an empty dirName and never got one.
+          dirName: _dirNameFor(s.dirId),
         );
       }
       _loadingSessions = false;
@@ -423,6 +427,38 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
       id: sessionId.hashCode,
       payload: sessionId,
     );
+  }
+
+  /// Apply a live label change (server `session_updated` push) to every place
+  /// a title is rendered: the immutable [Session] entry in the fleet lists and
+  /// any open chat provider's header. A null/empty label falls back to the
+  /// session id — never keeps the stale previous title.
+  void applySessionLabel(String sessionId, String? label) {
+    final clean = label?.trim();
+    final alias = (clean != null && clean.isNotEmpty) ? clean : null;
+    var touched = false;
+    for (var i = 0; i < _sessions.length; i++) {
+      final s = _sessions[i];
+      if (s.id != sessionId) continue;
+      if (s.label == alias) {
+        touched = true; // already current — still refresh the provider below
+      } else {
+        _sessions[i] = s.copyWith(label: alias);
+        touched = true;
+      }
+      break;
+    }
+    _providers[sessionId]?.setDisplayName(alias ?? sessionId);
+    if (touched || _providers.containsKey(sessionId)) notifyListeners();
+  }
+
+  /// 用户可读会话名（label 优先，回退 id）。给派发队列这类跨会话 UI 解析
+  /// 对端会话用；未加载的会话（比如别的目录里的）就显示原始 id。
+  String sessionDisplayName(String id) {
+    for (final s in _sessions) {
+      if (s.id == id) return s.label?.isNotEmpty == true ? s.label! : s.id;
+    }
+    return id;
   }
 
   /// Resolve a directory id to its display name (empty if unknown / not loaded).

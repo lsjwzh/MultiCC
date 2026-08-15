@@ -39,6 +39,7 @@ class DashboardWorkspaceCoordinator {
     required DirectoryWorkspaceSnapshotListener onDirectorySnapshot,
     required DashboardWorkspaceNotificationSink onNotify,
     VoidCallback? onSessionCliChanged,
+    void Function(String sessionId, String? label)? onSessionUpdated,
   }) {
     if (_disposed) return;
 
@@ -55,6 +56,7 @@ class DashboardWorkspaceCoordinator {
       onDirectorySnapshot: onDirectorySnapshot,
       onNotify: onNotify,
       onSessionCliChanged: onSessionCliChanged,
+      onSessionUpdated: onSessionUpdated,
     );
     _reconcileDirectories();
     if (replacingBinding) {
