@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- MultiCC app icon — "parallel session streams".
+       Four vertical tracks = concurrent agent sessions; each lit segment is that
+       session's progress, deliberately unequal because agents run out of step. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1B1F28"/>
+      <stop offset="100%" stop-color="#0D1014"/>
+    </linearGradient>
+    <linearGradient id="lit" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0%" stop-color="#1E9E6A"/>
+      <stop offset="100%" stop-color="#3DDC97"/>
+    </linearGradient>
+    <linearGradient id="litFocus" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0%" stop-color="#3DDC97"/>
+      <stop offset="100%" stop-color="#9BF7CE"/>
+    </linearGradient>
+    <filter id="glow" x="-60%" y="-30%" width="220%" height="160%">
+      <feGaussianBlur stdDeviation="26" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+
+  <!-- unlit tracks -->
+  <g fill="#272D3A">
+    <rect x="204" y="204" width="88" height="616" rx="44"/>
+    <rect x="380" y="204" width="88" height="616" rx="44"/>
+    <rect x="556" y="204" width="88" height="616" rx="44"/>
+    <rect x="732" y="204" width="88" height="616" rx="44"/>
+  </g>
+
+  <!-- lit progress, bottom-aligned -->
+  <g filter="url(#glow)">
+    <rect x="204" y="420" width="88" height="400" rx="44" fill="url(#lit)"/>
+    <rect x="380" y="580" width="88" height="240" rx="44" fill="url(#lit)"/>
+    <rect x="556" y="300" width="88" height="520" rx="44" fill="url(#litFocus)"/>
+    <rect x="732" y="670" width="88" height="150" rx="44" fill="url(#lit)"/>
+  </g>
+</svg>
