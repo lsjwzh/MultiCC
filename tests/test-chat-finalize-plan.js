@@ -250,13 +250,10 @@ test('API stream classification wins; explicit kills never auto-resume', () => {
 
 test('process API, adapter and nonzero failures freeze instead of advancing FIFO', () => {
   for (const [override, classification] of [
-    // Only the API failure has a proven outcome: its retry budget was already
-    // spent above, so the boundary names it. The other three may still have
-    // produced a complete answer, so they keep asking the classifier.
     [{ apiError: true }, 'api-error'],
-    [{ adapterError: true }, undefined],
-    [{ code: 1 }, undefined],
-    [{ signal: 'SIGPIPE' }, undefined],
+    [{ adapterError: true }, 'interrupted'],
+    [{ code: 1 }, 'interrupted'],
+    [{ signal: 'SIGPIPE' }, 'interrupted'],
   ]) {
     const resolved = resolveTurnFinalization(planTurnFinalization(base(override)), {
       appendPersisted: true,
@@ -268,6 +265,15 @@ test('process API, adapter and nonzero failures freeze instead of advancing FIFO
     assert.deepEqual(resolved.effects.find(entry => entry.type === 'freeze-interrupted'),
       { type: 'freeze-interrupted', reason: 'error' });
   }
+});
+
+test('clean process completion names the structured completed boundary', () => {
+  const resolved = resolveTurnFinalization(planTurnFinalization(base()), {
+    appendPersisted: true,
+    resultDurable: true,
+  });
+  assert.equal(resolved.effects.find(entry => entry.type === 'classify-turn-end').classification,
+    'completed');
 });
 
 test('unknown stream interruption freezes instead of automatically resuming', () => {

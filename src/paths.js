@@ -58,6 +58,12 @@ function createPaths({ dataDir } = {}) {
     // dir as the state files so a stale journal is trivially discoverable.
     journalDir: path.join(root, '.journal'),
     chatHistoryDir: path.join(root, 'chat_history'),
+    // Raw Aux request/response evidence, one JSONL per session. Every verdict
+    // the classifier ever produced is replayable from here: the prompt it saw,
+    // the untrimmed text it returned, and the anchor message it judged. This is
+    // what makes an Aux decision auditable after the fact and what offline
+    // backtests read instead of re-running the model.
+    auxRunsDir: path.join(root, 'aux_runs'),
     eventsDir: path.join(root, 'events'),
     bridgesDir: path.join(root, 'bridges'),
     artifactsDir: path.join(root, 'artifacts'),

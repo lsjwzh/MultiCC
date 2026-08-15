@@ -214,6 +214,26 @@ test('append surfaces answeredQuestionId so multi-window clients can settle the 
   assert.equal(plainMeta.payload.message.answeredQuestionId, undefined);
 });
 
+test('Aux attribution atomically stamps every message in one turn', () => {
+  const fx = fixture({ initial: { s1: [
+    { id: 'u1', role: 'user', content: '继续改颜色', turnId: 'turn-1', taskId: 'old' },
+    { id: 'a1', role: 'assistant', content: '已经改好', turnId: 'turn-1', taskId: 'old' },
+    { id: 'u2', role: 'user', content: '另一轮', turnId: 'turn-2', taskId: 'other' },
+  ] } });
+  const changed = fx.runtime.annotateTurn('s1', 'turn-1', {
+    taskId: 'new', taskName: '配色调整', auxRunId: 'run-9',
+    taskStart: true, taskSource: 'aux', taskText: '继续改颜色',
+  });
+  assert.deepEqual(changed.map(message => message.id), ['u1', 'a1']);
+  const saved = fx.runtime.load('s1');
+  assert.equal(saved[0].taskId, 'new');
+  assert.equal(saved[0].taskStart, true);
+  assert.equal(saved[1].taskName, '配色调整');
+  assert.equal(saved[1].auxRunId, 'run-9');
+  assert.equal(saved[2].taskId, 'other');
+  assert.ok(fx.events.some(event => event?.payload?.type === 'chat_history_annotation'));
+});
+
 test('write failure has no broadcast proof and diagnostics redact paths and credentials', () => {
   const fx = fixture();
   fx.history.failNextWrite(new Error('token=secret /Users/private/chat.json'));
