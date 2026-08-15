@@ -576,6 +576,9 @@
             tool = {
               card, inputJson: block.input ? JSON.stringify(block.input) : '',
               name: block.name || 'Tool', id: block.id,
+              // Codex/opencode tools skip content_block_start, so this creation
+              // site is their startedAt — the paired tool_result stamps endedAt.
+              startedAt: Date.now(),
             };
             state.currentToolCards.set(`id:${block.id}`, tool);
             historyView.appendToolCard(state.currentMsgEl.querySelector('.msg-content'), card);
@@ -624,7 +627,7 @@
         let tool = findCurrentToolCardById(d.toolId);
         if (!tool) {
           const card = historyView.createToolCard(d.tool.name || 'Tool', d.toolId);
-          tool = { card, inputJson: '{}', name: d.tool.name || 'Tool', id: d.toolId, args: '' };
+          tool = { card, inputJson: '{}', name: d.tool.name || 'Tool', id: d.toolId, args: '', startedAt: Date.now() };
           state.currentToolCards.set(`id:${d.toolId}`, tool);
           historyView.appendToolCard(state.currentMsgEl.querySelector('.msg-content'), card);
         }

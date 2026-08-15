@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert' show jsonEncode;
 import 'package:flutter/widgets.dart';
 
 import '../i18n.dart';
@@ -1711,18 +1712,49 @@ class ChatProvider extends ChangeNotifier {
     if (blocks is! List) return;
     var changed = false;
     for (final raw in blocks) {
-      if (raw is! Map || raw['type'] != 'text') continue;
-      final text = raw['text']?.toString() ?? '';
-      if (text.isEmpty) continue;
-      _ensureAssistantMsg();
-      if (message['textSnapshot'] == true) {
-        _currentMsg!.content = text;
-      } else if (_cli == SessionCli.codex) {
-        _currentMsg!.content += text;
-      } else if (_currentMsg!.content.isEmpty) {
-        _currentMsg!.content = text;
+      if (raw is! Map) continue;
+      if (raw['type'] == 'text') {
+        final text = raw['text']?.toString() ?? '';
+        if (text.isEmpty) continue;
+        _ensureAssistantMsg();
+        if (message['textSnapshot'] == true) {
+          _currentMsg!.content = text;
+        } else if (_cli == SessionCli.codex) {
+          _currentMsg!.content += text;
+        } else if (_currentMsg!.content.isEmpty) {
+          _currentMsg!.content = text;
+        }
+        changed = true;
+      } else if (raw['type'] == 'tool_use') {
+        // Codex/OpenCode tools arrive as complete blocks here (no
+        // content_block_start), so this is their live creation site — mirror
+        // of the web's finalizeAssistantMsg branch. Without it the app showed
+        // no tool cards live on non-claude CLIs until a history reload.
+        final id = raw['id']?.toString() ?? '';
+        if (id.isEmpty) continue;
+        final name = raw['name']?.toString() ?? 'Tool';
+        final input = raw['input'];
+        _ensureAssistantMsg();
+        ToolCall? existing;
+        for (final tc in _currentMsg!.toolCalls) {
+          if (tc.id == id) {
+            existing = tc;
+            break;
+          }
+        }
+        if (existing == null) {
+          _currentMsg!.toolCalls.add(ToolCall(
+            id: id,
+            name: name,
+            inputJson: input != null ? jsonEncode(input) : '',
+            startedAt: DateTime.now().millisecondsSinceEpoch,
+          ));
+          changed = true;
+        } else if (input != null && existing.inputJson.isEmpty) {
+          existing.inputJson = jsonEncode(input);
+          changed = true;
+        }
       }
-      changed = true;
     }
     if (changed) notifyListeners();
   }

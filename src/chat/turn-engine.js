@@ -482,7 +482,10 @@ function createChatTurnEngine(deps) {
       }
       if (evt.type === 'tool_start') {
         turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'tool', evt.name);
-        const tool = { name: evt.name, input: evt.input || {}, id: evt.id };
+        // Same timing stamps as the claude path: startedAt at tool_start,
+        // endedAt at tool_result/tool_update-completed, persisted with the
+        // tools array so replay shows measured durations on every CLI.
+        const tool = { name: evt.name, input: evt.input || {}, id: evt.id, startedAt: Date.now() };
         cs.currentToolCalls.push(tool);
         getBackgroundTaskRuntime().recordMainToolUseId(sessionName, evt.id);
         forward({
@@ -503,6 +506,7 @@ function createChatTurnEngine(deps) {
         if (tool) {
           tool.result = text.length > 1000 ? text.slice(0, 1000) + '...' : text;
           tool.is_error = !!evt.isError;
+          tool.endedAt = Date.now();
         }
         continue;
       }
@@ -512,7 +516,7 @@ function createChatTurnEngine(deps) {
         const id = evt.id || `call_${cs.currentToolCalls.length}`;
         let tool = cs.currentToolCalls.find(item => item.id === id);
         if (!tool) {
-          tool = { name: evt.name, input: evt.input || {}, id };
+          tool = { name: evt.name, input: evt.input || {}, id, startedAt: Date.now() };
           cs.currentToolCalls.push(tool);
           getBackgroundTaskRuntime().recordMainToolUseId(sessionName, id);
           forward({
@@ -529,6 +533,7 @@ function createChatTurnEngine(deps) {
           });
           tool.result = text.length > 1000 ? text.slice(0, 1000) + '...' : text;
           tool.is_error = !!evt.isError;
+          tool.endedAt = Date.now();
         }
         continue;
       }
