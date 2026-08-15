@@ -25,8 +25,13 @@ const cliProviderRouter = require('cli-provider-router');
 const { createSqliteRuntime } = require('./sqlite-runtime');
 const { createPaths } = require('./paths');
 const { atomicWriteJson, atomicWriteText, ensurePrivateDir, secureFile } = require('./runtime-security');
+const { createOpencodeModelLimitResolver } = require('./providers/opencode-model-limits');
 
 const sqliteRuntime = createSqliteRuntime();
+
+// Model limits for generated OpenCode custom providers (models.dev cache).
+// Lazily resolved per model id; see ./providers/opencode-model-limits.
+const opencodeModelLimits = createOpencodeModelLimitResolver();
 
 // cc-switch stores its data at ~/.cc-switch/ on all platforms (Rust dirs::home_dir).
 // On Windows the default is C:\Users\<name>\.cc-switch\. However, Git Bash / Cygwin
@@ -1059,7 +1064,14 @@ function buildOpenCodeRoute(provider, session) {
     npm,
     name: provider.name,
     options,
-    models: Object.fromEntries(models.map(model => [model, { name: model }])),
+    // OpenCode only auto-compacts a custom-provider model whose entry carries
+    // real `limit` values; a bare {name} accumulates until the upstream window
+    // fails. Limits come from OpenCode's own models.dev cache, degrading to a
+    // deliberately understated fallback rather than a fabricated capability.
+    models: Object.fromEntries(models.map(model => [
+      model,
+      { name: model, limit: opencodeModelLimits.resolveLimit(model) },
+    ])),
   };
   return {
     env: {

@@ -29,7 +29,10 @@ const {
 } = require('./index');
 const { createWsEnvelope } = require('../api-contract');
 const { composeMessage, renderPrompt } = require('../message-composer');
-const { rememberActiveCliState, renderHandoffPrompt, stateSummary: cliStateSummary } = require('../cli-switch');
+const {
+  rememberActiveCliState, renderHandoffPrompt, stateSummary: cliStateSummary,
+  buildHandoffCheckpoint, clearAllNativeCliStates,
+} = require('../cli-switch');
 const { cliHandoffSummary } = require('../cli/switch-runtime');
 const { summarizeHistoryUsage } = require('../codex-usage');
 const { buildReplayMessages } = require('../routes/chat-history');
@@ -38,6 +41,7 @@ const waitInjector = require('../wait-injector');
 const providers = require('../providers');
 const { createTurnTimingRecorder } = require('./turn-timing');
 const { createCodexRolloutGuard } = require('./codex-rollout-guard');
+const { createOpencodeContextGuard } = require('./opencode-context-guard');
 
 function appendAdapterAssistantText(current, text) {
   const prior = String(current || '');
@@ -153,6 +157,10 @@ function createChatTurnEngine(deps) {
   // resumes it (`codex exec resume` hangs internally on one — no request ever
   // leaves the process). See src/chat/codex-rollout-guard.js.
   const codexRolloutGuard = deps.codexRolloutGuard || createCodexRolloutGuard({ logger });
+  // Turn-admission water-level guard for OpenCode native sessions. Decision
+  // only; rotation itself happens in runChatTurn via the shared
+  // pendingCliHandoff machinery. See ./opencode-context-guard.js.
+  const opencodeContextGuard = deps.opencodeContextGuard || createOpencodeContextGuard({ logger });
   // One boot-time sweep so expired archives get pruned even if no turn ever
   // archives again; delayed so it never touches startup critical path.
   const rolloutArchiveSweepTimer = setTimeout(() => {
@@ -676,6 +684,52 @@ function createChatTurnEngine(deps) {
           type: 'system',
           subtype: 'rollout_archived',
           message: `codex 原生会话历史过大（rollout > ${Math.round(guardResult.maxBytes / 1048576)}MB），已归档并重建上下文；旧历史文件保留在归档目录，未删除。`,
+        });
+      }
+    }
+    // Pre-turn water-level guard (opencode only): when the CURRENT native
+    // session crossed a safe fraction of the model's real context limit,
+    // rotate to a fresh native session. Full page history is untouched; the
+    // bounded handoff checkpoint carries prior context into this turn, and
+    // clearing cliSessionId below makes this turn a first turn (fresh
+    // `opencode run`, no --continue) — mirroring the manual rotate path.
+    if (turnCli === 'opencode' && persisted.cliSessionId) {
+      const contextVerdict = opencodeContextGuard.enforce(persisted);
+      if (contextVerdict.action === 'rotate') {
+        const rotationHistory = initialHistory || loadChatHistory(sessionName);
+        const checkpoint = buildHandoffCheckpoint({
+          session: persisted, fromCli: 'opencode', toCli: 'opencode', history: rotationHistory,
+        });
+        checkpoint.reason = 'auto_native_context_rotate';
+        persisted.pendingCliHandoff = {
+          id: `checkpoint_${crypto.randomBytes(8).toString('hex')}`,
+          fromCli: 'opencode',
+          toCli: 'opencode',
+          createdAt: checkpoint.createdAt,
+          status: 'pending',
+          reason: 'auto_native_context_rotate',
+          reusedTarget: false,
+          checkpoint,
+        };
+        const clearedNativeSessions = clearAllNativeCliStates(persisted);
+        rememberActiveCliState(persisted);
+        savePersistedSessionsBestEffort('runtime.opencode-context-rotate');
+        logger.warn('opencode_context_rotated', {
+          sessionId: sessionName,
+          rotatedCliSessionId: contextVerdict.cliSessionId,
+          tokensTotal: contextVerdict.tokensTotal,
+          contextLimit: contextVerdict.contextLimit,
+          ratio: contextVerdict.ratio,
+          threshold: contextVerdict.threshold,
+          clearedNativeSessions,
+        });
+        appendEvent(persisted.dirId, 'opencode_context_rotated',
+          `OpenCode 原生上下文水位 ${(contextVerdict.ratio * 100).toFixed(0)}%（${contextVerdict.tokensTotal}/${contextVerdict.contextLimit} tokens），已自动轮换原生会话`, sessionName);
+        chatBroadcast(sessionName, {
+          type: 'system',
+          subtype: 'native_context_rotated',
+          auto: true,
+          message: `OpenCode 原生上下文水位已达 ${(contextVerdict.ratio * 100).toFixed(0)}%，本轮自动切换到新的原生会话并附带最近上下文摘要；完整对话历史保留不变。`,
         });
       }
     }
