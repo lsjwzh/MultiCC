@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../models/message.dart';
@@ -21,8 +23,8 @@ String toolIconFor(String name) => _kToolIcons[name] ?? '⚙️';
 /// compact rows in [ToolCallGroup]. Mirrors the web tool-desc lifecycle: while
 /// running the input summary (command / file_path / …) is shown; once done it
 /// is replaced by the outcome plus the measured wall-clock duration — "done ·
-/// 1.5s" — and only when both timing stamps exist. History replay has no tool
-/// timing, so it degrades to the bare "done"/"failed" (never a fabricated 0ms).
+/// 1.5s" — and only when both timing stamps exist. Legacy history without tool
+/// timing degrades to the bare "done"/"failed" (never a fabricated 0ms).
 String toolDescriptionFor(ToolCall tc, {int max = 60}) {
   if (!tc.isDone) {
     final d = tc.description;
@@ -200,6 +202,131 @@ class _ToolCardWidgetState extends State<ToolCardWidget> {
   }
 
   String _truncate(String s, int max) => s.length > max ? '${s.substring(0, max)}…' : s;
+}
+
+/// Turn-internal tool trajectory, matching the Web strip.
+///
+/// Each measured tool is positioned at its real start offset and sized by its
+/// duration inside the earliest-start → latest-end wall-clock window. At least
+/// two fully measured tools are required: legacy history and partially settled
+/// turns stay hidden instead of fabricating a flat or zero-duration timeline.
+class ToolTrajectory extends StatelessWidget {
+  final List<ToolCall> toolCalls;
+  const ToolTrajectory({super.key, required this.toolCalls});
+
+  @override
+  Widget build(BuildContext context) {
+    final measured = toolCalls.where((tool) {
+      final startedAt = tool.startedAt;
+      final endedAt = tool.endedAt;
+      return startedAt != null && endedAt != null && endedAt >= startedAt;
+    }).toList(growable: false);
+    if (measured.length < 2) return const SizedBox.shrink();
+
+    final firstStartedAt = measured
+        .map((tool) => tool.startedAt!)
+        .reduce(math.min);
+    final lastEndedAt = measured.map((tool) => tool.endedAt!).reduce(math.max);
+    final wallClockMs = lastEndedAt - firstStartedAt;
+    final layoutSpanMs = math.max(wallClockMs, 1);
+    final duration = humanizeToolDuration(wallClockMs);
+
+    return Semantics(
+      label: '${measured.length} tools, $duration wall-clock',
+      child: Padding(
+        key: const Key('tool-trajectory'),
+        padding: const EdgeInsets.only(top: 6, bottom: 2),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            LayoutBuilder(
+              builder: (context, constraints) {
+                if (!constraints.hasBoundedWidth || constraints.maxWidth <= 0) {
+                  return const SizedBox(height: 8);
+                }
+                final trackWidth = constraints.maxWidth;
+                return Container(
+                  key: const Key('tool-trajectory-track'),
+                  height: 8,
+                  clipBehavior: Clip.hardEdge,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF21262D),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Stack(
+                    children: [
+                      for (var index = 0; index < measured.length; index++)
+                        _ToolTrajectorySegment(
+                          key: ValueKey(
+                            'tool-trajectory-segment-$index-'
+                            '${measured[index].isError ? 'error' : 'ok'}',
+                          ),
+                          toolCall: measured[index],
+                          firstStartedAt: firstStartedAt,
+                          layoutSpanMs: layoutSpanMs,
+                          trackWidth: trackWidth,
+                        ),
+                    ],
+                  ),
+                );
+              },
+            ),
+            const SizedBox(height: 3),
+            Text(
+              '⏱ ${measured.length} tools · $duration wall-clock',
+              key: const Key('tool-trajectory-label'),
+              style: const TextStyle(color: Color(0xFF6E7681), fontSize: 11),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ToolTrajectorySegment extends StatelessWidget {
+  final ToolCall toolCall;
+  final int firstStartedAt;
+  final int layoutSpanMs;
+  final double trackWidth;
+
+  const _ToolTrajectorySegment({
+    super.key,
+    required this.toolCall,
+    required this.firstStartedAt,
+    required this.layoutSpanMs,
+    required this.trackWidth,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final startedAt = toolCall.startedAt!;
+    final durationMs = toolCall.endedAt! - startedAt;
+    final left = ((startedAt - firstStartedAt) / layoutSpanMs) * trackWidth;
+    final rawWidth = (durationMs / layoutSpanMs) * trackWidth;
+    final remainingWidth = math.max(trackWidth - left, 0.0);
+    final width = math.min(math.max(rawWidth, 2.0), remainingWidth);
+    final duration = humanizeToolDuration(durationMs);
+
+    return Positioned(
+      left: left,
+      top: 1,
+      bottom: 1,
+      width: width,
+      child: Tooltip(
+        message: '${toolCall.name} · $duration',
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: (toolCall.isError
+                    ? const Color(0xFFF85149)
+                    : const Color(0xFF2F81F7))
+                .withValues(alpha: 0.85),
+            borderRadius: BorderRadius.circular(2),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 /// Renders the tool calls of one assistant message. Up to [_maxVisible] are
