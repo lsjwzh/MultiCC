@@ -516,7 +516,9 @@ test('Flutter keeps the pending answer card above the message lane, not in the b
     path.join(ROOT, 'app', 'lib', 'widgets', 'input_bar.dart'),
     'utf8',
   );
-  const pending = screen.indexOf('if (provider.pendingUserInput != null)');
+  // The expanded card guards on !collapsed (a collapsed turn renders the
+  // floating-ball variant instead); either way it must precede the lane.
+  const pending = screen.indexOf('if (provider.pendingUserInput != null &&');
   const messages = screen.indexOf('child: _MessageList(');
   assert.ok(pending >= 0 && pending < messages);
   assert.match(screen, /maxHeight:\s*MediaQuery\.sizeOf\(context\)\.height \* 0\.38/);
@@ -649,6 +651,33 @@ test('rate_limit_event forwards the server bar to the quota module and stores {p
   assert.deepEqual(fixture.state.claudeFiveHourRateLimit, { provider: 'claude', bar });
   // No billing fields leak onto the stored state object.
   assert.equal(JSON.stringify(fixture.state.claudeFiveHourRateLimit).includes('overageDisabledReason'), false);
+});
+
+test('api_error_policy renders into the api-error bar and clears on the next stream', () => {
+  // The bar element lives in chat.html; inject it into a fake document so the
+  // liveUi module can find it by id, then drive both render and clear paths.
+  const { document: doc, ids } = fakeDocument();
+  const bar = new FakeElement('div');
+  ids.set('api-error-bar', bar);
+  const liveUi = liveUiApi.createLiveUi({
+    document: doc,
+    messagesEl: new FakeElement('div'),
+    translate: key => key,
+    maybeScrollToBottom() {},
+    debug() {},
+  });
+  liveUi.renderApiError({
+    state: 'retry_wait',
+    provider: 'claude',
+    category: 'rate_limit',
+    httpStatus: 429,
+    message: '上游 429，已排队重试',
+    action: 'retry',
+  });
+  assert.equal(bar.style.display, '');
+  assert.equal(bar.textContent, 'API claude · rate_limit · HTTP 429 · 上游 429，已排队重试');
+  liveUi.clearApiError();
+  assert.equal(bar.style.display, 'none');
 });
 
 test('Claude stream reuses one bubble and binds tool input/result without HTML interpretation', () => {

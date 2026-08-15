@@ -367,6 +367,14 @@
           }
           break;
         }
+        case 'api_error_policy': {
+          // Structured upstream error state from the centralized policy — the
+          // same event the App renders via ApiErrorPolicyState. The bar is
+          // turn-scoped: the next stream_start clears it, and a failed retry
+          // re-shows it with the fresh decision.
+          liveUi.renderApiError?.(message);
+          break;
+        }
         case 'rate_limit_event': {
           const limit = global.MultiCCChatRateLimit?.consumeRateLimitEvent(
             message.rate_limit_info,
@@ -390,6 +398,9 @@
           // Server-broadcast turn begin (all CLIs; adapter CLIs like opencode
           // have no native message_start, so without this their isStreaming
           // stayed false all turn and isStreaming-gated guards misfired).
+          // A new turn supersedes any stale upstream-error bar; if the turn
+          // fails again a fresh api_error_policy event re-shows it.
+          liveUi.clearApiError?.();
           state.isStreaming = true;
           state.lastFinishedText = '';
           liveUi.showThinking();

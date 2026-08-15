@@ -2457,6 +2457,11 @@
       <div id="ark-quota-bar" class="usage-summary-bar" data-usage-role="provider" role="button" tabindex="0" aria-live="polite" style="display:none;cursor:pointer"></div>
       <div id="zhipu-quota-bar" class="usage-summary-bar" data-usage-role="provider" role="button" tabindex="0" aria-live="polite" style="display:none;cursor:pointer"></div>
       <div id="kimi-quota-bar" class="usage-summary-bar" data-usage-role="provider" role="button" tabindex="0" aria-live="polite" style="display:none;cursor:pointer"></div>
+      <!-- Upstream API error state from the centralized api-error policy.
+           Filled by chat-live-ui.js from api_error_policy WS events; cleared
+           when the next turn starts. Same format as the App's
+           ChatRuntimeNoticePanel api-error row. -->
+      <div id="api-error-bar" class="usage-summary-bar" data-usage-role="api-error" aria-live="polite" style="display:none"></div>
     </div>
     <!-- Row 3 is this conversation, not any account: how full the context is.
          Subscription windows measure an account over time and belong above;
