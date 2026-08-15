@@ -2130,6 +2130,10 @@ const memoryRuntime = createMemoryRuntime({
   appendEvent,
   workspaceBroadcast: (dirId, payload) => workspaceBroadcast(dirId, payload), // late-bound Meta wrapper
   reviewInterval: process.env.MULTICC_MEMORY_REVIEW_INTERVAL,
+  // Aux transport failures (distill/review) join the centralized API error
+  // taxonomy instead of only a console warn. Late-bound is unnecessary: the
+  // host is composed above the memory runtime.
+  recordApiError,
   logger: console,
 });
 const {

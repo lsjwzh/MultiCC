@@ -11,6 +11,12 @@ const {
   parseRetryAfter,
   retryNotice,
   claudeErrorEnvelope,
+  isErrorOnlyText,
+  splitTrailingErrorEnvelope,
+  detectErrorEnvelope,
+  isKnownHarmlessStderrLine,
+  API_ERROR_SIGNATURES,
+  apiErrorSignaturesQuoted,
 } = require('../src/chat/api-error-policy');
 
 const fixture = JSON.parse(fs.readFileSync(
@@ -262,6 +268,83 @@ test('watchdog envelope detection never fires on meaningful assistant output', (
   assert.equal(claudeErrorEnvelope('claude', `${'x'.repeat(700)} API Error: Response stalled mid-stream.`), null);
 });
 
+// ── Turn-boundary envelope detection: whole-message + trailing forms ──
+// Every text below is a real sample recovered from chat_history or pm2 logs;
+// before this detection existed each one was persisted verbatim as an
+// assistant message (113 occurrences across 90+ session files).
+
+test('whole-message envelopes beyond the pinned watchdog list are detected as errors', () => {
+  // These all reached chat_history as assistant messages because the old
+  // claudeErrorEnvelope only knew the five CLI 2.1.x watchdog wordings.
+  const samples = [
+    ['API Error: Unable to connect to API (ConnectionRefused)', 'network'],
+    ['API Error: The model has reached its context window limit.', 'context_token_limit'],
+    ['API Error: Request rejected (429) · This request would exceed your account\'s rate limit. Please try again later.', 'rate_limit'],
+    ['Failed to authenticate. API Error: 403 用户额度不足, 剩余额度: ＄-2.528834 (request id: 20260630182451514881408268d9d6SaERUZbx)', 'billing_quota'],
+    ['API Error: 400 [1211][模型不存在，请检查模型代码。][20260724151208020fa67b8fe54477]', 'invalid_request_model'],
+    ['API Error: 500 getaddrinfo ENOTFOUND maas-coding-api.cn-huabei-1.xf-yun.com', 'network'],
+  ];
+  for (const [message, category] of samples) {
+    const envelope = detectErrorEnvelope('claude', message);
+    assert.ok(envelope, `whole-message envelope must be detected: ${message.slice(0, 60)}`);
+    assert.equal(envelope.body, null, `whole-message envelope has no body: ${message.slice(0, 60)}`);
+    assert.equal(envelope.source, 'claude_result');
+    const normalized = normalizeApiError(envelope, { source: envelope.source, provider: 'claude' });
+    assert.equal(normalized.category, category, message);
+  }
+  assert.equal(detectErrorEnvelope('codex', 'API Error: The model has reached its context window limit.').source, 'codex_event');
+  assert.equal(detectErrorEnvelope('qoder', 'API Error: 400 error, status code: 400').source, 'qoder_result');
+  // The CLI boundary swallows upstream response headers, so the status the
+  // relay returned is recovered from the envelope text as structured evidence.
+  assert.equal(detectErrorEnvelope('claude', 'API Error: 503 The system is busy, please try again later.').httpStatus, 503);
+  assert.equal(detectErrorEnvelope('claude', 'API Error: Request rejected (429) · rate limit.').httpStatus, 429);
+  assert.equal(detectErrorEnvelope('claude', 'API Error: Connection closed mid-response. The response above may be incomplete.').httpStatus, null);
+  const trailingStatus = detectErrorEnvelope('claude', '正文输出完毕。API Error: 502 upstream error: TLS disconnected');
+  assert.equal(trailingStatus.httpStatus, 502);
+  assert.equal(trailingStatus.body, '正文输出完毕');
+});
+
+test('trailing envelopes appended after real output are split into body + error', () => {
+  // Real production samples: meaningful body, error envelope bolted on at the
+  // end after a sentence/colon boundary.
+  const samples = [
+    {
+      text: '现在更新 `generate_signals` 使用弱势区三角形 + 双路径入场：API Error: 503 The system is busy, please try again later. This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:3000).',
+      body: '现在更新 `generate_signals` 使用弱势区三角形 + 双路径入场',
+      category: 'provider_transient',
+    },
+    {
+      text: '我先快速看一下本地环境（仓库结构、codex 是否安装及其版本/配置），然后开一个 workflow 做并行调研。API Error: Connection closed mid-response. The response above may be incomplete.',
+      body: '我先快速看一下本地环境（仓库结构、codex 是否安装及其版本/配置），然后开一个 workflow 做并行调研',
+      category: 'network',
+    },
+    {
+      text: '好，我去它的目录里彻底挖一遍：两个 sqlite 数据库、引擎自己的配置解析逻辑，看 auth 到底存哪、零配置能不能跑。Failed to authenticate. API Error: 403 You\'ve reached your usage limit for this billing cycle. Your quota will be refreshed in the next cycle. To continue now, purchase extra usage or upgrade your plan: https://www.kimi.com/code/#pricing',
+      body: '好，我去它的目录里彻底挖一遍：两个 sqlite 数据库、引擎自己的配置解析逻辑，看 auth 到底存哪、零配置能不能跑',
+      category: 'billing_quota',
+    },
+  ];
+  for (const sample of samples) {
+    const envelope = detectErrorEnvelope('claude', sample.text);
+    assert.ok(envelope, `trailing envelope must be detected: ${sample.text.slice(-80)}`);
+    assert.equal(envelope.body, sample.body, `stripped body must keep the real output: ${sample.text.slice(0, 40)}…`);
+    assert.ok(/api error/i.test(envelope.message));
+    assert.ok(!envelope.body.includes('API Error'));
+    const normalized = normalizeApiError(envelope, { source: envelope.source, provider: 'claude' });
+    assert.equal(normalized.category, sample.category, sample.text.slice(-60));
+  }
+});
+
+test('envelope detection never fires on prose that merely mentions errors', () => {
+  assert.equal(detectErrorEnvelope('claude', '好的，我来解释 API Error 的处理方式，以及重试策略。'), null);
+  assert.equal(detectErrorEnvelope('claude', '如果看到 API Error: 429 就等一会再重试。'), null);
+  assert.equal(detectErrorEnvelope('claude', `${'正文'.repeat(300)}，前面说过 API Error 这个词。`), null);
+  assert.equal(detectErrorEnvelope('claude', ''), null);
+  assert.equal(detectErrorEnvelope('claude', null), null);
+  // A mid-message envelope with real text AFTER it is not a trailing envelope.
+  assert.equal(detectErrorEnvelope('claude', '步骤一完成。API Error: 429 rate limited. 不过我已经在步骤二重试成功了，结果如下。'), null);
+});
+
 test('stalled mid-stream with partial output fails fast at the replay boundary; stalled while thinking retries once', () => {
   const midStream = claudeErrorEnvelope('claude', 'API Error: Response stalled mid-stream. The response above may be incomplete.');
   const partial = decide({ ...midStream }, { phase: 'stream', partialOutput: true });
@@ -324,4 +407,56 @@ test('runtime deduplicates repeated events, opens provider circuit, and exposes 
   runtime.recordSuccess('claude', { retryAttempt: 1 });
   assert.equal(runtime.snapshot().circuits[0].open, false);
   assert.equal(metrics.get('multicc_api_error_retry_succeeded_total'), 1);
+});
+
+test('known-harmless provider stderr chatter is filtered, real errors are kept', () => {
+  // Lines measured from multicc-error.log noise (100+ skill warnings per log,
+  // model-refresh timeouts, mid-turn delta warnings). These never affect the
+  // turn outcome, so the turn engine drops them before the warn log and the
+  // close-time stderr tail.
+  const harmless = [
+    '2026-08-11T05:55:18.051710Z ERROR codex_core::session::session: failed to load skill [/Users/x/.codex/skills/foo] missing YAML frontmatter delimited by ---',
+    '2026-08-11T03:55:19.699334Z ERROR codex_core::session::session: failed to load skill [/Users/x/.codex/skills/bar] missing field `description`',
+    '2026-08-11T06:25:18.151557Z ERROR codex_models_manager::manager: failed to refresh available models: timeout waiting for child process to exit',
+    '2026-08-11T07:25:18.305148Z ERROR codex_models_manager::manager: failed to renew cache TTL: EOF while parsing a value at line 1 column 0',
+    'codex_core::util: OutputTextDelta without active item',
+    'codex_core::util: ReasoningSummaryDelta without active item',
+    '2026-08-12T01:02:03.456Z ERROR codex_core::util: Custom tool call output is missing for call id: call_l6W8pqQJxR9axWZ510dKYHcL',
+    '2026-08-11T05:00:00.000Z ERROR codex_rollout::list: state db returned stale rollout path for thread 1234: /root/rollout',
+    'Reading additional input from stdin...',
+    '',
+  ];
+  for (const line of harmless) {
+    assert.equal(isKnownHarmlessStderrLine(line), true, JSON.stringify(line));
+  }
+  // Real signals that must keep flowing into the warn log and the tail.
+  const meaningful = [
+    '2026-08-11T05:10:00Z ERROR codex_core::tools::router: error=agent type is currently not available',
+    '2026-08-11T05:10:00Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed',
+    'stream error: unexpected status 429 Too Many Requests',
+    'error: failed to connect to 127.0.0.1:3000: Connection refused',
+  ];
+  for (const line of meaningful) {
+    assert.equal(isKnownHarmlessStderrLine(line), false, JSON.stringify(line));
+  }
+});
+
+test('the canonical API-error signature list stays in sync with the actual matchers', () => {
+  // The classify/push prompts describe the E-state vocabulary by rendering
+  // API_ERROR_SIGNATURES. This test pins the invariant that makes that
+  // honest: every advertised signature is actually recognized by the policy
+  // (error-only prefix OR a specific text-fallback category) when it appears
+  // in a trusted provider message.
+  for (const sig of API_ERROR_SIGNATURES) {
+    const message = `${sig}: request failed before completion`;
+    const recognized = isErrorOnlyText(message)
+      || normalizeApiError({ message, source: 'claude_result', provider: 'claude' }).category !== 'unknown';
+    assert.equal(recognized, true, `unrecognized signature: ${sig}`);
+  }
+  // The prompts render the same list, so classifier instructions and the
+  // detection vocabulary cannot drift apart silently.
+  assert.equal(typeof apiErrorSignaturesQuoted(), 'string');
+  for (const sig of API_ERROR_SIGNATURES) {
+    assert.equal(apiErrorSignaturesQuoted().includes(sig), true);
+  }
 });

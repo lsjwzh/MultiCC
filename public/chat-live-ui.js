@@ -532,6 +532,35 @@
       debug('think', 'hideThinking() — 气泡已移除');
     }
 
+    // Upstream API error state from the centralized api-error policy. Same
+    // content contract as the App's ChatRuntimeNoticePanel api-error row:
+    // provider · category · HTTP status · remedy. Amber while a controlled
+    // retry is scheduled, red once the turn has terminally failed.
+    function renderApiError(message) {
+      const bar = doc.getElementById('api-error-bar');
+      if (!bar) return;
+      const retryScheduled = message.state === 'retry_wait' || message.action === 'retry'
+        || message.action === 'wait_reset' || message.action === 'wait_circuit';
+      const parts = [
+        String(message.provider || '?'),
+        String(message.category || 'unknown'),
+      ];
+      if (message.httpStatus != null) parts.push(`HTTP ${message.httpStatus}`);
+      const remedy = retryScheduled
+        ? String(message.message || '')
+        : String(message.userAction || message.message || '');
+      if (remedy) parts.push(remedy);
+      bar.textContent = `API ${parts.join(' · ')}`;
+      bar.title = String(message.message || '');
+      bar.style.color = retryScheduled ? '#e3b341' : '#ff9b9b';
+      bar.style.display = '';
+    }
+
+    function clearApiError() {
+      const bar = doc.getElementById('api-error-bar');
+      if (bar) bar.style.display = 'none';
+    }
+
     function showDisconnectBanner(seconds) {
       if (isRestarting()) return;
       if (!disconnectBannerEl) {
@@ -1008,6 +1037,8 @@
       showThinking,
       hideThinking,
       getThinkingElement: () => thinkingEl,
+      renderApiError,
+      clearApiError,
       showDisconnectBanner,
       clearDisconnectBanner,
       startTitleAnimation,

@@ -56,6 +56,9 @@ function fixture(options = {}) {
     reviewInterval: options.reviewInterval ?? 3,
     reviewMaxMessages: options.reviewMaxMessages,
     memoryMaxLength: options.memoryMaxLength,
+    recordApiError: options.recordApiError === undefined ? undefined : function (raw, context) {
+      calls.push({ type: 'apiError', raw, context });
+    },
     now: options.now || (() => 1234),
     logger: {
       log(message) { calls.push({ type: 'log', message }); },
@@ -213,6 +216,29 @@ test('distill failures remain best-effort and empty output has no side effects',
   ]);
   assert.deepEqual(result, { updated: false, entries: [] });
   assert.deepEqual(empty.calls.map(call => call.type), ['enqueue']);
+});
+
+test('aux transport failures route through the centralized API error policy', async () => {
+  const reported = fixture({
+    recordApiError: true,
+    enqueue: () => Promise.reject(new Error('read ECONNRESET')),
+  });
+  assert.deepEqual(await reported.runtime.distillHistoryIntoMemory('s1', [
+    { role: 'user', content: 'x'.repeat(80) },
+  ]), { updated: false, error: 'read ECONNRESET' });
+  const report = reported.calls.find(call => call.type === 'apiError');
+  assert.ok(report, 'failure must be reported to recordApiError');
+  assert.equal(report.raw.source, 'aux_http');
+  assert.equal(report.raw.provider, 'aux');
+  assert.equal(report.raw.message, 'read ECONNRESET');
+  assert.equal(report.context.sessionId, 's1');
+  // Without the optional dependency (test composition, older hosts) the same
+  // failure path stays best-effort and never throws.
+  const quiet = fixture({ enqueue: () => Promise.reject(new Error('timeout')) });
+  assert.deepEqual(await quiet.runtime.distillHistoryIntoMemory('s1', [
+    { role: 'user', content: 'x'.repeat(80) },
+  ]), { updated: false, error: 'timeout' });
+  assert.equal(quiet.calls.find(call => call.type === 'apiError'), undefined);
 });
 
 test('review advances the last eligible cursor after memory side effects', async () => {

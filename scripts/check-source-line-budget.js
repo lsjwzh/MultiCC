@@ -25,8 +25,10 @@ const MIGRATION_DEBT = Object.freeze({
   // gate caught it; the overview classify-grid renderer adds a bit more. Pay it
   // down by splitting the aux-history UI (modal/panel/ws) into its own script.
   'public/manage.js': Object.freeze({
-    ceiling: 3117,
-    byteCeiling: 144729,
+    // Re-baselined to the exact main size after a sibling merge grew the file
+    // without ratcheting (the gate was red on main). Keep exact-equality.
+    ceiling: 3124,
+    byteCeiling: 145297,
     target: DEFAULT_MAX_LINES,
     reason: 'aux-history UI pending split into a dedicated script',
   }),

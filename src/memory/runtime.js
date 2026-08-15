@@ -141,6 +141,22 @@ function createMemoryRuntime(rawDeps) {
   const deps = assertDependencies(rawDeps);
   const logger = deps.logger || console;
   const now = deps.now || Date.now;
+  // Optional by design: tests compose the runtime without the API error host.
+  // When present, Aux transport failures (distill/review timeouts, ECONNRESET)
+  // are routed through the centralized API error policy so they share the same
+  // taxonomy, metrics and provider circuit as turn failures instead of only a
+  // console warn line.
+  const recordApiError = typeof deps.recordApiError === 'function' ? deps.recordApiError : null;
+
+  function reportAuxFailure(error, sessionId, what) {
+    if (!recordApiError) return;
+    try {
+      recordApiError(
+        { source: 'aux_http', provider: 'aux', message: String(error && error.message || `${what} failed`) },
+        { source: 'aux_http', provider: 'aux', sessionId },
+      );
+    } catch (_) {}
+  }
   const reviewInterval = resolveReviewInterval(deps.reviewInterval);
   const reviewMaxMessages = deps.reviewMaxMessages ?? MEMORY_REVIEW_MAX_MESSAGES;
   const memoryMaxLength = deps.memoryMaxLength ?? SESSION_MEMORY_MAX;
@@ -179,6 +195,7 @@ function createMemoryRuntime(rawDeps) {
     const tracked = Promise.resolve(promise)
       .catch(error => {
         logger.warn(`[multicc/memory] pending distill ${sessionId} failed: ${error.message}`);
+        reportAuxFailure(error, sessionId, 'pending distill');
         return { updated: false, error: error.message };
       })
       .finally(() => {
@@ -233,6 +250,7 @@ ${text.slice(0, 12000)}
       })
       .catch(error => {
         logger.warn(`[multicc/memory] distill ${sessionId} failed: ${error.message}`);
+        reportAuxFailure(error, sessionId, 'distill');
         return { updated: false, error: error.message };
       });
   }
@@ -299,6 +317,7 @@ ${transcript.slice(0, 12000)}
           deps.saveBestEffort('runtime.memory-review-retry');
         }
         logger.warn(`[multicc/memory] periodic review ${sessionId} failed: ${error.message}`);
+        reportAuxFailure(error, sessionId, 'memory review');
         return { updated: false, error: error.message };
       })
       .finally(() => reviewInFlight.delete(sessionId));
