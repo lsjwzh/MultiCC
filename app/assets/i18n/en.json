@@ -310,7 +310,6 @@
   "activityLogHint": "Fleet-level events such as completion, merge and push",
   "contextUsage": "Context",
   "usageDetail": "details",
-  "usageDetailTitle": "This turn and session",
   "usageTurnBilled": "Billed this turn",
   "usageTurnDuration": "Turn duration",
   "usageSessionTotal": "Session total",
@@ -757,5 +756,17 @@
   "restartSpawnHint": "Process-level restart: kill and rebuild this session CLI process. MultiCC context is kept; for codex the native history is archived and the context rebuilt (use when ↻ reconnect does not help)",
   "restartSpawnConfirm": "Restart this session CLI process?\n\nThe turn in flight is interrupted. MultiCC context is kept; for codex sessions the native history is archived and the context rebuilt on your next message.",
   "restartSpawnDone": "✓ CLI process restarted (was pid {pid}). Send your next message to continue.",
-  "restartSpawnFailed": "Restart process failed: {error}"
+  "restartSpawnFailed": "Restart process failed: {error}",
+  "backgroundTasks": "background tasks",
+  "backgroundTaskUnnamed": "Background task",
+  "roleTokenDetailTitle": "Token breakdown",
+  "roleTokenMain": "Main agent",
+  "roleTokenSub": "Sub agents",
+  "roleTokenByProvider": "By provider",
+  "roleTokenInput": "Input",
+  "roleTokenOutput": "Output",
+  "roleTokenCacheRead": "Cache read",
+  "roleTokenCacheWrite": "Cache write",
+  "roleTokenNoSub": "No sub-agent usage this turn",
+  "usageDetailTitle": "This turn and session"
 }

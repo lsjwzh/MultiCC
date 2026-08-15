@@ -51,6 +51,8 @@ dependencies:
 
   # Markdown rendering
   flutter_markdown: ^0.7.5
+  # Element types for flutter_markdown's custom builders (code highlighting)
+  markdown: ^7.3.0
 
   # Voice recording
   record: ^6.0.0

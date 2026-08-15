@@ -16,6 +16,7 @@ import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../utils/session_status_helpers.dart';
 import '../widgets/ai_config_sheet.dart';
+import '../widgets/background_task_panel.dart';
 import '../widgets/chat_header.dart';
 import '../widgets/chat_runtime_panels.dart';
 import '../widgets/conflict_diff_dialog.dart';
@@ -441,6 +442,20 @@ class _ChatViewState extends State<ChatView> {
                 right: 14,
                 bottom: 100,
                 child: _PendingInputFab(onTap: provider.expandPendingUserInput),
+              ),
+            // Background-task danmaku (mobile): floats above the input bar on
+            // the right, stacked above the pending-input FAB when both show.
+            if (provider.hasBackgroundTaskRows)
+              Positioned(
+                right: 14,
+                bottom: provider.pendingUserInput != null &&
+                        provider.pendingUserInputCollapsed
+                    ? 160
+                    : 96,
+                child: BackgroundTaskPanel(
+                  rows: provider.backgroundTaskRows(),
+                  onDismiss: provider.dismissBackgroundTask,
+                ),
               ),
           ],
         ),
