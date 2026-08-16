@@ -2227,15 +2227,17 @@
 
     /* ── Background-task danmaku panel (live-stream style bullet feed) ──
        Replaces the old in-chat "▶ 后台任务启动 / ✓ 后台任务完成" bubbles: an
-       ephemeral, glanceable floating card that only exists while tasks run. */
+       ephemeral, glanceable floating card that only exists while tasks run.
+       Since the draggable dock, the card is the *expanded* state anchored to
+       the #danmaku-fab (JS sets left/top or bottom); the fab is the compact
+       persistent entry. */
     #danmaku-panel {
       position: fixed;
-      top: 54px;
-      right: 16px;
+      /* left/top (or bottom) set by JS, anchored to the fab */
       width: 280px;
       max-width: 34vw;
-      z-index: 100;
-      display: none;                 /* shown by JS on first task; hidden when idle */
+      z-index: 101;
+      display: none;                 /* shown by JS on expand; hidden when idle */
       flex-direction: column;
       background: rgba(22, 27, 34, 0.82);
       -webkit-backdrop-filter: blur(12px);
@@ -2247,6 +2249,60 @@
       font-size: 12px;
       color: #c9d1d9;
       transition: opacity 0.3s ease;
+    }
+    /* Draggable compact entry: hidden while no task rows exist, follows the
+       pointer during a drag, snaps to the nearest screen edge on release.
+       touch-action:none keeps mobile drags from scrolling the chat. */
+    #danmaku-fab {
+      position: fixed;
+      left: 10px;
+      top: 632px;                    /* placement managed by JS (band bottom) */
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      display: none;                 /* shown by JS with the first task row */
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      background: rgba(35, 134, 54, 0.92);
+      border: 1px solid #3fb950;
+      color: #fff;
+      font-size: 19px;
+      line-height: 1;
+      cursor: grab;
+      user-select: none;
+      -webkit-user-select: none;
+      touch-action: none;
+      z-index: 101;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+    }
+    #danmaku-fab.dm-dragging { cursor: grabbing; }
+    #danmaku-fab:focus-visible { outline: 2px solid #58a6ff; outline-offset: 2px; }
+    #danmaku-fab-badge {
+      position: absolute;
+      top: -5px;
+      right: -4px;
+      min-width: 19px;
+      height: 19px;
+      padding: 0 4px;
+      border-radius: 10px;
+      background: #d73a49;
+      border: 1px solid #0d1117;
+      color: #fff;
+      font-size: 11px;
+      font-weight: 700;
+      line-height: 17px;
+      text-align: center;
+      display: none;                 /* shown by JS while tasks are running */
+    }
+    /* Transparent scrim behind an expanded panel: taps on "blank" chat collapse
+       it (the list stays inert while the panel is open). */
+    #danmaku-scrim {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      display: none;
+      background: transparent;
     }
     #danmaku-head {
       display: flex;
@@ -2313,7 +2369,7 @@
     @keyframes danmakuSpin { to { transform: rotate(360deg); } }
     @keyframes danmakuPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
     @media (max-width: 760px) {
-      #danmaku-panel { top: 50px; right: 8px; width: auto; max-width: 74vw; }
+      #danmaku-panel { width: auto; max-width: 74vw; }
       #danmaku-body { max-height: 150px; }
     }
     @media (prefers-reduced-motion: reduce) {
@@ -2337,12 +2393,21 @@
 
   <!-- Background-task danmaku panel: live bullet feed for Monitor / run_in_background
        start & done notices. Populated by pushDanmaku() in chat.js; hidden when idle. -->
-  <div id="danmaku-panel" style="display:none">
+  <!-- Draggable compact entry for the danmaku panel: a 48px fab with a
+       running-count badge. Tap (or Enter/Space) expands the anchored panel,
+       drag moves it and snaps to the nearest screen edge on release. Fully
+       hidden while no task rows exist. -->
+  <button id="danmaku-fab" type="button" style="display:none" aria-expanded="false" aria-label="后台任务">
+    <span aria-hidden="true">&#9776;</span>
+    <span id="danmaku-fab-badge"></span>
+  </button>
+  <div id="danmaku-scrim"></div>
+  <div id="danmaku-panel" style="display:none" role="dialog" aria-label="后台任务详情">
     <div id="danmaku-head">
       <span id="danmaku-dot" class="dm-dot-idle"></span>
       <span id="danmaku-title">后台任务</span>
       <span id="danmaku-count"></span>
-      <button id="danmaku-collapse-btn" title="折叠 / 展开">&#9662;</button>
+      <button id="danmaku-collapse-btn" title="收起到悬浮球">&#9662;</button>
     </div>
     <div id="danmaku-body"></div>
   </div>
