@@ -2530,6 +2530,17 @@ function setProvTab(name) {
   if (fmt && isProto) fmt.value = name;
 }
 
+/* Swap the prov-tabs edge fades as the row scrolls: `at-start` drops the
+   (redundant) left fade, scrolling to the end makes the right one fade to
+   nothing visually so the last tab reads as complete. */
+(function initProvTabsScrollAffordance() {
+  const tabs = document.getElementById('prov-tabs');
+  if (!tabs) return;
+  const sync = () => tabs.classList.toggle('at-start', tabs.scrollLeft <= 2);
+  tabs.addEventListener('scroll', sync, { passive: true });
+  sync();
+})();
+
 function renderProviderList() {
   const groups = providerCatalog.groupByProtocol(_providerData);
   if (!_providerLatency) _providerLatency = {};
@@ -2558,19 +2569,24 @@ function renderProviderList() {
       statHtml = parts.join(' · ');
     }
     const latBadge = latencyBadge(p.id);
+    /* Four non-shrinking buttons next to a flex:1 column: on a phone the row
+       wraps and the buttons take their own full-width line, so the info column
+       keeps the whole card width instead of being crushed to 2–4 chars/line. */
     return `
-    <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;">
-      <div style="flex:1;min-width:0">
+    <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;flex-wrap:wrap;">
+      <div style="flex:1 1 200px;min-width:0">
         <div style="font-size:13px;color:var(--text);font-weight:600">${escapeHtml(p.name)} <span style="font-weight:400;font-size:11px;color:var(--faint)">${p.source === 'ccswitch' ? '· 来自 cc-switch' : '· 本地'} · 可用于 ${(p.compatibleClis || []).map(x => x === 'claude' ? 'Claude' : x === 'codex' ? 'Codex' : 'OpenCode').join(' / ')}</span>${latBadge}</div>
         <div data-quota-id="${escapeHtml(p.id)}" style="font-size:11px;font-weight:600;margin-top:3px;color:var(--faint)">余量 —</div>
         <div data-balance-id="${escapeHtml(p.id)}" style="display:none;font-size:11px;font-weight:600;margin-top:2px;color:var(--faint)"></div>
         ${statHtml ? `<div style="font-size:11px;color:var(--amber);margin-top:3px">${statHtml}</div>` : ''}
         <div style="font-size:11px;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.isOfficial ? '默认登录 / 订阅' : (p.baseUrl || ''))}${(p.modelOptions || []).length > 1 ? ' · ' + (p.modelOptions || []).length + ' models' : (p.model ? ' · ' + escapeHtml(p.model) : '')}${p.useChatResponsesProxy ? ' · proxy' : ''}${p.tokenMask ? ' · ' + escapeHtml(p.tokenMask) : ''}</div>
       </div>
+      <div style="display:flex;gap:8px;margin-left:auto;">
       <button class="btn" style="padding:4px 10px;font-size:12px" onclick="balanceProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}',this)">余量</button>
       <button class="btn" style="padding:4px 10px;font-size:12px" onclick="speedTestProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}',this)">测速</button>
       <button class="btn" style="padding:4px 10px;font-size:12px" onclick="editProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}')">编辑</button>
       <button class="btn" style="padding:4px 10px;font-size:12px" onclick="deleteProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}','${escapeHtml(p.name)}')">删除</button>
+      </div>
     </div>`;
   };
   const emptyMsg = !_providerData.providers.length
