@@ -60,6 +60,45 @@ function adapterReasoningProgressEvent(event) {
   };
 }
 
+function recoverDispatchFromHistory(history, operation) {
+  const messages = Array.isArray(history) ? history : [];
+  const operationId = operation?.id || null;
+  const requestId = operation?.requestOutboxId || null;
+  if (!operationId) return null;
+  const ownedUserIndexes = [];
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (!message || message.role !== 'user') continue;
+    if (message.originDispatchId === operationId
+        || (requestId && (message.deliveryId === requestId || message.clientMsgId === requestId))) {
+      ownedUserIndexes.push(index);
+    }
+  }
+  if (!ownedUserIndexes.length) return null;
+
+  // A superseded provider process may leave a cancelled/partial assistant row.
+  // Recovery belongs to the latest turn that explicitly retained the dispatch
+  // lineage, not to the first assistant row after the original request.
+  const userIndex = ownedUserIndexes.at(-1);
+  const user = messages[userIndex];
+  const turnId = user?.turnId || null;
+  const assistants = [];
+  for (let index = userIndex + 1; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (!message) continue;
+    if (message.role === 'user' && (!turnId || message.turnId !== turnId)) break;
+    if (message.role !== 'assistant') continue;
+    if (turnId && message.turnId && message.turnId !== turnId) continue;
+    assistants.push(message);
+  }
+  const assistant = assistants.at(-1) || null;
+  if (!assistant) return { completed: false, lastOutput: '' };
+  if (assistant._interim || assistant.partial || assistant.cancelled || assistant.error) {
+    return { completed: false, lastOutput: String(assistant.content || '').slice(-4000) };
+  }
+  return { completed: true, text: String(assistant.content || '') };
+}
+
 // How long after a restart the reconnect replay keeps surfacing tasks that
 // the restart killed. Long enough to cover a reconnect right after the
 // restart plus a couple of page refreshes; short enough that yesterday's
@@ -1521,23 +1560,7 @@ function createChatTurnEngine(deps) {
   }
 
   function recoverDispatchOperation(operation) {
-    const history = loadChatHistory(operation.spec.chatId);
-    const requestId = operation.requestOutboxId;
-    const userIndex = history.findIndex(message => message && message.role === 'user' && (
-      message.originDispatchId === operation.id
-      || message.deliveryId === requestId
-      || message.clientMsgId === requestId
-    ));
-    if (userIndex < 0) return null;
-    for (let index = userIndex + 1; index < history.length; index++) {
-      const message = history[index];
-      if (!message || message.role !== 'assistant') continue;
-      if (message._interim || message.partial || message.cancelled || message.error) {
-        return { completed: false, lastOutput: String(message.content || '').slice(-4000) };
-      }
-      return { completed: true, text: String(message.content || '') };
-    }
-    return { completed: false, lastOutput: '' };
+    return recoverDispatchFromHistory(loadChatHistory(operation.spec.chatId), operation);
   }
 
   function deliverOrchestrationOutbox({ item, sessionId, text, opts }) {
@@ -2096,4 +2119,5 @@ module.exports = {
   adapterReasoningProgressEvent,
   appendAdapterAssistantText,
   createChatTurnEngine,
+  recoverDispatchFromHistory,
 };
