@@ -21,6 +21,7 @@ import '../widgets/background_task_panel.dart';
 import '../widgets/chat_header.dart';
 import '../widgets/chat_runtime_panels.dart';
 import '../widgets/conflict_diff_dialog.dart';
+import '../widgets/dispatch_floating_dock.dart';
 import '../widgets/session_diff_dialog.dart';
 import '../widgets/input_bar.dart';
 import '../widgets/message_bubble.dart';
@@ -513,27 +514,44 @@ class _ChatViewState extends State<ChatView> {
                 ),
               ),
             if (provider.dispatchQueue.isNotEmpty)
-              Positioned(
-                left: 14,
-                bottom: 96,
-                child: DispatchQueuePanel(
-                  key: ValueKey('dispatch-${provider.sessionName}'),
-                  entries: provider.dispatchQueue,
-                  resolveName: context
-                      .read<SessionManager>()
-                      .sessionDisplayName,
-                  onRefresh: provider.refreshDispatchQueue,
-                  onOpenSession: _openDispatchSession,
-                  initiallyExpanded: dispatchExpanded,
-                  onExpandedChanged: (expanded) {
-                    if (mounted) setState(() => _dispatchExpanded = expanded);
-                  },
-                ),
+              DispatchFloatingDock(
+                key: ValueKey('dispatch-${provider.sessionName}'),
+                entries: provider.dispatchQueue,
+                resolveName: context
+                    .read<SessionManager>()
+                    .sessionDisplayName,
+                onRefresh: provider.refreshDispatchQueue,
+                onOpenSession: _openDispatchSession,
+                onExpandedChanged: (expanded) {
+                  if (mounted) setState(() => _dispatchExpanded = expanded);
+                },
+                leftMinBottom: 96,
+                rightMinBottom: _dispatchRightReserve(provider),
               ),
           ],
         ),
       ),
     );
+  }
+
+  /// Bottom clearance the dispatch dock must respect when snapped to the
+  /// right edge: the input bar always, plus the existing right-side floaters
+  /// (pending-input FAB, background-task danmaku) when they are visible.
+  /// Their exact heights are not measurable from here, so this uses the same
+  /// anchors chat_screen positions them with (bottom 96–160) plus a generous
+  /// panel-body allowance — deterministic: the dock always yields upward and
+  /// never overlaps those controls or the send button.
+  double _dispatchRightReserve(ChatProvider provider) {
+    var reserve = 96.0;
+    final pendingFab =
+        provider.pendingUserInput != null &&
+        provider.pendingUserInputCollapsed;
+    if (pendingFab) reserve = reserve < 160.0 ? 160.0 : reserve;
+    if (provider.hasBackgroundTaskRows) {
+      final stacked = (pendingFab ? 160.0 : 96.0) + 200.0;
+      reserve = reserve < stacked ? stacked : reserve;
+    }
+    return reserve;
   }
 }
 
