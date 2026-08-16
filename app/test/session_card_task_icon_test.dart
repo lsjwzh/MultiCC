@@ -1,19 +1,14 @@
-// 卡片级回归测试：Fleet 面板会话卡片顶部，任务状态 icon 必须只渲染一次。
+// 卡片级回归测试：Fleet 面板会话卡片顶部，任务状态 icon 只渲染一处、只出现一次。
 //
-// 历史 bug：SessionCard 顶部同时渲染主状态 icon（statusSpec.icon，来自
-// statusPresentation）与 classify 徽章 chip（classifyChip 的 emoji 也取自同一张
-// statusPresentation 表）。当 session 状态与 classify 字母映射到同一个 canonical
-// 状态时——running🔄+P🔄、succeeded✅+D✅、error❌+E❌、waiting⏸️+W/B⏸️——两个相同
-// 图标并排出现在卡片顶部。
+// 历史 bug：SessionCard 顶部同时渲染「主状态 icon」（statusSpec.icon）与
+// 「classify 状态徽章」（classifyChip 的 emoji 取自同一张 statusPresentation 表）。
+// 当 session 状态与 classify 字母映射到同一个 canonical 状态（succeeded+D 都是
+// ✅、running+P 都是 🔄、error+E 都是 ❌、waiting+W/B 都是 ⏸️）时，卡片顶部出现
+// 两个相同的状态 icon。
 //
-// 修复：主状态 icon 与 classify 徽章同 glyph 时，classify chip 只保留更细的
-// 文字（「等待用户」vs「等待中」），不再重复渲染 emoji；不同状态才两者并排
-// （语义不同，天然可区分）。本文件直接断言每张卡的任务状态 icon 只出现一次，
-// 并覆盖此前会重复的全部状态，以及「不同语义不误删」的对照用例。
-//
-// 注意：SessionManager 构造会启一个 5s 周期轮询 timer，flutter_test 会在 body
-// 结束时断言无 pending timer，因此 dispose 必须放进 body 末尾（addTearDown /
-// tearDownAll 都太晚，会导致 12 个测试全挂）。
+// 修复：删掉 classify 徽章在会话卡片顶部的渲染，只保留主状态 icon 这一路——
+// 每张卡天然只有一个任务状态 icon，不再需要去重判断。classify 徽章仍在会话
+// 弹窗里展示（main_shell 的 classifyChip 保留）。
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -32,14 +27,13 @@ Future<Widget> _wrap(Widget child) async =>
 Future<SessionManager> _pumpCard(
   WidgetTester tester, {
   String status = 'idle',
-  String? classifyState,
   bool active = false,
   double? width,
 }) async {
   final settings = await SettingsService.getInstance();
   final mgr = SessionManager(settings: settings);
   final session = Session(
-    id: 'sess-$status-$classifyState',
+    id: 'sess-$status',
     cli: SessionCli.claude,
     kind: SessionKind.chat,
     dirId: 'dir-1',
@@ -50,7 +44,7 @@ Future<SessionManager> _pumpCard(
     session: session,
     mgr: mgr,
     settings: settings,
-    liveStatus: SessionStatus(status: status, classifyState: classifyState),
+    liveStatus: SessionStatus(status: status),
   );
   await tester.pumpWidget(await _wrap(
     width == null ? card : SizedBox(width: width, child: card),
@@ -66,114 +60,63 @@ void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
   group('SessionCard single task-status icon', () {
-    testWidgets('running + classify P — 🔄 exactly once, 细分文案保留', (
-      tester,
-    ) async {
-      final mgr = await _pumpCard(tester, status: 'running', classifyState: 'P');
+    testWidgets('running — 🔄 exactly once', (tester) async {
+      final mgr = await _pumpCard(tester, status: 'running');
       expect(find.text('🔄'), findsOneWidget);
-      // classify 徽章降级为纯文字，细分语义「处理中」仍可见。
-      expect(find.text('处理中'), findsOneWidget);
-      // 操作按钮（⋯ 菜单）不因去重而丢失。
-      expect(find.byType(PopupMenuButton<String>), findsOneWidget);
       mgr.dispose();
     });
 
-    testWidgets('succeeded + classify D — ✅ exactly once', (tester) async {
-      final mgr = await _pumpCard(tester, status: 'succeeded', classifyState: 'D');
-      expect(find.text('✅'), findsOneWidget);
-      // 主 label 与 classify 文案同为「执行成功」，chip 整体隐藏——文案也只一次。
-      expect(find.text('执行成功'), findsOneWidget);
-      mgr.dispose();
-    });
-
-    testWidgets('done + classify D — ✅ exactly once', (tester) async {
-      final mgr = await _pumpCard(tester, status: 'done', classifyState: 'D');
+    testWidgets('succeeded — ✅ exactly once（此前重复的场景）', (tester) async {
+      final mgr = await _pumpCard(tester, status: 'succeeded');
       expect(find.text('✅'), findsOneWidget);
       mgr.dispose();
     });
 
-    testWidgets('error + classify E — ❌ exactly once, 「API 异常」保留', (
-      tester,
-    ) async {
-      final mgr = await _pumpCard(tester, status: 'error', classifyState: 'E');
+    testWidgets('done — ✅ exactly once', (tester) async {
+      final mgr = await _pumpCard(tester, status: 'done');
+      expect(find.text('✅'), findsOneWidget);
+      mgr.dispose();
+    });
+
+    testWidgets('error — ❌ exactly once（此前重复的场景）', (tester) async {
+      final mgr = await _pumpCard(tester, status: 'error');
       expect(find.text('❌'), findsOneWidget);
-      expect(find.text('API 异常'), findsOneWidget);
       mgr.dispose();
     });
 
-    testWidgets('waiting + classify W — ⏸️ exactly once, 「等待用户」保留', (
-      tester,
-    ) async {
-      final mgr = await _pumpCard(tester, status: 'waiting', classifyState: 'W');
-      expect(find.text('⏸️'), findsOneWidget);
-      expect(find.text('等待用户'), findsOneWidget);
-      mgr.dispose();
-    });
-
-    testWidgets('waiting + classify B — ⏸️ exactly once, 「后台等待」保留', (
-      tester,
-    ) async {
-      final mgr = await _pumpCard(tester, status: 'waiting', classifyState: 'B');
-      expect(find.text('⏸️'), findsOneWidget);
-      expect(find.text('后台等待'), findsOneWidget);
-      mgr.dispose();
-    });
-
-    testWidgets('不同语义不误删 — running + classify W 两个 icon 各一次', (
-      tester,
-    ) async {
-      final mgr = await _pumpCard(tester, status: 'running', classifyState: 'W');
-      expect(find.text('🔄'), findsOneWidget);
+    testWidgets('waiting — ⏸️ exactly once（此前重复的场景）', (tester) async {
+      final mgr = await _pumpCard(tester, status: 'waiting');
       expect(find.text('⏸️'), findsOneWidget);
       mgr.dispose();
     });
 
-    testWidgets('不同语义不误删 — waiting + classify P 两个 icon 各一次', (
-      tester,
-    ) async {
-      final mgr = await _pumpCard(tester, status: 'waiting', classifyState: 'P');
-      expect(find.text('⏸️'), findsOneWidget);
-      expect(find.text('🔄'), findsOneWidget);
+    testWidgets('blocked — 🔒 exactly once', (tester) async {
+      final mgr = await _pumpCard(tester, status: 'blocked');
+      expect(find.text('🔒'), findsOneWidget);
       mgr.dispose();
     });
 
-    testWidgets('idle + classify W — 主 icon 不渲染，classify ⏸️ 仍显示', (
-      tester,
-    ) async {
-      final mgr = await _pumpCard(tester, active: true, classifyState: 'W');
-      expect(find.text('⚪'), findsNothing);
-      expect(find.text('⏸️'), findsOneWidget);
-      mgr.dispose();
-    });
-
-    testWidgets('idle 无 classify — 无任何状态 icon（回归 dashboard 声明）', (
-      tester,
-    ) async {
+    testWidgets('idle — 无任何状态 icon（回归 dashboard 声明）', (tester) async {
       final mgr = await _pumpCard(tester, status: 'idle', active: true);
       expect(find.text('⚪'), findsNothing);
       expect(find.text('🔄'), findsNothing);
       expect(find.text('⏸️'), findsNothing);
+      expect(find.text('✅'), findsNothing);
       mgr.dispose();
     });
 
-    testWidgets('无 classify — 主 icon 一次、无 chip', (tester) async {
+    testWidgets('每个状态 icon 唯一 + ⋯ 操作菜单保留', (tester) async {
       final mgr = await _pumpCard(tester, status: 'running');
       expect(find.text('🔄'), findsOneWidget);
-      expect(find.text('处理中'), findsNothing); // 无 classify 判定 → 无 chip
+      // 操作按钮不受影响。
+      expect(find.byType(PopupMenuButton<String>), findsOneWidget);
       mgr.dispose();
     });
   });
 
   group('SessionCard narrow-layout regression', () {
-    testWidgets('running + classify P 在窄卡上不抛溢出异常', (tester) async {
-      // 320dp 是手机纵向最窄的可用卡片宽度档位；去重后 chip 降级为纯文字，
-      // 仍不得撑破 Row 的约束。
-      final mgr = await _pumpCard(
-        tester,
-        status: 'running',
-        classifyState: 'P',
-        width: 320,
-      );
+    testWidgets('running 在窄卡上不抛溢出异常', (tester) async {
+      final mgr = await _pumpCard(tester, status: 'running', width: 320);
       expect(tester.takeException(), isNull);
       expect(find.text('🔄'), findsOneWidget);
       mgr.dispose();
