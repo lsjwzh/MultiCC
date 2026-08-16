@@ -297,3 +297,26 @@ test('the public surface exposes minimise and restore', () => {
   );
   assert.equal(Object.isFrozen(h.viewer), true);
 });
+
+test('the fab is the unified compact circle: 24px visual inside a 44px hit box', () => {
+  // A CSS assertion on purpose — the shrink lives entirely in the stylesheet.
+  // Same contract as the danmaku/background-tasks fab and the App's two
+  // FloatingDocks: a 24-unit circle inside a ≥44-unit tap/drag target, with
+  // the placement JS (FAB_SIZE) still measuring the outer box.
+  const fab = CHAT_HTML.slice(
+    CHAT_HTML.indexOf('#diff-dock-fab {'),
+    CHAT_HTML.indexOf('#diff-dock-fab:hover'),
+  );
+  assert.match(fab, /width:\s*44px/, 'outer box keeps the 44px target');
+  assert.match(fab, /height:\s*44px/, 'outer box keeps the 44px target');
+  assert.match(fab, /background:\s*transparent/, 'outer box is only a target');
+
+  const circle = CHAT_HTML.slice(
+    CHAT_HTML.indexOf('.diff-fab-circle {'),
+    CHAT_HTML.indexOf('#diff-dock-fab:hover'),
+  );
+  assert.match(circle, /width:\s*24px/, 'visible circle shrinks to 24px');
+  assert.match(circle, /height:\s*24px/, 'visible circle shrinks to 24px');
+  assert.match(circle, /#1f6feb/, 'circle carries the blue fill');
+  assert.match(circle, /pointer-events:\s*none/, 'the box owns the gestures');
+});
