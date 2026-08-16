@@ -137,6 +137,10 @@ function createAuxRunLog(options = {}) {
       // The last message the classifier saw. Reverse lookup from a rendered
       // message back to the verdict that judged it goes through this field.
       anchorMessageId: run.anchorMessageId || null,
+      // The anchor observed when the delayed result returned.  A different
+      // value proves that a newer user/assistant message had already become
+      // current, so the result was retained for audit but not applied live.
+      observedAnchorMessageId: run.observedAnchorMessageId || null,
       model: run.model || null,
       latencyMs: Number.isFinite(run.latencyMs) ? run.latencyMs : null,
       systemPrompt: clip(run.systemPrompt, maxFieldChars),
@@ -148,6 +152,7 @@ function createAuxRunLog(options = {}) {
       error: run.error ? String(run.error) : null,
       cancelled: run.cancelled === true,
       superseded: run.superseded === true,
+      supersededReason: run.supersededReason || null,
     };
     if (!ensureDir()) return entry;
     try {

@@ -20,6 +20,7 @@ test('records a run and reads it back verbatim', () => {
     taskId: 'tsk-1',
     priorTaskId: 'tsk-old',
     anchorMessageId: 'msg-9',
+    observedAnchorMessageId: 'msg-10',
     source: 'turn-end',
     turnId: 'turn-7',
     model: 'aux-model',
@@ -28,6 +29,8 @@ test('records a run and reads it back verbatim', () => {
     prompt: 'CONVERSATION',
     rawText: '<think>…</think>\n改图标\n实现中\nW',
     parsed: { taskName: '改图标', phase: 'implementing', relation: 'same', taskId: 'tsk-1' },
+    superseded: true,
+    supersededReason: 'anchor_changed',
   });
 
   const stored = log.get('s1', 'run-1');
@@ -35,6 +38,9 @@ test('records a run and reads it back verbatim', () => {
   assert.equal(stored.taskId, 'tsk-1');
   assert.equal(stored.priorTaskId, 'tsk-old');
   assert.equal(stored.anchorMessageId, 'msg-9');
+  assert.equal(stored.observedAnchorMessageId, 'msg-10');
+  assert.equal(stored.superseded, true);
+  assert.equal(stored.supersededReason, 'anchor_changed');
   assert.equal(stored.source, 'turn-end');
   assert.equal(stored.turnId, 'turn-7');
   assert.equal(stored.latencyMs, 812);
