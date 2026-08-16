@@ -589,3 +589,64 @@ test('queued dispatch carries queuePosition and queueLength; non-queued omits bo
   assert.equal('queueLength' in running, false, 'queueLength only while queued');
   assert.equal(running.queuePosition, undefined);
 });
+
+test('dispatch recent view keeps every live operation ahead of bounded terminal history', async () => {
+  const operations = [
+    {
+      id: 'op-old-live', kind: 'dispatch', ownerSessionId: 's1', status: 'running',
+      requestOutboxId: 'operation:op-old-live:request', createdAt: 1, updatedAt: 2,
+      spec: { targetId: 'worker', chatId: 'worker', resultMode: 'async' },
+    },
+    ...[10, 20, 30].map(createdAt => ({
+      id: `op-done-${createdAt}`, kind: 'dispatch', ownerSessionId: 's1', status: 'completed',
+      requestOutboxId: `operation:op-done-${createdAt}:request`, createdAt,
+      completedAt: createdAt + 1, updatedAt: createdAt + 1,
+      spec: { targetId: 'worker', chatId: 'worker', resultMode: 'async' },
+    })),
+  ];
+  const current = fixture({ scheduler: true, operations, queueStatus: { active: null, queued: [] } });
+  const result = await invoke(current.app, 'GET', '/api/sessions/:id/dispatches', {
+    params: { id: 's1' },
+    query: { activeOnly: 'false', relation: 'both', recentTerminalLimit: '2' },
+  });
+  assert.equal(result.response.statusCode, 200);
+  assert.deepEqual(
+    result.response.body.dispatches.map(item => item.operationId),
+    ['op-old-live', 'op-done-30', 'op-done-20'],
+  );
+  assert.equal(result.response.body.activeCount, 1);
+  assert.equal(result.response.body.activeTruncated, false);
+  assert.equal(result.response.body.terminalCount, 3);
+  assert.equal(result.response.body.returnedTerminalCount, 2);
+  assert.equal(result.response.body.recentTerminalLimit, 2);
+
+  const invalid = await invoke(current.app, 'GET', '/api/sessions/:id/dispatches', {
+    params: { id: 's1' }, query: { activeOnly: 'false', recentTerminalLimit: '21' },
+  });
+  assert.equal(invalid.response.statusCode, 400);
+  assert.match(invalid.response.body.error, /recentTerminalLimit/);
+
+  const crowdedOperations = [
+    ...Array.from({ length: 101 }, (_, index) => ({
+      id: `op-live-${index}`, kind: 'dispatch', ownerSessionId: 's1', status: 'running',
+      requestOutboxId: `operation:op-live-${index}:request`, createdAt: 1000 - index,
+      spec: { targetId: 'worker', chatId: 'worker', resultMode: 'async' },
+    })),
+    ...operations.filter(operation => operation.status === 'completed'),
+  ];
+  const crowded = fixture({
+    scheduler: true,
+    operations: crowdedOperations,
+    queueStatus: { active: null, queued: [] },
+  });
+  const bounded = await invoke(crowded.app, 'GET', '/api/sessions/:id/dispatches', {
+    params: { id: 's1' },
+    query: { activeOnly: 'false', relation: 'both', recentTerminalLimit: '2' },
+  });
+  assert.equal(bounded.response.statusCode, 200);
+  assert.equal(bounded.response.body.dispatches.length, 102);
+  assert.equal(bounded.response.body.activeCount, 101);
+  assert.equal(bounded.response.body.activeTruncated, true);
+  assert.equal(bounded.response.body.returnedTerminalCount, 2);
+  assert.equal(bounded.response.body.dispatches.slice(-2).every(item => item.terminal), true);
+});

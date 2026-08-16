@@ -687,7 +687,7 @@ class ChatProvider extends ChangeNotifier {
   final BackgroundTaskBoard _backgroundTasks = BackgroundTaskBoard();
   Timer? _bgSweepTimer;
 
-  /// Dispatch FIFO (durable operations owned by or targeting this session).
+  /// Dispatch summary (live operations plus bounded recent terminal history).
   /// The contract has NO WS push — this is event-triggered + bounded polling
   /// over GET /dispatches (refreshDispatchQueue). Distinct from
   /// [_sessionQueue] (staged user messages) and from background tasks.
@@ -695,6 +695,8 @@ class ChatProvider extends ChangeNotifier {
   List<DispatchQueueEntry> get dispatchQueue =>
       List.unmodifiable(_dispatchQueue);
   Timer? _dispatchQueueTimer;
+  Timer? _dispatchQueueRetryTimer;
+  int _dispatchQueueFailureCount = 0;
   bool _dispatchQueueInFlight = false;
 
   /// aux classify verdict for THIS session — what the helper AI thinks the
@@ -2161,7 +2163,7 @@ class ChatProvider extends ChangeNotifier {
     });
   }
 
-  // ── Dispatch FIFO (polled projection; no WS push in the contract) ─────────
+  // ── Dispatch activity (polled projection; no WS push in the contract) ─────
 
   /// Pull the authoritative dispatch snapshot. Callers: connect/reconnect,
   /// session_queue events (queue advanced → dispatches move), turn results.
@@ -2176,31 +2178,55 @@ class ChatProvider extends ChangeNotifier {
         settings: settings,
       ).fetchDispatchQueue(sessionName);
       final next = mergeDispatchQueue(rows);
+      _dispatchQueueFailureCount = 0;
+      _dispatchQueueRetryTimer?.cancel();
+      _dispatchQueueRetryTimer = null;
       _armDispatchQueueTimer(next);
       if (_listEqualsById(_dispatchQueue, next)) return;
       _dispatchQueue = next;
       notifyListeners();
     } catch (_) {
       // Transport error: keep the last snapshot, keep the timer armed while
-      // rows exist so it retries on the next tick.
+      // live rows exist so it retries on the next tick. An initially empty
+      // snapshot gets three bounded retries; otherwise there would be neither
+      // a visible refresh button nor a timer to recover after a cold-start blip.
       _armDispatchQueueTimer(_dispatchQueue);
+      _dispatchQueueFailureCount += 1;
+      _armDispatchQueueRetry();
     } finally {
       _dispatchQueueInFlight = false;
     }
   }
 
-  /// Poll while entries exist (the server has no push for dispatch state);
-  /// park the timer when the queue drains. The tick only refreshes sessions
-  /// the user is actually looking at — background providers ride the
-  /// event triggers instead of polling forever.
+  /// Poll while live entries exist (the server has no push for dispatch state);
+  /// terminal-only history must not keep a timer alive forever. The tick only
+  /// refreshes sessions the user is actually looking at — background providers
+  /// ride the event triggers instead of polling forever.
   void _armDispatchQueueTimer(List<DispatchQueueEntry> next) {
-    if (next.isEmpty) {
+    if (!next.any((entry) => !entry.terminal)) {
       _dispatchQueueTimer?.cancel();
       _dispatchQueueTimer = null;
       return;
     }
     _dispatchQueueTimer ??= Timer.periodic(const Duration(seconds: 10), (_) {
       if (isActive) refreshDispatchQueue();
+    });
+  }
+
+  void _armDispatchQueueRetry() {
+    if (_dispatchQueueTimer != null ||
+        _dispatchQueueRetryTimer != null ||
+        _dispatchQueueFailureCount > 3) {
+      return;
+    }
+    final delaySeconds = switch (_dispatchQueueFailureCount) {
+      1 => 2,
+      2 => 5,
+      _ => 10,
+    };
+    _dispatchQueueRetryTimer = Timer(Duration(seconds: delaySeconds), () {
+      _dispatchQueueRetryTimer = null;
+      refreshDispatchQueue();
     });
   }
 
@@ -2214,7 +2240,13 @@ class ChatProvider extends ChangeNotifier {
           a[i].queueState != b[i].queueState ||
           a[i].queuePosition != b[i].queuePosition ||
           a[i].queueLength != b[i].queueLength ||
-          a[i].status != b[i].status) {
+          a[i].status != b[i].status ||
+          a[i].terminal != b[i].terminal ||
+          a[i].relation != b[i].relation ||
+          a[i].ownerSessionId != b[i].ownerSessionId ||
+          a[i].targetSessionId != b[i].targetSessionId ||
+          a[i].executionSessionId != b[i].executionSessionId ||
+          a[i].mode != b[i].mode) {
         return false;
       }
     }
@@ -2620,6 +2652,7 @@ class ChatProvider extends ChangeNotifier {
     _usageExpiryTimer?.cancel();
     _bgSweepTimer?.cancel();
     _dispatchQueueTimer?.cancel();
+    _dispatchQueueRetryTimer?.cancel();
     _stagedTracker.clear();
     _eventSub?.cancel();
     _service.dispose();

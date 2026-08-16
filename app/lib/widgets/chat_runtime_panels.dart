@@ -735,27 +735,56 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
   }
 }
 
-/// 派发队列面板（任务A）：展示本会话的双向 dispatch FIFO——本会话派出去的
-/// （owner）和别人派给本会话的（target）。数据来自轮询的权威投影
-/// （ChatProvider.refreshDispatchQueue），与 SessionQueuePanel（暂存消息队列）、
-/// 后台任务/TaskBoard 语义互斥，不混排。
-///
-/// 展示约束：不显示任务 prompt 文本（服务端 DTO 也不带，天然合规）；
-/// 队列为空时整个面板隐藏（空态不打扰）；terminal 条目在 merge 层已收敛消失。
-class DispatchQueuePanel extends StatelessWidget {
+/// Compact two-way dispatch history dock. It is mounted in ChatView's Stack,
+/// so the default collapsed FAB consumes no composer height. Expanding shows
+/// at most five rows, with live operations first and recent terminal records
+/// filling any remaining slots. The DTO never includes prompt text.
+class DispatchQueuePanel extends StatefulWidget {
   final List<DispatchQueueEntry> entries;
   final String Function(String sessionId) resolveName;
   final Future<void> Function()? onRefresh;
+  final ValueChanged<DispatchQueueEntry>? onOpenSession;
+  final ValueChanged<bool>? onExpandedChanged;
+  final bool initiallyExpanded;
 
-  /// 单屏最多直出的行数，超过显示「还有 N 条」——防长队列顶飞输入区。
-  static const int _maxRows = 6;
+  static const int maxRows = 5;
 
   const DispatchQueuePanel({
     super.key,
     required this.entries,
     required this.resolveName,
     this.onRefresh,
+    this.onOpenSession,
+    this.onExpandedChanged,
+    this.initiallyExpanded = false,
   });
+
+  @override
+  State<DispatchQueuePanel> createState() => _DispatchQueuePanelState();
+}
+
+class _DispatchQueuePanelState extends State<DispatchQueuePanel> {
+  late bool _expanded;
+
+  @override
+  void initState() {
+    super.initState();
+    _expanded = widget.initiallyExpanded;
+  }
+
+  @override
+  void didUpdateWidget(covariant DispatchQueuePanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.initiallyExpanded != widget.initiallyExpanded) {
+      _expanded = widget.initiallyExpanded;
+    }
+  }
+
+  void _setExpanded(bool value) {
+    if (_expanded == value) return;
+    setState(() => _expanded = value);
+    widget.onExpandedChanged?.call(value);
+  }
 
   String _modeLabel(String? mode) {
     switch (mode) {
@@ -771,6 +800,18 @@ class DispatchQueuePanel extends StatelessWidget {
   }
 
   String _stateLabel(DispatchQueueEntry e) {
+    if (e.terminal) {
+      switch (e.status) {
+        case 'completed':
+          return t('dispatchStateCompleted');
+        case 'failed':
+          return t('dispatchStateFailed');
+        case 'interrupted':
+          return t('dispatchStateInterrupted');
+        case 'cancelled':
+          return t('dispatchStateCancelled');
+      }
+    }
     switch (e.queueState) {
       case 'queued':
         final pos = e.queuePosition;
@@ -789,13 +830,75 @@ class DispatchQueuePanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (entries.isEmpty) return const SizedBox.shrink();
-    final shown = entries.take(_maxRows).toList(growable: false);
-    final rest = entries.length - shown.length;
+    if (widget.entries.isEmpty) return const SizedBox.shrink();
+    final activeCount = widget.entries.where((entry) => !entry.terminal).length;
+    if (!_expanded) {
+      return Semantics(
+        button: true,
+        label: t('dispatchQueueExpand'),
+        child: Material(
+          key: const Key('dispatch-queue-fab'),
+          color: const Color(0xFF1f6feb),
+          shape: const CircleBorder(side: BorderSide(color: Color(0xFF6aa3ff))),
+          elevation: 8,
+          child: InkWell(
+            customBorder: const CircleBorder(),
+            onTap: () => _setExpanded(true),
+            child: SizedBox(
+              width: 46,
+              height: 46,
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  const Center(
+                    child: Icon(
+                      Icons.swap_vert_rounded,
+                      size: 22,
+                      color: Colors.white,
+                    ),
+                  ),
+                  if (activeCount > 0)
+                    Positioned(
+                      key: const Key('dispatch-active-badge'),
+                      right: -4,
+                      top: -5,
+                      child: Container(
+                        constraints: const BoxConstraints(minWidth: 19),
+                        height: 19,
+                        padding: const EdgeInsets.symmetric(horizontal: 4),
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFd73a49),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: const Color(0xFF0f1115)),
+                        ),
+                        child: Text(
+                          activeCount > 99 ? '99+' : '$activeCount',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    final shown = widget.entries
+        .take(DispatchQueuePanel.maxRows)
+        .toList(growable: false);
+    final rest = widget.entries.length - shown.length;
+    final viewportWidth = MediaQuery.sizeOf(context).width;
+    final panelWidth = viewportWidth > 388 ? 360.0 : viewportWidth - 28;
     return Container(
       key: const Key('dispatch-queue-panel'),
-      width: double.infinity,
-      margin: const EdgeInsets.only(bottom: 7),
+      width: panelWidth,
       padding: const EdgeInsets.fromLTRB(10, 8, 8, 8),
       decoration: BoxDecoration(
         color: const Color(0xFF141a24),
@@ -816,7 +919,7 @@ class DispatchQueuePanel extends StatelessWidget {
               const SizedBox(width: 6),
               Expanded(
                 child: Text(
-                  t('dispatchQueueTitle', {'n': '${entries.length}'}),
+                  t('dispatchRecentTitle', {'n': '${widget.entries.length}'}),
                   style: const TextStyle(
                     color: Color(0xFF6aa3ff),
                     fontSize: 12,
@@ -824,9 +927,9 @@ class DispatchQueuePanel extends StatelessWidget {
                   ),
                 ),
               ),
-              if (onRefresh != null)
+              if (widget.onRefresh != null)
                 IconButton(
-                  onPressed: () => onRefresh!(),
+                  onPressed: () => widget.onRefresh!(),
                   icon: const Icon(Icons.refresh_rounded, size: 15),
                   tooltip: t('dispatchQueueRefresh'),
                   visualDensity: VisualDensity.compact,
@@ -837,10 +940,26 @@ class DispatchQueuePanel extends StatelessWidget {
                   ),
                   color: const Color(0xFF8a909b),
                 ),
+              IconButton(
+                onPressed: () => _setExpanded(false),
+                icon: const Icon(Icons.remove_rounded, size: 17),
+                tooltip: t('dispatchQueueCollapse'),
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                color: const Color(0xFF8a909b),
+              ),
             ],
           ),
           const SizedBox(height: 4),
-          for (final e in shown) _DispatchRow(entry: e, panel: this),
+          for (final e in shown)
+            _DispatchRow(
+              entry: e,
+              modeLabel: _modeLabel(e.mode),
+              stateLabel: _stateLabel(e),
+              resolveName: widget.resolveName,
+              onOpenSession: widget.onOpenSession,
+            ),
           if (rest > 0)
             Padding(
               padding: const EdgeInsets.only(top: 4),
@@ -857,51 +976,86 @@ class DispatchQueuePanel extends StatelessWidget {
 
 class _DispatchRow extends StatelessWidget {
   final DispatchQueueEntry entry;
-  final DispatchQueuePanel panel;
+  final String modeLabel;
+  final String stateLabel;
+  final String Function(String sessionId) resolveName;
+  final ValueChanged<DispatchQueueEntry>? onOpenSession;
 
-  const _DispatchRow({required this.entry, required this.panel});
+  const _DispatchRow({
+    required this.entry,
+    required this.modeLabel,
+    required this.stateLabel,
+    required this.resolveName,
+    required this.onOpenSession,
+  });
+
+  Color get _stateColor {
+    if (entry.terminal) {
+      if (entry.status == 'completed') return const Color(0xFF7fd49a);
+      if (entry.status == 'failed' || entry.status == 'interrupted') {
+        return const Color(0xFFf85149);
+      }
+      return const Color(0xFF8a909b);
+    }
+    if (entry.isQueued) return const Color(0xFFe3b341);
+    if (entry.queueState == 'started' || entry.queueState == 'running') {
+      return const Color(0xFF7fd49a);
+    }
+    return const Color(0xFF8a909b);
+  }
 
   @override
   Widget build(BuildContext context) {
     final incoming = entry.relation == 'target';
     final rawName = entry.counterpartId;
-    final name = rawName.isEmpty ? t('dispatchUnknownSession') : panel.resolveName(rawName);
-    final mode = panel._modeLabel(entry.mode);
-    final state = panel._stateLabel(entry);
+    final name = rawName.isEmpty
+        ? t('dispatchUnknownSession')
+        : resolveName(rawName);
     final dirText = incoming
         ? t('dispatchDirIn', {'name': name})
         : t('dispatchDirOut', {'name': name});
-    return Padding(
+    final navigationId = entry.navigationSessionId;
+    return InkWell(
       key: Key('dispatch-row-${entry.operationId}'),
-      padding: const EdgeInsets.symmetric(vertical: 2),
-      child: Row(
-        children: [
-          Icon(
-            incoming ? Icons.south_west_rounded : Icons.north_east_rounded,
-            size: 14,
-            color: incoming ? const Color(0xFFa78bfa) : const Color(0xFF6aa3ff),
-          ),
-          const SizedBox(width: 5),
-          Expanded(
-            child: Text(
-              mode.isEmpty ? dirText : '$dirText · $mode',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 12),
+      onTap: navigationId.isEmpty || onOpenSession == null
+          ? null
+          : () => onOpenSession!(entry),
+      borderRadius: BorderRadius.circular(6),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 5),
+        child: Row(
+          children: [
+            Icon(
+              incoming ? Icons.south_west_rounded : Icons.north_east_rounded,
+              size: 14,
+              color: incoming
+                  ? const Color(0xFFa78bfa)
+                  : const Color(0xFF6aa3ff),
             ),
-          ),
-          const SizedBox(width: 6),
-          // 队列状态右侧对齐：排队位次/运行中一目了然。
-          Text(
-            state,
-            style: TextStyle(
-              color: entry.isQueued
-                  ? const Color(0xFFe3b341)
-                  : const Color(0xFF7fd49a),
-              fontSize: 11,
+            const SizedBox(width: 5),
+            Expanded(
+              child: Text(
+                modeLabel.isEmpty ? dirText : '$dirText · $modeLabel',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 12),
+              ),
             ),
-          ),
-        ],
+            const SizedBox(width: 6),
+            Text(
+              stateLabel,
+              style: TextStyle(color: _stateColor, fontSize: 11),
+            ),
+            if (navigationId.isNotEmpty && onOpenSession != null) ...[
+              const SizedBox(width: 3),
+              const Icon(
+                Icons.chevron_right_rounded,
+                size: 15,
+                color: Color(0xFF6e7681),
+              ),
+            ],
+          ],
+        ),
       ),
     );
   }
