@@ -63,6 +63,19 @@ class SessionCard extends StatelessWidget {
     );
     final statusSpec = statusPresentation[cardStatus]!;
     final statusColor = statusSpec.color;
+    // classify 徽章与主状态 icon 同源（statusPresentation 同一张表）。当二者映射
+    // 到同一个 canonical 状态（running🔄+P🔄、succeeded✅+D✅、error❌+E❌、
+    // waiting⏸️+W/B⏸️）时，卡片顶部会出现两个相同的状态图标——只保留一次图标。
+    // 徽章里比主状态更细的文案（「等待用户」vs「等待中」）仍有信息量，降级为纯
+    // 文字 chip 保留；若连文案也与主状态 label 完全相同（succeeded+D 都是
+    // 「执行成功」），chip 没有任何新信息，整体隐藏。
+    final classify = classifyBadge(live?.classifyState);
+    final classifyRepeatsIcon =
+        classify != null && classify.emoji == statusSpec.icon;
+    final classifyRepeatsLabel =
+        classify != null && classify.label == statusSpec.label;
+    final showClassifyChip =
+        classify != null && !(classifyRepeatsIcon && classifyRepeatsLabel);
     final isRunning = statusSpec.spinner;
     final mergeReady = live?.mergeReady == true;
     final hasLabel = session.label?.isNotEmpty == true;
@@ -140,8 +153,16 @@ class SessionCard extends StatelessWidget {
                       ),
                       const SizedBox(width: 6),
                     ],
-                    if (classifyBadge(live?.classifyState) != null) ...[
-                      classifyChip(live, showLabel: false),
+                    if (showClassifyChip) ...[
+                      classifyChip(
+                        live,
+                        showLabel: false,
+                        // 与主状态 icon 同 glyph 时不重复渲染 emoji，只保留细分
+                        // 文案；不同状态才两者并排（天然可区分，非掩盖）。
+                        // 图标与文案都重复时 showClassifyChip 已为 false，chip
+                        // 整体不渲染。
+                        showEmoji: !classifyRepeatsIcon,
+                      ),
                       const SizedBox(width: 6),
                     ],
                     MiniBadge(label: session.cli.name, color: cliColor),
