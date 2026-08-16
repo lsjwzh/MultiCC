@@ -1336,7 +1336,7 @@
         <section class="view" data-view="tunnel">
           <div class="sec-head"><h2>外网穿透监控</h2><div class="line"></div></div>
           <div style="font-size:12px;color:var(--faint);line-height:1.6;margin-bottom:14px;">
-            勾选并配置后，服务会每隔一段时间探活对应的外网 URL；连续失败达阈值时自动重启对应穿透服务。监控运行在服务进程内，不会出现多份看门狗互相打架。
+            勾选并配置后，服务会定期探活外网入口。Tailscale Funnel 会绕过本机 MagicDNS，经公共 DNS 和公网边缘验证 HTTPS；仅当映射和本机源站正常、全部已验证公网边缘连续 3 轮发生传输层故障时，才限频重新应用 Funnel。映射缺失、证书/身份异常、部分边缘故障都只告警，绝不会自动 reset。
           </div>
 
           <!-- 访问密码 ACCESS_TOKEN -->
@@ -1368,8 +1368,9 @@
             <div class="sc-header">Tailscale <span id="tnl-ts-avail" style="font-size:11px;font-weight:400;color:var(--faint);"></span></div>
             <div class="sc-body">
               <div class="setting-row"><label>启用监控</label><input id="tnl-ts-enabled" type="checkbox" style="width:auto;" /></div>
-              <div class="setting-row"><label>仅监控</label><input id="tnl-ts-monitoronly" type="checkbox" style="width:auto;" /> <span style="font-size:11px;color:var(--faint);margin-left:8px;">只探活，不自动重启客户端</span></div>
-              <div class="setting-row"><label>探活 URL</label><input id="tnl-ts-url" type="text" placeholder="https://your-host.ts.net/manage" /></div>
+              <div class="setting-row"><label>仅监控</label><input id="tnl-ts-monitoronly" type="checkbox" style="width:auto;" /> <span style="font-size:11px;color:var(--faint);margin-left:8px;">只探活，不自动修复 Funnel</span></div>
+              <div class="setting-row"><label>备用探活 URL</label><input id="tnl-ts-url" type="text" placeholder="非 Funnel 模式使用；Funnel 地址会自动读取" /></div>
+              <div class="setting-row"><label>实际公网地址</label><span id="tnl-ts-publicurl" style="font-size:12px;color:var(--text);font-family:var(--mono);word-break:break-all;">等待公网探测…</span></div>
               <div class="setting-row"><label>状态</label><span id="tnl-ts-status" style="font-size:13px;color:var(--text);">—</span></div>
               <div style="border-top:1px solid var(--border);margin:6px 0;"></div>
               <div class="setting-row"><label>公网 Funnel</label><input id="tnl-ts-funnel" type="checkbox" style="width:auto;" /> <span style="font-size:11px;color:var(--faint);margin-left:8px;">勾选并点「应用 Funnel」= 执行 tailscale funnel --bg &lt;端口&gt;，把服务暴露到公网</span></div>
@@ -1380,7 +1381,7 @@
               <div class="setting-row"><label>本机全局 IPv6</label><span id="tnl-ipv6-addr" style="font-size:12px;color:var(--faint);font-family:var(--mono);white-space:pre-wrap;word-break:break-all;">—</span></div>
               <div class="setting-row" style="font-size:11px;color:var(--faint);">有全局 IPv6 + Tailscale 认到 → 远程（如手机流量）可走 IPv6 直连，绕开 DERP 中继，更快、不限流量。</div>
             </div>
-            <div class="sc-footer"><button class="btn btn-green" onclick="saveTunnelSettings()">保存</button><button class="btn" onclick="applyFunnel()">应用 Funnel</button><button class="btn" onclick="loadIpv6Status(true)">检测 IPv6</button><button class="btn" id="tnl-ts-restart" onclick="restartTunnel('tailscale')">立即重启</button><span class="status-text" id="tnl-ts-msg"></span></div>
+            <div class="sc-footer"><button class="btn btn-green" onclick="saveTunnelSettings()">保存</button><button class="btn" onclick="applyFunnel()">应用 Funnel</button><button class="btn" onclick="loadIpv6Status(true)">检测 IPv6</button><button class="btn" id="tnl-ts-restart" onclick="restartTunnel('tailscale')">重连控制面</button><span class="status-text" id="tnl-ts-msg"></span></div>
           </div>
 
           <!-- Natapp -->

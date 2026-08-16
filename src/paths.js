@@ -90,6 +90,7 @@ function createPaths({ dataDir } = {}) {
     pushSubscriptionsFile: path.join(root, 'push_subscriptions.json'),
     pushNotificationReceiptsFile: path.join(root, 'push_notification_receipts.json'),
     tunnelConfigFile: path.join(root, 'tunnel-config.json'),
+    tunnelRepairLedgerFile: path.join(root, 'tunnel-repair-ledger.json'),
     auxConfigFile: path.join(root, 'aux-config.json'),
     goalConfigFile: path.join(root, 'goal-config.json'),
     providerDefaultsFile: path.join(root, 'provider-defaults.json'),

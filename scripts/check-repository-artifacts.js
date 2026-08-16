@@ -15,7 +15,7 @@ const RUNTIME_BASENAMES = new Set([
   'push_notification_receipts.json',
   'token_usage.json', 'token_daily.json', 'token_by_role.json', 'providers.json',
   'provider-defaults.json', 'voice_examples.json', 'whisper_vocab.json',
-  'tunnel-config.json', 'orchestration.json', 'orchestration.sqlite',
+  'tunnel-config.json', 'tunnel-repair-ledger.json', 'orchestration.json', 'orchestration.sqlite',
   'orchestration.sqlite-wal', 'orchestration.sqlite-shm', 'task_board.json',
 ]);
 
