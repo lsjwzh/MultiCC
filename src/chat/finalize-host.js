@@ -119,6 +119,11 @@ function createTurnFinalizationExecutor(rawPorts) {
         ports.classifyTurnEnd(cs, sessionName, {
           classification: entry.classification || null,
           turnId: context.turn?.turnId || null,
+          // Correlate the verdict with the task identity captured when this
+          // turn was admitted.  The live session pointer is intentionally not
+          // authoritative here: a delayed Aux attribution from an older turn
+          // may have changed it while this runner was active.
+          taskId: context.turn?.task?.id || null,
         });
         break;
       case 'complete-session-turn':
