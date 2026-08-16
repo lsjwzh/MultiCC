@@ -346,13 +346,24 @@ function createRouterToolRuntime({
     };
   }
 
-  const DISPATCH_SLAVE_CALLBACK_INSTRUCTION = [
-    '',
-    '---',
-    '【回传要求】完成本任务后，你必须调用 dispatch_slave 工具回传结果：',
-    'dispatch_slave({result:"<结论/改动/证据/风险摘要>", status:"completed"})；',
-    '若失败用 status:"failed"。这是 async 回执；不要轮询、读取或等待 master 会话。',
-  ].join('\n');
+  // The receipt address travels WITH the task: the operation id is printed in
+  // the task text itself, so the worker can receipt by id from any turn -
+  // including after an interruption/continuation split, when the turn that
+  // carried the dispatch lineage is long gone. dispatch_slave resolves the
+  // operation purely by this id (plus an addressed-to-you check), never by
+  // "which turn am I in".
+  function slaveCallbackInstruction(operationId) {
+    return [
+      '',
+      '---',
+      '【回传要求】完成本任务后，你必须调用 dispatch_slave 工具回传结果：',
+      `dispatch_slave({operation_id:"${operationId}", result:"<结论/改动/证据/风险摘要>", status:"completed"})；`,
+      '若失败用 status:"failed"。若一直不回执，master 无法收到结果：派生轮一结束系统即把该操作自动判失败，',
+      '之后你随时可凭上方 operation_id 补交回执，系统会自动校正。operation_id 跨轮次不变，',
+      '任务中途被打断/续接多少轮都照样可用。',
+      '这是 async 回执；不要轮询、读取或等待 master 会话。',
+    ].join('\n');
+  }
 
   const SYNC_DISPATCH_INSTRUCTION = [
     '',
@@ -376,14 +387,23 @@ function createRouterToolRuntime({
       context, args.target_session_id, args.allow_terminal === true,
     );
     let message = cleanText(args.message, 'message', MAX_MESSAGE_LENGTH);
-    if (resultMode === 'async') {
-      message += DISPATCH_SLAVE_CALLBACK_INSTRUCTION;
-    } else if (resultMode === 'sync') {
-      message += SYNC_DISPATCH_INSTRUCTION;
-    }
     const identity = admissionIdentity(
       context, tool, targetId, message, args.idempotency_key,
     );
+    // The operation id is derived from the admission identity, so a client
+    // retry (same idempotency key) recomputes the SAME id and lands in the
+    // idempotent early-return of admitDispatch, while any different content
+    // or turn derives a different id. Appended after identity so dedup still
+    // keys on the caller's own content only.
+    let slaveOperationId;
+    if (resultMode === 'async') {
+      slaveOperationId = `op_${stableSuffix([
+        'dispatch-slave', tool, context.sessionId, context.turnId, targetId, identity.idempotencyKey,
+      ], cryptoImpl)}`;
+      message += slaveCallbackInstruction(slaveOperationId);
+    } else if (resultMode === 'sync') {
+      message += SYNC_DISPATCH_INSTRUCTION;
+    }
     // Attribute the sender so the recipient, the task board and the chat history
     // can all trace who dispatched this. Prepended AFTER admissionIdentity so
     // dedup still keys on the caller's own content, not on the attribution line.
@@ -395,6 +415,9 @@ function createRouterToolRuntime({
       resultMode,
       requireIdle: false,
       idempotencyKey: identity.idempotencyKey,
+      // Precomputed above so the id printed in the task text is the id the
+      // store actually admits - the worker's receipt address can never drift.
+      operationId: slaveOperationId,
       taskId: identity.taskId,
       taskStart: identity.taskStart,
       taskSource: identity.taskSource,
@@ -762,19 +785,30 @@ function createRouterToolRuntime({
   }
 
   async function dispatchSlave(context, args) {
-    if (!context.originDispatchId) {
+    rejectUnknownArguments(args, new Set(['operation_id', 'result', 'status']));
+    const rawOperationId = args.operation_id == null ? '' : String(args.operation_id).trim();
+    const operationId = rawOperationId ? cleanId(rawOperationId, 'operation_id') : '';
+    if (!operationId) {
       throw new RouterToolError(
-        'dispatch_lineage_required',
-        'dispatch_slave is only available inside a dispatched turn',
-        403,
+        'invalid_arguments',
+        'operation_id is required: it is printed in the dispatched task text (【回传要求】 dispatch_slave({operation_id:...})) and is returned to the dispatcher as operation_id',
+        400,
       );
     }
-    const operation = await operations.get(context.originDispatchId);
+    // Id-addressed, not turn-addressed: the worker may receipt from any turn
+    // (the original dispatched turn, or a later continuation after an
+    // interruption split). Ownership is still enforced - only the session the
+    // dispatch was sent to may receipt for it.
+    const operation = await operations.get(operationId);
     if (!operation || operation.kind !== 'dispatch') {
-      throw new RouterToolError('operation_not_found', 'origin dispatch operation not found', 404);
+      throw new RouterToolError('operation_not_found', 'dispatch operation not found', 404);
     }
     if (operation.spec.chatId !== context.sessionId) {
-      throw new RouterToolError('dispatch_lineage_mismatch', 'origin dispatch belongs to another session', 403);
+      throw new RouterToolError(
+        'dispatch_not_addressed_to_caller',
+        'this dispatch was sent to another session',
+        403,
+      );
     }
     if (operation.spec.resultMode !== 'async' && operation.spec.resultMode !== 'tool') {
       throw new RouterToolError(
@@ -783,20 +817,52 @@ function createRouterToolRuntime({
         409,
       );
     }
-    if (TERMINAL_OPERATION_STATES.has(operation.status)) {
-      return {
-        ok: operation.status === 'completed',
-        accepted: true,
-        duplicate: true,
-        status: operation.status,
-        operation_id: operation.id,
-      };
-    }
     const status = args.status == null ? 'completed' : String(args.status);
     if (status !== 'completed' && status !== 'failed') {
       throw new RouterToolError('invalid_arguments', 'status must be completed or failed');
     }
     const text = cleanText(args.result, 'result', MAX_RESULT_LENGTH);
+    if (TERMINAL_OPERATION_STATES.has(operation.status)) {
+      const priorSource = operation.result && typeof operation.result === 'object'
+        ? operation.result.source
+        : null;
+      if (priorSource !== 'missing_dispatch_slave') {
+        // Genuinely settled (a previous receipt, or a cancellation). The
+        // worker's copy is stale - tell it the truth instead of re-settling.
+        return {
+          ok: operation.status === 'completed',
+          accepted: true,
+          duplicate: true,
+          status: operation.status,
+          operation_id: operation.id,
+        };
+      }
+      // Late correction: the dispatched turn ended before the worker
+      // receipted, so the host auto-settled it as missing. The worker has now
+      // shown up with the id from the task text - resettle with the real
+      // result so the caller receives the corrected receipt.
+      const corrected = await completeDispatch(operation.id, {
+        status,
+        sessionName: context.sessionId,
+        text,
+        ...(status === 'failed' ? { error: text } : {}),
+        source: 'dispatch_slave',
+      }, { resettle: true });
+      if (!corrected || corrected.ok !== true) {
+        throw new RouterToolError(
+          corrected?.code || 'completion_rejected',
+          'dispatch result could not be persisted',
+          409,
+        );
+      }
+      return {
+        ok: status === 'completed',
+        accepted: true,
+        corrected: true,
+        status,
+        operation_id: operation.id,
+      };
+    }
     const completed = await completeDispatch(operation.id, {
       status,
       sessionName: context.sessionId,

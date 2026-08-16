@@ -299,7 +299,9 @@ test('E4: dispatch_master receipt contains queued field (contract parity with ro
   const slaveCap = runtime.issueContext({
     sessionId: 'slave-idle', turnId: 'turn-e4-slave', originDispatchId: ops[0].id,
   });
-  await runtime.execute(slaveCap, 'dispatch_slave', { result: 'done' });
+  await runtime.execute(slaveCap, 'dispatch_slave', {
+    operation_id: ops[0].id, result: 'done',
+  });
   const result = await pending;
   assert.equal(result.ok, true);
   assert.equal(typeof result.queued, 'boolean', 'dispatch_master receipt must have queued field');
@@ -323,6 +325,7 @@ test('S1: dispatch_master message to slave contains dispatch_slave callback inst
   assert.match(delivered, /implement feature X/, 'original message preserved');
   assert.match(delivered, /dispatch_slave/, 'must mention dispatch_slave tool');
   assert.match(delivered, /回传/, 'must contain callback instruction keyword');
+  assert.match(delivered, /operation_id:"op_/, 'must print the receipt operation id');
   assert.match(delivered, /status:"completed"/, 'must show completed status example');
   assert.match(delivered, /status:"failed"/, 'must show failed status example');
   assert.match(delivered, /不要轮询/, 'must forbid polling the master');
@@ -331,7 +334,9 @@ test('S1: dispatch_master message to slave contains dispatch_slave callback inst
   const slaveCap = runtime.issueContext({
     sessionId: 'slave-idle', turnId: 'turn-s1-slave', originDispatchId: ops[0].id,
   });
-  await runtime.execute(slaveCap, 'dispatch_slave', { result: 'ok' });
+  await runtime.execute(slaveCap, 'dispatch_slave', {
+    operation_id: ops[0].id, result: 'ok',
+  });
   await pending;
 });
 
