@@ -309,6 +309,22 @@ test('commit-diff validates hash, resolves directory, and returns diff/stat', as
   assert.equal(unknownDir.statusCode, 404);
   assert.deepEqual(unknownDir.body, { error: 'directory not found' });
 
+  // sessionId resolves the session's own worktree (same as /api/git/log) so
+  // the mobile git-history view reads commit diffs from the branch it listed,
+  // not the directory's checked-out base.
+  const sessionDiff = await invoke(fixture.app.routes.get('GET /api/git/commit-diff'), {
+    query: { sessionId: 's1', hash: 'abcdef0123' },
+  });
+  assert.equal(sessionDiff.statusCode, 200);
+  assert.ok(fixture.calls.run.some(call => call.repo === '/repo/wt-s1'
+    && call.args.includes('abcdef0123')), 'diff ran inside the session worktree');
+
+  const unknownSession = await invoke(fixture.app.routes.get('GET /api/git/commit-diff'), {
+    query: { sessionId: 'nope', hash: 'abcdef0' },
+  });
+  assert.equal(unknownSession.statusCode, 404);
+  assert.deepEqual(unknownSession.body, { error: 'session or worktree not found' });
+
   // valid hash -> 200 with diff/stat
   const response = await invoke(fixture.app.routes.get('GET /api/git/commit-diff'), {
     query: { dirId: 'd1', hash: 'abcdef0123' },

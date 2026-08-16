@@ -11,6 +11,7 @@ import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../services/workspace_service.dart';
 import '../widgets/conflict_diff_dialog.dart';
+import '../widgets/git_log_sheet.dart';
 import '../widgets/rainbow_border.dart';
 import '../widgets/session_badges.dart';
 import '../widgets/session_diff_dialog.dart';
@@ -385,6 +386,23 @@ class SessionCard extends StatelessWidget {
                               sessionId: session.id,
                             );
                             break;
+                          case 'gitlog':
+                            showGitLogSheet(
+                              context,
+                              fetchLog: (all) => SessionService(
+                                settings: settings,
+                              ).fetchGitLog(
+                                sessionId: session.id,
+                                allBranches: all,
+                              ),
+                              fetchDiff: (hash) => SessionService(
+                                settings: settings,
+                              ).fetchGitCommitDiff(
+                                sessionId: session.id,
+                                hash: hash,
+                              ),
+                            );
+                            break;
                           case 'rebase':
                             _rebaseSession(context);
                             break;
@@ -418,6 +436,11 @@ class SessionCard extends StatelessWidget {
                           'diff',
                           Icons.difference_outlined,
                           t('viewDiff'),
+                        ),
+                        _menuItem(
+                          'gitlog',
+                          Icons.history_rounded,
+                          t('gitLog'),
                         ),
                         _menuItem(
                           'rebase',
