@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 
+import '../models/provider_limit_label.dart';
 import '../services/manage_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
+import '../widgets/provider_option.dart';
 
 /// Provider 配置。镜像网页管理台的「Provider」页：从 cc-switch 导入/同步，
 /// 在 multicc 自己的存储里增删改，设全局默认（claude / codex 各一个）。
@@ -318,7 +320,10 @@ class _ProviderScreenState extends State<ProviderScreen> {
                   const DropdownMenuItem<String?>(value: null, child: Text('默认登录 / 订阅')),
                   ...list.map((p) => DropdownMenuItem<String?>(
                         value: p['id'] as String,
-                        child: Text(_providerLabel(p), overflow: TextOverflow.ellipsis),
+                        child: ProviderOption(
+                          main: _providerLabel(p),
+                          detail: providerLimitDetail(p),
+                        ),
                       )),
                 ],
                 onChanged: (v) => _setDefault(cli, v),
