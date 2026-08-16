@@ -790,5 +790,7 @@
   "roleTokenCacheRead": "Cache read",
   "roleTokenCacheWrite": "Cache write",
   "roleTokenNoSub": "No sub-agent usage this turn",
-  "usageDetailTitle": "This turn and session"
+  "usageDetailTitle": "This turn and session",
+  "dispatchDockCollapsed": "Dispatches · {n} active · tap to open, drag to move",
+  "dispatchDockExpanded": "Dispatches · {n} active · open · tap to collapse"
 }
