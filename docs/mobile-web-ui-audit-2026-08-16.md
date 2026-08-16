@@ -206,6 +206,35 @@ App 内跳转/深链走的正是这条路径。
 5. P2-3 触控目标：先把 ≤20px 高的一档抬到 44。
 6. P3 文案与标题同步。
 
+## 5.5 修复记录（2026-08-16 同日落地）
+
+除上表外另修复一条审计后新发现：**chat-ai-config.js 四个弹层（AI 配置 / Provider /
+努力程度 / Zcode setup）无高度约束，手机上弹层高出视口、底部保存按钮被推出屏幕且无法滚动**。
+修复 = 弹层改为 flex column 骨架（box `max-height:calc(100dvh-32px)`、body 滚动、
+footer 常驻 box 底部）；chat-live-ui.js 的 dialog / prompt / 切换 CLI 弹层同治
+（box 加 max-height + overflow，切换 CLI 的操作行 sticky 跟随滚动）。
+
+| 问题 | 修法 | 验证 |
+|---|---|---|
+| 弹层过长按钮不可达（新） | `chat-ai-config.js` modalShell + `chat-live-ui.js` 三处 | 375 视口 AI 配置弹层 footerBottom 650 ≤ 667，body 可滚 |
+| P0-1 merge-hint 压住底部条组 | ≤760px 时 `#merge-hint` 从 fixed 浮层改列内静态行（DOM 本就在 attach-area 之后）；`#merge-hint-fab` 抬到 112px 避开更高的移动端输入栏 | 重叠探针 `clean`；merge-hint t431–b522 与 pre-input t522 无交叠 |
+| P0-2 缺 dvh | `chat.html` `html,body` 三段 fallback（vh → -webkit-fill-available → dvh） | 375×667 bodyH 667 == vh，docOverflow 0 |
+| P1-1 header 半屏 | ≤760 隐藏 `.badge` 与 `.hdr-spacer`、header padding 8→6+8 | header 103→99px |
+| P1-2 title 38vw | 基础规则去 max-width，桌面 `@media (min-width:761px)` 才限 38vw（并注释了源序陷阱） | 375 下 title 宽 306px（原 142.5） |
+| P1-3 别名行溢出 178px | inline `align-items:flex-start` 移到 CSS `#prov-new-alias-row`，移动断点补 `align-items:stretch` | alias r348 ≤ 375，aliasOverflow 0 |
+| P1-4 provider 信息列被挤 | 卡片 `flex-wrap:wrap` + 信息列 `flex:1 1 200px` + 四按钮收进独立组 | 结构性修复（375 下按钮组独立一行） |
+| P2-1 prov-tabs 无滚动提示 | 右缘 mask 渐隐 + `.at-start` 切换左缘渐隐（manage.js 监听 scroll） | — |
+| P2-2 tnl 按钮溢出 | `.sc-footer` 加 `flex-wrap:wrap`（保存/应用/重连按钮换行不越界） | — |
+| P2-3 触控目标 | chat：`@media (pointer:coarse)` 离散按钮 44×44、条状读数 32、复选框 20；manage：860 断点 `.btn` 40、`.btn-icon` 44、`.prov-tab` 40、复选框 20/22 | — |
+| P3-1 「有有」 | `i18n.js` worktreeMergeable 模板去掉第二个「有」（英文本来无此问题） | — |
+| P3-2 crumb 不跟随 | `TITLES` 补 goal / provider / global 三项 | 深链 `?view=provider` crumb 显示「Provider · 多供应商接入与默认配…」 |
+
+相关测试全绿：test-chat-ai-config 7、test-chat-composer 12、test-chat-dispatch-hint 25、
+test-chat-dispatch-activity 6、test-cli-switch-runtime 18、test-danmaku-dock 9、
+test-manage-mobile-nav-layout 19、test-manage-ui-modules 11、test-manage-dashboard 11、
+test-tunnel-restart-semantics 32、test-chat-diff-dock 13、test-chat-usage-summary 6、
+test-cli-specific-ui / test-i18n 通过。
+
 ## 6. 证据索引
 
 | 文件 | 内容 |

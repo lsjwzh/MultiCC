@@ -938,7 +938,9 @@
         overlay.className = 'chat-dialog-backdrop';
         overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px;';
         const box = doc.createElement('div');
-        box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:20px;width:420px;max-width:94vw;color:#c9d1d9;box-shadow:0 18px 60px rgba(0,0,0,.45);';
+        // Long messages must not push the buttons past the viewport edge on phones.
+        box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:20px;width:420px;max-width:94vw;color:#c9d1d9;box-shadow:0 18px 60px rgba(0,0,0,.45);'
+          + 'max-height:calc(100vh - 32px);max-height:calc(100dvh - 32px);overflow-y:auto;-webkit-overflow-scrolling:touch;';
         if (settings.title) {
           const heading = doc.createElement('div');
           heading.style.cssText = 'font-size:15px;font-weight:700;margin-bottom:10px;color:#f2f4f7;';
@@ -983,7 +985,8 @@
         const backdrop = doc.createElement('div');
         backdrop.style.cssText = 'position:fixed;inset:0;z-index:12000;background:#0009;display:flex;align-items:center;justify-content:center;padding:18px;';
         const card = doc.createElement('div');
-        card.style.cssText = 'width:min(92vw,440px);background:#0f1115;border:1px solid #30363d;border-radius:10px;box-shadow:0 18px 60px #000c;color:#e7eaee;overflow:hidden;';
+        card.style.cssText = 'width:min(92vw,440px);background:#0f1115;border:1px solid #30363d;border-radius:10px;box-shadow:0 18px 60px #000c;color:#e7eaee;overflow:hidden auto;'
+          + 'max-height:calc(100vh - 36px);max-height:calc(100dvh - 36px);-webkit-overflow-scrolling:touch;';
         const heading = doc.createElement('div');
         heading.textContent = String(title || '');
         heading.style.cssText = 'padding:14px 16px;border-bottom:1px solid #20242b;font-size:15px;font-weight:700;color:#f2f4f7;';
@@ -1037,7 +1040,11 @@
         const overlay = doc.createElement('div');
         overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
         const box = doc.createElement('div');
-        box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:20px;width:460px;max-width:94vw;color:#c9d1d9;box-shadow:0 18px 60px rgba(0,0,0,.45);';
+        // Tall on phones (select + reset row + warning + install log), so the box
+        // scrolls and the action row sticks to its bottom edge — otherwise 「切换」
+        // ends up below the viewport with no way to reach it.
+        box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:20px;width:460px;max-width:94vw;color:#c9d1d9;box-shadow:0 18px 60px rgba(0,0,0,.45);'
+          + 'max-height:calc(100vh - 32px);max-height:calc(100dvh - 32px);overflow-y:auto;-webkit-overflow-scrolling:touch;';
         const title = doc.createElement('div');
         title.style.cssText = 'font-size:17px;font-weight:700;margin-bottom:8px;';
         title.textContent = '切换 CLI';
@@ -1072,7 +1079,8 @@
         warning.style.cssText = 'font-size:12px;color:#d29922;line-height:1.55;margin-bottom:14px;';
         warning.textContent = '如果当前回复仍在运行，确认切换会直接终止该回复并清空排队消息；已保存的历史与任务上下文会保留。';
         const actions = doc.createElement('div');
-        actions.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
+        actions.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;'
+          + 'position:sticky;bottom:-20px;background:#161b22;padding:12px 0 20px;margin-bottom:-20px;';
         const cancel = doc.createElement('button');
         cancel.textContent = '取消';
         cancel.style.cssText = 'background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 15px;cursor:pointer;';

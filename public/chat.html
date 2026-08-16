@@ -8,7 +8,16 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github-dark.min.css" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { height: 100%; overflow: hidden; }
+    /* iOS Safari resolves `height:100%` against the large viewport (the one the
+       toolbar covers), which cuts the composer off. Same three-step fallback
+       manage.html uses: old browsers get vh, iOS gets -webkit-fill-available,
+       everything modern gets dvh. */
+    html, body {
+      height: 100vh;
+      height: -webkit-fill-available;
+      height: 100dvh;
+      overflow: hidden;
+    }
 
     body {
       background: #0d1117;
@@ -145,8 +154,12 @@
       white-space: nowrap;
     }
     @media (max-width: 760px) {
-      #header { gap: 6px; padding: 8px; }
+      #header { gap: 6px; padding: 6px 8px; }
       #header-more-wrap { display: inline-flex; }
+      /* The badge restates what the page already is, and the spacer only
+         competes with `margin-left:auto` for a flex slot — both just wrap the
+         bar to an extra row on a phone. */
+      .badge, .hdr-spacer { display: none; }
       #session-title { order: 2; flex: 1 1 45%; max-width: none; }
       #status { margin-left: auto; max-width: 34vw; overflow: hidden; text-overflow: ellipsis; }
       #reconnect-btn, #cli-btn, #merge-btn, #header-more-btn { min-height: 40px; min-width: 40px; }
@@ -168,7 +181,13 @@
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
-      max-width: 38vw;
+    }
+    /* Desktop-only cap. It lives here rather than in the base rule because this
+       block sits *after* the phone breakpoint above — at equal specificity the
+       later rule wins, so a `max-width` written here would silently override the
+       breakpoint's `max-width:none` and truncate the title on phones. */
+    @media (min-width: 761px) {
+      #session-title { max-width: 38vw; }
     }
 
     /* ── CWD bar ── */
@@ -1757,6 +1776,27 @@
       #messages { padding: 12px; }
       .msg { max-width: 96%; }
       .msg.assistant { max-width: 100%; }
+      /* The bottom band already stacks quota bar + context bar + pills + queue
+         dock + composer. A card floating over that lands on top of all of them
+         and swallows their taps, so on phones the merge hint drops out of the
+         overlay layer and takes its own row in the column (its DOM position is
+         already right there, between the attachments and the pill row). */
+      #merge-hint {
+        position: static;
+        right: auto;
+        bottom: auto;
+        width: 100%;
+        max-width: none;
+        z-index: auto;
+        opacity: 1;
+        border-radius: 0;
+        border-left: none;
+        border-right: none;
+        box-shadow: none;
+      }
+      /* Collapsed pill: clear the taller mobile composer, and stay on the right
+         so it never collides with the dispatch dock (bottom-left). */
+      #merge-hint-fab { bottom: calc(112px + env(safe-area-inset-bottom)); }
       #input-bar textarea,
       #cwd-modal-inner input,
       #goal-modal-inner textarea,
@@ -1769,7 +1809,7 @@
       #input-bar { flex-wrap: wrap; align-items: stretch; padding: 7px 8px; }
       #input-bar textarea { order: 1; flex: 1 1 calc(100% - 52px); min-height: 44px; }
       #send-btn, #cancel-btn { order: 1; width: 44px; height: 44px; flex: 0 0 44px; }
-      #mic-btn, #attach-btn, #goal-btn { order: 2; width: 44px; height: 40px; }
+      #mic-btn, #attach-btn, #goal-btn { order: 2; width: 44px; height: 44px; }
       #pre-input-bar { flex-wrap: wrap; gap: 6px; padding: 5px 10px; }
       #subagent-pill { margin-left: 0 !important; }
     .lv-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; vertical-align:middle; }
@@ -1778,8 +1818,33 @@
     .lv-stalled { background:#f85149; box-shadow:0 0 4px #f85149; }
     .lv-unknown { background:#484f58; }
     @keyframes lv-pulse { 0%,100%{opacity:1;} 50%{opacity:0.35;} }
-      #merge-hint { bottom: calc(105px + env(safe-area-inset-bottom)); flex-wrap: wrap; }
+      #merge-hint { flex-wrap: wrap; }
       #merge-hint .merge-hint-text { flex-basis: 100%; }
+    }
+
+    /* ── Touch targets ──
+       Sized by pointer type, not width: a 40px button is fine under a mouse and
+       too small under a thumb. Discrete buttons get the full 44×44; the bar-style
+       readouts (quota / context / classify) only go to 32, because this screen's
+       chrome already eats half of a 375-tall viewport and four more rows of
+       padding would cost more than it buys. */
+    @media (pointer: coarse) {
+      .input-action-btn, #send-btn, #cancel-btn { width: 44px; height: 44px; }
+      #merge-hint .mh-collapse,
+      #merge-hint-fab,
+      #danmaku-collapse-btn,
+      #diff-min-btn,
+      #diff-close-btn,
+      #dbg-close { min-width: 44px; min-height: 44px; }
+      #merge-hint button { min-height: 44px; }
+      #claude-rate-limit-bar,
+      .usage-summary-bar,
+      #aux-classify-bar .ac-mark-done,
+      #aux-classify-bar .ac-cancel-task,
+      .aux-cls-more { min-height: 32px; }
+      /* 13×13 is the UA default and unhittable; 20px is as large as these go
+         before the rows they sit in start to reflow. */
+      input[type="checkbox"], input[type="radio"] { width: 20px; height: 20px; }
     }
 
     /* ── CWD change modal ── */
