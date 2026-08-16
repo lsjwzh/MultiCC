@@ -367,6 +367,10 @@ class _ChatViewState extends State<ChatView> {
                   settings: widget.settings,
                   onCollapse: widget.onCollapse,
                   mergeReady: mergeReady,
+                  cwd: provider.cwd,
+                  branch: _mergeStatus?['branch']?.toString(),
+                  behind: (_mergeStatus?['behind'] as num?)?.toInt() ?? 0,
+                  onCwd: () => _showCwdDialog(context, provider),
                   onMerge: () => _mergeCurrent(context, provider.sessionName),
                   onRole: () =>
                       _editRoleFromSession(context, provider.sessionName),
@@ -380,7 +384,6 @@ class _ChatViewState extends State<ChatView> {
                     widget.settings,
                   ),
                 ),
-                _CwdBar(mergeStatus: _mergeStatus),
                 if (provider.pendingUserInput != null &&
                     !provider.pendingUserInputCollapsed)
                   _CenteredChatLane(
@@ -401,7 +404,11 @@ class _ChatViewState extends State<ChatView> {
                       ),
                     ),
                   ),
-                if (livenessBadge(_liveness?['state'] as String?) != null)
+                // Liveness pill: only working (🟢) and stalled (🔴) earn a
+                // dedicated line — they say "a turn is running / stuck".
+                // idle (🟡) and unknown (⚪) are the resting states; a
+                // permanent "空闲" row under the header is pure noise.
+                if (chatLivenessDeservesLine(_liveness?['state'] as String?))
                   Align(
                     alignment: Alignment.centerLeft,
                     child: Padding(
@@ -1491,144 +1498,62 @@ class _AuxClassifyBar extends StatelessWidget {
   }
 }
 
-class _CwdBar extends StatelessWidget {
-  final Map<String, dynamic>? mergeStatus;
-  const _CwdBar({this.mergeStatus});
-
-  @override
-  Widget build(BuildContext context) {
-    final provider = context.watch<ChatProvider>();
-    final branch = mergeStatus?['branch']?.toString();
-    final behind = (mergeStatus?['behind'] as num?)?.toInt() ?? 0;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration: const BoxDecoration(
-        color: Color(0xFF070809),
-        border: Border(bottom: BorderSide(color: Color(0xFF14171c))),
+/// Change-working-directory dialog. Used to hang off the full-width cwd bar
+/// under the header; the bar is gone (the cwd now lives in the header ⋯ menu),
+/// so this stands alone, opened from the menu's 「更换目录」 item.
+void _showCwdDialog(BuildContext context, ChatProvider provider) {
+  final ctrl = TextEditingController(text: provider.cwd);
+  showDialog(
+    context: context,
+    builder: (_) => AlertDialog(
+      title: Text(t('changeCwdTitle'), style: const TextStyle(fontSize: 15)),
+      content: TextField(
+        controller: ctrl,
+        autofocus: true,
+        style: const TextStyle(
+          color: Color(0xFFe7eaee),
+          fontFamily: 'monospace',
+          fontSize: 13,
+        ),
+        decoration: InputDecoration(
+          hintText: '/path/to/project',
+          hintStyle: const TextStyle(color: Color(0xFF454b54)),
+          filled: true,
+          fillColor: const Color(0xFF070809),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(6),
+            borderSide: const BorderSide(color: Color(0xFF20242b)),
+          ),
+        ),
       ),
-      child: Row(
-        children: [
-          const Icon(Icons.folder_outlined, size: 14, color: Color(0xFF5b616c)),
-          const SizedBox(width: 6),
-          Expanded(
-            child: Text(
-              provider.cwd.isEmpty ? '(unknown)' : provider.cwd,
-              style: const TextStyle(
-                fontFamily: 'monospace',
-                fontSize: 12,
-                color: Color(0xFF6aa3ff),
-              ),
-              overflow: TextOverflow.ellipsis,
-            ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: Text(
+            t('cancel'),
+            style: const TextStyle(color: Color(0xFF8a909b)),
           ),
-          if (branch != null && branch.isNotEmpty) ...[
-            const SizedBox(width: 8),
-            // Worktree branch chip — makes each session's isolated worktree explicit.
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-              decoration: BoxDecoration(
-                color: behind > 0
-                    ? const Color(0xFF2d2108)
-                    : const Color(0xFF12161c),
-                borderRadius: BorderRadius.circular(6),
-                border: Border.all(
-                  color: behind > 0
-                      ? const Color(0xFFe3b341)
-                      : const Color(0xFF24303f),
-                ),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    Icons.account_tree_outlined,
-                    size: 11,
-                    color: behind > 0
-                        ? const Color(0xFFf2cc60)
-                        : const Color(0xFF6aa3ff),
-                  ),
-                  const SizedBox(width: 4),
-                  Text(
-                    branch,
-                    style: TextStyle(
-                      fontFamily: 'monospace',
-                      fontSize: 11,
-                      color: behind > 0
-                          ? const Color(0xFFf2cc60)
-                          : const Color(0xFF8a909b),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-          const SizedBox(width: 8),
-          GestureDetector(
-            onTap: () => _showCwdDialog(context, provider),
-            child: Text(
-              t('changeDir'),
-              style: const TextStyle(fontSize: 11, color: Color(0xFF8a909b)),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showCwdDialog(BuildContext context, ChatProvider provider) {
-    final ctrl = TextEditingController(text: provider.cwd);
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: Text(t('changeCwdTitle'), style: const TextStyle(fontSize: 15)),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          style: const TextStyle(
-            color: Color(0xFFe7eaee),
-            fontFamily: 'monospace',
-            fontSize: 13,
-          ),
-          decoration: InputDecoration(
-            hintText: '/path/to/project',
-            hintStyle: const TextStyle(color: Color(0xFF454b54)),
-            filled: true,
-            fillColor: const Color(0xFF070809),
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
-            enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(6),
-              borderSide: const BorderSide(color: Color(0xFF20242b)),
+        ),
+        TextButton(
+          onPressed: () {
+            final newCwd = ctrl.text.trim();
+            Navigator.pop(context);
+            if (newCwd.isNotEmpty && newCwd != provider.cwd) {
+              provider.changeCwd(newCwd);
+            }
+          },
+          child: Text(
+            t('apply'),
+            style: const TextStyle(
+              color: Color(0xFF6aa3ff),
+              fontWeight: FontWeight.w600,
             ),
           ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text(
-              t('cancel'),
-              style: const TextStyle(color: Color(0xFF8a909b)),
-            ),
-          ),
-          TextButton(
-            onPressed: () {
-              final newCwd = ctrl.text.trim();
-              Navigator.pop(context);
-              if (newCwd.isNotEmpty && newCwd != provider.cwd) {
-                provider.changeCwd(newCwd);
-              }
-            },
-            child: Text(
-              t('apply'),
-              style: const TextStyle(
-                color: Color(0xFF6aa3ff),
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+      ],
+    ),
+  );
 }
 
 /// Minimum gap (minutes) between two consecutive messages before a time

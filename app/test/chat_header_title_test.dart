@@ -3,9 +3,11 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:multicc_app/i18n.dart';
 import 'package:multicc_app/providers/chat_provider.dart';
 import 'package:multicc_app/providers/session_manager.dart';
 import 'package:multicc_app/services/settings_service.dart';
+import 'package:multicc_app/utils/session_status_helpers.dart';
 import 'package:multicc_app/widgets/chat_header.dart';
 
 /// ChatHeader 在真实 ChatProvider 上渲染。设置指向本机不可达端口：
@@ -23,8 +25,14 @@ Future<SettingsService> _settings() async {
   return SettingsService.getInstance();
 }
 
-Widget _host(SessionManager mgr, SettingsService settings, ChatProvider provider) =>
-    MultiProvider(
+Widget _host(
+  SessionManager mgr,
+  SettingsService settings,
+  ChatProvider provider, {
+  String cwd = '',
+  String? branch,
+  int behind = 0,
+}) => MultiProvider(
       providers: [
         ChangeNotifierProvider<SessionManager>.value(value: mgr),
         ChangeNotifierProvider<ChatProvider>.value(value: provider),
@@ -38,6 +46,10 @@ Widget _host(SessionManager mgr, SettingsService settings, ChatProvider provider
               child: ChatHeader(
                 settings: settings,
                 mergeReady: false,
+                cwd: cwd,
+                branch: branch,
+                behind: behind,
+                onCwd: () {},
                 onMerge: () {},
                 onRole: () {},
                 onMemory: () {},
@@ -52,6 +64,9 @@ Widget _host(SessionManager mgr, SettingsService settings, ChatProvider provider
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  // ⋯ 菜单断言用 zh 文案（「切换」「角色提示词」…），必须先装载词条。
+  setUpAll(() => I18n.init('zh'));
 
   testWidgets('narrow header keeps the title visible on its own full-width line', (
     tester,
@@ -137,5 +152,82 @@ void main() {
 
     provider.dispose();
     mgr.dispose();
+  });
+
+  // 聊天页原来的 working 目录条（_CwdBar）整行删掉，目录/分支收进 ⋯ 菜单：
+  // 信息行只读、短目录名 inline + 全路径在 Tooltip，「切换」仍是动作项。
+  group('ChatHeader cwd in ⋯ menu', () {
+    testWidgets('menu leads with cwd + branch info rows and a change-dir action', (
+      tester,
+    ) async {
+      final settings = await _settings();
+      final mgr = SessionManager(settings: settings);
+      final provider = ChatProvider(
+        settings: settings,
+        sessionName: 'multicc-claude-chat-06',
+        sessionCwd: '/repo/.multicc-worktrees/wt-alpha',
+      );
+
+      await tester.pumpWidget(_host(
+        mgr,
+        settings,
+        provider,
+        cwd: '/repo/.multicc-worktrees/wt-alpha',
+        branch: 'multicc/multicc-claude-chat-06',
+        behind: 2,
+      ));
+      await tester.tap(find.byIcon(Icons.more_vert));
+      await tester.pumpAndSettle();
+
+      // 短目录名 inline（全路径在 Tooltip），分支行带落后警示 ↓2。
+      final cwdRow = find.byKey(const Key('chat-header-cwd'));
+      expect(cwdRow, findsOneWidget);
+      expect(tester.widget<Text>(cwdRow).data, 'wt-alpha');
+      final branchRow = find.byKey(const Key('chat-header-branch'));
+      expect(tester.widget<Text>(branchRow).data, 'multicc/multicc-claude-chat-06');
+      expect(find.text('↓2'), findsOneWidget);
+      // 「切换」动作项排在信息行后面，原有动作项不丢。
+      expect(find.text('切换'), findsOneWidget);
+      expect(find.text('角色提示词'), findsOneWidget);
+
+      provider.dispose();
+      mgr.dispose();
+    });
+
+    testWidgets('omits the info rows when cwd/branch are unknown', (
+      tester,
+    ) async {
+      final settings = await _settings();
+      final mgr = SessionManager(settings: settings);
+      final provider = ChatProvider(
+        settings: settings,
+        sessionName: 's-fresh',
+        sessionCwd: '',
+      );
+
+      await tester.pumpWidget(_host(mgr, settings, provider));
+      await tester.tap(find.byIcon(Icons.more_vert));
+      await tester.pumpAndSettle();
+
+      // 连接早期 cwd/branch 未知：两条信息行都不渲染，
+      // 但「切换」动作仍在（旧目录条 '(unknown)' 时代的等价能力）。
+      expect(find.byKey(const Key('chat-header-cwd')), findsNothing);
+      expect(find.byKey(const Key('chat-header-branch')), findsNothing);
+      expect(find.text('切换'), findsOneWidget);
+
+      provider.dispose();
+      mgr.dispose();
+    });
+  });
+
+  // 聊天页 liveness 徽章的成行策略：working/stalled 有信息量（在跑/卡住）；
+  // idle 🟡 曾常年独占一行「空闲」，属于默认态噪音，回归点锁死不再渲染。
+  test('chatLivenessDeservesLine: only working/stalled earn a line', () {
+    expect(chatLivenessDeservesLine('working'), isTrue);
+    expect(chatLivenessDeservesLine('stalled'), isTrue);
+    expect(chatLivenessDeservesLine('idle'), isFalse);
+    expect(chatLivenessDeservesLine('unknown'), isFalse);
+    expect(chatLivenessDeservesLine(null), isFalse);
+    expect(chatLivenessDeservesLine(''), isFalse);
   });
 }

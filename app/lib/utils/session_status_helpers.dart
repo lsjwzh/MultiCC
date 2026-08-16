@@ -116,6 +116,13 @@ Widget classifyChip(SessionStatus? live, {bool showLabel = true}) {
   }
 }
 
+/// Chat-page policy for [livenessChip]: only working (a turn is running) and
+/// stalled (stuck) earn the dedicated liveness line under the header. idle and
+/// unknown are the resting states — a permanent「空闲」pill row is noise, so
+/// the chat screen renders no line for them at all.
+bool chatLivenessDeservesLine(String? state) =>
+    state == 'working' || state == 'stalled';
+
 /// A small liveness pill for the chat header. `verdict` is the parsed liveness
 /// JSON; a null/empty verdict renders nothing. Shows the silent duration on a
 /// working/stalled turn so "stuck for 3m" reads at a glance.
