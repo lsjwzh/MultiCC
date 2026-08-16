@@ -57,7 +57,16 @@ const Map<String, String> _classifyLabelKey = {
 /// A small classify-state pill. Shows the state emoji (+ optional label) tinted
 /// by state, with the current task goal as a tooltip. Empty widget when the
 /// session has no classify verdict.
-Widget classifyChip(SessionStatus? live, {bool showLabel = true}) {
+///
+/// [showEmoji] lets a caller drop the emoji when the surface already rendered
+/// the identical canonical icon (e.g. a session card whose task-status icon is
+/// the same glyph) — keeping the fine-grained classify label (「等待用户」 vs
+/// 「等待中」) without duplicating the same status icon on one card.
+Widget classifyChip(
+  SessionStatus? live, {
+  bool showLabel = true,
+  bool showEmoji = true,
+}) {
   final b = classifyBadge(live?.classifyState);
   if (b == null) return const SizedBox.shrink();
   final goal = live?.goal;
@@ -69,7 +78,9 @@ Widget classifyChip(SessionStatus? live, {bool showLabel = true}) {
       borderRadius: BorderRadius.circular(4),
     ),
     child: Text(
-      showLabel ? '${b.emoji} ${b.label}' : b.emoji,
+      showLabel
+          ? '${b.emoji} ${b.label}'
+          : (showEmoji ? b.emoji : b.label),
       style: TextStyle(
         color: b.color,
         fontSize: 9.5,
