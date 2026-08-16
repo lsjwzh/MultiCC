@@ -169,6 +169,9 @@ test('provider route extraction preserves the mounted surface and response DTOs'
     providers: [{ id: 'claude-one', appType: 'claude', name: 'One' }],
     defaults: { claude: 'claude-one', codex: null },
     stats: [{ providerId: 'claude-one', totalTokens: 3 }],
+    // The provider-limit cache is optional in this harness; a null value means
+    // no cache is wired (production always wires one).
+    limitCacheStaleMs: null,
   });
 
   response = await invoke(harness.app, 'GET', '/api/providers/stats');
@@ -530,4 +533,42 @@ test('provider route composition cannot reach CPR lifecycle or CC-Switch write A
   assert.doesNotMatch(source, /providerRouterRuntime\.[A-Za-z]*(?:takeover|restore)/i);
   assert.doesNotMatch(source, /\/api\/providers\/(?:takeover|restore)/i);
   assert.doesNotMatch(source, /(?:open|write|update|delete).*cc.?switch/i);
+});
+
+test('GET /api/providers attaches the persisted limit summary and freshness', async () => {
+  const { createProviderLimitCache } = require('../src/quota/provider-limit-cache');
+  const { createLimitRecorder } = require('../src/quota/limit-cache-recorder');
+  const dir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'multicc-provider-routes-'));
+  const cacheFile = path.join(dir, 'provider-limit-cache.json');
+  const cache = createProviderLimitCache({ file: cacheFile, now: () => 1000 });
+  // Seed one provider's last-known-good summary.
+  cache.record('claude', 'claude-one', {
+    kind: 'window',
+    summary: { kind: 'window', provider: 'glm', status: 'allowed', usedPercentage: 20 },
+    summaryText: '5h 80%',
+    barText: '5h 80% {cd:123}',
+    fetchedAt: 900,
+  });
+  const recorder = createLimitRecorder({
+    cache,
+    persistedSessions: new Map([['s1', { cli: 'claude', provider: 'claude-one' }]]),
+    providers: {
+      appTypeForCli: () => 'claude',
+      listProviders() { return [{ id: 'claude-one', appType: 'claude', name: 'One' }]; },
+      getProviderLimitTarget: () => null,
+    },
+  });
+  const harness = createHarness({ providerLimitCache: cache, limitRecorder: recorder });
+  const response = await invoke(harness.app, 'GET', '/api/providers', { query: { appType: 'claude' } });
+  assert.equal(response.body.limitCacheStaleMs, 10 * 60 * 1000);
+  assert.equal(response.body.providers.length, 1);
+  const limit = response.body.providers[0].limit;
+  assert.equal(limit.kind, 'window');
+  assert.equal(limit.summaryText, '5h 80%');
+  assert.equal(limit.stale, false); // fetchedAt 900, now 1000, window 600s
+  assert.equal(limit.summary.usedPercentage, 20);
+  // The public projection never leaks the raw bar placeholders.
+  assert.equal(JSON.stringify(limit).includes('{cd'), false);
+  // Deleting the provider prunes the orphan on the next catalog read.
+  assert.equal(cache.get('claude', 'claude-one') !== null, true);
 });

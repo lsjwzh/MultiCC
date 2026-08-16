@@ -753,6 +753,12 @@ const directoriesStore = stateBootstrap.directoriesStore;
 const _state = stateBootstrap.state;
 const persistedSessions = _state.persistedSessions;
 
+// Last-known-good per-provider limit/usage cache for the Web/App pickers;
+// producers feed it via src/quota/limit-cache-recorder.js.
+const { createProviderLimitCache } = require('./src/quota/provider-limit-cache');
+const { createLimitRecorder } = require('./src/quota/limit-cache-recorder');
+const providerLimitCache = createProviderLimitCache({ file: MULTICC_PATHS.providerLimitCacheFile });
+const limitRecorder = createLimitRecorder({ cache: providerLimitCache, persistedSessions, providers });
 // Host-injected store port. Production delegates directly to StateStore's
 // atomic tmp+fsync+rename write. Isolated integration tests may place a marker
 // inside their temporary MULTICC_DATA_DIR to inject EIO deterministically.
@@ -1423,7 +1429,7 @@ providerRouterRuntime.mountProtocolProxies(app, {
   onUsageObserved: recordUsageObserved,
   onActivity: e => livenessRuntime.recordProxyActivity(e),
   // Token-level delta + Claude 5h rate-limit sidecars: see src/chat/proxy-broadcast.js.
-  ...createProxyBroadcasters(chatBroadcast, { resolveCli: name => (persistedSessions.get(name) || {}).cli }),
+  ...createProxyBroadcasters(chatBroadcast, { resolveCli: name => (persistedSessions.get(name) || {}).cli, recordLimit: limitRecorder.recordSession }),
 });
 app.use(express.json({ limit: '50mb' }));
 
@@ -1434,7 +1440,7 @@ providerRouterRuntime.mountProtocolProxies(app, {
   getPort: () => PORT,
   onUsageObserved: recordUsageObserved,
   onActivity: e => livenessRuntime.recordProxyActivity(e),
-  ...createProxyBroadcasters(chatBroadcast, { resolveCli: name => (persistedSessions.get(name) || {}).cli }),
+  ...createProxyBroadcasters(chatBroadcast, { resolveCli: name => (persistedSessions.get(name) || {}).cli, recordLimit: limitRecorder.recordSession }),
 });
 
 // Session query, dashboard, workspace and classify-admin routes share one
@@ -2224,6 +2230,9 @@ const providerRoutes = createProviderRoutes({
   http,
   https,
   logger: console,
+  providerLimitCache,
+  limitRecorder,
+  limitCacheStaleMs: Number(process.env.MULTICC_LIMIT_CACHE_STALE_MS) || undefined,
 });
 const { providerDefaults, validProviderId } = providerRoutes;
 commanderMigrationRunner = createCommanderMigrationHost({
@@ -2251,7 +2260,9 @@ mountQoderModelRoutes(app);
 // exists. Surfaces chrome_unavailable / needs_login / unavailable states so
 // the chat rate-limit bar can prompt instead of degrading silently.
 mountOpenCodeQuotaRoutes(app); mountQoderQuotaRoutes(app); mountCodexQuotaRoutes(app);
-mountArkQuotaRoutes(app); mountZhipuQuotaRoutes(app); mountKimiQuotaRoutes(app); mountClaudeUsageQuotaRoutes(app); mountAliyunQuotaRoutes(app); require('./src/routes/quota-bars').mountQuotaBarRoutes(app);
+// Vendor routes feed results into the provider-limit cache via the recorder;
+// Qoder/OpenCode/Codex are account-level, so only ark/zhipu/kimi/claude feed here.
+mountArkQuotaRoutes(app, limitRecorder.recordVendor); mountZhipuQuotaRoutes(app, limitRecorder.recordVendor); mountKimiQuotaRoutes(app, { recordVendor: limitRecorder.recordVendor }); mountClaudeUsageQuotaRoutes(app, limitRecorder.recordClaude); mountAliyunQuotaRoutes(app); require('./src/routes/quota-bars').mountQuotaBarRoutes(app);
 mountCodexOAuthRoutes(app, { getStatus: () => codexOAuthRefresh.status(), directories, createSessionRecord, persistedSessionExists: id => persistedSessions.has(id) });
 const claudeOAuthSurface = createClaudeOAuthSurface({ refresher: claudeOAuthRefresh, directories, createSessionRecord, persistedSessions, destroySessionCascade, sessionPersistence, appendEvent }); claudeOAuthSurface.mountRoutes(app); // see src/routes/claude-oauth.js header
 // Token APIs remain between the two Provider route phases so the established
@@ -2262,8 +2273,10 @@ providerRoutes.mountManagementRoutes(app);
 
 // GET /api/providers/:appType/:id/balance + GET /api/providers/balances —
 // explicit per-provider and all-at-once quota/balance queries for the manage
-// page, reusing the usage-limit poller's vendor adapters.
-mountProviderBalanceRoutes(app, providers);
+// page, reusing the usage-limit poller's vendor adapters. Each query outcome is
+// mirrored into the persistent provider-limit cache (onResult), so an on-demand
+// balance check also refreshes the pickers' last-known summaries.
+mountProviderBalanceRoutes(app, { ...providers, onResult: limitRecorder.recordProvider });
 
 // ZCode auth management (L1-L4: desktop key sync, manual key, OAuth login,
 // pre-turn auth check). Mounted after provider routes for logical grouping.
@@ -2404,6 +2417,7 @@ const subscribeDispatchProgress = createDispatchProgressSubscription({
 const usageLimitPoller = require('./src/chat/usage-limit-wiring').createUsageLimitWiring({
   persistedSessions, providers, chatBroadcast,
   createPoller: require('./src/usage-limit-poller').createUsageLimitPoller,
+  recordLimit: limitRecorder.recordSession,
 });
 
 // ── WeChat Bridge ──
@@ -2751,7 +2765,8 @@ const stalledTurnRecovery = createStalledTurnRecovery({
 });
 const providerLogWatchdog = createProviderLogWatchdog({ listRecords: () => persistedSessions.entries(), getChatSession: id => chatSessions.get(id),
   broadcast: (id, evt) => chatBroadcast(id, evt), cancelTurn: (id, options) => sessionWorkHost.cancelActiveTurn(id, options),
-  intervalMs: envNumber(process.env.MULTICC_PROVIDER_LOG_INTERVAL_MS), minSilenceMs: envNumber(process.env.MULTICC_PROVIDER_LOG_MIN_SILENCE_MS), logger });
+  intervalMs: envNumber(process.env.MULTICC_PROVIDER_LOG_INTERVAL_MS), minSilenceMs: envNumber(process.env.MULTICC_PROVIDER_LOG_MIN_SILENCE_MS), logger,
+  recordLimit: limitRecorder.recordSession });
 const logHousekeeping = createLogHousekeeping({ logsDir: path.join(__dirname, 'logs'), logger,
   retainDays: envNumber(process.env.MULTICC_LOG_RETAIN_DAYS), keepTailBytes: envNumber(process.env.MULTICC_LOG_KEEP_TAIL_BYTES) });
 routerToolHost.configure({ records: persistedSessions, dispatchToSession, orchestrationRuntime, taskBoard: taskBoardRuntime,

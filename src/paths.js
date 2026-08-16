@@ -94,6 +94,10 @@ function createPaths({ dataDir } = {}) {
     auxConfigFile: path.join(root, 'aux-config.json'),
     goalConfigFile: path.join(root, 'goal-config.json'),
     providerDefaultsFile: path.join(root, 'provider-defaults.json'),
+    // Last-known-good per-provider limit/usage summaries, persisted so the
+    // Web/App provider pickers can show quota freshness after a restart,
+    // before any live poll has re-run. See src/quota/provider-limit-cache.js.
+    providerLimitCacheFile: path.join(root, 'provider-limit-cache.json'),
     scheduledTasksFile: path.join(root, 'scheduled_tasks.json'),
     taskBoardFile: path.join(root, 'task_board.json'),
     // The user's drag-and-drop arrangement of the dir grid and of each fleet's
