@@ -46,10 +46,17 @@ class FloatingDock extends StatefulWidget {
   /// Badge number (active/running count). 0 hides the badge.
   final int badgeCount;
 
-  /// Glyph inside the 48dp circle (colour pair comes with the dock).
+  /// Glyph inside the visible circle (colour pair comes with the dock).
   final IconData icon;
   final Color iconColor;
   final Color iconBorder;
+
+  /// Diameter of the *visible* circle. The gesture/anchor box stays at the
+  /// 48dp [_hitSize] regardless, so a compact dock keeps its ≥44dp touch,
+  /// drag and a11y target while drawing a smaller circle - the circle, its
+  /// glyph and the badge all scale together and stay centred in the box.
+  /// Must be ≤48. Defaults to 48 (no visual change).
+  final double visualSize;
 
   /// Tooltip + semantics label, rebuilt for the current expand state so it
   /// can carry the live count ("N 个进行中 · 点按展开").
@@ -100,6 +107,7 @@ class FloatingDock extends StatefulWidget {
     required this.icon,
     required this.iconColor,
     required this.iconBorder,
+    this.visualSize = 48,
     required this.tooltip,
     required this.panelBuilder,
     required this.panelWidth,
@@ -120,7 +128,10 @@ class FloatingDock extends StatefulWidget {
 }
 
 class _FloatingDockState extends State<FloatingDock> {
-  static const double _icon = 48;
+  /// Hit / anchor / persistence box: every clamp, snap, obstacle yield and
+  /// panel anchor is computed against this 48dp square (≥44dp touch target),
+  /// independent of how big the visible circle draws.
+  static const double _hitSize = 48;
   static const double _margin = 10;
   static const double _panelGap = 8;
   static const double _obstacleGap = 8;
@@ -202,10 +213,10 @@ class _FloatingDockState extends State<FloatingDock> {
     final obstacle = widget.obstacle;
     if (obstacle == null || obstacle.sideRight != _sideRight) return top;
     final oTop = obstacle.top;
-    if (top > oTop - _icon - _obstacleGap && top < oTop + _icon + _obstacleGap) {
-      final above = oTop - _icon - _obstacleGap;
+    if (top > oTop - _hitSize - _obstacleGap && top < oTop + _hitSize + _obstacleGap) {
+      final above = oTop - _hitSize - _obstacleGap;
       if (above >= widget.topMin) return above;
-      final below = oTop + _icon + _obstacleGap;
+      final below = oTop + _hitSize + _obstacleGap;
       if (below <= bandBottom) return below;
     }
     return top;
@@ -229,7 +240,7 @@ class _FloatingDockState extends State<FloatingDock> {
         double minBottom() =>
             _sideRight ? widget.rightMinBottom : widget.leftMinBottom;
         final bandBottom =
-            size.height - minBottom() - _icon; // icon-top max (pre-obstacle)
+            size.height - minBottom() - _hitSize; // icon-top max (pre-obstacle)
 
         // Snapped anchor (fraction → px). Clamp on every build so rotation /
         // resize / a larger side reservation always re-fits the icon, then
@@ -243,7 +254,7 @@ class _FloatingDockState extends State<FloatingDock> {
         }
 
         final double snappedLeft =
-            _sideRight ? size.width - _margin - _icon : _margin;
+            _sideRight ? size.width - _margin - _hitSize : _margin;
 
         var iconLeft = snappedLeft;
         var iconTop = snappedTop();
@@ -256,11 +267,11 @@ class _FloatingDockState extends State<FloatingDock> {
         // bottom clamp and obstacle yield happen at settle time.
         iconLeft = iconLeft.clamp(
           _margin,
-          (size.width - _margin - _icon).clamp(_margin, double.infinity),
+          (size.width - _margin - _hitSize).clamp(_margin, double.infinity),
         );
         iconTop = iconTop.clamp(
           widget.topMin,
-          (size.height - _margin - _icon).clamp(widget.topMin, double.infinity),
+          (size.height - _margin - _hitSize).clamp(widget.topMin, double.infinity),
         );
         // Publish the snapped anchor (pre-drag position) for event-time math.
         _anchorLeft = snappedLeft;
@@ -276,14 +287,14 @@ class _FloatingDockState extends State<FloatingDock> {
         final panelWidth = widget.panelWidth(size.width);
         var panelLeft = _sideRight
             ? iconLeft - _panelGap - panelWidth // opens leftwards
-            : iconLeft + _icon + _panelGap; // opens rightwards
+            : iconLeft + _hitSize + _panelGap; // opens rightwards
         panelLeft = panelLeft.clamp(
           8.0,
           (size.width - panelWidth - 8.0).clamp(8.0, double.infinity),
         );
         final availBelow =
             (size.height - minBottom()) - iconTop; // below icon top
-        final availAbove = iconTop + _icon - widget.topMin; // above icon bottom
+        final availAbove = iconTop + _hitSize - widget.topMin; // above icon bottom
         final panelAbove =
             availBelow < 240 && availAbove > availBelow; // ~5 rows + header
 
@@ -294,10 +305,10 @@ class _FloatingDockState extends State<FloatingDock> {
           // Computed from the State anchors + accumulated drag delta (both
           // current at event time), NOT from this build's locals.
           final drag = _dragOffset ?? Offset.zero;
-          final centreX = _anchorLeft + drag.dx + _icon / 2;
+          final centreX = _anchorLeft + drag.dx + _hitSize / 2;
           final liveTop = (_anchorTop + drag.dy).clamp(
             widget.topMin,
-            (size.height - _margin - _icon)
+            (size.height - _margin - _hitSize)
                 .clamp(widget.topMin, double.infinity),
           );
           final goRight = centreX > size.width / 2;
@@ -306,7 +317,7 @@ class _FloatingDockState extends State<FloatingDock> {
             _dragOffset = null;
             final settleBottom = size.height -
                 (goRight ? widget.rightMinBottom : widget.leftMinBottom) -
-                _icon;
+                _hitSize;
             final span =
                 (settleBottom - widget.topMin).clamp(0.0, double.infinity);
             if (span <= 0) {
@@ -325,6 +336,18 @@ class _FloatingDockState extends State<FloatingDock> {
         }
 
         final tooltip = widget.tooltip(_expanded);
+
+        // Compact-circle scaling: glyph and badge shrink with visualSize but
+        // keep legibility floors (12dp glyph, 14dp badge) so a 24dp dock
+        // stays readable; the hit box above never shrinks.
+        final double glyphSize =
+            (widget.visualSize * 22 / 48).clamp(12.0, 22.0);
+        final double badgeScale = widget.visualSize / 48;
+        final double badgeHeight = (19 * badgeScale).clamp(14.0, 19.0);
+        final double badgeFontSize = (10 * badgeScale).clamp(8.0, 10.0);
+        final double badgePad = 4 * badgeScale;
+        final double badgeRight = -4 * badgeScale;
+        final double badgeTop = -5 * badgeScale;
 
         return SizedBox.fromSize(
           size: size,
@@ -357,6 +380,9 @@ class _FloatingDockState extends State<FloatingDock> {
                       // movement before the pan recognizer wins, so a tap
                       // never fires after a real drag (and vice versa).
                       // supportedDevices left default; single-finger pan only.
+                      // Opaque: the whole 48dp box is the target - taps/ drags
+                      // on the transparent ring around a small circle count.
+                      behavior: HitTestBehavior.opaque,
                       onPanUpdate: (details) => setState(() {
                         _dragOffset = (_dragOffset ?? Offset.zero) +
                             details.delta;
@@ -364,59 +390,67 @@ class _FloatingDockState extends State<FloatingDock> {
                       onPanEnd: (_) => settle(),
                       onPanCancel: settle,
                       onTap: _expanded ? _collapse : _expand,
-                      child: Material(
+                      child: SizedBox(
                         key: widget.iconKey,
-                        color: widget.iconColor,
-                        shape: CircleBorder(
-                          side: BorderSide(color: widget.iconBorder),
-                        ),
-                        elevation: 8,
-                        child: SizedBox(
-                          width: _icon,
-                          height: _icon, // ≥44dp touch target
-                          child: Stack(
-                            clipBehavior: Clip.none,
-                            children: [
-                              Center(
-                                child: Icon(
-                                  widget.icon,
-                                  size: 22,
-                                  color: Colors.white,
-                                ),
-                              ),
-                              if (widget.badgeCount > 0)
-                                Positioned(
-                                  key: widget.badgeKey,
-                                  right: -4,
-                                  top: -5,
-                                  child: Container(
-                                    constraints:
-                                        const BoxConstraints(minWidth: 19),
-                                    height: 19,
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 4,
-                                    ),
-                                    alignment: Alignment.center,
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFFd73a49),
-                                      borderRadius: BorderRadius.circular(10),
-                                      border: Border.all(
-                                        color: const Color(0xFF0f1115),
-                                      ),
-                                    ),
-                                    child: Text(
-                                      widget.badgeCount > 99
-                                          ? '99+'
-                                          : '${widget.badgeCount}',
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 10,
-                                        fontWeight: FontWeight.w700,
-                                      ),
+                        width: _hitSize,
+                        height: _hitSize, // ≥44dp touch/drag/a11y target
+                        child: Center(
+                          child: Material(
+                            color: widget.iconColor,
+                            shape: CircleBorder(
+                              side: BorderSide(color: widget.iconBorder),
+                            ),
+                            elevation: 8,
+                            child: SizedBox(
+                              width: widget.visualSize,
+                              height: widget.visualSize,
+                              child: Stack(
+                                clipBehavior: Clip.none,
+                                children: [
+                                  Center(
+                                    child: Icon(
+                                      widget.icon,
+                                      size: glyphSize,
+                                      color: Colors.white,
                                     ),
                                   ),
-                                ),
-                            ],
+                                  if (widget.badgeCount > 0)
+                                    Positioned(
+                                      key: widget.badgeKey,
+                                      right: badgeRight,
+                                      top: badgeTop,
+                                      child: Container(
+                                        constraints: BoxConstraints(
+                                          minWidth: badgeHeight,
+                                        ),
+                                        height: badgeHeight,
+                                        padding: EdgeInsets.symmetric(
+                                          horizontal: badgePad,
+                                        ),
+                                        alignment: Alignment.center,
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFFd73a49),
+                                          borderRadius:
+                                              BorderRadius.circular(10),
+                                          border: Border.all(
+                                            color: const Color(0xFF0f1115),
+                                          ),
+                                        ),
+                                        child: Text(
+                                          widget.badgeCount > 99
+                                              ? '99+'
+                                              : '${widget.badgeCount}',
+                                          style: TextStyle(
+                                            color: Colors.white,
+                                            fontSize: badgeFontSize,
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
                           ),
                         ),
                       ),
@@ -429,7 +463,7 @@ class _FloatingDockState extends State<FloatingDock> {
                   left: panelLeft,
                   top: panelAbove ? null : iconTop,
                   bottom: panelAbove
-                      ? size.height - iconTop - _icon - _panelGap
+                      ? size.height - iconTop - _hitSize - _panelGap
                       : null,
                   child: ConstrainedBox(
                     constraints: BoxConstraints(

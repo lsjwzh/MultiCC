@@ -64,6 +64,10 @@ class DispatchFloatingDock extends StatelessWidget {
       icon: Icons.swap_vert_rounded,
       iconColor: const Color(0xFF1f6feb),
       iconBorder: const Color(0xFF6aa3ff),
+      // Compact entry: the visible circle draws at 24dp while FloatingDock
+      // keeps the full 48dp touch/drag/a11y box around it. Background Tasks
+      // keeps the default 48dp circle.
+      visualSize: 24,
       tooltip: (expanded) => t(
         expanded ? 'dispatchDockExpanded' : 'dispatchDockCollapsed',
         {'n': '$activeCount'},
