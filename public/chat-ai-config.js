@@ -301,6 +301,39 @@
     return document;
   }
 
+  /* Phones: several of these panels are taller than the viewport (the AI config
+   * one stacks six selects plus two inputs). A plain centred box then pushes
+   * its action row below the screen edge with nothing to scroll, so the save
+   * button is unreachable. Build every dialog as a flex column whose body
+   * scrolls and whose footer stays pinned inside the visible box. */
+  function modalShell(document, width, dim) {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = `position:fixed;inset:0;background:rgba(0,0,0,${dim || '.7'});z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;`;
+    const box = document.createElement('div');
+    box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;color:#c9d1d9;'
+      + `width:${width}px;max-width:94vw;display:flex;flex-direction:column;`
+      + 'max-height:calc(100vh - 32px);max-height:calc(100dvh - 32px);';
+    const body = document.createElement('div');
+    body.style.cssText = 'padding:18px;overflow-y:auto;min-height:0;-webkit-overflow-scrolling:touch;';
+    const footer = document.createElement('div');
+    footer.style.cssText = 'flex:none;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;padding:12px 18px;border-top:1px solid #21262d;';
+    box.append(body, footer);
+    overlay.appendChild(box);
+    return { overlay, box, body, footer };
+  }
+
+  // Dialog buttons are touch targets too: 44px tall wherever the pointer is coarse.
+  function ensureModalStyle(document) {
+    if (document.getElementById('multicc-modal-style')) return;
+    const style = document.createElement('style');
+    style.id = 'multicc-modal-style';
+    style.textContent = '.multicc-modal-btn{border-radius:6px;font-size:13px;padding:8px 16px;min-height:40px;cursor:pointer;}'
+      + '@media (pointer:coarse){.multicc-modal-btn{min-height:44px;}}';
+    (document.head || document.body).appendChild(style);
+  }
+  const MODAL_BTN_GHOST = 'background:#21262d;border:1px solid #30363d;color:#c9d1d9;';
+  const MODAL_BTN_PRIMARY = 'background:#238636;border:1px solid #2ea043;color:#fff;';
+
   function showLoadingOverlay(text, options = {}) {
     const document = documentOf(options);
     const overlay = document.createElement('div');
@@ -327,21 +360,17 @@
     const cli = options.cli || 'claude';
     const choices = effortOptions(cli);
     return new Promise((resolve) => {
-      const overlay = document.createElement('div');
-      overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
-      const box = document.createElement('div');
-      box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:380px;max-width:94vw;color:#c9d1d9;';
-      box.innerHTML = `
+      ensureModalStyle(document);
+      const { overlay, box, body, footer } = modalShell(document, 380);
+      body.innerHTML = `
         <div style="font-size:15px;font-weight:600;margin-bottom:8px;">选择努力程度（下一轮生效）</div>
         <div style="font-size:12px;color:#8b949e;line-height:1.5;margin-bottom:12px;">Claude 支持 low / medium / high / xhigh / max。ultracode 会向 Claude 传 xhigh，并启用 MultiCC 跨会话 workflow 编排。</div>
-        <select id="effort-select" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:14px;">
+        <select id="effort-select" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;">
           ${choices.map(option => `<option value="${option.value}">${option.label}</option>`).join('')}
-        </select>
-        <div style="display:flex;gap:8px;justify-content:flex-end;">
-          <button id="effort-cancel" style="background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:6px 14px;cursor:pointer;">取消</button>
-          <button id="effort-ok" style="background:#238636;border:1px solid #2ea043;border-radius:6px;color:#fff;font-size:13px;padding:6px 14px;cursor:pointer;">保存</button>
-        </div>`;
-      overlay.appendChild(box);
+        </select>`;
+      footer.innerHTML = `
+        <button id="effort-cancel" class="multicc-modal-btn" style="${MODAL_BTN_GHOST}">取消</button>
+        <button id="effort-ok" class="multicc-modal-btn" style="${MODAL_BTN_PRIMARY}">保存</button>`;
       document.body.appendChild(overlay);
       const select = box.querySelector('#effort-select');
       select.value = choices.some(option => option.value === current) ? current : defaultEffort(cli);
@@ -356,14 +385,12 @@
     const document = documentOf(options);
     const t = typeof options.translate === 'function' ? options.translate : key => key;
     return new Promise((resolve) => {
-      const overlay = document.createElement('div');
-      overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
-      const box = document.createElement('div');
-      box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:400px;max-width:94vw;';
+      ensureModalStyle(document);
+      const { overlay, body, footer } = modalShell(document, 400);
       const message = document.createElement('div');
       message.style.cssText = 'font-size:14px;color:#c9d1d9;line-height:1.6;margin-bottom:12px;';
       message.textContent = t('providerTitle');
-      box.appendChild(message);
+      body.appendChild(message);
       const select = document.createElement('select');
       select.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;';
       const defaultOption = document.createElement('option');
@@ -377,24 +404,22 @@
         select.appendChild(option);
       }
       select.value = current || '';
-      box.appendChild(select);
+      body.appendChild(select);
       if (!list || !list.length) {
         const empty = document.createElement('div');
-        empty.style.cssText = 'font-size:12px;color:#8b949e;margin-bottom:12px;';
+        empty.style.cssText = 'font-size:12px;color:#8b949e;';
         empty.textContent = t('providerEmpty');
-        box.appendChild(empty);
+        body.appendChild(empty);
       }
-      const row = document.createElement('div');
-      row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
       const cancel = document.createElement('button');
       cancel.textContent = t('cancel');
-      cancel.style.cssText = 'background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:6px 14px;cursor:pointer;';
+      cancel.className = 'multicc-modal-btn';
+      cancel.style.cssText = MODAL_BTN_GHOST;
       const save = document.createElement('button');
       save.textContent = t('save');
-      save.style.cssText = 'background:#238636;border:1px solid #2ea043;border-radius:6px;color:#fff;font-size:13px;padding:6px 14px;cursor:pointer;';
-      row.append(cancel, save);
-      box.appendChild(row);
-      overlay.appendChild(box);
+      save.className = 'multicc-modal-btn';
+      save.style.cssText = MODAL_BTN_PRIMARY;
+      footer.append(cancel, save);
       document.body.appendChild(overlay);
       const close = result => { overlay.remove(); resolve(result); };
       save.onclick = () => close({ value: select.value });
@@ -409,11 +434,9 @@
     const choicesForEffort = effortOptions(cli);
     const supportsProvider = cli !== 'qoder';
     return new Promise((resolve) => {
-      const overlay = document.createElement('div');
-      overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
-      const box = document.createElement('div');
-      box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:480px;max-width:94vw;color:#c9d1d9;';
-      box.innerHTML = `
+      ensureModalStyle(document);
+      const { overlay, box, body, footer } = modalShell(document, 480);
+      body.innerHTML = `
         <div style="font-size:15px;font-weight:600;margin-bottom:8px;">AI 配置（下一轮生效）</div>
         <div style="font-size:12px;color:#8b949e;line-height:1.5;margin-bottom:12px;">${supportsProvider ? 'Provider、' : ''}Model${choicesForEffort.length ? `、${effortLabel(cli)}` : ''} 会一起保存。${supportsProvider ? (cli === 'zcode' ? '选择 Provider 时使用 MultiCC 的三协议隔离配置；选择默认时跟随 ZCode 原生设置 / Coding Plan。' : '切换 Provider 后，Model 选项会按该 Provider 的可用模型联动更新。') : 'Qoder CN 使用自身账号与厂商配置。'}</div>
         <div id="ai-provider-section">
@@ -442,13 +465,11 @@
           <select id="ai-sub-provider" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:10px;"></select>
           <label style="display:block;font-size:12px;color:#8b949e;margin-bottom:5px;">子任务 Model</label>
           <select id="ai-sub-model" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:6px;"></select>
-          <input id="ai-sub-model-custom" type="text" placeholder="模型 ID" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:14px;display:none;">
-        </div>
-        <div style="display:flex;gap:8px;justify-content:flex-end;">
-          <button id="ai-cancel" style="background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:6px 14px;cursor:pointer;">取消</button>
-          <button id="ai-ok" style="background:#238636;border:1px solid #2ea043;border-radius:6px;color:#fff;font-size:13px;padding:6px 14px;cursor:pointer;">保存</button>
+          <input id="ai-sub-model-custom" type="text" placeholder="模型 ID" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;display:none;">
         </div>`;
-      overlay.appendChild(box);
+      footer.innerHTML = `
+        <button id="ai-cancel" class="multicc-modal-btn" style="${MODAL_BTN_GHOST}">取消</button>
+        <button id="ai-ok" class="multicc-modal-btn" style="${MODAL_BTN_PRIMARY}">保存</button>`;
       document.body.appendChild(overlay);
 
       const providerSelect = box.querySelector('#ai-provider');
@@ -609,30 +630,26 @@
     if (status && status.ok) return null;
     const document = documentOf(options);
     return new Promise(resolve => {
-      const overlay = document.createElement('div');
-      overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:10020;display:flex;align-items:center;justify-content:center;padding:16px;';
-      const box = document.createElement('div');
-      box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:460px;max-width:94vw;color:#c9d1d9;';
+      ensureModalStyle(document);
+      const { overlay, body, footer } = modalShell(document, 460, '.72');
+      overlay.style.zIndex = '10020';
       const title = document.createElement('div');
       title.style.cssText = 'font-size:16px;font-weight:600;margin-bottom:8px;';
       title.textContent = '配置 ZCode 连接';
       const message = document.createElement('div');
-      message.style.cssText = 'font-size:12px;color:#8b949e;line-height:1.65;margin-bottom:14px;';
+      message.style.cssText = 'font-size:12px;color:#8b949e;line-height:1.65;';
       message.textContent = '可选择 MultiCC 中已有的三协议 Provider；或配置 ZCode 原生连接，使用官方 Coding Plan / API Key。原生登录状态由 ZCode 自己维护。';
-      const row = document.createElement('div');
-      row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;';
       const later = document.createElement('button');
-      later.className = 'btn';
+      later.className = 'btn multicc-modal-btn';
       later.textContent = '稍后';
       const settings = document.createElement('button');
-      settings.className = 'btn';
+      settings.className = 'btn multicc-modal-btn';
       settings.textContent = '配置 Coding Plan / API Key';
       const provider = document.createElement('button');
-      provider.className = 'btn btn-green';
+      provider.className = 'btn btn-green multicc-modal-btn';
       provider.textContent = options.hasProviders ? '选择已有 Provider' : '创建 Provider';
-      row.append(later, settings, provider);
-      box.append(title, message, row);
-      overlay.appendChild(box);
+      footer.append(later, settings, provider);
+      body.append(title, message);
       document.body.appendChild(overlay);
       const close = action => {
         overlay.remove();
