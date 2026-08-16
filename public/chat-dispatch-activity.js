@@ -28,6 +28,13 @@
 
   var TERMINAL = new Set(['completed', 'failed', 'interrupted', 'cancelled']);
   var MAX_VISIBLE = 5;
+  var FAB_HIT_SIZE = 44;
+  var FAB_MARGIN = 12;
+  var FAB_TOP = 54;
+  var FAB_BOTTOM = 70;
+  var FAB_BOTTOM_NARROW = 104;
+  var FAB_DRAG_SLOP = 6;
+  var DOCK_STORE_KEY = 'multicc.dispatchActivityDock';
 
   function numberOrZero(value) {
     var number = Number(value);
@@ -124,9 +131,20 @@
     if (!fab || !badge || !panel || !title || !list) return null;
 
     var state = { entries: [], expanded: false, inFlight: false, destroyed: false };
+    var dock = {
+      sideRight: false,
+      dy: 1,
+      drag: null,
+      suppressClick: false,
+    };
+    var storage = opts.storage || null;
+    if (!storage) {
+      try { storage = win.localStorage || null; } catch (_) { storage = null; }
+    }
     var names = new Map();
     var generation = 0;
     var timer = null;
+    var suppressTimer = null;
     var intervalMs = Number.isFinite(opts.intervalMs) ? Math.max(1000, opts.intervalMs) : 10000;
     var translate = typeof opts.translate === 'function'
       ? opts.translate
@@ -137,6 +155,89 @@
     function text(key, params, fallback) {
       var translated = translate(key, params);
       return translated && translated !== key ? translated : fallback;
+    }
+
+    function clamp(value, minimum, maximum) {
+      return Math.min(maximum, Math.max(minimum, value));
+    }
+
+    function isNarrow() {
+      try {
+        return typeof win.matchMedia === 'function'
+          && !!win.matchMedia('(max-width: 760px)').matches;
+      } catch (_) { return false; }
+    }
+
+    function dockBand() {
+      var width = Number(win.innerWidth) || 0;
+      var height = Number(win.innerHeight) || 0;
+      if (!width || !height) return null;
+      var bottomInset = isNarrow() ? FAB_BOTTOM_NARROW : FAB_BOTTOM;
+      var bottom = Math.max(FAB_TOP, height - bottomInset - FAB_HIT_SIZE);
+      return { width: width, height: height, top: FAB_TOP, bottom: bottom, bottomInset: bottomInset };
+    }
+
+    function loadDock() {
+      if (!storage || typeof storage.getItem !== 'function') return;
+      try {
+        var saved = JSON.parse(storage.getItem(DOCK_STORE_KEY) || 'null');
+        if (!saved || typeof saved !== 'object') return;
+        dock.sideRight = saved.side === 'right';
+        if (Number.isFinite(Number(saved.dy))) dock.dy = clamp(Number(saved.dy), 0, 1);
+      } catch (_) {}
+    }
+
+    function persistDock() {
+      if (!storage || typeof storage.setItem !== 'function') return;
+      try {
+        storage.setItem(DOCK_STORE_KEY, JSON.stringify({
+          side: dock.sideRight ? 'right' : 'left',
+          dy: dock.dy,
+        }));
+      } catch (_) {}
+    }
+
+    function positionFab() {
+      var band = dockBand();
+      if (!band || !fab.style) return;
+      var top = clamp(
+        band.top + clamp(dock.dy, 0, 1) * (band.bottom - band.top),
+        band.top,
+        band.bottom,
+      );
+      fab.style.left = Math.round(dock.sideRight
+        ? band.width - FAB_MARGIN - FAB_HIT_SIZE
+        : FAB_MARGIN) + 'px';
+      fab.style.top = Math.round(top) + 'px';
+      fab.style.right = 'auto';
+      fab.style.bottom = 'auto';
+    }
+
+    function positionPanel() {
+      var band = dockBand();
+      if (!band || !panel.style) return;
+      var fabTop = Number.parseFloat(fab.style.top) || band.top;
+      var panelHeight = Number(panel.offsetHeight) || 280;
+      var maxTop = Math.max(band.top, band.height - band.bottomInset - panelHeight);
+      panel.style.top = Math.round(clamp(fabTop, band.top, maxTop)) + 'px';
+      panel.style.bottom = 'auto';
+      panel.style.left = dock.sideRight ? 'auto' : FAB_MARGIN + 'px';
+      panel.style.right = dock.sideRight ? FAB_MARGIN + 'px' : 'auto';
+    }
+
+    function settleDock() {
+      var drag = dock.drag;
+      dock.drag = null;
+      var band = dockBand();
+      if (fab.classList) fab.classList.remove('dispatch-activity-dragging');
+      if (!drag || !band) { positionFab(); return; }
+      dock.sideRight = drag.left + FAB_HIT_SIZE / 2 > band.width / 2;
+      var top = clamp(drag.top, band.top, band.bottom);
+      var span = band.bottom - band.top;
+      dock.dy = span > 0 ? clamp((top - band.top) / span, 0, 1) : 1;
+      persistDock();
+      positionFab();
+      if (state.expanded) positionPanel();
     }
 
     function displayName(id) { return names.get(id) || id || text('dispatchUnknownSession', null, 'Unknown session'); }
@@ -233,6 +334,7 @@
       panel.hidden = empty || !state.expanded;
       badge.textContent = activeCount > 0 ? (activeCount > 99 ? '99+' : String(activeCount)) : '';
       fab.setAttribute('aria-label', text('dispatchQueueExpand', null, 'Open recent dispatches'));
+      fab.setAttribute('aria-expanded', state.expanded ? 'true' : 'false');
       title.textContent = text('dispatchRecentTitle', { n: entries.length }, 'Recent dispatches ' + entries.length);
       list.replaceChildren();
       entries.slice(0, MAX_VISIBLE).forEach(function (entry) { list.appendChild(rowFor(entry)); });
@@ -242,6 +344,8 @@
         more.textContent = text('dispatchQueueMore', { n: entries.length - MAX_VISIBLE }, '+' + (entries.length - MAX_VISIBLE) + ' more');
         list.appendChild(more);
       }
+      positionFab();
+      if (state.expanded && !empty) positionPanel();
     }
 
     async function loadNames() {
@@ -285,12 +389,106 @@
     function onVisibility() { if (!doc.hidden) refresh(); }
     function onKey(event) { if (event.key === 'Escape' && state.expanded) collapse(); }
 
-    fab.addEventListener('click', expand);
+    function onFabPointerDown(event) {
+      if (event.button !== undefined && event.button !== 0) return;
+      var band = dockBand();
+      if (!band) return;
+      dock.drag = {
+        pointerId: event.pointerId,
+        startX: Number(event.clientX) || 0,
+        startY: Number(event.clientY) || 0,
+        left: Number.parseFloat(fab.style.left) || FAB_MARGIN,
+        top: Number.parseFloat(fab.style.top) || band.top,
+        moved: false,
+      };
+      try {
+        if (typeof fab.setPointerCapture === 'function' && event.pointerId !== undefined) {
+          fab.setPointerCapture(event.pointerId);
+        }
+      } catch (_) {}
+    }
+
+    function onFabPointerMove(event) {
+      var drag = dock.drag;
+      if (!drag || event.pointerId !== undefined && event.pointerId !== drag.pointerId) return;
+      var band = dockBand();
+      if (!band) return;
+      var x = Number(event.clientX) || 0;
+      var y = Number(event.clientY) || 0;
+      var dx = x - drag.startX;
+      var dy = y - drag.startY;
+      if (!drag.moved) {
+        if (Math.hypot(dx, dy) < FAB_DRAG_SLOP) return;
+        drag.moved = true;
+        if (fab.classList) fab.classList.add('dispatch-activity-dragging');
+      }
+      drag.left = clamp(
+        drag.left + dx,
+        FAB_MARGIN,
+        Math.max(FAB_MARGIN, band.width - FAB_MARGIN - FAB_HIT_SIZE),
+      );
+      drag.top = clamp(drag.top + dy, band.top, band.bottom);
+      drag.startX = x;
+      drag.startY = y;
+      fab.style.left = Math.round(drag.left) + 'px';
+      fab.style.top = Math.round(drag.top) + 'px';
+    }
+
+    function finishFabPointer(event) {
+      var drag = dock.drag;
+      if (!drag || event.pointerId !== undefined && event.pointerId !== drag.pointerId) return;
+      try {
+        if (typeof fab.releasePointerCapture === 'function' && event.pointerId !== undefined) {
+          fab.releasePointerCapture(event.pointerId);
+        }
+      } catch (_) {}
+      if (!drag.moved) {
+        dock.drag = null;
+        return;
+      }
+      settleDock();
+      dock.suppressClick = true;
+      var defer = typeof win.setTimeout === 'function' ? win.setTimeout.bind(win) : setTimeout;
+      suppressTimer = defer(function () {
+        dock.suppressClick = false;
+        suppressTimer = null;
+      }, 0);
+    }
+
+    function cancelFabPointer(event) {
+      var drag = dock.drag;
+      if (!drag || event.pointerId !== undefined && event.pointerId !== drag.pointerId) return;
+      settleDock();
+    }
+
+    function onFabClick(event) {
+      if (dock.suppressClick) {
+        if (event && typeof event.preventDefault === 'function') event.preventDefault();
+        return;
+      }
+      expand();
+    }
+
+    function onBlur() { if (dock.drag) settleDock(); }
+    function onResize() {
+      positionFab();
+      if (state.expanded) positionPanel();
+    }
+
+    loadDock();
+    positionFab();
+    fab.addEventListener('pointerdown', onFabPointerDown);
+    fab.addEventListener('pointermove', onFabPointerMove);
+    fab.addEventListener('pointerup', finishFabPointer);
+    fab.addEventListener('pointercancel', cancelFabPointer);
+    fab.addEventListener('click', onFabClick);
     if (refreshButton) refreshButton.addEventListener('click', refresh);
     if (collapseButton) collapseButton.addEventListener('click', collapse);
     doc.addEventListener('visibilitychange', onVisibility);
     doc.addEventListener('keydown', onKey);
     win.addEventListener('focus', refresh);
+    win.addEventListener('blur', onBlur);
+    win.addEventListener('resize', onResize);
     timer = win.setInterval(function () { if (!doc.hidden) refresh(); }, intervalMs);
     loadNames();
     refresh();
@@ -304,12 +502,19 @@
         state.destroyed = true;
         generation += 1;
         if (timer != null) win.clearInterval(timer);
-        fab.removeEventListener('click', expand);
+        if (suppressTimer != null && typeof win.clearTimeout === 'function') win.clearTimeout(suppressTimer);
+        fab.removeEventListener('pointerdown', onFabPointerDown);
+        fab.removeEventListener('pointermove', onFabPointerMove);
+        fab.removeEventListener('pointerup', finishFabPointer);
+        fab.removeEventListener('pointercancel', cancelFabPointer);
+        fab.removeEventListener('click', onFabClick);
         if (refreshButton) refreshButton.removeEventListener('click', refresh);
         if (collapseButton) collapseButton.removeEventListener('click', collapse);
         doc.removeEventListener('visibilitychange', onVisibility);
         doc.removeEventListener('keydown', onKey);
         win.removeEventListener('focus', refresh);
+        win.removeEventListener('blur', onBlur);
+        win.removeEventListener('resize', onResize);
       },
     };
   }
