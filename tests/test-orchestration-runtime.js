@@ -186,6 +186,133 @@ test('dispatch delivery carries canonical task metadata into runChatTurn', async
   await runtime.stop();
 });
 
+test('an immediate replacement turn retains the dispatch operation and task lineage', async t => {
+  const { runtime, injections } = fixture(t);
+  const dispatch = await runtime.admitDispatch({
+    ownerSessionId: 'commander',
+    resultSessionId: 'commander',
+    idempotencyKey: 'replace-live-dispatch',
+    spec: {
+      targetId: 'worker',
+      chatId: 'worker',
+      message: 'original dispatch',
+      resultMode: 'sync',
+      taskId: 'task-live',
+      taskStart: true,
+      taskSource: 'commander',
+      taskText: 'original dispatch',
+    },
+  });
+  await runtime.tick();
+  assert.equal(injections[0].opts.originDispatchId, dispatch.id);
+
+  const replacement = await runtime.sessionScheduler.admit({
+    sessionId: 'worker',
+    text: '立即继续',
+    idempotencyKey: 'immediate-replacement',
+  });
+  const inserted = await runtime.sessionScheduler.insertQueued(
+    'worker',
+    replacement.entry.id,
+  );
+  assert.equal(inserted.inserted.inheritedLineage, true);
+  await runtime.sessionScheduler.complete('worker', { classifyState: 'E' });
+  await runtime.tick();
+
+  assert.equal(injections.length, 2);
+  assert.equal(injections[1].opts.taskId, 'task-live');
+  assert.equal(injections[1].opts.originDispatchId, dispatch.id);
+  assert.equal(injections[1].opts.originContinue, true);
+  assert.equal(injections[1].opts.schedulerWorkKind, 'continuation');
+  assert.equal((await runtime.operations.get(dispatch.id)).status, 'running');
+  await runtime.stop();
+});
+
+test('legacy continuation lineage recovers only from one unique live dispatch task match', async t => {
+  const unique = fixture(t);
+  const dispatch = await unique.runtime.admitDispatch({
+    ownerSessionId: 'commander',
+    resultSessionId: 'commander',
+    idempotencyKey: 'unique-live-dispatch',
+    spec: {
+      targetId: 'worker', chatId: 'worker', message: 'work',
+      resultMode: 'sync', taskId: 'task-unique', taskStart: true,
+      taskSource: 'commander', taskText: 'work',
+    },
+  });
+  await unique.runtime.tick();
+  await unique.runtime.sessionScheduler.complete('worker', { classifyState: 'D' });
+  await unique.runtime.admitSessionWork({
+    sessionId: 'worker',
+    text: 'legacy continuation',
+    workKind: 'continuation',
+    options: { taskId: 'task-unique' },
+    idempotencyKey: 'legacy-continuation',
+  });
+  assert.equal(unique.injections.length, 2);
+  assert.equal(unique.injections[1].opts.originDispatchId, dispatch.id);
+  assert.match(unique.logs.join('\n'), /dispatch_lineage_recovered/);
+  await unique.runtime.stop();
+
+  const ambiguous = fixture(t);
+  const first = await ambiguous.runtime.admitDispatch({
+    ownerSessionId: 'one', resultSessionId: 'one', idempotencyKey: 'ambiguous-one',
+    spec: {
+      targetId: 'worker', chatId: 'worker', message: 'one',
+      resultMode: 'sync', taskId: 'task-shared', taskStart: true,
+      taskSource: 'commander', taskText: 'one',
+    },
+  });
+  await ambiguous.runtime.tick();
+  const second = await ambiguous.runtime.admitDispatch({
+    ownerSessionId: 'two', resultSessionId: 'two', idempotencyKey: 'ambiguous-two',
+    spec: {
+      targetId: 'worker', chatId: 'worker', message: 'two',
+      resultMode: 'sync', taskId: 'task-shared', taskStart: true,
+      taskSource: 'commander', taskText: 'two',
+    },
+  });
+  await ambiguous.runtime.operations.markRunning(second.id);
+  await ambiguous.runtime.sessionScheduler.complete('worker', { classifyState: 'D' });
+  await ambiguous.runtime.admitSessionWork({
+    sessionId: 'worker',
+    text: 'ambiguous continuation',
+    workKind: 'continuation',
+    options: { taskId: 'task-shared' },
+    idempotencyKey: 'ambiguous-continuation',
+  });
+  const delivered = ambiguous.injections.find(entry => entry.text === 'ambiguous continuation');
+  assert.ok(delivered);
+  assert.equal(delivered.opts.originDispatchId, undefined);
+  assert.match(ambiguous.logs.join('\n'), /dispatch_lineage_ambiguous/);
+  assert.equal((await ambiguous.runtime.operations.get(first.id)).status, 'running');
+  assert.equal((await ambiguous.runtime.operations.get(second.id)).status, 'running');
+  await ambiguous.runtime.stop();
+});
+
+test('interruptDispatch settles a live operation once and preserves an existing terminal result', async t => {
+  const { runtime } = fixture(t);
+  const dispatch = await runtime.admitDispatch({
+    ownerSessionId: 'commander', resultSessionId: 'commander',
+    idempotencyKey: 'interrupt-live',
+    spec: {
+      targetId: 'worker', chatId: 'worker', message: 'work',
+      resultMode: 'sync', taskId: 'task-interrupt', taskStart: true,
+      taskSource: 'commander', taskText: 'work',
+    },
+  });
+  await runtime.operations.markRunning(dispatch.id);
+  const first = await runtime.interruptDispatch(dispatch.id, { reason: 'manual stop' });
+  const repeat = await runtime.interruptDispatch(dispatch.id, { reason: 'different retry text' });
+  assert.equal(first.ok, true);
+  assert.equal(first.operation.status, 'interrupted');
+  assert.equal(repeat.ok, true);
+  assert.equal(repeat.idempotent, true);
+  assert.equal(repeat.status, 'interrupted');
+  assert.equal((await runtime.operations.get(dispatch.id)).result.error, 'manual stop');
+  await runtime.stop();
+});
+
 test('a queue notice that fails cannot falsify a durable dispatch admission', async t => {
   // Two writes make one admitted dispatch: the operation and its outbox request
   // land first, then the scheduler's queue notice records the wake-up. Only the
