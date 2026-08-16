@@ -64,12 +64,8 @@ class SessionCard extends StatelessWidget {
     final statusColor = statusSpec.color;
     final isRunning = statusSpec.spinner;
     final mergeReady = live?.mergeReady == true;
-    final title = session.label?.isNotEmpty == true
-        ? session.label!
-        : session.id;
-    final subtitle = session.label?.isNotEmpty == true
-        ? session.id
-        : session.shortCwd;
+    final hasLabel = session.label?.isNotEmpty == true;
+    final title = hasLabel ? session.label! : session.id;
     final modelRaw = session.effectiveModel?.isNotEmpty == true
         ? session.effectiveModel
         : (session.model?.isNotEmpty == true ? session.model : null);
@@ -131,14 +127,18 @@ class SessionCard extends StatelessWidget {
                   children: [
                     // 图标 + 无障碍名，不靠颜色单通道传达状态（WCAG 1.4.1）：
                     // 出错的会话在这里就是 ❌，而不是一个红色小圆点。
-                    Semantics(
-                      label: statusSpec.semanticLabel,
-                      child: Text(
-                        statusSpec.icon,
-                        style: const TextStyle(fontSize: 11),
+                    // idle 是默认态，一个 ⚪ 摆在行首只有噪音（空闲文案同样
+                    // 隐藏），不渲染；unknown 的 ❔ 是诊断信号，保留。
+                    if (cardStatus != CanonicalStatus.idle) ...[
+                      Semantics(
+                        label: statusSpec.semanticLabel,
+                        child: Text(
+                          statusSpec.icon,
+                          style: const TextStyle(fontSize: 11),
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 6),
+                      const SizedBox(width: 6),
+                    ],
                     if (classifyBadge(live?.classifyState) != null) ...[
                       classifyChip(live, showLabel: false),
                       const SizedBox(width: 6),
@@ -227,17 +227,22 @@ class SessionCard extends StatelessWidget {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
-                const SizedBox(height: 3),
-                Text(
-                  subtitle,
-                  style: const TextStyle(
-                    color: Color(0xFF5b616c),
-                    fontSize: 11,
-                    fontFamily: 'monospace',
+                // 有 label 时 id 仍有辨识价值（worktree 分支名）。无 label 时
+                // 副标题只会重复 worktree 目录名（与标题里的 id 几乎同串），
+                // working 目录整体收进 ⋯ 菜单，不再独占一行。
+                if (hasLabel) ...[
+                  const SizedBox(height: 3),
+                  Text(
+                    session.id,
+                    style: const TextStyle(
+                      color: Color(0xFF5b616c),
+                      fontSize: 11,
+                      fontFamily: 'monospace',
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
+                ],
                 if (live?.currentFile != null) ...[
                   const SizedBox(height: 4),
                   Row(
@@ -398,6 +403,10 @@ class SessionCard extends StatelessWidget {
                         }
                       },
                       itemBuilder: (_) => [
+                        if (session.cwd.isNotEmpty) ...[
+                          _cwdInfoItem(),
+                          const PopupMenuDivider(),
+                        ],
                         _menuItem('rename', Icons.edit_outlined, t('rename')),
                         if (!mergeReady)
                           _menuItem(
@@ -445,6 +454,42 @@ class SessionCard extends StatelessWidget {
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+
+  /// 菜单顶部的只读信息行：working 目录（短名），长按/悬停看完整路径。
+  /// 不响应点击、置灰显示——与目录卡菜单里「⚠ N 个未提交文件」的信息项
+  /// 同一模式。working 目录从卡片副标题行收编到这里，卡片每行少占一行。
+  PopupMenuItem<String> _cwdInfoItem() {
+    return PopupMenuItem<String>(
+      enabled: false,
+      height: 36,
+      child: Tooltip(
+        message: session.cwd,
+        child: Row(
+          children: [
+            const Icon(
+              Icons.folder_outlined,
+              size: 15,
+              color: Color(0xFF8a909b),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                session.shortCwd,
+                key: const Key('session-card-cwd'),
+                style: const TextStyle(
+                  color: Color(0xFF8a909b),
+                  fontSize: 12,
+                  fontFamily: 'monospace',
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
         ),
       ),
     );
