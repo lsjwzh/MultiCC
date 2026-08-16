@@ -47,6 +47,10 @@ function createProviderBalanceRuntime(options = {}) {
   if (typeof getProviderLimitTarget !== 'function') throw new TypeError('getProviderLimitTarget required');
   const adapters = options.adapters || DEFAULT_ADAPTERS;
   const now = typeof options.now === 'function' ? options.now : () => Date.now();
+  // Optional persistence hook (appType, id, result) => void, fed every queryOne
+  // outcome (successful DTO or ok:false) so the provider-limit cache stays warm
+  // from on-demand queries, not just the background poller. Best-effort.
+  const onResult = typeof options.onResult === 'function' ? options.onResult : null;
 
   // One provider → one result. Providers without a pollable surface resolve to
   // ok:false reason:'unsupported' rather than an HTTP error: "no balance API"
@@ -65,9 +69,13 @@ function createProviderBalanceRuntime(options = {}) {
       dto = null;
     }
     if (!dto) {
-      return { ok: false, reason: 'fetch_failed', providerId: id, appType: provider.appType, strategy: target.strategy };
+      const failure = { ok: false, reason: 'fetch_failed', providerId: id, appType: provider.appType, strategy: target.strategy };
+      if (onResult) { try { onResult(provider.appType, id, failure); } catch (_) {} }
+      return failure;
     }
-    return { ok: true, providerId: id, appType: provider.appType, strategy: target.strategy, dto };
+    const success = { ok: true, providerId: id, appType: provider.appType, strategy: target.strategy, dto };
+    if (onResult) { try { onResult(provider.appType, id, success); } catch (_) {} }
+    return success;
   }
 
   // Every provider at once, in parallel. Unpollable providers still appear in

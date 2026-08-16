@@ -19,7 +19,11 @@ const { rememberClaudeLive, renderClaudeBar } = require('../quota/claude-bar-sta
 // this window belongs to the CLI itself or to a provider routed underneath it
 // (OpenCode Go meters its own subscription separately from whatever it routes
 // to, and two unlabeled `5h N%` values read as one contradictory meter).
-function createProxyBroadcasters(chatBroadcast, { resolveCli } = {}) {
+//
+// `recordLimit(sessionId, dto)` is an optional side channel into the persistent
+// provider-limit cache (see limit-cache-recorder); best-effort like every other
+// callback here.
+function createProxyBroadcasters(chatBroadcast, { resolveCli, recordLimit } = {}) {
   const cliOf = (name) => {
     try { return typeof resolveCli === 'function' ? resolveCli(name) : null; } catch (_) { return null; }
   };
@@ -32,6 +36,9 @@ function createProxyBroadcasters(chatBroadcast, { resolveCli } = {}) {
   const onRateLimit = (info) => {
     try {
       if (!info || !info.sessionId || !info.rateLimitInfo) return;
+      if (recordLimit) {
+        try { recordLimit(info.sessionId, info.rateLimitInfo); } catch (_) {}
+      }
       // The event carries the rendered bar alongside the raw DTO. Claude's 5h
       // is only half its bar — the weekly windows come from the usage-page
       // scrape — so the merge happens here, server-side, and both clients paint

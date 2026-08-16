@@ -144,6 +144,8 @@ function createProviderLogWatchdog(deps = {}) {
       throw new TypeError(`[provider-log-watchdog] ${name} must be a function`);
     }
   }
+  // Optional side channel into the persistent provider-limit cache; best-effort.
+  const recordLimit = typeof deps.recordLimit === 'function' ? deps.recordLimit : null;
   const now = typeof deps.now === 'function' ? deps.now : Date.now;
   const intervalMs = Math.max(1000, Number(deps.intervalMs) || DEFAULT_INTERVAL_MS);
   const minSilenceMs = Math.max(0, Number(deps.minSilenceMs) || DEFAULT_MIN_SILENCE_MS);
@@ -245,6 +247,9 @@ function createProviderLogWatchdog(deps = {}) {
     }
     const limitInfo = record.cli === 'opencode' ? opencodeRateLimitInfoFromError(hit.text, at) : null;
     if (limitInfo) {
+      if (recordLimit) {
+        try { recordLimit(sessionId, limitInfo); } catch (_) {}
+      }
       const bar = windowEventBar(normalizeWindowEvent(limitInfo, at));
       const limitEvt = { type: 'rate_limit_event', sessionId, rate_limit_info: limitInfo, bar };
       try {

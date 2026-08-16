@@ -260,9 +260,10 @@ async function fetchClaudeUsage() {
   return lastUnavailable || { status: 'unavailable', error: '所有浏览器来源都未能取得用量' };
 }
 
-function mountClaudeUsageQuotaRoutes(app) {
+function mountClaudeUsageQuotaRoutes(app, recordClaude) {
   if (!app || typeof app.get !== 'function') return;
   app.get('/api/claude/quota', async (req, res) => {
+    const session = typeof req.query?.session === 'string' ? req.query.session : '';
     try {
       const result = await fetchClaudeUsage();
       const status = (result && result.status) || 'unavailable';
@@ -272,13 +273,18 @@ function mountClaudeUsageQuotaRoutes(app) {
       // The bar is rendered here, once, merged with whatever 5h window this
       // session's turns have already reported — so the web and the app get the
       // combined bar instead of each merging the two sources themselves.
-      const session = typeof req.query?.session === 'string' ? req.query.session : '';
       rememberClaudeScrape(result);
-      res.status(httpStatus).json({ ...result, bar: renderClaudeBar(session) });
+      const bar = renderClaudeBar(session);
+      if (recordClaude) {
+        try { recordClaude(session, result, bar && bar.text); } catch (_) {}
+      }
+      res.status(httpStatus).json({ ...result, bar });
     } catch (err) {
-      const session = typeof req.query?.session === 'string' ? req.query.session : '';
       const result = { status: 'unavailable', error: 'claude quota fetch failed' };
       rememberClaudeScrape(result);
+      if (recordClaude) {
+        try { recordClaude(session, result); } catch (_) {}
+      }
       res.status(500).json({ ...result, bar: renderClaudeBar(session) });
     }
   });

@@ -98,8 +98,9 @@ async function fetchZhipuUsage(preferHost, nowMs = Date.now(), deps = {}) {
   return { status: 'ok', fetchedAt: nowMs, sites };
 }
 
-function mountZhipuQuotaRoutes(app) {
+function mountZhipuQuotaRoutes(app, recordVendor) {
   if (!app || typeof app.get !== 'function') return;
+  const record = typeof recordVendor === 'function' ? recordVendor : null;
   app.get('/api/zhipu/quota', async (req, res) => {
     try {
       const preferHost = typeof req.query?.host === 'string' ? req.query.host : '';
@@ -108,9 +109,15 @@ function mountZhipuQuotaRoutes(app) {
       const httpStatus = status === 'ok' ? 200 : status === 'not_configured' ? 404 : 502;
       // The bar is rendered here, once, so the web and the app display the same
       // string rather than each formatting this JSON their own way.
+      if (record) {
+        try { record({ kind: 'zhipu', result, host: preferHost }); } catch (_) {}
+      }
       res.status(httpStatus).json({ ...result, bar: renderQuotaBar('zhipu', result) });
     } catch (_) {
       const result = { status: 'unavailable', error: 'zhipu quota fetch failed' };
+      if (record) {
+        try { record({ kind: 'zhipu', result, host: req.query?.host || '' }); } catch (_) {}
+      }
       res.status(500).json({ ...result, bar: renderQuotaBar('zhipu', result) });
     }
   });
