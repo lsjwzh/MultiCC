@@ -10,6 +10,7 @@ const {
 
 function createHarness(options = {}) {
   const calls = [];
+  const classifyOptions = [];
   const ports = {
     persistAssistant(context, append) {
       calls.push(['persist', append.final, append.partial]);
@@ -22,7 +23,10 @@ function createHarness(options = {}) {
     clearIncrementalSave() { calls.push(['clear-timer']); },
     setStatus(sessionName, status) { calls.push(['status', status]); },
     completeSessionTurn() { calls.push(['complete-session-turn']); },
-    classifyTurnEnd(cs, sessionName, opts) { calls.push(['classify', opts?.classification ?? null]); },
+    classifyTurnEnd(cs, sessionName, opts) {
+      calls.push(['classify', opts?.classification ?? null]);
+      classifyOptions.push(opts);
+    },
     resetInterrupted() { calls.push(['reset-interrupted']); },
     resumeInterrupted() { calls.push(['resume-interrupted']); return options.resumed === true; },
     freezeInterrupted(sessionName, reason) { calls.push(['freeze-interrupted', reason]); },
@@ -30,7 +34,7 @@ function createHarness(options = {}) {
     runPostTurn(context, entry) { calls.push(['post-turn', entry.guard, context.turn.resultDurable]); },
     now: () => 200,
   };
-  return { calls, executor: createTurnFinalizationExecutor(ports) };
+  return { calls, classifyOptions, executor: createTurnFinalizationExecutor(ports) };
 }
 
 function context(overrides = {}) {
@@ -48,7 +52,9 @@ function context(overrides = {}) {
       turnStartedAt: 100,
     },
     persisted: { cli: 'codex' },
-    turn: { resultDurable: false },
+    turn: {
+      turnId: 'turn-1', task: { id: 'task-at-admission' }, resultDurable: false,
+    },
     runner: { resultEvent: true, pendingUsage: { input_tokens: 1 } },
     ...overrides,
   };
@@ -132,6 +138,8 @@ test('the boundary verdict reaches the classify port instead of being dropped', 
     hasOutput: false, resultEvent: false, resultDurable: false, apiError: true,
   }), ctx);
   assert.deepEqual(harness.calls.find(call => call[0] === 'classify'), ['classify', 'api-error']);
+  assert.equal(harness.classifyOptions[0].turnId, 'turn-1');
+  assert.equal(harness.classifyOptions[0].taskId, 'task-at-admission');
 
   // Every branch labels its turn boundary; the host forwards the label verbatim
   // and leaves it to the classify centre to decide which labels are conclusive.

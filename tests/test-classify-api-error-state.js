@@ -47,10 +47,15 @@ function fixture({
     _lastApiErrorDecision: lastDecision,
     _activeRunner: retryPlanned ? { retryPlanned: true } : null,
   };
+  const history = [{
+    id: 'msg-1', role: 'assistant', content: 'x'.repeat(40),
+    taskId: 'task-1', taskName: '定位 codex 冷启瓶颈',
+  }];
   const persistedSessions = new Map([['s1', record]]);
   const chatSessions = new Map([['s1', chatState]]);
   const observed = {
-    enqueued: 0, cancelledFor: [], transitions: 0,
+    enqueued: 0, enqueuedTasks: [], cancelledFor: [], transitions: 0,
+    transitionTaskIds: [],
     broadcasts: [], pushes: [], evaluated: 0, boardTurnEnds: 0,
     auxRuns: [], annotations: [],
   };
@@ -59,8 +64,9 @@ function fixture({
     queue: [],
     isUnhealthy: () => auxUnhealthy,
     hasPendingFor: () => false,
-    enqueue() {
+    enqueue(task) {
       observed.enqueued += 1;
+      observed.enqueuedTasks.push(task);
       return new Promise(resolve => { releaseAux = () => resolve({ text: auxReply }); });
     },
     cancelClassifyFor(sessionKey) { observed.cancelledFor.push(sessionKey); return 1; },
@@ -72,7 +78,11 @@ function fixture({
     logger: { info() {}, warn() {}, error() {} },
     getAuxQueue: () => auxQueue,
     getSessionWorkHost: () => ({
-      classifyTransition() { observed.transitions += 1; },
+      classifyTransition(_sessionId, taskId) {
+        observed.transitions += 1;
+        observed.transitionTaskIds.push(taskId);
+        return { ok: true };
+      },
       classifyUnavailable() {},
     }),
     getLivenessRuntime: () => ({
@@ -105,7 +115,7 @@ function fixture({
     evaluateTurnApiError() { observed.evaluated += 1; },
     turnHasSideEffects: () => false,
     retryNotice: () => '上游 API 请求失败，未自动重试。检查错误详情后决定是否手动重试',
-    loadChatHistory: () => [{ role: 'assistant', content: 'x'.repeat(40) }],
+    loadChatHistory: () => history,
     appendChatMessage() {},
     annotateChatTurn: (...args) => { observed.annotations.push(args); return []; },
     getAuxRunLog: () => ({
@@ -113,7 +123,7 @@ function fixture({
     }),
     hasBackgroundPending: () => backgroundPending,
   });
-  return { machine, record, chatState, observed, releaseAux: () => releaseAux() };
+  return { machine, record, chatState, history, observed, releaseAux: () => releaseAux() };
 }
 
 test('an exhausted API failure publishes E from rules before best-effort Aux naming', () => {
@@ -176,6 +186,57 @@ test('a new-task Aux result indexes its run by the resolved task, not the prior 
   assert.match(run.taskId, /^tsk_[a-f0-9]{32}$/);
   assert.notEqual(run.taskId, 'task-1');
   assert.equal(h.record.taskState.taskId, run.taskId);
+});
+
+test('a delayed Aux result is audit-only once the last message anchor changes', async () => {
+  const h = fixture({
+    auxReply: '{"taskName":"旧任务重命名","phase":"done","relation":"same","taskId":"task-1"}',
+  });
+  h.machine.runClassifyNow(h.chatState, 's1', { turnId: 'turn-old' });
+  assert.equal(h.observed.enqueuedTasks[0].meta.anchorMessageId, 'msg-1');
+  assert.equal(h.observed.enqueuedTasks[0].meta.taskId, 'task-1');
+
+  // A newer turn has become authoritative while Aux is still running.
+  h.chatState._currentTaskId = 'task-2';
+  h.chatState.currentTask = { goal: '当前新任务', phase: 'implementing' };
+  h.record.taskState = {
+    ...h.record.taskState,
+    taskId: 'task-2', goal: '当前新任务', phase: 'implementing',
+  };
+  h.history.push({
+    id: 'msg-2', role: 'user', content: '开始当前新任务',
+    taskId: 'task-2', taskName: '当前新任务',
+  });
+
+  h.releaseAux();
+  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(h.chatState._currentTaskId, 'task-2');
+  assert.deepEqual(h.chatState.currentTask, { goal: '当前新任务', phase: 'implementing' });
+  assert.equal(h.record.taskState.taskId, 'task-2');
+  assert.equal(h.record.taskState.goal, '当前新任务');
+
+  const run = h.observed.auxRuns.at(-1);
+  assert.equal(run.anchorMessageId, 'msg-1');
+  assert.equal(run.observedAnchorMessageId, 'msg-2');
+  assert.equal(run.superseded, true);
+  assert.equal(run.supersededReason, 'anchor_changed');
+  assert.equal(run.taskId, 'task-1', 'the stale run stays indexed under its captured task');
+
+  const annotation = h.observed.annotations.at(-1);
+  assert.equal(annotation[1], 'turn-old');
+  assert.equal(annotation[2].taskId, 'task-1');
+  assert.equal(annotation[3].anchorMessageId, 'msg-1');
+});
+
+test('turn-end scheduler transition uses the task id captured at admission', () => {
+  const h = fixture({ auxUnhealthy: true });
+  h.chatState._currentTaskId = 'task-mutated-by-late-aux';
+  h.machine.classifyTurnEnd(h.chatState, 's1', {
+    classification: 'succeeded', turnId: 'turn-stable', taskId: 'task-admitted',
+  });
+  assert.deepEqual(h.observed.transitionTaskIds, ['task-admitted']);
 });
 
 test('a turn end without a boundary verdict fails closed and still attributes the task', () => {

@@ -31,15 +31,17 @@ function fixture({ cli = 'opencode', goal = '已识别任务', isStreaming = tru
   const persistedSessions = new Map([['s1', record]]);
   const chatSessions = new Map([['s1', chatState]]);
   const observed = {
-    enqueued: 0, transitions: 0, transitionResults: [], transitionOptions: [], broadcasts: [],
+    enqueued: 0, enqueuedTasks: [], transitions: 0,
+    transitionResults: [], transitionOptions: [], broadcasts: [],
   };
   const auxQueue = {
     queue: [],
     isUnhealthy: () => false,
     hasPendingFor: () => false,
     cancelClassifyFor() {},
-    enqueue() {
+    enqueue(task) {
       observed.enqueued += 1;
+      observed.enqueuedTasks.push(task);
       return Promise.resolve({ text: '已识别任务\n实现中\nW' });
     },
   };
@@ -86,7 +88,9 @@ function fixture({ cli = 'opencode', goal = '已识别任务', isStreaming = tru
     evaluateTurnApiError() {},
     turnHasSideEffects: () => false,
     retryNotice: () => '',
-    loadChatHistory: () => [{ role: 'assistant', content: 'x'.repeat(40) }],
+    loadChatHistory: () => [{
+      id: 'msg-scan-1', role: 'assistant', content: 'x'.repeat(40), taskId: 'task-1',
+    }],
     appendChatMessage() {},
   });
   return { machine, record, chatState, chatSessions, observed };
@@ -116,6 +120,8 @@ test('mid-turn goal discovery is observational and cannot publish a W verdict', 
   h.machine.scanAndReclassify();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(h.observed.enqueued, 1, 'unresolved goal may be classified for display');
+  assert.equal(h.observed.enqueuedTasks[0].meta.anchorMessageId, 'msg-scan-1');
+  assert.equal(h.observed.enqueuedTasks[0].meta.taskId, 'task-1');
   assert.equal(h.observed.transitions, 0, 'mid-turn W cannot reach the scheduler');
   assert.equal(h.record.taskState.classifyState, 'P');
   assert.equal(h.chatState.isStreaming, true);
