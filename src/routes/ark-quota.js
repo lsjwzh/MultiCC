@@ -211,8 +211,9 @@ async function fetchArkUsage(nowMs = Date.now()) {
   };
 }
 
-function mountArkQuotaRoutes(app) {
+function mountArkQuotaRoutes(app, recordVendor) {
   if (!app || typeof app.get !== 'function') return;
+  const record = typeof recordVendor === 'function' ? recordVendor : null;
 
   app.get('/api/ark/quota', async (req, res) => {
     try {
@@ -227,9 +228,15 @@ function mountArkQuotaRoutes(app) {
       // plan the session it is looking at actually routes through — so the
       // caller passes it in rather than re-picking the plan itself.
       const baseUrl = typeof req.query?.baseUrl === 'string' ? req.query.baseUrl : '';
+      if (record) {
+        try { record({ kind: 'ark', result, baseUrl }); } catch (_) {}
+      }
       res.status(httpStatus).json({ ...result, bar: renderQuotaBar('ark', result, { baseUrl }) });
     } catch (_) {
       const result = { status: 'unavailable', error: 'ark quota fetch failed' };
+      if (record) {
+        try { record({ kind: 'ark', result, baseUrl: req.query?.baseUrl || '' }); } catch (_) {}
+      }
       res.status(500).json({ ...result, bar: renderQuotaBar('ark', result) });
     }
   });

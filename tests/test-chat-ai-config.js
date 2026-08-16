@@ -201,3 +201,67 @@ test('chat page loads the classic config boundary before chat.js and chat delega
   assert.doesNotMatch(boundary, /(?:token|access_token)=/);
   assert.doesNotMatch(chat, /id="ai-provider"/);
 });
+
+
+
+test("providerLimitLabel renders the cached limit summary and freshness states", () => {
+  const now = 1_000_000;
+  const tr = (key, params) => {
+    if (key === "limitUpdatedAgo") return `更新于 ${params.ago}`;
+    if (key === "limitFetchFailed") return "查询失败";
+    if (key === "limitStale") return "过期";
+    return key;
+  };
+  // no cache entry → clean absence, option reads exactly as before
+  assert.equal(ai.providerLimitLabel(null, tr, now), "");
+  assert.equal(ai.providerLimitLabel({}, tr, now), "");
+  assert.equal(ai.providerLimitLabel({ limit: null }, tr, now), "");
+  // summary only
+  assert.equal(ai.providerLimitLabel({ limit: { summaryText: "5h 80%" } }, tr, now), " · 5h 80%");
+  // stale entry without a summary is indistinguishable from no-data (nothing to age)
+  assert.equal(ai.providerLimitLabel({ limit: { stale: true } }, tr, now), "");
+  // fresh summary + fetchedAt → updated time (20s ago → "20s 前")
+  assert.equal(
+    ai.providerLimitLabel({ limit: { summaryText: "5h 80%", fetchedAt: now - 20_000, stale: false } }, tr, now),
+    " · 5h 80% · 更新于 20s 前",
+  );
+  // last fetch failed → failure marker keeps the cached summary but drops the age
+  assert.equal(
+    ai.providerLimitLabel({ limit: { summaryText: "5h 80%", fetchedAt: now - 20_000, lastError: "boom" } }, tr, now),
+    " · 5h 80% · 查询失败",
+  );
+  // stale marker rides on a summary and shows alongside the age
+  assert.equal(
+    ai.providerLimitLabel({ limit: { summaryText: "5h 80%", fetchedAt: now - 20_000, stale: true } }, tr, now),
+    " · 5h 80% · 更新于 20s 前 · 过期",
+  );
+  // failure without any cached summary still says so
+  assert.equal(ai.providerLimitLabel({ limit: { lastError: "boom" } }, tr, now), " · 查询失败");
+  // translator params reach the resolved ago string
+  const trEn = (key, params) => key === "limitUpdatedAgo" ? `updated ${params.ago}` : key;
+  assert.equal(
+    ai.providerLimitLabel({ limit: { summaryText: "5h 80%", fetchedAt: now - 20_000 } }, trEn, now),
+    " · 5h 80% · updated 20s 前",
+  );
+});
+
+test("provider catalog preserves the normalized limit projection", () => {
+  const p = providerCatalog.normalizeProvider({
+    id: "relay", appType: "claude", name: "Relay", baseUrl: "https://relay.example.com/v1",
+    limit: {
+      kind: "window", status: "ok", summaryText: "5h 80%", fetchedAt: 123_456,
+      updatedAt: 123_457, lastError: null, lastErrorAt: null, stale: false,
+      summary: { provider: "glm" }, barText: "5h 80% {cd:12345}",
+    },
+  });
+  assert.deepEqual(p.limit, {
+    kind: "window", status: "ok", summaryText: "5h 80%", fetchedAt: 123_456,
+    updatedAt: 123_457, lastError: null, lastErrorAt: null, stale: false,
+  });
+  // no limit → null, never a frozen shell
+  assert.equal(providerCatalog.normalizeProvider({ id: "r2", appType: "codex", name: "R2" }).limit, null);
+
+  const cat = providerCatalog.normalizeCatalog({ providers: [], limitCacheStaleMs: 600_000 });
+  assert.equal(cat.limitCacheStaleMs, 600_000);
+  assert.equal(providerCatalog.normalizeCatalog({ providers: [] }).limitCacheStaleMs, null);
+});
