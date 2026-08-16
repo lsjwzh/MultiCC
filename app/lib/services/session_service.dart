@@ -773,16 +773,20 @@ class SessionService {
     }
   }
 
-  /// Fetch this session's dispatch FIFO snapshot (durable operations joined
-  /// with the target session's queue state — the authoritative projection).
+  /// Fetch this session's dispatch summary (durable operations joined with the
+  /// target session's queue state — the authoritative projection).
   /// relation=both covers both directions: dispatches this session owns (sent
   /// to workers) and dispatches targeting it (received from commanders).
+  /// `recentTerminalLimit=5` bounds terminal history without letting it evict
+  /// live work inside the endpoint's established response cap.
   /// Throws on transport/HTTP failure; the caller keeps the last snapshot.
   Future<List<Map<String, dynamic>>> fetchDispatchQueue(String id) async {
     final res = await http
         .get(
           Uri.parse(
-            _url('/api/sessions/$id/dispatches?activeOnly=true&relation=both'),
+            _url(
+              '/api/sessions/$id/dispatches?activeOnly=false&relation=both&recentTerminalLimit=5',
+            ),
           ),
           headers: _headers,
         )
