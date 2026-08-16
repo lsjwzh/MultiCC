@@ -366,34 +366,32 @@ class _TokenUsageLine extends StatelessWidget {
 
     return Padding(
       padding: const EdgeInsets.only(top: 6),
-      child: Row(
+      // Wrap, not Row: with cache/saved badges plus the role chip, realistic
+      // token counts overflow a 320dp lane by 250px+ inside a Row (clipped
+      // badges read as "token stats vanished"). The web line (.msg-usage) is
+      // flex-wrap:wrap; this mirrors it - badges flow onto the next line
+      // instead of past the bubble edge.
+      child: Wrap(
+        spacing: 6,
+        runSpacing: 4,
         children: [
           _UsageBadge(label: '↑入', value: _fmt(i), color: const Color(0xFF58a6ff)),
-          const SizedBox(width: 6),
           _UsageBadge(label: '↓出', value: _fmt(o), color: const Color(0xFF3fb950)),
-          if (cr > 0) ...[
-            const SizedBox(width: 6),
+          if (cr > 0)
             _UsageBadge(label: '⏱读', value: _fmt(cr), color: const Color(0xFFd29922)),
-          ],
-          if (cw > 0) ...[
-            const SizedBox(width: 6),
+          if (cw > 0)
             _UsageBadge(label: '⏱写', value: _fmt(cw), color: const Color(0xFFa371f7)),
-          ],
-          if (saved != null && saved > 0) ...[
-            const SizedBox(width: 6),
+          if (saved != null && saved > 0)
             _UsageBadge(
               label: '省主≈',
               value: _fmtSaved(saved),
               color: const Color(0xFF2ea043),
             ),
-          ],
-          // Per-role detail (main / sub / by-provider) — the mobile counterpart
+          // Per-role detail (main / sub / by-provider) - the mobile counterpart
           // of the web usage-line tooltip. Only present for live turns that
           // received a role_token_stats event; history replay has no split.
-          if (breakdown != null && !breakdown.isEmpty) ...[
-            const SizedBox(width: 6),
+          if (breakdown != null && !breakdown.isEmpty)
             _RoleDetailChip(breakdown: breakdown),
-          ],
         ],
       ),
     );
@@ -638,7 +636,6 @@ class _TimingLine extends StatelessWidget {
     }
 
     if (durationMs != null && durationMs! >= 0) {
-      if (parts.isNotEmpty) parts.add(const SizedBox(width: 10));
       parts.add(Text(
         '⏱ ${_fmtDuration(durationMs!)}',
         style: const TextStyle(color: Color(0xFF6e7681), fontSize: 11),
@@ -649,7 +646,10 @@ class _TimingLine extends StatelessWidget {
 
     return Padding(
       padding: const EdgeInsets.only(top: 4),
-      child: Row(children: parts),
+      // Wrap for the same reason the usage line above wraps: a large text-scale
+      // factor or a long duration must push the clock onto its own line rather
+      // than overflow the bubble.
+      child: Wrap(spacing: 10, runSpacing: 2, children: parts),
     );
   }
 }

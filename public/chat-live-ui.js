@@ -245,7 +245,9 @@
       if (!hasTimestamp && !hasDuration) return null;
       const line = doc.createElement('div');
       line.className = 'msg-timing';
-      line.style.cssText = 'font-size:11px;color:#6e7681;display:flex;gap:10px;padding:1px 0;';
+      // flex-wrap mirrors .msg-usage: the clock and the duration wrap onto a
+      // second line on a narrow bubble instead of being pushed past its edge.
+      line.style.cssText = 'font-size:11px;color:#6e7681;display:flex;flex-wrap:wrap;gap:10px;padding:1px 0;';
       if (hasTimestamp) {
         const date = new Date(timestamp);
         const clock = [date.getHours(), date.getMinutes(), date.getSeconds()]

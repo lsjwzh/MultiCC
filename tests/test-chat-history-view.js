@@ -6,12 +6,14 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { createHistoryView } = require('../public/chat-history-view');
+const liveUiApi = require('../public/chat-live-ui');
 
 const ROOT = path.join(__dirname, '..');
 const VIEW_SOURCE = fs.readFileSync(path.join(ROOT, 'public/chat-history-view.js'), 'utf8');
 const CHAT_SOURCE = fs.readFileSync(path.join(ROOT, 'public/chat.js'), 'utf8');
 const EVENT_SOURCE = fs.readFileSync(path.join(ROOT, 'public/chat-event-controller.js'), 'utf8');
 const HTML = fs.readFileSync(path.join(ROOT, 'public/chat.html'), 'utf8');
+const LIVE_UI_SOURCE = fs.readFileSync(path.join(ROOT, 'public/chat-live-ui.js'), 'utf8');
 
 class FakeClassList {
   constructor(element) { this.element = element; this.values = new Set(); }
@@ -141,6 +143,9 @@ class FakeElement {
 class FakeDocument {
   createElement(tagName) { return new FakeElement(tagName); }
   createDocumentFragment() { return new FakeElement('#fragment', 11); }
+  // The live-UI module looks up its danmaku/error docks by id at construction;
+  // this view fixture has no such chrome, so every lookup misses.
+  getElementById() { return null; }
 }
 
 function fixture(overrides = {}) {
@@ -359,6 +364,78 @@ test('history replay shows measured durations and a trajectory when the server s
   });
   assert.equal(legacy.querySelectorAll('.tool-desc')[0].textContent, 'done');
   assert.equal(legacy.querySelector('.tool-trajectory'), null);
+});
+
+// The token line and the wall-clock line are built by the live-UI module and
+// appended by the view. Wiring the real builders covers that seam; the default
+// fixture stubs them out, which is exactly where a "usage vanished" regression
+// could hide.
+function usageAwareFixture() {
+  const liveUi = liveUiApi.createLiveUi({
+    document: new FakeDocument(),
+    messagesEl: new FakeElement('div'),
+    translate: key => key,
+    maybeScrollToBottom() {}, retryTransport() {}, isRestarting: () => false, debug() {},
+  });
+  return fixture({
+    buildUsageLine: liveUi.buildUsageLine,
+    buildTimingLine: liveUi.buildTimingLine,
+  });
+}
+
+test('token usage and wall-clock timing render as independent sibling lines', () => {
+  const { view } = usageAwareFixture();
+  const usageOf = node => node.querySelectorAll('.msg-usage');
+  const timingOf = node => node.querySelectorAll('.msg-timing');
+
+  const both = view.renderMessage({
+    id: 'a1', role: 'assistant', content: 'done',
+    usage: {
+      input_tokens: 9273, output_tokens: 1752,
+      cache_read_input_tokens: 609536, cache_creation_input_tokens: 18432,
+    },
+    ts: 1_700_000_000_000, durationMs: 71014,
+  });
+  assert.equal(usageOf(both).length, 1, 'adding wall clock must not drop the token line');
+  assert.equal(timingOf(both).length, 1);
+  assert.match(usageOf(both)[0].textContent, /↑入 9,273/);
+  assert.match(usageOf(both)[0].textContent, /♻读 609,536/);
+  assert.match(timingOf(both)[0].textContent, /⏱ 1m11s/);
+  // Siblings under .msg-content: stacked block lines, so neither can clip or
+  // overlay the other however long the numbers get.
+  assert.equal(usageOf(both)[0].parentNode, timingOf(both)[0].parentNode);
+  assert.equal(usageOf(both)[0].parentNode.className, 'msg-content');
+
+  // Either half missing never hides the other half.
+  const usageOnly = view.renderMessage({
+    id: 'a2', role: 'assistant', content: 'u',
+    usage: { input_tokens: 12, output_tokens: 3 },
+  });
+  assert.equal(usageOf(usageOnly).length, 1);
+  assert.equal(timingOf(usageOnly).length, 0);
+  const timingOnly = view.renderMessage({
+    id: 'a3', role: 'assistant', content: 't', durationMs: 45000,
+  });
+  assert.equal(usageOf(timingOnly).length, 0);
+  assert.equal(timingOf(timingOnly).length, 1);
+  // All-zero usage is "no data", not a row of zeros.
+  const zeroUsage = view.renderMessage({
+    id: 'a4', role: 'assistant', content: 'z',
+    usage: { input_tokens: 0, output_tokens: 0 }, durationMs: 10,
+  });
+  assert.equal(usageOf(zeroUsage).length, 0);
+  assert.equal(timingOf(zeroUsage).length, 1);
+});
+
+test('both metric lines wrap instead of overflowing a narrow bubble', () => {
+  // Layout contract, matching the Flutter side (app/lib/widgets/message_bubble.dart
+  // renders both lines with Wrap, covered by app/test/usage_timing_line_test.dart).
+  const usageCss = HTML.slice(HTML.indexOf('.msg-usage {'));
+  assert.match(usageCss.slice(0, usageCss.indexOf('}')), /flex-wrap:\s*wrap/);
+  const timingStyle = LIVE_UI_SOURCE.match(/line\.style\.cssText\s*=\s*'([^']*msg-timing[^']*|[^']*6e7681[^']*)'/);
+  assert.ok(timingStyle, 'timing line still sets its inline layout');
+  assert.match(timingStyle[1], /display:flex/);
+  assert.match(timingStyle[1], /flex-wrap:wrap/);
 });
 
 test('typed tool input renders by tool name, not as a JSON blob', () => {
