@@ -40,6 +40,9 @@ function fixture(t, overrides = {}) {
       ownerSessionId: opts.ownerSessionId,
       resultSessionId: opts.ownerSessionId,
       idempotencyKey: opts.idempotencyKey,
+      // Mirrors gateway-host: a caller-precomputed id (printed in the task
+      // text) is admitted as-is; otherwise the store generates one.
+      operationId: opts.operationId || undefined,
       spec: {
         targetId,
         targetLabel: targetId,
@@ -67,7 +70,7 @@ function fixture(t, overrides = {}) {
     records,
     dispatchToSession,
     operations,
-    completeDispatch: (id, result) => operations.completeDispatch(id, result),
+    completeDispatch: (id, result, opts) => operations.completeDispatch(id, result, opts),
     recordUserInput: async signal => {
       const duplicate = userInputSignals.some(existing => existing.requestId === signal.requestId);
       if (!duplicate) userInputSignals.push(signal);
@@ -462,12 +465,16 @@ test('dispatch_master returns admitted immediately and backflow outbox is emitte
   assert.match(admissions[0].message, /dispatch_slave/);
   assert.match(admissions[0].message, /不要轮询/);
   const operationId = result.operation_id;
+  // The receipt address travels with the task text: the id printed in the
+  // 【回传要求】 instruction IS the admitted operation id.
+  assert.match(admissions[0].message, new RegExp(operationId));
   const slaveCapability = runtime.issueContext({
     sessionId: 'worker-a',
     turnId: 'turn-slave',
     originDispatchId: operationId,
   });
   const slave = await runtime.execute(slaveCapability, 'dispatch_slave', {
+    operation_id: operationId,
     result: 'checks passed',
   });
   assert.equal(slave.accepted, true);
@@ -638,16 +645,76 @@ test('target and slave lineage validation fail closed', async t => {
   const wrongWorker = runtime.issueContext({
     sessionId: 'caller',
     turnId: 'turn-wrong',
-    originDispatchId: admitted.id,
   });
   await assert.rejects(
-    runtime.execute(wrongWorker, 'dispatch_slave', { result: 'spoofed' }),
-    error => error.code === 'dispatch_lineage_mismatch',
+    runtime.execute(wrongWorker, 'dispatch_slave', {
+      operation_id: admitted.id, result: 'spoofed',
+    }),
+    error => error.code === 'dispatch_not_addressed_to_caller',
   );
   await assert.rejects(
-    runtime.execute(capability, 'dispatch_slave', { result: 'no lineage' }),
-    error => error.code === 'dispatch_lineage_required',
+    runtime.execute(capability, 'dispatch_slave', { result: 'no operation id' }),
+    error => error.code === 'invalid_arguments' && /operation_id is required/.test(error.message),
   );
+});
+
+test('slave receipts by id from any turn, and a late receipt corrects an auto-failed dispatch', async t => {
+  const { operations, runtime, store } = fixture(t);
+  // Real dispatch flow: the id printed in the task text is the admitted id.
+  const masterCapability = runtime.issueContext({ sessionId: 'caller', turnId: 'turn-late' });
+  const dispatched = await runtime.execute(masterCapability, 'dispatch_master', {
+    target_session_id: 'worker-a',
+    message: 'task that gets interrupted',
+    idempotency_key: 'late-1',
+    mode: 'async',
+  });
+  const operationId = dispatched.operation_id;
+
+  // (a) The dispatched turn is long gone (interruption/continuation split):
+  // the worker receipts from a fresh turn with NO originDispatchId, by id.
+  // The host meanwhile auto-settled it as missing (finalizeDispatch parity).
+  await operations.completeDispatch(operationId, {
+    status: 'failed',
+    sessionName: 'worker-a',
+    text: 'worker 已结束，但没有调用 dispatch_slave 提交 async 回执。',
+    error: 'missing receipt',
+    source: 'missing_dispatch_slave',
+  });
+  const continuation = runtime.issueContext({
+    sessionId: 'worker-a',
+    turnId: 'turn-continuation',   // no originDispatchId on purpose
+  });
+  const corrected = await runtime.execute(continuation, 'dispatch_slave', {
+    operation_id: operationId,
+    result: 'finished after a continuation split',
+  });
+  assert.equal(corrected.accepted, true);
+  assert.equal(corrected.corrected, true);
+  assert.equal(corrected.status, 'completed');
+  const operation = await operations.get(operationId);
+  assert.equal(operation.status, 'completed');
+  assert.equal(operation.result.text, 'finished after a continuation split');
+
+  // The corrected receipt is a NEW outbox delivery (sequence-suffixed), so
+  // the caller wakes with the correction; the original failure stays queued
+  // in history.
+  const snapshot = await store.snapshot();
+  assert.ok(snapshot.outbox[`operation:${operationId}:result`], 'original auto-fail delivery');
+  const correctedEntry = snapshot.outbox[`operation:${operationId}:result:2`];
+  assert.ok(correctedEntry, 'corrected receipt delivery');
+  assert.match(correctedEntry.payload.deliveryText, /迟到回执/);
+  assert.match(correctedEntry.payload.deliveryText, /finished after a continuation split/);
+
+  // (b) A receipt against a genuinely settled operation is a duplicate, not
+  // another correction: the second receipt must not overwrite the first.
+  const stale = await runtime.execute(continuation, 'dispatch_slave', {
+    operation_id: operationId,
+    result: 'late duplicate',
+  });
+  assert.equal(stale.duplicate, true);
+  assert.equal(stale.corrected, undefined);
+  assert.equal((await operations.get(operationId)).result.text, 'finished after a continuation split');
+  assert.equal(snapshot.outbox[`operation:${operationId}:result:3`], undefined);
 });
 
 test('dispatch_master sync streams progress and returns final result inline without backflow', async t => {
@@ -712,8 +779,12 @@ test('slave completion is exactly-once and capabilities revoke or expire', async
     turnId: 'turn-once',
     originDispatchId: admitted.id,
   });
-  const first = await runtime.execute(slave, 'dispatch_slave', { result: 'first' });
-  const duplicate = await runtime.execute(slave, 'dispatch_slave', { result: 'second' });
+  const first = await runtime.execute(slave, 'dispatch_slave', {
+    operation_id: admitted.id, result: 'first',
+  });
+  const duplicate = await runtime.execute(slave, 'dispatch_slave', {
+    operation_id: admitted.id, result: 'second',
+  });
   assert.equal(first.duplicate, false);
   assert.equal(duplicate.duplicate, true);
   assert.equal((await operations.get(admitted.id)).result.text, 'first');
