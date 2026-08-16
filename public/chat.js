@@ -843,8 +843,10 @@ function addSystemMsg(text) {
  * notices. Replaces the old addSystemMsg chat bubbles so these ephemeral status
  * lines stop consuming chat scroll space. Newest row slides in at the top; a
  * start row shows a spinner and resolves in-place to ✓/✗ when the matching
- * monitor_done lands (paired by task_id). The panel is display:none when empty,
- * auto-hides 5s after every row goes terminal, and collapses to a count pill.
+ * monitor_done lands (paired by task_id). The draggable #danmaku-fab is the
+ * persistent compact entry (badge = running count, drag snaps to the nearest
+ * screen edge); the panel itself only exists expanded, anchored to the fab,
+ * and the whole dock auto-hides 5s after every row goes terminal.
  * All text goes through textContent — task descriptions are agent-authored and
  * must never be treated as HTML. */
 function danmakuOnDisconnect() { return chatLiveUi.danmakuOnDisconnect(); }

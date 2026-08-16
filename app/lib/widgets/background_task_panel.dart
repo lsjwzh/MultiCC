@@ -12,14 +12,32 @@ import '../models/background_task_board.dart';
 class BackgroundTaskPanel extends StatefulWidget {
   final List<BackgroundTaskRow> rows;
   final void Function(String key) onDismiss;
-  const BackgroundTaskPanel({super.key, required this.rows, required this.onDismiss});
+
+  /// Render the expanded detail list on first build (floating-dock mount).
+  final bool initiallyExpanded;
+
+  /// Reports every internal expand/collapse transition (the ▾ / pill taps).
+  final ValueChanged<bool>? onExpandedChanged;
+  const BackgroundTaskPanel({
+    super.key,
+    required this.rows,
+    required this.onDismiss,
+    this.initiallyExpanded = false,
+    this.onExpandedChanged,
+  });
 
   @override
   State<BackgroundTaskPanel> createState() => _BackgroundTaskPanelState();
 }
 
 class _BackgroundTaskPanelState extends State<BackgroundTaskPanel> {
-  bool _expanded = false;
+  late bool _expanded = widget.initiallyExpanded;
+
+  void _setExpanded(bool value) {
+    if (_expanded == value) return;
+    setState(() => _expanded = value);
+    widget.onExpandedChanged?.call(value);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -32,7 +50,7 @@ class _BackgroundTaskPanelState extends State<BackgroundTaskPanel> {
         button: true,
         label: '${t('backgroundTasks')} ${widget.rows.length}',
         child: GestureDetector(
-          onTap: () => setState(() => _expanded = true),
+          onTap: () => _setExpanded(true),
           child: Container(
             key: const Key('bg-task-pill'),
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -98,7 +116,7 @@ class _BackgroundTaskPanelState extends State<BackgroundTaskPanel> {
                   ),
                 ),
                 GestureDetector(
-                  onTap: () => setState(() => _expanded = false),
+                  onTap: () => _setExpanded(false),
                   child: const Padding(
                     padding: EdgeInsets.all(6),
                     child: Icon(
