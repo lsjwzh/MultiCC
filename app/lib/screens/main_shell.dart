@@ -1735,7 +1735,10 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet>
       child: Row(
         children: [
           _FleetTabButton(
-            icon: Icons.dns_outlined,
+            // Match Web's “🖥 会话” cue. `dns_outlined` becomes another
+            // three-row list at this 14px size and is nearly indistinguishable
+            // from the task-board checklist beside it.
+            icon: Icons.desktop_windows_outlined,
             label: t('sessions'),
             selected: _tab == 0,
             onTap: () => setState(() => _tab = 0),
