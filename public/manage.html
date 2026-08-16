@@ -425,17 +425,31 @@
     .settings-card .sc-header{padding:14px 18px;border-bottom:1px solid var(--line-strong);font-size:14px;font-weight:620;color:var(--text);background:linear-gradient(180deg,rgba(255,255,255,.03),rgba(255,255,255,0))}
     .settings-card .sc-body{padding:18px;display:flex;flex-direction:column;gap:14px}
     /* Provider-config protocol tabs. Scrollable row so narrow phones never overflow. */
-    .prov-tabs{display:flex;gap:8px;flex-wrap:nowrap;overflow-x:auto;padding-bottom:4px;margin:2px 0 14px;max-width:780px;-webkit-overflow-scrolling:touch}
+    .prov-tabs{display:flex;gap:8px;flex-wrap:nowrap;overflow-x:auto;padding-bottom:4px;margin:2px 0 14px;max-width:780px;-webkit-overflow-scrolling:touch;
+      /* Edge fades: the only cue that the row scrolls (the bar is hidden), so a
+         tab clipped at the viewport edge gets a visible gradient toward the
+         panel background instead of looking like the row simply ends. */
+      -webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 40px),transparent);
+      mask-image:linear-gradient(90deg,#000 calc(100% - 40px),transparent);}
+    .prov-tabs.at-start{-webkit-mask-image:linear-gradient(-90deg,#000 calc(100% - 40px),transparent);mask-image:linear-gradient(-90deg,#000 calc(100% - 40px),transparent)}
     .prov-tab{flex-shrink:0;height:34px;padding:0 14px;border-radius:10px;border:1px solid var(--line);background:var(--panel);color:var(--muted);font-size:13px;font-weight:600;font-family:var(--sans);cursor:pointer;display:inline-flex;align-items:center;gap:7px;transition:.15s;white-space:nowrap}
     .prov-tab:hover{color:var(--text);border-color:var(--line-strong)}
     .prov-tab.active{background:var(--accent-dim);border-color:var(--accent-line);color:var(--accent)}
     .prov-pane{min-width:0}
     .setting-row{display:flex;align-items:center;gap:14px}
+    /* Top-aligned because its right side is a stack of alias rows, not a single
+       control. Kept here rather than inline so the phone breakpoint below —
+       which switches .setting-row to a column — can still win; an inline
+       align-items:flex-start outranks any media query and made the alias inputs
+       fall back to max-content width and burst the card. */
+    #prov-new-alias-row{align-items:flex-start}
     .setting-row label{flex:0 0 120px;font-size:13px;color:var(--muted);text-align:right}
     .setting-row input,.setting-row select,.setting-row textarea{flex:1;background:var(--well);border:1px solid var(--line-strong);border-radius:9px;padding:9px 12px;color:var(--text);font-size:13px;font-family:var(--mono);box-shadow:inset 0 1px 2px rgba(0,0,0,.4)}
     .setting-row input:focus,.setting-row select:focus,.setting-row textarea:focus{outline:none;border-color:var(--accent-line);box-shadow:inset 0 1px 2px rgba(0,0,0,.4),0 0 0 3px var(--accent-dim)}
     .setting-row input::placeholder{color:var(--faint)}
-    .sc-footer{padding:13px 18px;border-top:1px solid var(--line);display:flex;align-items:center;gap:12px}
+    /* Wraps: several footers carry 3–4 buttons (保存 / 应用 Funnel / 立即重连…)
+       which do not fit one 375px row. */
+    .sc-footer{padding:13px 18px;border-top:1px solid var(--line);display:flex;align-items:center;gap:12px;flex-wrap:wrap}
     .sc-footer .status-text{font-size:12px;color:var(--muted)}
     .status-text.ok{color:var(--codex)} .status-text.err{color:var(--danger)}
     .toggle-label{display:inline-flex;align-items:center;gap:10px;cursor:pointer}
@@ -539,6 +553,9 @@
       .search{display:none}
       .setting-row{flex-direction:column;align-items:stretch;gap:5px}
       .setting-row label{text-align:left;flex:none}
+      /* Column direction + the row's flex-start (ID rule above) would leave the
+         alias input stack at max-content width and overflowing the card. */
+      #prov-new-alias-row{align-items:stretch}
       body.has-focus #sidebar{display:none}
       body.has-focus #focus-panel{width:100%}
       /* 移动端目录卡片优化 */
@@ -550,7 +567,15 @@
       #topbar .topspace{min-width:0}
       #sidebar{padding:14px 12px 28px}
       #topbar .icon-btn{width:40px;height:40px;flex-basis:40px}
-      #topbar .btn.primary{height:42px;padding:0 10px}
+      #topbar .btn.primary{height:44px;padding:0 12px}
+      /* Coarse-pointer hit areas: 44 for buttons, 20 for checkboxes (UA gives
+         13×13, unhittable). Width-gated rather than pointer:coarse because the
+         manage page already keys its whole phone layout off this breakpoint. */
+      .btn{min-height:40px}
+      .btn-icon{min-width:44px;min-height:44px}
+      .prov-tab{height:40px}
+      input[type="checkbox"],input[type="radio"]{width:20px;height:20px}
+      .toggle-label input{width:22px;height:22px}
     }
     /* Landscape phones / split-screen: too little height for both the version
        read-out and the action row. The read-out is informational and yields;
@@ -1231,7 +1256,7 @@
               <div class="setting-row"><label>API Key</label><div style="display:flex;align-items:center;gap:6px;min-width:0;flex:1"><input id="prov-new-token" type="password" placeholder="sk-..." autocomplete="off" style="flex:1;min-width:0" /><button type="button" class="btn eye-toggle" data-target="prov-new-token" style="padding:4px 8px;font-size:12px;flex-shrink:0" title="显示/隐藏 Key">👁</button></div></div>
               <div class="setting-row"><label>Model</label><input id="prov-new-model" type="text" placeholder="默认模型，如 deepseek-chat（可选）" /></div>
               <div class="setting-row"><label>模型列表</label><textarea id="prov-new-models" rows="3" placeholder="每行一个模型；留空则只使用上面的 Model" style="min-height:74px"></textarea></div>
-              <div id="prov-new-alias-row" class="setting-row" style="align-items:flex-start">
+              <div id="prov-new-alias-row" class="setting-row">
                 <label>模型映射<div style="font-size:11px;color:var(--faint);font-weight:400;margin-top:2px">分级覆盖（可选）</div></label>
                 <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:6px">
                   <div style="font-size:11px;color:var(--faint)">让 Claude Code 内部 opus/sonnet/haiku/fable 分级请求路由到该 provider 的指定模型；留空则不覆盖该级别。</div>
@@ -2126,6 +2151,9 @@
       const TITLES = {
         overview: ['概览', ''], cron: ['定时任务', '到点自动新建会话执行'],
         voice: ['语音 Voice', '流式识别与转写'], power: ['macOS 电源', '关盖与系统睡眠设置'],
+        goal: ['目标 Goal', '会话目标与自动分类'],
+        provider: ['Provider', '多供应商接入与默认配置'],
+        global: ['全局设置', '语言与通用偏好'],
         push: ['推送通知', 'Web Push 与备用通道'],
         tunnel: ['外网穿透', '花生壳 / Tailscale 自动监控'],
         bridges: ['消息桥接', '微信 / 飞书 / Telegram / Discord / Slack 入口'],

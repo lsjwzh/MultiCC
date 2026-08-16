@@ -73,7 +73,7 @@
       behindLabel: '⎇ {branch} · 落后 {base} {n} 个提交',
       behindBanner: '⚠ 当前 worktree（{branch}）落后 {base} {n} 个提交，请使用上方同步按钮合入基分支。',
       worktreeClean: '当前 worktree 没有可合并的改动。',
-      worktreeMergeable: '当前 worktree 有{detail}，可合并回 {base}。',
+      worktreeMergeable: '当前 worktree {detail}，可合并回 {base}。',
       mergeWorktreeConfirmReady: '此 worktree 有可合并改动。\n未提交改动会先自动提交，是否继续？',
       mergeWorktreeConfirm: '把此会话 worktree 合并回基分支？\n未提交改动会先自动提交。',
       modelTitle: '切换该会话使用的模型（下一轮对话生效）',
