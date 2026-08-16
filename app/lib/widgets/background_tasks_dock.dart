@@ -53,6 +53,10 @@ class BackgroundTasksFloatingDock extends StatelessWidget {
       icon: Icons.terminal_rounded,
       iconColor: const Color(0xFF238636),
       iconBorder: const Color(0xFF3fb950),
+      // Unified compact entry: same 24dp visible circle as the dispatch dock
+      // (the user asked every draggable floating icon to shrink). FloatingDock
+      // keeps the full 48dp touch/drag/a11y box around it.
+      visualSize: 24,
       tooltip: (expanded) => t(
         expanded ? 'bgDockExpanded' : 'bgDockCollapsed',
         {'n': '$running'},

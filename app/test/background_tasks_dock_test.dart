@@ -83,7 +83,7 @@ void main() {
     expect(find.byKey(const Key('bg-dock-badge')), findsNothing);
   });
 
-  testWidgets('bg circle stays the full 48dp (dispatch-only shrink)', (
+  testWidgets('bg circle is the unified compact 24dp inside a 48dp hit box', (
     tester,
   ) async {
     await tester.pumpWidget(
@@ -95,13 +95,13 @@ void main() {
       ),
     );
     await tester.pump();
-    // The visualSize halving is dispatch-only: bg keeps a 48dp circle that
-    // fills its whole 48dp hit box.
+    // Unified shrink: every draggable floating icon draws a 24dp circle (same
+    // as the dispatch dock) while the hit box stays the full ≥44dp target.
     expect(tester.getSize(_bgIcon), const Size(48, 48));
     final circle = find
         .descendant(of: _bgIcon, matching: find.byType(Material))
         .first;
-    expect(tester.getSize(circle), const Size(48, 48));
+    expect(tester.getSize(circle), const Size(24, 24));
   });
 
   testWidgets('tap expands the task panel; blank tap / ⌄ collapses', (
