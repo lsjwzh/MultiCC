@@ -44,6 +44,37 @@ function escapeHtml(str) {
   return String(str == null ? '' : str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+// Provider limit suffix for native <option> rows — the cached limit summary plus
+// freshness / failure / stale markers, joined with ' · ' and WITHOUT a leading
+// separator. Mirrors public/chat-ai-config.js providerLimitLabel (and the App's
+// providerLimitDetail) so every provider picker phrases the quota the same way.
+// Returns '' when there is no cache entry — clean, intentional absence.
+function providerLimitSuffix(provider) {
+  const limit = provider && provider.limit;
+  if (!limit) return '';
+  const parts = [];
+  if (limit.summaryText) parts.push(limit.summaryText);
+  if (limit.lastError) {
+    parts.push(typeof tt === 'function' ? tt('limitFetchFailed') : '查询失败');
+  } else if (limit.fetchedAt) {
+    const ago = limitAgo(limit.fetchedAt);
+    if (ago) parts.push(typeof tt === 'function' ? tt('limitUpdatedAgo', { ago }) : `更新于 ${ago}`);
+  }
+  if (limit.stale && limit.summaryText) parts.push(typeof tt === 'function' ? tt('limitStale') : '过期');
+  return parts.length ? ` · ${parts.join(' · ')}` : '';
+}
+
+function limitAgo(tsMs) {
+  const diff = Math.floor((Date.now() - tsMs) / 1000);
+  if (diff < 5) return typeof tt === 'function' ? tt('justNow') : '刚刚';
+  if (diff < 60) return typeof tt === 'function' ? tt('secondsAgo', { n: diff }) : `${diff} 秒前`;
+  const min = Math.floor(diff / 60);
+  if (min < 60) return typeof tt === 'function' ? tt('minutesAgo', { n: min }) : `${min} 分钟前`;
+  const h = Math.floor(min / 60);
+  if (h < 24) return typeof tt === 'function' ? tt('hoursAgo', { n: h }) : `${h} 小时前`;
+  return typeof tt === 'function' ? tt('daysAgo', { n: Math.floor(h / 24) }) : `${Math.floor(h / 24)} 天前`;
+}
+
 function formatTime(iso) {
   if (!iso) return tt('notAvailable');
   const d = new Date(iso);
@@ -500,7 +531,7 @@ function refreshAuxProviderOptions() {
   if (!sel) return;
   const list = _auxConfig?.providersByProtocol?.[protocol] || [];
   sel.innerHTML = '<option value="">请选择 Provider</option>'
-    + list.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)} · ${escapeHtml(p.wireApi || '')}</option>`).join('');
+    + list.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)} · ${escapeHtml(p.wireApi || '')}${escapeHtml(providerLimitSuffix(p))}</option>`).join('');
   const saved = _auxConfig?.protocol === protocol ? (_auxConfig?.providerId || '') : '';
   sel.value = list.some(provider => provider.id === saved) ? saved : (list[0]?.id || '');
   refreshAuxModelOptions();

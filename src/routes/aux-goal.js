@@ -1,6 +1,7 @@
 'use strict';
 
 const { sanitizePublicText } = require('../http/public-safety');
+const { STALE_MS_DEFAULT } = require('../quota/provider-limit-cache');
 
 const AUX_SESSION_ID = '__aux__';
 const AUX_HISTORY_MAX = 200;
@@ -162,6 +163,9 @@ function mountAuxGoalRoutes(app, dependencies) {
     getClaudeOfficialViaProxy,
     executeAuxHttp,
     broadcast,
+    providerLimitCache,
+    limitCacheStaleMs,
+    now = Date.now,
     env = process.env,
     logger = console,
   } = dependencies;
@@ -551,11 +555,41 @@ function mountAuxGoalRoutes(app, dependencies) {
   function listAuxProviders(protocol) {
     const normalized = normalizeAuxProtocol(protocol);
     const appType = normalized === 'openai' ? 'codex' : 'claude';
+    const nowMs = now();
+    // Env override is read here (not threaded through the host) so the wiring
+    // stays self-contained; tests override via the injected dep.
+    const staleAfterMs =
+      limitCacheStaleMs ||
+      Number(process.env.MULTICC_LIMIT_CACHE_STALE_MS) ||
+      STALE_MS_DEFAULT;
     return providers.listProviders(appType).map(provider => {
       const target = providers.resolveAuxHttpTarget(normalized, provider.id, {
         port: getPort(),
         claudeOfficialViaProxy: getClaudeOfficialViaProxy(),
       });
+      // Attach the persistent last-known-good limit summary exactly like
+      // /api/providers (routes/providers.js) so the aux model picker can show
+      // the same quota/freshness the chat pickers show. Safe projection — the
+      // cache never stores credentials.
+      let limit = null;
+      if (providerLimitCache) {
+        try {
+          const entry = providerLimitCache.get(provider.appType, provider.id);
+          if (entry) {
+            limit = {
+              kind: entry.kind,
+              status: entry.status,
+              summary: entry.summary,
+              summaryText: entry.summaryText,
+              fetchedAt: entry.fetchedAt,
+              updatedAt: entry.updatedAt,
+              lastError: entry.lastError,
+              lastErrorAt: entry.lastErrorAt,
+              stale: !!(entry.fetchedAt != null && nowMs - entry.fetchedAt > staleAfterMs),
+            };
+          }
+        } catch (_) { /* cache must never break the catalog */ }
+      }
       return {
         id: provider.id,
         name: provider.name,
@@ -563,6 +597,7 @@ function mountAuxGoalRoutes(app, dependencies) {
         wireApi: target.wireApi || provider.wireApi || null,
         available: !!target.available,
         unavailableReason: target.available ? null : target.reason,
+        limit,
       };
     }).filter(provider => provider.available);
   }
