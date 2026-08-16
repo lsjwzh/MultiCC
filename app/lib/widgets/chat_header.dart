@@ -23,6 +23,13 @@ class ChatHeader extends StatelessWidget {
   final VoidCallback onMemory;
   final VoidCallback onMemo;
   final VoidCallback onShare;
+  /// Working directory + worktree branch for the read-only info rows at the
+  /// top of the ⋯ menu. The chat page used to burn a full-width cwd bar under
+  /// the header for this; now it lives one tap away, next to the actions.
+  final String cwd;
+  final String? branch;
+  final int behind;
+  final VoidCallback onCwd;
   const ChatHeader({
     super.key,
     required this.settings,
@@ -33,6 +40,10 @@ class ChatHeader extends StatelessWidget {
     required this.onMemory,
     required this.onMemo,
     required this.onShare,
+    required this.cwd,
+    this.branch,
+    this.behind = 0,
+    required this.onCwd,
   });
 
   @override
@@ -162,6 +173,10 @@ class ChatHeader extends StatelessWidget {
             const SizedBox(width: 4),
             _HeaderOverflowMenu(
               mergeReady: mergeReady,
+              cwd: cwd,
+              branch: branch,
+              behind: behind,
+              onCwd: onCwd,
               onRole: onRole,
               onMemory: onMemory,
               onMemo: onMemo,
@@ -619,6 +634,10 @@ class _ClearMenuBody extends StatelessWidget {
 /// icons never overflow the right edge on narrow screens.
 class _HeaderOverflowMenu extends StatelessWidget {
   final bool mergeReady;
+  final String cwd;
+  final String? branch;
+  final int behind;
+  final VoidCallback onCwd;
   final VoidCallback onRole;
   final VoidCallback onMemory;
   final VoidCallback onMemo;
@@ -630,6 +649,10 @@ class _HeaderOverflowMenu extends StatelessWidget {
   final VoidCallback onRestart;
   const _HeaderOverflowMenu({
     required this.mergeReady,
+    required this.cwd,
+    this.branch,
+    this.behind = 0,
+    required this.onCwd,
     required this.onRole,
     required this.onMemory,
     required this.onMemo,
@@ -653,6 +676,9 @@ class _HeaderOverflowMenu extends StatelessWidget {
       offset: const Offset(0, 40),
       onSelected: (value) {
         switch (value) {
+          case 'cwd':
+            onCwd();
+            break;
           case 'role':
             onRole();
             break;
@@ -683,6 +709,18 @@ class _HeaderOverflowMenu extends StatelessWidget {
         }
       },
       itemBuilder: (_) => [
+        // Read-only working-context rows (ex-_CwdBar): short dir name with the
+        // full path in the tooltip, then the worktree branch — amber with a ↓N
+        // badge when the base branch is ahead of this worktree.
+        if (cwd.isNotEmpty) _cwdInfoItem(),
+        if (branch != null && branch!.isNotEmpty) _branchInfoItem(),
+        _item(
+          'cwd',
+          Icons.drive_file_move_outline,
+          t('changeDir'),
+          const Color(0xFFe7eaee),
+        ),
+        const PopupMenuDivider(),
         _item(
           'role',
           Icons.theater_comedy_outlined,
@@ -757,6 +795,82 @@ class _HeaderOverflowMenu extends StatelessWidget {
           color: mergeReady ? const Color(0xFF070809) : const Color(0xFFe7eaee),
           size: 18,
         ),
+      ),
+    );
+  }
+
+  /// Disabled info row: the session's working directory. Shows just the last
+  /// path segment inline (the worktree name identifies the session well enough
+  /// in this menu); the full absolute path rides in the tooltip.
+  PopupMenuItem<String> _cwdInfoItem() {
+    final last = cwd.split('/').last;
+    final short = last.isEmpty ? cwd : last;
+    return PopupMenuItem<String>(
+      enabled: false,
+      height: 36,
+      child: Tooltip(
+        message: cwd,
+        child: Row(
+          children: [
+            const Icon(
+              Icons.folder_outlined,
+              size: 16,
+              color: Color(0xFF5b616c),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                short,
+                key: const Key('chat-header-cwd'),
+                style: const TextStyle(
+                  fontFamily: 'monospace',
+                  fontSize: 12.5,
+                  color: Color(0xFF6aa3ff),
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Disabled info row: the session's worktree branch, amber when the base
+  /// branch has moved ahead (behind > 0) — same warning colour the old cwd
+  /// bar's branch chip used, so the "you should rebase/merge" signal survives
+  /// the move into the menu.
+  PopupMenuItem<String> _branchInfoItem() {
+    final warn = behind > 0;
+    return PopupMenuItem<String>(
+      enabled: false,
+      height: 36,
+      child: Row(
+        children: [
+          Icon(
+            Icons.account_tree_outlined,
+            size: 16,
+            color: warn ? const Color(0xFFf2cc60) : const Color(0xFF6aa3ff),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              branch!,
+              key: const Key('chat-header-branch'),
+              style: TextStyle(
+                fontFamily: 'monospace',
+                fontSize: 12.5,
+                color: warn ? const Color(0xFFf2cc60) : const Color(0xFF8a909b),
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          if (warn)
+            Text(
+              '↓$behind',
+              style: const TextStyle(fontSize: 11, color: Color(0xFFe3b341)),
+            ),
+        ],
       ),
     );
   }
