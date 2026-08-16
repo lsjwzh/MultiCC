@@ -46,6 +46,20 @@
   "mergeWorktree": "合并 worktree",
   "mergeWorktreeReady": "合并 worktree（有未提交改动，可合并回 {base}）",
   "viewDiff": "查看 Diff",
+
+  "gitLog": "查看 Git 记录",
+
+  "gitLogTitle": "Git 记录",
+
+  "gitLogEmpty": "（无提交记录）",
+
+  "gitLogLoadFailed": "加载 Git 记录失败",
+
+  "gitLogAllBranches": "全部分支",
+
+  "gitLogDiffTruncated": "diff 超过 1MB，已截断显示",
+
+  "gitLogEmptyDiff": "（无变更内容）",
   "baseBranch": "基分支",
   "leaveNote": "留言",
   "restartSession": "重启",

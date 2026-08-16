@@ -549,10 +549,26 @@ function createSessionGitRuntime(rawDeps) {
     });
 
     app.get('/api/git/commit-diff', async (req, res) => {
+      // Same repo resolution as /api/git/log: a directory repo by dirId, or a
+      // session's own worktree by sessionId (the mobile git-history view reads
+      // commits from the session worktree, so its diffs must resolve there
+      // too - not to the directory's checked-out base branch).
       const dirId = req.query.dirId;
-      const dir = dirId ? deps.directories.get(dirId) : null;
-      if (!dir) return res.status(404).json({ error: 'directory not found' });
-      const repoPath = dir.path;
+      const sessionId = req.query.sessionId;
+      let repoPath;
+      if (dirId) {
+        const dir = deps.directories.get(dirId);
+        if (!dir) return res.status(404).json({ error: 'directory not found' });
+        repoPath = dir.path;
+      } else if (sessionId) {
+        const persisted = deps.records.get(sessionId);
+        if (!persisted || !persisted.worktreePath) {
+          return res.status(404).json({ error: 'session or worktree not found' });
+        }
+        repoPath = persisted.worktreePath;
+      } else {
+        return res.status(404).json({ error: 'directory not found' });
+      }
       if (!deps.existsSync(repoPath)) return res.status(404).json({ error: 'repo path missing' });
       const hash = req.query.hash;
       if (typeof hash !== 'string' || !/^[0-9a-f]{4,40}$/i.test(hash)) {
