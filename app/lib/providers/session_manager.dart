@@ -701,14 +701,34 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
       clearSubagent: clearSubagent,
       agent: agent,
     );
+    await _syncChatProviderAfterProviderChange(id);
     await loadDashboard();
   }
 
   Future<void> updateSessionProvider(String id, String provider) async {
     await _sessionService.updateSessionProvider(id, provider);
+    await _syncChatProviderAfterProviderChange(id);
     // Server auto-fills the session model from the new provider's model list.
     // loadDashboard() refreshes _sessions with the updated model from the server.
     await loadDashboard();
+  }
+
+  /// A provider-only change (same CLI) triggers no WS broadcast, so an open
+  /// chat screen's quota bars would keep the OLD provider until the next
+  /// cli_switched event or reconnect. Re-fetch the session config and hand its
+  /// providerBaseUrl to the chat provider - the app mirror of the web's
+  /// updateProviderBtn() -> setProviderBaseUrl() right after saveSession.
+  Future<void> _syncChatProviderAfterProviderChange(String id) async {
+    final provider = _providers[id];
+    if (provider == null) return;
+    try {
+      provider.applyProviderSwitch(
+        await _sessionService.fetchSessionCliConfig(id),
+      );
+    } catch (_) {
+      // Non-fatal: bars keep the previous provider until the next CLI switch
+      // broadcast or reconnect re-learns it.
+    }
   }
 
   Future<void> updateSessionRolePrompt(String id, String rolePrompt) async {

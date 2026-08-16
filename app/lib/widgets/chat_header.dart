@@ -12,6 +12,7 @@ import '../screens/file_browser_screen.dart';
 import '../screens/settings_screen.dart';
 import '../screens/share_messages_screen.dart';
 import 'cli_switch_sheet.dart';
+import 'git_log_sheet.dart';
 import 'model_chip.dart';
 
 class ChatHeader extends StatelessWidget {
@@ -200,6 +201,19 @@ class ChatHeader extends StatelessWidget {
                     settings: settings,
                   ),
                 ),
+              ),
+              onGitLog: () => showGitLogSheet(
+                context,
+                fetchLog: (all) => SessionService(settings: settings)
+                    .fetchGitLog(
+                      sessionId: provider.sessionName,
+                      allBranches: all,
+                    ),
+                fetchDiff: (hash) => SessionService(settings: settings)
+                    .fetchGitCommitDiff(
+                      sessionId: provider.sessionName,
+                      hash: hash,
+                    ),
               ),
               onRestart: () => _confirmRestartSpawn(context, provider),
             ),
@@ -647,6 +661,7 @@ class _HeaderOverflowMenu extends StatelessWidget {
   final VoidCallback onShareMessages;
   final VoidCallback onFiles;
   final VoidCallback onRestart;
+  final VoidCallback onGitLog;
   const _HeaderOverflowMenu({
     required this.mergeReady,
     required this.cwd,
@@ -662,6 +677,7 @@ class _HeaderOverflowMenu extends StatelessWidget {
     required this.onShareMessages,
     required this.onFiles,
     required this.onRestart,
+    required this.onGitLog,
   });
 
   @override
@@ -699,6 +715,9 @@ class _HeaderOverflowMenu extends StatelessWidget {
             break;
           case 'files':
             onFiles();
+            break;
+          case 'gitlog':
+            onGitLog();
             break;
           case 'restart':
             onRestart();
@@ -763,6 +782,12 @@ class _HeaderOverflowMenu extends StatelessWidget {
           'files',
           Icons.folder_open_outlined,
           t('fileBrowser'),
+          const Color(0xFFe7eaee),
+        ),
+        _item(
+          'gitlog',
+          Icons.history_rounded,
+          t('gitLog'),
           const Color(0xFFe7eaee),
         ),
         _item(

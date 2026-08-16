@@ -44,6 +44,20 @@
   "mergeWorktree": "Merge Worktree",
   "mergeWorktreeReady": "Merge Worktree（uncommitted changes, ready to merge into {base}）",
   "viewDiff": "View Diff",
+
+  "gitLog": "Git history",
+
+  "gitLogTitle": "Git history",
+
+  "gitLogEmpty": "(no commits)",
+
+  "gitLogLoadFailed": "Failed to load git history",
+
+  "gitLogAllBranches": "all branches",
+
+  "gitLogDiffTruncated": "diff exceeds 1MB - truncated",
+
+  "gitLogEmptyDiff": "(no changes)",
   "baseBranch": "base branch",
   "leaveNote": "Note",
   "restartSession": "Restart",
