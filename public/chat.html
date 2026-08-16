@@ -1896,22 +1896,34 @@
     }
     .diff-head-btn:hover { background: #30363d; color: #f0f6fc; }
 
-    /* Minimised form: a small edge-hugging button carrying the file count. */
+    /* Minimised form: a small edge-hugging button carrying the file count.
+       The 44px outer box is the tap/drag target (and the size the placement
+       JS measures); the visible circle shrinks to a centred 24px child. */
     #diff-dock-fab {
       position: fixed; z-index: 15001; width: 44px; height: 44px; padding: 0;
-      border-radius: 50%; border: 1px solid #388bfd; background: #1f6feb;
+      border-radius: 50%; border: none; background: transparent;
       color: #ffffff; font-size: 17px; font-weight: 700; line-height: 1;
       display: flex; align-items: center; justify-content: center;
-      box-shadow: 0 6px 20px #000000aa; cursor: grab; touch-action: none;
+      cursor: grab; touch-action: none;
     }
-    #diff-dock-fab:hover { background: #2a7bf5; }
-    #diff-dock-fab.dragging { cursor: grabbing; box-shadow: 0 10px 26px #000000cc; }
+    .diff-fab-circle {
+      position: relative;              /* count anchors to the circle */
+      width: 24px; height: 24px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      border: 1px solid #388bfd; background: #1f6feb;
+      font-size: 12px; font-weight: 700; line-height: 1;
+      box-shadow: 0 6px 20px #000000aa;
+      pointer-events: none;            /* the outer box owns the gestures */
+    }
+    #diff-dock-fab:hover .diff-fab-circle { background: #2a7bf5; }
+    #diff-dock-fab.dragging { cursor: grabbing; }
+    #diff-dock-fab.dragging .diff-fab-circle { box-shadow: 0 10px 26px #000000cc; }
     #diff-dock-fab[hidden] { display: none; }
     #diff-dock-count {
-      position: absolute; top: -5px; right: -5px; box-sizing: border-box;
-      min-width: 18px; height: 18px; padding: 0 4px; border-radius: 9px;
+      position: absolute; top: -4px; right: -4px; box-sizing: border-box;
+      min-width: 15px; height: 15px; padding: 0 3px; border-radius: 8px;
       background: #0d1117; border: 1px solid #388bfd; color: #cfe3ff;
-      font-family: monospace; font-size: 10px; font-weight: 600; line-height: 16px;
+      font-family: monospace; font-size: 9px; font-weight: 600; line-height: 13px;
     }
     #diff-dock-count:empty { display: none; }
 
@@ -2253,6 +2265,9 @@
     /* Draggable compact entry: hidden while no task rows exist, follows the
        pointer during a drag, snaps to the nearest screen edge on release.
        touch-action:none keeps mobile drags from scrolling the chat. */
+    /* Compact-circle parity with the App's FloatingDock(visualSize): the 48px
+       outer box stays the tap/drag/a11y target (and the size the placement JS
+       measures), while the visible circle shrinks to a centred 24px child. */
     #danmaku-fab {
       position: fixed;
       left: 10px;
@@ -2264,8 +2279,8 @@
       align-items: center;
       justify-content: center;
       padding: 0;
-      background: rgba(35, 134, 54, 0.92);
-      border: 1px solid #3fb950;
+      background: transparent;       /* circle colour lives on .dm-fab-circle */
+      border: none;
       color: #fff;
       font-size: 19px;
       line-height: 1;
@@ -2274,7 +2289,21 @@
       -webkit-user-select: none;
       touch-action: none;
       z-index: 101;
+    }
+    .dm-fab-circle {
+      position: relative;            /* badge anchors to the circle, not the box */
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(35, 134, 54, 0.92);
+      border: 1px solid #3fb950;
+      font-size: 12px;
+      line-height: 1;
       box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+      pointer-events: none;          /* the outer box owns the gestures */
     }
     #danmaku-fab.dm-dragging { cursor: grabbing; }
     #danmaku-fab:focus-visible { outline: 2px solid #58a6ff; outline-offset: 2px; }
@@ -2282,16 +2311,16 @@
       position: absolute;
       top: -5px;
       right: -4px;
-      min-width: 19px;
-      height: 19px;
-      padding: 0 4px;
-      border-radius: 10px;
+      min-width: 15px;
+      height: 15px;
+      padding: 0 3px;
+      border-radius: 8px;
       background: #d73a49;
       border: 1px solid #0d1117;
       color: #fff;
-      font-size: 11px;
+      font-size: 9px;
       font-weight: 700;
-      line-height: 17px;
+      line-height: 13px;
       text-align: center;
       display: none;                 /* shown by JS while tasks are running */
     }
@@ -2398,8 +2427,7 @@
        drag moves it and snaps to the nearest screen edge on release. Fully
        hidden while no task rows exist. -->
   <button id="danmaku-fab" type="button" style="display:none" aria-expanded="false" aria-label="后台任务">
-    <span aria-hidden="true">&#9776;</span>
-    <span id="danmaku-fab-badge"></span>
+    <span class="dm-fab-circle" aria-hidden="true">&#9776;<span id="danmaku-fab-badge"></span></span>
   </button>
   <div id="danmaku-scrim"></div>
   <div id="danmaku-panel" style="display:none" role="dialog" aria-label="后台任务详情">
@@ -2594,8 +2622,7 @@
   </div>
   <button id="diff-dock-fab" type="button" hidden
           title="展开 Diff 面板" aria-label="展开 Diff 面板">
-    <span aria-hidden="true">Δ</span>
-    <span id="diff-dock-count"></span>
+    <span class="diff-fab-circle" aria-hidden="true">Δ<span id="diff-dock-count"></span></span>
   </button>
 
   <!-- Compact durable dispatch history: collapsed by default so it never

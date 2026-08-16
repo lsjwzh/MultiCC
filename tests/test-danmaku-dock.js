@@ -15,8 +15,11 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const liveUiApi = require('../public/chat-live-ui');
+const CHAT_HTML = fs.readFileSync(path.join(__dirname, '..', 'public', 'chat.html'), 'utf8');
 
 function classList() {
   const values = new Set();
@@ -321,4 +324,28 @@ test('expanded panel flips above a low fab and stays on narrow viewports', () =>
   const maxWidth = Number.parseInt(narrowPanel.style.maxWidth, 10);
   assert.ok(maxWidth >= 220 && maxWidth <= 324, `budget ${maxWidth}`);
   assert.ok(Number.parseInt(narrowPanel.style.left, 10) >= 8);
+});
+
+test('the fab is the unified compact circle: 24px visual inside a 48px hit box', () => {
+  // A CSS assertion on purpose — the shrink lives entirely in the stylesheet.
+  // The draggable floating icons (this one, the diff dock, and the App's two
+  // FloatingDocks) all draw a 24-unit circle while keeping a ≥44-unit tap /
+  // drag target so the gesture + placement math (DANMAKU_DOCK_SIZE) is
+  // untouched. The circle is a centred child so the badge anchors to it.
+  const fab = CHAT_HTML.slice(
+    CHAT_HTML.indexOf('#danmaku-fab {'),
+    CHAT_HTML.indexOf('#danmaku-fab.dm-dragging'),
+  );
+  assert.match(fab, /width:\s*48px/, 'outer box keeps the 48px target');
+  assert.match(fab, /height:\s*48px/, 'outer box keeps the 48px target');
+  assert.match(fab, /background:\s*transparent/, 'outer box is only a target');
+
+  const circle = CHAT_HTML.slice(
+    CHAT_HTML.indexOf('.dm-fab-circle {'),
+    CHAT_HTML.indexOf('#danmaku-fab.dm-dragging'),
+  );
+  assert.match(circle, /width:\s*24px/, 'visible circle shrinks to 24px');
+  assert.match(circle, /height:\s*24px/, 'visible circle shrinks to 24px');
+  assert.match(circle, /rgba\(35, 134, 54/, 'circle carries the green fill');
+  assert.match(circle, /pointer-events:\s*none/, 'the box owns the gestures');
 });
