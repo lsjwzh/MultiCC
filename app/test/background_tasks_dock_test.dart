@@ -83,6 +83,27 @@ void main() {
     expect(find.byKey(const Key('bg-dock-badge')), findsNothing);
   });
 
+  testWidgets('bg circle stays the full 48dp (dispatch-only shrink)', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _host(
+        BackgroundTasksFloatingDock(
+          rows: _rows([BackgroundTaskState.start]),
+          onDismiss: (_) {},
+        ),
+      ),
+    );
+    await tester.pump();
+    // The visualSize halving is dispatch-only: bg keeps a 48dp circle that
+    // fills its whole 48dp hit box.
+    expect(tester.getSize(_bgIcon), const Size(48, 48));
+    final circle = find
+        .descendant(of: _bgIcon, matching: find.byType(Material))
+        .first;
+    expect(tester.getSize(circle), const Size(48, 48));
+  });
+
   testWidgets('tap expands the task panel; blank tap / ⌄ collapses', (
     tester,
   ) async {
