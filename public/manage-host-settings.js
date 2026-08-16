@@ -183,16 +183,38 @@
   /* ── 外网穿透监控 Tunnel ── */
   function tnlFmtStatus(p, prov, avail) {
     // p = runtime provider state; prov = config provider {enabled,url}
-    if (!prov.enabled) return '未启用';
-    if (!prov.url) return '未配置 URL';
-    if (p.healthy === null || !p.lastCheckAt) return '等待首次探活…';
+    const observeOnly = !prov.enabled && !!prov.funnel;
+    if (!prov.enabled && !prov.funnel) return '未启用';
+    const funnelProbe = !!prov.funnel && p.probeMode === 'tailscale_funnel_public';
+    if (!prov.url && !prov.funnel) return '未配置 URL';
+    if (!p.lastCheckAt) return '等待首次探活…';
     const when = new Date(p.lastCheckAt).toLocaleTimeString();
+    if (p.probeVerdict === 'degraded') {
+      let s = `公网 Funnel 部分可用 · 边缘 ${p.edgeSuccessCount || 0}/${p.resolvedAddressCount || 0} · ${when}`;
+      s += ' · 已告警，不自动修复';
+      return s;
+    }
+    if (p.probeVerdict === 'indeterminate') {
+      let s = `公网探针不确定 (${p.probeError || 'unknown'}) · ${when}`;
+      if (prov.monitorOnly) {
+        s += funnelProbe ? ' · 仅监控（不自动修复 Funnel）' : ' · 仅监控（不自动重启）';
+        return s;
+      }
+      if (p.lastAction) s += ` · ${p.lastAction}`;
+      return s;
+    }
     // URL 探活 与 客户端进程 是两个维度：URL 活着不代表本机的 frpc/natapp
     // 在跑（这个 URL 可能根本是别家隧道的），措辞上必须分开。
-    let s = 'URL 探活 ' + (p.healthy ? `正常 (HTTP ${p.lastHttpCode})` : `异常 (HTTP ${p.lastHttpCode}，连续 ${p.consecutiveFails} 次)`);
+    const label = funnelProbe ? '公网 Funnel' : 'URL 探活';
+    let s = label + ' ' + (p.healthy ? `正常 (HTTP ${p.lastHttpCode})` : `异常 (HTTP ${p.lastHttpCode}，连续 ${p.consecutiveFails} 次)`);
+    if (funnelProbe && p.resolvedAddressCount) s += ` · 边缘 ${p.edgeSuccessCount || 0}/${p.resolvedAddressCount}`;
     s += ` · ${when}`;
+    if (observeOnly) {
+      s += ' · 仅观察（自动修复未启用）';
+      return s;
+    }
     if (prov.monitorOnly) {
-      s += ' · 仅监控（不自动重启）';
+      s += funnelProbe ? ' · 仅监控（不自动修复 Funnel）' : ' · 仅监控（不自动重启）';
       return s;
     }
     // 客户端二进制不存在时 multicc 根本无法托管/重启它（URL 往往是外部隧道
@@ -201,8 +223,10 @@
       s += ' · 客户端: 未安装（非 multicc 托管）';
       return s;
     }
-    if (p.restartTimes && p.restartTimes.length) s += ` · 近1h重启 ${p.restartTimes.length} 次`;
-    if (p.lastAction) s += ` · 客户端: ${p.lastAction}`;
+    if (p.restartTimes && p.restartTimes.length) {
+      s += funnelProbe ? ` · 近1h修复/重连 ${p.restartTimes.length} 次` : ` · 近1h重启 ${p.restartTimes.length} 次`;
+    }
+    if (p.lastAction) s += funnelProbe ? ` · 最近动作: ${p.lastAction}` : ` · 客户端: ${p.lastAction}`;
     return s;
   }
 
@@ -331,10 +355,14 @@
   // Degrade「立即重启」instead of letting it fail opaquely: no client binary
   // means there is nothing we can launch, and monitor-only mode deliberately
   // never touches the client process.
-  function tnlGateRestart(btnId, available, monitorOnly) {
+  function tnlGateRestart(btnId, available, monitorOnly, tailscaleMode = false) {
     const btn = document.getElementById(btnId);
     if (!btn) return;
-    if (monitorOnly) { btn.disabled = true; btn.title = '仅监控模式下不重启客户端'; return; }
+    if (monitorOnly) {
+      btn.disabled = true;
+      btn.title = tailscaleMode ? '仅监控模式下不修复 Funnel 或重连控制面' : '仅监控模式下不重启客户端';
+      return;
+    }
     if (available === false) { btn.disabled = true; btn.title = '未检测到客户端，请先安装'; return; }
     btn.disabled = false;
     btn.title = '';
@@ -364,7 +392,9 @@
       document.getElementById('tnl-ts-monitoronly').checked = !!c.tailscale.monitorOnly;
       document.getElementById('tnl-ts-url').value = c.tailscale.url || '';
       document.getElementById('tnl-ts-status').textContent = tnlFmtStatus(pr.tailscale || {}, c.tailscale, av.tailscale);
-      tnlGateRestart('tnl-ts-restart', av.tailscale, !!c.tailscale.monitorOnly);
+      const tsPublicUrl = document.getElementById('tnl-ts-publicurl');
+      if (tsPublicUrl) tsPublicUrl.textContent = pr.tailscale?.publicUrl || '等待公网探测…';
+      tnlGateRestart('tnl-ts-restart', av.tailscale, !!c.tailscale.monitorOnly, true);
       document.getElementById('tnl-ts-funnel').checked = !!c.tailscale.funnel;
       document.getElementById('tnl-ts-funnelport').value = c.tailscale.funnelPort || 3000;
       // natapp (硬编码隧道)
