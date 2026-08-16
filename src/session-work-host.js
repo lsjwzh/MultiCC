@@ -390,6 +390,8 @@ function createSessionWorkHost(deps = {}) {
       taskId: event.taskId || null,
       queuePosition: event.queuePosition || null,
       workKind: event.workKind || null,
+      attemptOutcome: event.attemptOutcome || null,
+      supersededByEntryId: event.supersededByEntryId || null,
       queued: event.queued == null ? null : event.queued,
       items: Array.isArray(event.queuedItems) ? event.queuedItems : [],
       freezeReason: event.freezeReason || null,
@@ -613,7 +615,27 @@ function createSessionWorkHost(deps = {}) {
 
   async function runCancel(sessionId, intent) {
     const { reason, killReason, source, operationId, requestedAt } = intent;
-    stopRunner(sessionId, reason, killReason);
+    const activeBeforeCancel = scheduler()
+      ? (await scheduler().status(sessionId))?.active || null
+      : null;
+    const chatStateBeforeCancel = deps.getChatSession(sessionId);
+    const turnLineage = chatStateBeforeCancel?._activeTurn?.lineage || null;
+    const originDispatchId = activeBeforeCancel?.originDispatchId
+      || (turnLineage?.kind === 'dispatch' ? turnLineage.operationId : null)
+      || null;
+    const supersededByEntryId = activeBeforeCancel?.supersededByEntryId || null;
+    const successorRetainsDispatch = !!(
+      supersededByEntryId
+      && activeBeforeCancel?.supersededLineageTransferred === true
+      && originDispatchId
+    );
+    const effectiveReason = supersededByEntryId
+      ? 'superseded_by_immediate_insert' : reason;
+    stopRunner(
+      sessionId,
+      effectiveReason,
+      supersededByEntryId ? 'new_user_message' : killReason,
+    );
     const stopped = await awaitRunnerStop(sessionId);
     if (!stopped) {
       log.warn?.('session_cancel_runner_stop_timeout', { sessionId, source, operationId });
@@ -623,7 +645,7 @@ function createSessionWorkHost(deps = {}) {
     // active entry this is a no-op and classify still repairs the persisted state.
     let closed = { ok: false, code: 'no_active_task' };
     if (scheduler()) {
-      try { closed = await closeTurnForClassify(sessionId, reason); }
+      try { closed = await closeTurnForClassify(sessionId, effectiveReason); }
       catch (_) { closed = { ok: false, code: 'turn_close_failed' }; }
     }
     const state = deps.getChatSession(sessionId);
@@ -643,8 +665,12 @@ function createSessionWorkHost(deps = {}) {
         requestedAt,
         at: Date.now(),
         taskId,
-        reason: stopped ? reason : 'cancel_stop_timeout',
+        reason: stopped ? effectiveReason : 'cancel_stop_timeout',
         runnerStopped: stopped,
+        superseded: !!supersededByEntryId,
+        supersededByEntryId,
+        originDispatchId,
+        successorRetainsDispatch,
       },
     };
     deps.dispatchStateAction(result, {
@@ -667,6 +693,31 @@ function createSessionWorkHost(deps = {}) {
       try { deps.reconcileTaskProjection(taskId, { classifyState: 'E', reason: result.cancel.reason }); }
       catch (error) { log.warn?.('session_cancel_reconcile_failed', { sessionId, error: error.message }); }
     }
+    let dispatchSettlement = null;
+    // A provider turn is only one attempt of a durable dispatch. If an
+    // immediate replacement inherited that dispatch, leave the operation live
+    // for the successor's post-turn receipt. Every other successful stop is a
+    // real terminal interruption; settling it here prevents a sync caller from
+    // waiting forever after its only owned turn was cancelled.
+    if (stopped && originDispatchId && !successorRetainsDispatch) {
+      const runtime = schedulerRuntime();
+      if (typeof runtime?.interruptDispatch === 'function') {
+        try {
+          dispatchSettlement = await runtime.interruptDispatch(originDispatchId, {
+            reason: supersededByEntryId
+              ? 'dispatch target switched to an unrelated immediate message'
+              : `dispatch target turn interrupted: ${effectiveReason}`,
+            source,
+          });
+        } catch (error) {
+          log.warn?.('session_cancel_dispatch_settlement_failed', {
+            sessionId,
+            operationId: originDispatchId,
+            error: error.message,
+          });
+        }
+      }
+    }
     if (!stopped) {
       return {
         ok: false,
@@ -674,6 +725,8 @@ function createSessionWorkHost(deps = {}) {
         classifyState: 'E',
         operationId,
         cancelReason: result.cancel.reason,
+        originDispatchId,
+        dispatchSettlement,
       };
     }
     return {
@@ -681,6 +734,11 @@ function createSessionWorkHost(deps = {}) {
       classifyState: 'E',
       operationId,
       alreadyIdle: !closed.ok && closed.code === 'no_active_task',
+      superseded: !!supersededByEntryId,
+      supersededByEntryId,
+      originDispatchId,
+      successorRetainsDispatch,
+      dispatchSettlement,
     };
   }
 

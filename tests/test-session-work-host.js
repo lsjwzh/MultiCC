@@ -17,7 +17,21 @@ function fixture(options = {}) {
       state: schedulerState,
       active: schedulerState === 'idle'
         ? null
-        : { entryId: 'entry-1', ...(options.activeTaskId ? { taskId: options.activeTaskId } : {}) },
+        : {
+          entryId: 'entry-1',
+          ...(options.activeTaskId ? { taskId: options.activeTaskId } : {}),
+          ...(options.activeOriginDispatchId
+            ? { originDispatchId: options.activeOriginDispatchId }
+            : {}),
+          ...(options.supersededByEntryId
+            ? {
+              supersededByEntryId: options.supersededByEntryId,
+              supersededLineageTransferred: options.supersededLineageTransferred === true
+                || options.supersededOriginTransferred === true,
+              supersededOriginTransferred: options.supersededOriginTransferred === true,
+            }
+            : {}),
+        },
     }),
     complete: async (_sessionId, options) => {
       calls.push(['complete', options]);
@@ -44,6 +58,10 @@ function fixture(options = {}) {
     admitSessionWork: async input => {
       calls.push(['admit', input]);
       return { ok: true, entry: { id: 'entry-new' } };
+    },
+    interruptDispatch: async (operationId, input) => {
+      calls.push(['interrupt-dispatch', operationId, input]);
+      return { ok: true, operation: { id: operationId, status: 'interrupted' } };
     },
   };
   const host = createSessionWorkHost({
@@ -232,6 +250,45 @@ test('cancel stops the runner and submits one structured E result to classify â€
   assert.equal(result.ok, true);
   assert.equal(result.classifyState, 'E');
   assert.equal(result.operationId, 'op-1');
+});
+
+test('cancelling the only dispatch-owned turn settles its durable operation as interrupted', async () => {
+  const { h } = cancelFixture({}, {
+    activeTaskId: 'task-1',
+    activeOriginDispatchId: 'dispatch-live',
+  });
+  const result = await h.host.cancelActiveTurn('s1', { source: 'manual_cancel' });
+  const settlement = h.calls.find(call => call[0] === 'interrupt-dispatch');
+  assert.deepEqual(settlement, [
+    'interrupt-dispatch',
+    'dispatch-live',
+    {
+      reason: 'dispatch target turn interrupted: user_cancelled',
+      source: 'manual_cancel',
+    },
+  ]);
+  assert.equal(result.originDispatchId, 'dispatch-live');
+  assert.equal(result.dispatchSettlement.operation.status, 'interrupted');
+});
+
+test('an immediate same-task successor keeps the dispatch live and marks only the old attempt superseded', async () => {
+  const { h } = cancelFixture({}, {
+    activeTaskId: 'task-1',
+    activeOriginDispatchId: 'dispatch-live',
+    supersededByEntryId: 'entry-next',
+    supersededOriginTransferred: true,
+  });
+  const result = await h.host.cancelActiveTurn('s1', { source: 'insert_queued' });
+  assert.equal(h.calls.some(call => call[0] === 'interrupt-dispatch'), false);
+  const verdict = h.calls.find(call => call[0] === 'dispatch')[1];
+  assert.equal(verdict.cancel.superseded, true);
+  assert.equal(verdict.cancel.supersededByEntryId, 'entry-next');
+  assert.equal(verdict.cancel.reason, 'superseded_by_immediate_insert');
+  assert.equal(verdict.cancel.originDispatchId, 'dispatch-live');
+  assert.equal(verdict.cancel.successorRetainsDispatch, true);
+  assert.equal(result.superseded, true);
+  assert.equal(result.successorRetainsDispatch, true);
+  assert.equal(result.dispatchSettlement, null);
 });
 
 test('a partial assistant reply is persisted once, and a cancel never advances the FIFO', async () => {

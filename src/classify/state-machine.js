@@ -301,6 +301,7 @@ function createClassifyStateMachine(rawDeps) {
       ? retryNotice(cs._lastApiErrorDecision) : '';
     const cancelMsg = !cancel ? ''
       : cancel.runnerStopped === false ? '取消失败：任务未能停止'
+        : cancel.superseded === true ? '已切换到立即发送的消息'
         : finalGoal ? `已取消：${finalGoal}` : '任务已取消';
     const waitMsg = cancelMsg || (error ? (policyMessage || 'API 异常，未自动重试')
       : finalGoal ? `等待：${finalGoal}` : '等待交互');
@@ -326,6 +327,8 @@ function createClassifyStateMachine(rawDeps) {
         cancelReason: cancel.reason || 'user_cancelled',
         cancelSource: cancel.source || 'manual_cancel',
         cancelOperationId: cancel.operationId || null,
+        cancelSuperseded: cancel.superseded === true,
+        supersededByEntryId: cancel.supersededByEntryId || null,
       }
       : { classifyState: cls, endedAt: Date.now() });
     // Reset auto-continue guard on a plain W (user is in charge now). B/E keep their own flow.
@@ -989,7 +992,13 @@ function createClassifyStateMachine(rawDeps) {
       if (canonicalContinuation && prev.phase === 'done') prev.phase = 'planning';
       // Refresh persisted state: a continued turn means the closed-loop task
       // is still running (classify will refine shortly).
-      setTaskState(sessionName, { classifyState: 'P', cancelledAt: null, cancelReason: null });
+      setTaskState(sessionName, {
+        classifyState: 'P',
+        cancelledAt: null,
+        cancelReason: null,
+        cancelSuperseded: false,
+        supersededByEntryId: null,
+      });
       return prev;
     }
     // Preserve only an unfinished classify-refined legacy goal.
@@ -1001,6 +1010,7 @@ function createClassifyStateMachine(rawDeps) {
       goal: cs.currentTask.goal, phase: cs.currentTask.phase,
       startedAt: cs.currentTask.startedAt, endedAt: null,
       classifyState: 'P', cancelledAt: null, cancelReason: null,
+      cancelSuperseded: false, supersededByEntryId: null,
     });
     return cs.currentTask;
   }

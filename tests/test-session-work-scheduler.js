@@ -535,6 +535,132 @@ test('public FIFO exposes every pending kind and insertQueued marks exactly one 
   assert.equal((await claimOne(h)).id, last.entry.id);
 });
 
+test('insertQueued transfers task and dispatch lineage to the replacement turn atomically', async t => {
+  const h = fixture(t);
+  await h.outbox.enqueue({
+    id: 'operation:op-live:request',
+    sessionId: 's1',
+    payload: {
+      type: 'dispatch.request',
+      operationId: 'op-live',
+      message: 'dispatch body',
+      taskId: 'task-live',
+      taskStart: true,
+    },
+  });
+  await startClaim(h, await claimOne(h));
+
+  const queued = await h.scheduler.admit({
+    sessionId: 's1',
+    text: '立即继续',
+    idempotencyKey: 'replacement',
+  });
+  const inserted = await h.scheduler.insertQueued('s1', queued.entry.id);
+  assert.equal(inserted.ok, true);
+  assert.equal(inserted.inserted.inheritedLineage, true);
+  assert.equal(inserted.inserted.taskId, 'task-live');
+  assert.equal(inserted.inserted.originDispatchId, 'op-live');
+
+  const durable = await h.outbox.get(queued.entry.id);
+  assert.equal(durable.payload.taskId, null, 'the admitted payload hash remains unchanged');
+  assert.equal(Object.hasOwn(durable.payload, 'originDispatchId'), false,
+    'an empty lineage field must not change the legacy payload hash');
+  assert.deepEqual(
+    {
+      taskId: durable.turnLineage.taskId,
+      originDispatchId: durable.turnLineage.originDispatchId,
+      workKind: durable.turnLineage.workKind,
+      activeEntryId: durable.turnLineage.activeEntryId,
+    },
+    {
+      taskId: 'task-live',
+      originDispatchId: 'op-live',
+      workKind: 'continuation',
+      activeEntryId: 'operation:op-live:request',
+    },
+  );
+  const active = (await h.scheduler.status('s1')).active;
+  assert.equal(active.supersededByEntryId, queued.entry.id);
+  assert.equal(active.supersededOriginTransferred, true);
+
+  await h.scheduler.complete('s1', { classifyState: 'E' });
+  const released = await h.scheduler.status('s1');
+  assert.equal(released.lastDecision.action, 'superseded');
+  assert.equal(released.lastDecision.supersededByEntryId, queued.entry.id);
+  const replacement = await claimOne(h);
+  assert.equal(replacement.id, queued.entry.id);
+  const replacementActive = (await h.scheduler.status('s1')).active;
+  assert.equal(replacementActive.taskId, 'task-live');
+  assert.equal(replacementActive.originDispatchId, 'op-live');
+  assert.equal(replacementActive.workKind, 'continuation');
+});
+
+test('insertQueued never attaches an explicitly different task to the active dispatch', async t => {
+  const h = fixture(t);
+  await h.outbox.enqueue({
+    id: 'operation:op-old:request',
+    sessionId: 's1',
+    payload: {
+      type: 'dispatch.request',
+      operationId: 'op-old',
+      message: 'old dispatch',
+      taskId: 'task-old',
+      taskStart: true,
+    },
+  });
+  await startClaim(h, await claimOne(h));
+  const queued = await h.scheduler.admit({
+    sessionId: 's1',
+    text: 'different task',
+    options: {
+      taskId: 'task-new',
+      taskStart: true,
+      taskSource: 'commander',
+    },
+    idempotencyKey: 'different-task',
+  });
+  const inserted = await h.scheduler.insertQueued('s1', queued.entry.id);
+  assert.equal(inserted.inserted.inheritedLineage, false);
+  assert.equal(inserted.inserted.taskId, 'task-new');
+  assert.equal(inserted.inserted.originDispatchId, null);
+  assert.equal((await h.scheduler.status('s1')).active.supersededOriginTransferred, false);
+
+  await h.scheduler.complete('s1', { classifyState: 'E' });
+  await claimOne(h);
+  const next = (await h.scheduler.status('s1')).active;
+  assert.equal(next.taskId, 'task-new');
+  assert.equal(next.originDispatchId, null);
+  assert.equal(next.workKind, 'task');
+});
+
+test('a second insert cannot create two replacement turns for one active attempt', async t => {
+  const h = fixture(t);
+  await h.outbox.enqueue({
+    id: 'operation:op-once:request',
+    sessionId: 's1',
+    payload: {
+      type: 'dispatch.request', operationId: 'op-once', message: 'work',
+      taskId: 'task-once', taskStart: true,
+    },
+  });
+  await startClaim(h, await claimOne(h));
+  const first = await h.scheduler.admit({
+    sessionId: 's1', text: 'first replacement', idempotencyKey: 'first-replacement',
+  });
+  const second = await h.scheduler.admit({
+    sessionId: 's1', text: 'second replacement', idempotencyKey: 'second-replacement',
+  });
+  assert.equal((await h.scheduler.insertQueued('s1', first.entry.id)).ok, true);
+  const rejected = await h.scheduler.insertQueued('s1', second.entry.id);
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.code, 'active_supersession_in_progress');
+  assert.equal(rejected.supersededByEntryId, first.entry.id);
+  assert.equal((await h.outbox.get(first.entry.id)).directRun, true);
+  assert.equal((await h.outbox.get(second.entry.id)).directRun, true,
+    'ordinary direct input keeps its admission tag, but only the priority successor is promoted');
+  assert.equal((await h.outbox.get(second.entry.id)).turnLineage, undefined);
+});
+
 test('restart rebuilds the FIFO gate only from the recovered classify state', async t => {
   const h = fixture(t);
   await h.scheduler.admit({
