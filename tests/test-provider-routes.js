@@ -539,7 +539,7 @@ test('GET /api/providers attaches the persisted limit summary and freshness', as
   const { createProviderLimitCache } = require('../src/quota/provider-limit-cache');
   const { createLimitRecorder } = require('../src/quota/limit-cache-recorder');
   const dir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'multicc-provider-routes-'));
-  const cacheFile = path.join(dir, 'provider-limit-cache.json');
+  const cacheFile = path.join(dir, 'provider-limit-cache.db');
   const cache = createProviderLimitCache({ file: cacheFile, now: () => 1000 });
   // Seed one provider's last-known-good summary.
   cache.record('claude', 'claude-one', {
