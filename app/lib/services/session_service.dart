@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 
+import '../models/git_commit.dart';
 import '../models/message.dart';
 import 'settings_service.dart';
 
@@ -1022,5 +1023,65 @@ class SessionService {
       if (j is Map && j['error'] != null) return j['error'].toString();
     } catch (_) {}
     return null;
+  }
+
+  // ── Git history (server /api/git/*) ────────────────────────────────────────
+
+  /// Commit history for a session's worktree ([sessionId]) or a directory's
+  /// repo ([dirId]) - same params as the web manage git tree. `limit` clamps
+  /// to 100 server-side; [allBranches] adds `--all` so commits living only on
+  /// sibling worktree branches show too.
+  Future<List<GitCommit>> fetchGitLog({
+    String? dirId,
+    String? sessionId,
+    int limit = 50,
+    bool allBranches = false,
+  }) async {
+    final q = StringBuffer('limit=$limit');
+    if (dirId != null) {
+      q.write('&dirId=${Uri.encodeQueryComponent(dirId)}');
+    }
+    if (sessionId != null) {
+      q.write('&sessionId=${Uri.encodeQueryComponent(sessionId)}');
+    }
+    if (allBranches) q.write('&all=1');
+    final res = await http
+        .get(Uri.parse(_url('/api/git/log?$q')), headers: _headers)
+        .timeout(const Duration(seconds: 15));
+    if (res.statusCode >= 400) {
+      final err = _tryParseError(res.body);
+      throw Exception(err ?? '${res.statusCode}');
+    }
+    final commits = (jsonDecode(res.body) as Map)['commits'] as List? ?? [];
+    return commits
+        .map((e) => GitCommit.fromJson(Map<String, dynamic>.from(e as Map)))
+        .toList();
+  }
+
+  /// Diff + stat of one commit, resolved against the same repo as
+  /// [fetchGitLog]. `diff` is raw patch text (server caps it at 1MB and sets
+  /// `truncated` when it had to cut).
+  Future<GitCommitDiff> fetchGitCommitDiff({
+    String? dirId,
+    String? sessionId,
+    required String hash,
+  }) async {
+    final q = StringBuffer('hash=${Uri.encodeQueryComponent(hash)}');
+    if (dirId != null) {
+      q.write('&dirId=${Uri.encodeQueryComponent(dirId)}');
+    }
+    if (sessionId != null) {
+      q.write('&sessionId=${Uri.encodeQueryComponent(sessionId)}');
+    }
+    final res = await http
+        .get(Uri.parse(_url('/api/git/commit-diff?$q')), headers: _headers)
+        .timeout(const Duration(seconds: 20));
+    if (res.statusCode >= 400) {
+      final err = _tryParseError(res.body);
+      throw Exception(err ?? '${res.statusCode}');
+    }
+    return GitCommitDiff.fromJson(
+      jsonDecode(res.body) as Map<String, dynamic>,
+    );
   }
 }

@@ -752,10 +752,15 @@ class ChatProvider extends ChangeNotifier {
     required this.sessionCwd,
     SessionCli initialCli = SessionCli.claude,
     this.onSessionConfigChanged,
+    QuotaService? quotaService,
   }) : displayName = displayName ?? sessionName,
        dirName = dirName ?? '' {
     _cwd = sessionCwd;
     _cli = initialCli;
+    // Test seam: vendor quota fetches fire real HTTP against the configured
+    // host. A test can inject a stub here so those fetches complete without
+    // the network; null keeps the lazy on-first-use construction.
+    _quotaService = quotaService;
     _restoreRuntimeCache();
     _initService();
   }
@@ -1434,6 +1439,22 @@ class ChatProvider extends ChangeNotifier {
       _kimiErrorAt = 0;
       refreshVendorQuotas();
     }
+  }
+
+  /// A provider-only switch (PATCH /api/sessions/:id with provider/model while
+  /// staying on the same CLI): the server emits no cli_switched broadcast for
+  /// that, so nothing else re-learns the provider baseUrl. Re-learn it here so
+  /// the quota bars follow the switch immediately - the app mirror of the
+  /// web's updateProviderBtn() -> setProviderBaseUrl() call right after
+  /// saveSession (chat.js: "without this call the bar kept showing the OLD
+  /// provider until the next loadSessionModel()").
+  void applyProviderSwitch(SessionCliConfig config) {
+    _setProviderBaseUrl(config.providerBaseUrl ?? '');
+    final model = config.effectiveModel ?? config.model;
+    if (model != null && model.isNotEmpty) {
+      _statusText = 'Connected · $model';
+    }
+    notifyListeners();
   }
 
   /// An explicit CLI switch resets the per-CLI fetch backoffs: the account on
