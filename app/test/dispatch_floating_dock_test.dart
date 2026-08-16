@@ -267,6 +267,46 @@ void main() {
     handle.dispose();
   });
 
+  testWidgets('visible circle is 24dp inside the full 48dp hit box', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _host(DispatchFloatingDock(entries: _activeEntries, resolveName: resolve)),
+    );
+    await tester.pump();
+
+    // Hit/anchor box unchanged: ≥44dp touch, drag and a11y target, and the
+    // snapping/clamp math still anchors this box (top-left 10,456 default).
+    expect(tester.getSize(_icon), const Size(48, 48));
+    expect(tester.getTopLeft(_icon), const Offset(10, 456));
+
+    // The visible circle draws at half diameter, centred in the hit box.
+    final circle = find
+        .descendant(of: _icon, matching: find.byType(Material))
+        .first;
+    expect(tester.getSize(circle), const Size(24, 24));
+    expect(tester.getCenter(circle), tester.getCenter(_icon));
+    // Badge rides the small circle without swallowing it.
+    final badge = find.byKey(const Key('dispatch-dock-badge'));
+    expect(tester.getSize(badge).height, lessThan(24));
+    expect(tester.getSize(badge).height, greaterThanOrEqualTo(14));
+
+    // Tapping the transparent ring (outside the 24dp circle, inside the hit
+    // box) still expands - the enlarged target is real, not just declared.
+    await tester.tapAt(tester.getCenter(_icon) + const Offset(-20, 0));
+    await tester.pump();
+    expect(find.byKey(const Key('dispatch-dock-panel')), findsOneWidget);
+
+    // Dragging from the ring works too (drag still never expands; the slop
+    // absorption quirk is covered by the snap test - here only the side).
+    await tester.tapAt(const Offset(400, 10)); // collapse via barrier
+    await tester.pump();
+    await tester.drag(_icon, const Offset(60, -120));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('dispatch-dock-panel')), findsNothing);
+    expect(tester.getTopLeft(_icon).dx, 10); // still snaps left of centre
+  });
+
   testWidgets('panel anchors beside the icon and does not overflow', (
     tester,
   ) async {
