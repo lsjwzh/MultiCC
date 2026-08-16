@@ -282,4 +282,17 @@ void main() {
     expect(sourceText, isNot(contains('mgr.reportRunning(')));
     expect(sourceText, isNot(contains('mgr.reportStatuses(')));
   });
+
+  test('fleet session and task tabs use visually distinct icons', () {
+    final sourceText = File('lib/screens/main_shell.dart').readAsStringSync();
+    final start = sourceText.indexOf('Widget _buildTabBar()');
+    final end = sourceText.indexOf('\n  @override\n  Widget build', start);
+
+    expect(start, greaterThanOrEqualTo(0));
+    expect(end, greaterThan(start));
+    final tabBarSource = sourceText.substring(start, end);
+    expect(tabBarSource, contains('Icons.desktop_windows_outlined'));
+    expect(tabBarSource, contains('Icons.checklist_rounded'));
+    expect(tabBarSource, isNot(contains('Icons.dns_outlined')));
+  });
 }
