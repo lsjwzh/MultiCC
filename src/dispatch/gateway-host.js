@@ -404,6 +404,10 @@ function createGatewayHost(rawDeps) {
       ownerSessionId,
       resultSessionId: ownerSessionId,
       idempotencyKey: opts.idempotencyKey || null,
+      // Caller-precomputed id (async dispatches print it into the task text so
+      // the worker can receipt by id from any turn). Undefined -> the store
+      // generates one; null would defeat the default parameter, hence `||`.
+      operationId: opts.operationId || undefined,
       spec: {
         targetId,
         targetLabel: rec.label || '',
