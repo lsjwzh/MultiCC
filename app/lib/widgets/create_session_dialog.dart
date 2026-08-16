@@ -9,12 +9,14 @@ import 'package:flutter/material.dart';
 import '../i18n.dart';
 import '../models/message.dart';
 import '../models/agent_preset.dart';
+import '../models/provider_limit_label.dart';
 import '../services/settings_service.dart';
 import '../services/manage_service.dart';
 import '../services/qoder_models_service.dart';
 import '../theme.dart';
 import '../services/agent_preset_service.dart';
 import '../widgets/agent_preset_picker_sheet.dart';
+import '../widgets/provider_option.dart';
 
 // ── New-session dialog with role presets + provider->model linkage ───────────
 
@@ -494,6 +496,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
             const SizedBox(height: 4),
             DropdownButtonFormField<SessionCli>(
               value: _pickedCli,
+              isExpanded: true,
               dropdownColor: const Color(0xFF0f1115),
               style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
               decoration: sheetInputDecoration(),
@@ -566,6 +569,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
               const SizedBox(height: 4),
               DropdownButtonFormField<String>(
                 value: _pickedProvider ?? '',
+                isExpanded: true,
                 dropdownColor: const Color(0xFF0f1115),
                 style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
                 decoration: sheetInputDecoration(),
@@ -581,11 +585,16 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                   ..._providers.map(
                     (p) => DropdownMenuItem(
                       value: p['id'] as String,
-                      child: Text(
-                        '${p['id'] == _defaultProviderId ? t('defaultProviderPrefix') : ''}${p['name']}'
-                        '${p['isOfficial'] == true ? t('subscriptionSuffix') : ''}'
-                        '${(p['model'] as String? ?? '').isNotEmpty ? ' · ${p['model']}' : ''}',
-                        style: const TextStyle(color: Color(0xFFe7eaee)),
+                      child: ProviderOption(
+                        main:
+                            '${p['id'] == _defaultProviderId ? t('defaultProviderPrefix') : ''}${p['name']}'
+                            '${p['isOfficial'] == true ? t('subscriptionSuffix') : ''}'
+                            '${(p['model'] as String? ?? '').isNotEmpty ? ' · ${p['model']}' : ''}',
+                        detail: providerLimitDetail(p),
+                        mainStyle: const TextStyle(
+                          color: Color(0xFFe7eaee),
+                          fontSize: 13,
+                        ),
                       ),
                     ),
                   ),
@@ -607,6 +616,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
             const SizedBox(height: 4),
             DropdownButtonFormField<String>(
               value: _customModel ? '__custom__' : _pickedModel,
+              isExpanded: true,
               dropdownColor: const Color(0xFF0f1115),
               style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
               decoration: sheetInputDecoration(),
@@ -664,6 +674,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
               const SizedBox(height: 4),
               DropdownButtonFormField<String>(
                 value: _pickedEffort,
+                isExpanded: true,
                 dropdownColor: const Color(0xFF0f1115),
                 style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
                 decoration: sheetInputDecoration(),

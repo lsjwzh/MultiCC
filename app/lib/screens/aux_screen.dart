@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 
+import '../models/provider_limit_label.dart';
 import '../services/manage_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
+import '../widgets/provider_option.dart';
 import 'aux_history_screen.dart';
 
 /// AI 助手 (aux) 面板。聚合 aux 的配置、健康状态、重跑操作和任务历史入口——
@@ -259,7 +261,12 @@ class _AuxScreenState extends State<AuxScreen> {
             value: _providerId,
             hint: '请选择可调用的 Provider',
             items: _providersFor(_protocol)
-                .map((p) => DropdownMenuItem(value: p['id'] as String, child: Text(p['name']?.toString() ?? '')))
+                .map((p) => DropdownMenuItem(
+                    value: p['id'] as String,
+                    child: ProviderOption(
+                      main: p['name']?.toString() ?? '',
+                      detail: providerLimitDetail(p),
+                    )))
                 .toList(),
             onChanged: (v) => setState(() {
               _providerId = v ?? '';

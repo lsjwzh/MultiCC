@@ -12,6 +12,15 @@ import '../i18n.dart';
 ///
 /// [nowMs] injects a fixed clock for deterministic tests; defaults to now.
 String providerLimitLabel(Map<String, dynamic>? provider, {int? nowMs}) {
+  final detail = providerLimitDetail(provider, nowMs: nowMs);
+  return detail.isEmpty ? '' : ' · $detail';
+}
+
+/// The limit summary + freshness markers joined by ' · ' WITHOUT the leading
+/// separator that [providerLimitLabel] prepends for single-line suffix use.
+/// Two-line picker rows render this as their second line so the quota text is
+/// never eaten by a single-line ellipsis on narrow phones.
+String providerLimitDetail(Map<String, dynamic>? provider, {int? nowMs}) {
   final limit = provider?['limit'];
   if (limit is! Map) return '';
   final parts = <String>[];
@@ -28,7 +37,7 @@ String providerLimitLabel(Map<String, dynamic>? provider, {int? nowMs}) {
   if (limit['stale'] == true && summaryText.isNotEmpty) {
     parts.add(t('limitStale'));
   }
-  return parts.isEmpty ? '' : ' · ${parts.join(' · ')}';
+  return parts.join(' · ');
 }
 
 /// Locale-aware relative freshness. Reuses the existing justNow/secondsAgo/…
