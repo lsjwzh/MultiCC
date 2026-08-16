@@ -86,6 +86,7 @@
   function createLiveUi(options) {
     const opts = options || {};
     const doc = opts.document || global.document;
+    const win = opts.window || global;
     const messagesEl = opts.messagesEl;
     const translate = opts.translate || (key => key);
     const maybeScroll = opts.maybeScrollToBottom || (() => {});
@@ -98,6 +99,14 @@
     // danmaku row, notify the host with its task id so it can (best-effort)
     // request a real cancel. Absent → the ✕ button just clears the row locally.
     const onDanmakuDismiss = opts.onDanmakuDismiss || null;
+    // Placement store for the danmaku floating dock — bare localStorage keys,
+    // following the project convention (e.g. voiceOutputEnabled). Hosts may
+    // inject opts.storage; without one (and without a real localStorage, as in
+    // unit tests) persistence is simply disabled.
+    function dockStore() {
+      if (opts.storage) return opts.storage;
+      try { return global.localStorage || null; } catch (_) { return null; }
+    }
     // Optional host hook: manually declare this waiting turn succeeded. This is
     // a turn outcome, not a TaskBoard lifecycle mutation.
     const onMarkTurnSucceeded = opts.onMarkTurnSucceeded || null;
@@ -127,6 +136,24 @@
     const DANMAKU_MAX_ROWS = 8;
     const DANMAKU_AUTOHIDE_MS = 5000;
     const DANMAKU_STALE_MS = 180000;
+    // Draggable floating entry for the danmaku panel (web parity of the App's
+    // BackgroundTasksFloatingDock): a compact fab that only exists while task
+    // rows do, expands the anchored panel on tap, and snaps to the nearest
+    // screen edge on drag release. Placement persists as side + vertical
+    // fraction, written exactly once per release.
+    const danmakuDock = {
+      expanded: false,
+      sideRight: false,
+      dy: 1,             // 0 = top of the band, 1 = bottom (near the input bar)
+      drag: null,        // live pointer drag; null when snapped
+      suppressClick: false,
+      initialized: false,
+    };
+    const DANMAKU_DOCK_SIZE = 48;
+    const DANMAKU_DOCK_MARGIN = 10;
+    const DANMAKU_DOCK_TOP = 54;     // below the chat header
+    const DANMAKU_DOCK_BOTTOM = 120; // clears the input bar / voice controls
+    const DANMAKU_DOCK_DRAG_SLOP = 6;
     let thinkingEl = null;
     let disconnectBannerEl = null;
     let titleTimer = null;
@@ -333,6 +360,241 @@
       };
     }
 
+    // ── Danmaku floating dock ─────────────────────────────────────────────
+    // Mirrors the App's FloatingDock: the fab is the persistent compact entry
+    // (badge = running count), the panel only exists expanded, anchored to the
+    // fab. Pages without the fab DOM (older hosts / reduced fixtures) keep the
+    // legacy standalone-panel behaviour everywhere below.
+    function danmakuDockElements() {
+      return {
+        fab: doc.getElementById('danmaku-fab'),
+        badge: doc.getElementById('danmaku-fab-badge'),
+        scrim: doc.getElementById('danmaku-scrim'),
+      };
+    }
+
+    function dockBand() {
+      const width = win.innerWidth || 0;
+      const height = win.innerHeight || 0;
+      if (!width || !height) return null;
+      const top = DANMAKU_DOCK_TOP;
+      const bottom = Math.max(top, height - DANMAKU_DOCK_BOTTOM - DANMAKU_DOCK_SIZE);
+      return { width, height, top, bottom };
+    }
+
+    function runningDanmakuCount() {
+      let running = 0;
+      for (const row of danmaku.rows.values()) if (row.state === 'start') running += 1;
+      return running;
+    }
+
+    function clampNumber(value, min, max) {
+      return Math.min(max, Math.max(min, value));
+    }
+
+    // Snap position from side + fraction. Re-clamped on every call so a
+    // resize / rotation always keeps the fab inside the usable band.
+    function positionDanmakuFab() {
+      const { fab } = danmakuDockElements();
+      const band = dockBand();
+      if (!fab || !band) return;
+      const top = clampNumber(
+        band.top + clampNumber(danmakuDock.dy, 0, 1) * (band.bottom - band.top),
+        band.top, band.bottom,
+      );
+      fab.style.left = `${danmakuDock.sideRight
+        ? band.width - DANMAKU_DOCK_MARGIN - DANMAKU_DOCK_SIZE
+        : DANMAKU_DOCK_MARGIN}px`;
+      fab.style.top = `${Math.round(top)}px`;
+    }
+
+    // Anchor the expanded panel to the fab: left-snapped opens rightwards,
+    // right-snapped opens leftwards; when the fab sits low the panel flips
+    // above it. The width budget keeps the panel on screen on narrow viewports.
+    function positionDanmakuPanel() {
+      const elements = danmakuElements();
+      const { fab } = danmakuDockElements();
+      const band = dockBand();
+      if (!elements.panel || !fab || !band) return;
+      const fabLeft = Number.parseFloat(fab.style.left) || DANMAKU_DOCK_MARGIN;
+      const fabTop = Number.parseFloat(fab.style.top) || band.top;
+      const gap = 8;
+      const budget = Math.min(300, Math.max(220, band.width - 36));
+      let left = danmakuDock.sideRight
+        ? fabLeft - gap - budget
+        : fabLeft + DANMAKU_DOCK_SIZE + gap;
+      left = clampNumber(left, 8, Math.max(8, band.width - budget - 8));
+      elements.panel.style.left = `${Math.round(left)}px`;
+      elements.panel.style.right = 'auto';
+      elements.panel.style.maxWidth = `${budget}px`;
+      const panelHeight = 260; // head + max body height, conservative
+      const flipAbove = fabTop + panelHeight > band.height - DANMAKU_DOCK_MARGIN;
+      if (flipAbove) {
+        elements.panel.style.top = 'auto';
+        elements.panel.style.bottom = `${Math.round(band.height - fabTop + gap)}px`;
+      } else {
+        elements.panel.style.bottom = 'auto';
+        elements.panel.style.top = `${Math.round(fabTop)}px`;
+      }
+    }
+
+    function persistDanmakuDock() {
+      const store = dockStore();
+      if (!store) return;
+      try {
+        store.setItem('danmakuDockSide', danmakuDock.sideRight ? 'right' : 'left');
+        store.setItem('danmakuDockDy', String(danmakuDock.dy));
+      } catch (_) {}
+    }
+
+    // Drag release: pick the nearest horizontal edge from the live centre,
+    // renormalise the vertical fraction against the band, persist once.
+    function settleDanmakuDock() {
+      const drag = danmakuDock.drag;
+      danmakuDock.drag = null;
+      const band = dockBand();
+      const { fab } = danmakuDockElements();
+      if (fab) fab.classList.remove('dm-dragging');
+      if (!drag || !band) { positionDanmakuFab(); return; }
+      const centreX = drag.left + DANMAKU_DOCK_SIZE / 2;
+      danmakuDock.sideRight = centreX > band.width / 2;
+      const top = clampNumber(drag.top, band.top, band.bottom);
+      const span = band.bottom - band.top;
+      danmakuDock.dy = span > 0 ? clampNumber((top - band.top) / span, 0, 1) : 1;
+      persistDanmakuDock();
+      positionDanmakuFab();
+      if (danmakuDock.expanded) positionDanmakuPanel();
+    }
+
+    function expandDanmakuDock() {
+      const elements = danmakuElements();
+      const { fab, scrim } = danmakuDockElements();
+      if (!fab || danmakuDock.expanded || !danmaku.rows.size) return;
+      danmakuDock.expanded = true;
+      fab.setAttribute('aria-expanded', 'true');
+      if (scrim) scrim.style.display = 'block';
+      if (elements.panel) {
+        elements.panel.style.display = 'flex';
+        elements.panel.style.opacity = '1';
+        elements.panel.classList.remove('dm-collapsed');
+        danmaku.collapsed = false;
+        if (elements.button) elements.button.textContent = '▾';
+      }
+      refreshDanmakuMeta();
+      positionDanmakuPanel();
+    }
+
+    function collapseDanmakuDock() {
+      const elements = danmakuElements();
+      const { fab, scrim } = danmakuDockElements();
+      if (!fab || !danmakuDock.expanded) return;
+      danmakuDock.expanded = false;
+      fab.setAttribute('aria-expanded', 'false');
+      if (scrim) scrim.style.display = 'none';
+      if (elements.panel) elements.panel.style.display = 'none';
+    }
+
+    function toggleDanmakuDock() {
+      if (danmakuDock.expanded) collapseDanmakuDock();
+      else expandDanmakuDock();
+    }
+
+    function initDanmakuDock() {
+      if (danmakuDock.initialized) return;
+      const { fab } = danmakuDockElements();
+      if (!fab) return;
+      danmakuDock.initialized = true;
+      const store = dockStore();
+      if (store) {
+        try {
+          const side = store.getItem('danmakuDockSide');
+          const dy = Number.parseFloat(store.getItem('danmakuDockDy'));
+          danmakuDock.sideRight = side === 'right';
+          if (Number.isFinite(dy)) danmakuDock.dy = clampNumber(dy, 0, 1);
+        } catch (_) {}
+      }
+      positionDanmakuFab();
+      refreshDanmakuMeta();
+
+      fab.addEventListener('pointerdown', event => {
+        if (event.button !== undefined && event.button !== 0) return;
+        const band = dockBand();
+        if (!band) return;
+        const left = Number.parseFloat(fab.style.left) || DANMAKU_DOCK_MARGIN;
+        const top = Number.parseFloat(fab.style.top) || band.top;
+        danmakuDock.drag = {
+          pointerId: event.pointerId,
+          startX: event.clientX,
+          startY: event.clientY,
+          left,
+          top,
+          moved: false,
+        };
+        try { if (typeof fab.setPointerCapture === 'function') fab.setPointerCapture(event.pointerId); } catch (_) {}
+      });
+      fab.addEventListener('pointermove', event => {
+        const drag = danmakuDock.drag;
+        if (!drag || event.pointerId !== undefined && event.pointerId !== drag.pointerId) return;
+        const band = dockBand();
+        if (!band) return;
+        const dx = (event.clientX || 0) - (drag.startX || 0);
+        const dy = (event.clientY || 0) - (drag.startY || 0);
+        if (!drag.moved) {
+          if (Math.hypot(dx, dy) < DANMAKU_DOCK_DRAG_SLOP) return;
+          drag.moved = true;
+          fab.classList.add('dm-dragging');
+        }
+        // Incremental move with the pointer base rolled forward each event,
+        // clamped to the viewport so the fab tracks the finger without jumps.
+        drag.left = clampNumber(drag.left + dx, DANMAKU_DOCK_MARGIN, band.width - DANMAKU_DOCK_MARGIN - DANMAKU_DOCK_SIZE);
+        drag.top = clampNumber(drag.top + dy, band.top, band.bottom);
+        drag.startX = event.clientX || drag.startX;
+        drag.startY = event.clientY || drag.startY;
+        fab.style.left = `${Math.round(drag.left)}px`;
+        fab.style.top = `${Math.round(drag.top)}px`;
+      });
+      const finishDrag = event => {
+        const drag = danmakuDock.drag;
+        if (!drag || event.pointerId !== undefined && event.pointerId !== drag.pointerId) return;
+        try { if (typeof fab.releasePointerCapture === 'function' && event.pointerId !== undefined) fab.releasePointerCapture(event.pointerId); } catch (_) {}
+        if (drag.moved) {
+          // A finished drag must not toggle the panel — the click that the
+          // browser fires after pointerup on the same element is suppressed.
+          settleDanmakuDock();
+          danmakuDock.suppressClick = true;
+          setTimer(() => { danmakuDock.suppressClick = false; }, 0);
+        } else {
+          danmakuDock.drag = null;
+        }
+      };
+      fab.addEventListener('pointerup', finishDrag);
+      fab.addEventListener('pointercancel', () => {
+        if (danmakuDock.drag) settleDanmakuDock();
+      });
+      // Keyboard parity: Enter/Space come through as click on a <button>.
+      fab.addEventListener('click', () => {
+        if (danmakuDock.suppressClick) return;
+        toggleDanmakuDock();
+      });
+      const onEscape = event => {
+        if (event && event.key !== 'Escape') return;
+        if (danmakuDock.drag) settleDanmakuDock();
+        else if (danmakuDock.expanded) collapseDanmakuDock();
+      };
+      fab.addEventListener('keydown', onEscape);
+      const elements = danmakuElements();
+      if (elements.panel) elements.panel.addEventListener('keydown', onEscape);
+      const { scrim } = danmakuDockElements();
+      if (scrim) scrim.addEventListener('click', () => collapseDanmakuDock());
+      // Interrupted drags (alt-tab etc.) settle instead of hanging mid-air;
+      // resizes re-clamp the fab and re-anchor an open panel.
+      win.addEventListener('blur', () => { if (danmakuDock.drag) settleDanmakuDock(); });
+      win.addEventListener('resize', () => {
+        positionDanmakuFab();
+        if (danmakuDock.expanded) positionDanmakuPanel();
+      });
+    }
+
     function hasRunningDanmaku() {
       for (const row of danmaku.rows.values()) if (row.state === 'start') return true;
       return false;
@@ -344,14 +606,40 @@
       elements.dot.className = hasRunningDanmaku() ? 'dm-dot-running' : 'dm-dot-idle';
       elements.count.textContent = (danmaku.collapsed || !danmaku.rows.size) ? '' : String(danmaku.rows.size);
       elements.title.textContent = danmaku.collapsed ? `${danmaku.rows.size} 后台任务` : '后台任务';
+      // Dock parity: the fab badge counts running rows only, and the label
+      // carries the count so state never rides on colour alone.
+      const { fab, badge } = danmakuDockElements();
+      const running = runningDanmakuCount();
+      if (fab) {
+        const label = `后台任务 · ${running} 个进行中`;
+        fab.setAttribute('aria-label', label);
+        fab.setAttribute('title', label);
+      }
+      if (badge) {
+        if (running > 0) {
+          badge.textContent = running > 99 ? '99+' : String(running);
+          badge.style.display = 'block';
+        } else {
+          badge.textContent = '';
+          badge.style.display = 'none';
+        }
+      }
     }
 
     function showDanmaku() {
       const elements = danmakuElements();
-      if (!elements.panel) return;
+      const { fab } = danmakuDockElements();
+      if (!elements.panel && !fab) return;
       clearTimer(danmaku.fadeTimer);
-      elements.panel.style.display = 'flex';
-      elements.panel.style.opacity = '1';
+      // With the dock present the fab is the persistent surface; the panel is
+      // only shown expanded. Without one, the legacy standalone panel shows.
+      if (fab) {
+        fab.style.display = 'flex';
+        positionDanmakuFab();
+      } else {
+        elements.panel.style.display = 'flex';
+        elements.panel.style.opacity = '1';
+      }
     }
 
     function scheduleDanmakuHide() {
@@ -360,10 +648,21 @@
       if (danmaku.collapsed || hasRunningDanmaku()) return;
       danmaku.hideTimer = setTimer(() => {
         const elements = danmakuElements();
-        if (!elements.panel) return;
-        elements.panel.style.opacity = '0';
+        const { fab, scrim } = danmakuDockElements();
+        if (!elements.panel && !fab) return;
+        // All rows terminal → the whole dock folds away (fab included), the
+        // same convergence the legacy panel had with its own card.
+        danmakuDock.expanded = false;
+        if (fab) {
+          fab.setAttribute('aria-expanded', 'false');
+          fab.style.display = 'none';
+          fab.style.opacity = '1';
+        } else {
+          elements.panel.style.opacity = '0';
+        }
+        if (scrim) scrim.style.display = 'none';
         danmaku.fadeTimer = setTimer(() => {
-          elements.panel.style.display = 'none';
+          if (elements.panel) elements.panel.style.display = 'none';
           for (const row of danmaku.rows.values()) clearTimer(row.staleTimer);
           danmaku.rows.clear();
           if (elements.body) elements.body.textContent = '';
@@ -396,6 +695,8 @@
     function toggleDanmakuCollapse() {
       const elements = danmakuElements();
       if (!elements.panel) return;
+      // Dock mode: the ▾ affordance folds the panel back into the fab.
+      if (danmakuDockElements().fab) { collapseDanmakuDock(); return; }
       danmaku.collapsed = !danmaku.collapsed;
       elements.panel.classList.toggle('dm-collapsed', danmaku.collapsed);
       elements.button.textContent = danmaku.collapsed ? '▸' : '▾';
@@ -405,6 +706,7 @@
     }
 
     function initDanmaku() {
+      initDanmakuDock();
       if (danmaku.initialized) return;
       const elements = danmakuElements();
       if (!elements.panel) return;
