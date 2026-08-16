@@ -757,7 +757,7 @@ const persistedSessions = _state.persistedSessions;
 // producers feed it via src/quota/limit-cache-recorder.js.
 const { createProviderLimitCache } = require('./src/quota/provider-limit-cache');
 const { createLimitRecorder } = require('./src/quota/limit-cache-recorder');
-const providerLimitCache = createProviderLimitCache({ file: MULTICC_PATHS.providerLimitCacheFile });
+const providerLimitCache = createProviderLimitCache({ file: MULTICC_PATHS.providerLimitDbFile, legacyJsonFile: MULTICC_PATHS.providerLimitCacheFile });
 const limitRecorder = createLimitRecorder({ cache: providerLimitCache, persistedSessions, providers });
 // Host-injected store port. Production delegates directly to StateStore's
 // atomic tmp+fsync+rename write. Isolated integration tests may place a marker

@@ -96,7 +96,11 @@ function createPaths({ dataDir } = {}) {
     providerDefaultsFile: path.join(root, 'provider-defaults.json'),
     // Last-known-good per-provider limit/usage summaries, persisted so the
     // Web/App provider pickers can show quota freshness after a restart,
-    // before any live poll has re-run. See src/quota/provider-limit-cache.js.
+    // before any live poll has re-run. The SQLite DB is the sole live
+    // authority; providerLimitCacheFile is the legacy JSON retained only as a
+    // one-time migration source (renamed to *.migrated after import). See
+    // src/quota/provider-limit-cache.js.
+    providerLimitDbFile: path.join(root, 'provider-limit-cache.db'),
     providerLimitCacheFile: path.join(root, 'provider-limit-cache.json'),
     scheduledTasksFile: path.join(root, 'scheduled_tasks.json'),
     taskBoardFile: path.join(root, 'task_board.json'),
