@@ -1,6 +1,7 @@
 'use strict';
 
 const { safeCode, sanitizePublicText } = require('../http/public-safety');
+const { STALE_MS_DEFAULT } = require('../quota/provider-limit-cache');
 
 const DEFAULT_PROVIDER_IDS = Object.freeze({ claude: null, codex: null });
 const MAX_PROBE_CANDIDATES = 20;
@@ -248,15 +249,56 @@ function createProviderRoutes(rawDeps) {
       const appType = (req.query.appType || '').trim();
       const cli = (req.query.cli || '').trim();
       const ccSwitchStatus = deps.providers.getCcSwitchStatus();
+      const providers = deps.providers.listProviders(
+        appType === 'claude' || appType === 'codex' ? appType : undefined,
+      ).filter(provider => !cli || deps.providers.providerSupportsCli(provider, cli));
+      const nowMs = now();
+      const staleAfterMs = deps.limitCacheStaleMs || STALE_MS_DEFAULT;
+      // Attach the persistent last-known-good limit summary (if any) to each
+      // provider, and prune entries whose provider identity vanished (deleted /
+      // renamed). `limit` is a safe projection — the cache never stores
+      // credentials, and only summary/format fields are exposed here.
+      let limits = null;
+      const cache = deps.providerLimitCache;
+      const recorder = deps.limitRecorder;
+      if (cache) {
+        try {
+          if (recorder) cache.prune(recorder.liveKeys());
+          limits = {};
+          for (const provider of providers) {
+            const entry = cache.get(provider.appType, provider.id);
+            limits[`${provider.appType}:${provider.id}`] = entry ? {
+              kind: entry.kind,
+              status: entry.status,
+              summary: entry.summary,
+              // Compact summary text (placeholders already stripped) — the
+              // live bar text is intentionally not exposed; it carries
+              // client-expanded {cd}/{ago} markers that a picker shouldn't
+              // re-render.
+              summaryText: entry.summaryText,
+              fetchedAt: entry.fetchedAt,
+              updatedAt: entry.updatedAt,
+              lastError: entry.lastError,
+              lastErrorAt: entry.lastErrorAt,
+              stale: !!(entry.fetchedAt != null && nowMs - entry.fetchedAt > staleAfterMs),
+            } : null;
+          }
+        } catch (_) { /* cache must never break the catalog */ }
+      }
+      const providersWithLimits = limits
+        ? providers.map(provider => ({ ...provider, limit: limits[`${provider.appType}:${provider.id}`] || null }))
+        : providers;
       res.json({
         available: true,
         ccSwitchAvailable: ccSwitchStatus.available,
         ccSwitchStatus,
-        providers: deps.providers.listProviders(
-          appType === 'claude' || appType === 'codex' ? appType : undefined,
-        ).filter(provider => !cli || deps.providers.providerSupportsCli(provider, cli)),
+        providers: providersWithLimits,
         defaults: providerDefaults,
         stats: deps.providers.getProviderUsageStats().stats,
+        // Old clients ignore extra top-level fields; new clients use this to
+        // decide whether a provider's `limit` counts as fresh without duplicating
+        // the staleness constant in two codebases.
+        limitCacheStaleMs: cache ? staleAfterMs : null,
       });
     });
 

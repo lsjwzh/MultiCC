@@ -12,6 +12,8 @@
 //   providers         — src/providers (appTypeForCli, getProviderLimitTarget)
 //   chatBroadcast     — (sessionName, payload) => void
 //   createPoller      — factory from src/usage-limit-poller (injectable for tests)
+//   recordLimit       — optional (sessionName, dto) => void — persists the DTO
+//                       into the provider-limit cache (see limit-cache-recorder)
 
 const {
   normalizeWindowEvent, windowEventBar, normalizeBalance, balanceBar,
@@ -19,7 +21,7 @@ const {
 } = require('../quota/quota-bar-view');
 const { rememberClaudeLive, renderClaudeBar } = require('../quota/claude-bar-state');
 
-function createUsageLimitWiring({ persistedSessions, providers, chatBroadcast, createPoller }) {
+function createUsageLimitWiring({ persistedSessions, providers, chatBroadcast, createPoller, recordLimit }) {
   if (!persistedSessions || !providers || typeof chatBroadcast !== 'function' || typeof createPoller !== 'function') {
     throw new Error('createUsageLimitWiring requires persistedSessions, providers, chatBroadcast, createPoller');
   }
@@ -38,6 +40,9 @@ function createUsageLimitWiring({ persistedSessions, providers, chatBroadcast, c
       // OpenCode Go meters its own subscription separately from whatever it
       // routes to, so a routed provider's window says whose it is.
       const routed = (persistedSessions.get(sessionName) || {}).cli === 'opencode';
+      if (recordLimit) {
+        try { recordLimit(sessionName, dto); } catch (e) { /* cache write must not break chat */ }
+      }
       if (dto.kind === 'window') {
         const info = {
           rateLimitType: dto.rateLimitType, status: dto.status,

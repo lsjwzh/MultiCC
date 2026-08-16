@@ -46,19 +46,12 @@
   "mergeWorktree": "合并 worktree",
   "mergeWorktreeReady": "合并 worktree（有未提交改动，可合并回 {base}）",
   "viewDiff": "查看 Diff",
-
   "gitLog": "查看 Git 记录",
-
   "gitLogTitle": "Git 记录",
-
   "gitLogEmpty": "（无提交记录）",
-
   "gitLogLoadFailed": "加载 Git 记录失败",
-
   "gitLogAllBranches": "全部分支",
-
   "gitLogDiffTruncated": "diff 超过 1MB，已截断显示",
-
   "gitLogEmptyDiff": "（无变更内容）",
   "baseBranch": "基分支",
   "leaveNote": "留言",
@@ -139,6 +132,9 @@
   "sessionNotLoaded": "会话信息未加载",
   "noProviders": "暂无可用 provider，请到「设置 → Provider 配置」导入或新建。",
   "providerPickerTitle": "切换该会话的 Provider（下一轮生效）",
+  "limitUpdatedAgo": "更新于 {ago}",
+  "limitStale": "过期",
+  "limitFetchFailed": "查询失败",
   "defaultLogin": "默认登录 / 订阅",
   "defaultLoginDesc": "不覆盖，走本机登录",
   "subscription": "订阅",

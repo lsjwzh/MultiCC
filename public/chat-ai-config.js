@@ -295,6 +295,46 @@
     return provider.name + protocol + endpoint + (includeModel && provider.model ? ' · ' + provider.model : '');
   }
 
+  // Relative freshness for the cached limit, reusing the quota bar's resolver
+  // (public/quota-bar-view.js) so picker and quota bars age the same way.
+  // Resolved lazily from the window global (browser) or require (tests) exactly
+  // like chat-rate-limit.js does, so the two never drift.
+  function quotaBarView() {
+    if (root && root.QuotaBarView) return root.QuotaBarView;
+    if (typeof require === 'function') {
+      try { return require('./quota-bar-view'); } catch (_) { return null; }
+    }
+    return null;
+  }
+  function limitAgoText(tsMs, nowMs) {
+    const view = quotaBarView();
+    if (view && typeof view.relativeAgo === 'function') {
+      const ago = view.relativeAgo(tsMs, nowMs);
+      return ago || '';
+    }
+    return '';
+  }
+
+  // Compact suffix appended to a provider option: the cached limit summary plus
+  // freshness / failure / stale markers. Returns '' when there is no cache entry
+  // (never queried, cache disabled, or a provider that predates the cache) so the
+  // option reads exactly as before — no data is a clean, intentional absence.
+  // `tr` is the active translator (tt / window.t), which accepts {params}.
+  function providerLimitLabel(provider, tr, nowMs) {
+    const limit = provider && provider.limit;
+    if (!limit) return '';
+    const parts = [];
+    if (limit.summaryText) parts.push(limit.summaryText);
+    if (limit.lastError) {
+      parts.push(typeof tr === 'function' ? tr('limitFetchFailed') : '查询失败');
+    } else if (limit.fetchedAt) {
+      const ago = limitAgoText(limit.fetchedAt, nowMs);
+      if (ago) parts.push(typeof tr === 'function' ? tr('limitUpdatedAgo', { ago }) : `更新于 ${ago}`);
+    }
+    if (limit.stale && limit.summaryText) parts.push(typeof tr === 'function' ? tr('limitStale') : '过期');
+    return parts.length ? ` · ${parts.join(' · ')}` : '';
+  }
+
   function documentOf(options) {
     const document = options && options.document || (root && root.document);
     if (!document) throw new Error('Chat AI config picker requires a document');
@@ -400,7 +440,7 @@
       for (const provider of list || []) {
         const option = document.createElement('option');
         option.value = provider.id;
-        option.textContent = providerLabel(provider, true);
+        option.textContent = providerLabel(provider, true) + providerLimitLabel(provider, t, Date.now());
         select.appendChild(option);
       }
       select.value = current || '';
@@ -492,7 +532,7 @@
       for (const provider of providersOf(state)) {
         const option = document.createElement('option');
         option.value = provider.id;
-        option.textContent = providerLabel(provider, true);
+        option.textContent = providerLabel(provider, true) + providerLimitLabel(provider, state.translate, Date.now());
         providerSelect.appendChild(option);
       }
       providerSelect.value = config.provider || '';
@@ -524,7 +564,7 @@
         if (cli === 'codex' && provider.isOfficial) continue;
         const option = document.createElement('option');
         option.value = provider.id;
-        option.textContent = providerLabel(provider, false);
+        option.textContent = providerLabel(provider, false) + providerLimitLabel(provider, state.translate, Date.now());
         subProviderSelect.appendChild(option);
       }
       const initialSubagent = config.subagent && config.subagent.providerId ? config.subagent : null;
@@ -735,6 +775,7 @@
     modelChoiceLabel,
     modelDisplayName,
     providerLabel,
+    providerLimitLabel,
     showLoadingOverlay,
     showEffortPicker,
     showProviderPicker,

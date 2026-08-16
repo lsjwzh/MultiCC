@@ -332,6 +332,7 @@ async function fetchKimiUsage(preferHost, nowMs = Date.now(), deps = {}) {
 function mountKimiQuotaRoutes(app, options = {}) {
   if (!app || typeof app.get !== 'function') return;
   const usageDeps = options.usageDeps || {};
+  const recordVendor = typeof options.recordVendor === 'function' ? options.recordVendor : null;
   app.get('/api/kimi/quota', async (req, res) => {
     try {
       const preferHost = typeof req.query?.host === 'string' ? req.query.host : '';
@@ -344,9 +345,15 @@ function mountKimiQuotaRoutes(app, options = {}) {
       // The bar is rendered here, once, so the web and the app display the same
       // string rather than each formatting this JSON their own way.
       const cached = rememberKimiBalance(result);
+      if (recordVendor) {
+        try { recordVendor({ kind: 'kimi', result, host: preferHost, opts: { cached } }); } catch (_) {}
+      }
       res.status(httpStatus).json({ ...result, bar: renderQuotaBar('kimi', result, { cached }) });
     } catch (_) {
       const result = { status: 'unavailable', error: 'kimi quota fetch failed' };
+      if (recordVendor) {
+        try { recordVendor({ kind: 'kimi', result, host: req.query?.host || '' }); } catch (_) {}
+      }
       res.status(500).json({ ...result, bar: renderQuotaBar('kimi', result, { cached: lastKimiWithBalance }) });
     }
   });

@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../i18n.dart';
 import '../models/agent_preset.dart';
 import '../models/message.dart';
+import '../models/provider_limit_label.dart';
 import '../providers/session_manager.dart';
 import 'agent_preset_picker_sheet.dart';
 import '../services/agent_preset_service.dart';
@@ -329,18 +330,28 @@ class AIConfigSheetState extends State<AIConfigSheet> {
               const SizedBox(height: 5),
               DropdownButtonFormField<String>(
                 value: _provider,
+                isExpanded: true,
                 dropdownColor: AppColors.panel,
                 decoration: _sheetInputDecoration(),
                 style: const TextStyle(color: AppColors.text, fontSize: 13),
                 items: [
                   const DropdownMenuItem(value: '', child: Text('默认登录 / 订阅')),
                   if (includeCurrentProvider)
-                    DropdownMenuItem(value: _provider, child: Text(_provider)),
+                    DropdownMenuItem(
+                      value: _provider,
+                      child: Text(
+                        _provider,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
                   ...widget.providers.map(
                     (p) => DropdownMenuItem(
                       value: p['id']?.toString() ?? '',
                       child: Text(
-                        '${p['name'] ?? p['id']}${p['model'] != null && p['model'].toString().isNotEmpty ? ' · ${p['model']}' : ''}',
+                        '${p['name'] ?? p['id']}${p['model'] != null && p['model'].toString().isNotEmpty ? ' · ${p['model']}' : ''}${providerLimitLabel(p)}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
                   ),
@@ -479,6 +490,7 @@ class AIConfigSheetState extends State<AIConfigSheet> {
               const SizedBox(height: 5),
               DropdownButtonFormField<String>(
                 value: _subProvider,
+                isExpanded: true,
                 dropdownColor: AppColors.panel,
                 decoration: _sheetInputDecoration(),
                 style: const TextStyle(color: AppColors.text, fontSize: 13),
@@ -490,7 +502,9 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                         (p) => DropdownMenuItem(
                           value: p['id']?.toString() ?? '',
                           child: Text(
-                            '${p['name'] ?? p['id']}${p['model'] != null && p['model'].toString().isNotEmpty ? ' · ${p['model']}' : ''}',
+                            '${p['name'] ?? p['id']}${p['model'] != null && p['model'].toString().isNotEmpty ? ' · ${p['model']}' : ''}${providerLimitLabel(p)}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
                       ),

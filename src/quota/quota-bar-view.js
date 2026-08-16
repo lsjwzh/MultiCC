@@ -950,6 +950,24 @@ function idleQuotaBars() {
   return bars;
 }
 
+/**
+ * A persisted, client-agnostic fingerprint of a quota bar's text. The live bar
+ * carries client-expanded placeholders (`{cd:<ms>}` countdown, `{ago:<ms>}`
+ * relative time) and a trailing `⟳ 刷新` action segment that are meaningless
+ * when the text is stored and re-shown inside a provider picker. Stripping them
+ * yields a compact, sortable summary (e.g. `5h 20% 1.2h · 1wk 50% 3d 5h`) that
+ * both the provider-limit cache and the Web/App selectors can render verbatim.
+ */
+function compactBarText(text) {
+  if (!text) return '';
+  return String(text)
+    .replace(/\{[a-z]+:\d+\}/g, '')
+    .replace(/\s*⟳.*$/g, '')
+    // Split on '·' and drop empty cells so a stripped placeholder or the
+    // refresh action never leaves a doubled / dangling separator behind.
+    .split('·').map(s => s.trim()).filter(Boolean).join(' · ');
+}
+
 module.exports = {
   renderQuotaBar,
   idleQuotaBars,
@@ -961,5 +979,6 @@ module.exports = {
   labelRoutedProvider,
   labelRoutedBalance,
   arkPlanFromBaseUrl,
+  compactBarText,
   COLOR,
 };

@@ -44,19 +44,12 @@
   "mergeWorktree": "Merge Worktree",
   "mergeWorktreeReady": "Merge Worktree（uncommitted changes, ready to merge into {base}）",
   "viewDiff": "View Diff",
-
   "gitLog": "Git history",
-
   "gitLogTitle": "Git history",
-
   "gitLogEmpty": "(no commits)",
-
   "gitLogLoadFailed": "Failed to load git history",
-
   "gitLogAllBranches": "all branches",
-
   "gitLogDiffTruncated": "diff exceeds 1MB - truncated",
-
   "gitLogEmptyDiff": "(no changes)",
   "baseBranch": "base branch",
   "leaveNote": "Note",
@@ -113,6 +106,9 @@
   "sessionNotLoaded": "Session info not loaded",
   "noProviders": "No providers available. Go to Settings → Providers to import or create one.",
   "providerPickerTitle": "Choose a Provider for this session (applies next turn)",
+  "limitUpdatedAgo": "updated {ago}",
+  "limitStale": "stale",
+  "limitFetchFailed": "fetch failed",
   "defaultLogin": "Default Login / Subscription",
   "defaultLoginDesc": "No override, use local login",
   "subscription": "Subscription",
