@@ -8,6 +8,7 @@ import '../models/message.dart';
 import '../models/provider_limit_label.dart';
 import '../providers/session_manager.dart';
 import 'agent_preset_picker_sheet.dart';
+import 'provider_option.dart';
 import '../services/agent_preset_service.dart';
 import '../services/manage_service.dart';
 import '../services/qoder_models_service.dart';
@@ -348,10 +349,10 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                   ...widget.providers.map(
                     (p) => DropdownMenuItem(
                       value: p['id']?.toString() ?? '',
-                      child: Text(
-                        '${p['name'] ?? p['id']}${p['model'] != null && p['model'].toString().isNotEmpty ? ' · ${p['model']}' : ''}${providerLimitLabel(p)}',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
+                      child: ProviderOption(
+                        main:
+                            '${p['name'] ?? p['id']}${p['model'] != null && p['model'].toString().isNotEmpty ? ' · ${p['model']}' : ''}',
+                        detail: providerLimitDetail(p),
                       ),
                     ),
                   ),
@@ -501,10 +502,10 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                       .map(
                         (p) => DropdownMenuItem(
                           value: p['id']?.toString() ?? '',
-                          child: Text(
-                            '${p['name'] ?? p['id']}${p['model'] != null && p['model'].toString().isNotEmpty ? ' · ${p['model']}' : ''}${providerLimitLabel(p)}',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
+                          child: ProviderOption(
+                            main:
+                                '${p['name'] ?? p['id']}${p['model'] != null && p['model'].toString().isNotEmpty ? ' · ${p['model']}' : ''}',
+                            detail: providerLimitDetail(p),
                           ),
                         ),
                       ),

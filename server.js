@@ -2115,7 +2115,7 @@ const {
   providers,
   getPort: () => PORT,
   getClaudeOfficialViaProxy: () => CLAUDE_OFFICIAL_VIA_PROXY,
-  executeAuxHttp,
+  executeAuxHttp, providerLimitCache,
   broadcast: broadcastTo,
 });
 apiErrorAuxQueue = auxQueue;

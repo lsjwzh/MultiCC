@@ -485,3 +485,71 @@ test('POST /api/aux/cancel cancels an in-flight task by id', async () => {
   rejectTransport(new Error('provider failed after cancel'));
   await assert.rejects(pending, error => error && error.cancelled === true);
 });
+
+test('GET /api/aux/config attaches the persisted limit summary + freshness from real SQLite rows', async () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const os = require('node:os');
+  const { createProviderLimitCache } = require('../src/quota/provider-limit-cache');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-aux-limit-'));
+  const cache = createProviderLimitCache({ file: path.join(dir, 'provider-limit-cache.db'), now: () => 1000 });
+  // Seed two different providers with different summaries + freshness.
+  cache.record('claude', 'claude-one', {
+    kind: 'window',
+    summary: { kind: 'window', provider: 'claude', status: 'allowed', usedPercentage: 20 },
+    summaryText: '5h 80%',
+    barText: '5h 80% {cd:123}',
+    fetchedAt: 900,
+  });
+  cache.record('codex', 'codex-one', {
+    kind: 'window',
+    summary: { kind: 'window', provider: 'codex', status: 'allowed', usedPercentage: 60 },
+    summaryText: '1d 40%',
+    fetchedAt: 100,
+  });
+  const harness = createHarness({
+    providers: {
+      listProviders(appType) {
+        return appType === 'codex'
+          ? [{ id: 'codex-one', appType: 'codex', name: 'Codex One', modelOptions: ['gpt-test'] }]
+          : [{ id: 'claude-one', appType: 'claude', name: 'Claude One', modelOptions: ['claude-test'] }];
+      },
+      resolveAuxHttpTarget(protocol, providerId) {
+        if (providerId === 'unavailable') return { available: false, reason: 'no endpoint' };
+        return {
+          available: true,
+          wireApi: protocol === 'openai' ? 'responses' : 'messages',
+          model: protocol === 'openai' ? 'gpt-test' : 'claude-test',
+          modelOptions: protocol === 'openai' ? ['gpt-test'] : ['claude-test'],
+          protocol,
+          providerId,
+        };
+      },
+    },
+    providerLimitCache: cache,
+    // 500ms window on a fake millisecond clock (now=1000): claude (100ms old) is
+    // fresh, codex (900ms old) is stale — exercises both branches deterministically.
+    limitCacheStaleMs: 500,
+    now: () => 1000,
+  });
+  harness.runtime.auxQueue.init();
+  const res = await invoke(harness.app, 'GET', '/api/aux/config');
+  const anthropic = res.body.providersByProtocol.anthropic.find(p => p.id === 'claude-one');
+  const openai = res.body.providersByProtocol.openai.find(p => p.id === 'codex-one');
+  assert.ok(anthropic, 'claude-one present');
+  assert.ok(openai, 'codex-one present');
+  assert.equal(anthropic.limit.kind, 'window');
+  assert.equal(anthropic.limit.summaryText, '5h 80%');
+  assert.equal(anthropic.limit.stale, false); // fetchedAt 900 → 100ms old < 500ms
+  assert.equal(openai.limit.summaryText, '1d 40%');
+  assert.equal(openai.limit.stale, true); // fetchedAt 100 → 900ms old > 500ms
+  // The public projection never leaks the raw bar placeholders.
+  assert.equal(JSON.stringify(res.body).includes('{cd'), false);
+  // A provider without a cache row gets a clean null limit, not an error.
+  const harness2 = createHarness({ providerLimitCache: cache, limitCacheStaleMs: 600000 });
+  harness2.runtime.auxQueue.init();
+  const res2 = await invoke(harness2.app, 'GET', '/api/aux/config');
+  for (const group of Object.values(res2.body.providersByProtocol)) {
+    for (const p of group) assert.equal(p.limit, null);
+  }
+});
