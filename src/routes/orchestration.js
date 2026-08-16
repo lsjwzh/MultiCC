@@ -417,6 +417,15 @@ function createOrchestrationRoutes(rawDeps) {
               });
             }
             await deps.runtime.tick();
+            // The schedule snapshot from the mutate above is definitionally
+            // stale here: the tick just claimed the selected entry. Returning
+            // it would re-advertise a started entry as still queued, and a
+            // client that applies the HTTP schedule (the Flutter app) would
+            // resurrect the FIFO card until refresh. Re-read the authoritative
+            // post-tick schedule so the response matches what tick already
+            // broadcast over WS. This read happens after those broadcasts, so
+            // it can never be older than them.
+            result.schedule = await deps.runtime.sessionScheduler.status(session.id);
           }
           const status = result.ok ? 200
             : result.code === 'queued_entry_not_found' ? 404 : 409;

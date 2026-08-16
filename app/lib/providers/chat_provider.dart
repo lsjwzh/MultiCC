@@ -132,6 +132,28 @@ StagedVerdict resolveStagedQueueEvent(
   }
 }
 
+/// 纯裁决器：queue-action 的 HTTP 响应 schedule 能否覆盖当前（WS 驱动的）队列
+/// 状态。规则是本地因果序而非时间戳——服务器先广播 WS 事件、后写 HTTP 响应，
+/// 所以「请求期间有 session_queue 事件到达」⇒ 该事件至少与响应同源同新，响应
+/// 里的旧 schedule（例如 insert_queued 的 pre-tick 快照仍把已认领条目列为
+/// queued）绝不能再覆盖它；返回 null 表示跳过，交给 WS 流对账。无事件交错
+/// （典型：WS 断开）时才应用响应 schedule 作为兜底，条目同样立即消失。
+///
+/// [wsSeqAtRequest] = 发起 POST 前的事件计数；[wsSeqNow] = 应用响应时的计数。
+@visibleForTesting
+SessionQueueState? applyActionSchedule(
+  SessionQueueState current,
+  Map<String, dynamic> schedule,
+  int wsSeqAtRequest,
+  int wsSeqNow,
+) {
+  if (wsSeqNow != wsSeqAtRequest) return null;
+  final snapshot = Map<String, dynamic>.from(schedule);
+  snapshot['event'] = 'action';
+  snapshot['items'] = snapshot['queued'];
+  return SessionQueueState.fromEvent(snapshot, previous: current);
+}
+
 /// Staged send 生命周期持有者：暂存、断连兜底定时器与权威 FIFO 裁决
 /// （[resolveStagedQueueEvent]）收在一处，让时序语义可以脱离真实 socket 单测。
 ///
@@ -362,6 +384,11 @@ class ChatProvider extends ChangeNotifier {
   SessionQueueState get sessionQueue => _sessionQueue;
   List<SessionQueueItem> get sessionQueueItems => _sessionQueue.items;
   String? get sessionQueueFreezeReason => _sessionQueue.freezeReason;
+
+  /// Monotonic count of applied `session_queue` WS events. queueAction() uses
+  /// it for local causality: an HTTP action response whose schedule predates a
+  /// WS event that already landed must not overwrite the newer WS state.
+  int _sessionQueueEventSeq = 0;
 
   PendingUserInput? _pendingUserInput;
   PendingUserInput? get pendingUserInput => _pendingUserInput;
@@ -1234,6 +1261,7 @@ class ChatProvider extends ChangeNotifier {
         {
           final p = evt.payload as Map<String, dynamic>;
           final event = (p['event'] ?? '').toString();
+          _sessionQueueEventSeq++;
           _sessionQueue = SessionQueueState.fromEvent(
             p,
             previous: _sessionQueue,
@@ -2539,16 +2567,28 @@ class ChatProvider extends ChangeNotifier {
   /// itself; even after a successful POST it only applies the returned server
   /// schedule (and the following WS event will reconcile it again).
   Future<void> queueAction(String action, {String? entryId}) async {
+    // Causality anchor: any `session_queue` WS event that lands while this
+    // request is in flight is at least as authoritative as the action's own
+    // effects (the server broadcasts them BEFORE writing the HTTP response).
+    // Applying the HTTP schedule after such an event could resurrect a stale
+    // FIFO — the insert_queued race: the pre-tick response schedule still
+    // listed the just-claimed entry as queued, and overwrote the WS snapshot
+    // that had already removed it. The web client avoids this by never
+    // applying the HTTP schedule; we keep it as the offline/no-WS fallback,
+    // but only when no WS event has superseded it. Skipping is always safe:
+    // the skipped state is delivered by the (in-flight or later) WS stream.
+    final wsSeqAtRequest = _sessionQueueEventSeq;
     final result = await _service.queueAction(action, entryId: entryId);
     final schedule = result['schedule'];
     if (schedule is Map) {
-      final snapshot = Map<String, dynamic>.from(schedule);
-      snapshot['event'] = 'action';
-      snapshot['items'] = snapshot['queued'];
-      _sessionQueue = SessionQueueState.fromEvent(
-        snapshot,
-        previous: _sessionQueue,
+      final next = applyActionSchedule(
+        _sessionQueue,
+        Map<String, dynamic>.from(schedule),
+        wsSeqAtRequest,
+        _sessionQueueEventSeq,
       );
+      if (next == null) return;
+      _sessionQueue = next;
       notifyListeners();
     }
   }

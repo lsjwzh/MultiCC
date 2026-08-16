@@ -276,6 +276,63 @@ test('session FIFO status and explicit resolution require confirmation and remai
   );
 });
 
+test('insert_queued answers with the authoritative post-tick schedule, not the stale mutate snapshot', async () => {
+  // The mutate-time snapshot still lists the selected entry as queued/pending;
+  // after cancelActiveTurn + tick the entry is claimed (active) and the FIFO is
+  // empty. Returning the stale snapshot made Flutter clients that apply the
+  // HTTP schedule resurrect the FIFO card until a manual refresh.
+  const current = fixture({
+    scheduler: true,
+    queueInsertQueued: {
+      ok: true,
+      inserted: { entryId: 'entry-3' },
+      schedule: {
+        state: 'queued',
+        queued: [{ entryId: 'entry-3', state: 'pending', position: 1, priority: true }],
+      },
+    },
+    queueStatus: {
+      sessionId: 's1',
+      state: 'running',
+      freezeReason: null,
+      active: { entryId: 'entry-3', taskId: 'task-3' },
+      queued: [],
+      updatedAt: 424242,
+    },
+  });
+  const inserted = await invoke(current.app, 'POST', '/api/sessions/:id/queue/action', {
+    params: { id: 's1' },
+    body: { action: 'insert_queued', entryId: 'entry-3', confirm: true },
+  });
+  assert.equal(inserted.response.statusCode, 200);
+  assert.equal(inserted.response.body.ok, true);
+  assert.equal(inserted.response.body.schedule.state, 'running');
+  assert.deepEqual(inserted.response.body.schedule.queued, []);
+  assert.equal(inserted.response.body.schedule.active.entryId, 'entry-3');
+  assert.equal(inserted.response.body.schedule.updatedAt, 424242);
+  // The refresh read must happen after the tick that claims the entry, so the
+  // response can never be older than the WS snapshots tick already broadcast.
+  const kinds = current.calls.map(call => call.type);
+  const tickIndex = kinds.lastIndexOf('queue.tick');
+  const statusIndex = kinds.lastIndexOf('queue.status');
+  assert.ok(tickIndex >= 0, 'insert_queued must tick to claim the entry');
+  assert.ok(statusIndex > tickIndex, 'schedule refresh must follow the tick');
+
+  // Failure paths keep the old contract: no tick, no refresh, structured code.
+  const claimed = fixture({
+    scheduler: true,
+    queueInsertQueued: { ok: false, code: 'queued_entry_already_claimed' },
+  });
+  const rejected = await invoke(claimed.app, 'POST', '/api/sessions/:id/queue/action', {
+    params: { id: 's1' },
+    body: { action: 'insert_queued', entryId: 'entry-3', confirm: true },
+  });
+  assert.equal(rejected.response.statusCode, 409);
+  assert.equal(rejected.response.body.code, 'queued_entry_already_claimed');
+  assert.equal(claimed.calls.some(call => call.type === 'queue.tick'), false);
+  assert.equal(claimed.calls.some(call => call.type === 'queue.status'), false);
+});
+
 test('wait registration preserves validation payload, callback URL and errors', async () => {
   const missing = fixture({ records: new Map() });
   const notFound = await invoke(missing.app, 'POST', '/api/sessions/:id/wait', {
