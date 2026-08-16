@@ -17,7 +17,8 @@ import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../utils/session_status_helpers.dart';
 import '../widgets/ai_config_sheet.dart';
-import '../widgets/background_task_panel.dart';
+import '../widgets/background_tasks_dock.dart';
+import '../widgets/floating_dock.dart';
 import '../widgets/chat_header.dart';
 import '../widgets/chat_runtime_panels.dart';
 import '../widgets/conflict_diff_dialog.dart';
@@ -69,6 +70,10 @@ class _ChatViewState extends State<ChatView> {
   int _lastWarnedBehind = 0;
   bool _syncing = false;
   bool _dispatchExpanded = false;
+  // Current anchor of the dispatch floating dock (side + icon top px),
+  // reported via onAnchorChanged so the background-tasks dock can yield to
+  // it. Plain field, no setState — reading it next build is enough.
+  FloatingDockAnchor? _dispatchAnchor;
 
   // ── Deep-link focus (task-board "jump to message") ───────────────────────
   // Resolved at most once, after the initial history page is applied. The fade
@@ -499,19 +504,18 @@ class _ChatViewState extends State<ChatView> {
                 bottom: 100,
                 child: _PendingInputFab(onTap: provider.expandPendingUserInput),
               ),
-            // Background-task danmaku (mobile): floats above the input bar on
-            // the right, stacked above the pending-input FAB when both show.
-            if (!dispatchExpanded && provider.hasBackgroundTaskRows)
-              Positioned(
-                right: 14,
-                bottom: provider.pendingUserInput != null &&
-                        provider.pendingUserInputCollapsed
-                    ? 160
-                    : 96,
-                child: BackgroundTaskPanel(
-                  rows: provider.backgroundTaskRows(),
-                  onDismiss: provider.dismissBackgroundTask,
-                ),
+            // Background tasks (mobile): draggable floating dock — same
+            // primitive as the dispatch entry, independent persistence, and
+            // it deterministically yields to the dispatch dock's anchor on
+            // the same side so the two icons never overlap.
+            if (provider.hasBackgroundTaskRows)
+              BackgroundTasksFloatingDock(
+                key: ValueKey('bg-${provider.sessionName}'),
+                rows: provider.backgroundTaskRows(),
+                onDismiss: provider.dismissBackgroundTask,
+                obstacle: _dispatchAnchor,
+                leftMinBottom: 96,
+                rightMinBottom: _bgRightReserve(provider),
               ),
             if (provider.dispatchQueue.isNotEmpty)
               DispatchFloatingDock(
@@ -525,6 +529,21 @@ class _ChatViewState extends State<ChatView> {
                 onExpandedChanged: (expanded) {
                   if (mounted) setState(() => _dispatchExpanded = expanded);
                 },
+                onAnchorChanged: (sideRight, top) {
+                  final next = FloatingDockAnchor(
+                    sideRight: sideRight,
+                    top: top,
+                  );
+                  if (_dispatchAnchor == next) return;
+                  _dispatchAnchor = next;
+                  // The bg dock reads the obstacle on rebuild; nudge the view
+                  // post-frame (never setState during a child's build) so the
+                  // two icons re-separate promptly instead of waiting for the
+                  // next provider notify.
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (mounted) setState(() {});
+                  });
+                },
                 leftMinBottom: 96,
                 rightMinBottom: _dispatchRightReserve(provider),
               ),
@@ -535,23 +554,26 @@ class _ChatViewState extends State<ChatView> {
   }
 
   /// Bottom clearance the dispatch dock must respect when snapped to the
-  /// right edge: the input bar always, plus the existing right-side floaters
-  /// (pending-input FAB, background-task danmaku) when they are visible.
-  /// Their exact heights are not measurable from here, so this uses the same
-  /// anchors chat_screen positions them with (bottom 96–160) plus a generous
-  /// panel-body allowance — deterministic: the dock always yields upward and
-  /// never overlaps those controls or the send button.
+  /// right edge: the input bar always, plus the pending-input FAB when it is
+  /// visible. The background-tasks dock is no longer a fixed right-side
+  /// floater (it drifts with the user's drag; icon-vs-icon overlap is solved
+  /// by the obstacle yield), so it no longer inflates this reserve.
   double _dispatchRightReserve(ChatProvider provider) {
     var reserve = 96.0;
     final pendingFab =
         provider.pendingUserInput != null &&
         provider.pendingUserInputCollapsed;
     if (pendingFab) reserve = reserve < 160.0 ? 160.0 : reserve;
-    if (provider.hasBackgroundTaskRows) {
-      final stacked = (pendingFab ? 160.0 : 96.0) + 200.0;
-      reserve = reserve < stacked ? stacked : reserve;
-    }
     return reserve;
+  }
+
+  /// Same, for the background-tasks dock (pending-input FAB sits right-bottom
+  /// at ~160 when collapsed).
+  double _bgRightReserve(ChatProvider provider) {
+    return provider.pendingUserInput != null &&
+            provider.pendingUserInputCollapsed
+        ? 160.0
+        : 96.0;
   }
 }
 

@@ -792,5 +792,7 @@
   "roleTokenNoSub": "No sub-agent usage this turn",
   "usageDetailTitle": "This turn and session",
   "dispatchDockCollapsed": "Dispatches · {n} active · tap to open, drag to move",
-  "dispatchDockExpanded": "Dispatches · {n} active · open · tap to collapse"
+  "dispatchDockExpanded": "Dispatches · {n} active · open · tap to collapse",
+  "bgDockCollapsed": "Background tasks · {n} running · tap to open, drag to move",
+  "bgDockExpanded": "Background tasks · {n} running · open · tap to collapse"
 }
