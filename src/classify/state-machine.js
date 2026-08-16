@@ -197,15 +197,33 @@ function createClassifyStateMachine(rawDeps) {
       // Fall through to the waiting broadcast.
     }
 
-    getSessionWorkHost().classifyTransition(
+    const transitionTaskId = Object.prototype.hasOwnProperty.call(ctx, 'taskId')
+      ? ctx.taskId || null
+      : cs?._currentTaskId || null;
+    const transition = getSessionWorkHost().classifyTransition(
       sessionName,
-      cs?._currentTaskId || null,
+      transitionTaskId,
       result,
       {
         recoverMissingBoundary: source === 'multicc/scan' && liveness.state === 'inactive',
         livenessReason: liveness.reason || null,
       },
     );
+    Promise.resolve(transition).then(outcome => {
+      if (outcome?.ok !== false || outcome.code === 'stale_classification') return;
+      logger.warn?.('session_scheduler_classification_rejected', {
+        sessionId: sessionName,
+        taskId: transitionTaskId,
+        code: outcome.code || 'unknown',
+      });
+    }, error => {
+      logger.warn?.('session_scheduler_classification_rejected', {
+        sessionId: sessionName,
+        taskId: transitionTaskId,
+        code: 'transition_rejected',
+        error: error?.message || String(error || ''),
+      });
+    });
     if (state === 'D') {
       // D — this turn executed successfully. TaskBoard completion is a separate
       // user-owned lifecycle action and is never inferred here.
@@ -368,7 +386,8 @@ function createClassifyStateMachine(rawDeps) {
   }
 
   // Shared structured-verdict applier. Only an inactive owned turn may commit.
-  function applyClassifyResult(cs, sessionName, sessionId, res, { cwd, source } = {}) {
+  function applyClassifyResult(cs, sessionName, sessionId, res, options = {}) {
+    const { cwd, source } = options;
     const liveness = turnLivenessForClassify(sessionName);
     const currentState = getTaskState(persistedSessions.get(sessionName));
     // Explicit user/watchdog cancellation owns the turn boundary. An Aux job
@@ -399,18 +418,64 @@ function createClassifyStateMachine(rawDeps) {
       return;
     }
     // Liveness independently proved the structured verdict may commit.
-    dispatchStateAction(res, {
+    const actionContext = {
       sessionName, sessionId, cs, isTerminal: false, cwd, source, liveness,
-    });
+    };
+    if (Object.prototype.hasOwnProperty.call(options, 'taskId')) {
+      actionContext.taskId = options.taskId;
+    }
+    dispatchStateAction(res, actionContext);
     console.log(`[${source}] Classify RESULT for ${sessionName}: state=${res.state} goal="${res.goal}" phase=${res.phase || '?'}${res.state === 'E' ? ' (API error)' : ''}${res.evidence ? ` evidence=${res.evidence}` : ''}`);
   }
 
   // Aux owns task identity only. It may rename/re-group the turn and attach its
   // replay provenance, but it never calls dispatchStateAction and therefore can
   // neither finish a turn nor keep one stuck in processing.
+  function taskAttributionAnchorStatus(sessionName, expectedAnchorMessageId) {
+    const observedAnchorMessageId = classifyAnchorMessageId(sessionName);
+    return {
+      observedAnchorMessageId,
+      // null -> id and id -> null are changes too. The former is especially
+      // important for a legacy transcript whose old tail had no id but whose
+      // next message does: that late result must not acquire the new turn.
+      changed: observedAnchorMessageId !== expectedAnchorMessageId,
+    };
+  }
+
   function applyTaskAttributionResult(cs, sessionName, result, context = {}) {
     if (!cs) return null;
-    const previousTaskId = context.taskId || cs._currentTaskId || null;
+    const previousTaskId = Object.prototype.hasOwnProperty.call(context, 'taskId')
+      ? context.taskId || null
+      : cs._currentTaskId || null;
+    const anchor = context.anchorStatus
+      || taskAttributionAnchorStatus(sessionName, context.anchorMessageId || null);
+    const supersededReason = context.supersededReason
+      || (anchor.changed ? 'anchor_changed' : null);
+    if (supersededReason) {
+      let annotated = [];
+      try {
+        annotated = annotateChatTurn(sessionName, context.turnId, {
+          taskId: previousTaskId || undefined,
+          auxRunId: context.runId || null,
+        }, { anchorMessageId: context.anchorMessageId || null });
+      } catch (error) {
+        logger.warn?.('aux_message_annotation_failed', { sessionId: sessionName, error: error.message });
+      }
+      logger.info?.('task_attribution_superseded', {
+        sessionId: sessionName,
+        runId: context.runId || null,
+        reason: supersededReason,
+        anchorMessageId: context.anchorMessageId || null,
+        observedAnchorMessageId: anchor.observedAnchorMessageId || null,
+      });
+      return {
+        taskId: previousTaskId,
+        superseded: true,
+        supersededReason,
+        observedAnchorMessageId: anchor.observedAnchorMessageId || null,
+        annotated,
+      };
+    }
     const sameTaskId = result.relation === 'same' ? (result.taskId || previousTaskId) : null;
     const taskId = context.resolvedTaskId || sameTaskId
       || `tsk_${crypto.randomUUID().replace(/-/g, '')}`;
@@ -460,7 +525,11 @@ function createClassifyStateMachine(rawDeps) {
       const ph = phaseLabel(phase);
       emitRunningNotify(sessionName, `处理中：${taskName}${ph ? ` · ${ph}` : ''}`);
     }
-    return { taskId, taskName, phase, changedIdentity, annotated };
+    return {
+      taskId, taskName, phase, changedIdentity, annotated,
+      superseded: false,
+      observedAnchorMessageId: anchor.observedAnchorMessageId || null,
+    };
   }
 
   function scanAndReclassify() {
@@ -603,7 +672,10 @@ function createClassifyStateMachine(rawDeps) {
         type: 'intent_classify',
         systemPrompt,
         prompt,
-        meta: { sid, startup: true, runId }
+        // Persist the exact transcript/task view owned by this operation in the
+        // queue record itself, not only in this promise closure. Aux events and
+        // history can therefore prove which message the delayed result judged.
+        meta: { sid, startup: true, runId, anchorMessageId, taskId },
       }).then(result => {
         if (result.cancelled) {
           recordAuxRun(sid, { runId, anchorMessageId, cancelled: true, source: 'scan' });
@@ -617,14 +689,20 @@ function createClassifyStateMachine(rawDeps) {
           ? (res.taskId || taskId)
           : `tsk_${crypto.randomUUID().replace(/-/g, '')}`;
         const cs = chatSessions.get(sid);
+        const anchorStatus = taskAttributionAnchorStatus(sid, anchorMessageId);
+        const supersededReason = anchorStatus.changed ? 'anchor_changed' : null;
         recordAuxRun(sid, {
           runId, anchorMessageId, systemPrompt, prompt,
-          taskId: resolvedTaskId, priorTaskId: taskId,
+          taskId: supersededReason ? taskId : resolvedTaskId, priorTaskId: taskId,
+          observedAnchorMessageId: anchorStatus.observedAnchorMessageId,
           rawText: result.text, parsed: res, source: 'scan',
+          superseded: !!supersededReason,
+          supersededReason,
           latencyMs: Date.now() - startedAt,
         });
         applyTaskAttributionResult(cs, sid, res, {
           source: 'multicc/scan', runId, taskId, resolvedTaskId, anchorMessageId,
+          anchorStatus, supersededReason,
         });
       }).catch(e => {
         if (e && e.cancelled) return;
@@ -641,8 +719,8 @@ function createClassifyStateMachine(rawDeps) {
 
   function cancelClassify(cs) {
     if (cs._classifyTimer) { clearTimeout(cs._classifyTimer); cs._classifyTimer = null; }
-    // Don't cancel an in-flight classify — let it finish so its result lands.
-    // The .then() handler now always applies the latest result unconditionally.
+    // In-flight work may still finish for audit/provenance. Its captured message
+    // anchor is checked before any live task identity can be changed.
   }
 
   // Compatibility name retained for route composition; the content is now the
@@ -750,10 +828,13 @@ function createClassifyStateMachine(rawDeps) {
       type: 'intent_classify',
       systemPrompt,
       prompt,
-      meta: { sessionName, sessionId, runId, turnId, manual },
+      meta: {
+        sessionName, sessionId, runId, turnId, manual,
+        anchorMessageId, taskId: currentTaskId,
+      },
     }).then(result => {
-      const superseded = cs._classifyTaskId !== requestId;
-      if (!superseded) cs._classifyTaskId = null;
+      const requestSuperseded = cs._classifyTaskId !== requestId;
+      if (!requestSuperseded) cs._classifyTaskId = null;
       if (result.cancelled) {
         recordAuxRun(sessionName, {
           runId, turnId, anchorMessageId, cancelled: true, source: runSource,
@@ -772,24 +853,24 @@ function createClassifyStateMachine(rawDeps) {
       const resolvedTaskId = res.relation === 'same'
         ? (res.taskId || currentTaskId)
         : `tsk_${crypto.randomUUID().replace(/-/g, '')}`;
+      const anchorStatus = taskAttributionAnchorStatus(sessionName, anchorMessageId);
+      const supersededReason = anchorStatus.changed
+        ? 'anchor_changed'
+        : requestSuperseded ? 'newer_aux_request' : null;
       recordAuxRun(sessionName, {
         runId, turnId, anchorMessageId, systemPrompt, prompt,
-        taskId: superseded ? currentTaskId : resolvedTaskId,
+        taskId: supersededReason ? currentTaskId : resolvedTaskId,
         priorTaskId: currentTaskId,
+        observedAnchorMessageId: anchorStatus.observedAnchorMessageId,
         rawText: result.text, parsed: res, source: runSource,
-        superseded,
+        superseded: !!supersededReason,
+        supersededReason,
         latencyMs: Date.now() - startedAt,
       });
-      if (superseded) {
-        annotateChatTurn(sessionName, turnId, {
-          taskId: currentTaskId || undefined,
-          auxRunId: runId,
-        }, { anchorMessageId });
-        return;
-      }
       applyTaskAttributionResult(cs, sessionName, res, {
         source: 'multicc/aux', runId, turnId,
         taskId: currentTaskId, resolvedTaskId, anchorMessageId,
+        anchorStatus, supersededReason,
       });
     }).catch((e) => {
       if (cs._classifyTaskId === requestId) cs._classifyTaskId = null;
@@ -834,7 +915,8 @@ function createClassifyStateMachine(rawDeps) {
 
   // Commit the rule verdict first, then enqueue best-effort task attribution.
   // The two paths deliberately share no state writer.
-  function classifyTurnEnd(cs, sessionName, { classification, turnId = null } = {}) {
+  function classifyTurnEnd(cs, sessionName, options = {}) {
+    const { classification, turnId = null } = options;
     cancelClassify(cs);
     const persisted = persistedSessions.get(sessionName);
     getAuxQueue().cancelClassifyFor(sessionName);
@@ -855,12 +937,20 @@ function createClassifyStateMachine(rawDeps) {
         && !!userInputHost.pending(sessionName),
       backgroundPending,
     });
+    const applyOptions = { cwd: cs?.cwd, source: 'multicc/turn-rules' };
+    // The scheduler verdict belongs to the task admitted for this turn, not to
+    // the mutable task pointer that Aux may update later. An explicit null is
+    // still meaningful: session-work-host then correlates against its own
+    // active FIFO entry instead of consulting live chat state.
+    if (Object.prototype.hasOwnProperty.call(options, 'taskId')) {
+      applyOptions.taskId = options.taskId || null;
+    }
     applyClassifyResult(cs, sessionName, sessionId, {
       ...verdict,
       goal: cs?.currentTask?.goal || getTaskState(persisted).goal || '',
       phase: verdict.state === 'D'
         ? 'done' : cs?.currentTask?.phase || getTaskState(persisted).phase || 'planning',
-    }, { cwd: cs?.cwd, source: 'multicc/turn-rules' });
+    }, applyOptions);
 
     // Gateway turns are routing transactions and do not participate in task
     // naming. Every other turn gets best-effort Aux attribution after state has
