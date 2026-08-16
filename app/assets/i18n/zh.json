@@ -790,5 +790,7 @@
   "roleTokenCacheRead": "缓存读",
   "roleTokenCacheWrite": "缓存写",
   "roleTokenNoSub": "本轮无辅 Agent 消耗",
-  "usageDetailTitle": "本轮与会话用量"
+  "usageDetailTitle": "本轮与会话用量",
+  "dispatchDockCollapsed": "派发队列 · {n} 个进行中 · 点按展开，可拖动",
+  "dispatchDockExpanded": "派发队列 · {n} 个进行中 · 已展开，点按收起"
 }
