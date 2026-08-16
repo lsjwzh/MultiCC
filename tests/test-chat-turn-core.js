@@ -33,6 +33,7 @@ const {
 const {
   adapterReasoningProgressEvent,
   appendAdapterAssistantText,
+  recoverDispatchFromHistory,
 } = require('../src/chat/turn-engine');
 
 test('adapter assistant snapshots preserve every OpenCode text part canonically', () => {
@@ -48,6 +49,44 @@ test('adapter reasoning publishes only normalized display text for sync progress
   });
   assert.equal(adapterReasoningProgressEvent({ text: { secret: true } }), null);
   assert.equal(adapterReasoningProgressEvent({ text: '' }), null);
+});
+
+test('dispatch recovery uses the latest lineage-owned turn after a superseded attempt', () => {
+  const operation = { id: 'op-1', requestOutboxId: 'operation:op-1:request' };
+  const recovered = recoverDispatchFromHistory([
+    {
+      role: 'user', content: 'original', turnId: 'turn-1',
+      deliveryId: 'operation:op-1:request', originDispatchId: 'op-1',
+    },
+    {
+      role: 'assistant', content: 'partial old output', turnId: 'turn-1',
+      partial: true, cancelled: true,
+    },
+    {
+      role: 'user', content: 'replacement', turnId: 'turn-2',
+      originDispatchId: 'op-1',
+    },
+    { role: 'assistant', content: 'replacement completed', turnId: 'turn-2' },
+  ], operation);
+  assert.deepEqual(recovered, { completed: true, text: 'replacement completed' });
+});
+
+test('dispatch recovery fails closed when the latest lineage-owned turn is incomplete', () => {
+  const operation = { id: 'op-2', requestOutboxId: 'operation:op-2:request' };
+  const recovered = recoverDispatchFromHistory([
+    {
+      role: 'user', content: 'original', turnId: 'turn-a',
+      clientMsgId: 'operation:op-2:request',
+    },
+    { role: 'assistant', content: 'old success', turnId: 'turn-a' },
+    { role: 'user', content: 'replacement', turnId: 'turn-b', originDispatchId: 'op-2' },
+    { role: 'assistant', content: 'still partial', turnId: 'turn-b', partial: true },
+  ], operation);
+  assert.deepEqual(recovered, { completed: false, lastOutput: 'still partial' });
+  assert.equal(recoverDispatchFromHistory([
+    { role: 'user', content: 'unrelated' },
+    { role: 'assistant', content: 'done' },
+  ], operation), null);
 });
 
 test('Qoder Claude-compatible assistant events are normalized to snapshots', () => {

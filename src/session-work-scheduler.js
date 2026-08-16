@@ -69,6 +69,8 @@ function compactJson(value) {
 }
 
 function workKind(item) {
+  const transferredKind = item?.turnLineage?.workKind;
+  if (transferredKind) return transferredKind;
   const payload = item?.payload || {};
   if (payload.type === 'session.work') return payload.workKind || 'task';
   if (payload.type === 'dispatch.request') {
@@ -81,6 +83,17 @@ function workKind(item) {
     return 'callback';
   }
   return payload.originContinue === true ? 'continuation' : 'task';
+}
+
+function taskIdForItem(item) {
+  return item?.turnLineage?.taskId || item?.payload?.taskId || null;
+}
+
+function originDispatchIdForItem(item) {
+  return item?.turnLineage?.originDispatchId
+    || item?.payload?.originDispatchId
+    || (item?.payload?.type === 'dispatch.request' ? item.payload.operationId : null)
+    || null;
 }
 
 function isControlItem(item) {
@@ -191,7 +204,7 @@ function publicSchedule(schedule, queue = []) {
     active: schedule.active ? clone(schedule.active) : null,
     queued: visibleQueue.map((item, index) => ({
       entryId: item.id,
-      taskId: item.payload?.taskId || null,
+      taskId: taskIdForItem(item),
       source: item.payload?.source || item.source?.type || 'legacy',
       sequence: item.sequence,
       state: item.state,
@@ -397,6 +410,9 @@ function createSessionWorkScheduler({
       options: normalizedOptions,
       source: source || options.taskSource || (options.originTrigger ? 'trigger' : 'direct'),
       taskId: options.taskId || null,
+      // Omit the empty compatibility field so a pre-upgrade admission replay
+      // with the same idempotency key keeps the exact historical payload hash.
+      originDispatchId: options.originDispatchId || undefined,
       requestId: requestId || null,
       activeEntryId: activeEntryId || null,
     });
@@ -434,6 +450,9 @@ function createSessionWorkScheduler({
             ? null
             : schedule.active.entryId;
           if (!payload.taskId && schedule.active.taskId) payload.taskId = schedule.active.taskId;
+          if (!payload.originDispatchId && schedule.active.originDispatchId) {
+            payload.originDispatchId = schedule.active.originDispatchId;
+          }
         } else if (correlatedAnswer) {
           // Repair correlation metadata only. Classify remains the sole owner
           // of business state; this input simply starts the next native turn.
@@ -514,7 +533,8 @@ function createSessionWorkScheduler({
         schedule.active = {
           entryId: item.id,
           deliveryId: item.id,
-          taskId: item.payload?.taskId || null,
+          taskId: taskIdForItem(item),
+          originDispatchId: originDispatchIdForItem(item),
           source: item.payload?.source || item.source?.type || 'legacy',
           workKind: workKind(item),
           admittedAt: item.createdAt,
@@ -530,6 +550,12 @@ function createSessionWorkScheduler({
         schedule.active.deliveryId = item.id;
         schedule.active.workKind = workKind(item);
         schedule.active.attempt = item.attempts;
+        if (!schedule.active.taskId && taskIdForItem(item)) {
+          schedule.active.taskId = taskIdForItem(item);
+        }
+        if (!schedule.active.originDispatchId && originDispatchIdForItem(item)) {
+          schedule.active.originDispatchId = originDispatchIdForItem(item);
+        }
       } else {
         return { ok: false, code: 'session_gate_closed' };
       }
@@ -710,10 +736,12 @@ function createSessionWorkScheduler({
         }
       }
       schedule.lastDecision = {
-        action: 'complete',
-        reason,
+        action: completed.supersededByEntryId ? 'superseded' : 'complete',
+        reason: completed.supersededByEntryId ? 'superseded_by_immediate_insert' : reason,
         entryId: completed.entryId,
         taskId: completed.taskId || null,
+        originDispatchId: completed.originDispatchId || null,
+        supersededByEntryId: completed.supersededByEntryId || null,
         at,
       };
       schedule.updatedAt = at;
@@ -735,6 +763,8 @@ function createSessionWorkScheduler({
       classifyState: result.schedule.classifyState || null,
       turnOutcome: turnOutcomeForClassify(result.schedule.classifyState),
       reason,
+      attemptOutcome: result.completed.supersededByEntryId ? 'superseded' : null,
+      supersededByEntryId: result.completed.supersededByEntryId || null,
       queued: result.schedule.queued.length,
       queuedItems: result.schedule.queued,
       schedule: result.schedule,
@@ -793,6 +823,7 @@ function createSessionWorkScheduler({
         options: {
           originContinue: true,
           taskId: lineage.taskId || undefined,
+          originDispatchId: lineage.originDispatchId || undefined,
           clientMsgId: idempotencyKey || undefined,
         },
       });
@@ -817,6 +848,7 @@ function createSessionWorkScheduler({
         actor: String(actor || 'user').slice(0, 80),
         entryId: resolved.entryId,
         taskId: resolved.taskId || null,
+        originDispatchId: resolved.originDispatchId || null,
         at,
       };
       schedule.updatedAt = at;
@@ -912,6 +944,14 @@ function createSessionWorkScheduler({
         return { ok: false, code: 'queued_entry_not_found' };
       }
       const schedule = ensure(draft, sessionId, Number(now()));
+      if (schedule.active?.supersededByEntryId
+          && schedule.active.supersededByEntryId !== cleanEntryId) {
+        return {
+          ok: false,
+          code: 'active_supersession_in_progress',
+          supersededByEntryId: schedule.active.supersededByEntryId,
+        };
+      }
       const activeIds = new Set([
         schedule.active?.entryId,
         schedule.active?.deliveryId,
@@ -923,6 +963,46 @@ function createSessionWorkScheduler({
         return { ok: false, code: 'queued_entry_not_pending' };
       }
       const at = Number(now());
+      const active = schedule.active;
+      // "Insert now" replaces the currently running attempt with this exact
+      // user message.  The durable dispatch belongs to the logical task, not to
+      // one provider process, so a replacement of the same task must retain the
+      // complete lineage.  Keep this metadata outside payload/payloadHash: the
+      // original client idempotency key must continue to compare against the
+      // body that was admitted, while turnLineage records the later scheduling
+      // decision that promoted it.
+      const payloadTaskId = item.payload?.taskId || null;
+      const explicitTaskStart = item.payload?.options?.taskStart === true
+        || item.payload?.taskStart === true;
+      const existingOriginDispatchId = originDispatchIdForItem(item);
+      const sameTask = !!active
+        && item.payload?.type === 'session.work'
+        && !explicitTaskStart
+        && (!payloadTaskId || (!!active.taskId && payloadTaskId === active.taskId))
+        && (!existingOriginDispatchId
+          || !active.originDispatchId
+          || existingOriginDispatchId === active.originDispatchId);
+      if (sameTask) {
+        item.turnLineage = compactJson({
+          ...(item.turnLineage || {}),
+          taskId: payloadTaskId || active.taskId || null,
+          originDispatchId: existingOriginDispatchId || active.originDispatchId || null,
+          workKind: 'continuation',
+          activeEntryId: active.entryId,
+          inheritedBy: 'insert_queued',
+          inheritedAt: at,
+        });
+      }
+      if (active) {
+        active.supersededByEntryId = cleanEntryId;
+        active.supersededAt = at;
+        active.supersededLineageTransferred = sameTask;
+        active.supersededOriginTransferred = !!(
+          sameTask
+          && active.originDispatchId
+          && originDispatchIdForItem(item) === active.originDispatchId
+        );
+      }
       // A user-selected "insert now" item is not merely FIFO priority. Once
       // the route cancels/releases the active slot, directRun makes this exact
       // pending entry immediately selectable even when the prior verdict is E.
@@ -934,6 +1014,9 @@ function createSessionWorkScheduler({
         inserted: {
           entryId: cleanEntryId,
           actor: String(actor || 'user').slice(0, 80),
+          taskId: taskIdForItem(item),
+          originDispatchId: originDispatchIdForItem(item),
+          inheritedLineage: sameTask,
           at,
         },
         schedule: publicSchedule(schedule, queueForDraft(draft, sessionId)),
@@ -969,7 +1052,7 @@ function createSessionWorkScheduler({
     emit('queued', {
       sessionId: info.item.sessionId,
       entryId: info.item.id,
-      taskId: info.item.payload?.taskId || null,
+      taskId: taskIdForItem(info.item),
       source: info.item.payload?.taskSource || info.item.source?.type || 'dispatch',
       workKind: workKind(info.item),
       duplicate: false,
@@ -1043,6 +1126,7 @@ function createSessionWorkScheduler({
               entryId: `legacy-active:${sessionId}`,
               deliveryId: null,
               taskId: recoveredState.taskId || null,
+              originDispatchId: recoveredState.originDispatchId || null,
               source: 'legacy',
               workKind: 'task',
               admittedAt: recoveredState.startedAt || at,
@@ -1113,10 +1197,13 @@ function createSessionWorkScheduler({
           schedule.freezeReason = null;
           schedule.awaitingRequestId = null;
           schedule.lastDecision = {
-            action: 'complete',
-            reason: 'recovered-classify-D',
+            action: completed.supersededByEntryId ? 'superseded' : 'complete',
+            reason: completed.supersededByEntryId
+              ? 'superseded_by_immediate_insert' : 'recovered-classify-D',
             entryId: completed.entryId,
             taskId: completed.taskId || null,
+            originDispatchId: completed.originDispatchId || null,
+            supersededByEntryId: completed.supersededByEntryId || null,
             at,
           };
           schedule.updatedAt = at;

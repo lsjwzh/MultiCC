@@ -526,19 +526,78 @@ function createOrchestrationRuntime({
     return `${prefix}\n${renderData(payload.data)}`;
   }
 
+  function itemTurnLineage(item) {
+    return item?.turnLineage && typeof item.turnLineage === 'object'
+      ? item.turnLineage : {};
+  }
+
+  function itemTaskId(item) {
+    const lineage = itemTurnLineage(item);
+    return lineage.taskId || item?.payload?.taskId || item?.payload?.options?.taskId || null;
+  }
+
+  function itemOriginDispatchId(item) {
+    const lineage = itemTurnLineage(item);
+    return lineage.originDispatchId
+      || item?.payload?.originDispatchId
+      || (item?.payload?.type === 'dispatch.request' ? item.payload.operationId : null)
+      || null;
+  }
+
+  // Compatibility recovery for entries admitted before full turn lineage was
+  // persisted. A task id is only authoritative when it identifies exactly one
+  // live dispatch for this target session. Ambiguity intentionally returns no
+  // owner: completing the wrong dispatch is worse than leaving one inspectable.
+  async function resolveSessionWorkLineage(item) {
+    if (item?.payload?.type !== 'session.work' || itemOriginDispatchId(item)) return item;
+    const taskId = itemTaskId(item);
+    if (!taskId) return item;
+    const live = await operations.list({ kind: 'dispatch', statuses: ['running'] });
+    const matches = live.filter(operation => (
+      operation.spec?.chatId === item.sessionId
+      && operation.spec?.taskId === taskId
+    ));
+    if (matches.length !== 1) {
+      if (matches.length > 1) {
+        log(`[orchestration] dispatch_lineage_ambiguous ${JSON.stringify({
+          sessionId: item.sessionId,
+          taskId,
+          matches: matches.map(operation => operation.id),
+        })}`);
+      }
+      return item;
+    }
+    item.turnLineage = {
+      ...itemTurnLineage(item),
+      taskId,
+      originDispatchId: matches[0].id,
+      workKind: 'continuation',
+      inheritedBy: 'unique_live_task_match',
+    };
+    log(`[orchestration] dispatch_lineage_recovered ${JSON.stringify({
+      sessionId: item.sessionId,
+      taskId,
+      operationId: matches[0].id,
+    })}`);
+    return item;
+  }
+
   function deliveryOptions(item) {
     const payload = item.payload || {};
     if (payload.type === 'session.work') {
+      const lineage = itemTurnLineage(item);
+      const effectiveWorkKind = lineage.workKind || payload.workKind || 'task';
       return {
         ...(payload.options || {}),
-        taskId: payload.taskId || payload.options?.taskId || undefined,
-        originContinue: payload.workKind !== 'task',
+        taskId: itemTaskId(item) || undefined,
+        originDispatchId: itemOriginDispatchId(item) || undefined,
+        originContinue: effectiveWorkKind !== 'task',
         deliveryId: item.id,
         // Keep the browser correlation key so chat_msg_meta can replace the
         // optimistic user bubble. The durable outbox id remains deliveryId.
         clientMsgId: payload.options?.clientMsgId || item.id,
-        schedulerEntryId: payload.activeEntryId || item.id,
-        schedulerWorkKind: payload.workKind || 'task',
+        schedulerEntryId: lineage.activeEntryId || payload.activeEntryId || item.id,
+        schedulerWorkKind: effectiveWorkKind,
         directUserInput: payload.source === 'direct',
         userInputRequestId: payload.requestId || undefined,
       };
@@ -611,6 +670,7 @@ function createOrchestrationRuntime({
           delayMs: 0,
         });
       }
+      await resolveSessionWorkLineage(item);
       const schedulerClaim = await sessionScheduler.claim(item);
       if (!schedulerClaim.ok) {
         return outbox.defer(item.id, item.leaseToken, schedulerClaim.code || 'session gate closed', {
@@ -839,6 +899,27 @@ function createOrchestrationRuntime({
     return completed;
   }
 
+  async function interruptDispatch(id, {
+    reason = 'dispatch target turn was interrupted without a successor',
+    source = 'session_cancel',
+  } = {}) {
+    const current = await operations.get(id);
+    if (!current || current.kind !== 'dispatch') return { ok: false, code: 'not_found' };
+    if (TERMINAL_OPERATION_STATES.has(current.status)) {
+      return {
+        ok: true,
+        idempotent: true,
+        status: current.status,
+        operation: current,
+      };
+    }
+    return completeDispatch(id, {
+      status: 'interrupted',
+      error: String(reason || 'dispatch interrupted').slice(0, 2000),
+      source: String(source || 'session_cancel').slice(0, 80),
+    });
+  }
+
   async function observeTask(observation) {
     return operations.observeTask(observation);
   }
@@ -917,6 +998,7 @@ function createOrchestrationRuntime({
     admitDispatch,
     admitSessionWork,
     completeDispatch,
+    interruptDispatch,
     observeTask,
   });
 }
