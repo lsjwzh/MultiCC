@@ -80,9 +80,13 @@ async function main() {
     const failMode = prompt.includes('FAIL_MODE');
     const status = failMode ? 'failed' : 'completed';
     const resultText = failMode ? 'intentional failure' : 'work done successfully';
+    // Receipt by id, exactly like a real worker: the operation id is printed
+    // in the dispatched task text (【回传要求】 dispatch_slave({operation_id:...})).
+    const operationId = (prompt.match(/operation_id:"(op_[A-Za-z0-9_-]+)"/) || [])[1];
+    if (!operationId) throw new Error('slave prompt carries no operation_id');
     const res = await fetch(base + '/api/internal/router-tools/dispatch_slave', {
       method: 'POST', headers,
-      body: JSON.stringify({ arguments: { result: resultText, status } }),
+      body: JSON.stringify({ arguments: { operation_id: operationId, result: resultText, status } }),
     });
     const body = await res.json();
     if (!res.ok) throw new Error('dispatch_slave failed: ' + JSON.stringify(body));

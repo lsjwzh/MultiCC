@@ -45,7 +45,7 @@ const COMMANDER_ROUTER_PROMPT = [
   '',
   '## dispatch_master 的两种回执模式',
   '- mode="sync"：原 MCP 调用保持挂起；宿主持续展示 Slave 明确输出的 reasoning/thinking 与安全对话进度，Slave 最终输出会直接成为该工具结果。Slave 不调用 dispatch_slave，也不会向 Master 插入新消息。',
-  '- mode="async"：登记成功即返回。Master 可以继续做与 Slave 无依赖的事情，然后自然结束本轮；严禁自行轮询、查看目标会话或同步等待。Slave 完成后调用 dispatch_slave，结果作为新消息自动唤醒 Master。',
+  '- mode="async"：登记成功即返回。Master 可以继续做与 Slave 无依赖的事情，然后自然结束本轮；严禁自行轮询、查看目标会话或同步等待。Slave 完成后调用 dispatch_slave({operation_id, result, status}) 回执——operation_id 已印在派发给 Slave 的任务正文里（【回传要求】），按 id 回执、与轮次无关，中途被打断/续接后仍可回执并自动校正此前被自动判失败的操作；结果作为新消息自动唤醒 Master。',
   '- 两种模式在目标 busy 时都进入持久 FIFO，不会打断目标当前 turn。sync 会继续挂起等待；async 返回 queued/operation_id 后即放手。',
 ].join('\n');
 

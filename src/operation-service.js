@@ -216,6 +216,7 @@ function createOperationService({
   function completeOperationDraft(draft, operation, result, {
     status,
     outboxPayload,
+    resettle = false,
   }) {
     const normalizedResult = normalizeJson(result);
     const resultHash = hashPayload(normalizedResult, cryptoImpl);
@@ -223,13 +224,28 @@ function createOperationService({
       if (operation.resultHash === resultHash) {
         return { ok: true, idempotent: true, operation: publicOperation(operation) };
       }
-      throw new OperationConflictError(
-        `operation ${operation.id} already completed with different result`,
-        operation.id,
-      );
+      if (resettle !== true) {
+        throw new OperationConflictError(
+          `operation ${operation.id} already completed with different result`,
+          operation.id,
+        );
+      }
+      // Resettle: the prior terminal verdict was provisional (e.g. the host
+      // auto-failed an async dispatch whose worker never receipted) and the
+      // worker has now shown up with the operation id and a real result.
+      // Overwrite the verdict and emit a fresh outbox item so the caller
+      // receives the corrected receipt; the old delivery stays in history.
     }
+    const settles = Number(operation.resultSettles) || 0;
     const at = Number(now());
-    const outboxId = outboxPayload ? `operation:${operation.id}:result` : null;
+    // First settle keeps the canonical outbox id (compat with everything that
+    // reasons about `operation:<id>:result`); a resettle appends a sequence so
+    // the corrected receipt is a NEW delivery, not an idempotent no-op.
+    const outboxId = outboxPayload
+      ? (settles === 0
+        ? `operation:${operation.id}:result`
+        : `operation:${operation.id}:result:${settles + 1}`)
+      : null;
     if (outboxPayload) {
       admitOutboxItem(draft, {
         id: outboxId,
@@ -243,10 +259,13 @@ function createOperationService({
     operation.resultHash = resultHash;
     operation.result = normalizedResult;
     operation.resultOutboxId = outboxId;
+    operation.resultSettles = settles + 1;
     operation.completedAt = at;
     operation.updatedAt = at;
     if (status === 'failed' || status === 'interrupted') {
       operation.lastError = String(result.error || result.message || status).slice(0, 2000);
+    } else {
+      operation.lastError = null;
     }
     return { ok: true, idempotent: false, operation: publicOperation(operation) };
   }
@@ -274,7 +293,7 @@ function createOperationService({
     });
   }
 
-  async function completeDispatch(id, result) {
+  async function completeDispatch(id, result, opts = {}) {
     return store.mutate(draft => {
       const operation = draft.operations[id];
       if (!operation || operation.kind !== 'dispatch') return { ok: false, code: 'not_found' };
@@ -287,15 +306,17 @@ function createOperationService({
         ? `${targetId}（${operation.spec.targetLabel}）`
         : targetId;
       const resultBody = String(result.text || '').trim() || '（本次运行没有产生文本输出）';
+      const corrected = opts.resettle === true;
       const text = operation.spec.resultMode === 'async' || operation.spec.resultMode === 'tool'
         ? (status === 'completed'
-          ? `📜 dispatch 结果回流 [${label}]: ${resultBody}`
+          ? `${corrected ? '📜 dispatch 迟到回执（已校正此前的自动判失败） [' + label + ']: ' : ''}📜 dispatch 结果回流 [${label}]: ${resultBody}`
           : `📜 dispatch 结果回流 [${label}]: ❌ ${result.error || resultBody}`)
         : (status === 'completed'
           ? `【${label} 回复】\n${resultBody}`
           : `🔇【分发任务已中断】发往 ${label} 的任务在 MultiCC 服务重启时未找到可恢复的完成结果。请检查目标会话后决定是否重试。`);
       return completeOperationDraft(draft, operation, result, {
         status,
+        resettle: opts.resettle === true,
         // One-way routes and synchronous dispatches keep completion durable
         // without injecting another chat turn. Async dispatch alone wakes the
         // caller later with a normal queued result message. `tool` remains a
