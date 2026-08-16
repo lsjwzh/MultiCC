@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 
 import '../i18n.dart';
 import '../utils/status_presentation.dart';
+import '../models/dispatch_queue.dart';
 import '../models/message.dart';
 import '../models/usage_readout.dart';
 import '../providers/chat_provider.dart';
@@ -26,6 +27,7 @@ import '../widgets/message_bubble.dart';
 import '../widgets/thinking_indicator.dart';
 import 'memo_screen.dart';
 import 'memory_screen.dart';
+import 'terminal_screen.dart';
 
 const double _chatDesktopBreakpoint = 760;
 const double _chatMaxContentWidth = 980;
@@ -65,6 +67,7 @@ class _ChatViewState extends State<ChatView> {
   // worktree first falls behind main (or falls further), not on every 5s poll.
   int _lastWarnedBehind = 0;
   bool _syncing = false;
+  bool _dispatchExpanded = false;
 
   // ── Deep-link focus (task-board "jump to message") ───────────────────────
   // Resolved at most once, after the initial history page is applied. The fade
@@ -293,10 +296,54 @@ class _ChatViewState extends State<ChatView> {
     }
   }
 
+  Future<void> _openDispatchSession(DispatchQueueEntry entry) async {
+    if (entry.navigationSessionIds.isEmpty) return;
+    final mgr = context.read<SessionManager>();
+
+    Session? resolveTarget() {
+      for (final id in entry.navigationSessionIds) {
+        for (final session in mgr.sessions) {
+          if (session.id == id) return session;
+        }
+      }
+      return null;
+    }
+
+    // A gateway execution chat can be created just before the dashboard's
+    // five-second refresh. Refresh once, then fall back to the stable target.
+    var target = resolveTarget();
+    if (target == null) {
+      await mgr.loadDashboard();
+      if (!mounted) return;
+      target = resolveTarget();
+    }
+    if (target == null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(t('dispatchSessionNotFound'))));
+      return;
+    }
+    final resolvedTarget = target;
+    if (_dispatchExpanded) setState(() => _dispatchExpanded = false);
+    if (resolvedTarget.isChat) {
+      mgr.openSession(resolvedTarget);
+      mgr.switchToSession(resolvedTarget.id);
+      return;
+    }
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) =>
+            TerminalScreen(settings: widget.settings, session: resolvedTarget),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<ChatProvider>();
     final mergeReady = _mergeStatus?['mergeReady'] == true;
+    final dispatchExpanded =
+        _dispatchExpanded && provider.dispatchQueue.isNotEmpty;
     // Deep-link focus: resolve once, after the initial history page is applied.
     // Scheduled in a post-frame callback so the (async, setState-bearing)
     // resolution never runs during build. focusMessageId==null -> the guard
@@ -436,7 +483,8 @@ class _ChatViewState extends State<ChatView> {
                 ),
               ],
             ),
-            if (provider.pendingUserInput != null &&
+            if (!dispatchExpanded &&
+                provider.pendingUserInput != null &&
                 provider.pendingUserInputCollapsed)
               Positioned(
                 right: 14,
@@ -445,7 +493,7 @@ class _ChatViewState extends State<ChatView> {
               ),
             // Background-task danmaku (mobile): floats above the input bar on
             // the right, stacked above the pending-input FAB when both show.
-            if (provider.hasBackgroundTaskRows)
+            if (!dispatchExpanded && provider.hasBackgroundTaskRows)
               Positioned(
                 right: 14,
                 bottom: provider.pendingUserInput != null &&
@@ -455,6 +503,24 @@ class _ChatViewState extends State<ChatView> {
                 child: BackgroundTaskPanel(
                   rows: provider.backgroundTaskRows(),
                   onDismiss: provider.dismissBackgroundTask,
+                ),
+              ),
+            if (provider.dispatchQueue.isNotEmpty)
+              Positioned(
+                left: 14,
+                bottom: 96,
+                child: DispatchQueuePanel(
+                  key: ValueKey('dispatch-${provider.sessionName}'),
+                  entries: provider.dispatchQueue,
+                  resolveName: context
+                      .read<SessionManager>()
+                      .sessionDisplayName,
+                  onRefresh: provider.refreshDispatchQueue,
+                  onOpenSession: _openDispatchSession,
+                  initiallyExpanded: dispatchExpanded,
+                  onExpandedChanged: (expanded) {
+                    if (mounted) setState(() => _dispatchExpanded = expanded);
+                  },
                 ),
               ),
           ],

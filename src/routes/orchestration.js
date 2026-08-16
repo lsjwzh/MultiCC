@@ -287,7 +287,19 @@ function createOrchestrationRoutes(rawDeps) {
           return res.status(400).json({ error: 'invalid relation' });
         }
         const activeOnly = req.query.activeOnly !== 'false';
-        const operations = (await deps.runtime.operations.list({ kind: 'dispatch' }))
+        let recentTerminalLimit = null;
+        if (req.query.recentTerminalLimit != null) {
+          const rawRecent = String(req.query.recentTerminalLimit);
+          if (!/^\d+$/.test(rawRecent)) {
+            return res.status(400).json({ error: 'recentTerminalLimit must be an integer between 0 and 20' });
+          }
+          recentTerminalLimit = Number(rawRecent);
+          if (!Number.isInteger(recentTerminalLimit)
+              || recentTerminalLimit < 0 || recentTerminalLimit > 20) {
+            return res.status(400).json({ error: 'recentTerminalLimit must be an integer between 0 and 20' });
+          }
+        }
+        const related = (await deps.runtime.operations.list({ kind: 'dispatch' }))
           .filter(operation => {
             const owner = operation.ownerSessionId === session.id;
             const target = operation.spec?.chatId === session.id
@@ -296,9 +308,27 @@ function createOrchestrationRoutes(rawDeps) {
             if (relation === 'target') return target;
             return owner || target;
           })
-          .filter(operation => !activeOnly || !terminalDispatchStates.has(operation.status))
-          .sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id))
-          .slice(0, 100);
+          .sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id));
+        const active = related.filter(operation => !terminalDispatchStates.has(operation.status));
+        const terminal = related.filter(operation => terminalDispatchStates.has(operation.status));
+        // `recentTerminalLimit=N` is an additive history view: return up to 100
+        // live rows plus the explicitly bounded terminal tail, so a completion
+        // burst cannot evict live work. Without the option, preserve the
+        // historical 100-row endpoint shape.
+        const activeLimit = 100;
+        const returnedActive = active.slice(0, activeLimit);
+        const returnedTerminal = recentTerminalLimit == null ? [] : [...terminal]
+          .sort((a, b) => {
+            const aAt = a.completedAt || a.updatedAt || a.createdAt || 0;
+            const bAt = b.completedAt || b.updatedAt || b.createdAt || 0;
+            return bAt - aAt || b.id.localeCompare(a.id);
+          })
+          .slice(0, recentTerminalLimit);
+        const operations = activeOnly
+          ? returnedActive
+          : recentTerminalLimit == null
+            ? related.slice(0, activeLimit)
+            : [...returnedActive, ...returnedTerminal];
         const schedules = new Map();
         if (deps.runtime.sessionScheduler) {
           const targets = [...new Set(operations
@@ -320,6 +350,13 @@ function createOrchestrationRoutes(rawDeps) {
           activeOnly,
           dispatches,
           count: dispatches.length,
+          ...(recentTerminalLimit == null ? {} : {
+            activeCount: active.length,
+            activeTruncated: active.length > returnedActive.length,
+            terminalCount: terminal.length,
+            returnedTerminalCount: dispatches.filter(item => item.terminal).length,
+            recentTerminalLimit,
+          }),
           authoritative: 'durable_operation_plus_target_fifo',
           note: 'active/streaming/clients are process-presence signals, not dispatch completion.',
         });
