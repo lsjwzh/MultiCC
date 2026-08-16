@@ -114,4 +114,98 @@ void main() {
       mgr.dispose();
     });
   });
+
+  group('SessionCard compact layout', () {
+    // 空闲（idle）会话：状态图标与空闲文案都不渲染——⚪ 摆在行首只是噪音；
+    // working 目录不再独占副标题行（fleet 面板本就按目录分组，目录名收进 ⋯ 菜单）。
+    testWidgets('idle session renders no status icon and no cwd subtitle line', (
+      tester,
+    ) async {
+      final settings = await SettingsService.getInstance();
+      final mgr = SessionManager(settings: settings);
+      final session = Session(
+        id: 'sess-idle',
+        cli: SessionCli.claude,
+        kind: SessionKind.chat,
+        dirId: 'dir-1',
+        cwd: '/repo/.multicc-worktrees/wt-alpha',
+        createdAt: DateTime(2026, 1, 1),
+        active: true,
+      );
+
+      await tester.pumpWidget(await _wrap(
+        SessionCard(session: session, mgr: mgr, settings: settings),
+      ));
+      await tester.pump();
+
+      // No ⚪ glyph — idle is the default state, not news worth an icon.
+      expect(find.text('⚪'), findsNothing);
+      // No 「空闲」 label either (pre-existing behaviour, locked in here).
+      expect(find.text('空闲'), findsNothing);
+      // The worktree dir name is not shown on the card surface…
+      expect(find.text('wt-alpha'), findsNothing);
+      // …but the id-as-title still identifies the session.
+      expect(find.text('sess-idle'), findsOneWidget);
+
+      mgr.dispose();
+    });
+
+    testWidgets('labeled session keeps the id subtitle line', (tester) async {
+      final settings = await SettingsService.getInstance();
+      final mgr = SessionManager(settings: settings);
+      final session = Session(
+        id: 'sess-labeled',
+        label: '全栈工程师1',
+        cli: SessionCli.claude,
+        kind: SessionKind.chat,
+        dirId: 'dir-1',
+        createdAt: DateTime(2026, 1, 1),
+      );
+
+      await tester.pumpWidget(await _wrap(
+        SessionCard(session: session, mgr: mgr, settings: settings),
+      ));
+      await tester.pump();
+
+      expect(find.text('全栈工程师1'), findsOneWidget);
+      expect(find.text('sess-labeled'), findsOneWidget);
+
+      mgr.dispose();
+    });
+
+    testWidgets('⋯ menu leads with a read-only working-directory row', (
+      tester,
+    ) async {
+      final settings = await SettingsService.getInstance();
+      final mgr = SessionManager(settings: settings);
+      final session = Session(
+        id: 'sess-cwd',
+        cli: SessionCli.claude,
+        kind: SessionKind.chat,
+        dirId: 'dir-1',
+        cwd: '/Users/z/repo/.multicc-worktrees/sess-cwd',
+        createdAt: DateTime(2026, 1, 1),
+      );
+
+      await tester.pumpWidget(await _wrap(
+        SessionCard(session: session, mgr: mgr, settings: settings),
+      ));
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.more_horiz_rounded));
+      await tester.pumpAndSettle();
+
+      // Short dir name inline, full path in the tooltip.
+      final cwdRow = find.byKey(const Key('session-card-cwd'));
+      expect(cwdRow, findsOneWidget);
+      expect(
+        tester.widget<Text>(cwdRow).data,
+        'sess-cwd',
+      );
+      // The info row sits above the actionable items, which stay intact.
+      expect(find.text('改名'), findsOneWidget);
+      expect(find.text('删除'), findsOneWidget);
+
+      mgr.dispose();
+    });
+  });
 }
