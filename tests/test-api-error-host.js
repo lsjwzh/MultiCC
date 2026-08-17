@@ -200,6 +200,22 @@ test('only network failures open the global hold and recovery resumes held sessi
   assert.match(h.injections[0].deliveryOptions.idempotencyKey, /^api-recovery:session-1:/);
 });
 
+test('network recovery never resumes a scrubbed TaskRun execution slot', async () => {
+  const h = harness();
+  h.records.get('session-1').taskExecutionSlot = true;
+  h.decideWith(raw => decision({
+    error: { category: raw.category, provider: raw.provider || 'claude' },
+  }));
+  h.host.recordApiError({ category: 'network' });
+  h.host.recordApiError({ category: 'network' });
+  h.host.recordApiError({ category: 'network' });
+  h.host.holdSession('session-1', 'offline', 'must survive in TaskRun ledger');
+  h.host.recordApiSuccess('claude');
+  await Promise.resolve();
+  assert.equal(h.injections.length, 0);
+  assert.equal(h.logs.some(entry => entry.event === 'api_error_task_run_requires_new_run'), true);
+});
+
 test('Aux recovery probe skips permanent authentication/configuration failures', () => {
   const h = harness();
   let enqueued = 0;

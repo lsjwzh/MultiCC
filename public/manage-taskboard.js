@@ -504,17 +504,30 @@ function renderTaskBoardDetail(d) {
   const msgs = (d.items || []).map(it => {
     const time = it.ts ? new Date(it.ts).toLocaleString('zh-CN', { hour12: false }) : '?';
     const sessionHref = window.MultiCCTaskBoardUi.sessionChatUrl(it.sessionId, it.messageId);
+    const tag = sessionHref ? 'a' : 'div';
+    const linkAttrs = sessionHref
+      ? ` href="${_tbEsc(sessionHref)}" target="_blank" rel="noopener noreferrer" title="打开会话并定位到这条消息"`
+      : '';
     return `
-      <a class="tb-msg ${it.role} tb-msg-link" href="${_tbEsc(sessionHref)}" target="_blank" rel="noopener noreferrer" title="打开会话并定位到这条消息">
+      <${tag} class="tb-msg ${it.role}${sessionHref ? ' tb-msg-link' : ''}"${linkAttrs}>
         <div class="tb-msg-head">
-          <span class="tb-msg-sess">${_tbEsc(it.sessionLabel || it.sessionId)} ↗</span>
+          <span class="tb-msg-sess">${_tbEsc(it.sessionLabel || it.sessionId || '临时执行')}${sessionHref ? ' ↗' : ''}</span>
           <span>${_tbEsc(time)}</span>
           <span class="tb-msg-role-${it.role}">${it.role === 'user' ? '👤 用户' : '🤖 助手'}</span>
           ${it.lost ? '<span style="color:var(--danger)">（原消息已清理，仅存摘要）</span>' : ''}
         </div>
         <div class="tb-msg-body"></div>
-      </a>`;
+      </${tag}>`;
   }).join('') || '<div class="tb-empty">该任务还没有关联对话。</div>';
+
+  const recentRuns = window.MultiCCTaskBoardUi.recentTaskRuns(d);
+  const runHistory = recentRuns.length
+    ? `<details class="tb-run-history" data-testid="task-run-history" open>
+        <summary>最近执行 · ${recentRuns.length}</summary>
+        <div class="tb-run-history-list">${recentRuns
+          .map(run => window.MultiCCTaskBoardUi.renderTaskRunSummary(run)).join('')}</div>
+      </details>`
+    : '';
 
   content.innerHTML = `
     <div class="tb-d-head">
@@ -538,11 +551,27 @@ function renderTaskBoardDetail(d) {
       <div class="tb-chips">${chipHtml}</div>
       ${t.body ? `<details class="tb-body-detail"><summary>${t.legacy ? '旧记录任务正文' : '完整任务正文'}</summary><pre>${_tbEsc(t.body)}</pre></details>` : '<div class="tb-body-pending">正文尚未进入目标会话历史。</div>'}
     </div>
+    ${runHistory}
     <div class="tb-msgs">${msgs}</div>`;
 
   // Message bodies as textContent (never trust chat text as HTML).
   const bodies = content.querySelectorAll('.tb-msg-body');
   (d.items || []).forEach((it, i) => { if (bodies[i]) bodies[i].textContent = it.text || '（空）'; });
+
+  window.MultiCCTaskBoardUi.bindPendingQuestionAnswers(content, async payload => {
+    const response = await fetch(`/api/task-board/tasks/${encodeURIComponent(t.id)}/answer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.ok) throw new Error(result.error || response.status);
+    setTimeout(() => {
+      if (_tbDetailTaskId === t.id) loadTaskBoardDetail(t.id, true);
+      refreshTaskBoard(true);
+    }, 0);
+    return result;
+  });
 
   // Composer lives outside the re-rendered content, so refreshes never wipe
   // a half-typed message or an in-progress recording.

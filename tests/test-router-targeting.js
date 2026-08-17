@@ -31,6 +31,10 @@ function fixture(t, overrides = {}) {
     }],
     ['commander', { id: 'commander', dirId: 'dir-a', kind: 'chat', type: 'commander' }],
     ['aux', { id: 'aux', dirId: 'dir-a', kind: 'chat', type: 'aux' }],
+    ['task-slot', {
+      id: 'task-slot', dirId: 'dir-a', kind: 'chat', type: 'worker',
+      taskExecutionSlot: true,
+    }],
   ]);
   const admissions = [];
   const busySet = new Set(overrides.busyTargets || ['slave-busy']);
@@ -132,6 +136,23 @@ test('R11: cross-directory id is rejected with cross_directory', async t => {
     runtime.execute(cap, 'route_task', { target_session_id: 'other-dir', message: 'test' }),
     error => error.code === 'cross_directory',
   );
+});
+
+test('R11b: internal TaskRun slots cannot be addressed by route_task or dispatch_master', async t => {
+  const { runtime, admissions } = fixture(t);
+  for (const [tool, args, turnId] of [
+    ['route_task', { target_session_id: 'task-slot', message: 'bypass pool' }, 'turn-slot-route'],
+    ['dispatch_master', {
+      target_session_id: 'task-slot', message: 'bypass pool', mode: 'async',
+    }, 'turn-slot-master'],
+  ]) {
+    const cap = runtime.issueContext({ sessionId: 'master', turnId });
+    await assert.rejects(
+      runtime.execute(cap, tool, args),
+      error => error.code === 'invalid_target',
+    );
+  }
+  assert.equal(admissions.length, 0, 'ordinary MCP calls never reach dispatch admission');
 });
 
 // ── R4-R6: State interaction ─────────────────────────────────────────────────

@@ -337,8 +337,14 @@ function resolveTurnFinalization(plan, outcome = {}) {
       partial: plan.append.partial,
       checkpointRequired: plan.append.checkpointRequired,
     }));
-    effects.push(effect('commit-usage', { when: 'result-durable-after-append', exactlyOnce: true }));
     effects.push(effect('increment-chat-turn-count', { when: 'append-persisted' }));
+  }
+
+  // A result event may already have made the assistant message durable before
+  // the runner closes. Always retry the idempotent usage boundary here so a
+  // transient TaskRun write failure cannot be followed by scheduler success.
+  if (durableAfterAppend) {
+    effects.push(effect('commit-usage', { when: 'result-durable', exactlyOnce: true }));
   }
 
   if (facts.runnerKind === 'stream') effects.push(effect('clear-incremental-save'));

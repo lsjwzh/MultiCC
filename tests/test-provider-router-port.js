@@ -288,3 +288,15 @@ test('shadow never compares write/event operations and can mount one protocol at
   assert.equal(legacyCalls.filter(call => call.method === 'mountClaudeProxy').length, 1);
   assert.equal(legacyCalls.filter(call => call.method === 'mountCodexProxy').length, 0);
 });
+
+test('protocol mounts preserve request activity for liveness and TaskRun drain fencing', () => {
+  const calls = [];
+  const port = createCprPort(fakeRouter({ calls }));
+  const onActivity = () => {};
+  port.mountProtocolProxies({ use() {} }, {
+    protocols: ['claude'],
+    onActivity,
+  });
+  const mounted = calls.find(call => call.method === 'mountClaudeProxy').mountOptions;
+  assert.equal(mounted.onActivity, onActivity);
+});

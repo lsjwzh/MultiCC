@@ -105,6 +105,7 @@ function createPaths({ dataDir } = {}) {
     quotaBarCacheFile: path.join(root, 'quota-bar-cache.json'),
     scheduledTasksFile: path.join(root, 'scheduled_tasks.json'),
     taskBoardFile: path.join(root, 'task_board.json'),
+    taskRunDbFile: path.join(root, 'task-runs.sqlite'),
     // The user's drag-and-drop arrangement of the dir grid and of each fleet's
     // session list. Was per-device (localStorage / SharedPreferences) until it
     // moved here; see src/ui-layout.js.

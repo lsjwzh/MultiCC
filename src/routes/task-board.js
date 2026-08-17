@@ -28,6 +28,11 @@ const core = require('../task-board');
 const { isVoiceRouterRecord } = require('../voice-router');
 const { runStateForFreezeReason } = require('../session-work-scheduler');
 const { classifyDisplay } = require('../classify/vocab');
+const { publicRunDto } = require('./task-runs');
+const {
+  buildTaskRunContext: defaultBuildTaskRunContext,
+  stableTaskRunId: defaultStableTaskRunId,
+} = require('../task-run-context');
 
 const REQUIRED_DEPS = [
   'file', 'auxQueue', 'records', 'loadHistory', 'dispatchToSession',
@@ -53,12 +58,21 @@ function createTaskBoardRuntime(deps) {
     workspaceBroadcast, atomicWriteJson, isSystemInjected,
     getSessionRunState,
   } = deps;
+  const taskRuns = deps.taskRuns && typeof deps.taskRuns.beginRun === 'function'
+    ? deps.taskRuns : null;
+  const buildTaskRunContext = deps.buildTaskRunContext || defaultBuildTaskRunContext;
+  const stableTaskRunId = deps.stableTaskRunId || defaultStableTaskRunId;
   const resolveSessionQueue = typeof deps.resolveSessionQueue === 'function'
     ? deps.resolveSessionQueue
     : async () => ({ ok: false, code: 'no_active_task' });
+  const terminateTaskRun = typeof deps.terminateTaskRun === 'function'
+    ? deps.terminateTaskRun : null;
+  const cancelUndeliveredTaskRun = typeof deps.cancelUndeliveredTaskRun === 'function'
+    ? deps.cancelUndeliveredTaskRun : null;
   const getCommanderMigrationStatus = typeof deps.getCommanderMigrationStatus === 'function'
     ? deps.getCommanderMigrationStatus : null;
   const logger = deps.logger || console;
+  const taskRunAnswers = new Map();
   // Optional goal-mode helpers (from aux-goal). When present, a goal-flagged
   // send gets the same "[Goal 模式限制]…" note text-prepended that the chat
   // composer's goal mode produces — dispatch is text-only, so text parity is
@@ -91,6 +105,14 @@ function createTaskBoardRuntime(deps) {
     if (kind) payload.kind = kind;
     try { workspaceBroadcast(null, payload); }
     catch (_) {}
+  }
+
+  function notifyTaskRun(taskId) {
+    const id = String(taskId || '').trim();
+    const task = board.tasks[id];
+    if (!task) return false;
+    notify(core.taskDirId(board, task), [id]);
+    return true;
   }
 
   function stableTaskId(source, requestKey) {
@@ -127,7 +149,106 @@ function createTaskBoardRuntime(deps) {
     return messages.sort((a, b) => (a.message.ts || 0) - (b.message.ts || 0));
   }
 
+  function legacyImportMessages(task) {
+    const imported = new Map();
+    const add = (sessionId, message, {
+      excerpt = '', canonicalBody = false, createdAt: fallbackCreatedAt = 0,
+    } = {}) => {
+      const role = String(message?.role || (canonicalBody ? 'user' : '')).toLowerCase();
+      if (!['user', 'assistant'].includes(role)) return;
+      const content = message?.content ?? excerpt;
+      const text = core.messageText({ content });
+      if (!text && role !== 'assistant') return;
+      const sourceMessageId = String(message?.id || '').trim();
+      const createdAt = Number(message?.ts) || Number(fallbackCreatedAt) || 0;
+      const identity = sourceMessageId
+        ? `${sessionId}\0id:${sourceMessageId}`
+        : `${sessionId}\0${role}\0${createdAt}\0${text}`;
+      const messageId = `legacy:${crypto.createHash('sha256').update(identity).digest('hex').slice(0, 40)}`;
+      if (imported.has(messageId)) {
+        if (canonicalBody) imported.get(messageId).metadata.canonicalBody = true;
+        return;
+      }
+      imported.set(messageId, {
+        messageId,
+        role,
+        kind: 'legacy_import',
+        content,
+        metadata: {
+          sourceSessionId: String(sessionId || '').slice(0, 256),
+          sourceMessageId: sourceMessageId.slice(0, 256) || null,
+          canonicalBody: canonicalBody || message?.taskStart === true,
+          lost: !message,
+        },
+        createdAt,
+      });
+    };
+
+    for (const entry of canonicalMessages(task)) {
+      add(entry.sessionId, entry.message, {
+        canonicalBody: entry.message?.role === 'user' && entry.message?.taskStart === true,
+      });
+    }
+    const historyCache = new Map();
+    const historyFor = sessionId => {
+      if (!historyCache.has(sessionId)) {
+        try { historyCache.set(sessionId, loadHistory(sessionId) || []); }
+        catch (_) { historyCache.set(sessionId, []); }
+      }
+      return historyCache.get(sessionId);
+    };
+    for (const ref of task.refs || []) {
+      const history = historyFor(ref.sessionId);
+      const user = ref.userMsgId
+        ? history.find(message => message?.id === ref.userMsgId) : null;
+      const assistant = ref.assistantMsgId
+        ? history.find(message => message?.id === ref.assistantMsgId) : null;
+      if (user) add(ref.sessionId, user, { canonicalBody: true });
+      else if (ref.excerpt) add(ref.sessionId, null, {
+        excerpt: ref.excerpt, canonicalBody: true, createdAt: ref.ts,
+      });
+      if (assistant) add(ref.sessionId, assistant);
+    }
+    return [...imported.values()].sort((left, right) => (
+      left.createdAt - right.createdAt || left.messageId.localeCompare(right.messageId)
+    ));
+  }
+
+  function contextMessages(messages) {
+    return messages.map(message => ({
+      id: message.messageId,
+      role: message.role,
+      ts: message.createdAt,
+      text: core.messageText({ content: message.content }),
+    }));
+  }
+
   function canonicalTaskBody(task) {
+    if (taskRuns) {
+      try {
+        for (const run of taskRuns.listTaskRuns(task.id)) {
+          const messages = taskRuns.getRunMessages(run.runId);
+          const canonical = messages.find(message => message.role === 'user'
+              && message.kind === 'legacy_import' && message.metadata?.canonicalBody === true)
+            || messages.find(message => message.role === 'user'
+              && message.kind === 'legacy_import')
+            || messages.find(message => message.role === 'user' && message.kind === 'admission');
+          if (canonical) {
+            const imported = canonical.kind === 'legacy_import';
+            return {
+              text: core.messageText({ content: canonical.content }),
+              messageId: imported
+                ? canonical.metadata?.sourceMessageId || null
+                : canonical.messageId || null,
+              sessionId: imported
+                ? canonical.metadata?.sourceSessionId || null
+                : null,
+              legacy: false,
+            };
+          }
+        }
+      } catch (_) { /* legacy history remains the compatibility fallback */ }
+    }
     const start = canonicalMessages(task)
       .find(entry => entry.message.role === 'user' && entry.message.taskStart === true);
     if (start) {
@@ -156,6 +277,190 @@ function createTaskBoardRuntime(deps) {
       }
     }
     return { text: '', messageId: null, sessionId: null, legacy: true };
+  }
+
+  function storedTaskMessages(taskId, excludeRunId = null) {
+    if (!taskRuns) return [];
+    const items = [];
+    for (const run of taskRuns.listTaskRuns(taskId)) {
+      if (run.runId === excludeRunId) continue;
+      for (const message of taskRuns.getRunMessages(run.runId)) {
+        items.push({
+          id: message.messageId,
+          role: message.role,
+          ts: message.createdAt,
+          text: core.messageText({ content: message.content }),
+        });
+      }
+    }
+    return items;
+  }
+
+  function isOpenTaskRun(run) {
+    return !!run && run.executionStatus === 'running'
+      && run.usageStatus === 'collecting' && run.cleanupState === 'blocked';
+  }
+
+  function latestOpenTaskRun(taskId, knownRuns = null) {
+    if (!taskRuns) return null;
+    const runs = Array.isArray(knownRuns) ? knownRuns : taskRuns.listTaskRuns(taskId);
+    return runs.filter(isOpenTaskRun).sort((left, right) => (
+      (Number(left.startedAt) || 0) - (Number(right.startedAt) || 0)
+        || String(left.runId || '').localeCompare(String(right.runId || ''))
+    )).at(-1) || null;
+  }
+
+  function exactTaskRunTarget(taskId, knownRuns = null) {
+    if (!taskRuns) return { ok: false, code: 'task_run_unavailable' };
+    let run;
+    try { run = latestOpenTaskRun(taskId, knownRuns); }
+    catch (_) { return { ok: false, code: 'task_run_unavailable' }; }
+    if (!run) return { ok: false, code: 'task_run_not_waiting' };
+    const slotId = String(run.slotId || '').trim();
+    const leaseEpoch = Number(run.leaseEpoch);
+    if (!slotId || !Number.isSafeInteger(leaseEpoch) || leaseEpoch < 1) {
+      return { ok: false, code: 'task_run_lease_stale' };
+    }
+    const record = records.get(slotId);
+    const projected = record?.taskRunLease;
+    if (!record?.taskExecutionSlot || record.taskRunQuarantined
+        || projected?.runId !== run.runId || Number(projected?.leaseEpoch) !== leaseEpoch) {
+      return { ok: false, code: 'task_run_lease_stale' };
+    }
+    if (typeof taskRuns.getSlotLease !== 'function') {
+      return { ok: false, code: 'task_run_lease_stale' };
+    }
+    let lease;
+    try { lease = taskRuns.getSlotLease(slotId); }
+    catch (_) { return { ok: false, code: 'task_run_lease_stale' }; }
+    if (!lease || lease.runId !== run.runId || Number(lease.leaseEpoch) !== leaseEpoch
+        || lease.state !== 'active' || lease.phase !== 'ready') {
+      return { ok: false, code: 'task_run_lease_stale' };
+    }
+    const pending = record.taskState?.pendingUserInput || null;
+    if (!pending || String(pending.taskId || '') !== String(taskId)) {
+      return { ok: false, code: 'no_pending_question' };
+    }
+    return { ok: true, run, slotId, leaseEpoch, record, pending };
+  }
+
+  function publicPendingQuestion(pending) {
+    if (!pending || pending.resolved === true) return null;
+    const requestId = String(pending.requestId || '').trim().slice(0, 160);
+    const question = String(pending.question || '').trim().slice(0, 16 * 1024);
+    if (!requestId || !question) return null;
+    const options = [];
+    const seen = new Set();
+    for (const raw of Array.isArray(pending.options) ? pending.options : []) {
+      const option = String(raw == null ? '' : raw).trim().slice(0, 512);
+      if (!option || seen.has(option)) continue;
+      seen.add(option);
+      options.push(option);
+      if (options.length >= 12) break;
+    }
+    return {
+      requestId,
+      question,
+      reason: String(pending.reason || '').trim().slice(0, 4 * 1024),
+      options,
+      allowMultiple: pending.allowMultiple === true && options.length >= 2,
+      createdAt: Math.max(0, Number(pending.createdAt) || 0),
+    };
+  }
+
+  function taskRunDtos(taskId) {
+    if (!taskRuns) return { runs: [], usage: null };
+    try {
+      const storedRuns = taskRuns.listTaskRuns(taskId);
+      const answerTarget = exactTaskRunTarget(taskId, storedRuns);
+      const pendingQuestion = answerTarget.ok
+        ? publicPendingQuestion(answerTarget.pending) : null;
+      const runs = storedRuns.slice(-5).reverse().map(run => ({
+        ...publicRunDto(run), usage: taskRuns.getRunUsage(run.runId),
+        ...(pendingQuestion && run.runId === answerTarget.run.runId
+          ? { pendingQuestion } : {}),
+      }));
+      return { runs, usage: taskRuns.getTaskUsage(taskId) };
+    } catch (error) {
+      logger.log(`[multicc/taskboard] task-run projection failed: ${error?.code || 'unknown'}`);
+      return { runs: [], usage: null };
+    }
+  }
+
+  function beginTaskRun({ taskId, task, text, clientKey, source }) {
+    if (!taskRuns) return null;
+    const runId = stableTaskRunId(taskId, clientKey);
+    const existingRuns = taskRuns.listTaskRuns(taskId);
+    const existingRun = existingRuns.find(run => run.runId === runId) || null;
+    const created = !existingRun;
+    const firstRun = existingRuns.length === 0 || existingRuns[0]?.runId === runId;
+    const imports = firstRun
+      ? (existingRun
+          ? taskRuns.getRunMessages(runId).filter(message => message.kind === 'legacy_import')
+          : legacyImportMessages(task || { id: taskId, refs: [] }))
+      : [];
+    const context = buildTaskRunContext({
+      task: task || { id: taskId, title: core.PENDING_TASK_TITLE, status: 'active' },
+      messages: [...storedTaskMessages(taskId, runId), ...contextMessages(imports)],
+      currentText: text,
+    });
+    const startedAt = existingRun?.startedAt || Date.now();
+    const runInput = {
+      runId,
+      taskId,
+      attemptId: runId,
+      slotId: null,
+      startedAt,
+      metadata: {
+        source: String(source || 'task-board').slice(0, 40),
+        contextHash: context.hash,
+        contextManifest: context.manifest,
+      },
+    };
+    const admission = {
+      messageId: `admission:${runId}`,
+      role: 'user',
+      kind: 'admission',
+      content: text,
+      metadata: { contextHash: context.hash },
+      createdAt: startedAt,
+      atRunStart: true,
+    };
+    let run;
+    if (typeof taskRuns.admitRun === 'function') {
+      ({ run } = taskRuns.admitRun({ run: runInput, messages: [...imports, admission] }));
+    } else {
+      run = taskRuns.beginRun(runInput);
+      for (const message of imports) taskRuns.appendMessage({ runId, ...message });
+      taskRuns.appendMessage({ runId, ...admission, createdAt: run.startedAt });
+    }
+    const closed = run.executionStatus !== 'running' || run.usageStatus !== 'collecting'
+      || run.cleanupState !== 'blocked';
+    return { runId, leaseEpoch: run.leaseEpoch, context, created, closed };
+  }
+
+  function rejectTaskRun(taskRun, errorCode) {
+    if (!taskRun?.created || !taskRuns) return false;
+    try {
+      const runId = taskRun.runId;
+      taskRuns.observeUsage({ runId, event: {
+        eventId: `admission-rejected:${runId}`, occurredAt: Date.now(),
+        providerId: '_none_', providerName: 'No provider', cli: '', protocol: '', model: '',
+        roleKind: 'main', routeName: 'main', source: 'exact', coverage: 'observed', status: 'error',
+        tokens: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0 },
+        errorCode: String(errorCode || 'DISPATCH_REJECTED').slice(0, 128),
+      } });
+      taskRuns.sealUsage({ runId, executionStatus: 'failed', outcomeDurable: true,
+        producersDrained: true, nativeTranscriptChecked: true });
+      const permit = taskRuns.getCleanupPermit(runId);
+      if (!permit) return false;
+      taskRuns.markCleanup({ runId, permit, state: 'deleting' });
+      taskRuns.markCleanup({ runId, permit, state: 'done' });
+      return true;
+    } catch (error) {
+      logger.log(`[multicc/taskboard] rejected task-run finalization failed: ${error?.code || 'unknown'}`);
+      return false;
+    }
   }
 
   function ensureTaskIndex({
@@ -896,9 +1201,18 @@ function createTaskBoardRuntime(deps) {
     if (dto?.routing) {
       dto.routing.targetLabel = records.get(dto.routing.targetSessionId)?.label || dto.routing.targetSessionId;
       if (dto.routing.workerSessionId) {
-        dto.routing.workerLabel = records.get(dto.routing.workerSessionId)?.label || dto.routing.workerSessionId;
+        const worker = records.get(dto.routing.workerSessionId);
+        if (worker?.taskExecutionSlot === true) {
+          delete dto.routing.workerSessionId;
+          dto.routing.internalExecution = true;
+        } else {
+          dto.routing.workerLabel = worker?.label || dto.routing.workerSessionId;
+        }
       }
     }
+    dto.sessionIds = (dto.sessionIds || [])
+      .filter(sessionId => records.get(sessionId)?.taskExecutionSlot !== true);
+    Object.assign(dto, taskRunDtos(task.id));
     return dto;
   }
 
@@ -923,13 +1237,22 @@ function createTaskBoardRuntime(deps) {
         t.routing.targetLabel = labels[sid];
         if (t.routing.workerSessionId) {
           const workerId = t.routing.workerSessionId;
-          labels[workerId] = records.get(workerId)?.label || workerId;
-          t.routing.workerLabel = labels[workerId];
+          const worker = records.get(workerId);
+          if (worker?.taskExecutionSlot === true) {
+            delete t.routing.workerSessionId;
+            t.routing.internalExecution = true;
+          } else {
+            labels[workerId] = worker?.label || workerId;
+            t.routing.workerLabel = labels[workerId];
+          }
         }
       }
+      t.sessionIds = (t.sessionIds || [])
+        .filter(sessionId => records.get(sessionId)?.taskExecutionSlot !== true);
       for (const sid of t.sessionIds) {
         if (!(sid in labels)) labels[sid] = records.get(sid)?.label || sid;
       }
+      Object.assign(t, taskRunDtos(t.id));
     }
     res.json({ ok: true, ...dto, sessionLabels: labels, backfill: { ...backfillState } });
   }
@@ -937,6 +1260,40 @@ function createTaskBoardRuntime(deps) {
   function handleMessages(req, res) {
     const task = board.tasks[req.params.taskId];
     if (!task) return res.status(404).json({ error: 'task_not_found' });
+    const runProjection = taskRunDtos(task.id);
+    if (taskRuns && runProjection.runs.length) {
+      const items = [];
+      try {
+        for (const run of taskRuns.listTaskRuns(task.id)) {
+          for (const message of taskRuns.getRunMessages(run.runId)) {
+            const text = core.messageText({ content: message.content });
+            if (!text && message.role !== 'assistant') continue;
+            const imported = message.kind === 'legacy_import';
+            const sourceSessionId = imported
+              ? String(message.metadata?.sourceSessionId || '') || null
+              : null;
+            items.push({
+              sessionId: sourceSessionId,
+              sessionLabel: sourceSessionId
+                ? records.get(sourceSessionId)?.label || sourceSessionId
+                : '临时执行',
+              taskRunId: run.runId,
+              role: message.role,
+              messageId: imported
+                ? message.metadata?.sourceMessageId || null
+                : message.messageId || null,
+              ts: message.createdAt || 0,
+              text,
+              ...(imported && message.metadata?.lost === true ? { lost: true } : {}),
+            });
+          }
+        }
+        items.sort((left, right) => (left.ts || 0) - (right.ts || 0));
+        return res.json({ ok: true, task: taskDto(task), items, ...runProjection });
+      } catch (error) {
+        logger.log(`[multicc/taskboard] task-run messages failed: ${error?.code || 'unknown'}`);
+      }
+    }
     const cache = new Map();
     const historyFor = (sid) => {
       if (!cache.has(sid)) {
@@ -985,7 +1342,143 @@ function createTaskBoardRuntime(deps) {
       }
     }
     items.sort((a, b) => (a.ts || 0) - (b.ts || 0));
-    res.json({ ok: true, task: taskDto(task), items });
+    res.json({ ok: true, task: taskDto(task), items, ...runProjection });
+  }
+
+  function answerResult(res, target, result = {}, duplicate = false) {
+    return res.json({
+      ok: true,
+      taskId: target.run.taskId,
+      taskRunId: target.run.runId,
+      requestId: String(target.pending.requestId || ''),
+      queued: result.queued === true,
+      status: 'answered',
+      operationId: result.operationId || null,
+      duplicate: duplicate || result.duplicate === true,
+    });
+  }
+
+  async function handleAnswer(req, res) {
+    const taskId = String(req.params?.taskId || '').trim();
+    if (!board.tasks[taskId]) return res.status(404).json({ error: 'task_not_found' });
+    const requestId = String(req.body?.requestId || '').trim().slice(0, 160);
+    const text = String(req.body?.text || '').trim().slice(0, 64 * 1024);
+    const clientMsgId = String(req.body?.clientMsgId || '').trim().slice(0, 160);
+    if (!requestId) return res.status(400).json({ error: 'request_id_required' });
+    if (!text) return res.status(400).json({ error: 'empty_text' });
+    if (!clientMsgId) return res.status(400).json({ error: 'client_msg_id_required' });
+    const target = exactTaskRunTarget(taskId);
+    if (!target.ok) return res.status(target.code === 'task_run_unavailable' ? 503 : 409)
+      .json({ error: target.code });
+    if (String(target.pending.requestId || '') !== requestId) {
+      return res.status(409).json({ error: 'pending_request_mismatch' });
+    }
+    const key = `${target.run.runId}\0${requestId}`;
+    const answerHash = crypto.createHash('sha256').update(text, 'utf8').digest('hex');
+    const receiptIdentity = {
+      runId: target.run.runId, requestId, clientMsgId, answerHash,
+    };
+    if (!taskRuns || typeof taskRuns.reserveAnswerReceipt !== 'function'
+        || typeof taskRuns.markAnswerAccepted !== 'function'
+        || typeof taskRuns.getAnswerReceipt !== 'function') {
+      return res.status(503).json({ error: 'task_run_answer_receipt_unavailable' });
+    }
+
+    if (target.pending.resolved === true) {
+      let receipt;
+      try { receipt = taskRuns.getAnswerReceipt(receiptIdentity); }
+      catch (error) {
+        logger.log(`[multicc/taskboard] answer receipt read failed: ${error?.code || 'unknown'}`);
+        return res.status(503).json({ error: 'task_run_answer_receipt_unavailable' });
+      }
+      if (!receipt) return res.status(409).json({ error: 'answer_receipt_missing' });
+      if (receipt.clientMsgId !== clientMsgId || receipt.answerHash !== answerHash) {
+        return res.status(409).json({ error: 'idempotency_conflict' });
+      }
+      if (receipt.state === 'accepted') return answerResult(res, target, {}, true);
+      // A crash may land after the canonical ingress accepted the clientMsgId
+      // but before this receipt advanced. Retry the exact payload through that
+      // ingress: its durable clientMsgId dedupe proves the enqueue before we
+      // mark this receipt accepted.
+    }
+
+    let reservation;
+    try { reservation = taskRuns.reserveAnswerReceipt(receiptIdentity); }
+    catch (error) {
+      if (error?.code === 'TASK_RUN_ANSWER_CONFLICT') {
+        return res.status(409).json({ error: 'idempotency_conflict' });
+      }
+      logger.log(`[multicc/taskboard] answer receipt reserve failed: ${error?.code || 'unknown'}`);
+      return res.status(503).json({ error: 'task_run_answer_receipt_unavailable' });
+    }
+    if (reservation.state === 'accepted') return answerResult(res, target, {}, true);
+
+    const current = taskRunAnswers.get(key);
+    if (current) {
+      if (current.clientMsgId !== clientMsgId) {
+        return res.status(409).json({ error: 'answer_in_progress' });
+      }
+      if (current.answerHash !== answerHash) {
+        return res.status(409).json({ error: 'idempotency_conflict' });
+      }
+      try {
+        const replay = await current.promise;
+        if (!replay?.ok) {
+          return res.status(502).json({ error: replay?.code || replay?.error || 'answer_failed' });
+        }
+        return answerResult(res, target, replay, true);
+      } catch (error) {
+        logger.log(`[multicc/taskboard] answer failed: ${error?.code || error?.message || 'unknown'}`);
+        return res.status(502).json({ error: 'answer_failed' });
+      }
+    }
+
+    const promise = Promise.resolve()
+      .then(() => sendSessionMessage(target.slotId, text, {
+        userInputRequestId: requestId,
+        taskId,
+        taskRunId: target.run.runId,
+        leaseEpoch: target.leaseEpoch,
+        originContinue: true,
+        taskSource: 'task-board',
+        clientMsgId,
+      }))
+      .then(result => {
+        if (result?.ok) taskRuns.markAnswerAccepted(receiptIdentity);
+        return result;
+      });
+    taskRunAnswers.set(key, { clientMsgId, answerHash, promise });
+    try {
+      const result = await promise;
+      if (!result?.ok) {
+        return res.status(502).json({ error: result?.code || result?.error || 'answer_failed' });
+      }
+      notify(core.taskDirId(board, board.tasks[taskId]), [taskId]);
+      return answerResult(res, target, result);
+    } catch (error) {
+      logger.log(`[multicc/taskboard] answer failed: ${error?.code || error?.message || 'unknown'}`);
+      return res.status(502).json({ error: 'answer_failed' });
+    } finally {
+      if (taskRunAnswers.get(key)?.promise === promise) taskRunAnswers.delete(key);
+    }
+  }
+
+  function taskRunDispatchResult(result, {
+    taskId, taskRunId, commanderSessionId = null,
+  }) {
+    const receipt = {
+      ok: true,
+      taskId,
+      taskRunId,
+      queued: result?.queued === true,
+      status: String(result?.status || 'admitted'),
+      operationId: result?.operationId || taskRunId,
+    };
+    if (commanderSessionId && records.get(commanderSessionId)?.type === 'commander') {
+      receipt.commanderSessionId = commanderSessionId;
+      receipt.commanderLabel = records.get(commanderSessionId)?.label || commanderSessionId;
+    }
+    return receipt;
   }
 
   async function routeCommanderFollowup(commanderId, taskId, text, options = {}) {
@@ -999,16 +1492,29 @@ function createTaskBoardRuntime(deps) {
     if (!messageText) return { ok: false, code: 'empty_text' };
     const clientKey = String(options.clientMsgId || '').trim() || crypto.randomUUID();
     const source = options.source === 'commander' ? 'commander' : 'task-board';
-    const message = String(options.goalNote || '') + core.buildCommanderRoutedMessage(task, messageText);
+    const taskRun = beginTaskRun({
+      taskId: task.id, task, text: messageText,
+      clientKey: `followup:${clientKey}`, source,
+    });
+    if (taskRun?.closed) return { ok: false, code: 'task_run_closed' };
+    const message = String(options.goalNote || '')
+      + core.buildCommanderRoutedMessage(task, taskRun?.context.text || messageText);
     const result = await routeCommanderTask({
       commanderId,
       message,
-      idempotencyKey: `taskboard-followup:${task.id}:${clientKey}`,
+      idempotencyKey: taskRun ? `task-run:${taskRun.runId}`
+        : `taskboard-followup:${task.id}:${clientKey}`,
+      operationId: taskRun?.runId,
       taskId: task.id,
+      taskRunId: taskRun?.runId,
+      leaseEpoch: taskRun?.leaseEpoch,
       taskStart: false,
       taskSource: source,
     });
-    if (!result?.ok) return result || { ok: false, code: 'dispatch_failed' };
+    if (!result?.ok) {
+      rejectTaskRun(taskRun, result?.code || result?.error);
+      return result || { ok: false, code: 'dispatch_failed' };
+    }
     core.setTaskRouting(task, {
       mode: 'commander',
       targetSessionId: commanderId,
@@ -1021,14 +1527,16 @@ function createTaskBoardRuntime(deps) {
     });
     save();
     notify(core.taskDirId(board, task), [task.id]);
-    return {
-      ...result,
-      taskId: task.id,
+    if (taskRun) return {
+      ...taskRunDispatchResult(result, {
+        taskId: task.id,
+        taskRunId: taskRun.runId,
+        commanderSessionId: commanderId,
+      }),
       taskStart: false,
-      target: commanderId,
-      routeMode: 'commander',
-      workerSessionId: result.targetSessionId || null,
     };
+    return { ...result, taskId: task.id, taskStart: false,
+      target: commanderId, routeMode: 'commander' };
   }
 
   async function handleSend(req, res) {
@@ -1046,7 +1554,9 @@ function createTaskBoardRuntime(deps) {
         queryText: text,
         isAvailable: () => true,
       });
-      if (!target) return res.status(409).json({ error: 'no_relevant_target', note: '指定会话不可路由或不属于任务所在 Fleet' });
+      if (!target || records.get(target)?.taskExecutionSlot === true) {
+        return res.status(409).json({ error: 'no_relevant_target', note: '指定会话不可路由或不属于任务所在 Fleet' });
+      }
       routeMode = 'manual';
       result = await dispatchToSession(target,
         goalNoteFor(req.body) + core.buildRoutedMessage(task, text), {
@@ -1088,6 +1598,14 @@ function createTaskBoardRuntime(deps) {
       const busy = result?.code === 'target_busy' || result?.error === 'target_busy';
       return res.status(busy ? 409 : 502).json({ error: result?.code || result?.error || 'dispatch_failed' });
     }
+    if (result.taskRunId) {
+      return res.json(taskRunDispatchResult(result, {
+        taskId: task.id,
+        taskRunId: result.taskRunId,
+        commanderSessionId: routeMode === 'commander' ? target : null,
+        taskStart: false,
+      }));
+    }
     res.json({
       ok: true,
       target,
@@ -1100,6 +1618,7 @@ function createTaskBoardRuntime(deps) {
       elasticWorkerCreated: routeMode === 'commander' && result.elasticWorkerCreated === true,
       chatId: result.chatId,
       operationId: result.operationId || null,
+      taskRunId: null,
     });
   }
 
@@ -1121,14 +1640,31 @@ function createTaskBoardRuntime(deps) {
     }
     const effectiveRouteMode = existing?.routing?.mode || routeMode;
     const effectiveTarget = existing?.routing?.targetSessionId || target;
+    if (effectiveRouteMode === 'manual'
+        && records.get(effectiveTarget)?.taskExecutionSlot === true) {
+      return { ok: false, code: 'no_relevant_target' };
+    }
     const taskShape = { id: taskId, title: core.PENDING_TASK_TITLE };
+    const taskRun = effectiveRouteMode === 'commander' ? beginTaskRun({
+      taskId, task: existing || taskShape, text,
+      clientKey: `start:${clientKey}`, source,
+    }) : null;
+    if (taskRun?.closed && existing?.routing?.operationId !== taskRun.runId) {
+      return { ok: false, code: 'task_run_closed' };
+    }
+    const executionText = taskRun?.context.text || text;
     const routed = effectiveRouteMode === 'commander'
-      ? core.buildCommanderRoutedMessage(taskShape, text)
-      : core.buildRoutedMessage(taskShape, text);
+      ? core.buildCommanderRoutedMessage(taskShape, executionText)
+      : core.buildRoutedMessage(taskShape, executionText);
     const message = goalNote + routed;
-    const idempotencyKey = `task-start:${taskId}`;
+    const idempotencyKey = taskRun ? `task-run:${taskRun.runId}` : `task-start:${taskId}`;
     const taskContext = {
       taskId,
+      ...(taskRun ? {
+        taskRunId: taskRun.runId,
+        leaseEpoch: taskRun.leaseEpoch,
+        operationId: taskRun.runId,
+      } : {}),
       taskStart: true,
       taskSource: source,
       taskText: text,
@@ -1174,13 +1710,18 @@ function createTaskBoardRuntime(deps) {
         error: error?.message || 'dispatch_failed',
       };
     }
-    if (!result?.ok) return result || { ok: false, error: 'dispatch_failed' };
+    if (!result?.ok) {
+      rejectTaskRun(taskRun, result?.code || result?.error);
+      return result || { ok: false, error: 'dispatch_failed' };
+    }
     const workerSessionId = effectiveRouteMode === 'commander'
       ? result.targetSessionId
       : result.chatId || effectiveTarget;
     const routedAt = Date.now();
     const indexed = ensureTaskIndex({
       taskId,
+      taskRunId: taskRun?.runId || null,
+      leaseEpoch: taskRun?.leaseEpoch || null,
       dirId,
       sessionId: workerSessionId,
       taskText: text,
@@ -1201,6 +1742,14 @@ function createTaskBoardRuntime(deps) {
     }
     save();
     notify(dirId, [taskId], indexed.created ? 'created' : undefined);
+    if (taskRun) return {
+      ...taskRunDispatchResult(result, {
+        taskId,
+        taskRunId: taskRun.runId,
+        commanderSessionId: effectiveTarget,
+      }),
+      taskStart: true,
+    };
     return {
       ...result,
       taskId,
@@ -1225,7 +1774,9 @@ function createTaskBoardRuntime(deps) {
         queryText: text,
         isAvailable: () => true,
       });
-      if (!target) return res.status(409).json({ error: 'no_relevant_target', note: '指定会话不可路由或不属于该 Fleet' });
+      if (!target || records.get(target)?.taskExecutionSlot === true) {
+        return res.status(409).json({ error: 'no_relevant_target', note: '指定会话不可路由或不属于该 Fleet' });
+      }
       routeMode = 'manual';
     } else {
       if (commanderMigrationFailure(res, dirId)) return;
@@ -1256,6 +1807,14 @@ function createTaskBoardRuntime(deps) {
       return res.status(busy || conflict ? 409 : 502).json({
         error: result.code || result.error || 'dispatch_failed',
       });
+    }
+    if (result.taskRunId) {
+      return res.json(taskRunDispatchResult(result, {
+        taskId: result.taskId,
+        taskRunId: result.taskRunId,
+        commanderSessionId: routeMode === 'commander' ? target : null,
+        taskStart: true,
+      }));
     }
     if (routeMode === 'commander') {
       // Commander receives the message and may route it with MCP route_task.
@@ -1301,11 +1860,63 @@ function createTaskBoardRuntime(deps) {
       return res.status(400).json({ error: 'invalid_status' });
     }
     if (status === 'done') {
+      let openRun = null;
+      try { openRun = latestOpenTaskRun(task.id); }
+      catch (_) {
+        return res.status(409).json({ error: 'task_run_state_unavailable' });
+      }
+      if (openRun) {
+        const operationId = String(task.routing?.operationId || '').trim();
+        if (!openRun.slotId) {
+          if (!operationId || !cancelUndeliveredTaskRun) {
+            return res.status(409).json({ error: 'task_run_cancel_unavailable' });
+          }
+          let cancelled;
+          try {
+            cancelled = await cancelUndeliveredTaskRun(operationId, {
+              taskId: task.id, runId: openRun.runId,
+            });
+          } catch (error) {
+            logger.log(`[multicc/taskboard] task-run dispatch cancel failed: ${error?.code || error?.message || 'unknown'}`);
+            return res.status(409).json({ error: 'task_run_cancel_failed' });
+          }
+          if (!(cancelled?.ok === true && cancelled?.neverDelivered === true)) {
+            return res.status(409).json({
+              error: cancelled?.code || 'task_run_delivery_not_cancellable',
+            });
+          }
+        }
+        if (!terminateTaskRun) {
+          return res.status(409).json({ error: 'task_run_termination_unavailable' });
+        }
+        let terminated;
+        try {
+          terminated = await terminateTaskRun({
+            taskId: task.id,
+            runId: openRun.runId,
+            leaseEpoch: Number(openRun.leaseEpoch) || null,
+            ...(openRun.slotId
+              ? { slotId: openRun.slotId }
+              : { neverDelivered: true }),
+          });
+        } catch (error) {
+          logger.log(`[multicc/taskboard] task-run termination failed: ${error?.code || error?.message || 'unknown'}`);
+          return res.status(409).json({ error: 'task_run_termination_failed' });
+        }
+        const alreadyTerminal = terminated?.duplicate === true
+          || ['already_terminal', 'task_run_closed'].includes(terminated?.code);
+        if (!(terminated === true || terminated?.ok === true || alreadyTerminal)) {
+          return res.status(409).json({
+            error: terminated?.code || 'task_run_termination_failed',
+          });
+        }
+      }
       const routedWorker = task.routing?.workerSessionId;
       const sessionIds = routedWorker
         ? [routedWorker]
         : [...new Set((task.refs || []).map(ref => ref.sessionId).filter(Boolean))];
       for (const sessionId of sessionIds) {
+        if (records.get(sessionId)?.taskExecutionSlot === true) continue;
         const resolved = await resolveSessionQueue(sessionId, task.id);
         if (resolved && resolved.ok === false
             && !['no_active_task', 'active_task_mismatch'].includes(resolved.code)) {
@@ -1392,6 +2003,12 @@ function createTaskBoardRuntime(deps) {
         if (!res.headersSent) res.status(500).json({ error: 'internal_error' });
       });
     });
+    app.post('/api/task-board/tasks/:taskId/answer', (req, res) => {
+      handleAnswer(req, res).catch(e => {
+        logger.log(`[multicc/taskboard] answer failed: ${e?.message || e}`);
+        if (!res.headersSent) res.status(500).json({ error: 'internal_error' });
+      });
+    });
     app.post('/api/task-board/tasks/:taskId/status', (req, res) => {
       handleStatus(req, res).catch(error => {
         logger.log(`[multicc/taskboard] status update failed: ${error?.message || error}`);
@@ -1451,6 +2068,7 @@ function createTaskBoardRuntime(deps) {
       });
     },
     routeCommanderFollowup,
+    notifyTaskRun,
     // test/introspection surface
     getBoard: () => board,
     save,

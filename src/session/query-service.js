@@ -39,8 +39,15 @@ function createSessionQueryService({ records, runtime, presenter = sessionDtoPre
   assertSessionRuntimePort(runtime);
   if (typeof presenter !== 'function') throw new TypeError('[session] presenter must be a function');
 
-  function context(record, { includeHidden = false } = {}) {
+  function context(record, {
+    includeHidden = false,
+    includeTaskExecutionSlots = false,
+  } = {}) {
     if (!record || typeof record !== 'object') return null;
+    // `includeHidden` predates TaskRun pools and is used by legacy admin
+    // projections for aux/gateway records. It must not accidentally grant
+    // access to the separate internal execution-slot namespace.
+    if (record.taskExecutionSlot === true && !includeTaskExecutionSlots) return null;
     if (!includeHidden && HIDDEN_SESSION_TYPES.has(record.type)) return null;
     return Object.freeze({ record, runtime: safeRuntime(runtime, record) });
   }
@@ -58,7 +65,12 @@ function createSessionQueryService({ records, runtime, presenter = sessionDtoPre
     return presentContext(value, options.presenter || presenter);
   }
 
-  function listContexts({ dirId, includeHidden = false, filter } = {}) {
+  function listContexts({
+    dirId,
+    includeHidden = false,
+    includeTaskExecutionSlots = false,
+    filter,
+  } = {}) {
     const source = records.list();
     if (!source || typeof source[Symbol.iterator] !== 'function') {
       throw new TypeError('[session] records.list() must return an iterable');
@@ -67,7 +79,7 @@ function createSessionQueryService({ records, runtime, presenter = sessionDtoPre
     for (const record of source) {
       if (dirId !== undefined && record && record.dirId !== dirId) continue;
       if (typeof filter === 'function' && !filter(record)) continue;
-      const value = context(record, { includeHidden });
+      const value = context(record, { includeHidden, includeTaskExecutionSlots });
       if (value) result.push(value);
     }
     return result;
@@ -78,10 +90,13 @@ function createSessionQueryService({ records, runtime, presenter = sessionDtoPre
     return listContexts(options).map(value => presentContext(value, selectedPresenter));
   }
 
-  function getContext(id, { includeHidden = false } = {}) {
+  function getContext(id, {
+    includeHidden = false,
+    includeTaskExecutionSlots = false,
+  } = {}) {
     const key = String(id || '');
     if (!key) return null;
-    return context(records.get(key), { includeHidden });
+    return context(records.get(key), { includeHidden, includeTaskExecutionSlots });
   }
 
   function get(id, options = {}) {
