@@ -201,3 +201,36 @@ test('non-OpenCode CLIs preserve their existing quota text and hide the OpenCode
     h.cleanup();
   }
 });
+
+test('quota refreshes go through the unified server endpoint', async () => {
+  const previousFetch = global.fetch;
+  const calls = [];
+  global.fetch = async (url, opts) => {
+    calls.push({ url: String(url), method: opts && opts.method });
+    return {
+      json: async () => ({
+        status: 'ok',
+        fetchedAt: 1700000000000,
+        bar: Renderer.renderQuotaBar('opencode', {
+          status: 'ok',
+          fetchedAt: 1700000000000,
+          usage: { rolling: { usagePercent: 8, resetInSec: 60 } },
+        }),
+      }),
+    };
+  };
+  const h = rateLimitHarness();
+  try {
+    h.api.setCli('opencode');
+    await h.api.refreshOpenCodeQuota(true);
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].url, /^\/api\/quota\/bars\/refresh\?/);
+    assert.match(calls[0].url, /kind=opencode/);
+    assert.equal(calls[0].method, 'POST');
+    assert.equal(h.elements['opencode-quota-bar'].style.display, 'block');
+  } finally {
+    h.cleanup();
+    if (previousFetch === undefined) delete global.fetch;
+    else global.fetch = previousFetch;
+  }
+});

@@ -102,6 +102,7 @@ function createPaths({ dataDir } = {}) {
     // src/quota/provider-limit-cache.js.
     providerLimitDbFile: path.join(root, 'provider-limit-cache.db'),
     providerLimitCacheFile: path.join(root, 'provider-limit-cache.json'),
+    quotaBarCacheFile: path.join(root, 'quota-bar-cache.json'),
     scheduledTasksFile: path.join(root, 'scheduled_tasks.json'),
     taskBoardFile: path.join(root, 'task_board.json'),
     // The user's drag-and-drop arrangement of the dir grid and of each fleet's

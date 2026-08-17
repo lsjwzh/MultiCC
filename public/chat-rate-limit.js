@@ -64,6 +64,29 @@
     } catch (_) {}
   }
 
+  function quotaBarParams(extra) {
+    const params = new URLSearchParams();
+    if (currentSession) params.set('session', currentSession);
+    if (currentProviderBaseUrl) params.set('baseUrl', currentProviderBaseUrl);
+    const fields = extra && typeof extra === 'object' ? extra : {};
+    for (const [key, value] of Object.entries(fields)) {
+      if (value !== undefined && value !== null && String(value)) params.set(key, String(value));
+    }
+    const qs = params.toString();
+    return qs ? `?${qs}` : '';
+  }
+
+  function cacheEntryToResponse(entry) {
+    if (!entry || typeof entry !== 'object' || !entry.bar) return null;
+    return {
+      status: entry.status || 'ok',
+      fetchedAt: entry.fetchedAt || entry.updatedAt || null,
+      lastError: entry.lastError || null,
+      lastErrorAt: entry.lastErrorAt || null,
+      bar: entry.bar,
+    };
+  }
+
   // ── baseUrl / cli predicates (client view-state only) ──
   function hostFromBaseUrl(baseUrl) {
     if (!baseUrl || typeof baseUrl !== 'string') return '';
@@ -198,7 +221,7 @@
       if (!force && lastErrorAt && (Date.now() - lastErrorAt) < BACKOFF) return current;
       inFlight = true; render();
       try {
-        const res = await fetch(opts.getUrl(), { credentials: 'same-origin' });
+        const res = await fetch(opts.getUrl(), { method: 'POST', credentials: 'same-origin' });
         let data = null; try { data = await res.json(); } catch (_) {}
         if (!data) data = { status: 'unavailable', error: 'invalid response' };
         current = data;
@@ -226,37 +249,37 @@
   const opencodeSlot = createQuotaSlot({
     kind: 'opencode', id: 'opencode-quota-bar', loginKind: 'opencode',
     isVisible: () => currentCli === 'opencode',
-    getUrl: () => '/api/opencode/quota',
+    getUrl: () => `/api/quota/bars/refresh${quotaBarParams({ kind: 'opencode' })}`,
     storageKey: 'multicc.opencode.quota.v1',
   });
   const qoderSlot = createQuotaSlot({
     kind: 'qoder', id: 'qoder-quota-bar', loginKind: 'qoder',
     isVisible: () => currentCli === 'qoder',
-    getUrl: () => '/api/qoder/quota',
+    getUrl: () => `/api/quota/bars/refresh${quotaBarParams({ kind: 'qoder' })}`,
     storageKey: 'multicc.qoder.quota.v1',
   });
   const codexSlot = createQuotaSlot({
     kind: 'codex', id: 'codex-quota-bar',
     isVisible: () => currentCli === 'codex',
-    getUrl: () => '/api/codex/quota',
+    getUrl: () => `/api/quota/bars/refresh${quotaBarParams({ kind: 'codex' })}`,
     storageKey: 'multicc.codex.quota.v1',
   });
   const zhipuSlot = createQuotaSlot({
     kind: 'zhipu', id: 'zhipu-quota-bar',
     isVisible: () => isZhipuBaseUrl(currentProviderBaseUrl),
-    getUrl: () => { const h = hostFromBaseUrl(currentProviderBaseUrl); return h ? `/api/zhipu/quota?host=${encodeURIComponent(h)}` : '/api/zhipu/quota'; },
+    getUrl: () => `/api/quota/bars/refresh${quotaBarParams({ kind: 'zhipu', host: hostFromBaseUrl(currentProviderBaseUrl) })}`,
     storageKey: 'multicc.zhipu.quota.v1',
   });
   const kimiSlot = createQuotaSlot({
     kind: 'kimi', id: 'kimi-quota-bar', loginKind: 'kimi',
     isVisible: () => isKimiBaseUrl(currentProviderBaseUrl),
-    getUrl: () => { const h = hostFromBaseUrl(currentProviderBaseUrl); return h ? `/api/kimi/quota?host=${encodeURIComponent(h)}` : '/api/kimi/quota'; },
+    getUrl: () => `/api/quota/bars/refresh${quotaBarParams({ kind: 'kimi', host: hostFromBaseUrl(currentProviderBaseUrl) })}`,
     storageKey: 'multicc.kimi.quota.v1',
   });
   const arkSlot = createQuotaSlot({
     kind: 'ark', id: 'ark-quota-bar', canInstall: true,
     isVisible: () => isArkBaseUrl(currentProviderBaseUrl),
-    getUrl: () => `/api/ark/quota?baseUrl=${encodeURIComponent(currentProviderBaseUrl)}`,
+    getUrl: () => `/api/quota/bars/refresh${quotaBarParams({ kind: 'ark' })}`,
     storageKey: () => `multicc.ark.quota.v1:${arkPlanFromBaseUrl(currentProviderBaseUrl) || hostFromBaseUrl(currentProviderBaseUrl) || 'unknown'}`,
     onClick: (view) => arkClick(view),
   });
@@ -358,7 +381,7 @@
     if (!force && claudeLastErrorAt && (Date.now() - claudeLastErrorAt) < CLAUDE_BACKOFF) return currentClaudeUsage;
     claudeUsageFetchInFlight = true; claudeLoginPending = false; renderCurrent();
     try {
-      const res = await fetch('/api/claude/quota', { credentials: 'same-origin' });
+      const res = await fetch(`/api/quota/bars/refresh${quotaBarParams({ kind: 'claude' })}`, { method: 'POST', credentials: 'same-origin' });
       let data = null; try { data = await res.json(); } catch (_) {}
       if (!data) data = { status: 'unavailable', error: 'invalid response' };
       currentClaudeUsage = data;
@@ -438,6 +461,27 @@
     opencodeSlot.render(); qoderSlot.render(); codexSlot.render();
     arkSlot.render(); zhipuSlot.render(); kimiSlot.render();
   }
+  async function restoreServerQuotaBars() {
+    if (!global.document || !global.location) return null;
+    try {
+      const res = await fetch(`/api/quota/bars/state${quotaBarParams({ host: hostFromBaseUrl(currentProviderBaseUrl) })}`, { credentials: 'same-origin' });
+      const data = await res.json();
+      const bars = data && data.bars && typeof data.bars === 'object' ? data.bars : null;
+      if (!bars) return null;
+      opencodeSlot.setCurrent(cacheEntryToResponse(bars.opencode));
+      qoderSlot.setCurrent(cacheEntryToResponse(bars.qoder));
+      codexSlot.setCurrent(cacheEntryToResponse(bars.codex));
+      arkSlot.setCurrent(cacheEntryToResponse(bars.ark));
+      zhipuSlot.setCurrent(cacheEntryToResponse(bars.zhipu));
+      kimiSlot.setCurrent(cacheEntryToResponse(bars.kimi));
+      const claude = cacheEntryToResponse(bars.claude);
+      if (claude) currentClaudeUsage = claude;
+      renderAll();
+      return data;
+    } catch (_) {
+      return null;
+    }
+  }
   function setCli(cli) {
     const next = String(cli || 'claude');
     // The first call is the page reporting which CLI it loaded, not a switch —
@@ -467,6 +511,7 @@
     // hammered, not to stall an explicit user action.
     if (changed) {
       arkSlot.clearBackoff(); zhipuSlot.clearBackoff(); kimiSlot.clearBackoff();
+      restoreServerQuotaBars();
       arkSlot.refresh(); zhipuSlot.refresh(); kimiSlot.refresh();
     }
   }
@@ -488,6 +533,7 @@
     restoreZhipuQuota: () => zhipuSlot.restore(),
     refreshKimiQuota: (...a) => kimiSlot.refresh(...a),
     restoreKimiQuota: () => kimiSlot.restore(),
+    restoreServerQuotaBars,
     // Predicates kept public: the app mirrors them and tests assert them.
     isZhipuBaseUrl, isKimiBaseUrl, isArkBaseUrl, isDeepseekBaseUrl, isClaudeProvider,
     arkPlanFromBaseUrl, providerMatchesCli, quotaBarClick,
@@ -505,5 +551,6 @@
     arkSlot.restore(); zhipuSlot.restore(); kimiSlot.restore();
     restoreClaudeUsage();
     bootstrapIdleBars();
+    restoreServerQuotaBars();
   }
 })(typeof window !== 'undefined' ? window : globalThis);
