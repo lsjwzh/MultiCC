@@ -8,6 +8,8 @@
 const taskBoard = require('./task-board');
 
 const WORKER_TYPE = 'worker';
+const TASK_RUN_CLIS = Object.freeze(['claude', 'codex']);
+const TASK_RUN_CLI_SET = new Set(TASK_RUN_CLIS);
 const DEFAULT_MAX_ELASTIC_WORKERS = 4;
 const DEFAULT_WORKER_PROMPT = [
   '# Role: Fleet Worker',
@@ -47,6 +49,18 @@ function isWorkerRecord(record, directoryId) {
     && record.dirId === directoryId
     && record.kind === 'chat'
     && record.type === WORKER_TYPE;
+}
+
+function isTaskExecutionSlot(record, directoryId) {
+  return isWorkerRecord(record, directoryId) && record.taskExecutionSlot === true;
+}
+
+function isOrdinaryWorker(record, directoryId) {
+  return isWorkerRecord(record, directoryId) && record.taskExecutionSlot !== true;
+}
+
+function supportsTaskRunCleanup(record) {
+  return TASK_RUN_CLI_SET.has(clean(record?.cli).toLowerCase());
 }
 
 function activityMs(record) {
@@ -100,31 +114,53 @@ function createCommanderRouter(options = {}) {
     for (const record of legacy) await Promise.resolve(stampWorker(record.id, directoryId));
   }
 
-  function workersFor(directoryId) {
-    return [...records.values()].filter(record => isWorkerRecord(record, directoryId));
+  function workersFor(directoryId, { taskExecutionSlotsOnly = false } = {}) {
+    return [...records.values()].filter(record => (
+      taskExecutionSlotsOnly
+        ? isTaskExecutionSlot(record, directoryId)
+        : isOrdinaryWorker(record, directoryId)
+    ));
   }
 
-  async function ensureTarget(commander, message) {
-    await adoptLegacyWorkers(commander.dirId);
-    let workers = workersFor(commander.dirId);
+  async function ensureTarget(commander, message, { taskRunId = '' } = {}) {
+    const taskRun = !!clean(taskRunId);
+    if (!taskRun) await adoptLegacyWorkers(commander.dirId);
+    let allWorkers = workersFor(commander.dirId, { taskExecutionSlotsOnly: taskRun });
+    let workers = taskRun
+      ? allWorkers.filter(record => (
+        record.taskRunQuarantined !== true && supportsTaskRunCleanup(record)
+      ))
+      : allWorkers;
     const idle = workers.filter(record => {
       try { return !isBusy(record.id); } catch (_) { return false; }
     });
     if (idle.length) return { record: chooseWorker(idle, message), created: false, queued: false };
 
-    const elasticCount = workers.filter(record => record.elasticWorker === true).length;
-    if (!workers.length || elasticCount < maxElasticWorkers) {
-      const template = chooseWorker(workers.filter(record => record.elasticWorker !== true), message)
-        || chooseWorker(workers, message);
+    const elasticCount = taskRun
+      ? allWorkers.length
+      : workers.filter(record => record.elasticWorker === true).length;
+    if (!allWorkers.length || elasticCount < maxElasticWorkers) {
+      const templates = taskRun
+        ? workersFor(commander.dirId).filter(supportsTaskRunCleanup)
+        : workers;
+      const template = chooseWorker(templates.filter(record => (
+        record.taskExecutionSlot !== true && record.elasticWorker !== true
+      )), message) || chooseWorker(templates, message);
+      if (taskRun && !template && !supportsTaskRunCleanup(commander)) {
+        return { code: 'task_run_cli_unsupported' };
+      }
       try {
         const created = await createWorker({
           commander,
           template,
-          ordinal: workers.length + 1,
+          ordinal: allWorkers.length + 1,
           rolePrompt: clean(template?.rolePrompt) || DEFAULT_WORKER_PROMPT,
+          taskExecutionSlot: taskRun,
         });
         const record = created && (created.session || (created.id && records.get(created.id)));
-        if (created?.ok && isWorkerRecord(record, commander.dirId)) {
+        if (created?.ok && (taskRun
+          ? isTaskExecutionSlot(record, commander.dirId) && supportsTaskRunCleanup(record)
+          : isOrdinaryWorker(record, commander.dirId))) {
           return { record, created: true, queued: false };
         }
       } catch (error) {
@@ -132,9 +168,18 @@ function createCommanderRouter(options = {}) {
       }
     }
 
-    workers = workersFor(commander.dirId);
+    allWorkers = workersFor(commander.dirId, { taskExecutionSlotsOnly: taskRun });
+    workers = taskRun
+      ? allWorkers.filter(record => (
+        record.taskRunQuarantined !== true && supportsTaskRunCleanup(record)
+      ))
+      : allWorkers;
     const fallback = chooseWorker(workers, message);
-    return fallback ? { record: fallback, created: false, queued: true } : null;
+    if (fallback) return { record: fallback, created: false, queued: true };
+    if (taskRun && allWorkers.some(record => !supportsTaskRunCleanup(record))) {
+      return { code: 'task_run_cli_unsupported' };
+    }
+    return null;
   }
 
   async function route(input = {}) {
@@ -147,8 +192,11 @@ function createCommanderRouter(options = {}) {
     if (!message) return { ok: false, code: 'empty_message' };
 
     return withDirectoryLock(commander.dirId, async () => {
-      const target = await ensureTarget(commander, message);
-      if (!target?.record) return { ok: false, code: 'worker_unavailable' };
+      const taskRunId = clean(input.taskRunId);
+      const leaseEpoch = Number.isSafeInteger(Number(input.leaseEpoch))
+        && Number(input.leaseEpoch) > 0 ? Number(input.leaseEpoch) : null;
+      const target = await ensureTarget(commander, message, { taskRunId });
+      if (!target?.record) return { ok: false, code: target?.code || 'worker_unavailable' };
       const dispatched = await dispatchOneWay(target.record.id, message, {
         commanderId,
         idempotencyKey: clean(input.idempotencyKey) || null,
@@ -157,6 +205,8 @@ function createCommanderRouter(options = {}) {
         taskStart: input.taskStart === true,
         taskSource: clean(input.taskSource) || null,
         taskText: typeof input.taskText === 'string' ? input.taskText : '',
+        taskRunId: taskRunId || null,
+        leaseEpoch,
       });
       if (!dispatched?.ok) {
         return { ok: false, code: dispatched?.code || dispatched?.error || 'dispatch_failed' };
@@ -170,6 +220,7 @@ function createCommanderRouter(options = {}) {
         status: target.queued ? 'queued' : (dispatched.status || 'admitted'),
         queued: target.queued,
         elasticWorkerCreated: target.created,
+        taskRunId: taskRunId || null,
       };
     });
   }
@@ -179,6 +230,7 @@ function createCommanderRouter(options = {}) {
 
 module.exports = {
   WORKER_TYPE,
+  TASK_RUN_CLIS,
   DEFAULT_MAX_ELASTIC_WORKERS,
   DEFAULT_WORKER_PROMPT,
   createCommanderRouter,
@@ -186,5 +238,7 @@ module.exports = {
   isExactLegacyWorkerLabel,
   isTrustedLegacyWorker,
   isWorkerRecord,
+  isTaskExecutionSlot,
+  supportsTaskRunCleanup,
   chooseWorker,
 };

@@ -17,7 +17,11 @@ function createHarness(options = {}) {
       if (options.persisted !== false && append.final) context.turn.resultDurable = true;
       return options.persisted !== false;
     },
-    commitUsage() { calls.push(['usage']); },
+    commitUsage() {
+      calls.push(['usage']);
+      if (options.usageThrows) throw new Error('task-run store unavailable');
+      return options.usagePersisted !== false;
+    },
     broadcast(sessionName, event) { calls.push(['broadcast', event.type, event.error || null]); },
     cancelClassify() { calls.push(['cancel-classify']); },
     clearIncrementalSave() { calls.push(['clear-timer']); },
@@ -100,6 +104,48 @@ test('failed append never fabricates durability and exposes the guarded post-tur
   assert.equal(harness.calls.some(call => call[0] === 'usage'), false);
   assert.equal(harness.calls.some(call => call[0] === 'broadcast' && call[2]?.includes('未能持久化')), true);
   assert.deepEqual(harness.calls.at(-1), ['post-turn', 'current-runner-and-durable-final-result', false]);
+});
+
+test('failed durable usage is a hard barrier before scheduler completion and success classification', () => {
+  const harness = createHarness({ usagePersisted: false });
+  const ctx = context();
+  const result = harness.executor.execute(processPlan(), ctx);
+  assert.equal(result.appendPersisted, true);
+  assert.equal(result.usageDurable, false);
+  assert.equal(result.terminalBlocked, true);
+  assert.equal(harness.calls.some(call => call[0] === 'complete-session-turn'), false);
+  assert.equal(harness.calls.some(call => call[0] === 'classify' && call[1] === 'succeeded'), false);
+  assert.equal(harness.calls.some(call => call[0] === 'outcome'), false);
+  assert.equal(harness.calls.some(call => call[0] === 'post-turn'), true,
+    'post-turn still gets a chance to log its own durable-usage suppression');
+});
+
+test('an already durable result retries usage before any terminal effect', () => {
+  const harness = createHarness({ usagePersisted: false });
+  const ctx = context({ turn: { ...context().turn, resultDurable: true } });
+  const plan = processPlan({ resultDurable: true });
+  const result = harness.executor.execute(plan, ctx);
+  const labels = harness.calls.map(call => call[0]);
+  assert.equal(labels.includes('persist'), false);
+  assert.equal(labels.includes('usage'), true);
+  assert.equal(labels.includes('complete-session-turn'), false);
+  assert.equal(result.terminalBlocked, true);
+});
+
+test('usage failure also blocks error and cancellation classifications from producing scheduler E', () => {
+  for (const override of [{ apiError: true }, { killReason: 'user_cancel' }]) {
+    const harness = createHarness({ usagePersisted: false });
+    const ctx = context({ turn: { ...context().turn, resultDurable: true } });
+    const result = harness.executor.execute(processPlan({
+      resultDurable: true,
+      ...override,
+    }), ctx);
+    assert.equal(result.terminalBlocked, true);
+    assert.equal(harness.calls.some(call => call[0] === 'complete-session-turn'), false);
+    assert.equal(harness.calls.some(call => call[0] === 'freeze-interrupted'), false);
+    assert.equal(harness.calls.some(call => call[0] === 'classify'), false);
+    assert.equal(harness.calls.some(call => call[0] === 'outcome'), false);
+  }
 });
 
 test('unknown stream interruption freezes and never invokes automatic resume', () => {

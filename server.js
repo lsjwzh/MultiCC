@@ -8,13 +8,11 @@ try {
     if (m && !process.env[m[1]]) process.env[m[1]] = m[2];
   });
 } catch (_) { /* .env not found, skip */ }
-
 // Start every child from clean routing env; per-session providers re-apply theirs.
 const { ANTHROPIC_ROUTING_KEYS } = require('./src/providers');
 for (const k of ANTHROPIC_ROUTING_KEYS) {
   if (process.env[k]) { console.log(`[multicc] stripping inherited ${k} so claude uses the OAuth subscription`); delete process.env[k]; }
 }
-
 // Also strip parent Claude SDK markers: SIMPLE mode removes Agent/Task tools.
 for (const k of [
   'CLAUDE_CODE_SIMPLE',
@@ -23,7 +21,6 @@ for (const k of [
 ]) {
   if (process.env[k]) { console.log(`[multicc] stripping leaked ${k} so spawned claude keeps the full tool set`); delete process.env[k]; }
 }
-
 const express = require('express');
 const http = require('http');
 const https = require('https');
@@ -92,7 +89,7 @@ const { createPaths } = require('./src/paths');
 const stateStore = require('./src/state-store');
 const stateTx = require('./src/state-tx');
 const { bootstrapState } = require('./src/bootstrap/state');
-const { createSessionPersistence } = require('./src/session-persistence');
+const { createSessionPersistence } = require('./src/session-persistence'); const { mountPublicSessionAccessGuard } = require('./src/session/public-session-access');
 const { createOrchestrationRuntime } = require('./src/orchestration-runtime');
 const { createRouterToolHost } = require('./src/router-tool-host');
 const { createHostLifecycle } = require('./src/host-lifecycle');
@@ -105,8 +102,9 @@ const { mountHostReadRoutes } = require('./src/routes/host-read');
 const { mountHostWriteRoutes } = require('./src/routes/host-write');
 const { createVoiceHost } = require('./src/voice-host');
 const { mountAuxGoalRoutes } = require('./src/routes/aux-goal');
-const { createTaskBoardRuntime } = require('./src/routes/task-board');
-const { createCommanderMigrationState } = require('./src/commander-migration');
+const { createTaskBoardRuntime } = require('./src/routes/task-board'); const { createTaskRunRoutes } = require('./src/routes/task-runs');
+const { createTaskRunStore } = require('./src/task-run-store'); const { createProductionTaskRunHost } = require('./src/task-run-production'); const { reconcileTaskRunSlotLeases } = require('./src/task-run-recovery');
+const { createTaskRunProviderBridge } = require('./src/task-run-provider-bridge'); const { createCommanderMigrationState } = require('./src/commander-migration');
 const { createCommanderMigrationHost, createCommanderRoutingHost } = require('./src/commander-host-runtime');
 const { mountFileTransferRoutes } = require('./src/routes/file-transfer');
 const { mountSkillSyncRoutes } = require('./src/routes/skill-sync');
@@ -234,6 +232,7 @@ const { createHealthHandlers } = require('./src/health');
 const { secureRuntimeData, atomicWriteJson, atomicWriteText, ensurePrivateDir } = require('./src/runtime-security');
 const { createHostEnv } = require('./src/host-env');
 const MULTICC_PATHS = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
+const taskRunStore = createTaskRunStore({ file: MULTICC_PATHS.taskRunDbFile });
 const MEMORY_STORE_ROOT = process.env.MULTICC_MEMORY_ROOT || path.join(__dirname, 'memories');
 const chatHistoryRepository = createChatHistoryFileRepository({ dataDir: MULTICC_PATHS.root });
 const turnEventJournal = sharedTurnEventJournal(MULTICC_PATHS);
@@ -244,8 +243,7 @@ let chatHistoryService = null;
 // This runtime deliberately owns preparation only. The established streaming
 // and per-process runners keep their existing lifecycle after spawn is accepted.
 const chatTurnPreparationRuntime = createTurnRuntimeStore();
-let orchestrationRuntime = null;
-let sessionWorkHost = null;
+let orchestrationRuntime = null; let taskRunHost = null; let sessionWorkHost = null;
 const observability = createObservability({ service: 'multicc' });
 const { logger, metrics } = observability;
 const apiErrorPolicy = createApiErrorPolicyRuntime({ logger, metrics });
@@ -751,7 +749,7 @@ const stateBootstrap = bootstrapState({
 const sessionsStore = stateBootstrap.sessionsStore;
 const directoriesStore = stateBootstrap.directoriesStore;
 const _state = stateBootstrap.state;
-const persistedSessions = _state.persistedSessions;
+const persistedSessions = _state.persistedSessions; mountPublicSessionAccessGuard(app, { records: persistedSessions, logger, v1NotFound: (req, res) => v1Error(req, res, 404, 'session not found', 'session_not_found') });
 
 // Last-known-good per-provider limit/usage cache for the Web/App pickers;
 // producers feed it via src/quota/limit-cache-recorder.js.
@@ -1422,12 +1420,15 @@ const livenessRuntime = createLivenessRuntime({
   probeSession: async (sessionId, sig) => livenessProcessProbe.probe(
     sig && Number.isInteger(sig.pid) ? sig.pid : null, livenessRolloutPath(persistedSessions.get(sessionId))),
 });
+const taskRunProviderBridge = createTaskRunProviderBridge({ records: persistedSessions,
+  recordActivity: event => livenessRuntime.recordProxyActivity(event), recordLegacyUsage: recordUsageObserved,
+  recordTaskRunUsage: event => taskRunHost?.recordObservedUsage(event) });
 
 const { createProxyBroadcasters } = require('./src/chat/proxy-broadcast');
 providerRouterRuntime.mountProtocolProxies(app, {
   protocols: ['claude'],
-  onUsageObserved: recordUsageObserved,
-  onActivity: e => livenessRuntime.recordProxyActivity(e),
+  onUsageObserved: taskRunProviderBridge.onUsageObserved,
+  onActivity: taskRunProviderBridge.onActivity,
   // Token-level delta + Claude 5h rate-limit sidecars: see src/chat/proxy-broadcast.js.
   ...createProxyBroadcasters(chatBroadcast, { resolveCli: name => (persistedSessions.get(name) || {}).cli, recordLimit: limitRecorder.recordSession }),
 });
@@ -1438,8 +1439,8 @@ app.use(express.json({ limit: '50mb' }));
 providerRouterRuntime.mountProtocolProxies(app, {
   protocols: ['codex'],
   getPort: () => PORT,
-  onUsageObserved: recordUsageObserved,
-  onActivity: e => livenessRuntime.recordProxyActivity(e),
+  onUsageObserved: taskRunProviderBridge.onUsageObserved,
+  onActivity: taskRunProviderBridge.onActivity,
   ...createProxyBroadcasters(chatBroadcast, { resolveCli: name => (persistedSessions.get(name) || {}).cli, recordLimit: limitRecorder.recordSession }),
 });
 
@@ -1621,7 +1622,7 @@ memoModule.migrateLegacy().done.catch(error => console.log(`[memo] migration fai
 
 // Create + persist an isolated session record (its own git worktree + branch).
 // Shared creation boundary; an explicit id creates or reuses a named session.
-async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, effort = null, agent = null, rolePrompt = null, rolePresetId = null, type = null, elasticWorker = false, experimentalMode = null, loginFlow = null, persistence = 'bestEffort', persistenceSource = 'runtime.create-session' }) {
+async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, effort = null, agent = null, rolePrompt = null, rolePresetId = null, type = null, elasticWorker = false, taskExecutionSlot = false, experimentalMode = null, loginFlow = null, persistence = 'bestEffort', persistenceSource = 'runtime.create-session' }) {
   if (!dir) return { ok: false, error: 'directory not found' };
   if (!SUPPORTED_CHAT_CLIS.includes(cli)) return { ok: false, error: `cli must be ${SUPPORTED_CHAT_CLIS.join(', ')}` };
   if (!['terminal', 'chat'].includes(kind)) return { ok: false, error: 'kind must be terminal or chat' };
@@ -1699,6 +1700,7 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
   if (type) session.type = type;   // commander (and future roles) — round-trips via bootstrap/state + session-persistence
   if (loginFlow) session.loginFlow = loginFlow; // whitelisted interactive login terminal (codex-login)
   if (type === 'worker' && elasticWorker) session.elasticWorker = true;
+  if (type === 'worker' && taskExecutionSlot) session.taskExecutionSlot = true;
   if (ephemeral) session.ephemeral = true; if (experiment.mode) session.experimentalMode = experiment.mode;
   if (kind === 'chat') ensureCliStates(session);
   try {
@@ -2119,7 +2121,6 @@ const {
   broadcast: broadcastTo,
 });
 apiErrorAuxQueue = auxQueue;
-
 // Memory runtime owns normalization, Aux distillation, periodic review and the
 // pending-distill gate. History is resolved lazily because its runtime is
 // composed later in this file.
@@ -2145,19 +2146,10 @@ const {
   maybeSchedulePeriodicMemoryReview,
   trackPendingDistill: _trackPendingMemoryDistill,
 } = memoryRuntime;
-
-// Dispatch admission reads classify (sessionWorkHost.isRunActive), never
-// liveness: no prep phase, no isStreaming, no orchestrationChatBusy. Those are
-// strict subsets of classifyState 'P', which is written synchronously at turn
-// start and only clears on the Aux verdict — earlier in, later out, so the
-// classify answer is at least as conservative as the liveness one was.
-//
-// The repo lease is NOT liveness and stays: gitMergeBack commits and ff-merges
-// the session's own worktree, which is the same path the CLI runs in, and
-// classify cannot see a git lock. Dropping it would let a dispatch land in a
-// worktree git is concurrently rewriting.
-function dispatchTargetBusy(sid) {
-  return !!sessionWorkHost?.isRunActive(sid) || !!defaultRepoActor.isLeased(sid);
+// Admission uses classify state plus the repo/TaskRun leases; socket liveness is
+// neither a work nor repository-ownership proof.
+function dispatchTargetBusy(sid, item = null) {
+  return !!sessionWorkHost?.isRunActive(sid) || !!taskRunHost?.isSlotUnavailable(sid, item || {}) || !!defaultRepoActor.isLeased(sid);
 }
 const commanderRouter = createCommanderRoutingHost({
   records: persistedSessions, directories, isBusy: dispatchTargetBusy,
@@ -2166,15 +2158,16 @@ const commanderRouter = createCommanderRoutingHost({
 });
 const taskBoardRuntime = createTaskBoardRuntime({
   file: MULTICC_PATHS.taskBoardFile,
+  taskRuns: taskRunStore,
   auxQueue,
   records: persistedSessions,
-  // Read-only view, not the cloning load(): the board resolves each task's
-  // canonical body by scanning its sessions' transcripts, so GET /api/task-board
-  // cloned every referenced transcript once per task. That was the single most
-  // expensive thing the server did — see the port note in routes/task-board.js.
+  // Board projections inspect history without cloning every referenced transcript.
   loadHistory: sessionId => viewChatHistory(sessionId),
   dispatchToSession,
   routeCommanderTask: commanderRouter.route, sendSessionMessage: (...args) => taskContextHost.deliverSessionMessage(...args),
+  terminateTaskRun: input => taskRunHost.terminateRun(input), cancelUndeliveredTaskRun: async (operationId, context = {}) => {
+    const result = await orchestrationRuntime.operations.cancelUndeliveredDispatch(operationId, { taskRunId: context.runId, reason: 'task marked done before start' });
+    if (result?.ok) cancelDispatchRun(operationId); return result; },
   workspaceBroadcast: (dirId, payload) => workspaceBroadcast(dirId, payload),
   atomicWriteJson,
   isSystemInjected: msg => isSystemInjectedMsg(msg),
@@ -2185,16 +2178,16 @@ const taskBoardRuntime = createTaskBoardRuntime({
   buildGoalLimitNote,
   logger: console,
 });
-taskBoardRuntime.mountRoutes(app);
+taskBoardRuntime.mountRoutes(app); createTaskRunRoutes({ store: taskRunStore, logger }).mountRoutes(app);
 const taskContextHost = createTaskContextHost({
   getState: sessionId => chatSessions.get(sessionId), emitClients: broadcastTo,
   append: (sessionId, message) => chatHistoryRuntime.appendMessage(sessionId, message),
   getTaskBoard: () => taskBoardRuntime, classifyDisplay,
   containsDelivery: (sessionId, id) => chatHistoryService.containsDelivery(sessionId, id),
+  recordTaskRunMessage: (sessionId, message) => taskRunHost?.recordMessage(sessionId, message),
   randomUUID: () => crypto.randomUUID(), getRecord: sessionId => persistedSessions.get(sessionId),
   runTurn: (sessionId, text, options) => chatTurnEngine.admitChatWork(sessionId, text, options),
 });
-
 // Skill-sync owns converter/link state, its watcher and its periodic timer.
 // The host supplies only the process/session ports needed by detached AI conversion.
 const skillSyncRuntime = createSkillSyncRuntime({
@@ -2339,10 +2332,15 @@ chatHistoryRuntime = createChatHistoryRuntime({
 });
 chatHistoryService = chatHistoryRuntime.service;
 chatHistoryRuntime.mountRoutes(app);
+taskRunHost = createProductionTaskRunHost({ taskRunStore, dataRoot: MULTICC_PATHS.root, providerHomesDir: providers.CODEX_HOMES_DIR,
+  records: persistedSessions, directories, chatStream, clearNativeCliStates: record => { if (record) delete record.pendingCliHandoff; return clearAllNativeCliStates(record); },
+  deleteChatHistory: id => chatHistoryService.deleteSession(id), resetChatState: id => { const state = chatSessions.get(id); if (state) { state.chatTurnCount = 0; delete state._currentTaskId; delete state._currentTaskRunId; delete state._currentTaskLeaseEpoch; } },
+  resetRoleUsage: resetRoleTokenUsage, persistRecords: savePersistedSessionsBestEffort,
+  drainProviderProducers: (id, lease) => taskRunProviderBridge.waitForDrain(id, lease), onRunUpdated: ({ taskId }) => taskBoardRuntime.notifyTaskRun(taskId),
+  providerSnapshot: id => { const record = persistedSessions.get(id) || {}; return { providerId: record.provider || '_default_', providerName: record.provider || '_default_', cli: record.cli || '', model: effectiveSessionModel(record) || '' }; }, logger });
 createAuxRunRoutes({ records: persistedSessions, getLog: () => auxRunLog }).mountRoutes(app);
 
-// Compatibility wrappers keep earlier host composition (Aux, dispatch and
-// session queries) independent of the runtime's later construction point.
+// Compatibility wrappers preserve the earlier host composition point.
 function loadChatHistory(sessionId) { return chatHistoryRuntime.load(sessionId); }
 // Read-only twin of loadChatHistory for callers that only measure the
 // transcript; skips the deep clone. Never hand its messages to a mutator.
@@ -2357,9 +2355,7 @@ function appendChatMessage(sessionId, message) {
   return taskContextHost.appendMessage(sessionId, message);
 }
 
-// The host coordinator owns result/usage/post-turn ordering. server.js supplies
-// only concrete persistence and broadcast ports; it no longer reimplements the
-// lifecycle state machine inline.
+// The host coordinator owns result/usage/post-turn ordering.
 const {
   isCurrentTurnRunner,
   assistantCheckpointKey,
@@ -2369,6 +2365,7 @@ const {
 } = createChatHostRuntime({
   appendMessage: appendChatMessage,
   persistUsage: accumulateTokenUsage,
+  persistTaskRunUsage: payload => taskRunHost.recordMainUsage(payload),
   afterUsageCommit: (sessionId) => {
     broadcastProviderTokenStats(sessionId);
     broadcastRoleTokenStats(sessionId);
@@ -2734,8 +2731,9 @@ orchestrationRuntime = createOrchestrationRuntime({
   detachedAdapter: detached,
   recoverDispatchResult: chatTurnEngine.recoverDispatchOperation,
   replayRecoveredDispatchEffects: () => {},
+  beforeDeliver: descriptor => taskRunHost.beforeDeliver(descriptor), beforeFirstTick: ({ sessionScheduler }) => reconcileTaskRunSlotLeases({ store: taskRunStore, records: persistedSessions, persistRecords: savePersistedSessionsBestEffort, resumeCleanup: item => taskRunHost.resumeCleanup(item), resetSlot: item => taskRunHost.resetSlotForRecovery(item), getSchedulerStatus: slotId => sessionScheduler.status(slotId), recoverTerminal: event => taskRunHost.recoverTerminal(event), log: message => logger.warn(message) }),
   getSessionRecoveryState: id => sessionWorkHost.recoveryState(id),
-  onSchedulerEvent: event => sessionWorkHost.onSchedulerEvent(event),
+  onSchedulerEvent: event => { sessionWorkHost.onSchedulerEvent(event); void taskRunHost.onSchedulerEvent(event).catch(error => logger.warn('task_run_finalize_failed', { error: error.message })); },
   workerIntervalMs: Math.max(100, Number(process.env.MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS) || 1000),
   log: message => console.log('[multicc/wait]', message),
 });
@@ -2925,6 +2923,8 @@ const { shutdownCoordinator, trackServiceTimer, gracefulShutdown } = createHostL
   stopOutputCapture,
   routerToolHost,
   sessionPersistence,
+  taskRunHost,
+  taskRunStore,
   qwenAudioSupervisor,
 });
 // Terminal error handler: catches errors that reach next(err) or throw out of
@@ -2979,8 +2979,8 @@ app.use(safeErrorHandler(logger));
       .catch(error => logger.warn('provider_log_watchdog_sweep_failed', { error: error.message })), providerLogWatchdog.PROVIDER_LOG_WATCHDOG_INTERVAL_MS));
     logHousekeeping.runOnce().catch(err => logger.warn('log_housekeeping_failed', { error: err.message }));
     trackServiceTimer(setInterval(() => logHousekeeping.runOnce().catch(err => logger.warn('log_housekeeping_failed', { error: err.message })), LOG_HOUSEKEEPING_INTERVAL_MS));
-    artifacts.cleanup();
-    trackServiceTimer(setInterval(() => artifacts.cleanup(), 6 * 3600 * 1000));
+const cleanupArtifacts = () => { try { return artifacts.cleanup(undefined, taskRunStore.listPinnedArtifactIds()); } catch (error) { logger.warn('artifact_cleanup_pin_read_failed'); return 0; } }; cleanupArtifacts();
+    trackServiceTimer(setInterval(() => cleanupArtifacts(), 6 * 3600 * 1000));
     // ④: probe aux recovery every 5 min while unhealthy (no-op when healthy).
     trackServiceTimer(setInterval(() => auxHealthProbe(), AUX_HEALTH_PROBE_INTERVAL_MS));
     // Keep the official OAuth credential alive. The check is a credential read;

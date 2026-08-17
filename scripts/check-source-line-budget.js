@@ -27,8 +27,8 @@ const MIGRATION_DEBT = Object.freeze({
   'public/manage.js': Object.freeze({
     // Re-baselined to the exact main size after a sibling merge grew the file
     // without ratcheting (the gate was red on main). Keep exact-equality.
-    ceiling: 3124,
-    byteCeiling: 145295,
+    ceiling: 3114,
+    byteCeiling: 145075,
     target: DEFAULT_MAX_LINES,
     reason: 'aux-history UI pending split into a dedicated script',
   }),

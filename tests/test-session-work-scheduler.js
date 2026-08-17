@@ -90,6 +90,78 @@ async function startClaim(harness, item) {
   assert.equal((await harness.scheduler.started(item)).ok, true);
 }
 
+test('task-run fencing survives admission, active ownership and completion events', async t => {
+  const h = fixture(t);
+  const admitted = await h.scheduler.admit({
+    sessionId: 'slot-1',
+    text: 'execute isolated run',
+    options: {
+      taskId: 'task-1',
+      taskRunId: 'run-1',
+      leaseEpoch: 9,
+    },
+    idempotencyKey: 'run-1',
+  });
+  assert.equal(admitted.entry.payload.taskRunId, 'run-1');
+  assert.equal(admitted.entry.payload.leaseEpoch, 9);
+  const item = await claimOne(h, 'slot-1');
+  assert.equal((await h.scheduler.status('slot-1')).active.taskRunId, 'run-1');
+  assert.equal((await h.scheduler.status('slot-1')).active.leaseEpoch, 9);
+  await startClaim(h, item);
+  const completed = await h.scheduler.complete('slot-1', { expectedTaskId: 'task-1' });
+  assert.equal(completed.completed.taskRunId, 'run-1');
+  assert.equal(completed.completed.leaseEpoch, 9);
+  const event = h.events.find(candidate => candidate.type === 'completed');
+  assert.equal(event.taskRunId, 'run-1');
+  assert.equal(event.leaseEpoch, 9);
+});
+
+test('a correlated control turn resumes the TaskRun retained at a W/B boundary', async t => {
+  const pending = { requestId: 'request-1', taskId: 'task-1', resolved: false };
+  const h = fixture(t, { getPendingUserInput: () => pending });
+  await h.scheduler.admit({
+    sessionId: 'slot-1', text: 'ask user', idempotencyKey: 'run-1',
+    options: { taskId: 'task-1', taskRunId: 'run-1', leaseEpoch: 9 },
+  });
+  await startClaim(h, await claimOne(h, 'slot-1'));
+  await h.scheduler.complete('slot-1', {
+    expectedTaskId: 'task-1', classifyState: 'W', awaitingRequestId: 'request-1',
+  });
+  const answer = await h.scheduler.admit({
+    sessionId: 'slot-1', text: 'approved', workKind: 'answer',
+    requestId: 'request-1', idempotencyKey: 'answer-1',
+  });
+  assert.equal(answer.entry.payload.taskId, 'task-1');
+  assert.equal(answer.entry.payload.taskRunId, 'run-1');
+  assert.equal(answer.entry.payload.leaseEpoch, 9);
+  const claimed = await claimOne(h, 'slot-1');
+  assert.equal(claimed.payload.taskRunId, 'run-1');
+  assert.equal(claimed.payload.leaseEpoch, 9);
+});
+
+test('an external callback inherits the TaskRun retained at a background boundary', async t => {
+  const h = fixture(t);
+  await h.scheduler.admit({
+    sessionId: 'slot-1', text: 'wait in background', idempotencyKey: 'run-1',
+    options: { taskId: 'task-1', taskRunId: 'run-1', leaseEpoch: 9 },
+  });
+  await startClaim(h, await claimOne(h, 'slot-1'));
+  await h.scheduler.complete('slot-1', {
+    expectedTaskId: 'task-1', classifyState: 'B',
+  });
+  await h.outbox.enqueue({
+    id: 'wait:run-1',
+    sessionId: 'slot-1',
+    payload: { type: 'wait.result', deliveryText: 'background done' },
+    source: { type: 'wait' },
+  });
+  await claimOne(h, 'slot-1');
+  const active = (await h.scheduler.status('slot-1')).active;
+  assert.equal(active.taskId, 'task-1');
+  assert.equal(active.taskRunId, 'run-1');
+  assert.equal(active.leaseEpoch, 9);
+});
+
 test('idle starts one item and running work keeps later messages in strict FIFO order', async t => {
   const h = fixture(t);
   const first = await h.scheduler.admit({
@@ -721,7 +793,7 @@ test('restart advances only when the active run has timestamped structured succe
   const active = await h.scheduler.admit({
     sessionId: 's1',
     text: 'active',
-    options: { taskId: 'task-active' },
+    options: { taskId: 'task-active', taskRunId: 'run-active', leaseEpoch: 7 },
     idempotencyKey: 'active',
   });
   const activeClaim = await claimOne(h);
@@ -749,8 +821,12 @@ test('restart advances only when the active run has timestamped structured succe
   assert.equal(h.events.some(event => (
     event.type === 'completed'
       && event.entryId === active.entry.id
+      && event.taskRunId === 'run-active'
+      && event.leaseEpoch === 7
       && event.recovered === true
   )), true);
+  assert.equal(state.lastDecision.taskRunId, 'run-active');
+  assert.equal(state.lastDecision.leaseEpoch, 7);
   assert.equal((await claimOne(h)).id, queued.entry.id);
 
   const stale = fixture(t);
@@ -1000,6 +1076,24 @@ test('manual retry is admitted only for classify E', async t => {
   const retry = await claimOne(failed, 'failed');
   assert.equal(retry.payload.workKind, 'retry');
   assert.equal(retry.payload.taskId, 'task-failed');
+});
+
+test('an errored TaskRun cannot anonymously resume a scrubbed execution slot', async t => {
+  const failed = fixture(t);
+  await failed.scheduler.admit({
+    sessionId: 'slot-1',
+    text: 'active task run',
+    options: { taskId: 'task-1', taskRunId: 'run-1', leaseEpoch: 3 },
+    idempotencyKey: 'active-run',
+  });
+  await startClaim(failed, await claimOne(failed, 'slot-1'));
+  await failed.scheduler.complete('slot-1', { classifyState: 'E' });
+  const retry = await failed.scheduler.resolve('slot-1', {
+    action: 'retry',
+    idempotencyKey: 'retry-old-run',
+  });
+  assert.deepEqual(retry, { ok: false, code: 'task_run_retry_requires_new_run' });
+  assert.equal(await claimOne(failed, 'slot-1'), null);
 });
 
 test('host API recovery options become a retry work item after classify E', async t => {

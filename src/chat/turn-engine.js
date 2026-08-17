@@ -16,6 +16,7 @@ const {
   createProviderRouteProof,
   evaluateSpawnGuard,
   createTurnLifecycle,
+  bindTurnUsageAttribution,
   createRunnerOwnership,
   assignKillReason,
   clearErrorFlagsForSucceededTurn,
@@ -43,6 +44,7 @@ const { createTurnTimingRecorder } = require('./turn-timing');
 const { deriveOpenTasks } = require('./turn-event-replay');
 const { createCodexRolloutGuard } = require('./codex-rollout-guard');
 const { createOpencodeContextGuard } = require('./opencode-context-guard');
+const { isInternalExecutionSlot } = require('../session/public-session-access');
 
 function appendAdapterAssistantText(current, text) {
   const prior = String(current || '');
@@ -1096,6 +1098,17 @@ function createChatTurnEngine(deps) {
       },
     };
     const invocation = provider.buildInvocation(invocationEnvelope);
+    bindTurnUsageAttribution(turn, {
+      providerId: persisted.provider || '_default_',
+      providerName: provEnv.providerName || persisted.provider || '_default_',
+      cli: turnRequest.cli,
+      protocol: turnRequest.cli === 'codex' ? 'openai-responses'
+        : turnRequest.cli === 'claude' ? 'anthropic-messages' : turnRequest.cli,
+      model: invocationEnvelope.spawnOpts.rawModel
+        || invocationEnvelope.spawnOpts.effectiveModel || provEnv.providerModel || '',
+      roleKind: 'main',
+      routeName: 'main',
+    });
     const providerRouteProof = createProviderRouteProof(turnRequest, { resolved: true });
     const routeMarked = chatTurnPreparationRuntime.markProviderRouteResolved(sessionName, turnId, { resolved: true });
     if (!routeMarked.ok) {
@@ -1722,7 +1735,11 @@ function createChatTurnEngine(deps) {
       }, { final: append.final });
     },
     commitUsage(context) {
-      recordDurableTurnUsage(context.sessionName, context.runner, context.runner.pendingUsage);
+      return recordDurableTurnUsage(
+        context.sessionName,
+        context.runner,
+        context.runner.pendingUsage,
+      );
     },
     broadcast: chatBroadcast,
     cancelClassify,
@@ -1844,7 +1861,7 @@ function createChatTurnEngine(deps) {
   function handleChatWs(ws, req, urlObj) {
     const sessionName = urlObj.searchParams.get('session') || '_default';
     const persisted = persistedSessions.get(sessionName);
-    if (!persisted) {
+    if (!persisted || isInternalExecutionSlot(persisted)) {
       sendWs(ws, { type: 'error', error:
         `Chat session "${sessionName}" does not exist. Create it via the dashboard first.` });
       ws.close();

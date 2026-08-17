@@ -426,6 +426,11 @@ function createProviderRouterPort(options = {}) {
       ...(typeof mountOptions.getPort === 'function' ? { getPort: mountOptions.getPort } : {}),
       ...(mountOptions.proxyBaseUrl ? { proxyBaseUrl: String(mountOptions.proxyBaseUrl) } : {}),
       onUsageEvent: onUsageObserved ? event => onUsageObserved(normalizeUsage(event)) : undefined,
+      // Request/end activity is also the TaskRun producer fence.  Dropping it
+      // here would make the host believe provider requests are drained while
+      // the proxy is still streaming a response.
+      ...(typeof mountOptions.onActivity === 'function'
+        ? { onActivity: mountOptions.onActivity } : {}),
       // Token-level delta sidecar: cli-provider-router's codex proxy forwards each
       // upstream text/reasoning/tool delta here along with routing context
       // {providerId, sessionId, role, routeName, model}. The host broadcasts it to

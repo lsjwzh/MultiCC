@@ -67,7 +67,11 @@ test('callback token is returned once, stored only as hash, and checked safely',
 
 test('resolution and outbox admission are one mutation with payload idempotency', async t => {
   const { file, store, waits } = serviceFixture(t);
-  const registered = await waits.register({ sessionId: 'session-A', mode: 'callback' });
+  const registered = await waits.register({
+    sessionId: 'session-A',
+    mode: 'callback',
+    metadata: { taskId: 'task-1', taskRunId: 'run-1', leaseEpoch: 3 },
+  });
   const before = await store.snapshot();
 
   const first = await waits.resolveCallback(
@@ -84,6 +88,9 @@ test('resolution and outbox admission are one mutation with payload idempotency'
   assert.equal(after.waits[registered.id].outboxId, `wait:${registered.id}`);
   assert.equal(after.outbox[`wait:${registered.id}`].state, 'pending');
   assert.deepEqual(after.outbox[`wait:${registered.id}`].payload.data, { alpha: 1, beta: 2 });
+  assert.equal(after.outbox[`wait:${registered.id}`].payload.taskId, 'task-1');
+  assert.equal(after.outbox[`wait:${registered.id}`].payload.taskRunId, 'run-1');
+  assert.equal(after.outbox[`wait:${registered.id}`].payload.leaseEpoch, 3);
   assert.equal(fs.readFileSync(file, 'utf8').includes(registered.token), false);
 
   // Canonical JSON treats object key reordering as the same callback payload.

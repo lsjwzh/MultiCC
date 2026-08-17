@@ -173,6 +173,7 @@ test('async dispatch completes durably and emits a backflow outbox entry', async
     spec: {
       targetId: 'worker', chatId: 'worker', message: 'implement',
       replyTo: 'master', gateway: false, oneWay: false, resultMode: 'async',
+      taskId: 'task-1', taskRunId: 'run-1', leaseEpoch: 8,
     },
   });
   await service.completeDispatch(admitted.id, {
@@ -185,6 +186,9 @@ test('async dispatch completes durably and emits a backflow outbox entry', async
   const outboxEntry = snapshot.outbox[`operation:${admitted.id}:result`];
   assert.ok(outboxEntry, 'backflow outbox entry must exist for resultMode=async');
   assert.equal(outboxEntry.payload.type, 'dispatch.result');
+  assert.equal(outboxEntry.payload.taskId, 'task-1');
+  assert.equal(outboxEntry.payload.taskRunId, 'run-1');
+  assert.equal(outboxEntry.payload.leaseEpoch, 8);
   assert.match(outboxEntry.payload.deliveryText, /📜 dispatch 结果回流/);
   assert.match(outboxEntry.payload.deliveryText, /done/);
 });
@@ -208,6 +212,79 @@ test('sync dispatch completes durably without inserting a result message', async
   assert.equal(operation.result.text, 'inline result');
   assert.equal(operation.resultOutboxId, null);
   assert.equal(snapshot.outbox[`operation:${admitted.id}:result`], undefined);
+});
+
+test('an unleased TaskRun dispatch can be cancelled atomically before first delivery', async t => {
+  const { store, service } = fixture(t);
+  const admitted = await service.admitDispatch({
+    operationId: 'run-queued',
+    ownerSessionId: 'commander',
+    resultSessionId: 'commander',
+    idempotencyKey: 'queued-run',
+    spec: {
+      targetId: 'slot-1', chatId: 'slot-1', message: 'execute later',
+      oneWay: true, taskId: 'task-1', taskRunId: 'run-queued', leaseEpoch: 7,
+    },
+  });
+  assert.equal(admitted.status, 'admitted');
+
+  assert.deepEqual(await service.cancelUndeliveredDispatch('run-queued', {
+    taskRunId: 'another-run',
+  }), { ok: false, code: 'task_run_mismatch' });
+
+  const cancelled = await service.cancelUndeliveredDispatch('run-queued', {
+    taskRunId: 'run-queued', reason: 'task marked done before start',
+  });
+  assert.equal(cancelled.ok, true);
+  assert.equal(cancelled.neverDelivered, true);
+  assert.equal(cancelled.idempotent, false);
+
+  let snapshot = await store.snapshot();
+  assert.equal(snapshot.operations['run-queued'].status, 'cancelled');
+  assert.equal(snapshot.operations['run-queued'].result.disposition, 'never_delivered');
+  assert.equal(snapshot.outbox['operation:run-queued:request'].state, 'cancelled');
+  assert.equal(snapshot.outbox['operation:run-queued:request'].lastError,
+    'task marked done before start');
+  assert.equal(snapshot.outbox['operation:run-queued:request'].payload.message, undefined);
+  assert.deepEqual(snapshot.outbox['operation:run-queued:request'].payload.messageRef,
+    { taskRunId: 'run-queued' });
+  assert.equal(snapshot.operations['run-queued'].spec.message, undefined);
+
+  const replay = await service.cancelUndeliveredDispatch('run-queued', {
+    taskRunId: 'run-queued', reason: 'different retry wording',
+  });
+  assert.equal(replay.ok, true);
+  assert.equal(replay.neverDelivered, true);
+  assert.equal(replay.idempotent, true);
+  snapshot = await store.snapshot();
+  assert.equal(snapshot.outbox['operation:run-queued:request'].state, 'cancelled');
+});
+
+test('TaskRun pre-delivery cancellation fails closed after the outbox item is leased', async t => {
+  const { store, service } = fixture(t);
+  await service.admitDispatch({
+    operationId: 'run-leased',
+    ownerSessionId: 'commander',
+    spec: {
+      targetId: 'slot-1', chatId: 'slot-1', message: 'execute now',
+      oneWay: true, taskId: 'task-1', taskRunId: 'run-leased', leaseEpoch: 8,
+    },
+  });
+  await store.mutate(draft => {
+    const item = draft.outbox['operation:run-leased:request'];
+    item.state = 'leased';
+    item.leaseOwner = 'worker';
+    item.leasedAt = 10;
+    item.leasedUntil = 20;
+    item.leaseTokenHash = 'a'.repeat(64);
+  });
+
+  assert.deepEqual(await service.cancelUndeliveredDispatch('run-leased', {
+    taskRunId: 'run-leased',
+  }), { ok: false, code: 'dispatch_delivery_in_progress' });
+  const snapshot = await store.snapshot();
+  assert.equal(snapshot.operations['run-leased'].status, 'admitted');
+  assert.equal(snapshot.outbox['operation:run-leased:request'].state, 'leased');
 });
 
 test('task ledger records terminal output and interrupts only unproven active tasks', async t => {

@@ -63,7 +63,15 @@ function createApiErrorHost(options = {}) {
     network.heldSessions.clear();
     let index = 0;
     for (const [sessionId, info] of held) {
-      if (!persistedSessions.has(sessionId)) continue;
+      const record = persistedSessions.get(sessionId);
+      if (!record) continue;
+      // A TaskRun error is terminal and its hidden slot may already have had
+      // native history scrubbed.  Recovery must be a new TaskRun admitted by
+      // Task Board, never an anonymous retry of the reusable physical slot.
+      if (record.taskExecutionSlot === true) {
+        logger.info('api_error_task_run_requires_new_run', { sessionId });
+        continue;
+      }
       const recovery = `上游 API 已恢复。之前因 API 异常暂挂的任务「${info.goal || '未命名'}」现在可以继续了。`;
       const message = info.pendingText
         ? `${recovery}（含暂挂期间被暂存的真实数据，请据此继续）\n${info.pendingText}`

@@ -38,7 +38,7 @@ function createCommanderRoutingHost(options = {}) {
         record.type = WORKER_TYPE;
         return record;
       }),
-    createWorker: ({ commander, template, ordinal, rolePrompt }) => {
+    createWorker: ({ commander, template, ordinal, rolePrompt, taskExecutionSlot }) => {
       const dir = directories.get(commander.dirId);
       if (!dir) return { ok: false, code: 'directory_not_found' };
       return createSession({
@@ -50,18 +50,22 @@ function createCommanderRoutingHost(options = {}) {
         effort: template?.effort || (commander.cli === 'codex' ? 'high' : null),
         agent: template?.agent || null, rolePrompt,
         type: WORKER_TYPE, elasticWorker: true,
+        taskExecutionSlot: taskExecutionSlot === true,
         persistence: 'required', persistenceSource: 'runtime.commander-elastic-worker-create',
       });
     },
     dispatchOneWay: (target, message, routeOptions) => dispatch(target, message, {
       ownerSessionId: routeOptions.commanderId,
       idempotencyKey: routeOptions.idempotencyKey,
+      operationId: routeOptions.taskRunId || undefined,
       oneWay: true,
       requireIdle: false,
       taskId: routeOptions.taskId,
       taskStart: routeOptions.taskStart,
       taskSource: routeOptions.taskSource,
       taskText: routeOptions.taskText,
+      taskRunId: routeOptions.taskRunId,
+      leaseEpoch: routeOptions.leaseEpoch,
     }),
     logger: options.logger,
   });

@@ -124,6 +124,246 @@
     return `${commander} → ${workerLabel}${workerLabel === workerId ? '' : ` (${workerId})`}${elastic}`;
   }
 
+  function escapeHtml(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, character => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;',
+    }[character]));
+  }
+
+  function tokenCount(value) {
+    const number = Number(value);
+    return Number.isSafeInteger(number) && number >= 0 ? number : 0;
+  }
+
+  function runStateLabel(state) {
+    return ({
+      queued: '排队中',
+      leasing: '分配执行槽',
+      context_building: '构建上下文',
+      running: '执行中',
+      finalizing: '保存结果',
+      usage_sealing: '结算用量',
+      cleaning: '清理中',
+      succeeded: '已完成',
+      failed: '失败',
+      cancelled: '已取消',
+      interrupted: '已中断',
+    })[state] || '状态未知';
+  }
+
+  function cleanupLabel(state) {
+    if (state === 'done') return '已清理';
+    if (state === 'deleting' || state === 'cleaning' || state === 'running') return '清理中';
+    return '待清理';
+  }
+
+  function renderUsageDimension(dimension) {
+    const providerId = String(dimension?.providerId || 'unknown');
+    const providerName = String(dimension?.providerName || providerId || '未知 Provider');
+    const model = String(dimension?.model || '').trim();
+    const observedEvents = tokenCount(dimension?.observedEvents);
+    const unobservableEvents = tokenCount(dimension?.unobservableEvents);
+    const known = observedEvents > 0;
+    const freshInput = tokenCount(dimension?.freshInput);
+    const cacheRead = tokenCount(dimension?.cacheRead);
+    const cacheWrite = tokenCount(dimension?.cacheWrite);
+    const output = tokenCount(dimension?.output);
+    const reasoning = tokenCount(dimension?.reasoning);
+    const tokenDetail = known
+      ? `输入 ${freshInput} · 缓存读 ${cacheRead} · 缓存写 ${cacheWrite} · 输出 ${output} · 推理 ${reasoning}`
+      : '未观测';
+    return `<div class="tb-run-provider" data-testid="task-run-provider" data-provider-id="${escapeHtml(providerId)}" data-observed-events="${observedEvents}" data-unobservable-events="${unobservableEvents}">
+      <span class="tb-run-provider-name">${escapeHtml(providerName)}</span>${model ? ` <span class="tb-run-model">${escapeHtml(model)}</span>` : ''}
+      <span class="tb-run-token-detail">${tokenDetail}</span>
+    </div>`;
+  }
+
+  function pendingQuestion(run) {
+    const source = run?.pendingQuestion;
+    if (!source || typeof source !== 'object') return null;
+    const requestId = String(source.requestId || '').trim().slice(0, 160);
+    const question = String(source.question || '').trim().slice(0, 16 * 1024);
+    if (!requestId || !question) return null;
+    const options = [];
+    const seen = new Set();
+    for (const raw of Array.isArray(source.options) ? source.options : []) {
+      const option = String(raw == null ? '' : raw).trim().slice(0, 512);
+      if (!option || seen.has(option)) continue;
+      seen.add(option);
+      options.push(option);
+      if (options.length >= 12) break;
+    }
+    return {
+      requestId,
+      question,
+      reason: String(source.reason || '').trim().slice(0, 4 * 1024),
+      options,
+      allowMultiple: source.allowMultiple === true && options.length >= 2,
+      createdAt: Math.max(0, Number(source.createdAt) || 0),
+    };
+  }
+
+  function renderPendingQuestion(run) {
+    const pending = pendingQuestion(run);
+    if (!pending) return '';
+    const options = pending.options.map(option => (
+      `<button type="button" class="tb-run-answer-option" data-testid="task-run-answer-option" data-answer-value="${escapeHtml(option)}" aria-pressed="false">${escapeHtml(option)}</button>`
+    )).join('');
+    return `<section class="tb-run-question" data-testid="task-run-pending-question" data-request-id="${escapeHtml(pending.requestId)}" data-allow-multiple="${pending.allowMultiple ? '1' : '0'}">
+      <div class="tb-run-question-label">需要你的回答</div>
+      <div class="tb-run-question-text">${escapeHtml(pending.question)}</div>
+      ${pending.reason ? `<div class="tb-run-question-reason">${escapeHtml(pending.reason)}</div>` : ''}
+      ${options ? `<div class="tb-run-answer-options">${options}</div>` : ''}
+      <div class="tb-run-answer-compose">
+        <textarea rows="2" data-testid="task-run-answer-text" placeholder="也可以输入自定义回答"></textarea>
+        <button type="button" data-testid="task-run-answer-submit">回答</button>
+      </div>
+      <div class="tb-run-answer-result" data-testid="task-run-answer-result" aria-live="polite"></div>
+    </section>`;
+  }
+
+  function answerClientId(requestId) {
+    const uuid = global.crypto?.randomUUID?.();
+    return `tb-answer-${uuid || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`}-${String(requestId || '').slice(-12)}`;
+  }
+
+  function bindPendingQuestionAnswers(root, onAnswer) {
+    if (!root || typeof root.querySelectorAll !== 'function' || typeof onAnswer !== 'function') return 0;
+    let bound = 0;
+    for (const card of root.querySelectorAll('[data-testid="task-run-pending-question"]')) {
+      if (card.dataset.answerBound === '1') continue;
+      const requestId = String(card.dataset.requestId || '').trim();
+      const multiple = card.dataset.allowMultiple === '1';
+      const optionButtons = [...card.querySelectorAll('[data-testid="task-run-answer-option"]')];
+      const textInput = card.querySelector('[data-testid="task-run-answer-text"]');
+      const submitButton = card.querySelector('[data-testid="task-run-answer-submit"]');
+      const result = card.querySelector('[data-testid="task-run-answer-result"]');
+      if (!requestId || !textInput || !submitButton || !result) continue;
+      card.dataset.answerBound = '1';
+      bound += 1;
+      let submitting = false;
+      let lastAnswer = '';
+      let clientMsgId = '';
+      const selected = new Set();
+      const controls = [...optionButtons, textInput, submitButton];
+      const setDisabled = value => controls.forEach(control => { control.disabled = value; });
+      const submit = async rawAnswer => {
+        const text = String(rawAnswer || '').trim();
+        if (!text || submitting || card.dataset.resolved === '1') return false;
+        if (!clientMsgId || lastAnswer !== text) clientMsgId = answerClientId(requestId);
+        lastAnswer = text;
+        submitting = true;
+        setDisabled(true);
+        result.textContent = '发送中…';
+        result.dataset.state = 'sending';
+        try {
+          const response = await onAnswer({ requestId, text, clientMsgId });
+          if (!response || response.ok !== true) throw new Error(response?.error || 'answer failed');
+          card.dataset.resolved = '1';
+          result.textContent = response.duplicate === true ? '已回答' : '回答已发送';
+          result.dataset.state = 'success';
+          return true;
+        } catch (error) {
+          result.textContent = String(error?.message || error || '回答失败');
+          result.dataset.state = 'error';
+          submitting = false;
+          setDisabled(false);
+          return false;
+        }
+      };
+      for (const button of optionButtons) {
+        button.addEventListener('click', () => {
+          const value = String(button.dataset.answerValue || '').trim();
+          if (!multiple) { void submit(value); return; }
+          if (selected.has(value)) selected.delete(value); else selected.add(value);
+          button.setAttribute('aria-pressed', selected.has(value) ? 'true' : 'false');
+        });
+      }
+      submitButton.addEventListener('click', () => {
+        const custom = String(textInput.value || '').trim();
+        const answers = [...selected];
+        if (custom) answers.push(custom);
+        void submit(answers.join(', '));
+      });
+      textInput.addEventListener('keydown', event => {
+        if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+          event.preventDefault();
+          submitButton.click();
+        }
+      });
+    }
+    return bound;
+  }
+
+  // Durable TaskRun summary. It deliberately accepts task-owned run/usage data
+  // only: slotId, nativeSessionId and any other execution-pool internals are not
+  // rendered and can never turn into a legacy chat link.
+  function renderTaskRunSummary(run) {
+    const source = run && typeof run === 'object' ? run : {};
+    const runId = String(source.runId || source.id || '');
+    const state = String(source.executionStatus || source.state || 'unknown');
+    const cleanupState = String(source.cleanupState || 'pending');
+    const usage = source.usage && typeof source.usage === 'object' ? source.usage : {};
+    const usageStatus = String(source.usageStatus || usage.usageStatus || 'collecting');
+    const coverage = String(usage.coverage || (usageStatus === 'unobservable' ? 'unobservable' : 'unknown'));
+    const known = usageStatus !== 'unobservable'
+      && coverage !== 'unobservable'
+      && usage.hasKnownUsage !== false
+      && usage.tokens
+      && typeof usage.tokens === 'object';
+    const tokens = known ? usage.tokens : null;
+    const total = tokens
+      ? tokenCount(tokens.total ?? (
+        tokenCount(tokens.consumedInput ?? (
+          tokenCount(tokens.freshInput) + tokenCount(tokens.cacheRead) + tokenCount(tokens.cacheWrite)
+        )) + tokenCount(tokens.output)
+      ))
+      : null;
+    const dimensions = Array.isArray(usage.dimensions) ? usage.dimensions : [];
+    const totalHtml = known ? `${total} tokens` : '未观测';
+    const usageHtml = `<span data-testid="task-run-token-total">${totalHtml}</span>${dimensions
+      .map(dimension => renderUsageDimension(dimension)).join('')}`;
+
+    return `<section class="tb-run-summary" data-testid="task-run-summary" data-run-id="${escapeHtml(runId)}" data-state="${escapeHtml(state)}" data-cleanup-state="${escapeHtml(cleanupState)}">
+      <header class="tb-run-summary-head">
+        <span data-testid="task-run-state">${escapeHtml(runStateLabel(state))}</span>
+        <span data-testid="task-run-cleanup">${escapeHtml(cleanupLabel(cleanupState))}</span>
+      </header>
+      <div class="tb-run-usage" data-testid="task-run-usage" data-usage-status="${escapeHtml(usageStatus)}" data-coverage="${escapeHtml(coverage)}">${usageHtml}</div>
+      ${renderPendingQuestion(source)}
+    </section>`;
+  }
+
+  // Rolling-upgrade tolerant detail DTO reader. The server currently emits
+  // `runs`; aliases let clients survive either side of a staggered rollout
+  // without making Task Board details fail to open.
+  function recentTaskRuns(detail) {
+    const source = detail && typeof detail === 'object' ? detail : {};
+    const nested = source.task && typeof source.task === 'object' ? source.task : {};
+    const raw = [
+      source.recentRuns,
+      source.taskRuns,
+      source.runs,
+      nested.recentRuns,
+      nested.taskRuns,
+      nested.runs,
+    ].find(Array.isArray) || [];
+    return raw
+      .map((run, index) => ({ run, index }))
+      .filter(item => item.run && typeof item.run === 'object')
+      .sort((a, b) => {
+        const aTs = Number(a.run.startedAt || a.run.createdAt || a.run.terminalAt) || 0;
+        const bTs = Number(b.run.startedAt || b.run.createdAt || b.run.terminalAt) || 0;
+        return (bTs - aTs) || (a.index - b.index);
+      })
+      .slice(0, 5)
+      .map(item => item.run);
+  }
+
   const api = Object.freeze({
     sessionChatUrl,
     sortModules,
@@ -132,6 +372,10 @@
     partitionTaskIdentity,
     taskDisplayState,
     taskRoutingLabel,
+    renderTaskRunSummary,
+    recentTaskRuns,
+    pendingQuestion,
+    bindPendingQuestionAnswers,
   });
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   global.MultiCCTaskBoardUi = api;
