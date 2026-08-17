@@ -10,6 +10,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { parseArkcliJsonStream } = require('../src/routes/ark-quota');
+const { renderQuotaBar } = require('../src/quota/quota-bar-view');
 
 test('parses a clean JSON payload', () => {
   const parsed = parseArkcliJsonStream('{"ok":true,"items":[]}');
@@ -58,4 +59,42 @@ test('returns null for an unterminated object', () => {
 test('skips leading non-JSON text before the payload', () => {
   const parsed = parseArkcliJsonStream('warn: something\n{"ok":true}');
   assert.equal(parsed.ok, true);
+});
+
+test('renders Ark Coding compact bar as remaining quota in canonical window order', () => {
+  const now = Date.UTC(2026, 0, 1, 0, 0, 0);
+  const bar = renderQuotaBar('ark', {
+    status: 'ok',
+    fetchedAt: now,
+    viewer: { user_name: 'tester', auth_method: 'sso' },
+    items: [
+      {
+        product: 'agent-plan',
+        tier: 'pro',
+        subscribed: true,
+        periods: [
+          { label: 'weekly', used: 90, total: 100, percent: 90, resetAt: now + 2 * 24 * 3600 * 1000 },
+        ],
+      },
+      {
+        product: 'coding-plan',
+        tier: 'pro',
+        subscribed: true,
+        periods: [
+          { label: 'monthly', used: 70, total: 100, percent: 70, resetAt: now + 22 * 24 * 3600 * 1000 },
+          { label: '5h', used: 20, total: 100, percent: 20, resetAt: now + 5 * 3600 * 1000 },
+          { label: 'weekly', used: 40, total: 100, percent: 40, resetAt: now + (5 * 24 + 1) * 3600 * 1000 },
+        ],
+      },
+    ],
+  }, { baseUrl: 'https://ark.cn-beijing.volces.com/api/coding/v3' });
+
+  assert.equal(
+    bar.text,
+    `Coding · 5h 80% {cd:${now + 5 * 3600 * 1000}} · 1wk 60% {cd:${now + (5 * 24 + 1) * 3600 * 1000}} · 1m 30% {cd:${now + 22 * 24 * 3600 * 1000}} · {ago:${now}} ⟳`,
+  );
+  assert.match(bar.title, /Coding · pro（当前 provider）/);
+  assert.match(bar.title, /5h: 余量 80% · 已用 20% \(20\/100\)/);
+  assert.match(bar.title, /周: 余量 60% · 已用 40% \(40\/100\)/);
+  assert.match(bar.title, /月: 余量 30% · 已用 70% \(70\/100\)/);
 });
