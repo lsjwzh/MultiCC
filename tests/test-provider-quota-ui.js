@@ -74,6 +74,46 @@ test('known kind shows pending, then the fetched badge with credential-source to
   assert.equal(typeof el.onclick, 'function');
 });
 
+test('ark provider quota badges request and cache the active provider plan', async () => {
+  const agentEl = makeEl('p-agent');
+  const codingEl = makeEl('p-coding');
+  const calls = [];
+  await withWindow([agentEl, codingEl], async () => {
+    catalog.injectProviderQuotas(
+      {
+        providers: [
+          { id: 'p-agent', appType: 'claude', baseUrl: 'https://ark.cn-beijing.volces.com/api/plan' },
+          { id: 'p-coding', appType: 'claude', baseUrl: 'https://ark.cn-beijing.volces.com/api/coding' },
+        ],
+      },
+      async (url) => {
+        calls.push(String(url));
+        const product = decodeURIComponent(String(url)).includes('/api/coding') ? 'coding-plan' : 'agent-plan';
+        return {
+          status: 'ok',
+          bar: {
+            text: product === 'coding-plan' ? 'Coding 1wk 92%' : 'Agent 1wk 24%',
+            color: product === 'coding-plan' ? '#58a6ff' : '#d29922',
+            title: product === 'coding-plan' ? 'Coding（当前 provider）' : 'Agent（当前 provider）',
+          },
+          items: [
+            { product: product === 'coding-plan' ? 'agent-plan' : 'coding-plan', subscribed: true, periods: [{ label: '周', percent: 99 }] },
+            { product, subscribed: true, periods: [{ label: '周', percent: product === 'coding-plan' ? 24 : 76 }] },
+          ],
+        };
+      },
+    );
+    await flush();
+  });
+
+  assert.ok(calls.includes('/api/ark/quota?baseUrl=https%3A%2F%2Fark.cn-beijing.volces.com%2Fapi%2Fplan'));
+  assert.ok(calls.includes('/api/ark/quota?baseUrl=https%3A%2F%2Fark.cn-beijing.volces.com%2Fapi%2Fcoding'));
+  assert.match(agentEl.textContent, /Agent 1wk/);
+  assert.match(agentEl.title, /Agent（当前 provider）/);
+  assert.match(codingEl.textContent, /Coding 1wk/);
+  assert.match(codingEl.title, /Coding（当前 provider）/);
+});
+
 test('clicking the badge force-refreshes and bypasses the throttle; re-render alone does not', async () => {
   const el = makeEl('p-kimi');
   let fetches = 0;
@@ -101,6 +141,7 @@ test('failed fetch renders the failure badge, never a stuck loading text', async
       { providers: [{ id: 'p-ark', appType: 'claude', baseUrl: 'https://ark.cn-beijing.volces.com/api/coding' }] },
       async () => { throw Object.assign(new Error('boom'), { details: { status: 'unavailable', error: 'all fetches failed' } }); },
     );
+    el.onclick();
     await flush();
   });
   assert.match(el.textContent, /暂不可用/);
