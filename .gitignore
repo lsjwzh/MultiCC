@@ -15,6 +15,10 @@ orchestration.json
 orchestration.sqlite
 orchestration.sqlite-wal
 orchestration.sqlite-shm
+task-runs.sqlite
+task-runs.sqlite-wal
+task-runs.sqlite-shm
+task-run-transcripts/
 task_board.json
 shares.json
 aux-config.json

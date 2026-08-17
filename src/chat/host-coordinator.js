@@ -38,6 +38,9 @@ function assertChatHostPorts(ports) {
   if (ports.usage.afterCommit != null && typeof ports.usage.afterCommit !== 'function') {
     throw new TypeError('chat host port invalid: usage.afterCommit');
   }
+  if (ports.usage.commitTaskRun != null && typeof ports.usage.commitTaskRun !== 'function') {
+    throw new TypeError('chat host port invalid: usage.commitTaskRun');
+  }
   if (ports.effects && ports.effects.deliver != null && typeof ports.effects.deliver !== 'function') {
     throw new TypeError('chat host port invalid: effects.deliver');
   }
@@ -115,6 +118,29 @@ function makeUsageResult(input = {}) {
     error: input.error || null,
     observerError: input.observerError || null,
   });
+}
+
+function taskRunIdentity(turn) {
+  const task = turn && turn.task && typeof turn.task === 'object' ? turn.task : {};
+  const lineage = turn && turn.lineage && typeof turn.lineage === 'object' ? turn.lineage : {};
+  const taskRunId = clean(
+      task.taskRunId || task.runId || (turn && turn.taskRunId)
+      || lineage.taskRunId || lineage.runId,
+    ) || null;
+  const leaseEpoch = Number(task.leaseEpoch ?? (turn && turn.leaseEpoch) ?? lineage.leaseEpoch);
+  return Object.freeze({
+    taskRunId,
+    taskId: clean(task.taskId || task.id || lineage.taskId) || null,
+    leaseEpoch: taskRunId && Number.isSafeInteger(leaseEpoch) && leaseEpoch > 0
+      ? leaseEpoch
+      : null,
+  });
+}
+
+function snapshotObject(value) {
+  return Object.freeze(value && typeof value === 'object' && !Array.isArray(value)
+    ? { ...value }
+    : {});
 }
 
 function createChatHostCoordinator(rawPorts, options = {}) {
@@ -200,22 +226,77 @@ function createChatHostCoordinator(rawPorts, options = {}) {
     }
     if (runner.usageRecorded === true) return makeUsageResult({ committed: true, code: 'usage_already_recorded' });
 
-    let committed = false;
-    let commitError = null;
-    try {
-      committed = succeeded(ports.usage.commit(Object.freeze({
-        sessionId: turn.sessionId,
-        turnId: turn.turnId,
-        runnerId: runner.runnerId,
-        idempotencyKey: `usage:${turn.turnId}:${runner.runnerId}`,
-        usage: input.usage && typeof input.usage === 'object' ? input.usage : {},
-      })));
-    } catch (error) {
-      commitError = error && error.message ? String(error.message) : 'usage commit failed';
+    const identity = taskRunIdentity(turn);
+    const initialContext = Object.freeze({
+      sessionId: turn.sessionId,
+      turnId: turn.turnId,
+      runnerId: runner.runnerId,
+      idempotencyKey: `usage:${turn.turnId}:${runner.runnerId}`,
+      taskRunId: identity.taskRunId,
+      taskId: identity.taskId,
+      leaseEpoch: identity.leaseEpoch,
+      task: snapshotObject(turn.task),
+      lineage: snapshotObject(turn.lineage),
+      attribution: snapshotObject(input.attribution),
+      usage: snapshotObject(input.usage),
+    });
+    const context = runner.usageCommitContext || initialContext;
+    const taskRunRequired = !!(context.taskRunId && ports.usage.commitTaskRun);
+
+    if (runner.legacyUsageRecorded !== true) {
+      let committed = false;
+      let commitError = null;
+      try {
+        committed = succeeded(ports.usage.commit(Object.freeze({
+          sessionId: context.sessionId,
+          turnId: context.turnId,
+          runnerId: context.runnerId,
+          idempotencyKey: context.idempotencyKey,
+          usage: context.usage,
+        })));
+      } catch (error) {
+        commitError = error && error.message ? String(error.message) : 'usage commit failed';
+      }
+      if (!committed) {
+        return makeUsageResult({ attempted: true, code: 'usage_commit_failed', error: commitError });
+      }
+      // The legacy aggregate is not intrinsically idempotent. Retain the
+      // exact snapshot after it succeeds so a TaskRun-ledger retry cannot add
+      // the legacy usage a second time or drift attribution mid-finalization.
+      runner.legacyUsageRecorded = true;
+      runner.usageCommitContext = context;
     }
-    if (!committed) {
-      return makeUsageResult({ attempted: true, code: 'usage_commit_failed', error: commitError });
+
+    if (taskRunRequired && runner.taskRunUsageRecorded !== true) {
+      let taskRunCommitted = false;
+      let taskRunError = null;
+      try {
+        taskRunCommitted = succeeded(ports.usage.commitTaskRun(Object.freeze({
+          sessionId: context.sessionId,
+          turnId: context.turnId,
+          runnerId: context.runnerId,
+          idempotencyKey: context.idempotencyKey,
+          taskRunId: context.taskRunId,
+          taskId: context.taskId,
+          leaseEpoch: context.leaseEpoch,
+          task: context.task,
+          lineage: context.lineage,
+          attribution: context.attribution,
+          usage: context.usage,
+        })));
+      } catch (error) {
+        taskRunError = error && error.message ? String(error.message) : 'task-run usage commit failed';
+      }
+      if (!taskRunCommitted) {
+        return makeUsageResult({
+          attempted: true,
+          code: 'task_run_usage_commit_failed',
+          error: taskRunError,
+        });
+      }
+      runner.taskRunUsageRecorded = true;
     }
+
     const claim = claimDurableUsage(runner, { resultDurable: true });
     if (!claim.ok) return makeUsageResult({ attempted: true, committed: true, code: claim.code });
 
@@ -254,12 +335,16 @@ function createChatHostCoordinator(rawPorts, options = {}) {
       retryPlanned: !!(input.facts && input.facts.retryPlanned),
       handoffResumeFailure: !!(input.facts && input.facts.handoffResumeFailure),
     });
+    const usageDecision = decision.ok && taskRunIdentity(input.turn).taskRunId
+      && ports.usage.commitTaskRun && runner.taskRunUsageRecorded !== true
+      ? Object.freeze({ ok: false, code: 'task_run_usage_not_durable' })
+      : decision;
     return Object.freeze({
-      ok: append.durable === true,
-      code: append.durable === true ? null : append.code || decision.code,
+      ok: append.durable === true && usageDecision.ok === true,
+      code: append.durable !== true ? append.code || usageDecision.code : usageDecision.code,
       append,
       usage,
-      postTurn: decision,
+      postTurn: usageDecision,
       lineage: input.turn.lineage,
     });
   }
@@ -275,6 +360,10 @@ function createChatHostCoordinator(rawPorts, options = {}) {
       handoffResumeFailure: input.handoffResumeFailure === true,
     });
     if (!decision.ok) return Object.freeze({ ok: false, code: decision.code, effects: Object.freeze([]) });
+    if (taskRunIdentity(turn).taskRunId && ports.usage.commitTaskRun
+        && runner.taskRunUsageRecorded !== true) {
+      return Object.freeze({ ok: false, code: 'task_run_usage_not_durable', effects: Object.freeze([]) });
+    }
     if (turn.postTurnReservation) {
       return Object.freeze({ ok: false, code: 'post_turn_in_flight', effects: Object.freeze([]) });
     }
@@ -309,6 +398,26 @@ function createChatHostCoordinator(rawPorts, options = {}) {
   // handoff/bus adapters while delivery-bound effects keep their proof flag.
   function claimPostTurnPlan(input = {}) {
     const { turn, runner } = input;
+    const decision = evaluatePostTurn(turn, runner, {
+      currentTurn: input.currentTurn,
+      currentRunner: input.currentRunner,
+      interrupted: input.interrupted === true,
+      apiError: input.apiError === true,
+      retryPlanned: input.retryPlanned === true,
+      handoffResumeFailure: input.handoffResumeFailure === true,
+    });
+    if (!decision.ok) {
+      return Object.freeze({ ok: false, code: decision.code, route: null, effects: Object.freeze([]) });
+    }
+    if (taskRunIdentity(turn).taskRunId && ports.usage.commitTaskRun
+        && runner.taskRunUsageRecorded !== true) {
+      return Object.freeze({
+        ok: false,
+        code: 'task_run_usage_not_durable',
+        route: null,
+        effects: Object.freeze([]),
+      });
+    }
     const claim = claimPostTurn(turn, runner, {
       currentTurn: input.currentTurn,
       currentRunner: input.currentRunner,

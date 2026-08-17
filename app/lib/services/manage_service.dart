@@ -109,7 +109,8 @@ class ManageService {
         .timeout(const Duration(seconds: 10));
     if (res.statusCode >= 400) _throw(res);
     return CronTask.fromJson(
-        (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>());
+      (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>(),
+    );
   }
 
   Future<CronTask> updateCronTask(
@@ -129,12 +130,16 @@ class ManageService {
     if (cli != null) body['cli'] = cli;
     if (enabled != null) body['enabled'] = enabled;
     final res = await http
-        .patch(Uri.parse(_url('/api/cron/$id')),
-            headers: _headers, body: jsonEncode(body))
+        .patch(
+          Uri.parse(_url('/api/cron/$id')),
+          headers: _headers,
+          body: jsonEncode(body),
+        )
         .timeout(const Duration(seconds: 10));
     if (res.statusCode >= 400) _throw(res);
     return CronTask.fromJson(
-        (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>());
+      (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>(),
+    );
   }
 
   Future<void> deleteCronTask(String id) async {
@@ -150,7 +155,8 @@ class ManageService {
         .post(Uri.parse(_url('/api/cron/$id/run')), headers: _headers)
         .timeout(const Duration(seconds: 15));
     if (res.statusCode >= 400) _throw(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
   }
 
   // ── Agent resources (skills) ───────────────────────────────────────────────
@@ -161,7 +167,8 @@ class ManageService {
         .get(Uri.parse(_url('/api/agent-resources/skills')), headers: _headers)
         .timeout(const Duration(seconds: 15));
     if (res.statusCode >= 400) _throw(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
   }
 
   // ── Agent resources (Claude history) ───────────────────────────────────────
@@ -169,11 +176,14 @@ class ManageService {
   /// Returns `{sessions: [...], count, totalSize, protectedCount}`.
   Future<Map<String, dynamic>> fetchClaudeHistory() async {
     final res = await http
-        .get(Uri.parse(_url('/api/agent-resources/claude-sessions')),
-            headers: _headers)
+        .get(
+          Uri.parse(_url('/api/agent-resources/claude-sessions')),
+          headers: _headers,
+        )
         .timeout(const Duration(seconds: 20));
     if (res.statusCode >= 400) _throw(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
   }
 
   /// Bulk-delete history sessions older than [olderThanDays] (linked sessions
@@ -181,25 +191,32 @@ class ManageService {
   Future<Map<String, dynamic>> cleanupClaudeHistory(int olderThanDays) async {
     final res = await http
         .delete(
-          Uri.parse(_url(
-              '/api/agent-resources/claude-sessions?olderThanDays=$olderThanDays')),
+          Uri.parse(
+            _url(
+              '/api/agent-resources/claude-sessions?olderThanDays=$olderThanDays',
+            ),
+          ),
           headers: _headers,
         )
         .timeout(const Duration(seconds: 30));
     if (res.statusCode >= 400) _throw(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
   }
 
   // ── Providers (cc-switch import + multicc-owned store) ─────────────────────
 
   /// Returns `{available, ccSwitchAvailable, providers: [...], defaults: {...}}`.
   Future<Map<String, dynamic>> fetchProviders([String? appType]) async {
-    final q = (appType == 'claude' || appType == 'codex') ? '?appType=$appType' : '';
+    final q = (appType == 'claude' || appType == 'codex')
+        ? '?appType=$appType'
+        : '';
     final res = await http
         .get(Uri.parse(_url('/api/providers$q')), headers: _headers)
         .timeout(const Duration(seconds: 15));
     if (res.statusCode >= 400) _throw(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
   }
 
   /// Import / sync from cc-switch. Returns `{ok, imported, updated, total}`.
@@ -208,7 +225,8 @@ class ManageService {
         .post(Uri.parse(_url('/api/providers/import')), headers: _headers)
         .timeout(const Duration(seconds: 20));
     if (res.statusCode >= 400) _throw(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
   }
 
   Future<void> createProvider({
@@ -222,18 +240,20 @@ class ManageService {
     Map<String, dynamic>? aliasMap,
   }) async {
     final res = await http
-        .post(Uri.parse(_url('/api/providers')),
-            headers: _headers,
-            body: jsonEncode({
-              'appType': appType,
-              'name': name,
-              'baseUrl': baseUrl,
-              'authToken': authToken,
-              'model': model,
-              'models': models,
-              'useChatResponsesProxy': useChatResponsesProxy,
-              if (aliasMap != null) 'aliasMap': aliasMap,
-            }))
+        .post(
+          Uri.parse(_url('/api/providers')),
+          headers: _headers,
+          body: jsonEncode({
+            'appType': appType,
+            'name': name,
+            'baseUrl': baseUrl,
+            'authToken': authToken,
+            'model': model,
+            'models': models,
+            'useChatResponsesProxy': useChatResponsesProxy,
+            if (aliasMap != null) 'aliasMap': aliasMap,
+          }),
+        )
         .timeout(const Duration(seconds: 15));
     if (res.statusCode >= 400) _throw(res);
   }
@@ -252,7 +272,9 @@ class ManageService {
     final body = <String, dynamic>{};
     if (name != null) body['name'] = name;
     if (baseUrl != null) body['baseUrl'] = baseUrl;
-    if (authToken != null && authToken.isNotEmpty) body['authToken'] = authToken;
+    if (authToken != null && authToken.isNotEmpty) {
+      body['authToken'] = authToken;
+    }
     if (model != null) body['model'] = model;
     if (models != null) body['models'] = models;
     if (useChatResponsesProxy != null) {
@@ -260,15 +282,21 @@ class ManageService {
     }
     if (aliasMap != null) body['aliasMap'] = aliasMap;
     final res = await http
-        .patch(Uri.parse(_url('/api/providers/$appType/$id')),
-            headers: _headers, body: jsonEncode(body))
+        .patch(
+          Uri.parse(_url('/api/providers/$appType/$id')),
+          headers: _headers,
+          body: jsonEncode(body),
+        )
         .timeout(const Duration(seconds: 15));
     if (res.statusCode >= 400) _throw(res);
   }
 
   Future<void> deleteProvider(String appType, String id) async {
     final res = await http
-        .delete(Uri.parse(_url('/api/providers/$appType/$id')), headers: _headers)
+        .delete(
+          Uri.parse(_url('/api/providers/$appType/$id')),
+          headers: _headers,
+        )
         .timeout(const Duration(seconds: 15));
     if (res.statusCode >= 400) _throw(res);
   }
@@ -283,14 +311,15 @@ class ManageService {
   /// `{role:'user'|'assistant', content, ts, taskType?, meta?, error?, ...}`.
   Future<List<Map<String, dynamic>>> fetchAuxHistory({int limit = 50}) async {
     final res = await http
-        .get(Uri.parse(_url('/api/aux/history?limit=$limit')), headers: _headers)
+        .get(
+          Uri.parse(_url('/api/aux/history?limit=$limit')),
+          headers: _headers,
+        )
         .timeout(const Duration(seconds: 10));
     if (res.statusCode >= 400) _throw(res);
     final list = jsonDecode(utf8.decode(res.bodyBytes));
     if (list is! List) return [];
-    return list
-        .map((e) => (e as Map).cast<String, dynamic>())
-        .toList();
+    return list.map((e) => (e as Map).cast<String, dynamic>()).toList();
   }
 
   /// Aux config + provider lists for the pickers.
@@ -311,13 +340,15 @@ class ManageService {
     String model = '',
   }) async {
     final res = await http
-        .post(Uri.parse(_url('/api/aux/config')),
-            headers: _headers,
-            body: jsonEncode({
-              'protocol': protocol,
-              'providerId': providerId,
-              'model': model,
-            }))
+        .post(
+          Uri.parse(_url('/api/aux/config')),
+          headers: _headers,
+          body: jsonEncode({
+            'protocol': protocol,
+            'providerId': providerId,
+            'model': model,
+          }),
+        )
         .timeout(const Duration(seconds: 10));
     try {
       final j = (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
@@ -337,8 +368,11 @@ class ManageService {
   /// re-runs every session. Returns `{ok, count, ids, onlyJunk}`.
   Future<Map<String, dynamic>> reclassifyAll({bool onlyJunk = false}) async {
     final res = await http
-        .post(Uri.parse(_url('/api/reclassify-all')),
-            headers: _headers, body: jsonEncode({'onlyJunk': onlyJunk}))
+        .post(
+          Uri.parse(_url('/api/reclassify-all')),
+          headers: _headers,
+          body: jsonEncode({'onlyJunk': onlyJunk}),
+        )
         .timeout(const Duration(seconds: 20));
     if (res.statusCode >= 400) _throw(res);
     return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
@@ -348,8 +382,10 @@ class ManageService {
   /// Reclassify a single session by id.
   Future<Map<String, dynamic>> reclassifySession(String sessionId) async {
     final res = await http
-        .post(Uri.parse(_url('/api/sessions/$sessionId/reclassify')),
-            headers: _headers)
+        .post(
+          Uri.parse(_url('/api/sessions/$sessionId/reclassify')),
+          headers: _headers,
+        )
         .timeout(const Duration(seconds: 20));
     if (res.statusCode >= 400) _throw(res);
     return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
@@ -371,10 +407,15 @@ class ManageService {
   /// carries the upstream HTTP code (429/404/401…) so the UI can distinguish
   /// rate-limit / quota / misconfig at a glance; timeout/network errors carry
   /// no status.
-  Future<Map<String, dynamic>> speedtestProvider(String appType, String id) async {
+  Future<Map<String, dynamic>> speedtestProvider(
+    String appType,
+    String id,
+  ) async {
     final res = await http
-        .post(Uri.parse(_url('/api/providers/$appType/$id/speedtest')),
-            headers: _headers)
+        .post(
+          Uri.parse(_url('/api/providers/$appType/$id/speedtest')),
+          headers: _headers,
+        )
         .timeout(const Duration(seconds: 20));
     // The endpoint always returns 200 with a JSON body describing the probe
     // result (ok:false + error for upstream failures), so parse the body
@@ -393,8 +434,11 @@ class ManageService {
     if (claude != null) body['claude'] = claude;
     if (codex != null) body['codex'] = codex;
     final res = await http
-        .put(Uri.parse(_url('/api/provider-defaults')),
-            headers: _headers, body: jsonEncode(body))
+        .put(
+          Uri.parse(_url('/api/provider-defaults')),
+          headers: _headers,
+          body: jsonEncode(body),
+        )
         .timeout(const Duration(seconds: 15));
     if (res.statusCode >= 400) _throw(res);
   }
@@ -407,7 +451,8 @@ class ManageService {
         .get(Uri.parse(_url('/api/uploads/stats')), headers: _headers)
         .timeout(const Duration(seconds: 15));
     if (res.statusCode >= 400) _throw(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
   }
 
   /// Delete all cached temp uploads. Returns `{ok, deleted, freed}`.
@@ -416,7 +461,8 @@ class ManageService {
         .delete(Uri.parse(_url('/api/uploads/cleanup')), headers: _headers)
         .timeout(const Duration(seconds: 30));
     if (res.statusCode >= 400) _throw(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
   }
 
   // ── Skill synchronization ─────────────────────────────────────────────────
@@ -426,7 +472,8 @@ class ManageService {
         .get(Uri.parse(_url('/api/skill-sync/status')), headers: _headers)
         .timeout(const Duration(seconds: 15));
     if (res.statusCode >= 400) _throw(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
   }
 
   Future<Map<String, dynamic>> runSkillSync() async {
@@ -434,7 +481,8 @@ class ManageService {
         .post(Uri.parse(_url('/api/skill-sync/run')), headers: _headers)
         .timeout(const Duration(seconds: 45));
     if (res.statusCode >= 400) _throw(res);
-    final body = (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+    final body = (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
     return body['result'] is Map
         ? (body['result'] as Map).cast<String, dynamic>()
         : body;
@@ -442,7 +490,13 @@ class ManageService {
 
   // ── Message bridges ───────────────────────────────────────────────────────
 
-  static const _bridgePlatforms = {'feishu', 'telegram', 'discord', 'slack', 'wechat'};
+  static const _bridgePlatforms = {
+    'feishu',
+    'telegram',
+    'discord',
+    'slack',
+    'wechat',
+  };
 
   String _bridgePath(String platform, String suffix) {
     if (!_bridgePlatforms.contains(platform)) {
@@ -453,55 +507,84 @@ class ManageService {
 
   Future<Map<String, dynamic>> fetchBridgeStatus(String platform) async {
     final res = await http
-        .get(Uri.parse(_url(_bridgePath(platform, 'status'))), headers: _headers)
+        .get(
+          Uri.parse(_url(_bridgePath(platform, 'status'))),
+          headers: _headers,
+        )
         .timeout(const Duration(seconds: 12));
     if (res.statusCode >= 400) _throw(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
   }
 
   Future<Map<String, dynamic>> fetchBridgeConfig(String platform) async {
     final res = await http
-        .get(Uri.parse(_url(_bridgePath(platform, 'config'))), headers: _headers)
+        .get(
+          Uri.parse(_url(_bridgePath(platform, 'config'))),
+          headers: _headers,
+        )
         .timeout(const Duration(seconds: 12));
     if (res.statusCode >= 400) _throw(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
   }
 
-  Future<void> saveBridgeConfig(String platform, Map<String, dynamic> config) async {
+  Future<void> saveBridgeConfig(
+    String platform,
+    Map<String, dynamic> config,
+  ) async {
     final res = await http
-        .post(Uri.parse(_url(_bridgePath(platform, 'config'))),
-            headers: _headers, body: jsonEncode(config))
+        .post(
+          Uri.parse(_url(_bridgePath(platform, 'config'))),
+          headers: _headers,
+          body: jsonEncode(config),
+        )
         .timeout(const Duration(seconds: 15));
     if (res.statusCode >= 400) _throw(res);
   }
 
   Future<void> setBridgeRunning(String platform, bool running) async {
     final res = await http
-        .post(Uri.parse(_url(_bridgePath(platform, running ? 'start' : 'stop'))),
-            headers: _headers)
+        .post(
+          Uri.parse(_url(_bridgePath(platform, running ? 'start' : 'stop'))),
+          headers: _headers,
+        )
         .timeout(const Duration(seconds: 30));
     if (res.statusCode >= 400) _throw(res);
   }
 
-  Future<Map<String, dynamic>> setBridgeGateway(String platform, String cli) async {
+  Future<Map<String, dynamic>> setBridgeGateway(
+    String platform,
+    String cli,
+  ) async {
     final res = await http
-        .put(Uri.parse(_url(_bridgePath(platform, 'gateway'))),
-            headers: _headers, body: jsonEncode({'cli': cli}))
+        .put(
+          Uri.parse(_url(_bridgePath(platform, 'gateway'))),
+          headers: _headers,
+          body: jsonEncode({'cli': cli}),
+        )
         .timeout(const Duration(seconds: 15));
     if (res.statusCode >= 400) _throw(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
   }
 
   Future<void> resetBridgeGateway(String platform) async {
     final res = await http
-        .post(Uri.parse(_url(_bridgePath(platform, 'gateway/reset'))), headers: _headers)
+        .post(
+          Uri.parse(_url(_bridgePath(platform, 'gateway/reset'))),
+          headers: _headers,
+        )
         .timeout(const Duration(seconds: 15));
     if (res.statusCode >= 400) _throw(res);
   }
 
   Future<void> deleteBridgeGateway(String platform) async {
     final res = await http
-        .delete(Uri.parse(_url(_bridgePath(platform, 'gateway'))), headers: _headers)
+        .delete(
+          Uri.parse(_url(_bridgePath(platform, 'gateway'))),
+          headers: _headers,
+        )
         .timeout(const Duration(seconds: 15));
     if (res.statusCode >= 400) _throw(res);
   }
@@ -529,7 +612,8 @@ class ManageService {
         .get(Uri.parse(_url('/api/token-usage/global$q')), headers: _headers)
         .timeout(const Duration(seconds: 20));
     if (res.statusCode >= 400) _throw(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
   }
 
   /// Access-token (remote-login password). Masked; editable only from localhost.
@@ -539,15 +623,19 @@ class ManageService {
         .get(Uri.parse(_url('/api/settings/access-token')), headers: _headers)
         .timeout(const Duration(seconds: 10));
     if (res.statusCode >= 400) _throw(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
   }
 
   /// Set/clear the access token. Server rejects non-localhost with 403; the
   /// caller should catch Exception and surface "仅本机可改".
   Future<void> saveAccessToken(String token) async {
     final res = await http
-        .post(Uri.parse(_url('/api/settings/access-token')),
-            headers: _headers, body: jsonEncode({'token': token}))
+        .post(
+          Uri.parse(_url('/api/settings/access-token')),
+          headers: _headers,
+          body: jsonEncode({'token': token}),
+        )
         .timeout(const Duration(seconds: 10));
     if (res.statusCode >= 400) _throw(res);
   }
@@ -564,8 +652,11 @@ class ManageService {
 
   Future<void> setOfficialOauth(bool enabled) async {
     final res = await http
-        .post(Uri.parse(_url('/api/settings/official-oauth')),
-            headers: _headers, body: jsonEncode({'enabled': enabled}))
+        .post(
+          Uri.parse(_url('/api/settings/official-oauth')),
+          headers: _headers,
+          body: jsonEncode({'enabled': enabled}),
+        )
         .timeout(const Duration(seconds: 10));
     if (res.statusCode >= 400) _throw(res);
   }
@@ -580,7 +671,8 @@ class ManageService {
         .get(Uri.parse(_url('/api/dashboard/sessions$q')), headers: _headers)
         .timeout(const Duration(seconds: 10));
     if (res.statusCode >= 400) _throw(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
   }
 
   /// Aggregate stats: `{total, active, byCli, byKind}`.
@@ -589,7 +681,8 @@ class ManageService {
         .get(Uri.parse(_url('/api/dashboard/stats')), headers: _headers)
         .timeout(const Duration(seconds: 10));
     if (res.statusCode >= 400) _throw(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
   }
 
   // ── Per-directory activity feed (events) ───────────────────────────────────
@@ -597,7 +690,10 @@ class ManageService {
   /// Recent events for a directory. Returns `{events: [{ts,type,sessionId,sessionLabel,detail}]}`.
   Future<List<Map<String, dynamic>>> fetchDirectoryEvents(String dirId) async {
     final res = await http
-        .get(Uri.parse(_url('/api/directories/$dirId/events')), headers: _headers)
+        .get(
+          Uri.parse(_url('/api/directories/$dirId/events')),
+          headers: _headers,
+        )
         .timeout(const Duration(seconds: 10));
     if (res.statusCode >= 400) _throw(res);
     final j = jsonDecode(utf8.decode(res.bodyBytes)) as Map;
@@ -613,7 +709,8 @@ class ManageService {
         .get(Uri.parse(_url('/api/settings/notify')), headers: _headers)
         .timeout(const Duration(seconds: 10));
     if (res.statusCode >= 400) _throw(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
   }
 
   Future<void> saveNotifyConfig({String? barkUrl, String? webhookUrl}) async {
@@ -621,8 +718,11 @@ class ManageService {
     if (barkUrl != null) body['barkUrl'] = barkUrl;
     if (webhookUrl != null) body['webhookUrl'] = webhookUrl;
     final res = await http
-        .post(Uri.parse(_url('/api/settings/notify')),
-            headers: _headers, body: jsonEncode(body))
+        .post(
+          Uri.parse(_url('/api/settings/notify')),
+          headers: _headers,
+          body: jsonEncode(body),
+        )
         .timeout(const Duration(seconds: 10));
     if (res.statusCode >= 400) _throw(res);
   }
@@ -633,7 +733,8 @@ class ManageService {
         .get(Uri.parse(_url('/api/push/health')), headers: _headers)
         .timeout(const Duration(seconds: 10));
     if (res.statusCode >= 400) _throw(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
   }
 
   Future<Map<String, dynamic>> testPush() async {
@@ -641,7 +742,8 @@ class ManageService {
         .post(Uri.parse(_url('/api/push/test')), headers: _headers)
         .timeout(const Duration(seconds: 15));
     if (res.statusCode >= 400) _throw(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
   }
 
   Future<Map<String, dynamic>> testBark() async {
@@ -649,7 +751,8 @@ class ManageService {
         .post(Uri.parse(_url('/api/push/test-bark')), headers: _headers)
         .timeout(const Duration(seconds: 15));
     if (res.statusCode >= 400) _throw(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
   }
 
   Future<Map<String, dynamic>> testWebhook() async {
@@ -657,7 +760,8 @@ class ManageService {
         .post(Uri.parse(_url('/api/push/test-webhook')), headers: _headers)
         .timeout(const Duration(seconds: 15));
     if (res.statusCode >= 400) _throw(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
   }
 
   // ── External tunnel (花生壳 / Tailscale) ───────────────────────────────────
@@ -668,15 +772,20 @@ class ManageService {
         .get(Uri.parse(_url('/api/settings/tunnel')), headers: _headers)
         .timeout(const Duration(seconds: 10));
     if (res.statusCode >= 400) _throw(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
   }
 
   Future<Map<String, dynamic>> restartTunnel(String provider) async {
     final res = await http
-        .post(Uri.parse(_url('/api/tunnel/restart/$provider')), headers: _headers)
+        .post(
+          Uri.parse(_url('/api/tunnel/restart/$provider')),
+          headers: _headers,
+        )
         .timeout(const Duration(seconds: 20));
     if (res.statusCode >= 400) _throw(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
   }
 
   // ── Voice settings (read-only: keys are sensitive, edit stays on web) ───────
@@ -687,7 +796,8 @@ class ManageService {
         .get(Uri.parse(_url('/api/settings/voice')), headers: _headers)
         .timeout(const Duration(seconds: 10));
     if (res.statusCode >= 400) _throw(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
   }
 
   // ── Task board (AI-tagged module->task tree) ───────────────────────────────
@@ -703,24 +813,61 @@ class ManageService {
         .timeout(const Duration(seconds: 12));
     if (res.statusCode != 200) _throw(res);
     return TaskBoard.fromJson(
-        (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>());
+      (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>(),
+    );
   }
 
-  /// GET `/api/task-board/tasks/<taskId>/messages` -> cross-session conversation
-  /// trail (user/assistant pairs), oldest first.
-  Future<List<TaskMessage>> fetchTaskMessages(String taskId) async {
+  /// GET `/api/task-board/tasks/<taskId>/messages` -> durable task detail. New
+  /// servers include up to five TaskRuns; old servers omit that field and parse
+  /// as an empty run list.
+  Future<TaskBoardDetail> fetchTaskDetail(String taskId) async {
     final res = await http
         .get(
-            Uri.parse(_url(
-                '/api/task-board/tasks/${Uri.encodeComponent(taskId)}/messages')),
-            headers: _headers)
+          Uri.parse(
+            _url(
+              '/api/task-board/tasks/${Uri.encodeComponent(taskId)}/messages',
+            ),
+          ),
+          headers: _headers,
+        )
         .timeout(const Duration(seconds: 12));
     if (res.statusCode != 200) _throw(res);
-    final j = jsonDecode(utf8.decode(res.bodyBytes)) as Map;
-    final items = j['items'] as List? ?? const [];
-    return items
-        .map((e) => TaskMessage.fromJson((e as Map).cast<String, dynamic>()))
-        .toList();
+    return TaskBoardDetail.fromJson(
+      (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>(),
+    );
+  }
+
+  /// Backwards-compatible message-only reader for callers that do not render
+  /// TaskRun history yet.
+  Future<List<TaskMessage>> fetchTaskMessages(String taskId) async {
+    return (await fetchTaskDetail(taskId)).messages;
+  }
+
+  /// Answers the currently waiting question for a hidden TaskRun owned by
+  /// [taskId]. The client-generated id is stable across a retry of the same
+  /// text, allowing the server to deduplicate an uncertain HTTP outcome.
+  Future<Map<String, dynamic>> answerTaskQuestion(
+    String taskId, {
+    required String requestId,
+    required String text,
+    required String clientMsgId,
+  }) async {
+    final res = await http
+        .post(
+          Uri.parse(
+            _url('/api/task-board/tasks/${Uri.encodeComponent(taskId)}/answer'),
+          ),
+          headers: _headers,
+          body: jsonEncode({
+            'requestId': requestId,
+            'text': text,
+            'clientMsgId': clientMsgId,
+          }),
+        )
+        .timeout(const Duration(seconds: 15));
+    if (res.statusCode != 200) _throwBoardSend(res);
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
   }
 
   /// POST .../status body {status}. `status` ∈ active | done | archived.
@@ -728,10 +875,12 @@ class ManageService {
   Future<void> setTaskStatus(String taskId, String status) async {
     final res = await http
         .post(
-            Uri.parse(_url(
-                '/api/task-board/tasks/${Uri.encodeComponent(taskId)}/status')),
-            headers: _headers,
-            body: jsonEncode({'status': status}))
+          Uri.parse(
+            _url('/api/task-board/tasks/${Uri.encodeComponent(taskId)}/status'),
+          ),
+          headers: _headers,
+          body: jsonEncode({'status': status}),
+        )
         .timeout(const Duration(seconds: 10));
     if (res.statusCode >= 400) _throwWrite(res);
   }
@@ -741,10 +890,14 @@ class ManageService {
   Future<Map<String, dynamic>> reclassifyTask(String taskId) async {
     final res = await http
         .post(
-            Uri.parse(_url(
-                '/api/task-board/tasks/${Uri.encodeComponent(taskId)}/reclassify')),
-            headers: _headers,
-            body: '{}')
+          Uri.parse(
+            _url(
+              '/api/task-board/tasks/${Uri.encodeComponent(taskId)}/reclassify',
+            ),
+          ),
+          headers: _headers,
+          body: '{}',
+        )
         .timeout(const Duration(seconds: 15));
     if (res.statusCode >= 400) _throwWrite(res);
     return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
@@ -756,10 +909,13 @@ class ManageService {
   /// throws [LocalOnlyException] on 403. Returns {ok, queued, skipped}.
   Future<Map<String, dynamic>> reclassifyPending({String? dirId}) async {
     final res = await http
-        .post(Uri.parse(_url('/api/task-board/reclassify-pending')),
-            headers: _headers,
-            body: jsonEncode(
-                {if (dirId != null && dirId.isNotEmpty) 'dirId': dirId}))
+        .post(
+          Uri.parse(_url('/api/task-board/reclassify-pending')),
+          headers: _headers,
+          body: jsonEncode({
+            if (dirId != null && dirId.isNotEmpty) 'dirId': dirId,
+          }),
+        )
         .timeout(const Duration(seconds: 15));
     if (res.statusCode >= 400) _throwWrite(res);
     return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
@@ -808,15 +964,17 @@ class ManageService {
     Map<String, dynamic>? goalLimits,
   }) async {
     final res = await http
-        .post(Uri.parse(_url('/api/task-board/send')),
-            headers: _headers,
-            body: jsonEncode({
-              'text': text,
-              'dirId': dirId,
-              if (target != null && target.isNotEmpty) 'target': target,
-              if (goal) 'goal': true,
-              if (goal) 'goalLimits': goalLimits ?? const <String, dynamic>{},
-            }))
+        .post(
+          Uri.parse(_url('/api/task-board/send')),
+          headers: _headers,
+          body: jsonEncode({
+            'text': text,
+            'dirId': dirId,
+            if (target != null && target.isNotEmpty) 'target': target,
+            if (goal) 'goal': true,
+            if (goal) 'goalLimits': goalLimits ?? const <String, dynamic>{},
+          }),
+        )
         .timeout(const Duration(seconds: 15));
     if (res.statusCode != 200) _throwBoardSend(res);
     return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
@@ -835,15 +993,17 @@ class ManageService {
   }) async {
     final res = await http
         .post(
-            Uri.parse(_url(
-                '/api/task-board/tasks/${Uri.encodeComponent(taskId)}/send')),
-            headers: _headers,
-            body: jsonEncode({
-              'text': text,
-              if (target != null && target.isNotEmpty) 'target': target,
-              if (goal) 'goal': true,
-              if (goal) 'goalLimits': goalLimits ?? const <String, dynamic>{},
-            }))
+          Uri.parse(
+            _url('/api/task-board/tasks/${Uri.encodeComponent(taskId)}/send'),
+          ),
+          headers: _headers,
+          body: jsonEncode({
+            'text': text,
+            if (target != null && target.isNotEmpty) 'target': target,
+            if (goal) 'goal': true,
+            if (goal) 'goalLimits': goalLimits ?? const <String, dynamic>{},
+          }),
+        )
         .timeout(const Duration(seconds: 15));
     if (res.statusCode != 200) _throwBoardSend(res);
     return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
@@ -854,10 +1014,13 @@ class ManageService {
   /// Returns {ok, archivedCount, taskIds}. Throws [LocalOnlyException] on 403.
   Future<Map<String, dynamic>> archiveCompletedTasks({String? dirId}) async {
     final res = await http
-        .post(Uri.parse(_url('/api/task-board/archive-completed')),
-            headers: _headers,
-            body: jsonEncode(
-                {if (dirId != null && dirId.isNotEmpty) 'dirId': dirId}))
+        .post(
+          Uri.parse(_url('/api/task-board/archive-completed')),
+          headers: _headers,
+          body: jsonEncode({
+            if (dirId != null && dirId.isNotEmpty) 'dirId': dirId,
+          }),
+        )
         .timeout(const Duration(seconds: 15));
     if (res.statusCode >= 400) _throwWrite(res);
     return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
@@ -870,8 +1033,10 @@ class ManageService {
   /// 409 = session is streaming; 404 = session not found.
   Future<Map<String, dynamic>> markTurnSucceeded(String sessionId) async {
     final res = await http
-        .post(Uri.parse(_url('/api/sessions/$sessionId/mark-task-done')),
-            headers: _headers)
+        .post(
+          Uri.parse(_url('/api/sessions/$sessionId/mark-task-done')),
+          headers: _headers,
+        )
         .timeout(const Duration(seconds: 10));
     if (res.statusCode >= 400) _throwWrite(res);
     return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)

@@ -132,6 +132,30 @@ test('elastic cap queues on a worker instead of creating specialists or dropping
   assert.ok(['base', 'elastic'].includes(result.targetSessionId));
 });
 
+test('ordinary Commander routing never selects an internal TaskRun execution slot', async () => {
+  const h = harness({
+    initial: [
+      worker('visible', { label: '可见 Worker' }),
+      worker('task-slot', {
+        label: '内部临时槽', ephemeral: true, elasticWorker: true,
+        taskExecutionSlot: true,
+      }),
+    ],
+    busy: new Set(['visible']),
+    maxElasticWorkers: 1,
+  });
+
+  const result = await h.router.route({
+    commanderId: 'commander',
+    message: '这是普通 Commander 任务',
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.targetSessionId, 'elastic-2');
+  assert.notEqual(result.targetSessionId, 'task-slot');
+  assert.deepEqual(h.dispatches.map(item => item.target), ['elastic-2']);
+});
+
 test('missing Commander fails closed and simultaneous scale-out is serialized', async () => {
   const missing = harness({ initial: [worker('w')] });
   assert.deepEqual(await missing.router.route({ commanderId: 'nope', message: 'x' }), {

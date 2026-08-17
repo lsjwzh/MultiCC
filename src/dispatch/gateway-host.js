@@ -92,6 +92,7 @@ function createGatewayHost(rawDeps) {
   function addressableSessions(userText = '') {
     return [...persistedSessions.values()]
       .filter(s => s.type !== 'aux' && s.type !== 'gateway' && s.type !== 'commander')
+      .filter(s => s.taskExecutionSlot !== true)
       .map((session, index) => ({ session, index, score: mentionScore(session, userText) }))
       // The snapshot stays bounded, but an explicitly named id/label/Fleet is
       // promoted before truncation. Otherwise a real target after item 30 is
@@ -226,6 +227,18 @@ function createGatewayHost(rawDeps) {
     return { ok: true, rec };
   }
 
+  function validateTaskRunTarget(targetId, fromSessionId, allowCommander, taskRunId) {
+    const result = validateDispatchTarget(targetId, fromSessionId, allowCommander);
+    if (result.ok && result.rec.taskExecutionSlot === true && !String(taskRunId || '').trim()) {
+      return {
+        ok: false,
+        code: 'task_execution_slot_requires_task_run',
+        error: '内部任务执行槽只能由 TaskRun 调度器寻址',
+      };
+    }
+    return result;
+  }
+
   // Exactly one structured terminal frame per voice-router turn.
   //
   // A live call cannot infer durable admission from assistant prose. The Host
@@ -350,7 +363,12 @@ function createGatewayHost(rawDeps) {
 
   // Deliver a confirmed dispatch; terminal targets receive an ephemeral chat.
   async function dispatchToSession(targetId, message, opts = {}) {
-    let v = validateDispatchTarget(targetId, opts.replyTo || null, opts.allowCommander === true && opts.queueIfBusy === true && opts.requireIdle === false);
+    let v = validateTaskRunTarget(
+      targetId,
+      opts.replyTo || null,
+      opts.allowCommander === true && opts.queueIfBusy === true && opts.requireIdle === false,
+      opts.taskRunId,
+    );
     // Create matching *-ultra-NN workers on demand from the dispatcher's config.
     if (!v.ok) {
       const m = targetId.match(/-ultra-(\d{2})$/);
@@ -369,12 +387,23 @@ function createGatewayHost(rawDeps) {
               rolePrompt: '你是 MultiCC Ultracode worker。只执行派给你的自包含子任务；先同步 worktree，完成后验证、提交并尽量合并回基分支，最后用精简结构汇报改动、验证结果和风险。',
               persistence: 'bestEffort', persistenceSource: 'runtime.dispatch-worker-create',
             });
-            if (created.ok) v = validateDispatchTarget(targetId, opts.replyTo || null, opts.allowCommander === true && opts.queueIfBusy === true && opts.requireIdle === false);
+            if (created.ok) {
+              v = validateTaskRunTarget(
+                targetId,
+                opts.replyTo || null,
+                opts.allowCommander === true && opts.queueIfBusy === true && opts.requireIdle === false,
+                opts.taskRunId,
+              );
+            }
           }
         }
       }
     }
-    if (!v.ok) return { ok: false, error: v.error };
+    if (!v.ok) return {
+      ok: false,
+      ...(v.code ? { code: v.code } : {}),
+      error: v.error,
+    };
     const rec = v.rec;
 
     let chatId;

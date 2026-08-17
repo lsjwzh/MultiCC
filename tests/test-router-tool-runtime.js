@@ -174,6 +174,9 @@ test('external callback wait is session-bound, at-most-once, and never exposes r
   const capability = runtime.issueContext({
     sessionId: 'caller',
     turnId: 'turn-callback',
+    taskId: 'task-1',
+    taskRunId: 'run-1',
+    leaseEpoch: 6,
     baseUrl: 'http://127.0.0.1:3000',
   });
   const args = {
@@ -196,6 +199,9 @@ test('external callback wait is session-bound, at-most-once, and never exposes r
     mode: 'callback',
     reason: '等待 CI 发布结果',
     source: 'router-mcp',
+    taskId: 'task-1',
+    taskRunId: 'run-1',
+    leaseEpoch: 6,
     registrationFingerprint: externalWaitRegistrations[0].registrationFingerprint,
     timeoutSec: 300,
   });

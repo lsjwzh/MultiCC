@@ -158,6 +158,10 @@ class TaskMessage {
     this.lost = false,
   });
 
+  /// Headless TaskRun messages deliberately carry no public session id. They
+  /// remain readable in task history but must never become ordinary chat links.
+  bool get hasSessionTarget => sessionId.trim().isNotEmpty;
+
   factory TaskMessage.fromJson(Map<String, dynamic> json) => TaskMessage(
     sessionId: (json['sessionId'] ?? '').toString(),
     sessionLabel: json['sessionLabel']?.toString(),
@@ -167,6 +171,290 @@ class TaskMessage {
     text: (json['text'] ?? '').toString(),
     lost: json['lost'] == true,
   );
+}
+
+int _taskRunInt(dynamic value) {
+  if (value is num) return value.toInt();
+  return int.tryParse(value?.toString() ?? '') ?? 0;
+}
+
+/// One provider/model attribution bucket inside a durable TaskRun usage seal.
+class TaskRunUsageDimension {
+  final String providerId;
+  final String providerName;
+  final String model;
+  final String roleKind;
+  final String routeName;
+  final int observedEvents;
+  final int unobservableEvents;
+  final int freshInput;
+  final int cacheRead;
+  final int cacheWrite;
+  final int output;
+  final int reasoning;
+
+  const TaskRunUsageDimension({
+    required this.providerId,
+    required this.providerName,
+    this.model = '',
+    this.roleKind = 'main',
+    this.routeName = 'main',
+    this.observedEvents = 0,
+    this.unobservableEvents = 0,
+    this.freshInput = 0,
+    this.cacheRead = 0,
+    this.cacheWrite = 0,
+    this.output = 0,
+    this.reasoning = 0,
+  });
+
+  factory TaskRunUsageDimension.fromJson(Map<String, dynamic> json) =>
+      TaskRunUsageDimension(
+        providerId: (json['providerId'] ?? 'unknown').toString(),
+        providerName:
+            (json['providerName'] ?? json['providerId'] ?? 'Unknown Provider')
+                .toString(),
+        model: (json['model'] ?? '').toString(),
+        roleKind: (json['roleKind'] ?? 'main').toString(),
+        routeName: (json['routeName'] ?? 'main').toString(),
+        observedEvents: _taskRunInt(json['observedEvents']),
+        unobservableEvents: _taskRunInt(json['unobservableEvents']),
+        freshInput: _taskRunInt(json['freshInput']),
+        cacheRead: _taskRunInt(json['cacheRead']),
+        cacheWrite: _taskRunInt(json['cacheWrite']),
+        output: _taskRunInt(json['output']),
+        reasoning: _taskRunInt(json['reasoning']),
+      );
+}
+
+/// Usage snapshot sealed before a TaskRun's native transcript can be removed.
+/// [totalTokens] stays null for unobservable providers: unknown must never be
+/// displayed or aggregated as a known zero.
+class TaskRunUsage {
+  final String coverage;
+  final bool hasKnownUsage;
+  final bool isLowerBound;
+  final int? freshInput;
+  final int? cacheRead;
+  final int? cacheWrite;
+  final int? output;
+  final int? reasoning;
+  final int? totalTokens;
+  final List<TaskRunUsageDimension> dimensions;
+
+  const TaskRunUsage({
+    this.coverage = 'unobservable',
+    this.hasKnownUsage = false,
+    this.isLowerBound = false,
+    this.freshInput,
+    this.cacheRead,
+    this.cacheWrite,
+    this.output,
+    this.reasoning,
+    this.totalTokens,
+    this.dimensions = const [],
+  });
+
+  static const unobservable = TaskRunUsage();
+
+  factory TaskRunUsage.fromJson(Map<String, dynamic> json) {
+    final coverage = (json['coverage'] ?? 'unknown').toString();
+    final tokens = json['tokens'] is Map
+        ? (json['tokens'] as Map).cast<String, dynamic>()
+        : null;
+    final hasKnown =
+        json['hasKnownUsage'] == true ||
+        (json['hasKnownUsage'] == null &&
+            coverage != 'unobservable' &&
+            tokens != null);
+    final dimensions = <TaskRunUsageDimension>[];
+    final rawDimensions = json['dimensions'];
+    if (rawDimensions is List) {
+      for (final item in rawDimensions) {
+        if (item is Map) {
+          dimensions.add(
+            TaskRunUsageDimension.fromJson(item.cast<String, dynamic>()),
+          );
+        }
+      }
+    }
+    if (!hasKnown || tokens == null) {
+      return TaskRunUsage(
+        coverage: coverage,
+        hasKnownUsage: false,
+        isLowerBound: json['isLowerBound'] == true,
+        dimensions: List.unmodifiable(dimensions),
+      );
+    }
+    final fresh = _taskRunInt(tokens['freshInput']);
+    final read = _taskRunInt(tokens['cacheRead']);
+    final write = _taskRunInt(tokens['cacheWrite']);
+    final output = _taskRunInt(tokens['output']);
+    final consumed = tokens.containsKey('consumedInput')
+        ? _taskRunInt(tokens['consumedInput'])
+        : fresh + read + write;
+    final total = tokens.containsKey('total')
+        ? _taskRunInt(tokens['total'])
+        : consumed + output;
+    return TaskRunUsage(
+      coverage: coverage,
+      hasKnownUsage: true,
+      isLowerBound: json['isLowerBound'] == true,
+      freshInput: fresh,
+      cacheRead: read,
+      cacheWrite: write,
+      output: output,
+      reasoning: _taskRunInt(tokens['reasoning']),
+      totalTokens: total,
+      dimensions: List.unmodifiable(dimensions),
+    );
+  }
+}
+
+/// Safe, task-owned projection of a waiting TaskRun question. Execution-slot
+/// identity and lease fields intentionally have no representation in the App.
+class TaskRunPendingQuestion {
+  final String requestId;
+  final String question;
+  final String reason;
+  final List<String> options;
+  final bool allowMultiple;
+  final int createdAt;
+
+  const TaskRunPendingQuestion({
+    required this.requestId,
+    required this.question,
+    this.reason = '',
+    this.options = const [],
+    this.allowMultiple = false,
+    this.createdAt = 0,
+  });
+
+  static String _boundedText(Object? value, int maxLength) {
+    final text = (value ?? '').toString().trim();
+    return text.length <= maxLength ? text : text.substring(0, maxLength);
+  }
+
+  factory TaskRunPendingQuestion.fromJson(Map<String, dynamic> json) {
+    final options = <String>[];
+    final seen = <String>{};
+    final createdAt = _taskRunInt(json['createdAt']);
+    final rawOptions = json['options'];
+    if (rawOptions is List) {
+      for (final raw in rawOptions) {
+        final option = _boundedText(raw, 512);
+        if (option.isEmpty || !seen.add(option)) continue;
+        options.add(option);
+        if (options.length >= 12) break;
+      }
+    }
+    return TaskRunPendingQuestion(
+      requestId: _boundedText(json['requestId'], 160),
+      question: _boundedText(json['question'], 16 * 1024),
+      reason: _boundedText(json['reason'], 4 * 1024),
+      options: List.unmodifiable(options),
+      allowMultiple: json['allowMultiple'] == true && options.length >= 2,
+      createdAt: createdAt < 0 ? 0 : createdAt,
+    );
+  }
+
+  bool get isValid => requestId.isNotEmpty && question.isNotEmpty;
+}
+
+/// A user-visible durable run. Internal execution slot/native-session fields
+/// are intentionally absent so the App cannot accidentally create a chat jump
+/// for a headless TaskRun.
+class TaskRunSummary {
+  final String runId;
+  final String executionStatus;
+  final String usageStatus;
+  final String cleanupState;
+  final int startedAt;
+  final TaskRunUsage usage;
+  final TaskRunPendingQuestion? pendingQuestion;
+
+  const TaskRunSummary({
+    required this.runId,
+    this.executionStatus = 'unknown',
+    this.usageStatus = 'collecting',
+    this.cleanupState = 'pending',
+    this.startedAt = 0,
+    this.usage = TaskRunUsage.unobservable,
+    this.pendingQuestion,
+  });
+
+  factory TaskRunSummary.fromJson(Map<String, dynamic> json) {
+    final usageJson = json['usage'] is Map
+        ? (json['usage'] as Map).cast<String, dynamic>()
+        : json;
+    final pendingJson = json['pendingQuestion'] is Map
+        ? (json['pendingQuestion'] as Map).cast<String, dynamic>()
+        : null;
+    final parsedPending = pendingJson == null
+        ? null
+        : TaskRunPendingQuestion.fromJson(pendingJson);
+    return TaskRunSummary(
+      runId: (json['runId'] ?? json['id'] ?? '').toString(),
+      executionStatus: (json['executionStatus'] ?? json['state'] ?? 'unknown')
+          .toString(),
+      usageStatus:
+          (json['usageStatus'] ?? usageJson['usageStatus'] ?? 'collecting')
+              .toString(),
+      cleanupState: (json['cleanupState'] ?? 'pending').toString(),
+      startedAt: _taskRunInt(
+        json['startedAt'] ?? json['createdAt'] ?? json['terminalAt'],
+      ),
+      usage: TaskRunUsage.fromJson(usageJson),
+      pendingQuestion: parsedPending?.isValid == true ? parsedPending : null,
+    );
+  }
+}
+
+/// Detail endpoint payload. Run aliases are accepted during rolling upgrades;
+/// clients always sort and cap to the newest five before rendering.
+class TaskBoardDetail {
+  final List<TaskMessage> messages;
+  final List<TaskRunSummary> recentRuns;
+
+  const TaskBoardDetail({this.messages = const [], this.recentRuns = const []});
+
+  factory TaskBoardDetail.fromJson(Map<String, dynamic> json) {
+    final messages = <TaskMessage>[];
+    final rawItems = json['items'];
+    if (rawItems is List) {
+      for (final item in rawItems) {
+        if (item is Map) {
+          messages.add(TaskMessage.fromJson(item.cast<String, dynamic>()));
+        }
+      }
+    }
+    final task = json['task'] is Map
+        ? (json['task'] as Map).cast<String, dynamic>()
+        : const <String, dynamic>{};
+    final candidates = [
+      json['recentRuns'],
+      json['taskRuns'],
+      json['runs'],
+      task['recentRuns'],
+      task['taskRuns'],
+      task['runs'],
+    ];
+    final rawRuns = candidates.whereType<List>().firstOrNull ?? const [];
+    final runs = <TaskRunSummary>[];
+    for (final item in rawRuns) {
+      if (item is Map) {
+        runs.add(TaskRunSummary.fromJson(item.cast<String, dynamic>()));
+      }
+    }
+    runs.sort((a, b) {
+      final byStarted = b.startedAt.compareTo(a.startedAt);
+      return byStarted != 0 ? byStarted : b.runId.compareTo(a.runId);
+    });
+    return TaskBoardDetail(
+      messages: List.unmodifiable(messages),
+      recentRuns: List.unmodifiable(runs.take(5)),
+    );
+  }
 }
 
 /// Backfill (历史归档) progress reported by GET /api/task-board. A run is

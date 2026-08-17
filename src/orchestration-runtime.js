@@ -66,12 +66,14 @@ function createOrchestrationRuntime({
   runChatTurn,
   isBusy = () => false,
   hasPersistedDelivery = async () => false,
+  beforeDeliver = async () => {},
   deliverOutbox = null,
   probe = async () => { throw new Error('poll probe is not configured'); },
   detachedAdapter = null,
   recoverDispatchResult = async () => null,
   replayRecoveredDispatchEffects = async () => {},
   getSessionRecoveryState = () => null,
+  beforeFirstTick = async () => {},
   onSchedulerEvent = () => {},
   now = Date.now,
   setIntervalFn = setInterval,
@@ -94,6 +96,12 @@ function createOrchestrationRuntime({
   }
   if (typeof hasPersistedDelivery !== 'function') {
     throw new TypeError('[orchestration-runtime] hasPersistedDelivery must be a function');
+  }
+  if (typeof beforeDeliver !== 'function') {
+    throw new TypeError('[orchestration-runtime] beforeDeliver must be a function');
+  }
+  if (typeof beforeFirstTick !== 'function') {
+    throw new TypeError('[orchestration-runtime] beforeFirstTick must be a function');
   }
 
   // Production selects the normalized SQLite backend. Keeping the JSON path
@@ -175,7 +183,20 @@ function createOrchestrationRuntime({
       ...(spec.registrationFingerprint
         ? { registrationFingerprint: String(spec.registrationFingerprint).slice(0, 128) }
         : {}),
+      ...(spec.taskId ? { taskId: String(spec.taskId).slice(0, 128) } : {}),
+      ...(spec.taskRunId ? {
+        taskRunId: String(spec.taskRunId).slice(0, 128),
+        leaseEpoch: Number(spec.leaseEpoch),
+      } : {}),
+      ...(spec.originDispatchId
+        ? { originDispatchId: String(spec.originDispatchId).slice(0, 128) }
+        : {}),
     };
+    if (registrationMetadata.taskRunId
+        && (!Number.isSafeInteger(registrationMetadata.leaseEpoch)
+          || registrationMetadata.leaseEpoch < 1)) {
+      throw new TypeError('task-run wait requires a positive leaseEpoch');
+    }
     let metadata;
     if (mode === 'poll') {
       if (!spec.pollCmd && !spec.pollUrl) throw new Error('poll mode needs pollCmd or pollUrl');
@@ -536,6 +557,22 @@ function createOrchestrationRuntime({
     return lineage.taskId || item?.payload?.taskId || item?.payload?.options?.taskId || null;
   }
 
+  function itemTaskRunId(item) {
+    const lineage = itemTurnLineage(item);
+    return lineage.taskRunId
+      || item?.payload?.taskRunId
+      || item?.payload?.options?.taskRunId
+      || null;
+  }
+
+  function itemLeaseEpoch(item) {
+    const lineage = itemTurnLineage(item);
+    const parsed = Number(lineage.leaseEpoch
+      ?? item?.payload?.leaseEpoch
+      ?? item?.payload?.options?.leaseEpoch);
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+  }
+
   function itemOriginDispatchId(item) {
     const lineage = itemTurnLineage(item);
     return lineage.originDispatchId
@@ -570,6 +607,8 @@ function createOrchestrationRuntime({
     item.turnLineage = {
       ...itemTurnLineage(item),
       taskId,
+      taskRunId: matches[0].spec?.taskRunId || null,
+      leaseEpoch: matches[0].spec?.leaseEpoch || null,
       originDispatchId: matches[0].id,
       workKind: 'continuation',
       inheritedBy: 'unique_live_task_match',
@@ -590,6 +629,8 @@ function createOrchestrationRuntime({
       return {
         ...(payload.options || {}),
         taskId: itemTaskId(item) || undefined,
+        taskRunId: itemTaskRunId(item) || undefined,
+        leaseEpoch: itemLeaseEpoch(item) || undefined,
         originDispatchId: itemOriginDispatchId(item) || undefined,
         originContinue: effectiveWorkKind !== 'task',
         deliveryId: item.id,
@@ -609,6 +650,9 @@ function createOrchestrationRuntime({
         deliveryId: item.id,
         clientMsgId: item.id,
         taskId: payload.taskId || undefined,
+        taskRunId: payload.taskRunId || undefined,
+        leaseEpoch: itemLeaseEpoch(item) || undefined,
+        isFirstTurn: !!payload.taskRunId,
         taskStart: payload.taskStart === true,
         taskSource: payload.taskSource || undefined,
         taskText: payload.taskText || undefined,
@@ -618,6 +662,10 @@ function createOrchestrationRuntime({
       originContinue: true,
       deliveryId: item.id,
       clientMsgId: item.id,
+      taskId: itemTaskId(item) || undefined,
+      taskRunId: itemTaskRunId(item) || undefined,
+      leaseEpoch: itemLeaseEpoch(item) || undefined,
+      originDispatchId: itemOriginDispatchId(item) || undefined,
     };
   }
 
@@ -665,11 +713,6 @@ function createOrchestrationRuntime({
     const deliveryId = item.id;
     let schedulerClaimed = false;
     try {
-      if (isBusy(item.sessionId)) {
-        return outbox.defer(item.id, item.leaseToken, 'chat session is busy', {
-          delayMs: 0,
-        });
-      }
       await resolveSessionWorkLineage(item);
       const schedulerClaim = await sessionScheduler.claim(item);
       if (!schedulerClaim.ok) {
@@ -678,6 +721,24 @@ function createOrchestrationRuntime({
         });
       }
       schedulerClaimed = true;
+      const claimedActive = schedulerClaim.schedule?.active || {};
+      if (!itemTaskRunId(item) && claimedActive.taskRunId) {
+        item.turnLineage = {
+          ...itemTurnLineage(item),
+          taskId: itemTaskId(item) || claimedActive.taskId || null,
+          taskRunId: claimedActive.taskRunId,
+          leaseEpoch: claimedActive.leaseEpoch || null,
+          originDispatchId: itemOriginDispatchId(item)
+            || claimedActive.originDispatchId || null,
+        };
+      }
+      if (isBusy(item.sessionId, item)) {
+        await sessionScheduler.releaseClaim(item, 'host_busy_after_claim');
+        schedulerClaimed = false;
+        return outbox.defer(item.id, item.leaseToken, 'chat session is busy', {
+          delayMs: 0,
+        });
+      }
       if (await hasPersistedDelivery(item.sessionId, deliveryId)) {
         const acknowledged = await acknowledgeDelivery(item);
         const recovered = getSessionRecoveryState(item.sessionId) || {};
@@ -689,7 +750,11 @@ function createOrchestrationRuntime({
         sessionId: item.sessionId,
         text: deliveryText(item),
         opts: deliveryOptions(item),
+        taskId: itemTaskId(item),
+        taskRunId: itemTaskRunId(item),
+        leaseEpoch: itemLeaseEpoch(item),
       };
+      await Promise.resolve(beforeDeliver(descriptor));
       const accepted = await Promise.resolve(
         typeof deliverOutbox === 'function'
           ? deliverOutbox(descriptor)
@@ -724,9 +789,10 @@ function createOrchestrationRuntime({
   async function processOutbox() {
     const selectRunnableSessionItem = (items, draft, at) => {
       const item = sessionScheduler.selectSessionItem(items, draft, at);
+      const projected = item && sessionScheduler.projectItemLineage(item, draft);
       // Do not create a durable lease merely to discover the host process is
       // busy and immediately defer it. The next 1s tick will reconsider it.
-      return item && !isBusy(item.sessionId) ? item : null;
+      return item && !isBusy(item.sessionId, projected) ? item : null;
     };
     const claimed = await outbox.claim({
       workerId,
@@ -948,6 +1014,7 @@ function createOrchestrationRuntime({
     // recover() reads only stateForSession — the persisted classify/queue state.
     // It never consulted isBusy/hasPendingWait, so they are not passed.
     await sessionScheduler.recover({ stateForSession: getSessionRecoveryState });
+    await beforeFirstTick({ sessionScheduler, operations, outbox });
     await reconcileDispatchesOnStartup();
     await reconcileDetached();
     await tick();

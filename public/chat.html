@@ -4,21 +4,16 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <meta name="theme-color" content="#0d1117" />
-  <title>MultiCC Chat</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github-dark.min.css" />
+  <title>MultiCC Chat</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github-dark.min.css" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    /* iOS Safari resolves `height:100%` against the large viewport (the one the
-       toolbar covers), which cuts the composer off. Same three-step fallback
-       manage.html uses: old browsers get vh, iOS gets -webkit-fill-available,
-       everything modern gets dvh. */
+    /* iOS Safari height fallback: vh → -webkit-fill-available → dvh. */
     html, body {
       height: 100vh;
       height: -webkit-fill-available;
       height: 100dvh;
       overflow: hidden;
     }
-
     body {
       background: #0d1117;
       color: #c9d1d9;
@@ -26,7 +21,6 @@
       display: flex;
       flex-direction: column;
     }
-
     /* ── Header ── */
     #header {
       flex-shrink: 0;

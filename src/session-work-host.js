@@ -345,6 +345,13 @@ function createSessionWorkHost(deps = {}) {
     const record = deps.getRecord(sessionId);
     const state = deps.getTaskState(record);
     const pendingInput = deps.pendingUserInput(sessionId);
+    const persistedRunId = typeof record?.taskRunLease?.runId === 'string'
+      ? record.taskRunLease.runId.trim() : '';
+    const persistedLeaseEpoch = Number(record?.taskRunLease?.leaseEpoch);
+    const taskRunRecovery = persistedRunId
+      && Number.isSafeInteger(persistedLeaseEpoch) && persistedLeaseEpoch > 0
+      ? { taskRunId: persistedRunId, leaseEpoch: persistedLeaseEpoch }
+      : {};
     const endedAt = Number(state.lastTurnEndedAt || state.endedAt) || null;
     // A successful gateway post-turn is already durable before classify runs.
     // If a restart lands in that narrow P window, project D only when a durable
@@ -361,6 +368,7 @@ function createSessionWorkHost(deps = {}) {
       startedAt: state.startedAt,
       endedAt,
       taskId: deps.getChatSession(sessionId)?._currentTaskId || null,
+      ...taskRunRecovery,
       // Scheduler recovery needs correlation only; question/options remain in
       // the task-state owner and are never duplicated into orchestration state.
       pendingUserInput: pendingInput && pendingInput.resolved !== true

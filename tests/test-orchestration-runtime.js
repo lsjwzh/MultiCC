@@ -6,6 +6,7 @@ const os = require('os');
 const path = require('path');
 const test = require('node:test');
 const { createOrchestrationRuntime } = require('../src/orchestration-runtime');
+const { reconcileTaskRunSlotLeases } = require('../src/task-run-recovery');
 
 function fixture(t, overrides = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-orchestration-runtime-'));
@@ -34,6 +35,8 @@ function fixture(t, overrides = {}) {
     ),
     probe: overrides.probe || (async () => ''),
     getSessionRecoveryState: overrides.getSessionRecoveryState || (() => null),
+    beforeFirstTick: overrides.beforeFirstTick,
+    beforeDeliver: overrides.beforeDeliver,
     setIntervalFn(fn) {
       scheduled = fn;
       return { unref() {} };
@@ -50,6 +53,157 @@ function fixture(t, overrides = {}) {
   });
   return { dir, file, clock, history, injections, logs, runtime, scheduled: () => scheduled };
 }
+
+test('task-run dispatch crosses a fresh-run barrier before native delivery', async t => {
+  const order = [];
+  const { runtime, injections } = fixture(t, {
+    isBusy: (sessionId, item) => {
+      assert.equal(sessionId, 'slot-1');
+      assert.equal(item.payload.taskRunId, 'run-1');
+      assert.equal(item.payload.leaseEpoch, 3);
+      return false;
+    },
+    beforeDeliver: async descriptor => {
+      order.push(`barrier:${descriptor.taskRunId}:${descriptor.leaseEpoch}`);
+    },
+    runChatTurn: async (sessionId, text, opts) => {
+      order.push(`turn:${opts.taskRunId}:${opts.leaseEpoch}`);
+      injections.push({ sessionId, text, opts });
+      return true;
+    },
+  });
+  await runtime.admitDispatch({
+    operationId: 'run-1',
+    ownerSessionId: 'commander',
+    resultSessionId: 'commander',
+    idempotencyKey: 'run-1',
+    spec: {
+      targetId: 'slot-1', chatId: 'slot-1', message: 'execute', oneWay: true,
+      taskId: 'task-1', taskRunId: 'run-1', leaseEpoch: 3,
+      taskStart: true, taskSource: 'task-board', taskText: 'execute',
+    },
+  });
+  await runtime.tick();
+  assert.deepEqual(order, ['barrier:run-1:3', 'turn:run-1:3']);
+  assert.equal(injections[0].opts.isFirstTurn, true);
+  assert.equal(injections[0].opts.taskRunId, 'run-1');
+  assert.equal(injections[0].opts.leaseEpoch, 3);
+  await runtime.stop();
+});
+
+test('startup awaits lease reconciliation after scheduler recovery and before first delivery', async t => {
+  const order = [];
+  const { runtime } = fixture(t, {
+    beforeFirstTick: async ({ sessionScheduler }) => {
+      assert.ok(sessionScheduler);
+      order.push('lease-reconcile:start');
+      await Promise.resolve();
+      order.push('lease-reconcile:done');
+    },
+    runChatTurn: async () => { order.push('delivery'); return true; },
+  });
+  const wait = await runtime.register({ session: 'slot-1', mode: 'callback' });
+  await runtime.resolveCallback(wait.id, wait.token, 'ready');
+
+  await runtime.start();
+  assert.deepEqual(order, ['lease-reconcile:start', 'lease-reconcile:done', 'delivery']);
+  await runtime.stop();
+});
+
+test('startup exposes the durable terminal decision to TaskRun recovery before the first tick', async t => {
+  const first = fixture(t);
+  await first.runtime.admitSessionWork({
+    sessionId: 'slot-1',
+    text: 'execute',
+    idempotencyKey: 'run-1',
+    options: { taskId: 'task-1', taskRunId: 'run-1', leaseEpoch: 3 },
+  });
+  await first.runtime.sessionScheduler.complete('slot-1', {
+    expectedTaskId: 'task-1', classifyState: 'D', reason: 'classified_D',
+  });
+  await first.runtime.dispose();
+
+  const records = new Map([['slot-1', {
+    id: 'slot-1', taskExecutionSlot: true,
+    taskRunLease: { runId: 'run-1', leaseEpoch: 3 },
+  }]]);
+  const durableLease = {
+    slotId: 'slot-1', runId: 'run-1', leaseEpoch: 3,
+    state: 'active', phase: 'ready',
+  };
+  const recovered = [];
+  const taskRunStore = {
+    planSlotLeaseRecovery: () => [{
+      ...durableLease,
+      leaseState: 'active',
+      taskId: 'task-1',
+      action: 'restore_projection',
+      cleanupState: 'blocked',
+    }],
+    getSlotLease: () => ({ ...durableLease }),
+    getRun: () => ({
+      runId: 'run-1', taskId: 'task-1', slotId: 'slot-1', leaseEpoch: 3,
+      executionStatus: 'running', usageStatus: 'collecting', cleanupState: 'blocked',
+    }),
+    releaseSlotLease: () => {},
+    quarantineSlotLease: () => {},
+  };
+  const rebuilt = createOrchestrationRuntime({
+    file: first.file,
+    runChatTurn: async () => true,
+    getSessionRecoveryState: () => ({ classifyState: 'D' }),
+    beforeFirstTick: ({ sessionScheduler }) => reconcileTaskRunSlotLeases({
+      store: taskRunStore,
+      records,
+      persistRecords: () => true,
+      getSchedulerStatus: slotId => sessionScheduler.status(slotId),
+      recoverTerminal: async event => { recovered.push(event); return { ok: true }; },
+    }),
+    setIntervalFn: () => ({ unref() {} }),
+    clearIntervalFn: () => {},
+  });
+  await rebuilt.start();
+  assert.equal(recovered.length, 1);
+  assert.equal(recovered[0].taskRunId, 'run-1');
+  assert.equal(recovered[0].leaseEpoch, 3);
+  assert.equal(recovered[0].classifyState, 'D');
+  assert.equal(recovered[0].recovered, true);
+  await rebuilt.dispose();
+});
+
+test('a background callback resumes the retained TaskRun instead of starting anonymous work', async t => {
+  const { runtime, injections } = fixture(t, {
+    isBusy: (_sessionId, item) => item?.payload?.type === 'wait.result'
+      && item?.turnLineage?.taskRunId !== 'run-1',
+  });
+  await runtime.admitSessionWork({
+    sessionId: 'slot-1',
+    text: 'start',
+    idempotencyKey: 'run-1',
+    options: { taskId: 'task-1', taskRunId: 'run-1', leaseEpoch: 5 },
+  });
+  await runtime.tick();
+  await runtime.sessionScheduler.turnEnded('slot-1');
+  await runtime.sessionScheduler.complete('slot-1', {
+    expectedTaskId: 'task-1', classifyState: 'B',
+  });
+  const wait = await runtime.register({
+    id: 'run-1-wait',
+    session: 'slot-1',
+    mode: 'callback',
+    taskId: 'task-1',
+    taskRunId: 'run-1',
+    leaseEpoch: 5,
+  });
+  await runtime.resolveCallback(wait.id, wait.token, 'background done');
+  await runtime.tick();
+  assert.equal(injections.length, 2);
+  assert.equal(injections[1].opts.taskId, 'task-1');
+  assert.equal(injections[1].opts.taskRunId, 'run-1');
+  assert.equal(injections[1].opts.leaseEpoch, 5);
+  assert.equal(injections[1].opts.isFirstTurn, undefined);
+  await runtime.stop();
+});
 
 test('callback resolution is durable, private and payload-idempotent', async t => {
   const { file, runtime, injections } = fixture(t);

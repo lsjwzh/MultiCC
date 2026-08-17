@@ -26,6 +26,10 @@ const BASE = [
     cli: 'codex', kind: 'chat', ephemeral: true, gatewayFor: 'sib-b',
   },
   { id: 'other-dir', dirId: 'd2', type: 'chat', label: 'Elsewhere' },
+  {
+    id: 'task-slot', dirId: 'd1', type: 'worker', kind: 'chat',
+    label: 'Internal Task Slot', taskExecutionSlot: true,
+  },
   { id: 'aux', dirId: 'd1', type: 'aux' },
   { id: 'gw', dirId: 'd1', type: 'gateway' },
 ];
@@ -43,6 +47,7 @@ test('excludes aux/gateway and other-directory sessions', () => {
   assert.ok(!ids.includes('gw'));
   assert.ok(!ids.includes('other-dir'));
   assert.ok(!ids.includes('sib-b-gw-chat'), 'terminal execution gateways are not a second worker choice');
+  assert.ok(!ids.includes('task-slot'), 'headless TaskRun slots are never ordinary dispatch targets');
 });
 
 test('maps label/cli/kind with defaults and derives active from the chat session', () => {
@@ -81,6 +86,7 @@ test('caps the target list at 30 peers', () => {
 test('dispatchTargetHintFor renders the target list or a no-target message', () => {
   const t = makeFactory(BASE, {});
   assert.match(t.dispatchTargetHintFor('me'), /可用目标 sessions: \[/);
+  assert.doesNotMatch(t.dispatchTargetHintFor('me'), /task-slot|Internal Task Slot/);
   const alone = makeFactory([{ id: 'solo', dirId: 'd9', type: 'chat' }], {});
   assert.equal(alone.dispatchTargetHintFor('solo'), '当前同目录没有可分发的目标 session');
 });

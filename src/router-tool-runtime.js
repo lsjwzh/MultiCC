@@ -222,6 +222,8 @@ function createRouterToolRuntime({
     originDispatchId = null,
     userText = '',
     taskId = null,
+    taskRunId = null,
+    leaseEpoch = null,
     taskStart = false,
     taskSource = null,
     dynamic = false,
@@ -230,6 +232,14 @@ function createRouterToolRuntime({
     const caller = records.get(sessionId);
     if (!caller) throw new RouterToolError('session_not_found', 'caller session not found', 404);
     const token = cryptoImpl.randomBytes(32).toString('base64url');
+    const normalizedTaskRunId = taskRunId ? cleanId(taskRunId, 'taskRunId') : null;
+    const normalizedLeaseEpoch = leaseEpoch == null ? null : Number(leaseEpoch);
+    if ((normalizedTaskRunId && !taskId)
+        || (normalizedLeaseEpoch != null
+          && (!normalizedTaskRunId || !Number.isSafeInteger(normalizedLeaseEpoch)
+            || normalizedLeaseEpoch < 1))) {
+      throw new RouterToolError('invalid_context', 'task run context is invalid', 400);
+    }
     capabilities.set(token, Object.freeze({
       sessionId: String(sessionId),
       turnId: turnId ? cleanId(turnId, 'turnId') : null,
@@ -237,6 +247,8 @@ function createRouterToolRuntime({
       originDispatchId: originDispatchId ? cleanId(originDispatchId, 'originDispatchId') : null,
       userText: String(userText || '').slice(0, MAX_MESSAGE_LENGTH),
       taskId: taskId ? cleanId(taskId, 'taskId') : null,
+      taskRunId: normalizedTaskRunId,
+      leaseEpoch: normalizedLeaseEpoch,
       taskStart: taskStart === true,
       taskSource: taskSource ? cleanId(taskSource, 'taskSource') : null,
       dynamic: dynamic === true,
@@ -298,6 +310,13 @@ function createRouterToolRuntime({
     }
     if (target.type === 'aux' || target.type === 'gateway' || target.type === 'commander') {
       throw new RouterToolError('invalid_target', 'target must be a non-system worker session');
+    }
+    if (target.taskExecutionSlot === true) {
+      throw new RouterToolError(
+        'invalid_target',
+        'internal task execution slots are not addressable router targets',
+        409,
+      );
     }
     if (isTerminalGateway(records, target)) {
       const terminal = terminalForRecord(records, target);
@@ -1093,6 +1112,11 @@ function createRouterToolRuntime({
         mode: spec.mode,
         reason: spec.reason,
         source: 'router-mcp',
+        ...(context.taskId ? { taskId: context.taskId } : {}),
+        ...(context.taskRunId
+          ? { taskRunId: context.taskRunId, leaseEpoch: context.leaseEpoch }
+          : {}),
+        ...(context.originDispatchId ? { originDispatchId: context.originDispatchId } : {}),
         registrationFingerprint: spec.registrationFingerprint,
         ...(spec.mode === 'callback'
           ? { timeoutSec: spec.timeoutSec }

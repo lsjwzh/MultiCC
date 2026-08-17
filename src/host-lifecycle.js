@@ -57,6 +57,10 @@ function createHostLifecycle(deps) {
     stopOutputCapture,
     routerToolHost,
     sessionPersistence,
+    // Optional durable TaskRun ledger. It is closed last, after every producer
+    // and the legacy session persistence runtime have finished their teardown.
+    taskRunHost,
+    taskRunStore,
     qwenAudioSupervisor,
     log = console,
   } = deps;
@@ -274,7 +278,24 @@ function createHostLifecycle(deps) {
       ? orchestrationRuntime.dispose()
       : orchestrationRuntime.stop();
   });
+  if (taskRunHost && typeof taskRunHost.waitForFinalizers === 'function') {
+    shutdownCoordinator.onClose(() => taskRunHost.waitForFinalizers());
+  }
   shutdownCoordinator.onClose(() => sessionPersistence.stop());
+  if (taskRunStore && typeof taskRunStore.close === 'function') {
+    let closeStarted = false;
+    shutdownCoordinator.onClose(async () => {
+      if (closeStarted) return;
+      closeStarted = true;
+      try {
+        await taskRunStore.close();
+      } catch (error) {
+        try {
+          log.error(`[multicc] task-run store close error: ${error && error.message}`);
+        } catch (_) {}
+      }
+    });
+  }
 
   function gracefulShutdown(sig) {
     if (getShuttingDown()) return;

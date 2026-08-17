@@ -89,6 +89,21 @@ function taskIdForItem(item) {
   return item?.turnLineage?.taskId || item?.payload?.taskId || null;
 }
 
+function taskRunIdForItem(item) {
+  return item?.turnLineage?.taskRunId
+    || item?.payload?.taskRunId
+    || item?.payload?.options?.taskRunId
+    || null;
+}
+
+function leaseEpochForItem(item) {
+  const value = item?.turnLineage?.leaseEpoch
+    ?? item?.payload?.leaseEpoch
+    ?? item?.payload?.options?.leaseEpoch;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
 function originDispatchIdForItem(item) {
   return item?.turnLineage?.originDispatchId
     || item?.payload?.originDispatchId
@@ -205,6 +220,8 @@ function publicSchedule(schedule, queue = []) {
     queued: visibleQueue.map((item, index) => ({
       entryId: item.id,
       taskId: taskIdForItem(item),
+      taskRunId: taskRunIdForItem(item),
+      leaseEpoch: leaseEpochForItem(item),
       source: item.payload?.source || item.source?.type || 'legacy',
       sequence: item.sequence,
       state: item.state,
@@ -329,6 +346,38 @@ function createSessionWorkScheduler({
     return !!activeDeliveryId && item.id === activeDeliveryId;
   }
 
+  function projectControlLineage(schedule, item) {
+    if (!item || !isControlItem(item)) return item;
+    const incomingTaskId = taskIdForItem(item);
+    const incomingRunId = taskRunIdForItem(item);
+    const candidate = schedule?.active?.taskRunId
+      ? schedule.active
+      : ['W', 'B'].includes(classifyStateForSchedule(schedule))
+        ? schedule?.lastDecision
+        : null;
+    if (!candidate?.taskRunId
+        || (incomingTaskId && candidate.taskId && incomingTaskId !== candidate.taskId)
+        || (incomingRunId && incomingRunId !== candidate.taskRunId)) return item;
+    return {
+      ...item,
+      turnLineage: {
+      ...(item.turnLineage || {}),
+      taskId: incomingTaskId || candidate.taskId || null,
+      taskRunId: incomingRunId || candidate.taskRunId,
+      leaseEpoch: leaseEpochForItem(item) || candidate.leaseEpoch || null,
+      originDispatchId: originDispatchIdForItem(item)
+        || candidate.originDispatchId || null,
+      workKind: item.turnLineage?.workKind || workKind(item),
+      inheritedBy: item.turnLineage?.inheritedBy || 'retained_task_run_boundary',
+      },
+    };
+  }
+
+  function projectItemLineage(item, draft) {
+    const schedule = draft?.sessionSchedules?.[item?.sessionId];
+    return projectControlLineage(schedule, item);
+  }
+
   // Classify is the sole semantic gate. Only P stages typed chat input. A direct
   // continuation in every non-P state is immediately selectable; queued work
   // accumulated during P still advances only after classify D completes active.
@@ -366,8 +415,9 @@ function createSessionWorkScheduler({
     const replay = ordered.find(item => isActiveReplay(schedule, item));
     if (replay) return replay;
     const classifyState = canonicalClassifyState(schedule.sessionId, schedule);
-    return ordered.find(item => relatedControl(schedule, item)
+    const control = ordered.find(item => relatedControl(schedule, item)
       && controlAllowedByClassify(item, classifyState)) || null;
+    return control;
   }
 
   function stableEntryId(sessionId, key, payload) {
@@ -410,6 +460,9 @@ function createSessionWorkScheduler({
       options: normalizedOptions,
       source: source || options.taskSource || (options.originTrigger ? 'trigger' : 'direct'),
       taskId: options.taskId || null,
+      taskRunId: options.taskRunId || null,
+      leaseEpoch: Number.isSafeInteger(Number(options.leaseEpoch))
+        && Number(options.leaseEpoch) > 0 ? Number(options.leaseEpoch) : null,
       // Omit the empty compatibility field so a pre-upgrade admission replay
       // with the same idempotency key keeps the exact historical payload hash.
       originDispatchId: options.originDispatchId || undefined,
@@ -450,14 +503,32 @@ function createSessionWorkScheduler({
             ? null
             : schedule.active.entryId;
           if (!payload.taskId && schedule.active.taskId) payload.taskId = schedule.active.taskId;
+          if (!payload.taskRunId && schedule.active.taskRunId) {
+            payload.taskRunId = schedule.active.taskRunId;
+            payload.leaseEpoch = schedule.active.leaseEpoch || null;
+          }
           if (!payload.originDispatchId && schedule.active.originDispatchId) {
             payload.originDispatchId = schedule.active.originDispatchId;
           }
-        } else if (correlatedAnswer) {
-          // Repair correlation metadata only. Classify remains the sole owner
-          // of business state; this input simply starts the next native turn.
-          schedule.awaitingRequestId = requestId;
-          if (!payload.taskId && pendingInput?.taskId) payload.taskId = pendingInput.taskId;
+        } else {
+          if (correlatedAnswer) {
+            // Repair correlation metadata only. Classify remains the sole owner
+            // of business state; this input simply starts the next native turn.
+            schedule.awaitingRequestId = requestId;
+            if (!payload.taskId && pendingInput?.taskId) payload.taskId = pendingInput.taskId;
+          }
+          const previous = schedule.lastDecision || {};
+          const retainedRun = ['W', 'B'].includes(classifyStateForSchedule(schedule))
+            && previous.taskRunId
+            && (!payload.taskId || !previous.taskId || payload.taskId === previous.taskId);
+          if (retainedRun) {
+            if (!payload.taskId) payload.taskId = previous.taskId || null;
+            payload.taskRunId = previous.taskRunId;
+            payload.leaseEpoch = previous.leaseEpoch || null;
+            if (!payload.originDispatchId && previous.originDispatchId) {
+              payload.originDispatchId = previous.originDispatchId;
+            }
+          }
         }
       }
       const admitted = admitOutboxItem(draft, {
@@ -509,6 +580,8 @@ function createSessionWorkScheduler({
         sessionId: cleanSessionId,
         entryId: result.entry.id,
         taskId: result.entry.payload?.taskId || null,
+        taskRunId: result.entry.payload?.taskRunId || null,
+        leaseEpoch: leaseEpochForItem(result.entry),
         source: result.entry.payload?.source || 'direct',
         workKind: inferredKind,
         duplicate: result.duplicate,
@@ -530,11 +603,24 @@ function createSessionWorkScheduler({
       const at = Number(now());
       const schedule = ensure(draft, item.sessionId, at);
       if (!schedule.active || schedule.state === 'idle') {
+        const previous = schedule.lastDecision || {};
+        const incomingTaskId = taskIdForItem(item);
+        const incomingRunId = taskRunIdForItem(item);
+        const retainedRun = isControlItem(item)
+          && ['W', 'B'].includes(classifyStateForSchedule(schedule))
+          && previous.taskRunId
+          && (!incomingTaskId || !previous.taskId || incomingTaskId === previous.taskId)
+          && (!incomingRunId || incomingRunId === previous.taskRunId)
+          ? previous
+          : null;
         schedule.active = {
           entryId: item.id,
           deliveryId: item.id,
-          taskId: taskIdForItem(item),
-          originDispatchId: originDispatchIdForItem(item),
+          taskId: incomingTaskId || retainedRun?.taskId || null,
+          taskRunId: incomingRunId || retainedRun?.taskRunId || null,
+          leaseEpoch: leaseEpochForItem(item) || retainedRun?.leaseEpoch || null,
+          originDispatchId: originDispatchIdForItem(item)
+            || retainedRun?.originDispatchId || null,
           source: item.payload?.source || item.source?.type || 'legacy',
           workKind: workKind(item),
           admittedAt: item.createdAt,
@@ -553,6 +639,10 @@ function createSessionWorkScheduler({
         if (!schedule.active.taskId && taskIdForItem(item)) {
           schedule.active.taskId = taskIdForItem(item);
         }
+        if (!schedule.active.taskRunId && taskRunIdForItem(item)) {
+          schedule.active.taskRunId = taskRunIdForItem(item);
+          schedule.active.leaseEpoch = leaseEpochForItem(item);
+        }
         if (!schedule.active.originDispatchId && originDispatchIdForItem(item)) {
           schedule.active.originDispatchId = originDispatchIdForItem(item);
         }
@@ -568,6 +658,8 @@ function createSessionWorkScheduler({
       sessionId: item.sessionId,
       entryId: item.id,
       taskId: result.schedule.active?.taskId || null,
+      taskRunId: result.schedule.active?.taskRunId || null,
+      leaseEpoch: result.schedule.active?.leaseEpoch || null,
       queued: result.schedule.queued.length,
       queuedItems: result.schedule.queued,
       schedule: result.schedule,
@@ -596,6 +688,8 @@ function createSessionWorkScheduler({
       entryId: result.schedule.active?.entryId,
       deliveryId: item.id,
       taskId: result.schedule.active?.taskId || null,
+      taskRunId: result.schedule.active?.taskRunId || null,
+      leaseEpoch: result.schedule.active?.leaseEpoch || null,
       queued: result.schedule.queued.length,
       queuedItems: result.schedule.queued,
       schedule: result.schedule,
@@ -633,6 +727,8 @@ function createSessionWorkScheduler({
       sessionId: item.sessionId,
       entryId: item.id,
       taskId: result.schedule.active?.taskId || item.payload?.taskId || null,
+      taskRunId: result.schedule.active?.taskRunId || taskRunIdForItem(item),
+      leaseEpoch: result.schedule.active?.leaseEpoch || leaseEpochForItem(item),
       reason,
       queued: result.schedule.queued.length,
       queuedItems: result.schedule.queued,
@@ -659,6 +755,8 @@ function createSessionWorkScheduler({
       sessionId,
       entryId: result.schedule.active?.entryId || null,
       taskId: result.schedule.active?.taskId || null,
+      taskRunId: result.schedule.active?.taskRunId || null,
+      leaseEpoch: result.schedule.active?.leaseEpoch || null,
       schedulerState: 'assessing',
       queued: result.schedule.queued.length,
       queuedItems: result.schedule.queued,
@@ -692,6 +790,8 @@ function createSessionWorkScheduler({
       sessionId,
       entryId: result.schedule.active?.entryId,
       taskId: result.schedule.active?.taskId || null,
+      taskRunId: result.schedule.active?.taskRunId || null,
+      leaseEpoch: result.schedule.active?.leaseEpoch || null,
       freezeReason: result.schedule.freezeReason,
       queued: result.schedule.queued.length,
       queuedItems: result.schedule.queued,
@@ -740,6 +840,8 @@ function createSessionWorkScheduler({
         reason: completed.supersededByEntryId ? 'superseded_by_immediate_insert' : reason,
         entryId: completed.entryId,
         taskId: completed.taskId || null,
+        taskRunId: completed.taskRunId || null,
+        leaseEpoch: completed.leaseEpoch || null,
         originDispatchId: completed.originDispatchId || null,
         supersededByEntryId: completed.supersededByEntryId || null,
         at,
@@ -760,6 +862,8 @@ function createSessionWorkScheduler({
       sessionId,
       entryId: result.completed.entryId,
       taskId: result.completed.taskId || null,
+      taskRunId: result.completed.taskRunId || null,
+      leaseEpoch: result.completed.leaseEpoch || null,
       classifyState: result.schedule.classifyState || null,
       turnOutcome: turnOutcomeForClassify(result.schedule.classifyState),
       reason,
@@ -813,6 +917,13 @@ function createSessionWorkScheduler({
         return { ok: false, code: 'active_task_not_retryable' };
       }
       const lineage = current.active || current.lastDecision || {};
+      // E is terminal for a headless TaskRun: its usage/transcript may already
+      // be sealed and its slot scrubbed.  Retrying that physical session would
+      // resume a deleted native context.  Task Board retry must admit a new
+      // TaskRun (new lease/fresh context) instead.
+      if (lineage.taskRunId) {
+        return { ok: false, code: 'task_run_retry_requires_new_run' };
+      }
       return admit({
         sessionId,
         text: String(text || '').trim() || '请继续刚才未完成的任务。',
@@ -1126,6 +1237,8 @@ function createSessionWorkScheduler({
               entryId: `legacy-active:${sessionId}`,
               deliveryId: null,
               taskId: recoveredState.taskId || null,
+              taskRunId: recoveredState.taskRunId || null,
+              leaseEpoch: leaseEpochForItem({ payload: recoveredState }),
               originDispatchId: recoveredState.originDispatchId || null,
               source: 'legacy',
               workKind: 'task',
@@ -1202,6 +1315,8 @@ function createSessionWorkScheduler({
               ? 'superseded_by_immediate_insert' : 'recovered-classify-D',
             entryId: completed.entryId,
             taskId: completed.taskId || null,
+            taskRunId: completed.taskRunId || null,
+            leaseEpoch: completed.leaseEpoch || null,
             originDispatchId: completed.originDispatchId || null,
             supersededByEntryId: completed.supersededByEntryId || null,
             at,
@@ -1212,6 +1327,8 @@ function createSessionWorkScheduler({
             sessionId,
             entryId: completed.entryId,
             taskId: completed.taskId || null,
+            taskRunId: completed.taskRunId || null,
+            leaseEpoch: completed.leaseEpoch || null,
             classifyState: 'D',
             turnOutcome: 'succeeded',
             queued: queueForDraft(draft, sessionId).length,
@@ -1248,6 +1365,8 @@ function createSessionWorkScheduler({
       sessionId: event.sessionId,
       entryId: event.entryId || null,
       taskId: event.taskId || null,
+      taskRunId: event.taskRunId || null,
+      leaseEpoch: event.leaseEpoch || null,
       queued: event.queued == null ? null : event.queued,
       queuedItems: event.queuedItems || [],
       freezeReason: event.type === 'frozen' ? event.reason : null,
@@ -1277,6 +1396,7 @@ function createSessionWorkScheduler({
     recover,
     settlePersistedDelivery,
     selectSessionItem,
+    projectItemLineage,
     isControlItem,
   });
 }

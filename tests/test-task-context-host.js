@@ -6,13 +6,14 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createTaskContextHost } = require('../src/task-context-host');
 
-function fixture() {
+function fixture(overrides = {}) {
   const states = new Map([['worker', { clients: new Set(['client']), _currentTaskId: null }]]);
   const messages = [];
   const events = [];
   const projected = [];
   const deliveries = new Set();
   const runTurns = [];
+  const taskRunMessages = [];
   const records = new Map([
     ['worker', { id: 'worker', kind: 'chat', type: 'worker' }],
     ['commander', { id: 'commander', kind: 'chat', type: 'commander' }],
@@ -43,9 +44,61 @@ function fixture() {
       runTurns.push({ sessionId, text, options });
       return true;
     },
+    recordTaskRunMessage: (sessionId, message) => taskRunMessages.push({ sessionId, message: { ...message } }),
+    ...overrides,
   });
-  return { host, states, messages, events, projected, runTurns, records };
+  return { host, states, messages, events, projected, runTurns, records, taskRunMessages };
 }
+
+test('durably appended task-run messages are copied into the run-owned transcript', () => {
+  const { host, states, taskRunMessages } = fixture();
+  host.beginTurn(states.get('worker'), {
+    id: 'task-1', runId: 'run-1', leaseEpoch: 2,
+    start: true, source: 'task-board', text: 'execute',
+  });
+  host.appendMessage('worker', { id: 'assistant-1', role: 'assistant', content: 'done', ts: 10 });
+  assert.equal(taskRunMessages.length, 1);
+  assert.equal(taskRunMessages[0].message.taskRunId, 'run-1');
+  assert.equal(taskRunMessages[0].message.leaseEpoch, 2);
+});
+
+test('task-run ledger is committed before the disposable slot history', () => {
+  const order = [];
+  const { host, states, messages } = fixture({
+    append: (sessionId, message) => {
+      order.push('chat');
+      messages.push({ sessionId, ...message });
+      return true;
+    },
+    recordTaskRunMessage: () => {
+      order.push('ledger');
+      return true;
+    },
+  });
+  host.beginTurn(states.get('worker'), {
+    id: 'task-1', runId: 'run-1', leaseEpoch: 2,
+    start: true, source: 'task-board', text: 'execute',
+  });
+  assert.equal(host.appendMessage('worker', {
+    id: 'assistant-1', role: 'assistant', content: 'done', ts: 10,
+  }), true);
+  assert.deepEqual(order, ['ledger', 'chat']);
+  assert.equal(messages.length, 1);
+});
+
+test('task-run ledger failure blocks the disposable slot history write', () => {
+  const { host, states, messages } = fixture({
+    recordTaskRunMessage: () => false,
+  });
+  host.beginTurn(states.get('worker'), {
+    id: 'task-1', runId: 'run-1', leaseEpoch: 2,
+    start: true, source: 'task-board', text: 'execute',
+  });
+  assert.equal(host.appendMessage('worker', {
+    id: 'assistant-1', role: 'assistant', content: 'done', ts: 10,
+  }), false);
+  assert.equal(messages.length, 0);
+});
 
 test('task boundary and inherited events stay on the current task until a new id arrives', () => {
   const { host, states, messages, events } = fixture();

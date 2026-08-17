@@ -177,6 +177,8 @@ function createOperationService({
             taskStart: operation.spec.taskStart === true,
             taskSource: operation.spec.taskSource || null,
             taskText: operation.spec.taskText || null,
+            taskRunId: operation.spec.taskRunId || null,
+            leaseEpoch: operation.spec.leaseEpoch || null,
           },
           source: { type: 'operation', kind: 'dispatch', operationId: operation.id },
           now: Number(now()),
@@ -327,6 +329,9 @@ function createOperationService({
           operationId: operation.id,
           targetId,
           gateway: operation.spec.gateway === true,
+          taskId: operation.spec.taskId || null,
+          taskRunId: operation.spec.taskRunId || null,
+          leaseEpoch: operation.spec.leaseEpoch || null,
           deliveryText: text,
           result,
         },
@@ -447,6 +452,76 @@ function createOperationService({
     });
   }
 
+  // TaskRun cleanup may declare an unbound run terminal only when its durable
+  // dispatch is still pending. Cancel the operation and request outbox in one
+  // store mutation so a concurrent worker either owns the lease already (and
+  // this fails closed) or can never start the native process afterwards.
+  async function cancelUndeliveredDispatch(id, { taskRunId = '', reason = '' } = {}) {
+    return store.mutate(draft => {
+      const operation = draft.operations[id];
+      if (!operation || operation.kind !== 'dispatch') return { ok: false, code: 'not_found' };
+      const expectedRunId = String(taskRunId || '').trim();
+      if (!expectedRunId || operation.spec?.taskRunId !== expectedRunId) {
+        return { ok: false, code: 'task_run_mismatch' };
+      }
+      const item = operation.requestOutboxId
+        ? draft.outbox[operation.requestOutboxId]
+        : null;
+      if (operation.status === 'cancelled'
+          && item?.state === 'cancelled'
+          && operation.result?.disposition === 'never_delivered') {
+        return {
+          ok: true, idempotent: true, neverDelivered: true,
+          status: operation.status, operation: publicOperation(operation),
+        };
+      }
+      if (TERMINAL_OPERATION_STATES.has(operation.status)) {
+        return { ok: false, code: 'dispatch_already_terminal' };
+      }
+      if (!item) return { ok: false, code: 'dispatch_request_missing' };
+      if (item.state === 'leased') {
+        return { ok: false, code: 'dispatch_delivery_in_progress' };
+      }
+      if (item.state !== 'pending') {
+        return { ok: false, code: item.state === 'delivered'
+          ? 'dispatch_already_delivered' : 'dispatch_not_cancellable' };
+      }
+
+      const at = Number(now());
+      const cleanReason = String(reason || 'task run cancelled before delivery').slice(0, 500);
+      item.state = 'cancelled';
+      item.cancelledAt = at;
+      item.updatedAt = at;
+      item.lastError = cleanReason;
+      if (Object.prototype.hasOwnProperty.call(item.payload || {}, 'message')) {
+        delete item.payload.message;
+        delete item.payload.taskText;
+        item.payload.messageRef = { taskRunId: expectedRunId };
+      }
+      const schedule = draft.sessionSchedules?.[item.sessionId];
+      if (schedule?.priorityEntryId === item.id) schedule.priorityEntryId = null;
+
+      operation.status = 'cancelled';
+      operation.cancelledAt = at;
+      operation.completedAt = at;
+      operation.updatedAt = at;
+      operation.lastError = cleanReason;
+      if (operation.spec && Object.prototype.hasOwnProperty.call(operation.spec, 'message')) {
+        delete operation.spec.message;
+        delete operation.spec.taskText;
+        operation.spec.messageRef = { taskRunId: expectedRunId };
+      }
+      operation.result = normalizeJson({
+        status: 'cancelled', reason: cleanReason, disposition: 'never_delivered',
+      });
+      operation.resultHash = hashPayload(operation.result, cryptoImpl);
+      return {
+        ok: true, idempotent: false, neverDelivered: true,
+        status: operation.status, operation: publicOperation(operation),
+      };
+    });
+  }
+
   async function get(id) {
     return store.read(draft => publicOperation(draft.operations[id]));
   }
@@ -477,6 +552,7 @@ function createOperationService({
     completeDetached,
     completeDispatch,
     cancelDispatch,
+    cancelUndeliveredDispatch,
     observeTask,
     interruptActiveTasks,
     get,

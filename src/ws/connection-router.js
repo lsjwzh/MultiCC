@@ -1,6 +1,11 @@
 'use strict';
 
 const { installWsBackpressure } = require('../ws-backpressure');
+const { isInternalExecutionSlot } = require('../session/public-session-access');
+
+const SESSIONLESS_WS_PATHS = new Set([
+  '/ws/voice', '/ws/tts', '/ws/workspace', '/ws/meta', '/ws/aux',
+]);
 
 function mountWsConnectionRouter(wss, deps) {
   const {
@@ -87,6 +92,20 @@ function mountWsConnectionRouter(wss, deps) {
         ws.close(4003, 'Forbidden');
         return;
       }
+    }
+
+    const addressedSessionId = urlObj.pathname === '/ws/chat'
+      ? urlObj.searchParams.get('session')
+      : SESSIONLESS_WS_PATHS.has(urlObj.pathname) ? null : urlObj.searchParams.get('id');
+    if (addressedSessionId
+        && isInternalExecutionSlot(persistedSessions.get(addressedSessionId))) {
+      sendWs(ws, {
+        type: 'error',
+        error: 'Session does not exist.',
+        data: 'Session does not exist.\r\n',
+      });
+      ws.close();
+      return;
     }
 
     if (urlObj.pathname === '/ws/chat') {

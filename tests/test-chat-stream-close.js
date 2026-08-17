@@ -67,7 +67,7 @@ const running = pid => { try { process.kill(pid, 0); return true; } catch (_) { 
   const deafPid = stream.status('close-inflight').pid;
   assert.ok(deafPid, 'in-flight turn has a live pid');
 
-  stream.close('close-inflight');
+  const closeJoined = stream.closeAndWait('close-inflight', { timeoutMs: 2500 });
   await Promise.race([inflight, sleep(2000)]);
   assert.strictEqual(settled, 'rejected',
     'close() must settle the in-flight turn (it rejects; nothing else ever will)');
@@ -77,7 +77,8 @@ const running = pid => { try { process.kill(pid, 0); return true; } catch (_) { 
   // close() asked politely and then let go of the handle, so the escalation has
   // to be armed inside close() or the process leaks.
   assert.strictEqual(running(deafPid), true, 'still alive immediately after SIGTERM (it ignores TERM)');
-  await sleep(2200); // past CLOSE_KILL_GRACE_MS (1.5s) plus scheduling slack
+  const joined = await closeJoined;
+  assert.strictEqual(joined.hadProcess, true, 'closeAndWait joins the captured native process');
   assert.strictEqual(running(deafPid), false,
     'close() must escalate to SIGKILL — a TERM-deaf CLI would otherwise outlive teardown');
 

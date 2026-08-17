@@ -13,6 +13,9 @@ const os = require('os');
 const path = require('path');
 const express = require('express');
 const { createPaths } = require('./paths');
+const { isArtifactId } = require('./artifact-reference');
+
+const DEFAULT_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
 
 const ARTIFACTS_DIR = createPaths({ dataDir: process.env.MULTICC_DATA_DIR }).artifactsDir;
 // Older globally-installed copies of the artifact skill may still write here.
@@ -61,30 +64,62 @@ function mount(app) {
   app.use('/artifacts', headers, ...servedRoots().map(root => express.static(root, options)));
 }
 
-// Delete artifact dirs older than maxAgeMs (by mtime). Cheap; safe to call often.
-function cleanup(maxAgeMs = 7 * 24 * 3600 * 1000) {
-  let removed = 0;
+function normalizePinnedIds(values) {
+  const result = new Set();
+  if (!values || typeof values === 'string' || typeof values[Symbol.iterator] !== 'function') return result;
   try {
-    const now = Date.now();
-    for (const name of fs.readdirSync(ARTIFACTS_DIR)) {
-      const p = path.join(ARTIFACTS_DIR, name);
-      try {
-        if (now - fs.statSync(p).mtimeMs > maxAgeMs) {
-          fs.rmSync(p, { recursive: true, force: true });
-          removed++;
-        }
-      } catch (_) {}
-    }
-  } catch (_) {}
-  if (removed) console.log(`[multicc/artifacts] cleaned up ${removed} expired artifact(s)`);
-  return removed;
+    for (const value of values) if (isArtifactId(value)) result.add(value);
+  } catch (_) { /* invalid iterables pin nothing */ }
+  return result;
 }
+
+// Dependency injection keeps cleanup testable without ever pointing the
+// production singleton at a caller-controlled directory.
+function createCleanup({ artifactsDir, fsImpl = fs, now = Date.now, log = console.log } = {}) {
+  const root = path.resolve(String(artifactsDir || ''));
+  if (!path.isAbsolute(String(artifactsDir || '')) || root === path.parse(root).root) {
+    throw new TypeError('artifact cleanup requires a bounded absolute directory');
+  }
+  if (typeof now !== 'function' || typeof log !== 'function') {
+    throw new TypeError('artifact cleanup clock and logger must be functions');
+  }
+  return function cleanup(maxAgeMs = DEFAULT_MAX_AGE_MS, pinnedArtifactIds = []) {
+    const age = maxAgeMs == null ? DEFAULT_MAX_AGE_MS : Number(maxAgeMs);
+    if (!Number.isFinite(age) || age < 0) throw new TypeError('artifact max age must be non-negative');
+    const pinned = normalizePinnedIds(pinnedArtifactIds);
+    let removed = 0;
+    try {
+      const rootStat = fsImpl.lstatSync(root);
+      if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) return 0;
+      const currentTime = Number(now());
+      for (const name of fsImpl.readdirSync(root)) {
+        if (pinned.has(name)) continue;
+        const candidate = path.join(root, name);
+        if (path.dirname(candidate) !== root) continue;
+        try {
+          if (currentTime - fsImpl.lstatSync(candidate).mtimeMs > age) {
+            const currentRoot = fsImpl.lstatSync(root);
+            if (currentRoot.isSymbolicLink() || !currentRoot.isDirectory()) return removed;
+            fsImpl.rmSync(candidate, { recursive: true, force: true });
+            removed += 1;
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
+    if (removed) log(`[multicc/artifacts] cleaned up ${removed} expired artifact(s)`);
+    return removed;
+  };
+}
+
+// Delete unpinned artifact dirs older than maxAgeMs (by mtime).
+const cleanup = createCleanup({ artifactsDir: ARTIFACTS_DIR });
 
 module.exports = {
   ARTIFACTS_DIR,
   ARTIFACT_PATH_RE,
   LEGACY_ARTIFACTS_DIR,
   cleanup,
+  createCleanup,
   ensureDir,
   mount,
   servedRoots,

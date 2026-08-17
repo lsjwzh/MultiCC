@@ -16,6 +16,7 @@ import '../services/settings_service.dart';
 import '../theme.dart';
 import '../utils/session_status_helpers.dart';
 import '../utils/status_presentation.dart';
+import 'task_run_summary_list.dart';
 
 /// Task-board view for one directory: the AI-tagged module->task tree, filtered
 /// to [dirId], with 60s polling + manual refresh, plus the interactions layered
@@ -131,7 +132,6 @@ class _TaskBoardViewState extends State<TaskBoardView> {
     }
   }
 
-
   Future<void> _archiveCompleted() async {
     try {
       final r = await ManageService(
@@ -145,9 +145,9 @@ class _TaskBoardViewState extends State<TaskBoardView> {
       _refresh();
     } on LocalOnlyException {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(t('localOnly'))),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(t('localOnly'))));
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -156,7 +156,7 @@ class _TaskBoardViewState extends State<TaskBoardView> {
     }
   }
 
-    /// Diff the freshly-fetched board against [_prevTaskIds]. On a non-first load,
+  /// Diff the freshly-fetched board against [_prevTaskIds]. On a non-first load,
   /// if new task ids appeared, pick the first new task visible for this dir
   /// (sorted newest-activity first) and flag it for the 3s highlight + scroll.
   void _detectNewAndHighlight(TaskBoard board) {
@@ -354,20 +354,19 @@ class _TaskBoardViewState extends State<TaskBoardView> {
 
   Future<void> _quickArchive(TaskBoardTask task) async {
     try {
-      await ManageService(settings: widget.settings)
-          .setTaskStatus(task.id, 'archived');
+      await ManageService(
+        settings: widget.settings,
+      ).setTaskStatus(task.id, 'archived');
       if (!mounted) return;
       _refresh();
     } on LocalOnlyException {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(t('localOnly'))),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(t('localOnly'))));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('$e')),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
     }
   }
 
@@ -456,32 +455,37 @@ class _TaskBoardViewState extends State<TaskBoardView> {
                         ),
                         const Spacer(),
                         // Bulk archive completed tasks (mirrors web)
-                        Builder(builder: (_) {
-                          final completedCount = tasks
-                              .where((t) => t.status == 'done')
-                              .length;
-                          return TextButton.icon(
-                            onPressed: completedCount > 0
-                                ? _archiveCompleted
-                                : null,
-                            icon: const Icon(Icons.cleaning_services_rounded,
-                                size: 14),
-                            label: Text(
-                              completedCount > 0
-                                  ? '${t('archiveCompleted')} ($completedCount)'
-                                  : t('archiveCompleted'),
-                              style: const TextStyle(fontSize: 11),
-                            ),
-                            style: TextButton.styleFrom(
-                              foregroundColor: AppColors.muted,
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 6, vertical: 2),
-                              minimumSize: Size.zero,
-                              tapTargetSize:
-                                  MaterialTapTargetSize.shrinkWrap,
-                            ),
-                          );
-                        }),
+                        Builder(
+                          builder: (_) {
+                            final completedCount = tasks
+                                .where((t) => t.status == 'done')
+                                .length;
+                            return TextButton.icon(
+                              onPressed: completedCount > 0
+                                  ? _archiveCompleted
+                                  : null,
+                              icon: const Icon(
+                                Icons.cleaning_services_rounded,
+                                size: 14,
+                              ),
+                              label: Text(
+                                completedCount > 0
+                                    ? '${t('archiveCompleted')} ($completedCount)'
+                                    : t('archiveCompleted'),
+                                style: const TextStyle(fontSize: 11),
+                              ),
+                              style: TextButton.styleFrom(
+                                foregroundColor: AppColors.muted,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 6,
+                                  vertical: 2,
+                                ),
+                                minimumSize: Size.zero,
+                                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              ),
+                            );
+                          },
+                        ),
                         IconButton(
                           tooltip: t('refresh'),
                           onPressed: _refreshing ? null : () => _refresh(),
@@ -717,16 +721,15 @@ class _TaskRow extends StatelessWidget {
                       onTap: onQuickArchive,
                       child: Container(
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 6, vertical: 3),
+                          horizontal: 6,
+                          vertical: 3,
+                        ),
                         decoration: BoxDecoration(
                           color: AppColors.panel2,
                           borderRadius: BorderRadius.circular(4),
                           border: Border.all(color: AppColors.line),
                         ),
-                        child: const Text(
-                          '🗄',
-                          style: TextStyle(fontSize: 11),
-                        ),
+                        child: const Text('🗄', style: TextStyle(fontSize: 11)),
                       ),
                     ),
                   ),
@@ -742,10 +745,11 @@ class _TaskRow extends StatelessWidget {
   /// running 一处是脉冲点、一处是 🟢，queued/archived 两处都没有。
   /// 只有 spinner 状态才动：出错的任务立刻停止脉冲，换成 ❌。
   Widget _runStateIcon(String runState, bool isDone) {
-    final spec = statusPresentation[taskStatusOf(
-      status: isDone ? 'done' : null,
-      runState: runState,
-    )]!;
+    final spec =
+        statusPresentation[taskStatusOf(
+          status: isDone ? 'done' : null,
+          runState: runState,
+        )]!;
     if (spec.spinner) return const _RunningDot();
     return _EmojiDot(spec.icon, semanticLabel: spec.semanticLabel);
   }
@@ -856,6 +860,7 @@ class _TaskDetailSheet extends StatefulWidget {
 
 class _TaskDetailSheetState extends State<_TaskDetailSheet> {
   List<TaskMessage>? _messages;
+  List<TaskRunSummary> _recentRuns = const [];
   bool _loadingMsgs = true;
   String? _msgError;
   bool _busy = false;
@@ -872,12 +877,13 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
       _msgError = null;
     });
     try {
-      final msgs = await ManageService(
+      final detail = await ManageService(
         settings: widget.settings,
-      ).fetchTaskMessages(widget.task.id);
+      ).fetchTaskDetail(widget.task.id);
       if (!mounted) return;
       setState(() {
-        _messages = msgs;
+        _messages = detail.messages;
+        _recentRuns = detail.recentRuns;
         _loadingMsgs = false;
       });
     } catch (e) {
@@ -887,6 +893,22 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
         _loadingMsgs = false;
       });
     }
+  }
+
+  Future<void> _answerTaskRunQuestion(
+    TaskRunSummary run,
+    TaskRunPendingQuestion question,
+    String text,
+    String clientMsgId,
+  ) async {
+    await ManageService(settings: widget.settings).answerTaskQuestion(
+      widget.task.id,
+      requestId: question.requestId,
+      text: text,
+      clientMsgId: clientMsgId,
+    );
+    await _loadMessages();
+    widget.onChanged();
   }
 
   String _sessionLabel(String sid) => widget.sessionLabels[sid] ?? sid;
@@ -1002,9 +1024,11 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
   }
 
   /// 详情页状态 spec。与列表行 _runStateIcon 同源，两处不会再各说各话。
-  StatusSpec _runStateInfo(String runState, bool isDone) => statusPresentation[
-    taskStatusOf(status: isDone ? 'done' : null, runState: runState)
-  ]!;
+  StatusSpec _runStateInfo(String runState, bool isDone) =>
+      statusPresentation[taskStatusOf(
+        status: isDone ? 'done' : null,
+        runState: runState,
+      )]!;
 
   @override
   Widget build(BuildContext context) {
@@ -1119,6 +1143,11 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
                 ],
               ),
             ),
+            if (_recentRuns.isNotEmpty)
+              TaskRunSummaryList(
+                runs: _recentRuns,
+                onAnswer: _answerTaskRunQuestion,
+              ),
             const Divider(height: 1, color: AppColors.line),
             // Messages section header.
             Padding(
@@ -1232,6 +1261,7 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
     // (per spec: "lost==true 或 messageId 为空的消息不可点").
     final canJump =
         widget.onOpenSession != null &&
+        m.hasSessionTarget &&
         m.messageId != null &&
         m.messageId!.isNotEmpty;
     return Column(

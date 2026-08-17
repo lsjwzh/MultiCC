@@ -101,6 +101,9 @@ function dispatchableSessionsFor(sessionId) {
     // Never dispatch to a system/commander session: aux/gateway are internal,
     // commander only dispatches out (it is never a worker).
     .filter(s => s.type !== 'aux' && s.type !== 'gateway' && s.type !== 'commander')
+    // TaskRun slots are a bounded internal execution pool. They are selected by
+    // the TaskRun scheduler with lease lineage, never by an LLM/user target id.
+    .filter(s => s.taskExecutionSlot !== true)
     .filter(s => s.dirId === from.dirId)
     // A terminal gateway is an execution detail, not a second worker choice.
     // The Commander selects the stable terminal id only after explicit user

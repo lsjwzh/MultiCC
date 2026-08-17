@@ -13,11 +13,43 @@ function freezeLineage(lineage) {
 
 function freezeTask(task) {
   const source = task && typeof task === 'object' ? task : {};
+  const runId = clean(source.runId || source.taskRunId);
+  const leaseEpoch = source.leaseEpoch == null ? null : Number(source.leaseEpoch);
   return Object.freeze({
     id: clean(source.id) || null,
+    ...(runId ? { runId, leaseEpoch } : {}),
     start: source.start === true,
     source: clean(source.source) || null,
   });
+}
+
+function freezeUsageAttribution(input) {
+  const source = input && typeof input === 'object' ? input : {};
+  const cli = clean(source.cli).toLowerCase();
+  const providerId = clean(source.providerId) || '_default_';
+  const roleKind = clean(source.roleKind).toLowerCase() || 'main';
+  return Object.freeze({
+    providerId,
+    providerName: clean(source.providerName) || providerId,
+    cli,
+    protocol: clean(source.protocol).toLowerCase()
+      || (cli === 'codex' ? 'openai-responses' : cli === 'claude' ? 'anthropic-messages' : cli),
+    model: clean(source.model),
+    roleKind,
+    routeName: clean(source.routeName).toLowerCase() || roleKind,
+  });
+}
+
+function bindTurnUsageAttribution(turn, input) {
+  if (!turn || !turn.turnId) throw new TypeError('turn lifecycle is required');
+  const next = freezeUsageAttribution(input);
+  if (turn.usageAttribution) {
+    const same = Object.keys(next).every(key => turn.usageAttribution[key] === next[key]);
+    if (!same) throw new TypeError('turn usage attribution is already frozen');
+    return turn.usageAttribution;
+  }
+  turn.usageAttribution = next;
+  return next;
 }
 
 function createTurnLifecycle(request, input = {}) {
@@ -56,6 +88,7 @@ function createRunnerOwnership(turn, input = {}) {
     retryPlanned: false,
     resultEvent: false,
     partialCheckpointKey: null,
+    ...(turn.usageAttribution ? { usageAttribution: turn.usageAttribution } : {}),
   };
 }
 
@@ -185,6 +218,9 @@ function claimPostTurn(turn, runner, facts = {}) {
 
 module.exports = {
   freezeLineage,
+  freezeTask,
+  freezeUsageAttribution,
+  bindTurnUsageAttribution,
   createTurnLifecycle,
   createRunnerOwnership,
   ownsCurrentRunner,
