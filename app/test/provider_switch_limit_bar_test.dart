@@ -14,6 +14,14 @@ import 'package:multicc_app/services/settings_service.dart';
 class _StubQuotaService extends QuotaService {
   _StubQuotaService(SettingsService settings) : super(settings: settings);
 
+  final arkBaseUrls = <String?>[];
+
+  @override
+  Future<Map<String, dynamic>?> fetchArkQuota(String? baseUrl) async {
+    arkBaseUrls.add(baseUrl);
+    return null;
+  }
+
   @override
   Future<Map<String, dynamic>?> fetchZhipuQuota(String? host) async => null;
 }
@@ -40,51 +48,80 @@ void main() {
   }
 
   SessionCliConfig configWith(String baseUrl) => SessionCliConfig(
-        cli: SessionCli.claude,
-        provider: 'p1',
-        providerBaseUrl: baseUrl,
-        model: 'm',
-      );
+    cli: SessionCli.claude,
+    provider: 'p1',
+    providerBaseUrl: baseUrl,
+    model: 'm',
+  );
 
-  test('applyProviderSwitch re-gates the bars immediately and notifies', () async {
+  test(
+    'applyProviderSwitch re-gates the bars immediately and notifies',
+    () async {
+      final s = await settings();
+      final provider = ChatProvider(
+        settings: s,
+        sessionName: 'test-session',
+        sessionCwd: '/tmp/x',
+        quotaService: _StubQuotaService(s),
+      );
+      addTearDown(provider.dispose);
+
+      // Cold start: no baseUrl learned yet -> official login, a Claude provider.
+      expect(provider.providerBaseUrl, '');
+      expect(provider.claudeLimitView, isNotNull);
+      expect(provider.zhipuQuotaView, isNull);
+
+      var notified = 0;
+      provider.addListener(() => notified++);
+
+      // Switch to a Zhipu provider: the Claude bar hides and the Zhipu bar
+      // appears without any reconnect or CLI switch.
+      provider.applyProviderSwitch(
+        configWith('https://open.bigmodel.cn/api/anthropic'),
+      );
+      expect(
+        provider.providerBaseUrl,
+        'https://open.bigmodel.cn/api/anthropic',
+      );
+      // A non-Claude provider must hide the Claude subscription bar.
+      expect(provider.claudeLimitView, isNull);
+      // The Zhipu quota bar follows the switch immediately.
+      expect(provider.zhipuQuotaView, isNotNull);
+      // Listeners repaint the bars at once.
+      expect(notified, greaterThan(0));
+
+      // And back to a Claude provider: the bars flip the other way.
+      provider.applyProviderSwitch(configWith('https://api.anthropic.com'));
+      expect(provider.claudeLimitView, isNotNull);
+      expect(provider.zhipuQuotaView, isNull);
+
+      // The Zhipu switch fired a quota fetch whose continuation runs as a
+      // microtask. Drain it while the provider is still alive — otherwise its
+      // terminal notifyListeners() hits the disposed object after the body ends.
+      await Future<void>.delayed(Duration.zero);
+    },
+  );
+
+  test('Ark quota fetch receives the active provider baseUrl', () async {
     final s = await settings();
+    final quota = _StubQuotaService(s);
     final provider = ChatProvider(
       settings: s,
       sessionName: 'test-session',
       sessionCwd: '/tmp/x',
-      quotaService: _StubQuotaService(s),
+      quotaService: quota,
     );
     addTearDown(provider.dispose);
 
-    // Cold start: no baseUrl learned yet -> official login, a Claude provider.
-    expect(provider.providerBaseUrl, '');
-    expect(provider.claudeLimitView, isNotNull);
-    expect(provider.zhipuQuotaView, isNull);
-
-    var notified = 0;
-    provider.addListener(() => notified++);
-
-    // Switch to a Zhipu provider: the Claude bar hides and the Zhipu bar
-    // appears without any reconnect or CLI switch.
     provider.applyProviderSwitch(
-      configWith('https://open.bigmodel.cn/api/anthropic'),
+      configWith('https://ark.cn-beijing.volces.com/api/coding'),
     );
-    expect(provider.providerBaseUrl, 'https://open.bigmodel.cn/api/anthropic');
-    // A non-Claude provider must hide the Claude subscription bar.
-    expect(provider.claudeLimitView, isNull);
-    // The Zhipu quota bar follows the switch immediately.
-    expect(provider.zhipuQuotaView, isNotNull);
-    // Listeners repaint the bars at once.
-    expect(notified, greaterThan(0));
-
-    // And back to a Claude provider: the bars flip the other way.
-    provider.applyProviderSwitch(configWith('https://api.anthropic.com'));
-    expect(provider.claudeLimitView, isNotNull);
-    expect(provider.zhipuQuotaView, isNull);
-
-    // The Zhipu switch fired a quota fetch whose continuation runs as a
-    // microtask. Drain it while the provider is still alive — otherwise its
-    // terminal notifyListeners() hits the disposed object after the body ends.
     await Future<void>.delayed(Duration.zero);
+
+    expect(
+      quota.arkBaseUrls,
+      contains('https://ark.cn-beijing.volces.com/api/coding'),
+    );
+    expect(provider.arkQuotaView, isNotNull);
   });
 }
