@@ -25,7 +25,8 @@ class QuotaService {
 
   String _url(String path) => settings.buildHttpUrl(path);
 
-  Future<Map<String, dynamic>?> fetchArkQuota() => _get('/api/ark/quota');
+  Future<Map<String, dynamic>?> fetchArkQuota(String? baseUrl) =>
+      _get('/api/ark/quota${_baseUrlQuery(baseUrl)}');
 
   Future<Map<String, dynamic>?> fetchZhipuQuota(String? host) =>
       _get('/api/zhipu/quota${_hostQuery(host)}');
@@ -51,10 +52,7 @@ class QuotaService {
   Future<bool> openOpenCodeLogin() async {
     try {
       final res = await http
-          .post(
-            Uri.parse(_url('/api/opencode/quota/login')),
-            headers: _headers,
-          )
+          .post(Uri.parse(_url('/api/opencode/quota/login')), headers: _headers)
           .timeout(const Duration(seconds: 20));
       return res.statusCode == 200;
     } catch (_) {
@@ -66,8 +64,7 @@ class QuotaService {
   /// The app caches these on connect so an unfetched bar shows the server's idle
   /// placeholder verbatim — the app carries no vendor strings of its own.
   /// Returns `{status:'ok', bars:{ark:{...}, zhipu:{...}, ...}}` or null.
-  Future<Map<String, dynamic>?> fetchIdleBars() =>
-      _get('/api/quota/bars/idle');
+  Future<Map<String, dynamic>?> fetchIdleBars() => _get('/api/quota/bars/idle');
 
   /// Qoder CN credit usage, scraped from qoder.com.cn via the backend's CDP /
   /// cached-cookie path (`/api/qoder/quota`). `status` may be needs_login /
@@ -83,10 +80,7 @@ class QuotaService {
   Future<bool> openQoderLogin() async {
     try {
       final res = await http
-          .post(
-            Uri.parse(_url('/api/qoder/quota/login')),
-            headers: _headers,
-          )
+          .post(Uri.parse(_url('/api/qoder/quota/login')), headers: _headers)
           .timeout(const Duration(seconds: 20));
       return res.statusCode == 200;
     } catch (_) {
@@ -107,10 +101,7 @@ class QuotaService {
   Future<bool> openClaudeLogin() async {
     try {
       final res = await http
-          .post(
-            Uri.parse(_url('/api/claude/quota/login')),
-            headers: _headers,
-          )
+          .post(Uri.parse(_url('/api/claude/quota/login')), headers: _headers)
           .timeout(const Duration(seconds: 20));
       return res.statusCode == 200;
     } catch (_) {
@@ -125,10 +116,7 @@ class QuotaService {
   Future<bool> openKimiLogin() async {
     try {
       final res = await http
-          .post(
-            Uri.parse(_url('/api/kimi/quota/login')),
-            headers: _headers,
-          )
+          .post(Uri.parse(_url('/api/kimi/quota/login')), headers: _headers)
           .timeout(const Duration(seconds: 20));
       return res.statusCode == 200;
     } catch (_) {
@@ -143,10 +131,7 @@ class QuotaService {
   Future<Map<String, dynamic>?> installArk() async {
     try {
       final res = await http
-          .post(
-            Uri.parse(_url('/api/ark/quota/install')),
-            headers: _headers,
-          )
+          .post(Uri.parse(_url('/api/ark/quota/install')), headers: _headers)
           .timeout(const Duration(seconds: 300));
       final body = jsonDecode(res.body);
       return {
@@ -163,10 +148,7 @@ class QuotaService {
   Future<bool> openArkLogin() async {
     try {
       final res = await http
-          .post(
-            Uri.parse(_url('/api/ark/quota/login')),
-            headers: _headers,
-          )
+          .post(Uri.parse(_url('/api/ark/quota/login')), headers: _headers)
           .timeout(const Duration(seconds: 20));
       return res.statusCode == 200;
     } catch (_) {
@@ -185,6 +167,11 @@ class QuotaService {
   String _hostQuery(String? host) {
     if (host == null || host.isEmpty) return '';
     return '?host=${Uri.encodeComponent(host)}';
+  }
+
+  String _baseUrlQuery(String? baseUrl) {
+    if (baseUrl == null || baseUrl.isEmpty) return '';
+    return '?baseUrl=${Uri.encodeComponent(baseUrl)}';
   }
 
   Future<Map<String, dynamic>?> _get(String path) async {
