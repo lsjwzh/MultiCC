@@ -373,7 +373,7 @@ function arkBar(value, baseUrl) {
   const entries = [];
   let maxUsed = 0;
   for (const p of plan.periods) {
-    const pct = p.percent ?? 0;
+    const pct = finiteNumber(p.percent) ?? 0;
     if (pct > maxUsed) maxUsed = pct;
     const token = arkWindowLabel(p.label);
     entries.push({ window: token, seg: windowSeg(token, pct, p.resetAt || null) });
@@ -383,16 +383,22 @@ function arkBar(value, baseUrl) {
     const isCurrent = it === plan;
     titleLines.push(`${arkProductLabel(it.product)}${it.tier ? ' · ' + it.tier : ''}${isCurrent ? '（当前 provider）' : ''}`);
     for (const p of it.periods) {
+      const usedPct = finiteNumber(p.percent);
+      const remainingPct = unifiedRemaining(usedPct);
+      const remainingText = remainingPct === null ? '余量未知' : `余量 ${fmtNum(remainingPct)}%`;
+      const usedPctText = usedPct === null ? '已用未知' : `已用 ${fmtNum(usedPct)}%`;
       let line = `  ${arkPeriodLabel(p.label)}: `;
       line += (p.used != null && p.total != null)
-        ? `${fmtNum(p.used)}/${fmtNum(p.total)} (${fmtNum(p.percent ?? 0)}%)`
-        : `${fmtNum(p.percent ?? 0)}%`;
+        ? `${remainingText} · ${usedPctText} (${fmtNum(p.used)}/${fmtNum(p.total)})`
+        : `${remainingText} · ${usedPctText}`;
       if (p.resetAt) line += ` · ${cdTag(p.resetAt)} 后重置`;
       titleLines.push(line);
     }
   }
   const ago = agoTag(value.fetchedAt);
-  let text = sortSegs(entries).join(' · ') || '—';
+  const segments = sortSegs(entries);
+  const productPrefix = arkProductLabel(plan.product);
+  let text = segments.length ? `${productPrefix} · ${segments.join(' · ')}` : productPrefix;
   if (ago) text += ` · ${ago}`;
   text += ' ⟳';
 
