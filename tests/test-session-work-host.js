@@ -647,6 +647,19 @@ test('recovery state exposes only unresolved request correlation to the schedule
   assert.equal(h.host.recoveryState('s1').pendingUserInput, null);
 });
 
+test('recovery state restores the persisted TaskRun lease without consulting transient chat state', () => {
+  const h = fixture({
+    record: {
+      taskRunLease: { runId: 'run-1', leaseEpoch: 4 },
+      taskState: { classifyState: 'D', startedAt: 100, endedAt: 200 },
+    },
+    chatState: { _currentTaskId: 'task-1', _currentTaskRunId: 'stale-run' },
+  });
+  const recovered = h.host.recoveryState('s1');
+  assert.equal(recovered.taskRunId, 'run-1');
+  assert.equal(recovered.leaseEpoch, 4);
+});
+
 test('gateway recovery projects a durable ended P turn to D, but never invents an unproven end', () => {
   const durable = fixture({
     record: {

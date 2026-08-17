@@ -17,6 +17,7 @@ const {
   acknowledgeDeliveredEffect,
   createTurnRuntimeStore,
   createTurnLifecycle,
+  bindTurnUsageAttribution,
   createRunnerOwnership,
   ownsCurrentRunner,
   assignKillReason,
@@ -217,6 +218,35 @@ test('turn lifecycle carries canonical task identity into router tool capabiliti
   assert.equal(Object.isFrozen(turn.task), true);
 });
 
+test('task-run identity and provider attribution stay frozen for the admitted turn', () => {
+  const normalized = normalizeTurnRequest({
+    sessionId: 'worker-1',
+    text: 'run the task',
+    cli: 'codex',
+    taskId: 'task-1',
+    taskRunId: 'run-1',
+    leaseEpoch: 7,
+    taskSource: 'task-board',
+  });
+  const turn = createTurnLifecycle(normalized, { turnId: 'turn-task-run' });
+  assert.deepEqual(turn.task, {
+    id: 'task-1', runId: 'run-1', leaseEpoch: 7,
+    start: false, source: 'task-board',
+  });
+
+  const binding = bindTurnUsageAttribution(turn, {
+    providerId: 'provider-a', providerName: 'Provider A', cli: 'codex',
+    protocol: 'openai-responses', model: 'model-a', roleKind: 'main', routeName: 'main',
+  });
+  const runner = createRunnerOwnership(turn, { runnerId: 'runner-1', kind: 'process' });
+  assert.equal(Object.isFrozen(binding), true);
+  assert.equal(runner.usageAttribution, binding);
+  assert.throws(() => bindTurnUsageAttribution(turn, {
+    providerId: 'provider-b', providerName: 'Provider B', cli: 'codex', model: 'model-b',
+  }), /already frozen/);
+  assert.equal(runner.usageAttribution.providerId, 'provider-a');
+});
+
 test('Claude host pre-allocation proof preserves legacy resume intent for existing history', () => {
   const turn = request({ cli: 'claude', turnCount: 3, hasNativeSession: true });
   assert.equal(turn.execution.isFirstTurn, false);
@@ -360,6 +390,7 @@ test('production cutover keeps duplicate, proof and runner ordering explicit', (
   const append = at('const userMessageSaved = appendChatMessage(');
   const durable = at('createDurableMessageProof(turnRequest');
   const route = at('providerRouterRuntime.resolveSpawnEnv(persisted)');
+  const usageAttribution = at('bindTurnUsageAttribution(turn, {');
   const guard = at('evaluateSpawnGuard(turnRequest');
   const authorize = at('chatTurnPreparationRuntime.start(');
   const claudeRunner = at('runChatTurnStreaming(sessionName');
@@ -373,7 +404,10 @@ test('production cutover keeps duplicate, proof and runner ordering explicit', (
   assert.doesNotMatch(body, /New user_message while claude pid=|interrupting previous/,
     'the canonical turn boundary must reject busy races instead of interrupting an active turn');
   assert.ok(claim < append && append < durable && durable < route);
-  assert.ok(route < guard && guard < authorize);
+  assert.ok(route < usageAttribution && usageAttribution < guard,
+    'provider/model/cli attribution is frozen after route resolution and before authorization');
+  assert.ok(usageAttribution < authorize);
+  assert.ok(guard < authorize);
   assert.ok(authorize < claudeRunner && authorize < codexRunner);
   assert.ok(codexRunner < failureRelease, 'finally must release a failed preparation lease');
 });

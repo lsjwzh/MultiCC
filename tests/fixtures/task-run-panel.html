@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>TaskRun summary CDP fixture</title>
+</head>
+<body>
+  <main id="task-run-panel"></main>
+  <script src="/task-board-ui.js"></script>
+  <script>
+    const runs = [
+      {
+        runId: 'run-observed',
+        executionStatus: 'succeeded',
+        usageStatus: 'sealed',
+        cleanupState: 'done',
+        slotId: '/chat.html?session=internal-slot-must-stay-hidden',
+        nativeSessionId: 'native-thread-must-stay-hidden',
+        usage: {
+          coverage: 'observed',
+          hasKnownUsage: true,
+          tokens: {
+            freshInput: 10, cacheRead: 20, cacheWrite: 3,
+            consumedInput: 33, output: 4, reasoning: 2, total: 37
+          },
+          dimensions: [{
+            providerId: 'provider-a', providerName: 'Provider A', model: 'model-a',
+            roleKind: 'sub', routeName: 'sub', observedEvents: 1, unobservableEvents: 0,
+            freshInput: 10, cacheRead: 20,
+            cacheWrite: 3, output: 4, reasoning: 2
+          }, {
+            providerId: 'provider-main-unknown', providerName: 'Main Provider', model: 'main-model',
+            roleKind: 'main', routeName: 'main', observedEvents: 0, unobservableEvents: 1,
+            freshInput: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0
+          }]
+        }
+      },
+      {
+        runId: 'run-unobservable',
+        executionStatus: 'failed',
+        usageStatus: 'unobservable',
+        cleanupState: 'done',
+        usage: {
+          coverage: 'unobservable', hasKnownUsage: false, tokens: null,
+          dimensions: [{
+            providerId: 'provider-unknown', providerName: 'Provider Unknown', model: 'opaque-model'
+          }]
+        }
+      },
+      {
+        runId: 'run-cleanup-error',
+        executionStatus: 'succeeded',
+        usageStatus: 'sealed',
+        cleanupState: 'error',
+        usage: {
+          coverage: 'observed', hasKnownUsage: true,
+          tokens: { freshInput: 1, cacheRead: 0, cacheWrite: 0, output: 1, total: 2 },
+          dimensions: []
+        }
+      },
+      {
+        runId: 'run-waiting',
+        executionStatus: 'running',
+        usageStatus: 'collecting',
+        cleanupState: 'blocked',
+        slotId: 'internal-answer-slot-must-stay-hidden',
+        leaseEpoch: 42,
+        usage: {
+          coverage: 'unobservable', hasKnownUsage: false, tokens: null, dimensions: []
+        },
+        pendingQuestion: {
+          requestId: 'usrq-cdp-1',
+          question: '请选择部署环境',
+          reason: '这会决定发布目标',
+          options: ['生产', '预发'],
+          allowMultiple: false,
+          createdAt: 123
+        }
+      }
+    ];
+    const panel = document.getElementById('task-run-panel');
+    panel.innerHTML = runs
+      .map(window.MultiCCTaskBoardUi.renderTaskRunSummary)
+      .join('');
+    window.MultiCCTaskBoardUi.bindPendingQuestionAnswers(panel, async payload => {
+      const response = await fetch('/api/task-board/tasks/task-waiting/answer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const result = await response.json();
+      if (!response.ok || !result.ok) throw new Error(result.error || 'answer failed');
+      return result;
+    });
+  </script>
+</body>
+</html>

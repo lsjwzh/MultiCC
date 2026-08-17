@@ -90,6 +90,8 @@ function createRouterToolHost({
           originDispatchId: turn.lineage?.kind === 'dispatch' ? turn.lineage.operationId : null,
           userText: turn.userText || '',
           taskId: turn.task?.id || null,
+          taskRunId: turn.task?.runId || null,
+          leaseEpoch: turn.task?.leaseEpoch || null,
           taskStart: turn.task?.start === true,
           taskSource: turn.task?.source || null,
         } : null;
@@ -176,6 +178,8 @@ function createRouterToolHost({
     originDispatchId = null,
     userText = '',
     taskId = null,
+    taskRunId = null,
+    leaseEpoch = null,
     taskStart = false,
     taskSource = null,
     baseUrl,
@@ -184,7 +188,7 @@ function createRouterToolHost({
     if (!runtime) throw new Error('router tool runtime is not configured');
     const token = runtime.issueContext({
       sessionId, turnId, requestId, originDispatchId, userText,
-      taskId, taskStart, taskSource, dynamic, baseUrl,
+      taskId, taskRunId, leaseEpoch, taskStart, taskSource, dynamic, baseUrl,
     });
     let revoked = false;
     const revoke = () => {

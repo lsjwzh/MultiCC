@@ -277,6 +277,7 @@ test('installed CPR 0.3+ cpr mode proxies Claude and Codex through explicit host
 
     const providers = integrationProviders(upstream.url);
     const usageObserved = [];
+    const activityObserved = [];
     const runtime = createProviderRouterRuntime({
       mode: 'cpr',
       providers,
@@ -291,11 +292,13 @@ test('installed CPR 0.3+ cpr mode proxies Claude and Codex through explicit host
     runtime.mountProtocolProxies(app, {
       protocols: ['claude'],
       onUsageObserved: event => usageObserved.push(event),
+      onActivity: event => activityObserved.push(event),
     });
     app.use(express.json());
     runtime.mountProtocolProxies(app, {
       protocols: ['codex'],
       onUsageObserved: event => usageObserved.push(event),
+      onActivity: event => activityObserved.push(event),
     });
     proxy = await listenLocal(app);
 
@@ -314,27 +317,58 @@ test('installed CPR 0.3+ cpr mode proxies Claude and Codex through explicit host
       headers: { authorization: 'Bearer virtual-codex-token' },
       body: { model: 'codex-wire-model', input: [], stream: false },
     });
+    const claudeSubResponse = await postJson({
+      port: proxy.port,
+      pathname: '/claude-proxy/claude-local/session-claude/v1/messages',
+      headers: {
+        authorization: 'Bearer virtual-claude-token',
+        'x-api-key': 'virtual-claude-key',
+      },
+      body: { model: 'cpr:claude-local:claude-sub-wire-model', messages: [], stream: false },
+    });
+    const codexSubResponse = await postJson({
+      port: proxy.port,
+      pathname: '/codex-proxy/codex-local/session-codex/worker/responses',
+      headers: { authorization: 'Bearer virtual-codex-token' },
+      body: { model: 'codex-sub-wire-model', input: [], stream: false },
+    });
     await new Promise(resolve => setImmediate(resolve));
 
     assert.equal(claudeResponse.status, 200);
     assert.equal(JSON.parse(claudeResponse.body).content[0].text, 'CLAUDE_LOCAL_OK');
     assert.equal(codexResponse.status, 200);
     assert.equal(JSON.parse(codexResponse.body).output[0].content[0].text, 'CODEX_LOCAL_OK');
+    assert.equal(claudeSubResponse.status, 200);
+    assert.equal(codexSubResponse.status, 200);
 
-    assert.equal(upstreamRequests.length, 2);
-    const claudeUpstream = upstreamRequests.find(entry => entry.url === '/anthropic/v1/messages');
-    const codexUpstream = upstreamRequests.find(entry => entry.url === '/openai/v1/responses');
+    assert.equal(upstreamRequests.length, 4);
+    const claudeUpstream = upstreamRequests.find(entry => entry.url === '/anthropic/v1/messages'
+      && JSON.parse(entry.body).model === 'claude-wire-model');
+    const claudeSubUpstream = upstreamRequests.find(entry => entry.url === '/anthropic/v1/messages'
+      && JSON.parse(entry.body).model === 'claude-sub-wire-model');
+    const codexUpstream = upstreamRequests.find(entry => entry.url === '/openai/v1/responses'
+      && JSON.parse(entry.body).model === 'codex-wire-model');
+    const codexSubUpstream = upstreamRequests.find(entry => entry.url === '/openai/v1/responses'
+      && JSON.parse(entry.body).model === 'codex-sub-wire-model');
     assert.ok(claudeUpstream);
+    assert.ok(claudeSubUpstream);
     assert.ok(codexUpstream);
+    assert.ok(codexSubUpstream);
     assert.equal(claudeUpstream.headers.authorization, 'Bearer claude-upstream-secret');
     assert.equal(claudeUpstream.headers['x-api-key'], undefined);
     assert.equal(JSON.parse(claudeUpstream.body).model, 'claude-wire-model');
     assert.equal(codexUpstream.headers.authorization, 'Bearer codex-upstream-secret');
     assert.equal(JSON.parse(codexUpstream.body).model, 'codex-wire-model');
 
-    assert.equal(usageObserved.length, 2);
-    const claudeUsage = usageObserved.find(event => event.protocol === 'anthropic-messages');
-    const codexUsage = usageObserved.find(event => event.protocol === 'openai-responses');
+    assert.equal(usageObserved.length, 4);
+    const claudeUsage = usageObserved.find(event => event.protocol === 'anthropic-messages'
+      && event.roleKind === 'main');
+    const claudeSubUsage = usageObserved.find(event => event.protocol === 'anthropic-messages'
+      && event.roleKind === 'sub');
+    const codexUsage = usageObserved.find(event => event.protocol === 'openai-responses'
+      && event.roleKind === 'main');
+    const codexSubUsage = usageObserved.find(event => event.protocol === 'openai-responses'
+      && event.roleKind === 'sub');
     assert.deepEqual({
       sessionId: claudeUsage.sessionId,
       providerId: claudeUsage.providerId,
@@ -348,6 +382,23 @@ test('installed CPR 0.3+ cpr mode proxies Claude and Codex through explicit host
       roleKind: 'main',
       routeName: 'main',
       model: 'claude-wire-model',
+      tokens: { input: 3, output: 2, cacheRead: 1, cacheWrite: 0, total: 5 },
+    });
+    assert.deepEqual({
+      sessionId: claudeSubUsage.sessionId,
+      providerId: claudeSubUsage.providerId,
+      roleKind: claudeSubUsage.roleKind,
+      agentRole: claudeSubUsage.agentRole,
+      routeName: claudeSubUsage.routeName,
+      model: claudeSubUsage.model,
+      tokens: claudeSubUsage.tokens,
+    }, {
+      sessionId: 'session-claude',
+      providerId: 'claude-local',
+      roleKind: 'sub',
+      agentRole: 'default',
+      routeName: 'default',
+      model: 'claude-sub-wire-model',
       tokens: { input: 3, output: 2, cacheRead: 1, cacheWrite: 0, total: 5 },
     });
     assert.deepEqual({
@@ -365,6 +416,34 @@ test('installed CPR 0.3+ cpr mode proxies Claude and Codex through explicit host
       model: 'codex-wire-model',
       tokens: { input: 5, output: 4, cacheRead: 2, cacheWrite: 0, total: 9 },
     });
+    assert.deepEqual({
+      sessionId: codexSubUsage.sessionId,
+      providerId: codexSubUsage.providerId,
+      roleKind: codexSubUsage.roleKind,
+      agentRole: codexSubUsage.agentRole,
+      routeName: codexSubUsage.routeName,
+      model: codexSubUsage.model,
+      tokens: codexSubUsage.tokens,
+    }, {
+      sessionId: 'session-codex',
+      providerId: 'codex-local',
+      roleKind: 'sub',
+      agentRole: 'worker',
+      routeName: 'worker',
+      model: 'codex-sub-wire-model',
+      tokens: { input: 5, output: 4, cacheRead: 2, cacheWrite: 0, total: 9 },
+    });
+    for (const expected of [
+      { sessionId: 'session-claude', role: 'main' },
+      { sessionId: 'session-claude', role: 'sub' },
+      { sessionId: 'session-codex', role: 'main' },
+      { sessionId: 'session-codex', role: 'sub' },
+    ]) {
+      const events = activityObserved.filter(event => event.sessionId === expected.sessionId
+        && event.role === expected.role);
+      assert.equal(events.some(event => event.phase === 'request'), true);
+      assert.equal(events.some(event => event.phase === 'end'), true);
+    }
 
     assert.equal(fs.existsSync(forbiddenDefaultHome), false);
     assert.equal(fs.existsSync(runtime.embeddingPaths.cprPaths.runDir), true);

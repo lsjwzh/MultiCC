@@ -90,13 +90,14 @@ test('session bundle import never resets a worktree with reset --hard', () => {
 
 test('dispatch admission derives busy from classify plus the repo lease, never from liveness', () => {
   const source = fs.readFileSync('server.js', 'utf8');
-  const start = source.indexOf('function dispatchTargetBusy(sid) {');
+  const start = source.indexOf('function dispatchTargetBusy(sid, item = null) {');
   assert.ok(start >= 0, 'the single dispatch busy predicate must exist');
-  const predicate = source.slice(start, source.indexOf('}', start));
+  const predicate = source.slice(start, source.indexOf('\n}', start));
   // Classify answers "is work in flight"; the repo lease is a resource lock on
   // the session worktree (gitMergeBack rewrites the very path the CLI runs in),
   // which classify structurally cannot see — so it, and only it, is OR'd in.
   assert.match(predicate, /sessionWorkHost\?\.isRunActive\(sid\)/);
+  assert.match(predicate, /taskRunHost\?\.isSlotUnavailable\(sid, item \|\| \{\}\)/);
   assert.match(predicate, /defaultRepoActor\.isLeased\(sid\)/);
   for (const liveness of [/isStreaming/, /orchestrationChatBusy/, /chatTurnPreparationRuntime/, /claudeProc/]) {
     assert.doesNotMatch(predicate, liveness, 'dispatch admission must not read liveness');

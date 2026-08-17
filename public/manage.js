@@ -1,5 +1,4 @@
 'use strict';
-
 let autoRefreshTimer = null;
 let _cachedSessions = [];
 let _focusedSessionId = null;
@@ -10,9 +9,7 @@ const providerApi = window.MultiCCApi;
 const providerCatalog = window.MultiCCProviderCatalog;
 const NOTIFY_EXISTING_SESSIONS_MIGRATION_KEY = 'multicc_notify_existing_sessions_opened_20260629';
 
-// ── Per-directory memo (plain markdown, stored in multicc's memory store) ──
-// Network/DTO/state handling lives in memo-controller.js; this file only
-// injects dashboard caches and exposes the legacy globals used by inline UI.
+// ── Per-directory memo
 const memoController = window.MultiCCMemo.createController({
   api: window.MultiCCApi,
   document,
@@ -21,24 +18,10 @@ const memoController = window.MultiCCMemo.createController({
   getSessionStatus: id => _sessionStatus.get(id),
   notify: showToast,
 });
-const {
-  openMemo,
-  closeMemoModal,
-  memoSave,
-  memoCurrentLineText,
-  memoSendCurrentLine,
-  memoPickerClose,
-  memoConfirmSend,
-} = memoController;
-Object.assign(window, {
-  openMemo,
-  closeMemoModal,
-  memoSave,
-  memoCurrentLineText,
-  memoSendCurrentLine,
-  memoPickerClose,
-  memoConfirmSend,
-});
+const { openMemo, closeMemoModal, memoSave, memoCurrentLineText,
+  memoSendCurrentLine, memoPickerClose, memoConfirmSend } = memoController;
+Object.assign(window, { openMemo, closeMemoModal, memoSave, memoCurrentLineText,
+  memoSendCurrentLine, memoPickerClose, memoConfirmSend });
 
 async function renameDirectory(id) {
   const dir = _cachedDirectories.find(d => d.id === id);
@@ -495,9 +478,7 @@ const _workspaceEvents = new Map();    // dirId → event[]
 const _workspaceNotes = new Map();     // sessionId → pending note count
 const _workspaceSummaries = new Map(); // sessionId → { summary, ts } — 最近任务 one-liner
 
-// Per-letter tooltip copy for the classify badge. The glyph, colour and label all
-// come from the shared registry (window.MultiCCStatusPresentation) — only the
-// "why" sentence is classify-specific, so this table holds only titles.
+// Classify-specific tooltip titles; shared presentation owns glyph/tone/label.
 const _CLASSIFY_TITLE = {
   D: 'classifySucceeded',
   C: 'classifyContinuing',
@@ -592,9 +573,7 @@ function updateSessionStatusDom(sessionId) {
   if (!st) return;
   const chip = document.getElementById(`sess-status-${sessionId}`);
   if (chip) {
-    // applyStatusBadge is idempotent: it clears every tone class and the spinner
-    // flag before applying the current one, so a WebSocket replay or a
-    // running→error flip can never leave a stale glyph or a spinning error card.
+    // Idempotent: clears stale tone/spinner state before applying the next status.
     window.MultiCCStatusPresentation.applyStatusBadge(
       chip, 'session', sessionCardStatusFor(sessionId), { translate: tt, showLabel: false },
     );
@@ -846,12 +825,7 @@ function newSession() {
   openNewDirectoryModal();
 }
 
-// ── Aux health banner (③) ──────────────────────────────────────────────────
-// A non-dismissible red banner pinned to the top of the page while the aux
-// (summary) service is unhealthy, plus a recurring 5-min toast reminder. The
-// summary machinery is the backbone of task/lifecycle state; if it's down the
-// whole board is lying, so we surface it loudly and never let the user dismiss
-// it — only recovery (recordSuccess on the server) removes it.
+// Aux health stays visible and re-alerts until the server reports recovery.
 function handleAuxHealth(h) {
   const prev = _auxHealth;
   _auxHealth = h || null;

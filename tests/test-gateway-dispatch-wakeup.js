@@ -13,6 +13,10 @@ function hostFixture({ busy = false, tickError = null } = {}) {
       id: 'fresh-worker', dirId: 'dir-a', kind: 'chat', type: 'worker',
       cli: 'codex', cliSessionId: null,
     }],
+    ['task-slot', {
+      id: 'task-slot', dirId: 'dir-a', kind: 'chat', type: 'worker',
+      cli: 'codex', taskExecutionSlot: true,
+    }],
   ]);
   const directories = new Map([['dir-a', { id: 'dir-a', path: '/tmp' }]]);
   const admissions = [];
@@ -146,4 +150,43 @@ test('a successful wake-up carries no degraded marker', async () => {
   assert.equal(result.ok, true);
   assert.equal('wakeupError' in result, false);
   assert.deepEqual(fixture.warnings, []);
+});
+
+test('ordinary gateway dispatch neither lists nor admits a TaskRun execution slot', async () => {
+  const fixture = hostFixture();
+  const prompt = fixture.host.buildGatewayPrompt('把任务发给内部目标');
+  assert.doesNotMatch(prompt, /task-slot/);
+
+  const result = await fixture.host.dispatchToSession('task-slot', 'bypass pool', {
+    ownerSessionId: 'commander',
+    oneWay: true,
+    requireIdle: false,
+  });
+  assert.deepEqual(result, {
+    ok: false,
+    code: 'task_execution_slot_requires_task_run',
+    error: '内部任务执行槽只能由 TaskRun 调度器寻址',
+  });
+  assert.equal(fixture.admissions.length, 0);
+  assert.equal(fixture.tickCalls(), 0);
+});
+
+test('internal dispatch with TaskRun lineage may admit work to its leased slot', async () => {
+  const fixture = hostFixture();
+  const pending = fixture.host.dispatchToSession('task-slot', 'execute run', {
+    ownerSessionId: 'commander',
+    oneWay: true,
+    requireIdle: false,
+    taskId: 'task-1',
+    taskRunId: 'run-1',
+    leaseEpoch: 1,
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(fixture.admissions.length, 1);
+  assert.equal(fixture.admissions[0].spec.targetId, 'task-slot');
+  assert.equal(fixture.admissions[0].spec.taskId, 'task-1');
+  assert.equal(fixture.admissions[0].spec.taskRunId, 'run-1');
+  assert.equal(fixture.admissions[0].spec.leaseEpoch, 1);
+  fixture.releaseTick();
+  assert.equal((await pending).ok, true);
 });

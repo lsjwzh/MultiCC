@@ -143,6 +143,14 @@ function createWaitService({
           injectPrefix: wait.injectPrefix,
           data: normalizedPayload,
           deliveryText: typeof deliveryText === 'string' ? deliveryText : null,
+          ...(wait.metadata?.taskId ? { taskId: wait.metadata.taskId } : {}),
+          ...(wait.metadata?.taskRunId ? {
+            taskRunId: wait.metadata.taskRunId,
+            leaseEpoch: wait.metadata.leaseEpoch,
+          } : {}),
+          ...(wait.metadata?.originDispatchId
+            ? { originDispatchId: wait.metadata.originDispatchId }
+            : {}),
         },
         source: { type: 'wait', waitId: wait.id },
         now: at,

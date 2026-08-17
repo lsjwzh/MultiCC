@@ -519,6 +519,49 @@ function close(name) {
   sessions.delete(name);
 }
 
+// TaskRun reuse needs a stronger boundary than close(): the map entry being
+// gone proves no new turn can use the process, but transcript cleanup must also
+// wait until the captured CLI process has actually exited (including SIGKILL
+// escalation). Existing callers keep close()'s synchronous contract.
+function closeAndWait(name, { timeoutMs = CLOSE_KILL_GRACE_MS + 1_000 } = {}) {
+  const numericTimeout = Number(timeoutMs);
+  if (!Number.isFinite(numericTimeout) || numericTimeout < 1) {
+    return Promise.reject(Object.assign(new TypeError('valid close timeout required'), {
+      code: 'CHAT_STREAM_CLOSE_TIMEOUT_INVALID',
+    }));
+  }
+  const processState = sessions.get(name)?.proc || null;
+  if (!processState || processState.exitCode !== null) {
+    close(name);
+    return Promise.resolve(Object.freeze({ closed: true, hadProcess: false }));
+  }
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer = null;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      try { processState.removeListener('exit', onExit); } catch (_) {}
+      if (error) reject(error);
+      else resolve(Object.freeze({ closed: true, hadProcess: true }));
+    };
+    const onExit = () => finish();
+    try { processState.once('exit', onExit); } catch (cause) {
+      finish(Object.assign(new Error('cannot join native chat process', { cause }), {
+        code: 'CHAT_STREAM_CLOSE_JOIN_FAILED',
+      }));
+      return;
+    }
+    timer = setTimeout(() => finish(Object.assign(
+      new Error('native chat process did not exit before the cleanup deadline'),
+      { code: 'CHAT_STREAM_CLOSE_TIMEOUT' },
+    )), numericTimeout);
+    close(name);
+    if (processState.exitCode !== null) finish();
+  });
+}
+
 function status(name) {
   const s = sessions.get(name);
   if (!s) return null;
@@ -533,4 +576,4 @@ function status(name) {
   };
 }
 
-module.exports = { ensure, send, inject, cancel, close, isAlive, status, recycle };
+module.exports = { ensure, send, inject, cancel, close, closeAndWait, isAlive, status, recycle };

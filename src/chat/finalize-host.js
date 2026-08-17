@@ -31,8 +31,16 @@ function createTurnFinalizationExecutor(rawPorts) {
   const log = typeof ports.log === 'function' ? ports.log : () => {};
   const logError = typeof ports.logError === 'function' ? ports.logError : () => {};
 
+  function isBlockedTerminalEffect(entry, context) {
+    if (context.terminalBlocked !== true) return false;
+    if (entry.type === 'complete-session-turn') return true;
+    if (entry.type === 'freeze-interrupted' || entry.type === 'classify-turn-end') return true;
+    return entry.type === 'emit-turn-outcome' && entry.status === 'succeeded';
+  }
+
   function applyEffect(entry, context) {
     const { sessionName, cs } = context;
+    if (isBlockedTerminalEffect(entry, context)) return;
     switch (entry.type) {
       case 'set-streaming':
         cs.isStreaming = entry.value;
@@ -72,7 +80,17 @@ function createTurnFinalizationExecutor(rawPorts) {
         // The two-stage executor performs this write at the effect boundary.
         break;
       case 'commit-usage':
-        if (context.appendPersisted) ports.commitUsage(context);
+        if (context.turn && context.turn.resultDurable === true) {
+          context.usageAttempted = true;
+          try {
+            context.usageDurable = ports.commitUsage(context) === true;
+          } catch (error) {
+            context.usageDurable = false;
+            context.usageError = error && error.message ? String(error.message) : 'usage commit failed';
+            logError('usage-commit-failed', { sessionName, error });
+          }
+          if (context.usageDurable !== true) context.terminalBlocked = true;
+        }
         break;
       case 'increment-chat-turn-count':
         if (context.appendPersisted) cs.chatTurnCount++;
@@ -170,13 +188,26 @@ function createTurnFinalizationExecutor(rawPorts) {
   }
 
   function execute(plan, rawContext) {
-    const context = { appendPersisted: false, finalText: '', ...rawContext };
+    const context = {
+      appendPersisted: false,
+      finalText: '',
+      usageAttempted: false,
+      usageDurable: null,
+      terminalBlocked: false,
+      ...rawContext,
+    };
     const applyAll = effects => effects.forEach(entry => applyEffect(entry, context));
 
     if (!plan.append || !plan.append.required) {
       const resolved = resolveTurnFinalization(plan, { resultDurable: context.turn.resultDurable });
       applyAll(resolved.effects);
-      return Object.freeze({ resolved, appendPersisted: false, finalText: context.finalText });
+      return Object.freeze({
+        resolved,
+        appendPersisted: false,
+        finalText: context.finalText,
+        usageDurable: context.usageDurable,
+        terminalBlocked: context.terminalBlocked,
+      });
     }
 
     const preliminary = resolveTurnFinalization(plan, { resultDurable: context.turn.resultDurable });
@@ -196,6 +227,8 @@ function createTurnFinalizationExecutor(rawPorts) {
       resolved,
       appendPersisted: context.appendPersisted,
       finalText: context.finalText,
+      usageDurable: context.usageDurable,
+      terminalBlocked: context.terminalBlocked,
     });
   }
 

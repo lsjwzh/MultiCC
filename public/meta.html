@@ -110,6 +110,26 @@
   .td-chip { font-size: 10px; padding: 1px 7px; border-radius: 9px; background: #21262d; color: #8b949e; }
   .td-session-link { color: #58a6ff; text-decoration: none; cursor: pointer; }
   .td-session-link:hover { color: #79c0ff; text-decoration: underline; }
+  .tb-run-history { padding: 8px 14px; border-bottom: 1px solid #21262d; font-size: 11px; color: #8b949e; }
+  .tb-run-history > summary { cursor: pointer; color: #58a6ff; font-weight: 600; user-select: none; }
+  .tb-run-history-list { max-height: 220px; overflow: auto; margin-top: 6px; display: grid; gap: 6px; }
+  .tb-run-summary { border: 1px solid #30363d; border-radius: 8px; background: #0d1117; padding: 7px 9px; }
+  .tb-run-summary-head { display: flex; justify-content: space-between; gap: 8px; color: #c9d1d9; }
+  .tb-run-usage { margin-top: 4px; }
+  .tb-run-provider { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 3px; }
+  .tb-run-provider-name, .tb-run-model { color: #58a6ff; }
+  .tb-run-token-detail { color: #6e7681; }
+  .tb-run-question { margin-top: 8px; padding-top: 8px; border-top: 1px solid #30363d; }
+  .tb-run-question-label { color: #d29922; font-weight: 600; }
+  .tb-run-question-text { margin-top: 3px; color: #c9d1d9; white-space: pre-wrap; }
+  .tb-run-question-reason { margin-top: 3px; color: #8b949e; }
+  .tb-run-answer-options { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+  .tb-run-answer-option[aria-pressed="true"] { border-color: #d29922; color: #d29922; }
+  .tb-run-answer-compose { display: flex; gap: 6px; align-items: flex-end; margin-top: 6px; }
+  .tb-run-answer-compose textarea { flex: 1; min-height: 38px; resize: vertical; background: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 6px; }
+  .tb-run-answer-result { min-height: 16px; margin-top: 4px; color: #8b949e; }
+  .tb-run-answer-result[data-state="success"] { color: #3fb950; }
+  .tb-run-answer-result[data-state="error"] { color: #f85149; }
   .td-msgs { flex: 1; overflow-y: auto; padding: 10px 14px; }
   .td-msg { margin-bottom: 10px; border: 1px solid #21262d; border-radius: 8px; overflow: hidden; }
   .td-msg-link { display: block; color: inherit; text-decoration: none; cursor: pointer; }
@@ -562,19 +582,42 @@ function renderTaskDetail(d) {
   }
   panel.appendChild(head);
 
+  const recentRuns = window.MultiCCTaskBoardUi.recentTaskRuns(d);
+  if (recentRuns.length) {
+    const runHistory = document.createElement('details');
+    runHistory.className = 'tb-run-history';
+    runHistory.dataset.testid = 'task-run-history';
+    runHistory.open = true;
+    runHistory.innerHTML = `<summary>最近执行 · ${recentRuns.length}</summary><div class="tb-run-history-list">${recentRuns.map(window.MultiCCTaskBoardUi.renderTaskRunSummary).join('')}</div>`;
+    panel.appendChild(runHistory);
+  }
+  window.MultiCCTaskBoardUi.bindPendingQuestionAnswers(panel, async payload => {
+    const response = await fetch(`/api/task-board/tasks/${encodeURIComponent(t.id)}/answer`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.ok) throw new Error(result.error || response.status);
+    setTimeout(() => { loadTaskDetail(t.id, true); fetchTaskBoard(); }, 0);
+    return result;
+  });
+
   const msgs = document.createElement('div'); msgs.className = 'td-msgs';
   if (!d.items.length) {
     msgs.innerHTML = '<div class="td-placeholder">该任务还没有关联对话。</div>';
   }
   for (const it of d.items) {
-    const card = document.createElement('a'); card.className = `td-msg ${it.role} td-msg-link`;
+    const sessionHref = window.MultiCCTaskBoardUi.sessionChatUrl(it.sessionId, it.messageId);
+    const card = document.createElement(sessionHref ? 'a' : 'div');
+    card.className = `td-msg ${it.role}${sessionHref ? ' td-msg-link' : ''}`;
+    if (sessionHref) {
+      card.href = sessionHref; card.target = '_blank'; card.rel = 'noopener noreferrer';
+      card.title = '打开会话并定位到这条消息';
+    }
     const headEl = document.createElement('div'); headEl.className = 'td-msg-head';
     const time = it.ts ? new Date(it.ts).toLocaleString('zh-CN', { hour12: false }) : '?';
-    const sessionHref = window.MultiCCTaskBoardUi.sessionChatUrl(it.sessionId, it.messageId);
-    card.href = sessionHref; card.target = '_blank'; card.rel = 'noopener noreferrer';
-    card.title = '打开会话并定位到这条消息';
     headEl.innerHTML = `
-      <span class="td-sess">${esc(it.sessionLabel || it.sessionId)} ↗</span>
+      <span class="td-sess">${esc(it.sessionLabel || it.sessionId || '临时执行')}${sessionHref ? ' ↗' : ''}</span>
       <span>${esc(time)}</span>
       <span class="td-role-${it.role}">${it.role === 'user' ? '👤 用户' : '🤖 助手'}</span>
       ${it.lost ? '<span style="color:#f85149">（原消息已清理，仅存摘要）</span>' : ''}`;

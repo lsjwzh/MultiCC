@@ -29,7 +29,10 @@ test('session query projects only the bounded public DTO', () => {
     provider: 'p1', autoCommit: true, createdAt: 1000,
     token: 'do-not-leak', nativeSessionId: 'native', cliSessionId: 'native-2',
     cwd: '/private/project', worktreePath: '/private/worktree', stack: 'trace',
-  }, { id: '__aux__', type: 'aux', dirId: 'd1' }];
+  }, { id: '__aux__', type: 'aux', dirId: 'd1' }, {
+    id: 'task-slot', type: 'worker', kind: 'chat', dirId: 'd1',
+    taskExecutionSlot: true,
+  }];
   const service = createSessionQueryService({
     records: { list: () => source, get: id => source.find(item => item.id === id) },
     runtime: { read: () => ({
@@ -44,6 +47,20 @@ test('session query projects only the bounded public DTO', () => {
   assert.equal(list[0].effectiveModel, 'gpt-safe');
   assert.equal(list[0].clients, 2);
   assert.equal(service.get('__aux__'), null);
+  assert.equal(
+    service.get('task-slot', { includeHidden: true }),
+    null,
+    'generic hidden-session access must not implicitly expose TaskRun slots',
+  );
+  assert.equal(
+    service.get('task-slot', { includeTaskExecutionSlots: true }).id,
+    'task-slot',
+    'internal callers must opt into the execution-pool namespace explicitly',
+  );
+  assert.deepEqual(
+    service.list({ dirId: 'd1', includeHidden: true }).map(session => session.id).sort(),
+    ['__aux__', 's1'],
+  );
   assertNoSensitiveKeys(list);
 });
 

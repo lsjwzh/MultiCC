@@ -71,11 +71,22 @@ function normalizeGoalLimits(value) {
 
 function normalizeTaskContext(input) {
   const taskId = cleanId(input.taskId, 'taskId');
+  const taskRunId = cleanId(input.taskRunId, 'taskRunId');
+  const leaseEpoch = input.leaseEpoch == null ? null : Number(input.leaseEpoch);
   const start = input.taskStart === true;
   const rawSource = cleanId(input.taskSource, 'taskSource');
   const source = LEGACY_TASK_SOURCE_ALIASES.get(rawSource) || rawSource;
   if (start && !taskId) {
     throw new TurnRequestError('invalid_task', 'taskStart requires taskId');
+  }
+  if (taskRunId && !taskId) {
+    throw new TurnRequestError('invalid_task', 'taskRunId requires taskId');
+  }
+  if (leaseEpoch != null && (!Number.isSafeInteger(leaseEpoch) || leaseEpoch < 1)) {
+    throw new TurnRequestError('invalid_task', 'leaseEpoch must be a positive integer');
+  }
+  if (leaseEpoch != null && !taskRunId) {
+    throw new TurnRequestError('invalid_task', 'leaseEpoch requires taskRunId');
   }
   if (start && !TASK_SOURCES.has(source)) {
     throw new TurnRequestError('invalid_task', 'taskStart requires a trusted task source');
@@ -89,6 +100,7 @@ function normalizeTaskContext(input) {
   }
   return Object.freeze({
     id: taskId,
+    ...(taskRunId ? { runId: taskRunId, leaseEpoch } : {}),
     start,
     source: source || null,
     text: start ? rawText : '',
