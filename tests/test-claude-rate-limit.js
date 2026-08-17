@@ -257,7 +257,7 @@ test('Ark quota fetch carries the active provider baseUrl and caches per plan', 
     global.fetch = async (url) => {
       calls.push(String(url));
       return {
-        json: async () => String(url).startsWith('/api/ark/quota')
+        json: async () => String(url).startsWith('/api/quota/bars/refresh')
           ? { status: 'ok', fetchedAt: NOW, bar: { text: 'Coding', color: '#58a6ff', title: 'Coding（当前 provider）' } }
           : { status: 'ok', bars: IDLE_BARS },
       };
@@ -265,8 +265,9 @@ test('Ark quota fetch carries the active provider baseUrl and caches per plan', 
     f.values.set('multicc.ark.quota.v1', JSON.stringify({ status: 'ok', bar: { text: 'Agent', color: '#d29922', title: 'stale global key' } }));
     f.C.setProviderBaseUrl('https://ark.cn-beijing.volces.com/api/coding');
     await flushClient();
-    const arkCalls = calls.filter(url => url.startsWith('/api/ark/quota'));
-    assert.ok(arkCalls.some(url => url === '/api/ark/quota?baseUrl=https%3A%2F%2Fark.cn-beijing.volces.com%2Fapi%2Fcoding'));
+    const arkCalls = calls.filter(url => url.startsWith('/api/quota/bars/refresh'));
+    assert.ok(arkCalls.some(url => url.includes('kind=ark')
+      && url.includes('baseUrl=https%3A%2F%2Fark.cn-beijing.volces.com%2Fapi%2Fcoding')));
     assert.equal(f.element('ark-quota-bar').textContent, 'Coding');
     assert.ok(f.values.has('multicc.ark.quota.v1:coding-plan'), 'Coding and Agent cache entries must not share one bar');
     assert.equal(f.values.has('multicc.ark.quota.v1'), true, 'legacy global cache may exist but is no longer read for Ark');
