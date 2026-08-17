@@ -755,10 +755,10 @@ const persistedSessions = _state.persistedSessions;
 
 // Last-known-good per-provider limit/usage cache for the Web/App pickers;
 // producers feed it via src/quota/limit-cache-recorder.js.
-const { createProviderLimitCache } = require('./src/quota/provider-limit-cache');
-const { createLimitRecorder } = require('./src/quota/limit-cache-recorder');
+const { createProviderLimitCache } = require('./src/quota/provider-limit-cache'); const { createLimitRecorder } = require('./src/quota/limit-cache-recorder'); const { createQuotaBarCache } = require('./src/quota/quota-bar-cache');
 const providerLimitCache = createProviderLimitCache({ file: MULTICC_PATHS.providerLimitDbFile, legacyJsonFile: MULTICC_PATHS.providerLimitCacheFile });
 const limitRecorder = createLimitRecorder({ cache: providerLimitCache, persistedSessions, providers });
+const quotaBarCache = createQuotaBarCache({ file: MULTICC_PATHS.quotaBarCacheFile });
 // Host-injected store port. Production delegates directly to StateStore's
 // atomic tmp+fsync+rename write. Isolated integration tests may place a marker
 // inside their temporary MULTICC_DATA_DIR to inject EIO deterministically.
@@ -2262,7 +2262,7 @@ mountQoderModelRoutes(app);
 mountOpenCodeQuotaRoutes(app); mountQoderQuotaRoutes(app); mountCodexQuotaRoutes(app);
 // Vendor routes feed results into the provider-limit cache via the recorder;
 // Qoder/OpenCode/Codex are account-level, so only ark/zhipu/kimi/claude feed here.
-mountArkQuotaRoutes(app, limitRecorder.recordVendor); mountZhipuQuotaRoutes(app, limitRecorder.recordVendor); mountKimiQuotaRoutes(app, { recordVendor: limitRecorder.recordVendor }); mountClaudeUsageQuotaRoutes(app, limitRecorder.recordClaude); mountAliyunQuotaRoutes(app); require('./src/routes/quota-bars').mountQuotaBarRoutes(app);
+mountArkQuotaRoutes(app, limitRecorder.recordVendor); mountZhipuQuotaRoutes(app, limitRecorder.recordVendor); mountKimiQuotaRoutes(app, { recordVendor: limitRecorder.recordVendor }); mountClaudeUsageQuotaRoutes(app, limitRecorder.recordClaude); mountAliyunQuotaRoutes(app); require('./src/routes/quota-bars').mountQuotaBarRoutes(app, { quotaBarCache, recordVendor: limitRecorder.recordVendor, recordClaude: limitRecorder.recordClaude });
 mountCodexOAuthRoutes(app, { getStatus: () => codexOAuthRefresh.status(), directories, createSessionRecord, persistedSessionExists: id => persistedSessions.has(id) });
 const claudeOAuthSurface = createClaudeOAuthSurface({ refresher: claudeOAuthRefresh, directories, createSessionRecord, persistedSessions, destroySessionCascade, sessionPersistence, appendEvent }); claudeOAuthSurface.mountRoutes(app); // see src/routes/claude-oauth.js header
 // Token APIs remain between the two Provider route phases so the established
