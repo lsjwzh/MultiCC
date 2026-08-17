@@ -130,17 +130,18 @@
 
   // ── Per-vendor cache: one shape (a route response, fresh 24h) ──
   function makeStorage(key) {
+    const resolveKey = () => (typeof key === 'function' ? key() : key);
     return {
       load() {
         const s = browserStorage(); if (!s) return null;
         try {
-          const raw = s.getItem(key); if (!raw) return null;
+          const raw = s.getItem(resolveKey()); if (!raw) return null;
           const v = JSON.parse(raw); if (!v || typeof v !== 'object') return null;
           if (v.fetchedAt && (Date.now() - v.fetchedAt) > 86_400_000) return null;
           return v;
         } catch (_) { return null; }
       },
-      save(v) { const s = browserStorage(); if (!s || !v) return; try { s.setItem(key, JSON.stringify(v)); } catch (_) {} },
+      save(v) { const s = browserStorage(); if (!s || !v) return; try { s.setItem(resolveKey(), JSON.stringify(v)); } catch (_) {} },
     };
   }
 
@@ -255,8 +256,8 @@
   const arkSlot = createQuotaSlot({
     kind: 'ark', id: 'ark-quota-bar', canInstall: true,
     isVisible: () => isArkBaseUrl(currentProviderBaseUrl),
-    getUrl: () => '/api/ark/quota',
-    storageKey: 'multicc.ark.quota.v1',
+    getUrl: () => `/api/ark/quota?baseUrl=${encodeURIComponent(currentProviderBaseUrl)}`,
+    storageKey: () => `multicc.ark.quota.v1:${arkPlanFromBaseUrl(currentProviderBaseUrl) || hostFromBaseUrl(currentProviderBaseUrl) || 'unknown'}`,
     onClick: (view) => arkClick(view),
   });
 

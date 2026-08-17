@@ -419,6 +419,28 @@
     return null;
   }
 
+  function arkPlanFromBaseUrl(baseUrl) {
+    const path = (() => { try { return new URL(baseUrl || '').pathname.toLowerCase(); } catch (_) { return ''; } })();
+    if (/(^|\/)coding(\/|$)/.test(path)) return 'coding-plan';
+    if (/(^|\/)plan(\/|$)/.test(path)) return 'agent-plan';
+    return '';
+  }
+
+  function quotaProviderCacheKey(kind, provider) {
+    if (kind === 'ark') {
+      const plan = arkPlanFromBaseUrl(provider && provider.baseUrl);
+      return `ark:${plan || (provider && provider.baseUrl) || 'unknown'}`;
+    }
+    return kind;
+  }
+
+  function quotaRouteForProvider(kind, provider) {
+    const route = QUOTA_ROUTES[kind];
+    if (!route) return '';
+    if (kind === 'ark' && provider && provider.baseUrl) return `${route}?baseUrl=${encodeURIComponent(provider.baseUrl)}`;
+    return route;
+  }
+
   function formatProviderQuotaBadge(kind, data) {
     if (!data || typeof data !== 'object') return null;
     const st = data.status;
@@ -465,6 +487,13 @@
       return { text: `余量 周 ${quotaFmt2(w.usedPercent)}% 已用`, color: quotaPctColor(w.usedPercent), title: 'Codex 周窗口用量' + (data.planType ? ` · ${data.planType}` : '') };
     }
     if (kind === 'ark') {
+      if (data.bar && typeof data.bar === 'object' && data.bar.text) {
+        return {
+          text: `余量 ${data.bar.text}`,
+          color: data.bar.color || QUOTA_GRAY,
+          title: data.bar.title || '火山方舟套餐额度（当前 provider）',
+        };
+      }
       let worst = null;
       for (const it of (data.items || [])) {
         if (!it || it.subscribed !== true) continue;
@@ -532,7 +561,9 @@
 
     const paint = () => {
       root.document.querySelectorAll('[data-quota-id]').forEach(el => {
-        const kind = quotaKindForProvider(byId.get(el.getAttribute('data-quota-id')));
+        const provider = byId.get(el.getAttribute('data-quota-id'));
+        const kind = quotaKindForProvider(provider);
+        const cacheKey = quotaProviderCacheKey(kind, provider);
         if (!kind) {
           // Never promise a result for a vendor with no quota endpoint.
           el.textContent = '余量 —（无余量接口）';
@@ -542,13 +573,13 @@
           el.title = '该服务商未提供余量查询接口（目前支持 ark / 智谱 / Kimi / Codex / Qoder / OpenCode / 阿里云百炼 官方源）';
           return;
         }
-        const entry = cache[kind];
+        const entry = cache[cacheKey];
         const view = entry ? formatProviderQuotaBadge(kind, entry.data) : null;
         if (view) {
           el.textContent = view.text;
           el.style.color = view.color;
           el.title = view.title + '。数字来自服务端配置的同厂商凭证，未必属于这张卡的 key；点击重新查询';
-        } else if (pending.has(kind)) {
+        } else if (pending.has(cacheKey)) {
           el.textContent = '余量 查询中…';
           el.style.color = QUOTA_GRAY;
           el.title = '正在查询余量…';
@@ -560,7 +591,7 @@
         el.style.cursor = 'pointer';
         const st = entry && entry.data ? entry.data.status : '';
         const actionable = (st === 'needs_login' || st === 'chrome_unavailable') && QUOTA_LOGIN_ROUTES[kind] && openLoginWindow;
-        el.onclick = actionable ? () => openLoginWindow(kind, el) : () => fetchKind(kind, true);
+        el.onclick = actionable ? () => openLoginWindow(kind, el) : () => fetchKind(kind, provider, true);
       });
     };
     paint();
@@ -586,25 +617,33 @@
     };
     paint();
 
-    function fetchKind(kind, force) {
+    function fetchKind(kind, provider, force) {
+      const cacheKey = quotaProviderCacheKey(kind, provider);
       const now = Date.now();
-      if (!force && quotaLastFetch[kind] && now - quotaLastFetch[kind] < QUOTA_REFETCH_MS) return;
-      quotaLastFetch[kind] = now;
-      pending.add(kind);
+      if (!force && quotaLastFetch[cacheKey] && now - quotaLastFetch[cacheKey] < QUOTA_REFETCH_MS) return;
+      quotaLastFetch[cacheKey] = now;
+      pending.add(cacheKey);
       paint();
       const done = (data) => {
-        pending.delete(kind);
-        cache[kind] = { fetchedAt: now, data };
+        pending.delete(cacheKey);
+        cache[cacheKey] = { fetchedAt: now, data };
         quotaCacheWrite(root, cache);
         paint();
       };
       Promise.resolve()
-        .then(() => fetchFn(QUOTA_ROUTES[kind]))
+        .then(() => fetchFn(quotaRouteForProvider(kind, provider)))
         .then(done, (err) => done((err && err.details && typeof err.details === 'object') ? err.details : { status: 'unavailable' }));
     }
 
-    const kinds = new Set(providers.map(quotaKindForProvider).filter(Boolean));
-    for (const kind of kinds) fetchKind(kind, false);
+    const seen = new Set();
+    for (const provider of providers) {
+      const kind = quotaKindForProvider(provider);
+      if (!kind) continue;
+      const cacheKey = quotaProviderCacheKey(kind, provider);
+      if (seen.has(cacheKey)) continue;
+      seen.add(cacheKey);
+      fetchKind(kind, provider, false);
+    }
   }
 
   return {

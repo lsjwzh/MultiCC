@@ -267,11 +267,9 @@ bool applyReasoningDelta(ChatMessage msg, String sessionId, String text) {
   final id = 'sidecar-reasoning-$sessionId';
   final existing = toolCallById(msg, id);
   if (existing == null) {
-    msg.toolCalls.add(ToolCall(
-      id: id,
-      name: 'Thinking',
-      inputJson: jsonEncode({'text': text}),
-    ));
+    msg.toolCalls.add(
+      ToolCall(id: id, name: 'Thinking', inputJson: jsonEncode({'text': text})),
+    );
     return true;
   }
   var buffer = text;
@@ -288,9 +286,7 @@ bool applyReasoningDelta(ChatMessage msg, String sessionId, String text) {
 /// `{"arguments":"…"}` 取回内串；已能 parse 的形态本身即原始串。
 String _rawToolArgsBuffer(ToolCall tc) {
   final parsed = tc.parsedInput;
-  if (parsed != null &&
-      parsed.length == 1 &&
-      parsed['arguments'] is String) {
+  if (parsed != null && parsed.length == 1 && parsed['arguments'] is String) {
     return parsed['arguments'] as String;
   }
   return tc.inputJson;
@@ -325,12 +321,14 @@ bool applyToolArgsDelta(
     existing.inputJson = _normalizeToolArgs(raw);
     return true;
   }
-  msg.toolCalls.add(ToolCall(
-    id: toolId,
-    name: toolName.isNotEmpty ? toolName : 'Tool',
-    inputJson: _normalizeToolArgs(argsFragment),
-    startedAt: now,
-  ));
+  msg.toolCalls.add(
+    ToolCall(
+      id: toolId,
+      name: toolName.isNotEmpty ? toolName : 'Tool',
+      inputJson: _normalizeToolArgs(argsFragment),
+      startedAt: now,
+    ),
+  );
   return true;
 }
 
@@ -549,7 +547,9 @@ class ChatProvider extends ChangeNotifier {
   /// stand-in before the first fetch lands.
   VendorQuotaView? get codexQuotaView {
     if (_cli != SessionCli.codex) return null;
-    final v = vendorViewFromBar(_codexQuota != null ? _barOf(_codexQuota!) : null);
+    final v = vendorViewFromBar(
+      _codexQuota != null ? _barOf(_codexQuota!) : null,
+    );
     if (v != null) return v;
     if (_rateLimitBar != null && _usageWindowLimit?.provider == 'codex') {
       final ev = vendorViewFromBar(_rateLimitBar);
@@ -672,8 +672,9 @@ class ChatProvider extends ChangeNotifier {
 
   /// 已发送、等服务端 FIFO 裁决的用户消息（对齐 web stagedUserBubbles：进队列的
   /// 不在对话区占位，started 才回填气泡）。pending 为空 = 没有占位暂存。
-  late final StagedSendTracker _stagedTracker =
-      StagedSendTracker(onCommit: _commitStagedBubble);
+  late final StagedSendTracker _stagedTracker = StagedSendTracker(
+    onCommit: _commitStagedBubble,
+  );
   bool _historyApplied = false;
 
   // Lazy history pagination state. The initial WS chat_history push carries
@@ -830,14 +831,15 @@ class ChatProvider extends ChangeNotifier {
 
   // The fetch-based quota slots that participate in the runtime cache, keyed
   // by their cache field. Mirrors the web per-slot localStorage keys.
-  Map<String, void Function(Map<String, dynamic>)> get _vendorQuotaCacheSlots => {
-    'arkQuota': (v) => _arkQuota = v,
-    'zhipuQuota': (v) => _zhipuQuota = v,
-    'kimiQuota': (v) => _kimiQuota = v,
-    'qoderQuota': (v) => _qoderQuota = v,
-    'opencodeQuota': (v) => _opencodeQuota = v,
-    'codexQuota': (v) => _codexQuota = v,
-  };
+  Map<String, void Function(Map<String, dynamic>)> get _vendorQuotaCacheSlots =>
+      {
+        'arkQuota': (v) => _arkQuota = v,
+        'zhipuQuota': (v) => _zhipuQuota = v,
+        'kimiQuota': (v) => _kimiQuota = v,
+        'qoderQuota': (v) => _qoderQuota = v,
+        'opencodeQuota': (v) => _opencodeQuota = v,
+        'codexQuota': (v) => _codexQuota = v,
+      };
 
   void _persistRuntimeCache() {
     unawaited(
@@ -907,8 +909,7 @@ class ChatProvider extends ChangeNotifier {
   }
 
   void setDisplayName(String value, {String? dirName}) {
-    if (displayName == value &&
-        (dirName == null || this.dirName == dirName)) {
+    if (displayName == value && (dirName == null || this.dirName == dirName)) {
       return;
     }
     displayName = value;
@@ -1346,8 +1347,9 @@ class ChatProvider extends ChangeNotifier {
             (evt.payload as Map<String, dynamic>)['role']
                 as Map<String, dynamic>?;
         {
-          final breakdown =
-              RoleTokenBreakdown.fromEvent(evt.payload as Map<String, dynamic>);
+          final breakdown = RoleTokenBreakdown.fromEvent(
+            evt.payload as Map<String, dynamic>,
+          );
           if (breakdown != null) {
             _lastRoleBreakdown = breakdown;
             // Attach live so the detail chip appears during streaming; a
@@ -1540,7 +1542,7 @@ class ChatProvider extends ChangeNotifier {
     _arkInFlight = true;
     _arkLoading = true;
     notifyListeners();
-    final data = await _quota.fetchArkQuota();
+    final data = await _quota.fetchArkQuota(_providerBaseUrl);
     _arkInFlight = false;
     _arkLoading = false;
     if (data == null) {
@@ -1943,7 +1945,12 @@ class ChatProvider extends ChangeNotifier {
         tc.result = c is String
             ? c
             : c is List
-            ? c.map((item) => item is Map ? (item['text'] ?? '').toString() : '').join('')
+            ? c
+                  .map(
+                    (item) =>
+                        item is Map ? (item['text'] ?? '').toString() : '',
+                  )
+                  .join('')
             : c?.toString();
         tc.isError = raw['is_error'] == true;
         tc.isDone = true;
@@ -2011,12 +2018,14 @@ class ChatProvider extends ChangeNotifier {
           }
         }
         if (existing == null) {
-          _currentMsg!.toolCalls.add(ToolCall(
-            id: id,
-            name: name,
-            inputJson: input != null ? jsonEncode(input) : '',
-            startedAt: DateTime.now().millisecondsSinceEpoch,
-          ));
+          _currentMsg!.toolCalls.add(
+            ToolCall(
+              id: id,
+              name: name,
+              inputJson: input != null ? jsonEncode(input) : '',
+              startedAt: DateTime.now().millisecondsSinceEpoch,
+            ),
+          );
           changed = true;
         } else if (input != null && existing.inputJson != jsonEncode(input)) {
           // Authoritative convergence (web finalizeAssistantMsg parity): the
@@ -2186,9 +2195,8 @@ class ChatProvider extends ChangeNotifier {
 
   /// Rows for the floating background-task panel, newest first. Finished rows
   /// beyond the auto-hide window drop out automatically.
-  List<BackgroundTaskRow> backgroundTaskRows() => _backgroundTasks.rows(
-        now: DateTime.now().millisecondsSinceEpoch,
-      );
+  List<BackgroundTaskRow> backgroundTaskRows() =>
+      _backgroundTasks.rows(now: DateTime.now().millisecondsSinceEpoch);
 
   bool get hasBackgroundTaskRows => _backgroundTasks.rows().isNotEmpty;
 
@@ -2279,10 +2287,7 @@ class ChatProvider extends ChangeNotifier {
     });
   }
 
-  bool _listEqualsById(
-    List<DispatchQueueEntry> a,
-    List<DispatchQueueEntry> b,
-  ) {
+  bool _listEqualsById(List<DispatchQueueEntry> a, List<DispatchQueueEntry> b) {
     if (a.length != b.length) return false;
     for (var i = 0; i < a.length; i++) {
       if (a[i].operationId != b[i].operationId ||
