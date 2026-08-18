@@ -167,6 +167,10 @@ function createTaskRunHost(options = {}) {
     await Promise.resolve(deleteChatHistory(sessionId));
     await Promise.resolve(resetChatState(sessionId));
     await Promise.resolve(resetRoleUsage(sessionId));
+    // The next run on this slot must not inherit the previous run's failure
+    // verdict: a stale apiError would misattribute (and mis-retry) the next
+    // failure before the new turn writes its own.
+    if (record.taskState) record.taskState.apiError = null;
   }
 
   const finalizers = new Map();
@@ -469,7 +473,9 @@ function createTaskRunHost(options = {}) {
       if (status === 'failed') {
         let apiError = null;
         try {
-          apiError = getTaskState(record)?.apiError || null;
+          // The port is id-keyed (server wires `id => getTaskState(record)`);
+          // passing the record object would silently return the empty default.
+          apiError = getTaskState(sessionId)?.apiError || null;
         } catch (_) { apiError = null; }
         failure = describeRunFailure({ event, apiError });
         try {
