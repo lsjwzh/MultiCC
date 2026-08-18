@@ -279,7 +279,7 @@ class SessionCard extends StatelessWidget {
                       borderRadius: BorderRadius.circular(6),
                     ),
                     child: Text(
-                      '🗒 ${live!.summary}',
+                      '🗒 ${withTaskCode(live!.taskShortCode, live.summary!)}',
                       style: const TextStyle(
                         color: Color(0xFF7fe6da),
                         fontSize: 10.5,
