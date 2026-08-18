@@ -167,6 +167,7 @@ const {
   DEFAULT_CHECK_INTERVAL_MS: CODEX_OAUTH_CHECK_INTERVAL_MS,
 } = require('./src/codex-oauth-refresh');
 const { parseClassifyResult, buildClassifySystemPrompt, classifyDisplay, phaseLabel } = require('./src/classify/vocab');
+const { taskShortCode } = require('./src/classify/task-short-code'); // 4-char base36 display handle derived from taskId
 const { USER_INPUT_SIGNAL_PROMPT, buildCodexUserInputConstraint, recordAdapterUserInput, createUserInputSignalHost } = require('./src/classify/user-input-host');
 const { createDispatchTargeting } = require('./src/dispatch/targeting');
 const { createGatewayHost } = require('./src/dispatch/gateway-host');
@@ -2533,10 +2534,9 @@ function setTaskState(sessionId, patch, opts = {}) {
   // when a chat WS is connected for this session.
   const classifyPayload = {
     type: 'task_state',
-    goal: next.goal || '',
+    goal: next.goal || '', taskShortCode: taskShortCode(next.taskId),
     phase: next.phase || 'idle',
-    classifyState: next.classifyState || null,
-    apiError: next.apiError || null,
+    classifyState: next.classifyState || null, apiError: next.apiError || null,
   };
   try {
     chatBroadcast(sessionId, classifyPayload);

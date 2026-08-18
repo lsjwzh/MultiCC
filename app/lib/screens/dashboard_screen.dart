@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../services/manage_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
+import '../utils/session_status_helpers.dart';
 
 /// 状态看板 — 镜像网页 dashboard.html：全会话一览（active/idle）+ 聚合统计
 /// （总数 / 活跃数 / 按 CLI / 按 kind）。只读，自动刷新。
@@ -307,7 +308,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 if (goal != null && goal.isNotEmpty) ...[
                   const SizedBox(height: 2),
                   Text(
-                    goal,
+                    withTaskCode(s['taskShortCode']?.toString(), goal),
                     style: const TextStyle(
                       color: AppColors.faint,
                       fontSize: 11,
