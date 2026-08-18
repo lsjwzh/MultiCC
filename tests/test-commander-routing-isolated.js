@@ -256,6 +256,70 @@ async function waitUntil(check, message, attempts = 100) {
     assert.equal(admission.content, '从任务面板进入统一通道',
       'admission persists the raw task text, never the Commander wrapper');
 
+    // The wrapper is transport-only: it must not appear in the board's message
+    // projection (the task detail conversation view)…
+    const detailView = await waitUntil(async () => {
+      const value = await api('GET', `/api/task-board/tasks/${panelCard.id}/messages`);
+      return value.items?.some(item => item.role === 'assistant'
+        && String(item.text || '').includes('FAKE-WORKER-DONE')) ? value : null;
+    }, 'task detail projection did not include the worker reply', 250);
+    const detailTexts = detailView.items.map(item => String(item.text || ''));
+    assert.equal(detailTexts.filter(text => text === '从任务面板进入统一通道').length, 1,
+      'raw admission text appears exactly once in the task detail projection');
+    assert.equal(detailTexts.some(text => text.includes('【Commander 单向路由任务】')
+      || text.includes('[MultiCC 任务运行上下文')), false,
+      'transport wrapper never appears in the task detail projection');
+
+    // …and it must not re-enter the compiled context of a follow-up run.
+    await api('POST', `/api/task-board/tasks/${panelCard.id}/send`, {
+      text: '补充同一任务的验收细节', clientMsgId: 'panel-isolated-2',
+    });
+    const followupExecs = await waitUntil(() => {
+      const rows = fs.readFileSync(invocationFile, 'utf8').trim().split(/\n/).filter(Boolean).map(JSON.parse);
+      const execs = rows.filter(row => row.args[0] === 'exec');
+      return execs.length === 2 ? execs : null;
+    }, 'follow-up did not trigger a second worker execution', 200);
+    const followupPayload = String(followupExecs[1].args[followupExecs[1].args.length - 1] || '');
+    assert.ok(followupPayload.includes('补充同一任务的验收细节'),
+      'follow-up payload carries the new admission text');
+    assert.equal((followupPayload.match(/\[MultiCC 任务运行上下文/g) || []).length, 1,
+      'follow-up context contains only its own header, never a replayed wrapper');
+    assert.equal((followupPayload.match(/【Commander 单向路由任务】/g) || []).length, 1,
+      'follow-up payload carries only its own transport wrapper');
+
+    // The follow-up run's own wrapper is delivered with taskStart=false, so it
+    // DOES land in the run ledger — and must still be filtered from the
+    // projection…
+    const detailAfterFollowup = await waitUntil(async () => {
+      const value = await api('GET', `/api/task-board/tasks/${panelCard.id}/messages`);
+      const texts = (value.items || []).map(item => String(item.text || ''));
+      return texts.some(text => text === '补充同一任务的验收细节')
+        && texts.filter(text => text.includes('FAKE-WORKER-DONE')).length >= 2 ? value : null;
+    }, 'task detail projection did not include the follow-up turn', 250);
+    const followupTexts = detailAfterFollowup.items.map(item => String(item.text || ''));
+    assert.equal(followupTexts.filter(text => text === '补充同一任务的验收细节').length, 1,
+      'follow-up admission appears exactly once in the projection');
+    assert.equal(followupTexts.some(text => text.includes('【Commander 单向路由任务】')
+      || text.includes('[MultiCC 任务运行上下文')), false,
+      'follow-up wrapper never appears in the task detail projection');
+
+    // …and a third run must not compile the follow-up wrapper into its context.
+    await api('POST', `/api/task-board/tasks/${panelCard.id}/send`, {
+      text: '第三轮验收补充', clientMsgId: 'panel-isolated-3',
+    });
+    const thirdExecs = await waitUntil(() => {
+      const rows = fs.readFileSync(invocationFile, 'utf8').trim().split(/\n/).filter(Boolean).map(JSON.parse);
+      const execs = rows.filter(row => row.args[0] === 'exec');
+      return execs.length === 3 ? execs : null;
+    }, 'third follow-up did not trigger a third worker execution', 200);
+    const thirdPayload = String(thirdExecs[2].args[thirdExecs[2].args.length - 1] || '');
+    assert.ok(thirdPayload.includes('第三轮验收补充'),
+      'third payload carries the newest admission text');
+    assert.equal((thirdPayload.match(/\[MultiCC 任务运行上下文/g) || []).length, 1,
+      'third context contains only its own header, never a replayed follow-up wrapper');
+    assert.equal((thirdPayload.match(/【Commander 单向路由任务】/g) || []).length, 1,
+      'third payload carries only its own transport wrapper');
+
     const commanderHistoryFile = path.join(paths.chatHistoryDir, `${commander.id}.json`);
     const commanderHistory = fs.existsSync(commanderHistoryFile)
       ? JSON.parse(fs.readFileSync(commanderHistoryFile, 'utf8'))

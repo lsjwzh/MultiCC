@@ -6,6 +6,7 @@ const test = require('node:test');
 
 const {
   buildTaskRunContext,
+  isTaskRunWrapperText,
   stableTaskRunId,
 } = require('../src/task-run-context');
 
@@ -181,4 +182,34 @@ test('content hash changes when the effective current requirement changes', () =
   assert.deepEqual(replay, first);
   assert.notEqual(changed.hash, first.hash);
   assert.notEqual(changed.manifest.currentTextHash, first.manifest.currentTextHash);
+});
+
+// The compiled context / Commander wrapper is transport-only. One shared
+// predicate guards every consumer (ledger writer, board projection, next-turn
+// compile input) so the scaffold can never leak into the conversation view.
+test('isTaskRunWrapperText identifies every wrapper shape, never raw user text', () => {
+  const wall = buildTaskRunContext({
+    task: { id: 'task-42', title: '对比 omnigent 功能' },
+    messages: [],
+    currentText: '补充验收细节',
+  }).text;
+  assert.equal(isTaskRunWrapperText(wall), true, 'compiled context wall');
+  const commander = [
+    '【Commander 单向路由任务】',
+    '这是宿主路由器直接投递的执行任务。请在当前 worker 会话完成，不要再次分发。',
+    '',
+    `【任务：对比 omnigent 功能】\n${wall}`,
+  ].join('\n');
+  assert.equal(isTaskRunWrapperText(commander), true, 'Commander-routed wrapper');
+  assert.equal(isTaskRunWrapperText(`【任务：对比 omnigent 功能】\n补充验收细节`), true,
+    'manual routed wrapper');
+  assert.equal(isTaskRunWrapperText(`前缀说明\n${commander}`), true,
+    'wrapper stays detected behind a goal-note prefix');
+
+  assert.equal(isTaskRunWrapperText('从任务面板进入统一通道'), false, 'raw admission text');
+  assert.equal(isTaskRunWrapperText('【任务进展】顺手记一下'), false,
+    'lookalike user text is not a wrapper');
+  assert.equal(isTaskRunWrapperText(''), false);
+  assert.equal(isTaskRunWrapperText(null), false);
+  assert.equal(isTaskRunWrapperText(undefined), false);
 });

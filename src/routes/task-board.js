@@ -31,6 +31,7 @@ const { classifyDisplay } = require('../classify/vocab');
 const { publicRunDto } = require('./task-runs');
 const {
   buildTaskRunContext: defaultBuildTaskRunContext,
+  isTaskRunWrapperText,
   stableTaskRunId: defaultStableTaskRunId,
 } = require('../task-run-context');
 
@@ -279,12 +280,22 @@ function createTaskBoardRuntime(deps) {
     return { text: '', messageId: null, sessionId: null, legacy: true };
   }
 
+  // Transport wrappers (compiled context wall / routed scaffold) are not
+  // conversation. The write-time metadata flag is the structural signal; the
+  // text predicate catches rows written before the flag existed.
+  function isWrapperLedgerMessage(message) {
+    if (!message || message.role !== 'user') return false;
+    if (message.metadata?.wrapper === true) return true;
+    return isTaskRunWrapperText(core.messageText({ content: message.content }));
+  }
+
   function storedTaskMessages(taskId, excludeRunId = null) {
     if (!taskRuns) return [];
     const items = [];
     for (const run of taskRuns.listTaskRuns(taskId)) {
       if (run.runId === excludeRunId) continue;
       for (const message of taskRuns.getRunMessages(run.runId)) {
+        if (isWrapperLedgerMessage(message)) continue;
         items.push({
           id: message.messageId,
           role: message.role,
@@ -1266,6 +1277,7 @@ function createTaskBoardRuntime(deps) {
       try {
         for (const run of taskRuns.listTaskRuns(task.id)) {
           for (const message of taskRuns.getRunMessages(run.runId)) {
+            if (isWrapperLedgerMessage(message)) continue;
             const text = core.messageText({ content: message.content });
             if (!text && message.role !== 'assistant') continue;
             const imported = message.kind === 'legacy_import';
@@ -1311,6 +1323,7 @@ function createTaskBoardRuntime(deps) {
         ? String(message.taskText || core.messageText(message))
         : core.messageText(message);
       if (!text && message.role !== 'assistant') continue;
+      if (isTaskRunWrapperText(text)) continue;
       items.push({
         sessionId,
         sessionLabel: label,
