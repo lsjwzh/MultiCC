@@ -953,13 +953,12 @@ class ManageService {
     _throw(res);
   }
 
-  /// POST /api/task-board/send -> route [text] to an idle chat session in
-  /// [dirId], creating a pending task. Returns `{ok, taskId, target,
-  /// targetLabel, ...}`. Throws [LocalOnlyException] / [BoardRouteException].
+  /// POST /api/task-board/send -> open a fresh task virtual session in [dirId],
+  /// creating a pending task. Returns `{ok, taskId, taskRunId, commanderLabel,
+  /// ...}`. Throws [LocalOnlyException] / [BoardRouteException].
   Future<Map<String, dynamic>> sendToBoard(
     String dirId, {
     required String text,
-    String? target,
     bool goal = false,
     Map<String, dynamic>? goalLimits,
   }) async {
@@ -970,7 +969,6 @@ class ManageService {
           body: jsonEncode({
             'text': text,
             'dirId': dirId,
-            if (target != null && target.isNotEmpty) 'target': target,
             if (goal) 'goal': true,
             if (goal) 'goalLimits': goalLimits ?? const <String, dynamic>{},
           }),
@@ -981,13 +979,12 @@ class ManageService {
         .cast<String, dynamic>();
   }
 
-  /// POST `/api/task-board/tasks/:taskId/send` -> route [text] to an idle
-  /// session relevant to [taskId]. Returns `{ok, target, targetLabel, ...}`.
+  /// POST `/api/task-board/tasks/:taskId/send` -> continue [taskId]'s virtual
+  /// session. Returns `{ok, taskId, taskRunId, commanderLabel, ...}`.
   /// Throws [LocalOnlyException] / [BoardRouteException].
   Future<Map<String, dynamic>> sendToTask(
     String taskId, {
     required String text,
-    String? target,
     bool goal = false,
     Map<String, dynamic>? goalLimits,
   }) async {
@@ -999,7 +996,6 @@ class ManageService {
           headers: _headers,
           body: jsonEncode({
             'text': text,
-            if (target != null && target.isNotEmpty) 'target': target,
             if (goal) 'goal': true,
             if (goal) 'goalLimits': goalLimits ?? const <String, dynamic>{},
           }),

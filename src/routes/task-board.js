@@ -1545,53 +1545,26 @@ function createTaskBoardRuntime(deps) {
     const text = String(req.body?.text || '').trim();
     if (!text) return res.status(400).json({ error: 'empty_text' });
     const explicit = String(req.body?.target || '').trim() || null;
-    const followupKey = requestKey(req);
-    let target;
-    let routeMode;
-    let result;
     if (explicit) {
-      target = core.pickRouteTarget(board, task, records, explicit, {
-        queryText: text,
-        isAvailable: () => true,
-      });
-      if (!target || records.get(target)?.taskExecutionSlot === true) {
-        return res.status(409).json({ error: 'no_relevant_target', note: '指定会话不可路由或不属于任务所在 Fleet' });
-      }
-      routeMode = 'manual';
-      result = await dispatchToSession(target,
-        goalNoteFor(req.body) + core.buildRoutedMessage(task, text), {
-          idempotencyKey: `taskboard-followup:${task.id}:${followupKey}`,
-          oneWay: true,
-          requireIdle: false,
-          taskId: task.id,
-          taskStart: false,
-          taskSource: 'task-board',
-        });
-      if (result?.ok) {
-        core.setTaskRouting(task, {
-          mode: routeMode,
-          targetSessionId: target,
-          operationId: result.operationId || '',
-          status: result.status || 'admitted',
-          oneWay: true,
-          routedAt: Date.now(),
-        });
-        save();
-        notify(core.taskDirId(board, task), [task.id]);
-      }
-    } else {
-      const dirId = core.taskDirId(board, task);
-      if (commanderMigrationFailure(res, dirId)) return;
-      const commander = core.resolveDirectoryCommander(records, dirId);
-      if (!commander.ok) return commanderFailure(res, commander.code);
-      target = commander.sessionId;
-      routeMode = 'commander';
-      result = await routeCommanderFollowup(target, task.id, text, {
-        clientMsgId: followupKey,
-        source: 'task-board',
-        goalNote: goalNoteFor(req.body),
+      // Task-board input always enters the task's virtual session; there is no
+      // session picking on this ingress.
+      return res.status(409).json({
+        error: 'manual_target_unsupported',
+        note: '任务板消息一律进入任务的虚拟会话，不支持指定会话',
       });
     }
+    const followupKey = requestKey(req);
+    const routeMode = 'commander';
+    const dirId = core.taskDirId(board, task);
+    if (commanderMigrationFailure(res, dirId)) return;
+    const commander = core.resolveDirectoryCommander(records, dirId);
+    if (!commander.ok) return commanderFailure(res, commander.code);
+    const target = commander.sessionId;
+    const result = await routeCommanderFollowup(target, task.id, text, {
+      clientMsgId: followupKey,
+      source: 'task-board',
+      goalNote: goalNoteFor(req.body),
+    });
     if (!result?.ok) {
       const busy = result?.code === 'target_busy' || result?.error === 'target_busy';
       return res.status(busy ? 409 : 502).json({ error: result?.code || result?.error || 'dispatch_failed' });
@@ -1643,19 +1616,38 @@ function createTaskBoardRuntime(deps) {
       return { ok: false, code: 'no_relevant_target' };
     }
     const taskShape = { id: taskId, title: core.PENDING_TASK_TITLE };
-    const taskRun = effectiveRouteMode === 'commander' ? beginTaskRun({
-      taskId, task: existing || taskShape, text,
-      clientKey: `start:${clientKey}`, source,
-    }) : null;
-    if (taskRun?.closed && existing?.routing?.operationId !== taskRun.runId) {
+    const replayOperationId = existing?.routing?.operationId || null;
+    // Replay (the task already routed): never re-admit the run. The ledger
+    // already holds the original admission, so re-running beginTaskRun would
+    // rewrite it under a fresh context hash and trip the store's content
+    // conflict guard. The recorded operation id reproduces the original
+    // idempotency key (it is the run id on the Commander path).
+    const taskRun = !replayOperationId && effectiveRouteMode === 'commander'
+      ? beginTaskRun({
+          taskId, task: existing || taskShape, text,
+          clientKey: `start:${clientKey}`, source,
+        })
+      : null;
+    if (taskRun?.closed) {
       return { ok: false, code: 'task_run_closed' };
+    }
+    let replayRun = null;
+    if (replayOperationId && effectiveRouteMode === 'commander' && taskRuns) {
+      try {
+        replayRun = (taskRuns.listTaskRuns(taskId) || [])
+          .find(run => run.runId === replayOperationId) || null;
+      } catch (_) { replayRun = null; }
     }
     const executionText = taskRun?.context.text || text;
     const routed = effectiveRouteMode === 'commander'
       ? core.buildCommanderRoutedMessage(taskShape, executionText)
       : core.buildRoutedMessage(taskShape, executionText);
     const message = goalNote + routed;
-    const idempotencyKey = taskRun ? `task-run:${taskRun.runId}` : `task-start:${taskId}`;
+    const idempotencyKey = taskRun
+      ? `task-run:${taskRun.runId}`
+      : replayOperationId && effectiveRouteMode === 'commander'
+        ? `task-run:${replayOperationId}`
+        : `task-start:${taskId}`;
     const taskContext = {
       taskId,
       ...(taskRun ? {
@@ -1672,23 +1664,39 @@ function createTaskBoardRuntime(deps) {
       if (existing?.routing?.operationId) {
         const originalWorker = existing.routing.workerSessionId
           || existing.routing.targetSessionId;
-        result = await dispatchToSession(originalWorker, message, {
-          ownerSessionId: existing.routing.mode === 'commander'
-            ? existing.routing.targetSessionId
-            : undefined,
-          idempotencyKey,
-          oneWay: true,
-          requireIdle: false,
-          ...taskContext,
-        });
-        if (result?.ok) {
+        if (replayRun) {
+          // The durable queue already holds this operation; a replay must not
+          // re-admit it (the lease may have advanced since, which the outbox
+          // would rightfully reject as a payload conflict). Answer from the
+          // recorded routing instead.
           result = {
-            ...result,
+            ok: true,
             duplicate: true,
             targetSessionId: originalWorker,
             targetLabel: records.get(originalWorker)?.label || originalWorker,
             queued: existing.routing.status === 'queued',
+            status: existing.routing.status || 'admitted',
+            operationId: existing.routing.operationId,
           };
+        } else {
+          result = await dispatchToSession(originalWorker, message, {
+            ownerSessionId: existing.routing.mode === 'commander'
+              ? existing.routing.targetSessionId
+              : undefined,
+            idempotencyKey,
+            oneWay: true,
+            requireIdle: false,
+            ...taskContext,
+          });
+          if (result?.ok) {
+            result = {
+              ...result,
+              duplicate: true,
+              targetSessionId: originalWorker,
+              targetLabel: records.get(originalWorker)?.label || originalWorker,
+              queued: existing.routing.status === 'queued',
+            };
+          }
         }
       } else {
         result = effectiveRouteMode === 'commander'
@@ -1757,32 +1765,25 @@ function createTaskBoardRuntime(deps) {
     };
   }
 
-  // Board input is admitted deterministically: dispatchTaskStart opens a TaskRun
-  // and routes through the Commander host router, so the Commander LLM is never
-  // in the routing decision loop. Manual targets continue to dispatch directly.
+  // Board input always enters the task's virtual session: dispatchTaskStart opens
+  // a TaskRun and routes through the Commander host router, so the Commander LLM
+  // is never in the routing decision loop and there is no session picking.
   async function handleBoardSend(req, res) {
     const text = String(req.body?.text || '').trim();
     if (!text) return res.status(400).json({ error: 'empty_text' });
     const dirId = String(req.body?.dirId || '').trim() || null;
     const explicit = String(req.body?.target || '').trim() || null;
-    let target;
-    let routeMode;
     if (explicit) {
-      target = core.pickDirTarget(records, dirId, explicit, {
-        queryText: text,
-        isAvailable: () => true,
+      return res.status(409).json({
+        error: 'manual_target_unsupported',
+        note: '任务板消息一律进入任务的虚拟会话，不支持指定会话',
       });
-      if (!target || records.get(target)?.taskExecutionSlot === true) {
-        return res.status(409).json({ error: 'no_relevant_target', note: '指定会话不可路由或不属于该 Fleet' });
-      }
-      routeMode = 'manual';
-    } else {
-      if (commanderMigrationFailure(res, dirId)) return;
-      const commander = core.resolveDirectoryCommander(records, dirId);
-      if (!commander.ok) return commanderFailure(res, commander.code);
-      target = commander.sessionId;
-      routeMode = 'commander';
     }
+    if (commanderMigrationFailure(res, dirId)) return;
+    const commander = core.resolveDirectoryCommander(records, dirId);
+    if (!commander.ok) return commanderFailure(res, commander.code);
+    const target = commander.sessionId;
+    const routeMode = 'commander';
     const clientKey = requestKey(req);
     const result = await dispatchTaskStart({
       source: 'task-board',
@@ -1804,47 +1805,29 @@ function createTaskBoardRuntime(deps) {
       return res.json(taskRunDispatchResult(result, {
         taskId: result.taskId,
         taskRunId: result.taskRunId,
-        commanderSessionId: routeMode === 'commander' ? target : null,
+        commanderSessionId: target,
         taskStart: true,
       }));
     }
-    if (routeMode === 'commander') {
-      // Fallback when no TaskRun store is wired: the task is still created and
-      // routed deterministically, only the run receipt is skipped.
-      res.json({
-        ok: true,
-        taskId: result.taskId,
-        target,
-        targetLabel: records.get(target)?.label || target,
-        routingMode: 'commander',
-        commanderSessionId: target,
-        workerSessionId: result.workerSessionId || null,
-        workerLabel: result.workerSessionId
-          ? records.get(result.workerSessionId)?.label || result.workerSessionId
-          : null,
-        queued: result.queued === true,
-        elasticWorkerCreated: result.elasticWorkerCreated === true,
-        chatId: target,
-        operationId: result.operationId || null,
-        duplicate: result.duplicate === true,
-      });
-    } else {
-      res.json({
-        ok: true,
-        taskId: result.taskId,
-        target: result.target,
-        targetLabel: records.get(result.target)?.label || result.target,
-        routingMode: result.routeMode || routeMode,
-        commanderSessionId: null,
-        workerSessionId: null,
-        workerLabel: null,
-        queued: false,
-        elasticWorkerCreated: false,
-        chatId: result.chatId,
-        operationId: result.operationId || null,
-        duplicate: result.duplicate === true,
-      });
-    }
+    // Fallback when no TaskRun store is wired: the task is still created and
+    // routed deterministically, only the run receipt is skipped.
+    res.json({
+      ok: true,
+      taskId: result.taskId,
+      target,
+      targetLabel: records.get(target)?.label || target,
+      routingMode: 'commander',
+      commanderSessionId: target,
+      workerSessionId: result.workerSessionId || null,
+      workerLabel: result.workerSessionId
+        ? records.get(result.workerSessionId)?.label || result.workerSessionId
+        : null,
+      queued: result.queued === true,
+      elasticWorkerCreated: result.elasticWorkerCreated === true,
+      chatId: target,
+      operationId: result.operationId || null,
+      duplicate: result.duplicate === true,
+    });
   }
 
   async function handleStatus(req, res) {
