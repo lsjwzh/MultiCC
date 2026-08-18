@@ -152,7 +152,7 @@ async function waitUntil(check, message, attempts = 100) {
   }
 
   try {
-    await waitUntil(async () => (await fetch(`${base}/readyz`)).status === 200, 'isolated Commander server did not become ready');
+    await waitUntil(async () => (await fetch(`${base}/readyz`)).status === 200, 'isolated Commander server did not become ready', 300);
     const directory = await api('POST', '/api/directories', {
       name: 'Commander routing', path: project, create: true,
     });
@@ -208,53 +208,70 @@ async function waitUntil(check, message, attempts = 100) {
     }, 'panel task did not project from canonical worker history');
     assert.equal(panelCard.body, '从任务面板进入统一通道');
     assert.equal(panelCard.legacy, false);
-    assert.equal(panelFirst.target, commander.id);
+    assert.equal(panelFirst.commanderSessionId, commander.id);
     assert.equal(panelReplay.target, commander.id);
+    assert.equal(panelReplay.taskId, panelFirst.taskId);
+    assert.equal(panelReplay.duplicate, true, 'panel replay is an idempotent re-delivery');
     assert.equal((await api('GET', '/api/task-board')).tasks.filter(task => task.id === panelCard.id).length, 1);
-    assert.ok(panelCard.routing.workerSessionId, 'task card preserves the selected worker');
-    assert.equal(panelCard.routing.targetSessionId, commander.id);
-    assert.equal(panelCard.routing.oneWay, true);
-    assert.notEqual(panelCard.routing.workerSessionId, specialist.id, 'specialist is never auto-routed');
-
     const paths = createPaths({ dataDir: dataRoot });
     const persistedBoard = JSON.parse(fs.readFileSync(paths.taskBoardFile, 'utf8'));
     const projectedTask = persistedBoard.tasks[panelCard.id];
+    const workerId = projectedTask.routing?.workerSessionId;
+    assert.ok(workerId, 'task card preserves the selected worker in the durable index');
+    assert.equal(panelCard.routing.internalExecution, true,
+      'execution-slot workers stay hidden from the board DTO');
+    assert.equal(panelCard.routing.targetSessionId, commander.id);
+    assert.equal(panelCard.routing.oneWay, true);
+    assert.notEqual(workerId, specialist.id, 'specialist is never auto-routed');
+
     assert.equal(Object.hasOwn(projectedTask, 'body'), false);
     assert.equal(Object.hasOwn(projectedTask, 'taskText'), false,
       'task board index may keep a derived title but never a second canonical body');
     const invocationRows = await waitUntil(() => {
       if (!fs.existsSync(invocationFile)) return null;
       const rows = fs.readFileSync(invocationFile, 'utf8').trim().split(/\n/).filter(Boolean).map(JSON.parse);
-      return rows.filter(row => row.args[0] === 'exec').length === 2 ? rows : null;
-    }, 'panel task did not trigger one Commander and one worker execution');
+      return rows.filter(row => row.args[0] === 'exec').length === 1 ? rows : null;
+    }, 'panel task did not trigger exactly one worker execution', 200);
     const persisted = readJson(paths.sessionsFile, { legacyIsArray: true }).data;
     const durableCommander = persisted.find(session => session.id === commander.id);
-    const durableWorker = persisted.find(session => session.id === panelCard.routing.workerSessionId);
-    assert.ok(invocationRows.find(row =>
-      fs.realpathSync(row.cwd) === fs.realpathSync(durableCommander.worktreePath)));
+    const durableWorker = persisted.find(session => session.id === workerId);
     assert.ok(invocationRows.find(row =>
       fs.realpathSync(row.cwd) === fs.realpathSync(durableWorker.worktreePath)));
+    assert.equal(invocationRows.some(row =>
+      fs.realpathSync(row.cwd) === fs.realpathSync(durableCommander.worktreePath)), false,
+    'Commander never executes a model turn for board input');
 
-    const workerHistoryFile = path.join(paths.chatHistoryDir, `${panelCard.routing.workerSessionId}.json`);
-    const workerHistory = await waitUntil(() => {
-      if (!fs.existsSync(workerHistoryFile)) return null;
-      const messages = JSON.parse(fs.readFileSync(workerHistoryFile, 'utf8'));
-      return messages.some(message => message.role === 'assistant' && message.content === 'FAKE-WORKER-DONE')
-        ? messages : null;
-    }, 'worker history did not persist the routed turn');
-    const canonicalStart = workerHistory.find(message => message.role === 'user' && message.taskStart === true);
-    assert.equal(canonicalStart.taskId, panelCard.id);
-    assert.equal(canonicalStart.taskSource, 'task-board');
-    assert.equal(canonicalStart.taskText, '从任务面板进入统一通道');
-    assert.equal(canonicalStart.content, '从任务面板进入统一通道');
+    // Execution slots are recycled after a terminal run, so their chat history
+    // is ephemeral by design. The canonical record of the turn is the durable
+    // task-run ledger (the same source the task card projects from).
+    const runView = await waitUntil(async () => {
+      const value = await api('GET', `/api/task-runs/${panelFirst.taskRunId}`);
+      return value.messages?.some(message => message.role === 'assistant'
+        && String(message.content || '').includes('FAKE-WORKER-DONE')) ? value : null;
+    }, 'task-run ledger did not record the worker reply', 250);
+    assert.equal(runView.run.taskId, panelCard.id);
+    const admission = runView.messages.find(message => message.kind === 'admission');
+    assert.ok(admission, 'run ledger keeps the admission entry');
+    assert.equal(admission.role, 'user');
+    assert.equal(admission.content, '从任务面板进入统一通道',
+      'admission persists the raw task text, never the Commander wrapper');
+
+    const commanderHistoryFile = path.join(paths.chatHistoryDir, `${commander.id}.json`);
+    const commanderHistory = fs.existsSync(commanderHistoryFile)
+      ? JSON.parse(fs.readFileSync(commanderHistoryFile, 'utf8'))
+      : [];
+    assert.equal(JSON.stringify(commanderHistory).includes('从任务面板进入统一通道'), false,
+      'board input never enters the Commander chat history');
 
     await new Promise(resolve => setTimeout(resolve, 500));
-    assert.equal(events.some(event => event.type === 'assistant'), true, 'Commander reports after the tool call');
+    assert.equal(events.some(event => event.type === 'assistant'), false, 'Commander never runs a model turn for board input');
     assert.equal(events.some(event => event.type === 'dispatch.result'), false, 'worker result never flows back to Commander');
     sessions = await api('GET', '/api/sessions');
     assert.equal(sessions.find(session => session.id === specialist.id).type, null, 'specialist metadata remains manual-only');
-    assert.notEqual(sessions.find(session => session.id === panelCard.routing.workerSessionId).type, 'commander',
-      'the routed target remains an ordinary non-Commander chat session');
+    assert.notEqual(durableWorker.type, 'commander',
+      'the routed target remains an ordinary non-Commander execution slot');
+    assert.equal(durableWorker.taskExecutionSlot, true,
+      'the deterministic pool executes on a hidden execution slot');
     socket.terminate();
     await stop();
     console.log('Commander real WS → task board → one-way worker route: passed');

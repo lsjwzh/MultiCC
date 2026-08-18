@@ -2724,7 +2724,7 @@ services.provide('chat.runTurn', chatTurnEngine.admitChatWork);
 orchestrationRuntime = createOrchestrationRuntime({
   file: MULTICC_PATHS.orchestrationFile, databaseFile: MULTICC_PATHS.orchestrationDbFile,
   runChatTurn: chatTurnEngine.runChatTurn,
-  isBusy: dispatchTargetBusy,
+  isBusy: dispatchTargetBusy, isSlotUnavailable: (sid, item) => !!taskRunHost?.isSlotUnavailable(sid, item || {}),
   hasPersistedDelivery: chatTurnEngine.persistedOrchestrationDelivery,
   deliverOutbox: chatTurnEngine.deliverOrchestrationOutbox,
   probe: chatTurnEngine.probeExplicitWait,
