@@ -6,6 +6,7 @@ const os = require('os');
 const path = require('path');
 
 const { normalizeManualMemory } = require('../memory/runtime');
+const { taskShortCode } = require('../classify/task-short-code');
 
 // Session profile routes: PATCH /api/sessions/:id (label/model/effort/agent/
 // rolePrompt/memory/auto-flags/provider/subagent edits) and POST
@@ -309,7 +310,7 @@ function createSessionProfileRoutes(rawDeps) {
         try {
           const ts = getTaskState(s);
           if (ts && (ts.goal || ts.classifyState)) {
-            chatBroadcast(s.id, { type: 'task_state', goal: ts.goal || '', phase: ts.phase || 'idle', classifyState: ts.classifyState || null });
+            chatBroadcast(s.id, { type: 'task_state', goal: ts.goal || '', taskShortCode: taskShortCode(ts.taskId), phase: ts.phase || 'idle', classifyState: ts.classifyState || null });
           }
         } catch (_) {}
       }

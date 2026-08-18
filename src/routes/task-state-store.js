@@ -1,8 +1,10 @@
+const { taskShortCode } = require('../classify/task-short-code');
+
 function createTaskStateStore(deps) {
   const { persistedSessions, saveBestEffort, chatBroadcast, workspaceBroadcast } = deps;
 
   const TASK_STATE_DEFAULTS = {
-    goal: '', phase: 'idle', startedAt: null, endedAt: null,
+    goal: '', taskId: null, phase: 'idle', startedAt: null, endedAt: null,
     lastSummary: '', lastSummaryAt: null, lastTurnEndedAt: null,
     classifyState: null, pendingDispatches: [],
     classifyHistory: [],
@@ -32,6 +34,10 @@ function createTaskStateStore(deps) {
     const classifyPayload = {
       type: 'task_state',
       goal: next.goal || '',
+      // Stable display handle for the outward task (`#CODE · goal`). Derived
+      // from the taskId so it survives title edits within the same task and
+      // renews when Aux mints a new taskId. Empty until Aux attributes a task.
+      taskShortCode: taskShortCode(next.taskId),
       phase: next.phase || 'idle',
       classifyState: next.classifyState || null,
       apiError: next.apiError || null,

@@ -2,6 +2,7 @@
 
 const { isTerminalGateway } = require('./terminal-target-policy');
 const { sanitizePublicText } = require('../session-dto');
+const { labelWithCode } = require('../classify/task-short-code');
 
 const MAX_ROLE_SUMMARY_CHARS = 320;
 const MAX_RECENT_TASKS = 4;
@@ -38,6 +39,7 @@ function recentTasksFor(record) {
   if (state.goal) {
     history.push({
       goal: state.goal,
+      taskId: state.taskId || null,
       phase: state.phase,
       state: state.classifyState,
     });
@@ -47,10 +49,14 @@ function recentTasksFor(record) {
   const recent = [];
   for (const entry of history) {
     if (!entry || typeof entry !== 'object') continue;
-    const task = compactSafeText(entry.goal, MAX_RECENT_TASK_CHARS);
-    const key = task.normalize('NFKC').toLowerCase().replace(/\s+/g, '');
-    if (!task || seen.has(key)) continue;
+    const goal = compactSafeText(entry.goal, MAX_RECENT_TASK_CHARS);
+    // Dedup on the goal text alone: the same task keeps one row even as its
+    // stable code prefix rides along. The `#CODE · ` prefix then gives the
+    // Commander a persistent handle to refer back to a task across turns.
+    const key = goal.normalize('NFKC').toLowerCase().replace(/\s+/g, '');
+    if (!goal || seen.has(key)) continue;
     seen.add(key);
+    const task = labelWithCode(entry.taskId, goal);
     const item = { task };
     const phase = compactSafeText(entry.phase, 40);
     const taskState = compactSafeText(entry.state, 24);
