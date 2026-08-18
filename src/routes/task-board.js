@@ -113,8 +113,9 @@ function createTaskBoardRuntime(deps) {
   // Bounded failure recovery (design doc §3.3): a retryable terminal failure
   // is re-admitted exactly once as a brand-new run — new lease epoch, fresh
   // slot cleanup, compiled context that already contains the failure entry.
-  // The cap is structural: any run carrying metadata.retryOf (or an
-  // auto-retry source) ends the chain, so a retry can never spawn a retry.
+  // The cap is per failed DELIVERY: a retry run carries metadata.retryOf and
+  // can therefore never earn another retry (no chains), while a later,
+  // independently failed delivery still gets its own single chance.
   async function autoRetryTaskRun({ taskId, runId } = {}) {
     if (!taskRuns) return { ok: false, code: 'task_runs_unavailable' };
     const id = String(taskId || '').trim();
@@ -132,7 +133,7 @@ function createTaskBoardRuntime(deps) {
       return { ok: false, code: 'run_not_failed' };
     }
     if (failedRun.metadata?.retryOf
-        || runs.some(run => run.metadata?.retryOf || run.metadata?.source === 'auto-retry')) {
+        || runs.some(run => run.metadata?.retryOf === failedRunId)) {
       return { ok: true, skipped: true, code: 'retry_cap_reached' };
     }
     const errorInfo = runErrorOf(taskRuns, failedRunId);
@@ -1355,6 +1356,7 @@ function createTaskBoardRuntime(deps) {
                 : message.messageId || null,
               ts: message.createdAt || 0,
               text,
+              ...(message.metadata?.partial === true ? { partial: true } : {}),
               ...(imported && message.metadata?.lost === true ? { lost: true } : {}),
             });
           }
