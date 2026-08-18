@@ -36,8 +36,7 @@ class TaskBoardView extends StatefulWidget {
   final SettingsService settings;
   final String dirId;
 
-  /// Session manager - used by the dir-level composer to build the target
-  /// dropdown (idle chat sessions in [dirId]) and to read live busy status.
+  /// Session manager - kept for the host fleet sheet's session plumbing.
   final SessionManager mgr;
 
   /// Fires after each successful refresh with the count of tasks visible for
@@ -248,27 +247,6 @@ class _TaskBoardViewState extends State<TaskBoardView> {
     return modules;
   }
 
-  /// Idle chat sessions in this directory, for the composer's target dropdown.
-  /// A session is busy when its live workspace status is thinking / editing /
-  /// running; sessions without a live status yet are treated as idle (the
-  /// server re-checks busyness on dispatch and returns 409 if wrong). Aux and
-  /// terminal sessions are excluded. Mirrors the web `_tbDirTargets`.
-  List<({String id, String label})> _idleChatTargets() {
-    final labels = _board?.sessionLabels ?? const <String, String>{};
-    const busy = {'thinking', 'editing', 'running'};
-    final out = <({String id, String label})>[];
-    for (final s in widget.mgr.sessions) {
-      if (s.dirId != widget.dirId) continue;
-      if (!s.isChat || s.isAux) continue;
-      final st = widget.mgr.liveStatus(s.id);
-      if (st != null && busy.contains(st.status)) continue;
-      final label =
-          labels[s.id] ?? (s.label?.isNotEmpty == true ? s.label! : s.id);
-      out.add((id: s.id, label: label));
-    }
-    return out;
-  }
-
   Future<void> _reclassifyPending() async {
     final messenger = ScaffoldMessenger.of(context);
     try {
@@ -298,20 +276,18 @@ class _TaskBoardViewState extends State<TaskBoardView> {
     }
   }
 
-  /// Dir-level dispatch callback for the board composer. Routes [text] to an
-  /// idle chat session in this directory (server creates a pending task), then
-  /// refreshes the board so the new task appears. Throws on failure so the
-  /// composer can surface the right SnackBar.
+  /// Dir-level dispatch callback for the board composer. Sends [text] into a
+  /// fresh task virtual session (server creates a pending task and routes it
+  /// deterministically), then refreshes the board so the new task appears.
+  /// Throws on failure so the composer can surface the right SnackBar.
   Future<Map<String, dynamic>?> _sendToBoard(
     String text, {
-    String? target,
     bool goal = false,
     Map<String, dynamic>? goalLimits,
   }) async {
     final r = await ManageService(settings: widget.settings).sendToBoard(
       widget.dirId,
       text: text,
-      target: target,
       goal: goal,
       goalLimits: goalLimits,
     );
@@ -321,7 +297,6 @@ class _TaskBoardViewState extends State<TaskBoardView> {
 
   void _openDetail(TaskBoardTask task) {
     final labels = _board?.sessionLabels ?? const <String, String>{};
-    final targets = _idleChatTargets();
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -333,7 +308,6 @@ class _TaskBoardViewState extends State<TaskBoardView> {
         settings: widget.settings,
         task: task,
         sessionLabels: labels,
-        targets: targets,
         onOpenSession: widget.onOpenSession,
         onChanged: () => _refresh(silent: true),
       ),
@@ -373,10 +347,9 @@ class _TaskBoardViewState extends State<TaskBoardView> {
   /// Dir-level composer pinned to the bottom of the board view. The composer
   /// owns its text/attach/voice/goal state; [onSend] routes through
   /// [_sendToBoard] and refreshes the board on success.
-  Widget _buildDirComposer(List<({String id, String label})> targets) {
+  Widget _buildDirComposer() {
     return _BoardComposer(
       settings: widget.settings,
-      targets: targets,
       hint: t('boardComposerHint'),
       onSend: _sendToBoard,
     );
@@ -392,13 +365,12 @@ class _TaskBoardViewState extends State<TaskBoardView> {
         ),
       );
     }
-    final targets = _idleChatTargets();
     final board = _board;
     if (board == null) {
       return Column(
         children: [
           Expanded(child: _BoardEmpty(text: _error ?? t('noTasks'))),
-          _buildDirComposer(targets),
+          _buildDirComposer(),
         ],
       );
     }
@@ -408,7 +380,7 @@ class _TaskBoardViewState extends State<TaskBoardView> {
       return Column(
         children: [
           Expanded(child: _BoardEmpty(text: t('noTasksHint'))),
-          _buildDirComposer(targets),
+          _buildDirComposer(),
         ],
       );
     }
@@ -543,7 +515,7 @@ class _TaskBoardViewState extends State<TaskBoardView> {
             ],
           ),
         ),
-        _buildDirComposer(targets),
+        _buildDirComposer(),
       ],
     );
   }
@@ -840,7 +812,6 @@ class _TaskDetailSheet extends StatefulWidget {
   final SettingsService settings;
   final TaskBoardTask task;
   final Map<String, String> sessionLabels;
-  final List<({String id, String label})> targets;
   final void Function(String sessionId, {String? focusMessageId})?
   onOpenSession;
   final VoidCallback onChanged;
@@ -849,7 +820,6 @@ class _TaskDetailSheet extends StatefulWidget {
     required this.settings,
     required this.task,
     required this.sessionLabels,
-    required this.targets,
     required this.onChanged,
     this.onOpenSession,
   });
@@ -981,20 +951,18 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
     }
   }
 
-  /// Task-level dispatch callback for the detail-sheet composer. Routes [text]
-  /// to an idle session relevant to this task, then reloads the message trail
-  /// and notifies the parent to refresh the board. Throws on failure so the
-  /// composer can surface the right SnackBar.
+  /// Task-level dispatch callback for the detail-sheet composer. Sends [text]
+  /// into this task's virtual session (server routes it deterministically),
+  /// then reloads the message trail and notifies the parent to refresh the
+  /// board. Throws on failure so the composer can surface the right SnackBar.
   Future<Map<String, dynamic>?> _sendToTask(
     String text, {
-    String? target,
     bool goal = false,
     Map<String, dynamic>? goalLimits,
   }) async {
     final r = await ManageService(settings: widget.settings).sendToTask(
       widget.task.id,
       text: text,
-      target: target,
       goal: goal,
       goalLimits: goalLimits,
     );
@@ -1169,7 +1137,6 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
             const Divider(height: 1, color: AppColors.line),
             _BoardComposer(
               settings: widget.settings,
-              targets: widget.targets,
               hint: t('boardTaskComposerHint'),
               onSend: _sendToTask,
             ),
@@ -1570,16 +1537,16 @@ class _ActionButton extends StatelessWidget {
 // ── Board composer (dispatch) ───────────────────────────────────────────────
 
 /// Shared composer for dispatching a message into the task board. Used by the
-/// dir-level board view (auto-route within a Fleet) and the task detail sheet
-/// (route to a session relevant to one task). Owns its text / attachment /
-/// voice / goal / target state; the parent supplies [onSend] (which calls the
-/// right service method + refresh) and the list of idle chat [targets].
+/// dir-level board view (opens a fresh task virtual session) and the task
+/// detail sheet (continues that task's virtual session). Owns its text /
+/// attachment / voice / goal state; the parent supplies [onSend] (which calls
+/// the right service method + refresh). There is deliberately no session
+/// picker: board input always enters the task virtual session.
 ///
 /// Feature parity with the chat composer (input_bar.dart) and the web
 /// createTbComposer: attach -> POST /api/upload -> path appended to text;
 /// voice -> record -> POST /api/voice/stt -> transcript into the input;
-/// goal -> goal:true + goalLimits{maxRounds,maxBudget}; target dropdown
-/// (empty value = 🎯 自动路由).
+/// goal -> goal:true + goalLimits{maxRounds,maxBudget}.
 class _BoardComposer extends StatefulWidget {
   final SettingsService settings;
 
@@ -1588,19 +1555,16 @@ class _BoardComposer extends StatefulWidget {
   /// right SnackBar (LocalOnlyException / BoardRouteException / other).
   final Future<Map<String, dynamic>?> Function(
     String text, {
-    String? target,
     bool goal,
     Map<String, dynamic>? goalLimits,
   })
   onSend;
 
-  final List<({String id, String label})> targets;
   final String? hint;
 
   const _BoardComposer({
     required this.settings,
     required this.onSend,
-    required this.targets,
     this.hint,
   });
 
@@ -1627,8 +1591,6 @@ class _BoardComposerState extends State<_BoardComposer> {
   final _roundsCtrl = TextEditingController(text: '200');
   final _budgetCtrl = TextEditingController();
 
-  // Target session ('' = auto-route)
-  String _target = '';
   bool _sending = false;
 
   @override
@@ -1638,18 +1600,6 @@ class _BoardComposerState extends State<_BoardComposer> {
       final has = _ctrl.text.trim().isNotEmpty;
       if (has != _hasText) setState(() => _hasText = has);
     });
-  }
-
-  @override
-  void didUpdateWidget(covariant _BoardComposer oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    // The targets list is rebuilt each parent rebuild (idle sessions change as
-    // status ticks arrive). If the selected target is no longer offered (it
-    // became busy), fall back to auto-route so the dropdown never holds a
-    // value absent from its items (which would assert).
-    if (_target.isNotEmpty && !widget.targets.any((tg) => tg.id == _target)) {
-      _target = '';
-    }
   }
 
   @override
@@ -1820,7 +1770,6 @@ class _BoardComposerState extends State<_BoardComposer> {
     try {
       final r = await widget.onSend(
         text,
-        target: _target.isNotEmpty ? _target : null,
         goal: _goal,
         goalLimits: goalLimits,
       );
@@ -1830,7 +1779,7 @@ class _BoardComposerState extends State<_BoardComposer> {
         _hasText = false;
         _attachments.clear();
       });
-      final label = r?['targetLabel']?.toString();
+      final label = (r?['commanderLabel'] ?? r?['targetLabel'])?.toString();
       messenger.showSnackBar(
         SnackBar(
           content: Text(
@@ -1955,23 +1904,12 @@ class _BoardComposerState extends State<_BoardComposer> {
                 }).toList(),
               ),
             ),
-          // Controls row: target dropdown + goal toggle.
+          // Controls row: goal toggle.
           Padding(
             padding: const EdgeInsets.only(bottom: 6),
             child: Row(
               children: [
-                Expanded(child: _targetDropdown()),
-                if (widget.targets.isEmpty) ...[
-                  const SizedBox(width: 8),
-                  Text(
-                    t('boardNoIdleSession'),
-                    style: const TextStyle(
-                      color: AppColors.faint,
-                      fontSize: 10.5,
-                    ),
-                  ),
-                ],
-                const SizedBox(width: 8),
+                const Spacer(),
                 Text(
                   '🎯 ${t('boardGoalMode')}',
                   style: const TextStyle(color: AppColors.muted, fontSize: 11),
@@ -2063,30 +2001,6 @@ class _BoardComposerState extends State<_BoardComposer> {
             ],
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _targetDropdown() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-      decoration: BoxDecoration(
-        color: AppColors.panel2,
-        border: Border.all(color: AppColors.line),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: DropdownButton<String>(
-        value: _target,
-        isExpanded: true,
-        underline: const SizedBox.shrink(),
-        style: const TextStyle(color: AppColors.text, fontSize: 12),
-        dropdownColor: AppColors.panel2,
-        items: [
-          DropdownMenuItem(value: '', child: Text(t('boardAutoRoute'))),
-          for (final tg in widget.targets)
-            DropdownMenuItem(value: tg.id, child: Text(tg.label)),
-        ],
-        onChanged: _sending ? null : (v) => setState(() => _target = v ?? ''),
       ),
     );
   }
