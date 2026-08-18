@@ -404,8 +404,8 @@ function syncTaskBoardDirComposer(dirId, visible) {
         if (!r.ok || !d.ok) throw new Error(d.note || d.error || r.status);
         if (d.taskId) _tbPendingTaskIds = [d.taskId];
         await refreshTaskBoard(true);
-        return d.routingMode === 'commander'
-          ? `已创建「新任务」并交给 Commander「${d.targetLabel}」${d.queued ? '（已安全排队）' : ''}`
+        return d.taskRunId || d.routingMode === 'commander'
+          ? `已创建「新任务」并交给 Commander「${d.commanderLabel || d.targetLabel}」${d.queued ? '（已安全排队）' : ''}`
           : `已创建「新任务」并路由到「${d.targetLabel}」`;
       },
     });
@@ -432,9 +432,14 @@ function _tbEnsureTaskComposer(task) {
         if (!r.ok || !d.ok) throw new Error(d.note || d.error || r.status);
         _tbShowGatheringFloat();
         setTimeout(() => refreshTaskBoard(true), 1500);
-        return d.routingMode === 'commander'
-          ? `已由 Commander「${d.targetLabel}」单向路由到「${d.workerLabel || d.workerSessionId}」${d.elasticWorkerCreated ? '（已动态增加 worker）' : d.queued ? '（已安全排队）' : ''}`
-          : `已路由到「${d.targetLabel}」，回复将自动归档回本任务`;
+        if (d.taskRunId || d.routingMode === 'commander') {
+          const commanderLabel = d.commanderLabel || d.targetLabel;
+          const worker = d.workerLabel || d.workerSessionId;
+          return worker
+            ? `已由 Commander「${commanderLabel}」单向路由到「${worker}」${d.elasticWorkerCreated ? '（已动态增加 worker）' : d.queued ? '（已安全排队）' : ''}`
+            : `已交给 Commander「${commanderLabel}」路由执行${d.queued ? '（已安全排队）' : ''}，回复将自动归档回本任务`;
+        }
+        return `已路由到「${d.targetLabel}」，回复将自动归档回本任务`;
       },
     });
   }
