@@ -1,5 +1,7 @@
 'use strict';
 
+const { runErrorOf } = require('../task-run-errors');
+
 const PUBLIC_TASK_RUN_ERROR = 'Task run data is temporarily unavailable';
 const ROUTE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const REQUIRED_STORE_METHODS = Object.freeze([
@@ -66,7 +68,19 @@ function publicMessageDto(message = {}) {
     kind: String(message.kind || 'message'),
     content: message.content ?? '',
     createdAt: Number(message.createdAt || 0),
+    // The only metadata flag safe and useful to publish: a partial checkpoint
+    // is interrupted draft output, never a complete answer. Everything else
+    // (lease epochs, native session ids) stays sealed inside the store.
+    ...(message.metadata?.partial === true ? { partial: true } : {}),
   };
+}
+
+// Failed runs carry their ledger error entry as a DTO summary so cards and
+// detail views can render *why* without re-reading the message list.
+function withRunError(store, run, dto) {
+  if (dto.executionStatus !== 'failed') return dto;
+  const error = runErrorOf(store, run.runId || dto.runId);
+  return error ? { ...dto, error } : dto;
 }
 
 function assertDependencies(deps) {
@@ -118,7 +132,7 @@ function createTaskRunRoutes(rawDeps) {
         if (!run) return res.status(404).json({ error: 'task run not found' });
         const messages = store.getRunMessages(runId).map(publicMessageDto);
         const usage = store.getRunUsage(runId);
-        return res.json({ run: publicRunDto(run), messages, usage });
+        return res.json({ run: withRunError(store, run, publicRunDto(run)), messages, usage });
       } catch (error) {
         return handleError('run-detail', 'run', error, res);
       }
@@ -128,7 +142,9 @@ function createTaskRunRoutes(rawDeps) {
       try {
         const taskId = decodeRouteId(req && req.params && req.params.taskId, 'task');
         const storedRuns = store.listTaskRuns(taskId);
-        const runs = Array.isArray(storedRuns) ? storedRuns.map(publicRunDto) : storedRuns;
+        const runs = Array.isArray(storedRuns)
+          ? storedRuns.map(run => withRunError(store, run, publicRunDto(run)))
+          : storedRuns;
         if (!Array.isArray(runs)) {
           const error = new Error('task-run store returned an invalid run list');
           error.code = 'TASK_RUN_STORE_INVALID_RESULT';

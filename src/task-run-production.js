@@ -249,6 +249,8 @@ function createProductionTaskRunHost(options = {}) {
     drainProviderProducers,
     providerSnapshot,
     onRunUpdated,
+    getTaskState,
+    onRunFailed,
     logger = console,
   } = options;
   const transcriptRoots = discoverTranscriptRoots({ dataRoot, providerHomesDir });
@@ -291,6 +293,8 @@ function createProductionTaskRunHost(options = {}) {
     persistRecords,
     providerSnapshot,
     onRunUpdated,
+    getTaskState: typeof getTaskState === 'function' ? getTaskState : undefined,
+    onRunFailed: typeof onRunFailed === 'function' ? onRunFailed : null,
     finalizeRun,
     cleanupRun,
     log: message => logger.warn?.(message),
