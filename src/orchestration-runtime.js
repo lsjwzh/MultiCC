@@ -65,6 +65,7 @@ function createOrchestrationRuntime({
   databaseFile = null,
   runChatTurn,
   isBusy = () => false,
+  isSlotUnavailable = () => false,
   hasPersistedDelivery = async () => false,
   beforeDeliver = async () => {},
   deliverOutbox = null,
@@ -714,6 +715,16 @@ function createOrchestrationRuntime({
     let schedulerClaimed = false;
     try {
       await resolveSessionWorkLineage(item);
+      // The host-busy read must happen before our own claim: claiming emits
+      // 'claimed', which projects queueState 'running' onto the session
+      // record, so a post-claim isBusy would read its own claim as busy and
+      // defer forever. Slot-lease conflicts are re-checked after the claim
+      // because only the claim reveals the retained run lineage.
+      if (isBusy(item.sessionId, item)) {
+        return outbox.defer(item.id, item.leaseToken, 'chat session is busy', {
+          delayMs: 0,
+        });
+      }
       const schedulerClaim = await sessionScheduler.claim(item);
       if (!schedulerClaim.ok) {
         return outbox.defer(item.id, item.leaseToken, schedulerClaim.code || 'session gate closed', {
@@ -732,10 +743,10 @@ function createOrchestrationRuntime({
             || claimedActive.originDispatchId || null,
         };
       }
-      if (isBusy(item.sessionId, item)) {
+      if (isSlotUnavailable(item.sessionId, item)) {
         await sessionScheduler.releaseClaim(item, 'host_busy_after_claim');
         schedulerClaimed = false;
-        return outbox.defer(item.id, item.leaseToken, 'chat session is busy', {
+        return outbox.defer(item.id, item.leaseToken, 'task execution slot is leased to another run', {
           delayMs: 0,
         });
       }

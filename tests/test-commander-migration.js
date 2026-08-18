@@ -237,7 +237,9 @@ test('a newly migrated Commander is identified by the task board and safely queu
   assert.equal(response.code, 200);
   assert.equal(response.body.target, 'commander-dir-a');
   assert.equal(response.body.routingMode, 'commander');
-  assert.equal(response.body.workerSessionId, null, 'worker assignment is async via LLM');
+  assert.equal(response.body.workerSessionId, 'elastic-worker', 'worker assignment comes from the deterministic router receipt');
   assert.equal(response.body.queued, false);
-  assert.equal(dispatches.length, 0, 'the task board never bypasses Commander MCP routing');
+  assert.equal(dispatches.length, 1, 'board send routes deterministically through the Commander host router');
+  assert.equal(dispatches[0].target, 'commander-dir-a');
+  assert.match(dispatches[0].message, /请指挥官分派/);
 });

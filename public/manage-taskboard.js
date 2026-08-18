@@ -218,7 +218,6 @@ function createTbComposer(host, opts) {
         <button class="btn btn-sm tb-attach-btn" title="上传图片/文件">📎</button>
         <button class="btn btn-sm tb-mic-btn" title="语音输入">🎙</button>
         <button class="btn btn-sm tb-goal-btn" title="以 Goal 模式发送（自主任务，带轮次/预算上限）">🎯</button>
-        <select class="tb-target"></select>
         <button class="btn btn-sm tb-send-btn">🚀 发送</button>
         <span class="tb-result"></span>
       </div>
@@ -228,7 +227,6 @@ function createTbComposer(host, opts) {
   const $q = (sel) => host.querySelector(sel);
   const input = $q('.tb-input');
   const chiprow = $q('.tb-chiprow');
-  const targetSel = $q('.tb-target');
   const sendBtn = $q('.tb-send-btn');
   const micBtn = $q('.tb-mic-btn');
   const goalBtn = $q('.tb-goal-btn');
@@ -327,7 +325,6 @@ function createTbComposer(host, opts) {
       pendingText = text;
     }
     payload.clientMsgId = pendingClientMsgId;
-    if (targetSel.value) payload.target = targetSel.value;
     if (goalBtn.classList.contains('on')) {
       payload.goal = true;
       payload.goalLimits = {};
@@ -355,12 +352,6 @@ function createTbComposer(host, opts) {
   });
 
   return {
-    setTargets(options) {
-      const prev = targetSel.value;
-      targetSel.innerHTML = '<option value="">🎯 自动路由</option>'
-        + options.map(o => `<option value="${_tbEsc(o.id)}">${_tbEsc(o.label || o.id)}</option>`).join('');
-      if ([...targetSel.options].some(o => o.value === prev)) targetSel.value = prev;
-    },
     reset() {
       input.value = '';
       chiprow.innerHTML = '';
@@ -377,14 +368,6 @@ function createTbComposer(host, opts) {
 // container so WS-driven re-renders of #dir-detail-body never wipe its state.
 let _tbDirComposer = null;
 let _tbDirComposerDirId = null;
-
-function _tbDirTargets(dirId) {
-  if (typeof _cachedSessions === 'undefined' || !_cachedSessions) return [];
-  return _cachedSessions
-    .filter(s => s.dirId === dirId && s.kind === 'chat'
-      && s.type !== 'aux' && s.type !== 'gateway' && s.type !== 'commander')
-    .map(s => ({ id: s.id, label: s.label || s.id }));
-}
 
 function syncTaskBoardDirComposer(dirId, visible) {
   const host = document.getElementById('tb-dir-composer');
@@ -410,7 +393,6 @@ function syncTaskBoardDirComposer(dirId, visible) {
       },
     });
   }
-  _tbDirComposer.setTargets(_tbDirTargets(dirId));
 }
 
 // ── Task detail modal (stacked above dir-detail) ────────────────────────────
@@ -445,11 +427,6 @@ function _tbEnsureTaskComposer(task) {
   }
   if (_tbTaskComposerTaskId !== task.id) _tbTaskComposer.reset();
   _tbTaskComposerTaskId = task.id;
-  const labels = _tbBoard.sessionLabels || {};
-  const commanderId = task.routing?.mode === 'commander' ? task.routing.targetSessionId : null;
-  _tbTaskComposer.setTargets(task.sessionIds
-    .filter(sid => sid !== commanderId)
-    .map(sid => ({ id: sid, label: labels[sid] || sid })));
 }
 
 function openTaskBoardDetail(taskId) {
