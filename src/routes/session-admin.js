@@ -2,6 +2,7 @@
 
 const { createSessionQueryService, createWorkspaceService } = require('../session');
 const { isTerminalLetter, isSettledLetter } = require('../classify/vocab');
+const { taskShortCode } = require('../classify/task-short-code');
 
 function assertFunction(value, name) {
   if (typeof value !== 'function') throw new TypeError(`[session-admin] ${name} must be a function`);
@@ -141,6 +142,7 @@ function createSessionAdminRuntime(rawDeps) {
           summaryAt: summary?.ts || null,
           classifyState: task.classifyState || null,
           goal: task.goal || '',
+          taskShortCode: taskShortCode(task.taskId),
           phase: task.phase || 'idle',
         };
       },
@@ -228,6 +230,7 @@ function createSessionAdminRuntime(rawDeps) {
       lastActivity: runtime.lastActivity,
       classifyState: task.classifyState || null,
       goal: task.goal || '',
+      taskShortCode: taskShortCode(task.taskId),
       phase: task.phase || 'idle',
     };
   }
@@ -254,6 +257,7 @@ function createSessionAdminRuntime(rawDeps) {
       summaryTs: facts.summaryAt || null,
       classifyState: facts.classifyState || null,
       goal: facts.goal || '',
+      taskShortCode: facts.taskShortCode || '',
       phase: facts.phase || 'idle',
     };
   }
