@@ -2337,7 +2337,7 @@ taskRunHost = createProductionTaskRunHost({ taskRunStore, dataRoot: MULTICC_PATH
   records: persistedSessions, directories, chatStream, clearNativeCliStates: record => { if (record) delete record.pendingCliHandoff; return clearAllNativeCliStates(record); },
   deleteChatHistory: id => chatHistoryService.deleteSession(id), resetChatState: id => { const state = chatSessions.get(id); if (state) { state.chatTurnCount = 0; delete state._currentTaskId; delete state._currentTaskRunId; delete state._currentTaskLeaseEpoch; } },
   resetRoleUsage: resetRoleTokenUsage, persistRecords: savePersistedSessionsBestEffort,
-  drainProviderProducers: (id, lease) => taskRunProviderBridge.waitForDrain(id, lease), onRunUpdated: ({ taskId }) => taskBoardRuntime.notifyTaskRun(taskId),
+  drainProviderProducers: (id, lease) => taskRunProviderBridge.waitForDrain(id, lease), onRunUpdated: ({ taskId }) => taskBoardRuntime.notifyTaskRun(taskId), getTaskState: id => getTaskState(persistedSessions.get(id)), onRunFailed: ({ taskId, runId }) => taskBoardRuntime.autoRetryTaskRun({ taskId, runId }),
   providerSnapshot: id => { const record = persistedSessions.get(id) || {}; return { providerId: record.provider || '_default_', providerName: record.provider || '_default_', cli: record.cli || '', model: effectiveSessionModel(record) || '' }; }, logger });
 createAuxRunRoutes({ records: persistedSessions, getLog: () => auxRunLog }).mountRoutes(app);
 
