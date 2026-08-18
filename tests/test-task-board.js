@@ -691,6 +691,44 @@ function mkRuntime(overrides = {}) {
   };
 }
 
+function admitFailedRun(taskRuns, taskId, runId, { retryable, code = 'rate_limited' } = {}) {
+  taskRuns.admitRun({
+    run: {
+      runId, taskId, attemptId: runId, slotId: null,
+      startedAt: 1, metadata: { source: 'task-board' },
+    },
+    messages: [{
+      messageId: `admission:${runId}`, role: 'user', kind: 'admission',
+      content: '继续', metadata: {}, createdAt: 1,
+    }],
+  });
+  admitFailureState(taskRuns, runId, { retryable, code });
+}
+
+function admitFailureState(taskRuns, runId, { retryable, code = 'rate_limited' } = {}) {
+  const { recordRunError } = require('../src/task-run-errors');
+  recordRunError(taskRuns, {
+    runId, code, category: retryable ? 'rate_limit' : 'authentication_permission',
+    retryable,
+    message: retryable
+      ? '任务执行失败（触发服务端限流）：等待服务端限流窗口结束'
+      : '任务执行失败（凭据或权限问题）：重新登录、更新 API 凭据或补足权限后重试',
+    createdAt: 2,
+  });
+  taskRuns.observeUsage({ runId, event: {
+    eventId: `test-fail:${runId}`, occurredAt: 3,
+    providerId: '_none_', providerName: 'No provider', cli: '', protocol: '', model: '',
+    roleKind: 'main', routeName: 'main', source: 'exact', coverage: 'observed', status: 'error',
+    tokens: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0 },
+    errorCode: code,
+  } });
+  taskRuns.sealUsage({ runId, executionStatus: 'failed', outcomeDurable: true,
+    producersDrained: true, nativeTranscriptChecked: true });
+  const permit = taskRuns.getCleanupPermit(runId);
+  taskRuns.markCleanup({ runId, permit, state: 'deleting' });
+  taskRuns.markCleanup({ runId, permit, state: 'done' });
+}
+
 test('assertTaskBoardDeps rejects missing deps', () => {
   assert.throws(() => assertTaskBoardDeps({}), /missing dep/);
 });
@@ -2313,6 +2351,19 @@ test('a failed follow-up dispatch seals its TaskRun and rejects replays', async 
   const runs = taskRuns.listTaskRuns(task.id);
   assert.equal(runs.length, 1);
   assert.equal(runs[0].executionStatus, 'failed');
+  const errorEntries = taskRuns.getRunMessages(runs[0].runId).filter(m => m.kind === 'error');
+  assert.equal(errorEntries.length, 1, 'a dispatch rejection leaves one error ledger entry');
+  assert.equal(errorEntries[0].role, 'system');
+  assert.equal(errorEntries[0].metadata.code, 'queue_unavailable');
+  assert.equal(errorEntries[0].metadata.retryable, false, 'dispatch rejections never auto-retry');
+
+  const boardRes = res();
+  routes.get('GET /api/task-board')({ query: {} }, boardRes);
+  await new Promise(r => setImmediate(r));
+  const card = boardRes.body.tasks.find(item => item.id === task.id);
+  assert.equal(card.runs[0].error.code, 'queue_unavailable',
+    'the run DTO surfaces the failure summary to the card');
+  assert.equal(card.runs[0].error.retryable, false);
 
   const replay = res();
   routes.get('POST /api/task-board/tasks/:taskId/send')({
@@ -2594,4 +2645,61 @@ test('board persists across runtime restarts', () => {
   const rt2 = createTaskBoardRuntime(deps);
   assert.equal(Object.values(rt2.getBoard().tasks)[0].title, '持久化');
   fs.rmSync(path.dirname(file), { recursive: true, force: true });
+});
+
+test('a retryable failed TaskRun auto-retries exactly once with its admission text', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-taskboard-autoretry-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const taskRuns = createTaskRunStore({ file: path.join(dir, 'task-runs.sqlite'), Database });
+  t.after(() => { try { taskRuns.close(); } catch (_) {} });
+  const { runtime, dispatches } = mkRuntime({ taskRuns });
+  const task = core.createPendingTask(runtime.getBoard(), {
+    dirId: 'dir-1', sessionId: 'sess-1', seed: '限流任务', now: 1,
+  });
+  runtime.save();
+
+  admitFailedRun(taskRuns, task.id, 'tr_fail1', { retryable: true });
+
+  const first = await runtime.autoRetryTaskRun({ taskId: task.id, runId: 'tr_fail1' });
+  assert.equal(first.ok, true);
+  assert.match(first.taskRunId, /^tr_[a-f0-9]{32}$/);
+  assert.notEqual(first.taskRunId, 'tr_fail1', 'the retry is a fresh run, never a resurrected one');
+  const retryRun = taskRuns.getRun(first.taskRunId);
+  assert.equal(retryRun.metadata.retryOf, 'tr_fail1');
+  assert.equal(retryRun.metadata.source, 'auto-retry');
+  assert.equal(retryRun.executionStatus, 'running');
+  const retryAdmission = taskRuns.getRunMessages(first.taskRunId).find(m => m.kind === 'admission');
+  assert.equal(retryAdmission.content, '继续', 'the retry re-admits the original task text');
+  const routed = dispatches.at(-1);
+  assert.equal(routed.route, 'commander');
+  assert.match(routed.message, /继续/);
+  assert.equal(routed.opts.taskStart, false);
+
+  // The retry run itself fails retryable: the hard cap of one still holds.
+  admitFailureState(taskRuns, first.taskRunId, { retryable: true });
+  const second = await runtime.autoRetryTaskRun({ taskId: task.id, runId: first.taskRunId });
+  assert.equal(second.ok, true);
+  assert.equal(second.code, 'retry_cap_reached');
+  assert.equal(taskRuns.listTaskRuns(task.id).length, 2, 'no third run is ever admitted');
+});
+
+test('a non-retryable or healthy run is never auto-retried', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-taskboard-noretry-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const taskRuns = createTaskRunStore({ file: path.join(dir, 'task-runs.sqlite'), Database });
+  t.after(() => { try { taskRuns.close(); } catch (_) {} });
+  const { runtime, dispatches } = mkRuntime({ taskRuns });
+  const task = core.createPendingTask(runtime.getBoard(), {
+    dirId: 'dir-1', sessionId: 'sess-1', seed: '凭据任务', now: 1,
+  });
+  runtime.save();
+
+  admitFailedRun(taskRuns, task.id, 'tr_auth1', { retryable: false, code: 'unauthorized' });
+  const denied = await runtime.autoRetryTaskRun({ taskId: task.id, runId: 'tr_auth1' });
+  assert.equal(denied.code, 'not_retryable');
+  assert.equal(dispatches.length, 0);
+  assert.equal(taskRuns.listTaskRuns(task.id).length, 1);
+
+  const missing = await runtime.autoRetryTaskRun({ taskId: task.id, runId: 'tr_missing' });
+  assert.equal(missing.code, 'run_not_failed');
 });

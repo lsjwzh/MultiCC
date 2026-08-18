@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const { createUsageObserved, validateUsageObserved } = require('./usage-observed');
 const { assertProviderBinding } = require('./provider-binding');
 const { isTaskRunWrapperText } = require('./task-run-context');
+const { describeRunFailure, recordRunError } = require('./task-run-errors');
 
 const TASK_RUN_CLIS = new Set(['claude', 'codex']);
 const TERMINAL_EXECUTION_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
@@ -132,6 +133,8 @@ function createTaskRunHost(options = {}) {
     finalizeRun = null,
     cleanupRun = null,
     onRunUpdated = () => {},
+    getTaskState = () => null,
+    onRunFailed = null,
     log = () => {},
   } = options;
   if (!store || typeof store.getRun !== 'function' || typeof store.bindRunSlot !== 'function'
@@ -144,6 +147,12 @@ function createTaskRunHost(options = {}) {
   }
   if (typeof onRunUpdated !== 'function') {
     throw new TypeError('[task-run-host] onRunUpdated port must be a function');
+  }
+  if (typeof getTaskState !== 'function') {
+    throw new TypeError('[task-run-host] getTaskState port must be a function');
+  }
+  if (onRunFailed != null && typeof onRunFailed !== 'function') {
+    throw new TypeError('[task-run-host] onRunFailed port must be a function');
   }
   for (const [name, value] of Object.entries({
     closeNative, clearNativeState, deleteChatHistory, resetChatState,
@@ -327,6 +336,9 @@ function createTaskRunHost(options = {}) {
         leaseEpoch,
         deliveryId: message.deliveryId || null,
         ...(wrapper ? { wrapper: true } : {}),
+        // A partial checkpoint is a draft, not a final answer; keep the flag
+        // so the conversation view can render it as interrupted output.
+        ...(message.partial === true ? { partial: true } : {}),
       },
       createdAt: Number.isSafeInteger(Number(message.ts)) ? Number(message.ts) : Date.now(),
     });
@@ -448,6 +460,31 @@ function createTaskRunHost(options = {}) {
           code: 'TASK_RUN_FINALIZATION_EVIDENCE_INCOMPLETE',
         });
       }
+      const status = executionStatus(event);
+      // A terminal failure must explain itself in the ledger before the run
+      // seals: the slot transcript is scrubbed right after, so this system
+      // entry is the only durable record of *why* the run failed. It is
+      // best-effort — a visibility write must never block finalization.
+      let failure = null;
+      if (status === 'failed') {
+        let apiError = null;
+        try {
+          apiError = getTaskState(record)?.apiError || null;
+        } catch (_) { apiError = null; }
+        failure = describeRunFailure({ event, apiError });
+        try {
+          recordRunError(store, {
+            runId,
+            code: failure.code,
+            category: failure.category,
+            retryable: failure.retryable,
+            message: failure.text,
+            createdAt: Number(event.at) || Date.now(),
+          });
+        } catch (error) {
+          log(`[task-run] error entry failed ${error?.code || 'unknown'}`);
+        }
+      }
       const usage = store.getRunUsage(runId);
       if (!hasRoleCoverage(usage, 'main')) {
         const snapshot = providerSnapshot(sessionId) || {};
@@ -474,7 +511,7 @@ function createTaskRunHost(options = {}) {
       }
       store.sealUsage({
         runId,
-        executionStatus: executionStatus(event),
+        executionStatus: status,
         outcomeDurable: evidence.outcomeDurable,
         producersDrained: evidence.producersDrained,
         nativeTranscriptChecked: evidence.nativeTranscriptChecked,
@@ -499,8 +536,25 @@ function createTaskRunHost(options = {}) {
       delete record.taskRunFinalization;
       await Promise.resolve(persistRecords('task-run-slot-release'));
       await notifyRunUpdated(runId, taskIdForUpdate(runId, event), {
-        executionStatus: executionStatus(event), cleanupState: 'done', quarantined: false,
+        executionStatus: status, cleanupState: 'done', quarantined: false,
       });
+      // A retryable failure gets one bounded automatic retry, admitted by the
+      // Task Board as a brand-new run (new lease, compiled context includes
+      // the failure entry). The port runs after cleanup so the freed slot can
+      // immediately take the retry; it must never fail finalization itself.
+      if (status === 'failed' && typeof onRunFailed === 'function') {
+        try {
+          await Promise.resolve(onRunFailed({
+            runId,
+            taskId: taskIdForUpdate(runId, event),
+            slotId: sessionId,
+            code: failure?.code || 'TURN_FAILED',
+            retryable: failure?.retryable === true,
+          }));
+        } catch (error) {
+          log(`[task-run] onRunFailed failed ${error?.code || error?.message || 'unknown'}`);
+        }
+      }
       return { ok: true, runId };
     } catch (error) {
       record.taskRunQuarantined = true;

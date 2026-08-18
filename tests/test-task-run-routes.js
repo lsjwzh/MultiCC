@@ -191,3 +191,52 @@ test('storage failures return a fixed 500 response and log only a safe code', ()
     detail: { route: 'run-detail', code: 'SQLITE_IOERR_READ' },
   }]);
 });
+test('GET task run surfaces the failure summary and the partial draft flag without leaking metadata', () => {
+  const { app } = fixture({
+    getRun(runId) {
+      return {
+        runId, taskId: 'task-1', executionStatus: 'failed',
+        usageStatus: 'sealed', cleanupState: 'done', startedAt: 10, terminalAt: 20,
+        slotId: 'private-slot', metadata: { nativeSessionId: 'secret-native-id' },
+      };
+    },
+    getRunMessages(runId) {
+      return [
+        {
+          runId, messageId: 'partial-1', role: 'assistant', kind: 'message',
+          content: '半截输出', createdAt: 18,
+          metadata: { leaseEpoch: 7, partial: true, nativeSessionId: 'secret-native-id' },
+        },
+        {
+          runId, messageId: 'error:run-1', role: 'system', kind: 'error',
+          content: '任务执行失败（触发服务端限流）：等待服务端限流窗口结束', createdAt: 19,
+          metadata: { code: 'rate_limited', category: 'rate_limit', retryable: true },
+        },
+      ];
+    },
+  });
+  const res = invoke(app.routes.get('GET /api/task-runs/:runId'), { runId: '%72un-1' });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.body.run, {
+    runId: 'run-1', taskId: 'task-1', executionStatus: 'failed',
+    usageStatus: 'sealed', cleanupState: 'done', startedAt: 10, terminalAt: 20,
+    error: {
+      code: 'rate_limited',
+      category: 'rate_limit',
+      retryable: true,
+      message: '任务执行失败（触发服务端限流）：等待服务端限流窗口结束',
+    },
+  });
+  assert.deepEqual(res.body.messages, [
+    {
+      runId: 'run-1', messageId: 'partial-1', role: 'assistant', kind: 'message',
+      content: '半截输出', createdAt: 18, partial: true,
+    },
+    {
+      runId: 'run-1', messageId: 'error:run-1', role: 'system', kind: 'error',
+      content: '任务执行失败（触发服务端限流）：等待服务端限流窗口结束', createdAt: 19,
+    },
+  ]);
+  assert.equal(JSON.stringify(res.body).includes('secret-native-id'), false,
+    'raw metadata never leaks into the public DTO');
+});

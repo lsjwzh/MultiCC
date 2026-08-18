@@ -86,6 +86,8 @@ function fixture(overrides = {}) {
     }),
     cleanupRun: overrides.cleanupRun,
     onRunUpdated: overrides.onRunUpdated,
+    getTaskState: overrides.getTaskState,
+    onRunFailed: overrides.onRunFailed,
     log: () => {},
   });
   return { host, calls, records, store, usage, messages, run, observed };
@@ -838,4 +840,109 @@ test('waiting-user and waiting-background boundaries keep the run lease and nati
     assert.equal(h.host.isSlotUnavailable('slot-1', { taskRunId: 'run-2', leaseEpoch: 1 }), true);
     assert.equal(h.calls.some(call => call.startsWith('seal:') || call.startsWith('cleanup:')), false);
   }
+});
+
+test('run-owned transcript preserves the partial checkpoint flag', () => {
+  const h = fixture();
+  activateRun(h);
+  h.host.recordMessage('slot-1', {
+    id: 'partial-1', role: 'assistant', content: '半截输出', taskId: 'task-1',
+    taskRunId: 'run-1', leaseEpoch: 2, partial: true, ts: 20,
+  });
+  h.host.recordMessage('slot-1', {
+    id: 'final-1', role: 'assistant', content: '完整输出', taskId: 'task-1',
+    taskRunId: 'run-1', leaseEpoch: 2, ts: 30,
+  });
+  const partial = h.messages.find(message => message.messageId === 'partial-1');
+  const final = h.messages.find(message => message.messageId === 'final-1');
+  assert.equal(partial.metadata.partial, true, 'partial checkpoints keep their draft flag');
+  assert.equal(final.metadata.partial, undefined, 'final output is never flagged partial');
+});
+
+test('a failed completion writes one error ledger entry and fires onRunFailed exactly once', async () => {
+  const failures = [];
+  const h = fixture({
+    getTaskState: () => ({
+      apiError: {
+        category: 'rate_limit', code: 'rate_limited', retryable: true,
+        userAction: '等待服务端限流窗口结束',
+      },
+    }),
+    onRunFailed: async info => { failures.push(info); },
+  });
+  await h.host.beforeDeliver({
+    sessionId: 'slot-1', taskId: 'task-1', taskRunId: 'run-1', leaseEpoch: 2,
+  });
+  h.calls.length = 0;
+  const event = {
+    type: 'completed', sessionId: 'slot-1', taskId: 'task-1',
+    taskRunId: 'run-1', leaseEpoch: 2, turnOutcome: 'failed', classifyState: 'E',
+  };
+  await h.host.onSchedulerEvent(event);
+  const errors = h.messages.filter(message => message.kind === 'error');
+  assert.equal(errors.length, 1, 'a terminal failure leaves exactly one error ledger entry');
+  assert.equal(errors[0].role, 'system');
+  assert.equal(errors[0].metadata.code, 'rate_limited');
+  assert.equal(errors[0].metadata.category, 'rate_limit');
+  assert.equal(errors[0].metadata.retryable, true);
+  assert.match(String(errors[0].content), /限流/);
+  assert.ok(h.calls.includes('seal:failed'));
+  assert.deepEqual(failures, [{
+    runId: 'run-1', taskId: 'task-1', slotId: 'slot-1',
+    code: 'rate_limited', retryable: true,
+  }]);
+
+  await h.host.onSchedulerEvent(event);
+  assert.equal(h.messages.filter(message => message.kind === 'error').length, 1,
+    'a terminal replay never double-writes the error entry');
+  assert.equal(failures.length, 1, 'a terminal replay never re-fires onRunFailed');
+});
+
+test('a failed completion without structured evidence is recorded non-retryable', async () => {
+  const failures = [];
+  const h = fixture({ onRunFailed: async info => { failures.push(info); } });
+  await h.host.beforeDeliver({
+    sessionId: 'slot-1', taskId: 'task-1', taskRunId: 'run-1', leaseEpoch: 2,
+  });
+  await h.host.onSchedulerEvent({
+    type: 'completed', sessionId: 'slot-1', taskId: 'task-1',
+    taskRunId: 'run-1', leaseEpoch: 2, turnOutcome: 'failed', classifyState: 'E',
+  });
+  const errors = h.messages.filter(message => message.kind === 'error');
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].metadata.code, 'TURN_FAILED');
+  assert.equal(errors[0].metadata.retryable, false);
+  assert.deepEqual(failures, [{
+    runId: 'run-1', taskId: 'task-1', slotId: 'slot-1',
+    code: 'TURN_FAILED', retryable: false,
+  }]);
+});
+
+test('a succeeded completion writes no error entry and never fires onRunFailed', async () => {
+  const failures = [];
+  const h = fixture({ onRunFailed: async info => { failures.push(info); } });
+  await h.host.beforeDeliver({
+    sessionId: 'slot-1', taskId: 'task-1', taskRunId: 'run-1', leaseEpoch: 2,
+  });
+  await h.host.onSchedulerEvent({
+    type: 'completed', sessionId: 'slot-1', taskId: 'task-1',
+    taskRunId: 'run-1', leaseEpoch: 2, turnOutcome: 'succeeded',
+  });
+  assert.equal(h.messages.filter(message => message.kind === 'error').length, 0);
+  assert.equal(failures.length, 0);
+});
+
+test('a cancelled completion writes no error entry and never fires onRunFailed', async () => {
+  const failures = [];
+  const h = fixture({ onRunFailed: async info => { failures.push(info); } });
+  await h.host.beforeDeliver({
+    sessionId: 'slot-1', taskId: 'task-1', taskRunId: 'run-1', leaseEpoch: 2,
+  });
+  await h.host.onSchedulerEvent({
+    type: 'completed', sessionId: 'slot-1', taskId: 'task-1',
+    taskRunId: 'run-1', leaseEpoch: 2, attemptOutcome: 'cancelled', reason: 'cancelled',
+  });
+  assert.equal(h.messages.filter(message => message.kind === 'error').length, 0,
+    'a user cancel is not a failure');
+  assert.equal(failures.length, 0);
 });

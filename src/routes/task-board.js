@@ -34,6 +34,7 @@ const {
   isTaskRunWrapperText,
   stableTaskRunId: defaultStableTaskRunId,
 } = require('../task-run-context');
+const { recordRunError, runErrorOf } = require('../task-run-errors');
 
 const REQUIRED_DEPS = [
   'file', 'auxQueue', 'records', 'loadHistory', 'dispatchToSession',
@@ -106,6 +107,51 @@ function createTaskBoardRuntime(deps) {
     if (kind) payload.kind = kind;
     try { workspaceBroadcast(null, payload); }
     catch (_) {}
+  }
+
+
+  // Bounded failure recovery (design doc §3.3): a retryable terminal failure
+  // is re-admitted exactly once as a brand-new run — new lease epoch, fresh
+  // slot cleanup, compiled context that already contains the failure entry.
+  // The cap is structural: any run carrying metadata.retryOf (or an
+  // auto-retry source) ends the chain, so a retry can never spawn a retry.
+  async function autoRetryTaskRun({ taskId, runId } = {}) {
+    if (!taskRuns) return { ok: false, code: 'task_runs_unavailable' };
+    const id = String(taskId || '').trim();
+    const task = board.tasks[id];
+    if (!task) return { ok: false, code: 'task_not_found' };
+    const failedRunId = String(runId || '').trim();
+    let runs;
+    try {
+      runs = taskRuns.listTaskRuns(id);
+    } catch (_) {
+      return { ok: false, code: 'task_runs_unavailable' };
+    }
+    const failedRun = runs.find(run => run.runId === failedRunId) || null;
+    if (!failedRun || failedRun.executionStatus !== 'failed') {
+      return { ok: false, code: 'run_not_failed' };
+    }
+    if (failedRun.metadata?.retryOf
+        || runs.some(run => run.metadata?.retryOf || run.metadata?.source === 'auto-retry')) {
+      return { ok: true, skipped: true, code: 'retry_cap_reached' };
+    }
+    const errorInfo = runErrorOf(taskRuns, failedRunId);
+    if (errorInfo?.retryable !== true) {
+      return { ok: true, skipped: true, code: 'not_retryable' };
+    }
+    const admission = (taskRuns.getRunMessages(failedRunId) || [])
+      .find(message => message.kind === 'admission');
+    const text = core.messageText({ content: admission?.content }).trim();
+    if (!text) return { ok: false, code: 'admission_missing' };
+    const commander = core.resolveDirectoryCommander(records, core.taskDirId(board, task));
+    if (!commander.ok) return { ok: false, code: commander.code || 'commander_not_found' };
+    logger.log(`[multicc/taskboard] auto-retrying failed task run ${failedRunId} (${errorInfo.code})`);
+    const result = await routeCommanderFollowup(commander.sessionId, id, text, {
+      clientMsgId: `auto-retry:${failedRunId}`,
+      source: 'task-board',
+      retryOf: failedRunId,
+    });
+    return result;
   }
 
   function notifyTaskRun(taskId) {
@@ -388,6 +434,8 @@ function createTaskBoardRuntime(deps) {
         ? publicPendingQuestion(answerTarget.pending) : null;
       const runs = storedRuns.slice(-5).reverse().map(run => ({
         ...publicRunDto(run), usage: taskRuns.getRunUsage(run.runId),
+        ...(run.executionStatus === 'failed'
+          ? { error: runErrorOf(taskRuns, run.runId) } : {}),
         ...(pendingQuestion && run.runId === answerTarget.run.runId
           ? { pendingQuestion } : {}),
       }));
@@ -398,7 +446,7 @@ function createTaskBoardRuntime(deps) {
     }
   }
 
-  function beginTaskRun({ taskId, task, text, clientKey, source }) {
+  function beginTaskRun({ taskId, task, text, clientKey, source, retryOf = null }) {
     if (!taskRuns) return null;
     const runId = stableTaskRunId(taskId, clientKey);
     const existingRuns = taskRuns.listTaskRuns(taskId);
@@ -423,9 +471,13 @@ function createTaskBoardRuntime(deps) {
       slotId: null,
       startedAt,
       metadata: {
-        source: String(source || 'task-board').slice(0, 40),
+        source: retryOf ? 'auto-retry' : String(source || 'task-board').slice(0, 40),
         contextHash: context.hash,
         contextManifest: context.manifest,
+        // Bounded auto-retry lineage: the single automatic retry is the only
+        // run that ever carries retryOf, and autoRetryTaskRun refuses to
+        // admit another run once any run in the task has it.
+        ...(retryOf ? { retryOf: String(retryOf).slice(0, 64) } : {}),
       },
     };
     const admission = {
@@ -461,6 +513,13 @@ function createTaskBoardRuntime(deps) {
         tokens: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0 },
         errorCode: String(errorCode || 'DISPATCH_REJECTED').slice(0, 128),
       } });
+      recordRunError(taskRuns, {
+        runId,
+        code: String(errorCode || 'DISPATCH_REJECTED').slice(0, 128),
+        category: 'dispatch',
+        retryable: false,
+        message: `任务未能投递到执行槽（${String(errorCode || 'DISPATCH_REJECTED')}）。请重新发送。`,
+      });
       taskRuns.sealUsage({ runId, executionStatus: 'failed', outcomeDurable: true,
         producersDrained: true, nativeTranscriptChecked: true });
       const permit = taskRuns.getCleanupPermit(runId);
@@ -1505,9 +1564,11 @@ function createTaskBoardRuntime(deps) {
     if (!messageText) return { ok: false, code: 'empty_text' };
     const clientKey = String(options.clientMsgId || '').trim() || crypto.randomUUID();
     const source = options.source === 'commander' ? 'commander' : 'task-board';
+    const retryOf = String(options.retryOf || '').trim() || null;
     const taskRun = beginTaskRun({
       taskId: task.id, task, text: messageText,
       clientKey: `followup:${clientKey}`, source,
+      ...(retryOf ? { retryOf } : {}),
     });
     if (taskRun?.closed) return { ok: false, code: 'task_run_closed' };
     const message = String(options.goalNote || '')
@@ -2059,6 +2120,7 @@ function createTaskBoardRuntime(deps) {
       });
     },
     routeCommanderFollowup,
+    autoRetryTaskRun,
     notifyTaskRun,
     // test/introspection surface
     getBoard: () => board,
