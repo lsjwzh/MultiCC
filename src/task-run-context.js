@@ -420,7 +420,28 @@ function buildTaskRunContext({
   };
 }
 
+// ── Transport-wrapper detection ─────────────────────────────────────────────
+// The compiled context wall and the Commander/manual routed wrappers are
+// transport-only: they carry context INTO the model, but they are not
+// conversation. One shared predicate guards every consumer — the ledger
+// writer (marks metadata.wrapper), the board message projection, and the
+// next-turn compile input — so the scaffold can never leak into the
+// conversation view or be replayed as something the user said.
+const CONTEXT_HEADER_MARK = '[MultiCC 任务运行上下文';
+const COMMANDER_WRAPPER_MARK = '【Commander 单向路由任务】';
+const ROUTED_WRAPPER_PREFIX = '【任务：';
+
+function isTaskRunWrapperText(text) {
+  const value = String(text == null ? '' : text);
+  if (!value.trim()) return false;
+  // Mid-string matches survive a goal-note prefix glued ahead of the wrapper.
+  if (value.includes(CONTEXT_HEADER_MARK)) return true;
+  if (value.includes(COMMANDER_WRAPPER_MARK)) return true;
+  return value.trimStart().startsWith(ROUTED_WRAPPER_PREFIX);
+}
+
 module.exports = {
   buildTaskRunContext,
+  isTaskRunWrapperText,
   stableTaskRunId,
 };

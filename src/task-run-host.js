@@ -3,11 +3,23 @@
 const crypto = require('node:crypto');
 const { createUsageObserved, validateUsageObserved } = require('./usage-observed');
 const { assertProviderBinding } = require('./provider-binding');
+const { isTaskRunWrapperText } = require('./task-run-context');
 
 const TASK_RUN_CLIS = new Set(['claude', 'codex']);
 const TERMINAL_EXECUTION_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
 
 function clean(value) { return value == null ? '' : String(value).trim(); }
+
+function plainTextOf(content) {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter(block => block && block.type === 'text' && typeof block.text === 'string')
+      .map(block => block.text)
+      .join('\n');
+  }
+  return '';
+}
 
 function stableMessageId(runId, message) {
   if (message?.id) return String(message.id).slice(0, 256);
@@ -300,6 +312,11 @@ function createTaskRunHost(options = {}) {
     const existing = store.getRunMessages(runId);
     if (message.role === 'user' && message.taskStart === true
         && existing.some(item => item.kind === 'admission')) return true;
+    // Transport wrappers (compiled context wall / routed scaffold) are marked
+    // at write time so every reader — board projection, next-turn compile —
+    // can exclude them structurally instead of re-parsing text.
+    const wrapper = message.role === 'user'
+      && isTaskRunWrapperText(plainTextOf(message.content));
     store.appendMessage({
       runId,
       messageId: stableMessageId(runId, message),
@@ -309,6 +326,7 @@ function createTaskRunHost(options = {}) {
       metadata: {
         leaseEpoch,
         deliveryId: message.deliveryId || null,
+        ...(wrapper ? { wrapper: true } : {}),
       },
       createdAt: Number.isSafeInteger(Number(message.ts)) ? Number(message.ts) : Date.now(),
     });
