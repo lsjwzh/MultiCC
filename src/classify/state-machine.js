@@ -142,9 +142,12 @@ function createClassifyStateMachine(rawDeps) {
     const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
     // Turn-state history contains only structured rule evidence. Aux provenance
     // lives on messages and in aux-run-log, never on a state transition.
-    const entry = { at: now, goal: goal || '', phase: phase || '', state,
-      error: !!error, evidence: result.evidence || undefined };
     const persisted = persistedSessions.get(sessionName);
+    // Carry the task identity onto the history row so any surface (e.g. the
+    // Commander roster) can render this past task's stable `#CODE` handle.
+    const entryTaskId = cs?._currentTaskId || persisted?.taskState?.taskId || null;
+    const entry = { at: now, goal: goal || '', taskId: entryTaskId,
+      phase: phase || '', state, error: !!error, evidence: result.evidence || undefined };
     if (persisted) {
       const ts = persisted.taskState || {};
       const hist = (Array.isArray(ts.classifyHistory) ? ts.classifyHistory : [])

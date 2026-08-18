@@ -31,6 +31,7 @@ function workspaceEntry(session, facts = {}) {
     summaryAt: isoTimestamp(facts.summaryAt),
     classifyState: boundedString(facts.classifyState, 40),
     goal: sanitizePublicText(facts.goal, 1000) || '',
+    taskShortCode: boundedString(facts.taskShortCode, 8, ''),
     phase: boundedString(facts.phase, 80, 'idle'),
   });
 }
