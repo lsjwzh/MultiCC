@@ -167,7 +167,7 @@ const {
   DEFAULT_CHECK_INTERVAL_MS: CODEX_OAUTH_CHECK_INTERVAL_MS,
 } = require('./src/codex-oauth-refresh');
 const { parseClassifyResult, buildClassifySystemPrompt, classifyDisplay, phaseLabel } = require('./src/classify/vocab');
-const { taskShortCode } = require('./src/classify/task-short-code'); // 4-char base36 display handle derived from taskId
+const { taskShortCode, initTaskShortCodeRegistry } = require('./src/classify/task-short-code');
 const { USER_INPUT_SIGNAL_PROMPT, buildCodexUserInputConstraint, recordAdapterUserInput, createUserInputSignalHost } = require('./src/classify/user-input-host');
 const { createDispatchTargeting } = require('./src/dispatch/targeting');
 const { createGatewayHost } = require('./src/dispatch/gateway-host');
@@ -233,7 +233,7 @@ const { createHealthHandlers } = require('./src/health');
 const { secureRuntimeData, atomicWriteJson, atomicWriteText, ensurePrivateDir } = require('./src/runtime-security');
 const { createHostEnv } = require('./src/host-env');
 const MULTICC_PATHS = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
-const taskRunStore = createTaskRunStore({ file: MULTICC_PATHS.taskRunDbFile });
+const taskRunStore = createTaskRunStore({ file: MULTICC_PATHS.taskRunDbFile }); initTaskShortCodeRegistry({ file: MULTICC_PATHS.taskShortCodesFile });
 const MEMORY_STORE_ROOT = process.env.MULTICC_MEMORY_ROOT || path.join(__dirname, 'memories');
 const chatHistoryRepository = createChatHistoryFileRepository({ dataDir: MULTICC_PATHS.root });
 const turnEventJournal = sharedTurnEventJournal(MULTICC_PATHS);

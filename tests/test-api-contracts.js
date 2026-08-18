@@ -319,4 +319,8 @@ test('server composition uses canonical adapters and retires legacy dispatch end
   assert.ok(voiceHost.includes("createVoiceGatewayRoutes } = require('./routes/voice-gateway')"));
   assert.ok(voiceHost.includes("createQwenAudioRuntimeRoutes } = require('./routes/qwen-audio-runtime')"));
   assert.ok(source.includes('JSON.stringify(createWsEnvelope(payload))'));
+  // The outward task short-code registry must be the persisted one — without
+  // this wiring the singleton silently degrades to in-memory and every code
+  // remints on restart, breaking the uniqueness-across-time guarantee.
+  assert.ok(source.includes('initTaskShortCodeRegistry({ file: MULTICC_PATHS.taskShortCodesFile })'));
 });
