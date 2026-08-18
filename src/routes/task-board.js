@@ -1586,11 +1586,9 @@ function createTaskBoardRuntime(deps) {
       if (!commander.ok) return commanderFailure(res, commander.code);
       target = commander.sessionId;
       routeMode = 'commander';
-      result = await sendSessionMessage(target, text, {
+      result = await routeCommanderFollowup(target, task.id, text, {
         clientMsgId: followupKey,
-        taskId: task.id,
-        taskStart: false,
-        taskSource: 'task-board',
+        source: 'task-board',
         goalNote: goalNoteFor(req.body),
       });
     }
@@ -1759,9 +1757,9 @@ function createTaskBoardRuntime(deps) {
     };
   }
 
-  // Automatic board input first enters the Commander session through the same
-  // ingress as its WebSocket chat. Commander policy then calls dispatchTaskStart
-  // to force-forward the task; manual targets continue to dispatch directly.
+  // Board input is admitted deterministically: dispatchTaskStart opens a TaskRun
+  // and routes through the Commander host router, so the Commander LLM is never
+  // in the routing decision loop. Manual targets continue to dispatch directly.
   async function handleBoardSend(req, res) {
     const text = String(req.body?.text || '').trim();
     if (!text) return res.status(400).json({ error: 'empty_text' });
@@ -1786,21 +1784,15 @@ function createTaskBoardRuntime(deps) {
       routeMode = 'commander';
     }
     const clientKey = requestKey(req);
-    const result = routeMode === 'commander'
-      ? await sendSessionMessage(target, text, {
-          clientMsgId: clientKey,
-          taskSource: 'task-board',
-          goalNote: goalNoteFor(req.body),
-        })
-      : await dispatchTaskStart({
-          source: 'task-board',
-          dirId,
-          target,
-          routeMode,
-          text,
-          clientKey,
-          goalNote: goalNoteFor(req.body),
-        });
+    const result = await dispatchTaskStart({
+      source: 'task-board',
+      dirId: routeMode === 'commander' ? (records.get(target)?.dirId || dirId) : dirId,
+      target,
+      routeMode,
+      text,
+      clientKey,
+      goalNote: goalNoteFor(req.body),
+    });
     if (!result.ok) {
       const conflict = result.code === 'idempotency_conflict';
       const busy = result.code === 'target_busy' || result.error === 'target_busy';
@@ -1817,21 +1809,24 @@ function createTaskBoardRuntime(deps) {
       }));
     }
     if (routeMode === 'commander') {
-      // Commander receives the message and may route it with MCP route_task.
+      // Fallback when no TaskRun store is wired: the task is still created and
+      // routed deterministically, only the run receipt is skipped.
       res.json({
         ok: true,
-        taskId: null,
+        taskId: result.taskId,
         target,
         targetLabel: records.get(target)?.label || target,
         routingMode: 'commander',
         commanderSessionId: target,
-        workerSessionId: null,
-        workerLabel: null,
-        queued: false,
-        elasticWorkerCreated: false,
+        workerSessionId: result.workerSessionId || null,
+        workerLabel: result.workerSessionId
+          ? records.get(result.workerSessionId)?.label || result.workerSessionId
+          : null,
+        queued: result.queued === true,
+        elasticWorkerCreated: result.elasticWorkerCreated === true,
         chatId: target,
-        operationId: null,
-        duplicate: false,
+        operationId: result.operationId || null,
+        duplicate: result.duplicate === true,
       });
     } else {
       res.json({

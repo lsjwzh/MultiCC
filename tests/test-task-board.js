@@ -996,14 +996,15 @@ test('REST: board, messages, send and status flow', async () => {
   assert.equal(sendRes.body.ok, true);
   assert.equal(sendRes.body.target, 'commander-1');
   assert.equal(sendRes.body.routingMode, 'commander');
-  // Commander mode: message delivered via sendSessionMessage, no synchronous dispatch
-  assert.equal(sessionMessages.length >= 1, true, 'message delivered to Commander');
-  assert.equal(sessionMessages.length, 1);
-  assert.equal(sessionMessages[0].sessionId, 'commander-1');
-  assert.equal(sessionMessages[0].text, '加个删除按钮');
-  assert.equal(sessionMessages[0].options.taskId, tid);
-  assert.equal(sessionMessages[0].options.taskStart, false);
-  assert.equal(sessionMessages[0].options.taskSource, 'task-board');
+  // Commander mode: deterministically routed via routeCommanderTask. The
+  // Commander session never runs a chat turn for board follow-ups.
+  assert.equal(sessionMessages.length, 0, 'follow-up must not enter the Commander chat turn');
+  assert.equal(dispatches.length, 1);
+  assert.equal(dispatches[0].route, 'commander');
+  assert.match(dispatches[0].message, /加个删除按钮/);
+  assert.equal(dispatches[0].opts.taskId, tid);
+  assert.equal(dispatches[0].opts.taskStart, false);
+  assert.equal(dispatches[0].opts.taskSource, 'task-board');
 
   const stRes = res();
   routes.get('POST /api/task-board/tasks/:taskId/status')(
@@ -1133,9 +1134,12 @@ test('automatic board routing is Commander-first even with multiple active ordin
   assert.equal(res.body.target, 'commander-1');
   assert.equal(res.body.commanderSessionId, 'commander-1');
   assert.equal(res.body.routingMode, 'commander');
-  assert.equal(commanderCalls.length, 0, 'task board no longer calls routeCommanderTask synchronously');
+  assert.equal(commanderCalls.length, 1, 'board send routes deterministically through the Commander host router');
+  assert.equal(commanderCalls[0].commanderId, 'commander-1');
+  assert.equal(commanderCalls[0].taskStart, true);
+  assert.match(commanderCalls[0].message, /修复任务详情路由/);
   assert.equal(workerCalls.length, 0, 'task board must never bypass Commander');
-  assert.equal(res.body.workerSessionId, null, 'worker assignment happens later through Commander MCP routing');
+  assert.equal(res.body.workerSessionId, 'worker-newest', 'worker assignment comes from the deterministic router receipt');
 });
 
 test('same panel client id reuses taskId and operation without a second Commander decision', async () => {
@@ -1178,32 +1182,38 @@ test('same panel client id reuses taskId and operation without a second Commande
   routes.get('/api/task-board/send')(request, second);
   await new Promise(resolve => setImmediate(resolve));
 
-  // Commander mode: taskId is null (async routing), both calls deliver to Commander
-  assert.equal(first.body.taskId, null);
-  assert.equal(second.body.taskId, null);
+  // Commander mode: deterministic routing creates the task synchronously; the
+  // replay reuses the same taskId and re-delivers to the original worker.
+  assert.ok(first.body.taskId);
+  assert.equal(second.body.taskId, first.body.taskId);
   assert.equal(first.body.routingMode, 'commander');
   assert.equal(second.body.routingMode, 'commander');
-  assert.equal(sessionMessages.length, 2);
-  assert.equal(sessionMessages[0].options.clientMsgId, 'stable-client-message');
-  assert.equal(sessionMessages[1].options.clientMsgId, 'stable-client-message');
+  assert.equal(commanderCalls.length, 1, 'replay needs no second Commander decision');
+  assert.equal(replayCalls.length, 1, 'replay re-delivers to the original worker');
+  assert.equal(replayCalls[0].target, 'sess-1');
+  assert.equal(second.body.duplicate, true);
+  assert.equal(sessionMessages.length, 0, 'board sends never enter the Commander chat turn');
 
   const changedRoute = response();
   routes.get('/api/task-board/send')({
     body: { ...request.body, target: 'sess-1' },
   }, changedRoute);
   await new Promise(resolve => setImmediate(resolve));
-  // With explicit target change, it's a manual route to a busy session → 409
-  // Explicit target to a non-busy session succeeds as manual route
-  assert.equal(changedRoute.code, 200);
-  assert.equal(changedRoute.body.routingMode, 'manual');
+  // Same idempotency key with a different route is a conflict, not a new task
+  assert.equal(changedRoute.code, 409);
+  assert.equal(changedRoute.body.error, 'idempotency_conflict');
 });
 
-test('panel routing sends the original user source through the canonical Commander session ingress', async () => {
+test('panel routing sends the original user source through the deterministic Commander router', async () => {
+  const commanderCalls = [];
   const { runtime, sessionMessages } = mkRuntime({
-    routeCommanderTask: async () => ({
-      ok: true, targetSessionId: 'sess-1', targetLabel: '工程师1',
-      operationId: 'op-1', status: 'admitted', queued: false,
-    }),
+    routeCommanderTask: async request => {
+      commanderCalls.push(request);
+      return {
+        ok: true, targetSessionId: 'sess-1', targetLabel: '工程师1',
+        operationId: 'op-1', status: 'admitted', queued: false,
+      };
+    },
   });
   const routes = new Map();
   runtime.mountRoutes({ get: (p, h) => routes.set(p, h), post: (p, h) => routes.set(p, h) });
@@ -1212,17 +1222,13 @@ test('panel routing sends the original user source through the canonical Command
   await new Promise(resolve => setImmediate(resolve));
 
   assert.equal(res.body.routingMode, 'commander');
-  assert.deepEqual(sessionMessages, [{
-    sessionId: 'commander-1',
-    text: '让工程师改 README',
-    options: {
-      clientMsgId: sessionMessages[0].options.clientMsgId,
-      taskSource: 'task-board',
-      goalNote: '',
-    },
-  }]);
-  assert.ok(sessionMessages[0].options.clientMsgId);
-  assert.equal(JSON.stringify(runtime.getBoard()).includes('让工程师改 README'), false);
+  assert.equal(sessionMessages.length, 0, 'board sends never enter the Commander chat turn');
+  assert.equal(commanderCalls.length, 1);
+  assert.match(commanderCalls[0].message, /让工程师改 README/);
+  assert.equal(commanderCalls[0].taskSource, 'task-board');
+  assert.ok(res.body.taskId, 'board send returns the created taskId');
+  assert.equal(JSON.stringify(runtime.getBoard()).includes('让工程师改 README'), true,
+    'card-first: the task lands on the board');
 });
 
 test('task body UI folds long text and escapes or text-renders untrusted content', () => {
@@ -1269,13 +1275,13 @@ test('Commander busy state is irrelevant; worker queue receipt survives refresh'
   await new Promise(resolve => setImmediate(resolve));
 
   assert.equal(res.body.ok, true);
-  assert.equal(res.body.queued, false, 'queued is async now; Commander LLM decides routing');
-  // Commander mode: no synchronous routing; message delivered to Commander for LLM to route
-  assert.equal(fixture.sessionMessages.length >= 1, true, 'message delivered to Commander');
+  assert.equal(res.body.queued, true, 'queue receipt is returned synchronously by the deterministic router');
+  assert.equal(fixture.sessionMessages.length, 0, 'message never enters the Commander chat turn');
   assert.equal(res.body.commanderSessionId, 'commander-1');
-  // No task routing saved synchronously
-  assert.equal(res.body.taskId, null);
-  // No synchronous routing data to verify on restart; Commander LLM routes async.
+  assert.ok(res.body.taskId, 'task is created synchronously');
+  assert.equal(commanderCalls.length, 1);
+  assert.equal(JSON.stringify(fixture.runtime.getBoard()).includes('worker-idle'), true,
+    'worker queue receipt is persisted on the board');
 });
 
 test('automatic routing fails closed without a same-directory typed Commander', async () => {
@@ -1336,8 +1342,11 @@ test('automatic routing is unavailable until Commander migration finishes, while
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(automatic.code, 200);
   assert.equal(automatic.body.target, 'commander-1');
-  // Commander mode: message delivered to Commander via sendSessionMessage
+  // Commander mode: routed deterministically (routeCommanderTask), never a Commander chat turn
   assert.equal(automatic.body.routingMode, 'commander');
+  assert.equal(dispatches.length, 2);
+  assert.equal(dispatches[1].route, 'commander');
+  assert.ok(automatic.body.taskId, 'commander-mode board send returns the created taskId');
 });
 
 test('manual target remains worker-only and admits into the durable queue while busy', async () => {
@@ -2106,11 +2115,12 @@ test('goal-flagged sends prepend the goal note; board-level send routes by dir',
     { params: { taskId: tid }, body: { text: '继续', goal: true, goalLimits: { maxRounds: '50' } } }, r1);
   await new Promise(rr => setImmediate(rr));
   assert.equal(r1.body.ok, true);
-  // Commander mode: message delivered via sendSessionMessage with goal note
-  assert.equal(sessionMessages.length >= 1, true);
-  const cmdMsg = sessionMessages.find(m => m.sessionId === 'commander-1');
-  assert.ok(cmdMsg, 'Commander received the message');
-  assert.match(cmdMsg.options.goalNote || '', /rounds=50/);
+  // Commander mode: the goal note is prepended to the deterministically routed
+  // message; the Commander chat turn is not involved.
+  assert.equal(sessionMessages.length, 0);
+  const cmdDispatch = dispatches.find(d => d.route === 'commander');
+  assert.ok(cmdDispatch, 'follow-up routed via routeCommanderTask');
+  assert.match(cmdDispatch.message, /rounds=50/);
 
   const r2 = res();
   routes.get('POST /api/task-board/send')(
@@ -2119,14 +2129,148 @@ test('goal-flagged sends prepend the goal note; board-level send routes by dir',
   assert.equal(r2.body.ok, true);
   assert.equal(r2.body.target, 'commander-1');
   assert.equal(r2.body.routingMode, 'commander');
-  // Commander mode: taskId remains null until the Commander admits MCP work.
-  assert.equal(r2.body.taskId, null);
+  // The deterministic router creates the task synchronously.
+  assert.ok(r2.body.taskId, 'commander-mode board send returns the created taskId');
   assert.equal(r2.body.routingMode, 'commander');
 
   const r3 = res();
   routes.get('POST /api/task-board/send')({ body: { dirId: 'nope', text: 'x' } }, r3);
   await new Promise(rr => setImmediate(rr));
   assert.equal(r3.code, 409);
+});
+
+test('board-level commander send creates a TaskRun and never enters the Commander chat turn', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-taskboard-http-run-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const taskRuns = createTaskRunStore({ file: path.join(dir, 'task-runs.sqlite'), Database });
+  t.after(() => { try { taskRuns.close(); } catch (_) {} });
+  const routed = [];
+  const { runtime, sessionMessages } = mkRuntime({
+    taskRuns,
+    routeCommanderTask: async request => {
+      routed.push(request);
+      return {
+        ok: true, targetSessionId: 'slot-hidden', targetLabel: 'slot',
+        operationId: request.taskRunId, status: 'admitted', queued: false,
+      };
+    },
+  });
+  const routes = new Map();
+  runtime.mountRoutes({ get: (p, h) => routes.set(`GET ${p}`, h), post: (p, h) => routes.set(`POST ${p}`, h) });
+  const res = () => ({ code: 200, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } });
+
+  const created = res();
+  routes.get('POST /api/task-board/send')({
+    body: { dirId: 'dir-1', text: '隔离执行这个任务', clientMsgId: 'board-run-1' },
+  }, created);
+  await new Promise(r => setImmediate(r));
+  assert.equal(created.code, 200);
+  assert.ok(created.body.taskId);
+  assert.match(created.body.taskRunId, /^tr_[a-f0-9]{32}$/);
+  assert.equal(created.body.commanderSessionId, 'commander-1');
+  assert.equal(sessionMessages.length, 0, 'board send must not enter the Commander chat turn');
+  assert.equal(routed.length, 1);
+  assert.equal(routed[0].taskRunId, created.body.taskRunId);
+  assert.equal(routed[0].taskStart, true);
+  assert.match(routed[0].message, /隔离执行这个任务/);
+  const runs = taskRuns.listTaskRuns(created.body.taskId);
+  assert.equal(runs.length, 1);
+  assert.deepEqual(
+    taskRuns.getRunMessages(created.body.taskRunId).map(message => message.kind),
+    ['admission'],
+  );
+});
+
+test('task follow-up opens a fresh TaskRun per message and replays into the same run', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-taskboard-followup-run-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const taskRuns = createTaskRunStore({ file: path.join(dir, 'task-runs.sqlite'), Database });
+  t.after(() => { try { taskRuns.close(); } catch (_) {} });
+  const routed = [];
+  const { runtime, sessionMessages } = mkRuntime({
+    taskRuns,
+    routeCommanderTask: async request => {
+      routed.push(request);
+      return {
+        ok: true, targetSessionId: 'slot-hidden', targetLabel: 'slot',
+        operationId: request.taskRunId, status: 'admitted', queued: false,
+      };
+    },
+  });
+  const routes = new Map();
+  runtime.mountRoutes({ get: (p, h) => routes.set(`GET ${p}`, h), post: (p, h) => routes.set(`POST ${p}`, h) });
+  const res = () => ({ code: 200, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } });
+
+  const first = res();
+  routes.get('POST /api/task-board/send')({
+    body: { dirId: 'dir-1', text: '初始任务', clientMsgId: 'seed-1' },
+  }, first);
+  await new Promise(r => setImmediate(r));
+  const tid = first.body.taskId;
+
+  const followup = res();
+  routes.get('POST /api/task-board/tasks/:taskId/send')({
+    params: { taskId: tid }, body: { text: '继续改进', clientMsgId: 'follow-1' },
+  }, followup);
+  await new Promise(r => setImmediate(r));
+  assert.equal(followup.code, 200);
+  assert.match(followup.body.taskRunId, /^tr_[a-f0-9]{32}$/);
+  assert.notEqual(followup.body.taskRunId, first.body.taskRunId, 'each follow-up opens a fresh run');
+  assert.equal(taskRuns.listTaskRuns(tid).length, 2);
+  assert.equal(sessionMessages.length, 0, 'follow-up must not enter the Commander chat turn');
+  assert.equal(routed.at(-1).taskStart, false);
+
+  const replay = res();
+  routes.get('POST /api/task-board/tasks/:taskId/send')({
+    params: { taskId: tid }, body: { text: '继续改进', clientMsgId: 'follow-1' },
+  }, replay);
+  await new Promise(r => setImmediate(r));
+  assert.equal(replay.code, 200);
+  assert.equal(replay.body.taskRunId, followup.body.taskRunId, 'same clientMsgId replays into the same run');
+  assert.equal(taskRuns.listTaskRuns(tid).length, 2, 'replay must not open another run');
+  assert.equal(
+    taskRuns.getRunMessages(followup.body.taskRunId).filter(m => m.kind === 'admission').length,
+    1,
+    'replay must not duplicate the admission message',
+  );
+});
+
+test('a failed follow-up dispatch seals its TaskRun and rejects replays', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-taskboard-failed-run-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const taskRuns = createTaskRunStore({ file: path.join(dir, 'task-runs.sqlite'), Database });
+  t.after(() => { try { taskRuns.close(); } catch (_) {} });
+  const { runtime } = mkRuntime({
+    taskRuns,
+    routeCommanderTask: async () => ({ ok: false, code: 'queue_unavailable' }),
+  });
+  const routes = new Map();
+  runtime.mountRoutes({ get: (p, h) => routes.set(`GET ${p}`, h), post: (p, h) => routes.set(`POST ${p}`, h) });
+  const res = () => ({ code: 200, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } });
+  const task = core.createPendingTask(runtime.getBoard(), {
+    dirId: 'dir-1', sessionId: 'sess-1', seed: '会失败的任务', now: 1,
+  });
+  runtime.save();
+
+  const failed = res();
+  routes.get('POST /api/task-board/tasks/:taskId/send')({
+    params: { taskId: task.id }, body: { text: '继续', clientMsgId: 'fail-1' },
+  }, failed);
+  await new Promise(r => setImmediate(r));
+  assert.equal(failed.code, 502);
+  assert.equal(failed.body.error, 'queue_unavailable');
+  const runs = taskRuns.listTaskRuns(task.id);
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0].executionStatus, 'failed');
+
+  const replay = res();
+  routes.get('POST /api/task-board/tasks/:taskId/send')({
+    params: { taskId: task.id }, body: { text: '继续', clientMsgId: 'fail-1' },
+  }, replay);
+  await new Promise(r => setImmediate(r));
+  assert.equal(replay.code, 502);
+  assert.equal(replay.body.error, 'task_run_closed');
+  assert.equal(taskRuns.listTaskRuns(task.id).length, 1);
 });
 
 test('goal flag is ignored gracefully when goal helpers are not wired', async () => {
@@ -2156,12 +2300,12 @@ test('board placeholder stays in 待归类 at turn end (方案A：仅手动归�
   const r = { code: 200, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } };
   routes.get('POST /api/task-board/send')({ body: { dirId: 'dir-1', text: '增加手动重新归类按钮' } }, r);
   await new Promise(rr => setImmediate(rr));
-  // Commander mode: message delivered to Commander, routing is async.
-  // No taskId in response; no dispatch called synchronously.
-  assert.equal(r.body.taskId, null);
+  // Commander mode: deterministic routing creates the placeholder task
+  // synchronously and returns its taskId.
+  assert.ok(r.body.taskId);
   assert.equal(r.body.routingMode, 'commander');
-  // Simulate a worker turn that was routed by Commander's LLM (async path).
-  const simTaskId = 'tsk-simulated12345';
+  // Simulate the worker turn executing the routed task.
+  const simTaskId = r.body.taskId;
   history = [
     {
       id: 'u-new', role: 'user', content: '增加手动重新归类按钮', ts: 30,
