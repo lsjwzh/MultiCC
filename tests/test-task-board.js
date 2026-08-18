@@ -2357,6 +2357,16 @@ test('a failed follow-up dispatch seals its TaskRun and rejects replays', async 
   assert.equal(errorEntries[0].metadata.code, 'queue_unavailable');
   assert.equal(errorEntries[0].metadata.retryable, false, 'dispatch rejections never auto-retry');
 
+  taskRuns.appendMessage({
+    runId: runs[0].runId, messageId: 'partial-a1', role: 'assistant', kind: 'message',
+    content: '半截输出', metadata: { partial: true }, createdAt: 4,
+  });
+  const msgs = res();
+  routes.get('GET /api/task-board/tasks/:taskId/messages')({ params: { taskId: task.id } }, msgs);
+  const partialItem = msgs.body.items.find(item => item.messageId === 'partial-a1');
+  assert.equal(partialItem?.partial, true,
+    'the task detail conversation view must render partial output as interrupted draft');
+
   const boardRes = res();
   routes.get('GET /api/task-board')({ query: {} }, boardRes);
   await new Promise(r => setImmediate(r));
@@ -2675,12 +2685,31 @@ test('a retryable failed TaskRun auto-retries exactly once with its admission te
   assert.match(routed.message, /继续/);
   assert.equal(routed.opts.taskStart, false);
 
-  // The retry run itself fails retryable: the hard cap of one still holds.
+  // The retry run itself fails retryable: retries never chain.
   admitFailureState(taskRuns, first.taskRunId, { retryable: true });
   const second = await runtime.autoRetryTaskRun({ taskId: task.id, runId: first.taskRunId });
   assert.equal(second.ok, true);
   assert.equal(second.code, 'retry_cap_reached');
-  assert.equal(taskRuns.listTaskRuns(task.id).length, 2, 'no third run is ever admitted');
+  assert.equal(taskRuns.listTaskRuns(task.id).length, 2, 'a retry of a retry is never admitted');
+
+  const routes = new Map();
+  runtime.mountRoutes({ get: (p, h) => routes.set(`GET ${p}`, h), post: (p, h) => routes.set(`POST ${p}`, h) });
+  const res = () => ({ code: 200, status(c) { this.code = c; return this; }, json(b2) { this.body = b2; return this; } });
+
+  // A LATER ordinary failure still gets its own single retry: the cap is per
+  // failed delivery, not a one-shot task-lifetime allowance.
+  const manual = res();
+  routes.get('POST /api/task-board/tasks/:taskId/send')({
+    params: { taskId: task.id }, body: { text: '继续', clientMsgId: 'manual-2' },
+  }, manual);
+  await new Promise(r => setImmediate(r));
+  const manualRunId = manual.body.taskRunId;
+  admitFailureState(taskRuns, manualRunId, { retryable: true });
+  const third = await runtime.autoRetryTaskRun({ taskId: task.id, runId: manualRunId });
+  assert.equal(third.ok, true);
+  assert.match(third.taskRunId, /^tr_[a-f0-9]{32}$/);
+  assert.equal(taskRuns.getRun(third.taskRunId).metadata.retryOf, manualRunId,
+    'a later failed delivery earns its own bounded retry');
 });
 
 test('a non-retryable or healthy run is never auto-retried', async t => {
