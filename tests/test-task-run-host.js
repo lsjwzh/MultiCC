@@ -122,6 +122,18 @@ function activateRun(h, leaseEpoch = 2) {
   h.records.get('slot-1').taskRunLease = { runId: 'run-1', leaseEpoch };
 }
 
+test('a fresh slot barrier scrubs a stale apiError left by a prior failed run', async () => {
+  const h = fixture();
+  h.records.get('slot-1').taskState = {
+    apiError: { category: 'rate_limit', code: 'rate_limited', retryable: true },
+  };
+  await h.host.beforeDeliver({
+    sessionId: 'slot-1', taskId: 'task-1', taskRunId: 'run-1', leaseEpoch: 2,
+  });
+  assert.equal(h.records.get('slot-1').taskState.apiError, null,
+    'a reused execution slot must not misattribute the previous run\'s failure to the next one');
+});
+
 test('fresh-run barrier binds then clears an internal slot exactly once', async () => {
   const h = fixture();
   const descriptor = { sessionId: 'slot-1', taskId: 'task-1', taskRunId: 'run-1', leaseEpoch: 2 };
@@ -861,13 +873,17 @@ test('run-owned transcript preserves the partial checkpoint flag', () => {
 
 test('a failed completion writes one error ledger entry and fires onRunFailed exactly once', async () => {
   const failures = [];
+  const getTaskStateArgs = [];
   const h = fixture({
-    getTaskState: () => ({
-      apiError: {
-        category: 'rate_limit', code: 'rate_limited', retryable: true,
-        userAction: '等待服务端限流窗口结束',
-      },
-    }),
+    getTaskState: id => {
+      getTaskStateArgs.push(id);
+      return {
+        apiError: {
+          category: 'rate_limit', code: 'rate_limited', retryable: true,
+          userAction: '等待服务端限流窗口结束',
+        },
+      };
+    },
     onRunFailed: async info => { failures.push(info); },
   });
   await h.host.beforeDeliver({
@@ -887,6 +903,10 @@ test('a failed completion writes one error ledger entry and fires onRunFailed ex
   assert.equal(errors[0].metadata.retryable, true);
   assert.match(String(errors[0].content), /限流/);
   assert.ok(h.calls.includes('seal:failed'));
+  assert.ok(getTaskStateArgs.includes('slot-1'),
+    'the failure lookup must pass the slot session id — the production port is id-keyed');
+  assert.equal(getTaskStateArgs.some(arg => typeof arg === 'object'), false,
+    'passing the record object instead of the id silently breaks the apiError lookup');
   assert.deepEqual(failures, [{
     runId: 'run-1', taskId: 'task-1', slotId: 'slot-1',
     code: 'rate_limited', retryable: true,
