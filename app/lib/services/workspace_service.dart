@@ -31,6 +31,12 @@ class SessionStatus {
   /// The aux-AI's current guess at this session's task goal (一句话目标).
   final String? goal;
 
+  /// Stable 4-char base36 display handle for the current task, derived
+  /// server-side from the taskId. Rendered as a `#CODE · 标题` prefix so a task
+  /// keeps one referable code while its title evolves. Empty until the aux-AI
+  /// attributes a task.
+  final String? taskShortCode;
+
   /// Coarse phase key (planning/coding/testing/…) — server-normalised.
   final String? phase;
 
@@ -53,6 +59,7 @@ class SessionStatus {
     this.summaryTs = 0,
     this.classifyState,
     this.goal,
+    this.taskShortCode,
     this.phase,
     this.runStartedAt = 0,
     this.runEndedAt = 0,
@@ -71,6 +78,7 @@ class SessionStatus {
     int? summaryTs,
     String? classifyState,
     String? goal,
+    String? taskShortCode,
     String? phase,
     int? runStartedAt,
     int? runEndedAt,
@@ -88,6 +96,7 @@ class SessionStatus {
       summaryTs: summaryTs ?? this.summaryTs,
       classifyState: classifyState ?? this.classifyState,
       goal: goal ?? this.goal,
+      taskShortCode: taskShortCode ?? this.taskShortCode,
       phase: phase ?? this.phase,
       runStartedAt: runStartedAt ?? this.runStartedAt,
       runEndedAt: runEndedAt ?? this.runEndedAt,
@@ -225,6 +234,10 @@ class WorkspaceService extends ChangeNotifier {
       goal: (m['goal'] is String && (m['goal'] as String).isNotEmpty)
           ? m['goal'] as String
           : prev?.goal,
+      taskShortCode: (m['taskShortCode'] is String &&
+              (m['taskShortCode'] as String).isNotEmpty)
+          ? m['taskShortCode'] as String
+          : prev?.taskShortCode,
       phase: (m['phase'] as String?) ?? prev?.phase,
       runStartedAt:
           (m['runStartedAt'] as num?)?.toInt() ?? prev?.runStartedAt ?? 0,
@@ -322,9 +335,14 @@ class WorkspaceService extends ChangeNotifier {
       if (id is String) {
         final prev = statuses[id] ?? const SessionStatus(status: 'idle');
         final g = msg['goal']?.toString();
+        final code = msg['taskShortCode']?.toString();
         statuses[id] = prev.copyWith(
           classifyState: msg['classifyState']?.toString(),
           goal: (g != null && g.isNotEmpty) ? g : prev.goal,
+          // A task_state tick always reflects the current task identity — take
+          // the code verbatim (including '' when the task is unattributed) so a
+          // renewed/cleared task doesn't keep showing a stale code.
+          taskShortCode: code ?? prev.taskShortCode,
           phase: msg['phase']?.toString(),
         );
         notifyListeners();

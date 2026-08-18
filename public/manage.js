@@ -473,7 +473,7 @@ async function resolveRebase(id, action) {
 const _workspaceWs = new Map();        // dirId → WebSocket
 const _workspaceStatus = new Map();    // sessionId → { status, currentFile, lastActivity, mergeState }
 const _workspaceQueues = new Map();    // sessionId → bounded FIFO summary (never task text)
-const _workspaceClassify = new Map();  // sessionId → { classifyState, goal, phase }
+const _workspaceClassify = new Map();  // sessionId → { classifyState, goal, phase, code }
 const _workspaceEvents = new Map();    // dirId → event[]
 const _workspaceNotes = new Map();     // sessionId → pending note count
 const _workspaceSummaries = new Map(); // sessionId → { summary, ts } — 最近任务 one-liner
@@ -507,7 +507,7 @@ async function connectWorkspace(dirId) {
         _workspaceStatus.set(s.id, { status: s.status, currentFile: s.currentFile, lastActivity: s.lastActivity, runStartedAt: s.runStartedAt || null, runEndedAt: s.runEndedAt || null, mergeState: s.mergeState || null });
         _workspaceNotes.set(s.id, s.pendingNotes || 0);
         if (s.summary) _workspaceSummaries.set(s.id, { summary: s.summary, ts: s.summaryTs || 0 });
-        if (s.classifyState) _workspaceClassify.set(s.id, { classifyState: s.classifyState, goal: s.goal || '', phase: s.phase || 'idle' });
+        if (s.classifyState) _workspaceClassify.set(s.id, { classifyState: s.classifyState, goal: s.goal || '', phase: s.phase || 'idle', code: s.taskShortCode });
         updateSessionStatusDom(s.id);
         updateSessionNotesDom(s.id);
         updateSessionMergeDom(s.id);
@@ -545,9 +545,9 @@ async function connectWorkspace(dirId) {
       updateSessionSummaryDom(msg.sessionId);
       updateDirPreviewForSession(msg.sessionId);
     } else if (msg.type === 'task_state') {
-      _workspaceClassify.set(msg.sessionId, { classifyState: msg.classifyState || null, goal: msg.goal || '', phase: msg.phase || 'idle' });
+      _workspaceClassify.set(msg.sessionId, { classifyState: msg.classifyState || null, goal: msg.goal || '', phase: msg.phase || 'idle', code: msg.taskShortCode });
       updateSessionClassifyDom(msg.sessionId);
-      // Also refresh summary — classify goal changes often mean the summary line should update too
+      // goal changes often mean the summary should refresh too
       updateSessionSummaryDom(msg.sessionId);
     } else if (msg.type === 'session_queue_status') {
       applyWorkspaceQueueStatus(msg);
@@ -650,9 +650,9 @@ function updateSessionSummaryDom(sessionId) {
   const el = document.getElementById(`sess-summary-${sessionId}`);
   if (!el) return;
   const s = _workspaceSummaries.get(sessionId);
-  const text = s && s.summary ? s.summary : '';
-  // Same fold as the card's status badge, so the summary line can never show a
-  // different verdict from the badge sitting 20px above it.
+  const c = _workspaceClassify.get(sessionId)?.code, text = s && s.summary ? (c ? `#${c} · ${s.summary}` : s.summary) : '';
+  // Same fold as the card badge: summary and badge verdicts stay aligned.
+  //
   const ico = window.MultiCCStatusPresentation
     .presentation('session', sessionCardStatusFor(sessionId)).icon;
   el.textContent = text ? ico + ' ' + text : '';
@@ -660,8 +660,8 @@ function updateSessionSummaryDom(sessionId) {
   el.style.display = text ? '' : 'none';
 }
 
-// Update the classify state badge on a session card — shows the D/C/W/B/E/P
-// letter as an emoji badge with tint, driven by workspaceBroadcast('task_state').
+// Update the classify badge on a session card — shows the D/C/W/B/E/P letter
+// as an emoji badge with tint, driven by task_state broadcasts.
 function updateSessionClassifyDom(sessionId) {
   const el = document.getElementById(`sess-classify-${sessionId}`);
   if (!el) return;
@@ -670,9 +670,9 @@ function updateSessionClassifyDom(sessionId) {
   if (cls) {
     const reg = window.MultiCCStatusPresentation;
     const status = reg.classifyStatus(cls);
-    // `label` carries the classify-specific "why" into the tooltip; `reason` is
-    // the model-authored goal, which the registry sanitizes (no tokens, no paths)
-    // before it reaches the DOM. The accessible name stays the canonical状态 copy.
+    // `label` carries the classify "why" into the tooltip; `reason` is the
+    // model-authored goal, registry-sanitized (no tokens/paths) before the DOM.
+    // The accessible name stays the canonical状态 copy.
     reg.applyStatusBadge(el, 'session', status, {
       translate: tt,
       showLabel: false,

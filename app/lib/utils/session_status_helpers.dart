@@ -10,6 +10,16 @@ import '../theme.dart';
 import 'manual_order.dart';
 import 'status_presentation.dart';
 
+/// Prefix a task text with its stable short-code handle: `#CODE · text`.
+/// The code (derived server-side from the taskId) stays put while the title
+/// evolves, giving a persistent way to refer back to a task. Returns the text
+/// unchanged when there is no code (task not yet attributed).
+String withTaskCode(String? code, String text) {
+  final c = (code ?? '').trim();
+  if (c.isEmpty) return text;
+  return '#$c · $text';
+}
+
 /// Brand color for a session's CLI.
 Color cliBrandColor(SessionCli cli) => switch (cli) {
   SessionCli.claude => AppColors.claude,
