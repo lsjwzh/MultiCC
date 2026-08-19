@@ -322,7 +322,7 @@
             'waiting',
           );
           break;
-        case 'task_state': liveUi.renderAuxClassify(message.goal, message.phase, message.classifyState); break;
+        case 'task_state': liveUi.renderAuxClassify(message.goal, message.phase, message.classifyState, message.taskShortCode); break;
         case 'user_input_required':
           state.pendingUserInputRequestId = message.requestId || null;
           if (host.renderPendingUserInput?.(message) !== true) {
