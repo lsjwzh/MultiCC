@@ -22,7 +22,7 @@ function fakeClock() {
   };
 }
 
-function harness({ slot = true, runId = 'tr_1', taskId = 'tsk_1' } = {}) {
+function harness({ slot = true, runId = 'tr_1', taskId = 'tsk_1', cli = null } = {}) {
   const clock = fakeClock();
   const workspace = [];
   const emitted = [];
@@ -30,7 +30,7 @@ function harness({ slot = true, runId = 'tr_1', taskId = 'tsk_1' } = {}) {
     ['slot-1', taskId && runId ? { _currentTaskId: taskId, _currentTaskRunId: runId } : {}],
   ]);
   const records = new Map([
-    ['slot-1', { id: 'slot-1', dirId: 'dir-9', taskExecutionSlot: slot === true }],
+    ['slot-1', { id: 'slot-1', dirId: 'dir-9', taskExecutionSlot: slot === true, ...(cli ? { cli } : {}) }],
     ['chat-1', { id: 'chat-1', dirId: 'dir-9', taskExecutionSlot: false }],
   ]);
   const emitClients = (clients, event) => emitted.push({ clients, event });
@@ -156,4 +156,24 @@ test('task-context-host broadcast passes the session id through to emitClients',
   assert.equal(calls[0].sessionId, 'slot-1');
   // Existing behaviour: taskId is stamped onto the event when missing.
   assert.equal(calls[0].event.taskId, 'tsk_1');
+});
+
+test('the envelope stamps the slot record cli so hosts fold deltas with the right engine semantics', () => {
+  // Delta folding is cli-gated on BOTH renderers (web handlePartDelta and the
+  // app folder early-return on claude; codex assistant snapshots append).
+  // The envelope is the only channel a task view learns the run's engine
+  // from — the ledger DTOs deliberately carry no cli.
+  const codex = harness({ cli: 'codex' });
+  codex.emit(new Set(), { type: 'result' }, 'slot-1');
+  assert.equal(codex.workspace[0].payload.cli, 'codex');
+  // Batched envelopes carry it too, and a claude slot stamps claude.
+  const claude = harness({ cli: 'claude' });
+  claude.emit(new Set(), { type: 'part_delta', text: 'a' }, 'slot-1');
+  claude.emit(new Set(), { type: 'part_delta', text: 'b' }, 'slot-1');
+  claude.clock.flushOne();
+  assert.equal(claude.workspace[0].payload.cli, 'claude');
+  // A record without a cli leaves the field absent (older servers, never '').
+  const plain = harness();
+  plain.emit(new Set(), { type: 'result' }, 'slot-1');
+  assert.equal('cli' in plain.workspace[0].payload, false);
 });
