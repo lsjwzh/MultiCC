@@ -582,25 +582,10 @@ function renderTaskDetail(d) {
   }
   panel.appendChild(head);
 
-  const recentRuns = window.MultiCCTaskBoardUi.recentTaskRuns(d);
-  if (recentRuns.length) {
-    const runHistory = document.createElement('details');
-    runHistory.className = 'tb-run-history';
-    runHistory.dataset.testid = 'task-run-history';
-    runHistory.open = true;
-    runHistory.innerHTML = `<summary>最近执行 · ${recentRuns.length}</summary><div class="tb-run-history-list">${recentRuns.map(window.MultiCCTaskBoardUi.renderTaskRunSummary).join('')}</div>`;
-    panel.appendChild(runHistory);
-  }
-  window.MultiCCTaskBoardUi.bindPendingQuestionAnswers(panel, async payload => {
-    const response = await fetch(`/api/task-board/tasks/${encodeURIComponent(t.id)}/answer`, {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify(payload),
-    });
-    const result = await response.json();
-    if (!response.ok || !result.ok) throw new Error(result.error || response.status);
-    setTimeout(() => { loadTaskDetail(t.id, true); fetchTaskBoard(); }, 0);
-    return result;
-  });
+  // M4 (design D3): run history and the task-side pending-question card lived
+  // here through task-board-ui.js; both retired with the detail-modal
+  // unification. Answering and run streaming happen in the unified chat view
+  // (chat.html?task=); this archive page stays read-only for messages.
 
   const msgs = document.createElement('div'); msgs.className = 'td-msgs';
   if (!d.items.length) {

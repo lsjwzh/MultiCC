@@ -693,46 +693,6 @@
        keep spinning. */
     .tb-task .tb-icon{font-size:11px;line-height:1}
     .tb-empty{padding:10px 14px;color:var(--faint);font-size:12px}
-    #tb-detail-content{flex:1;display:flex;flex-direction:column;overflow:hidden}
-    .tb-d-head{padding:12px 18px;border-bottom:1px solid var(--line)}
-    .tb-d-title-row{display:flex;align-items:center;gap:10px;margin-top:2px;flex-wrap:wrap}
-    .tb-d-title{font-size:15px;font-weight:650;color:var(--text)}
-    .tb-badge{font-size:10px;padding:1px 8px;border-radius:10px;border:1px solid var(--line-strong);color:var(--st-fg,var(--muted))}
-    .tb-badge.on{border-color:var(--st-fg,var(--codex))}
-    .tb-d-actions{margin-left:auto;display:flex;gap:6px}
-    .tb-chips{margin-top:6px;display:flex;flex-wrap:wrap;gap:4px}
-    .tb-chip{font-size:10px;padding:1px 7px;border-radius:9px;background:var(--panel-2);color:var(--muted)}
-    .tb-session-link{text-decoration:none;cursor:pointer}
-    .tb-session-link:hover{color:var(--blue);text-decoration:underline}
-    .tb-run-history{padding:8px 18px;border-bottom:1px solid var(--line);font-size:11px;color:var(--muted)}
-    .tb-run-history>summary{cursor:pointer;color:var(--blue);font-weight:650;user-select:none}
-    .tb-run-history-list{max-height:220px;overflow:auto;margin-top:6px;display:grid;gap:6px}
-    .tb-run-summary{border:1px solid var(--line);border-radius:8px;background:var(--bg-soft);padding:7px 9px}
-    .tb-run-summary-head{display:flex;justify-content:space-between;gap:8px;color:var(--text)}
-    .tb-run-usage{margin-top:4px}
-    .tb-run-provider{display:flex;gap:6px;flex-wrap:wrap;margin-top:3px}
-    .tb-run-provider-name,.tb-run-model{color:var(--blue)}
-    .tb-run-token-detail{color:var(--faint)}
-    .tb-run-question{margin-top:8px;padding-top:8px;border-top:1px solid var(--line)}
-    .tb-run-question-label{font-weight:650;color:var(--amber)}
-    .tb-run-question-text{margin-top:3px;color:var(--text);white-space:pre-wrap}
-    .tb-run-question-reason{margin-top:3px;color:var(--muted)}
-    .tb-run-answer-options{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
-    .tb-run-answer-option[aria-pressed="true"]{border-color:var(--amber);color:var(--amber)}
-    .tb-run-answer-compose{display:flex;gap:6px;margin-top:6px;align-items:flex-end}
-    .tb-run-answer-compose textarea{flex:1;min-height:38px;resize:vertical;background:var(--well);color:var(--text);border:1px solid var(--line-strong);border-radius:6px;padding:6px}
-    .tb-run-answer-result{min-height:16px;margin-top:4px;color:var(--muted)}
-    .tb-run-answer-result[data-state="success"]{color:var(--codex)}
-    .tb-run-answer-result[data-state="error"]{color:var(--danger)}
-    .tb-msgs{flex:1;overflow-y:auto;padding:10px 18px}
-    .tb-msg{margin-bottom:10px;border:1px solid var(--line);border-radius:10px;overflow:hidden}
-    .tb-msg-link{display:block;color:inherit;text-decoration:none;cursor:pointer}
-    .tb-msg-link:hover{border-color:var(--blue)}
-    .tb-msg-head{padding:4px 10px;background:var(--panel);font-size:11px;color:var(--muted);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-    .tb-msg-sess{color:var(--blue);font-weight:600}
-    .tb-msg-role-user{color:var(--amber)}
-    .tb-msg-role-assistant{color:var(--codex)}
-    .tb-msg-body{padding:8px 10px;font-size:12px;white-space:pre-wrap;word-break:break-word;max-height:220px;overflow-y:auto;color:var(--text)}
     .tb-compose{border-top:1px solid var(--line);padding:10px 18px}
     .tb-compose textarea{width:100%;height:60px;background:var(--well);color:var(--text);border:1px solid var(--line-strong);border-radius:8px;padding:8px;font:inherit;font-size:12.5px;resize:vertical;box-sizing:border-box}
     .tb-compose-row{display:flex;gap:8px;margin-top:6px;align-items:center;flex-wrap:wrap}
@@ -2051,17 +2011,6 @@
       </div>
       <div id="dir-detail-body" style="flex:1;overflow:auto;padding:16px 18px;"></div>
       <div id="tb-dir-composer" style="display:none;padding:0 18px;"></div>
-    </div>
-  </div>
-
-  <div id="tb-detail-modal" class="modal-backdrop" style="z-index:10004;" onclick="if(event.target===this)closeTaskBoardDetail()">
-    <div class="modal-card" style="width:min(96vw,760px);height:min(92vh,780px);display:flex;flex-direction:column;background:var(--bg);">
-      <div style="display:flex;align-items:center;padding:12px 18px;border-bottom:1px solid var(--line);gap:12px;">
-        <div style="flex:1;color:var(--text);font-size:14px;font-weight:650;">📋 任务详情</div>
-        <button class="btn" onclick="closeTaskBoardDetail()">关闭</button>
-      </div>
-      <div id="tb-detail-content"></div>
-      <div id="tb-task-composer" style="padding:0 18px;"></div>
     </div>
   </div>
 
