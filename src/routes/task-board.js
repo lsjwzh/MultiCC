@@ -1643,6 +1643,72 @@ function createTaskBoardRuntime(deps) {
     return receipt;
   }
 
+  // P1-b1 · bound-session detour. A task with a live bound chat session and
+  // no open TaskRun takes its follow-ups straight through the canonical chat
+  // turn ingress (memory injection, per-session FIFO, classify — identical to
+  // the WS composer). The gates keep the migration monotonic:
+  //   · dangling binding (record deleted) → legacy commander path
+  //   · an open TaskRun still owns the task → legacy path drains it first, so
+  //     a pooled slot and the bound session never run one task's worktree at
+  //     the same time
+  function boundSessionForTask(task) {
+    const boundId = typeof task.chatSessionId === 'string' ? task.chatSessionId : '';
+    if (!boundId || !records.get(boundId)) return null;
+    if (latestOpenTaskRun(task.id)) return null;
+    return boundId;
+  }
+
+  async function sendBoundSessionFollowup(boundId, task, messageText, {
+    clientKey, source, goalNote = '', commanderId = null,
+  } = {}) {
+    let text = messageText;
+    try {
+      const history = loadHistory(boundId) || [];
+      if (history.length === 0) {
+        // Cold start (design: 用任务历史记录拼上下文): the bound session has
+        // never spoken, so its first turn carries the compiled task ledger —
+        // the same buildTaskRunContext input a pooled run would get. The
+        // wrapper mark keeps this wall out of task message projections while
+        // remaining auditable in the ordinary chat view. Later turns send
+        // bare text: the session's own history IS the context (zero reset).
+        const hasRuns = taskRuns ? taskRuns.listTaskRuns(task.id).length > 0 : false;
+        const imports = hasRuns ? [] : contextMessages(legacyImportMessages(task));
+        const context = buildTaskRunContext({
+          task,
+          messages: [...storedTaskMessages(task.id), ...imports],
+          currentText: messageText,
+        });
+        if (context.text.trim()) text = context.text;
+      }
+    } catch (_) { /* injection is best-effort; the bare text always sends */ }
+    const result = await sendSessionMessage(boundId, goalNote + text, {
+      taskId: task.id,
+      taskSource: source,
+      clientMsgId: clientKey,
+    });
+    if (!result || result.ok === false) {
+      return result || { ok: false, code: 'dispatch_failed' };
+    }
+    // Point the routing receipt at the bound session so the card's runState
+    // aggregates ITS classify state (buildBoardDto prefers oneWay routing
+    // worker over ref sessions) instead of a drained legacy slot.
+    core.setTaskRouting(task, {
+      mode: 'commander',
+      targetSessionId: commanderId || boundId,
+      workerSessionId: boundId,
+      operationId: result.operationId || '',
+      status: 'admitted',
+      oneWay: true,
+      routedAt: Date.now(),
+    });
+    save();
+    notify(core.taskDirId(board, task), [task.id]);
+    return {
+      ...result, ok: result.ok !== false, taskId: task.id, taskBound: true,
+      targetSessionId: boundId, workerSessionId: boundId, taskStart: false,
+    };
+  }
+
   async function routeCommanderFollowup(commanderId, taskId, text, options = {}) {
     const commander = records.get(commanderId);
     const task = board.tasks[taskId];
@@ -1654,6 +1720,12 @@ function createTaskBoardRuntime(deps) {
     if (!messageText) return { ok: false, code: 'empty_text' };
     const clientKey = String(options.clientMsgId || '').trim() || crypto.randomUUID();
     const source = options.source === 'commander' ? 'commander' : 'task-board';
+    const boundId = boundSessionForTask(task);
+    if (boundId) {
+      return sendBoundSessionFollowup(boundId, task, messageText, {
+        clientKey, source, goalNote: String(options.goalNote || ''), commanderId,
+      });
+    }
     const retryOf = String(options.retryOf || '').trim() || null;
     const taskRun = beginTaskRun({
       taskId: task.id, task, text: messageText,
@@ -1749,6 +1821,26 @@ function createTaskBoardRuntime(deps) {
         commanderSessionId: routeMode === 'commander' ? target : null,
         taskStart: false,
       }));
+    }
+    if (result.taskBound === true) {
+      // P1-b1: the follow-up went straight to the task-bound chat session —
+      // no commander, no slot, no TaskRun ledger row. The card's runState now
+      // aggregates the bound session's classify state like any legacy ref.
+      return res.json({
+        ok: true,
+        taskBound: true,
+        target: result.targetSessionId,
+        targetLabel: records.get(result.targetSessionId)?.label || result.targetSessionId,
+        routingMode: 'task-bound',
+        commanderSessionId: null,
+        workerSessionId: result.targetSessionId,
+        workerLabel: records.get(result.targetSessionId)?.label || null,
+        queued: result.queued === true,
+        elasticWorkerCreated: false,
+        chatId: result.chatId,
+        operationId: result.operationId || null,
+        taskRunId: null,
+      });
     }
     res.json({
       ok: true,
