@@ -323,4 +323,9 @@ test('server composition uses canonical adapters and retires legacy dispatch end
   // this wiring the singleton silently degrades to in-memory and every code
   // remints on restart, breaking the uniqueness-across-time guarantee.
   assert.ok(source.includes('initTaskShortCodeRegistry({ file: MULTICC_PATHS.taskShortCodesFile })'));
+  // Every task_state producer must carry the outward short code. The connect-time
+  // seed in turn-engine once omitted it, so a freshly opened chat showed the bare
+  // goal until the next classify event — pin the field on the wire.
+  const turnEngine = fs.readFileSync(path.join(ROOT, 'src', 'chat', 'turn-engine.js'), 'utf8');
+  assert.ok(turnEngine.includes("type: 'task_state', goal: ts0.goal || '', taskShortCode: taskShortCode(ts0.taskId)"));
 });

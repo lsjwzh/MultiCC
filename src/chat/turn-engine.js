@@ -29,6 +29,7 @@ const {
   sanitizeMessage: sanitizeApiErrorMessage,
 } = require('./index');
 const { createWsEnvelope } = require('../api-contract');
+const { taskShortCode } = require('../classify/task-short-code');
 const { composeMessage, renderPrompt } = require('../message-composer');
 const {
   rememberActiveCliState, renderHandoffPrompt, stateSummary: cliStateSummary,
@@ -1974,7 +1975,7 @@ function createChatTurnEngine(deps) {
       try {
         const ts0 = getTaskState(persistedSessions.get(sessionName));
         if (ts0 && (ts0.goal || (ts0.phase && ts0.phase !== 'idle'))) {
-          sendWs(ws, { type: 'task_state', goal: ts0.goal || '', phase: ts0.phase || 'idle', classifyState: ts0.classifyState || null });
+          sendWs(ws, { type: 'task_state', goal: ts0.goal || '', taskShortCode: taskShortCode(ts0.taskId), phase: ts0.phase || 'idle', classifyState: ts0.classifyState || null });
         }
       } catch (_) {}
       // If chat_history already includes the in-progress assistant message
