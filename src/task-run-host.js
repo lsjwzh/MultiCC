@@ -132,6 +132,8 @@ function createTaskRunHost(options = {}) {
     providerSnapshot = () => ({}),
     finalizeRun = null,
     cleanupRun = null,
+    prepareTaskWorktree = null,
+    releaseTaskWorktree = null,
     onRunUpdated = () => {},
     getTaskState = () => null,
     onRunFailed = null,
@@ -153,6 +155,11 @@ function createTaskRunHost(options = {}) {
   }
   if (onRunFailed != null && typeof onRunFailed !== 'function') {
     throw new TypeError('[task-run-host] onRunFailed port must be a function');
+  }
+  for (const [name, value] of Object.entries({ prepareTaskWorktree, releaseTaskWorktree })) {
+    if (value != null && typeof value !== 'function') {
+      throw new TypeError(`[task-run-host] ${name} port must be a function`);
+    }
   }
   for (const [name, value] of Object.entries({
     closeNative, clearNativeState, deleteChatHistory, resetChatState,
@@ -233,6 +240,34 @@ function createTaskRunHost(options = {}) {
         throw Object.assign(new Error('previous task run has not completed cleanup'), {
           code: 'TASK_RUN_SLOT_CLEANUP_PENDING',
         });
+      }
+    }
+    // M3 run boundary (entry): ensure the task's per-task worktree exists and
+    // stamp the slot onto it before any lease projection is persisted, so the
+    // stamp is durable with the lease and a failed prepare fails the delivery
+    // visibly instead of running in the wrong cwd (I6: the worktree choice
+    // only ever changes at this boundary).
+    if (prepareTaskWorktree) {
+      const prepared = await Promise.resolve(prepareTaskWorktree({
+        record, taskId: run.taskId, runId,
+      }));
+      if (!prepared?.ok) {
+        // Fail closed: quarantine the slot so the failure is visible on the
+        // board instead of retry-looping against a broken worktree setup.
+        record.taskRunQuarantined = true;
+        await Promise.resolve(persistRecords('task-run-slot-quarantine')).catch(() => {});
+        throw Object.assign(
+          new Error(`task worktree prepare failed: ${prepared?.code || 'unknown'}`),
+          { code: 'TASK_WORKTREE_PREPARE_FAILED', detail: prepared?.code || 'unknown' },
+        );
+      }
+      if (typeof store.annotateRun === 'function') {
+        try {
+          // Observability: the run ledger records the cwd it actually ran in.
+          store.annotateRun(runId, {
+            worktreePath: prepared.worktreePath, branch: prepared.branch,
+          });
+        } catch (_) { /* annotation must never block delivery */ }
       }
     }
     const exactLease = { runId, slotId: sessionId, leaseEpoch };
@@ -528,6 +563,17 @@ function createTaskRunHost(options = {}) {
       });
       permit = store.getCleanupPermit(runId);
       if (!permit) throw Object.assign(new Error('cleanup permit unavailable'), { code: 'TASK_RUN_CLEANUP_BLOCKED' });
+      // M3 run boundary (exit): restore the slot's own worktree identity
+      // before cleanup so worktree inspection judges the slot's (clean)
+      // worktree, never the task's expectedly-dirty one. A restore failure is
+      // logged but can never fail finalization.
+      if (releaseTaskWorktree) {
+        try {
+          await Promise.resolve(releaseTaskWorktree({ record, runId }));
+        } catch (error) {
+          log(`[task-run] worktree restore failed ${error?.code || error?.message || 'unknown'}`);
+        }
+      }
       if (record.taskExecutionSlot === true && cleanupRun) {
         await Promise.resolve(cleanupRun({
           runId, slotId: sessionId, permit, record, nativeRefs: evidence.nativeRefs,

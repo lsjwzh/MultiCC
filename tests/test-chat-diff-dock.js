@@ -293,7 +293,7 @@ test('the public surface exposes minimise and restore', () => {
   const h = browserContext();
   assert.deepEqual(
     Object.keys(h.viewer).sort(),
-    ['close', 'minimize', 'open', 'restore'],
+    ['close', 'minimize', 'open', 'restore', 'setTaskContext'],
   );
   assert.equal(Object.isFrozen(h.viewer), true);
 });

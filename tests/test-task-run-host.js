@@ -85,6 +85,8 @@ function fixture(overrides = {}) {
       };
     }),
     cleanupRun: overrides.cleanupRun,
+    prepareTaskWorktree: overrides.prepareTaskWorktree,
+    releaseTaskWorktree: overrides.releaseTaskWorktree,
     onRunUpdated: overrides.onRunUpdated,
     getTaskState: overrides.getTaskState,
     onRunFailed: overrides.onRunFailed,
@@ -976,3 +978,105 @@ test('a cancelled completion writes no error entry and never fires onRunFailed',
     'a user cancel is not a failure');
   assert.equal(failures.length, 0);
 });
+
+// ── per-task worktree ports (M3) ────────────────────────────────────────────
+
+test('a fresh run boundary prepares the task worktree before the lease projection is durable', async () => {
+  const annotated = [];
+  const h = fixture({
+    prepareTaskWorktree: async ({ record, taskId, runId }) => {
+      h.calls.push(`prepare:${taskId}:${runId}`);
+      record.worktreePath = '/repo/.multicc-worktrees/task-token';
+      record.branch = 'multicc/task-token';
+      return { ok: true, worktreePath: record.worktreePath, branch: record.branch };
+    },
+    storePorts: () => ({
+      annotateRun: (runId, patch) => { annotated.push({ runId, patch }); return true; },
+    }),
+  });
+  await h.host.beforeDeliver({
+    sessionId: 'slot-1', taskId: 'task-1', taskRunId: 'run-1', leaseEpoch: 2,
+  });
+  const prepareAt = h.calls.indexOf('prepare:task-1:run-1');
+  const persistAt = h.calls.indexOf('persist:task-run-slot-lease');
+  assert.ok(prepareAt >= 0, 'prepare port ran');
+  assert.ok(persistAt > prepareAt, 'the stamp is durable inside the lease projection persist');
+  assert.deepEqual(annotated, [{
+    runId: 'run-1',
+    patch: { worktreePath: '/repo/.multicc-worktrees/task-token', branch: 'multicc/task-token' },
+  }], 'the actual cwd is recorded on the run for observability');
+});
+
+test('task worktree preparation failure quarantines the slot and fails the delivery visibly', async () => {
+  const h = fixture({
+    prepareTaskWorktree: async () => ({ ok: false, code: 'worktree_create_failed' }),
+  });
+  await assert.rejects(
+    h.host.beforeDeliver({
+      sessionId: 'slot-1', taskId: 'task-1', taskRunId: 'run-1', leaseEpoch: 2,
+    }),
+    error => error.code === 'TASK_WORKTREE_PREPARE_FAILED',
+    'the delivery never runs in the wrong cwd',
+  );
+  assert.equal(h.records.get('slot-1').taskRunQuarantined, true);
+});
+
+test('finalization restores the slot worktree before cleanup runs and survives a restore failure', async () => {
+  const h = fixture({
+    prepareTaskWorktree: async ({ record }) => {
+      record.worktreePath = '/repo/.multicc-worktrees/task-token';
+      record.branch = 'multicc/task-token';
+      return { ok: true, worktreePath: record.worktreePath, branch: record.branch };
+    },
+    releaseTaskWorktree: ({ record }) => {
+      h.calls.push(`release:${record.id}`);
+      record.worktreePath = '/repo/.multicc-worktrees/slot-1';
+      record.branch = 'multicc/slot-1';
+      return true;
+    },
+    cleanupRun: async () => {
+      h.calls.push('cleanup-run');
+      h.store.markCleanup({ state: 'deleting' });
+      h.store.markCleanup({ state: 'done' });
+    },
+  });
+  await h.host.beforeDeliver({
+    sessionId: 'slot-1', taskId: 'task-1', taskRunId: 'run-1', leaseEpoch: 2,
+  });
+  assert.equal(h.records.get('slot-1').branch, 'multicc/task-token');
+  h.calls.length = 0;
+  await h.host.onSchedulerEvent({
+    type: 'completed', sessionId: 'slot-1', taskId: 'task-1',
+    taskRunId: 'run-1', leaseEpoch: 2, turnOutcome: 'succeeded',
+  });
+  // Restore happens before cleanup so worktree inspection sees the slot's own
+  // (clean) worktree, never the task's expectedly-dirty one.
+  assert.ok(h.calls.indexOf('release:slot-1') >= 0
+    && h.calls.indexOf('release:slot-1') < h.calls.indexOf('cleanup-run'));
+  assert.equal(h.records.get('slot-1').branch, 'multicc/slot-1');
+
+  const failing = fixture({
+    prepareTaskWorktree: async ({ record }) => {
+      record.branch = 'multicc/task-token';
+      return { ok: true, branch: 'multicc/task-token', worktreePath: '/w' };
+    },
+    releaseTaskWorktree: () => { throw new Error('restore boom'); },
+    cleanupRun: async () => {
+      failing.calls.push('cleanup-run');
+      failing.store.markCleanup({ state: 'deleting' });
+      failing.store.markCleanup({ state: 'done' });
+    },
+  });
+  await failing.host.beforeDeliver({
+    sessionId: 'slot-1', taskId: 'task-1', taskRunId: 'run-1', leaseEpoch: 2,
+  });
+  const result = await failing.host.onSchedulerEvent({
+    type: 'completed', sessionId: 'slot-1', taskId: 'task-1',
+    taskRunId: 'run-1', leaseEpoch: 2, turnOutcome: 'succeeded',
+  });
+  assert.deepEqual(result, { ok: true, runId: 'run-1' },
+    'a restore failure never fails run finalization');
+  assert.ok(failing.calls.includes('cleanup-run'));
+  assert.ok(failing.calls.includes('persist:task-run-slot-release'));
+});
+

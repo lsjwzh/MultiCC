@@ -2752,3 +2752,66 @@ test('a non-retryable or healthy run is never auto-retried', async t => {
   const missing = await runtime.autoRetryTaskRun({ taskId: task.id, runId: 'tr_missing' });
   assert.equal(missing.code, 'run_not_failed');
 });
+
+// ── per-task worktree ledger fields (M3) ────────────────────────────────────
+
+test('task worktree fields survive board normalization and surface on the single-task DTO', async () => {
+  const normalized = core.normalizeBoard({
+    tasks: {
+      'tsk-wt': {
+        title: '重构登录页',
+        worktreePath: '/repo/.multicc-worktrees/task-abcd1234',
+        branch: 'multicc/task-abcd1234',
+      },
+      'tsk-bad': { title: '脏数据', worktreePath: 42, branch: {} },
+    },
+  });
+  assert.equal(normalized.tasks['tsk-wt'].worktreePath, '/repo/.multicc-worktrees/task-abcd1234');
+  assert.equal(normalized.tasks['tsk-wt'].branch, 'multicc/task-abcd1234');
+  assert.equal(normalized.tasks['tsk-bad'].worktreePath, undefined, 'non-string fields are dropped');
+
+  const { runtime } = mkRuntime();
+  runtime.getBoard().tasks['tsk-wt'] = normalized.tasks['tsk-wt'];
+  const routes = new Map();
+  runtime.mountRoutes({
+    get: (p, handler) => routes.set(`GET ${p}`, handler),
+    post: (p, handler) => routes.set(`POST ${p}`, handler),
+  });
+  const response = { statusCode: 200, body: null };
+  const res = {
+    status(code) { response.statusCode = code; return this; },
+    json(value) { response.body = value; return this; },
+  };
+  await routes.get('GET /api/task-board/tasks/:taskId')({ params: { taskId: 'tsk-wt' } }, res);
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.task.worktreePath, '/repo/.multicc-worktrees/task-abcd1234');
+  assert.equal(response.body.task.branch, 'multicc/task-abcd1234',
+    'the task-mode chat view learns the worktree from its bootstrap DTO (I3 additive)');
+
+  await routes.get('GET /api/task-board/tasks/:taskId')({ params: { taskId: 'tsk-none' } }, res);
+  assert.equal(response.statusCode, 404);
+});
+
+test('the board runtime exposes the task worktree service only when git deps are injected', () => {
+  const bare = mkRuntime();
+  assert.equal(bare.runtime.taskWorktree, null,
+    'pure fake-deps composition (tests, reduced hosts) stays worktree-free');
+
+  const added = [];
+  const withGit = mkRuntime({
+    directories: new Map([['dir-1', { id: 'dir-1', path: '/repo', baseBranch: 'main' }]]),
+    gitWorktreeAdd: async (dirPath, token) => ({
+      ok: true,
+      worktreePath: `${dirPath}/.multicc-worktrees/${token}`,
+      branch: `multicc/${token}`,
+      existing: false,
+    }),
+    gitWorktreeRemove: async () => { added.push('remove'); return { ok: true, removed: true }; },
+    gitMergeBack: async () => { added.push('merge'); return { ok: true, merged: true }; },
+    existsSync: () => true,
+  });
+  const service = withGit.runtime.taskWorktree;
+  assert.ok(service && typeof service.prepareForRun === 'function');
+  assert.equal(typeof service.cleanupWorktree, 'function');
+  assert.deepEqual(added, [], 'constructing the service touches no git state');
+});

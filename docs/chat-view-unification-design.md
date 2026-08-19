@@ -131,7 +131,7 @@ UI 层从此不知道背后是会话还是任务。四轴隔离的落点：**spa
 - 全量 deterministic（含 chat.js ≤3000、chat.html 债务棘轮、i18n、composer/token/usage 钉死断言）+ contracts 55/55 绿。
 - 待用户重启后人工冒烟：fake CLI 慢速输出的实时渲染、`?task=` 与 `?session=` 对照清单、发送→流式→commit 闭环。
 
-### M3 · per-task worktree（D2）
+### M3 · per-task worktree（D2）——已实施，2026-08-19（as-built）
 
 **改动**
 - 任务创建（或首次需要改代码时惰性）开 worktree：分支 `multicc/task-<taskShortCode>`，路径 `.multicc-worktrees/task-<shortCode>`（复用现有 worktree 布局约定）。**task 维度跨 run 稳定；不是 slot 维度、不是 run 维度。**
@@ -140,6 +140,24 @@ UI 层从此不知道背后是会话还是任务。四轴隔离的落点：**spa
 - diff/merge 端点参数化：现有 `/api/sessions/:id/diff|merge|sync` 的逻辑以 worktreePath 为维度抽纯函数，task 端点（`/api/task-board/tasks/:id/diff|merge`）复用；前端 chat-diff.js 浮层直连（open(sessionId) 参数化）。
 - 清理：任务完结不自动删（D2）；详情页给「merge 回基分支后清理 worktree」一键操作；归档时若 worktree 未 merge 给提醒。防磁盘泄漏。
 - 并发：同 dir 多任务 = 多 worktree 并行，互不串 cwd；任务 worktree 与会话 worktree 命名空间隔离（`multicc/task-` 前缀）。
+
+**as-built 实施注（与上设计的差异与落点）**
+- 核心服务 `src/task-worktree.js`：token = sha256(taskId) 前 8 hex（`task-<hex>`）；`createTaskWorktreeService` 六端口面（ensureForRun/prepareForRun/releaseSlot/info/mergeTask/cleanupWorktree），ports 注入 + TypeError 校验，纯逻辑可测。
+- **stamp/restore 走槽位既有字段而非新机制**：run 边界入口（task-run-host `beforeDeliver`，lease 投影持久化之前）把槽位 record 的 `worktreePath`/`branch` 重指到任务 worktree（`prepareForRun`，同 task 幂等）；出口（`finalizeTerminal`，**在 cleanupRun 之前**）重算恢复槽位自身确定性值（`releaseSlot`：`path.join(dir.path, '.multicc-worktrees', record.id)` + `multicc/<record.id>`——按 gitWorktreeAdd 契约重算而非持久化备份，崩溃安全、无 schema 变更）。restore 先于 cleanup 的原因：cleanup 会 `inspectWorktree` 判 dirty/ahead——任务 worktree 跑完脏是设计预期，必须让检查看到槽位自己的干净 worktree。
+- prepare 失败 = 拒投递并隔离槽位（`TASK_WORKTREE_PREPARE_FAILED` → `taskRunQuarantined`），绝不在错误 cwd 里跑；`store.annotateRun(runId, {worktreePath, branch})` 把实际 cwd 记进 run metadata（task-run-store 纯新增方法，合并不清旧键，I4 无触碰）。
+- **所有权规则**：会话只删自己拥有的 worktree（`slotOwnsWorktree(record)` = `record.branch === 'multicc/' + record.id`）；server.js `destroySessionCascade` 加守卫——stamped 状态被删的槽位保留任务 worktree（清理权归任务）。
+- 服务组装在 `createTaskBoardRuntime` 内部（src/routes/task-board.js，可选 git deps：directories/gitWorktreeAdd/gitWorktreeRemove/gitMergeBack；`taskWorktree` 暴露在返回对象，未注入为 null）；生产 host 两 port（prepare/release）与 session-git 两惰性 resolver（`resolveTaskWorktree`=info、`cleanupTaskWorktree`=cleanupWorktree）由 server.js 注入，session-git 未传 deps 时不挂任务路由（老 9 路由 pin 不变）。
+- 任务路由 4 条（src/routes/session-git.js，镜像 session 语义）：`GET /api/task-board/tasks/:id/diff/files`、`GET …/diff/file`、`POST …/merge`（成功后 autoSyncSiblingWorktrees + merge_status 广播带 taskId；冲突 409）、`POST …/cleanup-worktree`（404 task_not_found / 409 blocked / 200 结果体）。
+- 清理原子性：merge（gitMergeBack 自带 commit-all + 集成 worktree 校验 + ff-only）→ remove（dirty/unmerged 拒绝）→ 成功后才清台账字段；worktree 已消失（remove 成功但台账写丢失）→ 清字段自愈。任一步失败字段不动 = 可重试。
+- 台账/DTO：normalizeBoard 任务白名单 +worktreePath/branch（非字符串丢弃）；buildBoardDto 投影带出（null 表示尚未有）；publicRunDto 透出 run.metadata.worktreePath（可选字段）。
+- 前端零 chat.html 改动：chat-diff.js 加 taskMode（diffBase() 切 URL 基、`open(sessionId, {task:true})`、`setTaskContext(taskId)` 显 FAB、restore/resumeDock/minimize/dock.taskId 全链路）；chat-task-boot.js 在 updateTaskIdentity 看到 dto.worktreePath 时 setTaskContext；manage-taskboard.js 详情 modal 加「🧹 清理 worktree」按钮（run_active/merge_failed/remove_refused 映射中文提示）。
+- server.js 恰 3000 行零余量：+6 行接线（守卫、三处 deps、require）配 6 行 pay-for（相邻 dep 合行），不动 test-request-locality 钉住的 isLocalRequest 面。
+
+**测试（先行红确认后全绿）**
+- tests/test-task-worktree.js 10/10（token 稳定性/所有权/服务全分支/server.js 守卫源码钉死）。
+- tests/test-task-run-host.js 39/39（prepare 在 lease 持久化之前 + annotateRun、prepare 失败隔离、release 先于 cleanup 且自身失败不阻塞 finalization）。
+- tests/test-task-run-store.js 21/21（annotateRun 合并语义）；test-session-git-routes 28/28（含 5 个任务路由用例）；test-task-board 87/87（台账字段 + 单任务 DTO + 服务条件组装）；test-chat-task-mode 13/13（前端源码断言）；test-task-run-routes 8/8、test-task-run-production 5/5。
+- 待用户重启后人工冒烟：改代码任务跑在 task-<hex> worktree、diff FAB 出现、同任务第 2 run 复用、并发两任务不串 cwd、清理按钮一键 merge+删。
 
 **验收**
 - 改代码类任务在独立 worktree 执行：主仓 `git status` 不变；diff 浮层可见、merge 可用。
