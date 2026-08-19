@@ -132,12 +132,20 @@ class ChatMessage {
   /// tag the exact optimistic bubble instead of whichever user bubble is last.
   final String? clientMsgId;
 
+  /// Durable interrupted-draft marker (server: `partial` in the unified
+  /// history DTO — a mid-turn checkpoint that was never finalized, e.g. the
+  /// host shut down or the run was cancelled). Distinct from [isStreaming]:
+  /// streaming is computed live and means "still producing"; partial is
+  /// persisted and means "stopped, will never continue".
+  bool isPartial;
+
   ChatMessage({
     required this.role,
     this.content = '',
     List<ToolCall>? toolCalls,
     DateTime? timestamp,
     this.isStreaming = false,
+    this.isPartial = false,
     this.cost,
     this.usage,
     this.id,
@@ -154,6 +162,7 @@ class ChatMessage {
           ? DateTime.fromMillisecondsSinceEpoch((json['ts'] as num).toInt())
           : DateTime.now(),
       isStreaming = json['streaming'] == true,
+      isPartial = json['partial'] == true,
       cost = (json['cost'] as num?)?.toDouble(),
       usage = json['usage'] is Map
           ? MessageUsage.fromJson(json['usage'] as Map<String, dynamic>)
