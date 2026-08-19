@@ -1998,6 +1998,106 @@ function createTaskBoardRuntime(deps) {
     });
   }
 
+  // Stopping a task's open run is shared by two entries: marking the task
+  // done (lifecycle change) and the chat view's stop button (cancel-run, no
+  // lifecycle change). One path, one 409 surface — only the status write
+  // differs. Returns { ok:true, openRun|null } or { ok:false, status, body }.
+  async function cancelOpenTaskRun(task) {
+    let openRun = null;
+    try { openRun = latestOpenTaskRun(task.id); }
+    catch (_) {
+      return { ok: false, status: 409, body: { error: 'task_run_state_unavailable' } };
+    }
+    if (!openRun) return { ok: true, openRun: null };
+    const operationId = String(task.routing?.operationId || '').trim();
+    if (!openRun.slotId) {
+      if (!operationId || !cancelUndeliveredTaskRun) {
+        return { ok: false, status: 409, body: { error: 'task_run_cancel_unavailable' } };
+      }
+      let cancelled;
+      try {
+        cancelled = await cancelUndeliveredTaskRun(operationId, {
+          taskId: task.id, runId: openRun.runId,
+        });
+      } catch (error) {
+        logger.log(`[multicc/taskboard] task-run dispatch cancel failed: ${error?.code || error?.message || 'unknown'}`);
+        return { ok: false, status: 409, body: { error: 'task_run_cancel_failed' } };
+      }
+      if (!(cancelled?.ok === true && cancelled?.neverDelivered === true)) {
+        return { ok: false, status: 409, body: {
+          error: cancelled?.code || 'task_run_delivery_not_cancellable',
+        } };
+      }
+    }
+    if (!terminateTaskRun) {
+      return { ok: false, status: 409, body: { error: 'task_run_termination_unavailable' } };
+    }
+    let terminated;
+    try {
+      terminated = await terminateTaskRun({
+        taskId: task.id,
+        runId: openRun.runId,
+        leaseEpoch: Number(openRun.leaseEpoch) || null,
+        ...(openRun.slotId
+          ? { slotId: openRun.slotId }
+          : { neverDelivered: true }),
+      });
+    } catch (error) {
+      logger.log(`[multicc/taskboard] task-run termination failed: ${error?.code || error?.message || 'unknown'}`);
+      return { ok: false, status: 409, body: { error: 'task_run_termination_failed' } };
+    }
+    const alreadyTerminal = terminated?.duplicate === true
+      || ['already_terminal', 'task_run_closed'].includes(terminated?.code);
+    if (!(terminated === true || terminated?.ok === true || alreadyTerminal)) {
+      return { ok: false, status: 409, body: {
+        error: terminated?.code || 'task_run_termination_failed',
+      } };
+    }
+    return { ok: true, openRun };
+  }
+
+  // Legacy (non-slot) sessions keep their own active-task queue entry; a
+  // stopped run must release it or the session stays occupied by a dead run.
+  async function resolveLegacySessionQueues(task, note) {
+    const routedWorker = task.routing?.workerSessionId;
+    const sessionIds = routedWorker
+      ? [routedWorker]
+      : [...new Set((task.refs || []).map(ref => ref.sessionId).filter(Boolean))];
+    for (const sessionId of sessionIds) {
+      if (records.get(sessionId)?.taskExecutionSlot === true) continue;
+      const resolved = await resolveSessionQueue(sessionId, task.id);
+      if (resolved && resolved.ok === false
+          && !['no_active_task', 'active_task_mismatch'].includes(resolved.code)) {
+        return { ok: false, status: 409, body: {
+          error: resolved.code || 'queue_resolution_failed',
+          note,
+        } };
+      }
+    }
+    return { ok: true };
+  }
+
+  // The chat view's stop button (A3 split): cancel the open run only. The
+  // card keeps its lifecycle state — marking done stays with the board's ✅.
+  // Idempotent: no open run → 200 { cancelled:false } (a stop press racing a
+  // natural completion is not an error). Queue release only happens when a
+  // run was actually stopped; a no-op cancel must not mutate queues.
+  async function handleCancelRun(req, res) {
+    const task = board.tasks[req.params.taskId];
+    if (!task) return res.status(404).json({ error: 'task_not_found' });
+    const stopped = await cancelOpenTaskRun(task);
+    if (!stopped.ok) return res.status(stopped.status).json(stopped.body);
+    if (!stopped.openRun) {
+      return res.json({ ok: true, cancelled: false, task: taskDto(task) });
+    }
+    const queues = await resolveLegacySessionQueues(task,
+      '会话仍占用该任务；请稍后重试。');
+    if (!queues.ok) return res.status(queues.status).json(queues.body);
+    res.json({
+      ok: true, cancelled: true, runId: stopped.openRun.runId, task: taskDto(task),
+    });
+  }
+
   async function handleStatus(req, res) {
     const task = board.tasks[req.params.taskId];
     if (!task) return res.status(404).json({ error: 'task_not_found' });
@@ -2006,72 +2106,13 @@ function createTaskBoardRuntime(deps) {
       return res.status(400).json({ error: 'invalid_status' });
     }
     if (status === 'done') {
-      let openRun = null;
-      try { openRun = latestOpenTaskRun(task.id); }
-      catch (_) {
-        return res.status(409).json({ error: 'task_run_state_unavailable' });
-      }
-      if (openRun) {
-        const operationId = String(task.routing?.operationId || '').trim();
-        if (!openRun.slotId) {
-          if (!operationId || !cancelUndeliveredTaskRun) {
-            return res.status(409).json({ error: 'task_run_cancel_unavailable' });
-          }
-          let cancelled;
-          try {
-            cancelled = await cancelUndeliveredTaskRun(operationId, {
-              taskId: task.id, runId: openRun.runId,
-            });
-          } catch (error) {
-            logger.log(`[multicc/taskboard] task-run dispatch cancel failed: ${error?.code || error?.message || 'unknown'}`);
-            return res.status(409).json({ error: 'task_run_cancel_failed' });
-          }
-          if (!(cancelled?.ok === true && cancelled?.neverDelivered === true)) {
-            return res.status(409).json({
-              error: cancelled?.code || 'task_run_delivery_not_cancellable',
-            });
-          }
-        }
-        if (!terminateTaskRun) {
-          return res.status(409).json({ error: 'task_run_termination_unavailable' });
-        }
-        let terminated;
-        try {
-          terminated = await terminateTaskRun({
-            taskId: task.id,
-            runId: openRun.runId,
-            leaseEpoch: Number(openRun.leaseEpoch) || null,
-            ...(openRun.slotId
-              ? { slotId: openRun.slotId }
-              : { neverDelivered: true }),
-          });
-        } catch (error) {
-          logger.log(`[multicc/taskboard] task-run termination failed: ${error?.code || error?.message || 'unknown'}`);
-          return res.status(409).json({ error: 'task_run_termination_failed' });
-        }
-        const alreadyTerminal = terminated?.duplicate === true
-          || ['already_terminal', 'task_run_closed'].includes(terminated?.code);
-        if (!(terminated === true || terminated?.ok === true || alreadyTerminal)) {
-          return res.status(409).json({
-            error: terminated?.code || 'task_run_termination_failed',
-          });
-        }
-      }
-      const routedWorker = task.routing?.workerSessionId;
-      const sessionIds = routedWorker
-        ? [routedWorker]
-        : [...new Set((task.refs || []).map(ref => ref.sessionId).filter(Boolean))];
-      for (const sessionId of sessionIds) {
-        if (records.get(sessionId)?.taskExecutionSlot === true) continue;
-        const resolved = await resolveSessionQueue(sessionId, task.id);
-        if (resolved && resolved.ok === false
-            && !['no_active_task', 'active_task_mismatch'].includes(resolved.code)) {
-          return res.status(409).json({
-            error: resolved.code || 'queue_resolution_failed',
-            note: '当前任务仍在执行；请先取消，或等待其进入冻结状态后再明确标记完成。',
-          });
-        }
-      }
+      const stopped = await cancelOpenTaskRun(task);
+      if (!stopped.ok) return res.status(stopped.status).json(stopped.body);
+      // Done is a lifecycle finalization: legacy queues resolve even when no
+      // open run exists (e.g. pre-TaskRun tasks with plain session refs).
+      const queues = await resolveLegacySessionQueues(task,
+        '当前任务仍在执行；请先取消，或等待其进入冻结状态后再明确标记完成。');
+      if (!queues.ok) return res.status(queues.status).json(queues.body);
     }
     task.status = status;
     task.updatedAt = Date.now();
@@ -2159,6 +2200,12 @@ function createTaskBoardRuntime(deps) {
     app.post('/api/task-board/tasks/:taskId/status', (req, res) => {
       handleStatus(req, res).catch(error => {
         logger.log(`[multicc/taskboard] status update failed: ${error?.message || error}`);
+        if (!res.headersSent) res.status(500).json({ error: 'internal_error' });
+      });
+    });
+    app.post('/api/task-board/tasks/:taskId/cancel-run', (req, res) => {
+      handleCancelRun(req, res).catch(error => {
+        logger.log(`[multicc/taskboard] cancel-run failed: ${error?.message || error}`);
         if (!res.headersSent) res.status(500).json({ error: 'internal_error' });
       });
     });

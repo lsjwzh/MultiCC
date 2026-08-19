@@ -330,13 +330,13 @@
       });
     }
 
-    // Cancelling a task view = terminating the open run, the same POST the
-    // board's ✅ button makes (design D3: one semantic, two entries).
+    // Cancelling a task view = stopping the open run only (A3 split): the
+    // card keeps its lifecycle state; marking done stays with the board's ✅.
     function cancelOpenRun() {
-      fetchJson(api(`/api/task-board/tasks/${encodeURIComponent(taskId())}/status`), {
+      fetchJson(api(`/api/task-board/tasks/${encodeURIComponent(taskId())}/cancel-run`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'done' }),
+        body: '{}',
       }).catch(err => {
         say(`${t('停止失败')}: ${errorMessage(err)}`);
       });
