@@ -1060,7 +1060,14 @@ function createChatTurnEngine(deps) {
     try {
       envelope = composeMessage({
         text, persisted, sessionName,
-        opts: { isFirstTurn, goalLimits, mode: cs.cli === 'claude' ? 'streaming' : 'per-turn' },
+        // taskContextSeed: a task-bound session's compiled ledger, injected as
+        // a prompt layer for its first turn. It rides the send options (not the
+        // record) so it is one-shot by construction — nothing to consume, and a
+        // turn that never reached the provider simply gets it again.
+        opts: {
+          isFirstTurn, goalLimits, taskContextSeed: opts.taskContextSeed,
+          mode: cs.cli === 'claude' ? 'streaming' : 'per-turn',
+        },
         deps: {
           resolveRolePrompt: folderMemory.resolveRolePrompt, multiccImgHint: MULTICC_IMG_HINT,
           buildCliHandoffPrompt: (session) => renderHandoffPrompt(session && session.pendingCliHandoff),

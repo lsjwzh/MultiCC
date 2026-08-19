@@ -1658,33 +1658,45 @@ function createTaskBoardRuntime(deps) {
     return boundId;
   }
 
+  // P4 · cold start (design: 用任务历史记录拼上下文). A bound session whose
+  // native CLI session does not exist yet knows nothing about its task, so its
+  // first turn carries the compiled ledger — the same buildTaskRunContext input
+  // a pooled run gets, minus the 当前要求 section because the user's own message
+  // follows it. It travels as a PROMPT layer (composeMessage kind:'task-context')
+  // and never as the turn text: what the transcript keeps is exactly what the
+  // user typed, so the task chat view is the ordinary chat view down to its
+  // first bubble, and the board's message projection sees a real user message
+  // instead of a filtered wrapper.
+  //
+  // The gate is the native session, NOT the transcript: the user message is
+  // persisted before the provider runs, so a first turn that died in between
+  // would otherwise ship contextless, and a cleared transcript would otherwise
+  // re-wall a session the CLI still remembers. Once the native session exists,
+  // it IS the context (zero reset per turn).
+  function coldStartSeed(boundId, task) {
+    if (records.get(boundId)?.cliSessionId) return '';
+    try {
+      const hasRuns = taskRuns ? taskRuns.listTaskRuns(task.id).length > 0 : false;
+      const imports = hasRuns ? [] : contextMessages(legacyImportMessages(task));
+      const context = buildTaskRunContext({
+        task,
+        messages: [...storedTaskMessages(task.id), ...imports],
+        includeCurrent: false,
+      });
+      // Layers concatenate with no separator, so the seed carries its own.
+      return context.text.trim() ? `${context.text}\n\n` : '';
+    } catch (_) { return ''; /* best-effort: the bare text always sends */ }
+  }
+
   async function sendBoundSessionFollowup(boundId, task, messageText, {
     clientKey, source, goalNote = '', commanderId = null,
   } = {}) {
-    let text = messageText;
-    try {
-      const history = loadHistory(boundId) || [];
-      if (history.length === 0) {
-        // Cold start (design: 用任务历史记录拼上下文): the bound session has
-        // never spoken, so its first turn carries the compiled task ledger —
-        // the same buildTaskRunContext input a pooled run would get. The
-        // wrapper mark keeps this wall out of task message projections while
-        // remaining auditable in the ordinary chat view. Later turns send
-        // bare text: the session's own history IS the context (zero reset).
-        const hasRuns = taskRuns ? taskRuns.listTaskRuns(task.id).length > 0 : false;
-        const imports = hasRuns ? [] : contextMessages(legacyImportMessages(task));
-        const context = buildTaskRunContext({
-          task,
-          messages: [...storedTaskMessages(task.id), ...imports],
-          currentText: messageText,
-        });
-        if (context.text.trim()) text = context.text;
-      }
-    } catch (_) { /* injection is best-effort; the bare text always sends */ }
-    const result = await sendSessionMessage(boundId, goalNote + text, {
+    const taskContextSeed = coldStartSeed(boundId, task);
+    const result = await sendSessionMessage(boundId, goalNote + messageText, {
       taskId: task.id,
       taskSource: source,
       clientMsgId: clientKey,
+      ...(taskContextSeed ? { taskContextSeed } : {}),
     });
     if (!result || result.ok === false) {
       return result || { ok: false, code: 'dispatch_failed' };
