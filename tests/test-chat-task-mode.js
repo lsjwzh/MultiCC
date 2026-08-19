@@ -365,3 +365,47 @@ test('task_run_stream envelope cli is handed to the host before the slot events'
   });
   assert.deepEqual(calls.clis, ['codex']);
 });
+
+/* ── P2 · task chat = ordinary chat: hand off to the bound hidden session ── */
+
+test('P2 resolveBoundSession get-or-creates the binding and returns the session id', async () => {
+  const { resolveBoundSession } = require('../public/chat-task-mode');
+  const calls = [];
+  const fetch = fetchStub([
+    ['/api/task-board/tasks/tsk-1/chat-session', [200, { ok: true, sessionId: 'sess-bound-1', created: false }]],
+  ], calls);
+  const id = await resolveBoundSession({ taskId: 'tsk-1', fetch, withToken: u => u + '?tok=1' });
+  assert.equal(id, 'sess-bound-1');
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].url, /\/api\/task-board\/tasks\/tsk-1\/chat-session\?tok=1/);
+  assert.equal(calls[0].init.method, 'POST');
+});
+
+test('P2 resolveBoundSession fails soft: any error means the legacy projection', async () => {
+  const { resolveBoundSession } = require('../public/chat-task-mode');
+  // HTTP errors: 501 old server, 404 gone task, 409 no directory, 502 create failed.
+  for (const status of [501, 404, 409, 502]) {
+    const id = await resolveBoundSession({
+      taskId: 'tsk-1',
+      fetch: fetchStub([['/chat-session', [status, { error: 'x' }]]], []),
+    });
+    assert.equal(id, null, 'status ' + status);
+  }
+  // Network failure.
+  assert.equal(await resolveBoundSession({
+    taskId: 'tsk-1', fetch: async () => { throw new Error('down'); },
+  }), null);
+  // Malformed success body.
+  assert.equal(await resolveBoundSession({
+    taskId: 'tsk-1',
+    fetch: fetchStub([['/chat-session', [200, { ok: true }]]], []),
+  }), null);
+});
+
+test('P2 boot hands off to the plain session chat when a binding exists', () => {
+  const boot = fs.readFileSync(path.join(__dirname, '..', 'public', 'chat-task-boot.js'), 'utf8');
+  assert.match(boot, /resolveBoundSession/);
+  assert.match(boot, /location\.replace\('chat\.html\?session='/);
+  // The legacy ledger projection stays as the fallback path.
+  assert.match(boot, /createTaskMode/);
+});
