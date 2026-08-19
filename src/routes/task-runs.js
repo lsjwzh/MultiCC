@@ -57,6 +57,11 @@ function publicRunDto(run = {}) {
     cleanupState: String(run.cleanupState || 'blocked'),
     startedAt: Number(run.startedAt || 0),
     terminalAt: run.terminalAt == null ? null : Number(run.terminalAt),
+    // M3 observability: where this run actually executed. Present only after
+    // the worktree stamp at the run boundary; absent for pre-M3 runs.
+    ...(typeof run.metadata?.worktreePath === 'string'
+      ? { worktreePath: run.metadata.worktreePath, branch: run.metadata.branch || null }
+      : {}),
   };
 }
 

@@ -538,6 +538,9 @@ function renderTaskBoardDetail(d) {
           ${t.status !== 'active'
             ? `<button class="btn btn-sm" onclick="setTaskBoardStatus('${_tbEsc(t.id)}','active',event)">♻️ 重开</button>`
             : `<button class="btn btn-sm" onclick="setTaskBoardStatus('${_tbEsc(t.id)}','done',event)">✅ 完成</button>`}
+          ${t.worktreePath
+            ? `<button class="btn btn-sm" title="把任务分支合并回基分支并删除任务 worktree（运行中的任务会被拒绝）" onclick="cleanupTaskWorktree(event,'${_tbEsc(t.id)}',this)">🧹 清理 worktree</button>`
+            : ''}
           <button class="btn btn-sm" onclick="archiveTaskBoardTask(event,'${_tbEsc(t.id)}',this)">🗄 归档</button>
         </span>
       </div>
@@ -586,6 +589,40 @@ async function setTaskBoardStatus(taskId, status, ev) {
   } catch (e) {
     if (typeof showToast === 'function') showToast(`操作失败：${e.message}`, true);
     return false;
+  }
+}
+
+// M3 · one-click task worktree cleanup (D2): merge the task branch back, then
+// remove the worktree and clear the ledger fields. Each server-side step is
+// idempotent; a refusal (run active, conflicts, dirty tree) leaves everything
+// untouched and tells the user why.
+async function cleanupTaskWorktree(ev, taskId, button) {
+  if (ev) ev.stopPropagation();
+  if (!confirm('把任务分支合并回基分支并删除任务 worktree？（正在执行的任务会被拒绝）')) return;
+  if (button) button.disabled = true;
+  try {
+    const r = await fetch(`/api/task-board/tasks/${encodeURIComponent(taskId)}/cleanup-worktree`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.ok) {
+      const notes = {
+        run_active: '任务正在执行，结束后再清理',
+        merge_failed: '合并失败：请先在任务 chat 中处理冲突再试',
+        worktree_remove_refused: 'worktree 有未提交或未合并改动，已安全拒绝',
+      };
+      throw new Error(notes[d.code] || d.error || d.code || r.status);
+    }
+    if (typeof showToast === 'function') {
+      showToast(d.merged ? '已合并并清理任务 worktree' : '无新提交，worktree 已清理');
+    }
+    setTimeout(() => {
+      if (_tbDetailTaskId === taskId) loadTaskBoardDetail(taskId, true);
+      refreshTaskBoard(true);
+    }, 0);
+  } catch (e) {
+    if (typeof showToast === 'function') showToast(`清理失败：${e.message}`, true);
+    if (button) button.disabled = false;
   }
 }
 

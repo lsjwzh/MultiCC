@@ -35,6 +35,7 @@ const {
   stableTaskRunId: defaultStableTaskRunId,
 } = require('../task-run-context');
 const { recordRunError, runErrorOf } = require('../task-run-errors');
+const { createTaskWorktreeService } = require('../task-worktree');
 const {
   taskTranscriptMessages,
   paginateTranscript,
@@ -112,6 +113,39 @@ function createTaskBoardRuntime(deps) {
     try { workspaceBroadcast(null, payload); }
     catch (_) {}
   }
+
+  // M3 · per-task worktree service (D2): the worktree belongs to the task, not
+  // the pooled slot running it. Optional git ports — without them the runtime
+  // stays worktree-free (tests, reduced hosts); with them the task detail
+  // views and the run boundary both share this one service instance.
+  function updateBoardTask(id, patch) {
+    const task = board.tasks[id];
+    if (!task) return;
+    Object.assign(task, patch);
+    task.updatedAt = Date.now();
+    save();
+    notify(null, [id]);
+  }
+  const resolveDirectoryPort = deps.directories instanceof Map
+    ? dirId => deps.directories.get(dirId)
+    : (typeof deps.directories === 'function' ? deps.directories : null);
+  const taskWorktree = (resolveDirectoryPort
+    && typeof deps.gitWorktreeAdd === 'function'
+    && typeof deps.gitWorktreeRemove === 'function'
+    && typeof deps.gitMergeBack === 'function')
+    ? createTaskWorktreeService({
+        getBoardTask: id => board.tasks[id],
+        updateTask: updateBoardTask,
+        getDirectory: resolveDirectoryPort,
+        taskDirIdOf: task => core.taskDirId(board, task),
+        gitWorktreeAdd: deps.gitWorktreeAdd,
+        gitWorktreeRemove: deps.gitWorktreeRemove,
+        gitMergeBack: deps.gitMergeBack,
+        existsSync: typeof deps.existsSync === 'function' ? deps.existsSync : fs.existsSync,
+        isTaskRunning: taskRuns ? id => taskRuns.listTaskRuns(id).some(isOpenTaskRun) : null,
+        logger,
+      })
+    : null;
 
 
   // Bounded failure recovery (design doc §3.3): a retryable terminal failure
@@ -2177,6 +2211,8 @@ function createTaskBoardRuntime(deps) {
     // test/introspection surface
     getBoard: () => board,
     save,
+    // M3: null unless git deps were injected — callers must feature-check.
+    taskWorktree,
   });
 }
 

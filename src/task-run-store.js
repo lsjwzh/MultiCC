@@ -739,6 +739,25 @@ function createTaskRunStore({ file, now = Date.now, Database = null, fsImpl = fs
       return result;
     }
 
+    // M3 observability: merge caller-supplied facts (e.g. the worktree the run
+    // actually executed in) into a run's metadata without touching any
+    // scheduler column. Unknown runs fail closed with false — annotation runs
+    // at a run boundary and must never throw there.
+    function annotateRun(runId, patch = {}) {
+      ensureOpen();
+      const row = rowForRun(requiredString(runId, 'runId'));
+      if (!row) return false;
+      const merged = { ...JSON.parse(row.metadata_json || '{}') };
+      for (const [key, value] of Object.entries(patch)) {
+        if (value === undefined) continue;
+        merged[key] = value;
+      }
+      db.prepare('UPDATE task_runs SET metadata_json = ? WHERE run_id = ?')
+        .run(stableStringify(merged, 'patch'), runId);
+      chmodPrivate(fsImpl, file);
+      return true;
+    }
+
     function mapSlotLease(row) {
       if (!row) return null;
       return {
@@ -1696,6 +1715,7 @@ function createTaskRunStore({ file, now = Date.now, Database = null, fsImpl = fs
       file,
       settings,
       beginRun,
+      annotateRun,
       admitRun,
       bindRunSlot,
       acquireSlotLease,

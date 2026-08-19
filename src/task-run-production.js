@@ -251,6 +251,8 @@ function createProductionTaskRunHost(options = {}) {
     onRunUpdated,
     getTaskState,
     onRunFailed,
+    prepareTaskWorktree = null,
+    releaseTaskWorktree = null,
     logger = console,
   } = options;
   const transcriptRoots = discoverTranscriptRoots({ dataRoot, providerHomesDir });
@@ -295,6 +297,9 @@ function createProductionTaskRunHost(options = {}) {
     onRunUpdated,
     getTaskState: typeof getTaskState === 'function' ? getTaskState : undefined,
     onRunFailed: typeof onRunFailed === 'function' ? onRunFailed : null,
+    // M3 run-boundary worktree stamp/restore (per-task worktree service).
+    prepareTaskWorktree: typeof prepareTaskWorktree === 'function' ? prepareTaskWorktree : null,
+    releaseTaskWorktree: typeof releaseTaskWorktree === 'function' ? releaseTaskWorktree : null,
     finalizeRun,
     cleanupRun,
     log: message => logger.warn?.(message),
