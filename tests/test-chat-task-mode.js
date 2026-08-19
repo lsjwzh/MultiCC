@@ -44,7 +44,7 @@ function fetchStub(routes, calls) {
 
 function harness({ task = null } = {}) {
   const clock = fakeClock();
-  const calls = { system: [], separators: [], identity: [], status: [], events: [], wsOpen: [] };
+  const calls = { system: [], separators: [], identity: [], status: [], events: [], wsOpen: [], clis: [] };
   const taskDto = task || {
     id: 'tsk-1', title: '重构登录页', status: 'active',
     dirIds: ['dir-9'], runState: 'running',
@@ -91,6 +91,7 @@ function harness({ task = null } = {}) {
     historyStore: { acceptHistory: page => ({ mode: 'initial', ...page }) },
     resetHistoryView: () => calls.system.push('::reset-view'),
     handleEvent: (event, generation) => calls.events.push({ event, generation }),
+    setCli: cli => calls.clis.push(cli),
     getGeneration: () => 7,
     debug: () => {},
     reconnectDelayMs: () => 0,
@@ -342,4 +343,25 @@ test('M3 the task diff dock and manage detail use the per-task worktree surface'
   assert.match(tb, /\/cleanup-worktree/);
   assert.match(tb, /function cleanupTaskWorktree\(/);
   assert.match(tb, /run_active/);
+});
+
+test('task_run_stream envelope cli is handed to the host before the slot events', async () => {
+  // The event controller folds deltas by state.currentCli (part_delta is a
+  // no-op under claude; codex snapshots append) — a codex run folded as
+  // claude loses live text. The envelope's cli must reach the host setter
+  // BEFORE its first slot event is fed.
+  const { mode, calls, sockets } = harness();
+  await mode.boot();
+  sockets[0].onopen();
+  mode.handleWorkspaceMessage({
+    type: 'task_run_stream', taskId: 'tsk-1', runId: 'tr_2', dirId: 'dir-9',
+    cli: 'codex', slotEvent: { type: 'part_delta', text: 'hi' },
+  });
+  assert.deepEqual(calls.clis, ['codex']);
+  // An envelope without cli leaves the host's engine untouched.
+  mode.handleWorkspaceMessage({
+    type: 'task_run_stream', taskId: 'tsk-1', runId: 'tr_2', dirId: 'dir-9',
+    slotEvent: { type: 'part_delta', text: 'again' },
+  });
+  assert.deepEqual(calls.clis, ['codex']);
 });
