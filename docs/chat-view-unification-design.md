@@ -187,6 +187,9 @@ UI 层从此不知道背后是会话还是任务。四轴隔离的落点：**spa
 - **T5 文档**：architecture.md（public/ 树补 4 文件 + 「One chat view, two transcript producers」「per-task worktree」两条决策）、features.md（Task board 节）、api-reference.md（Task Board 端点表 + task_run_stream WS 协议段）、本段。
 - **验收对账**：test:deterministic 全量 fail=0、test:contracts 55/55、flutter 全量 350 pass（i18n classify 文案与 directory_card_test 两个预存失败经 stash 基线验证与本次无关）。「旧版打新服务端不崩」由 I3 只加字段 + legacy 字段保留满足。待用户重启后人工冒烟：chat.html?task= 的慢速输出实时渲染、App 任务详情实时刷新、任务行 🧹 清理一键闭环。
 
+**as-built 实施注（2026-08-20，A3 停止语义拆分）**
+- review 发现 D3「停止=✅ 同语义」在 chat 视图里构成歧义（会话视图停止=中止本轮；任务视图同一手势=不可逆置 done）。拍板拆分：新增 `POST /api/task-board/tasks/:id/cancel-run`——只停 open run、不动 lifecycle；与 done 共用同一 `cancelOpenTaskRun` 取消路径与 409 表面（仅 status 写入不同）；无 open run 幂等返回 `{cancelled:false}`（停止键与自然完成竞态不算错误）；队列释放只在真实停了 run 时发生。chat-task-mode `cancelOpenRun` 改调新端点，✅ 仍走 `/status done`。测试：`tests/test-task-board-cancel-run.js`（新文件——test-task-board.js 会撞 3000 行预算）+ 路由清单断言 + chat-task-mode cancel 测试改钉「不调 /status」。
+
 ## 4. 实施顺序与依赖
 
 ```
