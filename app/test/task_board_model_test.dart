@@ -22,6 +22,28 @@ void main() {
     expect(task.moduleAssignment?.lastError, 'classification_failed');
   });
 
+  // P3: the bound chat session id rides the task DTO from the board card to
+  // the detail sheet; empty/missing values must normalize to null so the
+  // sheet falls back to the ensure-then-open flow instead of a bogus id.
+  test('chatSessionId round-trips and normalizes empties to null', () {
+    final bound = TaskBoardTask.fromJson({
+      'id': 'task-1',
+      'title': '有绑定会话',
+      'chatSessionId': 'sess-bound-1',
+    });
+    expect(bound.chatSessionId, 'sess-bound-1');
+
+    final absent = TaskBoardTask.fromJson({'id': 'task-2', 'title': '无绑定'});
+    expect(absent.chatSessionId, isNull);
+
+    final empty = TaskBoardTask.fromJson({
+      'id': 'task-3',
+      'title': '空串绑定',
+      'chatSessionId': '',
+    });
+    expect(empty.chatSessionId, isNull);
+  });
+
   // A2-c: while the live folded tail streams, it supersedes the
   // history's trailing partial rows (same run, older persisted snapshot).
   // The count is a pure function of the history tail; lost rows break the

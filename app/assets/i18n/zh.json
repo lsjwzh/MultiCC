@@ -809,5 +809,7 @@
   "tbLoadOlder": "加载更早的消息",
   "tbMsgPartial": "输出中断",
   "tbRoleUser": "用户",
-  "tbRoleAssistant": "助手"
+  "tbRoleAssistant": "助手",
+  "tbOpenFullChat": "打开完整聊天",
+  "tbBoundChatHint": "该任务的聊天已升级为完整会话视图：工具卡、用量、记忆注入与续跑都与普通会话一致。"
 }

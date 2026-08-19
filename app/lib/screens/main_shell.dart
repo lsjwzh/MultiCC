@@ -9,6 +9,7 @@ import '../providers/chat_provider.dart';
 import '../providers/session_manager.dart';
 import '../services/settings_service.dart';
 import '../services/manage_service.dart';
+import '../services/session_service.dart';
 import '../services/dashboard_workspace_coordinator.dart';
 import '../services/dashboard_workspace_store.dart';
 import '../services/workspace_service.dart';
@@ -1570,10 +1571,10 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet>
       }
     }
     if (match == null) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(t('tbSessionNotFound'))),
-      );
+      // P3: a fleet miss may be a task-bound hidden chat session (fleet-hidden
+      // by design, directly addressable). Resolve it by marker; anything else
+      // (aux/gateway, execution slots, dead ids) keeps the not-found surface.
+      unawaited(_openTaskBoundSession(sessionId));
       return;
     }
     if (focusMessageId != null &&
@@ -1583,6 +1584,20 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet>
     } else {
       _openSession(match);
     }
+  }
+
+  Future<void> _openTaskBoundSession(String sessionId) async {
+    final session = await SessionService(
+      settings: widget.settings,
+    ).fetchTaskBoundSession(sessionId);
+    if (!mounted) return;
+    if (session == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(t('tbSessionNotFound'))),
+      );
+      return;
+    }
+    _openSession(session);
   }
 
   Future<void> _createSession(SessionKind kind, {SessionCli? defaultCli}) async {
