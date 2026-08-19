@@ -68,8 +68,12 @@ multicc/
 ├── public/                       # Zero-build static frontend
 │   ├── index.html / client.js    # Terminal mode UI (xterm.js)
 │   ├── chat.html / chat.js       # Chat mode UI (message bubbles, tool cards, inline images)
+│   ├── chat-task-mode.js         # chat.html?task=<id> transport adapter (task board runs)
+│   ├── chat-task-boot.js         # task-mode DOM host helpers (boot, run separators, identity)
+│   ├── chat-session-features.js  # session-only chat features split out of chat.js
 │   ├── chat-live-ui.js           # CLI switch picker, background-task danmaku, live overlays
 │   ├── manage.html / manage.js   # Multi-session dashboard & admin panel
+│   ├── task-board-ui.js          # Shared task-board list rendering (web + archive page)
 │   ├── wechat.html / wechat.js   # WeChat bridge UI
 │   ├── events.html               # Directory event timeline viewer
 │   ├── share.html                # Shared session snapshot viewer
@@ -160,7 +164,8 @@ user interrupts by speaking → agent stops → next turn
 - **Fail-closed network binding.** `src/network-policy.js` refuses to start on a non-loopback host unless `MULTICC_ALLOW_REMOTE=1` is set explicitly. TLS is delegated to a front-end (Tailscale Funnel, ngrok, reverse proxy) rather than terminated in-process.
 - **tmux for terminal, raw spawn for chat.** Terminal needs persistent TTY state that survives disconnects. Chat is turn-based — the server spawns the CLI per turn, relying on Claude `--resume` or Codex `exec resume` for continuity.
 - **Provider isolation per child process.** Claude providers inject `ANTHROPIC_*` env vars only for that session's spawn. Codex providers materialize separate `CODEX_HOME` directories. The server strips any leaked env vars at startup.
-- **Worktree-first concurrency.** Each session owns a branch + worktree. Merge/sync APIs move changes between session branches and the base branch — no shared mutable checkout.
+- **Worktree-first concurrency.** Each session owns a branch + worktree. Merge/sync APIs move changes between session branches and the base branch — no shared mutable checkout. Task-board runs get their own per-task worktree (`multicc/task-<hash>`, stable across a task's runs; see `src/task-worktree.js`).
+- **One chat view, two transcript producers.** `chat.html?session=<id>` and `chat.html?task=<id>` are the same renderer. Session history comes from the per-session chat-history store; task runs project from the task-run sqlite ledger (`src/task-transcript-repository.js`) under the identical message DTO and pagination contract — pinned together by `tests/test-chat-dto-golden.js` so the two read paths cannot drift. Live task output reaches the view as `task_run_stream` envelopes on the directory workspace socket, byte-identical to the slot's own events. Design: [chat-view unification](chat-view-unification-design.md).
 - **No database for MultiCC state.** All state is in-memory `Map` objects persisted to flat JSON files. Fast, debuggable, no migration headaches. (SQLite appears only as a read-only reader for `cc-switch`'s provider database.)
 - **Single auth layer.** `ACCESS_TOKEN` → HTTP-only `multicc_auth` cookie → applied uniformly to REST, WebSocket, and static files (JS/CSS exempted for login-page rendering).
 - **Reconnect-safe chat.** Every WebSocket connect replays buffered events before going live, so the client deterministically rebuilds its bubble state.
