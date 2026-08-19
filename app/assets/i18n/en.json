@@ -809,5 +809,7 @@
   "tbLoadOlder": "Load older messages",
   "tbMsgPartial": "Output interrupted",
   "tbRoleUser": "User",
-  "tbRoleAssistant": "Assistant"
+  "tbRoleAssistant": "Assistant",
+  "tbOpenFullChat": "Open full chat",
+  "tbBoundChatHint": "This task's chat is now a full session view: tool cards, usage, memory injection and resume behave exactly like an ordinary session."
 }

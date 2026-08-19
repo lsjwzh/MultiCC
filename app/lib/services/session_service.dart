@@ -8,7 +8,11 @@ import 'settings_service.dart';
 class SessionService {
   final SettingsService settings;
 
-  SessionService({required this.settings});
+  /// Injectable for tests (MockClient); production callers leave it null and
+  /// requests go through the package-level `http` functions as before.
+  final http.Client? httpClient;
+
+  SessionService({required this.settings, this.httpClient});
 
   Map<String, String> get _headers {
     final h = <String, String>{'Content-Type': 'application/json'};
@@ -31,6 +35,42 @@ class SessionService {
     return list
         .map((j) => Session.fromJson(j as Map<String, dynamic>))
         .toList();
+  }
+
+  /// P3 · task-bound hidden sessions (任务专属隐藏会话) are ordinary chat
+  /// sessions 1:1-owned by a board task: fleet-hidden but directly
+  /// addressable. Resolve one by id for the "open full chat" handoff. The
+  /// gate is deliberately the server marker, not "any id resolves": aux /
+  /// gateway / execution-slot records must never open through the fleet-miss
+  /// path (slots are 404-grade by design and stay that way). Fails soft to
+  /// null on any error — the caller then keeps its legacy behaviour.
+  Future<Session?> fetchTaskBoundSession(String id) async {
+    final uri = Uri.parse(_url('/api/sessions/${Uri.encodeComponent(id)}'));
+    try {
+      final client = httpClient;
+      final res = await (client != null
+              ? client.get(uri, headers: _headers)
+              : http.get(uri, headers: _headers))
+          .timeout(const Duration(seconds: 10));
+      if (res.statusCode != 200) return null;
+      final j =
+          (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+      final marker = j['taskBoundTaskId'];
+      if (marker is! String || marker.isEmpty) return null;
+      return Session(
+        id: (j['id'] ?? id).toString(),
+        dirId: j['dirId']?.toString(),
+        label: j['label']?.toString(),
+        cli: parseCli(j['cli']?.toString()),
+        kind: SessionKind.chat,
+        cwd: j['cwd']?.toString() ?? '',
+        createdAt:
+            DateTime.tryParse(j['createdAt']?.toString() ?? '') ??
+            DateTime.now(),
+      );
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<SessionCliConfig> fetchSessionCliConfig(String id) async {

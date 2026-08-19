@@ -42,7 +42,11 @@ class BoardRouteException implements Exception {
 /// must surface "仅本机可改" for those.
 class ManageService {
   final SettingsService settings;
-  ManageService({required this.settings});
+
+  /// Injectable for tests (MockClient); production callers leave it null and
+  /// requests go through the package-level `http` functions as before.
+  final http.Client? httpClient;
+  ManageService({required this.settings, this.httpClient});
 
   Map<String, String> get _headers {
     final h = <String, String>{'Content-Type': 'application/json'};
@@ -849,6 +853,31 @@ class ManageService {
   /// TaskRun history yet.
   Future<List<TaskMessage>> fetchTaskMessages(String taskId) async {
     return (await fetchTaskDetail(taskId)).messages;
+  }
+
+  /// P3 · task chat = ordinary chat. Get-or-create the task's 1:1 bound hidden
+  /// session (P1 server side) and return its id so the detail sheet can hand
+  /// off to the full session chat. Fails soft: ANY error (old server 501, gone
+  /// task 404, failed create 502, offline, malformed body) returns null and
+  /// the sheet keeps the legacy ledger projection.
+  Future<String?> ensureTaskChatSession(String taskId) async {
+    final uri = Uri.parse(
+      _url('/api/task-board/tasks/${Uri.encodeComponent(taskId)}/chat-session'),
+    );
+    try {
+      final client = httpClient;
+      final res = await (client != null
+              ? client.post(uri, headers: _headers)
+              : http.post(uri, headers: _headers))
+          .timeout(const Duration(seconds: 12));
+      if (res.statusCode != 200) return null;
+      final j = jsonDecode(utf8.decode(res.bodyBytes));
+      if (j is! Map || j['ok'] != true) return null;
+      final sid = j['sessionId'];
+      return sid is String && sid.isNotEmpty ? sid : null;
+    } catch (_) {
+      return null;
+    }
   }
 
   /// Answers the currently waiting question for a hidden TaskRun owned by
