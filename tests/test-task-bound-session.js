@@ -308,7 +308,10 @@ test('bound follow-up bypasses commander and posts straight to the bound session
   assert.equal(dto.tasks.find(t => t.id === 'task-1').runState, 'running');
 });
 
-test('cold start compiles the task ledger into the first bound turn only', async () => {
+// P4 · cold start. The ledger reaches the MODEL as a prompt-only layer; what
+// reaches the TRANSCRIPT is exactly what the user typed, so the task chat view
+// is the ordinary chat view down to its very first bubble.
+test('cold start seeds the compiled ledger as prompt context, never as the user message', async () => {
   const taskRunsStub = {
     // beginRun/admitRun presence is the runtime's feature check for the store.
     beginRun: input => ({ ...input, leaseEpoch: 1 }),
@@ -328,13 +331,71 @@ test('cold start compiles the task ledger into the first bound turn only', async
   assert.equal(result.taskBound, true);
   assert.equal(fixture.calls.sent.length, 1);
   const sent = fixture.calls.sent[0];
-  // The compiled context wall (history + current text), exactly the input the
-  // pooled runs compile — the wrapper mark keeps it out of task projections.
-  assert.match(sent.text, /\[MultiCC 任务运行上下文/);
-  assert.match(sent.text, /先复现闪退堆栈/);
-  assert.match(sent.text, /已定位到空指针/);
-  assert.match(sent.text, /继续修/);
+  // The turn text — the thing runChatTurn persists — is the bare user message.
+  assert.equal(sent.text, '继续修');
+  // The compiled wall rides the turn options as a prompt prefix instead.
+  const seed = sent.options.taskContextSeed;
+  assert.match(seed, /\[MultiCC 任务运行上下文/);
+  assert.match(seed, /先复现闪退堆栈/);
+  assert.match(seed, /已定位到空指针/);
+  // No 当前要求 section and no copy of the user text: composeMessage appends
+  // the user message after the layer, so a copy here would duplicate it.
+  assert.equal(seed.includes('当前要求'), false);
+  assert.equal(seed.includes('继续修'), false);
+  // Layers concatenate with no separator — the seed carries its own.
+  assert.equal(seed.endsWith('\n\n'), true);
   assert.equal(sent.options.taskId, 'task-1');
+});
+
+test('a warm native session sends no seed: the session IS the context', async () => {
+  const fixture = mkBoundFixture({
+    taskRuns: {
+      beginRun: input => ({ ...input, leaseEpoch: 1 }),
+      listTaskRuns: () => [{ runId: 'tr_1' }],
+      getRunMessages: () => [
+        { messageId: 'mm1', role: 'user', kind: 'admission', content: '先复现闪退堆栈', createdAt: 1 },
+      ],
+    },
+    // Empty transcript (e.g. the user cleared it) but a live native session:
+    // the CLI still remembers the task, so re-walling it would be a reset.
+    loadHistory: () => [],
+    runtimeOverrides: {
+      records: new Map([
+        ['commander-1', { id: 'commander-1', kind: 'chat', type: 'commander', dirId: 'dir-1', cli: 'codex' }],
+        ['bound-1', {
+          id: 'bound-1', kind: 'chat', dirId: 'dir-1', taskBoundTaskId: 'task-1',
+          cliSessionId: 'ca88a4d8-1234-5678-9abc-def012345678',
+        }],
+      ]),
+    },
+  });
+  await fixture.runtime.routeCommanderFollowup(
+    'commander-1', 'task-1', '继续修', { clientMsgId: 'k3' });
+
+  assert.equal(fixture.calls.sent.length, 1);
+  assert.equal(fixture.calls.sent[0].text, '继续修');
+  assert.equal(fixture.calls.sent[0].options.taskContextSeed, undefined);
+});
+
+test('a persisted first turn that never reached the CLI still seeds', async () => {
+  const fixture = mkBoundFixture({
+    taskRuns: {
+      beginRun: input => ({ ...input, leaseEpoch: 1 }),
+      listTaskRuns: () => [{ runId: 'tr_1' }],
+      getRunMessages: () => [
+        { messageId: 'mm1', role: 'user', kind: 'admission', content: '先复现闪退堆栈', createdAt: 1 },
+      ],
+    },
+    // The transcript already holds a user message (persist happens before the
+    // provider runs), yet no native session exists — the previous attempt died
+    // in between. Gating on the transcript would ship this turn contextless.
+    loadHistory: () => [{ id: 'm1', role: 'user', content: '第一次尝试' }],
+  });
+  await fixture.runtime.routeCommanderFollowup(
+    'commander-1', 'task-1', '继续修', { clientMsgId: 'k4' });
+
+  assert.equal(fixture.calls.sent.length, 1);
+  assert.match(fixture.calls.sent[0].options.taskContextSeed, /先复现闪退堆栈/);
 });
 
 test('an open TaskRun gates the detour: legacy path drains first', async () => {
