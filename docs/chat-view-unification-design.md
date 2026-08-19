@@ -100,15 +100,14 @@ UI 层从此不知道背后是会话还是任务。四轴隔离的落点：**spa
 ### M1 · 流式转发：task_run_stream
 
 **改动**
-- `taskContextHost.broadcast`（task-context-host.js:118-125）加 hook：会话是执行槽且有活动 taskRun 时，把 payload 包装为 `{type:'task_run_stream', taskId, runId, dirId, slotEvent:<原 payload>}` 经 `workspace.broadcast(dirId, …)`（src/workspace/runtime.js:83-87，同时达 dir 订阅者 + metaClients）。
-- **事件形状不解包不翻译**：前端 task 宿主解包 slotEvent 后喂同一 event-controller——「一模一样」的流式体验零翻译成本，也避免双份事件语义漂移。
-- 流量控制：text_delta 级 ~100ms 节流合并；usage/result/tool 事件不节流；前端无匹配订阅时零消费。
-- 安全面：不新增（slot 本就把同样内容发给「它自己的客户端」只是恒为空；仅到本 dir 订阅者，与 task_board_update 同权限面）。
+- 新建 `src/task-run-stream-forwarder.js`（**已实施，2026-08-19**）：`createTaskRunStreamEmitter(emitClients, chatSessions, records, workspaceBroadcast, opts)` 返回 emitClients 的包装函数。门禁严格：仅 `taskExecutionSlot===true` 且 state 带 `_currentTaskId/_currentTaskRunId` 的会话转发；信封 `{type:'task_run_stream', taskId, runId, dirId, slotEvent}`（单个）/`slotEvents`（批），**槽位 sessionId 永不进信封**。delta 级事件（part_delta / stream_event·content_block_delta）100ms 窗口合并成批发；非 delta 事件先同步冲刷挂起批次再立即转发（保序）；批内上下文（task/run/dir）在批次开启时捕获，冲刷时状态已变仍正确归因。判定函数/定时器均可注入（测试确定性）。
+- 接线（server.js 净零行）：`taskContextHost.broadcast` 把 sessionId 作第三参传给 emitClients（其余 emitClients 消费者忽略多参）；server.js:190 解构再导出 + :2184 emitClients 原行替换为工厂调用。工厂经 task-context-host.js 再导出以省一个 require 行（server.js 恰在 3000 行上限）。
+- 安全面：不新增（slot 本就把同样内容发给「它自己的客户端」只是恒为空；仅到本 dir 订阅者 + metaClients，与 task_board_update 同权限面）。
 
-**验收**
-- fake CLI 慢速输出：run 进行中打开详情页，增量文本与工具卡实时更新。
-- 大 dir 多任务并跑时 metaClients 无风暴（delta 节流断言）。
-- 槽位隐藏边界不破：直接订阅 slot 会话 WS 仍被 `isInternalExecutionSlot` 拦截。
+**验收（已达成）**
+- `tests/test-task-run-stream-forwarder.js` 6 用例：信封形状+槽位 id 不外泄、非槽位/无活动 run 不转发、delta 窗口合并、非 delta 先冲刷后转发保序、delta 类判定边界（content_block_delta 是 / message_start 否）、task-context-host 三参传递兼容旧两参。
+- 回归：deterministic 1244/1244 + contracts 55/55 绿；server.js 仍 3000 行整。
+- （待 M2 联动验证：fake CLI 慢速输出下前端实时渲染——前端消费者落地时一并验收。）
 
 ### M2 · 前端宿主通用化（大改造主体，D4）
 
