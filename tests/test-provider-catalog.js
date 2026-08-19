@@ -318,7 +318,7 @@ test('formatProviderQuotaBadge renders ark percent-only periods without null/nul
     }],
   });
   assert.ok(!sessionWorst.text.includes('null'), `text must not contain null: ${sessionWorst.text}`);
-  assert.match(sessionWorst.text, /coding-plan session 100%/);
+  assert.match(sessionWorst.text, /coding-plan 5h 100%/);
   assert.equal(sessionWorst.color, '#f85149');
 
   // percent 0 renders as 0%, not blank or 100%.
@@ -326,7 +326,7 @@ test('formatProviderQuotaBadge renders ark percent-only periods without null/nul
     status: 'ok',
     items: [{ product: 'coding-plan', subscribed: true, periods: [{ label: 'session', used: null, total: null, percent: 0 }] }],
   });
-  assert.match(zero.text, /session 0%/);
+  assert.match(zero.text, /5h 0%/);
   assert.equal(zero.color, '#58a6ff');
 });
 

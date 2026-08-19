@@ -98,3 +98,32 @@ test('renders Ark Coding compact bar as remaining quota in canonical window orde
   assert.match(bar.title, /周: 余量 60% · 已用 40% \(40\/100\)/);
   assert.match(bar.title, /月: 余量 30% · 已用 70% \(70\/100\)/);
 });
+
+test('renders the Coding Plan session window as the 5h rolling window', () => {
+  // arkcli reports the coding-plan current-session window as `session`; the
+  // official console shows it with a reset countdown — it is the same 5h
+  // rolling window the agent plan reports as `5h`, so the bar must say 5h.
+  const now = Date.UTC(2026, 0, 1, 0, 0, 0);
+  const bar = renderQuotaBar('ark', {
+    status: 'ok',
+    fetchedAt: now,
+    viewer: null,
+    items: [
+      {
+        product: 'coding-plan',
+        tier: 'pro',
+        subscribed: true,
+        periods: [
+          { label: 'session', used: null, total: null, percent: 30.4, resetAt: now + 11 * 60 * 1000 },
+          { label: 'weekly', used: null, total: null, percent: 45.86, resetAt: now + 4.5 * 24 * 3600 * 1000 },
+          { label: 'monthly', used: null, total: null, percent: 63.82, resetAt: now + 20.5 * 24 * 3600 * 1000 },
+        ],
+      },
+    ],
+  }, { baseUrl: 'https://ark.cn-beijing.volces.com/api/coding/v3' });
+
+  assert.ok(bar.text.startsWith('Coding · 5h 70%'), `session window must render as 5h: ${bar.text}`);
+  assert.ok(!bar.text.includes('会话'), `bar must not label the session window 会话: ${bar.text}`);
+  assert.match(bar.title, /5h: 余量 70% · 已用 30\.4%/);
+  assert.ok(!bar.title.includes('会话:'), `tooltip must not label the session window 会话: ${bar.title}`);
+});
