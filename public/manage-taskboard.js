@@ -1,9 +1,9 @@
 'use strict';
 
 // Task board widget for the directory-detail modal (manage.html).
-// Renders the AI-tagged module→task tree inside #dir-detail-body and a
-// stacked task-detail modal (#tb-detail-modal) with the cross-session
-// conversation trail plus the panel-level composer that auto-routes.
+// Renders the AI-tagged module→task tree inside #dir-detail-body plus the
+// panel-level composer that auto-routes. Task details open the unified chat
+// view (chat.html?task=, design D3); the legacy stacked modal is retired.
 //
 // Self-contained: own fetch/cache/escape helpers, no load-order dependency
 // on manage-dashboard.js beyond being called from renderDirectoryDetailBody.
@@ -12,7 +12,6 @@ let _tbBoard = { modules: [], tasks: [], sessionLabels: {} };
 let _tbFetchedAt = 0;
 let _tbTimer = null;
 const _tbCollapsed = new Set();     // module ids collapsed in the tree
-let _tbDetailTaskId = null;
 let _tbGatheringFloat = null;       // 归拢中浮窗 DOM
 let _tbPendingTaskIds = [];         // 等待定位的新任务 id
 
@@ -52,6 +51,20 @@ function _tbQuickArchiveHtml(task) {
   return `<button class="btn btn-sm tb-quick-archive" onclick="archiveTaskBoardTask(event,'${_tbEsc(task.id)}',this)" title="快捷归档该任务">归档</button>`;
 }
 
+// M4 (design D3): the operations the retired detail modal owned live on the
+// row. Completion/reopen and — once the task owns a worktree (M3) — one-click
+// merge-back + worktree cleanup. Row click still opens the chat view; every
+// button handler stops propagation itself.
+function _tbTaskActionsHtml(task) {
+  const lifecycle = task.status !== 'active'
+    ? `<button class="btn btn-sm" onclick="setTaskBoardStatus('${_tbEsc(task.id)}','active',event)" title="重新激活该任务">♻️ 重开</button>`
+    : `<button class="btn btn-sm" onclick="setTaskBoardStatus('${_tbEsc(task.id)}','done',event)" title="标记完成">✅ 完成</button>`;
+  const worktree = task.worktreePath
+    ? `<button class="btn btn-sm" title="把任务分支合并回基分支并删除任务 worktree（运行中的任务会被拒绝）" onclick="cleanupTaskWorktree(event,'${_tbEsc(task.id)}',this)">🧹</button>`
+    : '';
+  return `${lifecycle}${worktree}`;
+}
+
 function _tbRoutingHtml(task) {
   const label = window.MultiCCTaskBoardUi.taskRoutingLabel(task);
   return label ? `<span class="tb-route-state">🫡 ${_tbEsc(label)}</span>` : '';
@@ -70,7 +83,6 @@ async function refreshTaskBoard(force) {
         && typeof renderDirectoryDetailBody === 'function') {
       renderDirectoryDetailBody(_detailDirId);
     }
-    if (_tbDetailTaskId) loadTaskBoardDetail(_tbDetailTaskId, true);
     // 刷新后定位新任务（若有待定位的）
     if (_tbPendingTaskIds.length) {
       const tid = _tbPendingTaskIds[0];
@@ -116,7 +128,7 @@ function _tbTaskRowHtml(task) {
         <span class="tb-title">${_tbEsc(task.title)}</span>
         ${body}
       </span>
-      <span class="tb-task-meta"><span class="tb-run-state st-tone-${display.tone}">${_tbEsc(display.label)}</span>${_tbRoutingHtml(task)}${attempt}${_tbModuleAssignmentHtml(task)}${_tbQuickArchiveHtml(task)}<span class="tb-dim">${task.refCount}轮 · ${_tbEsc(_tbTimeAgo(task.lastTs))}</span></span>
+      <span class="tb-task-meta"><span class="tb-run-state st-tone-${display.tone}">${_tbEsc(display.label)}</span>${_tbRoutingHtml(task)}${attempt}${_tbModuleAssignmentHtml(task)}${_tbTaskActionsHtml(task)}${_tbQuickArchiveHtml(task)}<span class="tb-dim">${task.refCount}轮 · ${_tbEsc(_tbTimeAgo(task.lastTs))}</span></span>
     </div>`;
 }
 
@@ -193,9 +205,9 @@ function toggleTaskBoardModule(modId) {
 }
 
 // ── Composer (chat-parity input: attach/paste, voice, goal) ─────────────────
-// One factory used by both the board-tab composer (dir-level routing) and the
-// task-detail composer (task-level routing). Fire-and-forget by design: no
-// streaming/cancel state — a sent message is sent.
+// One factory for the board-tab composer (dir-level routing). Fire-and-forget
+// by design: no streaming/cancel state — a sent message is sent. Task-level
+// follow-ups live in the unified chat view (chat.html?task=) since M4.
 //
 // Feature parity with the chat composer:
 //   attach/paste → POST /api/upload (FormData 'file') → absolute path appended
@@ -395,183 +407,14 @@ function syncTaskBoardDirComposer(dirId, visible) {
   }
 }
 
-// ── Task detail modal (stacked above dir-detail) ────────────────────────────
-
-let _tbTaskComposer = null;
-let _tbTaskComposerTaskId = null;
-
-function _tbEnsureTaskComposer(task) {
-  const host = document.getElementById('tb-task-composer');
-  if (!host) return;
-  if (!_tbTaskComposer) {
-    _tbTaskComposer = createTbComposer(host, {
-      placeholder: '向该任务派发后续消息…（Commander 单向路由到空闲 worker）',
-      submit: async (payload) => {
-        const r = await fetch(`/api/task-board/tasks/${encodeURIComponent(_tbTaskComposerTaskId)}/send`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
-        });
-        const d = await r.json();
-        if (!r.ok || !d.ok) throw new Error(d.note || d.error || r.status);
-        _tbShowGatheringFloat();
-        setTimeout(() => refreshTaskBoard(true), 1500);
-        if (d.taskRunId || d.routingMode === 'commander') {
-          const commanderLabel = d.commanderLabel || d.targetLabel;
-          const worker = d.workerLabel || d.workerSessionId;
-          return worker
-            ? `已由 Commander「${commanderLabel}」单向路由到「${worker}」${d.elasticWorkerCreated ? '（已动态增加 worker）' : d.queued ? '（已安全排队）' : ''}`
-            : `已交给 Commander「${commanderLabel}」路由执行${d.queued ? '（已安全排队）' : ''}，回复将自动归档回本任务`;
-        }
-        return `已路由到「${d.targetLabel}」，回复将自动归档回本任务`;
-      },
-    });
-  }
-  if (_tbTaskComposerTaskId !== task.id) _tbTaskComposer.reset();
-  _tbTaskComposerTaskId = task.id;
-}
+// ── Task entry + row actions ────────────────────────────────────────────────
 
 // M2 · the default task entry: the unified chat view in a new tab (the same
-// window.open pattern manage.js uses for chat sessions). The stacked modal
-// below stays mounted for now (M4 retires it).
+// window.open pattern manage.js uses for chat sessions). M4 (design D3) made
+// it the only entry — the legacy stacked modal is gone.
 function openTaskChatView(taskId) {
   if (event) event.stopPropagation();
   window.open(`/chat.html?task=${encodeURIComponent(taskId)}`, '_blank');
-}
-
-/** @deprecated (M2, design D3): task rows now open the unified chat view
- *  (chat.html?task=). This stacked modal has no default entry left and is
- *  retired in M4 — kept reachable for that transition only. */
-function openTaskBoardDetail(taskId) {
-  if (event) event.stopPropagation();
-  _tbDetailTaskId = taskId;
-  const m = document.getElementById('tb-detail-modal');
-  if (m) m.classList.add('visible');
-  const body = document.getElementById('tb-detail-content');
-  if (body) body.innerHTML = '<div class="tb-empty">加载中…</div>';
-  loadTaskBoardDetail(taskId);
-}
-
-function closeTaskBoardDetail() {
-  _tbDetailTaskId = null;
-  const m = document.getElementById('tb-detail-modal');
-  if (m) m.classList.remove('visible');
-}
-
-async function loadTaskBoardDetail(taskId, silent) {
-  let d;
-  try {
-    const r = await fetch(`/api/task-board/tasks/${encodeURIComponent(taskId)}/messages`);
-    d = await r.json();
-    if (!r.ok || !d.ok) throw new Error(d.error || r.status);
-  } catch (e) {
-    if (!silent) {
-      const body = document.getElementById('tb-detail-content');
-      if (body) body.innerHTML = `<div class="tb-empty">加载失败：${_tbEsc(e.message)}</div>`;
-    }
-    return;
-  }
-  if (_tbDetailTaskId !== taskId) return;
-  const content = document.getElementById('tb-detail-content');
-  if (!content) return;
-  const prevScroll = content.querySelector('.tb-msgs')?.scrollTop;
-  renderTaskBoardDetail(d);
-  const msgsBox = content.querySelector('.tb-msgs');
-  if (msgsBox) msgsBox.scrollTop = prevScroll != null ? prevScroll : msgsBox.scrollHeight;
-}
-
-function renderTaskBoardDetail(d) {
-  const content = document.getElementById('tb-detail-content');
-  const t = d.task;
-  const mod = _tbBoard.modules.find(m => m.id === t.moduleId);
-  const labels = _tbBoard.sessionLabels || {};
-  const display = window.MultiCCTaskBoardUi.taskDisplayState(t);
-
-  const chips = t.sessionIds.map(sid => {
-    const href = window.MultiCCTaskBoardUi.sessionChatUrl(sid);
-    return `<a class="tb-chip tb-session-link" href="${_tbEsc(href)}" target="_blank" rel="noopener noreferrer" title="在新标签打开对应会话">🖥 ${_tbEsc(labels[sid] || sid)} ↗</a>`;
-  });
-  const routingLabel = window.MultiCCTaskBoardUi.taskRoutingLabel(t);
-  if (routingLabel) chips.unshift(`<span class="tb-chip tb-route-state">🫡 ${_tbEsc(routingLabel)}</span>`);
-  const chipHtml = chips
-    .concat((t.areas || []).map(a => `<span class="tb-chip">${_tbEsc(a)}</span>`)).join('');
-
-  const msgs = (d.items || []).map(it => {
-    const time = it.ts ? new Date(it.ts).toLocaleString('zh-CN', { hour12: false }) : '?';
-    const sessionHref = window.MultiCCTaskBoardUi.sessionChatUrl(it.sessionId, it.messageId);
-    const tag = sessionHref ? 'a' : 'div';
-    const linkAttrs = sessionHref
-      ? ` href="${_tbEsc(sessionHref)}" target="_blank" rel="noopener noreferrer" title="打开会话并定位到这条消息"`
-      : '';
-    return `
-      <${tag} class="tb-msg ${it.role}${sessionHref ? ' tb-msg-link' : ''}"${linkAttrs}>
-        <div class="tb-msg-head">
-          <span class="tb-msg-sess">${_tbEsc(it.sessionLabel || it.sessionId || '临时执行')}${sessionHref ? ' ↗' : ''}</span>
-          <span>${_tbEsc(time)}</span>
-          <span class="tb-msg-role-${it.role}">${it.role === 'user' ? '👤 用户' : '🤖 助手'}</span>
-          ${it.lost ? '<span style="color:var(--danger)">（原消息已清理，仅存摘要）</span>' : ''}
-        </div>
-        <div class="tb-msg-body"></div>
-      </${tag}>`;
-  }).join('') || '<div class="tb-empty">该任务还没有关联对话。</div>';
-
-  const recentRuns = window.MultiCCTaskBoardUi.recentTaskRuns(d);
-  const runHistory = recentRuns.length
-    ? `<details class="tb-run-history" data-testid="task-run-history" open>
-        <summary>最近执行 · ${recentRuns.length}</summary>
-        <div class="tb-run-history-list">${recentRuns
-          .map(run => window.MultiCCTaskBoardUi.renderTaskRunSummary(run)).join('')}</div>
-      </details>`
-    : '';
-
-  content.innerHTML = `
-    <div class="tb-d-head">
-      <div class="tb-dim">${_tbEsc(mod ? mod.name : '未分组')} ›</div>
-      <div class="tb-d-title-row">
-        <span class="tb-d-title">${_tbEsc(t.title)}</span>
-        ${window.MultiCCStatusPresentation.statusBadgeHtml('task', display.status, {
-          translate: window.t,
-          className: `tb-badge${display.running ? ' on' : ''}`,
-        })}
-        <span class="tb-d-actions">
-          ${t.moduleAssignment
-            ? `<button class="btn btn-sm" onclick="reclassifyTaskBoardTask(event,'${_tbEsc(t.id)}')"${t.moduleAssignment.running ? ' disabled' : ''}>🔄 ${t.moduleAssignment.running ? '归类中…' : t.moduleAssignment.lastError ? '重新归类' : '归类'}</button>`
-            : ''}
-          ${t.status !== 'active'
-            ? `<button class="btn btn-sm" onclick="setTaskBoardStatus('${_tbEsc(t.id)}','active',event)">♻️ 重开</button>`
-            : `<button class="btn btn-sm" onclick="setTaskBoardStatus('${_tbEsc(t.id)}','done',event)">✅ 完成</button>`}
-          ${t.worktreePath
-            ? `<button class="btn btn-sm" title="把任务分支合并回基分支并删除任务 worktree（运行中的任务会被拒绝）" onclick="cleanupTaskWorktree(event,'${_tbEsc(t.id)}',this)">🧹 清理 worktree</button>`
-            : ''}
-          <button class="btn btn-sm" onclick="archiveTaskBoardTask(event,'${_tbEsc(t.id)}',this)">🗄 归档</button>
-        </span>
-      </div>
-      <div class="tb-chips">${chipHtml}</div>
-      ${t.body ? `<details class="tb-body-detail"><summary>${t.legacy ? '旧记录任务正文' : '完整任务正文'}</summary><pre>${_tbEsc(t.body)}</pre></details>` : '<div class="tb-body-pending">正文尚未进入目标会话历史。</div>'}
-    </div>
-    ${runHistory}
-    <div class="tb-msgs">${msgs}</div>`;
-
-  // Message bodies as textContent (never trust chat text as HTML).
-  const bodies = content.querySelectorAll('.tb-msg-body');
-  (d.items || []).forEach((it, i) => { if (bodies[i]) bodies[i].textContent = it.text || '（空）'; });
-
-  window.MultiCCTaskBoardUi.bindPendingQuestionAnswers(content, async payload => {
-    const response = await fetch(`/api/task-board/tasks/${encodeURIComponent(t.id)}/answer`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    const result = await response.json();
-    if (!response.ok || !result.ok) throw new Error(result.error || response.status);
-    setTimeout(() => {
-      if (_tbDetailTaskId === t.id) loadTaskBoardDetail(t.id, true);
-      refreshTaskBoard(true);
-    }, 0);
-    return result;
-  });
-
-  // Composer lives outside the re-rendered content, so refreshes never wipe
-  // a half-typed message or an in-progress recording.
-  _tbEnsureTaskComposer(t);
 }
 
 async function setTaskBoardStatus(taskId, status, ev) {
@@ -582,8 +425,6 @@ async function setTaskBoardStatus(taskId, status, ev) {
     });
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || r.status);
-    if (status === 'archived') closeTaskBoardDetail();
-    else loadTaskBoardDetail(taskId, true);
     refreshTaskBoard(true);
     return true;
   } catch (e) {
@@ -616,10 +457,7 @@ async function cleanupTaskWorktree(ev, taskId, button) {
     if (typeof showToast === 'function') {
       showToast(d.merged ? '已合并并清理任务 worktree' : '无新提交，worktree 已清理');
     }
-    setTimeout(() => {
-      if (_tbDetailTaskId === taskId) loadTaskBoardDetail(taskId, true);
-      refreshTaskBoard(true);
-    }, 0);
+    setTimeout(() => refreshTaskBoard(true), 0);
   } catch (e) {
     if (typeof showToast === 'function') showToast(`清理失败：${e.message}`, true);
     if (button) button.disabled = false;
@@ -644,9 +482,6 @@ async function archiveCompletedTaskBoard(ev, dirId, button) {
     });
     const d = await r.json();
     if (!r.ok || !d.ok) throw new Error(d.error || r.status);
-    if (_tbDetailTaskId && (d.taskIds || []).includes(_tbDetailTaskId)) {
-      closeTaskBoardDetail();
-    }
     if (typeof showToast === 'function') showToast(`已归档 ${d.archivedCount} 个已完成任务`);
     await refreshTaskBoard(true);
   } catch (e) {
@@ -697,7 +532,7 @@ async function reclassifyPendingTaskBoard(ev, dirId) {
 // Periodic reconciliation while a board surface is visible (WS loss fallback).
 setInterval(() => {
   const modalOpen = typeof _detailModalOpen === 'function' && _detailModalOpen();
-  if (modalOpen || _tbDetailTaskId) refreshTaskBoard(true);
+  if (modalOpen) refreshTaskBoard(true);
 }, 60000);
 refreshTaskBoard(true);
 

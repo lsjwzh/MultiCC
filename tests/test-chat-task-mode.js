@@ -171,6 +171,20 @@ test('transportSend posts user messages with the idempotency key and goal fields
   assert.equal(calls.system.length, 0, 'no error surface on success');
 });
 
+test('M4-T1 transportSend forwards the composer userInputRequestId so /send resolves the pending question', async () => {
+  const { mode, calls } = harness();
+  await mode.boot();
+  const sent = mode.transportSend({
+    type: 'user_message', text: '生产', clientMsgId: 'client-11',
+    userInputRequestId: 'usrq-live-1',
+  });
+  assert.equal(sent, true);
+  await new Promise(r => setImmediate(r));
+  const post = calls.fetch.find(c => c.url.includes('/send'));
+  assert.equal(JSON.parse(post.init.body).userInputRequestId, 'usrq-live-1',
+    'the answer reaches the answer ingress, not the followup path');
+});
+
 test('transportSend surfaces send failures and unstages the bubble', async () => {
   const h = harness();
   // Re-stub: task DTO ok, first page unstubbed (boot must degrade, not reject),
@@ -259,9 +273,17 @@ test('task-board rows open the unified chat view instead of the legacy modal', (
   // pattern manage.js uses for chat sessions).
   assert.match(tb, /function openTaskChatView\(/);
   assert.match(tb, /chat\.html\?task=/);
-  assert.doesNotMatch(tb, /onclick="openTaskBoardDetail\(/);
-  // The legacy stacked modal stays mounted but marked deprecated; M4 retires it.
-  assert.match(tb, /@deprecated/);
+  // M4 (design D3): the legacy stacked modal is retired, not deprecated —
+  // no handler chain, no markup, no task-side pending-question card (the
+  // chat view's card is the only answer surface left).
+  assert.doesNotMatch(tb, /openTaskBoardDetail|loadTaskBoardDetail|renderTaskBoardDetail|closeTaskBoardDetail|_tbEnsureTaskComposer/);
+  const manageHtml = fs.readFileSync(path.join(root, 'public', 'manage.html'), 'utf8');
+  assert.doesNotMatch(manageHtml, /tb-detail-modal|tb-detail-content|tb-task-composer/);
+  const ui = fs.readFileSync(path.join(root, 'public', 'task-board-ui.js'), 'utf8');
+  assert.doesNotMatch(ui, /renderPendingQuestion|bindPendingQuestionAnswers|renderTaskRunSummary|recentTaskRuns/);
+  // Row-level actions keep the modal-only operations reachable.
+  assert.match(tb, /cleanupTaskWorktree/);
+  assert.match(tb, /setTaskBoardStatus/);
 });
 
 test('chat.html loads the task-mode scripts before chat.js and gates session-only chrome by body class', () => {
