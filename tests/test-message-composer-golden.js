@@ -502,6 +502,66 @@ function todayStreamingBaseArgs(persisted, { sysPrompt, model, disallowedTools }
     console.error('    --- todayPayload ---'); console.error(JSON.stringify(todayPayload));
   }
 })();
+// ═══════════════════════════════════════════════════════════════════════
+// Suite 5: task-context layer (P4 · task-bound cold start)
+//
+// A bound task session's FIRST turn carries the compiled task ledger, but the
+// user message it persists must stay exactly what the user typed. That makes
+// the ledger a context layer like every other injection here — never part of
+// userText — so transcript and prompt differ by design, not by accident.
+// ═══════════════════════════════════════════════════════════════════════
+console.log('');
+console.log('── Suite 5: task-context layer (bound-session cold start) ──');
+
+(function taskContextLayer() {
+  const sessionName = 's1';
+  delete notesStore[sessionName];
+  const deps = makeDeps();
+  const persisted = basePersisted({ type: null, effort: 'high' });
+  const text = '继续修';
+  const seed = '[MultiCC 任务运行上下文 v1]\n\n任务：修复登录闪退\n\n对话历史：\n- 已定位到空指针\n\n';
+
+  const withSeed = composeMessage({
+    text, persisted, sessionName,
+    opts: { isFirstTurn: true, taskContextSeed: seed }, deps,
+  });
+  const layer = withSeed.contextLayers.find(l => l.kind === 'task-context');
+  assert(!!layer, '5a task-context layer present when a seed is supplied');
+  assert(!!layer && layer.text === seed, '5b layer carries the seed verbatim (own trailing separator)');
+  assert(!!layer && layer.order === 12, '5c order 12: after goal limits, before handoff/gateway/notes');
+  assert(withSeed.userText === text, '5d userText stays the raw user message (what the transcript persists)');
+
+  const rendered = renderPrompt(withSeed);
+  assert(rendered.startsWith(seed), '5e rendered prompt opens with the ledger');
+  assert(rendered.endsWith(text + withSeed.suffix), '5f user message is the tail of the prompt');
+  assert(rendered.split(text).length - 1 === 1, '5g the user message reaches the model exactly once');
+
+  // No seed → byte-identical to today (what the rest of this gate pins).
+  const without = composeMessage({
+    text, persisted, sessionName, opts: { isFirstTurn: true }, deps,
+  });
+  assert(!without.contextLayers.some(l => l.kind === 'task-context'), '5h no layer without a seed');
+  assert(renderPrompt(without) === todayPrompt({ text, persisted, sessionName, bare: false }, deps),
+    '5i seedless prompt still byte-equals today');
+
+  // bare (continue/retry) skips every layer, the seed included.
+  const bare = composeMessage({
+    text, persisted, sessionName,
+    opts: { isFirstTurn: false, bare: true, taskContextSeed: seed }, deps,
+  });
+  assert(bare.contextLayers.length === 0, '5j bare turns carry no layers, seed included');
+
+  // A non-string or empty seed is inert — never an empty layer, which
+  // validateEnvelope rejects outright.
+  for (const bad of ['', null, undefined, 42, {}]) {
+    const env = composeMessage({
+      text, persisted, sessionName,
+      opts: { isFirstTurn: true, taskContextSeed: bad }, deps,
+    });
+    assert(!env.contextLayers.some(l => l.kind === 'task-context'),
+      `5k inert seed: ${JSON.stringify(bad)}`);
+  }
+})();
 
 // ═══════════════════════════════════════════════════════════════════════
 console.log('');

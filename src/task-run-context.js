@@ -332,13 +332,18 @@ function buildTaskRunContext({
   currentText,
   maxChars = DEFAULT_MAX_CHARS,
   version = 1,
+  // A pooled run compiles the whole turn — context AND the request it carries.
+  // A task-bound chat session compiles only the context: the user's own
+  // message follows this text as the turn's own user message, so repeating it
+  // in a 当前要求 section would send it twice.
+  includeCurrent = true,
 } = {}) {
   if (!task || typeof task !== 'object') throw new TypeError('task must be an object');
   const taskId = normalizeString(task.id ?? task.taskId ?? '', MAX_TASK_ID_CHARS);
   const title = normalizeString(task.title ?? task.name ?? '未命名任务', MAX_TASK_TITLE_CHARS);
   if (!taskId) throw new TypeError('task.id must be a non-empty string');
   const normalizedCurrent = normalizeString(currentText);
-  if (!normalizedCurrent) throw new TypeError('currentText must be a non-empty string');
+  if (includeCurrent && !normalizedCurrent) throw new TypeError('currentText must be a non-empty string');
 
   const normalizedVersion = normalizeVersion(version);
   const budget = normalizeBudget(maxChars);
@@ -354,8 +359,8 @@ function buildTaskRunContext({
   const essentialTaskLines = [`任务：${title}`, `任务 ID：${taskId}`];
   if (status) essentialTaskLines.push(`状态：${status}`);
   let taskSection = essentialTaskLines.join('\n');
-  const currentSection = `当前要求：\n${normalizedCurrent}`;
-  const essentialText = [header, taskSection, currentSection].join('\n\n');
+  const currentSection = includeCurrent ? `当前要求：\n${normalizedCurrent}` : '';
+  const essentialText = [header, taskSection, currentSection].filter(Boolean).join('\n\n');
   let remaining = Math.max(0, budget - essentialText.length);
 
   const optionalTaskLines = [];
@@ -369,13 +374,13 @@ function buildTaskRunContext({
   }
   if (optionalTaskLines.length) taskSection += `\n${optionalTaskLines.join('\n')}`;
 
-  let baseSections = [header, taskSection, currentSection];
+  let baseSections = [header, taskSection, currentSection].filter(Boolean);
   let baseLength = baseSections.join('\n\n').length;
   remaining = Math.max(0, budget - baseLength);
   const artifactBudget = Math.min(2_000, Math.floor(remaining * 0.28));
   const artifactSection = renderArtifacts(normalizedArtifacts, artifactBudget);
   if (artifactSection.text) {
-    baseSections = [header, taskSection, artifactSection.text, currentSection];
+    baseSections = [header, taskSection, artifactSection.text, currentSection].filter(Boolean);
     baseLength = baseSections.join('\n\n').length;
   }
 
@@ -384,7 +389,7 @@ function buildTaskRunContext({
   const sections = [header, taskSection];
   if (history.text) sections.push(history.text);
   if (artifactSection.text) sections.push(artifactSection.text);
-  sections.push(currentSection);
+  if (currentSection) sections.push(currentSection);
   const text = sections.join('\n\n');
 
   const manifest = {
@@ -411,7 +416,7 @@ function buildTaskRunContext({
     },
     artifacts: normalizedArtifacts,
     artifactDisplayCount: artifactSection.displayed,
-    currentTextHash: digest(normalizedCurrent),
+    currentTextHash: currentSection ? digest(normalizedCurrent) : null,
   };
   return {
     text,
