@@ -44,8 +44,8 @@ const DEFAULT_IDLE_MS = 10 * 60 * 1000; // kill a warm-but-unused process after 
 // window — i.e. a leaked/stuck shadow. When it trips, the process is reclaimed
 // and the exit path reaps the shadows + surfaces `interrupted`.
 const DEFAULT_IDLE_MAX_HOLD_MS = 2 * 60 * 60 * 1000; // 2h
-// How long close() lets a SIGTERM'd process exit on its own before SIGKILL.
-// Matches the cancel path's grace window in session-work-host.
+// How long cancel()/close() let a SIGTERM'd process exit on its own before
+// SIGKILL. Matches the cancel path's grace window in session-work-host.
 const CLOSE_KILL_GRACE_MS = 1_500;
 // How long a recycle waits for a graceful exit before escalating (and again before
 // giving up on the exit event entirely). Longer than the close path: a recycle is
@@ -473,6 +473,18 @@ function recycle(name, reason) {
     : { ok: false, applied: 'kill-failed' };
 }
 
+// Arm the SIGTERM -> SIGKILL escalation for a captured child handle. SIGTERM is
+// a request; a CLI that ignores it (or is wedged in a syscall) keeps running and
+// - for the cancel path - stays eligible for reuse (pump only checks isAlive),
+// so every later turn inherits the wedged process. The timer fires only if the
+// captured process is still around; a respawn is a different ChildProcess, so a
+// handle captured before it can never be aimed at the new one.
+function armKillEscalation(proc, graceMs) {
+  const killer = setTimeout(() => { try { proc.kill('SIGKILL'); } catch (_) {} }, graceMs);
+  if (killer.unref) killer.unref();
+  try { proc.once('exit', () => clearTimeout(killer)); } catch (_) {}
+}
+
 // Kill the current turn (and process). Context is recoverable via --resume.
 function cancel(name) {
   const s = sessions.get(name);
@@ -480,7 +492,10 @@ function cancel(name) {
   // Reject queued sends so callers don't hang.
   const pending = s.queue.splice(0);
   for (const q of pending) { try { q.reject(new Error('cancelled')); } catch (_) {} }
-  if (s.proc) { try { s.proc.kill('SIGTERM'); } catch (_) {} }
+  if (s.proc) {
+    try { s.proc.kill('SIGTERM'); } catch (_) {}
+    armKillEscalation(s.proc, CLOSE_KILL_GRACE_MS);
+  }
 }
 
 // Fully tear down: session deleted, history cleared, or a deliberate hard
@@ -493,25 +508,19 @@ function cancel(name) {
 //     places that resolve or reject it, so send()'s caller (finalizeStreamingTurn)
 //     never runs and the session stays "streaming" for good — visible in the UI
 //     as a session that is idle by every other measure yet refuses new messages.
-//  2. The process is only ASKED to stop. cancel() sends SIGTERM and after the
-//     delete nobody is left holding the handle to escalate, so a CLI that
-//     ignores it keeps running — holding the provider connection and its stdin
-//     — while a respawn starts a second one alongside it.
+//  2. The process is only ASKED to stop. cancel() sends SIGTERM and arms the
+//     SIGKILL escalation itself (armKillEscalation keeps the captured handle),
+//     so a CLI that ignores even that is still reaped after the grace period
+//     instead of running alongside a respawn.
 function close(name) {
   const s = sessions.get(name);
   cancel(name);
   if (!s) return;
   clearIdle(s);
-  const proc = s.proc;
   const cur = s.current;
   s.current = null;
   s.busy = false;
   s.proc = null;
-  if (proc) {
-    const killer = setTimeout(() => { try { proc.kill('SIGKILL'); } catch (_) {} }, CLOSE_KILL_GRACE_MS);
-    if (killer.unref) killer.unref();
-    try { proc.once('exit', () => clearTimeout(killer)); } catch (_) {}
-  }
   if (cur && typeof cur.reject === 'function') {
     try { cur.reject(new Error('stream session closed')); } catch (_) {}
   }
