@@ -179,6 +179,14 @@ UI 层从此不知道背后是会话还是任务。四轴隔离的落点：**spa
 - App 端任务详情 chat 化渲染 + 流式可用。
 - 旧版 App/Web 打新服务端不崩（字段兼容测试）。
 
+**as-built 实施注（2026-08-19，T1-T5 全部落定）**
+- **T1 pendingQuestion 合一**：chat 版语义成为唯一路径——`/send` 检测到 `userInputRequestId` 即委托 `/answer` ingress（`req.body.requestId` 改写后 `return handleAnswer`，同 lease/幂等/answer receipt；plain send 语义零变化有专项测试钉住）；chat-task-mode transportSend 把 composer 的 requestId 送上同一 transport。`user_input_required`/`user_input_resolved` 经 forwarder 立即转发不缓冲（新增回归钉死 clock.timers===0）。
+- **T2 旧 modal 退役（含计划外第三消费者）**：删 manage.html modal markup+40 行死 CSS、manage-taskboard.js 的 modal 函数链/_tbEnsureTaskComposer、task-board-ui.js 的任务版 pendingQuestion/renderTaskRunSummary/recentTaskRuns+4 死 helper、meta.html 的任务版卡与 run 历史块（侦察漏掉的第三消费者，由全量 deterministic 暴露后按合一原则一并退役）、tests/test-task-run-summary-ui.js 整文件。modal 独占操作降级到任务行 meta（✅ 完成/♻️ 重开/🧹 清理 worktree）。chat.html 债务 3003→3000 偿还并销账（MIGRATION_DEBT 仅剩 manage.js）。**服务端 `/messages` 的 run DTO pendingQuestion 投影与 `/answer` 端点保留**——App 仍在消费（见 T3），「过渡版本再删」暂不设时限。
+- **T3 App 跟进（与设计两处偏差）**：TaskMessage 实际加 `taskRunId`/`partial`——**`tools`/`usage`/`kind` 未加：服务端台账 as-built 并未落这些字段（M0 决策），加了也是死字段；MessageBubble/ToolCallGroup 复用随之顺延，待台账阶段 2 落字段后再做**。workspace WS 加 `task_run_stream` case：防御解析（taskId+runId+≥1 map 事件，否则丢弃）+ 不可变投影（List/Map.unmodifiable）+ `onTaskRunEvent` 回调；DashboardWorkspaceStore 每目录 `ValueNotifier`（同 onNotify 的 stale 守卫/dispose 纪律）；任务板 4s 限频静默刷新、详情 sheet 2s 本任务过滤实时重拉（静默失败保留旧列表）。App 回答路径继续走保留的 `/answer`，不切换。
+- **T4 共享 DTO golden**：`tests/test-chat-dto-golden.js`——canonical turn 两 producer 投影同一 DTO 对象、任务侧白名单（leaseEpoch/retryable/error/deliveryId 不外泄）、分页矩阵（tail/before/around/未知游标/limit 钳制/垃圾 limit）双侧同跑 + 12 种 query 逐页 deepEqual、`DEFAULT_PAGE_SIZE === DEFAULT_HISTORY_PAGE_SIZE` 钉死。注册进 test:core。
+- **T5 文档**：architecture.md（public/ 树补 4 文件 + 「One chat view, two transcript producers」「per-task worktree」两条决策）、features.md（Task board 节）、api-reference.md（Task Board 端点表 + task_run_stream WS 协议段）、本段。
+- **验收对账**：test:deterministic 全量 fail=0、test:contracts 55/55、flutter 全量 350 pass（i18n classify 文案与 directory_card_test 两个预存失败经 stash 基线验证与本次无关）。「旧版打新服务端不崩」由 I3 只加字段 + legacy 字段保留满足。待用户重启后人工冒烟：chat.html?task= 的慢速输出实时渲染、App 任务详情实时刷新、任务行 🧹 清理一键闭环。
+
 ## 4. 实施顺序与依赖
 
 ```

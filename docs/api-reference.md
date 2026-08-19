@@ -91,6 +91,26 @@ curl -s "$MULTICC_BASE_URL/api/sessions/$MULTICC_SESSION_ID/run-detached" \
   -d '{"command":"npm test","label":"test suite","intervalSec":10,"maxChecks":120}'
 ```
 
+## Task Board
+
+Task-board runs execute on pooled headless slots; the durable record is the task-run ledger (sqlite), not any session transcript. The unified chat view (`chat.html?task=<id>`) renders a task exactly like a chat session.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/task-board` | Board DTO: `{ modules, tasks, sessionLabels, backfill }` (task rows carry `worktreePath`/`branch` when a per-task worktree exists) |
+| `GET` | `/api/task-board/tasks/:taskId` | Single-task bootstrap slice of the board DTO (used by `chat.html?task=`) |
+| `GET` | `/api/task-board/tasks/:taskId/messages` | Paginated transcript. Query `?before=<id>&around=<id>&limit=N` (limit clamped 1..100, default 5). Returns `{ messages, hasMore }` (+ `found`/`hasNewer` with `around`), plus legacy `items`/`text`/`runs` fields for old clients. Message DTO matches the session history page (`id, role, content, ts` + optional `tools/usage/cost/durationMs/clientMsgId/kind/taskRunId/partial`) — see `tests/test-chat-dto-golden.js` |
+| `POST` | `/api/task-board/tasks/:taskId/send` | Queue the next run (`{ text, goal?, clientMsgId?, goalLimits? }`). With `userInputRequestId` the body is delegated to the answer ingress instead — a composer answer resolves the pending question rather than opening a follow-up run |
+| `POST` | `/api/task-board/tasks/:taskId/answer` | Answer the run's pending question (`{ requestId, text, clientMsgId }`); same lease/idempotency checks as the send-side delegation. Kept for native clients (App) |
+| `POST` | `/api/task-board/tasks/:taskId/status` | Set lifecycle `{ status: active \| done \| archived }`. Completing a task with an open run cancels it first — a run already delivered to a slot, or a cancel that fails, is rejected with 409 |
+| `POST` | `/api/task-board/tasks/:taskId/reclassify` | Re-queue AI classification for a still-pending card (409 once a module is assigned, 503 when the aux CLI is unhealthy) |
+| `GET` | `/api/task-board/tasks/:taskId/diff/files` | List changed files in the task's worktree vs the base branch |
+| `GET` | `/api/task-board/tasks/:taskId/diff/file` | One file's diff content (same params as the session diff route) |
+| `POST` | `/api/task-board/tasks/:taskId/merge` | Merge the task worktree back into the base branch — same `gitMergeBack` path as the session merge (conflicts → 409, other failures → 400) |
+| `POST` | `/api/task-board/tasks/:taskId/cleanup-worktree` | Merge + delete the per-task worktree and clear the ledger fields (refuses while a run is active → 409) |
+
+A task's pending question surfaces three ways, all one semantic: the chat view's question card (answered through `/send` + `userInputRequestId`), the `user_input_required` / `user_input_resolved` slot events forwarded on the directory socket (see [Task run streaming](#websocket-protocol)), and the run DTO's `pendingQuestion` projection in `/messages` (answered through `/answer`).
+
 ## Cron Jobs
 
 | Method | Endpoint | Description |
@@ -300,6 +320,25 @@ Other WebSocket paths: `/` (terminal), `/ws/voice`, `/ws/tts`, `/ws/workspace`, 
 { "type": "chat_history", "messages": [...], "tokenUsage": {...} }
 { "type": "provider_token_stats", "windows": { "daily": ..., "weekly": ..., "monthly": ..., "allTime": ... } }
 ```
+
+**Task run streaming:** the directory workspace socket (`/ws/workspace?dirId=<dirId>`) also carries headless task-run activity:
+
+```jsonc
+// Server → Client. Slot events ride inside the envelope byte-identical —
+// they are never translated. Text deltas coalesce within a 100ms window.
+{ "type": "task_run_stream", "taskId": "task-1", "runId": "run-9", "dirId": "dir-a",
+  "slotEvent": { /* one slot event, verbatim */ } }
+{ "type": "task_run_stream", "taskId": "task-1", "runId": "run-9", "dirId": "dir-a",
+  "slotEvents": [ /* coalesced delta batch */ ] }
+
+// A pending question is just another slot event: every non-delta event flushes
+// the pending batch first and forwards immediately, so ordering is preserved.
+{ "type": "task_run_stream", "taskId": "task-1", "runId": "run-9", "dirId": "dir-a",
+  "slotEvent": { "type": "user_input_required", "requestId": "req-1", "taskId": "task-1",
+                 "question": "...", "reason": "", "options": ["…"] } }
+```
+
+The envelope never carries the execution slot's session id. `chat.html?task=` consumes these envelopes with the same event controller the session view uses; the Flutter app surfaces them as live task-board/detail refreshes.
 
 ---
 

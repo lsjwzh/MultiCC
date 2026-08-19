@@ -50,6 +50,15 @@ For Kimi Code, install the official CLI (`npm install -g @moonshot-ai/kimi-code`
 - **Syntax-gated merges.** Merge is rejected if a session's changes introduce JS syntax errors — broken code can't reach the base branch.
 - **Auto-commit + auto-sync.** Sessions auto-commit before merging; after a successful merge, sibling worktrees in the same directory are synced to the new base automatically (conflicting ones are skipped and reported as `siblingsSynced` on the merge response).
 
+## Task board
+
+Tasks filed from any surface (voice, IM bridges, chat, the board itself) run on pooled headless slots, fully outside your interactive sessions:
+
+- **Unified task chat view.** `chat.html?task=<taskId>` is the same renderer as a session chat — paginated history, tool cards, run separators, and a composer that queues the task's next run. Task transcripts project from the task-run ledger under the identical DTO/pagination contract as session history (pinned by a shared golden test), and live output streams in via `task_run_stream` envelopes on the directory socket.
+- **Pending-question card, everywhere.** A run that needs a decision raises one card in the task's chat view; answering it (card tap or composer text) resolves the waiting run over the same transport — no separate task-board answer UI. The Flutter app renders the same question from the run projection and live-refreshes the task detail while a run streams.
+- **Per-task worktree.** Code-editing tasks run in `<repo>/.multicc-worktrees/task-<hash>` on branch `multicc/task-<hash>`, stable across all of a task's runs (diff continuity). Row-level actions on the board: merge back to base, cleanup worktree, complete/reopen, reclassify.
+- **Board as the fleet view.** AI-grouped modules with a pending bucket, run-state aggregation per task, backfill progress for archived history, and read-only archive pages that reuse the same list renderer.
+
 ## Long-running & scheduled work
 
 - **Wait/poll.** Agents register poll or callback waits; MultiCC injects results back into the chat session when the condition resolves — no human nudge needed.
