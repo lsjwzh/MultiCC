@@ -368,3 +368,138 @@ test('a dangling binding falls back to the commander path', async () => {
   assert.equal(fixture.calls.sent.length, 0);
   assert.notEqual(result.taskBound, true);
 });
+
+/* ── 5 · P1-b2 · task start 改道：新任务直接绑定，永不落池 ── */
+
+function mkStartFixture(overrides = {}) {
+  const calls = { created: [], sent: [], routed: [] };
+  const fixture = mkRuntime({
+    createSessionRecord: async input => {
+      calls.created.push(input);
+      const session = { id: 'sess-new-1', ...input, dirId: input.dir.id };
+      fixture.deps.records.set(session.id, session);
+      return { ok: true, id: session.id, session };
+    },
+    sendSessionMessage: async (sessionId, text, options) => {
+      calls.sent.push({ sessionId, text, options });
+      return { handled: false, chatId: sessionId, queued: false };
+    },
+    routeCommanderTask: async input => {
+      calls.routed.push(input);
+      return { ok: true, targetSessionId: 'slot-1', operationId: 'op-1' };
+    },
+    ...(overrides.deps || {}),
+  });
+  return { ...fixture, calls };
+}
+
+test('board task start binds a hidden session and opens its first turn directly', async () => {
+  const fixture = mkStartFixture();
+  const routes = mkRoutes(fixture.runtime);
+  const send = routes.get('POST /api/task-board/send');
+  const res = response();
+  await send({ body: { text: '新任务：做 X', dirId: 'dir-1', clientMsgId: 'ck1' } }, res);
+
+  assert.equal(res.code, 200);
+  assert.equal(res.body.taskBound, true);
+  assert.equal(res.body.routingMode, 'task-bound');
+  assert.equal(res.body.commanderSessionId, null);
+  const taskId = res.body.taskId;
+  assert.ok(taskId);
+
+  // The binding was created with the task marker and inherited runtime.
+  assert.equal(fixture.calls.created.length, 1);
+  assert.equal(fixture.calls.created[0].taskBoundTaskId, taskId);
+  assert.equal(fixture.calls.created[0].cli, 'codex');
+
+  // One canonical chat turn with task-start metadata; zero slot routing.
+  assert.equal(fixture.calls.sent.length, 1);
+  const sent = fixture.calls.sent[0];
+  assert.equal(sent.sessionId, 'sess-new-1');
+  assert.equal(sent.text, '新任务：做 X'); // no history → bare text, no wall
+  assert.equal(sent.options.taskId, taskId);
+  assert.equal(sent.options.taskStart, true);
+  assert.equal(sent.options.taskText, '新任务：做 X');
+  assert.equal(fixture.calls.routed.length, 0);
+
+  // Board state: card bound and routing points at the bound session.
+  const task = fixture.runtime.getBoard().tasks[taskId];
+  assert.equal(task.chatSessionId, 'sess-new-1');
+  assert.equal(task.routing?.workerSessionId, 'sess-new-1');
+  assert.equal(task.routing?.oneWay, true);
+});
+
+test('replayed task start answers duplicate without a second turn or dispatch', async () => {
+  const fixture = mkStartFixture();
+  const routes = mkRoutes(fixture.runtime);
+  const send = routes.get('POST /api/task-board/send');
+  const first = response();
+  await send({ body: { text: '新任务：做 X', dirId: 'dir-1', clientMsgId: 'ck1' } }, first);
+  const second = response();
+  await send({ body: { text: '新任务：做 X', dirId: 'dir-1', clientMsgId: 'ck1' } }, second);
+
+  assert.equal(second.code, 200);
+  assert.equal(second.body.duplicate, true);
+  assert.equal(fixture.calls.sent.length, 1);
+  assert.equal(fixture.calls.routed.length, 0);
+  assert.equal(fixture.calls.created.length, 1);
+});
+
+test('a failed session CREATE falls back to the pooled path (board keeps working)', async () => {
+  const fixture = mkStartFixture({
+    deps: { createSessionRecord: async () => ({ ok: false, error: 'worktree 创建失败： boom' }) },
+  });
+  const routes = mkRoutes(fixture.runtime);
+  const res = response();
+  await routes.get('POST /api/task-board/send')(
+    { body: { text: '新任务：做 X', dirId: 'dir-1', clientMsgId: 'ck1' } }, res);
+
+  assert.equal(res.code, 200);
+  assert.notEqual(res.body.taskBound, true);
+  assert.equal(fixture.calls.routed.length, 1); // legacy commander→slot path
+  assert.equal(fixture.calls.sent.length, 0);
+});
+
+test('a failed SEND on a live binding never falls through to the slots', async () => {
+  const fixture = mkStartFixture({
+    deps: {
+      sendSessionMessage: async () => ({ ok: false, code: 'turn_rejected' }),
+    },
+  });
+  const routes = mkRoutes(fixture.runtime);
+  const res = response();
+  await routes.get('POST /api/task-board/send')(
+    { body: { text: '新任务：做 X', dirId: 'dir-1', clientMsgId: 'ck1' } }, res);
+
+  assert.equal(res.code, 502);
+  assert.equal(res.body.error, 'turn_rejected');
+  assert.equal(fixture.calls.routed.length, 0); // no dual executors, ever
+});
+
+test('a replay after a failed SEND reuses the already-bound session (no leak)', async () => {
+  let failFirst = true;
+  const fixture = mkStartFixture({
+    deps: {
+      sendSessionMessage: async (sessionId, text, options) => {
+        if (failFirst) return { ok: false, code: 'turn_rejected' };
+        fixture.calls.sent.push({ sessionId, text, options });
+        return { handled: false, chatId: sessionId, queued: false };
+      },
+    },
+  });
+  const routes = mkRoutes(fixture.runtime);
+  const send = routes.get('POST /api/task-board/send');
+  const first = response();
+  await send({ body: { text: '新任务：做 X', dirId: 'dir-1', clientMsgId: 'ck1' } }, first);
+  assert.equal(first.code, 502);
+  failFirst = false;
+  const second = response();
+  await send({ body: { text: '新任务：做 X', dirId: 'dir-1', clientMsgId: 'ck1' } }, second);
+
+  assert.equal(second.code, 200);
+  assert.equal(second.body.taskBound, true);
+  // The retry healed onto the SAME session record — 1:1 holds across crashes.
+  assert.equal(fixture.calls.created.length, 1);
+  assert.equal(fixture.calls.sent.length, 1);
+  assert.equal(fixture.calls.sent[0].sessionId, 'sess-new-1');
+});
