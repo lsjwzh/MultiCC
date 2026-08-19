@@ -147,6 +147,13 @@
     const options = providerModelOptions(providerId, state);
     if (options.length) return [...options, '__custom__'];
     if (state && state.cli === 'claude') {
+      // Prefer the live list extracted from the installed claude CLI's bundle
+      // (1-day localStorage cache filled by loadClaudeModels(); see
+      // public/shared/models.js) so new Anthropic releases appear without a
+      // multicc update. Falls back to the static table on old servers and on
+      // the first picker open before refreshClaudeModels() lands.
+      const cached = readClaudeModelsSync();
+      if (cached.length) return ['', ...cached.map(m => m.model), '__custom__'];
       return (state.claudeModelOptions || []).map(option => option.value);
     }
     if (state && state.cli === 'qoder') {
@@ -199,6 +206,10 @@
     return readModelCacheSync('multicc.qoder.models.v1');
   }
 
+  function readClaudeModelsSync() {
+    return readModelCacheSync('multicc.claude.models.v1');
+  }
+
   // Background-refresh the OpenCode model list (1-day cache, shared with
   // shared/models.js via the same localStorage key). The chat page should call
   // this once on init when `cli === 'opencode'`; on completion it triggers a
@@ -226,6 +237,20 @@
         try { rebuildCallback(); } catch (_) { /* noop */ }
       }
     } catch (_) { /* swallow — picker keeps the tier fallback */ }
+  }
+
+  // Same contract as refreshQoderModels, for the Claude CLI-bundle model list.
+  // The chat page calls this on init / CLI switch when `cli === 'claude'` so
+  // the picker upgrades from the static table to the CLI's real model ids.
+  async function refreshClaudeModels(rebuildCallback) {
+    try {
+      if (typeof loadClaudeModels !== 'function') return;
+      const prev = readClaudeModelsSync();
+      await loadClaudeModels();
+      if (typeof rebuildCallback === 'function' && prev.length === 0) {
+        try { rebuildCallback(); } catch (_) { /* noop */ }
+      }
+    } catch (_) { /* swallow — picker keeps the static table */ }
   }
 
   function stripModelSuffix(model) {
@@ -267,6 +292,8 @@
     }
     const named = (state && state.claudeModelOptions || []).find(option => option.value === value);
     if (named) return named.labelKey ? translate(state, named.labelKey) : named.label;
+    const live = readClaudeModelsSync().find(entry => entry && entry.model === value);
+    if (live && live.label) return live.label;
     if (value === '__custom__') return translate(state, 'custom');
     return value;
   }
@@ -787,5 +814,6 @@
     saveSession,
     refreshOpenCodeModels,
     refreshQoderModels,
+    refreshClaudeModels,
   };
 });
