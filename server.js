@@ -187,7 +187,7 @@ const { createChatHistoryFileRepository } = require('./src/session');
 const { TurnProgressHeartbeat } = require('./src/chat/progress-heartbeat');
 const { createBackgroundTaskRuntime } = require('./src/chat/background-task-runtime');
 const { sharedTurnEventJournal } = require('./src/chat/turn-event-journal');
-const { createTaskContextHost } = require('./src/task-context-host');
+const { createTaskContextHost, createTaskRunStreamEmitter } = require('./src/task-context-host');
 const { createSessionWorkHost } = require('./src/session-work-host');
 const {
   TurnRequestError,
@@ -2181,7 +2181,7 @@ const taskBoardRuntime = createTaskBoardRuntime({
 });
 taskBoardRuntime.mountRoutes(app); createTaskRunRoutes({ store: taskRunStore, logger }).mountRoutes(app);
 const taskContextHost = createTaskContextHost({
-  getState: sessionId => chatSessions.get(sessionId), emitClients: broadcastTo,
+  getState: sessionId => chatSessions.get(sessionId), emitClients: createTaskRunStreamEmitter(broadcastTo, chatSessions, persistedSessions, workspaceBroadcast),
   append: (sessionId, message) => chatHistoryRuntime.appendMessage(sessionId, message),
   getTaskBoard: () => taskBoardRuntime, classifyDisplay,
   containsDelivery: (sessionId, id) => chatHistoryService.containsDelivery(sessionId, id),

@@ -121,7 +121,10 @@ function createTaskContextHost(options = {}) {
     const event = state._currentTaskId && payload?.taskId == null
       ? { ...payload, taskId: state._currentTaskId }
       : payload;
-    emitClients(state.clients, event);
+    // The third argument lets the M1 task_run_stream emitter (wired as the
+    // emitClients port in server.js) attribute events to a session without
+    // changing any other emitClients consumer: they ignore extra args.
+    emitClients(state.clients, event, sessionId);
   }
 
   function runState(classifyState) {
@@ -287,4 +290,9 @@ function createTaskContextHost(options = {}) {
   });
 }
 
-module.exports = { createTaskContextHost };
+module.exports = {
+  createTaskContextHost,
+  // Re-exported so server.js can wire the M1 forwarder without a second
+  // require (the line budget is exactly at its ceiling).
+  createTaskRunStreamEmitter: require('./task-run-stream-forwarder').createTaskRunStreamEmitter,
+};
