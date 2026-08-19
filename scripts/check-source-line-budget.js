@@ -32,6 +32,16 @@ const MIGRATION_DEBT = Object.freeze({
     target: DEFAULT_MAX_LINES,
     reason: 'aux-history UI pending split into a dedicated script',
   }),
+  // Crossed 3000 in the chat-view unification M2 (three new task-mode script
+  // tags + the task-mode stylesheet link) after sitting at 2999 for ages.
+  // Pay it down when M4 retires the legacy task-detail modal markup from this
+  // file; the task-mode css already lives in chat-task-mode.css.
+  'public/chat.html': Object.freeze({
+    ceiling: 3003,
+    byteCeiling: 121820,
+    target: DEFAULT_MAX_LINES,
+    reason: 'legacy task-detail modal markup pending M4 removal',
+  }),
 });
 
 // Reviewed third-party/generated assets are not first-party maintainability

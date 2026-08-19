@@ -339,6 +339,10 @@ function createTaskRunHost(options = {}) {
       metadata: {
         leaseEpoch,
         deliveryId: message.deliveryId || null,
+        // The sender's idempotency key: a task-mode chat view re-fetching the
+        // ledger matches its locally staged user bubble by this id (the same
+        // commit loop chat_msg_meta drives in session mode).
+        ...(message.clientMsgId ? { clientMsgId: String(message.clientMsgId).slice(0, 128) } : {}),
         ...(wrapper ? { wrapper: true } : {}),
         // A partial checkpoint is a draft, not a final answer; keep the flag
         // so the conversation view can render it as interrupted output.

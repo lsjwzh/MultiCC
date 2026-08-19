@@ -120,6 +120,12 @@ const _params = new URLSearchParams(location.search);
 const _providerCatalog = window.MultiCCProviderCatalog;
 let _cwd = _params.get('cwd') || '';
 const _sessionName = _params.get('session') || '';  // dashboard session name
+const _taskId = _params.get('task') || '';          // task virtual session (M2)
+const TASK_MODE = !!_taskId;
+// Task mode: the same host renders a task from the ledger + the dir
+// workspace stream (chat-task-mode.js). One body class gates session-only
+// chrome; behaviour is gated at the install points below.
+if (TASK_MODE) document.body.classList.add('task-mode');
 const _targetMessageId = window.MultiCCChatMessageFocus.readTargetMessageId(location.search);
 const _hasNativeBridge = typeof window.MultiCCBridge !== 'undefined' && !!window.MultiCCBridge;
 function tt(key, params) { return (window.t || ((k) => k))(key, params); }
@@ -153,45 +159,9 @@ function updateTabIdentity(text, letterSrc) {
 }
 if (_sessionName) updateTabIdentity(_sessionName);
 
-// Resolve the friendly "directory / alias" identity from the API and upgrade the
-// tab title (the URL only carries the session id). Best-effort: on any failure
-// the id-based title above stays.
-async function loadSessionIdentity() {
-  if (!_sessionName) return;
-  try {
-    const [sessions, dirs] = await Promise.all([
-      fetch(withToken('/api/sessions')).then(r => r.json()).catch(() => null),
-      fetch(withToken('/api/directories')).then(r => r.json()).catch(() => null),
-    ]);
-    const sArr = Array.isArray(sessions) ? sessions : (sessions && sessions.sessions) || [];
-    const s = sArr.find(x => x.id === _sessionName);
-    if (!s) return;
-    const alias = (s.label && s.label.trim()) ? s.label.trim() : s.id;
-    let dir = '';
-    if (s.dirId) {
-      const dArr = Array.isArray(dirs) ? dirs : (dirs && dirs.directories) || [];
-      const d = dArr.find(x => x.id === s.dirId);
-      if (d && d.name) dir = d.name;
-    }
-    const identity = dir ? `${dir} / ${alias}` : alias;
-    updateTabIdentity(identity, alias);
-    // Also surface it in the header bar (the visible session title).
-    const titleEl = document.getElementById('session-title');
-    if (titleEl) { titleEl.textContent = identity; titleEl.title = identity; }
-  } catch (e) { /* keep the id-based title */ }
-}
-loadSessionIdentity();
-// Double-click the visible session title in the header to rename it.
-// Use event delegation so it works even if the span is repopulated later.
-  const _stEl = document.getElementById('session-title');
-  if (_stEl) _stEl.style.cursor = 'pointer';
-  document.addEventListener('dblclick', (ev) => {
-    const el = ev.target.closest('#session-title');
-    if (!el) return;
-    ev.preventDefault();
-    ev.stopPropagation();
-    renameSessionFromChat();
-  });
+// Session identity + header rename live in chat-session-features.js (M2 split,
+// session-only); task mode keeps the task title from its adapter instead.
+if (!TASK_MODE) installSessionIdentityFeatures();
 
 /* ── Markdown setup ── */
 if (typeof marked !== 'undefined' && marked.setOptions) {
@@ -522,8 +492,9 @@ const chatHistoryView = window.MultiCCChatHistoryView.createHistoryView({
   highlightCodeBlocks,
   buildUsageLine,
   buildTimingLine,
-  attachDeleteButton,
-  attachForkButton,
+  // Task mode renders read-only ledger history: no per-message delete/fork.
+  attachDeleteButton: TASK_MODE ? () => {} : attachDeleteButton,
+  attachForkButton: TASK_MODE ? () => {} : attachForkButton,
   warn: (...args) => console.warn(...args),
 });
 const chatMessageFocus = window.MultiCCChatMessageFocus.createMessageFocusController({
@@ -569,6 +540,7 @@ const chatLiveUi = window.MultiCCChatLiveUi.createLiveUi({
 });
 let chatEventController = null;
 let _eventGeneration = 0;
+let taskMode = null; // M2 · task-mode adapter instance (chat.html?task=<id>)
 const chatTransport = window.MultiCCChatTransport.createTransport({
   window,
   document,
@@ -651,6 +623,13 @@ const chatTransport = window.MultiCCChatTransport.createTransport({
 });
 
 function connect() { return chatTransport.connect(); }
+
+// One send entry for both host modes (M2): session mode goes through the
+// chat WS transport; task mode POSTs through the task adapter.
+function hostTransportSend(payload) {
+  if (TASK_MODE) return taskMode ? taskMode.transportSend(payload) : true;
+  return chatTransport.send(payload);
+}
 
 function isRecoverableCodexReconnectErrorText(text) {
   return window.MultiCCChatEventController.isRecoverableCodexReconnectErrorText(text);
@@ -1041,7 +1020,9 @@ async function loadOlderHistory() {
     messagesEl.insertBefore(_loadingOlderSentinel, messagesEl.firstElementChild);
   }
   try {
-    const url = withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/history?before=${encodeURIComponent(request.before)}&limit=${request.limit}`);
+    const url = withToken(TASK_MODE && taskMode
+      ? taskMode.historyPageUrl({ before: request.before, limit: request.limit })
+      : `/api/sessions/${encodeURIComponent(_sessionName)}/history?before=${encodeURIComponent(request.before)}&limit=${request.limit}`);
     const r = await fetch(url);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const d = await r.json();
@@ -1418,8 +1399,12 @@ function closeDiffModal() {
 
 document.getElementById('merge-hint-diff-btn')?.addEventListener('click', showDiff);
 
-startMergeStatusPolling();
-startLivenessPolling();
+// Task mode has no session worktree/merge state or slot liveness of its own
+// (M3 reworks the worktree half); skip the session-scoped pollers.
+if (!TASK_MODE) {
+  startMergeStatusPolling();
+  startLivenessPolling();
+}
 
 /* ── Cross-CLI switch (one logical chat, independent native sessions) ── */
 function showCliSwitchPicker(current, states, availability) {
@@ -2426,7 +2411,7 @@ chatEventController = window.MultiCCChatEventController.createEventController({
     addAgentNotes,
     updateEffortBtn,
     updateModelBtn,
-    transportSend: payload => chatTransport.send(payload),
+    transportSend: hostTransportSend,
     startTitleAnimation,
     stopTitleAnimation,
     updateUI,
@@ -2448,8 +2433,12 @@ chatEventController = window.MultiCCChatEventController.createEventController({
     rearmUnread,
   },
 });
-updateRoleBtn();
-loadSessionModel();
+// Session-identity chrome (role prompt, provider/model) has no task-mode
+// equivalent: the routing recorded on the task is what ran.
+if (!TASK_MODE) {
+  updateRoleBtn();
+  loadSessionModel();
+}
 /* ── Clear / rotate native context controls ── */
 window.MultiCCChatContextControls.create({
   document, window, translate: tt,
@@ -2457,7 +2446,7 @@ window.MultiCCChatContextControls.create({
   cancelStreaming, resetHistoryPagination, messagesEl, addSystemMsg,
   clearMessages: () => chatHistoryView.clearMessages(),
   isConnected: () => ws?.readyState === WebSocket.OPEN,
-  send: payload => chatTransport.send(payload),
+  send: hostTransportSend,
   showNotifyToast,
   getSessionId: () => _sessionName || sessionId || '',
 });
@@ -2517,7 +2506,7 @@ chatComposer = window.MultiCCChatComposer.createComposer({
     micToast,
   },
   isSocketOpen: () => !!ws && ws.readyState === WebSocket.OPEN,
-  transportSend: payload => chatTransport.send(payload),
+  transportSend: hostTransportSend,
   retryTransport: () => chatTransport.retryNow(),
   addSystemMessage: addSystemMsg,
   stageUserMessage: (text, id) => stagedUserBubbles.set(id, text),
@@ -2757,7 +2746,9 @@ function forceReconnect(reason) {
 }
 
 /* ── Reconnect when tab becomes visible again ── */
-chatTransport.startLifecycle();
+// Task mode owns its dir-workspace reconnect loop; the chat transport's
+// lifecycle must not open a session WS behind it.
+if (!TASK_MODE) chatTransport.startLifecycle();
 
 /* ── Recovery service: ↻ reconnect / long-press reload / ♻️ restart CLI spawn ── */
 const _chatRecovery = window.MultiCCChatRecoveryService.create({
@@ -2803,8 +2794,11 @@ const _chatRecovery = window.MultiCCChatRecoveryService.create({
 })();
 
 /* ── Start ── */
-dbg('state', 'page loaded — 开始连接');
-connect();
+// Task-mode host adapters (bootTaskMode/renderRunSeparator/updateTaskIdentity)
+// live in chat-task-boot.js to keep this host inside the line budget.
+dbg('state', TASK_MODE ? 'page loaded — task 模式启动' : 'page loaded — 开始连接');
+if (TASK_MODE) bootTaskMode();
+else connect();
 
 /* ════════════════════════════════════════════════════════════════════════════
  * 实时语音通话 — 全局 Qwen 语音网关
@@ -2902,6 +2896,7 @@ connect();
     } catch (_) { /* server restarting or offline — banner state unchanged */ }
   }
   document.addEventListener('DOMContentLoaded', () => {
+    if (TASK_MODE) return; // session-login banners don't apply to a task view
     poll();
     const timer = setInterval(poll, 30000);
     if (timer && timer.unref) timer.unref();
@@ -2967,6 +2962,7 @@ connect();
     } catch (_) { /* server restarting or offline — banner state unchanged */ }
   }
   document.addEventListener('DOMContentLoaded', () => {
+    if (TASK_MODE) return; // session-login banners don't apply to a task view
     poll();
     const timer = setInterval(poll, 30000);
     if (timer && timer.unref) timer.unref();
