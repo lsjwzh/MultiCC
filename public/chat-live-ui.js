@@ -294,7 +294,7 @@
       return { ...entry, status, barTint: status };
     }
 
-    function renderAuxClassify(goal, phase, classifyState) {
+    function renderAuxClassify(goal, phase, classifyState, code) {
       const bar = doc.getElementById('aux-classify-bar');
       if (!bar) return;
       const normalizedGoal = String(goal || '').trim();
@@ -302,7 +302,11 @@
       const goalEl = doc.getElementById('ac-goal');
       const phaseEl = doc.getElementById('ac-phase');
       const stateEl = doc.getElementById('ac-state');
-      if (goalEl) { goalEl.textContent = normalizedGoal; goalEl.title = normalizedGoal; }
+      // Outward task handle: prefix the registry-minted short code so the bar
+      // matches the manage cards / Commander roster (`#7K2M · title`).
+      const shortCode = String(code || '').trim();
+      const displayGoal = shortCode ? `#${shortCode} · ${normalizedGoal}` : normalizedGoal;
+      if (goalEl) { goalEl.textContent = displayGoal; goalEl.title = displayGoal; }
       const phaseLabels = {
         planning: translate('phasePlanning'), implementing: translate('phaseImplementing'),
         verifying: translate('phaseVerifying'), wrapping: translate('phaseWrapping'), done: translate('phaseDone'),
