@@ -54,8 +54,14 @@ Future<void> _handleLinkTap(BuildContext context, String? href) async {
 /// Long-press action sheet: copy always; delete only when the message has a
 /// server-side history id (streaming / not-yet-persisted bubbles aren't
 /// addressable — the id arrives via the chat_msg_meta WS event once saved).
-Future<void> _showMessageActions(BuildContext context, ChatMessage message) async {
-  final canDelete = (message.id ?? '').isNotEmpty;
+Future<void> _showMessageActions(
+  BuildContext context,
+  ChatMessage message, {
+  bool serverActions = true,
+}) async {
+  // Delete/fork are session-history operations bound to ChatProvider + the
+  // session REST surface; transcript-only hosts (task detail) get copy only.
+  final canDelete = serverActions && (message.id ?? '').isNotEmpty;
   final action = await showModalBottomSheet<String>(
     context: context,
     backgroundColor: const Color(0xFF161b22),
@@ -212,15 +218,32 @@ Future<void> _forkFromMessage(BuildContext context, ChatMessage message) async {
 
 class MessageBubble extends StatelessWidget {
   final ChatMessage message;
-  const MessageBubble({super.key, required this.message});
+
+  /// Session-history affordances (delete / fork) call ChatProvider and the
+  /// session REST surface. Transcript-only hosts (the task detail sheet)
+  /// pass false so the long-press sheet offers copy only — the task ledger
+  /// is an audit trail and is never mutated from a bubble.
+  final bool enableServerActions;
+
+  const MessageBubble({
+    super.key,
+    required this.message,
+    this.enableServerActions = true,
+  });
 
   @override
   Widget build(BuildContext context) {
     switch (message.role) {
       case MessageRole.user:
-        return _UserBubble(message: message);
+        return _UserBubble(
+          message: message,
+          enableServerActions: enableServerActions,
+        );
       case MessageRole.assistant:
-        return _AssistantBubble(message: message);
+        return _AssistantBubble(
+          message: message,
+          enableServerActions: enableServerActions,
+        );
       case MessageRole.system:
         return _SystemBubble(message: message);
     }
@@ -229,7 +252,8 @@ class MessageBubble extends StatelessWidget {
 
 class _UserBubble extends StatelessWidget {
   final ChatMessage message;
-  const _UserBubble({required this.message});
+  final bool enableServerActions;
+  const _UserBubble({required this.message, this.enableServerActions = true});
 
   @override
   Widget build(BuildContext context) {
@@ -241,7 +265,11 @@ class _UserBubble extends StatelessWidget {
         return Align(
           alignment: Alignment.centerRight,
           child: GestureDetector(
-            onLongPress: () => _showMessageActions(context, message),
+            onLongPress: () => _showMessageActions(
+              context,
+              message,
+              serverActions: enableServerActions,
+            ),
             child: Container(
               constraints: BoxConstraints(maxWidth: laneWidth * 0.85),
               margin: const EdgeInsets.symmetric(vertical: 4),
@@ -269,7 +297,11 @@ class _UserBubble extends StatelessWidget {
 
 class _AssistantBubble extends StatelessWidget {
   final ChatMessage message;
-  const _AssistantBubble({required this.message});
+  final bool enableServerActions;
+  const _AssistantBubble({
+    required this.message,
+    this.enableServerActions = true,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -284,7 +316,11 @@ class _AssistantBubble extends StatelessWidget {
         return Align(
           alignment: Alignment.centerLeft,
           child: GestureDetector(
-            onLongPress: () => _showMessageActions(context, message),
+            onLongPress: () => _showMessageActions(
+              context,
+              message,
+              serverActions: enableServerActions,
+            ),
             child: Container(
               constraints: BoxConstraints(maxWidth: laneWidth * 0.92),
               margin: const EdgeInsets.symmetric(vertical: 4),
@@ -319,6 +355,19 @@ class _AssistantBubble extends StatelessWidget {
                     _TimingLine(
                       timestamp: message.timestamp,
                       durationMs: message.durationMs,
+                    ),
+                  // Durable interrupted draft (partial): never continues.
+                  if (message.isPartial)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: Text(
+                        '⚠ ${I18n.of('tbMsgPartial')}',
+                        style: const TextStyle(
+                          color: Color(0xFF8b949e),
+                          fontSize: 11,
+                          fontStyle: FontStyle.italic,
+                        ),
+                      ),
                     ),
                 ],
               ),

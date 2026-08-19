@@ -18,6 +18,7 @@ import '../services/workspace_service.dart';
 import '../theme.dart';
 import '../utils/session_status_helpers.dart';
 import '../utils/status_presentation.dart';
+import 'message_bubble.dart';
 import 'task_run_summary_list.dart';
 
 /// Task-board view for one directory: the AI-tagged module->task tree, filtered
@@ -1035,8 +1036,6 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
     widget.onChanged();
   }
 
-  String _sessionLabel(String sid) => widget.sessionLabels[sid] ?? sid;
-
   Future<void> _setStatus(String status) async {
     final messenger = ScaffoldMessenger.of(context);
     setState(() => _busy = true);
@@ -1131,18 +1130,6 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
     final open = widget.onOpenSession;
     Navigator.of(context).pop();
     if (open != null) open(sid);
-  }
-
-  /// Deep-link: close this detail sheet, then open the message's session with
-  /// a focus on that message so the chat scrolls to + highlights it. Only
-  /// called for non-lost messages that carry a persisted id (see _messageRow's
-  /// canJump guard) - lost / id-less messages are never tappable.
-  void _jumpToMessage(TaskMessage m) {
-    final open = widget.onOpenSession;
-    final mid = m.messageId;
-    if (open == null || mid == null || mid.isEmpty) return;
-    Navigator.of(context).pop();
-    open(m.sessionId, focusMessageId: mid);
   }
 
   /// 详情页状态 spec。与列表行 _runStateIcon 同源，两处不会再各说各话。
@@ -1375,106 +1362,28 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
             ),
           );
         }
-        return _messageRow(msgs[_hasMore ? i - 1 : i]);
-      },
-    );
-  }
-
-  Widget _messageRow(TaskMessage m) {
-    // The unified messages DTO carries no session identity (I-A3); fall back
-    // to a localized role name so the header never renders an empty label.
-    final rawLabel = m.sessionLabel ?? _sessionLabel(m.sessionId);
-    final label = rawLabel.trim().isNotEmpty
-        ? rawLabel
-        : t(m.role == 'user' ? 'tbRoleUser' : 'tbRoleAssistant');
-    if (m.lost) {
-      return Padding(
-        padding: const EdgeInsets.symmetric(vertical: 4),
-        child: Text(
-          t('tbMsgLost'),
-          style: const TextStyle(
-            color: AppColors.faint,
-            fontSize: 11,
-            fontStyle: FontStyle.italic,
-          ),
-        ),
-      );
-    }
-    final isUser = m.role == 'user';
-    final roleColor = isUser ? AppColors.blue : AppColors.codex;
-    // A message is deep-linkable only when it carries a persisted id and an
-    // opener is wired. Lost / id-less messages render greyed and non-tappable
-    // (per spec: "lost==true 或 messageId 为空的消息不可点").
-    final canJump =
-        widget.onOpenSession != null &&
-        m.hasSessionTarget &&
-        m.messageId != null &&
-        m.messageId!.isNotEmpty;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        // The header (role + session label + time + ↗) is the tap target. The
-        // body stays SelectableText so text selection never fights the jump tap.
-        // An underlined label + open-in-new icon signal that the row is tappable.
-        GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: canJump ? () => _jumpToMessage(m) : null,
-          child: Row(
-            children: [
-              Text(isUser ? '👤' : '🤖', style: const TextStyle(fontSize: 11)),
-              const SizedBox(width: 4),
-              Flexible(
-                child: Text(
-                  label,
-                  style: TextStyle(
-                    color: canJump ? roleColor : AppColors.faint,
-                    fontSize: 10.5,
-                    fontWeight: FontWeight.w700,
-                    fontFamily: 'monospace',
-                    decoration: canJump ? TextDecoration.underline : null,
-                    decorationColor: roleColor,
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
+        final m = msgs[_hasMore ? i - 1 : i];
+        if (m.lost) {
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Text(
+              t('tbMsgLost'),
+              style: const TextStyle(
+                color: AppColors.faint,
+                fontSize: 11,
+                fontStyle: FontStyle.italic,
               ),
-              const SizedBox(width: 6),
-              Text(
-                _timeAgo(m.ts),
-                style: const TextStyle(color: AppColors.faint, fontSize: 9.5),
-              ),
-              if (canJump) ...[
-                const SizedBox(width: 4),
-                const Icon(
-                  Icons.open_in_new_rounded,
-                  size: 11,
-                  color: AppColors.muted,
-                ),
-              ],
-            ],
-          ),
-        ),
-        const SizedBox(height: 3),
-        SelectableText(
-          m.text,
-          style: const TextStyle(
-            color: AppColors.text,
-            fontSize: 12.5,
-            height: 1.45,
-          ),
-        ),
-        if (m.partial) ...[
-          const SizedBox(height: 3),
-          Text(
-            '⚠ ${t('tbMsgPartial')}',
-            style: const TextStyle(
-              color: AppColors.faint,
-              fontSize: 10.5,
-              fontStyle: FontStyle.italic,
             ),
-          ),
-        ],
-      ],
+          );
+        }
+        // I-A1: one bubble tree — the transcript renders through the same
+        // MessageBubble as session chat, with server actions off (the task
+        // ledger is an audit trail, never mutated from a bubble).
+        return MessageBubble(
+          message: chatMessageFromTask(m),
+          enableServerActions: false,
+        );
+      },
     );
   }
 

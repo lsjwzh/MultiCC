@@ -1,3 +1,5 @@
+import 'message.dart';
+
 // Task board data models - mirror the server's `buildBoardDto` shape verbatim
 // (see src/task-board.js buildBoardDto + src/routes/task-board.js handleBoard /
 // handleMessages). Every field here exists because the server emits it; parsing
@@ -186,6 +188,18 @@ class TaskMessage {
     partial: json['partial'] == true,
   );
 }
+
+/// Project one task transcript row onto the shared chat renderer model.
+/// I-A1: sessions and tasks render through one bubble tree; tools/usage are
+/// absent from the task ledger as-built (M0), so the bubble degrades to
+/// markdown text — data absence, not a renderer gap.
+ChatMessage chatMessageFromTask(TaskMessage m) => ChatMessage(
+  role: m.role == 'user' ? MessageRole.user : MessageRole.assistant,
+  content: m.text,
+  id: (m.messageId?.isNotEmpty ?? false) ? m.messageId : null,
+  timestamp: m.ts > 0 ? DateTime.fromMillisecondsSinceEpoch(m.ts) : null,
+  isPartial: m.partial,
+);
 
 int _taskRunInt(dynamic value) {
   if (value is num) return value.toInt();
