@@ -276,6 +276,12 @@
       if (!message || typeof message !== 'object') return;
       if (message.type === 'task_run_stream') {
         if (String(message.taskId || '') !== taskId()) return;
+        // The run's engine gates delta folding in the shared controller
+        // (part_delta is a no-op under claude; codex snapshots append), so
+        // the envelope's cli must land before its first slot event.
+        if (message.cli != null && typeof deps.setCli === 'function') {
+          deps.setCli(String(message.cli));
+        }
         const events = Array.isArray(message.slotEvents) && message.slotEvents.length
           ? message.slotEvents
           : (message.slotEvent ? [message.slotEvent] : []);

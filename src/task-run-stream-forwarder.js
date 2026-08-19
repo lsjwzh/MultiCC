@@ -54,16 +54,21 @@ function createTaskRunStreamEmitter(emitClients, chatSessions, records, workspac
   const pending = new Map();
 
   function emitEnvelope(context, events) {
+    // cli is envelope metadata (a run attribute, like dirId — never an event
+    // field): delta folding is cli-gated on every renderer, and the envelope
+    // is the only channel a task view can learn the run's engine from.
+    const cli = typeof context.cli === 'string' && context.cli
+      ? { cli: context.cli } : {};
     if (events.length === 1) {
       workspaceBroadcast(context.dirId, {
         type: 'task_run_stream', taskId: context.taskId, runId: context.runId,
-        dirId: context.dirId, slotEvent: events[0],
+        dirId: context.dirId, ...cli, slotEvent: events[0],
       });
       return;
     }
     workspaceBroadcast(context.dirId, {
       type: 'task_run_stream', taskId: context.taskId, runId: context.runId,
-      dirId: context.dirId, slotEvents: events,
+      dirId: context.dirId, ...cli, slotEvents: events,
     });
   }
 
@@ -82,7 +87,9 @@ function createTaskRunStreamEmitter(emitClients, chatSessions, records, workspac
     const taskId = state?._currentTaskId;
     const runId = state?._currentTaskRunId;
     if (!taskId || !runId) return null;
-    return { taskId, runId, dirId: record.dirId };
+    const cli = typeof record.cli === 'string' && record.cli
+      ? record.cli.toLowerCase() : null;
+    return { taskId, runId, dirId: record.dirId, ...(cli ? { cli } : {}) };
   }
 
   // Drop-in replacement for the task-context-host emitClients port. The third
