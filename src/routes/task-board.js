@@ -1882,6 +1882,75 @@ function createTaskBoardRuntime(deps) {
     }
     const taskShape = { id: taskId, title: core.PENDING_TASK_TITLE };
     const replayOperationId = existing?.routing?.operationId || null;
+    // P1-b2 · task-start detour: a fresh dispatch (never a replay) binds the
+    // task's hidden chat session immediately and opens the first turn through
+    // the canonical chat ingress — new tasks never touch the pooled slots.
+    // Gates mirror P1-b1: an open TaskRun keeps the legacy path (monotonic
+    // drain), and a failed session CREATE falls through to the pooled path so
+    // the board keeps working; a failed SEND on a live binding does NOT fall
+    // through (the turn ingress already owns idempotency for this clientKey,
+    // and two executors must never share one task worktree).
+    if (effectiveRouteMode === 'commander' && !replayOperationId && createSessionRecord
+        && !(existing && latestOpenTaskRun(taskId))) {
+      // Bind first, card second: createPendingTask requires a sessionId (the
+      // provenance ref), and the session needs the deterministic taskId for
+      // its taskBoundTaskId marker. For a fresh task a shim stands in; an
+      // existing card (e.g. classify-seeded) binds through its live record.
+      const bindTarget = existing
+        || { id: taskId, title: core.PENDING_TASK_TITLE, refs: [] };
+      const bound = await ensureBoundChatSession(bindTarget, { dirId });
+      if (bound?.ok) {
+        const sent = await sendSessionMessage(bound.sessionId, goalNote + text, {
+          taskId,
+          taskStart: true,
+          taskSource: source,
+          taskText: text,
+          clientMsgId: clientKey,
+        });
+        if (!sent || sent.ok === false) {
+          return sent || { ok: false, code: 'dispatch_failed' };
+        }
+        // The card's provenance ref IS the bound session: the task transcript
+        // projection and this chat view then read the same history.
+        const pre = ensureTaskIndex({
+          taskId, dirId, sessionId: bound.sessionId, taskText: text,
+          routing: null, now: Date.now(),
+        });
+        if (!pre.task) {
+          return { ok: false, code: 'dispatch_failed' };
+        }
+        if (!pre.task.chatSessionId) {
+          updateBoardTask(taskId, { chatSessionId: bound.sessionId });
+        }
+        // Synthetic stable operation id: the chat FIFO owns real delivery
+        // idempotency; this marker only lets a replayed taskStart recognise
+        // the bound routing receipt and answer duplicate without resending.
+        const receiptOperationId = sent.operationId || `task-bound:${taskId}`;
+        core.setTaskRouting(pre.task, {
+          mode: 'commander',
+          targetSessionId: effectiveTarget,
+          workerSessionId: bound.sessionId,
+          operationId: receiptOperationId,
+          status: sent.queued === true ? 'queued' : 'admitted',
+          oneWay: true,
+          routedAt: Date.now(),
+        });
+        save();
+        notify(dirId, [taskId], pre.created ? 'created' : undefined);
+        return {
+          ...sent,
+          ok: true,
+          taskId,
+          taskBound: true,
+          taskStart: true,
+          routeMode: 'task-bound',
+          target: bound.sessionId,
+          targetSessionId: bound.sessionId,
+          workerSessionId: bound.sessionId,
+          operationId: receiptOperationId,
+        };
+      }
+    }
     // Replay (the task already routed): never re-admit the run. The ledger
     // already holds the original admission, so re-running beginTaskRun would
     // rewrite it under a fresh context hash and trip the store's content
@@ -1929,7 +1998,21 @@ function createTaskBoardRuntime(deps) {
       if (existing?.routing?.operationId) {
         const originalWorker = existing.routing.workerSessionId
           || existing.routing.targetSessionId;
-        if (replayRun) {
+        if (records.get(originalWorker)?.taskBoundTaskId === taskId) {
+          // Bound-session receipt: the chat FIFO owns the real idempotency —
+          // a replay answers duplicate from the recorded routing, never a
+          // second turn and never the one-way slot dispatch below.
+          result = {
+            ok: true,
+            duplicate: true,
+            taskBound: true,
+            targetSessionId: originalWorker,
+            targetLabel: records.get(originalWorker)?.label || originalWorker,
+            queued: existing.routing.status === 'queued',
+            status: existing.routing.status || 'admitted',
+            operationId: existing.routing.operationId,
+          };
+        } else if (replayRun) {
           // The durable queue already holds this operation; a replay must not
           // re-admit it (the lease may have advanced since, which the outbox
           // would rightfully reject as a payload conflict). Answer from the
@@ -2074,6 +2157,26 @@ function createTaskBoardRuntime(deps) {
         taskStart: true,
       }));
     }
+    if (result.taskBound === true) {
+      // P1-b2: first turn opened on the task-bound hidden chat session — no
+      // commander hop, no slot, no TaskRun ledger row.
+      return res.json({
+        ok: true,
+        taskId: result.taskId,
+        taskBound: true,
+        target: result.targetSessionId,
+        targetLabel: records.get(result.targetSessionId)?.label || result.targetSessionId,
+        routingMode: 'task-bound',
+        commanderSessionId: null,
+        workerSessionId: result.targetSessionId,
+        workerLabel: records.get(result.targetSessionId)?.label || null,
+        queued: result.queued === true,
+        elasticWorkerCreated: false,
+        chatId: result.chatId || result.targetSessionId,
+        operationId: result.operationId || null,
+        duplicate: result.duplicate === true,
+      });
+    }
     // Fallback when no TaskRun store is wired: the task is still created and
     // routed deterministically, only the run receipt is skipped.
     res.json({
@@ -2179,32 +2282,37 @@ function createTaskBoardRuntime(deps) {
   // Idempotent: no open run → 200 { cancelled:false } (a stop press racing a
   // natural completion is not an error). Queue release only happens when a
   // run was actually stopped; a no-op cancel must not mutate queues.
-  // P1 · task-bound hidden chat session (任务专属隐藏会话) — get-or-create the
-  // 1:1 ordinary chat session this task owns. The record is hidden from fleet
-  // lists by its taskBoundTaskId marker (query-service gate) yet stays fully
-  // addressable through ordinary session APIs, so the task chat view IS the
-  // ordinary chat view (tool cards, usage, memory injection, resume
-  // continuity) instead of a ledger projection. Zero coupling to execution
-  // slots: this never creates or touches taskExecutionSlot records, and the
-  // send path stays commander-routed until P1-b rewires it.
-  async function handleChatSession(req, res) {
-    if (!createSessionRecord) {
-      return res.status(501).json({ error: 'chat_session_unavailable' });
-    }
-    const task = board.tasks[req.params.taskId];
-    if (!task) return res.status(404).json({ error: 'task_not_found' });
+  // P1 · get-or-create the task's bound chat session. Shared by the HTTP
+  // endpoint (view deep-link) and the P1-b2 task-start detour (first send
+  // binds immediately). A dangling binding (record deleted) heals by
+  // re-creating; explicit dirId wins over ref-derived resolution because a
+  // brand-new task has no refs yet.
+  async function ensureBoundChatSession(task, { dirId = null } = {}) {
+    if (!createSessionRecord) return { ok: false, code: 'chat_session_unavailable' };
     const boundId = typeof task.chatSessionId === 'string' ? task.chatSessionId : '';
     if (boundId && records.get(boundId)) {
-      return res.json({ ok: true, sessionId: boundId, created: false });
+      return { ok: true, sessionId: boundId, created: false };
     }
-    // A dangling binding (record deleted by cleanup/GC) heals by re-creating.
-    const dirId = core.taskDirId(board, task);
-    const dir = dirId && resolveDirectoryPort ? resolveDirectoryPort(dirId) : null;
-    if (!dir) return res.status(409).json({ error: 'directory_not_found' });
+    // Reverse heal: a record already carrying this task's marker (e.g. a
+    // previous attempt crashed between CREATE and card persist) is reused,
+    // never duplicated — the binding is 1:1 over retries by construction.
+    if (!boundId && typeof records?.values === 'function') {
+      for (const rec of records.values()) {
+        if (rec?.taskBoundTaskId === task.id) {
+          if (board.tasks[task.id] && !board.tasks[task.id].chatSessionId) {
+            updateBoardTask(task.id, { chatSessionId: rec.id });
+          }
+          return { ok: true, sessionId: rec.id, created: false };
+        }
+      }
+    }
+    const resolvedDirId = dirId || core.taskDirId(board, task);
+    const dir = resolvedDirId && resolveDirectoryPort ? resolveDirectoryPort(resolvedDirId) : null;
+    if (!dir) return { ok: false, code: 'directory_not_found' };
     // Inherit the directory commander's runtime (cli/model/provider/effort)
     // exactly like elastic workers do, so the bound session runs what the
     // fleet runs; commander-less directories fall back to host defaults.
-    const commander = core.resolveDirectoryCommander(records, dirId);
+    const commander = core.resolveDirectoryCommander(records, resolvedDirId);
     const commanderRec = commander.ok ? commander.record : null;
     const created = await createSessionRecord({
       dir,
@@ -2219,10 +2327,33 @@ function createTaskBoardRuntime(deps) {
       persistenceSource: 'runtime.task-chat-session-create',
     });
     if (!created?.ok) {
-      return res.status(502).json({ error: created?.error || 'chat_session_create_failed' });
+      return { ok: false, code: created?.error || 'chat_session_create_failed' };
     }
     updateBoardTask(task.id, { chatSessionId: created.id });
-    return res.json({ ok: true, sessionId: created.id, created: true });
+    return { ok: true, sessionId: created.id, created: true };
+  }
+
+  // P1 · task-bound hidden chat session (任务专属隐藏会话) — get-or-create the
+  // 1:1 ordinary chat session this task owns. The record is hidden from fleet
+  // lists by its taskBoundTaskId marker (query-service gate) yet stays fully
+  // addressable through ordinary session APIs, so the task chat view IS the
+  // ordinary chat view (tool cards, usage, memory injection, resume
+  // continuity) instead of a ledger projection. Zero coupling to execution
+  // slots: this never creates or touches taskExecutionSlot records, and the
+  // send path stays commander-routed until P1-b rewires it.
+  async function handleChatSession(req, res) {
+    if (!createSessionRecord) {
+      return res.status(501).json({ error: 'chat_session_unavailable' });
+    }
+    const task = board.tasks[req.params.taskId];
+    if (!task) return res.status(404).json({ error: 'task_not_found' });
+    const bound = await ensureBoundChatSession(task);
+    if (!bound.ok) {
+      const status = bound.code === 'chat_session_unavailable' ? 501
+        : bound.code === 'directory_not_found' ? 409 : 502;
+      return res.status(status).json({ error: bound.code });
+    }
+    return res.json({ ok: true, sessionId: bound.sessionId, created: bound.created });
   }
 
   async function handleCancelRun(req, res) {
@@ -2353,7 +2484,8 @@ function createTaskBoardRuntime(deps) {
       });
     });
     app.post('/api/task-board/tasks/:taskId/chat-session', (req, res) => {
-      handleChatSession(req, res).catch(error => {
+      // Return the promise so harness callers can await the full handler.
+      return handleChatSession(req, res).catch(error => {
         logger.log(`[multicc/taskboard] chat-session failed: ${error?.message || error}`);
         if (!res.headersSent) res.status(500).json({ error: 'internal_error' });
       });
@@ -2361,7 +2493,8 @@ function createTaskBoardRuntime(deps) {
     app.post('/api/task-board/archive-completed', handleArchiveCompleted);
     app.post('/api/task-board/tasks/:taskId/reclassify', handleReclassify);
     app.post('/api/task-board/send', (req, res) => {
-      handleBoardSend(req, res).catch(e => {
+      // Return the promise so harness callers can await the full handler.
+      return handleBoardSend(req, res).catch(e => {
         logger.log(`[multicc/taskboard] board send failed: ${e?.message || e}`);
         if (!res.headersSent) res.status(500).json({ error: 'internal_error' });
       });
