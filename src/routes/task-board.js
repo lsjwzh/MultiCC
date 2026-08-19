@@ -35,6 +35,10 @@ const {
   stableTaskRunId: defaultStableTaskRunId,
 } = require('../task-run-context');
 const { recordRunError, runErrorOf } = require('../task-run-errors');
+const {
+  taskTranscriptMessages,
+  paginateTranscript,
+} = require('../task-transcript-repository');
 
 const REQUIRED_DEPS = [
   'file', 'auxQueue', 'records', 'loadHistory', 'dispatchToSession',
@@ -1328,6 +1332,26 @@ function createTaskBoardRuntime(deps) {
     res.json({ ok: true, ...dto, sessionLabels: labels, backfill: { ...backfillState } });
   }
 
+  // M0 · chat-history-style pagination over the same wrapper-filtered
+  // transcript the legacy `items` projection serves, so a task-mode chat view
+  // pages a task exactly like a session (docs/chat-view-unification-design.md
+  // §3-M0). The session contract: tail page by default, `before` pages older,
+  // `around` centres on one id and adds found/hasNewer.
+  function transcriptPagePayload(messages, req) {
+    const query = req.query || {};
+    const page = paginateTranscript(messages, {
+      before: query.before && String(query.before),
+      around: query.around && String(query.around),
+      limit: query.limit && String(query.limit),
+    });
+    const payload = { messages: page.messages, hasMore: page.hasMore };
+    if (query.around) {
+      payload.found = page.found === true;
+      payload.hasNewer = page.hasNewer === true;
+    }
+    return payload;
+  }
+
   function handleMessages(req, res) {
     const task = board.tasks[req.params.taskId];
     if (!task) return res.status(404).json({ error: 'task_not_found' });
@@ -1362,7 +1386,12 @@ function createTaskBoardRuntime(deps) {
           }
         }
         items.sort((left, right) => (left.ts || 0) - (right.ts || 0));
-        return res.json({ ok: true, task: taskDto(task), items, ...runProjection });
+        return res.json({
+          ok: true, task: taskDto(task), items, ...runProjection,
+          ...transcriptPagePayload(taskTranscriptMessages({
+            taskRuns, messageText: core.messageText, isWrapperText: isTaskRunWrapperText,
+          }, task.id), req),
+        });
       } catch (error) {
         logger.log(`[multicc/taskboard] task-run messages failed: ${error?.code || 'unknown'}`);
       }
@@ -1416,7 +1445,18 @@ function createTaskBoardRuntime(deps) {
       }
     }
     items.sort((a, b) => (a.ts || 0) - (b.ts || 0));
-    res.json({ ok: true, task: taskDto(task), items, ...runProjection });
+    // Legacy ref-backed tasks share the pagination contract: ref history is
+    // frozen, so index-derived ids are stable and the task-mode chat view can
+    // open any historical task without a ledger.
+    res.json({
+      ok: true, task: taskDto(task), items, ...runProjection,
+      ...transcriptPagePayload(items.map((item, index) => ({
+        id: item.messageId || `legacy-${index}`,
+        role: item.role,
+        content: item.text,
+        ts: item.ts || 0,
+      })), req),
+    });
   }
 
   function answerResult(res, target, result = {}, duplicate = false) {
