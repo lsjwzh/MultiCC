@@ -248,3 +248,123 @@ test('chat-session endpoint surfaces failure modes honestly', async () => {
   const saved = JSON.parse(fs.readFileSync(failing.file, 'utf8'));
   assert.equal(saved.tasks['task-2'].chatSessionId, undefined);
 });
+
+/* ── 4 · P1-b1 · send 改道：follow-up 直投 bound session ── */
+
+function mkBoundFixture(overrides = {}) {
+  const calls = { sent: [], routed: [], runs: [] };
+  const taskRunsStub = overrides.taskRuns === undefined ? null : overrides.taskRuns;
+  const fixture = mkRuntime({
+    records: new Map([
+      ['commander-1', { id: 'commander-1', kind: 'chat', type: 'commander', dirId: 'dir-1', label: 'Agent Commander', cli: 'codex' }],
+      ['bound-1', { id: 'bound-1', kind: 'chat', dirId: 'dir-1', taskBoundTaskId: 'task-1' }],
+    ]),
+    sendSessionMessage: async (sessionId, text, options) => {
+      calls.sent.push({ sessionId, text, options });
+      return { handled: false, chatId: sessionId, queued: false };
+    },
+    routeCommanderTask: async input => {
+      calls.routed.push(input);
+      return { ok: true, targetSessionId: 'slot-1', operationId: 'op-1' };
+    },
+    ...(taskRunsStub ? { taskRuns: taskRunsStub } : {}),
+    ...(overrides.loadHistory ? { loadHistory: overrides.loadHistory } : {}),
+    ...(overrides.runtimeOverrides || {}),
+  });
+  seedTask(fixture.runtime, {
+    id: 'task-1', title: '修复登录闪退', status: 'active',
+    chatSessionId: 'bound-1',
+    refs: [{ sessionId: 'sess-old', dirId: 'dir-1', ts: 1 }],
+  });
+  return { ...fixture, calls };
+}
+
+test('bound follow-up bypasses commander and posts straight to the bound session', async () => {
+  const fixture = mkBoundFixture({
+    loadHistory: () => [{ id: 'm1', role: 'user', content: 'previous turn' }],
+  });
+  const result = await fixture.runtime.routeCommanderFollowup(
+    'commander-1', 'task-1', '继续修', { clientMsgId: 'k1' });
+
+  assert.equal(result.ok !== false, true);
+  // Exactly one ordinary chat turn on the bound session, task attribution
+  // riding the canonical turn options (the same keys the WS ingress uses).
+  assert.equal(fixture.calls.sent.length, 1);
+  const sent = fixture.calls.sent[0];
+  assert.equal(sent.sessionId, 'bound-1');
+  assert.equal(sent.text, '继续修'); // resume: bare text, the session IS the context
+  assert.equal(sent.options.taskId, 'task-1');
+  assert.equal(sent.options.clientMsgId, 'k1');
+  // Zero commander routing, zero TaskRun ledger rows, zero slot involvement.
+  assert.equal(fixture.calls.routed.length, 0);
+  assert.equal(result.taskBound, true);
+  assert.equal(result.targetSessionId, 'bound-1');
+  // The routing receipt points at the bound session so the card's runState
+  // aggregates its classify state (oneWay worker wins over legacy ref slots).
+  const task = fixture.runtime.getBoard().tasks['task-1'];
+  assert.equal(task.routing?.workerSessionId, 'bound-1');
+  assert.equal(task.routing?.oneWay, true);
+  const dto = core.buildBoardDto(fixture.runtime.getBoard(), sid => sid === 'bound-1' ? 'running' : 'idle');
+  assert.equal(dto.tasks.find(t => t.id === 'task-1').runState, 'running');
+});
+
+test('cold start compiles the task ledger into the first bound turn only', async () => {
+  const taskRunsStub = {
+    // beginRun/admitRun presence is the runtime's feature check for the store.
+    beginRun: input => ({ ...input, leaseEpoch: 1 }),
+    listTaskRuns: () => [{ runId: 'tr_1' }],
+    getRunMessages: () => [
+      { messageId: 'mm1', role: 'user', kind: 'admission', content: '先复现闪退堆栈', createdAt: 1 },
+      { messageId: 'mm2', role: 'assistant', kind: 'message', content: '已定位到空指针', createdAt: 2 },
+    ],
+  };
+  const fixture = mkBoundFixture({
+    taskRuns: taskRunsStub,
+    loadHistory: () => [], // bound session never spoke → cold start
+  });
+  const result = await fixture.runtime.routeCommanderFollowup(
+    'commander-1', 'task-1', '继续修', { clientMsgId: 'k2' });
+
+  assert.equal(result.taskBound, true);
+  assert.equal(fixture.calls.sent.length, 1);
+  const sent = fixture.calls.sent[0];
+  // The compiled context wall (history + current text), exactly the input the
+  // pooled runs compile — the wrapper mark keeps it out of task projections.
+  assert.match(sent.text, /\[MultiCC 任务运行上下文/);
+  assert.match(sent.text, /先复现闪退堆栈/);
+  assert.match(sent.text, /已定位到空指针/);
+  assert.match(sent.text, /继续修/);
+  assert.equal(sent.options.taskId, 'task-1');
+});
+
+test('an open TaskRun gates the detour: legacy path drains first', async () => {
+  const taskRunsStub = {
+    beginRun: input => ({ ...input, leaseEpoch: 1 }),
+    listTaskRuns: () => [
+      { runId: 'tr_open', executionStatus: 'running', usageStatus: 'collecting', cleanupState: 'blocked', startedAt: 1, leaseEpoch: 1 },
+    ],
+    getRunMessages: () => [],
+    admitRun: ({ run }) => ({ run: { ...run, executionStatus: 'running', usageStatus: 'collecting', cleanupState: 'blocked' } }),
+    appendMessage: () => {},
+  };
+  const fixture = mkBoundFixture({ taskRuns: taskRunsStub });
+  const result = await fixture.runtime.routeCommanderFollowup(
+    'commander-1', 'task-1', '继续修', { clientMsgId: 'k3' });
+
+  // The open run still owns the task — the follow-up joins the pooled run,
+  // and the bound session is NOT touched (no dual executors on one worktree).
+  assert.equal(fixture.calls.routed.length, 1);
+  assert.equal(fixture.calls.sent.length, 0);
+  assert.notEqual(result.taskBound, true);
+});
+
+test('a dangling binding falls back to the commander path', async () => {
+  const fixture = mkBoundFixture();
+  fixture.deps.records.delete('bound-1'); // record gone, board still points at it
+  const result = await fixture.runtime.routeCommanderFollowup(
+    'commander-1', 'task-1', '继续修', { clientMsgId: 'k4' });
+
+  assert.equal(fixture.calls.routed.length, 1);
+  assert.equal(fixture.calls.sent.length, 0);
+  assert.notEqual(result.taskBound, true);
+});
