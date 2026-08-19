@@ -105,6 +105,13 @@ function normalizeBoard(raw) {
       task.worktreePath = t.worktreePath.trim();
     }
     if (typeof t.branch === 'string' && t.branch.trim()) task.branch = t.branch.trim();
+    // P1 task-bound hidden session: the 1:1 chat session this task owns. The
+    // session record (taskBoundTaskId) is authoritative for hiding; this is
+    // the reverse pointer so the task chat view can deep-link it. Absent
+    // until the view first creates it; non-strings are dropped.
+    if (typeof t.chatSessionId === 'string' && t.chatSessionId.trim()) {
+      task.chatSessionId = t.chatSessionId.trim().slice(0, 160);
+    }
     // `classification.state` was an older module-assignment retry state that
     // was easily confused with the session classify state (A/B/C/D/W/P).
     // Migrate it into non-status operation metadata. The module itself is the
@@ -1016,6 +1023,10 @@ function buildBoardDto(board, getSessionRunState) {
       // without a second fetch; absent until the first run creates it.
       worktreePath: typeof t.worktreePath === 'string' ? t.worktreePath : null,
       branch: typeof t.branch === 'string' ? t.branch : null,
+      // P1 reverse pointer to the task-bound hidden chat session (the session
+      // record's taskBoundTaskId is the authoritative hiding marker). The task
+      // chat view deep-links this through ordinary session APIs.
+      chatSessionId: typeof t.chatSessionId === 'string' ? t.chatSessionId : null,
     };
   }).sort((a, b) => b.lastTs - a.lastTs);
   const countByModule = new Map();
