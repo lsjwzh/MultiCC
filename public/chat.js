@@ -432,6 +432,12 @@ function applyCliUi(cli) {
   if (next === 'qoder' && window.MultiCCChatAiConfig && typeof window.MultiCCChatAiConfig.refreshQoderModels === 'function') {
     window.MultiCCChatAiConfig.refreshQoderModels();
   }
+  // Claude: warm the CLI-bundle model list (/api/claude/models, 1-day cache in
+  // shared/models.js). No rebuild callback — the static table stays usable
+  // until the fetch lands, then the next picker open reads the cache.
+  if (next === 'claude' && window.MultiCCChatAiConfig && typeof window.MultiCCChatAiConfig.refreshClaudeModels === 'function') {
+    window.MultiCCChatAiConfig.refreshClaudeModels();
+  }
 }
 let _mergeReady = false;
 let _syncConflict = false;

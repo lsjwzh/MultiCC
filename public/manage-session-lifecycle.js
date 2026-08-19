@@ -38,8 +38,21 @@
     ];
   }
 
+  // Claude's servable ids come from the installed CLI's bundle via
+  // /api/claude/models (1-day cache, shared with chat.html through
+  // shared/models.js). Fall back to the static table on a cache miss — the
+  // dialog builds its <select> synchronously and cannot await.
+  function claudeModelOptions() {
+    const live = typeof root.readClaudeModelsSync === 'function' ? root.readClaudeModelsSync() : [];
+    const source = live.length
+      ? live.map(entry => ({ value: entry.model, label: entry.label || entry.model }))
+      : CLAUDE_MODEL_OPTIONS.filter(o => o.value && o.value !== '__custom__');
+    return [CLAUDE_MODEL_OPTIONS[0], ...source];
+  }
+
   function vendorModelOptions(cli) {
     if (cli === 'qoder') return qoderModelOptions();
+    if (cli === 'claude') return claudeModelOptions();
     return null;
   }
 
@@ -825,6 +838,12 @@
   // first open. One request per day — a warm localStorage cache never goes out.
   if (typeof root.loadQoderModels === 'function') {
     try { root.loadQoderModels(); } catch (_) { /* picker keeps the tiers */ }
+  }
+
+  // Same warm-up for the Claude CLI-bundle model list (picker keeps the static
+  // table until the fetch lands).
+  if (typeof root.loadClaudeModels === 'function') {
+    try { root.loadClaudeModels(); } catch (_) { /* picker keeps the static table */ }
   }
 
   Object.assign(root, {

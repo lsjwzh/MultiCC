@@ -32,6 +32,8 @@
 
   // Short display name for a wire model id, falling back to the id itself.
   function modelShortName(model) {
+    const live = readClaudeModelsSync().find(o => o && o.model === model);
+    if (live && live.label) return live.label;
     const opt = CLAUDE_MODEL_OPTIONS.find(o => o.value === model);
     return opt ? (opt.labelKey ? tt(opt.labelKey) : opt.label) : model;
   }
@@ -156,6 +158,63 @@
     return qoderModelsPromise;
   }
 
+  // ── Claude live model list ──────────────────────────────────────────────
+  // GET /api/claude/models extracts the servable model ids from the installed
+  // claude CLI's bundle (server-side cache 1 day) — the only local source that
+  // tracks Anthropic's releases; a hardcoded table rots between CLI upgrades
+  // (claude-opus-5 was missing from the App picker for weeks). Mirrored here
+  // for 1 day too. Entries are {model, label}; the route reports
+  // source:'fallback' when the CLI is unreadable, and that variant is never
+  // persisted so the next picker open retries.
+  const CLAUDE_MODELS_KEY = 'multicc.claude.models.v1';
+  let claudeModelsPromise = null;
+  let claudeCacheMemo = null; // { raw, models } keyed on the localStorage blob
+
+  // Memoized sync read: modelShortName() consults this on every model render,
+  // so the JSON must not be re-parsed per call. Returns [] on a miss/stale.
+  function readClaudeModelsSync() {
+    let raw = null;
+    try { raw = window.localStorage && window.localStorage.getItem(CLAUDE_MODELS_KEY); } catch (_) { return []; }
+    if (!raw) return [];
+    if (claudeCacheMemo && claudeCacheMemo.raw === raw) return claudeCacheMemo.models;
+    let models = [];
+    try {
+      const obj = JSON.parse(raw);
+      const at = Number(obj && obj.at) || 0;
+      const list = obj && Array.isArray(obj.models) ? obj.models : [];
+      if (at && (Date.now() - at) < 24 * 60 * 60 * 1000 && list.length) models = list;
+    } catch (_) { /* corrupted cache — treat as a miss */ }
+    claudeCacheMemo = { raw, models };
+    return models;
+  }
+
+  function writeClaudeCache(models) {
+    claudeCacheMemo = null; // drop the memo before the blob it keyed on changes
+    try {
+      if (window.localStorage) {
+        window.localStorage.setItem(CLAUDE_MODELS_KEY, JSON.stringify({ at: Date.now(), models }));
+      }
+    } catch (_) { /* ignore quota / disabled storage */ }
+  }
+
+  async function loadClaudeModels() {
+    const cached = readClaudeModelsSync();
+    if (cached.length) return cached;
+    if (claudeModelsPromise) return claudeModelsPromise;
+    claudeModelsPromise = (async () => {
+      try {
+        const data = await window.fetch('/api/claude/models', { credentials: 'same-origin' })
+          .then(r => (r && r.ok ? r.json() : null));
+        const models = data && Array.isArray(data.models) ? data.models : [];
+        // Only persist the CLI-derived list: caching the offline fallback for a
+        // day would hide the models once the CLI is readable again.
+        if (models.length && data.source !== 'fallback') writeClaudeCache(models);
+        return models;
+      } catch (_) { return []; } finally { claudeModelsPromise = null; }
+    })();
+    return claudeModelsPromise;
+  }
+
   window.CLAUDE_MODEL_OPTIONS = CLAUDE_MODEL_OPTIONS;
   window.ALIAS_TIERS = ALIAS_TIERS;
   window.modelShortName = modelShortName;
@@ -164,4 +223,6 @@
   window.loadOpenCodeModels = loadOpenCodeModels;
   window.loadQoderModels = loadQoderModels;
   window.readQoderModelsSync = readQoderModelsSync;
+  window.loadClaudeModels = loadClaudeModels;
+  window.readClaudeModelsSync = readClaudeModelsSync;
 })();
