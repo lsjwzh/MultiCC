@@ -110,7 +110,7 @@ function _tbTaskRowHtml(task) {
       ? '<span class="tb-body-pending">旧记录缺少 canonical 正文，未自动合并</span>'
       : '<span class="tb-body-pending">正文等待目标会话持久化…</span>';
   return `
-    <div class="tb-task${display.done ? ' done' : ''}${clsRun}" data-task-id="${_tbEsc(task.id)}" onclick="openTaskBoardDetail('${_tbEsc(task.id)}')">
+    <div class="tb-task${display.done ? ' done' : ''}${clsRun}" data-task-id="${_tbEsc(task.id)}" title="在聊天视图中打开" onclick="openTaskChatView('${_tbEsc(task.id)}')">
       ${_tbStatusIcon(display)}
       <span class="tb-title-cell">
         <span class="tb-title">${_tbEsc(task.title)}</span>
@@ -429,6 +429,17 @@ function _tbEnsureTaskComposer(task) {
   _tbTaskComposerTaskId = task.id;
 }
 
+// M2 · the default task entry: the unified chat view in a new tab (the same
+// window.open pattern manage.js uses for chat sessions). The stacked modal
+// below stays mounted for now (M4 retires it).
+function openTaskChatView(taskId) {
+  if (event) event.stopPropagation();
+  window.open(`/chat.html?task=${encodeURIComponent(taskId)}`, '_blank');
+}
+
+/** @deprecated (M2, design D3): task rows now open the unified chat view
+ *  (chat.html?task=). This stacked modal has no default entry left and is
+ *  retired in M4 — kept reachable for that transition only. */
 function openTaskBoardDetail(taskId) {
   if (event) event.stopPropagation();
   _tbDetailTaskId = taskId;
