@@ -155,6 +155,7 @@ test('provider route extraction preserves the mounted surface and response DTOs'
     'DELETE /api/providers/:appType/:id',
     'POST /api/providers/:appType/:id/probe',
     'POST /api/providers/:appType/:id/speedtest',
+    'POST /api/providers/:appType/:id/relay-share',
     'GET /api/provider-defaults',
     'PUT /api/provider-defaults',
   ]);
@@ -571,4 +572,59 @@ test('GET /api/providers attaches the persisted limit summary and freshness', as
   assert.equal(JSON.stringify(limit).includes('{cd'), false);
   // Deleting the provider prunes the orphan on the next catalog read.
   assert.equal(cache.get('claude', 'claude-one') !== null, true);
+});
+
+test('relay-share issues a borrow code and fails closed without the relay token', async () => {
+  // No token → 409 RELAY_TOKEN_UNSET (fail closed; nothing shareable exists).
+  let harness = createHarness({ getProxyToken: () => '' });
+  let response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/relay-share', {
+    params: { appType: 'claude', id: 'claude-one' },
+    body: { publicBaseUrl: 'https://relay.example' },
+  });
+  assert.equal(response.statusCode, 409);
+  assert.equal(response.body.code, 'RELAY_TOKEN_UNSET');
+
+  harness = createHarness({ getProxyToken: () => 'relay-pxy' });
+  response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/relay-share', {
+    params: { appType: 'claude', id: 'claude-one' },
+    body: { publicBaseUrl: 'https://relay.example/some/path' },
+  });
+  assert.equal(response.statusCode, 200);
+  // The public base URL is normalized to its origin.
+  assert.equal(response.body.baseUrl, 'https://relay.example/claude-proxy/claude-one/remote');
+  const payload = JSON.parse(Buffer.from(response.body.code.slice('mcrelay1.'.length), 'base64url').toString('utf8'));
+  assert.deepEqual(payload, {
+    v: 1,
+    kind: 'multicc-relay',
+    // The harness provider stub has no name; the share falls back to the id.
+    name: 'claude-one · 借道',
+    appType: 'claude',
+    baseUrl: 'https://relay.example/claude-proxy/claude-one/remote',
+    authToken: 'relay-pxy',
+  });
+
+  // Codex providers relay through the codex mount without the session segment.
+  response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/relay-share', {
+    params: { appType: 'codex', id: 'codex-one' },
+    body: { publicBaseUrl: 'https://relay.example/' },
+  });
+  assert.equal(response.body.baseUrl, 'https://relay.example/codex-proxy/codex-one');
+
+  // A missing/invalid public base URL is rejected.
+  response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/relay-share', {
+    params: { appType: 'claude', id: 'claude-one' },
+    body: { publicBaseUrl: 'not a url' },
+  });
+  assert.equal(response.statusCode, 400);
+
+  // Unknown providers cannot be shared.
+  harness = createHarness({
+    getProxyToken: () => 'relay-pxy',
+    providers: { getProvider: () => null },
+  });
+  response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/relay-share', {
+    params: { appType: 'claude', id: 'ghost' },
+    body: { publicBaseUrl: 'https://relay.example' },
+  });
+  assert.equal(response.statusCode, 404);
 });
