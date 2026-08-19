@@ -1621,7 +1621,7 @@ memoModule.migrateLegacy().done.catch(error => console.log(`[memo] migration fai
 
 // Create + persist an isolated session record (its own git worktree + branch).
 // Shared creation boundary; an explicit id creates or reuses a named session.
-async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, effort = null, agent = null, rolePrompt = null, rolePresetId = null, type = null, elasticWorker = false, taskExecutionSlot = false, experimentalMode = null, loginFlow = null, persistence = 'bestEffort', persistenceSource = 'runtime.create-session' }) {
+async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, effort = null, agent = null, rolePrompt = null, rolePresetId = null, type = null, elasticWorker = false, taskExecutionSlot = false, experimentalMode = null, loginFlow = null, persistence = 'bestEffort', persistenceSource = 'runtime.create-session', taskBoundTaskId = null }) {
   if (!dir) return { ok: false, error: 'directory not found' };
   if (!SUPPORTED_CHAT_CLIS.includes(cli)) return { ok: false, error: `cli must be ${SUPPORTED_CHAT_CLIS.join(', ')}` };
   if (!['terminal', 'chat'].includes(kind)) return { ok: false, error: 'kind must be terminal or chat' };
@@ -1700,7 +1700,7 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
   if (loginFlow) session.loginFlow = loginFlow; // whitelisted interactive login terminal (codex-login)
   if (type === 'worker' && elasticWorker) session.elasticWorker = true;
   if (type === 'worker' && taskExecutionSlot) session.taskExecutionSlot = true;
-  if (ephemeral) session.ephemeral = true; if (experiment.mode) session.experimentalMode = experiment.mode;
+  if (ephemeral) session.ephemeral = true; if (experiment.mode) session.experimentalMode = experiment.mode; if (taskBoundTaskId) session.taskBoundTaskId = String(taskBoundTaskId).slice(0, 120);
   if (kind === 'chat') ensureCliStates(session);
   try {
     if (persistence === 'required') {
@@ -2157,7 +2157,7 @@ const commanderRouter = createCommanderRoutingHost({
 });
 const taskBoardRuntime = createTaskBoardRuntime({
   file: MULTICC_PATHS.taskBoardFile,
-  taskRuns: taskRunStore, auxQueue, records: persistedSessions,
+  taskRuns: taskRunStore, auxQueue, records: persistedSessions, createSessionRecord,
   // Board projections inspect history without cloning every referenced transcript.
   loadHistory: sessionId => viewChatHistory(sessionId),
   dispatchToSession,

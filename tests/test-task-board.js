@@ -982,6 +982,8 @@ test('REST: board, messages, send and status flow', async () => {
     'POST /api/task-board/tasks/:taskId/answer',
     'POST /api/task-board/tasks/:taskId/status',
     'POST /api/task-board/tasks/:taskId/cancel-run',
+    // P1 · get-or-create the task-bound hidden chat session (addressable, not fleet-listed).
+    'POST /api/task-board/tasks/:taskId/chat-session',
     'POST /api/task-board/archive-completed',
     'POST /api/task-board/tasks/:taskId/reclassify',
     'POST /api/task-board/send',
