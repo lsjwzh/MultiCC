@@ -674,6 +674,7 @@ const {
   gitSyncFromBase, gitRebaseResolve, gitWorktreeSnapshot, gitExportSessionBundle,
   gitImportSessionBundle, defaultRepoActor,
 } = require('./src/git');
+const { slotOwnsWorktree } = require('./src/task-worktree');
 
 // RepoActor operations are retained in a bounded in-memory history. Destructive
 // endpoint responses include operationId; callers can inspect progress and the
@@ -846,12 +847,13 @@ async function seedCommanderSession(dir) {
 // registrations, shares, worktree, triggers, notes, status board entry).
 // Directory deletion cascades through here for every owned session.
 async function destroySessionCascade(s, d, opts = {}) {
-  const active = sessions.get(s.id);
-  const chat = chatSessions.get(s.id);
+  const active = sessions.get(s.id), chat = chatSessions.get(s.id);
   let removal = null;
   // Remove the worktree before tearing down runtime/persistence. A default
   // dirty/unmerged refusal therefore leaves the session completely intact.
-  if (s.worktreePath && s.branch) {
+  // M3: a slot stamped onto a task worktree never owns it — deletion must keep
+  // the task's worktree alive for the task's own one-click cleanup.
+  if (s.worktreePath && s.branch && slotOwnsWorktree(s)) {
     try {
       removal = await gitWorktreeRemove(d.path, s.worktreePath, s.branch, {
         sessionId: s.id, baseBranch: d.baseBranch, force: !!opts.force,
@@ -1449,21 +1451,17 @@ providerRouterRuntime.mountProtocolProxies(app, {
 // bounded composition. Dependencies that initialize later (Aux, workspace facts,
 // classifier helpers) are resolved lazily by closures and never snapshotted here.
 const sessionGitRuntime = createSessionGitRuntime({
-  records: persistedSessions,
-  directories,
-  terminalSessions: sessions,
-  chatSessions,
-  gitWorktreeMergeState,
-  gitBaseBranch,
-  gitRunQueued,
-  gitMergeBack,
-  gitSyncFromBase,
-  gitRebaseResolve,
-  appendEvent,
-  workspaceBroadcast: (...args) => workspaceBroadcast(...args),
-  existsSync: fs.existsSync,
-  now: Date.now,
-  random: Math.random,
+  records: persistedSessions, directories,
+  terminalSessions: sessions, chatSessions,
+  gitWorktreeMergeState, gitBaseBranch,
+  gitRunQueued, gitMergeBack,
+  gitSyncFromBase, gitRebaseResolve,
+  appendEvent, workspaceBroadcast: (...args) => workspaceBroadcast(...args),
+  // M3 task-surface resolvers — lazy arrows: taskBoardRuntime is declared
+  // later; the ports only fire at request time, after composition completes.
+  resolveTaskWorktree: id => taskBoardRuntime?.taskWorktree?.info(id) || null,
+  cleanupTaskWorktree: (id, o) => taskBoardRuntime?.taskWorktree?.cleanupWorktree(id, o),
+  existsSync: fs.existsSync, now: Date.now, random: Math.random,
   logger: console,
 });
 const mergeStateCached = sessionGitRuntime.mergeStateCached;
@@ -2159,9 +2157,7 @@ const commanderRouter = createCommanderRoutingHost({
 });
 const taskBoardRuntime = createTaskBoardRuntime({
   file: MULTICC_PATHS.taskBoardFile,
-  taskRuns: taskRunStore,
-  auxQueue,
-  records: persistedSessions,
+  taskRuns: taskRunStore, auxQueue, records: persistedSessions,
   // Board projections inspect history without cloning every referenced transcript.
   loadHistory: sessionId => viewChatHistory(sessionId),
   dispatchToSession,
@@ -2175,8 +2171,9 @@ const taskBoardRuntime = createTaskBoardRuntime({
   resolveSessionQueue: (...args) => sessionWorkHost.resolveTask(...args),
   getCommanderMigrationStatus: dirId => commanderMigrationState.statusFor(dirId),
   getSessionRunState: sid => sessionWorkHost?.getRunState(sid) || 'idle',
-  resolveGoalLimits,
-  buildGoalLimitNote,
+  resolveGoalLimits, buildGoalLimitNote,
+  // M3 per-task worktree service ports (taskWorktree on the runtime).
+  directories, gitWorktreeAdd, gitWorktreeRemove, gitMergeBack, existsSync: fs.existsSync,
   logger: console,
 });
 taskBoardRuntime.mountRoutes(app); createTaskRunRoutes({ store: taskRunStore, logger }).mountRoutes(app);
@@ -2338,6 +2335,9 @@ taskRunHost = createProductionTaskRunHost({ taskRunStore, dataRoot: MULTICC_PATH
   deleteChatHistory: id => chatHistoryService.deleteSession(id), resetChatState: id => { const state = chatSessions.get(id); if (state) { state.chatTurnCount = 0; delete state._currentTaskId; delete state._currentTaskRunId; delete state._currentTaskLeaseEpoch; } },
   resetRoleUsage: resetRoleTokenUsage, persistRecords: savePersistedSessionsBestEffort,
   drainProviderProducers: (id, lease) => taskRunProviderBridge.waitForDrain(id, lease), onRunUpdated: ({ taskId }) => taskBoardRuntime.notifyTaskRun(taskId), getTaskState: id => getTaskState(persistedSessions.get(id)), onRunFailed: ({ taskId, runId }) => taskBoardRuntime.autoRetryTaskRun({ taskId, runId }),
+  prepareTaskWorktree: i => taskBoardRuntime.taskWorktree?.prepareForRun(i) || { ok: false, code: 'worktree_service_unavailable' }, releaseTaskWorktree: i => taskBoardRuntime.taskWorktree?.releaseSlot(i),
+  prepareTaskWorktree: i => taskBoardRuntime.taskWorktree?.prepareForRun(i) || { ok: false, code: 'worktree_service_unavailable' },
+  releaseTaskWorktree: i => taskBoardRuntime.taskWorktree?.releaseSlot(i),
   providerSnapshot: id => { const record = persistedSessions.get(id) || {}; return { providerId: record.provider || '_default_', providerName: record.provider || '_default_', cli: record.cli || '', model: effectiveSessionModel(record) || '' }; }, logger });
 createAuxRunRoutes({ records: persistedSessions, getLog: () => auxRunLog }).mountRoutes(app);
 

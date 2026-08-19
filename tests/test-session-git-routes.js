@@ -77,6 +77,8 @@ function createFixture(overrides = {}) {
     directories,
     terminalSessions,
     chatSessions,
+    resolveTaskWorktree: overrides.resolveTaskWorktree,
+    cleanupTaskWorktree: overrides.cleanupTaskWorktree,
     ...implementations,
     appendEvent: (...args) => calls.events.push(args),
     workspaceBroadcast: (...args) => calls.broadcasts.push(args),
@@ -831,4 +833,160 @@ test('diff/file validates path, separates args with --, and truncates large patc
   });
   assert.equal(errored.body.patch, '');
   assert.equal(errored.body.error, 'diff failed');
+});
+
+// ── per-task worktree routes (M3) ───────────────────────────────────────────
+// Same git core, parameterized by the task's worktree instead of a session's:
+// the board runtime resolves taskId → {dir, worktreePath, branch, token} and
+// these routes reuse the session diff/merge semantics unchanged.
+
+function taskInfo() {
+  return {
+    dirId: 'd1',
+    dir: { id: 'd1', path: '/repo', baseBranch: 'main' },
+    worktreePath: '/repo/.multicc-worktrees/task-abcd1234',
+    branch: 'multicc/task-abcd1234',
+    token: 'task-abcd1234',
+  };
+}
+
+function createTaskFixture(overrides = {}) {
+  return createFixture({
+    resolveTaskWorktree: taskId => (taskId === 'tsk-1' ? taskInfo() : null),
+    cleanupTaskWorktree: async (taskId, opts) => ({ ok: true, removed: true, taskId, opts }),
+    ...overrides,
+  });
+}
+
+test('task worktree routes mount only when the task resolver deps are present', () => {
+  const plain = createFixture();
+  assert.equal([...plain.app.routes.keys()].some(key => key.includes('/api/task-board/')), false,
+    'session-only composition keeps exactly the nine session routes');
+  const withTasks = createTaskFixture();
+  assert.deepEqual(
+    [...withTasks.app.routes.keys()].filter(key => key.includes('/api/task-board/')).sort(),
+    [
+      'GET /api/task-board/tasks/:taskId/diff/file',
+      'GET /api/task-board/tasks/:taskId/diff/files',
+      'POST /api/task-board/tasks/:taskId/cleanup-worktree',
+      'POST /api/task-board/tasks/:taskId/merge',
+    ],
+  );
+});
+
+test('task diff/files mirrors the session diff DTO against the task worktree', async () => {
+  const fixture = createTaskFixture({
+    implementations: {
+      gitRunQueued: async (repo, args) => {
+        if (args.includes('--numstat')) return '1\t2\tsrc/a.js\0';
+        if (args.includes('--name-status')) return 'M\0src/a.js\0';
+        return '';
+      },
+    },
+  });
+  const response = await invoke(fixture.app.routes.get('GET /api/task-board/tasks/:taskId/diff/files'), {
+    params: { taskId: 'tsk-1' },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.baseBranch, 'main');
+  assert.equal(response.body.branch, 'multicc/task-abcd1234');
+  assert.deepEqual(response.body.files, [{
+    path: 'src/a.js', oldPath: null, status: 'M', additions: 1, deletions: 2, binary: false,
+  }]);
+  assert.equal(response.body.totalFiles, 1);
+  assert.equal(response.body.totalAdditions, 1);
+  assert.equal(response.body.totalDeletions, 2);
+  assert.equal(response.body.truncated, false);
+  assert.equal(response.body.error, null);
+  assert.ok(fixture.calls.run.every(call => call.repo === '/repo/.multicc-worktrees/task-abcd1234'),
+    'git runs inside the task worktree, never a slot or directory path');
+
+  const missing = await invoke(fixture.app.routes.get('GET /api/task-board/tasks/:taskId/diff/files'), {
+    params: { taskId: 'tsk-other' },
+  });
+  assert.equal(missing.statusCode, 404);
+  assert.equal(missing.body.error, 'task_not_found');
+});
+
+test('task diff/file returns the single-file patch from the task worktree', async () => {
+  const fixture = createTaskFixture();
+  const response = await invoke(fixture.app.routes.get('GET /api/task-board/tasks/:taskId/diff/file'), {
+    params: { taskId: 'tsk-1' }, query: { path: 'src/a.js' },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.body, { path: 'src/a.js', patch: '', truncated: false, error: null });
+  assert.deepEqual(fixture.calls.run.at(-1).args, ['diff', '--no-color', 'main', '--', 'src/a.js']);
+
+  const invalid = await invoke(fixture.app.routes.get('GET /api/task-board/tasks/:taskId/diff/file'), {
+    params: { taskId: 'tsk-1' }, query: { path: '-x' },
+  });
+  assert.equal(invalid.statusCode, 400);
+});
+
+test('task merge merges the task branch identity and reports conflicts as 409', async () => {
+  const merges = [];
+  const fixture = createTaskFixture({
+    implementations: {
+      gitMergeBack: async (dir, session) => {
+        merges.push({ dir: dir.id, session: { ...session } });
+        return { ok: true, merged: true, commits: 3 };
+      },
+    },
+  });
+  const response = await invoke(fixture.app.routes.get('POST /api/task-board/tasks/:taskId/merge'), {
+    params: { taskId: 'tsk-1' },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(merges, [{
+    dir: 'd1',
+    session: {
+      id: 'task-abcd1234',
+      worktreePath: '/repo/.multicc-worktrees/task-abcd1234',
+      branch: 'multicc/task-abcd1234',
+    },
+  }]);
+  assert.ok(fixture.calls.broadcasts.some(([dirId, payload]) => dirId === 'd1'
+    && payload.type === 'merge_status' && payload.taskId === 'tsk-1'));
+
+  const conflicted = createTaskFixture({
+    implementations: {
+      gitMergeBack: async () => ({ ok: false, conflicts: ['src/conflict.js'] }),
+    },
+  });
+  const conflictResponse = await invoke(conflicted.app.routes.get('POST /api/task-board/tasks/:taskId/merge'), {
+    params: { taskId: 'tsk-1' },
+  });
+  assert.equal(conflictResponse.statusCode, 409);
+  assert.deepEqual(conflictResponse.body.conflicts, ['src/conflict.js']);
+});
+
+test('task cleanup-worktree delegates to the board service and maps blocked outcomes to 409', async () => {
+  const cleanups = [];
+  const fixture = createTaskFixture({
+    cleanupTaskWorktree: async (taskId, opts) => {
+      cleanups.push({ taskId, opts });
+      return { ok: true, removed: true, merged: true };
+    },
+  });
+  const response = await invoke(fixture.app.routes.get('POST /api/task-board/tasks/:taskId/cleanup-worktree'), {
+    params: { taskId: 'tsk-1' }, body: {},
+  });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.body, { ok: true, removed: true, merged: true });
+  assert.deepEqual(cleanups, [{ taskId: 'tsk-1', opts: {} }]);
+
+  const blocked = createTaskFixture({
+    cleanupTaskWorktree: async () => ({ ok: false, code: 'run_active', blocked: true }),
+  });
+  const blockedResponse = await invoke(blocked.app.routes.get('POST /api/task-board/tasks/:taskId/cleanup-worktree'), {
+    params: { taskId: 'tsk-1' }, body: {},
+  });
+  assert.equal(blockedResponse.statusCode, 409);
+  assert.equal(blockedResponse.body.code, 'run_active');
+
+  const missing = await invoke(fixture.app.routes.get('POST /api/task-board/tasks/:taskId/cleanup-worktree'), {
+    params: { taskId: 'tsk-other' }, body: {},
+  });
+  assert.equal(missing.statusCode, 404);
+  assert.equal(missing.body.error, 'task_not_found');
 });

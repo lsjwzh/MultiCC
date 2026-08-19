@@ -632,6 +632,163 @@ function createSessionGitRuntime(rawDeps) {
     });
   }
 
+  // M3 · per-task worktree surface: the same git core parameterized by a task
+  // identity instead of a session record. Mounted only when the host injects
+  // the board-runtime resolvers, so pure session compositions (tests, reduced
+  // hosts) keep exactly the nine routes above.
+  function registerTaskRoutes(app) {
+    const resolveTaskInfo = (req, res) => {
+      const info = deps.resolveTaskWorktree(req.params.taskId);
+      if (!info || !info.dir || !info.worktreePath || !info.branch) {
+        res.status(404).json({ error: 'task_not_found' });
+        return null;
+      }
+      return info;
+    };
+    const taskIdentity = info => ({
+      id: info.token || info.branch,
+      worktreePath: info.worktreePath,
+      branch: info.branch,
+    });
+    const taskBaseBranch = async (info, res) => {
+      if (info.dir.baseBranch) return info.dir.baseBranch;
+      try {
+        return await deps.gitBaseBranch(info.dir.path);
+      } catch (cause) {
+        res.status(500).json({ error: errorText(cause) });
+        return null;
+      }
+    };
+
+    app.get('/api/task-board/tasks/:taskId/diff/files', async (req, res) => {
+      const info = resolveTaskInfo(req, res);
+      if (!info) return;
+      if (!deps.existsSync(info.worktreePath)) {
+        return res.status(400).json({ error: 'worktree missing' });
+      }
+      const baseBranch = await taskBaseBranch(info, res);
+      if (!baseBranch) return;
+      const worktree = info.worktreePath;
+      let numstat = '';
+      let nameStatus = '';
+      let error = null;
+      try {
+        numstat = await deps.gitRunQueued(worktree,
+          ['-c', 'core.quotepath=false', 'diff', '--numstat', '--no-color', '-z', baseBranch],
+          { maxBuffer: 4 * 1024 * 1024 });
+      } catch (cause) {
+        error = errorText(cause);
+      }
+      try {
+        nameStatus = await deps.gitRunQueued(worktree,
+          ['-c', 'core.quotepath=false', 'diff', '--name-status', '--no-color', '-z', baseBranch],
+          { maxBuffer: 1024 * 1024 });
+      } catch (cause) {
+        if (!error) error = errorText(cause);
+      }
+      const identity = taskIdentity(info);
+      const allFiles = error ? [] : parseDiffFiles(numstat, nameStatus);
+      const totalFiles = allFiles.length;
+      const totalAdditions = allFiles.reduce((sum, f) => sum + f.additions, 0);
+      const totalDeletions = allFiles.reduce((sum, f) => sum + f.deletions, 0);
+      const fileCap = 500;
+      const truncated = totalFiles > fileCap;
+      const files = truncated ? allFiles.slice(0, fileCap) : allFiles;
+      return res.json({
+        baseBranch,
+        branch: info.branch,
+        files,
+        totalFiles,
+        totalAdditions,
+        totalDeletions,
+        truncated,
+        mergeState: mergeStateCached(info.dir, identity),
+        error,
+      });
+    });
+
+    app.get('/api/task-board/tasks/:taskId/diff/file', async (req, res) => {
+      const info = resolveTaskInfo(req, res);
+      if (!info) return;
+      if (!deps.existsSync(info.worktreePath)) {
+        return res.status(400).json({ error: 'worktree missing' });
+      }
+      const filePath = req.query.path;
+      if (typeof filePath !== 'string' || filePath.length === 0 || filePath.length > 500) {
+        return res.status(400).json({ error: 'path required (1..500 chars)' });
+      }
+      if (filePath.startsWith('-')) {
+        return res.status(400).json({ error: 'path must not start with "-"' });
+      }
+      const baseBranch = await taskBaseBranch(info, res);
+      if (!baseBranch) return;
+      const patchCap = 256 * 1024;
+      let patch = '';
+      let truncated = false;
+      let error = null;
+      try {
+        patch = await deps.gitRunQueued(info.worktreePath,
+          ['diff', '--no-color', baseBranch, '--', filePath],
+          { maxBuffer: 512 * 1024 + 16 * 1024 });
+        if (patch.length > patchCap) {
+          patch = patch.slice(0, patchCap);
+          truncated = true;
+        }
+      } catch (cause) {
+        error = errorText(cause);
+        patch = '';
+      }
+      return res.json({ path: filePath, patch, truncated, error });
+    });
+
+    app.post('/api/task-board/tasks/:taskId/merge', async (req, res) => {
+      const info = resolveTaskInfo(req, res);
+      if (!info) return;
+      const identity = taskIdentity(info);
+      const result = await deps.gitMergeBack(info.dir, identity);
+      if (!result.ok) {
+        return res.status(result.conflicts && result.conflicts.length ? 409 : 400).json(result);
+      }
+      deps.logger.log(`[multicc] task merge ${identity.branch} → ${info.dir.baseBranch}: `
+        + (result.merged ? `${result.commits} commit(s)` : 'nothing to merge'));
+      deps.appendEvent(info.dir.id, 'merged',
+        result.merged ? `任务提交 ${result.commits} 个 → ${info.dir.baseBranch}` : '任务无新提交',
+        identity.id);
+      deps.workspaceBroadcast(info.dir.id, {
+        type: 'merge_status', sessionId: identity.id, taskId: req.params.taskId,
+        mergeState: await mergeStateFresh(info.dir, identity),
+      });
+      if (result.merged) {
+        const synced = await autoSyncSiblingWorktrees(info.dir, identity.id);
+        if (synced.length) result.siblingsSynced = synced;
+      }
+      return res.json(result);
+    });
+
+    app.post('/api/task-board/tasks/:taskId/cleanup-worktree', async (req, res) => {
+      const info = resolveTaskInfo(req, res);
+      if (!info) return;
+      const opts = {};
+      if (req.body && req.body.force === true) opts.force = true;
+      const result = await deps.cleanupTaskWorktree(req.params.taskId, opts);
+      if (!result || result.ok === false) {
+        if (result && result.code === 'task_not_found') {
+          return res.status(404).json({ error: 'task_not_found' });
+        }
+        if (result && result.blocked) return res.status(409).json(result);
+        return res.status(400).json(result || { error: 'cleanup_failed' });
+      }
+      deps.logger.log(`[multicc] task worktree cleanup ${req.params.taskId}: `
+        + `${info.branch} removed`);
+      deps.appendEvent(info.dir.id, 'worktree_cleanup',
+        '任务 worktree 已合并并清理', taskIdentity(info).id);
+      deps.workspaceBroadcast(null, {
+        type: 'task_board_update', taskIds: [req.params.taskId],
+      });
+      return res.json(result);
+    });
+  }
+
   function registerWriteRoutes(app) {
     app.post('/api/sessions/:id/merge', async (req, res) => {
       const found = findSession(req, res);
@@ -731,6 +888,10 @@ function createSessionGitRuntime(rawDeps) {
     }
     if (mountedApps.has(app)) return app;
     registerReadRoutes(app);
+    if (typeof deps.resolveTaskWorktree === 'function'
+        && typeof deps.cleanupTaskWorktree === 'function') {
+      registerTaskRoutes(app);
+    }
     registerWriteRoutes(app);
     mountedApps.add(app);
     return app;

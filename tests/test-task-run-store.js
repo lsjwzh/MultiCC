@@ -797,3 +797,27 @@ test('Claude aggregate main usage is authoritative while Codex main and sub usag
     output: 23, reasoning: 1, total: 148,
   });
 });
+
+test('annotateRun merges observability fields into run metadata without touching scheduler columns', t => {
+  const { file } = tempDatabase(t);
+  const store = createTaskRunStore({ file });
+  store.beginRun(runInput({ metadata: { source: 'task-board' } }));
+  assert.equal(store.annotateRun('run-1', {
+    worktreePath: '/repo/.multicc-worktrees/task-token',
+    branch: 'multicc/task-token',
+  }), true);
+  const run = store.getRun('run-1');
+  assert.equal(run.slotId, 'slot-1', 'scheduler columns are untouched');
+  assert.equal(run.metadata.source, 'task-board', 'existing metadata survives the merge');
+  assert.equal(run.metadata.worktreePath, '/repo/.multicc-worktrees/task-token');
+  assert.equal(run.metadata.branch, 'multicc/task-token');
+  assert.deepEqual(store.listTaskRuns('task-1')[0].metadata.worktreePath,
+    '/repo/.multicc-worktrees/task-token', 'the projection reads the annotated metadata');
+  // Later annotations merge without clobbering earlier keys; unknown runs fail
+  // closed without throwing.
+  assert.equal(store.annotateRun('run-1', { mergedAt: 5 }), true);
+  assert.equal(store.getRun('run-1').metadata.branch, 'multicc/task-token');
+  assert.equal(store.annotateRun('run-missing', { mergedAt: 5 }), false);
+  store.close();
+});
+

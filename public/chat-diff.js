@@ -93,6 +93,7 @@
   // ── Viewer state ──
   var state = {
     sessionId: null,
+    taskMode: false,           // M3: route to task worktree endpoints
     listData: null,            // cached /diff/files response
     listFetchedAt: 0,
     currentPath: null,         // path when in detail view
@@ -117,6 +118,7 @@
     fabTopRatio: FAB_DEFAULT_TOP_RATIO,
     minimized: false,
     sessionId: '',
+    taskId: '',                // M3: task-mode routing id (chat.html?task=)
   };
 
   function clamp(value, lo, hi) {
@@ -145,6 +147,7 @@
       if (Number.isFinite(saved.fabTopRatio)) dock.fabTopRatio = clamp(saved.fabTopRatio, 0, 1);
       dock.minimized = saved.minimized === true;
       dock.sessionId = typeof saved.sessionId === 'string' ? saved.sessionId : '';
+      dock.taskId = typeof saved.taskId === 'string' ? saved.taskId : '';
     } catch (_) {
       // Private-mode or corrupt entry: defaults are perfectly usable.
     }
@@ -344,7 +347,8 @@
     if (!dom.modal || !dom.fab) return;
     state.minimized = true;
     dock.minimized = true;
-    dock.sessionId = state.sessionId || dock.sessionId || '';
+    if (state.taskMode) dock.taskId = state.sessionId || dock.taskId || '';
+    else dock.sessionId = state.sessionId || dock.sessionId || '';
     dom.modal.classList.remove('open');
     dom.fab.hidden = false;
     updateFabCount();
@@ -359,13 +363,31 @@
     ensureDom();
     if (!dom.modal) return;
     // Reopened after a page reload, when only the button survived: fetch the
-    // session's diff again rather than showing an empty shell.
+    // session's (or task's) diff again rather than showing an empty shell.
+    if (!state.sessionId && dock.taskId) { open(dock.taskId, { task: true }); return; }
     if (!state.sessionId && dock.sessionId) { open(dock.sessionId); return; }
     showPanel();
   }
 
+  // M3 task-mode entry point (chat-task-boot): a task whose worktree exists
+  // gets the floating button without opening the panel; tapping it opens the
+  // task's per-task worktree diff via restore() → open(…, { task: true }).
+  function setTaskContext(taskId) {
+    ensureDom();
+    var id = String(taskId || '').trim();
+    if (!id || !dom.fab) return;
+    dock.taskId = id;
+    dock.sessionId = '';
+    state.taskMode = true;
+    dom.fab.hidden = false;
+    updateFabCount();
+    placeFab();
+  }
+
   // ── Public API ──
-  function open(sessionId) {
+  // opts.task: sessionId is a task-board task id and every fetch targets the
+  // task's per-task worktree endpoints instead of a session's.
+  function open(sessionId, opts) {
     ensureDom();
     if (!dom.modal) return;
     if (!sessionId) {
@@ -381,7 +403,10 @@
       state.summaryCache = {};
       state.patchCache = {};
     }
+    state.taskMode = !!(opts && opts.task);
     state.sessionId = sessionId;
+    dock.taskId = state.taskMode ? sessionId : '';
+    dock.sessionId = state.taskMode ? '' : sessionId;
     state.requestToken++;
     state.currentPath = null;
     state.listData = null;
@@ -391,7 +416,7 @@
     state.fileCount = 0;
     dock.sessionId = sessionId;
 
-    dom.title.textContent = 'Diff · ' + sessionId;
+    dom.title.textContent = (state.taskMode ? '任务 Diff · ' : 'Diff · ') + sessionId;
     dom.subTitle.textContent = '加载中…';
     showListView();
     renderEmptyFileList('加载中…');
@@ -441,9 +466,17 @@
     if (dom.summaryDels) dom.summaryDels.textContent = '−0';
   }
 
+  // M3: the task-mode dock reads the same DTOs from the task-board surface.
+  function diffBase() {
+    var id = encodeURIComponent(String(state.sessionId || ''));
+    return state.taskMode
+      ? '/api/task-board/tasks/' + id + '/diff'
+      : '/api/sessions/' + id + '/diff';
+  }
+
   function fetchFiles(sessionId) {
     var token = state.requestToken;
-    var url = withToken('/api/sessions/' + encodeURIComponent(sessionId) + '/diff/files');
+    var url = withToken(diffBase() + '/files');
     fetch(url, { headers: { 'Accept': 'application/json' } })
       .then(function (r) {
         if (!r.ok) return r.json().catch(function () { return {}; }).then(function (body) {
@@ -768,7 +801,7 @@
 
   // ── Patch fetch + render ──
   function fetchPatch(sessionId, path, token) {
-    var url = withToken('/api/sessions/' + encodeURIComponent(sessionId) + '/diff/file?path=' + encodeURIComponent(path));
+    var url = withToken(diffBase() + '/file?path=' + encodeURIComponent(path));
     return fetch(url, { headers: { 'Accept': 'application/json' } })
       .then(function (r) {
         if (!r.ok) return r.json().catch(function () { return {}; }).then(function (body) {
@@ -838,12 +871,26 @@
     if (!dom.modal) return;
     applyGeometry();
     placeFab();
-    var current = '';
-    try { current = new URLSearchParams(location.search).get('session') || ''; } catch (_) {}
-    if (dock.minimized && dock.sessionId && dock.sessionId === current && dom.fab) {
-      state.minimized = true;
-      dom.fab.hidden = false;
-      updateFabCount();
+    var current = '', currentTask = '';
+    try {
+      var params = new URLSearchParams(location.search);
+      current = params.get('session') || '';
+      currentTask = params.get('task') || '';
+    } catch (_) {}
+    if (dock.minimized && dom.fab) {
+      // Task pages restore the task dock; session pages the session one. The
+      // page's ?task=/?session= param arbitrates so a stale entry from the
+      // other mode never hijacks the FAB.
+      if (currentTask && dock.taskId && dock.taskId === currentTask) {
+        state.minimized = true;
+        state.taskMode = true;
+        dom.fab.hidden = false;
+        updateFabCount();
+      } else if (current && dock.sessionId && dock.sessionId === current) {
+        state.minimized = true;
+        dom.fab.hidden = false;
+        updateFabCount();
+      }
     }
   }
   if (typeof document !== 'undefined') {
@@ -857,5 +904,6 @@
   // ── Expose ──
   window.chatDiffViewer = Object.freeze({
     open: open, close: close, minimize: minimize, restore: restore,
+    setTaskContext: setTaskContext,
   });
 })();

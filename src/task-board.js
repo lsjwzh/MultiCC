@@ -99,6 +99,12 @@ function normalizeBoard(raw) {
     // Monotonic stamp of the queue event that produced runState. Survives a
     // reload so a heartbeat replayed after restart cannot un-cancel a card.
     if (Number(t.runStateAt) > 0) task.runStateAt = Number(t.runStateAt);
+    // M3 per-task worktree ledger: where the task's work lives between runs.
+    // Absent until the first run creates it; non-strings are dropped.
+    if (typeof t.worktreePath === 'string' && t.worktreePath.trim()) {
+      task.worktreePath = t.worktreePath.trim();
+    }
+    if (typeof t.branch === 'string' && t.branch.trim()) task.branch = t.branch.trim();
     // `classification.state` was an older module-assignment retry state that
     // was easily confused with the session classify state (A/B/C/D/W/P).
     // Migrate it into non-status operation metadata. The module itself is the
@@ -1006,6 +1012,10 @@ function buildBoardDto(board, getSessionRunState) {
       } : null,
       routing,
       attemptCount: routing?.attempts?.length || 0,
+      // M3 ledger surfaced so detail views can offer diff/merge/cleanup
+      // without a second fetch; absent until the first run creates it.
+      worktreePath: typeof t.worktreePath === 'string' ? t.worktreePath : null,
+      branch: typeof t.branch === 'string' ? t.branch : null,
     };
   }).sort((a, b) => b.lastTs - a.lastTs);
   const countByModule = new Map();

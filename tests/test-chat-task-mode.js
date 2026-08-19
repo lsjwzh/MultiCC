@@ -296,3 +296,26 @@ test('chat.html loads the task-mode scripts before chat.js and gates session-onl
   assert.match(css, /body\.task-mode \.session-only/);
   assert.match(css, /\.run-separator/);
 });
+
+test('M3 the task diff dock and manage detail use the per-task worktree surface', () => {
+  const root = path.join(__dirname, '..');
+  const diff = fs.readFileSync(path.join(root, 'public', 'chat-diff.js'), 'utf8');
+  const boot = fs.readFileSync(path.join(root, 'public', 'chat-task-boot.js'), 'utf8');
+  const tb = fs.readFileSync(path.join(root, 'public', 'manage-taskboard.js'), 'utf8');
+  // Diff dock: one base switch (task-board vs session endpoints), a task-mode
+  // open flag, and a setTaskContext entry for the boot wiring. The two fetch
+  // sites must go through the shared base — no session URL left inline.
+  assert.match(diff, /'\/api\/task-board\/tasks\/' \+ id \+ '\/diff'/);
+  assert.match(diff, /opts && opts\.task/);
+  assert.match(diff, /setTaskContext: setTaskContext/);
+  assert.match(diff, /open\(dock\.taskId, \{ task: true \}\)/);
+  assert.equal(diff.split("'/api/sessions/' + encodeURIComponent(sessionId)").length, 1,
+    'the one remaining literal session URL is diffBase() itself');
+  // Boot: an identity DTO carrying a worktree turns on the task FAB.
+  assert.match(boot, /dto\.worktreePath/);
+  assert.match(boot, /setTaskContext\(_taskId\)/);
+  // Manage: the one-click cleanup posts to the M3 endpoint and maps refusals.
+  assert.match(tb, /\/cleanup-worktree/);
+  assert.match(tb, /function cleanupTaskWorktree\(/);
+  assert.match(tb, /run_active/);
+});

@@ -34,6 +34,12 @@ function updateTaskIdentity(dto) {
   updateTabIdentity(title, _taskId);
   const titleEl = document.getElementById('session-title');
   if (titleEl) { titleEl.textContent = title; titleEl.title = title; }
+  // M3: once the task owns a worktree, surface the diff dock's floating
+  // button — the task's per-task worktree diff is one tap away.
+  if (dto && dto.worktreePath && window.chatDiffViewer
+      && typeof window.chatDiffViewer.setTaskContext === 'function') {
+    window.chatDiffViewer.setTaskContext(_taskId);
+  }
 }
 
 // Wires the task adapter to this host's existing pipelines: the shared
