@@ -71,6 +71,7 @@ function bootTaskMode() {
     historyStore: chatHistoryStore,
     resetHistoryView: () => { resetHistoryPagination(); chatHistoryView.clearMessages(); },
     handleEvent: (event, generation) => chatEventController.handleEvent(event, generation),
+    setCli: value => { chatEventState.currentCli = value; },
     getGeneration: () => _eventGeneration,
     unstageUserMessage: id => { stagedUserBubbles.delete(id); },
     debug: (...args) => dbg('task-mode', args.map(a => String(a && a.message ? a.message : a)).join(' ')),
