@@ -17,7 +17,7 @@
 // ════════════════════════════════════════════════════════════════════
 
 /**
- * @typedef {'goal-limit'|'gateway'|'dispatch-context'|'cross-agent-notes'} ContextLayerKind
+ * @typedef {'goal-limit'|'task-context'|'cli-handoff'|'gateway'|'dispatch-context'|'cross-agent-notes'} ContextLayerKind
  */
 
 /**
@@ -25,7 +25,7 @@
  *
  * @typedef {Object} ContextLayer
  * @property {ContextLayerKind} kind  - discriminator (unique within an envelope)
- * @property {number} order           - explicit sort key: 10=goal-limit, 20=gateway/dispatch-context, 30=cross-agent-notes
+ * @property {number} order           - explicit sort key: 10=goal-limit, 12=task-context, 15=cli-handoff, 20=gateway/dispatch-context, 30=cross-agent-notes
  * @property {string} text            - complete block INCLUDING its own trailing separator; concatenated with no extra separator
  */
 
@@ -177,6 +177,7 @@ function validateEnvelope(env) {
  * @param {Object} input.opts
  * @param {boolean} input.opts.isFirstTurn          - drives --session-id vs --resume (per-turn)
  * @param {Object|undefined} input.opts.goalLimits  - { maxRounds, maxBudget }
+ * @param {string|undefined} input.opts.taskContextSeed - compiled task ledger prefix for a task-bound session's first turn (prompt only; never persisted as the user message)
  * @param {'per-turn'|'streaming'} [input.opts.mode='per-turn']
  * @param {boolean} [input.opts.bare=false]         - true: skip contextLayers + suffix (continue/retry paths)
  * @param {string|undefined} input.opts.providerModel
@@ -193,6 +194,7 @@ function composeMessage({ text, persisted, sessionName, opts, deps }) {
   const {
     isFirstTurn,
     goalLimits,
+    taskContextSeed,
     mode = 'per-turn',
     bare = false,
     providerModel,
@@ -220,6 +222,16 @@ function composeMessage({ text, persisted, sessionName, opts, deps }) {
     if (goalLimits) {
       const note = deps.buildGoalLimitNote(goalLimits);
       if (note) contextLayers.push({ kind: 'goal-limit', order: 10, text: note });
+    }
+
+    // order 12: task-bound cold start. A task's own chat session compiles the
+    // task ledger into its FIRST turn only (the caller decides: it sends the
+    // seed while the session's native CLI session is still cold). It belongs
+    // here rather than in userText because the transcript must keep exactly
+    // what the user typed — the task chat view IS the ordinary chat view, and
+    // scaffolding is as invisible here as the role prompt and the notes block.
+    if (typeof taskContextSeed === 'string' && taskContextSeed) {
+      contextLayers.push({ kind: 'task-context', order: 12, text: taskContextSeed });
     }
 
     // order 15: one-shot cross-CLI handoff. This is a bounded checkpoint of

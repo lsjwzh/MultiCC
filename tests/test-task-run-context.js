@@ -213,3 +213,37 @@ test('isTaskRunWrapperText identifies every wrapper shape, never raw user text',
   assert.equal(isTaskRunWrapperText(null), false);
   assert.equal(isTaskRunWrapperText(undefined), false);
 });
+
+// P4 · task-bound cold start. The bound session's first turn carries the
+// compiled ledger as a prompt-only PREFIX and the user's own message follows
+// it verbatim as the turn text, so the wall must be able to drop its 当前要求
+// section (the current request is no longer inside it) without losing the
+// header, the task block or the history.
+test('includeCurrent:false compiles a prefix wall that omits the current request', () => {
+  const task = { id: 'task-9', title: '修复登录闪退', status: 'active' };
+  const messages = [
+    { id: 'm1', role: 'user', ts: 10, text: '先复现闪退堆栈' },
+    { id: 'm2', role: 'assistant', ts: 20, text: '已定位到空指针' },
+  ];
+
+  const prefix = buildTaskRunContext({ task, messages, includeCurrent: false });
+  assert.equal(prefix.text.includes('当前要求'), false, 'no current-request section');
+  assert.match(prefix.text, /\[MultiCC 任务运行上下文/);
+  assert.match(prefix.text, /任务：修复登录闪退/);
+  assert.match(prefix.text, /先复现闪退堆栈/);
+  assert.match(prefix.text, /已定位到空指针/);
+  // Still scaffolding for every consumer that filters transport wrappers.
+  assert.equal(isTaskRunWrapperText(prefix.text), true);
+  // currentText is genuinely optional in this mode — nothing to hash.
+  assert.equal(prefix.manifest.currentTextHash, null);
+  assert.match(prefix.hash, /^sha256:[a-f0-9]{64}$/);
+  // Deterministic like every other compile.
+  assert.deepEqual(buildTaskRunContext({ task, messages, includeCurrent: false }), prefix);
+
+  // The default path is untouched and still refuses an empty current request.
+  const full = buildTaskRunContext({ task, messages, currentText: '继续修' });
+  assert.match(full.text, /当前要求：\n继续修/);
+  assert.equal(full.manifest.currentTextHash?.startsWith('sha256:'), true);
+  assert.throws(() => buildTaskRunContext({ task, messages }), /currentText/);
+  assert.throws(() => buildTaskRunContext({ task, messages, includeCurrent: true }), /currentText/);
+});
