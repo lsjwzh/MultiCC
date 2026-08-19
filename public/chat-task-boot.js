@@ -42,10 +42,31 @@ function updateTaskIdentity(dto) {
   }
 }
 
+// P2 · task chat = ordinary chat. Get-or-create the task's 1:1 bound hidden
+// session first; when the server provides one, hand off to the plain session
+// chat (tool cards, usage, memory injection, resume continuity — the full
+// session feature set) instead of projecting the ledger. location.replace
+// keeps the ?task= URL out of history, so Back returns to the board. Any
+// failure (old server 501, gone task 404, failed create 502, offline) falls
+// back to the legacy projection — the handoff can never strand the view.
+function bootTaskMode() {
+  window.MultiCCChatTaskMode.resolveBoundSession({
+    taskId: _taskId,
+    fetch: window.fetch.bind(window),
+    withToken,
+  }).then(boundId => {
+    if (boundId) {
+      location.replace('chat.html?session=' + encodeURIComponent(boundId));
+      return;
+    }
+    bootTaskProjection();
+  });
+}
+
 // Wires the task adapter to this host's existing pipelines: the shared
 // history store → view plan, the event controller (fed unwrapped slot
 // events), the composer transport and the staged-bubble commit loop.
-function bootTaskMode() {
+function bootTaskProjection() {
   taskMode = window.MultiCCChatTaskMode.createTaskMode({
     taskId: _taskId,
     window,

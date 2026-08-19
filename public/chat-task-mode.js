@@ -39,6 +39,28 @@
   const REFRESH_DEBOUNCE_MS = 400;
   const RECONNECT_BACKOFF_MS = [1000, 2000, 5000, 15000, 30000];
 
+  // P2 · task chat = ordinary chat. Get-or-create the task's 1:1 bound hidden
+  // session (P1 server side) and return its id so the host can hand off to the
+  // plain session chat — the task view then IS the ordinary chat view (tool
+  // cards, usage, memory injection, resume continuity) instead of the ledger
+  // projection below. Fails soft: ANY error (old server 501, gone task 404,
+  // no directory 409, failed create 502, network down, malformed body) returns
+  // null and the host boots the legacy projection, so the task view is never
+  // stranded by the handoff itself.
+  async function resolveBoundSession({ taskId, fetch, withToken }) {
+    try {
+      const bare = `/api/task-board/tasks/${encodeURIComponent(taskId)}/chat-session`;
+      const url = typeof withToken === 'function' ? withToken(bare) : bare;
+      const r = await fetch(url, { method: 'POST' });
+      if (!r || !r.ok) return null;
+      const d = await r.json();
+      return d && d.ok === true && typeof d.sessionId === 'string' && d.sessionId
+        ? d.sessionId : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   function createTaskMode(deps) {
     // Every dep is read lazily off the shared object: the host may inject
     // optional ports (unstageUserMessage, translate) after construction.
@@ -384,4 +406,5 @@
   }
 
   exports.createTaskMode = createTaskMode;
+  exports.resolveBoundSession = resolveBoundSession;
 }));
