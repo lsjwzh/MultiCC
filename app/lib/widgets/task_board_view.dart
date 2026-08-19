@@ -927,6 +927,15 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
   Timer? _reconcileTimer;
   Timer? _liveHeartbeat;
 
+  // P3 · task chat = ordinary chat. When the task owns a bound hidden session
+  // (DTO field, or get-or-created on first open), the sheet downgrades to a
+  // summary card: the chat body below becomes a single "open full chat" tile
+  // and the ledger projection + live transport stay unwired. A failed resolve
+  // (old server, gone task, offline) starts the legacy projection instead —
+  // the handoff can never strand the sheet.
+  String? _boundSessionId;
+  bool _boundResolved = false;
+
   void _insertRunSeparator(String runId) {
     _liveMessages.add(
       ChatMessage(
@@ -958,6 +967,37 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
   @override
   void initState() {
     super.initState();
+    final bound = widget.task.chatSessionId;
+    if (bound != null && bound.isNotEmpty) {
+      // Already bound: summary-card mode from the first frame, zero async.
+      _boundSessionId = bound;
+      _boundResolved = true;
+      return;
+    }
+    _ensureBound();
+  }
+
+  Future<void> _ensureBound() async {
+    final sid = await ManageService(
+      settings: widget.settings,
+    ).ensureTaskChatSession(widget.task.id);
+    if (!mounted) return;
+    if (sid != null) {
+      setState(() {
+        _boundSessionId = sid;
+        _boundResolved = true;
+      });
+      return;
+    }
+    // Fail-soft: no binding available (old server / gone task / offline) —
+    // the legacy ledger projection keeps the sheet fully functional.
+    setState(() => _boundResolved = true);
+    _startProjection();
+  }
+
+  // The legacy ledger projection wiring (A2-c): durable pages + live tail.
+  // Only ever started when NO bound session backs this task.
+  void _startProjection() {
     _loadMessages();
     widget.taskRunEvents?.addListener(_onTaskRunActivity);
     _liveHeartbeat = Timer.periodic(const Duration(seconds: 15), (_) {
@@ -972,7 +1012,26 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.taskRunEvents != widget.taskRunEvents) {
       oldWidget.taskRunEvents?.removeListener(_onTaskRunActivity);
-      widget.taskRunEvents?.addListener(_onTaskRunActivity);
+      // Projection mode only — a bound sheet never attaches the listener.
+      if (_boundSessionId == null && _boundResolved) {
+        widget.taskRunEvents?.addListener(_onTaskRunActivity);
+      }
+    }
+    // A binding created elsewhere (web side, another device) is adopted on
+    // the next board refresh: swap to summary mode and tear the projection
+    // down so the two chat surfaces never run side by side.
+    final fresh = widget.task.chatSessionId;
+    if (_boundSessionId == null && fresh != null && fresh.isNotEmpty) {
+      setState(() {
+        _boundSessionId = fresh;
+        _boundResolved = true;
+        widget.taskRunEvents?.removeListener(_onTaskRunActivity);
+        _liveHeartbeat?.cancel();
+        _liveHeartbeat = null;
+        _reconcileTimer?.cancel();
+        _reconcileTimer = null;
+        _liveMessages.clear();
+      });
     }
   }
 
@@ -1308,19 +1367,72 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
                 ),
               ),
             ),
-            Expanded(child: _messagesBody()),
-            const Divider(height: 1, color: AppColors.line),
-            _BoardComposer(
-              settings: widget.settings,
-              hint: t('boardTaskComposerHint'),
-              onSend: _sendToTask,
+            Expanded(
+              child: _boundSessionId != null
+                  ? _boundChatTile()
+                  : (_boundResolved
+                      ? _messagesBody()
+                      : const Center(
+                          child: Padding(
+                            padding: EdgeInsets.all(20),
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                        )),
             ),
+            if (_boundSessionId == null && _boundResolved) ...[
+              const Divider(height: 1, color: AppColors.line),
+              _BoardComposer(
+                settings: widget.settings,
+                hint: t('boardTaskComposerHint'),
+                onSend: _sendToTask,
+              ),
+            ],
             const Divider(height: 1, color: AppColors.line),
             _actions(canReclassify: canReclassify),
           ],
         ),
       ),
     );
+  }
+
+  /// P3 summary-card tile: the whole chat body collapses into one handoff.
+  /// Tapping pops the sheet and opens the bound session through the fleet
+  /// sheet's opener — a full ordinary chat view (tool cards, usage, memory
+  /// injection, resume continuity), not the ledger projection.
+  Widget _boundChatTile() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.forum_outlined, color: AppColors.muted, size: 40),
+            const SizedBox(height: 12),
+            Text(
+              t('tbBoundChatHint'),
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: AppColors.muted, fontSize: 12),
+            ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: _openBoundChat,
+              icon: const Icon(Icons.open_in_new_rounded, size: 18),
+              label: Text(t('tbOpenFullChat')),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _openBoundChat() {
+    final sid = _boundSessionId;
+    if (sid == null) return;
+    // Close this detail sheet first, then hand off to the fleet sheet's
+    // opener (same contract as _jumpToSession).
+    final open = widget.onOpenSession;
+    Navigator.of(context).pop();
+    if (open != null) open(sid);
   }
 
   Widget _messagesBody() {

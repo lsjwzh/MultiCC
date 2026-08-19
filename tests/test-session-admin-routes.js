@@ -359,3 +359,21 @@ test('server delegates session-admin routes and retains only the shared v1 error
     );
   }
 });
+
+test('legacy session detail exposes the task-bound marker for direct addressing (P3)', () => {
+  const { app, records } = createFixture();
+  records.set('b1', {
+    id: 'b1', dirId: 'd1', cli: 'codex', kind: 'chat',
+    label: '任务 · 修 bug', createdAt: 400, taskBoundTaskId: 'task-9',
+  });
+  const detail = invoke(app.routes.get('GET /api/sessions/:id'), { params: { id: 'b1' } });
+  assert.equal(detail.statusCode, 200);
+  // The App gates its hidden-session open on this exact marker (aux/gateway
+  // and slots must never resolve through the fleet-miss path).
+  assert.equal(detail.body.taskBoundTaskId, 'task-9');
+  assert.equal(detail.body.dirId, 'd1');
+  assert.equal(detail.body.label, '任务 · 修 bug');
+  // Ordinary records carry a null marker, never an accidental truthy.
+  const plain = invoke(app.routes.get('GET /api/sessions/:id'), { params: { id: 's1' } });
+  assert.equal(plain.body.taskBoundTaskId, null);
+});

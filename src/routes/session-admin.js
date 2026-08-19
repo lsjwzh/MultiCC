@@ -293,6 +293,12 @@ function createSessionAdminRuntime(rawDeps) {
       streaming: isClaudeChat,
       autoContinue: record.autoContinue !== false,
       autoCommit: !!record.autoCommit,
+      // P1/P3: task-bound chat sessions are fleet-hidden but directly
+      // addressable — the marker (plus identity fields) lets a client that
+      // already holds the id open the session without a fleet-list entry.
+      taskBoundTaskId: record.taskBoundTaskId || null,
+      dirId: record.dirId || null,
+      label: record.label || null,
     };
   }
 

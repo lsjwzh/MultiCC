@@ -54,6 +54,11 @@ class TaskBoardTask {
   final TaskModuleAssignment? moduleAssignment;
   final String? body;
 
+  /// P1/P3: the 1:1 bound hidden chat session this task owns (server DTO).
+  /// When non-null the detail sheet hands the chat off to the full session
+  /// chat view instead of the legacy ledger projection.
+  final String? chatSessionId;
+
   const TaskBoardTask({
     required this.id,
     required this.moduleId,
@@ -68,6 +73,7 @@ class TaskBoardTask {
     this.runState = 'idle',
     this.moduleAssignment,
     this.body,
+    this.chatSessionId,
   });
 
   factory TaskBoardTask.fromJson(Map<String, dynamic> json) => TaskBoardTask(
@@ -102,6 +108,9 @@ class TaskBoardTask {
           )
         : null,
     body: json['body']?.toString(),
+    chatSessionId: (json['chatSessionId'] as String?)?.isNotEmpty == true
+        ? json['chatSessionId'] as String
+        : null,
   );
 }
 
