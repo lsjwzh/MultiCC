@@ -685,6 +685,7 @@
   "taskRounds": "{n} turns",
   "tbRunRunning": "Running",
   "tbRunWaiting": "Waiting",
+  "tbRunSeparator": "Run {n}",
   "tbRunError": "Error",
   "tbRunDone": "Done",
   "tbRunIdle": "Idle",

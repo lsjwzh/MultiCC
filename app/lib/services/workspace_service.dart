@@ -116,6 +116,13 @@ class TaskRunStreamEvent {
   /// socket is already per-directory, so this is informational).
   final String? dirId;
 
+  /// The run's engine (lowercased slot record cli), stamped by the server on
+  /// every envelope. Delta folding is engine-gated in the shared folder
+  /// (part_delta is a no-op under claude), so this must land before the first
+  /// slot event is folded. Null on old servers — the folder's claude default
+  /// then applies, matching the pre-stamp behaviour.
+  final String? cli;
+
   /// Slot events, byte-identical to the slot's own event stream (≥1 entry,
   /// unmodifiable). Delta batches arrive merged into one envelope.
   final List<Map<String, dynamic>> slotEvents;
@@ -124,6 +131,7 @@ class TaskRunStreamEvent {
     required this.taskId,
     required this.runId,
     this.dirId,
+    this.cli,
     this.slotEvents = const [],
   });
 }
@@ -195,6 +203,7 @@ class WorkspaceService extends ChangeNotifier {
       taskId: taskId,
       runId: runId,
       dirId: msg['dirId']?.toString(),
+      cli: msg['cli']?.toString(),
       slotEvents: List.unmodifiable(slotEvents),
     );
   }
