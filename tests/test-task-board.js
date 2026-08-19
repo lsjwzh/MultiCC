@@ -981,6 +981,7 @@ test('REST: board, messages, send and status flow', async () => {
     'POST /api/task-board/tasks/:taskId/send',
     'POST /api/task-board/tasks/:taskId/answer',
     'POST /api/task-board/tasks/:taskId/status',
+    'POST /api/task-board/tasks/:taskId/cancel-run',
     'POST /api/task-board/archive-completed',
     'POST /api/task-board/tasks/:taskId/reclassify',
     'POST /api/task-board/send',

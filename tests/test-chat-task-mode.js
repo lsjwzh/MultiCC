@@ -75,7 +75,7 @@ function harness({ task = null } = {}) {
       ['/api/task-board/tasks/tsk-1?', [200, { ok: true, task: taskDto }]],
       ['/api/task-board/tasks/tsk-1/messages', [200, firstPage]],
       ['/api/task-board/tasks/tsk-1/send', [200, { ok: true, taskRunId: 'tr_3' }]],
-      ['/api/task-board/tasks/tsk-1/status', [200, { ok: true }]],
+      ['/api/task-board/tasks/tsk-1/cancel-run', [200, { ok: true, cancelled: true }]],
     ], calls.fetch = []),
     withToken: url => url,
     multiccWsUrl: async url => url + '&ticket=once',
@@ -203,7 +203,9 @@ test('transportSend surfaces send failures and unstages the bubble', async () =>
   assert.deepEqual(unstaged, ['client-10']);
 });
 
-test('cancel terminates the open run via the status endpoint; typing/clear are host-side', async () => {
+test('cancel stops the open run via cancel-run and never marks the card done', async () => {
+  // A3 split: the chat view stop button must not POST {status:done} — that
+  // lifecycle change belongs to the board's ✅ alone.
   const { mode, calls } = harness();
   await mode.boot();
   assert.equal(mode.transportSend({ type: 'typing' }), true);
@@ -211,8 +213,8 @@ test('cancel terminates the open run via the status endpoint; typing/clear are h
   assert.deepEqual(calls.system.filter(t => t === '::reset-view').length, 1);
   mode.transportSend({ type: 'cancel' });
   await new Promise(r => setImmediate(r));
-  const post = calls.fetch.find(c => c.url.includes('/status'));
-  assert.deepEqual(JSON.parse(post.init.body), { status: 'done' });
+  assert.ok(calls.fetch.some(c => c.url.includes('/cancel-run')));
+  assert.ok(!calls.fetch.some(c => c.url.includes('/status')));
 });
 
 test('older pages hit the task transcript endpoint with the store cursor', async () => {

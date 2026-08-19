@@ -103,6 +103,7 @@ Task-board runs execute on pooled headless slots; the durable record is the task
 | `POST` | `/api/task-board/tasks/:taskId/send` | Queue the next run (`{ text, goal?, clientMsgId?, goalLimits? }`). With `userInputRequestId` the body is delegated to the answer ingress instead — a composer answer resolves the pending question rather than opening a follow-up run |
 | `POST` | `/api/task-board/tasks/:taskId/answer` | Answer the run's pending question (`{ requestId, text, clientMsgId }`); same lease/idempotency checks as the send-side delegation. Kept for native clients (App) |
 | `POST` | `/api/task-board/tasks/:taskId/status` | Set lifecycle `{ status: active \| done \| archived }`. Completing a task with an open run cancels it first — a run already delivered to a slot, or a cancel that fails, is rejected with 409 |
+| `POST` | `/api/task-board/tasks/:taskId/cancel-run` | Stop the open run **without** touching the lifecycle (the chat view's stop button; marking done stays with `/status`). Shares the status path's cancellation and 409 surface. Idempotent: no open run → `{ ok, cancelled:false }`; success → `{ ok, cancelled:true, runId }` |
 | `POST` | `/api/task-board/tasks/:taskId/reclassify` | Re-queue AI classification for a still-pending card (409 once a module is assigned, 503 when the aux CLI is unhealthy) |
 | `GET` | `/api/task-board/tasks/:taskId/diff/files` | List changed files in the task's worktree vs the base branch |
 | `GET` | `/api/task-board/tasks/:taskId/diff/file` | One file's diff content (same params as the session diff route) |
