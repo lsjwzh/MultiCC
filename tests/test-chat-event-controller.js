@@ -803,11 +803,17 @@ test('Flutter forwards and reconciles non-Claude assistant snapshots too', () =>
     path.join(ROOT, 'app', 'lib', 'services', 'chat_service.dart'), 'utf8');
   const provider = fs.readFileSync(
     path.join(ROOT, 'app', 'lib', 'providers', 'chat_provider.dart'), 'utf8');
+  // A2-a: the folding invariants live in the SHARED TranscriptLiveFolder; the
+  // provider's switch is a thin delegation and the parity contract pins both
+  // halves — the delegation site and the folder's folding rules.
+  const folder = fs.readFileSync(
+    path.join(ROOT, 'app', 'lib', 'services', 'transcript_live_folder.dart'), 'utf8');
   assert.match(service, /case 'assistant':[\s\S]{0,240}_emit\('assistant'/);
   assert.match(service, /case 'part_delta':[\s\S]{0,100}_emit\('part_delta'/);
-  assert.match(provider, /case 'assistant':[\s\S]{0,120}_onAssistantSnapshot/);
-  assert.match(provider, /message\['textSnapshot'\] == true[\s\S]{0,100}_currentMsg!\.content = text/);
-  assert.match(provider, /void _onPartDelta[\s\S]{0,180}SessionCli\.claude/);
+  assert.match(provider, /case 'assistant':[\s\S]{0,160}_folder\.assistantSnapshot/);
+  assert.match(provider, /case 'part_delta':[\s\S]{0,160}_folder\.partDelta/);
+  assert.match(folder, /message\['textSnapshot'\] == true[\s\S]{0,100}currentMsg!\.content = text/);
+  assert.match(folder, /void partDelta[\s\S]{0,180}SessionCli\.claude/);
 });
 
 test('recoverable reconnect errors stay quiet while real errors finish the owned turn', () => {
