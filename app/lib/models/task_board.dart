@@ -6,7 +6,7 @@
 //
 // Board DTO: { ok, modules:[...], tasks:[...], sessionLabels:{}, backfill:{} }
 // Messages DTO: { ok, task, items:[{sessionId, sessionLabel, role, messageId,
-//   ts, text, lost?}] }
+//   ts, text, lost?, taskRunId?, partial?}] }
 
 /// Operational metadata for manually assigning a pending task to a module.
 /// This is deliberately separate from the task's live `runState`, which comes
@@ -138,7 +138,10 @@ class TaskBoardModule {
 
 /// One message in a task's cross-session conversation trail (user / assistant
 /// pairs, oldest first). `lost` marks a user turn whose source message was
-/// trimmed from history - only the excerpt survives.
+/// trimmed from history - only the excerpt survives. `taskRunId` attributes
+/// the message to the headless TaskRun that produced it (chat-view
+/// unification M0/M4-T3); `partial` marks a streaming-tail snapshot row.
+/// Both are additive — old servers omit them.
 class TaskMessage {
   final String sessionId;
   final String? sessionLabel;
@@ -147,6 +150,8 @@ class TaskMessage {
   final int ts;
   final String text;
   final bool lost;
+  final String? taskRunId;
+  final bool partial;
 
   const TaskMessage({
     required this.sessionId,
@@ -156,6 +161,8 @@ class TaskMessage {
     this.ts = 0,
     this.text = '',
     this.lost = false,
+    this.taskRunId,
+    this.partial = false,
   });
 
   /// Headless TaskRun messages deliberately carry no public session id. They
@@ -170,6 +177,8 @@ class TaskMessage {
     ts: (json['ts'] as num?)?.toInt() ?? 0,
     text: (json['text'] ?? '').toString(),
     lost: json['lost'] == true,
+    taskRunId: json['taskRunId']?.toString(),
+    partial: json['partial'] == true,
   );
 }
 

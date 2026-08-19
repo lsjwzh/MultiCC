@@ -2052,6 +2052,11 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet>
                         settings: widget.settings,
                         dirId: widget.dirId,
                         mgr: widget.mgr,
+                        // M4-T3: live TaskRun activity for this dir — the
+                        // store entry is ensured in initState above.
+                        taskRunEvents: widget.workspaceStore.taskRunEventsFor(
+                          widget.dirId,
+                        ),
                         onTaskCount: (n) {
                           if (_taskCount != n) {
                             setState(() => _taskCount = n);
