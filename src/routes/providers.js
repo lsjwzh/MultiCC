@@ -514,6 +514,44 @@ function createProviderRoutes(rawDeps) {
       }
     });
 
+    // Export this provider as a "relay share" code so another multicc can
+    // borrow it through this host's CPR protocol relays. The code embeds the
+    // MULTICC_PROXY_TOKEN — an admin-only bearer that unlocks exactly the two
+    // relay mounts (see src/routes/auth.js) — and nothing else; raw provider
+    // credentials never leave this host.
+    app.post('/api/providers/:appType/:id/relay-share', (req, res) => {
+      const token = String(typeof deps.getProxyToken === 'function'
+        ? deps.getProxyToken()
+        : (process.env.MULTICC_PROXY_TOKEN || '')).trim();
+      if (!token) {
+        return res.status(409).json({
+          error: 'MULTICC_PROXY_TOKEN 未配置，无法生成借道分享码',
+          code: 'RELAY_TOKEN_UNSET',
+        });
+      }
+      const provider = deps.providers.getProvider(req.params.appType, req.params.id);
+      if (!provider) return res.status(404).json({ error: 'provider not found' });
+      let parsed = null;
+      try { parsed = new URLCtor(String((req.body && req.body.publicBaseUrl) || '').trim()); } catch (_) {}
+      if (!parsed || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')) {
+        return res.status(400).json({ error: 'publicBaseUrl must be an http(s) URL' });
+      }
+      const base = parsed.origin;
+      const relayBaseUrl = req.params.appType === 'codex'
+        ? `${base}/codex-proxy/${encodeURIComponent(req.params.id)}`
+        : `${base}/claude-proxy/${encodeURIComponent(req.params.id)}/remote`;
+      const payload = {
+        v: 1,
+        kind: 'multicc-relay',
+        name: `${provider.name || req.params.id} · 借道`,
+        appType: req.params.appType,
+        baseUrl: relayBaseUrl,
+        authToken: token,
+      };
+      const code = 'mcrelay1.' + Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+      res.json({ ok: true, code, baseUrl: relayBaseUrl });
+    });
+
     app.get('/api/provider-defaults', (req, res) => res.json(providerDefaults));
     app.put('/api/provider-defaults', (req, res) => {
       const nextDefaults = { ...providerDefaults };

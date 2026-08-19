@@ -73,7 +73,15 @@ On this host:
 2. Make the port reachable: Tailscale Funnel / tailnet, or a non-loopback
    `HOST` with `MULTICC_ALLOW_REMOTE=1` + `ACCESS_TOKEN`.
 
-On the remote multicc, create a provider whose baseUrl points at a relay path:
+Fastest path — the share-code UI: on this host's `/manage` Provider page,
+click 借道分享 on a provider card, enter the public base URL (the address the
+remote multicc can reach, e.g. the Tailscale Funnel URL), and copy the
+`mcrelay1.…` share code. On the remote multicc, open `/manage` → 导入借道
+Provider, paste the code, and the provider is created with the relay baseUrl
+and token already filled in. The code embeds only the relay token — never the
+upstream API keys.
+
+Manual setup: create a provider whose baseUrl points at a relay path:
 
 - Anthropic protocol (Claude CLI sessions):
   `http(s)://<host>:3000/claude-proxy/<providerId>/<any-session-label>`
