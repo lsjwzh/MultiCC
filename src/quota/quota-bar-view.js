@@ -307,7 +307,10 @@ function arkPeriodLabel(label) {
   const l = String(label || '').toLowerCase();
   if (l === 'weekly') return '周';
   if (l === 'monthly') return '月';
-  if (l === 'session') return '会话';
+  // Coding Plan's "current session" window is the same 5h rolling window the
+  // Agent Plan reports as "5h" (the official console shows it with a reset
+  // countdown too); surface it as 5h so the bar reads uniformly.
+  if (l === 'session') return '5h';
   return String(label || '?');
 }
 
@@ -316,7 +319,7 @@ function arkWindowLabel(label) {
   if (l === '5h') return '5h';
   if (l === 'weekly') return '1wk';
   if (l === 'monthly') return '1m';
-  if (l === 'session') return '会话';
+  if (l === 'session') return '5h';
   return l || '?';
 }
 
