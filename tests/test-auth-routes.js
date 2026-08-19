@@ -16,6 +16,7 @@ const { createAuthRuntime } = require('../src/routes/auth');
 function buildHarness(overrides = {}) {
   const state = {
     accessToken: '',
+    proxyToken: '',
     shuttingDown: false,
     local: true,
     metrics: [],
@@ -66,6 +67,7 @@ function buildHarness(overrides = {}) {
     createErrorDto: (dto) => ({ error: dto }),
     getAccessToken: () => state.accessToken,
     getShuttingDown: () => state.shuttingDown,
+    getProxyToken: () => state.proxyToken,
     allowLegacyTokenQuery: !!state.allowLegacyTokenQuery,
   });
   runtime.mountRoutes(app);
@@ -125,6 +127,47 @@ test('cookie, x-access-token grant access; wrong ones do not', async () => {
     res = await raw(h.base, '/api/thing', { headers: { accept: 'application/json', 'x-access-token': 'nope' } });
     assert.equal(res.status, 403);
   } finally { await h.close(); }
+});
+
+test('MULTICC_PROXY_TOKEN unlocks only the CPR relay mounts for external peers', async () => {
+  const h = await buildHarness({ accessToken: 'sekret', proxyToken: 'relay-pxy', local: false });
+  try {
+    // x-api-key (what an Anthropic-protocol client sends) opens the claude relay.
+    let res = await raw(h.base, '/claude-proxy/p1/s1/v1/messages', {
+      method: 'POST', headers: { 'x-api-key': 'relay-pxy' },
+    });
+    assert.equal(res.status, 200);
+    assert.ok(h.state.metrics.includes('multicc_auth_proxy_relay_total'));
+
+    // Authorization: Bearer (what a Codex-protocol client sends) opens the codex relay.
+    res = await raw(h.base, '/codex-proxy/p1/responses', {
+      method: 'POST', headers: { authorization: 'Bearer relay-pxy' },
+    });
+    assert.equal(res.status, 200);
+
+    // Wrong / missing relay token stays rejected.
+    res = await raw(h.base, '/claude-proxy/p1/s1/v1/messages', {
+      method: 'POST', headers: { 'x-api-key': 'wrong' },
+    });
+    assert.equal(res.status, 403);
+    res = await raw(h.base, '/claude-proxy/p1/s1/v1/messages', { method: 'POST' });
+    assert.equal(res.status, 403);
+
+    // The relay token must not escalate: every other path stays locked.
+    res = await raw(h.base, '/api/thing', { headers: { accept: 'application/json', 'x-api-key': 'relay-pxy' } });
+    assert.equal(res.status, 403);
+    res = await raw(h.base, '/dashboard', { headers: { 'x-api-key': 'relay-pxy' } });
+    assert.equal(res.status, 302);
+  } finally { await h.close(); }
+
+  // No token configured → fail closed, even on the relay mounts.
+  const bare = await buildHarness({ accessToken: 'sekret', proxyToken: '', local: false });
+  try {
+    const res = await raw(bare.base, '/claude-proxy/p1/s1/v1/messages', {
+      method: 'POST', headers: { 'x-api-key': 'relay-pxy' },
+    });
+    assert.equal(res.status, 403);
+  } finally { await bare.close(); }
 });
 
 test('legacy token query is gated by allowLegacyTokenQuery', async () => {

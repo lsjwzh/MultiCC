@@ -8,6 +8,21 @@
 // through getters so a token set at runtime — or a shutdown transition — takes
 // effect on the very next request without recapturing a stale snapshot.
 
+const crypto = require('node:crypto');
+
+// CPR mounts its Anthropic/OpenAI protocol relays at these paths. A dedicated
+// bearer (MULTICC_PROXY_TOKEN) may unlock exactly these two mounts for remote
+// multicc instances borrowing this host's provider credentials — it never
+// grants the rest of the API.
+const PROXY_RELAY_PREFIXES = ['/claude-proxy', '/codex-proxy'];
+
+function safeEqualSecret(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || !a || !b) return false;
+  const ha = crypto.createHash('sha256').update(a).digest();
+  const hb = crypto.createHash('sha256').update(b).digest();
+  return crypto.timingSafeEqual(ha, hb);
+}
+
 function assertFunction(value, name) {
   if (typeof value !== 'function') {
     throw new TypeError(`[auth] ${name} must be a function`);
@@ -28,6 +43,7 @@ function createAuthRuntime(rawDeps) {
     createErrorDto,
     getAccessToken,
     getShuttingDown,
+    getProxyToken = () => process.env.MULTICC_PROXY_TOKEN || '',
     allowLegacyTokenQuery = false,
   } = deps;
 
@@ -47,7 +63,7 @@ function createAuthRuntime(rawDeps) {
     [isLocalRequest, 'isLocalRequest'], [parseCookies, 'parseCookies'],
     [normalizeRedirect, 'normalizeRedirect'], [escapeHtmlAttribute, 'escapeHtmlAttribute'],
     [createErrorDto, 'createErrorDto'], [getAccessToken, 'getAccessToken'],
-    [getShuttingDown, 'getShuttingDown'],
+    [getShuttingDown, 'getShuttingDown'], [getProxyToken, 'getProxyToken'],
   ]) assertFunction(fn, name);
   if (!metrics || typeof metrics.inc !== 'function') {
     throw new TypeError('[auth] metrics.inc is required');
@@ -80,6 +96,19 @@ function createAuthRuntime(rawDeps) {
       return true;
     }
     return false;
+  }
+
+  // Remote relay credential: MULTICC_PROXY_TOKEN presented as x-api-key or
+  // Authorization: Bearer unlocks only the CPR protocol relays, letting another
+  // multicc borrow this host's provider endpoints without any wider access.
+  function isProxyRelayCredential(req) {
+    const token = String(getProxyToken() || '').trim();
+    if (!token) return false;
+    const p = req.path;
+    if (!PROXY_RELAY_PREFIXES.some(pre => p === pre || p.startsWith(`${pre}/`))) return false;
+    if (safeEqualSecret(String(req.headers['x-api-key'] || ''), token)) return true;
+    const bearer = /^Bearer\s+(.+)$/i.exec(String(req.headers.authorization || ''));
+    return !!(bearer && safeEqualSecret(bearer[1].trim(), token));
   }
 
   function mountRoutes(app) {
@@ -181,6 +210,10 @@ function createAuthRuntime(rawDeps) {
         metrics.inc('multicc_auth_bootstrap_query_total');
         logger.warn('bootstrap_token_query', { requestId: req.id, path: req.path });
         res.setHeader('Set-Cookie', authCookieHeader(req));
+        return next();
+      }
+      if (isProxyRelayCredential(req)) {
+        metrics.inc('multicc_auth_proxy_relay_total');
         return next();
       }
       if (isAuthenticated(req)) return next();
