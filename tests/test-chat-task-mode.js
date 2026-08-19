@@ -252,6 +252,18 @@ test('task_board_update refreshes the task DTO (debounced) and re-renders identi
   assert.equal(calls.identity.length, 2, 'one debounced refresh, not two');
 });
 
+test('task-board rows open the unified chat view instead of the legacy modal', () => {
+  const root = path.join(__dirname, '..');
+  const tb = fs.readFileSync(path.join(root, 'public', 'manage-taskboard.js'), 'utf8');
+  // Entry: row click opens chat.html?task= in a new tab (the same window.open
+  // pattern manage.js uses for chat sessions).
+  assert.match(tb, /function openTaskChatView\(/);
+  assert.match(tb, /chat\.html\?task=/);
+  assert.doesNotMatch(tb, /onclick="openTaskBoardDetail\(/);
+  // The legacy stacked modal stays mounted but marked deprecated; M4 retires it.
+  assert.match(tb, /@deprecated/);
+});
+
 test('chat.html loads the task-mode scripts before chat.js and gates session-only chrome by body class', () => {
   const root = path.join(__dirname, '..');
   const html = fs.readFileSync(path.join(root, 'public', 'chat.html'), 'utf8');
