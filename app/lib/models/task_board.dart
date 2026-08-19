@@ -201,6 +201,26 @@ ChatMessage chatMessageFromTask(TaskMessage m) => ChatMessage(
   isPartial: m.partial,
 );
 
+/// A2-c: how many trailing rows of [history] the live folded tail supersedes.
+/// Trailing `partial` rows are the running turn's older persisted snapshot —
+/// the live fold (task_run_stream envelopes through TranscriptLiveFolder)
+/// replaces them while it streams; they render again (authoritative) on the
+/// next reconcile once the live tail is cleared. A `lost` row breaks the
+/// walk: the partial before it is the authoritative interrupted marker, not
+/// a snapshot the live tail should hide.
+int liveSupersededCount(List<TaskMessage> history) {
+  var n = 0;
+  for (var i = history.length - 1; i >= 0; i--) {
+    final row = history[i];
+    if (row.partial && !row.lost) {
+      n++;
+    } else {
+      break;
+    }
+  }
+  return n;
+}
+
 int _taskRunInt(dynamic value) {
   if (value is num) return value.toInt();
   return int.tryParse(value?.toString() ?? '') ?? 0;

@@ -22,6 +22,39 @@ void main() {
     expect(task.moduleAssignment?.lastError, 'classification_failed');
   });
 
+  // A2-c: while the live folded tail streams, it supersedes the
+  // history's trailing partial rows (same run, older persisted snapshot).
+  // The count is a pure function of the history tail; lost rows break the
+  // run so an interrupted marker before a gap still renders.
+  test('liveSupersededCount counts only trailing partial rows', () {
+    TaskMessage row({bool partial = false, bool lost = false}) => TaskMessage(
+          sessionId: '',
+          role: 'assistant',
+          text: 'x',
+          partial: partial,
+          lost: lost,
+        );
+
+    expect(liveSupersededCount(const []), 0);
+    expect(liveSupersededCount([row()]), 0);
+    expect(liveSupersededCount([row(), row(partial: true)]), 1);
+    expect(
+      liveSupersededCount([row(partial: true), row(partial: true)]),
+      2,
+    );
+    // A non-partial row stops the walk — an older partial stays visible.
+    expect(
+      liveSupersededCount([row(partial: true), row(), row(partial: true)]),
+      1,
+    );
+    // A lost row breaks the run: the partial before it is the authoritative
+    // interrupted marker, not a snapshot the live tail replaces.
+    expect(
+      liveSupersededCount([row(partial: true), row(lost: true)]),
+      0,
+    );
+  });
+
   test('legacy classification metadata is accepted during rolling upgrade', () {
     final task = TaskBoardTask.fromJson({
       'id': 'task-legacy',

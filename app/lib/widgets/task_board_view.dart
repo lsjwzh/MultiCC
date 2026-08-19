@@ -10,10 +10,12 @@ import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 
 import '../i18n.dart';
+import '../models/message.dart';
 import '../models/task_board.dart';
 import '../providers/session_manager.dart';
 import '../services/manage_service.dart';
 import '../services/settings_service.dart';
+import '../services/task_chat_transport.dart';
 import '../services/workspace_service.dart';
 import '../theme.dart';
 import '../utils/session_status_helpers.dart';
@@ -904,6 +906,36 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
 
   static const int _pageSize = 50;
 
+  // A2-c live tail: task_run_stream envelopes folded through the SHARED
+  // TranscriptLiveFolder (I8 — one folder for sessions and tasks). This list
+  // is the increment since the last authoritative reload; every successful
+  // _loadMessages reconciles by clearing it (the reloaded history already
+  // contains the persisted rows, partial tail included).
+  final List<ChatMessage> _liveMessages = [];
+  late final TaskChatTransport _transport = TaskChatTransport(
+    taskId: widget.task.id,
+    messages: _liveMessages,
+    onChanged: () {
+      if (mounted) setState(() {});
+    },
+    onRunBoundary: _insertRunSeparator,
+  );
+  // Reconcile anchors: a result slot event means the run's remaining rows
+  // are being persisted — reload authoritatively once the ledger catches up.
+  // The heartbeat covers envelope loss / socket gaps (I1): while a live tail
+  // is showing, periodically re-pull the truth.
+  Timer? _reconcileTimer;
+  Timer? _liveHeartbeat;
+
+  void _insertRunSeparator(String runId) {
+    _liveMessages.add(
+      ChatMessage(
+        role: MessageRole.system,
+        content: t('tbRunSeparator', {'n': '${_transport.runCount}'}),
+      ),
+    );
+  }
+
   String _messageKey(TaskMessage m) =>
       m.messageId ?? 'noid-${m.ts}-${m.role}-${m.text.hashCode}';
 
@@ -923,16 +955,16 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
     _hasMore = detail.hasMore;
   }
 
-  // 活动驱动的限频重拉：sheet 打开期间同任务的 run 事件触发静默刷新，
-  // 2s 节流（消息流是这里的核心价值，节流比任务板的 4s 更紧）。
-  DateTime _lastLiveRefresh = DateTime.fromMillisecondsSinceEpoch(0);
-  Timer? _liveRefreshTimer;
-
   @override
   void initState() {
     super.initState();
     _loadMessages();
     widget.taskRunEvents?.addListener(_onTaskRunActivity);
+    _liveHeartbeat = Timer.periodic(const Duration(seconds: 15), (_) {
+      // Only a visible live tail needs reconciling — an idle sheet keeps its
+      // 60s board-level poll and stays quiet.
+      if (mounted && _liveMessages.isNotEmpty) _loadMessages(silent: true);
+    });
   }
 
   @override
@@ -947,29 +979,25 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
   @override
   void dispose() {
     widget.taskRunEvents?.removeListener(_onTaskRunActivity);
-    _liveRefreshTimer?.cancel();
+    _reconcileTimer?.cancel();
+    _liveHeartbeat?.cancel();
     super.dispose();
   }
 
   void _onTaskRunActivity() {
     final event = widget.taskRunEvents?.value;
     if (!mounted || event == null || event.taskId != widget.task.id) return;
-    final sinceLast = DateTime.now().difference(_lastLiveRefresh);
-    if (sinceLast >= const Duration(seconds: 2)) {
-      _lastLiveRefresh = DateTime.now();
-      _liveRefreshTimer?.cancel();
-      _loadMessages(silent: true);
-      return;
+    // Fold the envelope into the live tail (the transport's onChanged fires
+    // setState). A result inside means the run just ended — schedule the
+    // authoritative reconcile; everything else renders live with zero REST.
+    final sawResult = event.slotEvents.any((e) => e['type'] == 'result');
+    _transport.handleEnvelope(event);
+    if (sawResult) {
+      _reconcileTimer?.cancel();
+      _reconcileTimer = Timer(const Duration(seconds: 2), () {
+        if (mounted) _loadMessages(silent: true);
+      });
     }
-    _liveRefreshTimer?.cancel();
-    _liveRefreshTimer = Timer(
-      const Duration(seconds: 2) - sinceLast,
-      () {
-        if (!mounted) return;
-        _lastLiveRefresh = DateTime.now();
-        _loadMessages(silent: true);
-      },
-    );
   }
 
   Future<void> _loadMessages({bool silent = false}) async {
@@ -988,6 +1016,12 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
         _absorbPage(detail, trackCursor: _oldestCursor == null);
         _recentRuns = detail.recentRuns;
         _loadingMsgs = false;
+        // Reconcile (I1): the authoritative page now covers everything the
+        // live tail folded — including the interrupted partial row — so the
+        // increment restarts from empty. Envelopes arriving after this keep
+        // streaming on top of the fresh truth.
+        _liveMessages.clear();
+        _transport.folder.resetTail();
       });
     } catch (e) {
       if (!mounted) return;
@@ -1328,7 +1362,12 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
       );
     }
     final msgs = _messages ?? const [];
-    if (msgs.isEmpty) {
+    // While the live tail streams it supersedes the history's trailing
+    // partial rows (the same run's older persisted snapshot); between
+    // reconciles the interrupted marker row renders again.
+    final superseded = _liveMessages.isNotEmpty ? liveSupersededCount(msgs) : 0;
+    final visibleHistory = msgs.length - superseded;
+    if (visibleHistory == 0 && _liveMessages.isEmpty) {
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(20),
@@ -1341,7 +1380,8 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
     }
     return ListView.separated(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      itemCount: msgs.length + (_hasMore ? 1 : 0),
+      itemCount:
+          visibleHistory + _liveMessages.length + (_hasMore ? 1 : 0),
       separatorBuilder: (_, __) => const SizedBox(height: 10),
       itemBuilder: (_, i) {
         if (_hasMore && i == 0) {
@@ -1362,7 +1402,16 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
             ),
           );
         }
-        final m = msgs[_hasMore ? i - 1 : i];
+        final idx = _hasMore ? i - 1 : i;
+        if (idx >= visibleHistory) {
+          // Live tail: already ChatMessage (run separators included) — one
+          // bubble tree, server actions off (I-A1/I-A3).
+          return MessageBubble(
+            message: _liveMessages[idx - visibleHistory],
+            enableServerActions: false,
+          );
+        }
+        final m = msgs[idx];
         if (m.lost) {
           return Padding(
             padding: const EdgeInsets.symmetric(vertical: 4),
