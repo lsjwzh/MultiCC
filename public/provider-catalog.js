@@ -507,7 +507,9 @@
       const usage = (worst.used != null && worst.total != null)
         ? `${quotaFmt2(worst.used)}/${quotaFmt2(worst.total)} (${quotaFmt2(worst.percent)}%)`
         : `${quotaFmt2(worst.percent)}%`;
-      return { text: `余量 ${worst.product || 'Ark'} ${worst.label || ''} ${usage}`, color: quotaPctColor(worst.percent), title: '火山方舟套餐额度（最紧张周期）' };
+      // Coding Plan 的「当前会话」窗口就是与 Agent Plan 相同的 5h 滚动窗口。
+      const windowLabel = String(worst.label || '').toLowerCase() === 'session' ? '5h' : (worst.label || '');
+      return { text: `余量 ${worst.product || 'Ark'} ${windowLabel} ${usage}`, color: quotaPctColor(worst.percent), title: '火山方舟套餐额度（最紧张周期）' };
     }
     if (kind === 'qoder') {
       const total = (data.quota && data.quota.total_quota && data.quota.total_quota.quota_summary) || {};
