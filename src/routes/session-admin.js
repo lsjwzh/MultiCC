@@ -368,7 +368,7 @@ function createSessionAdminRuntime(rawDeps) {
     });
 
     app.get('/api/v1/sessions/:id', (req, res) => {
-      const session = sessionQuery.get(req.params.id);
+      const session = sessionQuery.get(req.params.id, { includeTaskBound: true });
       if (!session) return v1Error(req, res, 404, 'session not found', 'session_not_found');
       return res.json(deps.withApiMeta({ session }, deps.requestContext(req, res)));
     });
@@ -521,8 +521,11 @@ function createSessionAdminRuntime(rawDeps) {
     });
 
     app.get('/api/sessions/:id', (req, res) => {
+      // includeTaskBound: task-bound chat sessions are ordinary sessions that
+      // are merely unlisted; direct addressing is their whole point (P1).
       const detail = sessionQuery.get(req.params.id, {
         includeHidden: true,
+        includeTaskBound: true,
         presenter: legacySessionDetailPresenter,
       });
       if (!detail) return res.status(404).json({ error: 'Session not found' });

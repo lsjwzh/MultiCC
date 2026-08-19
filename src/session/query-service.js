@@ -42,12 +42,19 @@ function createSessionQueryService({ records, runtime, presenter = sessionDtoPre
   function context(record, {
     includeHidden = false,
     includeTaskExecutionSlots = false,
+    includeTaskBound = false,
   } = {}) {
     if (!record || typeof record !== 'object') return null;
     // `includeHidden` predates TaskRun pools and is used by legacy admin
     // projections for aux/gateway records. It must not accidentally grant
     // access to the separate internal execution-slot namespace.
     if (record.taskExecutionSlot === true && !includeTaskExecutionSlots) return null;
+    // Task-bound chat sessions (P1: 任务专属隐藏会话) are ordinary chat
+    // sessions 1:1-owned by a board task. They are hidden from fleet/session
+    // LISTS by default so the fleet stays human-shaped — but unlike execution
+    // slots they stay addressable: the task chat view opens them through the
+    // ordinary session APIs with an explicit includeTaskBound opt-in.
+    if (typeof record.taskBoundTaskId === 'string' && record.taskBoundTaskId && !includeTaskBound) return null;
     if (!includeHidden && HIDDEN_SESSION_TYPES.has(record.type)) return null;
     return Object.freeze({ record, runtime: safeRuntime(runtime, record) });
   }
@@ -69,6 +76,7 @@ function createSessionQueryService({ records, runtime, presenter = sessionDtoPre
     dirId,
     includeHidden = false,
     includeTaskExecutionSlots = false,
+    includeTaskBound = false,
     filter,
   } = {}) {
     const source = records.list();
@@ -79,7 +87,7 @@ function createSessionQueryService({ records, runtime, presenter = sessionDtoPre
     for (const record of source) {
       if (dirId !== undefined && record && record.dirId !== dirId) continue;
       if (typeof filter === 'function' && !filter(record)) continue;
-      const value = context(record, { includeHidden, includeTaskExecutionSlots });
+      const value = context(record, { includeHidden, includeTaskExecutionSlots, includeTaskBound });
       if (value) result.push(value);
     }
     return result;
@@ -93,10 +101,11 @@ function createSessionQueryService({ records, runtime, presenter = sessionDtoPre
   function getContext(id, {
     includeHidden = false,
     includeTaskExecutionSlots = false,
+    includeTaskBound = false,
   } = {}) {
     const key = String(id || '');
     if (!key) return null;
-    return context(records.get(key), { includeHidden, includeTaskExecutionSlots });
+    return context(records.get(key), { includeHidden, includeTaskExecutionSlots, includeTaskBound });
   }
 
   function get(id, options = {}) {

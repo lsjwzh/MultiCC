@@ -78,6 +78,11 @@ function createTaskBoardRuntime(deps) {
     ? deps.cancelUndeliveredTaskRun : null;
   const getCommanderMigrationStatus = typeof deps.getCommanderMigrationStatus === 'function'
     ? deps.getCommanderMigrationStatus : null;
+  // P1 task-bound hidden sessions: creates ordinary chat records carrying the
+  // taskBoundTaskId marker. Optional in reduced hosts/tests — without it the
+  // chat-session endpoint answers an explicit 501 instead of crashing.
+  const createSessionRecord = typeof deps.createSessionRecord === 'function'
+    ? deps.createSessionRecord : null;
   const logger = deps.logger || console;
   const taskRunAnswers = new Map();
   // Optional goal-mode helpers (from aux-goal). When present, a goal-flagged
@@ -2082,6 +2087,52 @@ function createTaskBoardRuntime(deps) {
   // Idempotent: no open run → 200 { cancelled:false } (a stop press racing a
   // natural completion is not an error). Queue release only happens when a
   // run was actually stopped; a no-op cancel must not mutate queues.
+  // P1 · task-bound hidden chat session (任务专属隐藏会话) — get-or-create the
+  // 1:1 ordinary chat session this task owns. The record is hidden from fleet
+  // lists by its taskBoundTaskId marker (query-service gate) yet stays fully
+  // addressable through ordinary session APIs, so the task chat view IS the
+  // ordinary chat view (tool cards, usage, memory injection, resume
+  // continuity) instead of a ledger projection. Zero coupling to execution
+  // slots: this never creates or touches taskExecutionSlot records, and the
+  // send path stays commander-routed until P1-b rewires it.
+  async function handleChatSession(req, res) {
+    if (!createSessionRecord) {
+      return res.status(501).json({ error: 'chat_session_unavailable' });
+    }
+    const task = board.tasks[req.params.taskId];
+    if (!task) return res.status(404).json({ error: 'task_not_found' });
+    const boundId = typeof task.chatSessionId === 'string' ? task.chatSessionId : '';
+    if (boundId && records.get(boundId)) {
+      return res.json({ ok: true, sessionId: boundId, created: false });
+    }
+    // A dangling binding (record deleted by cleanup/GC) heals by re-creating.
+    const dirId = core.taskDirId(board, task);
+    const dir = dirId && resolveDirectoryPort ? resolveDirectoryPort(dirId) : null;
+    if (!dir) return res.status(409).json({ error: 'directory_not_found' });
+    // Inherit the directory commander's runtime (cli/model/provider/effort)
+    // exactly like elastic workers do, so the bound session runs what the
+    // fleet runs; commander-less directories fall back to host defaults.
+    const commander = core.resolveDirectoryCommander(records, dirId);
+    const commanderRec = commander.ok ? commander.record : null;
+    const created = await createSessionRecord({
+      dir,
+      cli: commanderRec?.cli || 'claude',
+      kind: 'chat',
+      label: `任务 · ${String(task.title || '').slice(0, 40)}`,
+      model: commanderRec?.model || null,
+      provider: commanderRec?.provider || '',
+      effort: commanderRec?.effort || null,
+      taskBoundTaskId: task.id,
+      persistence: 'required',
+      persistenceSource: 'runtime.task-chat-session-create',
+    });
+    if (!created?.ok) {
+      return res.status(502).json({ error: created?.error || 'chat_session_create_failed' });
+    }
+    updateBoardTask(task.id, { chatSessionId: created.id });
+    return res.json({ ok: true, sessionId: created.id, created: true });
+  }
+
   async function handleCancelRun(req, res) {
     const task = board.tasks[req.params.taskId];
     if (!task) return res.status(404).json({ error: 'task_not_found' });
@@ -2206,6 +2257,12 @@ function createTaskBoardRuntime(deps) {
     app.post('/api/task-board/tasks/:taskId/cancel-run', (req, res) => {
       handleCancelRun(req, res).catch(error => {
         logger.log(`[multicc/taskboard] cancel-run failed: ${error?.message || error}`);
+        if (!res.headersSent) res.status(500).json({ error: 'internal_error' });
+      });
+    });
+    app.post('/api/task-board/tasks/:taskId/chat-session', (req, res) => {
+      handleChatSession(req, res).catch(error => {
+        logger.log(`[multicc/taskboard] chat-session failed: ${error?.message || error}`);
         if (!res.headersSent) res.status(500).json({ error: 'internal_error' });
       });
     });
