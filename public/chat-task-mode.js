@@ -310,6 +310,10 @@
     function sendUserMessage(payload) {
       const body = { text: String(payload.text || '') };
       if (payload.clientMsgId) body.clientMsgId = String(payload.clientMsgId).slice(0, 128);
+      // M4-T1: a composer answer to a pending question rides the same send
+      // transport with the chat-side requestId; the ingress resolves the
+      // pending run instead of opening a followup.
+      if (payload.userInputRequestId) body.userInputRequestId = String(payload.userInputRequestId).slice(0, 160);
       if (payload.goal) {
         body.goal = payload.goal;
         if (payload.goalLimits && typeof payload.goalLimits === 'object') body.goalLimits = payload.goalLimits;

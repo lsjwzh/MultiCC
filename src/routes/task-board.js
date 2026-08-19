@@ -1701,6 +1701,15 @@ function createTaskBoardRuntime(deps) {
   async function handleSend(req, res) {
     const task = board.tasks[req.params.taskId];
     if (!task) return res.status(404).json({ error: 'task_not_found' });
+    // M4-T1: the unified chat view answers a pending question through this
+    // transport with the chat-side userInputRequestId (composer semantics).
+    // Delegate to the answer ingress — same lease/idempotency checks — so the
+    // text resolves the waiting run instead of opening a followup run.
+    const userAnswerRequestId = String(req.body?.userInputRequestId || '').trim().slice(0, 160);
+    if (userAnswerRequestId) {
+      req.body.requestId = userAnswerRequestId;
+      return handleAnswer(req, res);
+    }
     const text = String(req.body?.text || '').trim();
     if (!text) return res.status(400).json({ error: 'empty_text' });
     const explicit = String(req.body?.target || '').trim() || null;

@@ -72,6 +72,28 @@ test('non-slot sessions and runless slots never forward', () => {
   assert.equal(runless.workspace.length, 0);
 });
 
+test('M4-T1 user_input_required and user_input_resolved forward immediately, byte-identical', () => {
+  const { clock, workspace, emit } = harness();
+  // The unified chat view renders its pending-question card from these two
+  // events; they are not delta-class, so they must bypass the coalescing
+  // window entirely (no flush needed) and keep every field.
+  emit(new Set(), {
+    type: 'user_input_required', requestId: 'usrq-1', taskId: 'tsk_1',
+    question: '选择环境', reason: '部署前确认', options: ['生产', '预发'],
+    allowMultiple: false,
+  }, 'slot-1');
+  assert.equal(clock.timers.length, 0, 'never buffered');
+  assert.deepEqual(workspace[0].payload.slotEvent, {
+    type: 'user_input_required', requestId: 'usrq-1', taskId: 'tsk_1',
+    question: '选择环境', reason: '部署前确认', options: ['生产', '预发'],
+    allowMultiple: false,
+  });
+  emit(new Set(), { type: 'user_input_resolved', requestId: 'usrq-1', taskId: 'tsk_1' }, 'slot-1');
+  assert.equal(workspace.length, 2);
+  assert.deepEqual(workspace[1].payload.slotEvent,
+    { type: 'user_input_resolved', requestId: 'usrq-1', taskId: 'tsk_1' });
+});
+
 test('delta-class events coalesce within the throttle window', () => {
   const { clock, workspace, emit } = harness();
   emit(new Set(), { type: 'part_delta', text: 'hel' }, 'slot-1');
