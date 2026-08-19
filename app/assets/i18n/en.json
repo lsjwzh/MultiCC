@@ -804,5 +804,9 @@
   "dispatchDockCollapsed": "Dispatches · {n} active · tap to open, drag to move",
   "dispatchDockExpanded": "Dispatches · {n} active · open · tap to collapse",
   "bgDockCollapsed": "Background tasks · {n} running · tap to open, drag to move",
-  "bgDockExpanded": "Background tasks · {n} running · open · tap to collapse"
+  "bgDockExpanded": "Background tasks · {n} running · open · tap to collapse",
+  "tbLoadOlder": "Load older messages",
+  "tbMsgPartial": "Output interrupted",
+  "tbRoleUser": "User",
+  "tbRoleAssistant": "Assistant"
 }

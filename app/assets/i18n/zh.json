@@ -804,5 +804,9 @@
   "dispatchDockCollapsed": "派发队列 · {n} 个进行中 · 点按展开，可拖动",
   "dispatchDockExpanded": "派发队列 · {n} 个进行中 · 已展开，点按收起",
   "bgDockCollapsed": "后台任务 · {n} 个进行中 · 点按展开，可拖动",
-  "bgDockExpanded": "后台任务 · {n} 个进行中 · 已展开，点按收起"
+  "bgDockExpanded": "后台任务 · {n} 个进行中 · 已展开，点按收起",
+  "tbLoadOlder": "加载更早的消息",
+  "tbMsgPartial": "输出中断",
+  "tbRoleUser": "用户",
+  "tbRoleAssistant": "助手"
 }

@@ -26,7 +26,7 @@ import 'task_run_summary_list.dart';
 ///   * tapping a task row opens a detail sheet (run state, areas, sessions,
 ///     cross-session message trail);
 ///   * status actions (done / reopen / archive) + reclassify call the
-///     localhost-only write endpoints and surface [LocalOnlyException] as a
+///     authenticated clients (57bfe99); a 403 from an outdated host surfaces as a
 ///     SnackBar;
 ///   * newly-filed tasks are auto-located and highlighted for 3s;
 ///
@@ -860,7 +860,7 @@ class _EmojiDot extends StatelessWidget {
 /// Bottom sheet for one task: run state + rounds/time, areas
 /// and session chips (tappable -> jump to session), the cross-session message
 /// trail (async [ManageService.fetchTaskMessages]), and the status / reclassify
-/// actions. Writes are localhost-only; a 403 surfaces as a [LocalOnlyException]
+/// actions. Writes need only authentication; a 403 from an outdated host surfaces as a [LocalOnlyException]
 /// SnackBar, other errors as a plain SnackBar.
 class _TaskDetailSheet extends StatefulWidget {
   final SettingsService settings;
@@ -888,11 +888,39 @@ class _TaskDetailSheet extends StatefulWidget {
 }
 
 class _TaskDetailSheetState extends State<_TaskDetailSheet> {
+  // A0 pagination: pages merge into an id-keyed store so a tail refresh never
+  // drops older pages the user already loaded (and updates partial flags in
+  // place). The visible list is the store sorted by ts.
+  final Map<String, TaskMessage> _messagesById = {};
+  bool _hasMore = false;
+  bool _loadingOlder = false;
+  String? _oldestCursor;
   List<TaskMessage>? _messages;
   List<TaskRunSummary> _recentRuns = const [];
   bool _loadingMsgs = true;
   String? _msgError;
   bool _busy = false;
+
+  static const int _pageSize = 50;
+
+  String _messageKey(TaskMessage m) =>
+      m.messageId ?? 'noid-${m.ts}-${m.role}-${m.text.hashCode}';
+
+  void _absorbPage(TaskBoardDetail detail, {bool trackCursor = false}) {
+    for (final m in detail.messages) {
+      _messagesById[_messageKey(m)] = m;
+    }
+    // Only the initial tail and explicit older pages move the global cursor;
+    // a tail refresh`s before value points at the tail, not the oldest row.
+    if (trackCursor && detail.before != null) _oldestCursor = detail.before;
+    final sorted = _messagesById.values.toList()
+      ..sort((a, b) {
+        final byTs = a.ts.compareTo(b.ts);
+        return byTs != 0 ? byTs : _messageKey(a).compareTo(_messageKey(b));
+      });
+    _messages = List.unmodifiable(sorted);
+    _hasMore = detail.hasMore;
+  }
 
   // 活动驱动的限频重拉：sheet 打开期间同任务的 run 事件触发静默刷新，
   // 2s 节流（消息流是这里的核心价值，节流比任务板的 4s 更紧）。
@@ -953,10 +981,10 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
     try {
       final detail = await ManageService(
         settings: widget.settings,
-      ).fetchTaskDetail(widget.task.id);
+      ).fetchTaskDetail(widget.task.id, limit: _pageSize);
       if (!mounted) return;
       setState(() {
-        _messages = detail.messages;
+        _absorbPage(detail, trackCursor: _oldestCursor == null);
         _recentRuns = detail.recentRuns;
         _loadingMsgs = false;
       });
@@ -969,6 +997,25 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
         _msgError = e.toString();
         _loadingMsgs = false;
       });
+    }
+  }
+
+  Future<void> _loadOlder() async {
+    if (_loadingOlder || !_hasMore) return;
+    final cursor = _oldestCursor;
+    if (cursor == null) return;
+    setState(() => _loadingOlder = true);
+    try {
+      final detail = await ManageService(settings: widget.settings)
+          .fetchTaskDetail(widget.task.id, before: cursor, limit: _pageSize);
+      if (!mounted) return;
+      setState(() {
+        _absorbPage(detail, trackCursor: true);
+        _loadingOlder = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _loadingOlder = false);
     }
   }
 
@@ -1307,14 +1354,39 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
     }
     return ListView.separated(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      itemCount: msgs.length,
+      itemCount: msgs.length + (_hasMore ? 1 : 0),
       separatorBuilder: (_, __) => const SizedBox(height: 10),
-      itemBuilder: (_, i) => _messageRow(msgs[i]),
+      itemBuilder: (_, i) {
+        if (_hasMore && i == 0) {
+          return Center(
+            child: TextButton.icon(
+              onPressed: _loadingOlder ? null : _loadOlder,
+              icon: _loadingOlder
+                  ? const SizedBox(
+                      width: 12,
+                      height: 12,
+                      child: CircularProgressIndicator(strokeWidth: 1.5),
+                    )
+                  : const Icon(Icons.history_rounded, size: 14),
+              label: Text(
+                t('tbLoadOlder'),
+                style: const TextStyle(fontSize: 11.5),
+              ),
+            ),
+          );
+        }
+        return _messageRow(msgs[_hasMore ? i - 1 : i]);
+      },
     );
   }
 
   Widget _messageRow(TaskMessage m) {
-    final label = m.sessionLabel ?? _sessionLabel(m.sessionId);
+    // The unified messages DTO carries no session identity (I-A3); fall back
+    // to a localized role name so the header never renders an empty label.
+    final rawLabel = m.sessionLabel ?? _sessionLabel(m.sessionId);
+    final label = rawLabel.trim().isNotEmpty
+        ? rawLabel
+        : t(m.role == 'user' ? 'tbRoleUser' : 'tbRoleAssistant');
     if (m.lost) {
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 4),
@@ -1391,6 +1463,17 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
             height: 1.45,
           ),
         ),
+        if (m.partial) ...[
+          const SizedBox(height: 3),
+          Text(
+            '⚠ ${t('tbMsgPartial')}',
+            style: const TextStyle(
+              color: AppColors.faint,
+              fontSize: 10.5,
+              fontStyle: FontStyle.italic,
+            ),
+          ),
+        ],
       ],
     );
   }
