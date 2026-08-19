@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
@@ -13,6 +14,7 @@ import '../models/task_board.dart';
 import '../providers/session_manager.dart';
 import '../services/manage_service.dart';
 import '../services/settings_service.dart';
+import '../services/workspace_service.dart';
 import '../theme.dart';
 import '../utils/session_status_helpers.dart';
 import '../utils/status_presentation.dart';
@@ -32,6 +34,11 @@ import 'task_run_summary_list.dart';
 /// notes); this matches the web dashboard, which also polls every 60s and only
 /// uses WS as a latency optimisation. Refresh also runs after each write so a
 /// reclassify / status change is reflected immediately.
+///
+/// Run activity is NOT deferred: [taskRunEvents] (the per-dir
+/// `task_run_stream` listenable from DashboardWorkspaceStore) drives a
+/// rate-limited silent refresh while a headless TaskRun streams, and is
+/// forwarded to the open detail sheet so its message trail live-updates.
 class TaskBoardView extends StatefulWidget {
   final SettingsService settings;
   final String dirId;
@@ -51,6 +58,10 @@ class TaskBoardView extends StatefulWidget {
   final void Function(String sessionId, {String? focusMessageId})?
   onOpenSession;
 
+  /// Live TaskRun activity for this directory (chat-view unification M4-T3).
+  /// Null on hosts without a workspace store — the 60s poll still applies.
+  final ValueListenable<TaskRunStreamEvent?>? taskRunEvents;
+
   const TaskBoardView({
     super.key,
     required this.settings,
@@ -58,6 +69,7 @@ class TaskBoardView extends StatefulWidget {
     required this.mgr,
     this.onTaskCount,
     this.onOpenSession,
+    this.taskRunEvents,
   });
 
   @override
@@ -86,6 +98,12 @@ class _TaskBoardViewState extends State<TaskBoardView> {
   Timer? _highlightTimer;
   final Map<String, GlobalKey> _taskKeys = {};
 
+  // task_run_stream 活动驱动的限频静默刷新：run 流式输出期间信封可高达
+  // 10 个/秒（delta 批），不能逐条触发 HTTP 刷新。空闲 ≥4s 立即刷新；
+  // 持续流式时按 4s 节流对齐，不会饿死。
+  DateTime _lastLiveRefresh = DateTime.fromMillisecondsSinceEpoch(0);
+  Timer? _liveRefreshTimer;
+
   @override
   void initState() {
     super.initState();
@@ -94,14 +112,49 @@ class _TaskBoardViewState extends State<TaskBoardView> {
       const Duration(seconds: 60),
       (_) => _refresh(silent: true),
     );
+    widget.taskRunEvents?.addListener(_onTaskRunActivity);
+  }
+
+  @override
+  void didUpdateWidget(covariant TaskBoardView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // The store replaces a directory's listenable when its connection is
+    // rebuilt — rebind instead of listening to a dead notifier.
+    if (oldWidget.taskRunEvents != widget.taskRunEvents) {
+      oldWidget.taskRunEvents?.removeListener(_onTaskRunActivity);
+      widget.taskRunEvents?.addListener(_onTaskRunActivity);
+    }
   }
 
   @override
   void dispose() {
+    widget.taskRunEvents?.removeListener(_onTaskRunActivity);
+    _liveRefreshTimer?.cancel();
     _poll?.cancel();
     _gatheringTimer?.cancel();
     _highlightTimer?.cancel();
     super.dispose();
+  }
+
+  /// Rate-limited silent refresh on headless run activity in this directory.
+  void _onTaskRunActivity() {
+    if (!mounted) return;
+    final sinceLast = DateTime.now().difference(_lastLiveRefresh);
+    if (sinceLast >= const Duration(seconds: 4)) {
+      _lastLiveRefresh = DateTime.now();
+      _liveRefreshTimer?.cancel();
+      _refresh(silent: true);
+      return;
+    }
+    _liveRefreshTimer?.cancel();
+    _liveRefreshTimer = Timer(
+      const Duration(seconds: 4) - sinceLast,
+      () {
+        if (!mounted) return;
+        _lastLiveRefresh = DateTime.now();
+        _refresh(silent: true);
+      },
+    );
   }
 
   Future<void> _refresh({bool silent = false}) async {
@@ -310,6 +363,7 @@ class _TaskBoardViewState extends State<TaskBoardView> {
         sessionLabels: labels,
         onOpenSession: widget.onOpenSession,
         onChanged: () => _refresh(silent: true),
+        taskRunEvents: widget.taskRunEvents,
       ),
     );
   }
@@ -816,12 +870,17 @@ class _TaskDetailSheet extends StatefulWidget {
   onOpenSession;
   final VoidCallback onChanged;
 
+  /// Live run activity for this directory; events for THIS task drive a
+  /// rate-limited silent reload so the trail streams while the run works.
+  final ValueListenable<TaskRunStreamEvent?>? taskRunEvents;
+
   const _TaskDetailSheet({
     required this.settings,
     required this.task,
     required this.sessionLabels,
     required this.onChanged,
     this.onOpenSession,
+    this.taskRunEvents,
   });
 
   @override
@@ -835,17 +894,62 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
   String? _msgError;
   bool _busy = false;
 
+  // 活动驱动的限频重拉：sheet 打开期间同任务的 run 事件触发静默刷新，
+  // 2s 节流（消息流是这里的核心价值，节流比任务板的 4s 更紧）。
+  DateTime _lastLiveRefresh = DateTime.fromMillisecondsSinceEpoch(0);
+  Timer? _liveRefreshTimer;
+
   @override
   void initState() {
     super.initState();
     _loadMessages();
+    widget.taskRunEvents?.addListener(_onTaskRunActivity);
   }
 
-  Future<void> _loadMessages() async {
-    setState(() {
-      _loadingMsgs = true;
-      _msgError = null;
-    });
+  @override
+  void didUpdateWidget(covariant _TaskDetailSheet oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.taskRunEvents != widget.taskRunEvents) {
+      oldWidget.taskRunEvents?.removeListener(_onTaskRunActivity);
+      widget.taskRunEvents?.addListener(_onTaskRunActivity);
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.taskRunEvents?.removeListener(_onTaskRunActivity);
+    _liveRefreshTimer?.cancel();
+    super.dispose();
+  }
+
+  void _onTaskRunActivity() {
+    final event = widget.taskRunEvents?.value;
+    if (!mounted || event == null || event.taskId != widget.task.id) return;
+    final sinceLast = DateTime.now().difference(_lastLiveRefresh);
+    if (sinceLast >= const Duration(seconds: 2)) {
+      _lastLiveRefresh = DateTime.now();
+      _liveRefreshTimer?.cancel();
+      _loadMessages(silent: true);
+      return;
+    }
+    _liveRefreshTimer?.cancel();
+    _liveRefreshTimer = Timer(
+      const Duration(seconds: 2) - sinceLast,
+      () {
+        if (!mounted) return;
+        _lastLiveRefresh = DateTime.now();
+        _loadMessages(silent: true);
+      },
+    );
+  }
+
+  Future<void> _loadMessages({bool silent = false}) async {
+    if (!silent) {
+      setState(() {
+        _loadingMsgs = true;
+        _msgError = null;
+      });
+    }
     try {
       final detail = await ManageService(
         settings: widget.settings,
@@ -858,6 +962,9 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
       });
     } catch (e) {
       if (!mounted) return;
+      // A failed silent refresh keeps the last good trail on screen — the
+      // transient error must not blank a list the user is already reading.
+      if (silent && _messages != null) return;
       setState(() {
         _msgError = e.toString();
         _loadingMsgs = false;

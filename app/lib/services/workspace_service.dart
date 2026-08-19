@@ -104,6 +104,30 @@ class SessionStatus {
   }
 }
 
+/// One `task_run_stream` envelope forwarded by the server's M1 forwarder:
+/// live activity of a headless TaskRun (chat-view unification §3-M1/M4-T3).
+/// The execution slot's session id intentionally has no representation here —
+/// the envelope never carries it, and the App must not invent one.
+class TaskRunStreamEvent {
+  final String taskId;
+  final String runId;
+
+  /// Directory the run executes in; null only if the server omitted it (the
+  /// socket is already per-directory, so this is informational).
+  final String? dirId;
+
+  /// Slot events, byte-identical to the slot's own event stream (≥1 entry,
+  /// unmodifiable). Delta batches arrive merged into one envelope.
+  final List<Map<String, dynamic>> slotEvents;
+
+  const TaskRunStreamEvent({
+    required this.taskId,
+    required this.runId,
+    this.dirId,
+    this.slotEvents = const [],
+  });
+}
+
 /// Subscribes to the server's per-directory `/ws/workspace` socket and exposes
 /// a live map of session id → [SessionStatus]. Notifies listeners on change.
 class WorkspaceService extends ChangeNotifier {
@@ -138,6 +162,42 @@ class WorkspaceService extends ChangeNotifier {
   /// sessions whose chat socket this app never opened. label == null means the
   /// label was cleared — fall back to the session id.
   void Function(String sessionId, String? label)? onSessionUpdated;
+
+  /// Fired on each `task_run_stream` envelope (headless TaskRun activity).
+  /// Consumed via [DashboardWorkspaceStore.taskRunEventsFor] by the task board
+  /// and the task detail sheet to live-refresh while a run streams; not part
+  /// of the session-status snapshot, hence no notifyListeners here.
+  void Function(TaskRunStreamEvent event)? onTaskRunEvent;
+
+  /// Parses a `task_run_stream` envelope. Returns null unless the message
+  /// carries both identities (taskId + runId) and at least one map-shaped
+  /// slot event — malformed traffic is dropped, never crashes the socket.
+  @visibleForTesting
+  static TaskRunStreamEvent? parseTaskRunStreamEnvelope(Map msg) {
+    if (msg['type'] != 'task_run_stream') return null;
+    final taskId = msg['taskId']?.toString() ?? '';
+    final runId = msg['runId']?.toString() ?? '';
+    if (taskId.isEmpty || runId.isEmpty) return null;
+    final slotEvents = <Map<String, dynamic>>[];
+    Map<String, dynamic>? frozen(dynamic raw) =>
+        raw is Map ? Map.unmodifiable(raw.cast<String, dynamic>()) : null;
+    final single = frozen(msg['slotEvent']);
+    if (single != null) slotEvents.add(single);
+    final batch = msg['slotEvents'];
+    if (batch is List) {
+      for (final item in batch) {
+        final frozenItem = frozen(item);
+        if (frozenItem != null) slotEvents.add(frozenItem);
+      }
+    }
+    if (slotEvents.isEmpty) return null;
+    return TaskRunStreamEvent(
+      taskId: taskId,
+      runId: runId,
+      dirId: msg['dirId']?.toString(),
+      slotEvents: List.unmodifiable(slotEvents),
+    );
+  }
 
   WorkspaceService({
     required this.settings,
@@ -176,7 +236,7 @@ class WorkspaceService extends ChangeNotifier {
       _channel = channel;
       _sub?.cancel();
       _sub = channel.stream.listen(
-        _onMessage,
+        handleSocketMessage,
         onError: (_) {
           if (attempt.isCurrent && _channel == channel) _scheduleReconnect();
         },
@@ -245,7 +305,10 @@ class WorkspaceService extends ChangeNotifier {
     );
   }
 
-  void _onMessage(dynamic raw) {
+  /// Handles one raw socket frame (string or byte payload). Public for tests
+  /// only; the socket subscription below is the sole production caller.
+  @visibleForTesting
+  void handleSocketMessage(dynamic raw) {
     String text;
     if (raw is String) {
       text = raw;
@@ -378,6 +441,11 @@ class WorkspaceService extends ChangeNotifier {
           (msg['message'] ?? '').toString(),
         );
       }
+    } else if (type == 'task_run_stream') {
+      // M4-T3: headless TaskRun activity forwarded by the M1 emitter. Pure
+      // event surface — never touches the session-status snapshot.
+      final event = parseTaskRunStreamEnvelope(msg);
+      if (event != null) onTaskRunEvent?.call(event);
     }
   }
 

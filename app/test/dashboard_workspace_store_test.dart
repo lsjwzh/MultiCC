@@ -197,6 +197,33 @@ void main() {
     expect(notifications, ['current:done:new service']);
   });
 
+  test('task run stream events surface on a per-directory listenable', () {
+    store.syncDirectories(['alpha']);
+    final listenable = store.taskRunEventsFor('alpha');
+    expect(listenable, isNotNull);
+
+    final received = <String>[];
+    listenable!.addListener(() => received.add(listenable.value!.taskId));
+
+    services['alpha']!.onTaskRunEvent?.call(
+      const TaskRunStreamEvent(taskId: 'task-1', runId: 'run-9'),
+    );
+    expect(received, ['task-1']);
+
+    // Removal detaches the service callback and disposes the notifier — a
+    // stale service can never reach a disposed listenable.
+    final removedService = services['alpha']!;
+    store.syncDirectories(const []);
+    expect(removedService.onTaskRunEvent, isNull);
+    expect(store.taskRunEventsFor('alpha'), isNull);
+
+    // A re-added directory gets a fresh listenable, not the disposed one.
+    store.syncDirectories(['alpha']);
+    final replacement = store.taskRunEventsFor('alpha');
+    expect(replacement, isNotNull);
+    expect(identical(replacement, listenable), isFalse);
+  });
+
   test('store disposal closes every remaining connection once', () {
     store.syncDirectories(['alpha', 'beta']);
     store.dispose();

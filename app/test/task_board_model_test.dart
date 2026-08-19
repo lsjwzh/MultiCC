@@ -33,4 +33,28 @@ void main() {
     expect(task.moduleAssignment?.running, isTrue);
     expect(task.moduleAssignment?.attempts, 1);
   });
+
+  // M4-T3: the unified chat view's messages DTO carries run attribution
+  // (which TaskRun produced the message) and the streaming-tail marker.
+  // Both are additive — old servers omit them and parse to the defaults.
+  test('task messages carry run attribution and streaming markers', () {
+    final streaming = TaskMessage.fromJson({
+      'sessionId': '',
+      'role': 'assistant',
+      'text': '部分输出…',
+      'taskRunId': 'run-abc123',
+      'partial': true,
+    });
+    expect(streaming.taskRunId, 'run-abc123');
+    expect(streaming.partial, isTrue);
+    expect(streaming.hasSessionTarget, isFalse);
+
+    final legacy = TaskMessage.fromJson({
+      'sessionId': 'session-1',
+      'role': 'user',
+      'text': 'hi',
+    });
+    expect(legacy.taskRunId, isNull);
+    expect(legacy.partial, isFalse);
+  });
 }
