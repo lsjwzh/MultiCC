@@ -2557,7 +2557,7 @@ function renderProviderList() {
       </div>
       <div style="display:flex;gap:8px;margin-left:auto;">
       <button class="btn" style="padding:4px 10px;font-size:12px" onclick="balanceProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}',this)">余量</button>
-      <button class="btn" style="padding:4px 10px;font-size:12px" onclick="speedTestProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}',this)">测速</button>
+      <button class="btn" style="padding:4px 10px;font-size:12px" onclick="speedTestProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}',this)">测速</button> <button class="btn" style="padding:4px 10px;font-size:12px" onclick="shareRelayProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}')" title="生成借道分享码，让另一台 multicc 通过本机代理使用这个 provider">借道分享</button>
       <button class="btn" style="padding:4px 10px;font-size:12px" onclick="editProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}')">编辑</button>
       <button class="btn" style="padding:4px 10px;font-size:12px" onclick="deleteProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}','${escapeHtml(p.name)}')">删除</button>
       </div>
