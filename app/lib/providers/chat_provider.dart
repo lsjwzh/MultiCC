@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert' show jsonDecode, jsonEncode;
 import 'package:flutter/widgets.dart';
 
 import '../i18n.dart';
@@ -15,6 +14,13 @@ import '../services/notification_service.dart';
 import '../services/quota_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
+import '../services/transcript_live_folder.dart';
+
+// Re-exported so existing tests keep importing the sidecar helpers from the
+// provider (their pre-extraction home); the implementation now lives with the
+// shared folder.
+export '../services/transcript_live_folder.dart'
+    show toolCallById, applyReasoningDelta, applyToolArgsDelta;
 
 bool _isRecoverableCodexReconnectErrorText(String text) {
   return RegExp(
@@ -241,97 +247,6 @@ class StagedSendTracker {
   }
 }
 
-// ── 非 Claude CLI 的 part_delta 边车（web chat-event-controller.js handlePartDelta）──
-//
-// codex/opencode 没有 Anthropic 式的 content_block_* 流，正文/推理/工具参数都以
-// part_delta 增量到达，权威快照则由 `assistant` 帧事后覆盖。三个纯函数只做增量
-// 应用，收敛交给 `_onAssistantSnapshot` 的权威覆盖 —— 语义与 web 相同，可脱离
-// socket 单测。
-
-/// 找到消息里指定 id 的工具卡（sidecar Thinking 卡也走它）。
-@visibleForTesting
-ToolCall? toolCallById(ChatMessage msg, String id) {
-  for (final tc in msg.toolCalls) {
-    if (tc.id == id) return tc;
-  }
-  return null;
-}
-
-/// 应用一帧 reasoning 增量：落到会话唯一的 Thinking 卡（id =
-/// `sidecar-reasoning-<sessionId>`，与 web 同键），文本追加进 `{text:…}`。
-/// 无 startedAt —— 推理没有真实的工具计时，不伪造时长也不进轨迹条。
-/// 返回消息是否变化（调用方据此 notifyListeners）。
-@visibleForTesting
-bool applyReasoningDelta(ChatMessage msg, String sessionId, String text) {
-  if (text.isEmpty) return false;
-  final id = 'sidecar-reasoning-$sessionId';
-  final existing = toolCallById(msg, id);
-  if (existing == null) {
-    msg.toolCalls.add(
-      ToolCall(id: id, name: 'Thinking', inputJson: jsonEncode({'text': text})),
-    );
-    return true;
-  }
-  var buffer = text;
-  final prev = existing.parsedInput?['text'];
-  // 只有当已积累内容确实来自本卡（{text:…} 键齐全）才在其后追加，防畸形 JSON 丢字。
-  if (prev is String) {
-    buffer = prev + text;
-  }
-  existing.inputJson = jsonEncode({'text': buffer});
-  return true;
-}
-
-/// 从卡片当前 inputJson 还原原始参数流缓冲：wrapper 形态
-/// `{"arguments":"…"}` 取回内串；已能 parse 的形态本身即原始串。
-String _rawToolArgsBuffer(ToolCall tc) {
-  final parsed = tc.parsedInput;
-  if (parsed != null && parsed.length == 1 && parsed['arguments'] is String) {
-    return parsed['arguments'] as String;
-  }
-  return tc.inputJson;
-}
-
-/// 与 web 相同的规范化：能整体 parse 就用规范化 JSON；否则包成
-/// `{"arguments": <raw>}`，保证 inputJson 始终是合法 JSON 可被 pretty 渲染。
-String _normalizeToolArgs(String raw) {
-  try {
-    final decoded = jsonDecode(raw);
-    return jsonEncode(decoded);
-  } catch (_) {
-    return jsonEncode({'arguments': raw});
-  }
-}
-
-/// 应用一帧工具参数增量：按 toolId 找卡追加参数片段；卡片不存在则创建
-/// （此刻打真实 startedAt —— 工具参数开始流出的时间就是工具开始时间，
-/// 与 web 边车创建时戳一致）。返回消息是否变化。
-@visibleForTesting
-bool applyToolArgsDelta(
-  ChatMessage msg,
-  String toolId,
-  String toolName,
-  String argsFragment, {
-  int now = 0,
-}) {
-  if (toolId.isEmpty || argsFragment.isEmpty) return false;
-  final existing = toolCallById(msg, toolId);
-  if (existing != null) {
-    final raw = _rawToolArgsBuffer(existing) + argsFragment;
-    existing.inputJson = _normalizeToolArgs(raw);
-    return true;
-  }
-  msg.toolCalls.add(
-    ToolCall(
-      id: toolId,
-      name: toolName.isNotEmpty ? toolName : 'Tool',
-      inputJson: _normalizeToolArgs(argsFragment),
-      startedAt: now,
-    ),
-  );
-  return true;
-}
-
 class ChatProvider extends ChangeNotifier {
   final SettingsService settings;
   final String sessionName;
@@ -352,6 +267,18 @@ class ChatProvider extends ChangeNotifier {
 
   final List<ChatMessage> _messages = [];
   List<ChatMessage> get messages => List.unmodifiable(_messages);
+
+  /// Shared live-fold core (chat-view unification I8): the session event
+  /// cases below delegate here; the task detail sheet drives its own
+  /// instance from task_run_stream envelopes. cli/sessionId are read through
+  /// getters so system_init / cli_switched need no sync point.
+  late final TranscriptLiveFolder _folder = TranscriptLiveFolder(
+    messages: _messages,
+    cliOf: () => _cli,
+    sessionIdOf: () => _sessionId ?? '',
+    onChanged: notifyListeners,
+    onTurnStart: bumpUnread,
+  );
 
   ChatConnectionState _connectionState = ChatConnectionState.disconnected;
   ChatConnectionState get connectionState => _connectionState;
@@ -666,8 +593,6 @@ class ChatProvider extends ChangeNotifier {
   int get sessionInputTokens => _sessionInputTokens;
   int get sessionOutputTokens => _sessionOutputTokens;
 
-  ChatMessage? _currentMsg;
-  final Map<int, ToolCall> _activeTools = {};
   int _reconnectAttempt = 0;
 
   /// 已发送、等服务端 FIFO 裁决的用户消息（对齐 web stagedUserBubbles：进队列的
@@ -704,11 +629,6 @@ class ChatProvider extends ChangeNotifier {
   /// Parsed view of the same event — feeds the usage detail sheet (main /
   /// sub / per-provider split) instead of re-reading the raw map in widgets.
   RoleTokenBreakdown? _lastRoleBreakdown;
-
-  /// The most recent assistant message, kept alive across _finishStreaming —
-  /// a role_token_stats arriving just after `result` (common ordering) still
-  /// targets this turn's bubble instead of being dropped on the floor.
-  ChatMessage? _lastAssistantMsg;
 
   /// Background-task danmaku state machine (web chat-live-ui.js parity).
   /// Fed by monitor_* / progress_heartbeat / background_tasks events.
@@ -988,9 +908,9 @@ class ChatProvider extends ChangeNotifier {
             : t('connectedCli', {'cli': _cli.name});
 
         final serverStreaming = msg['is_streaming'] == true;
-        if (serverStreaming && _currentMsg == null) {
-          _ensureAssistantMsg();
-        } else if (!serverStreaming && _currentMsg != null) {
+        if (serverStreaming && _folder.currentMsg == null) {
+          _folder.ensureAssistantMsg();
+        } else if (!serverStreaming && _folder.currentMsg != null) {
           _finishStreaming();
           _addSystemMsg(t('responseCompletedDisconnected'));
         }
@@ -1066,24 +986,24 @@ class ChatProvider extends ChangeNotifier {
         break;
 
       case 'content_block_start':
-        _onContentBlockStart(evt.payload as Map<String, dynamic>);
+        _folder.contentBlockStart(evt.payload as Map<String, dynamic>);
         break;
 
       case 'content_block_delta':
-        _onContentBlockDelta(evt.payload as Map<String, dynamic>);
+        _folder.contentBlockDelta(evt.payload as Map<String, dynamic>);
         break;
 
       case 'assistant':
-        _onAssistantSnapshot(evt.payload as Map<String, dynamic>);
+        _folder.assistantSnapshot(evt.payload as Map<String, dynamic>);
         break;
 
       case 'part_delta':
-        _onPartDelta(evt.payload as Map<String, dynamic>);
+        _folder.partDelta(evt.payload as Map<String, dynamic>);
         break;
 
       case 'user':
         // tool_result frames (the paired completion of each tool call).
-        _onUserToolResult(evt.payload as Map<String, dynamic>);
+        _folder.userToolResult(evt.payload as Map<String, dynamic>);
         break;
 
       case 'content_block_stop':
@@ -1354,7 +1274,7 @@ class ChatProvider extends ChangeNotifier {
             _lastRoleBreakdown = breakdown;
             // Attach live so the detail chip appears during streaming; a
             // post-result arrival falls back to the kept-alive last bubble.
-            final target = _currentMsg ?? _lastAssistantMsg;
+            final target = _folder.currentMsg ?? _folder.lastAssistantMsg;
             if (target != null) {
               target.usage ??= MessageUsage();
               target.usage!.roleBreakdown = breakdown;
@@ -1889,210 +1809,15 @@ class ChatProvider extends ChangeNotifier {
     if (usage is Map) {
       _requestUsage = MessageUsage.fromJson(Map<String, dynamic>.from(usage));
     }
-    _ensureAssistantMsg();
-    notifyListeners();
-  }
-
-  void _ensureAssistantMsg() {
-    if (_currentMsg == null) {
-      _currentMsg = ChatMessage(role: MessageRole.assistant, isStreaming: true);
-      _messages.add(_currentMsg!);
-      _lastAssistantMsg = _currentMsg;
-      _activeTools.clear();
-      // A new assistant turn started. If the user is up reading history, count
-      // it as one unread new message (drives the "↓ N new" pill). One bump per
-      // turn since subsequent steps reuse this same bubble.
-      bumpUnread();
-    }
-  }
-
-  void _onContentBlockStart(Map<String, dynamic> evt) {
-    final idx = (evt['index'] as num?)?.toInt() ?? 0;
-    final block = evt['content_block'] as Map<String, dynamic>?;
-    final bType = block?['type'] as String? ?? '';
-
-    if (bType == 'tool_use') {
-      final tc = ToolCall(
-        id: (block?['id'] ?? '').toString(),
-        name: (block?['name'] ?? '').toString(),
-        // Live timing stamp (mirror of the web's chat-event-controller): the
-        // tool's real wall-clock start, paired with endedAt at tool_result.
-        startedAt: DateTime.now().millisecondsSinceEpoch,
-      );
-      _activeTools[idx] = tc;
-      _ensureAssistantMsg();
-      _currentMsg!.toolCalls.add(tc);
-      notifyListeners();
-    }
-  }
-
-  /// A `user` role frame carrying tool_result blocks — one per finished tool.
-  /// Mirrors the web's handleToolResult: match by tool_use_id, attach the
-  /// result text, mark done, and stamp endedAt for the measured duration.
-  void _onUserToolResult(Map<String, dynamic> msg) {
-    final inner = msg['message'];
-    final content = inner is Map ? inner['content'] : msg['content'];
-    if (content is! List) return;
-    var changed = false;
-    for (final raw in content) {
-      if (raw is! Map || raw['type'] != 'tool_result') continue;
-      final id = raw['tool_use_id']?.toString() ?? '';
-      if (id.isEmpty) continue;
-      final tools = _currentMsg?.toolCalls ?? const <ToolCall>[];
-      for (final tc in tools) {
-        if (tc.id != id) continue;
-        final c = raw['content'];
-        tc.result = c is String
-            ? c
-            : c is List
-            ? c
-                  .map(
-                    (item) =>
-                        item is Map ? (item['text'] ?? '').toString() : '',
-                  )
-                  .join('')
-            : c?.toString();
-        tc.isError = raw['is_error'] == true;
-        tc.isDone = true;
-        tc.endedAt = DateTime.now().millisecondsSinceEpoch;
-        changed = true;
-        break;
-      }
-    }
-    if (changed) notifyListeners();
-  }
-
-  void _onContentBlockDelta(Map<String, dynamic> evt) {
-    final idx = (evt['index'] as num?)?.toInt() ?? 0;
-    final delta = evt['delta'] as Map<String, dynamic>?;
-    final dType = delta?['type'] as String? ?? '';
-
-    if (dType == 'text_delta') {
-      final text = delta?['text'] as String? ?? '';
-      _ensureAssistantMsg();
-      _currentMsg!.content += text;
-      notifyListeners();
-    } else if (dType == 'input_json_delta') {
-      final partial = delta?['partial_json'] as String? ?? '';
-      final tc = _activeTools[idx];
-      if (tc != null) {
-        tc.inputJson += partial;
-        notifyListeners();
-      }
-    }
-  }
-
-  void _onAssistantSnapshot(Map<String, dynamic> message) {
-    final blocks = message['content'];
-    if (blocks is! List) return;
-    var changed = false;
-    for (final raw in blocks) {
-      if (raw is! Map) continue;
-      if (raw['type'] == 'text') {
-        final text = raw['text']?.toString() ?? '';
-        if (text.isEmpty) continue;
-        _ensureAssistantMsg();
-        if (message['textSnapshot'] == true) {
-          _currentMsg!.content = text;
-        } else if (_cli == SessionCli.codex) {
-          _currentMsg!.content += text;
-        } else if (_currentMsg!.content.isEmpty) {
-          _currentMsg!.content = text;
-        }
-        changed = true;
-      } else if (raw['type'] == 'tool_use') {
-        // Codex/OpenCode tools arrive as complete blocks here (no
-        // content_block_start), so this is their live creation site — mirror
-        // of the web's finalizeAssistantMsg branch. Without it the app showed
-        // no tool cards live on non-claude CLIs until a history reload.
-        final id = raw['id']?.toString() ?? '';
-        if (id.isEmpty) continue;
-        final name = raw['name']?.toString() ?? 'Tool';
-        final input = raw['input'];
-        _ensureAssistantMsg();
-        ToolCall? existing;
-        for (final tc in _currentMsg!.toolCalls) {
-          if (tc.id == id) {
-            existing = tc;
-            break;
-          }
-        }
-        if (existing == null) {
-          _currentMsg!.toolCalls.add(
-            ToolCall(
-              id: id,
-              name: name,
-              inputJson: input != null ? jsonEncode(input) : '',
-              startedAt: DateTime.now().millisecondsSinceEpoch,
-            ),
-          );
-          changed = true;
-        } else if (input != null && existing.inputJson != jsonEncode(input)) {
-          // Authoritative convergence (web finalizeAssistantMsg parity): the
-          // snapshot carries the COMPLETE input, so it overwrites whatever
-          // the part_delta sidecar streamed so far — never the reverse. The
-          // sidecar reasoning card (id `sidecar-reasoning-*`) never matches a
-          // snapshot block id, so it is untouched here.
-          existing.inputJson = jsonEncode(input);
-          changed = true;
-        }
-      }
-    }
-    if (changed) notifyListeners();
-  }
-
-  void _onPartDelta(Map<String, dynamic> message) {
-    if (_cli == SessionCli.claude) return;
-    final delta = message['delta'];
-    if (delta is! Map) return;
-    final dType = delta['type']?.toString() ?? '';
-
-    if (dType == 'text') {
-      final text = delta['text']?.toString() ?? '';
-      if (text.isEmpty) return;
-      _ensureAssistantMsg();
-      _currentMsg!.content += text;
-      notifyListeners();
-    } else if (dType == 'reasoning') {
-      // Live reasoning streams into the session's single Thinking sidecar
-      // card (web handlePartDelta parity). No startedAt: reasoning has no
-      // real tool timing — must not fabricate durations or trajectory rows.
-      final text = delta['text']?.toString() ?? '';
-      if (text.isEmpty) return;
-      _ensureAssistantMsg();
-      if (applyReasoningDelta(_currentMsg!, _sessionId ?? '', text)) {
-        notifyListeners();
-      }
-    } else if (dType == 'tool') {
-      // Progressive tool-argument fragments: keyed by delta.toolId, args
-      // accumulate at delta.tool.arguments. The authoritative `assistant`
-      // snapshot later overwrites with the complete input.
-      final toolId = delta['toolId']?.toString() ?? '';
-      final tool = delta['tool'];
-      if (toolId.isEmpty || tool is! Map) return;
-      _ensureAssistantMsg();
-      if (applyToolArgsDelta(
-        _currentMsg!,
-        toolId,
-        tool['name']?.toString() ?? 'Tool',
-        tool['arguments']?.toString() ?? '',
-        now: DateTime.now().millisecondsSinceEpoch,
-      )) {
-        notifyListeners();
-      }
-    }
+    _folder.messageStart();
   }
 
   void _onResult(Map<String, dynamic> msg) {
     // Attach token usage + durationMs to the current assistant message BEFORE
-    // finishing streaming (because _finishStreaming() sets _currentMsg to null)
-    if (_currentMsg != null) {
-      if (msg['usage'] != null) {
-        _currentMsg!.usage = MessageUsage.fromJson(
-          msg['usage'] as Map<String, dynamic>,
-        );
-      }
-
+    // finishing streaming (because _finishStreaming() clears currentMsg).
+    _folder.attachResultUsage(msg);
+    final resultTarget = _folder.currentMsg;
+    if (resultTarget != null) {
       // Compute main-model tokens saved by offloading to sub-roles.
       // See the WS timing note above: role_token_stats may arrive before or
       // after result; _lastRoleTokens caches the latest value so we accept a
@@ -2107,8 +1832,8 @@ class ChatProvider extends ChangeNotifier {
           saved += (sub['cacheWrite'] as num?)?.toInt() ?? 0;
           saved += (sub['cacheRead'] as num?)?.toInt() ?? 0;
           if (saved > 0) {
-            _currentMsg!.usage ??= MessageUsage();
-            _currentMsg!.usage!.savedMainTokens = saved;
+            resultTarget.usage ??= MessageUsage();
+            resultTarget.usage!.savedMainTokens = saved;
           }
         }
       }
@@ -2118,13 +1843,9 @@ class ChatProvider extends ChangeNotifier {
       // result-first race resolves through the cached breakdown.
       final breakdown = _lastRoleBreakdown;
       if (breakdown != null && !breakdown.isEmpty) {
-        _currentMsg!.usage ??= MessageUsage();
-        _currentMsg!.usage!.roleBreakdown = breakdown;
+        resultTarget.usage ??= MessageUsage();
+        resultTarget.usage!.roleBreakdown = breakdown;
       }
-
-      // Server-stamped wall-clock duration: user submit → AI reply complete.
-      final dur = (msg['durationMs'] as num?)?.toInt();
-      if (dur != null) _currentMsg!.durationMs = dur;
     }
 
     _finishStreaming();
@@ -2173,14 +1894,7 @@ class ChatProvider extends ChangeNotifier {
   }
 
   void _finishStreaming() {
-    if (_currentMsg != null) {
-      _currentMsg!.isStreaming = false;
-      for (final tc in _currentMsg!.toolCalls) {
-        tc.isDone = true;
-      }
-      _currentMsg = null;
-    }
-    _activeTools.clear();
+    _folder.finishStreaming();
     // Turn end: settle turn-scoped background rows (heartbeat + any
     // still-unconfirmed spinning row). Confirmed background tasks keep
     // spinning — they outlive the turn by design (web parity).
@@ -2322,17 +2036,17 @@ class ChatProvider extends ChangeNotifier {
     // system_init may have created an empty local streaming bubble before the
     // ordered chat_history frame arrives. Replace that placeholder with the
     // authoritative cumulative tail instead of keeping both bubbles alive.
-    if (liveTail != null && _currentMsg != null) {
-      _messages.remove(_currentMsg);
-      _currentMsg = null;
+    if (liveTail != null && _folder.currentMsg != null) {
+      _messages.remove(_folder.currentMsg);
+      _folder.currentMsg = null;
     }
-    final insertIdx = _currentMsg != null
+    final insertIdx = _folder.currentMsg != null
         ? _messages.length - 1
         : _messages.length;
     _messages.insertAll(insertIdx, parsed);
     if (liveTail != null) {
-      _currentMsg = liveTail;
-      _activeTools.clear();
+      _folder.currentMsg = liveTail;
+      _folder.activeTools.clear();
     }
     _seedUsageFromHistory();
     notifyListeners();
@@ -2356,8 +2070,8 @@ class ChatProvider extends ChangeNotifier {
     _messages
       ..clear()
       ..addAll(parsed);
-    _currentMsg = streamingAssistantTail(parsed);
-    _activeTools.clear();
+    _folder.currentMsg = streamingAssistantTail(parsed);
+    _folder.activeTools.clear();
     _seedUsageFromHistory();
     // 历史已是权威：未裁决的暂存失去意义（已落盘的在历史里，未落盘的队列消息靠
     // 队列面板展示），取消它们的兜底定时器。
@@ -2372,7 +2086,7 @@ class ChatProvider extends ChangeNotifier {
   /// against a turn it did not measure. A live streaming tail is the exception:
   /// its `message_start` describes the turn still on screen.
   void _seedUsageFromHistory() {
-    if (_currentMsg == null) _requestUsage = null;
+    if (_folder.currentMsg == null) _requestUsage = null;
     var input = 0;
     var output = 0;
     for (final m in _messages) {
@@ -2513,8 +2227,7 @@ class ChatProvider extends ChangeNotifier {
       _messages
         ..clear()
         ..addAll(parsed);
-      _currentMsg = null;
-      _activeTools.clear();
+      _folder.resetTail();
       _oldestLoadedMsgId = _firstLoadedMsgId();
       _historyHasMore = page.hasMore;
       _historyExhausted = !page.hasMore;
@@ -2654,8 +2367,7 @@ class ChatProvider extends ChangeNotifier {
     } else {
       _messages.clear();
     }
-    _currentMsg = null;
-    _activeTools.clear();
+    _folder.resetTail();
     _seedUsageFromHistory();
     _historyApplied = false;
     _stagedTracker.clear();
@@ -2687,8 +2399,7 @@ class ChatProvider extends ChangeNotifier {
       // Genuine context switch (e.g. changing the working directory): drop the
       // old transcript immediately and reload from scratch.
       _messages.clear();
-      _currentMsg = null;
-      _activeTools.clear();
+      _folder.resetTail();
       _seedUsageFromHistory();
       _historyApplied = false;
       _stagedTracker.clear();
