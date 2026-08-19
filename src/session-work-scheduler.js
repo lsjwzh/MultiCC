@@ -405,10 +405,21 @@ function createSessionWorkScheduler({
           && controlAllowedByClassify(item, cls));
         if (control) return control;
       }
-      // At-rest verdicts (W/E/B) leave stale FIFO items untouched — the queue
+      // At-rest verdicts (W/B) leave stale FIFO items untouched — the queue
       // does nothing until the user's next direct admit or a D verdict. Every
       // other state (D succeeded, never-classified, P exhausted) drains FIFO.
-      if (cls === 'W' || cls === 'E' || cls === 'B') return null;
+      if (cls === 'W' || cls === 'B') return null;
+      if (cls === 'E') {
+        // E parks the queue for a human decision, and a hidden task execution
+        // slot has no human: Task Board owns the failed run's lifecycle (the
+        // error ledger entry and the bounded retry already consumed the E
+        // verdict), so its own re-engagement — any delivery carrying task-run
+        // lineage — IS that decision. Unlock the oldest lineage item; ordinary
+        // deliveries stay parked exactly as before.
+        const reengagement = ordered.find(item => taskRunIdForItem(item) != null);
+        if (reengagement) return reengagement;
+        return null;
+      }
       if (cls === 'P') return null;
       return ordered[0];
     }
