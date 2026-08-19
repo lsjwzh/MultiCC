@@ -12,6 +12,7 @@ import '../models/agent_preset.dart';
 import '../models/provider_limit_label.dart';
 import '../services/settings_service.dart';
 import '../services/manage_service.dart';
+import '../services/claude_models_service.dart';
 import '../services/qoder_models_service.dart';
 import '../theme.dart';
 import '../services/agent_preset_service.dart';
@@ -129,6 +130,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     _pickedEffort = _defaultEffort;
     _loadPresets();
     if (_isQoder) _loadQoderModels();
+    if (_isClaude) _loadClaudeModels();
     final opts = _currentModelOptions;
     _pickedModel = opts.isNotEmpty ? opts.first.key : null;
   }
@@ -151,6 +153,25 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
       await QoderModelsService(settings: widget.settings).load();
     } catch (_) {}
     if (!mounted || !_isQoder || QoderModelsService.cached.length == before) {
+      return;
+    }
+    setState(() {
+      final opts = _currentModelOptions;
+      final current = _customModel ? null : _pickedModel;
+      if (current != null && opts.any((e) => e.key == current)) return;
+      _pickedModel = opts.isNotEmpty ? opts.first.key : null;
+    });
+  }
+
+  /// Pull the CLI-bundle model list and re-seed the model field once it lands.
+  /// No-op when the list is already warm or unavailable — the dropdown just
+  /// keeps the built-in table.
+  Future<void> _loadClaudeModels() async {
+    final before = ClaudeModelsService.cached.length;
+    try {
+      await ClaudeModelsService(settings: widget.settings).load();
+    } catch (_) {}
+    if (!mounted || !_isClaude || ClaudeModelsService.cached.length == before) {
       return;
     }
     setState(() {
@@ -218,7 +239,8 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     // No provider (or provider without modelOptions):
     //  - Claude: fall back to standard model list
     //  - Codex: empty list (custom model entry only), matching web behavior
-    return _isClaude ? kClaudeModelOptions : const [];
+    // Live CLI-bundle list once _loadClaudeModels() lands; static table until then.
+    return _isClaude ? ClaudeModelsService.options() : const [];
   }
 
   String _providerIdForPresetDefault(AgentPreset preset) {
@@ -401,6 +423,9 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
       if (cli == SessionCli.qoder) _loadQoderModels();
       return;
     }
+    // Claude has a provider pool, but Claude Official exposes no modelOptions —
+    // warm the CLI-bundle list so the dropdown upgrades once it lands.
+    if (cli == SessionCli.claude) _loadClaudeModels();
     try {
       final d = await ManageService(
         settings: widget.settings,

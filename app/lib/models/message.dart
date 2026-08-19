@@ -310,12 +310,18 @@ extension SessionKindX on SessionKind {
 
 /// Claude model choices for new sessions / live switching.
 /// Empty value = follow the user's /model default on the server machine.
+/// Offline fallback only — the live list comes from ClaudeModelsService
+/// (GET /api/claude/models, extracted from the installed CLI's bundle).
+/// Keep in sync with CLAUDE_MODEL_OPTIONS in public/shared/models.js.
 const kClaudeModelOptions = <MapEntry<String, String>>[
   MapEntry('', '默认（跟随 Claude 设置）'),
+  MapEntry('claude-opus-5', 'Opus 5'),
+  MapEntry('claude-opus-5[1m]', 'Opus 5 (1M context)'),
+  MapEntry('claude-opus-4-8', 'Opus 4.8'),
+  MapEntry('claude-sonnet-5', 'Sonnet 5'),
+  MapEntry('claude-sonnet-4-6', 'Sonnet 4.6'),
   MapEntry('claude-fable-5', 'Fable 5'),
   MapEntry('claude-fable-5[1m]', 'Fable 5 (1M context)'),
-  MapEntry('claude-opus-4-8', 'Opus 4.8'),
-  MapEntry('claude-sonnet-4-6', 'Sonnet 4.6'),
   MapEntry('claude-haiku-4-5-20251001', 'Haiku 4.5'),
 ];
 
