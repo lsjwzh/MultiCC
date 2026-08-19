@@ -61,7 +61,7 @@ test('taskTranscriptMessages projects ledger rows into chat DTOs', () => {
       messages: [
         {
           messageId: 'adm-2', role: 'user', kind: 'admission',
-          content: '再补充一下', metadata: {}, createdAt: 30,
+          content: '再补充一下', metadata: { clientMsgId: 'client-7' }, createdAt: 30,
         },
         {
           messageId: 'err-1', role: 'system', kind: 'error',
@@ -91,8 +91,11 @@ test('taskTranscriptMessages projects ledger rows into chat DTOs', () => {
   assert.equal('code' in messages[3], false);
   assert.equal('retryable' in messages[3], false);
   assert.equal(messages[4].partial, true);
+  // The sender's idempotency key rides along so a task-mode chat view can
+  // commit its locally staged user bubble (same loop as chat_msg_meta).
+  assert.equal(messages[2].clientMsgId, 'client-7');
   // Plain messages stay lean: no phantom metadata keys on admission rows of run-2.
-  assert.deepEqual(Object.keys(messages[2]).sort(), ['content', 'id', 'kind', 'role', 'taskRunId', 'ts']);
+  assert.deepEqual(Object.keys(messages[0]).sort(), ['content', 'id', 'kind', 'role', 'taskRunId', 'ts']);
 });
 
 test('taskTranscriptMessages drops transport wrappers (flag + legacy prefix, user rows only)', () => {

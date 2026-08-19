@@ -51,6 +51,9 @@ function ledgerRowToChatMessage(message, taskRunId) {
   if (taskRunId) projected.taskRunId = taskRunId;
   const metadata = message.metadata || {};
   if (Array.isArray(metadata.tools) && metadata.tools.length) projected.tools = metadata.tools;
+  // The sender's idempotency key: the front-end's staged-bubble commit loop
+  // matches by clientMsgId, exactly like chat_msg_meta in session mode.
+  if (metadata.clientMsgId) projected.clientMsgId = String(metadata.clientMsgId);
   if (metadata.usage && typeof metadata.usage === 'object') projected.usage = metadata.usage;
   if (metadata.cost != null) projected.cost = metadata.cost;
   if (Number.isFinite(Number(metadata.durationMs))) projected.durationMs = Number(metadata.durationMs);
