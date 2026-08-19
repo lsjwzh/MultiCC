@@ -55,28 +55,22 @@ test('task detail session links use the encoded chat navigation contract', () =>
     '/chat.html?session=session+one%26%E4%B8%AD%E6%96%87&message=msg%2F1%3Fx',
   );
   assert.equal(taskBoardUi.sessionChatUrl(''), null);
+  // M4: the legacy manage detail modal is gone; meta.html (the task archive
+  // page) is the remaining detail-style consumer of the link contract.
   const source = fs.readFileSync(path.join(__dirname, '..', 'public', 'meta.html'), 'utf8');
   assert.match(source, /<script src="task-board-ui\.js"><\/script>/);
   assert.match(source, /t\.sessionIds\.map[\s\S]*?sessionChatUrl\(sid\)[\s\S]*?target="_blank"/);
   assert.match(source, /sessionChatUrl\(it\.sessionId, it\.messageId\)/);
   assert.match(source, /td-msg-link/);
-  const manage = fs.readFileSync(path.join(__dirname, '..', 'public', 'manage-taskboard.js'), 'utf8');
-  assert.match(manage, /sessionChatUrl\(it\.sessionId, it\.messageId\)/);
-  assert.match(manage, /tb-msg-link/);
   assert.doesNotMatch(source, /sessionChatUrl\([^)]*\)[^\n]*(?:token|cwd)=/);
 });
 
-test('manage task detail renders clickable session links in chips and message rows', async () => {
-  const content = {
-    innerHTML: '',
-    querySelectorAll: () => [],
-    querySelector: () => null,
-  };
+test('M4 task rows carry the modal-only operations after the detail modal retirement', async () => {
   const context = vm.createContext({
     console,
     window: { MultiCCTaskBoardUi: taskBoardUi },
     document: {
-      getElementById: id => id === 'tb-detail-content' ? content : null,
+      getElementById: () => null,
       createElement: () => ({}),
       body: { appendChild: () => {} },
       head: { appendChild: () => {} },
@@ -88,40 +82,37 @@ test('manage task detail renders clickable session links in chips and message ro
     clearTimeout: () => {},
     Date,
   });
-  // Same script order as manage.html: the shared status registry loads first, and
-  // the board renders its badges through it rather than through a local map.
   vm.runInContext(
     fs.readFileSync(path.join(__dirname, '..', 'public', 'status-presentation.js'), 'utf8'),
     context,
   );
-  const source = fs.readFileSync(path.join(__dirname, '..', 'public', 'manage-taskboard.js'), 'utf8');
-  vm.runInContext(source, context);
-  vm.runInContext(`
-    _tbBoard = {
-      modules: [{ id: 'mod-1', name: '前端 UI' }],
-      tasks: [],
-      sessionLabels: { 'session one&中文': '会话一' }
-    };
-    renderTaskBoardDetail({
-      task: {
-        id: 'task-1', moduleId: 'mod-1', title: '跳转修复', status: 'active',
-        sessionIds: ['session one&中文'], areas: [], moduleAssignment: null
-      },
-      items: [{
-        sessionId: 'session one&中文', sessionLabel: '会话一', role: 'user',
-        messageId: 'msg/1?x', ts: 1, text: '检查跳转'
-      }]
+  vm.runInContext(
+    fs.readFileSync(path.join(__dirname, '..', 'public', 'manage-taskboard.js'), 'utf8'),
+    context,
+  );
+  const row = vm.runInContext(`
+    _tbBoard = { modules: [], tasks: [], sessionLabels: {} };
+    _tbTaskRowHtml({
+      id: 'task-m4', title: '退役验证', status: 'active', refCount: 1, lastTs: 10,
+      runState: 'succeeded', sessionIds: [], attemptCount: 1,
+      worktreePath: '/repo/.multicc-worktrees/task-ab12cd34',
+      moduleAssignment: { running: false },
     });
   `, context);
-
-  const sessionUrl = '/chat.html?session=session+one%26%E4%B8%AD%E6%96%87';
-  const messageUrl = sessionUrl + '&amp;message=msg%2F1%3Fx';
-  assert.equal((content.innerHTML.match(/<a /g) || []).length, 2);
-  assert.match(content.innerHTML, new RegExp(sessionUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
-  assert.match(content.innerHTML, new RegExp(messageUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
-  assert.equal((content.innerHTML.match(/target="_blank"/g) || []).length, 2);
-  assert.match(content.innerHTML, /tb-chip tb-session-link/);
-  assert.match(content.innerHTML, /tb-msg user tb-msg-link/);
+  // The modal-only operations survive at row level; handlers take the event
+  // first and stop propagation inside (the row itself opens the chat view).
+  assert.match(row, /cleanupTaskWorktree\(event,'task-m4'/);
+  assert.match(row, /setTaskBoardStatus\('task-m4','done',event\)/);
+  assert.match(row, /reclassifyTaskBoardTask\(event,'task-m4'\)/);
+  // A task without a worktree shows no cleanup button.
+  const bare = vm.runInContext(`
+    _tbTaskRowHtml({
+      id: 'task-bare', title: '无 worktree', status: 'active', refCount: 1,
+      lastTs: 10, sessionIds: [], attemptCount: 1,
+    });
+  `, context);
+  assert.doesNotMatch(bare, /cleanupTaskWorktree/);
+  assert.match(bare, /setTaskBoardStatus\('task-bare','done',event\)/);
 });
 
 test('task board UI keeps pending modules first and sorts tasks by last activity', () => {
@@ -234,10 +225,10 @@ test('task board UI hides the Commander routing chip on the card', () => {
     const source = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
     assert.match(source, /taskRoutingLabel/);
   }
-  // The one-shot send toast ("已由 Commander…") is a transient send-time
-  // acknowledgement, not the card chip — it stays.
+  // The one-shot send toast ("已交给 Commander…") is a transient send-time
+  // acknowledgement from the board-tab composer — it stays.
   const composerSrc = fs.readFileSync(path.join(__dirname, '..', 'public/manage-taskboard.js'), 'utf8');
-  assert.match(composerSrc, /已由 Commander/);
+  assert.match(composerSrc, /交给 Commander/);
 });
 
 // ── parseTagResult ──────────────────────────────────────────────────────────
@@ -1292,15 +1283,16 @@ test('panel routing sends the original user source through the deterministic Com
 test('task body UI folds long text and escapes or text-renders untrusted content', () => {
   const manage = fs.readFileSync(path.join(__dirname, '..', 'public', 'manage-taskboard.js'), 'utf8');
   const meta = fs.readFileSync(path.join(__dirname, '..', 'public', 'meta.html'), 'utf8');
-  assert.match(manage, /tb-body-fold[\s\S]*?_tbEsc\(t\.body\)/);
-  assert.match(manage, /tb-body-detail[\s\S]*?_tbEsc\(t\.body\)/);
+  // M4: the row-level fold is the only manage surface left (the detail
+  // modal's tb-body-detail reader retired with it).
+  assert.match(manage, /tb-body-fold[\s\S]*?_tbEsc\(task\.body\)/);
   assert.match(meta, /tb-body-fold[\s\S]*?esc\(task\.body\)/);
   assert.match(meta, /querySelector\('\.tb-body-fold'\)[\s\S]*?stopPropagation/);
   assert.match(meta, /pre\.textContent = t\.body/);
   assert.match(meta, /reconcileSnapshot\(d\)/);
   assert.match(meta, /partitionTaskIdentity\(tasks\)/);
   assert.match(meta, /历史身份待确认/);
-  assert.doesNotMatch(manage, /innerHTML\s*=\s*t\.body/);
+  assert.doesNotMatch(manage, /innerHTML\s*=\s*t(?:ask)?\.body/);
   assert.doesNotMatch(meta, /innerHTML\s*=\s*t\.body/);
 });
 
@@ -2814,4 +2806,92 @@ test('the board runtime exposes the task worktree service only when git deps are
   assert.ok(service && typeof service.prepareForRun === 'function');
   assert.equal(typeof service.cleanupWorktree, 'function');
   assert.deepEqual(added, [], 'constructing the service touches no git state');
+});
+
+test('M4-T1 /send carries a composer userInputRequestId into the answer ingress', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-taskboard-m4send-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const taskRuns = createTaskRunStore({ file: path.join(dir, 'runs.sqlite'), Database });
+  t.after(() => taskRuns.close());
+  const records = new Map([
+    ['commander-1', {
+      id: 'commander-1', kind: 'chat', type: 'commander', dirId: 'dir-1',
+      label: 'Agent Commander',
+    }],
+    ['task-slot-1', {
+      id: 'task-slot-1', kind: 'chat', type: 'worker', dirId: 'dir-1',
+      label: 'internal secret slot', taskExecutionSlot: true,
+      taskRunLease: { runId: 'run-m4', leaseEpoch: 1 },
+      taskState: {
+        classifyState: 'W',
+        pendingUserInput: {
+          requestId: 'usrq-m4-1', taskId: 'task-m4', turnId: 'turn-m4',
+          question: '选择环境', reason: '部署前确认',
+          options: ['生产', '预发'], allowMultiple: false, createdAt: 123,
+          resolved: false, slotId: 'must-not-leak', leaseEpoch: 999,
+        },
+      },
+    }],
+  ]);
+  const run = taskRuns.beginRun({
+    runId: 'run-m4', taskId: 'task-m4', attemptId: 'run-m4',
+    slotId: null, startedAt: 100, metadata: {},
+  });
+  taskRuns.acquireSlotLease({ runId: run.runId, slotId: 'task-slot-1', leaseEpoch: run.leaseEpoch });
+  taskRuns.markSlotLeaseReady({ runId: run.runId, slotId: 'task-slot-1', leaseEpoch: run.leaseEpoch });
+  records.get('task-slot-1').taskRunLease.leaseEpoch = run.leaseEpoch;
+  const deliveries = [];
+  const fixture = mkRuntime({
+    file: path.join(dir, 'board.json'), taskRuns, records, loadHistory: () => [],
+    sendSessionMessage: async (sessionId, text, options) => {
+      deliveries.push({ sessionId, text, options: { ...options } });
+      records.get(sessionId).taskState.pendingUserInput.resolved = true;
+      return { ok: true, duplicate: false, queued: false, operationId: 'answer-op-m4' };
+    },
+  });
+  const task = core.createPendingTask(fixture.runtime.getBoard(), {
+    taskId: 'task-m4', dirId: 'dir-1', sessionId: 'commander-1',
+    taskText: '部署应用', now: 1,
+  });
+  delete task.moduleAssignment;
+  fixture.runtime.save();
+  const routes = new Map();
+  fixture.runtime.mountRoutes({
+    get: (name, handler) => routes.set(`GET ${name}`, handler),
+    post: (name, handler) => routes.set(`POST ${name}`, handler),
+  });
+  const response = () => ({
+    code: 200, headersSent: false,
+    status(code) { this.code = code; return this; },
+    json(body) { this.body = body; this.headersSent = true; return this; },
+  });
+
+  // The unified chat view sends answers through the plain /send transport with
+  // the chat-side userInputRequestId attached (chat-composer semantics). The
+  // ingress must resolve the pending question — same lease checks, same
+  // sendSessionMessage answer options as /answer — never open a followup run.
+  const answered = response();
+  routes.get('POST /api/task-board/tasks/:taskId/send')({
+    params: { taskId: task.id },
+    body: { text: '生产', clientMsgId: 'm4-client-1', userInputRequestId: 'usrq-m4-1' },
+  }, answered);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(answered.code, 200, JSON.stringify(answered.body));
+  assert.equal(answered.body.status, 'answered');
+  assert.equal(answered.body.operationId, 'answer-op-m4');
+  assert.equal(deliveries.length, 1, 'the message answers the pending run, not a new one');
+  assert.equal(deliveries[0].sessionId, 'task-slot-1');
+  assert.equal(deliveries[0].text, '生产');
+  assert.equal(deliveries[0].options.userInputRequestId, 'usrq-m4-1');
+  assert.equal(deliveries[0].options.originContinue, true);
+
+  // Without a requestId the ingress keeps its followup semantics untouched:
+  // the answered run is terminal, so a plain send must NOT re-enter answer.
+  const followup = response();
+  routes.get('POST /api/task-board/tasks/:taskId/send')({
+    params: { taskId: task.id },
+    body: { text: '再来一轮', clientMsgId: 'm4-client-2' },
+  }, followup);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(deliveries.length, 1, 'plain sends never route into the answer ingress');
 });

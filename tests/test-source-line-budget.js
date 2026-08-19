@@ -78,5 +78,5 @@ test('the current tracked tree satisfies the ratcheted budget', () => {
   // budget is a violation above, so this pins the declared set — a new god file
   // cannot be quietly parked here, and retiring an entry (by splitting the file
   // back under 3000) means shrinking this list in the same commit.
-  assert.deepEqual(result.debts.map(entry => entry.file), ['public/chat.html', 'public/manage.js']);
+  assert.deepEqual(result.debts.map(entry => entry.file), ['public/manage.js']);
 });
