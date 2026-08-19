@@ -270,8 +270,18 @@ test('run-owned transcript keeps later user answers while skipping only the task
   ]);
 });
 
-test('TaskRun transcript rejects stale epochs, wrong slots, and terminal late output', () => {
+test('run transcript persists the sending clientMsgId so a task chat view can commit staged bubbles', () => {
   const h = fixture();
+  activateRun(h);
+  h.host.recordMessage('slot-1', {
+    id: 'user-answer-2', role: 'user', content: 'approved', taskId: 'task-1',
+    taskRunId: 'run-1', leaseEpoch: 2, ts: 30, clientMsgId: 'client-42',
+  });
+  const recorded = h.messages.find(m => m.messageId === 'user-answer-2');
+  assert.equal(recorded.metadata.clientMsgId, 'client-42', 'ledger metadata carries the idempotency key');
+});
+
+test('TaskRun transcript rejects stale epochs, wrong slots, and terminal late output', () => {  const h = fixture();
   activateRun(h);
   assert.throws(() => h.host.recordMessage('slot-1', {
     id: 'late-old-epoch', role: 'assistant', content: 'old', taskId: 'task-1',

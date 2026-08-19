@@ -1291,6 +1291,15 @@ function createTaskBoardRuntime(deps) {
     return dto;
   }
 
+  // M2 T1 · single-task bootstrap for a task-mode chat view: the per-task
+  // slice of handleBoard's projection (title/body/identity, routing, dirIds,
+  // runs) without fetching the whole board. Additive-only (I3).
+  function handleTask(req, res) {
+    const task = board.tasks[req.params.taskId];
+    if (!task) return res.status(404).json({ error: 'task_not_found' });
+    res.json({ ok: true, task: taskDto(task) });
+  }
+
   function handleBoard(req, res) {
     const dto = core.buildBoardDto(board, getSessionRunState);
     const labels = {};
@@ -2090,6 +2099,7 @@ function createTaskBoardRuntime(deps) {
 
   function mountRoutes(app) {
     app.get('/api/task-board', handleBoard);
+    app.get('/api/task-board/tasks/:taskId', handleTask);
     app.get('/api/task-board/tasks/:taskId/messages', handleMessages);
     app.post('/api/task-board/tasks/:taskId/send', (req, res) => {
       handleSend(req, res).catch(e => {

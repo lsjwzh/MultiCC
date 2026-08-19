@@ -985,6 +985,7 @@ test('REST: board, messages, send and status flow', async () => {
   runtime.mountRoutes(app);
   assert.deepEqual([...routes.keys()], [
     'GET /api/task-board',
+    'GET /api/task-board/tasks/:taskId',
     'GET /api/task-board/tasks/:taskId/messages',
     'POST /api/task-board/tasks/:taskId/send',
     'POST /api/task-board/tasks/:taskId/answer',
@@ -1026,6 +1027,25 @@ test('REST: board, messages, send and status flow', async () => {
   const missRes = res();
   routes.get('GET /api/task-board/tasks/:taskId/messages')({ params: { taskId: 'nope' } }, missRes);
   assert.equal(missRes.code, 404);
+
+  // M2 T1 · single-task bootstrap DTO for chat.html?task=<id>: the same
+  // projection handleBoard serves per task, so a task-mode chat view never
+  // needs to fetch (or parse) the whole board.
+  const taskRes = res();
+  routes.get('GET /api/task-board/tasks/:taskId')({ params: { taskId: tid } }, taskRes);
+  assert.equal(taskRes.code, 200);
+  assert.equal(taskRes.body.ok, true);
+  assert.equal(taskRes.body.task.id, tid);
+  assert.equal(taskRes.body.task.title, 'T');
+  assert.deepEqual(taskRes.body.task.dirIds, ['dir-1']);
+  assert.equal(taskRes.body.task.status, 'active');
+  assert.ok(Array.isArray(taskRes.body.task.runs), 'task DTO carries run list');
+  assert.equal(taskRes.body.task.runs.length, 0);
+
+  const taskMiss = res();
+  routes.get('GET /api/task-board/tasks/:taskId')({ params: { taskId: 'nope' } }, taskMiss);
+  assert.equal(taskMiss.code, 404);
+  assert.equal(taskMiss.body.error, 'task_not_found');
 
   const sendRes = res();
   routes.get('POST /api/task-board/tasks/:taskId/send')(

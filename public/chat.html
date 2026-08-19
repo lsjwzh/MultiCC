@@ -2469,6 +2469,7 @@
   <!-- Loaded after the inline styles so the shared tone tokens win same-specificity ties. -->
   <link rel="stylesheet" href="status-badge.css" />
   <link rel="stylesheet" href="chat-dispatch-activity.css" />
+  <link rel="stylesheet" href="chat-task-mode.css" />
 </head>
 <body>
 
@@ -2505,27 +2506,27 @@
     <span class="badge">Chat</span>
     <span id="status">Connecting...</span>
     <span id="session-title" data-i18n-title="sessionIdentity" title="会话身份：Fleet / 别名"></span>
-    <button id="reconnect-btn" class="hdr-btn" data-i18n-title="forceReconnect" title="强制重连（连接卡住时点这里；长按可刷新页面）">&#8635;</button>
+    <button id="reconnect-btn" class="hdr-btn session-only" data-i18n-title="forceReconnect" title="强制重连（连接卡住时点这里；长按可刷新页面）">&#8635;</button>
     <span class="hdr-spacer"></span>
     <button class="hdr-btn lang-toggle" id="lang-btn" onclick="toggleLang()" data-i18n-title="language" title="Language">中/EN</button>
     <button id="notify-btn" class="hdr-btn" data-i18n-title="taskNotificationToggle" title="任务通知开关">&#128276;</button>
-    <button id="s2s-btn" class="hdr-btn" data-i18n-title="voiceConversationToggle" title="实时语音通话（在本会话上下文里说话）">&#128222;</button>
+    <button id="s2s-btn" class="hdr-btn session-only" data-i18n-title="voiceConversationToggle" title="实时语音通话（在本会话上下文里说话）">&#128222;</button>
     <button id="dbg-btn" class="hdr-btn" data-i18n-title="debugPanel" title="Debug 面板">&#128027;</button>
-    <button class="hdr-btn" id="cli-btn" data-i18n-title="switchCli" title="切换此逻辑会话使用的 CLI">CLI</button>
-    <button class="hdr-btn" id="model-btn" data-i18n-title="switchAiConfig" title="切换该会话使用的 Provider / 模型 / 努力程度（下一轮对话生效）" style="display:none"></button>
-    <button class="hdr-btn" id="effort-btn" data-i18n-title="switchEffort" title="切换该会话的思考努力程度（下一轮对话生效）" style="display:none"></button>
-    <button class="hdr-btn" id="provider-btn" data-i18n-title="switchProvider" title="切换该会话使用的 Provider（下一轮对话生效）" style="display:none"></button>
-    <button class="hdr-btn" id="role-btn" data-i18n-title="editRolePrompt" title="设置该会话的角色提示词（下一轮对话生效）" data-i18n="role">🎭 角色</button>
-    <button class="hdr-btn" id="memory-btn" data-i18n-title="openMemoryLibrary" title="会话记忆库" data-i18n="memory">🧠 记忆</button>
-    <button class="hdr-btn" id="auto-commit-btn" data-i18n-title="autoCommitTitle" title="每轮执行成功后自动提交代码并合并回基分支" data-i18n="autoCommit">🚀 自动提交</button>
-    <button class="hdr-btn" id="share-btn" data-i18n-title="shareSessionHint" title="把此会话分享到外部" data-i18n="share">🔗 分享</button>
-    <button class="hdr-btn" id="restart-spawn-btn" data-i18n-title="restartSpawnHint" title="进程级重启：杀掉并重建该会话的 CLI 进程，保留对话上下文（↻ 重连无效时用）" data-i18n="restartSpawn">♻️ 重启进程</button>
+    <button class="hdr-btn session-only" id="cli-btn" data-i18n-title="switchCli" title="切换此逻辑会话使用的 CLI">CLI</button>
+    <button class="hdr-btn session-only" id="model-btn" data-i18n-title="switchAiConfig" title="切换该会话使用的 Provider / 模型 / 努力程度（下一轮对话生效）" style="display:none"></button>
+    <button class="hdr-btn session-only" id="effort-btn" data-i18n-title="switchEffort" title="切换该会话的思考努力程度（下一轮对话生效）" style="display:none"></button>
+    <button class="hdr-btn session-only" id="provider-btn" data-i18n-title="switchProvider" title="切换该会话使用的 Provider（下一轮对话生效）" style="display:none"></button>
+    <button class="hdr-btn session-only" id="role-btn" data-i18n-title="editRolePrompt" title="设置该会话的角色提示词（下一轮对话生效）" data-i18n="role">🎭 角色</button>
+    <button class="hdr-btn session-only" id="memory-btn" data-i18n-title="openMemoryLibrary" title="会话记忆库" data-i18n="memory">🧠 记忆</button>
+    <button class="hdr-btn session-only" id="auto-commit-btn" data-i18n-title="autoCommitTitle" title="每轮执行成功后自动提交代码并合并回基分支" data-i18n="autoCommit">🚀 自动提交</button>
+    <button class="hdr-btn session-only" id="share-btn" data-i18n-title="shareSessionHint" title="把此会话分享到外部" data-i18n="share">🔗 分享</button>
+    <button class="hdr-btn session-only" id="restart-spawn-btn" data-i18n-title="restartSpawnHint" title="进程级重启：杀掉并重建该会话的 CLI 进程，保留对话上下文（↻ 重连无效时用）" data-i18n="restartSpawn">♻️ 重启进程</button>
     <span id="header-more-wrap">
       <button class="hdr-btn" id="header-more-btn" data-i18n="more">更多</button>
       <span id="header-more-menu"></span>
     </span>
-    <button class="hdr-btn" id="merge-btn" data-i18n-title="mergeWorktreeTitle" title="把此会话 worktree 合并回基分支" data-i18n="merge">合并</button>
-    <span class="hdr-menu-wrap" id="clear-ctx-wrap">
+    <button class="hdr-btn session-only" id="merge-btn" data-i18n-title="mergeWorktreeTitle" title="把此会话 worktree 合并回基分支" data-i18n="merge">合并</button>
+    <span class="hdr-menu-wrap session-only" id="clear-ctx-wrap">
       <button class="hdr-btn" id="clear-ctx-btn" data-i18n-title="clearHistory" title="Clear context" data-i18n="clear">Clear</button>
       <span class="hdr-drop-menu" id="clear-ctx-menu" style="display:none">
         <button data-action="clear-all" data-i18n="clearHistory">清空全部</button>
@@ -2538,14 +2539,14 @@
         <button data-action="context-level" style="width:100%" data-i18n="contextLevel">查看上下文水位</button>
       </span>
     </span>
-    <button class="hdr-btn" id="memo-btn" data-i18n-title="projectMemo" title="项目备忘" onclick="openMemo()">📝</button>
+    <button class="hdr-btn session-only" id="memo-btn" data-i18n-title="projectMemo" title="项目备忘" onclick="openMemo()">📝</button>
   </div>
 
   <!-- CWD bar -->
   <div id="cwd-bar">
     <span id="cwd-icon">&#128193;</span>
-    <span id="cwd-path">-</span>
-    <button id="cwd-change" style="display:none" data-i18n-title="changeCwdTitle" data-i18n="changeDir">Change</button>
+    <span class="session-only" id="cwd-path">-</span>
+    <button class="session-only" id="cwd-change" style="display:none" data-i18n-title="changeCwdTitle" data-i18n="changeDir">Change</button>
   </div>
 
   <!-- Worktree branch + behind-base indicator (populated by applyBehindStatus) -->
@@ -2626,14 +2627,14 @@
   <!-- Attachments area -->
   <div id="attach-area"></div>
 
-  <div id="merge-hint">
+  <div class="session-only" id="merge-hint">
     <span class="merge-hint-text">当前 worktree 有可合并内容。</span>
     <button id="merge-hint-diff-btn" class="ghost">查看 Diff</button>
     <button id="merge-hint-btn">合并</button>
     <button id="merge-hint-collapse-btn" class="mh-collapse" title="收起" aria-label="收起"
             data-i18n-title="mergeHintCollapse" data-i18n-aria-label="mergeHintCollapse">⌄</button>
   </div>
-  <button id="merge-hint-fab" type="button" hidden title="展开合并提示" aria-label="展开合并提示"
+  <button class="session-only" id="merge-hint-fab" type="button" hidden title="展开合并提示" aria-label="展开合并提示"
           data-i18n-title="mergeHintExpand" data-i18n-aria-label="mergeHintExpand">⎇</button>
 
   <!-- Diff dock: side panel (desktop) / bottom sheet (narrow), collapsible to
@@ -2992,6 +2993,9 @@
   <script src="chat-dispatch-activity.js"></script>
   <script src="chat-merge-hint.js"></script>
   <script src="chat-recovery-service.js"></script>
+  <script src="chat-task-mode.js"></script>
+  <script src="chat-task-boot.js"></script>
+  <script src="chat-session-features.js"></script>
   <script src="chat.js"></script>
   <script src="tour.js"></script>
 </body>
