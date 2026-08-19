@@ -107,28 +107,29 @@ UI 层从此不知道背后是会话还是任务。四轴隔离的落点：**spa
 **验收（已达成）**
 - `tests/test-task-run-stream-forwarder.js` 6 用例：信封形状+槽位 id 不外泄、非槽位/无活动 run 不转发、delta 窗口合并、非 delta 先冲刷后转发保序、delta 类判定边界（content_block_delta 是 / message_start 否）、task-context-host 三参传递兼容旧两参。
 - 回归：deterministic 1244/1244 + contracts 55/55 绿；server.js 仍 3000 行整。
-- （待 M2 联动验证：fake CLI 慢速输出下前端实时渲染——前端消费者落地时一并验收。）
+- （M2 已接线：chat-task-mode.js 解包信封喂同一 event controller；fake CLI 慢速输出的实时渲染待重启后人工冒烟。）
 
-### M2 · 前端宿主通用化（大改造主体，D4）
+### M2 · 前端宿主通用化（大改造主体，D4）——已实施，2026-08-19（f9796c4 + 后续）
 
-**改动**
-- chat.js（2979 行）拆三块（分批合入，参考 server.js 拆分批次四坑：交错块丢失/TDZ 扫描/基线误判/handoff 快照）：
-  1. `chat-host-core.js`（新，~900 行）：URL 解析（`?session=` 或 `?task=`）、模块装配、渲染管线、契约五件事接线、autofill 分页、断线 reconcile；
-  2. `chat-session-features.js`（新，从 chat.js 抽出）：role/memory/memo/provider·model·cli 切换/merge·sync·conflict·diff/share/fork/rename/restart-spawn/liveness/会话队列/oauth——按 feature flag 挂载（`mode==='session'` 全开，行为零变化）；
-  3. chat.js 保留为会话模式入口 + 旧全局兼容壳（外部脚本引用不断，chat.html script 序微调）。
-- `chat.html?task=<id>` 任务模式：
-  - bootstrap：`GET /api/task-board/tasks/:id`（identity/状态）+ M0 分页 history；不调 `/api/sessions/:id`、`/api/providers`、agent-presets。
-  - WS：订阅 dir workspace WS（`/ws/workspace?dirId=` 或 `/ws/meta`），消费 `task_run_stream` + `task_board_update`；重连/回放语义按 reconcile 降级（断线后以 M0 分页重拉对账，替代 session 版 chat_history 重放）。
-  - composer：transportSend 换 `POST /api/task-board/tasks/:id/send`（clientMsgId 幂等已具备，manage-taskboard.js:198-205 已验证语义对齐）；本地 staged 气泡 → 收到台账确认（task_board_update 或 POST 响应）后 commit，替代 chat_msg_meta。
-  - 按钮组按 §1.1 禁用清单不渲染；classify 状态条参数化：task runState 映射到同一条（status-presentation task 域词表现成）。
-  - run 分隔条：「第 N 次执行 · 状态 · 时间 · token 合计」，数据来自 run DTO。
-- 任务列表入口改跳 `chat.html?task=`；manage 页旧详情 modal 标记 deprecated（M4 退役）。
+**改动（as-built）**
+- **拆分形态与原计划不同（有意偏差）**：原计划拆出 ~900 行 chat-host-core.js；实际 chat.js 保持单宿主（2974 行，3000 预算内），D4 的 feature flag 即 `TASK_MODE` 布尔（install 级门控，非管线内散落分支）。新增三文件：
+  1. `chat-task-mode.js`（新，UMD 适配器、无 DOM、node 可测）：boot（任务 DTO + M0 首页 → 共享 historyStore→applyHistoryPlan 管线 → dir WS 订阅）、`task_run_stream` 信封解包喂同一 event controller（runId 变界 emit 分隔条）、`task_board_update` 去抖刷新 identity、transportSend（user_message→POST send 带 clientMsgId/goal；cancel→POST status done＝任务板 ✅ 同语义；typing no-op；clear 仅重置视图）、断线退避重连 + reconcile（reset 后重拉任务与首页，I1）。
+  2. `chat-task-boot.js`（新，task 宿主 DOM 适配：bootTaskMode/renderRunSeparator/updateTaskIdentity）。**纪律：declarations-only**（classic script 全局词法环境共享 chat.js 顶层 let/const，但 TDZ——加载在前、调用须在 chat.js 尾部之后）。
+  3. `chat-session-features.js`（新，首批：loadSessionIdentity/dblclick 改名；剩余 session-only 块按行预算棘轮后续 tranche）。
+- 服务端补两件（原 M2 清单未单列）：
+  - `GET /api/task-board/tasks/:taskId` 单任务 bootstrap 端点（handleBoard 投影的单任务切片，I3 只加不删）；
+  - **clientMsgId 进 ledger metadata**（截 128）+ M0 投影透出——staged 气泡按幂等键对账闭环的服务端半边（ledger messageId 是 hash，≠ clientMsgId，必须显式存）。
+- chat.js 宿主接线：`TASK_MODE` 门控 session-only 副作用（merge/liveness 轮询、role/model 装配、oauth 横幅轮询、chatTransport.startLifecycle、改名）；`hostTransportSend` 统一 composer/event-controller/context-controls 三处发送入口；loadOlderHistory URL 一行分支走 `taskMode.historyPageUrl`；task 模式 historyView 的 delete/fork 按钮传 no-op。
+- session-only chrome：18 个元素挂 `session-only` class，`body.task-mode` 由外置 `chat-task-mode.css`（status-badge.css 同款先例）隐藏；statusEl.onclick 置空（recovery service 的强制重连指向 chat WS）。
+- **行预算账目**：chat.js 2978→2974（拆出净减）；chat.html main 上 2999 行仅 1 行余量，+3 script +1 link 后 3003，登记 MIGRATION_DEBT 棘轮条目（manage.js 同款；M4 退役旧任务详情 modal 时偿还 3003→3000 并销账）。
+- run 分隔条首版渲染「— Run N · status —」（run DTO 的 executionStatus；「token 合计/时间」增强留 M4）。
+- 任务列表入口：任务行点击 `openTaskChatView` → `window.open('/chat.html?task=<id>', '_blank')`（manage.js 打开 chat 会话同款范式）；`openTaskBoardDetail` 标 `@deprecated`（无默认入口，M4 退役）。
 
-**验收**
-- `chat.html?task=` 与 `chat.html?session=` 除禁用项外视觉/交互一致（对照清单人工过一遍 + 截图）。
-- 会话模式回归全绿：feature flag 全开 = 行为零变化（chat 回归套件 + 手工冒烟）。
-- 旧任务纯文本降级不报错（无 tools/usage 的台账行渲染为纯文本气泡）。
-- 发送→流式→commit 闭环：clientMsgId 幂等（重发不重复执行）。
+**验收（已达成 / 待冒烟）**
+- `tests/test-chat-task-mode.js` 12 用例（boot/信封解包/runId 分隔条/transportSend 四分支/失败 unstage/分页 URL/重连 reconcile/无 dirIds 降级/去抖刷新/源结构断言含入口跳转）。
+- T1 端点 + clientMsgId 闭环：test-task-board 85/85、test-task-run-host、test-task-transcript 绿。
+- 全量 deterministic（含 chat.js ≤3000、chat.html 债务棘轮、i18n、composer/token/usage 钉死断言）+ contracts 55/55 绿。
+- 待用户重启后人工冒烟：fake CLI 慢速输出的实时渲染、`?task=` 与 `?session=` 对照清单、发送→流式→commit 闭环。
 
 ### M3 · per-task worktree（D2）
 
