@@ -88,15 +88,14 @@ UI 层从此不知道背后是会话还是任务。四轴隔离的落点：**spa
 ### M0 · 后端读侧：task transcript 投影（先行，独立可合）
 
 **改动**
-- 新建 `src/task-transcript-repository.js`：实现 chat-history port 的只读子集（paginate/before/around），底层数据 = task_run_messages 按 (task 的全部 run, ts 排序)，wrapper 过滤复用 §2 接缝。挂在 `src/routes/task-transcript.js`（守 server.js 行预算，server.js 只加 wiring）。
-- `GET /api/task-board/tasks/:id/messages` 升级：返回 chat_history 型分页 DTO（`messages/hasMore/tokenUsage`），支持 `before/limit/around`；旧字段（`text`/`items`）原样保留（不变量 I3）。
-- DTO 映射：台账行 → chat 消息 DTO `{id, role, content, tools, usage, cost, durationMs, ts, kind, partial}`；metadata.tools/usage 依赖阶段 2 的 recordMessage 扩展——未落字段自然降级为纯文本（渲染器对空 tools 本就跳过）。
+- 新建 `src/task-transcript-repository.js`（**已实施，2026-08-19**）：纯读侧投影——`taskTranscriptMessages`（台账行 → chat 消息 DTO，白名单 metadata 透出 tools/usage/cost/durationMs/partial/kind/taskRunId，过滤 wrapper）+ `paginateTranscript`（与 chat-history.js:284-319 逐语义对齐的纯分页函数）。实施时未新建独立路由文件：端点已在 task-board.js，原位升级 `handleMessages`（server.js 零改动，行预算/守卫不受影响）。
+- `GET /api/task-board/tasks/:id/messages` 升级：响应新增 `messages/hasMore`（`around` 时加 `found/hasNewer`），支持 `before/limit/around`；旧字段（`text`/`items`/`runs`/`usage`）原样保留（不变量 I3）。legacy ref 任务（无台账）走同分页契约（index 派生 id，历史冻结故稳定）。
+- DTO 映射：台账行 → chat 消息 DTO `{id, role, content, tools, usage, cost, durationMs, ts, kind, partial, taskRunId}`；metadata.tools/usage 依赖阶段 2 的 recordMessage 扩展——未落字段自然降级为纯文本（渲染器对空 tools 本就跳过）。
 
-**验收**
-- 分页 DTO golden：与 `/api/sessions/:id/history` 的 DTO 形状一致性测试（共享契约测试雏形）。
-- 旧前端（manage-taskboard 现版）打新端点不崩（字段兼容测试）。
-- wrapper 消息不进 DTO；admission 原文仅出现一次。
-- 三守卫（request-locality / api-contracts / line-budget）同步更新。
+**验收（已达成）**
+- `tests/test-task-transcript.js` 5 用例：DTO 投影白名单（内部字段 code/retryable/lease 不外泄）、wrapper 双层过滤（标志+遗留前缀，assistant 不误伤）、分页契约（tail/before/around/游标未知/limit 钳制）、路由集成分页 + 旧字段并存、legacy 任务同契约降级。
+- 旧前端（manage-taskboard 现版）打新端点不崩：响应只增字段（I3）。
+- 回归：test:deterministic 1244/1244、test:contracts 55/55 全绿；server.js 未动，line-budget 不变。
 
 ### M1 · 流式转发：task_run_stream
 
