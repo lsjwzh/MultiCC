@@ -1193,3 +1193,98 @@ test('structured questions and classify errors keep normal FIFO work staged', as
   await errored.scheduler.freeze('s1', 'error');
   assert.equal(await claimOne(errored), null, 'an error freeze keeps the queue staged');
 });
+
+// ── E-at-rest vs Task Board run deliveries ───────────────────────────────────
+// Production shape: the task-board dispatch path enqueues `dispatch.request`
+// outbox items directly through operation-service; they never pass through
+// scheduler.admit, so they carry no directRun tag. When a slot's turn ends with
+// an E verdict complete() parks the queue "for a user decision" — but a hidden
+// task execution slot has no user. Task Board owns the failed run's lifecycle
+// (error ledger entry + bounded retry already consumed the verdict), so its
+// own re-engagement — any delivery carrying task-run lineage — must drain.
+
+async function settleToVerdict(harness, sessionId, classifyState) {
+  await harness.scheduler.admit({
+    sessionId,
+    text: 'first turn',
+    idempotencyKey: `${sessionId}-first`,
+    options: { taskId: 'task-1', taskRunId: 'run-1', leaseEpoch: 1 },
+  });
+  await startClaim(harness, await claimOne(harness, sessionId));
+  await harness.scheduler.complete(sessionId, {
+    expectedTaskId: 'task-1',
+    classifyState,
+  });
+}
+
+function dispatchRequestPayload({
+  taskRunId = 'run-2', taskId = 'task-1', taskStart = false,
+} = {}) {
+  return {
+    type: 'dispatch.request',
+    operationId: taskRunId,
+    targetId: 'slot-1',
+    message: 're-engagement delivery',
+    taskId,
+    taskStart,
+    taskSource: 'task-board',
+    taskText: null,
+    taskRunId,
+    leaseEpoch: 9,
+  };
+}
+
+test('an E-at-rest queue still selects a Task Board run delivery — hidden slots have no user', async t => {
+  const h = fixture(t);
+  await settleToVerdict(h, 'slot-1', 'E');
+  // Both production shapes: the auto-retry continuation (taskStart:false,
+  // workKind continuation) and a fresh task delivery (taskStart:true,
+  // workKind task) — neither is a control kind the E gate would admit.
+  await h.outbox.enqueue({
+    id: 'operation:run-2:request',
+    sessionId: 'slot-1',
+    payload: dispatchRequestPayload(),
+    source: { type: 'operation', kind: 'dispatch', operationId: 'run-2' },
+  });
+  const enqueued = await h.outbox.enqueue({
+    id: 'operation:run-3:request',
+    sessionId: 'slot-1',
+    payload: dispatchRequestPayload({ taskRunId: 'run-3', taskStart: true }),
+    source: { type: 'operation', kind: 'dispatch', operationId: 'run-3' },
+  });
+  const item = await claimOne(h, 'slot-1');
+  assert.ok(item, 'a task-run-lineage delivery must drain the E-at-rest queue');
+  assert.equal(item.id, 'operation:run-2:request',
+    'the oldest lineage delivery drains first');
+  assert.notEqual(item.id, enqueued.id);
+});
+
+test('an E-at-rest queue still parks deliveries without task-run lineage', async t => {
+  const h = fixture(t);
+  await settleToVerdict(h, 's1', 'E');
+  await h.outbox.enqueue({
+    id: 'operation:plain:request',
+    sessionId: 's1',
+    payload: {
+      type: 'dispatch.request', operationId: 'plain', targetId: 's1',
+      message: 'no lineage', taskId: null, taskStart: true, taskSource: null,
+      taskText: null, taskRunId: null, leaseEpoch: null,
+    },
+    source: { type: 'operation', kind: 'dispatch', operationId: 'plain' },
+  });
+  assert.equal(await claimOne(h, 's1'), null,
+    'the E verdict still parks deliveries that are not Task Board re-engagements');
+});
+
+test('a W-at-rest queue does not leak task-kind run deliveries past a pending question', async t => {
+  const h = fixture(t);
+  await settleToVerdict(h, 'slot-1', 'W');
+  await h.outbox.enqueue({
+    id: 'operation:run-3:request',
+    sessionId: 'slot-1',
+    payload: dispatchRequestPayload({ taskRunId: 'run-3', taskStart: true }),
+    source: { type: 'operation', kind: 'dispatch', operationId: 'run-3' },
+  });
+  assert.equal(await claimOne(h, 'slot-1'), null,
+    'W must keep waiting for the structured answer; task-run lineage only unlocks E');
+});
