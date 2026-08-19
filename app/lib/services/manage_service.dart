@@ -5,10 +5,11 @@ import '../models/message.dart';
 import '../models/task_board.dart';
 import 'settings_service.dart';
 
-/// Thrown by task-board write endpoints (status / reclassify /
-/// reclassify-pending) when the server rejects a non-localhost caller with
-/// 403. The host machine owns those mutations; a remote phone must surface
-/// "该操作仅本机可用" instead of a generic HTTP error.
+/// Version-skew fallback for task-board writes. Since 57bfe99 (2026-07) the
+/// server allows ANY authenticated client to mutate the task board; older
+/// servers rejected non-localhost callers with 403. Keep mapping that 403 so
+/// a phone talking to an outdated host still surfaces "该操作仅本机可用"
+/// instead of a generic HTTP error.
 class LocalOnlyException implements Exception {
   final String? message;
   const LocalOnlyException([this.message]);
@@ -21,8 +22,8 @@ class LocalOnlyException implements Exception {
 /// rejects the route: 409 (no idle/relevant target, or the chosen session is
 /// busy) carries a human-readable `note` from the server; 503 (aux-AI
 /// unhealthy) and 400 (empty text) carry only an `error` code, so `note` is
-/// left empty and the UI maps the `code` to a localized message. 403 still
-/// surfaces as [LocalOnlyException] (the dispatch endpoints are localhost-only).
+/// left empty and the UI maps the `code` to a localized message. A 403 from
+/// an outdated pre-57bfe99 server still surfaces as [LocalOnlyException].
 class BoardRouteException implements Exception {
   final String code;
   final String note;
@@ -62,10 +63,10 @@ class ManageService {
   Never _throw(http.Response res) =>
       throw Exception(_tryParseError(res.body) ?? 'HTTP ${res.statusCode}');
 
-  /// Write endpoints that mutate the task board are localhost-only on the
-  /// server: a remote phone gets 403. Convert that into a [LocalOnlyException]
-  /// so the UI can surface "仅本机可用"; any other failure falls through to
-  /// the generic [_throw].
+  /// Task-board writes are open to any authenticated client on current
+  /// servers; a 403 can only come from an outdated pre-57bfe99 host. Convert
+  /// it into a [LocalOnlyException] so the UI can surface "仅本机可用"; any
+  /// other failure falls through to the generic [_throw].
   void _throwWrite(http.Response res) {
     if (res.statusCode == 403) throw const LocalOnlyException();
     _throw(res);
@@ -801,10 +802,10 @@ class ManageService {
   }
 
   // ── Task board (AI-tagged module->task tree) ───────────────────────────────
-  // Mirrors /api/task-board/* (see src/routes/task-board.js). Read endpoints are
-  // open to any authenticated client; writes (status / reclassify /
-  // reclassify-pending) are localhost-only and surface [LocalOnlyException] on
-  // 403 so a remote phone shows "仅本机可用".
+  // Mirrors /api/task-board/* (see src/routes/task-board.js). All endpoints are
+  // open to any authenticated client since 57bfe99 (2026-07); the 403 ->
+  // [LocalOnlyException] mapping remains only as a version-skew fallback for
+  // outdated hosts.
 
   /// GET /api/task-board -> { ok, modules, tasks, sessionLabels, backfill }.
   Future<TaskBoard> fetchTaskBoard() async {
@@ -817,19 +818,26 @@ class ManageService {
     );
   }
 
-  /// GET `/api/task-board/tasks/<taskId>/messages` -> durable task detail. New
-  /// servers include up to five TaskRuns; old servers omit that field and parse
-  /// as an empty run list.
-  Future<TaskBoardDetail> fetchTaskDetail(String taskId) async {
+  /// GET `/api/task-board/tasks/<taskId>/messages` -> durable task detail.
+  /// Pages through the unified `messages` contract: no params returns the
+  /// tail page; [before] pages strictly older than that cursor and [limit]
+  /// is clamped server-side to 1..100. New servers include up to five
+  /// TaskRuns; old servers omit that field and parse as an empty run list.
+  Future<TaskBoardDetail> fetchTaskDetail(
+    String taskId, {
+    String? before,
+    int? limit,
+  }) async {
+    final query = <String, String>{
+      if (before != null && before.isNotEmpty) 'before': before,
+      if (limit != null) 'limit': limit.toString(),
+    };
+    final base = _url(
+      '/api/task-board/tasks/${Uri.encodeComponent(taskId)}/messages',
+    );
+    final uri = Uri.parse(query.isEmpty ? base : '$base?${Uri(queryParameters: query).query}');
     final res = await http
-        .get(
-          Uri.parse(
-            _url(
-              '/api/task-board/tasks/${Uri.encodeComponent(taskId)}/messages',
-            ),
-          ),
-          headers: _headers,
-        )
+        .get(uri, headers: _headers)
         .timeout(const Duration(seconds: 12));
     if (res.statusCode != 200) _throw(res);
     return TaskBoardDetail.fromJson(
@@ -871,7 +879,7 @@ class ManageService {
   }
 
   /// POST .../status body {status}. `status` ∈ active | done | archived.
-  /// localhost-only; throws [LocalOnlyException] on 403.
+  /// Throws [LocalOnlyException] only against outdated pre-57bfe99 servers.
   Future<void> setTaskStatus(String taskId, String status) async {
     final res = await http
         .post(
@@ -886,7 +894,7 @@ class ManageService {
   }
 
   /// POST .../reclassify -> re-queue this task's classification.
-  /// localhost-only; throws [LocalOnlyException] on 403.
+  /// Throws [LocalOnlyException] only against outdated pre-57bfe99 servers.
   Future<Map<String, dynamic>> reclassifyTask(String taskId) async {
     final res = await http
         .post(
@@ -905,8 +913,9 @@ class ManageService {
   }
 
   /// POST /api/task-board/reclassify-pending body {dirId?} -> re-queue every
-  /// still-pending task, optionally scoped to one directory. localhost-only;
-  /// throws [LocalOnlyException] on 403. Returns {ok, queued, skipped}.
+  /// still-pending task, optionally scoped to one directory. Throws
+  /// [LocalOnlyException] only against outdated pre-57bfe99 servers.
+  /// Returns {ok, queued, skipped}.
   Future<Map<String, dynamic>> reclassifyPending({String? dirId}) async {
     final res = await http
         .post(
@@ -924,15 +933,16 @@ class ManageService {
 
   // ── Task-board dispatch (派发) ─────────────────────────────────────────────
   // POST /api/task-board/send (dir-level) and POST /api/task-board/tasks/:id/send
-  // (task-level) route a message to an idle, relevant chat session. Both are
-  // localhost-only (403 -> LocalOnlyException). A 409 carries the server's
-  // human note (no idle target / target busy); 503 means the aux-AI is
-  // unhealthy; 400 empty_text is a backstop the UI also guards client-side.
+  // (task-level) route a message into the task's execution pipeline. A 409
+  // carries the server's human note (no idle target / target busy); 503 means
+  // the aux-AI is unhealthy; 400 empty_text is a backstop the UI also guards
+  // client-side. 403 -> LocalOnlyException is a pre-57bfe99 skew fallback.
 
   /// Converts a dispatch-endpoint failure into the right exception type. 409/400
   /// become [BoardRouteException] (note from the server when present); 503
-  /// becomes a code-only [BoardRouteException] the UI localizes; 403 stays
-  /// [LocalOnlyException]; anything else falls through to [_throw].
+  /// becomes a code-only [BoardRouteException] the UI localizes; 403 (outdated
+  /// hosts only) becomes [LocalOnlyException]; anything else falls through to
+  /// [_throw].
   Never _throwBoardSend(http.Response res) {
     if (res.statusCode == 403) throw const LocalOnlyException();
     if (res.statusCode == 503) {
@@ -1007,7 +1017,8 @@ class ManageService {
   }
 
   /// POST /api/task-board/archive-completed -> bulk-archive all done tasks.
-  /// Returns {ok, archivedCount, taskIds}. Throws [LocalOnlyException] on 403.
+  /// Returns {ok, archivedCount, taskIds}. Throws [LocalOnlyException] only
+  /// against outdated pre-57bfe99 servers.
   Future<Map<String, dynamic>> archiveCompletedTasks({String? dirId}) async {
     final res = await http
         .post(
