@@ -60,12 +60,14 @@ class DirectoryWorkspaceSnapshot {
 class _WorkspaceEntry {
   final WorkspaceService service;
   final ValueNotifier<DirectoryWorkspaceSnapshot> snapshot;
+  final ValueNotifier<TaskRunStreamEvent?> taskRunEvents;
   final VoidCallback listener;
   final int generation;
 
   const _WorkspaceEntry({
     required this.service,
     required this.snapshot,
+    required this.taskRunEvents,
     required this.listener,
     required this.generation,
   });
@@ -173,10 +175,19 @@ class DashboardWorkspaceStore {
       if (_disposed || !identical(_entries[dirId], entry)) return;
       _onSessionUpdated?.call(sessionId, label);
     };
+    // Task-run activity is a transient event stream, not snapshot state —
+    // publish on a dedicated notifier so task consumers never rebuild the
+    // session-status projection (and vice versa).
+    final taskRunEvents = ValueNotifier<TaskRunStreamEvent?>(null);
+    service.onTaskRunEvent = (event) {
+      if (_disposed || !identical(_entries[dirId], entry)) return;
+      taskRunEvents.value = event;
+    };
     service.addListener(listener);
     entry = _WorkspaceEntry(
       service: service,
       snapshot: snapshot,
+      taskRunEvents: taskRunEvents,
       listener: listener,
       generation: generation,
     );
@@ -187,6 +198,11 @@ class DashboardWorkspaceStore {
   ValueListenable<DirectoryWorkspaceSnapshot>? listenableFor(String dirId) =>
       _entries[dirId]?.snapshot;
 
+  /// Live TaskRun activity for one directory (chat-view unification M4-T3).
+  /// Null while the directory has no connection; call [ensureDirectory] first.
+  ValueListenable<TaskRunStreamEvent?>? taskRunEventsFor(String dirId) =>
+      _entries[dirId]?.taskRunEvents;
+
   DirectoryWorkspaceSnapshot snapshotFor(String dirId) =>
       _entries[dirId]?.snapshot.value ?? DirectoryWorkspaceSnapshot.empty;
 
@@ -196,9 +212,11 @@ class DashboardWorkspaceStore {
     entry.service.onNotify = null;
     entry.service.onSessionCliChanged = null;
     entry.service.onSessionUpdated = null;
+    entry.service.onTaskRunEvent = null;
     entry.service.removeListener(entry.listener);
     entry.service.dispose();
     entry.snapshot.dispose();
+    entry.taskRunEvents.dispose();
     if (reportEmpty) {
       // Reconciliation runs from a SessionManager listener. Defer aggregate
       // cleanup so the manager finishes its current notification before the
