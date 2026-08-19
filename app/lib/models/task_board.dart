@@ -169,13 +169,18 @@ class TaskMessage {
   /// remain readable in task history but must never become ordinary chat links.
   bool get hasSessionTarget => sessionId.trim().isNotEmpty;
 
+  /// Accepts both wire shapes: the unified `messages` page DTO (`id`/
+  /// `content`, shared with the session history contract) and the legacy
+  /// `items` projection (`messageId`/`text` + session fields). The unified
+  /// DTO deliberately carries no session identity — hasSessionTarget stays
+  /// false and the row renders without a jump affordance.
   factory TaskMessage.fromJson(Map<String, dynamic> json) => TaskMessage(
     sessionId: (json['sessionId'] ?? '').toString(),
     sessionLabel: json['sessionLabel']?.toString(),
     role: (json['role'] ?? 'user').toString(),
-    messageId: json['messageId']?.toString(),
+    messageId: (json['messageId'] ?? json['id'])?.toString(),
     ts: (json['ts'] as num?)?.toInt() ?? 0,
-    text: (json['text'] ?? '').toString(),
+    text: (json['content'] ?? json['text'] ?? '').toString(),
     lost: json['lost'] == true,
     taskRunId: json['taskRunId']?.toString(),
     partial: json['partial'] == true,
@@ -425,11 +430,25 @@ class TaskBoardDetail {
   final List<TaskMessage> messages;
   final List<TaskRunSummary> recentRuns;
 
-  const TaskBoardDetail({this.messages = const [], this.recentRuns = const []});
+  /// Pagination contract of the unified `messages` page: [hasMore] says an
+  /// older page exists and [before] is the cursor to request it with. Both
+  /// default to a single complete page for legacy servers.
+  final bool hasMore;
+  final String? before;
+
+  const TaskBoardDetail({
+    this.messages = const [],
+    this.recentRuns = const [],
+    this.hasMore = false,
+    this.before,
+  });
 
   factory TaskBoardDetail.fromJson(Map<String, dynamic> json) {
     final messages = <TaskMessage>[];
-    final rawItems = json['items'];
+    // Prefer the unified paginated DTO; fall back to the legacy `items`
+    // projection for pre-unification servers (version skew).
+    final rawMessages = json['messages'];
+    final rawItems = rawMessages is List ? rawMessages : json['items'];
     if (rawItems is List) {
       for (final item in rawItems) {
         if (item is Map) {
@@ -462,6 +481,8 @@ class TaskBoardDetail {
     return TaskBoardDetail(
       messages: List.unmodifiable(messages),
       recentRuns: List.unmodifiable(runs.take(5)),
+      hasMore: json['hasMore'] == true,
+      before: json['before']?.toString(),
     );
   }
 }
