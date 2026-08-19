@@ -11,6 +11,7 @@ import 'agent_preset_picker_sheet.dart';
 import 'provider_option.dart';
 import '../services/agent_preset_service.dart';
 import '../services/manage_service.dart';
+import '../services/claude_models_service.dart';
 import '../services/qoder_models_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
@@ -160,7 +161,8 @@ class AIConfigSheetState extends State<AIConfigSheet> {
         ...opts.map((e) => e.toString()).where((e) => e.trim().isNotEmpty),
       ];
     }
-    return _isClaude ? kClaudeModelOptions.map((e) => e.key).toList() : [''];
+    // Live CLI-bundle list once openAIConfigSheet warmed it; static table until then.
+    return _isClaude ? ClaudeModelsService.options().map((e) => e.key).toList() : [''];
   }
 
   // Map a stored wire model id (e.g. claude-opus-4-8) back to its alias tier so
@@ -616,10 +618,15 @@ Future<void> openAIConfigSheet(
   } catch (_) {}
   // Qoder owns no provider pool; its model list comes from the host CLI's
   // catalog instead. Warm it before the sheet builds so the dropdown opens on
-  // the real models rather than the routing-tier fallback.
+  // the real models rather than the routing-tier fallback. Claude's list comes
+  // from the installed CLI bundle — same warm-up, static-table fallback.
   if (runtime.cli == SessionCli.qoder) {
     try {
       await QoderModelsService(settings: settings).load();
+    } catch (_) {}
+  } else if (runtime.cli == SessionCli.claude) {
+    try {
+      await ClaudeModelsService(settings: settings).load();
     } catch (_) {}
   }
   List<Map<String, dynamic>> providers = const [];

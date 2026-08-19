@@ -2246,7 +2246,7 @@ mountOpenCodeModelRoutes(app);
 // GET /api/qoder/models — the Qoder CN catalog entitled to the logged-in
 // account (`qoderclicn --list-models`, cached for 1 day). Lets each qoder
 // session pick its own model instead of sharing ~/.qoder-cn/settings.json.
-mountQoderModelRoutes(app);
+mountQoderModelRoutes(app); require('./src/routes/claude-models').mountClaudeModelRoutes(app); // GET /api/claude/models — ids extracted from the local claude CLI bundle, cached 1 day (see src/routes/claude-models.js)
 
 // GET /api/opencode/quota — drive whatever Chrome the user already has open
 // (src/chrome-cdp.js) to scrape the OpenCode Zen console's Go subscription

@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../models/message.dart';
+import '../services/claude_models_service.dart';
 
 /// Bottom-sheet model picker for claude sessions.
 /// Resolves to null (cancelled), '' (follow default) or a model id.
@@ -23,7 +23,10 @@ Future<String?> showClaudeModelPicker(
               const MapEntry('', '默认 / 跟随 Provider'),
               ...customOptions.map((m) => MapEntry(m, m)),
             ]
-          : kClaudeModelOptions;
+          // Static table until some entry point warmed ClaudeModelsService
+          // (AI config sheet / session create dialog); live CLI-bundle list
+          // afterwards.
+          : ClaudeModelsService.options();
       final isKnown = options.any((e) => e.key == current);
       return SafeArea(
         child: Column(
