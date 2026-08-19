@@ -64,7 +64,7 @@ function fixture({ chat, persisted, workHost = true, streamStatus, closeThrows =
     getChatStream: () => chatStream,
     getSessionWorkHost: () => (workHost ? sessionWorkHost : null),
     asyncHandler: handler => handler,
-    destroySessionCascade: async () => ({ ok: true }),
+    destroySessionCascade: async record => { calls.push(`cascade:${record.id}`); return { ok: true }; },
     tmuxKillSession: async () => {},
     appendEvent: (...args) => events.push(args),
     ensureDirGitReady: async () => ({ ok: true }),
@@ -83,7 +83,9 @@ function fixture({ chat, persisted, workHost = true, streamStatus, closeThrows =
 
   const handler = app.routes.get('POST /api/sessions/:id/restart-spawn');
   assert.ok(handler, 'restart-spawn route is mounted');
-  return { handler, calls, events, chatSessions, persistedSessions };
+  const deleteHandler = app.routes.get('DELETE /api/sessions/:id');
+  assert.ok(deleteHandler, 'DELETE route is mounted');
+  return { handler, deleteHandler, calls, events, chatSessions, persistedSessions };
 }
 
 function liveChatSession() {
@@ -224,6 +226,40 @@ test('restart-spawn force-archives the codex rollout and drops cliSessionId', as
   assert.deepEqual(res.body.rolloutArchived, archivedInfo);
   assert.equal(persisted.cliSessionId, null, 'memory record cleared');
   assert.equal(persistedSessions.get('s1').cliSessionId, null, 'persisted store cleared via mutate');
+});
+
+test('DELETE refuses a task-bound session without force and tears nothing down', async () => {
+  // A task-bound hidden session is the task's resume file. The fleet never
+  // lists it, so a DELETE reaching this route is a sweep script, not a UI
+  // click — default-refuse so bulk cleanup cannot orphan task chat history.
+  const persisted = { id: 's1', kind: 'chat', dirId: 'd1', taskBoundTaskId: 't-1' };
+  const { deleteHandler, calls, persistedSessions } = fixture({ persisted });
+  const res = await invoke(deleteHandler, { params: { id: 's1' } });
+  assert.equal(res.statusCode, 400);
+  assert.match(res.body.error, /task-bound/);
+  assert.match(res.body.error, /force=1/);
+  assert.deepEqual(calls, [], 'a refused delete must not cascade');
+  assert.ok(persistedSessions.has('s1'), 'the record survives');
+});
+
+test('DELETE force=1 proceeds on a task-bound session (operator hard reset)', async () => {
+  // force=1 is the deliberate escape hatch: the board re-creates the session
+  // on next use and the cold-start seed re-walls it from the task ledger.
+  const persisted = { id: 's1', kind: 'chat', dirId: 'd1', taskBoundTaskId: 't-1' };
+  const { deleteHandler, calls, persistedSessions } = fixture({ persisted });
+  const res = await invoke(deleteHandler, { params: { id: 's1' }, query: { force: '1' } });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(calls, ['cascade:s1']);
+  assert.equal(persistedSessions.has('s1'), false, 'record removed');
+});
+
+test('DELETE still removes ordinary chat sessions without force', async () => {
+  const persisted = { id: 's1', kind: 'chat', dirId: 'd1' };
+  const { deleteHandler, calls, persistedSessions } = fixture({ persisted });
+  const res = await invoke(deleteHandler, { params: { id: 's1' } });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(calls, ['cascade:s1']);
+  assert.equal(persistedSessions.has('s1'), false);
 });
 
 test('restart-spawn leaves non-codex sessions and guard failures untouched', async () => {

@@ -102,6 +102,18 @@ function createSessionLifecycleRuntime(rawDeps) {
       if (persisted?.type === 'commander') {
         return res.status(400).json({ error: 'commander 会话不可单独删除，只能随其所属 fleet 一起删除' });
       }
+      // A task-bound hidden session is its task's resume file. The fleet never
+      // lists it and the chat view has no session-DELETE affordance, so a DELETE
+      // arriving here is a sweep script — default-refuse so bulk cleanup cannot
+      // silently orphan task chat history. force=1 is the operator's deliberate
+      // hard reset (the board re-creates the session on next use and the
+      // cold-start seed rebuilds context from the task ledger); the in-band
+      // reset is the chat view's clear_history, which drops the native CLI
+      // session too. Unlike the commander guard this one honors force, because
+      // a task binding heals by re-creation while a fleet dispatcher does not.
+      if (persisted?.taskBoundTaskId && !force) {
+        return res.status(400).json({ error: 'task-bound 会话不可单独删除（任务 1:1 绑定）；如确需硬重置请带 force=1，或在会话内使用清空历史' });
+      }
       if (persisted) {
         const dir = directories.get(persisted.dirId);
         if (!dir) return res.status(404).json({ error: 'directory not found' });
