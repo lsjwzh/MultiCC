@@ -2359,6 +2359,7 @@ function createTaskBoardRuntime(deps) {
         const rec = records.get(ref.sessionId);
         if (!rec || rec.kind !== 'chat') continue;
         if (rec.taskExecutionSlot || rec.taskBoundTaskId) continue;
+        if (!sessionTranscriptHoldsTask(ref.sessionId, task.id)) continue;
         return { ok: true, sessionId: rec.id, created: false, adopted: true };
       }
     }
@@ -2390,6 +2391,21 @@ function createTaskBoardRuntime(deps) {
     }
     updateBoardTask(task.id, { chatSessionId: created.id });
     return { ok: true, sessionId: created.id, created: true };
+  }
+
+  // Adoption gate: a ref is a valid home only while that session's transcript
+  // still holds the task's turns. Refs are born from taskId-tagged messages
+  // (onMessagePersisted), so a live record whose transcript has none of them
+  // means the history was cleared (clear_history keeps the record) or the
+  // conversation moved on to other tasks — either way the ref points at the
+  // wrong room and adoption must decline (fall through to create + seed).
+  // Fail-open: an unreadable transcript is not proof the turns are gone.
+  function sessionTranscriptHoldsTask(sessionId, taskId) {
+    try {
+      return (loadHistory(sessionId) || []).some(message => message?.taskId === taskId);
+    } catch (_) {
+      return true;
+    }
   }
 
   // 归档即释放 · archive is a task's lifecycle end, so its bound session — the

@@ -367,6 +367,8 @@ function createSessionLifecycleRuntime(rawDeps) {
       console.log(`[multicc] restart-spawn ${id}: ${JSON.stringify(before)}`);
       res.json({ ok: true, before, cancelled, rolloutArchived, cli: persisted?.cli || cs?.cli || null });
     }));
+    // Chainable: hosts capture the runtime as createSessionLifecycleRuntime({...}).mountRoutes(app).
+    return api;
   }
 
   // Archive-time release for task-bound sessions. Same disposal semantics as
@@ -388,7 +390,8 @@ function createSessionLifecycleRuntime(rawDeps) {
     return { ok: true };
   }
 
-  return { mountRoutes, releaseTaskBoundSession };
+  const api = { mountRoutes, releaseTaskBoundSession };
+  return api;
 }
 
 module.exports = { createSessionLifecycleRuntime };

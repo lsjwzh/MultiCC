@@ -315,3 +315,14 @@ test('releaseTaskBoundSession surfaces a blocked cascade without touching the re
   assert.ok(persistedSessions.has('s1'), 'record survives a blocked release');
   assert.equal(events.length, 0, 'no release event for a kept session');
 });
+
+test('mountRoutes returns the runtime itself — chainable host wiring', () => {
+  // server.js wires `createSessionLifecycleRuntime({...}).mountRoutes(app)` and
+  // reads `.releaseTaskBoundSession` off the result. When mountRoutes returned
+  // undefined that read threw at module load and the server could not boot
+  // (6a068f3). Pin the chain: same object back, port surface intact.
+  const { runtime } = fixture();
+  const chained = runtime.mountRoutes(fakeApp());
+  assert.equal(chained, runtime, 'mountRoutes must return the runtime, not undefined');
+  assert.equal(typeof chained.releaseTaskBoundSession, 'function');
+});

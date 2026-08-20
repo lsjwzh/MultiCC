@@ -225,6 +225,9 @@ test('chat-session adopts the origin session for a task born in an ordinary sess
       ['commander-1', { id: 'commander-1', kind: 'chat', type: 'commander', dirId: 'dir-1', label: 'Agent Commander', cli: 'codex', model: 'gpt-5', provider: 'p-1' }],
       ['sess-mine', { id: 'sess-mine', kind: 'chat', dirId: 'dir-1', label: '我的会话' }],
     ]),
+    loadHistory: sid => (sid === 'sess-mine'
+      ? [{ id: 'm-1', role: 'user', taskId: 'task-1', ts: 10, content: '开始任务' }]
+      : []),
     createSessionRecord: async input => {
       creates += 1;
       deps.records.set(`sess-new-${creates}`, { id: `sess-new-${creates}`, kind: 'chat', dirId: input.dir.id });
@@ -258,6 +261,9 @@ test('adoption skips dead, slot and foreign-bound refs; the newest live ref wins
       ['sess-a', { id: 'sess-a', kind: 'chat', dirId: 'dir-1' }],
       ['sess-b', { id: 'sess-b', kind: 'chat', dirId: 'dir-1' }],
     ]),
+    loadHistory: sid => (sid === 'sess-a' || sid === 'sess-b'
+      ? [{ id: `m-${sid}`, role: 'user', taskId: 'task-1', ts: 1, content: '任务轮次' }]
+      : []),
     createSessionRecord: async input => {
       creates += 1;
       deps.records.set(`sess-new-${creates}`, { id: `sess-new-${creates}`, kind: 'chat', dirId: input.dir.id });
@@ -286,6 +292,74 @@ test('adoption skips dead, slot and foreign-bound refs; the newest live ref wins
   res = response();
   await handler({ params: { taskId: 'task-1' }, body: {} }, res);
   assert.equal(res.body.sessionId, 'sess-b');
+});
+
+test('a cleared or moved-on origin transcript is no longer a home: fall back to create', async () => {
+  // clear_history keeps the record but empties the transcript; a session
+  // whose turns moved on to a newer task no longer contains this task's
+  // conversation either. Both refs point at the wrong room, so adoption must
+  // decline and the click degrades to create + seed skeleton instead of
+  // opening an unrelated conversation.
+  let creates = 0;
+  const transcripts = {
+    'sess-cleared': [],
+    'sess-movedon': [{ id: 'm-b1', role: 'user', taskId: 'task-9', ts: 50, content: '别的任务' }],
+  };
+  const { runtime, deps } = mkRuntime({
+    records: new Map([
+      ['commander-1', { id: 'commander-1', kind: 'chat', type: 'commander', dirId: 'dir-1', label: 'Agent Commander', cli: 'codex', model: 'gpt-5', provider: 'p-1' }],
+      ['sess-cleared', { id: 'sess-cleared', kind: 'chat', dirId: 'dir-1' }],
+      ['sess-movedon', { id: 'sess-movedon', kind: 'chat', dirId: 'dir-1' }],
+    ]),
+    loadHistory: sid => transcripts[sid] || [],
+    createSessionRecord: async input => {
+      creates += 1;
+      deps.records.set(`sess-new-${creates}`, { id: `sess-new-${creates}`, kind: 'chat', dirId: input.dir.id });
+      return { ok: true, id: `sess-new-${creates}` };
+    },
+  });
+  seedTask(runtime, {
+    id: 'task-1', title: '清了历史的任务', status: 'active',
+    refs: [
+      { sessionId: 'sess-movedon', dirId: 'dir-1', ts: 50 },
+      { sessionId: 'sess-cleared', dirId: 'dir-1', ts: 10 },
+    ],
+  });
+  const handler = mkRoutes(runtime).get('POST /api/task-board/tasks/:taskId/chat-session');
+  const res = response();
+  await handler({ params: { taskId: 'task-1' }, body: {} }, res);
+  assert.equal(res.body.created, true);
+  assert.match(res.body.sessionId, /^sess-new-/);
+  assert.equal(creates, 1);
+});
+
+test("a session that still holds the task's turns keeps adopting even after new tasks moved in", async () => {
+  // The mixed case: the origin conversation continued with a newer task, but
+  // this task's turns are still in the transcript — its history lives there,
+  // so it still opens there.
+  let creates = 0;
+  const { runtime } = mkRuntime({
+    records: new Map([
+      ['commander-1', { id: 'commander-1', kind: 'chat', type: 'commander', dirId: 'dir-1', label: 'Agent Commander', cli: 'codex', model: 'gpt-5', provider: 'p-1' }],
+      ['sess-mixed', { id: 'sess-mixed', kind: 'chat', dirId: 'dir-1' }],
+    ]),
+    loadHistory: sid => (sid === 'sess-mixed' ? [
+      { id: 'm-a1', role: 'user', taskId: 'task-1', ts: 10, content: '任务一的轮次' },
+      { id: 'm-b1', role: 'user', taskId: 'task-2', ts: 20, content: '任务二的轮次' },
+    ] : []),
+    // The create port must exist (the endpoint's 501 contract guards on it
+    // before any resolution) but adoption must win without ever touching it.
+    createSessionRecord: async () => { creates += 1; return { ok: false, error: 'must_not_create' }; },
+  });
+  seedTask(runtime, {
+    id: 'task-1', title: '混住任务', status: 'active',
+    refs: [{ sessionId: 'sess-mixed', dirId: 'dir-1', ts: 10 }],
+  });
+  const handler = mkRoutes(runtime).get('POST /api/task-board/tasks/:taskId/chat-session');
+  const res = response();
+  await handler({ params: { taskId: 'task-1' }, body: {} }, res);
+  assert.deepEqual(res.body, { ok: true, sessionId: 'sess-mixed', created: false, adopted: true });
+  assert.equal(creates, 0);
 });
 
 test('a live 1:1 binding outranks origin refs; all-dead refs still create', async () => {
