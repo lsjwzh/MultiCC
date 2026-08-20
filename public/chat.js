@@ -130,9 +130,10 @@ const _targetMessageId = window.MultiCCChatMessageFocus.readTargetMessageId(loca
 const _hasNativeBridge = typeof window.MultiCCBridge !== 'undefined' && !!window.MultiCCBridge;
 function tt(key, params) { return (window.t || ((k) => k))(key, params); }
 
-function withToken(url) {
-  return url;
-}
+// Identity shim: URL-token auth is gone (cookie/session auth replaced it), but this
+// stays a live cross-module seam - chat-diff resolves window.withToken at call time,
+// composer/queue/recovery/task-mode take it as an injected port. Do not inline it away.
+function withToken(url) { return url; }
 
 /* ── Dynamic favicon + title from session name ── */
 const _TAB_COLORS = ['#58a6ff','#f78166','#3fb950','#d29922','#bc8cff','#f97583','#79c0ff','#56d364'];
@@ -185,6 +186,8 @@ const _LOCAL_IMG_RE = /^(?:file:\/\/|\/(?:tmp|Users|home|var|private|opt|Volumes
 function fixupLocalImages(root) {
   if (!root) return;
   root.querySelectorAll('img').forEach(img => {
+    if (img.dataset.imgFixed) return; // idempotent: a repeat pass must never re-bind click/error
+    img.dataset.imgFixed = '1';
     const raw = img.getAttribute('src') || '';
     img.addEventListener('load', () => chatScrollController?.handleLayoutChange(), { once: true });
     if (!_LOCAL_IMG_RE.test(raw)) return;
@@ -772,20 +775,15 @@ function attachUsageLine(bubbleEl, usage, roleBreakdown) {
   return chatLiveUi.attachUsageLine(bubbleEl, usage, roleBreakdown);
 }
 
-// Streaming deltas re-render the FULL accumulated markdown (the view layer has
-// no incremental path), so one render per text_delta is O(n^2) over a long
-// reply - hundreds of full marked+DOMPurify parses that stall mobile UIs.
-// Coalesce non-final renders on a short timer; only the first delta of a burst
-// schedules one, later deltas just extend the accumulated text. The FINAL
-// render (result/stream_end teardown) always runs synchronously so the turn
-// never ends on a throttled, stale bubble.
+// Streaming deltas re-render the FULL accumulated markdown (no incremental
+// path in the view layer), so one render per text_delta is O(n^2) over a long
+// reply. Coalesce non-final renders on a short timer; the FINAL render
+// (result/stream_end teardown) always runs synchronously so the turn never
+// ends on a throttled, stale bubble.
 const STREAM_RENDER_COALESCE_MS = 50;
 let _pendingStreamRender = null;
 function renderCurrentTextNow(final) {
-  return chatHistoryView.renderCurrentText(currentMsgEl, currentTextContent, {
-    final,
-    streaming: isStreaming,
-  });
+  return chatHistoryView.renderCurrentText(currentMsgEl, currentTextContent, { final, streaming: isStreaming });
 }
 function renderCurrentText(final = false) {
   if (final) {
@@ -1605,38 +1603,38 @@ function updateEffortBtn() {
 
 async function loadSessionModel() {
   if (!_sessionName) return;
-  try {
-    const info = await window.MultiCCChatAiConfig.loadSession(_sessionName);
-    // Role prompt applies to every cli; load it first, then the claude-only model.
-    _sessionRole = info.rolePrompt || '';
-    updateRoleBtn();
-    _sessionMemory = memoryToText(info.memory);
-    updateMemoryBtn();
-    // Provider switch applies to every cli (claude & codex both have providers).
-    applyCliUi(info.cli || 'claude');
-    _sessionCliStates = info.cliStates || {};
-    _cliAvailability = info.cliAvailability || _cliAvailability;
-    _pendingCliHandoff = info.pendingCliHandoff || null;
-    _sessionProvider = info.provider || '';
-    _sessionProviderDisplayName = '';
-    _sessionSubagent = info.subagent || null;
-    _sessionAgent = info.agent || '';
-    updateSubagentPill();
-    if (_sessionProvider && _sessionCli !== 'qoder') await ensureProviderList(_sessionCli);
-    updateProviderBtn();
-    _sessionModel = info.model || '';
-    _sessionEffectiveModel = info.effectiveModel || info.model || '';
-    _sessionEffort = info.effort || '';
-    _sessionEffectiveEffort = info.effectiveEffort || _sessionEffort || defaultEffortForCurrentCli();
-    updateModelBtn();
-    updateEffortBtn();
-    _sessionAutoCommit = !!info.autoCommit;
-    updateAutoCommitBtn();
-    void window.MultiCCChatAiConfig.maybePromptZcodeSetup({
-      cli: _sessionCli, provider: _sessionProvider, sessionId: _sessionName, loadProviders: () => ensureProviderList('zcode'),
-      onProvider: () => modelBtn?.click(), onSettings: () => window.open('/manage.html?view=provider', '_blank', 'noopener'),
-    });
-  } catch (_) {}
+  let info;
+  try { info = await window.MultiCCChatAiConfig.loadSession(_sessionName); }
+  catch (e) { dbg('model', `loadSessionModel fetch failed: ${e && e.message ? e.message : e}`); return; }
+  // The old single catch (_) {} wrapped everything below: one throwing UI
+  // update silently skipped the rest, leaving the pills stale with no hint
+  // why. UI updates are isolated individually; assignments cannot throw.
+  const safe = async (label, fn) => {
+    try { await fn(); } catch (e) { dbg('model', `loadSessionModel ${label} failed: ${e && e.message ? e.message : e}`); }
+  };
+  _sessionRole = info.rolePrompt || '';
+  safe('role-btn', updateRoleBtn);
+  _sessionMemory = memoryToText(info.memory);
+  safe('memory-btn', updateMemoryBtn);
+  safe('cli-ui', () => applyCliUi(info.cli || 'claude'));
+  _sessionCliStates = info.cliStates || {}; _cliAvailability = info.cliAvailability || _cliAvailability;
+  _pendingCliHandoff = info.pendingCliHandoff || null;
+  _sessionProvider = info.provider || '';
+  _sessionProviderDisplayName = '';
+  _sessionSubagent = info.subagent || null;
+  _sessionAgent = info.agent || '';
+  safe('subagent-pill', updateSubagentPill);
+  await safe('provider-list', async () => { if (_sessionProvider && _sessionCli !== 'qoder') await ensureProviderList(_sessionCli); });
+  safe('provider-btn', updateProviderBtn);
+  _sessionModel = info.model || ''; _sessionEffectiveModel = info.effectiveModel || info.model || '';
+  _sessionEffort = info.effort || ''; _sessionEffectiveEffort = info.effectiveEffort || _sessionEffort || defaultEffortForCurrentCli();
+  safe('model-btn', updateModelBtn); safe('effort-btn', updateEffortBtn);
+  _sessionAutoCommit = !!info.autoCommit;
+  safe('auto-commit-btn', updateAutoCommitBtn);
+  void window.MultiCCChatAiConfig.maybePromptZcodeSetup({
+    cli: _sessionCli, provider: _sessionProvider, sessionId: _sessionName, loadProviders: () => ensureProviderList('zcode'),
+    onProvider: () => modelBtn?.click(), onSettings: () => window.open('/manage.html?view=provider', '_blank', 'noopener'),
+  });
 }
 
 modelBtn?.addEventListener('click', async () => {
@@ -2071,8 +2069,11 @@ async function openMemoryEditor() {
   tabOwn.onclick = () => switchScope('own');
   tabShared.onclick = () => switchScope('shared');
   sel.onchange = () => { commit(); curName = sel.value; ta.value = model[scope].files[curName] || ''; pathHint.textContent = (model[scope].dir || '') + '/' + curName; };
-  newBtn.onclick = () => {
-    let n = (prompt(tt('memNewFileTitle'), '') || '').trim();
+  newBtn.onclick = async () => {
+    // In-page dialog, not native prompt(): WebViews suppress the native one.
+    let n = ((await chatLiveUi.prompt(tt('memNewFileTitle'), '', {
+      okText: tt('save'), cancelText: tt('cancel'),
+    })) || '').trim();
     if (!n) return;
     if (!/\.md$/i.test(n)) n += '.md';
     if (!/^[\w.\- 一-龥]+\.md$/i.test(n)) { addSystemMsg(tt('memNameInvalid')); return; }
@@ -2082,7 +2083,7 @@ async function openMemoryEditor() {
   };
   delBtn.onclick = async () => {
     if (!curName) return;
-    if (!confirm(tt('memDeleteConfirm', { scope: scope === 'own' ? tt('memScopeOwn') : tt('memScopeShared'), name: curName }))) return;
+    if (!(await chatLiveUi.confirm(tt('memDeleteConfirm', { scope: scope === 'own' ? tt('memScopeOwn') : tt('memScopeShared'), name: curName }), { danger: true }))) return;
     try {
       const r = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/memory`), {
         method: 'DELETE', headers: { 'Content-Type': 'application/json' },
@@ -2266,7 +2267,7 @@ async function openShareDialog() {
   }
   // Use event delegation on listEl so bind() is never needed — handlers survive
   // any innerHTML replacement, and data-* attrs always read the live DOM.
-  listEl.addEventListener('click', (e) => {
+  listEl.addEventListener('click', async (e) => {
     const btn = e.target.closest('button');
     if (!btn) return;
     if (btn.hasAttribute('data-copy')) {
@@ -2274,14 +2275,15 @@ async function openShareDialog() {
       btn.textContent = tt('shareCopied');
       setTimeout(() => { if (btn.isConnected) btn.textContent = tt('copy'); }, 1200);
     } else if (btn.hasAttribute('data-del')) {
-      if (!confirm(tt('revokeShareConfirm'))) return;
+      // In-page dialog, not native confirm/alert: WebViews suppress both.
+      if (!(await chatLiveUi.confirm(tt('revokeShareConfirm'), { danger: true }))) return;
       const token = btn.dataset.del;
       if (!token) return;
       btn.disabled = true;
       btn.textContent = tt('revoking');
       shareApi('DELETE', '/share/' + encodeURIComponent(token))
         .then(() => refresh())
-        .catch(e => alert(e.message))
+        .catch(e => chatLiveUi.alert(e.message))
         .finally(() => { if (btn.isConnected) { btn.disabled = false; btn.textContent = tt('revoke'); } });
     }
   });
@@ -2531,9 +2533,8 @@ chatComposer = window.MultiCCChatComposer.createComposer({
   addSystemMessage: addSystemMsg,
   // Deliberately inert: the user bubble appears only on the server's
   // queued=false confirmation (chat-event-controller session_queue), never
-  // optimistically on send. The old stagedUserBubbles map implemented this
-  // "stage" by storing every sent message forever with no reader (M6); staging
-  // now just discards.
+  // optimistically on send. The old stagedUserBubbles map stored every sent
+  // message forever with no reader (M6); staging now just discards.
   stageUserMessage: () => {},
   addUserMessage: addUserMsg,
   resetHistory: () => {
@@ -2913,6 +2914,7 @@ else connect();
     }
   }
   async function poll() {
+    if (document.hidden) return; // hidden tab: skip the fetch, next visible tick refreshes
     try {
       const r = await fetch(withToken('/api/codex/oauth/status'));
       if (!r.ok) return;
@@ -2923,8 +2925,7 @@ else connect();
   document.addEventListener('DOMContentLoaded', () => {
     if (TASK_MODE) return; // session-login banners don't apply to a task view
     poll();
-    const timer = setInterval(poll, 30000);
-    if (timer && timer.unref) timer.unref();
+    setInterval(poll, 30000); // unref() is a Node timer API, a no-op that never existed here
   });
 })();
 /* ════════════════════════════════════════════════════════════════════════════
@@ -2979,6 +2980,7 @@ else connect();
     }
   }
   async function poll() {
+    if (document.hidden) return; // hidden tab: skip the fetch, next visible tick refreshes
     try {
       const r = await fetch(withToken('/api/claude/oauth/status'));
       if (!r.ok) return;
@@ -2989,8 +2991,7 @@ else connect();
   document.addEventListener('DOMContentLoaded', () => {
     if (TASK_MODE) return; // session-login banners don't apply to a task view
     poll();
-    const timer = setInterval(poll, 30000);
-    if (timer && timer.unref) timer.unref();
+    setInterval(poll, 30000); // unref() is a Node timer API, a no-op that never existed here
   });
 })();
 /* ════════════════════════════════════════════════════════════════════════════

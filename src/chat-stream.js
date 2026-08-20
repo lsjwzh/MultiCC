@@ -142,7 +142,17 @@ function onStdout(name, chunk) {
     s.lineBuf = s.lineBuf.slice(i + 1);
     if (!line.trim()) continue;
     let evt;
-    try { evt = JSON.parse(line); } catch { continue; }
+    try { evt = JSON.parse(line); }
+    catch {
+      // A malformed JSONL line is a dropped event - silently ignoring it made
+      // adapter output corruption invisible. Count every drop, log the first
+      // few (capped so a chatty breakage cannot flood the log).
+      s.jsonlParseErrors = (s.jsonlParseErrors || 0) + 1;
+      if (s.jsonlParseErrors <= 5) {
+        console.warn(`[multicc/chat-stream] [${name}] malformed JSONL line dropped (#${s.jsonlParseErrors}, ${line.length} bytes)`);
+      }
+      continue;
+    }
 
     // Capture the real session id if the CLI reports one (first turn / system init).
     if (evt.session_id && evt.session_id !== s.sessionId && evt.type === 'system') {
