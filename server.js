@@ -2717,6 +2717,12 @@ orchestrationRuntime = createOrchestrationRuntime({
   detachedAdapter: detached,
   recoverDispatchResult: chatTurnEngine.recoverDispatchOperation,
   replayRecoveredDispatchEffects: () => {},
+  // Only a task-bound session takes the workspace key on delivery, so only it
+  // can collide with an admission that is holding that key while awaiting this
+  // tick. Answering before the claim keeps that collision a one-tick skip
+  // instead of a worker-wide deadlock (see orchestration-runtime processOutbox).
+  isDeliveryLocked: sid => !!persistedSessions.get(sid)?.taskBoundTaskId
+    && !!sessionHibernationRuntime?.isLocked?.(sid),
   beforeDeliver: async descriptor => { const record = persistedSessions.get(descriptor.sessionId); const guard = record?.taskBoundTaskId ? await sessionHibernationRuntime.acquireDelivery(descriptor.sessionId) : null; try { await taskRunHost.beforeDeliver(descriptor); return guard; } catch (error) { await guard?.complete({ accepted: false, durable: false }); throw error; } }, beforeFirstTick: ({ sessionScheduler }) => reconcileTaskRunSlotLeases({ store: taskRunStore, records: persistedSessions, persistRecords: savePersistedSessionsBestEffort, resumeCleanup: item => taskRunHost.resumeCleanup(item), resetSlot: item => taskRunHost.resetSlotForRecovery(item), getSchedulerStatus: slotId => sessionScheduler.status(slotId), recoverTerminal: event => taskRunHost.recoverTerminal(event), log: message => logger.warn(message) }),
   getSessionRecoveryState: id => sessionWorkHost.recoveryState(id),
   onSchedulerEvent: event => { sessionWorkHost.onSchedulerEvent(event); void taskRunHost.onSchedulerEvent(event).catch(error => logger.warn('task_run_finalize_failed', { error: error.message })); },
