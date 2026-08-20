@@ -748,6 +748,56 @@ test('a replay after a failed SEND reuses the already-bound session (no leak)', 
   assert.equal(fixture.calls.sent[0].sessionId, 'sess-new-1');
 });
 
+/* ── #37a · runtime fields are cli-scoped: cross-CLI inheritance is a mix the
+   validator rejects (the silent CREATE failure behind the worker_unavailable
+   incident — commander had switched to codex, the composer defaulted claude) ── */
+
+function mkCliFixture(commanderOverrides = {}) {
+  const fixture = mkStartFixture({
+    deps: {
+      records: new Map([
+        ['commander-1', {
+          id: 'commander-1', kind: 'chat', type: 'commander', dirId: 'dir-1',
+          cli: 'codex', model: 'gpt-5.6-sol', provider: 'p-codex', effort: 'ultra',
+          ...commanderOverrides,
+        }],
+      ]),
+    },
+  });
+  return { ...fixture, send: mkRoutes(fixture.runtime).get('POST /api/task-board/send') };
+}
+
+test('a composer cli pick that differs from the commander drops cross-CLI runtime fields', async () => {
+  const { send, calls } = mkCliFixture();
+  const res = response();
+  await send({
+    body: { text: '新任务：做 X', dirId: 'dir-1', clientMsgId: 'ck-cli', cli: 'claude' },
+  }, res);
+
+  assert.equal(res.code, 200);
+  assert.equal(calls.created.length, 1);
+  const created = calls.created[0];
+  assert.equal(created.cli, 'claude');
+  assert.equal(created.provider, '', 'a codex provider must never ride a claude session');
+  assert.equal(created.effort, null, "'ultra' is a codex-only reasoning level");
+  assert.equal(created.model, null, 'a codex model is meaningless on claude');
+});
+
+test('a matching commander cli still inherits provider/model/effort', async () => {
+  const { send, calls } = mkCliFixture({ effort: 'high' });
+  const res = response();
+  await send({
+    body: { text: '新任务：做 X', dirId: 'dir-1', clientMsgId: 'ck-cli-same', cli: 'codex' },
+  }, res);
+
+  assert.equal(res.code, 200);
+  const created = calls.created[0];
+  assert.equal(created.cli, 'codex');
+  assert.equal(created.provider, 'p-codex');
+  assert.equal(created.effort, 'high');
+  assert.equal(created.model, 'gpt-5.6-sol');
+});
+
 /* ── archive-time release (归档即释放) ── */
 
 function mkReleaseFixture(overrides = {}) {
