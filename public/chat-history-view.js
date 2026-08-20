@@ -181,7 +181,7 @@
     function createToolCard(name, id) {
       const toolName = asText(name || 'Tool');
       const card = document.createElement('div');
-      card.className = 'tool-card';
+      card.className = 'tool-card tool-running';
       if (id) card.dataset.toolId = asText(id);
 
       const header = document.createElement('div');
@@ -194,7 +194,7 @@
       nameEl.textContent = toolName;
       const description = document.createElement('span');
       description.className = 'tool-desc';
-      description.textContent = 'running...';
+      description.textContent = 'running';
       const arrow = document.createElement('span');
       arrow.className = 'tool-arrow';
       arrow.textContent = '▶';
@@ -239,6 +239,7 @@
 
     function addToolResult(toolState, value, isError) {
       if (!toolState || !toolState.card) return;
+      toolState.card.classList.remove('tool-running');
       const body = toolState.card.querySelector('.tool-body');
       if (!body) return;
       // A repeated tool_result is an upsert, not a second result block.
