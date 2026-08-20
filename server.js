@@ -1880,7 +1880,8 @@ const sessionLifecycleRuntime = createSessionLifecycleRuntime({
   // pushRuntime is composed further down this file; forward lazily past the TDZ.
   cleanupPushMonitor: (id) => cleanupPushMonitor(id),
   getSessionGitRuntime: () => sessionGitRuntime,
-}).mountRoutes(app);
+});
+sessionLifecycleRuntime.mountRoutes(app);
 
 // ── Restart the whole multicc server (graceful) ──
 // Handler + detached-scheduler debounce live in src/routes/server-restart-route.js;
