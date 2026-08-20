@@ -188,7 +188,7 @@ function controllerFixture() {
     applyHistoryPlan() {},
     removeHistoryMessageById() {},
     showNotifyToast(...args) { calls.push(['toast', ...args]); },
-    speakNotify() {},
+    speakNotify(...args) { calls.push(['speak', ...args]); },
     maybeScrollToBottom() {},
     renderCurrentText() { calls.push(['render', state.currentTextContent]); },
     renderSessionQueue(items, metadata) {
@@ -225,6 +225,18 @@ test('progress heartbeat formatter exposes only safe bounded status fields', () 
   assert.equal(eventApi.formatProgressHeartbeat({ phase: 'unknown', elapsedMs: -1 }), '仍在执行 · 0s');
 });
 
+test('task-aware completion voice keeps the localized outcome copy', () => {
+  assert.equal(eventApi.taskAwareCompletionVoice({
+    taskShortCode: '7K2M', taskGoal: 'Fix quota display',
+    voiceMessage: '任务 7K2M，Fix quota display，本轮执行成功',
+  }, 'Execution succeeded'), '7K2M，Fix quota display，Execution succeeded');
+  assert.equal(
+    eventApi.taskAwareCompletionVoice({ voiceMessage: '旧服务端专用文案' }, '本轮执行成功'),
+    '旧服务端专用文案',
+  );
+  assert.equal(eventApi.taskAwareCompletionVoice({}, '本轮执行成功'), '本轮执行成功');
+});
+
 test('turn and monitor progress update stable rows and terminal events close the turn row', () => {
   const fixture = controllerFixture();
   const generation = fixture.controller.beginGeneration();
@@ -244,6 +256,25 @@ test('turn and monitor progress update stable rows and terminal events close the
     ['progress', '后台测试仍在执行', 'task-1'],
     ['done', '本轮已完成', 'turn:turn-1'],
   ]);
+});
+
+test('completion notification speaks the authoritative task short label', () => {
+  const fixture = controllerFixture();
+  const generation = fixture.controller.beginGeneration();
+  fixture.controller.handleEvent({
+    type: 'notify', state: 'succeeded', classifyState: 'D',
+    message: '执行成功：修复配额显示',
+    taskShortCode: '7K2M', taskGoal: '修复配额显示',
+    voiceMessage: '任务 7K2M，修复配额显示，本轮执行成功',
+  }, generation);
+  assert.deepEqual(fixture.calls.at(-1), [
+    'speak', '7K2M，修复配额显示，voiceExecutionSucceeded', 'succeeded',
+  ]);
+
+  fixture.controller.handleEvent({
+    type: 'notify', state: 'succeeded', classifyState: 'D', message: '执行成功',
+  }, generation);
+  assert.deepEqual(fixture.calls.at(-1), ['speak', 'voiceExecutionSucceeded', 'succeeded']);
 });
 
 test('interrupted monitor_done (incl. post-restart journal replay) renders stale, not done', () => {

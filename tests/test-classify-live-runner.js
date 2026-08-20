@@ -155,4 +155,11 @@ test('a succeeded gateway turn deterministically reaches D without Aux classific
   assert.equal(h.observed.transitionResults[0].state, 'D');
   assert.equal(h.observed.transitionResults[0].evidence, 'gateway_turn_succeeded');
   assert.equal(h.record.taskState.classifyState, 'D');
+  const notify = h.observed.broadcasts.find(event => event.type === 'notify');
+  assert.match(notify.taskShortCode, /^[0-9A-Z]{4}$/);
+  assert.equal(notify.taskGoal, '已识别任务');
+  assert.equal(
+    notify.voiceMessage,
+    `任务 ${notify.taskShortCode}，已识别任务，本轮执行成功`,
+  );
 });
