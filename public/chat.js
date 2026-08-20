@@ -1603,38 +1603,38 @@ function updateEffortBtn() {
 
 async function loadSessionModel() {
   if (!_sessionName) return;
-  try {
-    const info = await window.MultiCCChatAiConfig.loadSession(_sessionName);
-    // Role prompt applies to every cli; load it first, then the claude-only model.
-    _sessionRole = info.rolePrompt || '';
-    updateRoleBtn();
-    _sessionMemory = memoryToText(info.memory);
-    updateMemoryBtn();
-    // Provider switch applies to every cli (claude & codex both have providers).
-    applyCliUi(info.cli || 'claude');
-    _sessionCliStates = info.cliStates || {};
-    _cliAvailability = info.cliAvailability || _cliAvailability;
-    _pendingCliHandoff = info.pendingCliHandoff || null;
-    _sessionProvider = info.provider || '';
-    _sessionProviderDisplayName = '';
-    _sessionSubagent = info.subagent || null;
-    _sessionAgent = info.agent || '';
-    updateSubagentPill();
-    if (_sessionProvider && _sessionCli !== 'qoder') await ensureProviderList(_sessionCli);
-    updateProviderBtn();
-    _sessionModel = info.model || '';
-    _sessionEffectiveModel = info.effectiveModel || info.model || '';
-    _sessionEffort = info.effort || '';
-    _sessionEffectiveEffort = info.effectiveEffort || _sessionEffort || defaultEffortForCurrentCli();
-    updateModelBtn();
-    updateEffortBtn();
-    _sessionAutoCommit = !!info.autoCommit;
-    updateAutoCommitBtn();
-    void window.MultiCCChatAiConfig.maybePromptZcodeSetup({
-      cli: _sessionCli, provider: _sessionProvider, sessionId: _sessionName, loadProviders: () => ensureProviderList('zcode'),
-      onProvider: () => modelBtn?.click(), onSettings: () => window.open('/manage.html?view=provider', '_blank', 'noopener'),
-    });
-  } catch (_) {}
+  let info;
+  try { info = await window.MultiCCChatAiConfig.loadSession(_sessionName); }
+  catch (e) { dbg('model', `loadSessionModel fetch failed: ${e && e.message ? e.message : e}`); return; }
+  // The old single catch (_) {} wrapped everything below: one throwing UI
+  // update silently skipped the rest, leaving the pills stale with no hint
+  // why. UI updates are isolated individually; assignments cannot throw.
+  const safe = async (label, fn) => {
+    try { await fn(); } catch (e) { dbg('model', `loadSessionModel ${label} failed: ${e && e.message ? e.message : e}`); }
+  };
+  _sessionRole = info.rolePrompt || '';
+  safe('role-btn', updateRoleBtn);
+  _sessionMemory = memoryToText(info.memory);
+  safe('memory-btn', updateMemoryBtn);
+  safe('cli-ui', () => applyCliUi(info.cli || 'claude'));
+  _sessionCliStates = info.cliStates || {}; _cliAvailability = info.cliAvailability || _cliAvailability;
+  _pendingCliHandoff = info.pendingCliHandoff || null;
+  _sessionProvider = info.provider || '';
+  _sessionProviderDisplayName = '';
+  _sessionSubagent = info.subagent || null;
+  _sessionAgent = info.agent || '';
+  safe('subagent-pill', updateSubagentPill);
+  await safe('provider-list', async () => { if (_sessionProvider && _sessionCli !== 'qoder') await ensureProviderList(_sessionCli); });
+  safe('provider-btn', updateProviderBtn);
+  _sessionModel = info.model || ''; _sessionEffectiveModel = info.effectiveModel || info.model || '';
+  _sessionEffort = info.effort || ''; _sessionEffectiveEffort = info.effectiveEffort || _sessionEffort || defaultEffortForCurrentCli();
+  safe('model-btn', updateModelBtn); safe('effort-btn', updateEffortBtn);
+  _sessionAutoCommit = !!info.autoCommit;
+  safe('auto-commit-btn', updateAutoCommitBtn);
+  void window.MultiCCChatAiConfig.maybePromptZcodeSetup({
+    cli: _sessionCli, provider: _sessionProvider, sessionId: _sessionName, loadProviders: () => ensureProviderList('zcode'),
+    onProvider: () => modelBtn?.click(), onSettings: () => window.open('/manage.html?view=provider', '_blank', 'noopener'),
+  });
 }
 
 modelBtn?.addEventListener('click', async () => {
