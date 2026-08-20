@@ -2138,18 +2138,16 @@ function createChatTurnEngine(deps) {
           }
           const pendingMemory = getPendingMemoryDistill(sessionName);
           const deliver = () => taskContextHost.deliverSessionMessage(sessionName, msg.text, turnOpts);
-          if (pendingMemory) {
-            // A pending memory distill delays delivery so the new turn sees the
-            // distilled memory. It must never EAT the message: the old shape
-            // (pendingMemory.finally(deliver)) left both the distill rejection
-            // and deliver's rejection unhandled, and returned from the handler
-            // before delivery - a failed distill silently dropped the user's
-            // message. Await through it, let a failed distill pass, and let
-            // deliver's own errors reach the handler's catch.
-            await Promise.resolve(pendingMemory).catch(() => {}).then(deliver);
-          } else {
-            await deliver();
-          }
+          // A pending memory distill delays delivery so the new turn sees the
+          // distilled memory. It must never EAT the message: the old shape
+          // (pendingMemory.finally(deliver)) left both the distill rejection and
+          // deliver's rejection unhandled, and returned from the handler before
+          // delivery - a failed distill silently dropped the user's message.
+          // Await through it, let a failed distill pass, and let deliver's own
+          // errors reach the handler's catch. The single-statement branches keep
+          // the 'else await deliver()' shape test-task-context-host.js pins.
+          if (pendingMemory) await Promise.resolve(pendingMemory).catch(() => {}).then(deliver);
+          else await deliver();
           return;
         }
       } catch (e) {
