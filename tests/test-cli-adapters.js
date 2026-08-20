@@ -141,6 +141,26 @@ assert.strictEqual(
   })[0].content,
   'child [completed]: ok',
 );
+// wait_agent: codex v2 has no targets field and v1 tolerates an empty list,
+// so receiver_thread_ids is usually empty — the card must show the wait
+// scope, not a bare empty agentIds array.
+assert.deepStrictEqual(
+  codex.decodeEvent({
+    type: 'item.started',
+    item: { type: 'collab_tool_call', id: 'w1', tool: 'wait', receiver_thread_ids: [] },
+  })[0],
+  {
+    type: 'tool_start', id: 'w1', name: 'Agent Wait',
+    input: { targets: '任意活跃 Agent' }, status: 'running',
+  },
+);
+assert.deepStrictEqual(
+  codex.decodeEvent({
+    type: 'item.started',
+    item: { type: 'collab_tool_call', id: 'w2', tool: 'wait', receiver_thread_ids: ['t-1', 't-2'] },
+  })[0].input,
+  { targets: ['t-1', 't-2'] },
+);
 assert.strictEqual(codex.decodeEvent({ type: 'error', message: 'response-disconnect' })[0].kind, 'response_completed_disconnect');
 assert.strictEqual(codex.decodeEvent({ type: 'error', message: 'transport-disconnect' })[0].kind, 'transport_disconnect');
 assert.deepStrictEqual(
