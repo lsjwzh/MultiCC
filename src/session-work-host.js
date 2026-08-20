@@ -593,6 +593,16 @@ function createSessionWorkHost(deps = {}) {
       try { proc.once('exit', () => { if (state._cancelledProc === proc) state._cancelledProc = null; }); }
       catch (_) {}
       state.lineBuf = '';
+      // The detach above makes turn-engine's close handler see a stale proc and
+      // skip its ENTIRE finalization - by design: the structured cancel below
+      // owns that chain. But nothing in the cancel chain broadcasts stream_end,
+      // and the classify-E notify never touches the frontend's isStreaming, so
+      // the live spinner would hang until the next reconnect. Emit it here for
+      // the per-turn runner (the claude streaming path has no claudeProc and
+      // finalizes through its own send() rejection).
+      if (state.isStreaming) {
+        try { deps.broadcast(sessionId, { type: 'stream_end' }); } catch (_) {}
+      }
     }
     state.isStreaming = false;
     state.streamReplay = [];

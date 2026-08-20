@@ -7,7 +7,7 @@
 // chat-task-mode.js and live here instead. This file must contain function
 // declarations ONLY — no top-level execution: it loads before chat.js, and
 // every binding it references (messagesEl, ws, chatEventController,
-// stagedUserBubbles, TASK_MODE, …) is a chat.js top-level lexical declaration
+// TASK_MODE, …) is a chat.js top-level lexical declaration
 // that only exists once chat.js has run. Calling any of these functions
 // earlier than the chat.js tail `bootTaskMode()` would be a TDZ
 // ReferenceError; the declarations themselves are hoisted and harmless.
@@ -94,7 +94,6 @@ function bootTaskProjection() {
     handleEvent: (event, generation) => chatEventController.handleEvent(event, generation),
     setCli: value => { chatEventState.currentCli = value; },
     getGeneration: () => _eventGeneration,
-    unstageUserMessage: id => { stagedUserBubbles.delete(id); },
     debug: (...args) => dbg('task-mode', args.map(a => String(a && a.message ? a.message : a)).join(' ')),
   });
   taskMode.boot();

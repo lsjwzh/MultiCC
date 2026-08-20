@@ -345,14 +345,15 @@
           const visibleItems = message.event === 'queued' && message.queued === false
             ? items.filter(item => item?.entryId !== message.entryId)
             : items;
-          // Insert user bubble now if queued=false (immediate), otherwise stage it
+          // Insert user bubble now if queued=false (immediate). A queued=true
+          // message stays off-screen until its turn runs (the queued entry is
+          // visible in the queue strip below); the old stagedUserBubbles side
+          // map had no reader and grew unboundedly (M6) - nothing is staged.
           if (message.event === 'queued') {
             const text = message.message;
             const clientMsgId = message.clientMsgId;
             if (message.queued === false && text && clientMsgId) {
               if (typeof host.addUserMessage === 'function') host.addUserMessage(text, clientMsgId);
-            } else if (message.queued && text && clientMsgId) {
-              if (window.stagedUserBubbles) window.stagedUserBubbles.set(clientMsgId, text);
             }
           }
           host.renderSessionQueue?.(
