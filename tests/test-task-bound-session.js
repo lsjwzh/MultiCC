@@ -453,6 +453,7 @@ function mkBoundFixture(overrides = {}) {
     ...(taskRunsStub ? { taskRuns: taskRunsStub } : {}),
     ...(overrides.loadHistory ? { loadHistory: overrides.loadHistory } : {}),
     ...(overrides.runtimeOverrides || {}),
+    ...(overrides.deps || {}),
   });
   seedTask(fixture.runtime, {
     id: 'task-1', title: '修复登录闪退', status: 'active',
@@ -581,7 +582,7 @@ test('a persisted first turn that never reached the CLI still seeds', async () =
   assert.match(fixture.calls.sent[0].options.taskContextSeed, /先复现闪退堆栈/);
 });
 
-test('an open TaskRun gates the detour: legacy path drains first', async () => {
+test('an open TaskRun refuses the follow-up honestly: no second executor', async () => {
   const taskRunsStub = {
     beginRun: input => ({ ...input, leaseEpoch: 1 }),
     listTaskRuns: () => [
@@ -595,22 +596,36 @@ test('an open TaskRun gates the detour: legacy path drains first', async () => {
   const result = await fixture.runtime.routeCommanderFollowup(
     'commander-1', 'task-1', '继续修', { clientMsgId: 'k3' });
 
-  // The open run still owns the task — the follow-up joins the pooled run,
-  // and the bound session is NOT touched (no dual executors on one worktree).
-  assert.equal(fixture.calls.routed.length, 1);
+  // The pooled path is retired: a legacy run that still owns the task makes
+  // the follow-up refuse (wait for it to end or cancel it) instead of opening
+  // a second executor or re-entering the drain path.
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'task_run_open');
+  assert.equal(fixture.calls.routed.length, 0);
   assert.equal(fixture.calls.sent.length, 0);
-  assert.notEqual(result.taskBound, true);
 });
 
-test('a dangling binding falls back to the commander path', async () => {
-  const fixture = mkBoundFixture();
+test('a dangling binding heals by re-creating the bound session, not by pooling', async () => {
+  const created = [];
+  const fixture = mkBoundFixture({
+    deps: {
+      createSessionRecord: async input => {
+        created.push(input);
+        const session = { id: 'bound-reborn', kind: 'chat', dirId: 'dir-1', taskBoundTaskId: 'task-1' };
+        fixture.deps.records.set(session.id, session);
+        return { ok: true, id: session.id, session };
+      },
+    },
+  });
   fixture.deps.records.delete('bound-1'); // record gone, board still points at it
   const result = await fixture.runtime.routeCommanderFollowup(
     'commander-1', 'task-1', '继续修', { clientMsgId: 'k4' });
 
-  assert.equal(fixture.calls.routed.length, 1);
-  assert.equal(fixture.calls.sent.length, 0);
-  assert.notEqual(result.taskBound, true);
+  assert.equal(result.taskBound, true);
+  assert.equal(created.length, 1, 'the binding heals onto a fresh 1:1 session');
+  assert.equal(fixture.calls.sent.length, 1);
+  assert.equal(fixture.calls.sent[0].sessionId, 'bound-reborn');
+  assert.equal(fixture.calls.routed.length, 0, 'the pooled path no longer exists');
 });
 
 /* ── 5 · P1-b2 · task start 改道：新任务直接绑定，永不落池 ── */
@@ -689,7 +704,7 @@ test('replayed task start answers duplicate without a second turn or dispatch', 
   assert.equal(fixture.calls.created.length, 1);
 });
 
-test('a failed session CREATE falls back to the pooled path (board keeps working)', async () => {
+test('a failed session CREATE reports honestly — no silent pooled fallback', async () => {
   const fixture = mkStartFixture({
     deps: { createSessionRecord: async () => ({ ok: false, error: 'worktree 创建失败： boom' }) },
   });
@@ -698,10 +713,15 @@ test('a failed session CREATE falls back to the pooled path (board keeps working
   await routes.get('POST /api/task-board/send')(
     { body: { text: '新任务：做 X', dirId: 'dir-1', clientMsgId: 'ck1' } }, res);
 
-  assert.equal(res.code, 200);
-  assert.notEqual(res.body.taskBound, true);
-  assert.equal(fixture.calls.routed.length, 1); // legacy commander→slot path
+  // The pooled path is retired (#38): a CREATE failure is surfaced to the
+  // user instead of quietly dropping the task into the TaskRun ledger where
+  // its messages were invisible in the chat view (the empty-room incident).
+  assert.equal(res.code, 502);
+  assert.match(res.body.error, /worktree/);
+  assert.equal(fixture.calls.routed.length, 0);
   assert.equal(fixture.calls.sent.length, 0);
+  assert.equal(Object.keys(fixture.runtime.getBoard().tasks).length, 0,
+    'a task that never opened its turn must not linger as a card');
 });
 
 test('a failed SEND on a live binding never falls through to the slots', async () => {
