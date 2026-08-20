@@ -496,6 +496,10 @@
           if (event.content_block?.type === 'text') state.activeContentType = 'text';
           else if (event.content_block?.type === 'tool_use') {
             state.activeContentType = 'tool_use';
+            // Out-of-order/replayed frames can deliver tool_use before
+            // message_start created the bubble - without this the querySelector
+            // below is a TypeError that kills the whole event switch.
+            if (!state.currentMsgEl) state.currentMsgEl = createAssistantBubble();
             const card = historyView.createToolCard(event.content_block.name, event.content_block.id);
             state.currentToolCards.set(event.index, {
               card, inputJson: '', name: event.content_block.name, id: event.content_block.id,
