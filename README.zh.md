@@ -67,10 +67,15 @@ MultiCC **不会**把一家厂商的对话记录翻译成另一家的格式—�
 | | |
 |---|---|
 | 🧵 **真并行** | 每个会话独占一个 git worktree，分支 `multicc/<会话id>`。六个 agent 同仓库互不打架，合回主分支时有语法校验把关，合并后自动同步兄弟 worktree。 |
+| 📋 **任务板绑定会话** | 每个任务拥有独立的隐藏聊天会话，实时台账、稳定短码 `#CODE`、取消/清理/归档释放全套生命周期。 |
+| ⏰ **定时消息浮窗** | 把消息排队进会话 FIFO，发送前在浮窗里复核，避免手滑。 |
+| 💤 **空闲任务 worktree 休眠** | 长时间空闲的任务绑定会话自动休眠，释放系统资源。 |
 | 💸 **子 agent 省钱** | 主 agent 用前沿模型，子 agent 通过本地 provider router 路由到 DeepSeek / GLM / Qwen。同一个仓库、并行跑、成本只有零头。 |
 | 📱 **会话比客户端活得久** | 合上笔记本，手机上接着看。终端会话跑在 `tmux` 里，聊天会话是有状态的轮次。 |
 | 🗣️ **语音，包括全双工** | 可以口述 prompt，也可以像打电话一样和 agent 实时语音对话（支持插话打断）。本地 ASR 用 sherpa-onnx SenseVoice，不走云端。 |
+| 🔊 **语音播报任务完成** | 全双工语音模式下会播报已完成任务的身份，全程免手操作。 |
 | 🔔 **它会来找你** | Web Push、Bark、Webhook，以及微信、飞书、Telegram、Discord、Slack 五个 IM 桥接。 |
+| 🔗 **借道分享 / 中继令牌** | 在 `/manage` 生成 relay token、选择地址，安全地分享访问权限或 provider 配置。 |
 | 🌐 **多端一个后端** | 桌面终端、网页聊天、PWA、原生 Flutter App（Android / iOS）。 |
 
 ---
@@ -80,7 +85,7 @@ MultiCC **不会**把一家厂商的对话记录翻译成另一家的格式—�
 ### 1. 安装
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v1.5.2/install.sh | bash -s -- --branch v1.5.2
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v1.6.1/install.sh | bash -s -- --branch v1.6.1
 ```
 
 脚本会自动识别系统、检查依赖、克隆仓库、安装依赖、生成 `ACCESS_TOKEN`，并可选注册为后台服务（macOS `launchd`）。安装过程不会构建 Android APK。
@@ -91,8 +96,8 @@ Android APK 只在发布 `vX.Y.Z` tag 时由 GitHub release workflow 构建一�
 使用项目统一的发布密钥签名，并上传到该精确版本的 GitHub Release。
 `/manage` 的 **APK 区域**优先使用非空的本地 `public/multicc.apk`；本地没有时，
 只提供与当前服务端 package 版本完全一致的 Release `multicc.apk`，不会回退到
-`latest`。安装和 `./multicc update` 都不会构建 APK。v1.5.2 尚无 Release Asset，
-线上兜底从下一个版本开始生效。
+`latest`。安装和 `./multicc update` 都不会构建 APK。从 v1.6.1 开始，每个稳定
+release 都会附带签名 APK，远程兜底立即生效。
 
 ### 2. 启动
 
