@@ -1161,11 +1161,14 @@ function createSessionWorkScheduler({
     const info = await store.mutate(draft => {
       const item = draft.outbox[entryId];
       if (!item) return null;
-      const schedule = ensure(draft, item.sessionId, Number(now()));
+      const at = Number(now());
+      const schedule = ensure(draft, item.sessionId, at);
       const queue = queueForDraft(draft, item.sessionId);
+      const selected = selectSessionItem(queue, draft, at);
       return {
         item: clone(item),
         position: queue.findIndex(candidate => candidate.id === item.id) + 1,
+        queued: selected?.id !== item.id,
         schedulerState: schedule.state,
         schedule: publicSchedule(schedule, queue),
       };
@@ -1177,7 +1180,10 @@ function createSessionWorkScheduler({
       taskId: taskIdForItem(info.item),
       source: info.item.payload?.taskSource || info.item.source?.type || 'dispatch',
       workKind: workKind(info.item),
+      message: queuedText(info.item),
+      clientMsgId: info.item.payload?.options?.clientMsgId || null,
       duplicate: false,
+      queued: info.queued,
       queuePosition: info.position || null,
       schedulerState: info.schedulerState,
       freezeReason: info.schedule.freezeReason,

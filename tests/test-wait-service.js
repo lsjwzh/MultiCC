@@ -239,3 +239,34 @@ test('delay waits resolve through the same atomic outbox path without a callback
     '【延迟条件已到】check deployment',
   );
 });
+
+test('a scheduled user delay atomically becomes ordinary task work', async t => {
+  const { store, waits } = serviceFixture(t);
+  const registered = await waits.register({ sessionId: 'session-S', mode: 'delay' });
+  const resolved = await waits.resolveDelay(
+    registered.id,
+    { dueAt: 12_345, scheduledMessage: true },
+    { sessionWork: { text: '到期执行这条消息' } },
+  );
+  assert.equal(resolved.ok, true);
+
+  const item = (await store.snapshot()).outbox[`wait:${registered.id}`];
+  assert.equal(item.directRun, true);
+  assert.deepEqual(item.payload, {
+    type: 'session.work',
+    workKind: 'task',
+    message: '到期执行这条消息',
+    options: {
+      originContinue: false,
+      clientMsgId: `wait:${registered.id}`,
+      scheduledMessageId: registered.id,
+      receivedAt: 10_000,
+    },
+    source: 'scheduled',
+    taskId: null,
+    taskRunId: null,
+    leaseEpoch: null,
+    requestId: null,
+    activeEntryId: null,
+  });
+});
