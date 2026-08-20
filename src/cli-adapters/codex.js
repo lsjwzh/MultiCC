@@ -42,6 +42,22 @@ function collabResult(item) {
   return lines.join('\n') || item.status || '';
 }
 
+// Input panel payload for collab tool cards. wait_agent's `targets` is an
+// optional array (v1 allows an empty list; v2 has no targets field at all —
+// it waits for a mailbox update from any live agent), so the wire's
+// receiver_thread_ids is usually empty. Rendering a bare `agentIds: []`
+// looked like a parsing bug; show the wait scope instead.
+function collabInput(item) {
+  const ids = Array.isArray(item.receiver_thread_ids) ? item.receiver_thread_ids : [];
+  if (item.tool === 'wait') {
+    return { targets: ids.length ? ids : '任意活跃 Agent' };
+  }
+  return {
+    prompt: item.prompt || undefined,
+    agentIds: ids,
+  };
+}
+
 // codex function/custom tool arguments arrive as a JSON string; parse to an
 // object for the tool card's input panel, falling back to the raw string.
 function parseToolArguments(raw) {
@@ -174,10 +190,7 @@ function createCodexAdapter(deps) {
         if (item.type === 'collab_tool_call') {
           return [{
             type: 'tool_start', id: item.id, name: collabToolName(item.tool),
-            input: {
-              prompt: item.prompt || undefined,
-              agentIds: item.receiver_thread_ids || [],
-            },
+            input: collabInput(item),
             status: 'running',
           }];
         }
