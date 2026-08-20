@@ -89,7 +89,7 @@ multicc/
 │   ├── manifest.json             # Web App Manifest
 │   ├── agent-presets.json        # Agent role templates (Commander, Reviewer, Builder…)
 │   ├── qrcode.min.js             # QR code generation
-│   └── multicc.apk               # Latest Flutter APK (build output)
+│   └── multicc.apk               # Ignored install-time Flutter build output
 │
 ├── app/                          # Flutter native client (Android + iOS)
 │   ├── lib/

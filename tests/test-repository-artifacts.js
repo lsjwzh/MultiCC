@@ -2,6 +2,7 @@
 
 const assert = require('node:assert/strict');
 const childProcess = require('node:child_process');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -56,4 +57,182 @@ test('tracked entry scan tolerates files deleted in the uncommitted worktree', (
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+// ── The APK is built, not tracked ──────────────────────────────────────────
+//
+// public/multicc.apk used to be a 59 MB tracked binary, which every session
+// worktree checked out a private copy of (149 worktrees × 59 MB ≈ 8.6 GB of
+// pure duplication). It is now produced at install time by
+// scripts/publish-apk.sh and left untracked, so these tests pin both halves:
+// nothing re-tracks an APK, and the build entry points that replaced it still
+// exist.
+
+const REPO_ROOT = path.resolve(__dirname, '..');
+
+function trackedPaths() {
+  return childProcess.execFileSync('git', ['ls-files', '-z'], { cwd: REPO_ROOT })
+    .toString('utf8').split('\0').filter(Boolean);
+}
+
+test('APK and generated sidecars are untracked and ignored build artifacts', () => {
+  assert.deepEqual(trackedPaths().filter(file => file.startsWith('public/multicc.apk')), []);
+  for (const file of [
+    'public/multicc.apk',
+    'public/multicc.apk.json',
+    'public/multicc.apk.sha1',
+    'public/multicc.apk.tmp.123',
+  ]) {
+    const ignored = childProcess.spawnSync('git', ['check-ignore', '--no-index', '-q', file], {
+      cwd: REPO_ROOT,
+    });
+    assert.equal(ignored.status, 0, `${file} must stay ignored after an install-time build`);
+  }
+  const baseline = JSON.parse(fs.readFileSync(
+    path.join(REPO_ROOT, 'governance', 'repository-artifact-baseline.json'), 'utf8'));
+  // The category stays (the scanner still rejects new APKs); the exemption goes.
+  assert.deepEqual(baseline.accepted['tracked-apk'], []);
+  assert.equal(baseline.accepted['large-binary'].includes('public/multicc.apk'), false);
+});
+
+test('every APK build entry point survives: publish script, CLI verb, installer step', () => {
+  const publish = path.join(REPO_ROOT, 'scripts', 'publish-apk.sh');
+  assert.equal(fs.existsSync(publish), true, 'scripts/publish-apk.sh is the single build implementation');
+  // eslint-disable-next-line no-bitwise
+  assert.equal((fs.statSync(publish).mode & 0o111) !== 0, true, 'publish-apk.sh must stay executable');
+  const publishSource = fs.readFileSync(publish, 'utf8');
+  // --if-missing is what makes the installer step idempotent across re-runs.
+  assert.match(publishSource, /--if-missing/);
+  // A missing Flutter SDK must be a named, non-zero failure, never a silent
+  // half-build that leaves a stale APK looking fresh.
+  assert.match(publishSource, /command -v flutter/);
+
+  const cli = fs.readFileSync(path.join(REPO_ROOT, 'multicc'), 'utf8');
+  assert.match(cli, /^\s*apk\)\s+/m, './multicc apk rebuilds it after install');
+  assert.match(cli, /publish-apk\.sh/);
+
+  const installer = fs.readFileSync(path.join(REPO_ROOT, 'install.sh'), 'utf8');
+  assert.match(installer, /publish-apk\.sh/, 'install.sh builds the APK instead of shipping it');
+  assert.match(installer, /--no-apk/, 'the build must be skippable on server installs');
+});
+
+function apkFixture() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-publish-apk-'));
+  fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'app'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'public'), { recursive: true });
+  fs.copyFileSync(
+    path.join(REPO_ROOT, 'scripts', 'publish-apk.sh'),
+    path.join(root, 'scripts', 'publish-apk.sh'),
+  );
+  fs.writeFileSync(path.join(root, 'app', 'pubspec.yaml'), 'name: multicc_app\nversion: 2.29.7+119\n');
+  return root;
+}
+
+function fakeFlutter(root) {
+  const bin = path.join(root, 'fake-bin');
+  const log = path.join(root, 'flutter-calls.log');
+  fs.mkdirSync(bin);
+  const executable = path.join(bin, 'flutter');
+  fs.writeFileSync(executable, `#!/bin/sh
+printf 'call\\n' >> "$FAKE_FLUTTER_LOG"
+if [ "\${FAKE_FLUTTER_FAIL:-0}" = 1 ]; then exit 7; fi
+mkdir -p build/app/outputs/flutter-apk
+printf 'fixture-apk' > build/app/outputs/flutter-apk/app-release.apk
+`);
+  fs.chmodSync(executable, 0o755);
+  return { bin, log };
+}
+
+function runPublish(root, args, env) {
+  return childProcess.spawnSync('bash', [path.join(root, 'scripts', 'publish-apk.sh'), ...args], {
+    cwd: root,
+    encoding: 'utf8',
+    env: { ...process.env, ...env },
+  });
+}
+
+test('publish-apk builds atomically, writes truthful metadata and skips only a current APK', () => {
+  const root = apkFixture();
+  try {
+    const fake = fakeFlutter(root);
+    const env = {
+      FAKE_FLUTTER_LOG: fake.log,
+      PATH: `${fake.bin}:/usr/bin:/bin`,
+    };
+    const first = runPublish(root, [], env);
+    assert.equal(first.status, 0, first.stderr);
+
+    const apk = path.join(root, 'public', 'multicc.apk');
+    assert.equal(fs.readFileSync(apk, 'utf8'), 'fixture-apk');
+    const metadata = JSON.parse(fs.readFileSync(`${apk}.json`, 'utf8'));
+    assert.equal(metadata.versionName, '2.29.7');
+    assert.equal(metadata.versionCode, 119);
+    assert.match(metadata.builtAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+    assert.equal(fs.readFileSync(`${apk}.sha1`, 'utf8').trim(),
+      crypto.createHash('sha1').update('fixture-apk').digest('hex'));
+
+    const skipped = runPublish(root, ['--if-missing'], env);
+    assert.equal(skipped.status, 0, skipped.stderr);
+    assert.equal(fs.readFileSync(fake.log, 'utf8'), 'call\n');
+
+    const reusedWithoutFlutter = runPublish(root, ['--if-missing'], { PATH: '/usr/bin:/bin' });
+    assert.equal(reusedWithoutFlutter.status, 0, reusedWithoutFlutter.stderr);
+
+    fs.rmSync(`${apk}.json`);
+    const repairedMetadata = runPublish(root, ['--if-missing'], env);
+    assert.equal(repairedMetadata.status, 0, repairedMetadata.stderr);
+    assert.equal(fs.readFileSync(fake.log, 'utf8'), 'call\ncall\n');
+
+    fs.writeFileSync(path.join(root, 'app', 'pubspec.yaml'), 'name: multicc_app\nversion: 2.29.8+120\n');
+    const refreshedVersion = runPublish(root, ['--if-missing'], env);
+    assert.equal(refreshedVersion.status, 0, refreshedVersion.stderr);
+    assert.equal(fs.readFileSync(fake.log, 'utf8'), 'call\ncall\ncall\n');
+    assert.equal(JSON.parse(fs.readFileSync(`${apk}.json`, 'utf8')).versionCode, 120);
+
+    fs.writeFileSync(apk, '');
+    const rebuilt = runPublish(root, ['--if-missing'], env);
+    assert.equal(rebuilt.status, 0, rebuilt.stderr);
+    assert.equal(fs.readFileSync(fake.log, 'utf8'), 'call\ncall\ncall\ncall\n');
+    assert.equal(fs.readFileSync(apk, 'utf8'), 'fixture-apk');
+
+    fs.writeFileSync(apk, 'known-good');
+    const failed = runPublish(root, [], { ...env, FAKE_FLUTTER_FAIL: '1' });
+    assert.equal(failed.status, 7);
+    assert.equal(fs.readFileSync(apk, 'utf8'), 'known-good', 'a failed build must not replace the served APK');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('publish-apk fails clearly and leaves no artifact when Flutter is unavailable', () => {
+  const root = apkFixture();
+  try {
+    const result = runPublish(root, [], { PATH: '/usr/bin:/bin' });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Flutter SDK not found/);
+    assert.equal(fs.existsSync(path.join(root, 'public', 'multicc.apk')), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('publish-apk rejects an invalid pubspec version instead of advertising unknown', () => {
+  const root = apkFixture();
+  try {
+    fs.writeFileSync(path.join(root, 'app', 'pubspec.yaml'), 'name: multicc_app\nversion: invalid\n');
+    const result = runPublish(root, [], { PATH: '/usr/bin:/bin' });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /must declare version/);
+    assert.equal(fs.existsSync(path.join(root, 'public', 'multicc.apk.json')), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('manage disables the APK link when a server-only install has no package', () => {
+  const source = fs.readFileSync(path.join(REPO_ROOT, 'public', 'manage-host-settings.js'), 'utf8');
+  assert.match(source, /if \(!info\.exists\)/);
+  assert.match(source, /removeAttribute\('href'\)/);
+  assert.match(source, /aria-disabled/);
 });

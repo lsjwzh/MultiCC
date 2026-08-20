@@ -180,6 +180,16 @@ test('APK handler exposes only file metadata and optional version sidecar', () =
   assert.equal(Object.hasOwn(body, 'ignored'), false);
 });
 
+test('APK handler reports the exact server-only state when no package was built', () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-apk-route-'));
+  try {
+    fs.mkdirSync(path.join(rootDir, 'public'));
+    assert.deepEqual(capture(createApkInfoHandler({ fs, path, rootDir })), { exists: false });
+  } finally {
+    fs.rmSync(rootDir, { recursive: true, force: true });
+  }
+});
+
 test('system route mount owns exactly the three legacy GET paths', () => {
   const paths = [];
   mountSystemRoutes({ get(route, handler) { paths.push([route, typeof handler]); } }, {
