@@ -857,6 +857,8 @@
   "scheduleCancelling": "Cancelling…",
   "scheduleCancelFailed": "Could not cancel: {error}",
   "scheduleClose": "Close",
+  "scheduleCollapse": "Collapse to floating button",
+  "scheduleExpand": "Open scheduled messages",
   "scheduleDueAt": "Scheduled for {time}",
   "scheduleDueNow": "Delivering shortly",
   "scheduleRemainingSeconds": "in {n}s",
