@@ -82,6 +82,7 @@ function createOrchestrationRuntime({
   databaseFile = null,
   runChatTurn,
   isBusy = () => false,
+  isDeliveryLocked = () => false,
   isSlotUnavailable = () => false,
   hasPersistedDelivery = async () => false,
   beforeDeliver = async () => {},
@@ -96,7 +97,10 @@ function createOrchestrationRuntime({
   now = Date.now,
   setIntervalFn = setInterval,
   clearIntervalFn = clearInterval,
+  setTimeoutFn = setTimeout,
+  clearTimeoutFn = clearTimeout,
   workerIntervalMs = 1000,
+  deliveryWatchdogMs = 120_000,
   pollLeaseMs = 30_000,
   claimLimit = 8,
   workerId = `multicc-${process.pid}-${crypto.randomBytes(6).toString('hex')}`,
@@ -117,6 +121,9 @@ function createOrchestrationRuntime({
   }
   if (typeof beforeDeliver !== 'function') {
     throw new TypeError('[orchestration-runtime] beforeDeliver must be a function');
+  }
+  if (typeof isDeliveryLocked !== 'function') {
+    throw new TypeError('[orchestration-runtime] isDeliveryLocked must be a function');
   }
   if (typeof beforeFirstTick !== 'function') {
     throw new TypeError('[orchestration-runtime] beforeFirstTick must be a function');
@@ -941,20 +948,69 @@ function createOrchestrationRuntime({
     }
   }
 
+  // Item ids whose deliver() promise has not settled yet. Only the watchdog
+  // path can outlive its own tick, so this stays empty in normal operation.
+  const inFlightDeliveries = new Set();
+
+  // Belt to the isDeliveryLocked braces: no single delivery may freeze the
+  // worker. Every tick chains onto tickTail, so one promise that never settles
+  // stops delivery for every session — and stops the lease recovery that would
+  // otherwise rescue the stuck item. The watchdog releases only the TICK; the
+  // delivery promise keeps running, and the expired lease is re-claimed later.
+  // deliver()'s hasPersistedDelivery guard keeps that retry idempotent.
+  function deliverWithinTick(item) {
+    const delivery = deliver(item);
+    if (!(deliveryWatchdogMs > 0)) return delivery;
+    delivery.catch(() => {});
+    // Releasing the tick must not turn one slow delivery into two: the lease
+    // can expire while the original is still in flight, and a re-claim would
+    // inject the same message twice whenever the first attempt has not reached
+    // its history write yet. Parking the id keeps that item (and only its own
+    // session) unselectable until the original delivery actually settles.
+    inFlightDeliveries.add(item.id);
+    delivery.then(
+      () => inFlightDeliveries.delete(item.id),
+      () => inFlightDeliveries.delete(item.id),
+    );
+    let timer = null;
+    const watchdog = new Promise(resolve => {
+      timer = setTimeoutFn(() => {
+        log(`[orchestration] delivery ${item.id} still unsettled after ${deliveryWatchdogMs}ms; releasing the worker tick`);
+        resolve();
+      }, deliveryWatchdogMs);
+      if (timer && typeof timer.unref === 'function') timer.unref();
+    });
+    return Promise.race([
+      delivery.finally(() => { if (timer !== null) clearTimeoutFn(timer); }),
+      watchdog,
+    ]);
+  }
+
   async function processOutbox() {
     const selectRunnableSessionItem = (items, draft, at) => {
       const item = sessionScheduler.selectSessionItem(items, draft, at);
       const projected = item && sessionScheduler.projectItemLineage(item, draft);
       // Do not create a durable lease merely to discover the host process is
       // busy and immediately defer it. The next 1s tick will reconsider it.
-      return item && !isBusy(item.sessionId, projected) ? item : null;
+      //
+      // isDeliveryLocked is the same question asked of the per-session
+      // workspace key. It must be answered HERE, before the claim: for a
+      // task-bound session, admitChatWork holds that key across the whole
+      // admission, and the admission awaits this very tick. Claiming first and
+      // blocking inside beforeDeliver would make the tick wait for a key whose
+      // holder waits for the tick — and because every tick chains onto
+      // tickTail, that deadlock freezes delivery for EVERY session until the
+      // process restarts.
+      if (!item || isBusy(item.sessionId, projected)) return null;
+      if (inFlightDeliveries.has(item.id)) return null;
+      return isDeliveryLocked(item.sessionId, projected) ? null : item;
     };
     const claimed = await outbox.claim({
       workerId,
       limit: claimLimit,
       selectSessionItem: selectRunnableSessionItem,
     });
-    await Promise.all(claimed.map(deliver));
+    await Promise.all(claimed.map(deliverWithinTick));
     return claimed.length;
   }
 

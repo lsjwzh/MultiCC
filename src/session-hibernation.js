@@ -152,6 +152,17 @@ function createSessionHibernationRuntime(options = {}) {
     };
   }
 
+  // True while this session's key is held (admission, delivery, terminal touch).
+  // The outbox worker reads it BEFORE claiming: admitChatWork holds the key for
+  // the whole admission, and that admission awaits runtime.tick(), so a worker
+  // that claimed and then blocked on acquireDelivery would wait for a key whose
+  // holder is waiting for that very tick — a deadlock that freezes the single
+  // tick chain for every session, not just this one. Skipping the claim keeps
+  // the tick short; the next one delivers once the key is free.
+  function isLocked(sessionId) {
+    return tails.has(sessionId);
+  }
+
   async function serialized(sessionId, operation) {
     const release = await acquireKey(sessionId);
     const promise = Promise.resolve().then(operation);
@@ -435,6 +446,7 @@ function createSessionHibernationRuntime(options = {}) {
     assertAwake,
     ensureAwake,
     hibernate,
+    isLocked,
     reconcileStartup,
     start,
     status,

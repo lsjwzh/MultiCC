@@ -8,6 +8,15 @@ const test = require('node:test');
 const { createOrchestrationRuntime } = require('../src/orchestration-runtime');
 const { reconcileTaskRunSlotLeases } = require('../src/task-run-recovery');
 
+function withTimeout(promise, ms, message) {
+  let timer = null;
+  const guard = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+    if (timer && typeof timer.unref === 'function') timer.unref();
+  });
+  return Promise.race([promise, guard]).finally(() => { if (timer !== null) clearTimeout(timer); });
+}
+
 function fixture(t, overrides = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-orchestration-runtime-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -30,6 +39,9 @@ function fixture(t, overrides = {}) {
     runChatTurn,
     log: message => logs.push(message),
     isBusy: overrides.isBusy || (() => false),
+    ...(overrides.isDeliveryLocked ? { isDeliveryLocked: overrides.isDeliveryLocked } : {}),
+    ...(overrides.deliveryWatchdogMs !== undefined
+      ? { deliveryWatchdogMs: overrides.deliveryWatchdogMs } : {}),
     hasPersistedDelivery: async (sessionId, deliveryId) => (
       history.get(sessionId)?.has(deliveryId) || false
     ),
@@ -839,4 +851,80 @@ test('a failed queue projection does not un-admit a durably committed dispatch',
   const replay = await runtime.admitDispatch(spec);
   assert.equal(replay.id, admitted.id);
   assert.equal(replay.idempotent, true);
+});
+
+// Regression: the worker froze for every session because one delivery never
+// settled. A task-bound admission holds the session's workspace key for the
+// whole admission and awaits runtime.tick() from inside it; the tick claimed
+// that same session's item and then blocked in beforeDeliver waiting for the
+// very key its caller was holding. Since every tick chains onto tickTail, that
+// one stuck promise stopped delivery — and lease recovery — process-wide.
+test('an admission holding the session key does not deadlock the worker tick', async t => {
+  let keyHeld = false;
+  let releaseKey = null;
+  const keyFree = new Promise(resolve => { releaseKey = resolve; });
+  const h = fixture(t, {
+    isDeliveryLocked: sessionId => sessionId === 'bound-1' && keyHeld,
+    // Mirrors acquireDelivery: it blocks until the workspace key is free.
+    beforeDeliver: async () => { if (keyHeld) await keyFree; },
+  });
+
+  keyHeld = true;
+  const admitted = await withTimeout(h.runtime.admitSessionWork({
+    sessionId: 'bound-1', text: 'release 1.6.1', idempotencyKey: 'task-start-1', options: {},
+  }), 2000, 'admitSessionWork deadlocked on the session workspace key');
+  assert.equal(admitted.ok, true);
+  assert.equal(h.injections.length, 0, 'the locked session must not be delivered yet');
+
+  keyHeld = false;
+  releaseKey();
+  await h.runtime.tick();
+  assert.equal(h.injections.length, 1, 'the item delivers on the next tick once the key is free');
+  assert.equal(h.injections[0].sessionId, 'bound-1');
+  await h.runtime.stop();
+});
+
+test('a delivery that never settles releases the tick instead of freezing the worker', async t => {
+  let unblock = null;
+  const stuck = new Promise(resolve => { unblock = resolve; });
+  let firstDelivery = true;
+  const h = fixture(t, {
+    deliveryWatchdogMs: 50,
+    beforeDeliver: async () => {
+      if (!firstDelivery) return;
+      firstDelivery = false;
+      await stuck;
+    },
+  });
+
+  await h.runtime.admitSessionWork({
+    sessionId: 'stuck-1', text: 'hangs', idempotencyKey: 'hangs-1', options: {},
+  });
+  // Without the watchdog this tick — and every tick chained behind it — never
+  // returns, so the second session below could never be delivered.
+  await withTimeout(h.runtime.tick(), 2000, 'the worker tick was frozen by a stuck delivery');
+
+  await withTimeout(h.runtime.admitSessionWork({
+    sessionId: 'other-1', text: 'unrelated', idempotencyKey: 'unrelated-1', options: {},
+  }), 2000, 'a stuck delivery froze admission for an unrelated session');
+  assert.ok(
+    h.injections.some(injection => injection.sessionId === 'other-1'),
+    'an unrelated session keeps being delivered while one delivery hangs',
+  );
+  assert.ok(
+    h.logs.some(message => /still unsettled after 50ms/.test(message)),
+    'the watchdog reports which delivery it released the tick from',
+  );
+
+  // The parked item must not be re-delivered while its original attempt is
+  // still running, even after its lease expires.
+  h.clock.value += 10_000;
+  await withTimeout(h.runtime.tick(), 2000, 'the worker tick was frozen by a stuck delivery');
+  assert.equal(
+    h.injections.filter(injection => injection.sessionId === 'stuck-1').length, 0,
+    'an unsettled delivery is never claimed a second time',
+  );
+
+  unblock();
+  await h.runtime.stop();
 });
