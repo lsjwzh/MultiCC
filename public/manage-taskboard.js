@@ -227,6 +227,8 @@ function createTbComposer(host, opts) {
         <label class="tb-dim">token 预算 <input type="number" class="tb-goal-budget" step="1000" min="0" placeholder="不限"></label>
       </div>
       <div class="tb-compose-row">
+        <select class="tb-cli" title="CLI（默认跟随最近活跃）"><option value="">CLI…</option></select>
+        <select class="tb-provider" title="Provider（默认跟随最近活跃）"><option value="">Provider…</option></select>
         <button class="btn btn-sm tb-attach-btn" title="上传图片/文件">📎</button>
         <button class="btn btn-sm tb-mic-btn" title="语音输入">🎙</button>
         <button class="btn btn-sm tb-goal-btn" title="以 Goal 模式发送（自主任务，带轮次/预算上限）">🎯</button>
@@ -324,6 +326,63 @@ function createTbComposer(host, opts) {
     goalRow.style.display = on ? '' : 'none';
   };
 
+  // Runtime picks (#34): cli + provider pinned onto the task's bound chat
+  // session at creation. The placeholders follow the host's "most recently
+  // active" suggestion, so a send always carries concrete values. Explicit
+  // picks apply at creation only — an already-bound session's runtime is its
+  // resume file and changes through the ordinary per-session surface.
+  const cliSel = $q('.tb-cli');
+  const provSel = $q('.tb-provider');
+  const TB_CLI_LABELS = { claude: 'Claude', codex: 'Codex', opencode: 'OpenCode', zcode: 'ZCode', qoder: 'Qoder CN' };
+  let runtimeSuggest = null;           // {cli, provider} from the host
+  const providerCache = new Map();     // cli -> [{appType,id,name}]
+  let provListCli = '';                // the cli the visible list was filtered by
+
+  const loadProviderOptions = async (cli) => {
+    provListCli = cli;
+    if (!cli || providerCache.has(cli)) return;
+    try {
+      const r = await fetch(`/api/providers?cli=${encodeURIComponent(cli)}`);
+      const d = await r.json();
+      providerCache.set(cli, Array.isArray(d.providers) ? d.providers : []);
+    } catch (_) { providerCache.set(cli, []); }
+  };
+
+  const renderCliOptions = () => {
+    const sugCli = runtimeSuggest?.cli || '';
+    const clis = [...new Set([sugCli, 'claude', 'codex', 'opencode', 'zcode', 'qoder'].filter(Boolean))];
+    cliSel.innerHTML = `<option value="">CLI · ${sugCli ? `最近活跃 ${_tbEsc(TB_CLI_LABELS[sugCli] || sugCli)}` : '默认'}</option>`
+      + clis.map(c => `<option value="${_tbEsc(c)}">${_tbEsc(TB_CLI_LABELS[c] || c)}</option>`).join('');
+  };
+
+  const renderProviderOptions = () => {
+    const list = providerCache.get(provListCli) || [];
+    const keep = provSel.value;
+    const sugCli = runtimeSuggest?.cli || '';
+    const sugName = runtimeSuggest?.provider
+      ? ((providerCache.get(sugCli) || []).find(p => p.id === runtimeSuggest.provider)?.name || runtimeSuggest.provider)
+      : '';
+    provSel.innerHTML = `<option value="">Provider · ${sugName ? `最近活跃 ${_tbEsc(sugName)}` : '默认'}</option>`
+      + list.map(p => `<option value="${_tbEsc(p.id)}">${_tbEsc(p.name || p.id)}</option>`).join('');
+    if (keep && list.some(p => p.id === keep)) provSel.value = keep;
+  };
+
+  cliSel.onchange = async () => {
+    await loadProviderOptions(cliSel.value || runtimeSuggest?.cli || 'claude');
+    renderProviderOptions();
+  };
+
+  (async () => {
+    try {
+      const r = await fetch('/api/task-board/suggested-runtime');
+      const d = await r.json();
+      if (d && d.ok) runtimeSuggest = d;
+    } catch (_) { /* picks stay manual */ }
+    await loadProviderOptions(runtimeSuggest?.cli || 'claude');
+    renderCliOptions();
+    renderProviderOptions();
+  })();
+
   async function doSend() {
     let text = input.value.trim();
     const paths = [...chiprow.querySelectorAll('.tb-fchip[data-path]')].map(c => c.dataset.path);
@@ -345,6 +404,14 @@ function createTbComposer(host, opts) {
       if (rounds !== '') payload.goalLimits.maxRounds = rounds;
       if (budget !== '') payload.goalLimits.maxBudget = budget;
     }
+    // Runtime picks: placeholders resolve to the "recently active" suggestion
+    // so the new task's session follows it by default; a provider picked
+    // without a cli rides the cli its list was filtered by (provListCli),
+    // never the commander's cli from under a foreign provider.
+    const effCli = cliSel.value || runtimeSuggest?.cli || (provSel.value ? provListCli : '');
+    const effProvider = provSel.value || runtimeSuggest?.provider || '';
+    if (effCli) payload.cli = effCli;
+    if (effProvider) payload.provider = effProvider;
     sendBtn.disabled = true;
     setResult('路由中…');
     try {
