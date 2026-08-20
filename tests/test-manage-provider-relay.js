@@ -63,6 +63,31 @@ test('parseRelayShareCode rejects malformed or untrusted codes', () => {
   }
 });
 
+test('_relayBaseOptions collects, filters and dedupes candidate addresses', async () => {
+  const ctx = loadModule();
+  ctx.providerApi = {
+    json: async (url) => {
+      if (url === '/api/server-info') return { ip: '192.168.1.10', port: 3000 };
+      if (url === '/api/settings/tunnel') return {
+        config: {
+          tailscale: { url: '' },
+          phddns: { url: 'https://abc.vicp.fun/manage' },
+          natapp: { url: 'ftp://bad-scheme' },
+        },
+        providers: { tailscale: { publicUrl: 'https://x.tailnet.ts.net/' }, phddns: {} },
+      };
+      throw new Error(`unexpected url: ${url}`);
+    },
+  };
+  const opts = JSON.parse(JSON.stringify(await ctx._relayBaseOptions()));
+  assert.deepEqual(opts.map(o => o.url), [
+    'http://127.0.0.1:3000',
+    'http://192.168.1.10:3000',
+    'https://x.tailnet.ts.net',
+    'https://abc.vicp.fun/manage',
+  ]);
+});
+
 test('manage.html loads the relay module before the manage facade', () => {
   const html = fs.readFileSync(path.join(ROOT, 'public', 'manage.html'), 'utf8');
   const relay = html.indexOf('<script src="manage-provider-relay.js"></script>');
