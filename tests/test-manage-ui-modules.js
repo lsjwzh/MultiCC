@@ -21,6 +21,10 @@ function fakeElement(id = '') {
     readOnly: false,
     textContent: '',
     placeholder: '',
+    title: '',
+    href: '',
+    hidden: false,
+    tabIndex: 0,
     className: '',
     style: {},
     children: [],
@@ -32,8 +36,18 @@ function fakeElement(id = '') {
     // Attributes are how the page states a role (a clickable commit row sets
     // role=button). They render nothing, so the escaping assertions here don't
     // read them — but a page that sets one must not crash the harness.
+    classList: {
+      values: new Set(),
+      add(...values) { values.forEach(value => this.values.add(value)); },
+      remove(...values) { values.forEach(value => this.values.delete(value)); },
+      contains(value) { return this.values.has(value); },
+    },
     setAttribute(name, value) { this.attrs[name] = String(value); },
     getAttribute(name) { return name in this.attrs ? this.attrs[name] : null; },
+    removeAttribute(name) {
+      delete this.attrs[name];
+      if (name === 'href') this.href = '';
+    },
     removeChild(child) { this.children = this.children.filter(item => item !== child); this.firstChild = this.children[0] || null; },
     replaceChildren(...children) {
       this.children = children.flatMap(child => child && child.__fragment ? child.children : [child]);
@@ -42,6 +56,8 @@ function fakeElement(id = '') {
     get innerHTML() { return ''; },
     set innerHTML(_value) { throw new Error('unsafe innerHTML write'); },
     querySelector() { return null; },
+    focus() { this.focused = true; },
+    scrollIntoView(options) { this.scrolledIntoView = options || true; },
     remove() {},
   };
 }
@@ -84,6 +100,7 @@ function browserContext() {
     qrcode: undefined,
     document: {
       visibilityState: 'visible',
+      body: fakeElement('body'),
       addEventListener(type, handler) { listeners.push({ type, handler }); },
       getElementById(id) {
         if (!elements.has(id)) elements.set(id, fakeElement(id));
@@ -264,6 +281,193 @@ test('host settings preserve bootstrap header auth without credential query para
   assert.equal(request.options.headers['X-Access-Token'], 'bootstrap-secret');
   assert.equal(JSON.parse(request.options.body).enabled, true);
   assert.doesNotMatch(request.url, /token/i);
+});
+
+function catalogTranslator(locale = 'zh') {
+  const catalog = JSON.parse(read(`app/assets/i18n/${locale}.json`));
+  return (key, params) => {
+    let text = catalog[key] || key;
+    if (params) {
+      text = text.replace(/\{(\w+)\}/g, (_, name) =>
+        Object.prototype.hasOwnProperty.call(params, name) ? String(params[name]) : `{${name}}`);
+    }
+    return text;
+  };
+}
+
+function apkHarness(initialSteps = [], { now = Date.parse('2026-08-20T12:01:00.000Z'), locale = 'zh' } = {}) {
+  const harness = browserContext();
+  const steps = initialSteps.slice();
+  harness.context.Date = class extends Date {
+    constructor(...args) { super(...(args.length ? args : [now])); }
+    static now() { return now; }
+  };
+  harness.context.t = catalogTranslator(locale);
+  harness.context.fetch = async (url, options = {}) => {
+    const request = { url: String(url), options };
+    harness.requests.push(request);
+    const step = steps.shift();
+    if (!step) throw new Error(`unscripted fetch: ${request.url}`);
+    if (step.url) assert.equal(request.url, step.url);
+    if (step.error) throw step.error;
+    const status = step.status || 200;
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      async json() { return step.body; },
+    };
+  };
+  harness.enqueue = (...more) => steps.push(...more);
+  harness.fireNextTimer = async () => {
+    const index = harness.timers.findIndex(timer => !timer.cleared);
+    assert.notEqual(index, -1, 'a retry/poll timer should be scheduled');
+    const [timer] = harness.timers.splice(index, 1);
+    await timer.callback();
+  };
+  vm.runInContext(read('public/manage-host-settings.js'), harness.context, { filename: 'manage-host-settings.js' });
+  return harness;
+}
+
+test('APK management renders independent download/build controls and a mobile-safe live region', () => {
+  const html = read('public/manage.html');
+  assert.match(html, /<a[^>]+id="apk-download-btn"[^>]+href="\/multicc\.apk"/);
+  assert.match(html, /<button[^>]+id="apk-build-btn"[^>]+onclick="startApkBuild\(\)"/);
+  assert.match(html, /id="apk-build-status"[^>]+role="status"[^>]+aria-live="polite"/);
+  assert.match(html, /\.apk-actions \.btn\{flex:1 1 100%;width:100%/,
+    'phone layout must stack full-width actions rather than overflow');
+
+  const zh = JSON.parse(read('app/assets/i18n/zh.json'));
+  const en = JSON.parse(read('app/assets/i18n/en.json'));
+  const apkKeys = Object.keys(zh).filter(key => key.startsWith('apk')).sort();
+  assert.deepEqual(Object.keys(en).filter(key => key.startsWith('apk')).sort(), apkKeys);
+  assert.ok(apkKeys.includes('apkRebuild'));
+  assert.ok(apkKeys.includes('apkBuildRunning'));
+});
+
+test('APK polling reads status before metadata, keeps the old download, and refreshes terminal success', async () => {
+  const running = {
+    state: 'running',
+    startedAt: '2026-08-20T12:00:00.000Z',
+    logTail: 'Resolving dependencies…\nRunning Gradle task assembleRelease',
+  };
+  const harness = apkHarness([
+    { url: '/api/apk-build', body: running },
+    {
+      url: '/api/apk-info',
+      body: {
+        exists: true, current: false, versionName: '2.1.0', versionCode: 10,
+        targetVersionName: '2.2.0', targetVersionCode: 11, size: 1048576,
+        mtime: '2026-08-20T11:00:00.000Z',
+      },
+    },
+  ]);
+
+  await harness.context.loadApkInfo();
+  assert.deepEqual(harness.requests.slice(0, 2).map(request => request.url), ['/api/apk-build', '/api/apk-info']);
+  assert.equal(harness.context.document.getElementById('apk-download-btn').href, '/multicc.apk');
+  assert.equal(harness.context.document.getElementById('apk-download-btn').getAttribute('aria-disabled'), null);
+  assert.equal(harness.context.document.getElementById('apk-build-btn').disabled, true);
+  assert.match(harness.context.document.getElementById('apk-build-status').textContent, /1m 0s/);
+  assert.match(harness.context.document.getElementById('apk-build-status').textContent, /assembleRelease/);
+  assert.match(harness.context.document.getElementById('apk-build-log').textContent, /Resolving dependencies/);
+
+  harness.enqueue(
+    { url: '/api/apk-build', body: { state: 'succeeded', exitCode: 0 } },
+    {
+      url: '/api/apk-info',
+      body: {
+        exists: true, current: true, versionName: '2.2.0', versionCode: 11,
+        targetVersionName: '2.2.0', targetVersionCode: 11, size: 2097152,
+        mtime: '2026-08-20T12:01:01.000Z',
+      },
+    },
+  );
+  await harness.fireNextTimer();
+
+  assert.deepEqual(harness.requests.slice(2, 4).map(request => request.url), ['/api/apk-build', '/api/apk-info']);
+  assert.equal(harness.context.document.getElementById('apk-build-btn').disabled, false);
+  assert.equal(harness.context.document.getElementById('apk-build-btn').textContent, '重新构建');
+  assert.match(harness.context.document.getElementById('apk-artifact-summary').textContent, /2\.2\.0\+11/);
+  assert.match(harness.context.document.getElementById('apk-build-status').textContent, /构建成功/);
+});
+
+test('a current APK can be explicitly rebuilt while its download remains available', async () => {
+  const currentInfo = {
+    exists: true, current: true, versionName: '2.2.0', versionCode: 11,
+    targetVersionName: '2.2.0', targetVersionCode: 11, size: 2097152,
+    mtime: '2026-08-20T12:00:00.000Z',
+  };
+  const running = { state: 'running', startedAt: '2026-08-20T12:01:00.000Z', logTail: 'Building release APK…' };
+  const harness = apkHarness([
+    { url: '/api/apk-build', body: { state: 'succeeded', exitCode: 0 } },
+    { url: '/api/apk-info', body: currentInfo },
+    { url: '/api/apk-build', status: 202, body: { ok: true, reused: false, build: running } },
+    { url: '/api/apk-build', body: running },
+    { url: '/api/apk-info', body: currentInfo },
+  ]);
+
+  await harness.context.loadApkInfo();
+  assert.equal(harness.context.document.getElementById('apk-build-btn').textContent, '重新构建');
+  await harness.context.startApkBuild();
+
+  const post = harness.requests.find(request => request.options.method === 'POST');
+  assert.ok(post, 'rebuilding a current package must issue an explicit POST');
+  assert.equal(post.url, '/api/apk-build');
+  assert.equal(post.options.headers['X-Access-Token'], 'bootstrap-secret');
+  assert.equal(harness.context.document.getElementById('apk-download-btn').href, '/multicc.apk');
+  assert.equal(harness.context.document.getElementById('apk-build-btn').disabled, true);
+  assert.match(harness.context.document.getElementById('apk-build-status').textContent, /构建/);
+});
+
+test('a failed rebuild preserves the old download and allows another rebuild', async () => {
+  const harness = apkHarness([
+    {
+      url: '/api/apk-build',
+      body: { state: 'failed', exitCode: 7, logTail: 'Gradle assembleRelease failed' },
+    },
+    {
+      url: '/api/apk-info',
+      body: {
+        exists: true, current: true, versionName: '2.2.0', versionCode: 11,
+        targetVersionName: '2.2.0', targetVersionCode: 11, size: 2097152,
+        mtime: '2026-08-20T12:00:00.000Z',
+      },
+    },
+  ]);
+
+  await harness.context.loadApkInfo();
+  assert.equal(harness.context.document.getElementById('apk-download-btn').href, '/multicc.apk');
+  assert.equal(harness.context.document.getElementById('apk-build-btn').disabled, false);
+  assert.equal(harness.context.document.getElementById('apk-build-btn').textContent, '重新构建');
+  assert.match(harness.context.document.getElementById('apk-build-status').textContent, /退出码 7/);
+  assert.match(harness.context.document.getElementById('apk-build-log').textContent, /Gradle/);
+});
+
+test('an uncertain POST is reconciled through status and never leaves APK rebuilding permanently locked', async () => {
+  const currentInfo = {
+    exists: true, current: true, versionName: '2.2.0', versionCode: 11,
+    targetVersionName: '2.2.0', targetVersionCode: 11, size: 2097152,
+    mtime: '2026-08-20T12:00:00.000Z',
+  };
+  const harness = apkHarness([
+    { url: '/api/apk-build', body: { state: 'idle' } },
+    { url: '/api/apk-info', body: currentInfo },
+    { url: '/api/apk-build', error: new Error('Failed to fetch') },
+  ]);
+
+  await harness.context.loadApkInfo();
+  await harness.context.startApkBuild();
+  assert.equal(harness.context.document.getElementById('apk-build-btn').disabled, true,
+    'the action stays guarded until the uncertain POST is reconciled');
+  assert.match(harness.context.document.getElementById('apk-build-status').textContent, /正在重试/);
+
+  harness.enqueue(
+    { url: '/api/apk-build', body: { state: 'idle' } },
+    { url: '/api/apk-info', body: currentInfo },
+  );
+  await harness.fireNextTimer();
+  assert.equal(harness.context.document.getElementById('apk-build-btn').disabled, false);
+  assert.equal(harness.context.document.getElementById('apk-build-btn').textContent, '重新构建');
 });
 
 /**

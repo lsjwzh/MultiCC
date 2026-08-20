@@ -9,9 +9,9 @@ curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v1.3.0/install.sh | b
 ```
 
 This installs the latest **stable release**. The script auto-detects your OS,
-checks prerequisites, clones the repo, builds the Android APK, installs
-dependencies, configures an access token, and optionally installs as a
-background service (macOS `launchd`).
+checks prerequisites, clones the repo, installs dependencies, configures an
+access token, and optionally installs as a background service (macOS `launchd`).
+It does not build the Android APK.
 
 Running `./multicc update` later checks for new releases and upgrades you
 when one becomes available.
@@ -25,7 +25,7 @@ when one becomes available.
 curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install.sh | bash
 ```
 
-Detects your OS, checks prerequisites, clones the repo, builds the Android APK, installs dependencies, configures an access token, and optionally installs as a background service (macOS `launchd`).
+Detects your OS, checks prerequisites, clones the repo, installs dependencies, configures an access token, and optionally installs as a background service (macOS `launchd`). APK builds are always explicit and on demand.
 
 **Install with options:**
 
@@ -40,9 +40,12 @@ curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install.sh | bas
 | `--token <xxx>` | Pre-set `ACCESS_TOKEN` (default: auto-generated) |
 | `--port <port>` | Server port (default: `3000`) |
 | `--no-service` | Skip background service install |
-| `--no-apk` | Skip the install-time Android build (server-only install) |
 | `--no-clone` | Use current directory; skip git clone |
 | `--branch <name>` | Git branch to clone (default: `main`) |
+
+Older automation may still pass `--no-apk`. It is accepted as a deprecated
+compatibility no-op, but is no longer an install option because installation
+never builds an APK.
 
 **After install:**
 
@@ -58,6 +61,9 @@ cd MultiCC && ./multicc install   # install as macOS launchd background service
 ./multicc update --force   # land on the remote's code whatever the local tree/history is
 ./multicc update --help    # usage
 ```
+
+Updates never build or rebuild the APK. If the App version changed, request a
+new package from `/manage` or run `./multicc apk` after the update.
 
 On the stable channel (`.multicc_channel` = `stable`, written by the installer when you
 pass `--branch <tag>`) `update` checks out the newest release tag. On the dev channel it
@@ -132,8 +138,8 @@ Under the hood: `POST /api/update` with `{"force": true|false}` starts it, `GET
 - **Node.js** >= 20.19 (required by `chokidar` 5 ESM — backported `require(ESM)` support landed in Node 20.19 / 22.12)
 - **tmux** (for terminal mode; chat mode works without it)
 - **At least one coding CLI** on your `PATH`, already logged in — `claude`, `codex`, `opencode`, `zcode`, `kimi`, or `qoder`. MultiCC can install the missing ones for you from the CLI switcher (see [Multi-CLI switching](cli-switching.md)).
-- **Flutter** >= 3.8 plus the Android toolchain (required by the default installer
-  APK build; optional only when installing with `--no-apk`)
+- **Flutter** >= 3.8 plus the Android toolchain — required only when an Android
+  APK build is explicitly requested. A server-only install does not need them.
 
 ## Manual Install
 
@@ -192,27 +198,42 @@ systemctl --user enable --now multicc
 
 ## Build the Flutter App
 
+Installation and update never compile the Flutter app. Android builds have two
+explicit entry points:
+
+- In `/manage`, use the **APK** area to start a background build or rebuild. You
+  can leave the page while it runs. If an older APK already exists, it remains
+  downloadable throughout the build and is replaced only after the new file is
+  complete.
+- From a shell, run `./multicc apk`.
+
 ```bash
 ./multicc apk                             # Android; publishes to public/multicc.apk
 cd app
 flutter build ios --release --no-codesign # iOS (needs Xcode + signing)
 ```
 
-The one-click installer runs the same APK publisher by default. The APK and its
-`.json` / `.sha1` sidecars are ignored local artifacts, not Git-tracked files;
-the dashboard serves the complete atomically-published file at `/multicc.apk`.
+Flutter >= 3.8 and the Android toolchain must be available to the process that
+starts an Android build. In particular, a build started from `/manage` needs
+`flutter` on the MultiCC service's `PATH`; their absence does not affect server
+installation or updates, but the requested build will fail with its log retained.
+
+The APK and its `.json` / `.sha1` sidecars are ignored local artifacts, not
+Git-tracked files. The dashboard serves the complete atomically-published file
+at `/multicc.apk`.
 `./multicc apk --if-missing` keeps an existing package only when its metadata
-matches the current `app/pubspec.yaml` version.
+matches the current `app/pubspec.yaml` version. The `/manage` action is explicit:
+choosing rebuild starts a new build even when the existing package is current.
 
 Android release builds currently use the host's Android debug keystore. Rebuilds
 on the same host retain that identity, but moving the server to a host with a
 different keystore cannot update an already-installed APK in place; uninstall
 the old app once or configure a shared release-signing key before migration.
 
-When crossing the historical commit that removed the tracked APK, an updater
-started from the older checkout cannot run the new post-update build hook. If
-the dashboard reports `APK (not built)` after that one transition, run
-`./multicc apk` (or rerun `install.sh` without `--no-apk`).
+A future distribution path may use a GitHub Release APK asset as a fallback on
+hosts without Flutter. That fallback is not implemented yet: today every APK
+offered by this server must first be built locally through one of the explicit
+entry points above.
 
 ---
 

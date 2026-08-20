@@ -19,7 +19,6 @@
 #   --token <xxx>      Pre-set ACCESS_TOKEN (default: auto-generate)
 #   --port <port>      Server port (default: 3000)
 #   --no-service       Skip launchd/systemd service installation
-#   --no-apk           Skip the install-time Android APK build
 #   --no-clone         Use current directory; don't git clone
 #   --branch <name>    Git branch to clone (default: main)
 #   --help             Show this help
@@ -135,7 +134,6 @@ INSTALL_DIR=""
 ACCESS_TOKEN=""
 PORT="3000"
 NO_SERVICE=false
-NO_APK=false
 NO_CLONE=false
 BRANCH="main"
 
@@ -149,7 +147,7 @@ while [ $# -gt 0 ]; do
     --token)     need_val "$1" "$#"; ACCESS_TOKEN="$2"; shift 2 ;;
     --port)      need_val "$1" "$#"; PORT="$2"; shift 2 ;;
     --no-service) NO_SERVICE=true; shift ;;
-    --no-apk)    NO_APK=true; shift ;;
+    --no-apk)     warn "--no-apk is no longer needed; APK builds are always on demand"; shift ;;
     --no-clone)  NO_CLONE=true; shift ;;
     --branch)    need_val "$1" "$#"; BRANCH="$2"; shift 2 ;;
     --help|-h)
@@ -170,7 +168,6 @@ Options:
   --token <xxx>      Pre-set ACCESS_TOKEN (default: auto-generate)
   --port <port>      Server port (default: 3000)
   --no-service       Skip launchd/systemd service installation
-  --no-apk           Skip the Android APK build (server-only install)
   --no-clone         Use current directory; don't git clone
   --branch <name>    Git branch to clone (default: main)
   --help             Show this help
@@ -343,17 +340,6 @@ detect_cli() {
 detect_cli "claude" "Claude Code" "Install/login first, then verify with: claude --version"
 detect_cli "codex" "Codex" "Optional unless you create Codex sessions; verify with: codex --version"
 
-if [ "$NO_APK" = true ]; then
-  info "Android APK build disabled (--no-apk)"
-elif command -v flutter >/dev/null 2>&1; then
-  FLUTTER_VERSION="$(flutter --version 2>/dev/null | head -1 | sed 's/^Flutter //' || true)"
-  ok "Flutter ${FLUTTER_VERSION:-found}"
-else
-  warn "Flutter SDK not found on PATH."
-  echo "       An existing current APK can still be reused; otherwise the build step will fail."
-  echo "       Install Flutter/Android tooling, or use --no-apk for a server-only install."
-fi
-
 # ── Determine install directory ───────────────────────────────────────────
 
 if [ "$NO_CLONE" = true ]; then
@@ -400,20 +386,6 @@ CHANNEL_EOF
 fi
 
 cd "$INSTALL_DIR"
-
-# ── Build the downloadable Android app ────────────────────────────────────
-if [ "$NO_APK" = false ]; then
-  step "Building Android APK"
-  if ./scripts/publish-apk.sh --if-missing; then
-    ok "Android APK ready: public/multicc.apk"
-  else
-    err "Android APK build failed. Fix the Flutter/Android error above and retry."
-    echo "      For a server-only install, re-run with --no-apk."
-    exit 1
-  fi
-else
-  info "Skipping Android APK build (--no-apk); any existing local package is left untouched"
-fi
 
 # ── Install dependencies ──────────────────────────────────────────────────
 step "Installing npm dependencies"
