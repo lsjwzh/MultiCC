@@ -51,6 +51,12 @@ function _tbQuickArchiveHtml(task) {
   return `<button class="btn btn-sm tb-quick-archive" onclick="archiveTaskBoardTask(event,'${_tbEsc(task.id)}',this)" title="快捷归档该任务">归档</button>`;
 }
 
+function _tbWorkspaceHtml(task) {
+  return task?.workspaceState === 'hibernated'
+    ? `<span class="tb-dim tb-workspace-state" title="连续 7 天无真实工作后自动回收工作区；下一条消息会恢复同一会话">💤 已休眠</span>`
+    : '';
+}
+
 // M4 (design D3): the operations the retired detail modal owned live on the
 // row. Completion/reopen and — once the task owns a worktree (M3) — one-click
 // merge-back + worktree cleanup. Row click still opens the chat view; every
@@ -128,7 +134,7 @@ function _tbTaskRowHtml(task) {
         <span class="tb-title">${_tbEsc(task.title)}</span>
         ${body}
       </span>
-      <span class="tb-task-meta"><span class="tb-run-state st-tone-${display.tone}">${_tbEsc(display.label)}</span>${_tbRoutingHtml(task)}${attempt}${_tbModuleAssignmentHtml(task)}${_tbTaskActionsHtml(task)}${_tbQuickArchiveHtml(task)}<span class="tb-dim">${task.refCount}轮 · ${_tbEsc(_tbTimeAgo(task.lastTs))}</span></span>
+      <span class="tb-task-meta"><span class="tb-run-state st-tone-${display.tone}">${_tbEsc(display.label)}</span>${_tbWorkspaceHtml(task)}${_tbRoutingHtml(task)}${attempt}${_tbModuleAssignmentHtml(task)}${_tbTaskActionsHtml(task)}${_tbQuickArchiveHtml(task)}<span class="tb-dim">${task.refCount}轮 · ${_tbEsc(_tbTimeAgo(task.lastTs))}</span></span>
     </div>`;
 }
 

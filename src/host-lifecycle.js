@@ -62,6 +62,7 @@ function createHostLifecycle(deps) {
     taskRunHost,
     taskRunStore,
     qwenAudioSupervisor,
+    sessionHibernationRuntime,
     log = console,
   } = deps;
 
@@ -128,6 +129,7 @@ function createHostLifecycle(deps) {
     try { stopNetworkProbe(); } catch (_) {}
     try { await skillSyncRuntime.stop(); } catch (_) {}
     try { await triggerRuntime.stop(); } catch (_) {}
+    try { await sessionHibernationRuntime?.stop?.(); } catch (_) {}
     try { pushRuntime.stop(); } catch (_) {}
     try { await lanDiscovery?.stop?.(); } catch (_) {}
     const chatHistoryRuntime = getChatHistoryRuntime();

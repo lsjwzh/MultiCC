@@ -472,6 +472,22 @@ function createOrchestrationRuntime({
     });
   }
 
+  async function hasSessionActivity(sessionId) {
+    const id = String(sessionId || '').trim();
+    if (!id) return false;
+    return store.read((draft) => {
+      if (Object.values(draft.waits).some(wait => wait.sessionId === id && wait.status === 'pending')) return true;
+      if (Object.values(draft.outbox).some(item => item.sessionId === id && ['pending', 'leased'].includes(item.state))) return true;
+      if (Object.values(draft.operations).some(operation => !TERMINAL_OPERATION_STATES.has(operation.status)
+          && (operation.ownerSessionId === id || operation.spec?.chatId === id || operation.spec?.targetId === id))) return true;
+      if (Object.values(draft.tasks).some(task => task.parentSessionId === id && !TERMINAL_TASK_STATES.has(task.status))) return true;
+      const schedule = draft.sessionSchedules[id];
+      const waitingOnly = schedule?.active && (schedule.classifyState === 'W'
+        || ['awaiting_user_input', 'classify_waiting'].includes(schedule.freezeReason));
+      return !!(schedule?.active && !waitingOnly);
+    });
+  }
+
   function matches(metadata, output) {
     if (metadata.untilContains) return output.includes(metadata.untilContains);
     if (metadata.untilRegex) {
@@ -832,6 +848,8 @@ function createOrchestrationRuntime({
   async function deliver(item) {
     const deliveryId = item.id;
     let schedulerClaimed = false;
+    let deliveryGuard = null;
+    let deliveryOutcome = { accepted: false, durable: false };
     try {
       await resolveSessionWorkLineage(item);
       // The host-busy read must happen before our own claim: claiming emits
@@ -884,7 +902,7 @@ function createOrchestrationRuntime({
         taskRunId: itemTaskRunId(item),
         leaseEpoch: itemLeaseEpoch(item),
       };
-      await Promise.resolve(beforeDeliver(descriptor));
+      deliveryGuard = await Promise.resolve(beforeDeliver(descriptor));
       const accepted = await Promise.resolve(
         typeof deliverOutbox === 'function'
           ? deliverOutbox(descriptor)
@@ -904,6 +922,7 @@ function createOrchestrationRuntime({
           retryable: true,
         });
       }
+      deliveryOutcome = { accepted: true, durable: true };
       const acknowledged = await acknowledgeDelivery(item);
       if (acknowledged.ok) await sessionScheduler.started(item);
       return acknowledged;
@@ -913,6 +932,12 @@ function createOrchestrationRuntime({
         await sessionScheduler.releaseClaim(item, 'delivery_error').catch(() => {});
       }
       return outbox.fail(item.id, item.leaseToken, error, { retryable: true });
+    } finally {
+      if (deliveryGuard && typeof deliveryGuard.complete === 'function') {
+        await Promise.resolve(deliveryGuard.complete(deliveryOutcome)).catch(error => {
+          log(`[orchestration] delivery guard ${item.id} cleanup failed: ${error.message}`);
+        });
+      }
     }
   }
 
@@ -1190,6 +1215,7 @@ function createOrchestrationRuntime({
     cancel,
     cancelForSession,
     listForSession,
+    hasSessionActivity,
     stats,
     hasPending,
     pendingCount,
