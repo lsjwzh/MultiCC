@@ -97,7 +97,8 @@ const { createLanDiscoveryRuntime } = require('./src/lan-discovery');
 const { requestIdMiddleware, safeErrorHandler, asyncHandler } = require('./src/http-errors');
 const { createMemoModule } = require('./src/memo');
 const { mountScanRoutes } = require('./src/routes/scan');
-const { mountSystemRoutes, createApkBuildRuntime } = require('./src/routes/system');
+const { mountSystemRoutes } = require('./src/routes/system');
+const { createApkDistribution } = require('./src/apk-distribution');
 const { mountHostReadRoutes } = require('./src/routes/host-read');
 const { mountHostWriteRoutes } = require('./src/routes/host-write');
 const { createVoiceHost } = require('./src/voice-host');
@@ -1896,12 +1897,11 @@ createServerRestartRoute({
 // ── One-click update (runs `./multicc update`, which restarts us at the end) ──
 // Run state lives in logs/update.log, not in memory: the process that starts the
 // update is not the one that reports its outcome. See src/routes/update-route.js.
-let apkBuildRuntime = null;
 const updateRoute = createUpdateRoute({
   chatSessions,
   spawn,
   rootDir: __dirname,
-  getShuttingDown: () => _shuttingDown, getApkBuildStatus: () => apkBuildRuntime?.status() || { state: 'idle' },
+  getShuttingDown: () => _shuttingDown,
 }); updateRoute.mountRoutes(app);
 
 // ── Per-session metadata: inter-agent notes + liveness ──
@@ -2002,7 +2002,7 @@ const {
 const bgCoalesce = require('./src/bg-completion-coalescer');
 const { createDetached } = require('./src/detached');
 const detached = createDetached({ baseDir: MULTICC_PATHS.detachedDir });
-apkBuildRuntime = createApkBuildRuntime({ detached, fs, path, rootDir: __dirname, atomicWriteJson });
+const apkDistribution = createApkDistribution({ fs, path, https, rootDir: __dirname });
 const share = require('./src/share');
 mountShareRoutes(app, {
   share,
@@ -2013,7 +2013,7 @@ mountShareRoutes(app, {
   logger,
 });
 
-// Host/install metadata and the fixed on-demand APK build live behind a narrow route boundary. PORT is
+// Host/install metadata and local-first / exact-release APK selection share a narrow route boundary. PORT is
 // read lazily because development mode may select a fallback port at startup.
 mountSystemRoutes(app, {
   fs,
@@ -2023,7 +2023,8 @@ mountSystemRoutes(app, {
   networkInterfaces: () => os.networkInterfaces(),
   getPort: () => PORT,
   authRequired: () => ACCESS_TOKEN,
-  gitRun, apkBuildRuntime, getUpdateStatus: () => updateRoute.status(), getShuttingDown: () => _shuttingDown,
+  gitRun,
+  apkDistribution,
 });
 
 // Read-only host control-plane endpoints share one narrow boundary. Mutable

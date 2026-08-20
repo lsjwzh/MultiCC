@@ -81,6 +81,23 @@ function createStaticAssetsRoutes(rawDeps) {
       next();
     });
 
+    // APK distribution has exactly one public name. The canonical route is
+    // mounted before this module and either falls through for a verified local
+    // file or terminates with a release redirect/404. Never let an accidental
+    // binary such as public/webcc.apk become downloadable just because it was
+    // left in the public directory.
+    app.use((req, res, next) => {
+      let requestedPath = req.path;
+      try { requestedPath = decodeURIComponent(requestedPath); } catch (_) {}
+      if ((req.method === 'GET' || req.method === 'HEAD')
+          && requestedPath !== '/multicc.apk'
+          && /\.apk$/i.test(requestedPath)) {
+        res.set('Cache-Control', 'no-store');
+        return res.status(404).end();
+      }
+      next();
+    });
+
     app.use(express.static(_publicDir, {
       extensions: ['html'],
       setHeaders: (res, filePath) => {

@@ -16,22 +16,32 @@ registry, and receives the same notifications.
   endpoint, show raw + AI-refined text with SSE streaming.
 - **Background notifications** via `flutter_local_notifications`, driven by the
   server's `waiting` / `completed` detector.
-- **APK auto-update** — polls `/multicc.apk` mtime and prompts when a newer
-  build is available.
+- **APK auto-update** — uses the server-selected `/multicc.apk`: a local package
+  when present, otherwise the verified asset from the exact server release.
 
-## Build
+## Release and build
 
 ```bash
-../multicc apk                              # Android + publish to ../public/multicc.apk
 flutter build ios --release --no-codesign   # iOS (needs Xcode + signing to install)
 ```
 
-The publisher builds the release APK and atomically copies it to the ignored
-`../public/multicc.apk` local artifact. The `/manage` APK area can start the same
-build in the background or explicitly rebuild it; an existing APK remains
-downloadable until the new package is ready. Flutter and the Android toolchain
-are build-time prerequisites only: installing or updating the MultiCC server
-never invokes them.
+Publishing a `vX.Y.Z` tag starts the GitHub release workflow. It builds Android
+once, signs the APK with the project's long-lived release key, and uploads
+`multicc.apk`, `multicc.apk.json`, and `multicc.apk.sha256` to that exact GitHub
+Release. The internal `scripts/publish-apk.sh` helper belongs to this release
+pipeline; there is no user-facing APK build command.
+
+The server prefers a non-empty local `../public/multicc.apk` as an operator or
+offline override. If it is absent, the server resolves only the verified
+`multicc.apk` asset whose `vX.Y.Z` tag exactly matches `package.json`, and never
+falls forward to GitHub's `latest` release. Installing or updating the server
+never invokes Flutter or the Android toolchain. Release v1.5.2 has no APK asset;
+remote fallback starts with the next release.
+
+The first APK signed by the official release key cannot update a previously
+installed debug-signed build in place. Uninstall the debug-signed app once, then
+install the official build. Back up the release keystore and credentials for the
+life of the application: losing them would break all future in-place upgrades.
 
 ## Package identifiers
 

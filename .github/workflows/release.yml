@@ -1,0 +1,199 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  android-apk:
+    name: Test, sign, and publish Android APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: android-release
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Check out the tagged source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+
+      - name: Validate release identity
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          TAG="$GITHUB_REF_NAME"
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Release tag must be strict SemVer (v<major>.<minor>.<patch>)"
+            exit 1
+          fi
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "v$PKG_VERSION" ]; then
+            echo "::error::Tag $TAG does not match package.json v$PKG_VERSION"
+            exit 1
+          fi
+          INSTALLER_VERSION="$(awk -F'"' '/^INSTALLER_VERSION=/ { print $2; exit }' install.sh)"
+          if [ "$INSTALLER_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::install.sh $INSTALLER_VERSION does not match package.json $PKG_VERSION"
+            exit 1
+          fi
+          git fetch --no-tags origin "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" "origin/$DEFAULT_BRANCH"; then
+            echo "::error::Release tag must point to a commit on $DEFAULT_BRANCH"
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.32.2'
+          cache: true
+
+      - name: Prepare official signing key
+        shell: bash
+        env:
+          ANDROID_RELEASE_KEYSTORE_BASE64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
+          ANDROID_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
+          ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+          ANDROID_RELEASE_CERT_SHA256: ${{ secrets.ANDROID_RELEASE_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in \
+            ANDROID_RELEASE_KEYSTORE_BASE64 \
+            ANDROID_RELEASE_STORE_PASSWORD \
+            ANDROID_RELEASE_KEY_ALIAS \
+            ANDROID_RELEASE_KEY_PASSWORD \
+            ANDROID_RELEASE_CERT_SHA256; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Required android-release secret $name is missing"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+
+          signer="$(printf '%s' "$ANDROID_RELEASE_CERT_SHA256" \
+            | tr -d '[:space:]:' | tr '[:upper:]' '[:lower:]')"
+          if ! [[ "$signer" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::ANDROID_RELEASE_CERT_SHA256 is not a SHA-256 certificate digest"
+            exit 1
+          fi
+          pinned_signer="$(tr -d '[:space:]:' < app/android/release-cert.sha256 \
+            | tr '[:upper:]' '[:lower:]')"
+          if [ "$signer" != "$pinned_signer" ]; then
+            echo "::error::Signing secret does not match app/android/release-cert.sha256"
+            exit 1
+          fi
+
+          keystore="$RUNNER_TEMP/multicc-release-keystore"
+          printf '%s' "$ANDROID_RELEASE_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          if [ ! -s "$keystore" ]; then
+            echo "::error::Decoded Android release keystore is empty"
+            exit 1
+          fi
+          chmod 600 "$keystore"
+          {
+            printf 'MULTICC_ANDROID_KEYSTORE_PATH=%s\n' "$keystore"
+            printf 'MULTICC_ANDROID_STORE_PASSWORD=%s\n' "$ANDROID_RELEASE_STORE_PASSWORD"
+            printf 'MULTICC_ANDROID_KEY_ALIAS=%s\n' "$ANDROID_RELEASE_KEY_ALIAS"
+            printf 'MULTICC_ANDROID_KEY_PASSWORD=%s\n' "$ANDROID_RELEASE_KEY_PASSWORD"
+            printf 'MULTICC_APK_EXPECTED_SIGNER_SHA256=%s\n' "$signer"
+          } >> "$GITHUB_ENV"
+
+      - name: Run release gates
+        run: |
+          set -euo pipefail
+          npm ci
+          npm test
+          cd app
+          flutter pub get --enforce-lockfile
+          flutter test
+
+      - name: Build and verify official APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          export MULTICC_RELEASE_TAG="$GITHUB_REF_NAME"
+          export MULTICC_RELEASE_VERSION="${GITHUB_REF_NAME#v}"
+          export MULTICC_RELEASE_COMMIT="$GITHUB_SHA"
+          ./scripts/publish-apk.sh
+
+          node <<'NODE'
+          const assert = require('node:assert/strict');
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const apk = 'public/multicc.apk';
+          const metadata = JSON.parse(fs.readFileSync(`${apk}.json`, 'utf8'));
+          const digest = crypto.createHash('sha256').update(fs.readFileSync(apk)).digest('hex');
+          assert.equal(metadata.schemaVersion, 1);
+          assert.equal(metadata.releaseTag, process.env.GITHUB_REF_NAME);
+          assert.equal(metadata.releaseVersion, process.env.GITHUB_REF_NAME.slice(1));
+          assert.equal(metadata.gitCommit, process.env.GITHUB_SHA.toLowerCase());
+          assert.equal(metadata.sha256, digest);
+          assert.equal(metadata.size, fs.statSync(apk).size);
+          assert.equal(fs.readFileSync(`${apk}.sha256`, 'utf8').trim(), digest);
+          NODE
+
+      - name: Refuse to replace inconsistent published assets
+        id: existing-release
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="$GITHUB_REF_NAME"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "matching=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          existing="$RUNNER_TEMP/existing-release-assets"
+          mkdir -p "$existing"
+          for asset in multicc.apk multicc.apk.json multicc.apk.sha256; do
+            if ! gh release download "$TAG" --pattern "$asset" --dir "$existing"; then
+              echo "::error::Release $TAG already exists but asset $asset is missing"
+              exit 1
+            fi
+            if ! cmp -s "public/$asset" "$existing/$asset"; then
+              echo "::error::Release $TAG already has a different $asset; refusing to overwrite it"
+              exit 1
+            fi
+          done
+          echo "matching=true" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release with APK assets
+        if: steps.existing-release.outputs.matching != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" \
+            public/multicc.apk \
+            public/multicc.apk.json \
+            public/multicc.apk.sha256 \
+            --verify-tag \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes

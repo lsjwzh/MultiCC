@@ -5,7 +5,7 @@
 # (public/multicc.apk.json) that /api/apk-info reads to show the real version
 # in the "发现新版本 X" dialog.
 #
-# Run from anywhere:  ./scripts/publish-apk.sh [--if-missing]
+# Release workflow entry point:  ./scripts/publish-apk.sh [--if-missing]
 # Remember to bump `version:` in app/pubspec.yaml first, or Android will treat
 # the new build as the same version and refuse to install over the old one.
 #
@@ -51,10 +51,30 @@ case "$VC" in
     ;;
 esac
 
-if [ "$IF_MISSING" = true ] && [ -s "$DEST" ] && [ -s "$DEST.json" ]; then
+# A distributable package must be traceable to one exact repository release.
+# These values are intentionally mandatory even though local output remains
+# ignored: the same files are uploaded as immutable GitHub Release assets.
+RELEASE_TAG="${MULTICC_RELEASE_TAG:-}"
+RELEASE_VERSION="${MULTICC_RELEASE_VERSION:-}"
+RELEASE_COMMIT="${MULTICC_RELEASE_COMMIT:-${GITHUB_SHA:-}}"
+if ! [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "[publish-apk] ERROR: MULTICC_RELEASE_TAG must be v<major>.<minor>.<patch>" >&2
+  exit 1
+fi
+if ! [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || [ "$RELEASE_TAG" != "v$RELEASE_VERSION" ]; then
+  echo "[publish-apk] ERROR: MULTICC_RELEASE_VERSION must match MULTICC_RELEASE_TAG" >&2
+  exit 1
+fi
+if ! [[ "$RELEASE_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]; then
+  echo "[publish-apk] ERROR: MULTICC_RELEASE_COMMIT must be a full Git commit SHA" >&2
+  exit 1
+fi
+RELEASE_COMMIT="$(printf '%s' "$RELEASE_COMMIT" | tr '[:upper:]' '[:lower:]')"
+
+if [ "$IF_MISSING" = true ] && [ -s "$DEST" ] && [ -s "$DEST.json" ] && [ -s "$DEST.sha256" ]; then
   PUBLISHED_META="$(tr -d '[:space:]' < "$DEST.json")"
   case "$PUBLISHED_META" in
-    *\"versionName\":\"$VN\",\"versionCode\":$VC*)
+    *\"versionName\":\"$VN\",\"versionCode\":$VC*\"releaseTag\":\"$RELEASE_TAG\"*)
       echo "[publish-apk] Current APK kept → $DEST (version $VN, code $VC)"
       exit 0
       ;;
@@ -71,13 +91,32 @@ if [ -z "$FLUTTER" ]; then
 fi
 if [ -z "$FLUTTER" ] || [ ! -x "$FLUTTER" ]; then
   echo "[publish-apk] ERROR: Flutter SDK not found; cannot build Android APK." >&2
-  echo "[publish-apk] Install Flutter or set FLUTTER_BIN, then retry from the APK control." >&2
+  echo "[publish-apk] Install Flutter or set FLUTTER_BIN on the release runner." >&2
+  exit 1
+fi
+
+for SIGNING_VAR in \
+  MULTICC_ANDROID_KEYSTORE_PATH \
+  MULTICC_ANDROID_STORE_PASSWORD \
+  MULTICC_ANDROID_KEY_ALIAS \
+  MULTICC_ANDROID_KEY_PASSWORD \
+  MULTICC_APK_EXPECTED_SIGNER_SHA256; do
+  if [ -z "${!SIGNING_VAR:-}" ]; then
+    echo "[publish-apk] ERROR: $SIGNING_VAR is required for an official APK" >&2
+    exit 1
+  fi
+done
+EXPECTED_SIGNER_SHA256="$(printf '%s' "$MULTICC_APK_EXPECTED_SIGNER_SHA256" \
+  | tr -d '[:space:]:' | tr '[:upper:]' '[:lower:]')"
+if ! [[ "$EXPECTED_SIGNER_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "[publish-apk] ERROR: MULTICC_APK_EXPECTED_SIGNER_SHA256 must be a SHA-256 certificate digest" >&2
   exit 1
 fi
 
 mkdir -p "$(dirname "$DEST")"
 TMP_APK="${DEST}.tmp.$$"
-TMP_SHA="${DEST}.sha1.tmp.$$"
+TMP_SHA1="${DEST}.sha1.tmp.$$"
+TMP_SHA256="${DEST}.sha256.tmp.$$"
 TMP_JSON="${DEST}.json.tmp.$$"
 LOCK_FILE="${MULTICC_APK_BUILD_LOCK:-}"
 if [ -z "$LOCK_FILE" ] && command -v node >/dev/null 2>&1 && [ -f "$ROOT/src/paths.js" ]; then
@@ -87,7 +126,7 @@ LOCK_FILE="${LOCK_FILE:-${HOME:-$ROOT}/.multicc/detached/apk-build.lock}"
 LOCK_CANDIDATE="${LOCK_FILE}.$$"
 LOCK_HELD=false
 cleanup() {
-  rm -f "$TMP_APK" "$TMP_SHA" "$TMP_JSON" "$LOCK_CANDIDATE"
+  rm -f "$TMP_APK" "$TMP_SHA1" "$TMP_SHA256" "$TMP_JSON" "$LOCK_CANDIDATE"
   if [ "$LOCK_HELD" = true ] && [ "$(cat "$LOCK_FILE" 2>/dev/null || true)" = "$$" ]; then rm -f "$LOCK_FILE"; fi
 }
 trap cleanup EXIT
@@ -118,31 +157,65 @@ fi
 
 cp "$SRC" "$TMP_APK"
 
-# Keep the legacy checksum sidecar in sync for scripts and mirrors that still
-# verify the published APK before serving or copying it.
+# SHA-256 is part of the release contract. Keep SHA-1 only as a compatibility
+# sidecar for older local tooling.
 if command -v shasum >/dev/null 2>&1; then
-  shasum -a 1 "$TMP_APK" | awk '{print $1}' > "$TMP_SHA"
-elif command -v sha1sum >/dev/null 2>&1; then
-  sha1sum "$TMP_APK" | awk '{print $1}' > "$TMP_SHA"
+  shasum -a 256 "$TMP_APK" | awk '{print $1}' > "$TMP_SHA256"
+  shasum -a 1 "$TMP_APK" | awk '{print $1}' > "$TMP_SHA1"
+elif command -v sha256sum >/dev/null 2>&1; then
+  sha256sum "$TMP_APK" | awk '{print $1}' > "$TMP_SHA256"
+  if command -v sha1sum >/dev/null 2>&1; then
+    sha1sum "$TMP_APK" | awk '{print $1}' > "$TMP_SHA1"
+  fi
 else
-  echo "[publish-apk] WARNING: no SHA-1 utility found; checksum sidecar omitted" >&2
+  echo "[publish-apk] ERROR: no SHA-256 utility found" >&2
+  exit 1
 fi
 
+APKSIGNER="${APKSIGNER_BIN:-}"
+if [ -z "$APKSIGNER" ]; then
+  for SDK_ROOT in "${ANDROID_SDK_ROOT:-}" "${ANDROID_HOME:-}" "${HOME:-}/Library/Android/sdk"; do
+    [ -n "$SDK_ROOT" ] && [ -d "$SDK_ROOT/build-tools" ] || continue
+    APKSIGNER="$(find "$SDK_ROOT/build-tools" -type f -name apksigner 2>/dev/null | sort | tail -1)"
+    [ -n "$APKSIGNER" ] && break
+  done
+fi
+if [ -z "$APKSIGNER" ] || [ ! -x "$APKSIGNER" ]; then
+  echo "[publish-apk] ERROR: apksigner is required to verify the official certificate" >&2
+  exit 1
+fi
+SIGNER_OUTPUT="$("$APKSIGNER" verify --print-certs "$TMP_APK")" || {
+  echo "[publish-apk] ERROR: apksigner rejected the built APK" >&2
+  exit 1
+}
+SIGNER_SHA256="$(printf '%s\n' "$SIGNER_OUTPUT" \
+  | awk -F': ' '/Signer #1 certificate SHA-256 digest:/ { print $2; exit }' \
+  | tr -d '[:space:]:' | tr '[:upper:]' '[:lower:]')"
+if [ "$SIGNER_SHA256" != "$EXPECTED_SIGNER_SHA256" ]; then
+  echo "[publish-apk] ERROR: APK signer certificate does not match the official fingerprint" >&2
+  exit 1
+fi
+
+APK_SHA256="$(tr -d '[:space:]' < "$TMP_SHA256")"
+APK_SIZE="$(wc -c < "$TMP_APK" | tr -d '[:space:]')"
+BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
 # This build does not pass --build-name/--build-number, so pubspec.yaml is the
-# authoritative version source on every platform; no Android SDK path probing is
-# needed. Flutter accepts semver+integer here, and Android uses the two halves as
-# versionName/versionCode.
-printf '{"versionName":"%s","versionCode":%s,"builtAt":"%s"}\n' \
-  "$VN" "$VC" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$TMP_JSON"
+# authoritative Android version source. Release identity and signer identity
+# make the sidecar independently auditable after it becomes a GitHub asset.
+printf '{"schemaVersion":1,"versionName":"%s","versionCode":%s,"releaseTag":"%s","releaseVersion":"%s","gitCommit":"%s","sha256":"%s","size":%s,"signerSha256":"%s","builtAt":"%s"}\n' \
+  "$VN" "$VC" "$RELEASE_TAG" "$RELEASE_VERSION" "$RELEASE_COMMIT" \
+  "$APK_SHA256" "$APK_SIZE" "$SIGNER_SHA256" "$BUILT_AT" > "$TMP_JSON"
 
 # Publish from the destination filesystem so a concurrent download sees either
 # the complete old APK or the complete new one, never a partially copied file.
 mv -f "$TMP_APK" "$DEST"
-if [ -s "$TMP_SHA" ]; then
-  mv -f "$TMP_SHA" "$DEST.sha1"
+if [ -s "$TMP_SHA1" ]; then
+  mv -f "$TMP_SHA1" "$DEST.sha1"
 else
   rm -f "$DEST.sha1"
 fi
+mv -f "$TMP_SHA256" "$DEST.sha256"
 mv -f "$TMP_JSON" "$DEST.json"
 cleanup
 trap - EXIT

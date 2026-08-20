@@ -44,7 +44,7 @@ node-telegram-bot-api   ^1.2.0         Telegram Bot bridge (lazy adapter)
 @slack/bolt             ^4.2.0         Slack Socket Mode bridge
 ```
 
-> **Zero frontend build step.** All web client code is plain JavaScript served as static files. Flutter and the Android toolchain are required only for an explicit App build from `/manage` or `./multicc apk`; server installation and updates do not invoke them.
+> **Zero frontend build step.** All web client code is plain JavaScript served as static files. Server installation and updates do not need Flutter or the Android toolchain. Android is built only by the tag-triggered GitHub release workflow; the running server uses a local APK override or the verified exact-version Release Asset.
 
 ---
 
