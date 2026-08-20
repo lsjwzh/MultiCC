@@ -1858,7 +1858,7 @@ sessionGitRuntime.mountRoutes(app);
 // Handler logic lives in src/routes/session-lifecycle.js; only host wiring
 // stays here. The whole-server POST /api/restart below deliberately remains
 // inline — its detached-scheduler debounce is host process state.
-createSessionLifecycleRuntime({
+const sessionLifecycleRuntime = createSessionLifecycleRuntime({
   sessions, chatSessions, persistedSessions, directories, invalidSessions,
   sessionPersistence,
   getChatStream: () => chatStream,
@@ -2157,7 +2157,7 @@ const commanderRouter = createCommanderRoutingHost({
 });
 const taskBoardRuntime = createTaskBoardRuntime({
   file: MULTICC_PATHS.taskBoardFile,
-  taskRuns: taskRunStore, auxQueue, records: persistedSessions, createSessionRecord,
+  taskRuns: taskRunStore, auxQueue, records: persistedSessions, createSessionRecord, releaseTaskBoundSession: sessionLifecycleRuntime.releaseTaskBoundSession,
   // Board projections inspect history without cloning every referenced transcript.
   loadHistory: sessionId => viewChatHistory(sessionId),
   dispatchToSession,

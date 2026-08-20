@@ -1066,19 +1066,19 @@ test('REST: board, messages, send and status flow', async () => {
   assert.equal(runtime.getBoard().tasks[tid].status, 'done');
 
   const archiveRes = res();
-  routes.get('POST /api/task-board/archive-completed')({ body: {} }, archiveRes);
+  await routes.get('POST /api/task-board/archive-completed')({ body: {} }, archiveRes);
   assert.equal(archiveRes.body.ok, true);
   assert.equal(archiveRes.body.archivedCount, 1);
   assert.deepEqual(archiveRes.body.taskIds, [tid]);
   assert.equal(runtime.getBoard().tasks[tid].status, 'archived');
 
   const badRes = res();
-  routes.get('POST /api/task-board/tasks/:taskId/status')(
+  await routes.get('POST /api/task-board/tasks/:taskId/status')(
     { params: { taskId: tid }, body: { status: 'weird' } }, badRes);
   assert.equal(badRes.code, 400);
 });
 
-test('bulk cleanup archives only user-completed tasks in scope and is idempotent', () => {
+test('bulk cleanup archives only user-completed tasks in scope and is idempotent', async () => {
   const { runtime, broadcasts } = mkRuntime({
     getSessionRunState: sid => sid === 'session-done-by-session' ? 'done' : 'idle',
   });
@@ -1110,7 +1110,7 @@ test('bulk cleanup archives only user-completed tasks in scope and is idempotent
   });
 
   const first = response();
-  routes.get('POST /api/task-board/archive-completed')(
+  await routes.get('POST /api/task-board/archive-completed')(
     { body: { dirId: 'dir-1' } }, first);
   assert.equal(first.body.archivedCount, 1);
   assert.deepEqual(first.body.taskIds, [byStatus.id]);
@@ -1123,7 +1123,7 @@ test('bulk cleanup archives only user-completed tasks in scope and is idempotent
   assert.deepEqual(broadcasts.at(-1).payload.taskIds.sort(), first.body.taskIds.sort());
 
   const second = response();
-  routes.get('POST /api/task-board/archive-completed')(
+  await routes.get('POST /api/task-board/archive-completed')(
     { body: { dirId: 'dir-1' } }, second);
   assert.equal(second.body.archivedCount, 0);
   assert.deepEqual(second.body.taskIds, []);
@@ -2578,7 +2578,7 @@ test('authenticated task-board mutations do not depend on transport locality', a
   const remoteRequest = { socket: { remoteAddress: '203.0.113.10' }, headers: { host: 'dashboard.example.com' } };
 
   const status = response();
-  routes.get('/api/task-board/tasks/:taskId/status')({
+  await routes.get('/api/task-board/tasks/:taskId/status')({
     ...remoteRequest, params: { taskId: task.id }, body: { status: 'archived' },
   }, status);
   assert.equal(status.code, 200);
@@ -2589,7 +2589,7 @@ test('authenticated task-board mutations do not depend on transport locality', a
   });
   completed.status = 'done';
   const cleanup = response();
-  routes.get('/api/task-board/archive-completed')({
+  await routes.get('/api/task-board/archive-completed')({
     ...remoteRequest, body: { dirId: 'dir-1' },
   }, cleanup);
   assert.equal(cleanup.code, 200);
