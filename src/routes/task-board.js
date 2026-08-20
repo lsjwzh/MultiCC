@@ -83,6 +83,11 @@ function createTaskBoardRuntime(deps) {
   // chat-session endpoint answers an explicit 501 instead of crashing.
   const createSessionRecord = typeof deps.createSessionRecord === 'function'
     ? deps.createSessionRecord : null;
+  // Archive-time release port (归档即释放): the session-lifecycle runtime's
+  // releaseTaskBoundSession. Optional in reduced hosts/tests — without it
+  // archiving simply keeps the binding (the pre-P5 behavior).
+  const releaseTaskBoundSession = typeof deps.releaseTaskBoundSession === 'function'
+    ? deps.releaseTaskBoundSession : null;
   const logger = deps.logger || console;
   const taskRunAnswers = new Map();
   // Optional goal-mode helpers (from aux-goal). When present, a goal-flagged
@@ -2345,6 +2350,25 @@ function createTaskBoardRuntime(deps) {
     return { ok: true, sessionId: created.id, created: true };
   }
 
+  // 归档即释放 · archive is a task's lifecycle end, so its bound session — the
+  // task's resume file — is released with it (user decision 2026-08-20). Best-
+  // effort by contract: a failed/blocked release never blocks archiving, and
+  // the pointer is only cleared on success so a surviving session is never
+  // dangled. Re-opening the task heals: ensureBoundChatSession re-creates the
+  // 1:1 session and the cold-start seed rebuilds context from the ledger.
+  async function releaseArchivedBoundSession(task) {
+    if (!releaseTaskBoundSession) return false;
+    const boundId = typeof task.chatSessionId === 'string' ? task.chatSessionId : '';
+    if (!boundId || records.get(boundId)?.taskBoundTaskId !== task.id) return false;
+    const result = await releaseTaskBoundSession(boundId).catch(() => null);
+    if (!result?.ok) {
+      logger.log(`[multicc/taskboard] bound session release kept (task ${task.id}): ${JSON.stringify(result || { error: 'threw' })}`);
+      return false;
+    }
+    task.chatSessionId = null;
+    return true;
+  }
+
   // P1 · task-bound hidden chat session (任务专属隐藏会话) — get-or-create the
   // 1:1 ordinary chat session this task owns. The record is hidden from fleet
   // lists by its taskBoundTaskId marker (query-service gate) yet stays fully
@@ -2402,13 +2426,17 @@ function createTaskBoardRuntime(deps) {
     }
     task.status = status;
     task.updatedAt = Date.now();
+    // Archived is the only lifecycle end that releases the bound session —
+    // done tasks still expect follow-ups, their resume file must survive.
+    const releasedSession = status === 'archived'
+      ? await releaseArchivedBoundSession(task) : false;
     save();
     const mod = task.moduleId ? board.modules[task.moduleId] : null;
     notify(mod?.dirId || null, [task.id]);
-    res.json({ ok: true, task: taskDto(task) });
+    res.json({ ok: true, releasedSession, task: taskDto(task) });
   }
 
-  function handleArchiveCompleted(req, res) {
+  async function handleArchiveCompleted(req, res) {
     const dirId = String(req.body?.dirId || '').trim() || null;
     const taskIds = [];
     const now = Date.now();
@@ -2422,11 +2450,17 @@ function createTaskBoardRuntime(deps) {
       task.updatedAt = now;
       taskIds.push(task.id);
     }
+    // Archive-time release happens before the board save so cleared pointers
+    // persist in the same write (release itself never throws — see helper).
+    let releasedSessions = 0;
+    for (const id of taskIds) {
+      if (await releaseArchivedBoundSession(board.tasks[id])) releasedSessions += 1;
+    }
     if (taskIds.length) {
       save();
       notify(dirId, taskIds);
     }
-    res.json({ ok: true, archivedCount: taskIds.length, taskIds });
+    res.json({ ok: true, archivedCount: taskIds.length, releasedSessions, taskIds });
   }
 
   function handleReclassify(req, res) {
@@ -2484,7 +2518,8 @@ function createTaskBoardRuntime(deps) {
       });
     });
     app.post('/api/task-board/tasks/:taskId/status', (req, res) => {
-      handleStatus(req, res).catch(error => {
+      // Return the promise so harness callers can await the full handler.
+      return handleStatus(req, res).catch(error => {
         logger.log(`[multicc/taskboard] status update failed: ${error?.message || error}`);
         if (!res.headersSent) res.status(500).json({ error: 'internal_error' });
       });

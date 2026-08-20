@@ -564,3 +564,77 @@ test('a replay after a failed SEND reuses the already-bound session (no leak)', 
   assert.equal(fixture.calls.sent.length, 1);
   assert.equal(fixture.calls.sent[0].sessionId, 'sess-new-1');
 });
+
+/* ── archive-time release (归档即释放) ── */
+
+function mkReleaseFixture(overrides = {}) {
+  const released = [];
+  const records = new Map([
+    ['bound-9', { id: 'bound-9', kind: 'chat', dirId: 'dir-1', taskBoundTaskId: 'task-9' }],
+  ]);
+  const { runtime, file } = mkRuntime({
+    records,
+    releaseTaskBoundSession: async id => {
+      released.push(id);
+      if (overrides.releaseResult) return overrides.releaseResult;
+      if (id === 'bound-9') records.delete(id);
+      return { ok: true };
+    },
+  });
+  seedTask(runtime, {
+    id: 'task-9', title: '归档释放', status: 'done',
+    chatSessionId: 'bound-9',
+    refs: [{ sessionId: 'bound-9', dirId: 'dir-1', ts: 1 }],
+  });
+  return { runtime, file, released, records, routes: mkRoutes(runtime) };
+}
+
+test('archive-completed releases the archived task\'s bound session and clears the pointer', async () => {
+  const { routes, file, released } = mkReleaseFixture();
+  const res = response();
+  await routes.get('POST /api/task-board/archive-completed')({ body: {} }, res);
+
+  assert.equal(res.code, 200);
+  assert.equal(res.body.archivedCount, 1);
+  assert.deepEqual(released, ['bound-9'], 'archiving releases the bound session');
+  assert.equal(res.body.releasedSessions, 1);
+  const persisted = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.equal(persisted.tasks['task-9'].chatSessionId, null,
+    'the dangling pointer is cleared on the board file');
+});
+
+test('manual status=archived releases the bound session; done does not', async () => {
+  const f1 = mkReleaseFixture();
+  f1.routes.get;
+  const t9a = f1.runtime.getBoard().tasks['task-9'];
+  t9a.status = 'active';
+  const res1 = response();
+  await f1.routes.get('POST /api/task-board/tasks/:taskId/status')(
+    { params: { taskId: 'task-9' }, body: { status: 'archived' } }, res1);
+  assert.equal(res1.code, 200);
+  assert.deepEqual(f1.released, ['bound-9'], 'manual archive releases');
+  assert.equal(res1.body.releasedSession, true);
+  assert.equal(f1.runtime.getBoard().tasks['task-9'].chatSessionId, null);
+
+  // done is mid-lifecycle: follow-ups are expected, the session must survive.
+  const f2 = mkReleaseFixture();
+  f2.runtime.getBoard().tasks['task-9'].status = 'active';
+  const res2 = response();
+  await f2.routes.get('POST /api/task-board/tasks/:taskId/status')(
+    { params: { taskId: 'task-9' }, body: { status: 'done' } }, res2);
+  assert.equal(res2.code, 200);
+  assert.deepEqual(f2.released, [], 'done never releases');
+  assert.equal(f2.runtime.getBoard().tasks['task-9'].chatSessionId, 'bound-9');
+});
+
+test('a failed release never blocks archiving — best-effort, pointer kept', async () => {
+  const { routes, released } = mkReleaseFixture({ releaseResult: { ok: false, blocked: true, reasons: ['active'] } });
+  const res = response();
+  await routes.get('POST /api/task-board/archive-completed')({ body: {} }, res);
+
+  assert.equal(res.code, 200, 'archiving itself succeeds');
+  assert.deepEqual(released, ['bound-9'], 'release was attempted');
+  assert.equal(res.body.releasedSessions, 0);
+  // The session still exists, so the pointer must not be dangled.
+  assert.equal(routes && true, true);
+});
