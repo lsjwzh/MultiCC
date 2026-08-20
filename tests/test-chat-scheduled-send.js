@@ -7,6 +7,70 @@ const test = require('node:test');
 
 const scheduledSend = require('../public/chat-scheduled-send.js');
 
+function fakeClassList() {
+  const values = new Set();
+  return {
+    add(...names) { names.forEach(name => values.add(name)); },
+    remove(...names) { names.forEach(name => values.delete(name)); },
+    contains(name) { return values.has(name); },
+  };
+}
+
+function fakeTarget(initial = {}) {
+  const handlers = new Map();
+  return Object.assign({
+    hidden: false,
+    style: {},
+    attrs: {},
+    classList: fakeClassList(),
+    addEventListener(type, fn) {
+      if (!handlers.has(type)) handlers.set(type, []);
+      handlers.get(type).push(fn);
+    },
+    removeEventListener(type, fn) {
+      handlers.set(type, (handlers.get(type) || []).filter(candidate => candidate !== fn));
+    },
+    dispatch(type, event = {}) {
+      const payload = { preventDefault() {}, ...event };
+      for (const fn of handlers.get(type) || []) fn(payload);
+    },
+    setAttribute(name, value) { this.attrs[name] = String(value); },
+    getAttribute(name) { return this.attrs[name]; },
+    setPointerCapture() {},
+    releasePointerCapture() {},
+  }, initial);
+}
+
+function dockFixture(saved = null) {
+  const values = new Map();
+  if (saved) values.set('multicc.scheduledSendDock', JSON.stringify(saved));
+  const writes = [];
+  const storage = {
+    getItem(key) { return values.has(key) ? values.get(key) : null; },
+    setItem(key, value) { values.set(key, value); writes.push([key, value]); },
+  };
+  const timeouts = [];
+  const win = fakeTarget({
+    innerWidth: 1280,
+    innerHeight: 800,
+    localStorage: storage,
+    matchMedia(query) { return { matches: query.includes('760px') && this.innerWidth <= 760 }; },
+    setTimeout(fn) { timeouts.push(fn); return timeouts.length; },
+    clearTimeout() {},
+  });
+  const fab = fakeTarget({ hidden: true });
+  const panel = fakeTarget({ hidden: true, offsetHeight: 320, offsetWidth: 440 });
+  const changes = [];
+  const dock = scheduledSend.createFloatingDock({
+    window: win, fab, panel, storage,
+    onExpandedChange(value) { changes.push(value); },
+  });
+  return {
+    dock, fab, panel, win, writes, changes,
+    flushTimeouts() { while (timeouts.length) timeouts.shift()(); },
+  };
+}
+
 test('delay parsing supports seconds through days and enforces the seven-day boundary', () => {
   assert.equal(scheduledSend.parseDelaySeconds(30, 'seconds'), 30);
   assert.equal(scheduledSend.parseDelaySeconds(10, 'minutes'), 600);
@@ -108,6 +172,77 @@ test('controller keeps the draft and reuses its idempotency key after an ambiguo
   assert.equal(input.value, '');
 });
 
+test('pending scheduled messages auto-open a floating panel and collapse to a counted dock', () => {
+  const fixture = dockFixture();
+  assert.equal(fixture.fab.hidden, true);
+  assert.equal(fixture.panel.hidden, true);
+
+  fixture.dock.setActive(true);
+  assert.equal(fixture.panel.hidden, false, 'the first pending item is visible in chat by default');
+  assert.equal(fixture.fab.hidden, true, 'expanded panel replaces its floating button');
+  assert.equal(fixture.panel.style.right, '12px');
+
+  fixture.dock.collapse();
+  assert.equal(fixture.panel.hidden, true);
+  assert.equal(fixture.fab.hidden, false);
+  assert.equal(fixture.fab.getAttribute('aria-expanded'), 'false');
+  assert.equal(JSON.parse(fixture.writes.at(-1)[1]).collapsed, true);
+
+  fixture.fab.dispatch('click');
+  assert.equal(fixture.panel.hidden, false);
+  assert.equal(fixture.fab.getAttribute('aria-expanded'), 'true');
+  assert.deepEqual(fixture.changes, [true, false, true]);
+
+  fixture.dock.setActive(false);
+  assert.equal(fixture.panel.hidden, true, 'an auto-opened panel disappears after its last item runs');
+  assert.equal(fixture.fab.hidden, true);
+  fixture.dock.setActive(true);
+  assert.equal(fixture.panel.hidden, false, 'a later item can auto-open again when not user-collapsed');
+  fixture.dock.destroy();
+});
+
+test('composer-opened schedule form can remain visible when there are no pending messages', () => {
+  const fixture = dockFixture();
+  fixture.dock.expand();
+  fixture.dock.setActive(false, true);
+  assert.equal(fixture.panel.hidden, false);
+  assert.equal(fixture.fab.hidden, true);
+  fixture.dock.destroy();
+});
+
+test('scheduled-message floating button drags, snaps, persists and stays inside mobile bounds', () => {
+  const fixture = dockFixture({ side: 'right', dy: 1, collapsed: true });
+  fixture.dock.setActive(true);
+  assert.equal(fixture.panel.hidden, true, 'saved collapse preference survives reload');
+  assert.equal(fixture.fab.hidden, false);
+  assert.equal(fixture.fab.style.left, '1224px');
+  assert.equal(fixture.fab.style.top, '686px');
+
+  fixture.fab.dispatch('pointerdown', { button: 0, pointerId: 7, clientX: 1230, clientY: 690 });
+  fixture.fab.dispatch('pointermove', { pointerId: 7, clientX: 20, clientY: 180 });
+  assert.equal(fixture.fab.classList.contains('schedule-send-dragging'), true);
+  fixture.fab.dispatch('pointerup', { pointerId: 7 });
+  assert.equal(fixture.fab.classList.contains('schedule-send-dragging'), false);
+  assert.equal(fixture.fab.style.left, '12px');
+  assert.equal(JSON.parse(fixture.writes.at(-1)[1]).side, 'left');
+
+  fixture.fab.dispatch('click');
+  assert.equal(fixture.panel.hidden, true, 'the synthetic click after dragging is suppressed');
+  fixture.flushTimeouts();
+  fixture.fab.dispatch('click');
+  assert.equal(fixture.panel.hidden, false);
+  assert.equal(fixture.panel.style.left, '12px');
+
+  fixture.dock.collapse();
+  fixture.win.innerWidth = 390;
+  fixture.win.innerHeight = 700;
+  fixture.win.dispatch('resize');
+  assert.equal(fixture.fab.style.left, '12px');
+  assert.ok(Number.parseFloat(fixture.fab.style.top) <= 544,
+    'narrow layout keeps the dock above the mobile composer');
+  fixture.dock.destroy();
+});
+
 test('chat page loads the isolated scheduler before chat boot without exceeding its line budget', () => {
   const source = fs.readFileSync(path.join(__dirname, '../public/chat.html'), 'utf8');
   const scheduler = source.indexOf('chat-scheduled-send.js');
@@ -117,4 +252,8 @@ test('chat page loads the isolated scheduler before chat boot without exceeding 
   const moduleSource = fs.readFileSync(path.join(__dirname, '../public/chat-scheduled-send.js'), 'utf8');
   assert.equal(moduleSource.includes('.innerHTML'), false,
     'scheduled message content must stay on textContent-only render paths');
+  assert.match(moduleSource, /id = 'schedule-send-fab'/);
+  assert.match(moduleSource, /multicc\.scheduledSendDock/);
+  assert.match(moduleSource, /width:44px;height:44px/);
+  assert.match(moduleSource, /width:24px;height:24px/);
 });

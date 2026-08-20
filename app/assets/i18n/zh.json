@@ -857,6 +857,8 @@
   "scheduleCancelling": "取消中…",
   "scheduleCancelFailed": "取消失败：{error}",
   "scheduleClose": "关闭",
+  "scheduleCollapse": "收起为悬浮球",
+  "scheduleExpand": "展开定时消息",
   "scheduleDueAt": "执行时间：{time}",
   "scheduleDueNow": "即将投递",
   "scheduleRemainingSeconds": "{n} 秒后",
