@@ -116,6 +116,7 @@ function createChatTurnEngine(deps) {
     getChatHistoryRuntime,      // let
     getChatHistoryService,      // let
     getExperimentalTuiChatRuntime,
+    getSessionHibernation,
     isShuttingDown,             // let bool _shuttingDown
     getPort,                    // let PORT
     getClaudeProxyEnabled,      // let
@@ -685,13 +686,45 @@ function createChatTurnEngine(deps) {
   }
 
   async function admitChatWork(sessionName, text, opts = {}) {
-    const experimentalRuntime = getExperimentalTuiChatRuntime?.();
-    if (experimentalRuntime?.owns(persistedSessions.get(sessionName))) {
-      return experimentalRuntime.admit(sessionName, text, opts);
+    const performAdmission = async () => {
+      const experimentalRuntime = getExperimentalTuiChatRuntime?.();
+      if (experimentalRuntime?.owns(persistedSessions.get(sessionName))) {
+        return experimentalRuntime.admit(sessionName, text, opts);
+      }
+      return getSessionWorkHost()
+        ? getSessionWorkHost().admit(sessionName, text, opts)
+        : null;
+    };
+    const sessionHibernation = getSessionHibernation?.();
+    const taskBound = !!persistedSessions.get(sessionName)?.taskBoundTaskId;
+    let admitted;
+    try {
+      admitted = taskBound && sessionHibernation
+        ? await sessionHibernation.admit(sessionName, performAdmission)
+        : await performAdmission();
+    } catch (error) {
+      if (taskBound && error?.code === 'SESSION_PERSISTENCE_FAILED') {
+        logger.warn?.('chat_workspace_restore_failed', { sessionId: sessionName, code: error.code });
+        try {
+          chatBroadcast(sessionName, {
+            type: 'error',
+            error: '会话工作区状态无法安全保存，消息未被接收；请稍后重试。',
+            code: 'workspace_restore_failed',
+          });
+        } catch (_) {}
+      }
+      throw error;
     }
-    const admitted = getSessionWorkHost()
-      ? await getSessionWorkHost().admit(sessionName, text, opts)
-      : null;
+    if (admitted?.workspaceUnavailable) {
+      logger.warn?.('chat_workspace_restore_failed', { sessionId: sessionName, code: admitted.code });
+      try {
+        chatBroadcast(sessionName, {
+          type: 'error',
+          error: '会话工作区恢复失败，消息未被接收；已保留休眠数据，请稍后重试。',
+          code: 'workspace_restore_failed',
+        });
+      } catch (_) {}
+    }
     // scheduler_not_ready is the one admission failure nothing downstream
     // reports: the auth gates and 消息入队失败 paths broadcast their own error
     // frames, but a missing/unwired scheduler runtime means the message was
@@ -715,6 +748,14 @@ function createChatTurnEngine(deps) {
     if (!persisted) {
       console.warn(`[multicc/chat] runChatTurn: no persisted record for ${sessionName}`);
       return false;
+    }
+    if (persisted.taskBoundTaskId && getSessionHibernation?.()) {
+      try { getSessionHibernation().assertAwake(sessionName); }
+      catch (error) {
+        logger.warn?.('chat_run_hibernated_workspace_blocked', { sessionId: sessionName, code: error.code });
+        try { chatBroadcast(sessionName, { type: 'error', code: 'workspace_hibernated', error: '会话工作区尚未恢复，消息未执行；系统会保留并重试投递。' }); } catch (_) {}
+        return false;
+      }
     }
     const experimentalRuntime = getExperimentalTuiChatRuntime?.();
     if (experimentalRuntime?.owns(persisted)) {

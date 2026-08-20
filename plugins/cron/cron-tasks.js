@@ -8,7 +8,7 @@
 // localhost). All managed centrally in the /manage panel.
 //
 // Decoupled from server.js via init(deps): the host injects { directories,
-// createSessionRecord, runChatTurn, sessionExists } so this module never
+// createSessionRecord, admitChatWork, sessionExists } so this module never
 // requires server.js back.
 
 const fs = require('fs');
@@ -20,7 +20,7 @@ const STORE = createPaths({ dataDir: process.env.MULTICC_DATA_DIR }).scheduledTa
 const LEGACY_STORE = path.join(__dirname, 'scheduled_tasks.json');
 
 let tasks = [];
-let deps = null;       // { directories, createSessionRecord, runChatTurn, sessionExists }
+let deps = null;       // { directories, createSessionRecord, admitChatWork, sessionExists }
 let timer = null;
 
 function load() {
@@ -136,7 +136,7 @@ async function fireTask(task, reason) {
     sessionId = r.id;
   }
   let started = false;
-  try { started = deps.runChatTurn(sessionId, task.prompt, {}); } catch (e) { task.lastError = e.message; }
+  try { const admitted = await deps.admitChatWork(sessionId, task.prompt, {}); started = admitted === true || admitted?.ok === true; } catch (e) { task.lastError = e.message; }
   task.lastRunAt = Date.now();
   task.lastSessionId = sessionId;
   task.runCount = (task.runCount || 0) + 1;

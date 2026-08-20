@@ -205,6 +205,14 @@ test('chat-session endpoint is idempotent and heals a dangling binding', async (
   assert.deepEqual(res.body, { ok: true, sessionId: 'sess-new-1', created: false });
   assert.equal(creates, 1);
 
+  // Hibernation removes only the checkout. The durable record remains the
+  // task's 1:1 binding and opening/viewing must neither thaw nor replace it.
+  deps.records.get('sess-new-1').workspaceState = 'hibernated';
+  res = response();
+  await handler({ params: { taskId: 'task-1' }, body: {} }, res);
+  assert.deepEqual(res.body, { ok: true, sessionId: 'sess-new-1', created: false });
+  assert.equal(creates, 1);
+
   // The record disappears (manual cleanup / GC bug): the next call HEALS the
   // binding instead of 404ing forever.
   deps.records.delete('sess-new-1');

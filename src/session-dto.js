@@ -89,6 +89,10 @@ function toSessionDto(source = {}) {
     lastActivity: timestamp(source.lastActivity),
     clients: Math.max(0, Math.floor(Number(source.clients) || 0)),
     active: !!source.active,
+    workspaceState: ['hibernated', 'hibernating', 'thawing'].includes(source.workspaceState)
+      ? 'hibernated' : 'awake',
+    lastWorkAt: timestamp(source.lastWorkAt || source.createdAt),
+    hibernatedAt: timestamp(source.hibernatedAt),
     mergeState: mergeStateDto(source.mergeState),
   };
   if (!dto.id) throw new TypeError('session DTO requires id');

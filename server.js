@@ -90,6 +90,7 @@ const stateStore = require('./src/state-store');
 const stateTx = require('./src/state-tx');
 const { bootstrapState } = require('./src/bootstrap/state');
 const { createSessionPersistence } = require('./src/session-persistence'); const { mountPublicSessionAccessGuard } = require('./src/session/public-session-access');
+const { createSessionHibernationRuntime, initializeSessionWorktrees, resolveSessionCwd } = require('./src/session-hibernation');
 const { createOrchestrationRuntime } = require('./src/orchestration-runtime');
 const { createRouterToolHost } = require('./src/router-tool-host');
 const { createHostLifecycle } = require('./src/host-lifecycle');
@@ -245,7 +246,7 @@ let chatHistoryService = null;
 // This runtime deliberately owns preparation only. The established streaming
 // and per-process runners keep their existing lifecycle after spawn is accepted.
 const chatTurnPreparationRuntime = createTurnRuntimeStore();
-let orchestrationRuntime = null; let taskRunHost = null; let sessionWorkHost = null;
+let orchestrationRuntime = null; let taskRunHost = null; let sessionWorkHost = null; let sessionHibernationRuntime = null;
 const observability = createObservability({ service: 'multicc' });
 const { logger, metrics } = observability;
 const apiErrorPolicy = createApiErrorPolicyRuntime({ logger, metrics });
@@ -671,7 +672,7 @@ async function recoverTmuxSessions() {
 // existing call sites are unchanged. The stateful bits stay here in server.js.
 const {
   WORKTREE_SUBDIR, gitRun, gitIsRepo, gitHasCommit, gitBaseBranch, gitEnsureExcluded,
-  gitWorktreeAdd, gitWorktreeRollbackCreate, gitWorktreeRemove, gitRelocateWorktree, gitWorktreeMergeState, gitMergeBack,
+  gitWorktreeAdd, gitWorktreeDetach, gitWorktreeValidate, gitWorktreeRollbackCreate, gitWorktreeRemove, gitRelocateWorktree, gitWorktreeMergeState, gitMergeBack,
   gitSyncFromBase, gitRebaseResolve, gitWorktreeSnapshot, gitExportSessionBundle,
   gitImportSessionBundle, defaultRepoActor,
 } = require('./src/git');
@@ -994,74 +995,14 @@ if (_state.needsSave) {
   console.log(`[multicc] Migration complete: ${directories.size} directories, ${persistedSessions.size} sessions`);
 }
 
-// Startup: ensure every session has an isolated worktree. Legacy sessions (created
-// before worktree isolation) get one built here. Sessions whose directory is invalid
-// ($HOME, or a duplicate physical path) are marked invalid and skipped at recovery.
-async function initWorktrees() {
-  // Detect directories that point at the same physical path — keep the earliest as
-  // canonical, mark sessions under the rest invalid.
-  const seenPaths = new Map();   // realpath → canonical dir id
-  const dupDirIds = new Set();
-  const sortedDirs = [...directories.values()]
-    .sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
-  for (const d of sortedDirs) {
-    const rp = realPathOf(d.path);
-    if (seenPaths.has(rp)) dupDirIds.add(d.id);
-    else seenPaths.set(rp, d.id);
-  }
-
-  let built = 0;
-  for (const s of persistedSessions.values()) {
-    if (s.type === 'aux' || s.id === AUX_SESSION_ID) continue;
-    if (s.type === 'gateway') continue;
-    const dir = directories.get(s.dirId);
-    if (!dir) { invalidSessions.set(s.id, 'no directory'); continue; }
-    if (dupDirIds.has(dir.id)) { invalidSessions.set(s.id, 'duplicate directory path'); continue; }
-    if (isHomeOrAbove(dir.path)) { invalidSessions.set(s.id, 'directory is $HOME or above'); continue; }
-    if (s.worktreePath && fs.existsSync(s.worktreePath)) continue;  // already isolated
-
-    const ready = await ensureDirGitReady(dir);
-    if (!ready.ok) { invalidSessions.set(s.id, 'git not ready: ' + ready.reason); continue; }
-    try {
-      const { worktreePath, branch } = await gitWorktreeAdd(dir.path, s.id, dir.baseBranch);
-      s.worktreePath = worktreePath;
-      s.branch = branch;
-      built++;
-      // Legacy terminal session still running in the old (non-worktree) tmux pane:
-      // kill it so recovery recreates the session inside its worktree.
-      if (s.kind === 'terminal' && await tmuxHasSession(s.id)) {
-        console.log(`[multicc] migrating terminal ${s.id} into worktree — discarding old tmux pane`);
-        await tmuxKillSession(s.id);
-      }
-    } catch (e) {
-      invalidSessions.set(s.id, 'worktree create failed: ' + e.message);
-      console.error(`[multicc] worktree creation failed for session ${s.id}: ${e.message}`);
-    }
-  }
-  if (built > 0 || invalidSessions.size > 0) {
-    saveDirectories();
-    savePersistedSessionsBestEffort('startup.worktree-migration');
-  }
-  console.log(`[multicc] worktrees: ${built} built, ${invalidSessions.size} session(s) invalid`);
-  for (const [id, reason] of invalidSessions) {
-    console.warn(`[multicc]   invalid session ${id}: ${reason}`);
-  }
-}
-
-// Helper: resolve a session's cwd. Isolated sessions run inside their git worktree;
-// fall back to the directory path if the worktree is somehow missing.
+const initWorktrees = () => initializeSessionWorktrees({ records: persistedSessions, directories, invalidSessions,
+  realPathOf, isHomeOrAbove, ensureDirGitReady, addWorktree: gitWorktreeAdd, existsSync: fs.existsSync,
+  tmuxHasSession, tmuxKillSession, saveDirectories, saveSessions: savePersistedSessionsBestEffort,
+  auxSessionId: AUX_SESSION_ID, log: console });
 function cwdForSession(session) {
-  if (!session) return os.homedir();
-  if (session.type === 'aux') return session.cwd || __dirname;
-  if (session.type === 'gateway') {
-    const p = session.cwd || path.join(os.homedir(), '.multicc', 'gateway');
-    try { fs.mkdirSync(p, { recursive: true }); } catch (_) {}
-    return p;
-  }
-  if (session.worktreePath && fs.existsSync(session.worktreePath)) return session.worktreePath;
-  const dir = directories.get(session.dirId);
-  if (dir && dir.path) return dir.path;
-  return session.cwd || os.homedir();
+  const cwd = resolveSessionCwd(session, { directories, dataRoot: MULTICC_PATHS.root, existsSync: fs.existsSync, homeDir: os.homedir, moduleDir: __dirname });
+  if (session?.type === 'gateway') try { fs.mkdirSync(cwd, { recursive: true }); } catch (_) {}
+  return cwd;
 }
 
 // Dispatch targeting (src/dispatch/targeting.js): sibling-session listing and
@@ -1672,6 +1613,7 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
     return { ok: false, error: 'worktree 创建失败: ' + e.message };
   }
 
+  const createdAt = new Date().toISOString();
   const session = {
     id: sid,
     dirId: dir.id,
@@ -1691,7 +1633,7 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
     // streaming option). The field stays true for back-compat only; the old
     // auto-drive mechanisms are retired.
     autoContinue: true,
-    createdAt: new Date().toISOString(),
+    createdAt, workspaceState: 'awake', lastWorkAt: createdAt,
     worktreePath,
     branch,
   };
@@ -2580,6 +2522,15 @@ sessionWorkHost = createSessionWorkHost({
   chatStream,
   assignKillReason,
   appendMessage: appendChatMessage,
+  onTerminalWork: (sessionId, completion) => {
+    Promise.resolve(sessionHibernationRuntime?.touchTerminal(sessionId, completion)).catch(error => {
+      logger.warn('session_hibernation_terminal_touch_failed', {
+        sessionId,
+        code: /^[A-Za-z][A-Za-z0-9_.-]{0,79}$/.test(String(error?.code || ''))
+          ? error.code : 'persistence_failed',
+      });
+    });
+  },
   cancelPreparation(sessionId, reason) {
     const preparation = chatTurnPreparationRuntime.snapshot(sessionId);
     if (preparation.phase === 'preparing' && preparation.turnId) {
@@ -2620,6 +2571,40 @@ const backgroundTaskRuntime = createBackgroundTaskRuntime({
   logger,
 });
 
+sessionHibernationRuntime = createSessionHibernationRuntime({
+  records: persistedSessions, directories, persistence: sessionPersistence, loadHistory: id => viewChatHistory(id),
+  git: {
+    inspect: async (dir, record) => { if (!dir || !record.worktreePath || !record.branch) return { pathExists: false, branchExists: false, valid: false }; const result = await gitWorktreeValidate(dir.path, record.worktreePath, record.branch, { sessionId: record.id }); return { pathExists: result.pathExists, branchExists: result.branchExists, valid: result.ok, code: result.code }; },
+    detach: (dir, record) => gitWorktreeDetach(dir.path, record.worktreePath, record.branch, { sessionId: record.id }),
+    thaw: (dir, record) => gitWorktreeAdd(dir.path, record.id, dir.baseBranch, { sessionId: record.id, requireExistingBranch: true }),
+  },
+  inspectBlockers: async (id, record) => {
+    const blockers = [], chat = chatSessions.get(id), stream = chatStream.status(id);
+    if (invalidSessions.has(id)) blockers.push('invalid_session');
+    if (defaultRepoActor.isLeased(id)) blockers.push('repo_lease');
+    if (chat?.isStreaming || chat?.claudeProc || chat?._cancelledProc || chat?._activeRunner) blockers.push('active_cli');
+    if (stream?.busy || stream?.queued) blockers.push('active_stream');
+    if (backgroundTaskRuntime.hasLiveBackgroundTasks(id)) blockers.push('background_task');
+    if (waitInjector.hasWait(id)) blockers.push('pending_wait');
+    if (orchestrationRuntime && await orchestrationRuntime.hasSessionActivity(id)) blockers.push('durable_work');
+    if (sessionWorkHost?.isRunActive(id)) blockers.push('running_task');
+    if (record.worktreePath && fs.existsSync(record.worktreePath)) {
+      const state = await gitWorktreeMergeState(directories.get(record.dirId), record).catch(() => null);
+      if (!state) blockers.push('git_state_unknown'); else if (state.conflict) blockers.push('git_conflict');
+    }
+    return blockers;
+  },
+  closePersistent: id => chatStream.closeAndWait(id),
+  updateChatCwd: (id, cwd) => { const chat = chatSessions.get(id); if (chat) chat.cwd = cwd; },
+  pathExists: record => !!record.worktreePath && fs.existsSync(record.worktreePath),
+  idleMs: process.env.MULTICC_SESSION_HIBERNATE_IDLE_MS,
+  intervalMs: process.env.MULTICC_SESSION_HIBERNATE_INTERVAL_MS,
+  startupDelayMs: process.env.MULTICC_SESSION_HIBERNATE_STARTUP_DELAY_MS,
+  batchSize: process.env.MULTICC_SESSION_HIBERNATE_BATCH_SIZE,
+  onEvent: event => { logger.info('session_workspace_lifecycle', event); const record = event.sessionId && persistedSessions.get(event.sessionId); if (record?.dirId) workspaceBroadcast(record.dirId, event); },
+  metric: name => metrics.inc(name), logger,
+});
+
 const tuiChatMirrorRuntime = createTuiChatMirrorRuntime({ enabled: tuiChatMirrorEnabled(), records: persistedSessions, cwdForSession, providerFor, send: sendWs, setSessionStatus, saveBestEffort: source => savePersistedSessionsBestEffort(source), logger });
 
 // Chat turn engine: per-turn + persistent-streaming turn execution, the chat
@@ -2632,6 +2617,7 @@ const chatTurnEngine = createChatTurnEngine({
   getChatHistoryRuntime: () => chatHistoryRuntime,
   getChatHistoryService: () => chatHistoryService,
   getExperimentalTuiChatRuntime: () => tuiChatMirrorRuntime,
+  getSessionHibernation: () => sessionHibernationRuntime,
   isShuttingDown: () => _shuttingDown,
   getPort: () => PORT,
   getClaudeProxyEnabled: () => CLAUDE_PROXY_ENABLED,
@@ -2731,7 +2717,7 @@ orchestrationRuntime = createOrchestrationRuntime({
   detachedAdapter: detached,
   recoverDispatchResult: chatTurnEngine.recoverDispatchOperation,
   replayRecoveredDispatchEffects: () => {},
-  beforeDeliver: descriptor => taskRunHost.beforeDeliver(descriptor), beforeFirstTick: ({ sessionScheduler }) => reconcileTaskRunSlotLeases({ store: taskRunStore, records: persistedSessions, persistRecords: savePersistedSessionsBestEffort, resumeCleanup: item => taskRunHost.resumeCleanup(item), resetSlot: item => taskRunHost.resetSlotForRecovery(item), getSchedulerStatus: slotId => sessionScheduler.status(slotId), recoverTerminal: event => taskRunHost.recoverTerminal(event), log: message => logger.warn(message) }),
+  beforeDeliver: async descriptor => { const record = persistedSessions.get(descriptor.sessionId); const guard = record?.taskBoundTaskId ? await sessionHibernationRuntime.acquireDelivery(descriptor.sessionId) : null; try { await taskRunHost.beforeDeliver(descriptor); return guard; } catch (error) { await guard?.complete({ accepted: false, durable: false }); throw error; } }, beforeFirstTick: ({ sessionScheduler }) => reconcileTaskRunSlotLeases({ store: taskRunStore, records: persistedSessions, persistRecords: savePersistedSessionsBestEffort, resumeCleanup: item => taskRunHost.resumeCleanup(item), resetSlot: item => taskRunHost.resetSlotForRecovery(item), getSchedulerStatus: slotId => sessionScheduler.status(slotId), recoverTerminal: event => taskRunHost.recoverTerminal(event), log: message => logger.warn(message) }),
   getSessionRecoveryState: id => sessionWorkHost.recoveryState(id),
   onSchedulerEvent: event => { sessionWorkHost.onSchedulerEvent(event); void taskRunHost.onSchedulerEvent(event).catch(error => logger.warn('task_run_finalize_failed', { error: error.message })); },
   workerIntervalMs: Math.max(100, Number(process.env.MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS) || 1000),
@@ -2861,7 +2847,7 @@ const triggerRuntime = createSessionTriggers({
 triggerRuntime.mountRoutes(app);
 const teardownTriggers = triggerRuntime.teardownSession;
 
-const startupRepoReady = Promise.resolve().then(providers.migrateLegacyProviderProtocols).then(initWorktrees)
+const startupRepoReady = Promise.resolve().then(providers.migrateLegacyProviderProtocols).then(() => sessionHibernationRuntime.reconcileStartup()).then(initWorktrees)
   .catch(error => console.error('[multicc] async repo startup failed:', error.message))
   .then(() => commanderMigrationRunner.run())
   .catch(error => {
@@ -2880,7 +2866,7 @@ const startupRepoReady = Promise.resolve().then(providers.migrateLegacyProviderP
 // Complements the per-session triggers above — this one fires by creating a
 // fresh chat session in a target directory (directory-level recurring tasks).
 cronTasks.mount(app);
-cronTasks.init({ directories, createSessionRecord, runChatTurn: chatTurnEngine.runChatTurn, sessionExists: (id) => persistedSessions.has(id) });
+cronTasks.init({ directories, createSessionRecord, admitChatWork: chatTurnEngine.admitChatWork, sessionExists: (id) => persistedSessions.has(id) });
 // In-process external-tunnel monitor (replaces phtunnel-monitor.sh watchdog).
 tunnel.init();
 
@@ -2926,6 +2912,7 @@ const { shutdownCoordinator, trackServiceTimer, gracefulShutdown } = createHostL
   taskRunHost,
   taskRunStore,
   qwenAudioSupervisor,
+  sessionHibernationRuntime,
 });
 // Terminal error handler: catches errors that reach next(err) or throw out of
 // async handlers wrapped with asyncHandler(). Redacts stacks/stderr, returns a
@@ -2966,6 +2953,7 @@ app.use(safeErrorHandler(logger));
     backfillReportedModels();                       // recover runtime model for pre-upgrade sessions
     skillSyncRuntime.start();
     triggerRuntime.start();
+    sessionHibernationRuntime.start();
     try { voiceHost.prepareBoot(); } catch (err) { logger.warn('voice_boot_prepare_failed', { error: err.message }); }
     qwenAudioSupervisor.reconcileAll().catch(err => logger.warn('voice_reconcile_failed', { error: err && err.message }));
     // Periodic scan retries unresolved task attribution; first tick waits for Aux warm-up.

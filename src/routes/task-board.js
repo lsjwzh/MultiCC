@@ -1253,7 +1253,17 @@ function createTaskBoardRuntime(deps) {
     }
     dto.sessionIds = (dto.sessionIds || [])
       .filter(sessionId => records.get(sessionId)?.taskExecutionSlot !== true);
+    attachBoundWorkspace(dto);
     Object.assign(dto, taskRunDtos(task.id));
+    return dto;
+  }
+
+  function attachBoundWorkspace(dto) {
+    const bound = dto?.chatSessionId && records.get(dto.chatSessionId);
+    dto.workspaceState = !bound ? null
+      : ['hibernated', 'hibernating', 'thawing'].includes(bound.workspaceState) ? 'hibernated' : 'awake';
+    dto.lastWorkAt = bound?.lastWorkAt || bound?.createdAt || null;
+    dto.hibernatedAt = bound?.hibernatedAt || null;
     return dto;
   }
 
@@ -1299,6 +1309,7 @@ function createTaskBoardRuntime(deps) {
       }
       t.sessionIds = (t.sessionIds || [])
         .filter(sessionId => records.get(sessionId)?.taskExecutionSlot !== true);
+      attachBoundWorkspace(t);
       for (const sid of t.sessionIds) {
         if (!(sid in labels)) labels[sid] = records.get(sid)?.label || sid;
       }
