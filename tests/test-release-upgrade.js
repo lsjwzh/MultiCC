@@ -11,11 +11,57 @@ const installer = fs.readFileSync(path.join(ROOT, 'install.sh'), 'utf8');
 const manager = fs.readFileSync(path.join(ROOT, 'multicc'), 'utf8');
 const runtimeCheck = fs.readFileSync(path.join(ROOT, 'scripts/check-runtime-deps.js'), 'utf8');
 const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+const releaseWorkflowPath = path.join(ROOT, '.github', 'workflows', 'release.yml');
+const androidGradle = fs.readFileSync(path.join(ROOT, 'app', 'android', 'app', 'build.gradle.kts'), 'utf8');
+const signerPin = fs.readFileSync(path.join(ROOT, 'app', 'android', 'release-cert.sha256'), 'utf8').trim();
 
 const stableCommand = `curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v${pkg.version}/install.sh | bash -s -- --branch v${pkg.version}`;
 assert.ok(installer.includes(stableCommand), 'installer help must clone the release tag, not main');
 assert.ok(readme.includes(stableCommand), 'README stable command must clone the release tag, not main');
 assert.match(installer, /--branch v\$\{INSTALLER_VERSION\}/);
+
+assert.equal(fs.existsSync(releaseWorkflowPath), true, 'release workflow must be version controlled');
+const releaseWorkflow = fs.readFileSync(releaseWorkflowPath, 'utf8');
+assert.match(releaseWorkflow, /^\s*push:\s*[\r\n]+\s*tags:\s*[\r\n]+\s*- ['"]v\*\.\*\.\*['"]/m,
+  'only release tags may trigger APK publication');
+assert.doesNotMatch(releaseWorkflow, /^\s*(pull_request|workflow_dispatch|release):/m,
+  'APK publication must not have a non-tag trigger');
+assert.match(releaseWorkflow, /\^v\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+\$/,
+  'the broad Actions tag glob must be narrowed by a strict SemVer check');
+assert.match(releaseWorkflow, /TAG[^\n]+v\$\{?PKG_VERSION\}?/,
+  'the release tag must equal package.json version');
+assert.match(releaseWorkflow, /flutter-version:\s*['"]?3\.32\.2/);
+assert.match(releaseWorkflow, /java-version:\s*['"]?17/);
+assert.match(releaseWorkflow, /permissions:[\s\S]*?contents:\s*write/);
+for (const secret of [
+  'ANDROID_RELEASE_KEYSTORE_BASE64',
+  'ANDROID_RELEASE_STORE_PASSWORD',
+  'ANDROID_RELEASE_KEY_ALIAS',
+  'ANDROID_RELEASE_KEY_PASSWORD',
+  'ANDROID_RELEASE_CERT_SHA256',
+]) {
+  assert.ok(releaseWorkflow.includes(`secrets.${secret}`), `release workflow must require ${secret}`);
+}
+assert.match(releaseWorkflow, /gh release create/);
+assert.match(releaseWorkflow, /multicc\.apk\.json/);
+assert.match(releaseWorkflow, /multicc\.apk\.sha256/);
+assert.doesNotMatch(releaseWorkflow, /--clobber/, 'published APK assets must never be destructively replaced');
+assert.match(signerPin, /^[a-f0-9]{64}$/, 'the official public certificate fingerprint must be pinned');
+assert.match(releaseWorkflow, /release-cert\.sha256/,
+  'the workflow must bind its signing secret to the repository certificate pin');
+
+for (const name of [
+  'MULTICC_ANDROID_KEYSTORE_PATH',
+  'MULTICC_ANDROID_STORE_PASSWORD',
+  'MULTICC_ANDROID_KEY_ALIAS',
+  'MULTICC_ANDROID_KEY_PASSWORD',
+]) {
+  assert.ok(androidGradle.includes(name), `Gradle must read official signing input ${name}`);
+}
+assert.doesNotMatch(androidGradle, /signingConfig\s*=\s*signingConfigs\.getByName\("debug"\)/,
+  'release builds must never silently fall back to the Android debug key');
+assert.match(androidGradle, /GradleException[\s\S]*official release signing/i,
+  'a release task without complete official signing input must fail closed');
 
 const beforeCapture = manager.indexOf('before="$(git rev-parse HEAD');
 const stableBranch = manager.indexOf('if [ "$channel" = "stable" ]');

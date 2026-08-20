@@ -23,8 +23,9 @@ migration plans:
 - `server.js`: `~/.claude/projects`, `~/.codex/sessions`, CLI settings and skill
   roots. These are upstream CLI-owned stores and must not be relocated as
   MultiCC state.
-- `server.js`: public assets and agent presets. The APK is now an ignored local
-  install artifact built by `scripts/publish-apk.sh`.
+- `server.js`: public assets and agent presets. `public/multicc.apk` is an
+  ignored optional local/offline override; official APKs live in GitHub Release
+  Assets and are produced by the tag-triggered release workflow.
 - `src/providers.js`: `~/.multicc/codex-homes` and the external read-only
   `~/.cc-switch/cc-switch.db` source. The former needs a backward-compatible
   directory migration; the latter is owned by cc-switch.
@@ -43,9 +44,10 @@ leaves the old file in place for rollback.
 No files were deleted in the original data-root batch. The current disposition
 of each reviewed artifact is recorded below.
 
-- `public/multicc.apk` — resolved: removed from Git and built only on explicit
-  request from `/manage` or `./multicc apk`; its generated metadata is ignored
-  with it. Install and update never produce it.
+- `public/multicc.apk` — resolved: removed from Git and retained only as an
+  ignored local/offline override. Official `multicc.apk`, `.json`, and `.sha256`
+  files are built once for a `vX.Y.Z` tag and stored as that exact GitHub
+  Release's assets. Install and update never produce them.
 - `server.js.bak.task1`, `task2`, `task4`, `task5`, `task7`, `task9`, `task10` —
   seven tracked source backups, roughly 376–421 KB each. Compare against Git
   history, check whether tooling still consumes them, then remove in a dedicated

@@ -136,7 +136,7 @@ A real Flutter app (Android + iOS), not a wrapped webview:
 - **Multi-session sidebar** with swipe-to-close, unread badges, and per-session working directory.
 - **xterm terminal widget** and a custom chat UI with message bubbles, tool cards, and inline images.
 - **Background notifications** via `flutter_local_notifications` + the server's push pipeline.
-- **In-app APK auto-update**: checks the server's `/multicc.apk` mtime, offers one-tap install.
+- **In-app APK auto-update**: uses the server's local-first `/multicc.apk` source and offers one-tap install from either the local package or the verified exact-version Release Asset.
 - **Voice capture** with waveform visualization.
 - **Task progress scroller** on the home screen showing real-time session status.
 - **KPI dashboard**: active sessions, waiting sessions, cron jobs — all tappable for drill-down.
@@ -157,7 +157,7 @@ A single operational surface for everything:
 - **Wait/detached task inspector**: see what's pending and what's running in the background.
 - **Public tunnel toggle**: enable Tailscale Funnel or monitor 花生壳 DDNS for external access.
 - **QR code**: LAN IP + access token for instant phone onboarding.
-- **On-demand APK build and download**: start or retry a background Flutter build from the dashboard; an existing package remains downloadable while its replacement is built.
+- **APK download source**: download a non-empty local APK when present; otherwise use only the verified `multicc.apk` asset from the GitHub Release matching the current package version.
 - **Onboarding tour**: mask-based guided walkthrough for new users.
 
 ## Session sharing
