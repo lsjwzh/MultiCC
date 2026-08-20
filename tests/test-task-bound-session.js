@@ -215,6 +215,115 @@ test('chat-session endpoint is idempotent and heals a dangling binding', async (
   assert.equal(creates, 2);
 });
 
+test('chat-session adopts the origin session for a task born in an ordinary session', async () => {
+  // The user's scenario: a task started inside their own normal session has
+  // its whole conversation there. Clicking it must land in THAT session —
+  // never fork a fresh hidden room that has never seen the work.
+  let creates = 0;
+  const { runtime, deps, file } = mkRuntime({
+    records: new Map([
+      ['commander-1', { id: 'commander-1', kind: 'chat', type: 'commander', dirId: 'dir-1', label: 'Agent Commander', cli: 'codex', model: 'gpt-5', provider: 'p-1' }],
+      ['sess-mine', { id: 'sess-mine', kind: 'chat', dirId: 'dir-1', label: '我的会话' }],
+    ]),
+    createSessionRecord: async input => {
+      creates += 1;
+      deps.records.set(`sess-new-${creates}`, { id: `sess-new-${creates}`, kind: 'chat', dirId: input.dir.id });
+      return { ok: true, id: `sess-new-${creates}` };
+    },
+  });
+  seedTask(runtime, {
+    id: 'task-1', title: '普通会话里开始的任务', status: 'active',
+    refs: [{ sessionId: 'sess-mine', dirId: 'dir-1', ts: 10 }],
+  });
+  const handler = mkRoutes(runtime).get('POST /api/task-board/tasks/:taskId/chat-session');
+  const res = response();
+  await handler({ params: { taskId: 'task-1' }, body: {} }, res);
+  assert.deepEqual(res.body, { ok: true, sessionId: 'sess-mine', created: false, adopted: true });
+  assert.equal(creates, 0, 'no hidden session forked for a task that already has a home');
+  // Stateless by design: nothing is bound or persisted, the origin stays an
+  // ordinary visible session, and archive-release stays a no-op for it.
+  assert.ok(!runtime.getBoard().tasks['task-1'].chatSessionId);
+  assert.equal(deps.records.get('sess-mine').taskBoundTaskId, undefined);
+  const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.ok(!saved.tasks['task-1'].chatSessionId);
+});
+
+test('adoption skips dead, slot and foreign-bound refs; the newest live ref wins', async () => {
+  let creates = 0;
+  const { runtime, deps } = mkRuntime({
+    records: new Map([
+      ['commander-1', { id: 'commander-1', kind: 'chat', type: 'commander', dirId: 'dir-1', cli: 'codex', model: 'gpt-5', provider: 'p-1' }],
+      ['slot-1', { id: 'slot-1', kind: 'chat', dirId: 'dir-1', taskExecutionSlot: true }],
+      ['other-bound', { id: 'other-bound', kind: 'chat', dirId: 'dir-1', taskBoundTaskId: 'task-9' }],
+      ['sess-a', { id: 'sess-a', kind: 'chat', dirId: 'dir-1' }],
+      ['sess-b', { id: 'sess-b', kind: 'chat', dirId: 'dir-1' }],
+    ]),
+    createSessionRecord: async input => {
+      creates += 1;
+      deps.records.set(`sess-new-${creates}`, { id: `sess-new-${creates}`, kind: 'chat', dirId: input.dir.id });
+      return { ok: true, id: `sess-new-${creates}` };
+    },
+  });
+  seedTask(runtime, {
+    id: 'task-1', title: '多来源任务', status: 'active',
+    refs: [
+      { sessionId: 'sess-dead', dirId: 'dir-1', ts: 99 },   // record gone
+      { sessionId: 'slot-1', dirId: 'dir-1', ts: 90 },      // execution slot — never a home
+      { sessionId: 'other-bound', dirId: 'dir-1', ts: 80 }, // another task's bound room
+      { sessionId: 'sess-b', dirId: 'dir-1', ts: 30 },
+      { sessionId: 'sess-a', dirId: 'dir-1', ts: 50 },      // newest live ordinary ref
+    ],
+  });
+  const handler = mkRoutes(runtime).get('POST /api/task-board/tasks/:taskId/chat-session');
+  let res = response();
+  await handler({ params: { taskId: 'task-1' }, body: {} }, res);
+  assert.equal(res.body.sessionId, 'sess-a');
+  assert.equal(res.body.adopted, true);
+  assert.equal(creates, 0);
+  // Stateless re-resolution: a home that dies falls to the next candidate on
+  // the next click — no stale pointer to heal.
+  deps.records.delete('sess-a');
+  res = response();
+  await handler({ params: { taskId: 'task-1' }, body: {} }, res);
+  assert.equal(res.body.sessionId, 'sess-b');
+});
+
+test('a live 1:1 binding outranks origin refs; all-dead refs still create', async () => {
+  let creates = 0;
+  const { runtime, deps } = mkRuntime({
+    records: new Map([
+      ['commander-1', { id: 'commander-1', kind: 'chat', type: 'commander', dirId: 'dir-1', label: 'Agent Commander', cli: 'codex', model: 'gpt-5', provider: 'p-1' }],
+      ['sess-bound', { id: 'sess-bound', kind: 'chat', dirId: 'dir-1', taskBoundTaskId: 'task-1' }],
+      ['sess-mine', { id: 'sess-mine', kind: 'chat', dirId: 'dir-1' }],
+    ]),
+    createSessionRecord: async input => {
+      creates += 1;
+      deps.records.set(`sess-new-${creates}`, { id: `sess-new-${creates}`, kind: 'chat', dirId: input.dir.id });
+      return { ok: true, id: `sess-new-${creates}` };
+    },
+  });
+  seedTask(runtime, {
+    id: 'task-1', title: '板建任务', status: 'active', chatSessionId: 'sess-bound',
+    refs: [{ sessionId: 'sess-mine', dirId: 'dir-1', ts: 10 }],
+  });
+  seedTask(runtime, {
+    id: 'task-2', title: '遗留任务', status: 'active',
+    refs: [{ sessionId: 'sess-gone', dirId: 'dir-1', ts: 10 }],
+  });
+  const handler = mkRoutes(runtime).get('POST /api/task-board/tasks/:taskId/chat-session');
+  let res = response();
+  await handler({ params: { taskId: 'task-1' }, body: {} }, res);
+  assert.equal(res.body.sessionId, 'sess-bound');
+  assert.equal(res.body.created, false);
+  assert.equal(res.body.adopted, undefined);
+  // A ledger-only legacy task (every ref dead) degrades to the bound-room
+  // creation the cold-start seed knows how to wall.
+  res = response();
+  await handler({ params: { taskId: 'task-2' }, body: {} }, res);
+  assert.equal(res.body.created, true);
+  assert.equal(creates, 1);
+});
+
 test('chat-session endpoint surfaces failure modes honestly', async () => {
   // No createSessionRecord dep (reduced hosts/tests): explicit 501, no crash.
   const bare = mkRuntime();
