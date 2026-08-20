@@ -31,7 +31,7 @@ async function invoke(handler, { params = {}, body = {}, query = {} } = {}) {
   return response;
 }
 
-function fixture({ chat, persisted, workHost = true, streamStatus, closeThrows = false, codexRolloutGuard } = {}) {
+function fixture({ chat, persisted, workHost = true, streamStatus, closeThrows = false, codexRolloutGuard, cascadeResult } = {}) {
   const calls = [];
   const events = [];
   const chatSessions = new Map();
@@ -56,7 +56,7 @@ function fixture({ chat, persisted, workHost = true, streamStatus, closeThrows =
   };
 
   const app = fakeApp();
-  createSessionLifecycleRuntime({
+  const runtime = createSessionLifecycleRuntime({
     sessions: new Map(), chatSessions, persistedSessions,
     directories: new Map([['d1', { id: 'd1', path: '/tmp/d1' }]]),
     invalidSessions: new Map(),
@@ -64,7 +64,7 @@ function fixture({ chat, persisted, workHost = true, streamStatus, closeThrows =
     getChatStream: () => chatStream,
     getSessionWorkHost: () => (workHost ? sessionWorkHost : null),
     asyncHandler: handler => handler,
-    destroySessionCascade: async record => { calls.push(`cascade:${record.id}`); return { ok: true }; },
+    destroySessionCascade: async record => { calls.push(`cascade:${record.id}`); return cascadeResult || { ok: true }; },
     tmuxKillSession: async () => {},
     appendEvent: (...args) => events.push(args),
     ensureDirGitReady: async () => ({ ok: true }),
@@ -79,13 +79,14 @@ function fixture({ chat, persisted, workHost = true, streamStatus, closeThrows =
     cleanupPushMonitor: () => {},
     getSessionGitRuntime: () => ({}),
     codexRolloutGuard,
-  }).mountRoutes(app);
+  });
+  runtime.mountRoutes(app);
 
   const handler = app.routes.get('POST /api/sessions/:id/restart-spawn');
   assert.ok(handler, 'restart-spawn route is mounted');
   const deleteHandler = app.routes.get('DELETE /api/sessions/:id');
   assert.ok(deleteHandler, 'DELETE route is mounted');
-  return { handler, deleteHandler, calls, events, chatSessions, persistedSessions };
+  return { handler, deleteHandler, runtime, calls, events, chatSessions, persistedSessions };
 }
 
 function liveChatSession() {
@@ -281,4 +282,36 @@ test('restart-spawn leaves non-codex sessions and guard failures untouched', asy
   assert.equal(failRes.statusCode, 200);
   assert.equal(failRes.body.rolloutArchived, null);
   assert.equal(codexPersisted.cliSessionId, 'thread-1', 'a guard failure never clears the session id');
+});
+
+/* ── releaseTaskBoundSession: the archive-time disposal primitive ── */
+
+test('releaseTaskBoundSession disposes like the DELETE branch and reports', async () => {
+  const persisted = { id: 's1', kind: 'chat', dirId: 'd1', taskBoundTaskId: 't-1', label: '任务 · X' };
+  const { runtime, calls, events, persistedSessions } = fixture({ persisted });
+  const result = await runtime.releaseTaskBoundSession('s1');
+  assert.equal(result.ok, true);
+  assert.deepEqual(calls, ['cascade:s1'], 'full cascade teardown, exactly like a delete');
+  assert.equal(persistedSessions.has('s1'), false, 'record removed durably');
+  assert.equal(events.length, 1, 'the release is observable on the directory timeline');
+  assert.equal(events[0][1], 'task_bound_session_released');
+});
+
+test('releaseTaskBoundSession refuses missing and non-bound sessions', async () => {
+  const { runtime, calls } = fixture({ persisted: { id: 's1', kind: 'chat', dirId: 'd1' } });
+  assert.deepEqual(await runtime.releaseTaskBoundSession('s1'), { ok: false, code: 'not_task_bound' });
+  assert.deepEqual(await runtime.releaseTaskBoundSession('nope'), { ok: false, code: 'not_found' });
+  assert.deepEqual(calls, [], 'a refused release tears nothing down');
+});
+
+test('releaseTaskBoundSession surfaces a blocked cascade without touching the record', async () => {
+  // e.g. an active run or a dirty worktree: the DELETE branch refuses, so the
+  // archive keeps the binding — a surviving session is never dangled.
+  const persisted = { id: 's1', kind: 'chat', dirId: 'd1', taskBoundTaskId: 't-1' };
+  const blocked = { ok: false, blocked: true, reasons: ['active'] };
+  const { runtime, events, persistedSessions } = fixture({ persisted, cascadeResult: blocked });
+  const result = await runtime.releaseTaskBoundSession('s1');
+  assert.deepEqual(result, blocked);
+  assert.ok(persistedSessions.has('s1'), 'record survives a blocked release');
+  assert.equal(events.length, 0, 'no release event for a kept session');
 });
