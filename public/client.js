@@ -277,10 +277,9 @@ function isAtBottom() {
 let currentSessionId = new URLSearchParams(location.search).get('id') || '';
 const _urlToken = new URLSearchParams(location.search).get('token') || '';
 
-/** Append token param to a URL string (handles both ? and & correctly) */
-function withToken(url) {
-  return url;
-}
+/** Identity shim: URL-token auth was replaced by cookie/session auth. Kept as the
+ *  single seam every API URL still flows through (see public/chat.js). */
+function withToken(url) { return url; }
 
 /* ── Dynamic favicon + title from session ID ── */
 const _TAB_COLORS = ['#58a6ff','#f78166','#3fb950','#d29922','#bc8cff','#f97583','#79c0ff','#56d364'];

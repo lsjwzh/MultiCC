@@ -130,9 +130,10 @@ const _targetMessageId = window.MultiCCChatMessageFocus.readTargetMessageId(loca
 const _hasNativeBridge = typeof window.MultiCCBridge !== 'undefined' && !!window.MultiCCBridge;
 function tt(key, params) { return (window.t || ((k) => k))(key, params); }
 
-function withToken(url) {
-  return url;
-}
+// Identity shim: URL-token auth is gone (cookie/session auth replaced it), but this
+// stays a live cross-module seam - chat-diff resolves window.withToken at call time,
+// composer/queue/recovery/task-mode take it as an injected port. Do not inline it away.
+function withToken(url) { return url; }
 
 /* ── Dynamic favicon + title from session name ── */
 const _TAB_COLORS = ['#58a6ff','#f78166','#3fb950','#d29922','#bc8cff','#f97583','#79c0ff','#56d364'];
@@ -185,6 +186,8 @@ const _LOCAL_IMG_RE = /^(?:file:\/\/|\/(?:tmp|Users|home|var|private|opt|Volumes
 function fixupLocalImages(root) {
   if (!root) return;
   root.querySelectorAll('img').forEach(img => {
+    if (img.dataset.imgFixed) return; // idempotent: a repeat pass must never re-bind click/error
+    img.dataset.imgFixed = '1';
     const raw = img.getAttribute('src') || '';
     img.addEventListener('load', () => chatScrollController?.handleLayoutChange(), { once: true });
     if (!_LOCAL_IMG_RE.test(raw)) return;
@@ -780,10 +783,7 @@ function attachUsageLine(bubbleEl, usage, roleBreakdown) {
 const STREAM_RENDER_COALESCE_MS = 50;
 let _pendingStreamRender = null;
 function renderCurrentTextNow(final) {
-  return chatHistoryView.renderCurrentText(currentMsgEl, currentTextContent, {
-    final,
-    streaming: isStreaming,
-  });
+  return chatHistoryView.renderCurrentText(currentMsgEl, currentTextContent, { final, streaming: isStreaming });
 }
 function renderCurrentText(final = false) {
   if (final) {
@@ -2914,6 +2914,7 @@ else connect();
     }
   }
   async function poll() {
+    if (document.hidden) return; // hidden tab: skip the fetch, next visible tick refreshes
     try {
       const r = await fetch(withToken('/api/codex/oauth/status'));
       if (!r.ok) return;
@@ -2924,8 +2925,7 @@ else connect();
   document.addEventListener('DOMContentLoaded', () => {
     if (TASK_MODE) return; // session-login banners don't apply to a task view
     poll();
-    const timer = setInterval(poll, 30000);
-    if (timer && timer.unref) timer.unref();
+    setInterval(poll, 30000); // unref() is a Node timer API, a no-op that never existed here
   });
 })();
 /* ════════════════════════════════════════════════════════════════════════════
@@ -2980,6 +2980,7 @@ else connect();
     }
   }
   async function poll() {
+    if (document.hidden) return; // hidden tab: skip the fetch, next visible tick refreshes
     try {
       const r = await fetch(withToken('/api/claude/oauth/status'));
       if (!r.ok) return;
@@ -2990,8 +2991,7 @@ else connect();
   document.addEventListener('DOMContentLoaded', () => {
     if (TASK_MODE) return; // session-login banners don't apply to a task view
     poll();
-    const timer = setInterval(poll, 30000);
-    if (timer && timer.unref) timer.unref();
+    setInterval(poll, 30000); // unref() is a Node timer API, a no-op that never existed here
   });
 })();
 /* ════════════════════════════════════════════════════════════════════════════
