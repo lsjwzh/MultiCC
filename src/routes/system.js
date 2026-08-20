@@ -1,5 +1,7 @@
 'use strict';
 
+const crypto = require('node:crypto');
+
 const DEFAULT_VERSION_RESULT = Object.freeze({
   current: '0.0.0',
   channel: 'dev',
@@ -8,6 +10,10 @@ const DEFAULT_VERSION_RESULT = Object.freeze({
   updateAvailable: false,
   apiError: true,
 });
+const APK_BUILD_LABEL = 'apk-build';
+const APK_BUILD_COMMAND = 'exec ./scripts/publish-apk.sh';
+const APK_BUILD_START_GRACE_MS = 15000;
+const APK_BUILD_POINTER_NAME = 'apk-build-latest.json';
 
 function compareSemver(a, b) {
   const pa = String(a || '').split('.').map(Number);
@@ -156,22 +162,190 @@ function createVersionCheckHandler(deps) {
   };
 }
 
+function readApkTargetVersion(deps) {
+  try {
+    const pubspec = deps.fs.readFileSync(deps.path.join(deps.rootDir, 'app', 'pubspec.yaml'), 'utf8');
+    const match = pubspec.match(/^\s*version:\s*([^\s+]+)\+(\d+)\s*$/m);
+    if (!match) return null;
+    return { versionName: match[1], versionCode: Number(match[2]) };
+  } catch (_) {
+    return null;
+  }
+}
+
+function readApkInfo(deps) {
+  const target = readApkTargetVersion(deps);
+  const info = { exists: false };
+  if (target) {
+    info.targetVersionName = target.versionName;
+    info.targetVersionCode = target.versionCode;
+  }
+  const apkPath = deps.path.join(deps.rootDir, 'public', 'multicc.apk');
+  try {
+    const stat = deps.fs.statSync(apkPath);
+    if (!stat.isFile() || stat.size <= 0) throw new Error('APK is empty or not a regular file');
+    info.exists = true;
+    info.mtime = stat.mtime.toISOString();
+    info.size = stat.size;
+    try {
+      const metadata = JSON.parse(deps.fs.readFileSync(`${apkPath}.json`, 'utf8'));
+      if (metadata.versionName) info.versionName = metadata.versionName;
+      if (metadata.versionCode) info.versionCode = metadata.versionCode;
+    } catch (_) {
+      // Missing metadata makes the package stale, but the old APK remains safe
+      // to serve while an explicit rebuild runs.
+    }
+  } catch (_) {
+    // A missing artifact is a normal on-demand state.
+  }
+  info.current = !!(info.exists && target
+    && info.versionName === target.versionName
+    && Number(info.versionCode) === target.versionCode);
+  return info;
+}
+
 function createApkInfoHandler(deps) {
   return function apkInfoHandler(req, res) {
-    const apkPath = deps.path.join(deps.rootDir, 'public', 'multicc.apk');
-    try {
-      const stat = deps.fs.statSync(apkPath);
-      const info = { exists: true, mtime: stat.mtime.toISOString(), size: stat.size };
-      try {
-        const metadata = JSON.parse(deps.fs.readFileSync(`${apkPath}.json`, 'utf8'));
-        if (metadata.versionName) info.versionName = metadata.versionName;
-        if (metadata.versionCode) info.versionCode = metadata.versionCode;
-      } catch (_) {
-        // The version sidecar is optional.
+    res.json(readApkInfo(deps));
+  };
+}
+
+function sanitizeBuildLog(value) {
+  return String(value || '')
+    .replace(/\u001b\[[0-?]*[ -\/]*[@-~]/g, '')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
+    .slice(-3000);
+}
+
+function apkBuildPointerPath(deps) {
+  return deps.path.join(deps.detached.BASE_DIR, APK_BUILD_POINTER_NAME);
+}
+
+function readApkBuildPointer(deps) {
+  try {
+    const pointer = JSON.parse(deps.fs.readFileSync(apkBuildPointerPath(deps), 'utf8'));
+    if (pointer.schemaVersion !== 1 || !/^d_apk_[a-f0-9]{16}$/.test(pointer.id)
+        || !Number.isFinite(pointer.scheduledAt)) return { kind: 'invalid' };
+    return { ...pointer, kind: 'valid' };
+  } catch (error) {
+    return error && error.code === 'ENOENT' ? { kind: 'missing' } : { kind: 'invalid' };
+  }
+}
+
+function apkBuildLockActive(deps) {
+  const lockPath = deps.path.join(deps.detached.BASE_DIR, 'apk-build.lock');
+  try {
+    const pid = Number(deps.fs.readFileSync(lockPath, 'utf8').trim());
+    if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+    if (typeof deps.isProcessAlive === 'function') return !!deps.isProcessAlive(pid);
+    process.kill(pid, 0);
+    return true;
+  } catch (_) { return false; }
+}
+
+function resolveApkBuildStatus(deps, pointer) {
+  if (!pointer || pointer.kind === 'missing') {
+    return apkBuildLockActive(deps) ? { state: 'running', source: 'external' } : { state: 'idle' };
+  }
+  if (pointer.kind === 'invalid') return { state: 'unknown', error: 'pointer_invalid' };
+  if (pointer.startFailedAt) return { state: 'failed', error: 'start_failed' };
+  let job = null;
+  try { job = deps.detached.status(pointer.id); } catch (_) {}
+  const now = typeof deps.now === 'function' ? deps.now() : Date.now();
+  if (!job) {
+    if (now - pointer.scheduledAt < APK_BUILD_START_GRACE_MS) {
+      return { state: 'running', source: 'scheduled', id: pointer.id, startedAt: new Date(pointer.scheduledAt).toISOString() };
+    }
+    return apkBuildLockActive(deps) ? { state: 'running', source: 'external' } : { state: 'failed', error: 'interrupted' };
+  }
+  if (job.label !== APK_BUILD_LABEL || job.command !== APK_BUILD_COMMAND || job.cwd !== deps.rootDir) {
+    return { state: 'unknown', error: 'job_mismatch' };
+  }
+  const startedMs = Number(job.startedAt || 0);
+  let state;
+  if (job.done) state = job.exitCode === 0 ? 'succeeded' : 'failed';
+  else if (job.running || (startedMs > 0 && now - startedMs < APK_BUILD_START_GRACE_MS)) state = 'running';
+  else state = 'failed';
+  if (state !== 'running' && apkBuildLockActive(deps)) return { state: 'running', source: 'external' };
+  const result = {
+    state,
+    id: job.id,
+    startedAt: startedMs > 0 ? new Date(startedMs).toISOString() : null,
+  };
+  if (job.done) result.exitCode = Number.isInteger(job.exitCode) ? job.exitCode : null;
+  if (state === 'failed' && !job.done) result.error = 'interrupted';
+  const logTail = sanitizeBuildLog(job.logTail);
+  if (logTail) result.logTail = logTail;
+  return result;
+}
+
+function createApkBuildRuntime(deps) {
+  if (!deps || !deps.detached || ['status', 'launch'].some(name => typeof deps.detached[name] !== 'function')) {
+    throw new TypeError('APK build detached runtime is required');
+  }
+  if (!deps.detached.BASE_DIR || typeof deps.atomicWriteJson !== 'function') {
+    throw new TypeError('APK build durable pointer dependencies are required');
+  }
+  let pointer = readApkBuildPointer(deps);
+  return Object.freeze({
+    status() { return resolveApkBuildStatus(deps, pointer); },
+    start() {
+      const existing = resolveApkBuildStatus(deps, pointer);
+      if (existing.state === 'running') return { reused: true, build: existing };
+      if (existing.state === 'unknown') {
+        const error = new Error('APK build pointer is invalid');
+        error.code = 'APK_BUILD_STATE_INVALID';
+        throw error;
       }
-      res.json(info);
-    } catch (_) {
-      res.json({ exists: false });
+      const id = `d_apk_${crypto.randomBytes(8).toString('hex')}`;
+      pointer = { kind: 'valid', schemaVersion: 1, id, scheduledAt: (deps.now || Date.now)() };
+      deps.atomicWriteJson(apkBuildPointerPath(deps), {
+        schemaVersion: pointer.schemaVersion, id: pointer.id, scheduledAt: pointer.scheduledAt,
+      });
+      try {
+        deps.detached.launch({ id, command: APK_BUILD_COMMAND, cwd: deps.rootDir, label: APK_BUILD_LABEL });
+      } catch (error) {
+        pointer.startFailedAt = (deps.now || Date.now)();
+        deps.atomicWriteJson(apkBuildPointerPath(deps), pointer);
+        throw error;
+      }
+      return { reused: false, build: resolveApkBuildStatus(deps, pointer) };
+    },
+  });
+}
+
+function createApkBuildStatusHandler(deps) {
+  return function apkBuildStatusHandler(req, res) {
+    res.json(deps.apkBuildRuntime.status());
+  };
+}
+
+function createApkBuildStartHandler(deps) {
+  return function apkBuildStartHandler(req, res) {
+    if (deps.getShuttingDown?.()) {
+      return res.status(409).json({ ok: false, error: 'server_shutting_down', code: 'SERVER_SHUTTING_DOWN' });
+    }
+    let update;
+    try { update = deps.getUpdateStatus?.() || {}; } catch (_) {
+      return res.status(503).json({ ok: false, error: 'update_status_unavailable', code: 'UPDATE_STATUS_UNAVAILABLE' });
+    }
+    if (update.running || update.scheduled) {
+      return res.status(409).json({ ok: false, error: 'update_in_progress', code: 'UPDATE_IN_PROGRESS', status: update });
+    }
+    if (update.state === 'unknown') {
+      return res.status(503).json({ ok: false, error: 'update_status_unavailable', code: 'UPDATE_STATUS_UNAVAILABLE' });
+    }
+    try {
+      const result = deps.apkBuildRuntime.start();
+      return res.status(202).json({ ok: true, ...result });
+    } catch (error) {
+      try { deps.logger?.warn?.('[apk-build] start failed'); } catch (_) {}
+      const invalid = error && error.code === 'APK_BUILD_STATE_INVALID';
+      return res.status(invalid ? 503 : 500).json({
+        ok: false,
+        error: invalid ? 'apk_build_status_unavailable' : 'apk_build_start_failed',
+        code: invalid ? 'APK_BUILD_STATUS_UNAVAILABLE' : 'APK_BUILD_START_FAILED',
+      });
     }
   };
 }
@@ -185,15 +359,22 @@ function assertSystemRouteDeps(deps) {
   if (!deps.fs || !deps.path || !deps.https || !deps.rootDir) {
     throw new TypeError('system route filesystem dependencies are required');
   }
+  if (!deps.apkBuildRuntime || ['status', 'start'].some(name => typeof deps.apkBuildRuntime[name] !== 'function')) {
+    throw new TypeError('system route APK build runtime is required');
+  }
   return deps;
 }
 
 function mountSystemRoutes(app, rawDeps) {
-  if (!app || typeof app.get !== 'function') throw new TypeError('Express app.get is required');
+  if (!app || typeof app.get !== 'function' || typeof app.post !== 'function') {
+    throw new TypeError('Express app.get/app.post are required');
+  }
   const deps = assertSystemRouteDeps(rawDeps);
   app.get('/api/server-info', createServerInfoHandler(deps));
   app.get('/api/version-check', createVersionCheckHandler(deps));
   app.get('/api/apk-info', createApkInfoHandler(deps));
+  app.get('/api/apk-build', createApkBuildStatusHandler(deps));
+  app.post('/api/apk-build', createApkBuildStartHandler(deps));
 }
 
 module.exports = {
@@ -206,6 +387,16 @@ module.exports = {
   resolveVersionInfo,
   createServerInfoHandler,
   createVersionCheckHandler,
+  readApkTargetVersion,
+  readApkInfo,
   createApkInfoHandler,
+  sanitizeBuildLog,
+  apkBuildPointerPath,
+  readApkBuildPointer,
+  apkBuildLockActive,
+  resolveApkBuildStatus,
+  createApkBuildRuntime,
+  createApkBuildStatusHandler,
+  createApkBuildStartHandler,
   mountSystemRoutes,
 };

@@ -157,7 +157,7 @@ A single operational surface for everything:
 - **Wait/detached task inspector**: see what's pending and what's running in the background.
 - **Public tunnel toggle**: enable Tailscale Funnel or monitor 花生壳 DDNS for external access.
 - **QR code**: LAN IP + access token for instant phone onboarding.
-- **APK download**: latest Flutter build served directly from the dashboard.
+- **On-demand APK build and download**: start or retry a background Flutter build from the dashboard; an existing package remains downloadable while its replacement is built.
 - **Onboarding tour**: mask-based guided walkthrough for new users.
 
 ## Session sharing

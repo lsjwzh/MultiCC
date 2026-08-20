@@ -63,8 +63,8 @@ test('tracked entry scan tolerates files deleted in the uncommitted worktree', (
 //
 // public/multicc.apk used to be a 59 MB tracked binary, which every session
 // worktree checked out a private copy of (149 worktrees × 59 MB ≈ 8.6 GB of
-// pure duplication). It is now produced at install time by
-// scripts/publish-apk.sh and left untracked, so these tests pin both halves:
+// pure duplication). It is now produced on demand by scripts/publish-apk.sh
+// and left untracked, so these tests pin both halves:
 // nothing re-tracks an APK, and the build entry points that replaced it still
 // exist.
 
@@ -86,7 +86,7 @@ test('APK and generated sidecars are untracked and ignored build artifacts', () 
     const ignored = childProcess.spawnSync('git', ['check-ignore', '--no-index', '-q', file], {
       cwd: REPO_ROOT,
     });
-    assert.equal(ignored.status, 0, `${file} must stay ignored after an install-time build`);
+    assert.equal(ignored.status, 0, `${file} must stay ignored after an on-demand build`);
   }
   const baseline = JSON.parse(fs.readFileSync(
     path.join(REPO_ROOT, 'governance', 'repository-artifact-baseline.json'), 'utf8'));
@@ -95,13 +95,13 @@ test('APK and generated sidecars are untracked and ignored build artifacts', () 
   assert.equal(baseline.accepted['large-binary'].includes('public/multicc.apk'), false);
 });
 
-test('every APK build entry point survives: publish script, CLI verb, installer step', () => {
+test('APK building is explicit and never blocks install or update', () => {
   const publish = path.join(REPO_ROOT, 'scripts', 'publish-apk.sh');
   assert.equal(fs.existsSync(publish), true, 'scripts/publish-apk.sh is the single build implementation');
   // eslint-disable-next-line no-bitwise
   assert.equal((fs.statSync(publish).mode & 0o111) !== 0, true, 'publish-apk.sh must stay executable');
   const publishSource = fs.readFileSync(publish, 'utf8');
-  // --if-missing is what makes the installer step idempotent across re-runs.
+  // --if-missing remains useful to explicit callers and release fallback work.
   assert.match(publishSource, /--if-missing/);
   // A missing Flutter SDK must be a named, non-zero failure, never a silent
   // half-build that leaves a stale APK looking fresh.
@@ -110,10 +110,12 @@ test('every APK build entry point survives: publish script, CLI verb, installer 
   const cli = fs.readFileSync(path.join(REPO_ROOT, 'multicc'), 'utf8');
   assert.match(cli, /^\s*apk\)\s+/m, './multicc apk rebuilds it after install');
   assert.match(cli, /publish-apk\.sh/);
+  assert.doesNotMatch(cli, /ensure_apk_if_possible/, 'update must never synchronously build Flutter');
 
   const installer = fs.readFileSync(path.join(REPO_ROOT, 'install.sh'), 'utf8');
-  assert.match(installer, /publish-apk\.sh/, 'install.sh builds the APK instead of shipping it');
-  assert.match(installer, /--no-apk/, 'the build must be skippable on server installs');
+  assert.doesNotMatch(installer, /publish-apk\.sh/, 'install must not synchronously build Flutter');
+  assert.match(installer, /--no-apk[^\n]+no longer needed/, 'the removed flag remains a harmless compatibility no-op');
+  assert.doesNotMatch(installer, /command -v flutter/, 'Flutter is an on-demand APK prerequisite');
 });
 
 function apkFixture() {
@@ -148,7 +150,12 @@ function runPublish(root, args, env) {
   return childProcess.spawnSync('bash', [path.join(root, 'scripts', 'publish-apk.sh'), ...args], {
     cwd: root,
     encoding: 'utf8',
-    env: { ...process.env, ...env },
+    env: {
+      ...process.env,
+      HOME: root,
+      MULTICC_APK_BUILD_LOCK: path.join(root, 'apk-build.lock'),
+      ...env,
+    },
   });
 }
 
@@ -230,9 +237,37 @@ test('publish-apk rejects an invalid pubspec version instead of advertising unkn
   }
 });
 
-test('manage disables the APK link when a server-only install has no package', () => {
+test('publish-apk serializes builds and recovers a stale process lock', () => {
+  const root = apkFixture();
+  try {
+    const fake = fakeFlutter(root);
+    const lock = path.join(root, 'apk-build.lock');
+    const env = { FAKE_FLUTTER_LOG: fake.log, PATH: `${fake.bin}:/usr/bin:/bin` };
+    fs.writeFileSync(lock, `${process.pid}\n`);
+    const blocked = runPublish(root, [], env);
+    assert.equal(blocked.status, 75);
+    assert.match(blocked.stderr, /already running/);
+    assert.equal(fs.existsSync(path.join(root, 'public', 'multicc.apk')), false);
+
+    fs.writeFileSync(lock, '99999999\n');
+    const recovered = runPublish(root, [], env);
+    assert.equal(recovered.status, 0, recovered.stderr);
+    assert.equal(fs.readFileSync(path.join(root, 'public', 'multicc.apk'), 'utf8'), 'fixture-apk');
+    assert.equal(fs.existsSync(lock), false, 'the owning build releases its lock');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('manage keeps APK download and on-demand build as independent actions', () => {
   const source = fs.readFileSync(path.join(REPO_ROOT, 'public', 'manage-host-settings.js'), 'utf8');
-  assert.match(source, /if \(!info\.exists\)/);
-  assert.match(source, /removeAttribute\('href'\)/);
-  assert.match(source, /aria-disabled/);
+  const html = fs.readFileSync(path.join(REPO_ROOT, 'public', 'manage.html'), 'utf8');
+  assert.match(html, /id="apk-download-btn"[^>]+href="\/multicc\.apk"/);
+  assert.match(html, /id="apk-build-btn"[^>]+startApkBuild/);
+  assert.match(html, /id="apk-build-status"[^>]+aria-live="polite"/);
+  assert.match(source, /if \(info\.exists\)[\s\S]*?download\.href = '\/multicc\.apk'/);
+  assert.match(source, /startApkBuild/);
+  assert.match(source, /\/api\/apk-build/);
+  assert.match(source, /method:\s*'POST'/);
+  assert.match(source, /setTimeout\([^)]*loadApkInfo/, 'running builds must be polled without reloading the page');
 });

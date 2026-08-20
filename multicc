@@ -87,22 +87,6 @@ check_runtime_dependencies() {
   return "$check_rc"
 }
 
-# APK availability must never decide whether a server security/runtime update
-# can land. Build or refresh it when this host has Flutter; otherwise keep the
-# server update successful and make the missing secondary artifact explicit.
-ensure_apk_if_possible() {
-  if [ ! -x "$SCRIPT_DIR/scripts/publish-apk.sh" ]; then
-    echo "Warning: APK build script is unavailable; /multicc.apk may be missing."
-    return 0
-  fi
-  if "$SCRIPT_DIR/scripts/publish-apk.sh" --if-missing; then
-    return 0
-  fi
-  echo "Warning: Android APK was not built; the server update will continue."
-  echo "         Install Flutter and run './multicc apk' when an Android package is needed."
-  return 0
-}
-
 # An update is not complete merely because the new process stayed alive: boot
 # now runs the idempotent Fleet Commander compatibility migration.  Wait for
 # /readyz so `./multicc update` reports a degraded migration instead of a false
@@ -341,7 +325,6 @@ do_update() {
     # Stable channel: only update when a newer release tag exists.
     if [ -z "$latest_tag" ]; then
       echo "No release tags found — nothing to update."
-      ensure_apk_if_possible
       return 0
     fi
     if compare_versions "$local_version" "$latest_version"; then
@@ -356,7 +339,6 @@ do_update() {
         echo "  To discard local changes and re-checkout this release:"
         echo "    git checkout -f ${latest_tag}"
       fi
-      ensure_apk_if_possible
       return 0
     fi
     # Update: checkout the tag. Under --force, back the tree up first and then
@@ -472,7 +454,6 @@ do_update() {
       echo "Local branch is ahead of origin — nothing to update."
       echo "  To discard the local commits and take origin's code: ./multicc update --force"
       [ "$stashed" = 1 ] && git stash pop >/dev/null 2>&1
-      ensure_apk_if_possible
       return 0
     else
       # Diverged histories (force-push on the server side).
@@ -503,7 +484,6 @@ do_update() {
     after="$(git rev-parse HEAD 2>/dev/null)"
     if [ "$before" = "$after" ] && [ "$forced_reset" != 1 ]; then
       echo "Already up to date — nothing to restart."
-      ensure_apk_if_possible
       return 0
     fi
     if [ "$before" = "$after" ]; then
@@ -528,10 +508,6 @@ do_update() {
     echo "Run the repair command shown above, then re-run './multicc update'."
     return 1
   fi
-
-  # The checked-out app sources are now final. Build once against that version;
-  # --if-missing makes this a no-op when the published package is already current.
-  ensure_apk_if_possible
 
   echo "Restarting to apply update..."
   if [ -f "$PLIST" ]; then
