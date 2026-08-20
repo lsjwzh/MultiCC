@@ -116,3 +116,7 @@ test_xf_503.sh
 # 独立开源子项目 cli-provider-router（拆出去的 provider 路由库，独立 GitHub repo，
 # 不应作为 multicc 的子目录被跟踪；防止误 clone 进 worktree/主目录时污染 git）
 cli-provider-router/
+
+# Legacy web-client APK dropped into public/ on 2026-04-12; never tracked
+# or referenced by serving code. Ignore so it cannot block merges as dirty.
+public/webcc.apk
