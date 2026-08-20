@@ -1063,6 +1063,96 @@ class ManageService {
         .cast<String, dynamic>();
   }
 
+  /// POST `/api/task-board/tasks/:taskId/cancel-run` -> stop the task's open
+  /// TaskRun only (web task chat view's ⏹ button; the card's lifecycle status
+  /// is untouched — marking done stays with .../status). Idempotent: no open
+  /// run returns `{ok, cancelled:false}` and is not an error. A 409 carries a
+  /// `task_run_*` / `queue_resolution_failed` code (optionally with a human
+  /// `note`) and is surfaced as [BoardRouteException]; 403 -> [LocalOnlyException]
+  /// is the pre-57bfe99 skew fallback.
+  Future<Map<String, dynamic>> cancelTaskRun(String taskId) async {
+    final res = await http
+        .post(
+          Uri.parse(
+            _url('/api/task-board/tasks/${Uri.encodeComponent(taskId)}/cancel-run'),
+          ),
+          headers: _headers,
+          body: '{}',
+        )
+        .timeout(const Duration(seconds: 15));
+    if (res.statusCode != 200) _throwBoardSend(res);
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
+  }
+
+  /// POST `/api/task-board/tasks/:taskId/cleanup-worktree` (mounted by
+  /// src/routes/session-git.js) -> merge the task branch back into the base
+  /// branch, then remove the task worktree and clear the ledger fields. Each
+  /// server-side step is idempotent; a refusal (409, `code` ∈ run_active /
+  /// merge_failed / worktree_remove_refused) leaves everything untouched and
+  /// surfaces as [BoardRouteException] so the UI can localize the reason.
+  /// Returns the result map ({ok, merged, ...}). 403 -> [LocalOnlyException].
+  Future<Map<String, dynamic>> cleanupTaskWorktree(
+    String taskId, {
+    bool force = false,
+  }) async {
+    final res = await http
+        .post(
+          Uri.parse(
+            _url(
+              '/api/task-board/tasks/${Uri.encodeComponent(taskId)}/cleanup-worktree',
+            ),
+          ),
+          headers: _headers,
+          body: jsonEncode({if (force) 'force': true}),
+        )
+        .timeout(const Duration(seconds: 30));
+    if (res.statusCode != 200) {
+      // 409 carries the structured refusal ({code, blocked:true, ...}) the web
+      // manage page maps to a human reason; keep the code for the UI.
+      if (res.statusCode == 409 || res.statusCode == 400) {
+        var code = 'cleanup_failed';
+        var note = '';
+        try {
+          final j = jsonDecode(res.body);
+          if (j is Map) {
+            code = (j['code'] ?? j['error'] ?? code).toString();
+            note = (j['note'] ?? '').toString();
+          }
+        } catch (_) {}
+        throw BoardRouteException(code, note);
+      }
+      _throwWrite(res);
+    }
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
+  }
+
+  /// POST /api/task-board/backfill -> enqueue historical archiving of chat
+  /// sessions into the board (aux classifies serially; progress is readable
+  /// from the board payload's `backfill` state). Returns {ok, queued, note}.
+  /// 409 = a backfill is already running (`backfill_running`), 503 = aux
+  /// unhealthy — both surface as [BoardRouteException]; 403 ->
+  /// [LocalOnlyException] is the pre-57bfe99 skew fallback.
+  Future<Map<String, dynamic>> backfillTaskBoard({
+    String? dirId,
+    int? turnLimit,
+  }) async {
+    final res = await http
+        .post(
+          Uri.parse(_url('/api/task-board/backfill')),
+          headers: _headers,
+          body: jsonEncode({
+            if (dirId != null && dirId.isNotEmpty) 'dirId': dirId,
+            if (turnLimit != null) 'turnLimit': turnLimit,
+          }),
+        )
+        .timeout(const Duration(seconds: 20));
+    if (res.statusCode != 200) _throwBoardSend(res);
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
+  }
+
   /// Back-compatible endpoint: manually mark a waiting turn as succeeded.
   /// It does not complete the TaskBoard lifecycle. Returns {ok, classifyState,
   /// turnOutcome}.
