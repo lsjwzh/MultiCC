@@ -684,35 +684,13 @@
     }
   }
 
-  /* ── APK info ── */
-  const APK_POLL_MS = 2000;
-  let _apkBuildPoll = null;
+  /* ── APK distribution ── */
   let _apkLoadPromise = null;
-  let _apkInfo = { exists: false };
-  let _apkBuild = { state: 'idle' };
-  let _apkStartPending = false;
-  let _apkStatusUncertain = false;
-  let _apkInfoUncertain = false;
-  let _apkStartError = '';
-  let _apkNetworkError = '';
+  let _apkInfo = { exists: false, localExists: false, source: null };
+  let _apkLoadError = '';
 
   function apkText(key, params) {
     return typeof global.t === 'function' ? global.t(key, params) : key;
-  }
-
-  function apkBuildDetail(build) {
-    const lines = String(build && build.logTail || '').split('\n').map(line => line.trim()).filter(Boolean);
-    return lines.length ? lines[lines.length - 1] : '';
-  }
-
-  function formatApkElapsed(startedAt) {
-    const start = Date.parse(String(startedAt || ''));
-    if (!Number.isFinite(start)) return apkText('apkBuildPreparing');
-    const total = Math.max(0, Math.floor((Date.now() - start) / 1000));
-    if (total < 60) return `${total}s`;
-    const minutes = Math.floor(total / 60);
-    if (minutes < 60) return `${minutes}m ${total % 60}s`;
-    return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
   }
 
   function formatApkVersion(name, code) {
@@ -732,43 +710,45 @@
     return Number.isFinite(bytes) && bytes >= 0 ? `${(bytes / 1048576).toFixed(1)} MB` : '—';
   }
 
-  function scheduleApkPoll(delay = APK_POLL_MS) {
-    if (_apkBuildPoll) clearTimeout(_apkBuildPoll);
-    _apkBuildPoll = setTimeout(loadApkInfo, delay);
+  function safeApkDownloadUrl(value) {
+    const url = String(value || '');
+    if (url === '/multicc.apk') return url;
+    return /^https:\/\/github\.com\/lsjwzh\/MultiCC\/releases\/download\/v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?\/multicc\.apk$/.test(url)
+      ? url : '';
   }
 
   function renderApkInfo() {
     const quick = document.getElementById('apk-btn');
     const summary = document.getElementById('apk-artifact-summary');
     const hint = document.getElementById('apk-card-hint');
-    const status = document.getElementById('apk-build-status');
-    const log = document.getElementById('apk-build-log');
+    const status = document.getElementById('apk-source-status');
     const download = document.getElementById('apk-download-btn');
-    const buildButton = document.getElementById('apk-build-btn');
-    if (!quick && !summary && !status && !download && !buildButton) return;
+    if (!quick && !summary && !status && !download) return;
 
-    const info = _apkInfo || { exists: false };
-    const build = _apkBuild || { state: 'idle' };
-    const running = build.state === 'running' || build.state === 'starting';
+    const info = _apkInfo || { exists: false, localExists: false, source: null };
     const target = formatApkVersion(info.targetVersionName, info.targetVersionCode);
     const published = formatApkVersion(info.versionName, info.versionCode);
     const size = formatApkSize(info.size);
     const time = formatApkTime(info.mtime);
+    const releaseTag = info.releaseTag || '—';
 
     let artifactText;
-    if (!info.exists) {
-      artifactText = apkText('apkArtifactMissing', { target });
-    } else if (info.current === false) {
-      artifactText = apkText('apkArtifactStale', { published, target, size, time });
+    if (info.source === 'local') {
+      artifactText = info.localCurrent === false || info.current === false
+        ? apkText('apkArtifactLocalStale', { published, target, size, time })
+        : apkText('apkArtifactLocal', { published, size, time });
+    } else if (info.source === 'release') {
+      artifactText = apkText('apkArtifactRelease', { published, releaseTag, size, time });
     } else {
-      artifactText = apkText('apkArtifactReady', { published, size, time });
+      artifactText = apkText('apkArtifactMissing', { releaseTag, target });
     }
     if (summary) summary.textContent = artifactText;
 
     if (download) {
       download.textContent = apkText('apkDownload');
-      if (info.exists) {
-        download.href = '/multicc.apk';
+      const safeUrl = info.exists ? safeApkDownloadUrl(info.downloadUrl) : '';
+      if (safeUrl) {
+        download.href = safeUrl;
         download.removeAttribute('aria-disabled');
         download.removeAttribute('tabindex');
         download.title = artifactText;
@@ -780,173 +760,60 @@
       }
     }
 
-    const detail = apkBuildDetail(build);
-    let stateText = '';
-    let stateTone = '';
-    if (_apkStartPending) {
-      stateText = apkText('apkBuildStarting');
-    } else if (_apkStatusUncertain || _apkInfoUncertain) {
-      stateText = apkText('apkBuildNetworkRetry', { error: _apkNetworkError || 'network' });
-    } else if (_apkStartError) {
-      stateText = _apkStartError;
+    let stateText;
+    let stateTone;
+    if (_apkLoadError) {
+      stateText = apkText('apkLookupFailed', { error: _apkLoadError });
       stateTone = 'err';
-    } else if (running) {
-      stateText = apkText('apkBuildRunning', { elapsed: formatApkElapsed(build.startedAt) });
-      if (detail) stateText += ` · ${detail}`;
-    } else if (build.state === 'succeeded') {
-      stateText = apkText('apkBuildSucceeded');
+    } else if (info.source === 'local') {
+      stateText = info.localCurrent === false || info.current === false
+        ? apkText('apkSourceLocalStale', { target }) : apkText('apkSourceLocal');
       stateTone = 'ok';
-    } else if (build.state === 'failed') {
-      stateText = build.error === 'interrupted'
-        ? apkText('apkBuildInterrupted')
-        : apkText('apkBuildFailed', { code: build.exitCode == null ? '—' : build.exitCode });
-      if (detail) stateText += ` · ${detail}`;
-      stateTone = 'err';
-    } else if (build.state === 'unknown') {
-      stateText = apkText('apkBuildStatusUnavailable');
-      stateTone = 'err';
+    } else if (info.source === 'release') {
+      stateText = apkText('apkSourceRelease', { releaseTag });
+      stateTone = 'ok';
     } else {
-      stateText = info.exists ? apkText('apkReadyToRebuild') : apkText('apkReadyToBuild');
+      stateText = apkText('apkReleaseMissing', { releaseTag });
+      stateTone = 'err';
     }
 
     if (status) {
       status.textContent = stateText;
       status.className = `apk-status${stateTone ? ` ${stateTone}` : ''}`;
     }
-    if (log) {
-      log.textContent = String(build.logTail || '');
-      log.hidden = !log.textContent;
-    }
     if (hint) {
-      hint.textContent = running ? apkText('apkBuildInProgress')
-        : info.exists ? (info.current === false ? apkText('apkArtifactOutdated') : apkText('apkArtifactAvailable'))
-          : apkText('apkArtifactUnavailable');
-      hint.className = `status-text${build.state === 'failed' || build.state === 'unknown' ? ' err' : info.exists ? ' ok' : ''}`;
-    }
-
-    const uncertain = _apkStatusUncertain || build.state === 'unknown';
-    if (buildButton) {
-      const busy = _apkStartPending || running || uncertain;
-      buildButton.disabled = busy;
-      if (busy) buildButton.setAttribute('aria-busy', 'true');
-      else buildButton.removeAttribute('aria-busy');
-      buildButton.textContent = _apkStartPending ? apkText('apkBuildStarting')
-        : running ? apkText('apkBuildInProgress')
-          : info.exists ? apkText('apkRebuild')
-            : build.state === 'failed' ? apkText('apkRetryBuild') : apkText('apkBuild');
+      hint.textContent = info.source === 'local' ? apkText('apkSourceLocalShort')
+        : info.source === 'release' ? apkText('apkSourceReleaseShort') : apkText('apkSourceUnavailable');
+      hint.className = `status-text${info.exists ? ' ok' : ' err'}`;
     }
 
     if (quick) {
-      quick.textContent = running ? 'APK …' : info.exists ? 'APK ✓' : build.state === 'failed' ? 'APK !' : 'APK';
+      quick.textContent = info.exists ? 'APK ✓' : 'APK !';
       quick.title = stateText || apkText('apkOpenPanel');
-      if (running) quick.setAttribute('aria-busy', 'true');
-      else quick.removeAttribute('aria-busy');
     }
   }
 
   async function refreshApkInfo() {
-    let build;
-    try {
-      const buildResp = await fetch('/api/apk-build' + tokenQS('?'));
-      if (!buildResp.ok) throw new Error(`HTTP ${buildResp.status}`);
-      build = await buildResp.json();
-      _apkBuild = build && typeof build === 'object' ? build : { state: 'unknown' };
-      _apkStatusUncertain = false;
-      _apkNetworkError = '';
-    } catch (error) {
-      _apkStatusUncertain = true;
-      _apkNetworkError = error && error.message || 'network';
-      renderApkInfo();
-      scheduleApkPoll();
-      return false;
-    }
-
-    // Status is authoritative and is deliberately fetched first. When it says
-    // succeeded, the following metadata read necessarily observes the package
-    // published by that completed job rather than the pre-publish artifact.
     try {
       const infoResp = await fetch('/api/apk-info' + tokenQS('?'));
       if (!infoResp.ok) throw new Error(`HTTP ${infoResp.status}`);
       const info = await infoResp.json();
-      _apkInfo = info && typeof info === 'object' ? info : { exists: false };
-      _apkInfoUncertain = false;
-      _apkNetworkError = '';
+      _apkInfo = info && typeof info === 'object'
+        ? info : { exists: false, localExists: false, source: null };
+      _apkLoadError = '';
     } catch (error) {
-      _apkInfoUncertain = true;
-      _apkNetworkError = error && error.message || 'network';
+      _apkLoadError = error && error.message || 'network';
       renderApkInfo();
-      scheduleApkPoll();
       return false;
     }
-
-    _apkStartPending = false;
-    _apkStartError = '';
     renderApkInfo();
-    if (_apkBuild.state === 'running' || _apkBuild.state === 'starting' || _apkBuild.state === 'unknown') {
-      scheduleApkPoll();
-    }
     return true;
   }
 
   function loadApkInfo() {
-    if (_apkBuildPoll) {
-      clearTimeout(_apkBuildPoll);
-      _apkBuildPoll = null;
-    }
     if (_apkLoadPromise) return _apkLoadPromise;
     _apkLoadPromise = refreshApkInfo().finally(() => { _apkLoadPromise = null; });
     return _apkLoadPromise;
-  }
-
-  function apkStartErrorText(data, status) {
-    if (data && data.code === 'UPDATE_IN_PROGRESS') return apkText('apkBuildBlockedUpdate');
-    if (data && data.code === 'SERVER_SHUTTING_DOWN') return apkText('apkBuildBlockedShutdown');
-    return apkText('apkBuildStartFailed', { error: data && data.error || `HTTP ${status}` });
-  }
-
-  async function startApkBuild() {
-    const running = _apkBuild.state === 'running' || _apkBuild.state === 'starting';
-    if (_apkStartPending || running || _apkStatusUncertain || _apkBuild.state === 'unknown') return;
-    _apkStartPending = true;
-    _apkStartError = '';
-    renderApkInfo();
-    let responseReceived = false;
-    try {
-      const headers = {};
-      if (typeof _urlToken !== 'undefined' && _urlToken) headers['X-Access-Token'] = _urlToken;
-      const res = await fetch('/api/apk-build' + tokenQS('?'), { method: 'POST', headers });
-      responseReceived = true;
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok) {
-        const error = new Error(apkStartErrorText(data, res.status));
-        error.data = data;
-        throw error;
-      }
-      _apkStartPending = false;
-      _apkStatusUncertain = false;
-      _apkBuild = data.build && typeof data.build === 'object' ? data.build : { state: 'running' };
-      renderApkInfo();
-      if (typeof showToast === 'function') {
-        showToast(data.reused ? apkText('apkBuildAttached') : apkText('apkBuildStarted'));
-      }
-      await loadApkInfo();
-    } catch (error) {
-      _apkStartPending = false;
-      if (!responseReceived) {
-        // The POST may have reached the server before the connection dropped.
-        // Keep the action guarded until the status endpoint says whether a job
-        // exists; the retry timer will unlock it when the server is reachable.
-        _apkStatusUncertain = true;
-        _apkNetworkError = error && error.message || 'network';
-        _apkStartError = '';
-        scheduleApkPoll();
-        if (typeof showToast === 'function') showToast(apkText('apkBuildStartUnknown'), true);
-      } else {
-        _apkStartError = error && error.message || apkText('apkBuildStartFailed', { error: 'unknown' });
-        if (typeof showToast === 'function') showToast(_apkStartError, true);
-      }
-      renderApkInfo();
-    }
   }
 
   function openApkPanel() {
@@ -1062,7 +929,6 @@
     loadApkInfo,
     openApkPanel,
     handleApkButton,
-    startApkBuild,
     loadBootTime,
   });
   global.MultiCCManageHostSettings = Object.freeze({ initialize });

@@ -328,34 +328,28 @@ function apkHarness(initialSteps = [], { now = Date.parse('2026-08-20T12:01:00.0
   return harness;
 }
 
-test('APK management renders independent download/build controls and a mobile-safe live region', () => {
+test('APK management is download-only and explains the release fallback', () => {
   const html = read('public/manage.html');
   assert.match(html, /<a[^>]+id="apk-download-btn"[^>]+href="\/multicc\.apk"/);
-  assert.match(html, /<button[^>]+id="apk-build-btn"[^>]+onclick="startApkBuild\(\)"/);
-  assert.match(html, /id="apk-build-status"[^>]+role="status"[^>]+aria-live="polite"/);
-  assert.match(html, /\.apk-actions \.btn\{flex:1 1 100%;width:100%/,
-    'phone layout must stack full-width actions rather than overflow');
+  assert.doesNotMatch(html, /apk-build-btn|startApkBuild|apk-build-log/);
+  assert.match(html, /id="apk-source-status"[^>]+role="status"[^>]+aria-live="polite"/);
 
   const zh = JSON.parse(read('app/assets/i18n/zh.json'));
   const en = JSON.parse(read('app/assets/i18n/en.json'));
   const apkKeys = Object.keys(zh).filter(key => key.startsWith('apk')).sort();
   assert.deepEqual(Object.keys(en).filter(key => key.startsWith('apk')).sort(), apkKeys);
-  assert.ok(apkKeys.includes('apkRebuild'));
-  assert.ok(apkKeys.includes('apkBuildRunning'));
+  assert.ok(apkKeys.includes('apkArtifactRelease'));
+  assert.ok(apkKeys.includes('apkArtifactLocal'));
+  assert.equal(apkKeys.some(key => key.startsWith('apkBuild')), false);
 });
 
-test('APK polling reads status before metadata, keeps the old download, and refreshes terminal success', async () => {
-  const running = {
-    state: 'running',
-    startedAt: '2026-08-20T12:00:00.000Z',
-    logTail: 'Resolving dependencies…\nRunning Gradle task assembleRelease',
-  };
+test('APK management prefers a local package even when its version is stale', async () => {
   const harness = apkHarness([
-    { url: '/api/apk-build', body: running },
     {
       url: '/api/apk-info',
       body: {
-        exists: true, current: false, versionName: '2.1.0', versionCode: 10,
+        exists: true, localExists: true, source: 'local', localCurrent: false,
+        current: false, downloadUrl: '/multicc.apk', versionName: '2.1.0', versionCode: 10,
         targetVersionName: '2.2.0', targetVersionCode: 11, size: 1048576,
         mtime: '2026-08-20T11:00:00.000Z',
       },
@@ -363,111 +357,51 @@ test('APK polling reads status before metadata, keeps the old download, and refr
   ]);
 
   await harness.context.loadApkInfo();
-  assert.deepEqual(harness.requests.slice(0, 2).map(request => request.url), ['/api/apk-build', '/api/apk-info']);
+  assert.deepEqual(harness.requests.map(request => request.url), ['/api/apk-info']);
   assert.equal(harness.context.document.getElementById('apk-download-btn').href, '/multicc.apk');
   assert.equal(harness.context.document.getElementById('apk-download-btn').getAttribute('aria-disabled'), null);
-  assert.equal(harness.context.document.getElementById('apk-build-btn').disabled, true);
-  assert.match(harness.context.document.getElementById('apk-build-status').textContent, /1m 0s/);
-  assert.match(harness.context.document.getElementById('apk-build-status').textContent, /assembleRelease/);
-  assert.match(harness.context.document.getElementById('apk-build-log').textContent, /Resolving dependencies/);
+  assert.match(harness.context.document.getElementById('apk-artifact-summary').textContent, /本地/);
+  assert.match(harness.context.document.getElementById('apk-artifact-summary').textContent, /2\.1\.0\+10/);
+  assert.match(harness.context.document.getElementById('apk-source-status').textContent, /目标版本 2\.2\.0\+11/);
+});
 
-  harness.enqueue(
-    { url: '/api/apk-build', body: { state: 'succeeded', exitCode: 0 } },
+test('APK management uses the exact current-version GitHub Release when local is absent', async () => {
+  const releaseUrl = 'https://github.com/lsjwzh/MultiCC/releases/download/v1.5.3/multicc.apk';
+  const harness = apkHarness([
     {
       url: '/api/apk-info',
       body: {
-        exists: true, current: true, versionName: '2.2.0', versionCode: 11,
-        targetVersionName: '2.2.0', targetVersionCode: 11, size: 2097152,
-        mtime: '2026-08-20T12:01:01.000Z',
-      },
-    },
-  );
-  await harness.fireNextTimer();
-
-  assert.deepEqual(harness.requests.slice(2, 4).map(request => request.url), ['/api/apk-build', '/api/apk-info']);
-  assert.equal(harness.context.document.getElementById('apk-build-btn').disabled, false);
-  assert.equal(harness.context.document.getElementById('apk-build-btn').textContent, '重新构建');
-  assert.match(harness.context.document.getElementById('apk-artifact-summary').textContent, /2\.2\.0\+11/);
-  assert.match(harness.context.document.getElementById('apk-build-status').textContent, /构建成功/);
-});
-
-test('a current APK can be explicitly rebuilt while its download remains available', async () => {
-  const currentInfo = {
-    exists: true, current: true, versionName: '2.2.0', versionCode: 11,
-    targetVersionName: '2.2.0', targetVersionCode: 11, size: 2097152,
-    mtime: '2026-08-20T12:00:00.000Z',
-  };
-  const running = { state: 'running', startedAt: '2026-08-20T12:01:00.000Z', logTail: 'Building release APK…' };
-  const harness = apkHarness([
-    { url: '/api/apk-build', body: { state: 'succeeded', exitCode: 0 } },
-    { url: '/api/apk-info', body: currentInfo },
-    { url: '/api/apk-build', status: 202, body: { ok: true, reused: false, build: running } },
-    { url: '/api/apk-build', body: running },
-    { url: '/api/apk-info', body: currentInfo },
-  ]);
-
-  await harness.context.loadApkInfo();
-  assert.equal(harness.context.document.getElementById('apk-build-btn').textContent, '重新构建');
-  await harness.context.startApkBuild();
-
-  const post = harness.requests.find(request => request.options.method === 'POST');
-  assert.ok(post, 'rebuilding a current package must issue an explicit POST');
-  assert.equal(post.url, '/api/apk-build');
-  assert.equal(post.options.headers['X-Access-Token'], 'bootstrap-secret');
-  assert.equal(harness.context.document.getElementById('apk-download-btn').href, '/multicc.apk');
-  assert.equal(harness.context.document.getElementById('apk-build-btn').disabled, true);
-  assert.match(harness.context.document.getElementById('apk-build-status').textContent, /构建/);
-});
-
-test('a failed rebuild preserves the old download and allows another rebuild', async () => {
-  const harness = apkHarness([
-    {
-      url: '/api/apk-build',
-      body: { state: 'failed', exitCode: 7, logTail: 'Gradle assembleRelease failed' },
-    },
-    {
-      url: '/api/apk-info',
-      body: {
-        exists: true, current: true, versionName: '2.2.0', versionCode: 11,
-        targetVersionName: '2.2.0', targetVersionCode: 11, size: 2097152,
+        exists: true, localExists: false, source: 'release', releaseTag: 'v1.5.3',
+        downloadUrl: releaseUrl, versionName: '2.30.0', versionCode: 120,
+        targetVersionName: '2.30.1', targetVersionCode: 121, size: 62914560,
         mtime: '2026-08-20T12:00:00.000Z',
       },
     },
   ]);
 
   await harness.context.loadApkInfo();
-  assert.equal(harness.context.document.getElementById('apk-download-btn').href, '/multicc.apk');
-  assert.equal(harness.context.document.getElementById('apk-build-btn').disabled, false);
-  assert.equal(harness.context.document.getElementById('apk-build-btn').textContent, '重新构建');
-  assert.match(harness.context.document.getElementById('apk-build-status').textContent, /退出码 7/);
-  assert.match(harness.context.document.getElementById('apk-build-log').textContent, /Gradle/);
+  assert.equal(harness.context.document.getElementById('apk-download-btn').href, releaseUrl);
+  assert.match(harness.context.document.getElementById('apk-artifact-summary').textContent, /GitHub Release v1\.5\.3/);
+  assert.match(harness.context.document.getElementById('apk-card-hint').textContent, /线上/);
 });
 
-test('an uncertain POST is reconciled through status and never leaves APK rebuilding permanently locked', async () => {
-  const currentInfo = {
-    exists: true, current: true, versionName: '2.2.0', versionCode: 11,
-    targetVersionName: '2.2.0', targetVersionCode: 11, size: 2097152,
-    mtime: '2026-08-20T12:00:00.000Z',
-  };
+test('APK management stays honest when the current release has no verified asset', async () => {
   const harness = apkHarness([
-    { url: '/api/apk-build', body: { state: 'idle' } },
-    { url: '/api/apk-info', body: currentInfo },
-    { url: '/api/apk-build', error: new Error('Failed to fetch') },
+    {
+      url: '/api/apk-info',
+      body: {
+        exists: false, localExists: false, source: null, releaseTag: 'v1.5.2',
+        targetVersionName: '2.29.7', targetVersionCode: 119,
+        error: 'release_asset_missing',
+      },
+    },
   ]);
 
   await harness.context.loadApkInfo();
-  await harness.context.startApkBuild();
-  assert.equal(harness.context.document.getElementById('apk-build-btn').disabled, true,
-    'the action stays guarded until the uncertain POST is reconciled');
-  assert.match(harness.context.document.getElementById('apk-build-status').textContent, /正在重试/);
-
-  harness.enqueue(
-    { url: '/api/apk-build', body: { state: 'idle' } },
-    { url: '/api/apk-info', body: currentInfo },
-  );
-  await harness.fireNextTimer();
-  assert.equal(harness.context.document.getElementById('apk-build-btn').disabled, false);
-  assert.equal(harness.context.document.getElementById('apk-build-btn').textContent, '重新构建');
+  const download = harness.context.document.getElementById('apk-download-btn');
+  assert.equal(download.getAttribute('aria-disabled'), 'true');
+  assert.equal(download.getAttribute('href'), null);
+  assert.match(harness.context.document.getElementById('apk-artifact-summary').textContent, /v1\.5\.2/);
 });
 
 /**

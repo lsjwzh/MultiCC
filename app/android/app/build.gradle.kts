@@ -5,6 +5,22 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+// Official Android releases are signed with one long-lived key supplied by the
+// release environment. Never make the debug key an implicit fallback: packages
+// signed by different keys cannot update one another in place.
+val androidAppProject = project
+val officialSigningEnvironment = mapOf(
+    "storeFile" to System.getenv("MULTICC_ANDROID_KEYSTORE_PATH"),
+    "storePassword" to System.getenv("MULTICC_ANDROID_STORE_PASSWORD"),
+    "keyAlias" to System.getenv("MULTICC_ANDROID_KEY_ALIAS"),
+    "keyPassword" to System.getenv("MULTICC_ANDROID_KEY_PASSWORD"),
+)
+val officialSigningConfigured = officialSigningEnvironment.values.all { !it.isNullOrBlank() }
+val officialSigningPartiallyConfigured = officialSigningEnvironment.values.any { !it.isNullOrBlank() }
+if (officialSigningPartiallyConfigured && !officialSigningConfigured) {
+    throw GradleException("Official release signing is only partially configured")
+}
+
 android {
     namespace = "com.multicc.multicc_app"
     compileSdk = flutter.compileSdkVersion
@@ -31,12 +47,35 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        if (officialSigningConfigured) {
+            create("officialRelease") {
+                storeFile = file(officialSigningEnvironment.getValue("storeFile")!!)
+                storePassword = officialSigningEnvironment.getValue("storePassword")
+                keyAlias = officialSigningEnvironment.getValue("keyAlias")
+                keyPassword = officialSigningEnvironment.getValue("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            if (officialSigningConfigured) {
+                signingConfig = signingConfigs.getByName("officialRelease")
+            }
         }
+    }
+}
+
+// Keep debug builds usable without secrets, but refuse every release task before
+// execution if the official key is absent. An unsigned or debug-signed artifact
+// must never be mistaken for the official update channel.
+gradle.taskGraph.whenReady {
+    val releaseRequested = allTasks.any { task ->
+        task.project == androidAppProject && task.name.contains("Release", ignoreCase = true)
+    }
+    if (releaseRequested && !officialSigningConfigured) {
+        throw GradleException("Official release signing is required for Android release tasks")
     }
 }
 

@@ -12,15 +12,11 @@ const {
   selectLanAddress,
   latestTagFromRemote,
   resolveVersionInfo,
-  readApkInfo,
-  resolveApkBuildStatus,
-  createApkBuildRuntime,
   createServerInfoHandler,
   createApkInfoHandler,
-  createApkBuildStartHandler,
-  createApkBuildStatusHandler,
   mountSystemRoutes,
 } = require('../src/routes/system');
+const { createApkDistribution } = require('../src/apk-distribution');
 
 function fakeHttps(payload, failure = null) {
   return {
@@ -59,63 +55,90 @@ function captureResponse(handler, req = {}) {
   return { status, body };
 }
 
-function apkRoot(version = '3.2.1+321') {
+function apkRoot(version = '3.2.1+321', packageVersion = '2.4.6') {
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-apk-route-'));
   fs.mkdirSync(path.join(rootDir, 'public'));
   fs.mkdirSync(path.join(rootDir, 'app'));
+  fs.mkdirSync(path.join(rootDir, 'app', 'android'));
   fs.writeFileSync(path.join(rootDir, 'app', 'pubspec.yaml'), `name: multicc_app\nversion: ${version}\n`);
+  fs.writeFileSync(path.join(rootDir, 'app', 'android', 'release-cert.sha256'), `${'b'.repeat(64)}\n`);
+  fs.writeFileSync(path.join(rootDir, 'package.json'), JSON.stringify({ version: packageVersion }));
   return rootDir;
 }
 
-function fakeDetachedRuntime() {
-  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-apk-detached-'));
-  const jobs = [];
-  const launches = [];
-  const runtime = {
-    BASE_DIR: baseDir,
-    jobs,
-    launches,
-    pendingNext: false,
-    list() { throw new Error('APK status must not scan detached history'); },
-    status(id) { return jobs.find(job => job.id === id) || null; },
-    launch(input) {
-      launches.push(input);
-      const job = {
-        id: input.id,
-        label: input.label,
-        command: input.command,
-        cwd: input.cwd,
-        startedAt: Date.parse('2026-08-20T12:00:00.000Z'),
-        started: !runtime.pendingNext,
-        running: !runtime.pendingNext,
-        done: false,
-        exitCode: null,
-        logTail: '\u001b[32mBuilding release APK…\u001b[0m',
-      };
-      jobs.unshift(job);
-      runtime.pendingNext = false;
-      return job;
+function scriptedHttps(initialSteps) {
+  const steps = initialSteps.slice();
+  const calls = [];
+  return {
+    calls,
+    get(url, options, callback) {
+      const request = new EventEmitter();
+      request.destroy = (error) => { if (error) queueMicrotask(() => request.emit('error', error)); };
+      calls.push({ url: String(url), options });
+      const step = steps.shift();
+      queueMicrotask(() => {
+        if (!step) {
+          request.emit('error', new Error(`unscripted HTTPS request: ${url}`));
+          return;
+        }
+        if (step.error) {
+          request.emit('error', step.error);
+          return;
+        }
+        const response = new EventEmitter();
+        response.statusCode = step.status || 200;
+        response.headers = step.headers || {};
+        response.setEncoding = () => {};
+        response.destroy = () => {};
+        callback(response);
+        if (step.body != null) response.emit('data', typeof step.body === 'string' ? step.body : JSON.stringify(step.body));
+        response.emit('end');
+      });
+      return request;
     },
   };
-  return runtime;
 }
 
-function writeJsonAtomic(file, value) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(value));
-  fs.renameSync(tmp, file);
-}
-
-function apkRuntimeDeps(rootDir, detached, overrides = {}) {
-  return {
-    fs,
-    path,
-    rootDir,
-    detached,
-    atomicWriteJson: writeJsonAtomic,
-    now: () => Date.parse('2026-08-20T12:00:01.000Z'),
+function releaseFixture(version = '2.4.6', overrides = {}) {
+  const tag = `v${version}`;
+  const base = `https://github.com/lsjwzh/MultiCC/releases/download/${tag}`;
+  const apk = {
+    name: 'multicc.apk', state: 'uploaded', size: 1234,
+    updated_at: '2026-08-20T12:00:00Z', browser_download_url: `${base}/multicc.apk`,
+  };
+  const manifestAsset = {
+    name: 'multicc.apk.json', state: 'uploaded', size: 400,
+    browser_download_url: `${base}/multicc.apk.json`,
+  };
+  const manifest = {
+    schemaVersion: 1,
+    releaseTag: tag,
+    releaseVersion: version,
+    versionName: '3.2.0',
+    versionCode: 320,
+    size: apk.size,
+    sha256: 'a'.repeat(64),
+    signerSha256: 'b'.repeat(64),
+    gitCommit: 'c'.repeat(40),
+    builtAt: '2026-08-20T11:59:00Z',
     ...overrides,
+  };
+  return [
+    { body: { tag_name: tag, draft: false, prerelease: false, assets: [apk, manifestAsset] } },
+    { body: manifest },
+  ];
+}
+
+function captureDownload() {
+  return {
+    statusCode: 200,
+    headers: {},
+    redirected: null,
+    ended: false,
+    set(name, value) { this.headers[String(name).toLowerCase()] = value; return this; },
+    status(code) { this.statusCode = code; return this; },
+    redirect(code, url) { this.statusCode = code; this.redirected = url; return this; },
+    end() { this.ended = true; return this; },
   };
 }
 
@@ -242,159 +265,170 @@ test('version info falls back to git tags without hiding the API failure', async
   assert.equal(result.channel, 'dev');
 });
 
-test('APK handler exposes only file metadata and optional version sidecar', () => {
+test('APK distribution prefers a non-empty local regular file without touching GitHub', async () => {
   const rootDir = apkRoot();
   const apkPath = path.join(rootDir, 'public', 'multicc.apk');
   fs.writeFileSync(apkPath, 'apk');
   fs.writeFileSync(`${apkPath}.json`, JSON.stringify({ versionName: '3.2.1', versionCode: 321, ignored: 'secret' }));
-  const body = capture(createApkInfoHandler({ fs, path, rootDir }));
-  assert.equal(body.exists, true);
-  assert.equal(body.size, 3);
-  assert.equal(body.versionName, '3.2.1');
-  assert.equal(body.versionCode, 321);
-  assert.equal(body.targetVersionName, '3.2.1');
-  assert.equal(body.targetVersionCode, 321);
-  assert.equal(body.current, true);
-  assert.equal(Object.hasOwn(body, 'ignored'), false);
+  const https = scriptedHttps([]);
+  try {
+    const runtime = createApkDistribution({ fs, path, https, rootDir });
+    const body = await runtime.info();
+    assert.equal(body.exists, true);
+    assert.equal(body.localExists, true);
+    assert.equal(body.source, 'local');
+    assert.equal(body.downloadUrl, '/multicc.apk');
+    assert.equal(body.size, 3);
+    assert.equal(body.versionName, '3.2.1');
+    assert.equal(body.versionCode, 321);
+    assert.equal(body.targetVersionName, '3.2.1');
+    assert.equal(body.targetVersionCode, 321);
+    assert.equal(body.current, true);
+    assert.equal(body.localCurrent, true);
+    assert.equal(body.releaseTag, 'v2.4.6');
+    assert.equal(https.calls.length, 0, 'local priority must not depend on GitHub');
+
+    let nextCalls = 0;
+    const res = captureDownload();
+    await runtime.downloadHandler({}, res, () => { nextCalls += 1; });
+    assert.equal(nextCalls, 1, 'the static mount owns the local file response');
+    assert.equal(res.redirected, null);
+  } finally {
+    fs.rmSync(rootDir, { recursive: true, force: true });
+  }
 });
 
-test('APK handler reports the exact server-only state when no package was built', () => {
+test('APK distribution verifies the exact current-version release and manifest with single-flight caching', async () => {
   const rootDir = apkRoot();
+  const https = scriptedHttps(releaseFixture());
   try {
-    assert.deepEqual(capture(createApkInfoHandler({ fs, path, rootDir })), {
-      exists: false,
-      targetVersionName: '3.2.1',
-      targetVersionCode: 321,
-      current: false,
+    const runtime = createApkDistribution({ fs, path, https, rootDir });
+    const [first, duplicate] = await Promise.all([runtime.info(), runtime.info()]);
+    assert.deepEqual(duplicate, first);
+    assert.equal(first.exists, true);
+    assert.equal(first.localExists, false);
+    assert.equal(first.source, 'release');
+    assert.equal(first.downloadUrl, 'https://github.com/lsjwzh/MultiCC/releases/download/v2.4.6/multicc.apk');
+    assert.equal(first.releaseUrl, first.downloadUrl);
+    assert.equal(first.remoteState, 'available');
+    assert.equal(first.versionName, '3.2.0', 'release manifest, not checkout pubspec, owns remote version');
+    assert.equal(first.versionCode, 320);
+    assert.equal(first.targetVersionName, '3.2.1');
+    assert.equal(first.targetVersionCode, 321);
+    assert.equal(first.current, false);
+    assert.equal(https.calls.length, 2, 'one release lookup plus one manifest fetch shared by both callers');
+    assert.equal(https.calls[0].url, 'https://api.github.com/repos/lsjwzh/MultiCC/releases/tags/v2.4.6');
+    assert.equal(https.calls[1].url, 'https://github.com/lsjwzh/MultiCC/releases/download/v2.4.6/multicc.apk.json');
+
+    const res = captureDownload();
+    await runtime.downloadHandler({}, res, () => assert.fail('remote source must not reach express.static'));
+    assert.equal(res.statusCode, 302);
+    assert.equal(res.redirected, first.downloadUrl);
+    assert.equal(res.headers['referrer-policy'], 'no-referrer');
+    assert.match(res.headers['cache-control'], /no-store/);
+    assert.equal(https.calls.length, 2, 'download reuses the positive cache');
+  } finally {
+    fs.rmSync(rootDir, { recursive: true, force: true });
+  }
+});
+
+test('missing and invalid release assets are not advertised, while transient network failures use only the fixed candidate', async () => {
+  const missingRoot = apkRoot();
+  const missingHttps = scriptedHttps([{ status: 404, body: { message: 'Not Found' } }]);
+  try {
+    const missing = createApkDistribution({ fs, path, https: missingHttps, rootDir: missingRoot });
+    const info = await missing.info();
+    assert.equal(info.exists, false);
+    assert.equal(info.localExists, false);
+    assert.equal(info.source, null);
+    assert.equal(info.downloadUrl, null);
+    assert.equal(info.remoteState, 'missing');
+    const res = captureDownload();
+    await missing.downloadHandler({}, res, () => assert.fail('missing package must terminate'));
+    assert.equal(res.statusCode, 404);
+    assert.equal(res.ended, true);
+  } finally {
+    fs.rmSync(missingRoot, { recursive: true, force: true });
+  }
+
+
+  const unknownRoot = apkRoot();
+  const unknownHttps = scriptedHttps([{ error: new Error('offline') }]);
+  try {
+    const unknown = createApkDistribution({ fs, path, https: unknownHttps, rootDir: unknownRoot });
+    const info = await unknown.info();
+    assert.equal(info.exists, false, 'an unverified URL is never claimed as available');
+    assert.equal(info.remoteState, 'unknown');
+    assert.equal(info.releaseUrl, 'https://github.com/lsjwzh/MultiCC/releases/download/v2.4.6/multicc.apk');
+    const res = captureDownload();
+    await unknown.downloadHandler({ query: { token: 'must-not-leak' } }, res, () => assert.fail('unknown package must redirect or terminate'));
+    assert.equal(res.statusCode, 302, 'the browser may still try the fixed, non-user-controlled candidate');
+    assert.equal(res.redirected, info.releaseUrl);
+    assert.equal(res.redirected.includes('token'), false);
+  } finally {
+    fs.rmSync(unknownRoot, { recursive: true, force: true });
+  }
+});
+
+test('zero-byte, directory, malformed manifest, and invalid package versions fail closed', async () => {
+  const rootDir = apkRoot('3.2.1+321', '2.4.6');
+  try {
+    fs.writeFileSync(path.join(rootDir, 'public', 'multicc.apk'), '');
+    const badManifest = scriptedHttps(releaseFixture('2.4.6', { releaseTag: 'v9.9.9' }));
+    const runtime = createApkDistribution({ fs, path, https: badManifest, rootDir });
+    const info = await runtime.info();
+    assert.equal(info.localExists, false, 'zero bytes are never a local artifact');
+    assert.equal(info.exists, false);
+    assert.equal(info.remoteState, 'invalid');
+
+    fs.rmSync(path.join(rootDir, 'public', 'multicc.apk'));
+    fs.mkdirSync(path.join(rootDir, 'public', 'multicc.apk'));
+    const directoryInfo = await createApkDistribution({
+      fs, path, https: scriptedHttps([{ status: 404 }]), rootDir,
+    }).info();
+    assert.equal(directoryInfo.localExists, false, 'directories do not satisfy the local contract');
+  } finally {
+    fs.rmSync(rootDir, { recursive: true, force: true });
+  }
+
+  const signerRoot = apkRoot();
+  try {
+    const wrongSigner = createApkDistribution({
+      fs, path, https: scriptedHttps(releaseFixture('2.4.6', { signerSha256: 'd'.repeat(64) })), rootDir: signerRoot,
     });
+    const signerInfo = await wrongSigner.info();
+    assert.equal(signerInfo.exists, false, 'a self-asserted signer cannot bypass the repository certificate pin');
+    assert.equal(signerInfo.remoteState, 'invalid');
+    assert.equal(signerInfo.remoteReason, 'manifest_invalid');
   } finally {
-    fs.rmSync(rootDir, { recursive: true, force: true });
+    fs.rmSync(signerRoot, { recursive: true, force: true });
   }
-});
 
-test('APK build is a singleton detached job with restart-safe status', () => {
-  const rootDir = apkRoot();
-  const detached = fakeDetachedRuntime();
-  detached.pendingNext = true;
-  const runtimeDeps = apkRuntimeDeps(rootDir, detached);
-  const apkBuildRuntime = createApkBuildRuntime(runtimeDeps);
-  const deps = { ...runtimeDeps, apkBuildRuntime };
+  const invalidRoot = apkRoot('3.2.1+321', '../latest');
+  const https = scriptedHttps([]);
   try {
-    const start = createApkBuildStartHandler(deps);
-    const first = captureResponse(start);
-    assert.equal(first.status, 202);
-    assert.equal(first.body.ok, true);
-    assert.equal(first.body.reused, false);
-    assert.equal(first.body.build.state, 'running');
-    assert.deepEqual(detached.launches, [{
-      id: first.body.build.id,
-      command: 'exec ./scripts/publish-apk.sh',
-      cwd: rootDir,
-      label: 'apk-build',
-    }]);
-
-    const duplicate = captureResponse(start);
-    assert.equal(duplicate.status, 202);
-    assert.equal(duplicate.body.reused, true);
-    assert.equal(detached.launches.length, 1, 'a second click must not launch another Gradle build');
-
-    const running = captureResponse(createApkBuildStatusHandler(deps));
-    assert.equal(running.body.state, 'running');
-    assert.equal(running.body.logTail.includes('\u001b'), false, 'terminal escapes stay out of the API');
-
-    detached.jobs[0].running = false;
-    detached.jobs[0].done = true;
-    detached.jobs[0].exitCode = 0;
-    assert.equal(apkBuildRuntime.status().state, 'succeeded');
-
-    const afterRestart = createApkBuildRuntime(runtimeDeps);
-    assert.equal(afterRestart.status().state, 'succeeded', 'the durable pointer survives server recreation');
+    const runtime = createApkDistribution({ fs, path, https, rootDir: invalidRoot });
+    const info = await runtime.info();
+    assert.equal(info.remoteState, 'invalid_version');
+    assert.equal(info.releaseTag, null);
+    assert.equal(info.releaseUrl, null);
+    assert.equal(https.calls.length, 0);
+    const res = captureDownload();
+    await runtime.downloadHandler({}, res, () => assert.fail('invalid version must terminate'));
+    assert.equal(res.statusCode, 404);
   } finally {
-    fs.rmSync(rootDir, { recursive: true, force: true });
-    fs.rmSync(detached.BASE_DIR, { recursive: true, force: true });
+    fs.rmSync(invalidRoot, { recursive: true, force: true });
   }
 });
 
-test('explicit APK rebuild starts even when a current package exists', () => {
-  const rootDir = apkRoot();
-  const detached = fakeDetachedRuntime();
-  try {
-    const apkPath = path.join(rootDir, 'public', 'multicc.apk');
-    fs.writeFileSync(apkPath, 'apk');
-    fs.writeFileSync(`${apkPath}.json`, JSON.stringify({ versionName: '3.2.1', versionCode: 321 }));
-    assert.equal(readApkInfo({ fs, path, rootDir }).current, true);
-    const apkBuildRuntime = createApkBuildRuntime(apkRuntimeDeps(rootDir, detached));
-    const response = captureResponse(createApkBuildStartHandler({ fs, path, rootDir, apkBuildRuntime }));
-    assert.equal(response.status, 202);
-    assert.equal(response.body.reused, false);
-    assert.equal(detached.launches.length, 1);
-  } finally {
-    fs.rmSync(rootDir, { recursive: true, force: true });
-    fs.rmSync(detached.BASE_DIR, { recursive: true, force: true });
-  }
-});
-
-test('APK freshness rejects zero-byte files and spoofed detached labels', () => {
-  const rootDir = apkRoot();
-  const detached = fakeDetachedRuntime();
-  try {
-    const apkPath = path.join(rootDir, 'public', 'multicc.apk');
-    fs.writeFileSync(apkPath, '');
-    fs.writeFileSync(`${apkPath}.json`, JSON.stringify({ versionName: '3.2.1', versionCode: 321 }));
-    assert.equal(readApkInfo({ fs, path, rootDir }).current, false);
-    assert.equal(readApkInfo({ fs, path, rootDir }).exists, false);
-
-    const spoofId = 'd_apk_0123456789abcdef';
-    writeJsonAtomic(path.join(detached.BASE_DIR, 'apk-build-latest.json'), {
-      schemaVersion: 1, id: spoofId, scheduledAt: Date.now(),
-    });
-    detached.jobs.push({
-      id: spoofId, label: 'apk-build', command: 'sleep 999', cwd: rootDir,
-      startedAt: Date.now(), started: true, running: true, done: false,
-    });
-    const spoofedRuntime = createApkBuildRuntime(apkRuntimeDeps(rootDir, detached));
-    assert.equal(spoofedRuntime.status().state, 'unknown');
-    const rejected = captureResponse(createApkBuildStartHandler({ apkBuildRuntime: spoofedRuntime }));
-    assert.equal(rejected.status, 503, 'an untrusted pointer must fail closed instead of launching');
-    assert.equal(rejected.body.code, 'APK_BUILD_STATUS_UNAVAILABLE');
-  } finally {
-    fs.rmSync(rootDir, { recursive: true, force: true });
-    fs.rmSync(detached.BASE_DIR, { recursive: true, force: true });
-  }
-});
-
-test('APK build refuses to race a checkout update or server shutdown', () => {
-  const rootDir = apkRoot();
-  const detached = fakeDetachedRuntime();
-  const apkBuildRuntime = createApkBuildRuntime(apkRuntimeDeps(rootDir, detached));
-  try {
-    const updating = captureResponse(createApkBuildStartHandler({
-      fs, path, rootDir, apkBuildRuntime, getUpdateStatus: () => ({ running: true }),
-    }));
-    assert.equal(updating.status, 409);
-    assert.equal(updating.body.error, 'update_in_progress');
-    const unknown = captureResponse(createApkBuildStartHandler({
-      fs, path, rootDir, apkBuildRuntime, getUpdateStatus() { throw new Error('disk unavailable'); },
-    }));
-    assert.equal(unknown.status, 503);
-    assert.equal(unknown.body.code, 'UPDATE_STATUS_UNAVAILABLE');
-    const shuttingDown = captureResponse(createApkBuildStartHandler({
-      fs, path, rootDir, apkBuildRuntime, getShuttingDown: () => true,
-    }));
-    assert.equal(shuttingDown.status, 409);
-    assert.equal(shuttingDown.body.error, 'server_shutting_down');
-    assert.equal(detached.launches.length, 0);
-  } finally {
-    fs.rmSync(rootDir, { recursive: true, force: true });
-    fs.rmSync(detached.BASE_DIR, { recursive: true, force: true });
-  }
-});
-
-test('system route mount owns metadata plus on-demand APK build paths', () => {
+test('system route mount owns APK metadata and the canonical download route only', async () => {
   const paths = [];
+  const apkDistribution = {
+    async info() { return { exists: false, localExists: false, source: null }; },
+    async downloadHandler() {},
+  };
   mountSystemRoutes({
     get(route, handler) { paths.push(['GET', route, typeof handler]); },
-    post(route, handler) { paths.push(['POST', route, typeof handler]); },
   }, {
     fs,
     path,
@@ -404,15 +438,16 @@ test('system route mount owns metadata plus on-demand APK build paths', () => {
     getPort: () => 3000,
     authRequired: () => false,
     gitRun: async () => '',
-    apkBuildRuntime: createApkBuildRuntime({
-      ...apkRuntimeDeps(process.cwd(), fakeDetachedRuntime()),
-    }),
+    apkDistribution,
   });
   assert.deepEqual(paths, [
     ['GET', '/api/server-info', 'function'],
     ['GET', '/api/version-check', 'function'],
     ['GET', '/api/apk-info', 'function'],
-    ['GET', '/api/apk-build', 'function'],
-    ['POST', '/api/apk-build', 'function'],
+    ['GET', '/multicc.apk', 'function'],
   ]);
+
+  const response = { json(value) { this.body = value; } };
+  await createApkInfoHandler({ apkDistribution })({}, response, error => { throw error; });
+  assert.deepEqual(response.body, { exists: false, localExists: false, source: null });
 });

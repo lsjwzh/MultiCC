@@ -290,30 +290,26 @@ test('the route starts one update, reports the turns it will interrupt, and reje
   assert.equal(spawned.length, 1, 'a concurrent update must never be spawned');
 });
 
-test('the update route refuses running or unreadable APK build state', () => {
+test('the update route has no coupling to the retired on-demand APK builder', () => {
   const root = createFixture();
-  let apkState = { state: 'running', id: 'd_apk_0123456789abcdef' };
+  let obsoleteProbeCalls = 0;
   const route = createUpdateRoute({
     chatSessions: new Map(),
-    spawn() { throw new Error('must not spawn while APK state blocks admission'); },
+    spawn() { return createChild(); },
     rootDir: root,
-    getApkBuildStatus: () => apkState,
+    getApkBuildStatus() {
+      obsoleteProbeCalls += 1;
+      throw new Error('a retired dependency must never be read');
+    },
     log: { log() {}, error() {} },
   });
   const app = createFakeApp();
   route.mountRoutes(app);
 
-  const busy = createRes();
-  app.routes.post.get('/api/update')({ body: {} }, busy);
-  assert.equal(busy.statusCode, 409);
-  assert.equal(busy.body.code, 'APK_BUILD_IN_PROGRESS');
-  assert.equal(busy.body.status.id, apkState.id);
-
-  apkState = { state: 'unknown' };
-  const unknown = createRes();
-  app.routes.post.get('/api/update')({ body: {} }, unknown);
-  assert.equal(unknown.statusCode, 503);
-  assert.equal(unknown.body.code, 'APK_BUILD_STATUS_UNAVAILABLE');
+  const response = createRes();
+  app.routes.post.get('/api/update')({ body: {} }, response);
+  assert.equal(response.statusCode, 202);
+  assert.equal(obsoleteProbeCalls, 0);
 });
 
 test('a running update on disk blocks a new one even in a server that never started it', () => {
