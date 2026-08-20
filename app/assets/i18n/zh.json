@@ -833,5 +833,6 @@
   "tbAttempts": "{n} 次投递",
   "tbBodyOrphan": "旧记录缺少 canonical 正文，未自动合并",
   "tbBodyPending": "正文等待目标会话持久化…",
-  "tbUnresolvedGroup": "历史身份待确认 · {n}（未自动合并）"
+  "tbUnresolvedGroup": "历史身份待确认 · {n}（未自动合并）",
+  "tbTaskActions": "任务详情与操作"
 }
