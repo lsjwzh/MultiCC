@@ -88,7 +88,7 @@ function fixture(options = {}) {
     onTaskBoardQueueEvent() {},
     onWorkspaceQueueStatus: (sessionId, status) =>
       calls.push(['workspace-queue', sessionId, status]),
-    classifyDisplay: () => ({ cardStatus: 'running' }),
+    classifyDisplay: options.classifyDisplay || (() => ({ cardStatus: 'running' })),
     // classify is the only writer of business state; the host merely submits.
     dispatchStateAction: (result, ctx) => calls.push(['dispatch', result, ctx]),
     reconcileTaskProjection: (...args) => calls.push(['reconcile', ...args]),
@@ -555,6 +555,49 @@ test('queued projection does not make its own outbox delivery look busy', () => 
     at: 11,
   });
   assert.equal(h.host.isRunActive('s1'), true);
+});
+
+test('a live queue outranks the stale classify verdict left by the previous turn', () => {
+  const h = fixture({
+    classifyDisplay: state => ({
+      cardStatus: state === 'D' ? 'succeeded' : state === 'W' ? 'waiting' : 'running',
+    }),
+  });
+  // The last turn closed with a D verdict (执行成功)...
+  h.setClassifyState('D');
+  assert.equal(h.host.getRunState('s1'), 'succeeded');
+
+  // ...then a follow-up starts: the queue goes live, but classify only
+  // re-fires at turn end / scan, so the verdict is stale for the whole turn.
+  h.host.onSchedulerEvent({
+    type: 'started',
+    sessionId: 's1',
+    schedulerState: 'running',
+    queuedItems: [],
+    at: 20,
+  });
+  assert.equal(h.host.getRunState('s1'), 'running');
+  assert.equal(h.host.isRunActive('s1'), true);
+
+  // A queued follow-up likewise outranks the stale verdict.
+  h.host.onSchedulerEvent({
+    type: 'queued',
+    sessionId: 's1',
+    schedulerState: 'idle',
+    queuedItems: [],
+    at: 21,
+  });
+  assert.equal(h.host.getRunState('s1'), 'queued');
+
+  // Once the queue drains back to idle, the verdict is authoritative again.
+  h.host.onSchedulerEvent({
+    type: 'idle',
+    sessionId: 's1',
+    schedulerState: 'idle',
+    queuedItems: [],
+    at: 22,
+  });
+  assert.equal(h.host.getRunState('s1'), 'succeeded');
 });
 
 test('a released W turn admits its correlated structured answer as a new control entry', async () => {
