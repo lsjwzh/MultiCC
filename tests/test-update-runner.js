@@ -290,6 +290,32 @@ test('the route starts one update, reports the turns it will interrupt, and reje
   assert.equal(spawned.length, 1, 'a concurrent update must never be spawned');
 });
 
+test('the update route refuses running or unreadable APK build state', () => {
+  const root = createFixture();
+  let apkState = { state: 'running', id: 'd_apk_0123456789abcdef' };
+  const route = createUpdateRoute({
+    chatSessions: new Map(),
+    spawn() { throw new Error('must not spawn while APK state blocks admission'); },
+    rootDir: root,
+    getApkBuildStatus: () => apkState,
+    log: { log() {}, error() {} },
+  });
+  const app = createFakeApp();
+  route.mountRoutes(app);
+
+  const busy = createRes();
+  app.routes.post.get('/api/update')({ body: {} }, busy);
+  assert.equal(busy.statusCode, 409);
+  assert.equal(busy.body.code, 'APK_BUILD_IN_PROGRESS');
+  assert.equal(busy.body.status.id, apkState.id);
+
+  apkState = { state: 'unknown' };
+  const unknown = createRes();
+  app.routes.post.get('/api/update')({ body: {} }, unknown);
+  assert.equal(unknown.statusCode, 503);
+  assert.equal(unknown.body.code, 'APK_BUILD_STATUS_UNAVAILABLE');
+});
+
 test('a running update on disk blocks a new one even in a server that never started it', () => {
   // This is the restart case: the process that answers the second request is
   // not the one that started the update, so its in-memory flag is false.

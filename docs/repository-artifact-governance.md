@@ -30,9 +30,10 @@ Both checks run inside `test:deterministic` on Node 20 and 22 in CI.
 The APK migration is complete; the remaining entries below retain their own
 separate migration plans.
 
-- `public/multicc.apk`: resolved by an install-time local build. The APK and its
-  metadata sidecars are ignored, `scripts/publish-apk.sh` publishes atomically,
-  and repository governance rejects any future tracked APK.
+- `public/multicc.apk`: resolved by an explicit on-demand local build from the
+  `/manage` APK controls or `./multicc apk`. Install/update never build it. The
+  APK and metadata sidecars are ignored, `scripts/publish-apk.sh` publishes
+  atomically, and repository governance rejects any future tracked APK.
 - `server.js.bak.task*`: compare each file with reachable Git history and any
   active recovery tooling. Archive unique recovery evidence outside Git, then
   remove all backups in one owner-approved cleanup.

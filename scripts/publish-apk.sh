@@ -61,17 +61,17 @@ if [ "$IF_MISSING" = true ] && [ -s "$DEST" ] && [ -s "$DEST.json" ]; then
   esac
 fi
 
-if ! command -v flutter >/dev/null 2>&1; then
-  echo "[publish-apk] ERROR: Flutter SDK not found on PATH; cannot build Android APK." >&2
-  echo "[publish-apk] Install Flutter, or run install.sh with --no-apk for a server-only install." >&2
-  exit 1
+FLUTTER="${FLUTTER_BIN:-}"
+if [ -z "$FLUTTER" ] && [ -n "${FLUTTER_ROOT:-}" ]; then FLUTTER="$FLUTTER_ROOT/bin/flutter"; fi
+if [ -z "$FLUTTER" ] && command -v flutter >/dev/null 2>&1; then FLUTTER="$(command -v flutter)"; fi
+if [ -z "$FLUTTER" ]; then
+  for CANDIDATE in "${HOME:-}/flutter/bin/flutter" "${HOME:-}/flutter/flutter/bin/flutter" /opt/homebrew/bin/flutter /usr/local/bin/flutter; do
+    if [ -x "$CANDIDATE" ]; then FLUTTER="$CANDIDATE"; break; fi
+  done
 fi
-
-echo "[publish-apk] Building release APK…"
-( cd "$ROOT/app" && flutter build apk --release )
-
-if [ ! -s "$SRC" ]; then
-  echo "[publish-apk] ERROR: Flutter reported success but produced no release APK at $SRC" >&2
+if [ -z "$FLUTTER" ] || [ ! -x "$FLUTTER" ]; then
+  echo "[publish-apk] ERROR: Flutter SDK not found; cannot build Android APK." >&2
+  echo "[publish-apk] Install Flutter or set FLUTTER_BIN, then retry from the APK control." >&2
   exit 1
 fi
 
@@ -79,8 +79,43 @@ mkdir -p "$(dirname "$DEST")"
 TMP_APK="${DEST}.tmp.$$"
 TMP_SHA="${DEST}.sha1.tmp.$$"
 TMP_JSON="${DEST}.json.tmp.$$"
-cleanup() { rm -f "$TMP_APK" "$TMP_SHA" "$TMP_JSON"; }
+LOCK_FILE="${MULTICC_APK_BUILD_LOCK:-}"
+if [ -z "$LOCK_FILE" ] && command -v node >/dev/null 2>&1 && [ -f "$ROOT/src/paths.js" ]; then
+  LOCK_FILE="$(cd "$ROOT" && node -e 'const p=require("path"),{createPaths}=require("./src/paths");process.stdout.write(p.join(createPaths({dataDir:process.env.MULTICC_DATA_DIR}).detachedDir,"apk-build.lock"))' 2>/dev/null || true)"
+fi
+LOCK_FILE="${LOCK_FILE:-${HOME:-$ROOT}/.multicc/detached/apk-build.lock}"
+LOCK_CANDIDATE="${LOCK_FILE}.$$"
+LOCK_HELD=false
+cleanup() {
+  rm -f "$TMP_APK" "$TMP_SHA" "$TMP_JSON" "$LOCK_CANDIDATE"
+  if [ "$LOCK_HELD" = true ] && [ "$(cat "$LOCK_FILE" 2>/dev/null || true)" = "$$" ]; then rm -f "$LOCK_FILE"; fi
+}
 trap cleanup EXIT
+mkdir -p "$(dirname "$LOCK_FILE")"
+printf '%s\n' "$$" > "$LOCK_CANDIDATE"
+if ! ln "$LOCK_CANDIDATE" "$LOCK_FILE" 2>/dev/null; then
+  LOCK_PID="$(cat "$LOCK_FILE" 2>/dev/null || true)"
+  if [ -n "$LOCK_PID" ] && kill -0 "$LOCK_PID" 2>/dev/null; then
+    echo "[publish-apk] ERROR: another APK build is already running (PID $LOCK_PID)." >&2
+    exit 75
+  fi
+  rm -f "$LOCK_FILE"
+  if ! ln "$LOCK_CANDIDATE" "$LOCK_FILE" 2>/dev/null; then
+    echo "[publish-apk] ERROR: another APK build acquired the lock; retry later." >&2
+    exit 75
+  fi
+fi
+LOCK_HELD=true
+rm -f "$LOCK_CANDIDATE"
+
+echo "[publish-apk] Building release APK…"
+( cd "$ROOT/app" && "$FLUTTER" build apk --release )
+
+if [ ! -s "$SRC" ]; then
+  echo "[publish-apk] ERROR: Flutter reported success but produced no release APK at $SRC" >&2
+  exit 1
+fi
+
 cp "$SRC" "$TMP_APK"
 
 # Keep the legacy checksum sidecar in sync for scripts and mirrors that still
@@ -109,6 +144,7 @@ else
   rm -f "$DEST.sha1"
 fi
 mv -f "$TMP_JSON" "$DEST.json"
+cleanup
 trap - EXIT
 
 echo "[publish-apk] Published → $DEST"
