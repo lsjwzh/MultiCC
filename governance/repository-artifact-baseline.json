@@ -6,9 +6,7 @@
   "note": "Existing findings are migration debt, not examples. New findings are rejected."
  },
  "accepted": {
-  "tracked-apk": [
-   "public/multicc.apk"
-  ],
+  "tracked-apk": [],
   "backup": [],
   "runtime-state": [
    "whisper_vocab.json"
@@ -17,9 +15,7 @@
    ".arch-review-findings.json",
    "classify-test-cases.json"
   ],
-  "large-binary": [
-   "public/multicc.apk"
-  ],
+  "large-binary": [],
   "credential-content": [
    "public/agent-presets.json"
   ]

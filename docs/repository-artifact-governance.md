@@ -27,12 +27,12 @@ Both checks run inside `test:deterministic` on Node 20 and 22 in CI.
 
 ## Existing repository artifacts: migration strategy
 
-No historical artifact is deleted by this phase.
+The APK migration is complete; the remaining entries below retain their own
+separate migration plans.
 
-- `public/multicc.apk`: publish release APKs in a release/object store, verify
-  `/api/apk-info` and updater compatibility against an external manifest, then
-  remove the tracked binary and baseline entry. Git LFS is a fallback, not the
-  default, because application deployments still need a deterministic fetch.
+- `public/multicc.apk`: resolved by an install-time local build. The APK and its
+  metadata sidecars are ignored, `scripts/publish-apk.sh` publishes atomically,
+  and repository governance rejects any future tracked APK.
 - `server.js.bak.task*`: compare each file with reachable Git history and any
   active recovery tooling. Archive unique recovery evidence outside Git, then
   remove all backups in one owner-approved cleanup.

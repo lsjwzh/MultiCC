@@ -22,9 +22,9 @@ const PUBLIC_DIR = path.resolve(__dirname, '..', 'public');
 const DOC_PATH = '/docs/classify-state-machine-architecture';
 const DOC_TITLE = '<title>MultiCC Classify 状态机审计</title>';
 
-function startServer() {
+function startServer(publicDir = PUBLIC_DIR) {
   const app = express();
-  createStaticAssetsRoutes({ express, fs, path, publicDir: PUBLIC_DIR }).mountRoutes(app);
+  createStaticAssetsRoutes({ express, fs, path, publicDir }).mountRoutes(app);
   return new Promise((resolve) => {
     const server = app.listen(0, '127.0.0.1', () => resolve(server));
   });
@@ -40,6 +40,7 @@ function fetchPath(server, urlPath) {
       res.on('end', () => resolve({
         status: res.statusCode,
         contentType: res.headers['content-type'] || '',
+        headers: res.headers,
         body,
       }));
     }).on('error', reject);
@@ -88,4 +89,24 @@ test('serving the page does not expose the docs directory or the tree above it',
       `traversal attempt must not return source: ${attempt} -> ${res.status}`,
     );
   }
+});
+
+test('a locally built APK keeps the download contract and a skipped build is a 404', async (t) => {
+  const publicDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'multicc-apk-static-'));
+  fs.writeFileSync(path.join(publicDir, 'multicc.apk'), 'complete-apk');
+  const server = await startServer(publicDir);
+  t.after(() => new Promise(resolve => server.close(() => {
+    fs.rmSync(publicDir, { recursive: true, force: true });
+    resolve();
+  })));
+
+  const available = await fetchPath(server, '/multicc.apk');
+  assert.equal(available.status, 200);
+  assert.match(available.contentType, /^application\/vnd\.android\.package-archive/);
+  assert.equal(available.headers['content-disposition'], 'attachment; filename="multicc.apk"');
+  assert.equal(available.headers['cache-control'], 'no-store, no-cache, must-revalidate');
+  assert.equal(available.body, 'complete-apk');
+
+  fs.rmSync(path.join(publicDir, 'multicc.apk'));
+  assert.equal((await fetchPath(server, '/multicc.apk')).status, 404);
 });

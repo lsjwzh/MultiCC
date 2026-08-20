@@ -83,9 +83,9 @@ MultiCC **不会**把一家厂商的对话记录翻译成另一家的格式—�
 curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v1.3.0/install.sh | bash -s -- --branch v1.3.0
 ```
 
-脚本会自动识别系统、检查依赖、克隆仓库、装依赖、生成 `ACCESS_TOKEN`，并可选注册为后台服务（macOS `launchd`）。
+脚本会自动识别系统、检查依赖、克隆仓库、现场构建可下载的 Android APK、装依赖、生成 `ACCESS_TOKEN`，并可选注册为后台服务（macOS `launchd`）。纯服务器安装可传 `--no-apk`。
 
-**前置要求**：Node.js **>= 20.19**、`tmux`（仅终端模式需要）、以及至少一个已登录的编程 CLI 在 `PATH` 上。想自己编译手机 App 才需要 Flutter >= 3.8。
+**前置要求**：Node.js **>= 20.19**、`tmux`（仅终端模式需要）、以及至少一个已登录的编程 CLI 在 `PATH` 上。默认安装还需要 Flutter >= 3.8 及 Android 工具链；不需要 APK 时传 `--no-apk`，以后可运行 `./multicc apk` 补建。
 
 ### 2. 启动
 

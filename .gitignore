@@ -62,9 +62,9 @@ app/.flutter-plugins-dependencies
 
 # Build artifacts
 /*.apk
-# Root-level APKs — only public/multicc.apk is tracked
-public/*.apk
-public/multicc.apk.json
+# Published APK, generated metadata and interrupted atomic-publish temps are
+# local install artifacts. One prefix keeps every member of the set untracked.
+public/multicc.apk*
 app/node_modules/
 app/android/app/build/
 app/android/build/
