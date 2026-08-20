@@ -103,9 +103,11 @@ test('dispatch admission derives busy from classify plus the repo lease, never f
     assert.doesNotMatch(predicate, liveness, 'dispatch admission must not read liveness');
   }
   // Every admission consumer is wired to that one predicate — no second opinion.
-  assert.match(source, /createCommanderRoutingHost\([\s\S]*?isBusy: dispatchTargetBusy/);
+  // (The Commander routing host was a third consumer until #38 retired pooled
+  // dispatch; task work now enters through the task-bound session, which admits
+  // via the same predicate inside the gateway host.)
+  assert.match(source, /createGatewayHost\([\s\S]*?isTargetBusy: dispatchTargetBusy/);
   assert.match(source, /createOrchestrationRuntime\([\s\S]*?isBusy: dispatchTargetBusy/);
-  assert.match(source, /isTargetBusy: dispatchTargetBusy/);
 });
 
 test('the classify-derived busy predicate exempts assessing so an unhealthy Aux cannot wedge dispatch', () => {
