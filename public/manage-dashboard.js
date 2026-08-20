@@ -204,6 +204,7 @@ async function startMonitor(sessionId) {
           sessionId,
           st,
           msg.message || (st === 'waiting' ? '等待交互' : st === 'error' ? '出现异常' : '执行成功'),
+          st === 'succeeded' ? msg.voiceMessage : '',
         );
         return;
       }
@@ -420,7 +421,7 @@ function applyReviewToLeanCard(card, status) {
 /* ── Alerts (one-shot voice, silenced once user views the session) ── */
 const _alertedSessions = new Set(); // sessions whose current alert has been read
 
-function alertSession(sessionId, type, message) {
+function alertSession(sessionId, type, message, voiceMessage) {
   // Always update the persistent status badge
   setSessionStatus(sessionId, type);
   if (typeof getTaskNotifyEnabled === 'function' && !getTaskNotifyEnabled(sessionId)) return;
@@ -438,7 +439,9 @@ function alertSession(sessionId, type, message) {
     });
   }
   if (window.speechSynthesis) {
-    const text = `Session ${sessionId}: ${message}`;
+    const completionVoice = typeof voiceMessage === 'string' ? voiceMessage.trim() : '';
+    const text = type === 'succeeded' && completionVoice
+      ? completionVoice : `Session ${sessionId}: ${message}`;
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = 'zh-CN';
     utterance.rate = 1.1;
