@@ -63,7 +63,7 @@
 
   function createTaskMode(deps) {
     // Every dep is read lazily off the shared object: the host may inject
-    // optional ports (unstageUserMessage, translate) after construction.
+    // optional ports (translate) after construction.
     let task = null;
     let socket = null;
     let socketEverOpened = false;
@@ -352,9 +352,6 @@
         body: JSON.stringify(body),
       }).catch(err => {
         say(`${t('发送失败')}: ${errorMessage(err)}`);
-        if (payload.clientMsgId && typeof deps.unstageUserMessage === 'function') {
-          deps.unstageUserMessage(String(payload.clientMsgId));
-        }
       });
     }
 

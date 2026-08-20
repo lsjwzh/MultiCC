@@ -324,8 +324,6 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('memo-send-btn')?.addEventListener('click', memoOpenPicker);
 });
 let isStreaming = false;
-let stagedUserBubbles = new Map(); // clientMsgId -> text for queued user messages
-window.stagedUserBubbles = stagedUserBubbles;
 let _pendingCancel = false; // cancel requested while WS was disconnected
 
 // Context window tracking
@@ -2531,7 +2529,12 @@ chatComposer = window.MultiCCChatComposer.createComposer({
   transportSend: hostTransportSend,
   retryTransport: () => chatTransport.retryNow(),
   addSystemMessage: addSystemMsg,
-  stageUserMessage: (text, id) => stagedUserBubbles.set(id, text),
+  // Deliberately inert: the user bubble appears only on the server's
+  // queued=false confirmation (chat-event-controller session_queue), never
+  // optimistically on send. The old stagedUserBubbles map implemented this
+  // "stage" by storing every sent message forever with no reader (M6); staging
+  // now just discards.
+  stageUserMessage: () => {},
   addUserMessage: addUserMsg,
   resetHistory: () => {
     resetHistoryPagination();
