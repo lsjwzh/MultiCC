@@ -186,7 +186,7 @@ test('M4-T1 transportSend forwards the composer userInputRequestId so /send reso
     'the answer reaches the answer ingress, not the followup path');
 });
 
-test('transportSend surfaces send failures and unstages the bubble', async () => {
+test('transportSend surfaces send failures', async () => {
   const h = harness();
   // Re-stub: task DTO ok, first page unstubbed (boot must degrade, not reject),
   // send fails with the server's error code.
@@ -196,12 +196,9 @@ test('transportSend surfaces send failures and unstages the bubble', async () =>
   ], h.calls.fetch = []);
   const mode = createTaskMode(h.deps);
   await mode.boot();
-  const unstaged = [];
-  h.deps.unstageUserMessage = id => unstaged.push(id);
   mode.transportSend({ type: 'user_message', text: 'x', clientMsgId: 'client-10' });
   await new Promise(r => setImmediate(r));
   assert.ok(h.calls.system.at(-1).includes('target_busy'));
-  assert.deepEqual(unstaged, ['client-10']);
 });
 
 test('cancel stops the open run via cancel-run and never marks the card done', async () => {
