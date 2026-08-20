@@ -231,6 +231,22 @@ test('task board UI hides the Commander routing chip on the card', () => {
   assert.match(composerSrc, /交给 Commander/);
 });
 
+test('task board composer pins cli/provider on the new task (default = recently active)', () => {
+  // #34: the dir composer carries explicit runtime picks for the task's bound
+  // chat session. The placeholders resolve to the host's "most recently
+  // active" suggestion, so a send always carries concrete values; explicit
+  // picks apply at creation only — an already-bound session's runtime is its
+  // resume file and changes through the ordinary per-session surface.
+  const tb = fs.readFileSync(path.join(__dirname, '..', 'public', 'manage-taskboard.js'), 'utf8');
+  assert.match(tb, /task-board\/suggested-runtime/);
+  assert.match(tb, /\/api\/providers\?cli=/);
+  assert.match(tb, /payload\.cli\s*=\s*effCli/);
+  assert.match(tb, /payload\.provider\s*=\s*effProvider/);
+  // A provider picked without a cli must ride the cli its list was filtered
+  // by, never inherit the commander's cli from under a foreign provider.
+  assert.match(tb, /provListCli/);
+});
+
 // ── parseTagResult ──────────────────────────────────────────────────────────
 
 test('parseTagResult accepts clean JSON and sanitizes entries', () => {
@@ -976,6 +992,7 @@ test('REST: board, messages, send and status flow', async () => {
   runtime.mountRoutes(app);
   assert.deepEqual([...routes.keys()], [
     'GET /api/task-board',
+    'GET /api/task-board/suggested-runtime',
     'GET /api/task-board/tasks/:taskId',
     'GET /api/task-board/tasks/:taskId/messages',
     'POST /api/task-board/tasks/:taskId/send',
