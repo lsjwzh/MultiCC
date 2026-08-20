@@ -599,6 +599,7 @@
     .tool-icon { font-size: 14px; }
     .tool-name { font-weight: 600; color: #79c0ff; }
     .tool-desc { color: #8b949e; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .tool-card.tool-running .tool-icon { animation: blink 1s infinite; } .tool-card.tool-running .tool-desc::after { content: ''; animation: tool-dots 1.2s steps(1) infinite; } @keyframes tool-dots { 0% { content: ''; } 25% { content: '.'; } 50% { content: '..'; } 75% { content: '...'; } }
     .tool-arrow { color: #6e7681; transition: transform 0.2s; font-size: 12px; }
     .tool-card.open .tool-arrow { transform: rotate(90deg); }
     .tool-body {
@@ -718,8 +719,7 @@
       width: 6px; height: 6px; background: #58a6ff; border-radius: 50%;
       animation: bounce 1.4s infinite ease-in-out both;
     }
-    .thinking-dots span:nth-child(1) { animation-delay: -0.32s; }
-    .thinking-dots span:nth-child(2) { animation-delay: -0.16s; }
+    .thinking-dots span:nth-child(1) { animation-delay: -0.32s; } .thinking-dots span:nth-child(2) { animation-delay: -0.16s; }
     @keyframes bounce {
       0%,80%,100% { transform: scale(0); opacity: 0.3; }
       40% { transform: scale(1); opacity: 1; }
