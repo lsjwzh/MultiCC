@@ -34,6 +34,9 @@
     "lastActivity": { "type": ["string", "null"], "format": "date-time" },
     "clients": { "type": "integer", "minimum": 0 },
     "active": { "type": "boolean" },
+    "workspaceState": { "enum": ["awake", "hibernated"] },
+    "lastWorkAt": { "type": ["string", "null"], "format": "date-time" },
+    "hibernatedAt": { "type": ["string", "null"], "format": "date-time" },
     "mergeState": {
       "type": ["object", "null"],
       "additionalProperties": false,

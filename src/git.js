@@ -269,17 +269,170 @@ async function gitWorktreeAdd(dirPath, sessionId, baseBranch, opts = {}) {
     await ensureExcludedWith(execGit, dirPath);
     await fsp.mkdir(path.join(dirPath, WORKTREE_SUBDIR), { recursive: true });
     try { await execGit(dirPath, ['worktree', 'prune']); } catch (_) {}
-    try {
-      const stat = await fsp.stat(worktreePath);
-      if (stat.isDirectory()) return { ok: true, worktreePath, branch, existing: true };
-    } catch (_) {}
     let branchExists = false;
     try { await execGit(dirPath, ['rev-parse', '--verify', branch]); branchExists = true; } catch (_) {}
+    if (opts.requireExistingBranch && !branchExists) {
+      const error = new Error('session branch is missing');
+      error.code = 'WORKTREE_BRANCH_MISSING';
+      throw error;
+    }
+    try {
+      const stat = await fsp.stat(worktreePath);
+      if (stat.isDirectory()) {
+        if (opts.requireExistingBranch) {
+          const validation = await worktreeValidationWith(execGit, dirPath, worktreePath, branch);
+          if (!validation.ok) {
+            const error = new Error('existing worktree does not match the session branch');
+            error.code = validation.code;
+            throw error;
+          }
+        }
+        return { ok: true, worktreePath, branch, existing: true };
+      }
+    } catch (error) {
+      if (error && error.code && error.code.startsWith('WORKTREE_')) throw error;
+    }
     progress('create', { worktreePath, branch });
     await execGit(dirPath, branchExists
       ? ['worktree', 'add', worktreePath, branch]
       : ['worktree', 'add', worktreePath, '-b', branch, baseBranch]);
     return { ok: true, worktreePath, branch, existing: false };
+  }, { ...opts, sessionId });
+}
+
+function worktreeBlocks(raw) {
+  return String(raw || '').split(/\n\s*\n/).map((block) => {
+    const item = {};
+    for (const line of block.split('\n')) {
+      const space = line.indexOf(' ');
+      if (space > 0) item[line.slice(0, space)] = line.slice(space + 1);
+    }
+    return item;
+  }).filter(item => item.worktree);
+}
+
+async function worktreeValidationWith(execGit, dirPath, worktreePath, branch) {
+  const canonical = (value) => {
+    try { return fs.realpathSync(value); } catch (_) { return path.resolve(value); }
+  };
+  const expectedPath = canonical(worktreePath);
+  const expectedRef = `refs/heads/${branch}`;
+  const pathExists = fs.existsSync(worktreePath);
+  const rows = worktreeBlocks(await execGit(dirPath, ['worktree', 'list', '--porcelain']).catch(() => ''));
+  const registered = rows.find(row => canonical(row.worktree) === expectedPath) || null;
+  if (registered && registered.branch !== expectedRef) {
+    return { ok: false, code: 'WORKTREE_BRANCH_MISMATCH', pathExists, branchExists: false };
+  }
+  let branchExists = false;
+  try {
+    await execGit(dirPath, ['rev-parse', '--verify', '--quiet', `${expectedRef}^{commit}`]);
+    branchExists = true;
+  } catch (_) {}
+  if (!branchExists) return { ok: false, code: 'WORKTREE_BRANCH_MISSING', pathExists, branchExists };
+  if (!registered) return { ok: false, code: 'WORKTREE_NOT_REGISTERED', pathExists, branchExists };
+  return { ok: pathExists, code: pathExists ? null : 'WORKTREE_PATH_MISSING', pathExists, branchExists };
+}
+
+async function gitWorktreeValidate(dirPath, worktreePath, branch, opts = {}) {
+  return defaultRepoActor.run(dirPath, 'worktree-validate', async ({ execGit }) => ({
+    ...(await worktreeValidationWith(execGit, dirPath, worktreePath, branch)),
+  }), opts);
+}
+
+const RECLAIMABLE_IGNORED_PREFIXES = Object.freeze([
+  'node_modules/', '.dart_tool/', 'build/', '.gradle/',
+  'app/node_modules/', 'app/.dart_tool/', 'app/build/', 'app/.gradle/',
+  'android/.gradle/', 'app/android/.gradle/',
+]);
+
+function reclaimableIgnored(relative) {
+  const value = String(relative || '').replace(/\\/g, '/').replace(/^\.\//, '');
+  if (!value || value.startsWith('/') || value.split('/').includes('..')) return false;
+  if (RECLAIMABLE_IGNORED_PREFIXES.some(prefix => value === prefix.slice(0, -1) || value.startsWith(prefix))) return true;
+  return /^(?:app\/)?(?:build\/[^/]+\/)*multicc[^/]*\.apk$/i.test(value)
+    || /^app\/build\/app\/outputs\/flutter-apk\/[^/]+\.apk$/i.test(value);
+}
+
+async function worktreeOperationInProgress(execGit, worktreePath) {
+  const markers = [
+    ['MERGE_HEAD', 'merge'],
+    ['CHERRY_PICK_HEAD', 'cherry_pick'],
+    ['REVERT_HEAD', 'revert'],
+    ['BISECT_START', 'bisect'],
+    ['rebase-merge', 'rebase'],
+    ['rebase-apply', 'rebase'],
+  ];
+  for (const [marker, operation] of markers) {
+    let gitPath;
+    try { gitPath = await execGit(worktreePath, ['rev-parse', '--git-path', marker]); }
+    catch (_) { continue; }
+    const target = path.isAbsolute(gitPath) ? gitPath : path.resolve(worktreePath, gitPath);
+    if (fs.existsSync(target)) return operation;
+  }
+  return null;
+}
+
+// Hibernate-only primitive: snapshot every Git-visible change, delete only
+// explicitly-regenerable ignored files, remove the checkout, and retain the
+// session branch. This intentionally does not call gitWorktreeRemove(), whose
+// lifecycle contract includes deleting the branch.
+async function gitWorktreeDetach(dirPath, worktreePath, branch, opts = {}) {
+  const sessionId = opts.sessionId || path.basename(worktreePath || branch || 'session');
+  return defaultRepoActor.run(dirPath, 'worktree-detach', async ({ execGit, progress }) => {
+    const validation = await worktreeValidationWith(execGit, dirPath, worktreePath, branch);
+    if (!validation.ok) {
+      const error = new Error('session worktree validation failed');
+      error.code = validation.code;
+      throw error;
+    }
+    const activeOperation = await worktreeOperationInProgress(execGit, worktreePath);
+    if (activeOperation) {
+      const error = new Error('worktree has an active Git operation');
+      error.code = 'HIBERNATE_GIT_OPERATION_ACTIVE';
+      error.operation = activeOperation;
+      throw error;
+    }
+    const ignoredRaw = await execGit(worktreePath, [
+      'ls-files', '--others', '--ignored', '--exclude-standard', '-z', '--directory',
+    ]).catch(() => '');
+    const ignored = String(ignoredRaw || '').split('\0').filter(Boolean);
+    const unknown = ignored.filter(relative => !reclaimableIgnored(relative));
+    if (unknown.length) {
+      const error = new Error('worktree contains ignored user files');
+      error.code = 'HIBERNATE_UNKNOWN_IGNORED';
+      error.count = unknown.length;
+      throw error;
+    }
+    progress('snapshot');
+    const committed = await commitAllWith(execGit, worktreePath,
+      `[multicc] hibernate snapshot ${sessionId}`);
+    const snapshot = await execGit(worktreePath, ['rev-parse', 'HEAD']);
+    for (const relative of ignored) {
+      const target = path.resolve(worktreePath, relative);
+      const root = `${path.resolve(worktreePath)}${path.sep}`;
+      if (!target.startsWith(root)) {
+        const error = new Error('ignored cache path escaped worktree');
+        error.code = 'HIBERNATE_CACHE_PATH_INVALID';
+        throw error;
+      }
+      await fsp.rm(target, { recursive: true, force: true });
+    }
+    const dirty = await execGit(worktreePath, ['status', '--porcelain']);
+    if (dirty) {
+      const error = new Error('worktree remained dirty after snapshot');
+      error.code = 'HIBERNATE_SNAPSHOT_DIRTY';
+      throw error;
+    }
+    progress('detach');
+    await execGit(dirPath, ['worktree', 'remove', worktreePath]);
+    await execGit(dirPath, ['worktree', 'prune']).catch(() => '');
+    if (fs.existsSync(worktreePath)) {
+      const error = new Error('worktree checkout still exists after detach');
+      error.code = 'HIBERNATE_PATH_REMAINS';
+      throw error;
+    }
+    await execGit(dirPath, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}^{commit}`]);
+    return { ok: true, detached: true, committed, snapshot };
   }, { ...opts, sessionId });
 }
 
@@ -721,6 +874,8 @@ module.exports = {
   gitImportSessionBundle,
   gitEnsureExcluded,
   gitWorktreeAdd,
+  gitWorktreeDetach,
+  gitWorktreeValidate,
   gitWorktreeRollbackCreate,
   gitWorktreeRemove,
   gitRelocateWorktree,

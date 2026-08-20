@@ -30,6 +30,9 @@ function sessionDtoPresenter({ record, runtime }) {
     lastActivity: runtime.lastActivity,
     clients: runtime.clients,
     active: runtime.active,
+    workspaceState: record.workspaceState,
+    lastWorkAt: record.lastWorkAt,
+    hibernatedAt: record.hibernatedAt,
     mergeState: runtime.mergeState,
   });
 }

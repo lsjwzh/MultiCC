@@ -250,10 +250,12 @@ function createSessionWorkHost(deps = {}) {
   }
 
   function turnSucceeded(sessionId) {
+    try { deps.onTerminalWork?.(sessionId, { status: 'completed' }); } catch (_) {}
     return closeTurnForClassify(sessionId);
   }
 
   function turnFailed(sessionId, reason = 'unknown_interruption') {
+    try { deps.onTerminalWork?.(sessionId, { status: 'failed', reason }); } catch (_) {}
     return closeTurnForClassify(sessionId, reason);
   }
 
@@ -743,6 +745,7 @@ function createSessionWorkHost(deps = {}) {
       }
     }
     if (!stopped) {
+      try { deps.onTerminalWork?.(sessionId, { status: 'failed', reason: 'cancel_stop_timeout' }); } catch (_) {}
       return {
         ok: false,
         code: 'runner_stop_timeout',
@@ -753,6 +756,7 @@ function createSessionWorkHost(deps = {}) {
         dispatchSettlement,
       };
     }
+    try { deps.onTerminalWork?.(sessionId, { status: 'cancelled', reason: effectiveReason }); } catch (_) {}
     return {
       ok: true,
       classifyState: 'E',
