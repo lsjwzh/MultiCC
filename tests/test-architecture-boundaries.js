@@ -134,7 +134,7 @@ test('only the shutdown drain reads raw liveness for a work decision', () => {
   const gateway = fs.readFileSync('src/dispatch/gateway-host.js', 'utf8');
   assert.match(gateway, /active: !!isTargetBusy\(s\.id\)/);
   assert.doesNotMatch(gateway, /activeChat\.isStreaming|clients\.size > 0/);
-  for (const file of ['src/commander-router.js', 'src/task-board.js', 'src/routes/task-board.js']) {
+  for (const file of ['src/task-board.js', 'src/routes/task-board.js']) {
     assert.doesNotMatch(fs.readFileSync(file, 'utf8'), /isStreaming|claudeProc/, file);
   }
 });

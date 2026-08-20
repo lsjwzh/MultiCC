@@ -670,8 +670,8 @@ function renderTaskDetail(d) {
         body: JSON.stringify({ text, target, clientMsgId: pendingFollowupId }) });
       const res = await r.json();
       if (!r.ok || !res.ok) throw new Error(res.note || res.error || r.status);
-      resultEl.textContent = res.routingMode === 'commander'
-        ? `已由 Commander「${res.targetLabel}」单向路由到「${res.workerLabel || res.workerSessionId}」${res.elasticWorkerCreated ? '（已动态增加 worker）' : res.queued ? '（已安全排队）' : ''}`
+      resultEl.textContent = res.taskBound
+        ? `已进入任务会话「${res.targetLabel}」${res.queued ? '（已安全排队）' : ''}`
         : `已路由到「${res.targetLabel}」，回复将自动归档回本任务`;
       resultEl.className = 'msg ok';
       input.value = '';
