@@ -42,6 +42,9 @@ function createTurnEventJournal(deps = {}) {
   // sessionId → { queue, seq, bytes }
   const sessions = new Map();
   let dropped = 0;
+  // Corrupt lines skipped during read/readAll (a partial write used to retire
+  // every event after it in the same file).
+  let corruptLines = 0;
 
   function fileFor(sessionId, suffix) {
     const safe = String(sessionId || '').replace(/[^A-Za-z0-9._-]/g, '_');
@@ -136,18 +139,20 @@ function createTurnEventJournal(deps = {}) {
     const out = [];
     for (const line of raw.split('\n')) {
       if (!line) continue;
-      try { out.push(JSON.parse(line)); } catch (_) { break; }
+      // A single corrupt line (partial write, disk hiccup) must not retire the
+      // rest of the file's events - skip it, count it, keep replaying.
+      try { out.push(JSON.parse(line)); } catch (_) { corruptLines += 1; }
     }
     return out;
   }
 
   function stats() {
-    return { sessions: sessions.size, dropped };
+    return { sessions: sessions.size, dropped, corruptLines };
   }
 
   // All generations, oldest first, so seq is ascending across files — the
   // full-history view derivation (open tasks at cutoff) needs. Same parse
-  // rules as read(); a corrupt line stops that file but not the rest.
+  // rules as read(); a corrupt line is skipped but never stops the rest.
   function readAll(sessionId) {
     if (!dirFor) return [];
     const suffixes = [];
@@ -159,7 +164,7 @@ function createTurnEventJournal(deps = {}) {
       try { raw = fs.readFileSync(fileFor(sessionId, suffix), 'utf8'); } catch (_) { continue; }
       for (const line of raw.split('\n')) {
         if (!line) continue;
-        try { out.push(JSON.parse(line)); } catch (_) { break; }
+        try { out.push(JSON.parse(line)); } catch (_) { corruptLines += 1; }
       }
     }
     return out;
