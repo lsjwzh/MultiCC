@@ -2325,7 +2325,7 @@ function createTaskBoardRuntime(deps) {
   // binds immediately). A dangling binding (record deleted) heals by
   // re-creating; explicit dirId wins over ref-derived resolution because a
   // brand-new task has no refs yet.
-  async function ensureBoundChatSession(task, { dirId = null, runtime = null } = {}) {
+  async function ensureBoundChatSession(task, { dirId = null, runtime = null, adoptOrigin = false } = {}) {
     if (!createSessionRecord) return { ok: false, code: 'chat_session_unavailable' };
     const boundId = typeof task.chatSessionId === 'string' ? task.chatSessionId : '';
     if (boundId && records.get(boundId)) {
@@ -2342,6 +2342,24 @@ function createTaskBoardRuntime(deps) {
           }
           return { ok: true, sessionId: rec.id, created: false };
         }
+      }
+    }
+    // Read-side adoption (opt-in, click path only): a task born inside
+    // ordinary sessions (message taskId refs) already HAS its conversation
+    // there — opening it must land in that session, not fork a fresh hidden
+    // room that has never seen the work. The newest live ordinary ref wins;
+    // execution slots and other tasks' bound rooms are never homes. Nothing
+    // is created, bound or persisted, so dispatch and archive semantics stay
+    // exactly as they were — this is view-layer resolution only.
+    if (adoptOrigin && typeof records?.get === 'function') {
+      const refs = [...(task.refs || [])]
+        .filter(ref => ref?.sessionId)
+        .sort((a, b) => (b.ts || 0) - (a.ts || 0));
+      for (const ref of refs) {
+        const rec = records.get(ref.sessionId);
+        if (!rec || rec.kind !== 'chat') continue;
+        if (rec.taskExecutionSlot || rec.taskBoundTaskId) continue;
+        return { ok: true, sessionId: rec.id, created: false, adopted: true };
       }
     }
     const resolvedDirId = dirId || core.taskDirId(board, task);
@@ -2407,13 +2425,14 @@ function createTaskBoardRuntime(deps) {
     }
     const task = board.tasks[req.params.taskId];
     if (!task) return res.status(404).json({ error: 'task_not_found' });
-    const bound = await ensureBoundChatSession(task);
+    const bound = await ensureBoundChatSession(task, { adoptOrigin: true });
     if (!bound.ok) {
       const status = bound.code === 'chat_session_unavailable' ? 501
         : bound.code === 'directory_not_found' ? 409 : 502;
       return res.status(status).json({ error: bound.code });
     }
-    return res.json({ ok: true, sessionId: bound.sessionId, created: bound.created });
+    return res.json({ ok: true, sessionId: bound.sessionId, created: bound.created,
+      ...(bound.adopted ? { adopted: true } : {}) });
   }
 
   async function handleCancelRun(req, res) {
