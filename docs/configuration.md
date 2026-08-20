@@ -69,14 +69,18 @@ from this host's provider store, so the remote side never sees your API keys.
 
 On this host:
 
-1. Set `MULTICC_PROXY_TOKEN=<a long random secret>` in `.env` and restart.
+1. Set the relay token — either in the UI (`/manage` → 外网穿透监控 →
+   「借道令牌 (MULTICC_PROXY_TOKEN)」卡片，保存后立即生效、无需重启), or put
+   `MULTICC_PROXY_TOKEN=<a long random secret>` in `.env` and restart.
 2. Make the port reachable: Tailscale Funnel / tailnet, or a non-loopback
    `HOST` with `MULTICC_ALLOW_REMOTE=1` + `ACCESS_TOKEN`.
 
 Fastest path — the share-code UI: on this host's `/manage` Provider page,
-click 借道分享 on a provider card, enter the public base URL (the address the
-remote multicc can reach, e.g. the Tailscale Funnel URL), and copy the
-`mcrelay1.…` share code. On the remote multicc, open `/manage` → 导入借道
+click 借道分享 on a provider card and pick the address the remote multicc can
+reach from the dropdown (current page address, LAN address, and any
+configured/verified tunnel addresses; a custom URL works too), then copy the
+`mcrelay1.…` share code. If the relay token is not configured yet, the dialog
+offers to set it in place. On the remote multicc, open `/manage` → 导入借道
 Provider, paste the code, and the provider is created with the relay baseUrl
 and token already filled in. The code embeds only the relay token — never the
 upstream API keys.
@@ -96,8 +100,8 @@ to the `MULTICC_PROXY_TOKEN` — the relays accept it as `x-api-key` or
 Security model: the token unlocks exactly the two relay mounts — never `/api`,
 the dashboard, or WebSockets. With the token unset the relays stay closed to
 all non-loopback peers (fail-closed). Whoever holds the token can consume the
-relayed providers' quota, so treat it like an API key and rotate it by
-changing `.env`.
+relayed providers' quota, so treat it like an API key and rotate it from the
+same 借道令牌 card (or by changing `.env`).
 
 ## Voice — Speech-to-Speech (S2S)
 

@@ -281,6 +281,64 @@
     }
   }
 
+  // ── Proxy relay token (MULTICC_PROXY_TOKEN) ──
+  async function loadProxyToken() {
+    const input = document.getElementById('ptoken');
+    const hint = document.getElementById('ptoken-hint');
+    const btn = document.getElementById('ptoken-save');
+    if (!input) return;
+    try {
+      const res = await fetch('/api/settings/proxy-token' + tokenQS('?'));
+      const d = await res.json();
+      if (d.canEdit) {
+        input.disabled = false;
+        input.readOnly = false;
+        input.value = '';
+        input.placeholder = d.hasToken ? '已设置（留空保存=清除；输入新值=修改）' : '未设置';
+        if (hint) { hint.textContent = '· 本机可修改'; hint.style.color = 'var(--faint)'; }
+        if (btn) btn.disabled = false;
+      } else {
+        input.disabled = true;
+        input.readOnly = true;
+        input.value = d.masked || '';
+        input.placeholder = d.hasToken ? '' : '未设置';
+        if (hint) { hint.textContent = '· 仅本机可修改'; hint.style.color = 'var(--faint)'; }
+        if (btn) btn.disabled = true;
+      }
+    } catch (_) {}
+  }
+
+  async function saveProxyToken() {
+    const input = document.getElementById('ptoken');
+    const msg = document.getElementById('ptoken-msg');
+    if (!input || input.disabled) return;
+    const token = input.value;
+    if (token.includes('****')) { if (msg) { msg.textContent = '未修改'; msg.className = 'status-text'; } return; }
+    if (!token.trim() && !confirm('留空保存将清除借道令牌，已分享的借道 provider 会立即失效。确定？')) return;
+    try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (_urlToken) headers['X-Access-Token'] = _urlToken;
+      const res = await fetch('/api/settings/proxy-token', { method: 'POST', headers, body: JSON.stringify({ token }) });
+      const d = await res.json();
+      if (!res.ok || d.error) throw new Error(d.error || ('HTTP ' + res.status));
+      if (msg) { msg.textContent = d.hasToken ? '已保存' : '已清除'; msg.className = 'status-text ok'; }
+      showToast('借道令牌已更新');
+      loadProxyToken();
+    } catch (e) {
+      if (msg) { msg.textContent = '错误: ' + e.message; msg.className = 'status-text err'; }
+    }
+  }
+
+  function genProxyToken() {
+    const input = document.getElementById('ptoken');
+    if (!input || input.disabled) return;
+    const bytes = new Uint8Array(24);
+    (window.crypto || crypto).getRandomValues(bytes);
+    input.value = 'mcpr_' + Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+    const msg = document.getElementById('ptoken-msg');
+    if (msg) { msg.textContent = '已生成，点「保存」生效'; msg.className = 'status-text'; }
+  }
+
   // ── Claude Code proxy global toggle ──
   async function loadProxySetting() {
     const cb = document.getElementById('cc-proxy-enabled');
@@ -370,6 +428,7 @@
 
   async function loadTunnelSettings() {
     loadAccessToken();
+    loadProxyToken();
     loadProxySetting();
     loadOfficialOAuthSetting();
     try {
@@ -727,6 +786,8 @@
     testBark,
     testWebhook,
     saveAccessToken,
+    saveProxyToken,
+    genProxyToken,
     saveProxySetting,
     saveOfficialOAuthSetting,
     loadTunnelSettings,

@@ -21,6 +21,7 @@ const EXPECTED_PATHS = [
   '/api/tunnel/restart/:provider',
   '/api/tunnel/funnel',
   '/api/settings/access-token',
+  '/api/settings/proxy-token',
   '/api/settings/proxy',
   '/api/settings/official-oauth',
   '/api/settings/power',
@@ -166,6 +167,7 @@ test('permission matrix preserves authenticated routes and limits only sensitive
   const { routes, state } = createHarness();
   for (const routePath of [
     '/api/settings/access-token',
+    '/api/settings/proxy-token',
     '/api/settings/proxy',
     '/api/settings/official-oauth',
   ]) {
@@ -563,6 +565,57 @@ test('access-token writes durably before hot reload and refuses unsafe clearing'
   });
   assert.equal(cliGuarded.statusCode, 400);
   assert.equal(cliTunnel.state.accessToken, 'old-token');
+});
+
+test('proxy-token writes durably before hot reload and rejects masked edits', async () => {
+  const { routes, state } = createHarness({
+    getProxyToken: () => state.proxyToken,
+    setProxyToken: token => {
+      state.events.push(['proxy-token-live', token]);
+      state.proxyToken = token;
+    },
+  });
+  state.proxyToken = '';
+  const updated = await invoke(routes, '/api/settings/proxy-token', {
+    local: true,
+    body: { token: '  mcpr_relay  ' },
+  });
+  assert.deepEqual(updated.body, { ok: true, hasToken: true });
+  assert.deepEqual(state.events.slice(0, 2), [
+    ['persist', { MULTICC_PROXY_TOKEN: 'mcpr_relay' }],
+    ['proxy-token-live', 'mcpr_relay'],
+  ]);
+  assert.equal(state.proxyToken, 'mcpr_relay');
+
+  assert.equal((await invoke(routes, '/api/settings/proxy-token', {
+    local: true,
+    body: { token: '****elay' },
+  })).statusCode, 400);
+  assert.equal(state.proxyToken, 'mcpr_relay');
+
+  const cleared = await invoke(routes, '/api/settings/proxy-token', {
+    local: true,
+    body: { token: '' },
+  });
+  assert.deepEqual(cleared.body, { ok: true, hasToken: false });
+  assert.equal(state.proxyToken, '');
+});
+
+test('proxy-token defaults to process.env when no getter/setter is wired', async () => {
+  const previous = process.env.MULTICC_PROXY_TOKEN;
+  delete process.env.MULTICC_PROXY_TOKEN;
+  try {
+    const { routes } = createHarness();
+    const updated = await invoke(routes, '/api/settings/proxy-token', {
+      local: true,
+      body: { token: 'mcpr_default' },
+    });
+    assert.deepEqual(updated.body, { ok: true, hasToken: true });
+    assert.equal(process.env.MULTICC_PROXY_TOKEN, 'mcpr_default');
+  } finally {
+    if (previous === undefined) delete process.env.MULTICC_PROXY_TOKEN;
+    else process.env.MULTICC_PROXY_TOKEN = previous;
+  }
 });
 
 test('access-token and boolean persistence failures leave live values unchanged', async () => {
