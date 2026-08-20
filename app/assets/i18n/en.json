@@ -833,5 +833,6 @@
   "tbAttempts": "{n} deliveries",
   "tbBodyOrphan": "Legacy record without canonical body; not auto-merged",
   "tbBodyPending": "Body pending persistence by the target session…",
-  "tbUnresolvedGroup": "Unresolved legacy identity · {n} (not auto-merged)"
+  "tbUnresolvedGroup": "Unresolved legacy identity · {n} (not auto-merged)",
+  "tbTaskActions": "Task details & actions"
 }

@@ -26,8 +26,11 @@ import 'task_run_summary_list.dart';
 /// Task-board view for one directory: the AI-tagged module->task tree, filtered
 /// to [dirId], with 60s polling + manual refresh, plus the interactions layered
 /// on top of B1's read-only board:
-///   * tapping a task row opens a detail sheet (run state, areas, sessions,
-///     cross-session message trail);
+///   * tapping a task row opens its bound chat session directly — the full
+///     ordinary chat window (web chat.html?task= parity); the detail sheet
+///     (run state, areas, sessions, cross-session message trail, lifecycle
+///     actions) is one tap further via the row's ⋯ button or a long-press,
+///     and is the fail-soft landing when no bound session can be resolved;
 ///   * status actions (done / reopen / archive) + reclassify call the
 ///     authenticated clients (57bfe99); a 403 from an outdated host surfaces as a
 ///     SnackBar;
@@ -422,7 +425,48 @@ class _TaskBoardViewState extends State<TaskBoardView> {
     return r;
   }
 
-  void _openDetail(TaskBoardTask task) {
+  /// Which task row is currently resolving its bound chat session
+  /// (tap → straight into the full chat). Null while idle; one resolve at a
+  /// time so a double-tap can never stack two ensures.
+  String? _openingTaskId;
+
+  /// Task tap = the full chat window (web chat.html?task= parity): the task's
+  /// 1:1 bound session opens directly in the ordinary chat sheet (tool cards,
+  /// usage, memory injection, resume — nothing task-specific is lost because
+  /// the bound session IS an ordinary session). The detail sheet stays
+  /// reachable via the row's ⋯ button or a long-press (meta, run summary,
+  /// lifecycle actions), and remains the automatic fail-soft landing when no
+  /// binding can be resolved (old server, gone task, offline).
+  Future<void> _openTask(TaskBoardTask task) async {
+    final opener = widget.onOpenSession;
+    if (opener == null) {
+      _openDetailSheet(task);
+      return;
+    }
+    final bound = task.chatSessionId;
+    if (bound != null && bound.isNotEmpty) {
+      opener(bound);
+      return;
+    }
+    if (_openingTaskId != null) return;
+    setState(() => _openingTaskId = task.id);
+    final sid = await ManageService(
+      settings: widget.settings,
+    ).ensureTaskChatSession(task.id);
+    if (!mounted) return;
+    setState(() => _openingTaskId = null);
+    if (sid != null && sid.isNotEmpty) {
+      opener(sid);
+    } else {
+      _openDetailSheet(task);
+    }
+  }
+
+  /// The task detail sheet: meta, run summary and lifecycle actions. No
+  /// longer the default tap target (that is the full chat now); reachable
+  /// from the row's ⋯ button or a long-press, and the fail-soft landing when
+  /// the bound chat session cannot be resolved.
+  void _openDetailSheet(TaskBoardTask task) {
     final labels = _board?.sessionLabels ?? const <String, String>{};
     showModalBottomSheet<void>(
       context: context,
@@ -447,7 +491,10 @@ class _TaskBoardViewState extends State<TaskBoardView> {
       key: _keyFor(task.id),
       task: task,
       highlighted: _highlightId == task.id,
-      onTap: () => _openDetail(task),
+      opening: _openingTaskId == task.id,
+      onTap: () => _openTask(task),
+      onLongPress: () => _openDetailSheet(task),
+      onShowDetails: () => _openDetailSheet(task),
       onQuickArchive: task.status != 'archived'
           ? () => _quickArchive(task)
           : null,
@@ -807,11 +854,26 @@ class _TaskRow extends StatelessWidget {
   final VoidCallback? onQuickArchive;
   final bool highlighted;
 
+  /// True while this row's bound chat session is being resolved (tap → chat).
+  final bool opening;
+
+  /// Long-press anywhere on the row opens the detail sheet (same target as
+  /// the ⋯ button) — details/actions stay reachable now that tap opens the
+  /// full chat directly.
+  final VoidCallback? onLongPress;
+
+  /// The ⋯ button: opens the task detail sheet (meta, run summary, lifecycle
+  /// actions).
+  final VoidCallback? onShowDetails;
+
   const _TaskRow({
     required this.task,
     this.onTap,
     this.onQuickArchive,
+    this.onLongPress,
+    this.onShowDetails,
     this.highlighted = false,
+    this.opening = false,
     super.key,
   });
 
@@ -841,6 +903,7 @@ class _TaskRow extends StatelessWidget {
         ),
         child: InkWell(
           onTap: onTap,
+          onLongPress: onLongPress,
           borderRadius: BorderRadius.circular(6),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
@@ -848,9 +911,17 @@ class _TaskRow extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 // runState icon: running pulses; others are static emoji.
+                // While the row resolves its bound chat (tap → chat) the icon
+                // yields to a spinner so the tap reads as in-flight.
                 Padding(
                   padding: const EdgeInsets.only(top: 2),
-                  child: _runStateIcon(spec),
+                  child: opening
+                      ? const SizedBox(
+                          width: 13,
+                          height: 13,
+                          child: CircularProgressIndicator(strokeWidth: 1.5),
+                        )
+                      : _runStateIcon(spec),
                 ),
                 const SizedBox(width: 8),
                 Expanded(
@@ -959,6 +1030,35 @@ class _TaskRow extends StatelessWidget {
                           border: Border.all(color: AppColors.line),
                         ),
                         child: const Text('🗄', style: TextStyle(fontSize: 11)),
+                      ),
+                    ),
+                  ),
+                // ⋯ details button: tap now opens the full chat directly, so
+                // the detail sheet (meta / run summary / lifecycle actions)
+                // gets this explicit affordance (long-press works too).
+                if (onShowDetails != null)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 4),
+                    child: Semantics(
+                      label: t('tbTaskActions'),
+                      child: GestureDetector(
+                        onTap: onShowDetails,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 3,
+                          ),
+                          decoration: BoxDecoration(
+                            color: AppColors.panel2,
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(color: AppColors.line),
+                          ),
+                          child: const Icon(
+                            Icons.more_horiz_rounded,
+                            size: 13,
+                            color: AppColors.muted,
+                          ),
+                        ),
                       ),
                     ),
                   ),
