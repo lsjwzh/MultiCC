@@ -689,8 +689,25 @@ function createChatTurnEngine(deps) {
     if (experimentalRuntime?.owns(persistedSessions.get(sessionName))) {
       return experimentalRuntime.admit(sessionName, text, opts);
     }
-    return getSessionWorkHost()?.admit(sessionName, text, opts)
-      || { ok: false, code: 'scheduler_not_ready' };
+    const admitted = getSessionWorkHost()
+      ? await getSessionWorkHost().admit(sessionName, text, opts)
+      : null;
+    // scheduler_not_ready is the one admission failure nothing downstream
+    // reports: the auth gates and 消息入队失败 paths broadcast their own error
+    // frames, but a missing/unwired scheduler runtime means the message was
+    // queued NOWHERE and no turn will ever start. Without this frame the user's
+    // message vanished with zero feedback (M3).
+    if (!admitted || admitted.code === 'scheduler_not_ready') {
+      logger.warn?.('chat_admit_scheduler_not_ready', { sessionId: sessionName });
+      try {
+        chatBroadcast(sessionName, {
+          type: 'error',
+          error: '会话调度器尚未就绪，消息未被接收；请稍后重试。',
+          code: 'scheduler_not_ready',
+        });
+      } catch (_) {}
+    }
+    return admitted || { ok: false, code: 'scheduler_not_ready' };
   }
 
   function runChatTurn(sessionName, text, opts = {}) {
@@ -2107,8 +2124,18 @@ function createChatTurnEngine(deps) {
           }
           const pendingMemory = getPendingMemoryDistill(sessionName);
           const deliver = () => taskContextHost.deliverSessionMessage(sessionName, msg.text, turnOpts);
-          if (pendingMemory) pendingMemory.finally(deliver);
-          else await deliver();
+          if (pendingMemory) {
+            // A pending memory distill delays delivery so the new turn sees the
+            // distilled memory. It must never EAT the message: the old shape
+            // (pendingMemory.finally(deliver)) left both the distill rejection
+            // and deliver's rejection unhandled, and returned from the handler
+            // before delivery - a failed distill silently dropped the user's
+            // message. Await through it, let a failed distill pass, and let
+            // deliver's own errors reach the handler's catch.
+            await Promise.resolve(pendingMemory).catch(() => {}).then(deliver);
+          } else {
+            await deliver();
+          }
           return;
         }
       } catch (e) {

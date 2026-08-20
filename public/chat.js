@@ -324,8 +324,6 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('memo-send-btn')?.addEventListener('click', memoOpenPicker);
 });
 let isStreaming = false;
-let stagedUserBubbles = new Map(); // clientMsgId -> text for queued user messages
-window.stagedUserBubbles = stagedUserBubbles;
 let _pendingCancel = false; // cancel requested while WS was disconnected
 
 // Context window tracking
@@ -774,11 +772,33 @@ function attachUsageLine(bubbleEl, usage, roleBreakdown) {
   return chatLiveUi.attachUsageLine(bubbleEl, usage, roleBreakdown);
 }
 
-function renderCurrentText(final = false) {
+// Streaming deltas re-render the FULL accumulated markdown (the view layer has
+// no incremental path), so one render per text_delta is O(n^2) over a long
+// reply - hundreds of full marked+DOMPurify parses that stall mobile UIs.
+// Coalesce non-final renders on a short timer; only the first delta of a burst
+// schedules one, later deltas just extend the accumulated text. The FINAL
+// render (result/stream_end teardown) always runs synchronously so the turn
+// never ends on a throttled, stale bubble.
+const STREAM_RENDER_COALESCE_MS = 50;
+let _pendingStreamRender = null;
+function renderCurrentTextNow(final) {
   return chatHistoryView.renderCurrentText(currentMsgEl, currentTextContent, {
     final,
     streaming: isStreaming,
   });
+}
+function renderCurrentText(final = false) {
+  if (final) {
+    if (_pendingStreamRender != null) { clearTimeout(_pendingStreamRender); _pendingStreamRender = null; }
+    return renderCurrentTextNow(true);
+  }
+  if (_pendingStreamRender == null) {
+    _pendingStreamRender = setTimeout(() => {
+      _pendingStreamRender = null;
+      renderCurrentTextNow(false);
+    }, STREAM_RENDER_COALESCE_MS);
+  }
+  return null;
 }
 
 function highlightCodeBlocks(root) {
@@ -2509,7 +2529,12 @@ chatComposer = window.MultiCCChatComposer.createComposer({
   transportSend: hostTransportSend,
   retryTransport: () => chatTransport.retryNow(),
   addSystemMessage: addSystemMsg,
-  stageUserMessage: (text, id) => stagedUserBubbles.set(id, text),
+  // Deliberately inert: the user bubble appears only on the server's
+  // queued=false confirmation (chat-event-controller session_queue), never
+  // optimistically on send. The old stagedUserBubbles map implemented this
+  // "stage" by storing every sent message forever with no reader (M6); staging
+  // now just discards.
+  stageUserMessage: () => {},
   addUserMessage: addUserMsg,
   resetHistory: () => {
     resetHistoryPagination();

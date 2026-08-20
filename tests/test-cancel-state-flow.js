@@ -351,6 +351,29 @@ test('a cancelled turn is never dressed up as completed on the task card', async
   assert.equal(classifyDisplay('E').barTint, 'error', 'card and bar agree');
 });
 
+test('manual cancel emits stream_end so the frontend live spinner ends with the per-turn runner', async t => {
+  const h = harness(t);
+  await h.startTurn();
+  const result = await h.host.cancelActiveTurn('s1', { source: 'manual_cancel' });
+  assert.equal(result.ok, true);
+  // stopRunner detaches claudeProc BEFORE signalling, so turn-engine's close
+  // handler sees a stale proc and skips its entire finalization - by design,
+  // the structured cancel owns that chain. But nothing in the cancel chain
+  // broadcasts stream_end, and the classify-E notify never touches the
+  // frontend's isStreaming, so the live spinner would hang until reconnect.
+  // The one stream_end stopRunner emits is the only end-of-stream the client
+  // gets; assert it exists, exactly once, and ahead of the E verdict.
+  const streamEnds = h.events.filter(e => e.kind === 'chat_broadcast' && e.payload.type === 'stream_end');
+  assert.equal(streamEnds.length, 1, 'cancel of a per-turn runner must emit exactly one stream_end');
+  assert.ok(streamEnds[0].seq < h.firstIndex('classify_dispatch'),
+    'stream_end precedes the structured E verdict so the spinner falls before the 已取消 notify');
+  // A repeat cancel on the now-idle session (claudeProc gone, isStreaming
+  // false) must not re-emit a spurious stream_end.
+  await h.host.cancelActiveTurn('s1');
+  assert.equal(h.events.filter(e => e.kind === 'chat_broadcast' && e.payload.type === 'stream_end').length, 1,
+    'no spurious stream_end once the runner is detached');
+});
+
 // ── 2. FIFO policy is untouched ────────────────────────────────────────────
 
 test('cancel releases the active slot without advancing the FIFO', async t => {
