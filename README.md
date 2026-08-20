@@ -114,7 +114,7 @@ The picker shows which CLIs are installed, which already hold a saved session, a
 ### 1. Install
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v1.5.2/install.sh | bash -s -- --branch v1.5.2
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v1.6.1/install.sh | bash -s -- --branch v1.6.1
 ```
 
 The script detects your OS, checks prerequisites, clones the repo, installs dependencies, generates an `ACCESS_TOKEN`, and optionally registers a background service (macOS `launchd`). Installation never builds the Android APK.
@@ -140,8 +140,9 @@ published, signed with the project release key, and attached to that exact GitHu
 Release. The **APK area in `/manage`** prefers a non-empty local
 `public/multicc.apk`; when none exists, it links only to the `multicc.apk` asset
 for the server's exact package version. It never falls forward to `latest`.
-Installation and `./multicc update` never build an APK. Release v1.5.2 predates
-the asset workflow, so the remote fallback begins with the next release.
+Installation and `./multicc update` never build an APK. Starting with v1.6.1,
+every stable release ships a signed APK asset, so the remote fallback is
+available immediately.
 
 ### 2. Start it
 
@@ -189,8 +190,11 @@ Or do it from the browser: click the **version number at the bottom of the `/man
 - Per-session **git worktree** on `multicc/<sessionId>`
 - Merge back with **syntax-gated** validation; sibling worktrees auto-sync after a merge
 - **Cross-session dispatch** — one agent hands work to another
-- **Agent Commander** scheduling, shared **task board**, inter-agent **notes**
+- Shared **task board** — every task owns a bound chat session with live transcript, cancel/cleanup, and stable short codes
+- **Scheduled message dock** — queue and review messages before they are sent
+- **Hibernate idle task worktrees** — auto-suspend idle task sessions to free resources
 - **run-detached** tasks, **cron** schedules, post-turn / file-change **triggers**
+- Inter-agent **notes**
 
 </td><td width="50%" valign="top">
 
@@ -209,6 +213,7 @@ Or do it from the browser: click the **version number at the bottom of the `/man
 - Native **Flutter app** for Android and iOS
 - **IM bridges**: WeChat, Feishu, Telegram, Discord, Slack
 - **Session sharing** via password-protected snapshot links
+- **Relay-token remote sharing** — grant access and share provider configs securely from `/manage`
 - Web Push / Bark / webhook **notifications**
 - Chinese + English UI
 
@@ -217,6 +222,7 @@ Or do it from the browser: click the **version number at the bottom of the `/man
 **Voice & resilience**
 - **Speech-to-speech** mode with VAD and barge-in
 - Classic voice input with **on-device ASR** (sherpa-onnx SenseVoice) and LLM prompt polishing
+- **Voice task announcements** — hands-free status of completed tasks
 - 500-event **replay buffer** — reconnect rebuilds state deterministically
 - Serialized git queue, graceful shutdown/restart
 - Fail-closed network binding, HMAC cookies, WebSocket tickets
@@ -272,11 +278,14 @@ Projects that **harness** the official CLIs — spawning and managing the real `
 
 **Where MultiCC is the only one, or nearly so:**
 
-- **In-place cross-CLI switching** with a bounded handoff checkpoint
-- **Speech-to-speech** voice conversation with an agent
+- **In-place cross-CLI switching** across six coding CLIs with a bounded handoff checkpoint
+- **Task board with bound chat sessions** — every task gets a private chat transcript, short codes, and lifecycle controls
+- **Scheduled messages** and **relay-token remote sharing**
+- **Speech-to-speech** voice conversation with an agent, plus hands-free task announcements
+- **On-device ASR** (sherpa-onnx SenseVoice) for classic voice input
 - **IM bridges** to five platforms with full dispatch + reply
 - **Per-session provider and subagent routing** for cost control
-- **Native mobile app** plus terminal, chat, and PWA against one backend
+- **Native mobile app**, PWA, terminal, and web chat against one backend, with signed APKs shipped on every stable release
 
 **Where it is weaker:** no hosted/cloud option, no built-in code editor, macOS/Linux only, and single-user by design — there is no team RBAC.
 
