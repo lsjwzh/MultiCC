@@ -2,7 +2,7 @@
 
 // Build sentinel — bump when shipping voice/HUD changes so users hitting a
 // stale cache immediately see a mismatch in devtools.
-window.__multiccClientBuild = 'voice-hud-2026-07-18b';
+window.__multiccClientBuild = 'voice-task-label-2026-08-20';
 console.log('[multicc] client.js build', window.__multiccClientBuild);
 
 // Simple HTML escape helper
@@ -635,7 +635,9 @@ async function connect() {
       } else if (msg.type === 'notify') {
         // Server-side aux-AI verdict (single judge): turn succeeded / waiting.
         const waiting = msg.state === 'waiting';
-        speakNotify(waiting ? '正在等待您的操作' : '本轮执行成功', waiting ? 'action' : 'succeeded');
+        const completionVoice = !waiting && typeof msg.voiceMessage === 'string'
+          ? msg.voiceMessage.trim() : '';
+        speakNotify(waiting ? '正在等待您的操作' : (completionVoice || '本轮执行成功'), waiting ? 'action' : 'succeeded');
       } else if (msg.type === 'exit') {
         term.write(msg.data);
         _sessionExited = true;

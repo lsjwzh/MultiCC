@@ -144,6 +144,20 @@ test('dashboard classic script stays ordered, bounded, and outside the manage fa
   }
 });
 
+test('dashboard completion alert prefers the task-aware voice message', () => {
+  const { context } = createHarness();
+  const spoken = [];
+  context.SpeechSynthesisUtterance = class SpeechSynthesisUtterance {
+    constructor(text) { this.text = text; }
+  };
+  context.speechSynthesis.speak = utterance => spoken.push(utterance.text);
+  context.alertSession(
+    'worker-1', 'succeeded', '执行成功：修复配额显示',
+    '任务 7K2M，修复配额显示，本轮执行成功',
+  );
+  assert.deepEqual(spoken, ['任务 7K2M，修复配额显示，本轮执行成功']);
+});
+
 test('dashboard module has no credential or token-query boundary', () => {
   const source = read('public/manage-dashboard.js');
   assert.doesNotMatch(source, /tokenQS|[?&]token=|authToken|apiKey|settingsConfig|authorization/i);

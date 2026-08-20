@@ -20,6 +20,7 @@ const {
   classifyDisplay,
   phaseLabel,
 } = require('./vocab');
+const { taskShortCode } = require('./task-short-code');
 const {
   buildTaskAttributionConversation,
   buildTaskAttributionSystemPrompt,
@@ -32,6 +33,13 @@ function assertFunction(value, name) {
   if (typeof value !== 'function') {
     throw new TypeError(`[classify-state-machine] ${name} must be a function`);
   }
+}
+
+function completionVoiceMessage(shortCode, goal) {
+  const code = String(shortCode || '').trim();
+  const taskGoal = String(goal || '').trim();
+  const identity = [code ? `任务 ${code}` : '', taskGoal].filter(Boolean).join('，');
+  return identity ? `${identity}，本轮执行成功` : '本轮执行成功';
 }
 
 function createClassifyStateMachine(rawDeps) {
@@ -231,15 +239,23 @@ function createClassifyStateMachine(rawDeps) {
       // D — this turn executed successfully. TaskBoard completion is a separate
       // user-owned lifecycle action and is never inferred here.
       const msg = finalGoal ? `执行成功：${finalGoal}` : '执行成功';
+      const completionTaskId = transitionTaskId || entryTaskId;
+      const completionTaskShortCode = taskShortCode(completionTaskId);
+      const completionNotice = {
+        type: 'notify', state: 'succeeded', classifyState: 'D', message: msg,
+        taskShortCode: completionTaskShortCode,
+        taskGoal: finalGoal || '',
+        voiceMessage: completionVoiceMessage(completionTaskShortCode, finalGoal),
+      };
       if (isTerminal) {
         triggerPush(sessionId, 'succeeded', msg);
-        terminalBroadcast(sessionId, { type: 'notify', state: 'succeeded', classifyState: 'D', message: msg });
+        terminalBroadcast(sessionId, completionNotice);
       } else {
         triggerPush(sessionId, 'succeeded', `[Chat] ${msg}`);
-        chatBroadcast(sessionName, { type: 'notify', state: 'succeeded', classifyState: 'D', message: msg });
+        chatBroadcast(sessionName, completionNotice);
       }
       const dirId = persistedSessions.get(sessionName)?.dirId;
-      if (dirId) workspaceBroadcast(dirId, { type: 'notify', sessionId, state: 'succeeded', classifyState: 'D', message: msg });
+      if (dirId) workspaceBroadcast(dirId, { ...completionNotice, sessionId });
       setSessionStatus(sessionName, { status: 'succeeded' });
       // D triggers no later state write, so persist it immediately. Otherwise a
       // crash before the next durable operation restores a stale P/W/E snapshot.
