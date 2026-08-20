@@ -133,9 +133,15 @@ curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install.sh | bas
 
 </details>
 
-**Prerequisites:** Node.js **>= 20.19**, `tmux` (terminal mode only), and at least one coding CLI on your `PATH`, already logged in. Flutter >= 3.8 and the Android toolchain are needed only when you explicitly build the Android app.
+**Prerequisites:** Node.js **>= 20.19**, `tmux` (terminal mode only), and at least one coding CLI on your `PATH`, already logged in.
 
-Build or rebuild the APK from the **APK area in `/manage`**; the release build runs in the background, and an existing APK stays downloadable until its replacement is published atomically. The explicit CLI equivalent is `./multicc apk`. Neither installation nor `./multicc update` starts an APK build.
+Android APKs are built once by the GitHub release workflow when a `vX.Y.Z` tag is
+published, signed with the project release key, and attached to that exact GitHub
+Release. The **APK area in `/manage`** prefers a non-empty local
+`public/multicc.apk`; when none exists, it links only to the `multicc.apk` asset
+for the server's exact package version. It never falls forward to `latest`.
+Installation and `./multicc update` never build an APK. Release v1.5.2 predates
+the asset workflow, so the remote fallback begins with the next release.
 
 ### 2. Start it
 

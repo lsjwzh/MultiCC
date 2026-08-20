@@ -5,7 +5,7 @@
 ## Stable Release (recommended)
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v1.3.0/install.sh | bash -s -- --branch v1.3.0
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v1.5.2/install.sh | bash -s -- --branch v1.5.2
 ```
 
 This installs the latest **stable release**. The script auto-detects your OS,
@@ -25,7 +25,7 @@ when one becomes available.
 curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install.sh | bash
 ```
 
-Detects your OS, checks prerequisites, clones the repo, installs dependencies, configures an access token, and optionally installs as a background service (macOS `launchd`). APK builds are always explicit and on demand.
+Detects your OS, checks prerequisites, clones the repo, installs dependencies, configures an access token, and optionally installs as a background service (macOS `launchd`). It never builds an APK; official APKs are release assets produced only when a version tag is published.
 
 **Install with options:**
 
@@ -62,8 +62,9 @@ cd MultiCC && ./multicc install   # install as macOS launchd background service
 ./multicc update --help    # usage
 ```
 
-Updates never build or rebuild the APK. If the App version changed, request a
-new package from `/manage` or run `./multicc apk` after the update.
+Updates never build or rebuild the APK. The dashboard uses a local APK when one
+is present, otherwise it resolves the asset attached to the exact installed
+release tag.
 
 On the stable channel (`.multicc_channel` = `stable`, written by the installer when you
 pass `--branch <tag>`) `update` checks out the newest release tag. On the dev channel it
@@ -138,8 +139,6 @@ Under the hood: `POST /api/update` with `{"force": true|false}` starts it, `GET
 - **Node.js** >= 20.19 (required by `chokidar` 5 ESM — backported `require(ESM)` support landed in Node 20.19 / 22.12)
 - **tmux** (for terminal mode; chat mode works without it)
 - **At least one coding CLI** on your `PATH`, already logged in — `claude`, `codex`, `opencode`, `zcode`, `kimi`, or `qoder`. MultiCC can install the missing ones for you from the CLI switcher (see [Multi-CLI switching](cli-switching.md)).
-- **Flutter** >= 3.8 plus the Android toolchain — required only when an Android
-  APK build is explicitly requested. A server-only install does not need them.
 
 ## Manual Install
 
@@ -196,44 +195,59 @@ systemctl --user daemon-reload
 systemctl --user enable --now multicc
 ```
 
-## Build the Flutter App
+## Android APK distribution and iOS builds
 
-Installation and update never compile the Flutter app. Android builds have two
-explicit entry points:
+Installation, update, and the running server never compile the Android app.
+Publishing a `vX.Y.Z` tag is the only official APK build trigger: the GitHub
+release workflow builds once, signs with the project's release key, and uploads
+these assets to that exact Release:
 
-- In `/manage`, use the **APK** area to start a background build or rebuild. You
-  can leave the page while it runs. If an older APK already exists, it remains
-  downloadable throughout the build and is replaced only after the new file is
-  complete.
-- From a shell, run `./multicc apk`.
+- `multicc.apk`
+- `multicc.apk.json`
+- `multicc.apk.sha256`
+
+Before publishing the first asset-bearing tag, configure the protected GitHub
+Environment named `android-release` with
+`ANDROID_RELEASE_KEYSTORE_BASE64`, `ANDROID_RELEASE_STORE_PASSWORD`,
+`ANDROID_RELEASE_KEY_ALIAS`, `ANDROID_RELEASE_KEY_PASSWORD`, and
+`ANDROID_RELEASE_CERT_SHA256`. The workflow fails closed when signing material
+is absent or the tag does not exactly match `package.json`. The public
+certificate fingerprint is pinned in `app/android/release-cert.sha256`; both
+the release workflow and the runtime Release-manifest verifier require an exact
+match, while the private key remains outside Git.
+
+The internal `scripts/publish-apk.sh` helper is reserved for that release
+pipeline. Flutter and the Android toolchain are release-maintainer/CI
+prerequisites, not server installation prerequisites.
+
+At runtime the APK source is deterministic:
+
+1. A non-empty regular `public/multicc.apk` wins as a local/offline operator
+   override.
+2. Otherwise MultiCC requests the GitHub Release whose tag is exactly
+   `v<package.json version>`, validates its APK metadata sidecar, and uses that
+   release's `multicc.apk` asset.
+3. It does not use `latest`, an older release, or a newer release. If the exact
+   release or verified asset is absent, the dashboard reports no APK available.
+
+`/multicc.apk` serves the local file directly or redirects to the verified exact
+Release Asset. The access token is never forwarded to GitHub. v1.5.2 predates
+this asset workflow and has no remote APK; the fallback becomes available with
+the next release.
+
+The first official release-key APK cannot update an APK previously signed with
+an Android debug key. Users must uninstall that debug-signed app once before
+installing the official build. The release keystore and credentials must be
+backed up for the lifetime of the app: losing the key prevents all future
+in-place upgrades.
+
+For iOS development, build locally (Xcode and signing are still required for an
+installable package):
 
 ```bash
-./multicc apk                             # Android; publishes to public/multicc.apk
 cd app
-flutter build ios --release --no-codesign # iOS (needs Xcode + signing)
+flutter build ios --release --no-codesign
 ```
-
-Flutter >= 3.8 and the Android toolchain must be available to the process that
-starts an Android build. In particular, a build started from `/manage` needs
-`flutter` on the MultiCC service's `PATH`; their absence does not affect server
-installation or updates, but the requested build will fail with its log retained.
-
-The APK and its `.json` / `.sha1` sidecars are ignored local artifacts, not
-Git-tracked files. The dashboard serves the complete atomically-published file
-at `/multicc.apk`.
-`./multicc apk --if-missing` keeps an existing package only when its metadata
-matches the current `app/pubspec.yaml` version. The `/manage` action is explicit:
-choosing rebuild starts a new build even when the existing package is current.
-
-Android release builds currently use the host's Android debug keystore. Rebuilds
-on the same host retain that identity, but moving the server to a host with a
-different keystore cannot update an already-installed APK in place; uninstall
-the old app once or configure a shared release-signing key before migration.
-
-A future distribution path may use a GitHub Release APK asset as a fallback on
-hosts without Flutter. That fallback is not implemented yet: today every APK
-offered by this server must first be built locally through one of the explicit
-entry points above.
 
 ---
 

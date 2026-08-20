@@ -1,6 +1,6 @@
 #!/bin/bash
 # MultiCC service manager — start/stop/restart/log
-# Usage: ./multicc start|stop|restart|status|log|update [--force]|apk|install|uninstall
+# Usage: ./multicc start|stop|restart|status|log|update [--force]|install|uninstall
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LABEL="com.multicc.server"
@@ -597,14 +597,6 @@ EOF
   echo "  ./multicc uninstall — remove auto-start"
 }
 
-do_apk() {
-  if [ ! -x "$SCRIPT_DIR/scripts/publish-apk.sh" ]; then
-    echo "APK build script is missing or not executable: $SCRIPT_DIR/scripts/publish-apk.sh" >&2
-    return 1
-  fi
-  "$SCRIPT_DIR/scripts/publish-apk.sh" "$@"
-}
-
 do_uninstall() {
   if [ -f "$PLIST" ]; then
     launchctl unload "$PLIST" 2>/dev/null
@@ -625,7 +617,6 @@ case "${1:-}" in
   status)    do_status ;;
   log|logs)  do_log ;;
   update)    shift; do_update "$@" ;;
-  apk)       shift; do_apk "$@" ;;
   install)   do_install ;;
   uninstall) do_uninstall ;;
   *)
@@ -642,7 +633,6 @@ case "${1:-}" in
     echo "  update     Pull latest code, reinstall deps if needed, restart"
     echo "             --force  Update even when the working tree is dirty or"
     echo "                      diverged (local changes are stashed, not restored)"
-    echo "  apk        Build and publish public/multicc.apk (--if-missing keeps a current build)"
     echo "  install    Install as login service (auto-start + auto-restart)"
     echo "  uninstall  Remove login service"
     ;;

@@ -91,9 +91,12 @@ test('serving the page does not expose the docs directory or the tree above it',
   }
 });
 
-test('a locally built APK keeps the download contract and a skipped build is a 404', async (t) => {
+test('the static mount serves only canonical multicc.apk and blocks every stray APK name', async (t) => {
   const publicDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'multicc-apk-static-'));
   fs.writeFileSync(path.join(publicDir, 'multicc.apk'), 'complete-apk');
+  fs.writeFileSync(path.join(publicDir, 'webcc.apk'), 'wrongly-named-apk');
+  fs.mkdirSync(path.join(publicDir, 'nested'));
+  fs.writeFileSync(path.join(publicDir, 'nested', 'other.apk'), 'other-apk');
   const server = await startServer(publicDir);
   t.after(() => new Promise(resolve => server.close(() => {
     fs.rmSync(publicDir, { recursive: true, force: true });
@@ -106,6 +109,11 @@ test('a locally built APK keeps the download contract and a skipped build is a 4
   assert.equal(available.headers['content-disposition'], 'attachment; filename="multicc.apk"');
   assert.equal(available.headers['cache-control'], 'no-store, no-cache, must-revalidate');
   assert.equal(available.body, 'complete-apk');
+
+  assert.equal((await fetchPath(server, '/webcc.apk')).status, 404);
+  assert.equal((await fetchPath(server, '/nested/other.apk')).status, 404);
+  assert.equal((await fetchPath(server, '/webcc%2Eapk')).status, 404, 'encoded suffix cannot bypass the APK allowlist');
+  assert.equal((await fetchPath(server, '/nested%2Fother.apk')).status, 404, 'encoded separators cannot bypass the APK allowlist');
 
   fs.rmSync(path.join(publicDir, 'multicc.apk'));
   assert.equal((await fetchPath(server, '/multicc.apk')).status, 404);

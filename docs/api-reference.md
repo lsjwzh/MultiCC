@@ -250,56 +250,68 @@ All three bridges share the same API structure (substitute the platform name):
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/api/server-info` | Server IP, port, protocol, URL, token |
-| `GET` | `/api/apk-info` | Local APK metadata plus source-version freshness |
-| `GET` | `/api/apk-build` | Progress of the running / most recent on-demand APK build |
-| `POST` | `/api/apk-build` | Start or reuse a background APK build; an explicit call may rebuild a current package |
-| `GET` | `/multicc.apk` | Last atomically published Flutter APK (404 until a build succeeds) |
+| `GET` | `/api/apk-info` | Selected APK source and metadata: local first, then the exact-version GitHub Release |
+| `GET` | `/multicc.apk` | Serve the selected local APK or redirect to its verified exact Release Asset |
 | `POST` | `/api/update` | Start `./multicc update` detached — body `{ "force": bool }` |
 | `GET` | `/api/update/status` | Progress of the running / last update |
 
-`GET /api/apk-info` separates “a package exists” from “that package matches the
-current source version”:
+`GET /api/apk-info` preserves `exists` for older App clients, but `exists` now
+means that a **verified selected download source** is available. `localExists`
+reports the separate physical fact that a non-empty regular
+`public/multicc.apk` exists:
 
 ```jsonc
 {
   "exists": true,
-  "mtime": "2026-08-20T04:20:12.000Z",
+  "localExists": false,
+  "source": "release",           // local | release | null
+  "downloadUrl": "https://github.com/lsjwzh/MultiCC/releases/download/v1.5.3/multicc.apk",
+  "releaseTag": "v1.5.3",        // v + current package.json version
+  "remoteState": "available",
+  "mtime": "2026-08-21T04:20:12.000Z",
   "size": 61865984,
-  "versionName": "2.20.0",       // published sidecar, when valid
-  "versionCode": 80,
-  "targetVersionName": "2.21.0", // current app/pubspec.yaml
-  "targetVersionCode": 81,
-  "current": false
+  "versionName": "2.30.0",       // selected source metadata
+  "versionCode": 120,
+  "targetVersionName": "2.30.0", // current checkout app/pubspec.yaml
+  "targetVersionCode": 120,
+  "current": true,                // selected source matches the checkout App
+  "localCurrent": false           // compares only a local APK and local sidecar
 }
 ```
 
-`current` is true only when a non-empty regular APK exists and its `.json`
-sidecar version matches `app/pubspec.yaml`. A missing or malformed sidecar can
-therefore produce `exists: true, current: false`; a missing or zero-byte APK is
-reported as `exists: false`. Conditional metadata fields are omitted when their
-source cannot be read.
+Selection is strict and local-first. A non-empty local regular file selects
+`source: "local"` and `downloadUrl: "/multicc.apk"`; its sidecar determines
+`localCurrent`. With no local file, the server queries only the Release tagged
+`v<package.json version>` and validates the remote metadata sidecar before it
+selects `source: "release"` and the asset's exact `browser_download_url`.
+`versionName`, `versionCode`, `size`, and `mtime` always describe the selected
+source; `targetVersionName` and `targetVersionCode` describe the checked-out
+`app/pubspec.yaml`. `current` compares the selected source with that target,
+while `localCurrent` never describes a remote asset. A verified Release also
+returns `sha256`, `signerSha256`, `gitCommit`, and `builtAt` audit fields.
+`releaseUrl` is the fixed exact-version candidate; `remoteState` and optional
+`remoteReason` expose whether the Release lookup was available, missing,
+invalid, or transiently unknown. Conditional metadata is omitted when it cannot
+be verified.
 
-`POST /api/apk-build` returns `202 { ok: true, reused, build }`. A second request
-while the build is starting or running reuses the same durable detached job.
-`GET /api/apk-build` and the nested `build` object report `state` as `idle`,
-`running`, `succeeded`, `failed`, or `unknown`, with `id`, `startedAt`,
-`exitCode`, `error`, `source`, and a sanitized `logTail` when applicable. Build
-state survives a server restart. Starting is rejected with `409` and
-`UPDATE_IN_PROGRESS` or `SERVER_SHUTTING_DOWN` while repository mutation would
-be unsafe; unreadable durable state returns `503`, and a launch failure returns
-`500 APK_BUILD_START_FAILED`.
-
-The publisher replaces the APK only after a complete build, so `/multicc.apk`
-continues serving the previous package while a rebuild runs or if that rebuild
-fails. Install and update do not call this API or build an APK automatically;
-the CLI equivalent is the explicit `./multicc apk` command.
+There is deliberately no fallback to GitHub `latest`, another tag, or an
+unverified URL. A missing release, missing asset, sidecar mismatch, or GitHub
+error must not report `exists: true`. `GET /multicc.apk` returns the local file
+when selected, returns `302` to the verified exact Release Asset when remote is
+selected, and returns `404` for a confirmed missing or invalid release. If the
+GitHub lookup is only transiently unavailable, this explicit download endpoint
+may still redirect to the strictly constructed
+`github.com/lsjwzh/MultiCC/releases/download/v<package version>/multicc.apk`
+candidate and let GitHub make the final availability decision; `/api/apk-info`
+continues reporting `exists: false` until verification succeeds. Redirects use
+a fixed host/tag/asset name and never forward the MultiCC access token. Install
+and update never build an APK.
 
 `POST /api/update` returns `202 { ok, status: "started", force, activeStreaming }`.
 `activeStreaming` is how many sessions were mid-turn — the update ends in a restart, so
 those turns get interrupted (partial output is saved). It returns `409` when an update is
-already running, an APK build is active, or the server is shutting down, and
-`503 { error, code }` when the update can't be started at all (`code` is one of
-`APK_BUILD_STATUS_UNAVAILABLE`, `UPDATE_MANAGER_MISSING`,
+already running or the server is shutting down, and `503 { error, code }` when
+the update can't be started at all (`code` is one of `UPDATE_MANAGER_MISSING`,
 `UPDATE_NOT_A_GIT_CHECKOUT`, `UPDATE_BASH_MISSING`, … or `UPDATE_START_FAILED`).
 
 `GET /api/update/status` derives its answer from `logs/update.log` rather than memory —
@@ -322,9 +334,8 @@ the process that starts an update is not the one that reports its outcome:
 
 `stale` means the log went quiet for 15 minutes — the updater was probably killed
 mid-flight. Poll this endpoint through the restart: the connection failing is expected and
-means the server is coming back, not that the update failed. The APK-build and
-update API endpoints are `ACCESS_TOKEN`-gated exactly like `/api/restart`. Their
-POSTs are mutually exclusive because both read or mutate the same checkout.
+means the server is coming back, not that the update failed. The update API is
+`ACCESS_TOKEN`-gated exactly like `/api/restart`.
 
 ## WebSocket Protocol
 

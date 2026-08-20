@@ -6,7 +6,7 @@
 multicc/
 ├── server.js                     # HTTP + WebSocket host: wires routes, tmux, CLI spawner, bridges
 ├── install.sh                    # One-command installer with OS detection
-├── multicc                       # CLI service manager (start/stop/restart/status/log/update/apk/install)
+├── multicc                       # CLI service manager (start/stop/restart/status/log/update/install)
 ├── ecosystem.config.js           # PM2 config (alternative process manager)
 │
 ├── src/                          # Server-side modules
@@ -89,7 +89,7 @@ multicc/
 │   ├── manifest.json             # Web App Manifest
 │   ├── agent-presets.json        # Agent role templates (Commander, Reviewer, Builder…)
 │   ├── qrcode.min.js             # QR code generation
-│   └── multicc.apk               # Ignored, atomically published on-demand Flutter build
+│   └── multicc.apk               # Ignored optional local/offline APK override
 │
 ├── app/                          # Flutter native client (Android + iOS)
 │   ├── lib/
@@ -170,7 +170,7 @@ user interrupts by speaking → agent stops → next turn
 - **Single auth layer.** `ACCESS_TOKEN` → HTTP-only `multicc_auth` cookie → applied uniformly to REST, WebSocket, and static files (JS/CSS exempted for login-page rendering).
 - **Reconnect-safe chat.** Every WebSocket connect replays buffered events before going live, so the client deterministically rebuilds its bubble state.
 - **Reliable continuation.** `wait`, `run-detached`, cron, and dispatch all re-enter a chat session through the same managed turn path — long-running work never gets lost between turns.
-- **APK is an explicit cached artifact.** Install and update never compile it. `/manage` or `./multicc apk` starts the build on demand; the web path uses durable detached-job state, excludes checkout updates while compiling, and atomically replaces `public/multicc.apk` so the previous package remains available on failure.
+- **APK distribution is release-bound and local-first.** Only a `vX.Y.Z` tag triggers the GitHub release workflow to build, sign with the long-lived project key, and attach `multicc.apk` plus its JSON/SHA-256 metadata to that exact Release. At runtime a non-empty local `public/multicc.apk` wins; otherwise the server verifies and redirects to the asset for exactly `v<package.json version>`. It never follows `latest`, and install/update never compile Android.
 - **Syntax-gated merges.** Merge into the base branch is rejected if any `.js` file has syntax errors — broken code can't corrupt the shared branch.
 - **Serialized git operations.** Concurrent git commands from multiple polled endpoints are queued through `src/git-queue.js` to prevent race conditions.
 
