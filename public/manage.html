@@ -452,6 +452,14 @@
     .sc-footer{padding:13px 18px;border-top:1px solid var(--line);display:flex;align-items:center;gap:12px;flex-wrap:wrap}
     .sc-footer .status-text{font-size:12px;color:var(--muted)}
     .status-text.ok{color:var(--codex)} .status-text.err{color:var(--danger)}
+    .apk-card-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+    .apk-card-head .status-text{font-size:11px;font-weight:500;text-align:right}
+    .apk-summary{font-size:13px;color:var(--text);line-height:1.55;overflow-wrap:anywhere}
+    .apk-status{font-size:12px;color:var(--muted);line-height:1.55;min-height:19px;overflow-wrap:anywhere}
+    .apk-status.ok{color:var(--codex)} .apk-status.err{color:var(--danger)}
+    .apk-log{margin:0;max-height:180px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;padding:10px 12px;border:1px solid var(--line);border-radius:9px;background:var(--well);color:var(--muted);font:11px/1.55 var(--mono)}
+    .apk-actions .btn{min-width:132px;justify-content:center}
+    .apk-actions .btn[aria-disabled="true"]{pointer-events:none;opacity:.45}
     .toggle-label{display:inline-flex;align-items:center;gap:10px;cursor:pointer}
     .toggle-label input{width:18px;height:18px;flex:none;accent-color:var(--accent)}
     .toggle-label input:disabled{cursor:wait;opacity:.6}
@@ -645,6 +653,10 @@
       .kpi{padding:12px}
       .voice-beta-entry{margin:-4px 0 18px;min-height:52px;padding:8px 11px}
       .settings-card .sc-body{padding:14px}
+      .apk-card-head{align-items:flex-start;flex-direction:column;gap:5px}
+      .apk-card-head .status-text{text-align:left}
+      .apk-actions{align-items:stretch}
+      .apk-actions .btn{flex:1 1 100%;width:100%;min-width:0}
       .modal-card{max-width:calc(100vw - 24px)}
     }
 
@@ -780,7 +792,7 @@
       </div>
 
       <div class="nav-foot">
-        <a class="hdr-btn" href="/multicc.apk" id="apk-btn" title="Download Android App">APK</a>
+        <button class="hdr-btn" type="button" id="apk-btn" onclick="openApkPanel()" data-i18n-title="apkOpenPanel" title="管理 Android APK">APK</button>
         <button class="hdr-btn" id="qr-btn" onclick="showQR()" title="Scan QR to open on mobile">QR</button>
         <button class="hdr-btn" id="push-toggle" onclick="togglePush()" title="Enable push notifications">Push</button>
         <button class="hdr-btn" id="svc-restart-btn" onclick="restartMulticcService()" data-i18n-title="restartServiceHint" title="重启 multicc 服务">🔄 <span data-i18n="restartService">重启</span></button>
@@ -1256,6 +1268,26 @@
         <!-- ─── macOS Power (hidden on other platforms) ─── -->
         <section class="view" data-view="global">
           <div class="sec-head"><h2>全局配置</h2><div class="line"></div></div>
+
+          <!-- Android APK: artifact availability and build execution are two
+               independent axes. An old package stays downloadable throughout
+               a rebuild and after a failed rebuild. -->
+          <div class="settings-card" id="apk-card">
+            <div class="sc-header apk-card-head">
+              <span data-i18n="apkTitle">Android APK</span>
+              <span class="status-text" id="apk-card-hint">—</span>
+            </div>
+            <div class="sc-body">
+              <div class="sec-desc" style="margin:0" data-i18n="apkDescription">APK 只在需要时构建；安装和更新服务不会等待 Flutter。</div>
+              <div class="apk-summary" id="apk-artifact-summary">—</div>
+              <div class="apk-status" id="apk-build-status" role="status" aria-live="polite" aria-atomic="true">—</div>
+              <pre class="apk-log" id="apk-build-log" aria-label="APK 构建输出" data-i18n-aria-label="apkLatestOutput" hidden></pre>
+            </div>
+            <div class="sc-footer apk-actions">
+              <a class="btn" id="apk-download-btn" href="/multicc.apk" download="multicc.apk" data-i18n="apkDownload">下载现有 APK</a>
+              <button class="btn btn-green" type="button" id="apk-build-btn" onclick="startApkBuild()" data-i18n="apkBuild">构建 APK</button>
+            </div>
+          </div>
 
           <!-- Claude Code 代理路由 -->
           <div class="settings-card">

@@ -43,8 +43,9 @@ leaves the old file in place for rollback.
 No files were deleted in the original data-root batch. The current disposition
 of each reviewed artifact is recorded below.
 
-- `public/multicc.apk` — resolved: removed from Git and built locally during
-  installation; its generated metadata is ignored with it.
+- `public/multicc.apk` — resolved: removed from Git and built only on explicit
+  request from `/manage` or `./multicc apk`; its generated metadata is ignored
+  with it. Install and update never produce it.
 - `server.js.bak.task1`, `task2`, `task4`, `task5`, `task7`, `task9`, `task10` —
   seven tracked source backups, roughly 376–421 KB each. Compare against Git
   history, check whether tooling still consumes them, then remove in a dedicated

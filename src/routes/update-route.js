@@ -20,6 +20,7 @@ const UPDATE_FLAG_TTL_MS = 20000;
 //   spawn             child_process.spawn (forwarded to startDetachedUpdate)
 //   rootDir           host package root (server.js __dirname), NOT this module's dir
 //   getShuttingDown   () => boolean — lazy read of the host's _shuttingDown let-binding
+//   getApkBuildStatus () => object — blocks checkout mutation while Flutter reads sources
 //   log               console-like sink (defaults to console)
 function createUpdateRoute(deps) {
   const {
@@ -27,6 +28,7 @@ function createUpdateRoute(deps) {
     spawn,
     rootDir,
     getShuttingDown = () => false,
+    getApkBuildStatus = () => ({ state: 'idle' }),
     log = console,
     now = Date.now,
   } = deps || {};
@@ -35,6 +37,13 @@ function createUpdateRoute(deps) {
 
   let _updateScheduled = false;
   let _updateScheduledAt = 0;
+
+  function expireScheduledFlag() {
+    if (_updateScheduled && now() - _updateScheduledAt > UPDATE_FLAG_TTL_MS) {
+      _updateScheduled = false;
+      _updateScheduledAt = 0;
+    }
+  }
 
   function statusNow() {
     try {
@@ -45,19 +54,42 @@ function createUpdateRoute(deps) {
     }
   }
 
+  function admissionStatus() {
+    expireScheduledFlag();
+    const current = statusNow();
+    if (_updateScheduled && !current.running) {
+      return {
+        ...current,
+        state: 'scheduled',
+        running: true,
+        scheduled: true,
+        startedAt: new Date(_updateScheduledAt).toISOString(),
+      };
+    }
+    return { ...current, scheduled: false };
+  }
+
   function mountRoutes(app) {
     app.get('/api/update/status', (req, res) => {
-      res.json(statusNow());
+      res.json(admissionStatus());
     });
 
     app.post('/api/update', (req, res) => {
-      if (_updateScheduled && now() - _updateScheduledAt > UPDATE_FLAG_TTL_MS) {
-        _updateScheduled = false;
-      }
+      expireScheduledFlag();
       if (getShuttingDown()) return res.status(409).json({ error: 'server is shutting down' });
       const current = statusNow();
       if (_updateScheduled || current.running) {
         return res.status(409).json({ error: 'update already in progress', status: current });
+      }
+      let apkBuild;
+      try { apkBuild = getApkBuildStatus(); } catch (_) {
+        return res.status(503).json({ error: 'apk build status unavailable', code: 'APK_BUILD_STATUS_UNAVAILABLE' });
+      }
+      if (apkBuild && apkBuild.state === 'running') {
+        return res.status(409).json({ error: 'apk build in progress', code: 'APK_BUILD_IN_PROGRESS', status: apkBuild });
+      }
+      if (apkBuild && apkBuild.state === 'unknown') {
+        return res.status(503).json({ error: 'apk build status unavailable', code: 'APK_BUILD_STATUS_UNAVAILABLE' });
       }
 
       const force = Boolean(req.body && (req.body.force === true || req.body.force === 'true' || req.body.force === 1));
@@ -108,7 +140,12 @@ function createUpdateRoute(deps) {
     });
   }
 
-  return { mountRoutes };
+  return {
+    mountRoutes,
+    status() {
+      return admissionStatus();
+    },
+  };
 }
 
 module.exports = { createUpdateRoute, UPDATE_FLAG_TTL_MS };

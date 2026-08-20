@@ -22,13 +22,16 @@ registry, and receives the same notifications.
 ## Build
 
 ```bash
-bash ../multicc apk                         # Android + publish to ../public/multicc.apk
+../multicc apk                              # Android + publish to ../public/multicc.apk
 flutter build ios --release --no-codesign   # iOS (needs Xcode + signing to install)
 ```
 
 The publisher builds the release APK and atomically copies it to the ignored
-`../public/multicc.apk` local artifact, which is what the `/manage` dashboard's
-**APK** button serves.
+`../public/multicc.apk` local artifact. The `/manage` APK area can start the same
+build in the background or explicitly rebuild it; an existing APK remains
+downloadable until the new package is ready. Flutter and the Android toolchain
+are build-time prerequisites only: installing or updating the MultiCC server
+never invokes them.
 
 ## Package identifiers
 

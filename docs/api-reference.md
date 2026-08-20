@@ -250,16 +250,56 @@ All three bridges share the same API structure (substitute the platform name):
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/api/server-info` | Server IP, port, protocol, URL, token |
-| `GET` | `/api/apk-info` | Local APK metadata, or `{ "exists": false }` when skipped/not built |
-| `GET` | `/multicc.apk` | Locally built Flutter APK (404 until `./multicc apk` succeeds) |
+| `GET` | `/api/apk-info` | Local APK metadata plus source-version freshness |
+| `GET` | `/api/apk-build` | Progress of the running / most recent on-demand APK build |
+| `POST` | `/api/apk-build` | Start or reuse a background APK build; an explicit call may rebuild a current package |
+| `GET` | `/multicc.apk` | Last atomically published Flutter APK (404 until a build succeeds) |
 | `POST` | `/api/update` | Start `./multicc update` detached — body `{ "force": bool }` |
 | `GET` | `/api/update/status` | Progress of the running / last update |
+
+`GET /api/apk-info` separates “a package exists” from “that package matches the
+current source version”:
+
+```jsonc
+{
+  "exists": true,
+  "mtime": "2026-08-20T04:20:12.000Z",
+  "size": 61865984,
+  "versionName": "2.20.0",       // published sidecar, when valid
+  "versionCode": 80,
+  "targetVersionName": "2.21.0", // current app/pubspec.yaml
+  "targetVersionCode": 81,
+  "current": false
+}
+```
+
+`current` is true only when a non-empty regular APK exists and its `.json`
+sidecar version matches `app/pubspec.yaml`. A missing or malformed sidecar can
+therefore produce `exists: true, current: false`; a missing or zero-byte APK is
+reported as `exists: false`. Conditional metadata fields are omitted when their
+source cannot be read.
+
+`POST /api/apk-build` returns `202 { ok: true, reused, build }`. A second request
+while the build is starting or running reuses the same durable detached job.
+`GET /api/apk-build` and the nested `build` object report `state` as `idle`,
+`running`, `succeeded`, `failed`, or `unknown`, with `id`, `startedAt`,
+`exitCode`, `error`, `source`, and a sanitized `logTail` when applicable. Build
+state survives a server restart. Starting is rejected with `409` and
+`UPDATE_IN_PROGRESS` or `SERVER_SHUTTING_DOWN` while repository mutation would
+be unsafe; unreadable durable state returns `503`, and a launch failure returns
+`500 APK_BUILD_START_FAILED`.
+
+The publisher replaces the APK only after a complete build, so `/multicc.apk`
+continues serving the previous package while a rebuild runs or if that rebuild
+fails. Install and update do not call this API or build an APK automatically;
+the CLI equivalent is the explicit `./multicc apk` command.
 
 `POST /api/update` returns `202 { ok, status: "started", force, activeStreaming }`.
 `activeStreaming` is how many sessions were mid-turn — the update ends in a restart, so
 those turns get interrupted (partial output is saved). It returns `409` when an update is
-already running or the server is shutting down, and `503 { error, code }` when the update
-can't be started at all (`code` is one of `UPDATE_MANAGER_MISSING`,
+already running, an APK build is active, or the server is shutting down, and
+`503 { error, code }` when the update can't be started at all (`code` is one of
+`APK_BUILD_STATUS_UNAVAILABLE`, `UPDATE_MANAGER_MISSING`,
 `UPDATE_NOT_A_GIT_CHECKOUT`, `UPDATE_BASH_MISSING`, … or `UPDATE_START_FAILED`).
 
 `GET /api/update/status` derives its answer from `logs/update.log` rather than memory —
@@ -267,8 +307,9 @@ the process that starts an update is not the one that reports its outcome:
 
 ```jsonc
 {
-  "state": "running",                   // idle | running | succeeded | failed | stale
+  "state": "running",                   // idle | scheduled | running | succeeded | failed | stale
   "running": true,
+  "scheduled": false,                   // true during spawn -> first-log handoff
   "exitCode": null,                     // set once the run finishes
   "force": true,
   "startedAt": "2026-08-03T04:20:00Z",  // from the log's start marker
@@ -281,8 +322,9 @@ the process that starts an update is not the one that reports its outcome:
 
 `stale` means the log went quiet for 15 minutes — the updater was probably killed
 mid-flight. Poll this endpoint through the restart: the connection failing is expected and
-means the server is coming back, not that the update failed. Both endpoints are
-`ACCESS_TOKEN`-gated exactly like `/api/restart`.
+means the server is coming back, not that the update failed. The APK-build and
+update API endpoints are `ACCESS_TOKEN`-gated exactly like `/api/restart`. Their
+POSTs are mutually exclusive because both read or mutate the same checkout.
 
 ## WebSocket Protocol
 

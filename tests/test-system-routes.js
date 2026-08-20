@@ -12,8 +12,13 @@ const {
   selectLanAddress,
   latestTagFromRemote,
   resolveVersionInfo,
+  readApkInfo,
+  resolveApkBuildStatus,
+  createApkBuildRuntime,
   createServerInfoHandler,
   createApkInfoHandler,
+  createApkBuildStartHandler,
+  createApkBuildStatusHandler,
   mountSystemRoutes,
 } = require('../src/routes/system');
 
@@ -41,6 +46,77 @@ function capture(handler, req = {}) {
   let body;
   handler(req, { json(value) { body = value; } });
   return body;
+}
+
+function captureResponse(handler, req = {}) {
+  let status = 200;
+  let body;
+  const res = {
+    status(value) { status = value; return this; },
+    json(value) { body = value; return this; },
+  };
+  handler(req, res, (error) => { throw error; });
+  return { status, body };
+}
+
+function apkRoot(version = '3.2.1+321') {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-apk-route-'));
+  fs.mkdirSync(path.join(rootDir, 'public'));
+  fs.mkdirSync(path.join(rootDir, 'app'));
+  fs.writeFileSync(path.join(rootDir, 'app', 'pubspec.yaml'), `name: multicc_app\nversion: ${version}\n`);
+  return rootDir;
+}
+
+function fakeDetachedRuntime() {
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-apk-detached-'));
+  const jobs = [];
+  const launches = [];
+  const runtime = {
+    BASE_DIR: baseDir,
+    jobs,
+    launches,
+    pendingNext: false,
+    list() { throw new Error('APK status must not scan detached history'); },
+    status(id) { return jobs.find(job => job.id === id) || null; },
+    launch(input) {
+      launches.push(input);
+      const job = {
+        id: input.id,
+        label: input.label,
+        command: input.command,
+        cwd: input.cwd,
+        startedAt: Date.parse('2026-08-20T12:00:00.000Z'),
+        started: !runtime.pendingNext,
+        running: !runtime.pendingNext,
+        done: false,
+        exitCode: null,
+        logTail: '\u001b[32mBuilding release APK…\u001b[0m',
+      };
+      jobs.unshift(job);
+      runtime.pendingNext = false;
+      return job;
+    },
+  };
+  return runtime;
+}
+
+function writeJsonAtomic(file, value) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(value));
+  fs.renameSync(tmp, file);
+}
+
+function apkRuntimeDeps(rootDir, detached, overrides = {}) {
+  return {
+    fs,
+    path,
+    rootDir,
+    detached,
+    atomicWriteJson: writeJsonAtomic,
+    now: () => Date.parse('2026-08-20T12:00:01.000Z'),
+    ...overrides,
+  };
 }
 
 test('semver and remote tag selection preserve legacy stable-tag semantics', () => {
@@ -167,8 +243,7 @@ test('version info falls back to git tags without hiding the API failure', async
 });
 
 test('APK handler exposes only file metadata and optional version sidecar', () => {
-  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-apk-route-'));
-  fs.mkdirSync(path.join(rootDir, 'public'));
+  const rootDir = apkRoot();
   const apkPath = path.join(rootDir, 'public', 'multicc.apk');
   fs.writeFileSync(apkPath, 'apk');
   fs.writeFileSync(`${apkPath}.json`, JSON.stringify({ versionName: '3.2.1', versionCode: 321, ignored: 'secret' }));
@@ -177,22 +252,150 @@ test('APK handler exposes only file metadata and optional version sidecar', () =
   assert.equal(body.size, 3);
   assert.equal(body.versionName, '3.2.1');
   assert.equal(body.versionCode, 321);
+  assert.equal(body.targetVersionName, '3.2.1');
+  assert.equal(body.targetVersionCode, 321);
+  assert.equal(body.current, true);
   assert.equal(Object.hasOwn(body, 'ignored'), false);
 });
 
 test('APK handler reports the exact server-only state when no package was built', () => {
-  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-apk-route-'));
+  const rootDir = apkRoot();
   try {
-    fs.mkdirSync(path.join(rootDir, 'public'));
-    assert.deepEqual(capture(createApkInfoHandler({ fs, path, rootDir })), { exists: false });
+    assert.deepEqual(capture(createApkInfoHandler({ fs, path, rootDir })), {
+      exists: false,
+      targetVersionName: '3.2.1',
+      targetVersionCode: 321,
+      current: false,
+    });
   } finally {
     fs.rmSync(rootDir, { recursive: true, force: true });
   }
 });
 
-test('system route mount owns exactly the three legacy GET paths', () => {
+test('APK build is a singleton detached job with restart-safe status', () => {
+  const rootDir = apkRoot();
+  const detached = fakeDetachedRuntime();
+  detached.pendingNext = true;
+  const runtimeDeps = apkRuntimeDeps(rootDir, detached);
+  const apkBuildRuntime = createApkBuildRuntime(runtimeDeps);
+  const deps = { ...runtimeDeps, apkBuildRuntime };
+  try {
+    const start = createApkBuildStartHandler(deps);
+    const first = captureResponse(start);
+    assert.equal(first.status, 202);
+    assert.equal(first.body.ok, true);
+    assert.equal(first.body.reused, false);
+    assert.equal(first.body.build.state, 'running');
+    assert.deepEqual(detached.launches, [{
+      id: first.body.build.id,
+      command: 'exec ./scripts/publish-apk.sh',
+      cwd: rootDir,
+      label: 'apk-build',
+    }]);
+
+    const duplicate = captureResponse(start);
+    assert.equal(duplicate.status, 202);
+    assert.equal(duplicate.body.reused, true);
+    assert.equal(detached.launches.length, 1, 'a second click must not launch another Gradle build');
+
+    const running = captureResponse(createApkBuildStatusHandler(deps));
+    assert.equal(running.body.state, 'running');
+    assert.equal(running.body.logTail.includes('\u001b'), false, 'terminal escapes stay out of the API');
+
+    detached.jobs[0].running = false;
+    detached.jobs[0].done = true;
+    detached.jobs[0].exitCode = 0;
+    assert.equal(apkBuildRuntime.status().state, 'succeeded');
+
+    const afterRestart = createApkBuildRuntime(runtimeDeps);
+    assert.equal(afterRestart.status().state, 'succeeded', 'the durable pointer survives server recreation');
+  } finally {
+    fs.rmSync(rootDir, { recursive: true, force: true });
+    fs.rmSync(detached.BASE_DIR, { recursive: true, force: true });
+  }
+});
+
+test('explicit APK rebuild starts even when a current package exists', () => {
+  const rootDir = apkRoot();
+  const detached = fakeDetachedRuntime();
+  try {
+    const apkPath = path.join(rootDir, 'public', 'multicc.apk');
+    fs.writeFileSync(apkPath, 'apk');
+    fs.writeFileSync(`${apkPath}.json`, JSON.stringify({ versionName: '3.2.1', versionCode: 321 }));
+    assert.equal(readApkInfo({ fs, path, rootDir }).current, true);
+    const apkBuildRuntime = createApkBuildRuntime(apkRuntimeDeps(rootDir, detached));
+    const response = captureResponse(createApkBuildStartHandler({ fs, path, rootDir, apkBuildRuntime }));
+    assert.equal(response.status, 202);
+    assert.equal(response.body.reused, false);
+    assert.equal(detached.launches.length, 1);
+  } finally {
+    fs.rmSync(rootDir, { recursive: true, force: true });
+    fs.rmSync(detached.BASE_DIR, { recursive: true, force: true });
+  }
+});
+
+test('APK freshness rejects zero-byte files and spoofed detached labels', () => {
+  const rootDir = apkRoot();
+  const detached = fakeDetachedRuntime();
+  try {
+    const apkPath = path.join(rootDir, 'public', 'multicc.apk');
+    fs.writeFileSync(apkPath, '');
+    fs.writeFileSync(`${apkPath}.json`, JSON.stringify({ versionName: '3.2.1', versionCode: 321 }));
+    assert.equal(readApkInfo({ fs, path, rootDir }).current, false);
+    assert.equal(readApkInfo({ fs, path, rootDir }).exists, false);
+
+    const spoofId = 'd_apk_0123456789abcdef';
+    writeJsonAtomic(path.join(detached.BASE_DIR, 'apk-build-latest.json'), {
+      schemaVersion: 1, id: spoofId, scheduledAt: Date.now(),
+    });
+    detached.jobs.push({
+      id: spoofId, label: 'apk-build', command: 'sleep 999', cwd: rootDir,
+      startedAt: Date.now(), started: true, running: true, done: false,
+    });
+    const spoofedRuntime = createApkBuildRuntime(apkRuntimeDeps(rootDir, detached));
+    assert.equal(spoofedRuntime.status().state, 'unknown');
+    const rejected = captureResponse(createApkBuildStartHandler({ apkBuildRuntime: spoofedRuntime }));
+    assert.equal(rejected.status, 503, 'an untrusted pointer must fail closed instead of launching');
+    assert.equal(rejected.body.code, 'APK_BUILD_STATUS_UNAVAILABLE');
+  } finally {
+    fs.rmSync(rootDir, { recursive: true, force: true });
+    fs.rmSync(detached.BASE_DIR, { recursive: true, force: true });
+  }
+});
+
+test('APK build refuses to race a checkout update or server shutdown', () => {
+  const rootDir = apkRoot();
+  const detached = fakeDetachedRuntime();
+  const apkBuildRuntime = createApkBuildRuntime(apkRuntimeDeps(rootDir, detached));
+  try {
+    const updating = captureResponse(createApkBuildStartHandler({
+      fs, path, rootDir, apkBuildRuntime, getUpdateStatus: () => ({ running: true }),
+    }));
+    assert.equal(updating.status, 409);
+    assert.equal(updating.body.error, 'update_in_progress');
+    const unknown = captureResponse(createApkBuildStartHandler({
+      fs, path, rootDir, apkBuildRuntime, getUpdateStatus() { throw new Error('disk unavailable'); },
+    }));
+    assert.equal(unknown.status, 503);
+    assert.equal(unknown.body.code, 'UPDATE_STATUS_UNAVAILABLE');
+    const shuttingDown = captureResponse(createApkBuildStartHandler({
+      fs, path, rootDir, apkBuildRuntime, getShuttingDown: () => true,
+    }));
+    assert.equal(shuttingDown.status, 409);
+    assert.equal(shuttingDown.body.error, 'server_shutting_down');
+    assert.equal(detached.launches.length, 0);
+  } finally {
+    fs.rmSync(rootDir, { recursive: true, force: true });
+    fs.rmSync(detached.BASE_DIR, { recursive: true, force: true });
+  }
+});
+
+test('system route mount owns metadata plus on-demand APK build paths', () => {
   const paths = [];
-  mountSystemRoutes({ get(route, handler) { paths.push([route, typeof handler]); } }, {
+  mountSystemRoutes({
+    get(route, handler) { paths.push(['GET', route, typeof handler]); },
+    post(route, handler) { paths.push(['POST', route, typeof handler]); },
+  }, {
     fs,
     path,
     https: fakeHttps({}),
@@ -201,10 +404,15 @@ test('system route mount owns exactly the three legacy GET paths', () => {
     getPort: () => 3000,
     authRequired: () => false,
     gitRun: async () => '',
+    apkBuildRuntime: createApkBuildRuntime({
+      ...apkRuntimeDeps(process.cwd(), fakeDetachedRuntime()),
+    }),
   });
   assert.deepEqual(paths, [
-    ['/api/server-info', 'function'],
-    ['/api/version-check', 'function'],
-    ['/api/apk-info', 'function'],
+    ['GET', '/api/server-info', 'function'],
+    ['GET', '/api/version-check', 'function'],
+    ['GET', '/api/apk-info', 'function'],
+    ['GET', '/api/apk-build', 'function'],
+    ['POST', '/api/apk-build', 'function'],
   ]);
 });
