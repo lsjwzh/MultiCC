@@ -91,7 +91,12 @@ function createWaitService({
     };
   }
 
-  async function resolveInternal(id, payload, { callbackToken, expectedMode, deliveryText } = {}) {
+  async function resolveInternal(id, payload, {
+    callbackToken,
+    expectedMode,
+    deliveryText,
+    sessionWork = null,
+  } = {}) {
     if (!id || typeof id !== 'string') {
       throw new TypeError('[wait-service] resolve requires wait id');
     }
@@ -133,10 +138,30 @@ function createWaitService({
 
       const at = Number(now());
       const outboxId = `wait:${wait.id}`;
-      const admitted = admitOutboxItem(draft, {
-        id: outboxId,
-        sessionId: wait.sessionId,
-        payload: {
+      const sessionWorkText = typeof sessionWork?.text === 'string'
+        ? sessionWork.text.trim() : '';
+      const outboxPayload = sessionWorkText
+        ? {
+          type: 'session.work',
+          // A timer represents user-authored future work, not an internal
+          // callback/continuation. Keeping it as task work makes an active P
+          // turn stage it in the ordinary FIFO instead of crossing that turn.
+          workKind: 'task',
+          message: sessionWorkText,
+          options: {
+            originContinue: false,
+            clientMsgId: outboxId,
+            scheduledMessageId: wait.id,
+            receivedAt: at,
+          },
+          source: 'scheduled',
+          taskId: null,
+          taskRunId: null,
+          leaseEpoch: null,
+          requestId: null,
+          activeEntryId: null,
+        }
+        : {
           type: 'wait.resolved',
           waitId: wait.id,
           mode: wait.mode,
@@ -151,10 +176,20 @@ function createWaitService({
           ...(wait.metadata?.originDispatchId
             ? { originDispatchId: wait.metadata.originDispatchId }
             : {}),
-        },
+        };
+      const admitted = admitOutboxItem(draft, {
+        id: outboxId,
+        sessionId: wait.sessionId,
+        payload: outboxPayload,
         source: { type: 'wait', waitId: wait.id },
         now: at,
       });
+      // A scheduled user message behaves like a normal direct submission once
+      // its clock expires: W/B/E at-rest verdicts must not strand it. While a P
+      // turn is active, task work remains in the ordinary FIFO.
+      if (sessionWorkText && draft.outbox[admitted.item.id]) {
+        draft.outbox[admitted.item.id].directRun = true;
+      }
 
       wait.status = 'resolved';
       wait.resolvedAt = at;
@@ -183,6 +218,7 @@ function createWaitService({
     return resolveInternal(id, payload, {
       expectedMode: 'delay',
       deliveryText: options.deliveryText,
+      sessionWork: options.sessionWork,
     });
   }
 

@@ -25,6 +25,8 @@ const DEFAULTS = Object.freeze({
   minDelaySec: 1,
   maxDelaySec: 7 * 24 * 60 * 60,
 });
+const SCHEDULED_MESSAGE_KIND = 'scheduled_message';
+const SCHEDULED_MESSAGE_MAX_CHARS = 256 * 1024;
 
 function asFinite(value, fallback) {
   const parsed = Number(value);
@@ -57,6 +59,21 @@ function publicWait(wait) {
     createdAt: wait.createdAt,
     resolvedAt: wait.resolvedAt,
     cancelledAt: wait.cancelledAt,
+  };
+}
+
+function scheduledMessageView(wait) {
+  const metadata = wait?.metadata || {};
+  return {
+    id: wait.id,
+    sessionId: wait.sessionId,
+    message: metadata.scheduledMessageText || metadata.scheduledMessagePreview || '',
+    dueAt: metadata.dueAt || null,
+    delaySeconds: metadata.delaySec || null,
+    status: wait.status,
+    createdAt: wait.createdAt,
+    resolvedAt: wait.resolvedAt || null,
+    cancelledAt: wait.cancelledAt || null,
   };
 }
 
@@ -157,10 +174,16 @@ function createOrchestrationRuntime({
     if (ids.size === 0) pendingBySession.delete(sessionId);
   }
 
+  function isBlockingWait(wait) {
+    return wait?.metadata?.kind !== SCHEDULED_MESSAGE_KIND;
+  }
+
   async function refreshPending() {
     const pending = await waits.list({ status: 'pending' });
     pendingBySession.clear();
-    for (const wait of pending) addPending(wait.sessionId, wait.id);
+    for (const wait of pending) {
+      if (isBlockingWait(wait)) addPending(wait.sessionId, wait.id);
+    }
     return pending;
   }
 
@@ -192,6 +215,13 @@ function createOrchestrationRuntime({
       ...(spec.originDispatchId
         ? { originDispatchId: String(spec.originDispatchId).slice(0, 128) }
         : {}),
+      ...(spec.scheduledMessageText ? {
+        kind: SCHEDULED_MESSAGE_KIND,
+        scheduledMessageText: String(spec.scheduledMessageText).slice(0, SCHEDULED_MESSAGE_MAX_CHARS),
+        scheduledMessagePreview: String(spec.scheduledMessageText).slice(0, 240),
+        scheduledMessageFingerprint: String(spec.scheduledMessageFingerprint || '').slice(0, 64),
+        clientScheduleId: String(spec.clientScheduleId || '').slice(0, 128),
+      } : {}),
     };
     if (registrationMetadata.taskRunId
         && (!Number.isSafeInteger(registrationMetadata.leaseEpoch)
@@ -250,7 +280,7 @@ function createOrchestrationRuntime({
       injectPrefix: spec.injectPrefix || '',
       metadata,
     });
-    addPending(registered.sessionId, registered.id);
+    if (isBlockingWait({ metadata })) addPending(registered.sessionId, registered.id);
     return {
       ...registered,
       token: registered.token || null,
@@ -275,6 +305,70 @@ function createOrchestrationRuntime({
     const result = await waits.cancel(id);
     if (result.ok && before) removePending(before.sessionId, id);
     return { ...result, status: result.ok ? 'cancelled' : result.status };
+  }
+
+  async function scheduleMessage(spec = {}) {
+    const sessionId = String(spec.sessionId || spec.session || '').trim();
+    const message = String(spec.message || '').trim();
+    const delaySeconds = Number(spec.delaySeconds ?? spec.delaySec);
+    if (!sessionId) throw new TypeError('sessionId is required');
+    if (!message) throw new TypeError('message is required');
+    if (message.length > SCHEDULED_MESSAGE_MAX_CHARS) {
+      throw new RangeError(`message is too long (max ${SCHEDULED_MESSAGE_MAX_CHARS} chars)`);
+    }
+    if (!Number.isSafeInteger(delaySeconds)
+        || delaySeconds < DEFAULTS.minDelaySec
+        || delaySeconds > DEFAULTS.maxDelaySec) {
+      throw new RangeError(`delaySeconds must be an integer between ${DEFAULTS.minDelaySec} and ${DEFAULTS.maxDelaySec}`);
+    }
+    const clientScheduleId = String(spec.clientScheduleId || crypto.randomUUID()).trim().slice(0, 128);
+    if (!clientScheduleId) throw new TypeError('clientScheduleId is required');
+    const identity = crypto.createHash('sha256')
+      .update(`${sessionId}\0${clientScheduleId}`, 'utf8').digest('hex').slice(0, 40);
+    const fingerprint = crypto.createHash('sha256')
+      .update(`${sessionId}\0${message}\0${delaySeconds}`, 'utf8').digest('hex');
+    const id = `scheduled:${identity}`;
+    try {
+      const registered = await register({
+        id,
+        session: sessionId,
+        mode: 'delay',
+        delaySec: delaySeconds,
+        source: 'chat-composer',
+        scheduledMessageText: message,
+        scheduledMessageFingerprint: fingerprint,
+        clientScheduleId,
+      });
+      const wait = await waits.get(registered.id);
+      return { ...scheduledMessageView(wait), duplicate: false };
+    } catch (error) {
+      if (error?.code !== 'WAIT_ALREADY_EXISTS') throw error;
+      const existing = await waits.get(id);
+      if (existing?.metadata?.kind !== SCHEDULED_MESSAGE_KIND
+          || existing.metadata.scheduledMessageFingerprint !== fingerprint) {
+        const conflict = new Error('clientScheduleId already belongs to another scheduled message');
+        conflict.code = 'SCHEDULED_MESSAGE_CONFLICT';
+        conflict.statusCode = 409;
+        throw conflict;
+      }
+      return { ...scheduledMessageView(existing), duplicate: true };
+    }
+  }
+
+  async function listScheduledMessages(sessionId) {
+    const list = await waits.list({ sessionId: String(sessionId || '').trim(), status: 'pending' });
+    return list.filter(wait => wait.metadata?.kind === SCHEDULED_MESSAGE_KIND)
+      .sort((a, b) => Number(a.metadata?.dueAt) - Number(b.metadata?.dueAt))
+      .map(scheduledMessageView);
+  }
+
+  async function cancelScheduledMessage(sessionId, id) {
+    const wait = await waits.get(String(id || '').trim());
+    if (!wait || wait.sessionId !== String(sessionId || '').trim()
+        || wait.metadata?.kind !== SCHEDULED_MESSAGE_KIND) {
+      return { ok: false, code: 'not_found' };
+    }
+    return cancel(wait.id);
   }
 
   async function cancelForSession(sessionId) {
@@ -508,6 +602,31 @@ function createOrchestrationRuntime({
     const claims = await claimDuePolls();
     await Promise.allSettled(claims.map(async claim => {
       if (claim.mode === 'delay') {
+        if (claim.metadata.kind === SCHEDULED_MESSAGE_KIND) {
+          const message = String(claim.metadata.scheduledMessageText || '').trim();
+          if (!message) {
+            log(`[orchestration] scheduled message ${claim.id} has no durable payload; cancelling`);
+            await waits.cancel(claim.id);
+            return;
+          }
+          const result = await waits.resolveDelay(
+            claim.id,
+            { dueAt: claim.metadata.dueAt, scheduledMessage: true },
+            { sessionWork: { text: message } },
+          );
+          if (result.ok) {
+            removePending(claim.sessionId, claim.id);
+            try {
+              const notice = await sessionScheduler.noteQueued(result.outboxId);
+              if (!notice?.ok) log(`[orchestration] scheduled message queue notice failed: ${notice?.code || 'unknown'}`);
+            } catch (error) {
+              // Resolution and outbox admission are already one durable commit;
+              // a UI-notice failure must not replay or drop that message.
+              log(`[orchestration] scheduled message queue notice failed: ${error.message}`);
+            }
+          }
+          return;
+        }
         const reason = String(claim.metadata.reason || '').trim();
         const text = reason
           ? `🔇【延迟条件已到】${reason}`
@@ -1064,6 +1183,9 @@ function createOrchestrationRuntime({
     dispose,
     tick,
     register,
+    scheduleMessage,
+    listScheduledMessages,
+    cancelScheduledMessage,
     resolveCallback,
     cancel,
     cancelForSession,
