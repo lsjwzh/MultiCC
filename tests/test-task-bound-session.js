@@ -638,3 +638,75 @@ test('a failed release never blocks archiving — best-effort, pointer kept', as
   // The session still exists, so the pointer must not be dangled.
   assert.equal(routes && true, true);
 });
+
+/* ── task composer runtime picks (指定 cli/provider，默认=最近活跃) ── */
+
+function mkRuntimePickFixture() {
+  const created = [];
+  const histDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-tbhist-'));
+  const { runtime, deps } = mkRuntime({
+    chatHistoryDir: histDir,
+    createSessionRecord: async input => {
+      created.push(input);
+      const session = { id: `sess-new-${created.length}`, ...input, dirId: input.dir.id };
+      deps.records.set(session.id, session);
+      return { ok: true, id: session.id, session };
+    },
+  });
+  return { runtime, deps, created, histDir, routes: mkRoutes(runtime) };
+}
+
+test('send pins cli/provider on the bound session at creation; absence keeps commander inheritance', async () => {
+  const { routes, created } = mkRuntimePickFixture();
+  // 1) no picks → commander runtime inheritance (the P1 default, unchanged)
+  const plain = response();
+  await routes.get('POST /api/task-board/send')(
+    { body: { text: '新任务：做 A', dirId: 'dir-1', clientMsgId: 'ck-a' } }, plain);
+  assert.equal(plain.code, 200);
+  assert.equal(created.length, 1);
+  assert.equal(created[0].cli, 'codex', 'commander cli inherited when unspecified');
+  assert.equal(created[0].provider, 'p-1', 'commander provider inherited when unspecified');
+
+  // 2) explicit picks win over the commander inheritance
+  const pinned = response();
+  await routes.get('POST /api/task-board/send')(
+    { body: { text: '新任务：做 B', dirId: 'dir-1', clientMsgId: 'ck-b', cli: 'claude', provider: 'p-glm' } },
+    pinned);
+  assert.equal(pinned.code, 200);
+  assert.equal(created.length, 2);
+  assert.equal(created[1].cli, 'claude', 'explicit cli beats commander inheritance');
+  assert.equal(created[1].provider, 'p-glm', 'explicit provider beats commander inheritance');
+});
+
+test('suggested-runtime returns the most recently active chat session\'s runtime', async () => {
+  const { deps, histDir, routes } = mkRuntimePickFixture();
+  deps.records.set('chat-a', { id: 'chat-a', kind: 'chat', dirId: 'dir-1', cli: 'codex', provider: 'p-1' });
+  deps.records.set('chat-b', { id: 'chat-b', kind: 'chat', dirId: 'dir-1', cli: 'claude', provider: 'p-glm', model: 'glm-4.7' });
+  fs.writeFileSync(path.join(histDir, 'chat-a.json'), '[]');
+  fs.writeFileSync(path.join(histDir, 'chat-b.json'), '[]');
+  // chat-b is the most recently written transcript → its runtime is the default.
+  const older = new Date(Date.now() - 3600_000);
+  fs.utimesSync(path.join(histDir, 'chat-a.json'), older, older);
+
+  const res = response();
+  await routes.get('GET /api/task-board/suggested-runtime')({}, res);
+  assert.equal(res.code, 200);
+  assert.equal(res.body.ok, true);
+  assert.equal(res.body.source, 'recent');
+  assert.equal(res.body.cli, 'claude');
+  assert.equal(res.body.provider, 'p-glm');
+  assert.equal(res.body.model, 'glm-4.7');
+});
+
+test('suggested-runtime skips synthetic ids and falls back to host defaults', async () => {
+  const { histDir, routes } = mkRuntimePickFixture();
+  // __aux__/__gateway__ histories are synthetic, never a provider source.
+  fs.writeFileSync(path.join(histDir, '__aux__.json'), '[]');
+
+  const res = response();
+  await routes.get('GET /api/task-board/suggested-runtime')({}, res);
+  assert.equal(res.code, 200);
+  assert.deepEqual(
+    { cli: res.body.cli, provider: res.body.provider, model: res.body.model, source: res.body.source },
+    { cli: 'claude', provider: '', model: null, source: 'default' });
+});

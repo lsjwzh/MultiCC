@@ -23,8 +23,10 @@
 //   isSystemInjected   — msgText → bool (skip recovery/nudge turns)
 
 const fs = require('fs');
+const path = require('path');
 const crypto = require('crypto');
 const core = require('../task-board');
+const { createPaths } = require('../paths');
 const { isVoiceRouterRecord } = require('../voice-router');
 const { runStateForFreezeReason } = require('../session-work-scheduler');
 const { classifyDisplay } = require('../classify/vocab');
@@ -88,6 +90,11 @@ function createTaskBoardRuntime(deps) {
   // archiving simply keeps the binding (the pre-P5 behavior).
   const releaseTaskBoundSession = typeof deps.releaseTaskBoundSession === 'function'
     ? deps.releaseTaskBoundSession : null;
+  // Composer runtime picks · where the suggested-runtime endpoint reads recent
+  // activity from. Optional in reduced hosts/tests; production derives the same
+  // chat_history dir the history service writes to.
+  const chatHistoryDir = typeof deps.chatHistoryDir === 'string' && deps.chatHistoryDir
+    ? deps.chatHistoryDir : null;
   const logger = deps.logger || console;
   const taskRunAnswers = new Map();
   // Optional goal-mode helpers (from aux-goal). When present, a goal-flagged
@@ -1877,6 +1884,7 @@ function createTaskBoardRuntime(deps) {
 
   async function dispatchTaskStart({
     source, dirId, target, routeMode, text, clientKey, goalNote = '',
+    runtime = null,
   }) {
     const taskId = stableTaskId(`${source}:${dirId || ''}`, clientKey);
     const existing = board.tasks[taskId];
@@ -1915,7 +1923,7 @@ function createTaskBoardRuntime(deps) {
       // existing card (e.g. classify-seeded) binds through its live record.
       const bindTarget = existing
         || { id: taskId, title: core.PENDING_TASK_TITLE, refs: [] };
-      const bound = await ensureBoundChatSession(bindTarget, { dirId });
+      const bound = await ensureBoundChatSession(bindTarget, { dirId, runtime });
       if (bound?.ok) {
         const sent = await sendSessionMessage(bound.sessionId, goalNote + text, {
           taskId,
@@ -2150,6 +2158,18 @@ function createTaskBoardRuntime(deps) {
     const target = commander.sessionId;
     const routeMode = 'commander';
     const clientKey = requestKey(req);
+    // Composer runtime picks (指定 cli/provider): applied at bound-session
+    // creation only; empty strings mean "no pick" (commander inheritance).
+    const pickCli = String(req.body?.cli || '').trim();
+    const pickProvider = String(req.body?.provider || '').trim();
+    const pickModel = String(req.body?.model || '').trim();
+    const runtime = (pickCli || pickProvider || pickModel)
+      ? {
+        ...(pickCli ? { cli: pickCli } : {}),
+        ...(pickProvider ? { provider: pickProvider } : {}),
+        ...(pickModel ? { model: pickModel } : {}),
+      }
+      : null;
     const result = await dispatchTaskStart({
       source: 'task-board',
       dirId: routeMode === 'commander' ? (records.get(target)?.dirId || dirId) : dirId,
@@ -2158,6 +2178,7 @@ function createTaskBoardRuntime(deps) {
       text,
       clientKey,
       goalNote: goalNoteFor(req.body),
+      ...(runtime ? { runtime } : {}),
     });
     if (!result.ok) {
       const conflict = result.code === 'idempotency_conflict';
@@ -2304,7 +2325,7 @@ function createTaskBoardRuntime(deps) {
   // binds immediately). A dangling binding (record deleted) heals by
   // re-creating; explicit dirId wins over ref-derived resolution because a
   // brand-new task has no refs yet.
-  async function ensureBoundChatSession(task, { dirId = null } = {}) {
+  async function ensureBoundChatSession(task, { dirId = null, runtime = null } = {}) {
     if (!createSessionRecord) return { ok: false, code: 'chat_session_unavailable' };
     const boundId = typeof task.chatSessionId === 'string' ? task.chatSessionId : '';
     if (boundId && records.get(boundId)) {
@@ -2329,15 +2350,18 @@ function createTaskBoardRuntime(deps) {
     // Inherit the directory commander's runtime (cli/model/provider/effort)
     // exactly like elastic workers do, so the bound session runs what the
     // fleet runs; commander-less directories fall back to host defaults.
+    // Composer picks (runtime) override the inheritance at creation only —
+    // once bound, the session's runtime is the resume file's, changed solely
+    // through the ordinary per-session settings.
     const commander = core.resolveDirectoryCommander(records, resolvedDirId);
     const commanderRec = commander.ok ? commander.record : null;
     const created = await createSessionRecord({
       dir,
-      cli: commanderRec?.cli || 'claude',
+      cli: runtime?.cli || commanderRec?.cli || 'claude',
       kind: 'chat',
       label: `任务 · ${String(task.title || '').slice(0, 40)}`,
-      model: commanderRec?.model || null,
-      provider: commanderRec?.provider || '',
+      model: runtime?.model ?? (commanderRec?.model || null),
+      provider: runtime?.provider ?? (commanderRec?.provider || ''),
       effort: commanderRec?.effort || null,
       taskBoundTaskId: task.id,
       persistence: 'required',
@@ -2503,6 +2527,34 @@ function createTaskBoardRuntime(deps) {
 
   function mountRoutes(app) {
     app.get('/api/task-board', handleBoard);
+    // Composer runtime suggestion: "recently active" = the newest mtime in the
+    // chat_history store maps to a live chat record — its (cli, provider, model)
+    // is what the user last actually ran, which is a better default than any
+    // configured constant. Synthetic histories (__aux__/__gateway__) and
+    // execution slots are never a provider source.
+    app.get('/api/task-board/suggested-runtime', (req, res) => {
+      try {
+        const dir = chatHistoryDir
+          || createPaths({ dataDir: process.env.MULTICC_DATA_DIR }).chatHistoryDir;
+        let newest = null;
+        for (const name of fs.readdirSync(dir)) {
+          if (!name.endsWith('.json') || name.startsWith('__')) continue;
+          const id = name.slice(0, -'.json'.length);
+          const record = records.get(id);
+          if (!record || record.kind !== 'chat' || record.taskExecutionSlot) continue;
+          const mtime = fs.statSync(path.join(dir, name)).mtimeMs;
+          if (!newest || mtime > newest.mtime) newest = { mtime, record };
+        }
+        if (newest) {
+          const r = newest.record;
+          return res.json({
+            ok: true, source: 'recent',
+            cli: r.cli || 'claude', provider: r.provider || '', model: r.model || null,
+          });
+        }
+      } catch (_) { /* fall through to defaults */ }
+      res.json({ ok: true, source: 'default', cli: 'claude', provider: '', model: null });
+    });
     app.get('/api/task-board/tasks/:taskId', handleTask);
     app.get('/api/task-board/tasks/:taskId/messages', handleMessages);
     app.post('/api/task-board/tasks/:taskId/send', (req, res) => {
