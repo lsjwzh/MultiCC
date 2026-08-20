@@ -180,12 +180,16 @@ function createSessionWorkHost(deps = {}) {
     const record = deps.getRecord(sessionId);
     if (!record) return null;
     const state = record.taskState;
+    // A live queue outranks the classify verdict: the verdict belongs to the
+    // LAST turn, so a follow-up turn would otherwise render the stale
+    // succeeded/waiting for its whole duration (task panel showed 执行成功
+    // while the追问 turn was already running).
+    if (state?.queueState === 'queued') return 'queued';
+    if (state?.queueState === 'running') return 'running';
     const classifyState = state?.classifyState;
     if (classifyState) {
       return deps.classifyDisplay(classifyState).cardStatus;
     }
-    if (state?.queueState === 'queued') return 'queued';
-    if (state?.queueState === 'running') return 'running';
     if (state?.queueState === 'frozen') {
       // Explicit reason→state map (session-work-scheduler) — never the old
       // substring heuristic that mislabelled interruption/recovery as "waiting".
