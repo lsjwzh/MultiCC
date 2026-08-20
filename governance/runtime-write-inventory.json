@@ -29,7 +29,7 @@
       "rationale": "The fallback gateway cwd can contain a live git workspace and native session context, so it is not a small state-file move.",
       "migrationStrategy": "Create a gateway workspace port and relocate only after active-session detection plus worktree/CLI resume tests exist.",
       "sources": [
-        { "file": "server.js", "anchor": "const p = session.cwd || path.join(os.homedir(), '.multicc', 'gateway');" }
+        { "file": "src/session-hibernation.js", "anchor": "if (session.type === 'gateway') return session.cwd || path.join(homeDir(), '.multicc', 'gateway');" }
       ]
     },
     {

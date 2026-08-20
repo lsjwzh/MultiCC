@@ -194,7 +194,7 @@ function testCron() {
       const deps = {
         directories: new Map(),
         createSessionRecord: async () => ({ ok: false }),
-        runChatTurn: () => false,
+        admitChatWork: () => false,
         sessionExists: () => false,
       };
       cron.init(deps);

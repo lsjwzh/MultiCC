@@ -91,6 +91,63 @@ test('task-run dispatch crosses a fresh-run barrier before native delivery', asy
   await runtime.stop();
 });
 
+test('hibernation activity view allows static W but blocks queued durable work', async t => {
+  const h = fixture(t);
+  await h.runtime.admitSessionWork({
+    sessionId: 'bound-1', text: 'question', idempotencyKey: 'question-1', options: {},
+  });
+  assert.equal(await h.runtime.hasSessionActivity('bound-1'), true);
+  await h.runtime.tick();
+  await h.runtime.sessionScheduler.freeze('bound-1', 'classify_waiting', { classifyState: 'W' });
+  assert.equal(await h.runtime.hasSessionActivity('bound-1'), false);
+  await h.runtime.admitSessionWork({
+    sessionId: 'bound-1', text: 'queued', idempotencyKey: 'queued-1', options: {},
+  });
+  assert.equal(await h.runtime.hasSessionActivity('bound-1'), true);
+  await h.runtime.stop();
+});
+
+test('delivery guard settles once with durable truth and also releases on rejection', async t => {
+  const outcomes = [];
+  const accepted = fixture(t, {
+    beforeDeliver: async () => ({ complete: async outcome => outcomes.push(outcome) }),
+  });
+  await accepted.runtime.admitSessionWork({
+    sessionId: 'bound-ok', text: 'go', idempotencyKey: 'guard-ok', options: {},
+  });
+  await accepted.runtime.tick();
+  assert.deepEqual(outcomes, [{ accepted: true, durable: true }]);
+  await accepted.runtime.stop();
+
+  const rejected = fixture(t, {
+    beforeDeliver: async () => ({ complete: async outcome => outcomes.push(outcome) }),
+    runChatTurn: async () => false,
+  });
+  await rejected.runtime.admitSessionWork({
+    sessionId: 'bound-fail', text: 'go', idempotencyKey: 'guard-fail', options: {},
+  });
+  await rejected.runtime.tick();
+  assert.deepEqual(outcomes.at(-1), { accepted: false, durable: false });
+  assert.equal((await rejected.runtime.stats()).pendingDeliveries, 1,
+    'a rejected delivery remains durable and retryable');
+  await rejected.runtime.stop();
+});
+
+test('delivery preparation failure runs no chat turn and preserves the outbox retry', async t => {
+  let turns = 0;
+  const h = fixture(t, {
+    beforeDeliver: async () => { throw Object.assign(new Error('thaw refused'), { code: 'thaw_failed' }); },
+    runChatTurn: async () => { turns += 1; return true; },
+  });
+  await h.runtime.admitSessionWork({
+    sessionId: 'bound-cold', text: 'due callback', idempotencyKey: 'cold-retry', options: {},
+  });
+  await h.runtime.tick();
+  assert.equal(turns, 0);
+  assert.equal((await h.runtime.stats()).pendingDeliveries, 1);
+  await h.runtime.stop();
+});
+
 test('startup awaits lease reconciliation after scheduler recovery and before first delivery', async t => {
   const order = [];
   const { runtime } = fixture(t, {
