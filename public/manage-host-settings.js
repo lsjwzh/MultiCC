@@ -691,13 +691,20 @@
     try {
       const resp = await fetch('/api/apk-info' + tokenQS('?'));
       const info = await resp.json();
-      if (info.exists) {
-        const d = new Date(info.mtime);
-        const time = `${d.getMonth()+1}-${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
-        const sizeMB = (info.size / 1048576).toFixed(1);
-        btn.textContent = `APK (${time})`;
-        btn.title = `Download Android App — ${sizeMB}MB — Updated ${time}`;
+      if (!info.exists) {
+        btn.removeAttribute('href');
+        btn.setAttribute('aria-disabled', 'true');
+        btn.textContent = 'APK (未构建)';
+        btn.title = 'Run ./multicc apk on the server to build the Android app';
+        return;
       }
+      const d = new Date(info.mtime);
+      const time = `${d.getMonth()+1}-${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+      const sizeMB = (info.size / 1048576).toFixed(1);
+      btn.href = '/multicc.apk';
+      btn.removeAttribute('aria-disabled');
+      btn.textContent = `APK (${time})`;
+      btn.title = `Download Android App — ${sizeMB}MB — Updated ${time}`;
     } catch {}
   }
 

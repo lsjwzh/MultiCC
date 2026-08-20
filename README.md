@@ -117,7 +117,7 @@ The picker shows which CLIs are installed, which already hold a saved session, a
 curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v1.5.2/install.sh | bash -s -- --branch v1.5.2
 ```
 
-The script detects your OS, checks prerequisites, clones the repo, installs dependencies, generates an `ACCESS_TOKEN`, and optionally registers a background service (macOS `launchd`).
+The script detects your OS, checks prerequisites, clones the repo, builds the downloadable Android APK, installs dependencies, generates an `ACCESS_TOKEN`, and optionally registers a background service (macOS `launchd`). Use `--no-apk` for a server-only install.
 
 <details>
 <summary>Manual install, or the daily <code>main</code> snapshot</summary>
@@ -133,7 +133,7 @@ curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install.sh | bas
 
 </details>
 
-**Prerequisites:** Node.js **>= 20.19**, `tmux` (terminal mode only), and at least one coding CLI on your `PATH`, already logged in. Flutter >= 3.8 only if you want to build the mobile app yourself.
+**Prerequisites:** Node.js **>= 20.19**, `tmux` (terminal mode only), and at least one coding CLI on your `PATH`, already logged in. The default install also needs Flutter >= 3.8 plus its Android toolchain; pass `--no-apk` to skip that build and run `./multicc apk` later.
 
 ### 2. Start it
 
