@@ -34,7 +34,6 @@ const { publicRunDto } = require('./task-runs');
 const {
   buildTaskRunContext: defaultBuildTaskRunContext,
   isTaskRunWrapperText,
-  stableTaskRunId: defaultStableTaskRunId,
 } = require('../task-run-context');
 const { recordRunError, runErrorOf } = require('../task-run-errors');
 const { createTaskWorktreeService } = require('../task-worktree');
@@ -45,7 +44,7 @@ const {
 
 const REQUIRED_DEPS = [
   'file', 'auxQueue', 'records', 'loadHistory', 'dispatchToSession',
-  'routeCommanderTask', 'sendSessionMessage',
+  'sendSessionMessage',
   'workspaceBroadcast', 'atomicWriteJson', 'isSystemInjected',
   'getSessionRunState',
 ];
@@ -62,7 +61,7 @@ function assertTaskBoardDeps(deps) {
 function createTaskBoardRuntime(deps) {
   assertTaskBoardDeps(deps);
   const {
-    file, auxQueue, records, loadHistory, dispatchToSession, routeCommanderTask,
+    file, auxQueue, records, loadHistory, dispatchToSession,
     sendSessionMessage,
     workspaceBroadcast, atomicWriteJson, isSystemInjected,
     getSessionRunState,
@@ -70,7 +69,6 @@ function createTaskBoardRuntime(deps) {
   const taskRuns = deps.taskRuns && typeof deps.taskRuns.beginRun === 'function'
     ? deps.taskRuns : null;
   const buildTaskRunContext = deps.buildTaskRunContext || defaultBuildTaskRunContext;
-  const stableTaskRunId = deps.stableTaskRunId || defaultStableTaskRunId;
   const resolveSessionQueue = typeof deps.resolveSessionQueue === 'function'
     ? deps.resolveSessionQueue
     : async () => ({ ok: false, code: 'no_active_task' });
@@ -166,11 +164,11 @@ function createTaskBoardRuntime(deps) {
 
 
   // Bounded failure recovery (design doc §3.3): a retryable terminal failure
-  // is re-admitted exactly once as a brand-new run — new lease epoch, fresh
-  // slot cleanup, compiled context that already contains the failure entry.
-  // The cap is per failed DELIVERY: a retry run carries metadata.retryOf and
-  // can therefore never earn another retry (no chains), while a later,
-  // independently failed delivery still gets its own single chance.
+  // gets exactly one re-send of its admission text — since #38 that goes to
+  // the task's bound chat session (the P4 cold-start seed rebuilds context
+  // from the ledger, failure entry included). The cap is per failed DELIVERY:
+  // a run carrying metadata.retryOf can never earn another retry (no chains),
+  // while a later, independently failed delivery still gets its own chance.
   async function autoRetryTaskRun({ taskId, runId } = {}) {
     if (!taskRuns) return { ok: false, code: 'task_runs_unavailable' };
     const id = String(taskId || '').trim();
@@ -205,7 +203,6 @@ function createTaskBoardRuntime(deps) {
     const result = await routeCommanderFollowup(commander.sessionId, id, text, {
       clientMsgId: `auto-retry:${failedRunId}`,
       source: 'task-board',
-      retryOf: failedRunId,
     });
     return result;
   }
@@ -502,92 +499,10 @@ function createTaskBoardRuntime(deps) {
     }
   }
 
-  function beginTaskRun({ taskId, task, text, clientKey, source, retryOf = null }) {
-    if (!taskRuns) return null;
-    const runId = stableTaskRunId(taskId, clientKey);
-    const existingRuns = taskRuns.listTaskRuns(taskId);
-    const existingRun = existingRuns.find(run => run.runId === runId) || null;
-    const created = !existingRun;
-    const firstRun = existingRuns.length === 0 || existingRuns[0]?.runId === runId;
-    const imports = firstRun
-      ? (existingRun
-          ? taskRuns.getRunMessages(runId).filter(message => message.kind === 'legacy_import')
-          : legacyImportMessages(task || { id: taskId, refs: [] }))
-      : [];
-    const context = buildTaskRunContext({
-      task: task || { id: taskId, title: core.PENDING_TASK_TITLE, status: 'active' },
-      messages: [...storedTaskMessages(taskId, runId), ...contextMessages(imports)],
-      currentText: text,
-    });
-    const startedAt = existingRun?.startedAt || Date.now();
-    const runInput = {
-      runId,
-      taskId,
-      attemptId: runId,
-      slotId: null,
-      startedAt,
-      metadata: {
-        source: retryOf ? 'auto-retry' : String(source || 'task-board').slice(0, 40),
-        contextHash: context.hash,
-        contextManifest: context.manifest,
-        // Bounded auto-retry lineage: the single automatic retry is the only
-        // run that ever carries retryOf, and autoRetryTaskRun refuses to
-        // admit another run once any run in the task has it.
-        ...(retryOf ? { retryOf: String(retryOf).slice(0, 64) } : {}),
-      },
-    };
-    const admission = {
-      messageId: `admission:${runId}`,
-      role: 'user',
-      kind: 'admission',
-      content: text,
-      metadata: { contextHash: context.hash },
-      createdAt: startedAt,
-      atRunStart: true,
-    };
-    let run;
-    if (typeof taskRuns.admitRun === 'function') {
-      ({ run } = taskRuns.admitRun({ run: runInput, messages: [...imports, admission] }));
-    } else {
-      run = taskRuns.beginRun(runInput);
-      for (const message of imports) taskRuns.appendMessage({ runId, ...message });
-      taskRuns.appendMessage({ runId, ...admission, createdAt: run.startedAt });
-    }
-    const closed = run.executionStatus !== 'running' || run.usageStatus !== 'collecting'
-      || run.cleanupState !== 'blocked';
-    return { runId, leaseEpoch: run.leaseEpoch, context, created, closed };
-  }
-
-  function rejectTaskRun(taskRun, errorCode) {
-    if (!taskRun?.created || !taskRuns) return false;
-    try {
-      const runId = taskRun.runId;
-      taskRuns.observeUsage({ runId, event: {
-        eventId: `admission-rejected:${runId}`, occurredAt: Date.now(),
-        providerId: '_none_', providerName: 'No provider', cli: '', protocol: '', model: '',
-        roleKind: 'main', routeName: 'main', source: 'exact', coverage: 'observed', status: 'error',
-        tokens: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0 },
-        errorCode: String(errorCode || 'DISPATCH_REJECTED').slice(0, 128),
-      } });
-      recordRunError(taskRuns, {
-        runId,
-        code: String(errorCode || 'DISPATCH_REJECTED').slice(0, 128),
-        category: 'dispatch',
-        retryable: false,
-        message: `任务未能投递到执行槽（${String(errorCode || 'DISPATCH_REJECTED')}）。请重新发送。`,
-      });
-      taskRuns.sealUsage({ runId, executionStatus: 'failed', outcomeDurable: true,
-        producersDrained: true, nativeTranscriptChecked: true });
-      const permit = taskRuns.getCleanupPermit(runId);
-      if (!permit) return false;
-      taskRuns.markCleanup({ runId, permit, state: 'deleting' });
-      taskRuns.markCleanup({ runId, permit, state: 'done' });
-      return true;
-    } catch (error) {
-      logger.log(`[multicc/taskboard] rejected task-run finalization failed: ${error?.code || 'unknown'}`);
-      return false;
-    }
-  }
+  // #38 · the pooled admission machinery (beginTaskRun/rejectTaskRun) is
+  // retired with the slot dispatch: new work only ever enters through the
+  // bound chat session, and the ledger's read side (projection, answers,
+  // cancel, bounded auto-retry) keeps serving the legacy cards.
 
   function ensureTaskIndex({
     taskId, dirId, sessionId, routing, taskText = '', now = Date.now(),
@@ -1637,39 +1552,6 @@ function createTaskBoardRuntime(deps) {
     }
   }
 
-  function taskRunDispatchResult(result, {
-    taskId, taskRunId, commanderSessionId = null,
-  }) {
-    const receipt = {
-      ok: true,
-      taskId,
-      taskRunId,
-      queued: result?.queued === true,
-      status: String(result?.status || 'admitted'),
-      operationId: result?.operationId || taskRunId,
-    };
-    if (commanderSessionId && records.get(commanderSessionId)?.type === 'commander') {
-      receipt.commanderSessionId = commanderSessionId;
-      receipt.commanderLabel = records.get(commanderSessionId)?.label || commanderSessionId;
-    }
-    return receipt;
-  }
-
-  // P1-b1 · bound-session detour. A task with a live bound chat session and
-  // no open TaskRun takes its follow-ups straight through the canonical chat
-  // turn ingress (memory injection, per-session FIFO, classify — identical to
-  // the WS composer). The gates keep the migration monotonic:
-  //   · dangling binding (record deleted) → legacy commander path
-  //   · an open TaskRun still owns the task → legacy path drains it first, so
-  //     a pooled slot and the bound session never run one task's worktree at
-  //     the same time
-  function boundSessionForTask(task) {
-    const boundId = typeof task.chatSessionId === 'string' ? task.chatSessionId : '';
-    if (!boundId || !records.get(boundId)) return null;
-    if (latestOpenTaskRun(task.id)) return null;
-    return boundId;
-  }
-
   // P4 · cold start (design: 用任务历史记录拼上下文). A bound session whose
   // native CLI session does not exist yet knows nothing about its task, so its
   // first turn carries the compiled ledger — the same buildTaskRunContext input
@@ -1744,59 +1626,25 @@ function createTaskBoardRuntime(deps) {
     if (!messageText) return { ok: false, code: 'empty_text' };
     const clientKey = String(options.clientMsgId || '').trim() || crypto.randomUUID();
     const source = options.source === 'commander' ? 'commander' : 'task-board';
-    const boundId = boundSessionForTask(task);
-    if (boundId) {
-      return sendBoundSessionFollowup(boundId, task, messageText, {
-        clientKey, source, goalNote: String(options.goalNote || ''), commanderId,
-      });
+    // #38 · the pooled follow-up path is retired. A follow-up goes to the
+    // task's bound chat session — created on first use, with the P4 cold-start
+    // seed rebuilding its context from the ledger — or, while a legacy pooled
+    // run still owns the task, refuses honestly instead of opening a second
+    // executor on one task worktree.
+    if (latestOpenTaskRun(task.id)) {
+      return {
+        ok: false, code: 'task_run_open',
+        error: '任务仍有池化旧运行未结束：请等它结束或先取消，再继续追问',
+      };
     }
-    const retryOf = String(options.retryOf || '').trim() || null;
-    const taskRun = beginTaskRun({
-      taskId: task.id, task, text: messageText,
-      clientKey: `followup:${clientKey}`, source,
-      ...(retryOf ? { retryOf } : {}),
-    });
-    if (taskRun?.closed) return { ok: false, code: 'task_run_closed' };
-    const message = String(options.goalNote || '')
-      + core.buildCommanderRoutedMessage(task, taskRun?.context.text || messageText);
-    const result = await routeCommanderTask({
-      commanderId,
-      message,
-      idempotencyKey: taskRun ? `task-run:${taskRun.runId}`
-        : `taskboard-followup:${task.id}:${clientKey}`,
-      operationId: taskRun?.runId,
-      taskId: task.id,
-      taskRunId: taskRun?.runId,
-      leaseEpoch: taskRun?.leaseEpoch,
-      taskStart: false,
-      taskSource: source,
-    });
-    if (!result?.ok) {
-      rejectTaskRun(taskRun, result?.code || result?.error);
-      return result || { ok: false, code: 'dispatch_failed' };
+    const bound = await ensureBoundChatSession(task, { dirId: commander.dirId });
+    if (!bound?.ok) {
+      logger.log(`[multicc/taskboard] follow-up bound-session resolve failed for ${taskId}: ${bound?.code || 'unknown'}`);
+      return bound || { ok: false, code: 'chat_session_create_failed' };
     }
-    core.setTaskRouting(task, {
-      mode: 'commander',
-      targetSessionId: commanderId,
-      workerSessionId: result.targetSessionId || '',
-      operationId: result.operationId || '',
-      status: result.status || 'admitted',
-      oneWay: true,
-      elasticWorkerCreated: result.elasticWorkerCreated === true,
-      routedAt: Date.now(),
+    return sendBoundSessionFollowup(bound.sessionId, task, messageText, {
+      clientKey, source, goalNote: String(options.goalNote || ''), commanderId,
     });
-    save();
-    notify(core.taskDirId(board, task), [task.id]);
-    if (taskRun) return {
-      ...taskRunDispatchResult(result, {
-        taskId: task.id,
-        taskRunId: taskRun.runId,
-        commanderSessionId: commanderId,
-      }),
-      taskStart: false,
-    };
-    return { ...result, taskId: task.id, taskStart: false,
-      target: commanderId, routeMode: 'commander' };
   }
 
   async function handleSend(req, res) {
@@ -1835,16 +1683,9 @@ function createTaskBoardRuntime(deps) {
       goalNote: goalNoteFor(req.body),
     });
     if (!result?.ok) {
-      const busy = result?.code === 'target_busy' || result?.error === 'target_busy';
+      const busy = result?.code === 'target_busy' || result?.error === 'target_busy'
+        || result?.code === 'task_run_open';
       return res.status(busy ? 409 : 502).json({ error: result?.code || result?.error || 'dispatch_failed' });
-    }
-    if (result.taskRunId) {
-      return res.json(taskRunDispatchResult(result, {
-        taskId: task.id,
-        taskRunId: result.taskRunId,
-        commanderSessionId: routeMode === 'commander' ? target : null,
-        taskStart: false,
-      }));
     }
     if (result.taskBound === true) {
       // P1-b1: the follow-up went straight to the task-bound chat session —
@@ -1860,7 +1701,6 @@ function createTaskBoardRuntime(deps) {
         workerSessionId: result.targetSessionId,
         workerLabel: records.get(result.targetSessionId)?.label || null,
         queued: result.queued === true,
-        elasticWorkerCreated: false,
         chatId: result.chatId,
         operationId: result.operationId || null,
         taskRunId: null,
@@ -1875,7 +1715,6 @@ function createTaskBoardRuntime(deps) {
       workerSessionId: routeMode === 'commander' ? result.workerSessionId || result.targetSessionId : null,
       workerLabel: routeMode === 'commander' ? result.targetLabel : null,
       queued: routeMode === 'commander' && result.queued === true,
-      elasticWorkerCreated: routeMode === 'commander' && result.elasticWorkerCreated === true,
       chatId: result.chatId,
       operationId: result.operationId || null,
       taskRunId: null,
@@ -1907,16 +1746,26 @@ function createTaskBoardRuntime(deps) {
     }
     const taskShape = { id: taskId, title: core.PENDING_TASK_TITLE };
     const replayOperationId = existing?.routing?.operationId || null;
-    // P1-b2 · task-start detour: a fresh dispatch (never a replay) binds the
-    // task's hidden chat session immediately and opens the first turn through
-    // the canonical chat ingress — new tasks never touch the pooled slots.
-    // Gates mirror P1-b1: an open TaskRun keeps the legacy path (monotonic
-    // drain), and a failed session CREATE falls through to the pooled path so
-    // the board keeps working; a failed SEND on a live binding does NOT fall
-    // through (the turn ingress already owns idempotency for this clientKey,
-    // and two executors must never share one task worktree).
-    if (effectiveRouteMode === 'commander' && !replayOperationId && createSessionRecord
-        && !(existing && latestOpenTaskRun(taskId))) {
+    // P1-b2 / #38 · task-start direct dispatch: a fresh dispatch (never a
+    // replay) binds the task's hidden chat session and opens the first turn
+    // through the canonical chat ingress — the ONLY admission path since the
+    // pooled slots were retired. Failures are honest: a session CREATE
+    // failure surfaces its code (never a silent ledger fallback — the
+    // empty-room incident), and a failed SEND on a live binding does not fall
+    // through either (the turn ingress owns idempotency for this clientKey,
+    // and two executors must never share one task worktree). A legacy open
+    // TaskRun still owns the task: refuse instead of double-executing; it
+    // drains or gets cancelled through the ordinary controls.
+    if (effectiveRouteMode === 'commander' && !replayOperationId) {
+      if (existing && latestOpenTaskRun(taskId)) {
+        return {
+          ok: false, code: 'task_run_open',
+          error: '任务仍有池化旧运行未结束：请等它结束或先取消，再重新发送',
+        };
+      }
+      if (!createSessionRecord) {
+        return { ok: false, code: 'chat_session_unavailable' };
+      }
       // Bind first, card second: createPendingTask requires a sessionId (the
       // provenance ref), and the session needs the deterministic taskId for
       // its taskBoundTaskId marker. For a fresh task a shim stands in; an
@@ -1924,72 +1773,64 @@ function createTaskBoardRuntime(deps) {
       const bindTarget = existing
         || { id: taskId, title: core.PENDING_TASK_TITLE, refs: [] };
       const bound = await ensureBoundChatSession(bindTarget, { dirId, runtime });
-      if (bound?.ok) {
-        const sent = await sendSessionMessage(bound.sessionId, goalNote + text, {
-          taskId,
-          taskStart: true,
-          taskSource: source,
-          taskText: text,
-          clientMsgId: clientKey,
-        });
-        if (!sent || sent.ok === false) {
-          return sent || { ok: false, code: 'dispatch_failed' };
-        }
-        // The card's provenance ref IS the bound session: the task transcript
-        // projection and this chat view then read the same history.
-        const pre = ensureTaskIndex({
-          taskId, dirId, sessionId: bound.sessionId, taskText: text,
-          routing: null, now: Date.now(),
-        });
-        if (!pre.task) {
-          return { ok: false, code: 'dispatch_failed' };
-        }
-        if (!pre.task.chatSessionId) {
-          updateBoardTask(taskId, { chatSessionId: bound.sessionId });
-        }
-        // Synthetic stable operation id: the chat FIFO owns real delivery
-        // idempotency; this marker only lets a replayed taskStart recognise
-        // the bound routing receipt and answer duplicate without resending.
-        const receiptOperationId = sent.operationId || `task-bound:${taskId}`;
-        core.setTaskRouting(pre.task, {
-          mode: 'commander',
-          targetSessionId: effectiveTarget,
-          workerSessionId: bound.sessionId,
-          operationId: receiptOperationId,
-          status: sent.queued === true ? 'queued' : 'admitted',
-          oneWay: true,
-          routedAt: Date.now(),
-        });
-        save();
-        notify(dirId, [taskId], pre.created ? 'created' : undefined);
-        return {
-          ...sent,
-          ok: true,
-          taskId,
-          taskBound: true,
-          taskStart: true,
-          routeMode: 'task-bound',
-          target: bound.sessionId,
-          targetSessionId: bound.sessionId,
-          workerSessionId: bound.sessionId,
-          operationId: receiptOperationId,
-        };
+      if (!bound?.ok) {
+        logger.log(`[multicc/taskboard] bound-session create failed for ${taskId}: ${bound?.code || 'unknown'}`);
+        return bound || { ok: false, code: 'chat_session_create_failed' };
       }
+      const sent = await sendSessionMessage(bound.sessionId, goalNote + text, {
+        taskId,
+        taskStart: true,
+        taskSource: source,
+        taskText: text,
+        clientMsgId: clientKey,
+      });
+      if (!sent || sent.ok === false) {
+        return sent || { ok: false, code: 'dispatch_failed' };
+      }
+      // The card's provenance ref IS the bound session: the task transcript
+      // projection and this chat view then read the same history.
+      const pre = ensureTaskIndex({
+        taskId, dirId, sessionId: bound.sessionId, taskText: text,
+        routing: null, now: Date.now(),
+      });
+      if (!pre.task) {
+        return { ok: false, code: 'dispatch_failed' };
+      }
+      if (!pre.task.chatSessionId) {
+        updateBoardTask(taskId, { chatSessionId: bound.sessionId });
+      }
+      // Synthetic stable operation id: the chat FIFO owns real delivery
+      // idempotency; this marker only lets a replayed taskStart recognise
+      // the bound routing receipt and answer duplicate without resending.
+      const receiptOperationId = sent.operationId || `task-bound:${taskId}`;
+      core.setTaskRouting(pre.task, {
+        mode: 'commander',
+        targetSessionId: effectiveTarget,
+        workerSessionId: bound.sessionId,
+        operationId: receiptOperationId,
+        status: sent.queued === true ? 'queued' : 'admitted',
+        oneWay: true,
+        routedAt: Date.now(),
+      });
+      save();
+      notify(dirId, [taskId], pre.created ? 'created' : undefined);
+      return {
+        ...sent,
+        ok: true,
+        taskId,
+        taskBound: true,
+        taskStart: true,
+        routeMode: 'task-bound',
+        target: bound.sessionId,
+        targetSessionId: bound.sessionId,
+        workerSessionId: bound.sessionId,
+        operationId: receiptOperationId,
+      };
     }
-    // Replay (the task already routed): never re-admit the run. The ledger
-    // already holds the original admission, so re-running beginTaskRun would
-    // rewrite it under a fresh context hash and trip the store's content
-    // conflict guard. The recorded operation id reproduces the original
-    // idempotency key (it is the run id on the Commander path).
-    const taskRun = !replayOperationId && effectiveRouteMode === 'commander'
-      ? beginTaskRun({
-          taskId, task: existing || taskShape, text,
-          clientKey: `start:${clientKey}`, source,
-        })
-      : null;
-    if (taskRun?.closed) {
-      return { ok: false, code: 'task_run_closed' };
-    }
+    // Replay (the task already routed): never re-admit a run. The recorded
+    // operation id reproduces the original idempotency key (it is the run id
+    // for legacy pooled routes); a fresh manual route is the only non-replay
+    // path left below — the pooled Commander admission is gone (#38).
     let replayRun = null;
     if (replayOperationId && effectiveRouteMode === 'commander' && taskRuns) {
       try {
@@ -1997,23 +1838,15 @@ function createTaskBoardRuntime(deps) {
           .find(run => run.runId === replayOperationId) || null;
       } catch (_) { replayRun = null; }
     }
-    const executionText = taskRun?.context.text || text;
     const routed = effectiveRouteMode === 'commander'
-      ? core.buildCommanderRoutedMessage(taskShape, executionText)
-      : core.buildRoutedMessage(taskShape, executionText);
+      ? core.buildCommanderRoutedMessage(taskShape, text)
+      : core.buildRoutedMessage(taskShape, text);
     const message = goalNote + routed;
-    const idempotencyKey = taskRun
-      ? `task-run:${taskRun.runId}`
-      : replayOperationId && effectiveRouteMode === 'commander'
-        ? `task-run:${replayOperationId}`
-        : `task-start:${taskId}`;
+    const idempotencyKey = replayOperationId && effectiveRouteMode === 'commander'
+      ? `task-run:${replayOperationId}`
+      : `task-start:${taskId}`;
     const taskContext = {
       taskId,
-      ...(taskRun ? {
-        taskRunId: taskRun.runId,
-        leaseEpoch: taskRun.leaseEpoch,
-        operationId: taskRun.runId,
-      } : {}),
       taskStart: true,
       taskSource: source,
       taskText: text,
@@ -2072,13 +1905,9 @@ function createTaskBoardRuntime(deps) {
           }
         }
       } else {
-        result = effectiveRouteMode === 'commander'
-          ? await routeCommanderTask({
-              commanderId: effectiveTarget, message, idempotencyKey, ...taskContext,
-            })
-          : await dispatchToSession(effectiveTarget, message, {
-              idempotencyKey, oneWay: true, requireIdle: false, ...taskContext,
-            });
+        result = await dispatchToSession(effectiveTarget, message, {
+          idempotencyKey, oneWay: true, requireIdle: false, ...taskContext,
+        });
       }
     } catch (error) {
       result = {
@@ -2090,7 +1919,6 @@ function createTaskBoardRuntime(deps) {
       };
     }
     if (!result?.ok) {
-      rejectTaskRun(taskRun, result?.code || result?.error);
       return result || { ok: false, error: 'dispatch_failed' };
     }
     const workerSessionId = effectiveRouteMode === 'commander'
@@ -2099,8 +1927,8 @@ function createTaskBoardRuntime(deps) {
     const routedAt = Date.now();
     const indexed = ensureTaskIndex({
       taskId,
-      taskRunId: taskRun?.runId || null,
-      leaseEpoch: taskRun?.leaseEpoch || null,
+      taskRunId: null,
+      leaseEpoch: null,
       dirId,
       sessionId: workerSessionId,
       taskText: text,
@@ -2111,7 +1939,6 @@ function createTaskBoardRuntime(deps) {
         operationId: result.operationId || '',
         status: result.status || 'admitted',
         oneWay: true,
-        elasticWorkerCreated: result.elasticWorkerCreated === true,
         routedAt,
       },
       now: routedAt,
@@ -2121,14 +1948,6 @@ function createTaskBoardRuntime(deps) {
     }
     save();
     notify(dirId, [taskId], indexed.created ? 'created' : undefined);
-    if (taskRun) return {
-      ...taskRunDispatchResult(result, {
-        taskId,
-        taskRunId: taskRun.runId,
-        commanderSessionId: effectiveTarget,
-      }),
-      taskStart: true,
-    };
     return {
       ...result,
       taskId,
@@ -2182,18 +2001,11 @@ function createTaskBoardRuntime(deps) {
     });
     if (!result.ok) {
       const conflict = result.code === 'idempotency_conflict';
-      const busy = result.code === 'target_busy' || result.error === 'target_busy';
+      const busy = result.code === 'target_busy' || result.error === 'target_busy'
+        || result.code === 'task_run_open';
       return res.status(busy || conflict ? 409 : 502).json({
         error: result.code || result.error || 'dispatch_failed',
       });
-    }
-    if (result.taskRunId) {
-      return res.json(taskRunDispatchResult(result, {
-        taskId: result.taskId,
-        taskRunId: result.taskRunId,
-        commanderSessionId: target,
-        taskStart: true,
-      }));
     }
     if (result.taskBound === true) {
       // P1-b2: first turn opened on the task-bound hidden chat session — no
@@ -2209,7 +2021,6 @@ function createTaskBoardRuntime(deps) {
         workerSessionId: result.targetSessionId,
         workerLabel: records.get(result.targetSessionId)?.label || null,
         queued: result.queued === true,
-        elasticWorkerCreated: false,
         chatId: result.chatId || result.targetSessionId,
         operationId: result.operationId || null,
         duplicate: result.duplicate === true,
@@ -2229,7 +2040,6 @@ function createTaskBoardRuntime(deps) {
         ? records.get(result.workerSessionId)?.label || result.workerSessionId
         : null,
       queued: result.queued === true,
-      elasticWorkerCreated: result.elasticWorkerCreated === true,
       chatId: target,
       operationId: result.operationId || null,
       duplicate: result.duplicate === true,
@@ -2326,7 +2136,9 @@ function createTaskBoardRuntime(deps) {
   // re-creating; explicit dirId wins over ref-derived resolution because a
   // brand-new task has no refs yet.
   async function ensureBoundChatSession(task, { dirId = null, runtime = null, adoptOrigin = false } = {}) {
-    if (!createSessionRecord) return { ok: false, code: 'chat_session_unavailable' };
+    // Resolution-only paths (live binding, reverse heal, origin adoption) need
+    // no creation port; the guard lives on the create branch so a reduced
+    // host can still follow up on tasks that are already bound.
     const boundId = typeof task.chatSessionId === 'string' ? task.chatSessionId : '';
     if (boundId && records.get(boundId)) {
       return { ok: true, sessionId: boundId, created: false };
@@ -2366,6 +2178,7 @@ function createTaskBoardRuntime(deps) {
     const resolvedDirId = dirId || core.taskDirId(board, task);
     const dir = resolvedDirId && resolveDirectoryPort ? resolveDirectoryPort(resolvedDirId) : null;
     if (!dir) return { ok: false, code: 'directory_not_found' };
+    if (!createSessionRecord) return { ok: false, code: 'chat_session_unavailable' };
     // Inherit the directory commander's runtime (cli/model/provider/effort)
     // exactly like elastic workers do, so the bound session runs what the
     // fleet runs; commander-less directories fall back to host defaults.
@@ -2374,14 +2187,21 @@ function createTaskBoardRuntime(deps) {
     // through the ordinary per-session settings.
     const commander = core.resolveDirectoryCommander(records, resolvedDirId);
     const commanderRec = commander.ok ? commander.record : null;
+    // Runtime fields are cli-scoped: a provider/effort/model configured for
+    // one CLI is invalid or meaningless on another. Inherit the commander's
+    // picks only when the final cli matches its cli (#37a — a commander that
+    // switched CLI must not poison bound-session CREATEs into a validator
+    // rejection); otherwise the host defaults apply.
+    const cli = runtime?.cli || commanderRec?.cli || 'claude';
+    const inheritCommander = !commanderRec || commanderRec.cli === cli;
     const created = await createSessionRecord({
       dir,
-      cli: runtime?.cli || commanderRec?.cli || 'claude',
+      cli,
       kind: 'chat',
       label: `任务 · ${String(task.title || '').slice(0, 40)}`,
-      model: runtime?.model ?? (commanderRec?.model || null),
-      provider: runtime?.provider ?? (commanderRec?.provider || ''),
-      effort: commanderRec?.effort || null,
+      model: runtime?.model ?? (inheritCommander ? commanderRec?.model || null : null),
+      provider: runtime?.provider ?? (inheritCommander ? commanderRec?.provider || '' : ''),
+      effort: inheritCommander ? commanderRec?.effort || null : null,
       taskBoundTaskId: task.id,
       persistence: 'required',
       persistenceSource: 'runtime.task-chat-session-create',

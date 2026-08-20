@@ -105,7 +105,7 @@ const { mountAuxGoalRoutes } = require('./src/routes/aux-goal');
 const { createTaskBoardRuntime } = require('./src/routes/task-board'); const { createTaskRunRoutes } = require('./src/routes/task-runs');
 const { createTaskRunStore } = require('./src/task-run-store'); const { createProductionTaskRunHost } = require('./src/task-run-production'); const { reconcileTaskRunSlotLeases } = require('./src/task-run-recovery');
 const { createTaskRunProviderBridge } = require('./src/task-run-provider-bridge'); const { createCommanderMigrationState } = require('./src/commander-migration');
-const { createCommanderMigrationHost, createCommanderRoutingHost } = require('./src/commander-host-runtime');
+const { createCommanderMigrationHost } = require('./src/commander-host-runtime');
 const { mountFileTransferRoutes } = require('./src/routes/file-transfer');
 const { mountSkillSyncRoutes } = require('./src/routes/skill-sync');
 const { createSkillSyncRuntime } = require('./src/skill-sync');
@@ -1621,7 +1621,7 @@ memoModule.migrateLegacy().done.catch(error => console.log(`[memo] migration fai
 
 // Create + persist an isolated session record (its own git worktree + branch).
 // Shared creation boundary; an explicit id creates or reuses a named session.
-async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, effort = null, agent = null, rolePrompt = null, rolePresetId = null, type = null, elasticWorker = false, taskExecutionSlot = false, experimentalMode = null, loginFlow = null, persistence = 'bestEffort', persistenceSource = 'runtime.create-session', taskBoundTaskId = null }) {
+async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, effort = null, agent = null, rolePrompt = null, rolePresetId = null, type = null, taskExecutionSlot = false, experimentalMode = null, loginFlow = null, persistence = 'bestEffort', persistenceSource = 'runtime.create-session', taskBoundTaskId = null }) {
   if (!dir) return { ok: false, error: 'directory not found' };
   if (!SUPPORTED_CHAT_CLIS.includes(cli)) return { ok: false, error: `cli must be ${SUPPORTED_CHAT_CLIS.join(', ')}` };
   if (!['terminal', 'chat'].includes(kind)) return { ok: false, error: 'kind must be terminal or chat' };
@@ -1698,7 +1698,6 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
   if (rolePresetId) session.rolePresetId = String(rolePresetId).trim();
   if (type) session.type = type;   // commander (and future roles) — round-trips via bootstrap/state + session-persistence
   if (loginFlow) session.loginFlow = loginFlow; // whitelisted interactive login terminal (codex-login)
-  if (type === 'worker' && elasticWorker) session.elasticWorker = true;
   if (type === 'worker' && taskExecutionSlot) session.taskExecutionSlot = true;
   if (ephemeral) session.ephemeral = true; if (experiment.mode) session.experimentalMode = experiment.mode; if (taskBoundTaskId) session.taskBoundTaskId = String(taskBoundTaskId).slice(0, 120);
   if (kind === 'chat') ensureCliStates(session);
@@ -2150,18 +2149,16 @@ const {
 function dispatchTargetBusy(sid, item = null) {
   return !!sessionWorkHost?.isRunActive(sid) || !!taskRunHost?.isSlotUnavailable(sid, item || {}) || !!defaultRepoActor.isLeased(sid);
 }
-const commanderRouter = createCommanderRoutingHost({
-  records: persistedSessions, directories, isBusy: dispatchTargetBusy,
-  sessionPersistence, createSessionRecord, dispatchToSession,
-  maxElasticWorkers: process.env.MULTICC_COMMANDER_MAX_ELASTIC_WORKERS, logger,
-});
+// #38 · the Commander routing host (pooled slot dispatch + elastic workers) is
+// retired: task work enters only through the task-bound chat session. Legacy
+// open runs keep draining through the queue/lease machinery.
 const taskBoardRuntime = createTaskBoardRuntime({
   file: MULTICC_PATHS.taskBoardFile,
   taskRuns: taskRunStore, auxQueue, records: persistedSessions, createSessionRecord, releaseTaskBoundSession: sessionLifecycleRuntime.releaseTaskBoundSession,
   // Board projections inspect history without cloning every referenced transcript.
   loadHistory: sessionId => viewChatHistory(sessionId),
   dispatchToSession,
-  routeCommanderTask: commanderRouter.route, sendSessionMessage: (...args) => taskContextHost.deliverSessionMessage(...args),
+  sendSessionMessage: (...args) => taskContextHost.deliverSessionMessage(...args),
   terminateTaskRun: input => taskRunHost.terminateRun(input), cancelUndeliveredTaskRun: async (operationId, context = {}) => {
     const result = await orchestrationRuntime.operations.cancelUndeliveredDispatch(operationId, { taskRunId: context.runId, reason: 'task marked done before start' });
     if (result?.ok) cancelDispatchRun(operationId); return result; },

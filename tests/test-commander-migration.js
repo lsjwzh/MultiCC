@@ -196,32 +196,39 @@ test('migration state is fail-closed before completion and safe per Fleet afterw
   assert.equal(state.snapshot().ready, false, 'global readiness reports a partial migration');
 });
 
-test('a newly migrated Commander is identified by the task board and safely queued', async t => {
+test('a newly migrated Commander is identified by the task board and binds the task session', async t => {
   const h = harness(t);
   await h.migration.run();
+  const commander = h.records.get('commander-dir-a');
   const dispatches = [];
-  let runtime;
-  runtime = createTaskBoardRuntime({
+  const creates = [];
+  const sends = [];
+  const board = createTaskBoardRuntime({
     file: path.join(h.dataRoot, 'task_board.json'),
     auxQueue: { isUnhealthy: () => false, cancel() {}, enqueue: async () => ({ cancelled: true }) },
     records: h.records,
+    directories: h.directories,
     loadHistory: () => [],
     dispatchToSession: async (target, message, options) => {
       dispatches.push({ target, message, options });
       return { ok: true, operationId: 'queued-op', status: 'admitted' };
     },
-    routeCommanderTask: async ({ commanderId, message, idempotencyKey }) => {
-      dispatches.push({ target: commanderId, message, options: { idempotencyKey, oneWay: true } });
-      return {
-        ok: true, targetSessionId: 'elastic-worker', targetLabel: '弹性 Worker',
-        operationId: 'queued-op', status: 'admitted', queued: false, elasticWorkerCreated: true,
+    createSessionRecord: async spec => {
+      creates.push(spec);
+      const id = `bound-${creates.length}`;
+      const record = {
+        id, kind: 'chat', dirId: spec.dir.id, cli: spec.cli,
+        label: spec.label, taskBoundTaskId: spec.taskBoundTaskId,
       };
+      h.records.set(id, record);
+      return { ok: true, id, session: record };
     },
     sendSessionMessage: async (sessionId, text, options) => {
+      sends.push({ sessionId, text, options });
       return { ok: true, handled: false, chatId: sessionId };
     },
     workspaceBroadcast() {},
-    atomicWriteJson: (file, value) => fs.writeFileSync(file, JSON.stringify(value)),
+    atomicWriteJson: (target, value) => fs.writeFileSync(target, JSON.stringify(value)),
     isSystemInjected: () => false,
     getSessionRunState: () => 'running',
     isSessionBusy: () => true,
@@ -229,17 +236,26 @@ test('a newly migrated Commander is identified by the task board and safely queu
     logger: { log() {} },
   });
   const routes = new Map();
-  runtime.mountRoutes({ get: (route, handler) => routes.set(route, handler), post: (route, handler) => routes.set(route, handler) });
+  board.mountRoutes({ get: (route, handler) => routes.set(route, handler), post: (route, handler) => routes.set(route, handler) });
   const response = { code: 200, status(code) { this.code = code; return this; }, json(body) { this.body = body; return this; } };
   routes.get('/api/task-board/send')({ body: { dirId: 'dir-a', text: '请指挥官分派' } }, response);
-  await new Promise(resolve => setImmediate(resolve));
+  for (let attempt = 0; attempt < 50 && !response.body; attempt += 1) {
+    await new Promise(resolve => setImmediate(resolve));
+  }
 
   assert.equal(response.code, 200);
-  assert.equal(response.body.target, 'commander-dir-a');
-  assert.equal(response.body.routingMode, 'commander');
-  assert.equal(response.body.workerSessionId, 'elastic-worker', 'worker assignment comes from the deterministic router receipt');
-  assert.equal(response.body.queued, false);
-  assert.equal(dispatches.length, 1, 'board send routes deterministically through the Commander host router');
-  assert.equal(dispatches[0].target, 'commander-dir-a');
-  assert.match(dispatches[0].message, /请指挥官分派/);
+  assert.equal(response.body.routingMode, 'task-bound');
+  assert.equal(response.body.target, 'bound-1');
+  assert.equal(response.body.commanderSessionId, null, 'the Commander is no longer a dispatch hop');
+  // #38 · the migrated Commander still identifies the directory's runtime — it
+  // just lends it to the task-bound session instead of owning a pooled slot.
+  assert.equal(creates.length, 1);
+  assert.equal(creates[0].dir.id, 'dir-a');
+  assert.equal(creates[0].cli, commander.cli);
+  assert.equal(creates[0].taskBoundTaskId, response.body.taskId);
+  assert.equal(dispatches.length, 0, 'a board send never dispatches through the Commander');
+  assert.equal(sends.length, 1, 'the first turn opens directly on the bound session');
+  assert.equal(sends[0].sessionId, 'bound-1');
+  assert.match(sends[0].text, /请指挥官分派/);
+  assert.equal(sends[0].options.taskStart, true);
 });
