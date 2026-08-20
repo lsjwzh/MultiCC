@@ -79,6 +79,24 @@ function fixture(options = {}) {
       if (options.cancelError) throw options.cancelError;
       return options.cancelResult || { ok: true, id };
     },
+    async scheduleMessage(input) {
+      calls.push({ type: 'scheduleMessage', input });
+      if (options.scheduleMessageError) throw options.scheduleMessageError;
+      return options.scheduledMessage || {
+        id: 'scheduled-1', sessionId: input.sessionId, message: input.message,
+        dueAt: 20_000, status: 'pending', duplicate: false,
+      };
+    },
+    async listScheduledMessages(sessionId) {
+      calls.push({ type: 'listScheduledMessages', sessionId });
+      if (options.listScheduledMessagesError) throw options.listScheduledMessagesError;
+      return options.scheduledMessages || [];
+    },
+    async cancelScheduledMessage(sessionId, messageId) {
+      calls.push({ type: 'cancelScheduledMessage', sessionId, messageId });
+      if (options.cancelScheduledMessageError) throw options.cancelScheduledMessageError;
+      return options.cancelScheduledMessageResult || { ok: true, id: messageId };
+    },
     async startDetached(input) {
       calls.push({ type: 'startDetached', input });
       if (options.startError) throw options.startError;
@@ -169,22 +187,106 @@ function fixture(options = {}) {
   return { app, calls, records, routes, runtime };
 }
 
-test('dependency and mount boundaries own exactly ten routes', () => {
+test('dependency and mount boundaries own the orchestration routes', () => {
   assert.throws(() => createOrchestrationRoutes({}), /records.get/);
   const current = fixture();
   assert.deepEqual([...current.app.routes.keys()].sort(), [
+    'DELETE /api/sessions/:id/scheduled-messages/:messageId',
     'DELETE /api/wait/:wid',
     'GET /api/detached/:taskId',
     'GET /api/sessions/:id/detached',
     'GET /api/sessions/:id/dispatches',
+    'GET /api/sessions/:id/scheduled-messages',
     'GET /api/sessions/:id/tasks',
     'GET /api/sessions/:id/waits',
     'GET /api/v1/sessions/:id/waits',
     'POST /api/sessions/:id/run-detached',
+    'POST /api/sessions/:id/scheduled-messages',
     'POST /api/sessions/:id/wait',
     'POST /api/wait/:wid/resolve',
   ]);
   assert.throws(() => current.routes.mountRoutes(current.app), /already mounted/);
+});
+
+test('scheduled message routes scope durable create, list and cancellation to the session', async () => {
+  const scheduledMessages = [{
+    id: 'scheduled-1', sessionId: 's1', message: '稍后继续',
+    dueAt: 20_000, status: 'pending',
+  }];
+  const current = fixture({ scheduledMessages });
+  const created = await invoke(current.app, 'POST', '/api/sessions/:id/scheduled-messages', {
+    params: { id: 's1' },
+    headers: { 'idempotency-key': 'schedule-once' },
+    body: { message: '稍后继续', delaySeconds: 600 },
+  });
+  assert.equal(created.response.statusCode, 201);
+  assert.equal(created.response.body.ok, true);
+  assert.deepEqual(current.calls.find(call => call.type === 'scheduleMessage'), {
+    type: 'scheduleMessage',
+    input: {
+      sessionId: 's1', message: '稍后继续', delaySeconds: 600,
+      clientScheduleId: 'schedule-once',
+    },
+  });
+
+  const listed = await invoke(current.app, 'GET', '/api/sessions/:id/scheduled-messages', {
+    params: { id: 's1' },
+  });
+  assert.equal(listed.response.statusCode, 200);
+  assert.deepEqual(listed.response.body, { ok: true, scheduledMessages, count: 1 });
+
+  const cancelled = await invoke(
+    current.app,
+    'DELETE',
+    '/api/sessions/:id/scheduled-messages/:messageId',
+    { params: { id: 's1', messageId: 'scheduled-1' } },
+  );
+  assert.equal(cancelled.response.statusCode, 200);
+  assert.deepEqual(current.calls.find(call => call.type === 'cancelScheduledMessage'), {
+    type: 'cancelScheduledMessage', sessionId: 's1', messageId: 'scheduled-1',
+  });
+
+  const duplicate = fixture({
+    scheduledMessage: { ...scheduledMessages[0], duplicate: true },
+  });
+  const duplicateResult = await invoke(
+    duplicate.app,
+    'POST',
+    '/api/sessions/:id/scheduled-messages',
+    { params: { id: 's1' }, body: { text: '稍后继续', delaySec: 600, clientScheduleId: 'same' } },
+  );
+  assert.equal(duplicateResult.response.statusCode, 200);
+  assert.equal(duplicateResult.response.body.duplicate, true);
+
+  const missing = fixture({ records: new Map() });
+  for (const [method, route, params] of [
+    ['POST', '/api/sessions/:id/scheduled-messages', { id: 'missing' }],
+    ['GET', '/api/sessions/:id/scheduled-messages', { id: 'missing' }],
+    ['DELETE', '/api/sessions/:id/scheduled-messages/:messageId', { id: 'missing', messageId: 'x' }],
+  ]) {
+    const response = await invoke(missing.app, method, route, { params, body: {} });
+    assert.equal(response.response.statusCode, 404);
+  }
+
+  const invalid = fixture({
+    scheduleMessageError: Object.assign(new Error('delay too long'), { statusCode: 400 }),
+  });
+  const invalidResult = await invoke(invalid.app, 'POST', '/api/sessions/:id/scheduled-messages', {
+    params: { id: 's1' }, body: { message: 'later', delaySeconds: 9999999 },
+  });
+  assert.equal(invalidResult.response.statusCode, 400);
+  assert.equal(invalidResult.response.body.error, 'delay too long');
+
+  const notFound = fixture({
+    cancelScheduledMessageResult: { ok: false, code: 'not_found' },
+  });
+  const notFoundResult = await invoke(
+    notFound.app,
+    'DELETE',
+    '/api/sessions/:id/scheduled-messages/:messageId',
+    { params: { id: 's1', messageId: 'missing' } },
+  );
+  assert.equal(notFoundResult.response.statusCode, 404);
 });
 
 test('session FIFO status and explicit resolution require confirmation and remain idempotent', async () => {

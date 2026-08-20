@@ -5,7 +5,10 @@ function assertDependencies(deps) {
   if (!deps.records || typeof deps.records.get !== 'function') {
     throw new TypeError('[orchestration-routes] records.get is required');
   }
-  const runtimeMethods = ['register', 'resolveCallback', 'listForSession', 'stats', 'cancel', 'startDetached'];
+  const runtimeMethods = [
+    'register', 'resolveCallback', 'listForSession', 'stats', 'cancel', 'startDetached',
+    'scheduleMessage', 'listScheduledMessages', 'cancelScheduledMessage',
+  ];
   if (!deps.runtime || runtimeMethods.some(name => typeof deps.runtime[name] !== 'function')
       || !deps.runtime.operations || typeof deps.runtime.operations.list !== 'function'
       || typeof deps.runtime.operations.listTasks !== 'function') {
@@ -76,6 +79,57 @@ function createOrchestrationRoutes(rawDeps) {
     }
     if (mounted) throw new Error('[orchestration-routes] routes already mounted');
     mounted = true;
+
+    app.post('/api/sessions/:id/scheduled-messages', async (req, res) => {
+      const session = deps.records.get(req.params.id);
+      if (!session) return res.status(404).json({ error: 'session not found', code: 'session_not_found' });
+      const body = req.body || {};
+      try {
+        const scheduledMessage = await deps.runtime.scheduleMessage({
+          sessionId: session.id,
+          message: body.message ?? body.text,
+          delaySeconds: body.delaySeconds ?? body.delaySec,
+          clientScheduleId: req.get('Idempotency-Key') || body.clientScheduleId,
+        });
+        res.status(scheduledMessage.duplicate ? 200 : 201).json({
+          ok: true,
+          duplicate: !!scheduledMessage.duplicate,
+          scheduledMessage,
+        });
+      } catch (error) {
+        res.status(error.statusCode || 400).json({
+          ok: false,
+          code: error.code || 'invalid_scheduled_message',
+          error: error.message,
+        });
+      }
+    });
+
+    app.get('/api/sessions/:id/scheduled-messages', async (req, res) => {
+      const session = deps.records.get(req.params.id);
+      if (!session) return res.status(404).json({ error: 'session not found', code: 'session_not_found' });
+      try {
+        const scheduledMessages = await deps.runtime.listScheduledMessages(session.id);
+        res.json({ ok: true, scheduledMessages, count: scheduledMessages.length });
+      } catch (error) {
+        res.status(500).json({ ok: false, code: 'scheduled_message_list_failed', error: error.message });
+      }
+    });
+
+    app.delete('/api/sessions/:id/scheduled-messages/:messageId', async (req, res) => {
+      const session = deps.records.get(req.params.id);
+      if (!session) return res.status(404).json({ error: 'session not found', code: 'session_not_found' });
+      try {
+        const result = await deps.runtime.cancelScheduledMessage(session.id, req.params.messageId);
+        const status = result.ok ? 200 : result.code === 'not_found' ? 404 : 409;
+        res.status(status).json({
+          ...result,
+          ...(result.ok ? {} : { error: result.code || 'scheduled message cannot be cancelled' }),
+        });
+      } catch (error) {
+        res.status(400).json({ ok: false, code: 'scheduled_message_cancel_failed', error: error.message });
+      }
+    });
 
     app.post('/api/sessions/:id/wait', async (req, res) => {
       const session = deps.records.get(req.params.id);

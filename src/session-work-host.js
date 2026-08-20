@@ -402,6 +402,8 @@ function createSessionWorkHost(deps = {}) {
       taskId: event.taskId || null,
       queuePosition: event.queuePosition || null,
       workKind: event.workKind || null,
+      message: event.message || null,
+      clientMsgId: event.clientMsgId || null,
       attemptOutcome: event.attemptOutcome || null,
       supersededByEntryId: event.supersededByEntryId || null,
       queued: event.queued == null ? null : event.queued,
