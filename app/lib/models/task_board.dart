@@ -59,6 +59,24 @@ class TaskBoardTask {
   /// chat view instead of the legacy ledger projection.
   final String? chatSessionId;
 
+  /// M3 per-task worktree ledger (server DTO `worktreePath` / `branch`):
+  /// where the task's work lives between runs. Non-null [worktreePath] gates
+  /// the one-click "merge back + cleanup worktree" action, mirroring the web
+  /// row's 🧹 button. Absent until the first run creates the worktree; old
+  /// servers omit both fields entirely.
+  final String? worktreePath;
+  final String? branch;
+
+  /// Routing attempts so far (server DTO `attemptCount`). The web row shows
+  /// "N 次投递" once a task was delivered more than once.
+  final int attemptCount;
+
+  /// Server-computed identity classification: canonical | legacy |
+  /// orphaned_admission | legacy_unresolved. The two latter values group a
+  /// card under "历史身份待确认" on the web board (they are never auto-merged);
+  /// old servers omit the field and parse as canonical.
+  final String identityState;
+
   const TaskBoardTask({
     required this.id,
     required this.moduleId,
@@ -74,7 +92,17 @@ class TaskBoardTask {
     this.moduleAssignment,
     this.body,
     this.chatSessionId,
+    this.worktreePath,
+    this.branch,
+    this.attemptCount = 0,
+    this.identityState = 'canonical',
   });
+
+  /// Cards whose historical identity was never resolved. Mirrors
+  /// partitionTaskIdentity() in public/task-board-ui.js.
+  bool get isIdentityUnresolved =>
+      identityState == 'orphaned_admission' ||
+      identityState == 'legacy_unresolved';
 
   factory TaskBoardTask.fromJson(Map<String, dynamic> json) => TaskBoardTask(
     id: (json['id'] ?? '').toString(),
@@ -111,6 +139,14 @@ class TaskBoardTask {
     chatSessionId: (json['chatSessionId'] as String?)?.isNotEmpty == true
         ? json['chatSessionId'] as String
         : null,
+    worktreePath: (json['worktreePath'] as String?)?.isNotEmpty == true
+        ? json['worktreePath'] as String
+        : null,
+    branch: (json['branch'] as String?)?.isNotEmpty == true
+        ? json['branch'] as String
+        : null,
+    attemptCount: (json['attemptCount'] as num?)?.toInt() ?? 0,
+    identityState: (json['identityState'] ?? 'canonical').toString(),
   );
 }
 
@@ -530,9 +566,11 @@ class TaskBoardDetail {
   }
 }
 
-/// Backfill (历史归档) progress reported by GET /api/task-board. A run is
-/// localhost-triggered but its progress is readable from any client, so the
-/// phone can show the "归拢中" float while one is in flight.
+/// Backfill (历史归档) progress reported by GET /api/task-board. Any
+/// authenticated client may trigger a run (POST /api/task-board/backfill,
+/// since 57bfe99); the progress fields below are readable from any client,
+/// so the phone shows the "归拢中" float while one is in flight regardless of
+/// where it started.
 class TaskBoardBackfill {
   final bool running;
   final int queued;
