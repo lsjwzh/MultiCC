@@ -2869,11 +2869,23 @@ else connect();
  * 实时语音通话 — 结束
  * ════════════════════════════════════════════════════════════════════════════ */
 
+// 仅当当前会话确实走对应 CLI 的官方 OAuth/订阅路径时才显示登录横幅。
+// 使用第三方 provider 时不应被无关的登录态提示打扰。
+function isOfficialProviderForCli(cli) {
+  if (cli !== 'claude' && cli !== 'codex') return false;
+  if (!_sessionProvider) return true; // 默认登录 == 官方
+  const p = _providerList.find(x => x && x.id === _sessionProvider);
+  return !!(p && p.isOfficial);
+}
+
 /* ════════════════════════════════════════════════════════════════════════════
  * Codex ChatGPT 登录态横幅 — 开始
  * 刷新器判定 refresh token 已被消费（needs_login）时，聊天页顶部出现横幅；
  * 按钮一键打开跑 `codex login` 的交互终端（浏览器 OAuth 无法在非交互进程
  * 完成）。重新登录后状态自愈，横幅在下次轮询时自动消失。
+ *
+ * 只有当前会话使用 Codex 官方 provider 时才显示；切换为第三方 provider 时
+ * 即使 ChatGPT 登录态过期也不打扰。
  * ════════════════════════════════════════════════════════════════════════════ */
 (function codexLoginBanner() {
   let banner = null;
@@ -2919,7 +2931,7 @@ else connect();
       const r = await fetch(withToken('/api/codex/oauth/status'));
       if (!r.ok) return;
       const d = await r.json();
-      setBanner(!!d.needsLogin);
+      setBanner(!!d.needsLogin && isOfficialProviderForCli('codex'));
     } catch (_) { /* server restarting or offline — banner state unchanged */ }
   }
   document.addEventListener('DOMContentLoaded', () => {
@@ -2985,7 +2997,7 @@ else connect();
       const r = await fetch(withToken('/api/claude/oauth/status'));
       if (!r.ok) return;
       const d = await r.json();
-      setBanner(!!d.needsLogin);
+      setBanner(!!d.needsLogin && isOfficialProviderForCli('claude'));
     } catch (_) { /* server restarting or offline — banner state unchanged */ }
   }
   document.addEventListener('DOMContentLoaded', () => {
