@@ -34,6 +34,16 @@
     return [phase, elapsed, tool].filter(Boolean).join(' · ');
   }
 
+  function taskAwareCompletionVoice(message, fallback) {
+    const source = message && typeof message === 'object' ? message : {};
+    const code = String(source.taskShortCode || '').trim();
+    const goal = String(source.taskGoal || '').trim();
+    const identity = [code, goal].filter(Boolean).join('，');
+    if (identity) return `${identity}，${fallback}`;
+    const serverVoice = typeof source.voiceMessage === 'string' ? source.voiceMessage.trim() : '';
+    return serverVoice || fallback;
+  }
+
   function createEventController(options) {
     const opts = options || {};
     const state = opts.state || {};
@@ -440,7 +450,9 @@
             host.showNotifyToast?.(message.message || '任务进行中', 'running');
           } else {
             const display = liveUi.classifyDisplay(classifyState);
-            if (display.voice) host.speakNotify?.(display.voice, display.ding);
+            const completionVoice = classifyState === 'D'
+              ? taskAwareCompletionVoice(message, display.voice) : '';
+            if (display.voice) host.speakNotify?.(completionVoice || display.voice, display.ding);
             else {
               const waiting = message.state === 'waiting';
               host.speakNotify?.(waiting ? '等待操作' : '本轮执行成功', waiting ? 'waiting' : 'succeeded');
@@ -700,6 +712,7 @@
     createEventController,
     isRecoverableCodexReconnectErrorText,
     formatProgressHeartbeat,
+    taskAwareCompletionVoice,
   });
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   global.MultiCCChatEventController = api;
