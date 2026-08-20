@@ -772,13 +772,11 @@ function attachUsageLine(bubbleEl, usage, roleBreakdown) {
   return chatLiveUi.attachUsageLine(bubbleEl, usage, roleBreakdown);
 }
 
-// Streaming deltas re-render the FULL accumulated markdown (the view layer has
-// no incremental path), so one render per text_delta is O(n^2) over a long
-// reply - hundreds of full marked+DOMPurify parses that stall mobile UIs.
-// Coalesce non-final renders on a short timer; only the first delta of a burst
-// schedules one, later deltas just extend the accumulated text. The FINAL
-// render (result/stream_end teardown) always runs synchronously so the turn
-// never ends on a throttled, stale bubble.
+// Streaming deltas re-render the FULL accumulated markdown (no incremental
+// path in the view layer), so one render per text_delta is O(n^2) over a long
+// reply. Coalesce non-final renders on a short timer; the FINAL render
+// (result/stream_end teardown) always runs synchronously so the turn never
+// ends on a throttled, stale bubble.
 const STREAM_RENDER_COALESCE_MS = 50;
 let _pendingStreamRender = null;
 function renderCurrentTextNow(final) {
@@ -2071,8 +2069,11 @@ async function openMemoryEditor() {
   tabOwn.onclick = () => switchScope('own');
   tabShared.onclick = () => switchScope('shared');
   sel.onchange = () => { commit(); curName = sel.value; ta.value = model[scope].files[curName] || ''; pathHint.textContent = (model[scope].dir || '') + '/' + curName; };
-  newBtn.onclick = () => {
-    let n = (prompt(tt('memNewFileTitle'), '') || '').trim();
+  newBtn.onclick = async () => {
+    // In-page dialog, not native prompt(): WebViews suppress the native one.
+    let n = ((await chatLiveUi.prompt(tt('memNewFileTitle'), '', {
+      okText: tt('save'), cancelText: tt('cancel'),
+    })) || '').trim();
     if (!n) return;
     if (!/\.md$/i.test(n)) n += '.md';
     if (!/^[\w.\- 一-龥]+\.md$/i.test(n)) { addSystemMsg(tt('memNameInvalid')); return; }
@@ -2082,7 +2083,7 @@ async function openMemoryEditor() {
   };
   delBtn.onclick = async () => {
     if (!curName) return;
-    if (!confirm(tt('memDeleteConfirm', { scope: scope === 'own' ? tt('memScopeOwn') : tt('memScopeShared'), name: curName }))) return;
+    if (!(await chatLiveUi.confirm(tt('memDeleteConfirm', { scope: scope === 'own' ? tt('memScopeOwn') : tt('memScopeShared'), name: curName }), { danger: true }))) return;
     try {
       const r = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/memory`), {
         method: 'DELETE', headers: { 'Content-Type': 'application/json' },
@@ -2266,7 +2267,7 @@ async function openShareDialog() {
   }
   // Use event delegation on listEl so bind() is never needed — handlers survive
   // any innerHTML replacement, and data-* attrs always read the live DOM.
-  listEl.addEventListener('click', (e) => {
+  listEl.addEventListener('click', async (e) => {
     const btn = e.target.closest('button');
     if (!btn) return;
     if (btn.hasAttribute('data-copy')) {
@@ -2274,14 +2275,15 @@ async function openShareDialog() {
       btn.textContent = tt('shareCopied');
       setTimeout(() => { if (btn.isConnected) btn.textContent = tt('copy'); }, 1200);
     } else if (btn.hasAttribute('data-del')) {
-      if (!confirm(tt('revokeShareConfirm'))) return;
+      // In-page dialog, not native confirm/alert: WebViews suppress both.
+      if (!(await chatLiveUi.confirm(tt('revokeShareConfirm'), { danger: true }))) return;
       const token = btn.dataset.del;
       if (!token) return;
       btn.disabled = true;
       btn.textContent = tt('revoking');
       shareApi('DELETE', '/share/' + encodeURIComponent(token))
         .then(() => refresh())
-        .catch(e => alert(e.message))
+        .catch(e => chatLiveUi.alert(e.message))
         .finally(() => { if (btn.isConnected) { btn.disabled = false; btn.textContent = tt('revoke'); } });
     }
   });
@@ -2531,9 +2533,8 @@ chatComposer = window.MultiCCChatComposer.createComposer({
   addSystemMessage: addSystemMsg,
   // Deliberately inert: the user bubble appears only on the server's
   // queued=false confirmation (chat-event-controller session_queue), never
-  // optimistically on send. The old stagedUserBubbles map implemented this
-  // "stage" by storing every sent message forever with no reader (M6); staging
-  // now just discards.
+  // optimistically on send. The old stagedUserBubbles map stored every sent
+  // message forever with no reader (M6); staging now just discards.
   stageUserMessage: () => {},
   addUserMessage: addUserMsg,
   resetHistory: () => {
