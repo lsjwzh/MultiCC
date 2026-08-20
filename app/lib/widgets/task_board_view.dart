@@ -332,6 +332,77 @@ class _TaskBoardViewState extends State<TaskBoardView> {
     }
   }
 
+  /// Trigger a historical backfill (POST /api/task-board/backfill) scoped to
+  /// this directory: the server re-scans chat sessions and lets aux file them
+  /// into the board. Progress shows through the existing [_GatheringFloat]
+  /// (driven by the board payload's `backfill.running`). The web manage page
+  /// has no button for this endpoint yet; the App surfaces it as a header
+  /// action next to refresh.
+  Future<void> _backfill() async {
+    final messenger = ScaffoldMessenger.of(context);
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.panel,
+        title: Text(t('tbBackfill')),
+        content: Text(
+          t('tbBackfillConfirm'),
+          style: const TextStyle(color: AppColors.text, fontSize: 13),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(t('cancel')),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(t('tbBackfill')),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true || !mounted) return;
+    try {
+      final r = await ManageService(
+        settings: widget.settings,
+      ).backfillTaskBoard(dirId: widget.dirId);
+      if (!mounted) return;
+      // A running backfill keeps the gathering float pinned (board payload),
+      // so kick a refresh right away to adopt the in-flight state.
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            t('tbBackfillQueued', {'n': '${r['queued'] ?? 0}'}),
+          ),
+        ),
+      );
+      await _refresh(silent: true);
+    } on LocalOnlyException {
+      if (!mounted) return;
+      messenger.showSnackBar(SnackBar(content: Text(t('localOnly'))));
+    } on BoardRouteException catch (e) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            e.code == 'backfill_running'
+                ? t('tbBackfillRunning')
+                : e.code == 'aux_unhealthy'
+                ? t('boardAuxUnhealthy')
+                : t('tbBackfillFailed', {
+                    'error': e.note.isNotEmpty ? e.note : e.code,
+                  }),
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(content: Text(t('tbBackfillFailed', {'error': '$e'}))),
+      );
+    }
+  }
+
   /// Dir-level dispatch callback for the board composer. Sends [text] into a
   /// fresh task virtual session (server creates a pending task and routes it
   /// deterministically), then refreshes the board so the new task appears.
@@ -381,6 +452,68 @@ class _TaskBoardViewState extends State<TaskBoardView> {
           ? () => _quickArchive(task)
           : null,
     );
+  }
+
+  // 未确认身份的分组展开状态（默认收起，对齐 web <details> 的默认关闭）。
+  final Set<String> _unresolvedExpanded = {};
+
+  /// Renders one module's tasks with the web partitionTaskIdentity split:
+  /// canonical cards first, then — when any exist — the "历史身份待确认" group,
+  /// collapsed by default because those cards were deliberately never
+  /// auto-merged (mirrors manage-taskboard.js renderTaskBoardSection).
+  List<Widget> _buildModuleTasks(
+    TaskBoardModule mod,
+    List<TaskBoardTask> sorted,
+  ) {
+    final canonical = <TaskBoardTask>[];
+    final unresolved = <TaskBoardTask>[];
+    for (final task in sorted) {
+      (task.isIdentityUnresolved ? unresolved : canonical).add(task);
+    }
+    final widgets = <Widget>[for (final task in canonical) _buildTaskRow(task)];
+    if (unresolved.isNotEmpty) {
+      final expanded = _unresolvedExpanded.contains(mod.id);
+      widgets.add(
+        InkWell(
+          borderRadius: BorderRadius.circular(4),
+          onTap: () => setState(() {
+            if (expanded) {
+              _unresolvedExpanded.remove(mod.id);
+            } else {
+              _unresolvedExpanded.add(mod.id);
+            }
+          }),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(10, 6, 4, 4),
+            child: Row(
+              children: [
+                Text(
+                  expanded ? '▾' : '▸',
+                  style: const TextStyle(color: AppColors.faint, fontSize: 11),
+                ),
+                const SizedBox(width: 4),
+                Flexible(
+                  child: Text(
+                    t('tbUnresolvedGroup', {'n': '${unresolved.length}'}),
+                    style: const TextStyle(
+                      color: AppColors.faint,
+                      fontSize: 11,
+                      fontStyle: FontStyle.italic,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+      if (expanded) {
+        widgets.addAll(unresolved.map(_buildTaskRow));
+      }
+    }
+    return widgets;
   }
 
   Future<void> _quickArchive(TaskBoardTask task) async {
@@ -515,6 +648,23 @@ class _TaskBoardViewState extends State<TaskBoardView> {
                             );
                           },
                         ),
+                        // Historical backfill trigger (POST .../backfill);
+                        // while one runs the gathering float stays pinned via
+                        // the board payload's backfill.running.
+                        IconButton(
+                          tooltip: t('tbBackfillTooltip'),
+                          onPressed: _refreshing ? null : _backfill,
+                          icon: const Icon(
+                            Icons.inventory_2_outlined,
+                            size: 18,
+                            color: AppColors.muted,
+                          ),
+                          constraints: const BoxConstraints(
+                            minWidth: 32,
+                            minHeight: 32,
+                          ),
+                          padding: EdgeInsets.zero,
+                        ),
                         IconButton(
                           tooltip: t('refresh'),
                           onPressed: _refreshing ? null : () => _refresh(),
@@ -556,8 +706,7 @@ class _TaskBoardViewState extends State<TaskBoardView> {
                           : null,
                     ),
                     if (!_collapsed.contains(mod.id))
-                      for (final task in _sortTasks(byModule[mod.id]!))
-                        _buildTaskRow(task),
+                      ..._buildModuleTasks(mod, _sortTasks(byModule[mod.id]!)),
                   ],
                   if (orphans.isNotEmpty)
                     for (final task in orphans) _buildTaskRow(task),
@@ -670,6 +819,14 @@ class _TaskRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDone = task.status == 'done';
     final hasBody = task.body != null && task.body!.isNotEmpty;
+    // One spec drives both the icon and the textual run-state label (the web
+    // row renders icon + label side by side); status lives in taskStatusOf so
+    // the two never disagree.
+    final spec =
+        statusPresentation[taskStatusOf(
+          status: isDone ? 'done' : null,
+          runState: task.runState,
+        )]!;
     return Padding(
       padding: const EdgeInsets.fromLTRB(4, 2, 4, 2),
       child: AnimatedContainer(
@@ -693,7 +850,7 @@ class _TaskRow extends StatelessWidget {
                 // runState icon: running pulses; others are static emoji.
                 Padding(
                   padding: const EdgeInsets.only(top: 2),
-                  child: _runStateIcon(task.runState, isDone),
+                  child: _runStateIcon(spec),
                 ),
                 const SizedBox(width: 8),
                 Expanded(
@@ -713,7 +870,9 @@ class _TaskRow extends StatelessWidget {
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                       ),
-                      // Task body preview (mirrors web tb-body-fold)
+                      // Task body preview (mirrors web tb-body-fold); when the
+                      // canonical body has not landed yet the web row shows a
+                      // dim placeholder explaining why (identity-dependent).
                       if (hasBody)
                         Padding(
                           padding: const EdgeInsets.only(top: 2),
@@ -729,15 +888,56 @@ class _TaskRow extends StatelessWidget {
                             maxLines: 2,
                             overflow: TextOverflow.ellipsis,
                           ),
+                        )
+                      else
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Text(
+                            task.isIdentityUnresolved
+                                ? t('tbBodyOrphan')
+                                : t('tbBodyPending'),
+                            style: const TextStyle(
+                              color: AppColors.faint,
+                              fontSize: 10.5,
+                              fontStyle: FontStyle.italic,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ),
                       const SizedBox(height: 3),
-                      Text(
-                        '${t('taskRounds', {'n': '${task.refCount}'})}'
-                        '${_timeAgo(task.lastTs).isEmpty ? '' : ' · ${_timeAgo(task.lastTs)}'}',
-                        style: const TextStyle(
-                          color: AppColors.faint,
-                          fontSize: 10.5,
-                        ),
+                      Row(
+                        children: [
+                          // Textual run-state label (web tb-run-state span).
+                          Flexible(
+                            child: Text(
+                              spec.label,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: spec.color,
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                          // Re-delivery marker (web: "N 次投递" once > 1).
+                          if (task.attemptCount > 1)
+                            Text(
+                              ' · ${t('tbAttempts', {'n': '${task.attemptCount}'})}',
+                              style: const TextStyle(
+                                color: AppColors.faint,
+                                fontSize: 10.5,
+                              ),
+                            ),
+                          Text(
+                            ' · ${t('taskRounds', {'n': '${task.refCount}'})}'
+                            '${_timeAgo(task.lastTs).isEmpty ? '' : ' · ${_timeAgo(task.lastTs)}'}',
+                            style: const TextStyle(
+                              color: AppColors.faint,
+                              fontSize: 10.5,
+                            ),
+                          ),
+                        ],
                       ),
                     ],
                   ),
@@ -773,12 +973,7 @@ class _TaskRow extends StatelessWidget {
   /// 行内状态图标。图标表来自中心 registry —— 列表行和详情页曾各写一份，
   /// running 一处是脉冲点、一处是 🟢，queued/archived 两处都没有。
   /// 只有 spinner 状态才动：出错的任务立刻停止脉冲，换成 ❌。
-  Widget _runStateIcon(String runState, bool isDone) {
-    final spec =
-        statusPresentation[taskStatusOf(
-          status: isDone ? 'done' : null,
-          runState: runState,
-        )]!;
+  Widget _runStateIcon(StatusSpec spec) {
     if (spec.spinner) return const _RunningDot();
     return _EmojiDot(spec.icon, semanticLabel: spec.semanticLabel);
   }
@@ -1197,6 +1392,121 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
     }
   }
 
+  /// Stop the task's open TaskRun only (mirrors the web task chat view's ⏹):
+  /// the card keeps its lifecycle status — marking done stays with the ✅
+  /// action. Idempotent server-side; a no-op cancel (run already finished)
+  /// surfaces as "当前没有正在执行的运行", not an error.
+  Future<void> _cancelRun() async {
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _busy = true);
+    try {
+      final r = await ManageService(
+        settings: widget.settings,
+      ).cancelTaskRun(widget.task.id);
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            r['cancelled'] == true ? t('tbStopRunDone') : t('tbStopRunNoop'),
+          ),
+        ),
+      );
+      // Pull the authoritative trail (interrupted partial row) and refresh
+      // the board so the card stops pulsing.
+      if (_boundSessionId == null && _boundResolved) {
+        await _loadMessages(silent: true);
+      }
+      widget.onChanged();
+    } on LocalOnlyException {
+      if (!mounted) return;
+      messenger.showSnackBar(SnackBar(content: Text(t('localOnly'))));
+    } on BoardRouteException catch (e) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            t('tbStopRunFailed', {
+              'error': e.note.isNotEmpty ? e.note : e.code,
+            }),
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(content: Text(t('tbStopRunFailed', {'error': '$e'}))),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// One-click task worktree cleanup (web manage page 🧹): merge the task
+  /// branch back into the base branch, then remove the worktree. Server-side
+  /// steps are idempotent; a refusal (run active, conflicts, dirty tree)
+  /// leaves everything untouched and maps to a localized reason.
+  Future<void> _cleanupWorktree() async {
+    final messenger = ScaffoldMessenger.of(context);
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.panel,
+        title: Text(t('tbCleanupWorktree')),
+        content: Text(
+          t('tbCleanupConfirm'),
+          style: const TextStyle(color: AppColors.text, fontSize: 13),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(t('cancel')),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(t('tbCleanupWorktree')),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true || !mounted) return;
+    setState(() => _busy = true);
+    try {
+      final r = await ManageService(
+        settings: widget.settings,
+      ).cleanupTaskWorktree(widget.task.id);
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            r['merged'] == true ? t('tbCleanupMerged') : t('tbCleanupNoop'),
+          ),
+        ),
+      );
+      widget.onChanged();
+    } on LocalOnlyException {
+      if (!mounted) return;
+      messenger.showSnackBar(SnackBar(content: Text(t('localOnly'))));
+    } on BoardRouteException catch (e) {
+      if (!mounted) return;
+      final msg = switch (e.code) {
+        'run_active' => t('tbCleanupRunActive'),
+        'merge_failed' => t('tbCleanupMergeFailed'),
+        'worktree_remove_refused' => t('tbCleanupRefused'),
+        _ => t('tbCleanupFailed', {
+          'error': e.note.isNotEmpty ? e.note : e.code,
+        }),
+      };
+      messenger.showSnackBar(SnackBar(content: Text(msg)));
+    } catch (e) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(content: Text(t('tbCleanupFailed', {'error': '$e'}))),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   /// Task-level dispatch callback for the detail-sheet composer. Sends [text]
   /// into this task's virtual session (server routes it deterministically),
   /// then reloads the message trail and notifies the parent to refresh the
@@ -1550,6 +1860,11 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
 
   Widget _actions({required bool canReclassify}) {
     final task = widget.task;
+    // ⏹ mirrors the web task chat view's stop: offered while a run could be
+    // open (executing or parked on a question). cleanup mirrors the manage
+    // page 🧹 and is gated on the task owning a worktree (M3 ledger field).
+    final canStop = task.runState == 'running' || task.runState == 'waiting';
+    final canCleanup = task.worktreePath != null;
     return Padding(
       padding: EdgeInsets.fromLTRB(
         16,
@@ -1571,6 +1886,12 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
             runSpacing: 6,
             alignment: WrapAlignment.end,
             children: [
+              if (canStop)
+                _ActionButton(
+                  label: '⏹ ${t('tbStopRun')}',
+                  icon: Icons.stop_circle_outlined,
+                  onPressed: _busy ? null : _cancelRun,
+                ),
               if (canReclassify)
                 _ActionButton(
                   label: t('reclassify'),
@@ -1584,6 +1905,12 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
                   filled: true,
                   onPressed: _busy ? null : () => _setStatus('done'),
                 ),
+                if (canCleanup)
+                  _ActionButton(
+                    label: '🧹 ${t('tbCleanupWorktree')}',
+                    icon: Icons.cleaning_services_outlined,
+                    onPressed: _busy ? null : _cleanupWorktree,
+                  ),
                 _ActionButton(
                   label: '🗄 ${t('archive')}',
                   icon: Icons.archive_outlined,
@@ -1596,6 +1923,12 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
                   icon: Icons.restart_alt_rounded,
                   onPressed: _busy ? null : () => _setStatus('active'),
                 ),
+                if (canCleanup)
+                  _ActionButton(
+                    label: '🧹 ${t('tbCleanupWorktree')}',
+                    icon: Icons.cleaning_services_outlined,
+                    onPressed: _busy ? null : _cleanupWorktree,
+                  ),
                 _ActionButton(
                   label: '🗄 ${t('archive')}',
                   icon: Icons.archive_outlined,
