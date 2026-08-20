@@ -250,7 +250,8 @@ All three bridges share the same API structure (substitute the platform name):
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/api/server-info` | Server IP, port, protocol, URL, token |
-| `GET` | `/multicc.apk` | Latest Flutter APK (served from `public/multicc.apk`) |
+| `GET` | `/api/apk-info` | Local APK metadata, or `{ "exists": false }` when skipped/not built |
+| `GET` | `/multicc.apk` | Locally built Flutter APK (404 until `./multicc apk` succeeds) |
 | `POST` | `/api/update` | Start `./multicc update` detached — body `{ "force": bool }` |
 | `GET` | `/api/update/status` | Progress of the running / last update |
 

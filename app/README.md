@@ -22,13 +22,13 @@ registry, and receives the same notifications.
 ## Build
 
 ```bash
-flutter pub get
-flutter build apk --release                 # Android
+bash ../multicc apk                         # Android + publish to ../public/multicc.apk
 flutter build ios --release --no-codesign   # iOS (needs Xcode + signing to install)
 ```
 
-The release APK is copied to `../public/multicc.apk` by the build, which is
-what the `/manage` dashboard's **APK** button serves.
+The publisher builds the release APK and atomically copies it to the ignored
+`../public/multicc.apk` local artifact, which is what the `/manage` dashboard's
+**APK** button serves.
 
 ## Package identifiers
 
