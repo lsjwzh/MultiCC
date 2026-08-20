@@ -2374,14 +2374,21 @@ function createTaskBoardRuntime(deps) {
     // through the ordinary per-session settings.
     const commander = core.resolveDirectoryCommander(records, resolvedDirId);
     const commanderRec = commander.ok ? commander.record : null;
+    // Runtime fields are cli-scoped: a provider/effort/model configured for
+    // one CLI is invalid or meaningless on another. Inherit the commander's
+    // picks only when the final cli matches its cli (#37a — a commander that
+    // switched CLI must not poison bound-session CREATEs into a validator
+    // rejection); otherwise the host defaults apply.
+    const cli = runtime?.cli || commanderRec?.cli || 'claude';
+    const inheritCommander = !commanderRec || commanderRec.cli === cli;
     const created = await createSessionRecord({
       dir,
-      cli: runtime?.cli || commanderRec?.cli || 'claude',
+      cli,
       kind: 'chat',
       label: `任务 · ${String(task.title || '').slice(0, 40)}`,
-      model: runtime?.model ?? (commanderRec?.model || null),
-      provider: runtime?.provider ?? (commanderRec?.provider || ''),
-      effort: commanderRec?.effort || null,
+      model: runtime?.model ?? (inheritCommander ? commanderRec?.model || null : null),
+      provider: runtime?.provider ?? (inheritCommander ? commanderRec?.provider || '' : ''),
+      effort: inheritCommander ? commanderRec?.effort || null : null,
       taskBoundTaskId: task.id,
       persistence: 'required',
       persistenceSource: 'runtime.task-chat-session-create',
