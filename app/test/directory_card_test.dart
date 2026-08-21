@@ -71,9 +71,6 @@ void main() {
     expect(view.id, 'dir-1');
     expect(view.totalSessions, 3);
     expect(view.activeSessions, 1);
-    expect(view.claudeSessions, 1);
-    expect(view.codexSessions, 1);
-    expect(view.opencodeSessions, 1);
     expect(view.running, isTrue);
     expect(view.latestTask?.who, 'Architect');
     expect(view.latestTask?.summary, 'Refactor directory boundary');
@@ -136,11 +133,6 @@ void main() {
             path: '/tmp/fleet-one',
             totalSessions: 2,
             activeSessions: 1,
-            claudeSessions: 1,
-            codexSessions: 1,
-            opencodeSessions: 0,
-            zcodeSessions: 0,
-            qoderSessions: 0,
             pushState: DirectoryPushState(hasRemote: true, ahead: 1, dirty: 2),
             running: false,
             recentEventLabels: ['🔄 Agent 同步：main'],
