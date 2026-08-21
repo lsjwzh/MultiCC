@@ -495,6 +495,7 @@ async function loadDashboard() {
       }
     }
     renderDashboard(directories, sessions);
+    if (typeof loadExternalFleets === 'function') loadExternalFleets();
 refreshAllCardBorders();
 syncMonitors(sessions);
     startRuntimeTicker();
@@ -905,6 +906,7 @@ function showDirMenu(ev, dirId) {
   }
   items.push({ label: tt('rename'), onclick: () => renameDirectory(dirId) });
   items.push({ label: dir?.rolePrompt ? tt('rolePromptSet') : tt('rolePrompt'), onclick: () => changeDirectoryRole(dirId) });
+  items.push({ label: '↗ 分享 Fleet', onclick: () => openFleetShareModal(dirId) });
   items.push({ sep: true });
   items.push({ label: tt('deleteDirectory'), danger: true, onclick: () => deleteDirectory(dirId) });
   showPopoverMenu(ev.currentTarget, items);
