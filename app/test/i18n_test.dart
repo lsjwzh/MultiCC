@@ -53,11 +53,10 @@ void main() {
     expect(t('confirmQueueChangeBody'), contains('FIFO'));
   });
 
-  test('legacy classify C degrades to waiting instead of auto-continue', () {
+  test('legacy classify C stays visible as historical continuing state', () {
     I18n.switchLang('zh');
     final legacy = classifyBadge('C');
-    final waiting = classifyBadge('W');
-    expect(legacy?.label, waiting?.label);
-    expect(legacy?.emoji, waiting?.emoji);
+    expect(legacy?.label, '继续中');
+    expect(legacy?.emoji, '🔄');
   });
 }
