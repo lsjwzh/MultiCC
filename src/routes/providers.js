@@ -540,6 +540,19 @@ function createProviderRoutes(rawDeps) {
       const relayBaseUrl = req.params.appType === 'codex'
         ? `${base}/codex-proxy/${encodeURIComponent(req.params.id)}`
         : `${base}/claude-proxy/${encodeURIComponent(req.params.id)}/remote`;
+      // Carry only public model metadata so the imported relay starts on a
+      // model the source provider actually serves. This matters especially for
+      // Codex Official: it has no model in config.toml, so without its cached
+      // catalog the importer would fall back to the unrelated gpt-4o-mini.
+      const summary = deps.providerRouterRuntime.getProviderSummary(
+        req.params.appType,
+        req.params.id,
+      ) || {};
+      const relayModels = [...new Set([
+        summary.model,
+        ...(Array.isArray(summary.modelOptions) ? summary.modelOptions : []),
+      ].map(value => String(value || '').trim())
+        .filter(value => value && value.length <= 256))].slice(0, 100);
       const payload = {
         v: 1,
         kind: 'multicc-relay',
@@ -547,6 +560,7 @@ function createProviderRoutes(rawDeps) {
         appType: req.params.appType,
         baseUrl: relayBaseUrl,
         authToken: token,
+        ...(relayModels[0] ? { model: relayModels[0], models: relayModels } : {}),
       };
       const code = 'mcrelay1.' + Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
       res.json({ ok: true, code, baseUrl: relayBaseUrl });

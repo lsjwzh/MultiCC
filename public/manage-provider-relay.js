@@ -3,7 +3,7 @@
 /* 借道分享/导入（Provider 配置页）：把本机 provider 通过 CPR 协议代理借给
    另一台 multicc。分享码（mcrelay1.…）内含 MULTICC_PROXY_TOKEN —— 一个只
    解锁 /claude-proxy、/codex-proxy 两个代理挂载的 bearer（见
-   src/routes/auth.js）——不含上游 API Key；导入端粘贴后走普通
+   src/routes/auth.js）——不含上游 API Key 或 OAuth 凭据；导入端粘贴后走普通
    POST /api/providers。依赖 manage.js 的全局 helper（escapeHtml、
    providerApi、showToast、loadProviders、_providerData、providerCatalog），
    点击时才解析，因此脚本顺序只要求在 manage.html 里加载即可。 */
@@ -25,6 +25,24 @@ function parseRelayShareCode(raw) {
   if (!/^https?:\/\//.test(String(payload.baseUrl || ''))) return { error: '分享码缺少 baseUrl' };
   if (!String(payload.authToken || '').trim()) return { error: '分享码缺少借道令牌' };
   return { payload };
+}
+
+function relayProviderInput(payload) {
+  const source = payload && typeof payload === 'object' ? payload : {};
+  const models = (Array.isArray(source.models) ? source.models : [])
+    .map(value => String(value || '').trim())
+    .filter((value, index, all) => value && value.length <= 256 && all.indexOf(value) === index)
+    .slice(0, 100);
+  const sharedModel = String(source.model || '').trim();
+  const model = sharedModel && sharedModel.length <= 256 ? sharedModel : (models[0] || '');
+  if (model && !models.includes(model)) models.unshift(model);
+  return {
+    appType: source.appType,
+    name: source.name || '借道',
+    baseUrl: source.baseUrl,
+    authToken: source.authToken,
+    ...(model ? { model, models: models.slice(0, 100) } : {}),
+  };
 }
 
 function _relayOverlay(innerHtml) {
@@ -76,7 +94,7 @@ function shareRelayProvider(appType, id) {
   const { overlay } = _relayOverlay(`
     <div style="background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:480px;max-width:92vw;">
       <div style="font-size:14px;color:#c9d1d9;font-weight:600;margin-bottom:10px">借道分享 · ${escapeHtml(p.name)}</div>
-      <div style="font-size:12px;color:var(--faint);margin-bottom:10px">生成分享码，另一台 multicc 在「导入借道 Provider」里粘贴即可通过本机代理使用这个 provider。分享码内含借道令牌（只解锁两个代理挂载，不含上游 API Key），只发给你信任的设备。</div>
+      <div style="font-size:12px;color:var(--faint);margin-bottom:10px">生成分享码，另一台 multicc 在「导入借道 Provider」里粘贴即可通过本机代理使用这个 provider。分享码内含借道令牌（只解锁两个代理挂载，不含上游 API Key 或 OAuth 凭据），只发给你信任的设备。</div>
       <label style="display:block;margin-bottom:10px"><div style="font-size:12px;color:var(--faint);margin-bottom:4px">远端可访问的本机地址</div>
         <select data-k="basesel" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;box-sizing:border-box">
           <option value="">读取可用地址…</option>
@@ -190,7 +208,7 @@ function importRelayProvider() {
     try {
       await providerApi.json('/api/providers', {
         method: 'POST',
-        json: { appType: payload.appType, name: payload.name || '借道', baseUrl: payload.baseUrl, authToken: payload.authToken },
+        json: relayProviderInput(payload),
       });
       showToast('已导入借道 provider：' + (payload.name || payload.baseUrl));
       close();
