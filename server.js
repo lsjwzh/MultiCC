@@ -228,7 +228,7 @@ const {
   escapeHtmlAttribute,
 } = require('./src/auth-security');
 const { envEnabled, resolveNetworkPolicy, selectListenPort } = require('./src/network-policy');
-const { isLocalRequest } = require('./src/request-locality');
+const { isLocalRequest, isPrivateRequestPeer } = require('./src/request-locality');
 const { createObservability, installConsoleRedaction } = require('./src/observability');
 const { mountWsConnectionRouter } = require('./src/ws/connection-router');
 const { createHealthHandlers } = require('./src/health');
@@ -365,7 +365,7 @@ routerToolHost.mount(app);
 const authRuntime = createAuthRuntime({
   express,
   authSecurity,
-  isLocalRequest,
+  isLocalRequest, isRequestPeerAllowed: req => !networkPolicy.lanOnly || isPrivateRequestPeer(req),
   parseCookies,
   normalizeRedirect,
   escapeHtmlAttribute,
@@ -1955,15 +1955,15 @@ mountShareRoutes(app, {
   logger,
 });
 
-// Host/install metadata and local-first / exact-release APK selection share a narrow route boundary. PORT is
-// read lazily because development mode may select a fallback port at startup.
+// Host/install metadata and APK selection share this boundary; live network
+// values are read lazily because development may select a fallback port.
 mountSystemRoutes(app, {
   fs,
   path,
   https,
   rootDir: __dirname,
   networkInterfaces: () => os.networkInterfaces(),
-  getPort: () => PORT,
+  getPort: () => PORT, getBindHost: () => BIND_HOST,
   authRequired: () => ACCESS_TOKEN,
   gitRun,
   apkDistribution,
@@ -2800,6 +2800,7 @@ mountWsConnectionRouter(wss, {
   share,
   parseCookies,
   isLocalRequest,
+  isRequestPeerAllowed: req => !networkPolicy.lanOnly || isPrivateRequestPeer(req),
   authSecurity,
   voiceAsr,
   ttsService,

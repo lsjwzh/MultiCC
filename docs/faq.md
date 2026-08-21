@@ -4,7 +4,7 @@
 
 ## Does MultiCC serve HTTPS?
 
-No — it listens over plain HTTP and binds to `127.0.0.1` by default. Browser features that need a secure context (microphone, PWA install, service worker) work over `http://localhost`. For any other host, put a real TLS front-end in front of MultiCC: Tailscale Funnel (built into `/manage` → Tunnel), ngrok, or your own reverse proxy. MultiCC does not generate certificates.
+No — direct access is plain HTTP. Password-protected installer deployments listen on the IPv4 LAN automatically, while browser features that need a secure context (microphone, PWA install, service worker) still work only over `http://localhost` or real HTTPS. For public access, put a TLS front-end in front of MultiCC: Tailscale Funnel (built into `/manage` → Tunnel), ngrok, or your own reverse proxy. MultiCC does not generate certificates or public port mappings.
 
 ## Claude command not found
 
@@ -45,8 +45,10 @@ On `/manage`: click the session card → "Model" dropdown shows provider-specifi
 ## Flutter app can't reach the server from my phone
 
 - Check the phone is on the same LAN.
-- MultiCC binds to `127.0.0.1` by default. To accept connections from other devices you must set both `HOST=0.0.0.0` and `MULTICC_ALLOW_REMOTE=1` in `.env` (the server refuses a non-loopback bind otherwise), plus an `ACCESS_TOKEN`. A tunnel is usually the better option.
+- Installer deployments with an `ACCESS_TOKEN` bind `0.0.0.0` automatically unless `HOST` or `MULTICC_ALLOW_REMOTE` overrides that policy. Check the host firewall and confirm both devices are on the same LAN; set `HOST=127.0.0.1` or `MULTICC_ALLOW_REMOTE=0` only when you intentionally want loopback-only access.
 - Confirm `ACCESS_TOKEN` is set in the Flutter setup screen if the server has one.
+- Use the LAN URL returned by `/api/server-info` or the install-complete screen. MultiCC ranks physical private Wi-Fi/Ethernet above VPN, Tailscale, Docker and VM adapters, and returns all usable choices as `lanUrls`.
+- If the URL opens on the host itself but not another device, allow the Node.js executable through the macOS/Windows/Linux host firewall and make sure the Wi-Fi is not a guest network with AP/client isolation. Those two controls live outside MultiCC and are not changed silently.
 
 ## How do I access MultiCC from the public internet?
 

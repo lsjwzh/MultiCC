@@ -184,7 +184,7 @@ A single operational surface for everything:
 - `multicc_auth` HTTP-only cookie for sticky browser sessions.
 - Localhost connections bypass the token.
 - **Plain HTTP by default.** MultiCC does not terminate TLS itself. Browser APIs that need a secure context (microphone, PWA install, service worker) work over `http://localhost`; for any other host, put a real TLS front-end in front of it — Tailscale Funnel, ngrok, or your own reverse proxy.
-- **Fail-closed remote binding.** Binding to anything other than loopback requires `MULTICC_ALLOW_REMOTE=1` in `.env`; without it the server refuses to start rather than silently exposing itself.
+- **Zero-config, password-gated LAN access.** Installer-created instances automatically bind the IPv4 LAN because they already have an `ACCESS_TOKEN`; tokenless starts stay loopback-only, LAN peers never bypass authentication, and explicit non-loopback binds remain fail-closed behind `MULTICC_ALLOW_REMOTE=1`. Public ingress is not created automatically.
 
 ## Server resilience
 

@@ -44,6 +44,7 @@ function createAuthRuntime(rawDeps) {
     getAccessToken,
     getShuttingDown,
     getProxyToken = () => process.env.MULTICC_PROXY_TOKEN || '',
+    isRequestPeerAllowed = () => true,
     allowLegacyTokenQuery = false,
   } = deps;
 
@@ -64,6 +65,7 @@ function createAuthRuntime(rawDeps) {
     [normalizeRedirect, 'normalizeRedirect'], [escapeHtmlAttribute, 'escapeHtmlAttribute'],
     [createErrorDto, 'createErrorDto'], [getAccessToken, 'getAccessToken'],
     [getShuttingDown, 'getShuttingDown'], [getProxyToken, 'getProxyToken'],
+    [isRequestPeerAllowed, 'isRequestPeerAllowed'],
   ]) assertFunction(fn, name);
   if (!metrics || typeof metrics.inc !== 'function') {
     throw new TypeError('[auth] metrics.inc is required');
@@ -124,6 +126,16 @@ function createAuthRuntime(rawDeps) {
         requestId: req.id,
         correlationId: req.correlationId,
       }));
+    });
+
+    // An automatic 0.0.0.0 LAN bind must not silently become a direct public
+    // listener on a cloud VM or publicly-addressed host. Explicit remote mode
+    // can relax this dependency; loopback reverse proxies (including
+    // Tailscale Funnel) remain allowed and continue through normal auth.
+    app.use((req, res, next) => {
+      if (isRequestPeerAllowed(req)) return next();
+      metrics.inc('multicc_auth_public_peer_rejected_total');
+      return res.status(403).json({ error: 'Forbidden: direct public access is disabled; use Tailscale or an explicit remote bind' });
     });
 
     // Login page & handler

@@ -66,6 +66,31 @@ function isLocalRequest(req) {
   return LOOPBACK_ADDRESSES.has(String(address || '')) && !isExternalProxyRequest(req);
 }
 
+// Automatic LAN mode binds the IPv4 wildcard so localhost and the physical
+// LAN work at the same time. This transport-only check prevents that wildcard
+// from becoming an accidental public listener on hosts with a public NIC.
+// Tailscale peers live in 100.64/10; Funnel/reverse proxies connect through
+// loopback and still pass the normal ACCESS_TOKEN authentication above them.
+function isPrivateNetworkAddress(rawAddress) {
+  let address = String(rawAddress || '').trim().toLowerCase().split('%')[0];
+  if (address.startsWith('::ffff:')) address = address.slice('::ffff:'.length);
+  if (address === '::1') return true;
+  if (/^(?:fc|fd)[0-9a-f]{2}:/.test(address) || /^fe[89ab][0-9a-f]:/.test(address)) return true;
+  const parts = address.split('.').map(Number);
+  if (parts.length !== 4 || parts.some(part => !Number.isInteger(part) || part < 0 || part > 255)) return false;
+  const [a, b] = parts;
+  return a === 127
+    || a === 10
+    || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && b === 168)
+    || (a === 100 && b >= 64 && b <= 127)
+    || (a === 169 && b === 254);
+}
+
+function isPrivateRequestPeer(req) {
+  return isPrivateNetworkAddress(req && req.socket && req.socket.remoteAddress);
+}
+
 module.exports = {
   LOOPBACK_ADDRESSES,
   FORWARDING_HEADERS,
@@ -73,4 +98,6 @@ module.exports = {
   hasForwardingMetadata,
   isExternalProxyRequest,
   isLocalRequest,
+  isPrivateNetworkAddress,
+  isPrivateRequestPeer,
 };
