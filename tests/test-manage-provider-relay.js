@@ -87,7 +87,10 @@ test('_relayBaseOptions collects, filters and dedupes candidate addresses', asyn
   const ctx = loadModule();
   ctx.providerApi = {
     json: async (url) => {
-      if (url === '/api/server-info') return { ip: '192.168.1.10', port: 3000 };
+      if (url === '/api/server-info') return {
+        ip: '192.168.1.10', port: 3000,
+        lanUrls: ['http://192.168.1.10:3000', 'http://10.0.0.10:3000'],
+      };
       if (url === '/api/settings/tunnel') return {
         config: {
           tailscale: { url: '' },
@@ -103,6 +106,7 @@ test('_relayBaseOptions collects, filters and dedupes candidate addresses', asyn
   assert.deepEqual(opts.map(o => o.url), [
     'http://127.0.0.1:3000',
     'http://192.168.1.10:3000',
+    'http://10.0.0.10:3000',
     'https://x.tailnet.ts.net',
     'https://abc.vicp.fun/manage',
   ]);

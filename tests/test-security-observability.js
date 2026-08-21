@@ -21,18 +21,30 @@ const { installWsBackpressure } = require('../src/ws-backpressure');
 const { requestIdMiddleware } = require('../src/http-errors');
 const { createHealthHandlers } = require('../src/health');
 
-test('network defaults to loopback and remote binding requires explicit opt-in', () => {
+test('authenticated installs auto-bind to IPv4 LAN while explicit policy stays fail-closed', () => {
   assert.deepStrictEqual(resolveNetworkPolicy({}), {
-    host: '127.0.0.1', port: 3000, development: false, allowRemote: false, accessToken: '',
+    host: '127.0.0.1', port: 3000, development: false, allowRemote: false, accessToken: '', lanOnly: false,
+  });
+  assert.deepStrictEqual(resolveNetworkPolicy({ ACCESS_TOKEN: 'short' }), {
+    host: '127.0.0.1', port: 3000, development: false, allowRemote: false, accessToken: 'short', lanOnly: false,
+  });
+  assert.deepStrictEqual(resolveNetworkPolicy({ ACCESS_TOKEN: 'installed-secret' }), {
+    host: '0.0.0.0', port: 3000, development: false, allowRemote: true, accessToken: 'installed-secret', lanOnly: true,
+  });
+  assert.deepStrictEqual(resolveNetworkPolicy({ ACCESS_TOKEN: 'installed-secret', MULTICC_ALLOW_REMOTE: '0' }), {
+    host: '127.0.0.1', port: 3000, development: false, allowRemote: false, accessToken: 'installed-secret', lanOnly: false,
+  });
+  assert.deepStrictEqual(resolveNetworkPolicy({ ACCESS_TOKEN: 'installed-secret', HOST: '127.0.0.1' }), {
+    host: '127.0.0.1', port: 3000, development: false, allowRemote: false, accessToken: 'installed-secret', lanOnly: false,
   });
   assert.throws(() => resolveNetworkPolicy({ HOST: '0.0.0.0' }), /MULTICC_ALLOW_REMOTE/);
   assert.deepStrictEqual(resolveNetworkPolicy({ HOST: '0.0.0.0', MULTICC_ALLOW_REMOTE: '1' }), {
-    host: '0.0.0.0', port: 3000, development: false, allowRemote: true, accessToken: '',
+    host: '0.0.0.0', port: 3000, development: false, allowRemote: true, accessToken: '', lanOnly: false,
   });
   assert.deepStrictEqual(resolveNetworkPolicy({
     HOST: '0.0.0.0', PORT: '4312', MULTICC_ALLOW_REMOTE: 'true', ACCESS_TOKEN: 'secret',
   }), {
-    host: '0.0.0.0', port: 4312, development: false, allowRemote: true, accessToken: 'secret',
+    host: '0.0.0.0', port: 4312, development: false, allowRemote: true, accessToken: 'secret', lanOnly: false,
   });
   assert.equal(resolveNetworkPolicy({ HOST: '::1', NODE_ENV: 'development' }).development, true);
 });

@@ -249,7 +249,7 @@ All three bridges share the same API structure (substitute the platform name):
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/api/server-info` | Server IP, port, protocol, URL, token |
+| `GET` | `/api/server-info` | Live bind host, ranked physical LAN IP/URLs (`lanAvailable`, `lanAddresses`, `lanUrls`), port, protocol, primary URL, and whether authentication is required |
 | `GET` | `/api/apk-info` | Selected APK source and metadata: local first, then the exact-version GitHub Release |
 | `GET` | `/multicc.apk` | Serve the selected local APK or redirect to its verified exact Release Asset |
 | `POST` | `/api/update` | Start `./multicc update` detached — body `{ "force": bool }` |

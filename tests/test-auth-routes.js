@@ -19,6 +19,7 @@ function buildHarness(overrides = {}) {
     proxyToken: '',
     shuttingDown: false,
     local: true,
+    peerAllowed: true,
     metrics: [],
     ...overrides,
   };
@@ -68,6 +69,7 @@ function buildHarness(overrides = {}) {
     getAccessToken: () => state.accessToken,
     getShuttingDown: () => state.shuttingDown,
     getProxyToken: () => state.proxyToken,
+    isRequestPeerAllowed: () => state.peerAllowed,
     allowLegacyTokenQuery: !!state.allowLegacyTokenQuery,
   });
   runtime.mountRoutes(app);
@@ -96,6 +98,23 @@ test('no ACCESS_TOKEN: loopback peer is allowed, external peer is rejected', asy
     h.state.local = false; // external transport peer, still no token configured
     res = await raw(h.base, '/api/thing', { headers: { accept: 'application/json' } });
     assert.equal(res.status, 403);
+  } finally { await h.close(); }
+});
+
+test('automatic LAN policy rejects direct public peers before login, static and relay bypasses', async () => {
+  const h = await buildHarness({ accessToken: 'sekret', proxyToken: 'relay-pxy', local: false, peerAllowed: false });
+  try {
+    for (const [method, pathname, headers] of [
+      ['GET', '/login', {}],
+      ['GET', '/app.js', {}],
+      ['GET', '/healthz', {}],
+      ['POST', '/claude-proxy/p1/s1/v1/messages', { 'x-api-key': 'relay-pxy' }],
+      ['GET', '/api/thing', { 'x-access-token': 'sekret' }],
+    ]) {
+      const res = await raw(h.base, pathname, { method, headers });
+      assert.equal(res.status, 403, `${method} ${pathname}`);
+    }
+    assert.ok(h.state.metrics.includes('multicc_auth_public_peer_rejected_total'));
   } finally { await h.close(); }
 });
 

@@ -99,7 +99,7 @@ test('internal execution slot discriminator is narrow and reusable by WS admissi
     'WS chat admission must use the same internal-slot discriminator');
 });
 
-function wsRouterHarness(url) {
+function wsRouterHarness(url, { peerAllowed = true } = {}) {
   const records = new Map([
     ['public-chat', { id: 'public-chat', kind: 'chat' }],
     ['slot-secret', { id: 'slot-secret', kind: 'chat', taskExecutionSlot: true }],
@@ -122,6 +122,7 @@ function wsRouterHarness(url) {
     share: { access: () => null },
     parseCookies: () => ({}),
     isLocalRequest: () => true,
+    isRequestPeerAllowed: () => peerAllowed,
     authSecurity: { consumeWsTicket: () => null, verifyCookie: () => false, verifyAccessToken: () => false },
     voiceAsr: { handleVoiceWs() { throw new Error('voice route reached'); } },
     ttsService: { handleTtsWs() { throw new Error('tts route reached'); } },
@@ -177,6 +178,13 @@ test('central WS router rejects internal slots before chat or terminal admission
   const normal = wsRouterHarness('/ws/chat?session=public-chat');
   assert.equal(normal.chatAdmissions, 1);
   assert.equal(normal.closes.length, 0);
+});
+
+test('automatic LAN policy rejects a direct public WebSocket peer before admission', () => {
+  const denied = wsRouterHarness('/ws/chat?session=public-chat', { peerAllowed: false });
+  assert.equal(denied.chatAdmissions, 0);
+  assert.equal(denied.terminalSpawns, 0);
+  assert.deepEqual(denied.closes[0], [4003, 'Direct public access disabled']);
 });
 
 test('server mounts the public-session guard before any session route surface', () => {

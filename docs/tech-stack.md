@@ -22,7 +22,7 @@
 | **Public access** | Tailscale Funnel + 花生壳 DDNS monitor |
 | **i18n** | zh/en via `public/i18n.js` + Flutter locale |
 | **Token stats** | Per-provider daily/weekly/monthly/all-time aggregation from chat history |
-| **TLS** | Not terminated in-process — MultiCC serves plain HTTP on loopback; use Tailscale Funnel / ngrok / a reverse proxy for public HTTPS |
+| **TLS** | Not terminated in-process — direct LAN access is plain HTTP; use Tailscale Funnel / ngrok / a reverse proxy for public HTTPS |
 | **CLI adapters** | One adapter per CLI (`src/cli-adapters/`) for claude, codex, opencode, zcode, qoder |
 | **Service manager** | macOS `launchd` via `./multicc install`; systemd on Linux |
 

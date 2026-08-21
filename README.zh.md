@@ -108,7 +108,7 @@ cd MultiCC
 
 打开 **<http://localhost:3000/manage>**。
 
-> MultiCC 默认只绑定 `127.0.0.1`。想让别的设备访问，必须在 `.env` 里**同时**设置 `HOST=0.0.0.0` 和 `MULTICC_ALLOW_REMOTE=1`，否则服务会拒绝启动（这是刻意的 fail-closed 设计）。
+> 安装器会生成 `ACCESS_TOKEN`；只要没有手工指定 `HOST` / `MULTICC_ALLOW_REMOTE`，MultiCC 就会自动监听 IPv4 局域网，同一 Wi-Fi 下可直接打开安装完成页给出的 LAN 地址并用该密码登录。它不会配置路由器端口映射或公网入口；公网访问仍请使用 `/manage` 内置的 Tailscale Funnel。想保持仅本机访问时，设置 `HOST=127.0.0.1` 或 `MULTICC_ALLOW_REMOTE=0`。
 
 ### 3. 30 秒体验到「多 CLI 切换」
 
@@ -145,9 +145,10 @@ cd MultiCC
 PORT=3000
 ACCESS_TOKEN=<安装脚本生成>
 
-# 仅当需要被其它设备访问时——两个都必须设置
-# HOST=0.0.0.0
-# MULTICC_ALLOW_REMOTE=1
+# 安装器生成密码后，未指定网络策略时会自动开放 IPv4 局域网。
+# 强制只允许本机访问（二选一即可）：
+# HOST=127.0.0.1
+# MULTICC_ALLOW_REMOTE=0
 ```
 
 来自本机回环地址的请求会跳过 `ACCESS_TOKEN` 校验。MultiCC 只提供**明文 HTTP**，不自己做 TLS —— 公网访问请用 Tailscale Funnel（`/manage` → 隧道里内置）、ngrok 或你自己的反向代理。
@@ -159,7 +160,7 @@ Provider、子 agent 路由、语音、TTS/ASR、通知都在 `/manage` 里配�
 ## 常见问题
 
 **MultiCC 提供 HTTPS 吗？**
-不提供，它只在回环地址上跑明文 HTTP。麦克风、PWA 安装这类需要安全上下文的功能，请用 `http://localhost` 访问，或者走一个真正做了 TLS 的隧道。
+不提供。局域网直连仍是明文 HTTP；麦克风、PWA 安装这类需要安全上下文的功能，请在本机用 `http://localhost`，或者走一个真正终止 TLS 的隧道。
 
 **「此浏览器不支持录音」怎么办？**
 `MediaRecorder` 需要安全上下文。本机用 `http://localhost:3000`，远程用 Tailscale Funnel / ngrok。直接用 `http://<局域网IP>:3000` 在任何现代浏览器里都拿不到麦克风权限。
