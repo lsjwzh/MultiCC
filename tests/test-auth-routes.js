@@ -223,6 +223,8 @@ test('bypass paths: static assets, wait-resolve, share, artifacts skip auth', as
       ['GET', '/share/deadbeef'],
       ['POST', '/api/share/deadbeef/auth'],
       ['GET', '/api/share/deadbeef/session'],
+      ['GET', `/fleet-share/fleet_share_${'a'.repeat(32)}`],
+      ['POST', `/api/fleet-shares/fleet_share_${'b'.repeat(32)}/import`],
       ['GET', '/artifacts/xY_9-artifactid/index.html'],
     ]) {
       const res = await raw(h.base, p, { method, headers: { accept: 'application/json' } });
@@ -231,6 +233,8 @@ test('bypass paths: static assets, wait-resolve, share, artifacts skip auth', as
     // A gated admin share route must NOT bypass.
     const gated = await raw(h.base, '/api/sessions/s1/share', { headers: { accept: 'application/json' } });
     assert.equal(gated.status, 403);
+    const gatedFleetAdmin = await raw(h.base, '/api/fleets/f1/share', { method: 'POST', headers: { accept: 'application/json' } });
+    assert.equal(gatedFleetAdmin.status, 403);
   } finally { await h.close(); }
 });
 

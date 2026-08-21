@@ -10,6 +10,7 @@
   <link rel="manifest" href="/manifest.json" />
   <link rel="icon" href="/icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="/icon.svg" />
+  <link rel="stylesheet" href="/manage-fleet-sharing.css" />
   <title>MultiCC — Dashboard</title>
   <script src="auth-client.js"></script>
   <script src="api-client.js"></script>
@@ -810,6 +811,7 @@
       <button class="icon-btn lang-toggle" onclick="toggleLang()" data-i18n-title="language" title="Language">中/EN</button>
       <button class="icon-btn" id="topbar-help" onclick="startOnboarding()" data-i18n-title="onboarding" title="引导">❓</button>
       <button class="icon-btn" id="topbar-refresh" onclick="loadDashboard()" data-i18n-title="refresh" title="刷新">⟳</button>
+      <button class="btn" type="button" onclick="openImportFleetModal()" title="从另一台 MultiCC 导入只读 Fleet"><span aria-hidden="true">⇩</span> <span class="fleet-import-label">导入 Fleet</span></button>
       <button class="btn primary" onclick="openNewDirectoryModal()" data-i18n="newDirectory">＋ 新建Fleet</button>
     </header>
 
@@ -840,6 +842,10 @@
           </button>
           <div class="sec-head"><h2 data-i18n="directories">Fleet</h2><span class="count" id="dir-count-pill">0</span><div class="line"></div></div>
           <div id="directory-list"></div>
+          <div id="external-fleet-section" hidden>
+            <div class="sec-head"><h2>外部 Fleet</h2><span class="count" id="external-fleet-count">0</span><div class="line"></div></div>
+            <div id="external-fleet-list" class="external-fleet-grid"></div>
+          </div>
         </section>
 
         <!-- ─── Memory Graph ─── -->
@@ -2149,6 +2155,7 @@
   <script src="task-board-ui.js"></script>
   <script src="manage-taskboard.js"></script>
   <script src="manage-dashboard.js"></script>
+  <script src="manage-fleet-sharing.js"></script>
   <script src="voice-launch-client.js"></script>
   <script src="manage-qwen-audio.js"></script>
   <script src="manage-provider-balance.js"></script>
