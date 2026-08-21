@@ -72,7 +72,9 @@ async function _relayBaseOptions() {
   push(location.origin, '当前页面地址');
   try {
     const info = await providerApi.json('/api/server-info');
-    if (info && info.ip) push(`http://${info.ip}:${info.port || 3000}`, '局域网');
+    const lanUrls = info && Array.isArray(info.lanUrls) ? info.lanUrls : [];
+    if (lanUrls.length) lanUrls.forEach((url, index) => push(url, lanUrls.length > 1 ? `局域网 ${index + 1}` : '局域网'));
+    else if (info && info.lanAvailable !== false && info.ip) push(`http://${info.ip}:${info.port || 3000}`, '局域网');
   } catch (_) {}
   try {
     const st = await providerApi.json('/api/settings/tunnel');

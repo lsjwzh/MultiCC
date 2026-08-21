@@ -25,7 +25,7 @@ multicc/
 │   ├── git.js                    # Git worktree, merge/sync, auto-commit, syntax validation
 │   ├── git-queue.js              # Serialized git operations (prevents concurrent conflicts)
 │   ├── tmux.js                   # Tmux session management, pipe-pane, FIFO output
-│   ├── network-policy.js         # Fail-closed bind policy (loopback unless explicitly allowed)
+│   ├── network-policy.js         # Token-gated automatic LAN bind + explicit overrides
 │   ├── auth-security.js          # HMAC cookies, timing-safe token compare, WS tickets
 │   ├── request-locality.js       # Loopback detection (localhost bypasses ACCESS_TOKEN)
 │   ├── directories.js / directory/ # Directory workspace registry & per-directory services
@@ -161,7 +161,7 @@ user interrupts by speaking → agent stops → next turn
 ## Key design decisions
 
 - **Vendor transcripts are never translated.** Cross-CLI continuity is a bounded, visible-text checkpoint (16 messages / 12000 chars + task state + git state), injected as a prompt prefix. Each CLI keeps its own native session, so switching back resumes that vendor conversation instead of replaying a lossy translation. See [Multi-CLI switching](cli-switching.md).
-- **Fail-closed network binding.** `src/network-policy.js` refuses to start on a non-loopback host unless `MULTICC_ALLOW_REMOTE=1` is set explicitly. TLS is delegated to a front-end (Tailscale Funnel, ngrok, reverse proxy) rather than terminated in-process.
+- **Password-gated LAN binding.** With no explicit bind policy, `src/network-policy.js` listens on the IPv4 LAN only when `ACCESS_TOKEN` is present; tokenless starts remain loopback-only. Explicit non-loopback hosts still require `MULTICC_ALLOW_REMOTE=1`, and LAN peers never receive localhost's authentication bypass. In automatic mode, HTTP and WebSocket admission reject direct public transport peers before credential checks while permitting private/link-local and Tailscale peers; loopback reverse proxies remain available for Funnel. MultiCC does not create public ingress or TLS itself.
 - **tmux for terminal, raw spawn for chat.** Terminal needs persistent TTY state that survives disconnects. Chat is turn-based — the server spawns the CLI per turn, relying on Claude `--resume` or Codex `exec resume` for continuity.
 - **Provider isolation per child process.** Claude providers inject `ANTHROPIC_*` env vars only for that session's spawn. Codex providers materialize separate `CODEX_HOME` directories. The server strips any leaked env vars at startup.
 - **Worktree-first concurrency.** Each session owns a branch + worktree. Merge/sync APIs move changes between session branches and the base branch — no shared mutable checkout. Task-board runs get their own per-task worktree (`multicc/task-<hash>`, stable across a task's runs; see `src/task-worktree.js`).

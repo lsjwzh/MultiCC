@@ -505,14 +505,11 @@ else
 fi
 
 # ── Done ──────────────────────────────────────────────────────────────────
-# Detect LAN IP for the access URL
-LAN_IP=""
-if command -v ip >/dev/null 2>&1; then
-  LAN_IP="$(ip -4 addr show scope global 2>/dev/null | grep inet | head -1 | awk '{print $2}' | cut -d/ -f1)"
-elif command -v ifconfig >/dev/null 2>&1; then
-  LAN_IP="$(ifconfig 2>/dev/null | grep 'inet ' | grep -v 127.0.0.1 | head -1 | awk '{print $2}')"
-fi
-[ -z "$LAN_IP" ] && LAN_IP="<your-lan-ip>"
+# Use the running server's policy and ranked adapter selection. Picking the
+# first non-loopback address is unreliable on hosts with Tailscale, Docker or
+# a VPN: those virtual adapters often precede Wi-Fi/Ethernet.
+LAN_INFO="$("$NODE" -e 'const fs=require("node:fs"),os=require("node:os"),p=require("node:path"),root=process.argv[1];try{fs.readFileSync(p.join(root,".env"),"utf8").split("\n").forEach(line=>{const m=line.match(/^\s*([^#=]+?)\s*=\s*(.*?)\s*$/);if(m&&!process.env[m[1]])process.env[m[1]]=m[2]})}catch{}const policy=require(p.join(root,"src/network-policy")).resolveNetworkPolicy(process.env),system=require(p.join(root,"src/routes/system")),addresses=system.reachableLanAddresses(os.networkInterfaces(),policy.host);process.stdout.write(policy.host+"\t"+(addresses[0]||""))' "$INSTALL_DIR" 2>/dev/null || true)"
+IFS=$'\t' read -r LAN_BIND_HOST LAN_IP <<< "$LAN_INFO"
 
 echo ""
 echo "${C_BOLD}${C_GREEN}╔══════════════════════════════════════════════════════╗${C_RESET}"
@@ -527,12 +524,20 @@ echo "    cd $INSTALL_DIR && ./multicc start"
 echo ""
 echo "  ${C_BOLD}Access URLs:${C_RESET}"
 echo "    Local:      ${C_CYAN}http://localhost:${PORT}${C_RESET}"
-echo "    LAN:        ${C_CYAN}http://${LAN_IP}:${PORT}${C_RESET}"
+if [ -n "$LAN_IP" ]; then
+  echo "    LAN:        ${C_CYAN}http://${LAN_IP}:${PORT}${C_RESET}"
+elif [ "$LAN_BIND_HOST" = "127.0.0.1" ] || [ "$LAN_BIND_HOST" = "localhost" ] || [ "$LAN_BIND_HOST" = "::1" ]; then
+  echo "    LAN:        ${C_YELLOW}disabled by HOST / MULTICC_ALLOW_REMOTE policy${C_RESET}"
+else
+  echo "    LAN:        ${C_YELLOW}no physical IPv4 LAN adapter detected${C_RESET}"
+fi
 echo "    Chat:       ${C_CYAN}http://localhost:${PORT}/chat${C_RESET}"
 echo "    Dashboard:  ${C_CYAN}http://localhost:${PORT}/manage${C_RESET}"
 echo ""
 echo "  ${C_BOLD}Access Token:${C_RESET}  ${C_YELLOW}${ACCESS_TOKEN}${C_RESET}"
-echo "  (Other devices append ?token=${ACCESS_TOKEN} to the URL)"
+echo "  (Other LAN devices append ?token=${ACCESS_TOKEN} to the URL)"
+echo "  Public access is not opened automatically; configure Tailscale Funnel in /manage."
+echo "  If LAN access still fails, allow Node.js through the host firewall and disable Wi-Fi client isolation."
 echo ""
 
 if [ "$NO_SERVICE" = true ]; then

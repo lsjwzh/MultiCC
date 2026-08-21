@@ -1,5 +1,7 @@
 'use strict';
 
+const net = require('node:net');
+
 const DEFAULT_VERSION_RESULT = Object.freeze({
   current: '0.0.0',
   channel: 'dev',
@@ -20,15 +22,46 @@ function compareSemver(a, b) {
   return 0;
 }
 
-function selectLanAddress(interfaces) {
+const VIRTUAL_INTERFACE = /^(?:lo\d*|utun\d*|tun\d*|tap\d*|tailscale\d*|docker\d*|br-|veth|vmnet|virbr|vEthernet|awdl\d*|llw\d*|bridge\d*|wg\d*|zt)/i;
+const PREFERRED_INTERFACE = /^(?:en\d+|eth\d*|enp|eno|ens|wlan|wlp|wi-?fi|ethernet)/i;
+
+function ipv4Priority(address) {
+  const parts = String(address || '').split('.').map(Number);
+  if (parts.length !== 4 || parts.some(part => !Number.isInteger(part) || part < 0 || part > 255)) return -1;
+  const [a, b] = parts;
+  if (a === 0 || a === 127 || a >= 224 || (a === 169 && b === 254)) return -1;
+  if (a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)) return 300;
+  if (a === 100 && b >= 64 && b <= 127) return 100;
+  return 0;
+}
+
+function selectLanAddresses(interfaces) {
   const nets = interfaces && typeof interfaces === 'object' ? interfaces : {};
+  const candidates = [];
+  let order = 0;
   for (const name of Object.keys(nets)) {
+    if (VIRTUAL_INTERFACE.test(name)) continue;
     const entries = Array.isArray(nets[name]) ? nets[name] : [];
-    for (const net of entries) {
-      if (net && net.family === 'IPv4' && !net.internal && net.address) return net.address;
+    for (const entry of entries) {
+      const ipv4 = entry && (entry.family === 'IPv4' || entry.family === 4) && !entry.internal;
+      const priority = ipv4 ? ipv4Priority(entry.address) : -1;
+      if (priority <= 0) continue;
+      candidates.push({ address: entry.address, priority: priority + (PREFERRED_INTERFACE.test(name) ? 50 : 0), order: order++ });
     }
   }
-  return '127.0.0.1';
+  candidates.sort((a, b) => b.priority - a.priority || a.order - b.order || a.address.localeCompare(b.address));
+  return [...new Set(candidates.map(candidate => candidate.address))];
+}
+
+function selectLanAddress(interfaces) {
+  return selectLanAddresses(interfaces)[0] || '127.0.0.1';
+}
+
+function reachableLanAddresses(interfaces, bindHost) {
+  const host = String(bindHost || '0.0.0.0').trim().toLowerCase();
+  if (host === 'localhost' || host === '::1' || host.startsWith('127.')) return [];
+  if (net.isIP(host) === 4 && host !== '0.0.0.0') return ipv4Priority(host) >= 0 ? [host] : [];
+  return selectLanAddresses(interfaces);
 }
 
 function readInstallMetadata({ fs, path, rootDir }) {
@@ -125,7 +158,10 @@ function createServerInfoHandler(deps) {
   const uptimeSeconds = typeof deps.uptimeSeconds === 'function' ? deps.uptimeSeconds : () => process.uptime();
   const now = typeof deps.now === 'function' ? deps.now : Date.now;
   return function serverInfoHandler(req, res) {
-    const ip = selectLanAddress(deps.networkInterfaces());
+    const interfaces = deps.networkInterfaces();
+    const bindHost = typeof deps.getBindHost === 'function' ? deps.getBindHost() : '0.0.0.0';
+    const lanAddresses = reachableLanAddresses(interfaces, bindHost);
+    const ip = lanAddresses[0] || '127.0.0.1';
     const port = deps.getPort();
     // Negative uptime is impossible, but a clamped floor is cheaper than a
     // startedAt in the future if a platform ever reports one.
@@ -135,6 +171,10 @@ function createServerInfoHandler(deps) {
       port,
       proto: 'http',
       url: `http://${ip}:${port}`,
+      bindHost,
+      lanAvailable: lanAddresses.length > 0,
+      lanAddresses,
+      lanUrls: lanAddresses.map(address => `http://${address}:${port}`),
       authRequired: Boolean(deps.authRequired()),
       // Both are sent on purpose. startedAt is the readable fact; uptimeMs is
       // the one a browser can use without inheriting this host's clock — a VM
@@ -199,7 +239,10 @@ function mountSystemRoutes(app, rawDeps) {
 module.exports = {
   DEFAULT_VERSION_RESULT,
   compareSemver,
+  ipv4Priority,
+  selectLanAddresses,
   selectLanAddress,
+  reachableLanAddresses,
   readInstallMetadata,
   fetchLatestRelease,
   latestTagFromRemote,

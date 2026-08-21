@@ -12,7 +12,7 @@ The nine documents the README links to directly.
 |---|---|
 | **[Multi-CLI switching](cli-switching.md)** | The headline feature: `claude`/`codex`/`opencode`/`zcode`/`kimi`/`qoder` in one chat, the bounded handoff checkpoint, `reused` semantics, one-click install, and the `switch-cli` API. |
 | [Installation & service management](installation.md) | Install-script flags (`--branch`, `--port`, `--token`, `--no-service`, `--no-clone`), updating, force-push recovery, the `./multicc` manager, macOS `launchd` / Linux `systemd` units, release APK distribution, and iOS builds. |
-| [Configuration](configuration.md) | Every environment variable: `ACCESS_TOKEN`, `HOST` + `MULTICC_ALLOW_REMOTE`, `PORT`, `providers.json`, `cc-switch` import, voice, TTS/ASR, notifications. |
+| [Configuration](configuration.md) | Every environment variable: password-gated automatic LAN access, `HOST` / `MULTICC_ALLOW_REMOTE` overrides, `PORT`, providers, voice, TTS/ASR, notifications. |
 | [Features](features.md) | Complete feature catalogue: git worktrees, parallel sessions, subagent provider routing, voice, IM bridges, push, task board. |
 | [Architecture](architecture.md) | Repository layout (`src/`, `cli-adapters/`, `routes/`, `plugins/`, `skills/`), message-flow diagrams, and the design decisions — no vendor-transcript translation, fail-closed network binding. |
 | [API reference](api-reference.md) | REST endpoints by domain (`/api/sessions`, `/api/sessions/:id/switch-cli`, `/api/cli/:cli/install`, `/api/voice/*`, `/api/push/*`) and the `/ws/chat` WebSocket protocol with ws-ticket auth. |

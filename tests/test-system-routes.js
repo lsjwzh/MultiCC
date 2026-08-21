@@ -9,6 +9,9 @@ const path = require('node:path');
 
 const {
   compareSemver,
+  ipv4Priority,
+  reachableLanAddresses,
+  selectLanAddresses,
   selectLanAddress,
   latestTagFromRemote,
   resolveVersionInfo,
@@ -154,25 +157,49 @@ test('semver and remote tag selection preserve legacy stable-tag semantics', () 
   ].join('\n')), 'v2.0.0');
 });
 
-test('server info selects the first external IPv4 and reads the live port', () => {
+test('server info prefers physical private LAN addresses and reads the live bind', () => {
   let port = 3000;
   const handler = createServerInfoHandler({
     networkInterfaces: () => ({
       lo0: [{ family: 'IPv4', internal: true, address: '127.0.0.1' }],
+      utun4: [{ family: 'IPv4', internal: false, address: '100.118.172.84' }],
+      docker0: [{ family: 'IPv4', internal: false, address: '172.17.0.1' }],
       en0: [{ family: 'IPv6', internal: false, address: '::1' }, { family: 'IPv4', internal: false, address: '192.168.1.8' }],
+      en1: [{ family: 4, internal: false, address: '10.0.0.4' }],
     }),
     getPort: () => port,
+    getBindHost: () => '0.0.0.0',
     authRequired: () => true,
     now: () => Date.parse('2026-07-27T05:32:00.000Z'),
     uptimeSeconds: () => 8100,
   });
   assert.deepEqual(capture(handler), {
     ip: '192.168.1.8', port: 3000, proto: 'http', url: 'http://192.168.1.8:3000', authRequired: true,
+    bindHost: '0.0.0.0', lanAvailable: true,
+    lanAddresses: ['192.168.1.8', '10.0.0.4'],
+    lanUrls: ['http://192.168.1.8:3000', 'http://10.0.0.4:3000'],
     startedAt: '2026-07-27T03:17:00.000Z', uptimeMs: 8100000,
   });
   port = 3012;
   assert.equal(capture(handler).port, 3012);
   assert.equal(selectLanAddress({ lo0: null }), '127.0.0.1');
+});
+
+test('LAN address selection rejects virtual and unroutable adapters and honors loopback binds', () => {
+  const interfaces = {
+    docker0: [{ family: 'IPv4', internal: false, address: '172.17.0.1' }],
+    tailscale0: [{ family: 'IPv4', internal: false, address: '100.100.10.5' }],
+    en0: [{ family: 'IPv4', internal: false, address: '169.254.8.2' }],
+    Ethernet: [{ family: 'IPv4', internal: false, address: '192.168.22.220' }],
+    en2: [{ family: 'IPv4', internal: false, address: '203.0.113.8' }],
+  };
+  assert.deepEqual(selectLanAddresses(interfaces), ['192.168.22.220']);
+  assert.equal(selectLanAddress(interfaces), '192.168.22.220');
+  assert.deepEqual(reachableLanAddresses(interfaces, '127.0.0.1'), []);
+  assert.deepEqual(reachableLanAddresses(interfaces, '0.0.0.0'), ['192.168.22.220']);
+  assert.deepEqual(reachableLanAddresses(interfaces, '192.168.22.220'), ['192.168.22.220']);
+  assert.equal(ipv4Priority('10.2.3.4') > ipv4Priority('8.8.8.8'), true);
+  assert.equal(ipv4Priority('169.254.1.2'), -1);
 });
 
 test('server info reports the running process start, not a value captured at require time', () => {
