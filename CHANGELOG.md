@@ -2,6 +2,22 @@
 
 All notable changes to MultiCC are documented in this file.
 
+## v1.6.2 — Secure LAN access and Official OAuth relay sharing
+
+### Highlights
+
+- **Password-gated LAN access by default** — normal installations now listen on the IPv4 LAN automatically when the installer-generated `ACCESS_TOKEN` is present. Direct HTTP and WebSocket peers are limited to private, loopback, and Tailscale networks; public access still goes through Tailscale Funnel or another explicitly configured reverse proxy.
+- **Reliable LAN address discovery** — MultiCC prefers physical Wi-Fi/Ethernet addresses, filters VPN, Docker, bridge, and Tailscale virtual adapters, and reports every usable LAN URL instead of advertising the first arbitrary interface.
+- **Actionable installation diagnostics** — the installer reports when LAN binding is explicitly disabled or no physical IPv4 adapter is available, and points to host-firewall and Wi-Fi client-isolation checks when the service is listening but another device still cannot connect.
+- **Official Codex OAuth relay** — relay sharing can use the host's current ChatGPT/Codex OAuth session without exporting access or refresh tokens. The host owns token refresh, account selection, upstream requests, and fail-closed login-expiry handling.
+- **Installable Android release artifact** — the signed Android package advances to `2.29.8+120`, so it can upgrade the prior stable APK instead of being rejected as the same Android version.
+
+### Security and compatibility
+
+- Explicit `HOST` / `MULTICC_ALLOW_REMOTE` settings remain authoritative; `HOST=127.0.0.1` or `MULTICC_ALLOW_REMOTE=0` keeps a loopback-only installation.
+- Existing API-key and non-official relay providers retain their previous paths and authentication contracts.
+- Automatic LAN mode does not create router port forwarding, change the system firewall, or expose a public tunnel.
+
 ## v1.6.1 — Task-bound sessions, scheduled messages, and signed APK releases
 
 ### Highlights
