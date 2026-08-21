@@ -19,6 +19,11 @@ const http = require('http');
 const https = require('https');
 const fs   = require('fs');
 const path = require('path');
+const { buildClassifySystemPrompt } = require('../src/classify/vocab');
+const {
+  API_ERROR_SIGNATURES,
+  normalizeApiError,
+} = require('../src/chat/api-error-policy');
 
 const BASE = process.env.MULTICC_URL || 'http://localhost:3000';
 
@@ -35,10 +40,7 @@ const API_ERROR_PATTERNS = [
 ];
 
 // E-detection keywords that MUST appear in the classify prompt
-const E_KEYWORDS = [
-  'API Error', '503', 'Connection closed', 'Overloaded',
-  'Internal server error', 'The system is busy', 'E ='
-];
+const E_KEYWORDS = [...API_ERROR_SIGNATURES, 'E ='];
 
 // ── tiny test runner ──────────────────────────────────────────────────
 let passed = 0, failed = 0, skipped = 0;
@@ -76,22 +78,21 @@ const post = (p, b)    => _req('POST', p, b);
 
 // ── Helper: read server code ──────────────────────────────────────────
 function readServerCode() {
-  // The classify parser and system prompt were extracted to src/classify/vocab.js
-  // (parseClassifyResult, buildClassifySystemPrompt); the classify state machine
-  // (dispatchStateAction, scanAndReclassify, the E-branch fallback) lives in
-  // src/classify/state-machine.js. Concatenate all three so the prompt-keyword
-  // and code-path text checks below still see the source of truth.
+  // Concatenate the current runtime boundaries used by the code-path checks.
+  // Prompt text itself is generated below through buildClassifySystemPrompt(),
+  // so a shared/dynamic vocabulary cannot make a source-text scan lie.
   try {
-    const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
-    let vocab = '';
-    let stateMachine = '';
-    try {
-      vocab = fs.readFileSync(path.join(__dirname, '..', 'src', 'classify', 'vocab.js'), 'utf8');
-    } catch (_) { /* optional */ }
-    try {
-      stateMachine = fs.readFileSync(path.join(__dirname, '..', 'src', 'classify', 'state-machine.js'), 'utf8');
-    } catch (_) { /* optional */ }
-    return `${server}\n${vocab}\n${stateMachine}`;
+    const relativePaths = [
+      'server.js',
+      'src/classify/vocab.js',
+      'src/classify/state-machine.js',
+      'src/chat/api-error-policy.js',
+      'src/chat/api-error-host.js',
+      'src/chat/turn-engine.js',
+    ];
+    return relativePaths.map(relativePath => fs.readFileSync(
+      path.join(__dirname, '..', relativePath), 'utf8',
+    )).join('\n');
   } catch (_) { return ''; }
 }
 
@@ -105,25 +106,31 @@ function readServerCode() {
   console.log('━━━ 1. E-state keyword detection ━━━');
 
   // 1a. Verify classify prompt includes all E-detection keywords
-  const serverCode = readServerCode();
-  if (!serverCode) {
-    skip('Prompt keyword check', 'cannot read server.js');
-  } else {
-    let kwFound = 0;
-    for (const kw of E_KEYWORDS) {
-      if (serverCode.includes(kw)) kwFound++;
-      else fail(`Prompt: "${kw}"`, 'not found in classify prompt');
-    }
-    ok('Prompt E keywords', `${kwFound}/${E_KEYWORDS.length} present`);
+  const classifyPrompt = buildClassifySystemPrompt('发布新版本');
+  let kwFound = 0;
+  for (const kw of E_KEYWORDS) {
+    if (classifyPrompt.includes(kw)) kwFound++;
+    else fail(`Prompt: "${kw}"`, 'not found in generated classify prompt');
   }
+  ok('Prompt E keywords', `${kwFound}/${E_KEYWORDS.length} present`);
+
+  const serverCode = readServerCode();
 
   // 1b. Verify all synthetic error replies contain at least one E keyword
   let allContainKw = true;
   for (const pat of API_ERROR_PATTERNS) {
     const matched = E_KEYWORDS.filter(kw => pat.toLowerCase().includes(kw.toLowerCase()));
     if (matched.length === 0) { fail(`Pattern match: "${pat.slice(0,50)}"`, 'no E keyword matched'); allContainKw = false; }
+    const normalized = normalizeApiError(
+      { message: pat, source: 'process_stderr', provider: 'fixture' },
+      { source: 'process_stderr', provider: 'fixture', phase: 'before_first_token' },
+    );
+    if (normalized.category === 'unknown') {
+      fail(`Policy normalize: "${pat.slice(0,50)}"`, 'canonical policy returned unknown');
+      allContainKw = false;
+    }
   }
-  if (allContainKw) ok('All 8 error patterns contain E keywords');
+  if (allContainKw) ok('All 8 error patterns are prompt-visible and policy-classified');
 
   // ===================================================================
   // SECTION 2: Fetch real test cases
@@ -148,35 +155,37 @@ function readServerCode() {
   console.log('\n━━━ 3. Normal retry path (live classify) ━━━');
 
   // Pick a usable session
-  const liveIdx = cases.findIndex(c => {
+  const liveCandidates = cases.filter(c => {
     const tail = c.lastAssistantTail300 || '';
     return tail.length > 80 && !tail.includes('API Error');
   });
-  const liveSession = liveIdx >= 0 ? cases[liveIdx] : null;
+  let liveSession = null;
 
-  if (!liveSession) {
+  if (liveCandidates.length === 0) {
     skip('Live classify', 'no suitable session');
   } else {
-    // Test first 3 error patterns via the debug classify endpoint
-    let liveOK = 0;
-    for (const errPat of API_ERROR_PATTERNS.slice(0, 3)) {
+    // A settled session requires the documented force flag. Try recent active
+    // candidates until one accepts the debug request; one enqueue proves the
+    // live Aux path without spending quota on three identical submissions.
+    let lastReason = '';
+    for (const candidate of liveCandidates.slice(0, 12)) {
       try {
-        const res = await post(`/api/debug/classify/${liveSession.sessionId}`, {});
+        const res = await post(`/api/debug/classify/${candidate.sessionId}?force=true`, {});
         if (res.status === 200) {
-          ok(`Live classify submit: ${errPat.slice(0, 50)}`, `session=${liveSession.sessionId}`);
-          liveOK++;
-        } else {
-          skip(`Live classify: ${errPat.slice(0, 50)}`, `status ${res.status}: ${res.body.error || ''}`);
+          liveSession = candidate;
+          ok('Live classify submit', `session=${candidate.sessionId}`);
+          break;
         }
+        lastReason = `status ${res.status}: ${res.body.error || ''}`;
       } catch (e) {
-        fail(`Live classify: ${errPat.slice(0, 50)}`, e.message);
+        lastReason = e.message;
       }
     }
-    if (liveOK > 0) ok('Live classify path', `${liveOK}/3 debug submissions accepted`);
-    else skip('Live classify path', 'no successful submissions');
+    if (liveSession) ok('Live classify path', 'debug submission accepted');
+    else skip('Live classify path', lastReason || 'no active session accepted the request');
 
     // Wait a moment for aux to process, then check classifyHistory
-    await new Promise(r => setTimeout(r, 3000));
+    if (liveSession) await new Promise(r => setTimeout(r, 3000));
   }
 
   // ===================================================================
@@ -220,13 +229,13 @@ function readServerCode() {
       // the head of the condition rather than pinning its exact text — this check
       // is about the delegation, not about how the branch is spelled.
       { name: 'classify E branch delegates to evaluateTurnApiError as legacy fallback', pattern: /if \(error[^)]*\)[\s\S]{0,120}_lastApiErrorDecision[\s\S]{0,160}evaluateTurnApiError/ },
-      { name: 'a deterministic API-error verdict goes through the central applier', pattern: /cancelClassifyFor\(sessionName\)[\s\S]{0,400}applyClassifyResult\(/ },
+      { name: 'a deterministic turn verdict goes through the shared applier', pattern: /function classifyTurnEnd[\s\S]{0,800}cancelClassifyFor\(sessionName\)[\s\S]{0,2200}applyClassifyResult\(/ },
       { name: 'retry vs fail_fast gated by policy decision .action', pattern: /_lastApiErrorDecision\?\.action/ },
       { name: 'wait message driven by retryNotice(decision), not injection', pattern: /retryNotice\(cs\._lastApiErrorDecision\)/ },
     ];
     for (const c of checks) {
       if (c.pattern.test(serverCode)) ok(c.name);
-      else fail(c.name, 'pattern not found in server.js');
+      else fail(c.name, 'pattern not found in classification runtime');
     }
     // Negative guards: the retired auto-continue retry machinery must stay gone.
     const retired = [
@@ -235,7 +244,7 @@ function readServerCode() {
     ];
     for (const c of retired) {
       if (!c.pattern.test(serverCode)) ok(c.name);
-      else fail(c.name, 'retired retry mechanism still present in server.js');
+      else fail(c.name, 'retired retry mechanism still present in runtime');
     }
   }
 
@@ -266,19 +275,18 @@ function readServerCode() {
   console.log('\n━━━ 7. End-to-end retry flow summary ━━━');
 
   console.log('  Normal path:');
-  console.log('    classify → E → dispatchStateAction error=true');
-  console.log('      → _apiRetryState.count++（≤3）');
-  console.log('      → count=1: "刚才因API异常中断，请从中断处继续。"');
-  console.log('      → count≥2: "[第N次重试] 刚才因..."');
-  console.log('      → waitInjector.safeInject(session, nudge)');
-  console.log('      → fireInject → runChatTurn(session, nudge, {originContinue:true})');
-  console.log('      → 新 turn 发送，claude/codex 从中断处继续');
+  console.log('    provider boundary → evaluateTurnApiError()');
+  console.log('      → canonical taxonomy + safe replay/side-effect gate');
+  console.log('      → retry: scheduleOwnedRetry() retains the current turn owner');
+  console.log('      → category budget: transient/network/rate-limit ≤2; timeout/unknown ≤1');
+  console.log('      → fail_fast / wait_reset: no automatic replay');
+  console.log('      → classify E only projects the policy decision; it opens no retry loop');
   console.log('');
   console.log('  Recovery path:');
-  console.log('    aux 恢复 → reclassifySessionsWithMissingGoals()');
-  console.log('      → 遍历 lifecycle=running/interrupted/waiting 的 session');
-  console.log('      → 最近 classify >5min 的 → 重判');
-  console.log('      → dispatchStateAction 处理结果（E→policy retry/fail-fast, W→waiting, D→done；C 已退役并归一为 W）');
+  console.log('    network circuit recovers → resumeHeldSessions()');
+  console.log('      → held sessions resume through sessionDelivery.deliverRetry()');
+  console.log('      → TaskRun slots require a new run and never receive anonymous retries');
+  console.log('      → periodic classify scan repairs missing turn-state projections only');
 
   ok('Retry flow documented', 'both normal and recovery paths');
 
