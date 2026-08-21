@@ -158,6 +158,7 @@ const {
 const { createChatHistoryRuntime, buildReplayMessages } = require('./src/routes/chat-history');
 const { createTokenUsageRoutes } = require('./src/routes/token-usage');
 const { mountShareRoutes } = require('./src/routes/share');
+const { mountFleetSharingRoutes } = require('./src/routes/fleet-sharing');
 const { createSessionAdminRuntime } = require('./src/routes/session-admin');
 const { createSessionTriggers } = require('./src/triggers');
 const {
@@ -1954,6 +1955,7 @@ mountShareRoutes(app, {
   sharePageFile: path.join(__dirname, 'public', 'share.html'),
   logger,
 });
+mountFleetSharingRoutes(app, { paths: MULTICC_PATHS, directories, sessions: persistedSessions, logger });
 
 // Host/install metadata and APK selection share this boundary; live network
 // values are read lazily because development may select a fallback port.

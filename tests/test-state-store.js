@@ -50,7 +50,9 @@ function tmpDir(label) {
     const d = tmpDir('pathsdir');
     const p = paths.createPaths({ dataDir: d });
     ok(p.sessionsFile === path.join(d, 'sessions.json'), 'createPaths: sessionsFile under override');
-    ok(p.directoriesFile === path.join(d, 'directories.json'), 'createPaths: directoriesFile under override');
+  ok(p.directoriesFile === path.join(d, 'directories.json'), 'createPaths: directoriesFile under override');
+  ok(p.fleetSharesFile === path.join(d, 'fleet-shares.json'), 'createPaths: fleetSharesFile under override');
+  ok(p.externalFleetsFile === path.join(d, 'external-fleets.json'), 'createPaths: externalFleetsFile under override');
     ok(p.journalDir === path.join(d, '.journal'), 'createPaths: journalDir under override');
     ok(p.bridgesDir === path.join(d, 'bridges'), 'createPaths: bridgesDir under override');
     ok(p.detachedDir === path.join(d, 'detached'), 'createPaths: detached evidence under override');

@@ -204,6 +204,12 @@ function createAuthRuntime(rawDeps) {
       // admin share management lives under /api/sessions/* and stays gated.
       if (/^\/share\/[^/]+$/.test(req.path)) return next();
       if (/^\/api\/share\/[^/]+\/(auth|session)$/.test(req.path)) return next();
+      // Fleet import capabilities mirror session shares: only the landing page
+      // and the single password-gated snapshot endpoint bypass ACCESS_TOKEN.
+      // Fleet creation/list/revoke and imported-Fleet management stay gated.
+      if (/^\/fleet-share\/fleet_share_[A-Za-z0-9_-]+$/.test(req.path)) return next();
+      if (req.method === 'POST'
+        && /^\/api\/fleet-shares\/fleet_share_[A-Za-z0-9_-]+\/import$/.test(req.path)) return next();
       // Temp artifacts (multicc-artifact skill): the random <id> in the path is an
       // unguessable capability token, so artifact links open without ACCESS_TOKEN —
       // same model as /share/:token above (keep regex in sync with src/artifacts.js).
