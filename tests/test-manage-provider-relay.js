@@ -45,6 +45,26 @@ test('parseRelayShareCode round-trips the server relay-share payload', () => {
   assert.deepEqual(JSON.parse(JSON.stringify(parsed)), payload);
 });
 
+test('relayProviderInput carries the shared model catalog into provider creation', () => {
+  const ctx = loadModule();
+  const input = ctx.relayProviderInput({
+    appType: 'codex',
+    name: 'OpenAI Official · 借道',
+    baseUrl: 'https://relay.example/codex-proxy/official',
+    authToken: 'relay-pxy',
+    model: 'gpt-5.6-sol',
+    models: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-sol', ''],
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(input)), {
+    appType: 'codex',
+    name: 'OpenAI Official · 借道',
+    baseUrl: 'https://relay.example/codex-proxy/official',
+    authToken: 'relay-pxy',
+    model: 'gpt-5.6-sol',
+    models: ['gpt-5.6-sol', 'gpt-5.6-terra'],
+  });
+});
+
 test('parseRelayShareCode rejects malformed or untrusted codes', () => {
   const ctx = loadModule();
   const bad = [

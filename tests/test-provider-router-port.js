@@ -289,6 +289,28 @@ test('shadow never compares write/event operations and can mount one protocol at
   assert.equal(legacyCalls.filter(call => call.method === 'mountCodexProxy').length, 0);
 });
 
+test('Official OAuth relay mounts before the generic CPR Codex proxy', () => {
+  const order = [];
+  const router = fakeRouter({ calls: [] });
+  router.mountCodexProxy = (app, mountOptions) => {
+    order.push({ kind: 'cpr', mountOptions });
+    return 'cpr-codex';
+  };
+  const app = {
+    use() {},
+    post(route) { order.push({ kind: 'official', route }); },
+  };
+  const port = createCprPort(router);
+  const mounted = port.mountProtocolProxies(app, {
+    protocols: ['codex'],
+    codexProxyPath: '/custom-codex',
+  });
+  assert.deepEqual(mounted, { codex: 'cpr-codex' });
+  assert.deepEqual(order.map(item => item.kind), ['official', 'cpr']);
+  assert.equal(order[0].route, '/custom-codex/:providerId/responses');
+  assert.equal(order[1].mountOptions.codexProxyPath, '/custom-codex');
+});
+
 test('protocol mounts preserve request activity for liveness and TaskRun drain fencing', () => {
   const calls = [];
   const port = createCprPort(fakeRouter({ calls }));

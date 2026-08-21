@@ -610,6 +610,33 @@ test('relay-share issues a borrow code and fails closed without the relay token'
   });
   assert.equal(response.body.baseUrl, 'https://relay.example/codex-proxy/codex-one');
 
+  // Official OAuth has no config.toml model; its public cached catalog must
+  // cross the share boundary so the importer does not invent gpt-4o-mini.
+  harness = createHarness({
+    getProxyToken: () => 'relay-pxy',
+    providers: {
+      getProvider: (appType, id) => ({
+        id, appType, name: 'OpenAI Official',
+        settingsConfig: { auth: { auth_mode: 'chatgpt' } },
+      }),
+    },
+    providerRouterRuntime: {
+      getProviderSummary: () => ({
+        id: 'official', appType: 'codex', model: '',
+        modelOptions: ['gpt-5.6-sol', 'gpt-5.6-terra'],
+      }),
+    },
+  });
+  response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/relay-share', {
+    params: { appType: 'codex', id: 'official' },
+    body: { publicBaseUrl: 'https://relay.example/' },
+  });
+  const officialPayload = JSON.parse(
+    Buffer.from(response.body.code.slice('mcrelay1.'.length), 'base64url').toString('utf8'),
+  );
+  assert.equal(officialPayload.model, 'gpt-5.6-sol');
+  assert.deepEqual(officialPayload.models, ['gpt-5.6-sol', 'gpt-5.6-terra']);
+
   // A missing/invalid public base URL is rejected.
   response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/relay-share', {
     params: { appType: 'claude', id: 'claude-one' },
