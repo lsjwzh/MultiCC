@@ -83,7 +83,16 @@ configured/verified tunnel addresses; a custom URL works too), then copy the
 offers to set it in place. On the remote multicc, open `/manage` → 导入借道
 Provider, paste the code, and the provider is created with the relay baseUrl
 and token already filled in. The code embeds only the relay token — never the
-upstream API keys.
+upstream API keys or OAuth credentials. It also carries the provider's public
+model catalog so the imported relay starts with a model the source serves.
+
+OpenAI Official is handled specially. The relay host reads the current
+ChatGPT OAuth access token and account id from `~/.codex/auth.json` for each
+request, calls the ChatGPT Codex Responses backend on the borrower's behalf,
+and never sends the access token or refresh token to the borrower. Token
+rotation remains owned by the host's normal Codex login/refresher. If that
+login is missing or expired, the relay fails closed with HTTP 503 until the
+host refresher renews it or the host signs in again.
 
 Manual setup: create a provider whose baseUrl points at a relay path:
 
