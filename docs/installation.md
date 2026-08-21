@@ -151,15 +151,28 @@ node server.js
 
 Open `http://localhost:3000/chat` to begin.
 
-MultiCC binds to `127.0.0.1` by default and will **refuse to start** on any other host unless you opt in explicitly. To reach it from other devices on your LAN, set all three in `.env`:
+`install.sh` generates an `ACCESS_TOKEN`. If neither `HOST` nor
+`MULTICC_ALLOW_REMOTE` is configured, that password-protected installation
+automatically binds `0.0.0.0`, so other devices on the same IPv4 LAN can open:
 
 ```env
-HOST=0.0.0.0
-MULTICC_ALLOW_REMOTE=1
 ACCESS_TOKEN=<a-long-random-string>
 ```
 
-Then open `http://<your-lan-ip>:3000?token=<ACCESS_TOKEN>`. Note that plain HTTP over a LAN address is not a secure context, so microphone input and PWA install will not work there — use a tunnel (see [FAQ](faq.md)) if you need those.
+Open `http://<your-lan-ip>:3000?token=<ACCESS_TOKEN>`. To opt out, set
+`HOST=127.0.0.1` or `MULTICC_ALLOW_REMOTE=0`. MultiCC never creates router
+port-forwarding or a public endpoint automatically; use Tailscale Funnel for
+off-LAN access. Plain HTTP over a LAN address is not a secure context, so
+microphone input and PWA install will not work there — use a TLS tunnel if you
+need those features.
+
+The installer and `/api/server-info` use the same adapter ranking: physical
+private Wi-Fi/Ethernet addresses are preferred, while Docker, VM, Tailscale and
+VPN adapters are excluded from the LAN URL. If more than one physical LAN is
+active, `server-info.lanUrls` exposes every candidate. MultiCC cannot safely
+change the host firewall or an access point's client-isolation policy without
+administrator/network-owner consent; the installer prints those two checks
+next to the LAN URL instead of silently changing either control.
 
 ## CLI Service Manager
 

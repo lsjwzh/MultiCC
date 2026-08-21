@@ -151,7 +151,7 @@ cd MultiCC
 ./multicc start
 ```
 
-Open **<http://localhost:3000/manage>**. MultiCC binds to `127.0.0.1` by default and refuses a non-loopback bind unless you opt in explicitly — see [Configuration](docs/configuration.md).
+Open **<http://localhost:3000/manage>**. Installer-created, password-protected instances also listen on the IPv4 LAN automatically; public access is never configured automatically and should use Tailscale Funnel — see [Configuration](docs/configuration.md).
 
 ### 3. See the point in 30 seconds
 
@@ -225,7 +225,7 @@ Or do it from the browser: click the **version number at the bottom of the `/man
 - **Voice task announcements** — hands-free status of completed tasks
 - 500-event **replay buffer** — reconnect rebuilds state deterministically
 - Serialized git queue, graceful shutdown/restart
-- Fail-closed network binding, HMAC cookies, WebSocket tickets
+- Password-gated automatic LAN binding, HMAC cookies, WebSocket tickets
 
 </td></tr>
 </table>
@@ -260,10 +260,10 @@ Everything lives in `.env` at the repo root. The installer writes `ACCESS_TOKEN`
 PORT=3000
 ACCESS_TOKEN=<generated-by-install.sh>
 
-# Only if you need access from other devices — both are required.
-# Without MULTICC_ALLOW_REMOTE the server refuses to start on a non-loopback host.
-# HOST=0.0.0.0
-# MULTICC_ALLOW_REMOTE=1
+# With a token and no explicit network policy, IPv4 LAN access is automatic.
+# To force loopback-only access, set either:
+# HOST=127.0.0.1
+# MULTICC_ALLOW_REMOTE=0
 ```
 
 Requests from loopback bypass `ACCESS_TOKEN`. MultiCC serves **plain HTTP** and does not terminate TLS — use Tailscale Funnel (built into `/manage` → Tunnel), ngrok, or your own reverse proxy for public access.
@@ -305,7 +305,7 @@ Surveyed: cc-switch, Ruflo, CLIProxyAPI, oh-my-claudecode, AionUi, vibe-kanban, 
            │                 │                 │                 │
            ▼                 ▼                 ▼                 ▼
     ┌───────────────────────────────────────────────────────────────────┐
-    │              MultiCC Server  (Express + ws, loopback HTTP)        │
+    │           MultiCC Server  (Express + ws, authenticated LAN HTTP)  │
     │  ┌────────────────────┐  ┌───────────────┐  ┌──────────────────┐  │
     │  │ tmux backend       │  │ CLI spawner   │  │ cli-switch       │  │
     │  │ (terminal mode)    │  │ (chat mode)   │  │ + handoff        │  │
@@ -344,7 +344,7 @@ curl -X POST "http://localhost:3000/api/sessions/$SESSION_ID/switch-cli" \
 
 A few of the most common questions:
 
-- **Does MultiCC serve HTTPS?** No — plain HTTP on loopback. Use `http://localhost` for microphone and PWA features, or a tunnel that terminates real TLS.
+- **Does MultiCC serve HTTPS?** No — direct LAN access is plain HTTP. Use `http://localhost` for microphone and PWA features, or a tunnel that terminates real TLS.
 - **Can I use it without Claude Code?** Yes. Any one of the six supported CLIs is enough.
 - **Does switching CLIs cost tokens immediately?** No. The checkpoint is queued and delivered with your *next* message.
 - **Port already in use?** Set a different `PORT` in `.env` — automatic rollover only happens in development mode.

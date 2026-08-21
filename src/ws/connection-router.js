@@ -14,6 +14,7 @@ function mountWsConnectionRouter(wss, deps) {
     share,
     parseCookies,
     isLocalRequest,
+    isRequestPeerAllowed = () => true,
     authSecurity,
     voiceAsr,
     ttsService,
@@ -43,6 +44,11 @@ function mountWsConnectionRouter(wss, deps) {
   wss.on('connection', async (ws, req) => {
     if (getShuttingDown()) {
       ws.close(1012, 'server shutting down');
+      return;
+    }
+    if (!isRequestPeerAllowed(req)) {
+      metrics.inc('multicc_ws_public_peer_rejected_total');
+      ws.close(4003, 'Direct public access disabled');
       return;
     }
     const urlObj = new URL(req.url, 'http://localhost');

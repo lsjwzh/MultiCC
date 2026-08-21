@@ -9,6 +9,8 @@ const {
   hasForwardingMetadata,
   isExternalProxyRequest,
   isLocalRequest,
+  isPrivateNetworkAddress,
+  isPrivateRequestPeer,
 } = require('../src/request-locality');
 
 function request(ip, host) {
@@ -90,6 +92,19 @@ test('missing or malformed request metadata fails closed', () => {
   assert.equal(isLocalRequest({ headers: { host: 'localhost' } }), false);
   assert.equal(isLocalRequest({ ip: '127.0.0.1', connection: { remoteAddress: '127.0.0.1' }, headers: { host: 'localhost' } }), false);
   assert.equal(isExternalProxyRequest({ headers: { host: '[::1' } }), true);
+});
+
+test('automatic LAN mode accepts private and Tailscale transport peers but rejects public addresses', () => {
+  for (const address of [
+    '127.0.0.1', '::1', '10.0.0.2', '172.16.0.1', '172.31.255.254',
+    '192.168.22.220', '100.64.0.1', '100.127.255.254', '169.254.1.2',
+    '::ffff:192.168.1.4', 'fd12:3456::1', 'fe80::1%en0',
+  ]) assert.equal(isPrivateNetworkAddress(address), true, address);
+  for (const address of ['8.8.8.8', '172.32.0.1', '100.128.0.1', '203.0.113.8', '2001:4860:4860::8888', '']) {
+    assert.equal(isPrivateNetworkAddress(address), false, address);
+  }
+  assert.equal(isPrivateRequestPeer(request('192.168.1.20', 'host.local')), true);
+  assert.equal(isPrivateRequestPeer(request('203.0.113.8', 'host.example')), false);
 });
 
 test('locality checks stay limited to authentication and sensitive host controls', () => {
