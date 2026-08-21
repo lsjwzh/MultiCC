@@ -7,6 +7,7 @@ const {
   createProviderBinding,
   toLegacyProviderView,
 } = require('./provider-binding');
+const { mountCodexOfficialRelay } = require('./codex-official-relay');
 const { createUsageObserved } = require('./usage-observed');
 
 const PORT_API_VERSION = '1.0.0';
@@ -452,6 +453,14 @@ function createProviderRouterPort(options = {}) {
       );
     }
     if (protocols.includes('codex')) {
+      // CPR's generic Codex proxy intentionally requires an API key + base_url.
+      // Mount the host-owned ChatGPT OAuth adapter first; it handles only the
+      // Official provider shape and calls next() for every ordinary provider.
+      mountCodexOfficialRelay(app, {
+        getProvider,
+        ...(mountOptions.codexOfficialRelay || {}),
+        ...(mountOptions.codexProxyPath ? { codexProxyPath: String(mountOptions.codexProxyPath) } : {}),
+      });
       mounted.codex = requireMethod(backend, 'mountCodexProxy', mode === 'cpr' ? 'router' : 'legacy')(
         app,
         { ...common, ...(mountOptions.codexProxyPath ? { codexProxyPath: String(mountOptions.codexProxyPath) } : {}) },
