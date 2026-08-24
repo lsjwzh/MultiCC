@@ -35,6 +35,20 @@ test('Fleet sharing UI keeps passwords write-only and uses the bounded API surfa
   assert.doesNotMatch(source, /fleet\.password|record\.password|externalFleets[^\n]+password/);
 });
 
+test('Fleet share and import dialogs expose complete close controls', () => {
+  const source = read('public/manage-fleet-sharing.js');
+  const styles = read('public/manage-fleet-sharing.css');
+  assert.match(source, /class="fs-modal-close"[^>]+onclick="closeFleetShareModal\(\)"[^>]+aria-label="关闭分享 Fleet 弹窗"/);
+  assert.match(source, /class="fs-modal-close"[^>]+onclick="closeImportFleetModal\(\)"[^>]+aria-label="关闭导入 Fleet 弹窗"/);
+  assert.match(source, /event\.target===this\)closeFleetShareModal\(\)/);
+  assert.match(source, /event\.target===this\)closeImportFleetModal\(\)/);
+  assert.match(source, /event\.key !== 'Escape'/);
+  assert.match(source, /document\.addEventListener\('keydown', closeVisibleFleetModal\)/);
+  assert.match(styles, /\.fs-modal-head\{/);
+  assert.match(styles, /\.fs-modal-body\{[^}]*overflow-y:auto/);
+  assert.match(styles, /\.fs-modal-close:focus-visible/);
+});
+
 test('public Fleet landing page explains snapshot scope without collecting a password', () => {
   const page = read('public/fleet-share.html');
   assert.match(page, /只读 Fleet 快照/);
