@@ -143,7 +143,14 @@ printf 'fixture-apk' > build/app/outputs/flutter-apk/app-release.apk
   fs.chmodSync(executable, 0o755);
   const apksigner = path.join(bin, 'apksigner');
   fs.writeFileSync(apksigner, `#!/bin/sh
-printf 'Signer #1 certificate SHA-256 digest: %s\n' "\${FAKE_SIGNER_SHA256}"
+# build-tools <=36 and >=37 print different prefixes for the same digest.
+if [ "\${FAKE_SIGNER_FORMAT:-36}" = 37 ]; then
+  printf 'V2 Signer: certificate SHA-256 digest: %s\n' "\${FAKE_SIGNER_SHA256}"
+elif [ "\${FAKE_SIGNER_FORMAT:-36}" = none ]; then
+  exit 0
+else
+  printf 'Signer #1 certificate SHA-256 digest: %s\n' "\${FAKE_SIGNER_SHA256}"
+fi
 `);
   fs.chmodSync(apksigner, 0o755);
   return { bin, log, apksigner };
@@ -236,6 +243,18 @@ test('publish-apk builds atomically, writes truthful metadata and skips only a c
     const failed = runPublish(root, [], { ...env, FAKE_FLUTTER_FAIL: '1' });
     assert.equal(failed.status, 7);
     assert.equal(fs.readFileSync(apk, 'utf8'), 'known-good', 'a failed build must not replace the served APK');
+
+    // build-tools 37 prints "V2 Signer:" instead of "Signer #1:"; the digest
+    // parser must accept both formats (v1.6.3 release, runs 4-6).
+    const v37 = runPublish(root, [], { ...env, FAKE_SIGNER_FORMAT: '37' });
+    assert.equal(v37.status, 0, v37.stderr);
+    assert.equal(JSON.parse(fs.readFileSync(`${apk}.json`, 'utf8')).signerSha256, 'b'.repeat(64));
+
+    // An apksigner that exits 0 without printing a digest must fail loudly
+    // instead of silently comparing an empty string against the pin.
+    const unparsable = runPublish(root, [], { ...env, FAKE_SIGNER_FORMAT: 'none' });
+    assert.notEqual(unparsable.status, 0);
+    assert.match(unparsable.stderr, /could not parse a certificate digest/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

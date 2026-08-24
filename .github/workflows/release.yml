@@ -179,7 +179,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: release-failure-diagnostics
-          path: public/multicc.apk*
+          # public/ only receives files after verification passes, so also
+          # capture the raw build output while diagnosing signing failures.
+          path: |
+            public/multicc.apk*
+            app/build/app/outputs/flutter-apk/*.apk
           if-no-files-found: ignore
           retention-days: 3
 
