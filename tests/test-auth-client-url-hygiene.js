@@ -43,6 +43,9 @@ function createHarness(href, { exchangeOk = true } = {}) {
     if (url === '/api/auth/ws-ticket') {
       return { ok: true, status: 200, json: async () => ({ ticket: 'once-ticket' }) };
     }
+    if (/^\/api\/external-fleets\/[^/]+\/ws-ticket$/.test(url)) {
+      return { ok: true, status: 200, json: async () => ({ ticket: 'remote-ticket', wsOrigin: 'wss://source.lan:3443' }) };
+    }
     return { ok: true, status: 200, json: async () => ({ ok: true }) };
   }
 
@@ -145,6 +148,21 @@ test('loopback without authentication keeps the URL and requests untouched', asy
   assert.equal(h.requests.length, 1);
   assert.equal(h.requests[0].headers['x-access-token'], undefined);
   assert.equal(h.location.href, 'http://127.0.0.1:3000/memo.html?dirId=d1#note');
+});
+
+test('external Fleet pages proxy REST through the target and bind WebSocket tickets to the source', async () => {
+  const h = createHarness('https://target.test/chat.html?session=remote-chat&external=external-1');
+  await h.window.multiccAuthReady;
+  await h.window.fetch('/api/sessions/remote-chat/history?limit=10');
+  const wsUrl = await h.window.multiccWsUrl('wss://target.test/ws/chat?session=remote-chat');
+
+  assert.equal(h.requests[0].url,
+    'https://target.test/api/external-fleets/external-1/remote/api/sessions/remote-chat/history?limit=10');
+  const ticket = h.requests.find(request => request.url === '/api/external-fleets/external-1/ws-ticket');
+  assert.deepEqual(JSON.parse(ticket.body), {
+    pathname: '/ws/chat', sessionId: 'remote-chat', directoryId: '',
+  });
+  assert.equal(wsUrl, 'wss://source.lan:3443/ws/chat?session=remote-chat&ticket=remote-ticket');
 });
 
 test('Memo and WeChat load auth first and never construct long-token request URLs', () => {
