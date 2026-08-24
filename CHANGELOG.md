@@ -2,7 +2,7 @@
 
 All notable changes to MultiCC are documented in this file.
 
-## v1.6.2 — Secure LAN access and Official OAuth relay sharing
+## v1.6.3 — Secure LAN access, Official OAuth relay, and cross-instance Fleet sharing
 
 ### Highlights
 
@@ -10,7 +10,8 @@ All notable changes to MultiCC are documented in this file.
 - **Reliable LAN address discovery** — MultiCC prefers physical Wi-Fi/Ethernet addresses, filters VPN, Docker, bridge, and Tailscale virtual adapters, and reports every usable LAN URL instead of advertising the first arbitrary interface.
 - **Actionable installation diagnostics** — the installer reports when LAN binding is explicitly disabled or no physical IPv4 adapter is available, and points to host-firewall and Wi-Fi client-isolation checks when the service is listening but another device still cannot connect.
 - **Official Codex OAuth relay** — relay sharing can use the host's current ChatGPT/Codex OAuth session without exporting access or refresh tokens. The host owns token refresh, account selection, upstream requests, and fail-closed login-expiry handling.
-- **Installable Android release artifact** — the signed Android package advances to `2.29.8+120`, so it can upgrade the prior stable APK instead of being rejected as the same Android version.
+- **Cross-instance Fleet sharing** — one instance can issue a password-protected, bounded share capability for a Fleet, and another MultiCC instance imports it as a read-only metadata snapshot over loopback or the LAN. Imported Fleets never enter local directories or the Git/worktree lifecycle.
+- **Installable Android release artifact** — the signed Android package advances to `2.29.9+121`, so it can upgrade the prior stable APK instead of being rejected as the same Android version.
 
 ### Security and compatibility
 
