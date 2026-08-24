@@ -148,6 +148,19 @@ LOCK_HELD=true
 rm -f "$LOCK_CANDIDATE"
 
 echo "[publish-apk] Building release APK…"
+# Surface a keystore/pin disagreement before a multi-minute build: gradle
+# signs with whatever this keystore holds, and the post-build verifier pins
+# the expected digest, so a mismatch here predetermines the failure. The
+# lookup itself is best-effort (a missing keytool must not abort the build).
+if ! KEYSTORE_DIGEST="$(keytool -list -v -keystore "$MULTICC_ANDROID_KEYSTORE_PATH" \
+  -alias "$MULTICC_ANDROID_KEY_ALIAS" \
+  -storepass "$MULTICC_ANDROID_STORE_PASSWORD" 2>/dev/null \
+  | awk '/SHA256:/ {print $2; exit}' | tr -d '[:space:]:' | tr '[:upper:]' '[:lower:]')"; then
+  KEYSTORE_DIGEST=""
+fi
+if [ -n "$KEYSTORE_DIGEST" ] && [ "$KEYSTORE_DIGEST" != "$EXPECTED_SIGNER_SHA256" ]; then
+  echo "[publish-apk] WARNING: signing keystore certificate differs from the expected fingerprint; the build will fail verification" >&2
+fi
 ( cd "$ROOT/app" && "$FLUTTER" build apk --release )
 
 if [ ! -s "$SRC" ]; then
@@ -193,6 +206,13 @@ SIGNER_SHA256="$(printf '%s\n' "$SIGNER_OUTPUT" \
   | tr -d '[:space:]:' | tr '[:upper:]' '[:lower:]')"
 if [ "$SIGNER_SHA256" != "$EXPECTED_SIGNER_SHA256" ]; then
   echo "[publish-apk] ERROR: APK signer certificate does not match the official fingerprint" >&2
+  # Certificate digests are public data; printing them identifies which key
+  # actually signed the APK (v1.6.3 release, runs 4-5).
+  echo "[publish-apk]   apksigner: $APKSIGNER" >&2
+  echo "[publish-apk]   got     : ${SIGNER_SHA256:-<nothing parsed from apksigner>}" >&2
+  echo "[publish-apk]   want    : $EXPECTED_SIGNER_SHA256" >&2
+  echo "[publish-apk]   verifier output:" >&2
+  printf '%s\n' "$SIGNER_OUTPUT" | head -5 | sed 's/^/    /' >&2
   exit 1
 fi
 
