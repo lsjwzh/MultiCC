@@ -24,9 +24,10 @@
     if (el('fleet-share-modal')) return;
     const host = document.createElement('div');
     host.innerHTML = `
-      <div id="fleet-share-modal" class="modal-backdrop fleet-share-modal">
+      <div id="fleet-share-modal" class="modal-backdrop fleet-share-modal" role="dialog" aria-modal="true" aria-labelledby="fleet-share-title" onclick="if(event.target===this)closeFleetShareModal()">
         <div class="modal-card">
-          <h3>分享 Fleet</h3>
+          <div class="fs-modal-head"><h3 id="fleet-share-title">分享 Fleet</h3><button class="fs-modal-close" type="button" onclick="closeFleetShareModal()" aria-label="关闭分享 Fleet 弹窗" title="关闭">×</button></div>
+          <div class="fs-modal-body">
           <div id="fleet-share-sub" class="fs-sub"></div>
           <div class="fs-field"><label for="fleet-share-password">访问密码（至少 6 位）</label><input id="fleet-share-password" type="password" autocomplete="new-password" /></div>
           <div class="fs-row">
@@ -39,11 +40,13 @@
           <div class="fs-actions"><button class="btn" type="button" onclick="closeFleetShareModal()">取消</button><button id="fleet-share-create" class="btn btn-green" type="button" onclick="createFleetShare()">生成分享链接</button></div>
           <div id="fleet-share-result" class="fs-result"><strong>分享链接已生成</strong><div class="fs-copy-row"><input id="fleet-share-url" readonly /><button class="btn" type="button" onclick="copyFleetShareUrl()">复制</button></div><div class="fs-note" style="margin-top:7px">请把密码通过单独渠道发给接收方。</div></div>
           <div class="fs-existing"><h4>现有分享</h4><div id="fleet-share-list"><span class="fs-note">加载中…</span></div></div>
+          </div>
         </div>
       </div>
-      <div id="fleet-import-modal" class="modal-backdrop fleet-share-modal">
+      <div id="fleet-import-modal" class="modal-backdrop fleet-share-modal" role="dialog" aria-modal="true" aria-labelledby="fleet-import-title" onclick="if(event.target===this)closeImportFleetModal()">
         <div class="modal-card">
-          <h3 id="fleet-import-title">导入外部 Fleet</h3>
+          <div class="fs-modal-head"><h3 id="fleet-import-title">导入外部 Fleet</h3><button class="fs-modal-close" type="button" onclick="closeImportFleetModal()" aria-label="关闭导入 Fleet 弹窗" title="关闭">×</button></div>
+          <div class="fs-modal-body">
           <div class="fs-sub">粘贴另一台 MultiCC 生成的 Fleet 分享链接。导入结果是只读快照，不会在本机创建 Git 仓库或会话。</div>
           <div class="fs-field"><label for="fleet-import-url">分享链接</label><input id="fleet-import-url" type="url" autocomplete="off" placeholder="https://host/fleet-share/fleet_share_…" /></div>
           <div class="fs-field"><label for="fleet-import-password">分享密码</label><input id="fleet-import-password" type="password" autocomplete="off" /></div>
@@ -51,6 +54,7 @@
           <div class="fs-note">密码只用于本次请求，不会保存到本机。刷新快照时需要重新输入。</div>
           <div id="fleet-import-error" class="fs-error"></div>
           <div class="fs-actions"><button class="btn" type="button" onclick="closeImportFleetModal()">取消</button><button id="fleet-import-submit" class="btn btn-green" type="button" onclick="submitImportFleet()">导入</button></div>
+          </div>
         </div>
       </div>`;
     while (host.firstElementChild) document.body.appendChild(host.firstElementChild);
@@ -148,6 +152,26 @@
     showToast('分享链接已复制');
   }
 
+  function closeFleetShareModal() {
+    closeModal('fleet-share-modal');
+    const password = el('fleet-share-password');
+    if (password) password.value = '';
+  }
+
+  function closeImportFleetModal() {
+    closeModal('fleet-import-modal');
+    const password = el('fleet-import-password');
+    if (password) password.value = '';
+  }
+
+  function closeVisibleFleetModal(event) {
+    if (event.key !== 'Escape') return;
+    const importModal = el('fleet-import-modal');
+    const shareModal = el('fleet-share-modal');
+    if (importModal && importModal.classList.contains('visible')) closeImportFleetModal();
+    else if (shareModal && shareModal.classList.contains('visible')) closeFleetShareModal();
+  }
+
   function openImportFleetModal(externalId) {
     ensureModals();
     const existing = externalId ? externalFleets.find(item => item.id === externalId) : null;
@@ -230,9 +254,10 @@
   }
 
   ensureModals();
+  document.addEventListener('keydown', closeVisibleFleetModal);
   Object.assign(global, {
-    closeFleetShareModal: () => closeModal('fleet-share-modal'),
-    closeImportFleetModal: () => closeModal('fleet-import-modal'),
+    closeFleetShareModal,
+    closeImportFleetModal,
     copyFleetShareUrl,
     createFleetShare,
     loadExternalFleets,
