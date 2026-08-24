@@ -887,6 +887,14 @@ test('an admission holding the session key does not deadlock the worker tick', a
 test('a delivery that never settles releases the tick instead of freezing the worker', async t => {
   let unblock = null;
   const stuck = new Promise(resolve => { unblock = resolve; });
+  // The delivery watchdog timer is deliberately unref'd (a stuck delivery must
+  // never keep a real process alive), and this fixture schedules nothing else.
+  // With only unref'd timers pending, Node can drain the child process before
+  // the 50ms watchdog fires and cancel the test with "the event loop has
+  // already resolved" — exactly what killed the v1.6.1 and v1.6.3 release
+  // runs. Hold the loop open explicitly until the parked delivery unblocks.
+  const holdLoopOpen = setTimeout(() => {}, 60_000);
+  t.after(() => clearTimeout(holdLoopOpen));
   let firstDelivery = true;
   const h = fixture(t, {
     deliveryWatchdogMs: 50,
