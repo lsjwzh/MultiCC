@@ -442,7 +442,15 @@ test('the sidebar shows when the service last started, derived from uptime not t
   await harness.context.loadBootTime();
 
   assert.equal(harness.requests.at(-1).url, '/api/server-info');
-  assert.equal(harness.context.document.getElementById('boot-time').textContent, '07-27 11:17');
+  // The rendered wall time uses the browser's local zone, so the expectation
+  // must be formatted from the same instant here instead of pinning one
+  // zone's rendering (the release runners are UTC, the dev box is UTC+8).
+  const boot = new Date(Date.parse('2026-07-27T13:32:00+08:00') - 8100000);
+  const pad = value => String(value).padStart(2, '0');
+  assert.equal(
+    harness.context.document.getElementById('boot-time').textContent,
+    `${pad(boot.getMonth() + 1)}-${pad(boot.getDate())} ${pad(boot.getHours())}:${pad(boot.getMinutes())}`,
+  );
   assert.equal(harness.context.document.getElementById('boot-uptime').textContent, '2h 15m');
 });
 
