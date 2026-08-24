@@ -375,7 +375,7 @@ const authRuntime = createAuthRuntime({
   createErrorDto,
   getAccessToken: () => ACCESS_TOKEN,
   getShuttingDown: () => _shuttingDown,
-  authorizeScopedRequest: req => fleetSharingRuntime?.sharing.authorizeRequest({ token: req.headers['x-multicc-fleet-token'], grant: req.headers['x-multicc-fleet-grant'], method: req.method, pathname: req.path }) === true,
+  authorizeScopedRequest: req => fleetSharingRuntime?.sharing.authorizeRequest({ token: req.headers['x-multicc-fleet-token'], grant: req.headers['x-multicc-fleet-grant'], method: req.method, pathname: req.originalUrl }) === true,
   allowLegacyTokenQuery: ALLOW_LEGACY_TOKEN_QUERY,
 });
 authRuntime.mountRoutes(app);

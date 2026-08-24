@@ -37,6 +37,7 @@ test('Fleet sharing UI keeps passwords write-only and uses the bounded API surfa
   assert.match(source, /Fleet 范围授权/);
   assert.match(source, /externalSessionPageUrl/);
   assert.match(source, /externalProxyUrl\(url, entry\.fleet, `\/api\/sessions\//);
+  assert.match(source, /\/api\\\/git\\\/\(\?:log\|commit-diff\)/);
   assert.doesNotMatch(source, /localStorage|sessionStorage/);
   assert.doesNotMatch(source, /fleet\.password|record\.password|externalFleets[^\n]+password/);
 });
