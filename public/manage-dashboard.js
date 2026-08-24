@@ -1296,7 +1296,7 @@ function renderDirectoryBlock(dir, dirSessions) {
   const externalLegacy = dir.external && !dir.interactive;
   const headerActions = `
         ${externalLegacy ? '' : `<button class="btn add-new btn-sm" title="${escapeHtml(tt('createSession'))}" onclick="event.stopPropagation(); showNewSessionMenu(event, '${escapeHtml(id)}')">${escapeHtml(tt('createSession'))}</button>`}
-        ${dir.external ? '' : `<button class="btn-icon" title="项目备忘" onclick="event.stopPropagation(); openMemo('${escapeHtml(id)}')">📝</button>`}
+        ${externalLegacy ? '' : `<button class="btn-icon" title="项目备忘" onclick="event.stopPropagation(); openMemo('${escapeHtml(id)}')">📝</button>`}
         <button class="btn-icon${pushPending ? ' has-pending' : ''}" title="更多操作${pushPending ? `（有 ${ps.ahead} 个提交待 push）` : ''}${dirtyCount > 0 ? `（${dirtyCount} 个未提交文件）` : ''}" onclick="event.stopPropagation(); showDirMenu(event, '${escapeHtml(id)}')">⋯</button>`;
 
   const headerMain = `
@@ -1357,13 +1357,13 @@ function openDirectoryDetail(dirId) {
   }
   const memoBtn = document.getElementById('dir-detail-memo');
   if (memoBtn) {
-    memoBtn.style.display = dir.external ? 'none' : '';
+    memoBtn.style.display = dir.external && !dir.interactive ? 'none' : '';
     memoBtn.onclick = (e) => { e.stopPropagation(); openMemo(dirId); };
   }
   updateDirDetailPush(dirId);
   // Show git tree button
   const gitBtn = document.getElementById('dir-detail-git');
-  if (gitBtn) gitBtn.style.display = dir.external ? 'none' : '';
+  if (gitBtn) gitBtn.style.display = dir.external && !dir.interactive ? 'none' : '';
   if (!dir.external && typeof refreshTaskBoard === 'function') refreshTaskBoard(true);
   renderDirectoryDetailBody(dirId);
   const m = document.getElementById('dir-detail-modal');

@@ -27,8 +27,14 @@
     } catch (_) { return input; }
     if (url.origin !== location.origin || !url.pathname.startsWith('/api/')) return input;
 
-    let match = /^\/api\/directories\/([^/]+)(.*)$/.exec(url.pathname);
-    if (match) {
+    let match;
+    if (/^\/api\/git\/(?:log|commit-diff)$/.test(url.pathname)) {
+      const fleet = externalDirectories.get(url.searchParams.get('dirId'));
+      if (fleet?.interactive) {
+        url.searchParams.set('dirId', fleet.sourceFleetId);
+        externalProxyUrl(url, fleet, url.pathname);
+      }
+    } else if ((match = /^\/api\/directories\/([^/]+)(.*)$/.exec(url.pathname))) {
       let directoryId;
       try { directoryId = decodeURIComponent(match[1]); } catch (_) { return input; }
       const fleet = externalDirectories.get(directoryId);

@@ -432,8 +432,14 @@ function createFleetSharing({
     catch (_) { return false; }
     if (!secretMatches(grant, record.accessGrant)) return false;
     const verb = String(method || 'GET').toUpperCase();
-    const requestPath = String(pathname || '').split('?', 1)[0];
+    let requestUrl;
+    try { requestUrl = new URL(String(pathname || ''), 'http://multicc.local'); }
+    catch (_) { return false; }
+    const requestPath = requestUrl.pathname;
     if (verb === 'GET' && requestPath === `/api/fleet-shares/${token}/state`) return true;
+    if (verb === 'GET' && /^\/api\/git\/(?:log|commit-diff)$/.test(requestPath)) {
+      return requestUrl.searchParams.get('dirId') === record.fleetId;
+    }
     // Relocation accepts a destination Fleet in the request body. Authentication
     // runs before body validation, so it cannot prove that destination remains
     // inside the shared Fleet; keep this one operation closed.
