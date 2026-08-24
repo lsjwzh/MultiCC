@@ -156,6 +156,13 @@ function runPublish(root, args, env) {
     env: {
       ...process.env,
       HOME: root,
+      // publish-apk.sh resolves FLUTTER_BIN, then FLUTTER_ROOT, then PATH.
+      // The release runner sets FLUTTER_ROOT for the real SDK before the test
+      // gates run, which would make these fixtures invoke the real Flutter on
+      // a pubspec-only directory ("Target file lib/main.dart not found").
+      // Pin resolution to the fixture PATH: the fake flutter, or none at all.
+      FLUTTER_BIN: '',
+      FLUTTER_ROOT: '',
       MULTICC_APK_BUILD_LOCK: path.join(root, 'apk-build.lock'),
       MULTICC_RELEASE_TAG: 'v1.5.3',
       MULTICC_RELEASE_VERSION: '1.5.3',
