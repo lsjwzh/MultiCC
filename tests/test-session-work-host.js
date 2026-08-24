@@ -95,6 +95,7 @@ function fixture(options = {}) {
     cancelClassify() {},
     cancelSessionClassifyJobs: sessionId => calls.push(['cancel-classify-jobs', sessionId]),
     assignKillReason() {},
+    finishProviderAttempt: (attempt, facts) => calls.push(['finish-provider-attempt', attempt, facts]),
     appendMessage: (...args) => calls.push(['append-message', ...args]),
     cancelPreparation: (...args) => calls.push(['cancel-preparation', ...args]),
     chatStream: { isAlive: () => false, cancel() {} },
@@ -304,6 +305,20 @@ test('a partial assistant reply is persisted once, and a cancel never advances t
   // tick() is the FIFO drain. A cancel must not trigger it; only a classify D
   // verdict does, and that decision lives in the state machine + scheduler.
   assert.equal(h.calls.some(call => call[0] === 'tick'), false);
+});
+
+test('process cancellation terminalizes the detached provider attempt before the next turn', async () => {
+  const providerAttempt = Object.freeze({
+    runtimeEpoch: 'epoch-1', turnId: 'turn-1', routeAttemptId: 'attempt-1',
+    routeGeneration: 1, providerId: 'provider-a',
+  });
+  const { h } = cancelFixture({ _activeRunner: { providerAttempt } });
+  await h.host.cancelActiveTurn('s1');
+  assert.deepEqual(h.calls.find(call => call[0] === 'finish-provider-attempt'), [
+    'finish-provider-attempt',
+    providerAttempt,
+    { outcome: 'failed', errorCategory: 'cancelled', reasonCode: 'user_cancel' },
+  ]);
 });
 
 test('concurrent and repeated cancels collapse into exactly one effective transition', async () => {

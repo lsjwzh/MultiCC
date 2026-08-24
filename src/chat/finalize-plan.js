@@ -374,6 +374,7 @@ function resolveTurnFinalization(plan, outcome = {}) {
     retryPlanned: facts.retryPlanned,
     handoffResumeFailure: facts.guardedHandoffResumeFailure,
   }));
+  effects.push(effect('clear-active-runner'));
 
   return freezePlan({
     action: 'finalize',

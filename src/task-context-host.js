@@ -1,5 +1,7 @@
 'use strict';
 
+const { scopeHostProviderEvent } = require('./chat/provider-attempt-runtime');
+
 function createTaskContextHost(options = {}) {
   const {
     getState,
@@ -118,9 +120,10 @@ function createTaskContextHost(options = {}) {
   function broadcast(sessionId, payload) {
     const state = getState(sessionId);
     if (!state) return;
-    const event = state._currentTaskId && payload?.taskId == null
-      ? { ...payload, taskId: state._currentTaskId }
-      : payload;
+    const scoped = scopeHostProviderEvent(payload);
+    const event = state._currentTaskId && scoped?.taskId == null
+      ? { ...scoped, taskId: state._currentTaskId }
+      : scoped;
     // The third argument lets the M1 task_run_stream emitter (wired as the
     // emitClients port in server.js) attribute events to a session without
     // changing any other emitClients consumer: they ignore extra args.

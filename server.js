@@ -199,7 +199,7 @@ const {
   createDurableMessageProof,
   createProviderRouteProof,
   evaluateSpawnGuard,
-  createTurnRuntimeStore,
+  createTurnRuntimeStore, createProviderAttemptRuntime, createProviderRevision, scopeHostProviderEvent,
   createTurnLifecycle,
   createRunnerOwnership,
   createChatHostRuntime,
@@ -882,7 +882,7 @@ async function destroySessionCascade(s, d, opts = {}) {
     sessions.delete(s.id);
   }
   if (chat) {
-    assignKillReason(chat._activeRunner, 'session_delete');
+    assignKillReason(chat._activeRunner, 'session_delete'); if (chat._activeRunner?.providerAttempt) providerAttemptRuntime.finishAttempt(chat._activeRunner.providerAttempt, { outcome: 'failed', errorCategory: 'cancelled', reasonCode: 'session_delete' }); backgroundTaskRuntime.reapSessionShadows(s.id, { reason: 'session_delete' });
     if (chat.claudeProc) try { chat.claudeProc.kill('SIGTERM'); } catch (_) {}
     chatStream.close(s.id);
     for (const client of chat.clients || []) try { client.terminate(); } catch (_) {}
@@ -1370,27 +1370,25 @@ const livenessRuntime = createLivenessRuntime({
 const taskRunProviderBridge = createTaskRunProviderBridge({ records: persistedSessions,
   recordActivity: event => livenessRuntime.recordProxyActivity(event), recordLegacyUsage: recordUsageObserved,
   recordTaskRunUsage: event => taskRunHost?.recordObservedUsage(event) });
-
+const providerAttemptRuntime = createProviderAttemptRuntime({ emit: chatBroadcast, audit: (id, event) => turnEventJournal.note(id, event), resolveProviderRevision: attempt => createProviderRevision({ cli: attempt.cli, providerId: attempt.providerId, protocol: attempt.protocol, model: attempt.model, summary: attempt.providerId === '_default_' ? null : providerRouterRuntime.getProviderSummary(undefined, attempt.providerId) }) });
 const { createProxyBroadcasters } = require('./src/chat/proxy-broadcast');
 providerRouterRuntime.mountProtocolProxies(app, {
-  protocols: ['claude'],
-  onUsageObserved: taskRunProviderBridge.onUsageObserved,
-  onActivity: taskRunProviderBridge.onActivity,
+  protocols: ['claude'], authorizeProxyRequest: providerAttemptRuntime.authorizeProxyRequest,
+  onUsageObserved: event => { const tagged = providerAttemptRuntime.attributeProxyUsage(event); if (tagged.routeAttribution === 'exact' || tagged.producerBound === true) taskRunProviderBridge.onUsageObserved(tagged); else if (String(event.roleKind || event.role || 'main').toLowerCase() !== 'main') recordUsageObserved(tagged); },
+  onActivity: event => { const bound = providerAttemptRuntime.onProxyActivity(event); if (bound) taskRunProviderBridge.onActivity({ ...event, sessionId: bound.sessionId }); },
   // Token-level delta + Claude 5h rate-limit sidecars: see src/chat/proxy-broadcast.js.
-  ...createProxyBroadcasters(chatBroadcast, { resolveCli: name => (persistedSessions.get(name) || {}).cli, recordLimit: limitRecorder.recordSession }),
+  ...createProxyBroadcasters(chatBroadcast, { resolveCli: name => (persistedSessions.get(name) || {}).cli, recordLimit: limitRecorder.recordSession, attemptRuntime: providerAttemptRuntime, audit: (id, event) => turnEventJournal.note(id, event) }),
 });
 app.use(express.json({ limit: '50mb' }));
-
 // Codex Responses↔Chat 协议转换代理（国产服务商 DeepSeek/GLM/Qwen/MiniMax）。
 // 必须在 express.json() 之后挂载，以便 req.body 已解析。详见 docs/codex-proxy-contract.md。
 providerRouterRuntime.mountProtocolProxies(app, {
   protocols: ['codex'],
-  getPort: () => PORT,
-  onUsageObserved: taskRunProviderBridge.onUsageObserved,
-  onActivity: taskRunProviderBridge.onActivity,
-  ...createProxyBroadcasters(chatBroadcast, { resolveCli: name => (persistedSessions.get(name) || {}).cli, recordLimit: limitRecorder.recordSession }),
+  getPort: () => PORT, authorizeProxyRequest: providerAttemptRuntime.authorizeProxyRequest,
+  onUsageObserved: event => { const tagged = providerAttemptRuntime.attributeProxyUsage(event); if (tagged.routeAttribution === 'exact' || tagged.producerBound === true) taskRunProviderBridge.onUsageObserved(tagged); else if (String(event.roleKind || event.role || 'main').toLowerCase() !== 'main') recordUsageObserved(tagged); },
+  onActivity: event => { const bound = providerAttemptRuntime.onProxyActivity(event); if (bound) taskRunProviderBridge.onActivity({ ...event, sessionId: bound.sessionId }); },
+  ...createProxyBroadcasters(chatBroadcast, { resolveCli: name => (persistedSessions.get(name) || {}).cli, recordLimit: limitRecorder.recordSession, attemptRuntime: providerAttemptRuntime, audit: (id, event) => turnEventJournal.note(id, event) }),
 });
-
 // Session query, dashboard, workspace and classify-admin routes share one
 // bounded composition. Dependencies that initialize later (Aux, workspace facts,
 // classifier helpers) are resolved lazily by closures and never snapshotted here.
@@ -1692,9 +1690,9 @@ const cliSwitchRuntime = createCliSwitchRuntime({
   cliStateSummary,
   gitWorktreeSnapshot,
   cwdForSession,
-  getChatStream: () => chatStream,
+  getChatStream: () => chatStream, hasLiveBackgroundTasks: id => backgroundTaskRuntime?.hasLiveBackgroundTasks(id) === true,
   cancelClassify,
-  assignKillReason,
+  assignKillReason, finishProviderAttempt: (attempt, facts) => providerAttemptRuntime.finishAttempt(attempt, facts),
   appendMessage: appendChatMessage,
   appendEvent,
   chatBroadcast,
@@ -1723,7 +1721,7 @@ createSessionProfileRoutes({
   providerRouterRuntime,
   // chatStream / providerRoutes are composed further down this file; resolve
   // them lazily or mounting would hit the const TDZ before boot finishes.
-  getChatStream: () => chatStream,
+  getChatStream: () => chatStream, getChatState: id => chatSessions.get(id), hasLiveBackgroundTasks: id => backgroundTaskRuntime?.hasLiveBackgroundTasks(id) === true,
   validProviderId: (...args) => validProviderId(...args),
   asyncHandler,
   appendEvent,
@@ -1805,7 +1803,7 @@ sessionGitRuntime.mountRoutes(app);
 const sessionLifecycleRuntime = createSessionLifecycleRuntime({
   sessions, chatSessions, persistedSessions, directories, invalidSessions,
   sessionPersistence,
-  getChatStream: () => chatStream,
+  getChatStream: () => chatStream, hasLiveBackgroundTasks: id => backgroundTaskRuntime?.hasLiveBackgroundTasks(id) === true, reapBackgroundTasks: (id, reason) => backgroundTaskRuntime?.reapSessionShadows(id, { reason }) || 0,
   // sessionWorkHost is composed further down this file; forward lazily past the TDZ.
   getSessionWorkHost: () => sessionWorkHost,
   asyncHandler,
@@ -1818,7 +1816,7 @@ const sessionLifecycleRuntime = createSessionLifecycleRuntime({
   fs,
   broadcastTo,
   stopOutputCapture,
-  assignKillReason,
+  assignKillReason, finishProviderAttempt: (attempt, facts) => providerAttemptRuntime.finishAttempt(attempt, facts),
   createSession,
   cwdForSession,
   // pushRuntime is composed further down this file; forward lazily past the TDZ.
@@ -2314,8 +2312,8 @@ const {
   appendMessage: appendChatMessage,
   persistUsage: accumulateTokenUsage,
   persistTaskRunUsage: payload => taskRunHost.recordMainUsage(payload),
-  afterUsageCommit: (sessionId) => {
-    broadcastProviderTokenStats(sessionId);
+  afterUsageCommit: (sessionId, attribution) => {
+    broadcastProviderTokenStats(sessionId, attribution);
     broadcastRoleTokenStats(sessionId);
   },
   getSessionState: (sessionId) => chatSessions.get(sessionId),
@@ -2338,6 +2336,7 @@ const codexUsageHost = createCodexUsageHost({
 });
 
 function chatBroadcast(sessionName, payload) {
+  payload = scopeHostProviderEvent(payload);
   // #110: journal every client-visible event (never blocks or throws)…
   turnEventJournal.note(sessionName, payload);
   // …then fan out. The sync dispatch bridge observes the same normalized
@@ -2526,6 +2525,7 @@ sessionWorkHost = createSessionWorkHost({
   cancelSessionClassifyJobs: sessionId => auxQueue.cancelClassifyFor(sessionId),
   chatStream,
   assignKillReason,
+  finishProviderAttempt: (attempt, facts) => providerAttemptRuntime.finishAttempt(attempt, facts),
   appendMessage: appendChatMessage,
   onTerminalWork: (sessionId, completion) => {
     Promise.resolve(sessionHibernationRuntime?.touchTerminal(sessionId, completion)).catch(error => {
@@ -2635,7 +2635,7 @@ const chatTurnEngine = createChatTurnEngine({
   detached,
   routerToolHost,
   turnProgressHeartbeat,
-  providerRouterRuntime,
+  providerRouterRuntime, providerAttemptRuntime,
   apiErrorHost,
   codexUsageHost,
   usageLimitPoller,
@@ -2915,7 +2915,7 @@ const { shutdownCoordinator, trackServiceTimer, gracefulShutdown } = createHostL
   turnProgressHeartbeat,
   backgroundTaskRuntime,
   cancelClassify,
-  assignKillReason,
+  assignKillReason, finishProviderAttempt: (attempt, facts) => providerAttemptRuntime.finishAttempt(attempt, facts),
   chatStream,
   cleanupPushMonitor,
   stopOutputCapture,

@@ -383,6 +383,28 @@ async function test(name, fn) {
     assert.strictEqual(done.background, true);
   });
 
+  await test('background progress, output files, ledger and wake-up nudges scrub route capabilities', () => {
+    const h = makeHarness();
+    const capability = 'pr1.c2Vzc2lvbi0x.cHJveHktcm91dGUtc2VjcmV0';
+    h.runtime.handleEvent('s1', {}, {
+      subtype: 'task_progress', task_id: 'secret-task', status: 'running',
+      output: `env ${capability}`,
+    });
+    h.files.set('/out/secret', `result ${capability}`);
+    h.runtime.recordMainToolUseId('s1', 'main-secret-tool');
+    const result = h.runtime.handleEvent('s1', {}, {
+      subtype: 'task_notification', task_id: 'secret-task',
+      tool_use_id: 'main-secret-tool', output_file: '/out/secret', status: 'completed',
+    });
+    assert.strictEqual(result.decision, 'inject');
+    h.clock.advance(100);
+    const publicState = JSON.stringify({
+      observations: h.observations, broadcasts: h.broadcasts, injections: h.injections,
+    });
+    assert.doesNotMatch(publicState, /pr1\./);
+    assert.match(publicState, /REDACTED_PROVIDER_ROUTE/);
+  });
+
   await test('background_tasks_changed preserves its established DTO', () => {
     const h = makeHarness();
     const tasks = [{ id: 'a', status: 'running' }];

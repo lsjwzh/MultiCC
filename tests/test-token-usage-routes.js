@@ -259,6 +259,26 @@ test('cumulative commit counts consumed input before best-effort local-day index
   }
 });
 
+test('frozen attempt attribution wins over a changed session provider in both ledgers', () => {
+  const root = tempDir();
+  try {
+    const sessions = new Map([['session-a', { id: 'session-a', provider: 'provider-preference' }]]);
+    const harness = createHarness(root, { persistedSessions: sessions });
+    const usage = { input_tokens: 5, cache_read_input_tokens: 7, output_tokens: 3 };
+    assert.equal(harness.runtime.accumulateTokenUsage('session-a', usage, {
+      providerId: 'provider-attempt', routeAttemptId: 'attempt-1',
+    }), true);
+    const cumulative = readJson(harness.tokenUsageFile)['session-a'];
+    assert.equal(cumulative.byProvider['provider-attempt'].inputTokens, 12);
+    assert.equal(cumulative.byProvider['provider-preference'], undefined);
+    const daily = readJson(harness.tokenDailyFile)['2026-07-19'];
+    assert.equal(daily['provider-attempt'].outputTokens, 3);
+    assert.equal(daily['provider-preference'], undefined);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('numeric boundaries convert safe digit strings and reject corrupt or implausible counts', () => {
   const root = tempDir();
   try {

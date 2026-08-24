@@ -145,6 +145,122 @@ test('turn policy receives the owned turn elapsed budget', () => {
   assert.equal(observed.elapsedMs, 750);
 });
 
+test('turn policy binds errors and idempotency to the owned provider route attempt', () => {
+  const h = harness();
+  const observed = [];
+  h.decideWith((raw, context) => {
+    observed.push(context);
+    const base = decision();
+    return decision({
+      error: {
+        ...base.error,
+        provider: context.provider,
+        providerId: context.providerId,
+        providerName: context.providerName,
+        runtimeEpoch: context.runtimeEpoch,
+        routeAttemptId: context.routeAttemptId,
+        routeGeneration: context.routeGeneration,
+        attemptNo: context.attemptNo,
+      },
+    });
+  });
+  const turn = { turnId: 'turn-routed' };
+  const usageAttribution = {
+    cli: 'codex',
+    providerId: 'provider-a',
+    providerName: 'Provider A',
+    turnId: 'turn-routed',
+    decisionId: 'decision-1',
+    routeAttemptId: 'route-attempt-1',
+    routeGeneration: 7,
+    attemptNo: 2,
+    providerRevision: 'revision-a',
+  };
+  h.host.evaluateTurnApiError({
+    sessionName: 'session-1',
+    cs: { cli: 'claude' },
+    persisted: { cli: 'claude', provider: 'stale-provider' },
+    turn,
+    runner: {
+      usageAttribution,
+      providerAttempt: {
+        ...usageAttribution,
+        runtimeEpoch: 'runtime-epoch-1',
+      },
+    },
+    raw: { httpStatus: 503, provider: 'claude' },
+    phase: 'before_first_token',
+  });
+
+  assert.equal(observed[0].provider, 'codex', 'legacy error.provider remains the concrete CLI');
+  assert.equal(observed[0].providerId, 'provider-a');
+  assert.equal(observed[0].providerName, 'Provider A');
+  assert.equal(observed[0].runtimeEpoch, 'runtime-epoch-1');
+  assert.equal(observed[0].decisionId, 'decision-1');
+  assert.equal(observed[0].routeAttemptId, 'route-attempt-1');
+  assert.equal(observed[0].routeGeneration, 7);
+  assert.equal(observed[0].attemptNo, 2);
+  assert.equal(observed[0].providerRevision, 'revision-a');
+  assert.match(observed[0].idempotencyKey, /route-attempt-1/);
+  assert.deepEqual(
+    {
+      provider: h.taskWrites[0].patch.apiError.provider,
+      providerId: h.taskWrites[0].patch.apiError.providerId,
+      providerName: h.taskWrites[0].patch.apiError.providerName,
+      runtimeEpoch: h.taskWrites[0].patch.apiError.runtimeEpoch,
+      routeAttemptId: h.taskWrites[0].patch.apiError.routeAttemptId,
+      routeGeneration: h.taskWrites[0].patch.apiError.routeGeneration,
+      attemptNo: h.taskWrites[0].patch.apiError.attemptNo,
+    },
+    {
+      provider: 'codex',
+      providerId: 'provider-a',
+      providerName: 'Provider A',
+      runtimeEpoch: undefined,
+      routeAttemptId: undefined,
+      routeGeneration: undefined,
+      attemptNo: undefined,
+    },
+  );
+  assert.deepEqual({
+    scope: h.broadcasts[0].payload.providerRouteScope,
+    turnId: h.broadcasts[0].payload.turnId,
+    decisionId: h.broadcasts[0].payload.decisionId,
+    routeAttemptId: h.broadcasts[0].payload.routeAttemptId,
+    providerRevision: h.broadcasts[0].payload.providerRevision,
+  }, {
+    scope: 'attempt', turnId: 'turn-routed', decisionId: 'decision-1',
+    routeAttemptId: 'route-attempt-1', providerRevision: 'revision-a',
+  });
+
+  h.host.evaluateTurnApiError({
+    sessionName: 'session-1',
+    cs: { cli: 'claude' },
+    persisted: { cli: 'claude', provider: 'stale-provider' },
+    turn,
+    runner: {
+      usageAttribution: {
+        ...usageAttribution,
+        routeAttemptId: 'route-attempt-2',
+        routeGeneration: 8,
+        attemptNo: 3,
+      },
+      providerAttempt: {
+        ...usageAttribution,
+        runtimeEpoch: 'runtime-epoch-1',
+        routeAttemptId: 'route-attempt-2',
+        routeGeneration: 8,
+        attemptNo: 3,
+      },
+    },
+    raw: { httpStatus: 503, provider: 'claude' },
+    phase: 'before_first_token',
+  });
+  assert.match(observed[1].idempotencyKey, /route-attempt-2/);
+  assert.notEqual(observed[1].idempotencyKey, observed[0].idempotencyKey,
+    'two physical route attempts in one logical turn are never deduplicated together');
+});
+
 test('owned retry reuses the current turn, resets partial state, and cancels when superseded', () => {
   const h = harness();
   const turn = { turnId: 'turn-1' };

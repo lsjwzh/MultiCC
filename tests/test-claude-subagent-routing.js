@@ -160,6 +160,12 @@ async function main() {
 
       assert.deepStrictEqual(tracker.snapshot('session-a'), {
         main: { inputTokens: 2, outputTokens: 3, cacheWrite: 5, cacheRead: 7 },
+        mainByProvider: [
+          {
+            providerId: 'main-provider', name: 'Main', model: 'main-model',
+            inputTokens: 2, outputTokens: 3, cacheWrite: 5, cacheRead: 7,
+          },
+        ],
         sub: { inputTokens: 75, outputTokens: 85, cacheWrite: 95, cacheRead: 109 },
         subByProvider: [
           {

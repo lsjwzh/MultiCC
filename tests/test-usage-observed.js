@@ -120,3 +120,20 @@ test('UsageObserved binds attribution and rejects conflicts', () => {
     error => error instanceof UsageObservedError && error.code === 'USAGE_BINDING_MISMATCH',
   );
 });
+
+test('UsageObserved preserves a complete immutable provider attempt identity', () => {
+  const attempt = {
+    runtimeEpoch: 'epoch-1', turnId: 'turn-1', decisionId: 'decision-1',
+    routeAttemptId: 'attempt-2', routeGeneration: 2, attemptNo: 2,
+    providerRevision: 'revision-2', routeAttribution: 'exact',
+  };
+  const event = createUsageObserved(exactUsage({ eventId: undefined, ...attempt }));
+  assert.deepEqual(Object.fromEntries(Object.keys(attempt).map(key => [key, event[key]])), attempt);
+  assert.equal(validateUsageObserved(event).routeAttemptId, 'attempt-2');
+  assert.notEqual(
+    createUsageObserved(exactUsage({ eventId: undefined, ...attempt, routeAttemptId: 'attempt-3' })).eventId,
+    event.eventId,
+  );
+  assert.throws(() => createUsageObserved(exactUsage({ routeAttemptId: 'attempt-only' })),
+    /complete provider attempt identity/);
+});

@@ -47,6 +47,7 @@ function fixedClock(startMs) {
 function stubProviders({ appTypeForCli = () => 'claude', list = [], targets = {} } = {}) {
   return {
     appTypeForCli,
+    getProvider(_appType, id) { return list.find(provider => provider.id === id) || null; },
     listProviders(appType) {
       return list.filter(p => !appType || p.appType === appType);
     },
@@ -205,6 +206,13 @@ function testRecorder() {
   ok(b && b.kind === 'balance', 'recordSession(balance) records a balance entry');
   ok(b.summaryText === '¥12.50', 'balance DTO renders ¥ compact text');
   ok(b.summary.total === 12.5 && b.summary.available === true, 'balance DTO stores normalized structured fields');
+
+  const exact = recorder.recordSession('s2', {
+    kind: 'window', rateLimitType: 'five_hour', status: 'rejected', utilization: 0.9,
+    resetsAt: 1_700_000_360_000, provider: 'glm',
+  }, 'p-glm');
+  ok(exact && cache.get('claude', 'p-glm').summary.status === 'rejected',
+    'an explicit proxy provider wins over a session preference that has already changed');
 
   // provider-balance runtime result → same recorder path
   const viaProvider = recorder.recordProvider('claude', 'p-glm', { ok: true, providerId: 'p-glm', dto: { kind: 'window', rateLimitType: 'five_hour', status: 'rejected', utilization: 1.0, resetsAt: 1_700_000_360_000, provider: 'glm' } });

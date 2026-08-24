@@ -3,6 +3,7 @@
 const { runStateForFreezeReason } = require('./session-work-scheduler');
 const zcodeAuth = require('./cli-adapters/zcode-auth');
 const kimiAuth = require('./cli-adapters/kimi-auth');
+const { redactProviderRouteCapability } = require('./observability');
 
 function requireFunction(deps, name) {
   if (typeof deps?.[name] !== 'function') {
@@ -15,7 +16,7 @@ function createSessionWorkHost(deps = {}) {
     'runtime', 'getRecord', 'getChatSession', 'getTaskState',
     'pendingUserInput', 'recordUserInput', 'resolveUserInput', 'broadcast', 'setTaskState',
     'onTaskBoardQueueEvent', 'onWorkspaceQueueStatus', 'classifyDisplay', 'cancelClassify',
-    'assignKillReason', 'appendMessage', 'cancelPreparation',
+    'assignKillReason', 'finishProviderAttempt', 'appendMessage', 'cancelPreparation',
     // classify owns every business-state transition, including cancellation.
     'dispatchStateAction',
   ]) requireFunction(deps, name);
@@ -584,7 +585,13 @@ function createSessionWorkHost(deps = {}) {
       try { deps.cancelSessionClassifyJobs(sessionId); }
       catch (error) { log.warn?.('session_cancel_classify_jobs_failed', { sessionId, error: error.message }); }
     }
-    deps.assignKillReason(state._activeRunner, killReason);
+    const activeRunner = state._activeRunner;
+    deps.assignKillReason(activeRunner, killReason);
+    if (activeRunner?.providerAttempt) {
+      deps.finishProviderAttempt(activeRunner.providerAttempt, {
+        outcome: 'failed', errorCategory: 'cancelled', reasonCode: killReason,
+      });
+    }
     if (state.cli === 'claude' && deps.chatStream.isAlive(sessionId)) {
       log.log?.(`[multicc/chat] [${sessionId}] (streaming) cancel requested (${reason})`);
       deps.chatStream.cancel(sessionId);
@@ -619,13 +626,13 @@ function createSessionWorkHost(deps = {}) {
     // same partial twice.
     const tools = Array.isArray(state.currentToolCalls) ? state.currentToolCalls : [];
     if (state.currentAssistantText || tools.length) {
-      deps.appendMessage(sessionId, {
+      deps.appendMessage(sessionId, redactProviderRouteCapability({
         role: 'assistant',
         content: state.currentAssistantText || '',
         tools: tools.length ? tools : undefined,
         ts: Date.now(),
         cancelled: true,
-      });
+      }));
       state.currentAssistantText = '';
       state.currentToolCalls = [];
     }

@@ -8,6 +8,8 @@ module.exports = {
   ...require('./post-turn-router'),
   ...require('./runtime-store'),
   ...require('./turn-lifecycle'),
+  ...require('./provider-attempt-runtime'),
+  ...require('./provider-invocation'),
   ...require('./host-coordinator'),
   ...require('./host-runtime'),
   ...require('./finalize-plan'),

@@ -31,8 +31,10 @@ test('server creates hidden reusable slots and freezes proxy usage lineage at re
   assert.match(source, /taskExecutionSlot = false/);
   assert.match(source, /session\.taskExecutionSlot = true/);
   assert.match(source, /createTaskRunProviderBridge\(\{ records: persistedSessions/);
-  assert.match(source, /onUsageObserved: taskRunProviderBridge\.onUsageObserved/);
-  assert.match(source, /onActivity: taskRunProviderBridge\.onActivity/);
+  assert.match(source, /providerAttemptRuntime\.attributeProxyUsage\(event\)/);
+  assert.match(source, /tagged\.routeAttribution === 'exact' \|\| tagged\.producerBound === true\) taskRunProviderBridge\.onUsageObserved\(tagged\)/);
+  assert.match(source, /const bound = providerAttemptRuntime\.onProxyActivity\(event\); if \(bound\) taskRunProviderBridge\.onActivity\(\{ \.\.\.event, sessionId: bound\.sessionId \}\)/);
+  assert.match(source, /authorizeProxyRequest: providerAttemptRuntime\.authorizeProxyRequest/);
   assert.match(source, /taskRunHost\?\.isSlotUnavailable\(sid, item \|\| \{\}\)/);
 });
 

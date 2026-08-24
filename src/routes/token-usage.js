@@ -193,14 +193,14 @@ function createTokenUsageRoutes(rawDeps) {
     return normalizeUsageLedger(readJson(deps.tokenUsageFile, {}));
   }
 
-  function accumulateTokenDaily(sessionId, usage) {
+  function accumulateTokenDaily(sessionId, usage, attribution = {}) {
     const parts = usageComponents(usage);
     const inputTokens = parts.consumedInputTokens;
     const outputTokens = parts.outputTokens;
     if (inputTokens + outputTokens === 0) return true;
 
     const persisted = deps.persistedSessions.get(sessionId);
-    const providerId = (persisted && persisted.provider) || '_default_';
+    const providerId = attribution.providerId || (persisted && persisted.provider) || '_default_';
     const date = now();
     const dateKey = localDateKey(date instanceof Date ? date : new Date(date));
     const daily = readObject(deps.tokenDailyFile);
@@ -229,7 +229,7 @@ function createTokenUsageRoutes(rawDeps) {
     }
   }
 
-  function accumulateTokenUsage(sessionId, usage) {
+  function accumulateTokenUsage(sessionId, usage, attribution = {}) {
     if (!hasLegacyUsage(usage)) return true;
     const parts = usageComponents(usage);
     diagnoseLargeEvent(sessionId, parts);
@@ -244,7 +244,7 @@ function createTokenUsageRoutes(rawDeps) {
     current.outputTokens += parts.outputTokens;
     current.turnCount += 1;
     const persisted = deps.persistedSessions.get(sessionId);
-    const providerId = (persisted && persisted.provider) || '_default_';
+    const providerId = attribution.providerId || (persisted && persisted.provider) || '_default_';
     const byProvider = current.byProvider && typeof current.byProvider === 'object'
       && !Array.isArray(current.byProvider) ? current.byProvider : {};
     const provider = aggregateBucket(byProvider[providerId]);
@@ -268,7 +268,7 @@ function createTokenUsageRoutes(rawDeps) {
     // The cumulative total is the durable commit. The derived day/provider
     // index deliberately remains best-effort, matching the established host
     // ordering used by chat result persistence.
-    accumulateTokenDaily(sessionId, usage);
+    accumulateTokenDaily(sessionId, usage, attribution);
     return true;
   }
 
@@ -328,9 +328,9 @@ function createTokenUsageRoutes(rawDeps) {
     }
   }
 
-  function providerTokenWindows(sessionId) {
+  function providerTokenWindows(sessionId, explicitProviderId = null) {
     const persisted = deps.persistedSessions.get(sessionId);
-    const providerId = (persisted && persisted.provider) || null;
+    const providerId = explicitProviderId || (persisted && persisted.provider) || null;
     if (!providerId) return { providerId: null, windows: null };
 
     const allWindows = deps.readProviderWindows() || {};
@@ -389,9 +389,16 @@ function createTokenUsageRoutes(rawDeps) {
     return { providerId, windows };
   }
 
-  function broadcastProviderTokenStats(sessionId) {
-    const result = providerTokenWindows(sessionId);
-    deps.broadcast(sessionId, { type: 'provider_token_stats', windows: result.windows });
+  function broadcastProviderTokenStats(sessionId, attribution = {}) {
+    const result = providerTokenWindows(sessionId, attribution.providerId || null);
+    const route = attribution.routeAttemptId ? {
+      providerRouteScope: 'attempt',
+      runtimeEpoch: attribution.runtimeEpoch, turnId: attribution.turnId,
+      decisionId: attribution.decisionId, routeAttemptId: attribution.routeAttemptId,
+      routeGeneration: attribution.routeGeneration, attemptNo: attribution.attemptNo,
+      providerId: attribution.providerId, providerRevision: attribution.providerRevision,
+    } : {};
+    deps.broadcast(sessionId, { type: 'provider_token_stats', windows: result.windows, ...route });
     return result.windows;
   }
 
@@ -414,7 +421,7 @@ function createTokenUsageRoutes(rawDeps) {
     return true;
   }
 
-  function reconcileCodexRoleUsage(sessionId, usage) {
+  function reconcileCodexRoleUsage(sessionId, usage, attribution = {}) {
     const persisted = deps.persistedSessions.get(sessionId);
     if (!persisted || persisted.cli !== 'codex' || !usage) return false;
     const cacheRead = eventTokenCount(
@@ -448,18 +455,18 @@ function createTokenUsageRoutes(rawDeps) {
       return false;
     }
 
-    const providerId = persisted.provider || '_default_';
+    const providerId = attribution.providerId || persisted.provider || '_default_';
     let summary = null;
-    if (persisted.provider) {
-      try { summary = deps.getProviderSummary('codex', persisted.provider); } catch (_) {}
+    if (providerId !== '_default_') {
+      try { summary = deps.getProviderSummary('codex', providerId); } catch (_) {}
     }
     return recordRoleTokenUsage({
       sessionId,
       role: 'main',
       providerId,
-      providerName: (summary && summary.name)
-        || (persisted.provider ? providerId : 'Default login'),
-      model: deps.getEffectiveSessionModel(persisted) || '',
+      providerName: attribution.providerName || (summary && summary.name)
+        || (providerId !== '_default_' ? providerId : 'Default login'),
+      model: attribution.model || deps.getEffectiveSessionModel(persisted) || '',
       usage: missing,
     });
   }

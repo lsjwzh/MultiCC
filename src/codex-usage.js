@@ -237,7 +237,7 @@ function createCodexUsageHost(deps = {}) {
       logger.warn('codex_usage_cumulative_regression', { sessionId: sessionName });
     }
     runner.pendingUsage = usage;
-    deps.reconcileRole(sessionName, usage);
+    deps.reconcileRole(sessionName, usage, runner.usageAttribution || {});
     if (cs.currentAssistantText || cs.currentToolCalls.length) {
       const durable = deps.persistFinalAssistantResult(sessionName, cs, turn, runner, {
         role: 'assistant',
