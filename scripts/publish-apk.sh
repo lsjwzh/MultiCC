@@ -201,9 +201,20 @@ SIGNER_OUTPUT="$("$APKSIGNER" verify --print-certs "$TMP_APK")" || {
   echo "[publish-apk] ERROR: apksigner rejected the built APK" >&2
   exit 1
 }
+# apksigner prints the digest as the final field of the line, but the prefix
+# differs across build-tools releases (≤36: "Signer #1 certificate SHA-256
+# digest:"; 37: "V2 Signer: certificate SHA-256 digest:"). Match any digest
+# line and take $NF so both formats parse (v1.6.3 release, runs 4-6).
 SIGNER_SHA256="$(printf '%s\n' "$SIGNER_OUTPUT" \
-  | awk -F': ' '/Signer #1 certificate SHA-256 digest:/ { print $2; exit }' \
+  | awk '/certificate SHA-256 digest:/ { print $NF; exit }' \
   | tr -d '[:space:]:' | tr '[:upper:]' '[:lower:]')"
+if [ -z "$SIGNER_SHA256" ]; then
+  echo "[publish-apk] ERROR: could not parse a certificate digest from apksigner output" >&2
+  echo "[publish-apk]   apksigner: $APKSIGNER" >&2
+  echo "[publish-apk]   verifier output:" >&2
+  printf '%s\n' "$SIGNER_OUTPUT" | head -5 | sed 's/^/    /' >&2
+  exit 1
+fi
 if [ "$SIGNER_SHA256" != "$EXPECTED_SIGNER_SHA256" ]; then
   echo "[publish-apk] ERROR: APK signer certificate does not match the official fingerprint" >&2
   # Certificate digests are public data; printing them identifies which key
