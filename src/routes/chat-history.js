@@ -474,6 +474,22 @@ function createChatHistoryRuntime(rawDeps) {
     const gitSnapshot = persisted && keep > 0
       ? await deps.cliSwitchGitSnapshot(persisted)
       : null;
+    // This is the durable boundary, after the optional async git snapshot.
+    // Re-check here so background work that starts while the snapshot is in
+    // flight cannot lose its owning warm process to the native-context reset.
+    let backgroundActive = true;
+    try {
+      backgroundActive = typeof deps.getActiveBackgroundTasks === 'function'
+        && deps.getActiveBackgroundTasks(key).length > 0;
+    } catch (_) {}
+    if (backgroundActive) {
+      deps.chatBroadcast(key, {
+        type: 'error',
+        code: 'background_tasks_running',
+        error: '后台任务仍在运行；请等待完成或先取消后台任务，再清空历史。',
+      });
+      return Object.freeze({ ok: false, code: 'background_tasks_running' });
+    }
     const split = keep > 0 ? Math.max(0, history.length - keep) : history.length;
     const removed = history.slice(0, split);
     const retained = history.slice(split);

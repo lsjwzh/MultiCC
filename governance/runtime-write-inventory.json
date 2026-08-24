@@ -57,6 +57,16 @@
       ]
     },
     {
+      "id": "provider-codex-attempt-homes",
+      "classification": "ephemeral",
+      "owner": "provider attempt routing",
+      "rationale": "A private per-process CODEX_HOME overlay isolates the short-lived proxy capability from provider-shared configuration and is deleted when that child exits.",
+      "migrationStrategy": "Keep the root disposable, permission-restricted and capability-free in its pathname; prune abandoned overlays at startup without copying them forward.",
+      "sources": [
+        { "file": "src/providers.js", "anchor": "const CODEX_ATTEMPT_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-attempt-homes');" }
+      ]
+    },
+    {
       "id": "provider-zcode-homes",
       "classification": "migration-required",
       "owner": "provider routing",

@@ -26,6 +26,12 @@ const { createSqliteRuntime } = require('./sqlite-runtime');
 const { createPaths } = require('./paths');
 const { atomicWriteJson, atomicWriteText, ensurePrivateDir, secureFile } = require('./runtime-security');
 const { createOpencodeModelLimitResolver } = require('./providers/opencode-model-limits');
+const { createCodexAttemptHome } = require('./codex-attempt-home');
+const { isOfficialCodexOAuthProvider } = require('./codex-official-relay');
+const {
+  assertCodexProxyConfigApplied,
+  codexProxyConfigRequired: evaluateCodexProxyConfigRequired,
+} = require('./codex-proxy-policy');
 
 const sqliteRuntime = createSqliteRuntime();
 
@@ -53,6 +59,7 @@ const STORE_FILE = RUNTIME_PATHS.providersFile;
 // Per-provider CODEX_HOME dirs materialized on demand so codex sessions can
 // point at different auth/config without clobbering the global ~/.codex.
 const CODEX_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-homes');
+const CODEX_ATTEMPT_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-attempt-homes');
 // ZCode 0.15.x advertises --settings but its parser rejects the flag. Provider
 // overrides therefore run the ZCode child with HOME pointed at a private home
 // containing a native ~/.zcode/cli/config.json. The native/default route keeps
@@ -1694,10 +1701,73 @@ function codexProviderProxyable(providerOrId) {
   return cliProviderRouter.codexProviderProxyable(providerOrId, { getProvider });
 }
 
+function codexProxyConfigRequired(options = {}) {
+  const providerId = String(options.providerId || '').trim();
+  const provider = providerId && providerId !== '_default_'
+    ? getProvider('codex', providerId)
+    : null;
+  return evaluateCodexProxyConfigRequired({
+    providerId,
+    subagentProviderId: options.subagent && options.subagent.providerId,
+    // A missing provider record is stale and must remain fail-closed. Only a
+    // concrete store entry with neither custom endpoint nor API key is the
+    // direct OAuth exception.
+    officialOAuth: isOfficialCodexOAuthProvider(provider),
+  });
+}
+
 const materializeCodexRoutingHome = cliProviderRouter.materializeCodexRoutingHome;
 
+const codexProxyLeases = new WeakMap();
+
+function releaseCodexProxyConfig(env) {
+  if (!env || typeof env !== 'object') return false;
+  const lease = codexProxyLeases.get(env);
+  if (!lease) return false;
+  codexProxyLeases.delete(env);
+  env.CODEX_HOME = lease.sourceHome;
+  try { return lease.release(); }
+  catch (_) {
+    console.warn('[multicc/provider] failed to scrub private Codex attempt state; orphan retained');
+    return false;
+  }
+}
+
 function applyCodexProxyConfig(env, options) {
-  return cliProviderRouter.applyCodexProxyConfig(env, { ...options, getProvider });
+  if (!env || typeof env !== 'object' || !env.CODEX_HOME
+      || !options || !options.providerId || !options.sessionId
+      || (!options.port && !options.proxyBaseUrl)) return false;
+  releaseCodexProxyConfig(env);
+  const sourceHome = env.CODEX_HOME;
+  let lease;
+  try {
+    lease = createCodexAttemptHome(sourceHome, {
+      providerId: options.providerId,
+      sessionId: options.sessionId,
+      homesDir: CODEX_ATTEMPT_HOMES_DIR,
+    });
+    env.CODEX_HOME = lease.home;
+    const applied = cliProviderRouter.applyCodexProxyConfig(env, { ...options, getProvider });
+    if (!applied) {
+      env.CODEX_HOME = sourceHome;
+      lease.release();
+      return false;
+    }
+    codexProxyLeases.set(env, lease);
+    return true;
+  } catch (error) {
+    env.CODEX_HOME = sourceHome;
+    if (lease) {
+      try { lease.release(); }
+      catch (_) {
+        (options.logger || console).warn(
+          '[multicc/provider] failed to scrub private Codex attempt state; orphan retained',
+        );
+      }
+    }
+    (options.logger || console).warn('[multicc/provider] failed to create private Codex attempt config');
+    return false;
+  }
 }
 
 module.exports = {
@@ -1726,6 +1796,9 @@ module.exports = {
   materializeCodexAuth,
   applyClaudeProxyEnv,
   applyCodexProxyConfig,
+  assertCodexProxyConfigApplied,
+  codexProxyConfigRequired,
+  releaseCodexProxyConfig,
   materializeCodexRoutingHome,
   codexProviderProxyable,
   resolveSessionWireModel,
@@ -1738,6 +1811,7 @@ module.exports = {
   CLAUDE_ROUTING_KEYS,
   ANTHROPIC_ROUTING_KEYS,
   CODEX_HOMES_DIR,
+  CODEX_ATTEMPT_HOMES_DIR,
   ZCODE_HOMES_DIR,
   KIMI_HOMES_DIR,
   buildKimiCodeRoute,

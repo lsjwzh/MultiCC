@@ -8,6 +8,10 @@ const {
   toLegacyProviderView,
 } = require('./provider-binding');
 const { mountCodexOfficialRelay } = require('./codex-official-relay');
+const {
+  createProviderProxyAdmission,
+  createProviderProxyGuard,
+} = require('./provider-proxy-guard');
 const { createUsageObserved } = require('./usage-observed');
 
 const PORT_API_VERSION = '1.0.0';
@@ -406,6 +410,8 @@ function createProviderRouterPort(options = {}) {
     const onUsageObserved = typeof mountOptions.onUsageObserved === 'function'
       ? mountOptions.onUsageObserved
       : null;
+    const authorizeProxyRequest = typeof mountOptions.authorizeProxyRequest === 'function'
+      ? mountOptions.authorizeProxyRequest : null;
     if (mountOptions.protocols != null && !Array.isArray(mountOptions.protocols)) {
       throw new ProviderRouterPortError('protocols must be an array', 'PROXY_PROTOCOL_INVALID');
     }
@@ -426,6 +432,7 @@ function createProviderRouterPort(options = {}) {
       } : {}),
       ...(typeof mountOptions.getPort === 'function' ? { getPort: mountOptions.getPort } : {}),
       ...(mountOptions.proxyBaseUrl ? { proxyBaseUrl: String(mountOptions.proxyBaseUrl) } : {}),
+      ...(authorizeProxyRequest ? { captureEnabled: false } : {}),
       onUsageEvent: onUsageObserved ? event => onUsageObserved(normalizeUsage(event)) : undefined,
       // Request/end activity is also the TaskRun producer fence.  Dropping it
       // here would make the host believe provider requests are drained while
@@ -447,12 +454,28 @@ function createProviderRouterPort(options = {}) {
     };
     const mounted = {};
     if (protocols.includes('claude')) {
+      const admission = authorizeProxyRequest ? createProviderProxyAdmission({
+        protocol: 'claude', app, getProvider, authorizeProxyRequest,
+        onActivity: mountOptions.onActivity,
+      }) : null;
+      if (authorizeProxyRequest) app.use(
+        `/${String(mountOptions.claudeProxyPath || '/claude-proxy').replace(/^\/+|\/+$/g, '')}`,
+        createProviderProxyGuard({ protocol: 'claude', authorizeProxyRequest }),
+      );
       mounted.claude = requireMethod(backend, 'mountClaudeProxy', mode === 'cpr' ? 'router' : 'legacy')(
-        app,
-        { ...common, ...(mountOptions.claudeProxyPath ? { claudeProxyPath: String(mountOptions.claudeProxyPath) } : {}) },
+        admission ? admission.app : app,
+        { ...common, ...(admission ? { getProvider: admission.getProvider, onActivity: admission.onActivity } : {}), ...(mountOptions.claudeProxyPath ? { claudeProxyPath: String(mountOptions.claudeProxyPath) } : {}) },
       );
     }
     if (protocols.includes('codex')) {
+      const admission = authorizeProxyRequest ? createProviderProxyAdmission({
+        protocol: 'codex', app, getProvider, authorizeProxyRequest,
+        onActivity: mountOptions.onActivity,
+      }) : null;
+      if (authorizeProxyRequest) app.use(
+        `/${String(mountOptions.codexProxyPath || '/codex-proxy').replace(/^\/+|\/+$/g, '')}`,
+        createProviderProxyGuard({ protocol: 'codex', authorizeProxyRequest }),
+      );
       // CPR's generic Codex proxy intentionally requires an API key + base_url.
       // Mount the host-owned ChatGPT OAuth adapter first; it handles only the
       // Official provider shape and calls next() for every ordinary provider.
@@ -462,8 +485,8 @@ function createProviderRouterPort(options = {}) {
         ...(mountOptions.codexProxyPath ? { codexProxyPath: String(mountOptions.codexProxyPath) } : {}),
       });
       mounted.codex = requireMethod(backend, 'mountCodexProxy', mode === 'cpr' ? 'router' : 'legacy')(
-        app,
-        { ...common, ...(mountOptions.codexProxyPath ? { codexProxyPath: String(mountOptions.codexProxyPath) } : {}) },
+        admission ? admission.app : app,
+        { ...common, ...(admission ? { getProvider: admission.getProvider, onActivity: admission.onActivity } : {}), ...(mountOptions.codexProxyPath ? { codexProxyPath: String(mountOptions.codexProxyPath) } : {}) },
       );
     }
     return Object.freeze(mounted);

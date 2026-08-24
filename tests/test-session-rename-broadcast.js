@@ -43,9 +43,10 @@ function invoke(handler, { params = {}, body = {} } = {}) {
   return response;
 }
 
-function fixture(session) {
+function fixture(session, { chatState = null, backgroundActive = false } = {}) {
   const workspace = [];
   const chat = [];
+  const effects = [];
   const persistedSessions = new Map([['s1', session]]);
   const providerRouterRuntime = { getProviderSummary: () => null };
   const sessionPolicy = createSessionPolicy({
@@ -59,7 +60,10 @@ function fixture(session) {
     persistedSessions,
     directories: new Map([['d1', { id: 'd1', path: '/tmp/d1' }]]),
     sessionPersistence: {
-      begin: () => ({ commit() {}, rollback() {} }),
+      begin: () => {
+        effects.push('persistence-begin');
+        return { commit() {}, rollback() {} };
+      },
       mutate: (_reason, fn) => fn(),
     },
     sessionPolicy,
@@ -70,7 +74,9 @@ function fixture(session) {
       CODEX_HOMES_DIR: providers.CODEX_HOMES_DIR,
     },
     providerRouterRuntime,
-    getChatStream: () => ({ close() {} }),
+    getChatStream: () => ({ close: id => effects.push(`stream-close:${id}`) }),
+    getChatState: () => chatState,
+    hasLiveBackgroundTasks: () => backgroundActive,
     validProviderId: () => ({ ok: true, value: null }),
     asyncHandler: handler => handler,
     appendEvent: () => {},
@@ -89,7 +95,7 @@ function fixture(session) {
     getFolderMemory: () => ({ sessionDir: () => path.join(tmpRoot, 'mem') }),
     getCliSwitchGitSnapshot: () => async () => ({}),
   }).mountRoutes(app);
-  return { session, handler: app.routes.get('PATCH /api/sessions/:id'), workspace, chat };
+  return { session, handler: app.routes.get('PATCH /api/sessions/:id'), workspace, chat, effects };
 }
 
 test('label PATCH broadcasts session_updated on both workspace and chat planes', () => {
@@ -134,4 +140,46 @@ test('non-label PATCHes stay silent — no spurious session_updated', () => {
   invoke(handler, { params: { id: 's1' }, body: { provider: '' } });
   assert.equal(workspace.length, 0);
   assert.equal(chat.length, 0);
+});
+
+test('an active provider-bound turn rejects route mutation before session state changes', () => {
+  const session = {
+    id: 's1', dirId: 'd1', cli: 'codex', kind: 'chat',
+    provider: 'provider-a', model: 'model-a', cliSessionId: 'native-a',
+  };
+  const { handler } = fixture(session, {
+    chatState: { _activeRunner: { providerAttempt: { routeAttemptId: 'attempt-a' } } },
+  });
+
+  const res = invoke(handler, { params: { id: 's1' }, body: { provider: 'provider-b' } });
+
+  assert.equal(res.statusCode, 409);
+  assert.equal(session.provider, 'provider-a');
+  assert.equal(session.model, 'model-a');
+  assert.match(res.body.error, /active turn/);
+});
+
+test('a live background task rejects route mutation before persistence or stream teardown', () => {
+  const session = {
+    id: 's1', dirId: 'd1', cli: 'claude', kind: 'chat',
+    provider: 'provider-a', model: 'model-a',
+  };
+  const { handler, effects } = fixture(session, { backgroundActive: true });
+
+  const res = invoke(handler, { params: { id: 's1' }, body: { model: 'model-b' } });
+
+  assert.equal(res.statusCode, 409);
+  assert.match(res.body.error, /background task/i);
+  assert.equal(session.model, 'model-a');
+  assert.deepEqual(effects, [], 'rejected route mutation must not begin persistence or close the warm stream');
+});
+
+test('server composition gives profile routes the live chat-state reader', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  const start = source.indexOf('createSessionProfileRoutes({');
+  const end = source.indexOf('}).mountRoutes(app);', start);
+  assert.ok(start >= 0 && end > start);
+  const composition = source.slice(start, end);
+  assert.match(composition, /getChatStream: \(\) => chatStream, getChatState: id => chatSessions\.get\(id\),/);
+  assert.match(composition, /hasLiveBackgroundTasks: id => backgroundTaskRuntime\?\.hasLiveBackgroundTasks\(id\) === true/);
 });

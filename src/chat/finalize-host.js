@@ -73,6 +73,9 @@ function createTurnFinalizationExecutor(rawPorts) {
       case 'clear-active-process':
         cs.claudeProc = null;
         break;
+      case 'clear-active-runner':
+        if (cs._activeRunner === context.runner) cs._activeRunner = null;
+        break;
       case 'clear-incremental-save':
         ports.clearIncrementalSave(sessionName);
         break;

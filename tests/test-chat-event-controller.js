@@ -311,6 +311,146 @@ test('connection generation rejects stale late events before any host mutation',
   assert.deepEqual(fixture.calls, [['system', 'fresh']]);
 });
 
+test('legacy server keeps accepting unlabelled provider frames until route protocol v1 is advertised', () => {
+  const fixture = controllerFixture();
+  fixture.state.currentCli = 'codex';
+  const generation = fixture.controller.beginGeneration();
+  fixture.controller.handleEvent({
+    type: 'system', subtype: 'init', session_id: 'legacy', is_streaming: false,
+  }, generation);
+  assert.equal(fixture.controller.handleEvent({
+    type: 'part_delta', delta: { type: 'text', text: 'legacy' },
+  }, generation), true);
+  assert.equal(fixture.state.currentTextContent, 'legacy');
+});
+
+test('route protocol v1 drops unlabelled attempt frames before debug, DOM, or state mutation', () => {
+  const fixture = controllerFixture();
+  fixture.state.currentCli = 'codex';
+  const generation = fixture.controller.beginGeneration();
+  fixture.controller.handleEvent({
+    type: 'system', subtype: 'init', session_id: 'strict', is_streaming: false,
+    providerRouteProtocolVersion: 1,
+  }, generation);
+  const debugBefore = fixture.debugCalls.length;
+  const callsBefore = fixture.calls.length;
+  assert.equal(fixture.controller.handleEvent({
+    type: 'part_delta', delta: { type: 'text', text: 'must-not-render' },
+  }, generation), false);
+  assert.equal(fixture.debugCalls.length, debugBefore);
+  assert.equal(fixture.calls.length, callsBefore);
+  assert.equal(fixture.state.currentTextContent, '');
+  assert.equal(fixture.state.currentMsgEl, null);
+});
+
+test('route protocol v1 isolates scoped attempts while preserving host-owned terminal frames', () => {
+  const fixture = controllerFixture();
+  const generation = fixture.controller.beginGeneration();
+  fixture.controller.handleEvent({
+    type: 'system', subtype: 'init', session_id: 'strict', is_streaming: false,
+    providerRouteProtocolVersion: 1,
+  }, generation);
+  const debugBefore = fixture.debugCalls.length;
+  for (const type of ['part_delta', 'stream_event']) {
+    assert.equal(fixture.controller.handleEvent({ type, providerRouteScope: 'host' }, generation), false,
+      `${type} has no legitimate host-owned form`);
+  }
+  for (const type of [
+    'assistant', 'user', 'result', 'api_error_policy', 'provider_token_stats', 'rate_limit_event',
+  ]) {
+    assert.equal(fixture.controller.handleEvent({
+      type, providerRouteScope: 'host',
+    }, generation), true,
+      `${type} may be produced by the host outside a provider attempt`);
+    assert.equal(fixture.controller.handleEvent({
+      type, providerRouteScope: 'attempt',
+    }, generation), false, `${type} with attempt scope requires an exact tuple`);
+  }
+  assert.equal(fixture.controller.handleEvent({
+    type: 'error', providerRouteScope: 'attempt', error: 'must-not-render',
+  }, generation), false, 'attempt error');
+  assert.equal(fixture.debugCalls.length, debugBefore + 6);
+  assert.equal(fixture.controller.handleEvent({
+    type: 'error', providerRouteScope: 'host', error: 'host failure',
+  }, generation), true, 'host-scoped errors are not provider attempt frames');
+  assert.equal(fixture.debugCalls.length, debugBefore + 7);
+});
+
+test('route protocol v1 enforces an epoch-scoped monotonic route-generation high-water mark', () => {
+  const fixture = controllerFixture();
+  fixture.state.currentCli = 'codex';
+  const generation = fixture.controller.beginGeneration();
+  fixture.controller.handleEvent({
+    type: 'system', subtype: 'init', session_id: 'strict', is_streaming: false,
+    providerRouteProtocolVersion: 1,
+  }, generation);
+  const route = (routeGeneration, routeAttemptId, providerId = 'provider-a') => ({
+    type: 'provider_route_event', version: 1, phase: 'selected',
+    providerRouteScope: 'attempt',
+    runtimeEpoch: 'epoch-1', turnId: 'turn-1', decisionId: 'decision-1', routeAttemptId,
+    routeGeneration, attemptNo: routeGeneration, providerId,
+    providerRevision: `revision-${providerId}`,
+  });
+  const frame = (text, routeGeneration, routeAttemptId, providerId = 'provider-a') => ({
+    type: 'part_delta', delta: { type: 'text', text },
+    providerRouteScope: 'attempt',
+    runtimeEpoch: 'epoch-1', turnId: 'turn-1', decisionId: 'decision-1', routeAttemptId,
+    routeGeneration, attemptNo: routeGeneration, providerId,
+    providerRevision: `revision-${providerId}`,
+  });
+
+  assert.equal(fixture.controller.handleEvent(route(2, 'attempt-2'), generation), true);
+  assert.equal(fixture.controller.handleEvent(frame('accepted-2', 2, 'attempt-2'), generation), true);
+  const debugBeforeRejected = fixture.debugCalls.length;
+  assert.equal(fixture.controller.handleEvent(frame('stale-1', 1, 'attempt-1'), generation), false);
+  assert.equal(fixture.controller.handleEvent(frame('wrong-tuple', 2, 'attempt-x'), generation), false);
+  assert.equal(fixture.controller.handleEvent({
+    ...frame('wrong-epoch', 2, 'attempt-2'), runtimeEpoch: 'epoch-old',
+  }, generation), false);
+  assert.equal(fixture.debugCalls.length, debugBeforeRejected,
+    'all rejected attempt frames are invisible to diagnostics');
+
+  assert.equal(fixture.controller.handleEvent(route(1, 'attempt-1'), generation), false,
+    'a stale route announcement cannot lower the high-water mark');
+  assert.equal(fixture.controller.handleEvent({ ...route(3, 'attempt-3'), version: undefined }, generation), false,
+    'strict mode rejects route events from an unspecified protocol version');
+  assert.equal(fixture.controller.handleEvent(route(2, 'attempt-x'), generation), false,
+    'the same generation cannot be rebound to a different tuple');
+  assert.equal(fixture.controller.handleEvent(route(3, 'attempt-3', 'provider-b'), generation), true);
+  assert.equal(fixture.controller.handleEvent(frame('late-2', 2, 'attempt-2'), generation), false);
+  assert.equal(fixture.controller.handleEvent(frame('accepted-3', 3, 'attempt-3', 'provider-b'), generation), true);
+  assert.equal(fixture.state.currentTextContent, 'accepted-2accepted-3');
+});
+
+test('route protocol v1 reconnect init restores the active attempt and terminal closes it', () => {
+  const fixture = controllerFixture();
+  fixture.state.currentCli = 'codex';
+  const generation = fixture.controller.beginGeneration();
+  const identity = {
+    providerRouteScope: 'attempt', runtimeEpoch: 'epoch-r', turnId: 'turn-r',
+    decisionId: 'decision-r', routeAttemptId: 'attempt-r', routeGeneration: 4,
+    attemptNo: 2, providerId: 'provider-r', providerRevision: 'revision-r',
+  };
+  assert.equal(fixture.controller.handleEvent({
+    type: 'system', subtype: 'init', session_id: 'strict', is_streaming: true,
+    providerRouteProtocolVersion: 1, providerRoute: identity,
+  }, generation), true);
+  assert.equal(fixture.controller.handleEvent({
+    type: 'part_delta', delta: { type: 'text', text: 'after-reconnect' }, ...identity,
+  }, generation), true);
+  assert.equal(fixture.controller.handleEvent({
+    type: 'provider_route_event', version: 1, phase: 'succeeded', ...identity,
+  }, generation), true);
+  assert.equal(fixture.state.activeProviderRoute, null);
+  assert.equal(fixture.controller.handleEvent({
+    type: 'part_delta', delta: { type: 'text', text: 'late' }, ...identity,
+  }, generation), false);
+  assert.equal(fixture.controller.handleEvent({
+    type: 'provider_route_event', version: 1, phase: 'selected', ...identity,
+  }, generation), false, 'a terminal generation cannot be re-opened');
+  assert.equal(fixture.state.currentTextContent, 'after-reconnect');
+});
+
 test('only server init synchronizes streaming state and pending cancel ownership', () => {
   const fixture = controllerFixture();
   const generation = fixture.controller.beginGeneration();

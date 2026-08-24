@@ -41,6 +41,14 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
     return { appType, providerId: rec.provider };
   }
 
+  function explicitProviderIdentity(providerId) {
+    if (!providerId || typeof providers.getProvider !== 'function') return null;
+    let provider;
+    try { provider = providers.getProvider(undefined, String(providerId)); } catch (_) { return null; }
+    if (!provider || !provider.id || !provider.appType) return null;
+    return { appType: String(provider.appType), providerId: String(provider.id) };
+  }
+
   // A window/balance DTO → full structured summary. This is the primary path:
   // the poller, the passive proxy broadcaster, and the log watchdog all feed it.
   function recordDto(appType, providerId, dto) {
@@ -89,8 +97,8 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
   }
 
   // Record a session-derived DTO (poller / passive proxy / watchdog).
-  function recordSession(sessionName, dto) {
-    const id = appTypeForSession(sessionName);
+  function recordSession(sessionName, dto, providerId) {
+    const id = providerId ? explicitProviderIdentity(providerId) : appTypeForSession(sessionName);
     if (!id) return null;
     return recordDto(id.appType, id.providerId, dto);
   }

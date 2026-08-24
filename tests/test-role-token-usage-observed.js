@@ -48,3 +48,27 @@ test('standardized tracker entry preserves old snapshots and deduplicates stable
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('main usage keeps its legacy total and an additive exact provider split', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-role-main-provider-'));
+  try {
+    const tracker = createRoleTokenTracker({ filePath: path.join(dir, 'ledger.json') });
+    tracker.accumulate({
+      sessionId: 's1', role: 'main', providerId: 'provider-a', providerName: 'A', model: 'a',
+      usage: { inputTokens: 10, outputTokens: 2, cacheWrite: 0, cacheRead: 1 },
+    });
+    tracker.accumulate({
+      sessionId: 's1', role: 'main', providerId: 'provider-b', providerName: 'B', model: 'b',
+      usage: { inputTokens: 3, outputTokens: 4, cacheWrite: 2, cacheRead: 0 },
+    });
+    const snapshot = tracker.snapshot('s1');
+    assert.deepEqual(snapshot.main, {
+      inputTokens: 13, outputTokens: 6, cacheWrite: 2, cacheRead: 1,
+    });
+    assert.deepEqual(snapshot.mainByProvider.map(item => item.providerId), ['provider-a', 'provider-b']);
+    assert.equal(snapshot.mainByProvider.reduce((sum, item) => sum + item.outputTokens, 0),
+      snapshot.main.outputTokens);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

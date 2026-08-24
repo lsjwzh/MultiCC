@@ -3,6 +3,68 @@
 const { isErrorOnlyText, retryNotice } = require('./api-error-policy');
 const { SYSTEM_PREFIX } = require('../session-delivery');
 
+function cleanIdentity(value) {
+  return value == null ? '' : String(value).trim();
+}
+
+function positiveIdentityNumber(value) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number > 0 ? number : null;
+}
+
+// A logical turn can move between concrete provider routes. Error policy must
+// therefore read the immutable runner-owned attempt before mutable session
+// defaults. Field-wise fallback lets providerAttempt carry the physical route
+// while usageAttribution supplies the CLI on older attempt snapshots.
+function turnProviderIdentity({ runner, persisted, cs, raw }) {
+  const providerAttempt = runner?.providerAttempt && typeof runner.providerAttempt === 'object'
+    ? runner.providerAttempt : {};
+  const usageAttribution = runner?.usageAttribution && typeof runner.usageAttribution === 'object'
+    ? runner.usageAttribution : {};
+  const cli = cleanIdentity(
+    providerAttempt.cli || usageAttribution.cli || persisted?.cli || cs?.cli || raw?.provider || 'unknown',
+  ).toLowerCase() || 'unknown';
+  const providerId = cleanIdentity(
+    providerAttempt.providerId || usageAttribution.providerId
+      || persisted?.provider || raw?.providerId || '_default_',
+  ) || '_default_';
+  return Object.freeze({
+    cli,
+    providerId,
+    providerName: cleanIdentity(
+      providerAttempt.providerName || usageAttribution.providerName
+        || persisted?.providerName || raw?.providerName,
+    ) || (providerId === '_default_' ? cli : providerId),
+    turnId: cleanIdentity(
+      providerAttempt.turnId || usageAttribution.turnId || raw?.turnId,
+    ) || null,
+    decisionId: cleanIdentity(
+      providerAttempt.decisionId || usageAttribution.decisionId || raw?.decisionId,
+    ) || null,
+    runtimeEpoch: cleanIdentity(
+      providerAttempt.runtimeEpoch || usageAttribution.runtimeEpoch || raw?.runtimeEpoch,
+    ) || null,
+    routeAttemptId: cleanIdentity(
+      providerAttempt.routeAttemptId || usageAttribution.routeAttemptId || raw?.routeAttemptId,
+    ) || null,
+    routeGeneration: positiveIdentityNumber(
+      providerAttempt.routeGeneration ?? usageAttribution.routeGeneration ?? raw?.routeGeneration,
+    ),
+    attemptNo: positiveIdentityNumber(
+      providerAttempt.attemptNo ?? usageAttribution.attemptNo ?? raw?.attemptNo,
+    ),
+    providerRevision: cleanIdentity(
+      providerAttempt.providerRevision || usageAttribution.providerRevision || raw?.providerRevision,
+    ) || null,
+  });
+}
+
+function turnErrorIdempotencyKey(sessionName, turn, attempt, identity) {
+  const legacy = `${turn?.turnId || sessionName}:${attempt}:${identity.cli}`;
+  if (!identity.routeAttemptId) return legacy;
+  return `${legacy}:${identity.runtimeEpoch || '_runtime_'}:${identity.routeAttemptId}`;
+}
+
 function createApiErrorHost(options = {}) {
   const {
     policy,
@@ -179,9 +241,23 @@ function createApiErrorHost(options = {}) {
     partialOutput,
     sideEffects,
   }) {
-    const provider = String(persisted?.cli || cs?.cli || raw?.provider || 'unknown').toLowerCase();
+    const identity = turnProviderIdentity({ runner, persisted, cs, raw });
     const decision = recordApiError(raw, {
-      provider,
+      // `provider` is the legacy public field and intentionally remains the
+      // CLI. providerId is additive and owns circuit/failover identity.
+      provider: identity.cli,
+      cli: identity.cli,
+      providerId: identity.providerId,
+      providerName: identity.providerName,
+      decisionId: identity.decisionId,
+      runtimeEpoch: identity.runtimeEpoch,
+      routeAttemptId: identity.routeAttemptId,
+      routeGeneration: identity.routeGeneration,
+      attemptNo: identity.attemptNo,
+      providerRevision: identity.providerRevision,
+      providerRouteScope: identity.runtimeEpoch && identity.decisionId && identity.routeAttemptId
+        && identity.routeGeneration && identity.attemptNo && identity.providerRevision
+        ? 'attempt' : null,
       source: raw?.source || 'process_stderr',
       sessionId: sessionName,
       turnId: turn?.turnId,
@@ -192,16 +268,30 @@ function createApiErrorHost(options = {}) {
       elapsedMs: Number.isFinite(Number(cs?.turnStartedAt))
         ? Math.max(0, now() - Number(cs.turnStartedAt))
         : 0,
-      idempotencyKey: `${turn?.turnId || sessionName}:${attempt}:${provider}`,
+      idempotencyKey: turnErrorIdempotencyKey(sessionName, turn, attempt, identity),
     });
     if (runner) {
       runner.apiErrorDecision = decision;
       runner.apiErrorRaw = raw;
     }
     if (cs) cs._lastApiErrorDecision = decision;
+    const routeIdentity = identity.runtimeEpoch && identity.decisionId && identity.routeAttemptId
+        && identity.routeGeneration && identity.attemptNo && identity.providerRevision ? {
+      providerRouteScope: 'attempt',
+      runtimeEpoch: decision.error.runtimeEpoch || identity.runtimeEpoch,
+      turnId: decision.error.turnId || identity.turnId || turn?.turnId,
+      decisionId: decision.error.decisionId || identity.decisionId,
+      routeAttemptId: decision.error.routeAttemptId || identity.routeAttemptId,
+      routeGeneration: decision.error.routeGeneration ?? identity.routeGeneration,
+      attemptNo: decision.error.attemptNo ?? identity.attemptNo,
+      providerRevision: decision.error.providerRevision || identity.providerRevision,
+    } : {};
     const safe = {
       category: decision.error.category,
       provider: decision.error.provider,
+      providerId: decision.error.providerId || identity.providerId,
+      providerName: decision.error.providerName || identity.providerName,
+      ...routeIdentity,
       code: decision.error.code,
       httpStatus: decision.error.httpStatus,
       retryable: decision.error.retryable,
@@ -217,7 +307,13 @@ function createApiErrorHost(options = {}) {
       userAction: decision.error.userAction,
       at: now(),
     };
-    setTaskState(sessionName, { apiError: safe }, { save: true });
+    const {
+      providerRouteScope: _scope, runtimeEpoch: _epoch, turnId: _turnId,
+      decisionId: _decisionId, routeAttemptId: _routeAttemptId,
+      routeGeneration: _routeGeneration, attemptNo: _attemptNo,
+      providerRevision: _providerRevision, ...durableSafe
+    } = safe;
+    setTaskState(sessionName, { apiError: durableSafe }, { save: true });
     if (!decision.duplicate) {
       const message = retryNotice(decision);
       chatBroadcast(sessionName, {
