@@ -72,7 +72,7 @@ function createInstance({ dataDir, directories = new Map(), sessions = new Map()
       token: req.headers['x-multicc-fleet-token'],
       grant: req.headers['x-multicc-fleet-grant'],
       method: req.method,
-      pathname: req.path,
+      pathname: req.originalUrl,
     }) ? next() : res.status(403).json({ error: 'Fleet scope forbidden' }));
     app.patch('/api/sessions/:id', (req, res) => {
       const current = sessions.get(req.params.id);
@@ -87,6 +87,7 @@ function createInstance({ dataDir, directories = new Map(), sessions = new Map()
       sessions.set(id, created);
       return res.json(created);
     });
+    app.get('/api/git/log', (req, res) => res.json({ dirId: req.query.dirId, commits: [] }));
   }
   return app;
 }
@@ -259,6 +260,11 @@ test('Fleet sharing works from a LAN-bound source to a loopback-bound target', a
   });
   assert.equal(deniedOtherSession.response.status, 403,
     'the Fleet capability cannot mutate a session outside its source Fleet');
+  const gitLog = await requestJson(`${proxyBase}/api/git/log?dirId=fleet-source&limit=50`);
+  assert.equal(gitLog.response.status, 200);
+  assert.equal(gitLog.body.dirId, 'fleet-source', 'the existing Git-tree API is reused through Fleet scope');
+  const deniedOtherGit = await requestJson(`${proxyBase}/api/git/log?dirId=other-fleet&limit=50`);
+  assert.equal(deniedOtherGit.response.status, 403);
 
   sourceSessions.set('new-remote-worker', {
     id: 'new-remote-worker', dirId: 'fleet-source', label: 'New LAN Worker', cli: 'zcode', kind: 'terminal',
