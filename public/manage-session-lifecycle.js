@@ -261,9 +261,11 @@
     if (supportsManagedProvider(cli)) {
       try {
         const appType = cli === 'codex' ? 'codex' : 'claude';
-        const data = catalog.normalizeCatalog(
-          await api.json(`/api/providers?cli=${encodeURIComponent(cli)}`),
-        );
+        const providerUrl = window.MultiCCFleetSharing?.apiUrlForDirectory(
+          `/api/providers?cli=${encodeURIComponent(cli)}`,
+          dirId,
+        ) || `/api/providers?cli=${encodeURIComponent(cli)}`;
+        const data = catalog.normalizeCatalog(await api.json(providerUrl));
         providers = catalog.providersForCli(data, cli);
         defaultProviderId = cli === 'opencode' || cli === 'zcode'
           ? ''
@@ -290,7 +292,8 @@
       _expandedDirs.add(dirId);
       await loadDashboard();
       // Open it immediately
-      openSessionInline(sess.id, sess.kind);
+      const visibleSessionId = window.MultiCCFleetSharing?.sessionIdForRemote(dirId, sess.id) || sess.id;
+      openSessionInline(visibleSessionId, sess.kind);
     } catch (err) {
       showApiError(err);
     }

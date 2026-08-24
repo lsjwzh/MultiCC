@@ -45,7 +45,7 @@ function expectFleetError(fn, code, status) {
     && error.code === code && (status === undefined || error.status === status));
 }
 
-test('Fleet share persists only a scrypt hash and exports a bounded metadata snapshot', t => {
+test('Fleet share persists a scrypt password hash and exports a Fleet-scoped interactive capability', t => {
   const h = fixture(t);
   expectFleetError(() => h.sharing.createShare('fleet-1', { password: 'short' }), 'INVALID_PASSWORD');
   const created = h.sharing.createShare('fleet-1', {
@@ -59,6 +59,7 @@ test('Fleet share persists only a scrypt hash and exports a bounded metadata sna
   const persisted = JSON.parse(raw).shares[created.token];
   assert.match(persisted.passwordHash, /^[a-f0-9]{64}$/);
   assert.match(persisted.salt, /^[a-f0-9]{32}$/);
+  assert.match(persisted.accessGrant, /^[A-Za-z0-9_-]{43,128}$/);
 
   expectFleetError(() => h.sharing.accessSharedFleet(created.token, 'wrong password'), 'WRONG_PASSWORD', 403);
   assert.equal(h.sharing.listShares('fleet-1')[0].remainingAccesses, 2,
@@ -69,10 +70,24 @@ test('Fleet share persists only a scrypt hash and exports a bounded metadata sna
   assert.equal(payload.fleet.name, 'Local Fleet');
   assert.equal(payload.fleet.sessionCount, 2);
   assert.deepEqual(payload.fleet.sessions.map(item => item.type), ['worker', 'commander']);
+  assert.deepEqual(payload.fleet.sessions.map(item => item.id), ['secret-session-id', 'commander-id']);
+  assert.equal(payload.fleet.sessions[0].provider, 'private-provider');
+  assert.equal(payload.capability.token, created.token);
+  assert.match(payload.capability.grant, /^[A-Za-z0-9_-]{43,128}$/);
   const wire = JSON.stringify(payload);
-  for (const forbidden of ['/private/', 'private-provider', 'secret-session-id', 'commander-id']) {
-    assert.equal(wire.includes(forbidden), false, `snapshot excludes ${forbidden}`);
-  }
+  assert.equal(wire.includes('/private/'), false, 'capability payload excludes filesystem paths');
+  assert.equal(h.sharing.authorizeRequest({
+    token: created.token, grant: payload.capability.grant, method: 'PATCH', pathname: '/api/sessions/secret-session-id',
+  }), true);
+  assert.equal(h.sharing.authorizeRequest({
+    token: created.token, grant: payload.capability.grant, method: 'PATCH', pathname: '/api/sessions/other-session',
+  }), false);
+  assert.equal(h.sharing.authorizeRequest({
+    token: created.token, grant: payload.capability.grant, method: 'POST', pathname: '/api/sessions/secret-session-id/relocate',
+  }), false, 'a scoped capability cannot move a session into another Fleet');
+  assert.equal(h.sharing.authorizeRequest({
+    token: created.token, grant: payload.capability.grant, method: 'GET', pathname: `/api/fleet-shares/${created.token}/state`,
+  }), true);
   assert.equal(h.sharing.listShares('fleet-1')[0].remainingAccesses, 1);
   h.sharing.accessSharedFleet(created.token, 'correct horse');
   expectFleetError(() => h.sharing.accessSharedFleet(created.token, 'correct horse'), 'SHARE_EXHAUSTED', 410);
@@ -116,9 +131,13 @@ test('external import is server-to-server, upserts the same source, and never pe
         return JSON.stringify({
           schemaVersion: 1,
           instanceId: 'instance-remote',
+          capability: {
+            token: `fleet_share_${'d'.repeat(32)}`,
+            grant: 'g'.repeat(43),
+          },
           fleet: {
             id: 'remote-fleet-1', name: remoteName, description: 'Remote snapshot',
-            sessions: [{ label: 'Remote worker', cli: 'zcode', kind: 'chat' }],
+            sessions: [{ id: 'remote-worker-1', label: 'Remote worker', cli: 'zcode', kind: 'chat' }],
           },
         });
       },
@@ -129,11 +148,14 @@ test('external import is server-to-server, upserts the same source, and never pe
   const first = await h.sharing.importExternal({ shareUrl, password: 'secret-pass', alias: 'My remote' });
   assert.equal(first.name, 'My remote');
   assert.equal(first.sessionCount, 1);
+  assert.equal(first.interactive, true);
   assert.equal(requests[0].url, `http://remote.lan:3000/api/fleet-shares/fleet_share_${'d'.repeat(32)}/import`);
   assert.deepEqual(JSON.parse(requests[0].init.body), { password: 'secret-pass' });
 
   const persistedText = fs.readFileSync(path.join(h.root, 'external-fleets.json'), 'utf8');
   assert.equal(persistedText.includes('secret-pass'), false);
+  assert.equal(persistedText.includes('g'.repeat(43)), true, 'only the random Fleet grant is persisted');
+  assert.equal(JSON.stringify(first).includes('g'.repeat(43)), false, 'the grant is never returned by the external Fleet list DTO');
   remoteName = 'Remote Fleet Renamed';
   const second = await h.sharing.importExternal({ shareUrl, password: 'secret-pass' });
   assert.equal(second.id, first.id);

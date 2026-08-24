@@ -20,6 +20,7 @@ function buildHarness(overrides = {}) {
     shuttingDown: false,
     local: true,
     peerAllowed: true,
+    scopedRequest: false,
     metrics: [],
     ...overrides,
   };
@@ -70,6 +71,7 @@ function buildHarness(overrides = {}) {
     getShuttingDown: () => state.shuttingDown,
     getProxyToken: () => state.proxyToken,
     isRequestPeerAllowed: () => state.peerAllowed,
+    authorizeScopedRequest: () => state.scopedRequest,
     allowLegacyTokenQuery: !!state.allowLegacyTokenQuery,
   });
   runtime.mountRoutes(app);
@@ -225,6 +227,7 @@ test('bypass paths: static assets, wait-resolve, share, artifacts skip auth', as
       ['GET', '/api/share/deadbeef/session'],
       ['GET', `/fleet-share/fleet_share_${'a'.repeat(32)}`],
       ['POST', `/api/fleet-shares/fleet_share_${'b'.repeat(32)}/import`],
+      ['POST', `/api/fleet-shares/fleet_share_${'c'.repeat(32)}/ws-ticket`],
       ['GET', '/artifacts/xY_9-artifactid/index.html'],
     ]) {
       const res = await raw(h.base, p, { method, headers: { accept: 'application/json' } });
@@ -235,6 +238,22 @@ test('bypass paths: static assets, wait-resolve, share, artifacts skip auth', as
     assert.equal(gated.status, 403);
     const gatedFleetAdmin = await raw(h.base, '/api/fleets/f1/share', { method: 'POST', headers: { accept: 'application/json' } });
     assert.equal(gatedFleetAdmin.status, 403);
+  } finally { await h.close(); }
+});
+
+test('Fleet-scoped credentials pass only when the injected scope authorizer accepts them', async () => {
+  const h = await buildHarness({ accessToken: 'sekret', local: false, scopedRequest: false });
+  try {
+    let res = await raw(h.base, '/api/sessions/remote-session', {
+      headers: { 'x-multicc-fleet-token': 'share', 'x-multicc-fleet-grant': 'grant' },
+    });
+    assert.equal(res.status, 403);
+    h.state.scopedRequest = true;
+    res = await raw(h.base, '/api/sessions/remote-session', {
+      headers: { 'x-multicc-fleet-token': 'share', 'x-multicc-fleet-grant': 'grant' },
+    });
+    assert.equal(res.status, 200);
+    assert.ok(h.state.metrics.includes('multicc_auth_fleet_scope_total'));
   } finally { await h.close(); }
 });
 

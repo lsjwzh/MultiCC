@@ -11,7 +11,7 @@ const {
 function appHarness() {
   const routes = new Map();
   const app = {};
-  for (const method of ['get', 'post', 'delete']) {
+  for (const method of ['get', 'post', 'delete', 'all']) {
     app[method] = (route, handler) => routes.set(`${method.toUpperCase()} ${route}`, handler);
   }
   return { app, routes };
@@ -22,6 +22,7 @@ function response() {
     statusCode: 200, body: undefined, headers: {}, file: null,
     status(code) { this.statusCode = code; return this; },
     json(body) { this.body = body; return this; },
+    send(body) { this.body = body; return this; },
     set(name, value) { this.headers[name.toLowerCase()] = value; return this; },
     sendFile(file) { this.file = file; return this; },
   };
@@ -30,10 +31,13 @@ function response() {
 async function invoke(handler, options = {}) {
   const req = {
     params: options.params || {}, body: options.body || {}, protocol: options.protocol || 'https',
-    ip: options.ip || '203.0.113.8', socket: {},
+    ip: options.ip || '203.0.113.8', socket: {}, headers: options.headers || {},
+    method: options.method || 'GET', originalUrl: options.originalUrl || '',
     get(name) {
       if (name === 'host') return options.host || 'multicc.example.test';
       if (name === 'x-forwarded-proto') return options.forwardedProto;
+      if (name === 'content-type') return options.contentType;
+      if (name === 'accept') return options.accept;
       return undefined;
     },
   };
@@ -60,9 +64,18 @@ function fakeSharing() {
       if (password !== 'password') throw new FleetSharingError('WRONG_PASSWORD', '密码错误', 403);
       return { schemaVersion: 1, instanceId: 'i', fleet: { id: 'f', name: 'Fleet', sessions: [] } };
     },
+    readSharedFleet(token, grant) {
+      calls.push(['state', token, grant]);
+      return { schemaVersion: 1, instanceId: 'i', fleet: { id: 'f', name: 'Fleet', sessions: [] } };
+    },
+    authorizeWebSocket() { return true; },
     async importExternal(body) { calls.push(['import', body]); return { id: 'external-1', name: 'Remote' }; },
     listExternal() { calls.push(['external-list']); return [{ id: 'external-1', name: 'Remote' }]; },
     removeExternal(id) { calls.push(['external-remove', id]); return true; },
+    async refreshExternal(id) { calls.push(['external-refresh', id]); return { id, name: 'Remote' }; },
+    externalAuthority(id) { return { id, sourceFleetId: 'f', name: 'Remote', sourceOrigin: 'https://remote', sessions: [] }; },
+    async proxyExternal() { return { status: 200, body: Buffer.from('{}'), contentType: 'application/json' }; },
+    async issueExternalWsTicket() { return { ticket: 'remote-ticket', wsOrigin: 'wss://remote' }; },
   };
 }
 
@@ -75,9 +88,14 @@ test('Fleet sharing routes mount the complete admin, public, and external surfac
     'DELETE /api/fleets/:id/share/:token',
     'GET /fleet-share/:token',
     'POST /api/fleet-shares/:token/import',
+    'GET /api/fleet-shares/:token/state',
+    'POST /api/fleet-shares/:token/ws-ticket',
     'POST /api/external-fleets/import',
     'GET /api/external-fleets',
     'DELETE /api/external-fleets/:id',
+    'POST /api/external-fleets/:id/refresh',
+    'POST /api/external-fleets/:id/ws-ticket',
+    'ALL /api/external-fleets/:id/remote/*',
   ]);
 });
 
@@ -98,6 +116,8 @@ test('admin create/list return canonical landing URLs and external endpoints pre
   assert.deepEqual(res.body.fleets, [{ id: 'external-1', name: 'Remote' }]);
   res = await invoke(routes.removeExternal, { params: { id: 'external-1' } });
   assert.deepEqual(res.body, { ok: true });
+  res = await invoke(routes.refreshExternal, { params: { id: 'external-1' } });
+  assert.deepEqual(res.body, { ok: true, fleet: { id: 'external-1', name: 'Remote' } });
 });
 
 test('public Fleet capability requires its password, sets no-store, and rate-limits failures', async () => {
@@ -116,6 +136,35 @@ test('public Fleet capability requires its password, sets no-store, and rate-lim
   res = await invoke(handlers.accessShare, { params: { token }, body: { password: 'password' } });
   assert.equal(res.statusCode, 429);
   assert.equal(res.body.code, 'SHARE_RATE_LIMITED');
+});
+
+test('Fleet state and WebSocket tickets keep the remote grant server-side and bind the session', async () => {
+  const sharing = fakeSharing();
+  const issued = [];
+  const handlers = createFleetSharingRoutes({
+    sharing,
+    pageFile: '/public/fleet-share.html',
+    issueWsTicket: (pathname, metadata) => {
+      issued.push({ pathname, metadata });
+      return { ticket: 'once-ticket', expiresAt: 123 };
+    },
+  }).handlers;
+  const token = `fleet_share_${'d'.repeat(32)}`;
+  let res = await invoke(handlers.readSharedFleet, {
+    params: { token }, headers: { 'x-multicc-fleet-grant': 'random-grant' },
+  });
+  assert.equal(res.headers['cache-control'], 'no-store');
+  assert.deepEqual(sharing.calls.at(-1), ['state', token, 'random-grant']);
+
+  res = await invoke(handlers.issueSharedWsTicket, {
+    params: { token },
+    headers: { 'x-multicc-fleet-grant': 'random-grant' },
+    body: { pathname: '/ws/chat', sessionId: 'remote-session' },
+    host: 'source.lan:3000', protocol: 'http',
+  });
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.wsOrigin, 'ws://source.lan:3000');
+  assert.deepEqual(issued, [{ pathname: '/ws/chat', metadata: { fleetSessionId: 'remote-session' } }]);
 });
 
 test('route errors expose stable public messages and hide unexpected exception details', async () => {

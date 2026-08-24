@@ -15,13 +15,17 @@ test('manage page exposes discoverable Fleet share/import entrypoints and loads 
   const manage = html.indexOf('<script src="manage.js"></script>');
   assert.ok(dashboard >= 0 && dashboard < sharing && sharing < manage);
   assert.match(html, /onclick="openImportFleetModal\(\)"/);
-  assert.match(html, /id="external-fleet-section"/);
+  assert.doesNotMatch(html, /id="external-fleet-section"/,
+    'external Fleets must not render in a second, non-interactive card grid');
   assert.match(html, /manage-fleet-sharing\.css/);
 
   const dashboardSource = read('public/manage-dashboard.js');
   assert.match(dashboardSource, /分享 Fleet/);
   assert.match(dashboardSource, /openFleetShareModal\(dirId\)/);
-  assert.match(dashboardSource, /loadExternalFleets/);
+  assert.match(dashboardSource, /loadExternalFleetData/);
+  assert.match(dashboardSource, /localDirectories\.concat\(external\.directories/);
+  assert.match(dashboardSource, /renderDirectoryBlock\(d,/,
+    'local and external Fleets share the same directory-card renderer');
 });
 
 test('Fleet sharing UI keeps passwords write-only and uses the bounded API surface', () => {
@@ -30,7 +34,9 @@ test('Fleet sharing UI keeps passwords write-only and uses the bounded API surfa
   assert.match(source, /id="fleet-import-password" type="password"/);
   assert.match(source, /\/api\/fleets\/\$\{encodeURIComponent\(activeFleetId\)\}\/share/);
   assert.match(source, /\/api\/external-fleets\/import/);
-  assert.match(source, /只读快照/);
+  assert.match(source, /Fleet 范围授权/);
+  assert.match(source, /externalSessionPageUrl/);
+  assert.match(source, /externalProxyUrl\(url, entry\.fleet, `\/api\/sessions\//);
   assert.doesNotMatch(source, /localStorage|sessionStorage/);
   assert.doesNotMatch(source, /fleet\.password|record\.password|externalFleets[^\n]+password/);
 });
@@ -49,9 +55,10 @@ test('Fleet share and import dialogs expose complete close controls', () => {
   assert.match(styles, /\.fs-modal-close:focus-visible/);
 });
 
-test('public Fleet landing page explains snapshot scope without collecting a password', () => {
+test('public Fleet landing page explains remote execution scope without collecting a password', () => {
   const page = read('public/fleet-share.html');
-  assert.match(page, /只读 Fleet 快照/);
-  assert.match(page, /不会.*执行代码/);
+  assert.match(page, /Fleet 范围授权/);
+  assert.match(page, /命令仍在来源实例执行/);
+  assert.match(page, /不会开放其他 Fleet 或 Provider 凭据/);
   assert.doesNotMatch(page, /type="password"|\/api\//);
 });

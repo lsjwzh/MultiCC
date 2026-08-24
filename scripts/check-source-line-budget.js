@@ -29,8 +29,8 @@ const MIGRATION_DEBT = Object.freeze({
     // without ratcheting (the gate was red on main). Keep exact-equality.
     // Bytes grew for the 借道分享 row button (dialog itself lives in
     // manage-provider-relay.js).
-    ceiling: 3114,
-    byteCeiling: 145310,
+    ceiling: 3105,
+    byteCeiling: 145285,
     target: DEFAULT_MAX_LINES,
     reason: 'aux-history UI pending split into a dedicated script',
   }),

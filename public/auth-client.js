@@ -17,6 +17,7 @@ if (typeof module !== 'undefined' && module.exports) {
   if (typeof window === 'undefined') return;
   const params = new URLSearchParams(location.search);
   let bootstrapToken = params.get('token') || '';
+  const externalFleetId = params.get('external') || '';
   const nativeFetch = window.fetch.bind(window);
 
   // Capture the legacy bootstrap token in memory and scrub the address bar
@@ -38,6 +39,19 @@ if (typeof module !== 'undefined' && module.exports) {
     } catch (_) { return false; }
   }
 
+  function externalProxyInput(input) {
+    if (!externalFleetId || !isSameOrigin(input)) return input;
+    let url;
+    try {
+      const raw = input instanceof Request ? input.url : String(input);
+      url = new URL(raw, location.href);
+    } catch (_) { return input; }
+    if (!url.pathname.startsWith('/api/') || url.pathname.startsWith('/api/external-fleets/')) return input;
+    url.pathname = `/api/external-fleets/${encodeURIComponent(externalFleetId)}/remote${url.pathname}`;
+    if (input instanceof Request) return new Request(url.href, input);
+    return url.href;
+  }
+
   window.fetch = function authenticatedFetch(input, init) {
     const options = { ...(init || {}) };
     if (bootstrapToken && isSameOrigin(input)) {
@@ -46,7 +60,7 @@ if (typeof module !== 'undefined' && module.exports) {
       if (!headers.has('X-Access-Token')) headers.set('X-Access-Token', bootstrapToken);
       options.headers = headers;
     }
-    return nativeFetch(input, options);
+    return nativeFetch(externalProxyInput(input), options);
   };
 
   const ready = bootstrapToken
@@ -63,6 +77,23 @@ if (typeof module !== 'undefined' && module.exports) {
     await ready;
     const url = new URL(rawUrl, location.href);
     url.searchParams.delete('token');
+    if (externalFleetId) {
+      const sessionId = url.searchParams.get('session') || url.searchParams.get('id') || '';
+      const directoryId = url.searchParams.get('dirId') || '';
+      const res = await window.fetch(`/api/external-fleets/${encodeURIComponent(externalFleetId)}/ws-ticket`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pathname: url.pathname, sessionId, directoryId }),
+      });
+      if (!res.ok) throw new Error(`External Fleet WebSocket ticket failed: HTTP ${res.status}`);
+      const data = await res.json();
+      const remoteOrigin = new URL(data.wsOrigin);
+      url.protocol = remoteOrigin.protocol;
+      url.host = remoteOrigin.host;
+      url.searchParams.set('ticket', data.ticket);
+      return url.toString();
+    }
     const res = await window.fetch('/api/auth/ws-ticket', {
       method: 'POST',
       credentials: 'same-origin',
