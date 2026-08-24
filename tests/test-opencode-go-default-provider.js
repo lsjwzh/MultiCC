@@ -79,6 +79,8 @@ function fixture(session) {
     },
     providerRouterRuntime,
     getChatStream: () => ({ close() {} }),
+    getChatState: () => null,
+    hasLiveBackgroundTasks: () => false,
     validProviderId: (_cli, id) => (id === '' || id === 'prov-1'
       ? { ok: true, value: id || null }
       : { ok: false }),

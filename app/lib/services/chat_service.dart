@@ -4,6 +4,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:http/http.dart' as http;
 
 import '../models/message.dart';
+import 'provider_route_gate.dart';
 import 'settings_service.dart';
 import 'ws_ticket_service.dart';
 
@@ -36,6 +37,7 @@ class ChatService {
   WebSocketChannel? _channel;
   StreamSubscription? _sub;
   final _controller = StreamController<ChatEvent>.broadcast();
+  final ProviderRouteGate _providerRouteGate = ProviderRouteGate();
 
   ChatConnectionState _state = ChatConnectionState.disconnected;
   ChatConnectionState get state => _state;
@@ -142,6 +144,7 @@ class ChatService {
       }
       _channel = channel;
       _sub?.cancel();
+      _providerRouteGate.resetConnection();
       _sub = channel.stream.listen(
         _onMessage,
         onError: (_) {
@@ -187,6 +190,7 @@ class ChatService {
     try {
       final msg = jsonDecode(raw as String) as Map<String, dynamic>;
       if (msg['type'] == 'pong') return;
+      if (!_providerRouteGate.accept(msg)) return;
       _handleMessage(msg);
     } catch (_) {}
   }
@@ -289,6 +293,10 @@ class ChatService {
         _emit('cli_switched', msg);
         break;
 
+      case 'provider_route_event':
+        _emit('provider_route_event', msg);
+        break;
+
       case 'chat_history':
         final messages = msg['messages'];
         if (messages is List) {
@@ -317,6 +325,10 @@ class ChatService {
 
       case 'part_delta':
         _emit('part_delta', msg);
+        break;
+
+      case 'user':
+        _emit('user', msg);
         break;
 
       case 'result':
@@ -425,6 +437,10 @@ class ChatService {
       // silently never computed on the app.
       case 'role_token_stats':
         _emit('role_token_stats', msg);
+        break;
+
+      case 'provider_token_stats':
+        _emit('provider_token_stats', msg);
         break;
 
       // Background-task / turn-progress broadcast channel (same payloads the

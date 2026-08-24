@@ -16,6 +16,17 @@ function freezeRecord(record) {
   return Object.freeze(copy);
 }
 
+function ownsConcreteRouteProof(proof, sessionId, turnId) {
+  const route = proof && proof.route;
+  return !!(proof && proof.kind === 'provider-route'
+    && proof.resolved === true && Object.isFrozen(proof) && Object.isFrozen(route)
+    && proof.sessionId === sessionId && proof.turnId === turnId
+    && route.runtimeEpoch && route.decisionId && route.routeAttemptId
+    && route.providerId && route.protocol && route.model && route.providerRevision
+    && Number.isSafeInteger(route.routeGeneration) && route.routeGeneration > 0
+    && Number.isSafeInteger(route.attemptNo) && route.attemptNo > 0);
+}
+
 function createTurnRuntimeStore(options = {}) {
   const now = typeof options.now === 'function' ? options.now : Date.now;
   const sessions = new Map();
@@ -76,7 +87,11 @@ function createTurnRuntimeStore(options = {}) {
     const found = match(sessionId, turnId, ['preparing']);
     if (!found.ok) return result(false, found.record, found.code);
     if (route.resolved !== true) return providerRouteFailed(sessionId, turnId, route.reason || 'route-failed');
+    if (!ownsConcreteRouteProof(route.proof, sessionId, turnId)) {
+      return providerRouteFailed(sessionId, turnId, 'invalid-provider-route-proof');
+    }
     found.record.providerRouteResolved = true;
+    found.record.providerRouteProof = route.proof;
     return result(true, found.record);
   }
 

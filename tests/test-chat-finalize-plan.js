@@ -144,8 +144,9 @@ test('reused cross-CLI target fails closed and never falls through to fresh retr
   const resolved = resolveTurnFinalization(plan);
   assert.equal(types(resolved).includes('spawn-fresh-retry'), false);
   assert.equal(types(resolved).includes('report-handoff-resume-failure'), true);
-  assert.equal(resolved.effects.at(-1).type, 'run-post-turn');
-  assert.equal(resolved.effects.at(-1).handoffResumeFailure, true);
+  assert.equal(resolved.effects.at(-2).type, 'run-post-turn');
+  assert.equal(resolved.effects.at(-2).handoffResumeFailure, true);
+  assert.equal(resolved.effects.at(-1).type, 'clear-active-runner');
 });
 
 test('process finality preserves result-event and clean first-attempt fallback semantics', () => {
@@ -177,7 +178,8 @@ test('process effects preserve durability, classification, stream_end and post-t
   assert.ok(at('reset-turn-output') < at('classify-turn-end'));
   assert.ok(at('classify-turn-end') < at('stream-end'));
   assert.ok(at('stream-end') < at('run-post-turn'));
-  assert.equal(resolved.effects.at(-1).guard, 'current-runner-and-durable-final-result');
+  assert.ok(at('run-post-turn') < at('clear-active-runner'));
+  assert.equal(resolved.effects.at(-1).type, 'clear-active-runner');
 });
 
 test('result persistence failure is visible and cannot satisfy post-turn durability guard', () => {
@@ -188,7 +190,8 @@ test('result persistence failure is visible and cannot satisfy post-turn durabil
   assert.equal(resolved.code, 'result_not_durable');
   assert.equal(types(resolved).includes('report-result-persistence-failure'), true);
   assert.equal(types(resolved).filter(type => type === 'report-result-persistence-failure').length, 1);
-  assert.equal(resolved.effects.at(-1).guard, 'current-runner-and-durable-final-result');
+  assert.equal(resolved.effects.at(-2).guard, 'current-runner-and-durable-final-result');
+  assert.equal(resolved.effects.at(-1).type, 'clear-active-runner');
 });
 
 test('recovered Codex disconnect emits a synthetic result only after durable append proof', () => {
@@ -226,7 +229,8 @@ test('clean stream completion resets interruption, classifies, emits outcome the
   assert.ok(order.indexOf('classify-turn-end') < order.indexOf('emit-turn-outcome'));
   assert.ok(order.indexOf('emit-turn-outcome') < order.indexOf('stream-end'));
   assert.ok(order.indexOf('stream-end') < order.indexOf('run-post-turn'));
-  assert.equal(resolved.effects.at(-1).interrupted, false);
+  assert.equal(resolved.effects.at(-2).interrupted, false);
+  assert.equal(resolved.effects.at(-1).type, 'clear-active-runner');
 });
 
 test('API stream classification wins; explicit kills never auto-resume', () => {
@@ -286,7 +290,8 @@ test('unknown stream interruption freezes instead of automatically resuming', ()
     resolved.effects.find(entry => entry.type === 'freeze-interrupted'),
     { type: 'freeze-interrupted', reason: 'unknown_interruption' },
   );
-  assert.equal(resolved.effects.at(-1).interrupted, true);
+  assert.equal(resolved.effects.at(-2).interrupted, true);
+  assert.equal(resolved.effects.at(-1).type, 'clear-active-runner');
 });
 
 test('stream handoff resume failure preserves target and suppresses unknown interruption recovery', () => {
@@ -299,7 +304,8 @@ test('stream handoff resume failure preserves target and suppresses unknown inte
   assert.equal(plan.facts.guardedHandoffResumeFailure, true);
   assert.equal(types(resolved).includes('try-resume-interrupted'), false);
   assert.equal(types(resolved).includes('report-handoff-resume-failure'), true);
-  assert.equal(resolved.effects.at(-1).handoffResumeFailure, true);
+  assert.equal(resolved.effects.at(-2).handoffResumeFailure, true);
+  assert.equal(resolved.effects.at(-1).type, 'clear-active-runner');
 });
 
 test('finalize planner remains pure and exported from chat index', () => {

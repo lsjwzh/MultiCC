@@ -81,7 +81,8 @@ function createCliSwitchRuntime(options) {
     'getProviderDefaults', 'codexDefaultReasoningLevel', 'getHistory',
     'buildHandoffCheckpoint', 'activateCliState', 'rememberActiveCliState',
     'ensureCliStates', 'cliStateSummary', 'gitWorktreeSnapshot', 'cwdForSession',
-    'getChatStream', 'cancelClassify', 'assignKillReason', 'appendMessage',
+    'getChatStream', 'hasLiveBackgroundTasks', 'cancelClassify', 'assignKillReason',
+    'finishProviderAttempt', 'appendMessage',
     'appendEvent', 'chatBroadcast', 'workspaceBroadcast', 'saveBestEffort',
     'cliAvailabilitySummary', 'sessionProviderName', 'sessionProviderBaseUrl',
     'effectiveSessionModel',
@@ -289,6 +290,11 @@ function createCliSwitchRuntime(options) {
   function resetChatRuntimeForCli(chat, session) {
     if (!chat) return;
     options.assignKillReason(chat._activeRunner, 'cli_switch');
+    if (chat._activeRunner?.providerAttempt) {
+      options.finishProviderAttempt(chat._activeRunner.providerAttempt, {
+        outcome: 'failed', errorCategory: 'cancelled', reasonCode: 'cli_switch',
+      });
+    }
     if (chat.claudeProc) {
       try { chat.claudeProc.kill('SIGTERM'); } catch (_) {}
       chat.claudeProc = null;
@@ -441,6 +447,17 @@ function createCliSwitchRuntime(options) {
       if (!availability[targetCli]?.available) {
         return res.status(400).json({ error: `${targetCli} CLI is not installed or not executable` });
       }
+      const rejectForBackgroundWork = () => {
+        let backgroundActive = true;
+        try { backgroundActive = options.hasLiveBackgroundTasks(session.id) === true; } catch (_) {}
+        return backgroundActive
+          ? res.status(409).json({
+            error: 'session has a live background task; wait for it or cancel it before switching CLI',
+          })
+          : null;
+      };
+      const backgroundRejection = rejectForBackgroundWork();
+      if (backgroundRejection) return backgroundRejection;
       const activity = cliSwitchBusyState(session.id);
       // Switching is an explicit user action with its own confirmation UI.
       // performCliSwitch already closes the stream, rejects queued sends,
@@ -448,6 +465,11 @@ function createCliSwitchRuntime(options) {
       // Refusing here made that cleanup path unreachable precisely when it was
       // needed, leaving interrupted/stuck sessions impossible to switch.
       const gitSnapshot = await cliSwitchGitSnapshot(session);
+      // The snapshot yields to git. Re-check immediately before the durable
+      // mutation so a background task that started while it was running cannot
+      // have its owning warm process closed by the switch.
+      const racedBackgroundRejection = rejectForBackgroundWork();
+      if (racedBackgroundRejection) return racedBackgroundRejection;
       const switched = sessionPersistence.mutate('http.switch-cli', () =>
         performCliSwitch(session, targetCli, {
           fresh, gitSnapshot, forced: activity.busy,

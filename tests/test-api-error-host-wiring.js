@@ -29,13 +29,15 @@ test('Classify no longer owns an uncapped API retry or error-text pruning channe
 });
 
 test('process and stream retries reuse the owned turn without appending a second user message', () => {
-  const processStart = server.indexOf('const spawnChat = (spawnArgs, isRetry, apiRetryAttempt = 0)');
-  const processEnd = server.indexOf('cs.claudeProc = spawnChat(args, false)', processStart);
+  const processStart = server.indexOf('const spawnChat = (prepared, isRetry, apiRetryAttempt = 0)');
+  const processEnd = server.indexOf('cs.claudeProc = spawnChat(initialInvocation, false)', processStart);
   const processBody = server.slice(processStart, processEnd);
   assert.ok(processStart >= 0 && processEnd > processStart);
   assert.equal(processBody.includes('evaluateTurnApiError({'), true);
   assert.equal(processBody.includes('scheduleOwnedRetry({'), true);
-  assert.equal(processBody.includes('spawnChat(spawnArgs, true, finalizePlan.retry.attempt)'), true);
+  assert.equal(processBody.includes("retryInvocation = prepareInvocation({ reasonCode: 'same_provider_retry' })"), true,
+    'each physical retry must resolve a fresh concrete provider attempt');
+  assert.equal(processBody.includes('spawnChat(retryInvocation, true, finalizePlan.retry.attempt)'), true);
   assert.equal(processBody.includes('appendChatMessage(sessionName'), false,
     'retry runner reuses the already durable canonical user event');
 
@@ -46,14 +48,18 @@ test('process and stream retries reuse the owned turn without appending a second
   assert.equal(streamBody.includes('evaluateTurnApiError({'), true);
   assert.equal(streamBody.includes('scheduleOwnedRetry({'), true);
   assert.match(streamBody,
-    /runChatTurnStreaming\(\s*sessionName,\s*cs,\s*persisted,\s*invocation,\s*provider,\s*turn,\s*plan\.retry\.attempt\)/);
+    /runChatTurnStreaming\(\s*sessionName,\s*cs,\s*persisted,\s*retryInvocation,\s*provider,\s*turn,\s*prepareInvocation,\s*plan\.retry\.attempt,?\s*\)/);
   assert.equal(streamBody.includes('runChatTurn(sessionName'), false,
     'stream retry must not create a second canonical user message');
 });
 
 test('host persistence and broadcast expose only stable policy fields', () => {
   assert.equal(apiErrorHost.includes("type: 'api_error_policy'"), true);
-  assert.equal(apiErrorHost.includes('setTaskState(sessionName, { apiError: safe }'), true);
+  assert.equal(apiErrorHost.includes('setTaskState(sessionName, { apiError: durableSafe }'), true);
+  assert.equal(apiErrorHost.includes('providerRouteScope: _scope, runtimeEpoch: _epoch, turnId: _turnId'), true,
+    'ephemeral attempt correlation must be stripped from durable task state');
+  assert.equal(apiErrorHost.includes('...safe,'), true,
+    'the live policy event keeps exact attempt correlation for client fencing');
   assert.equal(server.includes("logger.warn('chat_provider_stderr'"), true);
   assert.equal(server.includes('[multicc/chat] stderr:'), false);
 });

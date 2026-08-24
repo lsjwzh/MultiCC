@@ -1,5 +1,7 @@
 'use strict';
 
+const { assertProviderBinding } = require('../provider-binding');
+
 const REQUEST_KIND = 'chat-turn-request.v1';
 const MAX_ID_LENGTH = 128;
 const FORBIDDEN_FIELDS = new Set([
@@ -13,6 +15,10 @@ const RETRY_REASONS = new Set([
 const TASK_SOURCES = new Set(['task-board', 'commander', 'router-tool']);
 const LEGACY_TASK_SOURCE_ALIASES = new Map([
   ['commander-route', 'commander'],
+]);
+const PROVIDER_ROUTE_EVIDENCE_KEYS = new Set([
+  'resolved', 'binding', 'providerName', 'protocol', 'runtimeEpoch', 'turnId',
+  'decisionId', 'routeAttemptId', 'routeGeneration', 'attemptNo', 'providerRevision',
 ]);
 
 class TurnRequestError extends TypeError {
@@ -242,6 +248,14 @@ function planTurnAdmission(request, facts = {}) {
       effects: Object.freeze([]),
     });
   }
+  if (facts.backgroundWorkActive === true) {
+    return Object.freeze({
+      decision: 'reject',
+      reason: 'background-work-active',
+      trace: Object.freeze([...trace, 'busy-check', 'background-check']),
+      effects: Object.freeze([]),
+    });
+  }
   const effects = [];
   effects.push(Object.freeze({
     type: 'persist-user-message',
@@ -250,7 +264,7 @@ function planTurnAdmission(request, facts = {}) {
     identity: request.identity,
     origin: request.origin,
   }));
-  trace.push('busy-check', 'persistence-plan');
+  trace.push('busy-check', 'background-check', 'persistence-plan');
   return Object.freeze({ decision: 'prepare', trace: Object.freeze(trace), effects: Object.freeze(effects) });
 }
 
@@ -266,12 +280,60 @@ function createDurableMessageProof(request, evidence = {}) {
 
 function createProviderRouteProof(request, evidence = {}) {
   assertNormalized(request);
+  const unexpected = Object.keys(evidence).filter(key => !PROVIDER_ROUTE_EVIDENCE_KEYS.has(key));
+  if (unexpected.length) {
+    throw new TurnRequestError(
+      'invalid_provider_route',
+      `provider route evidence is too broad: ${unexpected.sort().join(', ')}`,
+    );
+  }
+  let binding;
+  try { binding = assertProviderBinding(evidence.binding); } catch (_) {
+    throw new TurnRequestError('invalid_provider_route', 'concrete provider route binding is required');
+  }
+  const providerId = binding.providerId || '_default_';
+  const text = (value, field) => {
+    const normalized = value == null ? '' : String(value).trim();
+    if (!normalized || normalized.length > 256 || /[\u0000-\u001f\u007f]/.test(normalized)) {
+      throw new TurnRequestError('invalid_provider_route', `${field} is invalid`);
+    }
+    return normalized;
+  };
+  const integer = (value, field) => {
+    const normalized = Number(value);
+    if (!Number.isSafeInteger(normalized) || normalized < 1) {
+      throw new TurnRequestError('invalid_provider_route', `${field} must be a positive integer`);
+    }
+    return normalized;
+  };
+  if (evidence.resolved !== true
+      || binding.sessionId !== request.sessionId
+      || binding.cli !== request.cli
+      || binding.roleKind !== 'main'
+      || binding.routeName !== 'main'
+      || /^auto(?::|$)/i.test(providerId)) {
+    throw new TurnRequestError('invalid_provider_route', 'concrete provider route identity is required');
+  }
+  const route = Object.freeze({
+    runtimeEpoch: text(evidence.runtimeEpoch, 'runtimeEpoch'),
+    decisionId: text(evidence.decisionId, 'decisionId'),
+    routeAttemptId: text(evidence.routeAttemptId, 'routeAttemptId'),
+    routeGeneration: integer(evidence.routeGeneration, 'routeGeneration'),
+    attemptNo: integer(evidence.attemptNo, 'attemptNo'),
+    providerId,
+    providerName: text(evidence.providerName || providerId, 'providerName'),
+    protocol: text(evidence.protocol, 'protocol'),
+    model: text(binding.model, 'model'),
+    providerRevision: text(evidence.providerRevision, 'providerRevision'),
+  });
   return Object.freeze({
     kind: 'provider-route',
     sessionId: request.sessionId,
     cli: request.cli,
     transport: request.execution.transport,
-    resolved: evidence.resolved === true,
+    turnId: text(evidence.turnId, 'turnId'),
+    resolved: true,
+    route,
   });
 }
 
@@ -285,7 +347,14 @@ function evaluateSpawnGuard(request, proofs = {}) {
     missing.push('durable-user-message');
   }
   if (!route || route.kind !== 'provider-route' || route.sessionId !== request.sessionId
-      || route.cli !== request.cli || route.transport !== request.execution.transport || route.resolved !== true) {
+      || route.cli !== request.cli || route.transport !== request.execution.transport || route.resolved !== true
+      || route.turnId !== (runtime && runtime.turnId)
+      || !route.route || !Object.isFrozen(route.route)
+      || !route.route.runtimeEpoch || !route.route.decisionId || !route.route.routeAttemptId
+      || !route.route.providerId || !route.route.providerName || !route.route.protocol
+      || !route.route.model || !route.route.providerRevision
+      || !Number.isSafeInteger(route.route.routeGeneration) || route.route.routeGeneration < 1
+      || !Number.isSafeInteger(route.route.attemptNo) || route.route.attemptNo < 1) {
     missing.push('provider-route');
   }
   if (!runtime || runtime.kind !== 'runtime-claim' || runtime.sessionId !== request.sessionId || runtime.claimed !== true) {
@@ -303,6 +372,7 @@ function evaluateSpawnGuard(request, proofs = {}) {
       cli: request.cli,
       transport: request.execution.transport,
       historyIntent: request.execution.historyIntent,
+      route: route.route,
     }),
   });
 }

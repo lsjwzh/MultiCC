@@ -66,3 +66,9 @@ test('sub-agent binding validates agentRole and routeName', () => {
     /only valid for sub/,
   );
 });
+
+test('every production chat CLI, including Kimi, can cross the narrow binding boundary', () => {
+  for (const cli of ['claude', 'codex', 'opencode', 'zcode', 'qoder', 'kimi']) {
+    assert.equal(createProviderBinding({ sessionId: `session-${cli}`, cli }).cli, cli);
+  }
+});

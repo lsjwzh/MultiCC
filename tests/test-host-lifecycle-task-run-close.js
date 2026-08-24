@@ -95,9 +95,13 @@ function createDeps({ timeline = [], errors = [], taskRunHost, taskRunStore, ses
     wss: { clients: new Set(), close: callback => callback() },
     server: { listening: false },
     turnProgressHeartbeat: { stopAll: () => timeline.push('heartbeat-stopped') },
-    backgroundTaskRuntime: { stopAll: () => timeline.push('background-stopped') },
+    backgroundTaskRuntime: {
+      reapSessionShadows: (id, options) => timeline.push(`background-reap:${id}:${options.reason}`),
+      stopAll: () => timeline.push('background-stopped'),
+    },
     cancelClassify: () => {},
     assignKillReason: () => {},
+    finishProviderAttempt: () => {},
     chatStream: { close: () => {}, status: () => ({ busy: false }) },
     cleanupPushMonitor: () => {},
     stopOutputCapture: async () => {},
@@ -225,4 +229,52 @@ test('TaskRun close is still attempted after an earlier persistence closer fails
   assert.equal(closeCalls, 1);
   assert.ok(timeline.indexOf('session-persistence-attempted') < timeline.indexOf('task-run-store-closed'));
   assert.ok(errors.some(message => /session persistence stop failed/.test(message)));
+});
+
+test('forced shutdown terminalizes the active provider attempt before closing its runner', async () => {
+  const timeline = [];
+  const loaded = loadHostLifecycle();
+  const deps = createDeps({ timeline });
+  deps.chatSessions.set('chat-a', {
+    cli: 'codex',
+    currentAssistantText: '',
+    currentToolCalls: [],
+    _activeRunner: { providerAttempt: { routeAttemptId: 'route-a' } },
+    claudeProc: { kill: signal => timeline.push(`proc-kill:${signal}`) },
+    clients: new Set(),
+  });
+  deps.assignKillReason = (_runner, reason) => timeline.push(`kill-reason:${reason}`);
+  deps.finishProviderAttempt = (attempt, facts) => {
+    timeline.push(`attempt-finish:${attempt.routeAttemptId}:${facts.reasonCode}`);
+  };
+  deps.chatStream = {
+    status: () => ({ busy: false }),
+    close: name => timeline.push(`stream-close:${name}`),
+  };
+  loaded.createHostLifecycle(deps);
+
+  await loaded.getCoordinator().shutdown({ graceMs: 0 });
+
+  const finished = timeline.indexOf('attempt-finish:route-a:shutdown');
+  assert.ok(finished >= 0);
+  assert.ok(finished < timeline.indexOf('stream-close:chat-a'));
+  assert.ok(finished < timeline.indexOf('proc-kill:SIGTERM'));
+});
+
+test('forced shutdown reaps each chat background shadow exactly once before stream close', async () => {
+  const timeline = [];
+  const loaded = loadHostLifecycle();
+  const deps = createDeps({ timeline });
+  deps.chatSessions.set('chat-a', { clients: new Set() });
+  deps.chatStream = {
+    status: () => ({ busy: false }),
+    close: name => timeline.push(`stream-close:${name}`),
+  };
+  loaded.createHostLifecycle(deps);
+
+  await loaded.getCoordinator().shutdown({ graceMs: 0 });
+
+  const reaps = timeline.filter(value => value === 'background-reap:chat-a:shutdown');
+  assert.equal(reaps.length, 1);
+  assert.ok(timeline.indexOf(reaps[0]) < timeline.indexOf('stream-close:chat-a'));
 });
