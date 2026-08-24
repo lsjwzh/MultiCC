@@ -36,6 +36,9 @@ function makeOwned(overrides = {}) {
   const runner = createRunnerOwnership(turn, {
     runnerId: overrides.runnerId || 'runner-1',
     kind: overrides.kind || (request.cli === 'claude' ? 'stream' : 'process'),
+    ...(overrides.providerAttempt ? { providerAttempt: overrides.providerAttempt } : {}),
+    ...(overrides.routeProof ? { routeProof: overrides.routeProof } : {}),
+    ...(overrides.usageAttribution ? { usageAttribution: overrides.usageAttribution } : {}),
   });
   return { request, turn, runner, currentTurn: turn, currentRunner: runner };
 }
@@ -486,6 +489,61 @@ test('host runtime composes production ports without leaking effect switches bac
     ['turn-complete', 'session-1', 'turn-1'],
   ]);
   assert.equal(state._continuationLineage, null);
+});
+
+test('host runtime keeps history stable and commits usage to the frozen attempt provider', () => {
+  const route = Object.freeze({
+    runtimeEpoch: 'epoch-1', decisionId: 'decision-1',
+    routeAttemptId: 'attempt-2', routeGeneration: 2, attemptNo: 2,
+    providerId: 'provider-b', providerName: 'Provider B', protocol: 'anthropic',
+    model: 'model-b', providerRevision: 'revision-b',
+  });
+  const providerAttempt = Object.freeze({
+    sessionId: 'session-1', turnId: 'turn-1', cli: 'claude', ...route,
+  });
+  const routeProof = Object.freeze({
+    kind: 'provider-route',
+    sessionId: 'session-1',
+    cli: 'claude',
+    transport: 'claude-stream',
+    turnId: 'turn-1',
+    resolved: true,
+    route,
+  });
+  const usageAttribution = {
+    providerId: 'provider-b', providerName: 'Provider B', cli: 'claude',
+    protocol: 'anthropic', model: 'model-b', roleKind: 'main', routeName: 'main',
+    runtimeEpoch: 'epoch-1', decisionId: 'decision-1', routeAttemptId: 'attempt-2',
+    routeGeneration: 2, attemptNo: 2, providerRevision: 'revision-b',
+  };
+  const owned = makeOwned({ providerAttempt, routeProof, usageAttribution });
+  const state = { _activeTurn: owned.turn, _activeRunner: owned.runner };
+  let appended;
+  let committed;
+  const runtime = createChatHostRuntime({
+    appendMessage: (_sessionId, message) => { appended = message; return true; },
+    persistUsage: (_sessionId, usage, attribution) => { committed = { usage, attribution }; return true; },
+    afterUsageCommit: () => {},
+    getSessionState: () => state,
+    consumeHandoff: () => {}, emitTurnComplete: () => {},
+    emitDispatchComplete: () => {}, emitGatewayComplete: () => {}, logSuppressed: () => {},
+  });
+  const capability = 'pr1.c2Vzc2lvbi0x.cHJveHktcm91dGUtc2VjcmV0';
+  assert.equal(runtime.persistFinalAssistantResult(
+    'session-1', state, owned.turn, owned.runner,
+    {
+      role: 'assistant', content: `done ${capability}`,
+      tools: [{ name: 'Bash', result: `MULTICC_ROUTE=${capability}` }],
+    }, { resultEvent: true },
+  ), true);
+  assert.equal(runtime.recordDurableTurnUsage('session-1', owned.runner, { input_tokens: 7 }), true);
+  assert.equal(appended.providerRoute, undefined,
+    'ephemeral attempt identity must not change the durable chat-history DTO');
+  assert.doesNotMatch(JSON.stringify(appended), /pr1\./,
+    'a model-readable route capability must never enter durable chat history');
+  assert.match(appended.content, /REDACTED_PROVIDER_ROUTE/);
+  assert.equal(committed.attribution.routeAttemptId, 'attempt-2');
+  assert.equal(committed.attribution.providerId, 'provider-b');
 });
 
 test('host runtime normalizes task-run usage before turn completion and fails closed on retry', () => {

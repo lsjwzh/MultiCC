@@ -252,6 +252,7 @@ function createChatHostCoordinator(rawPorts, options = {}) {
           turnId: context.turnId,
           runnerId: context.runnerId,
           idempotencyKey: context.idempotencyKey,
+          attribution: context.attribution,
           usage: context.usage,
         })));
       } catch (error) {
@@ -307,6 +308,7 @@ function createChatHostCoordinator(rawPorts, options = {}) {
           sessionId: turn.sessionId,
           turnId: turn.turnId,
           runnerId: runner.runnerId,
+          attribution: context.attribution,
         }));
       } catch (error) {
         observerError = error && error.message ? String(error.message) : 'usage observer failed';

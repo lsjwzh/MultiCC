@@ -32,6 +32,8 @@ function createSessionLifecycleRuntime(rawDeps) {
     invalidSessions,
     sessionPersistence,
     getChatStream,
+    hasLiveBackgroundTasks,
+    reapBackgroundTasks,
     asyncHandler,
     destroySessionCascade,
     tmuxKillSession,
@@ -43,6 +45,7 @@ function createSessionLifecycleRuntime(rawDeps) {
     broadcastTo,
     stopOutputCapture,
     assignKillReason,
+    finishProviderAttempt,
     createSession,
     cwdForSession,
     cleanupPushMonitor,
@@ -74,17 +77,43 @@ function createSessionLifecycleRuntime(rawDeps) {
     throw new TypeError('[session-lifecycle] fs.existsSync is required');
   }
   for (const [fn, name] of [
-    [getChatStream, 'getChatStream'], [asyncHandler, 'asyncHandler'], [destroySessionCascade, 'destroySessionCascade'],
+    [getChatStream, 'getChatStream'], [hasLiveBackgroundTasks, 'hasLiveBackgroundTasks'],
+    [reapBackgroundTasks, 'reapBackgroundTasks'], [asyncHandler, 'asyncHandler'],
+    [destroySessionCascade, 'destroySessionCascade'],
     [tmuxKillSession, 'tmuxKillSession'], [appendEvent, 'appendEvent'],
     [ensureDirGitReady, 'ensureDirGitReady'], [gitRelocateWorktree, 'gitRelocateWorktree'],
     [gitWorktreeAdd, 'gitWorktreeAdd'], [broadcastTo, 'broadcastTo'],
     [stopOutputCapture, 'stopOutputCapture'], [assignKillReason, 'assignKillReason'],
+    [finishProviderAttempt, 'finishProviderAttempt'],
     [createSession, 'createSession'], [cwdForSession, 'cwdForSession'],
     [cleanupPushMonitor, 'cleanupPushMonitor'], [getSessionGitRuntime, 'getSessionGitRuntime'],
   ]) assertFunction(fn, name);
   // chatStream is required further down server.js (chat machinery composes
   // after these routes mount); resolve it per request, never snapshot.
   const chatStream = () => getChatStream();
+
+  function terminalizeProviderAttempt(chat, reasonCode) {
+    const attempt = chat?._activeRunner?.providerAttempt;
+    if (!attempt) return false;
+    try {
+      finishProviderAttempt(attempt, {
+        outcome: 'failed', errorCategory: 'cancelled', reasonCode,
+      });
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function backgroundTasksAreLive(sessionId) {
+    try { return hasLiveBackgroundTasks(sessionId) === true; }
+    catch (_) { return true; }
+  }
+
+  function reapInterruptedBackgroundTasks(sessionId, reasonCode) {
+    try { return reapBackgroundTasks(sessionId, reasonCode); }
+    catch (_) { return 0; }
+  }
 
   function mountRoutes(app) {
     app.delete('/api/sessions/:id', asyncHandler(async (req, res) => {
@@ -124,6 +153,8 @@ function createSessionLifecycleRuntime(rawDeps) {
         return res.json({ ...result, forced: force });
       } else {
         if (session) { await tmuxKillSession(id); for (const client of session.clients || []) try { client.terminate(); } catch (_) {} }
+        if (chat) terminalizeProviderAttempt(chat, 'session_delete');
+        reapInterruptedBackgroundTasks(id, 'session_delete');
         if (chat) { if (chat.claudeProc) try { chat.claudeProc.kill('SIGTERM'); } catch (_) {} chatStream().close(id); for (const client of chat.clients || []) try { client.terminate(); } catch (_) {} }
         sessions.delete(id);
         chatSessions.delete(id);
@@ -146,7 +177,9 @@ function createSessionLifecycleRuntime(rawDeps) {
       const force = req.query.force === '1' || req.body.force === true;
       const activeTerminal = sessions.get(id);
       const activeChat = chatSessions.get(id);
-      const active = !!activeTerminal || !!(activeChat && (activeChat.claudeProc || activeChat.isStreaming || activeChat.clients?.size));
+      const activeBackground = backgroundTasksAreLive(id);
+      const active = activeBackground || !!activeTerminal
+        || !!(activeChat && (activeChat.claudeProc || activeChat.isStreaming || activeChat.clients?.size));
       if (active && !force) {
         return res.status(409).json({ ok: false, blocked: true, reasons: ['active'], error: 'active session cannot be relocated' });
       }
@@ -170,11 +203,15 @@ function createSessionLifecycleRuntime(rawDeps) {
             await tmuxKillSession(oldSession.id);
             sessions.delete(id);
           }
-          if (activeChat && force) {
-            assignKillReason(activeChat._activeRunner, 'relocate');
-            if (activeChat.claudeProc) try { activeChat.claudeProc.kill('SIGTERM'); } catch (_) {}
-            chatStream().close(id);
-            chatSessions.delete(id);
+          if (force) {
+            if (activeChat) terminalizeProviderAttempt(activeChat, 'relocate');
+            reapInterruptedBackgroundTasks(id, 'relocate');
+            if (activeChat) {
+              assignKillReason(activeChat._activeRunner, 'relocate');
+              if (activeChat.claudeProc) try { activeChat.claudeProc.kill('SIGTERM'); } catch (_) {}
+              chatStream().close(id);
+              chatSessions.delete(id);
+            }
           }
         },
       });
@@ -322,6 +359,10 @@ function createSessionLifecycleRuntime(rawDeps) {
           cancelled = { ok: false, code: 'cancel_failed', error: error.message };
         }
       }
+      if (!cancelled || cancelled.ok !== true) {
+        terminalizeProviderAttempt(cs, 'restart_spawn');
+      }
+      reapInterruptedBackgroundTasks(id, 'restart_spawn');
 
       // 2. Destroy the stream session: SIGTERM→SIGKILL the process, settle any
       //    in-flight turn, release the router MCP sidecar, drop the entry.

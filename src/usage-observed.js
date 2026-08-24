@@ -44,6 +44,15 @@ function nonNegative(value, label) {
   return number;
 }
 
+function optionalPositiveInteger(value, label) {
+  if (value == null || value === '') return null;
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < 1) {
+    throw new UsageObservedError(`${label} must be a positive integer`);
+  }
+  return number;
+}
+
 function firstValue(object, keys) {
   for (const key of keys) if (object[key] != null) return object[key];
   return undefined;
@@ -159,6 +168,23 @@ function createUsageObserved(input, binding = null) {
     input.sourceEventId || (/^uo_[a-f0-9]{32}$/.test(inputEventId) ? '' : inputEventId),
     256,
   ) || null;
+  const runtimeEpoch = optionalString(input.runtimeEpoch, 256);
+  const turnId = optionalString(input.turnId, 256);
+  const decisionId = optionalString(input.decisionId, 256);
+  const routeAttemptId = optionalString(input.routeAttemptId, 256);
+  const providerRevision = optionalString(input.providerRevision, 256);
+  const routeGeneration = optionalPositiveInteger(input.routeGeneration, 'routeGeneration');
+  const attemptNo = optionalPositiveInteger(input.attemptNo, 'attemptNo');
+  const hasAttemptIdentity = !!(runtimeEpoch || turnId || decisionId || routeAttemptId
+    || providerRevision || routeGeneration != null || attemptNo != null);
+  if (hasAttemptIdentity && (!runtimeEpoch || !turnId || !decisionId || !routeAttemptId
+      || !providerRevision || routeGeneration == null || attemptNo == null)) {
+    throw new UsageObservedError('complete provider attempt identity is required');
+  }
+  const routeAttribution = optionalString(input.routeAttribution, 32).toLowerCase();
+  if (routeAttribution && routeAttribution !== 'exact' && routeAttribution !== 'ambiguous') {
+    throw new UsageObservedError('routeAttribution must be exact or ambiguous');
+  }
 
   const eventContent = {
     version: USAGE_OBSERVED_VERSION,
@@ -175,6 +201,10 @@ function createUsageObserved(input, binding = null) {
     protocol,
     model: optionalString(input.model, 256),
     tokens,
+    ...(hasAttemptIdentity ? {
+      runtimeEpoch, turnId, decisionId, routeAttemptId, routeGeneration,
+      attemptNo, providerRevision,
+    } : {}),
   };
   // An upstream event id is the stable observation identity; mutable delivery
   // details (normalizer timestamp, latency, or corrected token counts) must not
@@ -213,6 +243,11 @@ function createUsageObserved(input, binding = null) {
     latencyMs: nonNegative(input.latencyMs, 'latencyMs'),
     ...(input.statusCode == null ? {} : { statusCode: nonNegative(input.statusCode, 'statusCode') }),
     ...(input.errorCode ? { errorCode: optionalString(input.errorCode, 128) } : {}),
+    ...(hasAttemptIdentity ? {
+      runtimeEpoch, turnId, decisionId, routeAttemptId, routeGeneration,
+      attemptNo, providerRevision,
+    } : {}),
+    ...(routeAttribution ? { routeAttribution } : {}),
   };
   return Object.freeze(event);
 }

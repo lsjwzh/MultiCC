@@ -28,6 +28,13 @@ const {
   isKnownHarmlessStderrLine,
   sanitizeMessage: sanitizeApiErrorMessage,
 } = require('./index');
+const {
+  createProviderAttemptRuntime,
+  providerAttemptFields,
+  tagProviderAttemptEvent,
+} = require('./provider-attempt-runtime');
+const { createProviderInvocationFactory } = require('./provider-invocation');
+const { redactProviderRouteCapability } = require('../observability');
 const { createWsEnvelope } = require('../api-contract');
 const { taskShortCode } = require('../classify/task-short-code');
 const { composeMessage, renderPrompt } = require('../message-composer');
@@ -60,6 +67,38 @@ function adapterReasoningProgressEvent(event) {
     id: typeof event.id === 'string' ? event.id : null,
     text: event.text,
     snapshot: true,
+  };
+}
+
+function normalizeClaudeToolResultContent(content) {
+  if (!Array.isArray(content)) {
+    const text = typeof content === 'string' ? content : JSON.stringify(content == null ? '' : content);
+    const safeText = redactProviderRouteCapability(text);
+    return { text: safeText, content: safeText };
+  }
+  const joined = content.map(item => item && typeof item.text === 'string' ? item.text : '').join('');
+  const safeText = redactProviderRouteCapability(joined);
+  const nonText = content.filter(item => !item || typeof item.text !== 'string')
+    .map(item => redactProviderRouteCapability(item));
+  return {
+    text: safeText,
+    content: [...(safeText ? [{ type: 'text', text: safeText }] : []), ...nonText],
+  };
+}
+
+function normalizeClaudeAssistantSnapshot(event, currentText) {
+  if (!event || event.type !== 'assistant' || !Array.isArray(event.message?.content)) return event;
+  const nonText = event.message.content.filter(block => block?.type !== 'text');
+  return {
+    ...event,
+    message: {
+      ...event.message,
+      textSnapshot: true,
+      content: [
+        ...(currentText ? [{ type: 'text', text: redactProviderRouteCapability(currentText) }] : []),
+        ...nonText,
+      ],
+    },
   };
 }
 
@@ -131,6 +170,7 @@ function createChatTurnEngine(deps) {
     routerToolHost,
     turnProgressHeartbeat,
     providerRouterRuntime,
+    providerAttemptRuntime,
     apiErrorHost,
     codexUsageHost,
     usageLimitPoller,
@@ -206,6 +246,32 @@ function createChatTurnEngine(deps) {
   // Shared [turn-timing] recorder: one instance for every adapter path (claude
   // stream + per-turn spawn). See src/chat/turn-timing.js for the t0-t3 contract.
   const turnTiming = createTurnTimingRecorder();
+  const attemptRuntime = providerAttemptRuntime || createProviderAttemptRuntime();
+
+  function forwardProviderEvent(sessionName, cs, turn, runner, event) {
+    const observed = attemptRuntime.observeEvent(runner && runner.providerAttempt, event);
+    if (!observed || observed.accepted !== true) {
+      logger.warn?.('provider_attempt_event_suppressed', {
+        sessionId: sessionName,
+        turnId: turn && turn.turnId,
+        routeAttemptId: runner && runner.providerAttempt && runner.providerAttempt.routeAttemptId,
+        code: observed && observed.code || 'attempt_unavailable',
+      });
+      return false;
+    }
+    const tagged = tagProviderAttemptEvent(attemptRuntime.scrubAttemptEvent(observed, event), observed);
+    cs.lastStreamAt = Date.now();
+    turnProgressHeartbeat.touchVisible(sessionName, turn.turnId);
+    cs.streamReplay.push(tagged);
+    if (cs.streamReplay.length > 500) cs.streamReplay.shift();
+    chatBroadcast(sessionName, tagged);
+    return true;
+  }
+
+  function finishProviderAttempt(runner, outcome, facts = {}) {
+    if (!runner || !runner.providerAttempt) return null;
+    return attemptRuntime.finishAttempt(runner.providerAttempt, { outcome, ...facts });
+  }
   // Pre-resume size guard: archive an oversized codex rollout before the turn
   // resumes it (`codex exec resume` hangs internally on one — no request ever
   // leaves the process). See src/chat/codex-rollout-guard.js.
@@ -307,13 +373,16 @@ function createChatTurnEngine(deps) {
   // returns the session to idle, and fires post-turn hooks.
   function applyClaudeChatEvent(cs, sessionName, evt, forward, turn, runner, providerName = 'claude') {
     if (!isCurrentTurnRunner(cs, turn, runner)) return;
+    evt = attemptRuntime.scrubAttemptStructure(runner.providerAttempt, evt);
     turnProgressHeartbeat.touchActivity(sessionName, turn.turnId);
     if (evt.type === 'assistant' && evt.message?.model) noteReportedModel(sessionName, evt.message.model);
     if (evt.type === 'assistant' && evt.message?.content) {
       for (const block of evt.message.content) {
         if (block.type === 'text') {
           turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'thinking');
-          cs.currentAssistantText += block.text;
+          cs.currentAssistantText = redactProviderRouteCapability(
+            cs.currentAssistantText + String(block.text || ''),
+          );
           setSessionStatus(sessionName, { status: 'thinking', currentFile: null });
           // Incremental save: flush the in-progress assistant message to disk
           // every 5s so a crash/restart mid-turn doesn't lose the whole reply.
@@ -340,20 +409,27 @@ function createChatTurnEngine(deps) {
       }
     }
     if (evt.type === 'user' && evt.message?.content) {
-      for (const r of (Array.isArray(evt.message.content) ? evt.message.content : [evt.message.content])) {
+      const contentWasArray = Array.isArray(evt.message.content);
+      const normalizedContent = [];
+      for (const r of (contentWasArray ? evt.message.content : [evt.message.content])) {
         if (r.type === 'tool_result') {
           turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'thinking');
           const tc = cs.currentToolCalls.find(t => t.id === r.tool_use_id);
+          const normalized = normalizeClaudeToolResultContent(r.content);
           if (tc) {
-            tc.result = typeof r.content === 'string' ? r.content :
-              Array.isArray(r.content) ? r.content.map(c => c.text || '').join('') :
-              JSON.stringify(r.content);
+            tc.result = normalized.text;
             tc.is_error = r.is_error || false;
             tc.endedAt = Date.now();
             if (tc.result && tc.result.length > 1000) tc.result = tc.result.slice(0, 1000) + '...';
           }
+          normalizedContent.push({ ...r, content: normalized.content });
+        } else {
+          normalizedContent.push(r);
         }
       }
+      evt = { ...evt, message: { ...evt.message,
+        content: contentWasArray ? normalizedContent : normalizedContent[0],
+      } };
     }
     if (evt.type === 'result') {
       turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'finalizing');
@@ -383,7 +459,7 @@ function createChatTurnEngine(deps) {
           message: detail.message || evt.result || evt.subtype || 'api_error',
         };
       } else {
-        recordApiSuccess(providerName, { retryAttempt: runner.apiRetryAttempt || 0 });
+        recordApiSuccess(providerName, { retryAttempt: runner.apiRetryAttempt || 0, runner });
         clearSessionApiErrorState(sessionName, cs);
       }
       // Hoisted out of the if-block: forward() below also needs usage. Block
@@ -435,22 +511,8 @@ function createChatTurnEngine(deps) {
     // Drop claude's `system init` — server already sent its own (but keep the
     // runtime-reported model before discarding).
     if (evt.type === 'system' && evt.subtype === 'init') { noteReportedModel(sessionName, evt.model); return; }
-    if (providerName === 'qoder' && evt.type === 'assistant'
-        && Array.isArray(evt.message?.content)) {
-      const nonTextBlocks = evt.message.content.filter(block => block?.type !== 'text');
-      forward({
-        ...evt,
-        message: {
-          ...evt.message,
-          textSnapshot: true,
-          content: [
-            ...(cs.currentAssistantText
-              ? [{ type: 'text', text: cs.currentAssistantText }]
-              : []),
-            ...nonTextBlocks,
-          ],
-        },
-      });
+    if (evt.type === 'assistant' && Array.isArray(evt.message?.content)) {
+      forward(normalizeClaudeAssistantSnapshot(evt, cs.currentAssistantText));
       return;
     }
     forward(evt);
@@ -465,6 +527,7 @@ function createChatTurnEngine(deps) {
     const decoded = provider.decodeEvent(rawEvent) || [];
     for (let evt of (Array.isArray(decoded) ? decoded : [decoded])) {
       if (!evt) continue;
+      evt = attemptRuntime.scrubAttemptStructure(runner.providerAttempt, evt);
       if (evt.type === 'claude_event') {
         applyClaudeChatEvent(cs, sessionName, evt.raw, forward, turn, runner, provider.name);
         continue;
@@ -488,9 +551,12 @@ function createChatTurnEngine(deps) {
           cs._adapterError = 'cross-cli target returned a different native session id';
           runner.adapterError = cs._adapterError;
           assignKillReason(runner, 'cli_resume_mismatch');
-          chatBroadcast(sessionName, {
+          forward({
             type: 'error',
             error: `目标 ${persisted.cli} 没有恢复预期的原生会话；未接受 CLI 返回的新会话。请重新切换并选择“重置目标 CLI 会话”。`,
+          });
+          finishProviderAttempt(runner, 'failed', {
+            errorCategory: 'adapter_configuration', reasonCode: 'cli_resume_mismatch',
           });
           if (cs.claudeProc) {
             try { cs.claudeProc.kill('SIGTERM'); } catch (_) {}
@@ -532,7 +598,9 @@ function createChatTurnEngine(deps) {
       if (evt.type === 'assistant_text') {
         turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'thinking');
         if (!evt.text) continue;
-        cs.currentAssistantText = appendAdapterAssistantText(cs.currentAssistantText, evt.text);
+        cs.currentAssistantText = redactProviderRouteCapability(
+          appendAdapterAssistantText(cs.currentAssistantText, evt.text),
+        );
         forward({
           type: 'assistant',
           // A cumulative authoritative snapshot heals a dropped/replayed WS
@@ -632,7 +700,7 @@ function createChatTurnEngine(deps) {
       }
       if (evt.type === 'complete') {
         turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'finalizing');
-        recordApiSuccess(provider.name, { retryAttempt: runner.apiRetryAttempt || 0 });
+        recordApiSuccess(provider.name, { retryAttempt: runner.apiRetryAttempt || 0, runner });
         clearSessionApiErrorState(sessionName, cs);
         codexUsageHost.complete({ evt, cs, persisted, sessionName, turn, runner, forward });
         continue;
@@ -910,6 +978,14 @@ function createChatTurnEngine(deps) {
     }
 
     const streamBusy = turnRequest.cli === 'claude' && !!chatStream.status(sessionName)?.busy;
+    let claudeManagedProxy = false;
+    if (turnRequest.cli === 'claude' && getClaudeProxyEnabled() && persisted.provider) {
+      try {
+        const summary = providerRouterRuntime.getProviderSummary('claude', persisted.provider);
+        claudeManagedProxy = !!(summary && (summary.baseUrl
+          || (summary.isOfficial && getClaudeOfficialViaProxy())));
+      } catch (_) {}
+    }
     const admission = planTurnAdmission(turnRequest, {
       duplicateSeen,
       duplicatePersisted,
@@ -917,10 +993,16 @@ function createChatTurnEngine(deps) {
       sessionExists: true,
       networkUnhealthy: isNetworkUnhealthy(),
       runningTurn: !!(existingCs && existingCs.claudeProc) || streamBusy,
+      backgroundWorkActive: claudeManagedProxy
+        && getBackgroundTaskRuntime().hasLiveBackgroundTasks(sessionName),
     });
     if (admission.decision === 'duplicate') return admission.accepted;
     if (admission.decision === 'reject') {
       if (admission.reason === 'shutdown') logger.warn('chat_turn_rejected_shutdown', { sessionId: sessionName });
+      if (admission.reason === 'background-work-active') chatBroadcast(sessionName, {
+        type: 'error',
+        error: '后台任务仍在运行；为隔离本轮 Provider 路由，本消息尚未执行。请等待任务结束或先取消任务后重试。',
+      });
       return false;
     }
     if (admission.decision === 'hold') {
@@ -952,6 +1034,7 @@ function createChatTurnEngine(deps) {
     let runnerHandedOff = false;
     let preparationStateActivated = false;
     let messageDurable = false;
+    let preparationAttempt = null;
 
     try {
     // A real user/trigger turn resets auto-continue guards. Degraded automatic
@@ -1149,34 +1232,25 @@ function createChatTurnEngine(deps) {
       return false;
     }
     const promptText = renderPrompt(envelope);
-    // Provider routing is resolved before every invocation so all runners consume
-    // the same adapter-produced command contract.
-    const provEnv = providerRouterRuntime.resolveSpawnEnv(persisted);
-    const invocationEnvelope = {
-      ...envelope,
-      spawnOpts: {
-        ...envelope.spawnOpts,
-        skipDefaultModel: provEnv.skipDefaultModel,
-        providerModel: provEnv.providerModel,
-        providerModels: provEnv.providerModels,
-        effectiveModel: effectiveSessionModel(persisted),
-        rawModel: provEnv.qualifiedModel || envelope.spawnOpts.rawModel,
-      },
-    };
-    const invocation = provider.buildInvocation(invocationEnvelope);
-    bindTurnUsageAttribution(turn, {
-      providerId: persisted.provider || '_default_',
-      providerName: provEnv.providerName || persisted.provider || '_default_',
-      cli: turnRequest.cli,
-      protocol: turnRequest.cli === 'codex' ? 'openai-responses'
-        : turnRequest.cli === 'claude' ? 'anthropic-messages' : turnRequest.cli,
-      model: invocationEnvelope.spawnOpts.rawModel
-        || invocationEnvelope.spawnOpts.effectiveModel || provEnv.providerModel || '',
-      roleKind: 'main',
-      routeName: 'main',
+    const invocationFactory = createProviderInvocationFactory({
+      providerRouterRuntime, providerAttemptRuntime: attemptRuntime, effectiveSessionModel,
     });
-    const providerRouteProof = createProviderRouteProof(turnRequest, { resolved: true });
-    const routeMarked = chatTurnPreparationRuntime.markProviderRouteResolved(sessionName, turnId, { resolved: true });
+    let providerAttemptNo = 0;
+    const prepareInvocation = (attemptOptions = {}) => invocationFactory.prepare({
+      request: turnRequest, turn, session: persisted, provider, envelope,
+      attemptNo: ++providerAttemptNo,
+      ...attemptOptions,
+    });
+    const initialInvocation = prepareInvocation({ reasonCode: 'route_resolved' });
+    preparationAttempt = initialInvocation.attempt;
+    const {
+      resolution: provEnv, invocationEnvelope, invocation,
+      routeProof: providerRouteProof,
+    } = initialInvocation;
+    bindTurnUsageAttribution(turn, initialInvocation.baseUsageAttribution);
+    const routeMarked = chatTurnPreparationRuntime.markProviderRouteResolved(sessionName, turnId, {
+      resolved: true, proof: providerRouteProof,
+    });
     if (!routeMarked.ok) {
       preparationFailure = routeMarked.code || 'provider-route-proof-rejected';
       throw new Error(`provider route proof rejected: ${preparationFailure}`);
@@ -1204,7 +1278,9 @@ function createChatTurnEngine(deps) {
     // (the per-turn toggle was removed); non-claude CLIs use the per-turn spawn
     // path below, unchanged.
     if (cs.cli === 'claude') {
-      const accepted = runChatTurnStreaming(sessionName, cs, persisted, invocation, provider, turn);
+      const accepted = runChatTurnStreaming(
+        sessionName, cs, persisted, initialInvocation, provider, turn, prepareInvocation,
+      );
       if (!accepted) {
         preparationFailure = 'stream-runner-rejected';
         return false;
@@ -1225,43 +1301,61 @@ function createChatTurnEngine(deps) {
     const args = [...invocation.args, invocation.payload];
     console.log(`[multicc/chat] Spawning ${cs.cli} (turn ${cs.chatTurnCount}, first=${isFirstTurn}${provEnv.providerName ? `, provider=${provEnv.providerName}` : ''}): ${invocation.cmd} ${args.join(' ').slice(0, 200)}...`);
 
-    // Retry and transport-continuation turns reuse already-rendered text without
-    // re-running composeMessage's note-delivery side effects.
-    const buildBareInvocation = (bareText, firstTurn) => provider.buildInvocation({
-      ...invocationEnvelope,
-      contextLayers: [],
-      userText: bareText,
-      suffix: '',
-      historyHandle: {
-        ...invocationEnvelope.historyHandle,
-        isFirstTurn: firstTurn,
-        cliSessionId: persisted.cliSessionId,
-      },
-      spawnOpts: { ...invocationEnvelope.spawnOpts, ultracode: false },
-    });
-
-    const spawnChat = (spawnArgs, isRetry, apiRetryAttempt = 0) => {
-      const { env: childEnv } = providerRouterRuntime.buildChildEnv(process.env, persisted, {
-        TERM: 'dumb', NO_COLOR: '1',
-        // Let the bundled multicc-trigger skill know who it is and where the
-        // localhost API lives, so it can register/manage triggers for us.
-        MULTICC_SESSION_ID: sessionName,
-        MULTICC_DIR_ID: persisted.dirId || '',
-        MULTICC_BASE_URL: `http://127.0.0.1:${getPort()}`,
-      });
-      if (persisted.cli === 'claude') providers.applyClaudeProxyEnv(childEnv, {
-          providerId: persisted.provider, sessionId: sessionName,
+    // Every physical retry resolves a fresh immutable invocation attempt without
+    // replaying composeMessage's note-delivery side effects.
+    const spawnChat = (prepared, isRetry, apiRetryAttempt = 0) => {
+      const { invocation: physicalInvocation, attempt, routeOverrides, binding, proxySessionId } = prepared;
+      const spawnArgs = [...physicalInvocation.args, physicalInvocation.payload];
+      let childEnv;
+      try {
+        ({ env: childEnv } = providerRouterRuntime.buildChildEnv(process.env, persisted, {
+          TERM: 'dumb', NO_COLOR: '1',
+          // Let the bundled multicc-trigger skill know who it is and where the
+          // localhost API lives, so it can register/manage triggers for us.
+          MULTICC_SESSION_ID: sessionName,
+          MULTICC_DIR_ID: persisted.dirId || '',
+          MULTICC_BASE_URL: `http://127.0.0.1:${getPort()}`,
+        }, routeOverrides));
+      } catch (error) {
+        attemptRuntime.finishAttempt(attempt, {
+          outcome: 'failed', errorCategory: 'spawn_env', reasonCode: 'child_env_failed',
+        });
+        throw error;
+      }
+      try {
+        if (persisted.cli === 'claude') providers.applyClaudeProxyEnv(childEnv, {
+          providerId: binding.providerId, sessionId: proxySessionId,
           subagent: persisted.subagent, port: getPort(), enabled: getClaudeProxyEnabled(),
           officialOAuth: getClaudeOfficialViaProxy(),
         });
-      if (persisted.cli === 'codex') {
-        providers.applyCodexProxyConfig(childEnv, {
-          providerId: persisted.provider, sessionId: sessionName,
-          subagent: persisted.subagent, port: getPort(),
+        if (persisted.cli === 'codex') {
+          const proxyRequired = providers.codexProxyConfigRequired({
+            providerId: binding.providerId,
+            subagent: persisted.subagent,
+          });
+          const proxyApplied = providers.applyCodexProxyConfig(childEnv, {
+            providerId: binding.providerId, sessionId: proxySessionId,
+            subagent: persisted.subagent, port: getPort(),
+          });
+          providers.assertCodexProxyConfigApplied({ required: proxyRequired, applied: proxyApplied });
+        }
+      } catch (error) {
+        providers.releaseCodexProxyConfig(childEnv);
+        attemptRuntime.finishAttempt(attempt, {
+          outcome: 'failed', errorCategory: 'proxy_config', reasonCode: 'proxy_config_failed',
         });
+        throw error;
       }
-      const proc = routerToolHost.spawnProcess({
-        cli: persisted.cli, spawn, command: invocation.cmd,
+      const runner = createRunnerOwnership(turn, {
+        runnerId: `proc_${crypto.randomBytes(8).toString('hex')}`,
+        kind: 'process', providerAttempt: attempt,
+        routeProof: prepared.routeProof,
+        usageAttribution: prepared.usageAttribution,
+      });
+      let proc;
+      try {
+        proc = routerToolHost.spawnProcess({
+        cli: persisted.cli, spawn, command: physicalInvocation.cmd,
         args: spawnArgs, cwd: cs.cwd, env: childEnv,
         sessionId: sessionName, turnId: turn.turnId, originDispatchId,
         // Correlation key for post-admission receipts addressed to this turn.
@@ -1272,10 +1366,13 @@ function createChatTurnEngine(deps) {
         taskSource: turn.task?.source,
         baseUrl: `http://127.0.0.1:${getPort()}`,
       });
-      const runner = createRunnerOwnership(turn, {
-        runnerId: `proc_${proc.pid || 'pending'}_${crypto.randomBytes(6).toString('hex')}`,
-        kind: 'process',
-      });
+      } catch (error) {
+        providers.releaseCodexProxyConfig(childEnv);
+        finishProviderAttempt(runner, 'failed', {
+          errorCategory: 'spawn_failed', reasonCode: 'process_spawn_failed',
+        });
+        throw error;
+      }
       runner.apiRetryAttempt = Math.max(0, Number(apiRetryAttempt) || 0);
       cs._activeTurn = turn;
       cs._activeRunner = runner;
@@ -1297,6 +1394,7 @@ function createChatTurnEngine(deps) {
       // already consumes. Returns an array of events to forward (may be empty), or null
       // to forward the original event as-is (claude path).
       const handleLine = (line) => {
+        if (!attemptRuntime.acceptEvent(runner.providerAttempt)) return;
         let evt;
         try { evt = JSON.parse(line); }
         catch {
@@ -1318,11 +1416,7 @@ function createChatTurnEngine(deps) {
       };
 
       const forward = (evt) => {
-        cs.lastStreamAt = Date.now();  // watchdog: last live stream activity (stuck-isStreaming detection)
-        turnProgressHeartbeat.touchVisible(sessionName, turn.turnId);
-        cs.streamReplay.push(evt);
-        if (cs.streamReplay.length > 500) cs.streamReplay.shift();
-        chatBroadcast(sessionName, evt);
+        forwardProviderEvent(sessionName, cs, turn, runner, evt);
       };
 
       proc.stdout.on('data', (chunk) => {
@@ -1376,6 +1470,7 @@ function createChatTurnEngine(deps) {
       });
 
       proc.on('close', (code, signal) => {
+        providers.releaseCodexProxyConfig(childEnv);
         if (!isActiveProc()) {
           console.log(`[multicc/chat] [${sessionName}] stale proc pid=${proc.pid} closed after replacement (code=${code}, signal=${signal || ''})`);
           return;
@@ -1396,7 +1491,7 @@ function createChatTurnEngine(deps) {
         const hasTurnOutput = !!(cs._resultSaved || cs.currentAssistantText || cs.currentToolCalls.length);
         if (pendingStreamError && !hasTurnOutput && !cs._adapterError) {
           cs._adapterError = pendingStreamError;
-          chatBroadcast(sessionName, { type: 'error', error: `Codex 出错：${pendingStreamError}` });
+          forward({ type: 'error', error: `Codex 出错：${pendingStreamError}` });
         }
         const recoveredCodexDisconnect = (!!cs._codexRecoveredDisconnect || !!pendingStreamError) && hasTurnOutput;
         const sanitizedStderrTail = sanitizeApiErrorMessage(stderrBuf.slice(-300).trim(), '');
@@ -1417,8 +1512,10 @@ function createChatTurnEngine(deps) {
         else if (code !== 0 && !recoveredCodexDisconnect) kind = 'nonzero_exit';
         else if (!turn.resultDurable && !cs.currentAssistantText && !cs.currentToolCalls.length) kind = 'empty_exit';
         console.log(`[multicc/chat] [${sessionName}] close kind=${kind} ${JSON.stringify(diag)}`);
-        const partialOutput = meaningfulTurnOutput(cs);
-        const sideEffects = turnHasSideEffects(cs);
+        const attemptFacts = attemptRuntime.snapshot(sessionName);
+        const partialOutput = meaningfulTurnOutput(cs) || !!attemptFacts?.visibleOutputObserved;
+        const sideEffects = turnHasSideEffects(cs)
+          || !!attemptFacts?.toolIntentObserved || !!attemptFacts?.sideEffectObserved;
         // A durable result + clean close proves the turn succeeded; any error
         // flagged mid-stream (codex emits internal housekeeping failures as
         // stream error items, then finishes fine) was recovered from and must
@@ -1500,6 +1597,37 @@ function createChatTurnEngine(deps) {
             `closed_before_first_byte:code=${code}${signal ? `:signal=${signal}` : ''}`);
         }
 
+        const executeBlockedRetry = (error) => {
+          runner.retryPlanned = false;
+          logger.warn('provider_attempt_retry_blocked', {
+            sessionId: sessionName,
+            providerId: runner.providerAttempt && runner.providerAttempt.providerId,
+            routeAttemptId: runner.providerAttempt && runner.providerAttempt.routeAttemptId,
+            code: error && error.code || 'attempt_prepare_failed',
+          });
+          const blockedPlan = planTurnFinalization({
+            ...finalizePlan.facts,
+            apiError: true,
+            apiErrorDecision: null,
+            retryPlanned: false,
+            handoff: persisted.pendingCliHandoff,
+          });
+          turnProgressHeartbeat.stop(sessionName, turn.turnId);
+          turnFinalizationExecutor.execute(blockedPlan, {
+            runnerKind: 'process', sessionName, cs, persisted, turn, runner,
+            code, signal, stderrTail: sanitizedStderrTail, pendingTransportError,
+          });
+        };
+
+        const prepareRetryAttempt = (options) => {
+          finishProviderAttempt(runner, 'failed', {
+            errorCategory: apiErrorDecision?.error?.category || 'retry',
+            reasonCode: options.reasonCode,
+          });
+          try { return prepareInvocation(options); }
+          catch (error) { executeBlockedRetry(error); return null; }
+        };
+
         if (finalizePlan.action === 'continue-codex') {
           cs._codexStreamContinuationCount = finalizePlan.retry.attempt;
           cs._codexRecoveredDisconnect = false;
@@ -1508,8 +1636,11 @@ function createChatTurnEngine(deps) {
           cs.isStreaming = true;
           cs.lastStreamAt = Date.now();  // watchdog: fresh baseline for the continuation spawn (turnStartedAt may be >10min old)
           const continuePrompt = codexStreamDisconnectContinuePrompt();
-          const continueInvocation = buildBareInvocation(continuePrompt, false);
-          const continueArgs = [...continueInvocation.args, continueInvocation.payload];
+          const continueInvocation = prepareRetryAttempt({
+            bareText: continuePrompt, firstTurn: false, continuation: true,
+            reasonCode: 'codex_transport_continuation',
+          });
+          if (!continueInvocation) return;
           const msg = isGlm52Session(persisted)
             ? `正在使用 GLM-5.2 最高档：检测到连接中断，正在自动续跑剩余任务（${cs._codexStreamContinuationCount}/${CODEX_STREAM_DISCONNECT_CONTINUE_MAX}）。`
             : `检测到 Codex 连接中断，正在自动续跑剩余任务（${cs._codexStreamContinuationCount}/${CODEX_STREAM_DISCONNECT_CONTINUE_MAX}）。`;
@@ -1517,7 +1648,8 @@ function createChatTurnEngine(deps) {
           setSessionStatus(sessionName, { status: 'running', currentFile: null });
           console.warn(`[multicc/chat] [${sessionName}] auto-continuing codex after response.completed disconnect #${cs._codexStreamContinuationCount}`);
           runner.retryPlanned = true;
-          cs.claudeProc = spawnChat(continueArgs, true);
+          try { cs.claudeProc = spawnChat(continueInvocation, true); }
+          catch (error) { executeBlockedRetry(error); }
           return;
         }
 
@@ -1543,25 +1675,46 @@ function createChatTurnEngine(deps) {
           cs.lastStreamAt = Date.now();  // watchdog: fresh baseline for the retry spawn (turnStartedAt may be >10min old)
           cs.streamReplay = [];
           cs._codexTransportError = '';
-          const fallbackInvocation = buildBareInvocation(promptText, true);
-          const fallbackArgs = [...fallbackInvocation.args, fallbackInvocation.payload];
+          const fallbackInvocation = prepareRetryAttempt({
+            bareText: promptText, firstTurn: true, reasonCode: 'fresh_retry',
+          });
+          if (!fallbackInvocation) return;
           chatBroadcast(sessionName, {
             type: 'system', subtype: 'warning',
             message: `${cs.cli} 启动失败（${reason}），已用新会话重试`,
           });
           runner.retryPlanned = true;
-          cs.claudeProc = spawnChat(fallbackArgs, true);
+          try { cs.claudeProc = spawnChat(fallbackInvocation, true); }
+          catch (error) { executeBlockedRetry(error); }
           return;
         }
         if (finalizePlan.action === 'retry-api') {
           cs.claudeProc = null;
+          finishProviderAttempt(runner, 'failed', {
+            errorCategory: apiErrorDecision?.error?.category || 'api_error',
+            reasonCode: 'api_retry_scheduled',
+          });
           scheduleOwnedRetry({
             sessionName, cs, persisted, turn, runner,
             decision: finalizePlan.retry, provider: cs.cli,
-            start: () => spawnChat(spawnArgs, true, finalizePlan.retry.attempt),
+            start: () => {
+              let retryInvocation;
+              try {
+                retryInvocation = prepareInvocation({ reasonCode: 'same_provider_retry' });
+              } catch (error) {
+                executeBlockedRetry(error);
+                return null;
+              }
+              try { return spawnChat(retryInvocation, true, finalizePlan.retry.attempt); }
+              catch (error) { executeBlockedRetry(error); return null; }
+            },
           });
           return;
         }
+        finishProviderAttempt(runner, turn.resultDurable && !apiErrorDecision ? 'succeeded' : 'failed', {
+          errorCategory: apiErrorDecision?.error?.category || null,
+          reasonCode: finalizePlan.action,
+        });
         turnProgressHeartbeat.stop(sessionName, turn.turnId);
         turnFinalizationExecutor.execute(finalizePlan, {
           runnerKind: 'process', sessionName, cs, persisted, turn, runner,
@@ -1575,7 +1728,7 @@ function createChatTurnEngine(deps) {
       return proc;
     };
 
-    cs.claudeProc = spawnChat(args, false);
+    cs.claudeProc = spawnChat(initialInvocation, false);
     if (!cs.claudeProc) {
       preparationFailure = 'process-runner-rejected';
       return false;
@@ -1599,6 +1752,11 @@ function createChatTurnEngine(deps) {
         });
         preparationOpen = false;
         return true;
+      }
+      if (preparationAttempt) {
+        attemptRuntime.finishAttempt(preparationAttempt, {
+          outcome: 'failed', errorCategory: 'preparation', reasonCode: preparationFailure,
+        });
       }
       console.error(`[multicc/chat] [${sessionName}] turn preparation failed before runner handoff: ${error && error.message ? error.message : error}`);
       const publicError = messageDurable
@@ -1681,7 +1839,10 @@ function createChatTurnEngine(deps) {
   // UI sees identical events. The turn boundary is the `result` event (handled
   // inside applyClaudeChatEvent); finalizeStreamingTurn() then does the
   // process-independent cleanup (stream_end, gateway回流) WITHOUT killing the proc.
-  function runChatTurnStreaming(sessionName, cs, persisted, invocation, provider, turn, apiRetryAttempt = 0) {
+  function runChatTurnStreaming(
+    sessionName, cs, persisted, prepared, provider, turn, prepareInvocation, apiRetryAttempt = 0,
+  ) {
+    const { invocation, attempt, routeOverrides, binding, proxySessionId } = prepared;
     // Per-session provider env. buildChildEnv strips inherited ANTHROPIC_* routing
     // vars before applying the provider env, so the provider choice is always
     // authoritative — see providers.CLAUDE_ROUTING_KEYS. The full computed env is
@@ -1691,9 +1852,9 @@ function createChatTurnEngine(deps) {
       MULTICC_SESSION_ID: sessionName,
       MULTICC_DIR_ID: persisted.dirId || '',
       MULTICC_BASE_URL: `http://127.0.0.1:${getPort()}`,
-    });
+    }, routeOverrides);
     providers.applyClaudeProxyEnv(childEnv, {
-      providerId: persisted.provider, sessionId: sessionName,
+      providerId: binding.providerId, sessionId: proxySessionId,
       subagent: persisted.subagent, port: getPort(), enabled: getClaudeProxyEnabled(),
       officialOAuth: getClaudeOfficialViaProxy(),
     });
@@ -1745,18 +1906,16 @@ function createChatTurnEngine(deps) {
     const mySeq = cs._streamTurnSeq = (cs._streamTurnSeq || 0) + 1;
     const runner = createRunnerOwnership(turn, {
       runnerId: `stream_${mySeq}_${crypto.randomBytes(6).toString('hex')}`,
-      kind: 'stream', sequence: mySeq,
+      kind: 'stream', sequence: mySeq, providerAttempt: attempt,
+      routeProof: prepared.routeProof,
+      usageAttribution: prepared.usageAttribution,
     });
     runner.apiRetryAttempt = Math.max(0, Number(apiRetryAttempt) || 0);
     cs._activeTurn = turn;
     cs._activeRunner = runner;
 
     const forward = (evt) => {
-      cs.lastStreamAt = Date.now();  // watchdog: last live stream activity (stuck-isStreaming detection)
-      turnProgressHeartbeat.touchVisible(sessionName, turn.turnId);
-      cs.streamReplay.push(evt);
-      if (cs.streamReplay.length > 500) cs.streamReplay.shift();
-      chatBroadcast(sessionName, evt);
+      forwardProviderEvent(sessionName, cs, turn, runner, evt);
     };
 
     console.log(`[multicc/chat] [${sessionName}] (streaming) send turn=${cs.chatTurnCount} model=${persisted.model || 'default'} status=${JSON.stringify(chatStream.status(sessionName))}`);
@@ -1765,7 +1924,8 @@ function createChatTurnEngine(deps) {
     // after the prompt line is written to stdin. t3 is the first decoded
     // stream event — the earliest reply signal observable on this path.
     chatStream.send(sessionName, invocation.payload, (evt) => {
-      if (!isCurrentTurnRunner(cs, turn, runner)) return;
+      if (!isCurrentTurnRunner(cs, turn, runner)
+          || !attemptRuntime.acceptEvent(runner.providerAttempt)) return;
       turnTiming.markFirstByte(sessionName, turn.turnId);
       applyAdapterChatEvent(provider, cs, persisted, sessionName, evt, forward, turn, runner);
     }, {
@@ -1775,7 +1935,9 @@ function createChatTurnEngine(deps) {
         else if (phase === 'firstByte') turnTiming.markFirstByte(sessionName, turn.turnId);
       },
     })
-      .then(() => finalizeStreamingTurn(sessionName, cs, persisted, mySeq, turn, runner, invocation, provider))
+      .then(() => finalizeStreamingTurn(
+        sessionName, cs, persisted, mySeq, turn, runner, prepared, provider, prepareInvocation,
+      ))
       .catch((err) => {
         turnTiming.abort(sessionName, turn.turnId,
           `stream_ended_before_first_byte:${(err && err.code) || 'exit'}`);
@@ -1794,7 +1956,9 @@ function createChatTurnEngine(deps) {
           code: err && err.code || null,
           killed: !!runner.killReason,
         });
-        finalizeStreamingTurn(sessionName, cs, persisted, mySeq, turn, runner, invocation, provider);
+        finalizeStreamingTurn(
+          sessionName, cs, persisted, mySeq, turn, runner, prepared, provider, prepareInvocation,
+        );
       });
 
     return true;
@@ -1864,11 +2028,15 @@ function createChatTurnEngine(deps) {
   // Process-independent end-of-turn cleanup for the streaming path. Guarded by
   // the turn sequence so a superseded (interrupted) turn's late completion can't
   // clobber the turn that replaced it.
-  function finalizeStreamingTurn(sessionName, cs, persisted, seq, turn, runner, invocation, provider) {
+  function finalizeStreamingTurn(
+    sessionName, cs, persisted, seq, turn, runner, prepared, provider, prepareInvocation,
+  ) {
     if (seq !== undefined && cs._streamTurnSeq !== seq) return; // superseded by a newer turn
     if (!isCurrentTurnRunner(cs, turn, runner)) return;
-    const partialOutput = meaningfulTurnOutput(cs);
-    const sideEffects = turnHasSideEffects(cs);
+    const attemptFacts = attemptRuntime.snapshot(sessionName);
+    const partialOutput = meaningfulTurnOutput(cs) || !!attemptFacts?.visibleOutputObserved;
+    const sideEffects = turnHasSideEffects(cs)
+      || !!attemptFacts?.toolIntentObserved || !!attemptFacts?.sideEffectObserved;
     // Same success veto as the process close path: a durable result proves a
     // mid-stream error was recovered from (see the close handler above).
     clearErrorFlagsForSucceededTurn(turn, runner, cs, { killReason: runner.killReason });
@@ -1924,14 +2092,52 @@ function createChatTurnEngine(deps) {
     });
     turnProgressHeartbeat.stop(sessionName, turn.turnId);
     if (plan.action === 'retry-api') {
+      finishProviderAttempt(runner, 'failed', {
+        errorCategory: apiErrorDecision?.error?.category || 'api_error',
+        reasonCode: 'api_retry_scheduled',
+      });
       scheduleOwnedRetry({
         sessionName, cs, persisted, turn, runner,
         decision: plan.retry, provider: persisted.cli || 'claude',
-        start: () => runChatTurnStreaming(
-          sessionName, cs, persisted, invocation, provider, turn, plan.retry.attempt),
+        start: () => {
+          let retryInvocation;
+          try {
+            retryInvocation = prepareInvocation({ reasonCode: 'same_provider_retry' });
+            const accepted = runChatTurnStreaming(
+              sessionName, cs, persisted, retryInvocation, provider, turn,
+              prepareInvocation, plan.retry.attempt,
+            );
+            if (!accepted) throw new Error('stream retry was not accepted');
+            return accepted;
+          }
+          catch (error) {
+            if (retryInvocation) attemptRuntime.finishAttempt(retryInvocation.attempt, {
+              outcome: 'failed', errorCategory: 'spawn_failed', reasonCode: 'stream_retry_failed',
+            });
+            logger.warn('provider_attempt_retry_blocked', {
+              sessionId: sessionName,
+              providerId: runner.providerAttempt && runner.providerAttempt.providerId,
+              routeAttemptId: runner.providerAttempt && runner.providerAttempt.routeAttemptId,
+              code: error && error.code || 'attempt_prepare_failed',
+            });
+            runner.retryPlanned = false;
+            const blockedPlan = planTurnFinalization({
+              ...plan.facts, apiError: true, apiErrorDecision: null,
+              retryPlanned: false, handoff: persisted.pendingCliHandoff,
+            });
+            turnFinalizationExecutor.execute(blockedPlan, {
+              runnerKind: 'stream', sessionName, cs, persisted, turn, runner,
+            });
+            return null;
+          }
+        },
       });
       return;
     }
+    finishProviderAttempt(runner, turn.resultDurable && !apiErrorDecision ? 'succeeded' : 'failed', {
+      errorCategory: apiErrorDecision?.error?.category || null,
+      reasonCode: plan.action,
+    });
     turnFinalizationExecutor.execute(plan, {
       runnerKind: 'stream', sessionName, cs, persisted, turn, runner,
     });
@@ -2005,6 +2211,9 @@ function createChatTurnEngine(deps) {
     if (provId) {
       try { provName = providers.getProvider(undefined, provId)?.name || null; } catch (_) {}
     }
+    const activeRoute = attemptRuntime.snapshot(sessionName);
+    const reconnectRoute = activeRoute && activeRoute.outcome === 'running'
+      ? providerAttemptFields(activeRoute) : null;
 
     sendWs(ws, {
       type: 'system', subtype: 'init',
@@ -2016,8 +2225,10 @@ function createChatTurnEngine(deps) {
       effort: persisted.effort || null,
       effectiveEffort: effectiveSessionEffort(persisted),
       agent: persisted.agent || null,
-      providerId: provId,
-      providerName: provName,
+      providerRouteProtocolVersion: 1,
+      providerRoute: reconnectRoute,
+      providerId: reconnectRoute ? reconnectRoute.providerId : provId,
+      providerName: reconnectRoute ? activeRoute.providerName : provName,
       providerTokenWindows: provWindows,
       cliStates: cliStateSummary(persisted),
       cliAvailability: cliAvailabilitySummary(),
@@ -2154,6 +2365,28 @@ function createChatTurnEngine(deps) {
         }
 
         if (msg.type === 'clear_history') {
+          if (msg.preserveHistory !== true) {
+            let backgroundActive = true;
+            try {
+              backgroundActive = getBackgroundTaskRuntime().hasLiveBackgroundTasks(sessionName) === true;
+            } catch (_) {}
+            if (backgroundActive) {
+              chatBroadcast(sessionName, {
+                type: 'error',
+                code: 'background_tasks_running',
+                error: '后台任务仍在运行；请等待完成或先取消后台任务，再清空历史。',
+              });
+              return;
+            }
+          }
+          let streamBusy = false;
+          try { streamBusy = chatStream.status(sessionName)?.busy === true; } catch (_) {}
+          if (msg.preserveHistory !== true
+              && !!(cs._activeRunner || cs.claudeProc || cs.isStreaming || streamBusy)) {
+            await getSessionWorkHost().cancelActiveTurn(sessionName, {
+              resolveQueue: true, source: 'clear_history', reason: 'clear_history', killReason: 'clear_history',
+            });
+          }
           await getChatHistoryRuntime().clearHistory(sessionName, msg, cs);
           return;
         }
@@ -2224,5 +2457,7 @@ module.exports = {
   adapterReasoningProgressEvent,
   appendAdapterAssistantText,
   createChatTurnEngine,
+  normalizeClaudeAssistantSnapshot,
+  normalizeClaudeToolResultContent,
   recoverDispatchFromHistory,
 };

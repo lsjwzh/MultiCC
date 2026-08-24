@@ -42,6 +42,7 @@ function createHarness(options = {}) {
 }
 
 function context(overrides = {}) {
+  const runner = { resultEvent: true, pendingUsage: { input_tokens: 1 } };
   return {
     runnerKind: 'process',
     sessionName: 'session-1',
@@ -54,12 +55,13 @@ function context(overrides = {}) {
       currentCost: 0.1,
       chatTurnCount: 2,
       turnStartedAt: 100,
+      _activeRunner: runner,
     },
     persisted: { cli: 'codex' },
     turn: {
       turnId: 'turn-1', task: { id: 'task-at-admission' }, resultDurable: false,
     },
-    runner: { resultEvent: true, pendingUsage: { input_tokens: 1 } },
+    runner,
     ...overrides,
   };
 }
@@ -93,6 +95,27 @@ test('host executor crosses the real append boundary before usage, classify, str
   assert.ok(at('classify') < at('broadcast:stream_end'));
   assert.ok(at('broadcast:stream_end') < at('post-turn'));
   assert.deepEqual(harness.calls.at(-1), ['post-turn', 'current-runner-and-durable-final-result', true]);
+  assert.equal(ctx.cs._activeRunner, null);
+});
+
+test('finalization clears only the runner it still owns', () => {
+  const harness = createHarness();
+  const ctx = context();
+  const replacement = { runnerId: 'replacement' };
+  const originalRunPostTurn = harness.executor;
+  // A synchronous post-turn hook may admit a replacement before final cleanup.
+  const portsHarness = createHarness();
+  const original = ctx.runner;
+  ctx.cs._activeRunner = original;
+  portsHarness.executor.execute(processPlan(), {
+    ...ctx,
+    cs: ctx.cs,
+    runner: original,
+  });
+  assert.equal(ctx.cs._activeRunner, null);
+  ctx.cs._activeRunner = replacement;
+  originalRunPostTurn.execute(processPlan(), ctx);
+  assert.equal(ctx.cs._activeRunner, replacement);
 });
 
 test('failed append never fabricates durability and exposes the guarded post-turn attempt', () => {

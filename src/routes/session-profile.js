@@ -34,6 +34,8 @@ function createSessionProfileRoutes(rawDeps) {
     providers,
     providerRouterRuntime,
     getChatStream,
+    getChatState,
+    hasLiveBackgroundTasks,
     validProviderId,
     asyncHandler,
     appendEvent,
@@ -86,7 +88,8 @@ function createSessionProfileRoutes(rawDeps) {
     throw new TypeError('[session-profile] providerRouterRuntime.getProviderSummary is required');
   }
   for (const [fn, name] of [
-    [getChatStream, 'getChatStream'],
+    [getChatStream, 'getChatStream'], [getChatState, 'getChatState'],
+    [hasLiveBackgroundTasks, 'hasLiveBackgroundTasks'],
     [validProviderId, 'validProviderId'], [asyncHandler, 'asyncHandler'],
     [appendEvent, 'appendEvent'], [workspaceBroadcast, 'workspaceBroadcast'],
     [chatBroadcast, 'chatBroadcast'], [getTaskState, 'getTaskState'],
@@ -127,6 +130,23 @@ function createSessionProfileRoutes(rawDeps) {
         return res.status(400).json({
           error: 'cli cannot be changed with PATCH; use POST /api/sessions/:id/switch-cli',
         });
+      }
+      const routeMutation = ['model', 'effort', 'agent', 'rolePrompt', 'provider', 'subagent']
+        .some(key => Object.prototype.hasOwnProperty.call(req.body || {}, key));
+      if (routeMutation) {
+        let backgroundActive = true;
+        try { backgroundActive = hasLiveBackgroundTasks(s.id) === true; } catch (_) {}
+        if (backgroundActive) {
+          return res.status(409).json({
+            error: 'session has a live background task; wait for it or cancel it before changing the provider route',
+          });
+        }
+        const cs = getChatState(s.id);
+        let streamBusy = false;
+        try { streamBusy = getChatStream()?.status?.(s.id)?.busy === true; } catch (_) {}
+        if (cs?._activeRunner || cs?.claudeProc || cs?.isStreaming || streamBusy) {
+          return res.status(409).json({ error: 'session has an active turn; stop it before changing the provider route' });
+        }
       }
       const mutation = sessionPersistence.begin('http.patch-session');
       const rejectMutation = (status, body) => {

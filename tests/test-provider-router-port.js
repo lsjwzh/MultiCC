@@ -322,3 +322,23 @@ test('protocol mounts preserve request activity for liveness and TaskRun drain f
   const mounted = calls.find(call => call.method === 'mountClaudeProxy').mountOptions;
   assert.equal(mounted.onActivity, onActivity);
 });
+
+test('protocol mounts install attempt preflight ahead of the CPR handler', () => {
+  const calls = [];
+  const uses = [];
+  const authorizeProxyRequest = () => ({ ok: true });
+  const port = createCprPort(fakeRouter({ calls }));
+  port.mountProtocolProxies({
+    use(pathname, handler) { uses.push({ pathname, handler }); },
+  }, {
+    protocols: ['claude'], claudeProxyPath: '/custom-claude/', authorizeProxyRequest,
+  });
+  assert.equal(uses.length, 1);
+  assert.equal(uses[0].pathname, '/custom-claude');
+  assert.equal(typeof uses[0].handler, 'function');
+  const mountOptions = calls.find(call => call.method === 'mountClaudeProxy').mountOptions;
+  assert.equal(mountOptions.authorizeProxyRequest, undefined);
+  assert.equal(mountOptions.captureEnabled, false,
+    'attempt capabilities must never reach CPR diagnostic capture files');
+  assert.equal(typeof mountOptions.getProvider, 'function');
+});

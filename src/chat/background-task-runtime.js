@@ -1,5 +1,7 @@
 'use strict';
 
+const { redactProviderRouteCapability } = require('../observability');
+
 // Session-scoped runtime for Claude Code Monitor / run_in_background events.
 // All host effects are injected so this module can be exercised without
 // starting a process, touching disk, or loading server.js.
@@ -359,7 +361,7 @@ function createBackgroundTaskRuntime(deps = {}) {
         log('warn', 'background task readFile must be synchronous');
         return '';
       }
-      const output = String(value || '');
+      const output = redactProviderRouteCapability(String(value || ''));
       return output.length > outputCap ? output.slice(-outputCap) : output;
     } catch (_) {
       return '';
@@ -525,6 +527,7 @@ function createBackgroundTaskRuntime(deps = {}) {
 
   function handleEvent(sessionName, chatState, event) {
     if (!sessionName || !event || typeof event !== 'object') return { handled: false };
+    event = redactProviderRouteCapability(event);
     knownSessions.add(sessionName);
     if (event.subtype === 'task_started') return handleStarted(sessionName, chatState, event);
     if (event.subtype === 'task_progress' || event.subtype === 'task_updated') {

@@ -22,6 +22,21 @@
     search: '代码检索',
     network: '网络请求',
   });
+  const ATTEMPT_OWNED_EVENT_TYPES = Object.freeze({
+    part_delta: true,
+    stream_event: true,
+    assistant: true,
+    user: true,
+    result: true,
+    api_error_policy: true,
+    provider_token_stats: true,
+    rate_limit_event: true,
+  });
+  const TERMINAL_PROVIDER_ROUTE_PHASES = Object.freeze({
+    failed: true,
+    succeeded: true,
+    released: true,
+  });
 
   function formatProgressHeartbeat(message) {
     const source = message && typeof message === 'object' ? message : {};
@@ -53,9 +68,22 @@
     const historyView = opts.historyView;
     let generation = 0;
     let activeProgressTurnId = null;
+    let providerRouteProtocolVersion = 0;
+    let activeProviderRoute = null;
+    let providerRouteHighWater = null;
+    let providerRouteTerminal = false;
 
-    function beginGeneration() { generation += 1; return generation; }
-    function invalidateGeneration() { generation += 1; return generation; }
+    function resetProviderRouteGate() {
+      providerRouteProtocolVersion = 0;
+      activeProviderRoute = null;
+      providerRouteHighWater = null;
+      providerRouteTerminal = false;
+      state.providerRouteProtocolVersion = 0;
+      state.activeProviderRoute = null;
+      state.providerRouteHighWater = null;
+    }
+    function beginGeneration() { generation += 1; resetProviderRouteGate(); return generation; }
+    function invalidateGeneration() { generation += 1; resetProviderRouteGate(); return generation; }
     // Dead-socket defense: a user_input_resolved broadcast sent while we were
     // disconnected is lost, so drop the stale card — the server's connect-time
     // replay re-delivers the authoritative state (required or resolved).
@@ -65,6 +93,81 @@
     }
     function isOwned(expectedGeneration) {
       return Number.isInteger(expectedGeneration) && expectedGeneration === generation;
+    }
+
+    function providerRouteIdentity(message) {
+      const source = message && typeof message === 'object' ? message : {};
+      const routeField = (value) => {
+        if (typeof value !== 'string') return '';
+        const text = value.trim();
+        return text && text.length <= 256 && !/[\u0000-\u001f\u007f]/.test(text) ? text : '';
+      };
+      const routeGeneration = source.routeGeneration;
+      const identity = {
+        providerRouteScope: routeField(source.providerRouteScope),
+        runtimeEpoch: routeField(source.runtimeEpoch),
+        turnId: routeField(source.turnId),
+        decisionId: routeField(source.decisionId),
+        routeAttemptId: routeField(source.routeAttemptId),
+        routeGeneration,
+        attemptNo: source.attemptNo,
+        providerId: routeField(source.providerId),
+        providerRevision: routeField(source.providerRevision),
+      };
+      if (identity.providerRouteScope !== 'attempt'
+          || !Number.isSafeInteger(routeGeneration) || routeGeneration < 1
+          || !identity.runtimeEpoch || !identity.turnId
+          || !identity.decisionId || !identity.routeAttemptId || !identity.providerId
+          || !Number.isSafeInteger(identity.attemptNo) || identity.attemptNo < 1
+          || !identity.providerRevision) return null;
+      return identity;
+    }
+
+    function sameProviderRoute(left, right) {
+      return !!(left && right
+        && left.providerRouteScope === right.providerRouteScope
+        && left.runtimeEpoch === right.runtimeEpoch
+        && left.turnId === right.turnId
+        && left.decisionId === right.decisionId
+        && left.routeAttemptId === right.routeAttemptId
+        && left.routeGeneration === right.routeGeneration
+        && left.attemptNo === right.attemptNo
+        && left.providerId === right.providerId
+        && left.providerRevision === right.providerRevision);
+    }
+
+    function acceptProviderRouteEvent(message) {
+      if (providerRouteProtocolVersion !== 1) return true;
+      if (!message || message.version !== 1) return false;
+      const next = providerRouteIdentity(message);
+      if (!next) return false;
+      if (providerRouteHighWater) {
+        if (next.runtimeEpoch !== providerRouteHighWater.runtimeEpoch) return false;
+        if (next.routeGeneration < providerRouteHighWater.routeGeneration) return false;
+        if (next.routeGeneration === providerRouteHighWater.routeGeneration) {
+          if (!sameProviderRoute(next, providerRouteHighWater)) return false;
+          if (providerRouteTerminal && !TERMINAL_PROVIDER_ROUTE_PHASES[message.phase]) return false;
+        }
+      }
+      if (!providerRouteHighWater || next.routeGeneration > providerRouteHighWater.routeGeneration) {
+        providerRouteHighWater = Object.freeze(next);
+        providerRouteTerminal = false;
+      }
+      if (TERMINAL_PROVIDER_ROUTE_PHASES[message.phase]) providerRouteTerminal = true;
+      activeProviderRoute = providerRouteTerminal ? null : providerRouteHighWater;
+      state.providerRouteHighWater = providerRouteHighWater;
+      state.activeProviderRoute = activeProviderRoute;
+      return true;
+    }
+
+    function acceptAttemptOwnedEvent(message) {
+      if (providerRouteProtocolVersion !== 1) return true;
+      const scope = message.providerRouteScope;
+      const routeOwnable = ATTEMPT_OWNED_EVENT_TYPES[message.type] || message.type === 'error';
+      if (!routeOwnable) return true;
+      if (scope === 'host') return message.type !== 'part_delta' && message.type !== 'stream_event';
+      if (scope !== 'attempt') return false;
+      return sameProviderRoute(providerRouteIdentity(message), activeProviderRoute);
     }
 
     function debugEvent(message) {
@@ -234,6 +337,22 @@
 
     function handleEvent(message, expectedGeneration) {
       if (!message || !isOwned(expectedGeneration)) return false;
+      if (message.type === 'system' && message.subtype === 'init'
+          && message.providerRouteProtocolVersion === 1) {
+        providerRouteProtocolVersion = 1;
+        state.providerRouteProtocolVersion = 1;
+        const reconnectRoute = providerRouteIdentity(message.providerRoute || message);
+        if (reconnectRoute) {
+          providerRouteHighWater = Object.freeze(reconnectRoute);
+          activeProviderRoute = providerRouteHighWater;
+          providerRouteTerminal = false;
+          state.providerRouteHighWater = providerRouteHighWater;
+          state.activeProviderRoute = activeProviderRoute;
+        }
+      }
+      if (message.type === 'provider_route_event') {
+        if (!acceptProviderRouteEvent(message)) return false;
+      } else if (!acceptAttemptOwnedEvent(message)) return false;
       debugEvent(message);
       switch (message.type) {
         case 'system':

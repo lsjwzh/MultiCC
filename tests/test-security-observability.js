@@ -14,7 +14,9 @@ const {
   timingSafeEqualText,
 } = require('../src/auth-security');
 const { resolveNetworkPolicy, selectListenPort } = require('../src/network-policy');
-const { createLogger, createMetrics, redact } = require('../src/observability');
+const {
+  createExactSecretStreamRedactor, createLogger, createMetrics, redact, redactProviderRouteCapability,
+} = require('../src/observability');
 const { atomicWriteJson, secureRuntimeData } = require('../src/runtime-security');
 const { createPaths } = require('../src/paths');
 const { installWsBackpressure } = require('../src/ws-backpressure');
@@ -159,11 +161,55 @@ test('structured logger and metrics redact secrets', () => {
   assert.equal(record.accessToken, '[REDACTED]');
   assert.doesNotMatch(record.detail, /abc123|xyz/);
   assert.equal(redact('https://x.test/?token=secret'), 'https://x.test/?token=[REDACTED]');
+  const routeCapability = 'pr1.c2Vzc2lvbi0x.cHJveHktcm91dGUtc2VjcmV0';
+  assert.equal(redact(`[cpr] sess=${routeCapability} status=200`),
+    '[cpr] sess=[REDACTED_PROVIDER_ROUTE] status=200');
+  const embeddedRoute = redact(`_${routeCapability}_`);
+  assert.match(embeddedRoute, /REDACTED_PROVIDER_ROUTE/);
+  assert.equal(embeddedRoute.includes(routeCapability), false,
+    'identifier characters around a capability cannot defeat DLP');
+  assert.equal(redact('route=proxy-route-secret-1'),
+    'route=[REDACTED_PROVIDER_ROUTE]', 'the decoded capability token is secret too');
+  const providerFrame = {
+    type: 'user', input_tokens: 17,
+    message: { content: [{ type: 'tool_result', content: `env=${routeCapability}` }] },
+  };
+  const safeFrame = redactProviderRouteCapability(providerFrame);
+  assert.doesNotMatch(JSON.stringify(safeFrame), /pr1\./);
+  assert.equal(safeFrame.input_tokens, 17,
+    'capability-only scrubbing must not erase ordinary token usage fields');
+  assert.match(safeFrame.message.content[0].content, /REDACTED_PROVIDER_ROUTE/);
+  assert.match(providerFrame.message.content[0].content, /pr1\./,
+    'the scrubber must not mutate a provider-owned input object');
+  const capabilityKeyFrame = { [routeCapability]: 'secret-key-name' };
+  const safeCapabilityKeyFrame = redactProviderRouteCapability(capabilityKeyFrame);
+  assert.doesNotMatch(Object.keys(safeCapabilityKeyFrame)[0], /pr1\./,
+    'a complete capability used as an object key must not cross a structured boundary');
+  assert.equal(Object.keys(capabilityKeyFrame)[0], routeCapability);
+  assert.doesNotMatch(Object.keys(redact(capabilityKeyFrame))[0], /pr1\./,
+    'the structured logger path must apply key DLP too');
   const metrics = createMetrics();
   metrics.inc('multicc_persistence_failures_total');
   metrics.set('multicc_ws_clients', 3);
   assert.match(metrics.render(), /multicc_persistence_failures_total 1/);
   assert.match(metrics.render(), /multicc_ws_clients 3/);
+});
+
+test('provider route capability redaction is invariant to every possible chunk boundary', () => {
+  const capability = 'pr1.c2Vzc2lvbi0x.cHJveHktcm91dGUtc2VjcmV0';
+  for (let split = 0; split <= capability.length; split += 1) {
+    const redactor = createExactSecretStreamRedactor([capability]);
+    const output = redactor.push(capability.slice(0, split))
+      + redactor.push(capability.slice(split));
+    assert.doesNotMatch(output, /pr1\./);
+    assert.match(output, /REDACTED_PROVIDER_ROUTE/);
+  }
+  const bytewise = createExactSecretStreamRedactor([capability]);
+  const output = [...capability].map(char => bytewise.push(char)).join('');
+  assert.equal(output, '[REDACTED_PROVIDER_ROUTE]');
+  const ordinary = createExactSecretStreamRedactor([capability]);
+  assert.equal(ordinary.push('answer ends in p'), 'answer ends in ');
+  assert.equal(ordinary.flush(), 'p', 'an explicit stream boundary preserves a harmless held prefix');
 });
 
 test('request middleware propagates request and correlation IDs', () => {

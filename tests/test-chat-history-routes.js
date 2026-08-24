@@ -464,6 +464,25 @@ test('clear write failure is sanitized and cannot reset clients or native CLI st
   assert.doesNotMatch(JSON.stringify(fx.logs), /abc|\/Users\/private/);
 });
 
+test('clear rejects live background work before history persistence or native stream teardown', async () => {
+  const original = [
+    { id: 'm1', role: 'user', content: 'one' },
+    { id: 'm2', role: 'assistant', content: 'two' },
+  ];
+  const fx = fixture({
+    initial: { s1: original },
+    rotationBlock: 'background_tasks_running',
+  });
+
+  const result = await fx.runtime.clearHistory('s1', { keep: 0 }, fx.chatState);
+
+  assert.deepEqual(result, { ok: false, code: 'background_tasks_running' });
+  assert.deepEqual(fx.history.records.get('s1'), original);
+  assert.deepEqual(eventNames(fx.events), ['broadcast:error:s1']);
+  assert.equal(fx.events.some(value => value === 'stream-close:s1'), false);
+  assert.equal(fx.events.some(value => value === 'clear-native:s1'), false);
+});
+
 test('manual native context rotation preserves full history and commits a one-shot checkpoint', async () => {
   const persistedSessions = new Map([
     ['s1', {

@@ -364,12 +364,57 @@ function userAction(category, retryAfterMs) {
   }
 }
 
+function routeIdentityText(value, fallback = null, maxLength = 256) {
+  const text = value == null ? '' : String(value).trim();
+  return text ? text.slice(0, maxLength) : fallback;
+}
+
+function routeIdentityNumber(value) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number > 0 ? number : null;
+}
+
 function normalizeApiError(raw = {}, context = {}, deps = {}) {
   const now = typeof deps.now === 'function' ? Number(deps.now()) : Date.now();
   const source = String(context.source || raw.source || 'unknown').toLowerCase().slice(0, 40);
-  const provider = String(context.provider || raw.provider || 'unknown').toLowerCase().slice(0, 40);
+  // Historical callers and persisted UI state call this field `provider`, but
+  // its value is the CLI family. Accept the additive `cli` spelling without
+  // changing the legacy output contract.
+  const provider = String(
+    context.provider || context.cli || raw.provider || raw.cli || 'unknown',
+  ).toLowerCase().slice(0, 40);
   const nested = raw && typeof raw === 'object' && raw.error && typeof raw.error === 'object'
     ? raw.error : {};
+  const providerId = routeIdentityText(
+    context.providerId ?? raw.providerId ?? nested.providerId,
+    '_default_',
+  );
+  const providerName = routeIdentityText(
+    context.providerName ?? raw.providerName ?? nested.providerName,
+    providerId === '_default_' ? provider : providerId,
+  );
+  const turnId = routeIdentityText(context.turnId ?? raw.turnId ?? nested.turnId);
+  const decisionId = routeIdentityText(
+    context.decisionId ?? raw.decisionId ?? nested.decisionId,
+  );
+  const runtimeEpoch = routeIdentityText(
+    context.runtimeEpoch ?? raw.runtimeEpoch ?? nested.runtimeEpoch,
+  );
+  const routeAttemptId = routeIdentityText(
+    context.routeAttemptId ?? raw.routeAttemptId ?? nested.routeAttemptId,
+  );
+  const routeGeneration = routeIdentityNumber(
+    context.routeGeneration ?? raw.routeGeneration ?? nested.routeGeneration,
+  );
+  const attemptNo = routeIdentityNumber(
+    context.attemptNo ?? raw.attemptNo ?? nested.attemptNo,
+  );
+  const providerRevision = routeIdentityText(
+    context.providerRevision ?? raw.providerRevision ?? nested.providerRevision,
+  );
+  const providerRouteScope = context.providerRouteScope === 'attempt'
+    && runtimeEpoch && turnId && decisionId && routeAttemptId
+    && routeGeneration && attemptNo && providerRevision ? 'attempt' : null;
   const code = normalizeCode(context.code || raw.code || nested.code || raw.type || nested.type);
   const httpStatus = httpStatusOf(raw);
   const message = sourceMessage(raw);
@@ -426,6 +471,16 @@ function normalizeApiError(raw = {}, context = {}, deps = {}) {
   return Object.freeze({
     category,
     provider,
+    providerId,
+    providerName,
+    providerRouteScope,
+    runtimeEpoch,
+    turnId,
+    decisionId,
+    routeAttemptId,
+    routeGeneration,
+    attemptNo,
+    providerRevision,
     code: code || null,
     httpStatus,
     retryable,
@@ -529,6 +584,41 @@ function metricToken(value) {
   return token.replace(/^_+|_+$/g, '') || 'unknown';
 }
 
+function circuitIdentity(providerOrIdentity, context = {}) {
+  const source = providerOrIdentity && typeof providerOrIdentity === 'object'
+    ? providerOrIdentity : {};
+  const providerAttempt = context.providerAttempt && typeof context.providerAttempt === 'object'
+    ? context.providerAttempt
+    : context.runner?.providerAttempt && typeof context.runner.providerAttempt === 'object'
+      ? context.runner.providerAttempt : {};
+  const usageAttribution = context.usageAttribution && typeof context.usageAttribution === 'object'
+    ? context.usageAttribution
+    : context.runner?.usageAttribution && typeof context.runner.usageAttribution === 'object'
+      ? context.runner.usageAttribution : {};
+  const cli = String(
+    providerAttempt.cli || usageAttribution.cli || context.cli || context.provider
+      || source.cli || source.provider
+      || (typeof providerOrIdentity === 'string' ? providerOrIdentity : '')
+      || 'unknown',
+  ).trim().toLowerCase().slice(0, 40) || 'unknown';
+  const providerId = routeIdentityText(
+    providerAttempt.providerId || usageAttribution.providerId || context.providerId
+      || source.providerId,
+    '_default_',
+  );
+  const providerName = routeIdentityText(
+    providerAttempt.providerName || usageAttribution.providerName || context.providerName
+      || source.providerName,
+    providerId === '_default_' ? cli : providerId,
+  );
+  return { cli, providerId, providerName };
+}
+
+function circuitIdentityKey(identity) {
+  // JSON tuple encoding avoids collisions when provider ids contain `:`.
+  return JSON.stringify([identity.cli, identity.providerId]);
+}
+
 function createApiErrorPolicyRuntime(options = {}) {
   const now = typeof options.now === 'function' ? options.now : Date.now;
   const random = typeof options.random === 'function' ? options.random : Math.random;
@@ -540,9 +630,12 @@ function createApiErrorPolicyRuntime(options = {}) {
   const circuits = new Map();
   const decisions = new Map();
 
-  function circuitFor(provider) {
-    const key = provider || 'unknown';
-    if (!circuits.has(key)) circuits.set(key, { failures: [], openUntil: 0 });
+  function circuitFor(providerOrIdentity, context = {}) {
+    const identity = circuitIdentity(providerOrIdentity, context);
+    const key = circuitIdentityKey(identity);
+    if (!circuits.has(key)) {
+      circuits.set(key, { ...identity, failures: [], openUntil: 0 });
+    }
     return circuits.get(key);
   }
 
@@ -558,6 +651,15 @@ function createApiErrorPolicyRuntime(options = {}) {
     const fields = {
       category: error.category,
       provider: error.provider,
+      providerId: error.providerId,
+      providerName: error.providerName,
+      providerRouteScope: error.providerRouteScope,
+      runtimeEpoch: error.runtimeEpoch,
+      decisionId: error.decisionId,
+      routeAttemptId: error.routeAttemptId,
+      routeGeneration: error.routeGeneration,
+      attemptNo: error.attemptNo,
+      providerRevision: error.providerRevision,
       code: error.code,
       httpStatus: error.httpStatus,
       phase: error.phase,
@@ -592,7 +694,7 @@ function createApiErrorPolicyRuntime(options = {}) {
     const at = Number(now());
     const normalized = normalizeApiError(raw, context, { now: () => at });
     let decision = decideApiErrorPolicy(normalized, context, { now: () => at, random });
-    const circuit = circuitFor(normalized.provider);
+    const circuit = circuitFor(normalized);
     circuit.failures = circuit.failures.filter(ts => at - ts <= windowMs);
 
     if (decision.action === 'retry' && TRANSIENT.has(normalized.category)) {
@@ -625,8 +727,7 @@ function createApiErrorPolicyRuntime(options = {}) {
   }
 
   function recordSuccess(provider, context = {}) {
-    const key = String(provider || 'unknown').toLowerCase();
-    const circuit = circuitFor(key);
+    const circuit = circuitFor(provider, context);
     const recovered = circuit.failures.length > 0 || circuit.openUntil > 0;
     circuit.failures = [];
     circuit.openUntil = 0;
@@ -637,8 +738,13 @@ function createApiErrorPolicyRuntime(options = {}) {
   function snapshot() {
     const at = Number(now());
     return {
-      circuits: [...circuits.entries()].map(([provider, state]) => ({
-        provider,
+      circuits: [...circuits.values()].map(state => ({
+        // Preserve `provider` for provider-only callers; it has always meant
+        // the CLI in this policy. The concrete provider is additive.
+        provider: state.cli,
+        cli: state.cli,
+        providerId: state.providerId,
+        providerName: state.providerName,
         failures: state.failures.filter(ts => at - ts <= windowMs).length,
         open: state.openUntil > at,
         openUntil: state.openUntil || null,

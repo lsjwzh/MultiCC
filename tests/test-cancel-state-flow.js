@@ -95,6 +95,21 @@ function harness(t, options = {}) {
       exitListeners.splice(0).forEach(fn => fn(null, signal));
     },
   };
+  const providerAttempt = Object.freeze({
+    runtimeEpoch: 'epoch-1',
+    sessionId: 's1',
+    turnId: 'turn-1',
+    decisionId: 'decision-1',
+    routeAttemptId: 'attempt-1',
+    routeGeneration: 1,
+    attemptNo: 1,
+    cli: 'codex',
+    providerId: 'provider-a',
+    providerName: 'Provider A',
+    protocol: 'openai_responses',
+    model: 'model-a',
+    providerRevision: 'revision-a',
+  });
   const chatState = {
     cli: 'codex',
     claudeProc: child,
@@ -102,7 +117,7 @@ function harness(t, options = {}) {
     currentAssistantText: '',
     currentToolCalls: [],
     streamReplay: ['partial'],
-    _activeRunner: {},
+    _activeRunner: { providerAttempt },
     _currentTaskId: 'tsk-1',
     currentTask: { goal: '重构取消链路', phase: 'implement' },
   };
@@ -238,6 +253,8 @@ function harness(t, options = {}) {
     cancelClassify: () => {},
     cancelSessionClassifyJobs: sessionId => auxQueue.cancelClassifyFor(sessionId),
     assignKillReason: (runner, reason) => { if (runner) runner.killReason = reason; },
+    finishProviderAttempt: (attempt, facts) =>
+      record({ kind: 'provider_attempt_finish', attempt, facts }),
     appendMessage: (sessionId, message) => record({ kind: 'history_append', sessionId, message }),
     cancelPreparation: (sessionId, reason) => record({ kind: 'cancel_preparation', sessionId, reason }),
     chatStream: { isAlive: () => false, cancel() {} },
@@ -293,6 +310,11 @@ test('manual cancel: controller → cancel event → classify → persist → br
   // (a) The runner really stopped — a cancel that only repaints the UI is a lie.
   assert.equal(h.child.kills, 1);
   assert.equal(h.chatState.isStreaming, false);
+  const attemptFinish = h.events.find(event => event.kind === 'provider_attempt_finish');
+  assert.equal(attemptFinish.attempt, h.chatState._activeRunner.providerAttempt);
+  assert.deepEqual(attemptFinish.facts, {
+    outcome: 'failed', errorCategory: 'cancelled', reasonCode: 'user_cancel',
+  });
 
   // (b) classify persisted the transition, with the cancel envelope that tells a
   // stop apart from a provider fault without a second terminal value.
@@ -315,6 +337,7 @@ test('manual cancel: controller → cancel event → classify → persist → br
   assert.ok(bar.payload.cancelledAt, 'the bar can say 已取消 rather than API 异常');
 
   // (d) Ordering, by sequence number.
+  assert.ok(h.firstIndex('provider_attempt_finish') < h.firstIndex('runner_kill'));
   assert.ok(h.firstIndex('cancel_preparation') < h.firstIndex('classify_dispatch'));
   assert.ok(h.firstIndex('classify_dispatch') < h.firstIndex('scheduler:completed'));
   assert.ok(h.firstIndex('scheduler:completed') < h.firstIndex('projection_reconcile'));

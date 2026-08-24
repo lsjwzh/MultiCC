@@ -52,6 +52,7 @@ function createHostLifecycle(deps) {
     backgroundTaskRuntime,
     cancelClassify,
     assignKillReason,
+    finishProviderAttempt,
     chatStream,
     cleanupPushMonitor,
     stopOutputCapture,
@@ -65,6 +66,9 @@ function createHostLifecycle(deps) {
     sessionHibernationRuntime,
     log = console,
   } = deps;
+  if (typeof finishProviderAttempt !== 'function') {
+    throw new TypeError('[host-lifecycle] finishProviderAttempt is required');
+  }
 
   // Graceful shutdown checkpoints partial turns, drains, then closes dependencies.
   function flushInFlightChats() {
@@ -161,10 +165,17 @@ function createHostLifecycle(deps) {
 
   async function closeSessionRuntime() {
     turnProgressHeartbeat.stopAll();
-    backgroundTaskRuntime.stopAll();
     for (const [name, cs] of chatSessions) {
       try { cancelClassify(cs); } catch (_) {}
       if (cs) assignKillReason(cs._activeRunner, 'shutdown');
+      if (cs?._activeRunner?.providerAttempt) {
+        try {
+          finishProviderAttempt(cs._activeRunner.providerAttempt, {
+            outcome: 'failed', errorCategory: 'cancelled', reasonCode: 'shutdown',
+          });
+        } catch (_) {}
+      }
+      try { backgroundTaskRuntime.reapSessionShadows(name, { reason: 'shutdown' }); } catch (_) {}
       try { chatStream.close(name); } catch (_) {}
       if (cs && cs.claudeProc) {
         try { cs.claudeProc.kill('SIGTERM'); } catch (_) {}
@@ -172,6 +183,9 @@ function createHostLifecycle(deps) {
       }
       if (cs && cs.clients) cs.clients.clear();
     }
+    // Reaping consumes live shadows first; stopAll then clears correlation
+    // state and any orphan session not represented in chatSessions.
+    backgroundTaskRuntime.stopAll();
 
     const captures = [];
     for (const [id, session] of sessions) {

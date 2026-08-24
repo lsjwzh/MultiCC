@@ -236,6 +236,39 @@ test('untrusted text cannot smuggle a retryable category and public messages are
   assert.doesNotMatch(error.sanitizedMessage, /secret-token|\/Users\/person/);
 });
 
+test('normalized errors preserve legacy CLI provider and add immutable route identity', () => {
+  const error = normalizeApiError({
+    httpStatus: 503,
+    source: 'codex_event',
+    provider: 'legacy-raw-provider',
+  }, {
+    cli: 'codex',
+    providerId: 'provider-a',
+    providerName: 'Provider A',
+    providerRouteScope: 'attempt',
+    runtimeEpoch: 'runtime-epoch-1',
+    turnId: 'turn-1',
+    decisionId: 'decision-1',
+    routeAttemptId: 'route-attempt-1',
+    routeGeneration: 7,
+    attemptNo: 2,
+    providerRevision: 'revision-a',
+    phase: 'before_first_token',
+  });
+  assert.equal(error.provider, 'codex');
+  assert.equal(error.providerId, 'provider-a');
+  assert.equal(error.providerName, 'Provider A');
+  assert.equal(error.runtimeEpoch, 'runtime-epoch-1');
+  assert.equal(error.providerRouteScope, 'attempt');
+  assert.equal(error.turnId, 'turn-1');
+  assert.equal(error.decisionId, 'decision-1');
+  assert.equal(error.routeAttemptId, 'route-attempt-1');
+  assert.equal(error.routeGeneration, 7);
+  assert.equal(error.attemptNo, 2);
+  assert.equal(error.providerRevision, 'revision-a');
+  assert.equal(error.safeToRetry, true, 'route identity must not change replay safety');
+});
+
 test('Claude CLI 2.1.x stream-watchdog envelopes are detected and classified', () => {
   const cases = [
     ['API Error: Response stalled mid-stream. The response above may be incomplete.', 'timeout', 'response_stalled_mid_stream'],
@@ -407,6 +440,48 @@ test('runtime deduplicates repeated events, opens provider circuit, and exposes 
   runtime.recordSuccess('claude', { retryAttempt: 1 });
   assert.equal(runtime.snapshot().circuits[0].open, false);
   assert.equal(metrics.get('multicc_api_error_retry_succeeded_total'), 1);
+});
+
+test('circuit identity is cli plus providerId and success clears only that identity', () => {
+  const runtime = createApiErrorPolicyRuntime({
+    now: () => 5_000,
+    random: () => 0,
+    circuitThreshold: 2,
+  });
+  const raw = { httpStatus: 503, source: 'codex_event' };
+  const fail = (cli, providerId, idempotencyKey) => runtime.evaluate(raw, {
+    source: raw.source,
+    provider: cli,
+    ...(providerId == null ? {} : { providerId }),
+    idempotencyKey,
+  });
+  const circuit = (cli, providerId) => runtime.snapshot().circuits.find(item => (
+    item.cli === cli && item.providerId === providerId
+  ));
+
+  fail('codex', 'provider-a', 'a-1');
+  assert.equal(fail('codex', 'provider-a', 'a-2').action, 'wait_circuit');
+  assert.equal(fail('codex', 'provider-b', 'b-1').action, 'retry');
+  assert.equal(circuit('codex', 'provider-a').open, true);
+  assert.equal(circuit('codex', 'provider-b').open, false);
+
+  runtime.recordSuccess('codex', { providerId: 'provider-b' });
+  assert.equal(circuit('codex', 'provider-a').open, true,
+    'a success on provider B must not close provider A');
+  runtime.recordSuccess('codex', { providerId: 'provider-a' });
+  assert.equal(circuit('codex', 'provider-a').open, false);
+
+  fail('claude', null, 'claude-default-1');
+  assert.equal(fail('claude', null, 'claude-default-2').action, 'wait_circuit');
+  assert.equal(fail('codex', null, 'codex-default-1').action, 'retry');
+  assert.equal(circuit('claude', '_default_').open, true);
+  assert.equal(circuit('codex', '_default_').open, false,
+    'default routes remain isolated by CLI');
+  runtime.recordSuccess('codex');
+  assert.equal(circuit('claude', '_default_').open, true,
+    'the provider-only compatibility API clears only its CLI default route');
+  runtime.recordSuccess('claude');
+  assert.equal(circuit('claude', '_default_').open, false);
 });
 
 test('known-harmless provider stderr chatter is filtered, real errors are kept', () => {

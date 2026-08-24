@@ -90,13 +90,17 @@ function createRoleTokenTracker({
     if (role !== 'aux') {
       let turn = runtime.get(info.sessionId);
       if (!turn) {
-        turn = { main: emptyBucket(), sub: emptyBucket(), byProviderSub: {} };
+        turn = {
+          main: emptyBucket(), sub: emptyBucket(),
+          byProviderMain: {}, byProviderSub: {},
+        };
         runtime.set(info.sessionId, turn);
       }
       addUsage(turn[role], usage);
-      if (role === 'sub') {
+      if (role === 'main' || role === 'sub') {
         const providerId = info.providerId || '_unknown_';
-        const provider = turn.byProviderSub[providerId] || (turn.byProviderSub[providerId] = {
+        const buckets = role === 'main' ? turn.byProviderMain : turn.byProviderSub;
+        const provider = buckets[providerId] || (buckets[providerId] = {
           name: info.providerName || providerId,
           model: info.model || '',
           ...emptyBucket(),
@@ -137,6 +141,15 @@ function createRoleTokenTracker({
     const sub = hasUsage(turn.sub) ? { ...turn.sub } : null;
     return {
       main: { ...turn.main },
+      mainByProvider: Object.entries(turn.byProviderMain || {}).map(([providerId, bucket]) => ({
+        providerId,
+        name: bucket.name,
+        model: bucket.model,
+        inputTokens: bucket.inputTokens,
+        outputTokens: bucket.outputTokens,
+        cacheWrite: bucket.cacheWrite,
+        cacheRead: bucket.cacheRead,
+      })),
       sub,
       subByProvider: sub
         ? Object.entries(turn.byProviderSub).map(([providerId, bucket]) => ({

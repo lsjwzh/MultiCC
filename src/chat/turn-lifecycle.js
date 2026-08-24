@@ -28,6 +28,20 @@ function freezeUsageAttribution(input) {
   const cli = clean(source.cli).toLowerCase();
   const providerId = clean(source.providerId) || '_default_';
   const roleKind = clean(source.roleKind).toLowerCase() || 'main';
+  const decisionId = clean(source.decisionId);
+  const routeAttemptId = clean(source.routeAttemptId);
+  const routeGeneration = source.routeGeneration == null ? null : Number(source.routeGeneration);
+  const attemptNo = source.attemptNo == null ? null : Number(source.attemptNo);
+  const runtimeEpoch = clean(source.runtimeEpoch);
+  const providerRevision = clean(source.providerRevision);
+  const hasAttemptIdentity = !!(decisionId || routeAttemptId
+    || routeGeneration != null || attemptNo != null || runtimeEpoch || providerRevision);
+  if (hasAttemptIdentity && (!decisionId || !routeAttemptId
+      || !runtimeEpoch || !providerRevision
+      || !Number.isSafeInteger(routeGeneration) || routeGeneration < 1
+      || !Number.isSafeInteger(attemptNo) || attemptNo < 1)) {
+    throw new TypeError('complete provider attempt attribution is required');
+  }
   return Object.freeze({
     providerId,
     providerName: clean(source.providerName) || providerId,
@@ -37,6 +51,9 @@ function freezeUsageAttribution(input) {
     model: clean(source.model),
     roleKind,
     routeName: clean(source.routeName).toLowerCase() || roleKind,
+    ...(hasAttemptIdentity ? {
+      runtimeEpoch, decisionId, routeAttemptId, routeGeneration, attemptNo, providerRevision,
+    } : {}),
   });
 }
 
@@ -49,6 +66,19 @@ function bindTurnUsageAttribution(turn, input) {
     return turn.usageAttribution;
   }
   turn.usageAttribution = next;
+  return next;
+}
+
+function bindRunnerUsageAttribution(runner, input) {
+  if (!runner || !runner.runnerId) throw new TypeError('runner ownership is required');
+  const next = freezeUsageAttribution(input);
+  if (!next.routeAttemptId) throw new TypeError('runner provider attempt attribution is required');
+  if (runner.usageAttribution && runner.usageAttribution.routeAttemptId) {
+    const same = Object.keys(next).every(key => runner.usageAttribution[key] === next[key]);
+    if (!same) throw new TypeError('runner usage attribution is already frozen');
+    return runner.usageAttribution;
+  }
+  runner.usageAttribution = next;
   return next;
 }
 
@@ -79,7 +109,7 @@ function createRunnerOwnership(turn, input = {}) {
   if (!turn || !turn.turnId) throw new TypeError('turn lifecycle is required');
   const runnerId = clean(input.runnerId);
   if (!runnerId) throw new TypeError('runnerId is required');
-  return {
+  const runner = {
     runnerId,
     turnId: turn.turnId,
     kind: clean(input.kind) || 'process',
@@ -88,8 +118,43 @@ function createRunnerOwnership(turn, input = {}) {
     retryPlanned: false,
     resultEvent: false,
     partialCheckpointKey: null,
-    ...(turn.usageAttribution ? { usageAttribution: turn.usageAttribution } : {}),
+    ...(input.usageAttribution
+      ? { usageAttribution: freezeUsageAttribution(input.usageAttribution) }
+      : turn.usageAttribution ? { usageAttribution: turn.usageAttribution } : {}),
   };
+  if (input.providerAttempt) {
+    if (!Object.isFrozen(input.providerAttempt)
+        || input.providerAttempt.turnId !== turn.turnId
+        || !clean(input.providerAttempt.routeAttemptId)) {
+      throw new TypeError('frozen provider attempt ownership is required');
+    }
+    const routeProof = input.routeProof;
+    const route = routeProof && routeProof.route;
+    const attribution = runner.usageAttribution;
+    const fields = [
+      'runtimeEpoch', 'decisionId', 'routeAttemptId', 'routeGeneration', 'attemptNo',
+      'providerId', 'providerName', 'protocol', 'model', 'providerRevision',
+    ];
+    if (!routeProof || !Object.isFrozen(routeProof) || !Object.isFrozen(route)
+        || routeProof.kind !== 'provider-route' || routeProof.resolved !== true
+        || routeProof.sessionId !== turn.sessionId || routeProof.turnId !== turn.turnId
+        || routeProof.cli !== attribution.cli
+        || input.providerAttempt.cli !== attribution.cli
+        || input.providerAttempt.sessionId !== turn.sessionId
+        || fields.some(field => route[field] !== input.providerAttempt[field]
+          || attribution[field] !== input.providerAttempt[field])) {
+      throw new TypeError('runner provider attempt, route proof, and attribution must match');
+    }
+    Object.defineProperty(runner, 'providerAttempt', {
+      value: input.providerAttempt, enumerable: true, writable: false, configurable: false,
+    });
+    Object.defineProperty(runner, 'providerRouteProof', {
+      value: routeProof, enumerable: true, writable: false, configurable: false,
+    });
+  } else if (input.routeProof) {
+    throw new TypeError('route proof requires provider attempt ownership');
+  }
+  return runner;
 }
 
 function ownsCurrentRunner(currentTurn, currentRunner, turn, runner) {
@@ -221,6 +286,7 @@ module.exports = {
   freezeTask,
   freezeUsageAttribution,
   bindTurnUsageAttribution,
+  bindRunnerUsageAttribution,
   createTurnLifecycle,
   createRunnerOwnership,
   ownsCurrentRunner,

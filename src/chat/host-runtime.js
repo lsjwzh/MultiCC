@@ -3,6 +3,7 @@
 const crypto = require('node:crypto');
 const { createChatHostCoordinator } = require('./host-coordinator');
 const { createProviderBinding } = require('../provider-binding');
+const { redactProviderRouteCapability } = require('../observability');
 
 const REQUIRED_PORTS = Object.freeze([
   'appendMessage',
@@ -118,6 +119,18 @@ function attributionSnapshot(state, turn, runner, explicit = {}) {
     occurredAt: Number.isSafeInteger(Number(source.occurredAt)) && Number(source.occurredAt) >= 0
       ? Number(source.occurredAt)
       : Date.now(),
+    ...((bound.runtimeEpoch && bound.decisionId && bound.routeAttemptId
+        && bound.providerRevision && Number.isSafeInteger(bound.routeGeneration)
+        && Number.isSafeInteger(bound.attemptNo)) ? {
+      runtimeEpoch: bound.runtimeEpoch,
+      turnId: clean((runner && runner.turnId) || (turn && turn.turnId)),
+      decisionId: bound.decisionId,
+      routeAttemptId: bound.routeAttemptId,
+      routeGeneration: bound.routeGeneration,
+      attemptNo: bound.attemptNo,
+      providerRevision: bound.providerRevision,
+      routeAttribution: 'exact',
+    } : {}),
   });
 }
 
@@ -166,6 +179,16 @@ function normalizeTaskRunUsagePayload(input = {}) {
       ? clean(attribution.status).toLowerCase() || 'success'
       : 'unobservable',
     tokens: normalized.tokens,
+    ...(attribution.routeAttemptId ? {
+      runtimeEpoch: attribution.runtimeEpoch,
+      turnId: attribution.turnId,
+      decisionId: attribution.decisionId,
+      routeAttemptId: attribution.routeAttemptId,
+      routeGeneration: attribution.routeGeneration,
+      attemptNo: attribution.attemptNo,
+      providerRevision: attribution.providerRevision,
+      routeAttribution: 'exact',
+    } : {}),
   });
   return Object.freeze({
     runId: clean(input.taskRunId),
@@ -190,8 +213,8 @@ function normalizeTaskRunUsagePayload(input = {}) {
 function createChatHostRuntime(rawPorts) {
   const ports = assertHostRuntimePorts(rawPorts);
   const usagePort = {
-    commit: ({ sessionId, usage }) => ports.persistUsage(sessionId, usage),
-    afterCommit: ({ sessionId }) => ports.afterUsageCommit(sessionId),
+    commit: ({ sessionId, usage, attribution }) => ports.persistUsage(sessionId, usage, attribution),
+    afterCommit: ({ sessionId, attribution }) => ports.afterUsageCommit(sessionId, attribution),
   };
   if (ports.persistTaskRunUsage) {
     usagePort.commitTaskRun = input => taskRunCommitAcknowledged(
@@ -200,7 +223,9 @@ function createChatHostRuntime(rawPorts) {
   }
   const coordinator = createChatHostCoordinator({
     history: {
-      appendFinal: ({ sessionId, message }) => ports.appendMessage(sessionId, message),
+      appendFinal: ({ sessionId, message }) => ports.appendMessage(
+        sessionId, redactProviderRouteCapability(message),
+      ),
     },
     usage: usagePort,
   });

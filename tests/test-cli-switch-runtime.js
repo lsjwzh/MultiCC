@@ -67,8 +67,13 @@ function createHarness(overrides = {}) {
     })),
     cwdForSession: () => '/tmp/worktree',
     getChatStream: () => stream,
+    hasLiveBackgroundTasks: () => overrides.backgroundActive === true,
     cancelClassify: () => effects.push('cancel-classify'),
     assignKillReason: (_runner, reason) => effects.push(`kill-reason:${reason}`),
+    finishProviderAttempt: (attempt, facts) => {
+      effects.push(`attempt-finish:${attempt.routeAttemptId}:${facts.reasonCode}`);
+      return { ok: true };
+    },
     appendMessage: (_id, message) => effects.push(`message:${message.cliSwitch.handoffId}`),
     appendEvent: (_dirId, type) => effects.push(`event:${type}`),
     chatBroadcast: (_id, event) => effects.push(`chat:${event.type}`),
@@ -195,6 +200,7 @@ test('same CLI is a transactional no-op while unavailable and busy targets are f
   assert.match(res.body.error, /not installed/);
 
   harness = createHarness({ streamState: { busy: true, queued: 0 } });
+  harness.chat._activeRunner.providerAttempt = { routeAttemptId: 'attempt-1' };
   harness.chat.claudeProc = {
     kill: signal => harness.effects.push(`process-kill:${signal}`),
   };
@@ -204,9 +210,28 @@ test('same CLI is a transactional no-op while unavailable and busy targets are f
   assert.equal(harness.session.cli, 'codex');
   assert.equal(harness.chat.claudeProc, null);
   assert.equal(harness.effects.includes('kill-reason:cli_switch'), true);
+  assert.equal(harness.effects.includes('attempt-finish:attempt-1:cli_switch'), true);
   assert.equal(harness.effects.includes('process-kill:SIGTERM'), true);
   assert.equal(harness.effects.includes('stream-close:s1'), true);
   assert.equal(harness.effects.includes('chat:stream_end'), true);
+  assert.ok(
+    harness.effects.indexOf('attempt-finish:attempt-1:cli_switch')
+      < harness.effects.indexOf('process-kill:SIGTERM'),
+    'attempt admission closes before a slow child is signalled',
+  );
+});
+
+test('live background work rejects a real CLI switch without snapshot, mutation, or stream close', async () => {
+  const harness = createHarness({ backgroundActive: true });
+
+  const res = await harness.invoke({ body: { cli: 'codex', force: true } });
+
+  assert.equal(res.statusCode, 409);
+  assert.match(res.body.error, /background task/i);
+  assert.equal(harness.session.cli, 'claude');
+  assert.equal(harness.effects.some(effect => effect.startsWith('mutate:')), false);
+  assert.equal(harness.effects.includes('stream-close:s1'), false);
+  assert.equal(harness.effects.some(effect => effect.startsWith('message:')), false);
 });
 
 test('successful switch preserves side-effect order, checkpoint and target state', async () => {

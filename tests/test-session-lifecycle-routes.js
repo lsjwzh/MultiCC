@@ -11,6 +11,8 @@
 // runner has already vanished, which is the stuck state this route is for.
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const test = require('node:test');
 
 const { createSessionLifecycleRuntime } = require('../src/routes/session-lifecycle');
@@ -31,7 +33,10 @@ async function invoke(handler, { params = {}, body = {}, query = {} } = {}) {
   return response;
 }
 
-function fixture({ chat, persisted, workHost = true, streamStatus, closeThrows = false, codexRolloutGuard, cascadeResult } = {}) {
+function fixture({
+  chat, persisted, workHost = true, streamStatus, closeThrows = false,
+  codexRolloutGuard, cascadeResult, backgroundActive = false,
+} = {}) {
   const calls = [];
   const events = [];
   const chatSessions = new Map();
@@ -54,26 +59,44 @@ function fixture({ chat, persisted, workHost = true, streamStatus, closeThrows =
       return { ok: true, classifyState: 'E' };
     },
   };
+  let liveBackground = backgroundActive;
 
   const app = fakeApp();
   const runtime = createSessionLifecycleRuntime({
     sessions: new Map(), chatSessions, persistedSessions,
-    directories: new Map([['d1', { id: 'd1', path: '/tmp/d1' }]]),
+    directories: new Map([
+      ['d1', { id: 'd1', path: '/tmp/d1' }],
+      ['d2', { id: 'd2', path: '/tmp/d2' }],
+    ]),
     invalidSessions: new Map(),
     sessionPersistence: { mutate: (_reason, fn) => fn(persistedSessions) },
     getChatStream: () => chatStream,
+    hasLiveBackgroundTasks: () => liveBackground,
+    reapBackgroundTasks: (id, reason) => {
+      if (!liveBackground) return 0;
+      liveBackground = false;
+      calls.push(`reap:${id}:${reason}`);
+      return 1;
+    },
     getSessionWorkHost: () => (workHost ? sessionWorkHost : null),
     asyncHandler: handler => handler,
     destroySessionCascade: async record => { calls.push(`cascade:${record.id}`); return cascadeResult || { ok: true }; },
     tmuxKillSession: async () => {},
     appendEvent: (...args) => events.push(args),
     ensureDirGitReady: async () => ({ ok: true }),
-    gitRelocateWorktree: async () => ({ ok: true }),
+    gitRelocateWorktree: async (_oldDir, _targetDir, _record, options) => {
+      if (options?.beforeRemove) await options.beforeRemove();
+      return { ok: true, worktreePath: '/tmp/wt-2', branch: 'b-2' };
+    },
     gitWorktreeAdd: async () => ({ worktreePath: '/tmp/wt', branch: 'b' }),
     fs: { existsSync: () => true },
     broadcastTo: () => {},
     stopOutputCapture: async () => {},
     assignKillReason: () => {},
+    finishProviderAttempt: (attempt, facts) => {
+      calls.push(`finish:${attempt.routeAttemptId}:${facts.reasonCode}`);
+      return { ok: true };
+    },
     createSession: async () => {},
     cwdForSession: () => '/tmp/d1',
     cleanupPushMonitor: () => {},
@@ -86,7 +109,12 @@ function fixture({ chat, persisted, workHost = true, streamStatus, closeThrows =
   assert.ok(handler, 'restart-spawn route is mounted');
   const deleteHandler = app.routes.get('DELETE /api/sessions/:id');
   assert.ok(deleteHandler, 'DELETE route is mounted');
-  return { handler, deleteHandler, runtime, calls, events, chatSessions, persistedSessions };
+  const relocateHandler = app.routes.get('POST /api/sessions/:id/relocate');
+  assert.ok(relocateHandler, 'relocate route is mounted');
+  return {
+    handler, deleteHandler, relocateHandler, runtime,
+    calls, events, chatSessions, persistedSessions,
+  };
 }
 
 function liveChatSession() {
@@ -99,9 +127,24 @@ function liveChatSession() {
     currentAssistantText: 'partial reply',
     currentToolCalls: [{ name: 'Bash' }],
     _activeTurn: { turnId: 't1' },
-    _activeRunner: { runnerId: 'r1' },
+    _activeRunner: {
+      runnerId: 'r1',
+      providerAttempt: { sessionId: 's1', routeAttemptId: 'attempt-1' },
+    },
   };
 }
+
+test('persisted cascade terminalizes a provider attempt before signalling its process', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  const start = source.indexOf('async function destroySessionCascade(');
+  const end = source.indexOf('\n// Notes/events store', start);
+  const body = source.slice(start, end);
+  const terminal = body.indexOf('providerAttemptRuntime.finishAttempt(');
+  const reap = body.indexOf('backgroundTaskRuntime.reapSessionShadows(');
+  const signal = body.indexOf("chat.claudeProc.kill('SIGTERM')");
+  assert.ok(start >= 0 && terminal >= 0 && reap > terminal && signal > reap,
+    'hard deletion must terminalize admission and reap background shadows before signalling the child');
+});
 
 test('restart-spawn 404s when the session is unknown', async () => {
   const { handler } = fixture({});
@@ -126,6 +169,20 @@ test('restart-spawn releases the scheduler slot BEFORE destroying the process', 
   assert.equal(res.statusCode, 200);
   assert.deepEqual(calls, ['cancel:s1:restart_spawn', 'close:s1'],
     'cancel must precede close, or the scheduler parks on a runner that no longer exists');
+});
+
+test('restart-spawn reaps live background work exactly once before destroying the stream', async () => {
+  const { handler, calls } = fixture({
+    chat: liveChatSession(), backgroundActive: true,
+    persisted: { id: 's1', kind: 'chat', dirId: 'd1', cli: 'claude' },
+  });
+  const res = await invoke(handler, { params: { id: 's1' } });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(calls, [
+    'cancel:s1:restart_spawn',
+    'reap:s1:restart_spawn',
+    'close:s1',
+  ]);
 });
 
 test('restart-spawn clears the runtime state the stream module does not own', async () => {
@@ -187,8 +244,50 @@ test('restart-spawn still tears down when the work host is absent', async () => 
   const res = await invoke(handler, { params: { id: 's1' } });
   assert.equal(res.statusCode, 200);
   assert.equal(res.body.cancelled, null);
-  assert.deepEqual(calls, ['close:s1']);
+  assert.deepEqual(calls, ['finish:attempt-1:restart_spawn', 'close:s1']);
   assert.equal(chat.isStreaming, false);
+});
+
+test('chat-only DELETE terminalizes and reaps background work before signalling the child', async () => {
+  const chat = liveChatSession();
+  const { deleteHandler, calls } = fixture({ chat, backgroundActive: true });
+  const res = await invoke(deleteHandler, { params: { id: 's1' } });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(calls, [
+    'finish:attempt-1:session_delete',
+    'reap:s1:session_delete',
+    'close:s1',
+  ]);
+});
+
+test('relocate blocks live background work unless forced, then reaps it before closing the old stream', async () => {
+  let fx = fixture({
+    chat: { cli: 'claude', isStreaming: false, claudeProc: null, clients: new Set() },
+    backgroundActive: true,
+    persisted: { id: 's1', kind: 'chat', dirId: 'd1', cli: 'claude' },
+  });
+  let res = await invoke(fx.relocateHandler, {
+    params: { id: 's1' }, body: { dirId: 'd2' },
+  });
+  assert.equal(res.statusCode, 409);
+  assert.deepEqual(fx.calls, []);
+  assert.equal(fx.persistedSessions.get('s1').dirId, 'd1');
+
+  const chat = liveChatSession();
+  fx = fixture({
+    chat,
+    backgroundActive: true,
+    persisted: { id: 's1', kind: 'chat', dirId: 'd1', cli: 'claude' },
+  });
+  res = await invoke(fx.relocateHandler, {
+    params: { id: 's1' }, body: { dirId: 'd2', force: true },
+  });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(fx.calls, [
+    'finish:attempt-1:relocate',
+    'reap:s1:relocate',
+    'close:s1',
+  ]);
 });
 
 test('restart-spawn survives a failing stream close and still clears runtime', async () => {

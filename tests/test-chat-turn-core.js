@@ -18,6 +18,7 @@ const {
   createTurnRuntimeStore,
   createTurnLifecycle,
   bindTurnUsageAttribution,
+  bindRunnerUsageAttribution,
   createRunnerOwnership,
   ownsCurrentRunner,
   assignKillReason,
@@ -31,11 +32,27 @@ const {
   CHAT_TURN_PORTS,
   assertChatTurnPorts,
 } = require('../src/chat');
+const { createProviderBinding } = require('../src/provider-binding');
+const { redactProviderRouteCapability } = require('../src/observability');
 const {
   adapterReasoningProgressEvent,
   appendAdapterAssistantText,
+  normalizeClaudeAssistantSnapshot,
+  normalizeClaudeToolResultContent,
   recoverDispatchFromHistory,
 } = require('../src/chat/turn-engine');
+
+function runtimeRouteProof(sessionId, turnId) {
+  return Object.freeze({
+    kind: 'provider-route', resolved: true, sessionId, turnId,
+    route: Object.freeze({
+      runtimeEpoch: 'epoch-1', decisionId: `decision-${turnId}`,
+      routeAttemptId: `attempt-${turnId}`, routeGeneration: 1, attemptNo: 1,
+      providerId: 'provider-a', protocol: 'anthropic', model: 'model-a',
+      providerRevision: 'revision-a',
+    }),
+  });
+}
 
 test('adapter assistant snapshots preserve every OpenCode text part canonically', () => {
   assert.equal(appendAdapterAssistantText('', 'first'), 'first');
@@ -90,10 +107,46 @@ test('dispatch recovery fails closed when the latest lineage-owned turn is incom
   ], operation), null);
 });
 
-test('Qoder Claude-compatible assistant events are normalized to snapshots', () => {
-  const source = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
-  assert.match(source, /providerName === 'qoder'[\s\S]{0,500}textSnapshot: true/);
+test('Claude-compatible content arrays collapse before capability redaction and forwarding', () => {
+  const capability = 'pr1.c2Vzc2lvbi0x.cHJveHktcm91dGUtc2VjcmV0';
+  const tool = normalizeClaudeToolResultContent([
+    { type: 'text', text: capability.slice(0, 18) },
+    { type: 'text', text: capability.slice(18) },
+  ]);
+  assert.doesNotMatch(JSON.stringify(tool), /pr1\./);
+  assert.match(tool.text, /REDACTED_PROVIDER_ROUTE/);
+  const assistant = normalizeClaudeAssistantSnapshot({
+    type: 'assistant',
+    message: { content: [
+      { type: 'text', text: capability.slice(0, 18) },
+      { type: 'text', text: capability.slice(18) },
+      { type: 'tool_use', id: 't1', name: 'Bash', input: {} },
+    ] },
+  }, redactProviderRouteCapability(capability));
+  assert.equal(assistant.message.textSnapshot, true);
+  assert.doesNotMatch(JSON.stringify(assistant), /pr1\./);
+  assert.equal(assistant.message.content.filter(block => block.type === 'text').length, 1);
+});
+
+test('attempt semantic DLP runs before Claude and adapter state mutation', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
+  const claudeStart = source.indexOf('function applyClaudeChatEvent(');
+  const claudeEnd = source.indexOf('function applyAdapterChatEvent(', claudeStart);
+  const claudeBody = source.slice(claudeStart, claudeEnd);
+  assert.ok(claudeStart >= 0 && claudeEnd > claudeStart);
+  assert.ok(claudeBody.indexOf('attemptRuntime.scrubAttemptStructure(')
+    < claudeBody.indexOf('cs.currentAssistantText ='),
+  'assistant content must be semantically scrubbed before transcript state changes');
+  assert.ok(claudeBody.indexOf('attemptRuntime.scrubAttemptStructure(')
+    < claudeBody.indexOf('cs.currentToolCalls.push('),
+  'tool input must be semantically scrubbed before tool state changes');
+
+  const adapterStart = claudeEnd;
+  const adapterEnd = source.indexOf('function runChatTurn(', adapterStart);
+  const adapterBody = source.slice(adapterStart, adapterEnd);
+  assert.ok(adapterBody.indexOf('attemptRuntime.scrubAttemptStructure(')
+    < adapterBody.indexOf('cs.currentToolCalls.push('),
+  'adapter-normalized tool input must be scrubbed before tool state changes');
 });
 
 function request(overrides = {}) {
@@ -245,6 +298,66 @@ test('task-run identity and provider attribution stay frozen for the admitted tu
     providerId: 'provider-b', providerName: 'Provider B', cli: 'codex', model: 'model-b',
   }), /already frozen/);
   assert.equal(runner.usageAttribution.providerId, 'provider-a');
+
+  const attemptBinding = bindRunnerUsageAttribution(runner, {
+    ...binding,
+    runtimeEpoch: 'epoch-1', decisionId: 'decision-1', routeAttemptId: 'attempt-1',
+    routeGeneration: 1, attemptNo: 1, providerRevision: 'revision-1',
+  });
+  assert.equal(attemptBinding.routeAttemptId, 'attempt-1');
+  assert.equal(attemptBinding.routeGeneration, 1);
+  assert.throws(() => bindRunnerUsageAttribution(runner, {
+    ...binding,
+    runtimeEpoch: 'epoch-1', decisionId: 'decision-1', routeAttemptId: 'attempt-2',
+    routeGeneration: 2, attemptNo: 2, providerRevision: 'revision-1',
+  }), /already frozen/);
+
+  const retryRunner = createRunnerOwnership(turn, { runnerId: 'runner-2', kind: 'process' });
+  bindRunnerUsageAttribution(retryRunner, {
+    providerId: 'provider-b', providerName: 'Provider B', cli: 'codex',
+    protocol: 'openai_responses', model: 'model-b', roleKind: 'main', routeName: 'main',
+    runtimeEpoch: 'epoch-1', decisionId: 'decision-1', routeAttemptId: 'attempt-2',
+    routeGeneration: 2, attemptNo: 2, providerRevision: 'revision-2',
+  });
+  assert.equal(retryRunner.usageAttribution.providerId, 'provider-b');
+  assert.equal(retryRunner.usageAttribution.routeAttemptId, 'attempt-2');
+});
+
+test('runner attempt ownership requires one exact proof and attribution tuple', () => {
+  const normalized = request({ cli: 'codex' });
+  const turn = createTurnLifecycle(normalized, { turnId: 'turn-attempt' });
+  const binding = createProviderBinding({
+    sessionId: turn.sessionId, cli: 'codex', providerId: 'provider-a', model: 'model-a',
+  });
+  const proof = createProviderRouteProof(normalized, {
+    resolved: true, binding, providerName: 'Provider A', protocol: 'openai_responses',
+    runtimeEpoch: 'epoch-1', turnId: turn.turnId, decisionId: 'decision-1',
+    routeAttemptId: 'attempt-1', routeGeneration: 1, attemptNo: 1,
+    providerRevision: 'revision-1',
+  });
+  const attempt = Object.freeze({
+    sessionId: turn.sessionId, turnId: turn.turnId,
+    cli: 'codex',
+    runtimeEpoch: 'epoch-1', decisionId: 'decision-1', routeAttemptId: 'attempt-1',
+    routeGeneration: 1, attemptNo: 1, providerId: 'provider-a',
+    providerName: 'Provider A', protocol: 'openai_responses', model: 'model-a',
+    providerRevision: 'revision-1',
+  });
+  const usageAttribution = {
+    providerId: 'provider-a', providerName: 'Provider A', cli: 'codex',
+    protocol: 'openai_responses', model: 'model-a', roleKind: 'main', routeName: 'main',
+    runtimeEpoch: 'epoch-1', decisionId: 'decision-1', routeAttemptId: 'attempt-1',
+    routeGeneration: 1, attemptNo: 1, providerRevision: 'revision-1',
+  };
+  const runner = createRunnerOwnership(turn, {
+    runnerId: 'runner-attempt', providerAttempt: attempt, routeProof: proof, usageAttribution,
+  });
+  assert.equal(runner.providerRouteProof, proof);
+  assert.equal(Object.getOwnPropertyDescriptor(runner, 'providerAttempt').writable, false);
+  assert.throws(() => createRunnerOwnership(turn, {
+    runnerId: 'runner-mismatch', providerAttempt: attempt, routeProof: proof,
+    usageAttribution: { ...usageAttribution, providerId: 'provider-b' },
+  }), /must match/);
 });
 
 test('Claude host pre-allocation proof preserves legacy resume intent for existing history', () => {
@@ -272,6 +385,25 @@ test('duplicate delivery wins and a fresh busy runner rejects without interrupti
   assert.deepEqual(fresh.effects, []);
 });
 
+test('a new Claude attempt is rejected before persistence while background work owns the old process', () => {
+  const turn = request({ cli: 'claude' });
+  const blocked = planTurnAdmission(turn, {
+    sessionExists: true,
+    backgroundWorkActive: true,
+  });
+  assert.equal(blocked.decision, 'reject');
+  assert.equal(blocked.reason, 'background-work-active');
+  assert.deepEqual(blocked.effects, []);
+  assert.equal(blocked.trace.includes('persistence-plan'), false);
+
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
+  const admissionStart = source.indexOf('const admission = planTurnAdmission');
+  const turnStart = source.indexOf('const turnId =', admissionStart);
+  const body = source.slice(admissionStart, turnStart);
+  assert.match(body, /backgroundWorkActive:[\s\S]*hasLiveBackgroundTasks\(sessionName\)/);
+  assert.match(body, /background-work-active[\s\S]*本消息尚未执行/);
+});
+
 test('system continuation is held during network failure while user turns remain admissible', () => {
   const system = request({ originContinue: true });
   const held = planTurnAdmission(system, { sessionExists: true, networkUnhealthy: true });
@@ -287,7 +419,37 @@ test('spawn requires durable message, provider route and runtime claim proofs', 
   assert.equal(runtime.claim(turn.sessionId, 'turn-1', {
     cli: turn.cli, transport: turn.execution.transport,
   }).ok, true);
-  const route = createProviderRouteProof(turn, { resolved: true });
+  const binding = createProviderBinding({
+    sessionId: turn.sessionId, cli: turn.cli, providerId: 'provider-a',
+    model: 'model-a', roleKind: 'main', routeName: 'main',
+  });
+  assert.throws(() => createProviderRouteProof(turn, { resolved: true }), /concrete provider route/);
+  const routeEvidence = {
+    resolved: true,
+    binding,
+    providerName: 'Provider A',
+    protocol: 'anthropic',
+    runtimeEpoch: 'epoch-1',
+    turnId: 'turn-1',
+    decisionId: 'decision-1',
+    routeAttemptId: 'attempt-1',
+    routeGeneration: 1,
+    attemptNo: 1,
+    providerRevision: 'revision-1',
+  };
+  const route = createProviderRouteProof(turn, routeEvidence);
+  assert.equal(Object.isFrozen(route), true);
+  assert.equal(Object.isFrozen(route.route), true);
+  assert.throws(() => createProviderRouteProof(turn, {
+    ...routeEvidence, token: 'must-never-cross-the-proof-boundary',
+  }), /too broad/);
+  assert.throws(() => createProviderRouteProof(turn, {
+    ...routeEvidence,
+    binding: createProviderBinding({
+      sessionId: turn.sessionId, cli: turn.cli, providerId: 'auto:balanced',
+      model: 'model-a', roleKind: 'main', routeName: 'main',
+    }),
+  }), /concrete provider route/);
   const missing = evaluateSpawnGuard(turn, {
     message: createDurableMessageProof(turn, { persisted: false }),
     route,
@@ -305,7 +467,18 @@ test('spawn requires durable message, provider route and runtime claim proofs', 
   assert.deepEqual(ready.effect, {
     type: 'spawn-turn', sessionId: 'session-1', turnId: 'turn-1', cli: 'claude',
     transport: 'claude-stream', historyIntent: 'first',
+    route: {
+      runtimeEpoch: 'epoch-1', decisionId: 'decision-1', routeAttemptId: 'attempt-1', routeGeneration: 1,
+      attemptNo: 1, providerId: 'provider-a', providerName: 'Provider A',
+      protocol: 'anthropic', model: 'model-a', providerRevision: 'revision-1',
+    },
   });
+  const wrongTurnRoute = createProviderRouteProof(turn, { ...routeEvidence, turnId: 'turn-other' });
+  assert.deepEqual(evaluateSpawnGuard(turn, {
+    message: createDurableMessageProof(turn, { persisted: true }),
+    route: wrongTurnRoute,
+    runtime: runtime.claimProof(turn.sessionId, 'turn-1'),
+  }).missing, ['provider-route']);
 });
 
 test('runtime store blocks double turns and requires legal proof-bearing transitions', () => {
@@ -315,7 +488,9 @@ test('runtime store blocks double turns and requires legal proof-bearing transit
   assert.equal(store.claim('s1', 't2').code, 'turn_in_flight');
   assert.deepEqual(store.start('s1', 't1').missing, ['durable-user-message', 'provider-route']);
   assert.equal(store.markMessageDurable('s1', 't1').ok, true);
-  assert.equal(store.markProviderRouteResolved('s1', 't1', { resolved: true }).ok, true);
+  assert.equal(store.markProviderRouteResolved('s1', 't1', {
+    resolved: true, proof: runtimeRouteProof('s1', 't1'),
+  }).ok, true);
   assert.equal(store.start('s1', 't1').state.phase, 'running');
   assert.equal(store.cleanup('s1', 't1').code, 'invalid_transition');
   assert.equal(store.beginCleanup('s1', 't1', { status: 'completed' }).state.phase, 'finishing');
@@ -356,7 +531,9 @@ test('preparation lease settles after runner handoff and releases every failure 
 
   assert.equal(store.claim('s1', 'delegated', { cli: 'codex', transport: 'cli-process' }).ok, true);
   store.markMessageDurable('s1', 'delegated');
-  store.markProviderRouteResolved('s1', 'delegated', { resolved: true });
+  store.markProviderRouteResolved('s1', 'delegated', {
+    resolved: true, proof: runtimeRouteProof('s1', 'delegated'),
+  });
   assert.equal(store.start('s1', 'delegated').ok, true);
   const delegated = store.settle('s1', 'delegated', {
     status: 'delegated', reason: 'cli-process',
@@ -389,12 +566,12 @@ test('production cutover keeps duplicate, proof and runner ordering explicit', (
   const claim = at('chatTurnPreparationRuntime.claim(');
   const append = at('const userMessageSaved = appendChatMessage(');
   const durable = at('createDurableMessageProof(turnRequest');
-  const route = at('providerRouterRuntime.resolveSpawnEnv(persisted)');
-  const usageAttribution = at('bindTurnUsageAttribution(turn, {');
+  const route = at('const initialInvocation = prepareInvocation(');
+  const usageAttribution = at('bindTurnUsageAttribution(turn, initialInvocation.baseUsageAttribution)');
   const guard = at('evaluateSpawnGuard(turnRequest');
   const authorize = at('chatTurnPreparationRuntime.start(');
-  const claudeRunner = at('runChatTurnStreaming(sessionName');
-  const codexRunner = at('cs.claudeProc = spawnChat(args, false)');
+  const claudeRunner = at('const accepted = runChatTurnStreaming(');
+  const codexRunner = at('cs.claudeProc = spawnChat(initialInvocation, false)');
   const failureRelease = at('if (preparationOpen)');
 
   assert.ok(futureClaudeProof < normalized && normalized < admission);
@@ -410,6 +587,15 @@ test('production cutover keeps duplicate, proof and runner ordering explicit', (
   assert.ok(guard < authorize);
   assert.ok(authorize < claudeRunner && authorize < codexRunner);
   assert.ok(codexRunner < failureRelease, 'finally must release a failed preparation lease');
+  const invocationSource = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'chat', 'provider-invocation.js'), 'utf8');
+  assert.match(invocationSource, /router\.resolveSpawnEnv\(session, selectionOverrides\)/,
+    'every physical attempt must resolve its route instead of reusing captured argv/env');
+  assert.match(invocationSource,
+    /routeOverrides = Object\.freeze\(\{ providerId: binding\.providerId, model: selectedModel \}\)/,
+    'the child env must rebuild from the same provider and raw selected model, not a qualified wire model');
+  assert.match(body, /errorCategory: 'proxy_config', reasonCode: 'proxy_config_failed'/,
+    'a proxy materialization failure must terminalize its physical attempt before retry exits');
 });
 
 test('retry policy bounds API failures and keeps deterministic scheduling', () => {
@@ -710,8 +896,8 @@ test('production lifecycle uses append return, runner ownership and one guarded 
   assert.equal(source.includes('turn.resultEvent'), false, 'result events must be runner-owned');
   assert.equal((source.match(/sameDurablePartial: hasMatchingPartialCheckpoint\(runner,/g) || []).length, 2,
     'both runner paths must pass checkpoint evidence into the shared planner');
-  assert.equal((source.match(/planTurnFinalization\(\{/g) || []).length, 2,
-    'process and stream paths must both use the pure finalization plan');
+  assert.ok((source.match(/planTurnFinalization\(\{/g) || []).length >= 2,
+    'process and stream paths, including blocked retries, must use the pure finalization plan');
   assert.equal((source.match(/turnFinalizationExecutor\.execute\((?:finalizePlan|plan),/g) || []).length, 2,
     'process and stream paths must both use the shared host effect executor');
   assert.match(source, /createChatHostRuntime\(\{[\s\S]{0,500}persistUsage: accumulateTokenUsage/,
@@ -727,7 +913,7 @@ test('production lifecycle uses append return, runner ownership and one guarded 
   const accumulateEnd = tokenSource.indexOf('\n  function seedTokenUsageFromHistory(', accumulateStart);
   const accumulateBody = tokenSource.slice(accumulateStart, accumulateEnd);
   assert.ok(accumulateBody.indexOf('deps.atomicWriteJson(deps.tokenUsageFile, data)')
-    < accumulateBody.indexOf('accumulateTokenDaily(sessionId, usage)'),
+    < accumulateBody.indexOf('accumulateTokenDaily(sessionId, usage, attribution)'),
   'daily aggregation must derive only after the main usage file commits');
   assert.match(accumulateBody,
     /catch \(error\) \{[\s\S]{0,120}logFailure\('token_usage_write_failed', error\);[\s\S]{0,80}return false;/,
@@ -774,6 +960,33 @@ test('chat turn ports are narrow and pure modules import no runtime I/O dependen
     const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', file), 'utf8');
     assert.equal(/require\(['"](?:fs|child_process|express|ws)['"]\)/.test(source), false, `${file} must stay pure`);
   }
+});
+
+test('hard turn-control paths terminalize the provider attempt before teardown or history mutation', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
+  const mismatchStart = source.indexOf("assignKillReason(runner, 'cli_resume_mismatch')");
+  const mismatchEnd = source.indexOf("cs.claudeProc.kill('SIGTERM')", mismatchStart);
+  const mismatchBody = source.slice(mismatchStart, mismatchEnd);
+  assert.ok(mismatchStart >= 0 && mismatchEnd > mismatchStart);
+  assert.match(mismatchBody, /finishProviderAttempt\(runner, 'failed',[\s\S]*reasonCode: 'cli_resume_mismatch'/);
+  assert.ok(mismatchBody.indexOf('forward({') < mismatchBody.indexOf("finishProviderAttempt(runner, 'failed'"),
+    'the owned error remains visible before the attempt becomes terminal');
+
+  const clearStart = source.indexOf("if (msg.type === 'clear_history')");
+  const clearEnd = source.indexOf("if (msg.type === 'user_message'", clearStart);
+  const clearBody = source.slice(clearStart, clearEnd);
+  assert.ok(clearStart >= 0 && clearEnd > clearStart);
+  assert.match(clearBody, /cs\._activeRunner \|\| cs\.claudeProc \|\| cs\.isStreaming \|\| streamBusy/,
+    'an idle clear must not manufacture a cancelled scheduler transition');
+  const backgroundGate = clearBody.indexOf('hasLiveBackgroundTasks(sessionName)');
+  assert.ok(backgroundGate >= 0, 'destructive clear must detect a live background shadow');
+  assert.ok(backgroundGate < clearBody.indexOf('cancelActiveTurn(sessionName'),
+    'background work must reject clear before scheduler or history mutation');
+  assert.match(clearBody, /killReason: 'clear_history'/);
+  assert.ok(clearBody.indexOf('cancelActiveTurn(sessionName') < clearBody.indexOf('clearHistory(sessionName'),
+    'active work must reach its canonical terminal state before history is replaced');
+  assert.match(source, /const proxyRequired = providers\.codexProxyConfigRequired\([\s\S]{0,520}providers\.assertCodexProxyConfigApplied\(\{ required: proxyRequired, applied: proxyApplied \}\)/,
+    'a routed Codex attempt must apply the explicit route policy before spawning');
 });
 
 test('tool timing stamps ride in the persisted tools array (replay upgrade)', () => {
