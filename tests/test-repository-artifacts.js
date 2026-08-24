@@ -170,6 +170,8 @@ function runPublish(root, args, env) {
       // Pin resolution to the fixture PATH: the fake flutter, or none at all.
       FLUTTER_BIN: '',
       FLUTTER_ROOT: '',
+      LC_ALL: 'C',
+      LANG: 'C',
       MULTICC_APK_BUILD_LOCK: path.join(root, 'apk-build.lock'),
       MULTICC_RELEASE_TAG: 'v1.5.3',
       MULTICC_RELEASE_VERSION: '1.5.3',
