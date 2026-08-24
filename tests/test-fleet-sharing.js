@@ -88,6 +88,12 @@ test('Fleet share persists a scrypt password hash and exports a Fleet-scoped int
   assert.equal(h.sharing.authorizeRequest({
     token: created.token, grant: payload.capability.grant, method: 'GET', pathname: `/api/fleet-shares/${created.token}/state`,
   }), true);
+  assert.equal(h.sharing.authorizeRequest({
+    token: created.token, grant: payload.capability.grant, method: 'GET', pathname: '/api/git/log?dirId=fleet-1&limit=50',
+  }), true);
+  assert.equal(h.sharing.authorizeRequest({
+    token: created.token, grant: payload.capability.grant, method: 'GET', pathname: '/api/git/log?dirId=other-fleet&limit=50',
+  }), false, 'global Git readers remain bound to the shared Fleet query');
   assert.equal(h.sharing.listShares('fleet-1')[0].remainingAccesses, 1);
   h.sharing.accessSharedFleet(created.token, 'correct horse');
   expectFleetError(() => h.sharing.accessSharedFleet(created.token, 'correct horse'), 'SHARE_EXHAUSTED', 410);
