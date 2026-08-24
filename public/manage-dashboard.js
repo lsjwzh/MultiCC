@@ -236,7 +236,7 @@ function stopMonitor(sessionId) {
 }
 
 function syncMonitors(sessions) {
-  const activeIds = new Set(sessions.filter(s => s.active && s.type !== 'aux').map(s => s.id));
+  const activeIds = new Set(sessions.filter(s => s.active && s.type !== 'aux' && !s.external).map(s => s.id));
   // Start monitors for new active sessions
   for (const id of activeIds) {
     if (!monitors.has(id)) startMonitor(id);
@@ -467,16 +467,22 @@ async function loadDashboard() {
   try {
     // The saved arrangement has to be in hand before the first paint, or the
     // grid renders in default order and then visibly jumps.
-    const [dirRes, sessRes] = await Promise.all([
+    const externalPromise = typeof loadExternalFleetData === 'function'
+      ? loadExternalFleetData()
+      : Promise.resolve({ directories: [], sessions: [] });
+    const [dirRes, sessRes, , external] = await Promise.all([
       fetch('/api/directories'),
       fetch('/api/sessions'),
       window.MultiCCUiLayout.ready(),
+      externalPromise,
     ]);
-    const directories = await dirRes.json();
-    const sessions = await sessRes.json();
+    const localDirectories = await dirRes.json();
+    const localSessions = await sessRes.json();
+    const directories = localDirectories.concat(external.directories || []);
+    const sessions = localSessions.concat(external.sessions || []);
     _cachedDirectories = directories;
     _cachedSessions = sessions;
-    openBellForExistingSessionsOnce(sessions);
+    openBellForExistingSessionsOnce(localSessions);
     // Load provider list in background if not yet loaded, then re-render
     // session cards so provider names resolve from IDs.
     if (!_providerData.available) {
@@ -495,9 +501,8 @@ async function loadDashboard() {
       }
     }
     renderDashboard(directories, sessions);
-    if (typeof loadExternalFleets === 'function') loadExternalFleets();
-refreshAllCardBorders();
-syncMonitors(sessions);
+    refreshAllCardBorders();
+    syncMonitors(localSessions);
     startRuntimeTicker();
   } catch (err) {
     console.error('Failed to load dashboard:', err);
@@ -890,6 +895,19 @@ function showDirMenu(ev, dirId) {
   const dir = (_cachedDirectories || []).find(d => d.id === dirId);
   const ps = dir?.pushState || {};
   const items = [];
+  if (dir?.external) {
+    if (!dir.interactive) {
+      items.push({ label: '重新导入以启用操作', onclick: () => openImportFleetModal(dir.externalFleetId) });
+    } else {
+      items.push({ label: tt('rename'), onclick: () => renameDirectory(dirId) });
+      items.push({ label: dir.rolePrompt ? tt('rolePromptSet') : tt('rolePrompt'), onclick: () => changeDirectoryRole(dirId) });
+      items.push({ label: '↻ 刷新远端状态', onclick: () => refreshExternalFleet(dir.externalFleetId) });
+    }
+    items.push({ sep: true });
+    items.push({ label: '移除外部 Fleet', danger: true, onclick: () => removeExternalFleet(dir.externalFleetId) });
+    showPopoverMenu(ev.currentTarget, items);
+    return;
+  }
   // Dirty main working tree — surface a quick way to inspect/commit uncommitted
   // files before they tangle a session worktree merge.
   if (typeof ps.dirty === 'number' && ps.dirty > 0) {
@@ -916,6 +934,12 @@ function showSessionMenu(ev, sessionId) {
   ev.stopPropagation();
   const st = _workspaceStatus.get(sessionId);
   const s = _cachedSessions.find(x => x.id === sessionId);
+  if (s?.external && !window.MultiCCFleetSharing?.externalDirectory(s.dirId)?.interactive) {
+    showPopoverMenu(ev.currentTarget, [
+      { label: '重新导入以启用操作', onclick: () => openImportFleetModal(s.externalFleetId) },
+    ]);
+    return;
+  }
   const ms = st?.mergeState || s?.mergeState || {};
   const mergeReady = !!ms.mergeReady;
   const mergeLabel = mergeReady
@@ -1269,14 +1293,15 @@ function renderDirectoryBlock(dir, dirSessions) {
   const dirtyBadge = dirtyCount > 0
     ? `<span class="dir-dirty-badge" title="主分支有 ${dirtyCount} 个未提交文件，合并前请先提交" onclick="event.stopPropagation(); showUncommittedFiles('${escapeHtml(id)}')">⚠ ${dirtyCount}未提交</span>`
     : '';
+  const externalLegacy = dir.external && !dir.interactive;
   const headerActions = `
-        <button class="btn add-new btn-sm" title="${escapeHtml(tt('createSession'))}" onclick="event.stopPropagation(); showNewSessionMenu(event, '${escapeHtml(id)}')">${escapeHtml(tt('createSession'))}</button>
-        <button class="btn-icon" title="项目备忘" onclick="event.stopPropagation(); openMemo('${escapeHtml(id)}')">📝</button>
+        ${externalLegacy ? '' : `<button class="btn add-new btn-sm" title="${escapeHtml(tt('createSession'))}" onclick="event.stopPropagation(); showNewSessionMenu(event, '${escapeHtml(id)}')">${escapeHtml(tt('createSession'))}</button>`}
+        ${dir.external ? '' : `<button class="btn-icon" title="项目备忘" onclick="event.stopPropagation(); openMemo('${escapeHtml(id)}')">📝</button>`}
         <button class="btn-icon${pushPending ? ' has-pending' : ''}" title="更多操作${pushPending ? `（有 ${ps.ahead} 个提交待 push）` : ''}${dirtyCount > 0 ? `（${dirtyCount} 个未提交文件）` : ''}" onclick="event.stopPropagation(); showDirMenu(event, '${escapeHtml(id)}')">⋯</button>`;
 
   const headerMain = `
         <div class="dir-main">
-          <span class="dir-name">${escapeHtml(dir.name)}</span>
+          <span class="dir-name">${escapeHtml(dir.name)}</span>${dir.external ? '<span class="external-fleet-badge">外部</span>' : ''}
           <span class="dir-path" title="${escapeHtml(dir.path)}">${escapeHtml(shortenPath(dir.path, maxPath))}</span>
           ${dirtyBadge}
           <div class="dir-meta">
@@ -1326,14 +1351,20 @@ function openDirectoryDetail(dirId) {
   if (title) title.textContent = dir.name;
   if (sub) { sub.textContent = dir.path; sub.title = dir.path; }
   const addBtn = document.getElementById('dir-detail-add');
-  if (addBtn) addBtn.onclick = (e) => { e.stopPropagation(); showNewSessionMenu(e, dirId); };
+  if (addBtn) {
+    addBtn.style.display = dir.external && !dir.interactive ? 'none' : '';
+    addBtn.onclick = (e) => { e.stopPropagation(); showNewSessionMenu(e, dirId); };
+  }
   const memoBtn = document.getElementById('dir-detail-memo');
-  if (memoBtn) memoBtn.onclick = (e) => { e.stopPropagation(); openMemo(dirId); };
+  if (memoBtn) {
+    memoBtn.style.display = dir.external ? 'none' : '';
+    memoBtn.onclick = (e) => { e.stopPropagation(); openMemo(dirId); };
+  }
   updateDirDetailPush(dirId);
   // Show git tree button
   const gitBtn = document.getElementById('dir-detail-git');
-  if (gitBtn) gitBtn.style.display = '';
-  if (typeof refreshTaskBoard === 'function') refreshTaskBoard(true);
+  if (gitBtn) gitBtn.style.display = dir.external ? 'none' : '';
+  if (!dir.external && typeof refreshTaskBoard === 'function') refreshTaskBoard(true);
   renderDirectoryDetailBody(dirId);
   const m = document.getElementById('dir-detail-modal');
   if (m) m.classList.add('visible');
@@ -1372,7 +1403,8 @@ function switchDirDetailTab(tab) {
 function renderDirectoryDetailBody(dirId) {
   const body = document.getElementById('dir-detail-body');
   if (!body) return;
-  const hasBoard = typeof renderTaskBoardSection === 'function';
+  const dir = (_cachedDirectories || []).find(item => item.id === dirId);
+  const hasBoard = !dir?.external && typeof renderTaskBoardSection === 'function';
   let tabs = '';
   if (hasBoard) {
     const taskCount = typeof _tbTasksForDir === 'function' ? _tbTasksForDir(dirId).length : 0;

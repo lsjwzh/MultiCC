@@ -52,6 +52,11 @@ function mountWsConnectionRouter(wss, deps) {
       return;
     }
     const urlObj = new URL(req.url, 'http://localhost');
+    const addressedSessionId = urlObj.pathname === '/ws/chat'
+      ? urlObj.searchParams.get('session')
+      : SESSIONLESS_WS_PATHS.has(urlObj.pathname) ? null : urlObj.searchParams.get('id');
+    const addressedDirectoryId = urlObj.pathname === '/ws/workspace'
+      ? urlObj.searchParams.get('dirId') : null;
     installWsBackpressure(ws, {
       onMetric: (name, value, op) => op === 'set' ? metrics.set(name, value) : metrics.inc(name, value),
       onLog: (event, fields) => logger.warn(event, { ...fields, correlationId: ws._correlationId }),
@@ -85,6 +90,12 @@ function mountWsConnectionRouter(wss, deps) {
       const legacyToken = accessToken && allowLegacyWsToken
         && authSecurity.verifyAccessToken(urlObj.searchParams.get('token'));
       if (ticket) ws._correlationId = ticket.correlationId || ticket.requestId;
+      if (ticket && ((ticket.fleetSessionId && ticket.fleetSessionId !== addressedSessionId)
+          || (ticket.fleetDirectoryId && ticket.fleetDirectoryId !== addressedDirectoryId))) {
+        metrics.inc('multicc_ws_fleet_scope_denied_total');
+        ws.close(4003, 'Forbidden');
+        return;
+      }
       if (legacyCookie || legacyToken) {
         metrics.inc('multicc_ws_legacy_auth_total');
         logger.warn('legacy_ws_auth', {
@@ -100,9 +111,6 @@ function mountWsConnectionRouter(wss, deps) {
       }
     }
 
-    const addressedSessionId = urlObj.pathname === '/ws/chat'
-      ? urlObj.searchParams.get('session')
-      : SESSIONLESS_WS_PATHS.has(urlObj.pathname) ? null : urlObj.searchParams.get('id');
     if (addressedSessionId
         && isInternalExecutionSlot(persistedSessions.get(addressedSessionId))) {
       sendWs(ws, {
