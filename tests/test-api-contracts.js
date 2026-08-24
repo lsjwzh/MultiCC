@@ -329,3 +329,14 @@ test('server composition uses canonical adapters and retires legacy dispatch end
   const turnEngine = fs.readFileSync(path.join(ROOT, 'src', 'chat', 'turn-engine.js'), 'utf8');
   assert.ok(turnEngine.includes("type: 'task_state', goal: ts0.goal || '', taskShortCode: taskShortCode(ts0.taskId)"));
 });
+
+test('chat worktree guidance treats sync API as manual and permits safe Agent self-sync', () => {
+  const source = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+  assert.ok(source.includes('`/sync` 主要供用户/UI 手动同步'));
+  assert.ok(source.includes('Agent 自同步：在自己的 worktree 内直接用 Git'));
+  assert.ok(source.includes('不调用“当前会话自己的 sync”接口'));
+  assert.ok(source.includes('禁止直接丢弃无法证明已入基线的提交'));
+  assert.ok(source.includes('behind 必须为 0；`0 0` 才是完全一致'));
+  assert.doesNotMatch(source, /先由派活方直接调用目标会话的 sync 接口/);
+  assert.doesNotMatch(source, /只有未同步时才调用自己的 sync/);
+});
