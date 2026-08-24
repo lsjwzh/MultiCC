@@ -104,11 +104,7 @@ function _getOrCreateSessionIframe(id, kind) {
   iframe.sandbox = 'allow-same-origin allow-scripts allow-forms allow-popups';
   iframe.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;border:none;background:#0d1117;';
 
-  if (kind === 'chat') {
-    iframe.src = `/chat.html?session=${encodeURIComponent(id)}`;
-  } else {
-    iframe.src = `/?id=${encodeURIComponent(id)}`;
-  }
+  iframe.src = window.MultiCCFleetSharing.sessionPageUrl(id, kind);
 
   _sessionIframeBody.appendChild(iframe);
   _sessionIframePool.set(id, { iframe, lastUsed: Date.now(), kind });
@@ -126,13 +122,14 @@ let _currentSessionModalKind = null;
 function openSessionModal(id) {
   const s = _cachedSessions.find(sess => sess.id === id);
   if (!s) return;
+  if (!window.MultiCCFleetSharing.ensureInteractiveSession(s)) return;
 
   acknowledgeSession(id);
   const kind = s.kind || 'terminal';
 
   // Set title
   sessionModalTitle.textContent = kind === 'chat' ? '💬 Chat Session' : '🖥 Terminal Session';
-  sessionModalSubtitle.textContent = `#${id} · ${s.cwd || ''}`;
+  sessionModalSubtitle.textContent = window.MultiCCFleetSharing.sessionSubtitle(s);
 
   // Hide all pooled iframes first
   for (const [, entry] of _sessionIframePool) {
@@ -195,7 +192,6 @@ const focusContainer = focusIframe.parentElement;
 
 function getOrCreateIframe(id) {
   if (_iframeCache.has(id)) return _iframeCache.get(id);
-  // Determine session kind to set appropriate URL
   const s = _cachedSessions.find(sess => sess.id === id);
   const kind = s?.kind || 'terminal';
 
@@ -207,12 +203,7 @@ function getOrCreateIframe(id) {
   iframe.sandbox = focusIframe.sandbox.toString();
   iframe.style.cssText = 'flex:1;border:none;width:100%;height:100%;background:#0d1117;display:none;';
 
-  // Chat sessions use /chat.html, terminal sessions use /?id=
-  if (kind === 'chat') {
-    iframe.src = `/chat.html?session=${encodeURIComponent(id)}`;
-  } else {
-    iframe.src = `/?id=${encodeURIComponent(id)}`;
-  }
+  iframe.src = window.MultiCCFleetSharing.sessionPageUrl(id, kind);
 
   focusContainer.appendChild(iframe);
   _iframeCache.set(id, iframe);
@@ -269,15 +260,15 @@ function openSessionNewTab(id) {
     openAuxNewTab();
     return;
   }
-  window.open(`/?id=${encodeURIComponent(id)}`, '_blank');
+  const record = _cachedSessions.find(session => session.id === id);
+  if (!window.MultiCCFleetSharing.ensureInteractiveSession(record)) return;
+  const kind = record?.kind || 'terminal';
+  window.open(window.MultiCCFleetSharing.sessionPageUrl(id, kind), '_blank');
   acknowledgeSession(id);
 }
 
 function openSessionChat(id, _cwd) {
-  // cwd is ignored now — server derives it from the session's directory
-  const params = new URLSearchParams();
-  params.set('session', id);
-  window.open(`/chat.html?${params.toString()}`, '_blank');
+  window.open(window.MultiCCFleetSharing.sessionPageUrl(id, 'chat'), '_blank');
 }
 
 async function deleteSession(id) {
@@ -495,13 +486,13 @@ async function connectWorkspace(dirId) {
   if (_workspaceWs.has(dirId)) return;  // idempotent
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   let url = `${proto}//${location.host}/ws/workspace?dirId=${encodeURIComponent(dirId)}`;
-  try { url = await window.multiccWsUrl(url); } catch (_) { return; }
+  try { url = await window.MultiCCFleetSharing.workspaceWsUrl(url, dirId); if (!url) return; } catch (_) { return; }
   if (_workspaceWs.has(dirId)) return;
   let ws;
   try { ws = new WebSocket(url); } catch (_) { return; }
   _workspaceWs.set(dirId, ws);
   ws.onmessage = ({ data }) => {
-    let msg; try { msg = JSON.parse(data); } catch { return; }
+    let msg; try { msg = window.MultiCCFleetSharing.parseWorkspaceMessage(dirId, data); } catch { return; }
     if (msg.type === 'snapshot') {
       for (const s of msg.sessions) {
         _workspaceStatus.set(s.id, { status: s.status, currentFile: s.currentFile, lastActivity: s.lastActivity, runStartedAt: s.runStartedAt || null, runEndedAt: s.runEndedAt || null, mergeState: s.mergeState || null });

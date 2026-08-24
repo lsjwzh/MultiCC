@@ -45,6 +45,7 @@ function createAuthRuntime(rawDeps) {
     getShuttingDown,
     getProxyToken = () => process.env.MULTICC_PROXY_TOKEN || '',
     isRequestPeerAllowed = () => true,
+    authorizeScopedRequest = () => false,
     allowLegacyTokenQuery = false,
   } = deps;
 
@@ -65,7 +66,7 @@ function createAuthRuntime(rawDeps) {
     [normalizeRedirect, 'normalizeRedirect'], [escapeHtmlAttribute, 'escapeHtmlAttribute'],
     [createErrorDto, 'createErrorDto'], [getAccessToken, 'getAccessToken'],
     [getShuttingDown, 'getShuttingDown'], [getProxyToken, 'getProxyToken'],
-    [isRequestPeerAllowed, 'isRequestPeerAllowed'],
+    [isRequestPeerAllowed, 'isRequestPeerAllowed'], [authorizeScopedRequest, 'authorizeScopedRequest'],
   ]) assertFunction(fn, name);
   if (!metrics || typeof metrics.inc !== 'function') {
     throw new TypeError('[auth] metrics.inc is required');
@@ -205,11 +206,13 @@ function createAuthRuntime(rawDeps) {
       if (/^\/share\/[^/]+$/.test(req.path)) return next();
       if (/^\/api\/share\/[^/]+\/(auth|session)$/.test(req.path)) return next();
       // Fleet import capabilities mirror session shares: only the landing page
-      // and the single password-gated snapshot endpoint bypass ACCESS_TOKEN.
+      // and the single password-gated capability import endpoint bypass ACCESS_TOKEN.
       // Fleet creation/list/revoke and imported-Fleet management stay gated.
       if (/^\/fleet-share\/fleet_share_[A-Za-z0-9_-]+$/.test(req.path)) return next();
       if (req.method === 'POST'
         && /^\/api\/fleet-shares\/fleet_share_[A-Za-z0-9_-]+\/import$/.test(req.path)) return next();
+      if (req.method === 'POST'
+        && /^\/api\/fleet-shares\/fleet_share_[A-Za-z0-9_-]+\/ws-ticket$/.test(req.path)) return next();
       // Temp artifacts (multicc-artifact skill): the random <id> in the path is an
       // unguessable capability token, so artifact links open without ACCESS_TOKEN —
       // same model as /share/:token above (keep regex in sync with src/artifacts.js).
@@ -234,6 +237,12 @@ function createAuthRuntime(rawDeps) {
         metrics.inc('multicc_auth_proxy_relay_total');
         return next();
       }
+      try {
+        if (authorizeScopedRequest(req)) {
+          metrics.inc('multicc_auth_fleet_scope_total');
+          return next();
+        }
+      } catch (_) { /* a scoped authorizer always fails closed */ }
       if (isAuthenticated(req)) return next();
       // Redirect HTML requests to login, reject API calls with 403
       if (req.headers.accept?.includes('text/html') || (!req.path.startsWith('/api/') && req.method === 'GET')) {

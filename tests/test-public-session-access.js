@@ -99,7 +99,7 @@ test('internal execution slot discriminator is narrow and reusable by WS admissi
     'WS chat admission must use the same internal-slot discriminator');
 });
 
-function wsRouterHarness(url, { peerAllowed = true } = {}) {
+function wsRouterHarness(url, { peerAllowed = true, ticket = null } = {}) {
   const records = new Map([
     ['public-chat', { id: 'public-chat', kind: 'chat' }],
     ['slot-secret', { id: 'slot-secret', kind: 'chat', taskExecutionSlot: true }],
@@ -123,7 +123,7 @@ function wsRouterHarness(url, { peerAllowed = true } = {}) {
     parseCookies: () => ({}),
     isLocalRequest: () => true,
     isRequestPeerAllowed: () => peerAllowed,
-    authSecurity: { consumeWsTicket: () => null, verifyCookie: () => false, verifyAccessToken: () => false },
+    authSecurity: { consumeWsTicket: () => ticket, verifyCookie: () => false, verifyAccessToken: () => false },
     voiceAsr: { handleVoiceWs() { throw new Error('voice route reached'); } },
     ttsService: { handleTtsWs() { throw new Error('tts route reached'); } },
     workspaceRuntime: {
@@ -144,7 +144,7 @@ function wsRouterHarness(url, { peerAllowed = true } = {}) {
     pushOnInput() {},
     handleChatWs: () => { chatAdmissions += 1; },
     getShuttingDown: () => false,
-    getAccessToken: () => '',
+    getAccessToken: () => ticket ? 'configured' : '',
     allowLegacyWsCookie: false,
     allowLegacyWsToken: false,
     fs,
@@ -185,6 +185,20 @@ test('automatic LAN policy rejects a direct public WebSocket peer before admissi
   assert.equal(denied.chatAdmissions, 0);
   assert.equal(denied.terminalSpawns, 0);
   assert.deepEqual(denied.closes[0], [4003, 'Direct public access disabled']);
+});
+
+test('Fleet-scoped WebSocket ticket is bound to the exact remote session', () => {
+  const denied = wsRouterHarness('/ws/chat?session=public-chat&ticket=once', {
+    ticket: { fleetSessionId: 'different-session', path: '/ws/chat' },
+  });
+  assert.equal(denied.chatAdmissions, 0);
+  assert.deepEqual(denied.closes[0], [4003, 'Forbidden']);
+
+  const admitted = wsRouterHarness('/ws/chat?session=public-chat&ticket=once', {
+    ticket: { fleetSessionId: 'public-chat', path: '/ws/chat' },
+  });
+  assert.equal(admitted.chatAdmissions, 1);
+  assert.equal(admitted.closes.length, 0);
 });
 
 test('server mounts the public-session guard before any session route surface', () => {

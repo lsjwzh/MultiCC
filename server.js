@@ -339,7 +339,7 @@ let _shuttingDown = false;
 // ── Access token authentication (cookie-based login) ──
 // `let` (not const): editable at runtime via /api/settings/access-token from
 // localhost, hot-reloaded without restart (persisted to .env).
-let ACCESS_TOKEN = networkPolicy.accessToken;
+let ACCESS_TOKEN = networkPolicy.accessToken, fleetSharingRuntime = null;
 const authSecurity = createAuthSecurity({ getSecret: () => ACCESS_TOKEN });
 const ALLOW_LEGACY_TOKEN_QUERY = envEnabled(process.env.MULTICC_ALLOW_LEGACY_TOKEN_QUERY);
 const ALLOW_LEGACY_WS_TOKEN = envEnabled(process.env.MULTICC_ALLOW_LEGACY_WS_TOKEN);
@@ -375,6 +375,7 @@ const authRuntime = createAuthRuntime({
   createErrorDto,
   getAccessToken: () => ACCESS_TOKEN,
   getShuttingDown: () => _shuttingDown,
+  authorizeScopedRequest: req => fleetSharingRuntime?.sharing.authorizeRequest({ token: req.headers['x-multicc-fleet-token'], grant: req.headers['x-multicc-fleet-grant'], method: req.method, pathname: req.path }) === true,
   allowLegacyTokenQuery: ALLOW_LEGACY_TOKEN_QUERY,
 });
 authRuntime.mountRoutes(app);
@@ -1955,7 +1956,9 @@ mountShareRoutes(app, {
   sharePageFile: path.join(__dirname, 'public', 'share.html'),
   logger,
 });
-mountFleetSharingRoutes(app, { paths: MULTICC_PATHS, directories, sessions: persistedSessions, logger });
+fleetSharingRuntime = mountFleetSharingRoutes(app, { paths: MULTICC_PATHS, directories, sessions: persistedSessions, logger,
+  issueWsTicket: (pathname, metadata) => authSecurity.issueWsTicket(pathname, metadata),
+});
 
 // Host/install metadata and APK selection share this boundary; live network
 // values are read lazily because development may select a fallback port.
