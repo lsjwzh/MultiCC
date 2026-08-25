@@ -500,6 +500,15 @@ class ChatProvider extends ChangeNotifier {
   // bar swaps to the new provider's quota right away.
   String _providerBaseUrl = '';
   String get providerBaseUrl => _providerBaseUrl;
+  SessionProviderSelection? _providerSelection;
+  SessionProviderSelection? get providerSelection => _providerSelection;
+  String? _activeProviderId;
+  String? get activeProviderId => _activeProviderId;
+  String? _activeProviderName;
+  String? get activeProviderName => _activeProviderName;
+  String? _activeProviderModel;
+  String? get activeProviderModel => _activeProviderModel;
+  final Map<String, String> _providerCatalogBaseUrls = {};
 
   QuotaService? _quotaService;
   QuotaService get _quota => _quotaService ??= QuotaService(settings: settings);
@@ -895,15 +904,31 @@ class ChatProvider extends ChangeNotifier {
         if (msg['cli'] != null) {
           _cli = parseCli(msg['cli']?.toString());
         }
+        _providerSelection = parseProviderSelection(msg['providerSelection']);
+        _clearActualProviderRoute();
+        final providerRoute = msg['providerRoute'];
+        if (providerRoute is Map) {
+          _applyActualProviderRoute(providerRoute);
+        } else if (_providerSelection == null) {
+          _applyConfiguredProvider(msg);
+        }
         refreshClaudeUsage();
         refreshQoderQuota();
         refreshOpenCodeQuota();
         refreshCodexQuota();
-        _loadProviderBaseUrl();
+        if (_providerSelection == null) {
+          _loadProviderBaseUrl();
+        } else {
+          _syncActualProviderBaseUrl();
+        }
         _loadIdleBars();
 
-        final model = msg['model']?.toString();
-        _statusText = model != null
+        final model = _providerSelection == null
+            ? msg['model']?.toString()
+            : null;
+        _statusText = _providerSelection != null
+            ? 'Connected · Auto'
+            : model != null
             ? t('connectedModel', {'model': model})
             : t('connectedCli', {'cli': _cli.name});
 
@@ -927,6 +952,9 @@ class ChatProvider extends ChangeNotifier {
         final from = parseCli(msg['fromCli']?.toString());
         if (next != _cli) _clearCliQuotaBackoff();
         _cli = next;
+        _providerSelection = parseProviderSelection(msg['providerSelection']);
+        _clearActualProviderRoute();
+        if (_providerSelection == null) _applyConfiguredProvider(msg);
         refreshClaudeUsage();
         refreshQoderQuota();
         // Parity with system_init / applyCliConfig / the web setCli: switching
@@ -935,9 +963,17 @@ class ChatProvider extends ChangeNotifier {
         // dedupes the applyCliConfig that often precedes this broadcast).
         refreshOpenCodeQuota();
         refreshCodexQuota();
-        _setProviderBaseUrl(msg['providerBaseUrl']?.toString() ?? '');
-        final model = msg['effectiveModel']?.toString();
-        _statusText = model != null && model.isNotEmpty
+        if (_providerSelection == null) {
+          _setProviderBaseUrl(msg['providerBaseUrl']?.toString() ?? '');
+        } else {
+          _syncActualProviderBaseUrl();
+        }
+        final model = _providerSelection == null
+            ? msg['effectiveModel']?.toString()
+            : null;
+        _statusText = _providerSelection != null
+            ? 'Connected · Auto'
+            : model != null && model.isNotEmpty
             ? t('connectedModel', {'model': model})
             : t('connectedCli', {'cli': next.name});
         final handoffId = msg['handoffId']?.toString();
@@ -957,6 +993,11 @@ class ChatProvider extends ChangeNotifier {
           notifyListeners();
         }
         onSessionConfigChanged?.call();
+        break;
+
+      case 'provider_route_event':
+      case 'provider_auto_route':
+        applyProviderRoutingEvent(evt.type, evt.payload as Map);
         break;
 
       case 'chat_history':
@@ -1333,15 +1374,32 @@ class ChatProvider extends ChangeNotifier {
   void applyCliConfig(SessionCliConfig config) {
     if (config.cli != _cli) _clearCliQuotaBackoff();
     _cli = config.cli;
+    _providerSelection = config.providerSelection;
+    _clearActualProviderRoute();
+    if (_providerSelection == null) {
+      _applyConfiguredProvider({
+        'providerId': config.provider,
+        'providerName': config.providerName,
+        'model': config.effectiveModel ?? config.model,
+      });
+    }
     refreshClaudeUsage();
     refreshQoderQuota();
     refreshOpenCodeQuota();
     refreshCodexQuota();
-    final model = config.effectiveModel ?? config.model;
-    _statusText = model != null && model.isNotEmpty
+    final model = _providerSelection == null
+        ? config.effectiveModel ?? config.model
+        : null;
+    _statusText = _providerSelection != null
+        ? 'Connected · Auto'
+        : model != null && model.isNotEmpty
         ? 'Connected · $model'
         : 'Connected · ${config.cli.name}';
-    _setProviderBaseUrl(config.providerBaseUrl ?? '');
+    if (_providerSelection == null) {
+      _setProviderBaseUrl(config.providerBaseUrl ?? '');
+    } else {
+      _syncActualProviderBaseUrl();
+    }
     notifyListeners();
   }
 
@@ -1371,12 +1429,98 @@ class ChatProvider extends ChangeNotifier {
   /// saveSession (chat.js: "without this call the bar kept showing the OLD
   /// provider until the next loadSessionModel()").
   void applyProviderSwitch(SessionCliConfig config) {
-    _setProviderBaseUrl(config.providerBaseUrl ?? '');
-    final model = config.effectiveModel ?? config.model;
+    _providerSelection = config.providerSelection;
+    _clearActualProviderRoute();
+    if (_providerSelection == null) {
+      _applyConfiguredProvider({
+        'providerId': config.provider,
+        'providerName': config.providerName,
+        'model': config.effectiveModel ?? config.model,
+      });
+      _setProviderBaseUrl(config.providerBaseUrl ?? '');
+    } else {
+      _syncActualProviderBaseUrl();
+    }
+    final model = _providerSelection == null
+        ? config.effectiveModel ?? config.model
+        : null;
     if (model != null && model.isNotEmpty) {
       _statusText = 'Connected · $model';
     }
     notifyListeners();
+  }
+
+  /// ChatService has already run ProviderRouteGate before emitting these
+  /// events. Auto policy events are only plans; only a physical attempt route
+  /// event is allowed to establish the displayed actual provider.
+  @visibleForTesting
+  void applyProviderRoutingEvent(String type, Map<dynamic, dynamic> source) {
+    if (type != 'provider_route_event') return;
+    _applyActualProviderRoute(source);
+    notifyListeners();
+  }
+
+  void _applyActualProviderRoute(Map<dynamic, dynamic> source) {
+    final providerId = source['providerId']?.toString();
+    final providerName = source['providerName']?.toString();
+    final model = source['model']?.toString();
+    if (providerId != null && providerId.isNotEmpty) {
+      _activeProviderId = providerId;
+      _activeProviderName = providerName == null || providerName.isEmpty
+          ? providerId
+          : providerName;
+      _activeProviderModel = model == null || model.isEmpty ? null : model;
+      _syncActualProviderBaseUrl();
+    }
+  }
+
+  void _applyConfiguredProvider(Map<dynamic, dynamic> source) {
+    final providerId = source['providerId']?.toString();
+    final providerName = source['providerName']?.toString();
+    final model = source['model']?.toString();
+    _activeProviderId = providerId == null || providerId.isEmpty
+        ? null
+        : providerId;
+    _activeProviderName = providerName == null || providerName.isEmpty
+        ? _activeProviderId
+        : providerName;
+    _activeProviderModel = model == null || model.isEmpty ? null : model;
+  }
+
+  void _clearActualProviderRoute() {
+    _activeProviderId = null;
+    _activeProviderName = null;
+    _activeProviderModel = null;
+  }
+
+  /// Provider summaries contain credential-free base URLs. Once the UI has
+  /// loaded that catalog, an accepted physical route can re-gate quota bars to
+  /// the actual provider instead of the configured Auto primary.
+  void applyProviderCatalog(List<Map<String, dynamic>> catalog) {
+    _providerCatalogBaseUrls
+      ..clear()
+      ..addEntries(
+        catalog.map((provider) {
+          final id = provider['id']?.toString() ?? '';
+          final baseUrl = provider['baseUrl']?.toString() ?? '';
+          return MapEntry(id, baseUrl);
+        }).where((entry) => entry.key.isNotEmpty),
+      );
+    _syncActualProviderBaseUrl();
+    notifyListeners();
+  }
+
+  void _syncActualProviderBaseUrl() {
+    final providerId = _activeProviderId;
+    if (providerId == null) {
+      if (_providerSelection != null) _setProviderBaseUrl('');
+      return;
+    }
+    if (_providerCatalogBaseUrls.containsKey(providerId)) {
+      _setProviderBaseUrl(_providerCatalogBaseUrls[providerId] ?? '');
+    } else if (_providerSelection != null) {
+      _setProviderBaseUrl('');
+    }
   }
 
   /// An explicit CLI switch resets the per-CLI fetch backoffs: the account on
@@ -1396,7 +1540,9 @@ class ChatProvider extends ChangeNotifier {
     if (sid.isEmpty) return;
     try {
       final baseUrl = await _quota.fetchProviderBaseUrl(sid);
-      _setProviderBaseUrl(baseUrl ?? '');
+      // A manual-route lookup may race with enabling Auto. Never let its
+      // configured-primary URL overwrite the physical route's quota gate.
+      if (_providerSelection == null) _setProviderBaseUrl(baseUrl ?? '');
     } catch (_) {
       // Non-fatal: the bar simply stays hidden until a switch provides a baseUrl.
     }

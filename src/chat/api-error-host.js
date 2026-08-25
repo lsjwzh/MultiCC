@@ -240,6 +240,7 @@ function createApiErrorHost(options = {}) {
     phase,
     partialOutput,
     sideEffects,
+    deferNotice = false,
   }) {
     const identity = turnProviderIdentity({ runner, persisted, cs, raw });
     const decision = recordApiError(raw, {
@@ -322,7 +323,7 @@ function createApiErrorHost(options = {}) {
         message,
         ...safe,
       });
-      chatBroadcast(sessionName, { type: 'system', subtype: 'warning', message });
+      if (!deferNotice) chatBroadcast(sessionName, { type: 'system', subtype: 'warning', message });
     }
     return decision;
   }

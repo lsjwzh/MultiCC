@@ -5,6 +5,32 @@ import '../models/git_commit.dart';
 import '../models/message.dart';
 import 'settings_service.dart';
 
+Map<String, dynamic> sessionAIConfigPatchBody({
+  required String provider,
+  required String model,
+  required String effort,
+  SessionProviderSelection? providerSelection,
+  SessionSubagent? subagent,
+  bool clearSubagent = false,
+  String? agent,
+}) {
+  final body = <String, dynamic>{
+    'provider': provider,
+    // Always present: a manual selection explicitly clears a previous Auto
+    // pool instead of accidentally leaving it active on the server.
+    'providerSelection': providerSelection?.toJson(),
+    'model': model,
+    'effort': effort,
+  };
+  if (agent != null) body['agent'] = agent;
+  if (clearSubagent) {
+    body['subagent'] = null;
+  } else if (subagent != null && !subagent.isEmpty) {
+    body['subagent'] = subagent.toJson();
+  }
+  return body;
+}
+
 class SessionService {
   final SettingsService settings;
 
@@ -477,21 +503,20 @@ class SessionService {
     required String provider,
     required String model,
     required String effort,
+    SessionProviderSelection? providerSelection,
     SessionSubagent? subagent,
     bool clearSubagent = false,
     String? agent,
   }) async {
-    final body = <String, dynamic>{
-      'provider': provider,
-      'model': model,
-      'effort': effort,
-    };
-    if (agent != null) body['agent'] = agent;
-    if (clearSubagent) {
-      body['subagent'] = null;
-    } else if (subagent != null && !subagent.isEmpty) {
-      body['subagent'] = subagent.toJson();
-    }
+    final body = sessionAIConfigPatchBody(
+      provider: provider,
+      providerSelection: providerSelection,
+      model: model,
+      effort: effort,
+      subagent: subagent,
+      clearSubagent: clearSubagent,
+      agent: agent,
+    );
     final res = await http
         .patch(
           Uri.parse(_url('/api/sessions/$id')),
@@ -515,7 +540,7 @@ class SessionService {
         .patch(
           Uri.parse(_url('/api/sessions/$id')),
           headers: _headers,
-          body: jsonEncode({'provider': provider}),
+          body: jsonEncode({'provider': provider, 'providerSelection': null}),
         )
         .timeout(const Duration(seconds: 10));
     if (res.statusCode >= 400) {

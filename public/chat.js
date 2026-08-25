@@ -1504,6 +1504,7 @@ function chatAiConfigState() {
     providers: _providerList,
     defaults: _providerDefaults,
     providerDisplayName: _sessionProviderDisplayName,
+    providerSelection: _sessionProviderSelection,
     claudeModelOptions: CLAUDE_MODEL_OPTIONS,
     translate: tt,
     modelShortName,
@@ -1580,13 +1581,18 @@ function showAIConfigPicker(config) {
 
 function updateModelBtn() {
   if (!modelBtn) return;
-  const shown = _sessionEffectiveModel || _sessionModel;
-  const provider = _sessionCli === 'qoder'
-    ? 'Qoder CN'
-    : ((_sessionProvider ? providerShortName(_sessionProvider) : '')
+  const auto = _sessionProviderSelection?.mode === 'auto' ? _sessionProviderSelection : null;
+  const shown = auto ? _activeProviderModel : (_sessionEffectiveModel || _sessionModel);
+  const actualProvider = _activeProviderName;
+  const provider = auto
+      ? `Auto · ${window.MultiCCChatAiConfig.autoProtocolLabel(auto.protocol)} → ${actualProvider || '待路由'}`
+      : _sessionCli === 'qoder'
+      ? 'Qoder CN'
+      : ((_sessionProvider ? providerShortName(_sessionProvider) : '')
       || _sessionProviderDisplayName
       || (_sessionCli === 'zcode' ? 'ZCode 原生' : tt('default')));
-  const model = shown ? modelDisplayName(shown, _sessionProvider) : tt('default');
+  const modelProviderId = auto ? _activeProviderId : _sessionProvider;
+  const model = shown ? modelDisplayName(shown, modelProviderId) : tt('default');
   const effort = effortShortName(_sessionEffectiveEffort || _sessionEffort);
   const agent = (_sessionCli === 'claude' || _sessionCli === 'opencode' || _sessionCli === 'qoder') && _sessionAgent
     ? `Agent ${_sessionAgent}`
@@ -1620,6 +1626,7 @@ async function loadSessionModel() {
   _sessionCliStates = info.cliStates || {}; _cliAvailability = info.cliAvailability || _cliAvailability;
   _pendingCliHandoff = info.pendingCliHandoff || null;
   _sessionProvider = info.provider || '';
+  _sessionProviderSelection = info.providerSelection || null;
   _sessionProviderDisplayName = '';
   _sessionSubagent = info.subagent || null;
   _sessionAgent = info.agent || '';
@@ -1645,6 +1652,7 @@ modelBtn?.addEventListener('click', async () => {
   }
   const picked = await showAIConfigPicker({
     provider: _sessionProvider,
+    providerSelection: _sessionProviderSelection,
     model: _sessionModel,
     effort: _sessionEffectiveEffort || _sessionEffort || defaultEffortForCurrentCli(),
     subagent: _sessionSubagent,
@@ -1654,12 +1662,15 @@ modelBtn?.addEventListener('click', async () => {
   try {
     const data = await window.MultiCCChatAiConfig.saveSession(_sessionName, {
       provider: picked.provider,
+      providerSelection: picked.providerSelection,
       model: picked.model,
       effort: picked.effort,
       ...((_sessionCli === 'claude' || _sessionCli === 'opencode' || _sessionCli === 'qoder') ? { agent: picked.agent } : {}),
       ...((_sessionCli === 'claude' || _sessionCli === 'codex') ? { subagent: picked.subagent } : {}),
     });
     _sessionProvider = data.provider || '';
+    _sessionProviderSelection = data.providerSelection || null;
+    _activeProviderId = ''; _activeProviderName = ''; _activeProviderModel = '';
     _sessionSubagent = data.subagent || null;
     _sessionAgent = data.agent || '';
     updateSubagentPill();
@@ -1673,7 +1684,10 @@ modelBtn?.addEventListener('click', async () => {
     // kept showing the OLD provider until the next loadSessionModel().
     updateProviderBtn(); // also calls updateModelBtn()
     const _savedModel = _sessionEffectiveModel || _sessionModel;
-    const savedParts = [providerShortName(_sessionProvider), _savedModel ? modelDisplayName(_savedModel, _sessionProvider) : tt('default'), effortShortName(_sessionEffectiveEffort)];
+    const savedProvider = _sessionProviderSelection?.mode === 'auto'
+      ? `Auto · ${window.MultiCCChatAiConfig.autoProtocolLabel(_sessionProviderSelection.protocol)}`
+      : providerShortName(_sessionProvider);
+    const savedParts = [savedProvider, _savedModel ? modelDisplayName(_savedModel, _sessionProvider) : tt('default'), effortShortName(_sessionEffectiveEffort)];
     if ((_sessionCli === 'claude' || _sessionCli === 'opencode' || _sessionCli === 'qoder') && _sessionAgent) savedParts.push(`Agent ${_sessionAgent}`);
     addSystemMsg(`✓ AI 配置已保存：${savedParts.filter(Boolean).join(' | ')}，下一轮对话生效`);
   } catch (e) {
@@ -1698,6 +1712,10 @@ effortBtn?.addEventListener('click', async () => {
 /* ── Per-session provider switch (cc-switch) ── */
 const providerBtn = document.getElementById('provider-btn');
 let _sessionProvider = '';       // provider id ('' = default login)
+let _sessionProviderSelection = null; // additive Auto pool; provider remains the concrete manual fallback
+let _activeProviderId = '';
+let _activeProviderName = '';
+let _activeProviderModel = '';
 let _sessionSubagent = null;     // {providerId, model} for Task-tool subagent (claude-proxy), null = 随主
 let _sessionAgent = '';          // Claude/OpenCode native --agent name; blank = CLI default agent
 let _sessionProviderDisplayName = '';  // 实际生效 provider 的显示名（init 兜底；_sessionProvider 为空或 _providerList 未加载时用）
@@ -1716,7 +1734,9 @@ function applyCliSwitchState(info) {
   if (info.cli) applyCliUi(info.cli);
   _providerList = [];
   _sessionProviderDisplayName = '';
+  _activeProviderId = ''; _activeProviderName = ''; _activeProviderModel = '';
   if (info.provider !== undefined) _sessionProvider = info.provider || '';
+  if (info.providerSelection !== undefined) _sessionProviderSelection = info.providerSelection || null;
   if (info.providerName !== undefined) _sessionProviderDisplayName = info.providerName || '';
   if (info.model !== undefined) _sessionModel = info.model || '';
   if (info.effectiveModel !== undefined) _sessionEffectiveModel = info.effectiveModel || info.model || '';
@@ -1741,7 +1761,9 @@ function providerShortName(id) {
 function updateProviderBtn() {
   if (!providerBtn) return;
   providerBtn.style.display = 'none';
-  window.MultiCCChatRateLimit?.setProviderBaseUrl?.((_providerList.find((x) => x && x.id === _sessionProvider) || {}).baseUrl || '');
+  const quotaProviderId = _sessionProviderSelection?.mode === 'auto'
+    ? _activeProviderId : _sessionProvider;
+  window.MultiCCChatRateLimit?.setProviderBaseUrl?.((_providerList.find((x) => x && x.id === quotaProviderId) || {}).baseUrl || '');
   updateModelBtn();
 }
 
@@ -1774,8 +1796,11 @@ providerBtn?.addEventListener('click', async () => {
   const picked = await showProviderPicker(_sessionProvider, list);
   if (picked === null) return;
   try {
-    const data = await window.MultiCCChatAiConfig.saveSession(_sessionName, { provider: picked.value });
+    const data = await window.MultiCCChatAiConfig.saveSession(_sessionName, {
+      provider: picked.value, providerSelection: null,
+    });
     _sessionProvider = data.provider || '';
+    _sessionProviderSelection = null;
     _sessionModel = data.model || '';
     _sessionEffectiveModel = data.effectiveModel || data.model || '';
     _sessionEffort = data.effort || '';
@@ -2379,6 +2404,10 @@ const eventStateBindings = {
   sessionEffectiveEffort: [() => _sessionEffectiveEffort, value => { _sessionEffectiveEffort = value; }],
   sessionProvider: [() => _sessionProvider, value => { _sessionProvider = value; }],
   sessionProviderDisplayName: [() => _sessionProviderDisplayName, value => { _sessionProviderDisplayName = value; }],
+  sessionProviderSelection: [() => _sessionProviderSelection, value => { _sessionProviderSelection = value; }],
+  activeProviderId: [() => _activeProviderId, value => { _activeProviderId = value; }],
+  activeProviderName: [() => _activeProviderName, value => { _activeProviderName = value; }],
+  activeProviderModel: [() => _activeProviderModel, value => { _activeProviderModel = value; }],
   sessionCliStates: [() => _sessionCliStates, value => { _sessionCliStates = value; }],
   cliAvailability: [() => _cliAvailability, value => { _cliAvailability = value; }],
   sessionAgent: [() => _sessionAgent, value => { _sessionAgent = value; }],
@@ -2432,6 +2461,7 @@ chatEventController = window.MultiCCChatEventController.createEventController({
     addSystemMsg,
     addAgentNotes,
     updateEffortBtn,
+    updateProviderBtn,
     updateModelBtn,
     transportSend: hostTransportSend,
     startTitleAnimation,
@@ -2868,4 +2898,3 @@ else connect();
 /* ════════════════════════════════════════════════════════════════════════════
  * 实时语音通话 — 结束
  * ════════════════════════════════════════════════════════════════════════════ */
-

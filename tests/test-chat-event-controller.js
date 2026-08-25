@@ -451,6 +451,42 @@ test('route protocol v1 reconnect init restores the active attempt and terminal 
   assert.equal(fixture.state.currentTextContent, 'after-reconnect');
 });
 
+test('Auto Provider init and route events update actual route without replacing the configured pool', () => {
+  const fixture = controllerFixture();
+  const generation = fixture.controller.beginGeneration();
+  const selection = {
+    version: 1, mode: 'auto', protocol: 'anthropic', maxAttempts: 2, sticky: true,
+    allowCrossTrust: false,
+    candidates: [
+      { providerId: 'empty', model: 'm1', priority: 1, enabled: true },
+      { providerId: 'backup', model: 'm2', priority: 2, enabled: true },
+    ],
+  };
+  fixture.controller.handleEvent({
+    type: 'system', subtype: 'init', session_id: 'auto', is_streaming: false,
+    providerSelection: selection, providerId: 'empty', providerName: 'Empty',
+    autoProvider: { model: 'm1' },
+  }, generation);
+  assert.deepEqual(fixture.state.sessionProviderSelection, selection);
+  assert.equal(fixture.state.sessionProvider, '');
+  assert.equal(fixture.state.activeProviderId, '', 'idle init does not claim a physical route');
+  assert.equal(fixture.state.activeProviderName, '');
+  assert.equal(fixture.controller.handleEvent({
+    type: 'provider_auto_route', version: 1, mode: 'auto', phase: 'switched',
+    providerId: 'backup', providerName: 'Backup', model: 'm2',
+  }, generation), true);
+  assert.equal(fixture.state.activeProviderId, '',
+    'a policy reservation cannot claim that its physical attempt began');
+  assert.equal(fixture.controller.handleEvent({
+    type: 'provider_route_event', version: 1, phase: 'selected',
+    providerId: 'backup', providerName: 'Backup', model: 'm2',
+  }, generation), true);
+  assert.equal(fixture.state.activeProviderId, 'backup');
+  assert.equal(fixture.state.activeProviderName, 'Backup');
+  assert.equal(fixture.state.activeProviderModel, 'm2');
+  assert.deepEqual(fixture.state.sessionProviderSelection, selection);
+});
+
 test('only server init synchronizes streaming state and pending cancel ownership', () => {
   const fixture = controllerFixture();
   const generation = fixture.controller.beginGeneration();

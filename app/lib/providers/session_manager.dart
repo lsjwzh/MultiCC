@@ -688,6 +688,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
     required String provider,
     required String model,
     required String effort,
+    SessionProviderSelection? providerSelection,
     SessionSubagent? subagent,
     bool clearSubagent = false,
     String? agent,
@@ -695,6 +696,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
     await _sessionService.updateSessionAIConfig(
       id,
       provider: provider,
+      providerSelection: providerSelection,
       model: model,
       effort: effort,
       subagent: subagent,

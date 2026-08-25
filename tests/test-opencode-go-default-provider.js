@@ -34,6 +34,11 @@ const MANAGED = {
   model: 'glm-5', modelOptions: ['glm-5'], aliasOnly: false,
   baseUrl: 'https://open.example.test/v1', hasToken: true, isOfficial: false,
 };
+const BACKUP = {
+  id: 'prov-2', appType: 'claude', name: 'Backup', apiFormat: 'anthropic',
+  model: 'glm-4', modelOptions: ['glm-4'], compatibleClis: ['claude', 'opencode'],
+  baseUrl: 'https://backup.example.test/v1', hasToken: true, isOfficial: false,
+};
 
 function fakeApp() {
   const routes = new Map();
@@ -53,6 +58,7 @@ function invoke(handler, { params = {}, body = {} } = {}) {
 
 function fixture(session) {
   const persistedSessions = new Map([['s1', session]]);
+  const effects = { events: [], closes: 0, workspaceBroadcasts: 0, chatBroadcasts: 0 };
   const providerRouterRuntime = {
     getProviderSummary: (_type, id) => (id === 'prov-1' ? MANAGED : null),
   };
@@ -73,21 +79,26 @@ function fixture(session) {
     sessionPolicy,
     providers: {
       appTypeForCli: providers.appTypeForCli,
-      modelValidForProvider: providers.modelValidForProvider,
+      listProviders: () => [{ ...MANAGED, apiFormat: 'anthropic', compatibleClis: ['claude', 'opencode'] }, BACKUP],
+      providerSupportsCli: (provider, cli) => provider.compatibleClis.includes(cli),
+      modelValidForProvider: (_appType, providerId, model) => {
+        const provider = [MANAGED, BACKUP].find(item => item.id === providerId);
+        return !model || !!provider?.modelOptions.includes(model);
+      },
       codexProviderProxyable: providers.codexProviderProxyable,
       CODEX_HOMES_DIR: providers.CODEX_HOMES_DIR,
     },
     providerRouterRuntime,
-    getChatStream: () => ({ close() {} }),
+    getChatStream: () => ({ close() { effects.closes += 1; } }),
     getChatState: () => null,
     hasLiveBackgroundTasks: () => false,
-    validProviderId: (_cli, id) => (id === '' || id === 'prov-1'
+    validProviderId: (_cli, id) => (id === '' || id === 'prov-1' || id === 'prov-2'
       ? { ok: true, value: id || null }
       : { ok: false }),
     asyncHandler: handler => handler,
-    appendEvent: () => {},
-    workspaceBroadcast: () => {},
-    chatBroadcast: () => {},
+    appendEvent: (...args) => effects.events.push(args),
+    workspaceBroadcast: () => { effects.workspaceBroadcasts += 1; },
+    chatBroadcast: () => { effects.chatBroadcasts += 1; },
     getTaskState: () => null,
     rememberActiveCliState: () => {},
     buildHandoffCheckpoint: () => ({ createdAt: 0 }),
@@ -101,7 +112,7 @@ function fixture(session) {
     getFolderMemory: () => ({ sessionDir: () => path.join(tmpRoot, 'mem') }),
     getCliSwitchGitSnapshot: () => async () => ({}),
   }).mountRoutes(app);
-  return { session, handler: app.routes.get('PATCH /api/sessions/:id') };
+  return { session, effects, handler: app.routes.get('PATCH /api/sessions/:id') };
 }
 
 test('opencode session keeps its native OpenCode Go model when saving the default provider', () => {
@@ -163,4 +174,68 @@ test('opencode session bound to a managed provider keeps model compatibility enf
   });
   assert.equal(staleRes.statusCode, 200);
   assert.equal(stale.session.model, 'glm-5'); // replaced with the provider's primary
+});
+
+test('session PATCH persists a validated Auto Provider pool while retaining a concrete fallback', () => {
+  const { session, effects, handler } = fixture({
+    id: 's1', dirId: 'd1', cli: 'claude', kind: 'chat', provider: 'prov-1', model: 'glm-5',
+  });
+  const providerSelection = {
+    version: 1, mode: 'auto', protocol: 'anthropic', maxAttempts: 2, sticky: true,
+    candidates: [
+      { providerId: 'prov-1', model: 'glm-5', priority: 1 },
+      { providerId: 'prov-2', model: 'glm-4', priority: 2 },
+    ],
+  };
+  const res = invoke(handler, {
+    params: { id: 's1' },
+    body: { provider: 'prov-1', model: 'glm-5', providerSelection },
+  });
+  assert.equal(res.statusCode, 200);
+  assert.equal(session.provider, 'prov-1');
+  assert.equal(session.providerSelection.mode, 'auto');
+  assert.deepEqual(res.body.providerSelection.candidates.map(item => item.providerId), ['prov-1', 'prov-2']);
+
+  const beforeInvalid = structuredClone(session);
+  const effectsBeforeInvalid = structuredClone(effects);
+  const invalidFallback = invoke(handler, {
+    params: { id: 's1' },
+    body: { label: 'must-not-stick', model: 'glm-4', provider: '', providerSelection },
+  });
+  assert.equal(invalidFallback.statusCode, 400);
+  assert.match(invalidFallback.body.error, /fallback must be an enabled candidate/);
+  assert.deepEqual(session, beforeInvalid, 'invalid Auto/provider combination performs no session mutation');
+  assert.deepEqual(effects, effectsBeforeInvalid, 'invalid Auto/provider combination emits no event and closes no stream');
+
+  const selectionOnly = invoke(handler, {
+    params: { id: 's1' }, body: { providerSelection },
+  });
+  assert.equal(selectionOnly.statusCode, 200);
+  assert.equal(session.provider, 'prov-1');
+  assert.equal(session.model, 'glm-5');
+
+  const manual = invoke(handler, { params: { id: 's1' }, body: { provider: 'prov-2' } });
+  assert.equal(manual.statusCode, 200);
+  assert.equal(session.providerSelection, null, 'legacy/manual provider PATCH exits Auto mode');
+});
+
+test('selection-only PATCH derives the concrete fallback from priority, not array order', () => {
+  const { session, handler } = fixture({
+    id: 's1', dirId: 'd1', cli: 'claude', kind: 'chat', provider: 'prov-1', model: 'glm-5',
+  });
+  const res = invoke(handler, {
+    params: { id: 's1' },
+    body: {
+      providerSelection: {
+        version: 1, mode: 'auto', protocol: 'anthropic', maxAttempts: 2, sticky: true,
+        candidates: [
+          { providerId: 'prov-1', model: 'glm-5', priority: 20 },
+          { providerId: 'prov-2', model: 'glm-4', priority: 1 },
+        ],
+      },
+    },
+  });
+  assert.equal(res.statusCode, 200);
+  assert.equal(session.provider, 'prov-2');
+  assert.equal(session.model, 'glm-4');
 });

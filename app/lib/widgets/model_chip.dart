@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../i18n.dart';
 import '../models/message.dart';
 import '../providers/session_manager.dart';
+import '../providers/chat_provider.dart';
 import '../services/manage_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
@@ -58,11 +59,13 @@ class ModelChipState extends State<ModelChip> {
         settings: widget.settings,
       ).fetchProviders(appType);
       if (!mounted || epoch != _loadEpoch) return;
+      final providers = (d['providers'] as List? ?? [])
+          .map((e) => (e as Map).cast<String, dynamic>())
+          .toList();
       setState(() {
-        _providers = (d['providers'] as List? ?? [])
-            .map((e) => (e as Map).cast<String, dynamic>())
-            .toList();
+        _providers = providers;
       });
+      context.read<ChatProvider>().applyProviderCatalog(providers);
     } catch (_) {}
   }
 
@@ -120,6 +123,7 @@ class ModelChipState extends State<ModelChip> {
   @override
   Widget build(BuildContext context) {
     final mgr = context.watch<SessionManager>();
+    final live = context.watch<ChatProvider>();
     Session? s;
     for (final x in mgr.sessions) {
       if (x.id == widget.sessionId) {
@@ -127,7 +131,19 @@ class ModelChipState extends State<ModelChip> {
         break;
       }
     }
-    final parts = [_providerLabel(s?.provider), _modelLabel(s)];
+    final selection = live.providerSelection ?? s?.providerSelection;
+    final parts = <String>[];
+    if (selection != null) {
+      parts.add(
+        autoProviderRouteLabel(selection.protocol, live.activeProviderName),
+      );
+      final actualModel = live.activeProviderModel;
+      if (actualModel != null && actualModel.isNotEmpty) {
+        parts.add(modelDisplayName(s?.cli ?? widget.cli, actualModel));
+      }
+    } else {
+      parts.addAll([_providerLabel(s?.provider), _modelLabel(s)]);
+    }
     if (widget.cli.supportsEffort) parts.add(_effortLabel(s));
     final label = parts.join(' | ');
     return Tooltip(
@@ -191,6 +207,7 @@ class ModelChipState extends State<ModelChip> {
     var runtime = SessionCliConfig(
       cli: s.cli,
       provider: s.provider,
+      providerSelection: s.providerSelection,
       model: s.model,
       effectiveModel: s.effectiveModel,
       effort: s.effort,
@@ -215,6 +232,7 @@ class ModelChipState extends State<ModelChip> {
         cli: runtime.cli,
         providers: _providers,
         provider: runtime.provider ?? '',
+        providerSelection: runtime.providerSelection,
         model: runtime.model ?? '',
         effort: runtime.effectiveEffort ?? runtime.effort ?? runtime.cli.defaultEffort,
         subProviderId: runtime.subagent?.providerId,
@@ -227,6 +245,7 @@ class ModelChipState extends State<ModelChip> {
       await mgr.updateSessionAIConfig(
         s.id,
         provider: picked.provider,
+        providerSelection: picked.providerSelection,
         model: picked.model,
         effort: picked.effort,
         subagent: picked.subagent,
@@ -242,4 +261,18 @@ class ModelChipState extends State<ModelChip> {
       messenger.showSnackBar(SnackBar(content: Text('AI 配置保存失败：$e')));
     }
   }
+}
+
+@visibleForTesting
+String autoProviderRouteLabel(String protocol, String? actualProviderName) {
+  final protocolLabel = switch (protocol) {
+    'anthropic' => 'Anthropic',
+    'openai_responses' => 'Responses',
+    'openai_chat' => 'OpenAI Chat',
+    _ => protocol,
+  };
+  final actual = actualProviderName == null || actualProviderName.isEmpty
+      ? '待路由'
+      : actualProviderName;
+  return 'Auto · $protocolLabel → $actual';
 }

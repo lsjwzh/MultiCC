@@ -6,6 +6,7 @@ const {
   createProviderRevision,
   createProviderAttemptRuntime,
   fenceForEvent,
+  markHostErrorEnvelope,
   scopeHostProviderEvent,
   tagProviderAttemptEvent,
 } = require('../src/chat/provider-attempt-runtime');
@@ -462,6 +463,64 @@ test('a retry is refused after any replay fence has been crossed', () => {
   assert.throws(() => runtime.beginAttempt(route({ attemptNo: 2 })), error => (
     error && error.code === 'PROVIDER_REPLAY_FENCE_CLOSED'
   ));
+});
+
+test('a host-marked whole-message provider error never becomes model output', () => {
+  const { runtime } = harness();
+  const first = runtime.beginAttempt(route());
+  const marked = markHostErrorEnvelope({
+    type: 'assistant', message: { content: [{ type: 'text', text: 'API Error: 402 insufficient balance' }] },
+  });
+  assert.equal(Object.getOwnPropertySymbols(marked).length, 1);
+  assert.deepEqual(Object.keys(marked), ['type', 'message']);
+  assert.equal(JSON.stringify(marked).includes('hostErrorEnvelope'), false);
+  runtime.observeEvent(first, marked);
+  assert.equal(runtime.snapshot('session-1').replayFence, 'none');
+  assert.equal(runtime.snapshot('session-1').visibleOutputObserved, false);
+  runtime.finishAttempt(first, { outcome: 'failed', errorCategory: 'billing_quota' });
+  assert.equal(runtime.beginAttempt(route({
+    providerId: 'provider-backup', model: 'backup-model', attemptNo: 2,
+  })).routeGeneration, 2);
+});
+
+test('raw data cannot forge the host marker and earlier deltas can never be reopened', () => {
+  const { runtime } = harness();
+  const first = runtime.beginAttempt(route());
+  runtime.observeEvent(first, {
+    type: 'assistant', hostErrorEnvelope: true,
+    message: { content: [{ type: 'text', text: 'API Error: 402 insufficient balance' }] },
+  });
+  assert.equal(runtime.snapshot('session-1').replayFence, 'visible_output');
+  runtime.finishAttempt(first, { outcome: 'failed' });
+  assert.throws(() => runtime.beginAttempt(route({ attemptNo: 2 })), error => (
+    error && error.code === 'PROVIDER_REPLAY_FENCE_CLOSED'
+  ));
+
+  const second = runtime.beginAttempt(route({ sessionId: 'session-2', turnId: 'turn-2' }));
+  runtime.observeEvent(second, {
+    type: 'stream_event', event: {
+      type: 'content_block_delta', delta: { type: 'text_delta', text: 'earlier output' },
+    },
+  });
+  runtime.observeEvent(second, markHostErrorEnvelope({
+    type: 'assistant', message: { content: [{ type: 'text', text: 'API Error: 402 insufficient balance' }] },
+  }));
+  assert.equal(runtime.snapshot('session-2').replayFence, 'visible_output');
+});
+
+test('thinking and tools remain irreversible even if a host marker is present', () => {
+  const { runtime } = harness();
+  const thinking = runtime.beginAttempt(route());
+  runtime.observeEvent(thinking, markHostErrorEnvelope({
+    type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'private reasoning' }] },
+  }));
+  assert.equal(runtime.snapshot('session-1').replayFence, 'visible_output');
+
+  const tool = runtime.beginAttempt(route({ sessionId: 'session-tool', turnId: 'turn-tool' }));
+  runtime.observeEvent(tool, markHostErrorEnvelope({
+    type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: {} }] },
+  }));
+  assert.equal(runtime.snapshot('session-tool').replayFence, 'tool_intent');
 });
 
 test('a new attempt waits until the old proxy producer has drained', () => {
