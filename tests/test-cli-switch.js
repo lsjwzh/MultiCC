@@ -38,7 +38,8 @@ test('legacy active fields migrate into the current CLI state', () => {
   assert.strictEqual(ensureCliStates(session, 100), true);
   assert.deepStrictEqual(session.cliStates.codex, {
     cliSessionId: 'codex-thread', streamSessionId: null, model: 'gpt-5', effort: 'high',
-    provider: 'codex-provider', subagent: { providerId: 'sub', model: 'mini' },
+    provider: 'codex-provider', providerSelection: null,
+    subagent: { providerId: 'sub', model: 'mini' },
     agent: null, reportedModel: null, updatedAt: 100,
   });
 });
@@ -63,6 +64,25 @@ test('switching saves the source and restores an existing target native session'
   assert.strictEqual(session.provider, 'claude-provider');
   assert.strictEqual(session.cliStates.codex.cliSessionId, 'thread-1');
   assert.strictEqual(session.streaming, true);
+});
+
+test('Auto Provider pools remain scoped to and restore with their owning CLI', () => {
+  const auto = {
+    version: 1, mode: 'auto', protocol: 'anthropic', maxAttempts: 2, sticky: true,
+    candidates: [
+      { providerId: 'claude-a', model: 'm-a', priority: 1, enabled: true },
+      { providerId: 'claude-b', model: 'm-b', priority: 2, enabled: true },
+    ],
+  };
+  const session = {
+    kind: 'chat', cli: 'claude', provider: 'claude-a', providerSelection: auto,
+    cliStates: { codex: { provider: 'codex-a', providerSelection: null } },
+  };
+  activateCliState(session, 'codex', { now: 201 });
+  assert.strictEqual(session.providerSelection, null);
+  activateCliState(session, 'claude', { now: 202 });
+  assert.deepStrictEqual(session.providerSelection, auto);
+  assert.notStrictEqual(session.providerSelection, auto, 'restored config is cloned, not aliased');
 });
 
 test('a new target gets target-safe defaults instead of source settings', () => {

@@ -132,7 +132,7 @@ const { mountSessionCreateRoutes } = require('./src/routes/session-create');
 const { mountCodexOAuthRoutes } = require('./src/routes/codex-oauth'); const { createClaudeOAuthSurface } = require('./src/routes/claude-oauth');
 const { mountZcodeAuthRoutes } = require('./src/routes/zcode-auth'); const { mountKimiAuthRoutes } = require('./src/routes/kimi-auth');
 const { createOrchestrationRoutes } = require('./src/routes/orchestration');
-const { createChatTurnEngine } = require('./src/chat/turn-engine');
+const { createChatTurnEngine } = require('./src/chat/turn-engine'); const { primaryProviderCandidate, validateProviderSelection } = require('./src/auto-provider-config');
 const { createTuiChatMirrorRuntime, isEnabled: tuiChatMirrorEnabled, validateExperimentalSession } = require('./src/experiments/tui-chat-mirror-runtime');
 const { createSessionGitRuntime } = require('./src/routes/session-git');
 const { createSessionProfileRoutes } = require('./src/routes/session-profile');
@@ -1563,7 +1563,7 @@ memoModule.migrateLegacy().done.catch(error => console.log(`[memo] migration fai
 
 // Create + persist an isolated session record (its own git worktree + branch).
 // Shared creation boundary; an explicit id creates or reuses a named session.
-async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, effort = null, agent = null, rolePrompt = null, rolePresetId = null, type = null, taskExecutionSlot = false, experimentalMode = null, loginFlow = null, persistence = 'bestEffort', persistenceSource = 'runtime.create-session', taskBoundTaskId = null }) {
+async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, providerSelection = null, effort = null, agent = null, rolePrompt = null, rolePresetId = null, type = null, taskExecutionSlot = false, experimentalMode = null, loginFlow = null, persistence = 'bestEffort', persistenceSource = 'runtime.create-session', taskBoundTaskId = null }) {
   if (!dir) return { ok: false, error: 'directory not found' };
   if (!SUPPORTED_CHAT_CLIS.includes(cli)) return { ok: false, error: `cli must be ${SUPPORTED_CHAT_CLIS.join(', ')}` };
   if (!['terminal', 'chat'].includes(kind)) return { ok: false, error: 'kind must be terminal or chat' };
@@ -1588,12 +1588,12 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
   // Provider override (cc-switch). An explicit value is validated; when omitted
   // the session inherits the global default for this CLI. null = use the default
   // login / OAuth subscription.
-  let providerId;
+  const autoSelection = validateProviderSelection(providerSelection, { cli, providers }); if (!autoSelection.ok) return { ok: false, error: autoSelection.error }; let providerId;
   if (provider === undefined) {
-    providerId = providerDefaults[cli] || null;
+    providerId = primaryProviderCandidate(autoSelection.value)?.providerId || providerDefaults[cli] || null;
   } else {
     const v = validProviderId(cli, provider);
-    if (!v.ok) return { ok: false, error: 'invalid provider' };
+    if (!v.ok) return { ok: false, error: 'invalid provider' }; if (autoSelection.value && !autoSelection.value.candidates.some(candidate => candidate.enabled && candidate.providerId === v.value)) return { ok: false, error: 'Auto Provider fallback must be an enabled candidate' };
     providerId = v.value;
   }
   const sid = id || allocateSessionId(dir, cli, kind);
@@ -1623,7 +1623,7 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
     model: model || null, // null = follow default/provider model
     effort: sessionEffort || null, // null = follow Claude Code/provider default
     agent: sessionAgent || null, // Claude/OpenCode/Qoder native --agent; unsupported CLIs keep null
-    provider: providerId,  // cc-switch provider id; null = default login/subscription
+    provider: providerId, providerSelection: autoSelection.value, // concrete manual fallback + optional virtual Auto policy
     autoCommit: true,      // default: auto-commit & merge after task completion
     // streaming (流式常驻) is now claude's default mode: keep the claude process
     // alive across turns for faster, context-preserving continuation. Non-claude
@@ -2635,7 +2635,7 @@ const chatTurnEngine = createChatTurnEngine({
   detached,
   routerToolHost,
   turnProgressHeartbeat,
-  providerRouterRuntime, providerAttemptRuntime,
+  providerRouterRuntime, providerAttemptRuntime, providerLimitCache,
   apiErrorHost,
   codexUsageHost,
   usageLimitPoller,

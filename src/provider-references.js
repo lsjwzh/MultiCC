@@ -28,6 +28,14 @@ function findProviderReferences({ appType, providerId, sessions, defaults, aux }
         sessionName: String(session.name || session.label || session.id || ''),
       }));
     }
+    if (session.providerSelection?.mode === 'auto'
+        && session.providerSelection.candidates?.some(candidate => candidate.providerId === id)) {
+      references.push(Object.freeze({
+        kind: 'auto_candidate',
+        sessionId: String(session.id || ''),
+        sessionName: String(session.name || session.label || session.id || ''),
+      }));
+    }
     if (session.subagent && session.subagent.providerId === id) {
       references.push(Object.freeze({
         kind: 'subagent',

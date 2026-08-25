@@ -37,10 +37,12 @@ const { redactProviderRouteCapability } = require('../src/observability');
 const {
   adapterReasoningProgressEvent,
   appendAdapterAssistantText,
+  markReplaySafeAssistantEnvelope,
   normalizeClaudeAssistantSnapshot,
   normalizeClaudeToolResultContent,
   recoverDispatchFromHistory,
 } = require('../src/chat/turn-engine');
+const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
 
 function runtimeRouteProof(sessionId, turnId) {
   return Object.freeze({
@@ -126,6 +128,36 @@ test('Claude-compatible content arrays collapse before capability redaction and 
   assert.equal(assistant.message.textSnapshot, true);
   assert.doesNotMatch(JSON.stringify(assistant), /pr1\./);
   assert.equal(assistant.message.content.filter(block => block.type === 'text').length, 1);
+});
+
+test('only an exact host-detected DeepSeek error envelope avoids the replay fence', () => {
+  let id = 0;
+  const runtime = createProviderAttemptRuntime({
+    runtimeEpoch: 'error-envelope-runtime', nextId: prefix => `${prefix}-${++id}`,
+  });
+  const route = (sessionId, turnId) => ({
+    sessionId, turnId, cli: 'claude', providerId: 'deepseek-empty',
+    providerName: 'DeepSeek Flash', protocol: 'anthropic', model: 'deepseek-v4-flash',
+    providerRevision: 'deepseek-revision', attemptNo: 1,
+  });
+  const first = runtime.beginAttempt(route('deepseek-exact', 'turn-exact'));
+  const exact = markReplaySafeAssistantEnvelope({
+    type: 'assistant', message: { content: [{
+      type: 'text',
+      text: 'Failed to authenticate. API Error: 403 用户额度不足, 剩余额度: ＄-2.528834',
+    }] },
+  }, 'claude');
+  runtime.observeEvent(first, exact);
+  assert.equal(runtime.snapshot('deepseek-exact').replayFence, 'none');
+
+  const second = runtime.beginAttempt(route('deepseek-trailing', 'turn-trailing'));
+  const trailing = markReplaySafeAssistantEnvelope({
+    type: 'assistant', message: { content: [{
+      type: 'text', text: '已经完成第一步。\nAPI Error: 403 用户额度不足',
+    }] },
+  }, 'claude');
+  runtime.observeEvent(second, trailing);
+  assert.equal(runtime.snapshot('deepseek-trailing').replayFence, 'visible_output');
 });
 
 test('attempt semantic DLP runs before Claude and adapter state mutation', () => {

@@ -35,8 +35,12 @@ test('process and stream retries reuse the owned turn without appending a second
   assert.ok(processStart >= 0 && processEnd > processStart);
   assert.equal(processBody.includes('evaluateTurnApiError({'), true);
   assert.equal(processBody.includes('scheduleOwnedRetry({'), true);
-  assert.equal(processBody.includes("retryInvocation = prepareInvocation({ reasonCode: 'same_provider_retry' })"), true,
-    'each physical retry must resolve a fresh concrete provider attempt');
+  assert.match(processBody,
+    /retryInvocation = prepareInvocation\(autoFailover\?\.invocationOptions\s*\|\| \{ reasonCode: 'same_provider_retry', \.\.\.currentRouteOptions\(\) \}\)/,
+    'each physical retry must resolve a fresh concrete provider attempt, optionally on the Auto fallback');
+  assert.match(processBody,
+    /reasonCode: 'codex_transport_continuation', \.\.\.currentRouteOptions\(\)/,
+    'native continuation must remain pinned to the current physical Auto route');
   assert.equal(processBody.includes('spawnChat(retryInvocation, true, finalizePlan.retry.attempt)'), true);
   assert.equal(processBody.includes('appendChatMessage(sessionName'), false,
     'retry runner reuses the already durable canonical user event');
@@ -48,7 +52,7 @@ test('process and stream retries reuse the owned turn without appending a second
   assert.equal(streamBody.includes('evaluateTurnApiError({'), true);
   assert.equal(streamBody.includes('scheduleOwnedRetry({'), true);
   assert.match(streamBody,
-    /runChatTurnStreaming\(\s*sessionName,\s*cs,\s*persisted,\s*retryInvocation,\s*provider,\s*turn,\s*prepareInvocation,\s*plan\.retry\.attempt,?\s*\)/);
+    /runChatTurnStreaming\(\s*sessionName,\s*cs,\s*persisted,\s*retryInvocation,\s*provider,\s*turn,\s*prepareInvocation,\s*autoTurn,\s*plan\.retry\.attempt,?\s*\)/);
   assert.equal(streamBody.includes('runChatTurn(sessionName'), false,
     'stream retry must not create a second canonical user message');
 });
