@@ -7,6 +7,7 @@ const path = require('path');
 
 const { normalizeManualMemory } = require('../memory/runtime');
 const { taskShortCode } = require('../classify/task-short-code');
+const { primaryProviderCandidate, providerSelectionDto, validateProviderSelection } = require('../auto-provider-config');
 
 // Session profile routes: PATCH /api/sessions/:id (label/model/effort/agent/
 // rolePrompt/memory/auto-flags/provider/subagent edits) and POST
@@ -131,7 +132,7 @@ function createSessionProfileRoutes(rawDeps) {
           error: 'cli cannot be changed with PATCH; use POST /api/sessions/:id/switch-cli',
         });
       }
-      const routeMutation = ['model', 'effort', 'agent', 'rolePrompt', 'provider', 'subagent']
+      const routeMutation = ['model', 'effort', 'agent', 'rolePrompt', 'provider', 'providerSelection', 'subagent']
         .some(key => Object.prototype.hasOwnProperty.call(req.body || {}, key));
       if (routeMutation) {
         let backgroundActive = true;
@@ -147,6 +148,34 @@ function createSessionProfileRoutes(rawDeps) {
         if (cs?._activeRunner || cs?.claudeProc || cs?.isStreaming || streamBusy) {
           return res.status(409).json({ error: 'session has an active turn; stop it before changing the provider route' });
         }
+      }
+      const hasProviderSelectionPatch = req.body.providerSelection !== undefined;
+      const hasProviderPatch = req.body.provider !== undefined;
+      let preparedProviderSelection = null;
+      let preparedPrimaryProvider = null;
+      let preparedProvider = null;
+      if (hasProviderSelectionPatch) {
+        preparedProviderSelection = validateProviderSelection(req.body.providerSelection, {
+          cli: s.cli || 'claude', providers,
+        });
+        if (!preparedProviderSelection.ok) {
+          return res.status(400).json({
+            error: preparedProviderSelection.error,
+            code: preparedProviderSelection.code,
+          });
+        }
+        preparedPrimaryProvider = primaryProviderCandidate(preparedProviderSelection.value);
+      }
+      if (hasProviderPatch) {
+        preparedProvider = validProviderId(s.cli || 'claude', (req.body.provider || '').toString().trim());
+        if (!preparedProvider.ok) return res.status(400).json({ error: 'invalid provider' });
+      }
+      const requestedFallback = hasProviderPatch
+        ? preparedProvider.value : preparedPrimaryProvider?.providerId;
+      if (preparedProviderSelection?.value
+          && !preparedProviderSelection.value.candidates.some(candidate => candidate.enabled
+            && candidate.providerId === requestedFallback)) {
+        return res.status(400).json({ error: 'Auto Provider fallback must be an enabled candidate' });
       }
       const mutation = sessionPersistence.begin('http.patch-session');
       const rejectMutation = (status, body) => {
@@ -230,12 +259,25 @@ function createSessionProfileRoutes(rawDeps) {
         s.autoCommit = !!req.body.autoCommit;
         appendEvent(s.dirId, 'session_autocommit_changed', `${s.label || s.id} → ${s.autoCommit ? '自动提交合并' : '关闭'}`, s.id);
       }
-      if (req.body.provider !== undefined) {
+      if (hasProviderSelectionPatch) {
+        s.providerSelection = preparedProviderSelection.value;
+        if (preparedPrimaryProvider && !hasProviderPatch) {
+          s.provider = preparedPrimaryProvider.providerId;
+          s.model = preparedPrimaryProvider.model || providerRouterRuntime.getProviderSummary(undefined, preparedPrimaryProvider.providerId)?.model || null;
+        }
+        if ((s.cli || 'claude') === 'claude') chatStream().close(s.id);
+        appendEvent(s.dirId, 'session_provider_selection_changed',
+          `${s.label || s.id} → ${preparedProviderSelection.value ? `Auto (${preparedProviderSelection.value.protocol}, ${preparedProviderSelection.value.candidates.filter(item => item.enabled).length} candidates)` : '手动 Provider'}`, s.id);
+      }
+      if (hasProviderPatch) {
         // Per-session cc-switch provider. '' / null clears the override → default login.
-        const v = validProviderId(s.cli || 'claude', (req.body.provider || '').toString().trim());
-        if (!v.ok) return rejectMutation(400, { error: 'invalid provider' });
+        const v = preparedProvider;
         const prevProvider = s.provider;
         s.provider = v.value;
+        // Old clients only know the concrete provider field. An explicit
+        // provider patch leaves Auto mode unless this request also carries the
+        // new providerSelection contract.
+        if (req.body.providerSelection === undefined) s.providerSelection = null;
         // Codex keeps each provider's threads under its own CODEX_HOME
         // (sessions/YYYY/MM/DD/rollout-<ts>-<cliSessionId>.jsonl). Switching provider
         // repoints the next spawn at a different home, so `codex exec resume <id>`
@@ -380,6 +422,7 @@ function createSessionProfileRoutes(rawDeps) {
         cliAvailability: cliAvailabilitySummary(),
         pendingCliHandoff: cliHandoffSummary(s),
         subagent: serializeSubagent(s.subagent),
+        providerSelection: providerSelectionDto(s.providerSelection),
         effectiveModel: effectiveSessionModel(s),
         effectiveEffort: effectiveSessionEffort(s),
       });
@@ -426,6 +469,7 @@ function createSessionProfileRoutes(rawDeps) {
       const r = await createSessionRecord({
         dir, cli: src.cli, kind: 'chat', label: label || `${src.label || src.id} · fork`,
         provider: src.provider == null ? undefined : src.provider,
+        providerSelection: providerSelectionDto(src.providerSelection),
         model: src.model, effort: src.effort, agent: src.agent, rolePrompt: src.rolePrompt,
         persistence: 'required', persistenceSource: 'http.fork-session-create',
       });

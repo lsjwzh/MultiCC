@@ -11,6 +11,11 @@ const FENCE_ORDER = Object.freeze({
   tool_intent: 2,
   side_effect: 3,
 });
+// Host-only proof that one complete assistant snapshot is a provider-owned
+// error envelope, not model output. The Symbol is intentionally module-private:
+// upstream JSON/model data cannot forge it, and the non-enumerable descriptor
+// keeps it out of client frames, logs, persistence and object spreads.
+const HOST_ERROR_ENVELOPE = Symbol('multicc.hostErrorEnvelope');
 const PROVIDER_ROUTE_OWNABLE_EVENT_TYPES = new Set([
   'part_delta', 'stream_event', 'assistant', 'user', 'result', 'error',
   'api_error_policy', 'provider_token_stats', 'rate_limit_event',
@@ -107,6 +112,19 @@ function contentBlocks(event) {
   return Array.isArray(content) ? content : [];
 }
 
+function markHostErrorEnvelope(event) {
+  if (!event || typeof event !== 'object' || Array.isArray(event)
+      || event.type !== 'assistant') return event;
+  const marked = { ...event };
+  Object.defineProperty(marked, HOST_ERROR_ENVELOPE, {
+    value: true,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  return marked;
+}
+
 function fenceForEvent(event) {
   if (!event || typeof event !== 'object') return 'none';
   if (event.type === 'stream_event' && event.event && typeof event.event === 'object') {
@@ -136,7 +154,11 @@ function fenceForEvent(event) {
   if (event.type === 'tool_result') return 'side_effect';
   if (event.type === 'assistant') {
     const blocks = contentBlocks(event);
+    if (blocks.length > 0 && blocks.every(block => block && block.type === 'text')
+        && event[HOST_ERROR_ENVELOPE] === true) return 'none';
     if (blocks.some(block => block && block.type === 'tool_use')) return 'tool_intent';
+    if (blocks.some(block => block && block.type === 'thinking'
+        && clean(block.thinking || block.text))) return 'visible_output';
     if (blocks.some(block => block && block.type === 'text' && clean(block.text))) return 'visible_output';
   }
   if (event.type === 'user'
@@ -977,6 +999,7 @@ module.exports = {
   createProviderRevision,
   createProviderAttemptRuntime,
   fenceForEvent,
+  markHostErrorEnvelope,
   providerAttemptFields,
   scopeHostProviderEvent,
   tagProviderAttemptEvent,

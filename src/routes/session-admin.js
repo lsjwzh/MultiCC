@@ -3,6 +3,7 @@
 const { createSessionQueryService, createWorkspaceService } = require('../session');
 const { isTerminalLetter, isSettledLetter } = require('../classify/vocab');
 const { taskShortCode } = require('../classify/task-short-code');
+const { providerSelectionDto } = require('../auto-provider-config');
 
 function assertFunction(value, name) {
   if (typeof value !== 'function') throw new TypeError(`[session-admin] ${name} must be a function`);
@@ -167,6 +168,7 @@ function createSessionAdminRuntime(rawDeps) {
       rolePrompt: record.rolePrompt || null,
       rolePresetId: record.rolePresetId || null,
       provider: record.provider || null,
+      providerSelection: providerSelectionDto(record.providerSelection),
       experimentalMode: record.experimentalMode || null,
       subagent: runtime.subagent,
       autoCommit: !!record.autoCommit,
@@ -200,6 +202,7 @@ function createSessionAdminRuntime(rawDeps) {
       rolePrompt: record.rolePrompt || null,
       rolePresetId: record.rolePresetId || null,
       provider: record.provider || null,
+      providerSelection: providerSelectionDto(record.providerSelection),
       experimentalMode: record.experimentalMode || null,
       subagent: runtime.subagent,
       cliStates: deps.cliStateSummary(record),
@@ -284,6 +287,7 @@ function createSessionAdminRuntime(rawDeps) {
       rolePresetId: record.rolePresetId || null,
       memory: record.memory || null,
       provider: record.provider || null,
+      providerSelection: providerSelectionDto(record.providerSelection),
       providerBaseUrl: deps.sessionProviderBaseUrl(record),
       experimentalMode: record.experimentalMode || null,
       subagent: runtime.subagent,

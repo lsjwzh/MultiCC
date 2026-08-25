@@ -54,6 +54,15 @@ void main() {
     model: 'm',
   );
 
+  const autoSelection = SessionProviderSelection(
+    protocol: 'anthropic',
+    candidates: [
+      SessionProviderCandidate(providerId: 'p1', priority: 1),
+      SessionProviderCandidate(providerId: 'p2', priority: 2),
+    ],
+    maxAttempts: 2,
+  );
+
   test(
     'applyProviderSwitch re-gates the bars immediately and notifies',
     () async {
@@ -124,4 +133,69 @@ void main() {
     );
     expect(provider.arkQuotaView, isNotNull);
   });
+
+  test(
+    'Auto policy choice is not actual until a physical route event',
+    () async {
+      final s = await settings();
+      final provider = ChatProvider(
+        settings: s,
+        sessionName: 'test-session',
+        sessionCwd: '/tmp/x',
+        quotaService: _StubQuotaService(s),
+      );
+      addTearDown(provider.dispose);
+
+      provider.applyProviderCatalog(const <Map<String, dynamic>>[
+        {
+          'id': 'p1',
+          'baseUrl': 'https://api.deepseek.com/anthropic',
+        },
+        {
+          'id': 'p2',
+          'baseUrl': 'https://open.bigmodel.cn/api/anthropic',
+        },
+      ]);
+      provider.applyProviderSwitch(
+        const SessionCliConfig(
+          cli: SessionCli.claude,
+          provider: 'p1',
+          providerName: 'Configured primary',
+          providerBaseUrl: 'https://api.deepseek.com/anthropic',
+          model: 'primary-model',
+          providerSelection: autoSelection,
+        ),
+      );
+
+      expect(provider.activeProviderId, isNull);
+      expect(provider.activeProviderName, isNull);
+      expect(provider.activeProviderModel, isNull);
+      expect(provider.providerBaseUrl, isEmpty);
+
+      provider.applyProviderRoutingEvent('provider_auto_route', const {
+        'phase': 'switched',
+        'providerId': 'p2',
+        'providerName': 'Working backup',
+        'model': 'backup-model',
+      });
+      expect(provider.activeProviderId, isNull);
+      expect(provider.providerBaseUrl, isEmpty);
+
+      provider.applyProviderRoutingEvent('provider_route_event', const {
+        'phase': 'selected',
+        'providerId': 'p2',
+        'providerName': 'Working backup',
+        'model': 'backup-model',
+      });
+      expect(provider.activeProviderId, 'p2');
+      expect(provider.activeProviderName, 'Working backup');
+      expect(provider.activeProviderModel, 'backup-model');
+      expect(
+        provider.providerBaseUrl,
+        'https://open.bigmodel.cn/api/anthropic',
+      );
+      expect(provider.zhipuQuotaView, isNotNull);
+      await Future<void>.delayed(Duration.zero);
+    },
+  );
 }
