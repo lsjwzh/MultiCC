@@ -24,6 +24,7 @@ function activeState(session, now = Date.now()) {
     model: session.model || null,
     effort: session.effort || null,
     provider: providerless ? null : (session.provider || null),
+    providerSelection: providerless ? null : (cloneValue(session.providerSelection) || null),
     subagent: providerless ? null : (cloneValue(session.subagent) || null),
     agent: session.agent || null,
     reportedModel: session.reportedModel || null,
@@ -73,6 +74,7 @@ function activateCliState(session, targetCli, options = {}) {
     model: defaults.model || null,
     effort: defaults.effort || null,
     provider: PROVIDERLESS_CLIS.has(targetCli) ? null : (defaults.provider || null),
+    providerSelection: null,
     subagent: PROVIDERLESS_CLIS.has(targetCli) ? null : (cloneValue(defaults.subagent) || null),
     agent: defaults.agent || null,
     reportedModel: null,
@@ -87,6 +89,7 @@ function activateCliState(session, targetCli, options = {}) {
   session.effort = state.effort || null;
   const providerless = PROVIDERLESS_CLIS.has(targetCli);
   session.provider = providerless ? null : (state.provider || null);
+  session.providerSelection = providerless ? null : (cloneValue(state.providerSelection) || null);
   session.subagent = providerless ? null : (cloneValue(state.subagent) || null);
   session.agent = state.agent || null;
   if (state.reportedModel) session.reportedModel = state.reportedModel;
@@ -97,6 +100,7 @@ function activateCliState(session, targetCli, options = {}) {
   session.cliStates[targetCli] = {
     ...state,
     provider: session.provider,
+    providerSelection: cloneValue(session.providerSelection) || null,
     subagent: cloneValue(session.subagent) || null,
     lastActivatedAt: now,
   };

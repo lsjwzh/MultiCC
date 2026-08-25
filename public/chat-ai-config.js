@@ -85,6 +85,27 @@
     return state && Array.isArray(state.providers) ? state.providers : [];
   }
 
+  function protocolOfProvider(provider) {
+    const value = provider && (provider.protocol || provider.apiFormat);
+    return ['anthropic', 'openai_responses', 'openai_chat'].includes(value) ? value : null;
+  }
+
+  function autoProtocolLabel(protocol) {
+    return ({
+      anthropic: 'Anthropic Messages',
+      openai_responses: 'OpenAI Responses',
+      openai_chat: 'OpenAI Chat Completions',
+    })[protocol] || protocol;
+  }
+
+  function autoOptionValue(protocol) {
+    return `__auto__:${protocol}`;
+  }
+
+  function autoProtocolFromValue(value) {
+    return String(value || '').startsWith('__auto__:') ? String(value).slice(9) : null;
+  }
+
   function translate(state, key) {
     return state && typeof state.translate === 'function' ? state.translate(key) : key;
   }
@@ -502,7 +523,7 @@
     const supportsProvider = cli !== 'qoder';
     return new Promise((resolve) => {
       ensureModalStyle(document);
-      const { overlay, box, body, footer } = modalShell(document, 480);
+      const { overlay, box, body, footer } = modalShell(document, 620);
       body.innerHTML = `
         <div style="font-size:15px;font-weight:600;margin-bottom:8px;">AI 配置（下一轮生效）</div>
         <div style="font-size:12px;color:#8b949e;line-height:1.5;margin-bottom:12px;">${supportsProvider ? 'Provider、' : ''}Model${choicesForEffort.length ? `、${effortLabel(cli)}` : ''} 会一起保存。${supportsProvider ? (cli === 'zcode' ? '选择 Provider 时使用 MultiCC 的三协议隔离配置；选择默认时跟随 ZCode 原生设置 / Coding Plan。' : '切换 Provider 后，Model 选项会按该 Provider 的可用模型联动更新。') : 'Qoder CN 使用自身账号与厂商配置。'}</div>
@@ -510,9 +531,21 @@
           <label style="display:block;font-size:12px;color:#8b949e;margin-bottom:5px;">Provider</label>
           <select id="ai-provider" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;"></select>
         </div>
-        <label style="display:block;font-size:12px;color:#8b949e;margin-bottom:5px;">Model</label>
-        <select id="ai-model" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:8px;"></select>
-        <input id="ai-model-custom" type="text" placeholder="模型 ID" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;display:none;">
+        <div id="ai-auto-section" style="display:none;border:1px solid #30363d;border-radius:8px;padding:10px;margin:0 0 12px;">
+          <div style="font-size:12px;font-weight:600;margin-bottom:3px;">Auto Provider 候选池</div>
+          <div style="font-size:11px;color:#8b949e;line-height:1.45;margin-bottom:8px;">按优先级尝试；仅在首字节前且没有工具副作用时切换。新鲜额度已耗尽的候选会预先跳过。</div>
+          <div id="ai-auto-candidates"></div>
+          <div id="ai-auto-error" style="display:none;color:#f85149;font-size:11px;margin:5px 0;"></div>
+          <div style="display:flex;gap:12px;align-items:center;margin-top:8px;font-size:11px;color:#8b949e;">
+            <label>最多尝试 <select id="ai-auto-max" style="background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:5px;padding:3px 6px;"><option>2</option><option>3</option><option>4</option></select></label>
+            <label><input id="ai-auto-sticky" type="checkbox" checked> 成功后优先沿用</label>
+          </div>
+        </div>
+        <div id="ai-model-section">
+          <label style="display:block;font-size:12px;color:#8b949e;margin-bottom:5px;">Model</label>
+          <select id="ai-model" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:8px;"></select>
+          <input id="ai-model-custom" type="text" placeholder="模型 ID" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;display:none;">
+        </div>
         <div id="ai-effort-section">
           <label id="ai-effort-label" style="display:block;font-size:12px;color:#8b949e;margin-bottom:5px;">${effortLabel(cli)}</label>
           <select id="ai-effort" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:14px;"></select>
@@ -541,6 +574,12 @@
 
       const providerSelect = box.querySelector('#ai-provider');
       const providerSection = box.querySelector('#ai-provider-section');
+      const autoSection = box.querySelector('#ai-auto-section');
+      const autoCandidates = box.querySelector('#ai-auto-candidates');
+      const autoError = box.querySelector('#ai-auto-error');
+      const autoMax = box.querySelector('#ai-auto-max');
+      const autoSticky = box.querySelector('#ai-auto-sticky');
+      const modelSection = box.querySelector('#ai-model-section');
       const modelSelect = box.querySelector('#ai-model');
       const customModel = box.querySelector('#ai-model-custom');
       const effortSelect = box.querySelector('#ai-effort');
@@ -556,13 +595,30 @@
           ? 'OpenCode 原生配置（OpenCode Go 等）'
           : translate(state, 'providerDefault');
       providerSelect.appendChild(defaultProvider);
+      const protocolGroups = new Map();
+      for (const provider of providersOf(state)) {
+        const protocol = protocolOfProvider(provider);
+        if (!protocol) continue;
+        const trust = provider.isOfficial ? 'official' : 'user-managed';
+        const key = `${protocol}:${trust}`;
+        if (!protocolGroups.has(key)) protocolGroups.set(key, []);
+        protocolGroups.get(key).push(provider);
+      }
+      for (const protocol of ['anthropic', 'openai_responses', 'openai_chat']) {
+        if (![...protocolGroups.entries()].some(([key, list]) => key.startsWith(`${protocol}:`) && list.length >= 2)) continue;
+        const option = document.createElement('option');
+        option.value = autoOptionValue(protocol);
+        option.textContent = `⚡ Auto · ${autoProtocolLabel(protocol)}`;
+        providerSelect.appendChild(option);
+      }
       for (const provider of providersOf(state)) {
         const option = document.createElement('option');
         option.value = provider.id;
         option.textContent = providerLabel(provider, true) + providerLimitLabel(provider, state.translate, Date.now());
         providerSelect.appendChild(option);
       }
-      providerSelect.value = config.provider || '';
+      const configuredAuto = config.providerSelection?.mode === 'auto' ? config.providerSelection : null;
+      providerSelect.value = configuredAuto ? autoOptionValue(configuredAuto.protocol) : (config.provider || '');
       providerSection.style.display = supportsProvider ? '' : 'none';
       if (!supportsProvider) providerSelect.value = '';
 
@@ -638,6 +694,91 @@
         if (subModelSelect.value === '__custom__') subCustomModel.focus();
       };
 
+      function autoPool(protocol) {
+        const all = providersOf(state).filter(provider => protocolOfProvider(provider) === protocol);
+        const configuredIds = new Set((configuredAuto?.protocol === protocol ? configuredAuto.candidates : [])
+          .map(candidate => candidate.providerId));
+        const configuredFirst = all.find(provider => configuredIds.has(provider.id));
+        const trustOfficial = configuredFirst ? !!configuredFirst.isOfficial
+          : all.filter(provider => !provider.isOfficial).length < 2;
+        return all.filter(provider => !!provider.isOfficial === trustOfficial);
+      }
+
+      function renderAutoCandidates() {
+        const protocol = autoProtocolFromValue(providerSelect.value);
+        autoSection.style.display = protocol ? '' : 'none';
+        modelSection.style.display = protocol ? 'none' : '';
+        autoCandidates.innerHTML = '';
+        autoError.style.display = 'none';
+        if (!protocol) return;
+        const prior = new Map((configuredAuto?.protocol === protocol ? configuredAuto.candidates : [])
+          .map(candidate => [candidate.providerId, candidate]));
+        const hasConfiguredPool = configuredAuto?.protocol === protocol;
+        const pool = autoPool(protocol);
+        pool.forEach((provider, index) => {
+          const configured = prior.get(provider.id);
+          const row = document.createElement('div');
+          row.className = 'auto-provider-candidate';
+          row.dataset.providerId = provider.id;
+          row.style.cssText = 'display:grid;grid-template-columns:22px minmax(150px,1fr) 70px minmax(130px,1fr);gap:7px;align-items:center;padding:6px 0;border-bottom:1px solid #21262d;';
+          const enabled = document.createElement('input');
+          enabled.type = 'checkbox';
+          enabled.className = 'auto-candidate-enabled';
+          enabled.checked = configured ? configured.enabled !== false : (!hasConfiguredPool && index < 2);
+          enabled.setAttribute('aria-label', `启用 ${provider.name}`);
+          const label = document.createElement('span');
+          label.style.cssText = 'font-size:11px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+          label.textContent = providerLabel(provider, false) + providerLimitLabel(provider, state.translate, Date.now());
+          const priority = document.createElement('input');
+          priority.type = 'number';
+          priority.min = '1'; priority.max = '100';
+          priority.className = 'auto-candidate-priority';
+          priority.value = String(configured?.priority || index + 1);
+          priority.title = '优先级（数字越小越优先）';
+          priority.style.cssText = 'width:100%;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:5px;padding:5px;';
+          const model = document.createElement('select');
+          model.className = 'auto-candidate-model';
+          model.style.cssText = 'width:100%;min-width:0;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:5px;padding:5px;';
+          const models = [...new Set([provider.model, ...(provider.modelOptions || [])].filter(Boolean))];
+          if (!models.length) models.push('');
+          for (const modelId of models) {
+            const option = document.createElement('option');
+            option.value = modelId;
+            option.textContent = modelId || 'Provider 默认';
+            model.appendChild(option);
+          }
+          model.value = configured?.model || provider.model || models[0];
+          row.append(enabled, label, priority, model);
+          autoCandidates.appendChild(row);
+        });
+        autoMax.value = String(configuredAuto?.protocol === protocol ? configuredAuto.maxAttempts || 3 : Math.min(3, pool.length));
+        autoSticky.checked = configuredAuto?.protocol === protocol ? configuredAuto.sticky !== false : true;
+      }
+
+      function collectAutoSelection() {
+        const protocol = autoProtocolFromValue(providerSelect.value);
+        if (!protocol) return null;
+        const candidates = [...autoCandidates.querySelectorAll('.auto-provider-candidate')]
+          .map(row => ({
+            providerId: row.dataset.providerId,
+            model: row.querySelector('.auto-candidate-model').value || null,
+            priority: Number(row.querySelector('.auto-candidate-priority').value),
+            enabled: row.querySelector('.auto-candidate-enabled').checked,
+          }))
+          .filter(candidate => candidate.enabled)
+          .sort((left, right) => left.priority - right.priority);
+        if (candidates.length < 2) {
+          autoError.textContent = '至少启用两个同协议 Provider。';
+          autoError.style.display = '';
+          return false;
+        }
+        return {
+          version: 1, mode: 'auto', protocol, candidates,
+          maxAttempts: Math.max(2, Math.min(4, candidates.length, Number(autoMax.value) || 2)),
+          sticky: autoSticky.checked, allowCrossTrust: false,
+        };
+      }
+
       function syncCustom() {
         customModel.style.display = modelSelect.value === '__custom__' ? '' : 'none';
       }
@@ -657,9 +798,12 @@
         customModel.value = known ? '' : selected;
         syncCustom();
       }
-      rebuildModels(providerSelect.value, config.model || '');
+      rebuildModels(configuredAuto ? (config.provider || '') : providerSelect.value, config.model || '');
+      renderAutoCandidates();
       providerSelect.onchange = () => {
-        rebuildModels(providerSelect.value, '');
+        const autoProtocol = autoProtocolFromValue(providerSelect.value);
+        if (!autoProtocol) rebuildModels(providerSelect.value, '');
+        renderAutoCandidates();
         if (cli === 'codex' && !providerSelect.value) subProviderSelect.value = '';
         refreshSubUi();
       };
@@ -670,6 +814,8 @@
 
       const close = result => { overlay.remove(); resolve(result); };
       box.querySelector('#ai-ok').onclick = () => {
+        const providerSelection = collectAutoSelection();
+        if (providerSelection === false) return;
         const selectedModel = modelSelect.value === '__custom__'
           ? customModel.value.trim()
           : modelSelect.value;
@@ -677,9 +823,11 @@
         const childModel = childProviderId
           ? (subModelSelect.value === '__custom__' ? subCustomModel.value.trim() : subModelSelect.value)
           : '';
+        const primary = providerSelection && providerSelection.candidates[0];
         close({
-          provider: providerSelect.value,
-          model: selectedModel,
+          provider: primary ? primary.providerId : providerSelect.value,
+          providerSelection,
+          model: primary ? primary.model || '' : selectedModel,
           effort: effortSelect.value,
           agent: cli === 'claude' || cli === 'opencode' || cli === 'qoder' ? agentInput.value.trim() : null,
           subagent: (cli === 'claude' || cli === 'codex') && childProviderId && childModel
@@ -790,6 +938,9 @@
     effortOptions,
     effortLabel,
     effortShortName,
+    autoProtocolLabel,
+    autoProtocolFromValue,
+    autoOptionValue,
     effectiveProviderId,
     providerShortName,
     providerModelOptions,

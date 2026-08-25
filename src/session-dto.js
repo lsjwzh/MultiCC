@@ -1,5 +1,7 @@
 'use strict';
 
+const { providerSelectionDto } = require('./auto-provider-config');
+
 // Public session contract. This boundary deliberately excludes filesystem and
 // native-CLI implementation details (cwd/worktreePath/cliSessionId), large
 // prompt/memory blobs, credentials, and Error objects.
@@ -82,6 +84,7 @@ function toSessionDto(source = {}) {
     effectiveEffort: nullableString(source.effectiveEffort, 80),
     agent: nullableString(source.agent, 160),
     provider: nullableString(source.provider, 160),
+    providerSelection: providerSelectionDto(source.providerSelection),
     experimentalMode: nullableString(source.experimentalMode, 80),
     subagent: subagentDto(source.subagent),
     autoCommit: !!source.autoCommit,

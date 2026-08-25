@@ -23,6 +23,7 @@ class AIConfigResult {
   final String providerLabel;
   final String modelLabel;
   final String effortLabel;
+  final SessionProviderSelection? providerSelection;
   final SessionSubagent? subagent;
   final String? agent;
   const AIConfigResult({
@@ -32,9 +33,38 @@ class AIConfigResult {
     required this.providerLabel,
     required this.modelLabel,
     required this.effortLabel,
+    this.providerSelection,
     this.subagent,
     this.agent,
   });
+}
+
+class _AutoProviderGroup {
+  const _AutoProviderGroup({
+    required this.key,
+    required this.protocol,
+    required this.official,
+    required this.providers,
+  });
+
+  final String key;
+  final String protocol;
+  final bool official;
+  final List<Map<String, dynamic>> providers;
+}
+
+class _AutoCandidateDraft {
+  _AutoCandidateDraft({
+    required this.providerId,
+    required this.model,
+    required this.priority,
+    required this.enabled,
+  });
+
+  final String providerId;
+  String model;
+  int priority;
+  bool enabled;
 }
 
 class AIConfigSheet extends StatefulWidget {
@@ -43,6 +73,7 @@ class AIConfigSheet extends StatefulWidget {
   final String provider;
   final String model;
   final String effort;
+  final SessionProviderSelection? providerSelection;
   final String? subProviderId;
   final String? subModel;
   final String? agent;
@@ -53,6 +84,7 @@ class AIConfigSheet extends StatefulWidget {
     required this.provider,
     required this.model,
     required this.effort,
+    this.providerSelection,
     this.subProviderId,
     this.subModel,
     this.agent,
@@ -66,6 +98,10 @@ class AIConfigSheetState extends State<AIConfigSheet> {
   late String _provider;
   late String _model;
   late String _effort;
+  String? _autoGroupKey;
+  final List<_AutoCandidateDraft> _autoCandidates = [];
+  int _autoMaxAttempts = 2;
+  bool _autoSticky = true;
   bool _customModel = false;
   late final TextEditingController _customCtrl;
   late final TextEditingController _agentCtrl;
@@ -91,6 +127,7 @@ class AIConfigSheetState extends State<AIConfigSheet> {
     final known = _modelChoices(_provider).contains(_model);
     _customModel = _model.isNotEmpty && !known;
     _customCtrl = TextEditingController(text: _customModel ? _model : '');
+    _seedAutoSelection(widget.providerSelection);
     _agentCtrl = TextEditingController(text: widget.agent ?? '');
     // Sub-task seeding.
     _subProvider = widget.subProviderId ?? '';
@@ -114,6 +151,89 @@ class AIConfigSheetState extends State<AIConfigSheet> {
   }
 
   List<String> get _validEfforts => widget.cli.effortOptions;
+  bool get _isAuto => _autoGroupKey != null;
+
+  static String _autoKey(String protocol, bool official) =>
+      '$protocol:${official ? 'official' : 'user-managed'}';
+
+  String _protocolLabel(String protocol) => switch (protocol) {
+    'anthropic' => 'Anthropic',
+    'openai_responses' => 'OpenAI Responses',
+    'openai_chat' => 'OpenAI Chat',
+    _ => protocol,
+  };
+
+  String? _protocolOf(Map<String, dynamic> provider) {
+    final value = (provider['protocol'] ?? provider['apiFormat'])?.toString();
+    return const {
+          'anthropic',
+          'openai_responses',
+          'openai_chat',
+        }.contains(value)
+        ? value
+        : null;
+  }
+
+  List<_AutoProviderGroup> get _autoGroups {
+    final grouped = <String, List<Map<String, dynamic>>>{};
+    for (final provider in widget.providers) {
+      final protocol = _protocolOf(provider);
+      final id = provider['id']?.toString() ?? '';
+      if (protocol == null || id.isEmpty) continue;
+      final key = _autoKey(protocol, provider['isOfficial'] == true);
+      grouped.putIfAbsent(key, () => []).add(provider);
+    }
+    return grouped.entries
+        .where((entry) => entry.value.length >= 2)
+        .map((entry) {
+          final separator = entry.key.lastIndexOf(':');
+          final protocol = entry.key.substring(0, separator);
+          return _AutoProviderGroup(
+            key: entry.key,
+            protocol: protocol,
+            official: entry.key.endsWith(':official'),
+            providers: entry.value,
+          );
+        })
+        .toList(growable: false);
+  }
+
+  _AutoProviderGroup? _autoGroup(String? key) {
+    if (key == null) return null;
+    for (final group in _autoGroups) {
+      if (group.key == key) return group;
+    }
+    return null;
+  }
+
+  void _seedAutoSelection(SessionProviderSelection? selection) {
+    if (selection == null) return;
+    final firstId = selection.candidates.first.providerId;
+    final first = _providerMap(firstId);
+    final official = first?['isOfficial'] == true;
+    _autoGroupKey = _autoKey(selection.protocol, official);
+    _autoCandidates
+      ..clear()
+      ..addAll(
+        selection.candidates.map(
+          (candidate) => _AutoCandidateDraft(
+            providerId: candidate.providerId,
+            model: candidate.model ?? '',
+            priority: candidate.priority,
+            enabled: candidate.enabled,
+          ),
+        ),
+      );
+    _autoMaxAttempts = selection.maxAttempts;
+    _autoSticky = selection.sticky;
+    final enabled =
+        _autoCandidates.where((candidate) => candidate.enabled).toList()
+          ..sort((a, b) => a.priority.compareTo(b.priority));
+    if (enabled.isNotEmpty) {
+      _provider = enabled.first.providerId;
+      _model = _normalizeModel(_provider, enabled.first.model);
+    }
+  }
 
   Map<String, dynamic>? _providerMap(String id) {
     for (final p in widget.providers) {
@@ -233,8 +353,37 @@ class AIConfigSheetState extends State<AIConfigSheet> {
 
   void _onProviderChanged(String? value) {
     final next = value ?? '';
+    if (next.startsWith('__auto__:')) {
+      final groupKey = next.substring('__auto__:'.length);
+      final group = _autoGroup(groupKey);
+      if (group == null) return;
+      setState(() {
+        _autoGroupKey = groupKey;
+        _autoCandidates
+          ..clear()
+          ..addAll(
+            group.providers.asMap().entries.map(
+              (entry) => _AutoCandidateDraft(
+                providerId: entry.value['id']?.toString() ?? '',
+                model: '',
+                priority: entry.key + 1,
+                enabled: entry.key < 2,
+              ),
+            ),
+          );
+        _autoMaxAttempts = 2;
+        final primary = _autoCandidates.first;
+        _provider = primary.providerId;
+        _model = '';
+        _customModel = false;
+        _customCtrl.clear();
+      });
+      return;
+    }
     final choices = _modelChoices(next);
     setState(() {
+      _autoGroupKey = null;
+      _autoCandidates.clear();
       _provider = next;
       if (_isCodex && next.isEmpty) {
         _subProvider = '';
@@ -264,7 +413,36 @@ class AIConfigSheetState extends State<AIConfigSheet> {
   }
 
   void _submit() {
-    final model = _customModel ? _customCtrl.text.trim() : _model;
+    SessionProviderSelection? providerSelection;
+    var provider = _provider;
+    var model = _customModel ? _customCtrl.text.trim() : _model;
+    if (_isAuto) {
+      final group = _autoGroup(_autoGroupKey);
+      final protocol = group?.protocol ?? widget.providerSelection?.protocol;
+      final enabled =
+          _autoCandidates.where((candidate) => candidate.enabled).toList()
+            ..sort((a, b) => a.priority.compareTo(b.priority));
+      if (protocol == null || protocol.isEmpty || enabled.length < 2) return;
+      provider = enabled.first.providerId;
+      model = enabled.first.model.trim();
+      providerSelection = SessionProviderSelection(
+        protocol: protocol,
+        candidates: _autoCandidates
+            .map(
+              (candidate) => SessionProviderCandidate(
+                providerId: candidate.providerId,
+                model: candidate.model.trim().isEmpty
+                    ? null
+                    : candidate.model.trim(),
+                priority: candidate.priority.clamp(1, 100),
+                enabled: candidate.enabled,
+              ),
+            )
+            .toList(growable: false),
+        maxAttempts: _autoMaxAttempts.clamp(2, enabled.length.clamp(2, 4)),
+        sticky: _autoSticky,
+      );
+    }
     final subModel = _subProvider.isEmpty
         ? null
         : (_customSubModel ? _subCustomCtrl.text.trim() : _subModel);
@@ -274,14 +452,175 @@ class AIConfigSheetState extends State<AIConfigSheet> {
     Navigator.pop(
       context,
       AIConfigResult(
-        provider: _provider,
+        provider: provider,
         model: model,
         effort: _effort,
-        providerLabel: _providerName(_provider),
-        modelLabel: _modelResultLabel(_provider, model),
+        providerLabel: providerSelection == null
+            ? _providerName(provider)
+            : 'Auto · ${_protocolLabel(providerSelection.protocol)} → ${_providerName(provider)}',
+        modelLabel: _modelResultLabel(provider, model),
         effortLabel: effortShortNameForCli(widget.cli, _effort),
+        providerSelection: providerSelection,
         subagent: subagent,
         agent: widget.cli.supportsAgent ? _agentCtrl.text.trim() : null,
+      ),
+    );
+  }
+
+  Widget _buildAutoSection() {
+    final enabledCount = _autoCandidates
+        .where((candidate) => candidate.enabled)
+        .length;
+    final maxAllowed = enabledCount.clamp(2, 4);
+    if (_autoMaxAttempts > maxAllowed) _autoMaxAttempts = maxAllowed;
+    final ordered = [..._autoCandidates]
+      ..sort((a, b) => a.priority.compareTo(b.priority));
+    return Container(
+      key: const Key('auto-provider-section'),
+      margin: const EdgeInsets.only(top: 12),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0b0d10),
+        border: Border.all(color: const Color(0xFF20242b)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Text(
+            'Auto Provider 候选池',
+            style: TextStyle(
+              color: AppColors.text,
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            '仅在首个 Provider 无额度或安全可重放的连接错误时切换。',
+            style: TextStyle(color: AppColors.faint, fontSize: 11),
+          ),
+          const SizedBox(height: 8),
+          ...ordered.map((candidate) {
+            final provider = _providerMap(candidate.providerId);
+            return Container(
+              key: Key('auto-candidate-${candidate.providerId}'),
+              margin: const EdgeInsets.only(bottom: 8),
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: const Color(0xFF111318),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      Checkbox(
+                        key: Key(
+                          'auto-candidate-enabled-${candidate.providerId}',
+                        ),
+                        value: candidate.enabled,
+                        onChanged: (value) => setState(() {
+                          candidate.enabled = value == true;
+                          final count = _autoCandidates
+                              .where((item) => item.enabled)
+                              .length;
+                          _autoMaxAttempts = _autoMaxAttempts.clamp(
+                            2,
+                            count.clamp(2, 4),
+                          );
+                        }),
+                      ),
+                      Expanded(
+                        child: ProviderOption(
+                          main: _providerName(candidate.providerId),
+                          detail: providerLimitDetail(provider),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      SizedBox(
+                        width: 64,
+                        child: TextFormField(
+                          key: Key(
+                            'auto-candidate-priority-${candidate.providerId}',
+                          ),
+                          initialValue: '${candidate.priority}',
+                          keyboardType: TextInputType.number,
+                          style: const TextStyle(
+                            color: AppColors.text,
+                            fontSize: 12,
+                          ),
+                          decoration: _sheetInputDecoration(
+                            hint: '优先级',
+                          ).copyWith(labelText: '优先级'),
+                          onChanged: (value) {
+                            final parsed = int.tryParse(value);
+                            if (parsed != null) {
+                              candidate.priority = parsed.clamp(1, 100);
+                            }
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  TextFormField(
+                    key: Key('auto-candidate-model-${candidate.providerId}'),
+                    initialValue: candidate.model,
+                    style: const TextStyle(
+                      color: AppColors.text,
+                      fontSize: 12,
+                      fontFamily: 'monospace',
+                    ),
+                    decoration: _sheetInputDecoration(
+                      hint: '留空跟随 Provider 默认模型',
+                    ).copyWith(labelText: 'Model'),
+                    onChanged: (value) => candidate.model = value,
+                  ),
+                ],
+              ),
+            );
+          }),
+          if (enabledCount < 2)
+            const Text(
+              '至少启用两个候选 Provider',
+              key: Key('auto-provider-validation'),
+              style: TextStyle(color: AppColors.danger, fontSize: 11),
+            ),
+          const SizedBox(height: 4),
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  '最多尝试次数',
+                  style: TextStyle(color: AppColors.faint, fontSize: 12),
+                ),
+              ),
+              DropdownButton<int>(
+                key: const Key('auto-provider-max-attempts'),
+                value: _autoMaxAttempts,
+                dropdownColor: AppColors.panel,
+                items: [
+                  for (var value = 2; value <= maxAllowed; value += 1)
+                    DropdownMenuItem(value: value, child: Text('$value')),
+                ],
+                onChanged: (value) =>
+                    setState(() => _autoMaxAttempts = value ?? 2),
+              ),
+            ],
+          ),
+          SwitchListTile.adaptive(
+            key: const Key('auto-provider-sticky'),
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+            title: const Text(
+              '成功后优先复用该 Provider',
+              style: TextStyle(color: AppColors.text, fontSize: 12),
+            ),
+            value: _autoSticky,
+            onChanged: (value) => setState(() => _autoSticky = value),
+          ),
+        ],
       ),
     );
   }
@@ -289,11 +628,14 @@ class AIConfigSheetState extends State<AIConfigSheet> {
   @override
   Widget build(BuildContext context) {
     final modelChoices = _modelChoices(_provider);
+    final autoGroups = _autoGroups;
     final providerIds = widget.providers
         .map((p) => p['id']?.toString() ?? '')
         .toSet();
     final includeCurrentProvider =
         _provider.isNotEmpty && !providerIds.contains(_provider);
+    final providerValue = _isAuto ? '__auto__:$_autoGroupKey' : _provider;
+    final includeCurrentAuto = _isAuto && _autoGroup(_autoGroupKey) == null;
     final modelValue = _customModel
         ? '__custom__'
         : (modelChoices.contains(_model) ? _model : '');
@@ -332,13 +674,28 @@ class AIConfigSheetState extends State<AIConfigSheet> {
               ),
               const SizedBox(height: 5),
               DropdownButtonFormField<String>(
-                value: _provider,
+                value: providerValue,
                 isExpanded: true,
                 dropdownColor: AppColors.panel,
                 decoration: _sheetInputDecoration(),
                 style: const TextStyle(color: AppColors.text, fontSize: 13),
                 items: [
                   const DropdownMenuItem(value: '', child: Text('默认登录 / 订阅')),
+                  ...autoGroups.map(
+                    (group) => DropdownMenuItem(
+                      value: '__auto__:${group.key}',
+                      child: Text(
+                        '⚡ Auto · ${_protocolLabel(group.protocol)} · ${group.official ? '官方' : '自管'}',
+                      ),
+                    ),
+                  ),
+                  if (includeCurrentAuto)
+                    DropdownMenuItem(
+                      value: providerValue,
+                      child: Text(
+                        '⚡ Auto · ${_protocolLabel(widget.providerSelection?.protocol ?? '')}',
+                      ),
+                    ),
                   if (includeCurrentProvider)
                     DropdownMenuItem(
                       value: _provider,
@@ -361,6 +718,7 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                 ],
                 onChanged: _onProviderChanged,
               ),
+              if (_isAuto) _buildAutoSection(),
               const SizedBox(height: 12),
             ] else ...[
               const Text(
@@ -369,49 +727,51 @@ class AIConfigSheetState extends State<AIConfigSheet> {
               ),
               const SizedBox(height: 12),
             ],
-            const Text(
-              'Model',
-              style: TextStyle(color: AppColors.faint, fontSize: 12),
-            ),
-            const SizedBox(height: 5),
-            DropdownButtonFormField<String>(
-              value: modelValue,
-              dropdownColor: AppColors.panel,
-              decoration: _sheetInputDecoration(),
-              style: const TextStyle(color: AppColors.text, fontSize: 13),
-              items: [
-                ...modelChoices.map(
-                  (m) => DropdownMenuItem(
-                    value: m,
-                    child: Text(_modelOptionLabel(_provider, m)),
+            if (!_isAuto) ...[
+              const Text(
+                'Model',
+                style: TextStyle(color: AppColors.faint, fontSize: 12),
+              ),
+              const SizedBox(height: 5),
+              DropdownButtonFormField<String>(
+                value: modelValue,
+                dropdownColor: AppColors.panel,
+                decoration: _sheetInputDecoration(),
+                style: const TextStyle(color: AppColors.text, fontSize: 13),
+                items: [
+                  ...modelChoices.map(
+                    (m) => DropdownMenuItem(
+                      value: m,
+                      child: Text(_modelOptionLabel(_provider, m)),
+                    ),
+                  ),
+                  const DropdownMenuItem(
+                    value: '__custom__',
+                    child: Text('自定义…'),
+                  ),
+                ],
+                onChanged: (v) {
+                  setState(() {
+                    _customModel = v == '__custom__';
+                    if (!_customModel) _model = v ?? '';
+                  });
+                },
+              ),
+              if (_customModel) ...[
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _customCtrl,
+                  autofocus: true,
+                  style: const TextStyle(
+                    color: AppColors.text,
+                    fontSize: 13,
+                    fontFamily: 'monospace',
+                  ),
+                  decoration: _sheetInputDecoration(
+                    hint: _isClaude ? 'claude-opus-4-8' : '模型 ID',
                   ),
                 ),
-                const DropdownMenuItem(
-                  value: '__custom__',
-                  child: Text('自定义…'),
-                ),
               ],
-              onChanged: (v) {
-                setState(() {
-                  _customModel = v == '__custom__';
-                  if (!_customModel) _model = v ?? '';
-                });
-              },
-            ),
-            if (_customModel) ...[
-              const SizedBox(height: 8),
-              TextField(
-                controller: _customCtrl,
-                autofocus: true,
-                style: const TextStyle(
-                  color: AppColors.text,
-                  fontSize: 13,
-                  fontFamily: 'monospace',
-                ),
-                decoration: _sheetInputDecoration(
-                  hint: _isClaude ? 'claude-opus-4-8' : '模型 ID',
-                ),
-              ),
             ],
             if (widget.cli.supportsEffort) ...[
               const SizedBox(height: 12),
@@ -569,7 +929,17 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                   child: const Text('取消'),
                 ),
                 const SizedBox(width: 8),
-                ElevatedButton(onPressed: _submit, child: const Text('保存')),
+                ElevatedButton(
+                  onPressed:
+                      !_isAuto ||
+                          _autoCandidates
+                                  .where((candidate) => candidate.enabled)
+                                  .length >=
+                              2
+                      ? _submit
+                      : null,
+                  child: const Text('保存'),
+                ),
               ],
             ),
           ],
@@ -606,6 +976,7 @@ Future<void> openAIConfigSheet(
   var runtime = SessionCliConfig(
     cli: sess.cli,
     provider: sess.provider,
+    providerSelection: sess.providerSelection,
     model: sess.model,
     effectiveModel: sess.effectiveModel,
     effort: sess.effort,
@@ -652,6 +1023,7 @@ Future<void> openAIConfigSheet(
       cli: runtime.cli,
       providers: providers,
       provider: runtime.provider ?? '',
+      providerSelection: runtime.providerSelection,
       model: runtime.model ?? '',
       effort:
           runtime.effectiveEffort ??
@@ -667,6 +1039,7 @@ Future<void> openAIConfigSheet(
     await mgr.updateSessionAIConfig(
       sess.id,
       provider: picked.provider,
+      providerSelection: picked.providerSelection,
       model: picked.model,
       effort: picked.effort,
       subagent: picked.subagent,

@@ -209,8 +209,17 @@
         state.sessionEffort = message.effort || '';
         state.sessionEffectiveEffort = message.effectiveEffort || state.sessionEffort || 'medium';
       }
-      if (message.providerId !== undefined) state.sessionProvider = message.providerId || '';
-      if (message.providerName !== undefined) state.sessionProviderDisplayName = message.providerName || '';
+      if (message.providerSelection !== undefined) state.sessionProviderSelection = message.providerSelection || null;
+      const autoMode = state.sessionProviderSelection?.mode === 'auto';
+      if (message.providerId !== undefined) {
+        if (autoMode) state.activeProviderId = message.providerRoute ? (message.providerId || '') : '';
+        else state.sessionProvider = message.providerId || '';
+      }
+      if (message.providerName !== undefined) {
+        if (autoMode) state.activeProviderName = message.providerRoute ? (message.providerName || '') : '';
+        else state.sessionProviderDisplayName = message.providerName || '';
+      }
+      if (autoMode) state.activeProviderModel = message.providerRoute?.model || '';
       if (message.cliStates) state.sessionCliStates = message.cliStates;
       if (message.cliAvailability) state.cliAvailability = message.cliAvailability;
       if (message.agent !== undefined) state.sessionAgent = message.agent || '';
@@ -220,9 +229,11 @@
         if (message.model !== undefined) state.sessionModel = message.model || '';
       }
       if (message.effort !== undefined || message.providerName || message.effectiveModel !== undefined
-          || message.providerId !== undefined || message.agent !== undefined) {
+          || message.providerId !== undefined || message.providerSelection !== undefined
+          || message.autoProvider || message.agent !== undefined) {
         host.updateEffortBtn?.();
-        host.updateModelBtn?.();
+        if (autoMode) host.updateProviderBtn?.();
+        else host.updateModelBtn?.();
       }
       if (message.is_streaming && state.pendingCancel) {
         state.pendingCancel = false;
@@ -355,6 +366,16 @@
       } else if (!acceptAttemptOwnedEvent(message)) return false;
       debugEvent(message);
       switch (message.type) {
+        case 'provider_route_event':
+          if (message.providerId) state.activeProviderId = message.providerId;
+          if (message.providerName) state.activeProviderName = message.providerName;
+          if (message.model !== undefined) state.activeProviderModel = message.model || '';
+          host.updateProviderBtn?.();
+          break;
+        case 'provider_auto_route':
+          // Policy selection is only a reservation. The attempt-owned route
+          // event above is the authority that a physical provider actually began.
+          break;
         case 'system':
           if (message.subtype === 'init') applySystemInit(message);
           else if (message.subtype === 'agent_notes' && Array.isArray(message.notes)) host.addAgentNotes?.(message.notes);

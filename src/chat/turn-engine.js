@@ -27,13 +27,16 @@ const {
   detectErrorEnvelope,
   isKnownHarmlessStderrLine,
   sanitizeMessage: sanitizeApiErrorMessage,
+  retryNotice,
 } = require('./index');
 const {
   createProviderAttemptRuntime,
+  markHostErrorEnvelope,
   providerAttemptFields,
   tagProviderAttemptEvent,
 } = require('./provider-attempt-runtime');
 const { createProviderInvocationFactory } = require('./provider-invocation');
+const { createAutoProviderRuntime } = require('./auto-provider-runtime');
 const { redactProviderRouteCapability } = require('../observability');
 const { createWsEnvelope } = require('../api-contract');
 const { taskShortCode } = require('../classify/task-short-code');
@@ -53,6 +56,7 @@ const { deriveOpenTasks } = require('./turn-event-replay');
 const { createCodexRolloutGuard } = require('./codex-rollout-guard');
 const { createOpencodeContextGuard } = require('./opencode-context-guard');
 const { isInternalExecutionSlot } = require('../session/public-session-access');
+const { providerSelectionDto } = require('../auto-provider-config');
 
 function appendAdapterAssistantText(current, text) {
   const prior = String(current || '');
@@ -100,6 +104,17 @@ function normalizeClaudeAssistantSnapshot(event, currentText) {
       ],
     },
   };
+}
+
+function markReplaySafeAssistantEnvelope(event, providerName) {
+  if (!event || event.type !== 'assistant' || !Array.isArray(event.message?.content)) return event;
+  const blocks = event.message.content;
+  if (!blocks.length || !blocks.every(block => block && block.type === 'text')) return event;
+  const envelope = detectErrorEnvelope(
+    providerName,
+    blocks.map(block => String(block.text || '')).join(''),
+  );
+  return envelope && envelope.body == null ? markHostErrorEnvelope(event) : event;
 }
 
 function recoverDispatchFromHistory(history, operation) {
@@ -171,6 +186,7 @@ function createChatTurnEngine(deps) {
     turnProgressHeartbeat,
     providerRouterRuntime,
     providerAttemptRuntime,
+    providerLimitCache,
     apiErrorHost,
     codexUsageHost,
     usageLimitPoller,
@@ -247,6 +263,13 @@ function createChatTurnEngine(deps) {
   // stream + per-turn spawn). See src/chat/turn-timing.js for the t0-t3 contract.
   const turnTiming = createTurnTimingRecorder();
   const attemptRuntime = providerAttemptRuntime || createProviderAttemptRuntime();
+  const autoProviderRuntime = deps.autoProviderRuntime || createAutoProviderRuntime({
+    providers, providerLimitCache, emit: chatBroadcast, logger,
+    hasLiveBackgroundTasks: sessionId => {
+      try { return getBackgroundTaskRuntime()?.hasLiveBackgroundTasks?.(sessionId) === true; }
+      catch (_) { return true; }
+    },
+  });
 
   function forwardProviderEvent(sessionName, cs, turn, runner, event) {
     const observed = attemptRuntime.observeEvent(runner && runner.providerAttempt, event);
@@ -435,7 +458,8 @@ function createChatTurnEngine(deps) {
       turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'finalizing');
       cs.currentCost = evt.total_cost_usd || null;
       const apiFailure = evt.is_error === true || (evt.subtype && evt.subtype !== 'success' && /error|abort|timeout/i.test(evt.subtype));
-      const envelopeError = apiFailure ? null : detectErrorEnvelope(providerName, cs.currentAssistantText);
+      const detectedErrorEnvelope = detectErrorEnvelope(providerName, cs.currentAssistantText);
+      const envelopeError = apiFailure ? null : detectedErrorEnvelope;
       if (envelopeError && envelopeError.body != null) {
         // Trailing envelope appended after real output: strip the error text so
         // it never reaches the transcript; the meaningful body below is still
@@ -448,7 +472,7 @@ function createChatTurnEngine(deps) {
         cs._sawApiError = true;
         runner.sawApiError = true;
         const detail = evt.error && typeof evt.error === 'object' ? evt.error : {};
-        runner.apiErrorRaw = envelopeError || {
+        runner.apiErrorRaw = detectedErrorEnvelope || {
           source: providerName === 'qoder' ? 'qoder_result' : 'claude_result',
           provider: providerName,
           code: detail.code || evt.subtype || detail.type,
@@ -512,7 +536,8 @@ function createChatTurnEngine(deps) {
     // runtime-reported model before discarding).
     if (evt.type === 'system' && evt.subtype === 'init') { noteReportedModel(sessionName, evt.model); return; }
     if (evt.type === 'assistant' && Array.isArray(evt.message?.content)) {
-      forward(normalizeClaudeAssistantSnapshot(evt, cs.currentAssistantText));
+      const snapshot = normalizeClaudeAssistantSnapshot(evt, cs.currentAssistantText);
+      forward(markReplaySafeAssistantEnvelope(snapshot, providerName));
       return;
     }
     forward(evt);
@@ -1235,13 +1260,14 @@ function createChatTurnEngine(deps) {
     const invocationFactory = createProviderInvocationFactory({
       providerRouterRuntime, providerAttemptRuntime: attemptRuntime, effectiveSessionModel,
     });
+    const autoTurn = autoProviderRuntime.beginTurn({ session: persisted, turnId: turn.turnId });
     let providerAttemptNo = 0;
     const prepareInvocation = (attemptOptions = {}) => invocationFactory.prepare({
       request: turnRequest, turn, session: persisted, provider, envelope,
       attemptNo: ++providerAttemptNo,
       ...attemptOptions,
     });
-    const initialInvocation = prepareInvocation({ reasonCode: 'route_resolved' });
+    const initialInvocation = prepareInvocation({ reasonCode: 'route_resolved', ...autoTurn.initial() });
     preparationAttempt = initialInvocation.attempt;
     const {
       resolution: provEnv, invocationEnvelope, invocation,
@@ -1279,7 +1305,7 @@ function createChatTurnEngine(deps) {
     // path below, unchanged.
     if (cs.cli === 'claude') {
       const accepted = runChatTurnStreaming(
-        sessionName, cs, persisted, initialInvocation, provider, turn, prepareInvocation,
+        sessionName, cs, persisted, initialInvocation, provider, turn, prepareInvocation, autoTurn,
       );
       if (!accepted) {
         preparationFailure = 'stream-runner-rejected';
@@ -1558,8 +1584,23 @@ function createChatTurnEngine(deps) {
             phase: partialOutput || sideEffects ? 'stream' : 'before_first_token',
             partialOutput,
             sideEffects,
+            deferNotice: autoTurn.enabled,
           })
           : null;
+        // A Codex transport continuation must stay on the physical route whose
+        // native conversation is being resumed. Do not consume an Auto pool
+        // candidate before the finalizer gives that continuation precedence.
+        const deferAutoToCodexContinuation = cs.cli === 'codex' && !!pendingStreamError;
+        const autoFailover = apiErrorDecision && !deferAutoToCodexContinuation
+          ? autoTurn.failover(apiErrorDecision, attemptFacts) : null;
+        const effectiveApiErrorDecision = autoFailover?.decision || apiErrorDecision;
+        if (autoFailover?.invocationOptions) chatBroadcast(sessionName, {
+          type: 'system', subtype: 'warning',
+          message: `Auto Provider：${autoFailover.fromProviderName} 不可用，正在切换到 ${autoFailover.toProviderName}。`,
+        });
+        else if (autoTurn.enabled && apiErrorDecision && !deferAutoToCodexContinuation) chatBroadcast(sessionName, {
+          type: 'system', subtype: 'warning', message: retryNotice(effectiveApiErrorDecision),
+        });
         const closeCheckpointKey = assistantCheckpointKey(cs);
         const finalizePlan = planTurnFinalization({
           current: true,
@@ -1568,8 +1609,8 @@ function createChatTurnEngine(deps) {
           code,
           signal,
           killReason,
-          apiError: !!apiErrorDecision || !!runner.sawApiError,
-          apiErrorDecision,
+          apiError: !!effectiveApiErrorDecision || !!runner.sawApiError,
+          apiErrorDecision: effectiveApiErrorDecision,
           adapterError: !!runner.adapterError,
           retryBlockedByAdapterError: !!cs._adapterError,
           retryPlanned: !!runner.retryPlanned,
@@ -1628,6 +1669,11 @@ function createChatTurnEngine(deps) {
           catch (error) { executeBlockedRetry(error); return null; }
         };
 
+        const currentRouteOptions = () => ({
+          providerId: runner.providerAttempt && runner.providerAttempt.providerId,
+          model: runner.providerAttempt && runner.providerAttempt.model,
+        });
+
         if (finalizePlan.action === 'continue-codex') {
           cs._codexStreamContinuationCount = finalizePlan.retry.attempt;
           cs._codexRecoveredDisconnect = false;
@@ -1638,7 +1684,7 @@ function createChatTurnEngine(deps) {
           const continuePrompt = codexStreamDisconnectContinuePrompt();
           const continueInvocation = prepareRetryAttempt({
             bareText: continuePrompt, firstTurn: false, continuation: true,
-            reasonCode: 'codex_transport_continuation',
+            reasonCode: 'codex_transport_continuation', ...currentRouteOptions(),
           });
           if (!continueInvocation) return;
           const msg = isGlm52Session(persisted)
@@ -1676,7 +1722,7 @@ function createChatTurnEngine(deps) {
           cs.streamReplay = [];
           cs._codexTransportError = '';
           const fallbackInvocation = prepareRetryAttempt({
-            bareText: promptText, firstTurn: true, reasonCode: 'fresh_retry',
+            bareText: promptText, firstTurn: true, reasonCode: 'fresh_retry', ...currentRouteOptions(),
           });
           if (!fallbackInvocation) return;
           chatBroadcast(sessionName, {
@@ -1700,7 +1746,8 @@ function createChatTurnEngine(deps) {
             start: () => {
               let retryInvocation;
               try {
-                retryInvocation = prepareInvocation({ reasonCode: 'same_provider_retry' });
+                retryInvocation = prepareInvocation(autoFailover?.invocationOptions
+                  || { reasonCode: 'same_provider_retry', ...currentRouteOptions() });
               } catch (error) {
                 executeBlockedRetry(error);
                 return null;
@@ -1711,6 +1758,7 @@ function createChatTurnEngine(deps) {
           });
           return;
         }
+        if (turn.resultDurable && !apiErrorDecision) autoTurn.recordSuccess(runner.providerAttempt);
         finishProviderAttempt(runner, turn.resultDurable && !apiErrorDecision ? 'succeeded' : 'failed', {
           errorCategory: apiErrorDecision?.error?.category || null,
           reasonCode: finalizePlan.action,
@@ -1840,7 +1888,7 @@ function createChatTurnEngine(deps) {
   // inside applyClaudeChatEvent); finalizeStreamingTurn() then does the
   // process-independent cleanup (stream_end, gateway回流) WITHOUT killing the proc.
   function runChatTurnStreaming(
-    sessionName, cs, persisted, prepared, provider, turn, prepareInvocation, apiRetryAttempt = 0,
+    sessionName, cs, persisted, prepared, provider, turn, prepareInvocation, autoTurn, apiRetryAttempt = 0,
   ) {
     const { invocation, attempt, routeOverrides, binding, proxySessionId } = prepared;
     // Per-session provider env. buildChildEnv strips inherited ANTHROPIC_* routing
@@ -1936,7 +1984,7 @@ function createChatTurnEngine(deps) {
       },
     })
       .then(() => finalizeStreamingTurn(
-        sessionName, cs, persisted, mySeq, turn, runner, prepared, provider, prepareInvocation,
+        sessionName, cs, persisted, mySeq, turn, runner, prepared, provider, prepareInvocation, autoTurn,
       ))
       .catch((err) => {
         turnTiming.abort(sessionName, turn.turnId,
@@ -1957,7 +2005,7 @@ function createChatTurnEngine(deps) {
           killed: !!runner.killReason,
         });
         finalizeStreamingTurn(
-          sessionName, cs, persisted, mySeq, turn, runner, prepared, provider, prepareInvocation,
+          sessionName, cs, persisted, mySeq, turn, runner, prepared, provider, prepareInvocation, autoTurn,
         );
       });
 
@@ -2029,7 +2077,7 @@ function createChatTurnEngine(deps) {
   // the turn sequence so a superseded (interrupted) turn's late completion can't
   // clobber the turn that replaced it.
   function finalizeStreamingTurn(
-    sessionName, cs, persisted, seq, turn, runner, prepared, provider, prepareInvocation,
+    sessionName, cs, persisted, seq, turn, runner, prepared, provider, prepareInvocation, autoTurn,
   ) {
     if (seq !== undefined && cs._streamTurnSeq !== seq) return; // superseded by a newer turn
     if (!isCurrentTurnRunner(cs, turn, runner)) return;
@@ -2072,16 +2120,26 @@ function createChatTurnEngine(deps) {
         phase: partialOutput || sideEffects ? 'stream' : 'before_first_token',
         partialOutput,
         sideEffects,
+        deferNotice: autoTurn.enabled,
       })
       : null;
+    const autoFailover = apiErrorDecision ? autoTurn.failover(apiErrorDecision, attemptFacts) : null;
+    const effectiveApiErrorDecision = autoFailover?.decision || apiErrorDecision;
+    if (autoFailover?.invocationOptions) chatBroadcast(sessionName, {
+      type: 'system', subtype: 'warning',
+      message: `Auto Provider：${autoFailover.fromProviderName} 不可用，正在切换到 ${autoFailover.toProviderName}。`,
+    });
+    else if (autoTurn.enabled && apiErrorDecision) chatBroadcast(sessionName, {
+      type: 'system', subtype: 'warning', message: retryNotice(effectiveApiErrorDecision),
+    });
     const finalizeCheckpointKey = assistantCheckpointKey(cs);
     const plan = planTurnFinalization({
       current: true,
       runnerKind: 'stream',
       cli: persisted.cli || 'claude',
       killReason: runner.killReason || null,
-      apiError: !!apiErrorDecision || !!runner.sawApiError,
-      apiErrorDecision,
+      apiError: !!effectiveApiErrorDecision || !!runner.sawApiError,
+      apiErrorDecision: effectiveApiErrorDecision,
       adapterError: !!runner.adapterError,
       retryPlanned: !!runner.retryPlanned,
       resultEvent: !!runner.resultEvent,
@@ -2102,10 +2160,14 @@ function createChatTurnEngine(deps) {
         start: () => {
           let retryInvocation;
           try {
-            retryInvocation = prepareInvocation({ reasonCode: 'same_provider_retry' });
+            retryInvocation = prepareInvocation(autoFailover?.invocationOptions || {
+              reasonCode: 'same_provider_retry',
+              providerId: runner.providerAttempt && runner.providerAttempt.providerId,
+              model: runner.providerAttempt && runner.providerAttempt.model,
+            });
             const accepted = runChatTurnStreaming(
               sessionName, cs, persisted, retryInvocation, provider, turn,
-              prepareInvocation, plan.retry.attempt,
+              prepareInvocation, autoTurn, plan.retry.attempt,
             );
             if (!accepted) throw new Error('stream retry was not accepted');
             return accepted;
@@ -2134,6 +2196,7 @@ function createChatTurnEngine(deps) {
       });
       return;
     }
+    if (turn.resultDurable && !apiErrorDecision) autoTurn.recordSuccess(runner.providerAttempt);
     finishProviderAttempt(runner, turn.resultDurable && !apiErrorDecision ? 'succeeded' : 'failed', {
       errorCategory: apiErrorDecision?.error?.category || null,
       reasonCode: plan.action,
@@ -2212,6 +2275,8 @@ function createChatTurnEngine(deps) {
       try { provName = providers.getProvider(undefined, provId)?.name || null; } catch (_) {}
     }
     const activeRoute = attemptRuntime.snapshot(sessionName);
+    const autoProvider = persisted.providerSelection?.mode === 'auto'
+      ? autoProviderRuntime.snapshot(sessionName) : null;
     const reconnectRoute = activeRoute && activeRoute.outcome === 'running'
       ? providerAttemptFields(activeRoute) : null;
 
@@ -2227,8 +2292,10 @@ function createChatTurnEngine(deps) {
       agent: persisted.agent || null,
       providerRouteProtocolVersion: 1,
       providerRoute: reconnectRoute,
-      providerId: reconnectRoute ? reconnectRoute.providerId : provId,
-      providerName: reconnectRoute ? activeRoute.providerName : provName,
+      providerId: reconnectRoute ? reconnectRoute.providerId : (autoProvider?.providerId || provId),
+      providerName: reconnectRoute ? activeRoute.providerName : (autoProvider?.providerName || provName),
+      providerSelection: providerSelectionDto(persisted.providerSelection),
+      autoProvider,
       providerTokenWindows: provWindows,
       cliStates: cliStateSummary(persisted),
       cliAvailability: cliAvailabilitySummary(),
@@ -2457,6 +2524,7 @@ module.exports = {
   adapterReasoningProgressEvent,
   appendAdapterAssistantText,
   createChatTurnEngine,
+  markReplaySafeAssistantEnvelope,
   normalizeClaudeAssistantSnapshot,
   normalizeClaudeToolResultContent,
   recoverDispatchFromHistory,

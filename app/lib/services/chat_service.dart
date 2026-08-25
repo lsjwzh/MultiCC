@@ -297,6 +297,10 @@ class ChatService {
         _emit('provider_route_event', msg);
         break;
 
+      case 'provider_auto_route':
+        _emit('provider_auto_route', msg);
+        break;
+
       case 'chat_history':
         final messages = msg['messages'];
         if (messages is List) {

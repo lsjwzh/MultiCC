@@ -122,6 +122,24 @@ test('Qoder stays vendor-managed while ZCode exposes MultiCC providers', () => {
   assert.doesNotMatch(page, /_sessionCli !== 'qoder' && _sessionCli !== 'zcode'/);
 });
 
+test('Auto Provider picker exposes protocol pools, ordered candidates and the persisted contract', () => {
+  const source = fs.readFileSync(path.join(ROOT, 'public', 'chat-ai-config.js'), 'utf8');
+  const page = fs.readFileSync(path.join(ROOT, 'public', 'chat.js'), 'utf8');
+  assert.equal(ai.autoOptionValue('anthropic'), '__auto__:anthropic');
+  assert.equal(ai.autoProtocolFromValue('__auto__:openai_responses'), 'openai_responses');
+  assert.equal(ai.autoProtocolLabel('openai_chat'), 'OpenAI Chat Completions');
+  assert.match(source, /id="ai-auto-section"/);
+  assert.match(source, /className = 'auto-candidate-priority'/);
+  assert.match(source, /mode: 'auto', protocol, candidates/);
+  assert.match(source, /allowCrossTrust: false/);
+  assert.match(page, /providerSelection: picked\.providerSelection/);
+  assert.match(page, /Auto · \$\{window\.MultiCCChatAiConfig\.autoProtocolLabel/);
+  assert.match(page, /actualProvider \|\| '待路由'/,
+    'Auto must not claim its configured primary before a physical attempt begins');
+  assert.match(page, /\? _activeProviderId : _sessionProvider/,
+    'the quota bar must follow the physical Auto route after failover');
+});
+
 test('provider and session transport use MultiCCApi with token-free relative URLs', async () => {
   const calls = [];
   const api = {

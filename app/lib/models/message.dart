@@ -442,12 +442,97 @@ class SessionSubagent {
       (model == null || model == '');
 }
 
+/// One concrete route in an Auto Provider pool. The virtual Auto selection is
+/// never used as a provider id; each turn resolves to one of these routes.
+class SessionProviderCandidate {
+  final String providerId;
+  final String? model;
+  final int priority;
+  final bool enabled;
+
+  const SessionProviderCandidate({
+    required this.providerId,
+    this.model,
+    required this.priority,
+    this.enabled = true,
+  });
+
+  factory SessionProviderCandidate.fromJson(Map<dynamic, dynamic> json) =>
+      SessionProviderCandidate(
+        providerId: json['providerId']?.toString() ?? '',
+        model: json['model']?.toString(),
+        priority: (json['priority'] as num?)?.toInt() ?? 1,
+        enabled: json['enabled'] != false,
+      );
+
+  Map<String, dynamic> toJson() => {
+    'providerId': providerId,
+    'model': model == null || model!.isEmpty ? null : model,
+    'priority': priority,
+    'enabled': enabled,
+  };
+}
+
+/// Additive session-level Auto Provider contract. `Session.provider` remains
+/// the concrete manual fallback for backwards compatibility.
+class SessionProviderSelection {
+  final int version;
+  final String mode;
+  final String protocol;
+  final List<SessionProviderCandidate> candidates;
+  final int maxAttempts;
+  final bool sticky;
+  final bool allowCrossTrust;
+
+  const SessionProviderSelection({
+    this.version = 1,
+    this.mode = 'auto',
+    required this.protocol,
+    required this.candidates,
+    required this.maxAttempts,
+    this.sticky = true,
+    this.allowCrossTrust = false,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'version': version,
+    'mode': mode,
+    'protocol': protocol,
+    'candidates': candidates.map((candidate) => candidate.toJson()).toList(),
+    'maxAttempts': maxAttempts,
+    'sticky': sticky,
+    'allowCrossTrust': false,
+  };
+}
+
+SessionProviderSelection? parseProviderSelection(dynamic json) {
+  if (json is! Map || json['mode'] != 'auto') return null;
+  final protocol = json['protocol']?.toString() ?? '';
+  final rawCandidates = json['candidates'];
+  if (protocol.isEmpty || rawCandidates is! List) return null;
+  final candidates = rawCandidates
+      .whereType<Map>()
+      .map(SessionProviderCandidate.fromJson)
+      .where((candidate) => candidate.providerId.isNotEmpty)
+      .toList(growable: false);
+  if (candidates.length < 2) return null;
+  return SessionProviderSelection(
+    version: (json['version'] as num?)?.toInt() ?? 1,
+    protocol: protocol,
+    candidates: candidates,
+    maxAttempts: (json['maxAttempts'] as num?)?.toInt() ?? 2,
+    sticky: json['sticky'] != false,
+    allowCrossTrust: false,
+  );
+}
+
 class SessionCliState {
   final bool hasNativeSession;
   final int? lastActivatedAt;
   final int? updatedAt;
   final String? model;
   final String? provider;
+  final SessionProviderSelection? providerSelection;
   final String? effort;
   final String? agent;
 
@@ -457,6 +542,7 @@ class SessionCliState {
     this.updatedAt,
     this.model,
     this.provider,
+    this.providerSelection,
     this.effort,
     this.agent,
   });
@@ -469,6 +555,7 @@ class SessionCliState {
       updatedAt: (map['updatedAt'] as num?)?.toInt(),
       model: map['model']?.toString(),
       provider: map['provider']?.toString(),
+      providerSelection: parseProviderSelection(map['providerSelection']),
       effort: map['effort']?.toString(),
       agent: map['agent']?.toString(),
     );
@@ -531,6 +618,7 @@ class SessionCliConfig {
   final Map<SessionCli, bool> cliAvailability;
   final CliHandoff? pendingCliHandoff;
   final String? provider;
+  final SessionProviderSelection? providerSelection;
   final String? providerName;
   final String? providerBaseUrl;
   final String? model;
@@ -548,6 +636,7 @@ class SessionCliConfig {
     this.cliAvailability = const {},
     this.pendingCliHandoff,
     this.provider,
+    this.providerSelection,
     this.providerName,
     this.providerBaseUrl,
     this.model,
@@ -568,6 +657,7 @@ class SessionCliConfig {
       cliAvailability: parseCliAvailability(json['cliAvailability']),
       pendingCliHandoff: handoff is Map ? CliHandoff.fromJson(handoff) : null,
       provider: json['provider']?.toString(),
+      providerSelection: parseProviderSelection(json['providerSelection']),
       providerName: json['providerName']?.toString(),
       providerBaseUrl: json['providerBaseUrl']?.toString(),
       model: json['model']?.toString(),
@@ -599,6 +689,7 @@ class Session {
   effectiveEffort; // concrete effort / reasoning level used for display
   final String? rolePrompt;
   final String? provider; // cc-switch provider id; null = default login
+  final SessionProviderSelection? providerSelection;
   final SessionSubagent?
   subagent; // Task-tool subagent provider+model override (claude-proxy)
   final String? agent; // Native --agent for Claude/OpenCode.
@@ -627,6 +718,7 @@ class Session {
     this.effectiveEffort,
     this.rolePrompt,
     this.provider,
+    this.providerSelection,
     this.subagent,
     this.agent,
     this.cliStates = const {},
@@ -655,6 +747,7 @@ class Session {
       effectiveEffort: json['effectiveEffort']?.toString(),
       rolePrompt: json['rolePrompt']?.toString(),
       provider: json['provider']?.toString(),
+      providerSelection: parseProviderSelection(json['providerSelection']),
       subagent: json['subagent'] == null
           ? null
           : SessionSubagent.fromJson(json['subagent']),
@@ -705,6 +798,7 @@ class Session {
       effectiveEffort: effectiveEffort,
       rolePrompt: rolePrompt,
       provider: provider ?? this.provider,
+      providerSelection: providerSelection,
       subagent: subagent,
       agent: agent ?? this.agent,
       cliStates: cliStates,
