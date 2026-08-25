@@ -49,6 +49,12 @@ assert.doesNotMatch(releaseWorkflow, /--clobber/, 'published APK assets must nev
 assert.match(signerPin, /^[a-f0-9]{64}$/, 'the official public certificate fingerprint must be pinned');
 assert.match(releaseWorkflow, /release-cert\.sha256/,
   'the workflow must bind its signing secret to the repository certificate pin');
+assert.match(releaseWorkflow, /keytool\s+-exportcert/,
+  'the workflow must inspect the certificate embedded in the decoded keystore');
+assert.match(releaseWorkflow, /openssl\s+dgst\s+-sha256/,
+  'the workflow must compare the decoded keystore certificate by SHA-256');
+assert.match(releaseWorkflow, /keystore certificate does not match app\/android\/release-cert\.sha256/,
+  'the workflow must fail before building when the keystore certificate and pin differ');
 
 for (const name of [
   'MULTICC_ANDROID_KEYSTORE_PATH',

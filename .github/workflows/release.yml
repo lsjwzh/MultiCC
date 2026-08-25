@@ -123,15 +123,22 @@ jobs:
           # certificate (or the alias does not exist): catching it here beats
           # a full gates + build cycle that can only fail at the post-build
           # apksigner check (v1.6.3 release, run 4).
-          actual_signer="$(keytool -list -v -keystore "$keystore" \
-            -alias "$ANDROID_RELEASE_KEY_ALIAS" \
-            -storepass "$ANDROID_RELEASE_STORE_PASSWORD" 2>/dev/null \
-            | awk '/SHA256:/ {print $2; exit}' \
-            | tr -d '[:space:]:' | tr '[:upper:]' '[:lower:]')"
-          if [ "$actual_signer" != "$signer" ]; then
-            echo "::error::Android release keystore certificate does not match the pinned fingerprint"
+          keystore_signer="$(
+            keytool -exportcert \
+              -storetype PKCS12 \
+              -keystore "$keystore" \
+              -storepass "$ANDROID_RELEASE_STORE_PASSWORD" \
+              -alias "$ANDROID_RELEASE_KEY_ALIAS" \
+            | openssl dgst -sha256 -r \
+            | awk '{ print $1 }' \
+            | tr -d '[:space:]:' \
+            | tr '[:upper:]' '[:lower:]'
+          )"
+          if [ "$keystore_signer" != "$signer" ]; then
+            echo "::error::Decoded Android release keystore certificate does not match app/android/release-cert.sha256"
             exit 1
           fi
+
           {
             printf 'MULTICC_ANDROID_KEYSTORE_PATH=%s\n' "$keystore"
             printf 'MULTICC_ANDROID_STORE_PASSWORD=%s\n' "$ANDROID_RELEASE_STORE_PASSWORD"
