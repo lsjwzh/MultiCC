@@ -52,7 +52,7 @@ function createProviderInvocationFactory(options = {}) {
         providerModel: resolution.providerModel,
         providerModels: resolution.providerModels,
         effectiveModel: effectiveSessionModel(session),
-        rawModel: resolution.qualifiedModel || envelope.spawnOpts.rawModel,
+        rawModel: resolution.qualifiedModel || routeBinding.model || envelope.spawnOpts.rawModel,
       },
     };
     const invocationEnvelope = input.bareText === undefined

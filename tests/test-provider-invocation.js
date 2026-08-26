@@ -143,6 +143,77 @@ test('child env route overrides do not qualify an OpenCode-style wire model twic
   );
 });
 
+test('legacy failover replaces the original envelope model with the selected candidate model', () => {
+  const emitted = [];
+  const attempts = createProviderAttemptRuntime({
+    runtimeEpoch: 'epoch-1',
+    nextId: prefix => `${prefix}-${emitted.length + 1}`,
+    emit: (_sessionId, event) => emitted.push(event),
+  });
+  const summaries = {
+    'provider-a': { id: 'provider-a', name: 'Provider A', apiFormat: 'anthropic' },
+    'provider-b': { id: 'provider-b', name: 'Provider B', apiFormat: 'anthropic' },
+  };
+  const router = {
+    createBinding(session, overrides = {}) {
+      return createProviderBinding({
+        sessionId: session.id,
+        cli: session.cli,
+        providerId: overrides.providerId !== undefined ? overrides.providerId : session.provider,
+        model: overrides.model !== undefined ? overrides.model : session.model,
+        roleKind: 'main',
+        routeName: 'main',
+      });
+    },
+    resolveSpawnEnv(session, overrides = {}) {
+      const providerId = overrides.providerId ?? session.provider;
+      const model = overrides.model ?? session.model;
+      return {
+        providerName: summaries[providerId].name,
+        providerModel: model,
+        providerModels: [model],
+        skipDefaultModel: true,
+      };
+    },
+    getProviderSummary(_appType, providerId) { return summaries[providerId]; },
+  };
+  const factory = createProviderInvocationFactory({
+    providerRouterRuntime: router,
+    providerAttemptRuntime: attempts,
+    effectiveSessionModel: session => session.model,
+  });
+  const { request, turn } = turnInput();
+  const session = {
+    id: 'session-1', cli: 'claude', provider: 'provider-a', model: 'primary-model',
+  };
+  let capturedRawModel = null;
+  const prepared = factory.prepare({
+    request,
+    turn,
+    session,
+    provider: {
+      buildInvocation: envelope => {
+        capturedRawModel = envelope.spawnOpts.rawModel;
+        return { cmd: 'claude', args: ['--model', capturedRawModel], payload: envelope.userText };
+      },
+    },
+    envelope: {
+      userText: 'hello',
+      spawnOpts: { rawModel: 'primary-model' },
+      historyHandle: {},
+    },
+    attemptNo: 1,
+    providerId: 'provider-b',
+    model: 'backup-model',
+    reasonCode: 'failover_billing_quota',
+  });
+
+  assert.equal(capturedRawModel, 'backup-model');
+  assert.equal(prepared.attempt.model, 'backup-model');
+  assert.equal(prepared.usageAttribution.model, 'backup-model');
+  assert.equal(emitted.at(-1).model, 'backup-model');
+});
+
 test('bare retries rebuild invocation text without replaying composition layers', () => {
   const { factory } = makeHarness();
   const session = { id: 'session-1', cli: 'claude', provider: 'provider-a', model: 'sonnet', cliSessionId: 'native-1' };
