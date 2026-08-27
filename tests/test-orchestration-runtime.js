@@ -40,6 +40,8 @@ function fixture(t, overrides = {}) {
     log: message => logs.push(message),
     isBusy: overrides.isBusy || (() => false),
     ...(overrides.isDeliveryLocked ? { isDeliveryLocked: overrides.isDeliveryLocked } : {}),
+    ...(overrides.runnerDeliveryProbe ? { runnerDeliveryProbe: overrides.runnerDeliveryProbe } : {}),
+    ...(overrides.onSchedulerEvent ? { onSchedulerEvent: overrides.onSchedulerEvent } : {}),
     ...(overrides.deliveryWatchdogMs !== undefined
       ? { deliveryWatchdogMs: overrides.deliveryWatchdogMs } : {}),
     hasPersistedDelivery: async (sessionId, deliveryId) => (
@@ -934,5 +936,115 @@ test('a delivery that never settles releases the tick instead of freezing the wo
   );
 
   unblock();
+  await h.runtime.stop();
+});
+
+// --- P0-2: persisted ≠ delivered -------------------------------------------
+// The live turn engine reports per-identity handoff facts. The persisted
+// recovery branch must only acknowledge a delivery the runner actually took
+// over; a known pre-handoff rejection is re-delivered instead of being acked
+// into the "message exists but is never executed" wedge.
+function persistedButRejectedFixture(t, probe) {
+  const turns = [];
+  const h = fixture(t, {
+    runnerDeliveryProbe: probe,
+    outboxOptions: { backoff: () => 1_000 },
+    runChatTurn: async (sessionId, text, opts) => {
+      turns.push({ sessionId, text, opts });
+      if (turns.length === 1) {
+        // Simulate "message written to history, turn aborted in preparation":
+        // runChatTurn persisted the user message but returned false before a
+        // runner ever took over.
+        const ids = h.history.get(sessionId) || new Set();
+        ids.add(opts.deliveryId);
+        h.history.set(sessionId, ids);
+        return false;
+      }
+      const ids = h.history.get(sessionId) || new Set();
+      ids.add(opts.deliveryId);
+      h.history.set(sessionId, ids);
+      return true;
+    },
+  });
+  return { ...h, turns };
+}
+
+test('a persisted delivery the runner never took over is re-delivered, not acknowledged', async t => {
+  const probes = [];
+  const h = persistedButRejectedFixture(t, async (sessionId, identity) => {
+    probes.push({ sessionId, identity });
+    return { known: true, handedOff: false, turnId: 'turn-1', at: 1 };
+  });
+  await h.runtime.admitSessionWork({
+    sessionId: 'wedge-1', text: 'go', idempotencyKey: 'wedge-1', options: { clientMsgId: 'cmid-1' },
+  });
+  await h.runtime.tick();
+  assert.equal(h.turns.length, 1, 'first attempt rejects in preparation');
+  assert.equal((await h.runtime.stats()).pendingDeliveries, 1,
+    'the rejected delivery stays durable and retryable');
+
+  h.clock.value += 2_000;
+  await h.runtime.tick();
+  assert.equal(probes.length, 1, 'the recovery branch probed the runner before deciding');
+  assert.equal(h.turns.length, 2, 'known pre-handoff rejection is re-executed');
+  assert.equal((await h.runtime.stats()).pendingDeliveries, 0,
+    'the re-delivery is acknowledged once the runner accepts it');
+  assert.ok(h.logs.some(line => line.includes('persisted but runner never took over')));
+  await h.runtime.stop();
+});
+
+test('a persisted delivery the runner did take over is acknowledged without re-execution', async t => {
+  const h = persistedButRejectedFixture(t, async () => (
+    { known: true, handedOff: true, turnId: 'turn-1', at: 1 }
+  ));
+  await h.runtime.admitSessionWork({
+    sessionId: 'wedge-2', text: 'go', idempotencyKey: 'wedge-2', options: { clientMsgId: 'cmid-2' },
+  });
+  await h.runtime.tick();
+  assert.equal(h.turns.length, 1);
+  h.clock.value += 2_000;
+  await h.runtime.tick();
+  assert.equal(h.turns.length, 1, 'handed-off delivery is idempotently acknowledged');
+  assert.equal((await h.runtime.stats()).pendingDeliveries, 0);
+  await h.runtime.stop();
+});
+
+test('an unknown probe (e.g. after restart) keeps the conservative crash-recovery ack', async t => {
+  const h = persistedButRejectedFixture(t, async () => null);
+  await h.runtime.admitSessionWork({
+    sessionId: 'wedge-3', text: 'go', idempotencyKey: 'wedge-3', options: {},
+  });
+  await h.runtime.tick();
+  assert.equal(h.turns.length, 1);
+  h.clock.value += 2_000;
+  await h.runtime.tick();
+  assert.equal(h.turns.length, 1, 'unknown handoff facts must not re-run a possibly executed message');
+  assert.equal((await h.runtime.stats()).pendingDeliveries, 0);
+  await h.runtime.stop();
+});
+
+// --- P0-3: rollback before broadcast ----------------------------------------
+// The scheduler's 'claim_released' broadcast must carry the authoritative
+// post-rollback queue snapshot: the rejected/deferred item is already back in
+// the FIFO when the event fires, instead of reappearing only on a later event.
+test('claim_released broadcasts the queue with the rejected item already rolled back', async t => {
+  const released = [];
+  const h = fixture(t, {
+    onSchedulerEvent: event => { if (event.type === 'claim_released') released.push(event); },
+    outboxOptions: { backoff: () => 1_000 },
+    runChatTurn: async () => false,
+  });
+  await h.runtime.admitSessionWork({
+    sessionId: 'order-1', text: 'go', idempotencyKey: 'order-1', options: {},
+  });
+  await h.runtime.tick();
+  assert.equal(released.length, 1);
+  assert.equal(released[0].reason, 'delivery_deferred');
+  assert.equal(released[0].queued, 1,
+    'the rejected delivery is visible in the broadcast queue snapshot');
+  assert.equal(released[0].queuedItems.length, 1);
+  assert.equal(released[0].queuedItems[0].entryId, released[0].entryId,
+    'the rolled-back item is the one the broadcast reports as released');
+  assert.equal((await h.runtime.stats()).pendingDeliveries, 1);
   await h.runtime.stop();
 });

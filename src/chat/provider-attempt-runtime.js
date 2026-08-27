@@ -392,6 +392,14 @@ function createProviderAttemptRuntime(options = {}) {
   const audit = typeof options.audit === 'function' ? options.audit : null;
   const resolveProviderRevision = typeof options.resolveProviderRevision === 'function'
     ? options.resolveProviderRevision : null;
+  // A proxied request whose downstream CLI consumer died mid-stream never
+  // emits the proxy 'end' that drains its producer. After this grace the
+  // entry is provably orphaned (the attempt gate below already guarantees no
+  // attempt is 'running'), so a new attempt force-releases it instead of
+  // wedging the session until a server restart.
+  const producerStaleGraceMs = Math.min(600_000, Math.max(5_000,
+    Number.isFinite(Number(options.producerStaleGraceMs)) && Number(options.producerStaleGraceMs) > 0
+      ? Number(options.producerStaleGraceMs) : 30_000));
   const runtimeEpoch = required(
     options.runtimeEpoch || `runtime_${crypto.randomUUID()}`,
     'runtimeEpoch',
@@ -533,10 +541,32 @@ function createProviderAttemptRuntime(options = {}) {
     const producer = proxyProducers.get(sessionId);
 
     if (producer && producer.count > 0) {
-      throw new ProviderAttemptError(
-        'previous provider request has not drained',
-        'PROVIDER_PRODUCER_NOT_DRAINED',
-      );
+      const ageMs = Number(now()) - (Number(producer.lastRequestAt) || 0);
+      // Draining normally requires the proxy 'end'. A request whose CLI
+      // consumer was killed or crashed mid-stream never gets one, so waiting
+      // forever would wedge every later attempt of this session (the in-memory
+      // counter previously only cleared on server restart). Past the grace the
+      // entry is orphaned: proxyRouteToken rotation already makes any late
+      // traffic from it unattributable to the new attempt.
+      if (Number.isFinite(ageMs) && producer.lastRequestAt
+          && ageMs >= producerStaleGraceMs) {
+        auditOnly(sessionId, {
+          type: 'provider_producer_force_drained',
+          runtimeEpoch,
+          turnId,
+          count: producer.count,
+          ageMs,
+          graceMs: producerStaleGraceMs,
+          reason: 'stale_producer_grace',
+        });
+        proxyProducers.delete(sessionId);
+        endedProxyProducers.delete(sessionId);
+      } else {
+        throw new ProviderAttemptError(
+          'previous provider request has not drained',
+          'PROVIDER_PRODUCER_NOT_DRAINED',
+        );
+      }
     }
 
     if (previous && previous.turnId === turnId
@@ -770,11 +800,40 @@ function createProviderAttemptRuntime(options = {}) {
     if (producer && producer.count > 0) {
       producer.count += 1;
       producer.ambiguous = true;
+      producer.lastRequestAt = Number(now());
     } else {
       proxyProducers.set(sessionId, {
         attempt: null, proxyRouteToken: null, count: 1, ambiguous: true,
+        lastRequestAt: Number(now()),
       });
     }
+  }
+
+  // Cancel/kill hook: the stopped CLI process was the proxy request's only
+  // downstream consumer, so its in-flight upstream can no longer produce a
+  // meaningful 'end'. Release the session's MAIN producer accounting
+  // immediately (non-main/background producers are untouched: background work
+  // legitimately outlives the cancelled turn). Attributability stays safe
+  // because proxyRouteToken rotates on every physical attempt.
+  function forceReleaseProducers(sessionId, reason = 'force_release') {
+    const id = clean(sessionId);
+    if (!id) return Object.freeze({ ok: false, code: 'invalid_session' });
+    const producer = proxyProducers.get(id);
+    if (!producer || producer.count <= 0) {
+      return Object.freeze({ ok: true, code: 'no_producers', released: 0 });
+    }
+    const released = producer.count;
+    auditOnly(id, {
+      type: 'provider_producer_force_drained',
+      runtimeEpoch,
+      turnId: producer.attempt ? producer.attempt.turnId : null,
+      count: released,
+      ageMs: Number(now()) - (Number(producer.lastRequestAt) || 0),
+      reason: clean(reason) || 'force_release',
+    });
+    proxyProducers.delete(id);
+    endedProxyProducers.delete(id);
+    return Object.freeze({ ok: true, code: 'released', released });
   }
 
   function nonMainProducerKey(context, event, role) {
@@ -858,10 +917,11 @@ function createProviderAttemptRuntime(options = {}) {
       if (producer && producer.count > 0) {
         producer.count += 1;
         producer.ambiguous = true;
+        producer.lastRequestAt = Number(now());
       } else {
         proxyProducers.set(sessionId, {
           attempt: snapshot(record), proxyRouteToken: record.proxyRouteToken,
-          count: 1, ambiguous: false,
+          count: 1, ambiguous: false, lastRequestAt: Number(now()),
         });
       }
       return snapshot(record);
@@ -980,6 +1040,7 @@ function createProviderAttemptRuntime(options = {}) {
     beginAttempt,
     finishAttempt,
     acceptEvent,
+    forceReleaseProducers,
     observeEvent,
     observeProxyDelta,
     scrubAttemptStructure,
