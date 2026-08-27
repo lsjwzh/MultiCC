@@ -596,7 +596,9 @@ test('production cutover keeps duplicate, proof and runner ordering explicit', (
   const duplicateReturn = at("admission.decision === 'duplicate'");
   const nativeAllocation = at('persisted.cliSessionId = crypto.randomUUID()');
   const claim = at('chatTurnPreparationRuntime.claim(');
-  const append = at('const userMessageSaved = appendChatMessage(');
+  // P0-2: a re-executed delivery skips the duplicate append, so the canonical
+  // shape is a conditional `userMessageSaved = appendChatMessage(`.
+  const append = at('userMessageSaved = appendChatMessage(');
   const durable = at('createDurableMessageProof(turnRequest');
   const route = at('const initialInvocation = prepareInvocation(');
   const usageAttribution = at('bindTurnUsageAttribution(turn, initialInvocation.baseUsageAttribution)');

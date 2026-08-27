@@ -85,6 +85,11 @@ function createOrchestrationRuntime({
   isDeliveryLocked = () => false,
   isSlotUnavailable = () => false,
   hasPersistedDelivery = async () => false,
+  // Optional: (sessionId, identity) → null | { known, handedOff, turnId, at }.
+  // Distinguishes "persisted to history" from "runner took over" on the
+  // persisted-delivery recovery path. Null/absent keeps the conservative
+  // crash-recovery reading (persisted = delivered).
+  runnerDeliveryProbe = null,
   beforeDeliver = async () => {},
   deliverOutbox = null,
   probe = async () => { throw new Error('poll probe is not configured'); },
@@ -888,17 +893,41 @@ function createOrchestrationRuntime({
         };
       }
       if (isSlotUnavailable(item.sessionId, item)) {
-        await sessionScheduler.releaseClaim(item, 'host_busy_after_claim');
-        schedulerClaimed = false;
-        return outbox.defer(item.id, item.leaseToken, 'task execution slot is leased to another run', {
+        // P0 ordering: settle the transport lease FIRST (silent store mutation),
+        // then release the scheduler claim — its 'claim_released' broadcast then
+        // carries the authoritative post-rollback queue snapshot with this item
+        // already back in the FIFO, instead of broadcasting an intermediate
+        // state that hides the item until some later event fires.
+        const deferred = await outbox.defer(item.id, item.leaseToken, 'task execution slot is leased to another run', {
           delayMs: 0,
         });
+        await sessionScheduler.releaseClaim(item, 'host_busy_after_claim');
+        schedulerClaimed = false;
+        return deferred;
       }
       if (await hasPersistedDelivery(item.sessionId, deliveryId)) {
-        const acknowledged = await acknowledgeDelivery(item);
-        const recovered = getSessionRecoveryState(item.sessionId) || {};
-        await sessionScheduler.settlePersistedDelivery(item, recovered);
-        return acknowledged;
+        // Persisted ≠ delivered. The live turn engine reports whether a runner
+        // actually took over for this identity. A known pre-handoff rejection
+        // (message written to history, turn aborted in preparation) must NOT
+        // be acknowledged as delivered — that is the "message exists but is
+        // never executed" wedge. Unknown (null, e.g. after a restart) keeps
+        // the conservative crash-recovery reading.
+        let probe = null;
+        if (typeof runnerDeliveryProbe === 'function') {
+          try {
+            probe = await Promise.resolve(runnerDeliveryProbe(
+              item.sessionId,
+              item.payload?.options?.clientMsgId || deliveryId,
+            ));
+          } catch (_) { probe = null; }
+        }
+        if (!probe || probe.known !== true || probe.handedOff !== false) {
+          const acknowledged = await acknowledgeDelivery(item);
+          const recovered = getSessionRecoveryState(item.sessionId) || {};
+          await sessionScheduler.settlePersistedDelivery(item, recovered);
+          return acknowledged;
+        }
+        log(`[orchestration] delivery ${item.id} persisted but runner never took over; re-delivering`);
       }
       const descriptor = {
         item,
@@ -916,18 +945,21 @@ function createOrchestrationRuntime({
           : runChatTurn(descriptor.sessionId, descriptor.text, descriptor.opts),
       );
       if (!accepted) {
-        // Delivery is transport state, never FIFO/classify state. Roll back the
-        // lease-side claim and retry this item without freezing the session.
-        await sessionScheduler.releaseClaim(item, 'delivery_deferred');
-        return outbox.fail(item.id, item.leaseToken, 'runChatTurn rejected delivery', {
+        // Delivery is transport state, never FIFO/classify state. Settle the
+        // transport lease first (retry budget), then release the claim so the
+        // 'claim_released' broadcast carries the post-rollback FIFO snapshot.
+        const failed = await outbox.fail(item.id, item.leaseToken, 'runChatTurn rejected delivery', {
           retryable: true,
         });
+        await sessionScheduler.releaseClaim(item, 'delivery_deferred');
+        return failed;
       }
       if (!await hasPersistedDelivery(item.sessionId, deliveryId)) {
-        await sessionScheduler.releaseClaim(item, 'message_not_durable');
-        return outbox.fail(item.id, item.leaseToken, 'chat history did not persist delivery', {
+        const failed = await outbox.fail(item.id, item.leaseToken, 'chat history did not persist delivery', {
           retryable: true,
         });
+        await sessionScheduler.releaseClaim(item, 'message_not_durable');
+        return failed;
       }
       deliveryOutcome = { accepted: true, durable: true };
       const acknowledged = await acknowledgeDelivery(item);
@@ -935,10 +967,21 @@ function createOrchestrationRuntime({
       return acknowledged;
     } catch (error) {
       log(`[orchestration] delivery ${item.id} failed: ${error.message}`);
+      // Same ordering guarantee as the named failure paths above: the outbox
+      // lease settles before the scheduler broadcast. An outbox failure here
+      // must not skip the claim release, or the schedule would wedge on a
+      // 'starting' claim nothing can re-drive.
+      let settled = null;
+      try {
+        settled = await outbox.fail(item.id, item.leaseToken, error, { retryable: true });
+      } catch (settleError) {
+        log(`[orchestration] delivery ${item.id} outbox settle failed: ${settleError.message}`);
+      }
       if (schedulerClaimed) {
         await sessionScheduler.releaseClaim(item, 'delivery_error').catch(() => {});
       }
-      return outbox.fail(item.id, item.leaseToken, error, { retryable: true });
+      if (settled) return settled;
+      throw error;
     } finally {
       if (deliveryGuard && typeof deliveryGuard.complete === 'function') {
         await Promise.resolve(deliveryGuard.complete(deliveryOutcome)).catch(error => {

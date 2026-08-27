@@ -17,8 +17,7 @@ for (const k of ANTHROPIC_ROUTING_KEYS) {
 for (const k of [
   'CLAUDE_CODE_SIMPLE',
   'CLAUDECODE', 'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_ENTRYPOINT',
-  'CLAUDE_CODE_EXECPATH', 'CLAUDE_CODE_SESSION_ID',
-]) {
+  'CLAUDE_CODE_EXECPATH', 'CLAUDE_CODE_SESSION_ID',]) {
   if (process.env[k]) { console.log(`[multicc] stripping leaked ${k} so spawned claude keeps the full tool set`); delete process.env[k]; }
 }
 const express = require('express');
@@ -2515,8 +2514,7 @@ sessionWorkHost = createSessionWorkHost({
   // Cancellation submits a structured result to classify instead of writing
   // state; classify is the only writer of session/task business state.
   dispatchStateAction,
-  reconcileTaskProjection: (taskId, options) =>
-    taskBoardRuntime.reconcileRunState(taskId, options),
+  reconcileTaskProjection: (taskId, options) => taskBoardRuntime.reconcileRunState(taskId, options),
   classifyDisplay,
   cancelClassify,
   // Stopping the runner also stops the judgement queued for it: drop this
@@ -2526,6 +2524,7 @@ sessionWorkHost = createSessionWorkHost({
   chatStream,
   assignKillReason,
   finishProviderAttempt: (attempt, facts) => providerAttemptRuntime.finishAttempt(attempt, facts),
+  releaseProviderProducers: (sessionId, reason) => providerAttemptRuntime.forceReleaseProducers(sessionId, reason),
   appendMessage: appendChatMessage,
   onTerminalWork: (sessionId, completion) => {
     Promise.resolve(sessionHibernationRuntime?.touchTerminal(sessionId, completion)).catch(error => {
@@ -2717,6 +2716,7 @@ orchestrationRuntime = createOrchestrationRuntime({
   runChatTurn: chatTurnEngine.runChatTurn,
   isBusy: dispatchTargetBusy, isSlotUnavailable: (sid, item) => !!taskRunHost?.isSlotUnavailable(sid, item || {}),
   hasPersistedDelivery: chatTurnEngine.persistedOrchestrationDelivery,
+  runnerDeliveryProbe: (sessionId, identity) => chatTurnEngine.runnerDeliveryHandoff(sessionId, identity),
   deliverOutbox: chatTurnEngine.deliverOrchestrationOutbox,
   probe: chatTurnEngine.probeExplicitWait,
   detachedAdapter: detached,

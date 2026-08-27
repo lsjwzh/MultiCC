@@ -162,6 +162,57 @@ function recoverDispatchFromHistory(history, operation) {
 // interruptions don't pop up on every visit.
 const RECONNECT_REPLAY_WINDOW_MS = 15 * 60 * 1000;
 
+// In-memory delivery-handoff facts backing runnerDeliveryHandoff(). The probe
+// distinguishes "message already written to history" (persisted) from "a runner
+// actually took over" (handedOff). Semantics per lookup:
+//   known && handedOff===false → safe to re-execute (we watched it fail
+//     before handoff; re-running cannot duplicate side effects);
+//   known && handedOff===true → idempotent skip as before;
+//   unknown (no record, e.g. after a restart) → conservative crash-recovery
+//     reading stands: persisted = delivered, because re-running a message
+//     that may have executed risks duplicate side effects.
+function createDeliveryProbeRegistry({ maxIdentities = 64, now = Date.now } = {}) {
+  const bySession = new Map();
+  function record(sessionName, clientMsgId, deliveryId, facts = {}) {
+    if (!sessionName || (!clientMsgId && !deliveryId)) return;
+    let byIdentity = bySession.get(sessionName);
+    if (!byIdentity) {
+      byIdentity = new Map();
+      bySession.set(sessionName, byIdentity);
+    }
+    const entry = Object.freeze({
+      handedOff: facts.handedOff === true,
+      turnId: facts.turnId || null,
+      at: Number(now()),
+    });
+    for (const identity of [clientMsgId, deliveryId]) {
+      if (!identity) continue;
+      byIdentity.delete(identity);
+      byIdentity.set(identity, entry);
+    }
+    while (byIdentity.size > maxIdentities) {
+      byIdentity.delete(byIdentity.keys().next().value);
+    }
+  }
+  function lookup(sessionName, identity) {
+    if (!sessionName || !identity) return null;
+    const byIdentity = bySession.get(sessionName);
+    const entry = byIdentity ? byIdentity.get(identity) : null;
+    if (!entry) return null;
+    return { known: true, handedOff: entry.handedOff, turnId: entry.turnId, at: entry.at };
+  }
+  return Object.freeze({ record, lookup });
+}
+
+// The outbox re-delivers a persisted message only when the live engine
+// actually watched it fail BEFORE a runner took over (duplicate admission +
+// known probe + handedOff===false). Everything else keeps the historical
+// duplicate semantics.
+function shouldReexecutePersistedDelivery(duplicateSeen, duplicatePersisted, probe) {
+  return duplicateSeen === true && duplicatePersisted === true
+    && !!probe && probe.known === true && probe.handedOff === false;
+}
+
 function createChatTurnEngine(deps) {
   const {
     // ── Getters for reassigned / late-composed host bindings ──
@@ -263,6 +314,23 @@ function createChatTurnEngine(deps) {
   // stream + per-turn spawn). See src/chat/turn-timing.js for the t0-t3 contract.
   const turnTiming = createTurnTimingRecorder();
   const attemptRuntime = providerAttemptRuntime || createProviderAttemptRuntime();
+
+  // ── Persisted ≠ delivered (delivery probe) ──
+  // The outbox's persisted-delivery recovery used to treat "user message is in
+  // chat history" as "delivered". A turn that persisted the message and then
+  // aborted in preparation (e.g. PROVIDER_PRODUCER_NOT_DRAINED) left exactly
+  // that evidence — message on disk, runner never took over — so the retry
+  // acknowledged a delivery that never executed, and the message sat in
+  // history forever unexecuted. The registry (see createDeliveryProbeRegistry
+  // above) records, per delivery identity, the runner-handoff outcome observed
+  // by THIS live process; orchestration probes it before acknowledging a
+  // persisted delivery as delivered.
+  const DELIVERY_PROBE_MAX_IDENTITIES = 64;
+  const deliveryProbeRegistry = createDeliveryProbeRegistry({
+    maxIdentities: DELIVERY_PROBE_MAX_IDENTITIES,
+  });
+  const recordDeliveryProbe = deliveryProbeRegistry.record;
+  const runnerDeliveryHandoff = deliveryProbeRegistry.lookup;
   const autoProviderRuntime = deps.autoProviderRuntime || createAutoProviderRuntime({
     providers, providerLimitCache, emit: chatBroadcast, logger,
     hasLiveBackgroundTasks: sessionId => {
@@ -1001,6 +1069,26 @@ function createChatTurnEngine(deps) {
         duplicatePersisted = getChatHistoryService().hasPersistedDelivery(sessionName, deliveryId);
       }
     }
+    // Persisted ≠ delivered: if THIS live process watched the runner reject
+    // this exact identity before handoff, the persisted user message is a
+    // leftover of that failed attempt, not a delivered turn. Drop the
+    // duplicate short-circuit and re-execute below (without appending a
+    // second copy of the message to history). An unknown probe (restart)
+    // keeps the conservative idempotent skip.
+    const priorDeliveryProbe = runnerDeliveryHandoff(sessionName, clientMsgId || deliveryId);
+    const reexecutePersistedDelivery = shouldReexecutePersistedDelivery(
+      duplicateSeen, duplicatePersisted, priorDeliveryProbe,
+    );
+    if (reexecutePersistedDelivery) {
+      duplicateSeen = false;
+      duplicatePersisted = false;
+      logger.warn?.('chat_turn_reexecute_persisted_delivery', {
+        sessionId: sessionName,
+        clientMsgId: clientMsgId || null,
+        deliveryId: deliveryId || null,
+        priorTurnId: priorDeliveryProbe.turnId || null,
+      });
+    }
 
     const streamBusy = turnRequest.cli === 'claude' && !!chatStream.status(sessionName)?.busy;
     let claudeManagedProxy = false;
@@ -1021,7 +1109,14 @@ function createChatTurnEngine(deps) {
       backgroundWorkActive: claudeManagedProxy
         && getBackgroundTaskRuntime().hasLiveBackgroundTasks(sessionName),
     });
-    if (admission.decision === 'duplicate') return admission.accepted;
+    if (admission.decision === 'duplicate') {
+      // An accepted duplicate is a settled delivery (this or an earlier
+      // attempt handed off): record it so retries keep skipping idempotently.
+      if (admission.accepted) {
+        recordDeliveryProbe(sessionName, clientMsgId, deliveryId, { handedOff: true });
+      }
+      return admission.accepted;
+    }
     if (admission.decision === 'reject') {
       if (admission.reason === 'shutdown') logger.warn('chat_turn_rejected_shutdown', { sessionId: sessionName });
       if (admission.reason === 'background-work-active') chatBroadcast(sessionName, {
@@ -1117,7 +1212,18 @@ function createChatTurnEngine(deps) {
     } : requestedTask;
 
     // Persist the canonical user event before any provider execution.
-    const userMessageSaved = appendChatMessage(sessionName, {
+    // A re-executed delivery already has its user message in history from the
+    // failed attempt; appending again would duplicate the bubble, so only the
+    // durable-presence check runs (falling back to a normal append if the
+    // history was cleared in between).
+    let userMessageSaved = false;
+    if (reexecutePersistedDelivery) {
+      try {
+        userMessageSaved = getChatHistoryService()
+          .hasPersistedDelivery(sessionName, clientMsgId || deliveryId);
+      } catch (_) { userMessageSaved = false; }
+    }
+    if (!userMessageSaved) userMessageSaved = appendChatMessage(sessionName, {
       role: 'user', content: text, ts: Date.now(),
       turnId,
       clientMsgId: clientMsgId || undefined,
@@ -1817,6 +1923,14 @@ function createChatTurnEngine(deps) {
       }
       return false;
     } finally {
+      // Record the runner-handoff outcome for this delivery identity so the
+      // outbox's persisted-delivery recovery can distinguish "persisted and
+      // executed" from "persisted but aborted before the runner took over".
+      // See the delivery-probe block near the factory top.
+      recordDeliveryProbe(sessionName, clientMsgId, deliveryId, {
+        handedOff: runnerHandedOff,
+        turnId,
+      });
       if (preparationOpen) {
         turnProgressHeartbeat.stop(sessionName, turnId);
         chatTurnPreparationRuntime.settle(sessionName, turnId, {
@@ -2514,6 +2628,7 @@ function createChatTurnEngine(deps) {
     probeExplicitWait,
     recoverDispatchOperation,
     deliverOrchestrationOutbox,
+    runnerDeliveryHandoff,
     runChatTurnStreaming,
     finalizeStreamingTurn,
     handleChatWs,
@@ -2524,8 +2639,10 @@ module.exports = {
   adapterReasoningProgressEvent,
   appendAdapterAssistantText,
   createChatTurnEngine,
+  createDeliveryProbeRegistry,
   markReplaySafeAssistantEnvelope,
   normalizeClaudeAssistantSnapshot,
   normalizeClaudeToolResultContent,
   recoverDispatchFromHistory,
+  shouldReexecutePersistedDelivery,
 };
