@@ -698,3 +698,71 @@ test('provider revision hashes only safe route configuration and tagged frames a
   assert.doesNotMatch(tagged.text, /pr1\./);
   assert.equal(Object.isFrozen(tagged), true);
 });
+
+function clockHarness(options = {}) {
+  let sequence = 0;
+  let clock = options.startAt || 1_000;
+  const events = [];
+  const audit = [];
+  const runtime = createProviderAttemptRuntime({
+    runtimeEpoch: 'runtime-epoch-1',
+    now: () => clock,
+    nextId: prefix => `${prefix}-${++sequence}`,
+    emit: (sessionId, event) => events.push({ sessionId, event }),
+    audit: (sessionId, event) => audit.push({ sessionId, event }),
+    ...options.runtime,
+  });
+  return { runtime, events, audit, advance: ms => { clock += ms; } };
+}
+
+test('an orphaned producer past the stale grace is force-drained, not a permanent wedge', () => {
+  const { runtime, audit, advance } = clockHarness();
+  const first = runtime.beginAttempt(route());
+  runtime.onProxyActivity(proxy(runtime, first, { phase: 'request' }));
+  runtime.finishAttempt(first, { outcome: 'failed', errorCategory: 'rate_limit' });
+  // Fresh producer: still rejected, exactly as before.
+  assert.throws(() => runtime.beginAttempt(route({ attemptNo: 2 })), error => (
+    error && error.code === 'PROVIDER_PRODUCER_NOT_DRAINED'
+  ));
+  // No proxy 'end' ever arrives (dead CLI consumer); past the grace the entry
+  // is orphaned and beginAttempt force-drains it instead of wedging forever.
+  advance(30_000);
+  assert.equal(runtime.beginAttempt(route({ attemptNo: 2 })).routeGeneration, 2);
+  const drained = audit.find(item => item.event.type === 'provider_producer_force_drained');
+  assert.equal(drained && drained.event.reason, 'stale_producer_grace');
+  assert.equal(drained && drained.sessionId, 'session-1');
+  assert.equal(drained && drained.event.graceMs, 30_000);
+  assert.equal(drained && drained.event.count, 1);
+});
+
+test('producerStaleGraceMs is honoured and clamped to at least five seconds', () => {
+  const { runtime, advance } = clockHarness({
+    runtime: { producerStaleGraceMs: 5_000 },
+  });
+  const first = runtime.beginAttempt(route());
+  runtime.onProxyActivity(proxy(runtime, first, { phase: 'request' }));
+  runtime.finishAttempt(first, { outcome: 'failed' });
+  advance(4_999);
+  assert.throws(() => runtime.beginAttempt(route({ attemptNo: 2 })), error => (
+    error && error.code === 'PROVIDER_PRODUCER_NOT_DRAINED'
+  ));
+  advance(1);
+  assert.equal(runtime.beginAttempt(route({ attemptNo: 2 })).routeGeneration, 2);
+});
+
+test('forceReleaseProducers releases main producers immediately and is idempotent', () => {
+  const { runtime, audit } = clockHarness();
+  const first = runtime.beginAttempt(route());
+  runtime.onProxyActivity(proxy(runtime, first, { phase: 'request' }));
+  runtime.onProxyActivity(proxy(runtime, first, { phase: 'request' }));
+  runtime.finishAttempt(first, { outcome: 'failed' });
+
+  assert.equal(runtime.forceReleaseProducers('session-1', 'cancel:user_cancel').released, 2);
+  const drained = audit.find(item => item.event.type === 'provider_producer_force_drained');
+  assert.equal(drained && drained.event.reason, 'cancel:user_cancel');
+  // The next attempt no longer needs to wait for the grace window.
+  assert.equal(runtime.beginAttempt(route({ attemptNo: 2 })).routeGeneration, 2);
+  // Idempotent on a drained session and defensive on bad input.
+  assert.equal(runtime.forceReleaseProducers('session-1').code, 'no_producers');
+  assert.equal(runtime.forceReleaseProducers('').code, 'invalid_session');
+});
