@@ -669,6 +669,14 @@ function createSessionWorkHost(deps = {}) {
       effectiveReason,
       supersededByEntryId ? 'new_user_message' : killReason,
     );
+    // The stopped CLI process was the proxy's only downstream consumer: its
+    // in-flight upstream request will never emit the proxy 'end' that drains
+    // the provider producer accounting. Release it now so the session's next
+    // attempt is not rejected with PROVIDER_PRODUCER_NOT_DRAINED forever
+    // (previously only a server restart cleared it).
+    if (typeof deps.releaseProviderProducers === 'function') {
+      try { deps.releaseProviderProducers(sessionId, `cancel:${effectiveReason}`); } catch (_) {}
+    }
     const stopped = await awaitRunnerStop(sessionId);
     if (!stopped) {
       log.warn?.('session_cancel_runner_stop_timeout', { sessionId, source, operationId });
