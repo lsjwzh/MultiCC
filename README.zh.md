@@ -85,7 +85,7 @@ MultiCC **不会**把一家厂商的对话记录翻译成另一家的格式—�
 ### 1. 安装
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v1.6.3/install.sh | bash -s -- --branch v1.6.3
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v1.6.4/install.sh | bash -s -- --branch v1.6.4
 ```
 
 脚本会自动识别系统、检查依赖、克隆仓库、安装依赖、生成 `ACCESS_TOKEN`，并可选注册为后台服务（macOS `launchd`）。安装过程不会构建 Android APK。
