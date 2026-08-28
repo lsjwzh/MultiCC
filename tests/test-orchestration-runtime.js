@@ -99,13 +99,17 @@ test('task-run dispatch crosses a fresh-run barrier before native delivery', asy
   });
   await runtime.tick();
   assert.deepEqual(order, ['barrier:run-1:3', 'turn:run-1:3']);
-  assert.equal(injections[0].opts.isFirstTurn, true);
+  // The fresh thread comes from resetSlot (cliSessionId cleared, turn count
+  // zeroed) before the slot's prior run could report cleanup done, not from a
+  // pinned history intent. Delivery carries no history intent at all.
+  assert.equal('isFirstTurn' in injections[0].opts, false);
+  assert.equal('resume' in injections[0].opts, false);
   assert.equal(injections[0].opts.taskRunId, 'run-1');
   assert.equal(injections[0].opts.leaseEpoch, 3);
   await runtime.stop();
 });
 
-test('plain dispatch leaves isFirstTurn unpinned so a rotated native session still admits', async t => {
+test('plain dispatch carries no history intent so a rotated native session still admits', async t => {
   const injections = [];
   const { runtime } = fixture(t, {
     runChatTurn: async (sessionId, text, opts) => {
@@ -130,10 +134,10 @@ test('plain dispatch leaves isFirstTurn unpinned so a rotated native session sti
   // After the codex rollout guard archives an oversized rollout (clearing
   // cliSessionId), a pinned resume makes normalizeTurnRequest throw
   // resume_without_native_session on EVERY retry — the item wedges until its
-  // attempts run out. Unpinned lets the engine pick fresh-turn from live
-  // native-session proof instead.
-  assert.equal('isFirstTurn' in injections[0].opts, true);
-  assert.equal(injections[0].opts.isFirstTurn, undefined);
+  // attempts run out. A delivered dispatch must look exactly like a message
+  // typed into the input box: no history intent, engine decides.
+  assert.equal('isFirstTurn' in injections[0].opts, false);
+  assert.equal('resume' in injections[0].opts, false);
   assert.equal(injections[0].opts.taskId, 'task-2');
   assert.equal(injections[0].opts.taskRunId, undefined);
   await runtime.stop();
