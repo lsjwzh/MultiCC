@@ -53,7 +53,8 @@
       "rationale": "Per-provider CODEX_HOME directories contain upstream CLI auth/config and must remain stable across process restarts.",
       "migrationStrategy": "Version the materialized-home layout and add a per-provider copy-forward/rollback operation before changing its root.",
       "sources": [
-        { "file": "src/providers.js", "anchor": "const CODEX_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-homes');" }
+        { "file": "src/providers.js", "anchor": "const CODEX_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-homes');" },
+        { "file": "src/codex-session-home.js", "anchor": "|| path.join(os.homedir(), '.multicc', 'codex-homes'));" }
       ]
     },
     {
@@ -73,7 +74,8 @@
       "rationale": "Logical-session history directories contain the canonical native rollout shared by Auto, managed, and Official physical routes across restarts; providerless routes synchronize only at idle route boundaries.",
       "migrationStrategy": "Version the canonical layout; copy forward only a uniquely identified native rollout with durable atomic no-overwrite semantics, retain legacy sources for rollback, and fail closed on ambiguity.",
       "sources": [
-        { "file": "src/providers.js", "anchor": "const CODEX_SESSION_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-session-homes');" }
+        { "file": "src/providers.js", "anchor": "const CODEX_SESSION_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-session-homes');" },
+        { "file": "src/codex-session-home.js", "anchor": "|| path.join(os.homedir(), '.multicc', 'codex-session-homes'));" }
       ]
     },
     {
