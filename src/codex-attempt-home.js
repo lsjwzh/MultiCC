@@ -301,6 +301,9 @@ function readAttemptOwner(attemptHome) {
     const sourceHome = typeof owner.sourceHome === 'string' && path.isAbsolute(owner.sourceHome)
       ? path.resolve(owner.sourceHome)
       : '';
+    const sessionsDir = typeof owner.sessionsDir === 'string' && path.isAbsolute(owner.sessionsDir)
+      ? path.resolve(owner.sessionsDir)
+      : '';
     const rawCreatedAtMs = Number(owner.createdAtMs);
     const parsedCreatedAt = Date.parse(String(owner.createdAt || ''));
     const createdAtMs = Number.isFinite(rawCreatedAtMs) && rawCreatedAtMs > 0
@@ -310,6 +313,7 @@ function readAttemptOwner(attemptHome) {
       pid,
       processInstanceId: String(owner.processInstanceId || ''),
       sourceHome,
+      sessionsDir,
       encodedCapability: normalizedCapability(owner.encodedCapability),
       createdAtMs,
     };
@@ -363,6 +367,13 @@ function orphanSessionsDir(attemptHome, owner) {
     const stat = fs.lstatSync(linkedSessions);
     if (stat.isSymbolicLink()) linkedTarget = fs.realpathSync(linkedSessions);
   } catch (_) {}
+  if (owner && owner.sessionsDir) {
+    if (owner.sessionsDir === attemptHome
+        || owner.sessionsDir.startsWith(`${attemptHome}${path.sep}`)) return '';
+    if (linkedTarget && fs.existsSync(owner.sessionsDir)
+        && fs.realpathSync(owner.sessionsDir) !== linkedTarget) return '';
+    return owner.sessionsDir;
+  }
   if (owner && owner.sourceHome) {
     if (owner.sourceHome === attemptHome
         || owner.sourceHome.startsWith(`${attemptHome}${path.sep}`)) return '';
@@ -480,6 +491,12 @@ function linkSharedDirectory(sourceHome, attemptHome, name, { create = false } =
   return true;
 }
 
+function linkDirectory(source, attemptHome, name) {
+  const target = fs.realpathSync(source);
+  fs.symlinkSync(target, path.join(attemptHome, name),
+    process.platform === 'win32' ? 'junction' : 'dir');
+}
+
 function createCodexAttemptHome(sourceHomeInput, options = {}) {
   const sourceHome = path.resolve(requiredText(sourceHomeInput, 'source CODEX_HOME'));
   const sessionId = requiredText(options.sessionId, 'attempt proxy session');
@@ -492,7 +509,14 @@ function createCodexAttemptHome(sourceHomeInput, options = {}) {
   }
   cleanupCodexAttemptHomes(homesDir);
   const createdAtMs = Date.now();
-  const sourceSessions = path.join(sourceHome, 'sessions');
+  const sourceSessions = options.sessionsDir
+    ? path.resolve(requiredText(options.sessionsDir, 'shared Codex sessions directory'))
+    : path.join(sourceHome, 'sessions');
+  if (sourceSessions === homesDir || sourceSessions.startsWith(`${homesDir}${path.sep}`)) {
+    const error = new Error('Codex sessions directory must be outside the attempt overlay directory');
+    error.code = 'CODEX_ATTEMPT_HOME_PATH_INVALID';
+    throw error;
+  }
   ensurePrivateDir(sourceSessions);
   const rolloutBaseline = snapshotRollouts(sourceSessions);
   const attemptHome = fs.mkdtempSync(path.join(
@@ -529,6 +553,7 @@ function createCodexAttemptHome(sourceHomeInput, options = {}) {
       pid: process.pid,
       processInstanceId: PROCESS_INSTANCE_ID,
       sourceHome,
+      sessionsDir: sourceSessions,
       encodedCapability: normalizedCapability(sessionId),
       createdAt: new Date(createdAtMs).toISOString(),
       createdAtMs,
@@ -537,19 +562,20 @@ function createCodexAttemptHome(sourceHomeInput, options = {}) {
     copyPrivateFile(
       path.join(sourceHome, 'config.toml'),
       path.join(attemptHome, 'config.toml'),
-      { required: true },
+      { required: options.configRequired !== false },
     );
     copyPrivateFile(path.join(sourceHome, 'auth.json'), path.join(attemptHome, 'auth.json'));
     copyPrivateFile(path.join(sourceHome, 'AGENTS.md'), path.join(attemptHome, 'AGENTS.md'));
     ensurePrivateDir(path.join(attemptHome, 'agents'));
-    // Native conversation state and shared skills remain provider-scoped. The
-    // only attempt-private surface is config/agents, which may contain the
-    // opaque proxy capability and is deleted as soon as the child closes.
-    linkSharedDirectory(sourceHome, attemptHome, 'sessions', { create: true });
+    // Native conversation state is logical-session-scoped when sessionsDir is
+    // supplied; skills/rules/memories remain provider-scoped. The only
+    // attempt-private surface is config/agents, which may contain the opaque
+    // proxy capability and is deleted as soon as the child closes.
+    linkDirectory(sourceSessions, attemptHome, 'sessions');
     linkSharedDirectory(sourceHome, attemptHome, 'skills');
     linkSharedDirectory(sourceHome, attemptHome, 'rules');
     linkSharedDirectory(sourceHome, attemptHome, 'memories');
-    return Object.freeze({ home: attemptHome, sourceHome, release });
+    return Object.freeze({ home: attemptHome, sourceHome, sessionsDir: sourceSessions, release });
   } catch (error) {
     release();
     throw error;

@@ -43,7 +43,12 @@ function invoke(handler, { params = {}, body = {} } = {}) {
   return response;
 }
 
-function fixture(session, { chatState = null, backgroundActive = false } = {}) {
+function fixture(session, {
+  chatState = null,
+  backgroundActive = false,
+  synchronizeCodexSessionRoute = () => ({ synchronized: false }),
+  validProviderId = (_cli, id) => ({ ok: true, value: id || null }),
+} = {}) {
   const workspace = [];
   const chat = [];
   const effects = [];
@@ -71,13 +76,14 @@ function fixture(session, { chatState = null, backgroundActive = false } = {}) {
       appTypeForCli: providers.appTypeForCli,
       modelValidForProvider: providers.modelValidForProvider,
       codexProviderProxyable: providers.codexProviderProxyable,
+      synchronizeCodexSessionRoute,
       CODEX_HOMES_DIR: providers.CODEX_HOMES_DIR,
     },
     providerRouterRuntime,
     getChatStream: () => ({ close: id => effects.push(`stream-close:${id}`) }),
     getChatState: () => chatState,
     hasLiveBackgroundTasks: () => backgroundActive,
-    validProviderId: () => ({ ok: true, value: null }),
+    validProviderId,
     asyncHandler: handler => handler,
     appendEvent: () => {},
     workspaceBroadcast: (dirId, payload) => workspace.push({ dirId, payload }),
@@ -172,6 +178,34 @@ test('a live background task rejects route mutation before persistence or stream
   assert.match(res.body.error, /background task/i);
   assert.equal(session.model, 'model-a');
   assert.deepEqual(effects, [], 'rejected route mutation must not begin persistence or close the warm stream');
+});
+
+test('idle Codex route changes synchronize the exact native rollout before authority changes', () => {
+  for (const [fromProviderId, requested, toProviderId] of [
+    ['managed-a', '', null],
+    [null, 'managed-b', 'managed-b'],
+  ]) {
+    const session = {
+      id: 's1', dirId: 'd1', cli: 'codex', kind: 'chat',
+      provider: fromProviderId, model: 'model-a', cliSessionId: 'native-a',
+    };
+    const calls = [];
+    const { handler } = fixture(session, {
+      synchronizeCodexSessionRoute: input => {
+        calls.push({ ...input, providerAtCall: session.provider });
+        return { synchronized: true };
+      },
+    });
+
+    const res = invoke(handler, { params: { id: 's1' }, body: { provider: requested } });
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(session.provider, toProviderId);
+    assert.deepEqual(calls, [{
+      logicalSessionId: 's1', nativeSessionId: 'native-a',
+      fromProviderId, toProviderId, providerAtCall: fromProviderId,
+    }]);
+  }
 });
 
 test('server composition gives profile routes the live chat-state reader', () => {

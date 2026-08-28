@@ -1351,7 +1351,7 @@ const livenessRolloutResolver = createRolloutPathResolver({
   path,
   sessionsDirFor: rec => path.join(
     rec.provider
-      ? path.join(providers.CODEX_HOMES_DIR, rec.provider)
+      ? providers.codexSessionHome(rec.id)
       : path.join(os.homedir(), '.codex'),
     'sessions',
   ),
@@ -2274,7 +2274,7 @@ chatHistoryRuntime = createChatHistoryRuntime({
 });
 chatHistoryService = chatHistoryRuntime.service;
 chatHistoryRuntime.mountRoutes(app);
-taskRunHost = createProductionTaskRunHost({ taskRunStore, dataRoot: MULTICC_PATHS.root, providerHomesDir: providers.CODEX_HOMES_DIR,
+taskRunHost = createProductionTaskRunHost({ taskRunStore, dataRoot: MULTICC_PATHS.root, providerHomesDir: providers.CODEX_HOMES_DIR, codexSessionHomesDir: providers.CODEX_SESSION_HOMES_DIR,
   records: persistedSessions, directories, chatStream, clearNativeCliStates: record => { if (record) delete record.pendingCliHandoff; return clearAllNativeCliStates(record); },
   deleteChatHistory: id => chatHistoryService.deleteSession(id), resetChatState: id => { const state = chatSessions.get(id); if (state) { state.chatTurnCount = 0; delete state._currentTaskId; delete state._currentTaskRunId; delete state._currentTaskLeaseEpoch; } },
   resetRoleUsage: resetRoleTokenUsage, persistRecords: savePersistedSessionsBestEffort,

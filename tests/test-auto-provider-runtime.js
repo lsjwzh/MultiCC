@@ -12,6 +12,7 @@ function fixture({
     { id: 'empty', name: 'Empty', appType: 'claude', apiFormat: 'anthropic', compatibleClis: ['claude'], model: 'empty-model', modelOptions: ['empty-model'] },
     { id: 'backup', name: 'Backup', appType: 'claude', apiFormat: 'anthropic', compatibleClis: ['claude'], model: 'backup-model', modelOptions: ['backup-model'] },
     { id: 'third', name: 'Third', appType: 'claude', apiFormat: 'anthropic', compatibleClis: ['claude'], model: 'third-model', modelOptions: ['third-model'] },
+    { id: 'official', name: 'Official', appType: 'claude', apiFormat: 'anthropic', compatibleClis: ['claude'], isOfficial: true, model: 'official-model', modelOptions: ['official-model'] },
   ];
   const limits = new Map([
     ['empty', {
@@ -87,9 +88,43 @@ test('stale zero balance is probed first, then quota failure switches to the nex
   assert.equal(next.decision.action, 'retry');
   assert.equal(next.decision.reason, 'provider_failover');
   assert.deepEqual(next.decision.providerFailover, {
-    fromProviderId: 'empty', toProviderId: 'backup', category: 'billing_quota',
+    fromProviderId: 'empty', toProviderId: 'backup',
+    fromTrustDomain: 'user-managed', toTrustDomain: 'user-managed',
+    category: 'billing_quota',
   });
   assert.deepEqual(events.map(event => event.phase), ['selected', 'switched']);
+  assert.deepEqual(events.map(event => [event.trustDomain, event.fromTrustDomain]), [
+    ['user-managed', null],
+    ['user-managed', 'user-managed'],
+  ]);
+});
+
+test('an explicitly authorized mixed pool switches from user-managed to Official and audits both trust domains', () => {
+  const { runtime, session, events } = fixture({ emptyFetchedAt: 900_000, maxAttempts: 2 });
+  session.providerSelection = {
+    version: 1, mode: 'auto', protocol: 'anthropic', maxAttempts: 2,
+    sticky: true, allowCrossTrust: true,
+    candidates: [
+      { providerId: 'empty', priority: 1 },
+      { providerId: 'official', priority: 2 },
+    ],
+  };
+  const turn = runtime.beginTurn({ session, turnId: 'turn-cross-trust' });
+
+  assert.equal(turn.initial().providerId, 'empty');
+  const next = turn.failover(quotaDecision(), openAttempt());
+  assert.equal(next.invocationOptions.providerId, 'official');
+  assert.deepEqual(next.decision.providerFailover, {
+    fromProviderId: 'empty',
+    toProviderId: 'official',
+    fromTrustDomain: 'user-managed',
+    toTrustDomain: 'official',
+    category: 'billing_quota',
+  });
+  assert.equal(events[0].trustDomain, 'user-managed');
+  assert.equal(events[0].fromTrustDomain, null);
+  assert.equal(events[1].trustDomain, 'official');
+  assert.equal(events[1].fromTrustDomain, 'user-managed');
 });
 
 test('fresh known exhausted provider is skipped before the physical attempt', () => {
@@ -232,6 +267,23 @@ test('a successful fallback becomes sticky on the next turn', () => {
   first.recordSuccess({ providerId: next.invocationOptions.providerId });
   const second = runtime.beginTurn({ session, turnId: 'turn-2' });
   assert.equal(second.initial().providerId, 'backup');
+});
+
+test('sticky=false re-enters priority order on every turn and after runtime restart', () => {
+  const { runtime, session } = fixture({ emptyFetchedAt: 900_000 });
+  session.providerSelection = { ...session.providerSelection, sticky: false };
+  const first = runtime.beginTurn({ session, turnId: 'turn-1' });
+  assert.equal(first.initial().providerId, 'empty');
+  const fallback = first.failover(quotaDecision(), openAttempt());
+  assert.equal(fallback.invocationOptions.providerId, 'backup');
+  first.recordSuccess({ providerId: 'backup' });
+  assert.equal(runtime.beginTurn({ session, turnId: 'turn-2' }).initial().providerId, 'empty');
+
+  const restarted = fixture({ emptyFetchedAt: 900_000 });
+  restarted.session.providerSelection = { ...restarted.session.providerSelection, sticky: false };
+  assert.equal(restarted.runtime.beginTurn({
+    session: restarted.session, turnId: 'turn-after-restart',
+  }).initial().providerId, 'empty');
 });
 
 test('replacing or clearing the selection resets in-memory stickiness and route state', () => {

@@ -106,6 +106,30 @@
     return String(value || '').startsWith('__auto__:') ? String(value).slice(9) : null;
   }
 
+  function autoProvidersForProtocol(protocol, providers) {
+    return (Array.isArray(providers) ? providers : [])
+      .filter(provider => provider && provider.id && protocolOfProvider(provider) === protocol);
+  }
+
+  function autoSelectionCrossesTrust(candidates, providers) {
+    const byId = new Map((Array.isArray(providers) ? providers : [])
+      .filter(provider => provider && provider.id)
+      .map(provider => [provider.id, provider]));
+    const trust = new Set((Array.isArray(candidates) ? candidates : [])
+      .map(candidate => byId.get(candidate && candidate.providerId))
+      .filter(Boolean)
+      .map(provider => provider.isOfficial === true ? 'official' : 'user-managed'));
+    return trust.size > 1;
+  }
+
+  function autoCandidateModel(provider, configured) {
+    if (configured && Object.prototype.hasOwnProperty.call(configured, 'model')) {
+      return configured.model ? String(configured.model) : null;
+    }
+    if (provider && provider.isOfficial === true) return null;
+    return provider && provider.model ? String(provider.model) : null;
+  }
+
   function translate(state, key) {
     return state && typeof state.translate === 'function' ? state.translate(key) : key;
   }
@@ -536,6 +560,7 @@
           <div style="font-size:11px;color:#8b949e;line-height:1.45;margin-bottom:8px;">按优先级尝试；仅在首字节前且没有工具副作用时切换。新鲜额度已耗尽的候选会预先跳过。</div>
           <div id="ai-auto-candidates"></div>
           <div id="ai-auto-error" style="display:none;color:#f85149;font-size:11px;margin:5px 0;"></div>
+          <div id="ai-auto-cross-trust-warning" style="display:none;color:#d29922;font-size:11px;line-height:1.45;margin:7px 0;">已选择 Official 与自管 Provider：同一对话上下文可能在自动切换时发送给多个上游。</div>
           <div style="display:flex;gap:12px;align-items:center;margin-top:8px;font-size:11px;color:#8b949e;">
             <label>最多尝试 <select id="ai-auto-max" style="background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:5px;padding:3px 6px;"><option>2</option><option>3</option><option>4</option></select></label>
             <label><input id="ai-auto-sticky" type="checkbox" checked> 成功后优先沿用</label>
@@ -577,6 +602,7 @@
       const autoSection = box.querySelector('#ai-auto-section');
       const autoCandidates = box.querySelector('#ai-auto-candidates');
       const autoError = box.querySelector('#ai-auto-error');
+      const autoCrossTrustWarning = box.querySelector('#ai-auto-cross-trust-warning');
       const autoMax = box.querySelector('#ai-auto-max');
       const autoSticky = box.querySelector('#ai-auto-sticky');
       const modelSection = box.querySelector('#ai-model-section');
@@ -595,17 +621,8 @@
           ? 'OpenCode 原生配置（OpenCode Go 等）'
           : translate(state, 'providerDefault');
       providerSelect.appendChild(defaultProvider);
-      const protocolGroups = new Map();
-      for (const provider of providersOf(state)) {
-        const protocol = protocolOfProvider(provider);
-        if (!protocol) continue;
-        const trust = provider.isOfficial ? 'official' : 'user-managed';
-        const key = `${protocol}:${trust}`;
-        if (!protocolGroups.has(key)) protocolGroups.set(key, []);
-        protocolGroups.get(key).push(provider);
-      }
       for (const protocol of ['anthropic', 'openai_responses', 'openai_chat']) {
-        if (![...protocolGroups.entries()].some(([key, list]) => key.startsWith(`${protocol}:`) && list.length >= 2)) continue;
+        if (autoProvidersForProtocol(protocol, providersOf(state)).length < 2) continue;
         const option = document.createElement('option');
         option.value = autoOptionValue(protocol);
         option.textContent = `⚡ Auto · ${autoProtocolLabel(protocol)}`;
@@ -695,13 +712,19 @@
       };
 
       function autoPool(protocol) {
-        const all = providersOf(state).filter(provider => protocolOfProvider(provider) === protocol);
-        const configuredIds = new Set((configuredAuto?.protocol === protocol ? configuredAuto.candidates : [])
-          .map(candidate => candidate.providerId));
-        const configuredFirst = all.find(provider => configuredIds.has(provider.id));
-        const trustOfficial = configuredFirst ? !!configuredFirst.isOfficial
-          : all.filter(provider => !provider.isOfficial).length < 2;
-        return all.filter(provider => !!provider.isOfficial === trustOfficial);
+        return autoProvidersForProtocol(protocol, providersOf(state));
+      }
+
+      function enabledAutoCandidatesForTrust() {
+        return [...autoCandidates.querySelectorAll('.auto-provider-candidate')]
+          .filter(row => row.querySelector('.auto-candidate-enabled').checked)
+          .map(row => ({ providerId: row.dataset.providerId }));
+      }
+
+      function updateAutoCrossTrustWarning() {
+        autoCrossTrustWarning.style.display = autoSelectionCrossesTrust(
+          enabledAutoCandidatesForTrust(), providersOf(state),
+        ) ? '' : 'none';
       }
 
       function renderAutoCandidates() {
@@ -710,11 +733,17 @@
         modelSection.style.display = protocol ? 'none' : '';
         autoCandidates.innerHTML = '';
         autoError.style.display = 'none';
+        autoCrossTrustWarning.style.display = 'none';
         if (!protocol) return;
         const prior = new Map((configuredAuto?.protocol === protocol ? configuredAuto.candidates : [])
           .map(candidate => [candidate.providerId, candidate]));
         const hasConfiguredPool = configuredAuto?.protocol === protocol;
         const pool = autoPool(protocol);
+        const managed = pool.filter(provider => provider.isOfficial !== true);
+        const defaultEnabledIds = new Set((managed.length >= 2 ? managed : pool)
+          .slice(0, 2).map(provider => provider.id));
+        let nextUnconfiguredPriority = Math.max(0, ...[...prior.values()]
+          .map(candidate => Number(candidate.priority) || 0));
         pool.forEach((provider, index) => {
           const configured = prior.get(provider.id);
           const row = document.createElement('div');
@@ -724,8 +753,11 @@
           const enabled = document.createElement('input');
           enabled.type = 'checkbox';
           enabled.className = 'auto-candidate-enabled';
-          enabled.checked = configured ? configured.enabled !== false : (!hasConfiguredPool && index < 2);
+          enabled.checked = configured
+            ? configured.enabled !== false
+            : (!hasConfiguredPool && defaultEnabledIds.has(provider.id));
           enabled.setAttribute('aria-label', `启用 ${provider.name}`);
+          enabled.onchange = updateAutoCrossTrustWarning;
           const label = document.createElement('span');
           label.style.cssText = 'font-size:11px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
           label.textContent = providerLabel(provider, false) + providerLimitLabel(provider, state.translate, Date.now());
@@ -733,26 +765,30 @@
           priority.type = 'number';
           priority.min = '1'; priority.max = '100';
           priority.className = 'auto-candidate-priority';
-          priority.value = String(configured?.priority || index + 1);
+          priority.value = String(configured?.priority
+            || (hasConfiguredPool ? ++nextUnconfiguredPriority : index + 1));
           priority.title = '优先级（数字越小越优先）';
           priority.style.cssText = 'width:100%;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:5px;padding:5px;';
           const model = document.createElement('select');
           model.className = 'auto-candidate-model';
           model.style.cssText = 'width:100%;min-width:0;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:5px;padding:5px;';
-          const models = [...new Set([provider.model, ...(provider.modelOptions || [])].filter(Boolean))];
-          if (!models.length) models.push('');
+          const preferredModel = autoCandidateModel(provider, configured);
+          const models = [...new Set([
+            '', provider.model, ...(provider.modelOptions || []), preferredModel,
+          ].filter(value => value != null))];
           for (const modelId of models) {
             const option = document.createElement('option');
             option.value = modelId;
             option.textContent = modelId || 'Provider 默认';
             model.appendChild(option);
           }
-          model.value = configured?.model || provider.model || models[0];
+          model.value = preferredModel || '';
           row.append(enabled, label, priority, model);
           autoCandidates.appendChild(row);
         });
         autoMax.value = String(configuredAuto?.protocol === protocol ? configuredAuto.maxAttempts || 3 : Math.min(3, pool.length));
         autoSticky.checked = configuredAuto?.protocol === protocol ? configuredAuto.sticky !== false : true;
+        updateAutoCrossTrustWarning();
       }
 
       function collectAutoSelection() {
@@ -775,7 +811,8 @@
         return {
           version: 1, mode: 'auto', protocol, candidates,
           maxAttempts: Math.max(2, Math.min(4, candidates.length, Number(autoMax.value) || 2)),
-          sticky: autoSticky.checked, allowCrossTrust: false,
+          sticky: autoSticky.checked,
+          allowCrossTrust: autoSelectionCrossesTrust(candidates, providersOf(state)),
         };
       }
 
@@ -941,6 +978,9 @@
     autoProtocolLabel,
     autoProtocolFromValue,
     autoOptionValue,
+    autoProvidersForProtocol,
+    autoSelectionCrossesTrust,
+    autoCandidateModel,
     effectiveProviderId,
     providerShortName,
     providerModelOptions,

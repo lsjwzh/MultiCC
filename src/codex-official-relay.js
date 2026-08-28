@@ -12,12 +12,14 @@
 // on the host-to-ChatGPT hop.
 
 const fs = require('node:fs');
+const crypto = require('node:crypto');
 const os = require('node:os');
 const path = require('node:path');
 
 const DEFAULT_AUTH_FILE = path.join(os.homedir(), '.codex', 'auth.json');
 const DEFAULT_UPSTREAM_URL = 'https://chatgpt.com/backend-api/codex/responses';
 const OFFICIAL_AUTH_MODE = 'chatgpt';
+const BUILTIN_AGENT_ROLES = new Set(['default', 'worker', 'explorer']);
 const mountedApps = new WeakSet();
 
 function parseObject(value) {
@@ -44,7 +46,8 @@ function isOfficialCodexOAuthProvider(provider) {
   if (!provider || provider.appType !== 'codex') return false;
   const config = parseObject(provider.settingsConfig);
   const auth = parseObject(config.auth);
-  if (auth.OPENAI_API_KEY || config.proxyTarget) return false;
+  if (auth.OPENAI_API_KEY || config.proxyTarget
+      || /(?:^|\n)\s*base_url\s*=/i.test(String(config.config || ''))) return false;
   return String(auth.auth_mode || '').toLowerCase() === OFFICIAL_AUTH_MODE;
 }
 
@@ -82,6 +85,25 @@ function responseJson(res, status, body) {
   return undefined;
 }
 
+function normalizeCodexRole(value) {
+  const raw = String(value || 'main').trim().toLowerCase();
+  if (raw === 'main') {
+    return { valid: true, roleKind: 'main', agentRole: null, routeName: 'main' };
+  }
+  if (raw === 'sub') {
+    return { valid: true, roleKind: 'sub', agentRole: 'default', routeName: 'default' };
+  }
+  if (/^[a-z][a-z0-9_-]{0,63}$/.test(raw) && raw !== 'aux') {
+    return {
+      valid: true,
+      roleKind: 'sub',
+      agentRole: BUILTIN_AGENT_ROLES.has(raw) ? raw : 'custom',
+      routeName: raw,
+    };
+  }
+  return { valid: false, roleKind: 'sub', agentRole: 'custom', routeName: '' };
+}
+
 function upstreamHeaders(credential) {
   return {
     Authorization: `Bearer ${credential.accessToken}`,
@@ -110,6 +132,168 @@ function setResponseHeaders(res, upstream, streaming) {
   if (typeof res.flushHeaders === 'function') res.flushHeaders();
 }
 
+function normalizeResponsesUsage(usage) {
+  if (!usage || typeof usage !== 'object') return null;
+  const totalInput = Number(usage.input_tokens || usage.prompt_tokens || 0);
+  const cached = Number(
+    (usage.input_tokens_details && usage.input_tokens_details.cached_tokens)
+    || (usage.prompt_tokens_details && usage.prompt_tokens_details.cached_tokens)
+    || usage.cached_input_tokens
+    || 0,
+  );
+  const normalized = {
+    inputTokens: Math.max(0, totalInput - cached),
+    outputTokens: Number(usage.output_tokens || usage.completion_tokens || 0),
+    cacheWrite: 0,
+    cacheRead: Math.max(0, cached),
+  };
+  return normalized.inputTokens + normalized.outputTokens + normalized.cacheRead > 0
+    ? normalized : null;
+}
+
+function reportActivity(context, phase, extra = {}) {
+  if (!context || typeof context.onActivity !== 'function' || !context.sessionId) return;
+  if (phase === 'first_byte') {
+    if (context.firstByteReported) return;
+    context.firstByteReported = true;
+  }
+  if (phase === 'end') {
+    if (context.endReported) return;
+    context.endReported = true;
+  }
+  try {
+    context.onActivity({
+      sessionId: context.sessionId,
+      role: context.roleKind,
+      roleKind: context.roleKind,
+      agentRole: context.agentRole,
+      routeName: context.routeName,
+      providerId: context.providerId,
+      providerName: context.providerName,
+      phase,
+      at: Date.now(),
+      ...extra,
+    });
+  } catch (_) {}
+}
+
+function reportTerminal(context, usage, outcome = {}) {
+  if (!context || context.terminalReported) return;
+  context.terminalReported = true;
+  const status = outcome.status === 'error' ? 'error' : 'success';
+  reportActivity(context, 'end', { status });
+  if (!context.sessionId) return;
+  const event = {
+    sessionId: context.sessionId,
+    role: context.roleKind,
+    roleKind: context.roleKind,
+    agentRole: context.agentRole,
+    routeName: context.routeName,
+    providerId: context.providerId,
+    providerName: context.providerName,
+    model: context.model,
+    isStream: context.streaming,
+    usage,
+    eventId: crypto.randomUUID(),
+    protocol: 'openai-responses',
+    latencyMs: Date.now() - context.startedAt,
+    status,
+    statusCode: outcome.statusCode == null ? context.statusCode : outcome.statusCode,
+    coverage: usage ? 'observed' : 'unobservable',
+    source: 'exact',
+    errorCode: outcome.errorCode,
+  };
+  try {
+    if (usage && typeof context.onUsage === 'function') context.onUsage(event);
+    if (typeof context.onUsageEvent === 'function') context.onUsageEvent(event);
+  } catch (_) {}
+}
+
+function emitDelta(context, delta) {
+  if (!context || !context.sessionId || typeof context.onDelta !== 'function') return;
+  try {
+    context.onDelta(delta, {
+      providerId: context.providerId,
+      sessionId: context.sessionId,
+      role: context.roleKind,
+      roleKind: context.roleKind,
+      agentRole: context.agentRole,
+      routeName: context.routeName,
+      model: context.model,
+    });
+  } catch (_) {}
+}
+
+function responseObserver(contentType) {
+  return {
+    buffer: '',
+    isSse: /text\/event-stream/i.test(String(contentType || '')),
+    toolNames: {},
+    usage: null,
+  };
+}
+
+function observeResponseObject(observer, value, context) {
+  if (!value || typeof value !== 'object') return;
+  const usage = normalizeResponsesUsage((value.response && value.response.usage) || value.usage);
+  if (usage) observer.usage = usage;
+  const type = String(value.type || '');
+  if (type === 'response.output_item.added' && value.item && value.item.id) {
+    if (value.item.type === 'function_call' || value.item.type === 'custom_tool_call'
+        || value.item.type === 'apply_patch_call' || value.item.type === 'code_interpreter_call') {
+      observer.toolNames[value.item.id] = value.item.name || value.item.type || '';
+    }
+  } else if (type === 'response.output_text.delta' && typeof value.delta === 'string') {
+    emitDelta(context, { type: 'text', text: value.delta });
+  } else if (type === 'response.reasoning_summary_text.delta' && typeof value.delta === 'string') {
+    emitDelta(context, { type: 'reasoning', text: value.delta });
+  } else if ((type === 'response.function_call_arguments.delta'
+      || type === 'response.custom_tool_call_input.delta'
+      || type === 'response.apply_patch_call_operation_diff.delta'
+      || type === 'response.code_interpreter_call_code.delta')
+      && typeof value.delta === 'string' && value.item_id) {
+    emitDelta(context, {
+      type: 'tool',
+      tool: {
+        name: observer.toolNames[value.item_id]
+          || (type === 'response.custom_tool_call_input.delta' ? 'custom_tool_call' : ''),
+        arguments: value.delta,
+      },
+      toolId: value.item_id,
+    });
+  } else if (type === 'response.output_text.annotation.added' && value.annotation) {
+    emitDelta(context, {
+      type: 'source', source: value.annotation,
+      itemId: value.item_id || '', outputIndex: value.output_index,
+    });
+  }
+}
+
+function observeResponseChunk(observer, chunk, context) {
+  observer.buffer += typeof chunk === 'string'
+    ? chunk : (chunk ? Buffer.from(chunk).toString('utf8') : '');
+  if (!observer.isSse) return;
+  let newline;
+  while ((newline = observer.buffer.indexOf('\n')) >= 0) {
+    const line = observer.buffer.slice(0, newline).replace(/\r$/, '');
+    observer.buffer = observer.buffer.slice(newline + 1);
+    if (!line.startsWith('data:')) continue;
+    const payload = line.slice(5).trim();
+    if (!payload || payload === '[DONE]') continue;
+    try { observeResponseObject(observer, JSON.parse(payload), context); } catch (_) {}
+  }
+}
+
+function finishResponseObservation(observer, context) {
+  const tail = observer.buffer.trim();
+  if (!tail) return observer.usage;
+  try {
+    const payload = observer.isSse && tail.startsWith('data:') ? tail.slice(5).trim() : tail;
+    if (payload && payload !== '[DONE]') observeResponseObject(observer, JSON.parse(payload), context);
+  } catch (_) {}
+  return observer.usage;
+}
+
 function createCodexOfficialRelayHandler(options = {}) {
   const getProvider = options.getProvider;
   const fetchImpl = options.fetch || globalThis.fetch;
@@ -122,9 +306,36 @@ function createCodexOfficialRelayHandler(options = {}) {
     const providerId = String(req.params && req.params.providerId || '');
     const provider = getProvider('codex', providerId);
     if (!isOfficialCodexOAuthProvider(provider)) return next();
+    const role = normalizeCodexRole(req.params && req.params.role);
+    if (!role.valid) return responseJson(res, 400, { error: 'invalid Codex agent route' });
+
+    const input = req.body && typeof req.body === 'object' && !Array.isArray(req.body)
+      ? req.body : {};
+    const streaming = input.stream !== false;
+    const context = {
+      providerId,
+      providerName: provider.name || providerId,
+      sessionId: String(req.params && req.params.sessionId || ''),
+      roleKind: role.roleKind,
+      agentRole: role.agentRole,
+      routeName: role.routeName,
+      model: String(input.model || ''),
+      streaming,
+      statusCode: null,
+      startedAt: Date.now(),
+      onActivity: options.onActivity,
+      onUsage: options.onUsage,
+      onUsageEvent: options.onUsageEvent,
+      onDelta: options.onDelta,
+      firstByteReported: false,
+      endReported: false,
+      terminalReported: false,
+    };
+    reportActivity(context, 'request');
 
     const credential = await readCredential();
     if (!credential || !credential.ok) {
+      reportTerminal(context, null, { status: 'error', errorCode: 'OAUTH_CREDENTIAL_UNAVAILABLE' });
       return responseJson(res, 503, {
         error: 'Codex Official OAuth credential is unavailable on the relay host',
         code: 'CODEX_OFFICIAL_OAUTH_UNAVAILABLE',
@@ -138,14 +349,12 @@ function createCodexOfficialRelayHandler(options = {}) {
       if (res.writableEnded) return;
       clientClosed = true;
       controller.abort();
+      reportTerminal(context, null, { status: 'error', errorCode: 'CLIENT_ABORTED' });
     };
     if (typeof req.once === 'function') req.once('aborted', close);
     if (typeof res.once === 'function') res.once('close', close);
 
-    const input = req.body && typeof req.body === 'object' && !Array.isArray(req.body)
-      ? req.body : {};
     const body = { ...input, store: false };
-    const streaming = input.stream !== false;
     body.stream = streaming;
 
     let upstream;
@@ -158,6 +367,7 @@ function createCodexOfficialRelayHandler(options = {}) {
       });
     } catch (_) {
       if (clientClosed) return undefined;
+      reportTerminal(context, null, { status: 'error', errorCode: 'UPSTREAM_CONNECT_FAILED' });
       return responseJson(res, 502, {
         error: 'Codex Official OAuth upstream is unreachable',
         code: 'CODEX_OFFICIAL_OAUTH_UPSTREAM_UNREACHABLE',
@@ -166,6 +376,10 @@ function createCodexOfficialRelayHandler(options = {}) {
 
     if (!upstream.ok || !upstream.body) {
       try { if (upstream.body) await upstream.body.cancel(); } catch (_) {}
+      context.statusCode = upstream.status || 502;
+      reportTerminal(context, null, {
+        status: 'error', statusCode: context.statusCode, errorCode: 'UPSTREAM_HTTP_ERROR',
+      });
       return responseJson(res, upstream.status || 502, {
         error: 'Codex Official OAuth upstream rejected the request',
         code: 'CODEX_OFFICIAL_OAUTH_UPSTREAM_REJECTED',
@@ -173,14 +387,21 @@ function createCodexOfficialRelayHandler(options = {}) {
       });
     }
 
+    context.statusCode = upstream.status;
     setResponseHeaders(res, upstream, streaming);
+    const contentType = upstream.headers && typeof upstream.headers.get === 'function'
+      ? upstream.headers.get('content-type') : '';
+    const observer = responseObserver(contentType);
     const reader = upstream.body.getReader();
     try {
       while (!clientClosed) {
         const { done, value } = await reader.read();
         if (done) break;
+        reportActivity(context, 'first_byte', { latencyMs: Date.now() - context.startedAt });
+        observeResponseChunk(observer, value, context);
         res.write(value);
       }
+      if (!clientClosed) reportTerminal(context, finishResponseObservation(observer, context), { status: 'success' });
     } catch (_) {
       if (!clientClosed && streaming && !res.writableEnded) {
         try {
@@ -190,6 +411,7 @@ function createCodexOfficialRelayHandler(options = {}) {
           })}\n\n`);
         } catch (_) {}
       }
+      if (!clientClosed) reportTerminal(context, null, { status: 'error', errorCode: 'UPSTREAM_STREAM_FAILED' });
     } finally {
       try { await reader.cancel(); } catch (_) {}
       if (!res.writableEnded) res.end();
@@ -202,7 +424,15 @@ function mountCodexOfficialRelay(app, options = {}) {
   if (!app || typeof app.post !== 'function' || mountedApps.has(app)) return false;
   mountedApps.add(app);
   const proxyPath = normalizeProxyPath(options.codexProxyPath || options.mountPath);
-  app.post(`${proxyPath}/:providerId/responses`, createCodexOfficialRelayHandler(options));
+  const handler = createCodexOfficialRelayHandler(options);
+  app.post(
+    `${proxyPath}/:providerId/:sessionId/:role/responses`,
+    handler,
+  );
+  // Compatibility/borrowing surface: external callers authenticated by the
+  // host's relay token may still use the historical session-less endpoint. It
+  // intentionally produces no attempt activity/usage attribution.
+  app.post(`${proxyPath}/:providerId/responses`, handler);
   return true;
 }
 
