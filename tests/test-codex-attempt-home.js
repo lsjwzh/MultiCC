@@ -13,6 +13,8 @@ const {
   assertCodexProxyConfigApplied,
   codexProxyConfigRequired,
 } = require('../src/codex-proxy-policy');
+const { createProviderRouterRuntime } = require('../src/provider-router-runtime');
+const { createCodexSessionHomeRuntime } = require('../src/codex-session-home');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-codex-attempt-home-'));
 const original = {
@@ -52,7 +54,7 @@ function treeText(directory) {
 
 test.after(restoreEnvironment);
 
-test('Codex proxy requirement matrix fails closed except confirmed direct OAuth main', () => {
+test('Codex proxy requirement matrix requires every managed provider, including Official OAuth', () => {
   const customRequired = codexProxyConfigRequired({
     providerId: 'custom-main', officialOAuth: false,
   });
@@ -65,10 +67,10 @@ test('Codex proxy requirement matrix fails closed except confirmed direct OAuth 
   const officialDirectRequired = codexProxyConfigRequired({
     providerId: 'official-main', officialOAuth: true,
   });
-  assert.equal(officialDirectRequired, false);
-  assert.equal(
-    assertCodexProxyConfigApplied({ required: officialDirectRequired, applied: false }),
-    false,
+  assert.equal(officialDirectRequired, true);
+  assert.throws(
+    () => assertCodexProxyConfigApplied({ required: officialDirectRequired, applied: false }),
+    error => error && error.code === 'CODEX_PROXY_CONFIG_REQUIRED',
   );
 
   const officialSubagentRequired = codexProxyConfigRequired({
@@ -116,11 +118,334 @@ test('provider metadata classifies custom, stale, and OAuth Codex routes conserv
   });
   assert.equal(providers.codexProxyConfigRequired({ providerId: ambiguous.id }), true,
     'a base-less record without explicit ChatGPT auth mode is not confirmed OAuth');
-  assert.equal(providers.codexProxyConfigRequired({ providerId: official.id }), false);
+  assert.equal(providers.codexProxyConfigRequired({ providerId: official.id }), true);
   assert.equal(providers.codexProxyConfigRequired({
     providerId: official.id,
     subagent: { providerId: custom.id },
   }), true);
+});
+
+test('Official OAuth is host-only and each local Codex attempt receives a private CPR route', () => {
+  const official = providers.createProvider({
+    appType: 'codex',
+    name: 'Official relay fixture',
+    settingsConfig: {
+      auth: {
+        auth_mode: 'chatgpt',
+        tokens: { access_token: 'stored-provider-oauth-must-not-reach-child' },
+      },
+      config: 'model = "gpt-5.6-sol"\n',
+    },
+  });
+  const globalCodexHome = path.join(process.env.HOME, '.codex');
+  fs.mkdirSync(globalCodexHome, { recursive: true });
+  fs.writeFileSync(path.join(globalCodexHome, 'auth.json'), JSON.stringify({
+    auth_mode: 'chatgpt',
+    tokens: {
+      access_token: 'global-host-oauth-must-not-reach-child',
+      account_id: 'host-account',
+    },
+  }));
+
+  const built = providers.buildChildEnv({
+    OPENAI_API_KEY: 'inherited-openai-key-must-not-reach-child',
+    OPENAI_BASE_URL: 'https://wrong-inherited.example/v1',
+  }, {
+    id: 'official-relay-session', cli: 'codex', provider: official.id, model: 'gpt-5.6-sol',
+  }, {
+    OPENAI_ORG_ID: 'caller-openai-context-must-not-reach-child',
+  });
+  assert.equal(built.env.OPENAI_API_KEY, undefined);
+  assert.equal(built.env.OPENAI_BASE_URL, undefined);
+  assert.equal(built.env.OPENAI_ORG_ID, undefined);
+  const providerHome = built.env.CODEX_HOME;
+  assert.equal(fs.existsSync(path.join(providerHome, 'auth.json')), false);
+  assert.equal(treeText(providerHome).includes('global-host-oauth-must-not-reach-child'), false);
+  assert.equal(treeText(providerHome).includes('stored-provider-oauth-must-not-reach-child'), false);
+
+  const capability = 'pr1.b2ZmaWNpYWwtc2Vzc2lvbg.b2ZmaWNpYWwtYXR0ZW1wdA';
+  assert.equal(providers.applyCodexProxyConfig(built.env, {
+    providerId: official.id,
+    sessionId: capability,
+    port: 3000,
+  }), true);
+  const attemptHome = built.env.CODEX_HOME;
+  assert.notEqual(attemptHome, providerHome);
+  assert.equal(fs.existsSync(path.join(attemptHome, 'auth.json')), false);
+  const attemptConfig = fs.readFileSync(path.join(attemptHome, 'config.toml'), 'utf8');
+  assert.match(attemptConfig, new RegExp(
+    `/codex-proxy/${official.id}/${capability.replace(/\./g, '\\.')}\/main`,
+  ));
+  assert.match(attemptConfig, /requires_openai_auth\s*=\s*false/);
+  assert.equal(treeText(attemptHome).includes('global-host-oauth-must-not-reach-child'), false);
+  assert.equal(treeText(attemptHome).includes('stored-provider-oauth-must-not-reach-child'), false);
+  assert.equal(providers.releaseCodexProxyConfig(built.env), true);
+  assert.equal(built.env.CODEX_HOME, providerHome);
+  assert.equal(fs.existsSync(attemptHome), false);
+});
+
+test('CPR resolves and builds Official homes credential-free before any attempt is applied', () => {
+  const official = providers.createProvider({
+    appType: 'codex',
+    name: 'Official early materialization fixture',
+    settingsConfig: {
+      auth: {
+        auth_mode: 'chatgpt',
+        tokens: { access_token: 'official-early-token-must-never-land' },
+      },
+      config: 'model = "gpt-5.6-sol"\n',
+    },
+  });
+  const runtime = createProviderRouterRuntime({
+    mode: 'cpr', providers,
+    dataRoot: process.env.MULTICC_DATA_DIR,
+    codexHomesDir: providers.CODEX_HOMES_DIR,
+  });
+  const session = {
+    id: 'official-early-session', cli: 'codex', provider: official.id, model: 'gpt-5.6-sol',
+  };
+
+  const resolution = runtime.resolveSpawnEnv(session);
+  assert.equal(fs.existsSync(path.join(resolution.env.CODEX_HOME, 'auth.json')), false);
+  assert.equal(treeText(resolution.env.CODEX_HOME).includes('official-early-token-must-never-land'), false);
+  assert.match(
+    fs.readFileSync(path.join(resolution.env.CODEX_HOME, 'config.toml'), 'utf8'),
+    /\/codex-proxy\/[^/]+\/inactive\/main/,
+  );
+
+  const built = runtime.buildChildEnv({ OPENAI_API_KEY: 'inherited-must-not-land' }, session);
+  assert.equal(fs.existsSync(path.join(built.env.CODEX_HOME, 'auth.json')), false);
+  assert.equal(treeText(built.env.CODEX_HOME).includes('official-early-token-must-never-land'), false);
+  assert.equal(treeText(built.env.CODEX_HOME).includes('inherited-must-not-land'), false);
+});
+
+test('canonical Codex sessions preserve one native thread across managed and Official routes', () => {
+  const managed = providers.createProvider({
+    appType: 'codex', name: 'Canonical managed fixture',
+    baseUrl: 'https://canonical-managed.example/v1', authToken: 'canonical-managed-key',
+    model: 'gpt-managed', apiFormat: 'openai_responses',
+  });
+  const official = providers.createProvider({
+    appType: 'codex', name: 'Canonical Official fixture',
+    settingsConfig: {
+      auth: { auth_mode: 'chatgpt', tokens: { access_token: 'canonical-official-snapshot' } },
+      config: 'model = "gpt-5.6-sol"\n',
+    },
+  });
+  const logicalSessionId = 'canonical-auto-session';
+  const nativeSessionId = '019c-canonical-native-thread';
+  const managedEnv = providers.buildChildEnv({}, {
+    id: logicalSessionId, cli: 'codex', provider: managed.id, model: 'gpt-managed',
+  }).env;
+  const legacyRollout = path.join(
+    managedEnv.CODEX_HOME, 'sessions', '2026', '08', '28',
+    `rollout-2026-08-28T00-00-00-${nativeSessionId}.jsonl`,
+  );
+  fs.mkdirSync(path.dirname(legacyRollout), { recursive: true });
+  fs.writeFileSync(legacyRollout, 'completed-turn-a\n');
+
+  const officialEnv = providers.buildChildEnv({}, {
+    id: logicalSessionId, cli: 'codex', provider: official.id, model: 'gpt-5.6-sol',
+  }).env;
+  assert.equal(providers.applyCodexProxyConfig(officialEnv, {
+    providerId: official.id,
+    sessionId: 'pr1.canonical.official-attempt',
+    logicalSessionId,
+    nativeSessionId,
+    subagent: { providerId: managed.id, model: 'gpt-managed' },
+    port: 3000,
+  }), true);
+  const canonicalSessions = path.join(providers.codexSessionHome(logicalSessionId), 'sessions');
+  assert.equal(fs.realpathSync(path.join(officialEnv.CODEX_HOME, 'sessions')), fs.realpathSync(canonicalSessions));
+  const canonicalRollout = path.join(canonicalSessions, path.relative(
+    path.join(managedEnv.CODEX_HOME, 'sessions'), legacyRollout,
+  ));
+  assert.equal(fs.readFileSync(canonicalRollout, 'utf8'), 'completed-turn-a\n');
+  fs.appendFileSync(canonicalRollout, 'completed-turn-b\n');
+  providers.releaseCodexProxyConfig(officialEnv);
+
+  const managedAgain = providers.buildChildEnv({}, {
+    id: logicalSessionId, cli: 'codex', provider: managed.id, model: 'gpt-managed',
+  }).env;
+  assert.equal(providers.applyCodexProxyConfig(managedAgain, {
+    providerId: managed.id,
+    sessionId: 'pr1.canonical.managed-attempt',
+    logicalSessionId,
+    nativeSessionId,
+    subagent: { providerId: official.id, model: 'gpt-5.6-sol' },
+    port: 3000,
+  }), true, 'managed main plus Official sub must use the host CPR materializer');
+  assert.equal(fs.realpathSync(path.join(managedAgain.CODEX_HOME, 'sessions')), fs.realpathSync(canonicalSessions));
+  assert.equal(fs.readFileSync(canonicalRollout, 'utf8'), 'completed-turn-a\ncompleted-turn-b\n');
+  assert.equal(fs.existsSync(path.join(managedAgain.CODEX_HOME, 'auth.json')), false);
+  const routedConfig = fs.readFileSync(path.join(managedAgain.CODEX_HOME, 'config.toml'), 'utf8');
+  assert.match(routedConfig, new RegExp(`/codex-proxy/${official.id}/pr1\\.canonical\\.managed-attempt/sub`));
+  providers.releaseCodexProxyConfig(managedAgain);
+  assert.equal(fs.existsSync(legacyRollout), true, 'legacy source remains recoverable');
+});
+
+test('ambiguous legacy Codex rollouts fail closed without deleting either source', () => {
+  const nativeSessionId = '019c-ambiguous-native-thread';
+  const logicalSessionId = 'ambiguous-logical-session';
+  const sources = ['legacy-a', 'legacy-b'].map((name) => {
+    const file = path.join(
+      providers.CODEX_HOMES_DIR, name, 'sessions', '2026', '08',
+      `rollout-${name}-${nativeSessionId}.jsonl`,
+    );
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `${name}\n`);
+    return file;
+  });
+  assert.throws(
+    () => providers.prepareCodexSessionHome({ logicalSessionId, nativeSessionId }),
+    error => error && error.code === 'CODEX_SESSION_ROLLOUT_AMBIGUOUS',
+  );
+  assert.deepEqual(sources.map(file => fs.readFileSync(file, 'utf8')), ['legacy-a\n', 'legacy-b\n']);
+});
+
+test('canonical Codex history survives a host runtime restart and is never overwritten by legacy state', () => {
+  const caseRoot = path.join(root, 'canonical-restart');
+  const sessionHomesDir = path.join(caseRoot, 'session-homes');
+  const codexHomesDir = path.join(caseRoot, 'provider-homes');
+  const globalCodexHome = path.join(caseRoot, 'global-home');
+  const source = path.join(
+    codexHomesDir, 'managed-a', 'sessions', '2026', '08',
+    'rollout-restart-native-thread.jsonl',
+  );
+  fs.mkdirSync(path.dirname(source), { recursive: true });
+  fs.writeFileSync(source, 'legacy-before-restart\n');
+  const options = { sessionHomesDir, codexHomesDir, globalCodexHome };
+  const beforeRestart = createCodexSessionHomeRuntime(options);
+  const migrated = beforeRestart.prepareCodexSessionHome({
+    logicalSessionId: 'restart-logical-session', nativeSessionId: 'restart-native-thread',
+  });
+  fs.appendFileSync(migrated.rollout, 'canonical-after-turn\n');
+  fs.writeFileSync(source, 'stale-legacy-after-restart\n');
+
+  const afterRestart = createCodexSessionHomeRuntime(options);
+  const resumed = afterRestart.prepareCodexSessionHome({
+    logicalSessionId: 'restart-logical-session', nativeSessionId: 'restart-native-thread',
+  });
+  assert.equal(resumed.rollout, migrated.rollout);
+  assert.equal(fs.readFileSync(resumed.rollout, 'utf8'),
+    'legacy-before-restart\ncanonical-after-turn\n');
+  assert.equal(fs.readFileSync(source, 'utf8'), 'stale-legacy-after-restart\n',
+    'legacy source remains untouched and cannot overwrite canonical history');
+});
+
+test('providerless Codex keeps real OAuth home and synchronizes its rollout at managed boundaries', () => {
+  const logicalSessionId = 'providerless-canonical-session';
+  const nativeSessionId = 'providerless-canonical-native';
+  const globalHome = path.join(process.env.HOME, '.codex');
+  const globalRollout = path.join(globalHome, 'sessions', '2026', '08',
+    `rollout-default-${nativeSessionId}.jsonl`);
+  fs.mkdirSync(path.dirname(globalRollout), { recursive: true });
+  fs.writeFileSync(globalRollout, 'default-turn-a\n');
+  const authFile = path.join(globalHome, 'auth.json');
+  const authFixture = JSON.stringify({
+    auth_mode: 'chatgpt', tokens: { access_token: 'providerless-oauth-fixture' },
+  });
+  fs.writeFileSync(authFile, authFixture);
+
+  const defaultEnv = providers.buildChildEnv({}, {
+    id: logicalSessionId, cli: 'codex', provider: null,
+  }).env;
+  assert.equal(defaultEnv.CODEX_HOME, undefined);
+  assert.equal(providers.applyCodexProxyConfig(defaultEnv, {
+    providerId: null, sessionId: 'pr1.providerless.default-one',
+    logicalSessionId, nativeSessionId, port: 3000,
+  }), false, 'default Codex must keep using the real ~/.codex directly');
+  assert.equal(fs.readFileSync(authFile, 'utf8'), authFixture,
+    'refreshable OAuth state is never copied into a disposable attempt home');
+
+  const managed = providers.createProvider({
+    appType: 'codex', name: 'Providerless continuity managed fixture',
+    baseUrl: 'https://providerless-managed.example/v1', authToken: 'managed-key',
+    model: 'gpt-managed', apiFormat: 'openai_responses',
+  });
+  const intoManaged = providers.synchronizeCodexSessionRoute({
+    logicalSessionId, nativeSessionId,
+    fromProviderId: null, toProviderId: managed.id,
+  });
+  assert.equal(intoManaged.direction, 'providerless-to-managed');
+  const canonicalSessions = path.join(providers.codexSessionHome(logicalSessionId), 'sessions');
+  const canonicalRollout = path.join(canonicalSessions,
+    path.relative(path.join(globalHome, 'sessions'), globalRollout));
+  assert.equal(fs.readFileSync(canonicalRollout, 'utf8'), 'default-turn-a\n');
+  const managedEnv = providers.buildChildEnv({}, {
+    id: logicalSessionId, cli: 'codex', provider: managed.id, model: 'gpt-managed',
+  }).env;
+  assert.equal(providers.applyCodexProxyConfig(managedEnv, {
+    providerId: managed.id, sessionId: 'pr1.providerless.managed',
+    logicalSessionId, nativeSessionId, port: 3000,
+  }), true);
+  assert.equal(fs.realpathSync(path.join(managedEnv.CODEX_HOME, 'sessions')),
+    fs.realpathSync(canonicalSessions));
+  fs.appendFileSync(canonicalRollout, 'second-turn-b\n');
+  providers.releaseCodexProxyConfig(managedEnv);
+
+  const intoDefault = providers.synchronizeCodexSessionRoute({
+    logicalSessionId, nativeSessionId,
+    fromProviderId: managed.id, toProviderId: null,
+  });
+  assert.equal(intoDefault.direction, 'managed-to-providerless');
+  assert.equal(fs.readFileSync(globalRollout, 'utf8'),
+    'default-turn-a\nsecond-turn-b\n');
+  fs.appendFileSync(globalRollout, 'default-turn-c\n');
+
+  providers.synchronizeCodexSessionRoute({
+    logicalSessionId, nativeSessionId,
+    fromProviderId: null, toProviderId: managed.id,
+  });
+  assert.equal(fs.readFileSync(canonicalRollout, 'utf8'),
+    'default-turn-a\nsecond-turn-b\ndefault-turn-c\n');
+  assert.equal(fs.existsSync(globalRollout), true);
+  assert.equal(fs.existsSync(canonicalRollout), true,
+    'both authoritative-boundary copies remain recoverable');
+  assert.equal(fs.readFileSync(authFile, 'utf8'), authFixture);
+});
+
+test('CPR-mode Official spawn homes are sanitized at the physical attempt boundary', () => {
+  const router = require('cli-provider-router');
+  const official = providers.createProvider({
+    appType: 'codex',
+    name: 'Official CPR fixture',
+    settingsConfig: {
+      auth: {
+        auth_mode: 'chatgpt',
+        tokens: { access_token: 'cpr-imported-oauth-must-not-reach-child' },
+      },
+      config: 'model = "gpt-5.6-sol"\n',
+    },
+  });
+  const built = router.buildChildEnv({
+    OPENAI_ORG_ID: 'cpr-inherited-openai-context-must-not-reach-child',
+  }, {
+    cli: 'codex',
+    providerId: official.id,
+    store: { getProvider: providers.getProvider },
+    codexHomesDir: providers.CODEX_HOMES_DIR,
+  });
+  const sourceHome = built.env.CODEX_HOME;
+  const capability = 'pr1.Y3ByLW9mZmljaWFsLXNlc3Npb24.Y3ByLW9mZmljaWFsLWF0dGVtcHQ';
+  assert.equal(providers.applyCodexProxyConfig(built.env, {
+    providerId: official.id,
+    sessionId: capability,
+    port: 3000,
+  }), true);
+  const attemptHome = built.env.CODEX_HOME;
+  assert.notEqual(attemptHome, sourceHome);
+  assert.equal(fs.existsSync(path.join(sourceHome, 'auth.json')), false);
+  assert.equal(fs.existsSync(path.join(attemptHome, 'auth.json')), false);
+  assert.equal(built.env.OPENAI_ORG_ID, undefined);
+  assert.equal(treeText(sourceHome).includes('cpr-imported-oauth-must-not-reach-child'), false);
+  assert.equal(treeText(attemptHome).includes('cpr-imported-oauth-must-not-reach-child'), false);
+  assert.match(
+    fs.readFileSync(path.join(attemptHome, 'config.toml'), 'utf8'),
+    new RegExp(`/codex-proxy/${official.id}/${capability.replace(/\./g, '\\.')}\/main`),
+  );
+  assert.equal(providers.releaseCodexProxyConfig(built.env), true);
+  assert.equal(built.env.CODEX_HOME, sourceHome);
 });
 
 test('first attempt use removes legacy capability overlays without following symlinks', () => {
@@ -324,6 +649,10 @@ test('attempt-home cleanup failure propagates into the required-route fail-close
   const staticHome = env.CODEX_HOME;
   const attemptsDir = providers.CODEX_ATTEMPT_HOMES_DIR;
   fs.mkdirSync(path.dirname(attemptsDir), { recursive: true });
+  if (fs.existsSync(attemptsDir)) {
+    assert.deepEqual(fs.readdirSync(attemptsDir), [], 'released attempts leave only an empty root');
+    fs.rmSync(attemptsDir, { recursive: true, force: true });
+  }
   assert.equal(fs.existsSync(attemptsDir), false);
   fs.writeFileSync(attemptsDir, 'not-a-directory');
   try {

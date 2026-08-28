@@ -11,6 +11,7 @@ const {
   DEFAULT_ARCHIVE_TTL_DAYS,
   ARCHIVE_DIRNAME,
 } = require('../src/chat/codex-rollout-guard');
+const { createCodexSessionHomeRuntime } = require('../src/codex-session-home');
 
 // The guard protects `codex exec resume` from oversized rollouts (observed:
 // 440MB file → deterministic internal hang before the first upstream request).
@@ -98,6 +99,92 @@ test('provider sessions live under codexHomesDir/<provider>', () => {
   assert.equal(result.action, 'archived');
   assert.equal(fs.existsSync(file), false);
   assert.ok(fs.existsSync(path.join(codexHomesDir, 'prov1', ARCHIVE_DIRNAME, path.basename(file))));
+});
+
+test('Auto provider sessions use the logical-session canonical Codex home', () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-rollout-guard-'));
+  const codexHomesDir = path.join(homeDir, '.multicc', 'codex-homes');
+  const canonicalHome = path.join(homeDir, '.multicc', 'codex-session-homes', 'logical-session');
+  const sessionsDir = path.join(canonicalHome, 'sessions', '2026', '08', '28');
+  fs.mkdirSync(sessionsDir, { recursive: true });
+  const file = path.join(sessionsDir, 'rollout-x-thread-canonical.jsonl');
+  fs.writeFileSync(file, 'z'.repeat(2048));
+  const guard = createCodexRolloutGuard({
+    homeDir,
+    codexHomesDir,
+    maxBytes: 1024,
+    codexSessionHomeFor: sessionId => {
+      assert.equal(sessionId, 'logical-session');
+      return canonicalHome;
+    },
+  });
+  const result = guard.enforce({
+    id: 'logical-session', cli: 'codex', cliSessionId: 'thread-canonical', provider: 'prov1',
+  });
+  assert.equal(result.action, 'archived');
+  assert.equal(fs.existsSync(file), false);
+  assert.ok(fs.existsSync(path.join(canonicalHome, ARCHIVE_DIRNAME, path.basename(file))));
+});
+
+test('the guard migrates and archives an oversized legacy rollout before it can bypass canonical checks', () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-rollout-guard-'));
+  const codexHomesDir = path.join(homeDir, '.multicc', 'codex-homes');
+  const codexSessionHomesDir = path.join(homeDir, '.multicc', 'codex-session-homes');
+  const legacy = path.join(codexHomesDir, 'managed', 'sessions', '2026', '08',
+    'rollout-x-thread-legacy-large.jsonl');
+  fs.mkdirSync(path.dirname(legacy), { recursive: true });
+  fs.writeFileSync(legacy, 'x'.repeat(2048));
+  const sessionHomes = createCodexSessionHomeRuntime({
+    sessionHomesDir: codexSessionHomesDir,
+    codexHomesDir,
+    globalCodexHome: path.join(homeDir, '.codex'),
+  });
+  const guard = createCodexRolloutGuard({
+    homeDir, codexHomesDir, codexSessionHomesDir, maxBytes: 1024,
+    codexSessionHomeFor: sessionHomes.codexSessionHome,
+    prepareCodexSessionHome: sessionHomes.prepareCodexSessionHome,
+  });
+  const result = guard.enforce({
+    id: 'logical-legacy-large', cli: 'codex', provider: 'managed',
+    cliSessionId: 'thread-legacy-large',
+  });
+  assert.equal(result.action, 'archived');
+  assert.equal(fs.existsSync(legacy), true, 'migration never deletes its legacy source');
+  assert.ok(fs.existsSync(path.join(
+    sessionHomes.codexSessionHome('logical-legacy-large'),
+    ARCHIVE_DIRNAME,
+    path.basename(legacy),
+  )));
+});
+
+test('ambiguous legacy rollout migration blocks resume explicitly', () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-rollout-guard-'));
+  const codexHomesDir = path.join(homeDir, '.multicc', 'codex-homes');
+  const codexSessionHomesDir = path.join(homeDir, '.multicc', 'codex-session-homes');
+  for (const provider of ['managed-a', 'managed-b']) {
+    const file = path.join(codexHomesDir, provider, 'sessions',
+      `rollout-${provider}-thread-ambiguous.jsonl`);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, provider);
+  }
+  const sessionHomes = createCodexSessionHomeRuntime({
+    sessionHomesDir: codexSessionHomesDir,
+    codexHomesDir,
+    globalCodexHome: path.join(homeDir, '.codex'),
+  });
+  const guard = createCodexRolloutGuard({
+    homeDir, codexHomesDir, codexSessionHomesDir,
+    codexSessionHomeFor: sessionHomes.codexSessionHome,
+    prepareCodexSessionHome: sessionHomes.prepareCodexSessionHome,
+  });
+  assert.deepEqual(guard.enforce({
+    id: 'logical-ambiguous', cli: 'codex', provider: 'managed-a',
+    cliSessionId: 'thread-ambiguous',
+  }), {
+    action: 'blocked',
+    code: 'CODEX_SESSION_ROLLOUT_AMBIGUOUS',
+    error: 'Codex native session thread-ambiguous has multiple rollout sources',
+  });
 });
 
 test('force mode archives regardless of size (restart-spawn contract)', () => {

@@ -62,7 +62,7 @@ test('Auto Provider validates a same-protocol concrete candidate pool', () => {
   });
 });
 
-test('Auto Provider rejects virtual, duplicate and cross-trust routes', () => {
+test('Auto Provider rejects virtual, duplicate and implicit cross-trust routes', () => {
   const providers = catalog();
   assert.equal(validateProviderSelection(selection({
     candidates: [{ providerId: 'auto:balanced' }, { providerId: 'backup' }],
@@ -74,8 +74,41 @@ test('Auto Provider rejects virtual, duplicate and cross-trust routes', () => {
     candidates: [{ providerId: 'empty' }, { providerId: 'official' }],
   }), { cli: 'claude', providers }).code, 'provider_trust_mismatch');
   assert.equal(validateProviderSelection(selection({
+    candidates: [{ providerId: 'empty' }, { providerId: 'official' }],
+    allowCrossTrust: false,
+  }), { cli: 'claude', providers }).code, 'provider_trust_mismatch');
+  assert.equal(validateProviderSelection(selection({
     candidates: [{ providerId: 'empty' }, { providerId: 'codex-only' }],
   }), { cli: 'claude', providers }).code, 'provider_not_found');
+});
+
+test('Auto Provider permits an explicitly authorized cross-trust pool and preserves the flag in its DTO', () => {
+  const result = validateProviderSelection(selection({
+    candidates: [
+      { providerId: 'official', priority: 1 },
+      { providerId: 'backup', model: 'good-model', priority: 2 },
+    ],
+    allowCrossTrust: true,
+  }), { cli: 'claude', providers: catalog() });
+
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.value.allowCrossTrust, true);
+  assert.equal(providerSelectionDto(result.value).allowCrossTrust, true);
+});
+
+test('a disabled candidate in another trust domain does not require cross-trust authorization', () => {
+  const result = validateProviderSelection(selection({
+    candidates: [
+      { providerId: 'empty', model: 'bad-model', priority: 1 },
+      { providerId: 'backup', model: 'good-model', priority: 2 },
+      { providerId: 'official', priority: 3, enabled: false },
+    ],
+    allowCrossTrust: false,
+  }), { cli: 'claude', providers: catalog() });
+
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.value.allowCrossTrust, false);
+  assert.equal(result.value.candidates.at(-1).enabled, false);
 });
 
 test('manual mode clears Auto Provider without changing the concrete provider contract', () => {

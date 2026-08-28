@@ -477,11 +477,15 @@ function createProviderRouterPort(options = {}) {
         createProviderProxyGuard({ protocol: 'codex', authorizeProxyRequest }),
       );
       // CPR's generic Codex proxy intentionally requires an API key + base_url.
-      // Mount the host-owned ChatGPT OAuth adapter first; it handles only the
-      // Official provider shape and calls next() for every ordinary provider.
-      mountCodexOfficialRelay(app, {
-        getProvider,
+      // Mount the host-owned ChatGPT OAuth adapter first on the SAME guarded
+      // admission surface. Official therefore shares attempt authorization,
+      // liveness, abort, usage and delta contracts with every managed route;
+      // only the final host-to-upstream credential injection differs.
+      mountCodexOfficialRelay(admission ? admission.app : app, {
+        ...common,
         ...(mountOptions.codexOfficialRelay || {}),
+        getProvider: admission ? admission.getProvider : getProvider,
+        ...(admission ? { onActivity: admission.onActivity } : {}),
         ...(mountOptions.codexProxyPath ? { codexProxyPath: String(mountOptions.codexProxyPath) } : {}),
       });
       mounted.codex = requireMethod(backend, 'mountCodexProxy', mode === 'cpr' ? 'router' : 'legacy')(

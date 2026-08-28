@@ -2,8 +2,6 @@
 
 const crypto = require('crypto');
 const fs = require('fs');
-const os = require('os');
-const path = require('path');
 
 const { normalizeManualMemory } = require('../memory/runtime');
 const { taskShortCode } = require('../classify/task-short-code');
@@ -82,6 +80,7 @@ function createSessionProfileRoutes(rawDeps) {
     || typeof providers.appTypeForCli !== 'function'
     || typeof providers.modelValidForProvider !== 'function'
     || typeof providers.codexProviderProxyable !== 'function'
+    || typeof providers.synchronizeCodexSessionRoute !== 'function'
     || typeof providers.CODEX_HOMES_DIR !== 'string') {
     throw new TypeError('[session-profile] providers must expose app-type/model/codex helpers and CODEX_HOMES_DIR');
   }
@@ -262,6 +261,15 @@ function createSessionProfileRoutes(rawDeps) {
       if (hasProviderSelectionPatch) {
         s.providerSelection = preparedProviderSelection.value;
         if (preparedPrimaryProvider && !hasProviderPatch) {
+          if (s.cli === 'codex' && s.cliSessionId
+              && s.provider !== preparedPrimaryProvider.providerId) {
+            providers.synchronizeCodexSessionRoute({
+              logicalSessionId: s.id,
+              nativeSessionId: s.cliSessionId,
+              fromProviderId: s.provider,
+              toProviderId: preparedPrimaryProvider.providerId,
+            });
+          }
           s.provider = preparedPrimaryProvider.providerId;
           s.model = preparedPrimaryProvider.model || providerRouterRuntime.getProviderSummary(undefined, preparedPrimaryProvider.providerId)?.model || null;
         }
@@ -273,48 +281,22 @@ function createSessionProfileRoutes(rawDeps) {
         // Per-session cc-switch provider. '' / null clears the override → default login.
         const v = preparedProvider;
         const prevProvider = s.provider;
+        // Providerless Codex retains the real ~/.codex OAuth store. At this
+        // idle route boundary synchronize only the exact native rollout with
+        // the canonical managed-session root before changing its authority.
+        if (s.cli === 'codex' && s.cliSessionId && prevProvider !== v.value) {
+          providers.synchronizeCodexSessionRoute({
+            logicalSessionId: s.id,
+            nativeSessionId: s.cliSessionId,
+            fromProviderId: prevProvider,
+            toProviderId: v.value,
+          });
+        }
         s.provider = v.value;
         // Old clients only know the concrete provider field. An explicit
         // provider patch leaves Auto mode unless this request also carries the
         // new providerSelection contract.
         if (req.body.providerSelection === undefined) s.providerSelection = null;
-        // Codex keeps each provider's threads under its own CODEX_HOME
-        // (sessions/YYYY/MM/DD/rollout-<ts>-<cliSessionId>.jsonl). Switching provider
-        // repoints the next spawn at a different home, so `codex exec resume <id>`
-        // would no longer find this session's rollout and silently start a fresh
-        // thread. Carry the rollout over to the new home so resume keeps working.
-        if (s.cli === 'codex' && s.cliSessionId && prevProvider !== v.value) {
-          try {
-            const codexHomeFor = (pid) => pid
-              ? path.join(providers.CODEX_HOMES_DIR, pid)
-              : path.join(os.homedir(), '.codex');
-            const srcSessions = path.join(codexHomeFor(prevProvider), 'sessions');
-            let srcFile = null;
-            if (fs.existsSync(srcSessions)) {
-              const walk = (d) => {
-                if (srcFile) return;
-                let entries;
-                try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
-                for (const e of entries) {
-                  if (srcFile) return;
-                  if (e.isDirectory()) walk(path.join(d, e.name));
-                  else if (e.isFile() && e.name.endsWith(`-${s.cliSessionId}.jsonl`)) srcFile = path.join(d, e.name);
-                }
-              };
-              walk(srcSessions);
-            }
-            if (srcFile) {
-              const dstFile = path.join(codexHomeFor(v.value), 'sessions', path.relative(srcSessions, srcFile));
-              if (!fs.existsSync(dstFile)) {
-                fs.mkdirSync(path.dirname(dstFile), { recursive: true });
-                fs.copyFileSync(srcFile, dstFile);
-                console.log(`[multicc/provider] migrated codex rollout ${s.cliSessionId}: ${prevProvider || '默认'} -> ${v.value || '默认'}`);
-              }
-            }
-          } catch (e) {
-            console.warn(`[multicc/provider] codex rollout migration failed for ${s.id}:`, e.message);
-          }
-        }
         // When switching provider the old session.model may hold a model that
         // only works with the previous backend (e.g. claude-opus-4-8 set while
         // on Anthropic Official, then switching to DeepSeek/GLM which don't

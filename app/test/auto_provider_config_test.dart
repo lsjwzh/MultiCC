@@ -53,6 +53,25 @@ void main() {
     expect(config.providerSelection?.toJson(), json);
   });
 
+  test('session DTOs preserve explicit mixed-trust authorization', () {
+    const mixed = SessionProviderSelection(
+      protocol: 'anthropic',
+      candidates: [
+        SessionProviderCandidate(providerId: 'official', priority: 1),
+        SessionProviderCandidate(providerId: 'relay', priority: 2),
+      ],
+      maxAttempts: 2,
+      allowCrossTrust: true,
+    );
+
+    final json = mixed.toJson();
+    expect(json['allowCrossTrust'], isTrue);
+    expect(json['candidates'][0]['model'], isNull);
+    expect(parseProviderSelection(json)?.allowCrossTrust, isTrue);
+    final legacy = Map<String, dynamic>.from(json)..remove('allowCrossTrust');
+    expect(parseProviderSelection(legacy)?.allowCrossTrust, isFalse);
+  });
+
   test('PATCH body sends Auto config and manual save explicitly clears it', () {
     final auto = sessionAIConfigPatchBody(
       provider: 'p1',
@@ -190,7 +209,7 @@ void main() {
 
     await tester.tap(find.byType(DropdownButtonFormField<String>).first);
     await tester.pumpAndSettle();
-    await tester.tap(find.text('⚡ Auto · Anthropic · 自管').last);
+    await tester.tap(find.text('⚡ Auto · Anthropic').last);
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('auto-provider-section')), findsOneWidget);
     expect(
@@ -212,4 +231,88 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('auto-provider-section')), findsNothing);
   });
+
+  testWidgets(
+    'existing Auto pool exposes Official and warns when mixed trust is enabled',
+    (tester) async {
+      AIConfigResult? result;
+      const providers = <Map<String, dynamic>>[
+        {
+          'id': 'official',
+          'name': 'Official',
+          'protocol': 'anthropic',
+          'isOfficial': true,
+        },
+        {
+          'id': 'p1',
+          'name': 'Managed primary',
+          'protocol': 'anthropic',
+          'isOfficial': false,
+        },
+        {
+          'id': 'p2',
+          'name': 'Managed backup',
+          'protocol': 'anthropic',
+          'isOfficial': false,
+        },
+      ];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (context) => ElevatedButton(
+                key: const Key('open-mixed-auto-config'),
+                onPressed: () async {
+                  result = await showModalBottomSheet<AIConfigResult>(
+                    context: context,
+                    isScrollControlled: true,
+                    builder: (_) => const AIConfigSheet(
+                      cli: SessionCli.claude,
+                      providers: providers,
+                      provider: 'p1',
+                      providerSelection: selection,
+                      model: 'model-a',
+                      effort: 'medium',
+                    ),
+                  );
+                },
+                child: const Text('open'),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.byKey(const Key('open-mixed-auto-config')));
+      await tester.pumpAndSettle();
+
+      final official = find.byKey(const Key('auto-candidate-enabled-official'));
+      expect(official, findsOneWidget);
+      await tester.ensureVisible(official);
+      await tester.tap(official);
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const Key('auto-provider-cross-trust-warning')),
+        findsOneWidget,
+      );
+      expect(
+        find.text('已选择 Official 与自管 Provider：同一对话上下文可能在自动切换时发送给多个上游。'),
+        findsOneWidget,
+      );
+
+      final save = find.widgetWithText(ElevatedButton, '保存');
+      await tester.ensureVisible(save);
+      await tester.tap(save);
+      await tester.pumpAndSettle();
+
+      expect(result?.providerSelection?.allowCrossTrust, isTrue);
+      expect(
+        result?.providerSelection?.candidates
+            .firstWhere((candidate) => candidate.providerId == 'official')
+            .model,
+        isNull,
+      );
+    },
+  );
 }

@@ -47,7 +47,7 @@ test('attempt proxy guard rejects stale capabilities without echoing route metad
   assert.equal(state.body.includes('pr1.session.secret'), false);
 });
 
-test('session-less Codex Official and Claude Aux routes stay outside attempt ownership', () => {
+test('legacy session-less Codex and Claude Aux routes stay outside attempt ownership', () => {
   let authorized = 0;
   let nextCalls = 0;
   const authorizeProxyRequest = () => { authorized += 1; return { ok: false }; };
@@ -57,6 +57,24 @@ test('session-less Codex Official and Claude Aux routes stay outside attempt own
   claude({ method: 'POST', url: '/provider-a/aux/v1/messages' }, {}, () => { nextCalls += 1; });
   assert.equal(authorized, 0);
   assert.equal(nextCalls, 2);
+});
+
+test('attempt-scoped Codex Official routes require the exact active capability', () => {
+  const calls = [];
+  let nextCalls = 0;
+  const guard = createProviderProxyGuard({
+    protocol: 'codex',
+    authorizeProxyRequest: input => { calls.push(input); return { ok: true }; },
+  });
+  guard({
+    method: 'POST',
+    url: '/official-provider/pr1.session.capability/main/responses',
+  }, {}, () => { nextCalls += 1; });
+  assert.equal(nextCalls, 1);
+  assert.deepEqual(calls, [{
+    protocol: 'codex', providerId: 'official-provider',
+    sessionId: 'pr1.session.capability', role: 'main', method: 'POST',
+  }]);
 });
 
 test('final admission rechecks after async Claude body parsing and blocks upstream lookup', async () => {

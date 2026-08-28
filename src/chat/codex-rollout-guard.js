@@ -53,6 +53,12 @@ function createCodexRolloutGuard(deps = {}) {
   const fsImpl = deps.fsImpl || fs;
   const homeDir = deps.homeDir || os.homedir();
   const codexHomesDir = deps.codexHomesDir || path.join(homeDir, '.multicc', 'codex-homes');
+  const codexSessionHomesDir = deps.codexSessionHomesDir
+    || path.join(homeDir, '.multicc', 'codex-session-homes');
+  const codexSessionHomeFor = typeof deps.codexSessionHomeFor === 'function'
+    ? deps.codexSessionHomeFor : null;
+  const prepareCodexSessionHome = typeof deps.prepareCodexSessionHome === 'function'
+    ? deps.prepareCodexSessionHome : null;
   const maxBytes = toPositiveBytes(
     deps.maxBytes !== undefined ? deps.maxBytes : process.env.MULTICC_CODEX_ROLLOUT_MAX_BYTES,
     DEFAULT_MAX_ROLLOUT_BYTES,
@@ -60,6 +66,9 @@ function createCodexRolloutGuard(deps = {}) {
   const logger = deps.logger || console;
 
   function codexHome(record) {
+    if (record.provider && codexSessionHomeFor && record.id) {
+      return codexSessionHomeFor(String(record.id));
+    }
     return record.provider
       ? path.join(codexHomesDir, String(record.provider))
       : path.join(homeDir, '.codex');
@@ -115,6 +124,11 @@ function createCodexRolloutGuard(deps = {}) {
     for (const entry of entries) {
       if (entry.isDirectory()) homes.push(path.join(codexHomesDir, entry.name));
     }
+    try { entries = fsImpl.readdirSync(codexSessionHomesDir, { withFileTypes: true }); }
+    catch (_) { entries = []; }
+    for (const entry of entries) {
+      if (entry.isDirectory()) homes.push(path.join(codexSessionHomesDir, entry.name));
+    }
     return homes.map(home => path.join(home, ARCHIVE_DIRNAME));
   }
 
@@ -167,7 +181,13 @@ function createCodexRolloutGuard(deps = {}) {
     }
     const force = options.force === true;
     try {
-      const sessionsDir = path.join(codexHome(record), 'sessions');
+      const prepared = record.provider && prepareCodexSessionHome && record.id
+        ? prepareCodexSessionHome({
+          logicalSessionId: record.id,
+          nativeSessionId: record.cliSessionId,
+        }) : null;
+      const sessionsDir = prepared && prepared.sessionsDir
+        ? prepared.sessionsDir : path.join(codexHome(record), 'sessions');
       const files = findRollouts(sessionsDir, String(record.cliSessionId));
       if (!files.length) return Object.freeze({ action: 'not_found', maxBytes });
       const archived = [];
@@ -189,6 +209,13 @@ function createCodexRolloutGuard(deps = {}) {
         cliSessionId: String(record.cliSessionId), archived,
       });
     } catch (error) {
+      if (error && /^CODEX_SESSION_/.test(String(error.code || ''))) {
+        try { logger.warn?.('codex_rollout_guard_blocked', { sessionId: record.id, code: error.code }); } catch (_) {}
+        return Object.freeze({
+          action: 'blocked', code: error.code,
+          error: String(error && error.message || error),
+        });
+      }
       try { logger.warn?.('codex_rollout_guard_error', { sessionId: record.id, error: String(error && error.message || error) }); } catch (_) {}
       return Object.freeze({ action: 'error', error: String(error && error.message || error) });
     }

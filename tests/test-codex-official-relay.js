@@ -25,7 +25,11 @@ function officialProvider() {
 
 function request(body = {}) {
   const req = new EventEmitter();
-  req.params = { providerId: 'official' };
+  req.params = {
+    providerId: 'official',
+    sessionId: 'pr1.session.attempt-capability',
+    role: 'main',
+  };
   req.headers = {};
   req.body = body;
   return req;
@@ -61,6 +65,20 @@ test('Official detection is narrow and excludes API-key/custom providers', () =>
   }), false);
   assert.equal(isOfficialCodexOAuthProvider({
     ...officialProvider(), settingsConfig: { auth: { auth_mode: 'chatgpt' }, proxyTarget: { baseUrl: 'https://api.test' } },
+  }), false);
+  assert.equal(isOfficialCodexOAuthProvider({
+    ...officialProvider(),
+    settingsConfig: {
+      auth: { auth_mode: 'chatgpt' },
+      config: 'model_provider = "custom"\n[model_providers.custom]\nbase_url = "https://api.test/v1"\n',
+    },
+  }), false);
+  assert.equal(isOfficialCodexOAuthProvider({
+    ...officialProvider(),
+    settingsConfig: {
+      auth: { auth_mode: 'chatgpt' },
+      config: "model_provider = 'custom'\n[model_providers.custom]\nbase_url = 'https://api.test/v1'\n",
+    },
   }), false);
 });
 
@@ -99,12 +117,22 @@ test('non-Official providers fall through to the existing CPR proxy', async () =
 
 test('Official relay swaps host OAuth credentials and streams Responses SSE', async () => {
   const calls = [];
+  const activity = [];
+  const usage = [];
+  const deltas = [];
   const handler = createCodexOfficialRelayHandler({
     getProvider: () => officialProvider(),
     readCredential: () => ({ ok: true, accessToken: 'fresh-host-token', accountId: 'acct-host' }),
+    onActivity: event => activity.push(event),
+    onUsageEvent: event => usage.push(event),
+    onDelta: (delta, context) => deltas.push({ delta, context }),
     fetch: async (url, init) => {
       calls.push({ url, init });
-      return new Response('data: {"type":"response.completed"}\n\n', {
+      return new Response([
+        'data: {"type":"response.output_text.delta","delta":"OK"}',
+        'data: {"type":"response.completed","response":{"usage":{"input_tokens":7,"output_tokens":3}}}',
+        '',
+      ].join('\n'), {
         status: 200,
         headers: { 'content-type': 'text/event-stream' },
       });
@@ -123,9 +151,71 @@ test('Official relay swaps host OAuth credentials and streams Responses SSE', as
   assert.equal(sent.model, 'gpt-5.6-sol');
   assert.equal(sent.stream, true);
   assert.equal(sent.store, false);
-  assert.equal(Buffer.concat(res.chunks).toString('utf8'), 'data: {"type":"response.completed"}\n\n');
+  assert.match(Buffer.concat(res.chunks).toString('utf8'), /response\.completed/);
   assert.match(res.headers['content-type'], /text\/event-stream/);
   assert.equal(res.writableEnded, true);
+  assert.deepEqual(activity.map(event => event.phase), ['request', 'first_byte', 'end']);
+  assert.equal(activity[0].sessionId, 'pr1.session.attempt-capability');
+  assert.equal(activity[0].role, 'main');
+  assert.equal(usage.length, 1);
+  assert.deepEqual(usage[0].usage, {
+    inputTokens: 7, outputTokens: 3, cacheWrite: 0, cacheRead: 0,
+  });
+  assert.equal(usage[0].sessionId, 'pr1.session.attempt-capability');
+  assert.equal(usage[0].routeName, 'main');
+  assert.equal(usage[0].source, 'exact');
+  assert.equal(usage[0].coverage, 'observed');
+  assert.deepEqual(deltas, [{
+    delta: { type: 'text', text: 'OK' },
+    context: {
+      providerId: 'official', sessionId: 'pr1.session.attempt-capability',
+      role: 'main', roleKind: 'main', agentRole: null,
+      routeName: 'main', model: 'gpt-5.6-sol',
+    },
+  }]);
+});
+
+test('Official relay attributes a controlled Codex agent role as a sub route', async () => {
+  const activity = [];
+  const usage = [];
+  const deltas = [];
+  const handler = createCodexOfficialRelayHandler({
+    getProvider: () => officialProvider(),
+    readCredential: () => ({ ok: true, accessToken: 'fresh-host-token', accountId: 'acct-host' }),
+    onActivity: event => activity.push(event),
+    onUsageEvent: event => usage.push(event),
+    onDelta: (delta, context) => deltas.push({ delta, context }),
+    fetch: async () => new Response([
+      'data: {"type":"response.output_text.delta","delta":"SUB_OK"}',
+      'data: {"type":"response.completed","response":{"usage":{"input_tokens":2,"output_tokens":1}}}',
+      '',
+    ].join('\n'), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+  });
+  const req = request({ model: 'gpt-5.6-sol', input: 'sub', stream: true });
+  req.params.role = 'worker';
+  await handler(req, response(), () => assert.fail('Official must not fall through'));
+  assert.deepEqual(activity.map(event => ({
+    phase: event.phase, role: event.role, roleKind: event.roleKind,
+    agentRole: event.agentRole, routeName: event.routeName,
+  })), [
+    { phase: 'request', role: 'sub', roleKind: 'sub', agentRole: 'worker', routeName: 'worker' },
+    { phase: 'first_byte', role: 'sub', roleKind: 'sub', agentRole: 'worker', routeName: 'worker' },
+    { phase: 'end', role: 'sub', roleKind: 'sub', agentRole: 'worker', routeName: 'worker' },
+  ]);
+  assert.equal(usage.length, 1);
+  assert.equal(usage[0].roleKind, 'sub');
+  assert.equal(usage[0].agentRole, 'worker');
+  assert.equal(usage[0].routeName, 'worker');
+  assert.equal(deltas.length, 1);
+  assert.equal(deltas[0].context.roleKind, 'sub');
+  assert.equal(deltas[0].context.agentRole, 'worker');
+  assert.equal(deltas[0].context.routeName, 'worker');
+
+  const invalid = request({ model: 'gpt-5.6-sol', input: 'bad role' });
+  invalid.params.role = 'aux';
+  const invalidResponse = response();
+  await handler(invalid, invalidResponse, () => assert.fail('Official must not fall through'));
+  assert.equal(invalidResponse.statusCode, 400);
 });
 
 test('missing credentials and upstream rejection expose no credential material', async () => {
@@ -152,11 +242,42 @@ test('missing credentials and upstream rejection expose no credential material',
   assert.equal(JSON.stringify(res.jsonBody).includes('private-account'), false);
 });
 
-test('mount uses the existing codex-proxy namespace and mounts once per app', () => {
+test('client abort cancels the host OAuth hop and closes attempt activity', async () => {
+  let upstreamSignal;
+  const activity = [];
+  const usage = [];
+  const handler = createCodexOfficialRelayHandler({
+    getProvider: () => officialProvider(),
+    readCredential: () => ({ ok: true, accessToken: 'host-only-token', accountId: 'host-account' }),
+    onActivity: event => activity.push(event),
+    onUsageEvent: event => usage.push(event),
+    fetch: async (_url, init) => {
+      upstreamSignal = init.signal;
+      return new Promise((_resolve, reject) => {
+        init.signal.addEventListener('abort', () => reject(new Error('aborted by client')), { once: true });
+      });
+    },
+  });
+  const req = request({ model: 'gpt-5.6-sol', input: 'abort me', stream: true });
+  const pending = handler(req, response(), () => assert.fail('Official must not fall through'));
+  await new Promise(resolve => setImmediate(resolve));
+  req.emit('aborted');
+  await pending;
+  assert.equal(upstreamSignal.aborted, true);
+  assert.deepEqual(activity.map(event => event.phase), ['request', 'end']);
+  assert.equal(activity[1].status, 'error');
+  assert.equal(usage.length, 1);
+  assert.equal(usage[0].errorCode, 'CLIENT_ABORTED');
+});
+
+test('mount uses the attempt-scoped CPR namespace and mounts once per app', () => {
   const routes = [];
   const app = { post: (route, handler) => routes.push({ route, handler }) };
   const options = { getProvider: () => officialProvider(), fetch: async () => new Response(null, { status: 204 }) };
   assert.equal(mountCodexOfficialRelay(app, options), true);
   assert.equal(mountCodexOfficialRelay(app, options), false);
-  assert.deepEqual(routes.map(item => item.route), ['/codex-proxy/:providerId/responses']);
+  assert.deepEqual(routes.map(item => item.route), [
+    '/codex-proxy/:providerId/:sessionId/:role/responses',
+    '/codex-proxy/:providerId/responses',
+  ]);
 });

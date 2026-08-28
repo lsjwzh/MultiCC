@@ -208,6 +208,35 @@ test('production transcript discovery returns only exact native ids under safe r
     'substring lookalikes must never be attributed to a run');
 });
 
+test('production transcript discovery keeps legacy provider roots and follows future canonical session homes', t => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-task-run-canonical-'));
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  const dataRoot = path.join(base, 'data');
+  const homeDir = path.join(base, 'home');
+  const providerHomesDir = path.join(base, 'provider-homes');
+  const codexSessionHomesDir = path.join(base, 'session-homes');
+  const legacy = path.join(providerHomesDir, 'legacy-provider', 'sessions',
+    'rollout-legacy-native.jsonl');
+  fs.mkdirSync(path.dirname(legacy), { recursive: true });
+  fs.writeFileSync(legacy, '{}\n');
+  const roots = discoverTranscriptRoots({
+    dataRoot, homeDir, providerHomesDir, codexSessionHomesDir,
+  });
+  const canonical = path.join(codexSessionHomesDir, 'logical-session', 'sessions',
+    '2026', '08', 'rollout-canonical-native.jsonl');
+  fs.mkdirSync(path.dirname(canonical), { recursive: true });
+  fs.writeFileSync(canonical, '{}\n');
+  const refs = findNativeRefs({
+    record: {
+      cliSessionId: 'canonical-native',
+      cliStates: { codexLegacy: { cliSessionId: 'legacy-native' } },
+    },
+    roots,
+    runId: 'run-canonical',
+  });
+  assert.deepEqual(new Set(refs.files.map(ref => ref.path)), new Set([legacy, canonical]));
+});
+
 test('worktree inspection uses asynchronous git probes and fails closed on probe errors', async () => {
   const calls = [];
   const execFile = (command, args, options, callback) => {

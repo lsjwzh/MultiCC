@@ -94,6 +94,18 @@ test('session DTO is canonical, schema-valid, and excludes process or filesystem
     effort: 'high',
     effectiveEffort: 'high',
     provider: 'provider-safe-id',
+    providerSelection: {
+      version: 1,
+      mode: 'auto',
+      protocol: 'openai_responses',
+      candidates: [
+        { providerId: 'official', model: null, priority: 1, enabled: true },
+        { providerId: 'provider-safe-id', model: 'gpt-test', priority: 2, enabled: true },
+      ],
+      maxAttempts: 2,
+      sticky: true,
+      allowCrossTrust: true,
+    },
     subagent: { providerId: 'sub-safe-id', model: 'sub-model', effectiveModel: 'sub-effective' },
     autoCommit: true,
     createdAt: 1784332800000,
@@ -110,6 +122,8 @@ test('session DTO is canonical, schema-valid, and excludes process or filesystem
   });
 
   assertValid('session.schema.json', dto);
+  assert.equal(dto.providerSelection.allowCrossTrust, true,
+    'session DTO preserves explicit cross-trust authorization');
   const wire = serialized(dto);
   for (const forbidden of ['/private/', 'native-session-secret', 'hidden prompt', 'secret-token', 'Error at']) {
     assert.equal(wire.includes(forbidden), false, `DTO excludes ${forbidden}`);

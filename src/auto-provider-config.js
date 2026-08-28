@@ -98,9 +98,9 @@ function validateProviderSelection(input, options = {}) {
       || input.candidates.length > MAX_CANDIDATES) {
     return fail(`Auto Provider requires 2-${MAX_CANDIDATES} candidates`, 'invalid_provider_candidates');
   }
-  if (input.allowCrossTrust === true) {
-    return fail('cross-trust Auto Provider routing is not supported', 'cross_trust_not_supported');
-  }
+  // Missing/false keeps the v1 fail-closed behavior. A true value is the
+  // persisted user authorization for a mixed Official/user-managed pool.
+  const allowCrossTrust = input.allowCrossTrust === true;
   const catalog = catalogFor(options);
   const candidates = [];
   const ids = new Set();
@@ -113,11 +113,13 @@ function validateProviderSelection(input, options = {}) {
     }
     ids.add(result.value.providerId);
     candidates.push(result.value);
-    if (result.trustDomain) trustDomains.add(result.trustDomain);
+    if (result.value.enabled && result.trustDomain) trustDomains.add(result.trustDomain);
   }
   const enabledCount = candidates.filter(candidate => candidate.enabled).length;
   if (enabledCount < 2) return fail('Auto Provider requires at least two enabled candidates', 'insufficient_provider_candidates');
-  if (trustDomains.size > 1) return fail('Auto Provider candidates cross trust domains', 'provider_trust_mismatch');
+  if (trustDomains.size > 1 && !allowCrossTrust) {
+    return fail('Auto Provider candidates cross trust domains', 'provider_trust_mismatch');
+  }
   const maxAttempts = input.maxAttempts == null ? Math.min(3, enabledCount) : Number(input.maxAttempts);
   if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 2
       || maxAttempts > Math.min(MAX_ATTEMPTS, enabledCount)) {
@@ -130,7 +132,7 @@ function validateProviderSelection(input, options = {}) {
     candidates: Object.freeze(candidates),
     maxAttempts,
     sticky: input.sticky !== false,
-    allowCrossTrust: false,
+    allowCrossTrust,
   });
   return Object.freeze({ ok: true, value, error: null, code: null });
 }
@@ -160,7 +162,7 @@ function providerSelectionDto(input) {
     candidates: value.candidates.map(candidate => ({ ...candidate })),
     maxAttempts: value.maxAttempts,
     sticky: value.sticky,
-    allowCrossTrust: false,
+    allowCrossTrust: value.allowCrossTrust,
   };
 }
 
