@@ -2069,6 +2069,47 @@ function createChatTurnEngine(deps) {
         rememberActiveCliState(persisted);
         savePersistedSessionsBestEffort('runtime.streaming-session-id-capture');
       },
+      onResumeTargetMissing: () => {
+        // chat-stream only raises this before forwarding any event from the
+        // failed turn, so the same canonical user message is safe to replay.
+        // Keep it out of API error policy: this is a missing local transcript,
+        // not an upstream/provider failure.
+        clearSessionApiErrorState(sessionName, cs);
+        turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'recovering');
+        setSessionStatus(sessionName, { status: 'thinking', currentFile: null });
+        chatBroadcast(sessionName, {
+          type: 'system', subtype: 'warning',
+          message: 'Claude 原生会话记录已失效，已自动新建上下文并重试本条消息。',
+        });
+        logger.warn('chat_stream_resume_target_missing_recovered', {
+          sessionId: sessionName, turnId: turn.turnId,
+        });
+        // The replacement process has no hidden native context. Preserve
+        // semantic continuity by prepending the same bounded, quoted visible
+        // checkpoint used by deliberate context rotation. Exclude this turn's
+        // already-durable user row because invocation.payload carries it once.
+        try {
+          const history = loadChatHistory(sessionName).filter(message => (
+            !turn.turnId || message?.turnId !== turn.turnId
+          ));
+          const checkpoint = buildHandoffCheckpoint({
+            session: persisted, fromCli: 'claude', toCli: 'claude', history, git: null,
+          });
+          checkpoint.reason = 'auto_native_resume_recovery';
+          const checkpointText = renderHandoffPrompt({
+            id: `resume_recovery_${turn.turnId || 'unknown'}`,
+            fromCli: 'claude', toCli: 'claude',
+            reason: 'auto_native_resume_recovery', checkpoint,
+          });
+          return { text: checkpointText ? `${checkpointText}${invocation.payload}` : invocation.payload };
+        } catch (error) {
+          logger.warn('chat_stream_resume_checkpoint_failed', {
+            sessionId: sessionName, turnId: turn.turnId,
+            code: error && error.code ? error.code : 'checkpoint_failed',
+          });
+          return { text: invocation.payload };
+        }
+      },
       beforeSpawn: ({ sessionId }) => {
         routerToolHost.refreshPersistentProcess(cs, childEnv,
           { sessionId: sessionName, baseUrl: `http://127.0.0.1:${getPort()}` });
