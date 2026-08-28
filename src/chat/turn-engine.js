@@ -1022,7 +1022,6 @@ function createChatTurnEngine(deps) {
         cli: turnCli,
         turnCount,
         hasNativeSession: !!persisted.cliSessionId || willAllocateClaudeNativeSession,
-        forceFirstTurn: typeof opts.isFirstTurn === 'boolean' ? opts.isFirstTurn : undefined,
         requestId: opts.requestId,
         clientMsgId: opts.clientMsgId,
         deliveryId: opts.deliveryId,

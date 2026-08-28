@@ -8,10 +8,6 @@ const FORBIDDEN_FIELDS = new Set([
   'cliSessionId', 'nativeSessionId', 'sessionSecret', 'secret',
   'token', 'apiKey', 'accessToken', 'providerToken',
 ]);
-const RETRY_REASONS = new Set([
-  'empty-exit', 'session-id-conflict', 'resume-target-missing',
-  'transport-disconnect', 'api-error', 'interrupted', 'manual',
-]);
 const TASK_SOURCES = new Set(['task-board', 'commander', 'router-tool']);
 const LEGACY_TASK_SOURCE_ALIASES = new Map([
   ['commander-route', 'commander'],
@@ -39,27 +35,6 @@ function normalizeStringList(value, field) {
   if (value == null) return Object.freeze([]);
   if (!Array.isArray(value)) throw new TurnRequestError('invalid_request', `${field} must be an array`);
   return Object.freeze([...new Set(value.map(item => cleanId(item, field)).filter(Boolean))]);
-}
-
-function normalizeRetry(value) {
-  if (value == null || value === false) return null;
-  const source = value === true ? {} : value;
-  if (!source || typeof source !== 'object' || Array.isArray(source)) {
-    throw new TurnRequestError('invalid_retry', 'retry must be boolean or an object');
-  }
-  const attempt = source.attempt == null ? 1 : Number(source.attempt);
-  if (!Number.isInteger(attempt) || attempt < 1) {
-    throw new TurnRequestError('invalid_retry', 'retry.attempt must be a positive integer');
-  }
-  const reason = source.reason == null ? 'manual' : String(source.reason).trim();
-  if (!RETRY_REASONS.has(reason)) {
-    throw new TurnRequestError('invalid_retry', `unsupported retry reason: ${reason}`);
-  }
-  const strategy = source.strategy == null ? 'resume' : String(source.strategy).trim();
-  if (strategy !== 'resume' && strategy !== 'fresh') {
-    throw new TurnRequestError('invalid_retry', 'retry.strategy must be resume or fresh');
-  }
-  return Object.freeze({ attempt, reason, strategy });
 }
 
 function normalizeGoalLimits(value) {
@@ -134,33 +109,11 @@ function normalizeTurnRequest(input) {
   }
   const hasNativeSession = input.hasNativeSession === true;
 
-  if (input.forceFirstTurn != null && typeof input.forceFirstTurn !== 'boolean') {
-    throw new TurnRequestError('invalid_history_intent', 'forceFirstTurn must be boolean');
-  }
-  if (input.resume != null && typeof input.resume !== 'boolean') {
-    throw new TurnRequestError('invalid_history_intent', 'resume must be boolean');
-  }
-  if (typeof input.forceFirstTurn === 'boolean' && typeof input.resume === 'boolean'
-      && input.resume !== !input.forceFirstTurn) {
-    throw new TurnRequestError('invalid_history_intent', 'forceFirstTurn and resume contradict each other');
-  }
-
-  let isFirstTurn;
-  if (typeof input.forceFirstTurn === 'boolean') isFirstTurn = input.forceFirstTurn;
-  else if (typeof input.resume === 'boolean') isFirstTurn = !input.resume;
-  else isFirstTurn = turnCount === 0 || !hasNativeSession;
-  const resume = !isFirstTurn;
-  if (resume && !hasNativeSession) {
-    throw new TurnRequestError('resume_without_native_session', 'resume requires proof that a native session exists');
-  }
-
-  const retry = normalizeRetry(input.retry);
-  if (retry && retry.strategy === 'fresh' && !isFirstTurn) {
-    throw new TurnRequestError('invalid_retry', 'fresh retry must force a first turn');
-  }
-  if (retry && retry.strategy === 'resume' && isFirstTurn) {
-    throw new TurnRequestError('invalid_retry', 'resume retry cannot be a first turn');
-  }
+  // History intent is derived, never negotiated. A caller cannot ask for a
+  // resume: resuming needs a live native session, and only the engine knows at
+  // spawn time whether one still exists. Pinning it was how a dispatch whose
+  // native session had been rotated away wedged in the FIFO forever.
+  const isFirstTurn = turnCount === 0 || !hasNativeSession;
 
   const originDispatchId = cleanId(input.originDispatchId, 'originDispatchId');
   const originTrigger = input.originTrigger === true;
@@ -191,10 +144,7 @@ function normalizeTurnRequest(input) {
       transport,
       historyIntent: isFirstTurn ? 'first' : 'resume',
       isFirstTurn,
-      resume,
-      forceFirstTurn: typeof input.forceFirstTurn === 'boolean' ? input.forceFirstTurn : null,
     }),
-    retry,
     origin: Object.freeze({ kind: originKind, operationId: originDispatchId }),
     launch: Object.freeze({ reason: originContinue ? 'continue' : 'request' }),
     identity: Object.freeze({ clientMsgId, deliveryId }),
