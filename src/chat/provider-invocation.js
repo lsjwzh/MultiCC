@@ -15,6 +15,14 @@ function protocolFor(cli, summary) {
   return clean(cli) || 'native';
 }
 
+function providerRetryRouteOptions(attempt) {
+  const route = attempt && typeof attempt === 'object' ? attempt : {};
+  return {
+    providerId: route.providerId,
+    model: route.model === '_default_' ? null : route.model,
+  };
+}
+
 function createProviderInvocationFactory(options = {}) {
   const router = options.providerRouterRuntime;
   const attempts = options.providerAttemptRuntime;
@@ -42,8 +50,15 @@ function createProviderInvocationFactory(options = {}) {
       ...(input.providerId !== undefined ? { providerId: input.providerId } : {}),
       ...(input.model !== undefined ? { model: input.model } : {}),
     });
+    const hasModelOverride = input.model !== undefined;
     const routeBinding = router.createBinding(session, selectionOverrides);
     const resolution = router.resolveSpawnEnv(session, selectionOverrides);
+    const routeRawModel = clean(resolution.qualifiedModel)
+      || clean(routeBinding.model)
+      || (hasModelOverride ? null : envelope.spawnOpts.rawModel);
+    const routeEffectiveModel = hasModelOverride
+      ? (clean(routeBinding.model) || clean(resolution.providerModel) || null)
+      : effectiveSessionModel(session);
     const baseInvocationEnvelope = {
       ...envelope,
       spawnOpts: {
@@ -51,8 +66,8 @@ function createProviderInvocationFactory(options = {}) {
         skipDefaultModel: resolution.skipDefaultModel,
         providerModel: resolution.providerModel,
         providerModels: resolution.providerModels,
-        effectiveModel: effectiveSessionModel(session),
-        rawModel: resolution.qualifiedModel || routeBinding.model || envelope.spawnOpts.rawModel,
+        effectiveModel: routeEffectiveModel,
+        rawModel: routeRawModel,
       },
     };
     const invocationEnvelope = input.bareText === undefined
@@ -157,4 +172,8 @@ function createProviderInvocationFactory(options = {}) {
   return Object.freeze({ prepare });
 }
 
-module.exports = { createProviderInvocationFactory, protocolFor };
+module.exports = {
+  createProviderInvocationFactory,
+  protocolFor,
+  providerRetryRouteOptions,
+};

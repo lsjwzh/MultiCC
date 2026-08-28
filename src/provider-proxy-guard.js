@@ -40,8 +40,10 @@ function createProviderProxyGuard(options = {}) {
     const segments = routeSegments(req);
     const providerId = clean(segments[0]);
     const sessionId = clean(segments[1]);
-    // Codex Official relay is intentionally session-less. Claude Aux uses the
-    // reserved `aux` bucket and is outside main-turn attempt ownership.
+    // The two-segment Codex endpoint exists only for already-materialized legacy
+    // homes and has no attempt identity to authorize. New managed routes,
+    // including Official OAuth, always carry provider/capability/role. Claude
+    // Aux uses the reserved `aux` bucket and is outside main-turn ownership.
     if (!providerId || !sessionId
         || (protocol === 'codex' && (!segments[2] || sessionId === 'responses'))
         || (protocol === 'claude' && sessionId === 'aux')) {

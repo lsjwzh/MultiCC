@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "reviewedAt": "2026-07-27",
+  "reviewedAt": "2026-08-28",
   "entries": [
     {
       "id": "server-env",
@@ -64,6 +64,16 @@
       "migrationStrategy": "Keep the root disposable, permission-restricted and capability-free in its pathname; prune abandoned overlays at startup without copying them forward.",
       "sources": [
         { "file": "src/providers.js", "anchor": "const CODEX_ATTEMPT_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-attempt-homes');" }
+      ]
+    },
+    {
+      "id": "codex-logical-session-homes",
+      "classification": "migration-required",
+      "owner": "Codex native session continuity",
+      "rationale": "Logical-session history directories contain the canonical native rollout shared by Auto, managed, and Official physical routes across restarts; providerless routes synchronize only at idle route boundaries.",
+      "migrationStrategy": "Version the canonical layout; copy forward only a uniquely identified native rollout with durable atomic no-overwrite semantics, retain legacy sources for rollback, and fail closed on ambiguity.",
+      "sources": [
+        { "file": "src/providers.js", "anchor": "const CODEX_SESSION_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-session-homes');" }
       ]
     },
     {

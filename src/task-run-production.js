@@ -26,6 +26,7 @@ function discoverTranscriptRoots({
   dataRoot,
   homeDir = os.homedir(),
   providerHomesDir = null,
+  codexSessionHomesDir = null,
 } = {}) {
   if (!dataRoot || !path.isAbsolute(dataRoot)) throw new TypeError('absolute dataRoot required');
   const ownedRoot = path.join(dataRoot, 'task-run-transcripts');
@@ -41,6 +42,10 @@ function discoverTranscriptRoots({
         candidates.push(path.join(providerHomesDir, entry.name, 'sessions'));
       }
     }
+  }
+  if (codexSessionHomesDir) {
+    fs.mkdirSync(codexSessionHomesDir, { recursive: true, mode: 0o700 });
+    candidates.push(codexSessionHomesDir);
   }
   return realDirectories(candidates);
 }
@@ -238,6 +243,7 @@ function createProductionTaskRunHost(options = {}) {
     taskRunStore,
     dataRoot,
     providerHomesDir,
+    codexSessionHomesDir,
     records,
     directories,
     chatStream,
@@ -255,7 +261,9 @@ function createProductionTaskRunHost(options = {}) {
     releaseTaskWorktree = null,
     logger = console,
   } = options;
-  const transcriptRoots = discoverTranscriptRoots({ dataRoot, providerHomesDir });
+  const transcriptRoots = discoverTranscriptRoots({
+    dataRoot, providerHomesDir, codexSessionHomesDir,
+  });
   const closeNative = sessionId => chatStream.closeAndWait(sessionId);
   const clearNativeState = record => clearNativeCliStates(record);
   const cleanup = createTaskRunCleanup({

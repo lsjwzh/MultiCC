@@ -136,15 +136,31 @@ function createProviderRouterRuntime(options = {}) {
     });
   }
 
+  function hostOwnsOfficialCodexHome(binding) {
+    if (mode !== 'cpr' || binding.cli !== 'codex' || !binding.providerId) return false;
+    const provider = providers.getProvider('codex', binding.providerId);
+    return typeof providers.isOfficialCodexOAuthProvider === 'function'
+      && providers.isOfficialCodexOAuthProvider(provider);
+  }
+
   function resolveSpawnEnv(session, overrides) {
-    return port.resolveSpawn(createBinding(session, overrides));
+    const binding = createBinding(session, overrides);
+    // CPR's generic Codex materializer copies provider/global auth.json before
+    // an attempt route exists. Official OAuth is a host-only credential, so
+    // select MultiCC's credential-free relay home at this earliest boundary.
+    if (hostOwnsOfficialCodexHome(binding)) {
+      return legacy.resolveSpawnEnv(toLegacyProviderView(binding));
+    }
+    return port.resolveSpawn(binding);
   }
 
   function buildChildEnv(base, session, extra = {}, overrides) {
     const binding = createBinding(session, overrides);
     // Shadow comparisons are intentionally limited to summary/model/spawn.
     // Child-env construction can materialize Codex state, so it stays legacy.
-    if (mode === 'shadow') return legacy.buildChildEnv(base, toLegacyProviderView(binding), extra);
+    if (mode === 'shadow' || hostOwnsOfficialCodexHome(binding)) {
+      return legacy.buildChildEnv(base, toLegacyProviderView(binding), extra);
+    }
     return port.buildChildEnv(base, binding, extra);
   }
 

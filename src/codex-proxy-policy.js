@@ -5,15 +5,16 @@ function clean(value) {
 }
 
 // A Codex turn may stay on its native/static home only when no managed route
-// was selected, or when the selected main provider is a confirmed direct
-// ChatGPT OAuth provider and no subagent override needs the managed proxy.
-// Missing provider metadata is deliberately treated as stale, not official.
+// was selected. Every concrete provider — including ChatGPT OAuth Official —
+// must be materialized as an attempt-scoped local proxy route. This keeps the
+// upstream credential host-side and gives guard/admission/activity/usage one
+// invariant route shape for every managed attempt.
 function codexProxyConfigRequired(options = {}) {
   const subagentProviderId = clean(options.subagentProviderId);
   if (subagentProviderId) return true;
   const providerId = clean(options.providerId);
   if (!providerId || providerId === '_default_') return false;
-  return options.officialOAuth !== true;
+  return true;
 }
 
 function assertCodexProxyConfigApplied({ required, applied } = {}) {
