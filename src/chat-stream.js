@@ -26,6 +26,7 @@
 //     timeout. Context survives an idle-kill because we spawn with
 //     --session-id and respawn with --resume <same id>.
 
+const crypto = require('crypto');
 const { spawn } = require('child_process');
 
 // session name -> state
@@ -33,7 +34,7 @@ const { spawn } = require('child_process');
 //     started (bool: has this sessionId ever run a turn → use --resume),
 //     busy (bool: a turn is in flight), queue: [{text, onEvent, resolve, reject}],
 //     current: {onEvent, resolve, reject} | null,
-//     lineBuf, idleTimer, onExit, onNewSessionId }
+//     lineBuf, idleTimer, onExit, onNewSessionId, onResumeTargetMissing }
 const sessions = new Map();
 
 const DEFAULT_IDLE_MS = 10 * 60 * 1000; // kill a warm-but-unused process after 10min
@@ -86,7 +87,8 @@ function routeFingerprint(env) {
 function spawnProc(name, cfg) {
   const s = sessions.get(name);
   if (typeof s.beforeSpawn === 'function') s.beforeSpawn({ sessionId: s.sessionId });
-  const sessionArgs = s.started
+  const resuming = s.started;
+  const sessionArgs = resuming
     ? ['--resume', s.sessionId]
     : ['--session-id', s.sessionId];
   const args = [...s.baseArgs, ...sessionArgs];
@@ -105,6 +107,7 @@ function spawnProc(name, cfg) {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   s.proc = proc;
+  s.lastSpawnWasResume = resuming;
   // Record the routing fingerprint this process was actually spawned with, so a
   // later provider/env switch (which updates s.env via ensure()) is detectable
   // at the next turn boundary and triggers a --resume respawn.
@@ -125,6 +128,71 @@ function spawnProc(name, cfg) {
   proc.on('error', (err) => { if (sessions.get(name)?.proc === proc) onExit(name, null, null, err); });
 
   return proc;
+}
+
+function isMissingResumeResult(evt) {
+  if (!evt || evt.type !== 'result' || evt.is_error !== true) return false;
+  const messages = [
+    ...(Array.isArray(evt.errors) ? evt.errors : []),
+    typeof evt.error === 'string' ? evt.error : evt.error && evt.error.message,
+    evt.result,
+  ];
+  return messages.some((message) => (
+    /No conversation found with session ID\s*:/i.test(String(message || ''))
+  ));
+}
+
+// A persisted streaming id only proves that MultiCC allocated an id; it does
+// not prove Claude still has the corresponding transcript. Claude reports a
+// missing `--resume` target as a stream-json result (not stderr / process
+// failure), so the ordinary exit recovery cannot see it. Recover below the
+// provider layer: no provider request ran, and requiring this to be the first
+// event guarantees that retrying the same queued message cannot duplicate
+// visible output or tool side effects.
+function recoverMissingResume(name, evt) {
+  const s = sessions.get(name);
+  const cur = s && s.current;
+  if (!s || !cur || !s.lastSpawnWasResume || cur.eventCount !== 0
+      || cur.resumeRecoveryAttempt >= 1 || !isMissingResumeResult(evt)) return false;
+
+  const proc = s.proc;
+  const previousSessionId = s.sessionId;
+  const nextSessionId = crypto.randomUUID();
+  cur.resumeRecoveryAttempt += 1;
+  cur.firstByteReported = false;
+  s.current = null;
+  s.busy = false;
+  s.sessionId = nextSessionId;
+  s.started = false;
+  s.stderrTail = '';
+  s.recycleRequested = false;
+  s.recycleReason = '';
+  s.queue.unshift(cur);
+
+  if (typeof s.onNewSessionId === 'function') {
+    try { s.onNewSessionId(nextSessionId); } catch (_) {}
+  }
+  if (typeof s.onResumeTargetMissing === 'function') {
+    try {
+      const recovery = s.onResumeTargetMissing({
+        previousSessionId, sessionId: nextSessionId,
+      });
+      const replacementText = typeof recovery === 'string' ? recovery : recovery && recovery.text;
+      if (typeof replacementText === 'string' && replacementText.trim()) cur.text = replacementText;
+    } catch (_) {}
+  }
+  console.warn(`[multicc/chat-stream] [${name}] resume target missing; rotating native session and retrying`);
+
+  if (proc && proc.exitCode === null && !proc.killed) {
+    if (!killForRecycle(name, s)) s.proc = null;
+  } else {
+    // The process can exit between emitting the result and this handler. Detach
+    // it so its late exit callback cannot reject the message we just re-queued.
+    s.proc = null;
+    s.recycling = false;
+    setImmediate(() => pump(name));
+  }
+  return true;
 }
 
 function onStdout(name, chunk) {
@@ -153,6 +221,9 @@ function onStdout(name, chunk) {
       }
       continue;
     }
+
+    if (recoverMissingResume(name, evt)) return;
+    if (s.current) s.current.eventCount += 1;
 
     // Capture the real session id if the CLI reports one (first turn / system init).
     if (evt.session_id && evt.session_id !== s.sessionId && evt.type === 'system') {
@@ -382,7 +453,7 @@ function clearIdle(s) {
 /**
  * Ensure a streaming session exists (does not spawn until first send()).
  * cfg: { cmd, cwd, sessionId, baseArgs, beforeSpawn?, env?, idleMs?, onExit?, onDispose?,
- *        onNewSessionId?, resume? }
+ *        onNewSessionId?, onResumeTargetMissing?, resume? }
  */
 function ensure(name, cfg) {
   let s = sessions.get(name);
@@ -400,12 +471,14 @@ function ensure(name, cfg) {
       onExit: cfg.onExit || null,
       onDispose: cfg.onDispose || null,
       onNewSessionId: cfg.onNewSessionId || null,
+      onResumeTargetMissing: cfg.onResumeTargetMissing || null,
       onBackgroundEvent: cfg.onBackgroundEvent || null,
       proc: null, started: false, busy: false,
       queue: [], current: null, lineBuf: '', stderrTail: '',
       idleTimer: null, idleHeldSince: 0,
       recycling: false, spawnedFingerprint: null,
       recycleRequested: false, recycleReason: '',
+      lastSpawnWasResume: false,
     };
     s.started = cfg.resume === true;
     sessions.set(name, s);
@@ -415,6 +488,7 @@ function ensure(name, cfg) {
     if (cfg.beforeSpawn !== undefined) s.beforeSpawn = cfg.beforeSpawn;
     if (cfg.env !== undefined) s.env = cfg.env;
     if (cfg.onNewSessionId !== undefined) s.onNewSessionId = cfg.onNewSessionId;
+    if (cfg.onResumeTargetMissing !== undefined) s.onResumeTargetMissing = cfg.onResumeTargetMissing;
     if (cfg.onBackgroundEvent !== undefined) s.onBackgroundEvent = cfg.onBackgroundEvent;
     if (cfg.onExit !== undefined) s.onExit = cfg.onExit;
     if (cfg.onDispose !== undefined) s.onDispose = cfg.onDispose;
@@ -435,7 +509,10 @@ function send(name, text, onEvent, opts = {}) {
   const s = sessions.get(name);
   if (!s) return Promise.reject(new Error(`stream session "${name}" not ensured`));
   return new Promise((resolve, reject) => {
-    s.queue.push({ text, onEvent, resolve, reject, onTiming: opts.onTiming || null });
+    s.queue.push({
+      text, onEvent, resolve, reject, onTiming: opts.onTiming || null,
+      eventCount: 0, resumeRecoveryAttempt: 0,
+    });
     pump(name);
   });
 }
