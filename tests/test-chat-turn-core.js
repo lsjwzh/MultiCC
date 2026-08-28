@@ -202,7 +202,6 @@ test('turn request normalizes identity/origin/history without native ids or secr
   assert.deepEqual(turn.launch, { reason: 'request' });
   assert.deepEqual(turn.execution, {
     transport: 'claude-stream', historyIntent: 'first', isFirstTurn: true,
-    resume: false, forceFirstTurn: null,
   });
   const serialized = JSON.stringify(turn);
   assert.equal(serialized.includes('cliSessionId'), false);
@@ -210,25 +209,27 @@ test('turn request normalizes identity/origin/history without native ids or secr
   assert.equal(serialized.includes('secret'), false);
 });
 
-test('force-first/resume/retry/dispatch metadata is explicit and illegal combinations fail closed', () => {
+test('history intent is derived from live state and dispatch metadata fails closed', () => {
+  // A resume is a conclusion, not a request: it appears only when this session
+  // has already taken a turn AND still holds a native session. Callers pass
+  // neither forceFirstTurn nor resume — the fields do not exist.
   const turn = request({
     cli: 'codex', turnCount: 4, hasNativeSession: true,
     forceFirstTurn: false, resume: true,
-    retry: { attempt: 2, reason: 'transport-disconnect', strategy: 'resume' },
     originDispatchId: 'operation-9', clientMsgId: 'client-9',
   });
   assert.deepEqual(turn.execution, {
     transport: 'cli-process', historyIntent: 'resume', isFirstTurn: false,
-    resume: true, forceFirstTurn: false,
   });
-  assert.deepEqual(turn.retry, { attempt: 2, reason: 'transport-disconnect', strategy: 'resume' });
+  const rotatedAway = request({ cli: 'codex', turnCount: 4, hasNativeSession: false, resume: true });
+  assert.deepEqual(rotatedAway.execution, {
+    transport: 'cli-process', historyIntent: 'first', isFirstTurn: true,
+  });
   assert.deepEqual(turn.origin, { kind: 'dispatch', operationId: 'operation-9' });
 
   assert.throws(() => request({ cliSessionId: 'native-secret' }), error => (
     error instanceof TurnRequestError && error.code === 'secret_field_forbidden'
   ));
-  assert.throws(() => request({ forceFirstTurn: true, resume: true }), /contradict/);
-  assert.throws(() => request({ forceFirstTurn: false, resume: true, hasNativeSession: false }), /native session/);
   const continuedDispatch = request({ originDispatchId: 'd1', originContinue: true });
   assert.deepEqual(continuedDispatch.origin, { kind: 'dispatch', operationId: 'd1' });
   assert.deepEqual(continuedDispatch.launch, { reason: 'continue' });
@@ -236,7 +237,6 @@ test('force-first/resume/retry/dispatch metadata is explicit and illegal combina
   assert.deepEqual(continuedTrigger.origin, { kind: 'trigger', operationId: null });
   assert.deepEqual(continuedTrigger.launch, { reason: 'continue' });
   assert.throws(() => request({ originDispatchId: 'd1', originTrigger: true }), /mutually exclusive/);
-  assert.throws(() => request({ retry: { strategy: 'resume' } }), /cannot be a first turn/);
 });
 
 test('task context is explicit, trusted, and preserved only for routed task starts', () => {
@@ -395,7 +395,6 @@ test('runner attempt ownership requires one exact proof and attribution tuple', 
 test('Claude host pre-allocation proof preserves legacy resume intent for existing history', () => {
   const turn = request({ cli: 'claude', turnCount: 3, hasNativeSession: true });
   assert.equal(turn.execution.isFirstTurn, false);
-  assert.equal(turn.execution.resume, true);
   assert.equal(turn.execution.historyIntent, 'resume');
 });
 
