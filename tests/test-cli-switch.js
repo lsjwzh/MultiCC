@@ -236,6 +236,22 @@ test('auto native rotation renders its own checkpoint text, distinct from manual
   assert.match(manual, /The user started a fresh native CLI context/);
 });
 
+test('missing native resume renders a recovery checkpoint instead of a fake CLI switch', () => {
+  const checkpoint = buildHandoffCheckpoint({
+    session: {}, fromCli: 'claude', toCli: 'claude',
+    history: [{ role: 'assistant', content: 'prior verified progress', ts: 1 }],
+  });
+  checkpoint.reason = 'auto_native_resume_recovery';
+  const prompt = renderHandoffPrompt({
+    id: 'resume-recovery-1', fromCli: 'claude', toCli: 'claude',
+    reason: 'auto_native_resume_recovery', checkpoint,
+  });
+  assert.match(prompt, /MultiCC context checkpoint v1/);
+  assert.match(prompt, /transcript required for resume was unavailable/);
+  assert.match(prompt, /prior verified progress/);
+  assert.doesNotMatch(prompt, /logical conversation switched/);
+});
+
 test('checkpoint contains bounded visible transcript and no native ids', () => {
   const session = {
     summary: 'summary',

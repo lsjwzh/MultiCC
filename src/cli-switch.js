@@ -216,7 +216,9 @@ function renderHandoffPrompt(handoff) {
   const isAutoRotation = !isManualRotation
     && (handoff.reason === 'auto_native_context_rotate'
       || cp.reason === 'auto_native_context_rotate');
-  const isContextReset = isManualRotation || isAutoRotation
+  const isResumeRecovery = handoff.reason === 'auto_native_resume_recovery'
+    || cp.reason === 'auto_native_resume_recovery';
+  const isContextReset = isManualRotation || isAutoRotation || isResumeRecovery
     || handoff.reason === 'history_clear_keep'
     || cp.reason === 'history_clear_keep';
   const lines = isManualRotation ? [
@@ -227,6 +229,11 @@ function renderHandoffPrompt(handoff) {
   ] : isAutoRotation ? [
     '[MultiCC context checkpoint v1]',
     'The native CLI context approached its model context limit, so MultiCC automatically started a fresh native session.',
+    'The full MultiCC display history is preserved. Use the verified bounded checkpoint below as prior context.',
+    `Checkpoint id: ${handoff.id || 'unknown'}`,
+  ] : isResumeRecovery ? [
+    '[MultiCC context checkpoint v1]',
+    'The native CLI transcript required for resume was unavailable, so MultiCC automatically started a fresh native session.',
     'The full MultiCC display history is preserved. Use the verified bounded checkpoint below as prior context.',
     `Checkpoint id: ${handoff.id || 'unknown'}`,
   ] : isContextReset ? [
