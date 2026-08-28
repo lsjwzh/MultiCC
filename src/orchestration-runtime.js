@@ -800,14 +800,12 @@ function createOrchestrationRuntime({
         taskId: payload.taskId || undefined,
         taskRunId: payload.taskRunId || undefined,
         leaseEpoch: itemLeaseEpoch(item) || undefined,
-        // Only a task-run start pins a first turn. A plain dispatch must NOT
-        // pin resume: the target's native session can be legitimately gone
-        // (codex rollout archive, opencode context rotate, cli switch), and a
-        // pinned resume then fails normalizeTurnRequest with
-        // resume_without_native_session on EVERY retry — the dispatch wedges
-        // in the FIFO until its attempts run out. Leave it undefined so the
-        // engine decides resume-vs-fresh from the live native-session proof.
-        isFirstTurn: payload.taskRunId ? true : undefined,
+        // No history intent is passed. A delivered dispatch is the same thing
+        // as a message typed into the input box: the engine derives
+        // resume-vs-fresh from live native-session proof. A task run still
+        // starts a fresh thread, but because resetSlot cleared cliSessionId
+        // and the turn count before cleanup could report done — not because
+        // the dispatcher pinned it.
         taskStart: payload.taskStart === true,
         taskSource: payload.taskSource || undefined,
         taskText: payload.taskText || undefined,
