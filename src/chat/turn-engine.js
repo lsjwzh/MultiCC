@@ -35,7 +35,10 @@ const {
   providerAttemptFields,
   tagProviderAttemptEvent,
 } = require('./provider-attempt-runtime');
-const { createProviderInvocationFactory } = require('./provider-invocation');
+const {
+  createProviderInvocationFactory,
+  providerRetryRouteOptions,
+} = require('./provider-invocation');
 const { createAutoProviderRuntime } = require('./auto-provider-runtime');
 const { redactProviderRouteCapability } = require('../observability');
 const { createWsEnvelope } = require('../api-contract');
@@ -54,6 +57,7 @@ const providers = require('../providers');
 const { createTurnTimingRecorder } = require('./turn-timing');
 const { deriveOpenTasks } = require('./turn-event-replay');
 const { createCodexRolloutGuard } = require('./codex-rollout-guard');
+const { captureNativeSessionId } = require('./native-session-state');
 const { createOpencodeContextGuard } = require('./opencode-context-guard');
 const { isInternalExecutionSlot } = require('../session/public-session-access');
 const { providerSelectionDto } = require('../auto-provider-config');
@@ -366,7 +370,10 @@ function createChatTurnEngine(deps) {
   // Pre-resume size guard: archive an oversized codex rollout before the turn
   // resumes it (`codex exec resume` hangs internally on one — no request ever
   // leaves the process). See src/chat/codex-rollout-guard.js.
-  const codexRolloutGuard = deps.codexRolloutGuard || createCodexRolloutGuard({ logger });
+  const codexRolloutGuard = deps.codexRolloutGuard || createCodexRolloutGuard({
+    logger, codexSessionHomeFor: providers.codexSessionHome,
+    prepareCodexSessionHome: providers.prepareCodexSessionHome,
+  });
   // Turn-admission water-level guard for OpenCode native sessions. Decision
   // only; rotation itself happens in runChatTurn via the shared
   // pendingCliHandoff machinery. See ./opencode-context-guard.js.
@@ -656,11 +663,27 @@ function createChatTurnEngine(deps) {
           }
           continue;
         }
-        if (evt.sessionId && !persisted.cliSessionId) {
-          persisted.cliSessionId = evt.sessionId;
+        const captured = captureNativeSessionId(persisted, evt.sessionId, { fresh: runner.freshNativeSession });
+        if (captured.mismatch) {
+          cs._adapterError = 'native resume returned a different session id';
+          runner.adapterError = cs._adapterError;
+          assignKillReason(runner, 'native_resume_mismatch');
+          forward({
+            type: 'error',
+            error: `目标 ${persisted.cli} 返回了不同的原生会话；为避免把回复写入错误上下文，本轮已停止。`,
+          });
+          finishProviderAttempt(runner, 'failed', {
+            errorCategory: 'adapter_configuration', reasonCode: 'native_resume_mismatch',
+          });
+          if (cs.claudeProc) {
+            try { cs.claudeProc.kill('SIGTERM'); } catch (_) {}
+          }
+          continue;
+        }
+        if (captured.changed) {
           rememberActiveCliState(persisted);
           savePersistedSessionsBestEffort('runtime.chat-session-id-capture');
-          console.log(`[multicc/chat] [${sessionName}] captured ${provider.name} session id=${evt.sessionId}`);
+          console.log(`[multicc/chat] [${sessionName}] captured ${provider.name} session id=${captured.current}`);
         }
         continue;
       }
@@ -940,6 +963,16 @@ function createChatTurnEngine(deps) {
     // thread; MultiCC context layers are recomposed below by composeMessage.
     if (turnCli === 'codex' && persisted.cliSessionId) {
       const guardResult = codexRolloutGuard.enforce(persisted);
+      if (guardResult.action === 'blocked') {
+        logger.error('codex_rollout_guard_blocked', {
+          sessionId: sessionName, code: guardResult.code,
+        });
+        chatBroadcast(sessionName, {
+          type: 'error', code: guardResult.code,
+          error: 'Codex 原生会话历史无法唯一定位；为避免恢复到错误上下文，本轮已阻止。请检查重复的 rollout 文件。',
+        });
+        return false;
+      }
       if (guardResult.action === 'archived') {
         persisted.cliSessionId = null;
         savePersistedSessionsBestEffort();
@@ -1467,6 +1500,8 @@ function createChatTurnEngine(deps) {
           const proxyApplied = providers.applyCodexProxyConfig(childEnv, {
             providerId: binding.providerId, sessionId: proxySessionId,
             subagent: persisted.subagent, port: getPort(),
+            logicalSessionId: sessionName, nativeSessionId: persisted.cliSessionId,
+            allowMissingNativeSession: prepared.invocationEnvelope.historyHandle.isFirstTurn === true,
           });
           providers.assertCodexProxyConfigApplied({ required: proxyRequired, applied: proxyApplied });
         }
@@ -1483,6 +1518,7 @@ function createChatTurnEngine(deps) {
         routeProof: prepared.routeProof,
         usageAttribution: prepared.usageAttribution,
       });
+      runner.freshNativeSession = prepared.invocationEnvelope.historyHandle.isFirstTurn === true;
       let proc;
       try {
         proc = routerToolHost.spawnProcess({
@@ -1774,10 +1810,7 @@ function createChatTurnEngine(deps) {
           catch (error) { executeBlockedRetry(error); return null; }
         };
 
-        const currentRouteOptions = () => ({
-          providerId: runner.providerAttempt && runner.providerAttempt.providerId,
-          model: runner.providerAttempt && runner.providerAttempt.model,
-        });
+        const currentRouteOptions = () => providerRetryRouteOptions(runner.providerAttempt);
 
         if (finalizePlan.action === 'continue-codex') {
           cs._codexStreamContinuationCount = finalizePlan.retry.attempt;
@@ -2275,8 +2308,7 @@ function createChatTurnEngine(deps) {
           try {
             retryInvocation = prepareInvocation(autoFailover?.invocationOptions || {
               reasonCode: 'same_provider_retry',
-              providerId: runner.providerAttempt && runner.providerAttempt.providerId,
-              model: runner.providerAttempt && runner.providerAttempt.model,
+              ...providerRetryRouteOptions(runner.providerAttempt),
             });
             const accepted = runChatTurnStreaming(
               sessionName, cs, persisted, retryInvocation, provider, turn,

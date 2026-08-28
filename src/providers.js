@@ -21,12 +21,14 @@ const os = require('os');
 const fs = require('fs');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
+const TOML = require('@iarna/toml');
 const cliProviderRouter = require('cli-provider-router');
 const { createSqliteRuntime } = require('./sqlite-runtime');
 const { createPaths } = require('./paths');
 const { atomicWriteJson, atomicWriteText, ensurePrivateDir, secureFile } = require('./runtime-security');
 const { createOpencodeModelLimitResolver } = require('./providers/opencode-model-limits');
 const { createCodexAttemptHome } = require('./codex-attempt-home');
+const { createCodexSessionHomeRuntime } = require('./codex-session-home');
 const { isOfficialCodexOAuthProvider } = require('./codex-official-relay');
 const {
   assertCodexProxyConfigApplied,
@@ -60,6 +62,15 @@ const STORE_FILE = RUNTIME_PATHS.providersFile;
 // point at different auth/config without clobbering the global ~/.codex.
 const CODEX_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-homes');
 const CODEX_ATTEMPT_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-attempt-homes');
+const CODEX_SESSION_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-session-homes');
+const codexSessionHomeRuntime = createCodexSessionHomeRuntime({
+  sessionHomesDir: CODEX_SESSION_HOMES_DIR,
+  codexHomesDir: CODEX_HOMES_DIR,
+});
+const {
+  codexSessionHome, prepareCodexSessionHome, synchronizeCodexSessionRoute,
+} = codexSessionHomeRuntime;
+const CODEX_OFFICIAL_ROUTE_PROVIDER = 'multicc_official_relay';
 // ZCode 0.15.x advertises --settings but its parser rejects the flag. Provider
 // overrides therefore run the ZCode child with HOME pointed at a private home
 // containing a native ~/.zcode/cli/config.json. The native/default route keeps
@@ -1001,6 +1012,14 @@ function buildChildEnv(base, session, extra = {}) {
   if (session && session.cli === 'opencode') delete env.OPENCODE_CONFIG_CONTENT;
   const spawn = resolveSpawnEnv(session);
   Object.assign(env, extra, spawn.env);
+  if (spawn.codexOfficialRelay) {
+    // Official OAuth belongs exclusively to the host relay. A shell-level or
+    // caller-supplied OPENAI_* override would otherwise let the child bypass
+    // its attempt route even though CODEX_HOME contains no upstream credential.
+    for (const key of Object.keys(env)) {
+      if (/^OPENAI_[A-Z0-9_]*$/.test(key)) delete env[key];
+    }
+  }
   return {
     env,
     skipDefaultModel: spawn.skipDefaultModel,
@@ -1020,6 +1039,51 @@ function materializeCodexAuth(home, cfg) {
   const result = cliProviderRouter.materializeCodexAuth(home, cfg);
   secureFile(path.join(home, 'auth.json'));
   return result;
+}
+
+function materializeCodexOfficialRelayHome(home, provider, cfg) {
+  let config = {};
+  if (cfg && String(cfg.config || '').trim()) config = TOML.parse(String(cfg.config));
+  config.model_providers = config.model_providers && typeof config.model_providers === 'object'
+    ? config.model_providers : {};
+  config.model_provider = CODEX_OFFICIAL_ROUTE_PROVIDER;
+  config.model_providers[CODEX_OFFICIAL_ROUTE_PROVIDER] = {
+    name: 'OpenAI Official via MultiCC host relay',
+    // Deliberately unreachable until applyCodexProxyConfig rewrites this copy in
+    // an attempt-private overlay. The shared provider home is never callable.
+    base_url: `http://127.0.0.1:1/codex-proxy/${encodeURIComponent(provider.id)}/inactive/main`,
+    wire_api: 'responses',
+    requires_openai_auth: false,
+  };
+  const configFile = path.join(home, 'config.toml');
+  atomicWriteText(configFile, TOML.stringify(config));
+  secureFile(configFile);
+  // Old versions copied ~/.codex/auth.json here. Remove that durable OAuth
+  // snapshot before any attempt overlay is created from this source home.
+  fs.rmSync(path.join(home, 'auth.json'), { force: true });
+}
+
+function sanitizeCodexOfficialAttemptHome(home, options = {}) {
+  const configFile = path.join(home, 'config.toml');
+  const config = TOML.parse(fs.readFileSync(configFile, 'utf8'));
+  const proxyPath = '/' + String(options.codexProxyPath || options.mountPath || '/codex-proxy')
+    .replace(/^\/+|\/+$/g, '');
+  for (const entry of Object.values(config.model_providers || {})) {
+    if (!entry || typeof entry !== 'object') continue;
+    let localProxy = false;
+    try {
+      const target = new URL(String(entry.base_url || ''));
+      localProxy = /^(?:127\.0\.0\.1|localhost)$/i.test(target.hostname)
+        && (target.pathname === proxyPath || target.pathname.startsWith(`${proxyPath}/`));
+    } catch (_) {}
+    if (!localProxy) continue;
+    entry.requires_openai_auth = false;
+    delete entry.experimental_bearer_token;
+    delete entry.env_key;
+  }
+  atomicWriteText(configFile, TOML.stringify(config));
+  secureFile(configFile);
+  fs.rmSync(path.join(home, 'auth.json'), { force: true });
 }
 
 function opencodeProviderId(provider) {
@@ -1331,8 +1395,13 @@ function resolveSpawnEnv(session) {
     const home = path.join(CODEX_HOMES_DIR, providerId);
     ensurePrivateDir(home);
     ensurePrivateDir(path.join(home, 'sessions'));
-    materializeCodexAuth(home, cfg);
-    if (cfg.config) {
+    const officialOAuth = isOfficialCodexOAuthProvider(p);
+    if (officialOAuth) {
+      materializeCodexOfficialRelayHome(home, p, cfg);
+    } else {
+      materializeCodexAuth(home, cfg);
+    }
+    if (!officialOAuth && cfg.config) {
       // cc-switch 导入的 config 可能带 model_catalog_json 指向 cc-switch 自己目录里的
       // 文件（codex home 里没有），导致 codex 启动时 "config could not be loaded" → exit 1。
       // 同时折叠 [model_providers] 空表头 + [model_providers.custom] 子表的写法。
@@ -1367,7 +1436,16 @@ function resolveSpawnEnv(session) {
         if (needLink) fs.symlinkSync(globalSkills, skillsDir);
       }
     } catch (_) { /* best-effort: skills stay invisible but spawn still works */ }
-    return { env: { CODEX_HOME: home }, skipDefaultModel: false, aliasOnly: false, providerModel: null, providerModels: [], providerName: p.name, codexHome: home };
+    return {
+      env: { CODEX_HOME: home },
+      skipDefaultModel: false,
+      aliasOnly: false,
+      providerModel: null,
+      providerModels: [],
+      providerName: p.name,
+      codexHome: home,
+      codexOfficialRelay: officialOAuth,
+    };
   } catch (_) {
     return { env: {}, skipDefaultModel: false, aliasOnly: false, providerModel: null, providerModels: [], providerName: p.name };
   }
@@ -1703,16 +1781,9 @@ function codexProviderProxyable(providerOrId) {
 
 function codexProxyConfigRequired(options = {}) {
   const providerId = String(options.providerId || '').trim();
-  const provider = providerId && providerId !== '_default_'
-    ? getProvider('codex', providerId)
-    : null;
   return evaluateCodexProxyConfigRequired({
     providerId,
     subagentProviderId: options.subagent && options.subagent.providerId,
-    // A missing provider record is stale and must remain fail-closed. Only a
-    // concrete store entry with neither custom endpoint nor API key is the
-    // direct OAuth exception.
-    officialOAuth: isOfficialCodexOAuthProvider(provider),
   });
 }
 
@@ -1725,7 +1796,8 @@ function releaseCodexProxyConfig(env) {
   const lease = codexProxyLeases.get(env);
   if (!lease) return false;
   codexProxyLeases.delete(env);
-  env.CODEX_HOME = lease.sourceHome;
+  if (lease.restoreHome) env.CODEX_HOME = lease.restoreHome;
+  else delete env.CODEX_HOME;
   try { return lease.release(); }
   catch (_) {
     console.warn('[multicc/provider] failed to scrub private Codex attempt state; orphan retained');
@@ -1734,29 +1806,73 @@ function releaseCodexProxyConfig(env) {
 }
 
 function applyCodexProxyConfig(env, options) {
-  if (!env || typeof env !== 'object' || !env.CODEX_HOME
-      || !options || !options.providerId || !options.sessionId
+  if (!env || typeof env !== 'object' || !env.CODEX_HOME || !options
+      || !options.providerId || !options.sessionId
       || (!options.port && !options.proxyBaseUrl)) return false;
+  const providerId = String(options.providerId || '').trim();
+  const explicitSubProviderId = String(options.subagent && options.subagent.providerId || '').trim();
   releaseCodexProxyConfig(env);
-  const sourceHome = env.CODEX_HOME;
+  const restoreHome = env.CODEX_HOME;
+  const sourceHome = restoreHome;
+  const restore = () => { env.CODEX_HOME = restoreHome; };
   let lease;
   try {
+    const canonical = options.logicalSessionId ? prepareCodexSessionHome({
+      logicalSessionId: options.logicalSessionId,
+      nativeSessionId: options.nativeSessionId,
+      allowMissingNativeSession: options.allowMissingNativeSession === true,
+    }) : null;
+    const mainProvider = getProvider('codex', providerId);
+    if (!mainProvider) return false;
+    const mainOfficial = isOfficialCodexOAuthProvider(mainProvider);
+    const subProviderId = explicitSubProviderId || providerId;
+    const subProvider = getProvider('codex', subProviderId);
+    const subOfficial = isOfficialCodexOAuthProvider(subProvider);
+    const containsOfficial = mainOfficial || subOfficial;
+    // CPR mode owns the initial spawn home and may have materialized the
+    // provider's imported OAuth snapshot before the host applies its physical
+    // attempt capability. Rebuild that source into the same credential-free,
+    // fail-closed relay shape used by the legacy adapter before cloning it.
+    if (containsOfficial) {
+      for (const key of Object.keys(env)) {
+        if (/^OPENAI_[A-Z0-9_]*$/.test(key)) delete env[key];
+      }
+    }
+    if (mainOfficial) {
+      materializeCodexOfficialRelayHome(
+        sourceHome,
+        mainProvider,
+        effectiveCodexSettings(mainProvider),
+      );
+    }
     lease = createCodexAttemptHome(sourceHome, {
-      providerId: options.providerId,
+      providerId,
       sessionId: options.sessionId,
       homesDir: CODEX_ATTEMPT_HOMES_DIR,
+      ...(canonical ? { sessionsDir: canonical.sessionsDir } : {}),
     });
     env.CODEX_HOME = lease.home;
-    const applied = cliProviderRouter.applyCodexProxyConfig(env, { ...options, getProvider });
+    const mainProxyable = mainOfficial
+      || cliProviderRouter.codexProviderProxyable(mainProvider, { ...options, getProvider });
+    const subProxyable = subOfficial
+      || cliProviderRouter.codexProviderProxyable(subProvider, { ...options, getProvider });
+    const applied = !!(mainProxyable && subProxyable) && materializeCodexRoutingHome(lease.home, {
+      ...options,
+      mainProviderId: providerId,
+      mainProxyable: true,
+      subProviderId,
+      subModel: explicitSubProviderId ? String(options.subagent.model || '').trim() : '',
+    });
+    if (applied && containsOfficial) sanitizeCodexOfficialAttemptHome(lease.home, options);
     if (!applied) {
-      env.CODEX_HOME = sourceHome;
+      restore();
       lease.release();
       return false;
     }
-    codexProxyLeases.set(env, lease);
+    codexProxyLeases.set(env, Object.freeze({ restoreHome, release: lease.release }));
     return true;
   } catch (error) {
-    env.CODEX_HOME = sourceHome;
+    restore();
     if (lease) {
       try { lease.release(); }
       catch (_) {
@@ -1801,6 +1917,10 @@ module.exports = {
   releaseCodexProxyConfig,
   materializeCodexRoutingHome,
   codexProviderProxyable,
+  isOfficialCodexOAuthProvider,
+  codexSessionHome,
+  prepareCodexSessionHome,
+  synchronizeCodexSessionRoute,
   resolveSessionWireModel,
   modelValidForProvider,
   readCodexOfficialModels,
@@ -1812,6 +1932,7 @@ module.exports = {
   ANTHROPIC_ROUTING_KEYS,
   CODEX_HOMES_DIR,
   CODEX_ATTEMPT_HOMES_DIR,
+  CODEX_SESSION_HOMES_DIR,
   ZCODE_HOMES_DIR,
   KIMI_HOMES_DIR,
   buildKimiCodeRoute,

@@ -41,7 +41,7 @@
         },
         "maxAttempts": { "type": "integer", "minimum": 2, "maximum": 4 },
         "sticky": { "type": "boolean" },
-        "allowCrossTrust": { "const": false }
+        "allowCrossTrust": { "type": "boolean" }
       }
     },
     "experimentalMode": { "type": ["string", "null"], "maxLength": 80 },

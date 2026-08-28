@@ -501,7 +501,7 @@ class SessionProviderSelection {
     'candidates': candidates.map((candidate) => candidate.toJson()).toList(),
     'maxAttempts': maxAttempts,
     'sticky': sticky,
-    'allowCrossTrust': false,
+    'allowCrossTrust': allowCrossTrust,
   };
 }
 
@@ -522,7 +522,7 @@ SessionProviderSelection? parseProviderSelection(dynamic json) {
     candidates: candidates,
     maxAttempts: (json['maxAttempts'] as num?)?.toInt() ?? 2,
     sticky: json['sticky'] != false,
-    allowCrossTrust: false,
+    allowCrossTrust: json['allowCrossTrust'] == true,
   );
 }
 
@@ -813,6 +813,7 @@ class Session {
       auxLabel: label ?? this.label,
     );
   }
+
   bool get isCommander => type == 'commander';
   bool get isChat => kind == SessionKind.chat;
   bool get isTerminal => kind == SessionKind.terminal;

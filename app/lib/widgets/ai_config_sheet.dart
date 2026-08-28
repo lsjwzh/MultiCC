@@ -43,13 +43,11 @@ class _AutoProviderGroup {
   const _AutoProviderGroup({
     required this.key,
     required this.protocol,
-    required this.official,
     required this.providers,
   });
 
   final String key;
   final String protocol;
-  final bool official;
   final List<Map<String, dynamic>> providers;
 }
 
@@ -102,6 +100,7 @@ class AIConfigSheetState extends State<AIConfigSheet> {
   final List<_AutoCandidateDraft> _autoCandidates = [];
   int _autoMaxAttempts = 2;
   bool _autoSticky = true;
+  bool _seededAutoAllowCrossTrust = false;
   bool _customModel = false;
   late final TextEditingController _customCtrl;
   late final TextEditingController _agentCtrl;
@@ -153,9 +152,6 @@ class AIConfigSheetState extends State<AIConfigSheet> {
   List<String> get _validEfforts => widget.cli.effortOptions;
   bool get _isAuto => _autoGroupKey != null;
 
-  static String _autoKey(String protocol, bool official) =>
-      '$protocol:${official ? 'official' : 'user-managed'}';
-
   String _protocolLabel(String protocol) => switch (protocol) {
     'anthropic' => 'Anthropic',
     'openai_responses' => 'OpenAI Responses',
@@ -180,18 +176,14 @@ class AIConfigSheetState extends State<AIConfigSheet> {
       final protocol = _protocolOf(provider);
       final id = provider['id']?.toString() ?? '';
       if (protocol == null || id.isEmpty) continue;
-      final key = _autoKey(protocol, provider['isOfficial'] == true);
-      grouped.putIfAbsent(key, () => []).add(provider);
+      grouped.putIfAbsent(protocol, () => []).add(provider);
     }
     return grouped.entries
         .where((entry) => entry.value.length >= 2)
         .map((entry) {
-          final separator = entry.key.lastIndexOf(':');
-          final protocol = entry.key.substring(0, separator);
           return _AutoProviderGroup(
             key: entry.key,
-            protocol: protocol,
-            official: entry.key.endsWith(':official'),
+            protocol: entry.key,
             providers: entry.value,
           );
         })
@@ -208,24 +200,54 @@ class AIConfigSheetState extends State<AIConfigSheet> {
 
   void _seedAutoSelection(SessionProviderSelection? selection) {
     if (selection == null) return;
-    final firstId = selection.candidates.first.providerId;
-    final first = _providerMap(firstId);
-    final official = first?['isOfficial'] == true;
-    _autoGroupKey = _autoKey(selection.protocol, official);
+    _autoGroupKey = selection.protocol;
+    final configured = {
+      for (final candidate in selection.candidates)
+        candidate.providerId: candidate,
+    };
+    final pool = widget.providers
+        .where(
+          (provider) =>
+              _protocolOf(provider) == selection.protocol &&
+              (provider['id']?.toString() ?? '').isNotEmpty,
+        )
+        .toList(growable: false);
+    var nextPriority = selection.candidates.fold<int>(
+      0,
+      (highest, candidate) =>
+          candidate.priority > highest ? candidate.priority : highest,
+    );
+    final seen = <String>{};
     _autoCandidates
       ..clear()
       ..addAll(
-        selection.candidates.map(
-          (candidate) => _AutoCandidateDraft(
-            providerId: candidate.providerId,
-            model: candidate.model ?? '',
-            priority: candidate.priority,
-            enabled: candidate.enabled,
-          ),
-        ),
+        pool.map((provider) {
+          final providerId = provider['id']?.toString() ?? '';
+          seen.add(providerId);
+          final candidate = configured[providerId];
+          return _AutoCandidateDraft(
+            providerId: providerId,
+            model: candidate?.model ?? '',
+            priority: candidate?.priority ?? ++nextPriority,
+            enabled: candidate?.enabled ?? false,
+          );
+        }),
+      )
+      ..addAll(
+        selection.candidates
+            .where((candidate) => !seen.contains(candidate.providerId))
+            .map(
+              (candidate) => _AutoCandidateDraft(
+                providerId: candidate.providerId,
+                model: candidate.model ?? '',
+                priority: candidate.priority,
+                enabled: candidate.enabled,
+              ),
+            ),
       );
     _autoMaxAttempts = selection.maxAttempts;
     _autoSticky = selection.sticky;
+    _seededAutoAllowCrossTrust = selection.allowCrossTrust;
     final enabled =
         _autoCandidates.where((candidate) => candidate.enabled).toList()
           ..sort((a, b) => a.priority.compareTo(b.priority));
@@ -234,6 +256,26 @@ class AIConfigSheetState extends State<AIConfigSheet> {
       _model = _normalizeModel(_provider, enabled.first.model);
     }
   }
+
+  bool get _autoSelectionCrossesTrust {
+    final trust = <bool>{};
+    for (final candidate in _autoCandidates.where(
+      (candidate) => candidate.enabled,
+    )) {
+      final provider = _providerMap(candidate.providerId);
+      if (provider != null) trust.add(provider['isOfficial'] == true);
+    }
+    return trust.length > 1;
+  }
+
+  bool get _hasUnknownEnabledAutoProvider => _autoCandidates.any(
+    (candidate) =>
+        candidate.enabled && _providerMap(candidate.providerId) == null,
+  );
+
+  bool get _autoAllowsCrossTrust =>
+      _autoSelectionCrossesTrust ||
+      (_hasUnknownEnabledAutoProvider && _seededAutoAllowCrossTrust);
 
   Map<String, dynamic>? _providerMap(String id) {
     for (final p in widget.providers) {
@@ -282,7 +324,9 @@ class AIConfigSheetState extends State<AIConfigSheet> {
       ];
     }
     // Live CLI-bundle list once openAIConfigSheet warmed it; static table until then.
-    return _isClaude ? ClaudeModelsService.options().map((e) => e.key).toList() : [''];
+    return _isClaude
+        ? ClaudeModelsService.options().map((e) => e.key).toList()
+        : [''];
   }
 
   // Map a stored wire model id (e.g. claude-opus-4-8) back to its alias tier so
@@ -359,6 +403,16 @@ class AIConfigSheetState extends State<AIConfigSheet> {
       if (group == null) return;
       setState(() {
         _autoGroupKey = groupKey;
+        final managed = group.providers
+            .where((provider) => provider['isOfficial'] != true)
+            .toList(growable: false);
+        final defaultProviders = managed.length >= 2
+            ? managed
+            : group.providers;
+        final defaultEnabled = defaultProviders
+            .take(2)
+            .map((provider) => provider['id']?.toString() ?? '')
+            .toSet();
         _autoCandidates
           ..clear()
           ..addAll(
@@ -367,12 +421,17 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                 providerId: entry.value['id']?.toString() ?? '',
                 model: '',
                 priority: entry.key + 1,
-                enabled: entry.key < 2,
+                enabled: defaultEnabled.contains(
+                  entry.value['id']?.toString() ?? '',
+                ),
               ),
             ),
           );
         _autoMaxAttempts = 2;
-        final primary = _autoCandidates.first;
+        _seededAutoAllowCrossTrust = false;
+        final primary = _autoCandidates.firstWhere(
+          (candidate) => candidate.enabled,
+        );
         _provider = primary.providerId;
         _model = '';
         _customModel = false;
@@ -441,6 +500,7 @@ class AIConfigSheetState extends State<AIConfigSheet> {
             .toList(growable: false),
         maxAttempts: _autoMaxAttempts.clamp(2, enabled.length.clamp(2, 4)),
         sticky: _autoSticky,
+        allowCrossTrust: _autoAllowsCrossTrust,
       );
     }
     final subModel = _subProvider.isEmpty
@@ -475,6 +535,7 @@ class AIConfigSheetState extends State<AIConfigSheet> {
     if (_autoMaxAttempts > maxAllowed) _autoMaxAttempts = maxAllowed;
     final ordered = [..._autoCandidates]
       ..sort((a, b) => a.priority.compareTo(b.priority));
+    final crossesTrust = _autoAllowsCrossTrust;
     return Container(
       key: const Key('auto-provider-section'),
       margin: const EdgeInsets.only(top: 12),
@@ -581,6 +642,12 @@ class AIConfigSheetState extends State<AIConfigSheet> {
               ),
             );
           }),
+          if (crossesTrust)
+            const Text(
+              '已选择 Official 与自管 Provider：同一对话上下文可能在自动切换时发送给多个上游。',
+              key: Key('auto-provider-cross-trust-warning'),
+              style: TextStyle(color: Color(0xFFD29922), fontSize: 11),
+            ),
           if (enabledCount < 2)
             const Text(
               '至少启用两个候选 Provider',
@@ -684,9 +751,7 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                   ...autoGroups.map(
                     (group) => DropdownMenuItem(
                       value: '__auto__:${group.key}',
-                      child: Text(
-                        '⚡ Auto · ${_protocolLabel(group.protocol)} · ${group.official ? '官方' : '自管'}',
-                      ),
+                      child: Text('⚡ Auto · ${_protocolLabel(group.protocol)}'),
                     ),
                   ),
                   if (includeCurrentAuto)

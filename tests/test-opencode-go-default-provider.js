@@ -86,6 +86,7 @@ function fixture(session) {
         return !model || !!provider?.modelOptions.includes(model);
       },
       codexProviderProxyable: providers.codexProviderProxyable,
+      synchronizeCodexSessionRoute: providers.synchronizeCodexSessionRoute,
       CODEX_HOMES_DIR: providers.CODEX_HOMES_DIR,
     },
     providerRouterRuntime,

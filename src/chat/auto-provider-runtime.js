@@ -2,6 +2,7 @@
 
 const {
   protocolOf,
+  trustDomainOf,
   validateProviderSelection,
 } = require('../auto-provider-config');
 const {
@@ -61,6 +62,7 @@ function createAutoProviderRuntime(options = {}) {
         provider,
         providerName: provider && provider.name || candidate.providerId,
         protocol: protocolOf(provider),
+        trustDomain: trustDomainOf(provider),
         model: candidate.model || provider && provider.model || null,
         limitState: limit.state,
         limitReason: limit.reason,
@@ -112,6 +114,9 @@ function createAutoProviderRuntime(options = {}) {
         providerId: candidate && candidate.providerId || null,
         providerName: candidate && candidate.providerName || null,
         model: candidate && candidate.model || null,
+        trustDomain: candidate && candidate.trustDomain || null,
+        fromTrustDomain: null,
+        toTrustDomain: candidate && candidate.trustDomain || null,
         attemptNo: physicalAttempt,
         maxAttempts: selection.maxAttempts,
         ...details,
@@ -121,6 +126,8 @@ function createAutoProviderRuntime(options = {}) {
       logger.info?.('auto_provider_route', {
         sessionId: session.id, turnId, phase,
         providerId: event.providerId, fromProviderId: event.fromProviderId || null,
+        trustDomain: event.trustDomain, fromTrustDomain: event.fromTrustDomain,
+        toTrustDomain: event.toTrustDomain,
         reasonCode: event.reasonCode || null, attemptNo: physicalAttempt,
       });
       return event;
@@ -153,6 +160,8 @@ function createAutoProviderRuntime(options = {}) {
       publish(previous ? 'switched' : 'selected', current, {
         fromProviderId: previous && previous.providerId || null,
         fromProviderName: previous && previous.providerName || null,
+        fromTrustDomain: previous && previous.trustDomain || null,
+        toTrustDomain: current.trustDomain,
         reasonCode,
         skipped: picked.skipped,
       });
@@ -209,6 +218,7 @@ function createAutoProviderRuntime(options = {}) {
       if (!result) {
         return terminalFailure(decision, `auto_${selectionFailureReason || 'provider_exhausted'}`, attempt);
       }
+      const fromCandidate = candidates.find(item => item.providerId === attempt.providerId) || null;
       const retryDecision = Object.freeze({
         ...decision,
         action: 'retry',
@@ -219,13 +229,15 @@ function createAutoProviderRuntime(options = {}) {
         providerFailover: Object.freeze({
           fromProviderId: attempt.providerId,
           toProviderId: result.providerId,
+          fromTrustDomain: fromCandidate && fromCandidate.trustDomain || null,
+          toTrustDomain: current.trustDomain,
           category: decision.error.category,
         }),
       });
       return Object.freeze({
         invocationOptions: result,
         decision: retryDecision,
-        fromProviderName: candidates.find(item => item.providerId === attempt.providerId)?.providerName || attempt.providerId,
+        fromProviderName: fromCandidate && fromCandidate.providerName || attempt.providerId,
         toProviderName: current.providerName,
       });
     }

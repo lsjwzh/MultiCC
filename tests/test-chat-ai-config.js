@@ -131,13 +131,46 @@ test('Auto Provider picker exposes protocol pools, ordered candidates and the pe
   assert.match(source, /id="ai-auto-section"/);
   assert.match(source, /className = 'auto-candidate-priority'/);
   assert.match(source, /mode: 'auto', protocol, candidates/);
-  assert.match(source, /allowCrossTrust: false/);
+  assert.match(source, /allowCrossTrust: autoSelectionCrossesTrust/);
+  assert.match(source, /同一对话上下文可能在自动切换时发送给多个上游/);
   assert.match(page, /providerSelection: picked\.providerSelection/);
   assert.match(page, /Auto · \$\{window\.MultiCCChatAiConfig\.autoProtocolLabel/);
   assert.match(page, /actualProvider \|\| '待路由'/,
     'Auto must not claim its configured primary before a physical attempt begins');
   assert.match(page, /\? _activeProviderId : _sessionProvider/,
     'the quota bar must follow the physical Auto route after failover');
+});
+
+test('Auto Provider keeps Official in the same-protocol pool and authorizes only mixed trust', () => {
+  const providers = [
+    { id: 'official', protocol: 'anthropic', isOfficial: true },
+    { id: 'relay-a', protocol: 'anthropic', isOfficial: false, model: 'relay-model' },
+    { id: 'relay-b', protocol: 'anthropic', isOfficial: false },
+    { id: 'chat', protocol: 'openai_chat', isOfficial: false },
+  ];
+
+  assert.deepEqual(
+    ai.autoProvidersForProtocol('anthropic', providers).map(provider => provider.id),
+    ['official', 'relay-a', 'relay-b'],
+  );
+  assert.equal(ai.autoSelectionCrossesTrust([
+    { providerId: 'official' },
+    { providerId: 'relay-a' },
+  ], providers), true);
+  assert.equal(ai.autoSelectionCrossesTrust([
+    { providerId: 'relay-a' },
+    { providerId: 'relay-b' },
+  ], providers), false);
+});
+
+test('Auto Provider preserves an empty Official model as Provider default', () => {
+  const official = { id: 'official', protocol: 'anthropic', isOfficial: true };
+  const relay = { id: 'relay', protocol: 'anthropic', model: 'relay-model' };
+
+  assert.equal(ai.autoCandidateModel(official, null), null);
+  assert.equal(ai.autoCandidateModel(official, { model: null }), null);
+  assert.equal(ai.autoCandidateModel(relay, null), 'relay-model');
+  assert.equal(ai.autoCandidateModel(relay, { model: null }), null);
 });
 
 test('provider and session transport use MultiCCApi with token-free relative URLs', async () => {

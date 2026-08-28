@@ -36,6 +36,9 @@ test('process and stream retries reuse the owned turn without appending a second
   assert.equal(processBody.includes('evaluateTurnApiError({'), true);
   assert.equal(processBody.includes('scheduleOwnedRetry({'), true);
   assert.match(processBody,
+    /const currentRouteOptions = \(\) => providerRetryRouteOptions\(runner\.providerAttempt\)/,
+    'all process retries must decode the physical default-model sentinel before rebuilding');
+  assert.match(processBody,
     /retryInvocation = prepareInvocation\(autoFailover\?\.invocationOptions\s*\|\| \{ reasonCode: 'same_provider_retry', \.\.\.currentRouteOptions\(\) \}\)/,
     'each physical retry must resolve a fresh concrete provider attempt, optionally on the Auto fallback');
   assert.match(processBody,
@@ -52,9 +55,24 @@ test('process and stream retries reuse the owned turn without appending a second
   assert.equal(streamBody.includes('evaluateTurnApiError({'), true);
   assert.equal(streamBody.includes('scheduleOwnedRetry({'), true);
   assert.match(streamBody,
+    /reasonCode: 'same_provider_retry',\s*\.\.\.providerRetryRouteOptions\(runner\.providerAttempt\)/,
+    'stream retries must decode the physical default-model sentinel before rebuilding');
+  assert.match(streamBody,
     /runChatTurnStreaming\(\s*sessionName,\s*cs,\s*persisted,\s*retryInvocation,\s*provider,\s*turn,\s*prepareInvocation,\s*autoTurn,\s*plan\.retry\.attempt,?\s*\)/);
   assert.equal(streamBody.includes('runChatTurn(sessionName'), false,
     'stream retry must not create a second canonical user message');
+});
+
+test('a fresh Codex fallback owns and replaces its newly allocated native thread', () => {
+  assert.match(server,
+    /runner\.freshNativeSession = prepared\.invocationEnvelope\.historyHandle\.isFirstTurn === true/);
+  assert.match(server,
+    /captureNativeSessionId\(persisted, evt\.sessionId, \{ fresh: runner\.freshNativeSession \}\)/);
+  assert.match(server, /assignKillReason\(runner, 'native_resume_mismatch'\)/,
+    'a resume that starts an unexpected native thread must be killed, not silently ignored');
+  assert.match(server,
+    /logicalSessionId: sessionName, nativeSessionId: persisted\.cliSessionId/,
+    'every physical Codex attempt must bind its canonical session root before spawn');
 });
 
 test('host persistence and broadcast expose only stable policy fields', () => {
