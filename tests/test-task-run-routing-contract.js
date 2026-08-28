@@ -51,10 +51,14 @@ test('task-run identity survives dispatch operation and outbox persistence', asy
   assert.equal(store.state.operations['run-1'].spec.taskRunId, 'run-1');
 });
 
-test('turn request carries task-run fencing and forces fresh native history', () => {
+test('turn request carries task-run fencing and reads fresh history off the reset slot', () => {
+  // A task run starts a fresh native thread because resetSlot already cleared
+  // the slot's cliSessionId and zeroed its turn count before the prior run
+  // could report cleanup done — beforeDeliver refuses the run otherwise. The
+  // dispatcher pins nothing; the request derives 'first' from that state.
   const request = normalizeTurnRequest({
-    sessionId: 'slot-1', text: 'execute', cli: 'codex', turnCount: 12,
-    hasNativeSession: true, forceFirstTurn: true,
+    sessionId: 'slot-1', text: 'execute', cli: 'codex', turnCount: 0,
+    hasNativeSession: false,
     originDispatchId: 'run-1', taskId: 'task-1', taskRunId: 'run-1',
     leaseEpoch: 4, taskStart: true, taskSource: 'task-board', taskText: 'execute',
   });
@@ -62,7 +66,7 @@ test('turn request carries task-run fencing and forces fresh native history', ()
   assert.equal(request.task.runId, 'run-1');
   assert.equal(request.task.leaseEpoch, 4);
   assert.equal(request.execution.historyIntent, 'first');
-  assert.equal(request.execution.resume, false);
+  assert.equal(request.execution.isFirstTurn, true);
 
   assert.throws(() => normalizeTurnRequest({
     sessionId: 'slot-1', text: 'bad', cli: 'codex', turnCount: 0,
