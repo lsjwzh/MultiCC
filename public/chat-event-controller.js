@@ -38,6 +38,14 @@
     released: true,
   });
 
+  function visibleProviderModel(value) {
+    if (typeof value !== 'string') return '';
+    const model = value.trim();
+    if (!model || model === '_default_' || model.length > 256
+        || /[\u0000-\u001f\u007f]/.test(model)) return '';
+    return model;
+  }
+
   function formatProgressHeartbeat(message) {
     const source = message && typeof message === 'object' ? message : {};
     const phase = PROGRESS_PHASES[source.phase] || '仍在执行';
@@ -72,12 +80,16 @@
     let activeProviderRoute = null;
     let providerRouteHighWater = null;
     let providerRouteTerminal = false;
+    let activeProviderModelRoute = null;
+    let activeProviderModelSource = '';
 
     function resetProviderRouteGate() {
       providerRouteProtocolVersion = 0;
       activeProviderRoute = null;
       providerRouteHighWater = null;
       providerRouteTerminal = false;
+      activeProviderModelRoute = null;
+      activeProviderModelSource = '';
       state.providerRouteProtocolVersion = 0;
       state.activeProviderRoute = null;
       state.providerRouteHighWater = null;
@@ -170,6 +182,35 @@
       return sameProviderRoute(providerRouteIdentity(message), activeProviderRoute);
     }
 
+    function applyProviderRouteModel(message) {
+      const route = providerRouteIdentity(message);
+      const model = visibleProviderModel(message?.model);
+      if (!route) {
+        if (message?.model !== undefined) state.activeProviderModel = model;
+        return;
+      }
+      if (!sameProviderRoute(route, activeProviderModelRoute)) {
+        activeProviderModelRoute = Object.freeze(route);
+        activeProviderModelSource = 'route';
+        state.activeProviderModel = model;
+      } else if (model && activeProviderModelSource !== 'assistant') {
+        state.activeProviderModel = model;
+      }
+    }
+
+    function applyAssistantProviderModel(message) {
+      if (state.sessionProviderSelection?.mode !== 'auto' || providerRouteProtocolVersion !== 1) return;
+      const route = providerRouteIdentity(message);
+      if (!sameProviderRoute(route, activeProviderRoute)
+          || !sameProviderRoute(route, activeProviderModelRoute)) return;
+      const model = visibleProviderModel(message?.message?.model);
+      if (!model) return;
+      activeProviderModelSource = 'assistant';
+      if (state.activeProviderModel === model) return;
+      state.activeProviderModel = model;
+      host.updateProviderBtn?.();
+    }
+
     function debugEvent(message) {
       let summary = message.type;
       if (message.type === 'system') {
@@ -219,7 +260,7 @@
         if (autoMode) state.activeProviderName = message.providerRoute ? (message.providerName || '') : '';
         else state.sessionProviderDisplayName = message.providerName || '';
       }
-      if (autoMode) state.activeProviderModel = message.providerRoute?.model || '';
+      if (autoMode) state.activeProviderModel = visibleProviderModel(message.providerRoute?.model);
       if (message.cliStates) state.sessionCliStates = message.cliStates;
       if (message.cliAvailability) state.cliAvailability = message.cliAvailability;
       if (message.agent !== undefined) state.sessionAgent = message.agent || '';
@@ -356,6 +397,8 @@
         if (reconnectRoute) {
           providerRouteHighWater = Object.freeze(reconnectRoute);
           activeProviderRoute = providerRouteHighWater;
+          activeProviderModelRoute = providerRouteHighWater;
+          activeProviderModelSource = 'route';
           providerRouteTerminal = false;
           state.providerRouteHighWater = providerRouteHighWater;
           state.activeProviderRoute = activeProviderRoute;
@@ -369,7 +412,7 @@
         case 'provider_route_event':
           if (message.providerId) state.activeProviderId = message.providerId;
           if (message.providerName) state.activeProviderName = message.providerName;
-          if (message.model !== undefined) state.activeProviderModel = message.model || '';
+          applyProviderRouteModel(message);
           host.updateProviderBtn?.();
           break;
         case 'provider_auto_route':
@@ -394,7 +437,10 @@
           host.loadSessionModel?.();
           break;
         case 'stream_event': handleStreamEvent(message.event, expectedGeneration); break;
-        case 'assistant': finalizeAssistantMsg(message.message); break;
+        case 'assistant':
+          applyAssistantProviderModel(message);
+          finalizeAssistantMsg(message.message);
+          break;
       case 'part_delta': handlePartDelta(message); break;
         case 'user':
           if (message.tool_use_result || message.message?.content) handleToolResult(message);
