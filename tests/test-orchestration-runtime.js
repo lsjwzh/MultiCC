@@ -105,6 +105,40 @@ test('task-run dispatch crosses a fresh-run barrier before native delivery', asy
   await runtime.stop();
 });
 
+test('plain dispatch leaves isFirstTurn unpinned so a rotated native session still admits', async t => {
+  const injections = [];
+  const { runtime } = fixture(t, {
+    runChatTurn: async (sessionId, text, opts) => {
+      injections.push({ sessionId, text, opts });
+      return true;
+    },
+  });
+  await runtime.admitDispatch({
+    operationId: 'op-plain-1',
+    ownerSessionId: 'commander',
+    resultSessionId: 'commander',
+    idempotencyKey: 'op-plain-1',
+    spec: {
+      targetId: 'slot-1', chatId: 'slot-1', message: 'translate the images',
+      oneWay: true, taskId: 'task-2',
+    },
+  });
+  await runtime.tick();
+  assert.equal(injections.length, 1);
+  // Regression (marketing-codex-chat-01 FIFO wedge): deliveryOptions used to
+  // pin `isFirstTurn: !!payload.taskRunId` = false for non-task dispatches.
+  // After the codex rollout guard archives an oversized rollout (clearing
+  // cliSessionId), a pinned resume makes normalizeTurnRequest throw
+  // resume_without_native_session on EVERY retry — the item wedges until its
+  // attempts run out. Unpinned lets the engine pick fresh-turn from live
+  // native-session proof instead.
+  assert.equal('isFirstTurn' in injections[0].opts, true);
+  assert.equal(injections[0].opts.isFirstTurn, undefined);
+  assert.equal(injections[0].opts.taskId, 'task-2');
+  assert.equal(injections[0].opts.taskRunId, undefined);
+  await runtime.stop();
+});
+
 test('hibernation activity view allows static W but blocks queued durable work', async t => {
   const h = fixture(t);
   await h.runtime.admitSessionWork({
