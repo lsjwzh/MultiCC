@@ -487,6 +487,85 @@ test('Auto Provider init and route events update actual route without replacing 
   assert.deepEqual(fixture.state.sessionProviderSelection, selection);
 });
 
+test('Auto Provider keeps the internal default-model sentinel out of the visible route model', () => {
+  const fixture = controllerFixture();
+  const generation = fixture.controller.beginGeneration();
+  const selection = {
+    version: 1, mode: 'auto', protocol: 'anthropic', maxAttempts: 2, sticky: false,
+    allowCrossTrust: true,
+    candidates: [
+      { providerId: 'quota-empty', model: 'claude-opus-4-8', priority: 1, enabled: true },
+      { providerId: 'claude-official', model: null, priority: 2, enabled: true },
+    ],
+  };
+  fixture.controller.handleEvent({
+    type: 'system', subtype: 'init', session_id: 'auto-default', is_streaming: true,
+    providerRouteProtocolVersion: 1, providerSelection: selection,
+  }, generation);
+  const official = {
+    providerRouteScope: 'attempt', runtimeEpoch: 'epoch-default', turnId: 'turn-default',
+    decisionId: 'decision-default', routeAttemptId: 'attempt-official', routeGeneration: 2,
+    attemptNo: 2, providerId: 'claude-official', providerRevision: 'revision-official',
+  };
+  assert.equal(fixture.controller.handleEvent({
+    type: 'provider_route_event', version: 1, phase: 'selected',
+    providerName: 'Claude Official', model: '_default_', ...official,
+  }, generation), true);
+  assert.equal(fixture.state.activeProviderModel, '',
+    'the physical audit sentinel must render as Provider default, never as a model name');
+});
+
+test('Auto Provider promotes only the current attempt assistant model over its route sentinel', () => {
+  const fixture = controllerFixture();
+  const generation = fixture.controller.beginGeneration();
+  fixture.controller.handleEvent({
+    type: 'system', subtype: 'init', session_id: 'auto-model', is_streaming: true,
+    providerRouteProtocolVersion: 1,
+    providerSelection: {
+      version: 1, mode: 'auto', protocol: 'anthropic', maxAttempts: 2, sticky: false,
+      allowCrossTrust: true, candidates: [],
+    },
+  }, generation);
+  const route = (routeGeneration, routeAttemptId, attemptNo, providerId) => ({
+    providerRouteScope: 'attempt', runtimeEpoch: 'epoch-model', turnId: 'turn-model',
+    decisionId: 'decision-model', routeAttemptId, routeGeneration, attemptNo, providerId,
+    providerRevision: `revision-${providerId}`,
+  });
+  const exhausted = route(1, 'attempt-exhausted', 1, 'quota-empty');
+  const official = route(2, 'attempt-official', 2, 'claude-official');
+  fixture.controller.handleEvent({
+    type: 'provider_route_event', version: 1, phase: 'selected',
+    providerName: 'Quota Empty', model: 'claude-opus-4-8', ...exhausted,
+  }, generation);
+  fixture.controller.handleEvent({
+    type: 'provider_route_event', version: 1, phase: 'failed',
+    providerName: 'Quota Empty', model: 'claude-opus-4-8', ...exhausted,
+  }, generation);
+  fixture.controller.handleEvent({
+    type: 'provider_route_event', version: 1, phase: 'selected',
+    providerName: 'Claude Official', model: '_default_', ...official,
+  }, generation);
+
+  assert.equal(fixture.controller.handleEvent({
+    type: 'assistant', message: {
+      model: 'stale-provider-model', content: [{ type: 'text', text: 'stale' }],
+    }, ...exhausted,
+  }, generation), false, 'the previous attempt assistant frame is rejected by the route gate');
+  assert.equal(fixture.controller.handleEvent({
+    type: 'assistant', message: {
+      model: 'claude-opus-5', content: [{ type: 'text', text: 'current' }],
+    }, ...official,
+  }, generation), true);
+  assert.equal(fixture.state.activeProviderModel, 'claude-opus-5');
+
+  fixture.controller.handleEvent({
+    type: 'provider_route_event', version: 1, phase: 'succeeded',
+    providerName: 'Claude Official', model: '_default_', ...official,
+  }, generation);
+  assert.equal(fixture.state.activeProviderModel, 'claude-opus-5',
+    'a later physical audit event cannot downgrade an attempt-resolved real model');
+});
+
 test('only server init synchronizes streaming state and pending cancel ownership', () => {
   const fixture = controllerFixture();
   const generation = fixture.controller.beginGeneration();
