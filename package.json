@@ -1,6 +1,6 @@
 {
   "name": "multicc",
-  "version": "1.6.4",
+  "version": "1.6.5",
   "description": "Web interface for Claude Code CLI",
   "license": "MIT",
   "main": "server.js",
