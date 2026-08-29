@@ -808,6 +808,67 @@ test('a released delivery claim returns its routed task card to queued', () => {
   assert.equal(runtime.getBoard().tasks['tsk-release'].runState, 'queued');
 });
 
+test('a task-bound session resumes its card after a cancel dropped the turn lineage', () => {
+  // Observed on #A1N3: the user cancelled, classify recorded E and the card
+  // went to error. The next turn was admitted with taskId null (schedule
+  // lineage only survives a W/B verdict, not E), so its 'started' event no
+  // longer named the task and the card stayed on error while the session was
+  // visibly running again. The 1:1 task-bound binding is the authority.
+  const records = new Map([
+    ['worker-bound', {
+      id: 'worker-bound', kind: 'chat', type: 'worker', dirId: 'dir-1',
+      label: 'Worker', taskBoundTaskId: 'tsk-bound',
+    }],
+    ['commander-1', { id: 'commander-1', kind: 'chat', type: 'commander', dirId: 'dir-1', label: 'Agent Commander' }],
+  ]);
+  const { runtime } = mkRuntime({ records });
+  assert.equal(runtime.recordRouterAdmission({
+    callerSessionId: 'commander-1',
+    targetSessionId: 'worker-bound',
+    taskId: 'tsk-bound',
+    taskText: 'align app ui',
+    operationId: 'op-bound',
+    status: 'admitted',
+  }), true);
+  runtime.getBoard().tasks['tsk-bound'].chatSessionId = 'worker-bound';
+
+  runtime.onQueueEvent({ type: 'claimed', sessionId: 'worker-bound', taskId: 'tsk-bound', at: Date.now() });
+  assert.equal(runtime.getBoard().tasks['tsk-bound'].runState, 'running');
+  // reconcile stamps its own Date.now(); the continuation must be no older.
+  runtime.reconcileRunState('tsk-bound', { classifyState: 'E', reason: 'manual_cancel' });
+  assert.equal(runtime.getBoard().tasks['tsk-bound'].runState, 'error');
+
+  // The continuation turn carries no taskId at all.
+  runtime.onQueueEvent({ type: 'started', sessionId: 'worker-bound', taskId: null, at: Date.now() + 1000 });
+  assert.equal(runtime.getBoard().tasks['tsk-bound'].runState, 'running');
+});
+
+test('an unbound session never borrows another task card through the binding fallback', () => {
+  const records = new Map([
+    ['sess-1', { id: 'sess-1', kind: 'chat', type: 'worker', dirId: 'dir-1', label: '工程师1' }],
+    ['half-released', {
+      id: 'half-released', kind: 'chat', type: 'worker', dirId: 'dir-1',
+      label: 'Stale', taskBoundTaskId: 'tsk-half',
+    }],
+    ['commander-1', { id: 'commander-1', kind: 'chat', type: 'commander', dirId: 'dir-1', label: 'Agent Commander' }],
+  ]);
+  const { runtime } = mkRuntime({ records });
+  runtime.recordRouterAdmission({
+    callerSessionId: 'commander-1', targetSessionId: 'sess-1', taskId: 'tsk-half',
+    taskText: 'half released', operationId: 'op-half', status: 'admitted',
+  });
+  // Board side of the binding was released; only the record's marker remains.
+  runtime.getBoard().tasks['tsk-half'].chatSessionId = null;
+  assert.deepEqual(
+    runtime.onQueueEvent({ type: 'started', sessionId: 'half-released', taskId: null, at: 40 }),
+    { ok: false, code: 'task_not_found' },
+  );
+  assert.equal(
+    runtime.onQueueEvent({ type: 'started', sessionId: 'sess-1', taskId: null, at: 41 }).ok,
+    false,
+  );
+});
+
 test('global gateway projects a cross-Fleet worker admission with the durable operation id', () => {
   const records = new Map([
     ['__voice_router__', {
