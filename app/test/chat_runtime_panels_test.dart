@@ -374,4 +374,20 @@ void main() {
     await tester.tap(find.byKey(const Key('api-error-manual-retry')));
     expect(retries, 1);
   });
+
+  testWidgets('API error panel exposes the sanitized root cause', (
+    tester,
+  ) async {
+    final state = ApiErrorPolicyState.fromJson({
+      'state': 'failed',
+      'provider': 'claude',
+      'category': 'network',
+      'httpStatus': 502,
+      'message': '上游 API 请求失败，未自动重试。根因：getaddrinfo ENOTFOUND open.bigmodel.cn。',
+      'rootCause': 'getaddrinfo ENOTFOUND open.bigmodel.cn',
+      'userAction': '稍后手动继续',
+    })!;
+    await tester.pumpWidget(_host(ChatRuntimeNoticePanel(apiError: state)));
+    expect(find.textContaining('ENOTFOUND open.bigmodel.cn'), findsOneWidget);
+  });
 }

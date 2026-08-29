@@ -242,6 +242,20 @@ function createApiErrorHost(options = {}) {
     sideEffects,
     deferNotice = false,
   }) {
+    const observedAt = now();
+    const recoveryTurnId = cleanIdentity(turn?.turnId);
+    let recoveryStartedAt = observedAt;
+    if (cs) {
+      const ownedStart = Number(cs._apiRecoveryStartedAt);
+      if (cs._apiRecoveryTurnId !== recoveryTurnId || !Number.isFinite(ownedStart)) {
+        cs._apiRecoveryTurnId = recoveryTurnId;
+        cs._apiRecoveryStartedAt = observedAt;
+      }
+      recoveryStartedAt = Number(cs._apiRecoveryStartedAt);
+    }
+    const turnElapsedMs = Number.isFinite(Number(cs?.turnStartedAt))
+      ? Math.max(0, observedAt - Number(cs.turnStartedAt)) : 0;
+    const recoveryElapsedMs = Math.max(0, observedAt - recoveryStartedAt);
     const identity = turnProviderIdentity({ runner, persisted, cs, raw });
     const decision = recordApiError(raw, {
       // `provider` is the legacy public field and intentionally remains the
@@ -266,9 +280,11 @@ function createApiErrorHost(options = {}) {
       phase,
       partialOutput,
       sideEffects,
-      elapsedMs: Number.isFinite(Number(cs?.turnStartedAt))
-        ? Math.max(0, now() - Number(cs.turnStartedAt))
-        : 0,
+      turnElapsedMs,
+      recoveryElapsedMs,
+      // Compatibility for policy runtimes that have not learned the explicit
+      // recovery field yet. It intentionally no longer means turn duration.
+      elapsedMs: recoveryElapsedMs,
       idempotencyKey: turnErrorIdempotencyKey(sessionName, turn, attempt, identity),
     });
     if (runner) {
@@ -306,7 +322,11 @@ function createApiErrorHost(options = {}) {
       reason: decision.reason,
       retryAt: decision.retryAt || null,
       userAction: decision.error.userAction,
-      at: now(),
+      rootCause: decision.error.rootCause || decision.error.sanitizedMessage || null,
+      turnElapsedMs,
+      recoveryElapsedMs: decision.recoveryElapsedMs ?? recoveryElapsedMs,
+      budgetExhaustedBy: decision.budgetExhaustedBy || null,
+      at: observedAt,
     };
     const {
       providerRouteScope: _scope, runtimeEpoch: _epoch, turnId: _turnId,
@@ -341,6 +361,8 @@ function createApiErrorHost(options = {}) {
     if (cs) {
       cs._apiRetryAttempt = 0;
       cs._lastApiErrorDecision = null;
+      cs._apiRecoveryStartedAt = null;
+      cs._apiRecoveryTurnId = null;
     }
     setTaskState(sessionName, { apiError: null }, { save: false });
   }

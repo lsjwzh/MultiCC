@@ -209,21 +209,31 @@ test('cancellation and shutdown never retry; unknown gets at most one controlled
   assert.equal(second.action, 'fail_fast');
 });
 
-test('elapsed retry budget stops even the bounded unknown fallback', () => {
+test('recovery clock never suppresses attempt 0 and caps later host retries', () => {
   const raw = {
-    message: 'opaque upstream failure',
-    source: 'opencode_event',
-    provider: 'opencode',
+    message: 'API Error: 502 getaddrinfo ENOTFOUND open.bigmodel.cn',
+    source: 'claude_result',
+    provider: 'claude',
   };
-  const withinBudget = decide(raw, { elapsedMs: 119_999 });
-  assert.equal(withinBudget.error.category, 'unknown');
-  assert.equal(withinBudget.action, 'retry');
-  assert.equal(withinBudget.attempt, 1);
+  const firstAfterSlowProvider = decide(raw, { recoveryElapsedMs: 600_000 });
+  assert.equal(firstAfterSlowProvider.error.category, 'network');
+  assert.equal(firstAfterSlowProvider.action, 'retry');
+  assert.equal(firstAfterSlowProvider.attempt, 1);
 
-  const exhausted = decide(raw, { elapsedMs: 120_000 });
-  assert.equal(exhausted.error.category, 'unknown');
+  const withinBudget = decide(raw, { attempt: 1, recoveryElapsedMs: 119_999 });
+  assert.equal(withinBudget.action, 'retry');
+  assert.equal(withinBudget.attempt, 2);
+
+  const exhausted = decide(raw, { attempt: 1, recoveryElapsedMs: 120_000 });
   assert.equal(exhausted.action, 'fail_fast');
   assert.equal(exhausted.reason, 'retry_budget_exhausted');
+  assert.equal(exhausted.budgetExhaustedBy, 'recovery_window');
+  assert.match(retryNotice(exhausted), /自动恢复等待窗口已用尽/);
+  assert.match(retryNotice(exhausted), /ENOTFOUND open\.bigmodel\.cn/);
+
+  const attemptsExhausted = decide(raw, { attempt: 2, recoveryElapsedMs: 1 });
+  assert.equal(attemptsExhausted.budgetExhaustedBy, 'attempts');
+  assert.match(retryNotice(attemptsExhausted), /自动重试次数已用尽/);
 });
 
 test('untrusted text cannot smuggle a retryable category and public messages are sanitized', () => {
@@ -234,6 +244,18 @@ test('untrusted text cannot smuggle a retryable category and public messages are
   }, { phase: 'before_first_token' });
   assert.equal(error.category, 'unknown');
   assert.doesNotMatch(error.sanitizedMessage, /secret-token|\/Users\/person/);
+  assert.doesNotMatch(error.rootCause, /secret-token|\/Users\/person/);
+});
+
+test('retry notices retain the redacted provider root cause', () => {
+  const result = decide({
+    message: 'API Error: 502 getaddrinfo ENOTFOUND open.bigmodel.cn',
+    source: 'claude_result',
+    provider: 'claude',
+  });
+  assert.equal(result.error.category, 'network');
+  assert.match(result.error.rootCause, /ENOTFOUND open\.bigmodel\.cn/);
+  assert.match(retryNotice(result), /根因：.*ENOTFOUND open\.bigmodel\.cn/);
 });
 
 test('normalized errors preserve legacy CLI provider and add immutable route identity', () => {

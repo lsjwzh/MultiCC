@@ -468,6 +468,7 @@ function normalizeApiError(raw = {}, context = {}, deps = {}) {
   const requestId = requestIdRaw
     ? `req_${crypto.createHash('sha256').update(String(requestIdRaw)).digest('hex').slice(0, 10)}`
     : null;
+  const sanitizedMessage = sanitizeMessage(message);
   return Object.freeze({
     category,
     provider,
@@ -492,7 +493,12 @@ function normalizeApiError(raw = {}, context = {}, deps = {}) {
     attempt: Math.max(0, Number(context.attempt || raw.attempt || 0) || 0),
     maxAttempts: null,
     userAction: userAction(category, retryAfterMs),
-    sanitizedMessage: sanitizeMessage(message),
+    sanitizedMessage,
+    // Public/durable diagnostic detail. This is deliberately derived from the
+    // same redacted, bounded message as observability — never from raw provider
+    // text — so a synthetic relay status (for example HTTP 502) cannot hide the
+    // actionable socket/DNS cause underneath it.
+    rootCause: sanitizedMessage,
     cause: code || (httpStatus ? `http_${httpStatus}` : category),
     source,
     requestId,
@@ -519,7 +525,14 @@ function decideApiErrorPolicy(rawError, context = {}, deps = {}) {
     ? maxAttemptsFor(error.category) : Math.max(0, Number(context.maxAttempts) || 0);
   error = withMaxAttempts(error, maxAttempts);
   const nextAttempt = error.attempt + 1;
-  const elapsedMs = Math.max(0, Number(context.elapsedMs || 0) || 0);
+  // The wall-clock guard belongs to MultiCC's recovery loop, not to the
+  // provider invocation. Some CLIs already spend minutes on internal backoff;
+  // charging that time here used to reject attempt 0 before MultiCC had made a
+  // single retry. `elapsedMs` remains a compatibility fallback for direct
+  // policy callers while the host supplies the correctly scoped field.
+  const recoveryElapsedMs = Math.max(0, Number(
+    context.recoveryElapsedMs ?? context.elapsedMs ?? 0,
+  ) || 0);
 
   if (error.category === 'cancel_shutdown') {
     return Object.freeze({ action: 'fail_fast', reason: 'cancelled_or_shutdown', error, attempt: error.attempt, delayMs: 0 });
@@ -539,8 +552,20 @@ function decideApiErrorPolicy(rawError, context = {}, deps = {}) {
       ? 'unsafe_replay_boundary' : `${error.category}_not_retryable`;
     return Object.freeze({ action: 'fail_fast', reason, error, attempt: error.attempt, delayMs: 0 });
   }
-  if (nextAttempt > maxAttempts || elapsedMs >= 120_000) {
-    return Object.freeze({ action: 'fail_fast', reason: 'retry_budget_exhausted', error, attempt: error.attempt, delayMs: 0 });
+  if (nextAttempt > maxAttempts) {
+    return Object.freeze({
+      action: 'fail_fast', reason: 'retry_budget_exhausted', budgetExhaustedBy: 'attempts',
+      error, attempt: error.attempt, delayMs: 0, recoveryElapsedMs,
+    });
+  }
+  // Attempt 0 must always receive its first bounded host retry. This invariant
+  // also protects restored/legacy callers that accidentally pass turn elapsed
+  // time instead of the recovery-scoped clock.
+  if (error.attempt > 0 && recoveryElapsedMs >= 120_000) {
+    return Object.freeze({
+      action: 'fail_fast', reason: 'retry_budget_exhausted', budgetExhaustedBy: 'recovery_window',
+      error, attempt: error.attempt, delayMs: 0, recoveryElapsedMs,
+    });
   }
 
   if (error.category === 'rate_limit'
@@ -576,6 +601,7 @@ function decideApiErrorPolicy(rawError, context = {}, deps = {}) {
     maxAttempts,
     delayMs,
     retryAt: now + delayMs,
+    recoveryElapsedMs,
   });
 }
 
@@ -672,6 +698,12 @@ function createApiErrorPolicyRuntime(options = {}) {
       delayMs: decision.delayMs || 0,
       attempt: decision.attempt || 0,
       maxAttempts: error.maxAttempts,
+      rootCause: error.rootCause,
+      turnElapsedMs: Math.max(0, Number(context.turnElapsedMs || 0) || 0),
+      recoveryElapsedMs: Math.max(0, Number(
+        decision.recoveryElapsedMs ?? context.recoveryElapsedMs ?? context.elapsedMs ?? 0,
+      ) || 0),
+      budgetExhaustedBy: decision.budgetExhaustedBy || null,
       sessionId: context.sessionId || null,
       turnId: context.turnId || null,
       requestId: error.requestId,
@@ -759,21 +791,33 @@ function createApiErrorPolicyRuntime(options = {}) {
 function retryNotice(decision) {
   if (!decision || !decision.error) return '上游 API 请求失败，未自动重试。';
   const { error } = decision;
+  const cause = String(error.rootCause || error.sanitizedMessage || '').trim();
+  const causeNotice = cause
+    ? `根因：${cause}${/[。.!?！？]$/.test(cause) ? '' : '。'}`
+    : '';
   if (decision.action === 'retry') {
     const seconds = Math.max(1, Math.ceil((decision.delayMs || 0) / 1000));
-    return `上游 API 暂时不可用，将在 ${seconds} 秒后进行受控重试（${decision.attempt}/${error.maxAttempts}）。`;
+    return `上游 API 暂时不可用，将在 ${seconds} 秒后进行受控重试（${decision.attempt}/${error.maxAttempts}）。${causeNotice}`;
   }
   if (decision.action === 'wait_reset') {
-    return `额度或限流窗口尚未恢复，系统不会短周期重试。${error.userAction}`;
+    return `额度或限流窗口尚未恢复，系统不会短周期重试。${causeNotice}${error.userAction}`;
   }
   if (decision.action === 'wait_circuit') {
     const seconds = Math.max(1, Math.ceil((decision.delayMs || 0) / 1000));
-    return `Provider 连续失败，熔断 ${seconds} 秒以避免重试风暴；本轮未重放。`;
+    return `Provider 连续失败，熔断 ${seconds} 秒以避免重试风暴；本轮未重放。${causeNotice}`;
   }
   if (decision.reason === 'unsafe_replay_boundary') {
-    return `上游 API 中断，但本轮已有部分输出或工具执行；为避免重复副作用，未自动重放。${error.userAction}`;
+    return `上游 API 中断，但本轮已有部分输出或工具执行；为避免重复副作用，未自动重放。${causeNotice}${error.userAction}`;
   }
-  return `上游 API 请求失败，未自动重试。${error.userAction}`;
+  if (decision.reason === 'retry_budget_exhausted') {
+    const budget = decision.budgetExhaustedBy === 'attempts'
+      ? '自动重试次数已用尽。'
+      : decision.budgetExhaustedBy === 'recovery_window'
+        ? '自动恢复等待窗口已用尽。'
+        : '自动重试预算已用尽。';
+    return `上游 API 请求仍然失败，${budget}${causeNotice}${error.userAction}`;
+  }
+  return `上游 API 请求失败，未自动重试。${causeNotice}${error.userAction}`;
 }
 
 module.exports = {
