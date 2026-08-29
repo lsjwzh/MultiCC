@@ -25,6 +25,7 @@ function decision(overrides = {}) {
       maxAttempts: 2,
       userAction: '稍后重试',
       sanitizedMessage: 'service unavailable',
+      rootCause: 'service unavailable',
       ...overrides.error,
     },
     ...overrides,
@@ -82,7 +83,7 @@ function harness(options = {}) {
     isCurrentTurnRunner: (state, turn, runner) => state._activeRunner === runner
       && state._activeTurn === turn,
     isShuttingDown: () => false,
-    now: () => 1_000,
+    now: typeof options.now === 'function' ? options.now : () => 1_000,
     setTimeout: (callback, delay) => {
       const timer = { callback, delay, unref() {} };
       timers.push(timer);
@@ -124,25 +125,41 @@ test('turn policy decision persists stable state and duplicate delivery does not
   assert.equal(h.broadcasts[0].payload.type, 'api_error_policy');
   assert.equal(h.taskWrites[0].patch.apiError.category, 'provider_transient');
   assert.equal('sanitizedMessage' in h.taskWrites[0].patch.apiError, false);
+  assert.equal(h.taskWrites[0].patch.apiError.rootCause, 'service unavailable');
+  assert.match(h.broadcasts[1].payload.message, /根因：service unavailable/);
 });
 
-test('turn policy receives the owned turn elapsed budget', () => {
-  const h = harness();
-  let observed = null;
+test('turn duration is diagnostic only and recovery budget starts at first host decision', () => {
+  let clock = 200_000;
+  const h = harness({ now: () => clock });
+  const observed = [];
   h.decideWith((raw, context) => {
-    observed = context;
+    observed.push(context);
     return decision();
   });
+  const state = { turnStartedAt: 1_000 };
+  const turn = { turnId: 'turn-elapsed' };
   h.host.evaluateTurnApiError({
     sessionName: 'session-1',
-    cs: { turnStartedAt: 250 },
+    cs: state,
     persisted: { cli: 'claude' },
-    turn: { turnId: 'turn-elapsed' },
+    turn,
     runner: {},
     raw: { httpStatus: 503 },
     phase: 'before_first_token',
   });
-  assert.equal(observed.elapsedMs, 750);
+  assert.equal(observed[0].turnElapsedMs, 199_000);
+  assert.equal(observed[0].recoveryElapsedMs, 0);
+  assert.equal(observed[0].elapsedMs, 0);
+
+  clock += 10_000;
+  h.host.evaluateTurnApiError({
+    sessionName: 'session-1', cs: state, persisted: { cli: 'claude' },
+    turn, runner: {}, raw: { httpStatus: 503 }, attempt: 1,
+    phase: 'before_first_token',
+  });
+  assert.equal(observed[1].turnElapsedMs, 209_000);
+  assert.equal(observed[1].recoveryElapsedMs, 10_000);
 });
 
 test('turn policy binds errors and idempotency to the owned provider route attempt', () => {

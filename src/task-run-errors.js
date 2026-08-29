@@ -45,11 +45,12 @@ function describeRunFailure({ event = {}, apiError = null } = {}) {
     || (hasEvidence ? category : 'TURN_FAILED');
   const label = CATEGORY_LABELS[category] || CATEGORY_LABELS.unknown;
   const action = clean(apiError && apiError.userAction, 200);
+  const rootCause = clean(apiError && apiError.rootCause, 320);
   const retryable = hasEvidence
     && RETRYABLE_CATEGORIES.has(category)
     && apiError.retryable === true;
   const text = hasEvidence
-    ? `任务执行失败（${label}）${action ? `：${action}` : ''}`
+    ? `任务执行失败（${label}）${rootCause ? `；根因：${rootCause}` : ''}${action ? `；${action}` : ''}`
     : '任务执行失败：模型调用异常结束，未产出完整结果。可手动重新发起。';
   return Object.freeze({ code, category, retryable, text });
 }

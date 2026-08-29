@@ -712,11 +712,15 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
   }
 
   Widget _errorView(ApiErrorPolicyState value) {
-    final retry = value.isRetryScheduled
+    // `message` carries the server-sanitized root cause and the policy action.
+    // Falling back to the generic action used to hide DNS/TLS/socket failures.
+    final retry = value.message.isNotEmpty
+        ? value.message
+        : value.rootCause.isNotEmpty
+        ? '根因：${value.rootCause}'
+        : value.isRetryScheduled
         ? t('serverRetryScheduled')
-        : value.userAction.isNotEmpty
-        ? value.userAction
-        : value.message;
+        : value.userAction;
     return ConstrainedBox(
       constraints: const BoxConstraints(maxWidth: 520),
       child: Text(
