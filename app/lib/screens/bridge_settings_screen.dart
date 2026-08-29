@@ -4,6 +4,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../services/manage_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
+import '../widgets/settings_navigation_drawer.dart';
 
 class _BridgeSpec {
   final String id;
@@ -196,6 +197,10 @@ class _BridgeSettingsScreenState extends State<BridgeSettingsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.bg,
+      drawer: SettingsNavigationDrawer(
+        selected: SettingsDestination.bridges,
+        serverLabel: widget.settings.host,
+      ),
       appBar: AppBar(
         title: const Text('消息桥接'),
         actions: [

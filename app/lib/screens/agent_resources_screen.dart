@@ -1,14 +1,24 @@
 import 'package:flutter/material.dart';
 
+import '../i18n.dart';
 import '../services/manage_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
+import '../widgets/settings_navigation_drawer.dart';
+
+enum AgentResourcesInitialSection { resources, skillSync, storage }
 
 /// Agent 资源与缓存。镜像网页管理台的「Agent 资源」+「临时上传」面板：
 /// 查看 Skills、同步状态、Claude 历史会话和服务器临时上传缓存。
 class AgentResourcesScreen extends StatefulWidget {
   final SettingsService settings;
-  const AgentResourcesScreen({super.key, required this.settings});
+  final AgentResourcesInitialSection initialSection;
+
+  const AgentResourcesScreen({
+    super.key,
+    required this.settings,
+    this.initialSection = AgentResourcesInitialSection.resources,
+  });
 
   @override
   State<AgentResourcesScreen> createState() => _AgentResourcesScreenState();
@@ -37,18 +47,40 @@ class _AgentResourcesScreenState extends State<AgentResourcesScreen> {
       _error = null;
     });
     try {
-      final r = await Future.wait([
-        _manage.fetchSkills(),
-        _manage.fetchClaudeHistory(),
-        _manage.fetchUploadStats(),
-        _manage.fetchSkillSyncStatus(),
-      ]);
+      Map<String, dynamic>? skills;
+      Map<String, dynamic>? history;
+      Map<String, dynamic>? uploads;
+      Map<String, dynamic>? skillSync;
+      switch (widget.initialSection) {
+        case AgentResourcesInitialSection.resources:
+          final results = await Future.wait([
+            _manage.fetchSkills(),
+            _manage.fetchClaudeHistory(),
+          ]);
+          skills = results[0];
+          history = results[1];
+          break;
+        case AgentResourcesInitialSection.skillSync:
+          skillSync = await _manage.fetchSkillSyncStatus();
+          break;
+        case AgentResourcesInitialSection.storage:
+          uploads = await _manage.fetchUploadStats();
+          break;
+      }
       if (!mounted) return;
       setState(() {
-        _skills = r[0];
-        _history = r[1];
-        _uploads = r[2];
-        _skillSync = r[3];
+        if (skills != null) {
+          _skills = skills;
+        }
+        if (history != null) {
+          _history = history;
+        }
+        if (uploads != null) {
+          _uploads = uploads;
+        }
+        if (skillSync != null) {
+          _skillSync = skillSync;
+        }
         _loading = false;
       });
     } catch (e) {
@@ -166,10 +198,25 @@ class _AgentResourcesScreenState extends State<AgentResourcesScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final destination = switch (widget.initialSection) {
+      AgentResourcesInitialSection.resources => SettingsDestination.resources,
+      AgentResourcesInitialSection.skillSync => SettingsDestination.skillSync,
+      AgentResourcesInitialSection.storage => SettingsDestination.storage,
+    };
+    final title = switch (widget.initialSection) {
+      AgentResourcesInitialSection.resources => t('agentResources'),
+      AgentResourcesInitialSection.skillSync => t('skillSync'),
+      AgentResourcesInitialSection.storage => t('temporaryUploads'),
+    };
+
     return Scaffold(
       backgroundColor: AppColors.bg,
+      drawer: SettingsNavigationDrawer(
+        selected: destination,
+        serverLabel: widget.settings.host,
+      ),
       appBar: AppBar(
-        title: const Text('Agent 资源 / 缓存'),
+        title: Text(title),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh_rounded, color: AppColors.muted),
@@ -188,13 +235,18 @@ class _AgentResourcesScreenState extends State<AgentResourcesScreen> {
                   child: ListView(
                     padding: const EdgeInsets.all(14),
                     children: [
-                      _skillsSection(),
-                      const SizedBox(height: 18),
-                      _skillSyncSection(),
-                      const SizedBox(height: 18),
-                      _historySection(),
-                      const SizedBox(height: 18),
-                      _uploadsSection(),
+                      if (widget.initialSection ==
+                          AgentResourcesInitialSection.resources) ...[
+                        _skillsSection(),
+                        const SizedBox(height: 18),
+                        _historySection(),
+                      ],
+                      if (widget.initialSection ==
+                          AgentResourcesInitialSection.skillSync)
+                        _skillSyncSection(),
+                      if (widget.initialSection ==
+                          AgentResourcesInitialSection.storage)
+                        _uploadsSection(),
                       if (_busy) ...[
                         const SizedBox(height: 20),
                         const Center(

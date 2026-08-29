@@ -14,17 +14,14 @@ import '../services/update_service.dart';
 import '../theme.dart';
 import '../widgets/lan_discovery_picker.dart';
 import '../widgets/model_picker.dart';
-import 'agent_resources_screen.dart';
+import '../widgets/settings_navigation_drawer.dart';
 import 'aux_screen.dart';
-import 'bridge_settings_screen.dart';
 import 'dashboard_screen.dart';
 import 'events_screen.dart';
 import 'main_shell.dart';
-import 'provider_screen.dart';
-import 'push_settings_screen.dart';
 import 'token_usage_screen.dart';
-import 'tunnel_settings_screen.dart';
-import 'voice_settings_screen.dart';
+
+enum SettingsInitialSection { global, goal }
 
 /// Unified in-app settings page. Covers app-local config (server connection,
 /// default model, notifications, appearance) and links out to the web
@@ -32,7 +29,13 @@ import 'voice_settings_screen.dart';
 /// tasks live on the home workspace bar, not here.
 class SettingsScreen extends StatefulWidget {
   final SettingsService settings;
-  const SettingsScreen({super.key, required this.settings});
+  final SettingsInitialSection initialSection;
+
+  const SettingsScreen({
+    super.key,
+    required this.settings,
+    this.initialSection = SettingsInitialSection.global,
+  });
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -101,11 +104,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _fontScale = s.fontScale.value;
     _goalMinCtrl = TextEditingController(text: '60');
     _accessTokenCtrl = TextEditingController();
-    _loadGoalConfig();
-    _loadProxyConfig();
-    _loadOfficialOauth();
-    _loadAccessToken();
-    _loadVersion();
+    if (widget.initialSection == SettingsInitialSection.goal) {
+      _loadGoalConfig();
+    } else {
+      _loadProxyConfig();
+      _loadOfficialOauth();
+      _loadAccessToken();
+      _loadVersion();
+    }
   }
 
   @override
@@ -468,13 +474,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final isGoal = widget.initialSection == SettingsInitialSection.goal;
     return Scaffold(
       backgroundColor: AppColors.bg,
-      appBar: AppBar(title: Text(t('settingsTitle'))),
+      drawer: SettingsNavigationDrawer(
+        selected: isGoal
+            ? SettingsDestination.goal
+            : SettingsDestination.global,
+        serverLabel: widget.settings.host,
+      ),
+      appBar: AppBar(
+        title: Text(isGoal ? t('goalPrecheck') : t('globalConfig')),
+      ),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 40),
         children: [
-          _Section(
+          if (!isGoal) _Section(
             title: t('serverConnection'),
             children: [
               if (_serverHistory.isNotEmpty) ...[
@@ -569,7 +584,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ],
           ),
-          _Section(
+          if (!isGoal) _Section(
             title: t('newSessionSettings'),
             children: [
               _Tile(
@@ -580,7 +595,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               _Hint(t('defaultClaudeModelHint')),
             ],
           ),
-          _Section(
+          if (!isGoal) _Section(
             title: t('notifications'),
             children: [
               SwitchListTile(
@@ -625,7 +640,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
             ],
           ),
-          _Section(
+          if (isGoal) _Section(
             title: t('goalPrecheck'),
             children: [
               _Hint(t('goalPrecheckHint')),
@@ -685,7 +700,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ],
           ),
-          _Section(
+          if (!isGoal) _Section(
             title: t('claudeProxyRouting'),
             children: [
               _Hint(t('claudeProxyRoutingHint')),
@@ -709,7 +724,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ],
             ],
           ),
-          _Section(
+          if (!isGoal) _Section(
             title: t('appearance'),
             children: [
               SegmentedButton<String>(
@@ -757,21 +772,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
               _Hint(t('fontSizePreview')),
             ],
           ),
-          _Section(
+          if (!isGoal) _Section(
             title: t('management'),
             children: [
-              _NavTile(
-                icon: Icons.swap_horiz_rounded,
-                title: t('providerConfig'),
-                subtitle: t('providerConfigHint'),
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute<void>(
-                    builder: (_) => ProviderScreen(settings: widget.settings),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 8),
               _NavTile(
                 icon: Icons.auto_awesome_outlined,
                 title: t('auxAssistant'),
@@ -783,35 +786,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                 ),
               ),
-              const SizedBox(height: 8),
-              _NavTile(
-                icon: Icons.dataset_outlined,
-                title: t('agentResources'),
-                subtitle: t('agentResourcesHint'),
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute<void>(
-                    builder: (_) =>
-                        AgentResourcesScreen(settings: widget.settings),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 8),
-              _NavTile(
-                icon: Icons.hub_outlined,
-                title: t('messageBridges'),
-                subtitle: t('messageBridgesHint'),
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute<void>(
-                    builder: (_) =>
-                        BridgeSettingsScreen(settings: widget.settings),
-                  ),
-                ),
-              ),
             ],
           ),
-          _Section(
+          if (!isGoal) _Section(
             title: t('serverSettings'),
             children: [
               _Hint(t('serverSettingsHint')),
@@ -925,45 +902,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                 ),
               ),
-              const SizedBox(height: 8),
-              _NavTile(
-                icon: Icons.notifications_active_outlined,
-                title: t('pushNotifications'),
-                subtitle: t('pushNotificationsHint'),
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute<void>(
-                    builder: (_) =>
-                        PushSettingsScreen(settings: widget.settings),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 8),
-              _NavTile(
-                icon: Icons.vpn_lock_outlined,
-                title: t('tunnel'),
-                subtitle: t('tunnelHint'),
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute<void>(
-                    builder: (_) =>
-                        TunnelSettingsScreen(settings: widget.settings),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 8),
-              _NavTile(
-                icon: Icons.record_voice_over_outlined,
-                title: t('voiceSettings'),
-                subtitle: t('voiceSettingsHint'),
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute<void>(
-                    builder: (_) =>
-                        VoiceSettingsScreen(settings: widget.settings),
-                  ),
-                ),
-              ),
               const Divider(height: 24),
               SizedBox(
                 width: double.infinity,
@@ -989,7 +927,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ],
           ),
-          _Section(
+          if (!isGoal) _Section(
             title: t('about'),
             children: [
               Row(
