@@ -854,9 +854,10 @@
         String(message.category || 'unknown'),
       ];
       if (message.httpStatus != null) parts.push(`HTTP ${message.httpStatus}`);
-      const remedy = retryScheduled
-        ? String(message.message || '')
-        : String(message.userAction || message.message || '');
+      // The server message contains the redacted root cause plus the recovery
+      // decision. Prefer it in both retrying and terminal states; using only
+      // userAction on terminal failures previously hid ENOTFOUND/TLS/etc.
+      const remedy = String(message.message || message.userAction || '');
       if (remedy) parts.push(remedy);
       bar.textContent = `API ${parts.join(' · ')}`;
       bar.title = String(message.message || '');

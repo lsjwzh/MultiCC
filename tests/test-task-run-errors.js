@@ -42,12 +42,14 @@ test('describeRunFailure maps a structured api error to a human entry', () => {
     apiError: {
       category: 'rate_limit', code: 'rate_limited', retryable: true,
       userAction: '等待服务端限流窗口结束',
+      rootCause: 'API Error: 429 rate limit',
     },
   });
   assert.equal(failure.code, 'rate_limited');
   assert.equal(failure.category, 'rate_limit');
   assert.equal(failure.retryable, true);
   assert.match(failure.text, /限流/);
+  assert.match(failure.text, /根因：API Error: 429 rate limit/);
   assert.match(failure.text, /等待服务端限流窗口结束/);
 });
 
