@@ -117,6 +117,7 @@ function controllerFixture() {
   const bubble = new FakeElement('div');
   bubble.appendChild(content);
   const tools = [];
+  const clientMessages = new Map();
   const historyView = {
     createAssistantBubble() { calls.push('create-bubble'); return bubble; },
     createToolCard(name, id) { return { name, id }; },
@@ -124,6 +125,7 @@ function controllerFixture() {
     updateToolInput(tool) { calls.push(['tool-input', tool.inputJson]); },
     addToolResult(tool, text, error) { calls.push(['tool-result', tool.id, text, !!error]); },
     tagLatestMessage(role, id) { calls.push(['tag', role, id]); },
+    findByClientMsgId(clientMsgId) { return clientMessages.get(clientMsgId) || null; },
     visibleIds() { return []; },
     clearMessages() { calls.push('clear'); },
   };
@@ -172,6 +174,13 @@ function controllerFixture() {
     updateCwdDisplay(value) { calls.push(['cwd', value]); },
     applyCliUi(value) { state.currentCli = value; calls.push(['cli', value]); },
     addSystemMsg(value) { calls.push(['system', value]); },
+    addUserMessage(text, clientMsgId) {
+      calls.push(['user', text, clientMsgId]);
+      const node = new FakeElement('div');
+      node.dataset.clientMsgId = clientMsgId;
+      clientMessages.set(clientMsgId, node);
+      return node;
+    },
     addAgentNotes(value) { calls.push(['notes', value.length]); },
     updateEffortBtn() {},
     updateModelBtn() {},
@@ -204,7 +213,7 @@ function controllerFixture() {
   };
   const controller = eventApi.createEventController({ state, host, liveUi, historyStore, historyView });
   return {
-    controller, state, calls, debugCalls, progressCalls, tools, bubble, content, liveUi,
+    controller, state, calls, debugCalls, progressCalls, tools, bubble, content, liveUi, messages,
     setPendingInputId(value) { pendingInputId = value; },
   };
 }
@@ -223,6 +232,97 @@ test('progress heartbeat formatter exposes only safe bounded status fields', () 
     prompt: 'secret prompt', output: 'secret output', token: 'sk-secret',
   }), '正在调用工具 · 2m 30s · 子 Agent');
   assert.equal(eventApi.formatProgressHeartbeat({ phase: 'unknown', elapsedMs: -1 }), '仍在执行 · 0s');
+});
+
+test('memory admission progress shows the user message immediately and updates one loading bubble', () => {
+  const fixture = controllerFixture();
+  const generation = fixture.controller.beginGeneration();
+  const waiting = {
+    type: 'message_admission_progress',
+    state: 'waiting',
+    stage: 'memory_distill',
+    message: '继续处理 502',
+    clientMsgId: 'client-memory-1',
+  };
+  fixture.controller.handleEvent(waiting, generation);
+  fixture.controller.handleEvent(waiting, generation);
+  assert.deepEqual(
+    fixture.calls.filter(call => Array.isArray(call) && call[0] === 'user'),
+    [['user', '继续处理 502', 'client-memory-1']],
+    'replayed progress never duplicates the optimistic-looking server-confirmed bubble',
+  );
+  assert.equal(
+    fixture.liveUi.getThinkingElement().querySelector('.thinking-label').textContent,
+    '已收到消息 · 正在整理会话记忆，完成后自动继续',
+  );
+
+  fixture.controller.handleEvent({ ...waiting, state: 'ready' }, generation);
+  assert.equal(
+    fixture.liveUi.getThinkingElement().querySelector('.thinking-label').textContent,
+    '记忆整理完成 · 正在提交消息',
+  );
+  fixture.controller.handleEvent({
+    type: 'session_queue', event: 'queued', queued: false,
+    message: waiting.message, clientMsgId: waiting.clientMsgId, items: [],
+  }, generation);
+  assert.equal(fixture.calls.filter(call => Array.isArray(call) && call[0] === 'user').length, 1,
+    'formal scheduler admission reuses the progress bubble');
+  assert.equal(
+    fixture.liveUi.getThinkingElement().querySelector('.thinking-label').textContent,
+    '消息已提交 · 正在启动',
+  );
+  fixture.controller.handleEvent({ type: 'stream_start' }, generation);
+  assert.equal(
+    fixture.liveUi.getThinkingElement().querySelector('.thinking-label').textContent,
+    '正在处理…',
+  );
+});
+
+test('memory failure stays visible while queued admission retires its transient loader', () => {
+  const fixture = controllerFixture();
+  const generation = fixture.controller.beginGeneration();
+  const base = {
+    type: 'message_admission_progress', stage: 'memory_distill',
+    message: '下一条消息', clientMsgId: 'client-memory-2',
+  };
+  fixture.controller.handleEvent({ ...base, state: 'waiting' }, generation);
+  fixture.controller.handleEvent({
+    ...base, state: 'skipped', reason: 'memory_distill_failed', rootCause: 'HTTP 502 Bad Gateway',
+  }, generation);
+  assert.equal(
+    fixture.liveUi.getThinkingElement().querySelector('.thinking-label').textContent,
+    '记忆整理失败（根因：HTTP 502 Bad Gateway）· 已跳过并继续提交消息',
+  );
+  assert.ok(fixture.calls.some(call => Array.isArray(call)
+    && call[0] === 'toast' && call[1].includes('HTTP 502 Bad Gateway')));
+  assert.ok(fixture.calls.some(call => Array.isArray(call)
+    && call[0] === 'system' && call[1].includes('HTTP 502 Bad Gateway')));
+
+  fixture.controller.handleEvent({
+    type: 'session_queue', event: 'queued', queued: true,
+    message: base.message, clientMsgId: base.clientMsgId,
+    queuePosition: 2, items: [{ text: base.message }],
+  }, generation);
+  assert.equal(fixture.liveUi.getThinkingElement(), null,
+    'the queue strip becomes authoritative once admission enters FIFO');
+});
+
+test('terminal admission failure removes loading and presents a retryable error', () => {
+  const fixture = controllerFixture();
+  const generation = fixture.controller.beginGeneration();
+  fixture.controller.handleEvent({
+    type: 'message_admission_progress', state: 'waiting', stage: 'memory_distill',
+    message: '会失败的消息', clientMsgId: 'client-memory-3',
+  }, generation);
+  fixture.controller.handleEvent({
+    type: 'message_admission_progress', state: 'failed', reason: 'message_delivery_failed',
+    message: '会失败的消息', clientMsgId: 'client-memory-3', rootCause: 'scheduler unavailable',
+  }, generation);
+  assert.equal(fixture.liveUi.getThinkingElement(), null);
+  assert.ok(fixture.calls.some(call => Array.isArray(call)
+    && call[0] === 'system' && call[1].includes('scheduler unavailable')));
+  assert.ok(fixture.calls.some(call => Array.isArray(call)
+    && call[0] === 'toast' && call[2] === 'error'));
 });
 
 test('task-aware completion voice keeps the localized outcome copy', () => {

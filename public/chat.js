@@ -2476,6 +2476,7 @@ chatEventController = window.MultiCCChatEventController.createEventController({
     resetHistoryPagination,
     applyHistoryPlan,
     removeHistoryMessageById,
+    addUserMessage: addUserMsg,
     showNotifyToast,
     speakNotify,
     maybeScrollToBottom,

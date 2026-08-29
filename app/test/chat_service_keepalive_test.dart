@@ -182,6 +182,43 @@ void main() {
   });
 
   test(
+    'pre-FIFO admission progress and stream start reach the provider',
+    () async {
+      await setupSettings();
+      fakeAsync((async) {
+        final made = makeService();
+        final service = made.$1;
+        final channels = made.$2;
+        final events = <ChatEvent>[];
+        service.events.listen(events.add);
+        service.connect();
+        async.flushMicrotasks();
+
+        channels.single.incoming.add(
+          jsonEncode({
+            'type': 'message_admission_progress',
+            'state': 'waiting',
+            'stage': 'memory_distill',
+            'message': 'hello',
+            'clientMsgId': 'app-1',
+          }),
+        );
+        channels.single.incoming.add(jsonEncode({'type': 'stream_start'}));
+        async.flushMicrotasks();
+
+        final progress = events.singleWhere(
+          (event) => event.type == 'message_admission_progress',
+        );
+        expect((progress.payload as Map)['clientMsgId'], 'app-1');
+        expect(service.isStreaming, isTrue);
+        expect(events.any((event) => event.type == 'stream_start'), isTrue);
+        service.dispose();
+        async.flushMicrotasks();
+      });
+    },
+  );
+
+  test(
     'provider-route gate filters before emit and reconnect init restores the active tuple',
     () async {
       await setupSettings();

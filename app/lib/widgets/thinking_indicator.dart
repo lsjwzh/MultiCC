@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 
 class ThinkingIndicator extends StatefulWidget {
-  const ThinkingIndicator({super.key});
+  final String label;
+  const ThinkingIndicator({super.key, this.label = 'Thinking'});
 
   @override
   State<ThinkingIndicator> createState() => _ThinkingIndicatorState();
@@ -65,7 +66,14 @@ class _ThinkingIndicatorState extends State<ThinkingIndicator>
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Text('Thinking', style: TextStyle(color: Color(0xFF8a909b), fontSize: 13)),
+            Flexible(
+              child: Text(
+                widget.label,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Color(0xFF8a909b), fontSize: 13),
+              ),
+            ),
             const SizedBox(width: 10),
             ...List.generate(3, (i) {
               return AnimatedBuilder(
