@@ -121,12 +121,30 @@ function createTaskBoardRuntime(deps) {
   }
 
   function notify(dirId, taskIds, kind) {
-    // Always broadcast to metaClients (dirId=null) so meta.html always gets updates.
+    // Fan out to BOTH channels. workspaceBroadcast(dir) delivers to that
+    // directory's /ws/workspace sockets AND mirrors the payload to the Meta
+    // channel, so one dir-scoped call feeds manage.html's board, the task chat
+    // view and meta.html at once. Broadcasting with dirId=null only ever
+    // reached metaClients — the board on manage.html then never updated live
+    // and needed a manual refresh. Callers that only know the task id (every
+    // updateBoardTask) get their directory resolved here.
     // kind='created' signals a new task was just tagged, for归拢中→定位 animation.
     const payload = { type: 'task_board_update', taskIds };
     if (kind) payload.kind = kind;
-    try { workspaceBroadcast(null, payload); }
-    catch (_) {}
+    const dirs = new Set();
+    if (dirId) dirs.add(dirId);
+    for (const id of Array.isArray(taskIds) ? taskIds : []) {
+      const task = board.tasks[id];
+      if (!task) continue;
+      let resolved = null;
+      try { resolved = core.taskDirId(board, task); } catch (_) { resolved = null; }
+      if (resolved) dirs.add(resolved);
+    }
+    // No known directory: Meta still gets it (dirId=null is the Meta-only path).
+    try {
+      if (!dirs.size) workspaceBroadcast(null, payload);
+      else for (const dir of dirs) workspaceBroadcast(dir, payload);
+    } catch (_) {}
   }
 
   // M3 · per-task worktree service (D2): the worktree belongs to the task, not
@@ -1993,11 +2011,19 @@ function createTaskBoardRuntime(deps) {
     const pickCli = String(req.body?.cli || '').trim();
     const pickProvider = String(req.body?.provider || '').trim();
     const pickModel = String(req.body?.model || '').trim();
-    const runtime = (pickCli || pickProvider || pickModel)
+    // Auto Provider pick: a virtual pool, not a provider id. It is passed
+    // through untouched — createSessionRecord owns the one validator (catalog,
+    // protocol, trust domain, attempt budget) and rejects a bad pool there.
+    const rawSelection = req.body?.providerSelection;
+    const pickSelection = rawSelection && typeof rawSelection === 'object' && !Array.isArray(rawSelection)
+      ? rawSelection
+      : null;
+    const runtime = (pickCli || pickProvider || pickModel || pickSelection)
       ? {
         ...(pickCli ? { cli: pickCli } : {}),
         ...(pickProvider ? { provider: pickProvider } : {}),
         ...(pickModel ? { model: pickModel } : {}),
+        ...(pickSelection ? { providerSelection: pickSelection } : {}),
       }
       : null;
     const result = await dispatchTaskStart({
@@ -2205,13 +2231,20 @@ function createTaskBoardRuntime(deps) {
     // rejection); otherwise the host defaults apply.
     const cli = runtime?.cli || commanderRec?.cli || 'claude';
     const inheritCommander = !commanderRec || commanderRec.cli === cli;
+    // An Auto pick carries a pool instead of a provider id: leave `provider`
+    // unset so createSessionRecord derives the concrete manual fallback from
+    // the pool's primary candidate (the rule the chat picker already follows).
+    const autoSelection = runtime?.providerSelection || null;
     const created = await createSessionRecord({
       dir,
       cli,
       kind: 'chat',
       label: `任务 · ${String(task.title || '').slice(0, 40)}`,
       model: runtime?.model ?? (inheritCommander ? commanderRec?.model || null : null),
-      provider: runtime?.provider ?? (inheritCommander ? commanderRec?.provider || '' : ''),
+      provider: autoSelection && !runtime?.provider
+        ? undefined
+        : (runtime?.provider ?? (inheritCommander ? commanderRec?.provider || '' : '')),
+      ...(autoSelection ? { providerSelection: autoSelection } : {}),
       effort: inheritCommander ? commanderRec?.effort || null : null,
       taskBoundTaskId: task.id,
       persistence: 'required',
