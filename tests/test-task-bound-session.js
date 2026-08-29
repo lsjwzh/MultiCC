@@ -971,3 +971,90 @@ test('suggested-runtime skips synthetic ids and falls back to host defaults', as
     { cli: res.body.cli, provider: res.body.provider, model: res.body.model, source: res.body.source },
     { cli: 'claude', provider: '', model: null, source: 'default' });
 });
+
+/* ── Auto Provider pick (⚡ Auto · <protocol>) travels as a pool, not an id ── */
+
+test('an Auto provider pick reaches session creation as a pool with no concrete provider', async () => {
+  const { routes, created } = mkRuntimePickFixture();
+  const selection = {
+    version: 1,
+    mode: 'auto',
+    protocol: 'anthropic',
+    candidates: [
+      { providerId: 'p-glm', model: 'glm-4.7', priority: 1, enabled: true },
+      { providerId: 'p-kimi', model: null, priority: 2, enabled: true },
+    ],
+    maxAttempts: 2,
+    sticky: true,
+    allowCrossTrust: false,
+  };
+  const res = response();
+  await routes.get('POST /api/task-board/send')({
+    body: {
+      text: '新任务：走 Auto', dirId: 'dir-1', clientMsgId: 'ck-auto',
+      cli: 'claude', providerSelection: selection,
+    },
+  }, res);
+
+  assert.equal(res.code, 200);
+  assert.equal(created.length, 1);
+  const input = created[0];
+  assert.equal(input.cli, 'claude');
+  assert.deepEqual(input.providerSelection, selection, 'the pool rides through untouched');
+  // Auto has no single provider: leaving the field unset lets createSessionRecord
+  // derive the manual fallback from the primary candidate. An empty string would
+  // instead pin "no provider" and silently defeat the pool.
+  assert.equal('provider' in input && input.provider !== undefined, false,
+    'no concrete provider is pinned for an Auto pick');
+
+  // An explicit provider alongside a pool still wins (manual override).
+  const both = response();
+  await routes.get('POST /api/task-board/send')({
+    body: {
+      text: '新任务：Auto + 明确 provider', dirId: 'dir-1', clientMsgId: 'ck-auto-2',
+      cli: 'claude', provider: 'p-pinned', providerSelection: selection,
+    },
+  }, both);
+  assert.equal(both.code, 200);
+  assert.equal(created[1].provider, 'p-pinned');
+  assert.deepEqual(created[1].providerSelection, selection);
+
+  // A malformed selection is not a pool — it must never reach creation as one.
+  const junk = response();
+  await routes.get('POST /api/task-board/send')({
+    body: {
+      text: '新任务：坏 selection', dirId: 'dir-1', clientMsgId: 'ck-auto-3',
+      cli: 'claude', providerSelection: 'auto',
+    },
+  }, junk);
+  assert.equal(junk.code, 200);
+  assert.equal(created[2].providerSelection, undefined);
+});
+
+/* ── live board updates reach the directory sockets, not just Meta ── */
+
+test('board notifications fan out to the task directory, not only the Meta channel', async () => {
+  const broadcasts = [];
+  const { runtime } = mkRuntime({
+    workspaceBroadcast: (dirId, payload) => broadcasts.push({ dirId, payload }),
+  });
+  const routes = mkRoutes(runtime);
+  seedTask(runtime, {
+    id: 'task-n', title: '通知', status: 'active',
+    refs: [{ sessionId: 'sess-x', dirId: 'dir-1', ts: 1 }],
+  });
+
+  const res = response();
+  await routes.get('POST /api/task-board/tasks/:taskId/status')(
+    { params: { taskId: 'task-n' }, body: { status: 'done' } }, res);
+  assert.equal(res.code, 200);
+
+  const updates = broadcasts.filter(b => b.payload?.type === 'task_board_update');
+  assert.ok(updates.length >= 1, 'a board update was broadcast');
+  // broadcast(null, …) only ever reaches /ws/meta — manage.html and the task
+  // chat view listen on /ws/workspace?dirId=…, so a null fan-out left the board
+  // stale until a manual refresh.
+  assert.ok(updates.some(u => u.dirId === 'dir-1'),
+    'the update is addressed to the task directory');
+  assert.ok(updates.every(u => u.payload.taskIds.includes('task-n')));
+});
