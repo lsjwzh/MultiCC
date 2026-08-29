@@ -120,6 +120,11 @@ function _tbTaskActionsHtml(task) {
   return `${lifecycle}${worktree}`;
 }
 
+function _tbOriginHtml(task) {
+  const origin = window.MultiCCTaskBoardUi.taskOrigin(task);
+  return `<span class="tb-origin tb-origin-${origin.key}" title="${_tbEsc(origin.title)}">${origin.icon} ${_tbEsc(origin.label)}</span>`;
+}
+
 function _tbRoutingHtml(task) {
   const label = window.MultiCCTaskBoardUi.taskRoutingLabel(task);
   return label ? `<span class="tb-route-state">🫡 ${_tbEsc(label)}</span>` : '';
@@ -180,7 +185,7 @@ function _tbTaskRowHtml(task) {
     <div class="tb-task${display.done ? ' done' : ''}${clsRun}" data-task-id="${_tbEsc(task.id)}" title="在聊天视图中打开" onclick="openTaskChatView('${_tbEsc(task.id)}')">
       ${_tbStatusIcon(display)}
       <span class="tb-title-cell">
-        <span class="tb-title">${_tbEsc(task.title)}</span>
+        <span class="tb-title">${_tbOriginHtml(task)}${_tbEsc(task.title)}</span>
         ${body}
       </span>
       <span class="tb-task-meta"><span class="tb-run-state st-tone-${display.tone}">${_tbEsc(display.label)}</span>${_tbWorkspaceHtml(task)}${_tbRoutingHtml(task)}${attempt}${_tbModuleAssignmentHtml(task)}${_tbTaskActionsHtml(task)}${_tbQuickArchiveHtml(task)}<span class="tb-dim">${task.refCount}轮 · ${_tbEsc(_tbTimeAgo(task.lastTs))}</span></span>

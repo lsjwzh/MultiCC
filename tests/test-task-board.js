@@ -808,6 +808,86 @@ test('a released delivery claim returns its routed task card to queued', () => {
   assert.equal(runtime.getBoard().tasks['tsk-release'].runState, 'queued');
 });
 
+test('task cards record whether they were started on the board or inside a chat', async () => {
+  const { runtime, sessionMessages } = mkRuntime({});
+  const routes = new Map();
+  runtime.mountRoutes({ get: (path_, h) => routes.set(path_, h), post: (path_, h) => routes.set(path_, h) });
+  const res = { code: 200, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } };
+  routes.get('/api/task-board/send')({ body: { dirId: 'dir-1', text: '独立任务' } }, res);
+  await new Promise(resolve => setImmediate(resolve));
+  const boardTaskId = res.body.taskId;
+  assert.equal(runtime.getBoard().tasks[boardTaskId].origin, 'board');
+  assert.equal(sessionMessages[0].options.taskSource, 'task-board');
+
+  // The same admission arriving through the persisted message reads the origin
+  // off the trusted taskSource, so whichever side creates the card first
+  // (the send indexes it only AFTER the message is persisted) agrees.
+  const chatTask = {
+    id: 'u9', role: 'user', content: '会话里冒出来的任务', ts: 30,
+    taskId: 'tsk-from-chat', taskStart: true, taskSource: 'router-tool',
+    taskText: '会话里冒出来的任务',
+  };
+  assert.equal(runtime.onMessagePersisted('sess-1', chatTask), true);
+  assert.equal(runtime.getBoard().tasks['tsk-from-chat'].origin, 'session');
+
+  const dto = core.buildBoardDto(runtime.getBoard(), () => 'idle');
+  const byId = new Map(dto.tasks.map(task => [task.id, task]));
+  assert.equal(byId.get(boardTaskId).origin, 'board');
+  assert.equal(byId.get('tsk-from-chat').origin, 'session');
+});
+
+test('a board send owns the origin marker even when the persisted message indexes the card first', async () => {
+  const { runtime } = mkRuntime({});
+  // The race: onMessagePersisted lands before dispatchTaskStart's own
+  // ensureTaskIndex. Both read the same taskSource, so the marker is stable.
+  const boardMessage = {
+    id: 'u1', role: 'user', content: '独立任务', ts: 5,
+    taskId: 'tsk-race', taskStart: true, taskSource: 'commander', taskText: '独立任务',
+  };
+  assert.equal(runtime.onMessagePersisted('sess-1', boardMessage), true);
+  assert.equal(runtime.getBoard().tasks['tsk-race'].origin, 'board');
+});
+
+test('cards written before the origin marker fall back to the id shape a board send mints', () => {
+  const board = core.normalizeBoard({
+    modules: { 'mod-1': { id: 'mod-1', name: '模块', source: 'ai', dirId: 'dir-1' } },
+    tasks: {
+      // stableTaskId(): sha256 digest, only ever minted by a board send.
+      'tsk-0123456789abcdef0123456789abcdef': {
+        id: 'tsk-0123456789abcdef0123456789abcdef', moduleId: 'mod-1', title: '旧独立任务', refs: [],
+      },
+      'tsk-router-0123456789abcdef01234567': {
+        id: 'tsk-router-0123456789abcdef01234567', moduleId: 'mod-1', title: '旧路由任务', refs: [],
+      },
+      'tsk_0123456789abcdef0123456789abcdef': {
+        id: 'tsk_0123456789abcdef0123456789abcdef', moduleId: 'mod-1', title: '旧会话任务', refs: [],
+      },
+      'tsk-mfk1s2-ab12cd': {
+        id: 'tsk-mfk1s2-ab12cd', moduleId: 'mod-1', title: '旧归类任务', refs: [],
+      },
+      'tsk-explicit': {
+        id: 'tsk-explicit', moduleId: 'mod-1', title: '已标记', refs: [], origin: 'board',
+      },
+    },
+  });
+  assert.equal(board.tasks['tsk-0123456789abcdef0123456789abcdef'].origin, 'board');
+  assert.equal(board.tasks['tsk-router-0123456789abcdef01234567'].origin, 'session');
+  assert.equal(board.tasks['tsk_0123456789abcdef0123456789abcdef'].origin, 'session');
+  assert.equal(board.tasks['tsk-mfk1s2-ab12cd'].origin, 'session');
+  assert.equal(board.tasks['tsk-explicit'].origin, 'board');
+});
+
+test('the task row renders the origin marker from the DTO, or from the id on an old server', () => {
+  assert.deepEqual(taskBoardUi.taskOrigin({ id: 'tsk-x', origin: 'board' }).key, 'board');
+  assert.deepEqual(taskBoardUi.taskOrigin({ id: 'tsk-x', origin: 'session' }).key, 'session');
+  assert.equal(taskBoardUi.taskOrigin({ id: 'tsk-0123456789abcdef0123456789abcdef' }).key, 'board');
+  assert.equal(taskBoardUi.taskOrigin({ id: 'tsk_0123456789abcdef0123456789abcdef' }).key, 'session');
+  assert.notEqual(taskBoardUi.taskOrigin({ origin: 'board' }).label,
+    taskBoardUi.taskOrigin({ origin: 'session' }).label);
+  const row = fs.readFileSync(path.join(__dirname, '..', 'public', 'manage-taskboard.js'), 'utf8');
+  assert.match(row, /_tbOriginHtml\(task\)\}\$\{_tbEsc\(task\.title\)\}/);
+});
+
 test('a task-bound session resumes its card after a cancel dropped the turn lineage', () => {
   // Observed on #A1N3: the user cancelled, classify recorded E and the card
   // went to error. The next turn was admitted with taskId null (schedule

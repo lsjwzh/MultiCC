@@ -691,6 +691,11 @@
     .tb-task.done .tb-dot{background:var(--faint)}
     .tb-task.done .tb-title{color:var(--faint);text-decoration:line-through}
     .tb-task .tb-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    /* Origin marker: 独立任务 (started on the board) vs 会话任务 (surfaced in a
+       chat). Tone-only distinction — the label text carries the meaning. */
+    .tb-origin{display:inline-block;font-size:10px;padding:0 5px;margin-right:6px;border-radius:9px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+    .tb-origin-board{color:var(--codex)}
+    .tb-task.done .tb-origin{color:var(--faint)}
     .tb-title-cell{min-width:0;display:flex;flex-direction:column;gap:2px}
     .tb-body-fold,.tb-body-detail{font-size:11px;color:var(--faint)}
     .tb-body-fold summary,.tb-body-detail summary{cursor:pointer;user-select:none;color:var(--codex)}

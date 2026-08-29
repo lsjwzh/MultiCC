@@ -90,6 +90,9 @@
      renders the status icon too, so this text is never the only signal. */
   .tb-run-state { font-size: 10px; white-space: nowrap; color: var(--st-fg, #8b949e); }
   .tb-reclassify, .tb-quick-archive { padding: 1px 6px; font-size: 10px; background: #21262d; border-color: #30363d; }
+  .tb-origin { display: inline-block; font-size: 10px; padding: 0 5px; margin-right: 6px; border-radius: 9px;
+               border: 1px solid #30363d; color: #8b949e; white-space: nowrap; }
+  .tb-origin-board { color: #58a6ff; }
   /* No status animation here: whether a status may animate is decided once, in
      status-presentation.js (.st-spin, running only). */
   .tb-task .tb-icon { font-size: 11px; line-height: 1; }
@@ -360,6 +363,12 @@ function scheduleTbRefresh(evt) {
   }, 400);
 }
 
+// 独立任务 (started on the board) vs 会话任务 (surfaced inside a chat).
+function originHtml(task) {
+  const origin = window.MultiCCTaskBoardUi.taskOrigin(task);
+  return `<span class="tb-origin tb-origin-${origin.key}" title="${esc(origin.title)}">${origin.icon} ${esc(origin.label)}</span>`;
+}
+
 function taskRoutingHtml(task) {
   const label = window.MultiCCTaskBoardUi.taskRoutingLabel(task);
   return label ? `<span class="tb-route-state">🫡 ${esc(label)}</span>` : '';
@@ -436,7 +445,7 @@ function createTaskBoardRow(task) {
     ? `<span>${Number(task.attemptCount)} 次投递</span>` : '';
   row.innerHTML = `
     ${statusIconHtml(display)}
-    <span class="tb-title-cell"><span class="tb-title">${esc(task.title)}</span>${body}</span>
+    <span class="tb-title-cell"><span class="tb-title">${originHtml(task)}${esc(task.title)}</span>${body}</span>
     <span class="tb-meta"><span class="tb-run-state st-tone-${display.tone}">${esc(display.label)}</span>${taskRoutingHtml(task)}${attempt}${assignment ? `<button class="tb-reclassify"${assignment.running ? ' disabled' : ''} title="${esc(assignment.lastError || '')}">${assignment.running ? '归类中…' : assignment.lastError ? '重新归类' : '归类'}</button>` : ''}<button class="tb-quick-archive" title="快捷归档该任务">归档</button><span>${task.refCount}轮 · ${esc(timeAgo(task.lastTs))}</span></span>`;
   row.querySelector('.tb-body-fold')?.addEventListener('click', event => event.stopPropagation());
   row.onclick = () => { selectedTask = task.id; renderTaskBoard(); loadTaskDetail(task.id); };

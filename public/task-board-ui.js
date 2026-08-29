@@ -104,6 +104,20 @@
     };
   }
 
+  // Where the card came from. The board mixes two admissions that otherwise
+  // look identical on the row: an independent task started from the board (it
+  // owns a task-bound session) and a task that surfaced inside an ongoing
+  // chat. The server stamps `origin`; older cards fall back to the id shape a
+  // board send mints (see legacyTaskOrigin in src/task-board.js).
+  function taskOrigin(task) {
+    const origin = task?.origin === 'board' || task?.origin === 'session'
+      ? task.origin
+      : /^tsk-[0-9a-f]{32}$/.test(String(task?.id || '')) ? 'board' : 'session';
+    return origin === 'board'
+      ? { key: 'board', icon: '\uD83D\uDCCB', label: '\u72EC\u7ACB\u4EFB\u52A1', title: '\u5728\u4EFB\u52A1\u677F\u521B\u5EFA\uFF0C\u8DD1\u5728\u5B83\u81EA\u5DF1\u7684\u4EFB\u52A1\u4F1A\u8BDD\u91CC' }
+      : { key: 'session', icon: '\uD83D\uDCAC', label: '\u4F1A\u8BDD\u4EFB\u52A1', title: '\u5728\u4F1A\u8BDD\u5BF9\u8BDD\u4E2D\u4EA7\u751F\u7684\u4EFB\u52A1' };
+  }
+
   function taskRoutingLabel(task) {
     // The task card intentionally hides the Commander→worker routing chip: a card
     // should read as just "新任务 · 进行中" and let its title/runState sync from the
@@ -147,6 +161,7 @@
     reconcileSnapshot,
     partitionTaskIdentity,
     taskDisplayState,
+    taskOrigin,
     taskRoutingLabel,
   });
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
