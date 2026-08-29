@@ -313,7 +313,7 @@
   "providerDeleteLocalConfirm": "仅删除 MultiCC 本地副本「{name}」，不会修改 CC-Switch；以后从 CC-Switch 同步时可能重新导入。是否继续？",
   "auxAssistant": "AI 助手",
   "auxAssistantHint": "助手模型配置、健康状态、重跑所有会话、任务历史",
-  "agentResources": "Agent 资源 / 缓存",
+  "agentResources": "Agent 资源",
   "agentResourcesHint": "Skills、技能同步、Claude 历史会话、临时上传缓存",
   "serverSettings": "服务端设置",
   "serverSettingsHint": "以下设置读写服务器全局配置。消息桥接与推送凭证可在 App 中管理；微信首次扫码和语音密钥仍需网页管理台。密码类项仅服务器本机可改。",
