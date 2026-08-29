@@ -39,6 +39,55 @@ function _tbTimeAgo(ts) {
   return `${Math.floor(s / 86400)}天前`;
 }
 
+// ── Auto Provider (composer picks) ──────────────────────────────────────────
+// The chat AI-config picker offers "⚡ Auto · <protocol>" alongside the concrete
+// providers; the task-board composer offers the same choice with a default pool
+// instead of a full candidate editor (the bound session's own picker still
+// edits it afterwards). Same wire contract as the chat picker: a virtual
+// selection never becomes session.provider — the server resolves one concrete
+// provider per invocation.
+const TB_AUTO_PREFIX = '__auto__:';
+const TB_PROTOCOL_LABELS = {
+  anthropic: 'Anthropic Messages',
+  openai_responses: 'OpenAI Responses',
+  openai_chat: 'OpenAI Chat Completions',
+};
+const TB_AUTO_MAX_CANDIDATES = 12;    // src/auto-provider-config.js MAX_CANDIDATES
+
+function _tbProtocolOf(provider) {
+  const value = provider && (provider.protocol || provider.apiFormat);
+  return TB_PROTOCOL_LABELS[value] ? value : null;
+}
+
+// Default pool for a protocol: the user-managed providers only. An Official
+// login and an API key are separate trust domains, and the server refuses a
+// mixed pool without explicit consent — a consent the composer has nowhere to
+// ask for, so it never builds one (the session picker still can).
+function _tbAutoPool(list, protocol) {
+  return (Array.isArray(list) ? list : [])
+    .filter(p => p && p.id && p.isOfficial !== true && _tbProtocolOf(p) === protocol)
+    .slice(0, TB_AUTO_MAX_CANDIDATES);
+}
+
+function _tbAutoSelection(list, protocol) {
+  const pool = _tbAutoPool(list, protocol);
+  if (pool.length < 2) return null;
+  return {
+    version: 1,
+    mode: 'auto',
+    protocol,
+    candidates: pool.map((p, index) => ({
+      providerId: p.id,
+      model: p.model || null,
+      priority: index + 1,
+      enabled: true,
+    })),
+    maxAttempts: Math.min(3, pool.length),
+    sticky: true,
+    allowCrossTrust: false,
+  };
+}
+
 function _tbModuleAssignmentHtml(task) {
   const assignment = task && task.moduleAssignment;
   if (!assignment) return '';
@@ -368,9 +417,17 @@ function createTbComposer(host, opts) {
     const sugName = runtimeSuggest?.provider
       ? ((providerCache.get(sugCli) || []).find(p => p.id === runtimeSuggest.provider)?.name || runtimeSuggest.provider)
       : '';
+    // Auto entries first: one per protocol that has at least two managed
+    // providers to fail over between.
+    const autoHtml = [...new Set(list.map(_tbProtocolOf).filter(Boolean))]
+      .map(protocol => ({ protocol, pool: _tbAutoPool(list, protocol) }))
+      .filter(entry => entry.pool.length >= 2)
+      .map(entry => `<option value="${TB_AUTO_PREFIX}${_tbEsc(entry.protocol)}" title="按列表顺序优先，失败自动切换下一个；候选池可在任务会话的 AI 配置里细调">⚡ Auto · ${_tbEsc(TB_PROTOCOL_LABELS[entry.protocol])}（${entry.pool.length} 个候选）</option>`)
+      .join('');
     provSel.innerHTML = `<option value="">Provider · ${sugName ? `最近活跃 ${_tbEsc(sugName)}` : '默认'}</option>`
+      + autoHtml
       + list.map(p => `<option value="${_tbEsc(p.id)}">${_tbEsc(p.name || p.id)}</option>`).join('');
-    if (keep && list.some(p => p.id === keep)) provSel.value = keep;
+    if (keep && [...provSel.options].some(option => option.value === keep)) provSel.value = keep;
   };
 
   cliSel.onchange = async () => {
@@ -414,10 +471,20 @@ function createTbComposer(host, opts) {
     // so the new task's session follows it by default; a provider picked
     // without a cli rides the cli its list was filtered by (provListCli),
     // never the commander's cli from under a foreign provider.
-    const effCli = cliSel.value || runtimeSuggest?.cli || (provSel.value ? provListCli : '');
-    const effProvider = provSel.value || runtimeSuggest?.provider || '';
+    const picked = provSel.value;
+    const autoProtocol = picked.startsWith(TB_AUTO_PREFIX) ? picked.slice(TB_AUTO_PREFIX.length) : '';
+    const effCli = cliSel.value || runtimeSuggest?.cli || (picked ? provListCli : '');
     if (effCli) payload.cli = effCli;
-    if (effProvider) payload.provider = effProvider;
+    if (autoProtocol) {
+      // Auto: send the pool, never a single provider — the server derives the
+      // concrete fallback from the pool's primary candidate.
+      const selection = _tbAutoSelection(providerCache.get(provListCli) || [], autoProtocol);
+      if (!selection) { setResult('该协议下可用于 Auto 的自管 Provider 不足两个', 'err'); return; }
+      payload.providerSelection = selection;
+    } else {
+      const effProvider = picked || runtimeSuggest?.provider || '';
+      if (effProvider) payload.provider = effProvider;
+    }
     sendBtn.disabled = true;
     setResult('路由中…');
     try {

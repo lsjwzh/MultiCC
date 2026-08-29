@@ -776,8 +776,11 @@ test('durable TaskRun changes notify task-board clients without exposing a slot'
     taskId: 'task-run-update', dirId: 'dir-1', sessionId: 'sess-1', now: 10,
   });
   assert.equal(runtime.notifyTaskRun(task.id), true);
+  // Addressed to the task's directory: workspace.broadcast(dir) reaches that
+  // directory's /ws/workspace sockets AND mirrors to Meta, so manage.html's
+  // board updates live. A null dirId would only ever have reached Meta.
   assert.deepEqual(broadcasts.at(-1), {
-    dirId: null,
+    dirId: 'dir-1',
     payload: { type: 'task_board_update', taskIds: [task.id] },
   });
   assert.equal(JSON.stringify(broadcasts.at(-1)).includes('slot'), false);
@@ -838,7 +841,8 @@ test('global gateway projects a cross-Fleet worker admission with the durable op
   assert.equal(task.routing.targetSessionId, 'worker-2');
   assert.equal(task.routing.workerSessionId, 'worker-2');
   assert.equal(task.routing.operationId, 'op-durable-worker-2');
-  assert.equal(broadcasts.at(-1).dirId, null, 'meta clients receive the canonical global board update');
+  assert.equal(broadcasts.at(-1).dirId, 'dir-2',
+    "the update is addressed to the worker's directory; broadcast mirrors it to meta clients");
 });
 
 test('only the real Voice Router may project a cross-Fleet admission', () => {
