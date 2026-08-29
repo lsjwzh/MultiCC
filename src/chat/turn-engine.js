@@ -62,6 +62,61 @@ const { createOpencodeContextGuard } = require('./opencode-context-guard');
 const { isInternalExecutionSlot } = require('../session/public-session-access');
 const { providerSelectionDto } = require('../auto-provider-config');
 
+function admissionRootCause(value) {
+  const raw = value instanceof Error
+    ? value.message
+    : typeof value === 'string' ? value : '';
+  return raw.trim() ? sanitizeApiErrorMessage(raw) : null;
+}
+
+async function deliverAfterPendingMemory(pendingMemory, emitProgress, deliver) {
+  if (!pendingMemory) return deliver();
+  const emit = progress => {
+    try { emitProgress?.(progress); } catch (_) {}
+  };
+  emit({ state: 'waiting', reason: 'memory_distill_pending' });
+  let memoryResult;
+  try {
+    memoryResult = await Promise.resolve(pendingMemory);
+  } catch (error) {
+    memoryResult = { error };
+  }
+  const reason = memoryResult?.error
+    ? 'memory_distill_failed'
+    : memoryResult?.skipped ? 'memory_distill_skipped' : null;
+  const memoryRootCause = reason === 'memory_distill_failed'
+    ? admissionRootCause(memoryResult.error)
+    : null;
+  emit({
+    state: reason ? 'skipped' : 'ready',
+    ...(reason ? { reason } : {}),
+    ...(memoryRootCause ? { rootCause: memoryRootCause } : {}),
+  });
+  try {
+    const delivered = await deliver();
+    if (delivered?.ok === false) {
+      const code = typeof delivered.code === 'string' && /^[a-z0-9_]{1,64}$/.test(delivered.code)
+        ? delivered.code : null;
+      const rootCause = admissionRootCause(delivered.error || delivered.message);
+      emit({
+        state: 'failed',
+        reason: 'message_delivery_rejected',
+        ...(code ? { code } : {}),
+        ...(rootCause ? { rootCause } : {}),
+      });
+    }
+    return delivered;
+  } catch (error) {
+    const rootCause = admissionRootCause(error);
+    emit({
+      state: 'failed',
+      reason: 'message_delivery_failed',
+      ...(rootCause ? { rootCause } : {}),
+    });
+    throw error;
+  }
+}
+
 function appendAdapterAssistantText(current, text) {
   const prior = String(current || '');
   const next = String(text || '');
@@ -2663,17 +2718,25 @@ function createChatTurnEngine(deps) {
           if (typeof msg.userInputRequestId === 'string' && msg.userInputRequestId.trim()) {
             turnOpts.userInputRequestId = msg.userInputRequestId.trim();
           }
-          const pendingMemory = getPendingMemoryDistill(sessionName);
+          let pendingMemory;
+          try { pendingMemory = getPendingMemoryDistill(sessionName); }
+          catch (error) { pendingMemory = Promise.reject(error); }
           const deliver = () => taskContextHost.deliverSessionMessage(sessionName, msg.text, turnOpts);
           // A pending memory distill delays delivery so the new turn sees the
-          // distilled memory. It must never EAT the message: the old shape
-          // (pendingMemory.finally(deliver)) left both the distill rejection and
-          // deliver's rejection unhandled, and returned from the handler before
-          // delivery - a failed distill silently dropped the user's message.
-          // Await through it, let a failed distill pass, and let deliver's own
-          // errors reach the handler's catch. The single-statement branches keep
-          // the 'else await deliver()' shape test-task-context-host.js pins.
-          if (pendingMemory) await Promise.resolve(pendingMemory).catch(() => {}).then(deliver);
+          // distilled memory. Surface that otherwise-invisible admission phase
+          // immediately, but always continue delivery when distillation fails.
+          if (pendingMemory) await deliverAfterPendingMemory(
+            pendingMemory,
+            progress => chatBroadcast(sessionName, {
+              type: 'message_admission_progress',
+              stage: 'memory_distill',
+              message: msg.text,
+              clientMsgId: turnOpts.clientMsgId || null,
+              at: Date.now(),
+              ...progress,
+            }),
+            deliver,
+          );
           else await deliver();
           return;
         }
@@ -2712,6 +2775,7 @@ module.exports = {
   appendAdapterAssistantText,
   createChatTurnEngine,
   createDeliveryProbeRegistry,
+  deliverAfterPendingMemory,
   markReplaySafeAssistantEnvelope,
   normalizeClaudeAssistantSnapshot,
   normalizeClaudeToolResultContent,

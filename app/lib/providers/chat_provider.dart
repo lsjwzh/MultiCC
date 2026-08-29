@@ -30,6 +30,40 @@ bool _isRecoverableCodexReconnectErrorText(String text) {
           text.contains('response.completed'));
 }
 
+@visibleForTesting
+String? admissionProgressI18nKey(Map<String, dynamic> payload) {
+  switch (payload['state']?.toString()) {
+    case 'waiting':
+      return 'admissionMemoryWaiting';
+    case 'ready':
+      return 'admissionMemoryReady';
+    case 'skipped':
+      return payload['reason'] == 'memory_distill_failed'
+          ? 'admissionMemoryFailed'
+          : 'admissionMemorySkipped';
+    default:
+      return null;
+  }
+}
+
+@visibleForTesting
+String? admissionProgressDetail(Map<String, dynamic> payload) {
+  for (final key in const ['rootCause', 'code']) {
+    final value = payload[key];
+    if (value is! String) continue;
+    final normalized = value
+        .replaceAll(RegExp(r'[\r\n\t]+'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    if (normalized.isNotEmpty) {
+      return normalized.length > 240
+          ? normalized.substring(0, 240)
+          : normalized;
+    }
+  }
+  return null;
+}
+
 // ── Staged user sends: a sent message waiting for the server's FIFO verdict ─
 //
 // 对齐 web 的 stagedUserBubbles：sendMessage 不再立刻把用户气泡画进对话区，而是
@@ -101,8 +135,19 @@ StagedVerdict resolveStagedQueueEvent(
     return null;
   }
 
+  StagedUserSend? byClientMsgId(String id) {
+    for (final s in staged) {
+      if (s.clientMsgId == id && !s.resolved) return s;
+    }
+    return null;
+  }
+
   final rawEntry = payload['entryId']?.toString();
   final entryId = (rawEntry != null && rawEntry.isNotEmpty) ? rawEntry : null;
+  final rawClient = payload['clientMsgId']?.toString();
+  final clientMsgId = (rawClient != null && rawClient.isNotEmpty)
+      ? rawClient
+      : null;
 
   switch (event) {
     case 'queued':
@@ -111,8 +156,15 @@ StagedVerdict resolveStagedQueueEvent(
       if (entryId != null && byEntryId(entryId) != null) {
         return StagedVerdict.keep;
       }
-      // admit 裁决按发送顺序到达：绑到最早一条还没绑 entryId 的暂存。
-      final target = firstUnbound();
+      // New servers carry clientMsgId, which remains exact even when an earlier
+      // pre-FIFO progress event already committed another bubble. Legacy frames
+      // retain the original serial-admission fallback.
+      final target = clientMsgId == null
+          ? firstUnbound()
+          : byClientMsgId(clientMsgId);
+      if (target?.entryId != null && target?.entryId != entryId) {
+        return StagedVerdict.keep;
+      }
       // queued:false = 立即执行 → 显示气泡；queued:true = 进队列 → 暂存等 started。
       final resolution = payload['queued'] == false
           ? StagedResolution.commit
@@ -227,6 +279,18 @@ class StagedSendTracker {
     onCommit(staged);
   }
 
+  /// Commits the exact client-correlated send when a pre-FIFO admission event
+  /// confirms the server received it. Returns false for another window or a
+  /// replay whose bubble was already committed.
+  bool commitByClientMsgId(String clientMsgId) {
+    for (final staged in List<StagedUserSend>.of(_staged)) {
+      if (staged.clientMsgId != clientMsgId) continue;
+      commit(staged);
+      return true;
+    }
+    return false;
+  }
+
   /// 用户在队列面板取消了这条暂存消息：丢弃，不显示气泡（幂等）。
   void discard(StagedUserSend staged) {
     if (staged.resolved) return;
@@ -304,6 +368,10 @@ class ChatProvider extends ChangeNotifier {
 
   String _statusText = 'Disconnected';
   String get statusText => _statusText;
+
+  String? _admissionProgressText;
+  String? _admissionProgressClientMsgId;
+  String? get admissionProgressText => _admissionProgressText;
 
   SessionQueueState _sessionQueue = const SessionQueueState();
   SessionQueueState get sessionQueue => _sessionQueue;
@@ -1023,7 +1091,15 @@ class ChatProvider extends ChangeNotifier {
         break;
 
       case 'message_start':
+        _admissionProgressText = null;
+        _admissionProgressClientMsgId = null;
         _onMessageStart(evt.payload as Map<String, dynamic>?);
+        break;
+
+      case 'stream_start':
+        _admissionProgressText = null;
+        _admissionProgressClientMsgId = null;
+        notifyListeners();
         break;
 
       case 'content_block_start':
@@ -1224,6 +1300,60 @@ class ChatProvider extends ChangeNotifier {
           break;
         }
 
+      case 'message_admission_progress':
+        {
+          final p = evt.payload as Map<String, dynamic>;
+          final clientMsgId = (p['clientMsgId'] ?? '').toString().trim();
+          final text = (p['message'] ?? '').toString();
+          if (clientMsgId.isNotEmpty &&
+              !_messages.any((message) => message.clientMsgId == clientMsgId)) {
+            final committed = _stagedTracker.commitByClientMsgId(clientMsgId);
+            if (!committed && text.isNotEmpty) {
+              _messages.add(
+                ChatMessage(
+                  role: MessageRole.user,
+                  content: text,
+                  clientMsgId: clientMsgId,
+                ),
+              );
+            }
+          }
+          if (p['state'] == 'failed') {
+            if (clientMsgId.isEmpty ||
+                clientMsgId == _admissionProgressClientMsgId) {
+              _admissionProgressText = null;
+              _admissionProgressClientMsgId = null;
+            }
+            _statusText = t('admissionDeliveryFailedShort');
+            final detail = admissionProgressDetail(p);
+            _addSystemMsg(
+              detail == null
+                  ? t('admissionDeliveryFailed')
+                  : t('admissionDeliveryFailedWithCause', {'cause': detail}),
+            );
+            break;
+          }
+          final key = admissionProgressI18nKey(p);
+          if (key == null) break;
+          _admissionProgressClientMsgId = clientMsgId.isEmpty
+              ? null
+              : clientMsgId;
+          final detail = p['reason'] == 'memory_distill_failed'
+              ? admissionProgressDetail(p)
+              : null;
+          _admissionProgressText = detail == null
+              ? t(key)
+              : t('admissionMemoryFailedWithCause', {'cause': detail});
+          _statusText = _admissionProgressText!;
+          if (p['state'] == 'skipped' &&
+              p['reason'] == 'memory_distill_failed') {
+            _addSystemMsg(_admissionProgressText!);
+          } else {
+            notifyListeners();
+          }
+          break;
+        }
+
       case 'session_queue':
         {
           final p = evt.payload as Map<String, dynamic>;
@@ -1235,9 +1365,24 @@ class ChatProvider extends ChangeNotifier {
           );
           // 裁决暂存消息：立即执行则显示气泡，进队列则继续暂存，取消则丢弃。
           _stagedTracker.reconcile(event, p);
+          final clientMsgId = p['clientMsgId']?.toString();
+          final ownsAdmission =
+              clientMsgId != null &&
+              clientMsgId == _admissionProgressClientMsgId;
           if (event == 'queued') {
-            final position = p['queuePosition'];
-            _statusText = position == null ? '消息已持久排队' : '消息已排队（第 $position 位）';
+            if (ownsAdmission && p['queued'] == false) {
+              _admissionProgressText = t('admissionStarting');
+              _statusText = _admissionProgressText!;
+            } else {
+              if (ownsAdmission) {
+                _admissionProgressText = null;
+                _admissionProgressClientMsgId = null;
+              }
+              final position = p['queuePosition'];
+              _statusText = position == null
+                  ? '消息已持久排队'
+                  : '消息已排队（第 $position 位）';
+            }
           } else if (event == 'frozen') {
             _statusText = '队列已冻结：${(p['freezeReason'] ?? '当前任务尚未成功完成')}';
           } else if (event == 'started') {
@@ -1500,11 +1645,13 @@ class ChatProvider extends ChangeNotifier {
     _providerCatalogBaseUrls
       ..clear()
       ..addEntries(
-        catalog.map((provider) {
-          final id = provider['id']?.toString() ?? '';
-          final baseUrl = provider['baseUrl']?.toString() ?? '';
-          return MapEntry(id, baseUrl);
-        }).where((entry) => entry.key.isNotEmpty),
+        catalog
+            .map((provider) {
+              final id = provider['id']?.toString() ?? '';
+              final baseUrl = provider['baseUrl']?.toString() ?? '';
+              return MapEntry(id, baseUrl);
+            })
+            .where((entry) => entry.key.isNotEmpty),
       );
     _syncActualProviderBaseUrl();
     notifyListeners();
@@ -2040,6 +2187,8 @@ class ChatProvider extends ChangeNotifier {
   }
 
   void _finishStreaming() {
+    _admissionProgressText = null;
+    _admissionProgressClientMsgId = null;
     _folder.finishStreaming();
     // Turn end: settle turn-scoped background rows (heartbeat + any
     // still-unconfirmed spinning row). Confirmed background tasks keep
