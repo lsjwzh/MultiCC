@@ -341,6 +341,11 @@ class ChatService {
         _emit('result', msg);
         break;
 
+      case 'stream_start':
+        if (!_cancelRequested) isStreaming = true;
+        _emit('stream_start', msg);
+        break;
+
       case 'error':
         isStreaming = false;
         _cancelRequested = false;
@@ -404,6 +409,10 @@ class ChatService {
 
       case 'session_queue':
         _emit('session_queue', msg);
+        break;
+
+      case 'message_admission_progress':
+        _emit('message_admission_progress', msg);
         break;
 
       case 'api_error_policy':

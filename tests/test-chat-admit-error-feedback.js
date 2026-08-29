@@ -13,7 +13,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createChatTurnEngine } = require('../src/chat/turn-engine');
+const { createChatTurnEngine, deliverAfterPendingMemory } = require('../src/chat/turn-engine');
 
 const noop = () => {};
 
@@ -85,4 +85,79 @@ test('admitChatWork passes a successful admission through untouched', async () =
   const result = await engine.admitChatWork('s1', 'hello', {});
   assert.deepEqual(result, { ok: true, entryId: 'e-1' });
   assert.equal(broadcasts.length, 0, 'no error frame on the happy path');
+});
+
+test('pending memory reports progress before delivery and then delivers exactly once', async () => {
+  let resolveMemory;
+  const pendingMemory = new Promise(resolve => { resolveMemory = resolve; });
+  const progress = [];
+  let deliveries = 0;
+  const resultPromise = deliverAfterPendingMemory(
+    pendingMemory,
+    event => progress.push(event),
+    async () => { deliveries += 1; return { ok: true }; },
+  );
+
+  await Promise.resolve();
+  assert.deepEqual(progress, [{ state: 'waiting', reason: 'memory_distill_pending' }]);
+  assert.equal(deliveries, 0, 'delivery waits until memory distillation settles');
+  resolveMemory({ updated: true });
+  assert.deepEqual(await resultPromise, { ok: true });
+  assert.deepEqual(progress, [
+    { state: 'waiting', reason: 'memory_distill_pending' },
+    { state: 'ready' },
+  ]);
+  assert.equal(deliveries, 1);
+});
+
+test('failed or skipped memory distillation remains visible and never eats the message', async t => {
+  const cases = [
+    { name: 'resolved error', pending: Promise.resolve({ updated: false, error: '502' }), reason: 'memory_distill_failed' },
+    { name: 'rejected promise', pending: Promise.reject(new Error('offline')), reason: 'memory_distill_failed' },
+    { name: 'explicit skip', pending: Promise.resolve({ updated: false, skipped: 'aux unhealthy' }), reason: 'memory_distill_skipped' },
+  ];
+  for (const current of cases) {
+    await t.test(current.name, async () => {
+      const progress = [];
+      let deliveries = 0;
+      await deliverAfterPendingMemory(current.pending, event => progress.push(event), async () => { deliveries += 1; });
+      assert.equal(deliveries, 1);
+      assert.deepEqual(progress.at(-1), {
+        state: 'skipped',
+        reason: current.reason,
+        ...(current.name === 'resolved error' ? { rootCause: '502' } : {}),
+        ...(current.name === 'rejected promise' ? { rootCause: 'offline' } : {}),
+      });
+    });
+  }
+});
+
+test('delivery failure replaces loading with a terminal admission state', async () => {
+  const progress = [];
+  await assert.rejects(
+    deliverAfterPendingMemory(
+      Promise.resolve({ updated: true }),
+      event => progress.push(event),
+      async () => { throw new Error('scheduler unavailable'); },
+    ),
+    /scheduler unavailable/,
+  );
+  assert.deepEqual(progress.at(-1), {
+    state: 'failed',
+    reason: 'message_delivery_failed',
+    rootCause: 'scheduler unavailable',
+  });
+});
+
+test('a rejected admission result also replaces loading with a terminal state', async () => {
+  const progress = [];
+  const result = await deliverAfterPendingMemory(
+    Promise.resolve({ updated: true }),
+    event => progress.push(event),
+    async () => ({ ok: false, code: 'session_not_found' }),
+  );
+  assert.deepEqual(result, { ok: false, code: 'session_not_found' });
+  assert.deepEqual(progress.at(-1), {
+    state: 'failed', reason: 'message_delivery_rejected', code: 'session_not_found',
+  });
 });
