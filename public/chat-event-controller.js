@@ -37,6 +37,19 @@
     succeeded: true,
     released: true,
   });
+  const ADMISSION_PROGRESS_LABELS = Object.freeze({
+    waiting: '已收到消息 · 正在整理会话记忆，完成后自动继续',
+    ready: '记忆整理完成 · 正在提交消息',
+    memory_distill_failed: '记忆整理失败 · 已跳过并继续提交消息',
+    memory_distill_skipped: '记忆整理已跳过 · 正在继续提交消息',
+    starting: '消息已提交 · 正在启动',
+    processing: '正在处理…',
+  });
+
+  function admissionDetail(value) {
+    if (typeof value !== 'string') return '';
+    return value.replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 240);
+  }
 
   function visibleProviderModel(value) {
     if (typeof value !== 'string') return '';
@@ -82,6 +95,7 @@
     let providerRouteTerminal = false;
     let activeProviderModelRoute = null;
     let activeProviderModelSource = '';
+    const pendingAdmissionIds = new Set();
 
     function resetProviderRouteGate() {
       providerRouteProtocolVersion = 0;
@@ -281,7 +295,7 @@
         host.transportSend?.({ type: 'cancel' });
       } else if (message.is_streaming && !state.isStreaming) {
         state.isStreaming = true;
-        liveUi.showThinking();
+        liveUi.showThinking(ADMISSION_PROGRESS_LABELS.processing);
         host.startTitleAnimation?.();
         host.updateUI?.();
       } else if (!message.is_streaming && state.isStreaming) {
@@ -536,6 +550,42 @@
           // answering window's own copy is a harmless no-op.
           host.consumeUserInputRequestId?.(message.requestId);
           break;
+        case 'message_admission_progress': {
+          const clientMsgId = typeof message.clientMsgId === 'string' ? message.clientMsgId.trim() : '';
+          const text = typeof message.message === 'string' ? message.message : '';
+          if (clientMsgId) pendingAdmissionIds.add(clientMsgId);
+          if (clientMsgId && text && !historyView.findByClientMsgId?.(clientMsgId)) {
+            host.addUserMessage?.(text, clientMsgId);
+          }
+          if (message.state === 'failed') {
+            if (clientMsgId) pendingAdmissionIds.delete(clientMsgId);
+            if (!state.isStreaming) {
+              if (pendingAdmissionIds.size) liveUi.showThinking(ADMISSION_PROGRESS_LABELS.waiting);
+              else liveUi.hideThinking();
+            }
+            const detail = admissionDetail(message.rootCause) || admissionDetail(message.code);
+            host.addSystemMsg?.(detail
+              ? `消息提交失败（原因：${detail}），请重试。`
+              : '消息提交失败（内部提交阶段），请重试。');
+            host.showNotifyToast?.('消息提交失败，请重试', 'error');
+            break;
+          }
+          const baseLabel = message.state === 'skipped'
+            ? ADMISSION_PROGRESS_LABELS[message.reason] || ADMISSION_PROGRESS_LABELS.memory_distill_skipped
+            : ADMISSION_PROGRESS_LABELS[message.state] || ADMISSION_PROGRESS_LABELS.waiting;
+          const rootCause = message.reason === 'memory_distill_failed'
+            ? admissionDetail(message.rootCause)
+            : '';
+          const label = rootCause
+            ? `记忆整理失败（根因：${rootCause}）· 已跳过并继续提交消息`
+            : baseLabel;
+          if (message.state === 'skipped' && message.reason === 'memory_distill_failed') {
+            host.showNotifyToast?.(label, 'running');
+            host.addSystemMsg?.(label);
+          }
+          if (!state.isStreaming) liveUi.showThinking(label);
+          break;
+        }
         case 'session_queue': {
           const items = Array.isArray(message.items) ? message.items : [];
           const visibleItems = message.event === 'queued' && message.queued === false
@@ -549,7 +599,11 @@
             const text = message.message;
             const clientMsgId = message.clientMsgId;
             if (message.queued === false && text && clientMsgId) {
-              if (typeof host.addUserMessage === 'function') host.addUserMessage(text, clientMsgId);
+              if (!historyView.findByClientMsgId?.(clientMsgId)) host.addUserMessage?.(text, clientMsgId);
+            }
+            if (clientMsgId && pendingAdmissionIds.delete(clientMsgId) && !state.isStreaming) {
+              if (message.queued === false) liveUi.showThinking(ADMISSION_PROGRESS_LABELS.starting);
+              else if (pendingAdmissionIds.size === 0) liveUi.hideThinking();
             }
           }
           host.renderSessionQueue?.(
@@ -602,9 +656,10 @@
           // A new turn supersedes any stale upstream-error bar; if the turn
           // fails again a fresh api_error_policy event re-shows it.
           liveUi.clearApiError?.();
+          pendingAdmissionIds.clear();
           state.isStreaming = true;
           state.lastFinishedText = '';
-          liveUi.showThinking();
+          liveUi.showThinking(ADMISSION_PROGRESS_LABELS.processing);
           host.startTitleAnimation?.();
           host.updateUI?.();
           break;

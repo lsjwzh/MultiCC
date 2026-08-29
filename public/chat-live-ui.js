@@ -820,14 +820,24 @@
       if (changed) { refreshDanmakuMeta(); scheduleDanmakuHide(); }
     }
 
-    function showThinking() {
-      if (thinkingEl) { debug('think', 'showThinking() — 已在显示，忽略'); return; }
+    function showThinking(label = 'Thinking...') {
+      const text = typeof label === 'string' && label.trim() ? label.trim() : 'Thinking...';
+      if (thinkingEl) {
+        const currentLabel = thinkingEl.querySelector('.thinking-label');
+        if (currentLabel) currentLabel.textContent = text;
+        debug('think', 'showThinking() — 更新阶段文案');
+        maybeScroll();
+        return;
+      }
       thinkingEl = doc.createElement('div');
       thinkingEl.className = 'thinking-bubble';
       const dots = doc.createElement('div');
       dots.className = 'thinking-dots';
       dots.append(doc.createElement('span'), doc.createElement('span'), doc.createElement('span'));
-      thinkingEl.append(dots, doc.createTextNode(' Thinking...'));
+      const thinkingLabel = doc.createElement('span');
+      thinkingLabel.className = 'thinking-label';
+      thinkingLabel.textContent = text;
+      thinkingEl.append(dots, thinkingLabel);
       messagesEl.appendChild(thinkingEl);
       maybeScroll();
       debug('think', 'showThinking() — 气泡已显示');

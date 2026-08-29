@@ -431,7 +431,8 @@ class _ChatViewState extends State<ChatView> {
                     goal: provider.classifyGoal,
                     phase: provider.classifyPhase,
                     classifyState: provider.classifyState,
-                    onMarkTurnSucceeded: provider.classifyState.toUpperCase() == 'W'
+                    onMarkTurnSucceeded:
+                        provider.classifyState.toUpperCase() == 'W'
                         ? () => _markTurnSucceeded(provider)
                         : null,
                   ),
@@ -521,9 +522,7 @@ class _ChatViewState extends State<ChatView> {
               DispatchFloatingDock(
                 key: ValueKey('dispatch-${provider.sessionName}'),
                 entries: provider.dispatchQueue,
-                resolveName: context
-                    .read<SessionManager>()
-                    .sessionDisplayName,
+                resolveName: context.read<SessionManager>().sessionDisplayName,
                 onRefresh: provider.refreshDispatchQueue,
                 onOpenSession: _openDispatchSession,
                 onExpandedChanged: (expanded) {
@@ -561,8 +560,7 @@ class _ChatViewState extends State<ChatView> {
   double _dispatchRightReserve(ChatProvider provider) {
     var reserve = 96.0;
     final pendingFab =
-        provider.pendingUserInput != null &&
-        provider.pendingUserInputCollapsed;
+        provider.pendingUserInput != null && provider.pendingUserInputCollapsed;
     if (pendingFab) reserve = reserve < 160.0 ? 160.0 : reserve;
     return reserve;
   }
@@ -1797,11 +1795,14 @@ class _MessageListState extends State<_MessageList> {
   Widget build(BuildContext context) {
     final provider = context.watch<ChatProvider>();
     final messages = provider.messages;
+    final admissionProgress = provider.admissionProgressText;
     final showThinking =
+        admissionProgress != null ||
         provider.isStreaming &&
-        (messages.isEmpty ||
-            messages.last.role != MessageRole.assistant ||
-            messages.last.content.isEmpty && messages.last.toolCalls.isEmpty);
+            (messages.isEmpty ||
+                messages.last.role != MessageRole.assistant ||
+                messages.last.content.isEmpty &&
+                    messages.last.toolCalls.isEmpty);
 
     _scrollToBottom();
 
@@ -1825,7 +1826,11 @@ class _MessageListState extends State<_MessageList> {
               padding: EdgeInsets.fromLTRB(sidePadding, 12, sidePadding, 12),
               itemCount: messages.length + (showThinking ? 1 : 0),
               itemBuilder: (_, i) {
-                if (i == messages.length) return const ThinkingIndicator();
+                if (i == messages.length) {
+                  return ThinkingIndicator(
+                    label: admissionProgress ?? t('admissionProcessing'),
+                  );
+                }
                 final msg = messages[i];
                 // WeChat-style time separator: show a centered time label only when
                 // this message is the first, or its gap from the previous message
@@ -2039,7 +2044,10 @@ class _ContextUsageBar extends StatelessWidget {
     showDialog<void>(
       context: context,
       builder: (_) => AlertDialog(
-        title: Text(t('usageDetailTitle'), style: const TextStyle(fontSize: 15)),
+        title: Text(
+          t('usageDetailTitle'),
+          style: const TextStyle(fontSize: 15),
+        ),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
