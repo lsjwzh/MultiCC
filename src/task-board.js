@@ -31,6 +31,27 @@ const PENDING_TASK_TITLE = '新任务';
 const TASK_RUN_STATES = new Set(['queued', 'running', 'waiting', 'succeeded', 'error', 'idle']);
 const MAX_ROUTING_ATTEMPTS = 50;
 
+// Where the card came from, so the board can tell the two admissions apart at
+// a glance. 'board' = an explicit send from the task board / Commander (an
+// independent task that owns a task-bound session); 'session' = the task
+// surfaced inside an ongoing chat (classify, the retroactive backfill scan, or
+// a router-tool dispatch landing in a live worker). Purely informational:
+// nothing branches on it.
+const TASK_ORIGINS = new Set(['board', 'session']);
+const BOARD_TASK_SOURCES = new Set(['task-board', 'commander']);
+
+function taskOriginForSource(source) {
+  return BOARD_TASK_SOURCES.has(String(source || '')) ? 'board' : 'session';
+}
+
+// Cards persisted before the marker existed. The board send is the only path
+// that mints a stableTaskId (sha256 digest), so its shape is an exact witness;
+// every other generator (newId, the router's tsk-router-*, classify's tsk_*)
+// means the card was born inside a session.
+function legacyTaskOrigin(id) {
+  return /^tsk-[0-9a-f]{32}$/.test(String(id || '')) ? 'board' : 'session';
+}
+
 function safeClassificationError(value) {
   const code = typeof value === 'string' ? value.slice(0, 80) : '';
   return !code || /^[a-z0-9_:-]+$/i.test(code) ? code : 'classification_failed';
@@ -94,6 +115,9 @@ function normalizeBoard(raw) {
           })).slice(-MAX_REFS_PER_TASK)
         : [],
     };
+    // Origin marker. Absent on every card written before it existed, so fall
+    // back to the id shape rather than guessing 'session' for old board sends.
+    task.origin = TASK_ORIGINS.has(t.origin) ? t.origin : legacyTaskOrigin(id);
     const runState = ['done', 'completed'].includes(t.runState) ? 'succeeded' : t.runState;
     if (TASK_RUN_STATES.has(runState)) task.runState = runState;
     // Monotonic stamp of the queue event that produced runState. Survives a
@@ -601,7 +625,7 @@ function addRefToTask(task, ref, now) {
 // Create the durable card shown immediately after a board-level send. Identity
 // is always taskId; the canonical text only supplies an immediate display title.
 function createPendingTask(board, {
-  taskId = null, dirId = null, sessionId, taskText = '', now = Date.now(),
+  taskId = null, dirId = null, sessionId, taskText = '', origin = null, now = Date.now(),
 }) {
   if (!sessionId) return null;
   const id = typeof taskId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(taskId)
@@ -620,6 +644,7 @@ function createPendingTask(board, {
   const task = {
     id, moduleId: mod.id, title: deriveTaskTitle(taskText),
     status: 'active', areas: [], createdAt: now, updatedAt: now,
+    origin: TASK_ORIGINS.has(origin) ? origin : 'session',
     refs: [{
       sessionId, dirId: dirId || null, userMsgId: null, assistantMsgId: null,
       ts: now, excerpt: '',
@@ -744,6 +769,7 @@ function applyTagResult(board, entries, ref, now = Date.now(), options = {}) {
         task = {
           id: options.newTaskId || newId('tsk'), moduleId: mod.id, title: e.title.slice(0, MAX_TITLE_LEN),
           status: 'active', areas: [], createdAt: now, updatedAt: now, refs: [],
+          origin: 'session',
         };
         board.tasks[task.id] = task;
         touched.add(task.id);
@@ -1008,6 +1034,7 @@ function buildBoardDto(board, getSessionRunState) {
       dirIds: [...new Set(t.refs.map(r => r.dirId).filter(Boolean))],
       lastTs: taskLastTs(t),
       createdAt: t.createdAt,
+      origin: TASK_ORIGINS.has(t.origin) ? t.origin : legacyTaskOrigin(t.id),
       runState: TASK_RUN_STATES.has(t.runState)
         ? t.runState
         : aggregateTaskRunState(runSessionIds, getSessionRunState),
@@ -1051,6 +1078,9 @@ module.exports = {
   MAX_REFS_PER_TASK,
   CLASSIFY_PENDING_MODULE_NAME,
   PENDING_TASK_TITLE,
+  TASK_ORIGINS,
+  taskOriginForSource,
+  legacyTaskOrigin,
   deriveTaskTitle,
   createEmptyBoard,
   normalizeBoard,

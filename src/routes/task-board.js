@@ -523,13 +523,18 @@ function createTaskBoardRuntime(deps) {
   // cancel, bounded auto-retry) keeps serving the legacy cards.
 
   function ensureTaskIndex({
-    taskId, dirId, sessionId, routing, taskText = '', now = Date.now(),
+    taskId, dirId, sessionId, routing, taskText = '', origin = null, now = Date.now(),
   }) {
     const existing = board.tasks[taskId];
     const task = existing || core.createPendingTask(board, {
-      taskId, dirId, sessionId, taskText, now,
+      taskId, dirId, sessionId, taskText, origin, now,
     });
     if (!task) return { task: null, created: false };
+    // A board send persists its taskStart message before it indexes the card,
+    // so onMessagePersisted can win the race and create the card first. Both
+    // callers read the origin off the same trusted taskSource, so re-stamping
+    // is idempotent whichever one got there first.
+    if (core.TASK_ORIGINS.has(origin) && task.origin !== origin) task.origin = origin;
     if (sessionId && !(task.refs || []).some(ref => ref.sessionId === sessionId)) {
       core.addRefToTask(task, {
         sessionId, dirId, userMsgId: null, assistantMsgId: null,
@@ -553,6 +558,7 @@ function createTaskBoardRuntime(deps) {
           dirId: rec.dirId || null,
           sessionId,
           taskText: message.taskText || core.messageText(message),
+          origin: core.taskOriginForSource(message.taskSource),
           now: message.ts || Date.now(),
         }).task;
       }
@@ -1835,6 +1841,10 @@ function createTaskBoardRuntime(deps) {
       // projection and this chat view then read the same history.
       const pre = ensureTaskIndex({
         taskId, dirId, sessionId: bound.sessionId, taskText: text,
+        // Only a card this send brings into being is a board task. Re-sending
+        // into a card that already existed (a classify-seeded one, say) routes
+        // it; it does not rewrite where it came from.
+        origin: existing ? null : core.taskOriginForSource(source),
         routing: null, now: Date.now(),
       });
       if (!pre.task) {

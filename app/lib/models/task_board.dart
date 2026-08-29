@@ -77,6 +77,14 @@ class TaskBoardTask {
   /// old servers omit the field and parse as canonical.
   final String identityState;
 
+  /// Where the card came from (server DTO `origin`): 'board' = an independent
+  /// task started on the task board / by Commander, which owns its own bound
+  /// chat session; 'session' = a task that surfaced inside an ongoing chat.
+  /// Purely informational — it only labels the row. Old servers omit it, so
+  /// [isBoardTask] falls back to the id shape a board send mints, mirroring
+  /// legacyTaskOrigin() in src/task-board.js.
+  final String origin;
+
   const TaskBoardTask({
     required this.id,
     required this.moduleId,
@@ -96,7 +104,13 @@ class TaskBoardTask {
     this.branch,
     this.attemptCount = 0,
     this.identityState = 'canonical',
+    this.origin = '',
   });
+
+  static final RegExp _boardTaskId = RegExp(r'^tsk-[0-9a-f]{32}$');
+
+  bool get isBoardTask =>
+      origin == 'board' || (origin != 'session' && _boardTaskId.hasMatch(id));
 
   /// Cards whose historical identity was never resolved. Mirrors
   /// partitionTaskIdentity() in public/task-board-ui.js.
@@ -147,6 +161,7 @@ class TaskBoardTask {
         : null,
     attemptCount: (json['attemptCount'] as num?)?.toInt() ?? 0,
     identityState: (json['identityState'] ?? 'canonical').toString(),
+    origin: (json['origin'] ?? '').toString(),
   );
 }
 
