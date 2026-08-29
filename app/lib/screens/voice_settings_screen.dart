@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../services/manage_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
+import '../widgets/settings_navigation_drawer.dart';
 
 /// 语音设置 — 镜像网页 manage 页「语音设置」面板：查看 ASR（实时语音识别）、
 /// TTS（语音合成）、Whisper（离线转写）、OpenRouter 配置状态。只读——密钥类
@@ -52,6 +53,10 @@ class _VoiceSettingsScreenState extends State<VoiceSettingsScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      drawer: SettingsNavigationDrawer(
+        selected: SettingsDestination.voice,
+        serverLabel: widget.settings.host,
+      ),
       appBar: AppBar(
         title: const Text('语音设置'),
         actions: [

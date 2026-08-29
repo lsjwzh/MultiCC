@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../services/manage_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
+import '../widgets/settings_navigation_drawer.dart';
 
 /// 外网穿透监控 — 镜像网页 manage 页「外网穿透监控」面板：查看花生壳 / Tailscale
 /// 两个 provider 的可用性、健康状态、最近动作，并支持立即重启某个 provider。只读 + 重启。
@@ -79,6 +80,10 @@ class _TunnelSettingsScreenState extends State<TunnelSettingsScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      drawer: SettingsNavigationDrawer(
+        selected: SettingsDestination.tunnel,
+        serverLabel: widget.settings.host,
+      ),
       appBar: AppBar(
         title: const Text('外网穿透'),
         actions: [
