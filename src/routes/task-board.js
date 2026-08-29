@@ -1043,8 +1043,23 @@ function createTaskBoardRuntime(deps) {
     return runStateForClassify(classifyState);
   }
 
+  // A task-bound worker session runs exactly one task for its entire life, so
+  // every queue event it emits belongs to that task. Per-turn lineage alone is
+  // not enough: an E verdict (cancel, abnormal end) ends the turn that carried
+  // the taskId, and the next turn is admitted with taskId null — its 'started'
+  // event would then find no task and the card would stay frozen on the
+  // cancelled verdict while the session is visibly running again. Both
+  // directions must agree; a half-released binding attributes nothing.
+  function boundTaskId(sessionId) {
+    const id = String(sessionId || '');
+    if (!id) return '';
+    const bound = records.get(id)?.taskBoundTaskId;
+    if (typeof bound !== 'string' || !bound) return '';
+    return board.tasks[bound]?.chatSessionId === id ? bound : '';
+  }
+
   function onQueueEvent(event = {}) {
-    const taskId = String(event.taskId || '');
+    const taskId = String(event.taskId || '') || boundTaskId(event.sessionId);
     const task = taskId ? board.tasks[taskId] : null;
     if (!task) return { ok: false, code: 'task_not_found' };
     const type = String(event.type || '');
