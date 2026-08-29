@@ -55,6 +55,14 @@ retry timer is cancelled on shutdown, deletion, a new user message, or runner
 supersession. A turn with partial output or a non-thinking tool call is never
 automatically replayed.
 
+The 120-second wall-clock guard starts when MultiCC first receives a retryable
+terminal error, not when the provider invocation starts. Provider/CLI-internal
+backoff therefore cannot consume the host retry budget before attempt 1. When a
+retry still cannot run or ultimately fails, the durable state, Web/App notice,
+structured log, and TaskRun ledger retain the bounded, redacted `rootCause`;
+the policy outcome (`retry_budget_exhausted`, unsafe replay, and so on) remains
+separate instead of replacing the underlying DNS/TLS/provider error.
+
 ## Claude CLI stream-watchdog envelopes
 
 When the Claude CLI (2.1.x) stream watchdog kills a stalled stream, errors
@@ -84,8 +92,8 @@ code sets map to the same categories.
 
 ## Structured observability
 
-Decision logs expose only category, provider, code, HTTP status, phase,
-partial/side-effect flags, action, reason, delay, attempt budget, session/turn
-identifier, and a hashed request identifier. Metrics use the
+Decision logs expose only category, provider, code, HTTP status, redacted root
+cause, phase, partial/side-effect flags, action, reason, delay, attempt/recovery
+budget, session/turn identifier, and a hashed request identifier. Metrics use the
 `multicc_api_error_*` namespace for category/provider/action, retry attempts,
 success, exhaustion, fail-fast, recovery, and circuit-open totals.

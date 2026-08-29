@@ -177,6 +177,7 @@ class ApiErrorPolicyState {
   final String reason;
   final int? retryAtMs;
   final String userAction;
+  final String rootCause;
 
   const ApiErrorPolicyState({
     required this.state,
@@ -194,6 +195,7 @@ class ApiErrorPolicyState {
     required this.reason,
     this.retryAtMs,
     required this.userAction,
+    required this.rootCause,
   });
 
   bool get isRetryScheduled => state == 'retry_wait' || action == 'retry';
@@ -219,6 +221,7 @@ class ApiErrorPolicyState {
       reason: (json['reason'] ?? '').toString(),
       retryAtMs: _epochMs(json['retryAt']),
       userAction: (json['userAction'] ?? '').toString(),
+      rootCause: (json['rootCause'] ?? '').toString(),
     );
   }
 }

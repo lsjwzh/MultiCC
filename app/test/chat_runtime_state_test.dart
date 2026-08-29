@@ -122,6 +122,7 @@ void main() {
       'provider': 'claude',
       'safeToRetry': true,
       'partialOutput': true,
+      'rootCause': 'getaddrinfo ENOTFOUND open.bigmodel.cn',
     });
     final safe = ApiErrorPolicyState.fromJson({
       'state': 'failed',
@@ -137,6 +138,7 @@ void main() {
     });
 
     expect(partial?.canManualRetry, isFalse);
+    expect(partial?.rootCause, contains('ENOTFOUND'));
     expect(safe?.canManualRetry, isTrue);
     expect(automatic?.isRetryScheduled, isTrue);
     expect(automatic?.retryAtMs, 2000000000000);
