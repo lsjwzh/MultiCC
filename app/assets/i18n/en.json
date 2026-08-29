@@ -313,7 +313,7 @@
   "providerDeleteLocalConfirm": "Delete only the MultiCC local copy \"{name}\"? This does not modify CC-Switch, and a future CC-Switch sync may import it again.",
   "auxAssistant": "AI Assistant",
   "auxAssistantHint": "Model configuration, health, session reclassification and task history",
-  "agentResources": "Agent Resources / Cache",
+  "agentResources": "Agent Resources",
   "agentResourcesHint": "Skills, skill sync, Claude history and temporary upload cache",
   "serverSettings": "Server Settings",
   "serverSettingsHint": "These settings update global server configuration. Messaging bridges and push credentials are available in the App; first-time WeChat login and voice secrets still require the web dashboard. Passwords can only be changed locally.",

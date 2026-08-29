@@ -5,6 +5,7 @@ import '../services/manage_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
 import '../widgets/provider_option.dart';
+import '../widgets/settings_navigation_drawer.dart';
 
 /// Provider 配置。镜像网页管理台的「Provider」页：从 cc-switch 导入/同步，
 /// 在 multicc 自己的存储里增删改，设全局默认（claude / codex 各一个）。
@@ -141,6 +142,10 @@ class _ProviderScreenState extends State<ProviderScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.bg,
+      drawer: SettingsNavigationDrawer(
+        selected: SettingsDestination.provider,
+        serverLabel: widget.settings.host,
+      ),
       appBar: AppBar(
         title: const Text('Provider'),
         actions: [
