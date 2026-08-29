@@ -928,18 +928,30 @@ class _TaskRow extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        task.title,
-                        style: TextStyle(
-                          color: isDone ? AppColors.faint : AppColors.text,
-                          fontSize: 13,
-                          decoration: isDone
-                              ? TextDecoration.lineThrough
-                              : null,
-                          decorationColor: AppColors.faint,
-                        ),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // Origin marker (web tb-origin chip): an independent
+                          // task started on the board vs one that surfaced
+                          // inside a chat. Label only; nothing branches on it.
+                          _originChip(task),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              task.title,
+                              style: TextStyle(
+                                color: isDone ? AppColors.faint : AppColors.text,
+                                fontSize: 13,
+                                decoration: isDone
+                                    ? TextDecoration.lineThrough
+                                    : null,
+                                decorationColor: AppColors.faint,
+                              ),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
                       ),
                       // Task body preview (mirrors web tb-body-fold); when the
                       // canonical body has not landed yet the web row shows a
@@ -1076,6 +1088,32 @@ class _TaskRow extends StatelessWidget {
   Widget _runStateIcon(StatusSpec spec) {
     if (spec.spinner) return const _RunningDot();
     return _EmojiDot(spec.icon, semanticLabel: spec.semanticLabel);
+  }
+
+  /// 任务来源标记（对应 Web 的 .tb-origin）：任务板起的独立任务 vs 会话里
+  /// 冒出来的任务。纯展示，不参与任何行为分支。
+  Widget _originChip(TaskBoardTask task) {
+    final board = task.isBoardTask;
+    final label = t(board ? 'tbOriginBoard' : 'tbOriginSession');
+    return Tooltip(
+      message: t(board ? 'tbOriginBoardHint' : 'tbOriginSessionHint'),
+      child: Container(
+        margin: const EdgeInsets.only(top: 1),
+        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(9),
+          border: Border.all(color: AppColors.line),
+        ),
+        child: Text(
+          '${board ? '\u{1F4CB}' : '\u{1F4AC}'} $label',
+          style: TextStyle(
+            color: board ? AppColors.codex : AppColors.faint,
+            fontSize: 10,
+            height: 1.2,
+          ),
+        ),
+      ),
+    );
   }
 }
 
