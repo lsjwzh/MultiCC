@@ -2,7 +2,7 @@
 
 // Task board runtime — wires the pure core (src/task-board.js) to the host:
 // aux-queue tagging at turn end, atomic persistence, REST routes for the
-// fleet panel, the panel composer's auto-routed dispatch, and manual module
+// fleet panel, the panel composer's auto-routed dispatch, and AI module
 // assignment for cards that remain under 「待归类」.
 //
 // Host contract (all deps injected by server.js):
@@ -656,6 +656,7 @@ function createTaskBoardRuntime(deps) {
   }
 
   const pendingModuleAssignmentByTask = new Map();
+  const automaticAttributionByTask = new Map();
 
   // Resolve the current turn even while it is still streaming. Looking for the
   // last committed assistant first is wrong mid-turn: it pairs the previous
@@ -688,11 +689,26 @@ function createTaskBoardRuntime(deps) {
 
   function resolveTaskClassificationInput(task) {
     let partial = null;
+    let unreadable = false;
     for (let ri = task.refs.length - 1; ri >= 0; ri--) {
       const storedRef = task.refs[ri];
-      const history = loadHistory(storedRef.sessionId) || [];
+      let history;
+      try {
+        history = loadHistory(storedRef.sessionId) || [];
+      } catch (_) {
+        unreadable = true;
+        continue;
+      }
       let userIdx = storedRef.userMsgId
         ? history.findIndex(m => m && m.id === storedRef.userMsgId) : -1;
+      if (userIdx === -1) {
+        for (let i = history.length - 1; i >= 0; i--) {
+          if (history[i]?.role === 'user' && history[i]?.taskId === task.id) {
+            userIdx = i;
+            break;
+          }
+        }
+      }
       if (userIdx === -1) {
         for (let i = history.length - 1; i >= 0; i--) {
           if (history[i]?.role === 'user'
@@ -746,7 +762,7 @@ function createTaskBoardRuntime(deps) {
         };
       }
     }
-    return partial;
+    return partial || (unreadable ? { unreadable: true } : null);
   }
 
   function saveModuleAssignment(task, patch) {
@@ -772,6 +788,35 @@ function createTaskBoardRuntime(deps) {
     });
   }
 
+  function archiveMissingContextTask(task) {
+    if (!task?.moduleAssignment) return { ok: false, error: 'not_pending' };
+    if (task.status === 'archived') return { ok: false, error: 'task_archived' };
+    const pendingJobId = pendingModuleAssignmentByTask.get(task.id);
+    if (pendingJobId) {
+      pendingModuleAssignmentByTask.delete(task.id);
+      try { auxQueue.cancel(pendingJobId); } catch (_) {}
+    }
+    const dirId = core.taskDirId(board, task);
+    task.status = 'archived';
+    task.moduleAssignment.running = false;
+    task.moduleAssignment.lastError = 'missing_context';
+    task.updatedAt = Date.now();
+    save();
+    notify(dirId || null, [task.id]);
+    automaticAttributionByTask.delete(task.id);
+
+    // Missing-context cleanup is inferred from transcript evidence, unlike the
+    // explicit lifecycle archive endpoint. Hide the dead card, but retain any
+    // bound session/worktree pointer so a false positive remains recoverable and
+    // can never destroy user work or chat history.
+    return {
+      ok: true,
+      queued: false,
+      archived: true,
+      reason: 'missing_context',
+    };
+  }
+
   function targetedTagPrompt(task, input) {
     return [
       core.buildTagUserPrompt({
@@ -792,19 +837,31 @@ function createTaskBoardRuntime(deps) {
   function queueTaskClassification(taskId, options = {}) {
     const task = board.tasks[taskId];
     if (!task?.moduleAssignment) return { ok: false, error: 'not_pending' };
+    if (task.status === 'archived') return { ok: false, error: 'task_archived' };
     if (pendingModuleAssignmentByTask.has(taskId)) return { ok: false, error: 'classification_running' };
-    // 方案A（手动归类）：自动调用方（turn-end 钩子、retry 扫描）一律不得把「待归类」
-    // 卡片自动分到真实模块——只有用户点击「归类/重新归类」的端点会传 { manual: true }。
-    // 这是唯一权威闸门：任何未来新增的自动调用点都会被这里挡住。
-    if (!options.manual) return { ok: false, error: 'auto_classify_disabled' };
+    // Automatic module assignment is admitted only after task attribution has
+    // settled on the final canonical task id. Manual single/bulk retry remains
+    // available for failed cards. Any future call site must choose one path.
+    if (!options.manual && !options.automatic) {
+      return { ok: false, error: 'classification_trigger_required' };
+    }
+    // Automatic failures get one later-turn retry, then wait for an explicit
+    // user retry. This keeps a persistently malformed model response from
+    // spending Aux capacity on every subsequent turn forever.
+    if (options.automatic && (task.moduleAssignment.attempts || 0) >= 2) {
+      return { ok: false, error: 'automatic_attempt_limit' };
+    }
 
     const input = options.input || resolveTaskClassificationInput(task);
     if (!input?.userText) {
-      saveModuleAssignment(task, {
-        running: false,
-        lastError: 'missing_context',
-      });
-      return { ok: false, error: 'missing_context' };
+      if (input?.unreadable) return { ok: false, error: 'context_unavailable' };
+      // A manual single/bulk request is an explicit reconciliation pass and may
+      // retire a dead card. Automatic attribution can observe a partially
+      // persisted turn, so missing input there is never proof that the card is
+      // stale and must not hide it.
+      return options.manual
+        ? archiveMissingContextTask(task)
+        : { ok: false, error: 'missing_context' };
     }
     if (!input.replyText) input.replyText = '（尚无助手回复，仅根据用户提交的任务信息归类）';
     if (auxQueue.isUnhealthy && auxQueue.isUnhealthy()) {
@@ -843,6 +900,15 @@ function createTaskBoardRuntime(deps) {
     Promise.resolve(promise).then(result => {
       if (pendingModuleAssignmentByTask.get(taskId) !== jobId) return;
       pendingModuleAssignmentByTask.delete(taskId);
+      const current = board.tasks[taskId];
+      if (!current || !current.moduleAssignment) return;
+      if (current.status === 'archived') {
+        saveModuleAssignment(current, {
+          running: false,
+          lastError: 'classification_cancelled',
+        });
+        return;
+      }
       if (!result || result.cancelled) {
         recordModuleAssignmentFailure(taskId, 'classification_cancelled');
         return;
@@ -858,6 +924,7 @@ function createTaskBoardRuntime(deps) {
         recordModuleAssignmentFailure(taskId, applied.error);
         return;
       }
+      automaticAttributionByTask.delete(taskId);
       save();
       notify(input.ref.dirId, applied.touched);
     }).catch(e => {
@@ -870,26 +937,95 @@ function createTaskBoardRuntime(deps) {
   }
 
   function scanPendingClassifications(now = Date.now()) {
-    // Module assignment is manual. This pass only recovers a persisted
-    // in-flight operation after restart; it never queues a new Aux request.
-    const recovered = [];
+    // Startup recovery has two bounded jobs only: retire cards already proven
+    // to have no usable context, and mark operations that were in flight when
+    // the process stopped as interrupted. Untouched historical backlog is not bulk-queued
+    // here because Aux is a shared serial lane; new turns enter automatically
+    // through onTaskAttributionSettled below.
+    const changed = [];
     for (const task of Object.values(board.tasks)) {
       const assignment = task.moduleAssignment;
-      if (!assignment?.running || pendingModuleAssignmentByTask.has(task.id)) continue;
+      if (!assignment || task.status === 'archived') continue;
+      if (assignment.lastError === 'missing_context') {
+        // History may have been temporarily unreadable when the error was
+        // recorded. Re-prove the absence before hiding the card.
+        const input = resolveTaskClassificationInput(task);
+        if (input?.unreadable) {
+          assignment.lastError = 'context_unavailable';
+          task.updatedAt = now;
+          save();
+          notify(core.taskDirId(board, task) || null, [task.id]);
+          changed.push(task.id);
+        } else if (!input?.userText) {
+          const archived = archiveMissingContextTask(task);
+          if (archived.archived) changed.push(task.id);
+        } else {
+          assignment.lastError = '';
+          task.updatedAt = now;
+          save();
+          notify(core.taskDirId(board, task) || null, [task.id]);
+          changed.push(task.id);
+        }
+        continue;
+      }
+      if (!assignment.running || pendingModuleAssignmentByTask.has(task.id)) continue;
       assignment.running = false;
       assignment.lastError = 'classification_interrupted';
       task.updatedAt = now;
-      recovered.push(task.id);
-    }
-    if (recovered.length) {
       save();
-      for (const taskId of recovered) {
-        const task = board.tasks[taskId];
-        const mod = task?.moduleId ? board.modules[task.moduleId] : null;
-        notify(mod?.dirId || task?.refs.find(r => r.dirId)?.dirId || null, [taskId]);
-      }
+      notify(core.taskDirId(board, task) || null, [task.id]);
+      changed.push(task.id);
     }
-    return recovered.length;
+    return changed.length;
+  }
+
+  function onTaskAttributionSettled(sessionName, taskId, messages = [], meta = {}) {
+    const task = taskId ? board.tasks[taskId] : null;
+    if (!task?.moduleAssignment || task.status === 'archived') {
+      return { ok: false, error: task ? 'not_pending' : 'task_not_found' };
+    }
+    const turn = Array.isArray(messages) ? messages : [];
+    const userMsg = turn.find(message => message?.role === 'user') || null;
+    const assistantMsg = [...turn].reverse().find(message =>
+      message?.role === 'assistant' && !message._interim && !message.error) || null;
+    // This hook runs only after intent attribution has settled. A failed or
+    // cancelled turn may have no final assistant message; the module model can
+    // still classify the user's request, using the same explicit placeholder as
+    // manual classification.
+    const userText = core.messageText(userMsg).trim();
+    const rec = records.get(sessionName);
+    const fallback = userText ? null : resolveTaskClassificationInput(task);
+    if (fallback?.unreadable) return { ok: false, error: 'context_unavailable' };
+    const resolvedUserText = userText || fallback?.userText || '';
+    if (!resolvedUserText) return { ok: false, error: 'missing_context' };
+    const ref = fallback?.ref || {
+      sessionId: sessionName,
+      dirId: rec?.dirId || core.taskDirId(board, task) || null,
+      dirLabel: null,
+      userMsgId: userMsg?.id || null,
+      assistantMsgId: assistantMsg?.id || null,
+      ts: assistantMsg?.ts || userMsg?.ts || Date.now(),
+      excerpt: resolvedUserText.slice(0, 140),
+    };
+    const attributionKey = String(meta.runId || [
+      userMsg?.id || ref.userMsgId || '',
+      assistantMsg?.id || ref.assistantMsgId || '',
+    ].join(':'));
+    if (attributionKey && automaticAttributionByTask.get(task.id) === attributionKey) {
+      return { ok: false, error: 'attribution_already_handled' };
+    }
+    const result = queueTaskClassification(task.id, {
+      automatic: true,
+      input: {
+        userText: resolvedUserText,
+        replyText: fallback?.replyText || core.messageText(assistantMsg).trim(),
+        ref,
+      },
+    });
+    if (result.queued && attributionKey) {
+      automaticAttributionByTask.set(task.id, attributionKey);
+    }
+    return result;
   }
 
   // Turn-end hook — called from classifyTurnEnd alongside the classify pass.
@@ -937,6 +1073,10 @@ function createTaskBoardRuntime(deps) {
       if (!newTaskId || oldTaskId === newTaskId) return false;
       const rec = records.get(sessionName);
       if (!rec || rec.type === 'aux' || rec.type === 'gateway' || rec.type === 'commander') return false;
+      // A task-bound room is the resume file for one explicit board identity.
+      // Intent attribution may rename/classify it, but must never split that
+      // identity or leave the binding attached to a different card.
+      if (rec.taskBoundTaskId && newTaskId !== rec.taskBoundTaskId) return false;
       const userMsg = messages.find(message => message?.role === 'user') || null;
       const assistantMsg = [...messages].reverse().find(message => message?.role === 'assistant') || null;
       const messageIds = new Set(messages.map(message => message?.id).filter(Boolean));
@@ -977,6 +1117,15 @@ function createTaskBoardRuntime(deps) {
       if (!changed && !oldChanged && !indexed.created) return false;
       save();
       notify(rec.dirId || null, [newTaskId, ...(oldTaskId ? [oldTaskId] : [])]);
+      // A provisional card can lose its only turn when Aux decides this is a new
+      // canonical task. Do not leave that zero-ref shell behind as a permanent
+      // missing_context row.
+      if (oldTask && oldChanged && oldTask.refs.length === 0
+          && oldTask.moduleAssignment && oldTask.status !== 'archived'
+          && oldTask.origin === 'session' && !oldTask.chatSessionId
+          && !oldTask.routing && !oldTask.worktreePath && !oldTask.branch) {
+        archiveMissingContextTask(oldTask);
+      }
       return true;
     } catch (error) {
       logger.log(`[multicc/taskboard] reassignTurnTask error: ${error?.message || error}`);
@@ -2417,36 +2566,33 @@ function createTaskBoardRuntime(deps) {
     if (!task.moduleAssignment) return res.status(409).json({ error: 'not_pending' });
     const result = queueTaskClassification(task.id, { manual: true });
     if (!result.ok) {
-      const status = result.error === 'aux_unhealthy' ? 503 : 409;
-      // A card with no resolvable input can never be classified — tell the user
-      // it's a dead card they can delete, not just that content is "missing".
-      const note = result.error === 'missing_context'
-        ? '该任务卡没有可归类的对话内容（无有效会话引用），无法归类，可手动删除此卡'
-        : result.error === 'aux_unhealthy'
+      const status = ['aux_unhealthy', 'context_unavailable'].includes(result.error) ? 503 : 409;
+      const note = result.error === 'aux_unhealthy'
         ? '归类服务（aux）暂不可用，请稍后重试'
+        : result.error === 'context_unavailable'
+          ? '任务上下文暂时无法读取，请稍后重试'
         : null;
       return res.status(status).json({ error: result.error, note });
     }
-    res.json({ ok: true, queued: true, task: taskDto(task) });
+    res.json({ ...result, task: taskDto(task) });
   }
 
   function handleReclassifyPending(req, res) {
-    if (auxQueue.isUnhealthy && auxQueue.isUnhealthy()) {
-      return res.status(503).json({ error: 'aux_unhealthy' });
-    }
     const dirId = String(req.body?.dirId || '').trim() || null;
     let queued = 0;
+    let archived = 0;
     let skipped = 0;
     for (const task of Object.values(board.tasks)) {
-      if (!task.moduleAssignment) continue;
+      if (!task.moduleAssignment || task.status === 'archived') continue;
       const mod = task.moduleId ? board.modules[task.moduleId] : null;
       const taskDirId = mod?.dirId || task.refs.find(r => r.dirId)?.dirId || null;
       if (dirId && taskDirId !== dirId) continue;
       const result = queueTaskClassification(task.id, { manual: true });
-      if (result.ok) queued++;
+      if (result.queued) queued++;
+      else if (result.archived) archived++;
       else skipped++;
     }
-    res.json({ ok: true, queued, skipped });
+    res.json({ ok: true, queued, archived, skipped });
   }
 
   function mountRoutes(app) {
@@ -2531,8 +2677,9 @@ function createTaskBoardRuntime(deps) {
     app.post('/api/task-board/reclassify-pending', handleReclassifyPending);
   }
 
-  // Recover interrupted manual module assignment once after startup. Pending
-  // cards stay under 「待归类」 until the user explicitly assigns them.
+  // Recover interrupted module assignment and retire already-confirmed stale
+  // cards once after startup. Fresh automatic work is driven by the settled
+  // task-attribution hook, so startup never floods the shared serial Aux lane.
   const startupTimer = setTimeout(() => scanPendingClassifications(), 1_000);
   if (typeof startupTimer.unref === 'function') startupTimer.unref();
 
@@ -2544,6 +2691,7 @@ function createTaskBoardRuntime(deps) {
     recordRouterAdmission,
     onTurnEnd,
     onClassifyGoal,
+    onTaskAttributionSettled,
     reassignTurnTask,
     scanPendingClassifications,
     routeCommanderInput: async (commanderId, text, options = {}) => {

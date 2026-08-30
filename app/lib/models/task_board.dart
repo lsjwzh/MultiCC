@@ -10,7 +10,7 @@ import 'message.dart';
 // Messages DTO: { ok, task, items:[{sessionId, sessionLabel, role, messageId,
 //   ts, text, lost?, taskRunId?, partial?}] }
 
-/// Operational metadata for manually assigning a pending task to a module.
+/// Operational metadata for assigning a pending task to an AI-selected module.
 /// This is deliberately separate from the task's live `runState`, which comes
 /// exclusively from the session classify state machine.
 class TaskModuleAssignment {

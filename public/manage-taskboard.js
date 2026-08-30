@@ -645,7 +645,12 @@ async function reclassifyTaskBoardTask(ev, taskId) {
     });
     const d = await r.json();
     if (!r.ok || !d.ok) throw new Error(d.note || d.error || r.status);
-    if (typeof showToast === 'function') showToast('已加入重新归类队列');
+    if (typeof showToast === 'function') {
+      const params = { queued: d.queued ? 1 : 0, archived: d.archived ? 1 : 0, skipped: 0 };
+      showToast(typeof window.t === 'function'
+        ? window.t('reclassifyQueued', params)
+        : `已加入 ${params.queued} 个任务，归档 ${params.archived} 个无上下文任务，跳过 0 个`);
+    }
     await refreshTaskBoard(true);
   } catch (e) {
     if (typeof showToast === 'function') showToast(`重新归类失败：${e.message}`, true);
@@ -665,7 +670,12 @@ async function reclassifyPendingTaskBoard(ev, dirId) {
     });
     const d = await r.json();
     if (!r.ok || !d.ok) throw new Error(d.note || d.error || r.status);
-    if (typeof showToast === 'function') showToast(`已加入 ${d.queued} 个任务，跳过 ${d.skipped} 个`);
+    if (typeof showToast === 'function') {
+      const params = { queued: d.queued || 0, archived: d.archived || 0, skipped: d.skipped || 0 };
+      showToast(typeof window.t === 'function'
+        ? window.t('reclassifyQueued', params)
+        : `已加入 ${params.queued} 个任务，归档 ${params.archived} 个无上下文任务，跳过 ${params.skipped} 个`);
+    }
     await refreshTaskBoard(true);
   } catch (e) {
     if (typeof showToast === 'function') showToast(`批量归类失败：${e.message}`, true);

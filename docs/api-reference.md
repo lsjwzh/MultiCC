@@ -93,7 +93,9 @@ curl -s "$MULTICC_BASE_URL/api/sessions/$MULTICC_SESSION_ID/run-detached" \
 
 ## Task Board
 
-Task-board runs execute on pooled headless slots; the durable record is the task-run ledger (sqlite), not any session transcript. The unified chat view (`chat.html?task=<id>`) renders a task exactly like a chat session.
+Task-board work resumes through a task-bound hidden chat session, while the task-run
+ledger retains durable execution and usage records. The unified chat view
+(`chat.html?task=<id>`) renders a task exactly like a chat session.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -104,11 +106,16 @@ Task-board runs execute on pooled headless slots; the durable record is the task
 | `POST` | `/api/task-board/tasks/:taskId/answer` | Answer the run's pending question (`{ requestId, text, clientMsgId }`); same lease/idempotency checks as the send-side delegation. Kept for native clients (App) |
 | `POST` | `/api/task-board/tasks/:taskId/status` | Set lifecycle `{ status: active \| done \| archived }`. Completing a task with an open run cancels it first — a run already delivered to a slot, or a cancel that fails, is rejected with 409 |
 | `POST` | `/api/task-board/tasks/:taskId/cancel-run` | Stop the open run **without** touching the lifecycle (the chat view's stop button; marking done stays with `/status`). Shares the status path's cancellation and 409 surface. Idempotent: no open run → `{ ok, cancelled:false }`; success → `{ ok, cancelled:true, runId }` |
-| `POST` | `/api/task-board/tasks/:taskId/reclassify` | Re-queue AI classification for a still-pending card (409 once a module is assigned, 503 when the aux CLI is unhealthy) |
+| `POST` | `/api/task-board/tasks/:taskId/reclassify` | Re-queue AI classification for a still-pending card. A card with no recoverable user context is archived and returns `{ ok:true, queued:false, archived:true, reason:"missing_context" }` (409 once a module is assigned, 503 when Aux or the context store is unavailable) |
+| `POST` | `/api/task-board/reclassify-pending` | Re-queue pending cards, optionally scoped by `{ dirId }`; returns `{ ok, queued, archived, skipped }`. Missing-context cards are archived instead of occupying the pending module; `skipped` counts cards already running or temporarily unavailable |
 | `GET` | `/api/task-board/tasks/:taskId/diff/files` | List changed files in the task's worktree vs the base branch |
 | `GET` | `/api/task-board/tasks/:taskId/diff/file` | One file's diff content (same params as the session diff route) |
 | `POST` | `/api/task-board/tasks/:taskId/merge` | Merge the task worktree back into the base branch — same `gitMergeBack` path as the session merge (conflicts → 409, other failures → 400) |
 | `POST` | `/api/task-board/tasks/:taskId/cleanup-worktree` | Merge + delete the per-task worktree and clear the ledger fields (refuses while a run is active → 409) |
+
+New pending cards start module AI classification after intent attribution settles on
+their final task id. Automatic model failures are retried once on a later turn; the
+single-card and bulk endpoints remain the explicit recovery path after that.
 
 A task's pending question surfaces three ways, all one semantic: the chat view's question card (answered through `/send` + `userInputRequestId`), the `user_input_required` / `user_input_resolved` slot events forwarded on the directory socket (see [Task run streaming](#websocket-protocol)), and the run DTO's `pendingQuestion` projection in `/messages` (answered through `/answer`).
 

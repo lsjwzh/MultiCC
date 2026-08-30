@@ -57,7 +57,7 @@ function fixture({
     enqueued: 0, enqueuedTasks: [], cancelledFor: [], transitions: 0,
     transitionTaskIds: [],
     broadcasts: [], pushes: [], evaluated: 0, boardTurnEnds: 0,
-    auxRuns: [], annotations: [],
+    auxRuns: [], annotations: [], taskAttributionSettled: [],
   };
   let releaseAux = () => {};
   const auxQueue = {
@@ -98,7 +98,10 @@ function fixture({
       },
     }),
     getTaskContextHost: () => ({ recordGoal() {} }),
-    getTaskBoardRuntime: () => ({ onTurnEnd() { observed.boardTurnEnds += 1; } }),
+    getTaskBoardRuntime: () => ({
+      onTurnEnd() { observed.boardTurnEnds += 1; },
+      onTaskAttributionSettled(...args) { observed.taskAttributionSettled.push(args); },
+    }),
     getUserInputSignalHost: () => ({ apply: (_sessionId, result) => result, pending: () => null }),
     getApiErrorHost: () => ({ isHeld: () => false }),
     getWaitInjector: () => ({ SYS_PREFIX: '[system]', resetAuto() {}, resetInterrupted() {} }),
@@ -186,6 +189,30 @@ test('a new-task Aux result indexes its run by the resolved task, not the prior 
   assert.match(run.taskId, /^tsk_[a-f0-9]{32}$/);
   assert.notEqual(run.taskId, 'task-1');
   assert.equal(h.record.taskState.taskId, run.taskId);
+  assert.equal(h.observed.taskAttributionSettled.length, 1);
+  assert.equal(h.observed.taskAttributionSettled[0][0], 's1');
+  assert.equal(h.observed.taskAttributionSettled[0][1], run.taskId,
+    'module classification starts only after the final task identity settles');
+});
+
+test('a task-bound room keeps its explicit board identity when Aux says new task', async () => {
+  const h = fixture({
+    auxReply: '{"taskName":"错误的新任务","phase":"planning","relation":"new","taskId":null}',
+  });
+  h.record.taskBoundTaskId = 'task-1';
+  h.machine.classifyTurnEnd(h.chatState, 's1', {
+    classification: 'succeeded', turnId: 'turn-bound-task',
+  });
+  h.releaseAux();
+  await new Promise(resolve => setImmediate(resolve));
+
+  const run = h.observed.auxRuns.at(-1);
+  assert.equal(run.priorTaskId, 'task-1');
+  assert.equal(run.taskId, 'task-1');
+  assert.equal(h.record.taskState.taskId, 'task-1');
+  assert.equal(h.chatState._currentTaskId, 'task-1');
+  assert.equal(h.observed.taskAttributionSettled.length, 1);
+  assert.equal(h.observed.taskAttributionSettled[0][1], 'task-1');
 });
 
 test('a delayed Aux result is audit-only once the last message anchor changes', async () => {
@@ -223,6 +250,8 @@ test('a delayed Aux result is audit-only once the last message anchor changes', 
   assert.equal(run.superseded, true);
   assert.equal(run.supersededReason, 'anchor_changed');
   assert.equal(run.taskId, 'task-1', 'the stale run stays indexed under its captured task');
+  assert.equal(h.observed.taskAttributionSettled.length, 0,
+    'a superseded attribution must never start module classification');
 
   const annotation = h.observed.annotations.at(-1);
   assert.equal(annotation[1], 'turn-old');
