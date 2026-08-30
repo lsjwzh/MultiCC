@@ -2384,9 +2384,9 @@ test('goal flag is ignored gracefully when goal helpers are not wired', async ()
   assert.equal(dispatches.length, 0);
 });
 
-test('board placeholder stays in 待归类 at turn end (方案A：仅手动归类)', async () => {
+test('settled task attribution automatically AI-classifies a board placeholder in place', async () => {
   let history = [];
-  const { runtime, dispatches, auxCalls } = mkRuntime({
+  const { runtime, dispatches, auxCalls, resolveAux } = mkRuntime({
     loadHistory: () => history,
     records: new Map([
       ['sess-1', { id: 'sess-1', kind: 'chat', dirId: 'dir-1', label: '任务板重新归类工程师' }],
@@ -2417,16 +2417,69 @@ test('board placeholder stays in 待归类 at turn end (方案A：仅手动归�
   ];
   runtime.onMessagePersisted('bound-1', history[0]);
   runtime.onMessagePersisted('bound-1', history[1]);
+  const queued = runtime.onTaskAttributionSettled('bound-1', simTaskId, history);
   await new Promise(rr => setImmediate(rr));
-  const board = runtime.getBoard();
-  const tasks = Object.values(board.tasks);
-  assert.equal(auxCalls.length, 0);
+  let board = runtime.getBoard();
+  let tasks = Object.values(board.tasks);
+  assert.equal(queued.queued, true);
+  assert.equal(auxCalls.length, 1);
+  assert.equal(auxCalls[0].type, 'task_tag');
+  assert.match(auxCalls[0].prompt, new RegExp(simTaskId));
+  assert.match(auxCalls[0].prompt, /增加手动重新归类按钮/);
+  assert.match(auxCalls[0].prompt, /已经完成按钮、接口以及失败重试状态/);
   assert.equal(tasks.length, 1);
   assert.equal(tasks[0].id, simTaskId);
-  assert.equal(tasks[0].title, '增加手动重新归类按钮');
-  assert.ok(tasks[0].moduleAssignment, '占位卡仍待归类');
-  assert.equal(board.modules[tasks[0].moduleId].source, 'classify');
+  assert.equal(tasks[0].moduleAssignment.running, true);
+  assert.equal(tasks[0].moduleAssignment.attempts, 1);
+  assert.equal(
+    runtime.onTaskAttributionSettled('bound-1', simTaskId, history).error,
+    'attribution_already_handled',
+  );
+  assert.equal(auxCalls.length, 1, 'duplicate settled events cannot enqueue twice');
+
+  resolveAux({
+    cancelled: false,
+    text: `{"tasks":[{"id":"${simTaskId}","title":"自动归类任务板","module":"任务板","areas":["src/routes/task-board.js"]}]}`,
+  });
+  await new Promise(rr => setImmediate(rr));
+  board = runtime.getBoard();
+  tasks = Object.values(board.tasks);
+  assert.equal(tasks.length, 1);
+  assert.equal(tasks[0].id, simTaskId);
+  assert.equal(tasks[0].title, '自动归类任务板');
+  assert.equal(board.modules[tasks[0].moduleId].name, '任务板');
+  assert.deepEqual(tasks[0].areas, ['src/routes/task-board.js']);
+  assert.equal(tasks[0].moduleAssignment, undefined);
   assert.ok(tasks[0].refs.some(ref => ref.assistantMsgId === 'a-new'), '本轮 ref 已挂到占位卡');
+});
+
+test('new-task attribution archives the empty provisional card and classifies only the final id', () => {
+  const history = [
+    { id: 'u-switch', role: 'user', content: '开始全新的模块归类任务', ts: 10 },
+    { id: 'a-switch', role: 'assistant', content: '已经完成全新的模块归类任务。', ts: 20 },
+  ];
+  const { runtime, auxCalls } = mkRuntime({ loadHistory: () => history });
+  const board = runtime.getBoard();
+  const provisional = core.createPendingTask(board, {
+    taskId: 'task-provisional', dirId: 'dir-1', sessionId: 'sess-1',
+    taskText: '原临时任务', now: 1,
+  });
+  provisional.refs[0].userMsgId = 'u-switch';
+  provisional.refs[0].assistantMsgId = 'a-switch';
+
+  assert.equal(runtime.reassignTurnTask(
+    'sess-1', provisional.id, 'task-final', history,
+    { taskName: '全新的模块归类任务', taskText: '开始全新的模块归类任务' },
+  ), true);
+  assert.equal(provisional.status, 'archived');
+  assert.equal(provisional.moduleAssignment.lastError, 'missing_context');
+  assert.equal(board.tasks['task-final'].status, 'active');
+
+  const result = runtime.onTaskAttributionSettled('sess-1', 'task-final', history);
+  assert.equal(result.queued, true);
+  assert.equal(auxCalls.length, 1);
+  assert.match(auxCalls[0].prompt, /task-final/);
+  assert.doesNotMatch(auxCalls[0].prompt, /task-provisional/);
 });
 
 test('manual reclassify retries a failed pending card and exposes batch route', async () => {
@@ -2463,7 +2516,7 @@ test('manual reclassify retries a failed pending card and exposes batch route', 
   assert.equal(batch.body.queued, 1);
 });
 
-test('automatic pending scan no longer auto-classifies (方案A：仅手动归类)', async () => {
+test('startup scan does not flood untouched backlog or requeue interrupted work', async () => {
   const history = [
     { id: 'u1', role: 'user', content: '需要自动归类', ts: 1 },
     { id: 'a1', role: 'assistant', content: '已经完成这项任务的完整实现。', ts: 2 },
@@ -2475,20 +2528,24 @@ test('automatic pending scan no longer auto-classifies (方案A：仅手动归�
   pending.refs[0].userMsgId = 'u1';
   pending.refs[0].assistantMsgId = 'a1';
 
-  // 方案A：定时扫描不再触发自动归类——卡片原地停在「待归类」，attempts 不增长，
-  // 也不排队 aux 任务。用户手动点「归类」才会分类。
+  // The shared Aux lane is serial, so startup does not bulk-enqueue untouched
+  // historical cards. Fresh turns use onTaskAttributionSettled instead.
   assert.equal(runtime.scanPendingClassifications(), 0);
   assert.equal(auxCalls.length, 0);
   assert.equal(pending.moduleAssignment.attempts, 0);
   assert.equal(pending.moduleAssignment.running, false);
   assert.equal(Object.values(runtime.getBoard().modules).some(m => m.source === 'classify'), true);
 
-  // A persisted in-flight assignment has no live Aux owner after restart. The
-  // startup pass marks only that operation interrupted and still queues no AI.
+  // A persisted queued/in-flight assignment has no live Aux owner after
+  // restart. Mark it interrupted, but do not refill the shared Aux FIFO with an
+  // unbounded pre-restart batch.
   pending.moduleAssignment.running = true;
   assert.equal(runtime.scanPendingClassifications(99), 1);
   assert.equal(pending.moduleAssignment.running, false);
   assert.equal(pending.moduleAssignment.lastError, 'classification_interrupted');
+  assert.equal(pending.moduleAssignment.attempts, 0);
+  assert.equal(auxCalls.length, 0);
+  assert.equal(runtime.scanPendingClassifications(100), 0);
   assert.equal(auxCalls.length, 0);
 });
 
@@ -2519,22 +2576,83 @@ test('manual classification can use the submitted task text before a reply exist
   assert.equal(runtime.getBoard().tasks[pending.id].title, '实现归类按钮');
 });
 
-test('reclassifying an input-less card returns a note guiding the user to delete it', () => {
-  // Supplement over b81218f: a card whose refs resolve to no user text can never
-  // be classified. The reclassify note must give an actionable exit (delete the
-  // dead card) instead of only reporting that content is "missing".
-  const { runtime } = mkRuntime({ loadHistory: () => [] });
+test('reclassifying an input-less card archives it without destroying recoverable resources', async () => {
+  const released = [];
+  const { runtime, deps, auxCalls } = mkRuntime({
+    loadHistory: () => [],
+    releaseTaskBoundSession: async sessionId => {
+      released.push(sessionId);
+      return { ok: true };
+    },
+  });
   const pending = core.createPendingTask(runtime.getBoard(), {
     dirId: 'dir-1', sessionId: 'sess-1', seed: '够不到的种子', now: 1,
   });
-  pending.refs.length = 0;   // corrupt: no refs → resolveTaskClassificationInput returns null
+  pending.refs[0].userMsgId = 'deleted-user';
+  pending.refs[0].assistantMsgId = 'deleted-assistant';
+  pending.chatSessionId = 'bound-stale';
+  deps.records.set('bound-stale', {
+    id: 'bound-stale', kind: 'chat', dirId: 'dir-1', taskBoundTaskId: pending.id,
+  });
   const routes = new Map();
   runtime.mountRoutes({ get: (p, h) => routes.set(`GET ${p}`, h), post: (p, h) => routes.set(`POST ${p}`, h) });
   const r = { code: 200, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } };
   routes.get('POST /api/task-board/tasks/:taskId/reclassify')({ params: { taskId: pending.id }, body: {} }, r);
-  assert.equal(r.code, 409);
-  assert.equal(r.body.error, 'missing_context');
-  assert.match(r.body.note, /删除/);   // actionable: tells the user to delete the dead card
+  assert.equal(r.code, 200);
+  assert.equal(r.body.ok, true);
+  assert.equal(r.body.queued, false);
+  assert.equal(r.body.archived, true);
+  assert.equal(r.body.reason, 'missing_context');
+  assert.equal(pending.status, 'archived');
+  assert.equal(pending.moduleAssignment.running, false);
+  assert.equal(pending.moduleAssignment.lastError, 'missing_context');
+  assert.equal(auxCalls.length, 0);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(released, [], 'inferred cleanup must not delete a bound transcript/worktree');
+  assert.equal(pending.chatSessionId, 'bound-stale');
+});
+
+test('bulk reclassify queues valid cards, archives missing context, and ignores archived cards', () => {
+  const history = [
+    { id: 'u-valid', role: 'user', content: '实现自动归类', ts: 1 },
+    { id: 'a-valid', role: 'assistant', content: '已完成自动归类实现。', ts: 2 },
+  ];
+  const { runtime, auxCalls } = mkRuntime({
+    loadHistory: sessionId => sessionId === 'sess-1' ? history : [],
+  });
+  const board = runtime.getBoard();
+  const valid = core.createPendingTask(board, {
+    dirId: 'dir-1', sessionId: 'sess-1', taskText: '实现自动归类', now: 1,
+  });
+  valid.refs[0].userMsgId = 'u-valid';
+  valid.refs[0].assistantMsgId = 'a-valid';
+  const missing = core.createPendingTask(board, {
+    dirId: 'dir-1', sessionId: 'gone-session', taskText: '历史已删除', now: 2,
+  });
+  const hidden = core.createPendingTask(board, {
+    dirId: 'dir-1', sessionId: 'sess-1', taskText: '已归档', now: 3,
+  });
+  hidden.status = 'archived';
+  const routes = new Map();
+  runtime.mountRoutes({ get: (p, h) => routes.set(`GET ${p}`, h), post: (p, h) => routes.set(`POST ${p}`, h) });
+  const response = () => ({ code: 200, status(c) { this.code = c; return this; }, json(body) { this.body = body; return this; } });
+
+  const first = response();
+  routes.get('POST /api/task-board/reclassify-pending')({ body: { dirId: 'dir-1' } }, first);
+  assert.deepEqual(
+    { queued: first.body.queued, archived: first.body.archived, skipped: first.body.skipped },
+    { queued: 1, archived: 1, skipped: 0 },
+  );
+  assert.equal(auxCalls.length, 1);
+  assert.equal(missing.status, 'archived');
+
+  const second = response();
+  routes.get('POST /api/task-board/reclassify-pending')({ body: { dirId: 'dir-1' } }, second);
+  assert.deepEqual(
+    { queued: second.body.queued, archived: second.body.archived, skipped: second.body.skipped },
+    { queued: 0, archived: 0, skipped: 1 },
+  );
+  assert.equal(auxCalls.length, 1);
 });
 
 test('authenticated task-board mutations do not depend on transport locality', async () => {
