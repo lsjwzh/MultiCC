@@ -118,6 +118,129 @@
       : { key: 'session', icon: '\uD83D\uDCAC', label: '\u4F1A\u8BDD\u4EFB\u52A1', title: '\u5728\u4F1A\u8BDD\u5BF9\u8BDD\u4E2D\u4EA7\u751F\u7684\u4EFB\u52A1' };
   }
 
+  function sameTaskOrigin(first, second) {
+    if (!first || !second) return false;
+    return taskOrigin(first).key === taskOrigin(second).key;
+  }
+
+  function taskMergeEligibility(task, options) {
+    if (!task || !String(task.id || '').trim()) return { ok: false, reason: 'missing_task' };
+    if (['running', 'queued', 'waiting'].includes(String(task.runState || ''))) {
+      return { ok: false, reason: 'task_busy' };
+    }
+    if (task.moduleAssignment?.running === true) {
+      return { ok: false, reason: 'task_classifying' };
+    }
+    if (options?.asSource && (task.worktreePath || task.branch)) {
+      return { ok: false, reason: 'source_workspace' };
+    }
+    return { ok: true, reason: null };
+  }
+
+  function taskMergeCompatibility(target, candidate, options) {
+    const targetState = taskMergeEligibility(target);
+    if (!targetState.ok) return targetState;
+    const candidateState = taskMergeEligibility(candidate, { asSource: true });
+    if (!candidateState.ok) return candidateState;
+    if (!sameTaskOrigin(target, candidate)) return { ok: false, reason: 'origin_mismatch' };
+    const targetDirId = String(options?.targetDirId || '').trim();
+    const candidateDirId = String(options?.candidateDirId || '').trim();
+    if (targetDirId && candidateDirId && targetDirId !== candidateDirId) {
+      return { ok: false, reason: 'directory_mismatch' };
+    }
+    return { ok: true, reason: null };
+  }
+
+  function taskHomeDirId(task, modules) {
+    const module = (Array.isArray(modules) ? modules : [])
+      .find(item => item?.id === task?.moduleId);
+    return String(module?.dirId || task?.dirIds?.[0] || '').trim() || null;
+  }
+
+  // A manual merge is directional: the first selected task survives and every
+  // later selection is folded into it. Keep this tiny plan builder shared by
+  // both web task-board surfaces so legacy-origin fallback and validation never
+  // drift between manage.html and meta.html.
+  function taskMergePlan(tasks, options) {
+    const selected = [];
+    const seen = new Set();
+    for (const task of Array.isArray(tasks) ? tasks : []) {
+      const id = String(task?.id || '').trim();
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      selected.push(task);
+    }
+    const target = selected[0] || null;
+    const sources = selected.slice(1);
+    const origin = target ? taskOrigin(target) : null;
+    if (!target) {
+      return { ok: false, reason: 'empty', target, sources, origin, targetId: null, sourceTaskIds: [] };
+    }
+    const targetState = taskMergeEligibility(target);
+    if (!targetState.ok) {
+      return {
+        ok: false, reason: targetState.reason, target, sources, origin, blockedTask: target,
+        targetId: target.id, sourceTaskIds: sources.map(task => task.id),
+      };
+    }
+    const dirIdOf = typeof options?.dirIdOf === 'function' ? options.dirIdOf : () => null;
+    const blockedTask = sources.find(task => !taskMergeCompatibility(target, task, {
+      targetDirId: dirIdOf(target),
+      candidateDirId: dirIdOf(task),
+    }).ok);
+    if (blockedTask) {
+      const compatibility = taskMergeCompatibility(target, blockedTask, {
+        targetDirId: dirIdOf(target),
+        candidateDirId: dirIdOf(blockedTask),
+      });
+      return {
+        ok: false, reason: compatibility.reason, target, sources, origin, blockedTask,
+        targetId: target.id, sourceTaskIds: sources.map(task => task.id),
+      };
+    }
+    return {
+      ok: sources.length > 0,
+      reason: sources.length ? null : 'too_few',
+      target,
+      sources,
+      origin,
+      targetId: target.id,
+      sourceTaskIds: sources.map(task => task.id),
+    };
+  }
+
+  function taskMergeErrorMessage(value) {
+    const payload = value && typeof value === 'object' ? value : {};
+    const note = typeof payload.note === 'string' ? payload.note.trim() : '';
+    if (note) return note;
+    const code = String(typeof value === 'string' ? value
+      : payload.error || payload.code || payload.message || '').trim();
+    const messages = {
+      invalid_merge_request: '合并请求无效，请刷新任务板后重试',
+      task_not_found: '有任务已不存在，请刷新后重新选择',
+      target_already_merged: '保留任务已被并入其他任务，请刷新后重新选择',
+      target_not_mergeable: '保留任务已归档或不可合并',
+      source_already_merged: '有待并入任务已合并到其他任务，请刷新后重新选择',
+      source_not_mergeable: '有待并入任务已归档或不可合并',
+      task_origin_mismatch: '独立任务与会话任务不能互相合并',
+      task_directory_mismatch: '暂不支持跨 Fleet 合并任务',
+      task_busy: '有任务正在执行、排队或等待，请稍后重试',
+      task_worktree_conflict: '待并入任务仍有 worktree/分支；请先清理，或把它作为首个保留任务',
+      task_merge_persist_failed: '合并结果保存失败，原任务未变更，请重试',
+    };
+    if (messages[code]) return messages[code];
+    if (/failed to fetch|networkerror|network request failed/i.test(code)) {
+      return '网络请求失败，请检查连接后重试';
+    }
+    // A caller may wrap an already-localized server message in Error before the
+    // shared catch path sees it. Preserve that text instead of wrapping it a
+    // second time as “任务合并失败（中文文案）”.
+    if (/[㐀-鿿]/.test(code)) return code;
+    if (code) return `任务合并失败（${code}）`;
+    if (payload.status) return `任务合并失败（HTTP ${payload.status}）`;
+    return '任务合并失败，请稍后重试';
+  }
+
   function taskRoutingLabel(task) {
     // The task card intentionally hides the Commander→worker routing chip: a card
     // should read as just "新任务 · 进行中" and let its title/runState sync from the
@@ -162,6 +285,12 @@
     partitionTaskIdentity,
     taskDisplayState,
     taskOrigin,
+    sameTaskOrigin,
+    taskMergeEligibility,
+    taskMergeCompatibility,
+    taskHomeDirId,
+    taskMergePlan,
+    taskMergeErrorMessage,
     taskRoutingLabel,
   });
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
