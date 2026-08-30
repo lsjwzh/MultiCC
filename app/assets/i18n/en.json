@@ -706,7 +706,7 @@
   "noTasksHint": "No tasks yet. They are filed here automatically after a conversation ends.",
   "localOnly": "This action is only available on the host",
   "taskBoardStat": "{modules} modules · {tasks} tasks",
-  "reclassifyQueued": "Queued {queued}, skipped {skipped}",
+  "reclassifyQueued": "Queued {queued}, archived {archived} without context, skipped {skipped}",
   "reclassifyFailed": "Reclassify failed: {error}",
   "taskGathering": "Gathering tasks...",
   "taskRounds": "{n} turns",

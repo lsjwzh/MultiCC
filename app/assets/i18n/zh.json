@@ -706,7 +706,7 @@
   "noTasksHint": "还没有任务。对话结束后由 AI 自动归档到这里。",
   "localOnly": "该操作仅本机可用",
   "taskBoardStat": "{modules} 模块 · {tasks} 任务",
-  "reclassifyQueued": "已加入 {queued} 个任务，跳过 {skipped} 个",
+  "reclassifyQueued": "已加入 {queued} 个任务，归档 {archived} 个无上下文任务，跳过 {skipped} 个",
   "reclassifyFailed": "批量归类失败：{error}",
   "taskGathering": "任务归拢中…",
   "taskRounds": "{n}轮",

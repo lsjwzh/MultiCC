@@ -944,7 +944,7 @@ class ManageService {
   /// POST /api/task-board/reclassify-pending body {dirId?} -> re-queue every
   /// still-pending task, optionally scoped to one directory. Throws
   /// [LocalOnlyException] only against outdated pre-57bfe99 servers.
-  /// Returns {ok, queued, skipped}.
+  /// Returns {ok, queued, archived, skipped}.
   Future<Map<String, dynamic>> reclassifyPending({String? dirId}) async {
     final res = await http
         .post(
