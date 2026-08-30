@@ -59,12 +59,36 @@
   .tb-head { padding: 8px 12px; background: #161b22; font-size: 12px; color: #e7eaee; font-weight: 600;
              display: flex; justify-content: space-between; align-items: center; }
   .tb-head .tb-count { color: #8b949e; font-weight: 400; }
+  .tb-head-actions, .tb-merge-actions { display: flex; align-items: center; gap: 6px; }
   .tb-mod { padding: 6px 12px; background: #10151c; font-size: 12px; color: #a5b1bd; cursor: pointer;
             display: flex; justify-content: space-between; border-top: 1px solid #161b22; user-select: none; }
   .tb-mod:hover { background: #161b22; }
   .tb-mod .tb-mod-name { font-weight: 600; color: #d8dee6; }
   .tb-task { display: grid; grid-template-columns: 8px 1fr auto; gap: 8px; align-items: center;
              padding: 5px 12px 5px 20px; border-top: 1px solid #10151c; cursor: pointer; font-size: 12px; }
+  .tb-task.merge-mode { grid-template-columns: 18px 8px minmax(0, 1fr) auto; padding-left: 10px; }
+  .tb-merge-select { display: flex; align-items: center; justify-content: center; }
+  .tb-merge-select input { width: 15px; height: 15px; margin: 0; accent-color: #58a6ff; cursor: pointer; }
+  .tb-merge-select input:disabled { cursor: not-allowed; opacity: .35; }
+  .tb-merge-role { display: inline-block; margin-right: 5px; padding: 0 5px; border-radius: 8px;
+                   border: 1px solid #30363d; color: #8b949e; font-size: 10px; text-decoration: none; }
+  .tb-merge-role.keeper { color: #58a6ff; border-color: #1f6feb; background: rgba(56,139,253,.12); }
+  .tb-merge-bar { display: none; align-items: center; justify-content: space-between; gap: 10px;
+                  padding: 8px 12px; border-top: 1px solid #1f6feb; border-bottom: 1px solid #1f6feb;
+                  background: rgba(56,139,253,.08); color: #c9d1d9; font-size: 11px; }
+  .tb-merge-summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  @media (max-width: 600px) {
+    .tb-head { gap: 8px; flex-wrap: wrap; }
+    .tb-head .tb-count { margin-left: auto; }
+    .tb-head-actions { width: 100%; justify-content: flex-start; flex-wrap: wrap; }
+    .tb-head-actions button { flex: 1 1 auto; min-height: 40px; }
+    .tb-merge-bar { align-items: stretch; flex-direction: column; }
+    .tb-merge-summary { overflow: visible; white-space: normal; }
+    .tb-merge-actions { width: 100%; flex-wrap: wrap; }
+    .tb-merge-actions button { flex: 1 1 120px; min-height: 40px; }
+    .tb-task.merge-mode { grid-template-columns: 20px 8px minmax(0, 1fr); }
+    .tb-task.merge-mode .tb-meta { grid-column: 3; grid-row: 2; flex-wrap: wrap; white-space: normal; }
+  }
   .tb-task:hover { background: #161b22; }
   .tb-task.selected { background: #1f2937; }
   .tb-task .tb-dot { width: 7px; height: 7px; border-radius: 50%; background: #3fb950; }
@@ -164,7 +188,8 @@
 <main>
   <div class="left-col">
     <div class="tb-wrap">
-      <div class="tb-head"><span>📋 任务板</span><span class="tb-count" id="tb-count">加载中…</span><button class="btn-sec" id="tb-archive-completed" onclick="archiveCompletedTasks(this)" title="归档全部已完成任务" disabled>🧹 一键清理</button><button class="btn-icon" onclick="fetchTaskBoard()" title="刷新任务板" style="margin-left:8px">🔄</button></div>
+      <div class="tb-head"><span>📋 任务板</span><span class="tb-count" id="tb-count">加载中…</span><span class="tb-head-actions"><button class="btn-sec" id="tb-merge-mode" onclick="toggleTaskMergeMode(event)" title="手动选择同类任务进行合并" disabled>合并任务</button><button class="btn-sec" id="tb-archive-completed" onclick="archiveCompletedTasks(this)" title="归档全部已完成任务" disabled>🧹 一键清理</button><button class="btn-icon" onclick="fetchTaskBoard()" title="刷新任务板">🔄</button></span></div>
+      <div class="tb-merge-bar" id="tb-merge-bar"></div>
       <div id="taskboard"><div class="tb-empty">还没有任务。对话结束后由 AI 自动归档到这里。</div></div>
     </div>
     <section class="fleet" id="fleet"></section>
@@ -324,6 +349,71 @@ const collapsedMods = new Set();   // 全量重绘间记忆折叠态
 let tbTimer = null;
 let gatheringFloat = null;         // 归拢中浮窗
 let pendingTaskIds = [];           // 待定位任务
+let taskMergeMode = false;
+const selectedMergeTaskIds = new Set(); // insertion order: first id survives
+
+function taskHomeDirId(task) {
+  return window.MultiCCTaskBoardUi.taskHomeDirId(task, tb.modules);
+}
+
+function selectedMergeTasks() {
+  const byId = new Map(tb.tasks.map(task => [task.id, task]));
+  return [...selectedMergeTaskIds].map(id => byId.get(id)).filter(Boolean);
+}
+
+function currentTaskMergePlan() {
+  return window.MultiCCTaskBoardUi.taskMergePlan(selectedMergeTasks(), {
+    dirIdOf: taskHomeDirId,
+  });
+}
+
+function taskMergeBlockText(reason) {
+  const messages = {
+    task_busy: '任务正在执行、排队或等待，暂不能合并',
+    task_classifying: '任务正在归类，完成后才能合并',
+    source_workspace: '该任务仍有 worktree/分支；请先清理，或先勾选它作为保留任务',
+    origin_mismatch: '暂不支持独立任务与会话任务互相合并',
+    directory_mismatch: '暂不支持跨 Fleet 合并任务',
+    too_few: '至少选择 2 个任务',
+    empty: '请先选择要保留的任务',
+  };
+  return messages[reason] || '该任务暂不能合并';
+}
+
+function taskMergeCandidateState(task) {
+  if (selectedMergeTaskIds.has(task.id)) return { ok: true, reason: null };
+  const target = selectedMergeTasks()[0];
+  if (!target) return window.MultiCCTaskBoardUi.taskMergeEligibility(task);
+  return window.MultiCCTaskBoardUi.taskMergeCompatibility(target, task, {
+    targetDirId: taskHomeDirId(target),
+    candidateDirId: taskHomeDirId(task),
+  });
+}
+
+function hasTaskMergePair(tasks) {
+  for (const target of tasks) {
+    for (const source of tasks) {
+      if (target.id === source.id) continue;
+      if (window.MultiCCTaskBoardUi.taskMergeCompatibility(target, source, {
+        targetDirId: taskHomeDirId(target),
+        candidateDirId: taskHomeDirId(source),
+      }).ok) return true;
+    }
+  }
+  return false;
+}
+
+function pruneTaskMergeSelection(visibleTasks) {
+  const visibleIds = new Set(visibleTasks.map(task => task.id));
+  for (const id of selectedMergeTaskIds) {
+    if (!visibleIds.has(id)) selectedMergeTaskIds.delete(id);
+  }
+}
+
+function exitTaskMergeMode() {
+  taskMergeMode = false;
+  selectedMergeTaskIds.clear();
+}
 
 function timeAgo(ts) {
   if (!ts) return '';
@@ -340,6 +430,7 @@ async function fetchTaskBoard() {
     const d = await r.json();
     if (d && d.ok) {
       tb = window.MultiCCTaskBoardUi.reconcileSnapshot(d);
+      if (taskMergeMode) pruneTaskMergeSelection(tb.tasks.filter(task => task.status !== 'archived'));
       renderTaskBoard();
     }
     // 刷新后定位待定位任务
@@ -372,6 +463,116 @@ function originHtml(task) {
 function taskRoutingHtml(task) {
   const label = window.MultiCCTaskBoardUi.taskRoutingLabel(task);
   return label ? `<span class="tb-route-state">🫡 ${esc(label)}</span>` : '';
+}
+
+function toggleTaskMergeMode(event) {
+  event?.stopPropagation();
+  if (taskMergeMode) exitTaskMergeMode();
+  else {
+    taskMergeMode = true;
+    selectedMergeTaskIds.clear();
+  }
+  renderTaskBoard();
+}
+
+function toggleTaskMergeSelection(event, taskId) {
+  event?.stopPropagation();
+  if (!taskMergeMode) return;
+  const task = tb.tasks.find(item => item.id === taskId);
+  if (!task) return;
+  if (!event.currentTarget.checked) {
+    selectedMergeTaskIds.delete(taskId);
+    renderTaskBoard();
+    return;
+  }
+  const state = taskMergeCandidateState(task);
+  if (!state.ok) {
+    event.currentTarget.checked = false;
+    alert(taskMergeBlockText(state.reason));
+    return;
+  }
+  selectedMergeTaskIds.add(taskId);
+  renderTaskBoard();
+}
+
+function handleTaskBoardRowClick(task) {
+  if (!taskMergeMode) {
+    selectedTask = task.id;
+    renderTaskBoard();
+    loadTaskDetail(task.id);
+    return;
+  }
+  if (selectedMergeTaskIds.has(task.id)) {
+    selectedMergeTaskIds.delete(task.id);
+    renderTaskBoard();
+    return;
+  }
+  const state = taskMergeCandidateState(task);
+  if (!state.ok) {
+    alert(taskMergeBlockText(state.reason));
+    return;
+  }
+  selectedMergeTaskIds.add(task.id);
+  renderTaskBoard();
+}
+
+function renderTaskMergeBar(visibleTasks) {
+  const modeButton = $('tb-merge-mode');
+  const canStart = hasTaskMergePair(visibleTasks);
+  modeButton.disabled = taskMergeMode ? false : !canStart;
+  modeButton.textContent = taskMergeMode ? '取消合并' : '合并任务';
+  modeButton.title = taskMergeMode ? '退出合并模式'
+    : canStart ? '手动选择同类任务进行合并' : '当前没有两个可合并的同类任务';
+  const bar = $('tb-merge-bar');
+  if (!taskMergeMode) {
+    bar.style.display = 'none';
+    bar.innerHTML = '';
+    return;
+  }
+  const tasks = selectedMergeTasks();
+  const plan = currentTaskMergePlan();
+  const target = tasks[0];
+  const origin = target ? window.MultiCCTaskBoardUi.taskOrigin(target) : null;
+  const summary = target
+    ? `已选 ${tasks.length} 个${origin.label}；保留「${target.title}」，其余并入`
+    : '请先勾选要保留的任务，再勾选要并入的同类任务';
+  bar.style.display = 'flex';
+  bar.innerHTML = `<span class="tb-merge-summary">${esc(summary)}</span><span class="tb-merge-actions">
+    <button id="tb-merge-submit" title="${esc(plan.ok ? '执行合并' : taskMergeBlockText(plan.reason))}"${plan.ok ? '' : ' disabled'}>合并${tasks.length >= 2 ? ` ${tasks.length} 个` : ''}</button>
+    <button class="btn-sec" id="tb-merge-cancel">取消</button></span>`;
+  bar.querySelector('#tb-merge-submit').onclick = event => submitTaskMerge(event, event.currentTarget);
+  bar.querySelector('#tb-merge-cancel').onclick = toggleTaskMergeMode;
+}
+
+async function submitTaskMerge(event, button) {
+  event?.stopPropagation();
+  const plan = currentTaskMergePlan();
+  if (!plan.ok) return alert(taskMergeBlockText(plan.reason));
+  const sourceLines = plan.sources.map(task => `  • ${task.title}`).join('\n');
+  if (!confirm(`合并 ${plan.sources.length + 1} 个${plan.origin.label}？\n\n保留任务：「${plan.target.title}」\n将以下任务并入它：\n${sourceLines}\n\n合并后，被并入的任务将不再单独显示。`)) return;
+  button.disabled = true;
+  try {
+    const r = await fetch(`/api/task-board/tasks/${encodeURIComponent(plan.targetId)}/merge-tasks`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ sourceTaskIds: plan.sourceTaskIds }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.ok) {
+      throw new Error(window.MultiCCTaskBoardUi.taskMergeErrorMessage({ ...d, status: r.status }));
+    }
+    const mergedCount = Array.isArray(d.mergedTaskIds)
+      ? d.mergedTaskIds.length : plan.sourceTaskIds.length;
+    selectedTask = plan.targetId;
+    exitTaskMergeMode();
+    await fetchTaskBoard();
+    await loadTaskDetail(plan.targetId, true);
+    alert(mergedCount
+      ? `已合并 ${mergedCount} 个任务到「${plan.target.title}」`
+      : `「${plan.target.title}」已是合并后的最新状态`);
+  } catch (e) {
+    alert('合并失败：' + window.MultiCCTaskBoardUi.taskMergeErrorMessage(e));
+    button.disabled = false;
+  }
 }
 
 async function reclassifyTask(taskId, button) {
@@ -433,10 +634,22 @@ function bindQuickTaskArchive(row, task) {
 function createTaskBoardRow(task) {
   const display = window.MultiCCTaskBoardUi.taskDisplayState(task);
   const clsRun = display.running ? ' running' : '';
+  const mergeSelected = selectedMergeTaskIds.has(task.id);
+  const mergeState = taskMergeMode ? taskMergeCandidateState(task) : { ok: true, reason: null };
+  const mergeDisabled = taskMergeMode && !mergeSelected && !mergeState.ok;
+  const mergeTarget = selectedMergeTasks()[0];
+  const mergeRole = taskMergeMode && mergeSelected
+    ? `<span class="tb-merge-role${mergeTarget?.id === task.id ? ' keeper' : ''}">${mergeTarget?.id === task.id ? '保留' : '并入'}</span>` : '';
+  const mergeTitle = mergeDisabled ? taskMergeBlockText(mergeState.reason)
+    : mergeSelected ? '取消选择'
+      : selectedMergeTaskIds.size ? '选择为待并入任务' : '选择为保留任务';
+  const mergeSelect = taskMergeMode
+    ? `<span class="tb-merge-select" title="${esc(mergeTitle)}"><input type="checkbox" aria-label="${esc(mergeTitle)}"${mergeSelected ? ' checked' : ''}${mergeDisabled ? ' disabled' : ''}></span>` : '';
   const row = document.createElement('div');
   row.className = 'tb-task' + (display.done ? ' done' : '')
-    + (selectedTask === task.id ? ' selected' : '') + clsRun;
+    + (selectedTask === task.id ? ' selected' : '') + clsRun + (taskMergeMode ? ' merge-mode' : '');
   row.dataset.taskId = task.id;
+  row.title = taskMergeMode ? mergeTitle : '查看任务详情';
   const assignment = task.moduleAssignment;
   const body = task.body
     ? `<details class="tb-body-fold"><summary>任务正文</summary><pre>${esc(task.body)}</pre></details>`
@@ -446,11 +659,17 @@ function createTaskBoardRow(task) {
   const attempt = Number(task.attemptCount) > 1
     ? `<span>${Number(task.attemptCount)} 次投递</span>` : '';
   row.innerHTML = `
+    ${mergeSelect}
     ${statusIconHtml(display)}
-    <span class="tb-title-cell"><span class="tb-title">${originHtml(task)}${esc(task.title)}</span>${body}</span>
+    <span class="tb-title-cell"><span class="tb-title">${originHtml(task)}${mergeRole}${esc(task.title)}</span>${body}</span>
     <span class="tb-meta"><span class="tb-run-state st-tone-${display.tone}">${esc(display.label)}</span>${taskRoutingHtml(task)}${attempt}${assignment ? `<button class="tb-reclassify"${assignment.running ? ' disabled' : ''} title="${esc(assignment.lastError || '')}">${assignment.running ? '归类中…' : assignment.lastError ? '重新归类' : '归类'}</button>` : ''}<button class="tb-quick-archive" title="快捷归档该任务">归档</button><span>${task.refCount}轮 · ${esc(timeAgo(task.lastTs))}</span></span>`;
   row.querySelector('.tb-body-fold')?.addEventListener('click', event => event.stopPropagation());
-  row.onclick = () => { selectedTask = task.id; renderTaskBoard(); loadTaskDetail(task.id); };
+  row.onclick = () => handleTaskBoardRowClick(task);
+  const mergeCheckbox = row.querySelector('.tb-merge-select input');
+  if (mergeCheckbox) {
+    mergeCheckbox.onclick = event => event.stopPropagation();
+    mergeCheckbox.onchange = event => toggleTaskMergeSelection(event, task.id);
+  }
   const retry = row.querySelector('.tb-reclassify');
   if (retry) retry.onclick = (event) => {
     event.stopPropagation();
@@ -495,6 +714,8 @@ async function archiveCompletedTasks(button) {
 function renderTaskBoard() {
   const box = $('taskboard'); box.innerHTML = '';
   const visible = tb.tasks.filter(t => t.status !== 'archived');
+  if (taskMergeMode) pruneTaskMergeSelection(visible);
+  renderTaskMergeBar(visible);
   const completedCount = visible.filter(t =>
     window.MultiCCTaskBoardUi.taskDisplayState(t).done).length;
   const cleanup = $('tb-archive-completed');

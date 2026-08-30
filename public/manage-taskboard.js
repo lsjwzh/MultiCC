@@ -14,6 +14,9 @@ let _tbTimer = null;
 const _tbCollapsed = new Set();     // module ids collapsed in the tree
 let _tbGatheringFloat = null;       // 归拢中浮窗 DOM
 let _tbPendingTaskIds = [];         // 等待定位的新任务 id
+let _tbMergeMode = false;
+let _tbMergeDirId = null;
+const _tbMergeTaskIds = new Set();  // insertion order: first id is the survivor
 
 const _tbEsc = (s) => String(s ?? '').replace(/[&<>"']/g,
   c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -37,6 +40,76 @@ function _tbTimeAgo(ts) {
   if (s < 3600) return `${Math.floor(s / 60)}分钟前`;
   if (s < 86400) return `${Math.floor(s / 3600)}小时前`;
   return `${Math.floor(s / 86400)}天前`;
+}
+
+function _tbTaskDirId(task) {
+  return window.MultiCCTaskBoardUi.taskHomeDirId(task, _tbBoard.modules);
+}
+
+function _tbMergeSelectedTasks() {
+  const byId = new Map(_tbBoard.tasks.map(task => [task.id, task]));
+  return [..._tbMergeTaskIds].map(id => byId.get(id)).filter(Boolean);
+}
+
+function _tbMergePlan() {
+  return window.MultiCCTaskBoardUi.taskMergePlan(_tbMergeSelectedTasks(), {
+    dirIdOf: _tbTaskDirId,
+  });
+}
+
+function _tbMergeBlockText(reason) {
+  const messages = {
+    task_busy: '任务正在执行、排队或等待，暂不能合并',
+    task_classifying: '任务正在归类，完成后才能合并',
+    source_workspace: '该任务仍有 worktree/分支；请先清理，或先勾选它作为保留任务',
+    origin_mismatch: '暂不支持独立任务与会话任务互相合并',
+    directory_mismatch: '暂不支持跨 Fleet 合并任务',
+    too_few: '至少选择 2 个任务',
+    empty: '请先选择要保留的任务',
+  };
+  return messages[reason] || '该任务暂不能合并';
+}
+
+function _tbMergeCandidateState(task) {
+  if (_tbMergeTaskIds.has(task.id)) return { ok: true, reason: null };
+  const target = _tbMergeSelectedTasks()[0];
+  if (!target) return window.MultiCCTaskBoardUi.taskMergeEligibility(task);
+  return window.MultiCCTaskBoardUi.taskMergeCompatibility(target, task, {
+    targetDirId: _tbTaskDirId(target),
+    candidateDirId: _tbTaskDirId(task),
+  });
+}
+
+function _tbHasMergePair(tasks) {
+  for (const target of tasks) {
+    for (const source of tasks) {
+      if (target.id === source.id) continue;
+      if (window.MultiCCTaskBoardUi.taskMergeCompatibility(target, source, {
+        targetDirId: _tbTaskDirId(target),
+        candidateDirId: _tbTaskDirId(source),
+      }).ok) return true;
+    }
+  }
+  return false;
+}
+
+function _tbPruneMergeSelection(visibleTasks) {
+  const visibleIds = new Set((Array.isArray(visibleTasks) ? visibleTasks : []).map(task => task.id));
+  for (const id of _tbMergeTaskIds) {
+    if (!visibleIds.has(id)) _tbMergeTaskIds.delete(id);
+  }
+}
+
+function _tbExitMergeMode() {
+  _tbMergeMode = false;
+  _tbMergeDirId = null;
+  _tbMergeTaskIds.clear();
+}
+
+function _tbRenderVisibleBoard() {
+  if (typeof renderDirectoryDetailBody === 'function' && typeof _detailDirId !== 'undefined' && _detailDirId) {
+    renderDirectoryDetailBody(_detailDirId);
+  }
 }
 
 // ── Auto Provider (composer picks) ──────────────────────────────────────────
@@ -130,6 +203,61 @@ function _tbRoutingHtml(task) {
   return label ? `<span class="tb-route-state">🫡 ${_tbEsc(label)}</span>` : '';
 }
 
+function _tbMergeSelectionHtml(task) {
+  if (!_tbMergeMode) return '';
+  const selected = _tbMergeTaskIds.has(task.id);
+  const state = _tbMergeCandidateState(task);
+  const disabled = !selected && !state.ok;
+  const title = disabled ? _tbMergeBlockText(state.reason)
+    : selected ? '取消选择'
+      : _tbMergeTaskIds.size ? '选择为待并入任务' : '选择为保留任务';
+  return `<span class="tb-merge-select" title="${_tbEsc(title)}" onclick="event.stopPropagation()">
+    <input type="checkbox" aria-label="${_tbEsc(title)}"${selected ? ' checked' : ''}${disabled ? ' disabled' : ''}
+      onclick="event.stopPropagation()" onchange="toggleTaskBoardMergeSelection(event,'${_tbEsc(task.id)}')">
+  </span>`;
+}
+
+function _tbMergeRoleHtml(task) {
+  if (!_tbMergeMode || !_tbMergeTaskIds.has(task.id)) return '';
+  const target = _tbMergeSelectedTasks()[0];
+  const keeper = target?.id === task.id;
+  return `<span class="tb-merge-role${keeper ? ' keeper' : ''}">${keeper ? '保留' : '并入'}</span>`;
+}
+
+function _tbMergeRowTitle(task) {
+  if (!_tbMergeMode) return '在聊天视图中打开';
+  if (_tbMergeTaskIds.has(task.id)) return '点击取消选择';
+  const state = _tbMergeCandidateState(task);
+  if (!state.ok) return _tbMergeBlockText(state.reason);
+  return _tbMergeTaskIds.size ? '点击选择为待并入任务' : '点击选择为保留任务';
+}
+
+function _tbMergeStartButtonHtml(dirId, tasks) {
+  const available = _tbHasMergePair(tasks);
+  const title = available ? '手动选择同类任务进行合并'
+    : '当前没有两个可合并的同类任务';
+  return `<button class="btn btn-sm tb-merge-start" onclick="toggleTaskBoardMergeMode(event,'${_tbEsc(dirId)}')" title="${title}"${available ? '' : ' disabled'}>合并任务</button>`;
+}
+
+function _tbMergeBarHtml() {
+  if (!_tbMergeMode) return '';
+  const tasks = _tbMergeSelectedTasks();
+  const plan = _tbMergePlan();
+  const target = tasks[0];
+  const origin = target ? window.MultiCCTaskBoardUi.taskOrigin(target) : null;
+  const summary = target
+    ? `已选 ${tasks.length} 个${origin.label}；保留「${target.title}」，其余并入`
+    : '请先勾选要保留的任务，再勾选要并入的同类任务';
+  const disabledTitle = plan.ok ? '执行合并' : _tbMergeBlockText(plan.reason);
+  return `<div class="tb-merge-bar">
+    <span class="tb-merge-summary">${_tbEsc(summary)}</span>
+    <span class="tb-merge-actions">
+      <button class="btn btn-sm" onclick="submitTaskBoardMerge(event,this)" title="${_tbEsc(disabledTitle)}"${plan.ok ? '' : ' disabled'}>合并${tasks.length >= 2 ? ` ${tasks.length} 个` : ''}</button>
+      <button class="btn btn-sm" onclick="toggleTaskBoardMergeMode(event,'${_tbEsc(_tbMergeDirId)}')">取消</button>
+    </span>
+  </div>`;
+}
+
 async function refreshTaskBoard(force) {
   if (!force && Date.now() - _tbFetchedAt < 3000) return;   // debounce bursts
   try {
@@ -137,6 +265,7 @@ async function refreshTaskBoard(force) {
     const d = await r.json();
     if (!d || !d.ok) return;
     _tbBoard = window.MultiCCTaskBoardUi.reconcileSnapshot(d);
+    if (_tbMergeMode) _tbPruneMergeSelection(_tbTasksForDir(_tbMergeDirId));
     _tbFetchedAt = Date.now();
     // Re-render wherever the board is currently visible.
     if (typeof _detailModalOpen === 'function' && _detailModalOpen()
@@ -182,10 +311,11 @@ function _tbTaskRowHtml(task) {
       ? '<span class="tb-body-pending">旧记录缺少 canonical 正文，未自动合并</span>'
       : '<span class="tb-body-pending">正文等待目标会话持久化…</span>';
   return `
-    <div class="tb-task${display.done ? ' done' : ''}${clsRun}" data-task-id="${_tbEsc(task.id)}" title="在聊天视图中打开" onclick="openTaskChatView('${_tbEsc(task.id)}')">
+    <div class="tb-task${display.done ? ' done' : ''}${clsRun}${_tbMergeMode ? ' merge-mode' : ''}" data-task-id="${_tbEsc(task.id)}" title="${_tbEsc(_tbMergeRowTitle(task))}" onclick="handleTaskBoardRowClick(event,'${_tbEsc(task.id)}')">
+      ${_tbMergeSelectionHtml(task)}
       ${_tbStatusIcon(display)}
       <span class="tb-title-cell">
-        <span class="tb-title">${_tbOriginHtml(task)}${_tbEsc(task.title)}</span>
+        <span class="tb-title">${_tbOriginHtml(task)}${_tbEsc(task.title)}${_tbMergeRoleHtml(task)}</span>
         ${body}
       </span>
       <span class="tb-task-meta"><span class="tb-run-state st-tone-${display.tone}">${_tbEsc(display.label)}</span>${_tbWorkspaceHtml(task)}${_tbRoutingHtml(task)}${attempt}${_tbModuleAssignmentHtml(task)}${_tbTaskActionsHtml(task)}${_tbQuickArchiveHtml(task)}<span class="tb-dim">${task.refCount}轮 · ${_tbEsc(_tbTimeAgo(task.lastTs))}</span></span>
@@ -198,9 +328,13 @@ function _tbTaskRowHtml(task) {
 // would duplicate the tab label) is dropped.
 function renderTaskBoardSection(dirId, opts) {
   const tasks = _tbTasksForDir(dirId);
+  if (_tbMergeMode && _tbMergeDirId !== dirId) _tbExitMergeMode();
+  if (_tbMergeMode) _tbPruneMergeSelection(tasks);
   const completedCount = tasks.filter(t =>
     window.MultiCCTaskBoardUi.taskDisplayState(t).done).length;
   const cleanupButton = `<button class="btn btn-sm tb-clean-completed" onclick="archiveCompletedTaskBoard(event,'${_tbEsc(dirId)}',this)" title="归档全部已完成任务"${completedCount ? '' : ' disabled'}>🧹 一键清理${completedCount ? ` (${completedCount})` : ''}</button>`;
+  const mergeStartButton = _tbMergeMode ? '' : _tbMergeStartButtonHtml(dirId, tasks);
+  const mergeBar = _tbMergeBarHtml();
   const rowsHtml = [];
   const byModule = new Map();
   for (const t of tasks) {
@@ -242,16 +376,17 @@ function renderTaskBoardSection(dirId, opts) {
   if (opts && opts.tabbed) {
     const stat = `<div class="tb-stat" style="display:flex;align-items:center;justify-content:space-between;gap:8px">
       <span>${tasks.length ? `${mods.length || 1} 模块 · ${tasks.length} 任务` : '暂无任务'}</span>
-      <span>${cleanupButton}<button class="btn-icon" onclick="event.stopPropagation();refreshTaskBoard(true)" title="刷新任务板" style="margin-left:8px">🔄</button></span>
+      <span class="tb-head-actions">${mergeStartButton}${cleanupButton}<button class="btn-icon" onclick="event.stopPropagation();refreshTaskBoard(true)" title="刷新任务板">🔄</button></span>
     </div>`;
-    return `<div class="tb-section tb-tabbed">${stat}${body}</div>`;
+    return `<div class="tb-section tb-tabbed">${stat}${mergeBar}${body}</div>`;
   }
   return `
     <div class="tb-section">
       <div class="tb-section-head">
         <span>📋 任务板 <span class="tb-dim">${tasks.length ? `${mods.length || 1} 模块 · ${tasks.length} 任务` : ''}</span></span>
-        ${cleanupButton}
+        <span class="tb-head-actions">${mergeStartButton}${cleanupButton}</span>
       </div>
+      ${mergeBar}
       ${body}
     </div>`;
 }
@@ -554,11 +689,103 @@ function syncTaskBoardDirComposer(dirId, visible) {
 
 // ── Task entry + row actions ────────────────────────────────────────────────
 
+function handleTaskBoardRowClick(ev, taskId) {
+  if (ev) ev.stopPropagation();
+  if (!_tbMergeMode) {
+    openTaskChatView(taskId, ev);
+    return;
+  }
+  const task = _tbBoard.tasks.find(item => item.id === taskId);
+  if (!task) return;
+  if (_tbMergeTaskIds.has(taskId)) {
+    _tbMergeTaskIds.delete(taskId);
+    _tbRenderVisibleBoard();
+    return;
+  }
+  const state = _tbMergeCandidateState(task);
+  if (!state.ok) {
+    if (typeof showToast === 'function') showToast(_tbMergeBlockText(state.reason), true);
+    return;
+  }
+  _tbMergeTaskIds.add(taskId);
+  _tbRenderVisibleBoard();
+}
+
+function toggleTaskBoardMergeMode(ev, dirId) {
+  if (ev) ev.stopPropagation();
+  if (_tbMergeMode) {
+    _tbExitMergeMode();
+  } else {
+    _tbMergeMode = true;
+    _tbMergeDirId = dirId;
+    _tbMergeTaskIds.clear();
+  }
+  _tbRenderVisibleBoard();
+}
+
+function toggleTaskBoardMergeSelection(ev, taskId) {
+  if (ev) ev.stopPropagation();
+  if (!_tbMergeMode) return;
+  const task = _tbBoard.tasks.find(item => item.id === taskId);
+  if (!task) return;
+  const checked = !!ev?.currentTarget?.checked;
+  if (!checked) {
+    _tbMergeTaskIds.delete(taskId);
+    _tbRenderVisibleBoard();
+    return;
+  }
+  const state = _tbMergeCandidateState(task);
+  if (!state.ok) {
+    if (ev?.currentTarget) ev.currentTarget.checked = false;
+    if (typeof showToast === 'function') showToast(_tbMergeBlockText(state.reason), true);
+    return;
+  }
+  _tbMergeTaskIds.add(taskId);
+  _tbRenderVisibleBoard();
+}
+
+async function submitTaskBoardMerge(ev, button) {
+  if (ev) ev.stopPropagation();
+  const plan = _tbMergePlan();
+  if (!plan.ok) {
+    if (typeof showToast === 'function') showToast(_tbMergeBlockText(plan.reason), true);
+    return;
+  }
+  const sourceLines = plan.sources.map(task => `  • ${task.title}`).join('\n');
+  const confirmed = confirm(`合并 ${plan.sources.length + 1} 个${plan.origin.label}？\n\n保留任务：「${plan.target.title}」\n将以下任务并入它：\n${sourceLines}\n\n合并后，被并入的任务将不再单独显示。`);
+  if (!confirmed) return;
+  if (button) button.disabled = true;
+  try {
+    const r = await fetch(`/api/task-board/tasks/${encodeURIComponent(plan.targetId)}/merge-tasks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sourceTaskIds: plan.sourceTaskIds }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.ok) {
+      throw new Error(window.MultiCCTaskBoardUi.taskMergeErrorMessage({ ...d, status: r.status }));
+    }
+    const mergedCount = Array.isArray(d.mergedTaskIds)
+      ? d.mergedTaskIds.length : plan.sourceTaskIds.length;
+    _tbExitMergeMode();
+    await refreshTaskBoard(true);
+    if (typeof showToast === 'function') {
+      showToast(mergedCount
+        ? `已合并 ${mergedCount} 个任务到「${plan.target.title}」`
+        : `「${plan.target.title}」已是合并后的最新状态`);
+    }
+  } catch (e) {
+    const message = window.MultiCCTaskBoardUi.taskMergeErrorMessage(e);
+    if (typeof showToast === 'function') showToast(`合并失败：${message}`, true);
+    if (button) button.disabled = false;
+  }
+}
+
 // M2 · the default task entry: the unified chat view in a new tab (the same
 // window.open pattern manage.js uses for chat sessions). M4 (design D3) made
 // it the only entry — the legacy stacked modal is gone.
-function openTaskChatView(taskId) {
-  if (event) event.stopPropagation();
+function openTaskChatView(taskId, ev) {
+  if (ev) ev.stopPropagation();
   window.open(`/chat.html?task=${encodeURIComponent(taskId)}`, '_blank');
 }
 
