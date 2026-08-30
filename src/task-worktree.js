@@ -52,6 +52,7 @@ function createTaskWorktreeService(options = {}) {
     gitMergeBack,
     existsSync = p => require('fs').existsSync(p),
     isTaskRunning = null,
+    beginTaskOperation = null,
     logger = console,
   } = options;
   for (const [name, value] of Object.entries({
@@ -63,6 +64,13 @@ function createTaskWorktreeService(options = {}) {
   if (isTaskRunning != null && typeof isTaskRunning !== 'function') {
     throw new TypeError('[task-worktree] isTaskRunning port must be a function');
   }
+  if (beginTaskOperation != null && typeof beginTaskOperation !== 'function') {
+    throw new TypeError('[task-worktree] beginTaskOperation port must be a function');
+  }
+
+  function hold(taskId) {
+    return beginTaskOperation ? beginTaskOperation(taskId) : () => {};
+  }
 
   function refuseWhileRunning(taskId) {
     if (isTaskRunning && isTaskRunning(taskId)) {
@@ -73,12 +81,13 @@ function createTaskWorktreeService(options = {}) {
 
   async function ensureForTask(taskId) {
     const id = String(taskId || '').trim();
-    const task = getBoardTask(id);
-    if (!task) return { ok: false, code: 'task_not_found' };
-    const dir = getDirectory(taskDirIdOf(task));
-    if (!dir || !dir.path) return { ok: false, code: 'directory_not_found' };
-    const token = taskWorktreeToken(id);
+    const release = hold(id);
     try {
+      const task = getBoardTask(id);
+      if (!task) return { ok: false, code: 'task_not_found' };
+      const dir = getDirectory(taskDirIdOf(task));
+      if (!dir || !dir.path) return { ok: false, code: 'directory_not_found' };
+      const token = taskWorktreeToken(id);
       // Idempotent by construction: an existing directory is reused and the
       // branch re-checked (git.js gitWorktreeAdd). Same task → same token →
       // same worktree across every run and slot (design D2).
@@ -96,6 +105,8 @@ function createTaskWorktreeService(options = {}) {
     } catch (error) {
       logger.log(`[multicc/taskworktree] ensure failed for ${id}: ${error?.message || error}`);
       return { ok: false, code: 'worktree_create_failed', error: error?.message || String(error) };
+    } finally {
+      release();
     }
   }
 
@@ -142,18 +153,23 @@ function createTaskWorktreeService(options = {}) {
   }
 
   async function mergeTask(taskId) {
-    const resolved = info(taskId);
-    if (!resolved) return { ok: false, code: 'worktree_not_found' };
-    const busy = refuseWhileRunning(taskId);
-    if (busy) return busy;
-    // gitMergeBack commits all dirty work in the worktree first, then merges
-    // through an integration worktree with syntax validation — the same
-    // semantics the session merge button relies on.
-    return gitMergeBack(resolved.dir, {
-      id: resolved.token,
-      worktreePath: resolved.worktreePath,
-      branch: resolved.branch,
-    });
+    const release = hold(taskId);
+    try {
+      const resolved = info(taskId);
+      if (!resolved) return { ok: false, code: 'worktree_not_found' };
+      const busy = refuseWhileRunning(taskId);
+      if (busy) return busy;
+      // gitMergeBack commits all dirty work in the worktree first, then merges
+      // through an integration worktree with syntax validation — the same
+      // semantics the session merge button relies on.
+      return await gitMergeBack(resolved.dir, {
+        id: resolved.token,
+        worktreePath: resolved.worktreePath,
+        branch: resolved.branch,
+      });
+    } finally {
+      release();
+    }
   }
 
   // One-click detail-page action (D2): merge back, then remove the worktree
@@ -162,37 +178,42 @@ function createTaskWorktreeService(options = {}) {
   // a retryable state — never a half-deleted worktree.
   async function cleanupWorktree(taskId, opts = {}) {
     const id = String(taskId || '').trim();
-    const task = getBoardTask(id);
-    if (!task) return { ok: false, code: 'task_not_found' };
-    if (!task.worktreePath || !task.branch) {
-      return { ok: true, skipped: true, code: 'worktree_not_found' };
-    }
-    const busy = refuseWhileRunning(id);
-    if (busy) return busy;
-    const dir = getDirectory(taskDirIdOf(task));
-    if (!dir) return { ok: false, code: 'directory_not_found' };
-    if (!existsSync(task.worktreePath)) {
-      // Removal succeeded but the ledger write was lost (crash between the
-      // two): heal by clearing the stale fields without touching git.
+    const release = hold(id);
+    try {
+      const task = getBoardTask(id);
+      if (!task) return { ok: false, code: 'task_not_found' };
+      if (!task.worktreePath || !task.branch) {
+        return { ok: true, skipped: true, code: 'worktree_not_found' };
+      }
+      const busy = refuseWhileRunning(id);
+      if (busy) return busy;
+      const dir = getDirectory(taskDirIdOf(task));
+      if (!dir) return { ok: false, code: 'directory_not_found' };
+      if (!existsSync(task.worktreePath)) {
+        // Removal succeeded but the ledger write was lost (crash between the
+        // two): heal by clearing the stale fields without touching git.
+        updateTask(id, { worktreePath: null, branch: null });
+        return { ok: true, removed: true, alreadyGone: true };
+      }
+      const merged = await gitMergeBack(dir, {
+        id: taskWorktreeToken(id),
+        worktreePath: task.worktreePath,
+        branch: task.branch,
+      });
+      if (!merged.ok) return { ok: false, code: 'merge_failed', merge: merged };
+      const removal = await gitWorktreeRemove(dir.path, task.worktreePath, task.branch, {
+        sessionId: taskWorktreeToken(id),
+        baseBranch: dir.baseBranch,
+        force: opts.force === true,
+      });
+      if (!removal.ok) {
+        return { ok: false, code: 'worktree_remove_refused', merge: merged, removal };
+      }
       updateTask(id, { worktreePath: null, branch: null });
-      return { ok: true, removed: true, alreadyGone: true };
+      return { ok: true, removed: true, merged: merged.merged === true };
+    } finally {
+      release();
     }
-    const merged = await gitMergeBack(dir, {
-      id: taskWorktreeToken(id),
-      worktreePath: task.worktreePath,
-      branch: task.branch,
-    });
-    if (!merged.ok) return { ok: false, code: 'merge_failed', merge: merged };
-    const removal = await gitWorktreeRemove(dir.path, task.worktreePath, task.branch, {
-      sessionId: taskWorktreeToken(id),
-      baseBranch: dir.baseBranch,
-      force: opts.force === true,
-    });
-    if (!removal.ok) {
-      return { ok: false, code: 'worktree_remove_refused', merge: merged, removal };
-    }
-    updateTask(id, { worktreePath: null, branch: null });
-    return { ok: true, removed: true, merged: merged.merged === true };
   }
 
   return Object.freeze({
