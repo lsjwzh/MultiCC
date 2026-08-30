@@ -136,6 +136,15 @@ function normalizeBoard(raw) {
     if (typeof t.chatSessionId === 'string' && t.chatSessionId.trim()) {
       task.chatSessionId = t.chatSessionId.trim().slice(0, 160);
     }
+    // Explicit user-confirmed task merge tombstone.  The source record stays
+    // durable (and hidden through its archived status) so its task-run ledger
+    // and task-bound session remain readable from the surviving task.  This is
+    // intentionally an alias, not a title-based identity guess.
+    if (typeof t.mergedInto === 'string' && t.mergedInto.trim()
+        && t.mergedInto.trim() !== id) {
+      task.mergedInto = t.mergedInto.trim().slice(0, 128);
+      task.mergedAt = Math.max(0, Number(t.mergedAt) || 0);
+    }
     // `classification.state` was an older module-assignment retry state that
     // was easily confused with the session classify state (A/B/C/D/W/P).
     // Migrate it into non-status operation metadata. The module itself is the
@@ -158,6 +167,29 @@ function normalizeBoard(raw) {
     const routing = normalizeTaskRouting(t.routing);
     if (routing) task.routing = routing;
     board.tasks[id] = task;
+  }
+  // A corrupt/dangling merge pointer must never make a live task disappear.
+  // Drop aliases that do not resolve to another task or that form a cycle.
+  for (const task of Object.values(board.tasks)) {
+    if (!task.mergedInto) continue;
+    const seen = new Set([task.id]);
+    let cursor = task;
+    let valid = true;
+    while (cursor.mergedInto) {
+      if (seen.has(cursor.mergedInto)
+          || !Object.prototype.hasOwnProperty.call(board.tasks, cursor.mergedInto)) {
+        valid = false;
+        break;
+      }
+      seen.add(cursor.mergedInto);
+      cursor = board.tasks[cursor.mergedInto];
+    }
+    if (!valid) {
+      delete task.mergedInto;
+      delete task.mergedAt;
+    } else {
+      task.status = 'archived';
+    }
   }
   return board;
 }
@@ -515,7 +547,38 @@ function findModuleByName(board, name, dirId = null) {
 function taskDirId(board, task) {
   const modDir = task.moduleId ? board.modules[task.moduleId]?.dirId : null;
   if (modDir) return modDir;
-  return task.refs.find(r => r.dirId)?.dirId || null;
+  return (task.refs || []).find(r => r.dirId)?.dirId || null;
+}
+
+function ownTask(board, taskId) {
+  const tasks = board?.tasks;
+  return tasks && Object.prototype.hasOwnProperty.call(tasks, taskId)
+    ? tasks[taskId] : null;
+}
+
+// Resolve an old task id through explicit merge tombstones.  Returning null on
+// a corrupt cycle is fail-closed: callers must not accidentally resurrect or
+// mutate an arbitrary member of a broken alias chain.
+function resolveTask(board, taskId) {
+  let task = ownTask(board, taskId);
+  const seen = new Set();
+  while (task?.mergedInto) {
+    if (seen.has(task.id)) return null;
+    seen.add(task.id);
+    task = ownTask(board, task.mergedInto);
+  }
+  return task;
+}
+
+function taskLineageIds(board, taskId) {
+  const target = resolveTask(board, taskId);
+  if (!target) return [];
+  const ids = [target.id];
+  for (const task of Object.values(board.tasks || {})) {
+    if (task.id === target.id || !task.mergedInto) continue;
+    if (resolveTask(board, task.id)?.id === target.id) ids.push(task.id);
+  }
+  return ids;
 }
 
 function findTaskByTitle(board, moduleId, title, { dirId = null, similar = false } = {}) {
@@ -580,7 +643,7 @@ function deriveTaskTitle(value) {
 
 // Attach one turn ref to a task; dedup on either message id so an in-flight
 // user-only ref can be enriched with its final assistant message in place.
-function addRefToTask(task, ref, now) {
+function addRefToTask(task, ref, now, maxRefs = MAX_REFS_PER_TASK) {
   const existing = task.refs.find(r =>
     (ref.assistantMsgId && r.assistantMsgId === ref.assistantMsgId) ||
     (ref.userMsgId && r.userMsgId === ref.userMsgId) ||
@@ -615,11 +678,125 @@ function addRefToTask(task, ref, now) {
     ts: ref.ts || now,
     excerpt: String(ref.excerpt || '').slice(0, 200),
   });
-  if (task.refs.length > MAX_REFS_PER_TASK) task.refs.splice(0, task.refs.length - MAX_REFS_PER_TASK);
+  if (Number.isFinite(maxRefs) && task.refs.length > maxRefs) {
+    task.refs.splice(0, task.refs.length - maxRefs);
+  }
   task.updatedAt = now;
   // A done task that receives new conversation is live again.
   if (task.status === 'done') task.status = 'active';
   return true;
+}
+
+// Explicit, user-confirmed identity merge.  Sources become durable archived
+// aliases instead of being deleted: their hidden bound sessions and SQLite
+// task-run rows keep their original ownership, while read projections can
+// follow the lineage from the surviving target.  The target's user-selected
+// identity fields (id/title/module/routing/chatSession/worktree) always win.
+function mergeTasks(board, {
+  targetTaskId, sourceTaskIds, now = Date.now(),
+} = {}) {
+  const target = ownTask(board, targetTaskId);
+  if (!target) return { ok: false, error: 'task_not_found', taskId: targetTaskId || null };
+  if (target.mergedInto) return { ok: false, error: 'target_already_merged' };
+  if (target.status === 'archived') return { ok: false, error: 'target_not_mergeable' };
+
+  const requested = [...new Set((Array.isArray(sourceTaskIds) ? sourceTaskIds : [])
+    .filter(id => typeof id === 'string' && id.trim())
+    .map(id => id.trim()))];
+  if (!requested.length || requested.length > 100) {
+    return { ok: false, error: 'invalid_merge_request' };
+  }
+
+  const sources = [];
+  const alreadyMerged = [];
+  for (const id of requested) {
+    if (id === target.id) return { ok: false, error: 'invalid_merge_request', taskId: id };
+    const source = ownTask(board, id);
+    if (!source) return { ok: false, error: 'task_not_found', taskId: id };
+    if (source.mergedInto) {
+      if (resolveTask(board, id)?.id === target.id) {
+        alreadyMerged.push(id);
+        continue;
+      }
+      return { ok: false, error: 'source_already_merged', taskId: id };
+    }
+    if (source.status === 'archived') {
+      return { ok: false, error: 'source_not_mergeable', taskId: id };
+    }
+    const targetOrigin = TASK_ORIGINS.has(target.origin) ? target.origin : legacyTaskOrigin(target.id);
+    const sourceOrigin = TASK_ORIGINS.has(source.origin) ? source.origin : legacyTaskOrigin(source.id);
+    if (sourceOrigin !== targetOrigin) {
+      return { ok: false, error: 'task_origin_mismatch', taskId: id };
+    }
+    const targetDir = taskDirId(board, target);
+    const sourceDir = taskDirId(board, source);
+    if (targetDir && sourceDir && targetDir !== sourceDir) {
+      return { ok: false, error: 'task_directory_mismatch', taskId: id };
+    }
+    sources.push(source);
+  }
+  if (!sources.length) {
+    return {
+      ok: true, changed: false, taskId: target.id,
+      mergedTaskIds: [], alreadyMergedTaskIds: alreadyMerged,
+      touched: [target.id, ...alreadyMerged],
+    };
+  }
+
+  // Include aliases already owned by a source and flatten them directly onto
+  // the new target.  This keeps lineage lookup and archive-time release simple.
+  const sourceRoots = new Set(sources.map(task => task.id));
+  const tombstones = Object.values(board.tasks).filter(task => {
+    if (!task.mergedInto) return false;
+    const resolved = resolveTask(board, task.id);
+    return resolved && sourceRoots.has(resolved.id);
+  });
+  const mergedRecords = [...sources, ...tombstones];
+
+  // Rebuild refs chronologically through the canonical deduper, then retain
+  // the newest MAX_REFS_PER_TASK.  Appending an older source ref must never
+  // make taskLastTs regress or evict a newer target ref.
+  const allRefs = [target, ...sources]
+    .flatMap(task => task.refs || [])
+    .sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  const refAccumulator = { refs: [], status: 'active', updatedAt: 0 };
+  // Do not apply the ordinary per-task cap while merging. A later duplicate
+  // may upgrade an old ref's timestamp; trimming before that upgrade can evict
+  // the now-new evidence merely because it still occupies an early array slot.
+  for (const ref of allRefs) addRefToTask(refAccumulator, ref, now, Infinity);
+  target.refs = refAccumulator.refs
+    .sort((a, b) => (a.ts || 0) - (b.ts || 0))
+    .slice(-MAX_REFS_PER_TASK);
+
+  for (const source of sources) {
+    for (const area of source.areas || []) {
+      if (!target.areas.includes(area) && target.areas.length < MAX_AREAS_PER_TASK) {
+        target.areas.push(area);
+      }
+    }
+  }
+  const lifecycle = [target, ...sources].map(task => task.status);
+  target.status = lifecycle.every(status => status === 'done') ? 'done' : 'active';
+  const created = [target, ...sources].map(task => Number(task.createdAt) || 0).filter(Boolean);
+  if (created.length) target.createdAt = Math.min(...created);
+  target.updatedAt = now;
+
+  for (const source of mergedRecords) {
+    source.mergedInto = target.id;
+    source.mergedAt = now;
+    source.status = 'archived';
+    source.updatedAt = now;
+    // A hidden tombstone must never be picked up by the manual pending-task
+    // batch again.  Its historical assignment receipt has no live meaning.
+    if (source.moduleAssignment?.running !== true) delete source.moduleAssignment;
+  }
+
+  return {
+    ok: true, changed: true, taskId: target.id,
+    mergedTaskIds: sources.map(task => task.id),
+    alreadyMergedTaskIds: alreadyMerged,
+    touched: [target.id, ...mergedRecords.map(task => task.id), ...alreadyMerged],
+  };
 }
 
 // Create the durable card shown immediately after a board-level send. Identity
@@ -1015,7 +1192,13 @@ function aggregateTaskRunState(sessionIds, getSessionRunState) {
 }
 
 function buildBoardDto(board, getSessionRunState) {
-  const tasks = Object.values(board.tasks).map(t => {
+  const mergedCount = new Map();
+  for (const task of Object.values(board.tasks)) {
+    if (!task.mergedInto) continue;
+    const target = resolveTask(board, task.id);
+    if (target) mergedCount.set(target.id, (mergedCount.get(target.id) || 0) + 1);
+  }
+  const tasks = Object.values(board.tasks).filter(t => !t.mergedInto).map(t => {
     const sessionIds = [...new Set(t.refs.map(r => r.sessionId))];
     const routing = normalizeTaskRouting(t.routing);
     // A Commander one-way route is executed by the admitted worker. Commander
@@ -1034,6 +1217,7 @@ function buildBoardDto(board, getSessionRunState) {
       dirIds: [...new Set(t.refs.map(r => r.dirId).filter(Boolean))],
       lastTs: taskLastTs(t),
       createdAt: t.createdAt,
+      mergedTaskCount: mergedCount.get(t.id) || 0,
       origin: TASK_ORIGINS.has(t.origin) ? t.origin : legacyTaskOrigin(t.id),
       runState: TASK_RUN_STATES.has(t.runState)
         ? t.runState
@@ -1093,6 +1277,7 @@ module.exports = {
   applyTagResult,
   applyBackfillResult,
   addRefToTask,
+  mergeTasks,
   createPendingTask,
   applyTaskClassification,
   canonicalTaskTitle,
@@ -1101,6 +1286,8 @@ module.exports = {
   findTaskByTitle,
   taskLastTs,
   taskDirId,
+  resolveTask,
+  taskLineageIds,
   pickRouteTarget,
   pickDirTarget,
   resolveDirectoryCommander,
