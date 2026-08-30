@@ -318,6 +318,7 @@ class _TaskBoardViewState extends State<TaskBoardView> {
           content: Text(
             t('reclassifyQueued', {
               'queued': '${r['queued'] ?? 0}',
+              'archived': '${r['archived'] ?? 0}',
               'skipped': '${r['skipped'] ?? 0}',
             }),
           ),
@@ -1513,12 +1514,25 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
     final messenger = ScaffoldMessenger.of(context);
     setState(() => _busy = true);
     try {
-      await ManageService(
+      final result = await ManageService(
         settings: widget.settings,
       ).reclassifyTask(widget.task.id);
       if (!mounted) return;
       Navigator.of(context).pop();
       widget.onChanged();
+      if (result['archived'] == true) {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(
+              t('reclassifyQueued', {
+                'queued': '0',
+                'archived': '1',
+                'skipped': '0',
+              }),
+            ),
+          ),
+        );
+      }
     } on LocalOnlyException {
       if (!mounted) return;
       messenger.showSnackBar(SnackBar(content: Text(t('localOnly'))));

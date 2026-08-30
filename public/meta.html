@@ -382,6 +382,7 @@ async function reclassifyTask(taskId, button) {
     });
     const d = await r.json();
     if (!r.ok || !d.ok) throw new Error(d.note || d.error || r.status);
+    alert(`已加入 ${d.queued || 0} 个任务，归档 ${d.archived || 0} 个无上下文任务，跳过 ${d.skipped || 0} 个`);
     await fetchTaskBoard();
   } catch (e) { alert('重新归类失败：' + e.message); }
   finally { if (button) button.disabled = false; }
@@ -395,6 +396,7 @@ async function reclassifyAllPending(button) {
     });
     const d = await r.json();
     if (!r.ok || !d.ok) throw new Error(d.note || d.error || r.status);
+    alert(`已加入 ${d.queued || 0} 个任务，归档 ${d.archived || 0} 个无上下文任务，跳过 ${d.skipped || 0} 个`);
     await fetchTaskBoard();
   } catch (e) { alert('批量归类失败：' + e.message); }
   finally { if (button) button.disabled = false; }

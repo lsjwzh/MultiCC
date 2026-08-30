@@ -498,8 +498,9 @@ function createClassifyStateMachine(rawDeps) {
         annotated,
       };
     }
+    const boundTaskId = persistedSessions.get(sessionName)?.taskBoundTaskId || null;
     const sameTaskId = result.relation === 'same' ? (result.taskId || previousTaskId) : null;
-    const taskId = context.resolvedTaskId || sameTaskId
+    const taskId = boundTaskId || context.resolvedTaskId || sameTaskId
       || `tsk_${crypto.randomUUID().replace(/-/g, '')}`;
     const taskName = result.taskName || cs.currentTask?.goal || '新任务';
     const phase = result.phase || cs.currentTask?.phase || 'planning';
@@ -542,6 +543,21 @@ function createClassifyStateMachine(rawDeps) {
 
     const currentState = getTaskState(persistedSessions.get(sessionName)).classifyState || 'P';
     recordTaskBoardGoal(sessionName, taskName, phase, cs, currentState);
+    if (typeof board.onTaskAttributionSettled === 'function') {
+      try {
+        Promise.resolve(board.onTaskAttributionSettled(sessionName, taskId, annotated, {
+          taskName, phase, runId: context.runId || null,
+        })).catch(error => {
+          logger.warn?.('task_module_classification_failed', {
+            sessionId: sessionName, taskId, error: error?.message || String(error || ''),
+          });
+        });
+      } catch (error) {
+        logger.warn?.('task_module_classification_failed', {
+          sessionId: sessionName, taskId, error: error?.message || String(error || ''),
+        });
+      }
+    }
     if (taskName) setSessionSummary(persistedSessions.get(sessionName)?.id || sessionName, taskName);
     if (turnLivenessForClassify(sessionName).state === 'active') {
       const ph = phaseLabel(phase);
@@ -707,9 +723,10 @@ function createClassifyStateMachine(rawDeps) {
           fallbackTaskId: taskId,
           allowedTaskIds: recentTasks.map(task => task.taskId),
         });
-        const resolvedTaskId = res.relation === 'same'
+        const boundTaskId = persistedSessions.get(sid)?.taskBoundTaskId || null;
+        const resolvedTaskId = boundTaskId || (res.relation === 'same'
           ? (res.taskId || taskId)
-          : `tsk_${crypto.randomUUID().replace(/-/g, '')}`;
+          : `tsk_${crypto.randomUUID().replace(/-/g, '')}`);
         const cs = chatSessions.get(sid);
         const anchorStatus = taskAttributionAnchorStatus(sid, anchorMessageId);
         const supersededReason = anchorStatus.changed ? 'anchor_changed' : null;
@@ -872,9 +889,10 @@ function createClassifyStateMachine(rawDeps) {
         fallbackTaskId: currentTaskId,
         allowedTaskIds: recentTasks.map(task => task.taskId),
       });
-      const resolvedTaskId = res.relation === 'same'
+      const boundTaskId = persistedSessions.get(sessionName)?.taskBoundTaskId || null;
+      const resolvedTaskId = boundTaskId || (res.relation === 'same'
         ? (res.taskId || currentTaskId)
-        : `tsk_${crypto.randomUUID().replace(/-/g, '')}`;
+        : `tsk_${crypto.randomUUID().replace(/-/g, '')}`);
       const anchorStatus = taskAttributionAnchorStatus(sessionName, anchorMessageId);
       const supersededReason = anchorStatus.changed
         ? 'anchor_changed'
