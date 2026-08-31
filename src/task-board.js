@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
+const planning = require('./task-planning');
 
 // Task board core — pure logic for the AI-tagged module→task board shown in
 // the fleet panel (meta.html). No I/O and no host state: given a board object
@@ -58,7 +59,12 @@ function safeClassificationError(value) {
 }
 
 function createEmptyBoard() {
-  return { modules: {}, tasks: {} };
+  return {
+    schemaVersion: planning.TASK_BOARD_SCHEMA_VERSION,
+    revision: 0,
+    modules: {},
+    tasks: {},
+  };
 }
 
 function normalizeModuleName(module) {
@@ -77,6 +83,8 @@ function normalizeModuleName(module) {
 function normalizeBoard(raw) {
   const board = createEmptyBoard();
   if (!raw || typeof raw !== 'object') return board;
+  board.revision = Number.isSafeInteger(Number(raw.revision)) && Number(raw.revision) >= 0
+    ? Number(raw.revision) : 0;
   const modules = raw.modules && typeof raw.modules === 'object' ? raw.modules : {};
   for (const [id, m] of Object.entries(modules)) {
     if (!m || typeof m !== 'object' || typeof m.name !== 'string' || !m.name.trim()) continue;
@@ -118,6 +126,20 @@ function normalizeBoard(raw) {
     // Origin marker. Absent on every card written before it existed, so fall
     // back to the id shape rather than guessing 'session' for old board sends.
     task.origin = TASK_ORIGINS.has(t.origin) ? t.origin : legacyTaskOrigin(id);
+    for (const key of [
+      'recordType', 'dirId', 'description', 'workflowStage', 'rank',
+      'priority', 'dueAt', 'acceptanceCriteria', 'planningRevision',
+    ]) {
+      if (Object.prototype.hasOwnProperty.call(t, key)) task[key] = t[key];
+    }
+    planning.normalizePlanningTask(task, {
+      origin: task.origin,
+      dirId: typeof t.dirId === 'string' && t.dirId.trim()
+        ? t.dirId.trim()
+        : board.modules[task.moduleId]?.dirId
+          || task.refs.find(ref => ref.dirId)?.dirId
+          || null,
+    });
     const runState = ['done', 'completed'].includes(t.runState) ? 'succeeded' : t.runState;
     if (TASK_RUN_STATES.has(runState)) task.runState = runState;
     // Monotonic stamp of the queue event that produced runState. Survives a
@@ -545,6 +567,7 @@ function findModuleByName(board, name, dirId = null) {
 }
 
 function taskDirId(board, task) {
+  if (typeof task.dirId === 'string' && task.dirId.trim()) return task.dirId.trim();
   const modDir = task.moduleId ? board.modules[task.moduleId]?.dirId : null;
   if (modDir) return modDir;
   return (task.refs || []).find(r => r.dirId)?.dirId || null;
@@ -667,7 +690,11 @@ function addRefToTask(task, ref, now, maxRefs = MAX_REFS_PER_TASK) {
       changed = true;
     }
     if (changed) task.updatedAt = now;
-    if (task.status === 'done') { task.status = 'active'; changed = true; }
+    if (task.status === 'done') {
+      task.status = 'active';
+      planning.alignStageWithStatus(task, 'active', now);
+      changed = true;
+    }
     return changed;
   }
   task.refs.push({
@@ -683,7 +710,10 @@ function addRefToTask(task, ref, now, maxRefs = MAX_REFS_PER_TASK) {
   }
   task.updatedAt = now;
   // A done task that receives new conversation is live again.
-  if (task.status === 'done') task.status = 'active';
+  if (task.status === 'done') {
+    task.status = 'active';
+    planning.alignStageWithStatus(task, 'active', now);
+  }
   return true;
 }
 
@@ -777,6 +807,7 @@ function mergeTasks(board, {
   }
   const lifecycle = [target, ...sources].map(task => task.status);
   target.status = lifecycle.every(status => status === 'done') ? 'done' : 'active';
+  planning.alignStageWithStatus(target, target.status, now, board);
   const created = [target, ...sources].map(task => Number(task.createdAt) || 0).filter(Boolean);
   if (created.length) target.createdAt = Math.min(...created);
   target.updatedAt = now;
@@ -832,6 +863,12 @@ function createPendingTask(board, {
       lastError: '',
     },
   };
+  planning.normalizePlanningTask(task, { origin: task.origin, dirId });
+  if (task.recordType === 'planned') {
+    task.description = String(taskText || '').trim().slice(0, 20_000);
+    task.workflowStage = 'doing';
+    task.rank = planning.rankAtEnd(board, 'doing', null, task.dirId);
+  }
   board.tasks[task.id] = task;
   mod.updatedAt = now;
   return task;
@@ -889,7 +926,10 @@ function applyTaskClassification(board, pendingTaskId, entry, ref, now = Date.no
     if (pending.routing && (!target.routing || pending.routing.routedAt >= target.routing.routedAt)) {
       target.routing = pending.routing;
     }
-    if (target.status === 'done') target.status = 'active';
+    if (target.status === 'done') {
+      target.status = 'active';
+      planning.alignStageWithStatus(target, 'active', now, board);
+    }
     delete board.tasks[pendingTaskId];
     deleteEmptyModule(board, oldModuleId);
     return { ok: true, taskId: target.id, removedTaskId: pendingTaskId, touched: [target.id, pendingTaskId] };
@@ -946,7 +986,7 @@ function applyTagResult(board, entries, ref, now = Date.now(), options = {}) {
         task = {
           id: options.newTaskId || newId('tsk'), moduleId: mod.id, title: e.title.slice(0, MAX_TITLE_LEN),
           status: 'active', areas: [], createdAt: now, updatedAt: now, refs: [],
-          origin: 'session',
+          origin: 'session', recordType: 'observed',
         };
         board.tasks[task.id] = task;
         touched.add(task.id);
@@ -1214,11 +1254,12 @@ function buildBoardDto(board, getSessionRunState) {
       areas: t.areas,
       refCount: t.refs.length,
       sessionIds,
-      dirIds: [...new Set(t.refs.map(r => r.dirId).filter(Boolean))],
+      dirIds: [...new Set([t.dirId, ...t.refs.map(r => r.dirId)].filter(Boolean))],
       lastTs: taskLastTs(t),
       createdAt: t.createdAt,
       mergedTaskCount: mergedCount.get(t.id) || 0,
       origin: TASK_ORIGINS.has(t.origin) ? t.origin : legacyTaskOrigin(t.id),
+      ...planning.planningFields(t),
       runState: TASK_RUN_STATES.has(t.runState)
         ? t.runState
         : aggregateTaskRunState(runSessionIds, getSessionRunState),
@@ -1254,7 +1295,13 @@ function buildBoardDto(board, getSessionRunState) {
     taskCount: countByModule.get(m.id) || 0,
     lastTs: lastByModule.get(m.id) || m.updatedAt || 0,
   })).sort((a, b) => b.lastTs - a.lastTs);
-  return { modules, tasks };
+  return {
+    schemaVersion: planning.TASK_BOARD_SCHEMA_VERSION,
+    revision: Number.isSafeInteger(Number(board.revision)) && Number(board.revision) >= 0
+      ? Number(board.revision) : 0,
+    modules,
+    tasks,
+  };
 }
 
 module.exports = {
@@ -1263,6 +1310,8 @@ module.exports = {
   CLASSIFY_PENDING_MODULE_NAME,
   PENDING_TASK_TITLE,
   TASK_ORIGINS,
+  TASK_RECORD_TYPES: planning.TASK_RECORD_TYPES,
+  WORKFLOW_STAGES: planning.WORKFLOW_STAGES,
   taskOriginForSource,
   legacyTaskOrigin,
   deriveTaskTitle,
