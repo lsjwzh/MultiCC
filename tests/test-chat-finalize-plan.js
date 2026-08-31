@@ -149,6 +149,26 @@ test('reused cross-CLI target fails closed and never falls through to fresh retr
   assert.equal(resolved.effects.at(-1).type, 'clear-active-runner');
 });
 
+test('process handoff resume failure suppresses a generic API retry decision', () => {
+  const plan = planTurnFinalization(base({
+    hasOutput: false,
+    resultEvent: false,
+    apiError: true,
+    apiErrorDecision: {
+      action: 'retry',
+      attempt: 1,
+      delayMs: 1000,
+      retryAt: 2000,
+      error: { category: 'unknown', maxAttempts: 1 },
+    },
+    handoff: { status: 'pending', reusedTarget: true, toCli: 'codex' },
+  }));
+  assert.equal(plan.action, 'finalize');
+  assert.equal(plan.facts.guardedHandoffResumeFailure, true);
+  assert.equal(types(plan).includes('schedule-api-retry'), false);
+  assert.equal(types(resolveTurnFinalization(plan)).includes('report-handoff-resume-failure'), true);
+});
+
 test('process finality preserves result-event and clean first-attempt fallback semantics', () => {
   assert.equal(planTurnFinalization(base()).append.final, true);
   assert.equal(planTurnFinalization(base({ resultEvent: false, isRetry: false })).append.final, true);
@@ -306,6 +326,25 @@ test('stream handoff resume failure preserves target and suppresses unknown inte
   assert.equal(types(resolved).includes('report-handoff-resume-failure'), true);
   assert.equal(resolved.effects.at(-2).handoffResumeFailure, true);
   assert.equal(resolved.effects.at(-1).type, 'clear-active-runner');
+});
+
+test('stream handoff resume failure suppresses a generic API retry decision', () => {
+  const plan = planTurnFinalization(base({
+    runnerKind: 'stream', cli: 'claude', resultEvent: false,
+    resultDurable: false, hasOutput: false, apiError: true,
+    apiErrorDecision: {
+      action: 'retry',
+      attempt: 1,
+      delayMs: 1000,
+      retryAt: 2000,
+      error: { category: 'unknown', maxAttempts: 1 },
+    },
+    handoff: { status: 'pending', reusedTarget: true, toCli: 'claude' },
+  }));
+  assert.equal(plan.action, 'finalize');
+  assert.equal(plan.facts.guardedHandoffResumeFailure, true);
+  assert.equal(types(plan).includes('schedule-api-retry'), false);
+  assert.equal(types(resolveTurnFinalization(plan)).includes('report-handoff-resume-failure'), true);
 });
 
 test('finalize planner remains pure and exported from chat index', () => {
