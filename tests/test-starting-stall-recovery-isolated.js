@@ -8,7 +8,7 @@
 // tests/test-liveness-api.js.
 
 const assert = require('node:assert/strict');
-const { spawn, execSync } = require('node:child_process');
+const { spawn, execFileSync, execSync } = require('node:child_process');
 const fs = require('node:fs');
 const net = require('node:net');
 const os = require('node:os');
@@ -23,8 +23,10 @@ fs.mkdirSync(dataDir, { recursive: true });
 
 // Unique marker so pgrep can find (and later confirm the kill of) the fake runner.
 const MARKER = `fake-codex-${process.pid}-${Date.now()}`;
-const fakeCodex = path.join(testRoot, MARKER + '.sh');
-fs.writeFileSync(fakeCodex, '#!/bin/sh\n# pretend to be codex: start up, then hang silently\nsleep 600\n', { mode: 0o755 });
+const fakeCodex = path.join(testRoot, MARKER + '.js');
+fs.writeFileSync(fakeCodex,
+  '#!/usr/bin/env node\n// Pretend to be codex: start up, then hang silently without child processes.\nsetInterval(() => {}, 60_000);\n',
+  { mode: 0o755 });
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -48,7 +50,9 @@ async function waitReady(base) {
 
 function fakeRunnerAlive() {
   try {
-    execSync(`pgrep -f "${MARKER}" >/dev/null`);
+    // Avoid `sh -c`: on Linux its command line contains MARKER and pgrep can
+    // mistake that probe shell for the runner it is trying to find.
+    execFileSync('pgrep', ['-f', MARKER], { stdio: 'ignore' });
     return true;
   } catch (_) {
     return false;
@@ -145,7 +149,7 @@ async function main() {
   } finally {
     try { if (ws) ws.close(); } catch (_) {}
     child.kill('SIGKILL');
-    try { execSync(`pkill -f "${MARKER}" 2>/dev/null || true`); } catch (_) {}
+    try { execFileSync('pkill', ['-f', MARKER], { stdio: 'ignore' }); } catch (_) {}
   }
 
   console.log(`\nstarting-stall recovery: ${failed === 0 ? 'all checks passed' : failed + ' FAILED'}`);
