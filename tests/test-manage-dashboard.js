@@ -201,6 +201,54 @@ test('classic script preserves compatibility globals and pure formatting behavio
   assert.equal(JSON.stringify(context.getDirOrder()), '["d2","d1"]');
 });
 
+test('task-board activity lights the outer Fleet card like a running session', () => {
+  const running = createHarness({ taskBoardRunningCountForDir: dirId => dirId === 'fleet-running' ? 1 : 0 });
+  const activeHtml = running.context.renderDirectoryBlock({
+    id: 'fleet-running', name: 'Running Fleet', path: '/fleet-running',
+  }, []);
+  const idleHtml = running.context.renderDirectoryBlock({
+    id: 'fleet-idle', name: 'Idle Fleet', path: '/fleet-idle',
+  }, []);
+  assert.match(activeHtml, /dir-block dir-card card-border-rainbow/);
+  assert.match(activeHtml, /dir-task-running/);
+  assert.match(activeHtml, /data-status="running"/);
+  assert.match(activeHtml, /· 1 个任务/);
+  assert.doesNotMatch(idleHtml, /card-border-rainbow/);
+  assert.doesNotMatch(idleHtml, /dir-task-running/);
+  assert.equal(running.context.isAnyWorkInDirRunning('fleet-running'), true);
+  assert.equal(running.context.isAnyWorkInDirRunning('fleet-idle'), false);
+});
+
+test('task-board tab renders and clears the shared running animation', () => {
+  let runningTaskCount = 2;
+  const { context } = createHarness({
+    taskBoardRunningCountForDir: () => runningTaskCount,
+    _tbTasksForDir: () => [{}, {}, {}],
+    renderTaskBoardSection: () => '<div class="board">board</div>',
+    syncTaskBoardDirComposer() {},
+  });
+  const body = { innerHTML: '' };
+  context.document.getElementById = id => id === 'dir-detail-body' ? body : null;
+  vm.runInContext(`
+    _cachedDirectories = [{ id: 'fleet-1', name: 'Fleet 1' }];
+    _dirDetailTab = 'taskboard';
+  `, context);
+
+  context.renderDirectoryDetailBody('fleet-1');
+  assert.match(body.innerHTML, /dd-tab on has-running/);
+  assert.match(body.innerHTML, /dd-tab-running/);
+  assert.match(body.innerHTML, /data-status="running"/);
+  assert.match(body.innerHTML, /任务板 \(3\)/);
+
+  runningTaskCount = 0;
+  context.renderDirectoryDetailBody('fleet-1');
+  assert.doesNotMatch(body.innerHTML, /has-running|dd-tab-running|data-status="running"/);
+
+  const css = read('public/manage.html');
+  assert.match(css, /\.dd-tab\.has-running::after[\s\S]*?ddTabRunningSweep/);
+  assert.match(css, /prefers-reduced-motion:reduce[\s\S]*?\.card-border-rainbow\{animation:none/);
+});
+
 test('session card consumes provider summary fields without rendering credential material', () => {
   const { context } = createHarness({
     _providerData: {

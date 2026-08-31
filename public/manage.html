@@ -662,9 +662,18 @@
 
     /* ── Dir-detail modal content tabs (sessions vs task board) ── */
     .dd-tabs{display:flex;gap:6px;margin-bottom:14px;border-bottom:1px solid var(--line);padding-bottom:0}
-    .dd-tab{background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);font-size:13px;font-weight:600;padding:6px 12px 8px;cursor:pointer;border-radius:0}
+    .dd-tab{position:relative;background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);font-size:13px;font-weight:600;padding:6px 12px 8px;cursor:pointer;border-radius:0}
     .dd-tab:hover{color:var(--text)}
     .dd-tab.on{color:var(--text);border-bottom-color:var(--accent)}
+    .dd-tab.has-running{color:var(--text);background:linear-gradient(180deg,transparent,rgba(127,212,154,.07))}
+    .dd-tab.has-running::after{content:"";position:absolute;left:8px;right:8px;bottom:-2px;height:2px;border-radius:2px;background:linear-gradient(90deg,transparent,var(--codex),var(--accent),transparent);background-size:200% 100%;animation:ddTabRunningSweep 1.8s linear infinite}
+    .dd-tab .dd-tab-running{margin-left:7px;padding:1px 6px;border:1px solid rgba(127,212,154,.35);border-radius:999px;background:rgba(127,212,154,.1);font-size:10px;font-weight:650;vertical-align:1px}
+    .dd-tab-running .mc-status-ico{width:1em}
+    @keyframes ddTabRunningSweep{to{background-position:-200% 0}}
+    @media (prefers-reduced-motion:reduce){
+      .dd-tab.has-running::after{animation:none;background:var(--codex)}
+      .card-border-rainbow{animation:none;border-color:var(--codex);box-shadow:0 0 0 1px rgba(127,212,154,.55),0 0 10px rgba(127,212,154,.25)}
+    }
 
     /* ── Task board (dir-detail modal section + stacked detail modal) ── */
     .tb-section{border:1px solid var(--line);border-radius:12px;overflow:hidden;margin-bottom:16px;background:var(--bg-soft)}

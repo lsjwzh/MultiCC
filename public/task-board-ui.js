@@ -104,6 +104,14 @@
     };
   }
 
+  // Fleet-level activity is a projection of the exact same presentation rule
+  // as each task row. In particular, a human-completed task with a stale
+  // `runState: running` must not keep a parent tab/card lit up forever.
+  function runningTaskCount(tasks) {
+    return (Array.isArray(tasks) ? tasks : []).reduce((count, task) =>
+      count + (taskDisplayState(task).running ? 1 : 0), 0);
+  }
+
   // Where the card came from. The board mixes two admissions that otherwise
   // look identical on the row: an independent task started from the board (it
   // owns a task-bound session) and a task that surfaced inside an ongoing
@@ -284,6 +292,7 @@
     reconcileSnapshot,
     partitionTaskIdentity,
     taskDisplayState,
+    runningTaskCount,
     taskOrigin,
     sameTaskOrigin,
     taskMergeEligibility,
