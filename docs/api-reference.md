@@ -99,12 +99,16 @@ ledger retains durable execution and usage records. The unified chat view
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/api/task-board` | Board DTO: `{ modules, tasks, sessionLabels, backfill }` (task rows carry `worktreePath`/`branch` when a per-task worktree exists) |
+| `GET` | `/api/task-board` | Board DTO: `{ schemaVersion, revision, modules, tasks, sessionLabels, backfill }`. `recordType:"planned"` rows include the planning fields below; historical/session rows are `observed` |
+| `POST` | `/api/task-board/tasks` | Save a planned card without starting an Agent: `{ title?, description?, dirId, workflowStage?, priority?, dueAt?, acceptanceCriteria?, sourceTaskId? }` → `{ ok, task, revision }`. `sourceTaskId` copies an observed card while preserving the historical source |
+| `POST` | `/api/task-board/tasks/:taskId/update` | Edit a planned card with optimistic concurrency: `{ title?, description?, dirId?, priority?, dueAt?, acceptanceCriteria?, workflowStage?, expectedRevision }`; the revision is the card's `planningRevision` |
+| `POST` | `/api/task-board/tasks/:taskId/planning` | Compatibility alias for `/update` |
+| `POST` | `/api/task-board/tasks/:taskId/move` | Atomically move/reorder a planned card: `{ workflowStage, beforeTaskId?, afterTaskId?, expectedRevision }`. Ranks are scoped to one directory/Fleet and are rebalanced server-side when necessary |
 | `GET` | `/api/task-board/tasks/:taskId` | Single-task bootstrap slice of the board DTO (used by `chat.html?task=`) |
 | `GET` | `/api/task-board/tasks/:taskId/messages` | Paginated transcript. Query `?before=<id>&around=<id>&limit=N` (limit clamped 1..100, default 5). Returns `{ messages, hasMore }` (+ `found`/`hasNewer` with `around`), plus legacy `items`/`text`/`runs` fields for old clients. Message DTO matches the session history page (`id, role, content, ts` + optional `tools/usage/cost/durationMs/clientMsgId/kind/taskRunId/partial`) — see `tests/test-chat-dto-golden.js` |
-| `POST` | `/api/task-board/tasks/:taskId/send` | Queue the next run (`{ text, goal?, clientMsgId?, goalLimits? }`). With `userInputRequestId` the body is delegated to the answer ingress instead — a composer answer resolves the pending question rather than opening a follow-up run |
+| `POST` | `/api/task-board/tasks/:taskId/send` | Queue the next run (`{ text, goal?, clientMsgId?, goalLimits?, expectedRevision? }`; `message` aliases `text`). Planned callers may bind start to `planningRevision` (stale → 409) before any Chat is created or message sent. A never-started planned card lazily creates its task-bound chat and advances to `doing`; runtime success never auto-completes it. With `userInputRequestId` the body is delegated to the answer ingress instead |
 | `POST` | `/api/task-board/tasks/:taskId/answer` | Answer the run's pending question (`{ requestId, text, clientMsgId }`); same lease/idempotency checks as the send-side delegation. Kept for native clients (App) |
-| `POST` | `/api/task-board/tasks/:taskId/status` | Set lifecycle `{ status: active \| done \| archived }`. Completing a task with an open run cancels it first — a run already delivered to a slot, or a cancel that fails, is rejected with 409 |
+| `POST` | `/api/task-board/tasks/:taskId/status` | Set lifecycle `{ status: active \| done \| archived, expectedRevision? }`. Planned callers should send `expectedRevision=planningRevision` (stale → 409); observed/legacy callers remain compatible. `done` aligns the workflow stage to `done`, while reopening a done card returns it to `ready` |
 | `POST` | `/api/task-board/tasks/:taskId/cancel-run` | Stop the open run **without** touching the lifecycle (the chat view's stop button; marking done stays with `/status`). Shares the status path's cancellation and 409 surface. Idempotent: no open run → `{ ok, cancelled:false }`; success → `{ ok, cancelled:true, runId }` |
 | `POST` | `/api/task-board/tasks/:taskId/reclassify` | Re-queue AI classification for a still-pending card. A card with no recoverable user context is archived and returns `{ ok:true, queued:false, archived:true, reason:"missing_context" }` (409 once a module is assigned, 503 when Aux or the context store is unavailable) |
 | `POST` | `/api/task-board/reclassify-pending` | Re-queue pending cards, optionally scoped by `{ dirId }`; returns `{ ok, queued, archived, skipped }`. Missing-context cards are archived instead of occupying the pending module; `skipped` counts cards already running or temporarily unavailable |
@@ -116,6 +120,12 @@ ledger retains durable execution and usage records. The unified chat view
 New pending cards start module AI classification after intent attribution settles on
 their final task id. Automatic model failures are retried once on a later turn; the
 single-card and bulk endpoints remain the explicit recovery path after that.
+
+Planned task fields are `recordType`, `dirId`, `description`, `workflowStage`
+(`inbox|ready|doing|review|done`), numeric `rank`, `priority`
+(`urgent|high|medium|low|null`), RFC3339 `dueAt|null`, `acceptanceCriteria`, and
+`planningRevision`. They deliberately coexist with lifecycle `status` and runtime
+`runState`: only an explicit user planning/lifecycle action marks work done.
 
 A task's pending question surfaces three ways, all one semantic: the chat view's question card (answered through `/send` + `userInputRequestId`), the `user_input_required` / `user_input_resolved` slot events forwarded on the directory socket (see [Task run streaming](#websocket-protocol)), and the run DTO's `pendingQuestion` projection in `/messages` (answered through `/answer`).
 
