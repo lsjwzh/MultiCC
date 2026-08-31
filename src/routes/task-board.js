@@ -1,31 +1,12 @@
 'use strict';
 
-// Task board runtime — wires the pure core (src/task-board.js) to the host:
-// aux-queue tagging at turn end, atomic persistence, REST routes for the
-// fleet panel, the panel composer's auto-routed dispatch, and AI module
-// assignment for cards that remain under 「待归类」.
-//
-// Host contract (all deps injected by server.js):
-//   file               — task_board.json path (from createPaths)
-//   auxQueue           — { enqueue, cancel, isUnhealthy } from mountAuxGoalRoutes
-//   records            — persistedSessions Map (sessionId → record)
-//   loadHistory        — sessionId → message[] (READ-ONLY view, NOT a copy: the
-//                        array and its messages are shared with the chat history
-//                        cache. Board code may only read them; anything kept
-//                        beyond the call must be a copied primitive, which is
-//                        why refs store ids and timestamps rather than messages.
-//                        This route scans a transcript per task, so cloning here
-//                        cost O(tasks × sessions × transcript) per board load.)
-//   dispatchToSession  — durable dispatch; Commander access requires an internal flag
-//   sendSessionMessage  — canonical per-session ingress used by WebSocket and task board
-//   workspaceBroadcast — (dirId, payload) → void (reaches /ws/meta clients)
-//   atomicWriteJson    — (file, value) → void
-//   isSystemInjected   — msgText → bool (skip recovery/nudge turns)
+// Task-board runtime: persistence, classification, dispatch and REST wiring.
 
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const core = require('../task-board');
+const planning = require('../task-planning');
 const { createPaths } = require('../paths');
 const { isVoiceRouterRecord } = require('../voice-router');
 const { runStateForFreezeReason } = require('../session-work-scheduler');
@@ -45,6 +26,7 @@ const {
   aggregateTaskUsages,
   createTaskMergeHandler,
 } = require('../task-board-merge-runtime');
+const { createTaskPlanningRuntime } = require('./task-planning');
 
 const REQUIRED_DEPS = [
   'file', 'auxQueue', 'records', 'loadHistory', 'dispatchToSession',
@@ -99,10 +81,7 @@ function createTaskBoardRuntime(deps) {
     ? deps.chatHistoryDir : null;
   const logger = deps.logger || console;
   const taskRunAnswers = new Map();
-  // Optional goal-mode helpers (from aux-goal). When present, a goal-flagged
-  // send gets the same "[Goal 模式限制]…" note text-prepended that the chat
-  // composer's goal mode produces — dispatch is text-only, so text parity is
-  // full parity (message-composer just prepends the note as a context layer).
+  // Optional goal-mode note ports.
   const resolveGoalLimits = typeof deps.resolveGoalLimits === 'function' ? deps.resolveGoalLimits : null;
   const buildGoalLimitNote = typeof deps.buildGoalLimitNote === 'function' ? deps.buildGoalLimitNote : null;
 
@@ -112,16 +91,89 @@ function createTaskBoardRuntime(deps) {
     catch (_) { return ''; }
   }
 
+  const recoveryFile = file.replace(/\.json$/i, '') + '.planning-v2.json';
+  let rawBoard = null;
+  try { rawBoard = JSON.parse(fs.readFileSync(file, 'utf8')); }
+  catch (_) { /* absent/corrupt legacy file starts empty, as before */ }
+  let recoveryBoard = null;
+  try { recoveryBoard = JSON.parse(fs.readFileSync(recoveryFile, 'utf8')); }
+  catch (_) { /* recovery sidecar is additive */ }
+  const rawSchemaValue = Math.max(0, Math.floor(Number(rawBoard?.schemaVersion) || 0));
+  const recoverySchema = Math.max(0, Math.floor(Number(recoveryBoard?.schemaVersion) || 0));
+  if (recoverySchema === planning.TASK_BOARD_SCHEMA_VERSION
+      && (!rawBoard || rawSchemaValue < planning.TASK_BOARD_SCHEMA_VERSION)) {
+    logger.log('[multicc/taskboard] restored planning board from v2 recovery sidecar');
+    rawBoard = recoveryBoard;
+  }
   let board;
-  try {
-    board = core.normalizeBoard(JSON.parse(fs.readFileSync(file, 'utf8')));
-  } catch (_) {
-    board = core.createEmptyBoard();
+  if (rawBoard && typeof rawBoard === 'object') {
+    const rawSchema = Math.max(0, Math.floor(Number(rawBoard?.schemaVersion) || 0));
+    if (rawSchema > planning.TASK_BOARD_SCHEMA_VERSION) {
+      throw Object.assign(new Error(`[taskboard] unsupported schemaVersion ${rawSchema}`), {
+        code: 'TASK_BOARD_SCHEMA_UNSUPPORTED',
+      });
+    }
+    if (rawSchema < planning.TASK_BOARD_SCHEMA_VERSION
+        && (Object.keys(rawBoard?.tasks || {}).length || Object.keys(rawBoard?.modules || {}).length)) {
+      const backup = file.replace(/\.json$/i, '') + '.pre-planning-v1.json';
+      if (!fs.existsSync(backup)) atomicWriteJson(backup, rawBoard);
+    }
+    board = core.normalizeBoard(rawBoard);
+  } else board = core.createEmptyBoard();
+
+  function persistWithRecovery(value) {
+    let previous = null;
+    try { previous = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) {}
+    atomicWriteJson(file, value);
+    try { atomicWriteJson(recoveryFile, value); }
+    catch (error) {
+      try { previous ? atomicWriteJson(file, previous) : fs.unlinkSync(file); }
+      catch (_) {}
+      throw error;
+    }
   }
 
   function save() {
-    try { atomicWriteJson(file, board); }
-    catch (e) { logger.log(`[multicc/taskboard] save failed: ${e.message}`); }
+    const previousRevision = Number(board.revision) || 0;
+    board.schemaVersion = planning.TASK_BOARD_SCHEMA_VERSION;
+    board.revision = previousRevision + 1;
+    try {
+      persistWithRecovery(board);
+      return true;
+    } catch (e) {
+      board.revision = previousRevision;
+      logger.log(`[multicc/taskboard] save failed: ${e.message}`);
+      return false;
+    }
+  }
+
+  // Persist planning candidates before reconciling them into the live board.
+  function commitPlanningMutation(mutate) {
+    const candidate = JSON.parse(JSON.stringify(board));
+    let result;
+    try { result = mutate(candidate); }
+    catch (error) { return { ok: false, error: error?.code || 'invalid_request' }; }
+    if (!result?.ok) return result || { ok: false, error: 'invalid_request' };
+    candidate.schemaVersion = planning.TASK_BOARD_SCHEMA_VERSION;
+    candidate.revision = (Number(board.revision) || 0) + 1;
+    try { persistWithRecovery(candidate); }
+    catch (error) {
+      logger.log(`[multicc/taskboard] planning save failed: ${error?.message || error}`);
+      return { ok: false, error: 'persistence_failed' };
+    }
+    const reconcileMap = (target, source) => {
+      for (const id of Object.keys(target)) if (!source[id]) delete target[id];
+      for (const [id, value] of Object.entries(source)) {
+        if (!target[id]) { target[id] = value; continue; }
+        for (const key of Object.keys(target[id])) delete target[id][key];
+        Object.assign(target[id], value);
+      }
+    };
+    reconcileMap(board.modules, candidate.modules);
+    reconcileMap(board.tasks, candidate.tasks);
+    board.schemaVersion = candidate.schemaVersion;
+    board.revision = candidate.revision;
+    return { ...result, taskId: result.task?.id || null };
   }
 
   function resolvedTask(taskId) {
@@ -149,14 +201,7 @@ function createTaskBoardRuntime(deps) {
   }
 
   function notify(dirId, taskIds, kind) {
-    // Fan out to BOTH channels. workspaceBroadcast(dir) delivers to that
-    // directory's /ws/workspace sockets AND mirrors the payload to the Meta
-    // channel, so one dir-scoped call feeds manage.html's board, the task chat
-    // view and meta.html at once. Broadcasting with dirId=null only ever
-    // reached metaClients — the board on manage.html then never updated live
-    // and needed a manual refresh. Callers that only know the task id (every
-    // updateBoardTask) get their directory resolved here.
-    // kind='created' signals a new task was just tagged, for归拢中→定位 animation.
+    // Directory broadcasts also mirror to Meta; created drives locate animation.
     const payload = { type: 'task_board_update', taskIds };
     if (kind) payload.kind = kind;
     const dirs = new Set();
@@ -175,10 +220,7 @@ function createTaskBoardRuntime(deps) {
     } catch (_) {}
   }
 
-  // M3 · per-task worktree service (D2): the worktree belongs to the task, not
-  // the pooled slot running it. Optional git ports — without them the runtime
-  // stays worktree-free (tests, reduced hosts); with them the task detail
-  // views and the run boundary both share this one service instance.
+  // Optional per-task worktree service.
   function updateBoardTask(id, patch) {
     const task = board.tasks[id];
     if (!task) return;
@@ -216,12 +258,7 @@ function createTaskBoardRuntime(deps) {
     : null;
 
 
-  // Bounded failure recovery (design doc §3.3): a retryable terminal failure
-  // gets exactly one re-send of its admission text — since #38 that goes to
-  // the task's bound chat session (the P4 cold-start seed rebuilds context
-  // from the ledger, failure entry included). The cap is per failed DELIVERY:
-  // a run carrying metadata.retryOf can never earn another retry (no chains),
-  // while a later, independently failed delivery still gets its own chance.
+  // Retry each retryable failed delivery once, without retry chains.
   async function autoRetryTaskRun({ taskId, runId } = {}) {
     if (!taskRuns) return { ok: false, code: 'task_runs_unavailable' };
     const id = String(taskId || '').trim();
@@ -380,7 +417,6 @@ function createTaskBoardRuntime(deps) {
       text: core.messageText({ content: message.content }),
     }));
   }
-
   function canonicalTaskBody(task) {
     if (taskRuns) {
       try {
@@ -419,8 +455,12 @@ function createTaskBoardRuntime(deps) {
         legacy: false,
       };
     }
-    // Old cards predate taskId metadata. Their ref remains a read-only fallback;
-    // no new write path stores task text in the board.
+    if (task.recordType === 'planned') {
+      const description = String(task.description || task.title || '').trim();
+      if (description) return { text: description, messageId: null,
+        sessionId: task.chatSessionId || null, legacy: false };
+    }
+    // Old cards predate taskId metadata; their ref remains a read-only fallback.
     for (const ref of task.refs || []) {
       let history = [];
       try { history = loadHistory(ref.sessionId) || []; } catch (_) {}
@@ -438,16 +478,12 @@ function createTaskBoardRuntime(deps) {
     }
     return { text: '', messageId: null, sessionId: null, legacy: true };
   }
-
-  // Transport wrappers (compiled context wall / routed scaffold) are not
-  // conversation. The write-time metadata flag is the structural signal; the
-  // text predicate catches rows written before the flag existed.
+  // Transport wrappers are not conversation; metadata plus text catch old and new rows.
   function isWrapperLedgerMessage(message) {
     if (!message || message.role !== 'user') return false;
     if (message.metadata?.wrapper === true) return true;
     return isTaskRunWrapperText(core.messageText({ content: message.content }));
   }
-
   function storedTaskMessages(taskId, excludeRunId = null) {
     if (!taskRuns) return [];
     const items = [];
@@ -1882,21 +1918,7 @@ function createTaskBoardRuntime(deps) {
     }
   }
 
-  // P4 · cold start (design: 用任务历史记录拼上下文). A bound session whose
-  // native CLI session does not exist yet knows nothing about its task, so its
-  // first turn carries the compiled ledger — the same buildTaskRunContext input
-  // a pooled run gets, minus the 当前要求 section because the user's own message
-  // follows it. It travels as a PROMPT layer (composeMessage kind:'task-context')
-  // and never as the turn text: what the transcript keeps is exactly what the
-  // user typed, so the task chat view is the ordinary chat view down to its
-  // first bubble, and the board's message projection sees a real user message
-  // instead of a filtered wrapper.
-  //
-  // The gate is the native session, NOT the transcript: the user message is
-  // persisted before the provider runs, so a first turn that died in between
-  // would otherwise ship contextless, and a cleared transcript would otherwise
-  // re-wall a session the CLI still remembers. Once the native session exists,
-  // it IS the context (zero reset per turn).
+  // Seed a not-yet-native bound session from durable task history.
   function coldStartSeed(boundId, task) {
     if (records.get(boundId)?.cliSessionId) return '';
     try {
@@ -1966,6 +1988,7 @@ function createTaskBoardRuntime(deps) {
   async function sendBoundSessionFollowupUnlocked(boundId, task, messageText, {
     clientKey, source, goalNote = '', commanderId = null,
   } = {}) {
+    const beforeBoardMutation = JSON.parse(JSON.stringify(task));
     const taskContextSeed = coldStartSeed(boundId, task);
     const result = await sendSessionMessage(boundId, goalNote + messageText, {
       taskId: task.id,
@@ -1976,9 +1999,7 @@ function createTaskBoardRuntime(deps) {
     if (!result || result.ok === false) {
       return result || { ok: false, code: 'dispatch_failed' };
     }
-    // Point the routing receipt at the bound session so the card's runState
-    // aggregates ITS classify state (buildBoardDto prefers oneWay routing
-    // worker over ref sessions) instead of a drained legacy slot.
+    // Project run state from the bound worker, not a drained legacy slot.
     core.setTaskRouting(task, {
       mode: 'commander',
       targetSessionId: commanderId || boundId,
@@ -1988,7 +2009,12 @@ function createTaskBoardRuntime(deps) {
       oneWay: true,
       routedAt: Date.now(),
     });
-    save();
+    planning.markPlannedTaskStarted(task);
+    if (!save()) {
+      for (const key of Object.keys(task)) delete task[key];
+      Object.assign(task, beforeBoardMutation);
+      return { ok: false, code: 'persistence_failed', delivered: true };
+    }
     notify(core.taskDirId(board, task), [task.id]);
     return {
       ...result, ok: result.ok !== false, taskId: task.id, taskBound: true,
@@ -2013,11 +2039,7 @@ function createTaskBoardRuntime(deps) {
     if (!messageText) return { ok: false, code: 'empty_text' };
     const clientKey = String(options.clientMsgId || '').trim() || crypto.randomUUID();
     const source = options.source === 'commander' ? 'commander' : 'task-board';
-    // #38 · the pooled follow-up path is retired. A follow-up goes to the
-    // task's bound chat session — created on first use, with the P4 cold-start
-    // seed rebuilding its context from the ledger — or, while a legacy pooled
-    // run still owns the task, refuses honestly instead of opening a second
-    // executor on one task worktree.
+    // Follow up through the bound chat; refuse while a legacy run owns it.
     if (latestOpenTaskRun(task.id)) {
       return {
         ok: false, code: 'task_run_open',
@@ -2037,16 +2059,17 @@ function createTaskBoardRuntime(deps) {
   async function handleSend(req, res) {
     const task = resolvedTask(req.params.taskId);
     if (!task) return res.status(404).json({ error: 'task_not_found' });
-    // M4-T1: the unified chat view answers a pending question through this
-    // transport with the chat-side userInputRequestId (composer semantics).
-    // Delegate to the answer ingress — same lease/idempotency checks — so the
-    // text resolves the waiting run instead of opening a followup run.
     const userAnswerRequestId = String(req.body?.userInputRequestId || '').trim().slice(0, 160);
     if (userAnswerRequestId) {
       req.body.requestId = userAnswerRequestId;
       return handleAnswer(req, res);
     }
-    const text = String(req.body?.text || '').trim();
+    const expected = req.body?.expectedRevision ?? req.body?.revision;
+    if (task.recordType === 'planned' && expected != null) {
+      const checked = planning.validateExpectedRevision(task, expected);
+      if (!checked.ok) return res.status(checked.error === 'revision_conflict' ? 409 : 400).json(checked);
+    }
+    const text = String(req.body?.text ?? req.body?.message ?? '').trim();
     if (!text) return res.status(400).json({ error: 'empty_text' });
     const explicit = String(req.body?.target || '').trim() || null;
     if (explicit) {
@@ -2072,7 +2095,8 @@ function createTaskBoardRuntime(deps) {
     if (!result?.ok) {
       const busy = result?.code === 'target_busy' || result?.error === 'target_busy'
         || result?.code === 'task_run_open';
-      return res.status(busy ? 409 : 502).json({ error: result?.code || result?.error || 'dispatch_failed' });
+      return res.status(busy ? 409 : result?.code === 'persistence_failed' ? 500 : 502)
+        .json({ error: result?.code || result?.error || 'dispatch_failed' });
     }
     if (result.taskBound === true) {
       // P1-b1: the follow-up went straight to the task-bound chat session —
@@ -2091,6 +2115,8 @@ function createTaskBoardRuntime(deps) {
         chatId: result.chatId,
         operationId: result.operationId || null,
         taskRunId: null,
+        task: taskDto(task),
+        revision: board.revision,
       });
     }
     res.json({
@@ -2105,6 +2131,8 @@ function createTaskBoardRuntime(deps) {
       chatId: result.chatId,
       operationId: result.operationId || null,
       taskRunId: null,
+      task: taskDto(task),
+      revision: board.revision,
     });
   }
 
@@ -2133,16 +2161,7 @@ function createTaskBoardRuntime(deps) {
     }
     const taskShape = { id: taskId, title: core.PENDING_TASK_TITLE };
     const replayOperationId = existing?.routing?.operationId || null;
-    // P1-b2 / #38 · task-start direct dispatch: a fresh dispatch (never a
-    // replay) binds the task's hidden chat session and opens the first turn
-    // through the canonical chat ingress — the ONLY admission path since the
-    // pooled slots were retired. Failures are honest: a session CREATE
-    // failure surfaces its code (never a silent ledger fallback — the
-    // empty-room incident), and a failed SEND on a live binding does not fall
-    // through either (the turn ingress owns idempotency for this clientKey,
-    // and two executors must never share one task worktree). A legacy open
-    // TaskRun still owns the task: refuse instead of double-executing; it
-    // drains or gets cancelled through the ordinary controls.
+    // A fresh Commander route binds a hidden chat and uses canonical ingress.
     if (effectiveRouteMode === 'commander' && !replayOperationId) {
       if (existing && latestOpenTaskRun(taskId)) {
         return {
@@ -2534,16 +2553,7 @@ function createTaskBoardRuntime(deps) {
     return { ok: true };
   }
 
-  // The chat view's stop button (A3 split): cancel the open run only. The
-  // card keeps its lifecycle state — marking done stays with the board's ✅.
-  // Idempotent: no open run → 200 { cancelled:false } (a stop press racing a
-  // natural completion is not an error). Queue release only happens when a
-  // run was actually stopped; a no-op cancel must not mutate queues.
-  // P1 · get-or-create the task's bound chat session. Shared by the HTTP
-  // endpoint (view deep-link) and the P1-b2 task-start detour (first send
-  // binds immediately). A dangling binding (record deleted) heals by
-  // re-creating; explicit dirId wins over ref-derived resolution because a
-  // brand-new task has no refs yet.
+  // Get or create the task's 1:1 hidden chat, healing dangling bindings.
   async function ensureBoundChatSessionUnlocked(task, { dirId = null, runtime = null, adoptOrigin = false } = {}) {
     // Resolution-only paths (live binding, reverse heal, origin adoption) need
     // no creation port; the guard lives on the create branch so a reduced
@@ -2565,13 +2575,7 @@ function createTaskBoardRuntime(deps) {
         }
       }
     }
-    // Read-side adoption (opt-in, click path only): a task born inside
-    // ordinary sessions (message taskId refs) already HAS its conversation
-    // there — opening it must land in that session, not fork a fresh hidden
-    // room that has never seen the work. The newest live ordinary ref wins;
-    // execution slots and other tasks' bound rooms are never homes. Nothing
-    // is created, bound or persisted, so dispatch and archive semantics stay
-    // exactly as they were — this is view-layer resolution only.
+    // A click may adopt the newest live ordinary session that owns the task.
     if (adoptOrigin && typeof records?.get === 'function') {
       const refs = [...(task.refs || [])]
         .filter(ref => ref?.sessionId)
@@ -2635,13 +2639,7 @@ function createTaskBoardRuntime(deps) {
     finally { release(); }
   }
 
-  // Adoption gate: a ref is a valid home only while that session's transcript
-  // still holds the task's turns. Refs are born from taskId-tagged messages
-  // (onMessagePersisted), so a live record whose transcript has none of them
-  // means the history was cleared (clear_history keeps the record) or the
-  // conversation moved on to other tasks — either way the ref points at the
-  // wrong room and adoption must decline (fall through to create + seed).
-  // Fail-open: an unreadable transcript is not proof the turns are gone.
+  // Adopt only sessions whose transcript still owns this task; reads fail open.
   function sessionTranscriptHoldsTask(sessionId, taskId) {
     try {
       const task = resolvedTask(taskId);
@@ -2652,12 +2650,7 @@ function createTaskBoardRuntime(deps) {
     }
   }
 
-  // 归档即释放 · archive is a task's lifecycle end, so its bound session — the
-  // task's resume file — is released with it (user decision 2026-08-20). Best-
-  // effort by contract: a failed/blocked release never blocks archiving, and
-  // the pointer is only cleared on success so a surviving session is never
-  // dangled. Re-opening the task heals: ensureBoundChatSession re-creates the
-  // 1:1 session and the cold-start seed rebuilds context from the ledger.
+  // Archive releases bound sessions best-effort and retains failed pointers.
   async function releaseArchivedBoundSession(task) {
     if (!releaseTaskBoundSession) return 0;
     let released = 0;
@@ -2676,14 +2669,7 @@ function createTaskBoardRuntime(deps) {
     return released;
   }
 
-  // P1 · task-bound hidden chat session (任务专属隐藏会话) — get-or-create the
-  // 1:1 ordinary chat session this task owns. The record is hidden from fleet
-  // lists by its taskBoundTaskId marker (query-service gate) yet stays fully
-  // addressable through ordinary session APIs, so the task chat view IS the
-  // ordinary chat view (tool cards, usage, memory injection, resume
-  // continuity) instead of a ledger projection. Zero coupling to execution
-  // slots: this never creates or touches taskExecutionSlot records, and the
-  // send path stays commander-routed until P1-b rewires it.
+  // Return the task-bound ordinary chat used by the unified task view.
   async function handleChatSession(req, res) {
     if (!createSessionRecord) {
       return res.status(501).json({ error: 'chat_session_unavailable' });
@@ -2729,6 +2715,17 @@ function createTaskBoardRuntime(deps) {
     if (!['active', 'done', 'archived'].includes(status)) {
       return res.status(400).json({ error: 'invalid_status' });
     }
+    const expectedPlanningRevision = req.body?.expectedRevision ?? req.body?.revision;
+    const planningRevisionAtStart = task.recordType === 'planned'
+      ? planning.planningRevision(task.planningRevision) : null;
+    if (planningRevisionAtStart != null && expectedPlanningRevision != null) {
+      const checked = planning.validateExpectedRevision(task, expectedPlanningRevision);
+      if (!checked.ok) {
+        const code = checked.error === 'revision_conflict' ? 409 : 400;
+        return res.status(code).json(checked);
+      }
+    }
+    const beforeMutation = JSON.parse(JSON.stringify(task));
     if (status === 'done') {
       const stopped = await cancelOpenTaskRun(task);
       if (!stopped.ok) return res.status(stopped.status).json(stopped.body);
@@ -2738,13 +2735,30 @@ function createTaskBoardRuntime(deps) {
         '当前任务仍在执行；请先取消，或等待其进入冻结状态后再明确标记完成。');
       if (!queues.ok) return res.status(queues.status).json(queues.body);
     }
+    if (planningRevisionAtStart != null
+        && planning.planningRevision(task.planningRevision) !== planningRevisionAtStart) {
+      return res.status(409).json({
+        error: 'revision_conflict',
+        expectedRevision: planningRevisionAtStart,
+        actualRevision: planning.planningRevision(task.planningRevision),
+      });
+    }
     task.status = status;
-    task.updatedAt = Date.now();
+    const statusAt = Date.now();
+    task.updatedAt = statusAt;
+    const stageChanged = planning.alignStageWithStatus(task, status, statusAt, board);
+    if (planningRevisionAtStart != null && !stageChanged) {
+      task.planningRevision = planningRevisionAtStart + 1;
+    }
     // Archived is the only lifecycle end that releases the bound session —
     // done tasks still expect follow-ups, their resume file must survive.
     const releasedSessions = status === 'archived'
       ? await releaseArchivedBoundSession(task) : 0;
-    save();
+    if (!save()) {
+      for (const key of Object.keys(task)) delete task[key];
+      Object.assign(task, beforeMutation);
+      return res.status(500).json({ error: 'persistence_failed' });
+    }
     const mod = task.moduleId ? board.modules[task.moduleId] : null;
     notify(mod?.dirId || null, [task.id]);
     res.json({
@@ -2752,6 +2766,7 @@ function createTaskBoardRuntime(deps) {
       releasedSession: releasedSessions > 0,
       releasedSessions,
       task: taskDto(task),
+      revision: board.revision,
     });
   }
 
@@ -2764,7 +2779,7 @@ function createTaskBoardRuntime(deps) {
   const handleMergeTasks = createTaskMergeHandler({
     board, core, taskRuns, getSessionRunState, isOpenTaskRun,
     activeTaskOperations, taskIdentityIds, resolvedTask, taskDto,
-    persist: () => atomicWriteJson(file, board),
+    persist: () => { if (!save()) throw new Error('persistence_failed'); },
     notify, logger,
   });
 
@@ -2830,7 +2845,25 @@ function createTaskBoardRuntime(deps) {
     res.json({ ok: true, queued, archived, skipped });
   }
 
+  const planningRuntime = createTaskPlanningRuntime({
+    getBoard: () => board,
+    commitMutation: commitPlanningMutation,
+    taskDto,
+    resolveTask: resolvedTask,
+    taskDirId: task => core.taskDirId(board, task),
+    notify,
+    hasDirectory: resolveDirectoryPort ? dirId => !!resolveDirectoryPort(dirId) : null,
+    beforeStageChange: async task => {
+      const stopped = await cancelOpenTaskRun(task);
+      if (!stopped.ok) return stopped;
+      return resolveLegacySessionQueues(task,
+        '当前任务仍在执行；请先取消，或等待其进入冻结状态后再移动到已完成。');
+    },
+    logger,
+  });
+
   function mountRoutes(app) {
+    planningRuntime.mountRoutes(app);
     app.get('/api/task-board', handleBoard);
     // Composer runtime suggestion: "recently active" = the newest mtime in the
     // chat_history store maps to a live chat record — its (cli, provider, model)

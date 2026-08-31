@@ -9,10 +9,14 @@ const path = require('node:path');
 const vm = require('node:vm');
 const Database = require('better-sqlite3');
 const core = require('../src/task-board');
+const planning = require('../src/task-planning');
 const { createTaskBoardRuntime, assertTaskBoardDeps } = require('../src/routes/task-board');
 const { createTaskRunStore } = require('../src/task-run-store');
 const taskBoardUi = require('../public/task-board-ui');
 const { mkRuntime } = require('./helpers/task-board-runtime');
+require('./test-task-planning');
+
+const EMPTY_BOARD = core.createEmptyBoard();
 
 test('task board snapshot reconciliation is taskId-idempotent and prunes replay ghosts', () => {
   const reconciled = taskBoardUi.reconcileSnapshot({
@@ -477,8 +481,8 @@ test('applyBackfillResult uses source-message identity and is replay-idempotent'
 // ── normalizeBoard ──────────────────────────────────────────────────────────
 
 test('normalizeBoard drops malformed entries and survives garbage', () => {
-  assert.deepEqual(core.normalizeBoard(null), { modules: {}, tasks: {} });
-  assert.deepEqual(core.normalizeBoard('junk'), { modules: {}, tasks: {} });
+  assert.deepEqual(core.normalizeBoard(null), EMPTY_BOARD);
+  assert.deepEqual(core.normalizeBoard('junk'), EMPTY_BOARD);
   const board = core.normalizeBoard({
     modules: { m1: { name: '服务端' }, bad: { nope: 1 } },
     tasks: {
@@ -700,7 +704,7 @@ test('ordinary chat never creates a task or queues task tagging', () => {
     runState: 'running',
   });
   assert.equal(auxCalls.length, 0);
-  assert.deepEqual(runtime.getBoard(), { modules: {}, tasks: {} });
+  assert.deepEqual(runtime.getBoard(), EMPTY_BOARD);
 });
 
 test('durable TaskRun changes notify task-board clients without exposing a slot', () => {
@@ -1085,6 +1089,10 @@ test('REST: board, messages, send and status flow', async () => {
   };
   runtime.mountRoutes(app);
   assert.deepEqual([...routes.keys()], [
+    'POST /api/task-board/tasks',
+    'POST /api/task-board/tasks/:taskId/update',
+    'POST /api/task-board/tasks/:taskId/planning',
+    'POST /api/task-board/tasks/:taskId/move',
     'GET /api/task-board',
     'GET /api/task-board/suggested-runtime',
     'GET /api/task-board/tasks/:taskId',
@@ -1447,7 +1455,7 @@ test('automatic routing fails closed without a same-directory typed Commander', 
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(res.code, 409);
     assert.equal(res.body.error, 'commander_not_found');
-    assert.deepEqual(runtime.getBoard(), { modules: {}, tasks: {} });
+    assert.deepEqual(runtime.getBoard(), EMPTY_BOARD);
   }
   assert.equal(dispatches.length, 0);
 });
@@ -1468,7 +1476,7 @@ test('board send waits for Commander migration and never accepts explicit target
   assert.equal(blocked.body.error, 'commander_migration_pending');
   assert.equal(blocked.body.directoryId, 'dir-1');
   assert.equal(dispatches.length, 0);
-  assert.deepEqual(runtime.getBoard(), { modules: {}, tasks: {} });
+  assert.deepEqual(runtime.getBoard(), EMPTY_BOARD);
 
   const manual = response();
   routes.get('/api/task-board/send')({ body: { dirId: 'dir-1', target: 'sess-1', text: '手工任务' } }, manual);
@@ -1501,7 +1509,7 @@ test('board send and task follow-up reject explicit targets; everything enters t
   assert.equal(rejected.code, 409);
   assert.equal(rejected.body.error, 'manual_target_unsupported');
   assert.equal(dispatches.length, 0);
-  assert.deepEqual(runtime.getBoard(), { modules: {}, tasks: {} }, 'rejected send must not create a task');
+  assert.deepEqual(runtime.getBoard(), EMPTY_BOARD, 'rejected send must not create a task');
 
   const created = response();
   routes.get('/api/task-board/send')({ body: { dirId: 'dir-1', text: '自动任务' } }, created);
@@ -1572,7 +1580,7 @@ test('commander input never admits a TaskRun; a failed send reports honestly wit
   });
   assert.equal(failed.ok, false);
   assert.equal(failed.code, 'chat_ingress_down', 'a failed send surfaces its code — no ledger fallback');
-  assert.deepEqual(failedRuntime.getBoard(), { modules: {}, tasks: {} },
+  assert.deepEqual(failedRuntime.getBoard(), EMPTY_BOARD,
     'the card is only indexed after a successful send — so no run can exist either');
 });
 
@@ -1887,7 +1895,7 @@ test('explicit TaskBoard targets are rejected before any dispatch or TaskRun', a
   assert.equal(first.code, 409);
   assert.equal(first.body.error, 'manual_target_unsupported');
   assert.equal(dispatches.length, 0);
-  assert.deepEqual(fixture.runtime.getBoard(), { modules: {}, tasks: {} });
+  assert.deepEqual(fixture.runtime.getBoard(), EMPTY_BOARD);
 
   const hidden = response();
   routes.get('POST /api/task-board/send')({
@@ -2646,7 +2654,7 @@ test('a failed board send never creates the placeholder card', async () => {
   assert.equal(r.body.error, 'chat_ingress_down');
   assert.equal(creates.length, 1,
     'the hidden session exists — the next send heals through the reverse bind');
-  assert.deepEqual(runtime.getBoard(), { modules: {}, tasks: {} },
+  assert.deepEqual(runtime.getBoard(), EMPTY_BOARD,
     'the card is only indexed after a successful send');
 });
 
@@ -2688,7 +2696,7 @@ test('a failed bound-session CREATE reports honestly with no placeholder card', 
   // never a silent fallback that leaves the message unowned.
   assert.equal(r.code, 502);
   assert.equal(r.body.error, 'session_create_500');
-  assert.deepEqual(runtime.getBoard(), { modules: {}, tasks: {} });
+  assert.deepEqual(runtime.getBoard(), EMPTY_BOARD);
 });
 
 test('board persists across runtime restarts', () => {
