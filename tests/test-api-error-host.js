@@ -3,6 +3,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { createApiErrorHost } = require('../src/chat/api-error-host');
+const { createChatTurnEngine } = require('../src/chat/turn-engine');
 
 function decision(overrides = {}) {
   return {
@@ -127,6 +128,111 @@ test('turn policy decision persists stable state and duplicate delivery does not
   assert.equal('sanitizedMessage' in h.taskWrites[0].patch.apiError, false);
   assert.equal(h.taskWrites[0].patch.apiError.rootCause, 'service unavailable');
   assert.match(h.broadcasts[1].payload.message, /根因：service unavailable/);
+});
+
+test('stream host rejects a reused Claude handoff failure before policy and Auto failover', () => {
+  const h = harness();
+  let evaluateCalls = 0;
+  let failovers = 0;
+  let retriesScheduled = 0;
+  const finalizerBroadcasts = [];
+  const noop = () => {};
+  const engine = createChatTurnEngine({
+    getExperimentalTuiChatRuntime: () => null,
+    persistedSessions: new Map(),
+    chatSessions: new Map(),
+    logger: { warn: noop, info: noop, error: noop },
+    chatBroadcast: (sessionId, payload) => finalizerBroadcasts.push({ sessionId, payload }),
+    cancelClassify: noop,
+    emitTurnOutcome: noop,
+    classifyTurnEnd: noop,
+    turnProgressHeartbeat: { stop: noop },
+    meaningfulTurnOutput: () => false,
+    turnHasSideEffects: () => false,
+    evaluateTurnApiError(input) {
+      evaluateCalls += 1;
+      return h.host.evaluateTurnApiError(input);
+    },
+    scheduleOwnedRetry: () => { retriesScheduled += 1; },
+    isCurrentTurnRunner: (state, turn, runner) =>
+      state._activeTurn === turn && state._activeRunner === runner,
+    assistantCheckpointKey: () => null,
+    getChatHistoryRuntime: () => ({ clearIncrementalSave: noop }),
+    setSessionStatus: noop,
+    getSessionWorkHost: () => ({ turnFailed: noop, turnSucceeded: noop }),
+    runDurablePostTurn: noop,
+    persistFinalAssistantResult: () => false,
+    recordDurableTurnUsage: () => false,
+    autoProviderRuntime: {},
+    codexRolloutGuard: { sweepExpiredArchives: noop },
+    opencodeContextGuard: {},
+  });
+  const persisted = {
+    cli: 'claude',
+    pendingCliHandoff: { status: 'pending', reusedTarget: true, toCli: 'claude' },
+  };
+  const turn = { turnId: 'turn-handoff', resultDurable: false };
+  const runner = {
+    kind: 'stream', turnId: turn.turnId, killReason: null,
+    resultEvent: false, sawApiError: true,
+  };
+  const state = {
+    _streamTurnSeq: 1,
+    _activeTurn: turn,
+    _activeRunner: runner,
+    currentAssistantText: '',
+    currentToolCalls: [],
+    streamReplay: [],
+    isStreaming: true,
+  };
+  const autoTurn = {
+    enabled: true,
+    failover() { failovers += 1; return null; },
+    recordSuccess: noop,
+  };
+
+  engine.finalizeStreamingTurn(
+    'session-1', state, persisted, 1, turn, runner,
+    null, null, noop, autoTurn,
+  );
+
+  assert.equal(evaluateCalls, 0, 'generic API policy host is never called');
+  assert.equal(failovers, 0, 'Auto Provider receives no decision and consumes no candidate');
+  assert.equal(h.taskWrites.length, 0, 'retry_wait state is never persisted');
+  assert.equal(h.broadcasts.length, 0, 'retry_wait is never broadcast');
+  assert.equal(runner.apiErrorDecision, undefined);
+  assert.equal(runner.apiErrorRaw, undefined);
+  assert.equal(finalizerBroadcasts.some(entry => entry.payload.type === 'api_error_policy'), false);
+  assert.equal(finalizerBroadcasts.some(entry => /目标 Claude 原生会话恢复异常/.test(
+    String(entry.payload.error || ''),
+  )), true, 'the finalizer still reports the reset-target action');
+
+  const mismatchTurn = { turnId: 'turn-mismatch', resultDurable: false };
+  const mismatchRunner = {
+    kind: 'stream', turnId: mismatchTurn.turnId, killReason: null,
+    resultEvent: false, sawApiError: true,
+  };
+  const mismatchState = {
+    _streamTurnSeq: 2,
+    _activeTurn: mismatchTurn,
+    _activeRunner: mismatchRunner,
+    currentAssistantText: '',
+    currentToolCalls: [],
+    streamReplay: [],
+    isStreaming: true,
+  };
+  engine.finalizeStreamingTurn(
+    'session-1', mismatchState,
+    { cli: 'claude', pendingCliHandoff: {
+      status: 'pending', reusedTarget: true, toCli: 'codex',
+    } },
+    2, mismatchTurn, mismatchRunner, null, null, noop, autoTurn,
+  );
+  assert.equal(evaluateCalls, 1, 'a different target CLI does not over-match the guard');
+  assert.equal(failovers, 1);
+  assert.equal(retriesScheduled, 1);
+  assert.equal(h.taskWrites.length, 1);
+  assert.equal(h.broadcasts[0].payload.state, 'retry_wait');
 });
 
 test('turn duration is diagnostic only and recovery budget starts at first host decision', () => {
