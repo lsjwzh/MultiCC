@@ -114,7 +114,7 @@ The picker shows which CLIs are installed, which already hold a saved session, a
 ### 1. Install
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v1.6.6/install.sh | bash -s -- --branch v1.6.6
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v1.6.7/install.sh | bash -s -- --branch v1.6.7
 ```
 
 The script detects your OS, checks prerequisites, clones the repo, installs dependencies, generates an `ACCESS_TOKEN`, and optionally registers a background service (macOS `launchd`). Installation never builds the Android APK.

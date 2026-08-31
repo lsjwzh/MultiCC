@@ -2,8 +2,8 @@
 
 // Isolated process-level proof for the bidirectional dispatch closed loop.
 // Spawns a real server with a temporary data root and fake CLI binaries.
-// Tests: D1 (completed), D2 (failed), S3 (callback instruction in slave prompt),
-// E2 (busy slave → ok:true queued).
+// Tests D1 (completed dispatch + result backflow) and S3 (callback instruction
+// in the slave prompt) through the process-scoped Router MCP.
 
 const assert = require('node:assert/strict');
 const { spawn } = require('node:child_process');
@@ -291,6 +291,15 @@ function sendWsMessage(port, sessionId, text) {
     }, 'D1: backflow outbox entry not emitted for master');
     assert.match(backflowEntry.payload.deliveryText, /dispatch 结果回流/, 'D1: backflow format correct');
     assert.match(backflowEntry.payload.deliveryText, /work done successfully/, 'D1: backflow contains result');
+
+    const masterBackflow = await waitUntil(async () => {
+      const history = normalizeHistory(await api('GET', `/api/sessions/${master.id}/history`));
+      return history.find(message => (
+        message.role === 'assistant' && contentText(message).includes('BACKFLOW_RECEIVED')
+      )) || null;
+    }, 'D1: master did not consume the result backflow');
+    assert.match(contentText(masterBackflow), /work done successfully/,
+      'D1: master consumed the worker result in a follow-up turn');
 
     await stop();
     console.log('Bidirectional dispatch closed-loop integration: ALL PASSED');

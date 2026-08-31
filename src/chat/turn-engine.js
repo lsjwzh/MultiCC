@@ -22,6 +22,8 @@ const {
   clearErrorFlagsForSucceededTurn,
   recordResultEvent,
   hasMatchingPartialCheckpoint,
+  isGuardedHandoffFailure,
+  normalizeHandoff,
   planTurnFinalization,
   createTurnFinalizationExecutor,
   detectErrorEnvelope,
@@ -1748,7 +1750,15 @@ function createChatTurnEngine(deps) {
             provider: cs.cli,
           });
         }
-        const shouldClassifyApiError = !!(
+        const guardedHandoffResumeFailure = isGuardedHandoffFailure({
+          runnerKind: 'process',
+          cli: cs.cli,
+          isRetry: !!isRetry,
+          hasOutput: hasTurnOutput,
+          killReason,
+          retryBlockedByAdapterError: !!cs._adapterError || !!runner.adapterError,
+        }, normalizeHandoff({ handoff: persisted.pendingCliHandoff }));
+        const shouldClassifyApiError = !guardedHandoffResumeFailure && !!(
           runner.apiErrorRaw
           || runner.sawApiError
           || runner.adapterError
@@ -2330,7 +2340,17 @@ function createChatTurnEngine(deps) {
     // Same success veto as the process close path: a durable result proves a
     // mid-stream error was recovered from (see the close handler above).
     clearErrorFlagsForSucceededTurn(turn, runner, cs, { killReason: runner.killReason });
-    const shouldClassifyApiError = !!(
+    // A reused cross-CLI target is an explicit fail-closed boundary. Detect a
+    // failed native Claude resume before generic API policy can persist or
+    // broadcast retry_wait, and before Auto Provider can consume a candidate.
+    // planTurnFinalization repeats this guard as a second line of defence.
+    const guardedHandoffResumeFailure = isGuardedHandoffFailure({
+      runnerKind: 'stream',
+      cli: persisted.cli || 'claude',
+      resultDurable: turn.resultDurable === true,
+      killReason: runner.killReason || '',
+    }, normalizeHandoff({ handoff: persisted.pendingCliHandoff }));
+    const shouldClassifyApiError = !guardedHandoffResumeFailure && !!(
       runner.apiErrorRaw
       || runner.sawApiError
       || runner.adapterError

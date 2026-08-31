@@ -158,7 +158,8 @@ function planTurnFinalization(input = {}, deps = {}) {
     }
   }
 
-  if (facts.apiErrorDecision && facts.apiErrorDecision.action === 'retry') {
+  if (!guardedHandoffResumeFailure
+      && facts.apiErrorDecision && facts.apiErrorDecision.action === 'retry') {
     return freezePlan({
       action: 'retry-api',
       code: null,
@@ -389,6 +390,7 @@ function resolveTurnFinalization(plan, outcome = {}) {
 module.exports = {
   classifyProcessExit,
   isGuardedHandoffFailure,
+  normalizeHandoff,
   planTurnFinalization,
   resolveTurnFinalization,
 };

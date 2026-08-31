@@ -34,6 +34,16 @@ test('process and stream retries reuse the owned turn without appending a second
   const processBody = server.slice(processStart, processEnd);
   assert.ok(processStart >= 0 && processEnd > processStart);
   assert.equal(processBody.includes('evaluateTurnApiError({'), true);
+  const processGuard = processBody.indexOf('const guardedHandoffResumeFailure = isGuardedHandoffFailure({');
+  const processPolicy = processBody.indexOf('const apiErrorDecision = shouldClassifyApiError');
+  assert.ok(processGuard >= 0 && processPolicy > processGuard,
+    'process reused-target guard must run before generic API policy');
+  assert.match(processBody,
+    /const shouldClassifyApiError = !guardedHandoffResumeFailure && !!\(/,
+    'process guard must suppress both retry_wait policy and downstream Auto failover');
+  assert.match(processBody,
+    /retryBlockedByAdapterError: !!cs\._adapterError \|\| !!runner\.adapterError/,
+    'process guard must preserve both close-time and runner-owned adapter vetoes');
   assert.equal(processBody.includes('scheduleOwnedRetry({'), true);
   assert.match(processBody,
     /const currentRouteOptions = \(\) => providerRetryRouteOptions\(runner\.providerAttempt\)/,

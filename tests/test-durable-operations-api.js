@@ -1,9 +1,9 @@
 'use strict';
 
-// Isolated HTTP composition test for phase-three durable orchestration. The
-// worker interval is intentionally long, so dispatch admission never starts a
-// native AI turn. The only external process is a harmless sleep command that
-// is cancelled through session deletion.
+// Isolated HTTP composition test for durable detached orchestration. Public
+// HTTP dispatch is intentionally retired in favor of the process-scoped Router
+// MCP; the only external process here is a harmless sleep command that is
+// cancelled through session deletion.
 
 const assert = require('node:assert/strict');
 const { spawn } = require('child_process');
@@ -115,38 +115,16 @@ function readOrchestration(file) {
   const workerId = response.data.id;
 
   const dispatchBody = { target: workerId, message: 'deterministic dispatch payload' };
-  const firstDispatch = await api(
+  const legacyDispatch = await api(
     'POST', `/api/sessions/${parentId}/dispatch`, dispatchBody,
-    { 'Idempotency-Key': 'raw-dispatch-capability' },
+    { 'Idempotency-Key': 'retired-raw-dispatch' },
   );
-  assert.equal(firstDispatch.status, 200);
-  assert.equal(firstDispatch.data.ok, true);
-  assert.equal(typeof firstDispatch.data.operationId, 'string');
-  assert.equal(firstDispatch.data.status, 'admitted');
-
-  const duplicateDispatch = await api(
-    'POST', `/api/sessions/${parentId}/dispatch`, dispatchBody,
-    { 'Idempotency-Key': 'raw-dispatch-capability' },
-  );
-  assert.equal(duplicateDispatch.status, 200);
-  assert.equal(duplicateDispatch.data.operationId, firstDispatch.data.operationId);
-
-  const conflict = await api(
-    'POST', `/api/sessions/${parentId}/dispatch`,
-    { ...dispatchBody, message: 'different payload' },
-    { 'Idempotency-Key': 'raw-dispatch-capability' },
-  );
-  assert.equal(conflict.status, 409);
-  assert.equal(conflict.data.code, 'dispatch_conflict');
-
-  const v1 = await api(
+  assert.equal([404, 405].includes(legacyDispatch.status), true);
+  const legacyV1Dispatch = await api(
     'POST', `/api/v1/sessions/${parentId}/dispatch`, dispatchBody,
-    { 'Idempotency-Key': 'v1-separate-key' },
+    { 'Idempotency-Key': 'retired-v1-dispatch' },
   );
-  assert.equal(v1.status, 200);
-  assert.equal(v1.data.ok, true);
-  assert.equal(Object.hasOwn(v1.data, 'operationId'), false);
-  assert.equal(Object.hasOwn(v1.data, 'status'), false);
+  assert.equal([404, 405].includes(legacyV1Dispatch.status), true);
 
   const detached = await api(
     'POST', `/api/sessions/${parentId}/run-detached`,
@@ -158,6 +136,7 @@ function readOrchestration(file) {
   assert.equal(typeof detached.data.operationId, 'string');
   assert.equal(typeof detached.data.taskId, 'string');
   assert.equal(['admitted', 'running'].includes(detached.data.status), true);
+  assert.equal(detached.data.dispatchEndpoint, null);
 
   const ownJobs = await api('GET', `/api/sessions/${parentId}/detached`);
   const otherJobs = await api('GET', `/api/sessions/${workerId}/detached`);
@@ -173,18 +152,14 @@ function readOrchestration(file) {
   assert.equal(fs.statSync(detachedDir).mode & 0o777, 0o700);
   assert.equal(fs.statSync(path.join(detachedDir, detached.data.taskId, 'meta.json')).mode & 0o777, 0o600);
   const durableText = JSON.stringify(readOrchestration(orchestrationFile));
-  assert.equal(durableText.includes('raw-dispatch-capability'), false);
+  assert.equal(durableText.includes('retired-raw-dispatch'), false);
+  assert.equal(durableText.includes('retired-v1-dispatch'), false);
   assert.equal(durableText.includes('raw-detached-capability'), false);
 
   response = await api('DELETE', `/api/sessions/${parentId}?force=1`);
   assert.equal(response.status, 200);
   const snapshot = readOrchestration(orchestrationFile);
-  assert.equal(snapshot.operations[firstDispatch.data.operationId].status, 'cancelled');
   assert.equal(snapshot.operations[detached.data.operationId].status, 'cancelled');
-  assert.equal(
-    snapshot.outbox[`operation:${firstDispatch.data.operationId}:request`].state,
-    'cancelled',
-  );
 
   await api('DELETE', `/api/directories/${directoryId}?force=1`);
   await stopServer();
