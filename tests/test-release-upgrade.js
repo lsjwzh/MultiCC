@@ -16,6 +16,9 @@ const androidGradle = fs.readFileSync(path.join(ROOT, 'app', 'android', 'app', '
 const signerPin = fs.readFileSync(path.join(ROOT, 'app', 'android', 'release-cert.sha256'), 'utf8').trim();
 
 const stableCommand = `curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v${pkg.version}/install.sh | bash -s -- --branch v${pkg.version}`;
+assert.equal(lock.version, pkg.version, 'package-lock root version must match package.json');
+assert.equal(lock.packages[''].version, pkg.version,
+  'package-lock workspace version must match package.json');
 assert.ok(installer.includes(stableCommand), 'installer help must clone the release tag, not main');
 assert.ok(readme.includes(stableCommand), 'README stable command must clone the release tag, not main');
 assert.match(installer, /--branch v\$\{INSTALLER_VERSION\}/);
