@@ -743,6 +743,11 @@
     .tb-compose textarea{width:100%;height:60px;background:var(--well);color:var(--text);border:1px solid var(--line-strong);border-radius:8px;padding:8px;font:inherit;font-size:12.5px;resize:vertical;box-sizing:border-box}
     .tb-compose-row{display:flex;gap:8px;margin-top:6px;align-items:center;flex-wrap:wrap}
     .tb-compose select{background:var(--well);color:var(--text);border:1px solid var(--line-strong);border-radius:8px;padding:5px 8px;font-size:12px;max-width:200px}
+    .tb-auto-summary-row{display:none;align-items:center;gap:8px;min-width:0;margin-top:7px;padding:6px 8px;border:1px solid var(--accent-line);border-radius:8px;background:var(--accent-dim);color:var(--muted);font-size:11.5px}
+    .tb-auto-summary-row.visible{display:flex}
+    .tb-auto-summary-row.cross-trust{border-color:rgba(227,179,65,.55);background:rgba(227,179,65,.1)}
+    .tb-auto-summary{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
+    .tb-auto-summary-row .btn{flex:none}
     .tb-result{font-size:11.5px;color:var(--muted)}
     .tb-result.ok{color:var(--codex)}
     .tb-result.err{color:var(--danger)}
@@ -2183,6 +2188,7 @@
   <script src="status-presentation.js"></script>
   <script src="ui-layout-store.js"></script>
   <script src="task-board-ui.js"></script>
+  <script src="auto-provider-editor.js"></script>
   <script src="manage-taskboard.js"></script>
   <script src="manage-dashboard.js"></script>
   <script src="manage-fleet-sharing.js"></script>
