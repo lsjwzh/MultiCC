@@ -11,6 +11,7 @@
   <link rel="icon" href="/icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="/icon.svg" />
   <link rel="stylesheet" href="/manage-fleet-sharing.css" />
+  <link rel="stylesheet" href="/manage-task-planner.css" />
   <title>MultiCC — Dashboard</title>
   <script src="auth-client.js"></script>
   <script src="api-client.js"></script>
@@ -781,6 +782,7 @@
     <div id="nav-scroll">
     <div class="nav-label" data-i18n="workspace">Workspace</div>
     <button class="nav-item active" data-view="overview" onclick="setView('overview')"><span class="ic">◧</span> <span data-i18n="overview">概览</span> <span class="badge" id="nav-dir-count">0</span></button>
+    <button class="nav-item" data-view="tasks" onclick="setView('tasks')"><span class="ic">▦</span> <span data-i18n="plannerTaskCenter">任务中心</span> <span class="badge" id="nav-planner-count">0</span></button>
     <!-- Cron sits with Overview, not under Settings: it is scheduled work that
          spawns sessions, so it belongs with the live view of what is running
          rather than with the config panes. -->
@@ -881,6 +883,11 @@
           </button>
           <div class="sec-head"><h2 data-i18n="directories">Fleet</h2><span class="count" id="dir-count-pill">0</span><div class="line"></div></div>
           <div id="directory-list"></div>
+        </section>
+
+        <!-- ─── Proactive task planning / Kanban ─── -->
+        <section class="view planner-view" data-view="tasks">
+          <div id="task-planner-root" aria-live="polite"></div>
         </section>
 
         <!-- ─── Memory Graph ─── -->
@@ -2203,6 +2210,7 @@
     (function () {
       const TITLES = {
         overview: ['概览', ''], cron: ['定时任务', '到点自动新建会话执行'],
+        tasks: ['任务中心', '主动计划、执行与验收'],
         voice: ['语音 Voice', '流式识别与转写'], power: ['macOS 电源', '关盖与系统睡眠设置'],
         goal: ['目标 Goal', '会话目标与自动分类'],
         provider: ['Provider', '多供应商接入与默认配置'],
@@ -2238,7 +2246,7 @@
         }
       };
       const requestedView = new URLSearchParams(location.search).get('view');
-      const allowedViews = ['overview', 'memory', 'cron', 'voice', 'goal', 'provider', 'global', 'push', 'tunnel', 'bridges', 'resources', 'skillsync', 'storage'];
+      const allowedViews = ['overview', 'tasks', 'memory', 'cron', 'voice', 'goal', 'provider', 'global', 'push', 'tunnel', 'bridges', 'resources', 'skillsync', 'storage'];
       if (allowedViews.includes(requestedView)) {
         window.setView(requestedView);
       }
@@ -2328,6 +2336,7 @@
       };
     })();
   </script>
+  <script src="manage-task-planner.js"></script>
   <script src="tour.js"></script>
 
   <!-- Git tree modal -->
