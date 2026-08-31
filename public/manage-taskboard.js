@@ -113,52 +113,42 @@ function _tbRenderVisibleBoard() {
 }
 
 // ── Auto Provider (composer picks) ──────────────────────────────────────────
-// The chat AI-config picker offers "⚡ Auto · <protocol>" alongside the concrete
-// providers; the task-board composer offers the same choice with a default pool
-// instead of a full candidate editor (the bound session's own picker still
-// edits it afterwards). Same wire contract as the chat picker: a virtual
-// selection never becomes session.provider — the server resolves one concrete
-// provider per invocation.
+// Chat and Task Board share one candidate editor + one default-selection policy.
+// Auto remains a virtual selection: it never becomes session.provider — the
+// server resolves one concrete provider per invocation. The board stores the
+// user's committed candidate snapshot before the first task turn starts.
 const TB_AUTO_PREFIX = '__auto__:';
 const TB_PROTOCOL_LABELS = {
   anthropic: 'Anthropic Messages',
   openai_responses: 'OpenAI Responses',
   openai_chat: 'OpenAI Chat Completions',
 };
-const TB_AUTO_MAX_CANDIDATES = 12;    // src/auto-provider-config.js MAX_CANDIDATES
-
 function _tbProtocolOf(provider) {
   const value = provider && (provider.protocol || provider.apiFormat);
   return TB_PROTOCOL_LABELS[value] ? value : null;
 }
 
-// Default pool for a protocol: the user-managed providers only. An Official
-// login and an API key are separate trust domains, and the server refuses a
-// mixed pool without explicit consent — a consent the composer has nowhere to
-// ask for, so it never builds one (the session picker still can).
+function _tbAutoEditor() {
+  const editor = window.MultiCCAutoProviderEditor;
+  if (!editor) throw new Error('Auto Provider 编辑器未加载');
+  return editor;
+}
+
+// Auto entries are offered only when a safe, no-consent default exists: at
+// least two user-managed providers on one protocol. Official providers remain
+// available inside the shared editor and require explicit cross-trust consent
+// before they can be mixed with a managed provider.
 function _tbAutoPool(list, protocol) {
-  return (Array.isArray(list) ? list : [])
-    .filter(p => p && p.id && p.isOfficial !== true && _tbProtocolOf(p) === protocol)
-    .slice(0, TB_AUTO_MAX_CANDIDATES);
+  const editor = window.MultiCCAutoProviderEditor;
+  const pool = editor && typeof editor.providersForProtocol === 'function'
+    ? editor.providersForProtocol(list, protocol)
+    : (Array.isArray(list) ? list : []).filter(p => p && p.id && _tbProtocolOf(p) === protocol);
+  return pool.filter(provider => provider.isOfficial !== true);
 }
 
 function _tbAutoSelection(list, protocol) {
-  const pool = _tbAutoPool(list, protocol);
-  if (pool.length < 2) return null;
-  return {
-    version: 1,
-    mode: 'auto',
-    protocol,
-    candidates: pool.map((p, index) => ({
-      providerId: p.id,
-      model: p.model || null,
-      priority: index + 1,
-      enabled: true,
-    })),
-    maxAttempts: Math.min(3, pool.length),
-    sticky: true,
-    allowCrossTrust: false,
-  };
+  const editor = _tbAutoEditor();
+  return editor.defaultSelection(list, protocol);
 }
 
 function _tbModuleAssignmentHtml(task) {
@@ -441,6 +431,10 @@ function createTbComposer(host, opts) {
         <button class="btn btn-sm tb-send-btn">🚀 发送</button>
         <span class="tb-result"></span>
       </div>
+      <div class="tb-auto-summary-row tb-auto-provider-editor" aria-live="polite">
+        <span class="tb-auto-summary"></span>
+        <button type="button" class="btn btn-sm tb-auto-config-btn" title="发送前选择 Auto Provider 候选、顺序和模型">⚙ 配置候选</button>
+      </div>
       ${opts.hint ? `<div class="tb-dim" style="margin-top:4px">${_tbEsc(opts.hint)}</div>` : ''}
       <input type="file" multiple hidden class="tb-file-input">
     </div>`;
@@ -453,13 +447,18 @@ function createTbComposer(host, opts) {
   const goalRow = $q('.tb-goalrow');
   const fileInput = $q('.tb-file-input');
   const resultEl = $q('.tb-result');
+  const autoSummaryRow = $q('.tb-auto-summary-row');
+  const autoSummary = $q('.tb-auto-summary');
+  const autoConfigBtn = $q('.tb-auto-config-btn');
   let pendingClientMsgId = '';
   let pendingText = '';
+  let composerContextKey = String(opts.contextKey || '');
 
   const setResult = (text, cls) => { resultEl.textContent = text || ''; resultEl.className = 'tb-result' + (cls ? ' ' + cls : ''); };
 
   // Attachments — upload immediately, keep the returned path on a chip.
   async function uploadFile(file) {
+    const uploadContextKey = composerContextKey;
     const chip = document.createElement('span');
     chip.className = 'tb-fchip';
     chip.textContent = `⏳ ${file.name || '文件'}`;
@@ -471,6 +470,11 @@ function createTbComposer(host, opts) {
       const r = await fetch('/api/upload', { method: 'POST', body: fd });
       const d = await r.json();
       if (!r.ok || !d.path) throw new Error(d.error || r.status);
+      if (uploadContextKey !== composerContextKey) {
+        chip.remove();
+        if (!chiprow.children.length) chiprow.style.display = 'none';
+        return;
+      }
       chip.dataset.path = d.path;
       chip.textContent = `📄 ${d.name || file.name}`;
       const x = document.createElement('span');
@@ -479,6 +483,10 @@ function createTbComposer(host, opts) {
       x.onclick = () => { chip.remove(); if (!chiprow.children.length) chiprow.style.display = 'none'; };
       chip.appendChild(x);
     } catch (e) {
+      if (uploadContextKey !== composerContextKey) {
+        chip.remove();
+        return;
+      }
       chip.textContent = `⚠️ ${file.name || '文件'} 上传失败`;
       setTimeout(() => { chip.remove(); if (!chiprow.children.length) chiprow.style.display = 'none'; }, 3000);
     }
@@ -495,9 +503,14 @@ function createTbComposer(host, opts) {
   let recChunks = [];
   micBtn.onclick = async () => {
     if (recorder && recorder.state === 'recording') { recorder.stop(); return; }
+    const recordContextKey = composerContextKey;
     let stream;
     try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
     catch (_) { setResult('无法访问麦克风', 'err'); return; }
+    if (recordContextKey !== composerContextKey) {
+      stream.getTracks().forEach(t => t.stop());
+      return;
+    }
     recChunks = [];
     const mime = window.MediaRecorder && MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
       ? 'audio/webm;codecs=opus' : undefined;
@@ -516,10 +529,13 @@ function createTbComposer(host, opts) {
         const r = await fetch('/api/voice/stt', { method: 'POST', body: fd });
         const d = await r.json();
         if (!r.ok || !d.text) throw new Error(d.error || '无转写结果');
+        if (recordContextKey !== composerContextKey) return;
         input.value = input.value ? `${input.value} ${d.text.trim()}` : d.text.trim();
         input.focus();
         setResult('');
-      } catch (e) { setResult(`转写失败：${e.message}`, 'err'); }
+      } catch (e) {
+        if (recordContextKey === composerContextKey) setResult(`转写失败：${e.message}`, 'err');
+      }
     };
     recorder.start();
     micBtn.classList.add('rec');
@@ -532,26 +548,45 @@ function createTbComposer(host, opts) {
     goalRow.style.display = on ? '' : 'none';
   };
 
-  // Runtime picks (#34): cli + provider pinned onto the task's bound chat
-  // session at creation. The placeholders follow the host's "most recently
-  // active" suggestion, so a send always carries concrete values. Explicit
-  // picks apply at creation only — an already-bound session's runtime is its
-  // resume file and changes through the ordinary per-session surface.
+  // Runtime picks (#34): cli + provider policy are pinned onto the task's bound
+  // chat session at creation. Manual picks carry one concrete provider; Auto
+  // carries the committed candidate snapshot. Explicit picks apply at creation
+  // only — an already-bound session changes through its ordinary Chat surface.
   const cliSel = $q('.tb-cli');
   const provSel = $q('.tb-provider');
   const TB_CLI_LABELS = { claude: 'Claude', codex: 'Codex', opencode: 'OpenCode', zcode: 'ZCode', qoder: 'Qoder CN' };
   let runtimeSuggest = null;           // {cli, provider} from the host
   const providerCache = new Map();     // cli -> [{appType,id,name}]
+  const autoDrafts = new Map();        // fleet + cli + protocol -> committed selection
   let provListCli = '';                // the cli the visible list was filtered by
+  let lastProviderValue = '';
+  let pickerEpoch = 0;
+  let runtimeLoadEpoch = 0;
+  let closeActivePicker = null;
+  let providerLoading = false;
+  let autoConfigLoading = false;
+  let sending = false;
 
-  const loadProviderOptions = async (cli) => {
-    provListCli = cli;
-    if (!cli || providerCache.has(cli)) return;
+  const syncRuntimeControls = () => {
+    cliSel.disabled = sending;
+    provSel.disabled = sending || providerLoading;
+    sendBtn.disabled = sending || providerLoading;
+    if (autoConfigBtn) autoConfigBtn.disabled = sending || providerLoading || autoConfigLoading;
+  };
+
+  const loadProviderOptions = async (cli, force) => {
+    if (!cli || (!force && providerCache.has(cli))) return providerCache.get(cli) || [];
     try {
       const r = await fetch(`/api/providers?cli=${encodeURIComponent(cli)}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status || 'error'}`);
       const d = await r.json();
-      providerCache.set(cli, Array.isArray(d.providers) ? d.providers : []);
-    } catch (_) { providerCache.set(cli, []); }
+      const list = Array.isArray(d.providers) ? d.providers : [];
+      providerCache.set(cli, list);
+      return list;
+    } catch (error) {
+      if (!providerCache.has(cli)) throw error;
+      return providerCache.get(cli);
+    }
   };
 
   const renderCliOptions = () => {
@@ -565,7 +600,7 @@ function createTbComposer(host, opts) {
     const list = providerCache.get(provListCli) || [];
     const keep = provSel.value;
     const sugCli = runtimeSuggest?.cli || '';
-    const sugName = runtimeSuggest?.provider
+    const sugName = provListCli === sugCli && runtimeSuggest?.provider
       ? ((providerCache.get(sugCli) || []).find(p => p.id === runtimeSuggest.provider)?.name || runtimeSuggest.provider)
       : '';
     // Auto entries first: one per protocol that has at least two managed
@@ -573,31 +608,269 @@ function createTbComposer(host, opts) {
     const autoHtml = [...new Set(list.map(_tbProtocolOf).filter(Boolean))]
       .map(protocol => ({ protocol, pool: _tbAutoPool(list, protocol) }))
       .filter(entry => entry.pool.length >= 2)
-      .map(entry => `<option value="${TB_AUTO_PREFIX}${_tbEsc(entry.protocol)}" title="按列表顺序优先，失败自动切换下一个；候选池可在任务会话的 AI 配置里细调">⚡ Auto · ${_tbEsc(TB_PROTOCOL_LABELS[entry.protocol])}（${entry.pool.length} 个候选）</option>`)
+      .map(entry => `<option value="${TB_AUTO_PREFIX}${_tbEsc(entry.protocol)}" title="选择后会在发送前确认候选、顺序和模型；默认仅启用前两个自管 Provider">⚡ Auto · ${_tbEsc(TB_PROTOCOL_LABELS[entry.protocol])}（${entry.pool.length} 个自管可选）</option>`)
       .join('');
     provSel.innerHTML = `<option value="">Provider · ${sugName ? `最近活跃 ${_tbEsc(sugName)}` : '默认'}</option>`
       + autoHtml
       + list.map(p => `<option value="${_tbEsc(p.id)}">${_tbEsc(p.name || p.id)}</option>`).join('');
     if (keep && [...provSel.options].some(option => option.value === keep)) provSel.value = keep;
+    lastProviderValue = provSel.value;
+    syncAutoSummary();
   };
 
+  const cloneAutoSelection = selection => selection
+    ? JSON.parse(JSON.stringify(selection)) : null;
+  const autoProtocolFromPicker = () => {
+    const editor = window.MultiCCAutoProviderEditor;
+    return editor && typeof editor.protocolFromValue === 'function'
+      ? editor.protocolFromValue(provSel.value)
+      : (provSel.value.startsWith(TB_AUTO_PREFIX) ? provSel.value.slice(TB_AUTO_PREFIX.length) : null);
+  };
+  const autoDraftKey = protocol => `${composerContextKey}\u0000${provListCli}\u0000${protocol}`;
+
+  function syncAutoSummary() {
+    if (!autoSummaryRow || !autoSummary) return;
+    const protocol = autoProtocolFromPicker();
+    const selection = protocol ? autoDrafts.get(autoDraftKey(protocol)) : null;
+    if (!selection) {
+      autoSummaryRow.classList.remove('visible');
+      autoSummaryRow.classList.remove('cross-trust');
+      autoSummary.textContent = '';
+      autoSummary.title = '';
+      return;
+    }
+    const list = providerCache.get(provListCli) || [];
+    const byId = new Map(list.map(provider => [String(provider.id), provider]));
+    let hasOfficial = false;
+    const names = selection.candidates.map(candidate => {
+      const provider = byId.get(String(candidate.providerId));
+      if (provider?.isOfficial === true) hasOfficial = true;
+      const name = provider?.name || candidate.providerId;
+      return provider?.isOfficial === true ? `${name}（Official）` : name;
+    });
+    const label = TB_PROTOCOL_LABELS[protocol] || protocol;
+    const route = names.slice(0, 2).join(' → ');
+    const trustWarning = selection.allowCrossTrust === true
+      ? ' · ⚠ 跨上游已授权' : (hasOfficial ? ' · 含 Official' : '');
+    autoSummary.textContent = `⚡ Auto · ${label} · ${names.length} 个候选${route ? ` · ${route}` : ''} · 最多 ${selection.maxAttempts} 次${trustWarning}`;
+    autoSummary.title = `${names.join(' → ')}；仅用于新任务绑定会话，首轮立即生效${selection.allowCrossTrust === true ? '；同一上下文可能发送到 Official 与自管上游' : ''}`;
+    autoSummaryRow.classList.add('visible');
+    autoSummaryRow.classList.toggle('cross-trust', selection.allowCrossTrust === true);
+  }
+
+  function showAutoProviderPicker(protocol, initialSelection, providers) {
+    const editorApi = _tbAutoEditor();
+    return new Promise(resolve => {
+      if (closeActivePicker) closeActivePicker();
+      const overlay = document.createElement('div');
+      overlay.className = 'tb-auto-picker-overlay';
+      overlay.style.cssText = 'position:fixed;inset:0;z-index:10020;background:rgba(0,0,0,.72);display:flex;align-items:center;justify-content:center;padding:16px;';
+      const box = document.createElement('div');
+      box.style.cssText = 'width:640px;max-width:94vw;max-height:calc(100vh - 32px);max-height:calc(100dvh - 32px);display:flex;flex-direction:column;background:var(--panel,#161b22);border:1px solid var(--line-strong,#30363d);border-radius:12px;color:var(--text,#c9d1d9);';
+      const body = document.createElement('div');
+      body.style.cssText = 'padding:16px;overflow:auto;min-height:0;';
+      const title = document.createElement('div');
+      title.textContent = `发送前配置 Auto · ${TB_PROTOCOL_LABELS[protocol] || protocol}`;
+      title.style.cssText = 'font-size:15px;font-weight:600;margin-bottom:4px;';
+      const note = document.createElement('div');
+      note.textContent = '本配置会作为新任务首轮的固定候选 allowlist；新增 Provider 不会自动加入。';
+      note.style.cssText = 'font-size:11px;color:var(--muted,#8b949e);line-height:1.5;margin-bottom:10px;';
+      const editorHost = document.createElement('div');
+      body.append(title, note, editorHost);
+      const footer = document.createElement('div');
+      footer.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;padding:12px 16px;border-top:1px solid var(--line,#21262d);';
+      const cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.className = 'btn';
+      cancel.textContent = '取消';
+      const save = document.createElement('button');
+      save.type = 'button';
+      save.className = 'btn btn-green';
+      save.textContent = '确认候选';
+      footer.append(cancel, save);
+      box.append(body, footer);
+      overlay.appendChild(box);
+      document.body.appendChild(overlay);
+      const controller = editorApi.mount({
+        document,
+        container: editorHost,
+        providers,
+        protocol,
+        initialSelection,
+        formatProvider(provider) {
+          const trust = provider.isOfficial === true ? ' · Official' : '';
+          return `${provider.name || provider.id}${trust}`;
+        },
+      });
+      let closed = false;
+      const close = value => {
+        if (closed) return;
+        closed = true;
+        controller.destroy();
+        overlay.remove();
+        if (closeActivePicker === dismiss) closeActivePicker = null;
+        resolve(value);
+      };
+      const dismiss = () => close(null);
+      closeActivePicker = dismiss;
+      cancel.onclick = dismiss;
+      save.onclick = () => {
+        const result = controller.read();
+        if (result.ok) close(result.value);
+      };
+      overlay.onclick = event => { if (event.target === overlay) dismiss(); };
+    });
+  }
+
+  async function configureAutoProvider({ initial = false, previousValue = '' } = {}) {
+    const protocol = autoProtocolFromPicker();
+    if (!protocol) return false;
+    const contextAtOpen = composerContextKey;
+    const cliAtOpen = provListCli;
+    const epoch = ++pickerEpoch;
+    const draftKey = autoDraftKey(protocol);
+    const restoreUncommittedInitial = () => {
+      if (!initial || contextAtOpen !== composerContextKey || cliAtOpen !== provListCli
+          || provSel.value !== `${TB_AUTO_PREFIX}${protocol}` || autoDrafts.has(draftKey)) return;
+      provSel.value = previousValue;
+      lastProviderValue = previousValue;
+      syncAutoSummary();
+    };
+    providerLoading = true;
+    autoConfigLoading = true;
+    syncRuntimeControls();
+    try {
+      await loadProviderOptions(cliAtOpen, true);
+    } catch (_) {
+      if (epoch !== pickerEpoch || contextAtOpen !== composerContextKey || cliAtOpen !== provListCli) {
+        restoreUncommittedInitial();
+        return false;
+      }
+      if (epoch === pickerEpoch) {
+        autoConfigLoading = false;
+        providerLoading = false;
+        syncRuntimeControls();
+      }
+      setResult('刷新 Provider 列表失败，请稍后重试', 'err');
+      if (initial) provSel.value = previousValue;
+      syncAutoSummary();
+      return false;
+    }
+    if (epoch !== pickerEpoch || contextAtOpen !== composerContextKey || cliAtOpen !== provListCli) {
+      restoreUncommittedInitial();
+      return false;
+    }
+    providerLoading = false;
+    autoConfigLoading = false;
+    syncRuntimeControls();
+    const list = providerCache.get(cliAtOpen) || [];
+    const selection = autoDrafts.get(draftKey) || _tbAutoSelection(list, protocol);
+    if (!selection) {
+      setResult('该协议下至少需要两个自管 Provider', 'err');
+      if (initial) provSel.value = previousValue;
+      syncAutoSummary();
+      return false;
+    }
+    const picked = typeof opts.pickAutoProvider === 'function'
+      ? await opts.pickAutoProvider({
+        protocol,
+        providers: list.slice(),
+        selection: cloneAutoSelection(selection),
+      })
+      : await showAutoProviderPicker(protocol, cloneAutoSelection(selection), list);
+    if (epoch !== pickerEpoch || contextAtOpen !== composerContextKey || cliAtOpen !== provListCli) {
+      restoreUncommittedInitial();
+      return false;
+    }
+    if (!picked) {
+      if (initial) provSel.value = previousValue;
+      lastProviderValue = provSel.value;
+      syncAutoSummary();
+      return false;
+    }
+    autoDrafts.set(draftKey, cloneAutoSelection(picked));
+    provSel.value = `${TB_AUTO_PREFIX}${protocol}`;
+    lastProviderValue = provSel.value;
+    syncAutoSummary();
+    setResult('Auto 候选已确认', 'ok');
+    return true;
+  }
+
+  provSel.onchange = async () => {
+    const previousValue = lastProviderValue;
+    pickerEpoch += 1;
+    if (closeActivePicker) closeActivePicker();
+    autoConfigLoading = false;
+    providerLoading = false;
+    syncRuntimeControls();
+    const protocol = autoProtocolFromPicker();
+    if (!protocol) {
+      lastProviderValue = provSel.value;
+      syncAutoSummary();
+      return;
+    }
+    if (autoDrafts.has(autoDraftKey(protocol))) {
+      lastProviderValue = provSel.value;
+      syncAutoSummary();
+      return;
+    }
+    await configureAutoProvider({ initial: true, previousValue });
+  };
+  if (autoConfigBtn) autoConfigBtn.onclick = () => configureAutoProvider();
+
   cliSel.onchange = async () => {
-    await loadProviderOptions(cliSel.value || runtimeSuggest?.cli || 'claude');
-    renderProviderOptions();
+    pickerEpoch += 1;
+    if (closeActivePicker) closeActivePicker();
+    autoConfigLoading = false;
+    const loadEpoch = ++runtimeLoadEpoch;
+    const requestedCli = cliSel.value || runtimeSuggest?.cli || 'claude';
+    providerLoading = true;
+    provSel.innerHTML = '<option value="">Provider · 加载中…</option>';
+    lastProviderValue = '';
+    syncAutoSummary();
+    provListCli = requestedCli;
+    syncRuntimeControls();
+    try {
+      await loadProviderOptions(requestedCli);
+      if (loadEpoch === runtimeLoadEpoch && provListCli === requestedCli) {
+        providerLoading = false;
+        renderProviderOptions();
+        syncRuntimeControls();
+      }
+    } catch (_) {
+      if (loadEpoch === runtimeLoadEpoch && provListCli === requestedCli) {
+        providerLoading = false;
+        renderProviderOptions();
+        syncRuntimeControls();
+        setResult('Provider 列表加载失败', 'err');
+      }
+    }
   };
 
   (async () => {
+    const initEpoch = ++runtimeLoadEpoch;
+    providerLoading = true;
+    syncRuntimeControls();
     try {
       const r = await fetch('/api/task-board/suggested-runtime');
       const d = await r.json();
+      if (initEpoch !== runtimeLoadEpoch) return;
       if (d && d.ok) runtimeSuggest = d;
     } catch (_) { /* picks stay manual */ }
-    await loadProviderOptions(runtimeSuggest?.cli || 'claude');
+    if (initEpoch !== runtimeLoadEpoch) return;
+    provListCli = runtimeSuggest?.cli || 'claude';
+    try { await loadProviderOptions(provListCli); }
+    catch (_) { setResult('Provider 列表加载失败', 'err'); }
+    if (initEpoch !== runtimeLoadEpoch) return;
+    providerLoading = false;
     renderCliOptions();
     renderProviderOptions();
+    syncRuntimeControls();
   })();
 
   async function doSend() {
+    if (providerLoading) { setResult('Provider 列表仍在加载，请稍候', 'err'); return; }
+    if (sending) return;
     let text = input.value.trim();
     const paths = [...chiprow.querySelectorAll('.tb-fchip[data-path]')].map(c => c.dataset.path);
     if (paths.length) text = (text ? text + ' ' : '') + paths.join(' ');
@@ -623,47 +896,108 @@ function createTbComposer(host, opts) {
     // without a cli rides the cli its list was filtered by (provListCli),
     // never the commander's cli from under a foreign provider.
     const picked = provSel.value;
-    const autoProtocol = picked.startsWith(TB_AUTO_PREFIX) ? picked.slice(TB_AUTO_PREFIX.length) : '';
-    const effCli = cliSel.value || runtimeSuggest?.cli || (picked ? provListCli : '');
+    const autoProtocol = autoProtocolFromPicker();
+    const explicitCli = cliSel.value;
+    const effCli = explicitCli || runtimeSuggest?.cli || (picked ? provListCli : '');
     if (effCli) payload.cli = effCli;
     if (autoProtocol) {
-      // Auto: send the pool, never a single provider — the server derives the
-      // concrete fallback from the pool's primary candidate.
-      const selection = _tbAutoSelection(providerCache.get(provListCli) || [], autoProtocol);
-      if (!selection) { setResult('该协议下可用于 Auto 的自管 Provider 不足两个', 'err'); return; }
-      payload.providerSelection = selection;
+      // Send the exact allowlist the user confirmed before this first turn.
+      // Never regenerate it from the live catalog at click time: newly added
+      // providers have not been authorized for this task.
+      const selection = autoDrafts.get(autoDraftKey(autoProtocol));
+      if (!selection) { setResult('请先配置并确认 Auto Provider 候选', 'err'); return; }
+      payload.providerSelection = cloneAutoSelection(selection);
     } else {
-      const effProvider = picked || runtimeSuggest?.provider || '';
+      // A provider suggestion belongs to its CLI. Once the user explicitly
+      // switches CLI, leaving Provider blank means that CLI's own default — it
+      // must not inherit a stale provider from the previous CLI.
+      const suggestedProvider = !explicitCli || explicitCli === runtimeSuggest?.cli
+        ? runtimeSuggest?.provider || '' : '';
+      const effProvider = picked || suggestedProvider;
       if (effProvider) payload.provider = effProvider;
     }
-    sendBtn.disabled = true;
+    sending = true;
+    syncRuntimeControls();
     setResult('路由中…');
+    const sendContextKey = composerContextKey;
     try {
       const okText = await opts.submit(payload);
+      if (sendContextKey !== composerContextKey) return;
       setResult(okText || '已发送', 'ok');
       input.value = '';
       chiprow.innerHTML = '';
       chiprow.style.display = 'none';
       pendingClientMsgId = '';
       pendingText = '';
-    } catch (e) { setResult(String(e.message || e), 'err'); }
-    finally { sendBtn.disabled = false; }
+    } catch (e) {
+      if (sendContextKey === composerContextKey) setResult(String(e.message || e), 'err');
+    }
+    finally {
+      sending = false;
+      syncRuntimeControls();
+    }
   }
   sendBtn.onclick = doSend;
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); doSend(); }
   });
 
+  function clearMessageDraft() {
+    input.value = '';
+    chiprow.innerHTML = '';
+    chiprow.style.display = 'none';
+    fileInput.value = '';
+    goalBtn.classList.remove('on');
+    goalRow.style.display = 'none';
+    pendingClientMsgId = '';
+    pendingText = '';
+    setResult('');
+  }
+
   return {
-    reset() {
-      input.value = '';
-      chiprow.innerHTML = '';
-      chiprow.style.display = 'none';
-      pendingClientMsgId = '';
-      pendingText = '';
-      setResult('');
-    },
+    reset() { clearMessageDraft(); },
     focus() { input.focus(); },
+    setContext(contextKey) {
+      const next = String(contextKey || '');
+      if (next === composerContextKey) return;
+      composerContextKey = next;
+      pickerEpoch += 1;
+      const loadEpoch = ++runtimeLoadEpoch;
+      if (closeActivePicker) closeActivePicker();
+      autoConfigLoading = false;
+      if (recorder && recorder.state === 'recording') recorder.stop();
+      clearMessageDraft();
+      cliSel.value = '';
+      provSel.innerHTML = '<option value="">Provider · 加载中…</option>';
+      lastProviderValue = '';
+      syncAutoSummary();
+      provListCli = runtimeSuggest?.cli || 'claude';
+      providerLoading = true;
+      syncRuntimeControls();
+      loadProviderOptions(provListCli)
+        .then(() => {
+          if (loadEpoch !== runtimeLoadEpoch || next !== composerContextKey) return;
+          providerLoading = false;
+          renderProviderOptions();
+          syncRuntimeControls();
+        })
+        .catch(() => {
+          if (loadEpoch !== runtimeLoadEpoch || next !== composerContextKey) return;
+          providerLoading = false;
+          renderProviderOptions();
+          syncRuntimeControls();
+          setResult('Provider 列表加载失败', 'err');
+        });
+    },
+    dismissOverlays() {
+      pickerEpoch += 1;
+      if (closeActivePicker) closeActivePicker();
+      if (autoConfigLoading) {
+        autoConfigLoading = false;
+        providerLoading = false;
+        syncRuntimeControls();
+      }
+    },
   };
 }
 
@@ -676,11 +1010,15 @@ function syncTaskBoardDirComposer(dirId, visible) {
   const host = document.getElementById('tb-dir-composer');
   if (!host) return;
   host.style.display = visible ? '' : 'none';
-  if (!visible) return;
+  if (!visible) {
+    if (_tbDirComposer) _tbDirComposer.dismissOverlays();
+    return;
+  }
   _tbDirComposerDirId = dirId;
   if (!_tbDirComposer) {
     _tbDirComposer = createTbComposer(host, {
-    placeholder: '向该 Fleet 派发消息…（Commander 单向路由到空闲 worker）',
+      contextKey: dirId,
+      placeholder: '向该 Fleet 派发消息…（Commander 单向路由到空闲 worker）',
       submit: async (payload) => {
         const r = await fetch('/api/task-board/send', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -695,7 +1033,7 @@ function syncTaskBoardDirComposer(dirId, visible) {
           : `已创建「新任务」并路由到「${d.targetLabel}」`;
       },
     });
-  }
+  } else _tbDirComposer.setContext(dirId);
 }
 
 // ── Task entry + row actions ────────────────────────────────────────────────

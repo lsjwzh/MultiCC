@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const ai = require('../public/chat-ai-config');
+const autoEditor = require('../public/auto-provider-editor');
 const providerCatalog = require('../public/provider-catalog');
 
 const ROOT = path.join(__dirname, '..');
@@ -124,15 +125,24 @@ test('Qoder stays vendor-managed while ZCode exposes MultiCC providers', () => {
 
 test('Auto Provider picker exposes protocol pools, ordered candidates and the persisted contract', () => {
   const source = fs.readFileSync(path.join(ROOT, 'public', 'chat-ai-config.js'), 'utf8');
+  const shared = fs.readFileSync(path.join(ROOT, 'public', 'auto-provider-editor.js'), 'utf8');
   const page = fs.readFileSync(path.join(ROOT, 'public', 'chat.js'), 'utf8');
   assert.equal(ai.autoOptionValue('anthropic'), '__auto__:anthropic');
   assert.equal(ai.autoProtocolFromValue('__auto__:openai_responses'), 'openai_responses');
   assert.equal(ai.autoProtocolLabel('openai_chat'), 'OpenAI Chat Completions');
   assert.match(source, /id="ai-auto-section"/);
-  assert.match(source, /className = 'auto-candidate-priority'/);
-  assert.match(source, /mode: 'auto', protocol, candidates/);
-  assert.match(source, /allowCrossTrust: autoSelectionCrossesTrust/);
-  assert.match(source, /同一对话上下文可能在自动切换时发送给多个上游/);
+  assert.match(source, /autoProviderEditorApi\(\)\.mount/);
+  assert.match(source, /const result = autoEditor\.read\(\)/);
+  assert.match(shared, /multicc-auto-editor-priority/);
+  assert.match(shared, /cross_trust_confirmation_required/);
+  assert.match(shared, /同一对话上下文可能在自动切换时发送给多个上游/);
+  assert.match(shared, /@media \(max-width:640px\)/);
+  assert.equal(autoEditor.defaultSelection([
+    { id: 'official', protocol: 'anthropic', isOfficial: true },
+    { id: 'relay-a', protocol: 'anthropic' },
+    { id: 'relay-b', protocol: 'anthropic' },
+    { id: 'relay-c', protocol: 'anthropic' },
+  ], 'anthropic').candidates.length, 2);
   assert.match(page, /providerSelection: picked\.providerSelection/);
   assert.match(page, /Auto · \$\{window\.MultiCCChatAiConfig\.autoProtocolLabel/);
   assert.match(page, /actualProvider \|\| '待路由'/,
@@ -240,10 +250,12 @@ test('chat page loads the classic config boundary before chat.js and chat delega
   const auth = html.indexOf('<script src="auth-client.js"></script>');
   const apiClient = html.indexOf('<script src="api-client.js"></script>');
   const catalog = html.indexOf('<script src="provider-catalog.js"></script>');
+  const autoProvider = html.indexOf('<script src="auto-provider-editor.js"></script>');
   const config = html.indexOf('<script src="chat-ai-config.js"></script>');
   const page = html.indexOf('<script src="chat.js"></script>');
 
-  assert.ok(auth > 0 && auth < apiClient && apiClient < catalog && catalog < config && config < page);
+  assert.ok(auth > 0 && auth < apiClient && apiClient < catalog
+    && catalog < autoProvider && autoProvider < config && config < page);
   assert.doesNotMatch(html, /<script[^>]+type=["']module["'][^>]+chat-ai-config/i);
   assert.match(chat, /MultiCCChatAiConfig\.showAIConfigPicker/);
   assert.match(chat, /MultiCCChatAiConfig\.loadProviderList/);
