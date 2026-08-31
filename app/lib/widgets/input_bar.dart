@@ -61,10 +61,15 @@ class _InputBarState extends State<InputBar> {
   @override
   void initState() {
     super.initState();
+    _focusNode.addListener(_onFocusChanged);
     _ctrl.addListener(() {
       final has = _ctrl.text.trim().isNotEmpty;
       if (has != _hasText) setState(() => _hasText = has);
     });
+  }
+
+  void _onFocusChanged() {
+    if (mounted) setState(() {});
   }
 
   @override
@@ -72,6 +77,7 @@ class _InputBarState extends State<InputBar> {
     _dictation?.removeListener(_onDictationChanged);
     _dictation?.dispose();
     _ctrl.dispose();
+    _focusNode.removeListener(_onFocusChanged);
     _focusNode.dispose();
     _recorder.dispose();
     super.dispose();
@@ -150,7 +156,9 @@ class _InputBarState extends State<InputBar> {
     if (!mounted || result.ok) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(result.message ?? VoiceLaunchService.describe(result.errorCode)),
+        content: Text(
+          result.message ?? VoiceLaunchService.describe(result.errorCode),
+        ),
         backgroundColor: const Color(0xFFff6b63),
       ),
     );
@@ -515,8 +523,7 @@ class _InputBarState extends State<InputBar> {
     // 填进输入框（保留可编辑，移动端误触代价大，不直接发送），并 fire-and-forget
     // 回传润色反馈给服务端做质量评估。
     final current = _ctrl.text.trim();
-    _ctrl.text =
-        current.isEmpty ? result.text : '$current\n${result.text}';
+    _ctrl.text = current.isEmpty ? result.text : '$current\n${result.text}';
     _ctrl.selection = TextSelection.collapsed(offset: _ctrl.text.length);
     d.reportFeedback(result, userFinal: result.text);
   }
@@ -553,6 +560,11 @@ class _InputBarState extends State<InputBar> {
 
   // ── Send ──
 
+  void _dismissIosKeyboard() {
+    if (!mounted || Theme.of(context).platform != TargetPlatform.iOS) return;
+    _focusNode.unfocus();
+  }
+
   void _send(ChatProvider provider, {required bool commander}) {
     var text = _ctrl.text.trim();
     // Append attachment paths
@@ -562,13 +574,13 @@ class _InputBarState extends State<InputBar> {
     }
     if (text.isEmpty) return;
     // 装饰必须在交给 provider 之前：气泡与真正发出去的 payload 用同一个字符串。
-    text = decorateDispatchHint(
-      text,
-      enabled: commander,
-      mode: _dispatchMode,
-    );
+    text = decorateDispatchHint(text, enabled: commander, mode: _dispatchMode);
     provider.sendMessage(text);
     _ctrl.clear();
+    // Unlike Android, iOS has no persistent system affordance for hiding the
+    // software keyboard. A completed composer action must therefore release
+    // focus explicitly; otherwise the keyboard remains pinned over the chat.
+    _dismissIosKeyboard();
     setState(() {
       _hasText = false;
       _attachments.clear();
@@ -676,8 +688,9 @@ class _InputBarState extends State<InputBar> {
             body: jsonEncode({'task': task, 'dimensions': dims}),
           )
           .timeout(const Duration(seconds: 45));
-      if (res.statusCode != 200)
+      if (res.statusCode != 200) {
         return {'ok': false, 'error': 'HTTP ${res.statusCode}'};
+      }
       return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
     } catch (e) {
       return {'ok': false, 'error': '$e'};
@@ -1376,7 +1389,11 @@ class _InputBarState extends State<InputBar> {
                 // Realtime voice — opens the one global voice gateway, scoped to
                 // this session. Plain dictation stays on the mic button below.
                 _SmallButton(
-                  onTap: isConnected ? () { _openVoiceCall(); } : null,
+                  onTap: isConnected
+                      ? () {
+                          _openVoiceCall();
+                        }
+                      : null,
                   icon: Icons.phone_in_talk_rounded,
                   color: const Color(0xFF22ab9c),
                 ),
@@ -1398,6 +1415,7 @@ class _InputBarState extends State<InputBar> {
                       borderRadius: BorderRadius.circular(10),
                     ),
                     child: TextField(
+                      key: const Key('chat-message-input'),
                       controller: _ctrl,
                       focusNode: _focusNode,
                       maxLines: null,
@@ -1428,6 +1446,11 @@ class _InputBarState extends State<InputBar> {
                       onSubmitted: canSend
                           ? (_) => _send(provider, commander: isCommander)
                           : null,
+                      // Flutter intentionally keeps focus for touch-device
+                      // outside taps by default. Override that convention on
+                      // iOS so tapping the transcript/header hides the keyboard
+                      // while leaving the draft untouched.
+                      onTapOutside: (_) => _dismissIosKeyboard(),
                     ),
                   ),
                 ),
@@ -1484,8 +1507,9 @@ class _VoiceDictationHud extends StatelessWidget {
         final refined = dictation.refined;
         final failed = dictation.state == VoiceDictationState.failed;
         final hasRaw = raw.trim().isNotEmpty || partial.trim().isNotEmpty;
-        final accent =
-            failed ? const Color(0xFFff6b63) : const Color(0xFF22ab9c);
+        final accent = failed
+            ? const Color(0xFFff6b63)
+            : const Color(0xFF22ab9c);
         return Container(
           padding: const EdgeInsets.all(10),
           decoration: BoxDecoration(
