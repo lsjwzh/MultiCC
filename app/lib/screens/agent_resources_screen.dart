@@ -4,7 +4,6 @@ import '../i18n.dart';
 import '../services/manage_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
-import '../widgets/settings_navigation_drawer.dart';
 
 enum AgentResourcesInitialSection { resources, skillSync, storage }
 
@@ -26,6 +25,9 @@ class AgentResourcesScreen extends StatefulWidget {
 
 class _AgentResourcesScreenState extends State<AgentResourcesScreen> {
   late final ManageService _manage = ManageService(settings: widget.settings);
+  final GlobalKey _skillSyncSectionKey = GlobalKey();
+  final GlobalKey _storageSectionKey = GlobalKey();
+  bool _initialScrollApplied = false;
 
   bool _loading = true;
   String? _error;
@@ -47,42 +49,21 @@ class _AgentResourcesScreenState extends State<AgentResourcesScreen> {
       _error = null;
     });
     try {
-      Map<String, dynamic>? skills;
-      Map<String, dynamic>? history;
-      Map<String, dynamic>? uploads;
-      Map<String, dynamic>? skillSync;
-      switch (widget.initialSection) {
-        case AgentResourcesInitialSection.resources:
-          final results = await Future.wait([
-            _manage.fetchSkills(),
-            _manage.fetchClaudeHistory(),
-          ]);
-          skills = results[0];
-          history = results[1];
-          break;
-        case AgentResourcesInitialSection.skillSync:
-          skillSync = await _manage.fetchSkillSyncStatus();
-          break;
-        case AgentResourcesInitialSection.storage:
-          uploads = await _manage.fetchUploadStats();
-          break;
-      }
+      final results = await Future.wait([
+        _manage.fetchSkills(),
+        _manage.fetchClaudeHistory(),
+        _manage.fetchUploadStats(),
+        _manage.fetchSkillSyncStatus(),
+      ]);
       if (!mounted) return;
       setState(() {
-        if (skills != null) {
-          _skills = skills;
-        }
-        if (history != null) {
-          _history = history;
-        }
-        if (uploads != null) {
-          _uploads = uploads;
-        }
-        if (skillSync != null) {
-          _skillSync = skillSync;
-        }
+        _skills = results[0];
+        _history = results[1];
+        _uploads = results[2];
+        _skillSync = results[3];
         _loading = false;
       });
+      _scrollToInitialSection();
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -90,6 +71,30 @@ class _AgentResourcesScreenState extends State<AgentResourcesScreen> {
         _loading = false;
       });
     }
+  }
+
+  void _scrollToInitialSection() {
+    if (_initialScrollApplied ||
+        widget.initialSection == AgentResourcesInitialSection.resources) {
+      return;
+    }
+    _initialScrollApplied = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final target = switch (widget.initialSection) {
+        AgentResourcesInitialSection.skillSync =>
+          _skillSyncSectionKey.currentContext,
+        AgentResourcesInitialSection.storage => _storageSectionKey.currentContext,
+        AgentResourcesInitialSection.resources => null,
+      };
+      if (target == null) return;
+      Scrollable.ensureVisible(
+        target,
+        alignment: 0.05,
+        duration: const Duration(milliseconds: 280),
+        curve: Curves.easeOutCubic,
+      );
+    });
   }
 
   void _snack(String msg) {
@@ -198,25 +203,10 @@ class _AgentResourcesScreenState extends State<AgentResourcesScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final destination = switch (widget.initialSection) {
-      AgentResourcesInitialSection.resources => SettingsDestination.resources,
-      AgentResourcesInitialSection.skillSync => SettingsDestination.skillSync,
-      AgentResourcesInitialSection.storage => SettingsDestination.storage,
-    };
-    final title = switch (widget.initialSection) {
-      AgentResourcesInitialSection.resources => t('agentResources'),
-      AgentResourcesInitialSection.skillSync => t('skillSync'),
-      AgentResourcesInitialSection.storage => t('temporaryUploads'),
-    };
-
     return Scaffold(
       backgroundColor: AppColors.bg,
-      drawer: SettingsNavigationDrawer(
-        selected: destination,
-        serverLabel: widget.settings.host,
-      ),
       appBar: AppBar(
-        title: Text(title),
+        title: Text(t('agentResources')),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh_rounded, color: AppColors.muted),
@@ -232,27 +222,32 @@ class _AgentResourcesScreenState extends State<AgentResourcesScreen> {
                   color: AppColors.accent,
                   backgroundColor: AppColors.panel,
                   onRefresh: _refresh,
-                  child: ListView(
+                  child: SingleChildScrollView(
+                    physics: const AlwaysScrollableScrollPhysics(),
                     padding: const EdgeInsets.all(14),
-                    children: [
-                      if (widget.initialSection ==
-                          AgentResourcesInitialSection.resources) ...[
-                        _skillsSection(),
-                        const SizedBox(height: 18),
-                        _historySection(),
-                      ],
-                      if (widget.initialSection ==
-                          AgentResourcesInitialSection.skillSync)
-                        _skillSyncSection(),
-                      if (widget.initialSection ==
-                          AgentResourcesInitialSection.storage)
-                        _uploadsSection(),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                      _skillsSection(),
+                      const SizedBox(height: 18),
+                      KeyedSubtree(
+                        key: _skillSyncSectionKey,
+                        child: _skillSyncSection(),
+                      ),
+                      const SizedBox(height: 18),
+                      _historySection(),
+                      const SizedBox(height: 18),
+                      KeyedSubtree(
+                        key: _storageSectionKey,
+                        child: _uploadsSection(),
+                      ),
                       if (_busy) ...[
                         const SizedBox(height: 20),
                         const Center(
                             child: CircularProgressIndicator(color: AppColors.accent)),
                       ],
-                    ],
+                      ],
+                    ),
                   ),
                 ),
     );

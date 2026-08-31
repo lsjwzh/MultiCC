@@ -6,19 +6,11 @@ import 'package:provider/provider.dart';
 import 'providers/session_manager.dart';
 import 'i18n.dart';
 import 'theme.dart';
-import 'screens/agent_resources_screen.dart';
-import 'screens/bridge_settings_screen.dart';
 import 'screens/main_shell.dart';
-import 'screens/provider_screen.dart';
-import 'screens/push_settings_screen.dart';
-import 'screens/settings_screen.dart';
 import 'screens/setup_screen.dart';
-import 'screens/tunnel_settings_screen.dart';
-import 'screens/voice_settings_screen.dart';
 import 'services/notification_service.dart';
 import 'services/settings_service.dart';
 import 'services/update_service.dart';
-import 'widgets/settings_navigation_drawer.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -78,33 +70,6 @@ class MultiCCApp extends StatelessWidget {
               child: child ?? const SizedBox.shrink(),
             ),
           ),
-          routes: {
-            SettingsRoutes.voice: (_) =>
-                VoiceSettingsScreen(settings: settings),
-            SettingsRoutes.goal: (_) => SettingsScreen(
-              settings: settings,
-              initialSection: SettingsInitialSection.goal,
-            ),
-            SettingsRoutes.provider: (_) => ProviderScreen(settings: settings),
-            SettingsRoutes.global: (_) => SettingsScreen(settings: settings),
-            SettingsRoutes.push: (_) => PushSettingsScreen(settings: settings),
-            SettingsRoutes.tunnel: (_) =>
-                TunnelSettingsScreen(settings: settings),
-            SettingsRoutes.bridges: (_) =>
-                BridgeSettingsScreen(settings: settings),
-            SettingsRoutes.resources: (_) => AgentResourcesScreen(
-              settings: settings,
-              initialSection: AgentResourcesInitialSection.resources,
-            ),
-            SettingsRoutes.skillSync: (_) => AgentResourcesScreen(
-              settings: settings,
-              initialSection: AgentResourcesInitialSection.skillSync,
-            ),
-            SettingsRoutes.storage: (_) => AgentResourcesScreen(
-              settings: settings,
-              initialSection: AgentResourcesInitialSection.storage,
-            ),
-          },
           home: _StartupWrapper(settings: settings, child: home),
         );
       },
