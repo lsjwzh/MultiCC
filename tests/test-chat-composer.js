@@ -121,6 +121,83 @@ function input(value) {
   return { value, style: {}, scrollHeight: 32 };
 }
 
+function keyboardFixture(options = {}) {
+  const documentListeners = new Map();
+  const document = {
+    activeElement: null,
+    getElementById() { return null; },
+    createElement() { throw new Error('unexpected DOM creation'); },
+    createTextNode(text) { return { textContent: text }; },
+    addEventListener(type, listener) {
+      const list = documentListeners.get(type) || [];
+      list.push(listener);
+      documentListeners.set(type, list);
+    },
+    emit(type, event) {
+      for (const listener of documentListeners.get(type) || []) listener(event);
+    },
+  };
+  function eventTarget(extra = {}) {
+    const listeners = new Map();
+    return Object.assign({
+      addEventListener(type, listener) {
+        const list = listeners.get(type) || [];
+        list.push(listener);
+        listeners.set(type, list);
+      },
+      emit(type, event) {
+        for (const listener of listeners.get(type) || []) listener(event);
+      },
+    }, extra);
+  }
+  const sendButton = eventTarget();
+  const insideAction = {};
+  const inputBar = {
+    contains(target) {
+      return target === inputEl || target === sendButton || target === insideAction;
+    },
+  };
+  const inputEl = eventTarget({
+    value: options.text || 'hello',
+    style: {},
+    scrollHeight: 32,
+    blurCount: 0,
+    focus() { document.activeElement = this; },
+    blur() {
+      this.blurCount++;
+      if (document.activeElement === this) document.activeElement = null;
+    },
+    closest(selector) {
+      assert.equal(selector, '#input-bar');
+      return inputBar;
+    },
+  });
+  const { api, window } = loadModule({
+    document,
+    window: {
+      document,
+      innerWidth: 390,
+      navigator: {
+        userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Safari/604.1',
+        mediaDevices: null,
+      },
+    },
+  });
+  api.createComposer({
+    window,
+    document,
+    navigator: window.navigator,
+    fetch: () => Promise.resolve({ json: () => Promise.resolve({}) }),
+    elements: { input: inputEl, inputBar, sendButton },
+    isSocketOpen: () => true,
+    transportSend: () => options.sendResult !== false,
+    addSystemMessage() {},
+    addUserMessage() {},
+    updateUi() {},
+  });
+  return { document, inputEl, inputBar, sendButton, insideAction };
+}
+
 function attachmentArea(paths = []) {
   const chips = paths.map(value => ({ dataset: { path: value }, removed: false, remove() { this.removed = true; } }));
   return {
@@ -232,6 +309,36 @@ test('disconnected send is fail-closed and schedules reconnect', () => {
   assert.equal(fixture.users.length, 0);
   assert.equal(fixture.retries.length, 1);
   assert.match(fixture.system[0], /已断开/);
+});
+
+test('mobile send dismisses the iOS keyboard only after a successful send', () => {
+  const success = keyboardFixture();
+  success.inputEl.focus();
+  success.sendButton.emit('touchend', { preventDefault() {} });
+  assert.equal(success.document.activeElement, null);
+  assert.equal(success.inputEl.blurCount, 1);
+  assert.equal(success.inputEl.value, '');
+
+  const failed = keyboardFixture({ text: 'keep me', sendResult: false });
+  failed.inputEl.focus();
+  failed.sendButton.emit('touchend', { preventDefault() {} });
+  assert.strictEqual(failed.document.activeElement, failed.inputEl);
+  assert.equal(failed.inputEl.blurCount, 0);
+  assert.equal(failed.inputEl.value, 'keep me');
+});
+
+test('mobile outside tap dismisses the keyboard without discarding the draft', () => {
+  const fixture = keyboardFixture({ text: 'draft stays' });
+  fixture.inputEl.focus();
+  fixture.document.emit('pointerdown', { target: {} });
+  assert.equal(fixture.document.activeElement, null);
+  assert.equal(fixture.inputEl.blurCount, 1);
+  assert.equal(fixture.inputEl.value, 'draft stays');
+
+  fixture.inputEl.focus();
+  fixture.document.emit('pointerdown', { target: fixture.insideAction });
+  assert.strictEqual(fixture.document.activeElement, fixture.inputEl);
+  assert.equal(fixture.inputEl.blurCount, 1);
 });
 
 test('cancel remains idempotent and remembers an offline intent', () => {
