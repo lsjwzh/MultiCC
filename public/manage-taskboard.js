@@ -267,6 +267,10 @@ async function refreshTaskBoard(force) {
     _tbBoard = window.MultiCCTaskBoardUi.reconcileSnapshot(d);
     if (_tbMergeMode) _tbPruneMergeSelection(_tbTasksForDir(_tbMergeDirId));
     _tbFetchedAt = Date.now();
+    // A task-bound chat is deliberately absent from the ordinary Fleet session
+    // list, so task activity has to refresh the outer Fleet state explicitly.
+    if (typeof refreshTaskBoardFleetActivity === 'function') refreshTaskBoardFleetActivity();
+    else if (typeof refreshAllCardBorders === 'function') refreshAllCardBorders();
     // Re-render wherever the board is currently visible.
     if (typeof _detailModalOpen === 'function' && _detailModalOpen()
         && typeof renderDirectoryDetailBody === 'function') {
@@ -298,6 +302,13 @@ function _tbTasksForDir(dirId) {
   const modDir = new Map(_tbBoard.modules.map(m => [m.id, m.dirId]));
   return _tbBoard.tasks.filter(t => t.status !== 'archived'
     && ((t.dirIds || []).includes(dirId) || modDir.get(t.moduleId) === dirId));
+}
+
+// Cross-module read port used by manage-dashboard.js. Keep the aggregation on
+// the board side so both the detail tab and the outer Fleet card consume the
+// same directory membership and shared status-presentation policy.
+function taskBoardRunningCountForDir(dirId) {
+  return window.MultiCCTaskBoardUi.runningTaskCount(_tbTasksForDir(dirId));
 }
 
 function _tbTaskRowHtml(task) {
@@ -911,10 +922,11 @@ async function reclassifyPendingTaskBoard(ev, dirId) {
   }
 }
 
-// Periodic reconciliation while a board surface is visible (WS loss fallback).
+// The overview Fleet cards are now board-state consumers too, so reconcile in
+// every visible manage tab. This clears a stale running glow after a lost WS
+// transition even when the directory-detail modal was never opened.
 setInterval(() => {
-  const modalOpen = typeof _detailModalOpen === 'function' && _detailModalOpen();
-  if (modalOpen) refreshTaskBoard(true);
+  if (document.visibilityState !== 'hidden') refreshTaskBoard(true);
 }, 60000);
 refreshTaskBoard(true);
 

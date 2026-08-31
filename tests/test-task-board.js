@@ -203,6 +203,19 @@ test('task board display state follows classify runState for icon and status tex
   assert.doesNotMatch(runStateAdapter, /Busy\(/);
 });
 
+test('task board running aggregation follows the shared display policy', () => {
+  assert.equal(taskBoardUi.runningTaskCount([
+    { id: 'running', status: 'active', runState: 'running' },
+    { id: 'queued', status: 'active', runState: 'queued' },
+    { id: 'waiting', status: 'active', runState: 'waiting' },
+    { id: 'error', status: 'active', runState: 'error' },
+    // A lifecycle decision outranks a stale turn projection and must stop all
+    // parent-level motion immediately.
+    { id: 'done-stale', status: 'done', runState: 'running' },
+  ]), 1);
+  assert.equal(taskBoardUi.runningTaskCount(null), 0);
+});
+
 test('task board UI hides the Commander routing chip on the card', () => {
   // The routing chip is intentionally suppressed: a card should read as just
   // "新任务 · 进行中" and sync title/state from the worker's own classify. The

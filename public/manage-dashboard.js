@@ -351,14 +351,20 @@ function isSessionRunning(sessionId) {
 function isAnySessionInDirRunning(dirId) {
   return (dirSessionsOf(dirId) || []).some(s => isSessionRunning(s.id));
 }
+function isAnyWorkInDirRunning(dirId) {
+  const taskCount = typeof taskBoardRunningCountForDir === 'function'
+    ? taskBoardRunningCountForDir(dirId)
+    : 0;
+  return taskCount > 0 || isAnySessionInDirRunning(dirId);
+}
 function applyCardBorderState(cardEl, isRunning) {
   if (!cardEl) return;
   if (isRunning) cardEl.classList.add('card-border-rainbow');
   else cardEl.classList.remove('card-border-rainbow');
 }
 function refreshCardBordersForDir(dirId) {
-  const running = isAnySessionInDirRunning(dirId);
-  const dirCard = document.querySelector('.dir-card[data-dir-id="' + escapeHtml(dirId) + '"]');
+  const running = isAnyWorkInDirRunning(dirId);
+  const dirCard = document.querySelector('#directory-list .dir-block[data-dir-id="' + escapeHtml(dirId) + '"]');
   applyCardBorderState(dirCard, running);
   (dirSessionsOf(dirId) || []).forEach(s => {
     document.querySelectorAll('.lean[data-id="' + escapeHtml(s.id) + '"]').forEach(card => {
@@ -372,6 +378,12 @@ function refreshAllCardBorders() {
     const sid = card.getAttribute('data-id');
     applyCardBorderState(card, sid ? isSessionRunning(sid) : false);
   });
+}
+function refreshTaskBoardFleetActivity() {
+  refreshAllCardBorders();
+  // The compact activity row otherwise says “暂无活动” because task-bound
+  // sessions intentionally never enter the ordinary Fleet session list.
+  (_cachedDirectories || []).forEach(d => updateDirPreview(d.id));
 }
 function updateReviewInDOM(sessionId, status) {
   const leanCards = document.querySelectorAll('.lean[data-id="' + escapeHtml(sessionId) + '"]');
@@ -1194,6 +1206,9 @@ function sessionRunTimeText(sessionId) {
 function renderDirPreview(dirId, dirSessions) {
   // 获取最近活动（最多3条）
   const events = (_workspaceEvents.get(dirId) || []).slice(-3).reverse();
+  const runningTaskCount = typeof taskBoardRunningCountForDir === 'function'
+    ? taskBoardRunningCountForDir(dirId)
+    : 0;
 
   // 取「最近交互过」的 session（按最近交互时间降序，含实时活动）
   let latestSession = null;
@@ -1212,7 +1227,13 @@ function renderDirPreview(dirId, dirSessions) {
 
   // 活动块内容
   let activityContent = '';
-  if (sessionActive) {
+  if (runningTaskCount > 0) {
+    const runningBadge = window.MultiCCStatusPresentation.statusBadgeHtml('task', 'running', {
+      translate: window.t,
+      className: 'dir-task-running',
+    });
+    activityContent = `${runningBadge}<span style="color:var(--muted);">· ${runningTaskCount} 个任务</span>`;
+  } else if (sessionActive) {
     activityContent = `
       <span class="dot active" style="width:8px;height:8px;"></span>
       <span style="color:var(--accent);">正在运行</span>
@@ -1315,7 +1336,7 @@ function renderDirectoryBlock(dir, dirSessions) {
   // body is a 2-line preview; clicking opens the full detail in a modal.
   if (_focusedSessionId) {
     return `
-    <div class="dir-block open${isAnySessionInDirRunning(id) ? ' card-border-rainbow' : ''}" data-dir-id="${escapeHtml(id)}">
+    <div class="dir-block open${isAnyWorkInDirRunning(id) ? ' card-border-rainbow' : ''}" data-dir-id="${escapeHtml(id)}">
       <div class="dir-header">
         ${headerMain}
         ${headerActions}
@@ -1329,7 +1350,7 @@ function renderDirectoryBlock(dir, dirSessions) {
 
   // Overview mode: unified card with min-height and grid layout
   return `
-    <div class="dir-block dir-card${isAnySessionInDirRunning(id) ? ' card-border-rainbow' : ''}" data-dir-id="${escapeHtml(id)}" onclick="openDirectoryDetail('${escapeHtml(id)}')" style="display:flex;flex-direction:column;min-height:160px;">
+    <div class="dir-block dir-card${isAnyWorkInDirRunning(id) ? ' card-border-rainbow' : ''}" data-dir-id="${escapeHtml(id)}" onclick="openDirectoryDetail('${escapeHtml(id)}')" style="display:flex;flex-direction:column;min-height:160px;">
       <div class="dir-header">
         ${headerMain}
         ${headerActions}
@@ -1408,10 +1429,19 @@ function renderDirectoryDetailBody(dirId) {
   let tabs = '';
   if (hasBoard) {
     const taskCount = typeof _tbTasksForDir === 'function' ? _tbTasksForDir(dirId).length : 0;
+    const runningTaskCount = typeof taskBoardRunningCountForDir === 'function'
+      ? taskBoardRunningCountForDir(dirId)
+      : 0;
+    const runningBadge = runningTaskCount > 0
+      ? window.MultiCCStatusPresentation.statusBadgeHtml('task', 'running', {
+        translate: window.t,
+        className: 'dd-tab-running',
+      })
+      : '';
     tabs = `
       <div class="dd-tabs">
         <button class="dd-tab${_dirDetailTab === 'sessions' ? ' on' : ''}" onclick="switchDirDetailTab('sessions')">🖥 会话</button>
-        <button class="dd-tab${_dirDetailTab === 'taskboard' ? ' on' : ''}" onclick="switchDirDetailTab('taskboard')">📋 任务板${taskCount ? ` (${taskCount})` : ''}</button>
+        <button class="dd-tab${_dirDetailTab === 'taskboard' ? ' on' : ''}${runningTaskCount ? ' has-running' : ''}" onclick="switchDirDetailTab('taskboard')">📋 任务板${taskCount ? ` (${taskCount})` : ''}${runningBadge}</button>
       </div>`;
   }
   const boardTabActive = hasBoard && _dirDetailTab === 'taskboard';
