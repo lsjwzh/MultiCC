@@ -55,6 +55,8 @@
     const debug = opts.debug || (() => {});
     const webSocketOpen = opts.webSocketOpen == null ? 1 : opts.webSocketOpen;
     const hasNativeBridge = opts.hasNativeBridge === true;
+    const isMobile = /Mobi|Android|iPhone|iPad/i.test(nav.userAgent || '') || (win.innerWidth || 0) <= 768;
+    const inputBar = elements.inputBar || inputEl?.closest?.('#input-bar') || null;
 
     let mediaRecorder = null;
     let audioChunks = [];
@@ -72,6 +74,24 @@
 
     function newClientMsgId() {
       return defaultClientMessageId();
+    }
+
+    // iOS Safari has no system "hide keyboard" affordance and keeps a
+    // textarea focused after tapping a non-focusable surface. Treat keyboard
+    // visibility as part of the mobile composer lifecycle: successful sends
+    // and taps outside the composer explicitly release focus. A draft is never
+    // cleared by the outside-tap path.
+    function dismissKeyboard() {
+      if (!isMobile || !inputEl || doc.activeElement !== inputEl || typeof inputEl.blur !== 'function') return false;
+      inputEl.blur();
+      return true;
+    }
+
+    function dismissKeyboardFromOutside(event) {
+      if (!isMobile || !inputEl || doc.activeElement !== inputEl) return false;
+      const target = event && event.target;
+      if (target && inputBar && typeof inputBar.contains === 'function' && inputBar.contains(target)) return false;
+      return dismissKeyboard();
     }
 
     function updateAttachArea() {
@@ -188,7 +208,9 @@
       const now = Date.now();
       if (now - lastSendTapAt < 600) return false;
       lastSendTapAt = now;
-      return send();
+      const sent = send();
+      if (sent) dismissKeyboard();
+      return sent;
     }
 
     function cancelFromButton(event) {
@@ -209,7 +231,6 @@
             lastTypingSent = Date.now();
           }
         });
-        const isMobile = /Mobi|Android|iPhone|iPad/i.test(nav.userAgent || '') || (win.innerWidth || 0) <= 768;
         inputEl.addEventListener('keydown', event => {
           if (!isMobile && event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
             event.preventDefault();
@@ -221,6 +242,8 @@
       sendBtn?.addEventListener('touchend', sendFromButton, { passive: false });
       cancelBtn?.addEventListener('click', cancelFromButton);
       cancelBtn?.addEventListener('touchend', cancelFromButton, { passive: false });
+      doc?.addEventListener?.('pointerdown', dismissKeyboardFromOutside, { passive: true });
+      doc?.addEventListener?.('touchstart', dismissKeyboardFromOutside, { passive: true });
     }
 
     const lightbox = doc && doc.getElementById('img-lightbox');
