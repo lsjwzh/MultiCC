@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import '../services/manage_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
-import '../widgets/settings_navigation_drawer.dart';
 
 /// 推送通知通道 — 镜像网页 manage 页「推送通知」面板：查看 Bark / Webhook 配置
 /// 状态、编辑通道 URL、发送测试通知。移动端只读 + 可改 URL（不涉及密钥）。
@@ -141,10 +140,6 @@ class _PushSettingsScreenState extends State<PushSettingsScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      drawer: SettingsNavigationDrawer(
-        selected: SettingsDestination.push,
-        serverLabel: widget.settings.host,
-      ),
       appBar: AppBar(
         title: const Text('推送通知'),
         actions: [

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../models/message.dart';
 import '../providers/chat_provider.dart';
@@ -25,11 +26,18 @@ import '../widgets/session_badges.dart';
 import '../widgets/kpi_tile.dart';
 import '../widgets/task_board_view.dart';
 import '../widgets/create_session_dialog.dart';
+import '../widgets/workspace_navigation_drawer.dart';
+import 'agent_resources_screen.dart';
+import 'bridge_settings_screen.dart';
 import 'chat_screen.dart';
+import 'provider_screen.dart';
+import 'push_settings_screen.dart';
 import 'memo_screen.dart';
 import 'settings_screen.dart';
 import 'cron_screen.dart';
 import 'terminal_screen.dart';
+import 'tunnel_settings_screen.dart';
+import 'voice_settings_screen.dart';
 
 class MainShell extends StatefulWidget {
   final SettingsService settings;
@@ -437,19 +445,106 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
     );
   }
 
+  void _openNavigationDestination(WorkspaceDestination destination) {
+    final route = switch (destination) {
+      WorkspaceDestination.cron => MaterialPageRoute<void>(
+          builder: (_) => CronScreen(settings: widget.settings),
+        ),
+      WorkspaceDestination.voice => MaterialPageRoute<void>(
+          builder: (_) => VoiceSettingsScreen(settings: widget.settings),
+        ),
+      WorkspaceDestination.goal => MaterialPageRoute<void>(
+          builder: (_) => SettingsScreen(
+            settings: widget.settings,
+            initialSection: SettingsInitialSection.goal,
+          ),
+        ),
+      WorkspaceDestination.provider => MaterialPageRoute<void>(
+          builder: (_) => ProviderScreen(settings: widget.settings),
+        ),
+      WorkspaceDestination.global => MaterialPageRoute<void>(
+          builder: (_) => SettingsScreen(settings: widget.settings),
+        ),
+      WorkspaceDestination.push => MaterialPageRoute<void>(
+          builder: (_) => PushSettingsScreen(settings: widget.settings),
+        ),
+      WorkspaceDestination.tunnel => MaterialPageRoute<void>(
+          builder: (_) => TunnelSettingsScreen(settings: widget.settings),
+        ),
+      WorkspaceDestination.bridges => MaterialPageRoute<void>(
+          builder: (_) => BridgeSettingsScreen(settings: widget.settings),
+        ),
+      WorkspaceDestination.resources => MaterialPageRoute<void>(
+          builder: (_) => AgentResourcesScreen(
+            settings: widget.settings,
+            initialSection: AgentResourcesInitialSection.resources,
+          ),
+        ),
+      WorkspaceDestination.skillSync => MaterialPageRoute<void>(
+          builder: (_) => AgentResourcesScreen(
+            settings: widget.settings,
+            initialSection: AgentResourcesInitialSection.skillSync,
+          ),
+        ),
+      WorkspaceDestination.storage => MaterialPageRoute<void>(
+          builder: (_) => AgentResourcesScreen(
+            settings: widget.settings,
+            initialSection: AgentResourcesInitialSection.storage,
+          ),
+        ),
+      WorkspaceDestination.overview || WorkspaceDestination.memory => null,
+    };
+
+    if (destination == WorkspaceDestination.memory) {
+      unawaited(_openWebMemoryGraph());
+    } else if (route != null) {
+      Navigator.of(context).push(route);
+    }
+  }
+
+  Future<void> _openWebMemoryGraph() async {
+    final token = widget.settings.token.trim();
+    final uri = Uri.parse(widget.settings.buildHttpUrl('/manage')).replace(
+      queryParameters: {
+        'view': 'memory',
+        if (token.isNotEmpty) 'token': token,
+      },
+    );
+    final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!opened && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(t('openBrowserFailed'))),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final mgr = context.watch<SessionManager>();
 
     return Scaffold(
       backgroundColor: const Color(0xFF070809),
+      drawer: WorkspaceNavigationDrawer(
+        selected: WorkspaceDestination.overview,
+        serverLabel: widget.settings.host,
+        workspaceCount: mgr.directories.length,
+        cronCount: _cronCount,
+        onSelected: _openNavigationDestination,
+      ),
       // AppBar
       appBar: AppBar(
         backgroundColor: const Color(0xFF0f1115),
         foregroundColor: const Color(0xFFe7eaee),
         elevation: 0,
         centerTitle: false,
-        automaticallyImplyLeading: false,
+        leading: Builder(
+          builder: (drawerContext) => IconButton(
+            key: const ValueKey('workspace-menu-button'),
+            icon: const Icon(Icons.menu_rounded),
+            tooltip: t('menu'),
+            onPressed: () => Scaffold.of(drawerContext).openDrawer(),
+          ),
+        ),
         title: Row(
           children: [
             RichText(
@@ -467,18 +562,24 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
                 ],
               ),
             ),
-            const SizedBox(width: 8),
-            Text(
-              t('dirs_sessions', {
-                'dirs': '${mgr.directories.length}',
-                'sessions': '${mgr.sessions.where((s) => !s.isAux).length}',
-              }),
-              style: const TextStyle(
-                color: Color(0xFF8a909b),
-                fontSize: 12,
-                fontWeight: FontWeight.normal,
+            if (MediaQuery.sizeOf(context).width >= 430) ...[
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  t('dirs_sessions', {
+                    'dirs': '${mgr.directories.length}',
+                    'sessions': '${mgr.sessions.where((s) => !s.isAux).length}',
+                  }),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Color(0xFF8a909b),
+                    fontSize: 12,
+                    fontWeight: FontWeight.normal,
+                  ),
+                ),
               ),
-            ),
+            ],
           ],
         ),
         actions: [
@@ -494,15 +595,6 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
               mgr.loadDashboard();
               _loadCronCount();
             },
-          ),
-          IconButton(
-            icon: const Icon(Icons.settings_outlined, size: 20),
-            tooltip: t('settings'),
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (_) => SettingsScreen(settings: widget.settings),
-              ),
-            ),
           ),
         ],
         bottom: PreferredSize(
