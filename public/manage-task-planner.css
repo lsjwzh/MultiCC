@@ -1,5 +1,5 @@
-/* Proactive task planner. Kept separate from the legacy Fleet task tree so the
- * planning workflow can evolve without coupling it to directory-detail chrome. */
+/* Proactive task planner shared by the global Task Center and the Fleet-scoped
+ * planning tab. The legacy observed-task tree remains a separate perspective. */
 body[data-view="tasks"] #sidebar {
   overflow: hidden;
   padding: 0;
@@ -10,9 +10,37 @@ body[data-view="tasks"] #sidebar > .planner-view.active {
   height: 100%;
 }
 
-#task-planner-root {
+#task-planner-root,
+.fleet-task-planner-root {
   height: 100%;
   min-height: 0;
+}
+
+#dir-detail-modal.fleet-planner-open .modal-card {
+  width: min(96vw, 1440px) !important;
+  height: min(92vh, 900px);
+}
+
+#dir-detail-modal.fleet-planner-open #dir-detail-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 16px 18px 0 !important;
+  overflow: hidden !important;
+}
+
+#dir-detail-modal .dd-tabs {
+  overflow-x: auto;
+}
+
+#dir-detail-modal .dd-tab { flex: 0 0 auto; white-space: nowrap; }
+
+#dir-detail-modal.fleet-planner-open .dd-tabs { flex: 0 0 auto; }
+
+.fleet-task-planner-root {
+  flex: 1 1 auto;
+  margin: 0 -18px;
+  overflow: hidden;
 }
 
 .planner-shell {
@@ -43,6 +71,34 @@ body[data-view="tasks"] #sidebar > .planner-view.active {
 }
 
 .planner-toolbar .planner-grow { flex: 1 1 auto; }
+
+.planner-fleet-lock {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 36px;
+  max-width: 260px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  color: var(--muted);
+  background: var(--well);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.planner-fleet-lock strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  text-overflow: ellipsis;
+}
+
+.planner-fleet-lock > span:last-child {
+  padding-left: 7px;
+  border-left: 1px solid var(--line);
+}
 
 .planner-control,
 .planner-field input,
@@ -563,6 +619,7 @@ body[data-view="tasks"] #sidebar > .planner-view.active {
   .planner-toolbar-group.actions { width: auto; margin-left: auto; }
   .planner-segment { order: 3; }
   .planner-search { min-width: 0; }
+  .planner-fleet-lock { flex: 1 1 auto; max-width: none; }
   .planner-attention-bar { padding-inline: 10px; overflow-x: auto; white-space: nowrap; }
   .planner-mobile-tabs { display: flex; }
   .planner-board-scroll { padding: 10px; }
