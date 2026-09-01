@@ -255,6 +255,9 @@ async function refreshTaskBoard(force) {
     const d = await r.json();
     if (!d || !d.ok) return;
     _tbBoard = window.MultiCCTaskBoardUi.reconcileSnapshot(d);
+    if (typeof window.MultiCCTaskPlanner?.reconcileSnapshot === 'function') {
+      window.MultiCCTaskPlanner.reconcileSnapshot(d);
+    }
     if (_tbMergeMode) _tbPruneMergeSelection(_tbTasksForDir(_tbMergeDirId));
     _tbFetchedAt = Date.now();
     // A task-bound chat is deliberately absent from the ordinary Fleet session
@@ -263,6 +266,7 @@ async function refreshTaskBoard(force) {
     else if (typeof refreshAllCardBorders === 'function') refreshAllCardBorders();
     // Re-render wherever the board is currently visible.
     if (typeof _detailModalOpen === 'function' && _detailModalOpen()
+        && (typeof _dirDetailTab === 'undefined' || _dirDetailTab !== 'planner')
         && typeof renderDirectoryDetailBody === 'function') {
       renderDirectoryDetailBody(_detailDirId);
     }
