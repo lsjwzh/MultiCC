@@ -104,12 +104,14 @@
     };
   }
 
-  // Fleet-level activity is a projection of the exact same presentation rule
-  // as each task row. In particular, a human-completed task with a stale
-  // `runState: running` must not keep a parent tab/card lit up forever.
+  // Fleet-level activity belongs only to independent board tasks. Session
+  // tasks keep their row-level status, but an ordinary chat doing work must not
+  // light the Fleet card or the Task Board tab as if a dedicated task run were
+  // active. A human-completed board task with stale `runState: running` is also
+  // excluded by the shared presentation rule.
   function runningTaskCount(tasks) {
     return (Array.isArray(tasks) ? tasks : []).reduce((count, task) =>
-      count + (taskDisplayState(task).running ? 1 : 0), 0);
+      count + (taskOrigin(task).key === 'board' && taskDisplayState(task).running ? 1 : 0), 0);
   }
 
   // Where the card came from. The board mixes two admissions that otherwise

@@ -684,6 +684,14 @@
     .tb-section.tb-tabbed .tb-task{border-top:none;border-bottom:1px solid var(--line)}
     .tb-stat{font-size:11px;color:var(--muted);margin-bottom:10px}
     .tb-section-head{padding:8px 14px;background:var(--panel);font-size:12.5px;font-weight:650;color:var(--text);display:flex;justify-content:space-between;align-items:center}
+    .tb-stat-controls{min-width:0;display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+    .tb-origin-filter{max-width:100%;display:inline-flex;align-items:center;gap:2px;padding:2px;border:1px solid var(--line);border-radius:9px;background:var(--well);white-space:nowrap}
+    .tb-origin-filter-label{padding:0 6px;color:var(--faint);font-size:10px;font-weight:650;letter-spacing:.25px}
+    .tb-origin-filter-btn{height:24px;padding:0 8px;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--muted);font:600 10.5px var(--sans);cursor:pointer;white-space:nowrap;transition:color .15s,background .15s,border-color .15s}
+    .tb-origin-filter-btn:hover{color:var(--text);background:var(--panel-2)}
+    .tb-origin-filter-btn:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+    .tb-origin-filter-btn.active{color:var(--accent);border-color:var(--accent-line);background:var(--accent-dim)}
+    .tb-origin-filter-btn strong{font-variant-numeric:tabular-nums;font-weight:700}
     .tb-head-actions,.tb-merge-actions{display:flex;align-items:center;gap:7px}
     .tb-dim{color:var(--muted);font-weight:400;font-size:11px}
     .tb-mod{padding:6px 14px;font-size:12px;color:var(--text);cursor:pointer;display:flex;justify-content:space-between;border-top:1px solid var(--line);user-select:none}
@@ -708,6 +716,8 @@
     .tb-merge-summary{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     @media (max-width:640px){
       .tb-stat,.tb-section-head{align-items:flex-start!important;flex-wrap:wrap}
+      .tb-stat-controls{width:100%;justify-content:flex-start}
+      .tb-origin-filter-btn{height:32px}
       .tb-head-actions{width:100%;justify-content:flex-start;flex-wrap:wrap}
       .tb-merge-bar{align-items:stretch;flex-direction:column}
       .tb-merge-summary{overflow:visible;white-space:normal}

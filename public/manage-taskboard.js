@@ -17,6 +17,8 @@ let _tbPendingTaskIds = [];         // 等待定位的新任务 id
 let _tbMergeMode = false;
 let _tbMergeDirId = null;
 const _tbMergeTaskIds = new Set();  // insertion order: first id is the survivor
+const _tbOriginFilters = new Set(['all', 'board', 'session']);
+let _tbOriginFilter = 'all';
 
 const _tbEsc = (s) => String(s ?? '').replace(/[&<>"']/g,
   c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -298,6 +300,40 @@ function _tbTasksForDir(dirId) {
     && ((t.dirIds || []).includes(dirId) || modDir.get(t.moduleId) === dirId));
 }
 
+function _tbTasksForOrigin(tasks, origin = _tbOriginFilter) {
+  const source = _tbOriginFilters.has(origin) ? origin : 'all';
+  if (source === 'all') return [...(Array.isArray(tasks) ? tasks : [])];
+  return (Array.isArray(tasks) ? tasks : []).filter(task =>
+    window.MultiCCTaskBoardUi.taskOrigin(task).key === source);
+}
+
+function _tbOriginFilterHtml(tasks, dirId) {
+  const all = Array.isArray(tasks) ? tasks : [];
+  const independent = _tbTasksForOrigin(all, 'board').length;
+  const session = _tbTasksForOrigin(all, 'session').length;
+  const buttons = [
+    { key: 'all', label: '全部', count: all.length, title: '显示全部任务来源' },
+    { key: 'board', label: '独立任务', count: independent, title: '任务板直接发起、拥有独立任务会话' },
+    { key: 'session', label: '会话任务', count: session, title: '普通会话中产生的任务记录' },
+  ];
+  return `<div class="tb-origin-filter" role="group" aria-label="任务来源">
+    <span class="tb-origin-filter-label">来源</span>
+    ${buttons.map(item => `<button type="button" class="tb-origin-filter-btn${_tbOriginFilter === item.key ? ' active' : ''}" aria-pressed="${_tbOriginFilter === item.key}" title="${_tbEsc(item.title)}" onclick="setTaskBoardOriginFilter(event,'${item.key}','${_tbEsc(dirId)}')">${_tbEsc(item.label)} <strong>${item.count}</strong></button>`).join('')}
+  </div>`;
+}
+
+function setTaskBoardOriginFilter(ev, origin, dirId) {
+  if (ev) ev.stopPropagation();
+  const next = _tbOriginFilters.has(origin) ? origin : 'all';
+  if (next === _tbOriginFilter) return;
+  _tbOriginFilter = next;
+  if (_tbMergeMode) _tbExitMergeMode();
+  const targetDirId = String(dirId || (typeof _detailDirId !== 'undefined' ? _detailDirId : '') || '');
+  if (targetDirId && typeof renderDirectoryDetailBody === 'function') {
+    renderDirectoryDetailBody(targetDirId);
+  }
+}
+
 // Cross-module read port used by manage-dashboard.js. Keep the aggregation on
 // the board side so both the detail tab and the outer Fleet card consume the
 // same directory membership and shared status-presentation policy.
@@ -332,14 +368,16 @@ function _tbTaskRowHtml(task) {
 // board fills its own tab, so the section chrome (border + "任务板" head that
 // would duplicate the tab label) is dropped.
 function renderTaskBoardSection(dirId, opts) {
-  const tasks = _tbTasksForDir(dirId);
+  const allTasks = _tbTasksForDir(dirId);
+  const tasks = _tbTasksForOrigin(allTasks);
   if (_tbMergeMode && _tbMergeDirId !== dirId) _tbExitMergeMode();
   if (_tbMergeMode) _tbPruneMergeSelection(tasks);
-  const completedCount = tasks.filter(t =>
+  const completedCount = allTasks.filter(t =>
     window.MultiCCTaskBoardUi.taskDisplayState(t).done).length;
-  const cleanupButton = `<button class="btn btn-sm tb-clean-completed" onclick="archiveCompletedTaskBoard(event,'${_tbEsc(dirId)}',this)" title="归档全部已完成任务"${completedCount ? '' : ' disabled'}>🧹 一键清理${completedCount ? ` (${completedCount})` : ''}</button>`;
+  const cleanupButton = `<button class="btn btn-sm tb-clean-completed" onclick="archiveCompletedTaskBoard(event,'${_tbEsc(dirId)}',this)" title="归档 Fleet 内全部已完成任务（不受来源筛选影响）"${completedCount ? '' : ' disabled'}>🧹 一键清理${completedCount ? ` (${completedCount})` : ''}</button>`;
   const mergeStartButton = _tbMergeMode ? '' : _tbMergeStartButtonHtml(dirId, tasks);
   const mergeBar = _tbMergeBarHtml();
+  const originFilter = _tbOriginFilterHtml(allTasks, dirId);
   const rowsHtml = [];
   const byModule = new Map();
   for (const t of tasks) {
@@ -377,19 +415,25 @@ function renderTaskBoardSection(dirId, opts) {
   }
   const body = rowsHtml.length
     ? rowsHtml.join('')
-    : '<div class="tb-empty">还没有任务。从任务面板或 Commander 发起新任务后会显示在这里。</div>';
+    : `<div class="tb-empty">${_tbOriginFilter === 'all'
+      ? '还没有任务。从任务面板或 Commander 发起新任务后会显示在这里。'
+      : '当前来源筛选下没有任务。'}</div>`;
+  const moduleCount = mods.length || (tasks.length ? 1 : 0);
+  const statText = _tbOriginFilter === 'all'
+    ? `${moduleCount} 模块 · ${tasks.length} 任务`
+    : `${moduleCount} 模块 · 显示 ${tasks.length}/${allTasks.length} 任务`;
   if (opts && opts.tabbed) {
     const stat = `<div class="tb-stat" style="display:flex;align-items:center;justify-content:space-between;gap:8px">
-      <span>${tasks.length ? `${mods.length || 1} 模块 · ${tasks.length} 任务` : '暂无任务'}</span>
-      <span class="tb-head-actions">${mergeStartButton}${cleanupButton}<button class="btn-icon" onclick="event.stopPropagation();refreshTaskBoard(true)" title="刷新任务板">🔄</button></span>
+      <span>${allTasks.length ? statText : '暂无任务'}</span>
+      <div class="tb-stat-controls">${originFilter}<span class="tb-head-actions">${mergeStartButton}${cleanupButton}<button class="btn-icon" onclick="event.stopPropagation();refreshTaskBoard(true)" title="刷新任务板">🔄</button></span></div>
     </div>`;
     return `<div class="tb-section tb-tabbed">${stat}${mergeBar}${body}</div>`;
   }
   return `
     <div class="tb-section">
       <div class="tb-section-head">
-        <span>📋 任务板 <span class="tb-dim">${tasks.length ? `${mods.length || 1} 模块 · ${tasks.length} 任务` : ''}</span></span>
-        <span class="tb-head-actions">${mergeStartButton}${cleanupButton}</span>
+        <span>📋 任务板 <span class="tb-dim">${allTasks.length ? statText : ''}</span></span>
+        <div class="tb-stat-controls">${originFilter}<span class="tb-head-actions">${mergeStartButton}${cleanupButton}</span></div>
       </div>
       ${mergeBar}
       ${body}
