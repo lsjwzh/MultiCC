@@ -36,8 +36,9 @@ const MAX_ROUTING_ATTEMPTS = 50;
 // a glance. 'board' = an explicit send from the task board / Commander (an
 // independent task that owns a task-bound session); 'session' = the task
 // surfaced inside an ongoing chat (classify, the retroactive backfill scan, or
-// a router-tool dispatch landing in a live worker). Purely informational:
-// nothing branches on it.
+// a router-tool dispatch landing in a live worker). The UI uses this durable
+// distinction for source filtering and for independent-task-only activity
+// aggregation; it must not be inferred from recordType or chatSessionId.
 const TASK_ORIGINS = new Set(['board', 'session']);
 const BOARD_TASK_SOURCES = new Set(['task-board', 'commander']);
 
