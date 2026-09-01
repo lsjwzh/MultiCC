@@ -1454,7 +1454,7 @@ function renderDirectoryDetailBody(dirId) {
     window.MultiCCTaskPlanner.unmountFleet();
   }
   const content = plannerTabActive
-    ? '<div class="fleet-task-planner-root" aria-live="polite"></div>'
+    ? '<div class="fleet-task-planner-root"></div>'
     : boardTabActive
       ? renderTaskBoardSection(dirId, { tabbed: true })
       : renderEventTimeline(dirId) + renderDirSessionGroups(dirSessionsOf(dirId), dirId);

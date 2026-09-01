@@ -62,6 +62,8 @@
       plannerPromote: '提升为待办',
       plannerPromoted: '已复制到收件箱，原历史记录保持不变',
       plannerOpenChat: '打开任务 Chat',
+      plannerAnswerQuestion: '回答问题',
+      plannerInspectError: '查看异常',
       plannerNewTitle: '新建计划任务',
       plannerNewSubtitle: '先记录 TODO；只有“保存并启动”才会创建执行轮次。',
       plannerTitle: '任务标题',
@@ -160,6 +162,8 @@
       plannerPromote: 'Promote to todo',
       plannerPromoted: 'Copied to Inbox; the original history item was preserved',
       plannerOpenChat: 'Open task chat',
+      plannerAnswerQuestion: 'Answer question',
+      plannerInspectError: 'Inspect error',
       plannerNewTitle: 'New planned task',
       plannerNewSubtitle: 'Save a TODO first. Only “Save & start” creates an execution turn.',
       plannerTitle: 'Task title',
@@ -224,6 +228,7 @@
     mobileStage: 'inbox',
     draggingId: '',
     loadEpoch: 0,
+    directoryLoadEpoch: 0,
     searchTimer: null,
     // A failed/ambiguous send must retry with the same idempotency key. The key
     // is cleared only after the server acknowledges the task turn.
@@ -242,6 +247,7 @@
     attention: state.attention,
     mobileStage: state.mobileStage,
   };
+  let pendingRenderState = null;
   const boundRoots = new WeakSet();
 
   function tr(key, params) {
@@ -311,7 +317,10 @@
 
   async function loadPlanner(options) {
     const quiet = !!(options && options.quiet);
+    const refreshDirectories = !!(options && options.refreshDirectories);
+    const shouldLoadDirectories = refreshDirectories || !state.directories.length;
     const epoch = ++state.loadEpoch;
+    const directoryEpoch = shouldLoadDirectories ? ++state.directoryLoadEpoch : 0;
     if (!quiet || !state.loaded) {
       state.loading = true;
       state.error = '';
@@ -319,9 +328,17 @@
     }
     try {
       const requests = [requestJson('/api/task-board')];
-      if (!state.directories.length) requests.push(requestJson('/api/directories'));
+      if (shouldLoadDirectories) requests.push(requestJson('/api/directories'));
       const results = await Promise.all(requests);
-      if (epoch !== state.loadEpoch) return;
+      let directoriesApplied = false;
+      if (shouldLoadDirectories && directoryEpoch === state.directoryLoadEpoch && Array.isArray(results[1])) {
+        state.directories = results[1].filter(item => !item.external);
+        directoriesApplied = true;
+      }
+      if (epoch !== state.loadEpoch) {
+        if (directoriesApplied && state.loaded) render();
+        return;
+      }
       const snapshot = results[0] || {};
       if (snapshot.ok === false) throw new Error(snapshot.error || 'Invalid task board snapshot');
       const incomingRevision = Number(snapshot.revision) || 0;
@@ -330,11 +347,11 @@
       // rejects a stale replica/cache response that was requested later.
       if (state.loaded && incomingRevision && incomingRevision < state.revision) {
         state.loading = false;
+        if (shouldLoadDirectories) render();
         return;
       }
       state.board = normalizeBoard(snapshot);
       state.revision = Math.max(state.revision, incomingRevision);
-      if (results[1]) state.directories = Array.isArray(results[1]) ? results[1].filter(item => !item.external) : [];
       state.loaded = true;
       state.loading = false;
       state.error = '';
@@ -501,6 +518,9 @@
     const due = duePresentation(task);
     const priority = String(task.priority || '').toLowerCase();
     const attention = attentionKind(task);
+    const attentionAction = attention === 'waiting'
+      ? tr('plannerAnswerQuestion')
+      : attention === 'error' ? tr('plannerInspectError') : '';
     const updated = task.updatedAt || task.lastTs || task.createdAt;
     return `<article class="planner-card${attention ? ` attention-${attention}` : ''}"
       data-task-id="${esc(task.id)}" data-action="open-task" draggable="true" tabindex="0"
@@ -512,6 +532,7 @@
         ${due ? `<span class="planner-badge ${esc(due.className)}">◷ ${esc(due.label)}</span>` : ''}
         <span class="planner-badge module" title="${esc(module && module.name || tr('plannerNoModule'))}"># ${esc(module && module.name || tr('plannerNoModule'))}</span>
         ${statusHtml(task, true)}
+        ${attentionAction ? `<button class="planner-card-attention-action" type="button" data-action="open-chat" data-task-id="${esc(task.id)}">${esc(attentionAction)} <span aria-hidden="true">↗</span></button>` : ''}
       </div>
       <div class="planner-card-footer">
         <span title="${esc(tr('plannerFleet'))}">${esc(directory && directory.name || tr('plannerUnknownFleet'))}</span>
@@ -599,8 +620,8 @@
     return `<div class="planner-attention-bar">
       <strong>${esc(tr('plannerNeedsAttention'))}</strong>
       ${waiting || errors ? `
-        <button class="planner-attention-chip waiting${state.attention === 'waiting' ? ' active' : ''}" type="button" aria-pressed="${state.attention === 'waiting'}" data-action="attention" data-kind="waiting">⏸ <strong>${waiting}</strong> ${esc(tr('plannerWaitingCount', { n: waiting }).replace(String(waiting), '').trim())}</button>
-        <button class="planner-attention-chip error${state.attention === 'error' ? ' active' : ''}" type="button" aria-pressed="${state.attention === 'error'}" data-action="attention" data-kind="error">⚠ <strong>${errors}</strong> ${esc(tr('plannerErrorCount', { n: errors }).replace(String(errors), '').trim())}</button>
+        ${waiting ? `<button class="planner-attention-chip waiting${state.attention === 'waiting' ? ' active' : ''}" type="button" aria-pressed="${state.attention === 'waiting'}" data-action="attention" data-kind="waiting">⏸ <strong>${waiting}</strong> ${esc(tr('plannerWaitingCount', { n: waiting }).replace(String(waiting), '').trim())}</button>` : ''}
+        ${errors ? `<button class="planner-attention-chip error${state.attention === 'error' ? ' active' : ''}" type="button" aria-pressed="${state.attention === 'error'}" data-action="attention" data-kind="error">⚠ <strong>${errors}</strong> ${esc(tr('plannerErrorCount', { n: errors }).replace(String(errors), '').trim())}</button>` : ''}
       ` : `<span>${esc(tr('plannerAttentionEmpty'))}</span>`}
     </div>`;
   }
@@ -626,7 +647,53 @@
     return state.directories.map(directory => `<option value="${esc(directory.id)}"${state.dirId === String(directory.id) ? ' selected' : ''}>${esc(directory.name || directory.id)}</option>`).join('');
   }
 
+  function captureRenderState() {
+    const boardScroll = root.querySelector('.planner-board-scroll');
+    const historyScroll = root.querySelector('.planner-history');
+    const columnScroll = {};
+    root.querySelectorAll('.planner-card-list').forEach(list => {
+      if (list.dataset && list.dataset.stage) columnScroll[list.dataset.stage] = list.scrollTop;
+    });
+    const active = document.activeElement;
+    const searchFocused = !!(active && typeof active.matches === 'function'
+      && active.matches('[data-control="search"]')
+      && (typeof root.contains !== 'function' || root.contains(active)));
+    return {
+      boardLeft: boardScroll ? boardScroll.scrollLeft : 0,
+      boardTop: boardScroll ? boardScroll.scrollTop : 0,
+      historyTop: historyScroll ? historyScroll.scrollTop : 0,
+      columnScroll,
+      searchFocused,
+      selectionStart: searchFocused ? active.selectionStart : null,
+      selectionEnd: searchFocused ? active.selectionEnd : null,
+    };
+  }
+
+  function restoreRenderState(saved) {
+    if (!saved) return;
+    const boardScroll = root.querySelector('.planner-board-scroll');
+    if (boardScroll) {
+      boardScroll.scrollLeft = saved.boardLeft;
+      boardScroll.scrollTop = saved.boardTop;
+    }
+    const historyScroll = root.querySelector('.planner-history');
+    if (historyScroll) historyScroll.scrollTop = saved.historyTop;
+    root.querySelectorAll('.planner-card-list').forEach(list => {
+      const stage = list.dataset && list.dataset.stage;
+      if (stage && Number.isFinite(saved.columnScroll[stage])) list.scrollTop = saved.columnScroll[stage];
+    });
+    if (!saved.searchFocused) return;
+    const search = root.querySelector('[data-control="search"]');
+    if (!search) return;
+    try { search.focus({ preventScroll: true }); } catch (_) { search.focus(); }
+    if (Number.isFinite(saved.selectionStart) && typeof search.setSelectionRange === 'function') {
+      search.setSelectionRange(saved.selectionStart, Number.isFinite(saved.selectionEnd) ? saved.selectionEnd : saved.selectionStart);
+    }
+  }
+
   function render() {
+    const savedRenderState = pendingRenderState || captureRenderState();
+    pendingRenderState = null;
     const embedded = surface === 'fleet';
     const plannedCount = baseTasks('board').length;
     const plannedAttention = baseTasks('board').filter(task => !!attentionKind(task)).length;
@@ -651,9 +718,12 @@
             <option value="">${esc(tr('plannerAllFleets'))}</option>${directoryOptions()}
           </select>`;
     const modeControl = embedded ? '' : `<div class="planner-segment" role="tablist">
-          <button type="button" role="tab" aria-selected="${state.mode === 'board'}" aria-controls="planner-content" class="${state.mode === 'board' ? 'active' : ''}" data-action="mode" data-mode="board">${esc(tr('plannerBoard'))}</button>
-          <button type="button" role="tab" aria-selected="${state.mode === 'history'}" aria-controls="planner-content" class="${state.mode === 'history' ? 'active' : ''}" data-action="mode" data-mode="history">${esc(tr('plannerHistory'))}</button>
+          <button id="planner-mode-board" type="button" role="tab" aria-selected="${state.mode === 'board'}" aria-controls="planner-content" class="${state.mode === 'board' ? 'active' : ''}" data-action="mode" data-mode="board">${esc(tr('plannerBoard'))}</button>
+          <button id="planner-mode-history" type="button" role="tab" aria-selected="${state.mode === 'history'}" aria-controls="planner-content" class="${state.mode === 'history' ? 'active' : ''}" data-action="mode" data-mode="history">${esc(tr('plannerHistory'))}</button>
         </div>`;
+    const mainA11y = embedded
+      ? `role="region" aria-label="${esc(tr('plannerBoard'))}"`
+      : `role="tabpanel" aria-labelledby="planner-mode-${state.mode}"`;
 
     root.classList.toggle('planner-fleet-embedded', embedded);
     root.innerHTML = `<div class="planner-shell${embedded ? ' embedded' : ''}">
@@ -672,8 +742,10 @@
       </div>
       ${attentionBarHtml()}
       ${mobileTabsHtml()}
-      <div class="planner-main" id="planner-content" role="tabpanel">${main}</div>
+      <div class="planner-sr-only" role="status" aria-live="polite" aria-atomic="true">${busy ? esc(tr('plannerLoading')) : state.error ? esc(tr('plannerLoadFailed', { error: state.error })) : ''}</div>
+      <div class="planner-main" id="planner-content" ${mainA11y}>${main}</div>
     </div>`;
+    restoreRenderState(savedRenderState);
   }
 
   function findTask(taskId) {
@@ -687,6 +759,23 @@
       else state.board.tasks.push(data.task);
     }
     if (data && Number.isFinite(Number(data.revision))) state.revision = Number(data.revision);
+  }
+
+  function reconcilePlannerSnapshot(snapshot) {
+    if (!snapshot || snapshot.ok === false) return false;
+    const incomingRevision = Number(snapshot.revision) || 0;
+    if (state.loaded && incomingRevision && incomingRevision <= state.revision) return false;
+    // An accepted external snapshot supersedes every older in-flight planner
+    // request. Otherwise a late rejection could replace this fresh board with
+    // an error screen even though reconciliation already succeeded.
+    state.loadEpoch += 1;
+    state.board = normalizeBoard(snapshot);
+    state.revision = Math.max(state.revision, incomingRevision);
+    state.loaded = true;
+    state.loading = false;
+    state.error = '';
+    render();
+    return true;
   }
 
   function expectedRevisionBody(task, extra, override) {
@@ -809,9 +898,9 @@
     const overlay = document.createElement('div');
     overlay.className = 'planner-overlay centered';
     overlay.__plannerReturnFocus = document.activeElement;
-    overlay.innerHTML = `<form class="planner-dialog" id="planner-new-form">
+    overlay.innerHTML = `<form class="planner-dialog" id="planner-new-form" role="dialog" aria-modal="true" aria-labelledby="planner-new-title-heading">
       <div class="planner-panel-head">
-        <div class="planner-panel-title"><h2>${esc(tr('plannerNewTitle'))}</h2><p>${esc(tr('plannerNewSubtitle'))}</p></div>
+        <div class="planner-panel-title"><h2 id="planner-new-title-heading">${esc(tr('plannerNewTitle'))}</h2><p>${esc(tr('plannerNewSubtitle'))}</p></div>
         <button class="icon-btn" type="button" data-overlay-close aria-label="${esc(tr('plannerCancel'))}">×</button>
       </div>
       <div class="planner-panel-body"><div class="planner-form-grid">
@@ -896,6 +985,55 @@
     }
   }
 
+  function drawerFormPayload() {
+    const form = document.getElementById('planner-edit-form');
+    if (!form) return null;
+    const values = new FormData(form);
+    return {
+      form,
+      payload: {
+        title: String(values.get('title') || '').trim(),
+        dirId: String(values.get('dirId') || '').trim(),
+        workflowStage: String(values.get('workflowStage') || 'inbox'),
+        description: String(values.get('description') || '').trim() || null,
+        priority: String(values.get('priority') || '') || null,
+        dueAt: isoFromLocal(String(values.get('dueAt') || '')),
+        acceptanceCriteria: String(values.get('acceptanceCriteria') || '').trim() || null,
+      },
+    };
+  }
+
+  function drawerPayloadSnapshot(payload) {
+    return JSON.stringify(payload || {});
+  }
+
+  async function persistDrawerChanges(taskId, context) {
+    const task = findTask(taskId);
+    const current = drawerFormPayload();
+    if (!task || !current) return null;
+    const { form, payload } = current;
+    if (!payload.title || !payload.dirId) {
+      form.reportValidity();
+      return null;
+    }
+    const snapshot = drawerPayloadSnapshot(payload);
+    if (snapshot === context.formSnapshot) return { task, changed: false };
+    try {
+      const data = await requestJson(`/api/task-board/tasks/${encodeURIComponent(taskId)}/update`, {
+        method: 'POST',
+        json: expectedRevisionBody(task, payload, context.revision),
+      });
+      updateTaskFromResponse(data);
+      const updated = findTask(taskId) || data && data.task || task;
+      context.revision = Math.max(1, Number(updated.planningRevision) || context.revision);
+      context.formSnapshot = snapshot;
+      return { task: updated, changed: true };
+    } catch (error) {
+      if (!(await handleConflict(error))) notify(tr('plannerSaveFailed', { error: errorText(error) }), true);
+      return null;
+    }
+  }
+
   function openTaskDrawer(taskId) {
     const task = findTask(taskId);
     if (!task) return;
@@ -910,7 +1048,10 @@
     // Keep the form and its concurrency token as one snapshot. A websocket
     // refresh may update the board behind this drawer, but must not let stale
     // fields save against the newer revision.
-    const openRevision = Math.max(1, Number(task.planningRevision) || 1);
+    const drawerContext = {
+      revision: Math.max(1, Number(task.planningRevision) || 1),
+      formSnapshot: '',
+    };
     const busy = ['running', 'queued', 'waiting'].includes(taskStatus(task));
     const done = task.status === 'done' || stage === 'done';
     const overlay = document.createElement('div');
@@ -949,63 +1090,40 @@
       }
       const action = event.target.closest('[data-drawer-action]');
       if (!action) return;
-      handleDrawerAction(task.id, action.dataset.drawerAction, action, openRevision);
+      handleDrawerAction(task.id, action.dataset.drawerAction, action, drawerContext);
     });
+    const initialForm = drawerFormPayload();
+    drawerContext.formSnapshot = drawerPayloadSnapshot(initialForm && initialForm.payload);
     activateOverlay(overlay, '[name="title"]');
   }
 
-  async function saveDrawer(taskId, button, openRevision) {
-    const task = findTask(taskId);
-    const form = document.getElementById('planner-edit-form');
-    if (!task || !form) return;
+  async function saveDrawer(taskId, button, context) {
     button.disabled = true;
-    const values = new FormData(form);
-    const targetStage = String(values.get('workflowStage') || 'inbox');
-    const title = String(values.get('title') || '').trim();
-    const dirId = String(values.get('dirId') || '').trim();
-    if (!title || !dirId) {
-      form.reportValidity();
-      button.disabled = false;
-      return;
-    }
-    try {
-      const data = await requestJson(`/api/task-board/tasks/${encodeURIComponent(taskId)}/update`, {
-        method: 'POST',
-        json: expectedRevisionBody(task, {
-          title,
-          dirId,
-          workflowStage: targetStage,
-          description: String(values.get('description') || '').trim() || null,
-          priority: String(values.get('priority') || '') || null,
-          dueAt: isoFromLocal(String(values.get('dueAt') || '')),
-          acceptanceCriteria: String(values.get('acceptanceCriteria') || '').trim() || null,
-        }, openRevision),
-      });
-      updateTaskFromResponse(data);
-      closePlannerOverlay();
-      await loadPlanner({ quiet: true });
-      notify(tr('plannerSaved'));
-    } catch (error) {
-      if (!(await handleConflict(error))) notify(tr('plannerSaveFailed', { error: errorText(error) }), true);
-      button.disabled = false;
-    }
+    const saved = await persistDrawerChanges(taskId, context);
+    if (!saved) { button.disabled = false; return; }
+    closePlannerOverlay();
+    await loadPlanner({ quiet: true });
+    notify(tr('plannerSaved'));
   }
 
-  async function startTask(taskId, button, openRevision) {
-    const task = findTask(taskId);
+  async function startTask(taskId, button, context) {
+    let task = findTask(taskId);
     if (!task) return;
     if (['running', 'queued', 'waiting'].includes(taskStatus(task))) {
       notify(tr('plannerBusy'), true);
       return;
     }
     button.disabled = true;
+    const saved = await persistDrawerChanges(taskId, context);
+    if (!saved) { button.disabled = false; return; }
+    task = saved.task;
     try {
       await requestJson(`/api/task-board/tasks/${encodeURIComponent(taskId)}/send`, {
         method: 'POST',
         json: {
           text: taskDescription(task) || taskTitle(task),
           clientMsgId: sendIdForTask(taskId),
-          expectedRevision: openRevision,
+          expectedRevision: context.revision,
         },
       });
       state.sendIds.delete(String(taskId));
@@ -1013,28 +1131,36 @@
       await loadPlanner({ quiet: true });
       notify(tr('plannerStarted'));
     } catch (error) {
-      notify(tr('plannerActionFailed', { error: errorText(error) }), true);
+      if (!(await handleConflict(error))) notify(tr('plannerActionFailed', { error: errorText(error) }), true);
       button.disabled = false;
     }
   }
 
-  async function setLifecycle(taskId, status, button, openRevision) {
+  async function setLifecycle(taskId, status, button, context) {
     button.disabled = true;
+    const saved = await persistDrawerChanges(taskId, context);
+    if (!saved) { button.disabled = false; return; }
+    const task = saved.task;
     // Completion/reopen are planning transitions, so they use the same
     // per-card optimistic concurrency path as drag-and-drop.
     if (status === 'done' || status === 'active') {
-      const moved = await moveTask(taskId, status === 'done' ? 'done' : 'ready', null, { expectedRevision: openRevision });
+      const targetStage = status === 'done' ? 'done' : 'ready';
+      if (taskStage(task) === targetStage) {
+        closePlannerOverlay();
+        await loadPlanner({ quiet: true });
+        notify(status === 'done' ? tr('plannerCompleted') : tr('plannerReopened'));
+        return;
+      }
+      const moved = await moveTask(taskId, targetStage, null, { expectedRevision: context.revision });
       if (!moved) { button.disabled = false; return; }
       closePlannerOverlay();
       notify(status === 'done' ? tr('plannerCompleted') : tr('plannerReopened'));
       return;
     }
-    const task = findTask(taskId);
-    if (!task) { button.disabled = false; return; }
     try {
       await requestJson(`/api/task-board/tasks/${encodeURIComponent(taskId)}/status`, {
         method: 'POST',
-        json: { status, expectedRevision: openRevision },
+        json: { status, expectedRevision: context.revision },
       });
       closePlannerOverlay();
       await loadPlanner({ quiet: true });
@@ -1045,16 +1171,16 @@
     }
   }
 
-  async function handleDrawerAction(taskId, action, button, openRevision) {
-    if (action === 'save') return saveDrawer(taskId, button, openRevision);
-    if (action === 'start') return startTask(taskId, button, openRevision);
+  async function handleDrawerAction(taskId, action, button, context) {
+    if (action === 'save') return saveDrawer(taskId, button, context);
+    if (action === 'start') return startTask(taskId, button, context);
     if (action === 'chat') {
       window.open(`/chat.html?task=${encodeURIComponent(taskId)}`, '_blank');
       return;
     }
-    if (action === 'lifecycle') return setLifecycle(taskId, button.dataset.status, button, openRevision);
+    if (action === 'lifecycle') return setLifecycle(taskId, button.dataset.status, button, context);
     if (action === 'archive' && window.confirm(tr('plannerArchiveConfirm'))) {
-      return setLifecycle(taskId, 'archived', button, openRevision);
+      return setLifecycle(taskId, 'archived', button, context);
     }
   }
 
@@ -1094,7 +1220,7 @@
     if (!action) return;
     const kind = action.dataset.action;
     if (kind === 'new-task') openNewTaskDialog();
-    else if (kind === 'refresh') loadPlanner();
+    else if (kind === 'refresh') loadPlanner({ refreshDirectories: true });
     else if (kind === 'mode') {
       state.mode = action.dataset.mode === 'history' ? 'history' : 'board';
       state.attention = '';
@@ -1111,6 +1237,8 @@
       if (state.mode === 'history' && action.closest('.planner-history-actions')) {
         window.open(`/chat.html?task=${encodeURIComponent(taskId)}`, '_blank');
       } else openTaskDrawer(taskId);
+    } else if (kind === 'open-chat') {
+      window.open(`/chat.html?task=${encodeURIComponent(action.dataset.taskId)}`, '_blank');
     } else if (kind === 'promote') {
       promoteObserved(action.dataset.taskId, action);
     }
@@ -1127,19 +1255,12 @@
   function handleRootInput(event) {
     if (!event.target.matches('[data-control="search"]')) return;
     state.query = event.target.value;
-    const selection = event.target.selectionStart;
     clearTimeout(state.searchTimer);
-    state.searchTimer = setTimeout(() => {
-      render();
-      const next = root.querySelector('[data-control="search"]');
-      if (next) {
-        next.focus();
-        if (Number.isFinite(selection)) next.setSelectionRange(selection, selection);
-      }
-    }, 90);
+    state.searchTimer = setTimeout(render, 90);
   }
 
   function handleRootKeydown(event) {
+    if (event.target.closest('button,a,input,select,textarea')) return;
     const card = event.target.closest('.planner-card');
     if (card && (event.key === 'Enter' || event.key === ' ')) {
       event.preventDefault();
@@ -1197,6 +1318,7 @@
       query: state.query,
       attention: state.attention,
       mobileStage: state.mobileStage,
+      renderState: captureRenderState(),
     };
   }
 
@@ -1210,6 +1332,7 @@
     state.attention = String(next.attention || '');
     state.mobileStage = STAGES.includes(next.mobileStage) ? next.mobileStage : 'inbox';
     state.draggingId = '';
+    pendingRenderState = next.renderState || null;
   }
 
   const fleetUiStates = new Map();
@@ -1238,8 +1361,11 @@
     surface = 'global';
     lockedDirId = '';
     bindPlannerRoot(root);
-    if (!state.loaded && !state.loading) loadPlanner();
-    else render();
+    if (!state.loaded && !state.loading) loadPlanner({ refreshDirectories: true });
+    else {
+      render();
+      if (state.loaded) loadPlanner({ quiet: true, refreshDirectories: true });
+    }
   }
 
   function mountFleetSurface(element, dirId) {
@@ -1247,21 +1373,30 @@
     if (!element || !nextDirId) return;
     const sameFleet = surface === 'fleet' && lockedDirId === nextDirId;
     if (!sameFleet) closePlannerOverlay();
-    if (surface === 'global') globalUiState = uiStateSnapshot();
-    else if (surface === 'fleet') fleetUiStates.set(lockedDirId, uiStateSnapshot());
-    if (root !== element) root.innerHTML = '';
+    let currentSurfaceState = null;
+    if (surface === 'global') {
+      currentSurfaceState = uiStateSnapshot();
+      globalUiState = currentSurfaceState;
+    } else if (surface === 'fleet') {
+      currentSurfaceState = uiStateSnapshot();
+      fleetUiStates.set(lockedDirId, currentSurfaceState);
+    }
+    if (root !== element || !sameFleet) root.innerHTML = '';
     root = element;
     surface = 'fleet';
     lockedDirId = nextDirId;
-    const saved = sameFleet ? uiStateSnapshot() : fleetUiStates.get(nextDirId);
+    const saved = sameFleet ? currentSurfaceState : fleetUiStates.get(nextDirId);
     applyUiState({
       ...(saved || {}),
       mode: 'board',
       dirId: nextDirId,
     });
     bindPlannerRoot(root);
-    if (!state.loaded && !state.loading) loadPlanner();
-    else render();
+    if (!state.loaded && !state.loading) loadPlanner({ refreshDirectories: true });
+    else {
+      render();
+      if (state.loaded) loadPlanner({ quiet: true, refreshDirectories: true });
+    }
   }
 
   function unmountFleetSurface() {
@@ -1286,12 +1421,35 @@
   window.MultiCCTaskPlanner = Object.freeze({
     mountFleet: mountFleetSurface,
     unmountFleet: unmountFleetSurface,
-    refresh: () => loadPlanner({ quiet: true }),
+    refresh: () => loadPlanner({ refreshDirectories: true }),
+    reconcileSnapshot: reconcilePlannerSnapshot,
   });
 
   const originalSetView = window.setView;
+  const topbarRefresh = document.getElementById('topbar-refresh');
+  const dashboardRefresh = topbarRefresh && topbarRefresh.onclick;
+  const dashboardRefreshTitle = topbarRefresh && topbarRefresh.title;
+  const dashboardRefreshI18n = topbarRefresh && topbarRefresh.getAttribute('data-i18n-title');
+
+  function syncTopbarRefresh(plannerActive) {
+    if (!topbarRefresh) return;
+    if (plannerActive) {
+      topbarRefresh.onclick = () => loadPlanner({ refreshDirectories: true });
+      topbarRefresh.removeAttribute('data-i18n-title');
+      topbarRefresh.title = tr('plannerRefresh');
+      topbarRefresh.setAttribute('aria-label', tr('plannerRefresh'));
+      return;
+    }
+    topbarRefresh.onclick = dashboardRefresh || (() => window.loadDashboard && window.loadDashboard());
+    if (dashboardRefreshI18n) topbarRefresh.setAttribute('data-i18n-title', dashboardRefreshI18n);
+    else topbarRefresh.removeAttribute('data-i18n-title');
+    topbarRefresh.title = dashboardRefreshTitle || '';
+    topbarRefresh.removeAttribute('aria-label');
+  }
+
   window.setView = function setPlannerAwareView(view) {
     if (typeof originalSetView === 'function') originalSetView(view);
+    syncTopbarRefresh(view === 'tasks');
     if (view === 'tasks') {
       activateGlobalSurface();
       const crumb = document.getElementById('crumb');
