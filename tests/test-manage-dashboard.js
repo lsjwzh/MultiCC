@@ -219,6 +219,22 @@ test('task-board activity lights the outer Fleet card like a running session', (
   assert.equal(running.context.isAnyWorkInDirRunning('fleet-idle'), false);
 });
 
+test('Fleet parent activity reuses the task board origin-aware running aggregate', () => {
+  const taskBoardSource = read('public/manage-taskboard.js');
+  const dashboardSource = read('public/manage-dashboard.js');
+
+  // Directory membership and board/session origin policy stay behind one read
+  // port. Dashboard consumers must not independently count raw runState values.
+  assert.match(taskBoardSource,
+    /function taskBoardRunningCountForDir\(dirId\)\s*\{\s*return window\.MultiCCTaskBoardUi\.runningTaskCount\(_tbTasksForDir\(dirId\)\);\s*\}/);
+  assert.match(dashboardSource,
+    /function isAnyWorkInDirRunning\(dirId\)[\s\S]*?taskBoardRunningCountForDir\(dirId\)/);
+  assert.match(dashboardSource,
+    /function renderDirPreview\(dirId, dirSessions\)[\s\S]*?taskBoardRunningCountForDir\(dirId\)/);
+  assert.match(dashboardSource,
+    /function renderDirectoryDetailBody\(dirId\)[\s\S]*?taskBoardRunningCountForDir\(dirId\)/);
+});
+
 test('task-board tab renders and clears the shared running animation', () => {
   let runningTaskCount = 2;
   const { context } = createHarness({
