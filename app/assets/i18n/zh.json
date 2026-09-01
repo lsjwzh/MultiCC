@@ -991,5 +991,7 @@
   "plannerUnknownFleet": "未知 Fleet",
   "plannerNoDescription": "暂无补充描述",
   "plannerDragLabel": "拖动任务：{title}",
-  "plannerOpenTaskLabel": "打开任务：{title}"
+  "plannerOpenTaskLabel": "打开任务：{title}",
+  "plannerAnswerQuestion": "回答问题",
+  "plannerInspectError": "查看异常"
 }

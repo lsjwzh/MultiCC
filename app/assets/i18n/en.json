@@ -991,5 +991,7 @@
   "plannerUnknownFleet": "Unknown fleet",
   "plannerNoDescription": "No additional description",
   "plannerDragLabel": "Drag task: {title}",
-  "plannerOpenTaskLabel": "Open task: {title}"
+  "plannerOpenTaskLabel": "Open task: {title}",
+  "plannerAnswerQuestion": "Answer question",
+  "plannerInspectError": "Inspect error"
 }
