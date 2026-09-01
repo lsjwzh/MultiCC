@@ -249,6 +249,68 @@ test('task-board tab renders and clears the shared running animation', () => {
   assert.match(css, /prefers-reduced-motion:reduce[\s\S]*?\.card-border-rainbow\{animation:none/);
 });
 
+test('Fleet detail exposes a third planning tab scoped to the Fleet being rendered', () => {
+  const mounts = [];
+  let unmounts = 0;
+  const composerStates = [];
+  const plannerRoot = {};
+  const body = {
+    innerHTML: '',
+    querySelector(selector) {
+      return selector === '.fleet-task-planner-root' ? plannerRoot : null;
+    },
+  };
+  const modalClasses = new Set();
+  const modal = {
+    classList: {
+      toggle(name, enabled) {
+        if (enabled) modalClasses.add(name);
+        else modalClasses.delete(name);
+      },
+    },
+  };
+  const { context } = createHarness({
+    _tbTasksForDir: dirId => [{
+      id: `planned-${dirId}`, recordType: 'planned', status: 'active',
+    }],
+    renderTaskBoardSection: () => '<div class="board">board</div>',
+    syncTaskBoardDirComposer(dirId, active) { composerStates.push({ dirId, active }); },
+    MultiCCTaskPlanner: {
+      mountFleet(element, dirId) { mounts.push({ element, dirId }); },
+      unmountFleet() { unmounts += 1; },
+    },
+  });
+  context.document.getElementById = id => {
+    if (id === 'dir-detail-body') return body;
+    if (id === 'dir-detail-modal') return modal;
+    return null;
+  };
+  vm.runInContext(`
+    _cachedDirectories = [
+      { id: 'fleet-a', name: 'Fleet A' },
+      { id: 'fleet-b', name: 'Fleet B' },
+    ];
+    _detailDirId = 'fleet-a';
+  `, context);
+
+  context.switchDirDetailTab('planner');
+  assert.equal((body.innerHTML.match(/<button class="dd-tab/g) || []).length, 3);
+  assert.match(body.innerHTML, /class="dd-tab on"[^>]*onclick="switchDirDetailTab\('planner'\)"[^>]*>🗂 计划看板 \(1\)/);
+  assert.equal(mounts.length, 1);
+  assert.equal(mounts[0].element, plannerRoot);
+  assert.equal(mounts[0].dirId, 'fleet-a');
+  assert.equal(modalClasses.has('fleet-planner-open'), true);
+  assert.deepEqual(composerStates.at(-1), { dirId: 'fleet-a', active: false });
+
+  vm.runInContext("_detailDirId = 'fleet-b'", context);
+  context.renderDirectoryDetailBody('fleet-b');
+  assert.deepEqual(mounts.map(call => call.dirId), ['fleet-a', 'fleet-b']);
+
+  context.switchDirDetailTab('taskboard');
+  assert.equal(unmounts, 1);
+  assert.equal(modalClasses.has('fleet-planner-open'), false);
+});
+
 test('session card consumes provider summary fields without rendering credential material', () => {
   const { context } = createHarness({
     _providerData: {
