@@ -207,15 +207,26 @@ test('task board display state follows classify runState for icon and status tex
   assert.doesNotMatch(runStateAdapter, /Busy\(/);
 });
 
-test('task board running aggregation follows the shared display policy', () => {
+test('task board running aggregation only links independent tasks to parent activity', () => {
   assert.equal(taskBoardUi.runningTaskCount([
-    { id: 'running', status: 'active', runState: 'running' },
-    { id: 'queued', status: 'active', runState: 'queued' },
-    { id: 'waiting', status: 'active', runState: 'waiting' },
-    { id: 'error', status: 'active', runState: 'error' },
+    { id: 'board-running', origin: 'board', status: 'active', runState: 'running' },
+    // A chat-origin task may keep its own row-level running presentation, but
+    // it must not light the Fleet card, activity summary, or Task Board tab.
+    { id: 'session-running', origin: 'session', status: 'active', runState: 'running' },
+    { id: 'board-queued', origin: 'board', status: 'active', runState: 'queued' },
+    { id: 'board-waiting', origin: 'board', status: 'active', runState: 'waiting' },
+    { id: 'board-error', origin: 'board', status: 'active', runState: 'error' },
     // A lifecycle decision outranks a stale turn projection and must stop all
     // parent-level motion immediately.
-    { id: 'done-stale', status: 'done', runState: 'running' },
+    { id: 'board-done-stale', origin: 'board', status: 'done', runState: 'running' },
+  ]), 1);
+
+  // Rolling-upgrade compatibility: before `origin` was persisted, only the
+  // stable board-send id shape identifies an independent task.
+  assert.equal(taskBoardUi.runningTaskCount([
+    { id: 'tsk-0123456789abcdef0123456789abcdef', status: 'active', runState: 'running' },
+    { id: 'tsk_0123456789abcdef0123456789abcdef', status: 'active', runState: 'running' },
+    { id: 'tsk-router-0123456789abcdef01234567', status: 'active', runState: 'running' },
   ]), 1);
   assert.equal(taskBoardUi.runningTaskCount(null), 0);
 });

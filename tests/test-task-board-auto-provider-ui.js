@@ -156,6 +156,107 @@ function createTaskBoardComposerHarness({
   return { context, window, host, selectors, composer, fetchCalls, submitCalls };
 }
 
+function createTaskBoardOriginFilterHarness() {
+  const statusPresentation = require('../public/status-presentation');
+  const now = Date.now();
+  const board = {
+    modules: [
+      { id: 'mod-a', dirId: 'fleet-a', name: 'Fleet A', source: 'manual', lastTs: now },
+      { id: 'mod-b', dirId: 'fleet-b', name: 'Fleet B', source: 'manual', lastTs: now },
+    ],
+    tasks: [
+      {
+        id: 'board-active', moduleId: 'mod-a', dirIds: ['fleet-a'], title: '独立任务进行中',
+        body: 'board active body', status: 'active', runState: 'idle', origin: 'board',
+        // Deliberately cross the planning capability with the admission source:
+        // origin, not recordType, owns this filter.
+        recordType: 'observed', refCount: 1, lastTs: now,
+      },
+      {
+        id: 'board-done', moduleId: 'mod-a', dirIds: ['fleet-a'], title: '独立任务已完成',
+        body: 'board done body', status: 'done', runState: 'succeeded', origin: 'board',
+        recordType: 'observed', refCount: 1, lastTs: now - 1,
+      },
+      {
+        id: 'session-active', moduleId: 'mod-a', dirIds: ['fleet-a'], title: '会话任务进行中',
+        body: 'session active body', status: 'active', runState: 'idle', origin: 'session',
+        recordType: 'planned', refCount: 1, lastTs: now - 2,
+      },
+      {
+        id: 'session-done', moduleId: 'mod-a', dirIds: ['fleet-a'], title: '会话任务已完成',
+        body: 'session done body', status: 'done', runState: 'succeeded', origin: 'session',
+        recordType: 'planned', refCount: 1, lastTs: now - 3,
+      },
+      {
+        id: 'session-only', moduleId: 'mod-b', dirIds: ['fleet-b'], title: '只有会话来源',
+        body: 'session only body', status: 'active', runState: 'idle', origin: 'session',
+        recordType: 'planned', refCount: 1, lastTs: now - 4,
+      },
+    ],
+    sessionLabels: {},
+  };
+  const fetchCalls = [];
+  const renderCalls = [];
+  const fetch = async (url, options = {}) => {
+    fetchCalls.push({ url: String(url), options });
+    if (url === '/api/task-board/archive-completed') {
+      return { ok: true, json: async () => ({ ok: true, archivedCount: 2 }) };
+    }
+    if (url === '/api/task-board') {
+      return { ok: true, json: async () => ({ ok: true, ...board }) };
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+  const window = {
+    MultiCCTaskBoardUi: taskBoardUi,
+    MultiCCStatusPresentation: statusPresentation,
+    t: key => key,
+    open() {},
+  };
+  const context = vm.createContext({
+    console,
+    window,
+    document: {
+      getElementById: () => null,
+      createElement: tag => taskBoardFakeElement({ tagName: String(tag).toUpperCase() }),
+      body: { appendChild() {} },
+      head: { appendChild() {} },
+    },
+    fetch,
+    confirm: () => true,
+    setInterval: () => 0,
+    clearInterval() {},
+    setTimeout: () => 0,
+    clearTimeout() {},
+    Date,
+    _detailDirId: 'fleet-a',
+    renderDirectoryDetailBody(dirId) { renderCalls.push(dirId); },
+  });
+  vm.runInContext(
+    fs.readFileSync(path.join(__dirname, '..', 'public', 'manage-taskboard.js'), 'utf8'),
+    context,
+    { filename: 'manage-taskboard.js' },
+  );
+  context.__taskBoardOriginFixture = board;
+  vm.runInContext('_tbBoard = __taskBoardOriginFixture', context);
+
+  function call(name, ...args) {
+    context.__taskBoardOriginArgs = args;
+    return vm.runInContext(`${name}(...__taskBoardOriginArgs)`, context);
+  }
+
+  function state() {
+    return JSON.parse(vm.runInContext(`JSON.stringify({
+      origin: _tbOriginFilter,
+      mergeMode: _tbMergeMode,
+      mergeDirId: _tbMergeDirId,
+      mergeTaskIds: [..._tbMergeTaskIds],
+    })`, context));
+  }
+
+  return { board, call, context, fetchCalls, renderCalls, state };
+}
+
 async function settleTaskBoardComposer() {
   await new Promise(resolve => setImmediate(resolve));
   await Promise.resolve();
@@ -167,6 +268,99 @@ function taskBoardDeferred() {
   const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
+
+test('classic task board source filter renders all, independent, and session task views', () => {
+  const harness = createTaskBoardOriginFilterHarness();
+  let stopped = 0;
+  const event = { stopPropagation() { stopped += 1; } };
+
+  let html = harness.call('renderTaskBoardSection', 'fleet-a', { tabbed: true });
+  assert.match(html, /<span>1 模块 · 4 任务<\/span>/);
+  assert.match(html, /tb-origin-filter-btn active[^>]*aria-pressed="true"[^>]*>全部 <strong>4<\/strong>/);
+  assert.match(html, /tb-origin-filter-btn"[^>]*aria-pressed="false"[^>]*>独立任务 <strong>2<\/strong>/);
+  assert.match(html, /tb-origin-filter-btn"[^>]*aria-pressed="false"[^>]*>会话任务 <strong>2<\/strong>/);
+  assert.match(html, /独立任务进行中/);
+  assert.match(html, /独立任务已完成/);
+  assert.match(html, /会话任务进行中/);
+  assert.match(html, /会话任务已完成/);
+
+  harness.call('setTaskBoardOriginFilter', event, 'board', 'fleet-a');
+  html = harness.call('renderTaskBoardSection', 'fleet-a', { tabbed: true });
+  assert.equal(harness.state().origin, 'board');
+  assert.match(html, /<span>1 模块 · 显示 2\/4 任务<\/span>/);
+  assert.match(html, /tb-origin-filter-btn active[^>]*aria-pressed="true"[^>]*>独立任务 <strong>2<\/strong>/);
+  assert.match(html, /独立任务进行中/);
+  assert.match(html, /独立任务已完成/);
+  assert.doesNotMatch(html, /会话任务进行中/);
+  assert.doesNotMatch(html, /会话任务已完成/);
+
+  harness.call('setTaskBoardOriginFilter', event, 'session', 'fleet-a');
+  html = harness.call('renderTaskBoardSection', 'fleet-a', { tabbed: true });
+  assert.equal(harness.state().origin, 'session');
+  assert.match(html, /<span>1 模块 · 显示 2\/4 任务<\/span>/);
+  assert.match(html, /tb-origin-filter-btn active[^>]*aria-pressed="true"[^>]*>会话任务 <strong>2<\/strong>/);
+  assert.match(html, /会话任务进行中/);
+  assert.match(html, /会话任务已完成/);
+  assert.doesNotMatch(html, /独立任务进行中/);
+  assert.doesNotMatch(html, /独立任务已完成/);
+
+  harness.call('setTaskBoardOriginFilter', event, 'all', 'fleet-a');
+  html = harness.call('renderTaskBoardSection', 'fleet-a', { tabbed: true });
+  assert.equal(harness.state().origin, 'all');
+  assert.match(html, /<span>1 模块 · 4 任务<\/span>/);
+  assert.match(html, /独立任务进行中/);
+  assert.match(html, /会话任务进行中/);
+
+  harness.call('setTaskBoardOriginFilter', event, 'board', 'fleet-b');
+  html = harness.call('renderTaskBoardSection', 'fleet-b', { tabbed: true });
+  assert.match(html, /<span>0 模块 · 显示 0\/1 任务<\/span>/);
+  assert.match(html, /当前来源筛选下没有任务。/);
+  assert.match(html, />全部 <strong>1<\/strong>/);
+  assert.match(html, />独立任务 <strong>0<\/strong>/);
+  assert.match(html, />会话任务 <strong>1<\/strong>/);
+  assert.doesNotMatch(html, /只有会话来源/);
+
+  assert.equal(stopped, 4);
+  assert.deepEqual(harness.renderCalls, ['fleet-a', 'fleet-a', 'fleet-a', 'fleet-b']);
+});
+
+test('source filter exits merge mode while one-click cleanup remains Fleet-wide', async () => {
+  const harness = createTaskBoardOriginFilterHarness();
+  const event = { stopPropagation() {} };
+
+  harness.call('toggleTaskBoardMergeMode', event, 'fleet-a');
+  harness.call('handleTaskBoardRowClick', event, 'board-active');
+  assert.deepEqual(harness.state(), {
+    origin: 'all',
+    mergeMode: true,
+    mergeDirId: 'fleet-a',
+    mergeTaskIds: ['board-active'],
+  });
+
+  harness.call('setTaskBoardOriginFilter', event, 'session', 'fleet-a');
+  assert.deepEqual(harness.state(), {
+    origin: 'session',
+    mergeMode: false,
+    mergeDirId: null,
+    mergeTaskIds: [],
+  });
+
+  const html = harness.call('renderTaskBoardSection', 'fleet-a', { tabbed: true });
+  assert.doesNotMatch(html, /class="tb-merge-bar"/);
+  assert.match(html, /title="归档 Fleet 内全部已完成任务（不受来源筛选影响）"/);
+  assert.match(html, /🧹 一键清理 \(2\)/,
+    'the filtered session view has one completed row, but cleanup counts both Fleet sources');
+
+  const button = { disabled: false };
+  await harness.call('archiveCompletedTaskBoard', event, 'fleet-a', button);
+  const request = harness.fetchCalls.find(call => call.url === '/api/task-board/archive-completed');
+  assert.ok(request, 'cleanup must call the Fleet-wide archive endpoint');
+  assert.equal(request.options.method, 'POST');
+  assert.deepEqual(JSON.parse(request.options.body), { dirId: 'fleet-a' });
+  assert.equal(Object.prototype.hasOwnProperty.call(JSON.parse(request.options.body), 'origin'), false,
+    'the selected source is a view filter and must not narrow cleanup scope');
+  assert.equal(button.disabled, true);
+});
 
 test('task board Auto provider defaults to the first two managed routes', () => {
   const editor = require('../public/auto-provider-editor');
