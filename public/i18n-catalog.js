@@ -993,7 +993,9 @@ window.MULTICC_I18N_CATALOG = {
     "plannerUnknownFleet": "未知 Fleet",
     "plannerNoDescription": "暂无补充描述",
     "plannerDragLabel": "拖动任务：{title}",
-    "plannerOpenTaskLabel": "打开任务：{title}"
+    "plannerOpenTaskLabel": "打开任务：{title}",
+    "plannerAnswerQuestion": "回答问题",
+    "plannerInspectError": "查看异常"
   },
   "en": {
     "newDirectory": "New Directory",
@@ -1988,6 +1990,8 @@ window.MULTICC_I18N_CATALOG = {
     "plannerUnknownFleet": "Unknown fleet",
     "plannerNoDescription": "No additional description",
     "plannerDragLabel": "Drag task: {title}",
-    "plannerOpenTaskLabel": "Open task: {title}"
+    "plannerOpenTaskLabel": "Open task: {title}",
+    "plannerAnswerQuestion": "Answer question",
+    "plannerInspectError": "Inspect error"
   }
 };
