@@ -1414,11 +1414,12 @@ function updateDirDetailPush(dirId) {
   btn.title = title;
   btn.onclick = (e) => { e.stopPropagation(); pushDirectory(dirId); };
 }
-// Detail modal content tab: classic sessions view vs task board. Remembered
-// across re-renders/openings so WS-driven redraws don't yank the user back.
-let _dirDetailTab = 'sessions';   // 'sessions' | 'taskboard'
+// Detail modal content tabs: classic sessions, the observed task tree, and the
+// proactive planning board. Remembered across re-renders/openings so WS-driven
+// redraws don't yank the user back to another task perspective.
+let _dirDetailTab = 'sessions';   // 'sessions' | 'taskboard' | 'planner'
 function switchDirDetailTab(tab) {
-  _dirDetailTab = tab === 'taskboard' ? 'taskboard' : 'sessions';
+  _dirDetailTab = ['taskboard', 'planner'].includes(tab) ? tab : 'sessions';
   if (_detailDirId) renderDirectoryDetailBody(_detailDirId);
 }
 function renderDirectoryDetailBody(dirId) {
@@ -1428,7 +1429,9 @@ function renderDirectoryDetailBody(dirId) {
   const hasBoard = !dir?.external && typeof renderTaskBoardSection === 'function';
   let tabs = '';
   if (hasBoard) {
-    const taskCount = typeof _tbTasksForDir === 'function' ? _tbTasksForDir(dirId).length : 0;
+    const fleetTasks = typeof _tbTasksForDir === 'function' ? _tbTasksForDir(dirId) : [];
+    const taskCount = fleetTasks.length;
+    const plannedTaskCount = fleetTasks.filter(task => task.recordType === 'planned' && task.status !== 'archived').length;
     const runningTaskCount = typeof taskBoardRunningCountForDir === 'function'
       ? taskBoardRunningCountForDir(dirId)
       : 0;
@@ -1442,22 +1445,37 @@ function renderDirectoryDetailBody(dirId) {
       <div class="dd-tabs">
         <button class="dd-tab${_dirDetailTab === 'sessions' ? ' on' : ''}" onclick="switchDirDetailTab('sessions')">🖥 会话</button>
         <button class="dd-tab${_dirDetailTab === 'taskboard' ? ' on' : ''}${runningTaskCount ? ' has-running' : ''}" onclick="switchDirDetailTab('taskboard')">📋 任务板${taskCount ? ` (${taskCount})` : ''}${runningBadge}</button>
+        <button class="dd-tab${_dirDetailTab === 'planner' ? ' on' : ''}" onclick="switchDirDetailTab('planner')" title="Trello 视角：主动计划、拖拽推进和验收">🗂 计划看板${plannedTaskCount ? ` (${plannedTaskCount})` : ''}</button>
       </div>`;
   }
   const boardTabActive = hasBoard && _dirDetailTab === 'taskboard';
-  const content = boardTabActive
-    ? renderTaskBoardSection(dirId, { tabbed: true })
-    : renderEventTimeline(dirId) + renderDirSessionGroups(dirSessionsOf(dirId), dirId);
+  const plannerTabActive = hasBoard && _dirDetailTab === 'planner';
+  if (!plannerTabActive && window.MultiCCTaskPlanner?.unmountFleet) {
+    window.MultiCCTaskPlanner.unmountFleet();
+  }
+  const content = plannerTabActive
+    ? '<div class="fleet-task-planner-root" aria-live="polite"></div>'
+    : boardTabActive
+      ? renderTaskBoardSection(dirId, { tabbed: true })
+      : renderEventTimeline(dirId) + renderDirSessionGroups(dirSessionsOf(dirId), dirId);
+  const modal = document.getElementById('dir-detail-modal');
+  if (modal) modal.classList.toggle('fleet-planner-open', plannerTabActive);
   body.innerHTML = tabs + content;
-  if (!boardTabActive) initSessionCardDragDrop(body);
+  if (plannerTabActive) {
+    const plannerRoot = body.querySelector('.fleet-task-planner-root');
+    if (plannerRoot && window.MultiCCTaskPlanner?.mountFleet) {
+      window.MultiCCTaskPlanner.mountFleet(plannerRoot, dirId);
+    }
+  } else if (!boardTabActive) initSessionCardDragDrop(body);
   // The board composer sits outside this re-rendered body (static container in
   // the modal) so typed text/recording survive WS-driven redraws.
   if (typeof syncTaskBoardDirComposer === 'function') syncTaskBoardDirComposer(dirId, boardTabActive);
 }
 function closeDirectoryDetail() {
+  if (window.MultiCCTaskPlanner?.unmountFleet) window.MultiCCTaskPlanner.unmountFleet();
   _detailDirId = null;
   const m = document.getElementById('dir-detail-modal');
-  if (m) m.classList.remove('visible');
+  if (m) m.classList.remove('visible', 'fleet-planner-open');
 }
 function _detailModalOpen() {
   const m = document.getElementById('dir-detail-modal');

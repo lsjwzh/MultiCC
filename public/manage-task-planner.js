@@ -230,8 +230,19 @@
     sendIds: new Map(),
   };
 
-  const root = document.getElementById('task-planner-root');
-  if (!root) return;
+  const globalRoot = document.getElementById('task-planner-root');
+  if (!globalRoot) return;
+  let root = globalRoot;
+  let surface = 'global';
+  let lockedDirId = '';
+  let globalUiState = {
+    mode: state.mode,
+    dirId: state.dirId,
+    query: state.query,
+    attention: state.attention,
+    mobileStage: state.mobileStage,
+  };
+  const boundRoots = new WeakSet();
 
   function tr(key, params) {
     if (typeof window.t === 'function') return window.t(key, params);
@@ -616,6 +627,7 @@
   }
 
   function render() {
+    const embedded = surface === 'fleet';
     const plannedCount = baseTasks('board').length;
     const plannedAttention = baseTasks('board').filter(task => !!attentionKind(task)).length;
     const navBadge = document.getElementById('nav-planner-count');
@@ -631,20 +643,27 @@
         ? `<div class="planner-error"><div>${esc(tr('plannerLoadFailed', { error: state.error }))}<div style="margin-top:12px"><button class="btn" type="button" data-action="refresh">${esc(tr('plannerRetry'))}</button></div></div></div>`
         : state.mode === 'board' ? boardHtml() : historyHtml();
 
-    root.innerHTML = `<div class="planner-shell">
-      <div class="planner-toolbar">
-        <div class="planner-toolbar-group">
-          <label class="planner-sr-only" for="planner-fleet-filter">${esc(tr('plannerFleet'))}</label>
+    const directory = directoriesById().get(lockedDirId);
+    const fleetControl = embedded
+      ? `<div class="planner-fleet-lock" title="${esc(directory && directory.name || lockedDirId)}"><span aria-hidden="true">◆</span><strong>${esc(directory && directory.name || lockedDirId || tr('plannerUnknownFleet'))}</strong><span>${esc(tr('plannerBoard'))}</span></div>`
+      : `<label class="planner-sr-only" for="planner-fleet-filter">${esc(tr('plannerFleet'))}</label>
           <select class="planner-control planner-select" id="planner-fleet-filter" data-control="fleet">
             <option value="">${esc(tr('plannerAllFleets'))}</option>${directoryOptions()}
-          </select>
+          </select>`;
+    const modeControl = embedded ? '' : `<div class="planner-segment" role="tablist">
+          <button type="button" role="tab" aria-selected="${state.mode === 'board'}" aria-controls="planner-content" class="${state.mode === 'board' ? 'active' : ''}" data-action="mode" data-mode="board">${esc(tr('plannerBoard'))}</button>
+          <button type="button" role="tab" aria-selected="${state.mode === 'history'}" aria-controls="planner-content" class="${state.mode === 'history' ? 'active' : ''}" data-action="mode" data-mode="history">${esc(tr('plannerHistory'))}</button>
+        </div>`;
+
+    root.classList.toggle('planner-fleet-embedded', embedded);
+    root.innerHTML = `<div class="planner-shell${embedded ? ' embedded' : ''}">
+      <div class="planner-toolbar">
+        <div class="planner-toolbar-group">
+          ${fleetControl}
           <label class="planner-search"><span class="planner-sr-only">${esc(tr('plannerSearchPlaceholder'))}</span><input class="planner-control" type="search" value="${esc(state.query)}" placeholder="${esc(tr('plannerSearchPlaceholder'))}" data-control="search"></label>
         </div>
         <div class="planner-grow"></div>
-        <div class="planner-segment" role="tablist">
-          <button type="button" role="tab" aria-selected="${state.mode === 'board'}" aria-controls="planner-content" class="${state.mode === 'board' ? 'active' : ''}" data-action="mode" data-mode="board">${esc(tr('plannerBoard'))}</button>
-          <button type="button" role="tab" aria-selected="${state.mode === 'history'}" aria-controls="planner-content" class="${state.mode === 'history' ? 'active' : ''}" data-action="mode" data-mode="history">${esc(tr('plannerHistory'))}</button>
-        </div>
+        ${modeControl}
         <div class="planner-toolbar-group actions">
           <button class="btn planner-attention-toggle${state.attention ? ' active' : ''}" type="button" aria-pressed="${!!state.attention}" data-action="attention" data-kind="all">⚑ ${esc(tr('plannerNeedsMe'))}</button>
           <button class="icon-btn" type="button" data-action="refresh" title="${esc(tr('plannerRefresh'))}" aria-label="${esc(tr('plannerRefresh'))}">⟳</button>
@@ -769,7 +788,10 @@
   }
 
   function panelOptions(selected) {
-    return state.directories.map(directory => `<option value="${esc(directory.id)}"${selected === String(directory.id) ? ' selected' : ''}>${esc(directory.name || directory.id)}</option>`).join('');
+    const directories = surface === 'fleet' && lockedDirId
+      ? state.directories.filter(directory => String(directory.id) === lockedDirId)
+      : state.directories;
+    return directories.map(directory => `<option value="${esc(directory.id)}"${selected === String(directory.id) ? ' selected' : ''}>${esc(directory.name || directory.id)}</option>`).join('');
   }
 
   function priorityOptions(selected) {
@@ -1096,6 +1118,7 @@
 
   function handleRootChange(event) {
     if (event.target.matches('[data-control="fleet"]')) {
+      if (surface === 'fleet') return;
       state.dirId = event.target.value;
       render();
     }
@@ -1167,22 +1190,110 @@
     clearDragClasses();
   }
 
-  root.addEventListener('click', handleRootClick);
-  root.addEventListener('change', handleRootChange);
-  root.addEventListener('input', handleRootInput);
-  root.addEventListener('keydown', handleRootKeydown);
-  root.addEventListener('dragstart', handleDragStart);
-  root.addEventListener('dragover', handleDragOver);
-  root.addEventListener('drop', handleDrop);
-  root.addEventListener('dragend', handleDragEnd);
+  function uiStateSnapshot() {
+    return {
+      mode: state.mode,
+      dirId: state.dirId,
+      query: state.query,
+      attention: state.attention,
+      mobileStage: state.mobileStage,
+    };
+  }
+
+  function applyUiState(value) {
+    const next = value || {};
+    clearTimeout(state.searchTimer);
+    state.searchTimer = null;
+    state.mode = next.mode === 'history' ? 'history' : 'board';
+    state.dirId = String(next.dirId || '');
+    state.query = String(next.query || '');
+    state.attention = String(next.attention || '');
+    state.mobileStage = STAGES.includes(next.mobileStage) ? next.mobileStage : 'inbox';
+    state.draggingId = '';
+  }
+
+  const fleetUiStates = new Map();
+
+  function bindPlannerRoot(element) {
+    if (!element || boundRoots.has(element)) return;
+    element.addEventListener('click', handleRootClick);
+    element.addEventListener('change', handleRootChange);
+    element.addEventListener('input', handleRootInput);
+    element.addEventListener('keydown', handleRootKeydown);
+    element.addEventListener('dragstart', handleDragStart);
+    element.addEventListener('dragover', handleDragOver);
+    element.addEventListener('drop', handleDrop);
+    element.addEventListener('dragend', handleDragEnd);
+    boundRoots.add(element);
+  }
+
+  function activateGlobalSurface() {
+    if (surface === 'fleet') {
+      closePlannerOverlay();
+      fleetUiStates.set(lockedDirId, uiStateSnapshot());
+      if (root !== globalRoot) root.innerHTML = '';
+      applyUiState(globalUiState);
+    }
+    root = globalRoot;
+    surface = 'global';
+    lockedDirId = '';
+    bindPlannerRoot(root);
+    if (!state.loaded && !state.loading) loadPlanner();
+    else render();
+  }
+
+  function mountFleetSurface(element, dirId) {
+    const nextDirId = String(dirId || '').trim();
+    if (!element || !nextDirId) return;
+    const sameFleet = surface === 'fleet' && lockedDirId === nextDirId;
+    if (!sameFleet) closePlannerOverlay();
+    if (surface === 'global') globalUiState = uiStateSnapshot();
+    else if (surface === 'fleet') fleetUiStates.set(lockedDirId, uiStateSnapshot());
+    if (root !== element) root.innerHTML = '';
+    root = element;
+    surface = 'fleet';
+    lockedDirId = nextDirId;
+    const saved = sameFleet ? uiStateSnapshot() : fleetUiStates.get(nextDirId);
+    applyUiState({
+      ...(saved || {}),
+      mode: 'board',
+      dirId: nextDirId,
+    });
+    bindPlannerRoot(root);
+    if (!state.loaded && !state.loading) loadPlanner();
+    else render();
+  }
+
+  function unmountFleetSurface() {
+    if (surface !== 'fleet') return;
+    closePlannerOverlay();
+    fleetUiStates.set(lockedDirId, uiStateSnapshot());
+    if (root !== globalRoot) root.innerHTML = '';
+    root = globalRoot;
+    surface = 'global';
+    lockedDirId = '';
+    applyUiState(globalUiState);
+    bindPlannerRoot(root);
+    if (!state.loaded && !state.loading) loadPlanner();
+    else render();
+  }
+
+  bindPlannerRoot(root);
   document.addEventListener('keydown', event => {
     if (event.key === 'Escape' && document.querySelector('.planner-overlay')) closePlannerOverlay();
+  });
+
+  window.MultiCCTaskPlanner = Object.freeze({
+    mountFleet: mountFleetSurface,
+    unmountFleet: unmountFleetSurface,
+    refresh: () => loadPlanner({ quiet: true }),
   });
 
   const originalSetView = window.setView;
   window.setView = function setPlannerAwareView(view) {
     if (typeof originalSetView === 'function') originalSetView(view);
     if (view === 'tasks') {
+      activateGlobalSurface();
       const crumb = document.getElementById('crumb');
       if (crumb && crumb.firstChild) {
         // The generic shell marks this node as i18n="overview". Remove that
@@ -1193,8 +1304,6 @@
       }
       const sub = document.getElementById('crumb-sub');
       if (sub) sub.textContent = tr('plannerSubtitle');
-      if (!state.loaded && !state.loading) loadPlanner();
-      else render();
     }
   };
 
