@@ -45,7 +45,7 @@ All notable changes to MultiCC are documented in this file.
 - **Task board with bound chat sessions** — every task now owns a dedicated 1:1 hidden chat session. Open a task to see its live transcript, send follow-ups, cancel runs, and clean up worktrees. Tasks carry stable short codes (`#CODE`) and archived tasks release their bound sessions.
 - **Scheduled messages** — queue messages into a session FIFO and review them in a floating dock before they are sent.
 - **Signed APK distribution** — Android APKs are built on demand and attached to GitHub Releases, signed with the project release key. The `/manage` APK area prefers a local `public/multicc.apk` and falls back to the exact release asset for the server's package version.
-- **Relay sharing for remote access** — generate relay tokens and pick addresses from `/manage`; share provider configurations securely via the `MULTICC_PROXY_TOKEN` CPR proxy.
+- **Relay sharing for remote access** — generate provider-scoped relay links and pick addresses from `/manage`; each link has independent credentials, usage records and revocation.
 - **Hibernate idle task worktrees** — idle task-bound chat worktrees are automatically hibernated to free system resources.
 - **Voice task announcements** — voice mode announces the identity of completed tasks so you can stay hands-free.
 - **Dynamic Claude model list** — the Claude model picker is populated from your local Claude CLI bundle and cached for one day.

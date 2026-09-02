@@ -189,25 +189,6 @@ function createAccessTokenSettingsHandler(deps) {
   };
 }
 
-// The relay token is read live from process.env by auth.js / providers.js,
-// so no dedicated getter is wired from server.js (keeps its line budget).
-function proxyTokenOf(deps) {
-  return typeof deps.getProxyToken === 'function'
-    ? deps.getProxyToken()
-    : (process.env.MULTICC_PROXY_TOKEN || '');
-}
-
-function createProxyTokenSettingsHandler(deps) {
-  return function proxyTokenSettingsHandler(req, res) {
-    const token = proxyTokenOf(deps) || '';
-    res.json({
-      hasToken: !!token,
-      masked: token ? (token.length > 4 ? `****${token.slice(-4)}` : '****') : '',
-      canEdit: deps.isLocalRequest(req),
-    });
-  };
-}
-
 function createBooleanSettingHandler(getEnabled) {
   return function booleanSettingHandler(req, res) {
     res.json({ enabled: getEnabled() });
@@ -254,7 +235,6 @@ function mountHostReadRoutes(app, rawDeps) {
   app.get('/api/tunnel/funnel', createTunnelFunnelHandler(deps));
   app.get('/api/tunnel/ipv6', createTunnelIpv6Handler(deps));
   app.get('/api/settings/access-token', createAccessTokenSettingsHandler(deps));
-  app.get('/api/settings/proxy-token', createProxyTokenSettingsHandler(deps));
   app.get('/api/settings/proxy', createBooleanSettingHandler(deps.getProxyEnabled));
   app.get('/api/settings/official-oauth', createBooleanSettingHandler(deps.getOfficialOAuthEnabled));
   app.get('/api/settings/power', createPowerSettingsHandler(deps));
@@ -277,7 +257,6 @@ module.exports = {
   createTunnelFunnelHandler,
   createTunnelIpv6Handler,
   createAccessTokenSettingsHandler,
-  createProxyTokenSettingsHandler,
   createBooleanSettingHandler,
   createPowerSettingsHandler,
   mountHostReadRoutes,

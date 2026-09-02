@@ -16,7 +16,6 @@ const { createAuthRuntime } = require('../src/routes/auth');
 function buildHarness(overrides = {}) {
   const state = {
     accessToken: '',
-    proxyToken: '',
     shuttingDown: false,
     local: true,
     peerAllowed: true,
@@ -70,7 +69,6 @@ function buildHarness(overrides = {}) {
     createErrorDto: (dto) => ({ error: dto }),
     getAccessToken: () => state.accessToken,
     getShuttingDown: () => state.shuttingDown,
-    getProxyToken: () => state.proxyToken,
     authorizeProviderRelayRequest: input => typeof state.relayAuthorizer === 'function'
       ? state.relayAuthorizer(input) : null,
     isRequestPeerAllowed: () => state.peerAllowed,
@@ -107,7 +105,7 @@ test('no ACCESS_TOKEN: loopback peer is allowed, external peer is rejected', asy
 });
 
 test('automatic LAN policy rejects direct public peers before login, static and relay bypasses', async () => {
-  const h = await buildHarness({ accessToken: 'sekret', proxyToken: 'relay-pxy', local: false, peerAllowed: false });
+  const h = await buildHarness({ accessToken: 'sekret', local: false, peerAllowed: false });
   try {
     for (const [method, pathname, headers] of [
       ['GET', '/login', {}],
@@ -153,52 +151,39 @@ test('cookie, x-access-token grant access; wrong ones do not', async () => {
   } finally { await h.close(); }
 });
 
-test('MULTICC_PROXY_TOKEN unlocks only the CPR relay mounts for external peers', async () => {
-  const h = await buildHarness({ accessToken: 'sekret', proxyToken: 'relay-pxy', local: false });
+test('unscoped legacy relay credentials never unlock CPR mounts', async () => {
+  const previous = process.env.MULTICC_PROXY_TOKEN;
+  process.env.MULTICC_PROXY_TOKEN = 'relay-pxy';
+  const h = await buildHarness({ accessToken: 'sekret', local: false });
   try {
-    // x-api-key (what an Anthropic-protocol client sends) opens the claude relay.
+    // A leftover environment value is deliberately ignored.
     let res = await raw(h.base, '/claude-proxy/p1/s1/v1/messages', {
       method: 'POST', headers: { 'x-api-key': 'relay-pxy' },
     });
-    assert.equal(res.status, 200);
-    assert.ok(h.state.metrics.includes('multicc_auth_proxy_relay_total'));
+    assert.equal(res.status, 403);
 
-    // Authorization: Bearer (what a Codex-protocol client sends) opens the codex relay.
+    // Bearer authentication cannot revive the global credential either.
     res = await raw(h.base, '/codex-proxy/p1/responses', {
       method: 'POST', headers: { authorization: 'Bearer relay-pxy' },
-    });
-    assert.equal(res.status, 200);
-
-    // Wrong / missing relay token stays rejected.
-    res = await raw(h.base, '/claude-proxy/p1/s1/v1/messages', {
-      method: 'POST', headers: { 'x-api-key': 'wrong' },
     });
     assert.equal(res.status, 403);
     res = await raw(h.base, '/claude-proxy/p1/s1/v1/messages', { method: 'POST' });
     assert.equal(res.status, 403);
 
-    // The relay token must not escalate: every other path stays locked.
     res = await raw(h.base, '/api/thing', { headers: { accept: 'application/json', 'x-api-key': 'relay-pxy' } });
     assert.equal(res.status, 403);
-    res = await raw(h.base, '/dashboard', { headers: { 'x-api-key': 'relay-pxy' } });
-    assert.equal(res.status, 302);
-  } finally { await h.close(); }
-
-  // No token configured → fail closed, even on the relay mounts.
-  const bare = await buildHarness({ accessToken: 'sekret', proxyToken: '', local: false });
-  try {
-    const res = await raw(bare.base, '/claude-proxy/p1/s1/v1/messages', {
-      method: 'POST', headers: { 'x-api-key': 'relay-pxy' },
-    });
-    assert.equal(res.status, 403);
-  } finally { await bare.close(); }
+    assert.equal(h.state.metrics.includes('multicc_auth_proxy_relay_total'), false);
+  } finally {
+    await h.close();
+    if (previous === undefined) delete process.env.MULTICC_PROXY_TOKEN;
+    else process.env.MULTICC_PROXY_TOKEN = previous;
+  }
 });
 
 test('a provider-scoped relay credential is independently authorized and accounted', async () => {
   const authorizations = [];
   const h = await buildHarness({
     accessToken: 'sekret',
-    proxyToken: '',
     local: false,
     relayAuthorizer(input) {
       authorizations.push(input);
