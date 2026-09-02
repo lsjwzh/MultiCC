@@ -30,6 +30,7 @@ const { createOpencodeModelLimitResolver } = require('./providers/opencode-model
 const { createCodexAttemptHome } = require('./codex-attempt-home');
 const { createCodexSessionHomeRuntime } = require('./codex-session-home');
 const { isOfficialCodexOAuthProvider } = require('./codex-official-relay');
+const { codexAccountAuthFilePath } = require('./official-accounts');
 const {
   assertCodexProxyConfigApplied,
   codexProxyConfigRequired: evaluateCodexProxyConfigRequired,
@@ -623,6 +624,10 @@ function summarize(p, opts = {}) {
     tokenMask: maskToken(token),
     hasToken: !!token,
     isOfficial: !baseUrl, // no custom base url -> default login / subscription
+    // Official-account marker (multi-account OAuth): which entry in the
+    // official-accounts store this provider borrows, if any.
+    officialAccountId: (cfg.officialAccount && typeof cfg.officialAccount.id === 'string')
+      ? cfg.officialAccount.id : null,
   };
 }
 
@@ -736,15 +741,25 @@ function getProviderLimitTarget(appType, id) {
     apiKey = (cfg.proxyTarget && cfg.proxyTarget.apiKey)
       || (cfg.auth && cfg.auth.OPENAI_API_KEY) || '';
     // Official ChatGPT-OAuth codex has no relay base_url and no API key: it logs
-    // in through ~/.codex/auth.json and talks straight to the ChatGPT backend,
-    // bypassing our proxy (so no response-header extraction is possible). Its
-    // quota — a single WEEKLY window on this plan family, no 5h — is pollable from
-    // that backend with the on-disk OAuth token; the adapter sources the
-    // credential itself, so no key travels through this seam. keyHashSeed is a
-    // constant because there is one ChatGPT account per machine → all sessions on
-    // this provider dedup to one poll.
+    // in through ~/.codex/auth.json (shared login) or, when the provider carries
+    // settingsConfig.officialAccount, that account's own auth.json in the
+    // official-accounts store. Its quota — a single WEEKLY window on this plan
+    // family, no 5h — is pollable from that backend with the on-disk OAuth
+    // token; the adapter sources the credential itself, so no key travels
+    // through this seam. keyHashSeed carries the account id so N accounts no
+    // longer dedup into one poll (the shared login keeps the legacy constant).
     if (!baseUrl && !apiKey) {
-      return { providerId: id, appType: 'codex', host: 'chatgpt.com', apiKey: null, keyHashSeed: 'codex-oauth', strategy: 'codex-oauth-usage' };
+      const accountId = (cfg.officialAccount && typeof cfg.officialAccount.id === 'string')
+        ? cfg.officialAccount.id : '';
+      return {
+        providerId: id, appType: 'codex', host: 'chatgpt.com', apiKey: null,
+        keyHashSeed: accountId ? `codex-oauth:${accountId}` : 'codex-oauth',
+        strategy: 'codex-oauth-usage',
+        officialAccountId: accountId || null,
+        // The poller reads the credential itself; for an account provider that
+        // file is the account's own auth.json, not the shared ~/.codex one.
+        ...(accountId ? { authFile: codexAccountAuthFilePath(accountId) } : {}),
+      };
     }
   } else {
     const env = cfg.env || {};

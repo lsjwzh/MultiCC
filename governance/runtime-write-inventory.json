@@ -9,7 +9,10 @@
       "rationale": "The package-root .env is writable configuration and may contain credentials; moving it changes installer and settings compatibility.",
       "migrationStrategy": "Introduce an explicit config root, copy forward atomically, keep a read-only legacy fallback for one release, then remove package-root writes.",
       "sources": [
-        { "file": "src/host-env.js", "anchor": "const ENV_PATH = path.join(__dirname, '..', '.env');" }
+        {
+          "file": "src/host-env.js",
+          "anchor": "const ENV_PATH = path.join(__dirname, '..', '.env');"
+        }
       ]
     },
     {
@@ -19,7 +22,10 @@
       "rationale": "The legacy memory tree defaults to the package root and contains session/shared state with its own layout and API semantics.",
       "migrationStrategy": "Wire the existing MULTICC_MEMORY_ROOT override through createPaths, then perform a directory-level copy-forward with rollback metadata.",
       "sources": [
-        { "file": "server.js", "anchor": "const MEMORY_STORE_ROOT = process.env.MULTICC_MEMORY_ROOT || path.join(__dirname, 'memories');" }
+        {
+          "file": "server.js",
+          "anchor": "const MEMORY_STORE_ROOT = process.env.MULTICC_MEMORY_ROOT || path.join(__dirname, 'memories');"
+        }
       ]
     },
     {
@@ -29,7 +35,10 @@
       "rationale": "The fallback gateway cwd can contain a live git workspace and native session context, so it is not a small state-file move.",
       "migrationStrategy": "Create a gateway workspace port and relocate only after active-session detection plus worktree/CLI resume tests exist.",
       "sources": [
-        { "file": "src/session-hibernation.js", "anchor": "if (session.type === 'gateway') return session.cwd || path.join(homeDir(), '.multicc', 'gateway');" }
+        {
+          "file": "src/session-hibernation.js",
+          "anchor": "if (session.type === 'gateway') return session.cwd || path.join(homeDir(), '.multicc', 'gateway');"
+        }
       ]
     },
     {
@@ -39,11 +48,26 @@
       "rationale": "Bridge cwd directories may be git repositories with resumable native agent state.",
       "migrationStrategy": "Add a bridge-workspace port, detect active sessions, then copy or relocate one bridge at a time with rollback markers.",
       "sources": [
-        { "file": "plugins/bridges/discord-bridge.js", "anchor": "const GATEWAY_CWD = path.join(os.homedir(), '.multicc', 'discord-gateway');" },
-        { "file": "plugins/bridges/feishu-bridge.js", "anchor": "const GATEWAY_CWD = path.join(os.homedir(), '.multicc', 'feishu-gateway');" },
-        { "file": "plugins/bridges/slack-bridge.js", "anchor": "const GATEWAY_CWD = path.join(os.homedir(), '.multicc', 'slack-gateway');" },
-        { "file": "plugins/bridges/telegram-bridge.js", "anchor": "const GATEWAY_CWD = path.join(os.homedir(), '.multicc', 'telegram-gateway');" },
-        { "file": "plugins/bridges/wechat-ilink.js", "anchor": "const GATEWAY_CWD = path.join(os.homedir(), '.multicc', 'gateway');" }
+        {
+          "file": "plugins/bridges/discord-bridge.js",
+          "anchor": "const GATEWAY_CWD = path.join(os.homedir(), '.multicc', 'discord-gateway');"
+        },
+        {
+          "file": "plugins/bridges/feishu-bridge.js",
+          "anchor": "const GATEWAY_CWD = path.join(os.homedir(), '.multicc', 'feishu-gateway');"
+        },
+        {
+          "file": "plugins/bridges/slack-bridge.js",
+          "anchor": "const GATEWAY_CWD = path.join(os.homedir(), '.multicc', 'slack-gateway');"
+        },
+        {
+          "file": "plugins/bridges/telegram-bridge.js",
+          "anchor": "const GATEWAY_CWD = path.join(os.homedir(), '.multicc', 'telegram-gateway');"
+        },
+        {
+          "file": "plugins/bridges/wechat-ilink.js",
+          "anchor": "const GATEWAY_CWD = path.join(os.homedir(), '.multicc', 'gateway');"
+        }
       ]
     },
     {
@@ -53,8 +77,14 @@
       "rationale": "Per-provider CODEX_HOME directories contain upstream CLI auth/config and must remain stable across process restarts.",
       "migrationStrategy": "Version the materialized-home layout and add a per-provider copy-forward/rollback operation before changing its root.",
       "sources": [
-        { "file": "src/providers.js", "anchor": "const CODEX_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-homes');" },
-        { "file": "src/codex-session-home.js", "anchor": "|| path.join(os.homedir(), '.multicc', 'codex-homes'));" }
+        {
+          "file": "src/providers.js",
+          "anchor": "const CODEX_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-homes');"
+        },
+        {
+          "file": "src/codex-session-home.js",
+          "anchor": "|| path.join(os.homedir(), '.multicc', 'codex-homes'));"
+        }
       ]
     },
     {
@@ -64,7 +94,10 @@
       "rationale": "A private per-process CODEX_HOME overlay isolates the short-lived proxy capability from provider-shared configuration and is deleted when that child exits.",
       "migrationStrategy": "Keep the root disposable, permission-restricted and capability-free in its pathname; prune abandoned overlays at startup without copying them forward.",
       "sources": [
-        { "file": "src/providers.js", "anchor": "const CODEX_ATTEMPT_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-attempt-homes');" }
+        {
+          "file": "src/providers.js",
+          "anchor": "const CODEX_ATTEMPT_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-attempt-homes');"
+        }
       ]
     },
     {
@@ -74,8 +107,14 @@
       "rationale": "Logical-session history directories contain the canonical native rollout shared by Auto, managed, and Official physical routes across restarts; providerless routes synchronize only at idle route boundaries.",
       "migrationStrategy": "Version the canonical layout; copy forward only a uniquely identified native rollout with durable atomic no-overwrite semantics, retain legacy sources for rollback, and fail closed on ambiguity.",
       "sources": [
-        { "file": "src/providers.js", "anchor": "const CODEX_SESSION_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-session-homes');" },
-        { "file": "src/codex-session-home.js", "anchor": "|| path.join(os.homedir(), '.multicc', 'codex-session-homes'));" }
+        {
+          "file": "src/providers.js",
+          "anchor": "const CODEX_SESSION_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-session-homes');"
+        },
+        {
+          "file": "src/codex-session-home.js",
+          "anchor": "|| path.join(os.homedir(), '.multicc', 'codex-session-homes'));"
+        }
       ]
     },
     {
@@ -85,7 +124,10 @@
       "rationale": "Per-session ZCode data roots contain private generated upstream credentials/config and isolate provider-backed sessions from ZCode's native Coding Plan state.",
       "migrationStrategy": "Version the generated-home layout, preserve restrictive permissions, and add a per-session copy-forward/rollback operation before changing its root.",
       "sources": [
-        { "file": "src/providers.js", "anchor": "const ZCODE_HOMES_DIR = path.join(os.homedir(), '.multicc', 'zcode-homes');" }
+        {
+          "file": "src/providers.js",
+          "anchor": "const ZCODE_HOMES_DIR = path.join(os.homedir(), '.multicc', 'zcode-homes');"
+        }
       ]
     },
     {
@@ -95,7 +137,10 @@
       "rationale": "Per-session KIMI_CODE_HOME roots isolate provider-bound Kimi Code sessions from the user's native ~/.kimi-code login and persist kimi-code's own session/config state across restarts.",
       "migrationStrategy": "Version the generated-home layout, preserve restrictive permissions, and add a per-session copy-forward/rollback operation before changing its root.",
       "sources": [
-        { "file": "src/providers.js", "anchor": "const KIMI_HOMES_DIR = path.join(os.homedir(), '.multicc', 'kimi-homes');" }
+        {
+          "file": "src/providers.js",
+          "anchor": "const KIMI_HOMES_DIR = path.join(os.homedir(), '.multicc', 'kimi-homes');"
+        }
       ]
     },
     {
@@ -105,7 +150,10 @@
       "rationale": "Installs without MULTICC_DATA_DIR still persist private CDP session cookies under the historical ~/.multicc root; configured installs are already isolated.",
       "migrationStrategy": "Make MULTICC_DATA_DIR mandatory, copy qoder-cookies.json forward atomically with private permissions, retain a read-only legacy fallback for one migration window, then remove historical-root writes.",
       "sources": [
-        { "file": "src/routes/qoder-quota.js", "anchor": "const DATA_DIR = process.env.MULTICC_DATA_DIR || path.join(require('os').homedir(), '.multicc');" }
+        {
+          "file": "src/routes/qoder-quota.js",
+          "anchor": "const DATA_DIR = process.env.MULTICC_DATA_DIR || path.join(require('os').homedir(), '.multicc');"
+        }
       ]
     },
     {
@@ -115,8 +163,14 @@
       "rationale": "Model weights are large shared assets selected by ASR_LOCAL_MODEL_DIR, not transactional MultiCC runtime state.",
       "migrationStrategy": "Keep the explicit ASR_LOCAL_MODEL_DIR override; document backup/download behavior and never copy hundreds of MB during normal startup.",
       "sources": [
-        { "file": "src/asr-local.js", "anchor": "ASR_LOCAL_MODEL_DIR: process.env.ASR_LOCAL_MODEL_DIR || path.join(os.homedir(), '.multicc', 'asr-models')," },
-        { "file": "scripts/setup-local-asr.sh", "anchor": "MODEL_DIR=\"${ASR_LOCAL_MODEL_DIR:-$HOME/.multicc/asr-models}\"" }
+        {
+          "file": "src/asr-local.js",
+          "anchor": "ASR_LOCAL_MODEL_DIR: process.env.ASR_LOCAL_MODEL_DIR || path.join(os.homedir(), '.multicc', 'asr-models'),"
+        },
+        {
+          "file": "scripts/setup-local-asr.sh",
+          "anchor": "MODEL_DIR=\"${ASR_LOCAL_MODEL_DIR:-$HOME/.multicc/asr-models}\""
+        }
       ]
     },
     {
@@ -126,7 +180,10 @@
       "rationale": "The pinned private Node distribution and Qwen package are large replaceable third-party runtime assets, not transactional MultiCC state.",
       "migrationStrategy": "Keep production assets below the dedicated voice runtime root, verify every downloaded artifact before activation, and reinstall from the pinned manifest instead of copying binaries when the layout changes.",
       "sources": [
-        { "file": "src/paths.js", "anchor": "? path.join(os.homedir(), '.multicc', 'runtimes', 'voice')" }
+        {
+          "file": "src/paths.js",
+          "anchor": "? path.join(os.homedir(), '.multicc', 'runtimes', 'voice')"
+        }
       ]
     },
     {
@@ -136,7 +193,10 @@
       "rationale": "Resume cleanup edits Claude-owned JSONL transcripts and cannot be redirected to MultiCC's data root.",
       "migrationStrategy": "Keep the adapter bounded to a supplied native-session location and add upstream-format characterization tests before changing behavior.",
       "sources": [
-        { "file": "src/cli-adapters/claude.js", "anchor": "if (cleaned > 0) fs.writeFileSync(jsonlPath, output.join('\\n'));" }
+        {
+          "file": "src/cli-adapters/claude.js",
+          "anchor": "if (cleaned > 0) fs.writeFileSync(jsonlPath, output.join('\\n'));"
+        }
       ]
     },
     {
@@ -146,7 +206,10 @@
       "rationale": "Converted skills are intentionally installed into the user-owned .agents/.claude/.codex/.hermes skill stores.",
       "migrationStrategy": "Continue treating provider skill roots as explicit external ports; cache-only state may move separately after installed-copy compatibility is tested.",
       "sources": [
-        { "file": "src/skill-converter.js", "anchor": "const AGENTS_ROOT = path.join(os.homedir(), '.agents', 'skills');" }
+        {
+          "file": "src/skill-converter.js",
+          "anchor": "const AGENTS_ROOT = path.join(os.homedir(), '.agents', 'skills');"
+        }
       ]
     },
     {
@@ -156,7 +219,10 @@
       "rationale": "Recovery bundles and patches belong to the repository common dir so they remain available if a session worktree disappears.",
       "migrationStrategy": "Retain repository-local ownership; add retention and explicit user cleanup without moving backups into process-global state.",
       "sources": [
-        { "file": "src/git.js", "anchor": "const backupDir = path.join(commonDir, 'multicc-backups', operationId);" }
+        {
+          "file": "src/git.js",
+          "anchor": "const backupDir = path.join(commonDir, 'multicc-backups', operationId);"
+        }
       ]
     },
     {
@@ -166,8 +232,14 @@
       "rationale": "Uploads and git import bundles are bounded temporary files rather than restart-persistent runtime state.",
       "migrationStrategy": "Keep OS-temp ownership, enforce private modes and lifecycle cleanup, and never treat these paths as durable API fields.",
       "sources": [
-        { "file": "src/routes/session-bundle.js", "anchor": "const tmpBundle = path.join(os.tmpdir(), `multicc-import-${newSid}-${Date.now()}.bundle`);" },
-        { "file": "src/ws/connection-router.js", "anchor": "fs.writeFileSync(tempPath, Buffer.from(data, 'base64'), { mode: 0o600 });" }
+        {
+          "file": "src/routes/session-bundle.js",
+          "anchor": "const tmpBundle = path.join(os.tmpdir(), `multicc-import-${newSid}-${Date.now()}.bundle`);"
+        },
+        {
+          "file": "src/ws/connection-router.js",
+          "anchor": "fs.writeFileSync(tempPath, Buffer.from(data, 'base64'), { mode: 0o600 });"
+        }
       ]
     },
     {
@@ -177,7 +249,10 @@
       "rationale": "New bundled copies receive MULTICC_ARTIFACTS_DIR, while older standalone copies may still fall back to the historical directory.",
       "migrationStrategy": "Serve the legacy directory read-only during the compatibility window, refresh installed skills, then remove the writer fallback in a later major release.",
       "sources": [
-        { "file": "skills/multicc-artifact/bin/artifact", "anchor": ": path.join(os.homedir(), '.multicc', 'artifacts')" }
+        {
+          "file": "skills/multicc-artifact/bin/artifact",
+          "anchor": ": path.join(os.homedir(), '.multicc', 'artifacts')"
+        }
       ]
     },
     {
@@ -187,7 +262,10 @@
       "rationale": "The server reads old artifacts so links created before migration do not break; cleanup never mutates this root.",
       "migrationStrategy": "Remove the read fallback after the installed-skill compatibility window and documented expiry period.",
       "sources": [
-        { "file": "src/artifacts.js", "anchor": "const LEGACY_ARTIFACTS_DIR = path.join(os.homedir(), '.multicc', 'artifacts');" }
+        {
+          "file": "src/artifacts.js",
+          "anchor": "const LEGACY_ARTIFACTS_DIR = path.join(os.homedir(), '.multicc', 'artifacts');"
+        }
       ]
     },
     {
@@ -197,8 +275,14 @@
       "rationale": "Explicit MULTICC_DATA_DIR instances are isolated, while installs without that setting retain the historical ~/.multicc/detached root so in-flight job evidence remains discoverable.",
       "migrationStrategy": "Make the configured MultiCC data root mandatory, add a read-only fallback for historical jobs, and remove writes to the legacy root after the detached-job retention window.",
       "sources": [
-        { "file": "src/detached.js", "anchor": "const LEGACY_BASE_DIR = nodePath.join(os.homedir(), '.multicc', 'detached');" },
-        { "file": "src/paths.js", "anchor": "? path.join(os.homedir(), '.multicc', 'detached')" }
+        {
+          "file": "src/detached.js",
+          "anchor": "const LEGACY_BASE_DIR = nodePath.join(os.homedir(), '.multicc', 'detached');"
+        },
+        {
+          "file": "src/paths.js",
+          "anchor": "? path.join(os.homedir(), '.multicc', 'detached')"
+        }
       ]
     },
     {
@@ -208,7 +292,10 @@
       "rationale": "A package-local scheduled task file is read once and copied forward; all saves already use MULTICC_DATA_DIR.",
       "migrationStrategy": "Remove the read fallback after one supported migration window; do not delete the legacy file automatically.",
       "sources": [
-        { "file": "plugins/cron/cron-tasks.js", "anchor": "const LEGACY_STORE = path.join(__dirname, 'scheduled_tasks.json');" }
+        {
+          "file": "plugins/cron/cron-tasks.js",
+          "anchor": "const LEGACY_STORE = path.join(__dirname, 'scheduled_tasks.json');"
+        }
       ]
     },
     {
@@ -218,7 +305,23 @@
       "rationale": "The disposable Chrome profile and cookies are regenerable by re-login and already honor MULTICC_DATA_DIR when set.",
       "migrationStrategy": "Resolve the browser-profile root through createPaths when the data root becomes mandatory; no copy-forward of profiles or cookies is needed.",
       "sources": [
-        { "file": "src/quota-managed-browser.js", "anchor": "const DATA_DIR = process.env.MULTICC_DATA_DIR || path.join(os.homedir(), '.multicc');" }
+        {
+          "file": "src/quota-managed-browser.js",
+          "anchor": "const DATA_DIR = process.env.MULTICC_DATA_DIR || path.join(os.homedir(), '.multicc');"
+        }
+      ]
+    },
+    {
+      "id": "official-account-credentials",
+      "classification": "migration-required",
+      "owner": "provider routing",
+      "rationale": "Official-account OAuth credentials (Codex mini-homes, Claude PKCE token files) are multicc-owned login state that must survive restarts and stay isolated from the CLIs' global logins.",
+      "migrationStrategy": "Move the root behind a createPaths port and copy the whole account tree forward atomically (credentials are single-writer, so a directory-level move with a rollback marker suffices).",
+      "sources": [
+        {
+          "file": "src/official-accounts.js",
+          "anchor": "const DEFAULT_ROOT = path.join(os.homedir(), '.multicc', 'official-accounts');"
+        }
       ]
     }
   ]

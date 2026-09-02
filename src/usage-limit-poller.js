@@ -129,13 +129,14 @@ async function pollDeepseekBalance(target, nowMs, timeoutMs = POLL_TIMEOUT_MS) {
   };
 }
 
-// Official codex OAuth credential lives on disk in ~/.codex/auth.json and is
-// rotated by the codex CLI itself; we read it fresh each poll (never cache the
-// token) so a refresh is picked up automatically. Returns null on any problem →
-// the poll shows nothing rather than fabricating.
-function readCodexAuth() {
+// Official codex OAuth credential lives on disk in ~/.codex/auth.json (shared
+// login) or in an official-account's own auth.json (target.authFile, for
+// providers marked settingsConfig.officialAccount). It is rotated by the codex
+// CLI itself; we read it fresh each poll (never cache the token) so a refresh
+// is picked up automatically. Returns null on any problem → the poll shows
+// nothing rather than fabricating.
+function readCodexAuthFile(file) {
   try {
-    const file = path.join(os.homedir(), '.codex', 'auth.json');
     const auth = JSON.parse(fs.readFileSync(file, 'utf8'));
     const tokens = auth && auth.tokens;
     if (!tokens || !tokens.access_token) return null;
@@ -145,13 +146,19 @@ function readCodexAuth() {
   }
 }
 
+function readCodexAuth() {
+  return readCodexAuthFile(path.join(os.homedir(), '.codex', 'auth.json'));
+}
+
 // Codex (real ChatGPT backend). Weekly quota comes from the same usage read the
 // codex CLI's /status uses: GET chatgpt.com/backend-api/wham/usage with the OAuth
 // bearer + ChatGPT-Account-Id. This is a read (no messages consumed). We surface
 // the WEEKLY window only (per product decision: codex's binding limit is weekly,
 // and on the prolite plan there is no 5h window at all).
-async function pollCodexUsage(target, nowMs, timeoutMs = POLL_TIMEOUT_MS, readAuth = readCodexAuth) {
-  const auth = readAuth();
+async function pollCodexUsage(target, nowMs, timeoutMs = POLL_TIMEOUT_MS, readAuth = null) {
+  const reader = readAuth
+    || (target && target.authFile ? () => readCodexAuthFile(target.authFile) : readCodexAuth);
+  const auth = reader();
   if (!auth) return null;
   const body = await fetchJson(
     'https://chatgpt.com/backend-api/wham/usage',
