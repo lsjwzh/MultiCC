@@ -371,7 +371,11 @@ const CLI_META = {
   zcode: { label: 'ZCode', color: '#a371f7' },
   qoder: { label: 'Qoder CN', color: '#ff8a3d' },
   kimi: { label: 'Kimi Code', color: '#13c2c2' },
+  codebuddy: { label: 'WorkBuddy', color: '#0052d9' },
+  dsh: { label: 'DSH', color: '#4d6bfe' },
 };
+// Vendor-auth CLIs own their account/model config (no multicc provider).
+const PROVIDERLESS_CLIS = new Set(['qoder', 'codebuddy', 'dsh']);
 
 function applyCliUi(cli) {
   const next = CLI_META[cli] ? cli : 'claude';
@@ -1588,13 +1592,17 @@ function updateModelBtn() {
       ? `Auto · ${window.MultiCCChatAiConfig.autoProtocolLabel(auto.protocol)} → ${actualProvider || '待路由'}`
       : _sessionCli === 'qoder'
       ? 'Qoder CN'
+      : _sessionCli === 'codebuddy'
+      ? 'WorkBuddy'
+      : _sessionCli === 'dsh'
+      ? 'DSH'
       : ((_sessionProvider ? providerShortName(_sessionProvider) : '')
       || _sessionProviderDisplayName
       || (_sessionCli === 'zcode' ? 'ZCode 原生' : tt('default')));
   const modelProviderId = auto ? _activeProviderId : _sessionProvider;
   const model = shown ? modelDisplayName(shown, modelProviderId) : tt('default');
   const effort = effortShortName(_sessionEffectiveEffort || _sessionEffort);
-  const agent = (_sessionCli === 'claude' || _sessionCli === 'opencode' || _sessionCli === 'qoder') && _sessionAgent
+  const agent = (_sessionCli === 'claude' || _sessionCli === 'opencode' || _sessionCli === 'qoder' || _sessionCli === 'codebuddy') && _sessionAgent
     ? `Agent ${_sessionAgent}`
     : '';
   modelBtn.textContent = `🧠 ${[provider, model, effort, agent].filter(Boolean).join(' | ')}`;
@@ -1631,7 +1639,7 @@ async function loadSessionModel() {
   _sessionSubagent = info.subagent || null;
   _sessionAgent = info.agent || '';
   safe('subagent-pill', updateSubagentPill);
-  await safe('provider-list', async () => { if (_sessionProvider && _sessionCli !== 'qoder') await ensureProviderList(_sessionCli); });
+  await safe('provider-list', async () => { if (_sessionProvider && !PROVIDERLESS_CLIS.has(_sessionCli)) await ensureProviderList(_sessionCli); });
   safe('provider-btn', updateProviderBtn);
   _sessionModel = info.model || ''; _sessionEffectiveModel = info.effectiveModel || info.model || '';
   _sessionEffort = info.effort || ''; _sessionEffectiveEffort = info.effectiveEffort || _sessionEffort || defaultEffortForCurrentCli();
@@ -1647,7 +1655,7 @@ async function loadSessionModel() {
 modelBtn?.addEventListener('click', async () => {
   // 每次打开前重新拉取一次会话配置，避免重连/加载未完成时弹窗显示默认值。
   await loadSessionModel();
-  if (_sessionCli !== 'qoder') {
+  if (!PROVIDERLESS_CLIS.has(_sessionCli)) {
     await ensureProviderList(_sessionCli, { loading: true });
   }
   const picked = await showAIConfigPicker({
@@ -1665,7 +1673,7 @@ modelBtn?.addEventListener('click', async () => {
       providerSelection: picked.providerSelection,
       model: picked.model,
       effort: picked.effort,
-      ...((_sessionCli === 'claude' || _sessionCli === 'opencode' || _sessionCli === 'qoder') ? { agent: picked.agent } : {}),
+      ...((_sessionCli === 'claude' || _sessionCli === 'opencode' || _sessionCli === 'qoder' || _sessionCli === 'codebuddy') ? { agent: picked.agent } : {}),
       ...((_sessionCli === 'claude' || _sessionCli === 'codex') ? { subagent: picked.subagent } : {}),
     });
     _sessionProvider = data.provider || '';
@@ -1688,7 +1696,7 @@ modelBtn?.addEventListener('click', async () => {
       ? `Auto · ${window.MultiCCChatAiConfig.autoProtocolLabel(_sessionProviderSelection.protocol)}`
       : providerShortName(_sessionProvider);
     const savedParts = [savedProvider, _savedModel ? modelDisplayName(_savedModel, _sessionProvider) : tt('default'), effortShortName(_sessionEffectiveEffort)];
-    if ((_sessionCli === 'claude' || _sessionCli === 'opencode' || _sessionCli === 'qoder') && _sessionAgent) savedParts.push(`Agent ${_sessionAgent}`);
+    if ((_sessionCli === 'claude' || _sessionCli === 'opencode' || _sessionCli === 'qoder' || _sessionCli === 'codebuddy') && _sessionAgent) savedParts.push(`Agent ${_sessionAgent}`);
     addSystemMsg(`✓ AI 配置已保存：${savedParts.filter(Boolean).join(' | ')}，下一轮对话生效`);
   } catch (e) {
     addSystemMsg('AI 配置保存失败：' + e.message);

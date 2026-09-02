@@ -207,6 +207,36 @@ function resolveQoder(context) {
   return findExecutableOnPath('qoderclicn', context) || (isWindows ? 'qoderclicn.exe' : 'qoderclicn');
 }
 
+// WorkBuddy / CodeBuddy CLI (Tencent): binary `codebuddy`, alias `cbc`.
+function resolveCodebuddy(context) {
+  const { isWindows, env, homeDir } = context;
+  if (env.CODEBUDDY_CMD) return env.CODEBUDDY_CMD;
+  if (env.WORKBUDDY_CMD) return env.WORKBUDDY_CMD;
+  const directHit = firstRunnable([
+    '/opt/homebrew/bin/codebuddy',
+    '/usr/local/bin/codebuddy',
+    path.join(homeDir, '.local', 'bin', 'codebuddy'),
+    path.join(homeDir, '.codebuddy', 'bin', 'codebuddy'),
+  ], context);
+  if (directHit) return directHit;
+  return findExecutableOnPath('codebuddy', context)
+    || findExecutableOnPath('cbc', context)
+    || (isWindows ? 'codebuddy.exe' : 'codebuddy');
+}
+
+// DeepSeek Harness: binary `dsh` (@deepseek-ai/dsh).
+function resolveDsh(context) {
+  const { isWindows, env, homeDir } = context;
+  if (env.DSH_CMD) return env.DSH_CMD;
+  const directHit = firstRunnable([
+    '/opt/homebrew/bin/dsh',
+    '/usr/local/bin/dsh',
+    path.join(homeDir, '.local', 'bin', 'dsh'),
+  ], context);
+  if (directHit) return directHit;
+  return findExecutableOnPath('dsh', context) || (isWindows ? 'dsh.exe' : 'dsh');
+}
+
 function resolveCliCommands(options = {}) {
   const context = createContext(options);
   return {
@@ -216,6 +246,8 @@ function resolveCliCommands(options = {}) {
     zcode: resolveZcode(context),
     qoder: resolveQoder(context),
     kimi: resolveKimi(context),
+    codebuddy: resolveCodebuddy(context),
+    dsh: resolveDsh(context),
   };
 }
 

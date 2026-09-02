@@ -96,6 +96,22 @@ test('plain provider models and CLI fallback choices never retain a stale provid
   assert.equal(ai.modelChoiceLabel('', '', qoder), '默认（跟随 Qoder CN 设置）');
   assert.equal(ai.modelChoiceLabel('performance', '', qoder), 'Performance（性能）');
 
+  const codebuddy = state({ providers: [], defaults: {}, cli: 'codebuddy' });
+  assert.deepEqual(ai.buildModelChoices('', codebuddy)[0], '');
+  assert.ok(ai.buildModelChoices('', codebuddy).includes('default-model'));
+  assert.ok(ai.buildModelChoices('', codebuddy).includes('glm-5.2'));
+  assert.equal(ai.buildModelChoices('', codebuddy).at(-1), '__custom__');
+  assert.equal(ai.modelChoiceLabel('', '', codebuddy), '默认（跟随 WorkBuddy 设置）');
+  assert.equal(ai.modelChoiceLabel('fast-model', '', codebuddy), 'fast（快速档）');
+  assert.deepEqual(ai.effortOptions('codebuddy').map(item => item.value),
+    ['', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
+
+  const dsh = state({ providers: [], defaults: {}, cli: 'dsh' });
+  assert.deepEqual(ai.buildModelChoices('', dsh),
+    ['', 'deepseek-v4-flash', 'deepseek-v4-pro', '__custom__']);
+  assert.equal(ai.modelChoiceLabel('', '', dsh), '默认（跟随 DSH 配置）');
+  assert.deepEqual(ai.effortOptions('dsh'), []);
+
   const zcode = state({ providers: [], defaults: {}, cli: 'zcode' });
   assert.deepEqual(ai.buildModelChoices('', zcode), ['', '__custom__']);
   assert.equal(ai.modelChoiceLabel('', '', zcode), '默认（跟随 ZCode 设置）');
@@ -114,12 +130,14 @@ test('plain provider models and CLI fallback choices never retain a stale provid
   assert.equal(ai.defaultModelChoice('zai', zcodeProvider), 'glm-5.2');
 });
 
-test('Qoder stays vendor-managed while ZCode exposes MultiCC providers', () => {
+test('vendor-managed CLIs stay providerless while ZCode exposes MultiCC providers', () => {
   const source = fs.readFileSync(path.join(ROOT, 'public', 'chat-ai-config.js'), 'utf8');
   const page = fs.readFileSync(path.join(ROOT, 'public', 'chat.js'), 'utf8');
-  assert.match(source, /const supportsProvider = cli !== 'qoder'/);
+  // qoder / codebuddy / dsh are all vendor-auth CLIs: no MultiCC provider pick.
+  assert.match(source, /const supportsProvider = cli !== 'qoder' && cli !== 'codebuddy' && cli !== 'dsh';/);
   assert.match(source, /ZCode 原生 \/ Coding Plan/);
-  assert.match(page, /if \(_sessionCli !== 'qoder'\)/);
+  assert.match(page, /PROVIDERLESS_CLIS\.has\(_sessionCli\)/);
+  assert.match(page, /const PROVIDERLESS_CLIS = new Set\(\['qoder', 'codebuddy', 'dsh'\]\);/);
   assert.doesNotMatch(page, /_sessionCli !== 'qoder' && _sessionCli !== 'zcode'/);
 });
 

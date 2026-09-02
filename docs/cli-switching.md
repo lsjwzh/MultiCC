@@ -1,6 +1,6 @@
 # Multi-CLI switching
 
-> One conversation, six coding CLIs. Switch mid-task without losing the thread, without changing directory, and without re-explaining what you are doing.
+> One conversation, eight coding CLIs. Switch mid-task without losing the thread, without changing directory, and without re-explaining what you are doing.
 
 This is MultiCC's defining feature, so it is worth being precise about what it does — and what it deliberately does *not* do.
 
@@ -16,6 +16,8 @@ This is MultiCC's defining feature, so it is worth being precise about what it d
 | ZCode (GLM) | `zcode` | yes | manual — install the ZCode desktop app from <https://zcode.z.ai> (its bundled CLI is what MultiCC drives) |
 | Kimi Code (Moonshot) | `kimi` | yes — OpenAI-format providers only (`KIMI_API_KEY`/`KIMI_BASE_URL` injection) | `npm install -g @moonshot-ai/kimi-code` |
 | Qoder CN | `qoder` | **no** — provider and subagent are forced to `null` | `curl -fsSL https://qoder.cn/install \| bash` |
+| WorkBuddy (Tencent) | `codebuddy` | **no** — vendor auth via `codebuddy` TUI `/login` (`~/.codebuddy`) | `npm install -g @tencent-ai/codebuddy-code` |
+| DeepSeek Harness | `dsh` | **no** — DeepSeek-native credentials (`DEEPSEEK_API_KEY` env or the `dsh web` Models page) | `npm install -g @deepseek-ai/dsh` |
 
 Source of truth: `SUPPORTED_CHAT_CLIS` in `src/cli-switch.js`, install specs in `src/cli/switch-runtime.js`.
 
@@ -67,7 +69,7 @@ Pass `{"fresh": true}` to discard the saved native session for the target CLI an
 
 ### Clearing history clears *every* CLI
 
-Clearing a chat invalidates the native session of **all six** CLIs, not just the active one. Otherwise switching away and back after a clear would resurrect context you explicitly discarded. Per-CLI *configuration* (model, effort, provider) is preserved.
+Clearing a chat invalidates the native session of **all** CLIs, not just the active one. Otherwise switching away and back after a clear would resurrect context you explicitly discarded. Per-CLI *configuration* (model, effort, provider) is preserved.
 
 ---
 
@@ -75,7 +77,7 @@ Clearing a chat invalidates the native session of **all six** CLIs, not just the
 
 A provider binding is stored **per CLI**, not per session. Switching from Claude-on-provider-A to Codex-on-provider-B switches the model endpoint too — that is usually what you want (each CLI speaks its own vendor's API format), but it means the model shown in the header changes with the CLI.
 
-Qoder is providerless: selecting it forces `provider` and `subagent` to `null`.
+Qoder, WorkBuddy (`codebuddy`), and DSH (`dsh`) are providerless: selecting them forces `provider` and `subagent` to `null`. They authenticate with their own vendor accounts (Qoder CN login, `codebuddy` TUI `/login`, DeepSeek credentials for dsh).
 
 See [Configuration](configuration.md) for how providers and subagent routing are bound.
 
@@ -123,7 +125,7 @@ curl -X POST "$BASE/api/sessions/$SESSION_ID/switch-cli" \
 }
 ```
 
-Body fields: `cli` (required, one of the six) and `fresh` (optional boolean).
+Body fields: `cli` (required, one of the supported set) and `fresh` (optional boolean).
 
 Notable responses:
 
