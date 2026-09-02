@@ -53,6 +53,7 @@ function tmpDir(label) {
   ok(p.directoriesFile === path.join(d, 'directories.json'), 'createPaths: directoriesFile under override');
   ok(p.fleetSharesFile === path.join(d, 'fleet-shares.json'), 'createPaths: fleetSharesFile under override');
   ok(p.externalFleetsFile === path.join(d, 'external-fleets.json'), 'createPaths: externalFleetsFile under override');
+  ok(p.providerRelaySharesFile === path.join(d, 'provider-relay-shares.json'), 'createPaths: provider relay shares under override');
     ok(p.journalDir === path.join(d, '.journal'), 'createPaths: journalDir under override');
     ok(p.bridgesDir === path.join(d, 'bridges'), 'createPaths: bridgesDir under override');
     ok(p.detachedDir === path.join(d, 'detached'), 'createPaths: detached evidence under override');

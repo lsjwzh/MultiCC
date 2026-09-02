@@ -53,6 +53,7 @@ function createHarness(overrides = {}) {
   const writes = [];
   const calls = [];
   const deleted = [];
+  const relayShares = [];
   const logs = [];
   const defaultsFile = '/runtime/provider-defaults.json';
   const providers = {
@@ -105,6 +106,37 @@ function createHarness(overrides = {}) {
     ['claude:claude-one', { id: 'claude-one', appType: 'claude', name: 'Claude One' }],
     ['codex:codex-one', { id: 'codex-one', appType: 'codex', name: 'Codex One' }],
   ]);
+  const providerRelayShares = {
+    create(input) {
+      if (!input.token || String(input.token).length < 8) {
+        const error = new Error('relay token is required'); error.code = 'RELAY_TOKEN_INVALID'; throw error;
+      }
+      calls.push({ method: 'createRelayShare', input });
+      const share = {
+        id: 'abcdefghijklmnop', appType: input.appType, providerId: input.providerId,
+        providerName: input.providerName, label: input.label || null,
+        publicBaseUrl: input.publicBaseUrl, relayBaseUrl: input.relayBaseUrl,
+        tokenFingerprint: '0123456789ab', status: 'active', createdAt: 100,
+        revokedAt: null, accessCount: 0, lastUsedAt: null,
+      };
+      relayShares.push(share);
+      return { share, credential: `mcr1.${share.id}.${input.token}` };
+    },
+    list(filter = {}) {
+      return relayShares.filter(share => (!filter.appType || share.appType === filter.appType)
+        && (!filter.providerId || share.providerId === filter.providerId));
+    },
+    revoke(id) {
+      const share = relayShares.find(item => item.id === id);
+      if (!share) return null;
+      share.status = 'revoked'; share.revokedAt = 101;
+      return share;
+    },
+    revokeProvider(appType, providerId) {
+      calls.push({ method: 'revokeRelayProvider', appType, providerId });
+      return 0;
+    },
+  };
   const deps = {
     fs: {
       readFileSync(file) {
@@ -127,6 +159,7 @@ function createHarness(overrides = {}) {
     },
     findProviderReferences: () => [],
     persistedSessions: new Map(),
+    providerRelayShares,
     getAuxConfig: () => ({ protocol: 'anthropic', providerId: null }),
     claudeCmd: '/usr/local/bin/claude',
     getPort: () => 4321,
@@ -141,7 +174,7 @@ function createHarness(overrides = {}) {
   const runtime = createProviderRoutes(deps);
   runtime.mountCatalogRoutes(app);
   runtime.mountManagementRoutes(app);
-  return { app, runtime, deps, providers, writes, calls, deleted, logs };
+  return { app, runtime, deps, providers, writes, calls, deleted, relayShares, logs };
 }
 
 test('provider route extraction preserves the mounted surface and response DTOs', async () => {
@@ -156,6 +189,8 @@ test('provider route extraction preserves the mounted surface and response DTOs'
     'POST /api/providers/:appType/:id/probe',
     'POST /api/providers/:appType/:id/speedtest',
     'POST /api/providers/:appType/:id/relay-share',
+    'GET /api/provider-relay-shares',
+    'DELETE /api/provider-relay-shares/:id',
     'GET /api/provider-defaults',
     'PUT /api/provider-defaults',
   ]);
@@ -353,6 +388,20 @@ test('provider deletion retains the exact reference-protection 409 contract', as
   assert.equal(referenceInput.sessions, harness.deps.persistedSessions);
   assert.deepEqual(referenceInput.defaults, { claude: 'claude-one', codex: null });
   assert.deepEqual(referenceInput.aux, { protocol: 'anthropic', providerId: null });
+});
+
+test('provider deletion revokes all credentials scoped to that provider', async () => {
+  const harness = createHarness({ findProviderReferences: () => [] });
+  const response = await invoke(harness.app, 'DELETE', '/api/providers/:appType/:id', {
+    params: { appType: 'claude', id: 'claude-one' },
+  });
+  assert.deepEqual(response.body, { ok: true });
+  assert.deepEqual(harness.deleted, [{ appType: 'claude', id: 'claude-one' }]);
+  assert.deepEqual(harness.calls.at(-1), {
+    method: 'revokeRelayProvider',
+    appType: 'claude',
+    providerId: 'claude-one',
+  });
 });
 
 test('provider defaults keep best-effort persistence while redacting write failures', async () => {
@@ -574,46 +623,51 @@ test('GET /api/providers attaches the persisted limit summary and freshness', as
   assert.equal(cache.get('claude', 'claude-one') !== null, true);
 });
 
-test('relay-share issues a borrow code and fails closed without the relay token', async () => {
-  // No token → 409 RELAY_TOKEN_UNSET (fail closed; nothing shareable exists).
-  let harness = createHarness({ getProxyToken: () => '' });
+test('relay-share issues a recorded provider-scoped credential and requires a manual token', async () => {
+  let harness = createHarness();
   let response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/relay-share', {
     params: { appType: 'claude', id: 'claude-one' },
     body: { publicBaseUrl: 'https://relay.example' },
   });
-  assert.equal(response.statusCode, 409);
-  assert.equal(response.body.code, 'RELAY_TOKEN_UNSET');
+  assert.equal(response.statusCode, 400);
+  assert.equal(response.body.code, 'RELAY_TOKEN_INVALID');
 
-  harness = createHarness({ getProxyToken: () => 'relay-pxy' });
   response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/relay-share', {
     params: { appType: 'claude', id: 'claude-one' },
-    body: { publicBaseUrl: 'https://relay.example/some/path' },
+    body: {
+      publicBaseUrl: 'https://relay.example/some/path',
+      token: 'manual-secret',
+      label: 'office mac',
+    },
   });
   assert.equal(response.statusCode, 200);
   // The public base URL is normalized to its origin.
   assert.equal(response.body.baseUrl, 'https://relay.example/claude-proxy/claude-one/remote');
   const payload = JSON.parse(Buffer.from(response.body.code.slice('mcrelay1.'.length), 'base64url').toString('utf8'));
   assert.deepEqual(payload, {
-    v: 1,
+    v: 2,
     kind: 'multicc-relay',
     // The harness provider stub has no name; the share falls back to the id.
     name: 'claude-one · 借道',
     appType: 'claude',
     baseUrl: 'https://relay.example/claude-proxy/claude-one/remote',
-    authToken: 'relay-pxy',
+    relayShareId: 'abcdefghijklmnop',
+    authToken: 'mcr1.abcdefghijklmnop.manual-secret',
   });
+  assert.equal(response.body.share.label, 'office mac');
+  assert.equal(JSON.stringify(response.body.share).includes('manual-secret'), false);
+  assert.equal(harness.calls.at(-1).method, 'createRelayShare');
 
   // Codex providers relay through the codex mount without the session segment.
   response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/relay-share', {
     params: { appType: 'codex', id: 'codex-one' },
-    body: { publicBaseUrl: 'https://relay.example/' },
+    body: { publicBaseUrl: 'https://relay.example/', token: 'codex-secret' },
   });
   assert.equal(response.body.baseUrl, 'https://relay.example/codex-proxy/codex-one');
 
   // Official OAuth has no config.toml model; its public cached catalog must
   // cross the share boundary so the importer does not invent gpt-4o-mini.
   harness = createHarness({
-    getProxyToken: () => 'relay-pxy',
     providers: {
       getProvider: (appType, id) => ({
         id, appType, name: 'OpenAI Official',
@@ -629,7 +683,7 @@ test('relay-share issues a borrow code and fails closed without the relay token'
   });
   response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/relay-share', {
     params: { appType: 'codex', id: 'official' },
-    body: { publicBaseUrl: 'https://relay.example/' },
+    body: { publicBaseUrl: 'https://relay.example/', token: 'official-secret' },
   });
   const officialPayload = JSON.parse(
     Buffer.from(response.body.code.slice('mcrelay1.'.length), 'base64url').toString('utf8'),
@@ -640,18 +694,39 @@ test('relay-share issues a borrow code and fails closed without the relay token'
   // A missing/invalid public base URL is rejected.
   response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/relay-share', {
     params: { appType: 'claude', id: 'claude-one' },
-    body: { publicBaseUrl: 'not a url' },
+    body: { publicBaseUrl: 'not a url', token: 'manual-secret' },
   });
   assert.equal(response.statusCode, 400);
 
   // Unknown providers cannot be shared.
-  harness = createHarness({
-    getProxyToken: () => 'relay-pxy',
-    providers: { getProvider: () => null },
-  });
+  harness = createHarness({ providers: { getProvider: () => null } });
   response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/relay-share', {
     params: { appType: 'claude', id: 'ghost' },
     body: { publicBaseUrl: 'https://relay.example' },
+  });
+  assert.equal(response.statusCode, 404);
+});
+
+test('relay-share inventory lists and revokes durable records without returning credentials', async () => {
+  const harness = createHarness();
+  await invoke(harness.app, 'POST', '/api/providers/:appType/:id/relay-share', {
+    params: { appType: 'claude', id: 'claude-one' },
+    body: { publicBaseUrl: 'https://relay.example', token: 'manual-secret' },
+  });
+  let response = await invoke(harness.app, 'GET', '/api/provider-relay-shares', {
+    query: { appType: 'claude', providerId: 'claude-one' },
+  });
+  assert.equal(response.body.shares.length, 1);
+  assert.equal(response.body.shares[0].status, 'active');
+  assert.equal(JSON.stringify(response.body).includes('manual-secret'), false);
+
+  response = await invoke(harness.app, 'DELETE', '/api/provider-relay-shares/:id', {
+    params: { id: 'abcdefghijklmnop' },
+  });
+  assert.equal(response.body.ok, true);
+  assert.equal(response.body.share.status, 'revoked');
+  response = await invoke(harness.app, 'DELETE', '/api/provider-relay-shares/:id', {
+    params: { id: 'missing-relay-share' },
   });
   assert.equal(response.statusCode, 404);
 });
