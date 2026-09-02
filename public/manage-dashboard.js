@@ -899,6 +899,12 @@ function showNewSessionMenu(ev, dirId) {
     { sep: true },
     { label: '+ Qoder CN Chat', onclick: () => newSessionInDir(dirId, 'qoder', 'chat') },
     { label: '+ Qoder CN Terminal', onclick: () => newSessionInDir(dirId, 'qoder', 'terminal') },
+    { sep: true },
+    { label: '+ WorkBuddy Chat', onclick: () => newSessionInDir(dirId, 'codebuddy', 'chat') },
+    { label: '+ WorkBuddy Terminal', onclick: () => newSessionInDir(dirId, 'codebuddy', 'terminal') },
+    { sep: true },
+    { label: '+ DSH Chat', onclick: () => newSessionInDir(dirId, 'dsh', 'chat') },
+    { label: '+ DSH Terminal', onclick: () => newSessionInDir(dirId, 'dsh', 'terminal') },
   ]);
 }
 
@@ -1669,7 +1675,7 @@ function renderSessionRow(s) {
   // CLI marker: groups are now kind-only (chat/terminal), so each card shows its
   // own CLI chip. Unknown CLIs fall back to a neutral 'other' style.
   const cli = (s.cli || 'claude').toLowerCase();
-  const cliClass = ['claude', 'codex', 'opencode', 'zcode', 'qoder'].includes(cli) ? cli : 'other';
+  const cliClass = ['claude', 'codex', 'opencode', 'zcode', 'qoder', 'codebuddy', 'dsh'].includes(cli) ? cli : 'other';
   // Live workspace status (from /ws/workspace) takes precedence when available.
   const wb = _workspaceStatus.get(s.id);
   // One canonical verdict for the card, folded by the shared registry. It also

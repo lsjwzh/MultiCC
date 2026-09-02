@@ -41,6 +41,24 @@
     Object.freeze({ value: 'max', label: 'Max' }),
   ]);
   const QODER_MODEL_OPTIONS = Object.freeze(['', 'auto', 'ultimate', 'performance', 'efficient', 'lite']);
+  const CODEBUDDY_REASONING_OPTIONS = Object.freeze([
+    Object.freeze({ value: '', label: 'Default', desc: 'Follow WorkBuddy settings' }),
+    Object.freeze({ value: 'minimal', label: 'Minimal', desc: 'Minimal reasoning where supported' }),
+    Object.freeze({ value: 'low', label: 'Low' }),
+    Object.freeze({ value: 'medium', label: 'Medium' }),
+    Object.freeze({ value: 'high', label: 'High' }),
+    Object.freeze({ value: 'xhigh', label: 'Extra high' }),
+    Object.freeze({ value: 'max', label: 'Max' }),
+  ]);
+  // WorkBuddy (codebuddy) exposes tier aliases plus concrete vendor model ids.
+  // The catalog is static: the CLI has no --list-models, and entitlements vary
+  // per account, so unknown ids simply fall back to the CLI's own default.
+  const CODEBUDDY_MODEL_OPTIONS = Object.freeze([
+    '', 'default-model', 'fast-model', 'balanced-model', 'primary-model', 'deep-model',
+    'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.3-codex',
+    'gemini-3.5-flash', 'glm-5.3', 'glm-5.2', 'kimi-k3', 'kimi-k2.6', 'minimax-m3',
+  ]);
+  const DSH_MODEL_OPTIONS = Object.freeze(['', 'deepseek-v4-flash', 'deepseek-v4-pro']);
   // Provider-less ZCode follows its native config/Coding Plan. Do not hardcode
   // a vendor/model pair here: the native provider may be Z.ai, BigModel, Start
   // Plan, Team Plan, or a user-defined provider.
@@ -74,6 +92,7 @@
     if (cli === 'codex') return CODEX_REASONING_OPTIONS;
     if (cli === 'opencode') return OPENCODE_VARIANT_OPTIONS;
     if (cli === 'qoder') return QODER_REASONING_OPTIONS;
+    if (cli === 'codebuddy') return CODEBUDDY_REASONING_OPTIONS;
     if (cli === 'claude') return EFFORT_OPTIONS;
     return [];
   }
@@ -81,7 +100,7 @@
   function effortLabel(cli) {
     if (cli === 'codex') return 'Reasoning Level';
     if (cli === 'opencode') return 'Variant';
-    if (cli === 'qoder') return 'Reasoning Effort';
+    if (cli === 'qoder' || cli === 'codebuddy') return 'Reasoning Effort';
     return 'Effort';
   }
 
@@ -89,9 +108,9 @@
     const value = effort || defaultEffort(cli);
     if (cli === 'zcode') return '';
     if (cli === 'opencode') return value ? `Variant ${value}` : '';
-    if (cli === 'codex' || cli === 'qoder') {
+    if (cli === 'codex' || cli === 'qoder' || cli === 'codebuddy') {
       return ({
-        xhigh: 'Extra high', low: 'Low', medium: 'Medium', high: 'High',
+        xhigh: 'Extra high', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High',
         max: 'Max', ultra: 'Ultra',
       })[value] || value;
     }
@@ -210,6 +229,8 @@
       if (cached.length) return ['', ...cached.map(m => m.model), '__custom__'];
       return [...QODER_MODEL_OPTIONS, '__custom__'];
     }
+    if (state && state.cli === 'codebuddy') return [...CODEBUDDY_MODEL_OPTIONS, '__custom__'];
+    if (state && state.cli === 'dsh') return [...DSH_MODEL_OPTIONS, '__custom__'];
     if (state && state.cli === 'zcode') return [...ZCODE_MODEL_OPTIONS, '__custom__'];
     if (state && state.cli === 'opencode') {
       // No multicc-managed provider chosen: list the local opencode CLI's
@@ -325,8 +346,20 @@
     if (value === '') {
       if (state && state.cli === 'codex') return '默认（跟随 Provider）';
       if (state && state.cli === 'qoder') return '默认（跟随 Qoder CN 设置）';
+      if (state && state.cli === 'codebuddy') return '默认（跟随 WorkBuddy 设置）';
+      if (state && state.cli === 'dsh') return '默认（跟随 DSH 配置）';
       if (state && state.cli === 'zcode') return '默认（跟随 ZCode 设置）';
       return translate(state, 'default');
+    }
+    if (state && state.cli === 'codebuddy') {
+      return ({
+        'default-model': 'default（默认档）', 'fast-model': 'fast（快速档）',
+        'balanced-model': 'balanced（均衡档）', 'primary-model': 'primary（主力档）',
+        'deep-model': 'deep（深度档）',
+      })[value] || (value === '__custom__' ? translate(state, 'custom') : value);
+    }
+    if (state && state.cli === 'dsh') {
+      return value === '__custom__' ? translate(state, 'custom') : value;
     }
     if (state && state.cli === 'qoder') {
       return ({
@@ -544,13 +577,13 @@
     const document = documentOf(state);
     const cli = state.cli || 'claude';
     const choicesForEffort = effortOptions(cli);
-    const supportsProvider = cli !== 'qoder';
+    const supportsProvider = cli !== 'qoder' && cli !== 'codebuddy' && cli !== 'dsh';
     return new Promise((resolve) => {
       ensureModalStyle(document);
       const { overlay, box, body, footer } = modalShell(document, 620);
       body.innerHTML = `
         <div style="font-size:15px;font-weight:600;margin-bottom:8px;">AI 配置（下一轮生效）</div>
-        <div style="font-size:12px;color:#8b949e;line-height:1.5;margin-bottom:12px;">${supportsProvider ? 'Provider、' : ''}Model${choicesForEffort.length ? `、${effortLabel(cli)}` : ''} 会一起保存。${supportsProvider ? (cli === 'zcode' ? '选择 Provider 时使用 MultiCC 的三协议隔离配置；选择默认时跟随 ZCode 原生设置 / Coding Plan。' : '切换 Provider 后，Model 选项会按该 Provider 的可用模型联动更新。') : 'Qoder CN 使用自身账号与厂商配置。'}</div>
+        <div style="font-size:12px;color:#8b949e;line-height:1.5;margin-bottom:12px;">${supportsProvider ? 'Provider、' : ''}Model${choicesForEffort.length ? `、${effortLabel(cli)}` : ''} 会一起保存。${supportsProvider ? (cli === 'zcode' ? '选择 Provider 时使用 MultiCC 的三协议隔离配置；选择默认时跟随 ZCode 原生设置 / Coding Plan。' : '切换 Provider 后，Model 选项会按该 Provider 的可用模型联动更新。') : (cli === 'codebuddy' ? 'WorkBuddy 使用自身账号与厂商配置。' : cli === 'dsh' ? 'DSH 使用 DeepSeek 自身凭证（DEEPSEEK_API_KEY 或 dsh 内置 credentials）。' : 'Qoder CN 使用自身账号与厂商配置。')}</div>
         <div id="ai-provider-section">
           <label style="display:block;font-size:12px;color:#8b949e;margin-bottom:5px;">Provider</label>
           <select id="ai-provider" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;"></select>
@@ -567,7 +600,7 @@
         </div>
         <div id="ai-agent-section">
           <div style="height:1px;background:#30363d;margin:4px 0 14px;"></div>
-          <div style="font-size:13px;font-weight:600;margin-bottom:2px;">${cli === 'claude' ? 'Claude Code' : cli === 'opencode' ? 'OpenCode' : 'Qoder CN'} Agent</div>
+          <div style="font-size:13px;font-weight:600;margin-bottom:2px;">${cli === 'claude' ? 'Claude Code' : cli === 'opencode' ? 'OpenCode' : cli === 'qoder' ? 'Qoder CN' : 'WorkBuddy'} Agent</div>
           <div style="font-size:11px;color:#8b949e;line-height:1.45;margin-bottom:8px;">对应原生 <code>--agent</code>，用于选择该 CLI 已定义的主 agent；它不同于下面的子任务路由。留空使用 CLI 默认 agent。</div>
           <input id="ai-agent" type="text" list="ai-agent-list" maxlength="80" placeholder="${cli === 'opencode' ? '例如 build' : '已定义的 agent 名称'}" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:14px;">
           <datalist id="ai-agent-list">${cli === 'opencode' ? '<option value="build"></option>' : ''}</datalist>
@@ -625,9 +658,9 @@
       if (!supportsProvider) providerSelect.value = '';
 
       effortSection.style.display = choicesForEffort.length ? '' : 'none';
-      agentSection.style.display = cli === 'claude' || cli === 'opencode' || cli === 'qoder' ? '' : 'none';
+      agentSection.style.display = cli === 'claude' || cli === 'opencode' || cli === 'qoder' || cli === 'codebuddy' ? '' : 'none';
       subSection.style.display = cli === 'claude' || cli === 'codex' ? '' : 'none';
-      agentInput.value = cli === 'claude' || cli === 'opencode' || cli === 'qoder' ? (config.agent || '') : '';
+      agentInput.value = cli === 'claude' || cli === 'opencode' || cli === 'qoder' || cli === 'codebuddy' ? (config.agent || '') : '';
       for (const choice of choicesForEffort) {
         const option = document.createElement('option');
         option.value = choice.value;
@@ -771,7 +804,7 @@
           providerSelection,
           model: primary ? primary.model || '' : selectedModel,
           effort: effortSelect.value,
-          agent: cli === 'claude' || cli === 'opencode' || cli === 'qoder' ? agentInput.value.trim() : null,
+          agent: cli === 'claude' || cli === 'opencode' || cli === 'qoder' || cli === 'codebuddy' ? agentInput.value.trim() : null,
           subagent: (cli === 'claude' || cli === 'codex') && childProviderId && childModel
             ? { providerId: childProviderId, model: childModel }
             : null,
@@ -876,6 +909,9 @@
     EFFORT_OPTIONS,
     CODEX_REASONING_OPTIONS,
     OPENCODE_VARIANT_OPTIONS,
+    QODER_MODEL_OPTIONS,
+    CODEBUDDY_MODEL_OPTIONS,
+    DSH_MODEL_OPTIONS,
     defaultEffort,
     effortOptions,
     effortLabel,

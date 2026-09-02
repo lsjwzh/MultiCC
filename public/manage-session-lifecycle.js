@@ -20,6 +20,33 @@
   const ZCODE_MODEL_OPTIONS = Object.freeze([
     { value: '', label: '默认（跟随 ZCode 设置）' },
   ]);
+  // WorkBuddy (codebuddy) offers tier aliases plus concrete vendor ids; the
+  // CLI has no --list-models, so this static catalog is all we can offer.
+  const CODEBUDDY_MODEL_OPTIONS = Object.freeze([
+    { value: '', label: '默认（跟随 WorkBuddy 设置）' },
+    { value: 'default-model', label: 'default（默认档）' },
+    { value: 'fast-model', label: 'fast（快速档）' },
+    { value: 'balanced-model', label: 'balanced（均衡档）' },
+    { value: 'primary-model', label: 'primary（主力档）' },
+    { value: 'deep-model', label: 'deep（深度档）' },
+    { value: 'gpt-5.6-sol', label: 'gpt-5.6-sol' },
+    { value: 'gpt-5.6-terra', label: 'gpt-5.6-terra' },
+    { value: 'gpt-5.6-luna', label: 'gpt-5.6-luna' },
+    { value: 'gpt-5.5', label: 'gpt-5.5' },
+    { value: 'gpt-5.4', label: 'gpt-5.4' },
+    { value: 'gpt-5.3-codex', label: 'gpt-5.3-codex' },
+    { value: 'gemini-3.5-flash', label: 'gemini-3.5-flash' },
+    { value: 'glm-5.3', label: 'glm-5.3' },
+    { value: 'glm-5.2', label: 'glm-5.2' },
+    { value: 'kimi-k3', label: 'kimi-k3' },
+    { value: 'kimi-k2.6', label: 'kimi-k2.6' },
+    { value: 'minimax-m3', label: 'minimax-m3' },
+  ]);
+  const DSH_MODEL_OPTIONS = Object.freeze([
+    { value: '', label: '默认（跟随 DSH 配置）' },
+    { value: 'deepseek-v4-flash', label: 'deepseek-v4-flash（快速）' },
+    { value: 'deepseek-v4-pro', label: 'deepseek-v4-pro（深度）' },
+  ]);
 
   function supportsManagedProvider(cli) {
     return cli === 'claude' || cli === 'codex' || cli === 'opencode' || cli === 'zcode';
@@ -53,18 +80,21 @@
   function vendorModelOptions(cli) {
     if (cli === 'qoder') return qoderModelOptions();
     if (cli === 'claude') return claudeModelOptions();
+    if (cli === 'codebuddy') return CODEBUDDY_MODEL_OPTIONS;
+    if (cli === 'dsh') return DSH_MODEL_OPTIONS;
     return null;
   }
 
   function effortLabelForCli(cli, isClaude) {
-    if (cli === 'qoder') return 'Reasoning Effort';
+    if (cli === 'qoder' || cli === 'codebuddy') return 'Reasoning Effort';
     if (cli === 'opencode') return 'Variant';
     return isClaude ? 'Effort' : 'Reasoning Level';
   }
 
   function effortOptionsForCli(cli, isClaude) {
-    if (cli === 'zcode') return [];
+    if (cli === 'zcode' || cli === 'dsh') return [];
     if (cli === 'qoder') return ['', 'low', 'medium', 'high', 'xhigh', 'max'];
+    if (cli === 'codebuddy') return ['', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
     if (cli === 'opencode') return ['', 'minimal', 'low', 'medium', 'high', 'max'];
     return isClaude
       ? ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']
@@ -72,7 +102,7 @@
   }
 
   function defaultEffortForCli(cli, isClaude) {
-    if (cli === 'qoder' || cli === 'opencode' || cli === 'zcode') return '';
+    if (cli === 'qoder' || cli === 'opencode' || cli === 'zcode' || cli === 'dsh') return '';
     return isClaude ? 'medium' : 'xhigh';
   }
 
@@ -479,7 +509,7 @@
 
       const title = document.createElement('div');
       title.style.cssText = 'font-size:15px;color:#f2f4f7;font-weight:600;margin-bottom:14px;';
-      const CLI_LABELS = { claude: 'Claude', codex: 'Codex', opencode: 'OpenCode', zcode: 'ZCode', qoder: 'Qoder CN' };
+      const CLI_LABELS = { claude: 'Claude', codex: 'Codex', opencode: 'OpenCode', zcode: 'ZCode', qoder: 'Qoder CN', codebuddy: 'WorkBuddy', dsh: 'DSH' };
       title.textContent = `新建 ${CLI_LABELS[cli] || cli} ${kind === 'chat' ? 'Chat' : 'Terminal'}`;
       box.appendChild(title);
 

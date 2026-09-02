@@ -4,75 +4,302 @@
   "title": "Session DTO v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["id", "dirId", "type", "cli", "kind", "label", "model", "effectiveModel", "effort", "effectiveEffort", "agent", "provider", "subagent", "autoCommit", "createdAt", "lastActivity", "clients", "active", "mergeState"],
+  "required": [
+    "id",
+    "dirId",
+    "type",
+    "cli",
+    "kind",
+    "label",
+    "model",
+    "effectiveModel",
+    "effort",
+    "effectiveEffort",
+    "agent",
+    "provider",
+    "subagent",
+    "autoCommit",
+    "createdAt",
+    "lastActivity",
+    "clients",
+    "active",
+    "mergeState"
+  ],
   "properties": {
-    "id": { "type": "string", "minLength": 1, "maxLength": 160 },
-    "dirId": { "type": ["string", "null"], "maxLength": 160 },
-    "type": { "const": "session" },
-    "cli": { "enum": ["claude", "codex", "opencode", "zcode", "qoder", "kimi"] },
-    "kind": { "enum": ["chat", "terminal"] },
-    "label": { "type": ["string", "null"], "maxLength": 160 },
-    "model": { "type": ["string", "null"], "maxLength": 160 },
-    "effectiveModel": { "type": ["string", "null"], "maxLength": 160 },
-    "effort": { "type": ["string", "null"], "maxLength": 80 },
-    "effectiveEffort": { "type": ["string", "null"], "maxLength": 80 },
-    "agent": { "type": ["string", "null"], "maxLength": 160 },
-    "provider": { "type": ["string", "null"], "maxLength": 160 },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "dirId": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 160
+    },
+    "type": {
+      "const": "session"
+    },
+    "cli": {
+      "enum": [
+        "claude",
+        "codex",
+        "opencode",
+        "zcode",
+        "qoder",
+        "kimi",
+        "codebuddy",
+        "dsh"
+      ]
+    },
+    "kind": {
+      "enum": [
+        "chat",
+        "terminal"
+      ]
+    },
+    "label": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 160
+    },
+    "model": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 160
+    },
+    "effectiveModel": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 160
+    },
+    "effort": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 80
+    },
+    "effectiveEffort": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 80
+    },
+    "agent": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 160
+    },
+    "provider": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 160
+    },
     "providerSelection": {
-      "type": ["object", "null"],
+      "type": [
+        "object",
+        "null"
+      ],
       "additionalProperties": false,
-      "required": ["version", "mode", "protocol", "candidates", "maxAttempts", "sticky", "allowCrossTrust"],
+      "required": [
+        "version",
+        "mode",
+        "protocol",
+        "candidates",
+        "maxAttempts",
+        "sticky",
+        "allowCrossTrust"
+      ],
       "properties": {
-        "version": { "const": 1 },
-        "mode": { "const": "auto" },
-        "protocol": { "enum": ["anthropic", "openai_responses", "openai_chat"] },
+        "version": {
+          "const": 1
+        },
+        "mode": {
+          "const": "auto"
+        },
+        "protocol": {
+          "enum": [
+            "anthropic",
+            "openai_responses",
+            "openai_chat"
+          ]
+        },
         "candidates": {
-          "type": "array", "minItems": 2, "maxItems": 12,
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 12,
           "items": {
-            "type": "object", "additionalProperties": false,
-            "required": ["providerId", "model", "priority", "enabled"],
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "providerId",
+              "model",
+              "priority",
+              "enabled"
+            ],
             "properties": {
-              "providerId": { "type": "string", "minLength": 1, "maxLength": 160 },
-              "model": { "type": ["string", "null"], "maxLength": 100 },
-              "priority": { "type": "integer", "minimum": 1, "maximum": 100 },
-              "enabled": { "type": "boolean" }
+              "providerId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "model": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "maxLength": 100
+              },
+              "priority": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100
+              },
+              "enabled": {
+                "type": "boolean"
+              }
             }
           }
         },
-        "maxAttempts": { "type": "integer", "minimum": 2, "maximum": 4 },
-        "sticky": { "type": "boolean" },
-        "allowCrossTrust": { "type": "boolean" }
+        "maxAttempts": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 4
+        },
+        "sticky": {
+          "type": "boolean"
+        },
+        "allowCrossTrust": {
+          "type": "boolean"
+        }
       }
     },
-    "experimentalMode": { "type": ["string", "null"], "maxLength": 80 },
+    "experimentalMode": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 80
+    },
     "subagent": {
-      "type": ["object", "null"],
+      "type": [
+        "object",
+        "null"
+      ],
       "additionalProperties": false,
-      "required": ["providerId", "model", "effectiveModel"],
+      "required": [
+        "providerId",
+        "model",
+        "effectiveModel"
+      ],
       "properties": {
-        "providerId": { "type": "string", "minLength": 1, "maxLength": 160 },
-        "model": { "type": "string", "minLength": 1, "maxLength": 160 },
-        "effectiveModel": { "type": ["string", "null"], "maxLength": 160 }
+        "providerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "effectiveModel": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 160
+        }
       }
     },
-    "autoCommit": { "type": "boolean" },
-    "createdAt": { "type": ["string", "null"], "format": "date-time" },
-    "lastActivity": { "type": ["string", "null"], "format": "date-time" },
-    "clients": { "type": "integer", "minimum": 0 },
-    "active": { "type": "boolean" },
-    "workspaceState": { "enum": ["awake", "hibernated"] },
-    "lastWorkAt": { "type": ["string", "null"], "format": "date-time" },
-    "hibernatedAt": { "type": ["string", "null"], "format": "date-time" },
+    "autoCommit": {
+      "type": "boolean"
+    },
+    "createdAt": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "lastActivity": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "clients": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "active": {
+      "type": "boolean"
+    },
+    "workspaceState": {
+      "enum": [
+        "awake",
+        "hibernated"
+      ]
+    },
+    "lastWorkAt": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "hibernatedAt": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
     "mergeState": {
-      "type": ["object", "null"],
+      "type": [
+        "object",
+        "null"
+      ],
       "additionalProperties": false,
-      "required": ["ahead", "behind", "dirty", "mergeReady", "rebaseInProgress"],
+      "required": [
+        "ahead",
+        "behind",
+        "dirty",
+        "mergeReady",
+        "rebaseInProgress"
+      ],
       "properties": {
-        "ahead": { "type": "number", "minimum": 0 },
-        "behind": { "type": "number", "minimum": 0 },
-        "dirty": { "type": "boolean" },
-        "mergeReady": { "type": "boolean" },
-        "rebaseInProgress": { "type": "boolean" }
+        "ahead": {
+          "type": "number",
+          "minimum": 0
+        },
+        "behind": {
+          "type": "number",
+          "minimum": 0
+        },
+        "dirty": {
+          "type": "boolean"
+        },
+        "mergeReady": {
+          "type": "boolean"
+        },
+        "rebaseInProgress": {
+          "type": "boolean"
+        }
       }
     }
   }

@@ -606,7 +606,7 @@ function createTbComposer(host, opts) {
   // only — an already-bound session changes through its ordinary Chat surface.
   const cliSel = $q('.tb-cli');
   const provSel = $q('.tb-provider');
-  const TB_CLI_LABELS = { claude: 'Claude', codex: 'Codex', opencode: 'OpenCode', zcode: 'ZCode', qoder: 'Qoder CN' };
+  const TB_CLI_LABELS = { claude: 'Claude', codex: 'Codex', opencode: 'OpenCode', zcode: 'ZCode', qoder: 'Qoder CN', codebuddy: 'WorkBuddy', dsh: 'DSH' };
   let runtimeSuggest = null;           // {cli, provider} from the host
   const providerCache = new Map();     // cli -> [{appType,id,name}]
   const autoDrafts = new Map();        // fleet + cli + protocol -> committed selection
@@ -643,7 +643,7 @@ function createTbComposer(host, opts) {
 
   const renderCliOptions = () => {
     const sugCli = runtimeSuggest?.cli || '';
-    const clis = [...new Set([sugCli, 'claude', 'codex', 'opencode', 'zcode', 'qoder'].filter(Boolean))];
+    const clis = [...new Set([sugCli, 'claude', 'codex', 'opencode', 'zcode', 'qoder', 'codebuddy', 'dsh'].filter(Boolean))];
     cliSel.innerHTML = `<option value="">CLI · ${sugCli ? `最近活跃 ${_tbEsc(TB_CLI_LABELS[sugCli] || sugCli)}` : '默认'}</option>`
       + clis.map(c => `<option value="${_tbEsc(c)}">${_tbEsc(TB_CLI_LABELS[c] || c)}</option>`).join('');
   };

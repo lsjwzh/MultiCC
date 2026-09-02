@@ -168,7 +168,7 @@ function normalizeRemoteSessions(value) {
   return sourceSessions.map(session => ({
     id: cleanText(session && session.id, 180),
     label: cleanText(session && session.label, 120, '未命名会话'),
-    cli: ['claude', 'codex', 'opencode', 'zcode', 'qoder'].includes(session && session.cli)
+    cli: ['claude', 'codex', 'opencode', 'zcode', 'qoder', 'kimi', 'codebuddy', 'dsh'].includes(session && session.cli)
       ? session.cli : 'other',
     kind: session && session.kind === 'terminal' ? 'terminal' : 'chat',
     type: session && session.type === 'commander' ? 'commander' : 'worker',
@@ -304,7 +304,7 @@ function createFleetSharing({
     const sessions = listSessions(directory.id).slice(0, 500).map(session => ({
       id: cleanText(session.id, 180),
       label: cleanText(session.label || session.id, 120, '未命名会话'),
-      cli: ['claude', 'codex', 'opencode', 'zcode', 'qoder'].includes(session.cli)
+      cli: ['claude', 'codex', 'opencode', 'zcode', 'qoder', 'kimi', 'codebuddy', 'dsh'].includes(session.cli)
         ? session.cli : 'other',
       kind: session.kind === 'terminal' ? 'terminal' : 'chat',
       type: session.type === 'commander' ? 'commander' : 'worker',
