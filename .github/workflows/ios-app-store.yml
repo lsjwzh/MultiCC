@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   verify-ios-26:
-    name: Verify release build with iOS 26 SDK
+    name: Build unsigned archive with iOS 26 SDK
     runs-on: macos-26
     timeout-minutes: 45
 
@@ -48,20 +48,22 @@ jobs:
         working-directory: app
         run: flutter pub get --enforce-lockfile
 
-      - name: Build unsigned release app
+      - name: Build unsigned release archive
         working-directory: app
         run: >-
-          flutter build ios
+          flutter build ipa
           --release
           --no-codesign
           --build-name=2.29.12
           --build-number=124
 
-      - name: Verify build identity and SDK
+      - name: Verify archive identity and SDK
         working-directory: app
         run: |
           set -euo pipefail
-          app_path=build/ios/iphoneos/Runner.app
+          archive_path=build/ios/archive/Runner.xcarchive
+          app_path="$archive_path/Products/Applications/Runner.app"
+          test -d "$archive_path"
           test -d "$app_path"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app_path/Info.plist")" = '2.29.12'
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app_path/Info.plist")" = '124'
@@ -79,3 +81,20 @@ jobs:
             "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app_path/Info.plist")" \
             "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app_path/Info.plist")" \
             "$sdk_name"
+
+      - name: Package unsigned archive
+        working-directory: app
+        run: |
+          set -euo pipefail
+          artifact="$RUNNER_TEMP/MultiCC-2.29.12-124-unsigned.xcarchive.tar.gz"
+          tar -czf "$artifact" -C build/ios/archive Runner.xcarchive
+          test -s "$artifact"
+          shasum -a 256 "$artifact"
+
+      - name: Upload unsigned archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: MultiCC-2.29.12-124-unsigned-xcarchive
+          path: ${{ runner.temp }}/MultiCC-2.29.12-124-unsigned.xcarchive.tar.gz
+          if-no-files-found: error
+          retention-days: 1
