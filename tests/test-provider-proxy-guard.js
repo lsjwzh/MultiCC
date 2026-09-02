@@ -3,6 +3,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
+  classifyProviderProxyRoute,
   createProviderProxyAdmission,
   createProviderProxyGuard,
 } = require('../src/provider-proxy-guard');
@@ -47,16 +48,51 @@ test('attempt proxy guard rejects stale capabilities without echoing route metad
   assert.equal(state.body.includes('pr1.session.secret'), false);
 });
 
-test('legacy session-less Codex and Claude Aux routes stay outside attempt ownership', () => {
+test('host-scoped Codex and Claude routes stay outside attempt ownership', () => {
   let authorized = 0;
   let nextCalls = 0;
   const authorizeProxyRequest = () => { authorized += 1; return { ok: false }; };
   const codex = createProviderProxyGuard({ protocol: 'codex', authorizeProxyRequest });
   const claude = createProviderProxyGuard({ protocol: 'claude', authorizeProxyRequest });
   codex({ method: 'POST', url: '/official-provider/responses' }, {}, () => { nextCalls += 1; });
-  claude({ method: 'POST', url: '/provider-a/aux/v1/messages' }, {}, () => { nextCalls += 1; });
+  for (const bucket of ['aux', 'remote', 'speedtest']) {
+    claude({ method: 'POST', url: `/provider-a/${bucket}/v1/messages` }, {}, () => { nextCalls += 1; });
+  }
   assert.equal(authorized, 0);
-  assert.equal(nextCalls, 2);
+  assert.equal(nextCalls, 4);
+});
+
+test('unknown Claude route buckets remain fail-closed as attempt routes', () => {
+  assert.equal(classifyProviderProxyRoute('claude', [
+    'provider-a', 'unknown-bucket', 'v1', 'messages',
+  ]).scope, 'attempt');
+  let authorized = 0;
+  const guard = createProviderProxyGuard({
+    protocol: 'claude',
+    authorizeProxyRequest: () => { authorized += 1; return { ok: false }; },
+  });
+  const { state, res } = responseHarness();
+  guard({ method: 'POST', url: '/provider-a/unknown-bucket/v1/messages' }, res, () => {});
+  assert.equal(authorized, 1);
+  assert.equal(state.status, 409);
+});
+
+test('host-scoped Claude admission never re-authorizes relay or speedtest provider lookup', async () => {
+  let mounted;
+  let authorized = 0;
+  let providerReads = 0;
+  const app = { use(_pathname, handler) { mounted = handler; } };
+  const admission = createProviderProxyAdmission({
+    protocol: 'claude', app,
+    authorizeProxyRequest: () => { authorized += 1; return { ok: false }; },
+    getProvider: () => { providerReads += 1; return {}; },
+  });
+  admission.app.use('/claude-proxy', () => admission.getProvider('claude', 'provider-a'));
+  for (const bucket of ['remote', 'speedtest']) {
+    await mounted({ method: 'POST', url: `/provider-a/${bucket}/v1/messages` }, {}, error => { throw error; });
+  }
+  assert.equal(authorized, 0);
+  assert.equal(providerReads, 2);
 });
 
 test('attempt-scoped Codex Official routes require the exact active capability', () => {
