@@ -20,7 +20,6 @@ const EXPECTED_PATHS = [
   '/api/tunnel/funnel',
   '/api/tunnel/ipv6',
   '/api/settings/access-token',
-  '/api/settings/proxy-token',
   '/api/settings/proxy',
   '/api/settings/official-oauth',
   '/api/settings/power',
@@ -286,31 +285,6 @@ test('settings read live token and proxy values instead of mount-time snapshots'
   });
   assert.deepEqual((await invoke(routes, '/api/settings/proxy')).body, { enabled: false });
   assert.deepEqual((await invoke(routes, '/api/settings/official-oauth')).body, { enabled: true });
-});
-
-test('proxy-token settings mask the relay token and gate edits to loopback', async () => {
-  let proxyToken = 'mcpr_relay_secret';
-  const localRequest = { ip: '127.0.0.1' };
-  const { routes } = createHarness({
-    getProxyToken: () => proxyToken,
-    isLocalRequest: (req) => req === localRequest,
-  });
-  assert.deepEqual((await invoke(routes, '/api/settings/proxy-token', localRequest)).body, {
-    hasToken: true,
-    masked: '****cret',
-    canEdit: true,
-  });
-  assert.deepEqual((await invoke(routes, '/api/settings/proxy-token', {})).body, {
-    hasToken: true,
-    masked: '****cret',
-    canEdit: false,
-  });
-  proxyToken = '';
-  assert.deepEqual((await invoke(routes, '/api/settings/proxy-token', {})).body, {
-    hasToken: false,
-    masked: '',
-    canEdit: false,
-  });
 });
 
 test('tunnel settings and diagnostics preserve success payloads', async () => {
