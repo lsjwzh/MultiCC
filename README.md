@@ -5,16 +5,16 @@
 <h1 align="center">MultiCC</h1>
 
 <p align="center">
-  <strong>One conversation. Six coding CLIs. Switch between them mid-task without losing context.</strong>
+  <strong>One conversation. Eight coding CLIs. Switch between them mid-task without losing context.</strong>
 </p>
 
 <p align="center">
-  <em>Claude Code · Codex · OpenCode · ZCode · Kimi Code · Qoder — same chat, same repo, same task.<br/>
+  <em>Claude Code · Codex · OpenCode · ZCode · Kimi Code · Qoder · WorkBuddy · DSH — same chat, same repo, same task.<br/>
   Run them in parallel across isolated git worktrees, and drive it all from your desk, your phone, or IM.</em>
 </p>
 
 <p align="center">
-  <a href="#the-headline-one-chat-six-clis">Multi-CLI switching</a> &bull;
+  <a href="#the-headline-one-chat-eight-clis">Multi-CLI switching</a> &bull;
   <a href="#quick-start">Quick Start</a> &bull;
   <a href="#what-else-it-does">Features</a> &bull;
   <a href="#documentation">Docs</a> &bull;
@@ -25,7 +25,7 @@
 <p align="center">
   <img src="https://img.shields.io/github/v/release/lsjwzh/MultiCC?label=latest%20release" alt="Latest Release" />
   <img src="https://img.shields.io/badge/node-%3E%3D20.19-brightgreen" alt="Node.js >=20.19" />
-  <img src="https://img.shields.io/badge/CLIs-claude%20%7C%20codex%20%7C%20opencode%20%7C%20zcode%20%7C%20kimi%20%7C%20qoder-8A2BE2" alt="Supported CLIs" />
+  <img src="https://img.shields.io/badge/CLIs-claude%20%7C%20codex%20%7C%20opencode%20%7C%20zcode%20%7C%20kimi%20%7C%20qoder%20%7C%20workbuddy%20%7C%20dsh-8A2BE2" alt="Supported CLIs" />
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-blue" alt="Platform" />
   <img src="https://img.shields.io/badge/flutter-Android%20%7C%20iOS-02569B" alt="Flutter app" />
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License" />
@@ -45,7 +45,7 @@
 
 ---
 
-## The headline: one chat, six CLIs
+## The headline: one chat, eight CLIs
 
 You are three hours into a refactor with Claude Code. You want a second opinion from Codex, or your Anthropic quota just ran out, or GLM is simply cheaper for the next mechanical stretch.
 
@@ -58,10 +58,10 @@ In MultiCC it is one click. The **conversation** is yours; the CLI is just the e
    your chat ───▶│  goal · phase · recent messages · git state     │
                  └───────────────┬────────────────────────────────┘
                                  │  bounded checkpoint
-      ┌──────────┬───────────────┼───────────────┬──────────┬─────────┐
-      ▼          ▼               ▼               ▼          ▼         ▼
-   claude      codex         opencode          zcode      kimi      qoder
-      └──────────┴───────────────┴───────────────┴──────────┴─────────┘
+      ┌──────────┬───────────────┼───────────────┬──────────┬─────────┬──────────┬──────┐
+      ▼          ▼               ▼               ▼          ▼         ▼          ▼      ▼
+   claude      codex         opencode          zcode      kimi      qoder   workbuddy   dsh
+      └──────────┴───────────────┴───────────────┴──────────┴─────────┴──────────┴──────┘
         each keeps its own native session — switch back and it resumes
 ```
 
@@ -84,11 +84,11 @@ The receiving CLI is told, in the prompt, not to pretend otherwise:
 
 Each CLI remembers its own native session id, model, effort, provider and subagent routing. Claude → Codex → Claude returns you to **the Claude conversation that already exists**, brought up to date with a fresh checkpoint — not a blank slate. Pass `fresh: true` when you *want* the clean slate.
 
-Clearing a chat invalidates **all six** native sessions, so a switch can never resurrect context you deliberately discarded.
+Clearing a chat invalidates **all** native sessions, so a switch can never resurrect context you deliberately discarded.
 
 ### Missing a CLI? Install it from the switcher
 
-The picker shows which CLIs are installed, which already hold a saved session, and offers one-click installation for the ones that are missing (`claude`, `codex`, `opencode`, `kimi`, `qoder`; ZCode ships inside its desktop app).
+The picker shows which CLIs are installed, which already hold a saved session, and offers one-click installation for the ones that are missing (`claude`, `codex`, `opencode`, `kimi`, `qoder`, `codebuddy`, `dsh`; ZCode ships inside its desktop app).
 
 **→ Full details: [Multi-CLI switching](docs/cli-switching.md)**
 
@@ -101,7 +101,7 @@ The picker shows which CLIs are installed, which already hold a saved session, a
 | | |
 |---|---|
 | 🔄 **Not locked to one vendor** | Quota exhausted, model deprecated, or a task better suited to another engine — switch instead of starting over. |
-| 🧵 **Real parallelism** | Each session gets its own git worktree on branch `multicc/<sessionId>`. Six agents, one repo, no stepping on each other. Merge back through a syntax-gated API. |
+| 🧵 **Real parallelism** | Each session gets its own git worktree on branch `multicc/<sessionId>`. Eight agents, one repo, no stepping on each other. Merge back through a syntax-gated API. |
 | 💸 **Cheap subagents** | Main agent on a frontier model, subagents routed to DeepSeek / GLM / Qwen through a local provider router. Same repo, in parallel, at a fraction of the cost. |
 | 📱 **Sessions outlive the client** | Close the laptop mid-task; pick it up on your phone. Terminal sessions live in `tmux`, chat sessions as stateful turns. |
 | 🗣️ **Voice, including full duplex** | Dictate prompts, or hold a real-time speech-to-speech conversation with your agent while your hands are busy. |
@@ -368,5 +368,5 @@ MIT.
 ---
 
 <p align="center">
-  <sub>Built for Claude Code, Codex, OpenCode, ZCode, Kimi Code, and Qoder · <a href="https://github.com/lsjwzh/MultiCC">github.com/lsjwzh/MultiCC</a></sub>
+  <sub>Built for Claude Code, Codex, OpenCode, ZCode, Kimi Code, Qoder, WorkBuddy, and DSH · <a href="https://github.com/lsjwzh/MultiCC">github.com/lsjwzh/MultiCC</a></sub>
 </p>

@@ -75,6 +75,9 @@ function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, 
         opencode_terminal: 0, opencode_chat: 0,
         zcode_terminal: 0, zcode_chat: 0,
         qoder_terminal: 0, qoder_chat: 0,
+        kimi_terminal: 0, kimi_chat: 0,
+        codebuddy_terminal: 0, codebuddy_chat: 0,
+        dsh_terminal: 0, dsh_chat: 0,
       };
       for (const s of sessions.listByDir(d.id)) {
         const k = `${s.cli || 'claude'}_${s.kind || 'terminal'}`;

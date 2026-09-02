@@ -7,18 +7,39 @@ const path = require('node:path');
 
 const providers = require('../src/providers');
 
-test('Qoder stays providerless while ZCode resolves both MultiCC provider pools', () => {
+test('vendor-auth CLIs stay providerless while ZCode resolves both MultiCC provider pools', () => {
   assert.equal(providers.appTypeForCli('claude'), 'claude');
   assert.equal(providers.appTypeForCli('opencode'), 'claude');
   assert.equal(providers.appTypeForCli('codex'), 'codex');
   assert.equal(providers.appTypeForCli('qoder'), null);
+  assert.equal(providers.appTypeForCli('kimi'), null);
+  assert.equal(providers.appTypeForCli('codebuddy'), null);
+  assert.equal(providers.appTypeForCli('dsh'), null);
   assert.equal(providers.appTypeForCli('zcode'), null);
   assert.deepEqual(providers.appTypesForCli('qoder'), []);
+  assert.deepEqual(providers.appTypesForCli('codebuddy'), []);
+  assert.deepEqual(providers.appTypesForCli('dsh'), []);
   assert.deepEqual(providers.appTypesForCli('zcode'), ['claude', 'codex']);
 });
 
 test('stale vendor provider ids cannot silently fall through to another account', () => {
   assert.deepEqual(providers.resolveSpawnEnv({ cli: 'qoder', provider: 'stale-provider' }), {
+    env: {},
+    skipDefaultModel: false,
+    aliasOnly: false,
+    providerModel: null,
+    providerModels: [],
+    providerName: null,
+  });
+  assert.deepEqual(providers.resolveSpawnEnv({ cli: 'codebuddy', provider: 'stale-provider' }), {
+    env: {},
+    skipDefaultModel: false,
+    aliasOnly: false,
+    providerModel: null,
+    providerModels: [],
+    providerName: null,
+  });
+  assert.deepEqual(providers.resolveSpawnEnv({ cli: 'dsh', provider: 'stale-provider' }), {
     env: {},
     skipDefaultModel: false,
     aliasOnly: false,

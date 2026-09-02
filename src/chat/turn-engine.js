@@ -605,7 +605,7 @@ function createChatTurnEngine(deps) {
         runner.sawApiError = true;
         const detail = evt.error && typeof evt.error === 'object' ? evt.error : {};
         runner.apiErrorRaw = detectedErrorEnvelope || {
-          source: providerName === 'qoder' ? 'qoder_result' : 'claude_result',
+          source: envelopeSourceFor(providerName),
           provider: providerName,
           code: detail.code || evt.subtype || detail.type,
           httpStatus: detail.http_status || detail.status_code || detail.status

@@ -109,7 +109,7 @@
         const command = text.split(/\s+/)[0].toLowerCase();
         if (command === '/clear') {
           resetHistory();
-          addSystemMessage('Chat cleared；Claude / Codex / OpenCode / ZCode / Qoder CN 的原生上下文均已重置');
+          addSystemMessage('Chat cleared；Claude / Codex / OpenCode / ZCode / Qoder CN / WorkBuddy / DSH 的原生上下文均已重置');
           clearInput();
           if (isSocketOpen()) transportSend({ type: 'clear_history' });
           return true;
