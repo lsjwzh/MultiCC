@@ -3,8 +3,10 @@
 // Host-side adapter for borrowing an OpenAI Official (ChatGPT OAuth) Codex
 // provider through /codex-proxy. Ordinary Codex providers are handled by
 // cli-provider-router; Official is different because it has neither an API key
-// nor a model_provider.base_url. Its credential lives in ~/.codex/auth.json and
-// calls the ChatGPT Codex backend instead of api.openai.com.
+// nor a model_provider.base_url. Its credential lives in ~/.codex/auth.json
+// (the shared login) or — for a provider marked settingsConfig.officialAccount —
+// in that account's own auth.json under the multicc official-accounts store.
+// Both call the ChatGPT Codex backend instead of api.openai.com.
 //
 // The OAuth credential never crosses the relay boundary. A borrower presents
 // MULTICC_PROXY_TOKEN to MultiCC's existing auth middleware; this adapter reads
@@ -15,6 +17,8 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const os = require('node:os');
 const path = require('node:path');
+
+const { officialAccountIdFromProvider } = require('./official-accounts');
 
 const DEFAULT_AUTH_FILE = path.join(os.homedir(), '.codex', 'auth.json');
 const DEFAULT_UPSTREAM_URL = 'https://chatgpt.com/backend-api/codex/responses';
@@ -297,7 +301,23 @@ function finishResponseObservation(observer, context) {
 function createCodexOfficialRelayHandler(options = {}) {
   const getProvider = options.getProvider;
   const fetchImpl = options.fetch || globalThis.fetch;
-  const readCredential = options.readCredential || (() => readCodexOfficialCredential(options));
+  // Credential resolution is per-PROVIDER: a provider record marked with
+  // settingsConfig.officialAccount.id borrows that account's auth.json (the
+  // multicc-owned credential store) instead of the shared ~/.codex/auth.json.
+  // A marked provider whose account file cannot be resolved must NOT fall back
+  // to the shared login — that would silently spend another account's quota.
+  const readCredential = typeof options.readCredential === 'function'
+    ? options.readCredential
+    : (context) => {
+        const accountId = officialAccountIdFromProvider(context && context.provider);
+        if (accountId) {
+          const authFile = typeof options.resolveAccountAuthFile === 'function'
+            ? options.resolveAccountAuthFile(accountId) : null;
+          if (!authFile) return { ok: false, reason: 'account_credential_unresolved' };
+          return readCodexOfficialCredential({ ...options, authFile });
+        }
+        return readCodexOfficialCredential(options);
+      };
   const upstreamUrl = options.upstreamUrl || DEFAULT_UPSTREAM_URL;
   if (typeof getProvider !== 'function') throw new TypeError('getProvider required');
   if (typeof fetchImpl !== 'function') throw new TypeError('fetch required');
@@ -333,7 +353,7 @@ function createCodexOfficialRelayHandler(options = {}) {
     };
     reportActivity(context, 'request');
 
-    const credential = await readCredential();
+    const credential = await readCredential({ provider, providerId });
     if (!credential || !credential.ok) {
       reportTerminal(context, null, { status: 'error', errorCode: 'OAUTH_CREDENTIAL_UNAVAILABLE' });
       return responseJson(res, 503, {
