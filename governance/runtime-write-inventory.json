@@ -157,6 +157,19 @@
       ]
     },
     {
+      "id": "dsh-profile-bootstrap",
+      "classification": "external-owner",
+      "owner": "dsh adapter",
+      "rationale": "The dsh adapter materializes a dedicated ~/.dsh/profiles/multicc profile (manifest, cordis patch, workspace yaml, version stamp, and a copy of vendor/dsh-runner under the profile's node_modules) so the multicc streaming runner rides over the user's own dsh install. dsh itself owns the rest of ~/.dsh (credentials, sessions, shared bundle tree).",
+      "migrationStrategy": "The profile is fully derived state: delete ~/.dsh/profiles/multicc and ensureDshProfile() rebuilds it on the next spawn. Only DSH_PROFILE_VERSION bumps rewrite it in place; never write outside this profile directory.",
+      "sources": [
+        {
+          "file": "src/cli-adapters/dsh.js",
+          "anchor": "function dshProfileDir(homeDir) { return path.join(homeDir, '.dsh', 'profiles', DSH_PROFILE); }"
+        }
+      ]
+    },
+    {
       "id": "local-asr-models",
       "classification": "external-owner",
       "owner": "local ASR model installer",

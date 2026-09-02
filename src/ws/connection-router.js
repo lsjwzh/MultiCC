@@ -181,9 +181,11 @@ function mountWsConnectionRouter(wss, deps) {
         session = await createSession(sessionId);
       } catch (error) {
         const cliLabel = persisted.cli || 'claude';
+        const BINARY_NAMES = { qoder: 'qoderclicn', codebuddy: 'codebuddy', dsh: 'dsh' };
+        const binaryName = BINARY_NAMES[cliLabel] || cliLabel;
         const message = `Failed to launch ${cliLabel}: ${error.message}\r\n`
-          + `Make sure "${cliLabel === 'qoder' ? 'qoderclicn' : cliLabel}" is installed and available in PATH.\r\n`
-          + `You can also set the ${cliLabel.toUpperCase()}_CMD environment variable.\r\n`;
+          + `Make sure "${binaryName}" is installed and available in PATH.\r\n`
+          + `You can also set the ${binaryName.toUpperCase()}_CMD environment variable.\r\n`;
         sendWs(ws, { type: 'error', data: message });
         ws.close();
         return;

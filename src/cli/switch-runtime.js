@@ -36,6 +36,16 @@ const OFFICIAL_INSTALL_SPECS = Object.freeze({
     command: 'npm install -g @moonshot-ai/kimi-code',
     display: 'npm install -g @moonshot-ai/kimi-code',
   },
+  codebuddy: {
+    auto: true,
+    command: 'npm install -g @tencent-ai/codebuddy-code',
+    display: 'npm install -g @tencent-ai/codebuddy-code',
+  },
+  dsh: {
+    auto: true,
+    command: 'npm install -g @deepseek-ai/dsh',
+    display: 'npm install -g @deepseek-ai/dsh',
+  },
 });
 
 const INSTALL_TIMEOUT_MS = 8 * 60 * 1000;

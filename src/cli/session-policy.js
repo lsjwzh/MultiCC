@@ -12,6 +12,7 @@ const CODEX_REASONING_LEVELS = new Set(['none', 'minimal', 'low', 'medium', 'hig
 const CODEX_REASONING_56_LEVELS = new Set(['max', 'ultra']);
 const OPENCODE_VARIANTS = new Set(['minimal', 'low', 'medium', 'high', 'max']);
 const QODER_REASONING_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+const CODEBUDDY_REASONING_LEVELS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 const CODEX_STREAM_DISCONNECT_CONTINUE_MAX = 2;
 
 function assertProviderDependencies(options) {
@@ -165,8 +166,9 @@ function createSessionPolicy(options) {
       return CODEX_REASONING_LEVELS.has(effort) || CODEX_REASONING_56_LEVELS.has(effort);
     }
     if (cli === 'opencode') return OPENCODE_VARIANTS.has(effort);
-    if (cli === 'zcode' || cli === 'kimi') return false;
+    if (cli === 'zcode' || cli === 'kimi' || cli === 'dsh') return false;
     if (cli === 'qoder') return QODER_REASONING_LEVELS.has(effort);
+    if (cli === 'codebuddy') return CODEBUDDY_REASONING_LEVELS.has(effort);
     return EFFORT_LEVELS.has(effort);
   }
 
@@ -194,6 +196,11 @@ function createSessionPolicy(options) {
   function qoderEffortLevel(session) {
     const effort = normalizeEffort(session?.effort);
     return effort && QODER_REASONING_LEVELS.has(effort) ? effort : null;
+  }
+
+  function codebuddyEffortLevel(session) {
+    const effort = normalizeEffort(session?.effort);
+    return effort && CODEBUDDY_REASONING_LEVELS.has(effort) ? effort : null;
   }
 
   function codexReasoningConfigArg(session) {
@@ -242,8 +249,9 @@ function createSessionPolicy(options) {
       const effort = normalizeEffort(session.effort);
       return effort && OPENCODE_VARIANTS.has(effort) ? effort : null;
     }
-    if (cli === 'zcode' || cli === 'kimi') return null;
+    if (cli === 'zcode' || cli === 'kimi' || cli === 'dsh') return null;
     if (cli === 'qoder') return qoderEffortLevel(session);
+    if (cli === 'codebuddy') return codebuddyEffortLevel(session);
     const effort = normalizeEffort(session.effort);
     return effort && EFFORT_LEVELS.has(effort) ? effort : claudeDefaultEffort();
   }
@@ -255,7 +263,7 @@ function createSessionPolicy(options) {
   function normalizeCliAgent(cli, value) {
     const agent = value == null ? '' : String(value).trim();
     if (!agent) return null;
-    if (!['claude', 'opencode', 'qoder'].includes(cli) || !/^[A-Za-z0-9._-]{1,80}$/.test(agent)) return undefined;
+    if (!['claude', 'opencode', 'qoder', 'codebuddy'].includes(cli) || !/^[A-Za-z0-9._-]{1,80}$/.test(agent)) return undefined;
     return agent;
   }
 
@@ -297,6 +305,7 @@ function createSessionPolicy(options) {
     cliEffortLevel,
     codexReasoningLevel,
     qoderEffortLevel,
+    codebuddyEffortLevel,
     codexReasoningConfigArg,
     codexModelConfigArg,
     claudeDefaultEffort,

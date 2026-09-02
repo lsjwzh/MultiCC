@@ -4,8 +4,8 @@
 // Each CLI keeps its own native session and settings; continuity between those
 // independent sessions is provided by a bounded, visible-text checkpoint.
 
-const SUPPORTED_CHAT_CLIS = Object.freeze(['claude', 'codex', 'opencode', 'zcode', 'qoder', 'kimi']);
-const PROVIDERLESS_CLIS = new Set(['qoder']);
+const SUPPORTED_CHAT_CLIS = Object.freeze(['claude', 'codex', 'opencode', 'zcode', 'qoder', 'kimi', 'codebuddy', 'dsh']);
+const PROVIDERLESS_CLIS = new Set(['qoder', 'codebuddy', 'dsh']);
 
 function supportedCli(cli) {
   return SUPPORTED_CHAT_CLIS.includes(String(cli || ''));

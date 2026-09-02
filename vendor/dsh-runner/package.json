@@ -1,0 +1,8 @@
+{
+  "name": "multicc-dsh-runner",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "description": "multicc chat runner plugin for DeepSeek Harness (dsh): streams session events as JSONL on stdout, resumes persisted sessions, exits with the turn outcome. Copied verbatim into ~/.dsh/profiles/multicc/node_modules by src/cli-adapters/dsh.js."
+}
