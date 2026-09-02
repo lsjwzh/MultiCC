@@ -75,6 +75,8 @@ class WorkspaceNavigationDrawer extends StatelessWidget {
     required this.onSelected,
     this.workspaceCount,
     this.cronCount,
+    this.advancedMode = true,
+    this.onAdvancedModeChanged,
   });
 
   static const double width = 236;
@@ -84,6 +86,8 @@ class WorkspaceNavigationDrawer extends StatelessWidget {
   final ValueChanged<WorkspaceDestination> onSelected;
   final int? workspaceCount;
   final int? cronCount;
+  final bool advancedMode;
+  final ValueChanged<bool>? onAdvancedModeChanged;
 
   static const workspaceDestinations = <WorkspaceDestination>[
     WorkspaceDestination.overview,
@@ -121,6 +125,15 @@ class WorkspaceNavigationDrawer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final visibleWorkspaceDestinations = advancedMode
+        ? workspaceDestinations
+        : <WorkspaceDestination>[
+            WorkspaceDestination.overview,
+            if ((cronCount ?? 0) > 0) WorkspaceDestination.cron,
+          ];
+    final visibleSettingsDestinations = advancedMode
+        ? settingsDestinations
+        : const <WorkspaceDestination>[WorkspaceDestination.global];
     return Drawer(
       width: width,
       elevation: 0,
@@ -153,7 +166,7 @@ class WorkspaceNavigationDrawer extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
                         _GroupLabel(text: t('workspace')),
-                        for (final destination in workspaceDestinations)
+                        for (final destination in visibleWorkspaceDestinations)
                           _DestinationTile(
                             destination: destination,
                             selected: destination == selected,
@@ -161,12 +174,16 @@ class WorkspaceNavigationDrawer extends StatelessWidget {
                             onTap: () => _select(context, destination),
                           ),
                         _GroupLabel(text: t('settingsTitle')),
-                        for (final destination in settingsDestinations)
+                        for (final destination in visibleSettingsDestinations)
                           _DestinationTile(
                             destination: destination,
                             selected: destination == selected,
                             onTap: () => _select(context, destination),
                           ),
+                        _ExperienceModeToggle(
+                          advanced: advancedMode,
+                          onChanged: onAdvancedModeChanged,
+                        ),
                       ],
                     ),
                   ),
@@ -291,6 +308,74 @@ class _GroupLabel extends StatelessWidget {
           fontSize: 10,
           fontWeight: FontWeight.w600,
           letterSpacing: 1.4,
+        ),
+      ),
+    );
+  }
+}
+
+class _ExperienceModeToggle extends StatelessWidget {
+  const _ExperienceModeToggle({
+    required this.advanced,
+    required this.onChanged,
+  });
+
+  final bool advanced;
+  final ValueChanged<bool>? onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      key: const ValueKey('workspace-nav-advanced-mode'),
+      toggled: advanced,
+      label: t('developerOptions'),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 52),
+        child: Row(
+          children: [
+            const SizedBox(width: 10),
+            const SizedBox(
+              width: 17,
+              child: Icon(
+                Icons.tune_rounded,
+                color: _NavColors.muted,
+                size: 18,
+              ),
+            ),
+            const SizedBox(width: 11),
+            Expanded(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    t('developerOptions'),
+                    style: const TextStyle(
+                      color: _NavColors.muted,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  Text(
+                    t('developerOptionsHint'),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: _NavColors.faint,
+                      fontSize: 9.5,
+                      height: 1.2,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Switch.adaptive(
+              value: advanced,
+              onChanged: onChanged,
+              activeTrackColor: AppColors.accent.withValues(alpha: 0.55),
+              activeColor: AppColors.accent,
+            ),
+          ],
         ),
       ),
     );

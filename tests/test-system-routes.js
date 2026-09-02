@@ -8,6 +8,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const {
+  APP_CONNECTION_PROTOCOL,
   compareSemver,
   ipv4Priority,
   reachableLanAddresses,
@@ -174,6 +175,7 @@ test('server info prefers physical private LAN addresses and reads the live bind
     uptimeSeconds: () => 8100,
   });
   assert.deepEqual(capture(handler), {
+    product: 'multicc', appProtocolVersion: APP_CONNECTION_PROTOCOL,
     ip: '192.168.1.8', port: 3000, proto: 'http', url: 'http://192.168.1.8:3000', authRequired: true,
     bindHost: '0.0.0.0', lanAvailable: true,
     lanAddresses: ['192.168.1.8', '10.0.0.4'],
@@ -183,6 +185,28 @@ test('server info prefers physical private LAN addresses and reads the live bind
   port = 3012;
   assert.equal(capture(handler).port, 3012);
   assert.equal(selectLanAddress({ lo0: null }), '127.0.0.1');
+});
+
+test('server info identifies MultiCC and publishes its local version without a remote lookup', () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-server-info-'));
+  try {
+    fs.writeFileSync(path.join(rootDir, 'package.json'), JSON.stringify({ version: '1.7.3' }));
+    const body = capture(createServerInfoHandler({
+      fs,
+      path,
+      rootDir,
+      networkInterfaces: () => ({}),
+      getPort: () => 3000,
+      authRequired: () => false,
+      now: () => 1000,
+      uptimeSeconds: () => 0,
+    }));
+    assert.equal(body.product, 'multicc');
+    assert.equal(body.appProtocolVersion, APP_CONNECTION_PROTOCOL);
+    assert.equal(body.version, '1.7.3');
+  } finally {
+    fs.rmSync(rootDir, { recursive: true, force: true });
+  }
 });
 
 test('LAN address selection rejects virtual and unroutable adapters and honors loopback binds', () => {
