@@ -2,6 +2,10 @@
   'use strict';
 
   const STAGES = Object.freeze(['inbox', 'ready', 'doing', 'review', 'done']);
+  const MODES = Object.freeze(['todo', 'board', 'activity']);
+  const ORIGINS = Object.freeze(['all', 'board', 'session']);
+  const WORK_BUCKETS = Object.freeze(['todo', 'attention', 'running', 'next', 'review']);
+  const ORIGIN_STORAGE_KEY = 'multicc_task_center_origin';
   const PRIORITIES = Object.freeze(['urgent', 'high', 'medium', 'low']);
   const api = window.MultiCCApi;
   const boardUi = window.MultiCCTaskBoardUi;
@@ -10,9 +14,31 @@
   const COPY = {
     zh: {
       plannerTaskCenter: '任务中心',
-      plannerSubtitle: '主动计划、执行与验收',
+      plannerSubtitle: 'TODO、执行与验收',
+      plannerTodoList: 'TODO',
       plannerBoard: '看板',
-      plannerHistory: '历史记录',
+      plannerHistory: '活动记录',
+      plannerSource: '来源',
+      plannerSourceAll: '全部',
+      plannerSourceBoard: '独立任务',
+      plannerSourceSession: '会话任务',
+      plannerWorkOverview: 'TODO / 任务',
+      plannerBucketTodo: 'TODO',
+      plannerBucketAttention: '需要我处理',
+      plannerBucketRunning: '正在执行',
+      plannerBucketNext: '接下来',
+      plannerBucketReview: '待验收',
+      plannerBucketTodoHint: '已记录，尚未安排',
+      plannerBucketAttentionHint: '等待回答或需要处理异常',
+      plannerBucketRunningHint: 'Agent 正在处理',
+      plannerBucketNextHint: '已安排，可随时启动',
+      plannerBucketReviewHint: '查看结果并确认完成',
+      plannerTodoEmptyTitle: '当前没有待处理任务',
+      plannerTodoEmptyBody: '可以新建 TODO，或切换来源查看会话任务。',
+      plannerActivitySummary: '{modules} 个模块 · {tasks} 条活动记录',
+      plannerStartQuick: '开始',
+      plannerCompleteQuick: '完成',
+      plannerViewTask: '查看任务',
       plannerNeedsMe: '需要我',
       plannerNewTask: '＋ 新建任务',
       plannerAllFleets: '全部 Fleet',
@@ -110,9 +136,31 @@
     },
     en: {
       plannerTaskCenter: 'Task Center',
-      plannerSubtitle: 'Plan, execute, and review proactively',
+      plannerSubtitle: 'TODOs, execution, and review',
+      plannerTodoList: 'TODO',
       plannerBoard: 'Board',
-      plannerHistory: 'History',
+      plannerHistory: 'Activity',
+      plannerSource: 'Source',
+      plannerSourceAll: 'All',
+      plannerSourceBoard: 'Independent',
+      plannerSourceSession: 'Chat tasks',
+      plannerWorkOverview: 'TODO / Tasks',
+      plannerBucketTodo: 'TODO',
+      plannerBucketAttention: 'Needs me',
+      plannerBucketRunning: 'Running',
+      plannerBucketNext: 'Up next',
+      plannerBucketReview: 'Review',
+      plannerBucketTodoHint: 'Captured but not scheduled',
+      plannerBucketAttentionHint: 'Waiting for a reply or error handling',
+      plannerBucketRunningHint: 'An agent is working on it',
+      plannerBucketNextHint: 'Scheduled and ready to start',
+      plannerBucketReviewHint: 'Inspect the result and confirm completion',
+      plannerTodoEmptyTitle: 'No tasks need action here',
+      plannerTodoEmptyBody: 'Create a TODO or switch sources to inspect chat tasks.',
+      plannerActivitySummary: '{modules} modules · {tasks} activity records',
+      plannerStartQuick: 'Start',
+      plannerCompleteQuick: 'Complete',
+      plannerViewTask: 'View task',
       plannerNeedsMe: 'Needs me',
       plannerNewTask: '+ New task',
       plannerAllFleets: 'All fleets',
@@ -221,12 +269,11 @@
     loaded: false,
     loading: false,
     error: '',
-    mode: 'board',
+    mode: 'todo',
     dirId: '',
     query: '',
-    attention: '',
-    mobileStage: 'inbox',
-    draggingId: '',
+    origin: 'board',
+    bucket: '',
     loadEpoch: 0,
     directoryLoadEpoch: 0,
     searchTimer: null,
@@ -234,6 +281,10 @@
     // is cleared only after the server acknowledges the task turn.
     sendIds: new Map(),
   };
+  try {
+    const savedOrigin = localStorage.getItem(ORIGIN_STORAGE_KEY);
+    if (ORIGINS.includes(savedOrigin)) state.origin = savedOrigin;
+  } catch (_) {}
 
   const globalRoot = document.getElementById('task-planner-root');
   if (!globalRoot) return;
@@ -244,8 +295,8 @@
     mode: state.mode,
     dirId: state.dirId,
     query: state.query,
-    attention: state.attention,
-    mobileStage: state.mobileStage,
+    origin: state.origin,
+    bucket: state.bucket,
   };
   let pendingRenderState = null;
   const boundRoots = new WeakSet();
@@ -269,6 +320,11 @@
     if (typeof window.showToast === 'function') window.showToast(message, !!isError);
     else if (isError) console.error(message);
     else console.info(message);
+  }
+
+  function selectOrigin(origin) {
+    state.origin = ORIGINS.includes(origin) ? origin : 'board';
+    try { localStorage.setItem(ORIGIN_STORAGE_KEY, state.origin); } catch (_) {}
   }
 
   function errorText(error) {
@@ -381,6 +437,21 @@
     return String(module && module.dirId || '').trim();
   }
 
+  function taskBelongsToDir(task, dirId, moduleMap) {
+    const target = String(dirId || '').trim();
+    if (!target) return true;
+    if (String(task && task.dirId || '').trim() === target) return true;
+    if ((Array.isArray(task && task.dirIds) ? task.dirIds : []).some(id => String(id || '').trim() === target)) return true;
+    const module = moduleMap.get(String(task && task.moduleId || ''));
+    return String(module && module.dirId || '').trim() === target;
+  }
+
+  function taskContextDirId(task, moduleMap) {
+    return state.dirId && taskBelongsToDir(task, state.dirId, moduleMap)
+      ? state.dirId
+      : taskDirId(task, moduleMap);
+  }
+
   function taskTitle(task) {
     const direct = String(task && task.title || '').trim();
     if (direct) return direct;
@@ -389,7 +460,8 @@
   }
 
   function taskDescription(task) {
-    return String(task && (task.description != null ? task.description : task.body) || '').trim();
+    const description = String(task && task.description || '').trim();
+    return description || String(task && task.body || '').trim();
   }
 
   function taskStage(task) {
@@ -422,51 +494,93 @@
     return time || taskTitle(first).localeCompare(taskTitle(second));
   }
 
-  function baseTasks(mode) {
-    const planned = mode === 'board';
-    return state.board.tasks.filter(task => (
-      planned ? task.recordType === 'planned' && task.status !== 'archived' : task.recordType !== 'planned'
-    ));
+  function taskOrigin(task) {
+    const detected = boardUi && typeof boardUi.taskOrigin === 'function'
+      ? boardUi.taskOrigin(task || {})
+      : { key: task && task.origin === 'board' ? 'board' : 'session' };
+    const key = detected && detected.key === 'board' ? 'board' : 'session';
+    const label = tr(key === 'board' ? 'plannerSourceBoard' : 'plannerSourceSession');
+    return {
+      key,
+      icon: detected && detected.icon || (key === 'board' ? '📋' : '💬'),
+      label,
+      title: label,
+    };
+  }
+
+  function workBucket(task) {
+    const stage = taskStage(task);
+    if (!task || task.status === 'archived' || task.status === 'done' || stage === 'done') return '';
+    const status = taskStatus(task);
+    if (status === 'waiting' || status === 'error' || status === 'blocked') return 'attention';
+    if (status === 'running' || status === 'queued') return 'running';
+    if (task.recordType !== 'planned') return '';
+    // A user reopening a succeeded task moves it to ready. Honour that explicit
+    // planning transition instead of letting an old run projection bounce it
+    // straight back into Review.
+    if (stage === 'review' || (status === 'succeeded' && stage !== 'ready')) return 'review';
+    if (stage === 'ready' || stage === 'doing') return 'next';
+    return 'todo';
+  }
+
+  function taskMatchesScope(task, options) {
+    const opts = options || {};
+    const moduleMap = opts.moduleMap || modulesById();
+    const query = state.query.trim().toLocaleLowerCase();
+    if (!taskBelongsToDir(task, state.dirId, moduleMap)) return false;
+    if (!opts.ignoreOrigin && state.origin !== 'all' && taskOrigin(task).key !== state.origin) return false;
+    if (!query) return true;
+    const module = moduleMap.get(String(task.moduleId || ''));
+    const haystack = [taskTitle(task), taskDescription(task), module && module.name, task.acceptanceCriteria]
+      .join('\n').toLocaleLowerCase();
+    return haystack.includes(query);
+  }
+
+  function operationalTasks(options) {
+    const opts = options || {};
+    const scope = { ...opts, moduleMap: opts.moduleMap || modulesById() };
+    return state.board.tasks.filter(task => {
+      const bucket = workBucket(task);
+      if (!bucket || !taskMatchesScope(task, scope)) return false;
+      return opts.ignoreBucket || !state.bucket || bucket === state.bucket;
+    });
+  }
+
+  function activityTasks(options) {
+    const opts = options || {};
+    const scope = { ...opts, moduleMap: opts.moduleMap || modulesById() };
+    return state.board.tasks.filter(task => taskMatchesScope(task, scope));
   }
 
   function filteredTasks(mode) {
-    const moduleMap = modulesById();
-    const query = state.query.trim().toLocaleLowerCase();
-    return baseTasks(mode).filter(task => {
-      if (state.dirId && taskDirId(task, moduleMap) !== state.dirId) return false;
-      if (state.attention) {
-        const kind = attentionKind(task);
-        if (state.attention === 'all' ? !kind : kind !== state.attention) return false;
-      }
-      if (!query) return true;
-      const module = moduleMap.get(String(task.moduleId || ''));
-      const haystack = [taskTitle(task), taskDescription(task), module && module.name, task.acceptanceCriteria]
-        .join('\n').toLocaleLowerCase();
-      return haystack.includes(query);
-    });
+    return mode === 'activity' ? activityTasks() : operationalTasks();
   }
 
-  function allAttention(mode) {
-    const moduleMap = modulesById();
-    const query = state.query.trim().toLocaleLowerCase();
-    return baseTasks(mode).filter(task => {
-      if (state.dirId && taskDirId(task, moduleMap) !== state.dirId) return false;
-      if (query) {
-        const module = moduleMap.get(String(task.moduleId || ''));
-        const haystack = [taskTitle(task), taskDescription(task), module && module.name, task.acceptanceCriteria]
-          .join('\n').toLocaleLowerCase();
-        if (!haystack.includes(query)) return false;
-      }
-      return !!attentionKind(task);
-    });
+  function originCounts(mode) {
+    const source = mode === 'activity'
+      ? activityTasks({ ignoreOrigin: true })
+      : operationalTasks({ ignoreOrigin: true, ignoreBucket: true });
+    const counts = { all: source.length, board: 0, session: 0 };
+    for (const task of source) counts[taskOrigin(task).key] += 1;
+    return counts;
+  }
+
+  function bucketCounts() {
+    const counts = Object.fromEntries(WORK_BUCKETS.map(bucket => [bucket, 0]));
+    for (const task of operationalTasks({ ignoreBucket: true })) counts[workBucket(task)] += 1;
+    return counts;
   }
 
   function stageKey(stage) {
     return `plannerStage${stage.charAt(0).toUpperCase()}${stage.slice(1)}`;
   }
 
-  function stageHintKey(stage) {
-    return `${stageKey(stage)}Hint`;
+  function bucketKey(bucket) {
+    return `plannerBucket${bucket.charAt(0).toUpperCase()}${bucket.slice(1)}`;
+  }
+
+  function bucketHintKey(bucket) {
+    return `${bucketKey(bucket)}Hint`;
   }
 
   function priorityLabel(priority) {
@@ -511,10 +625,13 @@
     const moduleMap = context.moduleMap;
     const dirMap = context.dirMap;
     const module = moduleMap.get(String(task.moduleId || ''));
-    const dirId = taskDirId(task, moduleMap);
+    const dirId = taskContextDirId(task, moduleMap);
     const directory = dirMap.get(dirId);
     const title = taskTitle(task);
     const description = taskDescription(task);
+    const origin = taskOrigin(task);
+    const planned = task.recordType === 'planned';
+    const bucket = context.bucket || workBucket(task);
     const due = duePresentation(task);
     const priority = String(task.priority || '').toLowerCase();
     const attention = attentionKind(task);
@@ -522,17 +639,25 @@
       ? tr('plannerAnswerQuestion')
       : attention === 'error' ? tr('plannerInspectError') : '';
     const updated = task.updatedAt || task.lastTs || task.createdAt;
-    return `<article class="planner-card${attention ? ` attention-${attention}` : ''}"
-      data-task-id="${esc(task.id)}" data-action="open-task" draggable="true" tabindex="0"
-      aria-label="${esc(tr('plannerOpenTaskLabel', { title }))}" title="${esc(tr('plannerDragLabel', { title }))}">
+    const quickAction = attentionAction
+      ? `<button class="planner-card-attention-action" type="button" data-action="open-chat" data-task-id="${esc(task.id)}">${esc(attentionAction)} <span aria-hidden="true">↗</span></button>`
+      : planned && (bucket === 'todo' || bucket === 'next')
+        ? `<button class="planner-card-quick-action" type="button" data-action="start-task" data-task-id="${esc(task.id)}">▶ ${esc(tr('plannerStartQuick'))}</button>`
+        : planned && bucket === 'review'
+          ? `<button class="planner-card-quick-action complete" type="button" data-action="complete-task" data-task-id="${esc(task.id)}">✓ ${esc(tr('plannerCompleteQuick'))}</button>`
+          : '';
+    return `<article class="planner-card${attention ? ` attention-${attention}` : ''} origin-${esc(origin.key)}"
+      data-task-id="${esc(task.id)}" data-action="${planned ? 'open-task' : 'open-chat'}" tabindex="0"
+      aria-label="${esc(tr('plannerOpenTaskLabel', { title }))}" title="${esc(tr('plannerOpenTaskLabel', { title }))}">
       <div class="planner-card-title">${esc(title)}</div>
       ${description && description !== title ? `<div class="planner-card-description">${esc(description)}</div>` : ''}
       <div class="planner-card-badges">
         ${priority ? `<span class="planner-badge priority-${esc(priority)}">◆ ${esc(priorityLabel(priority))}</span>` : ''}
         ${due ? `<span class="planner-badge ${esc(due.className)}">◷ ${esc(due.label)}</span>` : ''}
+        <span class="planner-badge origin origin-${esc(origin.key)}" title="${esc(origin.title)}">${esc(origin.icon)} ${esc(origin.label)}</span>
         <span class="planner-badge module" title="${esc(module && module.name || tr('plannerNoModule'))}"># ${esc(module && module.name || tr('plannerNoModule'))}</span>
         ${statusHtml(task, true)}
-        ${attentionAction ? `<button class="planner-card-attention-action" type="button" data-action="open-chat" data-task-id="${esc(task.id)}">${esc(attentionAction)} <span aria-hidden="true">↗</span></button>` : ''}
+        ${quickAction}
       </div>
       <div class="planner-card-footer">
         <span title="${esc(tr('plannerFleet'))}">${esc(directory && directory.name || tr('plannerUnknownFleet'))}</span>
@@ -541,31 +666,91 @@
     </article>`;
   }
 
+  function todoRowHtml(task, context) {
+    const module = context.moduleMap.get(String(task.moduleId || ''));
+    const dirId = taskContextDirId(task, context.moduleMap);
+    const directory = context.dirMap.get(dirId);
+    const title = taskTitle(task);
+    const description = taskDescription(task);
+    const origin = taskOrigin(task);
+    const planned = task.recordType === 'planned';
+    const bucket = workBucket(task);
+    const attention = attentionKind(task);
+    const updated = task.updatedAt || task.lastTs || task.createdAt;
+    const primaryAction = planned ? 'open-task' : 'open-chat';
+    const actions = [];
+    if (attention) {
+      actions.push(`<button class="btn btn-sm planner-todo-primary" type="button" data-action="open-chat" data-task-id="${esc(task.id)}">${esc(attention === 'waiting' ? tr('plannerAnswerQuestion') : tr('plannerInspectError'))} ↗</button>`);
+    } else if (planned && (bucket === 'todo' || bucket === 'next')) {
+      actions.push(`<button class="btn btn-sm planner-todo-primary" type="button" data-action="start-task" data-task-id="${esc(task.id)}">▶ ${esc(tr('plannerStartQuick'))}</button>`);
+    } else if (planned && bucket === 'review') {
+      actions.push(`<button class="btn btn-sm planner-todo-primary complete" type="button" data-action="complete-task" data-task-id="${esc(task.id)}">✓ ${esc(tr('plannerCompleteQuick'))}</button>`);
+    } else {
+      actions.push(`<button class="btn btn-sm" type="button" data-action="open-chat" data-task-id="${esc(task.id)}">${esc(tr('plannerOpenChat'))}</button>`);
+    }
+    if (!planned) {
+      actions.push(`<button class="btn btn-sm" type="button" data-action="promote" data-task-id="${esc(task.id)}">${esc(tr('plannerPromote'))}</button>`);
+    }
+    return `<article class="planner-todo-row${attention ? ` attention-${attention}` : ''}" data-task-id="${esc(task.id)}" data-action="${primaryAction}" tabindex="0" aria-label="${esc(tr('plannerOpenTaskLabel', { title }))}">
+      <span class="planner-todo-state" aria-hidden="true"></span>
+      <div class="planner-todo-content">
+        <div class="planner-todo-title">${esc(title)}</div>
+        ${description && description !== title ? `<div class="planner-todo-description">${esc(description)}</div>` : ''}
+        <div class="planner-todo-meta">
+          <span class="planner-badge origin origin-${esc(origin.key)}" title="${esc(origin.title)}">${esc(origin.icon)} ${esc(origin.label)}</span>
+          <span class="planner-badge module"># ${esc(module && module.name || tr('plannerNoModule'))}</span>
+          ${statusHtml(task, true)}
+          <span>${esc(directory && directory.name || tr('plannerUnknownFleet'))}</span>
+          <span>·</span><span>${esc(updated ? tr('plannerUpdated', { date: localDate(updated, true) }) : '')}</span>
+        </div>
+      </div>
+      <div class="planner-todo-actions">${actions.join('')}</div>
+    </article>`;
+  }
+
+  function todoListHtml() {
+    const tasks = filteredTasks('todo').sort(rankCompare);
+    if (!tasks.length) {
+      return `<div class="planner-empty"><div><strong>${esc(tr('plannerTodoEmptyTitle'))}</strong>${esc(tr('plannerTodoEmptyBody'))}</div></div>`;
+    }
+    const context = { moduleMap: modulesById(), dirMap: directoriesById() };
+    const buckets = state.bucket ? [state.bucket] : WORK_BUCKETS;
+    return `<div class="planner-todo-list">${buckets.map(bucket => {
+      const list = tasks.filter(task => workBucket(task) === bucket);
+      if (!list.length) return '';
+      return `<section class="planner-todo-group" data-bucket="${bucket}">
+        <header><span class="planner-column-dot" aria-hidden="true"></span><strong>${esc(tr(bucketKey(bucket)))}</strong><span>${esc(tr(bucketHintKey(bucket)))}</span><b>${list.length}</b></header>
+        <div>${list.map(task => todoRowHtml(task, context)).join('')}</div>
+      </section>`;
+    }).join('')}</div>`;
+  }
+
   function boardHtml() {
     const tasks = filteredTasks('board').sort(rankCompare);
     const moduleMap = modulesById();
     const dirMap = directoriesById();
     const context = { moduleMap, dirMap };
-    return `<div class="planner-board-scroll"><div class="planner-board">
-      ${STAGES.map(stage => {
-        const list = tasks.filter(task => taskStage(task) === stage);
-        return `<section class="planner-column${state.mobileStage === stage ? ' is-mobile-active' : ''}" data-stage="${stage}">
+    const buckets = state.bucket ? [state.bucket] : WORK_BUCKETS;
+    return `<div class="planner-board-scroll"><div class="planner-board${state.bucket ? ' is-filtered' : ''}">
+      ${buckets.map(bucket => {
+        const list = tasks.filter(task => workBucket(task) === bucket);
+        return `<section class="planner-column" data-bucket="${bucket}">
           <header class="planner-column-head">
             <span class="planner-column-dot" aria-hidden="true"></span>
-            <span class="planner-column-title">${esc(tr(stageKey(stage)))}</span>
-            <span class="planner-column-hint">${esc(tr(stageHintKey(stage)))}</span>
+            <span class="planner-column-title">${esc(tr(bucketKey(bucket)))}</span>
+            <span class="planner-column-hint">${esc(tr(bucketHintKey(bucket)))}</span>
             <span class="planner-column-count">${list.length}</span>
           </header>
-          <div class="planner-card-list" data-stage="${stage}" data-empty="${esc(tr('plannerColumnEmpty'))}">
-            ${list.map(task => cardHtml(task, context)).join('')}
+          <div class="planner-card-list" data-bucket="${bucket}" data-empty="${esc(tr('plannerColumnEmpty'))}">
+            ${list.map(task => cardHtml(task, { ...context, bucket })).join('')}
           </div>
         </section>`;
       }).join('')}
     </div></div>`;
   }
 
-  function historyHtml() {
-    const tasks = filteredTasks('history');
+  function activityHtml() {
+    const tasks = filteredTasks('activity');
     if (!tasks.length) {
       return `<div class="planner-empty"><div><strong>${esc(tr('plannerNoHistoryTitle'))}</strong>${esc(tr('plannerNoHistoryBody'))}</div></div>`;
     }
@@ -583,14 +768,17 @@
       return firstName.localeCompare(secondName);
     });
     return `<div class="planner-history">
-      <div class="planner-history-summary">${esc(tr('plannerHistorySummary', { modules: ordered.length, tasks: tasks.length }))}</div>
+      <div class="planner-history-summary">${esc(tr('plannerActivitySummary', { modules: ordered.length, tasks: tasks.length }))}</div>
       ${ordered.map(([moduleId, list]) => {
         const module = moduleMap.get(moduleId);
         const moduleName = module && module.name || tr('plannerNoModule');
         return `<details class="planner-history-group" open>
           <summary><span>${esc(moduleName)}</span><span class="planner-history-count">${list.length}</span></summary>
           ${list.sort((a, b) => (Number(b.lastTs || b.updatedAt) || 0) - (Number(a.lastTs || a.updatedAt) || 0)).map(task => {
-            const directory = dirMap.get(taskDirId(task, moduleMap));
+            const directory = dirMap.get(taskContextDirId(task, moduleMap));
+            const origin = taskOrigin(task);
+            const planned = task.recordType === 'planned';
+            const editable = planned && task.status !== 'archived';
             const lifecycleKey = task.status === 'archived' ? 'plannerLifecycleArchived'
               : task.status === 'done' ? 'plannerLifecycleDone' : 'plannerLifecycleActive';
             return `<div class="planner-history-row">
@@ -599,12 +787,14 @@
                 <div class="planner-history-meta">
                   <span>${esc(directory && directory.name || tr('plannerUnknownFleet'))}</span>
                   <span>·</span><span>${esc(tr(lifecycleKey))}</span>
+                  <span class="planner-badge origin origin-${esc(origin.key)}" title="${esc(origin.title)}">${esc(origin.icon)} ${esc(origin.label)}</span>
                   ${statusHtml(task, true)}
                 </div>
               </div>
               <div class="planner-history-actions">
-                <button class="btn btn-sm" type="button" data-action="open-task" data-task-id="${esc(task.id)}">${esc(tr('plannerOpenChat'))}</button>
-                <button class="btn btn-sm" type="button" data-action="promote" data-task-id="${esc(task.id)}">${esc(tr('plannerPromote'))}</button>
+                ${editable ? `<button class="btn btn-sm" type="button" data-action="open-task" data-task-id="${esc(task.id)}">${esc(tr('plannerViewTask'))}</button>` : ''}
+                <button class="btn btn-sm" type="button" data-action="open-chat" data-task-id="${esc(task.id)}">${esc(tr('plannerOpenChat'))}</button>
+                ${planned ? '' : `<button class="btn btn-sm" type="button" data-action="promote" data-task-id="${esc(task.id)}">${esc(tr('plannerPromote'))}</button>`}
               </div>
             </div>`;
           }).join('')}
@@ -613,24 +803,21 @@
     </div>`;
   }
 
-  function attentionBarHtml() {
-    const attention = allAttention(state.mode);
-    const waiting = attention.filter(task => attentionKind(task) === 'waiting').length;
-    const errors = attention.filter(task => attentionKind(task) === 'error').length;
-    return `<div class="planner-attention-bar">
-      <strong>${esc(tr('plannerNeedsAttention'))}</strong>
-      ${waiting || errors ? `
-        ${waiting ? `<button class="planner-attention-chip waiting${state.attention === 'waiting' ? ' active' : ''}" type="button" aria-pressed="${state.attention === 'waiting'}" data-action="attention" data-kind="waiting">⏸ <strong>${waiting}</strong> ${esc(tr('plannerWaitingCount', { n: waiting }).replace(String(waiting), '').trim())}</button>` : ''}
-        ${errors ? `<button class="planner-attention-chip error${state.attention === 'error' ? ' active' : ''}" type="button" aria-pressed="${state.attention === 'error'}" data-action="attention" data-kind="error">⚠ <strong>${errors}</strong> ${esc(tr('plannerErrorCount', { n: errors }).replace(String(errors), '').trim())}</button>` : ''}
-      ` : `<span>${esc(tr('plannerAttentionEmpty'))}</span>`}
+  function workOverviewHtml() {
+    const counts = bucketCounts();
+    return `<div class="planner-work-overview">
+      <strong>${esc(tr('plannerWorkOverview'))}</strong>
+      <div class="planner-work-buckets" role="group" aria-label="${esc(tr('plannerWorkOverview'))}">
+        ${WORK_BUCKETS.map(bucket => `<button type="button" class="planner-work-bucket${state.bucket === bucket ? ' active' : ''}" aria-pressed="${state.bucket === bucket}" data-action="bucket" data-bucket="${bucket}"><span>${esc(tr(bucketKey(bucket)))}</span><strong>${counts[bucket]}</strong></button>`).join('')}
+      </div>
     </div>`;
   }
 
-  function mobileTabsHtml() {
-    if (state.mode !== 'board') return '<div class="planner-mobile-tabs"></div>';
-    const tasks = filteredTasks('board');
-    return `<div class="planner-mobile-tabs" role="tablist">
-      ${STAGES.map(stage => `<button type="button" role="tab" aria-selected="${state.mobileStage === stage}" class="${state.mobileStage === stage ? 'active' : ''}" data-action="mobile-stage" data-stage="${stage}">${esc(tr(stageKey(stage)))} <span>${tasks.filter(task => taskStage(task) === stage).length}</span></button>`).join('')}
+  function originFilterHtml(mode) {
+    const counts = originCounts(mode);
+    return `<div class="planner-origin-filter" role="group" aria-label="${esc(tr('plannerSource'))}">
+      <span>${esc(tr('plannerSource'))}</span>
+      ${ORIGINS.map(origin => `<button type="button" class="${state.origin === origin ? 'active' : ''}" aria-pressed="${state.origin === origin}" data-action="origin" data-origin="${origin}">${esc(tr(`plannerSource${origin === 'all' ? 'All' : origin === 'board' ? 'Board' : 'Session'}`))} <strong>${counts[origin]}</strong></button>`).join('')}
     </div>`;
   }
 
@@ -650,9 +837,10 @@
   function captureRenderState() {
     const boardScroll = root.querySelector('.planner-board-scroll');
     const historyScroll = root.querySelector('.planner-history');
+    const todoScroll = root.querySelector('.planner-todo-list');
     const columnScroll = {};
     root.querySelectorAll('.planner-card-list').forEach(list => {
-      if (list.dataset && list.dataset.stage) columnScroll[list.dataset.stage] = list.scrollTop;
+      if (list.dataset && list.dataset.bucket) columnScroll[list.dataset.bucket] = list.scrollTop;
     });
     const active = document.activeElement;
     const searchFocused = !!(active && typeof active.matches === 'function'
@@ -662,6 +850,7 @@
       boardLeft: boardScroll ? boardScroll.scrollLeft : 0,
       boardTop: boardScroll ? boardScroll.scrollTop : 0,
       historyTop: historyScroll ? historyScroll.scrollTop : 0,
+      todoTop: todoScroll ? todoScroll.scrollTop : 0,
       columnScroll,
       searchFocused,
       selectionStart: searchFocused ? active.selectionStart : null,
@@ -678,9 +867,11 @@
     }
     const historyScroll = root.querySelector('.planner-history');
     if (historyScroll) historyScroll.scrollTop = saved.historyTop;
+    const todoScroll = root.querySelector('.planner-todo-list');
+    if (todoScroll) todoScroll.scrollTop = saved.todoTop;
     root.querySelectorAll('.planner-card-list').forEach(list => {
-      const stage = list.dataset && list.dataset.stage;
-      if (stage && Number.isFinite(saved.columnScroll[stage])) list.scrollTop = saved.columnScroll[stage];
+      const bucket = list.dataset && list.dataset.bucket;
+      if (bucket && Number.isFinite(saved.columnScroll[bucket])) list.scrollTop = saved.columnScroll[bucket];
     });
     if (!saved.searchFocused) return;
     const search = root.querySelector('[data-control="search"]');
@@ -695,12 +886,13 @@
     const savedRenderState = pendingRenderState || captureRenderState();
     pendingRenderState = null;
     const embedded = surface === 'fleet';
-    const plannedCount = baseTasks('board').length;
-    const plannedAttention = baseTasks('board').filter(task => !!attentionKind(task)).length;
+    const globalWork = state.board.tasks.filter(task => !!workBucket(task));
+    const workCount = globalWork.length;
+    const workAttention = globalWork.filter(task => workBucket(task) === 'attention').length;
     const navBadge = document.getElementById('nav-planner-count');
     if (navBadge) {
-      navBadge.textContent = String(plannedCount);
-      navBadge.title = plannedAttention ? tr('plannerNeedsAttention') + ': ' + plannedAttention : '';
+      navBadge.textContent = String(workCount);
+      navBadge.title = workAttention ? tr('plannerNeedsAttention') + ': ' + workAttention : '';
     }
 
     const busy = state.loading && !state.loaded;
@@ -708,22 +900,22 @@
       ? `<div class="planner-loading">${esc(tr('plannerLoading'))}</div>`
       : state.error
         ? `<div class="planner-error"><div>${esc(tr('plannerLoadFailed', { error: state.error }))}<div style="margin-top:12px"><button class="btn" type="button" data-action="refresh">${esc(tr('plannerRetry'))}</button></div></div></div>`
-        : state.mode === 'board' ? boardHtml() : historyHtml();
+        : state.mode === 'todo' ? todoListHtml()
+          : state.mode === 'board' ? boardHtml() : activityHtml();
 
     const directory = directoriesById().get(lockedDirId);
     const fleetControl = embedded
-      ? `<div class="planner-fleet-lock" title="${esc(directory && directory.name || lockedDirId)}"><span aria-hidden="true">◆</span><strong>${esc(directory && directory.name || lockedDirId || tr('plannerUnknownFleet'))}</strong><span>${esc(tr('plannerBoard'))}</span></div>`
+      ? `<div class="planner-fleet-lock" title="${esc(directory && directory.name || lockedDirId)}"><span aria-hidden="true">◆</span><strong>${esc(directory && directory.name || lockedDirId || tr('plannerUnknownFleet'))}</strong><span>${esc(tr('plannerTaskCenter'))}</span></div>`
       : `<label class="planner-sr-only" for="planner-fleet-filter">${esc(tr('plannerFleet'))}</label>
           <select class="planner-control planner-select" id="planner-fleet-filter" data-control="fleet">
             <option value="">${esc(tr('plannerAllFleets'))}</option>${directoryOptions()}
           </select>`;
-    const modeControl = embedded ? '' : `<div class="planner-segment" role="tablist">
+    const modeControl = `<div class="planner-segment" role="tablist">
+          <button id="planner-mode-todo" type="button" role="tab" aria-selected="${state.mode === 'todo'}" aria-controls="planner-content" class="${state.mode === 'todo' ? 'active' : ''}" data-action="mode" data-mode="todo">${esc(tr('plannerTodoList'))}</button>
           <button id="planner-mode-board" type="button" role="tab" aria-selected="${state.mode === 'board'}" aria-controls="planner-content" class="${state.mode === 'board' ? 'active' : ''}" data-action="mode" data-mode="board">${esc(tr('plannerBoard'))}</button>
-          <button id="planner-mode-history" type="button" role="tab" aria-selected="${state.mode === 'history'}" aria-controls="planner-content" class="${state.mode === 'history' ? 'active' : ''}" data-action="mode" data-mode="history">${esc(tr('plannerHistory'))}</button>
+          <button id="planner-mode-activity" type="button" role="tab" aria-selected="${state.mode === 'activity'}" aria-controls="planner-content" class="${state.mode === 'activity' ? 'active' : ''}" data-action="mode" data-mode="activity">${esc(tr('plannerHistory'))}</button>
         </div>`;
-    const mainA11y = embedded
-      ? `role="region" aria-label="${esc(tr('plannerBoard'))}"`
-      : `role="tabpanel" aria-labelledby="planner-mode-${state.mode}"`;
+    const mainA11y = `role="tabpanel" aria-labelledby="planner-mode-${state.mode}"`;
 
     root.classList.toggle('planner-fleet-embedded', embedded);
     root.innerHTML = `<div class="planner-shell${embedded ? ' embedded' : ''}">
@@ -732,16 +924,15 @@
           ${fleetControl}
           <label class="planner-search"><span class="planner-sr-only">${esc(tr('plannerSearchPlaceholder'))}</span><input class="planner-control" type="search" value="${esc(state.query)}" placeholder="${esc(tr('plannerSearchPlaceholder'))}" data-control="search"></label>
         </div>
+        ${originFilterHtml(state.mode)}
         <div class="planner-grow"></div>
         ${modeControl}
         <div class="planner-toolbar-group actions">
-          <button class="btn planner-attention-toggle${state.attention ? ' active' : ''}" type="button" aria-pressed="${!!state.attention}" data-action="attention" data-kind="all">⚑ ${esc(tr('plannerNeedsMe'))}</button>
           <button class="icon-btn" type="button" data-action="refresh" title="${esc(tr('plannerRefresh'))}" aria-label="${esc(tr('plannerRefresh'))}">⟳</button>
           <button class="btn btn-green" type="button" data-action="new-task">${esc(tr('plannerNewTask'))}</button>
         </div>
       </div>
-      ${attentionBarHtml()}
-      ${mobileTabsHtml()}
+      ${workOverviewHtml()}
       <div class="planner-sr-only" role="status" aria-live="polite" aria-atomic="true">${busy ? esc(tr('plannerLoading')) : state.error ? esc(tr('plannerLoadFailed', { error: state.error })) : ''}</div>
       <div class="planner-main" id="planner-content" ${mainA11y}>${main}</div>
     </div>`;
@@ -976,8 +1167,9 @@
         }
       } else notify(tr('plannerCreatedInbox'));
       closePlannerOverlay();
-      state.mode = 'board';
-      state.attention = '';
+      state.mode = 'todo';
+      state.bucket = '';
+      selectOrigin('board');
       await loadPlanner({ quiet: true });
     } catch (error) {
       if (!(await handleConflict(error))) notify(tr('plannerActionFailed', { error: errorText(error) }), true);
@@ -1040,7 +1232,7 @@
     closePlannerOverlay();
     const moduleMap = modulesById();
     const dirMap = directoriesById();
-    const dirId = taskDirId(task, moduleMap);
+    const dirId = taskContextDirId(task, moduleMap);
     const directory = dirMap.get(dirId);
     const module = moduleMap.get(String(task.moduleId || ''));
     const stage = taskStage(task);
@@ -1136,6 +1328,44 @@
     }
   }
 
+  async function startTaskDirect(taskId, button) {
+    const task = findTask(taskId);
+    if (!task || task.recordType !== 'planned') return;
+    if (['running', 'queued', 'waiting'].includes(taskStatus(task))) {
+      notify(tr('plannerBusy'), true);
+      return;
+    }
+    if (button) button.disabled = true;
+    try {
+      const data = await requestJson(`/api/task-board/tasks/${encodeURIComponent(taskId)}/send`, {
+        method: 'POST',
+        json: {
+          text: taskDescription(task) || taskTitle(task),
+          clientMsgId: sendIdForTask(taskId),
+          expectedRevision: Math.max(1, Number(task.planningRevision) || 1),
+        },
+      });
+      updateTaskFromResponse(data);
+      state.sendIds.delete(String(taskId));
+      await loadPlanner({ quiet: true });
+      notify(tr('plannerStarted'));
+    } catch (error) {
+      if (!(await handleConflict(error))) notify(tr('plannerActionFailed', { error: errorText(error) }), true);
+      if (button) button.disabled = false;
+    }
+  }
+
+  async function completeTaskDirect(taskId, button) {
+    const task = findTask(taskId);
+    if (!task || task.recordType !== 'planned') return;
+    if (button) button.disabled = true;
+    const moved = await moveTask(taskId, 'done', null, {
+      expectedRevision: Math.max(1, Number(task.planningRevision) || 1),
+    });
+    if (moved) notify(tr('plannerCompleted'));
+    else if (button) button.disabled = false;
+  }
+
   async function setLifecycle(taskId, status, button, context) {
     button.disabled = true;
     const saved = await persistDrawerChanges(taskId, context);
@@ -1197,7 +1427,7 @@
           sourceTaskId: task.id,
           title: taskTitle(task),
           description: taskDescription(task) || taskTitle(task),
-          dirId: taskDirId(task, moduleMap),
+          dirId: taskContextDirId(task, moduleMap),
           workflowStage: 'inbox',
           priority: null,
           dueAt: null,
@@ -1205,8 +1435,9 @@
         },
       });
       updateTaskFromResponse(data);
-      state.mode = 'board';
-      state.attention = '';
+      state.mode = 'todo';
+      state.bucket = '';
+      selectOrigin('board');
       await loadPlanner({ quiet: true });
       notify(tr('plannerPromoted'));
     } catch (error) {
@@ -1222,23 +1453,28 @@
     if (kind === 'new-task') openNewTaskDialog();
     else if (kind === 'refresh') loadPlanner({ refreshDirectories: true });
     else if (kind === 'mode') {
-      state.mode = action.dataset.mode === 'history' ? 'history' : 'board';
-      state.attention = '';
+      state.mode = MODES.includes(action.dataset.mode) ? action.dataset.mode : 'todo';
+      if (state.mode === 'activity') state.bucket = '';
       render();
-    } else if (kind === 'attention') {
-      const selected = action.dataset.kind || 'all';
-      state.attention = state.attention === selected ? '' : selected;
+    } else if (kind === 'origin') {
+      selectOrigin(action.dataset.origin);
       render();
-    } else if (kind === 'mobile-stage') {
-      state.mobileStage = STAGES.includes(action.dataset.stage) ? action.dataset.stage : 'inbox';
+    } else if (kind === 'bucket') {
+      const bucket = WORK_BUCKETS.includes(action.dataset.bucket) ? action.dataset.bucket : '';
+      state.bucket = state.bucket === bucket ? '' : bucket;
+      if (state.mode === 'activity') state.mode = 'todo';
       render();
     } else if (kind === 'open-task') {
       const taskId = action.dataset.taskId || action.closest('[data-task-id]')?.dataset.taskId;
-      if (state.mode === 'history' && action.closest('.planner-history-actions')) {
-        window.open(`/chat.html?task=${encodeURIComponent(taskId)}`, '_blank');
-      } else openTaskDrawer(taskId);
+      const task = findTask(taskId);
+      if (task && task.recordType === 'planned' && task.status !== 'archived') openTaskDrawer(taskId);
+      else window.open(`/chat.html?task=${encodeURIComponent(taskId)}`, '_blank');
     } else if (kind === 'open-chat') {
       window.open(`/chat.html?task=${encodeURIComponent(action.dataset.taskId)}`, '_blank');
+    } else if (kind === 'start-task') {
+      startTaskDirect(action.dataset.taskId, action);
+    } else if (kind === 'complete-task') {
+      completeTaskDirect(action.dataset.taskId, action);
     } else if (kind === 'promote') {
       promoteObserved(action.dataset.taskId, action);
     }
@@ -1261,54 +1497,13 @@
 
   function handleRootKeydown(event) {
     if (event.target.closest('button,a,input,select,textarea')) return;
-    const card = event.target.closest('.planner-card');
+    const card = event.target.closest('.planner-card,.planner-todo-row');
     if (card && (event.key === 'Enter' || event.key === ' ')) {
       event.preventDefault();
-      openTaskDrawer(card.dataset.taskId);
+      const task = findTask(card.dataset.taskId);
+      if (task && task.recordType === 'planned') openTaskDrawer(card.dataset.taskId);
+      else window.open(`/chat.html?task=${encodeURIComponent(card.dataset.taskId)}`, '_blank');
     }
-  }
-
-  function clearDragClasses() {
-    root.querySelectorAll('.dragging,.drag-over').forEach(element => element.classList.remove('dragging', 'drag-over'));
-  }
-
-  function handleDragStart(event) {
-    const card = event.target.closest('.planner-card');
-    if (!card) return;
-    state.draggingId = card.dataset.taskId;
-    card.classList.add('dragging');
-    event.dataTransfer.effectAllowed = 'move';
-    event.dataTransfer.setData('text/plain', state.draggingId);
-  }
-
-  function handleDragOver(event) {
-    const list = event.target.closest('.planner-card-list');
-    if (!list || !state.draggingId) return;
-    event.preventDefault();
-    event.dataTransfer.dropEffect = 'move';
-    root.querySelectorAll('.planner-column.drag-over').forEach(column => column.classList.remove('drag-over'));
-    list.closest('.planner-column')?.classList.add('drag-over');
-  }
-
-  async function handleDrop(event) {
-    const list = event.target.closest('.planner-card-list');
-    const taskId = state.draggingId || event.dataTransfer.getData('text/plain');
-    if (!list || !taskId) return;
-    event.preventDefault();
-    const cards = [...list.querySelectorAll('.planner-card')].filter(card => card.dataset.taskId !== taskId);
-    const before = cards.find(card => event.clientY < card.getBoundingClientRect().top + card.getBoundingClientRect().height / 2);
-    const placement = before
-      ? { beforeTaskId: before.dataset.taskId }
-      : cards.length ? { afterTaskId: cards[cards.length - 1].dataset.taskId } : {};
-    const stage = list.dataset.stage;
-    state.draggingId = '';
-    clearDragClasses();
-    await moveTask(taskId, stage, placement);
-  }
-
-  function handleDragEnd() {
-    state.draggingId = '';
-    clearDragClasses();
   }
 
   function uiStateSnapshot() {
@@ -1316,8 +1511,8 @@
       mode: state.mode,
       dirId: state.dirId,
       query: state.query,
-      attention: state.attention,
-      mobileStage: state.mobileStage,
+      origin: state.origin,
+      bucket: state.bucket,
       renderState: captureRenderState(),
     };
   }
@@ -1326,12 +1521,11 @@
     const next = value || {};
     clearTimeout(state.searchTimer);
     state.searchTimer = null;
-    state.mode = next.mode === 'history' ? 'history' : 'board';
+    state.mode = MODES.includes(next.mode) ? next.mode : 'todo';
     state.dirId = String(next.dirId || '');
     state.query = String(next.query || '');
-    state.attention = String(next.attention || '');
-    state.mobileStage = STAGES.includes(next.mobileStage) ? next.mobileStage : 'inbox';
-    state.draggingId = '';
+    selectOrigin(ORIGINS.includes(next.origin) ? next.origin : state.origin);
+    state.bucket = WORK_BUCKETS.includes(next.bucket) ? next.bucket : '';
     pendingRenderState = next.renderState || null;
   }
 
@@ -1343,10 +1537,6 @@
     element.addEventListener('change', handleRootChange);
     element.addEventListener('input', handleRootInput);
     element.addEventListener('keydown', handleRootKeydown);
-    element.addEventListener('dragstart', handleDragStart);
-    element.addEventListener('dragover', handleDragOver);
-    element.addEventListener('drop', handleDrop);
-    element.addEventListener('dragend', handleDragEnd);
     boundRoots.add(element);
   }
 
@@ -1388,7 +1578,7 @@
     const saved = sameFleet ? currentSurfaceState : fleetUiStates.get(nextDirId);
     applyUiState({
       ...(saved || {}),
-      mode: 'board',
+      mode: saved && MODES.includes(saved.mode) ? saved.mode : 'todo',
       dirId: nextDirId,
     });
     bindPlannerRoot(root);

@@ -235,37 +235,78 @@ test('Fleet parent activity reuses the task board origin-aware running aggregate
     /function renderDirectoryDetailBody\(dirId\)[\s\S]*?taskBoardRunningCountForDir\(dirId\)/);
 });
 
-test('task-board tab renders and clears the shared running animation', () => {
+test('unified Fleet task tab renders and clears the shared running animation', () => {
   let runningTaskCount = 2;
+  const plannerRoot = {};
+  const mounts = [];
+  const tabClasses = new Set();
+  const taskTab = {
+    innerHTML: '',
+    classList: {
+      toggle(name, enabled) {
+        if (enabled) tabClasses.add(name);
+        else tabClasses.delete(name);
+      },
+    },
+  };
+  const fleetTasks = [
+    { recordType: 'planned', status: 'active', runState: 'idle', workflowStage: 'inbox' },
+    { recordType: 'observed', status: 'active', runState: 'running', workflowStage: 'inbox' },
+    { recordType: 'observed', status: 'active', runState: 'waiting', workflowStage: 'inbox' },
+    { recordType: 'observed', status: 'active', runState: 'succeeded', workflowStage: 'inbox' },
+    { recordType: 'observed', status: 'active', runState: 'idle', workflowStage: 'inbox' },
+    { recordType: 'planned', status: 'done', runState: 'running', workflowStage: 'doing' },
+    { recordType: 'planned', status: 'archived', runState: 'waiting', workflowStage: 'inbox' },
+  ];
   const { context } = createHarness({
     taskBoardRunningCountForDir: () => runningTaskCount,
-    _tbTasksForDir: () => [{}, {}, {}],
-    renderTaskBoardSection: () => '<div class="board">board</div>',
+    _tbTasksForDir: () => fleetTasks,
+    renderTaskBoardSection: () => '<div class="legacy-board">unused</div>',
     syncTaskBoardDirComposer() {},
+    MultiCCTaskPlanner: {
+      mountFleet(element, dirId) { mounts.push({ element, dirId }); },
+      unmountFleet() {},
+    },
   });
-  const body = { innerHTML: '' };
+  const body = {
+    innerHTML: '',
+    querySelector(selector) {
+      if (selector === '.fleet-task-planner-root') return plannerRoot;
+      if (selector === '.dd-tab[data-dir-detail-tab="tasks"]') return taskTab;
+      return null;
+    },
+    querySelectorAll() { return []; },
+  };
   context.document.getElementById = id => id === 'dir-detail-body' ? body : null;
   vm.runInContext(`
     _cachedDirectories = [{ id: 'fleet-1', name: 'Fleet 1' }];
-    _dirDetailTab = 'taskboard';
+    _dirDetailTab = 'tasks';
   `, context);
 
+  assert.equal(context.directoryWorkTaskCount(fleetTasks), 3);
   context.renderDirectoryDetailBody('fleet-1');
+  assert.equal((body.innerHTML.match(/<button class="dd-tab/g) || []).length, 2);
   assert.match(body.innerHTML, /dd-tab on has-running/);
   assert.match(body.innerHTML, /dd-tab-running/);
   assert.match(body.innerHTML, /data-status="running"/);
-  assert.match(body.innerHTML, /任务板 \(3\)/);
+  assert.match(body.innerHTML, /📋 任务 \(3\)/);
+  assert.deepEqual(mounts, [{ element: plannerRoot, dirId: 'fleet-1' }]);
+
+  context.refreshDirectoryDetailTaskTab('fleet-1');
+  assert.equal(tabClasses.has('has-running'), true);
+  assert.match(taskTab.innerHTML, /📋 任务 \(3\)[\s\S]*dd-tab-running/);
 
   runningTaskCount = 0;
-  context.renderDirectoryDetailBody('fleet-1');
-  assert.doesNotMatch(body.innerHTML, /has-running|dd-tab-running|data-status="running"/);
+  context.refreshDirectoryDetailTaskTab('fleet-1');
+  assert.equal(tabClasses.has('has-running'), false);
+  assert.equal(taskTab.innerHTML, '📋 任务 (3)');
 
   const css = read('public/manage.html');
   assert.match(css, /\.dd-tab\.has-running::after[\s\S]*?ddTabRunningSweep/);
   assert.match(css, /prefers-reduced-motion:reduce[\s\S]*?\.card-border-rainbow\{animation:none/);
 });
 
-test('Fleet detail exposes a third planning tab scoped to the Fleet being rendered', () => {
+test('Fleet detail exposes one task tab and maps legacy task routes onto it', () => {
   const mounts = [];
   let unmounts = 0;
   const composerStates = [];
@@ -275,6 +316,7 @@ test('Fleet detail exposes a third planning tab scoped to the Fleet being render
     querySelector(selector) {
       return selector === '.fleet-task-planner-root' ? plannerRoot : null;
     },
+    querySelectorAll() { return []; },
   };
   const modalClasses = new Set();
   const modal = {
@@ -289,6 +331,7 @@ test('Fleet detail exposes a third planning tab scoped to the Fleet being render
     _tbTasksForDir: dirId => [{
       id: `planned-${dirId}`, recordType: 'planned', status: 'active',
     }],
+    renderEventTimeline: () => '<div class="timeline">timeline</div>',
     renderTaskBoardSection: () => '<div class="board">board</div>',
     syncTaskBoardDirComposer(dirId, active) { composerStates.push({ dirId, active }); },
     MultiCCTaskPlanner: {
@@ -310,8 +353,10 @@ test('Fleet detail exposes a third planning tab scoped to the Fleet being render
   `, context);
 
   context.switchDirDetailTab('planner');
-  assert.equal((body.innerHTML.match(/<button class="dd-tab/g) || []).length, 3);
-  assert.match(body.innerHTML, /class="dd-tab on"[^>]*onclick="switchDirDetailTab\('planner'\)"[^>]*>🗂 计划看板 \(1\)/);
+  assert.equal(vm.runInContext('_dirDetailTab', context), 'tasks');
+  assert.equal((body.innerHTML.match(/<button class="dd-tab/g) || []).length, 2);
+  assert.match(body.innerHTML, /class="dd-tab on"[^>]*onclick="switchDirDetailTab\('tasks'\)"[^>]*>📋 任务 \(1\)/);
+  assert.doesNotMatch(body.innerHTML, /任务板|计划看板/);
   assert.equal(mounts.length, 1);
   assert.equal(mounts[0].element, plannerRoot);
   assert.equal(mounts[0].dirId, 'fleet-a');
@@ -322,9 +367,10 @@ test('Fleet detail exposes a third planning tab scoped to the Fleet being render
   context.renderDirectoryDetailBody('fleet-b');
   assert.deepEqual(mounts.map(call => call.dirId), ['fleet-a', 'fleet-b']);
 
-  context.switchDirDetailTab('taskboard');
+  context.switchDirDetailTab('sessions');
   assert.equal(unmounts, 1);
   assert.equal(modalClasses.has('fleet-planner-open'), false);
+  assert.deepEqual(composerStates.at(-1), { dirId: 'fleet-b', active: false });
 });
 
 test('session card consumes provider summary fields without rendering credential material', () => {

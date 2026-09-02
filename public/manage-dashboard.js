@@ -1414,12 +1414,42 @@ function updateDirDetailPush(dirId) {
   btn.title = title;
   btn.onclick = (e) => { e.stopPropagation(); pushDirectory(dirId); };
 }
-// Detail modal content tabs: classic sessions, the observed task tree, and the
-// proactive planning board. Remembered across re-renders/openings so WS-driven
-// redraws don't yank the user back to another task perspective.
-let _dirDetailTab = 'sessions';   // 'sessions' | 'taskboard' | 'planner'
+// Detail modal content tabs: sessions and one shared TODO/task surface. The
+// planner owns list/board/activity perspectives and source filtering inside the
+// task tab, so Fleet detail no longer exposes two competing task products.
+let _dirDetailTab = 'sessions';   // 'sessions' | 'tasks'
+function directoryWorkTaskCount(tasks) {
+  return (Array.isArray(tasks) ? tasks : []).reduce((count, task) => {
+    const stage = String(task?.workflowStage || '').toLowerCase();
+    if (task?.status === 'archived' || task?.status === 'done' || stage === 'done') return count;
+    if (task?.recordType === 'planned') return count + 1;
+    const status = typeof window.MultiCCStatusPresentation?.taskStatus === 'function'
+      ? window.MultiCCStatusPresentation.taskStatus(task)
+      : String(task?.runState || 'idle');
+    return count + (['waiting', 'error', 'blocked', 'running', 'queued'].includes(status) ? 1 : 0);
+  }, 0);
+}
+function refreshDirectoryDetailTaskTab(dirId) {
+  const body = document.getElementById('dir-detail-body');
+  const button = body && body.querySelector('.dd-tab[data-dir-detail-tab="tasks"]');
+  if (!button) return;
+  const fleetTasks = typeof _tbTasksForDir === 'function' ? _tbTasksForDir(dirId) : [];
+  const taskCount = directoryWorkTaskCount(fleetTasks);
+  const runningTaskCount = typeof taskBoardRunningCountForDir === 'function'
+    ? taskBoardRunningCountForDir(dirId)
+    : 0;
+  const runningBadge = runningTaskCount > 0
+    ? window.MultiCCStatusPresentation.statusBadgeHtml('task', 'running', {
+      translate: window.t,
+      className: 'dd-tab-running',
+    })
+    : '';
+  button.classList.toggle('has-running', runningTaskCount > 0);
+  button.innerHTML = `📋 任务${taskCount ? ` (${taskCount})` : ''}${runningBadge}`;
+}
 function switchDirDetailTab(tab) {
-  _dirDetailTab = ['taskboard', 'planner'].includes(tab) ? tab : 'sessions';
+  // Map old in-page calls during a rolling frontend update to the unified tab.
+  _dirDetailTab = ['tasks', 'taskboard', 'planner'].includes(tab) ? 'tasks' : 'sessions';
   if (_detailDirId) renderDirectoryDetailBody(_detailDirId);
 }
 function renderDirectoryDetailBody(dirId) {
@@ -1430,8 +1460,7 @@ function renderDirectoryDetailBody(dirId) {
   let tabs = '';
   if (hasBoard) {
     const fleetTasks = typeof _tbTasksForDir === 'function' ? _tbTasksForDir(dirId) : [];
-    const taskCount = fleetTasks.length;
-    const plannedTaskCount = fleetTasks.filter(task => task.recordType === 'planned' && task.status !== 'archived').length;
+    const taskCount = directoryWorkTaskCount(fleetTasks);
     const runningTaskCount = typeof taskBoardRunningCountForDir === 'function'
       ? taskBoardRunningCountForDir(dirId)
       : 0;
@@ -1444,32 +1473,28 @@ function renderDirectoryDetailBody(dirId) {
     tabs = `
       <div class="dd-tabs">
         <button class="dd-tab${_dirDetailTab === 'sessions' ? ' on' : ''}" onclick="switchDirDetailTab('sessions')">🖥 会话</button>
-        <button class="dd-tab${_dirDetailTab === 'taskboard' ? ' on' : ''}${runningTaskCount ? ' has-running' : ''}" onclick="switchDirDetailTab('taskboard')">📋 任务板${taskCount ? ` (${taskCount})` : ''}${runningBadge}</button>
-        <button class="dd-tab${_dirDetailTab === 'planner' ? ' on' : ''}" onclick="switchDirDetailTab('planner')" title="Trello 视角：主动计划、拖拽推进和验收">🗂 计划看板${plannedTaskCount ? ` (${plannedTaskCount})` : ''}</button>
+        <button class="dd-tab${_dirDetailTab === 'tasks' ? ' on' : ''}${runningTaskCount ? ' has-running' : ''}" data-dir-detail-tab="tasks" onclick="switchDirDetailTab('tasks')">📋 任务${taskCount ? ` (${taskCount})` : ''}${runningBadge}</button>
       </div>`;
   }
-  const boardTabActive = hasBoard && _dirDetailTab === 'taskboard';
-  const plannerTabActive = hasBoard && _dirDetailTab === 'planner';
-  if (!plannerTabActive && window.MultiCCTaskPlanner?.unmountFleet) {
+  const tasksTabActive = hasBoard && _dirDetailTab === 'tasks';
+  if (!tasksTabActive && window.MultiCCTaskPlanner?.unmountFleet) {
     window.MultiCCTaskPlanner.unmountFleet();
   }
-  const content = plannerTabActive
+  const content = tasksTabActive
     ? '<div class="fleet-task-planner-root"></div>'
-    : boardTabActive
-      ? renderTaskBoardSection(dirId, { tabbed: true })
-      : renderEventTimeline(dirId) + renderDirSessionGroups(dirSessionsOf(dirId), dirId);
+    : renderEventTimeline(dirId) + renderDirSessionGroups(dirSessionsOf(dirId), dirId);
   const modal = document.getElementById('dir-detail-modal');
-  if (modal) modal.classList.toggle('fleet-planner-open', plannerTabActive);
+  if (modal) modal.classList.toggle('fleet-planner-open', tasksTabActive);
   body.innerHTML = tabs + content;
-  if (plannerTabActive) {
+  if (tasksTabActive) {
     const plannerRoot = body.querySelector('.fleet-task-planner-root');
     if (plannerRoot && window.MultiCCTaskPlanner?.mountFleet) {
       window.MultiCCTaskPlanner.mountFleet(plannerRoot, dirId);
     }
-  } else if (!boardTabActive) initSessionCardDragDrop(body);
+  } else initSessionCardDragDrop(body);
   // The board composer sits outside this re-rendered body (static container in
   // the modal) so typed text/recording survive WS-driven redraws.
-  if (typeof syncTaskBoardDirComposer === 'function') syncTaskBoardDirComposer(dirId, boardTabActive);
+  if (typeof syncTaskBoardDirComposer === 'function') syncTaskBoardDirComposer(dirId, false);
 }
 function closeDirectoryDetail() {
   if (window.MultiCCTaskPlanner?.unmountFleet) window.MultiCCTaskPlanner.unmountFleet();

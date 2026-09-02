@@ -37,9 +37,29 @@ function fakePlannerRoot() {
       },
     },
     addEventListener(type, listener) { listeners.set(type, listener); },
+    dispatch(type, event) {
+      const listener = listeners.get(type);
+      if (!listener) throw new Error(`missing ${type} listener`);
+      return listener(event);
+    },
     querySelector() { return null; },
     querySelectorAll() { return []; },
   };
+}
+
+function dispatchPlannerAction(rootElement, action, dataset = {}) {
+  const target = {
+    dataset: { action, ...dataset },
+    closest(selector) { return selector === '[data-action]' ? this : null; },
+  };
+  rootElement.dispatch('click', { target });
+}
+
+function articleTaskIds(htmlText, className) {
+  const ids = [];
+  const pattern = new RegExp(`<article class="${className}[^>]*data-task-id="([^"]+)"`, 'g');
+  for (const match of htmlText.matchAll(pattern)) ids.push(match[1]);
+  return ids.sort();
 }
 
 function createPlannerHarness() {
@@ -52,11 +72,13 @@ function createPlannerHarness() {
     tasks: [
       {
         id: 'task-a', recordType: 'planned', status: 'active', runState: 'idle',
+        origin: 'board',
         dirId: 'fleet-a', workflowStage: 'inbox', planningRevision: 1, rank: 1024,
         title: 'Alpha plan', description: 'Only Fleet A should show this task',
       },
       {
         id: 'task-b', recordType: 'planned', status: 'active', runState: 'idle',
+        origin: 'board',
         dirId: 'fleet-b', workflowStage: 'ready', planningRevision: 1, rank: 1024,
         title: 'Beta plan', description: 'Only Fleet B should show this task',
       },
@@ -67,6 +89,7 @@ function createPlannerHarness() {
     { id: 'fleet-b', name: 'Fleet B' },
   ];
   let requestHandler = null;
+  const storage = new Map([['multicc_lang', 'zh']]);
   const document = {
     activeElement: null,
     body: { appendChild() {} },
@@ -79,7 +102,10 @@ function createPlannerHarness() {
     console,
     document,
     location: { search: '' },
-    localStorage: { getItem() { return 'zh'; } },
+    localStorage: {
+      getItem(key) { return storage.has(key) ? storage.get(key) : null; },
+      setItem(key, value) { storage.set(key, String(value)); },
+    },
     URLSearchParams,
     setTimeout,
     clearTimeout,
@@ -104,6 +130,7 @@ function createPlannerHarness() {
     context,
     globalRoot,
     requests,
+    storage,
     setDirectories(value) { directories = value; },
     setRequestHandler(value) { requestHandler = value; },
   };
@@ -122,11 +149,15 @@ test('manage shell exposes the first-class Task Center view', () => {
   assert.match(html, /manage-task-planner\.js/);
 });
 
-test('planner keeps workflow, runtime, and history identity independent', () => {
+test('planner keeps persisted workflow identity separate from the derived TODO projection', () => {
   assert.match(js, /Object\.freeze\(\['inbox', 'ready', 'doing', 'review', 'done'\]\)/);
+  assert.match(js, /Object\.freeze\(\['todo', 'board', 'activity'\]\)/);
+  assert.match(js, /Object\.freeze\(\['all', 'board', 'session'\]\)/);
+  assert.match(js, /Object\.freeze\(\['todo', 'attention', 'running', 'next', 'review'\]\)/);
   assert.match(js, /task\.recordType === 'planned'/);
   assert.match(js, /task\.recordType !== 'planned'/);
   assert.match(js, /statusUi\.taskStatus/);
+  assert.match(js, /function workBucket\(task\)/);
   assert.match(js, /sourceTaskId: task\.id/);
 });
 
@@ -140,8 +171,10 @@ test('planner mutations use task revisions and idempotent sends', () => {
   assert.match(js, /\/api\/task-board\/tasks\/\$\{encodeURIComponent\(taskId\)\}\/move/);
   assert.match(js, /\/api\/task-board\/tasks\/\$\{encodeURIComponent\(taskId\)\}\/update/);
   assert.match(js, /async function createFromDialog[\s\S]*?requestJson\('\/api\/task-board\/tasks'/);
-  assert.match(js, /function bindPlannerRoot[\s\S]*?addEventListener\('click', handleRootClick\)[\s\S]*?addEventListener\('drop', handleDrop\)/);
+  assert.match(js, /function bindPlannerRoot[\s\S]*?addEventListener\('click', handleRootClick\)[\s\S]*?addEventListener\('keydown', handleRootKeydown\)/);
+  assert.doesNotMatch(js, /addEventListener\('(?:dragstart|dragover|drop|dragend)'/);
   assert.match(js, /function unmountFleetSurface\(\)[\s\S]*?closePlannerOverlay\(\)/);
+  assert.match(js, /async function promoteObserved[\s\S]*?dirId: taskContextDirId\(task, moduleMap\)/);
   assert.match(js, /sendIdForTask\(taskId\)/);
   assert.match(js, /state\.sendIds\.delete/);
   assert.match(js, /isConflict\(error\)/);
@@ -149,9 +182,10 @@ test('planner mutations use task revisions and idempotent sends', () => {
 });
 
 test('Fleet planner mount is isolated and unmount or global navigation restores every Fleet', async () => {
-  const { context, globalRoot, requests } = createPlannerHarness();
+  const { context, globalRoot, requests, storage } = createPlannerHarness();
   const fleetRoot = fakePlannerRoot();
 
+  dispatchPlannerAction(globalRoot, 'origin', { origin: 'all' });
   context.MultiCCTaskPlanner.mountFleet(fleetRoot, 'fleet-a');
   await settlePlannerLoad();
 
@@ -161,7 +195,11 @@ test('Fleet planner mount is isolated and unmount or global navigation restores 
   assert.doesNotMatch(fleetRoot.innerHTML, /Beta plan|id="planner-fleet-filter"/);
   assert.deepEqual(requests.map(request => request.url), ['/api/task-board', '/api/directories']);
 
+  dispatchPlannerAction(fleetRoot, 'origin', { origin: 'session' });
+  assert.equal(storage.get('multicc_task_center_origin'), 'session');
+
   context.MultiCCTaskPlanner.unmountFleet();
+  assert.equal(storage.get('multicc_task_center_origin'), 'all');
   assert.equal(fleetRoot.innerHTML, '');
   assert.match(globalRoot.innerHTML, /id="planner-fleet-filter"/);
   assert.match(globalRoot.innerHTML, /Alpha plan/);
@@ -250,6 +288,7 @@ test('planner reconciles a newer task-board snapshot and ignores stale revisions
     modules: [],
     tasks: [{
       id: 'task-new', recordType: 'planned', status: 'active', runState: 'idle',
+      origin: 'board',
       dirId: 'fleet-a', workflowStage: 'doing', planningRevision: 1, rank: 1024,
       title: 'Polling reconciliation arrived',
     }],
@@ -284,6 +323,7 @@ test('a superseded planner request cannot replace a reconciled snapshot with an 
     modules: [],
     tasks: [{
       id: 'task-fresh', recordType: 'planned', status: 'active', runState: 'idle',
+      origin: 'board',
       dirId: 'fleet-a', workflowStage: 'doing', planningRevision: 1, rank: 1024,
       title: 'Fresh snapshot survives',
     }],
@@ -311,11 +351,13 @@ test('Fleet planner reconciles a newer snapshot without leaking other Fleets', a
     tasks: [
       {
         id: 'task-a-new', recordType: 'planned', status: 'active', runState: 'idle',
+        origin: 'board',
         dirId: 'fleet-a', workflowStage: 'review', planningRevision: 1, rank: 1024,
         title: 'Fleet A polling update',
       },
       {
         id: 'task-b-new', recordType: 'planned', status: 'active', runState: 'idle',
+        origin: 'board',
         dirId: 'fleet-b', workflowStage: 'review', planningRevision: 1, rank: 1024,
         title: 'Fleet B must stay hidden',
       },
@@ -325,6 +367,143 @@ test('Fleet planner reconciles a newer snapshot without leaking other Fleets', a
   assert.equal(reconciled, true);
   assert.match(fleetRoot.innerHTML, /Fleet A polling update/);
   assert.doesNotMatch(fleetRoot.innerHTML, /Alpha plan|Fleet B must stay hidden/);
+});
+
+test('Fleet planner keeps body-only observed tasks in every referenced Fleet', async () => {
+  const { context } = createPlannerHarness();
+  const fleetRoot = fakePlannerRoot();
+  context.MultiCCTaskPlanner.mountFleet(fleetRoot, 'fleet-b');
+  await settlePlannerLoad();
+  dispatchPlannerAction(fleetRoot, 'origin', { origin: 'all' });
+
+  assert.equal(context.MultiCCTaskPlanner.reconcileSnapshot({
+    ok: true,
+    revision: 2,
+    modules: [],
+    tasks: [{
+      id: 'multi-fleet-observed', recordType: 'observed', origin: 'session',
+      status: 'active', runState: 'waiting', workflowStage: 'inbox',
+      dirId: 'fleet-a', dirIds: ['fleet-a', 'fleet-b'], rank: 1,
+      title: 'Shared observed task', description: '', body: 'Body-only searchable details',
+    }],
+  }), true);
+
+  assert.match(fleetRoot.innerHTML, /Shared observed task/);
+  assert.match(fleetRoot.innerHTML, /Body-only searchable details/);
+  assert.match(fleetRoot.innerHTML, />Fleet B</);
+  assert.doesNotMatch(fleetRoot.innerHTML, />Fleet A</);
+});
+
+test('TODO and Board share one five-bucket projection with explicit source filtering', async () => {
+  const { context, globalRoot, storage } = createPlannerHarness();
+  context.setView('tasks');
+  await settlePlannerLoad();
+
+  const tasks = [
+    {
+      id: 'todo-board', title: 'Todo board', origin: 'board', recordType: 'planned',
+      status: 'active', runState: 'idle', workflowStage: 'inbox', dirId: 'fleet-a', rank: 1,
+    },
+    {
+      id: 'attention-board', title: 'Attention board', origin: 'board', recordType: 'planned',
+      status: 'active', runState: 'waiting', workflowStage: 'ready', dirId: 'fleet-a', rank: 2,
+    },
+    {
+      id: 'attention-session', title: 'Attention session', origin: 'session', recordType: 'observed',
+      status: 'active', runState: 'error', workflowStage: 'inbox', dirId: 'fleet-a', rank: 3,
+    },
+    {
+      id: 'running-board', title: 'Running board', origin: 'board', recordType: 'planned',
+      status: 'active', runState: 'running', workflowStage: 'doing', dirId: 'fleet-a', rank: 4,
+    },
+    {
+      id: 'running-session', title: 'Running session', origin: 'session', recordType: 'observed',
+      status: 'active', runState: 'queued', workflowStage: 'inbox', dirId: 'fleet-a', rank: 5,
+    },
+    {
+      id: 'next-board', title: 'Next board', origin: 'board', recordType: 'planned',
+      status: 'active', runState: 'idle', workflowStage: 'ready', dirId: 'fleet-a', rank: 6,
+    },
+    {
+      id: 'reopened-board', title: 'Reopened board', origin: 'board', recordType: 'planned',
+      status: 'active', runState: 'succeeded', workflowStage: 'ready', dirId: 'fleet-a', rank: 7,
+    },
+    {
+      id: 'review-board', title: 'Review board', origin: 'board', recordType: 'planned',
+      status: 'active', runState: 'idle', workflowStage: 'review', dirId: 'fleet-a', rank: 8,
+    },
+    {
+      id: 'succeeded-board', title: 'Succeeded board', origin: 'board', recordType: 'planned',
+      status: 'active', runState: 'succeeded', workflowStage: 'inbox', dirId: 'fleet-a', rank: 9,
+    },
+    {
+      id: 'observed-succeeded', title: 'Observed succeeded archive only', origin: 'session', recordType: 'observed',
+      status: 'active', runState: 'succeeded', workflowStage: 'inbox', dirId: 'fleet-a', rank: 10,
+    },
+    {
+      id: 'observed-idle', title: 'Observed idle archive only', origin: 'session', recordType: 'observed',
+      status: 'active', runState: 'idle', workflowStage: 'inbox', dirId: 'fleet-a', rank: 11,
+    },
+    {
+      id: 'done-board', title: 'Done outside workspace', origin: 'board', recordType: 'planned',
+      status: 'done', runState: 'running', workflowStage: 'doing', dirId: 'fleet-a', rank: 12,
+    },
+    {
+      id: 'archived-board', title: 'Archived outside workspace', origin: 'board', recordType: 'planned',
+      status: 'archived', runState: 'waiting', workflowStage: 'inbox', dirId: 'fleet-a', rank: 13,
+    },
+  ];
+  assert.equal(context.MultiCCTaskPlanner.reconcileSnapshot({
+    ok: true, revision: 2, modules: [], tasks,
+  }), true);
+
+  // Independent tasks are the default view; changing the source is persisted.
+  assert.match(globalRoot.innerHTML, /Todo board/);
+  assert.doesNotMatch(globalRoot.innerHTML, /Attention session/);
+  dispatchPlannerAction(globalRoot, 'origin', { origin: 'session' });
+  assert.equal(storage.get('multicc_task_center_origin'), 'session');
+  assert.match(globalRoot.innerHTML, /Attention session/);
+  assert.match(globalRoot.innerHTML, /Running session/);
+  assert.doesNotMatch(globalRoot.innerHTML, /Todo board|Observed succeeded archive only|Observed idle archive only/);
+
+  dispatchPlannerAction(globalRoot, 'origin', { origin: 'all' });
+  const expectedIds = [
+    'attention-board', 'attention-session', 'next-board', 'reopened-board',
+    'review-board', 'running-board', 'running-session', 'succeeded-board', 'todo-board',
+  ].sort();
+  assert.deepEqual(articleTaskIds(globalRoot.innerHTML, 'planner-todo-row'), expectedIds);
+
+  const groupHtml = bucket => {
+    const match = globalRoot.innerHTML.match(new RegExp(
+      `<section class="planner-todo-group" data-bucket="${bucket}">([\\s\\S]*?)<\\/section>`,
+    ));
+    return match ? match[1] : '';
+  };
+  const expectedByBucket = {
+    todo: ['Todo board'],
+    attention: ['Attention board', 'Attention session'],
+    running: ['Running board', 'Running session'],
+    next: ['Next board', 'Reopened board'],
+    review: ['Review board', 'Succeeded board'],
+  };
+  for (const [bucket, titles] of Object.entries(expectedByBucket)) {
+    const bucketMarkup = groupHtml(bucket);
+    assert.ok(bucketMarkup, `missing ${bucket} group`);
+    for (const title of titles) assert.match(bucketMarkup, new RegExp(title));
+  }
+  for (const task of tasks.filter(item => expectedIds.includes(item.id))) {
+    assert.equal((globalRoot.innerHTML.match(new RegExp(`>${task.title}<`, 'g')) || []).length, 1,
+      `${task.id} must belong to exactly one TODO bucket`);
+  }
+
+  // Switching presentation must not change membership or silently resurrect
+  // completed/idle observed rows into the work queue.
+  dispatchPlannerAction(globalRoot, 'mode', { mode: 'board' });
+  assert.deepEqual(articleTaskIds(globalRoot.innerHTML, 'planner-card'), expectedIds);
+  assert.doesNotMatch(globalRoot.innerHTML, /Observed succeeded archive only|Observed idle archive only/);
+  dispatchPlannerAction(globalRoot, 'mode', { mode: 'activity' });
+  assert.match(globalRoot.innerHTML, /Observed succeeded archive only/);
+  assert.match(globalRoot.innerHTML, /Observed idle archive only/);
 });
 
 test('the 60-second task-board poll feeds its snapshot into the planner', async () => {
@@ -360,8 +539,8 @@ test('the 60-second task-board poll feeds its snapshot into the planner', async 
 });
 
 test('planner preserves navigation context and keeps task actions in scope', () => {
-  assert.match(js, /function captureRenderState\(\)[\s\S]*?boardLeft[\s\S]*?columnScroll[\s\S]*?searchFocused/);
-  assert.match(js, /function restoreRenderState\(saved\)[\s\S]*?scrollLeft = saved\.boardLeft[\s\S]*?list\.scrollTop = saved\.columnScroll\[stage\]/);
+  assert.match(js, /function captureRenderState\(\)[\s\S]*?boardLeft[\s\S]*?todoTop[\s\S]*?columnScroll[\s\S]*?searchFocused/);
+  assert.match(js, /function restoreRenderState\(saved\)[\s\S]*?scrollLeft = saved\.boardLeft[\s\S]*?todoScroll\.scrollTop = saved\.todoTop[\s\S]*?list\.scrollTop = saved\.columnScroll\[bucket\]/);
   assert.match(js, /renderState: captureRenderState\(\)/);
   assert.match(js, /planner-card-attention-action[\s\S]*?data-action="open-chat"/);
   assert.match(js, /kind === 'open-chat'[\s\S]*?window\.open\(`\/chat\.html\?task=/);
@@ -376,7 +555,7 @@ test('planner columns scroll independently and dynamic regions have bounded anno
   assert.doesNotMatch(html, /id="task-planner-root"[^>]*aria-live/);
   assert.doesNotMatch(dashboardJs, /fleet-task-planner-root[^']*aria-live/);
   assert.match(js, /id="planner-new-form" role="dialog" aria-modal="true" aria-labelledby="planner-new-title-heading"/);
-  assert.match(js, /embedded\s*\? `role="region"[\s\S]*?: `role="tabpanel" aria-labelledby="planner-mode-\$\{state\.mode\}"`/);
+  assert.match(js, /const mainA11y = `role="tabpanel" aria-labelledby="planner-mode-\$\{state\.mode\}"`/);
   assert.match(js, /role="status" aria-live="polite" aria-atomic="true"/);
 });
 
@@ -385,17 +564,22 @@ test('planner refresh and responsive access paths are wired', () => {
   assert.match(js, /incomingRevision < state\.revision/);
   assert.match(js, /window\.onTaskBoardUpdate/);
   assert.match(taskBoardJs, /typeof window\.MultiCCTaskPlanner\?\.reconcileSnapshot === 'function'[\s\S]*?window\.MultiCCTaskPlanner\.reconcileSnapshot\(d\)/);
-  assert.match(taskBoardJs, /if \(typeof _detailModalOpen === 'function' && _detailModalOpen\(\)\s*&& \(typeof _dirDetailTab === 'undefined' \|\| _dirDetailTab !== 'planner'\)\s*&& typeof renderDirectoryDetailBody === 'function'\) \{\s*renderDirectoryDetailBody\(_detailDirId\);/);
+  assert.match(taskBoardJs, /_dirDetailTab === 'tasks'[\s\S]*?refreshDirectoryDetailTaskTab\(_detailDirId\)/);
+  assert.match(taskBoardJs, /else if \(typeof renderDirectoryDetailBody === 'function'\) \{\s*renderDirectoryDetailBody\(_detailDirId\);/);
   assert.match(js, /name="workflowStage"/);
   assert.match(css, /@media \(max-width: 760px\)/);
-  assert.match(css, /\.planner-column\.is-mobile-active/);
+  assert.match(css, /\.planner-board\s*\{\s*display: block;[\s\S]*?\.planner-column\s*\{\s*display: flex;/);
+  assert.doesNotMatch(css, /\.planner-column\.is-mobile-active/);
 });
 
 test('planner copy is present in both generated source catalogs', () => {
   const required = [
-    'plannerTaskCenter', 'plannerBoard', 'plannerHistory', 'plannerNeedsMe',
+    'plannerTaskCenter', 'plannerTodoList', 'plannerBoard', 'plannerHistory',
+    'plannerSource', 'plannerSourceAll', 'plannerSourceBoard', 'plannerSourceSession',
+    'plannerWorkOverview', 'plannerBucketTodo', 'plannerBucketAttention',
+    'plannerBucketRunning', 'plannerBucketNext', 'plannerBucketReview',
     'plannerNewTask', 'plannerSaveInbox', 'plannerSaveStart', 'plannerAcceptance',
-    'plannerAnswerQuestion', 'plannerInspectError',
+    'plannerAnswerQuestion', 'plannerInspectError', 'plannerStartQuick', 'plannerCompleteQuick',
   ];
   for (const key of required) {
     assert.equal(typeof zh[key], 'string', `missing zh.${key}`);
