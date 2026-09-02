@@ -1,10 +1,8 @@
 'use strict';
 
-/* 借道分享/导入（Provider 配置页）：把本机 provider 通过 CPR 协议代理借给
-   另一台 multicc。分享码（mcrelay1.…）内含 MULTICC_PROXY_TOKEN —— 一个只
-   解锁 /claude-proxy、/codex-proxy 两个代理挂载的 bearer（见
-   src/routes/auth.js）——不含上游 API Key 或 OAuth 凭据；导入端粘贴后走普通
-   POST /api/providers。依赖 manage.js 的全局 helper（escapeHtml、
+/* 借道分享/导入（Provider 配置页）：每份分享码拥有独立、可撤销、可统计的
+   Provider 范围凭据；服务端仅保存哈希，明文只在创建响应的分享码中出现一次。
+   导入端粘贴后走普通 POST /api/providers。依赖 manage.js 的全局 helper（escapeHtml、
    providerApi、showToast、loadProviders、_providerData、providerCatalog），
    点击时才解析，因此脚本顺序只要求在 manage.html 里加载即可。 */
 
@@ -90,103 +88,120 @@ async function _relayBaseOptions() {
   return opts;
 }
 
+function _relayDate(value) {
+  if (!value) return '从未';
+  try { return new Date(value).toLocaleString(); } catch (_) { return '未知'; }
+}
+
+function manageRelayShares(appType = '', providerId = '') {
+  const { overlay } = _relayOverlay(`
+    <div style="background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:720px;max-width:94vw;max-height:86vh;overflow:auto">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px">
+        <div><div style="font-size:15px;color:#c9d1d9;font-weight:600">借道链接记录</div><div style="font-size:12px;color:var(--faint);margin-top:4px">凭据仅保存哈希；“访问次数”统计通过鉴权的中转请求。</div></div>
+        <button class="btn" data-act="close">关闭</button>
+      </div>
+      <div data-k="list" style="display:grid;gap:8px"><div class="status-text">读取中…</div></div>
+      <div data-k="status" class="status-text" style="margin-top:8px"></div>
+    </div>`);
+  const listEl = overlay.querySelector('[data-k="list"]');
+  const statusEl = overlay.querySelector('[data-k="status"]');
+  const refresh = async () => {
+    const query = new URLSearchParams();
+    if (appType) query.set('appType', appType);
+    if (providerId) query.set('providerId', providerId);
+    try {
+      const d = await providerApi.json(`/api/provider-relay-shares?${query}`);
+      const shares = Array.isArray(d.shares) ? d.shares : [];
+      listEl.innerHTML = shares.length ? shares.map(share => `
+        <div style="border:1px solid #30363d;border-radius:8px;padding:10px;background:#0d1117">
+          <div style="display:flex;justify-content:space-between;gap:8px;align-items:center">
+            <div style="font-size:13px;color:#c9d1d9;font-weight:600">${escapeHtml(share.label || share.providerName || share.providerId)}</div>
+            <span style="font-size:11px;color:${share.status === 'active' ? '#3fb950' : '#8b949e'}">${share.status === 'active' ? '有效' : '已撤销'}</span>
+          </div>
+          <div style="font-size:11px;color:var(--faint);line-height:1.65;margin-top:5px;word-break:break-all">
+            ${escapeHtml(share.appType)} · ${escapeHtml(share.providerName || share.providerId)}<br>
+            地址：${escapeHtml(share.relayBaseUrl)}<br>
+            指纹：${escapeHtml(share.tokenFingerprint)} · 创建：${escapeHtml(_relayDate(share.createdAt))}<br>
+            访问：${Number(share.accessCount) || 0} 次 · 最后使用：${escapeHtml(_relayDate(share.lastUsedAt))}
+          </div>
+          ${share.status === 'active' ? `<div style="text-align:right;margin-top:7px"><button class="btn" data-revoke="${escapeHtml(share.id)}" style="font-size:11px;color:#f85149">撤销</button></div>` : ''}
+        </div>`).join('') : '<div class="status-text">尚未生成借道链接</div>';
+      listEl.querySelectorAll('[data-revoke]').forEach(button => {
+        button.onclick = async () => {
+          if (!confirm('撤销后，使用这条分享码的远端 Provider 将立即失效。继续吗？')) return;
+          try {
+            await providerApi.json(`/api/provider-relay-shares/${encodeURIComponent(button.dataset.revoke)}`, { method: 'DELETE' });
+            showToast('借道链接已撤销');
+            await refresh();
+          } catch (err) { statusEl.textContent = 'Failed: ' + err.message; statusEl.className = 'status-text err'; }
+        };
+      });
+    } catch (err) {
+      listEl.innerHTML = `<div class="status-text err">Failed: ${escapeHtml(err.message)}</div>`;
+    }
+  };
+  refresh();
+}
+
 function shareRelayProvider(appType, id) {
   const p = providerCatalog.findProvider(_providerData, appType, id);
   if (!p) return;
   const { overlay } = _relayOverlay(`
-    <div style="background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:480px;max-width:92vw;">
+    <div style="background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:560px;max-width:92vw;">
       <div style="font-size:14px;color:#c9d1d9;font-weight:600;margin-bottom:10px">借道分享 · ${escapeHtml(p.name)}</div>
-      <div style="font-size:12px;color:var(--faint);margin-bottom:10px">生成分享码，另一台 multicc 在「导入借道 Provider」里粘贴即可通过本机代理使用这个 provider。分享码内含借道令牌（只解锁两个代理挂载，不含上游 API Key 或 OAuth 凭据），只发给你信任的设备。</div>
+      <div style="font-size:12px;color:var(--faint);line-height:1.6;margin-bottom:10px">每次生成都必须设置独立令牌。令牌只写入本次分享码，服务端仅保存加盐哈希；以后可单独查看使用次数或撤销。</div>
+      <label style="display:block;margin-bottom:10px"><div style="font-size:12px;color:var(--faint);margin-bottom:4px">链接备注（建议填写接收设备或用途）</div>
+        <input data-k="label" type="text" maxlength="100" placeholder="例如：办公室 Mac" autocomplete="off" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;box-sizing:border-box"></label>
+      <label style="display:block;margin-bottom:10px"><div style="font-size:12px;color:var(--faint);margin-bottom:4px">独立借道令牌（8–128 位，无空格）</div>
+        <div style="display:flex;gap:8px"><input data-k="token" type="password" placeholder="手工设置或随机生成" autocomplete="new-password" style="flex:1;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:12px;padding:7px 10px;outline:none;box-sizing:border-box;font-family:ui-monospace,monospace"><button class="btn" data-act="tokengen" style="font-size:12px">随机生成</button></div></label>
       <label style="display:block;margin-bottom:10px"><div style="font-size:12px;color:var(--faint);margin-bottom:4px">远端可访问的本机地址</div>
-        <select data-k="basesel" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;box-sizing:border-box">
-          <option value="">读取可用地址…</option>
-        </select></label>
-      <input data-k="basecustom" type="text" placeholder="https://…（自定义地址）" autocomplete="off"
-        style="display:none;width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;box-sizing:border-box;margin-bottom:10px">
-      <div data-k="tokensetup" style="display:none;border:1px solid #d29922;border-radius:8px;padding:10px;margin-bottom:10px;">
-        <div style="font-size:12px;color:#d29922;font-weight:600;margin-bottom:6px">未配置借道令牌 (MULTICC_PROXY_TOKEN)</div>
-        <div style="font-size:12px;color:var(--faint);line-height:1.6;margin-bottom:8px">借道分享需要先在 .env 配置 MULTICC_PROXY_TOKEN。可以在这里直接设置（仅本机页面可设置，保存后立即生效、无需重启）；或手动写入 .env 后重启服务。</div>
-        <div style="display:flex;gap:8px">
-          <input data-k="token" type="text" placeholder="粘贴令牌或点右侧「随机生成」" autocomplete="off"
-            style="flex:1;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:12px;padding:7px 10px;outline:none;box-sizing:border-box;font-family:ui-monospace,monospace">
-          <button class="btn" data-act="tokengen" style="font-size:12px">随机生成</button>
-          <button class="btn btn-green" data-act="tokensave" style="font-size:12px">保存并生成</button>
-        </div>
-      </div>
-      <textarea data-k="code" rows="4" readonly placeholder="点下方「生成分享码」"
-        style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:12px;padding:8px 10px;outline:none;box-sizing:border-box;font-family:ui-monospace,monospace"></textarea>
-      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
-        <button class="btn" data-act="close" style="font-size:13px">关闭</button>
-        <button class="btn" data-act="copy" style="font-size:13px" disabled>复制分享码</button>
-        <button class="btn btn-green" data-act="gen" style="font-size:13px">生成分享码</button>
+        <select data-k="basesel" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;box-sizing:border-box"><option value="">读取可用地址…</option></select></label>
+      <input data-k="basecustom" type="text" placeholder="https://…（自定义地址）" autocomplete="off" style="display:none;width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;box-sizing:border-box;margin-bottom:10px">
+      <textarea data-k="code" rows="4" readonly placeholder="生成后分享码只在这里显示一次" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:12px;padding:8px 10px;outline:none;box-sizing:border-box;font-family:ui-monospace,monospace"></textarea>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px;flex-wrap:wrap">
+        <button class="btn" data-act="records" style="font-size:13px">借道记录</button><button class="btn" data-act="close" style="font-size:13px">关闭</button><button class="btn" data-act="copy" style="font-size:13px" disabled>复制分享码</button><button class="btn btn-green" data-act="gen" style="font-size:13px">生成分享码</button>
       </div>
       <div data-k="status" class="status-text" style="margin-top:8px"></div>
     </div>`);
   const sel = overlay.querySelector('[data-k="basesel"]');
   const customEl = overlay.querySelector('[data-k="basecustom"]');
-  const tokenSetup = overlay.querySelector('[data-k="tokensetup"]');
   const tokenInput = overlay.querySelector('[data-k="token"]');
+  const labelInput = overlay.querySelector('[data-k="label"]');
   const codeEl = overlay.querySelector('[data-k="code"]');
   const st = overlay.querySelector('[data-k="status"]');
 
   _relayBaseOptions().then((opts) => {
     sel.innerHTML = '';
     for (const o of opts) {
-      const op = document.createElement('option');
-      op.value = o.url;
-      op.textContent = `${o.label} · ${o.url}`;
-      sel.appendChild(op);
+      const op = document.createElement('option'); op.value = o.url; op.textContent = `${o.label} · ${o.url}`; sel.appendChild(op);
     }
-    const custom = document.createElement('option');
-    custom.value = '__custom';
-    custom.textContent = '自定义地址…';
-    sel.appendChild(custom);
+    const custom = document.createElement('option'); custom.value = '__custom'; custom.textContent = '自定义地址…'; sel.appendChild(custom);
   });
   sel.onchange = () => { customEl.style.display = sel.value === '__custom' ? 'block' : 'none'; };
-
   overlay.querySelector('[data-act="tokengen"]').onclick = () => {
-    const bytes = new Uint8Array(24);
-    crypto.getRandomValues(bytes);
-    tokenInput.value = 'mcpr_' + Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+    const bytes = new Uint8Array(24); crypto.getRandomValues(bytes);
+    tokenInput.value = 'relay_' + Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
   };
-
-  const doGen = async () => {
-    st.textContent = ''; st.className = 'status-text';
-    const base = sel.value === '__custom' ? customEl.value : sel.value;
-    try {
-      const d = await providerApi.json(`/api/providers/${encodeURIComponent(appType)}/${encodeURIComponent(id)}/relay-share`, {
-        method: 'POST', json: { publicBaseUrl: String(base || '').trim() },
-      });
-      tokenSetup.style.display = 'none';
-      codeEl.value = d.code;
-      overlay.querySelector('[data-act="copy"]').disabled = false;
-      st.textContent = '远端 provider 的 baseUrl：' + d.baseUrl; st.className = 'status-text ok';
-    } catch (err) {
-      if (err && err.code === 'RELAY_TOKEN_UNSET') {
-        tokenSetup.style.display = 'block';
-        return;
-      }
-      st.textContent = 'Failed: ' + err.message; st.className = 'status-text err';
-    }
-  };
-
-  overlay.querySelector('[data-act="tokensave"]').onclick = async () => {
-    st.textContent = ''; st.className = 'status-text';
-    try {
-      await providerApi.json('/api/settings/proxy-token', {
-        method: 'POST', json: { token: tokenInput.value },
-      });
-      showToast('借道令牌已保存');
-      await doGen();
-    } catch (err) { st.textContent = 'Failed: ' + err.message; st.className = 'status-text err'; }
-  };
-
+  overlay.querySelector('[data-act="records"]').onclick = () => manageRelayShares(appType, id);
   overlay.querySelector('[data-act="copy"]').onclick = async () => {
     try { await navigator.clipboard.writeText(codeEl.value); }
     catch (_) { codeEl.select(); document.execCommand('copy'); }
     showToast('分享码已复制');
   };
-  overlay.querySelector('[data-act="gen"]').onclick = doGen;
+  overlay.querySelector('[data-act="gen"]').onclick = async () => {
+    st.textContent = ''; st.className = 'status-text';
+    const base = sel.value === '__custom' ? customEl.value : sel.value;
+    if (!tokenInput.value.trim()) { st.textContent = '请为这条链接设置独立令牌'; st.className = 'status-text err'; return; }
+    try {
+      const d = await providerApi.json(`/api/providers/${encodeURIComponent(appType)}/${encodeURIComponent(id)}/relay-share`, {
+        method: 'POST', json: { publicBaseUrl: String(base || '').trim(), token: tokenInput.value, label: labelInput.value.trim() },
+      });
+      tokenInput.value = '';
+      codeEl.value = d.code;
+      overlay.querySelector('[data-act="copy"]').disabled = false;
+      st.textContent = `已记录链接 ${d.share.tokenFingerprint}；请立即复制分享码。`; st.className = 'status-text ok';
+    } catch (err) { st.textContent = 'Failed: ' + err.message; st.className = 'status-text err'; }
+  };
 }
 
 function importRelayProvider() {

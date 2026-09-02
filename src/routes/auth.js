@@ -44,6 +44,7 @@ function createAuthRuntime(rawDeps) {
     getAccessToken,
     getShuttingDown,
     getProxyToken = () => process.env.MULTICC_PROXY_TOKEN || '',
+    authorizeProviderRelayRequest = () => null,
     isRequestPeerAllowed = () => true,
     authorizeScopedRequest = () => false,
     allowLegacyTokenQuery = false,
@@ -66,6 +67,7 @@ function createAuthRuntime(rawDeps) {
     [normalizeRedirect, 'normalizeRedirect'], [escapeHtmlAttribute, 'escapeHtmlAttribute'],
     [createErrorDto, 'createErrorDto'], [getAccessToken, 'getAccessToken'],
     [getShuttingDown, 'getShuttingDown'], [getProxyToken, 'getProxyToken'],
+    [authorizeProviderRelayRequest, 'authorizeProviderRelayRequest'],
     [isRequestPeerAllowed, 'isRequestPeerAllowed'], [authorizeScopedRequest, 'authorizeScopedRequest'],
   ]) assertFunction(fn, name);
   if (!metrics || typeof metrics.inc !== 'function') {
@@ -101,17 +103,34 @@ function createAuthRuntime(rawDeps) {
     return false;
   }
 
-  // Remote relay credential: MULTICC_PROXY_TOKEN presented as x-api-key or
-  // Authorization: Bearer unlocks only the CPR protocol relays, letting another
-  // multicc borrow this host's provider endpoints without any wider access.
+  // New shares carry a provider-scoped mcr1 credential backed by a durable
+  // record. MULTICC_PROXY_TOKEN remains a legacy fallback so existing imports
+  // do not stop abruptly during migration.
   function isProxyRelayCredential(req) {
-    const token = String(getProxyToken() || '').trim();
-    if (!token) return false;
     const p = req.path;
     if (!PROXY_RELAY_PREFIXES.some(pre => p === pre || p.startsWith(`${pre}/`))) return false;
-    if (safeEqualSecret(String(req.headers['x-api-key'] || ''), token)) return true;
     const bearer = /^Bearer\s+(.+)$/i.exec(String(req.headers.authorization || ''));
-    return !!(bearer && safeEqualSecret(bearer[1].trim(), token));
+    const credential = String(req.headers['x-api-key'] || (bearer && bearer[1]) || '').trim();
+    if (!credential) return false;
+    let scoped = null;
+    try {
+      scoped = authorizeProviderRelayRequest({
+        credential, method: req.method, pathname: req.path,
+      });
+    } catch (error) {
+      logger.warn('provider_relay_share_auth_failed', {
+        requestId: req.id,
+        code: typeof error?.code === 'string' ? error.code : 'PERSISTENCE_FAILED',
+      });
+      return false;
+    }
+    if (scoped && scoped.ok === true) {
+      req.providerRelayShareId = scoped.shareId || null;
+      return true;
+    }
+    if (credential.startsWith('mcr1.')) return false;
+    const token = String(getProxyToken() || '').trim();
+    return !!(token && safeEqualSecret(credential, token));
   }
 
   function mountRoutes(app) {
@@ -235,6 +254,7 @@ function createAuthRuntime(rawDeps) {
       }
       if (isProxyRelayCredential(req)) {
         metrics.inc('multicc_auth_proxy_relay_total');
+        if (req.providerRelayShareId) metrics.inc('multicc_auth_provider_relay_share_total');
         return next();
       }
       try {

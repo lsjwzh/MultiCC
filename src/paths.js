@@ -96,6 +96,7 @@ function createPaths({ dataDir } = {}) {
     auxConfigFile: path.join(root, 'aux-config.json'),
     goalConfigFile: path.join(root, 'goal-config.json'),
     providerDefaultsFile: path.join(root, 'provider-defaults.json'),
+    providerRelaySharesFile: path.join(root, 'provider-relay-shares.json'),
     // Last-known-good per-provider limit/usage summaries, persisted so the
     // Web/App provider pickers can show quota freshness after a restart,
     // before any live poll has re-run. The SQLite DB is the sole live

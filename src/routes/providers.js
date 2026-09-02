@@ -177,7 +177,12 @@ function assertProviderRouteDeps(deps) {
   if (!deps.fs || typeof deps.fs.readFileSync !== 'function') {
     throw new TypeError('provider route dependency missing: fs.readFileSync');
   }
-  if (!deps.providers || !deps.providerRouterRuntime || !deps.persistedSessions) {
+  if (!deps.providers || !deps.providerRouterRuntime || !deps.persistedSessions
+      || !deps.providerRelayShares
+      || typeof deps.providerRelayShares.create !== 'function'
+      || typeof deps.providerRelayShares.list !== 'function'
+      || typeof deps.providerRelayShares.revoke !== 'function'
+      || typeof deps.providerRelayShares.revokeProvider !== 'function') {
     throw new TypeError('provider route runtime dependencies are required');
   }
   if (!deps.http || typeof deps.http.request !== 'function'
@@ -377,7 +382,9 @@ function createProviderRoutes(rawDeps) {
             references,
           });
         }
-        res.json({ ok: deps.providers.deleteProvider(req.params.appType, req.params.id) });
+        const ok = deps.providers.deleteProvider(req.params.appType, req.params.id);
+        if (ok) deps.providerRelayShares.revokeProvider(req.params.appType, req.params.id);
+        res.json({ ok });
       } catch (error) {
         res.status(400).json({ error: publicError(error, 'provider delete failed') });
       }
@@ -514,21 +521,10 @@ function createProviderRoutes(rawDeps) {
       }
     });
 
-    // Export this provider as a "relay share" code so another multicc can
-    // borrow it through this host's CPR protocol relays. The code embeds the
-    // MULTICC_PROXY_TOKEN — an admin-only bearer that unlocks exactly the two
-    // relay mounts (see src/routes/auth.js) — and nothing else; raw provider
-    // credentials never leave this host.
+    // Each exported relay receives its own provider-scoped credential. The
+    // share code discloses it once; durable inventory stores only its hash and
+    // usage counters. MULTICC_PROXY_TOKEN is retained only for legacy imports.
     app.post('/api/providers/:appType/:id/relay-share', (req, res) => {
-      const token = String(typeof deps.getProxyToken === 'function'
-        ? deps.getProxyToken()
-        : (process.env.MULTICC_PROXY_TOKEN || '')).trim();
-      if (!token) {
-        return res.status(409).json({
-          error: 'MULTICC_PROXY_TOKEN 未配置，无法生成借道分享码',
-          code: 'RELAY_TOKEN_UNSET',
-        });
-      }
       const provider = deps.providers.getProvider(req.params.appType, req.params.id);
       if (!provider) return res.status(404).json({ error: 'provider not found' });
       let parsed = null;
@@ -554,16 +550,57 @@ function createProviderRoutes(rawDeps) {
       ].map(value => String(value || '').trim())
         .filter(value => value && value.length <= 256))].slice(0, 100);
       const payload = {
-        v: 1,
+        v: 2,
         kind: 'multicc-relay',
         name: `${provider.name || req.params.id} · 借道`,
         appType: req.params.appType,
         baseUrl: relayBaseUrl,
-        authToken: token,
         ...(relayModels[0] ? { model: relayModels[0], models: relayModels } : {}),
       };
-      const code = 'mcrelay1.' + Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
-      res.json({ ok: true, code, baseUrl: relayBaseUrl });
+      try {
+        const created = deps.providerRelayShares.create({
+          appType: req.params.appType,
+          providerId: req.params.id,
+          providerName: provider.name || req.params.id,
+          publicBaseUrl: base,
+          relayBaseUrl,
+          token: req.body && req.body.token,
+          label: req.body && req.body.label,
+        });
+        const code = 'mcrelay1.' + Buffer.from(JSON.stringify({
+          ...payload,
+          relayShareId: created.share.id,
+          authToken: created.credential,
+        }), 'utf8').toString('base64url');
+        res.json({ ok: true, code, baseUrl: relayBaseUrl, share: created.share });
+      } catch (error) {
+        if (error && error.code === 'RELAY_TOKEN_INVALID') {
+          return res.status(400).json({
+            error: '借道令牌必须为 8–128 位无空格 ASCII 字符',
+            code: 'RELAY_TOKEN_INVALID',
+          });
+        }
+        return res.status(400).json({ error: publicError(error, 'relay share create failed') });
+      }
+    });
+
+    app.get('/api/provider-relay-shares', (req, res) => {
+      res.json({
+        shares: deps.providerRelayShares.list({
+          appType: req.query.appType,
+          providerId: req.query.providerId,
+        }),
+      });
+    });
+
+    app.delete('/api/provider-relay-shares/:id', (req, res) => {
+      try {
+        const share = deps.providerRelayShares.revoke(req.params.id);
+        if (!share) return res.status(404).json({ error: 'relay share not found' });
+        return res.json({ ok: true, share });
+      } catch (error) {
+        return res.status(500).json({ error: publicError(error, 'relay share revoke failed') });
+      }
     });
 
     app.get('/api/provider-defaults', (req, res) => res.json(providerDefaults));
