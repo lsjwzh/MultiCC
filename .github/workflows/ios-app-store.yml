@@ -1,0 +1,81 @@
+name: iOS App Store Cloud Build
+
+on:
+  push:
+    branches:
+      - multicc/multicc-claude-chat-01
+    paths:
+      - app/**
+      - .github/workflows/ios-app-store.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-app-store-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify-ios-26:
+    name: Verify release build with iOS 26 SDK
+    runs-on: macos-26
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Select Xcode 26.6
+        run: sudo xcode-select --switch /Applications/Xcode_26.6.app/Contents/Developer
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.32.2'
+          cache: true
+
+      - name: Report Apple toolchain
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          printf 'iPhoneOS SDK '
+          xcrun --sdk iphoneos --show-sdk-version
+          flutter --version
+
+      - name: Resolve locked Flutter dependencies
+        working-directory: app
+        run: flutter pub get --enforce-lockfile
+
+      - name: Build unsigned release app
+        working-directory: app
+        run: >-
+          flutter build ios
+          --release
+          --no-codesign
+          --build-name=2.29.12
+          --build-number=124
+
+      - name: Verify build identity and SDK
+        working-directory: app
+        run: |
+          set -euo pipefail
+          app_path=build/ios/iphoneos/Runner.app
+          test -d "$app_path"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app_path/Info.plist")" = '2.29.12'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app_path/Info.plist")" = '124'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app_path/Info.plist")" = 'com.multicc.multiccApp'
+          sdk_name="$(/usr/libexec/PlistBuddy -c 'Print :DTSDKName' "$app_path/Info.plist")"
+          case "$sdk_name" in
+            iphoneos26*) ;;
+            *)
+              echo "::error::Expected an iOS 26 SDK build, got $sdk_name"
+              exit 1
+              ;;
+          esac
+          printf 'Verified %s (%s), bundle %s, SDK %s\n' \
+            "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app_path/Info.plist")" \
+            "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app_path/Info.plist")" \
+            "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app_path/Info.plist")" \
+            "$sdk_name"
