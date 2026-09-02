@@ -111,7 +111,7 @@ const { mountFileTransferRoutes } = require('./src/routes/file-transfer');
 const { mountSkillSyncRoutes } = require('./src/routes/skill-sync');
 const { createSkillSyncRuntime } = require('./src/skill-sync');
 const skillConverter = require('./src/skill-converter');
-const { createProviderRoutes } = require('./src/routes/providers');
+const { createProviderRoutes } = require('./src/routes/providers'); const { createProviderRelayShareStore } = require('./src/provider-relay-share-store');
 const { mountOpenCodeModelRoutes } = require('./src/routes/opencode-models');
 const { mountOpenCodeQuotaRoutes } = require('./src/routes/opencode-quota');
 const { mountQoderModelRoutes } = require('./src/routes/qoder-models');
@@ -235,7 +235,7 @@ const { createHealthHandlers } = require('./src/health');
 const { secureRuntimeData, atomicWriteJson, atomicWriteText, ensurePrivateDir } = require('./src/runtime-security');
 const { createHostEnv } = require('./src/host-env');
 const MULTICC_PATHS = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
-const taskRunStore = createTaskRunStore({ file: MULTICC_PATHS.taskRunDbFile }); initTaskShortCodeRegistry({ file: MULTICC_PATHS.taskShortCodesFile });
+const taskRunStore = createTaskRunStore({ file: MULTICC_PATHS.taskRunDbFile }); const providerRelayShares = createProviderRelayShareStore({ file: MULTICC_PATHS.providerRelaySharesFile }); initTaskShortCodeRegistry({ file: MULTICC_PATHS.taskShortCodesFile });
 const MEMORY_STORE_ROOT = process.env.MULTICC_MEMORY_ROOT || path.join(__dirname, 'memories');
 const chatHistoryRepository = createChatHistoryFileRepository({ dataDir: MULTICC_PATHS.root });
 const turnEventJournal = sharedTurnEventJournal(MULTICC_PATHS);
@@ -356,12 +356,12 @@ function parseCookies(header) {
 
 app.use(requestIdMiddleware);
 routerToolHost.mount(app);
-// Auth surface (src/routes/auth.js): the /api shutdown gate, login routes and
-// gate middleware, plus cookie/ws-ticket exchange. Always registered (no-op
-// while ACCESS_TOKEN is empty, see isAuthenticated) so a token set later via the
-// localhost UI takes effect immediately without a restart. ACCESS_TOKEN and the
-// shutdown flag are read through getters so runtime changes apply on the next
-// request. Mounted here to preserve ordering: gate runs before every API route.
+// Auth owns shutdown, login, scoped grants and the global request gate.
+// It stays mounted before every API/relay route so mutable credentials apply
+// immediately and no downstream handler can accidentally bypass the boundary.
+// ACCESS_TOKEN and shutdown state are read lazily on each request.
+// Provider relay shares are independently scoped and usage-accounted.
+// Legacy global relay credentials remain inside auth during migration.
 const authRuntime = createAuthRuntime({
   express,
   authSecurity,
@@ -374,7 +374,7 @@ const authRuntime = createAuthRuntime({
   createErrorDto,
   getAccessToken: () => ACCESS_TOKEN,
   getShuttingDown: () => _shuttingDown,
-  authorizeScopedRequest: req => fleetSharingRuntime?.sharing.authorizeRequest({ token: req.headers['x-multicc-fleet-token'], grant: req.headers['x-multicc-fleet-grant'], method: req.method, pathname: req.originalUrl }) === true,
+  authorizeScopedRequest: req => fleetSharingRuntime?.sharing.authorizeRequest({ token: req.headers['x-multicc-fleet-token'], grant: req.headers['x-multicc-fleet-grant'], method: req.method, pathname: req.originalUrl }) === true, authorizeProviderRelayRequest: input => providerRelayShares.authorize(input),
   allowLegacyTokenQuery: ALLOW_LEGACY_TOKEN_QUERY,
 });
 authRuntime.mountRoutes(app);
@@ -2157,7 +2157,7 @@ const providerRoutes = createProviderRoutes({
   providers,
   providerRouterRuntime,
   findProviderReferences,
-  persistedSessions,
+  persistedSessions, providerRelayShares,
   getAuxConfig,
   claudeCmd: CLAUDE_CMD,
   getPort: () => PORT,
