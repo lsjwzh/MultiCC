@@ -431,6 +431,17 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
     super.initState();
     _loadProviders();
     _loadCronCount();
+    widget.settings.advancedMode.addListener(_handleExperienceModeChanged);
+  }
+
+  void _handleExperienceModeChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    widget.settings.advancedMode.removeListener(_handleExperienceModeChanged);
+    super.dispose();
   }
 
   // Machine-wide voice entry. No sourceSessionId is sent, which is exactly what
@@ -530,6 +541,8 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
         serverLabel: widget.settings.host,
         workspaceCount: mgr.directories.length,
         cronCount: _cronCount,
+        advancedMode: widget.settings.advancedMode.value,
+        onAdvancedModeChanged: widget.settings.setAdvancedMode,
         onSelected: _openNavigationDestination,
       ),
       // AppBar
@@ -599,7 +612,9 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
           ),
         ],
         bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(104),
+          preferredSize: Size.fromHeight(
+            widget.settings.advancedMode.value ? 104 : 53,
+          ),
           child: Column(
             children: [
               _KpiRow(
@@ -608,7 +623,8 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
                 cronCount: _cronCount,
                 onCronChanged: _loadCronCount,
               ),
-              _VoiceBetaEntry(onTap: _openGlobalVoice),
+              if (widget.settings.advancedMode.value)
+                _VoiceBetaEntry(onTap: _openGlobalVoice),
               const Divider(height: 1, color: Color(0xFF20242b)),
             ],
           ),
@@ -645,7 +661,7 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF14171c),
               ),
-              child: const Text('Retry'),
+              child: Text(t('retry')),
             ),
           ],
         ),
@@ -663,15 +679,28 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
               size: 48,
             ),
             const SizedBox(height: 12),
-            const Text(
-              'No directories yet',
+            Text(
+              t('noWorkspaces'),
               style: TextStyle(color: Color(0xFF5b616c), fontSize: 15),
+            ),
+            const SizedBox(height: 6),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 28),
+              child: Text(
+                t('noWorkspacesHint'),
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: Color(0xFF8a909b),
+                  fontSize: 12,
+                  height: 1.4,
+                ),
+              ),
             ),
             const SizedBox(height: 16),
             ElevatedButton.icon(
               onPressed: () => _showNewDirectoryDialog(context, mgr),
               icon: const Icon(Icons.add, size: 18),
-              label: const Text('New directory'),
+              label: Text(t('addWorkspace')),
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF22ab9c),
                 foregroundColor: Colors.white,
@@ -799,142 +828,197 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
     String? error;
     List<Map<String, String>> suggestions = [];
     Timer? debounce;
+    final basicMode = !widget.settings.advancedMode.value;
+    var initialBrowseRequested = false;
+    var dialogOpen = true;
+
+    Future<void> browse(String value, StateSetter update) async {
+      final res = await mgr.service.fetchFsList(value);
+      if (!dialogOpen) return;
+      update(() => suggestions = res);
+    }
 
     await showDialog<void>(
       context: context,
       builder: (dialogCtx) => StatefulBuilder(
-        builder: (context, setState) => AlertDialog(
-          backgroundColor: const Color(0xFF0f1115),
-          title: const Text(
-            'New directory',
-            style: TextStyle(color: Color(0xFFf2f4f7)),
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'Name',
-                style: TextStyle(color: Color(0xFF8a909b), fontSize: 11),
-              ),
-              const SizedBox(height: 4),
-              TextField(
-                controller: nameCtrl,
-                autofocus: true,
-                style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
-                decoration: sheetInputDecoration(hint: 'My project'),
-              ),
-              const SizedBox(height: 10),
-              const Text(
-                'Path',
-                style: TextStyle(color: Color(0xFF8a909b), fontSize: 11),
-              ),
-              const SizedBox(height: 4),
-              TextField(
-                controller: pathCtrl,
-                style: const TextStyle(
-                  color: Color(0xFFe7eaee),
-                  fontSize: 13,
-                  fontFamily: 'monospace',
-                ),
-                decoration: sheetInputDecoration(
-                  hint: '/Users/you/code/my-project',
-                ),
-                onChanged: (_) {
-                  debounce?.cancel();
-                  debounce = Timer(const Duration(milliseconds: 200), () async {
-                    final res = await mgr.service.fetchFsList(pathCtrl.text);
-                    setState(() => suggestions = res);
-                  });
-                },
-              ),
-              if (suggestions.isNotEmpty)
-                Container(
-                  margin: const EdgeInsets.only(top: 6),
-                  constraints: const BoxConstraints(maxHeight: 180),
-                  decoration: BoxDecoration(
-                    border: Border.all(color: const Color(0xFF20242b)),
-                    borderRadius: BorderRadius.circular(6),
+        builder: (context, setState) {
+          if (!initialBrowseRequested && pathCtrl.text.isEmpty) {
+            initialBrowseRequested = true;
+            debounce?.cancel();
+            debounce = Timer(Duration.zero, () => browse('', setState));
+          }
+          return AlertDialog(
+            backgroundColor: const Color(0xFF0f1115),
+            title: Text(
+              t('addWorkspace'),
+              style: const TextStyle(color: Color(0xFFf2f4f7)),
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  t('workspaceSafetyHint'),
+                  style: const TextStyle(
+                    color: Color(0xFF8a909b),
+                    fontSize: 12,
+                    height: 1.4,
                   ),
-                  child: ListView.builder(
-                    shrinkWrap: true,
-                    padding: EdgeInsets.zero,
-                    itemCount: suggestions.length,
-                    itemBuilder: (_, i) {
-                      final e = suggestions[i];
-                      return InkWell(
-                        onTap: () {
-                          pathCtrl.text = '${e['path']}/';
-                          if (nameCtrl.text.trim().isEmpty) {
-                            nameCtrl.text = e['name'] ?? '';
-                          }
-                          debounce?.cancel();
-                          debounce = Timer(
-                            const Duration(milliseconds: 200),
-                            () async {
-                              final res = await mgr.service.fetchFsList(
-                                pathCtrl.text,
-                              );
-                              setState(() => suggestions = res);
-                            },
-                          );
-                        },
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 10,
-                            vertical: 7,
-                          ),
-                          child: Text(
-                            '📁 ${e['name']}',
-                            style: const TextStyle(
-                              color: Color(0xFFe7eaee),
-                              fontSize: 12,
-                              fontFamily: 'monospace',
+                ),
+                const SizedBox(height: 14),
+                if (!basicMode) ...[
+                  Text(
+                    t('workspaceName'),
+                    style: const TextStyle(
+                      color: Color(0xFF8a909b),
+                      fontSize: 11,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  TextField(
+                    controller: nameCtrl,
+                    autofocus: true,
+                    style: const TextStyle(
+                      color: Color(0xFFe7eaee),
+                      fontSize: 13,
+                    ),
+                    decoration: sheetInputDecoration(
+                      hint: t('workspaceNameHint'),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                ],
+                Text(
+                  t('computerFolder'),
+                  style: const TextStyle(
+                    color: Color(0xFF8a909b),
+                    fontSize: 11,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                TextField(
+                  controller: pathCtrl,
+                  autofocus: basicMode,
+                  style: const TextStyle(
+                    color: Color(0xFFe7eaee),
+                    fontSize: 13,
+                    fontFamily: 'monospace',
+                  ),
+                  decoration: sheetInputDecoration(
+                    hint: '/Users/you/code/my-project',
+                  ),
+                  onChanged: (value) {
+                    debounce?.cancel();
+                    debounce = Timer(
+                      const Duration(milliseconds: 200),
+                      () => browse(value, setState),
+                    );
+                  },
+                ),
+                if (suggestions.isNotEmpty)
+                  Container(
+                    margin: const EdgeInsets.only(top: 6),
+                    constraints: const BoxConstraints(maxHeight: 180),
+                    decoration: BoxDecoration(
+                      border: Border.all(color: const Color(0xFF20242b)),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: ListView.builder(
+                      shrinkWrap: true,
+                      padding: EdgeInsets.zero,
+                      itemCount: suggestions.length,
+                      itemBuilder: (_, i) {
+                        final e = suggestions[i];
+                        return InkWell(
+                          onTap: () {
+                            pathCtrl.text = '${e['path']}/';
+                            if (nameCtrl.text.trim().isEmpty) {
+                              nameCtrl.text = e['name'] ?? '';
+                            }
+                            debounce?.cancel();
+                            debounce = Timer(
+                              const Duration(milliseconds: 200),
+                              () => browse(pathCtrl.text, setState),
+                            );
+                          },
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 7,
+                            ),
+                            child: Text(
+                              '📁 ${e['name']}',
+                              style: const TextStyle(
+                                color: Color(0xFFe7eaee),
+                                fontSize: 12,
+                                fontFamily: 'monospace',
+                              ),
                             ),
                           ),
-                        ),
-                      );
-                    },
+                        );
+                      },
+                    ),
                   ),
+                if (error != null) ...[
+                  const SizedBox(height: 10),
+                  Text(
+                    error!,
+                    style: const TextStyle(
+                      color: Color(0xFFff6b63),
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogCtx),
+                child: Text(
+                  t('cancel'),
+                  style: const TextStyle(color: Color(0xFF8a909b)),
                 ),
-              if (error != null) const SizedBox(height: 10),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF22ab9c),
+                  foregroundColor: Colors.white,
+                ),
+                onPressed: () async {
+                  final p = pathCtrl.text.trim();
+                  final parts = p
+                      .split(RegExp(r'[/\\]'))
+                      .where((part) => part.trim().isNotEmpty)
+                      .toList();
+                  final name = nameCtrl.text.trim().isNotEmpty
+                      ? nameCtrl.text.trim()
+                      : (parts.isEmpty ? '' : parts.last);
+                  if (p.isEmpty) {
+                    setState(() => error = t('folderRequired'));
+                    return;
+                  }
+                  try {
+                    await mgr.createDirectory(name: name, path: p);
+                    if (dialogCtx.mounted) Navigator.pop(dialogCtx);
+                  } catch (e) {
+                    setState(
+                      () => error = e
+                          .toString()
+                          .replaceFirst('Exception: ', ''),
+                    );
+                  }
+                },
+                child: Text(t('add')),
+              ),
             ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogCtx),
-              child: const Text(
-                'Cancel',
-                style: TextStyle(color: Color(0xFF8a909b)),
-              ),
-            ),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF22ab9c),
-                foregroundColor: Colors.white,
-              ),
-              onPressed: () async {
-                final name = nameCtrl.text.trim();
-                final p = pathCtrl.text.trim();
-                if (name.isEmpty || p.isEmpty) {
-                  setState(() => error = 'Name and path are required');
-                  return;
-                }
-                try {
-                  await mgr.createDirectory(name: name, path: p);
-                  if (dialogCtx.mounted) Navigator.pop(dialogCtx);
-                } catch (e) {
-                  setState(
-                    () => error = e.toString().replaceFirst('Exception: ', ''),
-                  );
-                }
-              },
-              child: const Text('Create'),
-            ),
-          ],
-        ),
+          );
+        },
       ),
     );
+    dialogOpen = false;
+    debounce?.cancel();
+    nameCtrl.dispose();
+    pathCtrl.dispose();
   }
 }
 
@@ -1714,19 +1798,44 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet>
       }
     } catch (_) {}
 
-    // Probe host-level CLI availability through any existing session's config
-    // (cliAvailability is keyed by host, not session, so any id works). With no
-    // sessions yet the dialog falls back to "all installed" so the user is
-    // never blocked from creating their first session.
+    // Ask the host which CLIs are installed before showing the first-session
+    // recommendation. Older servers do not return this summary, so keep the
+    // existing-session config as a compatibility fallback.
     Map<SessionCli, bool> cliAvailability = const {};
     try {
+      final installInfo = await SessionService(
+        settings: widget.settings,
+      ).fetchCliInstallSpecs();
+      final availability = installInfo['availability'];
+      if (availability is Map) {
+        cliAvailability = {
+          for (final cli in SessionCli.values)
+            cli: availability[cli.name] is Map
+                ? availability[cli.name]['available'] == true
+                : false,
+        };
+      }
       final sessions = widget.mgr.sessions;
-      if (sessions.isNotEmpty) {
-        final config = await widget.mgr.fetchSessionCliConfig(sessions.first.id);
+      if (cliAvailability.isEmpty && sessions.isNotEmpty) {
+        final config = await widget.mgr.fetchSessionCliConfig(
+          sessions.first.id,
+        );
         cliAvailability = config.cliAvailability;
       }
     } catch (_) {}
     if (!mounted) return;
+    final basicMode = !widget.settings.advancedMode.value;
+    if (basicMode &&
+        cliAvailability.isNotEmpty &&
+        !SessionCli.values.any((cli) => cliAvailability[cli] == true)) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(t('noCompatibleAi')),
+          backgroundColor: AppColors.danger,
+        ),
+      );
+      return;
+    }
 
     final result = await showDialog<CreateSessionResult>(
       context: context,
@@ -1737,6 +1846,7 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet>
         defaultProviderId: defaultProviderId,
         cliAvailability: cliAvailability,
         settings: widget.settings,
+        basicMode: basicMode,
       ),
     );
     if (result == null || !mounted) return;
@@ -2051,61 +2161,81 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet>
                       // Two kind buttons drive the create-session dialog; the
                       // CLI itself is picked inside the dialog via a dropdown
                       // (so all 5 CLIs × 2 kinds are reachable from 2 buttons).
-                      Row(
-                        children: [
-                          Expanded(
-                            child: FilledButton.icon(
-                              onPressed: () =>
-                                  _createSession(SessionKind.chat),
-                              icon: const Icon(
-                                Icons.chat_bubble_outline_rounded,
-                                size: 16,
-                              ),
-                              label: Text(t('newChatSession')),
-                              style: FilledButton.styleFrom(
-                                backgroundColor: AppColors.claude
-                                    .withValues(alpha: 0.16),
-                                foregroundColor: AppColors.claude,
-                                padding: const EdgeInsets.symmetric(
-                                  vertical: 10,
+                      if (!widget.settings.advancedMode.value)
+                        FilledButton.icon(
+                          key: const ValueKey('start-conversation-button'),
+                          onPressed: () => _createSession(SessionKind.chat),
+                          icon: const Icon(
+                            Icons.chat_bubble_outline_rounded,
+                            size: 17,
+                          ),
+                          label: Text(t('startConversation')),
+                          style: FilledButton.styleFrom(
+                            backgroundColor: AppColors.accent,
+                            foregroundColor: const Color(0xFF04110F),
+                            minimumSize: const Size.fromHeight(46),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(9),
+                            ),
+                          ),
+                        )
+                      else ...[
+                        Row(
+                          children: [
+                            Expanded(
+                              child: FilledButton.icon(
+                                onPressed: () =>
+                                    _createSession(SessionKind.chat),
+                                icon: const Icon(
+                                  Icons.chat_bubble_outline_rounded,
+                                  size: 16,
                                 ),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(8),
+                                label: Text(t('newChatSession')),
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: AppColors.claude
+                                      .withValues(alpha: 0.16),
+                                  foregroundColor: AppColors.claude,
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 10,
+                                  ),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
                                 ),
                               ),
                             ),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: FilledButton.icon(
-                              onPressed: () =>
-                                  _createSession(SessionKind.terminal),
-                              icon: const Icon(
-                                Icons.terminal_rounded,
-                                size: 16,
-                              ),
-                              label: Text(t('newTerminalSession')),
-                              style: FilledButton.styleFrom(
-                                backgroundColor: AppColors.accent
-                                    .withValues(alpha: 0.16),
-                                foregroundColor: AppColors.accent,
-                                padding: const EdgeInsets.symmetric(
-                                  vertical: 10,
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: FilledButton.icon(
+                                onPressed: () =>
+                                    _createSession(SessionKind.terminal),
+                                icon: const Icon(
+                                  Icons.terminal_rounded,
+                                  size: 16,
                                 ),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(8),
+                                label: Text(t('newTerminalSession')),
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: AppColors.accent
+                                      .withValues(alpha: 0.16),
+                                  foregroundColor: AppColors.accent,
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 10,
+                                  ),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
                                 ),
                               ),
                             ),
-                          ),
-                        ],
-                      ),
-                      EventTimeline(
-                        events: workspace.events,
-                        initiallyOpen: false,
-                        maxEvents: 3,
-                        maxExpandedHeight: 120,
-                      ),
+                          ],
+                        ),
+                        EventTimeline(
+                          events: workspace.events,
+                          initiallyOpen: false,
+                          maxEvents: 3,
+                          maxExpandedHeight: 120,
+                        ),
+                      ],
                       if (!hasSessions)
                         Container(
                           width: double.infinity,

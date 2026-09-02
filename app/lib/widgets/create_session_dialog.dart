@@ -47,6 +47,7 @@ class CreateSessionDialog extends StatefulWidget {
   final String? defaultProviderId;
   final Map<SessionCli, bool> cliAvailability;
   final SettingsService settings;
+  final bool basicMode;
 
   const CreateSessionDialog({
     super.key,
@@ -56,6 +57,7 @@ class CreateSessionDialog extends StatefulWidget {
     this.defaultProviderId,
     this.cliAvailability = const {},
     required this.settings,
+    this.basicMode = false,
   });
 
   @override
@@ -490,10 +492,12 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     return AlertDialog(
       backgroundColor: const Color(0xFF0f1115),
       title: Text(
-        t('createSessionTitle', {
-          'cli': _pickedCli.displayName,
-          'kind': widget.kind == SessionKind.chat ? 'Chat' : 'Terminal',
-        }),
+        widget.basicMode
+            ? t('startConversation')
+            : t('createSessionTitle', {
+                'cli': _pickedCli.displayName,
+                'kind': widget.kind == SessionKind.chat ? 'Chat' : 'Terminal',
+              }),
         style: const TextStyle(color: Color(0xFFf2f4f7), fontSize: 16),
       ),
       content: SingleChildScrollView(
@@ -512,6 +516,56 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
               style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
               decoration: sheetInputDecoration(hint: t('optionalAutoName')),
             ),
+            if (widget.basicMode) ...[
+              const SizedBox(height: 14),
+              Container(
+                key: const ValueKey('recommended-ai-summary'),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: AppColors.accent.withValues(alpha: 0.08),
+                  border: Border.all(
+                    color: AppColors.accent.withValues(alpha: 0.28),
+                  ),
+                  borderRadius: BorderRadius.circular(9),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(
+                      Icons.auto_awesome_rounded,
+                      color: AppColors.accent,
+                      size: 18,
+                    ),
+                    const SizedBox(width: 9),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '${t('recommended')} · ${_pickedCli.displayName}',
+                            style: const TextStyle(
+                              color: Color(0xFFe7eaee),
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const SizedBox(height: 3),
+                          Text(
+                            t('startConversationHint'),
+                            style: const TextStyle(
+                              color: Color(0xFF8a909b),
+                              fontSize: 11,
+                              height: 1.35,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+            if (!widget.basicMode) ...[
             const SizedBox(height: 12),
             // ── CLI picker (drives provider pool + model/effort/agent) ──
             Text(
@@ -739,6 +793,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                 ).copyWith(counterText: ''),
               ),
             ],
+          ],
           ],
         ),
       ),

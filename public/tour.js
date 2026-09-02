@@ -12,18 +12,18 @@
       prev: '上一步',
       next: '下一步',
       done: '完成',
-      continueInChat: '进入 Chat 后继续',
-      fillExample: '填入示例命令',
+      continueInChat: '打开对话后继续',
+      fillExample: '填入只读示例',
       step: '新手引导 {n}/4',
-      step1Title: '先创建一个项目Fleet',
-      step1Body: 'Fleet就是一个 git 仓库。multicc 会围绕它创建独立 worktree，让多个 session 可以并行工作。',
-      step2Title: '在Fleet里创建 session',
-      step2Body: 'session 就是一个子 agent。你可以选择 Claude / Codex、Chat / Terminal，每个 session 都有独立 worktree 和分支。点下一步后，进入某个 session 的 Chat 页会继续引导。',
-      step3Title: '给 session 指定角色',
-      step3Body: '角色提示词会限定这个 session 的职责，例如后端、前端、测试或代码审查，让它专注一类工作。',
-      step4Title: '发出第一条多 CLI 编排命令',
-      step4Body: '你可以让 multicc 把任务派给多个 session 并行完成。下面的按钮只会填入输入框，不会自动发送。',
-      example: '把这个需求拆给两个 session 并行做：A 负责后端接口，B 负责前端页面，做完各自提交并合并回 main，然后汇总给我'
+      step1Title: '选择一个工作区',
+      step1Body: '工作区就是你希望 AI 帮忙处理的文件夹。首次体验可选一个资料较少的文件夹；MultiCC 会在独立副本中工作，不会直接覆盖原文件。',
+      step2Title: '开始一段对话',
+      step2Body: '进入工作区后点“开始对话”。MultiCC 会自动使用已经就绪的 AI 服务；CLI、模型和终端等开发者选项可以以后再设置。',
+      step3Title: '获取第一份安全结果',
+      step3Body: '先让 AI 只读了解文件夹，不做任何修改。点下面填入示例，再按发送；收到 AI 的有效回复后，引导会自动进入最后一步。',
+      step4Title: '第一份结果已经完成',
+      step4Body: '现在你可以继续追问。如果以后允许 AI 修改文件，MultiCC 会保留独立副本，并在应用到主工作区前展示影响范围。',
+      example: '先不要修改任何文件。请概括这个工作区里有哪些内容，并告诉我最值得先看的三个文件。'
     },
     en: {
       close: 'Close',
@@ -31,18 +31,18 @@
       prev: 'Back',
       next: 'Next',
       done: 'Done',
-      continueInChat: 'Continue in Chat',
-      fillExample: 'Insert example',
+      continueInChat: 'Continue after opening a chat',
+      fillExample: 'Insert read-only example',
       step: 'Onboarding {n}/4',
-      step1Title: 'Create a project directory first',
-      step1Body: 'A directory maps to one git repository. multicc creates isolated worktrees around it so multiple sessions can work in parallel.',
-      step2Title: 'Create a session inside the directory',
-      step2Body: 'A session is a sub-agent. Choose Claude / Codex and Chat / Terminal; each session gets its own worktree and branch. After this step, open any session Chat page to continue.',
-      step3Title: 'Assign a role to this session',
-      step3Body: 'The role prompt narrows the session scope, such as backend, frontend, testing, or code review, so it stays focused on one kind of work.',
-      step4Title: 'Send your first multi-CLI orchestration command',
-      step4Body: 'Ask multicc to dispatch work across multiple sessions in parallel. The button below only fills the input; it will not send the message.',
-      example: 'Split this request across two sessions in parallel: A owns backend APIs, B owns the frontend page. Each should commit and merge back to main when done, then summarize the result for me.'
+      step1Title: 'Choose a workspace',
+      step1Body: 'A workspace is the folder you want AI to help with. Start with a small folder. MultiCC works in an isolated copy and does not overwrite the original files directly.',
+      step2Title: 'Start a conversation',
+      step2Body: 'Open the workspace and choose “Start a conversation.” MultiCC uses an AI service that is already ready; CLI, model, and terminal controls can wait until later.',
+      step3Title: 'Get your first safe result',
+      step3Body: 'Begin with a read-only request. Insert the example below and send it. The guide advances automatically after a real AI response arrives.',
+      step4Title: 'Your first result is ready',
+      step4Body: 'You can keep asking follow-up questions. If you later allow file edits, MultiCC keeps an isolated copy and shows the impact before applying changes.',
+      example: 'Do not modify any files yet. Summarize what is in this workspace and tell me the three files I should read first.'
     }
   };
 
@@ -61,16 +61,16 @@
     },
     3: {
       page: 'chat',
-      selector: '#role-btn',
+      selector: '#input',
       title: 'step3Title',
-      body: 'step3Body'
+      body: 'step3Body',
+      fill: true
     },
     4: {
       page: 'chat',
-      selector: '#input',
+      selector: '#messages',
       title: 'step4Title',
-      body: 'step4Body',
-      fill: true
+      body: 'step4Body'
     }
   };
 
@@ -79,6 +79,9 @@
   let spotlight = null;
   let card = null;
   let waitTimer = null;
+  let resultObserver = null;
+  let resultBaseline = null;
+  let stopResultTrigger = null;
 
   function lang() {
     try {
@@ -384,6 +387,9 @@
     ensureElements();
     renderCard();
 
+    if (step === 3) armFirstResultObserver();
+    else stopFirstResultObserver();
+
     waitForTarget(step, (target) => {
       if (activeStep !== step) return;
       if (!target) {
@@ -401,6 +407,59 @@
     });
   }
 
+  function stopFirstResultObserver() {
+    if (resultObserver) resultObserver.disconnect();
+    if (stopResultTrigger) stopResultTrigger();
+    resultObserver = null;
+    resultBaseline = null;
+    stopResultTrigger = null;
+  }
+
+  function armFirstResultObserver() {
+    stopFirstResultObserver();
+    const messages = document.getElementById('messages');
+    if (!messages || typeof MutationObserver !== 'function') return;
+    const count = (selector) => messages.querySelectorAll(selector).length;
+    resultBaseline = {
+      users: count('.msg.user'),
+      assistants: count('.msg.assistant'),
+      sent: false
+    };
+    const input = document.getElementById('input');
+    const sendButton = document.getElementById('send-btn');
+    const markSent = () => {
+      if (!resultBaseline) return;
+      resultBaseline.users = count('.msg.user');
+      resultBaseline.assistants = count('.msg.assistant');
+      resultBaseline.sent = true;
+    };
+    const markEnter = (event) => {
+      if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) markSent();
+    };
+    sendButton?.addEventListener('click', markSent, true);
+    sendButton?.addEventListener('touchend', markSent, true);
+    input?.addEventListener('keydown', markEnter, true);
+    stopResultTrigger = () => {
+      sendButton?.removeEventListener('click', markSent, true);
+      sendButton?.removeEventListener('touchend', markSent, true);
+      input?.removeEventListener('keydown', markEnter, true);
+    };
+    resultObserver = new MutationObserver(() => {
+      if (activeStep !== 3 || !resultBaseline) return;
+      const users = count('.msg.user');
+      const assistants = count('.msg.assistant');
+      const latest = Array.from(messages.querySelectorAll('.msg.assistant')).pop();
+      if (resultBaseline.sent
+          && users > resultBaseline.users
+          && assistants > resultBaseline.assistants
+          && latest
+          && latest.textContent.trim().length > 0) {
+        show(4);
+      }
+    });
+    resultObserver.observe(messages, { childList: true, subtree: true, characterData: true });
+  }
+
   function start(step) {
     const firstStep = Math.min(Math.max(parseInt(step || 1, 10), 1), 4);
     if (STEPS[firstStep].page !== pageName()) {
@@ -412,6 +471,7 @@
 
   function cleanup(done) {
     clearTimeout(waitTimer);
+    stopFirstResultObserver();
     activeStep = null;
     currentTarget = null;
     if (spotlight) spotlight.remove();
