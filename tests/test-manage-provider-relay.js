@@ -65,6 +65,22 @@ test('relayProviderInput carries the shared model catalog into provider creation
   });
 });
 
+test('v2 share codes preserve the independently-scoped relay credential', () => {
+  const ctx = loadModule();
+  const payload = {
+    v: 2,
+    kind: 'multicc-relay',
+    relayShareId: 'abcdefghijklmnop',
+    name: 'GLM · 借道',
+    appType: 'claude',
+    baseUrl: 'https://relay.example/claude-proxy/glm/remote',
+    authToken: 'mcr1.abcdefghijklmnop.manual-secret',
+  };
+  const parsed = ctx.parseRelayShareCode(encode(payload));
+  assert.equal(parsed.error, undefined);
+  assert.deepEqual(JSON.parse(JSON.stringify(parsed.payload)), payload);
+});
+
 test('parseRelayShareCode rejects malformed or untrusted codes', () => {
   const ctx = loadModule();
   const bad = [
@@ -117,4 +133,15 @@ test('manage.html loads the relay module before the manage facade', () => {
   const relay = html.indexOf('<script src="manage-provider-relay.js"></script>');
   const manage = html.indexOf('<script src="manage.js"></script>');
   assert.ok(relay >= 0 && manage > relay, 'relay module must be loaded before manage.js');
+  assert.match(html, /id="prov-relay-records-btn"[^>]+manageRelayShares/);
+});
+
+test('new relay creation requires a per-link token and exposes inventory/revocation controls', () => {
+  const source = fs.readFileSync(SOURCE_PATH, 'utf8');
+  assert.match(source, /data-k="token" type="password"/);
+  assert.match(source, /json: \{ publicBaseUrl:[^}]+token: tokenInput\.value/);
+  assert.match(source, /\/api\/provider-relay-shares\?/);
+  assert.match(source, /method: 'DELETE'/);
+  assert.doesNotMatch(source, /\/api\/settings\/proxy-token/);
+  assert.doesNotMatch(source, /RELAY_TOKEN_UNSET/);
 });

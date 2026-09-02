@@ -19,10 +19,11 @@ const {
 } = require('../src/provider-proxy-guard');
 const { createAuthRuntime } = require('../src/routes/auth');
 const { createProviderRoutes } = require('../src/routes/providers');
+const { createProviderRelayShareStore } = require('../src/provider-relay-share-store');
 
 const RELAY_UI_FILE = path.join(__dirname, '..', 'public', 'manage-provider-relay.js');
 const ACCESS_TOKEN = 'two-ip-admin-secret';
-const RELAY_TOKEN = 'mcpr_two_ip_relay_secret';
+const RELAY_TOKEN = 'manual-two-ip-relay-secret';
 const UPSTREAM_TOKEN = 'two-ip-upstream-secret';
 const CLIENT_TOKEN = 'two-ip-client-virtual-token';
 const MODEL = 'claude-shared-two-ip';
@@ -113,7 +114,7 @@ function providerFacade(store) {
   };
 }
 
-function providerRouteDeps(providers, proxyToken, defaultsFile) {
+function providerRouteDeps(providers, providerRelayShares, defaultsFile) {
   return {
     fs,
     providerDefaultsFile: defaultsFile,
@@ -128,14 +129,14 @@ function providerRouteDeps(providers, proxyToken, defaultsFile) {
     claudeCmd: process.execPath,
     getPort: () => 0,
     getClaudeOfficialViaProxy: () => false,
-    getProxyToken: () => proxyToken,
+    providerRelayShares,
     http,
     https,
     logger: { error() {} },
   };
 }
 
-function mountAuth(app, metrics, proxyToken) {
+function mountAuth(app, metrics, proxyToken, providerRelayShares) {
   const authSecurity = {
     createCookie: () => 'unused-cookie',
     verifyCookie: () => false,
@@ -157,12 +158,13 @@ function mountAuth(app, metrics, proxyToken) {
     getAccessToken: () => ACCESS_TOKEN,
     getShuttingDown: () => false,
     getProxyToken: () => proxyToken,
+    authorizeProviderRelayRequest: input => providerRelayShares.authorize(input),
     isRequestPeerAllowed: isPrivateRequestPeer,
   });
   runtime.mountRoutes(app);
 }
 
-function createInstance({ providers, proxyToken, defaultsFile, activity, authorizeProxyRequest }) {
+function createInstance({ providers, proxyToken, providerRelayShares, defaultsFile, activity, authorizeProxyRequest }) {
   const app = express();
   const metrics = [];
   app.disable('x-powered-by');
@@ -172,8 +174,8 @@ function createInstance({ providers, proxyToken, defaultsFile, activity, authori
     next();
   });
   app.use(express.json({ limit: '64kb' }));
-  mountAuth(app, metrics, proxyToken);
-  createProviderRoutes(providerRouteDeps(providers, proxyToken, defaultsFile))
+  mountAuth(app, metrics, proxyToken, providerRelayShares);
+  createProviderRoutes(providerRouteDeps(providers, providerRelayShares, defaultsFile))
     .mountManagementRoutes(app);
   const getProvider = (appType, id) => providers.getProvider(appType, id);
   const admission = createProviderProxyAdmission({
@@ -226,6 +228,12 @@ test('shared Provider works from a loopback Assist request through a LAN-bound C
   });
   const sourceProviders = providerFacade(sourceStore);
   const targetProviders = providerFacade(targetStore);
+  const sourceRelayShares = createProviderRelayShareStore({
+    file: path.join(root, 'source', 'provider-relay-shares.json'),
+  });
+  const targetRelayShares = createProviderRelayShareStore({
+    file: path.join(root, 'target', 'provider-relay-shares.json'),
+  });
   const upstreamRequests = [];
   const sourceActivity = [];
   const targetActivity = [];
@@ -277,7 +285,8 @@ test('shared Provider works from a loopback Assist request through a LAN-bound C
 
   const source = createInstance({
     providers: sourceProviders,
-    proxyToken: RELAY_TOKEN,
+    proxyToken: 'legacy-global-token',
+    providerRelayShares: sourceRelayShares,
     defaultsFile: path.join(root, 'source', 'provider-defaults.json'),
     activity: sourceActivity,
     authorizeProxyRequest: () => ({ ok: false, code: 'no-active-attempt' }),
@@ -285,6 +294,7 @@ test('shared Provider works from a loopback Assist request through a LAN-bound C
   const target = createInstance({
     providers: targetProviders,
     proxyToken: '',
+    providerRelayShares: targetRelayShares,
     defaultsFile: path.join(root, 'target', 'provider-defaults.json'),
     activity: targetActivity,
     authorizeProxyRequest: () => ({ ok: false, code: 'no-active-attempt' }),
@@ -300,7 +310,7 @@ test('shared Provider works from a loopback Assist request through a LAN-bound C
 
   const shared = await postJson(
     `${sourceOrigin}/api/providers/claude/source-provider/relay-share`,
-    { publicBaseUrl: sourceOrigin },
+    { publicBaseUrl: sourceOrigin, token: RELAY_TOKEN, label: 'two IP test' },
     { 'x-access-token': ACCESS_TOKEN },
   );
   assert.equal(shared.response.status, 200);
@@ -315,7 +325,8 @@ test('shared Provider works from a loopback Assist request through a LAN-bound C
   assert.equal(parsed.error, undefined);
   const payload = JSON.parse(JSON.stringify(parsed.payload));
   assert.equal(payload.baseUrl, `${sourceOrigin}/claude-proxy/source-provider/remote`);
-  assert.equal(payload.authToken, RELAY_TOKEN);
+  assert.match(payload.authToken, /^mcr1\.[A-Za-z0-9_-]{16}\./);
+  assert.notEqual(payload.authToken, RELAY_TOKEN);
   assert.equal(payload.model, MODEL);
   assert.deepEqual(payload.models, [MODEL, `${MODEL}-fallback`]);
   const providerInput = JSON.parse(JSON.stringify(relayUi.relayProviderInput(parsed.payload)));
@@ -334,7 +345,7 @@ test('shared Provider works from a loopback Assist request through a LAN-bound C
     messages: [{ role: 'user', content: 'verify shared provider over two IPs' }],
   };
   const wrongToken = await postJson(`${shared.body.baseUrl}/v1/messages`, prompt, {
-    'x-api-key': 'wrong-relay-token',
+    'x-api-key': `mcr1.${shared.body.share.id}.wrong-relay-secret`,
     'anthropic-version': '2023-06-01',
   });
   assert.equal(wrongToken.response.status, 403);
@@ -350,7 +361,7 @@ test('shared Provider works from a loopback Assist request through a LAN-bound C
   assert.equal(upstreamRequests.length, 0, 'a rejected attempt route never reaches upstream');
 
   const escalated = await requestJson(`${sourceOrigin}/api/provider-defaults`, {
-    headers: { 'x-api-key': RELAY_TOKEN, accept: 'application/json' },
+    headers: { 'x-api-key': payload.authToken, accept: 'application/json' },
   });
   assert.equal(escalated.response.status, 403,
     'the relay token cannot open non-CPR API routes');
@@ -376,6 +387,10 @@ test('shared Provider works from a loopback Assist request through a LAN-bound C
   assert.equal(JSON.stringify(upstream.headers).includes(CLIENT_TOKEN), false);
   assert.equal(JSON.parse(upstream.body).model, MODEL);
   assert.ok(source.metrics.includes('multicc_auth_proxy_relay_total'));
+  assert.ok(source.metrics.includes('multicc_auth_provider_relay_share_total'));
+  const relayRecord = sourceRelayShares.list()[0];
+  assert.equal(relayRecord.accessCount, 1);
+  assert.ok(relayRecord.lastUsedAt);
   assert.ok(targetActivity.some(event => event.role === 'aux'
     && event.providerId === imported.body.id));
   assert.ok(sourceActivity.some(event => event.role === 'main'

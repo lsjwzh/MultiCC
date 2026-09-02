@@ -21,6 +21,7 @@ function buildHarness(overrides = {}) {
     local: true,
     peerAllowed: true,
     scopedRequest: false,
+    relayAuthorizer: null,
     metrics: [],
     ...overrides,
   };
@@ -70,6 +71,8 @@ function buildHarness(overrides = {}) {
     getAccessToken: () => state.accessToken,
     getShuttingDown: () => state.shuttingDown,
     getProxyToken: () => state.proxyToken,
+    authorizeProviderRelayRequest: input => typeof state.relayAuthorizer === 'function'
+      ? state.relayAuthorizer(input) : null,
     isRequestPeerAllowed: () => state.peerAllowed,
     authorizeScopedRequest: () => state.scopedRequest,
     allowLegacyTokenQuery: !!state.allowLegacyTokenQuery,
@@ -189,6 +192,39 @@ test('MULTICC_PROXY_TOKEN unlocks only the CPR relay mounts for external peers',
     });
     assert.equal(res.status, 403);
   } finally { await bare.close(); }
+});
+
+test('a provider-scoped relay credential is independently authorized and accounted', async () => {
+  const authorizations = [];
+  const h = await buildHarness({
+    accessToken: 'sekret',
+    proxyToken: '',
+    local: false,
+    relayAuthorizer(input) {
+      authorizations.push(input);
+      return input.credential === 'mcr1.abcdefghijklmnop.manual-secret'
+        && input.pathname === '/claude-proxy/p1/remote/v1/messages'
+        ? { ok: true, shareId: 'abcdefghijklmnop' }
+        : { ok: false };
+    },
+  });
+  try {
+    let res = await raw(h.base, '/claude-proxy/p1/remote/v1/messages', {
+      method: 'POST', headers: { 'x-api-key': 'mcr1.abcdefghijklmnop.manual-secret' },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(authorizations.length, 1);
+    assert.ok(h.state.metrics.includes('multicc_auth_provider_relay_share_total'));
+
+    res = await raw(h.base, '/claude-proxy/p2/remote/v1/messages', {
+      method: 'POST', headers: { 'x-api-key': 'mcr1.abcdefghijklmnop.manual-secret' },
+    });
+    assert.equal(res.status, 403, 'the same link cannot open another provider');
+    res = await raw(h.base, '/api/thing', {
+      headers: { 'x-api-key': 'mcr1.abcdefghijklmnop.manual-secret' },
+    });
+    assert.equal(res.status, 403, 'the link cannot open the admin API');
+  } finally { await h.close(); }
 });
 
 test('legacy token query is gated by allowLegacyTokenQuery', async () => {
