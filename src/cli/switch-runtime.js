@@ -42,6 +42,16 @@ const INSTALL_TIMEOUT_MS = 8 * 60 * 1000;
 const INSTALL_LOG_TAIL = 12 * 1024; // 环形 buffer 保留尾部约 12KB
 const INSTALL_JOB_CAPACITY = 50;
 
+// CLI 版本探测: 只报告 multicc 实际派生的那个二进制(`<bin> --version`)的当前
+// 版本, 不联网比对、不自动升级、不替换二进制。结果按 runtime 实例缓存 1 天
+// (与 installJobs 同级), 懒探测: 打开面板时才跑一次, 之后走缓存。
+// SessionStart hook 曾把 qoder 报成 1.0.45(读错产物), 而真正派生的是 1.1.4——
+// 这里统一以 resolveCliCommands() 解析出的、与派生会话同一个二进制为准。
+const CLI_VERSION_TTL_MS = 24 * 60 * 60 * 1000;
+// 比 install 短得多: --version 是本地调用, 但个别 CLI 冷启动较慢, 给 8s 兜底。
+const CLI_VERSION_TIMEOUT_MS = Number(process.env.CLI_VERSION_TIMEOUT_MS || 8000);
+const CLI_VERSION_MAX_BUFFER = 64 * 1024;
+
 function cliHandoffSummary(session) {
   const handoff = session && session.pendingCliHandoff;
   return handoff ? {
@@ -101,6 +111,26 @@ function createCliSwitchRuntime(options) {
   const spawnProcessOverride = options.spawnProcess;
   // 安装任务表(模块内, 容量上限 50; 每个 runtime 实例独立, 便于测试隔离)。
   const installJobs = new Map();
+
+  // 版本探测依赖(可注入以便测试)。cliCommands 缺省走 resolveCliCommands()——
+  // 与 host 的 createCliAdapters 用的是同一个解析器, 故探测到的正是派生会话真正
+  // 会 spawn 的那个二进制; execFile 缺省走 child_process, 测试可注入假实现。
+  const cliCommandsOverride = options.cliCommands;
+  const execFileVersionOverride = options.execFileVersion;
+  const versionCache = { at: 0, versions: null };
+
+  function resolveCliCommandMap() {
+    if (cliCommandsOverride && typeof cliCommandsOverride === 'object') return cliCommandsOverride;
+    try {
+      return require('../cli-adapters/commands')
+        .resolveCliCommands({ logger: { log() {}, warn() {} } });
+    } catch (_) { return {}; }
+  }
+
+  function resolveExecFile() {
+    if (typeof execFileVersionOverride === 'function') return execFileVersionOverride;
+    return require('node:child_process').execFile;
+  }
 
   function resolveSpawn() {
     if (typeof spawnProcessOverride === 'function') return spawnProcessOverride;
@@ -164,6 +194,70 @@ function createCliSwitchRuntime(options) {
       hint: classifyInstallHint(job._log.tail()),
       logTail: job._log.tail(),
     };
+  }
+
+  // 从 `--version` 输出里提取语义化版本号。兼容 "1.1.4"、"claude v2.0.1"、
+  // "codex-cli 0.20.0"、"opencode 0.1.48 (cli)" 等噪声: 取第一个 x.y.z 片段。
+  function parseCliVersion(stdout) {
+    const text = String(stdout || '');
+    const match = text.match(/\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?/);
+    return match ? match[0] : null;
+  }
+
+  // 探测单个二进制的当前版本。永不 reject: 失败也回 {version:null, error},
+  // 让上层把"探测不到"如实呈现, 而不是让整个接口 500。
+  function probeCliVersion(cmd) {
+    return new Promise((resolve) => {
+      const execFile = resolveExecFile();
+      let settled = false;
+      const done = (result) => { if (!settled) { settled = true; resolve(result); } };
+      try {
+        execFile(cmd, ['--version'], {
+          timeout: CLI_VERSION_TIMEOUT_MS,
+          maxBuffer: CLI_VERSION_MAX_BUFFER,
+          windowsHide: true,
+        }, (err, stdout, stderr) => {
+          const version = parseCliVersion(stdout) || parseCliVersion(stderr);
+          if (version) return done({ version, error: null });
+          done({
+            version: null,
+            error: err ? String(err.message || err).slice(0, 200) : 'version not parseable',
+          });
+        });
+      } catch (err) {
+        done({ version: null, error: String((err && err.message) || err).slice(0, 200) });
+      }
+    });
+  }
+
+  // 汇总所有受支持 CLI 的当前版本。force=true 或缓存过期(1 天)才重新探测;
+  // 不可用/未解析到路径的 CLI 直接标记 available:false 且不 spawn(避免 ENOENT
+  // 噪声与无谓子进程)。探测并发进行, 单个失败不影响其它。
+  async function collectCliVersions({ force = false } = {}) {
+    const now = clock();
+    if (!force && versionCache.versions && (now - versionCache.at) < CLI_VERSION_TTL_MS) {
+      return {
+        versions: versionCache.versions,
+        cached: true,
+        checkedAt: new Date(versionCache.at).toISOString(),
+      };
+    }
+    const commands = resolveCliCommandMap();
+    const availability = options.cliAvailabilitySummary() || {};
+    const next = {};
+    await Promise.all(supportedClis.map(async (cli) => {
+      const cmd = commands[cli] || null;
+      const avail = !!(availability[cli] && availability[cli].available);
+      if (!cmd || !avail) {
+        next[cli] = { cmd: cmd || null, available: false, version: null, error: null };
+        return;
+      }
+      const probed = await probeCliVersion(cmd);
+      next[cli] = { cmd, available: true, version: probed.version, error: probed.error };
+    }));
+    versionCache.at = now;
+    versionCache.versions = next;
+    return { versions: next, cached: false, checkedAt: new Date(now).toISOString() };
   }
 
   // spawn 的 PATH 追加常见二进制目录(homebrew/local/user-local)。
@@ -539,6 +633,15 @@ function createCliSwitchRuntime(options) {
         job: serializeInstallJob(job),
         availability: { [job.cli]: availability[job.cli] || { available: false } },
       });
+    }));
+
+    // GET /api/cli/versions — 报告 multicc 实际派生的每个 CLI 二进制的当前版本
+    // (`<bin> --version`, 缓存 1 天, ?refresh=1 强制重探)。只读、只提示, 绝不
+    // 自动升级或替换二进制; 供切换面板显示"当前版本"并让用户自行决定何时更新。
+    app.get('/api/cli/versions', asyncHandler(async (req, res) => {
+      const force = !!(req.query && (req.query.refresh === '1' || req.query.force === '1'));
+      const result = await collectCliVersions({ force });
+      return res.json({ ok: true, ...result });
     }));
   }
 
