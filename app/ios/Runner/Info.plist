@@ -36,6 +36,8 @@
 	<string>MultiCC uses your local network to find a nearby MultiCC server and fill in its address.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>MultiCC uses the microphone for voice input and real-time voice calls.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>MultiCC accesses your photo library only when you choose a photo to attach to a conversation or task.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>MultiCC uses speech recognition to convert voice commands into text.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>

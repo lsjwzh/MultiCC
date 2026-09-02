@@ -55,7 +55,7 @@ jobs:
           --release
           --no-codesign
           --build-name=2.29.12
-          --build-number=124
+          --build-number=125
 
       - name: Verify archive identity and SDK
         working-directory: app
@@ -66,8 +66,10 @@ jobs:
           test -d "$archive_path"
           test -d "$app_path"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app_path/Info.plist")" = '2.29.12'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app_path/Info.plist")" = '124'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app_path/Info.plist")" = '125'
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app_path/Info.plist")" = 'com.multicc.multiccApp'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :NSPhotoLibraryUsageDescription' "$app_path/Info.plist")" = \
+            'MultiCC accesses your photo library only when you choose a photo to attach to a conversation or task.'
           sdk_name="$(/usr/libexec/PlistBuddy -c 'Print :DTSDKName' "$app_path/Info.plist")"
           case "$sdk_name" in
             iphoneos26*) ;;
@@ -86,7 +88,7 @@ jobs:
         working-directory: app
         run: |
           set -euo pipefail
-          artifact="$RUNNER_TEMP/MultiCC-2.29.12-124-unsigned.xcarchive.tar.gz"
+          artifact="$RUNNER_TEMP/MultiCC-2.29.12-125-unsigned.xcarchive.tar.gz"
           tar -czf "$artifact" -C build/ios/archive Runner.xcarchive
           test -s "$artifact"
           shasum -a 256 "$artifact"
@@ -94,7 +96,7 @@ jobs:
       - name: Upload unsigned archive
         uses: actions/upload-artifact@v4
         with:
-          name: MultiCC-2.29.12-124-unsigned-xcarchive
-          path: ${{ runner.temp }}/MultiCC-2.29.12-124-unsigned.xcarchive.tar.gz
+          name: MultiCC-2.29.12-125-unsigned-xcarchive
+          path: ${{ runner.temp }}/MultiCC-2.29.12-125-unsigned.xcarchive.tar.gz
           if-no-files-found: error
           retention-days: 1
