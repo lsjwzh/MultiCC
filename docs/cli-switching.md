@@ -143,6 +143,31 @@ Notable responses:
 | `POST` | `/api/cli/:cli/install` | Start an install job (8-minute timeout, rolling 12 KB log) |
 | `GET` | `/api/cli/install-status/:jobId` | Poll job progress, log tail, and classified error |
 
+### Checking installed CLI versions
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/cli/versions` | Current `--version` of the exact binary multicc spawns for each CLI |
+
+Reports the version of the **same binary the host actually spawns** (resolved through `resolveCliCommands()`, i.e. `cliCommands`), so it never drifts from a stale install artifact the way a PATH-based or hook-based check can. It is **read-only and notify-only**: it does not upgrade, replace, or restart anything — the UI shows the current version and the user decides whether to run the official install/update command themselves.
+
+Results are cached per server process for **1 day**; pass `?refresh=1` (or `?force=1`) to force a re-probe. Unavailable or unresolved CLIs are reported with `available: false` and are **not** spawned (no ENOENT child processes).
+
+```jsonc
+{
+  "ok": true,
+  "cached": false,
+  "checkedAt": "2026-09-03T10:12:00.000Z",
+  "versions": {
+    "qoder":  { "cmd": "/Users/me/.local/bin/qoderclicn", "available": true,  "version": "1.1.4", "error": null },
+    "claude": { "cmd": "/Users/me/.local/bin/claude",     "available": true,  "version": "2.0.1", "error": null },
+    "kimi":   { "cmd": "kimi",                            "available": false, "version": null,  "error": null }
+  }
+}
+```
+
+When a probe fails or the output has no `x.y.z` token, that CLI's `version` is `null` and `error` carries a short reason; the overall response stays `200 { ok: true }` so one bad binary never blanks the whole panel.
+
 ---
 
 ## Related
