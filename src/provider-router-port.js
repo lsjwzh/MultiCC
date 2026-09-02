@@ -464,7 +464,7 @@ function createProviderRouterPort(options = {}) {
       );
       mounted.claude = requireMethod(backend, 'mountClaudeProxy', mode === 'cpr' ? 'router' : 'legacy')(
         admission ? admission.app : app,
-        { ...common, ...(admission ? { getProvider: admission.getProvider, onActivity: admission.onActivity } : {}), ...(mountOptions.claudeProxyPath ? { claudeProxyPath: String(mountOptions.claudeProxyPath) } : {}) },
+        { ...common, ...(admission ? { getProvider: admission.getProvider, onActivity: admission.onActivity } : {}), ...(mountOptions.claudeProxyPath ? { claudeProxyPath: String(mountOptions.claudeProxyPath) } : {}), ...(mountOptions.claudeProxy || {}) },
       );
     }
     if (protocols.includes('codex')) {

@@ -1154,6 +1154,15 @@
             <div class="sc-footer"><button class="btn btn-green" onclick="saveProviderDefaults()">Save</button><span class="status-text" id="prov-default-status"></span></div>
           </div>
 
+          <div class="settings-card" id="official-accounts-card">
+            <div class="sc-header">官方账号（多账号登录）</div>
+            <div class="sc-body" id="official-accounts-body">
+              <p style="font-size:12px;color:var(--faint);margin:0">每个官方账号绑定一条带标记的 provider，凭证由 multicc 独立保管、请求时经 CPR 代理按账号注入，CLI 进程不接触 OAuth 凭证。</p>
+              <span style="color:var(--faint);font-size:13px">加载中…</span>
+            </div>
+            <div class="sc-footer"><button class="btn btn-green" data-act="add" data-vendor="codex">+ Codex 官方账号</button><button class="btn btn-green" data-act="add" data-vendor="claude">+ Claude 官方账号</button><span class="status-text" id="official-accounts-status"></span></div>
+          </div>
+
           <div class="prov-tabs" id="prov-tabs" role="tablist">
             <button class="prov-tab active" data-ptab="anthropic" onclick="setProvTab('anthropic')">🤖 Anthropic</button>
             <button class="prov-tab" data-ptab="openai_responses" onclick="setProvTab('openai_responses')">⚡ OpenAI Responses</button>
@@ -2213,6 +2222,8 @@
   <script src="manage-qwen-audio.js"></script>
   <script src="manage-provider-balance.js"></script>
   <script src="manage-provider-relay.js"></script>
+  <script src="quota-bar-view.js"></script>
+  <script src="manage-official-accounts.js"></script>
   <script src="manage.js"></script>
 <script src="manage-update.js"></script>
   <script>

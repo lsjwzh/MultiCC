@@ -19,9 +19,9 @@ const USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage';
 const TIMEOUT_MS = 10000;
 const WEEKLY_MIN_WINDOW_SECONDS = 24 * 60 * 60;
 
-function readCodexAuth() {
+function readCodexAuth(authFile) {
   try {
-    const file = path.join(os.homedir(), '.codex', 'auth.json');
+    const file = authFile || path.join(os.homedir(), '.codex', 'auth.json');
     const auth = JSON.parse(fs.readFileSync(file, 'utf8'));
     const tokens = auth && auth.tokens;
     if (!tokens || !tokens.access_token) return null;
@@ -56,9 +56,9 @@ function windowResetsAt(w, nowMs) {
   return resetsAt;
 }
 
-async function fetchCodexUsage(nowMs = Date.now()) {
-  const auth = readCodexAuth();
-  if (!auth) return { status: 'no_auth', error: '未找到 ~/.codex/auth.json，请先登录 codex' };
+async function fetchCodexUsage(nowMs = Date.now(), options = {}) {
+  const auth = readCodexAuth(options.authFile);
+  if (!auth) return { status: 'no_auth', error: options.authFile ? '该账号尚未完成登录' : '未找到 ~/.codex/auth.json，请先登录 codex' };
 
   let body;
   try {
@@ -122,11 +122,22 @@ async function fetchCodexUsage(nowMs = Date.now()) {
   };
 }
 
-function mountCodexQuotaRoutes(app) {
+function mountCodexQuotaRoutes(app, deps = {}) {
   if (!app || typeof app.get !== 'function') return;
   app.get('/api/codex/quota', async (req, res) => {
     try {
-      const result = await fetchCodexUsage();
+      // ?account=<officialAccountId> reads that account's own auth.json
+      // (multi-account); absent → the shared ~/.codex login as before.
+      const accountId = String(req.query && req.query.account || '').trim();
+      let authFile = null;
+      if (accountId) {
+        if (typeof deps.resolveAccountAuthFile !== 'function') {
+          return res.status(400).json({ status: 'unavailable', error: 'official accounts not enabled' });
+        }
+        authFile = deps.resolveAccountAuthFile(accountId);
+        if (!authFile) return res.status(404).json({ status: 'no_auth', error: '账号不存在' });
+      }
+      const result = await fetchCodexUsage(undefined, authFile ? { authFile } : {});
       const status = result?.status || 'unavailable';
       const httpStatus = status === 'ok' ? 200 : status === 'no_auth' ? 401 : 500;
       // The bar is rendered here, once, so the web and the app display the same
