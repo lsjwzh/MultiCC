@@ -35,8 +35,8 @@ The server prefers a non-empty local `../public/multicc.apk` as an operator or
 offline override. If it is absent, the server resolves only the verified
 `multicc.apk` asset whose `vX.Y.Z` tag exactly matches `package.json`, and never
 falls forward to GitHub's `latest` release. Installing or updating the server
-never invokes Flutter or the Android toolchain. Release v1.5.2 has no APK asset;
-remote fallback starts with the next release.
+never invokes Flutter or the Android toolchain. Releases before v1.6.1 have no APK asset;
+remote fallback is available from v1.6.1.
 
 The first APK signed by the official release key cannot update a previously
 installed debug-signed build in place. Uninstall the debug-signed app once, then

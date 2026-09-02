@@ -197,4 +197,36 @@ void main() {
     expect(find.byType(Column), findsNothing);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('basic mode shows one recommended path and no engine controls', (
+    tester,
+  ) async {
+    final s = await settings();
+    await tester.pumpWidget(
+      host(
+        CreateSessionDialog(
+          kind: SessionKind.chat,
+          defaultCli: SessionCli.codex,
+          providers: providers(),
+          cliAvailability: const {
+            SessionCli.claude: false,
+            SessionCli.codex: true,
+          },
+          settings: s,
+          basicMode: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey('recommended-ai-summary')),
+      findsOneWidget,
+    );
+    expect(find.textContaining('Codex'), findsOneWidget);
+    expect(find.byType(DropdownButtonFormField<SessionCli>), findsNothing);
+    expect(find.byType(DropdownButtonFormField<String>), findsNothing);
+    expect(find.text('Provider'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
 }

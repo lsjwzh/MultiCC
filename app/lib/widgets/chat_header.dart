@@ -31,6 +31,7 @@ class ChatHeader extends StatelessWidget {
   final String? branch;
   final int behind;
   final VoidCallback onCwd;
+  final bool advancedMode;
   const ChatHeader({
     super.key,
     required this.settings,
@@ -45,6 +46,7 @@ class ChatHeader extends StatelessWidget {
     this.branch,
     this.behind = 0,
     required this.onCwd,
+    this.advancedMode = true,
   });
 
   @override
@@ -73,7 +75,7 @@ class ChatHeader extends StatelessWidget {
       ),
       child: LayoutBuilder(
         builder: (context, constraints) {
-          final narrow = constraints.maxWidth < 500;
+          final narrow = advancedMode && constraints.maxWidth < 500;
           // The title must own real estate. In the old single-row layout the
           // title sat in a Flexible between fixed-width chrome (collapse,
           // brand, CLI badge) and a fixed action cluster — on a narrow phone
@@ -87,7 +89,7 @@ class ChatHeader extends StatelessWidget {
           // wordmark is dropped — the collapse arrow and the CLI badge still
           // identify the sheet — and the clear-context button collapses to an
           // icon-only form (tooltip keeps the meaning).
-          final brand = narrow
+          final brand = narrow || !advancedMode
               ? const SizedBox.shrink()
               : RichText(
                   text: const TextSpan(
@@ -117,18 +119,20 @@ class ChatHeader extends StatelessWidget {
                 ),
               ),
             ),
-            const SizedBox(width: 4),
-            brand,
-            // One spacing slot whether or not the brand renders, so the CLI
-            // badge never kisses the collapse arrow.
-            const SizedBox(width: 6),
-            _ChatCliBadge(
-              cli: provider.cli,
-              onTap: () => openCliSwitchSheet(
-                context,
-                sessionId: provider.sessionName,
+            if (advancedMode) ...[
+              const SizedBox(width: 4),
+              brand,
+              // One spacing slot whether or not the brand renders, so the CLI
+              // badge never kisses the collapse arrow.
+              const SizedBox(width: 6),
+              _ChatCliBadge(
+                cli: provider.cli,
+                onTap: () => openCliSwitchSheet(
+                  context,
+                  sessionId: provider.sessionName,
+                ),
               ),
-            ),
+            ],
           ];
           // Connection dot — tap to manually reconnect when disconnected.
           final connectionDot = GestureDetector(
@@ -142,6 +146,17 @@ class ChatHeader extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Icon(Icons.circle, size: 8, color: statusColor),
+                  if (!advancedMode) ...[
+                    const SizedBox(width: 5),
+                    Text(
+                      state == ChatConnectionState.connected
+                          ? t('connected')
+                          : state == ChatConnectionState.connecting
+                          ? t('connecting')
+                          : t('disconnected'),
+                      style: TextStyle(color: statusColor, fontSize: 10.5),
+                    ),
+                  ],
                   if (state != ChatConnectionState.connected) ...[
                     const SizedBox(width: 4),
                     const Icon(
@@ -155,23 +170,25 @@ class ChatHeader extends StatelessWidget {
             ),
           );
           final actions = <Widget>[
-            // Manual reconnect
-            _HeaderBtn(
-              icon: Icons.sync_rounded,
-              tooltip: t('reconnect'),
-              onTap: () => _forceReconnect(context, provider),
-            ),
-            // Provider / Model / Effort unified chip.
-            const SizedBox(width: 4),
-            ModelChip(
-              sessionId: provider.sessionName,
-              cli: provider.cli,
-              settings: settings,
-              compact: narrow,
-            ),
-            const SizedBox(width: 4),
-            _ClearCtxButton(provider: provider, compact: narrow),
-            const SizedBox(width: 4),
+            if (advancedMode) ...[
+              // Manual reconnect
+              _HeaderBtn(
+                icon: Icons.sync_rounded,
+                tooltip: t('reconnect'),
+                onTap: () => _forceReconnect(context, provider),
+              ),
+              // Provider / Model / Effort unified chip.
+              const SizedBox(width: 4),
+              ModelChip(
+                sessionId: provider.sessionName,
+                cli: provider.cli,
+                settings: settings,
+                compact: narrow,
+              ),
+              const SizedBox(width: 4),
+              _ClearCtxButton(provider: provider, compact: narrow),
+              const SizedBox(width: 4),
+            ],
             _HeaderOverflowMenu(
               mergeReady: mergeReady,
               cwd: cwd,

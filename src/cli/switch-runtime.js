@@ -604,7 +604,15 @@ function createCliSwitchRuntime(options) {
     }));
 
     app.get('/api/cli/install-specs', asyncHandler(async (req, res) => {
-      return res.json({ ok: true, specs: installSpecs });
+      return res.json({
+        ok: true,
+        specs: installSpecs,
+        // Host-level availability lets a brand-new client choose a working
+        // default before any session exists. Previously the App could only
+        // discover this through an existing session and guessed "Claude" on
+        // an empty installation.
+        availability: options.cliAvailabilitySummary(),
+      });
     }));
 
     app.post('/api/cli/:cli/install', asyncHandler(async (req, res) => {

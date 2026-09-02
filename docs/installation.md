@@ -5,7 +5,7 @@
 ## Stable Release (recommended)
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v1.5.2/install.sh | bash -s -- --branch v1.5.2
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v1.6.8/install.sh | bash -s -- --branch v1.6.8
 ```
 
 This installs the latest **stable release**. The script auto-detects your OS,
@@ -244,9 +244,9 @@ At runtime the APK source is deterministic:
    release or verified asset is absent, the dashboard reports no APK available.
 
 `/multicc.apk` serves the local file directly or redirects to the verified exact
-Release Asset. The access token is never forwarded to GitHub. v1.5.2 predates
-this asset workflow and has no remote APK; the fallback becomes available with
-the next release.
+Release Asset. The access token is never forwarded to GitHub. Releases before v1.6.1 predate
+this asset workflow and have no remote APK; the fallback is available from
+v1.6.1.
 
 The first official release-key APK cannot update an APK previously signed with
 an Android debug key. Users must uninstall that debug-signed app once before

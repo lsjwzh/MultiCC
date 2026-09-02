@@ -11,6 +11,12 @@ const DEFAULT_VERSION_RESULT = Object.freeze({
   apiError: true,
 });
 
+// Native clients use this deliberately small contract to reject a host whose
+// connection protocol they do not understand before persisting credentials.
+// Bump only when /api/server-info or the authenticated App bootstrap contract
+// becomes backwards-incompatible.
+const APP_CONNECTION_PROTOCOL = 1;
+
 function compareSemver(a, b) {
   const pa = String(a || '').split('.').map(Number);
   const pb = String(b || '').split('.').map(Number);
@@ -157,6 +163,15 @@ function createServerInfoHandler(deps) {
   // no second copy of the fact that could drift out of sync with reality.
   const uptimeSeconds = typeof deps.uptimeSeconds === 'function' ? deps.uptimeSeconds : () => process.uptime();
   const now = typeof deps.now === 'function' ? deps.now : Date.now;
+  let serverVersion = null;
+  try {
+    if (deps.fs && deps.path && deps.rootDir) {
+      serverVersion = readInstallMetadata(deps).current;
+    }
+  } catch (_) {
+    // Direct unit harnesses and damaged installations still expose identity
+    // and protocol. Version is helpful metadata, not a health dependency.
+  }
   return function serverInfoHandler(req, res) {
     const interfaces = deps.networkInterfaces();
     const bindHost = typeof deps.getBindHost === 'function' ? deps.getBindHost() : '0.0.0.0';
@@ -167,6 +182,9 @@ function createServerInfoHandler(deps) {
     // startedAt in the future if a platform ever reports one.
     const uptimeMs = Math.max(0, Math.round(uptimeSeconds() * 1000));
     res.json({
+      product: 'multicc',
+      appProtocolVersion: APP_CONNECTION_PROTOCOL,
+      ...(serverVersion ? { version: serverVersion } : {}),
       ip,
       port,
       proto: 'http',
@@ -237,6 +255,7 @@ function mountSystemRoutes(app, rawDeps) {
 }
 
 module.exports = {
+  APP_CONNECTION_PROTOCOL,
   DEFAULT_VERSION_RESULT,
   compareSemver,
   ipv4Priority,
