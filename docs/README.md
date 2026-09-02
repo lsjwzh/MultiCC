@@ -37,6 +37,12 @@ contributors and integrators.
 | [Router MCP tools](router-tools.md) | Cross-session routing exposed as a local stdio MCP server. |
 | [Status presentation](status-presentation.md) | Every user-visible status badge — web session list, Fleet cards, task cards — and its state machine. |
 
+## Product & UX reviews
+
+| Document | What's in it |
+|---|---|
+| [Newcomer experience audit (2026-09-02)](newcomer-experience-audit-2026-09-02.md) | End-to-end review from installation through Web/App daily use for non-technical office users, with prioritized findings, target flows, acceptance criteria, roadmap, and metrics. |
+
 ## Governance reviews (2026-07-18)
 
 Fixed-point reviews that record what was deliberately *not* deleted or changed.
