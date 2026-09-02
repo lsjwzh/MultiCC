@@ -28,6 +28,8 @@ Future<GlobalKey<ScaffoldState>> _pumpDrawer(
   WidgetTester tester, {
   WorkspaceDestination selected = WorkspaceDestination.overview,
   ValueChanged<WorkspaceDestination>? onSelected,
+  bool advancedMode = true,
+  ValueChanged<bool>? onAdvancedModeChanged,
   double height = 844,
 }) async {
   tester.view.devicePixelRatio = 1;
@@ -47,6 +49,8 @@ Future<GlobalKey<ScaffoldState>> _pumpDrawer(
           serverLabel: 'macbook.local:3000',
           workspaceCount: 4,
           cronCount: 2,
+          advancedMode: advancedMode,
+          onAdvancedModeChanged: onAdvancedModeChanged,
           onSelected: onSelected ?? (_) {},
         ),
       ),
@@ -138,6 +142,46 @@ void main() {
     }
     semantics.dispose();
   });
+
+  testWidgets(
+    'basic mode keeps user work visible and hides developer modules',
+    (tester) async {
+      bool? toggled;
+      await _pumpDrawer(
+        tester,
+        advancedMode: false,
+        onAdvancedModeChanged: (value) => toggled = value,
+      );
+
+      expect(
+        find.byKey(const ValueKey('workspace-nav-overview')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const ValueKey('workspace-nav-cron')), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('workspace-nav-global')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('workspace-nav-provider')),
+        findsNothing,
+      );
+      expect(find.byKey(const ValueKey('workspace-nav-tunnel')), findsNothing);
+      expect(
+        find.byKey(const ValueKey('workspace-nav-resources')),
+        findsNothing,
+      );
+
+      await tester.tap(
+        find.descendant(
+          of: find.byKey(const ValueKey('workspace-nav-advanced-mode')),
+          matching: find.byType(Switch),
+        ),
+      );
+      await tester.pump();
+      expect(toggled, isTrue);
+    },
+  );
 
   testWidgets('closes the home drawer and delegates destination selection', (
     tester,

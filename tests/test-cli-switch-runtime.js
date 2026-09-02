@@ -325,6 +325,7 @@ test('install-specs returns the static official command table', async () => {
     codebuddy: { auto: true, command: 'npm install -g @tencent-ai/codebuddy-code', display: 'npm install -g @tencent-ai/codebuddy-code' },
     dsh: { auto: true, command: 'npm install -g @deepseek-ai/dsh', display: 'npm install -g @deepseek-ai/dsh' },
   });
+  assert.equal(res.body.availability.codex.available, true);
 });
 
 test('install rejects an unsupported cli with 400', async () => {

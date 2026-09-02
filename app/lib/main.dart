@@ -44,9 +44,10 @@ class MultiCCApp extends StatelessWidget {
       home = SetupScreen(settings: settings);
     }
 
-    return ValueListenableBuilder<String>(
-      valueListenable: settings.language,
-      builder: (context, language, _) {
+    return ListenableBuilder(
+      listenable: Listenable.merge([settings.language, settings.advancedMode]),
+      builder: (context, _) {
+        final language = settings.language.value;
         I18n.switchLang(language);
         return MaterialApp(
           title: 'MultiCC',

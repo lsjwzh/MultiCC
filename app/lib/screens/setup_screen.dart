@@ -3,13 +3,15 @@ import 'package:provider/provider.dart';
 
 import '../i18n.dart';
 import '../providers/session_manager.dart';
+import '../services/connection_probe_service.dart';
 import '../services/settings_service.dart';
 import '../widgets/lan_discovery_picker.dart';
 import 'main_shell.dart';
 
 class SetupScreen extends StatefulWidget {
   final SettingsService settings;
-  const SetupScreen({super.key, required this.settings});
+  final ConnectionProbeService? probeService;
+  const SetupScreen({super.key, required this.settings, this.probeService});
 
   @override
   State<SetupScreen> createState() => _SetupScreenState();
@@ -19,6 +21,8 @@ class _SetupScreenState extends State<SetupScreen> {
   final _hostCtrl = TextEditingController();
   final _tokenCtrl = TextEditingController();
   late List<ServerHistoryEntry> _history;
+  late final bool _isFirstConnection;
+  late final ConnectionProbeService _probe;
   bool _saving = false;
   String? _error;
 
@@ -28,10 +32,13 @@ class _SetupScreenState extends State<SetupScreen> {
     _hostCtrl.text = widget.settings.host;
     _tokenCtrl.text = widget.settings.token;
     _history = widget.settings.serverHistory;
+    _isFirstConnection = !widget.settings.isConfigured;
+    _probe = widget.probeService ?? ConnectionProbeService();
   }
 
   @override
   void dispose() {
+    if (widget.probeService == null) _probe.close();
     _hostCtrl.dispose();
     _tokenCtrl.dispose();
     super.dispose();
@@ -57,8 +64,19 @@ class _SetupScreenState extends State<SetupScreen> {
       _error = null;
     });
     final token = _tokenCtrl.text.trim();
-    await widget.settings.save(host: host, token: token);
-    await widget.settings.rememberServer(host, token);
+    FocusManager.instance.primaryFocus?.unfocus();
+    final result = await _probe.probe(host: host, token: token);
+    if (!mounted) return;
+    if (!result.ok) {
+      setState(() {
+        _saving = false;
+        _error = _messageFor(result.failure!);
+      });
+      return;
+    }
+    await widget.settings.save(host: result.normalizedHost, token: token);
+    if (_isFirstConnection) await widget.settings.setAdvancedMode(false);
+    await widget.settings.rememberServer(result.normalizedHost, token);
     if (!mounted) return;
     Navigator.of(context).pushReplacement(
       MaterialPageRoute(
@@ -69,6 +87,16 @@ class _SetupScreenState extends State<SetupScreen> {
       ),
     );
   }
+
+  String _messageFor(ConnectionProbeFailure failure) => switch (failure) {
+    ConnectionProbeFailure.invalidAddress => t('connectErrorInvalidAddress'),
+    ConnectionProbeFailure.insecureAddress => t('connectErrorInsecureAddress'),
+    ConnectionProbeFailure.unreachable => t('connectErrorUnreachable'),
+    ConnectionProbeFailure.authentication => t('connectErrorAuthentication'),
+    ConnectionProbeFailure.notMulticc => t('connectErrorNotMulticc'),
+    ConnectionProbeFailure.notReady => t('connectErrorNotReady'),
+    ConnectionProbeFailure.incompatible => t('connectErrorIncompatible'),
+  };
 
   @override
   Widget build(BuildContext context) {
@@ -94,10 +122,13 @@ class _SetupScreenState extends State<SetupScreen> {
                   ),
                 ),
                 const SizedBox(height: 4),
-                const Text(
-                  'Claude Code Chat',
+                Text(
+                  t('productTagline'),
                   textAlign: TextAlign.center,
-                  style: TextStyle(color: Color(0xFF8a909b), fontSize: 14),
+                  style: const TextStyle(
+                    color: Color(0xFF8a909b),
+                    fontSize: 14,
+                  ),
                 ),
                 const SizedBox(height: 40),
 
@@ -130,11 +161,20 @@ class _SetupScreenState extends State<SetupScreen> {
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       Text(
-                        t('serverConnection'),
+                        t('connectToMulticc'),
                         style: const TextStyle(
                           color: Color(0xFFf2f4f7),
                           fontSize: 16,
                           fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        t('setupConnectionHint'),
+                        style: const TextStyle(
+                          color: Color(0xFF8a909b),
+                          fontSize: 12,
+                          height: 1.45,
                         ),
                       ),
                       const SizedBox(height: 20),
@@ -181,6 +221,7 @@ class _SetupScreenState extends State<SetupScreen> {
                         controller: _hostCtrl,
                         hint: 'http://192.168.1.100:3456',
                         keyboardType: TextInputType.url,
+                        onChanged: (_) => setState(() => _error = null),
                       ),
                       const SizedBox(height: 8),
                       LanDiscoveryPicker(
@@ -200,15 +241,44 @@ class _SetupScreenState extends State<SetupScreen> {
                         controller: _tokenCtrl,
                         hint: t('optionalIfUnset'),
                         obscure: true,
+                        onChanged: (_) => setState(() => _error = null),
                       ),
 
                       if (_error != null) ...[
                         const SizedBox(height: 12),
-                        Text(
-                          _error!,
-                          style: const TextStyle(
-                            color: Color(0xFFff6b63),
-                            fontSize: 13,
+                        Semantics(
+                          liveRegion: true,
+                          child: Container(
+                            key: const ValueKey('connection-error'),
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                              color: const Color(0x1FFF6B63),
+                              border: Border.all(
+                                color: const Color(0x55FF6B63),
+                              ),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Icon(
+                                  Icons.error_outline_rounded,
+                                  color: Color(0xFFff6b63),
+                                  size: 18,
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    _error!,
+                                    style: const TextStyle(
+                                      color: Color(0xFFFFA29D),
+                                      fontSize: 12.5,
+                                      height: 1.4,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
                         ),
                       ],
@@ -234,7 +304,7 @@ class _SetupScreenState extends State<SetupScreen> {
                                 ),
                               )
                             : Text(
-                                t('connect'),
+                                t('verifyAndConnect'),
                                 style: const TextStyle(
                                   fontWeight: FontWeight.w600,
                                   fontSize: 15,
@@ -340,12 +410,14 @@ class _Field extends StatelessWidget {
   final String hint;
   final bool obscure;
   final TextInputType? keyboardType;
+  final ValueChanged<String>? onChanged;
 
   const _Field({
     required this.controller,
     required this.hint,
     this.obscure = false,
     this.keyboardType,
+    this.onChanged,
   });
 
   @override
@@ -354,6 +426,7 @@ class _Field extends StatelessWidget {
       controller: controller,
       obscureText: obscure,
       keyboardType: keyboardType,
+      onChanged: onChanged,
       autocorrect: false,
       style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 14),
       decoration: InputDecoration(

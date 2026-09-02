@@ -389,6 +389,7 @@ class _ChatViewState extends State<ChatView> {
                     provider.sessionName,
                     widget.settings,
                   ),
+                  advancedMode: widget.settings.advancedMode.value,
                 ),
                 if (provider.pendingUserInput != null &&
                     !provider.pendingUserInputCollapsed)
@@ -475,7 +476,8 @@ class _ChatViewState extends State<ChatView> {
                     onHighlightDone: _clearHighlight,
                   ),
                 ),
-                const _CenteredChatLane(child: _ContextUsageBar()),
+                if (widget.settings.advancedMode.value)
+                  const _CenteredChatLane(child: _ContextUsageBar()),
                 if (mergeReady)
                   _MergeReadyBanner(
                     text: _mergeStatusText(_mergeStatus),

@@ -9,6 +9,7 @@ import '../i18n.dart';
 import '../models/message.dart';
 import '../providers/session_manager.dart';
 import '../services/background_service.dart';
+import '../services/connection_probe_service.dart';
 import '../services/settings_service.dart';
 import '../services/update_service.dart';
 import '../theme.dart';
@@ -110,10 +111,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _fontScale = s.fontScale.value;
     _goalMinCtrl = TextEditingController(text: '60');
     _accessTokenCtrl = TextEditingController();
-    _loadGoalConfig();
-    _loadProxyConfig();
-    _loadOfficialOauth();
-    _loadAccessToken();
+    if (s.advancedMode.value) _loadAdvancedSettings();
     _loadVersion();
     if (widget.initialSection == SettingsInitialSection.goal) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -127,6 +125,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
         );
       });
     }
+  }
+
+  void _loadAdvancedSettings() {
+    _loadGoalConfig();
+    _loadProxyConfig();
+    _loadOfficialOauth();
+    _loadAccessToken();
+  }
+
+  Future<void> _setAdvancedMode(bool value) async {
+    await widget.settings.setAdvancedMode(value);
+    if (!mounted) return;
+    setState(() {});
+    if (value) _loadAdvancedSettings();
   }
 
   @override
@@ -387,8 +399,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _serverStatus = null;
     });
     final token = _tokenCtrl.text.trim();
-    await widget.settings.save(host: host, token: token);
-    await widget.settings.rememberServer(host, token);
+    final probe = ConnectionProbeService();
+    final result = await probe.probe(host: host, token: token);
+    probe.close();
+    if (!mounted) return;
+    if (!result.ok) {
+      setState(() {
+        _savingServer = false;
+        _serverStatus = _connectionError(result.failure!);
+      });
+      return;
+    }
+    await widget.settings.save(host: result.normalizedHost, token: token);
+    await widget.settings.rememberServer(result.normalizedHost, token);
     if (!mounted) return;
     // Reconnect with a fresh SessionManager / MainShell, same as first setup.
     Navigator.of(context).pushAndRemoveUntil(
@@ -401,6 +424,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
       (route) => false,
     );
   }
+
+  String _connectionError(ConnectionProbeFailure failure) => switch (failure) {
+    ConnectionProbeFailure.invalidAddress => t('connectErrorInvalidAddress'),
+    ConnectionProbeFailure.insecureAddress => t('connectErrorInsecureAddress'),
+    ConnectionProbeFailure.unreachable => t('connectErrorUnreachable'),
+    ConnectionProbeFailure.authentication => t('connectErrorAuthentication'),
+    ConnectionProbeFailure.notMulticc => t('connectErrorNotMulticc'),
+    ConnectionProbeFailure.notReady => t('connectErrorNotReady'),
+    ConnectionProbeFailure.incompatible => t('connectErrorIncompatible'),
+  };
 
   void _applyHistory(ServerHistoryEntry e) {
     setState(() {
@@ -489,6 +522,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final advancedMode = widget.settings.advancedMode.value;
     return Scaffold(
       backgroundColor: AppColors.bg,
       appBar: AppBar(title: Text(t('settingsTitle'))),
@@ -497,6 +531,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+          _Section(
+            title: t('experienceMode'),
+            children: [
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: Text(
+                  advancedMode ? t('advancedMode') : t('basicMode'),
+                  style: const TextStyle(color: AppColors.text, fontSize: 14),
+                ),
+                subtitle: Text(
+                  t('developerOptionsHint'),
+                  style: const TextStyle(color: AppColors.muted, fontSize: 12),
+                ),
+                value: advancedMode,
+                activeColor: const Color(0xFF04110f),
+                activeTrackColor: AppColors.accent,
+                onChanged: _setAdvancedMode,
+              ),
+            ],
+          ),
           _Section(
             title: t('serverConnection'),
             children: [
@@ -592,7 +646,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ],
           ),
-          _Section(
+          _advancedOnly(advancedMode, _Section(
             title: t('newSessionSettings'),
             children: [
               _Tile(
@@ -602,7 +656,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
               _Hint(t('defaultClaudeModelHint')),
             ],
-          ),
+          )),
           _Section(
             title: t('notifications'),
             children: [
@@ -648,7 +702,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
             ],
           ),
-          _Section(
+          _advancedOnly(advancedMode, _Section(
             key: _goalSectionKey,
             title: t('goalPrecheck'),
             children: [
@@ -708,8 +762,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ),
             ],
-          ),
-          _Section(
+          )),
+          _advancedOnly(advancedMode, _Section(
             title: t('claudeProxyRouting'),
             children: [
               _Hint(t('claudeProxyRoutingHint')),
@@ -732,7 +786,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ],
             ],
-          ),
+          )),
           _Section(
             title: t('appearance'),
             children: [
@@ -781,7 +835,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               _Hint(t('fontSizePreview')),
             ],
           ),
-          _Section(
+          _advancedOnly(advancedMode, _Section(
             title: t('management'),
             children: [
               _NavTile(
@@ -834,8 +888,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ),
             ],
-          ),
-          _Section(
+          )),
+          _advancedOnly(advancedMode, _Section(
             title: t('serverSettings'),
             children: [
               _Hint(t('serverSettingsHint')),
@@ -1012,7 +1066,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ),
             ],
-          ),
+          )),
           _Section(
             title: t('about'),
             children: [
@@ -1074,6 +1128,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 }
+
+Widget _advancedOnly(bool enabled, Widget child) =>
+    enabled ? child : const SizedBox.shrink();
 
 // Goal precheck dimension labels: key → [title, subtitle].
 List<String> _goalDimLabel(String key) => switch (key) {

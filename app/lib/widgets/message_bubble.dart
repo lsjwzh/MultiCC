@@ -307,6 +307,7 @@ class _AssistantBubble extends StatelessWidget {
   Widget build(BuildContext context) {
     final hasText = message.content.trim().isNotEmpty;
     final hasTools = message.toolCalls.isNotEmpty;
+    final advancedMode = SettingsService.current?.advancedMode.value ?? true;
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -343,15 +344,21 @@ class _AssistantBubble extends StatelessWidget {
                       text: message.content,
                       isStreaming: message.isStreaming,
                     ),
-                  if (hasTools) ToolCallGroup(toolCalls: message.toolCalls),
-                  if (hasTools) ToolTrajectory(toolCalls: message.toolCalls),
+                  if (hasTools && advancedMode)
+                    ToolCallGroup(toolCalls: message.toolCalls),
+                  if (hasTools && advancedMode)
+                    ToolTrajectory(toolCalls: message.toolCalls),
+                  if (hasTools && !advancedMode)
+                    _BasicToolSummary(toolCalls: message.toolCalls),
                   if (!hasText && !hasTools && message.isStreaming)
                     const _StreamingDot(),
                   // Token usage line
-                  if (message.usage != null && !message.usage!.isEmpty)
+                  if (advancedMode &&
+                      message.usage != null &&
+                      !message.usage!.isEmpty)
                     _TokenUsageLine(usage: message.usage!),
                   // Timing line: reply timestamp + task duration
-                  if (message.durationMs != null)
+                  if (advancedMode && message.durationMs != null)
                     _TimingLine(
                       timestamp: message.timestamp,
                       durationMs: message.durationMs,
@@ -375,6 +382,113 @@ class _AssistantBubble extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+}
+
+class _BasicToolSummary extends StatefulWidget {
+  const _BasicToolSummary({required this.toolCalls});
+
+  final List<ToolCall> toolCalls;
+
+  @override
+  State<_BasicToolSummary> createState() => _BasicToolSummaryState();
+}
+
+class _BasicToolSummaryState extends State<_BasicToolSummary> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final running = widget.toolCalls.any((tool) => !tool.isDone);
+    final failed = widget.toolCalls.any((tool) => tool.isError);
+    final statusColor = failed
+        ? const Color(0xFFff6b63)
+        : running
+        ? const Color(0xFF6aa3ff)
+        : const Color(0xFF7fd49a);
+    final status = running
+        ? t('workProgressRunning')
+        : failed
+        ? t('workProgressIssue')
+        : t('workProgressChecked');
+
+    return Container(
+      key: const ValueKey('basic-tool-summary'),
+      margin: const EdgeInsets.only(top: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0B0D11),
+        border: Border.all(color: const Color(0xFF20242b)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        children: [
+          InkWell(
+            borderRadius: BorderRadius.circular(8),
+            onTap: () => setState(() => _expanded = !_expanded),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minHeight: 42),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 11),
+                child: Row(
+                  children: [
+                    if (running)
+                      const SizedBox(
+                        width: 13,
+                        height: 13,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 1.6,
+                          color: Color(0xFF6aa3ff),
+                        ),
+                      )
+                    else
+                      Icon(
+                        failed
+                            ? Icons.error_outline_rounded
+                            : Icons.check_circle_outline_rounded,
+                        size: 16,
+                        color: statusColor,
+                      ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        status,
+                        style: TextStyle(color: statusColor, fontSize: 12),
+                      ),
+                    ),
+                    Text(
+                      t('technicalDetailsCount', {
+                        'n': '${widget.toolCalls.length}',
+                      }),
+                      style: const TextStyle(
+                        color: Color(0xFF6E7681),
+                        fontSize: 10.5,
+                      ),
+                    ),
+                    Icon(
+                      _expanded
+                          ? Icons.expand_less_rounded
+                          : Icons.expand_more_rounded,
+                      color: const Color(0xFF6E7681),
+                      size: 17,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          if (_expanded)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+              child: Column(
+                children: [
+                  ToolCallGroup(toolCalls: widget.toolCalls),
+                  ToolTrajectory(toolCalls: widget.toolCalls),
+                ],
+              ),
+            ),
+        ],
+      ),
     );
   }
 }

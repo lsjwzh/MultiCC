@@ -37,6 +37,7 @@ class SettingsService {
   static const _keyKeepAlive = 'multicc_keepalive_enabled';
   static const _keyFontScale = 'multicc_font_scale';
   static const _keyLang = 'multicc_lang';
+  static const _keyExperienceMode = 'multicc_experience_mode';
   static const _keyServerHistory = 'multicc_server_history';
   static const _keyChatRuntimePrefix = 'multicc_chat_runtime_';
   static const _keyDispatchModePrefix = 'multicc_dispatch_mode_';
@@ -59,6 +60,11 @@ class SettingsService {
   /// Live application language. Values are the catalog ids `zh` and `en`.
   final ValueNotifier<String> language = ValueNotifier<String>('zh');
 
+  /// New installations start in the task-oriented basic experience. Existing
+  /// configured installations migrate to advanced so an upgrade never makes
+  /// familiar controls disappear without the user's choice.
+  final ValueNotifier<bool> advancedMode = ValueNotifier<bool>(false);
+
   SettingsService._();
 
   static Future<SettingsService> getInstance() async {
@@ -74,6 +80,11 @@ class SettingsService {
       _instance!.language.value = _instance!._prefs.getString(_keyLang) == 'en'
           ? 'en'
           : 'zh';
+      final storedMode = _instance!._prefs.getString(_keyExperienceMode);
+      _instance!.advancedMode.value =
+          storedMode == 'advanced' ||
+          (storedMode == null &&
+              (_instance!._prefs.getString(_keyHost) ?? '').trim().isNotEmpty);
     }
     return _instance!;
   }
@@ -89,6 +100,15 @@ class SettingsService {
     if (language.value == normalized) return;
     await _prefs.setString(_keyLang, normalized);
     language.value = normalized;
+  }
+
+  Future<void> setAdvancedMode(bool value) async {
+    if (advancedMode.value == value &&
+        _prefs.getString(_keyExperienceMode) != null) {
+      return;
+    }
+    await _prefs.setString(_keyExperienceMode, value ? 'advanced' : 'basic');
+    advancedMode.value = value;
   }
 
   /// Default Claude model for newly created chats ('' = follow Claude default).
