@@ -13,6 +13,30 @@ function routeSegments(req) {
   catch (_) { return []; }
 }
 
+const CLAUDE_HOST_ROUTE_BUCKETS = new Set(['aux', 'remote', 'speedtest']);
+
+// CPR exposes two different trust domains under the same protocol prefix:
+//   - attempt routes carry a per-turn capability in the session segment;
+//   - host routes are authenticated by the outer HTTP boundary (admin access,
+//     loopback, or the relay-only bearer) and have no turn attempt to prove.
+// Keep that distinction in one classifier so both the early HTTP guard and the
+// final getProvider admission make the same ownership decision.
+function classifyProviderProxyRoute(protocol, segments = []) {
+  const providerId = clean(segments[0]);
+  const sessionId = clean(segments[1]);
+  const role = protocol === 'codex' ? clean(segments[2]) || 'main' : 'main';
+  if (!providerId || !sessionId) {
+    return Object.freeze({ scope: 'host', providerId, sessionId, role });
+  }
+  if (protocol === 'codex' && (!segments[2] || sessionId === 'responses')) {
+    return Object.freeze({ scope: 'host', providerId, sessionId, role });
+  }
+  if (protocol === 'claude' && CLAUDE_HOST_ROUTE_BUCKETS.has(sessionId)) {
+    return Object.freeze({ scope: 'host', providerId, sessionId, role });
+  }
+  return Object.freeze({ scope: 'attempt', providerId, sessionId, role });
+}
+
 function reject(res) {
   const body = JSON.stringify({ error: 'provider route attempt is no longer active' });
   if (res && typeof res.status === 'function' && typeof res.json === 'function') {
@@ -37,23 +61,15 @@ function createProviderProxyGuard(options = {}) {
     throw new TypeError('provider proxy guard authorizer is required');
   }
   return function providerProxyGuard(req, res, next) {
-    const segments = routeSegments(req);
-    const providerId = clean(segments[0]);
-    const sessionId = clean(segments[1]);
-    // The two-segment Codex endpoint exists only for already-materialized legacy
-    // homes and has no attempt identity to authorize. New managed routes,
-    // including Official OAuth, always carry provider/capability/role. Claude
-    // Aux uses the reserved `aux` bucket and is outside main-turn ownership.
-    if (!providerId || !sessionId
-        || (protocol === 'codex' && (!segments[2] || sessionId === 'responses'))
-        || (protocol === 'claude' && sessionId === 'aux')) {
+    const route = classifyProviderProxyRoute(protocol, routeSegments(req));
+    if (route.scope !== 'attempt') {
       return typeof next === 'function' ? next() : undefined;
     }
-    const role = protocol === 'codex' ? clean(segments[2]) || 'main' : 'main';
     let decision;
     try {
       decision = authorize({
-        protocol, providerId, sessionId, role, method: clean(req && req.method).toUpperCase(),
+        protocol, providerId: route.providerId, sessionId: route.sessionId,
+        role: route.role, method: clean(req && req.method).toUpperCase(),
       });
     } catch (_) {
       decision = null;
@@ -107,18 +123,23 @@ function createProviderProxyAdmission(options = {}) {
 
   function contextFor(req) {
     if (protocol === 'codex' && req && req.params) {
-      const sessionId = clean(req.params.sessionId);
-      if (!sessionId) return null;
+      const route = classifyProviderProxyRoute(protocol, [
+        req.params.providerId, req.params.sessionId, req.params.role,
+      ]);
+      if (route.scope !== 'attempt') return null;
       return {
-        sessionId,
-        mainProviderId: clean(req.params.providerId),
-        role: clean(req.params.role) || 'main',
+        sessionId: route.sessionId,
+        mainProviderId: route.providerId,
+        role: route.role,
       };
     }
-    const segments = routeSegments(req);
-    const sessionId = clean(segments[1]);
-    if (!sessionId || sessionId === 'aux') return null;
-    return { sessionId, mainProviderId: clean(segments[0]), role: 'main' };
+    const route = classifyProviderProxyRoute(protocol, routeSegments(req));
+    if (route.scope !== 'attempt') return null;
+    return {
+      sessionId: route.sessionId,
+      mainProviderId: route.providerId,
+      role: route.role,
+    };
   }
 
   function handleFailure(error, res, next, context) {
@@ -178,6 +199,7 @@ function createProviderProxyAdmission(options = {}) {
 
 module.exports = {
   ProviderProxyAdmissionError,
+  classifyProviderProxyRoute,
   createProviderProxyAdmission,
   createProviderProxyGuard,
   routeSegments,
