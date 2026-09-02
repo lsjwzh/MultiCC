@@ -1,5 +1,4 @@
-/* Proactive task planner shared by the global Task Center and the Fleet-scoped
- * planning tab. The legacy observed-task tree remains a separate perspective. */
+/* Unified TODO/task surface shared by the global Task Center and Fleet detail. */
 body[data-view="tasks"] #sidebar {
   overflow: hidden;
   padding: 0;
@@ -73,6 +72,43 @@ body[data-view="tasks"] #topbar .planner-hide-on-tasks {
   gap: 7px;
   min-width: 0;
 }
+
+.planner-origin-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--well);
+  white-space: nowrap;
+}
+
+.planner-origin-filter > span {
+  padding: 0 6px;
+  color: var(--faint);
+  font-size: 10.5px;
+  font-weight: 650;
+}
+
+.planner-origin-filter button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 0 8px;
+  color: var(--muted);
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.planner-origin-filter button:hover { color: var(--text); }
+.planner-origin-filter button.active { color: var(--accent); background: var(--accent-dim); }
+.planner-origin-filter button strong { font-family: var(--mono); font-size: 9.5px; }
 
 .planner-toolbar .planner-grow { flex: 1 1 auto; }
 
@@ -179,70 +215,57 @@ body[data-view="tasks"] #topbar .planner-hide-on-tasks {
   box-shadow: 0 1px 5px rgba(0, 0, 0, .32);
 }
 
-.planner-attention-toggle.active {
-  color: var(--amber);
-  border-color: rgba(227, 179, 65, .55);
-  background: rgba(227, 179, 65, .1);
-}
-
-.planner-attention-bar {
+.planner-work-overview {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 8px;
-  min-height: 42px;
-  padding: 6px 18px;
+  gap: 14px;
+  min-height: 52px;
+  padding: 7px 18px;
+  overflow-x: auto;
   border-bottom: 1px solid var(--line);
-  color: var(--muted);
-  font-size: 12px;
-  background: linear-gradient(90deg, rgba(227, 179, 65, .07), transparent 58%);
+  background: linear-gradient(90deg, rgba(58, 214, 197, .055), transparent 64%);
 }
 
-.planner-attention-bar strong { color: var(--text); font-weight: 650; }
-.planner-attention-chip {
+.planner-work-overview > strong {
+  flex: 0 0 auto;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.planner-work-buckets {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.planner-work-bucket {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  min-height: 26px;
-  padding: 3px 9px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 11px;
   color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 9px;
   background: rgba(255, 255, 255, .025);
   font: inherit;
   font-size: 11.5px;
+  white-space: nowrap;
   cursor: pointer;
 }
-.planner-attention-chip:hover,
-.planner-attention-chip.active { color: var(--text); border-color: var(--line-strong); }
-.planner-attention-chip.waiting strong { color: var(--amber); }
-.planner-attention-chip.error strong { color: var(--danger); }
-
-.planner-mobile-tabs {
-  display: none;
-  flex: 0 0 auto;
-  gap: 5px;
-  padding: 8px 10px;
-  overflow-x: auto;
-  border-bottom: 1px solid var(--line);
-  background: var(--bg-soft);
+.planner-work-bucket:hover { color: var(--text); border-color: var(--line-strong); }
+.planner-work-bucket.active { color: var(--accent); border-color: var(--accent-line); background: var(--accent-dim); }
+.planner-work-bucket strong {
+  min-width: 21px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  color: var(--text);
+  background: rgba(255, 255, 255, .07);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  text-align: center;
 }
-
-.planner-mobile-tabs button {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 32px;
-  padding: 0 10px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  color: var(--muted);
-  background: var(--panel);
-  font: inherit;
-  font-size: 12px;
-  white-space: nowrap;
-}
-.planner-mobile-tabs button.active { color: var(--accent); border-color: var(--accent-line); background: var(--accent-dim); }
 
 .planner-main {
   flex: 1 1 auto;
@@ -260,13 +283,14 @@ body[data-view="tasks"] #topbar .planner-hide-on-tasks {
 
 .planner-board {
   display: grid;
-  grid-template-columns: repeat(5, minmax(268px, 1fr));
+  grid-template-columns: repeat(5, minmax(220px, 1fr));
   align-items: stretch;
   gap: 12px;
   height: 100%;
-  min-width: 1380px;
+  min-width: 1150px;
   min-height: 0;
 }
+.planner-board.is-filtered { grid-template-columns: minmax(320px, 1fr); min-width: 0; }
 
 .planner-column {
   display: flex;
@@ -282,16 +306,16 @@ body[data-view="tasks"] #topbar .planner-hide-on-tasks {
   box-shadow: var(--elev);
 }
 
-.planner-column[data-stage="inbox"] { --stage-color: #8b949e; }
-.planner-column[data-stage="ready"] { --stage-color: var(--blue); }
-.planner-column[data-stage="doing"] { --stage-color: var(--accent); }
-.planner-column[data-stage="review"] { --stage-color: #b39df3; }
-.planner-column[data-stage="done"] { --stage-color: var(--codex); }
-
-.planner-column.drag-over {
-  border-color: var(--accent-line);
-  box-shadow: 0 0 0 3px rgba(58, 214, 197, .09), var(--elev);
-}
+.planner-column[data-bucket="todo"],
+.planner-todo-group[data-bucket="todo"] { --stage-color: #8b949e; }
+.planner-column[data-bucket="attention"],
+.planner-todo-group[data-bucket="attention"] { --stage-color: var(--amber); }
+.planner-column[data-bucket="running"],
+.planner-todo-group[data-bucket="running"] { --stage-color: var(--accent); }
+.planner-column[data-bucket="next"],
+.planner-todo-group[data-bucket="next"] { --stage-color: var(--blue); }
+.planner-column[data-bucket="review"],
+.planner-todo-group[data-bucket="review"] { --stage-color: #b39df3; }
 
 .planner-column-head {
   flex: 0 0 auto;
@@ -370,7 +394,6 @@ body[data-view="tasks"] #topbar .planner-hide-on-tasks {
   box-shadow: var(--elev-hi);
   outline: 0;
 }
-.planner-card.dragging { opacity: .42; transform: rotate(1deg); }
 .planner-card.attention-waiting { box-shadow: inset 3px 0 0 rgba(227, 179, 65, .75); }
 .planner-card.attention-error { box-shadow: inset 3px 0 0 rgba(255, 107, 99, .78); }
 
@@ -435,6 +458,8 @@ body[data-view="tasks"] #topbar .planner-hide-on-tasks {
 .planner-badge.due-overdue { color: var(--danger); border-color: rgba(255, 107, 99, .38); }
 .planner-badge.due-soon { color: var(--amber); border-color: rgba(227, 179, 65, .38); }
 .planner-badge.module { max-width: 150px; }
+.planner-badge.origin-board { color: var(--accent); border-color: rgba(58, 214, 197, .28); }
+.planner-badge.origin-session { color: #aeb9cb; }
 
 .planner-card .mc-status {
   min-height: 20px;
@@ -445,7 +470,8 @@ body[data-view="tasks"] #topbar .planner-hide-on-tasks {
   font-size: 10.5px;
 }
 
-.planner-card-attention-action {
+.planner-card-attention-action,
+.planner-card-quick-action {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -459,10 +485,72 @@ body[data-view="tasks"] #topbar .planner-hide-on-tasks {
   font-size: 10.5px;
   cursor: pointer;
 }
+.planner-card-quick-action { color: var(--blue); }
+.planner-card-quick-action.complete { color: var(--codex); }
 .planner-card.attention-waiting .planner-card-attention-action { color: var(--amber); }
 .planner-card.attention-error .planner-card-attention-action { color: var(--danger); }
 .planner-card-attention-action:hover,
-.planner-card-attention-action:focus-visible { background: rgba(255, 255, 255, .055); outline: 0; }
+.planner-card-attention-action:focus-visible,
+.planner-card-quick-action:hover,
+.planner-card-quick-action:focus-visible { background: rgba(255, 255, 255, .055); outline: 0; }
+
+.planner-todo-list {
+  height: 100%;
+  overflow: auto;
+  padding: 14px max(18px, calc((100% - 1180px) / 2)) 24px;
+}
+
+.planner-todo-group {
+  margin-bottom: 13px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--stage-color, var(--line-strong));
+  border-radius: 12px;
+  background: rgba(24, 29, 39, .55);
+}
+
+.planner-todo-group > header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 8px 13px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(255, 255, 255, .018);
+}
+.planner-todo-group > header strong { color: var(--text); font-size: 12.5px; }
+.planner-todo-group > header > span:nth-of-type(2) { color: var(--faint); font-size: 10.5px; }
+.planner-todo-group > header b {
+  margin-left: auto;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, .06);
+  font-family: var(--mono);
+  font-size: 9.5px;
+}
+
+.planner-todo-row {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+  min-height: 68px;
+  padding: 10px 13px;
+  border-top: 1px solid var(--line);
+  cursor: pointer;
+}
+.planner-todo-group > div > .planner-todo-row:first-child { border-top: 0; }
+.planner-todo-row:hover,
+.planner-todo-row:focus-visible { background: rgba(255, 255, 255, .025); outline: 0; }
+.planner-todo-state { width: 7px; height: 7px; border-radius: 50%; background: var(--stage-color, var(--line-strong)); box-shadow: 0 0 7px color-mix(in srgb, var(--stage-color, var(--line-strong)) 65%, transparent); }
+.planner-todo-content { min-width: 0; }
+.planner-todo-title { overflow: hidden; color: var(--text); font-size: 12.5px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
+.planner-todo-description { overflow: hidden; margin-top: 4px; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.planner-todo-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; margin-top: 7px; color: var(--faint); font-size: 10px; }
+.planner-todo-actions { display: flex; align-items: center; gap: 7px; }
+.planner-todo-primary { color: var(--blue); }
+.planner-todo-primary.complete { color: var(--codex); }
 
 .planner-empty,
 .planner-loading,
@@ -639,6 +727,7 @@ body[data-view="tasks"] #topbar .planner-hide-on-tasks {
   .planner-toolbar .planner-grow { display: none; }
   .planner-search { flex: 1 1 180px; width: auto; }
   .planner-select { flex: 1 1 170px; width: auto; }
+  .planner-origin-filter { order: 3; }
 }
 
 @media (max-width: 760px) {
@@ -646,16 +735,19 @@ body[data-view="tasks"] #topbar .planner-hide-on-tasks {
   .planner-toolbar { gap: 7px; min-height: auto; padding: 9px 10px; }
   .planner-toolbar-group { width: 100%; }
   .planner-toolbar-group.actions { width: auto; margin-left: auto; }
-  .planner-segment { order: 3; }
+  .planner-segment { order: 4; }
   .planner-search { min-width: 0; }
   .planner-fleet-lock { flex: 1 1 auto; max-width: none; }
-  .planner-attention-bar { padding-inline: 10px; overflow-x: auto; white-space: nowrap; }
-  .planner-mobile-tabs { display: flex; }
+  .planner-origin-filter { width: 100%; overflow-x: auto; }
+  .planner-work-overview { gap: 9px; padding-inline: 10px; }
   .planner-board-scroll { padding: 10px; }
-  .planner-board { display: block; min-width: 0; min-height: 100%; }
-  .planner-column { display: none; height: 100%; min-height: 0; }
-  .planner-column.is-mobile-active { display: flex; }
+  .planner-board { display: block; min-width: 0; min-height: 100%; overflow-y: auto; }
+  .planner-column { display: flex; height: auto; min-height: 170px; margin-bottom: 10px; }
+  .planner-card-list { max-height: 58vh; }
   .planner-column-hint { display: none; }
+  .planner-todo-list { padding: 10px; }
+  .planner-todo-row { grid-template-columns: 8px minmax(0, 1fr); }
+  .planner-todo-actions { grid-column: 2; justify-content: flex-end; flex-wrap: wrap; }
   .planner-history { padding: 10px; }
   .planner-history-row { grid-template-columns: minmax(0, 1fr); }
   .planner-history-actions { justify-content: flex-end; }
