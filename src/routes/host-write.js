@@ -291,40 +291,6 @@ function createAccessTokenHandler(deps) {
   };
 }
 
-// The relay token (MULTICC_PROXY_TOKEN) is read live from process.env by
-// auth.js and providers.js, so the runtime apply step only needs to update
-// process.env — server.js wires no dedicated getter/setter pair.
-function createProxyTokenHandler(deps) {
-  const getProxyToken = typeof deps.getProxyToken === 'function'
-    ? deps.getProxyToken
-    : () => (process.env.MULTICC_PROXY_TOKEN || '');
-  const setProxyToken = typeof deps.setProxyToken === 'function'
-    ? deps.setProxyToken
-    : (token) => { process.env.MULTICC_PROXY_TOKEN = token; };
-  return function proxyTokenHandler(req, res, next) {
-    if (!requireLocal(deps, req, res, '借道令牌仅可在本机 (localhost) 修改')) return undefined;
-    const raw = req.body && req.body.token;
-    if (typeof raw !== 'string' || raw.includes('****') || !validateSafeText(raw)) {
-      return res.status(400).json({ error: '无有效改动' });
-    }
-    try {
-      const token = raw.trim();
-      const previous = getProxyToken();
-      persistThenApply(
-        deps,
-        { MULTICC_PROXY_TOKEN: token },
-        () => setProxyToken(token),
-        () => setProxyToken(previous),
-        'proxy_token',
-      );
-      deps.log(`[multicc/auth] MULTICC_PROXY_TOKEN ${token ? 'updated' : 'cleared'} via localhost UI`);
-      return res.json({ ok: true, hasToken: !!token });
-    } catch (error) {
-      return next(error);
-    }
-  };
-}
-
 function createBooleanSettingHandler(deps, setting) {
   return function booleanSettingHandler(req, res, next) {
     if (!requireLocal(deps, req, res)) return undefined;
@@ -414,7 +380,6 @@ function mountHostWriteRoutes(app, rawDeps) {
   app.post('/api/tunnel/restart/:provider', createTunnelRestartHandler(deps));
   app.post('/api/tunnel/funnel', createTunnelFunnelHandler(deps));
   app.post('/api/settings/access-token', createAccessTokenHandler(deps));
-  app.post('/api/settings/proxy-token', createProxyTokenHandler(deps));
   app.post('/api/settings/proxy', createBooleanSettingHandler(deps, {
     envKey: 'CLAUDE_PROXY_ENABLED',
     get: deps.getProxyEnabled,
@@ -446,7 +411,6 @@ module.exports = {
   createTunnelRestartHandler,
   createTunnelFunnelHandler,
   createAccessTokenHandler,
-  createProxyTokenHandler,
   createBooleanSettingHandler,
   createPowerSettingsHandler,
   mountHostWriteRoutes,

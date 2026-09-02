@@ -523,7 +523,7 @@ function createProviderRoutes(rawDeps) {
 
     // Each exported relay receives its own provider-scoped credential. The
     // share code discloses it once; durable inventory stores only its hash and
-    // usage counters. MULTICC_PROXY_TOKEN is retained only for legacy imports.
+    // usage counters. No server-wide credential can open provider relays.
     app.post('/api/providers/:appType/:id/relay-share', (req, res) => {
       const provider = deps.providers.getProvider(req.params.appType, req.params.id);
       if (!provider) return res.status(404).json({ error: 'provider not found' });

@@ -136,7 +136,7 @@ function providerRouteDeps(providers, providerRelayShares, defaultsFile) {
   };
 }
 
-function mountAuth(app, metrics, proxyToken, providerRelayShares) {
+function mountAuth(app, metrics, providerRelayShares) {
   const authSecurity = {
     createCookie: () => 'unused-cookie',
     verifyCookie: () => false,
@@ -157,14 +157,13 @@ function mountAuth(app, metrics, proxyToken, providerRelayShares) {
     createErrorDto: dto => ({ error: dto }),
     getAccessToken: () => ACCESS_TOKEN,
     getShuttingDown: () => false,
-    getProxyToken: () => proxyToken,
     authorizeProviderRelayRequest: input => providerRelayShares.authorize(input),
     isRequestPeerAllowed: isPrivateRequestPeer,
   });
   runtime.mountRoutes(app);
 }
 
-function createInstance({ providers, proxyToken, providerRelayShares, defaultsFile, activity, authorizeProxyRequest }) {
+function createInstance({ providers, providerRelayShares, defaultsFile, activity, authorizeProxyRequest }) {
   const app = express();
   const metrics = [];
   app.disable('x-powered-by');
@@ -174,7 +173,7 @@ function createInstance({ providers, proxyToken, providerRelayShares, defaultsFi
     next();
   });
   app.use(express.json({ limit: '64kb' }));
-  mountAuth(app, metrics, proxyToken, providerRelayShares);
+  mountAuth(app, metrics, providerRelayShares);
   createProviderRoutes(providerRouteDeps(providers, providerRelayShares, defaultsFile))
     .mountManagementRoutes(app);
   const getProvider = (appType, id) => providers.getProvider(appType, id);
@@ -285,7 +284,6 @@ test('shared Provider works from a loopback Assist request through a LAN-bound C
 
   const source = createInstance({
     providers: sourceProviders,
-    proxyToken: 'legacy-global-token',
     providerRelayShares: sourceRelayShares,
     defaultsFile: path.join(root, 'source', 'provider-defaults.json'),
     activity: sourceActivity,
@@ -293,7 +291,6 @@ test('shared Provider works from a loopback Assist request through a LAN-bound C
   });
   const target = createInstance({
     providers: targetProviders,
-    proxyToken: '',
     providerRelayShares: targetRelayShares,
     defaultsFile: path.join(root, 'target', 'provider-defaults.json'),
     activity: targetActivity,

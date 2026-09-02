@@ -8,20 +8,9 @@
 // through getters so a token set at runtime — or a shutdown transition — takes
 // effect on the very next request without recapturing a stale snapshot.
 
-const crypto = require('node:crypto');
-
-// CPR mounts its Anthropic/OpenAI protocol relays at these paths. A dedicated
-// bearer (MULTICC_PROXY_TOKEN) may unlock exactly these two mounts for remote
-// multicc instances borrowing this host's provider credentials — it never
-// grants the rest of the API.
+// CPR mounts its Anthropic/OpenAI protocol relays at these paths. Only a
+// durable, provider-scoped share credential may unlock them remotely.
 const PROXY_RELAY_PREFIXES = ['/claude-proxy', '/codex-proxy'];
-
-function safeEqualSecret(a, b) {
-  if (typeof a !== 'string' || typeof b !== 'string' || !a || !b) return false;
-  const ha = crypto.createHash('sha256').update(a).digest();
-  const hb = crypto.createHash('sha256').update(b).digest();
-  return crypto.timingSafeEqual(ha, hb);
-}
 
 function assertFunction(value, name) {
   if (typeof value !== 'function') {
@@ -43,7 +32,6 @@ function createAuthRuntime(rawDeps) {
     createErrorDto,
     getAccessToken,
     getShuttingDown,
-    getProxyToken = () => process.env.MULTICC_PROXY_TOKEN || '',
     authorizeProviderRelayRequest = () => null,
     isRequestPeerAllowed = () => true,
     authorizeScopedRequest = () => false,
@@ -66,7 +54,7 @@ function createAuthRuntime(rawDeps) {
     [isLocalRequest, 'isLocalRequest'], [parseCookies, 'parseCookies'],
     [normalizeRedirect, 'normalizeRedirect'], [escapeHtmlAttribute, 'escapeHtmlAttribute'],
     [createErrorDto, 'createErrorDto'], [getAccessToken, 'getAccessToken'],
-    [getShuttingDown, 'getShuttingDown'], [getProxyToken, 'getProxyToken'],
+    [getShuttingDown, 'getShuttingDown'],
     [authorizeProviderRelayRequest, 'authorizeProviderRelayRequest'],
     [isRequestPeerAllowed, 'isRequestPeerAllowed'], [authorizeScopedRequest, 'authorizeScopedRequest'],
   ]) assertFunction(fn, name);
@@ -103,9 +91,8 @@ function createAuthRuntime(rawDeps) {
     return false;
   }
 
-  // New shares carry a provider-scoped mcr1 credential backed by a durable
-  // record. MULTICC_PROXY_TOKEN remains a legacy fallback so existing imports
-  // do not stop abruptly during migration.
+  // Every share carries a provider-scoped mcr1 credential backed by a durable
+  // record. Unscoped legacy/global credentials always fail closed.
   function isProxyRelayCredential(req) {
     const p = req.path;
     if (!PROXY_RELAY_PREFIXES.some(pre => p === pre || p.startsWith(`${pre}/`))) return false;
@@ -128,9 +115,7 @@ function createAuthRuntime(rawDeps) {
       req.providerRelayShareId = scoped.shareId || null;
       return true;
     }
-    if (credential.startsWith('mcr1.')) return false;
-    const token = String(getProxyToken() || '').trim();
-    return !!(token && safeEqualSecret(credential, token));
+    return false;
   }
 
   function mountRoutes(app) {

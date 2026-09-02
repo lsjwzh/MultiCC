@@ -1451,18 +1451,6 @@
             <div class="sc-footer"><button class="btn btn-green" id="tnl-token-save" onclick="saveAccessToken()">保存</button><span class="status-text" id="tnl-token-msg"></span></div>
           </div>
 
-          <!-- 借道令牌 MULTICC_PROXY_TOKEN -->
-          <div class="settings-card">
-            <div class="sc-header">借道令牌 (MULTICC_PROXY_TOKEN) <span id="ptoken-hint" style="font-size:11px;font-weight:400;color:var(--faint);"></span></div>
-            <div class="sc-body">
-              <div style="font-size:12px;color:var(--faint);line-height:1.6;margin-bottom:8px;">
-                让另一台 multicc 经本机 CPR 代理（/claude-proxy、/codex-proxy）借用 provider 端点的专用令牌——「借道分享」生成的分享码里带的就是它。只解锁这两个代理挂载，不用于页面登录、不含上游 API Key。未设置时借道分享不可用。
-              </div>
-              <div class="setting-row"><label>借道令牌</label><input id="ptoken" type="text" placeholder="未设置" autocomplete="off" /></div>
-            </div>
-            <div class="sc-footer"><button class="btn btn-green" id="ptoken-save" onclick="saveProxyToken()">保存</button><button class="btn" onclick="genProxyToken()">随机生成</button><span class="status-text" id="ptoken-msg"></span></div>
-          </div>
-
           <!-- 花生壳 -->
           <div class="settings-card">
             <div class="sc-header">花生壳 (PhDDNS) <span id="tnl-ph-avail" style="font-size:11px;font-weight:400;color:var(--faint);"></span></div>
