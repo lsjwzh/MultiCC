@@ -26,6 +26,7 @@ task-short-codes.json
 task-short-codes.json.bak-*
 shares.json
 fleet-shares.json
+provider-relay-shares.json
 external-fleets.json
 aux-config.json
 aux_runs/
