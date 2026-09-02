@@ -88,10 +88,12 @@ function createHarness(overrides = {}) {
     effectiveSessionModel: value => value.model || 'effective-default',
     effectiveSessionEffort: value => value.effort || 'effective-default',
     serializeSubagent: value => value,
-    clock: () => 1000,
+    clock: overrides.clock || (() => 1000),
     handoffIdFactory: () => 'handoff_fixed',
     installSpecs: overrides.installSpecs,
     spawnProcess: overrides.spawnProcess,
+    cliCommands: overrides.cliCommands,
+    execFileVersion: overrides.execFileVersion,
   });
   const app = {
     routes: {},
@@ -119,7 +121,13 @@ function createHarness(overrides = {}) {
     await app.routes['GET /api/cli/install-status/:jobId']({ params: { jobId }, body: {} }, res);
     return res;
   }
-  return { runtime, session, records, chat, effects, app, invoke, invokeSpecs, invokeInstall, invokeStatus };
+  async function invokeVersions(force) {
+    const res = createResponse();
+    const query = force ? { refresh: '1' } : {};
+    await app.routes['GET /api/cli/versions']({ params: {}, query, body: {} }, res);
+    return res;
+  }
+  return { runtime, session, records, chat, effects, app, invoke, invokeSpecs, invokeInstall, invokeStatus, invokeVersions };
 }
 
 test('dependency boundary fails closed before registering a route', () => {
@@ -432,4 +440,132 @@ test('install-status returns 404 for an unknown job id', async () => {
   const res = await invokeStatus('does-not-exist');
   assert.equal(res.statusCode, 404);
   assert.deepEqual(res.body, { ok: false, error: 'job not found' });
+});
+
+// ── GET /api/cli/versions ─────────────────────────────────────────────────
+// 只读版本探测: 报告 multicc 实际派生的二进制的 `--version`, 缓存 1 天, 不升级。
+function fakeExecFile(versionByCmd, { failCmds = [] } = {}) {
+  const calls = [];
+  const fn = (cmd, args, _options, cb) => {
+    calls.push({ cmd, args });
+    if (failCmds.includes(cmd)) return cb(new Error(`spawn ${cmd} ENOENT`), '', '');
+    const stub = versionByCmd[cmd];
+    if (stub == null) return cb(new Error(`no stub for ${cmd}`), '', '');
+    if (typeof stub === 'string') return cb(null, stub, '');
+    return cb(null, stub.stdout || '', stub.stderr || '');
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+const VERSION_CMDS = {
+  claude: '/bin/claude', codex: '/bin/codex', opencode: '/bin/opencode',
+  zcode: '/bin/zcode', qoder: '/bin/qoderclicn', kimi: 'kimi',
+};
+
+test('cli/versions reports the spawned binary version and parses noisy output', async () => {
+  const exec = fakeExecFile({
+    '/bin/claude': 'claude v2.0.1 (cli)\n',
+    '/bin/codex': 'codex-cli 0.20.0',
+    '/bin/opencode': '0.1.48',
+    '/bin/zcode': { stdout: '', stderr: 'zcode 1.2.3' }, // 版本落在 stderr 也能解析
+    '/bin/qoderclicn': '1.1.4',
+  });
+  const harness = createHarness({
+    cliCommands: VERSION_CMDS,
+    execFileVersion: exec,
+    availability: {
+      claude: { available: true }, codex: { available: true }, opencode: { available: true },
+      zcode: { available: true }, qoder: { available: true }, kimi: { available: false },
+    },
+  });
+  const res = await harness.invokeVersions();
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.ok, true);
+  assert.equal(res.body.cached, false);
+  assert.equal(res.body.versions.qoder.version, '1.1.4');
+  assert.equal(res.body.versions.qoder.cmd, '/bin/qoderclicn');
+  assert.equal(res.body.versions.qoder.available, true);
+  assert.equal(res.body.versions.claude.version, '2.0.1');
+  assert.equal(res.body.versions.codex.version, '0.20.0');
+  assert.equal(res.body.versions.zcode.version, '1.2.3'); // 从 stderr 解析
+  // 探测确实用的是 --version, 且解析出的正是注入的那个二进制路径
+  assert.deepEqual(exec.calls.find(c => c.cmd === '/bin/qoderclicn').args, ['--version']);
+});
+
+test('cli/versions skips unavailable clis without spawning them', async () => {
+  const exec = fakeExecFile({ '/bin/claude': '2.0.1', '/bin/qoderclicn': '1.1.4' });
+  const harness = createHarness({
+    cliCommands: VERSION_CMDS,
+    execFileVersion: exec,
+    availability: {
+      claude: { available: true }, codex: { available: false }, opencode: { available: false },
+      zcode: { available: false }, qoder: { available: true }, kimi: { available: false },
+    },
+  });
+  const res = await harness.invokeVersions();
+  assert.equal(res.body.versions.kimi.available, false);
+  assert.equal(res.body.versions.kimi.version, null);
+  assert.equal(res.body.versions.codex.available, false);
+  // 只为可用的 claude/qoder spawn, 其余不触发子进程(避免 ENOENT 噪声)
+  const spawned = exec.calls.map(c => c.cmd).sort();
+  assert.deepEqual(spawned, ['/bin/claude', '/bin/qoderclicn']);
+});
+
+test('cli/versions caches within the TTL and re-probes on ?refresh=1', async () => {
+  const exec = fakeExecFile({ '/bin/qoderclicn': '1.1.4' });
+  const harness = createHarness({
+    cliCommands: VERSION_CMDS,
+    execFileVersion: exec,
+    availability: { qoder: { available: true } },
+  });
+  const first = await harness.invokeVersions();
+  assert.equal(first.body.cached, false);
+  const callsAfterFirst = exec.calls.length;
+  const second = await harness.invokeVersions();
+  assert.equal(second.body.cached, true);
+  assert.equal(exec.calls.length, callsAfterFirst); // 命中缓存, 未再 spawn
+  const third = await harness.invokeVersions(true); // ?refresh=1
+  assert.equal(third.body.cached, false);
+  assert.ok(exec.calls.length > callsAfterFirst); // 强制重探
+});
+
+test('cli/versions re-probes once the TTL elapses', async () => {
+  let now = 1000;
+  const exec = fakeExecFile({ '/bin/qoderclicn': '1.1.4' });
+  const harness = createHarness({
+    clock: () => now,
+    cliCommands: VERSION_CMDS,
+    execFileVersion: exec,
+    availability: { qoder: { available: true } },
+  });
+  await harness.invokeVersions();
+  const afterFirst = exec.calls.length;
+  now += 60 * 1000; // 1 分钟: 仍在 1 天 TTL 内
+  const cached = await harness.invokeVersions();
+  assert.equal(cached.body.cached, true);
+  assert.equal(exec.calls.length, afterFirst);
+  now += 24 * 60 * 60 * 1000; // 跨过 TTL
+  const stale = await harness.invokeVersions();
+  assert.equal(stale.body.cached, false);
+  assert.ok(exec.calls.length > afterFirst);
+});
+
+test('cli/versions reports a per-cli error entry without failing the whole call', async () => {
+  const exec = fakeExecFile(
+    { '/bin/claude': 'no version here' }, // 无法解析
+    { failCmds: ['/bin/qoderclicn'] },     // spawn 失败
+  );
+  const harness = createHarness({
+    cliCommands: VERSION_CMDS,
+    execFileVersion: exec,
+    availability: { claude: { available: true }, qoder: { available: true } },
+  });
+  const res = await harness.invokeVersions();
+  assert.equal(res.statusCode, 200); // 单点失败不影响整体 200
+  assert.equal(res.body.ok, true);
+  assert.equal(res.body.versions.claude.version, null);
+  assert.match(res.body.versions.claude.error, /not parseable/);
+  assert.equal(res.body.versions.qoder.version, null);
+  assert.match(res.body.versions.qoder.error, /ENOENT/);
 });
