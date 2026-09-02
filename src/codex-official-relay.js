@@ -9,9 +9,9 @@
 // Both call the ChatGPT Codex backend instead of api.openai.com.
 //
 // The OAuth credential never crosses the relay boundary. A borrower presents
-// MULTICC_PROXY_TOKEN to MultiCC's existing auth middleware; this adapter reads
-// the host's current access token for each request and swaps credentials only
-// on the host-to-ChatGPT hop.
+// a provider-scoped relay-share credential; this adapter reads the host's
+// current access token for each request and swaps credentials only on the
+// host-to-ChatGPT hop.
 
 const fs = require('node:fs');
 const crypto = require('node:crypto');
