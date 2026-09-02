@@ -116,7 +116,7 @@ const { mountOpenCodeModelRoutes } = require('./src/routes/opencode-models');
 const { mountOpenCodeQuotaRoutes } = require('./src/routes/opencode-quota');
 const { mountQoderModelRoutes } = require('./src/routes/qoder-models');
 const { mountQoderQuotaRoutes } = require('./src/routes/qoder-quota');
-const { mountCodexQuotaRoutes } = require('./src/routes/codex-quota');
+const { mountCodexQuotaRoutes } = require('./src/routes/codex-quota'); const { createOfficialAccountStore, sanitizeLoginEnv } = require('./src/official-accounts'); const { mountCodexAccountRoutes } = require('./src/routes/codex-accounts'); const { createCodexAccountRefreshSupervisor } = require('./src/codex-accounts-refresh'); // multi-account official credentials (see src/official-accounts.js)
 const { mountArkQuotaRoutes } = require('./src/routes/ark-quota');
 const { mountZhipuQuotaRoutes } = require('./src/routes/zhipu-quota');
 const { mountKimiQuotaRoutes } = require('./src/routes/kimi-quota');
@@ -1125,7 +1125,7 @@ async function createSession(id) {
   // Per-session provider override is injected into tmux; Codex capture below
   // also uses the selected CODEX_HOME.
   const provEnv = providerRouterRuntime.resolveSpawnEnv(persisted);
-  const termEnv = { ...provEnv.env };
+  const termEnv = { ...provEnv.env, ...(persisted.loginEnv || {}) }; // loginEnv: allowlisted login-terminal pins (sanitizeLoginEnv), e.g. CODEX_HOME=<account dir>
   if (persisted.cli === 'claude') {
     for (const k of providers.CLAUDE_ROUTING_KEYS) {
       if (!(k in termEnv)) termEnv[k] = '';
@@ -1383,7 +1383,7 @@ app.use(express.json({ limit: '50mb' }));
 // 必须在 express.json() 之后挂载，以便 req.body 已解析。详见 docs/codex-proxy-contract.md。
 providerRouterRuntime.mountProtocolProxies(app, {
   protocols: ['codex'],
-  getPort: () => PORT, authorizeProxyRequest: providerAttemptRuntime.authorizeProxyRequest,
+  getPort: () => PORT, authorizeProxyRequest: providerAttemptRuntime.authorizeProxyRequest, codexOfficialRelay: { resolveAccountAuthFile: id => officialAccounts.codexAuthFile(id) }, // multi-account: providers marked settingsConfig.officialAccount resolve the account's own auth.json
   onUsageObserved: event => { const tagged = providerAttemptRuntime.attributeProxyUsage(event); if (tagged.routeAttribution === 'exact' || tagged.producerBound === true) taskRunProviderBridge.onUsageObserved(tagged); else if (String(event.roleKind || event.role || 'main').toLowerCase() !== 'main') recordUsageObserved(tagged); },
   onActivity: event => { const bound = providerAttemptRuntime.onProxyActivity(event); if (bound) taskRunProviderBridge.onActivity({ ...event, sessionId: bound.sessionId }); },
   ...createProxyBroadcasters(chatBroadcast, { resolveCli: name => (persistedSessions.get(name) || {}).cli, recordLimit: limitRecorder.recordSession, attemptRuntime: providerAttemptRuntime, audit: (id, event) => turnEventJournal.note(id, event) }),
@@ -1562,7 +1562,7 @@ memoModule.migrateLegacy().done.catch(error => console.log(`[memo] migration fai
 
 // Create + persist an isolated session record (its own git worktree + branch).
 // Shared creation boundary; an explicit id creates or reuses a named session.
-async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, providerSelection = null, effort = null, agent = null, rolePrompt = null, rolePresetId = null, type = null, taskExecutionSlot = false, experimentalMode = null, loginFlow = null, persistence = 'bestEffort', persistenceSource = 'runtime.create-session', taskBoundTaskId = null }) {
+async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, providerSelection = null, effort = null, agent = null, rolePrompt = null, rolePresetId = null, type = null, taskExecutionSlot = false, experimentalMode = null, loginFlow = null, loginEnv = null, persistence = 'bestEffort', persistenceSource = 'runtime.create-session', taskBoundTaskId = null }) {
   if (!dir) return { ok: false, error: 'directory not found' };
   if (!SUPPORTED_CHAT_CLIS.includes(cli)) return { ok: false, error: `cli must be ${SUPPORTED_CHAT_CLIS.join(', ')}` };
   if (!['terminal', 'chat'].includes(kind)) return { ok: false, error: 'kind must be terminal or chat' };
@@ -1639,7 +1639,7 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
   if (rp) session.rolePrompt = rp;
   if (rolePresetId) session.rolePresetId = String(rolePresetId).trim();
   if (type) session.type = type;   // commander (and future roles) — round-trips via bootstrap/state + session-persistence
-  if (loginFlow) session.loginFlow = loginFlow; // whitelisted interactive login terminal (codex-login)
+  if (loginFlow) session.loginFlow = loginFlow; const loginEnvChecked = sanitizeLoginEnv(loginEnv, loginFlow); if (!loginEnvChecked.ok) return { ok: false, error: loginEnvChecked.error }; if (loginEnvChecked.env) session.loginEnv = loginEnvChecked.env; // whitelisted interactive login terminal (codex-login) + allowlisted env pins
   if (type === 'worker' && taskExecutionSlot) session.taskExecutionSlot = true;
   if (ephemeral) session.ephemeral = true; if (experiment.mode) session.experimentalMode = experiment.mode; if (taskBoundTaskId) session.taskBoundTaskId = String(taskBoundTaskId).slice(0, 120);
   if (kind === 'chat') ensureCliStates(session);
@@ -1924,7 +1924,7 @@ const sessionDelivery = require('./src/session-delivery').createSessionDelivery(
 });
 let apiErrorAuxQueue = null;
 const claudeOAuthRefresh = createClaudeOAuthRefresher({ logger });
-const codexOAuthRefresh = createCodexOAuthRefresher({ logger });
+const codexOAuthRefresh = createCodexOAuthRefresher({ logger }); const officialAccounts = createOfficialAccountStore(); const codexAccountRefresh = createCodexAccountRefreshSupervisor({ accounts: officialAccounts, logger }); // multi-account: one refresher per official-account credential (the shared refresher only watches ~/.codex/auth.json)
 const apiErrorHost = createApiErrorHost({
   policy: apiErrorPolicy, logger, persistedSessions, getTaskState, setTaskState,
   chatBroadcast, workspaceBroadcast, sessionDelivery,
@@ -2194,11 +2194,11 @@ mountQoderModelRoutes(app); require('./src/routes/claude-models').mountClaudeMod
 // usage (5h rolling / weekly / monthly). SSR'd hydration data, no REST API
 // exists. Surfaces chrome_unavailable / needs_login / unavailable states so
 // the chat rate-limit bar can prompt instead of degrading silently.
-mountOpenCodeQuotaRoutes(app); mountQoderQuotaRoutes(app); mountCodexQuotaRoutes(app);
+mountOpenCodeQuotaRoutes(app); mountQoderQuotaRoutes(app); mountCodexQuotaRoutes(app, { resolveAccountAuthFile: id => officialAccounts.codexAuthFile(id) });
 // Vendor routes feed results into the provider-limit cache via the recorder;
 // Qoder/OpenCode/Codex are account-level, so only ark/zhipu/kimi/claude feed here.
 mountArkQuotaRoutes(app, limitRecorder.recordVendor); mountZhipuQuotaRoutes(app, limitRecorder.recordVendor); mountKimiQuotaRoutes(app, { recordVendor: limitRecorder.recordVendor }); mountClaudeUsageQuotaRoutes(app, limitRecorder.recordClaude); mountAliyunQuotaRoutes(app); require('./src/routes/quota-bars').mountQuotaBarRoutes(app, { quotaBarCache, recordVendor: limitRecorder.recordVendor, recordClaude: limitRecorder.recordClaude });
-mountCodexOAuthRoutes(app, { getStatus: () => codexOAuthRefresh.status(), directories, createSessionRecord, persistedSessionExists: id => persistedSessions.has(id) });
+mountCodexOAuthRoutes(app, { getStatus: () => codexOAuthRefresh.status(), directories, createSessionRecord, persistedSessionExists: id => persistedSessions.has(id) }); mountCodexAccountRoutes(app, { accounts: officialAccounts, providers, directories, createSessionRecord, persistedSessionExists: id => persistedSessions.has(id), refresherStatus: id => codexAccountRefresh.status(id) }); // multi-account management under /api/codex/accounts — see src/routes/codex-accounts.js
 const claudeOAuthSurface = createClaudeOAuthSurface({ refresher: claudeOAuthRefresh, directories, createSessionRecord, persistedSessions, destroySessionCascade, sessionPersistence, appendEvent }); claudeOAuthSurface.mountRoutes(app); // see src/routes/claude-oauth.js header
 // Token APIs remain between the two Provider route phases so the established
 // route ordering stays byte-compatible while accounting lives in one runtime.
@@ -2992,8 +2992,8 @@ const cleanupArtifacts = () => { try { return artifacts.cleanup(undefined, taskR
     // Same job for the shared default codex login (~/.codex/auth.json): keep
     // the one-hour access token fresh so concurrent provider-less codex turns
     // never race over the single-use refresh token.
-    codexOAuthRefresh.check('boot');
-    trackServiceTimer(setInterval(() => codexOAuthRefresh.check(), CODEX_OAUTH_CHECK_INTERVAL_MS));
+    codexOAuthRefresh.check('boot'); codexAccountRefresh.checkAll('boot').catch(err => logger.warn('codex_account_refresh_failed', { error: err.message })); // official-account codex credentials: same cadence, one refresher per logged-in account
+    trackServiceTimer(setInterval(() => codexOAuthRefresh.check(), CODEX_OAUTH_CHECK_INTERVAL_MS)); trackServiceTimer(setInterval(() => codexAccountRefresh.checkAll().catch(err => logger.warn('codex_account_refresh_failed', { error: err.message })), CODEX_OAUTH_CHECK_INTERVAL_MS)); // official-account codex credentials: same cadence, one refresher per logged-in account
     serviceReady = true;
   });
 })();
