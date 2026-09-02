@@ -266,11 +266,15 @@ async function refreshTaskBoard(force) {
     // list, so task activity has to refresh the outer Fleet state explicitly.
     if (typeof refreshTaskBoardFleetActivity === 'function') refreshTaskBoardFleetActivity();
     else if (typeof refreshAllCardBorders === 'function') refreshAllCardBorders();
-    // Re-render wherever the board is currently visible.
-    if (typeof _detailModalOpen === 'function' && _detailModalOpen()
-        && (typeof _dirDetailTab === 'undefined' || _dirDetailTab !== 'planner')
-        && typeof renderDirectoryDetailBody === 'function') {
-      renderDirectoryDetailBody(_detailDirId);
+    // The unified task surface reconciles the snapshot above. Keep its DOM
+    // stable so search/scroll/focus survive, but refresh the outer Fleet tab's
+    // count and running marker from the same snapshot.
+    if (typeof _detailModalOpen === 'function' && _detailModalOpen()) {
+      if (typeof _dirDetailTab !== 'undefined' && _dirDetailTab === 'tasks') {
+        if (typeof refreshDirectoryDetailTaskTab === 'function') refreshDirectoryDetailTaskTab(_detailDirId);
+      } else if (typeof renderDirectoryDetailBody === 'function') {
+        renderDirectoryDetailBody(_detailDirId);
+      }
     }
     // 刷新后定位新任务（若有待定位的）
     if (_tbPendingTaskIds.length) {
