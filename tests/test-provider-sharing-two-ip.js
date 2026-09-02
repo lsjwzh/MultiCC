@@ -13,6 +13,10 @@ const express = require('express');
 const providerRouter = require('cli-provider-router');
 const { assertTestDir } = require('../src/paths');
 const { isLocalRequest, isPrivateRequestPeer } = require('../src/request-locality');
+const {
+  createProviderProxyAdmission,
+  createProviderProxyGuard,
+} = require('../src/provider-proxy-guard');
 const { createAuthRuntime } = require('../src/routes/auth');
 const { createProviderRoutes } = require('../src/routes/providers');
 
@@ -158,7 +162,7 @@ function mountAuth(app, metrics, proxyToken) {
   runtime.mountRoutes(app);
 }
 
-function createInstance({ providers, proxyToken, defaultsFile, activity }) {
+function createInstance({ providers, proxyToken, defaultsFile, activity, authorizeProxyRequest }) {
   const app = express();
   const metrics = [];
   app.disable('x-powered-by');
@@ -171,10 +175,18 @@ function createInstance({ providers, proxyToken, defaultsFile, activity }) {
   mountAuth(app, metrics, proxyToken);
   createProviderRoutes(providerRouteDeps(providers, proxyToken, defaultsFile))
     .mountManagementRoutes(app);
-  providerRouter.mountClaudeProxy(app, {
-    getProvider: (appType, id) => providers.getProvider(appType, id),
-    hopCredentials: { verify: () => ({ ok: false, managed: false, reason: 'unmanaged-route' }) },
+  const getProvider = (appType, id) => providers.getProvider(appType, id);
+  const admission = createProviderProxyAdmission({
+    protocol: 'claude', app, getProvider, authorizeProxyRequest,
     onActivity: event => activity.push(event),
+  });
+  app.use('/claude-proxy', createProviderProxyGuard({
+    protocol: 'claude', authorizeProxyRequest,
+  }));
+  providerRouter.mountClaudeProxy(admission.app, {
+    getProvider: admission.getProvider,
+    hopCredentials: { verify: () => ({ ok: false, managed: false, reason: 'unmanaged-route' }) },
+    onActivity: admission.onActivity,
   });
   return { app, metrics };
 }
@@ -268,12 +280,14 @@ test('shared Provider works from a loopback Assist request through a LAN-bound C
     proxyToken: RELAY_TOKEN,
     defaultsFile: path.join(root, 'source', 'provider-defaults.json'),
     activity: sourceActivity,
+    authorizeProxyRequest: () => ({ ok: false, code: 'no-active-attempt' }),
   });
   const target = createInstance({
     providers: targetProviders,
     proxyToken: '',
     defaultsFile: path.join(root, 'target', 'provider-defaults.json'),
     activity: targetActivity,
+    authorizeProxyRequest: () => ({ ok: false, code: 'no-active-attempt' }),
   });
   sourceServer = await listen(source.app, lanIp);
   targetServer = await listen(target.app, '127.0.0.1');
@@ -325,6 +339,15 @@ test('shared Provider works from a loopback Assist request through a LAN-bound C
   });
   assert.equal(wrongToken.response.status, 403);
   assert.equal(upstreamRequests.length, 0, 'a bad share token never reaches the upstream');
+
+  const fenced = await postJson(
+    `${sourceOrigin}/claude-proxy/source-provider/not-an-attempt/v1/messages`,
+    prompt,
+    { 'x-access-token': ACCESS_TOKEN, 'anthropic-version': '2023-06-01' },
+  );
+  assert.equal(fenced.response.status, 409,
+    'an unknown session bucket cannot bypass the attempt guard');
+  assert.equal(upstreamRequests.length, 0, 'a rejected attempt route never reaches upstream');
 
   const escalated = await requestJson(`${sourceOrigin}/api/provider-defaults`, {
     headers: { 'x-api-key': RELAY_TOKEN, accept: 'application/json' },
