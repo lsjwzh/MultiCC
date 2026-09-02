@@ -734,9 +734,10 @@ body[data-view="tasks"] #topbar .planner-hide-on-tasks {
   body[data-view="tasks"] #sidebar { padding: 0; }
   .planner-toolbar { gap: 7px; min-height: auto; padding: 9px 10px; }
   .planner-toolbar-group { width: 100%; }
-  .planner-toolbar-group.actions { width: auto; margin-left: auto; }
+  .planner-toolbar-group.actions { order: 2; width: 100%; margin-left: 0; justify-content: flex-end; }
   .planner-segment { order: 4; }
   .planner-search { min-width: 0; }
+  .planner-select { min-width: 0; }
   .planner-fleet-lock { flex: 1 1 auto; max-width: none; }
   .planner-origin-filter { width: 100%; overflow-x: auto; }
   .planner-work-overview { gap: 9px; padding-inline: 10px; }
