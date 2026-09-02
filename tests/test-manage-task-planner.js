@@ -568,6 +568,8 @@ test('planner refresh and responsive access paths are wired', () => {
   assert.match(taskBoardJs, /else if \(typeof renderDirectoryDetailBody === 'function'\) \{\s*renderDirectoryDetailBody\(_detailDirId\);/);
   assert.match(js, /name="workflowStage"/);
   assert.match(css, /@media \(max-width: 760px\)/);
+  assert.match(css, /\.planner-toolbar-group\.actions\s*\{[^}]*order: 2;[^}]*width: 100%;[^}]*justify-content: flex-end;/);
+  assert.match(css, /\.planner-select\s*\{\s*min-width: 0;/);
   assert.match(css, /\.planner-board\s*\{\s*display: block;[\s\S]*?\.planner-column\s*\{\s*display: flex;/);
   assert.doesNotMatch(css, /\.planner-column\.is-mobile-active/);
 });
