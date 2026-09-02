@@ -106,6 +106,7 @@ PROMOTION_PLAN.md
 providers.json
 providers.json.bak-*
 provider-defaults.json
+provider-relay-shares.json
 provider-limit-cache.db
 provider-limit-cache.db-shm
 provider-limit-cache.db-wal
