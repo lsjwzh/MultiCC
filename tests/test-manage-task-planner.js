@@ -15,6 +15,28 @@ const css = fs.readFileSync(path.join(root, 'public/manage-task-planner.css'), '
 const zh = JSON.parse(fs.readFileSync(path.join(root, 'app/assets/i18n/zh.json'), 'utf8'));
 const en = JSON.parse(fs.readFileSync(path.join(root, 'app/assets/i18n/en.json'), 'utf8'));
 
+function sourceSection(source, start, end) {
+  const from = source.indexOf(start);
+  const to = source.indexOf(end, from + start.length);
+  assert.notEqual(from, -1, `missing source section start: ${start}`);
+  assert.notEqual(to, -1, `missing source section end: ${end}`);
+  return source.slice(from, to);
+}
+
+function plannerSourceWithTestHooks() {
+  const marker = '  window.MultiCCTaskPlanner = Object.freeze({';
+  assert.ok(js.includes(marker), 'planner API marker must exist');
+  return js.replace(marker, `  window.__plannerTestHooks = Object.freeze({
+    taskTitleFromText,
+    dialogDirectoryId,
+    createTodoFromDialog,
+    openStartNowDialog,
+    closePlannerOverlay,
+  });
+
+${marker}`);
+}
+
 function fakePlannerRoot() {
   const classes = new Set();
   const listeners = new Map();
@@ -62,7 +84,7 @@ function articleTaskIds(htmlText, className) {
   return ids.sort();
 }
 
-function createPlannerHarness() {
+function createPlannerHarness(options = {}) {
   const globalRoot = fakePlannerRoot();
   const requests = [];
   const snapshot = {
@@ -90,7 +112,7 @@ function createPlannerHarness() {
   ];
   let requestHandler = null;
   const storage = new Map([['multicc_lang', 'zh']]);
-  const document = {
+  const defaultDocument = {
     activeElement: null,
     body: { appendChild() {} },
     getElementById(id) { return id === 'task-planner-root' ? globalRoot : null; },
@@ -98,6 +120,8 @@ function createPlannerHarness() {
     addEventListener() {},
     createElement() { throw new Error('planner overlay was not expected in this test'); },
   };
+  const document = typeof options.createDocument === 'function'
+    ? options.createDocument(globalRoot) : defaultDocument;
   const context = {
     console,
     document,
@@ -122,18 +146,81 @@ function createPlannerHarness() {
       },
     },
     setView() {},
+    ...(options.globals || {}),
   };
   context.window = context;
   vm.createContext(context);
-  vm.runInContext(js, context, { filename: 'manage-task-planner.js' });
+  vm.runInContext(options.source || js, context, { filename: 'manage-task-planner.js' });
   return {
     context,
+    document,
     globalRoot,
     requests,
     storage,
     setDirectories(value) { directories = value; },
     setRequestHandler(value) { requestHandler = value; },
   };
+}
+
+function createStartNowDocument(globalRoot) {
+  const listeners = new Map();
+  const document = {
+    activeElement: null,
+    overlay: null,
+    getElementById(id) { return id === 'task-planner-root' ? globalRoot : null; },
+    addEventListener(type, listener) { listeners.set(type, listener); },
+    querySelector(selector) {
+      if (selector === '.planner-overlay') {
+        return this.overlay && this.overlay.isConnected ? this.overlay : null;
+      }
+      return null;
+    },
+  };
+  const focusable = () => ({
+    disabled: false,
+    isConnected: true,
+    offsetParent: {},
+    listeners: new Map(),
+    addEventListener(type, listener) { this.listeners.set(type, listener); },
+    emit(type) { return this.listeners.get(type)?.({ target: this }); },
+    focus() { document.activeElement = this; },
+  });
+  const returnFocus = focusable();
+  const picker = focusable();
+  picker.value = 'fleet-a';
+  const closeButton = focusable();
+  const input = focusable();
+  const composerHost = {};
+  document.activeElement = returnFocus;
+  document.createElement = () => {
+    const overlay = {
+      className: '',
+      dataset: {},
+      innerHTML: '',
+      isConnected: false,
+      listeners: new Map(),
+      addEventListener(type, listener) { this.listeners.set(type, listener); },
+      querySelector(selector) {
+        if (selector === '.planner-start-composer') return composerHost;
+        if (selector === '[data-planner-dir]') return picker;
+        if (selector === '.tb-input') return input;
+        return null;
+      },
+      querySelectorAll(selector) {
+        if (selector === '[data-overlay-close]') return [closeButton];
+        if (selector.includes('button:not([disabled])')) return [closeButton, picker, input];
+        return [];
+      },
+      remove() { this.isConnected = false; },
+    };
+    document.overlay = overlay;
+    return overlay;
+  };
+  document.body = {
+    appendChild(overlay) { overlay.isConnected = true; },
+  };
+  document.refs = { returnFocus, picker, closeButton, input, composerHost, listeners };
+  return document;
 }
 
 async function settlePlannerLoad() {
@@ -170,7 +257,7 @@ test('planner mutations use task revisions and idempotent sends', () => {
   assert.match(js, /async function setLifecycle[\s\S]*?persistDrawerChanges\(taskId, context\)[\s\S]*?expectedRevision: context\.revision/);
   assert.match(js, /\/api\/task-board\/tasks\/\$\{encodeURIComponent\(taskId\)\}\/move/);
   assert.match(js, /\/api\/task-board\/tasks\/\$\{encodeURIComponent\(taskId\)\}\/update/);
-  assert.match(js, /async function createFromDialog[\s\S]*?requestJson\('\/api\/task-board\/tasks'/);
+  assert.match(js, /async function createTodoFromDialog[\s\S]*?requestJson\('\/api\/task-board\/tasks'/);
   assert.match(js, /function bindPlannerRoot[\s\S]*?addEventListener\('click', handleRootClick\)[\s\S]*?addEventListener\('keydown', handleRootKeydown\)/);
   assert.doesNotMatch(js, /addEventListener\('(?:dragstart|dragover|drop|dragend)'/);
   assert.match(js, /function unmountFleetSurface\(\)[\s\S]*?closePlannerOverlay\(\)/);
@@ -179,6 +266,198 @@ test('planner mutations use task revisions and idempotent sends', () => {
   assert.match(js, /state\.sendIds\.delete/);
   assert.match(js, /isConflict\(error\)/);
   assert.match(js, /id="planner-edit-title" name="title" maxlength="40"/);
+});
+
+test('planner splits TODO capture from the chat-parity start-now entry', () => {
+  assert.match(js, /data-action="new-todo"[^>]*>\$\{esc\(tr\('plannerNewTodo'\)\)\}/);
+  assert.match(js, /data-action="start-new-now"[^>]*>\$\{esc\(tr\('plannerStartNewNow'\)\)\}/);
+  assert.doesNotMatch(js, /data-action="new-task"/);
+  assert.match(js, /kind === 'new-todo'\) openNewTodoDialog\(\)/);
+  assert.match(js, /kind === 'start-new-now'\) openStartNowDialog\(\)/);
+
+  const capture = sourceSection(js,
+    'async function createTodoFromDialog', 'function openStartNowDialog');
+  assert.match(capture, /requestJson\('\/api\/task-board\/tasks'/);
+  assert.match(capture, /recordType: 'planned'/);
+  assert.match(capture, /workflowStage: 'inbox'/);
+  assert.doesNotMatch(capture, /\/api\/task-board\/send|\/tasks\/\$\{[^}]+\}\/send/,
+    'capturing a TODO must not start an execution turn');
+
+  const startNow = sourceSection(js,
+    'function openStartNowDialog', 'function drawerFormPayload');
+  assert.match(startNow, /window\.MultiCCTaskBoardComposer/);
+  assert.match(startNow, /composerApi\.mount\(/);
+  assert.match(startNow, /requestJson\('\/api\/task-board\/send'/);
+  assert.doesNotMatch(startNow, /requestJson\('\/api\/task-board\/tasks'/,
+    'start now must use the one-request board composer ingress');
+});
+
+test('both planner creation dialogs retain modal labels, focus, and cleanup contracts', () => {
+  const captureDialog = sourceSection(js,
+    'function openNewTodoDialog', 'async function createTodoFromDialog');
+  assert.match(captureDialog,
+    /id="planner-new-form" role="dialog" aria-modal="true" aria-labelledby="planner-new-todo-heading"/);
+  assert.match(captureDialog,
+    /<label[^>]*for="planner-new-todo"[\s\S]*?<textarea id="planner-new-todo" name="text"[^>]*required/);
+  assert.match(captureDialog, /activateOverlay\(overlay, '\[name="text"\]'\)/);
+
+  const startDialog = sourceSection(js,
+    'function openStartNowDialog', 'function drawerFormPayload');
+  assert.match(startDialog,
+    /role="dialog" aria-modal="true" aria-labelledby="planner-start-now-heading"/);
+  assert.match(startDialog, /<h2 id="planner-start-now-heading">/);
+  assert.match(startDialog, /activateOverlay\(overlay, '\.tb-input'\)/);
+  assert.match(startDialog, /overlay\.__plannerCleanup = \(\) => composer\.destroy\(\)/);
+  assert.match(js,
+    /function closePlannerOverlay\(expectedOverlay\)[\s\S]*?const cleanup = overlay\.__plannerCleanup[\s\S]*?typeof cleanup === 'function'[\s\S]*?cleanup\(\)[\s\S]*?overlay\.remove\(\)/);
+});
+
+test('the shared task-board composer has an explicit mount and destroy lifecycle', () => {
+  assert.match(taskBoardJs,
+    /window\.MultiCCTaskBoardComposer = Object\.freeze\(\{\s*mount: createTbComposer,\s*\}\)/);
+  const lifecycle = sourceSection(taskBoardJs,
+    'return {\n    reset() { clearMessageDraft(); },', '// Board-tab composer');
+  assert.match(lifecycle, /destroy\(\) \{/);
+  assert.match(lifecycle, /pickerEpoch \+= 1/);
+  assert.match(lifecycle, /runtimeLoadEpoch \+= 1/);
+  assert.match(lifecycle, /if \(closeActivePicker\) closeActivePicker\(\)/);
+  assert.match(lifecycle, /recorder && recorder\.state === 'recording'[\s\S]*?recorder\.stop\(\)/);
+  assert.match(lifecycle, /clearMessageDraft\(\)/);
+
+  const taskBoardScript = html.indexOf('<script src="manage-taskboard.js"></script>');
+  const plannerScript = html.indexOf('<script src="manage-task-planner.js"></script>');
+  assert.ok(taskBoardScript > 0 && plannerScript > taskBoardScript,
+    'the shared composer must load before the planner consumes it');
+});
+
+test('New TODO posts one Inbox record with a derived title and never starts a run', async () => {
+  class FakeFormData {
+    constructor(form) { this.values = form.values; }
+    get(name) { return this.values[name]; }
+  }
+  const harness = createPlannerHarness({
+    source: plannerSourceWithTestHooks(),
+    globals: { FormData: FakeFormData },
+  });
+  harness.setRequestHandler((url) => {
+    if (url === '/api/task-board/tasks') {
+      return {
+        ok: true,
+        task: {
+          id: 'todo-new', recordType: 'planned', origin: 'board', status: 'active',
+          runState: 'idle', workflowStage: 'inbox', planningRevision: 1, dirId: 'fleet-b',
+          title: 'A'.repeat(40), description: `${'A'.repeat(45)}\nKeep all of this context`,
+        },
+      };
+    }
+    return undefined;
+  });
+  harness.context.setView('tasks');
+  await settlePlannerLoad();
+  harness.requests.length = 0;
+
+  const form = {
+    values: { text: `${'A'.repeat(45)}\nKeep all of this context` },
+    reportValidity() { throw new Error('valid form should not report'); },
+  };
+  const picker = { value: 'fleet-b' };
+  const buttons = [{ disabled: false }];
+  const overlay = {
+    isConnected: false,
+    querySelector(selector) {
+      if (selector === 'form') return form;
+      if (selector === '[data-planner-dir]') return picker;
+      return null;
+    },
+    querySelectorAll(selector) { return selector === 'button' ? buttons : []; },
+  };
+
+  await harness.context.__plannerTestHooks.createTodoFromDialog(overlay, 'fleet-a');
+  const writes = harness.requests.filter(request => request.options?.method === 'POST');
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].url, '/api/task-board/tasks');
+  assert.deepEqual(JSON.parse(JSON.stringify(writes[0].options.json)), {
+    recordType: 'planned',
+    title: 'A'.repeat(40),
+    description: `${'A'.repeat(45)}\nKeep all of this context`,
+    dirId: 'fleet-b',
+    workflowStage: 'inbox',
+    priority: null,
+    dueAt: null,
+    acceptanceCriteria: null,
+  });
+  assert.equal(harness.requests.some(request => request.url.includes('/send')), false);
+});
+
+test('Start now validates Fleet, preserves its draft on Fleet change, and uses one atomic send', async () => {
+  let composerOptions = null;
+  const contextChanges = [];
+  let destroyCount = 0;
+  const harness = createPlannerHarness({
+    source: plannerSourceWithTestHooks(),
+    createDocument: createStartNowDocument,
+    globals: {
+      MultiCCTaskBoardComposer: {
+        mount(_host, options) {
+          composerOptions = options;
+          return {
+            destroy() { destroyCount += 1; },
+            setContext(...args) { contextChanges.push(args); },
+          };
+        },
+      },
+    },
+  });
+  harness.setRequestHandler((url) => (
+    url === '/api/task-board/send' ? { ok: true, queued: true, taskId: 'started-now' } : undefined
+  ));
+  harness.context.setView('tasks');
+  await settlePlannerLoad();
+  harness.requests.length = 0;
+
+  harness.context.__plannerTestHooks.openStartNowDialog();
+  const firstOverlay = harness.document.overlay;
+  const { picker, closeButton, returnFocus } = harness.document.refs;
+  assert.ok(composerOptions, 'shared composer should mount');
+
+  picker.value = '';
+  await assert.rejects(
+    () => composerOptions.submit({ text: 'Do it', clientMsgId: 'msg-1' }),
+    /请输入 TODO 并选择 Fleet/,
+  );
+  assert.equal(harness.requests.some(request => request.options?.method === 'POST'), false);
+
+  picker.value = 'fleet-b';
+  picker.emit('change');
+  assert.deepEqual(JSON.parse(JSON.stringify(contextChanges)), [
+    ['fleet-b', { preserveDraft: true }],
+  ]);
+  composerOptions.onSendingChange(true);
+  assert.equal(picker.disabled, true);
+  assert.equal(closeButton.disabled, true);
+  assert.equal(firstOverlay.dataset.plannerSending, 'true');
+  composerOptions.onSendingChange(false);
+
+  const payload = {
+    text: 'Do it now', clientMsgId: 'msg-atomic', cli: 'codex', provider: 'provider-a',
+    goal: true, goalLimits: { maxRounds: 12, maxBudget: 5000 },
+  };
+  await composerOptions.submit(payload);
+  const writes = harness.requests.filter(request => request.options?.method === 'POST');
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].url, '/api/task-board/send');
+  assert.deepEqual(JSON.parse(JSON.stringify(writes[0].options.json)), { ...payload, dirId: 'fleet-b' });
+  assert.equal(harness.requests.some(request => request.url === '/api/task-board/tasks'), false);
+  assert.equal(firstOverlay.isConnected, false);
+  assert.equal(destroyCount, 1);
+  assert.equal(harness.document.activeElement, returnFocus);
+
+  harness.context.__plannerTestHooks.openStartNowDialog();
+  const newerOverlay = harness.document.overlay;
+  harness.context.__plannerTestHooks.closePlannerOverlay(firstOverlay);
+  assert.equal(newerOverlay.isConnected, true, 'a stale completion must not close a newer dialog');
+  harness.context.__plannerTestHooks.closePlannerOverlay(newerOverlay);
+  assert.equal(destroyCount, 2);
 });
 
 test('Fleet planner mount is isolated and unmount or global navigation restores every Fleet', async () => {
@@ -554,7 +833,7 @@ test('planner columns scroll independently and dynamic regions have bounded anno
   assert.match(css, /\.planner-card-list\s*\{[\s\S]*?overflow-y: auto;[\s\S]*?overscroll-behavior: contain;/);
   assert.doesNotMatch(html, /id="task-planner-root"[^>]*aria-live/);
   assert.doesNotMatch(dashboardJs, /fleet-task-planner-root[^']*aria-live/);
-  assert.match(js, /id="planner-new-form" role="dialog" aria-modal="true" aria-labelledby="planner-new-title-heading"/);
+  assert.match(js, /id="planner-new-form" role="dialog" aria-modal="true" aria-labelledby="planner-new-todo-heading"/);
   assert.match(js, /const mainA11y = `role="tabpanel" aria-labelledby="planner-mode-\$\{state\.mode\}"`/);
   assert.match(js, /role="status" aria-live="polite" aria-atomic="true"/);
 });
@@ -580,7 +859,10 @@ test('planner copy is present in both generated source catalogs', () => {
     'plannerSource', 'plannerSourceAll', 'plannerSourceBoard', 'plannerSourceSession',
     'plannerWorkOverview', 'plannerBucketTodo', 'plannerBucketAttention',
     'plannerBucketRunning', 'plannerBucketNext', 'plannerBucketReview',
-    'plannerNewTask', 'plannerSaveInbox', 'plannerSaveStart', 'plannerAcceptance',
+    'plannerNewTodo', 'plannerStartNewNow', 'plannerNewTodoTitle',
+    'plannerNewTodoSubtitle', 'plannerTodoInput', 'plannerTodoPlaceholder', 'plannerTodoHint',
+    'plannerAddTodo', 'plannerStartNowTitle', 'plannerStartNowSubtitle',
+    'plannerStartNowPlaceholder', 'plannerAcceptance',
     'plannerAnswerQuestion', 'plannerInspectError', 'plannerStartQuick', 'plannerCompleteQuick',
   ];
   for (const key of required) {
@@ -588,4 +870,8 @@ test('planner copy is present in both generated source catalogs', () => {
     assert.equal(typeof en[key], 'string', `missing en.${key}`);
     assert.ok(zh[key].length > 0 && en[key].length > 0, `empty planner copy: ${key}`);
   }
+  assert.equal(zh.plannerNewTodo, '＋ 新建 TODO');
+  assert.equal(en.plannerNewTodo, '+ New TODO');
+  assert.equal(zh.plannerStartNewNow, '▶ 立即开始新 TODO');
+  assert.equal(en.plannerStartNewNow, '▶ Start new TODO now');
 });
