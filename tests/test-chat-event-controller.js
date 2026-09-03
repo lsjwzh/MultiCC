@@ -1407,3 +1407,47 @@ test('chat host loads new controllers before chat and reaches the 3000-line budg
     assert.doesNotMatch(source, /[?&](?:token|access_token)=/i);
   }
 });
+
+test('Flutter attachments offer the iOS photo library, not just the Files picker', () => {
+  const pubspec = fs.readFileSync(path.join(ROOT, 'app', 'pubspec.yaml'), 'utf8');
+  assert.match(pubspec, /image_picker:\s*\^/, 'image_picker is declared');
+
+  const picker = fs.readFileSync(
+    path.join(ROOT, 'app', 'lib', 'services', 'attachment_picker.dart'),
+    'utf8',
+  );
+  // iOS first asks which source, then routes: photos -> PHPicker, files -> FilePicker.
+  assert.match(picker, /Platform\.isIOS/);
+  assert.match(picker, /showModalBottomSheet/);
+  assert.match(picker, /ImagePicker\(\)\.pickImage\(\s*source:\s*ImageSource\.gallery/);
+  assert.match(picker, /FilePicker\.platform\.pickFiles\(withData:\s*true\)/);
+  assert.match(picker, /readAsBytes/);
+
+  // Both attachment call sites delegate to the shared picker and never drive
+  // FilePicker directly (the direct path is what hid the photo album on iOS).
+  for (const rel of ['input_bar.dart', 'task_board_view.dart']) {
+    const source = fs.readFileSync(
+      path.join(ROOT, 'app', 'lib', 'widgets', rel),
+      'utf8',
+    );
+    assert.match(source, /pickChatAttachment\(context\)/, `${rel} routes through the shared picker`);
+    assert.doesNotMatch(source, /FilePicker\.platform/, `${rel} must not pick files inline`);
+    assert.match(source, /picked\.filename/, `${rel} uploads under the picked filename`);
+  }
+
+  // Sheet labels are localized in both catalogs (zh is authoritative).
+  for (const locale of ['zh', 'en']) {
+    const catalog = JSON.parse(fs.readFileSync(
+      path.join(ROOT, 'app', 'assets', 'i18n', `${locale}.json`),
+      'utf8',
+    ));
+    for (const key of ['attachSourceTitle', 'attachFromFile', 'attachFromPhotos']) {
+      assert.ok(catalog[key], `${locale}.${key} exists`);
+    }
+  }
+
+  // PHPicker needs no permission prompt, but the Info.plist photo-library
+  // description must stay for older iOS fallbacks.
+  const plist = fs.readFileSync(path.join(ROOT, 'app', 'ios', 'Runner', 'Info.plist'), 'utf8');
+  assert.match(plist, /NSPhotoLibraryUsageDescription/);
+});
