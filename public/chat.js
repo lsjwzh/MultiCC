@@ -1,4 +1,5 @@
 'use strict';
+const chatApi = window.MultiCCApi;
 
 // ── Realtime Voice Output (TTS) Integration ──────────────────────────────────
 // Provides streaming text-to-speech for AI responses
@@ -41,11 +42,10 @@ function showFirstRunPasswordGate() {
     if (p1 !== p2) { msg.textContent = '两次输入不一致'; return; }
     msg.textContent = '正在设置…';
     try {
-      const r = await fetch('/api/settings/access-token', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: p1 }) });
-      const d = await r.json();
-      if (!r.ok || d.error) { msg.textContent = '错误: ' + (d.error || ('HTTP ' + r.status)); return; }
+      const d = await chatApi.json('/api/settings/access-token', { method: 'POST', json: { token: p1 } });
+      if (d.error) { msg.textContent = '错误: ' + chatApi.errorText(chatApi.errorFromPayload(d)); return; }
       ov.remove(); // 设密码成功,解除门槛
-    } catch (e) { msg.textContent = '错误: ' + e.message; }
+    } catch (e) { msg.textContent = '错误: ' + chatApi.errorText(e); }
   };
   document.getElementById('fr-save').addEventListener('click', save);
   document.getElementById('fr-pw2').addEventListener('keydown', e => { if (e.key === 'Enter') save(); });
@@ -507,9 +507,7 @@ const chatMessageFocus = window.MultiCCChatMessageFocus.createMessageFocusContro
   findById: id => chatHistoryView.findById(id),
   async fetchAround(messageId) {
     const url = withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/history?around=${encodeURIComponent(messageId)}&limit=31`);
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    return response.json();
+    return chatApi.json(url);
   },
   mergeMessages(messages, page) {
     const inserted = chatHistoryView.prependMessages(messages);
@@ -573,6 +571,7 @@ const chatTransport = window.MultiCCChatTransport.createTransport({
     }
     statusEl.textContent = 'Connected';
     statusEl.className = 'connected';
+    statusEl.title = '';
     statusEl.onclick = () => forceReconnect('status click');
     dbg('ws', 'onopen — 连接已建立');
     // If we'd shown the disconnect banner, replace it with a reconnected marker.
@@ -598,7 +597,7 @@ const chatTransport = window.MultiCCChatTransport.createTransport({
       console.warn('Bad message:', data, e);
     }
   },
-  onClose({ event: e, seconds: secs }) {
+  onClose({ event: e, seconds: secs, envelope }) {
     chatEventController?.invalidateGeneration(); chatEventController?.dropStaleUserInput?.();
     dbg('ws', `onclose — code=${e.code} (isStreaming=${isStreaming})`);
     if (_wasConnected && !_isDisconnected) {
@@ -611,18 +610,36 @@ const chatTransport = window.MultiCCChatTransport.createTransport({
     // Don't reset isStreaming here — server may still be running.
     // UI stays in streaming state so user sees "reconnecting" rather than a broken state.
     updateUI();
-    statusEl.textContent = _isRestarting ? '重启中…' : `Reconnecting in ${secs}s...`;
+    const view = !_isRestarting && window.MultiCCErrorEnvelope && envelope
+      ? window.MultiCCErrorEnvelope.presentation(envelope, { retrySeconds: secs }) : null;
+    statusEl.textContent = _isRestarting ? '重启中…'
+      : view ? `${view.headline}：${view.message}` : `Reconnecting in ${secs}s...`;
     statusEl.className = 'error';
+    statusEl.title = envelope && window.MultiCCErrorEnvelope
+      ? window.MultiCCErrorEnvelope.diagnosticText(envelope) : '';
     statusEl.onclick = () => chatTransport.retryNow();
     // Sticky in-chat banner so the reconnect state is visible without scrolling up.
-    if (_wasConnected) showDisconnectBanner(secs);
+    if (_wasConnected) showDisconnectBanner(secs, envelope);
     return true;
   },
   onForceReconnect(reason) { dbg('ws', `force reconnect — ${reason}`); },
-  onTicketError() {
-    statusEl.textContent = '连接授权失败，正在重试…';
+  onTicketError(error, meta = {}) {
+    const envelope = meta.envelope || window.MultiCCErrorEnvelope?.normalize(error, {
+      source: 'ws_ticket', scope: 'session', defaultCode: 'WS_TICKET_FAILED',
+    });
+    const view = envelope && window.MultiCCErrorEnvelope
+      ? window.MultiCCErrorEnvelope.presentation(envelope, { retrySeconds: 1 }) : null;
+    statusEl.textContent = view
+      ? `${view.headline}：${view.message}`
+      : `WebSocket ticket failed: ${error && error.message || 'unknown error'}`;
     statusEl.className = 'error';
-    dbg('ws', 'ticket exchange failed — retry scheduled');
+    statusEl.title = envelope && window.MultiCCErrorEnvelope
+      ? window.MultiCCErrorEnvelope.diagnosticText(envelope) : '';
+    showDisconnectBanner(1, envelope || error);
+    dbg('ws', `ticket exchange failed — ${envelope && envelope.code || error && error.code || 'unknown'} — retry scheduled`);
+  },
+  onError({ envelope }) {
+    dbg('ws', `socket error — ${envelope && envelope.code || 'WS_SOCKET_ERROR'}`);
   },
   onEnsureAlive() { updateUI(); },
 });
@@ -682,15 +699,10 @@ function attachDeleteButton(msgEl) {
     const go = await _chatConfirm(tt('msgDeleteConfirm'), { danger: true, okText: tt('delete') });
     if (!go) return;
     try {
-      const r = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/messages/${encodeURIComponent(msgEl.dataset.msgId)}`), { method: 'DELETE' });
-      if (r.ok) {
-        removeHistoryMessageById(msgEl.dataset.msgId); // broadcast removal is idempotent
-      } else {
-        const err = await r.json().catch(() => null);
-        _chatAlert(tt('msgDeleteFailed', { error: ((err && err.error) || r.status) }), { danger: true });
-      }
+      await chatApi.json(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/messages/${encodeURIComponent(msgEl.dataset.msgId)}`), { method: 'DELETE' });
+      removeHistoryMessageById(msgEl.dataset.msgId); // broadcast removal is idempotent
     } catch (err) {
-      _chatAlert(tt('msgDeleteFailed', { error: err.message }), { danger: true });
+      _chatAlert(tt('msgDeleteFailed', { error: chatApi.errorText(err) }), { danger: true });
     }
   };
   msgEl.appendChild(btn);
@@ -719,12 +731,9 @@ function attachForkButton(msgEl) {
     const orig = btn.innerHTML;
     btn.innerHTML = '…';
     try {
-      const r = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/fork`), {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ atMessageId: msgEl.dataset.msgId }),
+      const d = await chatApi.json(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/fork`), {
+        method: 'POST', json: { atMessageId: msgEl.dataset.msgId },
       });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
       const newId = d.sessionId;
       const n = d.replayedMessages || 0;
       // Open the forked session's chat page in a new tab; keep the original open.
@@ -733,7 +742,7 @@ function attachForkButton(msgEl) {
       // Lightweight in-place toast via the existing debug-log channel.
       dbg('chat', `已分叉: ${newId} (replay ${n} 条) → 新标签页已打开`);
     } catch (err) {
-      _chatAlert(tt('msgForkFailed', { error: err.message }), { danger: true });
+      _chatAlert(tt('msgForkFailed', { error: chatApi.errorText(err) }), { danger: true });
     } finally {
       btn.disabled = false;
       btn.innerHTML = orig;
@@ -756,17 +765,12 @@ function renderAuxClassify(goal, phase, classifyState, code) {
 async function markTurnSucceeded() {
   if (!_sessionName) { addSystemMsg('无 session id，无法标记执行成功'); return; }
   try {
-    const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/mark-task-done`), { method: 'POST' });
-    const data = await res.json().catch(() => ({}));
-    if (res.ok) {
-      addSystemMsg(data.alreadySucceeded || data.alreadyDone
-        ? '✓ 本轮已是执行成功状态'
-        : '✓ 已手动标记本轮执行成功');
-    } else {
-      addSystemMsg(`⚠️ 标记执行成功失败：${data.note || data.error || res.status}`);
-    }
+    const data = await chatApi.json(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/mark-task-done`), { method: 'POST' });
+    addSystemMsg(data.alreadySucceeded || data.alreadyDone
+      ? '✓ 本轮已是执行成功状态'
+      : '✓ 已手动标记本轮执行成功');
   } catch (e) {
-    addSystemMsg(`⚠️ 标记执行成功异常：${e && e.message ? e.message : e}`);
+    addSystemMsg(`⚠️ 标记执行成功失败：${chatApi.errorText(e)}`);
   } finally {
     const b = document.getElementById('ac-mark-done');
     if (b) b.disabled = false;
@@ -860,7 +864,7 @@ function danmakuOnDisconnect() { return chatLiveUi.danmakuOnDisconnect(); }
 function pushDanmaku(kind, description, taskId) { return chatLiveUi.pushDanmaku(kind, description, taskId); }
 function toggleDanmakuCollapse() { return chatLiveUi.toggleDanmakuCollapse(); }
 
-function showDisconnectBanner(seconds) { return chatLiveUi.showDisconnectBanner(seconds); }
+function showDisconnectBanner(seconds, error) { return chatLiveUi.showDisconnectBanner(seconds, error); }
 
 function removeHistoryMessageById(id) {
   const element = chatHistoryView.findById(id);
@@ -1045,9 +1049,7 @@ async function loadOlderHistory() {
     const url = withToken(TASK_MODE && taskMode
       ? taskMode.historyPageUrl({ before: request.before, limit: request.limit })
       : `/api/sessions/${encodeURIComponent(_sessionName)}/history?before=${encodeURIComponent(request.before)}&limit=${request.limit}`);
-    const r = await fetch(url);
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const d = await r.json();
+    const d = await chatApi.json(url);
     // Validate generation/request identity before touching DOM. A response
     // that raced a reconnect, clear or cursor deletion is discarded.
     const pagePlan = chatHistoryStore.completeOlder(request, d);
@@ -1055,7 +1057,7 @@ async function loadOlderHistory() {
     return _renderHistoryPageBefore(pagePlan.messages);
   } catch (e) {
     chatHistoryStore.rejectOlder(request);
-    dbg('history', `loadOlderHistory failed: ${e.message}`);
+    dbg('history', `loadOlderHistory failed: ${chatApi.errorText(e)}`);
     // Don't mark exhausted on a transient error - let the user retry by scrolling.
     return 0;
   } finally {
@@ -1184,19 +1186,20 @@ async function resolveRebase(action) {
       body: JSON.stringify({ action }),
     });
     const data = await res.json().catch(() => ({}));
+    const failure = res.ok ? null : chatApi.errorFromPayload(data, { response: res });
     if (res.ok) {
       if (data.aborted) addSystemMsg('✓ 已放弃 rebase，worktree 回到同步前状态');
       else if (data.done) addSystemMsg('✓ 冲突已解决，同步完成');
       else addSystemMsg('✓ rebase 已继续');
       refreshMergeStatus();
     } else if (res.status === 409 && data.conflicts) {
-      addSystemMsg(`✗ 仍有冲突未解决：\n${data.conflicts.join(', ')}\n请全部解决后再点「继续」。`);
+      addSystemMsg(`✗ 仍有冲突未解决：${chatApi.errorText(failure)}\n${data.conflicts.join(', ')}\n请全部解决后再点「继续」。`);
       refreshMergeStatus();
     } else {
-      addSystemMsg(`✗ 操作失败：${data.error || res.status}`);
+      addSystemMsg(`✗ 操作失败：${chatApi.errorText(failure)}`);
     }
   } catch (e) {
-    addSystemMsg(`✗ 请求失败：${e.message}`);
+    addSystemMsg(`✗ 请求失败：${chatApi.errorText(e)}`);
   }
 }
 
@@ -1247,19 +1250,20 @@ async function syncWorktree() {
   try {
     const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/sync`), { method: 'POST' });
     const data = await res.json().catch(() => ({}));
+    const failure = res.ok ? null : chatApi.errorFromPayload(data, { response: res });
     if (res.ok) {
       addSystemMsg(data.merged
         ? `✓ 已从 ${data.baseBranch || 'base'} 同步 ${data.commits} 个提交${data.committed ? '（已自动提交未保存改动）' : ''}`
         : (data.message || '已是最新'));
       refreshMergeStatus();
     } else if (res.status === 409 && data.conflicts) {
-      addSystemMsg(`✗ 同步与基分支冲突，rebase 已暂停（worktree 处于冲突态）：\n${data.conflicts.join(', ')}\n请用上方横幅的「继续 / 放弃」处理，或在 worktree 手动解决。`);
+      addSystemMsg(`✗ 同步与基分支冲突：${chatApi.errorText(failure)}\n${data.conflicts.join(', ')}\n请用上方横幅的「继续 / 放弃」处理，或在 worktree 手动解决。`);
       refreshMergeStatus();
     } else {
-      addSystemMsg(`✗ 同步失败：${data.error || res.status}`);
+      addSystemMsg(`✗ 同步失败：${chatApi.errorText(failure)}`);
     }
   } catch (e) {
-    addSystemMsg(`✗ 同步请求失败：${e.message}`);
+    addSystemMsg(`✗ 同步请求失败：${chatApi.errorText(e)}`);
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = tt('sync'); }
   }
@@ -1330,11 +1334,11 @@ async function renameSessionFromChat() {
       body: JSON.stringify({ label: next }),
     });
     const data = await res.json();
-    if (!res.ok) { addSystemMsg(tt('renameSessionFailed', { error: data.error || `HTTP ${res.status}` })); return; }
+    if (!res.ok) { addSystemMsg(tt('renameSessionFailed', { error: chatApi.errorText(chatApi.errorFromPayload(data, { response: res })) })); return; }
     addSystemMsg(next ? `${tt('renameSessionSaved')}: ${next}` : tt('sessionNameReset'));
     await loadSessionIdentity();
   } catch (e) {
-    addSystemMsg(tt('renameSessionFailed', { error: e.message }));
+    addSystemMsg(tt('renameSessionFailed', { error: chatApi.errorText(e) }));
   }
 }
 
@@ -1348,6 +1352,7 @@ async function requestMerge() {
   try {
     const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/merge`), { method: 'POST' });
     const data = await res.json();
+    const failure = res.ok ? null : chatApi.errorFromPayload(data, { response: res });
     if (res.ok) {
       addSystemMsg(data.merged
         ? `✓ 已合并 ${data.commits} 个提交回基分支${data.committed ? '（含本次自动提交）' : ''}${data.syncedBack ? '，并已自动把基分支同步回本 worktree' : ''}`
@@ -1356,12 +1361,12 @@ async function requestMerge() {
       // Auto-sync may have changed the behind count — re-fetch real state.
       refreshMergeStatus();
     } else if (res.status === 409) {
-      addSystemMsg(tt('mergeConflict', { files: (data.conflicts || []).join(', ') }));
+      addSystemMsg(`${chatApi.errorText(failure)}\n${tt('mergeConflict', { files: (data.conflicts || []).join(', ') })}`);
     } else {
-      addSystemMsg(tt('mergeFailed', { error: data.error || `HTTP ${res.status}` }));
+      addSystemMsg(tt('mergeFailed', { error: chatApi.errorText(failure) }));
     }
   } catch (e) {
-    addSystemMsg(tt('mergeRequestFailed', { error: e.message }));
+    addSystemMsg(tt('mergeRequestFailed', { error: chatApi.errorText(e) }));
   }
 }
 
@@ -1386,6 +1391,7 @@ async function autoCommitIfNeeded(bubbleEl) {
     addSystemMsg('🚀 自动提交合并中（此轮开启了自动提交）...');
     const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/merge`), { method: 'POST' });
     const data = await res.json();
+    const failure = res.ok ? null : chatApi.errorFromPayload(data, { response: res });
     if (res.ok) {
       addSystemMsg(data.merged
         ? `✓ 自动提交完成：已合并 ${data.commits} 个提交回基分支${data.committed ? '（含本次自动提交）' : ''}${data.syncedBack ? '，并已自动把基分支同步回本 worktree' : ''}`
@@ -1395,12 +1401,12 @@ async function autoCommitIfNeeded(bubbleEl) {
       applyMergeStatus({ mergeReady: false, dirty: false, ahead: 0 });
       refreshMergeStatus();
     } else if (res.status === 409) {
-      addSystemMsg('⚠️ 自动提交冲突，已 abort。冲突文件：' + (data.conflicts || []).join(', '));
+      addSystemMsg('⚠️ 自动提交冲突：' + chatApi.errorText(failure) + '。冲突文件：' + (data.conflicts || []).join(', '));
     } else {
-      addSystemMsg('自动提交失败：' + (data.error || `HTTP ${res.status}`));
+      addSystemMsg('自动提交失败：' + chatApi.errorText(failure));
     }
   } catch (e) {
-    addSystemMsg('自动提交请求失败：' + e.message);
+    addSystemMsg('自动提交请求失败：' + chatApi.errorText(e));
   } finally {
     _autoCommitPending = false;
   }
@@ -1450,8 +1456,8 @@ function showCliSwitchPicker(current, states, availability) {
         if ((res.status === 202 || res.status === 409) && data && data.jobId) {
           return { jobId: data.jobId };
         }
-        return { error: (data && data.error) || `安装请求失败 (HTTP ${res.status})` };
-      } catch (e) { return { error: (e && e.message) || '安装请求失败' }; }
+        return { error: chatApi.errorText(chatApi.errorFromPayload(data, { response: res })) };
+      } catch (e) { return { error: chatApi.errorText(e) }; }
     },
     pollInstall: async jobId => {
       try {
@@ -1479,7 +1485,7 @@ cliBtn?.addEventListener('click', async () => {
     });
     const data = await res.json();
     if (!res.ok) {
-      addSystemMsg('CLI 切换失败：' + (data.error || `HTTP ${res.status}`));
+      addSystemMsg('CLI 切换失败：' + chatApi.errorText(chatApi.errorFromPayload(data, { response: res })));
       return;
     }
     _sessionCliStates = data.cliStates || _sessionCliStates;
@@ -1487,7 +1493,7 @@ cliBtn?.addEventListener('click', async () => {
     applyCliSwitchState(data);
     await loadSessionModel();
   } catch (error) {
-    addSystemMsg('CLI 切换失败：' + error.message);
+    addSystemMsg('CLI 切换失败：' + chatApi.errorText(error));
   } finally {
     cliBtn.disabled = false;
   }
@@ -1699,7 +1705,7 @@ modelBtn?.addEventListener('click', async () => {
     if ((_sessionCli === 'claude' || _sessionCli === 'opencode' || _sessionCli === 'qoder' || _sessionCli === 'codebuddy') && _sessionAgent) savedParts.push(`Agent ${_sessionAgent}`);
     addSystemMsg(`✓ AI 配置已保存：${savedParts.filter(Boolean).join(' | ')}，下一轮对话生效`);
   } catch (e) {
-    addSystemMsg('AI 配置保存失败：' + e.message);
+    addSystemMsg('AI 配置保存失败：' + chatApi.errorText(e));
   }
 });
 
@@ -1713,7 +1719,7 @@ effortBtn?.addEventListener('click', async () => {
     updateEffortBtn();
     addSystemMsg(`✓ 努力程度已切换为 ${effortShortName(_sessionEffectiveEffort)}，下一轮对话生效`);
   } catch (e) {
-    addSystemMsg('努力程度切换失败：' + e.message);
+    addSystemMsg('努力程度切换失败：' + chatApi.errorText(e));
   }
 });
 
@@ -1817,7 +1823,7 @@ providerBtn?.addEventListener('click', async () => {
     updateModelBtn();
     addSystemMsg(`✓ Provider 已切换为 ${providerShortName(_sessionProvider)}，下一轮对话生效`);
   } catch (e) {
-    addSystemMsg('Provider 切换失败：' + e.message);
+    addSystemMsg('Provider 切换失败：' + chatApi.errorText(e));
   }
 });
 
@@ -1974,14 +1980,14 @@ roleBtn?.addEventListener('click', async () => {
       body: JSON.stringify({ rolePrompt: next }),
     });
     const data = await res.json();
-    if (!res.ok) { addSystemMsg(tt('rolePromptFailed', { error: data.error || `HTTP ${res.status}` })); return; }
+    if (!res.ok) { addSystemMsg(tt('rolePromptFailed', { error: chatApi.errorText(chatApi.errorFromPayload(data, { response: res })) })); return; }
     _sessionRole = data.rolePrompt || '';
     updateRoleBtn();
     addSystemMsg(_sessionRole
       ? tt('rolePromptUpdated')
       : tt('rolePromptSaved'));
   } catch (e) {
-    addSystemMsg(tt('rolePromptFailed', { error: e.message }));
+    addSystemMsg(tt('rolePromptFailed', { error: chatApi.errorText(e) }));
   }
 });
 
@@ -2017,10 +2023,8 @@ function updateMemoryBtn() {
 async function openMemoryEditor() {
   let data;
   try {
-    const r = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/memory`));
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    data = await r.json();
-  } catch (e) { addSystemMsg(tt('memSaveFailed') + ': ' + e.message); return; }
+    data = await chatApi.json(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/memory`));
+  } catch (e) { addSystemMsg(tt('memSaveFailed') + ': ' + chatApi.errorText(e)); return; }
 
   const model = {
     own:    { dir: (data.own && data.own.dir) || '', primary: (data.own && data.own.primary) || 'CLAUDE.md', files: {} },
@@ -2118,12 +2122,10 @@ async function openMemoryEditor() {
     if (!curName) return;
     if (!(await chatLiveUi.confirm(tt('memDeleteConfirm', { scope: scope === 'own' ? tt('memScopeOwn') : tt('memScopeShared'), name: curName }), { danger: true }))) return;
     try {
-      const r = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/memory`), {
-        method: 'DELETE', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scope, name: curName }),
+      await chatApi.json(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/memory`), {
+        method: 'DELETE', json: { scope, name: curName },
       });
-      if (!r.ok) { const d = await r.json().catch(() => ({})); addSystemMsg(tt('memDeleteFailed') + ': ' + (d.error || ('HTTP ' + r.status))); return; }
-    } catch (e) { addSystemMsg(tt('memDeleteFailed') + ': ' + e.message); return; }
+    } catch (e) { addSystemMsg(tt('memDeleteFailed') + ': ' + chatApi.errorText(e)); return; }
     delete model[scope].files[curName];
     curName = Object.keys(model[scope].files).sort()[0] || '';
     renderFiles();
@@ -2133,15 +2135,12 @@ async function openMemoryEditor() {
     commit();
     if (!curName) { addSystemMsg(tt('memNoSelection')); return; }
     try {
-      const r = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/memory`), {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scope, name: curName, content: model[scope].files[curName] }),
+      await chatApi.json(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/memory`), {
+        method: 'PUT', json: { scope, name: curName, content: model[scope].files[curName] },
       });
-      const d = await r.json().catch(() => ({}));
-      if (!r.ok) { addSystemMsg(tt('memSaveFailed') + ': ' + (d.error || ('HTTP ' + r.status))); return; }
       addSystemMsg(tt('memSaved', { scope: scope === 'own' ? tt('memScopeOwn') : tt('memScopeShared'), name: curName }));
       updateMemoryBtn();
-    } catch (e) { addSystemMsg(tt('memSaveFailed') + ': ' + e.message); }
+    } catch (e) { addSystemMsg(tt('memSaveFailed') + ': ' + chatApi.errorText(e)); }
   };
 
   const close = () => { document.removeEventListener('keydown', onKey, true); overlay.remove(); };
@@ -2183,12 +2182,12 @@ autoCommitBtn?.addEventListener('click', async () => {
       body: JSON.stringify({ autoCommit: newVal }),
     });
     const data = await res.json();
-    if (!res.ok) { addSystemMsg('保存失败：' + (data.error || `HTTP ${res.status}`)); return; }
+    if (!res.ok) { addSystemMsg('保存失败：' + chatApi.errorText(chatApi.errorFromPayload(data, { response: res }))); return; }
     _sessionAutoCommit = !!data.autoCommit;
     updateAutoCommitBtn();
     addSystemMsg(_sessionAutoCommit ? '✓ 已开启「本轮执行成功后自动提交合并」，每轮执行成功后将自动 commit 并合并回基分支' : '✓ 已关闭「本轮执行成功后自动提交合并」');
   } catch (e) {
-    addSystemMsg('保存失败：' + e.message);
+    addSystemMsg('保存失败：' + chatApi.errorText(e));
   }
 });
 
@@ -2242,13 +2241,12 @@ async function shareApi(method, p, body) {
   // /api/sessions/:id/... and Express treats an empty :id as a 404. Bail
   // early with a clear message instead of silently 404ing (which is what
   // made the 撤销 button look "dead" when the page had no ?session= param).
-  if (!_sessionName) throw new Error('未获取到会话标识（session id），请从管理面板进入此会话后再使用分享功能');
-  const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}${p}`), {
-    method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined,
+  if (!_sessionName) throw chatApi.errorFromPayload({
+    code: 'SESSION_ID_MISSING', error: '未获取到会话标识（session id），请从管理面板进入此会话后再使用分享功能',
   });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-  return data;
+  const options = { method };
+  if (body !== undefined) options.json = body;
+  return chatApi.json(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}${p}`), options);
 }
 
 function shareRow(s) {
@@ -2296,7 +2294,7 @@ async function openShareDialog() {
 
   async function refresh() {
     try { const d = await shareApi('GET', '/shares'); listEl.innerHTML = d.shares.length ? d.shares.map(shareRow).join('') : `<div style="color:#8b949e;font-size:12px;">${tt('none')}</div>`; }
-    catch (e) { listEl.innerHTML = `<div style="color:#f85149;font-size:12px;">${e.message}</div>`; }
+    catch (e) { listEl.innerHTML = `<div style="color:#f85149;font-size:12px;">${escapeHtml(chatApi.errorText(e))}</div>`; }
   }
   // Use event delegation on listEl so bind() is never needed — handlers survive
   // any innerHTML replacement, and data-* attrs always read the live DOM.
@@ -2316,7 +2314,7 @@ async function openShareDialog() {
       btn.textContent = tt('revoking');
       shareApi('DELETE', '/share/' + encodeURIComponent(token))
         .then(() => refresh())
-        .catch(e => chatLiveUi.alert(e.message))
+        .catch(e => chatLiveUi.alert(chatApi.errorText(e)))
         .finally(() => { if (btn.isConnected) { btn.disabled = false; btn.textContent = tt('revoke'); } });
     }
   });
@@ -2334,7 +2332,7 @@ async function openShareDialog() {
       navigator.clipboard?.writeText(d.url);
       box.querySelector('#sh-pw').value = '';
       refresh();
-    } catch (e) { msg.style.color = '#f85149'; msg.textContent = e.message; }
+    } catch (e) { msg.style.color = '#f85149'; msg.textContent = chatApi.errorText(e); }
   };
   refresh();
 }
@@ -2372,9 +2370,9 @@ async function openMessagePicker() {
 
   let msgs = [];
   try {
-    const r = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/history`));
-    const d = await r.json(); msgs = d.messages || [];
-  } catch (e) { listEl.textContent = '加载失败：' + e.message; return; }
+    const d = await chatApi.json(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/history`));
+    msgs = d.messages || [];
+  } catch (e) { listEl.textContent = '加载失败：' + chatApi.errorText(e); return; }
   if (!msgs.length) { listEl.textContent = tt('noMessages'); return; }
   const escH = (s) => String(s == null ? '' : s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
   listEl.innerHTML = msgs.map((m, i) => {
@@ -2394,11 +2392,10 @@ async function openMessagePicker() {
     const hrs = parseInt(box.querySelector('#mp-exp').value, 10);
     const body = { indices }; if (password) body.password = password; if (hrs > 0) body.expiresAt = Date.now() + hrs * 3600 * 1000;
     try {
-      const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/share-messages`), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-      const d = await res.json(); if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`);
+      const d = await chatApi.json(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/share-messages`), { method: 'POST', json: body });
       navigator.clipboard?.writeText(d.url);
       msgEl.style.color = '#3fb950'; msgEl.textContent = tt('generatedAndCopied', { url: d.url });
-    } catch (e) { msgEl.style.color = '#f85149'; msgEl.textContent = e.message; }
+    } catch (e) { msgEl.style.color = '#f85149'; msgEl.textContent = chatApi.errorText(e); }
   };
 }
 
@@ -2774,15 +2771,13 @@ if (goalPrecheckBtn) goalPrecheckBtn.onclick = async () => {
   goalPrecheckBtn.disabled = true;
   goalPrecheckBtn.textContent = '预检中…';
   try {
-    const resp = await fetch(withToken('/api/goal/precheck'), {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ task, dimensions: collectGoalDims() }),
+    const data = await chatApi.json(withToken('/api/goal/precheck'), {
+      method: 'POST', json: { task, dimensions: collectGoalDims() },
     });
-    const data = await resp.json();
-    if (!data.ok) throw new Error(data.error || '预检失败');
+    if (!data.ok) throw chatApi.errorFromPayload({ ...data, error: data.error || '预检失败' });
     renderGoalVerdict(data);
   } catch (e) {
-    goalErrorEl.textContent = '预检失败：' + e.message + '（可直接「用原文发送」）';
+    goalErrorEl.textContent = '预检失败：' + chatApi.errorText(e) + '（可直接「用原文发送」）';
     goalErrorEl.style.display = 'block';
     goalSendRawBtn.style.display = '';   // let the user skip precheck and send anyway
   } finally {
@@ -2897,7 +2892,7 @@ else connect();
       if (!result.ok) addSystemMsg('语音：' + (result.message || result.code));
       else addSystemMsg('已打开实时语音（当前会话：' + (result.launch.display || _sessionName) + '）');
     } catch (e) {
-      addSystemMsg('语音启动异常：' + (e && e.message ? e.message : e));
+      addSystemMsg('语音启动异常：' + chatApi.errorText(e));
     } finally {
       pending = false;
       btn.classList.remove('active');
