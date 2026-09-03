@@ -233,7 +233,7 @@
       source_already_merged: '有待并入任务已合并到其他任务，请刷新后重新选择',
       source_not_mergeable: '有待并入任务已归档或不可合并',
       task_origin_mismatch: '独立任务与会话任务不能互相合并',
-      task_directory_mismatch: '暂不支持跨 Fleet 合并任务',
+      task_directory_mismatch: '暂不支持跨工作区合并任务',
       task_busy: '有任务正在执行、排队或等待，请稍后重试',
       task_worktree_conflict: '待并入任务仍有 worktree/分支；请先清理，或把它作为首个保留任务',
       task_merge_persist_failed: '合并结果保存失败，原任务未变更，请重试',

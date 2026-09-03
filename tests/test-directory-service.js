@@ -13,7 +13,7 @@ const ok = (c, m) => { if (c) { pass++; console.log('✅', m); } else { fail++; 
 // ── fakes ──────────────────────────────────────────────────────────────
 function makeFakes({ dirs = [], sessions = [], fsDirs = new Set(), fsFiles = new Set() } = {}) {
   const repoMap = new Map(dirs.map(d => [d.id, d]));
-  const calls = { saved: 0, seeded: [], destroyed: [], persisted: 0, events: [], gitReady: [], unmarked: [] };
+  const calls = { saved: 0, seeded: [], destroyed: [], persisted: 0, events: [], gitReady: [], unmarked: [], writes: [] };
   const realPathOf = (p) => p;   // identity: no symlinks in fake fs
   const repo = createFsDirectoryRepository({ file: '/nonexistent/never-written.json', map: repoMap, realPathOf });
   const _save = repo.save; void _save;
@@ -40,6 +40,7 @@ function makeFakes({ dirs = [], sessions = [], fsDirs = new Set(), fsFiles = new
   const events = { append: (dirId, type, detail) => { calls.events.push({ dirId, type, detail }); } };
   const fsPort = {
     homedir: () => '/home/u',
+    sampleRoot: () => '/data/samples',
     exists: (p) => fsDirs.has(p) || fsFiles.has(p),
     isDirectory: (p) => fsDirs.has(p),
     mkdirp: (p) => { fsDirs.add(p); },
@@ -47,6 +48,10 @@ function makeFakes({ dirs = [], sessions = [], fsDirs = new Set(), fsFiles = new
       if (!fsDirs.has(p)) { const e = new Error(`ENOENT: ${p}`); throw e; }
       const kids = [...fsDirs].filter(d => path.dirname(d) === p && d !== p);
       return kids.map(d => ({ name: path.basename(d), isDirectory: true, isSymbolicLink: false }));
+    },
+    writeFileExclusive: (p, content) => {
+      if (fsFiles.has(p)) return false;
+      fsFiles.add(p); calls.writes.push({ path: p, content }); return true;
     },
   };
   const helpers = {
@@ -98,6 +103,20 @@ function makeFakes({ dirs = [], sessions = [], fsDirs = new Set(), fsFiles = new
     ok(!r.ok && r.message === 'friendly:boom', 'register: git-init failure → friendly error');
     ok(!fakes.repo.get('id-1') && fakes.calls.saved === 0, 'register: failed record rolled back, never saved');
     void svc; void repo;
+  }
+
+  // ── safe starter sample ──
+  {
+    const fakes = makeFakes({ fsDirs: new Set(['/data', '/data/samples']), fsFiles: new Set() });
+    let r = await fakes.svc.createSample();
+    ok(r.ok && r.data.sample === true && r.data.reused === false
+      && r.data.path === '/data/samples/getting-started', 'createSample: registers a marked workspace below the managed sample root');
+    ok(fakes.calls.writes.length === 4 && fakes.calls.writes.some(item => item.path.endsWith('/README.md')),
+      'createSample: seeds the bounded starter files');
+    const writesAfterFirstCreate = fakes.calls.writes.length;
+    r = await fakes.svc.createSample();
+    ok(r.ok && r.data.reused === true && fakes.calls.writes.length === writesAfterFirstCreate,
+      'createSample: reuses registration and never overwrites existing files');
   }
 
   // ── update ──

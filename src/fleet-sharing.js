@@ -245,20 +245,20 @@ function normalizeRemoteSessions(value) {
 function validateFleetPayload(value) {
   if (!value || value.schemaVersion !== SCHEMA_VERSION || typeof value.instanceId !== 'string'
     || !value.fleet || typeof value.fleet !== 'object') {
-    fail('INVALID_REMOTE_RESPONSE', '远端返回了不兼容的 Fleet 数据', 502);
+    fail('INVALID_REMOTE_RESPONSE', '远端返回了不兼容的工作区数据', 502);
   }
   const fleet = value.fleet;
   const sourceInstanceId = cleanText(value.instanceId, 128);
   const sourceFleetId = cleanText(fleet.id, 128);
   const remoteName = cleanText(fleet.name, 120);
   if (!sourceInstanceId || !sourceFleetId || !remoteName) {
-    fail('INVALID_REMOTE_RESPONSE', '远端 Fleet 数据不完整', 502);
+    fail('INVALID_REMOTE_RESPONSE', '远端工作区数据不完整', 502);
   }
   const sessions = normalizeRemoteSessions(fleet.sessions);
   const remoteToken = cleanText(value.capability && value.capability.token, 160);
   const remoteGrant = cleanText(value.capability && value.capability.grant, 180);
   if (!TOKEN_RE.test(remoteToken) || !GRANT_RE.test(remoteGrant)) {
-    fail('INVALID_REMOTE_RESPONSE', '远端 Fleet 未提供可操作授权', 502);
+    fail('INVALID_REMOTE_RESPONSE', '远端工作区未提供可操作授权', 502);
   }
   return {
     sourceInstanceId,
@@ -308,7 +308,7 @@ function createFleetSharing({
 
   function createShare(fleetId, options = {}) {
     const directory = getDirectory(fleetId);
-    if (!directory) fail('FLEET_NOT_FOUND', 'Fleet 不存在', 404);
+    if (!directory) fail('FLEET_NOT_FOUND', '工作区不存在', 404);
     const password = normalizePassword(options.password);
     const expiresInDays = positiveInteger(options.expiresInDays, {
       min: 1, max: 365, fallback: 7, label: '有效天数',
@@ -353,7 +353,7 @@ function createFleetSharing({
   function revokeShare(fleetId, token) {
     const record = shareState.shares[token];
     if (!record) return false;
-    if (record.fleetId !== fleetId) fail('SHARE_FLEET_MISMATCH', '分享不属于该 Fleet');
+    if (record.fleetId !== fleetId) fail('SHARE_FLEET_MISMATCH', '分享不属于该工作区');
     const nextShares = { ...shareState.shares };
     delete nextShares[token];
     saveShares({ ...shareState, shares: nextShares });
@@ -362,7 +362,7 @@ function createFleetSharing({
 
   function sharedFleetPayload(record, token) {
     const directory = getDirectory(record.fleetId);
-    if (!directory) fail('FLEET_NOT_FOUND', 'Fleet 已不存在', 404);
+    if (!directory) fail('FLEET_NOT_FOUND', '工作区已不存在', 404);
     const sessions = listSessions(directory.id).slice(0, 500).map(session => ({
       id: cleanText(session.id, 180),
       label: cleanText(session.label || session.id, 120, '未命名会话'),
@@ -383,7 +383,7 @@ function createFleetSharing({
       capability: { token, grant: record.accessGrant },
       fleet: {
         id: directory.id,
-        name: cleanText(directory.name, 120, '未命名 Fleet'),
+        name: cleanText(directory.name, 120, '未命名工作区'),
         description: record.description,
         createdAt: cleanText(String(directory.createdAt || ''), 64) || null,
         sessionCount: sessions.length,
@@ -401,7 +401,7 @@ function createFleetSharing({
     if ((record.accessCount || 0) >= record.maxAccesses) {
       fail('SHARE_EXHAUSTED', '分享访问次数已用完', 410);
     }
-    if (!getDirectory(record.fleetId)) fail('FLEET_NOT_FOUND', 'Fleet 已不存在', 404);
+    if (!getDirectory(record.fleetId)) fail('FLEET_NOT_FOUND', '工作区已不存在', 404);
     const updated = {
       ...record,
       accessCount: (record.accessCount || 0) + 1,
@@ -414,7 +414,7 @@ function createFleetSharing({
 
   function readSharedFleet(token, grant) {
     const record = activeRecord(token);
-    if (!secretMatches(grant, record.accessGrant)) fail('FLEET_SCOPE_FORBIDDEN', 'Fleet 授权无效', 403);
+    if (!secretMatches(grant, record.accessGrant)) fail('FLEET_SCOPE_FORBIDDEN', '工作区授权无效', 403);
     return sharedFleetPayload(record, token);
   }
 
@@ -457,13 +457,13 @@ function createFleetSharing({
     }
     const declaredLength = Number(response.headers && response.headers.get('content-length'));
     if (Number.isFinite(declaredLength) && declaredLength > MAX_REMOTE_BODY_BYTES) {
-      fail('REMOTE_RESPONSE_TOO_LARGE', '远端 Fleet 数据过大', 502);
+      fail('REMOTE_RESPONSE_TOO_LARGE', '远端工作区数据过大', 502);
     }
     let text;
     try { text = await response.text(); }
-    catch (_) { fail('INVALID_REMOTE_RESPONSE', '无法读取远端 Fleet 数据', 502); }
+    catch (_) { fail('INVALID_REMOTE_RESPONSE', '无法读取远端工作区数据', 502); }
     if (Buffer.byteLength(text, 'utf8') > MAX_REMOTE_BODY_BYTES) {
-      fail('REMOTE_RESPONSE_TOO_LARGE', '远端 Fleet 数据过大', 502);
+      fail('REMOTE_RESPONSE_TOO_LARGE', '远端工作区数据过大', 502);
     }
     let payload;
     try { payload = JSON.parse(text); }
@@ -571,7 +571,7 @@ function createFleetSharing({
   function externalAuthority(id) {
     const record = externalState.fleets[id];
     if (!record || !TOKEN_RE.test(record.remoteToken || '') || !GRANT_RE.test(record.remoteGrant || '')) {
-      fail('EXTERNAL_FLEET_NOT_INTERACTIVE', '该外部 Fleet 需要重新导入后才能操作', 409);
+      fail('EXTERNAL_FLEET_NOT_INTERACTIVE', '该共享工作区需要重新导入后才能操作', 409);
     }
     return {
       id: record.id,
@@ -588,7 +588,7 @@ function createFleetSharing({
   async function requestExternalRaw(record, { method = 'GET', pathname, headers = {}, body } = {}) {
     const remote = new URL(String(pathname || ''), `${record.sourceOrigin}/`);
     if (remote.origin !== record.sourceOrigin || !remote.pathname.startsWith('/api/')) {
-      fail('INVALID_REMOTE_PATH', '远端 Fleet 请求路径无效');
+      fail('INVALID_REMOTE_PATH', '远端工作区请求路径无效');
     }
     await assertSafeRemoteTarget(remote.hostname, lookupHost);
     const controller = new AbortController();
@@ -614,7 +614,7 @@ function createFleetSharing({
       const originalCode = cleanErrorCode(error && (error.code || error.cause && error.cause.code));
       const originalMessage = cleanText(error && (
         error.cause && error.cause.message || error.message
-      ), 1000, '无法连接外部 Fleet');
+      ), 1000, '无法连接共享工作区');
       fail(originalCode || 'REMOTE_UNAVAILABLE', originalMessage, 502, {
         category: 'remote',
         detail: originalMessage,
@@ -628,16 +628,16 @@ function createFleetSharing({
       clearTimeout(timer);
     }
     if (response.status >= 300 && response.status < 400) {
-      fail('REMOTE_REDIRECT_REJECTED', '外部 Fleet 返回了不安全的重定向', 502);
+      fail('REMOTE_REDIRECT_REJECTED', '共享工作区返回了不安全的重定向', 502);
     }
     const declaredLength = Number(response.headers && response.headers.get('content-length'));
     if (Number.isFinite(declaredLength) && declaredLength > MAX_PROXY_BODY_BYTES) {
-      fail('REMOTE_RESPONSE_TOO_LARGE', '外部 Fleet 响应过大', 502);
+      fail('REMOTE_RESPONSE_TOO_LARGE', '共享工作区响应过大', 502);
     }
     let buffer;
     try { buffer = Buffer.from(await response.arrayBuffer()); }
-    catch (_) { fail('INVALID_REMOTE_RESPONSE', '无法读取外部 Fleet 响应', 502); }
-    if (buffer.length > MAX_PROXY_BODY_BYTES) fail('REMOTE_RESPONSE_TOO_LARGE', '外部 Fleet 响应过大', 502);
+    catch (_) { fail('INVALID_REMOTE_RESPONSE', '无法读取共享工作区响应', 502); }
+    if (buffer.length > MAX_PROXY_BODY_BYTES) fail('REMOTE_RESPONSE_TOO_LARGE', '共享工作区响应过大', 502);
     return {
       status: response.status,
       body: buffer,
@@ -673,21 +673,21 @@ function createFleetSharing({
     });
     let payload;
     try { payload = JSON.parse(result.body.toString('utf8')); }
-    catch (_) { fail('INVALID_REMOTE_RESPONSE', '远端返回了无效的 Fleet 数据', 502); }
+    catch (_) { fail('INVALID_REMOTE_RESPONSE', '远端返回了无效的工作区数据', 502); }
     if (result.status !== 200) {
       failWithRemoteError(payload, {
         status: result.status === 200 ? 502 : result.status || 502,
         defaultCode: 'REMOTE_UNAVAILABLE',
-        defaultMessage: '无法刷新外部 Fleet',
+        defaultMessage: '无法刷新共享工作区',
         upstreamRequestId: result.upstreamRequestId,
         correlationId: result.correlationId || context.correlationId,
       });
     }
     const remote = validateFleetPayload(payload);
     const current = externalState.fleets[id];
-    if (!current) fail('EXTERNAL_FLEET_NOT_FOUND', '外部 Fleet 不存在', 404);
+    if (!current) fail('EXTERNAL_FLEET_NOT_FOUND', '共享工作区不存在', 404);
     if (remote.sourceInstanceId !== current.sourceInstanceId || remote.sourceFleetId !== current.sourceFleetId) {
-      fail('INVALID_REMOTE_RESPONSE', '远端 Fleet 身份发生变化', 502);
+      fail('INVALID_REMOTE_RESPONSE', '远端工作区身份发生变化', 502);
     }
     const updated = {
       ...current,

@@ -4,18 +4,18 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <meta name="theme-color" content="#0a0c10" />
-  <title>MultiCC — Fleet 分享</title>
+  <title>MultiCC — 工作区分享</title>
   <style>
     *{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:20px;background:#0a0c10;color:#eef1f6;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.card{width:min(560px,100%);padding:28px;border:1px solid rgba(255,255,255,.14);border-radius:16px;background:#181d27;box-shadow:0 18px 50px rgba(0,0,0,.35)}.mark{font-size:13px;color:#3ad6c5;font-weight:700;letter-spacing:.5px}.card h1{font-size:22px;margin:10px 0 8px}.card p{color:#969db0;line-height:1.65;margin:0 0 18px}.steps{padding:14px 16px;background:#0e1116;border:1px solid rgba(255,255,255,.1);border-radius:10px;color:#cdd3de;line-height:1.7;font-size:14px}.url{width:100%;margin-top:14px;padding:10px 12px;border:1px solid rgba(58,214,197,.35);border-radius:9px;background:#0a0c10;color:#6aa3ff;font:12px ui-monospace,monospace}.hint{font-size:12px!important;margin-top:14px!important;color:#6a7280!important}
   </style>
 </head>
 <body>
   <main class="card">
-    <div class="mark">MULTICC · FLEET SHARE</div>
-    <h1>收到一个 Fleet 分享</h1>
-    <p>这是受密码保护的 Fleet 范围授权。导入后可打开和操作该 Fleet 的会话；命令仍在来源实例执行，且不会开放其他 Fleet 或 Provider 凭据。</p>
-    <div class="steps">在目标 MultiCC 打开管理页，点击顶部的「导入 Fleet」，粘贴下面的链接并输入分享者提供的密码。</div>
-    <input id="share-url" class="url" readonly aria-label="Fleet 分享链接" />
+    <div class="mark">MULTICC · WORKSPACE SHARE</div>
+    <h1>收到一个工作区分享</h1>
+    <p>这是受密码保护的工作区范围授权。导入后可打开和操作该工作区的会话；命令仍在来源实例执行，且不会开放其他工作区或 Provider 凭据。</p>
+    <div class="steps">在目标 MultiCC 打开管理页，点击顶部的「导入工作区」，粘贴下面的链接并输入分享者提供的密码。</div>
+    <input id="share-url" class="url" readonly aria-label="工作区分享链接" />
     <p class="hint">分享密码请通过单独渠道获取。每次导入会消耗一次分享访问次数。</p>
   </main>
   <script>document.getElementById('share-url').value=location.href;</script>

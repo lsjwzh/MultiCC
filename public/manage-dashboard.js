@@ -644,10 +644,15 @@ function renderDashboard(directories, sessions) {
 
   if (directories.length === 0) {
     listEl.innerHTML = `
-      <div class="empty-state">
+      <div class="workspace-empty">
         <div class="empty-icon">📁</div>
-        <p>No directories yet</p>
-        <button class="btn btn-green" onclick="openNewDirectoryModal()">+ New Directory</button>
+        <h3>还没有工作区</h3>
+        <p>从一个安全、可删除的小示例开始，或添加你自己的本地文件夹。</p>
+        <div class="workspace-empty-actions">
+          <button class="btn btn-green" onclick="createSampleWorkspace()">体验示例工作区（约 2 分钟）</button>
+          <button class="btn" onclick="openNewDirectoryModal()">添加我的工作区</button>
+        </div>
+        <div class="workspace-sample-note">示例保存在 MultiCC 数据区，不会修改正在运行的 MultiCC 源码</div>
       </div>`;
     return;
   }
@@ -922,7 +927,7 @@ function showDirMenu(ev, dirId) {
       items.push({ label: '↻ 刷新远端状态', onclick: () => refreshExternalFleet(dir.externalFleetId) });
     }
     items.push({ sep: true });
-    items.push({ label: '移除外部 Fleet', danger: true, onclick: () => removeExternalFleet(dir.externalFleetId) });
+    items.push({ label: '移除共享工作区', danger: true, onclick: () => removeExternalFleet(dir.externalFleetId) });
     showPopoverMenu(ev.currentTarget, items);
     return;
   }
@@ -942,7 +947,7 @@ function showDirMenu(ev, dirId) {
   }
   items.push({ label: tt('rename'), onclick: () => renameDirectory(dirId) });
   items.push({ label: dir?.rolePrompt ? tt('rolePromptSet') : tt('rolePrompt'), onclick: () => changeDirectoryRole(dirId) });
-  items.push({ label: '↗ 分享 Fleet', onclick: () => openFleetShareModal(dirId) });
+  items.push({ label: '↗ 分享工作区', onclick: () => openFleetShareModal(dirId) });
   items.push({ sep: true });
   items.push({ label: tt('deleteDirectory'), danger: true, onclick: () => deleteDirectory(dirId) });
   showPopoverMenu(ev.currentTarget, items);
@@ -1328,7 +1333,7 @@ function renderDirectoryBlock(dir, dirSessions) {
 
   const headerMain = `
         <div class="dir-main">
-          <span class="dir-name">${escapeHtml(dir.name)}</span>${dir.external ? '<span class="external-fleet-badge">外部</span>' : ''}
+          <span class="dir-name">${escapeHtml(dir.name)}</span>${dir.sample ? '<span class="sample-badge">示例</span>' : ''}${dir.external ? '<span class="external-fleet-badge">外部</span>' : ''}
           <span class="dir-path" title="${escapeHtml(dir.path)}">${escapeHtml(shortenPath(dir.path, maxPath))}</span>
           ${dirtyBadge}
           <div class="dir-meta">
@@ -1522,7 +1527,7 @@ async function pushDirectory(id) {
     return;
   }
   if (!state.hasRemote) {
-    showToast('该Fleet未设置 Git remote', true);
+    showToast('该工作区未设置 Git remote', true);
     return;
   }
   if (!state.ahead) {
@@ -1764,96 +1769,10 @@ function renderOrphans(sessions) {
     </div>`;
 }
 
-/* ── Directory management ── */
-function openNewDirectoryModal() {
-  const modal = document.getElementById('newdir-modal');
-  if (!modal) return;
-  modal.style.display = 'flex';
-  document.getElementById('newdir-name').value = '';
-  document.getElementById('newdir-path').value = '';
-  document.getElementById('newdir-error').style.display = 'none';
-  const sg = document.getElementById('newdir-suggest');
-  if (sg) { sg.style.display = 'none'; sg.innerHTML = ''; }
-  const cc = document.getElementById('newdir-create');
-  if (cc) cc.checked = false;
-  _newDirEntries = [];
-  setTimeout(() => document.getElementById('newdir-name').focus(), 50);
-}
-
-// Filesystem path autocomplete for the "new directory" path field.
-let _newDirSuggestTimer = null;
-let _newDirEntries = [];
-function onNewDirPathInput() {
-  clearTimeout(_newDirSuggestTimer);
-  _newDirSuggestTimer = setTimeout(fetchNewDirSuggestions, 180);
-}
-async function fetchNewDirSuggestions() {
-  const val = document.getElementById('newdir-path').value;
-  const box = document.getElementById('newdir-suggest');
-  if (!box) return;
-  try {
-    const res = await fetch('/api/fs/list?path=' + encodeURIComponent(val));
-    if (!res.ok) { box.style.display = 'none'; return; }
-    const data = await res.json();
-    renderNewDirSuggestions(data.entries || []);
-  } catch (_) { box.style.display = 'none'; }
-}
-function renderNewDirSuggestions(entries) {
-  _newDirEntries = entries;
-  const box = document.getElementById('newdir-suggest');
-  if (!box) return;
-  if (!entries.length) { box.style.display = 'none'; box.innerHTML = ''; return; }
-  box.innerHTML = entries.map((e, i) =>
-    `<div onclick="pickNewDirSuggestion(${i})" onmouseover="this.style.background='#161b22'" onmouseout="this.style.background='transparent'" style="padding:6px 10px;cursor:pointer;font-family:monospace;font-size:12px;color:#c9d1d9;border-bottom:1px solid #21262d;">📁 ${escapeHtml(e.name)}</div>`
-  ).join('');
-  box.style.display = 'block';
-}
-function pickNewDirSuggestion(i) {
-  const e = _newDirEntries[i];
-  if (!e) return;
-  const pathEl = document.getElementById('newdir-path');
-  pathEl.value = e.path + '/';
-  const nameEl = document.getElementById('newdir-name');
-  if (!nameEl.value.trim()) nameEl.value = e.name;
-  pathEl.focus();
-  fetchNewDirSuggestions();   // drill into the chosen directory
-}
-
-function closeNewDirectoryModal() {
-  const modal = document.getElementById('newdir-modal');
-  if (modal) modal.style.display = 'none';
-}
-
-async function submitNewDirectory() {
-  const name = document.getElementById('newdir-name').value.trim();
-  const dirPath = document.getElementById('newdir-path').value.trim();
-  const create = !!document.getElementById('newdir-create')?.checked;
-  const errEl = document.getElementById('newdir-error');
-  errEl.style.display = 'none';
-  if (!name || !dirPath) {
-    errEl.textContent = 'Name and path are required';
-    errEl.style.display = 'block';
-    return;
-  }
-  try {
-    const res = await fetch('/api/directories', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, path: dirPath, create }),
-    });
-    if (!res.ok) {
-      const err = await res.json();
-      errEl.textContent = err.error || `HTTP ${res.status}`;
-      errEl.style.display = 'block';
-      return;
-    }
-    const dir = await res.json();
-    _expandedDirs.add(dir.id);
-    closeNewDirectoryModal();
-    showToast(`Directory "${dir.name}" created`);
-    loadDashboard();
-  } catch (err) {
-    errEl.textContent = err.message;
-    errEl.style.display = 'block';
-  }
+/* Workspace creation lives in manage-workspace-setup.js. This callback keeps
+   dashboard-owned expansion state private while giving the setup flow one
+   stable completion port. */
+async function workspaceSetupDidCreate(dir) {
+  if (dir?.id) _expandedDirs.add(dir.id);
+  return loadDashboard();
 }

@@ -1492,9 +1492,9 @@ function createTaskBoardRuntime(deps) {
 
   function commanderFailure(res, code) {
     const notes = {
-      directory_required: '自动路由必须指定任务所属 Fleet',
-      commander_not_found: '该 Fleet 没有带稳定角色元数据的 Agent Commander，请先创建或修复 Commander 会话',
-      commander_ambiguous: '该 Fleet 存在多个 Agent Commander，无法安全确定唯一入口，请先修复角色配置',
+      directory_required: '自动路由必须指定任务所属工作区',
+      commander_not_found: '该工作区没有带稳定角色元数据的 Agent Commander，请先创建或修复 Commander 会话',
+      commander_ambiguous: '该工作区存在多个 Agent Commander，无法安全确定唯一入口，请先修复角色配置',
     };
     return res.status(code === 'directory_required' ? 400 : 409).json({
       error: code || 'commander_unavailable',
@@ -1512,7 +1512,7 @@ function createTaskBoardRuntime(deps) {
       directoryId: dirId,
       note: code === 'commander_migration_pending'
         ? 'Agent Commander 升级迁移尚未完成，自动路由暂不可用'
-        : '该 Fleet 的 Agent Commander 迁移未安全完成，请查看 readiness 并修复后重试',
+        : '该工作区的 Agent Commander 迁移未安全完成，请查看 readiness 并修复后重试',
     });
     return true;
   }
