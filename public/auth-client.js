@@ -63,6 +63,32 @@ if (typeof module !== 'undefined' && module.exports) {
     return nativeFetch(externalProxyInput(input), options);
   };
 
+  async function responseError(response, context) {
+    const model = window.MultiCCErrorEnvelope;
+    if (model && typeof model.fromHttpResponse === 'function') {
+      return model.fromHttpResponse(response, context);
+    }
+    let body = null;
+    try {
+      if (response && typeof response.json === 'function') body = await response.json();
+    } catch (_) { /* status remains useful when an older server returns text */ }
+    const nested = body && body.error && typeof body.error === 'object' ? body.error : null;
+    const message = body && (typeof body.error === 'string' ? body.error : body.message)
+      || nested && nested.message
+      || (context && context.fallbackMessage)
+      || `HTTP ${response && response.status || 0}`;
+    const error = new Error(String(message));
+    error.name = 'MultiCCError';
+    error.code = body && (body.code || nested && nested.code)
+      || (context && context.defaultCode)
+      || 'HTTP_ERROR';
+    error.status = Number(response && response.status) || 0;
+    error.requestId = body && body.requestId || null;
+    error.correlationId = body && body.correlationId || error.requestId;
+    error.details = body;
+    return error;
+  }
+
   const ready = bootstrapToken
     ? window.fetch('/api/auth/exchange', { method: 'POST', credentials: 'same-origin' })
       .then(res => {
@@ -86,7 +112,13 @@ if (typeof module !== 'undefined' && module.exports) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pathname: url.pathname, sessionId, directoryId }),
       });
-      if (!res.ok) throw new Error(`External Fleet WebSocket ticket failed: HTTP ${res.status}`);
+      if (!res.ok) throw await responseError(res, {
+        source: 'external_fleet_ws_ticket',
+        scope: 'session',
+        category: 'remote',
+        defaultCode: 'EXTERNAL_FLEET_WS_TICKET_FAILED',
+        fallbackMessage: `External Fleet WebSocket ticket failed: HTTP ${res.status}`,
+      });
       const data = await res.json();
       const remoteOrigin = new URL(data.wsOrigin);
       url.protocol = remoteOrigin.protocol;
@@ -100,7 +132,12 @@ if (typeof module !== 'undefined' && module.exports) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path: url.pathname }),
     });
-    if (!res.ok) throw new Error(`WebSocket ticket failed: HTTP ${res.status}`);
+    if (!res.ok) throw await responseError(res, {
+      source: 'ws_ticket',
+      scope: 'session',
+      defaultCode: 'WS_TICKET_FAILED',
+      fallbackMessage: `WebSocket ticket failed: HTTP ${res.status}`,
+    });
     const data = await res.json();
     url.searchParams.set('ticket', data.ticket);
     return url.toString();

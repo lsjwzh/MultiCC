@@ -2,6 +2,7 @@
 
 const path = require('node:path');
 const { createFleetSharing, FleetSharingError } = require('../fleet-sharing');
+const { createErrorDto, requestContext } = require('../api-contract');
 
 const FAILURE_WINDOW_MS = 15 * 60_000;
 const MAX_PASSWORD_FAILURES = 10;
@@ -17,9 +18,36 @@ function createFleetSharingRoutes({ sharing, pageFile, logger, issueWsTicket, no
   if (!pageFile) throw new TypeError('fleet share page is required');
   const failures = new Map();
 
-  function sendError(res, error, operation) {
+  function sendError(req, res, error, operation) {
     if (error instanceof FleetSharingError) {
-      return res.status(error.status).json({ code: error.code, error: error.message });
+      const code = String(error.code || 'FLEET_REQUEST_FAILED');
+      const status = Number(error.status) || 400;
+      const authFailure = status === 401 || status === 403;
+      const remoteFailure = error.category === 'remote' || /REMOTE|EXTERNAL/.test(code);
+      const category = error.category || (authFailure ? 'authentication_permission'
+        : remoteFailure ? 'remote' : status === 409 ? 'conflict' : 'route');
+      const retryable = error.retryable == null
+        ? remoteFailure && [408, 425, 429, 500, 502, 503, 504].includes(status)
+        : error.retryable;
+      const detail = error.upstreamRequestId
+        ? `${error.detail || error.message} · upstream requestId ${error.upstreamRequestId}`
+        : error.detail || error.message;
+      if (error.upstreamRequestId) {
+        res.set('X-Multicc-Upstream-Request-Id', error.upstreamRequestId);
+      }
+      return res.status(status).json(createErrorDto({
+        code,
+        message: error.message,
+        category,
+        detail,
+        retryable,
+        action: error.action || (authFailure ? 'login' : retryable ? 'retry' : 'revise'),
+        scope: error.scope || 'request',
+        cause: error.causeCode || null,
+        upstreamRequestId: error.upstreamRequestId || null,
+        httpStatus: status,
+        ...requestContext(req, res),
+      }));
     }
     if (logger && typeof logger.error === 'function') {
       logger.error('fleet_sharing_failure', {
@@ -27,11 +55,21 @@ function createFleetSharingRoutes({ sharing, pageFile, logger, issueWsTicket, no
         errorType: error && error.name ? String(error.name).slice(0, 80) : 'Error',
       });
     }
-    return res.status(500).json({ code: 'INTERNAL_ERROR', error: 'Fleet 分享操作失败' });
+    return res.status(500).json(createErrorDto({
+      code: 'INTERNAL_ERROR',
+      message: 'Fleet 分享操作失败',
+      category: 'internal',
+      detail: 'Fleet 分享操作失败',
+      retryable: false,
+      action: 'copy_details',
+      scope: 'request',
+      httpStatus: 500,
+      ...requestContext(req, res),
+    }));
   }
 
   const wrap = (operation, handler) => (req, res) => Promise.resolve().then(() => handler(req, res))
-    .catch(error => sendError(res, error, operation));
+    .catch(error => sendError(req, res, error, operation));
 
   function failedAttemptKey(req) {
     return `${req.params.token}:${req.ip || req.socket?.remoteAddress || 'unknown'}`;
@@ -82,7 +120,17 @@ function createFleetSharingRoutes({ sharing, pageFile, logger, issueWsTicket, no
     accessShare: wrap('access', (req, res) => {
       const key = failedAttemptKey(req);
       if (isRateLimited(key)) {
-        return res.status(429).json({ code: 'SHARE_RATE_LIMITED', error: '尝试过于频繁，请稍后再试' });
+        return res.status(429).json(createErrorDto({
+          code: 'SHARE_RATE_LIMITED',
+          message: '尝试过于频繁，请稍后再试',
+          category: 'rate_limit',
+          detail: '尝试过于频繁，请稍后再试',
+          retryable: true,
+          action: 'retry_later',
+          scope: 'request',
+          httpStatus: 429,
+          ...requestContext(req, res),
+        }));
       }
       try {
         const payload = sharing.accessSharedFleet(req.params.token, (req.body || {}).password);
@@ -105,7 +153,17 @@ function createFleetSharingRoutes({ sharing, pageFile, logger, issueWsTicket, no
 
     issueSharedWsTicket: wrap('shared-ws-ticket', (req, res) => {
       if (typeof issueWsTicket !== 'function') {
-        return res.status(501).json({ code: 'WS_TICKET_UNAVAILABLE', error: 'WebSocket 凭证服务不可用' });
+        return res.status(501).json(createErrorDto({
+          code: 'WS_TICKET_UNAVAILABLE',
+          message: 'WebSocket 凭证服务不可用',
+          category: 'runtime',
+          detail: 'WebSocket 凭证服务不可用',
+          retryable: false,
+          action: 'restart',
+          scope: 'host',
+          httpStatus: 501,
+          ...requestContext(req, res),
+        }));
       }
       const body = req.body || {};
       const authorized = sharing.authorizeWebSocket({
@@ -115,7 +173,17 @@ function createFleetSharingRoutes({ sharing, pageFile, logger, issueWsTicket, no
         sessionId: body.sessionId,
         directoryId: body.directoryId,
       });
-      if (!authorized) return res.status(403).json({ code: 'FLEET_SCOPE_FORBIDDEN', error: 'Fleet 授权无效' });
+      if (!authorized) return res.status(403).json(createErrorDto({
+        code: 'FLEET_SCOPE_FORBIDDEN',
+        message: 'Fleet 授权无效',
+        category: 'authentication_permission',
+        detail: 'Fleet 授权无效',
+        retryable: false,
+        action: 'login',
+        scope: 'session',
+        httpStatus: 403,
+        ...requestContext(req, res),
+      }));
       const metadata = body.sessionId
         ? { fleetSessionId: body.sessionId }
         : { fleetDirectoryId: body.directoryId };
@@ -125,7 +193,10 @@ function createFleetSharingRoutes({ sharing, pageFile, logger, issueWsTicket, no
     }),
 
     importExternal: wrap('import', async (req, res) => {
-      const record = await sharing.importExternal(req.body || {});
+      const record = await sharing.importExternal(req.body || {}, {
+        requestId: req.id,
+        correlationId: req.correlationId || req.id,
+      });
       return res.json({ ok: true, fleet: record });
     }),
 
@@ -139,7 +210,10 @@ function createFleetSharingRoutes({ sharing, pageFile, logger, issueWsTicket, no
 
     refreshExternal: wrap('external-refresh', async (req, res) => res.json({
       ok: true,
-      fleet: await sharing.refreshExternal(req.params.id),
+      fleet: await sharing.refreshExternal(req.params.id, {
+        requestId: req.id,
+        correlationId: req.correlationId || req.id,
+      }),
     })),
 
     proxyExternal: wrap('external-proxy', async (req, res) => {
@@ -167,16 +241,24 @@ function createFleetSharingRoutes({ sharing, pageFile, logger, issueWsTicket, no
       const remote = await sharing.proxyExternal(req.params.id, {
         method,
         pathname,
-        headers: { accept: req.get('accept'), 'content-type': contentType },
+        headers: {
+          accept: req.get('accept'),
+          'content-type': contentType,
+          'x-correlation-id': req.correlationId || req.id,
+        },
         body,
       });
       if (remote.contentType) res.set('Content-Type', remote.contentType);
       if (remote.cacheControl) res.set('Cache-Control', remote.cacheControl);
+      if (remote.upstreamRequestId) res.set('X-Multicc-Upstream-Request-Id', remote.upstreamRequestId);
       return res.status(remote.status).send(remote.body);
     }),
 
     issueExternalWsTicket: wrap('external-ws-ticket', async (req, res) => {
-      const issued = await sharing.issueExternalWsTicket(req.params.id, req.body || {});
+      const issued = await sharing.issueExternalWsTicket(req.params.id, req.body || {}, {
+        requestId: req.id,
+        correlationId: req.correlationId || req.id,
+      });
       res.set('Cache-Control', 'no-store');
       return res.json(issued);
     }),

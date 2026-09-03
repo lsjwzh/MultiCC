@@ -1,16 +1,36 @@
 'use strict';
 
 (function installChatTransport(root, factory) {
-  const api = factory();
+  const api = factory(root);
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   if (root) root.MultiCCChatTransport = api;
-})(typeof window !== 'undefined' ? window : null, function createChatTransportApi() {
+})(typeof window !== 'undefined' ? window : null, function createChatTransportApi(root) {
   const OPEN = 1;
   const CLOSING = 2;
   const CLOSED = 3;
   const CREDENTIAL_QUERY_KEYS = new Set([
     'token', 'access_token', 'auth_token', 'api_key', 'apikey', 'authorization', 'x-access-token',
   ]);
+  const errorModel = (root && root.MultiCCErrorEnvelope)
+    || (typeof module === 'object' && module.exports ? require('./error-envelope') : null);
+
+  function codedError(code, message) {
+    const error = new Error(message);
+    error.code = code;
+    return error;
+  }
+
+  function normalizeTransportError(error, context = {}) {
+    if (errorModel) return errorModel.normalize(error || {}, {
+      source: 'websocket', scope: 'session', ...context,
+    });
+    return error && error.envelope || {
+      version: 'v1', code: error && error.code || context.defaultCode || 'WS_ERROR',
+      category: context.category || 'network', family: context.category || 'network',
+      message: error && error.message || context.fallbackMessage || 'WebSocket error',
+      retryable: true, action: 'retry', scope: 'session', httpStatus: error && error.status || 0,
+    };
+  }
 
   function credentialFreeUrl(rawUrl, baseUrl) {
     const url = new URL(rawUrl, baseUrl);
@@ -34,12 +54,12 @@
     const url = new URL(credentialFreeUrl(rawUrl, baseUrl), baseUrl);
     const base = new URL(baseUrl);
     if (!['ws:', 'wss:'].includes(url.protocol) || url.host !== base.host) {
-      throw new Error('WebSocket endpoint must be same-origin');
+      throw codedError('WS_ENDPOINT_ORIGIN_INVALID', 'WebSocket endpoint must be same-origin');
     }
     if (base.protocol === 'https:' && url.protocol !== 'wss:') {
-      throw new Error('WebSocket endpoint must preserve secure transport');
+      throw codedError('WS_ENDPOINT_DOWNGRADE_REJECTED', 'WebSocket endpoint must preserve secure transport');
     }
-    if (!url.searchParams.get('ticket')) throw new Error('WebSocket ticket is required');
+    if (!url.searchParams.get('ticket')) throw codedError('WS_TICKET_MISSING', 'WebSocket ticket is required');
     return url.toString();
   }
 
@@ -135,10 +155,17 @@
           if (destroyed || socket !== next) return;
           const delay = Math.min(1000 * Math.pow(2, reconnectAttempt), 15000);
           reconnectAttempt += 1;
+          const envelope = errorModel
+            ? errorModel.fromWsClose(event, { scope: 'session' })
+            : normalizeTransportError({
+              code: `WS_CLOSE_${Number(event && event.code) || 1006}`,
+              message: event && event.reason || 'WebSocket connection closed',
+            });
           const shouldReconnect = typeof options.onClose === 'function'
             ? options.onClose({
               socket: next,
               event,
+              envelope,
               delay,
               seconds: Math.round(delay / 1000),
               attempt: reconnectAttempt,
@@ -148,13 +175,27 @@
         };
         next.onerror = (event) => {
           if (!destroyed && socket === next && typeof options.onError === 'function') {
-            options.onError({ socket: next, event });
+            options.onError({
+              socket: next,
+              event,
+              envelope: normalizeTransportError({
+                code: 'WS_SOCKET_ERROR', message: 'WebSocket transport error', retryable: true,
+              }, { category: 'network' }),
+            });
           }
         };
         return next;
       } catch (error) {
         if (destroyed || generation !== connectGeneration) return null;
-        if (typeof options.onTicketError === 'function') options.onTicketError(error);
+        const envelope = normalizeTransportError(error, {
+          category: error && error.category,
+          source: error && error.family === 'remote' ? 'external_fleet_ws_ticket' : 'ws_ticket',
+          defaultCode: 'WS_TICKET_FAILED',
+          fallbackMessage: 'WebSocket ticket exchange failed',
+        });
+        if (typeof options.onTicketError === 'function') {
+          options.onTicketError(error, { envelope, attempt: reconnectAttempt + 1 });
+        }
         schedule(1000);
         return null;
       }
@@ -265,5 +306,11 @@
     });
   }
 
-  return Object.freeze({ createTransport, credentialFreeUrl, safeDebugUrl, verifiedTicketUrl });
+  return Object.freeze({
+    createTransport,
+    credentialFreeUrl,
+    normalizeTransportError,
+    safeDebugUrl,
+    verifiedTicketUrl,
+  });
 });

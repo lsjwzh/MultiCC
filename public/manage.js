@@ -32,16 +32,14 @@ async function renameDirectory(id) {
   if (!name) { showToast('名称不能为空', true); return; }
   if (name.length > 80) { showToast('名称过长（最多 80 字）', true); return; }
   try {
-    const res = await fetch(`/api/directories/${id}${tokenQS('?')}`, {
+    await providerApi.json(`/api/directories/${encodeURIComponent(id)}${tokenQS('?')}`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name }),
+      json: { name },
     });
-    if (!res.ok) { const err = await res.json(); showToast(`Error: ${err.error || res.status}`, true); return; }
     showToast(`已重命名为 ${name}`);
     loadDashboard();
   } catch (err) {
-    showToast(`Error: ${err.message}`, true);
+    showToast(`Error: ${providerApi.errorText(err)}`, true);
   }
 }
 
@@ -56,17 +54,12 @@ async function deleteDirectory(id) {
   try {
     const qs = tokenQS('?');
     const url = `/api/directories/${id}${qs}${qs ? '&' : '?'}force=1`;
-    const res = await fetch(url, { method: 'DELETE' });
-    if (!res.ok) {
-      const err = await res.json();
-      showToast(`Error: ${err.error}`, true);
-      return;
-    }
+    await providerApi.json(url, { method: 'DELETE' });
     showToast(`Directory "${dir.name}" deleted`);
     _expandedDirs.delete(id);
     loadDashboard();
   } catch (err) {
-    showToast(`Error: ${err.message}`, true);
+    showToast(`Error: ${providerApi.errorText(err)}`, true);
   }
 }
 
@@ -278,12 +271,7 @@ async function deleteSession(id) {
   if (rec?.type === 'commander') { showToast('指挥官会话不可单独删除，只能随其所属 fleet 一起删除', true); return; }
   if (!(await showConfirm(`Delete session ${id}?\nThe PTY process will be terminated.`, { danger: true, okText: '删除' }))) return;
   try {
-    const res = await fetch(`/api/sessions/${id}` + tokenQS('?'), { method: 'DELETE' });
-    if (!res.ok) {
-      const err = await res.json();
-      showToast(`Error: ${err.error}`, true);
-      return;
-    }
+    await providerApi.json(`/api/sessions/${encodeURIComponent(id)}` + tokenQS('?'), { method: 'DELETE' });
     showToast(`Session ${id} deleted`);
     // Clean up cached iframes (both focus panel and session modal pool)
     const cachedFrame = _iframeCache.get(id);
@@ -294,7 +282,7 @@ async function deleteSession(id) {
     if (_currentSessionModalId === id) { _currentSessionModalId = null; _currentSessionModalKind = null; }
     loadSessions();
   } catch (err) {
-    showToast(`Error: ${err.message}`, true);
+    showToast(`Error: ${providerApi.errorText(err)}`, true);
   }
 }
 
@@ -311,13 +299,7 @@ async function showDiff(sessionId) {
   contentEl.innerHTML = '';
   modal.style.display = 'flex';
   try {
-    const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/diff${tokenQS('?')}`);
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      subEl.textContent = `错误：${err.error || res.status}`;
-      return;
-    }
-    const data = await res.json();
+    const data = await providerApi.json(`/api/sessions/${encodeURIComponent(sessionId)}/diff${tokenQS('?')}`);
     const ms = data.mergeState || {};
     const parts = [];
     if (data.branch) parts.push(`${data.branch} → ${data.baseBranch || ''}`);
@@ -334,7 +316,7 @@ async function showDiff(sessionId) {
       contentEl.appendChild(errLine);
     }
   } catch (e) {
-    subEl.textContent = `请求失败：${e.message}`;
+    subEl.textContent = `请求失败：${providerApi.errorText(e)}`;
   }
 }
 
@@ -395,22 +377,17 @@ function renderDiffLines(text) {
 async function mergeSession(id) {
   if (!(await showConfirm(`把会话 ${id} 的 worktree 合并回基分支？\n未提交的改动会先自动提交。`, { okText: '合并' }))) return;
   try {
-    const res = await fetch(`/api/sessions/${id}/merge` + tokenQS('?'), { method: 'POST' });
-    const data = await res.json();
-    if (res.ok) {
-      showToast(data.merged ? `已合并 ${data.commits} 个提交回基分支` : (data.message || '没有新提交需要合并'));
-      const prev = _workspaceStatus.get(id) || {};
-      _workspaceStatus.set(id, { ...prev, mergeState: { ...(prev.mergeState || {}), mergeReady: false, dirty: false, ahead: 0 } });
-      updateSessionMergeDom(id);
-      await loadDashboard();
-    } else if (res.status === 409) {
-      showToast(`合并冲突，已 abort：${(data.conflicts || []).join(', ')}`, true);
-      showMergeConflictDiff(id, data);
-    } else {
-      showToast(`合并失败：${data.error || res.status}`, true);
-    }
+    const data = await providerApi.json(`/api/sessions/${encodeURIComponent(id)}/merge` + tokenQS('?'), { method: 'POST' });
+    showToast(data.merged ? `已合并 ${data.commits} 个提交回基分支` : (data.message || '没有新提交需要合并'));
+    const prev = _workspaceStatus.get(id) || {};
+    _workspaceStatus.set(id, { ...prev, mergeState: { ...(prev.mergeState || {}), mergeReady: false, dirty: false, ahead: 0 } });
+    updateSessionMergeDom(id);
+    await loadDashboard();
   } catch (err) {
-    showToast(`Error: ${err.message}`, true);
+    if (err.status === 409) {
+      showToast(`合并冲突，已 abort：${providerApi.errorText(err)}`, true);
+      showMergeConflictDiff(id, err.details || {});
+    } else showToast(`合并失败：${providerApi.errorText(err)}`, true);
   }
 }
 
@@ -439,24 +416,16 @@ async function showSyncConflictHelp(id) {
 
 async function resolveRebase(id, action) {
   try {
-    const res = await fetch(`/api/sessions/${id}/rebase` + tokenQS('?'), {
+    const data = await providerApi.json(`/api/sessions/${encodeURIComponent(id)}/rebase` + tokenQS('?'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action }),
+      json: { action },
     });
-    const data = await res.json();
-    if (res.ok) {
-      if (data.aborted) showToast('已放弃 rebase，worktree 回到同步前状态');
-      else if (data.done) showToast('冲突已解决，同步完成');
-      else showToast('rebase 已继续');
-      await loadDashboard();
-    } else if (res.status === 409) {
-      showToast(`仍有冲突未解决：${(data.conflicts || []).join(', ')}`, true);
-    } else {
-      showToast(`操作失败：${data.error || res.status}`, true);
-    }
+    if (data.aborted) showToast('已放弃 rebase，worktree 回到同步前状态');
+    else if (data.done) showToast('冲突已解决，同步完成');
+    else showToast('rebase 已继续');
+    await loadDashboard();
   } catch (err) {
-    showToast(`Error: ${err.message}`, true);
+    showToast(`${err.status === 409 ? '仍有冲突未解决' : '操作失败'}：${providerApi.errorText(err)}`, true);
   }
 }
 
@@ -796,16 +765,12 @@ function openNoteModal(fromId) {
     const body = overlay.querySelector('#note-body').value.trim();
     if (!body) { showToast('留言内容不能为空', true); return; }
     try {
-      const res = await fetch(`/api/sessions/${fromId}/notes` + tokenQS('?'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ toSessionId: toId, body }),
+      await providerApi.json(`/api/sessions/${encodeURIComponent(fromId)}/notes` + tokenQS('?'), {
+        method: 'POST', json: { toSessionId: toId, body },
       });
-      const data = await res.json();
-      if (res.ok) { showToast('留言已发送'); close(); }
-      else showToast(`发送失败：${data.error || res.status}`, true);
+      showToast('留言已发送'); close();
     } catch (err) {
-      showToast(`Error: ${err.message}`, true);
+      showToast(`发送失败：${providerApi.errorText(err)}`, true);
     }
   };
 }
@@ -941,8 +906,7 @@ document.addEventListener('keydown', (e) => {
 /* ── Voice Settings ── */
 async function loadVoiceSettings() {
   try {
-    const res = await fetch('/api/settings/voice' + tokenQS('?'));
-    const data = await res.json();
+    const data = await providerApi.json('/api/settings/voice' + tokenQS('?'));
     document.getElementById('vs-base-url').value = data.baseUrl || '';
     document.getElementById('vs-api-key').value = '';
     document.getElementById('vs-api-key').placeholder = data.hasKey ? data.apiKey : 'sk-or-v1-...';
@@ -986,12 +950,10 @@ async function saveVoiceSettings() {
   }
 
   try {
-    const res = await fetch('/api/settings/voice' + tokenQS('?'), {
+    await providerApi.json('/api/settings/voice' + tokenQS('?'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      json: body,
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     vsStatus.textContent = 'Saved';
     vsStatus.className = 'status-text ok';
     wsStatus.textContent = 'Saved';
@@ -999,9 +961,9 @@ async function saveVoiceSettings() {
     showToast('Voice settings saved');
     loadVoiceSettings();
   } catch (err) {
-    vsStatus.textContent = `Failed: ${err.message}`;
+    vsStatus.textContent = `Failed: ${providerApi.errorText(err)}`;
     vsStatus.className = 'status-text err';
-    wsStatus.textContent = `Failed: ${err.message}`;
+    wsStatus.textContent = `Failed: ${providerApi.errorText(err)}`;
     wsStatus.className = 'status-text err';
   }
 }
@@ -1010,8 +972,7 @@ async function saveVoiceSettings() {
 const GOAL_DIM_KEYS = ['objective', 'criteria', 'scope', 'executable'];
 async function loadGoalSettings() {
   try {
-    const res = await fetch('/api/settings/goal' + tokenQS('?'));
-    const d = await res.json();
+    const d = await providerApi.json('/api/settings/goal' + tokenQS('?'));
     const dims = d.dimensions || {};
     for (const k of GOAL_DIM_KEYS) {
       const el = document.getElementById('goal-dim-' + k);
@@ -1032,18 +993,16 @@ async function saveGoalSettings() {
   let minScore = parseInt(document.getElementById('goal-min-score').value, 10);
   if (!Number.isFinite(minScore)) minScore = 60;
   try {
-    const res = await fetch('/api/settings/goal' + tokenQS('?'), {
+    await providerApi.json('/api/settings/goal' + tokenQS('?'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ dimensions, minScore }),
+      json: { dimensions, minScore },
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     status.textContent = 'Saved';
     status.className = 'status-text ok';
     showToast('Goal 预检设置已保存');
     loadGoalSettings();
   } catch (err) {
-    status.textContent = `Failed: ${err.message}`;
+    status.textContent = `Failed: ${providerApi.errorText(err)}`;
     status.className = 'status-text err';
   }
 }
@@ -1057,22 +1016,21 @@ async function loadMacosPowerSettings() {
 
   let available = false;
   try {
-    const res = await fetch('/api/settings/power' + tokenQS('?'));
-    const data = await res.json();
+    const data = await providerApi.json('/api/settings/power' + tokenQS('?'));
     if (!data.available) {
       card.style.display = 'none';
       return;
     }
     available = true;
     card.style.display = '';
-    if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+    if (data.error) throw providerApi.errorFromPayload(data);
     toggle.checked = !!data.enabled;
     status.textContent = data.enabled ? '已开启' : '已关闭';
     status.className = `status-text ${data.enabled ? 'ok' : ''}`;
   } catch (error) {
     card.style.display = available ? '' : 'none';
     if (available) {
-      status.textContent = `读取失败：${error.message}`;
+      status.textContent = `读取失败：${providerApi.errorText(error)}`;
       status.className = 'status-text err';
     }
   }
@@ -1087,20 +1045,17 @@ async function saveMacosPowerSettings() {
   status.className = 'status-text';
 
   try {
-    const res = await fetch('/api/settings/power' + tokenQS('?'), {
+    const data = await providerApi.json('/api/settings/power' + tokenQS('?'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled: requested }),
+      json: { enabled: requested },
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     toggle.checked = !!data.enabled;
     status.textContent = data.enabled ? '已开启' : '已关闭';
     status.className = `status-text ${data.enabled ? 'ok' : ''}`;
     showToast(data.enabled ? '已开启关盖保持运行' : '已恢复关盖睡眠');
   } catch (error) {
     toggle.checked = !requested;
-    status.textContent = `设置失败：${error.message}`;
+    status.textContent = `设置失败：${providerApi.errorText(error)}`;
     status.className = 'status-text err';
   } finally {
     toggle.disabled = false;
@@ -1116,8 +1071,7 @@ function _asrBadge(el, ready) {
 
 async function loadAsrSettings() {
   try {
-    const res = await fetch('/api/settings/voice' + tokenQS('?'));
-    const data = await res.json();
+    const data = await providerApi.json('/api/settings/voice' + tokenQS('?'));
     const a = data.asr || {};
     const st = a.status || {};
     const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v || ''; };
@@ -1177,17 +1131,15 @@ async function saveAsrSettings() {
   opt('funasrMode', 'asr-funasr-mode');
 
   try {
-    const res = await fetch('/api/settings/voice' + tokenQS('?'), {
+    await providerApi.json('/api/settings/voice' + tokenQS('?'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ asr }),
+      json: { asr },
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     if (status) { status.textContent = '已保存'; status.style.color = '#3fb950'; }
     showToast('流式 ASR 设置已保存');
     loadAsrSettings();
   } catch (err) {
-    if (status) { status.textContent = `失败：${err.message}`; status.style.color = '#f85149'; }
+    if (status) { status.textContent = `失败：${providerApi.errorText(err)}`; status.style.color = '#f85149'; }
   }
 }
 
@@ -1217,8 +1169,7 @@ async function loadCronTasks() {
   const list = document.getElementById('cron-list');
   if (!list) return;
   try {
-    const res = await fetch('/api/cron' + tokenQS('?'));
-    const tasks = await res.json();
+    const tasks = await providerApi.json('/api/cron' + tokenQS('?'));
     _cronTasksCache = tasks;   // keep for the KPI popup
     const cnt = document.getElementById('cron-count');
     if (cnt) cnt.textContent = tasks.length ? `(${tasks.length})` : '';
@@ -1323,7 +1274,7 @@ async function loadCronTasks() {
     list.style.gap = '12px';
     list.classList.add('multicc-auto-grid');
   } catch (err) {
-    list.innerHTML = `<div style="color:var(--danger);font-size:13px;">加载失败：${escapeHtml(err.message)}</div>`;
+    list.innerHTML = `<div style="color:var(--danger);font-size:13px;">加载失败：${escapeHtml(providerApi.errorText(err))}</div>`;
   }
 }
 
@@ -1385,51 +1336,44 @@ async function saveCronTask() {
   if (!body.prompt.trim()) { status.textContent = 'prompt 不能为空'; status.style.color = '#f85149'; return; }
   try {
     const url = '/api/cron' + (id ? '/' + id : '') + tokenQS('?');
-    const res = await fetch(url, {
+    await providerApi.json(url, {
       method: id ? 'PATCH' : 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      json: body,
     });
-    const data = await res.json();
-    if (!res.ok) { status.textContent = data.error || `HTTP ${res.status}`; status.style.color = '#f85149'; return; }
     showToast(id ? '已更新定时任务' : '已创建定时任务');
     closeCronModal();
     loadCronTasks();
   } catch (err) {
-    status.textContent = `失败：${err.message}`; status.style.color = '#f85149';
+    status.textContent = `失败：${providerApi.errorText(err)}`; status.style.color = '#f85149';
   }
 }
 
 async function runCronTask(id) {
   try {
-    const res = await fetch(`/api/cron/${id}/run` + tokenQS('?'), { method: 'POST' });
-    const data = await res.json();
-    if (!res.ok || !data.ok) showToast(`运行失败：${data.error || res.status}`, true);
-    else showToast('已触发，正在新建会话执行');
+    const data = await providerApi.json(`/api/cron/${encodeURIComponent(id)}/run` + tokenQS('?'), { method: 'POST' });
+    if (!data.ok) throw providerApi.errorFromPayload(data);
+    showToast('已触发，正在新建会话执行');
     loadCronTasks();
-  } catch (err) { showToast(`运行失败：${err.message}`, true); }
+  } catch (err) { showToast(`运行失败：${providerApi.errorText(err)}`, true); }
 }
 
 async function toggleCronTask(id, enabled) {
   try {
-    const res = await fetch(`/api/cron/${id}` + tokenQS('?'), {
+    await providerApi.json(`/api/cron/${encodeURIComponent(id)}` + tokenQS('?'), {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled }),
+      json: { enabled },
     });
-    if (!res.ok) { const e = await res.json(); showToast(`Error: ${e.error}`, true); return; }
     loadCronTasks();
-  } catch (err) { showToast(`Error: ${err.message}`, true); }
+  } catch (err) { showToast(`Error: ${providerApi.errorText(err)}`, true); }
 }
 
 async function deleteCronTask(id) {
   if (!(await showConfirm('删除这个定时任务？', { danger: true, okText: '删除' }))) return;
   try {
-    const res = await fetch(`/api/cron/${id}` + tokenQS('?'), { method: 'DELETE' });
-    if (!res.ok) { const e = await res.json(); showToast(`Error: ${e.error}`, true); return; }
+    await providerApi.json(`/api/cron/${encodeURIComponent(id)}` + tokenQS('?'), { method: 'DELETE' });
     showToast('已删除');
     loadCronTasks();
-  } catch (err) { showToast(`Error: ${err.message}`, true); }
+  } catch (err) { showToast(`Error: ${providerApi.errorText(err)}`, true); }
 }
 
 /* ── QR Code ── */
@@ -1493,15 +1437,13 @@ async function loadAgentSkills() {
   if (!list) return;
   list.innerHTML = '<div class="resource-empty">Loading…</div>';
   try {
-    const res = await fetch('/api/agent-resources/skills' + tokenQS('?'));
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    const data = await providerApi.json('/api/agent-resources/skills' + tokenQS('?'));
     _agentSkills = data.skills || [];
     document.getElementById('skills-summary').textContent =
       `${data.counts?.claude || 0} Claude · ${data.counts?.codex || 0} Codex`;
     renderSkills();
   } catch (err) {
-    list.innerHTML = `<div class="resource-empty">Load failed: ${escapeHtml(err.message)}</div>`;
+    list.innerHTML = `<div class="resource-empty">Load failed: ${escapeHtml(providerApi.errorText(err))}</div>`;
   }
 }
 
@@ -1540,14 +1482,12 @@ function _ssRelTime(ts) {
 
 async function loadSkillSyncStatus() {
   try {
-    const res = await fetch('/api/skill-sync/status' + tokenQS('?'));
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    const data = await providerApi.json('/api/skill-sync/status' + tokenQS('?'));
     _skillSyncData = data;
     renderSkillSyncStatus();
   } catch (err) {
     const provEl = document.getElementById('ss-providers');
-    if (provEl) provEl.innerHTML = `<div class="resource-empty">Load failed: ${escapeHtml(err.message)}</div>`;
+    if (provEl) provEl.innerHTML = `<div class="resource-empty">Load failed: ${escapeHtml(providerApi.errorText(err))}</div>`;
   }
 }
 
@@ -1626,14 +1566,13 @@ async function runSkillSync() {
   if (btn) { btn.disabled = true; btn.textContent = '同步中…'; }
   if (status) { status.className = 'status-text'; status.textContent = ''; }
   try {
-    const res = await fetch('/api/skill-sync/run' + tokenQS('?'), { method: 'POST' });
-    const data = await res.json();
-    if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    const data = await providerApi.json('/api/skill-sync/run' + tokenQS('?'), { method: 'POST' });
+    if (!data.ok) throw providerApi.errorFromPayload(data);
     _skillSyncData = data.result;
     renderSkillSyncStatus();
     if (status) { status.className = 'status-text ok'; status.textContent = '同步完成'; }
   } catch (err) {
-    if (status) { status.className = 'status-text err'; status.textContent = '同步失败: ' + err.message; }
+    if (status) { status.className = 'status-text err'; status.textContent = '同步失败: ' + providerApi.errorText(err); }
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = '立即同步'; }
   }
@@ -1644,15 +1583,13 @@ async function loadClaudeHistory() {
   if (!list) return;
   list.innerHTML = '<div class="resource-empty">Loading…</div>';
   try {
-    const res = await fetch('/api/agent-resources/claude-sessions' + tokenQS('?'));
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    const data = await providerApi.json('/api/agent-resources/claude-sessions' + tokenQS('?'));
     _claudeHistory = data.sessions || [];
     document.getElementById('claude-history-summary').textContent =
       `${data.count || 0} sessions · ${fmtSize(data.totalSize || 0)} · ${data.protectedCount || 0} protected`;
     renderClaudeHistory();
   } catch (err) {
-    list.innerHTML = `<div class="resource-empty">Load failed: ${escapeHtml(err.message)}</div>`;
+    list.innerHTML = `<div class="resource-empty">Load failed: ${escapeHtml(providerApi.errorText(err))}</div>`;
   }
 }
 
@@ -1688,13 +1625,11 @@ async function deleteClaudeHistorySession(project, id) {
   try {
     status.textContent = 'Deleting…';
     const url = `/api/agent-resources/claude-sessions/${encodeURIComponent(project)}/${encodeURIComponent(id)}${tokenQS('?')}`;
-    const res = await fetch(url, { method: 'DELETE' });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    const data = await providerApi.json(url, { method: 'DELETE' });
     status.textContent = `Deleted ${id}, freed ${fmtSize(data.freed || 0)}`;
     await loadClaudeHistory();
   } catch (err) {
-    status.textContent = `Delete failed: ${err.message}`;
+    status.textContent = `Delete failed: ${providerApi.errorText(err)}`;
   }
 }
 
@@ -1706,13 +1641,11 @@ async function cleanupClaudeHistory() {
     status.textContent = 'Cleaning…';
     const suffix = tokenQS('?');
     const url = `/api/agent-resources/claude-sessions${suffix}${suffix ? '&' : '?'}olderThanDays=${days}`;
-    const res = await fetch(url, { method: 'DELETE' });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    const data = await providerApi.json(url, { method: 'DELETE' });
     status.textContent = `Deleted ${data.deleted} sessions, freed ${fmtSize(data.freed || 0)}`;
     await loadClaudeHistory();
   } catch (err) {
-    status.textContent = `Cleanup failed: ${err.message}`;
+    status.textContent = `Cleanup failed: ${providerApi.errorText(err)}`;
   }
 }
 
@@ -1725,15 +1658,14 @@ function fmtSize(bytes) {
 
 async function loadUploadStats() {
   try {
-    const res = await fetch('/api/uploads/stats' + tokenQS('?'));
-    const data = await res.json();
+    const data = await providerApi.json('/api/uploads/stats' + tokenQS('?'));
     document.getElementById('st-count').textContent = data.count + ' files';
     document.getElementById('st-size').textContent = fmtSize(data.totalSize);
     document.getElementById('st-dir').textContent = data.dir;
     document.getElementById('st-cleanup-btn').disabled = data.count === 0;
     document.getElementById('st-status').textContent = '';
   } catch (err) {
-    document.getElementById('st-status').textContent = 'Load failed';
+    document.getElementById('st-status').textContent = `Load failed: ${providerApi.errorText(err)}`;
   }
 }
 
@@ -1742,12 +1674,11 @@ async function cleanupUploads() {
   if (!(await showConfirm('Delete all temporary uploaded files?', { danger: true, okText: '删除' }))) return;
   try {
     stStatus.textContent = 'Cleaning...';
-    const res = await fetch('/api/uploads/cleanup' + tokenQS('?'), { method: 'DELETE' });
-    const data = await res.json();
+    const data = await providerApi.json('/api/uploads/cleanup' + tokenQS('?'), { method: 'DELETE' });
     stStatus.textContent = `Deleted ${data.deleted} files, freed ${fmtSize(data.freed)}`;
     loadUploadStats();
   } catch (err) {
-    stStatus.textContent = 'Cleanup failed';
+    stStatus.textContent = `Cleanup failed: ${providerApi.errorText(err)}`;
   }
 }
 
@@ -2279,11 +2210,9 @@ async function loadGlobalUsage(force) {
     const base = '/api/token-usage/global';
     const qs = tokenQS('?');
     const url = base + qs + (force ? (qs ? '&refresh=1' : '?refresh=1') : '');
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    _globalUsage = await res.json();
+    _globalUsage = await providerApi.json(url);
   } catch (e) {
-    if (body) body.innerHTML = `<span class="status-text err">加载失败：${escapeHtml(e.message)}</span>`;
+    if (body) body.innerHTML = `<span class="status-text err">加载失败：${escapeHtml(providerApi.errorText(e))}</span>`;
     return;
   }
   renderGlobalUsage();
@@ -2387,11 +2316,9 @@ async function loadByRoleUsage() {
   if (!body) return;
   try {
     const url = '/api/token-usage/by-role' + tokenQS('?');
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    _byRoleData = await res.json();
+    _byRoleData = await providerApi.json(url);
   } catch (e) {
-    if (body) body.innerHTML = `<span class="status-text err">加载失败：${escapeHtml(e.message)}</span>`;
+    if (body) body.innerHTML = `<span class="status-text err">加载失败：${escapeHtml(providerApi.errorText(e))}</span>`;
     return;
   }
   renderByRoleCard();
@@ -2455,7 +2382,7 @@ async function importProviders() {
     showToast(`从 cc-switch 同步：新增 ${d.imported}、刷新 ${d.updated}（共 ${d.total}）`);
     loadProviders();
   } catch (err) {
-    if (status) { status.textContent = `Failed: ${err.message}`; status.className = 'status-text err'; }
+    if (status) { status.textContent = `Failed: ${providerApi.errorText(err)}`; status.className = 'status-text err'; }
   }
 }
 
@@ -2585,7 +2512,7 @@ async function speedTestProvider(appType, id, btn) {
       { method: 'POST' },
     );
   } catch (e) {
-    _providerLatency[id] = { ok: false, ms: 0, status: e.status || 0, error: e.message };
+    _providerLatency[id] = { ok: false, ms: 0, status: e.status || 0, error: providerApi.errorText(e) };
   }
   if (btn) { btn.textContent = '测速'; btn.disabled = false; }
   renderProviderList();
@@ -2605,7 +2532,7 @@ async function speedTestGroup(btn, idList) {
           { method: 'POST' },
         );
       } catch (e) {
-        _providerLatency[id] = { ok: false, ms: 0, status: e.status || 0, error: e.message };
+        _providerLatency[id] = { ok: false, ms: 0, status: e.status || 0, error: providerApi.errorText(e) };
       }
     })();
   }));
@@ -2625,7 +2552,7 @@ async function saveProviderDefaults() {
     if (status) { status.textContent = 'Saved'; status.className = 'status-text ok'; }
     showToast('全局默认 provider 已保存');
   } catch (err) {
-    if (status) { status.textContent = `Failed: ${err.message}`; status.className = 'status-text err'; }
+    if (status) { status.textContent = `Failed: ${providerApi.errorText(err)}`; status.className = 'status-text err'; }
   }
 }
 
@@ -2657,7 +2584,7 @@ async function createProvider() {
     if (presetSel) presetSel.value = '';
     loadProviders();
   } catch (err) {
-    if (status) { status.textContent = `Failed: ${err.message}`; status.className = 'status-text err'; }
+    if (status) { status.textContent = `Failed: ${providerApi.errorText(err)}`; status.className = 'status-text err'; }
   }
 }
 
@@ -2747,7 +2674,7 @@ function editProvider(appType, id) {
       showToast('Provider 已更新');
       close();
       loadProviders();
-    } catch (err) { st.textContent = 'Failed: ' + err.message; st.className = 'status-text err'; }
+    } catch (err) { st.textContent = 'Failed: ' + providerApi.errorText(err); st.className = 'status-text err'; }
   };
 }
 
@@ -2763,7 +2690,7 @@ async function deleteProvider(appType, id, name) {
       const kind = { main: '主会话', subagent: '子 Agent', default: '默认 Provider', aux: 'Aux' }[item.kind] || item.kind;
       return `${kind} ${item.title}`;
     }).join('、');
-    showToast('删除失败：' + err.message + (refText ? `（仍被引用：${refText}）` : ''));
+    showToast('删除失败：' + providerApi.errorText(err) + (refText ? `（仍被引用：${refText}）` : ''), true);
   }
 }
 
@@ -2909,8 +2836,7 @@ document.addEventListener('visibilitychange', () => {
 // ── ZCode Auth Management ─────────────────────────────────────────────────
 async function loadZcodeAuth() {
   try {
-    const r = await fetch('/api/zcode/auth');
-    const d = await r.json();
+    const d = await providerApi.json('/api/zcode/auth');
     const statusEl = document.getElementById('zcode-auth-status');
     const actionsEl = document.getElementById('zcode-auth-actions');
     if (!statusEl || !actionsEl) return;
@@ -2936,23 +2862,24 @@ async function loadZcodeAuth() {
     if (loginBtn) loginBtn.style.display = d.loginAvailable ? '' : 'none';
   } catch (e) {
     const el = document.getElementById('zcode-auth-status');
-    if (el) el.textContent = '加载失败: ' + e.message;
+    if (el) el.textContent = '加载失败: ' + providerApi.errorText(e);
   }
 }
 
 async function syncZcodeAuth() {
   try {
-    const r = await fetch('/api/zcode/auth/sync', { method: 'POST' });
-    const d = await r.json();
+    const d = await providerApi.json('/api/zcode/auth/sync', { method: 'POST' });
     if (d.ok) {
       const providerName = d.provider === 'zai' ? 'Z.ai' : 'BigModel';
       showToast('已从桌面端同步 ' + providerName + ' API Key', 'success');
     } else {
-      showToast(d.message || '同步失败：未检测到桌面端 API Key', 'error');
+      showToast(providerApi.errorText(providerApi.errorFromPayload({
+        ...d, error: d.message || '同步失败：未检测到桌面端 API Key',
+      })), 'error');
     }
     loadZcodeAuth();
   } catch (e) {
-    showToast('同步失败: ' + e.message, 'error');
+    showToast('同步失败: ' + providerApi.errorText(e), 'error');
   }
 }
 
@@ -2960,17 +2887,18 @@ async function loginZcode() {
   const btn = document.getElementById('zcode-login-btn');
   if (btn) { btn.disabled = true; btn.textContent = '登录中…（请在浏览器完成授权）'; }
   try {
-    const r = await fetch('/api/zcode/auth/login', { method: 'POST' });
-    const d = await r.json();
+    const d = await providerApi.json('/api/zcode/auth/login', { method: 'POST' });
     if (d.ok) {
       showToast('ZCode 登录成功', 'success');
     } else if (d.code === 'login_timeout') {
-      showToast('登录超时，如浏览器已打开请完成授权', 'info');
+      showToast(`[${d.code}] 登录超时，如浏览器已打开请完成授权`, 'info');
     } else {
-      showToast(d.message || '登录失败', 'error');
+      showToast(providerApi.errorText(providerApi.errorFromPayload({
+        ...d, error: d.message || d.error || '登录失败',
+      })), 'error');
     }
   } catch (e) {
-    showToast('登录失败: ' + e.message, 'error');
+    showToast('登录失败: ' + providerApi.errorText(e), 'error');
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = '登录 Z.ai Coding Plan'; }
     loadZcodeAuth();
@@ -2991,22 +2919,21 @@ async function saveZcodeManualKey() {
     return;
   }
   try {
-    const r = await fetch('/api/zcode/auth', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ providerId, apiKey }),
+    const d = await providerApi.json('/api/zcode/auth', {
+      method: 'PUT', json: { providerId, apiKey },
     });
-    const d = await r.json();
     if (d.ok) {
       showToast('ZCode API Key 已保存', 'success');
       document.getElementById('zcode-manual-key').value = '';
       document.getElementById('zcode-manual-form').style.display = 'none';
       loadZcodeAuth();
     } else {
-      if (statusEl) statusEl.textContent = d.error || '保存失败';
+      if (statusEl) statusEl.textContent = providerApi.errorText(providerApi.errorFromPayload({
+        ...d, error: d.error || d.message || '保存失败',
+      }));
     }
   } catch (e) {
-    if (statusEl) statusEl.textContent = '保存失败: ' + e.message;
+    if (statusEl) statusEl.textContent = '保存失败: ' + providerApi.errorText(e);
   }
 }
 
@@ -3021,8 +2948,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 async function loadKimiAuth() {
   try {
-    const r = await fetch('/api/kimi/auth');
-    const d = await r.json();
+    const d = await providerApi.json('/api/kimi/auth');
     const statusEl = document.getElementById('kimi-auth-status');
     const actionsEl = document.getElementById('kimi-auth-actions');
     if (!statusEl || !actionsEl) return;
@@ -3039,7 +2965,7 @@ async function loadKimiAuth() {
     if (loginBtn) loginBtn.style.display = d.loginAvailable ? '' : 'none';
   } catch (e) {
     const el = document.getElementById('kimi-auth-status');
-    if (el) el.textContent = '加载失败: ' + e.message;
+    if (el) el.textContent = '加载失败: ' + providerApi.errorText(e);
   }
 }
 
@@ -3047,17 +2973,18 @@ async function loginKimi() {
   const btn = document.getElementById('kimi-login-btn');
   if (btn) { btn.disabled = true; btn.textContent = '登录中…（请在浏览器完成授权）'; }
   try {
-    const r = await fetch('/api/kimi/auth/login', { method: 'POST' });
-    const d = await r.json();
+    const d = await providerApi.json('/api/kimi/auth/login', { method: 'POST' });
     if (d.ok) {
       showToast('Kimi Code 登录成功', 'success');
     } else if (d.code === 'login_timeout') {
-      showToast('登录超时，如浏览器已打开请完成授权', 'info');
+      showToast(`[${d.code}] 登录超时，如浏览器已打开请完成授权`, 'info');
     } else {
-      showToast(d.message || '登录失败', 'error');
+      showToast(providerApi.errorText(providerApi.errorFromPayload({
+        ...d, error: d.message || d.error || '登录失败',
+      })), 'error');
     }
   } catch (e) {
-    showToast('登录失败: ' + e.message, 'error');
+    showToast('登录失败: ' + providerApi.errorText(e), 'error');
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = '登录 Kimi Code'; }
     loadKimiAuth();
@@ -3078,12 +3005,9 @@ async function saveKimiManualKey() {
     return;
   }
   try {
-    const r = await fetch('/api/kimi/auth', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ apiKey, baseURL }),
+    const d = await providerApi.json('/api/kimi/auth', {
+      method: 'PUT', json: { apiKey, baseURL },
     });
-    const d = await r.json();
     if (d.ok) {
       showToast('Kimi API Key 已保存', 'success');
       document.getElementById('kimi-manual-key').value = '';
@@ -3091,10 +3015,12 @@ async function saveKimiManualKey() {
       document.getElementById('kimi-manual-form').style.display = 'none';
       loadKimiAuth();
     } else {
-      if (statusEl) statusEl.textContent = d.error || '保存失败';
+      if (statusEl) statusEl.textContent = providerApi.errorText(providerApi.errorFromPayload({
+        ...d, error: d.error || d.message || '保存失败',
+      }));
     }
   } catch (e) {
-    if (statusEl) statusEl.textContent = '保存失败: ' + e.message;
+    if (statusEl) statusEl.textContent = '保存失败: ' + providerApi.errorText(e);
   }
 }
 

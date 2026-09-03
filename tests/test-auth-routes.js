@@ -126,7 +126,11 @@ test('with ACCESS_TOKEN: external request without credentials is 403; html gets 
   try {
     let res = await raw(h.base, '/api/thing', { headers: { accept: 'application/json' } });
     assert.equal(res.status, 403);
-    assert.equal((await res.json()).error, 'Forbidden: not authenticated');
+    const body = (await res.json()).error;
+    assert.equal(body.code, 'AUTH_REQUIRED');
+    assert.equal(body.message, 'Forbidden: not authenticated');
+    assert.equal(body.category, 'authentication_permission');
+    assert.equal(body.action, 'login');
 
     res = await raw(h.base, '/dashboard', { headers: { accept: 'text/html' } });
     assert.equal(res.status, 302);
@@ -368,7 +372,10 @@ test('ws-ticket: issues a no-store ticket, or 400 on invalid path', async () => 
       body: JSON.stringify({ path: '/bad' }),
     });
     assert.equal(res.status, 400);
-    assert.equal((await res.json()).error, 'invalid WebSocket path');
+    const body = (await res.json()).error;
+    assert.equal(body.code, 'WS_PATH_INVALID');
+    assert.equal(body.message, 'invalid WebSocket path');
+    assert.equal(body.category, 'route');
   } finally { await h.close(); }
 });
 

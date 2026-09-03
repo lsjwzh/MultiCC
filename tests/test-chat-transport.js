@@ -169,6 +169,9 @@ test('message ordering, safe sends and reconnect backoff remain deterministic', 
 
   first.close(1006, 'network');
   assert.equal(h.callbacks.closes[0].delay, 1000);
+  assert.equal(h.callbacks.closes[0].envelope.code, 'WS_CLOSE_1006');
+  assert.equal(h.callbacks.closes[0].envelope.family, 'network');
+  assert.equal(h.callbacks.closes[0].envelope.message, 'network');
   assert.equal(h.timers.timeouts.at(-1).ms, 1000);
   h.timers.runNextTimeout();
   await Promise.resolve();
@@ -178,6 +181,29 @@ test('message ordering, safe sends and reconnect backoff remain deterministic', 
   second.close(1006, 'network');
   assert.equal(h.callbacks.closes[1].delay, 2000);
   assert.equal(h.transport.send({ type: 'cancel' }), false);
+});
+
+test('ticket failures keep their original structured error for the host UI', async () => {
+  const observed = [];
+  const failure = Object.assign(new Error('remote Fleet refused the ticket'), {
+    code: 'FLEET_SCOPE_FORBIDDEN',
+    status: 403,
+    category: 'authentication_permission',
+    requestId: 'request-7',
+    correlationId: 'correlation-7',
+  });
+  const h = harness({
+    ticketUrl: async () => { throw failure; },
+    onTicketError: (error, meta) => observed.push({ error, meta }),
+  });
+
+  assert.equal(await h.transport.connect(), null);
+  assert.equal(observed.length, 1);
+  assert.equal(observed[0].error, failure);
+  assert.equal(observed[0].meta.envelope.code, 'FLEET_SCOPE_FORBIDDEN');
+  assert.equal(observed[0].meta.envelope.message, 'remote Fleet refused the ticket');
+  assert.equal(observed[0].meta.envelope.family, 'auth');
+  assert.equal(h.timers.timeouts.at(-1).ms, 1000);
 });
 
 test('force reconnect detaches the old socket and stale ticket resolutions cannot replace the winner', async () => {
