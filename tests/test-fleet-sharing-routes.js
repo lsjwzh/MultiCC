@@ -179,9 +179,9 @@ test('route errors expose stable public messages and hide unexpected exception d
   assert.deepEqual(res.body, {
     ok: false,
     code: 'INTERNAL_ERROR',
-    error: 'Fleet 分享操作失败',
+    error: '工作区分享操作失败',
     category: 'internal',
-    detail: 'Fleet 分享操作失败',
+    detail: '工作区分享操作失败',
     retryable: false,
     action: 'copy_details',
     scope: 'request',

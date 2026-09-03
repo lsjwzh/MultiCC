@@ -117,7 +117,7 @@ if (typeof module !== 'undefined' && module.exports) {
         scope: 'session',
         category: 'remote',
         defaultCode: 'EXTERNAL_FLEET_WS_TICKET_FAILED',
-        fallbackMessage: `External Fleet WebSocket ticket failed: HTTP ${res.status}`,
+        fallbackMessage: `Shared workspace WebSocket ticket failed: HTTP ${res.status}`,
       });
       const data = await res.json();
       const remoteOrigin = new URL(data.wsOrigin);

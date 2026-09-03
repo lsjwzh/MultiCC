@@ -389,7 +389,7 @@ test('New TODO posts one Inbox record with a derived title and never starts a ru
   assert.equal(harness.requests.some(request => request.url.includes('/send')), false);
 });
 
-test('Start now validates Fleet, preserves its draft on Fleet change, and uses one atomic send', async () => {
+test('Start now validates workspace, preserves its draft on workspace change, and uses one atomic send', async () => {
   let composerOptions = null;
   const contextChanges = [];
   let destroyCount = 0;
@@ -423,7 +423,7 @@ test('Start now validates Fleet, preserves its draft on Fleet change, and uses o
   picker.value = '';
   await assert.rejects(
     () => composerOptions.submit({ text: 'Do it', clientMsgId: 'msg-1' }),
-    /请输入 TODO 并选择 Fleet/,
+    /请输入 TODO 并选择工作区/,
   );
   assert.equal(harness.requests.some(request => request.options?.method === 'POST'), false);
 

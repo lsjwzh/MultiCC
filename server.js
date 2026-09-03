@@ -966,13 +966,13 @@ const directoryModule = createDirectoryModule({
     homedir: () => os.homedir(),
     exists: (p) => fs.existsSync(p),
     isDirectory: (p) => { try { return fs.statSync(p).isDirectory(); } catch (_) { return false; } },
-    mkdirp: (p) => { fs.mkdirSync(p, { recursive: true }); },
+    mkdirp: (p) => { fs.mkdirSync(p, { recursive: true }); }, sampleRoot: () => MULTICC_PATHS.sampleWorkspacesDir,
     readDirents: (p) => fs.readdirSync(p, { withFileTypes: true })
       .map(e => ({ name: e.name, isDirectory: e.isDirectory(), isSymbolicLink: e.isSymbolicLink() })),
+    writeFileExclusive: (p, content) => { try { fs.writeFileSync(p, content, { flag: 'wx' }); return true; } catch (e) { if (e.code === 'EEXIST') return false; throw e; } },
   },
   helpers: { resolveCwd, isHomeOrAbove, realPathOf, friendlyDirReason },
-  // Cross-file transaction wiring: directory deletion writes directories.json
-  // AND sessions.json under a single journal entry, so a crash between the
+  // Cross-file transaction wiring updates both state files under one journal entry, so a crash between the
   // two writes is finished by replayJournals() on next boot rather than
   // leaving the two files inconsistent (dir deleted + its sessions still
   // pointing at nothing, or vice versa).

@@ -79,6 +79,12 @@ function createPaths({ dataDir } = {}) {
     voiceRuntimesDir: root === PKG_ROOT
       ? path.join(os.homedir(), '.multicc', 'runtimes', 'voice')
       : path.join(root, 'runtimes', 'voice'),
+    // A disposable, user-editable starter repo. Keep it out of the package
+    // checkout so trying the onboarding sample can never modify live MultiCC
+    // source. Isolated test deployments keep it under their data root.
+    sampleWorkspacesDir: root === PKG_ROOT
+      ? path.join(os.homedir(), '.multicc', 'samples')
+      : path.join(root, 'samples'),
     // Meta files still owned by server.js modules — export the paths so future
     // consolidation can move them onto the store without another rename.
     notesFile: path.join(root, 'notes.json'),

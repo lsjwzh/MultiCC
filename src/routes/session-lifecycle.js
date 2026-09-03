@@ -129,7 +129,7 @@ function createSessionLifecycleRuntime(rawDeps) {
       // whole directory (which cascades through destroySessionCascade), never on its
       // own. Guard here on the single-session route only, unconditional of force.
       if (persisted?.type === 'commander') {
-        return res.status(400).json({ error: 'commander 会话不可单独删除，只能随其所属 fleet 一起删除' });
+        return res.status(400).json({ error: 'Commander 会话不可单独删除，只能随其所属工作区一起删除' });
       }
       // A task-bound hidden session is its task's resume file. The fleet never
       // lists it and the chat view has no session-DELETE affordance, so a DELETE

@@ -148,7 +148,7 @@ function buildDispatchContextPrompt(sessionId) {
   const ultra = normalizeEffort(current?.effort) === 'ultracode';
   const intro = [
     '[MultiCC Commander routing]',
-    '你是本 fleet 的 Commander。默认优先判断是否应把自包含任务用 route_task 单向派发给下面列出的同 fleet worker。',
+      '你是本工作区的 Commander。默认优先判断是否应把自包含任务用 route_task 单向派发给下面列出的同工作区 Worker。',
     '这不是强制 route-only：轻量分析、检查、规划、解释，或用户明确要求你自己处理时，可以在当前会话完成；如果选择自己完成，请简短说明为什么不派发。',
     '涉及代码修改、长时间执行、验证/提交/合并、跨 provider、多模块并行或需要独立 worktree 的任务，优先 route_task 派发。',
     ...(ultra ? [

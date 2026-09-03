@@ -12,7 +12,7 @@
   const FAMILY_LABELS = Object.freeze({
     auth: '登录或权限错误',
     network: '本机网络或连接错误',
-    remote: '外部 Fleet 不可达',
+    remote: '共享工作区不可达',
     route: 'Provider 路由失败',
     provider: 'Provider / 模型错误',
     conflict: '状态冲突',
