@@ -27,6 +27,8 @@ class AppColors {
   static const opencode = Color(0xFFa78bfa); // OpenCode brand (violet)
   static const zcode = Color(0xFF38bdf8); // ZCode brand (sky blue)
   static const qoder = Color(0xFFff9a5c); // Qoder CN brand (orange)
+  static const codebuddy = Color(0xFF5c8bff); // WorkBuddy brand (Tencent blue)
+  static const dsh = Color(0xFF4d6bfe); // DeepSeek Harness brand (blue)
   static const amber = Color(0xFFe3b341);
   static const danger = Color(0xFFff6b63);
 }

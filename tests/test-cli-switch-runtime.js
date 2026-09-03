@@ -159,6 +159,36 @@ test('defaults are CLI-specific and provider defaults are resolved lazily', () =
   });
 });
 
+// Regression (2026-09-03 user report): switching to WorkBuddy (codebuddy) or
+// DeepSeek Harness (dsh) failed with "cli must be one of: claude, codex,
+// opencode, zcode, qoder, kimi" because the running server predated the
+// whitelist extension. Pins the route-level behaviour: both canonical keys are
+// accepted through SUPPORTED_CHAT_CLIS, and the marketing name "workbuddy" is
+// NOT a valid wire key.
+test('switching to vendor-auth CLIs (codebuddy / dsh) passes the supported whitelist', async () => {
+  const { invoke, session } = createHarness({
+    availability: {
+      claude: { available: true },
+      codebuddy: { available: true },
+      dsh: { available: true },
+    },
+  });
+  const res1 = await invoke({ body: { cli: 'codebuddy' } });
+  assert.equal(res1.statusCode, 200);
+  assert.equal(res1.body.changed, true);
+  assert.equal(res1.body.cli, 'codebuddy');
+  assert.equal(res1.body.fromCli, 'claude');
+  assert.equal(session.cli, 'codebuddy');
+  const res2 = await invoke({ body: { cli: 'dsh' } });
+  assert.equal(res2.statusCode, 200);
+  assert.equal(res2.body.changed, true);
+  assert.equal(res2.body.cli, 'dsh');
+  assert.equal(session.cli, 'dsh');
+  const res3 = await invoke({ body: { cli: 'workbuddy' } });
+  assert.equal(res3.statusCode, 400);
+  assert.equal(res3.body.error, `cli must be one of: ${SUPPORTED_CHAT_CLIS.join(', ')}`);
+});
+
 test('Git snapshot is bounded and failure falls back to the persisted branch', async () => {
   let harness = createHarness();
   assert.deepEqual(await harness.runtime.cliSwitchGitSnapshot(harness.session), {
