@@ -9,6 +9,7 @@
 const path = require('path');
 const crypto = require('crypto');
 const { assertPort, REPOSITORY_PORT, GIT_PORT, SESSION_PORT, EVENT_PORT, FS_PORT, HELPER_PORT } = require('./ports');
+const { ensureSampleWorkspace } = require('./sample-workspace');
 const stateTx = require('../state-tx');
 
 const ok = (data) => ({ ok: true, data });
@@ -94,7 +95,7 @@ function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, 
     return ok(list);
   }
 
-  async function register({ name, path: rawPath, create }) {
+  async function register({ name, path: rawPath, create, sample = false }) {
     const dirName = (name || '').trim();
     const raw = (rawPath || '').trim();
     const wantCreate = create === true || create === 'true';
@@ -116,7 +117,7 @@ function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, 
     if (dup) {
       return err('invalid', `该路径已被目录 "${dup.name}" 登记，不允许重复`);
     }
-    const dir = { id: newId(), name: dirName, path: resolvedPath, createdAt: new Date().toISOString() };
+    const dir = { id: newId(), name: dirName, path: resolvedPath, createdAt: new Date().toISOString(), ...(sample ? { sample: true } : {}) };
     repo.add(dir);
     // Force the directory to be a usable git repo (worktree isolation depends on it).
     const ready = await git.ensureReady(dir);
@@ -125,11 +126,22 @@ function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, 
       return err('invalid', helpers.friendlyDirReason(ready.reason));
     }
     repo.save();
-    // Seed a default Agent Commander chat session so a fleet conductor is ready
+    // Seed a default Agent Commander chat session so a workspace coordinator is ready
     // out of the box. Best-effort: failure is logged but never blocks creation.
     try { await sessions.seedCommander(dir); }
     catch (e) { console.warn(`[multicc] seed commander session error for dir ${dir.id}: ${e.message}`); }
     return ok(dir);
+  }
+
+  async function createSample() {
+    const sample = ensureSampleWorkspace(fsPort);
+    const existing = repo.findByPath(sample.path);
+    if (existing) {
+      if (existing.sample !== true) { existing.sample = true; repo.save(); }
+      return ok({ ...existing, reused: true, createdFiles: sample.createdFiles });
+    }
+    const result = await register({ name: sample.name, path: sample.path, create: true, sample: true });
+    return result.ok ? ok({ ...result.data, reused: false, createdFiles: sample.createdFiles }) : result;
   }
 
   async function update(id, body) {
@@ -268,7 +280,7 @@ function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, 
     }
   }
 
-  return { browseFs, listAnnotated, register, update, remove, push, uncommitted, commitAll };
+  return { browseFs, listAnnotated, register, createSample, update, remove, push, uncommitted, commitAll };
 }
 
 module.exports = { createDirectoryService };

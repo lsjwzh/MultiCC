@@ -57,9 +57,9 @@ function createFleetSharingRoutes({ sharing, pageFile, logger, issueWsTicket, no
     }
     return res.status(500).json(createErrorDto({
       code: 'INTERNAL_ERROR',
-      message: 'Fleet 分享操作失败',
+      message: '工作区分享操作失败',
       category: 'internal',
-      detail: 'Fleet 分享操作失败',
+      detail: '工作区分享操作失败',
       retryable: false,
       action: 'copy_details',
       scope: 'request',
@@ -175,9 +175,9 @@ function createFleetSharingRoutes({ sharing, pageFile, logger, issueWsTicket, no
       });
       if (!authorized) return res.status(403).json(createErrorDto({
         code: 'FLEET_SCOPE_FORBIDDEN',
-        message: 'Fleet 授权无效',
+        message: '工作区授权无效',
         category: 'authentication_permission',
-        detail: 'Fleet 授权无效',
+        detail: '工作区授权无效',
         retryable: false,
         action: 'login',
         scope: 'session',

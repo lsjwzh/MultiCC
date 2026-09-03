@@ -65,7 +65,7 @@ function _tbMergeBlockText(reason) {
     task_classifying: '任务正在归类，完成后才能合并',
     source_workspace: '该任务仍有 worktree/分支；请先清理，或先勾选它作为保留任务',
     origin_mismatch: '暂不支持独立任务与会话任务互相合并',
-    directory_mismatch: '暂不支持跨 Fleet 合并任务',
+    directory_mismatch: '暂不支持跨工作区合并任务',
     too_few: '至少选择 2 个任务',
     empty: '请先选择要保留的任务',
   };
@@ -378,7 +378,7 @@ function renderTaskBoardSection(dirId, opts) {
   if (_tbMergeMode) _tbPruneMergeSelection(tasks);
   const completedCount = allTasks.filter(t =>
     window.MultiCCTaskBoardUi.taskDisplayState(t).done).length;
-  const cleanupButton = `<button class="btn btn-sm tb-clean-completed" onclick="archiveCompletedTaskBoard(event,'${_tbEsc(dirId)}',this)" title="归档 Fleet 内全部已完成任务（不受来源筛选影响）"${completedCount ? '' : ' disabled'}>🧹 一键清理${completedCount ? ` (${completedCount})` : ''}</button>`;
+  const cleanupButton = `<button class="btn btn-sm tb-clean-completed" onclick="archiveCompletedTaskBoard(event,'${_tbEsc(dirId)}',this)" title="归档工作区内全部已完成任务（不受来源筛选影响）"${completedCount ? '' : ' disabled'}>🧹 一键清理${completedCount ? ` (${completedCount})` : ''}</button>`;
   const mergeStartButton = _tbMergeMode ? '' : _tbMergeStartButtonHtml(dirId, tasks);
   const mergeBar = _tbMergeBarHtml();
   const originFilter = _tbOriginFilterHtml(allTasks, dirId);
@@ -1194,7 +1194,7 @@ function syncTaskBoardDirComposer(dirId, visible) {
   if (!_tbDirComposer) {
     _tbDirComposer = createTbComposer(host, {
       contextKey: dirId,
-      placeholder: '向该 Fleet 派发消息…（Commander 单向路由到空闲 worker）',
+      placeholder: '向该工作区派发消息…（指挥官单向路由到空闲 Worker）',
       submit: async (payload) => {
         const r = await fetch('/api/task-board/send', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },

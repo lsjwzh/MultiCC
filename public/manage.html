@@ -13,6 +13,7 @@
   <link rel="stylesheet" href="/error-envelope.css" />
   <link rel="stylesheet" href="/manage-fleet-sharing.css" />
   <link rel="stylesheet" href="/manage-task-planner.css" />
+  <link rel="stylesheet" href="/manage-workspace-setup.css" />
   <title>MultiCC — Dashboard</title>
   <script src="error-envelope.js"></script>
   <script src="auth-client.js"></script>
@@ -220,7 +221,7 @@
 
     /* Realtime voice is a global action, not a metric and not a setting. Keep it
        directly below the home KPIs so it is discoverable without competing with
-       the primary "New Fleet" action in the topbar. */
+       the primary "New Workspace" action in the topbar. */
     .voice-beta-entry{
       width:100%;min-height:54px;margin:-8px 0 22px;padding:9px 13px;
       display:flex;align-items:center;gap:11px;text-align:left;
@@ -652,7 +653,7 @@
       #topbar{padding-inline:8px;gap:6px}
       #topbar .crumb small{display:none}
       #topbar .btn.primary{font-size:0;min-width:78px}
-      #topbar .btn.primary::after{content:'+ Fleet';font-size:13px}
+      #topbar .btn.primary::after{content:'+ 工作区';font-size:13px}
       #topbar-help,#topbar-refresh{display:none}
       #kpi-row{gap:8px;margin-bottom:18px}
       .kpi{padding:12px}
@@ -862,12 +863,12 @@
       <button class="icon-btn" id="nav-toggle" onclick="document.body.classList.toggle('nav-open')" aria-controls="nav" aria-expanded="false" data-i18n-title="menu" title="菜单">☰</button>
       <div class="crumb" id="crumb"><span data-i18n="overview">概览</span> <small id="crumb-sub"></small></div>
       <div class="topspace"></div>
-      <div class="search planner-hide-on-tasks"><span>⌕</span><input id="dir-search" data-i18n-placeholder="search" placeholder="搜索Fleet / 会话…" oninput="filterDirs(this.value)" /></div>
+      <div class="search planner-hide-on-tasks"><span>⌕</span><input id="dir-search" data-i18n-placeholder="search" placeholder="搜索工作区 / 会话…" oninput="filterDirs(this.value)" /></div>
       <button class="icon-btn lang-toggle" onclick="toggleLang()" data-i18n-title="language" title="Language">中/EN</button>
       <button class="icon-btn" id="topbar-help" onclick="startOnboarding()" data-i18n-title="onboarding" title="引导">❓</button>
       <button class="icon-btn" id="topbar-refresh" onclick="loadDashboard()" data-i18n-title="refresh" title="刷新">⟳</button>
-      <button class="btn planner-hide-on-tasks" type="button" onclick="openImportFleetModal()" title="从另一台 MultiCC 导入只读 Fleet"><span aria-hidden="true">⇩</span> <span class="fleet-import-label">导入 Fleet</span></button>
-      <button class="btn primary planner-hide-on-tasks" onclick="openNewDirectoryModal()" data-i18n="newDirectory">＋ 新建Fleet</button>
+      <button class="btn planner-hide-on-tasks" type="button" onclick="openImportFleetModal()" title="从另一台 MultiCC 导入共享工作区"><span aria-hidden="true">⇩</span> <span class="fleet-import-label">导入工作区</span></button>
+      <button class="btn primary planner-hide-on-tasks" onclick="openNewDirectoryModal()" data-i18n="newDirectory">＋ 新建工作区</button>
     </header>
 
     <div id="content">
@@ -895,7 +896,7 @@
             </span>
             <span class="voice-beta-arrow" aria-hidden="true">›</span>
           </button>
-          <div class="sec-head"><h2 data-i18n="directories">Fleet</h2><span class="count" id="dir-count-pill">0</span><div class="line"></div></div>
+          <div class="sec-head"><h2 data-i18n="directories">工作区</h2><span class="count" id="dir-count-pill">0</span><div class="line"></div></div>
           <div id="directory-list"></div>
         </section>
 
@@ -1930,22 +1931,29 @@
 
   <div id="toast"></div>
 
-  <!-- New Directory modal -->
-  <div id="newdir-modal" class="modal-backdrop">
-    <div class="modal-card" style="padding:20px;width:460px;max-width:94vw;">
-      <h3 style="font-size:15px;color:var(--text);margin-bottom:12px;">New directory</h3>
-      <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px;">Name</label>
-      <input id="newdir-name" type="text" placeholder="My project" autocomplete="off" style="width:100%;background:var(--bg-soft);border:1px solid var(--line);border-radius:9px;color:var(--text);font-size:13px;padding:9px 12px;outline:none;margin-bottom:10px;" />
-      <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px;">Path</label>
-      <input id="newdir-path" type="text" placeholder="/Users/you/code/my-project" autocomplete="off" oninput="onNewDirPathInput()" style="width:100%;background:var(--bg-soft);border:1px solid var(--line);border-radius:9px;color:var(--text);font-size:13px;font-family:var(--mono);padding:9px 12px;outline:none;margin-bottom:6px;" />
-      <div id="newdir-suggest" style="display:none;max-height:200px;overflow-y:auto;background:var(--bg-soft);border:1px solid var(--line);border-radius:9px;margin-bottom:10px;"></div>
-      <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);margin-bottom:10px;cursor:pointer;user-select:none;">
-        <input id="newdir-create" type="checkbox" style="margin:0;" /> Fleet不存在时自动创建
-      </label>
-      <div id="newdir-error" style="font-size:12px;color:var(--danger);margin-bottom:8px;display:none;"></div>
-      <div style="display:flex;gap:8px;justify-content:flex-end;">
-        <button class="btn" onclick="closeNewDirectoryModal()">Cancel</button>
-        <button class="btn btn-green" onclick="submitNewDirectory()">Create</button>
+  <!-- Workspace + Agent-team setup -->
+  <div id="newdir-modal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="newdir-title">
+    <div class="modal-card workspace-setup-card">
+      <header class="workspace-setup-head">
+        <h3 id="newdir-title">创建工作区</h3>
+        <p>工作区是希望 MultiCC 帮你处理的本地文件夹。每个 Agent 都会使用隔离的 Git worktree。</p>
+      </header>
+      <div class="workspace-setup-fields">
+        <label class="workspace-field"><span>工作区名称（可选）</span><input id="newdir-name" type="text" placeholder="留空时使用文件夹名称" autocomplete="off" /></label>
+        <label class="workspace-field path"><span>本地路径</span><input id="newdir-path" type="text" placeholder="/Users/you/code/my-project" autocomplete="off" oninput="onNewDirPathInput()" /></label>
+        <div id="newdir-suggest"></div>
+        <label class="workspace-path-create"><input id="newdir-create" type="checkbox" /> 路径不存在时，创建这个文件夹</label>
+      </div>
+      <fieldset class="workspace-team-fieldset">
+        <legend class="workspace-team-legend">选择 Agent 团队</legend>
+        <p class="workspace-team-intro">模板会同时准备指挥官和专业角色；之后仍可随时添加、删除或调整成员。</p>
+        <div id="workspace-team-grid" class="workspace-team-grid" aria-live="polite"><span class="workspace-team-desc">正在加载团队模板…</span></div>
+      </fieldset>
+      <div class="workspace-setup-note">角色创建后不会自动执行任务；只有收到任务时才会使用模型。创建多个角色会占用对应 Git worktree 的磁盘空间。</div>
+      <div id="newdir-status" class="workspace-setup-status" role="status" aria-live="polite"></div>
+      <div class="workspace-setup-actions">
+        <button id="newdir-cancel" class="btn" type="button" onclick="closeNewDirectoryModal()">取消</button>
+        <button id="newdir-submit" class="btn btn-green" type="button" onclick="submitNewDirectory()">创建工作区与团队</button>
       </div>
     </div>
   </div>
@@ -2006,7 +2014,7 @@
       <div style="padding:16px 18px;">
         <input type="hidden" id="cron-edit-id" />
         <div class="setting-row"><label>任务名</label><input id="cron-f-name" type="text" placeholder="例如：每天早报" /></div>
-        <div class="setting-row"><label>目标Fleet</label><select id="cron-f-dir" style="flex:1;"></select></div>
+        <div class="setting-row"><label>目标工作区</label><select id="cron-f-dir" style="flex:1;"></select></div>
         <div class="setting-row"><label>CLI</label><select id="cron-f-cli"><option value="claude">claude</option><option value="codex">codex</option></select></div>
         <div class="setting-row"><label>cron</label><input id="cron-f-cron" type="text" placeholder="分 时 日 月 周，如 0 9 * * *" style="font-family:var(--mono);" /></div>
         <div style="padding:0 0 8px 134px;display:flex;flex-wrap:wrap;gap:6px;">
@@ -2177,7 +2185,7 @@
           <div id="memo-title" style="color:var(--text);font-size:14px;font-weight:600;">📝 备忘</div>
           <div id="memo-subtitle" style="color:var(--muted);font-size:11px;font-family:var(--mono);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>
         </div>
-        <button class="btn" onclick="memoSendCurrentLine()" title="把光标所在行发到该Fleet的某个 chat 会话">→ 发送当前行</button>
+        <button class="btn" onclick="memoSendCurrentLine()" title="把光标所在行发到该工作区的某个 chat 会话">→ 发送当前行</button>
         <button class="btn btn-green" onclick="memoSave()" title="保存（Ctrl/Cmd+S）">保存</button>
         <button class="btn" onclick="closeMemoModal()">关闭</button>
       </div>
@@ -2209,6 +2217,7 @@
   <script src="auto-provider-editor.js"></script>
   <script src="manage-taskboard.js"></script>
   <script src="manage-dashboard.js"></script>
+  <script src="manage-workspace-setup.js"></script>
   <script src="manage-fleet-sharing.js"></script>
   <script src="voice-launch-client.js"></script>
   <script src="manage-qwen-audio.js"></script>

@@ -8,7 +8,7 @@ const test = require('node:test');
 const ROOT = path.join(__dirname, '..');
 const read = file => fs.readFileSync(path.join(ROOT, file), 'utf8');
 
-test('manage page exposes discoverable Fleet share/import entrypoints and loads the isolated controller', () => {
+test('manage page exposes discoverable workspace share/import entrypoints and loads the isolated controller', () => {
   const html = read('public/manage.html');
   const dashboard = html.indexOf('<script src="manage-dashboard.js"></script>');
   const sharing = html.indexOf('<script src="manage-fleet-sharing.js"></script>');
@@ -20,7 +20,7 @@ test('manage page exposes discoverable Fleet share/import entrypoints and loads 
   assert.match(html, /manage-fleet-sharing\.css/);
 
   const dashboardSource = read('public/manage-dashboard.js');
-  assert.match(dashboardSource, /分享 Fleet/);
+  assert.match(dashboardSource, /分享工作区/);
   assert.match(dashboardSource, /openFleetShareModal\(dirId\)/);
   assert.match(dashboardSource, /loadExternalFleetData/);
   assert.match(dashboardSource, /localDirectories\.concat\(external\.directories/);
@@ -28,13 +28,13 @@ test('manage page exposes discoverable Fleet share/import entrypoints and loads 
     'local and external Fleets share the same directory-card renderer');
 });
 
-test('Fleet sharing UI keeps passwords write-only and uses the bounded API surface', () => {
+test('workspace sharing UI keeps passwords write-only and uses the bounded API surface', () => {
   const source = read('public/manage-fleet-sharing.js');
   assert.match(source, /id="fleet-share-password" type="password"/);
   assert.match(source, /id="fleet-import-password" type="password"/);
   assert.match(source, /\/api\/fleets\/\$\{encodeURIComponent\(activeFleetId\)\}\/share/);
   assert.match(source, /\/api\/external-fleets\/import/);
-  assert.match(source, /Fleet 范围授权/);
+  assert.match(source, /工作区范围授权/);
   assert.match(source, /externalSessionPageUrl/);
   assert.match(source, /externalProxyUrl\(url, entry\.fleet, `\/api\/sessions\//);
   assert.match(source, /\/api\\\/git\\\/\(\?:log\|commit-diff\)/);
@@ -42,11 +42,11 @@ test('Fleet sharing UI keeps passwords write-only and uses the bounded API surfa
   assert.doesNotMatch(source, /fleet\.password|record\.password|externalFleets[^\n]+password/);
 });
 
-test('Fleet share and import dialogs expose complete close controls', () => {
+test('workspace share and import dialogs expose complete close controls', () => {
   const source = read('public/manage-fleet-sharing.js');
   const styles = read('public/manage-fleet-sharing.css');
-  assert.match(source, /class="fs-modal-close"[^>]+onclick="closeFleetShareModal\(\)"[^>]+aria-label="关闭分享 Fleet 弹窗"/);
-  assert.match(source, /class="fs-modal-close"[^>]+onclick="closeImportFleetModal\(\)"[^>]+aria-label="关闭导入 Fleet 弹窗"/);
+  assert.match(source, /class="fs-modal-close"[^>]+onclick="closeFleetShareModal\(\)"[^>]+aria-label="关闭分享工作区弹窗"/);
+  assert.match(source, /class="fs-modal-close"[^>]+onclick="closeImportFleetModal\(\)"[^>]+aria-label="关闭导入工作区弹窗"/);
   assert.match(source, /event\.target===this\)closeFleetShareModal\(\)/);
   assert.match(source, /event\.target===this\)closeImportFleetModal\(\)/);
   assert.match(source, /event\.key !== 'Escape'/);
@@ -56,10 +56,10 @@ test('Fleet share and import dialogs expose complete close controls', () => {
   assert.match(styles, /\.fs-modal-close:focus-visible/);
 });
 
-test('public Fleet landing page explains remote execution scope without collecting a password', () => {
+test('public workspace landing page explains remote execution scope without collecting a password', () => {
   const page = read('public/fleet-share.html');
-  assert.match(page, /Fleet 范围授权/);
+  assert.match(page, /工作区范围授权/);
   assert.match(page, /命令仍在来源实例执行/);
-  assert.match(page, /不会开放其他 Fleet 或 Provider 凭据/);
+  assert.match(page, /不会开放其他工作区或 Provider 凭据/);
   assert.doesNotMatch(page, /type="password"|\/api\//);
 });

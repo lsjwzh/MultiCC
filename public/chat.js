@@ -284,7 +284,7 @@ async function openMemo() {
     });
     if (!_memoDirId) {
       const status = document.getElementById('memo-status');
-      if (status) status.textContent = '无法确定FleetID，会话可能没有归属Fleet';
+      if (status) status.textContent = '无法确定工作区 ID，会话可能没有归属工作区';
       modal.classList.add('open');
       return;
     }

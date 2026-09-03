@@ -200,6 +200,19 @@
       ]
     },
     {
+      "id": "starter-sample-workspace",
+      "classification": "workspace-scoped",
+      "owner": "newcomer onboarding",
+      "rationale": "The starter sample is an intentionally user-editable Git workspace and must live outside the running MultiCC package checkout.",
+      "migrationStrategy": "Keep generated files non-overwriting and disposable; a user can remove the registered workspace without risking package source or credentials.",
+      "sources": [
+        {
+          "file": "src/paths.js",
+          "anchor": "? path.join(os.homedir(), '.multicc', 'samples')"
+        }
+      ]
+    },
+    {
       "id": "claude-native-transcripts",
       "classification": "external-owner",
       "owner": "Claude CLI adapter",

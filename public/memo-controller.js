@@ -502,7 +502,7 @@
       }
       if (currentDirId !== dirId) return;
       if (!sessions.length) {
-        if (status) status.textContent = '该Fleet还没有 chat 会话，请先新建一个';
+        if (status) status.textContent = '该工作区还没有 chat 会话，请先新建一个';
         return;
       }
       const previewLength = Math.max(40, Number(ui.previewLength) || 120);

@@ -591,7 +591,7 @@
       });
 
       const roleInput = document.createElement('textarea');
-      roleInput.placeholder = '留空则继承Fleet默认角色';
+      roleInput.placeholder = '留空则继承工作区默认角色';
       roleInput.rows = 3;
       roleInput.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;resize:vertical;font-family:inherit;box-sizing:border-box;';
       box.appendChild(roleInput);
@@ -766,7 +766,7 @@
 
       const hint = document.createElement('div');
       hint.style.cssText = 'font-size:12px;color:#8b949e;margin-bottom:12px;';
-      hint.textContent = '留空＝清除（会话将继承Fleet默认角色）。Ctrl/⌘+Enter 保存。';
+      hint.textContent = '留空＝清除（会话将继承工作区默认角色）。Ctrl/⌘+Enter 保存。';
       box.appendChild(hint);
 
       const row = document.createElement('div');
@@ -820,7 +820,7 @@
     if (!result.owned) return;
     if (result.error) { showApiError(result.error); return; }
     const hint = (sess.cli || 'claude') === 'codex' ? '（Codex 仅新会话首轮生效）' : '（下一轮对话生效）';
-    showToast(`${next.trim() ? '角色已更新' : '已清除会话角色（继承Fleet默认）'} ${hint}`);
+    showToast(`${next.trim() ? '角色已更新' : '已清除会话角色（继承工作区默认）'} ${hint}`);
     loadDashboard();
   }
 
@@ -828,9 +828,9 @@
     const dir = (_cachedDirectories || []).find(d => d.id === id);
     if (!dir) return;
     const next = await showRoleEditor({
-      title: `Fleet默认角色 — ${dir.name}`,
+      title: `工作区默认角色 — ${dir.name}`,
       current: dir.rolePrompt || '',
-      placeholder: '该Fleet下所有会话的默认角色。单个会话可在「角色提示词」里单独覆盖。',
+      placeholder: '该工作区下所有会话的默认角色。单个会话可在「角色提示词」里单独覆盖。',
     });
     if (next === null) return;
     const result = await ownedJson(`directory:${id}:role`, `/api/directories/${encodeURIComponent(id)}`, {
@@ -839,7 +839,7 @@
     });
     if (!result.owned) return;
     if (result.error) { showApiError(result.error); return; }
-    showToast(`${next.trim() ? 'Fleet默认角色已更新' : '已清除Fleet默认角色'}（对未单独设角色的会话下一轮生效）`);
+    showToast(`${next.trim() ? '工作区默认角色已更新' : '已清除工作区默认角色'}（对未单独设角色的会话下一轮生效）`);
     loadDashboard();
   }
 
