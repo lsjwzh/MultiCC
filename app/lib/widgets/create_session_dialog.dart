@@ -199,6 +199,9 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
   List<MapEntry<String, String>> get _currentModelOptions {
     // Live Qoder catalog once _loadQoderModels() lands; routing tiers until then.
     if (_isQoder) return QoderModelsService.options();
+    // Vendor-auth CLIs with a static catalog (no provider pool, no fetch API).
+    if (_pickedCli == SessionCli.codebuddy) return kCodebuddyModelOptions;
+    if (_pickedCli == SessionCli.dsh) return kDshModelOptions;
     Map<String, dynamic>? prov;
     final providerId = _effectiveProviderId;
     for (final p in _providers) {
@@ -739,6 +742,10 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                       ? t('claudeModelIdHint')
                       : _isQoder
                       ? 'Qoder 模型或分级 ID'
+                      : _pickedCli == SessionCli.codebuddy
+                      ? 'WorkBuddy 模型或档位 ID'
+                      : _pickedCli == SessionCli.dsh
+                      ? 'DeepSeek 模型 ID'
                       : t('codexModelIdHint'),
                 ),
                 autofocus: true,

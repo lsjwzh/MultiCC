@@ -27,6 +27,8 @@ Color cliBrandColor(SessionCli cli) => switch (cli) {
   SessionCli.opencode => AppColors.opencode,
   SessionCli.zcode => AppColors.zcode,
   SessionCli.qoder => AppColors.qoder,
+  SessionCli.codebuddy => AppColors.codebuddy,
+  SessionCli.dsh => AppColors.dsh,
 };
 
 // Workspace status board: 一律走中心 registry（utils/status_presentation.dart），

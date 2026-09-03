@@ -206,7 +206,7 @@ ChatMessage? streamingAssistantTail(List<ChatMessage> messages) {
 }
 
 /// Which CLI binary this session drives.
-enum SessionCli { claude, codex, opencode, zcode, qoder }
+enum SessionCli { claude, codex, opencode, zcode, qoder, codebuddy, dsh }
 
 /// Interactive TUI terminal, or stream-json chat.
 enum SessionKind { terminal, chat }
@@ -223,6 +223,10 @@ SessionCli? tryParseCli(String? s) {
       return SessionCli.zcode;
     case 'qoder':
       return SessionCli.qoder;
+    case 'codebuddy':
+      return SessionCli.codebuddy;
+    case 'dsh':
+      return SessionCli.dsh;
     default:
       return null;
   }
@@ -241,6 +245,8 @@ extension SessionCliX on SessionCli {
     SessionCli.opencode => 'opencode',
     SessionCli.zcode => 'zcode',
     SessionCli.qoder => 'qoder',
+    SessionCli.codebuddy => 'codebuddy',
+    SessionCli.dsh => 'dsh',
     SessionCli.claude => 'claude',
   };
 
@@ -256,16 +262,24 @@ extension SessionCliX on SessionCli {
     SessionCli.opencode => 'OpenCode',
     SessionCli.zcode => 'ZCode',
     SessionCli.qoder => 'Qoder CN',
+    SessionCli.codebuddy => 'WorkBuddy',
+    SessionCli.dsh => 'DSH',
   };
 
-  bool get supportsProvider => this != SessionCli.qoder;
+  /// Vendor-auth CLIs (qoder / WorkBuddy / DSH) own their account and model
+  /// config; they expose no multicc provider pool.
+  bool get supportsProvider =>
+      this != SessionCli.qoder &&
+      this != SessionCli.codebuddy &&
+      this != SessionCli.dsh;
   bool get supportsAgent =>
       this == SessionCli.claude ||
       this == SessionCli.opencode ||
-      this == SessionCli.qoder;
+      this == SessionCli.qoder ||
+      this == SessionCli.codebuddy;
   bool get supportsSubagent =>
       this == SessionCli.claude || this == SessionCli.codex;
-  bool get supportsEffort => this != SessionCli.zcode;
+  bool get supportsEffort => this != SessionCli.zcode && this != SessionCli.dsh;
 
   String get effortFieldLabel => switch (this) {
     SessionCli.claude => 'Effort',
@@ -273,6 +287,8 @@ extension SessionCliX on SessionCli {
     SessionCli.opencode => 'Variant',
     SessionCli.zcode => '',
     SessionCli.qoder => 'Reasoning Effort',
+    SessionCli.codebuddy => 'Reasoning Effort',
+    SessionCli.dsh => '',
   };
 
   String get defaultEffort => switch (this) {
@@ -281,6 +297,8 @@ extension SessionCliX on SessionCli {
     SessionCli.opencode => '',
     SessionCli.zcode => '',
     SessionCli.qoder => '',
+    SessionCli.codebuddy => '',
+    SessionCli.dsh => '',
   };
 
   List<String> get effortOptions => switch (this) {
@@ -310,6 +328,16 @@ extension SessionCliX on SessionCli {
     ],
     SessionCli.zcode => const [],
     SessionCli.qoder => const ['', 'low', 'medium', 'high', 'xhigh', 'max'],
+    SessionCli.codebuddy => const [
+      '',
+      'minimal',
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max',
+    ],
+    SessionCli.dsh => const [],
   };
 }
 
@@ -345,6 +373,38 @@ const kQoderModelOptions = <MapEntry<String, String>>[
   MapEntry('lite', 'Lite（轻量）'),
 ];
 
+/// Static WorkBuddy (codebuddy) catalog: tier aliases plus concrete vendor
+/// model ids. The CLI has no --list-models and entitlements vary per account,
+/// so unknown ids simply fall back to the CLI's own default. Mirrors
+/// CODEBUDDY_MODEL_OPTIONS in public/chat-ai-config.js.
+const kCodebuddyModelOptions = <MapEntry<String, String>>[
+  MapEntry('', '默认（跟随 WorkBuddy 设置）'),
+  MapEntry('default-model', 'default（默认档）'),
+  MapEntry('fast-model', 'fast（快速档）'),
+  MapEntry('balanced-model', 'balanced（均衡档）'),
+  MapEntry('primary-model', 'primary（主力档）'),
+  MapEntry('deep-model', 'deep（深度档）'),
+  MapEntry('gpt-5.6-sol', 'gpt-5.6-sol'),
+  MapEntry('gpt-5.6-terra', 'gpt-5.6-terra'),
+  MapEntry('gpt-5.6-luna', 'gpt-5.6-luna'),
+  MapEntry('gpt-5.5', 'gpt-5.5'),
+  MapEntry('gpt-5.4', 'gpt-5.4'),
+  MapEntry('gpt-5.3-codex', 'gpt-5.3-codex'),
+  MapEntry('gemini-3.5-flash', 'gemini-3.5-flash'),
+  MapEntry('glm-5.3', 'glm-5.3'),
+  MapEntry('glm-5.2', 'glm-5.2'),
+  MapEntry('kimi-k3', 'kimi-k3'),
+  MapEntry('kimi-k2.6', 'kimi-k2.6'),
+  MapEntry('minimax-m3', 'minimax-m3'),
+];
+
+/// DeepSeek Harness (dsh) model whitelist; mirrors DSH_MODELS on the server.
+const kDshModelOptions = <MapEntry<String, String>>[
+  MapEntry('', '默认（跟随 DSH 配置）'),
+  MapEntry('deepseek-v4-flash', 'deepseek-v4-flash'),
+  MapEntry('deepseek-v4-pro', 'deepseek-v4-pro'),
+];
+
 String claudeModelShortName(String? model) {
   if (model == null || model.isEmpty) return '默认';
   for (final e in kClaudeModelOptions) {
@@ -357,6 +417,16 @@ String modelShortNameForCli(SessionCli cli, String? model) {
   if (cli == SessionCli.claude) return claudeModelShortName(model);
   if (cli == SessionCli.qoder) {
     for (final option in kQoderModelOptions) {
+      if (option.key == (model ?? '')) return option.value;
+    }
+  }
+  if (cli == SessionCli.codebuddy) {
+    for (final option in kCodebuddyModelOptions) {
+      if (option.key == (model ?? '')) return option.value;
+    }
+  }
+  if (cli == SessionCli.dsh) {
+    for (final option in kDshModelOptions) {
       if (option.key == (model ?? '')) return option.value;
     }
   }
@@ -389,10 +459,14 @@ String modelDisplayName(SessionCli cli, String? model, {Map? aliasMap}) {
 String effortShortNameForCli(SessionCli cli, String? effort) {
   if (!cli.supportsEffort) return '';
   final v = (effort == null || effort.isEmpty) ? cli.defaultEffort : effort;
-  if (cli == SessionCli.opencode && v.isEmpty) return 'Default';
+  if ((cli == SessionCli.opencode || cli == SessionCli.codebuddy) &&
+      v.isEmpty) {
+    return 'Default';
+  }
   if (cli == SessionCli.codex ||
       cli == SessionCli.opencode ||
-      cli == SessionCli.qoder) {
+      cli == SessionCli.qoder ||
+      cli == SessionCli.codebuddy) {
     switch (v) {
       case 'minimal':
         return 'Minimal';

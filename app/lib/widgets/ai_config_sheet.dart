@@ -286,6 +286,8 @@ class AIConfigSheetState extends State<AIConfigSheet> {
 
   String _providerName(String id) {
     if (_isQoder) return 'Qoder CN';
+    if (widget.cli == SessionCli.codebuddy) return 'WorkBuddy';
+    if (widget.cli == SessionCli.dsh) return 'DSH';
     if (id.isEmpty) return '默认登录';
     final p = _providerMap(id);
     return p?['name']?.toString() ?? id;
@@ -311,6 +313,13 @@ class AIConfigSheetState extends State<AIConfigSheet> {
     if (_isQoder) {
       // Live catalog when openAIConfigSheet warmed it, built-in tiers otherwise.
       return QoderModelsService.options().map((option) => option.key).toList();
+    }
+    // Vendor-auth CLIs with a static catalog (mirrors web CODEBUDDY/DSH_MODEL_OPTIONS).
+    if (widget.cli == SessionCli.codebuddy) {
+      return kCodebuddyModelOptions.map((option) => option.key).toList();
+    }
+    if (widget.cli == SessionCli.dsh) {
+      return kDshModelOptions.map((option) => option.key).toList();
     }
     // Alias-mapped relays: offer the tiers directly (opus/sonnet/haiku/fable) so
     // each option can read "alias → wire model (display name)".
@@ -342,7 +351,10 @@ class AIConfigSheetState extends State<AIConfigSheet> {
 
   String _modelLabel(String model) {
     if (model.isEmpty) {
-      return _isQoder ? '默认 / 跟随 Qoder CN 设置' : '默认 / 跟随 Provider';
+      if (_isQoder) return '默认 / 跟随 Qoder CN 设置';
+      if (widget.cli == SessionCli.codebuddy) return '默认 / 跟随 WorkBuddy 设置';
+      if (widget.cli == SessionCli.dsh) return '默认 / 跟随 DSH 配置';
+      return '默认 / 跟随 Provider';
     }
     return modelShortNameForCli(widget.cli, model);
   }
@@ -374,9 +386,11 @@ class AIConfigSheetState extends State<AIConfigSheet> {
 
   String _effortDescription(String value) {
     if (value.isEmpty) {
-      return _isQoder
-          ? 'Default — Follow Qoder CN settings'
-          : 'Default — Follow the selected model/provider';
+      if (_isQoder) return 'Default — Follow Qoder CN settings';
+      if (widget.cli == SessionCli.codebuddy) {
+        return 'Default — Follow WorkBuddy settings';
+      }
+      return 'Default — Follow the selected model/provider';
     }
     if (!_isClaude) {
       switch (value) {
