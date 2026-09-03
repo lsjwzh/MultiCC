@@ -1,6 +1,9 @@
 (function attachMultiCCChatLiveUi(global) {
   'use strict';
 
+  const errorModel = global.MultiCCErrorEnvelope
+    || (typeof module === 'object' && module.exports ? require('./error-envelope') : null);
+
   function bindHeaderMoreMenu(options) {
     const opts = options || {};
     const win = opts.window || global;
@@ -859,6 +862,12 @@
       if (!bar) return;
       const retryScheduled = message.state === 'retry_wait' || message.action === 'retry'
         || message.action === 'wait_reset' || message.action === 'wait_circuit';
+      const envelope = errorModel ? errorModel.normalize(message, {
+        source: 'provider_policy',
+        scope: 'turn',
+        status: message.httpStatus,
+        detail: message.rootCause,
+      }) : null;
       const parts = [
         String(message.provider || '?'),
         String(message.category || 'unknown'),
@@ -868,9 +877,23 @@
       // decision. Prefer it in both retrying and terminal states; using only
       // userAction on terminal failures previously hid ENOTFOUND/TLS/etc.
       const remedy = String(message.message || message.userAction || '');
-      if (remedy) parts.push(remedy);
-      bar.textContent = `API ${parts.join(' · ')}`;
-      bar.title = String(message.message || '');
+      const rootCause = String(message.rootCause || '').trim();
+      if (rootCause) {
+        const visible = envelope && envelope.code
+          ? errorModel.visibleMessage({ ...envelope, message: rootCause }) : rootCause;
+        parts.push(visible);
+      }
+      if (remedy && remedy !== rootCause) parts.push(remedy);
+      bar.replaceChildren();
+      const label = doc.createElement('span');
+      label.className = 'mc-error-summary';
+      label.textContent = `API ${parts.join(' · ')}`;
+      bar.appendChild(label);
+      if (envelope) {
+        const details = errorModel.createDetails(doc, envelope);
+        if (details) bar.appendChild(details);
+      }
+      bar.title = envelope ? errorModel.diagnosticText(envelope) : String(message.message || '');
       bar.style.color = retryScheduled ? '#e3b341' : '#ff9b9b';
       bar.style.display = '';
     }
@@ -880,15 +903,34 @@
       if (bar) bar.style.display = 'none';
     }
 
-    function showDisconnectBanner(seconds) {
+    function showDisconnectBanner(seconds, error) {
       if (isRestarting()) return;
       if (!disconnectBannerEl) {
         disconnectBannerEl = doc.createElement('div');
         disconnectBannerEl.className = 'msg system-msg disconnect-banner';
-        disconnectBannerEl.addEventListener('click', retryTransport);
+        disconnectBannerEl.addEventListener('click', (event) => {
+          if (event && event.target && typeof event.target.closest === 'function'
+              && event.target.closest('.mc-error-details')) return;
+          retryTransport();
+        });
         messagesEl.appendChild(disconnectBannerEl);
       }
-      disconnectBannerEl.textContent = `⚠️ 连接断开，${seconds}s 后自动重连（点此立即重试）`;
+      disconnectBannerEl.replaceChildren();
+      const envelope = error && error.version === 'v1' ? error
+        : errorModel && error ? errorModel.normalize(error, { source: 'websocket', scope: 'session' }) : null;
+      const label = doc.createElement('span');
+      label.className = 'mc-error-summary';
+      if (envelope) {
+        const view = errorModel.presentation(envelope, { retrySeconds: seconds });
+        label.textContent = `⚠️ ${view.headline}：${view.message}（点此立即重试）`;
+      } else {
+        label.textContent = `⚠️ 连接断开，${seconds}s 后自动重连（点此立即重试）`;
+      }
+      disconnectBannerEl.appendChild(label);
+      if (envelope) {
+        const details = errorModel.createDetails(doc, envelope);
+        if (details) disconnectBannerEl.appendChild(details);
+      }
       maybeScroll();
     }
 

@@ -131,10 +131,14 @@
   }
 
   function showApiError(error) {
+    if (typeof api.errorText === 'function') {
+      showToast(`Error: ${api.errorText(error)}`, true);
+      return;
+    }
     const detail = api.errorDisplay(error);
     const status = detail.status ? ` · HTTP ${detail.status}` : '';
     const request = detail.requestId ? ` · request ${detail.requestId}` : '';
-    showToast(`Error: ${detail.message}${status}${request}`, true);
+    showToast(`Error: ${detail.displayMessage || detail.message}${status}${request}`, true);
   }
 
   function buildSessionCreatePayload(cli, kind, result) {
