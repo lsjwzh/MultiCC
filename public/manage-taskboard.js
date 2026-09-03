@@ -465,27 +465,45 @@ function toggleTaskBoardModule(modId) {
 //   server-side via buildGoalLimitNote (byte-equal to chat's goal mode).
 
 function createTbComposer(host, opts) {
+  opts = opts || {};
+  const tx = (key, fallback, params) => {
+    const translate = typeof opts.translate === 'function'
+      ? opts.translate : (typeof window.t === 'function' ? window.t : null);
+    if (translate) {
+      const translated = translate(key, params);
+      if (translated && translated !== key) return translated;
+    }
+    return params ? fallback.replace(/\{(\w+)\}/g, (_, name) => (
+      Object.prototype.hasOwnProperty.call(params, name) ? String(params[name]) : `{${name}}`
+    )) : fallback;
+  };
+  const inputLabel = opts.inputLabel || tx('boardMessageInput', '任务内容');
+  const cliTitle = tx('boardCliRecentTitle', 'CLI（默认跟随最近活跃）');
+  const providerTitle = tx('boardProviderRecentTitle', 'Provider（默认跟随最近活跃）');
+  const attachTitle = tx('boardAttach', '上传图片/文件');
+  const voiceTitle = tx('boardVoice', '语音输入');
+  const goalTitle = tx('boardGoalSendTitle', '以 Goal 模式发送（自主任务，带轮次/预算上限）');
   host.innerHTML = `
     <div class="tb-compose">
       <div class="tb-chiprow" style="display:none"></div>
-      <textarea class="tb-input" placeholder="${_tbEsc(opts.placeholder || '输入消息…（支持粘贴图片/文件，Enter 发送，Shift+Enter 换行）')}"></textarea>
+      <textarea class="tb-input" aria-label="${_tbEsc(inputLabel)}" placeholder="${_tbEsc(opts.placeholder || tx('boardComposerDefaultHint', '输入消息…（支持粘贴图片/文件，Enter 发送，Shift+Enter 换行）'))}"></textarea>
       <div class="tb-goalrow" style="display:none">
-        <span class="tb-dim">🎯 Goal 模式</span>
-        <label class="tb-dim">轮次上限 <input type="number" class="tb-goal-rounds" value="200" min="0" max="200"></label>
-        <label class="tb-dim">token 预算 <input type="number" class="tb-goal-budget" step="1000" min="0" placeholder="不限"></label>
+        <span class="tb-dim">🎯 ${_tbEsc(tx('boardGoalMode', 'Goal 模式'))}</span>
+        <label class="tb-dim">${_tbEsc(tx('boardGoalRounds', '轮次上限'))} <input type="number" class="tb-goal-rounds" value="200" min="0" max="200"></label>
+        <label class="tb-dim">${_tbEsc(tx('boardTokenBudget', 'token 预算'))} <input type="number" class="tb-goal-budget" step="1000" min="0" placeholder="${_tbEsc(tx('boardUnlimited', '不限'))}"></label>
       </div>
       <div class="tb-compose-row">
-        <select class="tb-cli" title="CLI（默认跟随最近活跃）"><option value="">CLI…</option></select>
-        <select class="tb-provider" title="Provider（默认跟随最近活跃）"><option value="">Provider…</option></select>
-        <button class="btn btn-sm tb-attach-btn" title="上传图片/文件">📎</button>
-        <button class="btn btn-sm tb-mic-btn" title="语音输入">🎙</button>
-        <button class="btn btn-sm tb-goal-btn" title="以 Goal 模式发送（自主任务，带轮次/预算上限）">🎯</button>
-        <button class="btn btn-sm tb-send-btn">🚀 发送</button>
-        <span class="tb-result"></span>
+        <select class="tb-cli" title="${_tbEsc(cliTitle)}" aria-label="${_tbEsc(cliTitle)}"><option value="">CLI…</option></select>
+        <select class="tb-provider" title="${_tbEsc(providerTitle)}" aria-label="${_tbEsc(providerTitle)}"><option value="">Provider…</option></select>
+        <button type="button" class="btn btn-sm tb-attach-btn" title="${_tbEsc(attachTitle)}" aria-label="${_tbEsc(attachTitle)}">📎</button>
+        <button type="button" class="btn btn-sm tb-mic-btn" title="${_tbEsc(voiceTitle)}" aria-label="${_tbEsc(voiceTitle)}">🎙</button>
+        <button type="button" class="btn btn-sm tb-goal-btn" title="${_tbEsc(goalTitle)}" aria-label="${_tbEsc(goalTitle)}" aria-pressed="false">🎯</button>
+        <button type="button" class="btn btn-sm tb-send-btn">🚀 ${_tbEsc(tx('boardSend', '发送'))}</button>
+        <span class="tb-result" role="status" aria-live="polite" aria-atomic="true"></span>
       </div>
       <div class="tb-auto-summary-row tb-auto-provider-editor" aria-live="polite">
         <span class="tb-auto-summary"></span>
-        <button type="button" class="btn btn-sm tb-auto-config-btn" title="发送前选择 Auto Provider 候选、顺序和模型">⚙ 配置候选</button>
+        <button type="button" class="btn btn-sm tb-auto-config-btn" title="${_tbEsc(tx('boardAutoConfigureTitle', '发送前选择 Auto Provider 候选、顺序和模型'))}">⚙ ${_tbEsc(tx('boardAutoConfigure', '配置候选'))}</button>
       </div>
       ${opts.hint ? `<div class="tb-dim" style="margin-top:4px">${_tbEsc(opts.hint)}</div>` : ''}
       <input type="file" multiple hidden class="tb-file-input">
@@ -494,6 +512,7 @@ function createTbComposer(host, opts) {
   const input = $q('.tb-input');
   const chiprow = $q('.tb-chiprow');
   const sendBtn = $q('.tb-send-btn');
+  const attachBtn = $q('.tb-attach-btn');
   const micBtn = $q('.tb-mic-btn');
   const goalBtn = $q('.tb-goal-btn');
   const goalRow = $q('.tb-goalrow');
@@ -513,7 +532,7 @@ function createTbComposer(host, opts) {
     const uploadContextKey = composerContextKey;
     const chip = document.createElement('span');
     chip.className = 'tb-fchip';
-    chip.textContent = `⏳ ${file.name || '文件'}`;
+    chip.textContent = `⏳ ${file.name || tx('boardFileFallback', '文件')}`;
     chiprow.style.display = '';
     chiprow.appendChild(chip);
     try {
@@ -529,9 +548,11 @@ function createTbComposer(host, opts) {
       }
       chip.dataset.path = d.path;
       chip.textContent = `📄 ${d.name || file.name}`;
-      const x = document.createElement('span');
+      const x = document.createElement('button');
+      x.type = 'button';
       x.className = 'tb-fchip-x';
       x.textContent = ' ✕';
+      x.setAttribute('aria-label', tx('boardRemoveAttachment', '移除附件'));
       x.onclick = () => { chip.remove(); if (!chiprow.children.length) chiprow.style.display = 'none'; };
       chip.appendChild(x);
     } catch (e) {
@@ -539,11 +560,13 @@ function createTbComposer(host, opts) {
         chip.remove();
         return;
       }
-      chip.textContent = `⚠️ ${file.name || '文件'} 上传失败`;
+      chip.textContent = `⚠️ ${tx('boardUploadFailed', '{file} 上传失败', {
+        file: file.name || tx('boardFileFallback', '文件'),
+      })}`;
       setTimeout(() => { chip.remove(); if (!chiprow.children.length) chiprow.style.display = 'none'; }, 3000);
     }
   }
-  $q('.tb-attach-btn').onclick = () => fileInput.click();
+  attachBtn.onclick = () => fileInput.click();
   fileInput.onchange = () => { for (const f of fileInput.files) uploadFile(f); fileInput.value = ''; };
   input.addEventListener('paste', (e) => {
     const files = e.clipboardData && e.clipboardData.files;
@@ -558,7 +581,7 @@ function createTbComposer(host, opts) {
     const recordContextKey = composerContextKey;
     let stream;
     try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
-    catch (_) { setResult('无法访问麦克风', 'err'); return; }
+    catch (_) { setResult(tx('boardMicDenied', '无法访问麦克风'), 'err'); return; }
     if (recordContextKey !== composerContextKey) {
       stream.getTracks().forEach(t => t.stop());
       return;
@@ -567,36 +590,44 @@ function createTbComposer(host, opts) {
     const mime = window.MediaRecorder && MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
       ? 'audio/webm;codecs=opus' : undefined;
     try { recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined); }
-    catch (_) { stream.getTracks().forEach(t => t.stop()); setResult('浏览器不支持录音', 'err'); return; }
+    catch (_) {
+      stream.getTracks().forEach(t => t.stop());
+      setResult(tx('boardRecordingUnsupported', '浏览器不支持录音'), 'err');
+      return;
+    }
     recorder.ondataavailable = (e) => { if (e.data && e.data.size) recChunks.push(e.data); };
     recorder.onstop = async () => {
       stream.getTracks().forEach(t => t.stop());
       micBtn.classList.remove('rec');
       const blob = new Blob(recChunks, { type: 'audio/webm' });
+      if (recordContextKey !== composerContextKey) return;
       if (!blob.size) return;
-      setResult('转写中…');
+      setResult(tx('boardTranscribing', '转写中…'));
       try {
         const fd = new FormData();
         fd.append('file', blob, 'recording.webm');
         const r = await fetch('/api/voice/stt', { method: 'POST', body: fd });
         const d = await r.json();
-        if (!r.ok || !d.text) throw new Error(d.error || '无转写结果');
+        if (!r.ok || !d.text) throw new Error(d.error || tx('boardNoTranscript', '无转写结果'));
         if (recordContextKey !== composerContextKey) return;
         input.value = input.value ? `${input.value} ${d.text.trim()}` : d.text.trim();
         input.focus();
         setResult('');
       } catch (e) {
-        if (recordContextKey === composerContextKey) setResult(`转写失败：${e.message}`, 'err');
+        if (recordContextKey === composerContextKey) {
+          setResult(tx('boardTranscriptionFailed', '转写失败：{error}', { error: e.message }), 'err');
+        }
       }
     };
     recorder.start();
     micBtn.classList.add('rec');
-    setResult('录音中，点 🎙 结束…');
+    setResult(tx('boardRecording', '录音中，点 🎙 结束…'));
   };
 
   // Goal toggle — show the limits row while armed.
   goalBtn.onclick = () => {
     const on = goalBtn.classList.toggle('on');
+    goalBtn.setAttribute('aria-pressed', String(on));
     goalRow.style.display = on ? '' : 'none';
   };
 
@@ -623,7 +654,13 @@ function createTbComposer(host, opts) {
     cliSel.disabled = sending;
     provSel.disabled = sending || providerLoading;
     sendBtn.disabled = sending || providerLoading;
+    input.disabled = sending;
+    attachBtn.disabled = sending;
+    micBtn.disabled = sending;
+    goalBtn.disabled = sending;
+    fileInput.disabled = sending;
     if (autoConfigBtn) autoConfigBtn.disabled = sending || providerLoading || autoConfigLoading;
+    if (typeof opts.onSendingChange === 'function') opts.onSendingChange(sending);
   };
 
   const loadProviderOptions = async (cli, force) => {
@@ -644,7 +681,10 @@ function createTbComposer(host, opts) {
   const renderCliOptions = () => {
     const sugCli = runtimeSuggest?.cli || '';
     const clis = [...new Set([sugCli, 'claude', 'codex', 'opencode', 'zcode', 'qoder', 'codebuddy', 'dsh'].filter(Boolean))];
-    cliSel.innerHTML = `<option value="">CLI · ${sugCli ? `最近活跃 ${_tbEsc(TB_CLI_LABELS[sugCli] || sugCli)}` : '默认'}</option>`
+    const recentCli = sugCli
+      ? tx('boardRecentActiveValue', '最近活跃 {value}', { value: TB_CLI_LABELS[sugCli] || sugCli })
+      : tx('boardDefault', '默认');
+    cliSel.innerHTML = `<option value="">CLI · ${_tbEsc(recentCli)}</option>`
       + clis.map(c => `<option value="${_tbEsc(c)}">${_tbEsc(TB_CLI_LABELS[c] || c)}</option>`).join('');
   };
 
@@ -660,9 +700,12 @@ function createTbComposer(host, opts) {
     const autoHtml = [...new Set(list.map(_tbProtocolOf).filter(Boolean))]
       .map(protocol => ({ protocol, pool: _tbAutoPool(list, protocol) }))
       .filter(entry => entry.pool.length >= 2)
-      .map(entry => `<option value="${TB_AUTO_PREFIX}${_tbEsc(entry.protocol)}" title="选择后会在发送前确认候选、顺序和模型；默认仅启用前两个自管 Provider">⚡ Auto · ${_tbEsc(TB_PROTOCOL_LABELS[entry.protocol])}（${entry.pool.length} 个自管可选）</option>`)
+      .map(entry => `<option value="${TB_AUTO_PREFIX}${_tbEsc(entry.protocol)}" title="${_tbEsc(tx('boardAutoOptionTitle', '选择后会在发送前确认候选、顺序和模型；默认仅启用前两个自管 Provider'))}">⚡ Auto · ${_tbEsc(TB_PROTOCOL_LABELS[entry.protocol])} · ${_tbEsc(tx('boardManagedProviderCount', '{count} 个自管可选', { count: entry.pool.length }))}</option>`)
       .join('');
-    provSel.innerHTML = `<option value="">Provider · ${sugName ? `最近活跃 ${_tbEsc(sugName)}` : '默认'}</option>`
+    const recentProvider = sugName
+      ? tx('boardRecentActiveValue', '最近活跃 {value}', { value: sugName })
+      : tx('boardDefault', '默认');
+    provSel.innerHTML = `<option value="">Provider · ${_tbEsc(recentProvider)}</option>`
       + autoHtml
       + list.map(p => `<option value="${_tbEsc(p.id)}">${_tbEsc(p.name || p.id)}</option>`).join('');
     if (keep && [...provSel.options].some(option => option.value === keep)) provSel.value = keep;
@@ -703,9 +746,14 @@ function createTbComposer(host, opts) {
     const label = TB_PROTOCOL_LABELS[protocol] || protocol;
     const route = names.slice(0, 2).join(' → ');
     const trustWarning = selection.allowCrossTrust === true
-      ? ' · ⚠ 跨上游已授权' : (hasOfficial ? ' · 含 Official' : '');
-    autoSummary.textContent = `⚡ Auto · ${label} · ${names.length} 个候选${route ? ` · ${route}` : ''} · 最多 ${selection.maxAttempts} 次${trustWarning}`;
-    autoSummary.title = `${names.join(' → ')}；仅用于新任务绑定会话，首轮立即生效${selection.allowCrossTrust === true ? '；同一上下文可能发送到 Official 与自管上游' : ''}`;
+      ? ` · ${tx('boardCrossUpstreamAuthorized', '⚠ 跨上游已授权')}`
+      : (hasOfficial ? ` · ${tx('boardIncludesOfficial', '含 Official')}` : '');
+    autoSummary.textContent = `⚡ Auto · ${label} · ${tx('boardCandidateCount', '{count} 个候选', { count: names.length })}${route ? ` · ${route}` : ''} · ${tx('boardMaxAttempts', '最多 {count} 次', { count: selection.maxAttempts })}${trustWarning}`;
+    autoSummary.title = tx('boardAutoSummaryTitle', '{route}；仅用于新任务绑定会话，首轮立即生效{warning}', {
+      route: names.join(' → '),
+      warning: selection.allowCrossTrust === true
+        ? `；${tx('boardCrossUpstreamContextWarning', '同一上下文可能发送到 Official 与自管上游')}` : '',
+    });
     autoSummaryRow.classList.add('visible');
     autoSummaryRow.classList.toggle('cross-trust', selection.allowCrossTrust === true);
   }
@@ -714,18 +762,25 @@ function createTbComposer(host, opts) {
     const editorApi = _tbAutoEditor();
     return new Promise(resolve => {
       if (closeActivePicker) closeActivePicker();
+      const returnFocus = document.activeElement;
       const overlay = document.createElement('div');
       overlay.className = 'tb-auto-picker-overlay';
       overlay.style.cssText = 'position:fixed;inset:0;z-index:10020;background:rgba(0,0,0,.72);display:flex;align-items:center;justify-content:center;padding:16px;';
       const box = document.createElement('div');
+      box.setAttribute('role', 'dialog');
+      box.setAttribute('aria-modal', 'true');
+      box.setAttribute('aria-labelledby', 'tb-auto-picker-title');
       box.style.cssText = 'width:640px;max-width:94vw;max-height:calc(100vh - 32px);max-height:calc(100dvh - 32px);display:flex;flex-direction:column;background:var(--panel,#161b22);border:1px solid var(--line-strong,#30363d);border-radius:12px;color:var(--text,#c9d1d9);';
       const body = document.createElement('div');
       body.style.cssText = 'padding:16px;overflow:auto;min-height:0;';
       const title = document.createElement('div');
-      title.textContent = `发送前配置 Auto · ${TB_PROTOCOL_LABELS[protocol] || protocol}`;
+      title.id = 'tb-auto-picker-title';
+      title.textContent = tx('boardAutoPickerTitle', '发送前配置 Auto · {protocol}', {
+        protocol: TB_PROTOCOL_LABELS[protocol] || protocol,
+      });
       title.style.cssText = 'font-size:15px;font-weight:600;margin-bottom:4px;';
       const note = document.createElement('div');
-      note.textContent = '本配置会作为新任务首轮的固定候选 allowlist；新增 Provider 不会自动加入。';
+      note.textContent = tx('boardAutoPickerNote', '本配置会作为新任务首轮的固定候选 allowlist；新增 Provider 不会自动加入。');
       note.style.cssText = 'font-size:11px;color:var(--muted,#8b949e);line-height:1.5;margin-bottom:10px;';
       const editorHost = document.createElement('div');
       body.append(title, note, editorHost);
@@ -734,11 +789,11 @@ function createTbComposer(host, opts) {
       const cancel = document.createElement('button');
       cancel.type = 'button';
       cancel.className = 'btn';
-      cancel.textContent = '取消';
+      cancel.textContent = tx('cancel', '取消');
       const save = document.createElement('button');
       save.type = 'button';
       save.className = 'btn btn-green';
-      save.textContent = '确认候选';
+      save.textContent = tx('boardConfirmCandidates', '确认候选');
       footer.append(cancel, save);
       box.append(body, footer);
       overlay.appendChild(box);
@@ -761,6 +816,9 @@ function createTbComposer(host, opts) {
         controller.destroy();
         overlay.remove();
         if (closeActivePicker === dismiss) closeActivePicker = null;
+        if (returnFocus && returnFocus.isConnected !== false && typeof returnFocus.focus === 'function') {
+          returnFocus.focus();
+        }
         resolve(value);
       };
       const dismiss = () => close(null);
@@ -771,6 +829,30 @@ function createTbComposer(host, opts) {
         if (result.ok) close(result.value);
       };
       overlay.onclick = event => { if (event.target === overlay) dismiss(); };
+      overlay.addEventListener('keydown', event => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          event.stopPropagation();
+          dismiss();
+          return;
+        }
+        if (event.key !== 'Tab') return;
+        const focusable = [...box.querySelectorAll('button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),a[href],[tabindex]:not([tabindex="-1"])')];
+        if (!focusable.length) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      });
+      setTimeout(() => {
+        const initialFocus = box.querySelector('input:not([disabled]),select:not([disabled]),button:not([disabled])');
+        (initialFocus || save).focus();
+      }, 0);
     });
   }
 
@@ -803,7 +885,7 @@ function createTbComposer(host, opts) {
         providerLoading = false;
         syncRuntimeControls();
       }
-      setResult('刷新 Provider 列表失败，请稍后重试', 'err');
+      setResult(tx('boardProviderRefreshFailed', '刷新 Provider 列表失败，请稍后重试'), 'err');
       if (initial) provSel.value = previousValue;
       syncAutoSummary();
       return false;
@@ -818,7 +900,7 @@ function createTbComposer(host, opts) {
     const list = providerCache.get(cliAtOpen) || [];
     const selection = autoDrafts.get(draftKey) || _tbAutoSelection(list, protocol);
     if (!selection) {
-      setResult('该协议下至少需要两个自管 Provider', 'err');
+      setResult(tx('boardAutoNeedsTwoProviders', '该协议下至少需要两个自管 Provider'), 'err');
       if (initial) provSel.value = previousValue;
       syncAutoSummary();
       return false;
@@ -844,7 +926,7 @@ function createTbComposer(host, opts) {
     provSel.value = `${TB_AUTO_PREFIX}${protocol}`;
     lastProviderValue = provSel.value;
     syncAutoSummary();
-    setResult('Auto 候选已确认', 'ok');
+    setResult(tx('boardAutoConfirmed', 'Auto 候选已确认'), 'ok');
     return true;
   }
 
@@ -877,7 +959,7 @@ function createTbComposer(host, opts) {
     const loadEpoch = ++runtimeLoadEpoch;
     const requestedCli = cliSel.value || runtimeSuggest?.cli || 'claude';
     providerLoading = true;
-    provSel.innerHTML = '<option value="">Provider · 加载中…</option>';
+    provSel.innerHTML = `<option value="">Provider · ${_tbEsc(tx('boardProviderLoading', '加载中…'))}</option>`;
     lastProviderValue = '';
     syncAutoSummary();
     provListCli = requestedCli;
@@ -894,7 +976,7 @@ function createTbComposer(host, opts) {
         providerLoading = false;
         renderProviderOptions();
         syncRuntimeControls();
-        setResult('Provider 列表加载失败', 'err');
+        setResult(tx('boardProviderLoadFailed', 'Provider 列表加载失败'), 'err');
       }
     }
   };
@@ -912,7 +994,7 @@ function createTbComposer(host, opts) {
     if (initEpoch !== runtimeLoadEpoch) return;
     provListCli = runtimeSuggest?.cli || 'claude';
     try { await loadProviderOptions(provListCli); }
-    catch (_) { setResult('Provider 列表加载失败', 'err'); }
+    catch (_) { setResult(tx('boardProviderLoadFailed', 'Provider 列表加载失败'), 'err'); }
     if (initEpoch !== runtimeLoadEpoch) return;
     providerLoading = false;
     renderCliOptions();
@@ -921,12 +1003,15 @@ function createTbComposer(host, opts) {
   })();
 
   async function doSend() {
-    if (providerLoading) { setResult('Provider 列表仍在加载，请稍候', 'err'); return; }
+    if (providerLoading) {
+      setResult(tx('boardProviderStillLoading', 'Provider 列表仍在加载，请稍候'), 'err');
+      return;
+    }
     if (sending) return;
     let text = input.value.trim();
     const paths = [...chiprow.querySelectorAll('.tb-fchip[data-path]')].map(c => c.dataset.path);
     if (paths.length) text = (text ? text + ' ' : '') + paths.join(' ');
-    if (!text) { setResult('请输入内容', 'err'); return; }
+    if (!text) { setResult(tx('boardEmptyText', '请输入内容'), 'err'); return; }
     const payload = { text };
     if (!pendingClientMsgId || pendingText !== text) {
       pendingClientMsgId = window.crypto?.randomUUID
@@ -957,7 +1042,10 @@ function createTbComposer(host, opts) {
       // Never regenerate it from the live catalog at click time: newly added
       // providers have not been authorized for this task.
       const selection = autoDrafts.get(autoDraftKey(autoProtocol));
-      if (!selection) { setResult('请先配置并确认 Auto Provider 候选', 'err'); return; }
+      if (!selection) {
+        setResult(tx('boardAutoConfigureFirst', '请先配置并确认 Auto Provider 候选'), 'err');
+        return;
+      }
       payload.providerSelection = cloneAutoSelection(selection);
     } else {
       // A provider suggestion belongs to its CLI. Once the user explicitly
@@ -970,12 +1058,12 @@ function createTbComposer(host, opts) {
     }
     sending = true;
     syncRuntimeControls();
-    setResult('路由中…');
+    setResult(tx('boardDispatching', '路由中…'));
     const sendContextKey = composerContextKey;
     try {
       const okText = await opts.submit(payload);
       if (sendContextKey !== composerContextKey) return;
-      setResult(okText || '已发送', 'ok');
+      setResult(okText || tx('boardSent', '已发送'), 'ok');
       input.value = '';
       chiprow.innerHTML = '';
       chiprow.style.display = 'none';
@@ -1000,6 +1088,7 @@ function createTbComposer(host, opts) {
     chiprow.style.display = 'none';
     fileInput.value = '';
     goalBtn.classList.remove('on');
+    goalBtn.setAttribute('aria-pressed', 'false');
     goalRow.style.display = 'none';
     pendingClientMsgId = '';
     pendingText = '';
@@ -1009,36 +1098,63 @@ function createTbComposer(host, opts) {
   return {
     reset() { clearMessageDraft(); },
     focus() { input.focus(); },
-    setContext(contextKey) {
+    destroy() {
+      composerContextKey = `destroyed:${Date.now()}`;
+      pickerEpoch += 1;
+      runtimeLoadEpoch += 1;
+      if (closeActivePicker) closeActivePicker();
+      if (recorder && recorder.state === 'recording') recorder.stop();
+      clearMessageDraft();
+    },
+    setContext(contextKey, contextOptions) {
       const next = String(contextKey || '');
       if (next === composerContextKey) return;
+      const preserveDraft = contextOptions && contextOptions.preserveDraft === true;
+      const preservedCli = preserveDraft ? cliSel.value : '';
+      const preservedProvider = preserveDraft ? provSel.value : '';
       composerContextKey = next;
       pickerEpoch += 1;
       const loadEpoch = ++runtimeLoadEpoch;
       if (closeActivePicker) closeActivePicker();
       autoConfigLoading = false;
       if (recorder && recorder.state === 'recording') recorder.stop();
-      clearMessageDraft();
-      cliSel.value = '';
-      provSel.innerHTML = '<option value="">Provider · 加载中…</option>';
+      if (preserveDraft) {
+        // A routing-context change makes an earlier retry token stale, but it
+        // should not discard what the user can see and has already composed.
+        pendingClientMsgId = '';
+        pendingText = '';
+        setResult('');
+      } else {
+        clearMessageDraft();
+      }
+      cliSel.value = preservedCli;
+      provSel.innerHTML = `<option value="">Provider · ${_tbEsc(tx('boardProviderLoading', '加载中…'))}</option>`;
       lastProviderValue = '';
       syncAutoSummary();
-      provListCli = runtimeSuggest?.cli || 'claude';
+      provListCli = preservedCli || runtimeSuggest?.cli || 'claude';
       providerLoading = true;
       syncRuntimeControls();
+      const finishContextRefresh = () => {
+        providerLoading = false;
+        renderCliOptions();
+        if (preservedCli) cliSel.value = preservedCli;
+        renderProviderOptions();
+        if (preservedProvider && [...provSel.options].some(option => option.value === preservedProvider)) {
+          provSel.value = preservedProvider;
+          lastProviderValue = preservedProvider;
+          syncAutoSummary();
+        }
+        syncRuntimeControls();
+      };
       loadProviderOptions(provListCli)
         .then(() => {
           if (loadEpoch !== runtimeLoadEpoch || next !== composerContextKey) return;
-          providerLoading = false;
-          renderProviderOptions();
-          syncRuntimeControls();
+          finishContextRefresh();
         })
         .catch(() => {
           if (loadEpoch !== runtimeLoadEpoch || next !== composerContextKey) return;
-          providerLoading = false;
-          renderProviderOptions();
-          syncRuntimeControls();
-          setResult('Provider 列表加载失败', 'err');
+          finishContextRefresh();
+          setResult(tx('boardProviderLoadFailed', 'Provider 列表加载失败'), 'err');
         });
     },
     dismissOverlays() {
@@ -1052,6 +1168,14 @@ function createTbComposer(host, opts) {
     },
   };
 }
+
+// The Task Center's "start now" entry is another first-turn composer, not a
+// second implementation of attachments, voice, Goal mode, or runtime picks.
+// Keep the factory behind a small explicit browser API so both surfaces share
+// the same send behaviour while retaining independent drafts and context.
+window.MultiCCTaskBoardComposer = Object.freeze({
+  mount: createTbComposer,
+});
 
 // Board-tab composer (dir-level routing) — lives in the static #tb-dir-composer
 // container so WS-driven re-renders of #dir-detail-body never wipe its state.
