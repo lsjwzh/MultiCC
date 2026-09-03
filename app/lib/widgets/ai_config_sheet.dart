@@ -1452,7 +1452,7 @@ class RolePromptEditorDialogState extends State<RolePromptEditorDialog> {
               ),
             ),
             const Text(
-              '留空＝清除（会话将继承Fleet默认角色）',
+              '留空＝清除（会话将继承工作区默认角色）',
               style: TextStyle(color: AppColors.muted, fontSize: 11),
             ),
           ],

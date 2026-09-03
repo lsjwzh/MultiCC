@@ -308,14 +308,14 @@ function render() {
     g.appendChild(list);
     fleet.appendChild(g);
   }
-  $('fleet-stat').textContent = `${totalDirs} 舰队 · ${totalSess} 会话`;
+  $('fleet-stat').textContent = `${totalDirs} 工作区 · ${totalSess} 会话`;
 }
 function updateAside() {
   const info = $('sel-info');
   if (!selected) { info.textContent = '未选择会话。'; $('dispatch-btn').disabled = $('msg-btn').disabled = true; return; }
   let s = null, dirLabel = null;
   for (const [_, dir] of dirMap) { if (dir.sessions.has(selected)) { s = dir.sessions.get(selected); dirLabel = dir.label; break; } }
-  if (!s) { info.textContent = '会话已不在 fleet。'; return; }
+  if (!s) { info.textContent = '会话已不在工作区。'; return; }
   info.innerHTML = `→ <span class="sel-name">${esc(s.label || selected)}</span><br>
     <span style="color:#8b949e">id: ${esc(selected)} · ${esc(s.cli||'?')} · ${esc(dirLabel||'?')}</span>`;
   $('dispatch-btn').disabled = $('msg-btn').disabled = false;
@@ -374,7 +374,7 @@ function taskMergeBlockText(reason) {
     task_classifying: '任务正在归类，完成后才能合并',
     source_workspace: '该任务仍有 worktree/分支；请先清理，或先勾选它作为保留任务',
     origin_mismatch: '暂不支持独立任务与会话任务互相合并',
-    directory_mismatch: '暂不支持跨 Fleet 合并任务',
+    directory_mismatch: '暂不支持跨工作区合并任务',
     too_few: '至少选择 2 个任务',
     empty: '请先选择要保留的任务',
   };

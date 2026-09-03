@@ -77,7 +77,7 @@
       const note = document.createElement('div');
       note.className = 'sec-desc';
       note.style.margin = '0';
-      note.textContent = `已迁移：${legacy.length} 条旧的按 Fleet 配置只作兼容保留，不会再各自拉起进程。`;
+      note.textContent = `已迁移：${legacy.length} 条旧的按工作区配置只作兼容保留，不会再各自拉起进程。`;
       container.appendChild(note);
     }
   }

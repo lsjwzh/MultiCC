@@ -62,6 +62,7 @@ function tmpDir(label) {
     ok(p.orchestrationFile === path.join(d, 'orchestration.json'), 'createPaths: orchestration store under override');
     ok(p.voiceExamplesFile === path.join(d, 'voice_examples.json'), 'createPaths: voice examples under override');
     ok(p.whisperVocabFile === path.join(d, 'whisper_vocab.json'), 'createPaths: whisper vocab under override');
+    ok(p.sampleWorkspacesDir === path.join(d, 'samples'), 'createPaths: sample workspaces under override');
   }
 
   // ── writeJsonAtomic + readJson ──────────────────────────────────────

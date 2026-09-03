@@ -327,7 +327,7 @@ test('classic task board source filter renders all, independent, and session tas
   assert.deepEqual(harness.renderCalls, ['fleet-a', 'fleet-a', 'fleet-a', 'fleet-b']);
 });
 
-test('source filter exits merge mode while one-click cleanup remains Fleet-wide', async () => {
+test('source filter exits merge mode while one-click cleanup remains workspace-wide', async () => {
   const harness = createTaskBoardOriginFilterHarness();
   const event = { stopPropagation() {} };
 
@@ -350,14 +350,14 @@ test('source filter exits merge mode while one-click cleanup remains Fleet-wide'
 
   const html = harness.call('renderTaskBoardSection', 'fleet-a', { tabbed: true });
   assert.doesNotMatch(html, /class="tb-merge-bar"/);
-  assert.match(html, /title="归档 Fleet 内全部已完成任务（不受来源筛选影响）"/);
+  assert.match(html, /title="归档工作区内全部已完成任务（不受来源筛选影响）"/);
   assert.match(html, /🧹 一键清理 \(2\)/,
-    'the filtered session view has one completed row, but cleanup counts both Fleet sources');
+    'the filtered session view has one completed row, but cleanup counts both workspace sources');
 
   const button = { disabled: false };
   await harness.call('archiveCompletedTaskBoard', event, 'fleet-a', button);
   const request = harness.fetchCalls.find(call => call.url === '/api/task-board/archive-completed');
-  assert.ok(request, 'cleanup must call the Fleet-wide archive endpoint');
+  assert.ok(request, 'cleanup must call the workspace-wide archive endpoint');
   assert.equal(request.options.method, 'POST');
   assert.deepEqual(JSON.parse(request.options.body), { dirId: 'fleet-a' });
   assert.equal(Object.prototype.hasOwnProperty.call(JSON.parse(request.options.body), 'origin'), false,

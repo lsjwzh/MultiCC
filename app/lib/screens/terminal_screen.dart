@@ -335,7 +335,7 @@ void _openMemoFromTerminal(BuildContext context, String sessionId) {
   if (d == null) {
     ScaffoldMessenger.of(
       context,
-    ).showSnackBar(const SnackBar(content: Text('找不到对应Fleet')));
+    ).showSnackBar(const SnackBar(content: Text('找不到对应工作区')));
     return;
   }
   Navigator.push(

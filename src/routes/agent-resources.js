@@ -2,9 +2,9 @@
 
 const AGENT_COMMANDER_PRESET_ID = 'specialized__agent-commander';
 const COMMANDER_ROUTER_PROMPT = [
-  '# Fleet Commander',
+  '# Workspace Commander',
   '',
-  '你是本 fleet 的指挥官（Commander）。你接收用户或任务板的任务，默认优先判断是否把任务派发给合适 worker。',
+  '你是本工作区的指挥官（Commander）。你接收用户或任务板的任务，默认优先判断是否把任务派发给合适 Worker。',
   '',
   '## 路由优先原则',
   '1. 跨 session 派发的【唯一通道】是 MCP：单向任务调用 route_task；需要回执调用 dispatch_master。',
@@ -121,7 +121,7 @@ function createAgentResourcesRoutes(rawDeps) {
     const preset = data && (data.presets || []).find(item => item.id === AGENT_COMMANDER_PRESET_ID);
     return preset ? {
       ...preset,
-      description: 'Route-first fleet entrypoint: prefers worker routing while allowing light local analysis.',
+      description: 'Route-first workspace entrypoint: prefers Worker routing while allowing light local analysis.',
       vibe: 'Prefers durable worker routing, but may handle lightweight planning or checks itself.',
       prompt: COMMANDER_ROUTER_PROMPT,
       defaultEffort: 'high',

@@ -116,6 +116,12 @@ function createHarness(overrides = {}) {
   vm.runInContext(read('public/manage-dashboard.js'), context, {
     filename: 'manage-dashboard.js',
   });
+  // Workspace setup owns directory creation and loads after the dashboard so
+  // its completion callback can reopen the freshly created workspace.
+  context.MultiCCApi = context.MultiCCApi || { json: async () => ({}), errorText: error => String(error) };
+  vm.runInContext(read('public/manage-workspace-setup.js'), context, {
+    filename: 'manage-workspace-setup.js',
+  });
   return { context, storage };
 }
 
@@ -136,12 +142,14 @@ test('dashboard classic script stays ordered, bounded, and outside the manage fa
   assert.ok(facade.split(/\r?\n/).length <= 3200, 'manage.js should stay near the 3200-line target');
   assert.ok(source.split(/\r?\n/).length < 2000, 'dashboard module should stay below 2000 lines');
   for (const name of [
-    'loadDashboard', 'renderDashboard', 'renderDirectoryBlock', 'renderSessionRow',
-    'openNewDirectoryModal', 'startMonitor',
+    'loadDashboard', 'renderDashboard', 'renderDirectoryBlock', 'renderSessionRow', 'startMonitor',
   ]) {
     assert.doesNotMatch(facade, new RegExp('function\\s+' + name + '\\b'));
     assert.match(source, new RegExp('function\\s+' + name + '\\b'));
   }
+  const setup = read('public/manage-workspace-setup.js');
+  assert.match(setup, /function openNewDirectoryModal\b/);
+  assert.doesNotMatch(source, /function openNewDirectoryModal\b/);
 });
 
 test('dashboard completion alert prefers the task-aware voice message', () => {

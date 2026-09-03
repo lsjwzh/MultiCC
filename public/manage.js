@@ -26,7 +26,7 @@ Object.assign(window, { openMemo, closeMemoModal, memoSave, memoCurrentLineText,
 async function renameDirectory(id) {
   const dir = _cachedDirectories.find(d => d.id === id);
   if (!dir) return;
-  const next = await showPrompt('重命名Fleet', dir.name || '');
+  const next = await showPrompt('重命名工作区', dir.name || '');
   if (next === null) return;
   const name = next.trim();
   if (!name) { showToast('名称不能为空', true); return; }
@@ -265,10 +265,9 @@ function openSessionChat(id, _cwd) {
 }
 
 async function deleteSession(id) {
-  // Commander can't be deleted on its own — it goes with its fleet. Backend also
-  // returns 400, but skip the confirm dialog entirely for a cleaner UX.
+  // Commander is removed together with its workspace; the backend enforces this too.
   const rec = _cachedSessions.find(sess => sess.id === id);
-  if (rec?.type === 'commander') { showToast('指挥官会话不可单独删除，只能随其所属 fleet 一起删除', true); return; }
+  if (rec?.type === 'commander') { showToast('指挥官会话不可单独删除，只能随其所属工作区一起删除', true); return; }
   if (!(await showConfirm(`Delete session ${id}?\nThe PTY process will be terminated.`, { danger: true, okText: '删除' }))) return;
   try {
     await providerApi.json(`/api/sessions/${encodeURIComponent(id)}` + tokenQS('?'), { method: 'DELETE' });
@@ -739,7 +738,7 @@ function openNoteModal(fromId) {
   if (!from) return;
   const siblings = _cachedSessions.filter(s =>
     s.dirId === from.dirId && s.id !== fromId && s.type !== 'aux');
-  if (!siblings.length) { showToast('该Fleet下没有其他会话可留言', true); return; }
+  if (!siblings.length) { showToast('该工作区下没有其他会话可留言', true); return; }
 
   const overlay = document.createElement('div');
   overlay.style.cssText = 'position:fixed;inset:0;background:#000000bb;z-index:20000;display:flex;align-items:center;justify-content:center;';
@@ -747,7 +746,7 @@ function openNoteModal(fromId) {
     `<option value="${escapeHtml(s.id)}">${escapeHtml(s.label || s.id)} (${escapeHtml(s.cli)}/${escapeHtml(s.kind)})</option>`).join('');
   overlay.innerHTML = `
     <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:18px;width:440px;max-width:92vw;">
-      <div style="font-size:14px;font-weight:600;color:#f0f6fc;margin-bottom:4px;">给同Fleet agent 留言</div>
+      <div style="font-size:14px;font-weight:600;color:#f0f6fc;margin-bottom:4px;">给同工作区 Agent 留言</div>
       <div style="font-size:11px;color:#8b949e;margin-bottom:12px;">来自 ${escapeHtml(from.label || from.id)}。留言会在对方下一轮对话开始时送达。</div>
       <select id="note-target" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 9px;margin-bottom:10px;">${opts}</select>
       <textarea id="note-body" rows="4" placeholder="留言内容…" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;resize:vertical;outline:none;"></textarea>
