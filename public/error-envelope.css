@@ -1,0 +1,10 @@
+.mc-error-summary{white-space:pre-wrap;overflow-wrap:anywhere}
+.mc-error-details{margin-top:5px;color:var(--text,#c9d1d9);font-weight:400;cursor:default}
+.mc-error-details summary{color:var(--blue,#58a6ff);cursor:pointer;user-select:none}
+.mc-error-details pre{margin-top:5px;max-width:min(82vw,760px);max-height:240px;overflow:auto;padding:8px 10px;border:1px solid var(--line,#30363d);border-radius:6px;background:var(--bg,#0d1117);color:var(--text,#c9d1d9);font:11px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;text-align:left;white-space:pre-wrap;overflow-wrap:anywhere}
+.mc-error-copy{margin-top:5px;padding:2px 8px;border:1px solid var(--line,#30363d);border-radius:5px;background:var(--bg-soft,#21262d);color:var(--text,#c9d1d9);font-size:11px;cursor:pointer}
+#api-error-bar{align-items:center;gap:5px}
+#api-error-bar .mc-error-details{display:inline-block;margin-top:0}
+#api-error-bar .mc-error-details summary{color:inherit;opacity:.85}
+#api-error-bar .mc-error-details pre{position:fixed;z-index:1200;left:50%;bottom:96px;transform:translateX(-50%);width:min(92vw,760px);white-space:pre-wrap}
+.fs-error .mc-error-summary{display:block}.fs-error .mc-error-details{margin-top:6px}

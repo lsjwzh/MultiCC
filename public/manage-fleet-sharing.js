@@ -9,6 +9,8 @@
   const externalDirectories = new Map();
   const externalSessions = new Map();
   const baseFetch = global.fetch.bind(global);
+  const api = global.MultiCCApi;
+  const errorModel = global.MultiCCErrorEnvelope;
 
   function syntheticSessionId(fleetId, remoteSessionId) {
     return `${fleetId}::${remoteSessionId}`;
@@ -61,11 +63,35 @@
   };
 
   function el(id) { return document.getElementById(id); }
-  function setError(id, message) {
+  function displayError(error) {
+    if (api && typeof api.errorDisplay === 'function') return api.errorDisplay(error);
+    const envelope = errorModel && errorModel.normalize(error || {}, {
+      defaultCode: 'FLEET_REQUEST_FAILED', source: 'fleet_ui',
+    });
+    return {
+      message: error && error.message || String(error || 'Fleet request failed'),
+      displayMessage: envelope ? errorModel.visibleMessage(envelope) : null,
+      envelope,
+    };
+  }
+
+  function setError(id, value) {
     const target = el(id);
     if (!target) return;
-    target.textContent = message || '';
-    target.style.display = message ? 'block' : 'none';
+    target.replaceChildren();
+    if (!value) { target.style.display = 'none'; return; }
+    const detail = typeof value === 'string'
+      ? { message: value, displayMessage: value, envelope: null }
+      : displayError(value);
+    const label = document.createElement('span');
+    label.className = 'mc-error-summary';
+    label.textContent = detail.displayMessage || detail.message;
+    target.appendChild(label);
+    if (detail.envelope && errorModel) {
+      const diagnostics = errorModel.createDetails(document, detail.envelope);
+      if (diagnostics) target.appendChild(diagnostics);
+    }
+    target.style.display = 'block';
   }
   function closeModal(id) { const modal = el(id); if (modal) modal.classList.remove('visible'); }
   function displayDate(value) {
@@ -130,13 +156,18 @@
   async function loadFleetShares() {
     if (!activeFleetId) return;
     try {
-      const response = await fetch(`/api/fleets/${encodeURIComponent(activeFleetId)}/shares`);
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      const data = await api.json(`/api/fleets/${encodeURIComponent(activeFleetId)}/shares`);
       renderShareList(data.shares || []);
     } catch (error) {
       const list = el('fleet-share-list');
-      if (list) list.innerHTML = `<span class="fs-error" style="display:block">${escapeHtml(error.message)}</span>`;
+      if (list) {
+        list.textContent = '';
+        const failure = document.createElement('span');
+        failure.className = 'fs-error';
+        failure.style.display = 'block';
+        failure.textContent = displayError(error).displayMessage || displayError(error).message;
+        list.appendChild(failure);
+      }
     }
   }
 
@@ -163,24 +194,21 @@
     setError('fleet-share-error', '');
     button.disabled = true;
     try {
-      const response = await fetch(`/api/fleets/${encodeURIComponent(activeFleetId)}/share`, {
+      const data = await api.json(`/api/fleets/${encodeURIComponent(activeFleetId)}/share`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
+        json: {
           password: el('fleet-share-password').value,
           expiresInDays: Number(el('fleet-share-days').value),
           maxAccesses: Number(el('fleet-share-accesses').value),
           description: el('fleet-share-description').value,
-        }),
+        },
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
       el('fleet-share-url').value = data.url;
       el('fleet-share-result').style.display = 'block';
       await loadFleetShares();
       showToast('Fleet 分享链接已生成');
     } catch (error) {
-      setError('fleet-share-error', error.message);
+      setError('fleet-share-error', error);
     } finally {
       button.disabled = false;
     }
@@ -190,12 +218,13 @@
     if (!activeFleetId) return;
     if (!(await showConfirm('撤销这个 Fleet 分享？已发出的链接会立即失效。', { danger: true, okText: '撤销' }))) return;
     try {
-      const response = await fetch(`/api/fleets/${encodeURIComponent(activeFleetId)}/share/${encodeURIComponent(token)}`, { method: 'DELETE' });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      await api.json(`/api/fleets/${encodeURIComponent(activeFleetId)}/share/${encodeURIComponent(token)}`, { method: 'DELETE' });
       await loadFleetShares();
       showToast('Fleet 分享已撤销');
-    } catch (error) { showToast(`撤销失败：${error.message}`, true); }
+    } catch (error) {
+      const detail = displayError(error);
+      showToast(`撤销失败：${detail.displayMessage || detail.message}`, true);
+    }
   }
 
   async function copyFleetShareUrl() {
@@ -242,22 +271,19 @@
     setError('fleet-import-error', '');
     button.disabled = true;
     try {
-      const response = await fetch('/api/external-fleets/import', {
+      const data = await api.json('/api/external-fleets/import', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
+        json: {
           shareUrl: el('fleet-import-url').value.trim(),
           password: el('fleet-import-password').value,
           alias: el('fleet-import-alias').value.trim(),
-        }),
+        },
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
       closeModal('fleet-import-modal');
       await loadExternalFleets();
       showToast(`已导入外部 Fleet「${data.fleet.name}」`);
     } catch (error) {
-      setError('fleet-import-error', error.message);
+      setError('fleet-import-error', error);
     } finally {
       button.disabled = false;
     }
@@ -304,9 +330,7 @@
 
   async function loadExternalFleetData() {
     try {
-      const response = await baseFetch('/api/external-fleets');
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      const data = await api.json('/api/external-fleets');
       externalFleets = Array.isArray(data.fleets) ? data.fleets : [];
       return dashboardData();
     } catch (error) {
@@ -371,7 +395,18 @@
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ pathname: remoteUrl.pathname, directoryId: fleet.sourceFleetId }),
     });
-    if (!response.ok) throw new Error(`External Fleet WebSocket ticket failed: HTTP ${response.status}`);
+    if (!response.ok) {
+      if (errorModel && typeof errorModel.fromHttpResponse === 'function') {
+        throw await errorModel.fromHttpResponse(response, {
+          source: 'external_fleet_workspace_ws_ticket',
+          scope: 'session',
+          category: 'remote',
+          defaultCode: 'EXTERNAL_FLEET_WS_TICKET_FAILED',
+          fallbackMessage: `External Fleet WebSocket ticket failed: HTTP ${response.status}`,
+        });
+      }
+      throw new Error(`External Fleet WebSocket ticket failed: HTTP ${response.status}`);
+    }
     const data = await response.json();
     const source = new URL(data.wsOrigin);
     remoteUrl.protocol = source.protocol;
@@ -411,24 +446,26 @@
 
   async function refreshExternalFleet(id) {
     try {
-      const response = await baseFetch(`/api/external-fleets/${encodeURIComponent(id)}/refresh`, { method: 'POST' });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      const data = await api.json(`/api/external-fleets/${encodeURIComponent(id)}/refresh`, { method: 'POST' });
       await loadExternalFleets();
       showToast(`外部 Fleet「${data.fleet.name}」已刷新`);
-    } catch (error) { showToast(`刷新失败：${error.message}`, true); }
+    } catch (error) {
+      const detail = displayError(error);
+      showToast(`刷新失败：${detail.displayMessage || detail.message}`, true);
+    }
   }
 
   async function removeExternalFleet(id) {
     const fleet = externalFleets.find(item => item.id === id);
     if (!fleet || !(await showConfirm(`移除外部 Fleet「${fleet.name}」？来源实例不会受影响。`, { danger: true, okText: '移除' }))) return;
     try {
-      const response = await baseFetch(`/api/external-fleets/${encodeURIComponent(id)}`, { method: 'DELETE' });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      await api.json(`/api/external-fleets/${encodeURIComponent(id)}`, { method: 'DELETE' });
       await loadExternalFleets();
       showToast('外部 Fleet 已移除');
-    } catch (error) { showToast(`移除失败：${error.message}`, true); }
+    } catch (error) {
+      const detail = displayError(error);
+      showToast(`移除失败：${detail.displayMessage || detail.message}`, true);
+    }
   }
 
   ensureModals();

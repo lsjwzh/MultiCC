@@ -176,7 +176,43 @@ test('route errors expose stable public messages and hide unexpected exception d
   }).handlers;
   const res = await invoke(handlers.createShare, { params: { id: 'fleet-1' } });
   assert.equal(res.statusCode, 500);
-  assert.deepEqual(res.body, { code: 'INTERNAL_ERROR', error: 'Fleet 分享操作失败' });
+  assert.deepEqual(res.body, {
+    ok: false,
+    code: 'INTERNAL_ERROR',
+    error: 'Fleet 分享操作失败',
+    category: 'internal',
+    detail: 'Fleet 分享操作失败',
+    retryable: false,
+    action: 'copy_details',
+    scope: 'request',
+    httpStatus: 500,
+    apiVersion: 'v1',
+    requestId: 'unknown',
+    correlationId: 'unknown',
+  });
   assert.equal(JSON.stringify(res.body).includes('/private/path'), false);
   assert.equal(logged.length, 1);
+});
+
+test('structured remote route errors expose the original code, message, and upstream request id', async () => {
+  const sharing = fakeSharing();
+  sharing.issueExternalWsTicket = async () => {
+    throw new FleetSharingError('REMOTE_AUTH_EXPIRED', 'remote grant expired', 403, {
+      category: 'remote',
+      detail: 'remote grant expired at source',
+      retryable: false,
+      action: 'login',
+      scope: 'session',
+      causeCode: 'REMOTE_WS_TICKET_FAILED',
+      upstreamRequestId: 'remote-request-11',
+    });
+  };
+  const handlers = createFleetSharingRoutes({ sharing, pageFile: '/public/fleet-share.html' }).handlers;
+  const res = await invoke(handlers.issueExternalWsTicket, { params: { id: 'external-1' } });
+  assert.equal(res.statusCode, 403);
+  assert.equal(res.body.code, 'REMOTE_AUTH_EXPIRED');
+  assert.equal(res.body.error, 'remote grant expired');
+  assert.equal(res.body.upstreamRequestId, 'remote-request-11');
+  assert.equal(res.body.cause, 'REMOTE_WS_TICKET_FAILED');
+  assert.equal(res.headers['x-multicc-upstream-request-id'], 'remote-request-11');
 });

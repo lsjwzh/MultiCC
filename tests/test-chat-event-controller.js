@@ -1081,7 +1081,8 @@ test('api_error_policy renders into the api-error bar and clears on the next str
     action: 'retry',
   });
   assert.equal(bar.style.display, '');
-  assert.equal(bar.textContent, 'API claude · rate_limit · HTTP 429 · 上游 429，已排队重试');
+  assert.equal(bar.children[0].textContent, 'API claude · rate_limit · HTTP 429 · 上游 429，已排队重试');
+  assert.equal(bar.children[1].tagName, 'DETAILS');
   liveUi.clearApiError();
   assert.equal(bar.style.display, 'none');
   liveUi.renderApiError({
@@ -1092,8 +1093,8 @@ test('api_error_policy renders into the api-error bar and clears on the next str
     message: '未自动重试。根因：getaddrinfo ENOTFOUND open.bigmodel.cn',
     userAction: '稍后手动继续',
   });
-  assert.match(bar.textContent, /ENOTFOUND open\.bigmodel\.cn/);
-  assert.doesNotMatch(bar.textContent, /稍后手动继续/,
+  assert.match(bar.children[0].textContent, /ENOTFOUND open\.bigmodel\.cn/);
+  assert.doesNotMatch(bar.children[0].textContent, /稍后手动继续/,
     'the detailed policy message must not be replaced by a generic action');
 });
 

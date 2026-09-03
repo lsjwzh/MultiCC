@@ -9,6 +9,8 @@
   const SENSITIVE_QUERY_KEY = /^(?:token|access[_-]?token|auth(?:orization)?|api[_-]?key)$/i;
   const SENSITIVE_HEADER = /^(?:authorization|proxy-authorization|cookie|x-access-token|x-api-key)$/i;
   const SENSITIVE_DATA_KEY = /(?:token|secret|password|authorization|cookie|api[_-]?key|credential)/i;
+  const errorModel = (root && root.MultiCCErrorEnvelope)
+    || (typeof module === 'object' && module.exports ? require('./error-envelope') : null);
 
   class ApiError extends Error {
     constructor(message, options = {}) {
@@ -18,7 +20,15 @@
       this.status = Number(options.status) || 0;
       this.requestId = options.requestId || null;
       this.correlationId = options.correlationId || null;
+      this.upstreamRequestId = options.upstreamRequestId || null;
       this.details = options.details || null;
+      this.category = options.category || 'unknown';
+      this.family = options.family || 'internal';
+      this.retryable = options.retryable === true;
+      this.action = options.action || null;
+      this.scope = options.scope || 'request';
+      this.occurredAt = options.occurredAt || null;
+      this.envelope = options.envelope || null;
     }
   }
 
@@ -29,7 +39,9 @@
 
   function safeData(value, depth = 0) {
     if (depth > 4 || value == null) return value == null ? value : undefined;
-    if (typeof value === 'string') return truncate(value, 500);
+    if (typeof value === 'string') {
+      return errorModel ? errorModel.redactText(value, 1000) : truncate(value, 500);
+    }
     if (typeof value === 'number' || typeof value === 'boolean') return value;
     if (Array.isArray(value)) {
       return value.slice(0, 100).map(item => safeData(item, depth + 1)).filter(item => item !== undefined);
@@ -88,6 +100,8 @@
         responseHeader(response, 'x-multicc-request-id') || truncate(body.requestId || '', 160) || null,
       correlationId: responseHeader(response, 'x-correlation-id') ||
         truncate(body.correlationId || '', 160) || null,
+      upstreamRequestId: responseHeader(response, 'x-multicc-upstream-request-id') ||
+        truncate(body.upstreamRequestId || '', 160) || null,
     };
   }
 
@@ -107,17 +121,48 @@
   function httpError(response, parsed) {
     const details = parsed.isJson ? safeData(parsed.data) : null;
     const ids = responseIds(response, details);
-    const bodyMessage = details && (details.error || details.message);
-    const message = typeof bodyMessage === 'string' && bodyMessage.trim()
-      ? truncate(bodyMessage)
-      : `HTTP ${response.status || 0}`;
-    return new ApiError(message, {
-      code: (details && truncate(details.code || '', 80)) || 'HTTP_ERROR',
+    const envelope = errorModel ? errorModel.normalize(details || {}, {
       status: response.status,
       requestId: ids.requestId,
       correlationId: ids.correlationId,
+      upstreamRequestId: ids.upstreamRequestId,
+      source: 'http',
+      scope: 'request',
+      defaultCode: 'HTTP_ERROR',
+      fallbackMessage: `HTTP ${response.status || 0}`,
+    }) : null;
+    const bodyMessage = details && (details.error || details.message);
+    const message = envelope ? envelope.message
+      : typeof bodyMessage === 'string' && bodyMessage.trim()
+        ? truncate(bodyMessage)
+        : `HTTP ${response.status || 0}`;
+    return new ApiError(message, {
+      code: envelope ? envelope.code : (details && truncate(details.code || '', 80)) || 'HTTP_ERROR',
+      status: envelope ? envelope.httpStatus : response.status,
+      requestId: ids.requestId,
+      correlationId: ids.correlationId,
+      upstreamRequestId: ids.upstreamRequestId,
       details,
+      category: envelope && envelope.category,
+      family: envelope && envelope.family,
+      retryable: envelope && envelope.retryable,
+      action: envelope && envelope.action,
+      scope: envelope && envelope.scope,
+      occurredAt: envelope && envelope.occurredAt,
+      envelope,
     });
+  }
+
+  function errorFromPayload(payload, options = {}) {
+    const response = options.response || {
+      status: Number(options.status) || 0,
+      headers: options.headers || null,
+    };
+    return httpError(response, { isJson: payload != null, data: payload });
+  }
+
+  async function errorFromResponse(response) {
+    return httpError(response, await readResponse(response));
   }
 
   function abortError(code) {
@@ -194,6 +239,7 @@
           status: response.status,
           requestId: ids.requestId,
           correlationId: ids.correlationId,
+          upstreamRequestId: ids.upstreamRequestId,
         });
       }
       const ids = responseIds(response, parsed.data);
@@ -202,11 +248,27 @@
         response,
         requestId: ids.requestId,
         correlationId: ids.correlationId,
+        upstreamRequestId: ids.upstreamRequestId,
       };
     } catch (error) {
       if (error instanceof ApiError) throw error;
       if (settledAbort) throw abortError(callerSignal && callerSignal.aborted ? 'API_ABORTED' : 'API_TIMEOUT');
-      throw new ApiError('Network request failed', { code: 'NETWORK_ERROR' });
+      const envelope = errorModel ? errorModel.normalize({
+        code: error && error.code || 'NETWORK_ERROR',
+        message: error && error.message || 'Network request failed',
+        cause: error && error.cause && error.cause.message,
+        retryable: true,
+      }, { category: 'network', source: 'fetch', scope: 'request' }) : null;
+      throw new ApiError(envelope ? envelope.message : 'Network request failed', {
+        code: envelope ? envelope.code : 'NETWORK_ERROR',
+        category: envelope && envelope.category,
+        family: envelope && envelope.family,
+        retryable: true,
+        action: envelope && envelope.action,
+        scope: envelope && envelope.scope,
+        occurredAt: envelope && envelope.occurredAt,
+        envelope,
+      });
     } finally {
       if (timer !== null) root.clearTimeout(timer);
       if (callerSignal) callerSignal.removeEventListener('abort', onCallerAbort);
@@ -220,15 +282,58 @@
 
   function errorDisplay(error) {
     if (!(error instanceof ApiError)) {
-      return { message: 'Request failed', code: 'API_ERROR', status: 0, requestId: null, correlationId: null };
+      const envelope = errorModel ? errorModel.normalize(error || {}, {
+        defaultCode: 'API_ERROR', fallbackMessage: 'Request failed', source: 'browser',
+      }) : null;
+      return {
+        message: envelope ? envelope.message : 'Request failed',
+        displayMessage: envelope ? errorModel.visibleMessage(envelope) : 'Request failed',
+        code: envelope ? envelope.code : 'API_ERROR',
+        status: envelope ? envelope.httpStatus : 0,
+        requestId: envelope && envelope.requestId,
+        correlationId: envelope && envelope.correlationId,
+        upstreamRequestId: envelope && envelope.upstreamRequestId,
+        category: envelope ? envelope.category : 'unknown',
+        family: envelope ? envelope.family : 'internal',
+        retryable: envelope ? envelope.retryable : false,
+        action: envelope && envelope.action,
+        envelope,
+        diagnostics: envelope ? errorModel.diagnosticText(envelope) : '错误: Request failed',
+      };
     }
+    const envelope = error.envelope || (errorModel && errorModel.normalize(error, {
+      status: error.status,
+      code: error.code,
+      requestId: error.requestId,
+      correlationId: error.correlationId,
+      upstreamRequestId: error.upstreamRequestId,
+      source: 'http',
+    }));
     return {
       message: truncate(error.message) || 'Request failed',
-      code: error.code,
+      displayMessage: envelope ? errorModel.visibleMessage(envelope) : truncate(error.message) || 'Request failed',
+      code: envelope ? envelope.code : error.code,
       status: error.status,
       requestId: error.requestId,
       correlationId: error.correlationId,
+      upstreamRequestId: envelope ? envelope.upstreamRequestId : error.upstreamRequestId,
+      category: envelope ? envelope.category : error.category,
+      family: envelope ? envelope.family : error.family,
+      retryable: envelope ? envelope.retryable : error.retryable,
+      action: envelope ? envelope.action : error.action,
+      envelope,
+      diagnostics: envelope ? errorModel.diagnosticText(envelope) : truncate(error.message) || 'Request failed',
     };
+  }
+
+  function errorText(error) {
+    const detail = errorDisplay(error);
+    const status = detail.status ? ` · HTTP ${detail.status}` : '';
+    const request = detail.requestId ? ` · request ${detail.requestId}` : '';
+    const correlation = detail.correlationId && detail.correlationId !== detail.requestId
+      ? ` · correlation ${detail.correlationId}` : '';
+    const upstream = detail.upstreamRequestId ? ` · upstream ${detail.upstreamRequestId}` : '';
+    return `${detail.displayMessage || detail.message}${status}${request}${correlation}${upstream}`;
   }
 
   return {
@@ -237,5 +342,8 @@
     request,
     json,
     errorDisplay,
+    errorFromPayload,
+    errorFromResponse,
+    errorText,
   };
 });

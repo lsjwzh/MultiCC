@@ -6,11 +6,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const { multiccTokenFreeRelativeUrl } = require('../public/auth-client');
+const errorEnvelope = require('../public/error-envelope');
 
 const ROOT = path.join(__dirname, '..');
 const AUTH_SOURCE = fs.readFileSync(path.join(ROOT, 'public', 'auth-client.js'), 'utf8');
 
-function createHarness(href, { exchangeOk = true } = {}) {
+function createHarness(href, { exchangeOk = true, ticketFailure = null, externalTicketFailure = null } = {}) {
   const requests = [];
   const replacements = [];
   const logs = [];
@@ -41,15 +42,27 @@ function createHarness(href, { exchangeOk = true } = {}) {
     requests.push({ url, method: init.method || 'GET', headers, body: init.body || '' });
     if (url === '/api/auth/exchange') return { ok: exchangeOk, status: exchangeOk ? 204 : 401 };
     if (url === '/api/auth/ws-ticket') {
+      if (ticketFailure) return {
+        ok: false,
+        status: ticketFailure.status,
+        headers: new Headers(ticketFailure.headers || {}),
+        json: async () => ticketFailure.body,
+      };
       return { ok: true, status: 200, json: async () => ({ ticket: 'once-ticket' }) };
     }
     if (/^\/api\/external-fleets\/[^/]+\/ws-ticket$/.test(url)) {
+      if (externalTicketFailure) return {
+        ok: false,
+        status: externalTicketFailure.status,
+        headers: new Headers(externalTicketFailure.headers || {}),
+        json: async () => externalTicketFailure.body,
+      };
       return { ok: true, status: 200, json: async () => ({ ticket: 'remote-ticket', wsOrigin: 'wss://source.lan:3443' }) };
     }
     return { ok: true, status: 200, json: async () => ({ ok: true }) };
   }
 
-  const window = { fetch: nativeFetch, location, history };
+  const window = { fetch: nativeFetch, location, history, MultiCCErrorEnvelope: errorEnvelope };
   const context = {
     window,
     location,
@@ -163,6 +176,33 @@ test('external Fleet pages proxy REST through the target and bind WebSocket tick
     pathname: '/ws/chat', sessionId: 'remote-chat', directoryId: '',
   });
   assert.equal(wsUrl, 'wss://source.lan:3443/ws/chat?session=remote-chat&ticket=remote-ticket');
+});
+
+test('WebSocket ticket failures retain the server code, original message, and correlation ids', async () => {
+  const h = createHarness('https://target.test/chat.html?session=remote-chat&external=external-1', {
+    externalTicketFailure: {
+      status: 502,
+      headers: {
+        'x-multicc-request-id': 'local-request-1',
+        'x-correlation-id': 'correlation-1',
+      },
+      body: {
+        code: 'REMOTE_UNAVAILABLE',
+        error: 'connect ECONNREFUSED source.lan:3000',
+        category: 'remote',
+        retryable: true,
+      },
+    },
+  });
+  await h.window.multiccAuthReady;
+  await assert.rejects(
+    h.window.multiccWsUrl('wss://target.test/ws/chat?session=remote-chat'),
+    error => error.code === 'REMOTE_UNAVAILABLE'
+      && error.message === 'connect ECONNREFUSED source.lan:3000'
+      && error.family === 'remote'
+      && error.requestId === 'local-request-1'
+      && error.correlationId === 'correlation-1',
+  );
 });
 
 test('Memo and WeChat load auth first and never construct long-token request URLs', () => {

@@ -140,7 +140,17 @@ function createAuthRuntime(rawDeps) {
     app.use((req, res, next) => {
       if (isRequestPeerAllowed(req)) return next();
       metrics.inc('multicc_auth_public_peer_rejected_total');
-      return res.status(403).json({ error: 'Forbidden: direct public access is disabled; use Tailscale or an explicit remote bind' });
+      return res.status(403).json(createErrorDto({
+        code: 'DIRECT_PUBLIC_ACCESS_DISABLED',
+        message: 'Forbidden: direct public access is disabled; use Tailscale or an explicit remote bind',
+        category: 'authentication_permission',
+        detail: 'Forbidden: direct public access is disabled; use Tailscale or an explicit remote bind',
+        retryable: false,
+        action: 'open_settings',
+        scope: 'host',
+        requestId: req.id,
+        correlationId: req.correlationId,
+      }));
     });
 
     // Login page & handler
@@ -253,13 +263,33 @@ function createAuthRuntime(rawDeps) {
       if (req.headers.accept?.includes('text/html') || (!req.path.startsWith('/api/') && req.method === 'GET')) {
         res.redirect(`/login?redirect=${encodeURIComponent(req.originalUrl)}`);
       } else {
-        res.status(403).json({ error: 'Forbidden: not authenticated' });
+        res.status(403).json(createErrorDto({
+          code: 'AUTH_REQUIRED',
+          message: 'Forbidden: not authenticated',
+          category: 'authentication_permission',
+          detail: 'Forbidden: not authenticated',
+          retryable: false,
+          action: 'login',
+          scope: 'request',
+          requestId: req.id,
+          correlationId: req.correlationId,
+        }));
       }
     });
 
     app.post('/api/auth/exchange', (req, res) => {
       if (!getAccessToken() || !authSecurity.verifyAccessToken(req.headers['x-access-token'])) {
-        return res.status(403).json({ error: 'Forbidden: invalid access token' });
+        return res.status(403).json(createErrorDto({
+          code: 'AUTH_TOKEN_INVALID',
+          message: 'Forbidden: invalid access token',
+          category: 'authentication_permission',
+          detail: 'Forbidden: invalid access token',
+          retryable: false,
+          action: 'login',
+          scope: 'request',
+          requestId: req.id,
+          correlationId: req.correlationId,
+        }));
       }
       res.setHeader('Set-Cookie', authCookieHeader(req));
       res.status(204).end();
@@ -274,7 +304,17 @@ function createAuthRuntime(rawDeps) {
         res.set('Cache-Control', 'no-store');
         res.json(issued);
       } catch (_) {
-        res.status(400).json({ error: 'invalid WebSocket path' });
+        res.status(400).json(createErrorDto({
+          code: 'WS_PATH_INVALID',
+          message: 'invalid WebSocket path',
+          category: 'route',
+          detail: 'invalid WebSocket path',
+          retryable: false,
+          action: 'check_route',
+          scope: 'session',
+          requestId: req.id,
+          correlationId: req.correlationId,
+        }));
       }
     });
 
