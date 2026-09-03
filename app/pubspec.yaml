@@ -66,6 +66,10 @@ dependencies:
   # File picker
   file_picker: ^8.1.2
 
+  # Photo library picker (iOS): the Files document picker cannot reach the
+  # system photo album, so attachments also offer PHPicker via image_picker.
+  image_picker: ^1.1.2
+
   # Path utilities
   path_provider: ^2.1.4
 
