@@ -41,6 +41,8 @@
       plannerViewTask: '查看任务',
       plannerNeedsMe: '需要我',
       plannerNewTask: '＋ 新建任务',
+      plannerNewTodo: '＋ 新建 TODO',
+      plannerStartNewNow: '▶ 立即开始新 TODO',
       plannerAllFleets: '全部 Fleet',
       plannerSearchPlaceholder: '搜索任务、描述或模块…',
       plannerRefresh: '刷新任务中心',
@@ -64,7 +66,7 @@
       plannerLoadFailed: '任务中心加载失败：{error}',
       plannerRetry: '重试',
       plannerNoPlannedTitle: '还没有主动计划任务',
-      plannerNoPlannedBody: '点击“新建任务”，先保存到收件箱，再决定何时启动。',
+      plannerNoPlannedBody: '可以先记一条 TODO，或直接输入任务并立即开始。',
       plannerNoHistoryTitle: '没有匹配的历史记录',
       plannerNoHistoryBody: '会话中自动归类的 observed 任务会保留在这里。',
       plannerUntitled: '未命名任务',
@@ -90,6 +92,16 @@
       plannerOpenChat: '打开任务 Chat',
       plannerAnswerQuestion: '回答问题',
       plannerInspectError: '查看异常',
+      plannerNewTodoTitle: '新建 TODO',
+      plannerNewTodoSubtitle: '快速记下一件事；详细计划可以稍后再补。',
+      plannerTodoInput: '要做什么',
+      plannerTodoPlaceholder: '记下要做的事…',
+      plannerTodoHint: 'Enter 添加 · Shift+Enter 换行',
+      plannerAddTodo: '添加 TODO',
+      plannerStartNowTitle: '立即开始新 TODO',
+      plannerStartNowSubtitle: '像发送消息一样描述任务，发送后 Agent 会立即开始处理。',
+      plannerStartNowPlaceholder: '描述要立即完成的任务…（Enter 发送，Shift+Enter 换行）',
+      plannerComposerUnavailable: '任务输入组件未加载',
       plannerNewTitle: '新建计划任务',
       plannerNewSubtitle: '先记录 TODO；只有“保存并启动”才会创建执行轮次。',
       plannerTitle: '任务标题',
@@ -102,9 +114,9 @@
       plannerSaveInbox: '保存到收件箱',
       plannerSaveStart: '保存并启动',
       plannerCancel: '取消',
-      plannerCreateRequired: '请填写标题并选择 Fleet',
-      plannerCreatedInbox: '任务已保存到收件箱',
-      plannerCreatedStarted: '任务已创建并开始执行',
+      plannerCreateRequired: '请输入 TODO 并选择 Fleet',
+      plannerCreatedInbox: 'TODO 已添加',
+      plannerCreatedStarted: '新任务已开始',
       plannerCreatedStartFailed: '任务已保存，但启动失败：{error}',
       plannerTaskDetails: '任务计划',
       plannerStage: '工作流阶段',
@@ -163,6 +175,8 @@
       plannerViewTask: 'View task',
       plannerNeedsMe: 'Needs me',
       plannerNewTask: '+ New task',
+      plannerNewTodo: '+ New TODO',
+      plannerStartNewNow: '▶ Start new TODO now',
       plannerAllFleets: 'All fleets',
       plannerSearchPlaceholder: 'Search tasks, descriptions, or modules...',
       plannerRefresh: 'Refresh task center',
@@ -186,7 +200,7 @@
       plannerLoadFailed: 'Could not load Task Center: {error}',
       plannerRetry: 'Retry',
       plannerNoPlannedTitle: 'No planned tasks yet',
-      plannerNoPlannedBody: 'Create a task, save it to the Inbox, and start it when you are ready.',
+      plannerNoPlannedBody: 'Capture a TODO for later, or type a task and start it now.',
       plannerNoHistoryTitle: 'No matching history',
       plannerNoHistoryBody: 'Observed tasks classified from chats stay here.',
       plannerUntitled: 'Untitled task',
@@ -212,6 +226,16 @@
       plannerOpenChat: 'Open task chat',
       plannerAnswerQuestion: 'Answer question',
       plannerInspectError: 'Inspect error',
+      plannerNewTodoTitle: 'New TODO',
+      plannerNewTodoSubtitle: 'Capture one thing quickly. You can add planning details later.',
+      plannerTodoInput: 'What needs doing?',
+      plannerTodoPlaceholder: 'Write down a TODO...',
+      plannerTodoHint: 'Enter to add · Shift+Enter for a new line',
+      plannerAddTodo: 'Add TODO',
+      plannerStartNowTitle: 'Start new TODO now',
+      plannerStartNowSubtitle: 'Describe the task like a message. The agent starts as soon as you send it.',
+      plannerStartNowPlaceholder: 'Describe the task to start now... (Enter to send, Shift+Enter for a new line)',
+      plannerComposerUnavailable: 'Task composer is unavailable',
       plannerNewTitle: 'New planned task',
       plannerNewSubtitle: 'Save a TODO first. Only “Save & start” creates an execution turn.',
       plannerTitle: 'Task title',
@@ -224,9 +248,9 @@
       plannerSaveInbox: 'Save to Inbox',
       plannerSaveStart: 'Save & start',
       plannerCancel: 'Cancel',
-      plannerCreateRequired: 'Enter a title and choose a fleet',
-      plannerCreatedInbox: 'Task saved to Inbox',
-      plannerCreatedStarted: 'Task created and started',
+      plannerCreateRequired: 'Enter a TODO and choose a fleet',
+      plannerCreatedInbox: 'TODO added',
+      plannerCreatedStarted: 'New task started',
       plannerCreatedStartFailed: 'Task was saved, but start failed: {error}',
       plannerTaskDetails: 'Task plan',
       plannerStage: 'Workflow stage',
@@ -929,7 +953,8 @@
         ${modeControl}
         <div class="planner-toolbar-group actions">
           <button class="icon-btn" type="button" data-action="refresh" title="${esc(tr('plannerRefresh'))}" aria-label="${esc(tr('plannerRefresh'))}">⟳</button>
-          <button class="btn btn-green" type="button" data-action="new-task">${esc(tr('plannerNewTask'))}</button>
+          <button class="btn" type="button" data-action="new-todo">${esc(tr('plannerNewTodo'))}</button>
+          <button class="btn btn-green" type="button" data-action="start-new-now">${esc(tr('plannerStartNewNow'))}</button>
         </div>
       </div>
       ${workOverviewHtml()}
@@ -1041,10 +1066,19 @@
     return Number.isNaN(date.getTime()) ? null : date.toISOString();
   }
 
-  function closePlannerOverlay() {
-    const overlay = document.querySelector('.planner-overlay');
+  function closePlannerOverlay(expectedOverlay) {
+    const overlay = expectedOverlay || document.querySelector('.planner-overlay');
     if (overlay) {
+      // Async task creation may finish after its dialog was dismissed and a
+      // different dialog was opened. Only ever close the overlay owned by the
+      // caller; never let the stale completion tear down the newer draft.
+      if (expectedOverlay && overlay.isConnected === false) return;
       const returnFocus = overlay.__plannerReturnFocus;
+      const cleanup = overlay.__plannerCleanup;
+      overlay.__plannerCleanup = null;
+      if (typeof cleanup === 'function') {
+        try { cleanup(); } catch (_) {}
+      }
       overlay.remove();
       if (returnFocus && returnFocus.isConnected && typeof returnFocus.focus === 'function') returnFocus.focus();
     }
@@ -1083,98 +1117,173 @@
     return STAGES.map(stage => `<option value="${stage}"${selected === stage ? ' selected' : ''}>${esc(tr(stageKey(stage)))}</option>`).join('');
   }
 
-  function openNewTaskDialog() {
+  function initialTaskDirId() {
+    return lockedDirId || state.dirId
+      || String(state.directories[0] && state.directories[0].id || '');
+  }
+
+  function taskTitleFromText(value) {
+    const text = String(value || '').trim();
+    const firstLine = text.split(/\r?\n/).map(line => line.trim()).find(Boolean) || text;
+    return firstLine.slice(0, 40);
+  }
+
+  function dialogDirectoryPicker(id, selectedDir) {
+    const directory = directoriesById().get(String(selectedDir || ''));
+    if (surface === 'fleet' && lockedDirId) {
+      return `<div class="planner-dialog-fleet planner-dialog-fleet-locked"><span>${esc(tr('plannerFleet'))}</span><strong>${esc(directory && directory.name || lockedDirId)}</strong></div>`;
+    }
+    return `<label class="planner-dialog-fleet" for="${esc(id)}"><span>${esc(tr('plannerFleet'))}</span><select id="${esc(id)}" data-planner-dir required><option value=""></option>${panelOptions(selectedDir)}</select></label>`;
+  }
+
+  function dialogDirectoryId(overlay, fallback) {
+    const picker = overlay.querySelector('[data-planner-dir]');
+    // A locked Fleet surface has no picker and legitimately uses its fallback.
+    // If a picker exists, preserve an explicit empty value so validation can
+    // reject it instead of silently routing the task to the initial Fleet.
+    return String(picker ? picker.value : fallback || '').trim();
+  }
+
+  function openNewTodoDialog() {
     closePlannerOverlay();
-    const selectedDir = state.dirId || String(state.directories[0] && state.directories[0].id || '');
+    const selectedDir = initialTaskDirId();
     const overlay = document.createElement('div');
     overlay.className = 'planner-overlay centered';
     overlay.__plannerReturnFocus = document.activeElement;
-    overlay.innerHTML = `<form class="planner-dialog" id="planner-new-form" role="dialog" aria-modal="true" aria-labelledby="planner-new-title-heading">
+    overlay.innerHTML = `<form class="planner-dialog planner-quick-dialog" id="planner-new-form" role="dialog" aria-modal="true" aria-labelledby="planner-new-todo-heading">
       <div class="planner-panel-head">
-        <div class="planner-panel-title"><h2 id="planner-new-title-heading">${esc(tr('plannerNewTitle'))}</h2><p>${esc(tr('plannerNewSubtitle'))}</p></div>
+        <div class="planner-panel-title"><h2 id="planner-new-todo-heading">${esc(tr('plannerNewTodoTitle'))}</h2><p>${esc(tr('plannerNewTodoSubtitle'))}</p></div>
         <button class="icon-btn" type="button" data-overlay-close aria-label="${esc(tr('plannerCancel'))}">×</button>
       </div>
-      <div class="planner-panel-body"><div class="planner-form-grid">
-        <div class="planner-field full"><label for="planner-new-title">${esc(tr('plannerTitle'))}</label><input id="planner-new-title" name="title" maxlength="40" required placeholder="${esc(tr('plannerTitlePlaceholder'))}"><span class="planner-help">${esc(tr('plannerTitleLimit'))}</span></div>
-        <div class="planner-field full"><label for="planner-new-description">${esc(tr('plannerDescription'))}</label><textarea id="planner-new-description" name="description" placeholder="${esc(tr('plannerDescriptionPlaceholder'))}"></textarea></div>
-        <div class="planner-field"><label for="planner-new-dir">${esc(tr('plannerFleet'))}</label><select id="planner-new-dir" name="dirId" required><option value=""></option>${panelOptions(selectedDir)}</select></div>
-        <div class="planner-field"><label for="planner-new-priority">${esc(tr('plannerPriority'))}</label><select id="planner-new-priority" name="priority">${priorityOptions('')}</select></div>
-        <div class="planner-field"><label for="planner-new-due">${esc(tr('plannerDue'))}</label><input id="planner-new-due" name="dueAt" type="datetime-local"></div>
-        <div class="planner-field full"><label for="planner-new-acceptance">${esc(tr('plannerAcceptance'))}</label><textarea class="acceptance" id="planner-new-acceptance" name="acceptanceCriteria" placeholder="${esc(tr('plannerAcceptancePlaceholder'))}"></textarea></div>
-      </div></div>
+      <div class="planner-panel-body planner-quick-body">
+        <label class="planner-quick-input" for="planner-new-todo"><span>${esc(tr('plannerTodoInput'))}</span><textarea id="planner-new-todo" name="text" maxlength="20000" required placeholder="${esc(tr('plannerTodoPlaceholder'))}"></textarea><small>${esc(tr('plannerTodoHint'))}</small></label>
+        ${dialogDirectoryPicker('planner-new-dir', selectedDir)}
+      </div>
       <div class="planner-panel-actions">
         <button class="btn" type="button" data-overlay-close>${esc(tr('plannerCancel'))}</button><span class="spacer"></span>
-        <button class="btn" type="submit" data-create-mode="inbox">${esc(tr('plannerSaveInbox'))}</button>
-        <button class="btn btn-green" type="button" data-create-mode="start">${esc(tr('plannerSaveStart'))}</button>
+        <button class="btn btn-green" type="submit">${esc(tr('plannerAddTodo'))}</button>
       </div>
     </form>`;
     document.body.appendChild(overlay);
     overlay.addEventListener('click', event => {
       if (event.target === overlay || event.target.closest('[data-overlay-close]')) closePlannerOverlay();
-      const startButton = event.target.closest('[data-create-mode="start"]');
-      if (startButton) createFromDialog(overlay, true);
     });
-    overlay.querySelector('form').addEventListener('submit', event => {
+    const form = overlay.querySelector('form');
+    form.addEventListener('submit', event => {
       event.preventDefault();
-      createFromDialog(overlay, false);
+      createTodoFromDialog(overlay, selectedDir);
     });
-    activateOverlay(overlay, '[name="title"]');
+    form.querySelector('[name="text"]').addEventListener('keydown', event => {
+      if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+        event.preventDefault();
+        form.requestSubmit();
+      }
+    });
+    activateOverlay(overlay, '[name="text"]');
   }
 
-  async function createFromDialog(overlay, startImmediately) {
+  async function createTodoFromDialog(overlay, fallbackDirId) {
     const form = overlay.querySelector('form');
     const values = new FormData(form);
-    const title = String(values.get('title') || '').trim();
-    const dirId = String(values.get('dirId') || '').trim();
-    if (!title || !dirId) {
+    const text = String(values.get('text') || '').trim();
+    const dirId = dialogDirectoryId(overlay, fallbackDirId);
+    if (!text || !dirId) {
       notify(tr('plannerCreateRequired'), true);
       form.reportValidity();
       return;
     }
     const buttons = [...overlay.querySelectorAll('button')];
     buttons.forEach(button => { button.disabled = true; });
-    const description = String(values.get('description') || '').trim();
     try {
       const created = await requestJson('/api/task-board/tasks', {
         method: 'POST',
         json: {
           recordType: 'planned',
-          title,
-          description: description || title,
+          title: taskTitleFromText(text),
+          description: text,
           dirId,
           workflowStage: 'inbox',
-          priority: String(values.get('priority') || '') || null,
-          dueAt: isoFromLocal(String(values.get('dueAt') || '')),
-          acceptanceCriteria: String(values.get('acceptanceCriteria') || '').trim() || null,
+          priority: null,
+          dueAt: null,
+          acceptanceCriteria: null,
         },
       });
       updateTaskFromResponse(created);
-      const task = created && created.task;
-      if (startImmediately && task && task.id) {
-        try {
-          await requestJson(`/api/task-board/tasks/${encodeURIComponent(task.id)}/send`, {
-            method: 'POST',
-            json: {
-              text: description || title,
-              clientMsgId: sendIdForTask(task.id),
-              expectedRevision: Math.max(1, Number(task.planningRevision) || 1),
-            },
-          });
-          state.sendIds.delete(String(task.id));
-          notify(tr('plannerCreatedStarted'));
-        } catch (error) {
-          notify(tr('plannerCreatedStartFailed', { error: errorText(error) }), true);
-        }
-      } else notify(tr('plannerCreatedInbox'));
-      closePlannerOverlay();
       state.mode = 'todo';
       state.bucket = '';
       selectOrigin('board');
+      closePlannerOverlay(overlay);
       await loadPlanner({ quiet: true });
+      notify(tr('plannerCreatedInbox'));
     } catch (error) {
-      if (!(await handleConflict(error))) notify(tr('plannerActionFailed', { error: errorText(error) }), true);
+      notify(tr('plannerActionFailed', { error: errorText(error) }), true);
       buttons.forEach(button => { button.disabled = false; });
     }
+  }
+
+  function openStartNowDialog() {
+    closePlannerOverlay();
+    const composerApi = window.MultiCCTaskBoardComposer;
+    if (!composerApi || typeof composerApi.mount !== 'function') {
+      notify(tr('plannerActionFailed', { error: tr('plannerComposerUnavailable') }), true);
+      return;
+    }
+    const selectedDir = initialTaskDirId();
+    const overlay = document.createElement('div');
+    overlay.className = 'planner-overlay centered';
+    overlay.__plannerReturnFocus = document.activeElement;
+    overlay.innerHTML = `<section class="planner-dialog planner-start-dialog" role="dialog" aria-modal="true" aria-labelledby="planner-start-now-heading">
+      <div class="planner-panel-head">
+        <div class="planner-panel-title"><h2 id="planner-start-now-heading">${esc(tr('plannerStartNowTitle'))}</h2><p>${esc(tr('plannerStartNowSubtitle'))}</p></div>
+        <button class="icon-btn" type="button" data-overlay-close aria-label="${esc(tr('plannerCancel'))}">×</button>
+      </div>
+      <div class="planner-panel-body planner-start-body">
+        ${dialogDirectoryPicker('planner-start-dir', selectedDir)}
+        <div class="planner-start-composer"></div>
+      </div>
+    </section>`;
+    document.body.appendChild(overlay);
+    const composer = composerApi.mount(overlay.querySelector('.planner-start-composer'), {
+      contextKey: selectedDir,
+      placeholder: tr('plannerStartNowPlaceholder'),
+      onSendingChange: sending => {
+        overlay.dataset.plannerSending = sending ? 'true' : 'false';
+        const picker = overlay.querySelector('[data-planner-dir]');
+        if (picker) picker.disabled = sending;
+        overlay.querySelectorAll('[data-overlay-close]').forEach(button => {
+          button.disabled = sending;
+        });
+      },
+      submit: async payload => {
+        const dirId = dialogDirectoryId(overlay, selectedDir);
+        if (!dirId) throw new Error(tr('plannerCreateRequired'));
+        const result = await requestJson('/api/task-board/send', {
+          method: 'POST',
+          json: { ...payload, dirId },
+        });
+        state.mode = 'todo';
+        state.bucket = '';
+        selectOrigin('board');
+        await loadPlanner({ quiet: true });
+        closePlannerOverlay(overlay);
+        notify(tr('plannerCreatedStarted'));
+        return result && result.queued ? tr('plannerCreatedStarted') : tr('plannerStarted');
+      },
+    });
+    overlay.__plannerCleanup = () => composer.destroy();
+    overlay.addEventListener('click', event => {
+      if (overlay.dataset.plannerSending === 'true') return;
+      if (event.target === overlay || event.target.closest('[data-overlay-close]')) closePlannerOverlay();
+    });
+    const fleetSelect = overlay.querySelector('[data-planner-dir]');
+    if (fleetSelect) {
+      fleetSelect.addEventListener('change', () => {
+        // Destination changes must not erase text, attachments, or Goal
+        // settings the user has already entered in this short-lived dialog.
+        composer.setContext(fleetSelect.value, { preserveDraft: true });
+      });
+    }
+    activateOverlay(overlay, '.tb-input');
   }
 
   function drawerFormPayload() {
@@ -1450,7 +1559,8 @@
     const action = event.target.closest('[data-action]');
     if (!action) return;
     const kind = action.dataset.action;
-    if (kind === 'new-task') openNewTaskDialog();
+    if (kind === 'new-todo') openNewTodoDialog();
+    else if (kind === 'start-new-now') openStartNowDialog();
     else if (kind === 'refresh') loadPlanner({ refreshDirectories: true });
     else if (kind === 'mode') {
       state.mode = MODES.includes(action.dataset.mode) ? action.dataset.mode : 'todo';
@@ -1605,7 +1715,10 @@
 
   bindPlannerRoot(root);
   document.addEventListener('keydown', event => {
-    if (event.key === 'Escape' && document.querySelector('.planner-overlay')) closePlannerOverlay();
+    if (event.defaultPrevented || event.key !== 'Escape') return;
+    if (document.querySelector('.tb-auto-picker-overlay')) return;
+    const overlay = document.querySelector('.planner-overlay');
+    if (overlay && overlay.dataset.plannerSending !== 'true') closePlannerOverlay(overlay);
   });
 
   window.MultiCCTaskPlanner = Object.freeze({
