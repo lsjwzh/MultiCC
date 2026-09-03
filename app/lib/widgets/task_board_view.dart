@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -13,6 +12,7 @@ import '../i18n.dart';
 import '../models/message.dart';
 import '../models/task_board.dart';
 import '../providers/session_manager.dart';
+import '../services/attachment_picker.dart';
 import '../services/manage_service.dart';
 import '../services/settings_service.dart';
 import '../services/task_chat_transport.dart';
@@ -2360,10 +2360,9 @@ class _BoardComposerState extends State<_BoardComposer> {
   // ── File attachment (mirrors input_bar._pickAndUpload) ──
 
   Future<void> _pickAndUpload() async {
-    final result = await FilePicker.platform.pickFiles(withData: true);
-    if (result == null || result.files.isEmpty) return;
-    final file = result.files.first;
-    if (file.bytes == null) return;
+    // iOS 弹「文件 / 相册」二选一（文档选择器够不到相册）；其它平台直接选文件。
+    final picked = await pickChatAttachment(context);
+    if (picked == null) return;
 
     setState(() => _uploading = true);
     try {
@@ -2375,9 +2374,11 @@ class _BoardComposerState extends State<_BoardComposer> {
       req.files.add(
         http.MultipartFile.fromBytes(
           'file',
-          file.bytes!,
-          filename: file.name,
-          contentType: MediaType('application', 'octet-stream'),
+          picked.bytes,
+          filename: picked.filename,
+          contentType: picked.mimeType != null
+              ? MediaType.parse(picked.mimeType!)
+              : MediaType('application', 'octet-stream'),
         ),
       );
       final res = await req.send().timeout(const Duration(seconds: 30));
@@ -2387,7 +2388,7 @@ class _BoardComposerState extends State<_BoardComposer> {
         setState(() {
           _attachments.add({
             'path': json['path'] as String,
-            'name': json['name'] as String? ?? file.name,
+            'name': json['name'] as String? ?? picked.filename,
           });
         });
       } else {
