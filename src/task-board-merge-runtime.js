@@ -75,6 +75,7 @@ function restoreBoardInPlace(board, snapshot) {
   };
   restoreRecords(board.modules, snapshot.modules || {});
   restoreRecords(board.tasks, snapshot.tasks || {});
+  restoreRecords(board.taskGroups, snapshot.taskGroups || {});
 }
 
 function createTaskMergeHandler({

@@ -26,18 +26,26 @@ test('task board snapshot reconciliation is taskId-idempotent and prunes replay 
       { id: 'tsk-1', title: 'newer projection', updatedAt: 2 },
       { id: 'tsk-2', title: 'same title', updatedAt: 3 },
     ],
+    taskGroups: [
+      { id: 'grp-1', taskIds: ['tsk-1', 'tsk-2'], updatedAt: 1 },
+      { id: 'grp-1', taskIds: ['tsk-1', 'tsk-2'], updatedAt: 4 },
+    ],
   });
   assert.equal(reconciled.modules.length, 1);
   assert.equal(reconciled.tasks.length, 2);
   assert.equal(reconciled.tasks.find(task => task.id === 'tsk-1').title, 'newer projection');
   assert.equal(reconciled.tasks.find(task => task.id === 'tsk-2').title, 'same title',
     'two explicit task ids with identical titles must remain two cards');
+  assert.equal(reconciled.taskGroups.length, 1);
+  assert.equal(reconciled.taskGroups[0].updatedAt, 4);
 
   const afterReconnect = taskBoardUi.reconcileSnapshot({
     modules: [{ id: 'mod-1' }],
     tasks: [{ id: 'tsk-2', title: 'same title' }],
+    taskGroups: [],
   });
   assert.deepEqual(afterReconnect.tasks.map(task => task.id), ['tsk-2']);
+  assert.deepEqual(afterReconnect.taskGroups, []);
 });
 
 test('legacy tasks with unresolved identity are separated without destructive merging', () => {
