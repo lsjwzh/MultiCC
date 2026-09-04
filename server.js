@@ -1832,7 +1832,7 @@ createServerRestartRoute({
   chatSessions,
   spawn,
   rootDir: __dirname,
-  getShuttingDown: () => _shuttingDown,
+  getShuttingDown: () => _shuttingDown, desktopExit: reason => gracefulShutdown(reason),
 }).mountRoutes(app);
 
 // ── One-click update (runs `./multicc update`, which restarts us at the end) ──
