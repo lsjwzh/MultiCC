@@ -148,10 +148,38 @@ test('commander sees bounded roles and deduplicated recent task evidence', () =>
   assert.match(target.role, /后端与安全/);
   assert.doesNotMatch(target.role, /top-secret|private\/repo/);
   assert.deepEqual(target.recentTasks, [
-    { task: '当前 API 修复', phase: 'planning', state: 'waiting' },
+    { task: '当前 API 修复', phase: 'implementing', state: 'running' },
     { task: '修复OAuth回调', phase: 'verifying', state: 'completed' },
     { task: '旧 UI 任务', phase: 'done', state: 'completed' },
   ]);
+});
+
+test('commander keeps current task first and deduplicates by canonical taskId', () => {
+  const records = [
+    { id: 'cmd', dirId: 'd1', type: 'commander' },
+    {
+      id: 'worker', dirId: 'd1', type: 'worker', kind: 'chat',
+      taskState: {
+        taskId: 'tsk-current', goal: '当前任务新名称', phase: 'implementing', classifyState: 'P',
+        taskIdentityPending: true,
+        classifyHistory: [
+          { taskId: 'tsk-old-1', goal: '更早任务', state: 'D' },
+          { taskId: 'tsk-same-a', goal: '同名任务', state: 'D' },
+          { taskId: 'tsk-same-b', goal: '同名任务', state: 'W' },
+          { taskId: 'tsk-current', goal: '当前任务旧名称', state: 'W' },
+        ],
+      },
+    },
+  ];
+  const [target] = makeFactory(records, {}).dispatchableSessionsFor('cmd');
+  assert.equal(target.recentTasks.length, 4, 'current survives a full history cap');
+  assert.match(target.recentTasks[0].task, /当前任务新名称$/);
+  assert.equal(target.recentTasks[0].attribution, 'classifying');
+  assert.equal(target.recentTasks.some(item => item.task.endsWith('当前任务旧名称')), false,
+    'same taskId rename has one row');
+  assert.equal(target.recentTasks.filter(item => item.task.endsWith('同名任务')).length, 2,
+    'same-name tasks with distinct ids remain distinct');
+  assert.notEqual(target.recentTasks[1].task.slice(0, 5), target.recentTasks[2].task.slice(0, 5));
 });
 
 test('a normal session never sees a commander peer as a dispatch target', () => {

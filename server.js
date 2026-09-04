@@ -2654,7 +2654,7 @@ const chatTurnEngine = createChatTurnEngine({
   saveNotes,
   pendingNotesFor,
   appendEvent,
-  classifyTurnEnd,
+  classifyTurnEnd, runClassifyNow,
   cancelClassify,
   emitRunningNotify,
   emitTurnOutcome,

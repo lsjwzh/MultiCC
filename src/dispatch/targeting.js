@@ -33,16 +33,21 @@ function roleSummaryFor(record) {
 function recentTasksFor(record) {
   const state = record?.taskState && typeof record.taskState === 'object'
     ? record.taskState : {};
-  const history = Array.isArray(state.classifyHistory)
-    ? [...state.classifyHistory].reverse()
-    : [];
+  const history = [];
+  // The live projection is authoritative and must survive the four-row cap.
+  // Putting it first also prevents a delayed history row from presenting a new
+  // code with the title of the task that preceded it.
   if (state.goal) {
     history.push({
       goal: state.goal,
       taskId: state.taskId || null,
       phase: state.phase,
       state: state.classifyState,
+      attribution: state.taskIdentityPending === true ? 'classifying' : null,
     });
+  }
+  if (Array.isArray(state.classifyHistory)) {
+    history.push(...[...state.classifyHistory].reverse());
   }
 
   const seen = new Set();
@@ -50,10 +55,13 @@ function recentTasksFor(record) {
   for (const entry of history) {
     if (!entry || typeof entry !== 'object') continue;
     const goal = compactSafeText(entry.goal, MAX_RECENT_TASK_CHARS);
-    // Dedup on the goal text alone: the same task keeps one row even as its
-    // stable code prefix rides along. The `#CODE · ` prefix then gives the
-    // Commander a persistent handle to refer back to a task across turns.
-    const key = goal.normalize('NFKC').toLowerCase().replace(/\s+/g, '');
+    // Canonical identity owns deduplication: same-name tasks with different ids
+    // remain distinct, while a renamed task appears once under its latest name.
+    // Goal fallback is only for legacy rows that predate task ids.
+    const taskId = String(entry.taskId || '').trim();
+    const key = taskId
+      ? `id:${taskId}`
+      : `legacy:${goal.normalize('NFKC').toLowerCase().replace(/\s+/g, '')}`;
     if (!goal || seen.has(key)) continue;
     seen.add(key);
     const task = labelWithCode(entry.taskId, goal);
@@ -62,6 +70,7 @@ function recentTasksFor(record) {
     const taskState = compactSafeText(entry.state, 24);
     if (phase) item.phase = phase;
     if (taskState) item.state = taskState;
+    if (entry.attribution === 'classifying') item.attribution = 'classifying';
     recent.push(item);
     if (recent.length >= MAX_RECENT_TASKS) break;
   }
