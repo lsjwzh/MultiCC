@@ -28,6 +28,7 @@
   <img src="https://img.shields.io/badge/CLIs-claude%20%7C%20codex%20%7C%20opencode%20%7C%20zcode%20%7C%20kimi%20%7C%20qoder%20%7C%20workbuddy%20%7C%20dsh-8A2BE2" alt="Supported CLIs" />
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-blue" alt="Platform" />
   <img src="https://img.shields.io/badge/flutter-Android%20%7C%20iOS-02569B" alt="Flutter app" />
+  <img src="https://img.shields.io/badge/desktop-macOS%20%7C%20Windows%20%7C%20Linux-47848F" alt="Desktop app (Electron)" />
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License" />
 </p>
 
@@ -135,6 +136,32 @@ curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install.sh | bas
 
 **Prerequisites:** Node.js **>= 20.19**, `tmux` (terminal mode only), and at least one coding CLI on your `PATH`, already logged in.
 
+<details>
+<summary><strong>Not a terminal person? Install the desktop app instead</strong> (macOS / Windows / Linux)</summary>
+
+MultiCC ships as a regular desktop application — double-click the icon and the whole
+stack (backend + web UI) starts locally. No Node, no CLI commands, no ports to
+remember.
+
+1. Grab the installer for your platform from the
+   **[Releases](https://github.com/lsjwzh/MultiCC/releases)** page:
+   `multicc-desktop-<version>-macos-arm64/x64.dmg`, `-windows-x64.exe`, or
+   `-linux-x64.AppImage` / `.deb` (each has a `.sha256` sidecar; `SHA256SUMS.txt`
+   covers everything).
+2. Launch it. A splash window starts the backend on a local loopback port and the
+   UI opens automatically once it is ready.
+3. Data, settings, and logs live in the standard per-user app folder — nothing in
+   a terminal, nothing in the repo. Updates arrive as new installers.
+
+Desktop installers appear on the Releases page from the first tag published after
+this feature landed; until such a release exists, build and run it from source
+with `npm run desktop:dev`.
+
+**→ Install, first launch, startup failures, data/log locations, security model,
+signing status: [Desktop app](docs/desktop.md)**
+
+</details>
+
 Android APKs are built once by the GitHub release workflow when a `vX.Y.Z` tag is
 published, signed with the project release key, and attached to that exact GitHub
 Release. The **APK area in `/manage`** prefers a non-empty local
@@ -142,7 +169,8 @@ Release. The **APK area in `/manage`** prefers a non-empty local
 for the server's exact package version. It never falls forward to `latest`.
 Installation and `./multicc update` never build an APK. Starting with v1.6.1,
 every stable release ships a signed APK asset, so the remote fallback is
-available immediately.
+available immediately. The same Release also carries the desktop installers and
+their checksums (see the desktop section above).
 
 ### 2. Start it
 
@@ -210,6 +238,7 @@ Or do it from the browser: click the **version number at the bottom of the `/man
 
 **Clients & reach**
 - Zero-build web UI + installable **PWA**
+- Native **desktop app** (Electron) for macOS / Windows / Linux — backend included, loopback-only, no terminal needed
 - Native **Flutter app** for Android and iOS
 - **IM bridges**: WeChat, Feishu, Telegram, Discord, Slack
 - **Session sharing** via password-protected snapshot links
@@ -240,6 +269,7 @@ Or do it from the browser: click the **version number at the bottom of the `/man
 |---|---|
 | **[Multi-CLI switching](docs/cli-switching.md)** | The headline feature: checkpoint format, reuse semantics, API, one-click install |
 | [Installation & service management](docs/installation.md) | Install flags, updating, `./multicc` commands, systemd, Flutter builds |
+| [Desktop app](docs/desktop.md) | macOS / Windows / Linux desktop installers: first launch, failures, data & log locations, security model, signing |
 | [Configuration](docs/configuration.md) | Every environment variable, providers, voice, notifications |
 | [Features](docs/features.md) | The complete feature reference |
 | [Architecture](docs/architecture.md) | Repository layout, message flows, design decisions |
@@ -248,7 +278,7 @@ Or do it from the browser: click the **version number at the bottom of the `/man
 | [FAQ](docs/faq.md) | Troubleshooting and common questions |
 | [Tech stack](docs/tech-stack.md) | Runtime dependencies and what each one is for |
 
-The full index — design contracts, voice, provider routing, governance reviews, and modularization history — is in **[docs/README.md](docs/README.md)** (34 documents).
+The full index — design contracts, voice, provider routing, governance reviews, and modularization history — is in **[docs/README.md](docs/README.md)** (35 documents).
 
 ---
 
@@ -285,9 +315,9 @@ Projects that **harness** the official CLIs — spawning and managing the real `
 - **On-device ASR** (sherpa-onnx SenseVoice) for classic voice input
 - **IM bridges** to five platforms with full dispatch + reply
 - **Per-session provider and subagent routing** for cost control
-- **Native mobile app**, PWA, terminal, and web chat against one backend, with signed APKs shipped on every stable release
+- **Native desktop and mobile apps**, PWA, terminal, and web chat against one backend, with signed APKs shipped on every stable release
 
-**Where it is weaker:** no hosted/cloud option, no built-in code editor, macOS/Linux only, and single-user by design — there is no team RBAC.
+**Where it is weaker:** no hosted/cloud option, no built-in code editor, CLI/server installs are macOS/Linux only (the desktop app covers Windows), and single-user by design — there is no team RBAC.
 
 Surveyed: cc-switch, Ruflo, CLIProxyAPI, oh-my-claudecode, AionUi, vibe-kanban, cc-connect, CloudCLI, Superset, Orca, cockpit-tools.
 
@@ -318,9 +348,9 @@ Surveyed: cc-switch, Ruflo, CLIProxyAPI, oh-my-claudecode, AionUi, vibe-kanban, 
                     per-session git worktree: multicc/<sessionId>
 ```
 
-Key decisions: vendor transcripts are never translated; state is flat JSON, not a database; each session owns a branch and worktree; the network bind is fail-closed.
+Key decisions: vendor transcripts are never translated; state is flat JSON, not a database; each session owns a branch and worktree; the network bind is fail-closed. The desktop app adds one more client without adding a second UI — it embeds this same server and serves this same web page from a loopback port.
 
-**Built with:** Node.js · Express · ws · better-sqlite3 · sherpa-onnx (on-device ASR) · cli-provider-router · chokidar · tmux · Flutter. No frontend build step — the web client is plain JavaScript.
+**Built with:** Node.js · Express · ws · better-sqlite3 · sherpa-onnx (on-device ASR) · cli-provider-router · chokidar · tmux · Flutter · Electron (desktop shell). No frontend build step — the web client is plain JavaScript.
 
 **→ [Architecture](docs/architecture.md)**
 
@@ -344,6 +374,7 @@ curl -X POST "http://localhost:3000/api/sessions/$SESSION_ID/switch-cli" \
 
 A few of the most common questions:
 
+- **Is there a desktop app?** Yes — macOS (dmg), Windows (exe), and Linux (AppImage/deb) installers ship on the Releases page. Double-click and everything (backend + UI) starts locally; no Node, no terminal. See [Desktop app](docs/desktop.md).
 - **Does MultiCC serve HTTPS?** No — direct LAN access is plain HTTP. Use `http://localhost` for microphone and PWA features, or a tunnel that terminates real TLS.
 - **Can I use it without Claude Code?** Yes. Any one of the six supported CLIs is enough.
 - **Does switching CLIs cost tokens immediately?** No. The checkpoint is queued and delivered with your *next* message.
