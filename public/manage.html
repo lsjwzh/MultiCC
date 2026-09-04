@@ -750,6 +750,10 @@
     .tb-legacy-group{border-top:1px dashed var(--line);background:color-mix(in srgb,var(--panel) 55%,transparent)}
     .tb-legacy-group>summary{padding:7px 14px 7px 24px;cursor:pointer;color:var(--faint);font-size:11px;user-select:none}
     .tb-legacy-group>.tb-task{padding-left:34px}
+    .tb-related-group{border:1px solid color-mix(in srgb,var(--accent) 28%,var(--line));border-radius:9px;margin:7px 10px;background:color-mix(in srgb,var(--accent-dim) 35%,transparent);overflow:hidden}
+    .tb-related-group>summary{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 12px;cursor:pointer;color:var(--text);font-size:12px;user-select:none}
+    .tb-related-group>.tb-task{padding-left:18px;background:color-mix(in srgb,var(--panel) 35%,transparent)}
+    .tb-related-module{display:inline-flex;margin-right:6px;padding:1px 5px;border:1px solid var(--line);border-radius:999px;color:var(--muted);font-size:10px;text-decoration:none}
     /* No status animation here: whether a status may animate is decided once, in
        status-presentation.js (.st-spin, running only), so an errored row cannot
        keep spinning. */

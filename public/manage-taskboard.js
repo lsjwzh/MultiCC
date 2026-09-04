@@ -8,7 +8,7 @@
 // Self-contained: own fetch/cache/escape helpers, no load-order dependency
 // on manage-dashboard.js beyond being called from renderDirectoryDetailBody.
 
-let _tbBoard = { modules: [], tasks: [], sessionLabels: {} };
+let _tbBoard = { modules: [], tasks: [], taskGroups: [], sessionLabels: {} };
 let _tbFetchedAt = 0;
 let _tbTimer = null;
 const _tbCollapsed = new Set();     // module ids collapsed in the tree
@@ -345,7 +345,7 @@ function taskBoardRunningCountForDir(dirId) {
   return window.MultiCCTaskBoardUi.runningTaskCount(_tbTasksForDir(dirId));
 }
 
-function _tbTaskRowHtml(task) {
+function _tbTaskRowHtml(task, showModule) {
   const display = window.MultiCCTaskBoardUi.taskDisplayState(task);
   const clsRun = display.running ? ' running' : '';
   const attempt = Number(task.attemptCount) > 1
@@ -355,16 +355,27 @@ function _tbTaskRowHtml(task) {
     : task.identityState === 'orphaned_admission' || task.identityState === 'legacy_unresolved'
       ? '<span class="tb-body-pending">旧记录缺少 canonical 正文，未自动合并</span>'
       : '<span class="tb-body-pending">正文等待目标会话持久化…</span>';
+  const module = showModule
+    ? _tbBoard.modules.find(item => item.id === task.moduleId) : null;
+  const moduleLabel = module
+    ? `<span class="tb-related-module">${_tbEsc(module.name)}</span>` : '';
   return `
     <div class="tb-task${display.done ? ' done' : ''}${clsRun}${_tbMergeMode ? ' merge-mode' : ''}" data-task-id="${_tbEsc(task.id)}" title="${_tbEsc(_tbMergeRowTitle(task))}" onclick="handleTaskBoardRowClick(event,'${_tbEsc(task.id)}')">
       ${_tbMergeSelectionHtml(task)}
       ${_tbStatusIcon(display)}
       <span class="tb-title-cell">
-        <span class="tb-title">${_tbOriginHtml(task)}${_tbEsc(task.title)}${_tbMergeRoleHtml(task)}</span>
+        <span class="tb-title">${_tbOriginHtml(task)}${_tbEsc(task.title)}${moduleLabel}${_tbMergeRoleHtml(task)}</span>
         ${body}
       </span>
       <span class="tb-task-meta"><span class="tb-run-state st-tone-${display.tone}">${_tbEsc(display.label)}</span>${_tbWorkspaceHtml(task)}${_tbRoutingHtml(task)}${attempt}${_tbModuleAssignmentHtml(task)}${_tbTaskActionsHtml(task)}${_tbQuickArchiveHtml(task)}<span class="tb-dim">${task.refCount}轮 · ${_tbEsc(_tbTimeAgo(task.lastTs))}</span></span>
     </div>`;
+}
+
+function _tbRelatedGroupHtml(group) {
+  return `<details class="tb-related-group" open onclick="event.stopPropagation()">
+    <summary><span>🧩 ${_tbEsc(group.title || '关联任务')} · ${group.tasks.length}</span><span class="tb-dim">关联任务</span></summary>
+    ${group.tasks.map(task => _tbTaskRowHtml(task, true)).join('')}
+  </details>`;
 }
 
 // Synchronous section HTML for renderDirectoryDetailBody (data from cache;
@@ -383,8 +394,11 @@ function renderTaskBoardSection(dirId, opts) {
   const mergeBar = _tbMergeBarHtml();
   const originFilter = _tbOriginFilterHtml(allTasks, dirId);
   const rowsHtml = [];
+  const grouped = window.MultiCCTaskBoardUi.partitionTaskGroups(tasks, _tbBoard.taskGroups);
+  for (const group of grouped.groups) rowsHtml.push(_tbRelatedGroupHtml(group));
+  const ungroupedTasks = grouped.ungrouped;
   const byModule = new Map();
-  for (const t of tasks) {
+  for (const t of ungroupedTasks) {
     if (!byModule.has(t.moduleId)) byModule.set(t.moduleId, []);
     byModule.get(t.moduleId).push(t);
   }
@@ -408,13 +422,13 @@ function renderTaskBoardSection(dirId, opts) {
     if (identity.unresolved.length) {
       rowsHtml.push(`<details class="tb-legacy-group" onclick="event.stopPropagation()">
         <summary>历史身份待确认 · ${identity.unresolved.length}（未自动合并）</summary>
-        ${identity.unresolved.map(_tbTaskRowHtml).join('')}
+        ${identity.unresolved.map(task => _tbTaskRowHtml(task)).join('')}
       </details>`);
     }
   }
   // Orphans (module list pruned or filtered out) still need to be reachable.
   const seen = new Set(mods.map(m => m.id));
-  for (const task of window.MultiCCTaskBoardUi.sortTasks(tasks.filter(x => !seen.has(x.moduleId)))) {
+  for (const task of window.MultiCCTaskBoardUi.sortTasks(ungroupedTasks.filter(x => !seen.has(x.moduleId)))) {
     rowsHtml.push(_tbTaskRowHtml(task));
   }
   const body = rowsHtml.length
@@ -422,10 +436,12 @@ function renderTaskBoardSection(dirId, opts) {
     : `<div class="tb-empty">${_tbOriginFilter === 'all'
       ? '还没有任务。从任务面板或 Commander 发起新任务后会显示在这里。'
       : '当前来源筛选下没有任务。'}</div>`;
-  const moduleCount = mods.length || (tasks.length ? 1 : 0);
+  const moduleCount = new Set(tasks.map(task => task.moduleId).filter(Boolean)).size
+    || (tasks.length ? 1 : 0);
+  const groupSuffix = grouped.groups.length ? ` · ${grouped.groups.length} 关联组` : '';
   const statText = _tbOriginFilter === 'all'
-    ? `${moduleCount} 模块 · ${tasks.length} 任务`
-    : `${moduleCount} 模块 · 显示 ${tasks.length}/${allTasks.length} 任务`;
+    ? `${moduleCount} 模块 · ${tasks.length} 任务${groupSuffix}`
+    : `${moduleCount} 模块 · 显示 ${tasks.length}/${allTasks.length} 任务${groupSuffix}`;
   if (opts && opts.tabbed) {
     const stat = `<div class="tb-stat" style="display:flex;align-items:center;justify-content:space-between;gap:8px">
       <span>${allTasks.length ? statText : '暂无任务'}</span>

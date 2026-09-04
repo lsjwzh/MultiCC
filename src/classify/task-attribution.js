@@ -40,14 +40,20 @@ function parseTaskAttribution(text, { fallbackTaskId = null, allowedTaskIds = nu
   if (object) {
     const relation = String(object.relation || '').toLowerCase() === 'new' ? 'new' : 'same';
     const requestedTaskId = String(object.taskId || '').trim();
+    const requestedRelatedTaskId = String(object.relatedTaskId || '').trim();
     const allowed = allowedTaskIds == null ? null : new Set(allowedTaskIds);
     const existingTaskId = requestedTaskId && (!allowed || allowed.has(requestedTaskId))
       ? requestedTaskId : fallbackTaskId || null;
+    const relatedTaskId = relation === 'new' && requestedRelatedTaskId
+      && requestedRelatedTaskId !== fallbackTaskId
+      && (!allowed || allowed.has(requestedRelatedTaskId))
+      ? requestedRelatedTaskId : null;
     return {
       taskName: cleanName(object.taskName || object.goal || object.title),
       phase: PHASE_ALIASES[String(object.phase || '').trim()] || null,
       relation,
       taskId: relation === 'same' ? existingTaskId : null,
+      relatedTaskId,
     };
   }
 
@@ -60,6 +66,7 @@ function parseTaskAttribution(text, { fallbackTaskId = null, allowedTaskIds = nu
     phase: PHASE_ALIASES[(lines[1] || '').replace(/^(阶段|phase)[:：]\s*/i, '').trim()] || null,
     relation: 'same',
     taskId: fallbackTaskId || null,
+    relatedTaskId: null,
   };
 }
 
@@ -91,11 +98,11 @@ function buildTaskAttributionSystemPrompt({
     ? recentTasks.map(task => `- ${task.taskId}: ${task.taskName || '（名称待提取）'}`).join('\n')
     : '- 无';
   const identityRule = identityLocked
-    ? `任务身份已由明确任务卡或 #CODE 锁定为 ${currentTaskId}；输出 relation=same 和该 taskId，只精炼名称与阶段。`
+    ? `任务身份已由明确任务卡或 #CODE 锁定为 ${currentTaskId}；输出 relation=same、该 taskId、relatedTaskId=null，只精炼名称与阶段。`
     : provisionalTaskId
-      ? `${provisionalTaskId} 是本轮候选 ID：若目标不同输出 relation=new/taskId=null（候选 ID 会升格）；若是续作，relation=same 必须选择最近任务中另一个既有 canonical taskId。`
+      ? `${provisionalTaskId} 是本轮候选 ID：若目标不同输出 relation=new/taskId=null（候选 ID 会升格）；若新任务由某个旧任务衍生或与其属于同一工作主题，把该旧 ID 填入 relatedTaskId；若完全无关则 relatedTaskId=null。若是同一任务续作，relation=same 必须选择最近任务中另一个既有 canonical taskId，relatedTaskId=null。`
       : '';
-  return `你是任务归集器，只负责给消息归属任务，不负责判断 turn 的运行状态。\n\n最近任务：\n${known}\n当前任务ID：${currentTaskId || '无'}${identityRule ? `\n${identityRule}` : ''}\n\n判断最新一轮是真正的新任务，还是最近某个任务的继续、追问、修订或衍生。继续/衍生必须复用原任务名和 taskId；只有目标确实不同才 relation=new。\n\n只输出一个 JSON 对象：\n{"taskName":"简短任务名","phase":"planning|implementing|verifying|wrapping|done","relation":"same|new","taskId":"same 时填写上面的既有 ID；new 时为 null"}\n不要输出状态字母、解释或 Markdown。`;
+  return `你是任务归集器，只负责给消息归属任务，不负责判断 turn 的运行状态。\n\n最近任务：\n${known}\n当前任务ID：${currentTaskId || '无'}${identityRule ? `\n${identityRule}` : ''}\n\n判断最新一轮是真正的新任务，还是最近某个任务的继续、追问或修订。同一交付目标的继续才复用原任务名和 taskId。产生独立交付物、子任务或衍生任务时 relation=new，保留新任务身份；若它与某个旧任务属于同一工作主题，用 relatedTaskId 指向该旧任务，仅供任务面板归组。\n\n只输出一个 JSON 对象：\n{"taskName":"简短任务名","phase":"planning|implementing|verifying|wrapping|done","relation":"same|new","taskId":"same 时填写上面的既有 ID；new 时为 null","relatedTaskId":"new 且相关时填写既有 ID；否则 null"}\n不要输出状态字母、解释或 Markdown。`;
 }
 
 function buildTaskAttributionConversation(history, reply = '') {

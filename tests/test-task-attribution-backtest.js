@@ -41,6 +41,7 @@ test('prompt distinguishes provisional admission from locked explicit continuati
   });
   assert.match(provisional, /候选 ID/);
   assert.match(provisional, /relation=new\/taskId=null/);
+  assert.match(provisional, /relatedTaskId/);
   const locked = buildTaskAttributionSystemPrompt({
     recentTasks: recentTaskContext(history),
     currentTaskId: 'tsk-login',
@@ -55,12 +56,35 @@ test('parser keeps continuations on the existing task and permits genuinely new 
     taskName: '登录页样式调整', phase: 'implementing', relation: 'same', taskId: 'tsk-login',
   })), {
     taskName: '登录页样式调整', phase: 'implementing', relation: 'same', taskId: 'tsk-login',
+    relatedTaskId: null,
   });
   assert.deepEqual(parseTaskAttribution(JSON.stringify({
     taskName: '增加导出功能', phase: 'planning', relation: 'new', taskId: 'tsk-login',
   })), {
     taskName: '增加导出功能', phase: 'planning', relation: 'new', taskId: null,
+    relatedTaskId: null,
   });
+});
+
+test('new related tasks keep a distinct identity and accept only a recent related task id', () => {
+  assert.deepEqual(parseTaskAttribution(JSON.stringify({
+    taskName: '登录页截图测试', phase: 'planning', relation: 'new', taskId: null,
+    relatedTaskId: 'tsk-login',
+  }), {
+    fallbackTaskId: 'tsk-candidate',
+    allowedTaskIds: ['tsk-candidate', 'tsk-login'],
+  }), {
+    taskName: '登录页截图测试', phase: 'planning', relation: 'new', taskId: null,
+    relatedTaskId: 'tsk-login',
+  });
+  assert.equal(parseTaskAttribution(JSON.stringify({
+    taskName: '伪造关联', relation: 'new', relatedTaskId: 'tsk-hallucinated',
+  }), {
+    fallbackTaskId: 'tsk-candidate', allowedTaskIds: ['tsk-candidate', 'tsk-login'],
+  }).relatedTaskId, null);
+  assert.equal(parseTaskAttribution(JSON.stringify({
+    taskName: '同一任务续作', relation: 'same', taskId: 'tsk-login', relatedTaskId: 'tsk-other',
+  }), { allowedTaskIds: ['tsk-login', 'tsk-other'] }).relatedTaskId, null);
 });
 
 test('same-task attribution cannot select a task id absent from recent history', () => {
@@ -115,6 +139,7 @@ test('legacy raw Aux text remains replayable as same-task naming evidence', () =
     fallbackTaskId: 'tsk-login',
   }), {
     taskName: '登录页样式调整', phase: 'verifying', relation: 'same', taskId: 'tsk-login',
+    relatedTaskId: null,
   });
 });
 

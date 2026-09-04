@@ -26,23 +26,8 @@ const {
   aggregateTaskUsages,
   createTaskMergeHandler,
 } = require('../task-board-merge-runtime');
+const { assertTaskBoardDeps, createRelatedTaskLinker } = require('../task-board-runtime-helpers');
 const { createTaskPlanningRuntime } = require('./task-planning');
-
-const REQUIRED_DEPS = [
-  'file', 'auxQueue', 'records', 'loadHistory', 'dispatchToSession',
-  'sendSessionMessage',
-  'workspaceBroadcast', 'atomicWriteJson', 'isSystemInjected',
-  'getSessionRunState',
-];
-
-function assertTaskBoardDeps(deps) {
-  if (!deps || typeof deps !== 'object') throw new Error('[taskboard] deps object required');
-  for (const name of REQUIRED_DEPS) {
-    if (deps[name] === undefined || deps[name] === null) {
-      throw new Error(`[taskboard] missing dep: ${name}`);
-    }
-  }
-}
 
 function createTaskBoardRuntime(deps) {
   assertTaskBoardDeps(deps);
@@ -171,6 +156,7 @@ function createTaskBoardRuntime(deps) {
     };
     reconcileMap(board.modules, candidate.modules);
     reconcileMap(board.tasks, candidate.tasks);
+    reconcileMap(board.taskGroups, candidate.taskGroups || {});
     board.schemaVersion = candidate.schemaVersion;
     board.revision = candidate.revision;
     return { ...result, taskId: result.task?.id || null };
@@ -1129,6 +1115,10 @@ function createTaskBoardRuntime(deps) {
     return result;
   }
 
+  const linkRelatedTasks = createRelatedTaskLinker({
+    board, groupRelatedTasks: core.groupRelatedTasks, save, notify,
+  });
+
   // Turn-end hook — called from classifyTurnEnd alongside the classify pass.
   // Only task-aware canonical messages participate. Ordinary chats are not
   // inferred into tasks; legacy marker records remain attachable for migration.
@@ -1518,7 +1508,11 @@ function createTaskBoardRuntime(deps) {
   }
 
   function taskDto(task) {
-    const dto = core.buildBoardDto({ modules: board.modules, tasks: { [task.id]: task } }, getSessionRunState).tasks[0];
+    const dto = core.buildBoardDto({
+      modules: board.modules,
+      tasks: { [task.id]: task },
+      taskGroups: board.taskGroups,
+    }, getSessionRunState).tasks[0];
     dto.mergedTaskCount = Math.max(0, taskIdentityIds(task).length - 1);
     const body = canonicalTaskBody(task);
     if (dto.title === core.PENDING_TASK_TITLE && body.text) {
@@ -2961,6 +2955,7 @@ function createTaskBoardRuntime(deps) {
     onTurnEnd,
     onClassifyGoal,
     onTaskAttributionSettled,
+    linkRelatedTasks,
     reassignTurnTask,
     scanPendingClassifications,
     routeCommanderInput: async (commanderId, text, options = {}) => {
