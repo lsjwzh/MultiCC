@@ -184,6 +184,11 @@ function mountClaudeAccountRoutes(app, deps) {
       const usage = await fetchUsage(fetchImpl, cred.token);
       res.json({ status: 'ok', fetchedAt: Date.now(), usage });
     } catch (error) {
+      // 401 = the token was revoked/expired beyond refresh — say no_auth so the
+      // UI can point at relogin instead of a generic upstream failure.
+      if (error && error.status === 401) {
+        return res.status(401).json({ status: 'no_auth', error: `账号凭证已失效，请重新登录：${error.message}` });
+      }
       res.status(502).json({ status: 'unavailable', error: error.message });
     }
   });

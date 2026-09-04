@@ -400,3 +400,24 @@ test('per-account quota route reads usage with the account token', async () => {
   assert.equal(noAuth.statusCode, 401);
   assert.equal(noAuth.body.status, 'no_auth');
 });
+
+test('per-account quota maps a 401 from the usage endpoint to no_auth (relogin hint)', async () => {
+  // The token was revoked / expired beyond refresh: fetchUsage throws a
+  // ClaudeOAuthError with status 401. The route must NOT fold that into the
+  // generic 502 'unavailable' branch — the UI needs 'no_auth' to point the user
+  // at relogin.
+  const store = createOfficialAccountStore({ root: tmpRoot() });
+  const account = store.createClaudeAccount({ label: 'dead' });
+  store.writeClaudeCredential(account.id, {
+    access_token: 'oat-revoked',
+    expired: new Date(Date.now() + 3600e3).toISOString(),
+  });
+  const { fetch } = mockFetch({ '/api/oauth/usage': { status: 401, body: { error: 'invalid_token' } } });
+  const credentials = createClaudeAccountCredentialService({ accounts: store, fetch });
+  const h = routeHarness({ accounts: store, providers: providersStub(), credentials, fetch, waitForCallback: listenerStub().factory });
+
+  const res = await h.invoke('GET', `/api/claude/accounts/${account.id}/quota`);
+  assert.equal(res.statusCode, 401);
+  assert.equal(res.body.status, 'no_auth');
+  assert.match(res.body.error, /重新登录/);
+});
