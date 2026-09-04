@@ -33,6 +33,23 @@ test('prompt carries recent message task names and forbids turn-state output', (
   assert.match(prompt, /\[任务 登录页样式调整 \| tsk-login\]/);
 });
 
+test('prompt distinguishes provisional admission from locked explicit continuation', () => {
+  const provisional = buildTaskAttributionSystemPrompt({
+    recentTasks: recentTaskContext(history),
+    currentTaskId: 'tsk-candidate',
+    provisionalTaskId: 'tsk-candidate',
+  });
+  assert.match(provisional, /候选 ID/);
+  assert.match(provisional, /relation=new\/taskId=null/);
+  const locked = buildTaskAttributionSystemPrompt({
+    recentTasks: recentTaskContext(history),
+    currentTaskId: 'tsk-login',
+    identityLocked: true,
+  });
+  assert.match(locked, /身份已由明确任务卡或 #CODE 锁定/);
+  assert.match(locked, /relation=same/);
+});
+
 test('parser keeps continuations on the existing task and permits genuinely new tasks', () => {
   assert.deepEqual(parseTaskAttribution(JSON.stringify({
     taskName: '登录页样式调整', phase: 'implementing', relation: 'same', taskId: 'tsk-login',
