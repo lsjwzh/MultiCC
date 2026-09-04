@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>MultiCC</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: #101218; color: #e8eaf0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px;
+    user-select: none; cursor: default; overflow: hidden;
+  }
+  .logo {
+    font-size: 40px; font-weight: 700; letter-spacing: 1px;
+    background: linear-gradient(135deg, #7aa2ff, #b48bff);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .spin {
+    width: 26px; height: 26px; border-radius: 50%;
+    border: 3px solid rgba(255,255,255,.14); border-top-color: #7aa2ff;
+    animation: rot 0.9s linear infinite;
+  }
+  @keyframes rot { to { transform: rotate(360deg); } }
+  .tip { font-size: 13px; color: #8b91a3; }
+</style>
+</head>
+<body>
+  <div class="logo">MultiCC</div>
+  <div class="spin"></div>
+  <div class="tip">正在启动本地服务，首次启动可能需要一点时间…</div>
+</body>
+</html>

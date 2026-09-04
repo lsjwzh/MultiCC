@@ -1,0 +1,238 @@
+name: desktop-release
+
+# Cross-platform desktop builds (macOS dmg / Windows exe / Linux AppImage+deb).
+#
+# Tag flow: the Android release workflow (.github/workflows/release.yml) owns
+# `gh release create` for a tag. This workflow BUILDS desktop installers on all
+# three native runners and then ATTACHES them to that same release — it never
+# creates one first (release.yml's consistency check treats a pre-existing
+# release without APK assets as an error).
+#
+# workflow_dispatch runs the build/validation half only — no release, no tag.
+#
+# Signing: builds are unsigned by default. Providing the MAC_* secrets below
+# signs + notarizes the macOS dmg; absence is reported as an explicit unsigned
+# status in the build log and in the SIGNING-STATUS-*.txt assets — never
+# silently skipped and never claimed as signed. Windows/Linux artifacts are
+# always unsigned and pinned by SHA-256.
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  ELECTRON_VERSION: 44.1.1
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: macos
+            targets: --mac
+          - os: windows-latest
+            platform: windows
+            targets: --win
+          - os: ubuntu-latest
+            platform: linux
+            targets: --linux
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Preflight — desktop version matches root package.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -e '
+          const assert = require("node:assert/strict");
+          const root = require("./package.json");
+          const desktop = require("./desktop/package.json");
+          assert.equal(desktop.version, root.version,
+            `desktop/package.json version ${desktop.version} != root ${root.version} — bump both together`);
+          console.log(`versions aligned at ${root.version}`);
+          '
+
+      - name: Stage server bundle (production deps)
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/desktop-bundle-server.js --out desktop/.staging/app-server --install
+
+      - name: Install desktop toolchain
+        shell: bash
+        working-directory: desktop
+        run: npm ci --no-audit --no-fund
+
+      # better-sqlite3 ships Node prebuilds; the desktop backend runs under the
+      # Electron binary (ELECTRON_RUN_AS_NODE), so its staged copy must be
+      # rebuilt against Electron's ABI or require() fails at first Database().
+      - name: Rebuild native modules for Electron ABI
+        shell: bash
+        run: |
+          set -euo pipefail
+          desktop/node_modules/.bin/electron-rebuild \
+            --module-dir desktop/.staging/app-server \
+            --force --which-module better-sqlite3 \
+            --electron-version "$ELECTRON_VERSION" \
+            --dist-url https://electronjs.org/headers
+
+      - name: Build desktop installers (macOS signing if secrets present)
+        shell: bash
+        working-directory: desktop
+        env:
+          # Passed through only when configured; empty values stay unset so
+          # electron-builder builds unsigned instead of failing half-signed.
+          MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          build_args=(--publish never ${{ matrix.targets }})
+          signing_status="unsigned (code signing not configured for this platform; verify via SHA256SUMS.txt)"
+          if [ "${{ matrix.platform }}" = "macos" ]; then
+            if [ -n "${MAC_CSC_LINK:-}" ]; then
+              export CSC_LINK="$MAC_CSC_LINK"
+              export CSC_KEY_PASSWORD="${MAC_CSC_KEY_PASSWORD:-}"
+              build_args+=(--config.mac.identity="Developer ID Application")
+              if [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ]; then
+                signing_status="signed (Developer ID) + notarized"
+              else
+                signing_status="signed (Developer ID), not notarized (APPLE_* secrets incomplete)"
+              fi
+            else
+              # No signing material: keep electron-builder honest about it.
+              build_args+=(--config.mac.identity=null)
+              echo "::warning::Building UNSIGNED macOS dmg — configure MAC_CSC_LINK / MAC_CSC_KEY_PASSWORD (+ APPLE_* for notarization) secrets to sign."
+              signing_status="unsigned (MAC_CSC_LINK secret not configured)"
+            fi
+          fi
+          echo "DESKTOP_SIGNING_STATUS=$signing_status" >> "$GITHUB_ENV"
+          npx electron-builder "${build_args[@]}"
+
+      - name: Write sidecars, checksum manifest, signing status
+        shell: bash
+        working-directory: desktop
+        run: |
+          set -euo pipefail
+          node ../scripts/desktop-release-assets.js \
+            --dir dist \
+            --platform "${{ matrix.platform }}" \
+            --version "$(node -p 'require("./package.json").version')" \
+            --signing-status "$DESKTOP_SIGNING_STATUS"
+          # Per-OS suffixes so three artifacts can merge without clobbering.
+          mv dist/SHA256SUMS.txt "dist/SHA256SUMS-${{ matrix.platform }}.txt"
+          mv dist/SIGNING-STATUS.txt "dist/SIGNING-STATUS-${{ matrix.platform }}.txt"
+
+      - name: Upload per-OS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.platform }}
+          path: |
+            desktop/dist/*.dmg
+            desktop/dist/*.exe
+            desktop/dist/*.AppImage
+            desktop/dist/*.deb
+            desktop/dist/*.sha256
+            desktop/dist/SHA256SUMS-*.txt
+            desktop/dist/SIGNING-STATUS-*.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: attach desktop assets to release
+    needs: build
+    # Only real tag pushes publish; workflow_dispatch validates builds only.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: desktop-out
+          pattern: desktop-*
+          merge-multiple: true
+
+      - name: Wait for the APK release to exist (release.yml owns creation)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        timeout-minutes: 45
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          for i in $(seq 1 90); do
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              echo "release $TAG exists after ${i} check(s)"
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "::error::Release $TAG not created within 45 minutes. Did the Android release workflow (.github/workflows/release.yml) succeed for this tag?"
+          exit 1
+
+      - name: Upload desktop assets to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          # One consolidated manifest covering all three OSes.
+          cat desktop-out/SHA256SUMS-*.txt | sort -u > desktop-out/SHA256SUMS.txt
+          rm desktop-out/SHA256SUMS-*.txt
+          gh release upload "$TAG" desktop-out/* --clobber
+          echo "uploaded assets:"
+          gh release view "$TAG" --json assets -q '.assets[].name'
+
+      - name: Verify all desktop assets landed
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          export TAG VERSION
+          node <<'NODE'
+          const assert = require('node:assert/strict');
+          const { execSync } = require('node:child_process');
+          const { TAG, VERSION } = process.env;
+          const assets = execSync(`gh release view ${TAG} --json assets`)
+          const names = new Set(JSON.parse(assets).assets.map(a => a.name));
+          const installers = [
+            `multicc-desktop-${VERSION}-macos-arm64.dmg`,
+            `multicc-desktop-${VERSION}-macos-x64.dmg`,
+            `multicc-desktop-${VERSION}-windows-x64.exe`,
+            `multicc-desktop-${VERSION}-linux-x64.AppImage`,
+            `multicc-desktop-${VERSION}-linux-x64.deb`,
+          ];
+          for (const name of [...installers, 'SHA256SUMS.txt',
+            'SIGNING-STATUS-macos.txt', 'SIGNING-STATUS-windows.txt', 'SIGNING-STATUS-linux.txt']) {
+            if (!names.has(name)) throw new Error(`missing release asset: ${name}`);
+          }
+          for (const name of names) {
+            if (/\.(dmg|exe|AppImage|deb)$/.test(name) && name.startsWith('multicc-desktop-')) {
+              assert.ok(names.has(`${name}.sha256`), `missing sidecar for ${name}`);
+            }
+          }
+          console.log(`all desktop assets present on release ${TAG}`);
+          NODE
