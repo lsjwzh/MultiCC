@@ -347,6 +347,25 @@ test('stream handoff resume failure suppresses a generic API retry decision', ()
   assert.equal(types(resolveTurnFinalization(plan)).includes('report-handoff-resume-failure'), true);
 });
 
+test('a host-proved provider error envelope may fail over during a reused stream handoff', () => {
+  const plan = planTurnFinalization(base({
+    runnerKind: 'stream', cli: 'claude', resultEvent: false,
+    resultDurable: false, hasOutput: true, apiError: true,
+    replaySafeProviderError: true,
+    apiErrorDecision: {
+      action: 'retry',
+      attempt: 1,
+      delayMs: 0,
+      retryAt: 1000,
+      error: { category: 'billing_quota', httpStatus: 403, maxAttempts: 0 },
+    },
+    handoff: { status: 'pending', reusedTarget: true, toCli: 'claude' },
+  }));
+  assert.equal(plan.action, 'retry-api');
+  assert.equal(plan.facts.guardedHandoffResumeFailure, false);
+  assert.equal(types(plan).includes('schedule-api-retry'), true);
+});
+
 test('finalize planner remains pure and exported from chat index', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'finalize-plan.js'), 'utf8');
   assert.equal(/require\(['"](?:fs|child_process|express|ws)['"]\)/.test(source), false);

@@ -179,6 +179,21 @@ function markReplaySafeAssistantEnvelope(event, providerName) {
   return envelope && envelope.body == null ? markHostErrorEnvelope(event) : event;
 }
 
+function reconcileBoundaryErrorEnvelope(attemptRuntime, providerAttempt, providerName, text) {
+  const envelope = detectErrorEnvelope(providerName, text);
+  if (!envelope || envelope.body != null) return envelope;
+  // Some CLI failure paths end without a result event, so the complete text is
+  // first available only at close/finalize. Feed the same unforgeable proof to
+  // the attempt runtime here that the normal assistant-snapshot path uses.
+  if (attemptRuntime && typeof attemptRuntime.observeEvent === 'function' && providerAttempt) {
+    attemptRuntime.observeEvent(providerAttempt, markHostErrorEnvelope({
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: String(text || '') }] },
+    }));
+  }
+  return envelope;
+}
+
 function recoverDispatchFromHistory(history, operation) {
   const messages = Array.isArray(history) ? history : [];
   const operationId = operation?.id || null;
@@ -776,7 +791,7 @@ function createChatTurnEngine(deps) {
         cs.currentAssistantText = redactProviderRouteCapability(
           appendAdapterAssistantText(cs.currentAssistantText, evt.text),
         );
-        forward({
+        forward(markReplaySafeAssistantEnvelope({
           type: 'assistant',
           // A cumulative authoritative snapshot heals a dropped/replayed WS
           // fragment and reconciles any proxy part_delta preview. OpenCode and
@@ -786,7 +801,7 @@ function createChatTurnEngine(deps) {
             textSnapshot: true,
             content: [{ type: 'text', text: cs.currentAssistantText }],
           },
-        });
+        }, provider.name));
         setSessionStatus(sessionName, { status: 'thinking', currentFile: null });
         scheduleIncrementalSave(sessionName, cs);
         if (evt.log) console.warn(`[multicc/chat] [${sessionName}] ${provider.name} ${evt.log}`);
@@ -1787,10 +1802,16 @@ function createChatTurnEngine(deps) {
         else if (code !== 0 && !recoveredCodexDisconnect) kind = 'nonzero_exit';
         else if (!turn.resultDurable && !cs.currentAssistantText && !cs.currentToolCalls.length) kind = 'empty_exit';
         console.log(`[multicc/chat] [${sessionName}] close kind=${kind} ${JSON.stringify(diag)}`);
+        const boundaryErrorEnvelope = reconcileBoundaryErrorEnvelope(
+          attemptRuntime, runner.providerAttempt, provider?.name || cs.cli, cs.currentAssistantText,
+        );
         const attemptFacts = attemptRuntime.snapshot(sessionName);
-        const partialOutput = meaningfulTurnOutput(cs) || !!attemptFacts?.visibleOutputObserved;
         const sideEffects = turnHasSideEffects(cs)
           || !!attemptFacts?.toolIntentObserved || !!attemptFacts?.sideEffectObserved;
+        const errorOnlyBoundary = !!(boundaryErrorEnvelope && boundaryErrorEnvelope.body == null
+          && attemptFacts?.replayFence === 'none' && !sideEffects);
+        const partialOutput = errorOnlyBoundary
+          ? false : meaningfulTurnOutput(cs) || !!attemptFacts?.visibleOutputObserved;
         // A durable result + clean close proves the turn succeeded; any error
         // flagged mid-stream (codex emits internal housekeeping failures as
         // stream error items, then finishes fine) was recovered from and must
@@ -1809,8 +1830,9 @@ function createChatTurnEngine(deps) {
           killReason,
           retryBlockedByAdapterError: !!cs._adapterError || !!runner.adapterError,
         }, normalizeHandoff({ handoff: persisted.pendingCliHandoff }));
-        const shouldClassifyApiError = !guardedHandoffResumeFailure && !!(
-          runner.apiErrorRaw
+        const shouldClassifyApiError = (!guardedHandoffResumeFailure || errorOnlyBoundary) && !!(
+          boundaryErrorEnvelope
+          || runner.apiErrorRaw
           || runner.sawApiError
           || runner.adapterError
           || pendingTransportError
@@ -1823,7 +1845,7 @@ function createChatTurnEngine(deps) {
           provider: cs.cli,
           code: killReason,
           message: 'turn cancelled',
-        } : runner.apiErrorRaw || {
+        } : boundaryErrorEnvelope || runner.apiErrorRaw || {
           source: 'process_stderr',
           provider: cs.cli,
           code: killReason || (code !== 0 ? `process_exit_${code}` : 'empty_exit'),
@@ -1868,6 +1890,7 @@ function createChatTurnEngine(deps) {
           killReason,
           apiError: !!effectiveApiErrorDecision || !!runner.sawApiError,
           apiErrorDecision: effectiveApiErrorDecision,
+          replaySafeProviderError: errorOnlyBoundary,
           adapterError: !!runner.adapterError,
           retryBlockedByAdapterError: !!cs._adapterError,
           retryPlanned: !!runner.retryPlanned,
@@ -2384,10 +2407,17 @@ function createChatTurnEngine(deps) {
   ) {
     if (seq !== undefined && cs._streamTurnSeq !== seq) return; // superseded by a newer turn
     if (!isCurrentTurnRunner(cs, turn, runner)) return;
+    const boundaryErrorEnvelope = reconcileBoundaryErrorEnvelope(
+      attemptRuntime, runner.providerAttempt,
+      provider?.name || persisted.cli || 'claude', cs.currentAssistantText,
+    );
     const attemptFacts = attemptRuntime.snapshot(sessionName);
-    const partialOutput = meaningfulTurnOutput(cs) || !!attemptFacts?.visibleOutputObserved;
     const sideEffects = turnHasSideEffects(cs)
       || !!attemptFacts?.toolIntentObserved || !!attemptFacts?.sideEffectObserved;
+    const errorOnlyBoundary = !!(boundaryErrorEnvelope && boundaryErrorEnvelope.body == null
+      && attemptFacts?.replayFence === 'none' && !sideEffects);
+    const partialOutput = errorOnlyBoundary
+      ? false : meaningfulTurnOutput(cs) || !!attemptFacts?.visibleOutputObserved;
     // Same success veto as the process close path: a durable result proves a
     // mid-stream error was recovered from (see the close handler above).
     clearErrorFlagsForSucceededTurn(turn, runner, cs, { killReason: runner.killReason });
@@ -2401,8 +2431,9 @@ function createChatTurnEngine(deps) {
       resultDurable: turn.resultDurable === true,
       killReason: runner.killReason || '',
     }, normalizeHandoff({ handoff: persisted.pendingCliHandoff }));
-    const shouldClassifyApiError = !guardedHandoffResumeFailure && !!(
-      runner.apiErrorRaw
+    const shouldClassifyApiError = (!guardedHandoffResumeFailure || errorOnlyBoundary) && !!(
+      boundaryErrorEnvelope
+      || runner.apiErrorRaw
       || runner.sawApiError
       || runner.adapterError
       || runner.killReason
@@ -2415,7 +2446,7 @@ function createChatTurnEngine(deps) {
         code: runner.killReason,
         message: 'turn cancelled',
       }
-      : runner.apiErrorRaw || {
+      : boundaryErrorEnvelope || runner.apiErrorRaw || {
         source: 'host_interruption',
         provider: persisted.cli || 'claude',
         code: 'stream_ended_without_result',
@@ -2453,6 +2484,7 @@ function createChatTurnEngine(deps) {
       killReason: runner.killReason || null,
       apiError: !!effectiveApiErrorDecision || !!runner.sawApiError,
       apiErrorDecision: effectiveApiErrorDecision,
+      replaySafeProviderError: errorOnlyBoundary,
       adapterError: !!runner.adapterError,
       retryPlanned: !!runner.retryPlanned,
       resultEvent: !!runner.resultEvent,
@@ -2848,6 +2880,7 @@ module.exports = {
   createDeliveryProbeRegistry,
   deliverAfterPendingMemory,
   markReplaySafeAssistantEnvelope,
+  reconcileBoundaryErrorEnvelope,
   normalizeClaudeAssistantSnapshot,
   normalizeClaudeToolResultContent,
   recoverDispatchFromHistory,
