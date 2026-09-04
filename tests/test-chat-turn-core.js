@@ -38,6 +38,7 @@ const {
   adapterReasoningProgressEvent,
   appendAdapterAssistantText,
   markReplaySafeAssistantEnvelope,
+  reconcileBoundaryErrorEnvelope,
   normalizeClaudeAssistantSnapshot,
   normalizeClaudeToolResultContent,
   recoverDispatchFromHistory,
@@ -158,6 +159,31 @@ test('only an exact host-detected DeepSeek error envelope avoids the replay fenc
   }, 'claude');
   runtime.observeEvent(second, trailing);
   assert.equal(runtime.snapshot('deepseek-trailing').replayFence, 'visible_output');
+});
+
+test('an authoritative error-only snapshot reconciles earlier streamed error deltas', () => {
+  let id = 0;
+  const runtime = createProviderAttemptRuntime({
+    runtimeEpoch: 'streamed-error-runtime', nextId: prefix => `${prefix}-${++id}`,
+  });
+  const attempt = runtime.beginAttempt({
+    sessionId: 'streamed-error', turnId: 'turn-403', cli: 'claude',
+    providerId: 'provider-empty', providerName: 'Empty', protocol: 'anthropic',
+    model: 'model-empty', providerRevision: 'revision-empty', attemptNo: 1,
+  });
+  runtime.observeEvent(attempt, {
+    type: 'stream_event', event: {
+      type: 'content_block_delta', delta: { type: 'text_delta', text: 'Failed to authenticate.' },
+    },
+  });
+  assert.equal(runtime.snapshot('streamed-error').replayFence, 'visible_output');
+
+  const text = 'Failed to authenticate. API Error: 403 用户额度不足, 剩余额度: ＄-2.528834';
+  const envelope = reconcileBoundaryErrorEnvelope(runtime, attempt, 'claude', text);
+  assert.equal(envelope.httpStatus, 403);
+  assert.equal(envelope.body, null);
+  assert.equal(runtime.snapshot('streamed-error').replayFence, 'none');
+  assert.equal(runtime.snapshot('streamed-error').visibleOutputObserved, false);
 });
 
 test('attempt semantic DLP runs before Claude and adapter state mutation', () => {

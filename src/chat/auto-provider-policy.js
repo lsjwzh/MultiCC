@@ -53,7 +53,14 @@ function chooseCandidate({ candidates, attempted = new Set(), stickyProviderId =
 function failoverSafety(decision, attempt) {
   const error = decision && decision.error;
   if (!error) return Object.freeze({ ok: false, reason: 'missing_error_decision' });
-  if (!FAILOVER_CATEGORIES.has(error.category)) {
+  const httpStatus = Number(error.httpStatus);
+  const upstream4xx = Number.isInteger(httpStatus) && httpStatus >= 400 && httpStatus <= 499;
+  // A locally-owned cancellation must never be replayed, even if an adapter
+  // happens to attach a synthetic 4xx status to it.
+  if (error.category === 'cancel_shutdown') {
+    return Object.freeze({ ok: false, reason: 'category_not_failoverable' });
+  }
+  if (!FAILOVER_CATEGORIES.has(error.category) && !upstream4xx) {
     return Object.freeze({ ok: false, reason: 'category_not_failoverable' });
   }
   if (!SAFE_PHASES.has(String(error.phase || ''))) {
@@ -66,7 +73,11 @@ function failoverSafety(decision, attempt) {
       || attempt.toolIntentObserved || attempt.sideEffectObserved) {
     return Object.freeze({ ok: false, reason: 'provider_replay_fence_closed' });
   }
-  return Object.freeze({ ok: true, reason: `failover_${error.category}` });
+  return Object.freeze({
+    ok: true,
+    reason: FAILOVER_CATEGORIES.has(error.category)
+      ? `failover_${error.category}` : 'failover_http_4xx',
+  });
 }
 
 module.exports = {
