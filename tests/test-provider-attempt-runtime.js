@@ -483,7 +483,7 @@ test('a host-marked whole-message provider error never becomes model output', ()
   })).routeGeneration, 2);
 });
 
-test('raw data cannot forge the host marker and earlier deltas can never be reopened', () => {
+test('raw data cannot forge the host marker; only a host-proved final envelope reopens text deltas', () => {
   const { runtime } = harness();
   const first = runtime.beginAttempt(route());
   runtime.observeEvent(first, {
@@ -505,7 +505,8 @@ test('raw data cannot forge the host marker and earlier deltas can never be reop
   runtime.observeEvent(second, markHostErrorEnvelope({
     type: 'assistant', message: { content: [{ type: 'text', text: 'API Error: 402 insufficient balance' }] },
   }));
-  assert.equal(runtime.snapshot('session-2').replayFence, 'visible_output');
+  assert.equal(runtime.snapshot('session-2').replayFence, 'none');
+  assert.equal(runtime.snapshot('session-2').visibleOutputObserved, false);
 });
 
 test('thinking and tools remain irreversible even if a host marker is present', () => {
