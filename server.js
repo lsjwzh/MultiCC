@@ -1006,14 +1006,14 @@ function cwdForSession(session) {
   return cwd;
 }
 
-// Dispatch targeting (src/dispatch/targeting.js): sibling-session listing and
-// the cross-session dispatch context prompt. Bound here so the pure module
-// reads the live session registry / chat map / effort normalizer as deps.
+// Dispatch targeting: sibling list and Commander prompt over live registry,
+// chat state, effort and the canonical busy predicate.
+//
 const {
   dispatchableSessionsFor,
   dispatchTargetHintFor,
   buildDispatchContextPrompt,
-} = createDispatchTargeting({ records: persistedSessions, chatSessions, normalizeEffort });
+} = createDispatchTargeting({ records: persistedSessions, chatSessions, normalizeEffort, isTargetBusy: dispatchTargetBusy });
 
 // Gateway/dispatch orchestration (src/dispatch/gateway-host.js): the gateway
 // system prompt, confirm/cancel control, dispatch admission and the turn-end

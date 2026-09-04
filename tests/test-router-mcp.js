@@ -137,6 +137,14 @@ test('stdio MCP advertises scoped tools and bridges calls with the capability', 
   assert.equal(requests[0].url, '/api/internal/router-tools/wait_for_user_answer');
   assert.deepEqual(requests[0].body.arguments.options, ['测试环境', '生产环境']);
   const routeSchema = listed.result.tools.find(tool => tool.name === 'route_task').inputSchema;
+  const routeTool = listed.result.tools.find(tool => tool.name === 'route_task');
+  assert.match(routeTool.description, /busy.*available|available.*busy/i);
+  assert.match(routeSchema.properties.target_session_id.description, /busy.*available|available.*busy/i);
+  assert.match(routeSchema.properties.message.description, /objective/i);
+  assert.match(routeSchema.properties.message.description, /constraints/i);
+  assert.match(routeSchema.properties.message.description, /acceptance/i);
+  assert.match(routeSchema.properties.message.description, /necessary/i);
+  assert.match(routeSchema.properties.message.description, /redact|secret/i);
   assert.deepEqual(routeSchema.properties.allow_terminal, {
     type: 'boolean',
     default: false,
@@ -159,6 +167,7 @@ test('stdio MCP advertises scoped tools and bridges calls with the capability', 
   assert.deepEqual(masterTool.inputSchema.properties.mode.enum, ['sync', 'async']);
   assert.match(masterTool.description, /do not poll/i);
   assert.match(masterTool.description, /dispatch_status/);
+  assert.match(masterTool.description, /busy.*available|available.*busy/i);
   const dispatchStatusTool = listed.result.tools.find(tool => tool.name === 'dispatch_status');
   assert.equal(dispatchStatusTool.annotations.readOnlyHint, true);
   assert.equal(dispatchStatusTool.inputSchema.required, undefined);

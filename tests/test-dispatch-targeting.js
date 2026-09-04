@@ -9,11 +9,12 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createDispatchTargeting } = require('../src/dispatch/targeting');
 
-function makeFactory(records, chatSessions, effort = () => 'normal') {
+function makeFactory(records, chatSessions, effort = () => 'normal', isTargetBusy = () => false) {
   return createDispatchTargeting({
     records: new Map(records.map(r => [r.id, r])),
     chatSessions: new Map(Object.entries(chatSessions || {})),
     normalizeEffort: effort,
+    isTargetBusy,
   });
 }
 
@@ -140,8 +141,8 @@ test('commander sees bounded roles and deduplicated recent task evidence', () =>
     },
   ];
   const t = makeFactory(records, {
-    backend: { clients: { size: 1 }, isStreaming: true },
-  });
+    backend: { clients: { size: 1 }, isStreaming: false },
+  }, () => 'normal', sessionId => sessionId === 'backend');
   const [target] = t.dispatchableSessionsFor('cmd');
   assert.equal(target.load, 'running');
   assert.equal(target.routingState, 'unknown');
@@ -182,6 +183,25 @@ test('commander keeps current task first and deduplicates by canonical taskId', 
   assert.notEqual(target.recentTasks[1].task.slice(0, 5), target.recentTasks[2].task.slice(0, 5));
 });
 
+test('commander load uses the canonical host busy predicate, not browser or streaming activity', () => {
+  const records = [
+    { id: 'cmd', dirId: 'd1', type: 'commander' },
+    { id: 'leased', dirId: 'd1', type: 'worker', kind: 'chat' },
+    { id: 'stream-flag-only', dirId: 'd1', type: 'worker', kind: 'chat' },
+  ];
+  const t = makeFactory(records, {
+    leased: { clients: { size: 0 }, isStreaming: false },
+    'stream-flag-only': { clients: { size: 1 }, isStreaming: true },
+  }, () => 'normal', sessionId => sessionId === 'leased');
+  const targets = t.dispatchableSessionsFor('cmd');
+  const leased = targets.find(target => target.id === 'leased');
+  const streamFlagOnly = targets.find(target => target.id === 'stream-flag-only');
+  assert.equal(leased.load, 'running');
+  assert.equal(leased.active, true);
+  assert.equal(streamFlagOnly.load, 'available');
+  assert.equal(streamFlagOnly.active, false);
+});
+
 test('a normal session never sees a commander peer as a dispatch target', () => {
   const recs = [
     { id: 'me', dirId: 'd1', type: 'chat' },
@@ -212,7 +232,14 @@ test('commander gets the dispatch prompt', () => {
   assert.match(p, /上下文连续性/);
   assert.match(p, /load="running"/);
   assert.match(p, /routingState="waiting_user"/);
-  assert.match(p, /相关性明显更高/);
+  assert.match(p, /关联会话.*available.*优先/);
+  assert.match(p, /关联会话.*running.*其他.*available/);
+  assert.match(p, /全部.*忙.*FIFO/);
+  assert.match(p, /用户明确点名.*不得改派/);
+  assert.match(p, /waiting_user.*background.*error/);
+  assert.match(p, /目标.*已知事实.*约束.*验收标准/);
+  assert.match(p, /不要.*完整对话.*秘密/);
+  assert.doesNotMatch(p, /不要仅因最相关会话正在运行就改投/);
   assert.match(p, /候选列表顺序不表示优先级/);
   assert.match(p, /不要根据 id、CLI 名称或最近活跃时间猜职责/);
   assert.match(p, /用户原话点名/);
@@ -306,4 +333,7 @@ test('createDispatchTargeting validates its deps', () => {
   assert.throws(() => createDispatchTargeting({}), /records must be/);
   assert.throws(() => createDispatchTargeting({ records: new Map() }), /chatSessions must be/);
   assert.throws(() => createDispatchTargeting({ records: new Map(), chatSessions: new Map() }), /normalizeEffort/);
+  assert.throws(() => createDispatchTargeting({
+    records: new Map(), chatSessions: new Map(), normalizeEffort: () => 'normal',
+  }), /isTargetBusy/);
 });
