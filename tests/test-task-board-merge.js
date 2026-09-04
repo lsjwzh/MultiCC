@@ -77,6 +77,32 @@ test('explicit board-task merge preserves target identity and folds bounded chro
     'the tombstone retains its bound-session lineage instead of deleting history');
 });
 
+test('explicit identity merge only cleans obsolete ids from a related-task presentation group', () => {
+  const board = core.createEmptyBoard();
+  for (const [taskId, title, now] of [
+    ['target', '目标任务', 10],
+    ['source', '误建的重复任务', 20],
+    ['related', '独立关联任务', 30],
+  ]) {
+    core.createPendingTask(board, {
+      taskId, dirId: 'd1', sessionId: `session-${taskId}`, taskText: title, now,
+    });
+  }
+  core.groupRelatedTasks(board, 'source', 'target', 40);
+  core.groupRelatedTasks(board, 'related', 'target', 50);
+
+  const result = core.mergeTasks(board, {
+    targetTaskId: 'target', sourceTaskIds: ['source'], now: 60,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(board.tasks.source.mergedInto, 'target');
+  assert.equal(board.tasks.related.mergedInto, undefined,
+    'the related task remains an independent task');
+  assert.equal(Object.keys(board.taskGroups).length, 1);
+  assert.deepEqual(Object.values(board.taskGroups)[0].taskIds, ['target', 'related']);
+});
+
 test('explicit session-task merge keeps done lifecycle and rejects cross-origin or cross-Fleet identity', () => {
   const makeBoard = () => core.normalizeBoard({
     modules: {

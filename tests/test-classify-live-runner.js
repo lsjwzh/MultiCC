@@ -36,7 +36,7 @@ function fixture({
   const observed = {
     enqueued: 0, enqueuedTasks: [], transitions: 0,
     transitionResults: [], transitionOptions: [], broadcasts: [], summaries: [],
-    boardReassignments: [],
+    boardReassignments: [], boardGroupLinks: [],
   };
   const auxQueue = {
     queue: [],
@@ -82,6 +82,10 @@ function fixture({
       onTurnEnd() {},
       onMessagePersisted() {},
       reassignTurnTask(...args) { observed.boardReassignments.push(args); },
+      linkRelatedTasks(...args) {
+        observed.boardGroupLinks.push(args);
+        return { ok: true, groupId: 'group-related' };
+      },
       onTaskAttributionSettled() {},
     }),
     getUserInputSignalHost: () => ({ apply: (_sessionId, result) => result, pending: () => null }),
@@ -244,6 +248,29 @@ test('admission classify new promotes the provisional id without changing turn s
   assert.equal(h.record.taskState.classifyState, 'P', 'Aux must not rewrite D/W/B/E/P');
 });
 
+test('admission classify groups a related new task without replacing either task id', async () => {
+  const h = fixture({
+    goal: 'iOS文件选择器兼容相册图片',
+    history: admissionHistory(),
+    auxText: JSON.stringify({
+      taskName: 'iOS 相册回归测试', phase: 'implementing', relation: 'new', taskId: null,
+      relatedTaskId: 'task-1',
+    }),
+  });
+  h.chatState.currentUserText = '为刚才的 iOS 文件选择器新增相册回归测试';
+  h.machine.ensureCurrentTask(h.chatState, 's1', h.chatState.currentUserText, true, {
+    taskId: 'task-candidate', taskText: h.chatState.currentUserText,
+  });
+  h.machine.runClassifyNow(h.chatState, 's1', {
+    turnId: 'turn-related', source: 'admission', admittedTaskId: 'task-candidate',
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.chatState._currentTaskId, 'task-candidate');
+  assert.equal(h.record.taskState.taskId, 'task-candidate');
+  assert.deepEqual(h.observed.boardGroupLinks, [['task-candidate', 'task-1']]);
+  assert.equal(h.observed.boardReassignments.length, 0);
+});
+
 test('admission classify same re-points to the old canonical id and preserves rule facts', async () => {
   const h = fixture({
     goal: 'iOS文件选择器兼容相册图片',
@@ -294,6 +321,28 @@ test('explicit old-task continuation keeps its canonical id/title without a pend
   assert.equal(h.chatState.currentTask.goal, 'iOS文件选择器兼容相册图片');
   assert.equal(h.record.taskState.taskIdentityPending, false);
   assert.equal(h.observed.summaries.at(-1), '处理中：iOS文件选择器兼容相册图片');
+});
+
+test('identity-locked continuation ignores a malformed new-related model verdict', async () => {
+  const h = fixture({
+    goal: 'iOS文件选择器兼容相册图片',
+    history: admissionHistory(),
+    auxText: JSON.stringify({
+      taskName: '错误拆分', phase: 'planning', relation: 'new', taskId: null,
+      relatedTaskId: 'task-candidate',
+    }),
+  });
+  h.record.taskState.taskId = 'task-1';
+  h.chatState.currentUserText = '#ABCD 继续验证';
+  h.machine.runClassifyNow(h.chatState, 's1', {
+    turnId: 'turn-locked', source: 'admission', identityLocked: true,
+    admittedTaskId: 'task-1',
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.chatState._currentTaskId, 'task-1');
+  assert.equal(h.record.taskState.taskId, 'task-1');
+  assert.equal(h.observed.boardGroupLinks.length, 0);
+  assert.equal(h.observed.boardReassignments.length, 0);
 });
 
 test('delayed attribution with a superseded anchor cannot overwrite the newer task', () => {
