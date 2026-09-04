@@ -135,6 +135,8 @@ function createGatewayHost(rawDeps) {
       '你是 MultiCC 的全局实时语音 Router 会话。用户通过实时语音发起、且没有指定来源会话的请求都进入这里。',
       '你负责判断如何回应：可以直接回答、追问澄清，或把任务投给某个具体 session。',
       '当用户确实要求执行、修改、检查或推进某项工作时，调用 dispatch_master，mode 必须是 async；target_session_id 必须逐字使用下面列表里的真实 id，message 必须完整、自包含。',
+      '用户明确点名合法 chat session 时必须照选、不得改派；否则关联会话忙（active=true，或 routingState 为 waiting_user、background、error、processing）时，优先选择同 Fleet 其他能胜任的空闲 chat，只有全部合适会话都忙时才排入 FIFO。',
+      '改投其他会话时，message 必须写清目标、已知事实、约束、相关文件/标识、验收标准和交付方式；只带必要且已脱敏的上下文。',
       '不要输出 <<dispatch>> 或 <<route>> 文本；文本不会触发任何投递。不要调用旧 HTTP dispatch 接口。',
       '语音场景没有二次确认，所以只有用户确实要求干活时才调用工具。工具返回 admitted 后才可声称已提交。',
       '如果用户没说清是哪个项目或哪个会话，而请求又必须落到某一个上，就只用一句话反问，不要自己挑一个 id 投出去。',
@@ -153,6 +155,7 @@ function createGatewayHost(rawDeps) {
     if (sessionId === VOICE_ROUTER_ID) return voiceRouterPrompt(userText);
     const sessionsForPrompt = addressableSessions()
       .map(s => ({
+        ...(s.dirId ? { fleet: directories.get(s.dirId)?.label || directories.get(s.dirId)?.name || '', dirId: s.dirId } : {}),
         id: s.id,
         label: s.label || '',
         cli: s.cli || 'claude',
@@ -162,6 +165,8 @@ function createGatewayHost(rawDeps) {
         // routing LLM and the admission check cannot disagree. Never isStreaming
         // or connected-client count — a watching browser is not busy work.
         active: !!isTargetBusy(s.id),
+        routingState: routingStateFor(s),
+        recentTasks: recentTasksFor(s),
       }));
     const context = JSON.stringify(sessionsForPrompt);
     return [
@@ -170,6 +175,8 @@ function createGatewayHost(rawDeps) {
       '你负责基于用户消息和可用 session 上下文判断如何回应：可以直接回答、追问澄清，或把任务分发给某个具体 session。',
       '需要 session 执行任务时，先用自然语言复述目标与任务并等待用户明确回复「确认」；确认后的下一轮才调用 dispatch_master，mode 必须是 async。',
       'target_session_id 必须逐字使用下面列表里的真实 id，message 必须完整、自包含；工具返回 admitted 后才可声称已投递。',
+      '用户明确点名合法 chat session 时必须照选、不得改派；否则关联会话忙（active=true，或 routingState 为 waiting_user、background、error、processing）时，优先选择同项目其他能胜任的空闲 chat，只有全部合适会话都忙时才排入 FIFO。',
+      '改投其他会话时，message 必须写清目标、已知事实、约束、相关文件/标识、验收标准和交付方式；只带必要且已脱敏的上下文。',
       '不要输出 <<dispatch>> 或 <<route>> 文本；文本不会触发任何投递。不要调用旧 HTTP dispatch 接口。',
       '纯聊天、答疑、澄清类回复不要调用分派工具。',
       '当用户问 Gateway/Router/会话管理相关问题时，直接以 Gateway 身份回答，不要输出标记。',

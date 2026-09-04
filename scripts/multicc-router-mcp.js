@@ -17,13 +17,13 @@ const TARGET_SCHEMA = {
       type: 'string',
       minLength: 1,
       maxLength: 256,
-      description: 'Stable same-directory target session id. Terminal targets require allow_terminal=true.',
+      description: 'Stable same-directory target session id. Unless the user explicitly named a chat, choose an available eligible worker instead of a busy related worker. Terminal targets require allow_terminal=true.',
     },
     message: {
       type: 'string',
       minLength: 1,
       maxLength: 262144,
-      description: 'Complete self-contained task instructions for the target session.',
+      description: 'Complete self-contained task instructions for the target session, including objective, known facts and artifacts, constraints, acceptance criteria, and the required delivery or handoff. Include only necessary, redacted context; never copy secrets or an entire conversation.',
     },
     idempotency_key: {
       type: 'string',
@@ -261,7 +261,7 @@ const TOOLS = [
   {
     name: 'route_task',
     title: 'Route task (one way)',
-    description: 'Durably queue a one-way task for an existing same-directory worker. Prefer an existing chat worker. Terminal sessions require exact user targeting plus allow_terminal=true. Returns after admission and never recollects the result.',
+    description: 'Durably queue a one-way task for an existing same-directory worker. Unless the user explicitly names the target, prefer another available eligible chat when the related worker is busy, and send complete self-contained context. Terminal sessions require exact user targeting plus allow_terminal=true. Returns after admission and never recollects the result.',
     inputSchema: TARGET_SCHEMA,
     annotations: {
       readOnlyHint: false,
@@ -297,7 +297,7 @@ const TOOLS = [
   {
     name: 'dispatch_master',
     title: 'Dispatch to worker',
-    description: 'Durably dispatch to a same-directory worker. mode=sync keeps this call pending, streams safe provider-emitted reasoning and worker dialogue progress, and returns the final worker result inline without dispatch_slave or a new chat message. mode=async returns after admission; do not poll or inspect the worker—continue only independent work and end naturally, then MultiCC wakes this session with the dispatch_slave result as a new message. Busy targets are queued and never interrupted. A timeout, terminated stream, or transport error never proves that the admitted task stopped: recover with dispatch_status, then wait or cancel before re-routing.',
+    description: 'Durably dispatch to a same-directory worker. Unless the user explicitly names the target, prefer another available eligible chat when the related worker is busy, and send complete self-contained context. mode=sync keeps this call pending, streams safe provider-emitted reasoning and worker dialogue progress, and returns the final worker result inline without dispatch_slave or a new chat message. mode=async returns after admission; do not poll or inspect the worker—continue only independent work and end naturally, then MultiCC wakes this session with the dispatch_slave result as a new message. A selected busy target is queued and never interrupted. A timeout, terminated stream, or transport error never proves that the admitted task stopped: recover with dispatch_status, then wait or cancel before re-routing.',
     inputSchema: DISPATCH_MASTER_SCHEMA,
     annotations: {
       readOnlyHint: false,

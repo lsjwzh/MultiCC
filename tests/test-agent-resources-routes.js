@@ -140,6 +140,13 @@ test('preset cache and commander prompt preserve provider default resolution', a
     'migration recognizes only stable type metadata and never stamps an untyped session');
 });
 
+test('generated Agent Commander asset carries the same busy-aware MCP routing contract', () => {
+  const catalog = require('../public/agent-presets.json');
+  const preset = catalog.presets.find(item => item.id === AGENT_COMMANDER_PRESET_ID);
+  assert.ok(preset);
+  assert.equal(preset.prompt, COMMANDER_ROUTER_PROMPT);
+});
+
 test('preset list strips prompts while detail preserves them and returns legacy errors', async () => {
   const current = fixture();
   const list = await invoke(current.app, 'GET', '/api/agent-presets');
@@ -158,8 +165,14 @@ test('preset list strips prompts while detail preserves them and returns legacy 
   assert.match(detail.body.prompt, /dispatch_master 的两种回执模式/);
   assert.match(detail.body.prompt, /不要输出 <<route>> 或 <<dispatch>>/);
   assert.match(detail.body.prompt, /routingState="waiting_user"/);
-  assert.match(detail.body.prompt, /相关性相近时优先选择非 waiting_user/);
-  assert.match(detail.body.prompt, /相关性明显更高时仍可选择/);
+  assert.match(detail.body.prompt, /关联会话.*available.*优先/);
+  assert.match(detail.body.prompt, /关联会话.*running.*其他.*available/);
+  assert.match(detail.body.prompt, /全部.*忙.*FIFO/);
+  assert.match(detail.body.prompt, /用户明确点名.*不得改派/);
+  assert.match(detail.body.prompt, /waiting_user.*background.*error/);
+  assert.match(detail.body.prompt, /目标.*已知事实.*约束.*验收标准/);
+  assert.match(detail.body.prompt, /不要.*完整对话.*秘密/);
+  assert.doesNotMatch(detail.body.prompt, /不要因此改投不相关 worker/);
   assert.match(detail.body.prompt, /列表顺序不表示优先级/);
   assert.match(detail.body.prompt, /dispatch_status/);
   assert.match(detail.body.prompt, /timeout、terminated/);
