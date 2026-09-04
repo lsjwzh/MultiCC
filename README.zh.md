@@ -76,7 +76,7 @@ MultiCC **不会**把一家厂商的对话记录翻译成另一家的格式—�
 | 🔊 **语音播报任务完成** | 全双工语音模式下会播报已完成任务的身份，全程免手操作。 |
 | 🔔 **它会来找你** | Web Push、Bark、Webhook，以及微信、飞书、Telegram、Discord、Slack 五个 IM 桥接。 |
 | 🔗 **借道分享 / 中继令牌** | 在 `/manage` 生成 relay token、选择地址，安全地分享访问权限或 provider 配置。 |
-| 🌐 **多端一个后端** | 桌面终端、网页聊天、PWA、原生 Flutter App（Android / iOS）。 |
+| 🌐 **多端一个后端** | 桌面应用（macOS / Windows / Linux，Electron）、网页聊天、PWA、原生 Flutter App（Android / iOS）。 |
 
 ---
 
@@ -92,12 +92,32 @@ curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v1.6.8/install.sh | b
 
 **前置要求**：Node.js **>= 20.19**、`tmux`（仅终端模式需要）、以及至少一个已登录的编程 CLI 在 `PATH` 上。
 
+<details>
+<summary><strong>不想碰终端？直接装桌面版</strong>（macOS / Windows / Linux）</summary>
+
+MultiCC 同时是一个普通的桌面应用——双击图标，后端和界面就在本机自动起来。
+不需要 Node、不需要命令行、不需要记住端口。
+
+1. 到 **[Releases](https://github.com/lsjwzh/MultiCC/releases)** 页下载对应平台的安装包：
+   `multicc-desktop-<版本>-macos-arm64/x64.dmg`、`-windows-x64.exe`、或
+   `-linux-x64.AppImage` / `.deb`（每个包旁有 `.sha256` 校验文件，`SHA256SUMS.txt` 汇总全部）。
+2. 打开应用：先显示启动页，后端在本机回环端口就绪后自动进入主界面。
+3. 数据、配置、日志都在各平台标准的用户数据目录里，更新就是下载新的安装包覆盖。
+
+桌面安装包从这个功能合入后的第一个 tag 发布起出现在 Releases 页；在那之前可以用
+`npm run desktop:dev` 从源码运行。
+
+**→ 安装、首次启动、启动失败处理、数据与日志位置、安全模型、签名状态：[桌面版文档](docs/desktop.md)**
+
+</details>
+
 Android APK 只在发布 `vX.Y.Z` tag 时由 GitHub release workflow 构建一次，
 使用项目统一的发布密钥签名，并上传到该精确版本的 GitHub Release。
 `/manage` 的 **APK 区域**优先使用非空的本地 `public/multicc.apk`；本地没有时，
 只提供与当前服务端 package 版本完全一致的 Release `multicc.apk`，不会回退到
 `latest`。安装和 `./multicc update` 都不会构建 APK。从 v1.6.1 开始，每个稳定
-release 都会附带签名 APK，远程兜底立即生效。
+release 都会附带签名 APK，远程兜底立即生效。同一个 Release 页也会附带桌面
+安装包和校验文件（见上面的桌面版说明）。
 
 ### 2. 启动
 
@@ -159,6 +179,9 @@ Provider、子 agent 路由、语音、TTS/ASR、通知都在 `/manage` 里配�
 
 ## 常见问题
 
+**有桌面版吗？**
+有。macOS（dmg）、Windows（exe）、Linux（AppImage / deb）安装包都在 Releases 页。双击即用，后端和界面全部在本机自动启动，无需 Node 和终端。详见 **[桌面版文档](docs/desktop.md)**。
+
 **MultiCC 提供 HTTPS 吗？**
 不提供。局域网直连仍是明文 HTTP；麦克风、PWA 安装这类需要安全上下文的功能，请在本机用 `http://localhost`，或者走一个真正终止 TLS 的隧道。
 
@@ -193,6 +216,7 @@ cd MultiCC && ./multicc update --force
 |---|---|
 | **[Multi-CLI switching](docs/cli-switching.md)** | 核心卖点：checkpoint 格式、会话复用语义、API、一键安装 |
 | [Installation](docs/installation.md) | 安装参数、升级、`./multicc` 命令、systemd、App 编译 |
+| [桌面版 Desktop app](docs/desktop.md) | macOS / Windows / Linux 桌面安装包：首启、故障处理、数据与日志位置、安全模型、签名 |
 | [Configuration](docs/configuration.md) | 全部环境变量、provider、语音、通知 |
 | [Features](docs/features.md) | 完整功能参考 |
 | [Architecture](docs/architecture.md) | 仓库结构、消息流、设计决策 |
@@ -201,7 +225,7 @@ cd MultiCC && ./multicc update --force
 | [FAQ](docs/faq.md) | 排错与常见问题 |
 | [Tech stack](docs/tech-stack.md) | 运行时依赖及其用途 |
 
-完整的文档索引（34 篇，含设计契约、语音、provider 路由、治理评审、模块化历史）在 **[docs/README.md](docs/README.md)**。
+完整的文档索引（35 篇，含设计契约、语音、provider 路由、治理评审、模块化历史）在 **[docs/README.md](docs/README.md)**。
 
 界面本身支持中英文切换，默认中文。
 
