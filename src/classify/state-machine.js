@@ -21,6 +21,7 @@ const {
   phaseLabel,
 } = require('./vocab');
 const { taskShortCode } = require('./task-short-code');
+const { deriveTaskTitle, PENDING_TASK_TITLE } = require('../task-board');
 const {
   buildTaskAttributionConversation,
   buildTaskAttributionSystemPrompt,
@@ -153,7 +154,9 @@ function createClassifyStateMachine(rawDeps) {
     const persisted = persistedSessions.get(sessionName);
     // Carry the task identity onto the history row so any surface (e.g. the
     // Commander roster) can render this past task's stable `#CODE` handle.
-    const entryTaskId = cs?._currentTaskId || persisted?.taskState?.taskId || null;
+    const entryTaskId = Object.prototype.hasOwnProperty.call(ctx, 'taskId')
+      ? ctx.taskId || null
+      : cs?._currentTaskId || persisted?.taskState?.taskId || null;
     const entry = { at: now, goal: goal || '', taskId: entryTaskId,
       phase: phase || '', state, error: !!error, evidence: result.evidence || undefined };
     if (persisted) {
@@ -510,11 +513,31 @@ function createClassifyStateMachine(rawDeps) {
     if (!cs.currentTask) cs.currentTask = newCurrentTask(taskName);
     cs.currentTask.goal = taskName;
     cs.currentTask.phase = phase;
+    const persisted = persistedSessions.get(sessionName);
+    const currentState = getTaskState(persisted);
+    const taskStartedAt = Number(cs.currentTask.startedAt || currentState.startedAt || 0);
+    const historyTaskIds = new Set([
+      previousTaskId,
+      context.admittedTaskId || null,
+    ].filter(Boolean));
+    const classifyHistory = Array.isArray(currentState.classifyHistory)
+      ? currentState.classifyHistory.map(entry => {
+        if (!entry || !historyTaskIds.has(entry.taskId)
+            || Number(entry.at || 0) < taskStartedAt) return entry;
+        // Identity attribution refines only identity/name/phase. Preserve the
+        // rule-owned D/W/B/E state and its evidence byte-for-byte.
+        return { ...entry, taskId, goal: taskName, phase };
+      })
+      : [];
     setTaskState(sessionName, {
       goal: taskName,
       phase,
       taskId,
       auxRunId: context.runId || null,
+      taskIdentityState: 'canonical',
+      taskIdentityPending: false,
+      taskIdentityAnchorMessageId: context.anchorMessageId || null,
+      classifyHistory,
     });
 
     let annotated = [];
@@ -541,8 +564,8 @@ function createClassifyStateMachine(rawDeps) {
       for (const message of annotated) board.onMessagePersisted(sessionName, message);
     }
 
-    const currentState = getTaskState(persistedSessions.get(sessionName)).classifyState || 'P';
-    recordTaskBoardGoal(sessionName, taskName, phase, cs, currentState);
+    const currentClassifyState = getTaskState(persistedSessions.get(sessionName)).classifyState || 'P';
+    recordTaskBoardGoal(sessionName, taskName, phase, cs, currentClassifyState);
     if (typeof board.onTaskAttributionSettled === 'function') {
       try {
         Promise.resolve(board.onTaskAttributionSettled(sessionName, taskId, annotated, {
@@ -558,7 +581,7 @@ function createClassifyStateMachine(rawDeps) {
         });
       }
     }
-    if (taskName) setSessionSummary(persistedSessions.get(sessionName)?.id || sessionName, taskName);
+    if (taskName) setSessionSummary(persisted?.id || sessionName, taskName);
     if (turnLivenessForClassify(sessionName).state === 'active') {
       const ph = phaseLabel(phase);
       emitRunningNotify(sessionName, `处理中：${taskName}${ph ? ` · ${ph}` : ''}`);
@@ -628,7 +651,7 @@ function createClassifyStateMachine(rawDeps) {
         continue;
       }
       if (liveness.state === 'active') {
-        if (isGoalResolved(ts.goal)) {
+        if (isGoalResolved(ts.goal) && ts.taskIdentityPending !== true) {
           note(sid, ts.classifyState, 'skipped-live-runner', 'owned provider turn + goal already resolved');
           continue;
         }
@@ -678,7 +701,7 @@ function createClassifyStateMachine(rawDeps) {
         || (p.lastActivity ? new Date(p.lastActivity).getTime() : 0) || lastAt || 0;
       // The scan is now only a naming backstop. A resolved name cannot improve
       // without a new user message, and turn state is never re-judged by Aux.
-      if (isGoalResolved(ts.goal)) {
+      if (isGoalResolved(ts.goal) && ts.taskIdentityPending !== true) {
         note(sid, ts.classifyState, 'skipped-goal-resolved', 'task identity already resolved');
         continue;
       }
@@ -699,9 +722,11 @@ function createClassifyStateMachine(rawDeps) {
       const history = viewChatHistory(sid);
       const csAtStart = chatSessions.get(sid);
       const taskId = csAtStart?._currentTaskId || null;
+      const stateAtStart = getTaskState(persistedSessions.get(sid));
+      const provisionalTaskId = stateAtStart.taskIdentityPending === true ? taskId : null;
       const recentTasks = recentTaskContext(history);
       const systemPrompt = buildTaskAttributionSystemPrompt({
-        recentTasks, currentTaskId: taskId,
+        recentTasks, currentTaskId: taskId, provisionalTaskId,
       });
       const prompt = buildClassifyConversation(sid, reply);
       const anchorMessageId = classifyAnchorMessageId(sid);
@@ -726,7 +751,7 @@ function createClassifyStateMachine(rawDeps) {
         const boundTaskId = persistedSessions.get(sid)?.taskBoundTaskId || null;
         const resolvedTaskId = boundTaskId || (res.relation === 'same'
           ? (res.taskId || taskId)
-          : `tsk_${crypto.randomUUID().replace(/-/g, '')}`);
+          : provisionalTaskId || `tsk_${crypto.randomUUID().replace(/-/g, '')}`);
         const cs = chatSessions.get(sid);
         const anchorStatus = taskAttributionAnchorStatus(sid, anchorMessageId);
         const supersededReason = anchorStatus.changed ? 'anchor_changed' : null;
@@ -740,7 +765,8 @@ function createClassifyStateMachine(rawDeps) {
           latencyMs: Date.now() - startedAt,
         });
         applyTaskAttributionResult(cs, sid, res, {
-          source: 'multicc/scan', runId, taskId, resolvedTaskId, anchorMessageId,
+          source: 'multicc/scan', runId, taskId,
+          admittedTaskId: provisionalTaskId, resolvedTaskId, anchorMessageId,
           anchorStatus, supersededReason,
         });
       }).catch(e => {
@@ -807,6 +833,9 @@ function createClassifyStateMachine(rawDeps) {
     turnId = null,
     skipCancel = false,
     manual = false,
+    source = null,
+    identityLocked = false,
+    admittedTaskId = null,
   } = {}) {
     const reply = cs.currentAssistantText || '';
     const userMsg = cs.currentUserText || '';
@@ -827,11 +856,15 @@ function createClassifyStateMachine(rawDeps) {
     const history = viewChatHistory(sessionName);
     const currentTaskId = cs._currentTaskId || null;
     const recentTasks = recentTaskContext(history);
+    const identityState = getTaskState(persistedSessions.get(sessionName));
+    const provisionalTaskId = identityState.taskIdentityPending === true
+      ? currentTaskId : null;
+    const admissionTaskId = admittedTaskId || null;
     const requestId = crypto.randomUUID();
     const runId = requestId;
-    const runSource = manual ? 'manual' : 'turn-end';
+    const runSource = source || (manual ? 'manual' : 'turn-end');
     const systemPrompt = buildTaskAttributionSystemPrompt({
-      recentTasks, currentTaskId,
+      recentTasks, currentTaskId, provisionalTaskId, identityLocked,
     });
     const prompt = buildClassifyConversation(sessionName, reply);
     const anchorMessageId = classifyAnchorMessageId(sessionName);
@@ -868,7 +901,7 @@ function createClassifyStateMachine(rawDeps) {
       systemPrompt,
       prompt,
       meta: {
-        sessionName, sessionId, runId, turnId, manual,
+        sessionName, sessionId, runId, turnId, manual, identityLocked,
         anchorMessageId, taskId: currentTaskId,
       },
     }).then(result => {
@@ -890,9 +923,15 @@ function createClassifyStateMachine(rawDeps) {
         allowedTaskIds: recentTasks.map(task => task.taskId),
       });
       const boundTaskId = persistedSessions.get(sessionName)?.taskBoundTaskId || null;
-      const resolvedTaskId = boundTaskId || (res.relation === 'same'
-        ? (res.taskId || currentTaskId)
-        : `tsk_${crypto.randomUUID().replace(/-/g, '')}`);
+      // `new` promotes the admission's provisional id; it must never mint a
+      // second id after that candidate has already been persisted and rendered.
+      // Explicit task-card/#CODE continuations are identity-locked evidence.
+      const resolvedTaskId = boundTaskId || (identityLocked
+        ? currentTaskId
+        : res.relation === 'same'
+          ? (res.taskId || currentTaskId)
+          : admissionTaskId)
+        || `tsk_${crypto.randomUUID().replace(/-/g, '')}`;
       const anchorStatus = taskAttributionAnchorStatus(sessionName, anchorMessageId);
       const supersededReason = anchorStatus.changed
         ? 'anchor_changed'
@@ -902,14 +941,16 @@ function createClassifyStateMachine(rawDeps) {
         taskId: supersededReason ? currentTaskId : resolvedTaskId,
         priorTaskId: currentTaskId,
         observedAnchorMessageId: anchorStatus.observedAnchorMessageId,
-        rawText: result.text, parsed: res, source: runSource,
+        rawText: result.text, parsed: res, source: runSource, identityLocked,
+        admittedTaskId: admissionTaskId,
         superseded: !!supersededReason,
         supersededReason,
         latencyMs: Date.now() - startedAt,
       });
       applyTaskAttributionResult(cs, sessionName, res, {
         source: 'multicc/aux', runId, turnId,
-        taskId: currentTaskId, resolvedTaskId, anchorMessageId,
+        taskId: currentTaskId, admittedTaskId: admissionTaskId,
+        resolvedTaskId, anchorMessageId,
         anchorStatus, supersededReason,
       });
     }).catch((e) => {
@@ -956,7 +997,7 @@ function createClassifyStateMachine(rawDeps) {
   // Commit the rule verdict first, then enqueue best-effort task attribution.
   // The two paths deliberately share no state writer.
   function classifyTurnEnd(cs, sessionName, options = {}) {
-    const { classification, turnId = null } = options;
+    const { classification, turnId = null, identityLocked = false } = options;
     cancelClassify(cs);
     const persisted = persistedSessions.get(sessionName);
     getAuxQueue().cancelClassifyFor(sessionName);
@@ -996,7 +1037,13 @@ function createClassifyStateMachine(rawDeps) {
     // naming. Every other turn gets best-effort Aux attribution after state has
     // already committed.
     if (persisted?.type !== 'gateway') {
-      runClassifyNow(cs, sessionName, { turnId, skipCancel: true });
+      runClassifyNow(cs, sessionName, {
+        turnId,
+        skipCancel: true,
+        identityLocked,
+        admittedTaskId: Object.prototype.hasOwnProperty.call(options, 'taskId')
+          ? options.taskId || null : null,
+      });
     }
     getTaskBoardRuntime().onTurnEnd(cs, sessionName);
   }
@@ -1004,9 +1051,8 @@ function createClassifyStateMachine(rawDeps) {
   // to know "what task is running" and "what's the current status" WHILE the
   // agent is still working. This does exactly that:
   // ── Closed-loop task model ─────────────────────────────────────────────────
-  // The goal is produced solely by the classify loop (turn-start + every 60s).
-  // No rule-based fallback from the raw user message — that path used to turn
-  // greetings ("hi") and injected recovery text into bogus goals.
+  // Admission derives an honest provisional title from the new task message;
+  // the classify loop refines it and decides canonical identity.
   function newCurrentTask(goal) {
     return {
       goal: goal || '新任务',    // placeholder until the first classify fills it in
@@ -1018,8 +1064,30 @@ function createClassifyStateMachine(rawDeps) {
     };
   }
 
+  function knownTaskGoal(sessionName, taskId) {
+    if (!taskId) return '';
+    const state = getTaskState(persistedSessions.get(sessionName));
+    if (state.taskId === taskId && state.goal) return state.goal;
+    const classified = Array.isArray(state.classifyHistory) ? state.classifyHistory : [];
+    for (let index = classified.length - 1; index >= 0; index -= 1) {
+      if (classified[index]?.taskId === taskId && classified[index].goal) {
+        return classified[index].goal;
+      }
+    }
+    try {
+      const history = viewChatHistory(sessionName);
+      for (let index = history.length - 1; index >= 0; index -= 1) {
+        const message = history[index];
+        if (message?.taskId !== taskId) continue;
+        const goal = message.taskName || (message.taskText && deriveTaskTitle(message.taskText));
+        if (goal && goal !== PENDING_TASK_TITLE) return goal;
+      }
+    } catch (_) {}
+    return '';
+  }
+
   // taskId is the authoritative boundary; legacy turns retain the 10-minute heuristic.
-  function ensureCurrentTask(cs, sessionName, userText, forceNew = false) {
+  function ensureCurrentTask(cs, sessionName, userText, forceNew = false, identity = {}) {
     if (!cs) return;
     const now = Date.now();
     const prev = cs.currentTask;
@@ -1038,17 +1106,31 @@ function createClassifyStateMachine(rawDeps) {
       });
       return prev;
     }
-    // Preserve only an unfinished classify-refined legacy goal.
-    const carryGoal = (prev && prev.phase !== 'done' && prev.goal && prev.goal !== '新任务' && !isInjectedOrJunkGoal(prev.goal)) ? prev.goal : '';
-    cs.currentTask = newCurrentTask(carryGoal);
+    const explicitContinuation = identity.explicitContinuation === true;
+    const taskId = identity.taskId || cs._currentTaskId || null;
+    const explicitGoal = explicitContinuation ? knownTaskGoal(sessionName, taskId) : '';
+    const candidateGoal = explicitGoal || deriveTaskTitle(identity.taskText || userText);
+    // A changed boundary never carries the prior live goal. Until Aux settles,
+    // the new message's own title is the only honest first-frame description.
+    cs.currentTask = newCurrentTask(candidateGoal);
     cs.currentTask.turnSeq = 1;
+    cs._currentTaskId = taskId;
+    const anchorMessageId = identity.anchorMessageId || classifyAnchorMessageId(sessionName);
     // Persist the new task snapshot so a mid-task restart can reconcile it (②).
     setTaskState(sessionName, {
       goal: cs.currentTask.goal, phase: cs.currentTask.phase,
       startedAt: cs.currentTask.startedAt, endedAt: null,
+      taskId,
+      taskIdentityState: explicitContinuation ? 'canonical' : 'provisional',
+      taskIdentityPending: !explicitContinuation,
+      taskIdentityAnchorMessageId: anchorMessageId,
       classifyState: 'P', cancelledAt: null, cancelReason: null,
       cancelSuperseded: false, supersededByEntryId: null,
     });
+    recordTaskBoardGoal(sessionName, cs.currentTask.goal, cs.currentTask.phase, cs, 'P');
+    emitRunningNotify(sessionName, explicitContinuation
+      ? `处理中：${cs.currentTask.goal}`
+      : `归类中：${cs.currentTask.goal}`);
     return cs.currentTask;
   }
 

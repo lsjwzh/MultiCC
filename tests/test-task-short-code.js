@@ -14,6 +14,7 @@ const path = require('path');
 
 const {
   taskShortCode,
+  taskIdForShortCode,
   labelWithCode,
   createTaskShortCodeRegistry,
   initTaskShortCodeRegistry,
@@ -52,6 +53,14 @@ test('code is exactly 4 base36 chars', () => {
 
 test('same taskId resolves the same code across calls', () => {
   assert.equal(taskShortCode('tsk_stable'), taskShortCode('tsk_stable'));
+});
+
+test('only an already-minted code resolves back to its canonical taskId', () => {
+  const taskId = 'tsk_explicit_reference';
+  const code = taskShortCode(taskId);
+  assert.equal(taskIdForShortCode(code.toLowerCase()), taskId);
+  assert.equal(taskIdForShortCode('NOPE'), null);
+  assert.equal(taskIdForShortCode('TOO-LONG'), null);
 });
 
 test('registry guarantees distinct codes for distinct taskIds', () => {

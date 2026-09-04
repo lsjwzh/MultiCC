@@ -16,7 +16,7 @@ const { createStore } = require('../state-store');
 // collisions between different tasks are impossible, not just improbable.
 //   - stable        → the same taskId always reads back its minted code
 //   - reuse-on-same → Aux relation:"same" keeps the taskId, so the code stays
-//   - renew-on-new  → Aux relation:"new" mints a new taskId, so a fresh code
+//   - renew-on-new  → admission mints a provisional taskId that Aux promotes
 //   - unique        → mint retries with a salted hash until the code is free
 // Mint candidates are hash-derived: salt 0 reproduces the pre-registry
 // deterministic code, so tasks created before the upgrade keep the code users
@@ -136,6 +136,15 @@ function taskShortCode(taskId) {
   return registry().codeFor(taskId);
 }
 
+// Resolve an already-minted display code back to its canonical task id. This
+// never mints and therefore cannot turn arbitrary `#ABCD` text into authority;
+// only a code the persisted registry already owns is accepted.
+function taskIdForShortCode(code) {
+  const normalized = String(code == null ? '' : code).trim().toUpperCase();
+  if (!CODE_PATTERN.test(normalized)) return null;
+  return registry().ownerOf(normalized);
+}
+
 // Render `#CODE · text`. Returns text unchanged when there is no resolvable
 // code, and just `#CODE` when there is a code but no text, so callers never
 // have to special-case the empty states.
@@ -149,6 +158,7 @@ function labelWithCode(taskId, text) {
 
 module.exports = {
   taskShortCode,
+  taskIdForShortCode,
   labelWithCode,
   createTaskShortCodeRegistry,
   initTaskShortCodeRegistry,
