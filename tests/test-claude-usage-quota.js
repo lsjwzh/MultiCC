@@ -262,3 +262,161 @@ test('both claude usage routes mount without a browser anywhere in sight', () =>
     ['POST', '/api/claude/quota/login', 'function'],
   ]);
 });
+
+// ── source 1: OAuth control plane ────────────────────────────────────────────
+// fetchUsage does res.text() then JSON.parse, checks res.ok / res.status, and
+// reads res.headers for Retry-After on a 429 — the fake response mirrors that
+// surface. timedFetch passes a `signal` the fake simply ignores.
+function fakeUsageFetch(responder) {
+  const calls = [];
+  const fetch = async (url, init = {}) => {
+    calls.push({ url: String(url), init });
+    return responder(String(url), init);
+  };
+  return { fetch, calls };
+}
+const okJson = (body) => ({ ok: true, status: 200, headers: { get: () => null }, text: async () => JSON.stringify(body) });
+const errResp = (status, text = 'nope') => ({ ok: false, status, headers: { get: () => null }, text: async () => text });
+
+// A minimal source: N accounts, and readAccountToken handing back each token by
+// account id (or null to model an unreadable/dead credential).
+function fakeSource({ accounts = [], tokens = {}, fetch }) {
+  return {
+    accounts: { listClaudeAccounts: () => accounts },
+    credentials: { readAccountToken: async (id) => ({ token: tokens[id] || null }) },
+    fetch,
+  };
+}
+
+test('summarizeOAuthUsage maps the usage windows to the unified row shape', () => {
+  const usage = {
+    five_hour: { utilization: 0.31, resets_at: '2026-09-02T10:00:00Z' },
+    seven_day: { utilization: 0.5, resets_at: '2026-09-05T00:00:00Z' },
+    seven_day_opus: { utilization: 0.125, resets_at: '2026-09-05T00:00:00Z' },
+  };
+  const rows = claude.summarizeOAuthUsage(usage);
+  assert.deepEqual(rows.map((r) => r.window), ['5h', '1wk', '1wk']);
+  assert.deepEqual(rows.map((r) => r.label), ['Current session', 'All models', 'Opus']);
+  // utilization is a 0..1 fraction; usedPercent keeps one decimal.
+  assert.deepEqual(rows.map((r) => r.usedPercent), [31, 50, 12.5]);
+  assert.equal(rows[0].percent, rows[0].usedPercent, 'percent mirrors usedPercent');
+  assert.equal(rows[0].resetMs, Date.parse('2026-09-02T10:00:00Z'));
+});
+
+test('summarizeOAuthUsage clamps, skips null-utilization windows, and tolerates bad resets', () => {
+  // utilization can exceed 1 (overage) — clamp to 100, never render >100%.
+  const over = claude.summarizeOAuthUsage({ five_hour: { utilization: 1.4 } });
+  assert.equal(over.length, 1);
+  assert.equal(over[0].usedPercent, 100);
+  assert.equal(over[0].resetMs, null, 'a window with no resets_at still yields a row');
+
+  // A plan without a window reports utilization:null — skip it entirely rather
+  // than emit a 0% row that would look like a real, empty window.
+  assert.equal(claude.summarizeOAuthUsage({ five_hour: { utilization: null }, seven_day: { utilization: null } }), null);
+
+  // A garbage resets_at must not poison the row: keep the percentage, null the reset.
+  const badReset = claude.summarizeOAuthUsage({ five_hour: { utilization: 0.2, resets_at: 'not-a-date' } });
+  assert.equal(badReset[0].usedPercent, 20);
+  assert.equal(badReset[0].resetMs, null);
+});
+
+test('summarizeOAuthUsage returns null for junk / empty input', () => {
+  assert.equal(claude.summarizeOAuthUsage(null), null);
+  assert.equal(claude.summarizeOAuthUsage('x'), null);
+  assert.equal(claude.summarizeOAuthUsage({}), null);
+  assert.equal(claude.summarizeOAuthUsage({ unknown_window: { utilization: 0.5 } }), null);
+});
+
+test('fetchClaudeUsageViaOAuth reads usage with the first usable account token', async () => {
+  const body = { five_hour: { utilization: 0.31, resets_at: '2026-09-02T10:00:00Z' } };
+  const { fetch, calls } = fakeUsageFetch(() => okJson(body));
+  claude.configureClaudeOAuthSource(fakeSource({
+    accounts: [{ id: 'acct-1', label: 'L', email: 'me@example.com' }],
+    tokens: { 'acct-1': 'oat-1' },
+    fetch,
+  }));
+  try {
+    const result = await claude.fetchClaudeUsageViaOAuth();
+    assert.equal(result.status, 'ok');
+    assert.equal(result.source, 'oauth');
+    assert.deepEqual(result.account, { id: 'acct-1', label: 'L', email: 'me@example.com' });
+    assert.deepEqual(result.summary.map((r) => r.window), ['5h']);
+    assert.equal(result.usage.five_hour.utilization, 0.31);
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0].url.includes('api.anthropic.com/api/oauth/usage'), 'hits the OAuth usage endpoint');
+    assert.equal(calls[0].init.headers.Authorization, 'Bearer oat-1');
+    assert.equal(calls[0].init.headers['anthropic-beta'], 'oauth-2025-04-20');
+  } finally {
+    claude.configureClaudeOAuthSource(null);
+  }
+});
+
+test('fetchClaudeUsageViaOAuth skips a dead account and uses the next one', async () => {
+  const body = { seven_day: { utilization: 0.4, resets_at: '2026-09-05T00:00:00Z' } };
+  // First account 401s (revoked), second succeeds.
+  const { fetch, calls } = fakeUsageFetch((url, init) => (
+    init.headers.Authorization === 'Bearer dead' ? errResp(401, 'invalid_token') : okJson(body)
+  ));
+  claude.configureClaudeOAuthSource(fakeSource({
+    accounts: [{ id: 'a1', label: '', email: '' }, { id: 'a2', label: '', email: '' }],
+    tokens: { a1: 'dead', a2: 'live' },
+    fetch,
+  }));
+  try {
+    const result = await claude.fetchClaudeUsageViaOAuth();
+    assert.equal(result.status, 'ok');
+    assert.equal(result.account.id, 'a2', 'fell through the 401 account');
+    assert.equal(calls.length, 2, 'tried both tokens');
+  } finally {
+    claude.configureClaudeOAuthSource(null);
+  }
+});
+
+test('fetchClaudeUsageViaOAuth returns null when no account can be used', async () => {
+  // No accounts at all.
+  claude.configureClaudeOAuthSource(fakeSource({ accounts: [], tokens: {}, fetch: fakeUsageFetch(() => okJson({})).fetch }));
+  assert.equal(await claude.fetchClaudeUsageViaOAuth(), null);
+  claude.configureClaudeOAuthSource(null);
+
+  // Accounts exist but every credential is unreadable (token null) — must NOT
+  // call fetch at all, and must return null so the CDP fallback owns the status.
+  const { fetch, calls } = fakeUsageFetch(() => okJson({ five_hour: { utilization: 0.1 } }));
+  claude.configureClaudeOAuthSource(fakeSource({ accounts: [{ id: 'x' }], tokens: {}, fetch }));
+  try {
+    assert.equal(await claude.fetchClaudeUsageViaOAuth(), null);
+    assert.equal(calls.length, 0, 'never hits the network without a token');
+  } finally {
+    claude.configureClaudeOAuthSource(null);
+  }
+
+  // Authenticated but the body shape is unrecognized — null, not a bogus row.
+  const { fetch: f2 } = fakeUsageFetch(() => okJson({ something_else: true }));
+  claude.configureClaudeOAuthSource(fakeSource({ accounts: [{ id: 'y' }], tokens: { y: 'tok' }, fetch: f2 }));
+  try {
+    assert.equal(await claude.fetchClaudeUsageViaOAuth(), null);
+  } finally {
+    claude.configureClaudeOAuthSource(null);
+  }
+});
+
+test('fetchClaudeUsage prefers the OAuth source and never drives a browser', async () => {
+  // With a working account, fetchClaudeUsage must return the oauth result. The
+  // CDP fallback is only reached when OAuth returns null; in a test env there is
+  // no browser, so if the source were consulted the result would be
+  // chrome_unavailable — getting source:'oauth' proves CDP was bypassed.
+  const body = { five_hour: { utilization: 0.22, resets_at: '2026-09-02T10:00:00Z' } };
+  const { fetch, calls } = fakeUsageFetch(() => okJson(body));
+  claude.configureClaudeOAuthSource(fakeSource({
+    accounts: [{ id: 'acct', label: 'L', email: 'e@x.com' }],
+    tokens: { acct: 'tok' },
+    fetch,
+  }));
+  try {
+    const result = await claude.fetchClaudeUsage();
+    assert.equal(result.source, 'oauth');
+    assert.equal(result.status, 'ok');
+    assert.equal(calls.length, 1);
+  } finally {
+    claude.configureClaudeOAuthSource(null);
+  }
+});
