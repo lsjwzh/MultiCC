@@ -102,9 +102,13 @@
     white-space: pre-wrap; word-break: break-word; border: 1px solid #30363d; border-radius: 6px;
     background: #0d1117; color: #c9d1d9; font: inherit; }
   .tb-body-pending { font-size: 10px; color: #6e7681; font-style: italic; }
-  .tb-legacy-group { display: block; border-top: 1px dashed #30363d; background: rgba(22,27,34,.55); }
-  .tb-legacy-group > summary { padding: 7px 12px 7px 24px; cursor: pointer; color: #8b949e; font-size: 11px; }
-  .tb-legacy-group > .tb-task { padding-left: 34px; }
+    .tb-legacy-group { display: block; border-top: 1px dashed #30363d; background: rgba(22,27,34,.55); }
+    .tb-legacy-group > summary { padding: 7px 12px 7px 24px; cursor: pointer; color: #8b949e; font-size: 11px; }
+    .tb-legacy-group > .tb-task { padding-left: 34px; }
+    .tb-related-group { display: block; margin: 7px 8px; border: 1px solid rgba(88,166,255,.32); border-radius: 8px; overflow: hidden; background: rgba(56,139,253,.07); }
+    .tb-related-group > summary { display: flex; justify-content: space-between; gap: 8px; padding: 8px 10px; cursor: pointer; color: #c9d1d9; font-size: 12px; }
+    .tb-related-group > .tb-task { padding-left: 18px; background: rgba(13,17,23,.35); }
+    .tb-related-module { display: inline-flex; margin-right: 6px; padding: 1px 5px; border: 1px solid #30363d; border-radius: 999px; color: #8b949e; font-size: 10px; text-decoration: none; }
   .tb-task .tb-meta { color: #6e7681; font-size: 11px; white-space: nowrap; }
   .tb-mod-actions, .tb-meta { display: flex; align-items: center; gap: 6px; }
   .tb-class-state { font-size: 10px; padding: 1px 6px; border-radius: 9px; background: #21262d; color: #8b949e; }
@@ -344,7 +348,7 @@ $('msg-btn').onclick = () => {
 };
 
 /* ── 任务板：模块 › 任务 两级树 + 任务详情 + 面板输入框 ───────────── */
-let tb = { modules: [], tasks: [], sessionLabels: {} };
+let tb = { modules: [], tasks: [], taskGroups: [], sessionLabels: {} };
 let selectedTask = null;
 const collapsedMods = new Set();   // 全量重绘间记忆折叠态
 let tbTimer = null;
@@ -632,7 +636,7 @@ function bindQuickTaskArchive(row, task) {
   };
 }
 
-function createTaskBoardRow(task) {
+function createTaskBoardRow(task, showModule) {
   const display = window.MultiCCTaskBoardUi.taskDisplayState(task);
   const clsRun = display.running ? ' running' : '';
   const mergeSelected = selectedMergeTaskIds.has(task.id);
@@ -659,10 +663,13 @@ function createTaskBoardRow(task) {
       : '<span class="tb-body-pending">正文等待目标会话持久化…</span>';
   const attempt = Number(task.attemptCount) > 1
     ? `<span>${Number(task.attemptCount)} 次投递</span>` : '';
+  const module = showModule ? tb.modules.find(item => item.id === task.moduleId) : null;
+  const moduleLabel = module
+    ? `<span class="tb-related-module">${esc(module.name)}</span>` : '';
   row.innerHTML = `
     ${mergeSelect}
     ${statusIconHtml(display)}
-    <span class="tb-title-cell"><span class="tb-title">${originHtml(task)}${mergeRole}${esc(task.title)}</span>${body}</span>
+    <span class="tb-title-cell"><span class="tb-title">${originHtml(task)}${moduleLabel}${mergeRole}${esc(task.title)}</span>${body}</span>
     <span class="tb-meta"><span class="tb-run-state st-tone-${display.tone}">${esc(display.label)}</span>${taskRoutingHtml(task)}${attempt}${assignment ? `<button class="tb-reclassify"${assignment.running ? ' disabled' : ''} title="${esc(assignment.lastError || '')}">${assignment.running ? '归类中…' : assignment.lastError ? '重新归类' : '归类'}</button>` : ''}<button class="tb-quick-archive" title="快捷归档该任务">归档</button><span>${task.refCount}轮 · ${esc(timeAgo(task.lastTs))}</span></span>`;
   row.querySelector('.tb-body-fold')?.addEventListener('click', event => event.stopPropagation());
   row.onclick = () => handleTaskBoardRowClick(task);
@@ -678,6 +685,19 @@ function createTaskBoardRow(task) {
   };
   bindQuickTaskArchive(row, task);
   return row;
+}
+
+function appendRelatedTaskGroups(box, groups) {
+  for (const item of groups) {
+    const group = document.createElement('details');
+    group.className = 'tb-related-group';
+    group.open = true;
+    const summary = document.createElement('summary');
+    summary.innerHTML = `<span>🧩 ${esc(item.title || '关联任务')} · ${item.tasks.length}</span><span>关联任务</span>`;
+    group.appendChild(summary);
+    for (const task of item.tasks) group.appendChild(createTaskBoardRow(task, true));
+    box.appendChild(group);
+  }
 }
 
 function appendTaskIdentityGroups(box, tasks) {
@@ -724,13 +744,16 @@ function renderTaskBoard() {
     cleanup.disabled = completedCount === 0;
     cleanup.textContent = `🧹 一键清理${completedCount ? ` (${completedCount})` : ''}`;
   }
-  $('tb-count').textContent = `${tb.modules.length} 模块 · ${visible.length} 任务`;
+  const grouped = window.MultiCCTaskBoardUi.partitionTaskGroups(visible, tb.taskGroups);
+  const groupSuffix = grouped.groups.length ? ` · ${grouped.groups.length} 关联组` : '';
+  $('tb-count').textContent = `${tb.modules.length} 模块 · ${visible.length} 任务${groupSuffix}`;
   if (!visible.length) {
     box.innerHTML = '<div class="tb-empty">还没有任务。从任务面板或 Commander 发起新任务后会显示在这里。</div>';
     return;
   }
+  appendRelatedTaskGroups(box, grouped.groups);
   for (const mod of window.MultiCCTaskBoardUi.sortModules(tb.modules)) {
-    const tasks = window.MultiCCTaskBoardUi.sortTasks(visible.filter(t => t.moduleId === mod.id));
+    const tasks = window.MultiCCTaskBoardUi.sortTasks(grouped.ungrouped.filter(t => t.moduleId === mod.id));
     if (!tasks.length) continue;
     const collapsed = collapsedMods.has(mod.id);
     const mrow = document.createElement('div'); mrow.className = 'tb-mod';
@@ -744,7 +767,7 @@ function renderTaskBoard() {
   }
   // 孤儿任务（模块已不存在）兜底展示
   const orphan = window.MultiCCTaskBoardUi.sortTasks(
-    visible.filter(t => !tb.modules.some(m => m.id === t.moduleId)),
+    grouped.ungrouped.filter(t => !tb.modules.some(m => m.id === t.moduleId)),
   );
   appendTaskIdentityGroups(box, orphan);
 }

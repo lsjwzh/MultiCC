@@ -13,10 +13,13 @@ const planning = require('./task-planning');
 //     modules: { <moduleId>: { id, name, source:'ai'|'directory'|'classify', dirId, createdAt, updatedAt } },
 //     tasks:   { <taskId>:   { id, moduleId, title, status:'active'|'done'|'archived',
 //                              areas:[], createdAt, updatedAt, moduleAssignment?:{},
-//                              refs:[{ sessionId, dirId, userMsgId, assistantMsgId, ts, excerpt }] } }
+//                              refs:[{ sessionId, dirId, userMsgId, assistantMsgId, ts, excerpt }] } },
+//     taskGroups: { <groupId>: { id, rootTaskId, taskIds:[], createdAt, updatedAt } }
 //   }
 // A ref is one chat turn (user message + assistant reply) tagged onto the task;
 // the same turn may appear under several tasks (multi-label by design).
+// A task group is presentation-only: every member keeps its own taskId, runs,
+// short code and lifecycle. It must never be interpreted as an identity merge.
 
 const MAX_TAGS_PER_TURN = 3;
 const MAX_AREAS_PER_TASK = 8;
@@ -24,6 +27,7 @@ const MAX_REFS_PER_TASK = 500;
 const MAX_TASKS_IN_PROMPT = 50;
 const MAX_TITLE_LEN = 40;
 const MAX_MODULE_LEN = 20;
+const MAX_TASKS_PER_GROUP = 100;
 const CLASSIFY_PENDING_MODULE_NAME = '待归类';
 const PENDING_TASK_TITLE = '新任务';
 // Runtime projection is deliberately separate from task.status lifecycle.
@@ -65,6 +69,7 @@ function createEmptyBoard() {
     revision: 0,
     modules: {},
     tasks: {},
+    taskGroups: {},
   };
 }
 
@@ -214,6 +219,24 @@ function normalizeBoard(raw) {
       task.status = 'archived';
     }
   }
+  const taskGroups = raw.taskGroups && typeof raw.taskGroups === 'object'
+    ? raw.taskGroups : {};
+  for (const [id, value] of Object.entries(taskGroups)) {
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(id) || !value || typeof value !== 'object') continue;
+    const taskIds = [...new Set((Array.isArray(value.taskIds) ? value.taskIds : [])
+      .filter(taskId => typeof taskId === 'string' && taskId.trim())
+      .map(taskId => taskId.trim().slice(0, 128)))]
+      .slice(0, MAX_TASKS_PER_GROUP);
+    board.taskGroups[id] = {
+      id,
+      rootTaskId: typeof value.rootTaskId === 'string'
+        ? value.rootTaskId.trim().slice(0, 128) : '',
+      taskIds,
+      createdAt: Math.max(0, Number(value.createdAt) || 0),
+      updatedAt: Math.max(0, Number(value.updatedAt) || 0),
+    };
+  }
+  reconcileTaskGroups(board);
   return board;
 }
 
@@ -605,6 +628,136 @@ function taskLineageIds(board, taskId) {
   return ids;
 }
 
+// Keep presentation groups well-formed without attaching group identity to a
+// task record. Canonicalising explicit merge tombstones here is only cleanup of
+// a user-requested identity merge; creating a group never merges task ids.
+function reconcileTaskGroups(board) {
+  if (!board || typeof board !== 'object') return {};
+  if (!board.taskGroups || typeof board.taskGroups !== 'object') board.taskGroups = {};
+  const ordered = Object.values(board.taskGroups)
+    .filter(group => group && typeof group === 'object'
+      && /^[A-Za-z0-9_-]{1,128}$/.test(String(group.id || '')))
+    .sort((a, b) => (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0)
+      || String(a.id).localeCompare(String(b.id)));
+  const clean = {};
+  const ownerByTaskId = new Map();
+  for (const raw of ordered) {
+    const ids = [];
+    for (const value of Array.isArray(raw.taskIds) ? raw.taskIds : []) {
+      const resolved = resolveTask(board, String(value || '').trim());
+      if (!resolved || ids.includes(resolved.id)) continue;
+      ids.push(resolved.id);
+      if (ids.length >= MAX_TASKS_PER_GROUP) break;
+    }
+    if (ids.length < 2) continue;
+    const requestedRoot = resolveTask(board, String(raw.rootTaskId || '').trim())?.id || null;
+    const overlaps = [...new Set(ids.map(id => ownerByTaskId.get(id)).filter(Boolean))];
+    let group = overlaps.length ? clean[overlaps[0]] : null;
+    if (!group) {
+      const id = String(raw.id);
+      group = {
+        id,
+        rootTaskId: requestedRoot && ids.includes(requestedRoot) ? requestedRoot : ids[0],
+        taskIds: [],
+        createdAt: Math.max(0, Number(raw.createdAt) || 0),
+        updatedAt: Math.max(0, Number(raw.updatedAt) || 0),
+      };
+      clean[id] = group;
+    }
+    for (const overlapId of overlaps.slice(1)) {
+      const secondary = clean[overlapId];
+      if (!secondary) continue;
+      for (const id of secondary.taskIds) {
+        if (!group.taskIds.includes(id) && group.taskIds.length < MAX_TASKS_PER_GROUP) {
+          group.taskIds.push(id);
+        }
+      }
+      group.createdAt = Math.min(group.createdAt || 0, secondary.createdAt || 0);
+      group.updatedAt = Math.max(group.updatedAt || 0, secondary.updatedAt || 0);
+      delete clean[overlapId];
+    }
+    for (const id of ids) {
+      if (!group.taskIds.includes(id) && group.taskIds.length < MAX_TASKS_PER_GROUP) {
+        group.taskIds.push(id);
+      }
+    }
+    group.updatedAt = Math.max(group.updatedAt, Number(raw.updatedAt) || 0);
+    for (const taskId of group.taskIds) ownerByTaskId.set(taskId, group.id);
+  }
+  board.taskGroups = clean;
+  return clean;
+}
+
+function relatedTaskGroup(board, taskId) {
+  const resolved = resolveTask(board, taskId);
+  if (!resolved) return null;
+  return Object.values(board.taskGroups || {})
+    .find(group => Array.isArray(group.taskIds) && group.taskIds.includes(resolved.id)) || null;
+}
+
+// Add two distinct tasks to one display family. This is intentionally the only
+// mutation: task records, task ids, short codes, refs and run ledgers are left
+// byte-for-byte untouched.
+function groupRelatedTasks(board, taskId, relatedTaskId, now = Date.now()) {
+  const task = resolveTask(board, String(taskId || '').trim());
+  const related = resolveTask(board, String(relatedTaskId || '').trim());
+  if (!task || !related) return { ok: false, error: 'task_not_found' };
+  if (task.id === related.id) return { ok: false, error: 'same_task' };
+  const taskDir = taskDirId(board, task);
+  const relatedDir = taskDirId(board, related);
+  if (taskDir && relatedDir && taskDir !== relatedDir) {
+    return { ok: false, error: 'task_directory_mismatch' };
+  }
+  reconcileTaskGroups(board);
+  const taskGroup = relatedTaskGroup(board, task.id);
+  const relatedGroup = relatedTaskGroup(board, related.id);
+  if (taskGroup && relatedGroup && taskGroup.id === relatedGroup.id) {
+    return { ok: true, changed: false, groupId: taskGroup.id, taskIds: [...taskGroup.taskIds] };
+  }
+  const desiredTaskIds = new Set([
+    ...(taskGroup?.taskIds || []),
+    ...(relatedGroup?.taskIds || []),
+    task.id,
+    related.id,
+  ]);
+  if (desiredTaskIds.size > MAX_TASKS_PER_GROUP) {
+    return { ok: false, error: 'task_group_full' };
+  }
+
+  let group = relatedGroup || taskGroup;
+  if (!group) {
+    const digest = crypto.createHash('sha256')
+      .update([task.id, related.id].sort().join('\u001f'))
+      .digest('hex')
+      .slice(0, 24);
+    group = {
+      id: `grp-${digest}`,
+      rootTaskId: related.id,
+      taskIds: [related.id, task.id],
+      createdAt: now,
+      updatedAt: now,
+    };
+    board.taskGroups[group.id] = group;
+  } else {
+    const additions = [related.id, task.id].filter(id => !group.taskIds.includes(id));
+    group.taskIds.push(...additions);
+    group.updatedAt = now;
+  }
+  const secondary = relatedGroup && taskGroup && relatedGroup.id !== taskGroup.id
+    ? taskGroup : null;
+  if (secondary) {
+    for (const id of secondary.taskIds) {
+      if (!group.taskIds.includes(id)) group.taskIds.push(id);
+    }
+    group.createdAt = Math.min(group.createdAt || now, secondary.createdAt || now);
+    group.updatedAt = now;
+    delete board.taskGroups[secondary.id];
+  }
+  reconcileTaskGroups(board);
+  group = relatedTaskGroup(board, task.id);
+  return { ok: true, changed: true, groupId: group.id, taskIds: [...group.taskIds] };
+}
+
 function findTaskByTitle(board, moduleId, title, { dirId = null, similar = false } = {}) {
   const key = canonicalTaskTitle(title);
   if (!key) return null;
@@ -822,6 +975,10 @@ function mergeTasks(board, {
     // batch again.  Its historical assignment receipt has no live meaning.
     if (source.moduleAssignment?.running !== true) delete source.moduleAssignment;
   }
+  // Group membership is display metadata. If an explicitly merged identity was
+  // present in a family, point that membership at the surviving id and collapse
+  // any overlap; never copy the source task's identity or execution state.
+  reconcileTaskGroups(board);
 
   return {
     ok: true, changed: true, taskId: target.id,
@@ -1239,6 +1396,12 @@ function buildBoardDto(board, getSessionRunState) {
     const target = resolveTask(board, task.id);
     if (target) mergedCount.set(target.id, (mergedCount.get(target.id) || 0) + 1);
   }
+  const groupByTaskId = new Map();
+  for (const group of Object.values(board.taskGroups || {})) {
+    for (const taskId of Array.isArray(group.taskIds) ? group.taskIds : []) {
+      if (!groupByTaskId.has(taskId)) groupByTaskId.set(taskId, group.id);
+    }
+  }
   const tasks = Object.values(board.tasks).filter(t => !t.mergedInto).map(t => {
     const sessionIds = [...new Set(t.refs.map(r => r.sessionId))];
     const routing = normalizeTaskRouting(t.routing);
@@ -1258,6 +1421,7 @@ function buildBoardDto(board, getSessionRunState) {
       dirIds: [...new Set([t.dirId, ...t.refs.map(r => r.dirId)].filter(Boolean))],
       lastTs: taskLastTs(t),
       createdAt: t.createdAt,
+      taskGroupId: groupByTaskId.get(t.id) || null,
       mergedTaskCount: mergedCount.get(t.id) || 0,
       origin: TASK_ORIGINS.has(t.origin) ? t.origin : legacyTaskOrigin(t.id),
       ...planning.planningFields(t),
@@ -1296,12 +1460,29 @@ function buildBoardDto(board, getSessionRunState) {
     taskCount: countByModule.get(m.id) || 0,
     lastTs: lastByModule.get(m.id) || m.updatedAt || 0,
   })).sort((a, b) => b.lastTs - a.lastTs);
+  const taskById = new Map(tasks.map(task => [task.id, task]));
+  const taskGroups = Object.values(board.taskGroups || {}).map(group => {
+    const taskIds = (Array.isArray(group.taskIds) ? group.taskIds : [])
+      .filter(taskId => taskById.has(taskId));
+    if (taskIds.length < 2) return null;
+    const rootTaskId = taskIds.includes(group.rootTaskId) ? group.rootTaskId : taskIds[0];
+    return {
+      id: group.id,
+      rootTaskId,
+      taskIds,
+      title: taskById.get(rootTaskId)?.title || '关联任务',
+      createdAt: Math.max(0, Number(group.createdAt) || 0),
+      updatedAt: Math.max(0, Number(group.updatedAt) || 0),
+      lastTs: Math.max(...taskIds.map(taskId => taskById.get(taskId)?.lastTs || 0)),
+    };
+  }).filter(Boolean).sort((a, b) => b.lastTs - a.lastTs || a.id.localeCompare(b.id));
   return {
     schemaVersion: planning.TASK_BOARD_SCHEMA_VERSION,
     revision: Number.isSafeInteger(Number(board.revision)) && Number(board.revision) >= 0
       ? Number(board.revision) : 0,
     modules,
     tasks,
+    taskGroups,
   };
 }
 
@@ -1327,6 +1508,9 @@ module.exports = {
   applyTagResult,
   applyBackfillResult,
   addRefToTask,
+  groupRelatedTasks,
+  relatedTaskGroup,
+  reconcileTaskGroups,
   mergeTasks,
   createPendingTask,
   applyTaskClassification,

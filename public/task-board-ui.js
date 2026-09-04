@@ -57,6 +57,37 @@
       ...source,
       modules: byId(source.modules),
       tasks: byId(source.tasks),
+      taskGroups: byId(source.taskGroups),
+    };
+  }
+
+  // Resolve presentation-only task families against the currently visible
+  // task set. A filtered/archived family with fewer than two visible members is
+  // left as ordinary rows; grouping never changes task identity or ordering.
+  function partitionTaskGroups(tasks, groups) {
+    const source = Array.isArray(tasks) ? tasks : [];
+    const taskById = new Map(source.map(task => [String(task?.id || ''), task]));
+    const claimed = new Set();
+    const related = [];
+    const orderedGroups = [...(Array.isArray(groups) ? groups : [])].sort((a, b) =>
+      (Number(b?.lastTs || b?.updatedAt) || 0) - (Number(a?.lastTs || a?.updatedAt) || 0)
+        || compareText(a?.id, b?.id));
+    for (const group of orderedGroups) {
+      const members = [];
+      for (const taskId of Array.isArray(group?.taskIds) ? group.taskIds : []) {
+        const id = String(taskId || '');
+        const task = taskById.get(id);
+        if (!task || claimed.has(id) || members.includes(task)) continue;
+        members.push(task);
+      }
+      if (members.length < 2) continue;
+      const sorted = sortTasks(members);
+      for (const task of sorted) claimed.add(String(task.id));
+      related.push({ ...group, tasks: sorted });
+    }
+    return {
+      groups: related,
+      ungrouped: source.filter(task => !claimed.has(String(task?.id || ''))),
     };
   }
 
@@ -292,6 +323,7 @@
     sortModules,
     sortTasks,
     reconcileSnapshot,
+    partitionTaskGroups,
     partitionTaskIdentity,
     taskDisplayState,
     runningTaskCount,

@@ -566,6 +566,27 @@ function createClassifyStateMachine(rawDeps) {
 
     const currentClassifyState = getTaskState(persistedSessions.get(sessionName)).classifyState || 'P';
     recordTaskBoardGoal(sessionName, taskName, phase, cs, currentClassifyState);
+    let taskGroupId = null;
+    if (result.relation === 'new' && result.relatedTaskId
+        && typeof board.linkRelatedTasks === 'function') {
+      try {
+        const grouped = board.linkRelatedTasks(taskId, result.relatedTaskId);
+        if (grouped?.ok) taskGroupId = grouped.groupId || null;
+        else logger.info?.('task_group_link_skipped', {
+          sessionId: sessionName,
+          taskId,
+          relatedTaskId: result.relatedTaskId,
+          error: grouped?.error || 'unknown',
+        });
+      } catch (error) {
+        logger.warn?.('task_group_link_failed', {
+          sessionId: sessionName,
+          taskId,
+          relatedTaskId: result.relatedTaskId,
+          error: error?.message || String(error || ''),
+        });
+      }
+    }
     if (typeof board.onTaskAttributionSettled === 'function') {
       try {
         Promise.resolve(board.onTaskAttributionSettled(sessionName, taskId, annotated, {
@@ -587,7 +608,7 @@ function createClassifyStateMachine(rawDeps) {
       emitRunningNotify(sessionName, `处理中：${taskName}${ph ? ` · ${ph}` : ''}`);
     }
     return {
-      taskId, taskName, phase, changedIdentity, annotated,
+      taskId, taskName, phase, changedIdentity, annotated, taskGroupId,
       superseded: false,
       observedAnchorMessageId: anchor.observedAnchorMessageId || null,
     };
@@ -918,10 +939,19 @@ function createClassifyStateMachine(rawDeps) {
         }, { anchorMessageId });
         return;
       }
-      const res = parseTaskAttribution(result.text, {
+      const parsedAttribution = parseTaskAttribution(result.text, {
         fallbackTaskId: currentTaskId,
         allowedTaskIds: recentTasks.map(task => task.taskId),
       });
+      // Explicit task-card/#CODE continuations are stronger than a probabilistic
+      // model answer. A malformed `new` verdict must not split or group that
+      // locked task even if the raw model JSON asks for it.
+      const res = identityLocked ? {
+        ...parsedAttribution,
+        relation: 'same',
+        taskId: currentTaskId,
+        relatedTaskId: null,
+      } : parsedAttribution;
       const boundTaskId = persistedSessions.get(sessionName)?.taskBoundTaskId || null;
       // `new` promotes the admission's provisional id; it must never mint a
       // second id after that candidate has already been persisted and rendered.
