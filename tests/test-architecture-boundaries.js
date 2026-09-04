@@ -106,6 +106,7 @@ test('dispatch admission derives busy from classify plus the repo lease, never f
   // (The Commander routing host was a third consumer until #38 retired pooled
   // dispatch; task work now enters through the task-bound session, which admits
   // via the same predicate inside the gateway host.)
+  assert.match(source, /createDispatchTargeting\([\s\S]*?isTargetBusy: dispatchTargetBusy/);
   assert.match(source, /createGatewayHost\([\s\S]*?isTargetBusy: dispatchTargetBusy/);
   assert.match(source, /createOrchestrationRuntime\([\s\S]*?isBusy: dispatchTargetBusy/);
 });
