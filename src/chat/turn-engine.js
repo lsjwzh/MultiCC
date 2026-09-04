@@ -16,6 +16,7 @@ const {
   createProviderRouteProof,
   evaluateSpawnGuard,
   createTurnLifecycle,
+  bindTurnTask,
   bindTurnUsageAttribution,
   createRunnerOwnership,
   assignKillReason,
@@ -44,7 +45,7 @@ const {
 const { createAutoProviderRuntime } = require('./auto-provider-runtime');
 const { redactProviderRouteCapability } = require('../observability');
 const { createWsEnvelope } = require('../api-contract');
-const { taskShortCode } = require('../classify/task-short-code');
+const { taskShortCode, taskIdForShortCode } = require('../classify/task-short-code');
 const { composeMessage, renderPrompt } = require('../message-composer');
 const {
   rememberActiveCliState, renderHandoffPrompt, stateSummary: cliStateSummary,
@@ -319,6 +320,7 @@ function createChatTurnEngine(deps) {
     pendingNotesFor,
     appendEvent,
     classifyTurnEnd,
+    runClassifyNow,
     cancelClassify,
     emitRunningNotify,
     emitTurnOutcome,
@@ -1140,7 +1142,32 @@ function createChatTurnEngine(deps) {
     const goalLimits = turnRequest.goalLimits;
     const bgTaskIds = turnRequest.background.taskIds;
     const bgToolUseIds = turnRequest.background.toolUseIds;
-    const requestedTask = turnRequest.task;
+    let requestedTask = turnRequest.task;
+    // A minted #CODE is an explicit user reference, not a fuzzy text hint. It
+    // can therefore bind directly to the known canonical task; unknown codes
+    // remain ordinary message text and go through provisional classification.
+    if (!requestedTask.id) {
+      const codeMatch = text.match(/(?:^|\s)#([0-9A-Z]{4})(?=$|\s|[，。,:：;；!?！？])/iu);
+      const codeOwner = codeMatch ? taskIdForShortCode(codeMatch[1]) : null;
+      const state = getTaskState(persisted);
+      const knownTaskIds = new Set([
+        persisted.taskBoundTaskId,
+        state.taskId,
+        ...(Array.isArray(state.classifyHistory)
+          ? state.classifyHistory.map(entry => entry?.taskId) : []),
+      ].filter(Boolean));
+      try {
+        for (const message of viewChatHistory(sessionName)) {
+          if (message?.taskId) knownTaskIds.add(message.taskId);
+        }
+      } catch (_) {}
+      const referencedTaskId = codeOwner && knownTaskIds.has(codeOwner) ? codeOwner : null;
+      if (referencedTaskId) {
+        requestedTask = Object.freeze({
+          id: referencedTaskId, start: false, source: 'code-reference', text: '',
+        });
+      }
+    }
 
     // Durable orchestration may replay an outbox claim after a crash in the
     // narrow window between history persistence and outbox acknowledgement.
@@ -1285,20 +1312,26 @@ function createChatTurnEngine(deps) {
       cs._lastApiErrorDecision = null;
       setTaskState(sessionName, { apiError: null }, { save: false });
     }
-    const detachTaskContext = (!requestedTask.id && opts.schedulerWorkKind === 'task')
-      || (!!originDispatchId && !requestedTask.id);
+    const provisionalAdmission = !requestedTask.id && !reexecutePersistedDelivery
+      && (!originContinue || directUserInput);
     const {
       taskId: nextTaskId, boundaryChanged: taskBoundaryChanged,
       detached: taskDetached,
-    } = taskContextHost.beginTurn(cs, requestedTask, { detach: detachTaskContext });
+    } = taskContextHost.beginTurn(cs, requestedTask, { provisional: provisionalAdmission });
     const inferredTaskStart = !requestedTask.id && taskBoundaryChanged
       && !taskDetached && !!nextTaskId;
     const messageTask = inferredTaskStart ? {
       id: nextTaskId,
       start: true,
-      source: 'aux',
+      source: 'provisional',
       text,
     } : requestedTask;
+    const identityLocked = !!requestedTask.id && (requestedTask.start !== true
+      || ['task-board', 'commander', 'code-reference'].includes(requestedTask.source));
+    bindTurnTask(turn, {
+      ...messageTask,
+      id: nextTaskId,
+    });
 
     // Persist the canonical user event before any provider execution.
     // A re-executed delivery already has its user message in history from the
@@ -1361,8 +1394,24 @@ function createChatTurnEngine(deps) {
     cs.currentUserText = text;          // store user message for summary context
     // Synchronous task goal fallback (zero-latency first frame); the in-progress
     // classify loop will refine it to a stable noun-phrase goal within 60s.
-    ensureCurrentTask(cs, sessionName, text, taskBoundaryChanged);
+    ensureCurrentTask(cs, sessionName, text, taskBoundaryChanged, {
+      taskId: nextTaskId,
+      taskText: messageTask.text || text,
+      taskSource: messageTask.source,
+      explicitContinuation: identityLocked,
+    });
     cs.currentTaskName = cs.currentTask ? cs.currentTask.goal : '新任务'; // compat for legacy callers
+    // Identity attribution starts as soon as the canonical user event is
+    // durable. It is intentionally independent of provider completion and only
+    // refines task identity/name; D/W/B/E remains owned by turn finalization.
+    if (taskBoundaryChanged && persisted.type !== 'gateway') {
+      runClassifyNow(cs, sessionName, {
+        turnId,
+        source: 'admission',
+        identityLocked,
+        admittedTaskId: nextTaskId,
+      });
+    }
     cs.currentToolCalls = [];
     cs.currentCost = null;
     cs.isStreaming = true;
@@ -1399,7 +1448,9 @@ function createChatTurnEngine(deps) {
     // decides P/D/W/B/E at turn end; best-effort Aux attribution names/groups the
     // task afterward and the periodic scan only retries unresolved names.
     cancelClassify(cs);
-    emitRunningNotify(sessionName, `处理中：${(cs.currentTask && cs.currentTask.goal) || '新任务'}`);
+    const taskIdentityPending = getTaskState(persisted).taskIdentityPending === true;
+    emitRunningNotify(sessionName,
+      `${taskIdentityPending ? '归类中' : '处理中'}：${(cs.currentTask && cs.currentTask.goal) || '新任务'}`);
     // Trigger/dispatch lineage is owned by `turn`; no session-global origin flag
     // is written here, so a stale finalize cannot leak ancestry into a new turn.
     setSessionStatus(sessionName, { status: 'thinking', currentFile: null });

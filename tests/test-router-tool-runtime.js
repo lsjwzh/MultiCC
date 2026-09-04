@@ -427,6 +427,26 @@ test('route_task preserves an inherited logical task across follow-up turns', as
   assert.equal((await operations.list({ kind: 'dispatch' })).length, 2);
 });
 
+test('ordinary route_task mints a candidate instead of inheriting an unfinished task', async t => {
+  const { admissions, runtime } = fixture(t, {
+    resolveContext: () => ({
+      turnId: 'turn-unrelated',
+      taskId: 'tsk-unfinished-prior',
+      taskStart: false,
+      taskSource: 'router-tool',
+    }),
+  });
+  const capability = runtime.issueContext({ sessionId: 'caller', dynamic: true });
+  const result = await runtime.execute(capability, 'route_task', {
+    target_session_id: 'worker-a',
+    message: 'completely unrelated work',
+  });
+  assert.notEqual(result.task_id, 'tsk-unfinished-prior');
+  assert.match(result.task_id, /^tsk-router-/);
+  assert.equal(admissions[0].opts.taskStart, true);
+  assert.equal(admissions[0].opts.taskSource, 'router-tool');
+});
+
 test('explicit idempotency survives a fresh turn without creating a second logical task', async t => {
   const { admissions, operations, runtime } = fixture(t);
   const args = {

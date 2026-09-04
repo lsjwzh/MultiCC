@@ -348,12 +348,15 @@ function createRouterToolRuntime({
     const key = !hasExplicitKey
       ? `router:${stableSuffix([tool, context.sessionId, context.turnId, targetId, message], cryptoImpl)}`
       : `router:${tool}:${cleanId(explicitKey, 'idempotency_key')}`;
-    // A task id is logical identity, not an execution attempt. A continuation
-    // carries the canonical source task across Commander/router turns; an
-    // explicit idempotency key must also survive a client retry that starts a
-    // fresh turn. turnId/message remain operation identity only when neither
-    // stronger boundary exists.
-    const inheritedTaskId = context.taskId ? cleanId(context.taskId, 'taskId') : null;
+    // Only an explicit board/Commander task owns enough evidence to carry a
+    // canonical identity through a route. An ordinary router invocation is a
+    // new candidate even if the caller's previous task is unfinished; otherwise
+    // unrelated work lands with that previous task's code and title until Aux
+    // eventually runs. The idempotency key still deduplicates execution retries.
+    const explicitContinuation = ['task-board', 'commander', 'code-reference']
+      .includes(String(context.taskSource || ''));
+    const inheritedTaskId = explicitContinuation && context.taskId
+      ? cleanId(context.taskId, 'taskId') : null;
     const suffix = stableSuffix(hasExplicitKey
       ? [tool, context.sessionId, targetId, key]
       : [tool, context.sessionId, context.turnId, targetId, message, key], cryptoImpl);
@@ -361,7 +364,7 @@ function createRouterToolRuntime({
       idempotencyKey: key,
       taskId: inheritedTaskId || `tsk-router-${suffix}`,
       taskStart: inheritedTaskId ? context.taskStart === true : true,
-      taskSource: context.taskSource || 'router-tool',
+      taskSource: inheritedTaskId ? context.taskSource : 'router-tool',
     };
   }
 
