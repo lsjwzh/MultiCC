@@ -120,14 +120,21 @@ test('absoluteBaseUrl prefers forwarded proto+host and sanitizes garbage', () =>
 
 test('buildManifestXml embeds the per-request asset URL and escapes metadata', () => {
   const xml = buildManifestXml(
-    { bundleId: 'com.multicc.app', versionName: '2.29.12', title: 'A&B <App>' },
+    { bundleId: 'com.multicc.app', versionName: '2.29.12', versionCode: '125', title: 'A&B <App>' },
     'https://mac.tail1234.ts.net');
   assert.match(xml, /<!DOCTYPE plist PUBLIC/);
   assert.ok(xml.includes('<string>https://mac.tail1234.ts.net/multicc-ios.ipa</string>'));
   assert.ok(xml.includes('<key>bundle-identifier</key>\n\t\t\t\t<string>com.multicc.app</string>'));
-  assert.ok(xml.includes('<key>bundle-version</key>\n\t\t\t\t<string>2.29.12</string>'));
+  // bundle-version must be the CFBundleVersion build number, not the
+  // marketing version — installd drops the install post-download otherwise.
+  assert.ok(xml.includes('<key>bundle-version</key>\n\t\t\t\t<string>125</string>'));
+  assert.ok(!xml.includes('<key>bundle-version</key>\n\t\t\t\t<string>2.29.12</string>'));
   assert.ok(xml.includes('<string>A&amp;B &lt;App&gt;</string>'));
   assert.ok(!xml.includes('A&B <App>'));
+  // …and without a build number it falls back to the marketing version.
+  const fallback = buildManifestXml(
+    { bundleId: 'com.multicc.app', versionName: '2.29.12' }, 'https://h.ts.net');
+  assert.ok(fallback.includes('<key>bundle-version</key>\n\t\t\t\t<string>2.29.12</string>'));
 });
 
 test('manifestHandler 404s without a complete publish and renders per request otherwise', t => {
