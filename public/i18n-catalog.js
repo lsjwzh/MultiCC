@@ -1146,7 +1146,19 @@ window.MULTICC_I18N_CATALOG = {
     "docsregDeleted": "已删除登记",
     "docsregAddTitle": "服务名称（如：vite dev server）",
     "docsregAddUrl": "服务 URL（如 http://127.0.0.1:5173/）",
-    "docsregAdded": "已登记"
+    "docsregAdded": "已登记",
+    "docsregStatus_up": "运行中",
+    "docsregStatus_down": "已停止",
+    "docsregStatus_starting": "启动中",
+    "docsregStatus_unknown": "未知",
+    "docsregStart": "启动",
+    "docsregStop": "停止",
+    "docsregLog": "查看日志",
+    "docsregStarted": "已发出启动",
+    "docsregStopped": "已停止",
+    "docsregNoCmd": "未登记启动命令，无法从面板启动",
+    "docsregAddCmd": "启动命令（可留空，如 python3 server.py --port 8770）",
+    "docsregAddCwd": "工作目录（绝对路径）"
   },
   "en": {
     "newDirectory": "New Workspace",
@@ -2294,6 +2306,18 @@ window.MULTICC_I18N_CATALOG = {
     "docsregDeleted": "Removed",
     "docsregAddTitle": "Service name (e.g. vite dev server)",
     "docsregAddUrl": "Service URL (e.g. http://127.0.0.1:5173/)",
-    "docsregAdded": "Registered"
+    "docsregAdded": "Registered",
+    "docsregStatus_up": "Up",
+    "docsregStatus_down": "Down",
+    "docsregStatus_starting": "Starting",
+    "docsregStatus_unknown": "Unknown",
+    "docsregStart": "Start",
+    "docsregStop": "Stop",
+    "docsregLog": "View log",
+    "docsregStarted": "Start issued",
+    "docsregStopped": "Stopped",
+    "docsregNoCmd": "No start command registered; cannot start from panel",
+    "docsregAddCmd": "Start command (optional, e.g. python3 server.py --port 8770)",
+    "docsregAddCwd": "Working directory (absolute path)"
   }
 };
