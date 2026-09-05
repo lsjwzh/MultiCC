@@ -1,5 +1,7 @@
 'use strict';
 
+const { DOCS_REGISTRY_RULE_MARKER, ensureBuiltinSharedMemory } = require('./builtin-rules');
+
 // Per-session injection caps (chars of folder content surfaced into each
 // session's system prompt). These are the per-session CONTEXT COST dials —
 // raising them bloats every session's prompt. Keep modest.
@@ -46,6 +48,15 @@ function createFolderMemoryService(rawDeps) {
     return path.join(deps.memoryStoreRoot, String(dirId), '_shared');
   }
 
+  function ensureShared(dirId) {
+    try {
+      return ensureBuiltinSharedMemory(sharedDir(dirId));
+    } catch (error) {
+      (deps.logger || console).warn(`[multicc/memory] shared seed ${dirId} failed: ${error.message}`);
+      return false; // Retry at the next startup/session; never block a chat.
+    }
+  }
+
   function primaryFileName(cli) {
     return cli === 'codex' ? 'AGENTS.md' : 'CLAUDE.md';
   }
@@ -77,6 +88,7 @@ ${body}
     try {
       fs.mkdirSync(own, { recursive: true });
       fs.mkdirSync(shared, { recursive: true });
+      ensureShared(persisted.dirId);
       const primary = path.join(own, primaryFileName(persisted.cli));
       if (!fs.existsSync(primary)) {
         fs.writeFileSync(primary,
@@ -118,6 +130,7 @@ ${body}
     });
     const sharedText = deps.readMemoryFolder(shared, SHARED_MEM_CAP, {
       primaryNames: ['MEMORY.md'],
+      priorityEntryMarkers: [DOCS_REGISTRY_RULE_MARKER],
     });
     return (
 `[记忆库｜原生会话快照] 你有一个持久记忆文件夹（存在 multicc 数据区，不在本仓库、不进 git）。以下正文会在原生 CLI 会话启动/重建时形成快照；会话中写入会立即落盘并由工具结果确认，但不会改写已经运行中的系统提示词。
@@ -181,10 +194,14 @@ ${sharedText || '（空）'}
     return parts.length ? parts.join('\n\n') : null;
   }
 
+  // Upgrade every registered project, including ones without an active session.
+  for (const dirId of deps.directories.keys()) ensureShared(dirId);
+
   return Object.freeze({
     buildBlock,
     curatedLimit,
     ensureDirs,
+    ensureShared,
     listFiles,
     primaryFileName,
     resolveRolePrompt,

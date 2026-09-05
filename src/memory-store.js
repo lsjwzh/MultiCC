@@ -87,6 +87,12 @@ function buildMemoryFolderSnapshot(dir, capChars, opts = {}) {
       });
       continue;
     }
+    if (name.toLowerCase() === 'memory.md' && opts.priorityEntryMarkers?.length) {
+      const rank = entry => opts.priorityEntryMarkers.some(marker => entry.trimStart().startsWith(marker)) ? 0 : 1;
+      // Pin shipped rules in the bounded snapshot only. The store retains its
+      // original order and bytes, including hand-written legacy rule entries.
+      body = body.split(ENTRY_DELIMITER).sort((a, b) => rank(a) - rank(b)).join(ENTRY_DELIMITER);
+    }
     records.push({
       name,
       body,

@@ -955,7 +955,7 @@ const directoryModule = createDirectoryModule({
   },
   sessions: {
     listByDir: (dirId) => [...persistedSessions.values()].filter(s => s.dirId === dirId),
-    seedCommander: seedCommanderSession,
+    seedCommander: dir => { folderMemory.ensureShared(dir.id); return seedCommanderSession(dir); },
     destroyCascade: destroySessionCascade,
     persistRecords: () => sessionPersistence.mutate('http.directory-delete-fallback', () => {}),
     // Cross-file transaction needs the sessions payload at the moment of
