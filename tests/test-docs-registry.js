@@ -203,3 +203,40 @@ test('startService refuses entries without startCmd and unknown ids', () => {
   assert.equal(reg.startService('nope').status, 404);
   reset();
 });
+
+// ── Web loopback URL rewrite (public/docs-registry.js, pure function) ────────
+// The panel opens registry URLs recorded from the server's own view; browsing
+// from another machine must swap loopback hosts for the browsing host.
+const { rewriteLoopbackUrl: rewriteWeb, isLoopbackHost } = require('../public/docs-registry');
+
+test('web rewriteLoopbackUrl swaps loopback host, keeps port/path/query/protocol', () => {
+  assert.equal(rewriteWeb('http://127.0.0.1:8770/', '192.168.1.5'), 'http://192.168.1.5:8770/');
+  assert.equal(rewriteWeb('http://127.0.0.1:8770/x?a=1', '192.168.1.5'), 'http://192.168.1.5:8770/x?a=1');
+  assert.equal(rewriteWeb('https://localhost:5173/', 'macbook.tail94695a.ts.net'), 'https://macbook.tail94695a.ts.net:5173/');
+  assert.equal(rewriteWeb('http://LOCALHOST:8770/', '192.168.1.5'), 'http://192.168.1.5:8770/');
+  assert.equal(rewriteWeb('http://[::1]:8770/', '192.168.1.5'), 'http://192.168.1.5:8770/');
+});
+
+test('web rewriteLoopbackUrl leaves non-loopback, relative and local-view URLs untouched', () => {
+  assert.equal(rewriteWeb('http://example.com:8080/', '192.168.1.5'), 'http://example.com:8080/');
+  assert.equal(rewriteWeb('https://192.168.1.9:443/', '192.168.1.5'), 'https://192.168.1.9:443/');
+  assert.equal(rewriteWeb('/artifacts/abc/report.html', '192.168.1.5'), '/artifacts/abc/report.html');
+  assert.equal(rewriteWeb('ftp://127.0.0.1:21/', '192.168.1.5'), 'ftp://127.0.0.1:21/', 'non-http scheme untouched');
+  // Local (loopback) browsing keeps the URL exactly as recorded.
+  assert.equal(rewriteWeb('http://127.0.0.1:8770/', 'localhost'), 'http://127.0.0.1:8770/');
+  assert.equal(rewriteWeb('http://127.0.0.1:8770/', '127.0.0.1'), 'http://127.0.0.1:8770/');
+  assert.equal(rewriteWeb('http://127.0.0.1:8770/', '[::1]'), 'http://127.0.0.1:8770/');
+  // Degenerate inputs pass through untouched.
+  assert.equal(rewriteWeb('', '192.168.1.5'), '');
+  assert.equal(rewriteWeb('http://127.0.0.1:8770/', ''), 'http://127.0.0.1:8770/');
+  assert.equal(rewriteWeb('not a url', '192.168.1.5'), 'not a url');
+});
+
+test('web isLoopbackHost recognizes the loopback family only', () => {
+  for (const h of ['localhost', '127.0.0.1', '::1', '[::1]', 'LOCALHOST']) {
+    assert.equal(isLoopbackHost(h), true, h);
+  }
+  for (const h of ['192.168.1.5', 'example.com', '[fd00::5]', '127.0.0.2']) {
+    assert.equal(isLoopbackHost(h), false, h);
+  }
+});
