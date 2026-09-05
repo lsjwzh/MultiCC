@@ -1144,5 +1144,17 @@
   "docsregDeleted": "已删除登记",
   "docsregAddTitle": "服务名称（如：vite dev server）",
   "docsregAddUrl": "服务 URL（如 http://127.0.0.1:5173/）",
-  "docsregAdded": "已登记"
+  "docsregAdded": "已登记",
+  "docsregStatus_up": "运行中",
+  "docsregStatus_down": "已停止",
+  "docsregStatus_starting": "启动中",
+  "docsregStatus_unknown": "未知",
+  "docsregStart": "启动",
+  "docsregStop": "停止",
+  "docsregLog": "查看日志",
+  "docsregStarted": "已发出启动",
+  "docsregStopped": "已停止",
+  "docsregNoCmd": "未登记启动命令，无法从面板启动",
+  "docsregAddCmd": "启动命令（可留空，如 python3 server.py --port 8770）",
+  "docsregAddCwd": "工作目录（绝对路径）"
 }
