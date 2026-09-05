@@ -458,9 +458,16 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
     );
   }
 
-  // Shared route builder: keeps each simple case a two-liner (3k line budget).
+  // Shared route builders: keep each switch case a two-liner (3k line budget).
   MaterialPageRoute<void> _routeTo(WidgetBuilder builder) =>
       MaterialPageRoute<void>(builder: builder);
+
+  MaterialPageRoute<void> _agentResourcesRoute(
+    AgentResourcesInitialSection section,
+  ) => _routeTo((_) => AgentResourcesScreen(
+        settings: widget.settings,
+        initialSection: section,
+      ));
 
   void _openNavigationDestination(WorkspaceDestination destination) {
     final route = switch (destination) {
@@ -470,8 +477,8 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
         _routeTo((_) => DocsRegistryScreen(settings: widget.settings)),
       WorkspaceDestination.voice =>
         _routeTo((_) => VoiceSettingsScreen(settings: widget.settings)),
-      WorkspaceDestination.goal => MaterialPageRoute<void>(
-          builder: (_) => SettingsScreen(
+      WorkspaceDestination.goal => _routeTo(
+          (_) => SettingsScreen(
             settings: widget.settings,
             initialSection: SettingsInitialSection.goal,
           ),
@@ -486,24 +493,12 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
         _routeTo((_) => TunnelSettingsScreen(settings: widget.settings)),
       WorkspaceDestination.bridges =>
         _routeTo((_) => BridgeSettingsScreen(settings: widget.settings)),
-      WorkspaceDestination.resources => MaterialPageRoute<void>(
-          builder: (_) => AgentResourcesScreen(
-            settings: widget.settings,
-            initialSection: AgentResourcesInitialSection.resources,
-          ),
-        ),
-      WorkspaceDestination.skillSync => MaterialPageRoute<void>(
-          builder: (_) => AgentResourcesScreen(
-            settings: widget.settings,
-            initialSection: AgentResourcesInitialSection.skillSync,
-          ),
-        ),
-      WorkspaceDestination.storage => MaterialPageRoute<void>(
-          builder: (_) => AgentResourcesScreen(
-            settings: widget.settings,
-            initialSection: AgentResourcesInitialSection.storage,
-          ),
-        ),
+      WorkspaceDestination.resources =>
+        _agentResourcesRoute(AgentResourcesInitialSection.resources),
+      WorkspaceDestination.skillSync =>
+        _agentResourcesRoute(AgentResourcesInitialSection.skillSync),
+      WorkspaceDestination.storage =>
+        _agentResourcesRoute(AgentResourcesInitialSection.storage),
       WorkspaceDestination.overview || WorkspaceDestination.memory => null,
     };
 
