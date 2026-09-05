@@ -10,6 +10,30 @@ import '../services/manage_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
 
+/// 登记条目的 URL 是「服务器自己视角」——通常是 loopback
+/// （http://127.0.0.1:端口/）。手机/外网（局域网 IP、Tailscale 域名）打开
+/// 条目时，设备上的 127.0.0.1 指向设备自身而非服务器，因此把 loopback host
+/// 替换为「App 当前连接的 multicc 服务器 host」；端口、协议、路径、查询保留。
+/// 非 loopback 绝对 URL、相对路径不动；服务器本身配成 loopback 访问时也不动。
+/// Best-effort：多网卡 / 反代 / 服务只绑 loopback 时改写后仍可能不可达，
+/// 客户端无法验证。语义与 web 端 public/docs-registry.js 的
+/// rewriteLoopbackUrl 完全一致（两端行为互为镜像，测试同套用例）。
+bool isLoopbackHost(String hostname) {
+  final h = hostname.toLowerCase();
+  return h == 'localhost' || h == '127.0.0.1' || h == '::1' || h == '[::1]';
+}
+
+String rewriteLoopbackUrl(String rawUrl, String currentHost) {
+  final url = rawUrl.trim();
+  final host = currentHost.trim().toLowerCase();
+  if (!url.startsWith('http://') && !url.startsWith('https://')) return url;
+  if (host.isEmpty || isLoopbackHost(host)) return url;
+  final uri = Uri.tryParse(url);
+  if (uri == null || !uri.hasScheme || !isLoopbackHost(uri.host)) return url;
+  // replace 只换 host：scheme / port / path / query 原样保留。
+  return uri.replace(host: host).toString();
+}
+
 /// 服务与文档 (Docs & web-services registry)。镜像网页管理台 /manage 的同名
 /// 面板：agent 发布的网页/文件（7 天清理，置顶豁免）+ 手动登记的本地 Web
 /// 服务（探活状态、启停、日志）。后端契约见 src/docs-registry.js。
@@ -100,12 +124,14 @@ class _DocsRegistryScreenState extends State<DocsRegistryScreen> {
   }
 
   /// 打开条目。相对路径（/docs/…、/artifacts/…）拼到当前服务器 origin 并附
-  /// token（同源凭据安全）；绝对 http(s) URL 原样打开，绝不附带 token，
-  /// 避免把服务器凭据泄露给第三方 host。
+  /// token（同源凭据安全）；绝对 http(s) URL 打开前做 loopback host 改写
+  /// （见文件头 rewriteLoopbackUrl），绝不附带 token，避免把服务器凭据
+  /// 泄露给第三方 host。
   Future<void> _open(DocsRegistryEntry e) async {
     Uri uri;
     if (e.url.startsWith('http://') || e.url.startsWith('https://')) {
-      uri = Uri.parse(e.url);
+      final serverHost = Uri.tryParse(widget.settings.buildHttpUrl('/'))?.host ?? '';
+      uri = Uri.parse(rewriteLoopbackUrl(e.url, serverHost));
     } else {
       final token = widget.settings.token.trim();
       uri = Uri.parse(widget.settings.buildHttpUrl(e.url)).replace(
