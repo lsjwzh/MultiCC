@@ -313,12 +313,10 @@ function stripModelSuffix(m) {
 // no model list, so its picker would otherwise be empty. The authoritative set
 // is the codex CLI's own cached catalog (~/.codex/models_cache.json, refreshed
 // by the CLI itself), whose entries carry visibility + priority. We surface the
-// visibility:"list" slugs in priority order. [CODEX_OFFICIAL_MODELS_FALLBACK] is
-// the curated baseline used when that cache is absent (mirrors codex client
-// 0.144.x, July 2026) so the picker is never empty on a fresh install.
-const CODEX_OFFICIAL_MODELS_FALLBACK = Object.freeze([
-  'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.3-codex-spark',
-]);
+// visibility:"list" slugs in priority order. The safe built-in fallback is an
+// empty concrete list: leaving model unset lets Codex choose an entitled
+// default. A static model id must never masquerade as an account entitlement.
+const CODEX_OFFICIAL_MODELS_FALLBACK = Object.freeze([]);
 let _codexModelsCache = { path: null, mtime: 0, models: null };
 function readCodexOfficialModels(cachePath) {
   const file = cachePath || path.join(os.homedir(), '.codex', 'models_cache.json');
@@ -590,11 +588,10 @@ function summarize(p, opts = {}) {
       if (v && !seen.has(v)) { seen.add(v); ordered.push(v); }
     }
     modelOptions = ordered;
-    if (!ordered.length && !baseUrl) {
-      // Official codex (ChatGPT OAuth) login: no config.toml `model` and cc-switch
-      // supplies no list, so the picker would be empty. Fall back to the codex
-      // CLI's own cached model catalog. Never overrides a provider's own declared
-      // models (ordered is non-empty in that case).
+    if (!baseUrl) {
+      // Official Codex (ChatGPT OAuth): account-scoped CLI discovery always
+      // outranks a provider row's old static modelCatalog. Keep `model` itself
+      // untouched so a user-saved unknown/new id remains editable as Custom.
       modelOptions = readCodexOfficialModels(opts.codexCachePath);
     }
   }

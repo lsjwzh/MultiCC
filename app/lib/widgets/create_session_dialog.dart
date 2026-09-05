@@ -13,6 +13,7 @@ import '../models/provider_limit_label.dart';
 import '../services/settings_service.dart';
 import '../services/manage_service.dart';
 import '../services/claude_models_service.dart';
+import '../services/codex_models_service.dart';
 import '../services/qoder_models_service.dart';
 import '../theme.dart';
 import '../services/agent_preset_service.dart';
@@ -90,6 +91,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
   final _customModelCtrl = TextEditingController();
 
   bool get _isClaude => _pickedCli == SessionCli.claude;
+  bool get _isCodex => _pickedCli == SessionCli.codex;
   bool get _isQoder => _pickedCli == SessionCli.qoder;
   String get _defaultEffort => _pickedCli.defaultEffort;
   bool get _hasConcreteDefaultProvider =>
@@ -133,6 +135,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     _loadPresets();
     if (_isQoder) _loadQoderModels();
     if (_isClaude) _loadClaudeModels();
+    if (_isCodex) _loadCodexModels();
     final opts = _currentModelOptions;
     _pickedModel = opts.isNotEmpty ? opts.first.key : null;
   }
@@ -184,6 +187,21 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     });
   }
 
+  Future<void> _loadCodexModels({bool forceRefresh = true}) async {
+    try {
+      await CodexModelsService(
+        settings: widget.settings,
+      ).load(forceRefresh: forceRefresh);
+    } catch (_) {}
+    if (!mounted || !_isCodex) return;
+    setState(() {
+      final opts = _currentModelOptions;
+      final current = _customModel ? null : _pickedModel;
+      if (current != null && opts.any((entry) => entry.key == current)) return;
+      _pickedModel = opts.isNotEmpty ? opts.first.key : null;
+    });
+  }
+
   Future<void> _loadPresets() async {
     setState(() => _loadingPresets = true);
     try {
@@ -194,8 +212,8 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
   }
 
   /// Build the model options for the current provider selection.
-  /// Mirrors web rebuildModelOptions(): provider modelOptions if available,
-  /// else CLAUDE_MODEL_OPTIONS for Claude only (empty list for Codex).
+  /// Official Codex uses the account catalog; relays keep provider options;
+  /// Claude falls back to its CLI-derived catalog.
   List<MapEntry<String, String>> get _currentModelOptions {
     // Live Qoder catalog once _loadQoderModels() lands; routing tiers until then.
     if (_isQoder) return QoderModelsService.options();
@@ -209,6 +227,9 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
         prov = p;
         break;
       }
+    }
+    if (_isCodex && (prov == null || prov['isOfficial'] == true)) {
+      return CodexModelsService.options();
     }
     // Alias-mapped relays (e.g. iFlytek): expose the tiers directly, each option
     // reading "opus -> claude-opus-4-8 (GLM5.2)". The tier key is the value - the
@@ -241,9 +262,8 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     }
     // Empty provider follows the configured default provider for this CLI:
     // Codex should still show GPT / XF model choices instead of a Claude list.
-    // No provider (or provider without modelOptions):
-    //  - Claude: fall back to standard model list
-    //  - Codex: empty list (custom model entry only), matching web behavior
+    // No provider (or provider without modelOptions): Claude falls back to its
+    // CLI-derived list. Official Codex already returned above.
     // Live CLI-bundle list once _loadClaudeModels() lands; static table until then.
     return _isClaude ? ClaudeModelsService.options() : const [];
   }
@@ -431,6 +451,13 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     // Claude has a provider pool, but Claude Official exposes no modelOptions —
     // warm the CLI-bundle list so the dropdown upgrades once it lands.
     if (cli == SessionCli.claude) _loadClaudeModels();
+    if (cli == SessionCli.codex) {
+      try {
+        await CodexModelsService(
+          settings: widget.settings,
+        ).load(forceRefresh: true);
+      } catch (_) {}
+    }
     try {
       final d = await ManageService(
         settings: widget.settings,
@@ -732,6 +759,20 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                 });
               },
             ),
+            if (_isCodex &&
+                CodexModelsService.cached.diagnosticMessage.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              Text(
+                '${CodexModelsService.cached.diagnosticMessage}'
+                '${CodexModelsService.cached.cliVersion.isNotEmpty ? ' · CLI ${CodexModelsService.cached.cliVersion}' : ''}',
+                key: const ValueKey('codex-model-diagnostic'),
+                style: const TextStyle(
+                  color: Color(0xFF8a909b),
+                  fontSize: 11,
+                  height: 1.35,
+                ),
+              ),
+            ],
             if (_customModel) ...[
               const SizedBox(height: 6),
               TextField(
