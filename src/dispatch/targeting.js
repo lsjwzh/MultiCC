@@ -96,7 +96,7 @@ function routingStateFor(record) {
 // verbatim from server.js; the host injects the session registry, the live chat
 // session map, and normalizeEffort so targeting/prompt stay free of globals.
 
-function createDispatchTargeting({ records, chatSessions, normalizeEffort, isTargetBusy } = {}) {
+function createDispatchTargeting({ records, chatSessions, normalizeEffort, isTargetBusy, boundTaskTitleFor } = {}) {
   if (!records || typeof records.get !== 'function' || typeof records.values !== 'function') {
     throw new TypeError('[dispatch-targeting] records must be a map-like session registry');
   }
@@ -108,6 +108,11 @@ function createDispatchTargeting({ records, chatSessions, normalizeEffort, isTar
   }
   if (typeof isTargetBusy !== 'function') {
     throw new TypeError('[dispatch-targeting] isTargetBusy must be a function');
+  }
+  // Optional: resolve a task-bound session's task title by task id. Hosts that
+  // cannot supply it leave the dep out — candidates then carry only the id.
+  if (boundTaskTitleFor != null && typeof boundTaskTitleFor !== 'function') {
+    throw new TypeError('[dispatch-targeting] boundTaskTitleFor must be a function');
   }
 
 function dispatchableSessionsFor(sessionId) {
@@ -142,6 +147,20 @@ function dispatchableSessionsFor(sessionId) {
           ? busy
           : !!activeChat && (activeChat.clients.size > 0 || activeChat.isStreaming),
       };
+      // A task-bound session (hidden task-board worker, label「任务 · …」) is
+      // only a valid target for follow-ups of ITS bound task — see the routing
+      // rule in buildDispatchContextPrompt. Present on the candidate so the
+      // dispatcher can tell bound from ordinary workers apart.
+      const taskBoundTaskId = typeof s.taskBoundTaskId === 'string' && s.taskBoundTaskId
+        ? s.taskBoundTaskId
+        : '';
+      if (taskBoundTaskId) {
+        target.taskBoundTaskId = taskBoundTaskId;
+        if (boundTaskTitleFor) {
+          const boundTaskTitle = compactSafeText(boundTaskTitleFor(taskBoundTaskId), 120);
+          if (boundTaskTitle) target.boundTaskTitle = boundTaskTitle;
+        }
+      }
       if (includeRoutingProfile) {
         target.role = roleSummaryFor(s);
         target.recentTasks = recentTasksFor(s);
@@ -170,6 +189,7 @@ function buildDispatchContextPrompt(sessionId) {
       '你是本工作区的 Commander。默认优先判断是否应把自包含任务用 route_task 单向派发给下面列出的同工作区 Worker。',
     '这不是强制 route-only：轻量分析、检查、规划、解释，或用户明确要求你自己处理时，可以在当前会话完成；如果选择自己完成，请简短说明为什么不派发。',
     '涉及代码修改、长时间执行、验证/提交/合并、跨 provider、多模块并行或需要独立 worktree 的任务，优先 route_task 派发。',
+    '带 taskBoundTaskId 的候选是任务绑定会话（隐藏的任务板专属 worker）：仅当新任务是其绑定任务的后续时才可选，无关任务一律派给不带该字段的会话；用户显式点名任务绑定会话时照选（规则①优先），但须在派发 message 里注明它是任务绑定会话。',
     ...(ultra ? [
       '当前会话具备 Ultracode 能力，可用于轻量分析、验证和小范围自执行；跨 session 派发仍只使用 MCP route_task / dispatch_master。',
     ] : []),

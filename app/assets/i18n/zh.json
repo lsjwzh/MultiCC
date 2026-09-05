@@ -695,6 +695,7 @@
   "dispatchStateCancelled": "已取消",
   "dispatchSessionNotFound": "目标会话已删除或尚未加载",
   "dispatchUnknownSession": "未知会话",
+  "dispatchTaskBoundHint": "任务绑定会话 · {task}（隐藏的任务板专属 worker，点击打开其聊天视图）",
   "recording": "录音中…",
   "transcribing": "识别中…",
   "typeMessage": "输入消息…",

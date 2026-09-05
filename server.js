@@ -1014,7 +1014,7 @@ const {
   dispatchableSessionsFor,
   dispatchTargetHintFor,
   buildDispatchContextPrompt,
-} = createDispatchTargeting({ records: persistedSessions, chatSessions, normalizeEffort, isTargetBusy: dispatchTargetBusy });
+} = createDispatchTargeting({ records: persistedSessions, chatSessions, normalizeEffort, isTargetBusy: dispatchTargetBusy, boundTaskTitleFor: id => taskBoardRuntime?.getBoard()?.tasks?.[id]?.title || '' });
 
 // Gateway/dispatch orchestration (src/dispatch/gateway-host.js): the gateway
 // system prompt, confirm/cancel control, dispatch admission and the turn-end

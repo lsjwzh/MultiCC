@@ -47,6 +47,13 @@ function createOrchestrationRoutes(rawDeps) {
       : queued ? 'queued'
         : started ? 'started'
           : operation.status === 'running' ? 'running' : 'unknown';
+    const targetId = operation.spec?.targetId || null;
+    // Task-bound workers are hidden from the /api/sessions list, so a client
+    // cannot resolve their「任务 · …」label from there. Carrying the registry
+    // label (and the bound-task marker) on the projection lets the dispatch UI
+    // show a friendly name without a second lookup. Absent for ordinary
+    // targets keeps the DTO minimal.
+    const targetRecord = targetId ? deps.records.get(targetId) : null;
     return {
       operationId: operation.id,
       status: operation.status,
@@ -54,7 +61,11 @@ function createOrchestrationRoutes(rawDeps) {
       relation: operation.ownerSessionId === sessionId
         ? (operation.spec?.chatId === sessionId ? 'self' : 'owner') : 'target',
       ownerSessionId: operation.ownerSessionId,
-      targetSessionId: operation.spec?.targetId || null,
+      targetSessionId: targetId,
+      ...(targetRecord && typeof targetRecord.label === 'string' && targetRecord.label
+        ? { targetLabel: targetRecord.label } : {}),
+      ...(targetRecord && typeof targetRecord.taskBoundTaskId === 'string' && targetRecord.taskBoundTaskId
+        ? { targetTaskBoundTaskId: targetRecord.taskBoundTaskId } : {}),
       executionSessionId: operation.spec?.chatId || operation.spec?.targetId || null,
       taskId: operation.spec?.taskId || null,
       mode: operation.spec?.resultMode || (operation.spec?.oneWay ? 'one_way' : null),
