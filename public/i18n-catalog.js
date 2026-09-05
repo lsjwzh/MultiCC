@@ -1134,7 +1134,19 @@ window.MULTICC_I18N_CATALOG = {
     "plannerDragLabel": "拖动任务：{title}",
     "plannerOpenTaskLabel": "打开任务：{title}",
     "plannerAnswerQuestion": "回答问题",
-    "plannerInspectError": "查看异常"
+    "plannerInspectError": "查看异常",
+    "docsServices": "服务与文档",
+    "docsregDesc": "所有 agent 发布的网页/文件和你登记的本地 web 服务。临时产物 7 天后自动清理（📌 置顶可豁免），过期条目会标注。",
+    "docsregAddService": "登记服务",
+    "docsregEmpty": "还没有登记的文档或服务。agent 用 multicc-artifact 发布的网页/文件会自动出现在这里。",
+    "docsregExpired": "已过期",
+    "docsregPin": "置顶（豁免自动清理）",
+    "docsregUnpin": "取消置顶",
+    "docsregConfirmDelete": "确定删除「{title}」的登记？（不会删除已发布的内容本身）",
+    "docsregDeleted": "已删除登记",
+    "docsregAddTitle": "服务名称（如：vite dev server）",
+    "docsregAddUrl": "服务 URL（如 http://127.0.0.1:5173/）",
+    "docsregAdded": "已登记"
   },
   "en": {
     "newDirectory": "New Workspace",
@@ -2270,6 +2282,18 @@ window.MULTICC_I18N_CATALOG = {
     "plannerDragLabel": "Drag task: {title}",
     "plannerOpenTaskLabel": "Open task: {title}",
     "plannerAnswerQuestion": "Answer question",
-    "plannerInspectError": "Inspect error"
+    "plannerInspectError": "Inspect error",
+    "docsServices": "Docs & Services",
+    "docsregDesc": "Pages/files published by agents and local web services you register. Temp artifacts are cleaned up after 7 days (📌 pin to exempt); expired rows are flagged.",
+    "docsregAddService": "Add service",
+    "docsregEmpty": "Nothing registered yet. Pages/files published via the multicc-artifact skill appear here automatically.",
+    "docsregExpired": "Expired",
+    "docsregPin": "Pin (exempt from cleanup)",
+    "docsregUnpin": "Unpin",
+    "docsregConfirmDelete": "Remove the registration for “{title}”? (The published content itself is not deleted.)",
+    "docsregDeleted": "Removed",
+    "docsregAddTitle": "Service name (e.g. vite dev server)",
+    "docsregAddUrl": "Service URL (e.g. http://127.0.0.1:5173/)",
+    "docsregAdded": "Registered"
   }
 };
