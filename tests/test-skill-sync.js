@@ -149,6 +149,45 @@ function createHarness(t, options = {}) {
   };
 }
 
+test('bundled artifact rule installs and upgrades with its relative references intact', t => {
+  const h = createHarness(t);
+  const source = path.join(__dirname, '../skills/multicc-artifact');
+  fs.cpSync(source, path.join(h.rootDir, 'skills/multicc-artifact'), { recursive: true });
+  const rule = fs.readFileSync(path.join(source, 'references/registration-rule.md'), 'utf8');
+  assert.equal(h.runtime.installBundledSkills(), 1);
+  const destination = path.join(h.agentsSkillsDir, 'multicc-artifact');
+  assert.equal(fs.readFileSync(path.join(destination, 'references/registration-rule.md'), 'utf8'), rule);
+  assert.match(fs.readFileSync(path.join(destination, 'SKILL.md'), 'utf8'), /references\/registration-rule.md/);
+  fs.writeFileSync(path.join(destination, '.skill-version'), '1');
+  fs.rmSync(path.join(destination, 'references'), { recursive: true });
+  assert.equal(h.runtime.installBundledSkills(), 1, 'version bump repairs old installations');
+  assert.equal(h.runtime.installBundledSkills(), 0, 'same version does not reinstall');
+  h.runtime.syncSharedSkills();
+  for (const provider of h.providers) {
+    assert.equal(fs.readFileSync(path.join(provider.dir, 'multicc-artifact/references/registration-rule.md'), 'utf8'), rule);
+  }
+});
+
+test('real Codex and Hermes conversion copies the shared registration rule', t => {
+  const h = createHarness(t);
+  // Isolate the converter's OS-owned canonical directory without touching HOME.
+  const homedir = t.mock.method(os, 'homedir', () => h.tempDir);
+  const modulePath = require.resolve('../src/skill-converter');
+  delete require.cache[modulePath];
+  const converter = require(modulePath);
+  homedir.mock.restore();
+  t.after(() => { converter.stop(); delete require.cache[modulePath]; });
+  const source = path.join(__dirname, '../skills/multicc-artifact');
+  fs.cpSync(source, path.join(converter.AGENTS_ROOT, 'multicc-artifact'), { recursive: true });
+  const result = converter.ensureSkillConverted('multicc-artifact');
+  assert.deepEqual(result.mechanical.sort(), ['codex', 'hermes']);
+  const rule = fs.readFileSync(path.join(source, 'references/registration-rule.md'), 'utf8');
+  for (const provider of ['codex', 'hermes']) {
+    assert.equal(fs.readFileSync(path.join(converter.getLinkTarget('multicc-artifact', provider),
+      'references/registration-rule.md'), 'utf8'), rule);
+  }
+});
+
 test('status and route DTOs preserve the never-synced contract', t => {
   const { runtime } = createHarness(t);
   const app = createApp();

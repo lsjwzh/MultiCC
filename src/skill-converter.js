@@ -194,6 +194,9 @@ function writeConvertedCache(skillName, provider, files) {
   }
   // Copy bin/ helpers so converted skills can invoke their scripts on the target provider.
   copyBinHelpers(path.join(AGENTS_ROOT, skillName), cacheDir);
+  // Relative SKILL.md references must survive provider conversion as well.
+  const references = path.join(AGENTS_ROOT, skillName, 'references');
+  if (fs.existsSync(references)) fs.cpSync(references, path.join(cacheDir, 'references'), { recursive: true });
   fs.writeFileSync(path.join(cacheDir, '.converter-version'), '1', 'utf8');
 }
 
