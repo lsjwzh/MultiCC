@@ -2182,7 +2182,7 @@ providerRoutes.mountCatalogRoutes(app);
 // GET /api/opencode/models — list models the local opencode CLI exposes
 // (provider/model strings, cached for 1 day). Used by the chat picker when an
 // opencode session has no multicc-managed provider's model list to render.
-mountOpenCodeModelRoutes(app);
+mountOpenCodeModelRoutes(app); require('./src/routes/codex-models').mountCodexModelRoutes(app); // account-entitled Codex app-server model/list, 60s cache + explicit refresh
 
 // GET /api/qoder/models — the Qoder CN catalog entitled to the logged-in
 // account (`qoderclicn --list-models`, cached for 1 day). Lets each qoder

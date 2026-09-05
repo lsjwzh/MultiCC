@@ -7,6 +7,7 @@ import '../models/message.dart';
 import '../providers/session_manager.dart';
 import '../providers/chat_provider.dart';
 import '../services/manage_service.dart';
+import '../services/codex_models_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
 import 'ai_config_sheet.dart';
@@ -51,10 +52,16 @@ class ModelChipState extends State<ModelChip> {
     }
   }
 
-  Future<void> _load({SessionCli? cli}) async {
+  Future<void> _load({SessionCli? cli, bool refreshCodex = false}) async {
     final epoch = ++_loadEpoch;
-    final appType = (cli ?? widget.cli).appType;
+    final selectedCli = cli ?? widget.cli;
+    final appType = selectedCli.appType;
     try {
+      if (selectedCli == SessionCli.codex) {
+        await CodexModelsService(
+          settings: widget.settings,
+        ).load(forceRefresh: refreshCodex);
+      }
       final d = await ManageService(
         settings: widget.settings,
       ).fetchProviders(appType);
@@ -112,6 +119,7 @@ class ModelChipState extends State<ModelChip> {
       }
     }
     if (model == null || model.isEmpty) return '默认';
+    if (s.cli == SessionCli.codex) return CodexModelsService.labelFor(model);
     return modelDisplayName(s.cli, model, aliasMap: _aliasMapFor(s.provider));
   }
 
@@ -218,7 +226,7 @@ class ModelChipState extends State<ModelChip> {
     try {
       runtime = await mgr.fetchSessionCliConfig(s.id);
     } catch (_) {}
-    await _load(cli: runtime.cli);
+    await _load(cli: runtime.cli, refreshCodex: true);
     if (!context.mounted) return;
     final messenger = ScaffoldMessenger.of(context);
     final picked = await showModalBottomSheet<AIConfigResult>(
