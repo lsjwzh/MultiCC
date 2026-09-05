@@ -29,6 +29,7 @@ class ChatService {
   final SettingsService settings;
   final String sessionName;
   final String sessionCwd;
+  bool historyArchive;
   final WsTicketConnectionGate _wsAuth;
   final WebSocketChannel Function(Uri) _connectChannel;
   final http.Client _httpClient;
@@ -86,6 +87,7 @@ class ChatService {
     required this.sessionName,
     required this.sessionCwd,
     this.initialSessionId,
+    this.historyArchive = false,
     WsTicketClient? wsTicketClient,
     WebSocketChannel Function(Uri)? channelFactory,
     http.Client? httpClient,
@@ -98,6 +100,7 @@ class ChatService {
     final params = <String, String>{};
     if (sessionCwd.isNotEmpty) params['cwd'] = sessionCwd;
     if (sessionName.isNotEmpty) params['session'] = sessionName;
+    if (historyArchive) params['historyScope'] = 'archive';
     if (resumeId != null && resumeId.isNotEmpty) params['resume'] = resumeId;
     return buildMulticcWebSocketUri(
       host: settings.host,
@@ -380,6 +383,10 @@ class ChatService {
         _emit('chat_msg_meta', msg);
         break;
 
+      case 'chat_history_reset':
+        _emit('chat_history_reset', msg);
+        break;
+
       case 'chat_msg_deleted':
         // Broadcast after a successful delete from any client; drop the
         // matching bubble. Idempotent — the initiator already removed it.
@@ -576,10 +583,12 @@ class ChatService {
     } catch (_) {}
   }
 
-  void clearHistory({int keep = 0}) {
+  bool clearHistory({int keep = 0}) {
+    if (_channel == null || _state != ChatConnectionState.connected) return false;
     try {
-      _channel?.sink.add(jsonEncode({'type': 'clear_history', 'keep': keep}));
-    } catch (_) {}
+      _channel!.sink.add(jsonEncode({'type': 'clear_history', 'keep': keep}));
+      return true;
+    } catch (_) { return false; }
   }
 
   void _scheduleReconnect() {
@@ -680,6 +689,7 @@ class ChatService {
   }) async {
     final qs = <String, String>{'limit': limit.toString()};
     if (beforeId != null && beforeId.isNotEmpty) qs['before'] = beforeId;
+    if (historyArchive) qs['historyScope'] = 'archive';
     final query = qs.entries
         .map(
           (e) =>

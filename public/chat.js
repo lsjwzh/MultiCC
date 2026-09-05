@@ -122,6 +122,7 @@ let _cwd = _params.get('cwd') || '';
 const _sessionName = _params.get('session') || '';  // dashboard session name
 const _taskId = _params.get('task') || '';          // task virtual session (M2)
 const TASK_MODE = !!_taskId;
+const HISTORY_ARCHIVE = _params.get('historyScope') === 'archive';
 // Task mode: the same host renders a task from the ledger + the dir
 // workspace stream (chat-task-mode.js). One body class gates session-only
 // chrome; behaviour is gated at the install points below.
@@ -237,7 +238,7 @@ const headerMoreController = window.MultiCCChatLiveUi.bindHeaderMoreMenu({
   ids: [
     'lang-btn', 'notify-btn', 's2s-btn', 'dbg-btn', 'model-btn', 'role-btn',
     'memory-btn', 'auto-commit-btn', 'share-btn', 'restart-spawn-btn',
-    'clear-ctx-wrap', 'memo-btn',
+    'memo-btn',
   ],
 });
 function syncHeaderMoreMenu() { return headerMoreController.sync(); }
@@ -498,7 +499,7 @@ const chatHistoryView = window.MultiCCChatHistoryView.createHistoryView({
   buildUsageLine,
   buildTimingLine,
   // Task mode renders read-only ledger history: no per-message delete/fork.
-  attachDeleteButton: TASK_MODE ? () => {} : attachDeleteButton,
+  attachDeleteButton: (TASK_MODE || HISTORY_ARCHIVE) ? () => {} : attachDeleteButton,
   attachForkButton: TASK_MODE ? () => {} : attachForkButton,
   warn: (...args) => console.warn(...args),
 });
@@ -506,7 +507,7 @@ const chatMessageFocus = window.MultiCCChatMessageFocus.createMessageFocusContro
   targetId: _targetMessageId,
   findById: id => chatHistoryView.findById(id),
   async fetchAround(messageId) {
-    const url = withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/history?around=${encodeURIComponent(messageId)}&limit=31`);
+    const url = withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/history?around=${encodeURIComponent(messageId)}&limit=31&historyScope=${HISTORY_ARCHIVE ? 'archive' : 'display'}`);
     return chatApi.json(url);
   },
   mergeMessages(messages, page) {
@@ -552,6 +553,7 @@ const chatTransport = window.MultiCCChatTransport.createTransport({
     const url = new URL(`${proto}//${location.host}/ws/chat`);
     if (_cwd) url.searchParams.set('cwd', _cwd);
     if (_sessionName) url.searchParams.set('session', _sessionName);
+    if (HISTORY_ARCHIVE) url.searchParams.set('historyScope', 'archive');
     if (sessionId) url.searchParams.set('resume', sessionId);
     return url.toString();
   },
@@ -592,7 +594,9 @@ const chatTransport = window.MultiCCChatTransport.createTransport({
   },
   onMessage({ data }) {
     try {
-      handleEvent(JSON.parse(data), _eventGeneration);
+      const message = JSON.parse(data);
+      if (HISTORY_ARCHIVE && message.displayOnly && ['chat_history_reset', 'chat_msg_deleted'].includes(message.type)) return;
+      handleEvent(message, _eventGeneration);
     } catch (e) {
       console.warn('Bad message:', data, e);
     }
@@ -689,6 +693,7 @@ function _chatConfirm(message, options = {}) { return chatLiveUi.confirm(message
 function _chatAlert(message, options = {}) { return chatLiveUi.alert(message, options); }
 
 function attachDeleteButton(msgEl) {
+  if (HISTORY_ARCHIVE) return;
   if (!msgEl || !msgEl.dataset.msgId || msgEl.querySelector('.msg-del')) return;
   const btn = document.createElement('button');
   btn.className = 'msg-del';
@@ -696,7 +701,7 @@ function attachDeleteButton(msgEl) {
   btn.innerHTML = '&#10005;';
   btn.onclick = async (e) => {
     e.stopPropagation();
-    const go = await _chatConfirm(tt('msgDeleteConfirm'), { danger: true, okText: tt('delete') });
+    const go = await _chatConfirm(tt('msgDeleteConfirm'), { okText: tt('msgDeleteAction') });
     if (!go) return;
     try {
       await chatApi.json(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/messages/${encodeURIComponent(msgEl.dataset.msgId)}`), { method: 'DELETE' });
@@ -1048,7 +1053,7 @@ async function loadOlderHistory() {
   try {
     const url = withToken(TASK_MODE && taskMode
       ? taskMode.historyPageUrl({ before: request.before, limit: request.limit })
-      : `/api/sessions/${encodeURIComponent(_sessionName)}/history?before=${encodeURIComponent(request.before)}&limit=${request.limit}`);
+      : `/api/sessions/${encodeURIComponent(_sessionName)}/history?historyScope=${HISTORY_ARCHIVE ? 'archive' : 'display'}&before=${encodeURIComponent(request.before)}&limit=${request.limit}`);
     const d = await chatApi.json(url);
     // Validate generation/request identity before touching DOM. A response
     // that raced a reconnect, clear or cursor deletion is discarded.
@@ -2498,11 +2503,11 @@ if (!TASK_MODE) {
   loadSessionModel();
 }
 /* ── Clear / rotate native context controls ── */
+if (HISTORY_ARCHIVE) document.getElementById('clear-ctx-wrap').style.display = 'none';
 window.MultiCCChatContextControls.create({
   document, window, translate: tt,
   getIsStreaming: () => isStreaming,
-  cancelStreaming, resetHistoryPagination, messagesEl, addSystemMsg,
-  clearMessages: () => chatHistoryView.clearMessages(),
+  addSystemMsg,
   isConnected: () => ws?.readyState === WebSocket.OPEN,
   send: hostTransportSend,
   showNotifyToast,

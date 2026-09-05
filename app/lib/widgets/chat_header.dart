@@ -186,7 +186,7 @@ class ChatHeader extends StatelessWidget {
                 compact: narrow,
               ),
               const SizedBox(width: 4),
-              _ClearCtxButton(provider: provider, compact: narrow),
+              if (!provider.historyArchive) _ClearCtxButton(provider: provider, compact: narrow),
               const SizedBox(width: 4),
             ],
             _HeaderOverflowMenu(
@@ -409,9 +409,8 @@ class _HeaderBtn extends StatelessWidget {
 /// button: tapping opens a small popup with two options —
 ///   • 清空全部 (clear all)  → clearHistory(keep: 0)
 ///   • 保留最近 N 条          → clearHistory(keep: N)
-/// The provider's clearHistory() cancels any in-flight stream before wiping,
-/// so clearing while streaming actually takes effect instead of looking like a
-/// no-op (the running CLI process gets killed first).
+/// The provider waits for durable display-state acknowledgement; work continues,
+/// and the native model context remains unchanged.
 class _ClearCtxButton extends StatefulWidget {
   final ChatProvider provider;
   /// Icon-only form for the narrow (phone) header, where the text label
@@ -575,7 +574,7 @@ class _ClearMenuBody extends StatelessWidget {
                           ),
                           const SizedBox(width: 8),
                           Text(
-                            t('clearAll'),
+                            t('clearAllChatHistory'),
                             style: const TextStyle(
                               color: Color(0xFFff6b63),
                               fontSize: 13,

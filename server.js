@@ -154,6 +154,7 @@ const {
   getMemoryEntries,
   normalizeManualMemory,
 } = require('./src/memory/runtime');
+const { createTaskHistoryRetention } = require('./src/session/task-history-retention');
 const { createChatHistoryRuntime, buildReplayMessages } = require('./src/routes/chat-history');
 const { createTokenUsageRoutes } = require('./src/routes/token-usage');
 const { mountShareRoutes } = require('./src/routes/share');
@@ -846,10 +847,10 @@ async function seedCommanderSession(dir) {
   return { ok: false, error: result.code, ...result };
 }
 
-// Tear down one session record + all its runtime state (tmux, chat proc, wait
-// registrations, shares, worktree, triggers, notes, status board entry).
-// Directory deletion cascades through here for every owned session.
+// Session and directory disposal share this history-protected teardown.
 async function destroySessionCascade(s, d, opts = {}) {
+  try { chatHistoryService?.assertCanDeleteSession(s.id); }
+  catch (error) { return { ok: false, code: error.code || 'history_check_failed', blocked: true, reasons: ['task_history_referenced'] }; }
   const active = sessions.get(s.id), chat = chatSessions.get(s.id);
   let removal = null;
   // Remove the worktree before tearing down runtime/persistence. A default
@@ -2234,19 +2235,18 @@ createStaticAssetsRoutes({
   publicDir: path.join(__dirname, 'public'),
 }).mountRoutes(app);
 
-// ── Chat mode: message history ──
-// Display history is paginated and independent from native CLI transcripts.
+// Display state is independent from canonical messages and native CLI transcripts.
 const CHAT_HISTORY_SOFT_CAP = 10000;
 const CHAT_HISTORY_PAGE = 5;
 
-// Chat history runtime owns persistence composition, pagination routes,
-// incremental checkpoints, history clear and committed-message side effects.
+// Chat history owns persistence, display visibility, pagination and checkpoints.
 let _chatMsgIdSeq = 0;
 function newChatMsgId() {
   return 'm' + Date.now().toString(36) + '-' + (_chatMsgIdSeq++).toString(36);
 }
 chatHistoryRuntime = createChatHistoryRuntime({
   history: chatHistoryRepository,
+  ...createTaskHistoryRetention({ getBoard: () => taskBoardRuntime.getBoard(), getRecord: id => persistedSessions.get(id), loadHistory: id => chatHistoryRepository.readStrict(id) }),
   persistedSessions,
   chatSessions,
   idFactory: newChatMsgId,

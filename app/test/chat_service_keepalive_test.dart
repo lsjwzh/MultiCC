@@ -60,12 +60,13 @@ void main() {
   /// Builds a ChatService whose sockets are [_FakeChannel]s — one per connect,
   /// so a reconnect lands on a fresh live transport (mirroring the real app).
   /// Returns the service plus the list of channels in creation order.
-  (ChatService, List<_FakeChannel>) makeService() {
+  (ChatService, List<_FakeChannel>) makeService({bool historyArchive = false}) {
     final channels = <_FakeChannel>[];
     final service = ChatService(
       settings: settings,
       sessionName: 'chat one',
       sessionCwd: '/tmp/work',
+      historyArchive: historyArchive,
       wsTicketClient: WsTicketClient(
         post: (_, {required headers, required body}) async =>
             http.Response('{"ticket":"t","path":"/ws/chat"}', 200),
@@ -81,6 +82,30 @@ void main() {
     );
     return (service, channels);
   }
+
+  test('display clear keeps streaming and relays the authoritative reset', () async {
+    await setupSettings();
+    fakeAsync((async) {
+      final (service, channels) = makeService();
+      final events = <ChatEvent>[];
+      service.events.listen(events.add);
+      expect(service.clearHistory(), isFalse);
+      service.connect();
+      async.flushMicrotasks();
+      service.isStreaming = true;
+      expect(service.clearHistory(keep: 2), isTrue);
+      expect(jsonDecode(channels.single.sent.last), {'type': 'clear_history', 'keep': 2});
+      expect(channels.single.sent.any((frame) => jsonDecode(frame)['type'] == 'cancel'), isFalse);
+      expect(service.isStreaming, isTrue);
+      channels.single.incoming.add(jsonEncode({
+        'type': 'chat_history_reset', 'messages': [], 'hasMore': false, 'displayOnly': true,
+      }));
+      async.flushMicrotasks();
+      expect(events.any((event) => event.type == 'chat_history_reset'), isTrue);
+      expect(service.isStreaming, isTrue);
+      service.dispose();
+    });
+  });
 
   group('foreground-return probe (ensureAlive)', () {
     test('probe ping with no pong reconnects after the probe window '

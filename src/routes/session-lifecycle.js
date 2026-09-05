@@ -412,23 +412,9 @@ function createSessionLifecycleRuntime(rawDeps) {
     return api;
   }
 
-  // Archive-time release for task-bound sessions. Same disposal semantics as
-  // the DELETE route's persisted branch — cascade teardown, durable record
-  // removal, directory event — minus the HTTP concerns, so the task board can
-  // release a task's resume file the moment the task archives. Best-effort by
-  // contract: a blocked cascade (active run, dirty worktree) returns not-ok
-  // and the caller keeps the binding intact.
-  async function releaseTaskBoundSession(id, { reason = 'task_archive' } = {}) {
-    const persisted = persistedSessions.get(id);
-    if (!persisted) return { ok: false, code: 'not_found' };
-    if (!persisted.taskBoundTaskId) return { ok: false, code: 'not_task_bound' };
-    const dir = directories.get(persisted.dirId);
-    if (!dir) return { ok: false, code: 'directory_not_found' };
-    const result = await destroySessionCascade(persisted, dir, { force: false, removeRecord: false });
-    if (!result.ok) return result;
-    sessionPersistence.mutate(`release.${reason}`, store => store.delete(id));
-    appendEvent(persisted.dirId, 'task_bound_session_released', persisted.label || id, null);
-    return { ok: true };
+  // Kept as a compatibility port. Archiving never disposes the task's evidence.
+  async function releaseTaskBoundSession(id) {
+    return { ok: false, code: 'task_history_retained' };
   }
 
   const api = { mountRoutes, releaseTaskBoundSession };
