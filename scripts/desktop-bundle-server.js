@@ -88,7 +88,7 @@ function main() {
   // 1) source trees the server reads at runtime. plugins/ is not optional:
   //   server.js requires ./plugins/bridges/* at boot (caught by the local
   //   real-server smoke, not by the sentinel list alone).
-  for (const entry of ['server.js', 'src', 'public', 'plugins']) {
+  for (const entry of ['server.js', 'src', 'public', 'plugins', 'skills']) {
     const src = path.join(repoRoot, entry);
     if (!fs.existsSync(src)) throw new Error(`missing ${src} — run from the repo root`);
     if (entry === 'public') copyTree(src, path.join(out, 'public'), { filter: PUBLIC_EXCLUDE });
@@ -116,6 +116,7 @@ function main() {
   // 4) sanity gate — a silent missing file here becomes "app won't start" there
   for (const must of ['server.js', 'src/paths.js', 'public/manage.html', 'public/chat.html',
     'scripts/multicc-router-mcp.js', 'plugins/bridges/wechat-ilink.js',
+    'skills/multicc-artifact/references/registration-rule.md',
     ...(args.install ? [path.join('node_modules', 'express')] : [])]) {
     if (!fs.existsSync(path.join(out, must))) throw new Error(`staged copy is missing ${must}`);
   }

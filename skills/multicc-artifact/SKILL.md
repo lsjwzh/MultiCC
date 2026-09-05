@@ -13,12 +13,7 @@ description: multicc 自带「临时产物」技能。把一段 HTML 网页或�
 
 原理：内容写到 `MULTICC_DATA_DIR/artifacts/<随机id>/<文件名>`，multicc 服务端在 `/artifacts/<id>/<文件名>` 提供访问。迁移期间服务端仍只读兼容旧的 `~/.multicc/artifacts`。随机 id 本身就是访问凭证（像分享链接），所以链接**免登录**、本机和隧道外网都能打开。产物会在 7 天后自动清理——只用于临时、可丢弃的东西。
 
-每次发布会**自动登记**到「文档 / Web 服务管理表」（`/manage` 的「服务与文档」面板，`POST /api/docs-registry`），用户随时能在面板里找回链接。登记是 best-effort，失败不影响发布。若你没有用本技能、而是手动启动了本地 web 服务（dev server、Flask 等），**必须**登记，且 `port`/`startCmd`/`cwd` 三字段缺一不可——它们支撑面板的 30s 探活、一键启动/停止和日志查看：
-
-```bash
-curl -s "$MULTICC_BASE_URL/api/docs-registry" -H 'Content-Type: application/json' \
-  -d '{"kind":"service","title":"<名称>","url":"http://127.0.0.1:<端口>/","port":<端口>,"startCmd":"<完整启动命令>","cwd":"<工作目录绝对路径>","sessionId":"'"$MULTICC_SESSION_ID"'"}'
-```
+发布前请读取并遵循 [文档与服务登记规则](references/registration-rule.md)。该文件是登记规则的唯一正文来源，也用于 multicc 新项目的共享记忆种子和已有项目的启动补齐；其中包含文档交付动作、服务登记字段及验证方法。
 
 ## 工具
 
