@@ -23,20 +23,19 @@
     }
 
     function clear(keep) {
-      if (options.getIsStreaming()) options.cancelStreaming();
-      options.resetHistoryPagination();
-      if (keep > 0) {
-        const messages = [...options.messagesEl.querySelectorAll('.msg:not(.system-msg)')];
-        const removed = messages.slice(0, Math.max(0, messages.length - keep));
-        removed.forEach(element => element.remove());
-        options.addSystemMsg(removed.length
-          ? translate('contextKept', { removed: removed.length, kept: keep })
-          : translate('contextResetKept'));
-      } else {
-        options.clearMessages();
-        options.addSystemMsg(translate('contextCleared'));
+      if (!options.isConnected()) {
+        options.showNotifyToast(translate('clearChatHistoryOffline'), 'fail');
+        closeMenu();
+        return;
       }
-      if (options.isConnected()) options.send({ type: 'clear_history', keep });
+      if (keep === 0 && !window.confirm(translate('clearAllChatHistoryConfirm'))) return;
+      // The server persists display state and acknowledges it. Leave
+      // the view intact until that acknowledgement, including failed requests.
+      try {
+        if (options.send({ type: 'clear_history', keep }) === false) throw new Error('offline');
+      } catch (_) {
+        options.showNotifyToast(translate('clearChatHistoryOffline'), 'fail');
+      }
       closeMenu();
     }
 

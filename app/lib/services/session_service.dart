@@ -776,12 +776,12 @@ class SessionService {
   /// history. The raw message maps reuse [ChatMessage.fromHistory] at the call
   /// site, the same parser as [fetchHistory].
   Future<({List<Map<String, dynamic>> messages, bool found, bool hasMore, bool hasNewer})>
-      fetchHistoryAround(String sessionId, String messageId) async {
+      fetchHistoryAround(String sessionId, String messageId, {bool historyArchive = false}) async {
     final res = await http
         .get(
           Uri.parse(_url(
             '/api/sessions/${Uri.encodeComponent(sessionId)}/history'
-            '?around=${Uri.encodeQueryComponent(messageId)}',
+            '?around=${Uri.encodeQueryComponent(messageId)}&historyScope=${historyArchive ? 'archive' : 'display'}',
           )),
           headers: _headers,
         )
