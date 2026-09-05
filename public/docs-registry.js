@@ -4,6 +4,32 @@
 // 后端见 src/docs-registry.js（GET/POST/PATCH/DELETE /api/docs-registry）。
 // 独立文件而非 manage.js：manage.js 是 migration-debt 棘轮文件，只减不增。
 
+// ── Loopback URL 改写（纯函数，供 node 单测；语义与 App 端
+//    docs_registry_screen.dart 的 rewriteLoopbackUrl 一致）──────────────────
+// 登记条目的 URL 是「服务器自己视角」——通常是 loopback（http://127.0.0.1:<port>/）。
+// 用户从别的机器（局域网 IP / Tailscale 域名）打开面板时，浏览器里的 127.0.0.1
+// 指向用户设备而非服务器，因此打开链接前把 loopback host 替换为「用户当前访问
+// multicc 用的 host」；端口、协议、路径、查询全部保留。非 loopback 的绝对 URL、
+// 相对（同源）URL 一律不动。本机 loopback 访问时也不动（保持原样）。
+// Best-effort：多网卡 / 反代 / 服务只绑 loopback 的场景改写后仍可能不可达，
+// 客户端无法验证，只能按语义改写。
+function isLoopbackHost(hostname) {
+  const h = String(hostname || '').toLowerCase();
+  return h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '[::1]';
+}
+
+function rewriteLoopbackUrl(rawUrl, currentHost) {
+  const url = String(rawUrl || '');
+  const host = String(currentHost || '').trim().toLowerCase();
+  if (!/^https?:\/\//i.test(url) || !host || isLoopbackHost(host)) return url;
+  let parsed;
+  try { parsed = new URL(url); } catch (_) { return url; }
+  if (!isLoopbackHost(parsed.hostname)) return url;
+  parsed.hostname = host;
+  return parsed.toString();
+}
+
+if (typeof window !== 'undefined' && typeof window.document !== 'undefined') {
 (function initDocsRegistryView() {
   const api = window.MultiCCApi;
   const qs = typeof tokenQS === 'function' ? tokenQS : () => '';
@@ -53,7 +79,11 @@
       + 'display:flex;align-items:center;gap:10px;background:var(--bg-soft);'
       + (e.expired ? 'opacity:.55;' : '');
     const icon = KIND_ICON[e.kind] || '📄';
-    const href = esc(e.url);
+    // 展示保持登记原样；打开用改写后的 loopback→当前访问 host（见文件头
+    // rewriteLoopbackUrl 注释）。改写发生时悬停提示实际打开的地址。
+    const displayHref = esc(e.url);
+    const openHref = esc(rewriteLoopbackUrl(e.url, window.location.hostname));
+    const rewritten = openHref !== displayHref;
     const expiredTag = e.expired
       ? `<span style="font-size:11px;color:#d29922;border:1px solid #d2992255;border-radius:10px;padding:0 6px;">${esc(t('docsregExpired'))}</span>`
       : '';
@@ -72,10 +102,10 @@
       ${dot}
       <div style="flex:1;min-width:0;">
         <div style="font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
-          ${pinTag} <a href="${href}" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none;">${esc(e.title)}</a> ${expiredTag}
+          ${pinTag} <a href="${openHref}"${rewritten ? ` title="${openHref}"` : ''} target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none;">${esc(e.title)}</a> ${expiredTag}
         </div>
         <div style="font-size:11px;color:var(--faint);font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
-          ${href}${portTag}${e.sessionId ? ' · ' + esc(e.sessionId) : ''} · ${esc(fmtTime(e.createdAt))}
+          ${displayHref}${portTag}${e.sessionId ? ' · ' + esc(e.sessionId) : ''} · ${esc(fmtTime(e.createdAt))}
         </div>
       </div>
       ${svcBtns}
@@ -146,3 +176,9 @@
     if (document.body && document.body.dataset.view === 'docs') loadDocsRegistry();
   }, 5000);
 })();
+}
+
+// Headless 测试钩子：浏览器初始化在上方 window 守卫内，node require 只拿纯函数。
+if (typeof module === 'object' && module.exports) {
+  module.exports = { rewriteLoopbackUrl, isLoopbackHost };
+}

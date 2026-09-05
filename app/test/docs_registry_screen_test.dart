@@ -210,4 +210,56 @@ void main() {
     );
     expect(WorkspaceDestination.docs.labelKey, 'docsServices');
   });
+
+  group('rewriteLoopbackUrl', () {
+    // Mirror cases with the web panel's rewriteLoopbackUrl
+    // (tests/test-docs-registry.js) — both ends must stay in lockstep.
+    test('swaps loopback host, keeps port/path/query/protocol', () {
+      expect(rewriteLoopbackUrl('http://127.0.0.1:8770/', '192.168.1.5'),
+          'http://192.168.1.5:8770/');
+      expect(rewriteLoopbackUrl('http://127.0.0.1:8770/x?a=1', '192.168.1.5'),
+          'http://192.168.1.5:8770/x?a=1');
+      expect(
+          rewriteLoopbackUrl('https://localhost:5173/',
+              'macbook.tail94695a.ts.net'),
+          'https://macbook.tail94695a.ts.net:5173/');
+      expect(rewriteLoopbackUrl('http://LOCALHOST:8770/', '192.168.1.5'),
+          'http://192.168.1.5:8770/');
+      expect(rewriteLoopbackUrl('http://[::1]:8770/', '192.168.1.5'),
+          'http://192.168.1.5:8770/');
+    });
+
+    test('leaves non-loopback, relative and local-view URLs untouched', () {
+      expect(rewriteLoopbackUrl('http://example.com:8080/', '192.168.1.5'),
+          'http://example.com:8080/');
+      expect(rewriteLoopbackUrl('https://192.168.1.9:443/', '192.168.1.5'),
+          'https://192.168.1.9:443/');
+      expect(rewriteLoopbackUrl('/artifacts/abc/report.html', '192.168.1.5'),
+          '/artifacts/abc/report.html');
+      expect(rewriteLoopbackUrl('ftp://127.0.0.1:21/', '192.168.1.5'),
+          'ftp://127.0.0.1:21/', reason: 'non-http scheme untouched');
+      // Local (loopback) browsing keeps the URL exactly as recorded.
+      expect(rewriteLoopbackUrl('http://127.0.0.1:8770/', 'localhost'),
+          'http://127.0.0.1:8770/');
+      expect(rewriteLoopbackUrl('http://127.0.0.1:8770/', '127.0.0.1'),
+          'http://127.0.0.1:8770/');
+      expect(rewriteLoopbackUrl('http://127.0.0.1:8770/', '[::1]'),
+          'http://127.0.0.1:8770/');
+      // Degenerate inputs pass through untouched.
+      expect(rewriteLoopbackUrl('', '192.168.1.5'), '');
+      expect(rewriteLoopbackUrl('http://127.0.0.1:8770/', ''),
+          'http://127.0.0.1:8770/');
+      expect(rewriteLoopbackUrl('not a url', '192.168.1.5'), 'not a url');
+    });
+
+    test('isLoopbackHost recognizes the loopback family only', () {
+      for (final h in ['localhost', '127.0.0.1', '::1', '[::1]', 'LOCALHOST']) {
+        expect(isLoopbackHost(h), isTrue, reason: h);
+      }
+      for (final h
+          in ['192.168.1.5', 'example.com', '[fd00::5]', '127.0.0.2']) {
+        expect(isLoopbackHost(h), isFalse, reason: h);
+      }
+    });
+  });
 }
