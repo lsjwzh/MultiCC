@@ -13,6 +13,13 @@ description: multicc 自带「临时产物」技能。把一段 HTML 网页或�
 
 原理：内容写到 `MULTICC_DATA_DIR/artifacts/<随机id>/<文件名>`，multicc 服务端在 `/artifacts/<id>/<文件名>` 提供访问。迁移期间服务端仍只读兼容旧的 `~/.multicc/artifacts`。随机 id 本身就是访问凭证（像分享链接），所以链接**免登录**、本机和隧道外网都能打开。产物会在 7 天后自动清理——只用于临时、可丢弃的东西。
 
+每次发布会**自动登记**到「文档 / Web 服务管理表」（`/manage` 的「服务与文档」面板，`POST /api/docs-registry`），用户随时能在面板里找回链接。登记是 best-effort，失败不影响发布。若你没有用本技能、而是手动发布了别的本地服务（如 dev server），请自行登记：
+
+```bash
+curl -s "$MULTICC_BASE_URL/api/docs-registry" -H 'Content-Type: application/json' \
+  -d '{"kind":"service","title":"<名称>","url":"http://127.0.0.1:<端口>/","sessionId":"'"$MULTICC_SESSION_ID"'"}'
+```
+
 ## 工具
 
 技能目录下的 `bin/artifact`（Node 脚本，用 Bash 调用）。若不确定路径，先 `ls` 本技能目录；常见为 `"$CLAUDE_SKILL_DIR"/bin/artifact`。

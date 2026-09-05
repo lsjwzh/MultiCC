@@ -819,6 +819,7 @@
     <button class="nav-item" data-view="resources" onclick="setView('resources')"><span class="ic">⊟</span> <span data-i18n="agentResources">Agent 资源</span></button>
     <button class="nav-item" data-view="skillsync" onclick="setView('skillsync')"><span class="ic">⟳</span> <span data-i18n="skillSync">技能同步</span> <span class="badge" id="nav-skillsync-count">0</span></button>
     <button class="nav-item" data-view="storage" onclick="setView('storage')"><span class="ic">⛁</span> <span data-i18n="temporaryUploads">临时上传</span></button>
+    <button class="nav-item" data-view="docs" onclick="setView('docs')"><span class="ic">🗂</span> <span data-i18n="docsServices">服务与文档</span></button>
     </div><!-- /#nav-scroll -->
 
     <!-- Bottom region: never scrolls away with the list. Pinned by the flex
@@ -1918,6 +1919,19 @@
           </div>
         </section>
 
+        <section class="view" data-view="docs">
+          <div class="sec-head"><h2><span data-i18n="docsServices">服务与文档</span> <span id="docsreg-count" style="color:var(--faint);font-weight:400;"></span></h2><div class="line"></div>
+            <button class="btn btn-sm" onclick="loadDocsRegistry()" data-i18n="refresh">刷新</button>
+            <button class="btn btn-green btn-sm" onclick="docsRegistryAddService()">＋ <span data-i18n="docsregAddService">登记服务</span></button>
+          </div>
+          <p class="sec-desc" data-i18n="docsregDesc">所有 agent 发布的网页/文件和你登记的本地 web 服务。临时产物 7 天后自动清理（📌 置顶可豁免），过期条目会标注。</p>
+          <div class="settings-card" style="max-width:none">
+            <div class="sc-body" id="docsreg-list" style="gap:8px;">
+              <div style="color:var(--faint);font-size:13px;">加载中…</div>
+            </div>
+          </div>
+        </section>
+
       </div>
 
       <!-- Focus panel: embedded terminal -->
@@ -2230,6 +2244,7 @@
   <script src="quota-bar-view.js"></script>
   <script src="manage-official-accounts.js"></script>
   <script src="manage.js"></script>
+<script src="docs-registry.js"></script>
 <script src="manage-update.js"></script>
   <script>
     /* ── Redesign shell: nav view switching, KPI row, search ── */
@@ -2247,6 +2262,7 @@
         resources: ['Agent 资源', 'Skills 与历史会话'],
         skillsync: ['技能同步', 'Skills 跨 Provider 同步状态'],
         storage: ['临时上传', '上传文件缓存'],
+        docs: ['服务与文档', '生成的文档与本地 web 服务'],
         memory: ['🧠 记忆图谱', '项目记忆系统网络'],
       };
       window.setView = function (v) {
@@ -2265,6 +2281,7 @@
           loadMemoryGraph();
         }
         if (v === 'voice') window.MultiCCManageQwenAudio?.loadPanel?.();
+        if (v === 'docs') window.loadDocsRegistry?.();
         // Sync the active provider tab when the provider view is shown.
         if (v === 'provider') {
           const activeTab = document.querySelector('#prov-tabs .prov-tab.active');
@@ -2272,7 +2289,7 @@
         }
       };
       const requestedView = new URLSearchParams(location.search).get('view');
-      const allowedViews = ['overview', 'tasks', 'memory', 'cron', 'voice', 'goal', 'provider', 'global', 'push', 'tunnel', 'bridges', 'resources', 'skillsync', 'storage'];
+      const allowedViews = ['overview', 'tasks', 'memory', 'cron', 'voice', 'goal', 'provider', 'global', 'push', 'tunnel', 'bridges', 'resources', 'skillsync', 'storage', 'docs'];
       if (allowedViews.includes(requestedView)) {
         window.setView(requestedView);
       }
