@@ -9,6 +9,7 @@ enum WorkspaceDestination {
   overview,
   cron,
   memory,
+  docs,
   voice,
   goal,
   provider,
@@ -26,6 +27,7 @@ extension WorkspaceDestinationPresentation on WorkspaceDestination {
     WorkspaceDestination.overview => 'overview',
     WorkspaceDestination.cron => 'cronTasks',
     WorkspaceDestination.memory => 'memoryGraph',
+    WorkspaceDestination.docs => 'docsServices',
     WorkspaceDestination.voice => 'voiceSettings',
     WorkspaceDestination.goal => 'goalPrecheck',
     WorkspaceDestination.provider => 'providerConfig',
@@ -42,6 +44,7 @@ extension WorkspaceDestinationPresentation on WorkspaceDestination {
     WorkspaceDestination.overview => Icons.dashboard_outlined,
     WorkspaceDestination.cron => Icons.schedule_rounded,
     WorkspaceDestination.memory => Icons.hub_outlined,
+    WorkspaceDestination.docs => Icons.travel_explore_outlined,
     WorkspaceDestination.voice => Icons.mic_none_rounded,
     WorkspaceDestination.goal => Icons.track_changes_rounded,
     WorkspaceDestination.provider => Icons.swap_horiz_rounded,
@@ -93,6 +96,7 @@ class WorkspaceNavigationDrawer extends StatelessWidget {
     WorkspaceDestination.overview,
     WorkspaceDestination.cron,
     WorkspaceDestination.memory,
+    WorkspaceDestination.docs,
   ];
 
   static const settingsDestinations = <WorkspaceDestination>[
