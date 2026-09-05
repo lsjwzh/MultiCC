@@ -1132,5 +1132,17 @@
   "plannerDragLabel": "Drag task: {title}",
   "plannerOpenTaskLabel": "Open task: {title}",
   "plannerAnswerQuestion": "Answer question",
-  "plannerInspectError": "Inspect error"
+  "plannerInspectError": "Inspect error",
+  "docsServices": "Docs & Services",
+  "docsregDesc": "Pages/files published by agents and local web services you register. Temp artifacts are cleaned up after 7 days (📌 pin to exempt); expired rows are flagged.",
+  "docsregAddService": "Add service",
+  "docsregEmpty": "Nothing registered yet. Pages/files published via the multicc-artifact skill appear here automatically.",
+  "docsregExpired": "Expired",
+  "docsregPin": "Pin (exempt from cleanup)",
+  "docsregUnpin": "Unpin",
+  "docsregConfirmDelete": "Remove the registration for “{title}”? (The published content itself is not deleted.)",
+  "docsregDeleted": "Removed",
+  "docsregAddTitle": "Service name (e.g. vite dev server)",
+  "docsregAddUrl": "Service URL (e.g. http://127.0.0.1:5173/)",
+  "docsregAdded": "Registered"
 }
