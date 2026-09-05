@@ -695,6 +695,7 @@
   "dispatchStateCancelled": "cancelled",
   "dispatchSessionNotFound": "The target session was deleted or is not loaded",
   "dispatchUnknownSession": "unknown session",
+  "dispatchTaskBoundHint": "Task-bound session · {task} (hidden task-board worker; click to open its chat)",
   "recording": "Recording...",
   "transcribing": "Transcribing...",
   "typeMessage": "Type a message...",
