@@ -2652,7 +2652,7 @@ function createChatTurnEngine(deps) {
     // The replay helper also recognizes the crash-safety `_interim` record. It
     // promotes that stable-id entry to the one live streaming tail, rather than
     // sending both the persisted first batch and a cumulative id-less copy.
-    const canonicalPage = getChatHistoryRuntime().paginate(sessionName, { limit: CHAT_HISTORY_PAGE });
+    const canonicalPage = getChatHistoryRuntime().paginate(sessionName, { limit: CHAT_HISTORY_PAGE, includeHidden: urlObj.searchParams.get('historyScope') === 'archive' });
     const page = { messages: canonicalPage.messages, hasMore: canonicalPage.hasMore };
     const replayMessages = buildReplayMessages(page.messages, cs);
     // Include authoritative cumulative token usage from the persistent
@@ -2776,28 +2776,6 @@ function createChatTurnEngine(deps) {
         }
 
         if (msg.type === 'clear_history') {
-          if (msg.preserveHistory !== true) {
-            let backgroundActive = true;
-            try {
-              backgroundActive = getBackgroundTaskRuntime().hasLiveBackgroundTasks(sessionName) === true;
-            } catch (_) {}
-            if (backgroundActive) {
-              chatBroadcast(sessionName, {
-                type: 'error',
-                code: 'background_tasks_running',
-                error: '后台任务仍在运行；请等待完成或先取消后台任务，再清空历史。',
-              });
-              return;
-            }
-          }
-          let streamBusy = false;
-          try { streamBusy = chatStream.status(sessionName)?.busy === true; } catch (_) {}
-          if (msg.preserveHistory !== true
-              && !!(cs._activeRunner || cs.claudeProc || cs.isStreaming || streamBusy)) {
-            await getSessionWorkHost().cancelActiveTurn(sessionName, {
-              resolveQueue: true, source: 'clear_history', reason: 'clear_history', killReason: 'clear_history',
-            });
-          }
           await getChatHistoryRuntime().clearHistory(sessionName, msg, cs);
           return;
         }

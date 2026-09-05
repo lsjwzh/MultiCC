@@ -54,11 +54,6 @@ function createTaskBoardRuntime(deps) {
   // chat-session endpoint answers an explicit 501 instead of crashing.
   const createSessionRecord = typeof deps.createSessionRecord === 'function'
     ? deps.createSessionRecord : null;
-  // Archive-time release port (归档即释放): the session-lifecycle runtime's
-  // releaseTaskBoundSession. Optional in reduced hosts/tests — without it
-  // archiving simply keeps the binding (the pre-P5 behavior).
-  const releaseTaskBoundSession = typeof deps.releaseTaskBoundSession === 'function'
-    ? deps.releaseTaskBoundSession : null;
   // Composer runtime picks · where the suggested-runtime endpoint reads recent
   // activity from. Optional in reduced hosts/tests; production derives the same
   // chat_history dir the history service writes to.
@@ -2644,25 +2639,6 @@ function createTaskBoardRuntime(deps) {
     }
   }
 
-  // Archive releases bound sessions best-effort and retains failed pointers.
-  async function releaseArchivedBoundSession(task) {
-    if (!releaseTaskBoundSession) return 0;
-    let released = 0;
-    for (const identityId of taskIdentityIds(task)) {
-      const member = board.tasks[identityId];
-      const boundId = typeof member?.chatSessionId === 'string' ? member.chatSessionId : '';
-      if (!boundId || records.get(boundId)?.taskBoundTaskId !== member.id) continue;
-      const result = await releaseTaskBoundSession(boundId).catch(() => null);
-      if (!result?.ok) {
-        logger.log(`[multicc/taskboard] bound session release kept (task ${member.id}): ${JSON.stringify(result || { error: 'threw' })}`);
-        continue;
-      }
-      member.chatSessionId = null;
-      released += 1;
-    }
-    return released;
-  }
-
   // Return the task-bound ordinary chat used by the unified task view.
   async function handleChatSession(req, res) {
     if (!createSessionRecord) {
@@ -2744,10 +2720,8 @@ function createTaskBoardRuntime(deps) {
     if (planningRevisionAtStart != null && !stageChanged) {
       task.planningRevision = planningRevisionAtStart + 1;
     }
-    // Archived is the only lifecycle end that releases the bound session —
-    // done tasks still expect follow-ups, their resume file must survive.
-    const releasedSessions = status === 'archived'
-      ? await releaseArchivedBoundSession(task) : 0;
+    // Archiving only changes lifecycle visibility; the task still owns its history.
+    const releasedSessions = 0;
     if (!save()) {
       for (const key of Object.keys(task)) delete task[key];
       Object.assign(task, beforeMutation);
@@ -2791,12 +2765,7 @@ function createTaskBoardRuntime(deps) {
       task.updatedAt = now;
       taskIds.push(task.id);
     }
-    // Archive-time release happens before the board save so cleared pointers
-    // persist in the same write (release itself never throws — see helper).
-    let releasedSessions = 0;
-    for (const id of taskIds) {
-      releasedSessions += await releaseArchivedBoundSession(board.tasks[id]);
-    }
+    const releasedSessions = 0;
     if (taskIds.length) {
       save();
       notify(dirId, taskIds);

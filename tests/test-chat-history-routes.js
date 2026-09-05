@@ -42,9 +42,92 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+test('display clearing and hiding survive restart without changing task evidence or delivery receipts', async t => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-display-history-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const history = createChatHistoryFileRepository({ dataDir });
+  const original = [
+    { id: 'u1', role: 'user', taskId: 't1', content: 'requirement', deliveryId: 'delivery-1' },
+    { id: 'a1', role: 'assistant', taskId: 't1', content: 'complete evidence' },
+    { id: 'u2', role: 'user', content: 'next question' },
+  ];
+  history.write('s1', original);
+  const bytes = fs.readFileSync(history.fileFor('s1'), 'utf8');
+  const fx = fixture({ history });
+  await fx.runtime.clearHistory('s1', { keep: 1 }, fx.chatState);
+  const app = createFakeApp(); fx.runtime.mountRoutes(app);
+  const res = createResponse();
+  app.routes.get('DELETE /api/sessions/:id/messages/:msgId')({ params: { id: 's1', msgId: 'u2' } }, res);
+  assert.equal(res.statusCode, 200);
+  assert.equal(fs.readFileSync(history.fileFor('s1'), 'utf8'), bytes);
+  fx.runtime.stop();
+  const restarted = fixture({ history: createChatHistoryFileRepository({ dataDir }) });
+  t.after(() => restarted.runtime.stop());
+  assert.deepEqual(restarted.runtime.paginate('s1').messages, []);
+  assert.equal(restarted.runtime.paginate('s1', { around: 'a1' }).found, false);
+  assert.deepEqual(restarted.runtime.load('s1'), original);
+  assert.equal(restarted.runtime.service.hasPersistedDelivery('s1', 'delivery-1'), true);
+  assert.deepEqual(restarted.runtime.paginate('s1', { includeHidden: true, limit: 100 }).messages, original);
+  restarted.runtime.appendMessage('s1', { id: 'u3', role: 'user', content: 'new message' });
+  assert.deepEqual(restarted.runtime.paginate('s1').messages.map(m => m.id), ['u3']);
+});
+
+test('display cap and task-linked removal never delete original records', async () => {
+  const original = Array.from({ length: 6 }, (_, index) => ({
+    id: `m${index}`, role: 'user', content: `task evidence ${index}`, taskId: 'task-1',
+  }));
+  const fx = fixture({ maxMessages: 2, initial: { s1: original } });
+  assert.equal(fx.runtime.load('s1').length, 6);
+  assert.deepEqual(fx.runtime.paginate('s1').messages.map(m => m.id), ['m4', 'm5']);
+  const app = createFakeApp(); fx.runtime.mountRoutes(app);
+  const res = createResponse();
+  app.routes.get('DELETE /api/sessions/:id/messages/:msgId')({ params: { id: 's1', msgId: 'm4' } }, res);
+  assert.equal(res.statusCode, 200);
+  assert.equal(fx.runtime.load('s1').length, 6);
+  assert.throws(() => fx.runtime.service.remove('s1', 'm4'), { code: 'TASK_HISTORY_REFERENCED' });
+  await fx.runtime.clearHistory('s1', { keep: 1 }, fx.chatState);
+  await fx.runtime.clearHistory('s1', { keep: 100 }, fx.chatState);
+  assert.deepEqual(fx.runtime.paginate('s1').messages.map(m => m.id), ['m5']);
+  assert.equal(fx.runtime.load('s1').length, 6);
+  fx.runtime.stop();
+});
+
+test('legacy IDs are made durable before hiding, and visibility follows a repository rename', async t => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-legacy-display-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const history = createChatHistoryFileRepository({ dataDir });
+  history.write('s1', [{ role: 'user', content: 'legacy evidence', taskId: 't1' }]);
+  const fx = fixture({ history });
+  await fx.runtime.clearHistory('s1', { keep: 0 }, fx.chatState);
+  fx.runtime.stop();
+  assert.equal(history.renameSession('s1', 'renamed'), true);
+  const restarted = fixture({ history: createChatHistoryFileRepository({ dataDir }) });
+  assert.deepEqual(restarted.runtime.paginate('renamed').messages, []);
+  assert.equal(restarted.runtime.load('renamed')[0].content, 'legacy evidence');
+  restarted.runtime.stop();
+});
+
+test('clearing completed messages keeps the ongoing answer and its work state', async () => {
+  const fx = fixture({ initial: { s1: [
+    { id: 'u1', role: 'user', content: 'question' },
+    { id: 'live', role: 'assistant', content: 'still working', _interim: true },
+  ] } });
+  fx.chatState.isStreaming = true;
+  fx.chatState.currentAssistantText = 'still working';
+  await fx.runtime.clearHistory('s1', { keep: 0 }, fx.chatState);
+  assert.equal(fx.runtime.load('s1').length, 2);
+  assert.deepEqual(fx.runtime.paginate('s1').messages.map(m => m.id), ['live']);
+  assert.equal(fx.chatState.isStreaming, true);
+  const reset = fx.events.find(value => value?.payload?.type === 'chat_history_reset').payload;
+  assert.equal(reset.messages.at(-1).streaming, true);
+  assert.equal(reset.messages.at(-1).id, 'live');
+  fx.runtime.stop();
+});
+
 function createMemoryHistory(events, initial = {}) {
   const records = new Map(Object.entries(initial).map(([key, value]) => [key, clone(value)]));
   let writeFailure = null;
+  const visibility = new Map();
   return {
     records,
     failNextWrite(error) { writeFailure = error; },
@@ -57,6 +140,12 @@ function createMemoryHistory(events, initial = {}) {
         throw error;
       }
       records.set(String(sessionId), clone(messages));
+    },
+    readVisibility(sessionId) { return visibility.get(sessionId) || null; },
+    writeVisibility(sessionId, value) {
+      events.push(`visibility:${sessionId}`);
+      if (writeFailure) { const error = writeFailure; writeFailure = null; throw error; }
+      visibility.set(sessionId, clone(value));
     },
     deleteSession(sessionId) { return records.delete(String(sessionId)); },
     hasPersistedDelivery(sessionId, deliveryId) {
@@ -284,7 +373,7 @@ test('HTTP pagination and delete preserve legacy DTOs, status codes and commit o
   assert.equal(res.statusCode, 200);
   assert.deepEqual(res.body, { ok: true });
   assert.deepEqual(eventNames(fx.events), [
-    'write:s1',
+    'visibility:s1',
     'broadcast:chat_msg_deleted:s1',
   ]);
 
@@ -398,53 +487,29 @@ test('HTTP delete persistence failure reaches the terminal safe boundary without
   assert.equal(res.statusCode, 200);
   assert.equal(res.body, undefined);
   assert.equal(forwarded.message, 'chat history operation failed');
-  assert.deepEqual(eventNames(fx.events), ['write:s1']);
+  assert.deepEqual(eventNames(fx.events), ['visibility:s1']);
   assert.doesNotMatch(JSON.stringify({ forwarded: forwarded.message, logs: fx.logs }), /hunter2|\/private\/history/);
 });
 
-test('clear is durable-first, broadcasts one authoritative page, then resets native contexts', async () => {
-  const fx = fixture({ initial: { s1: [
-    { id: 'm1', role: 'user', content: 'one' },
-    { id: 'm2', role: 'assistant', content: 'two' },
+test('clear persists display state, preserves raw messages and leaves native context intact', async () => {
+  const original = [
+    { id: 'm1', role: 'user', content: 'one', taskId: 'task-1' },
+    { id: 'm2', role: 'assistant', content: 'two', taskId: 'task-1' },
     { id: 'm3', role: 'user', content: 'three' },
     { id: 'm4', role: 'assistant', content: 'four' },
-  ] } });
+  ];
+  const fx = fixture({ initial: { s1: original } });
   const result = await fx.runtime.clearHistory('s1', { keep: '2' }, fx.chatState);
-  assert.deepEqual(result, {
-    keep: 2,
-    removedCount: 2,
-    retainedCount: 2,
-    clearedNativeSessions: 2,
-  });
-  assert.equal(Object.isFrozen(result), true);
-  assert.deepEqual(fx.history.records.get('s1').map(message => message.id), ['m3', 'm4']);
-  assert.deepEqual(eventNames(fx.events), [
-    'git:s1',
-    'write:s1',
-    'distill:s1:2',
-    'broadcast:chat_history_reset:s1',
-    'stream-close:s1',
-    'clear-native:s1',
-    'checkpoint:s1',
-    'remember:s1',
-    'save:websocket.clear-native-session-state',
-    'track:s1',
-  ]);
+  assert.deepEqual(result, { keep: 2, removedCount: 2, retainedCount: 2, clearedNativeSessions: 0 });
+  assert.deepEqual(fx.history.records.get('s1'), original);
+  assert.deepEqual(fx.runtime.load('s1'), original);
+  assert.deepEqual(fx.runtime.paginate('s1').messages.map(m => m.id), ['m3', 'm4']);
+  assert.deepEqual(eventNames(fx.events), ['visibility:s1', 'broadcast:chat_history_reset:s1']);
   const reset = fx.events.find(value => value && value.payload)?.payload;
-  assert.deepEqual(reset, {
-    type: 'chat_history_reset',
-    messages: [
-      { id: 'm3', role: 'user', content: 'three' },
-      { id: 'm4', role: 'assistant', content: 'four' },
-    ],
-    hasMore: false,
-    keep: 2,
-    removedCount: 2,
-    retainedCount: 2,
-  });
-  assert.equal(fx.chatState.chatTurnCount, 0);
-  assert.equal(fx.persistedSessions.get('s1').pendingCliHandoff.reason, 'history_clear_keep');
-  assert.equal(fx.persistedSessions.get('s1').pendingCliHandoff.checkpoint.reason, 'history_clear_keep');
+  assert.equal(reset.displayOnly, true);
+  assert.deepEqual(reset.messages, original.slice(2));
+  assert.equal(fx.chatState.chatTurnCount, 7);
+  assert.equal(fx.persistedSessions.get('s1').pendingCliHandoff, undefined);
 });
 
 test('clear write failure is sanitized and cannot reset clients or native CLI state', async () => {
@@ -458,29 +523,19 @@ test('clear write failure is sanitized and cannot reset clients or native CLI st
     error => error.code === 'CHAT_HISTORY_CLEAR_FAILED'
       && error.message === 'chat history clear failed',
   );
-  assert.deepEqual(eventNames(fx.events), ['write:s1']);
+  assert.deepEqual(eventNames(fx.events), ['visibility:s1']);
   assert.equal(fx.chatState.chatTurnCount, 7);
   assert.equal(fx.persistedSessions.get('s1').pendingCliHandoff, undefined);
   assert.doesNotMatch(JSON.stringify(fx.logs), /abc|\/Users\/private/);
 });
 
-test('clear rejects live background work before history persistence or native stream teardown', async () => {
-  const original = [
-    { id: 'm1', role: 'user', content: 'one' },
-    { id: 'm2', role: 'assistant', content: 'two' },
-  ];
-  const fx = fixture({
-    initial: { s1: original },
-    rotationBlock: 'background_tasks_running',
-  });
-
-  const result = await fx.runtime.clearHistory('s1', { keep: 0 }, fx.chatState);
-
-  assert.deepEqual(result, { ok: false, code: 'background_tasks_running' });
+test('clear is allowed with live background work and never tears down its native stream', async () => {
+  const original = [{ id: 'm1', role: 'user', content: 'one' }, { id: 'm2', role: 'assistant', content: 'two' }];
+  const fx = fixture({ initial: { s1: original }, rotationBlock: 'background_tasks_running' });
+  await fx.runtime.clearHistory('s1', { keep: 0 }, fx.chatState);
   assert.deepEqual(fx.history.records.get('s1'), original);
-  assert.deepEqual(eventNames(fx.events), ['broadcast:error:s1']);
-  assert.equal(fx.events.some(value => value === 'stream-close:s1'), false);
-  assert.equal(fx.events.some(value => value === 'clear-native:s1'), false);
+  assert.deepEqual(fx.runtime.paginate('s1').messages, []);
+  assert.deepEqual(eventNames(fx.events), ['visibility:s1', 'broadcast:chat_history_reset:s1']);
 });
 
 test('manual native context rotation preserves full history and commits a one-shot checkpoint', async () => {
