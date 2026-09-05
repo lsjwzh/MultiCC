@@ -1,8 +1,12 @@
 'use strict';
 
+const { randomUUID } = require('node:crypto');
+const { WebSocket } = require('ws');
 const { installWsBackpressure } = require('../ws-backpressure');
 const { isInternalExecutionSlot } = require('../session/public-session-access');
 
+const WS_PING_INTERVAL_MS = 30_000;
+const WS_MAX_MISSED_PONGS = 3;
 const SESSIONLESS_WS_PATHS = new Set([
   '/ws/voice', '/ws/tts', '/ws/workspace', '/ws/meta', '/ws/aux',
 ]);
@@ -40,8 +44,47 @@ function mountWsConnectionRouter(wss, deps) {
     path,
     os,
   } = deps;
+  const connections = new WeakMap();
 
   wss.on('connection', async (ws, req) => {
+    const urlObj = new URL(req.url, 'http://localhost');
+    const addressedSessionId = urlObj.pathname === '/ws/chat'
+      ? urlObj.searchParams.get('session')
+      : SESSIONLESS_WS_PATHS.has(urlObj.pathname) ? null : urlObj.searchParams.get('id');
+    const addressedDirectoryId = urlObj.pathname === '/ws/workspace'
+      ? urlObj.searchParams.get('dirId') : null;
+    const heartbeat = {
+      pendingPong: false,
+      missedPongs: 0,
+      timedOut: false,
+      connectedAt: Date.now(),
+      fields: {
+        connectionId: randomUUID(),
+        path: urlObj.pathname, // Never log query strings containing auth credentials.
+        sessionId: addressedSessionId,
+        directoryId: addressedDirectoryId,
+      },
+    };
+    connections.set(ws, heartbeat);
+    // Install before dispatch: every WS route needs protocol-level liveness.
+    ws.on('pong', () => {
+      heartbeat.pendingPong = false;
+      heartbeat.missedPongs = 0;
+    });
+    ws.once('close', (code, reason) => {
+      logger.info('ws_connection_closed', {
+        ...heartbeat.fields,
+        correlationId: ws._correlationId,
+        code,
+        reason: reason.toString(),
+        durationMs: Math.max(0, Date.now() - heartbeat.connectedAt),
+        // Same handshake flags used by ws 8.x to populate CloseEvent.wasClean.
+        wasClean: ws._closeFrameReceived === true && ws._closeFrameSent === true,
+        heartbeatTimedOut: heartbeat.timedOut,
+        missedPongs: heartbeat.missedPongs,
+      });
+      connections.delete(ws);
+    });
     if (getShuttingDown()) {
       ws.close(1012, 'server shutting down');
       return;
@@ -51,12 +94,6 @@ function mountWsConnectionRouter(wss, deps) {
       ws.close(4003, 'Direct public access disabled');
       return;
     }
-    const urlObj = new URL(req.url, 'http://localhost');
-    const addressedSessionId = urlObj.pathname === '/ws/chat'
-      ? urlObj.searchParams.get('session')
-      : SESSIONLESS_WS_PATHS.has(urlObj.pathname) ? null : urlObj.searchParams.get('id');
-    const addressedDirectoryId = urlObj.pathname === '/ws/workspace'
-      ? urlObj.searchParams.get('dirId') : null;
     installWsBackpressure(ws, {
       onMetric: (name, value, op) => op === 'set' ? metrics.set(name, value) : metrics.inc(name, value),
       onLog: (event, fields) => logger.warn(event, { ...fields, correlationId: ws._correlationId }),
@@ -140,8 +177,6 @@ function mountWsConnectionRouter(wss, deps) {
     }
     if (urlObj.pathname === '/ws/aux') {
       auxQueue.attachClient(ws);
-      ws.isAlive = true;
-      ws.on('pong', () => { ws.isAlive = true; });
       sendWs(ws, {
         type: 'aux_init',
         status: auxQueue.getStatus(),
@@ -193,8 +228,6 @@ function mountWsConnectionRouter(wss, deps) {
     }
 
     session.clients.add(ws);
-    ws.isAlive = true;
-    ws.on('pong', () => { ws.isAlive = true; });
     sendWs(ws, { type: 'session_id', id: sessionId, cli: session.cli || 'claude' });
 
     // The most recent input client owns resize; the pane uses the maximum
@@ -274,11 +307,25 @@ function mountWsConnectionRouter(wss, deps) {
 
   const wsPingInterval = setInterval(() => {
     wss.clients.forEach(client => {
-      if (client.isAlive === false) return client.terminate();
-      client.isAlive = false;
+      const heartbeat = connections.get(client);
+      if (client.readyState !== WebSocket.OPEN || !heartbeat || heartbeat.timedOut) return;
+      // Count completed unanswered windows, not the first ping itself. Three
+      // missed windows allow ~90s after that ping for a delayed relay pong.
+      if (heartbeat.pendingPong) heartbeat.missedPongs += 1;
+      if (heartbeat.missedPongs >= WS_MAX_MISSED_PONGS) {
+        heartbeat.timedOut = true;
+        logger.warn('ws_pong_timeout', {
+          ...heartbeat.fields,
+          correlationId: client._correlationId,
+          missedPongs: heartbeat.missedPongs,
+        });
+        client.terminate();
+        return;
+      }
+      heartbeat.pendingPong = true;
       client.ping();
     });
-  }, 30000);
+  }, WS_PING_INTERVAL_MS);
   wss.on('close', () => clearInterval(wsPingInterval));
   return { wsPingInterval };
 }
