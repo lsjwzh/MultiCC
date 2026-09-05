@@ -537,6 +537,7 @@
   "apkSourceUnavailable": "Unavailable",
   "apkReleaseMissing": "GitHub Release {releaseTag} has not published multicc.apk.",
   "apkLookupFailed": "Could not verify the online APK: {error}",
+  "iosOtaOpen": "iOS OTA install page",
   "messageBridges": "Message Bridges",
   "skillSync": "Skill Sync",
   "temporaryUploads": "Temporary Uploads",
