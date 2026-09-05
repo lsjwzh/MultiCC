@@ -2246,7 +2246,7 @@ function newChatMsgId() {
 }
 chatHistoryRuntime = createChatHistoryRuntime({
   history: chatHistoryRepository,
-  ...createTaskHistoryRetention({ getBoard: () => taskBoardRuntime.getBoard(), getRecord: id => persistedSessions.get(id), loadHistory: id => chatHistoryRepository.readStrict(id) }),
+  ...createTaskHistoryRetention({ getBoard: () => taskBoardRuntime.getBoard(), getRecord: id => persistedSessions.get(id), loadHistory: id => chatHistoryRepository.readStrict(id, { allowEmpty: true }) }),
   persistedSessions,
   chatSessions,
   idFactory: newChatMsgId,

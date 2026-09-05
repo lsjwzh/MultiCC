@@ -131,8 +131,12 @@ function createChatHistoryFileRepository({
     writeText(visibilityFileFor(sessionId), JSON.stringify(state));
   }
 
-  function readStrict(sessionId) {
-    return parseTranscript(fsImpl.readFileSync(fileFor(sessionId), 'utf8')).messages;
+  function readStrict(sessionId, { allowEmpty = false } = {}) {
+    const text = fsImpl.readFileSync(fileFor(sessionId), 'utf8');
+    // Legacy clear wrote an empty file. Retention checks may treat that as
+    // no evidence; delivery durability checks must still reject an empty file.
+    if (allowEmpty && !text.trim()) return [];
+    return parseTranscript(text).messages;
   }
 
   function read(sessionId) {
