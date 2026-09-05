@@ -113,6 +113,10 @@ function createPaths({ dataDir } = {}) {
     providerLimitCacheFile: path.join(root, 'provider-limit-cache.json'),
     quotaBarCacheFile: path.join(root, 'quota-bar-cache.json'),
     scheduledTasksFile: path.join(root, 'scheduled_tasks.json'),
+    // Published docs & web services management table (src/docs-registry.js):
+    // every agent-generated document/page/file and every reachable local web
+    // service registers here so the /manage panel can list, open and prune them.
+    docsRegistryFile: path.join(root, 'docs_registry.json'),
     taskBoardFile: path.join(root, 'task_board.json'),
     taskRunDbFile: path.join(root, 'task-runs.sqlite'),
     // Outward task short-code registry (taskId→#CODE), guaranteeing the 4-char
