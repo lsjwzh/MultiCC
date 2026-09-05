@@ -108,6 +108,11 @@ function absoluteBaseUrl(req) {
 function buildManifestXml(meta, baseUrl) {
   const assetUrl = `${baseUrl}/${IPA_NAME}`;
   const title = meta.title || 'MultiCC';
+  // Apple's manifest contract: bundle-version is the app's CFBundleVersion
+  // (build number), not the marketing version. Handing installd the semantic
+  // version here makes modern iOS fetch the whole IPA and then silently drop
+  // the install — the exact "tap install, nothing happens" failure.
+  const bundleVersion = meta.versionCode || meta.versionName;
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
@@ -130,7 +135,7 @@ function buildManifestXml(meta, baseUrl) {
     '\t\t\t\t<key>bundle-identifier</key>',
     `\t\t\t\t<string>${xmlEscape(meta.bundleId)}</string>`,
     '\t\t\t\t<key>bundle-version</key>',
-    `\t\t\t\t<string>${xmlEscape(meta.versionName)}</string>`,
+    `\t\t\t\t<string>${xmlEscape(bundleVersion)}</string>`,
     '\t\t\t\t<key>kind</key>',
     '\t\t\t\t<string>software</string>',
     '\t\t\t\t<key>title</key>',
