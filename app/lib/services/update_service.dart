@@ -1,15 +1,25 @@
-import 'dart:convert';
-import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-import 'package:package_info_plus/package_info_plus.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:url_launcher/url_launcher.dart';
+import 'dart:io';
 
+import 'package:flutter/material.dart';
+import 'package:package_info_plus/package_info_plus.dart';
+
+import '../i18n.dart';
+import 'app_update_provider.dart';
 import 'settings_service.dart';
 
+/// App update orchestration: picks a platform-specific provider (see
+/// app_update_provider.dart) and renders prompts. The APK flow is Android
+/// only; iOS checks the App Store and can never reach an APK endpoint.
 class UpdateService {
-  static const _keyLastMtime = 'multicc_apk_mtime';
-  static const _keyLastVersionCode = 'multicc_apk_version_code';
+  /// Test seam: how the production platform choice is made. Production reads
+  /// Platform.*; tests override with injected fake providers.
+  static AppUpdateProvider? Function() providerForPlatform = _defaultProvider;
+
+  static AppUpdateProvider? _defaultProvider() {
+    if (Platform.isIOS) return IosAppStoreUpdateProvider();
+    if (Platform.isAndroid) return AndroidApkUpdateProvider();
+    return null; // desktop / other: no in-app update checks at all
+  }
 
   /// Installed app version string for display, e.g. "2.5.2 (30)".
   static Future<String> currentVersion() async {
@@ -21,79 +31,62 @@ class UpdateService {
     }
   }
 
+  /// The settings-page version hint is platform specific: Android compares
+  /// build numbers against the server APK, iOS follows the App Store release.
+  static String versionFormatHintKey() =>
+      Platform.isIOS ? 'versionFormatHintIos' : 'versionFormatHint';
+
   /// Silent, automatic update check fired on launch. Prompts only when the
-  /// server's APK is genuinely newer than what's installed.
+  /// platform provider reports a genuinely newer published version the user
+  /// has not already acknowledged.
   static Future<void> checkUpdate(
     BuildContext context,
-    SettingsService settings,
-  ) async {
-    if (!settings.isConfigured) return;
+    SettingsService settings, {
+    AppUpdateProvider? providerOverride,
+  }) async {
+    final provider = providerOverride ?? providerForPlatform();
+    if (provider == null || !settings.isConfigured) return;
 
     try {
       final info = await PackageInfo.fromPlatform();
-      final currentCode = int.tryParse(info.buildNumber) ?? 0;
+      final result = await provider.check(settings: settings, info: info);
+      if (!result.hasUpdate) return;
 
-      final meta = await _fetchApkInfo(settings);
-      if (meta == null || meta['exists'] != true) return;
-
-      final serverVersion = (meta['versionName'] as String?)?.trim() ?? '';
-      final serverCode = (meta['versionCode'] as num?)?.toInt() ?? 0;
-      final serverMtime = meta['mtime'] as String? ?? '';
-
-      // Prefer deterministic APK metadata over file mtime. A freshly installed
-      // or freshly configured app may not have a stored mtime yet; it still must
-      // prompt when the server publishes a higher Android versionCode.
-      if (serverCode > 0 && currentCode > 0) {
-        if (serverCode <= currentCode) {
-          await _rememberPublishedApk(serverMtime, serverCode);
-          return;
-        }
-        if (!context.mounted) return;
-        final shouldUpdate = await _confirmUpdateDialog(
-          context,
-          _versionLabel(serverVersion, serverCode),
-        );
-        if (shouldUpdate == true) {
-          await _rememberPublishedApk(serverMtime, serverCode);
-          await _launchDownload(settings);
-        }
-        return;
+      // Quiet repeat prompts: once the user has answered for a given offered
+      // version, automatic checks stay silent until something newer appears.
+      if (provider is IosAppStoreUpdateProvider) {
+        final acked = await IosAppStoreUpdateProvider.ackedVersion();
+        if (acked == result.newVersionLabel) return;
       }
 
-      if (serverMtime.isEmpty) return;
-
-      final prefs = await SharedPreferences.getInstance();
-      final lastMtime = prefs.getString(_keyLastMtime) ?? '';
-
-      if (lastMtime.isEmpty) {
-        await prefs.setString(_keyLastMtime, serverMtime);
-        return;
-      }
-
-      if (serverMtime != lastMtime) {
-        if (!context.mounted) return;
-        final shouldUpdate = await _confirmUpdateDialog(
-          context,
-          _versionLabel(serverVersion, serverCode),
-        );
-        if (shouldUpdate == true) {
-          await _rememberPublishedApk(serverMtime, serverCode);
-          await _launchDownload(settings);
-        }
+      if (!context.mounted) return;
+      final shouldUpdate = await _confirmUpdateDialog(context, provider, result);
+      if (shouldUpdate == true) {
+        await provider.onConfirmed(result, settings);
+        await _openUpdate(context, provider, result, settings);
+      } else if (shouldUpdate == false) {
+        // Declining also counts as acknowledged — no nagging every launch.
+        await provider.onConfirmed(result, settings);
       }
     } catch (_) {
       // Silently ignore — automatic check must never interrupt the user.
     }
   }
 
-  /// Manual "check for update" triggered from Settings. Always shows a result:
-  /// either "you're up to date" or an update prompt.
+  /// Manual "check for update" triggered from Settings. Always shows a
+  /// result: an update prompt, or a platform-specific "no update" reason.
   static Future<void> checkUpdateManually(
     BuildContext context,
-    SettingsService settings,
-  ) async {
+    SettingsService settings, {
+    AppUpdateProvider? providerOverride,
+  }) async {
+    final provider = providerOverride ?? providerForPlatform();
     if (!settings.isConfigured) {
-      _info(context, '请先配置服务器连接', '在「服务器连接」里填好地址后再检查更新。');
+      _info(context, t('updateNeedConfigTitle'), t('updateNeedConfigBody'));
+      return;
+    }
+    if (provider == null) {
+      _info(context, t('updateUnsupportedTitle'), t('updateUnsupportedBody'));
       return;
     }
 
@@ -101,128 +94,111 @@ class UpdateService {
     try {
       info = await PackageInfo.fromPlatform();
     } catch (e) {
-      if (context.mounted) _info(context, '检查失败', '无法读取本机版本：$e');
+      if (context.mounted) {
+        _info(context, t('updateCheckFailedTitle'), t('updateReadVersionFailed', {'error': '$e'}));
+      }
       return;
     }
-    final currentCode = int.tryParse(info.buildNumber) ?? 0;
 
-    final meta = await _fetchApkInfo(settings);
+    final result = await provider.check(settings: settings, info: info, fresh: true);
     if (!context.mounted) return;
-    if (meta == null) {
-      _info(context, '检查失败', '无法连接服务器，请确认地址、Token 与网络。');
-      return;
-    }
-    if (meta['exists'] != true) {
-      _info(context, '暂无安装包', '服务器上还没有发布 APK。');
-      return;
-    }
 
-    final serverVersion = (meta['versionName'] as String?)?.trim() ?? '';
-    final serverCode = (meta['versionCode'] as num?)?.toInt() ?? 0;
-    final serverMtime = meta['mtime'] as String? ?? '';
-
-    final hasNewer = (serverCode > 0 && currentCode > 0)
-        ? serverCode > currentCode
-        : (serverVersion.isNotEmpty && serverVersion != info.version);
-
-    if (!hasNewer) {
-      _info(
-        context,
-        '已是最新版本',
-        '当前版本 ${info.version} (${info.buildNumber}) 已是服务器上的最新版本。',
-      );
-      return;
-    }
-
-    final shouldUpdate = await _confirmUpdateDialog(
-      context,
-      _versionLabel(serverVersion, serverCode),
-    );
-    if (shouldUpdate == true) {
-      await _rememberPublishedApk(serverMtime, serverCode);
-      await _launchDownload(settings);
+    switch (result.status) {
+      case UpdateStatus.updateAvailable:
+        final shouldUpdate = await _confirmUpdateDialog(context, provider, result);
+        if (shouldUpdate == true) {
+          await provider.onConfirmed(result, settings);
+          await _openUpdate(context, provider, result, settings);
+        } else if (shouldUpdate == false) {
+          await provider.onConfirmed(result, settings);
+        }
+        return;
+      case UpdateStatus.upToDate:
+        if (provider is IosAppStoreUpdateProvider) {
+          _info(
+            context,
+            t('updateUpToDateTitle'),
+            t('updateUpToDateStoreBody', {'version': info.version}),
+          );
+        } else {
+          _info(
+            context,
+            t('updateUpToDateTitle'),
+            t('updateUpToDateApkBody', {
+              'version': info.version,
+              'build': info.buildNumber,
+            }),
+          );
+        }
+        return;
+      case UpdateStatus.listingMissing:
+        // Not released / in review / TestFlight-only / not visible in the
+        // storefront — the honest answer is "nothing available", never an
+        // APK fallback.
+        _info(context, t('updateUpToDateTitle'), t('updateStoreListingMissing'));
+        return;
+      case UpdateStatus.noApk:
+        _info(context, t('updateNoApkTitle'), t('updateNoApkBody'));
+        return;
+      case UpdateStatus.failed:
+        if (provider is IosAppStoreUpdateProvider) {
+          _info(context, t('updateCheckFailedTitle'), t('updateStoreCheckFailed'));
+        } else {
+          _info(context, t('updateCheckFailedTitle'), t('updateServerUnreachable'));
+        }
+        return;
     }
   }
 
   // ── helpers ──
 
-  static Future<Map<String, dynamic>?> _fetchApkInfo(
+  static Future<void> _openUpdate(
+    BuildContext context,
+    AppUpdateProvider provider,
+    UpdateCheckResult result,
     SettingsService settings,
   ) async {
-    try {
-      final url = settings.buildHttpUrl('/api/apk-info');
-      final headers = <String, String>{};
-      if (settings.token.isNotEmpty) headers['X-Access-Token'] = settings.token;
-      final res = await http
-          .get(Uri.parse(url), headers: headers)
-          .timeout(const Duration(seconds: 8));
-      if (res.statusCode != 200) return null;
-      return jsonDecode(res.body) as Map<String, dynamic>;
-    } catch (_) {
-      return null;
+    final ok = await provider.openUpdate(result, settings);
+    if (!ok && context.mounted) {
+      _info(
+        context,
+        t('updateOpenFailedTitle'),
+        provider is IosAppStoreUpdateProvider
+            ? t('updateOpenStoreFailed')
+            : t('updateOpenDownloadFailed'),
+      );
     }
-  }
-
-  static Future<void> _launchDownload(SettingsService settings) async {
-    var downloadUrl = settings.buildHttpUrl('/multicc.apk');
-    if (settings.token.isNotEmpty) {
-      downloadUrl += '?token=${Uri.encodeQueryComponent(settings.token)}';
-    }
-    // Don't use canLaunchUrl — it's unreliable on Android 11+.
-    await launchUrl(
-      Uri.parse(downloadUrl),
-      mode: LaunchMode.externalApplication,
-    );
-  }
-
-  static Future<void> _rememberPublishedApk(
-    String mtime,
-    int versionCode,
-  ) async {
-    final prefs = await SharedPreferences.getInstance();
-    if (mtime.isNotEmpty) {
-      await prefs.setString(_keyLastMtime, mtime);
-    }
-    if (versionCode > 0) {
-      await prefs.setInt(_keyLastVersionCode, versionCode);
-    }
-  }
-
-  static String _versionLabel(String versionName, int versionCode) {
-    if (versionName.isNotEmpty && versionCode > 0) {
-      return '$versionName ($versionCode)';
-    }
-    if (versionName.isNotEmpty) return versionName;
-    if (versionCode > 0) return 'build $versionCode';
-    return '';
   }
 
   static Future<bool?> _confirmUpdateDialog(
     BuildContext context,
-    String serverVersion,
+    AppUpdateProvider provider,
+    UpdateCheckResult result,
   ) {
+    final isStore = provider is IosAppStoreUpdateProvider;
+    final label = result.newVersionLabel;
     return showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
         backgroundColor: const Color(0xFF0f1115),
         title: Text(
-          serverVersion.isNotEmpty ? '发现新版本 $serverVersion' : '发现新版本',
+          label.isNotEmpty ? t('updateFoundTitle', {'version': label}) : t('updateFoundPlainTitle'),
           style: const TextStyle(color: Color(0xFFf2f4f7)),
         ),
-        content: const Text(
-          '服务器上有新版本的 APK，是否下载更新？',
-          style: TextStyle(color: Color(0xFF8a909b)),
+        content: Text(
+          isStore ? t('updateFoundStoreBody') : t('updateFoundApkBody'),
+          style: const TextStyle(color: Color(0xFF8a909b)),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('稍后', style: TextStyle(color: Color(0xFF8a909b))),
+            child: Text(t('updateLater'), style: const TextStyle(color: Color(0xFF8a909b))),
           ),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text(
-              '更新',
-              style: TextStyle(
+            child: Text(
+              t('updateAction'),
+              style: const TextStyle(
                 color: Color(0xFF6aa3ff),
                 fontWeight: FontWeight.w600,
               ),
@@ -243,9 +219,9 @@ class UpdateService {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text(
-              '好',
-              style: TextStyle(
+            child: Text(
+              t('done'),
+              style: const TextStyle(
                 color: Color(0xFF6aa3ff),
                 fontWeight: FontWeight.w600,
               ),
