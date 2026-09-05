@@ -36,6 +36,7 @@ import 'push_settings_screen.dart';
 import 'memo_screen.dart';
 import 'settings_screen.dart';
 import 'cron_screen.dart';
+import 'docs_registry_screen.dart';
 import 'terminal_screen.dart';
 import 'tunnel_settings_screen.dart';
 import 'voice_settings_screen.dart';
@@ -461,6 +462,9 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
     final route = switch (destination) {
       WorkspaceDestination.cron => MaterialPageRoute<void>(
           builder: (_) => CronScreen(settings: widget.settings),
+        ),
+      WorkspaceDestination.docs => MaterialPageRoute<void>(
+          builder: (_) => DocsRegistryScreen(settings: widget.settings),
         ),
       WorkspaceDestination.voice => MaterialPageRoute<void>(
           builder: (_) => VoiceSettingsScreen(settings: widget.settings),
