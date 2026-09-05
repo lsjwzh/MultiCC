@@ -1944,7 +1944,7 @@ const {
 const bgCoalesce = require('./src/bg-completion-coalescer');
 const { createDetached } = require('./src/detached');
 const detached = createDetached({ baseDir: MULTICC_PATHS.detachedDir });
-const apkDistribution = createApkDistribution({ fs, path, https, rootDir: __dirname });
+const apkDistribution = createApkDistribution({ fs, path, https, rootDir: __dirname }); const iosOta = require('./src/ios-ota').createIosOta({ fs, path, rootDir: __dirname });
 const share = require('./src/share');
 mountShareRoutes(app, {
   share,
@@ -1969,7 +1969,7 @@ mountSystemRoutes(app, {
   getPort: () => PORT, getBindHost: () => BIND_HOST,
   authRequired: () => ACCESS_TOKEN,
   gitRun,
-  apkDistribution,
+  apkDistribution, iosOta,
 });
 
 // Read-only host control-plane endpoints share one narrow boundary. Mutable

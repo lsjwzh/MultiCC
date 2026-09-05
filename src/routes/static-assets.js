@@ -81,17 +81,18 @@ function createStaticAssetsRoutes(rawDeps) {
       next();
     });
 
-    // APK distribution has exactly one public name. The canonical route is
-    // mounted before this module and either falls through for a verified local
-    // file or terminates with a release redirect/404. Never let an accidental
-    // binary such as public/webcc.apk become downloadable just because it was
-    // left in the public directory.
+    // App binary distribution has exactly one public name per platform. The
+    // canonical routes are mounted before this module and either fall through
+    // for a verified local file or terminate explicitly. Never let an
+    // accidental binary such as public/webcc.apk become downloadable just
+    // because it was left in the public directory.
     app.use((req, res, next) => {
       let requestedPath = req.path;
       try { requestedPath = decodeURIComponent(requestedPath); } catch (_) {}
       if ((req.method === 'GET' || req.method === 'HEAD')
           && requestedPath !== '/multicc.apk'
-          && /\.apk$/i.test(requestedPath)) {
+          && requestedPath !== '/multicc-ios.ipa'
+          && /\.(apk|ipa)$/i.test(requestedPath)) {
         res.set('Cache-Control', 'no-store');
         return res.status(404).end();
       }
@@ -104,6 +105,13 @@ function createStaticAssetsRoutes(rawDeps) {
         if (filePath.endsWith('.apk')) {
           res.set('Content-Type', 'application/vnd.android.package-archive');
           res.set('Content-Disposition', 'attachment; filename="multicc.apk"');
+          res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+          res.set('Pragma', 'no-cache');
+          res.set('Expires', '0');
+        }
+        if (filePath.endsWith('.ipa')) {
+          res.set('Content-Type', 'application/octet-stream');
+          res.set('Content-Disposition', 'attachment; filename="multicc-ios.ipa"');
           res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
           res.set('Pragma', 'no-cache');
           res.set('Expires', '0');
