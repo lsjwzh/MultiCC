@@ -210,7 +210,11 @@ function createAuthRuntime(rawDeps) {
       // Allow login page, static assets
       if (req.path === '/login' || req.path === '/logout') return next();
       if (req.path === '/healthz' || req.path === '/readyz') return next();
-      if (!req.path.startsWith('/api/') && /\.(js|css|png|jpg|jpeg|gif|svg|ico|woff2?|ttf|json|apk)$/i.test(req.path)) return next();
+      if (!req.path.startsWith('/api/') && /\.(js|css|png|jpg|jpeg|gif|svg|ico|woff2?|ttf|json|apk|ipa)$/i.test(req.path)) return next();
+      // iOS OTA (itms-services): the on-device installer fetches the manifest
+      // without the login cookie — same capability-by-name model as the public
+      // /multicc.apk download above. The /ios-ota page itself stays gated.
+      if (req.path === '/ios-ota/manifest.plist') return next();
       // Wait-callback endpoint is secured by its own per-wait token so external
       // (off-box) systems can deliver results without the ACCESS_TOKEN cookie.
       if (req.method === 'POST' && /^\/api\/wait\/[^/]+\/resolve$/.test(req.path)) return next();

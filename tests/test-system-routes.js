@@ -18,6 +18,7 @@ const {
   resolveVersionInfo,
   createServerInfoHandler,
   createApkInfoHandler,
+  createIosOtaInfoHandler,
   mountSystemRoutes,
 } = require('../src/routes/system');
 const { createApkDistribution } = require('../src/apk-distribution');
@@ -472,11 +473,15 @@ test('zero-byte, directory, malformed manifest, and invalid package versions fai
   }
 });
 
-test('system route mount owns APK metadata and the canonical download route only', async () => {
+test('system route mount owns the app-binary metadata and canonical download routes', async () => {
   const paths = [];
   const apkDistribution = {
     async info() { return { exists: false, localExists: false, source: null }; },
     async downloadHandler() {},
+  };
+  const iosOta = {
+    info() { return { exists: false, installable: false, installPage: '/ios-ota' }; },
+    manifestHandler() {},
   };
   mountSystemRoutes({
     get(route, handler) { paths.push(['GET', route, typeof handler]); },
@@ -490,15 +495,22 @@ test('system route mount owns APK metadata and the canonical download route only
     authRequired: () => false,
     gitRun: async () => '',
     apkDistribution,
+    iosOta,
   });
   assert.deepEqual(paths, [
     ['GET', '/api/server-info', 'function'],
     ['GET', '/api/version-check', 'function'],
     ['GET', '/api/apk-info', 'function'],
     ['GET', '/multicc.apk', 'function'],
+    ['GET', '/api/ios-ota-info', 'function'],
+    ['GET', '/ios-ota/manifest.plist', 'function'],
   ]);
 
   const response = { json(value) { this.body = value; } };
   await createApkInfoHandler({ apkDistribution })({}, response, error => { throw error; });
   assert.deepEqual(response.body, { exists: false, localExists: false, source: null });
+
+  const iosResponse = { json(value) { this.body = value; } };
+  createIosOtaInfoHandler({ iosOta })({}, iosResponse, error => { throw error; });
+  assert.deepEqual(iosResponse.body, { exists: false, installable: false, installPage: '/ios-ota' });
 });

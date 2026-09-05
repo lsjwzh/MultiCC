@@ -537,6 +537,7 @@
   "apkSourceUnavailable": "不可用",
   "apkReleaseMissing": "GitHub Release {releaseTag} 尚未发布 multicc.apk。",
   "apkLookupFailed": "无法确认线上 APK：{error}",
+  "iosOtaOpen": "iOS OTA 安装页",
   "messageBridges": "消息桥接",
   "skillSync": "技能同步",
   "temporaryUploads": "临时上传",
