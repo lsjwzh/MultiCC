@@ -130,6 +130,7 @@
       cursor: pointer;
     }
     .hdr-drop-menu button:hover { background: #21262d; border-color: #30363d; }
+    .hdr-drop-menu button[data-action="clear-all"] { color: #ff7b72; }
     .hdr-drop-menu button.primary {
       color: #fff;
       background: #238636;
@@ -156,13 +157,11 @@
       .badge, .hdr-spacer { display: none; }
       #session-title { order: 2; flex: 1 1 45%; max-width: none; }
       #status { margin-left: auto; max-width: 34vw; overflow: hidden; text-overflow: ellipsis; }
-      #reconnect-btn, #cli-btn, #merge-btn, #header-more-btn { min-height: 40px; min-width: 40px; }
+      #reconnect-btn, #cli-btn, #merge-btn, #header-more-btn, #clear-ctx-btn { min-height: 40px; min-width: 40px; }
       #cli-btn { margin-left: auto; }
       #model-btn, #provider-btn, #role-btn, #memory-btn, #auto-commit-btn, #share-btn { max-width: 100%; }
-      #header-more-menu > .hdr-btn,
-      #header-more-menu #clear-ctx-wrap,
-      #header-more-menu #clear-ctx-btn { width: 100%; min-height: 44px; }
-      #header-more-menu #clear-ctx-wrap { display: flex; }
+      #header-more-menu > .hdr-btn, #clear-ctx-menu button { width: 100%; min-height: 44px; }
+      #clear-ctx-menu { max-width: calc(100vw - 32px); }
     }
 
     /* Session identity (directory / alias) shown in the header */
@@ -2525,9 +2524,9 @@
     </span>
     <button class="hdr-btn session-only" id="merge-btn" data-i18n-title="mergeWorktreeTitle" title="把此会话 worktree 合并回基分支" data-i18n="merge">合并</button>
     <span class="hdr-menu-wrap session-only" id="clear-ctx-wrap">
-      <button class="hdr-btn" id="clear-ctx-btn" data-i18n-title="clearHistory" title="Clear context" data-i18n="clear">Clear</button>
+      <button class="hdr-btn" id="clear-ctx-btn" data-i18n-title="clearChatHistory" title="清理显示" data-i18n="clearChatHistory">清理显示</button>
       <span class="hdr-drop-menu" id="clear-ctx-menu" style="display:none">
-        <button data-action="clear-all" data-i18n="clearHistory">清空全部</button>
+        <button data-action="clear-all" data-i18n="clearAllChatHistory">清空消息显示</button>
         <label style="display:flex;align-items:center;gap:4px;padding:6px 8px;font-size:12px;color:var(--faint);white-space:nowrap">
           <input id="clear-keep-n" type="number" min="1" max="999" value="5" style="width:44px;font-size:12px;padding:2px 4px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg)">
           <span data-i18n="clearKeepLast">保留最近 N 条</span>

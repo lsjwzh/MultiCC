@@ -63,8 +63,8 @@ test('explicit board-task merge preserves target identity and folds bounded chro
   assert.equal(target.branch, 'multicc/target');
   assert.equal(target.status, 'active', 'any active member keeps the merged task active');
   assert.deepEqual(target.areas, ['shared', 'target-area', 'source-area']);
-  assert.equal(target.refs.length, core.MAX_REFS_PER_TASK);
-  assert.equal(target.refs[0].ts, 3, 'the cap keeps the newest 500 refs');
+  assert.equal(target.refs.length, 502);
+  assert.equal(target.refs[0].ts, 1, 'merging retains even the oldest evidence');
   assert.equal(target.refs.at(-1).ts, 502);
   assert.equal(new Set(target.refs.map(item => item.assistantMsgId)).size, target.refs.length,
     'the overlapping source/target turn is present only once');

@@ -23,7 +23,8 @@ const planning = require('./task-planning');
 
 const MAX_TAGS_PER_TURN = 3;
 const MAX_AREAS_PER_TASK = 8;
-const MAX_REFS_PER_TASK = 500;
+// References are durable ownership, not a display window. Never age them out.
+const MAX_REFS_PER_TASK = Infinity;
 const MAX_TASKS_IN_PROMPT = 50;
 const MAX_TITLE_LEN = 40;
 const MAX_MODULE_LEN = 20;
@@ -937,9 +938,7 @@ function mergeTasks(board, {
   });
   const mergedRecords = [...sources, ...tombstones];
 
-  // Rebuild refs chronologically through the canonical deduper, then retain
-  // the newest MAX_REFS_PER_TASK.  Appending an older source ref must never
-  // make taskLastTs regress or evict a newer target ref.
+  // Rebuild all durable refs chronologically through the canonical deduper.
   const allRefs = [target, ...sources]
     .flatMap(task => task.refs || [])
     .sort((a, b) => (a.ts || 0) - (b.ts || 0));

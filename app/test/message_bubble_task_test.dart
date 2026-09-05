@@ -119,7 +119,7 @@ void main() {
     );
     await openSheet();
     expect(find.text('复制内容'), findsOneWidget);
-    expect(find.text('删除这条消息'), findsNothing);
+    expect(find.text('隐藏'), findsNothing);
     expect(find.text('从此处分叉会话'), findsNothing);
     await tester.tap(find.text('复制内容'));
     await tester.pumpAndSettle();
@@ -130,7 +130,7 @@ void main() {
     );
     await openSheet();
     expect(find.text('复制内容'), findsOneWidget);
-    expect(find.text('删除这条消息'), findsOneWidget);
+    expect(find.text('隐藏'), findsOneWidget);
     expect(find.text('从此处分叉会话'), findsOneWidget);
   });
 }

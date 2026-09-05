@@ -1732,10 +1732,8 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet>
 
   /// Open a session by id (called from the task-board detail sheet when a
   /// session chip is tapped, or when a message is tapped to deep-link into the
-  /// chat). Looks the session up in the loaded list; a chat opens inline over
-  /// the fleet panel, a terminal pushes its screen. A [focusMessageId]
-  /// deep-links a chat session to that message (scroll + highlight); it is
-  /// ignored for terminals and when null. A session referenced by a task but no
+  /// chat). Task entries read full history, including messages hidden in the
+  /// ordinary session view. A session referenced by a task but no
   /// longer loaded surfaces a SnackBar. The detail sheet pops itself before
   /// calling this, so the fleet panel is the top layer and its context/mgr are
   /// still live.
@@ -1757,7 +1755,10 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet>
     if (focusMessageId != null &&
         focusMessageId.isNotEmpty &&
         match.isChat) {
-      widget.mgr.openSessionWithFocus(match, focusMessageId: focusMessageId);
+      widget.mgr.openSessionWithFocus(match, focusMessageId: focusMessageId, historyArchive: true);
+    } else if (match.isChat) {
+      widget.mgr.openSession(match, historyArchive: true);
+      widget.mgr.switchToSession(match.id);
     } else {
       _openSession(match);
     }
@@ -1774,7 +1775,8 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet>
       );
       return;
     }
-    _openSession(session);
+    widget.mgr.openSession(session, historyArchive: true);
+    widget.mgr.switchToSession(session.id);
   }
 
   Future<void> _createSession(SessionKind kind, {SessionCli? defaultCli}) async {

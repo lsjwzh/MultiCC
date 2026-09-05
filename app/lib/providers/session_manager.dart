@@ -487,8 +487,12 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Open (or reuse) a chat connection for a session. Only meaningful for
   /// `kind == chat` sessions; terminals run in a separate TerminalService.
-  ChatProvider openSession(Session session) {
-    if (_providers.containsKey(session.id)) return _providers[session.id]!;
+  ChatProvider openSession(Session session, {bool historyArchive = false}) {
+    if (_providers.containsKey(session.id)) {
+      final provider = _providers[session.id]!;
+      provider.setHistoryArchive(historyArchive);
+      return provider;
+    }
     final provider =
         ChatProvider(
             settings: settings,
@@ -499,6 +503,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
             dirName: _dirNameFor(session.dirId),
             sessionCwd: session.cwd,
             initialCli: session.cli,
+            historyArchive: historyArchive,
             onSessionConfigChanged: loadDashboard,
           )
           ..isActive = false
@@ -523,7 +528,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
   /// (the chat scrolls to + highlights that message once its history loads).
   /// A null / empty [focusMessageId] - or a non-chat session - behaves exactly
   /// like a normal open (no focus stashed). Terminals ignore the focus.
-  void openSessionWithFocus(Session session, {String? focusMessageId}) {
+  void openSessionWithFocus(Session session, {String? focusMessageId, bool historyArchive = false}) {
     if (focusMessageId != null &&
         focusMessageId.isNotEmpty &&
         session.isChat) {
@@ -533,7 +538,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
       _pendingFocusSessionId = null;
       _pendingFocusMessageId = null;
     }
-    openSession(session);
+    openSession(session, historyArchive: historyArchive);
     switchToSession(session.id);
   }
 

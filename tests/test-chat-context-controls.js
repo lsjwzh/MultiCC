@@ -48,16 +48,17 @@ function fixture({
   const systemMsgs = [];
   const requests = [];
   let confirmCalls = 0;
+  const mutations = [];
   const api = create({
     document,
     window: { confirm() { confirmCalls += 1; return confirmed; } },
     translate: (key, vars) => (vars ? `${key}:${JSON.stringify(vars)}` : key),
     getIsStreaming: () => streaming,
-    cancelStreaming() {},
-    resetHistoryPagination() {},
+    cancelStreaming() { mutations.push('cancel'); },
+    resetHistoryPagination() { mutations.push('pagination'); },
     messagesEl: { querySelectorAll: () => [] },
     addSystemMsg: message => systemMsgs.push(message),
-    clearMessages() {},
+    clearMessages() { mutations.push('clear'); },
     isConnected: () => connected,
     send: payload => sent.push(payload),
     showNotifyToast: (message, kind) => notices.push({ message, kind }),
@@ -70,7 +71,7 @@ function fixture({
     },
   });
   return {
-    api, wrap, menu, rotate, contextLevel, sent, notices, systemMsgs, requests,
+    api, wrap, menu, rotate, clearAll, clearKeep, mutations, contextLevel, sent, notices, systemMsgs, requests,
     confirmCalls: () => confirmCalls,
   };
 }
@@ -210,4 +211,28 @@ test('context level distinguishes a lossless trim, an unsupported session and a 
   await noSession.api.showContextLevel();
   assert.deepEqual(noSession.requests, []);
   assert.deepEqual(noSession.notices, [{ message: 'contextLevelFail', kind: 'fail' }]);
+});
+
+
+test('clear requests display cleanup without cancelling streaming or optimistic local mutation', () => {
+  const fx = fixture({ streaming: true });
+  fx.clearAll.click();
+  assert.deepEqual(fx.sent, [{ type: 'clear_history', keep: 0 }]);
+  assert.deepEqual(fx.mutations, []);
+  assert.deepEqual(fx.systemMsgs, []);
+  fx.clearKeep.click();
+  assert.deepEqual(fx.sent[1], { type: 'clear_history', keep: 5 });
+  assert.deepEqual(fx.mutations, []);
+});
+
+test('offline clear and declined confirmation preserve the existing view', () => {
+  const offline = fixture({ connected: false });
+  offline.clearAll.click();
+  assert.deepEqual(offline.sent, []);
+  assert.deepEqual(offline.mutations, []);
+  assert.equal(offline.notices[0].message, 'clearChatHistoryOffline');
+  const declined = fixture({ confirmed: false });
+  declined.clearAll.click();
+  assert.deepEqual(declined.sent, []);
+  assert.deepEqual(declined.mutations, []);
 });

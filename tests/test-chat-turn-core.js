@@ -1035,15 +1035,9 @@ test('hard turn-control paths terminalize the provider attempt before teardown o
   const clearEnd = source.indexOf("if (msg.type === 'user_message'", clearStart);
   const clearBody = source.slice(clearStart, clearEnd);
   assert.ok(clearStart >= 0 && clearEnd > clearStart);
-  assert.match(clearBody, /cs\._activeRunner \|\| cs\.claudeProc \|\| cs\.isStreaming \|\| streamBusy/,
-    'an idle clear must not manufacture a cancelled scheduler transition');
-  const backgroundGate = clearBody.indexOf('hasLiveBackgroundTasks(sessionName)');
-  assert.ok(backgroundGate >= 0, 'destructive clear must detect a live background shadow');
-  assert.ok(backgroundGate < clearBody.indexOf('cancelActiveTurn(sessionName'),
-    'background work must reject clear before scheduler or history mutation');
-  assert.match(clearBody, /killReason: 'clear_history'/);
-  assert.ok(clearBody.indexOf('cancelActiveTurn(sessionName') < clearBody.indexOf('clearHistory(sessionName'),
-    'active work must reach its canonical terminal state before history is replaced');
+  assert.match(clearBody, /clearHistory\(sessionName, msg, cs\)/);
+  assert.doesNotMatch(clearBody, /cancelActiveTurn|killReason|hasLiveBackgroundTasks/,
+    'display clearing must not cancel active work or wait for background tasks');
   assert.match(source, /const proxyRequired = providers\.codexProxyConfigRequired\([\s\S]{0,520}providers\.assertCodexProxyConfigApplied\(\{ required: proxyRequired, applied: proxyApplied \}\)/,
     'a routed Codex attempt must apply the explicit route policy before spawning');
 });
