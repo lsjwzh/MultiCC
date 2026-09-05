@@ -1087,7 +1087,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                 ],
               ),
-              _Hint(t('versionFormatHint')),
+              _Hint(t(UpdateService.versionFormatHintKey())),
               const SizedBox(height: 14),
               SizedBox(
                 width: double.infinity,
