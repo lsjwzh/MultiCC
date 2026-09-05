@@ -707,6 +707,55 @@ test('session dispatch query joins durable operations with authoritative FIFO st
   assert.equal(invalid.response.statusCode, 400);
 });
 
+test('dispatch projection carries label and task-bound marker for hidden workers', async () => {
+  const operations = [
+    {
+      id: 'op-bound', kind: 'dispatch', ownerSessionId: 's1', status: 'completed',
+      requestOutboxId: 'operation:op-bound:request', createdAt: 10, completedAt: 15,
+      spec: { targetId: 'worker-9', chatId: 'worker-9', taskId: '#A1N3', resultMode: 'async' },
+    },
+    {
+      id: 'op-plain', kind: 'dispatch', ownerSessionId: 's1', status: 'completed',
+      requestOutboxId: 'operation:op-plain:request', createdAt: 12, completedAt: 16,
+      spec: { targetId: 'plain', chatId: 'plain', resultMode: 'one_way', oneWay: true },
+    },
+  ];
+  const current = fixture({
+    operations,
+    records: new Map([
+      ['s1', { id: 's1', cwd: '/repo' }],
+      // Task-bound workers are hidden from /api/sessions, so the projection is
+      // the only channel that can hand the UI their「任务 · …」label.
+      ['worker-9', {
+        id: 'worker-9', label: '任务 · App UI 适配', taskBoundTaskId: '#A1N3', cwd: '/repo',
+      }],
+      ['plain', { id: 'plain', label: '普通 worker', cwd: '/repo' }],
+    ]),
+  });
+  const result = await invoke(current.app, 'GET', '/api/sessions/:id/dispatches', {
+    params: { id: 's1' }, query: { activeOnly: 'false' },
+  });
+  assert.equal(result.response.statusCode, 200);
+  const bound = result.response.body.dispatches.find(d => d.operationId === 'op-bound');
+  assert.equal(bound.targetSessionId, 'worker-9');
+  assert.equal(bound.targetLabel, '任务 · App UI 适配');
+  assert.equal(bound.targetTaskBoundTaskId, '#A1N3');
+  const plain = result.response.body.dispatches.find(d => d.operationId === 'op-plain');
+  assert.equal(plain.targetLabel, '普通 worker');
+  // The bound-task marker stays absent for ordinary targets (minimal DTO).
+  assert.equal('targetTaskBoundTaskId' in plain, false);
+  // Unknown targets (record evicted) degrade to no label fields at all.
+  const unknown = fixture({
+    operations: [operations[0]],
+  });
+  const degraded = await invoke(unknown.app, 'GET', '/api/sessions/:id/dispatches', {
+    params: { id: 's1' }, query: { activeOnly: 'false' },
+  });
+  const row = degraded.response.body.dispatches.find(d => d.operationId === 'op-bound');
+  assert.equal('targetLabel' in row, false);
+  assert.equal('targetTaskBoundTaskId' in row, false);
+});
+
 test('queued dispatch carries queuePosition and queueLength; non-queued omits both', async () => {
   const operations = [
     {

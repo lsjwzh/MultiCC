@@ -458,38 +458,34 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
     );
   }
 
+  // Shared route builder: keeps each simple case a two-liner (3k line budget).
+  MaterialPageRoute<void> _routeTo(WidgetBuilder builder) =>
+      MaterialPageRoute<void>(builder: builder);
+
   void _openNavigationDestination(WorkspaceDestination destination) {
     final route = switch (destination) {
-      WorkspaceDestination.cron => MaterialPageRoute<void>(
-          builder: (_) => CronScreen(settings: widget.settings),
-        ),
-      WorkspaceDestination.docs => MaterialPageRoute<void>(
-          builder: (_) => DocsRegistryScreen(settings: widget.settings),
-        ),
-      WorkspaceDestination.voice => MaterialPageRoute<void>(
-          builder: (_) => VoiceSettingsScreen(settings: widget.settings),
-        ),
+      WorkspaceDestination.cron =>
+        _routeTo((_) => CronScreen(settings: widget.settings)),
+      WorkspaceDestination.docs =>
+        _routeTo((_) => DocsRegistryScreen(settings: widget.settings)),
+      WorkspaceDestination.voice =>
+        _routeTo((_) => VoiceSettingsScreen(settings: widget.settings)),
       WorkspaceDestination.goal => MaterialPageRoute<void>(
           builder: (_) => SettingsScreen(
             settings: widget.settings,
             initialSection: SettingsInitialSection.goal,
           ),
         ),
-      WorkspaceDestination.provider => MaterialPageRoute<void>(
-          builder: (_) => ProviderScreen(settings: widget.settings),
-        ),
-      WorkspaceDestination.global => MaterialPageRoute<void>(
-          builder: (_) => SettingsScreen(settings: widget.settings),
-        ),
-      WorkspaceDestination.push => MaterialPageRoute<void>(
-          builder: (_) => PushSettingsScreen(settings: widget.settings),
-        ),
-      WorkspaceDestination.tunnel => MaterialPageRoute<void>(
-          builder: (_) => TunnelSettingsScreen(settings: widget.settings),
-        ),
-      WorkspaceDestination.bridges => MaterialPageRoute<void>(
-          builder: (_) => BridgeSettingsScreen(settings: widget.settings),
-        ),
+      WorkspaceDestination.provider =>
+        _routeTo((_) => ProviderScreen(settings: widget.settings)),
+      WorkspaceDestination.global =>
+        _routeTo((_) => SettingsScreen(settings: widget.settings)),
+      WorkspaceDestination.push =>
+        _routeTo((_) => PushSettingsScreen(settings: widget.settings)),
+      WorkspaceDestination.tunnel =>
+        _routeTo((_) => TunnelSettingsScreen(settings: widget.settings)),
+      WorkspaceDestination.bridges =>
+        _routeTo((_) => BridgeSettingsScreen(settings: widget.settings)),
       WorkspaceDestination.resources => MaterialPageRoute<void>(
           builder: (_) => AgentResourcesScreen(
             settings: widget.settings,

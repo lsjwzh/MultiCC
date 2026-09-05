@@ -9,12 +9,13 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createDispatchTargeting } = require('../src/dispatch/targeting');
 
-function makeFactory(records, chatSessions, effort = () => 'normal', isTargetBusy = () => false) {
+function makeFactory(records, chatSessions, effort = () => 'normal', isTargetBusy = () => false, boundTaskTitleFor = null) {
   return createDispatchTargeting({
     records: new Map(records.map(r => [r.id, r])),
     chatSessions: new Map(Object.entries(chatSessions || {})),
     normalizeEffort: effort,
     isTargetBusy,
+    ...(boundTaskTitleFor ? { boundTaskTitleFor } : {}),
   });
 }
 
@@ -336,4 +337,68 @@ test('createDispatchTargeting validates its deps', () => {
   assert.throws(() => createDispatchTargeting({
     records: new Map(), chatSessions: new Map(), normalizeEffort: () => 'normal',
   }), /isTargetBusy/);
+  assert.throws(() => createDispatchTargeting({
+    records: new Map(), chatSessions: new Map(), normalizeEffort: () => 'normal',
+    isTargetBusy: () => false, boundTaskTitleFor: 'not-a-function',
+  }), /boundTaskTitleFor/);
+});
+
+// ── Task-bound sessions (hidden task-board workers) ──────────────────────────
+
+const TASK_BOUND_BASE = () => ([
+  { id: 'me', dirId: 'd1', type: 'chat' },
+  { id: 'plain', dirId: 'd1', type: 'chat', label: 'Plain worker', kind: 'chat' },
+  {
+    id: 'bound-worker', dirId: 'd1', type: 'worker', kind: 'chat',
+    label: '任务 · App UI 适配', taskBoundTaskId: '#A1N3',
+  },
+  {
+    id: 'empty-marker', dirId: 'd1', type: 'worker', kind: 'chat',
+    label: '任务 · ', taskBoundTaskId: '',
+  },
+]);
+
+test('task-bound candidates carry taskBoundTaskId; unbound candidates carry nothing', () => {
+  const t = makeFactory(TASK_BOUND_BASE(), {});
+  const list = t.dispatchableSessionsFor('me');
+  const bound = list.find(s => s.id === 'bound-worker');
+  const plain = list.find(s => s.id === 'plain');
+  const emptyMarker = list.find(s => s.id === 'empty-marker');
+  assert.equal(bound.taskBoundTaskId, '#A1N3');
+  assert.equal('boundTaskTitle' in bound, false, 'no title dep → id only');
+  assert.equal('taskBoundTaskId' in plain, false);
+  assert.equal('taskBoundTaskId' in emptyMarker, false, 'empty-string marker is treated as unbound');
+  // The hint payload (ordinary sessions' gateway prompt) sees the same field.
+  assert.match(t.dispatchTargetHintFor('me'), /"taskBoundTaskId":"#A1N3"/);
+});
+
+test('boundTaskTitleFor enriches bound candidates with a sanitized title', () => {
+  const t = makeFactory(TASK_BOUND_BASE(), {}, () => 'normal', () => false,
+    id => (id === '#A1N3' ? '  App UI 适配 /private/repo/server.js ' : ''));
+  const bound = t.dispatchableSessionsFor('me').find(s => s.id === 'bound-worker');
+  assert.equal(bound.taskBoundTaskId, '#A1N3');
+  assert.match(bound.boundTaskTitle, /^App UI 适配/);
+  assert.doesNotMatch(bound.boundTaskTitle, /private\/repo/);
+});
+
+test('commander routing prompt states the task-bound rule', () => {
+  const records = [
+    { id: 'cmd', dirId: 'd1', type: 'commander' },
+    {
+      id: 'bound-worker', dirId: 'd1', type: 'worker', kind: 'chat',
+      label: '任务 · App UI 适配', taskBoundTaskId: '#A1N3',
+    },
+    { id: 'plain', dirId: 'd1', type: 'chat', label: 'Plain', kind: 'chat' },
+  ];
+  const t = makeFactory(records, {}, () => 'normal', () => false,
+    () => 'App UI 适配');
+  const p = t.buildDispatchContextPrompt('cmd');
+  assert.match(p, /带 taskBoundTaskId 的候选是任务绑定会话/);
+  assert.match(p, /仅当新任务是其绑定任务的后续时才可选/);
+  assert.match(p, /无关任务一律派给不带该字段的会话/);
+  assert.match(p, /用户显式点名任务绑定会话时照选/);
+  assert.match(p, /注明它是任务绑定会话/);
+  // The candidate JSON in the same prompt carries the marker + title.
+  assert.match(p, /"taskBoundTaskId":"#A1N3"/);
+  assert.match(p, /"boundTaskTitle":"App UI 适配"/);
 });
