@@ -12,12 +12,18 @@ import 'package:multicc_app/widgets/input_bar.dart';
 
 class _ConnectedChatProvider extends ChatProvider {
   final sent = <String>[];
+  ChatConnectionState _connectionState = ChatConnectionState.connected;
 
   _ConnectedChatProvider({required super.settings})
     : super(sessionName: 'keyboard-test', sessionCwd: '/tmp');
 
   @override
-  ChatConnectionState get connectionState => ChatConnectionState.connected;
+  ChatConnectionState get connectionState => _connectionState;
+
+  void setConnectionState(ChatConnectionState value) {
+    _connectionState = value;
+    notifyListeners();
+  }
 
   @override
   bool get isStreaming => false;
@@ -138,6 +144,80 @@ void main() {
     provider.dispose();
     manager.dispose();
   });
+
+  testWidgets(
+    'disconnect keeps the composer focused and editable while Send stays gated',
+    (tester) async {
+      final settings = await _settings();
+      final manager = SessionManager(settings: settings);
+      final provider = _ConnectedChatProvider(settings: settings);
+
+      await tester.pumpWidget(
+        _host(
+          platform: TargetPlatform.android,
+          manager: manager,
+          provider: provider,
+        ),
+      );
+      final input = find.byKey(const Key('chat-message-input'));
+      await tester.enterText(input, 'draft before disconnect');
+      await tester.pump();
+      final sendIcon = find.byIcon(Icons.send_rounded);
+      final sendGesture = find.ancestor(
+        of: sendIcon,
+        matching: find.byType(GestureDetector),
+      );
+      final staleConnectedSend = tester
+          .widget<GestureDetector>(sendGesture)
+          .onTap;
+      expect(staleConnectedSend, isNotNull);
+
+      provider.setConnectionState(ChatConnectionState.disconnected);
+      await tester.pump();
+
+      var inputWidget = tester.widget<TextField>(input);
+      expect(inputWidget.enabled, isNot(false));
+      expect(inputWidget.focusNode!.hasFocus, isTrue);
+      expect(inputWidget.controller!.text, 'draft before disconnect');
+
+      await tester.enterText(input, 'draft while offline');
+      await tester.pump();
+      inputWidget = tester.widget<TextField>(input);
+      expect(inputWidget.focusNode!.hasFocus, isTrue);
+      expect(inputWidget.controller!.text, 'draft while offline');
+
+      expect(tester.widget<GestureDetector>(sendGesture).onTap, isNull);
+      expect(tester.widget<Icon>(sendIcon).color, const Color(0xFF454b54));
+      expect(provider.sent, isEmpty);
+
+      // A callback captured just before the socket dropped must still fail
+      // closed, explain why, and preserve the offline draft.
+      staleConnectedSend!();
+      await tester.pump();
+      expect(provider.sent, isEmpty);
+      expect(inputWidget.controller!.text, 'draft while offline');
+      expect(find.text(t('connectionLostRetry')), findsOneWidget);
+
+      provider.setConnectionState(ChatConnectionState.connecting);
+      await tester.pump();
+      inputWidget = tester.widget<TextField>(input);
+      expect(inputWidget.focusNode!.hasFocus, isTrue);
+      expect(inputWidget.controller!.text, 'draft while offline');
+      expect(tester.widget<GestureDetector>(sendGesture).onTap, isNull);
+
+      provider.setConnectionState(ChatConnectionState.connected);
+      await tester.pump();
+
+      inputWidget = tester.widget<TextField>(input);
+      expect(inputWidget.focusNode!.hasFocus, isTrue);
+      expect(inputWidget.controller!.text, 'draft while offline');
+      expect(tester.widget<GestureDetector>(sendGesture).onTap, isNotNull);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      provider.dispose();
+      manager.dispose();
+    },
+  );
 
   testWidgets('Android send keeps the existing keyboard behaviour', (
     tester,
