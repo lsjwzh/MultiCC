@@ -67,6 +67,12 @@
         relation: String(raw.relation || 'owner'),
         ownerSessionId: raw.ownerSessionId == null ? '' : String(raw.ownerSessionId),
         targetSessionId: raw.targetSessionId == null ? '' : String(raw.targetSessionId),
+        // Server-side enrichment: the target's registry label and, when it is
+        // a hidden task-board worker, the bound task id. Task-bound sessions
+        // never appear in /api/sessions, so this label is the only friendly
+        // name the panel can show for them.
+        targetLabel: raw.targetLabel == null ? '' : String(raw.targetLabel),
+        targetTaskBoundTaskId: raw.targetTaskBoundTaskId == null ? '' : String(raw.targetTaskBoundTaskId),
         executionSessionId: raw.executionSessionId == null ? '' : String(raw.executionSessionId),
         mode: raw.mode == null ? '' : String(raw.mode),
         queueState: String(raw.queueState || 'unknown'),
@@ -240,7 +246,15 @@
       if (state.expanded) positionPanel();
     }
 
-    function displayName(id) { return names.get(id) || id || text('dispatchUnknownSession', null, 'Unknown session'); }
+    function displayName(id, entry) {
+      if (!id) return text('dispatchUnknownSession', null, 'Unknown session');
+      return names.get(id)
+        // Task-bound workers are absent from /api/sessions (names stays empty
+        // for them); the projection-carried label「任务 · …」is their only
+        // friendly name, so it backfills the display instead of a bare id.
+        || (entry && id === entry.targetSessionId && entry.targetLabel ? entry.targetLabel : '')
+        || id;
+    }
 
     function modeLabel(mode) {
       if (mode === 'sync') return text('dispatchModeSync', null, 'sync');
@@ -297,6 +311,12 @@
       row.className = 'dispatch-activity-row ' + stateClass(entry);
       row.dataset.operationId = entry.operationId;
       row.disabled = !target;
+      // Hover hint for task-bound targets: explains why the worker is not in
+      // the session list and which task it belongs to.
+      if (target && entry.targetTaskBoundTaskId && target === entry.targetSessionId) {
+        row.title = text('dispatchTaskBoundHint', { task: entry.targetTaskBoundTaskId },
+          '任务绑定会话 · ' + entry.targetTaskBoundTaskId);
+      }
 
       var icon = doc.createElement('span');
       icon.className = 'dispatch-activity-direction';
@@ -305,8 +325,8 @@
       var body = doc.createElement('span');
       body.className = 'dispatch-activity-row-body';
       var direction = incoming
-        ? text('dispatchDirIn', { name: displayName(target) }, 'From ' + displayName(target))
-        : text('dispatchDirOut', { name: displayName(target) }, 'To ' + displayName(target));
+        ? text('dispatchDirIn', { name: displayName(target, entry) }, 'From ' + displayName(target, entry))
+        : text('dispatchDirOut', { name: displayName(target, entry) }, 'To ' + displayName(target, entry));
       var mode = modeLabel(entry.mode);
       body.textContent = mode ? direction + ' · ' + mode : direction;
 

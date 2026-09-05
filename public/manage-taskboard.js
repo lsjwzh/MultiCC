@@ -182,7 +182,11 @@ function _tbTaskActionsHtml(task) {
   const worktree = task.worktreePath
     ? `<button class="btn btn-sm" title="把任务分支合并回基分支并删除任务 worktree（运行中的任务会被拒绝）" onclick="cleanupTaskWorktree(event,'${_tbEsc(task.id)}',this)">🧹</button>`
     : '';
-  return `${lifecycle}${worktree}`;
+  // Explicit entry to the task's bound (hidden) session — same destination as
+  // the row click, but always available (merge mode repurposes the row) and
+  // discoverable, so a bound worker is never「找不到」.
+  const chat = `<button class="btn btn-sm" onclick="openTaskChatView('${_tbEsc(task.id)}',event)" title="打开该任务绑定会话的聊天视图">💬</button>`;
+  return `${chat}${lifecycle}${worktree}`;
 }
 
 function _tbOriginHtml(task) {
