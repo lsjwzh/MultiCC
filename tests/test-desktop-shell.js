@@ -355,6 +355,7 @@ test('desktop-bundle-server stages a runnable server tree without the APK', { ti
   const staged = path.join(out, 'app-server');
   for (const must of ['server.js', 'src/paths.js', 'public/manage.html', 'public/chat.html',
     'scripts/multicc-router-mcp.js', 'plugins/bridges/wechat-ilink.js', 'plugins/cron/cron-tasks.js',
+    'skills/multicc-artifact/references/registration-rule.md',
     'package.json']) {
     assert.ok(fs.existsSync(path.join(staged, must)), `staged tree missing ${must}`);
   }
@@ -370,6 +371,8 @@ test('desktop-bundle-server stages a runnable server tree without the APK', { ti
   assert.ok(pkg.optionalDependencies['sherpa-onnx-node'], 'sherpa becomes optional (graceful ASR degrade)');
   assert.equal(pkg.dependencies['sherpa-onnx-node'], undefined);
   assert.equal(pkg.version, require(path.join(ROOT, 'package.json')).version);
+  assert.equal(require(path.join(staged, 'src/memory/builtin-rules')).DOCS_REGISTRY_RULE,
+    require('../src/memory/builtin-rules').DOCS_REGISTRY_RULE);
 });
 
 // ── gates: MULTICC_DESKTOP server-side behavior ─────────────────────────────
