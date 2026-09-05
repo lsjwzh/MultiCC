@@ -566,7 +566,19 @@ class _InputBarState extends State<InputBar> {
     _focusNode.unfocus();
   }
 
+  bool _guardConnectedSend(ChatProvider provider) {
+    if (provider.connectionState == ChatConnectionState.connected) return true;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(t('connectionLostRetry')),
+        backgroundColor: const Color(0xFF454b54),
+      ),
+    );
+    return false;
+  }
+
   void _send(ChatProvider provider, {required bool commander}) {
+    if (!_guardConnectedSend(provider)) return;
     var text = _ctrl.text.trim();
     // Append attachment paths
     if (_attachments.isNotEmpty) {
@@ -851,7 +863,7 @@ class _InputBarState extends State<InputBar> {
 
     void sendGoal(String task) {
       final t = task.trim();
-      if (t.isEmpty) return;
+      if (t.isEmpty || !_guardConnectedSend(provider)) return;
       final limits = collectLimits();
       Navigator.pop(context);
       provider.sendMessage(_goalWrap(t), goal: true, goalLimits: limits);
@@ -1421,7 +1433,9 @@ class _InputBarState extends State<InputBar> {
                       focusNode: _focusNode,
                       maxLines: null,
                       textInputAction: TextInputAction.newline,
-                      enabled: isConnected,
+                      // Keep the draft editable through disconnects/reconnects.
+                      // Connection state gates Send (and the adjacent actions),
+                      // not the composer focus or the software keyboard.
                       style: const TextStyle(
                         color: Color(0xFFe7eaee),
                         fontSize: 14,
