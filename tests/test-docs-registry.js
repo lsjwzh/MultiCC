@@ -131,3 +131,75 @@ test('store persists to docs_registry.json under MULTICC_DATA_DIR', () => {
   assert.equal(onDisk[0].title, 'svc');
   reset();
 });
+
+test('service supervision: probe flips status, lsof adopts the listener pid', async () => {
+  reset();
+  const net = require('net');
+  const srv = net.createServer(() => {});
+  await new Promise(r => srv.listen(0, '127.0.0.1', r));
+  const port = srv.address().port;
+
+  const r = reg.register({ kind: 'service', title: 'probe-me', url: `http://127.0.0.1:${port}/` });
+  assert.equal(r.entry.port, undefined, 'port not supplied at register time');
+  await reg.probeAllServices();
+  let e = reg._entriesForTests()[0];
+  assert.equal(e.status, 'up');
+  assert.equal(e.port, port, 'port derived from url');
+  assert.equal(e.pid, process.pid, 'lsof resolves this test process as the listener');
+  assert.equal(e.pidSource, 'observed');
+
+  srv.close();
+  await new Promise(res => setTimeout(res, 50));
+  await reg.probeAllServices();
+  e = reg._entriesForTests()[0];
+  assert.equal(e.status, 'down');
+  reset();
+});
+
+test('startService spawns detached, stopService kills the process group', async () => {
+  reset();
+  const net = require('net');
+  // Grab a free port, then release it for the child to bind.
+  const srv = net.createServer(() => {});
+  await new Promise(r => srv.listen(0, '127.0.0.1', r));
+  const port = srv.address().port;
+  await new Promise(r => srv.close(r));
+
+  const r = reg.register({
+    kind: 'service', title: 'spawn-me', url: `http://127.0.0.1:${port}/`,
+    startCmd: `${process.execPath} -e "require('net').createServer(()=>{}).listen(${port},'127.0.0.1')"`,
+    cwd: tmp,
+  });
+  assert.equal(r.created, true);
+  const started = reg.startService(r.entry.id);
+  assert.ok(started.entry, started.error);
+  assert.equal(started.entry.pidSource, 'spawned');
+  assert.equal(started.entry.status, 'starting');
+
+  // Wait for the child to bind, then probe: up with our pid.
+  let up = false;
+  for (let i = 0; i < 30 && !up; i++) {
+    await new Promise(res => setTimeout(res, 200));
+    await reg.probeAllServices();
+    up = reg._entriesForTests()[0].status === 'up';
+  }
+  assert.equal(up, true, 'spawned service came up');
+  assert.ok(fs.existsSync(path.join(tmp, 'docs-registry-logs', `${r.entry.id}.log`)), 'log file created');
+
+  const stopped = await reg.stopService(r.entry.id);
+  assert.ok(stopped.entry, stopped.error);
+  assert.equal(stopped.entry.status, 'down');
+  assert.equal(stopped.entry.pid, null);
+  await new Promise(res => setTimeout(res, 300));
+  await reg.probeAllServices();
+  assert.equal(reg._entriesForTests()[0].status, 'down', 'stays down after kill');
+  reset();
+});
+
+test('startService refuses entries without startCmd and unknown ids', () => {
+  reset();
+  const r = reg.register({ kind: 'service', title: 'no-cmd', url: 'http://127.0.0.1:1/' });
+  assert.equal(reg.startService(r.entry.id).status, 400);
+  assert.equal(reg.startService('nope').status, 404);
+  reset();
+});
