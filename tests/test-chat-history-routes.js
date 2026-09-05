@@ -905,3 +905,20 @@ test('context level reports the transcript water level read-only and without lea
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
+
+
+test('legacy empty history remains deletable without weakening durable delivery checks', t => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-empty-history-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const history = createChatHistoryFileRepository({ dataDir });
+  history.write('empty', []);
+  assert.deepEqual(history.readStrict('empty', { allowEmpty: true }), []);
+  assert.throws(() => history.hasPersistedDelivery('empty', 'receipt'), { code: 'CHAT_HISTORY_CORRUPT' });
+  const { createTaskHistoryRetention } = require('../src/session/task-history-retention');
+  const board = { tasks: {} };
+  const policy = createTaskHistoryRetention({ getBoard: () => board, getRecord: () => null,
+    loadHistory: id => history.readStrict(id, { allowEmpty: true }) });
+  assert.equal(policy.canDeleteSession('empty'), true);
+  board.tasks.keep = { id: 'keep', refs: [{ sessionId: 'empty' }] };
+  assert.equal(policy.canDeleteSession('empty'), false);
+});
