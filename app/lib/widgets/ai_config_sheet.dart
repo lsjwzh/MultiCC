@@ -12,6 +12,7 @@ import 'provider_option.dart';
 import '../services/agent_preset_service.dart';
 import '../services/manage_service.dart';
 import '../services/claude_models_service.dart';
+import '../services/codex_models_service.dart';
 import '../services/qoder_models_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
@@ -321,6 +322,11 @@ class AIConfigSheetState extends State<AIConfigSheet> {
     if (widget.cli == SessionCli.dsh) {
       return kDshModelOptions.map((option) => option.key).toList();
     }
+    final resolvedProvider = _providerMap(provider);
+    if (_isCodex &&
+        (resolvedProvider == null || resolvedProvider['isOfficial'] == true)) {
+      return CodexModelsService.options().map((entry) => entry.key).toList();
+    }
     // Alias-mapped relays: offer the tiers directly (opus/sonnet/haiku/fable) so
     // each option can read "alias → wire model (display name)".
     final tiers = _aliasTiers(provider);
@@ -368,6 +374,7 @@ class AIConfigSheetState extends State<AIConfigSheet> {
       final name = e.value['name']?.toString();
       return '${e.key} → $m${(name != null && name.isNotEmpty) ? ' ($name)' : ''}';
     }
+    if (_isCodex) return CodexModelsService.labelFor(value);
     return _modelLabel(value);
   }
 
@@ -836,6 +843,20 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                   });
                 },
               ),
+              if (_isCodex &&
+                  CodexModelsService.cached.diagnosticMessage.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                Text(
+                  '${CodexModelsService.cached.diagnosticMessage}'
+                  '${CodexModelsService.cached.cliVersion.isNotEmpty ? ' · CLI ${CodexModelsService.cached.cliVersion}' : ''}',
+                  key: const ValueKey('codex-model-diagnostic'),
+                  style: const TextStyle(
+                    color: AppColors.faint,
+                    fontSize: 11,
+                    height: 1.35,
+                  ),
+                ),
+              ],
               if (_customModel) ...[
                 const SizedBox(height: 8),
                 TextField(
@@ -1077,6 +1098,10 @@ Future<void> openAIConfigSheet(
   } else if (runtime.cli == SessionCli.claude) {
     try {
       await ClaudeModelsService(settings: settings).load();
+    } catch (_) {}
+  } else if (runtime.cli == SessionCli.codex) {
+    try {
+      await CodexModelsService(settings: settings).load(forceRefresh: true);
     } catch (_) {}
   }
   List<Map<String, dynamic>> providers = const [];
