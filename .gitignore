@@ -11,6 +11,8 @@ sessions.json
 memories/
 directories.json
 scheduled_tasks.json
+docs_registry.json
+docs-registry-logs/
 orchestration.json
 orchestration.sqlite
 orchestration.sqlite-wal
