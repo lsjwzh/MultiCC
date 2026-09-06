@@ -104,11 +104,17 @@ function main() {
 
   if (args.install) {
     console.log('[desktop-bundle-server] installing production dependencies…');
-    const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-    const res = spawnSync(npm, ['install', '--omit=dev', '--no-audit', '--no-fund'], {
-      cwd: out, stdio: 'inherit',
+    // Node >= 20.12 refuses to spawn .cmd/.bat without a shell, so npm.cmd needs
+    // shell: true on Windows; spawnSync reports that refusal as status null.
+    const win = process.platform === 'win32';
+    const res = spawnSync(win ? 'npm.cmd' : 'npm', ['install', '--omit=dev', '--no-audit', '--no-fund'], {
+      cwd: out, stdio: 'inherit', shell: win,
     });
-    if (res.status !== 0) throw new Error(`npm install failed with status ${res.status}`);
+    if (res.status !== 0) {
+      throw new Error(res.status === null
+        ? `npm install never completed (${res.error ? res.error.code || res.error.message : `killed by signal ${res.signal}`})`
+        : `npm install failed with status ${res.status}`);
+    }
   } else {
     console.log('[desktop-bundle-server] --no-install: skipping dependency install');
   }
@@ -117,7 +123,10 @@ function main() {
   for (const must of ['server.js', 'src/paths.js', 'public/manage.html', 'public/chat.html',
     'scripts/multicc-router-mcp.js', 'plugins/bridges/wechat-ilink.js',
     'skills/multicc-artifact/references/registration-rule.md',
-    ...(args.install ? [path.join('node_modules', 'express')] : [])]) {
+    ...(args.install ? [path.join('node_modules', 'express'),
+      // electron-rebuild exits 0 with "No native modules found" when this is
+      // absent, so a missing better-sqlite3 must fail here, not in the packaged app.
+      path.join('node_modules', 'better-sqlite3')] : [])]) {
     if (!fs.existsSync(path.join(out, must))) throw new Error(`staged copy is missing ${must}`);
   }
   const staged = JSON.parse(fs.readFileSync(path.join(out, 'package.json'), 'utf8'));
