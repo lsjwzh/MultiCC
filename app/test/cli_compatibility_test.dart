@@ -143,18 +143,21 @@ void main() {
   testWidgets(
     'CLI switch sheet reports resume state and disables missing CLI',
     (tester) async {
-      const config = SessionCliConfig(
+      // The sheet renders every SessionCli.values entry and treats a CLI that
+      // is absent from cliAvailability as unavailable unless it is the
+      // session's current CLI. Deriving the map from the enum keeps "exactly
+      // one disabled row" true when a new CLI is added; a hand-written subset
+      // silently marks every omitted CLI unavailable instead.
+      final availability = <SessionCli, bool>{
+        for (final cli in SessionCli.values) cli: true,
+      };
+      availability[SessionCli.zcode] = false;
+      final config = SessionCliConfig(
         cli: SessionCli.claude,
-        cliStates: {SessionCli.codex: SessionCliState(hasNativeSession: true)},
-        cliAvailability: {
-          SessionCli.claude: true,
-          SessionCli.codex: true,
-          SessionCli.opencode: true,
-          SessionCli.zcode: false,
-          SessionCli.qoder: true,
-        },
+        cliStates: const {SessionCli.codex: SessionCliState(hasNativeSession: true)},
+        cliAvailability: availability,
       );
-      await tester.pumpWidget(_host(const CliSwitchSheet(config: config)));
+      await tester.pumpWidget(_host(CliSwitchSheet(config: config)));
 
       expect(find.textContaining('可恢复上次原生会话'), findsOneWidget);
       expect(find.text('未安装或不可执行'), findsOneWidget);
