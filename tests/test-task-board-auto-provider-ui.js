@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const taskBoardUi = require('../public/task-board-ui');
+const { createSandboxConsole } = require('./helpers/sandbox-console');
 
 function taskBoardFakeClassList() {
   const values = new Set();
@@ -117,7 +118,7 @@ function createTaskBoardComposerHarness({
     crypto: { randomUUID: () => 'task-board-auto-provider-test' },
   };
   const context = vm.createContext({
-    console,
+    console: createSandboxConsole(),
     window,
     document: {
       getElementById: () => null,
@@ -217,7 +218,7 @@ function createTaskBoardOriginFilterHarness() {
     open() {},
   };
   const context = vm.createContext({
-    console,
+    console: createSandboxConsole(),
     window,
     document: {
       getElementById: () => null,
