@@ -1,6 +1,7 @@
 'use strict';
 
 const { renderPrompt } = require('../message-composer');
+const { extractUpstreamError } = require('../upstream-error');
 
 function normalizeCodexUsage(usage) {
   const source = usage || {};
@@ -301,10 +302,12 @@ function createCodexAdapter(deps) {
       }
       if (event.type === 'error' || event.type === 'turn.failed') {
         const detail = event.error && typeof event.error === 'object' ? event.error : {};
-        const message = String(event.message || detail.message || '未知错误');
-        const kind = isResponseCompletedDisconnect(message)
+        const originalMessage = String(event.message || detail.message || '未知错误');
+        const upstream = extractUpstreamError(originalMessage);
+        const message = upstream.message || originalMessage;
+        const kind = (isResponseCompletedDisconnect(originalMessage) || isResponseCompletedDisconnect(message))
           ? 'response_completed_disconnect'
-          : isTransportDisconnect(message) ? 'transport_disconnect' : 'provider';
+          : (isTransportDisconnect(originalMessage) || isTransportDisconnect(message)) ? 'transport_disconnect' : 'provider';
         // codex reports its own background housekeeping failures (refreshing
         // the model list, loading skills) as stream error items although the
         // turn keeps running and finishes normally. They are not API errors
@@ -320,11 +323,13 @@ function createCodexAdapter(deps) {
           error: {
             source: 'codex_event',
             provider: 'codex',
-            code: detail.code || event.code || detail.type || event.type,
-            httpStatus: detail.http_status || detail.status_code || detail.status
-              || event.http_status || event.status_code || event.status,
+            code: upstream.code || detail.code || event.code || upstream.type || detail.type || event.type,
+            httpStatus: upstream.httpStatus || detail.http_status || detail.status_code || detail.status
+              || event.http_status || event.status_code || event.status
+              || Number(/(?:status(?: code)?|HTTP)\s*:?\s*([45]\d\d)\b/i.exec(originalMessage)?.[1]) || undefined,
             headers: detail.headers || event.headers,
-            requestId: detail.request_id || event.request_id,
+            requestId: upstream.requestId || detail.request_id || event.request_id,
+            ...(upstream.param ? { param: upstream.param } : {}),
             message,
           },
         }];

@@ -483,6 +483,7 @@ function createProviderRouterPort(options = {}) {
       // only the final host-to-upstream credential injection differs.
       mountCodexOfficialRelay(admission ? admission.app : app, {
         ...common,
+        logger,
         ...(mountOptions.codexOfficialRelay || {}),
         getProvider: admission ? admission.getProvider : getProvider,
         ...(admission ? { onActivity: admission.onActivity } : {}),
