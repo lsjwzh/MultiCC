@@ -349,6 +349,19 @@
           "anchor": "const DEFAULT_ROOT = path.join(os.homedir(), '.multicc', 'official-accounts');"
         }
       ]
+    },
+    {
+      "id": "task-shell-sqlite",
+      "classification": "migration-required",
+      "owner": "task-shell/store",
+      "sources": [
+        {
+          "file": "src/paths.js",
+          "anchor": "taskShellDbFile: path.join(root, 'task-shells.sqlite')"
+        }
+      ],
+      "rationale": "Opt-in task-shell bindings, immutable context snapshots and durable route receipts.",
+      "migrationStrategy": "Additive data-root SQLite namespace; old sessions are unchanged. Back up database with WAL via SQLite backup; disabling experiment keeps history readable."
     }
   ]
 }

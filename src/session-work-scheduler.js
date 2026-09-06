@@ -243,6 +243,7 @@ function createSessionWorkScheduler({
   onEvent = () => {},
   getClassifyState = null,
   getPendingUserInput = null,
+  getTurnId = null,
   log = () => {},
 } = {}) {
   if (!store || typeof store.mutate !== 'function' || typeof store.read !== 'function') {
@@ -486,6 +487,29 @@ function createSessionWorkScheduler({
     const result = await store.mutate(draft => {
       const at = Number(now());
       const schedule = ensure(draft, cleanSessionId, at);
+      if (options.taskShellReceiptId) {
+        const existing = draft.outbox[id];
+        if (existing) {
+          // A shell receipt already fixed the task/text/options before this
+          // second durable boundary. Do not reinterpret it using a new active
+          // turn or a question which has since been answered.
+          if (existing.payload?.options?.taskShellReceiptId !== options.taskShellReceiptId
+            || existing.payload.message !== cleanText || existing.payload.taskId !== options.taskId
+            || JSON.stringify(existing.payload.options) !== JSON.stringify(normalizedOptions)) {
+            return { ok: false, code: 'idempotency_conflict' };
+          }
+          return { ok: true, duplicate: true, shellReplay: true, entry: clone(existing), queued: false,
+            position: 0, schedule: publicSchedule(schedule, queueForDraft(draft, cleanSessionId)) };
+        }
+        const control = options.taskShellControl;
+        if (control) {
+          const question = canonicalPendingUserInput(cleanSessionId);
+          if (!control.turnId || getTurnId?.(cleanSessionId) !== control.turnId
+            || (control.intent === 'answer' && (!question || question.requestId !== requestId || question.taskId !== options.taskId))) {
+            return { ok: false, code: 'stale_control' };
+          }
+        }
+      }
       const pendingInput = inferredKind === 'answer'
         ? canonicalPendingUserInput(cleanSessionId) : null;
       // An unresolved structured request is the authoritative correlation
@@ -581,7 +605,7 @@ function createSessionWorkScheduler({
         schedule: publicSchedule(schedule, queue),
       };
     });
-    if (result.ok) {
+    if (result.ok && !result.shellReplay) {
       const queuedItems = result.queued
         ? result.schedule.queued
         : result.schedule.queued.filter(item => item.entryId !== result.entry.id);
