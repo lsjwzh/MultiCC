@@ -27,6 +27,8 @@ docker compose -f docker/task-shell/compose.yaml exec -T lab node docker/task-sh
 
 端口冲突时同时指定两个不同端口，例如 `MULTICC_LAB_PORT=3400 MULTICC_LAB_BACKEND_PORT=3401 npm run lab:up`。默认 3300 为宿主 Node 转发入口，3301 为 Docker 后端发布端口，二者都只监听 127.0.0.1。宿主入口使服务管理器只停止本环境的 Node 进程，避免把 Docker Desktop 的共享端口转发进程当作可终止服务。
 
+浏览器请始终使用 3300 入口。入口使用独立的 `multicc_docker_lab_auth` Cookie，并在 HTTP / WebSocket 转发时只传递沙盒 Cookie，避免与同一主机上正式 MultiCC 的登录 Cookie 相互覆盖；3301 是内部转发端口，不作为浏览器入口。
+
 ## 自动回归范围
 
 `lab:test` 创建无网络、无宿主挂载的一次性容器，失败返回非零状态，成功后删除容器。它运行：

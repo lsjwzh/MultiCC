@@ -15,9 +15,21 @@ if (![port, backend].every(p => Number.isInteger(p) && p > 1024 && p < 65536) ||
 }
 const root = path.resolve(__dirname, '..');
 const sockets = new Set();
+// Cookies are scoped by hostname, not port. Isolate the lab's login from the
+// production UI on 127.0.0.1:3000 and never forward its cookie into the lab.
+function proxyHeaders(headers) {
+  const copy = { ...headers };
+  delete copy.cookie;
+  const cookie = String(headers.cookie || '').split(';').map(s => s.trim())
+    .find(s => s.startsWith('multicc_docker_lab_auth='));
+  if (cookie) copy.cookie = cookie.replace(/^multicc_docker_lab_auth=/, 'multicc_auth=');
+  return copy;
+}
 const server = http.createServer((req, res) => {
-  const proxy = http.request({ hostname: '127.0.0.1', port: backend, method: req.method, path: req.url, headers: req.headers }, reply => {
-    res.writeHead(reply.statusCode, reply.headers); reply.pipe(res);
+  const proxy = http.request({ hostname: '127.0.0.1', port: backend, method: req.method, path: req.url, headers: proxyHeaders(req.headers) }, reply => {
+    const headers = { ...reply.headers };
+    if (headers['set-cookie']) headers['set-cookie'] = headers['set-cookie'].map(s => s.replace(/^multicc_auth=/, 'multicc_docker_lab_auth='));
+    res.writeHead(reply.statusCode, headers); reply.pipe(res);
   });
   proxy.on('error', () => { if (!res.headersSent) res.writeHead(502); res.end('Docker lab is starting'); });
   req.on('aborted', () => proxy.destroy());
@@ -28,8 +40,7 @@ const track = socket => { sockets.add(socket); socket.once('close', () => socket
 server.on('connection', track);
 server.on('upgrade', (req, socket, head) => {
   const upstream = net.connect(backend, '127.0.0.1', () => {
-    const headers = [];
-    for (let i = 0; i < req.rawHeaders.length; i += 2) headers.push(`${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}`);
+    const headers = Object.entries(proxyHeaders(req.headers)).map(([key, value]) => `${key}: ${value}`);
     upstream.write(`${req.method} ${req.url} HTTP/${req.httpVersion}\r\n${headers.join('\r\n')}\r\n\r\n`);
     if (head.length) upstream.write(head);
     upstream.pipe(socket); socket.pipe(upstream);
@@ -50,7 +61,7 @@ server.on('error', error => { console.error(error.message); process.exitCode = 1
 // Claim the visible port before starting containers; an occupied port causes no
 // container side effect. Requests return 502 until Compose has started the lab.
 server.listen(port, '127.0.0.1', () => {
-  compose = spawn('docker', ['compose', '-f', 'docker/task-shell/compose.yaml', 'up', '--abort-on-container-exit', 'gateway'],
+  compose = spawn('docker', ['compose', '-f', 'docker/task-shell/compose.yaml', 'up', '--abort-on-container-exit', 'lab', 'gateway'],
     { cwd: root, stdio: 'inherit' });
   compose.once('error', error => { console.error(error.message); process.exitCode = 1; stop(); });
   compose.once('exit', code => { if (!stopping) process.exitCode = code || 1; stop(); });
