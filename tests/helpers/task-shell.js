@@ -12,7 +12,7 @@ function fixture(t, extra = {}) {
   const records = new Map(['a', 'b', 'other'].map(id => [id, { id, kind: 'chat', cli: 'codex', dirId: id === 'other' ? 'd2' : 'd1' }]));
   const statuses = new Map(), histories = new Map(), sends = [], creations = [], cancels = [];
   const ports = {
-    store, enabled: () => true,
+    store,
     getRecord: id => records.get(id),
     getHistory: id => histories.get(id) || [],
     getExecution: async id => statuses.get(id) || { busy: false, turnId: null },

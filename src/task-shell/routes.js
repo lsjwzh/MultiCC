@@ -2,19 +2,19 @@
 
 const { cleanError } = require('./runtime');
 
-function mountTaskShellRoutes(app, { getRuntime, enabled }) {
+function mountTaskShellRoutes(app, { getRuntime, open = id => getRuntime().open(id) }) {
   const route = handler => async (req, res) => {
     try {
       const runtime = getRuntime();
-      if (!runtime) return res.status(403).json({ ok: false, code: 'experiment_disabled' });
       res.json(await handler(runtime, req));
     } catch (error) {
       if (!res.headersSent) res.status(error.status || 500).json({ ok: false, ...cleanError(error),
         ...(error.receiptId ? { receiptId: error.receiptId, taskId: error.taskId, notDelivered: error.notDelivered === true } : {}) });
     }
   };
-  app.get('/api/task-shells/config', (_req, res) => res.json({ enabled: enabled() }));
-  app.post('/api/task-shells', route((runtime, req) => runtime.open(req.body?.sessionId)));
+  // Discovery remains stable for cached clients; there is no switch or fallback.
+  app.get('/api/task-shells/config', (_req, res) => res.json({ enabled: true }));
+  app.post('/api/task-shells', route((_runtime, req) => open(req.body?.sessionId)));
   app.get('/api/task-shells/:shellId', route((runtime, req) => runtime.view(req.params.shellId)));
   app.delete('/api/task-shells/:shellId', route((runtime, req) => runtime.remove(req.params.shellId)));
   app.post('/api/task-shells/:shellId/links', route((runtime, req) => runtime.link(req.params.shellId, req.body?.taskId)));

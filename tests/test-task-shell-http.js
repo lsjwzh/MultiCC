@@ -9,7 +9,7 @@ const { createClient } = require('../public/task-shell-client');
 
 test('HTTP routes execute and preserve structured errors, links and receipt ownership', async t => {
   const f = fixture(t), app = express(); app.use(express.json());
-  mountTaskShellRoutes(app, { getRuntime: () => f.runtime, enabled: () => true });
+  mountTaskShellRoutes(app, { getRuntime: () => f.runtime });
   const server = app.listen(0, '127.0.0.1');
   await new Promise(resolve => server.once('listening', resolve));
   t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));

@@ -59,6 +59,13 @@ class ChatService {
   // new turn begins (send) or the stream truly ends (stream_end/result/error).
   bool _cancelRequested = false;
   String? _pendingUserInputRequestId;
+  String? _executionSessionName;
+  bool _usesTaskShell = false;
+  String? _controlTurnId;
+  Map<String, dynamic>? _pendingShellInput;
+  final Map<String, String> _shellClientIds = {};
+  final List<Map<String, dynamic>> _shellAdmissionEvents = [];
+  String get executionSessionName => _executionSessionName ?? sessionName;
   int _messageSequence = 0;
 
   // ── Heartbeat: detect "half-open" sockets ──
@@ -99,7 +106,8 @@ class ChatService {
   Uri _buildChatUri({String? resumeId}) {
     final params = <String, String>{};
     if (sessionCwd.isNotEmpty) params['cwd'] = sessionCwd;
-    if (sessionName.isNotEmpty) params['session'] = sessionName;
+    if (executionSessionName.isNotEmpty)
+      params['session'] = executionSessionName;
     if (historyArchive) params['historyScope'] = 'archive';
     if (resumeId != null && resumeId.isNotEmpty) params['resume'] = resumeId;
     return buildMulticcWebSocketUri(
@@ -168,6 +176,9 @@ class ChatService {
             _reconnectAttempt = 0;
             _lastActivity = DateTime.now();
             _startHeartbeat();
+            if (_pendingShellInput != null) {
+              channel.sink.add(jsonEncode(_pendingShellInput));
+            }
             // Flush a cancel that was requested while disconnected — the server
             // never saw it, so the CLI process is still running.
             if (_pendingCancel) {
@@ -267,7 +278,43 @@ class ChatService {
 
   void _handleMessage(Map<String, dynamic> msg) {
     final type = msg['type'] as String? ?? '';
+    if (msg['turnId'] is String) _controlTurnId = msg['turnId'] as String;
+    final receipt = msg['clientMsgId']?.toString();
+    if (receipt != null && _shellClientIds.containsKey(receipt)) {
+      msg = {...msg, 'clientMsgId': _shellClientIds[receipt]};
+    } else if (_pendingShellInput != null &&
+        receipt != null &&
+        receipt.startsWith('sr_')) {
+      _shellAdmissionEvents.add(msg);
+      return;
+    }
     switch (type) {
+      case 'task_shell_routed':
+        final clientId = msg['clientMsgId']?.toString();
+        final receiptId = msg['receiptId']?.toString();
+        if (clientId != null && receiptId != null)
+          _shellClientIds[receiptId] = clientId;
+        _pendingShellInput = null;
+        final next = msg['sessionId']?.toString();
+        final buffered = List<Map<String, dynamic>>.from(_shellAdmissionEvents);
+        _shellAdmissionEvents.clear();
+        if (next != null && next != executionSessionName) {
+          _executionSessionName = next;
+          _sessionId = null;
+          initialSessionId = null;
+          _controlTurnId = null;
+          isStreaming = false;
+          _emit('task_shell_routed', msg);
+          _wsAuth.invalidate();
+          unawaited(_sub?.cancel());
+          unawaited(_channel?.sink.close());
+          connect();
+        } else {
+          for (final event in buffered) {
+            _handleMessage(event);
+          }
+        }
+        break;
       case 'system':
         if (msg['subtype'] == 'init') {
           // Only the server's own init carries `is_streaming`. Claude CLI's
@@ -275,6 +322,7 @@ class ChatService {
           // field — it must not be treated as a (re)connect init, otherwise
           // it fires the "completed while disconnected" warning every turn.
           if (!msg.containsKey('is_streaming')) break;
+          _usesTaskShell = msg['taskShell'] == true;
 
           _sessionId = (msg['session_id'] ?? msg['session'] ?? _sessionId)
               ?.toString();
@@ -350,6 +398,11 @@ class ChatService {
         break;
 
       case 'error':
+        if (msg['notDelivered'] == true &&
+            msg['clientMsgId'] == _pendingShellInput?['clientMsgId']) {
+          _pendingShellInput = null;
+          _shellAdmissionEvents.clear();
+        }
         isStreaming = false;
         _cancelRequested = false;
         _emit('error', msg['error']?.toString() ?? 'Unknown error');
@@ -530,17 +583,21 @@ class ChatService {
           'app-${DateTime.now().microsecondsSinceEpoch}-${_messageSequence++}';
       final payload = <String, dynamic>{
         'type': 'user_message',
+        if (_usesTaskShell) 'taskShell': true,
         'text': text,
         'clientMsgId': clientMsgId,
       };
       final pendingRequestId = _pendingUserInputRequestId;
       if (pendingRequestId != null && pendingRequestId.isNotEmpty) {
         payload['userInputRequestId'] = pendingRequestId;
+        payload['turnId'] = _controlTurnId;
       }
       if (goal) {
         payload['goal'] = true;
         payload['goalLimits'] = goalLimits ?? <String, dynamic>{};
       }
+      if (_pendingShellInput != null) return null;
+      if (_usesTaskShell) _pendingShellInput = payload;
       _channel!.sink.add(jsonEncode(payload));
       if (pendingRequestId != null) _pendingUserInputRequestId = null;
       _cancelRequested = false; // New turn — clear any stale cancel guard
@@ -560,6 +617,20 @@ class ChatService {
   ///     button) reacts instantly, instead of waiting for a server `result`
   ///     that may never come if the socket died mid-stream.
   void cancel() {
+    if (_usesTaskShell) {
+      if (_pendingShellInput != null || _controlTurnId == null) {
+        _emit('error', '任务投递或回合尚未确认，请重连后重试。');
+        return;
+      }
+      final message = _cancelMessage();
+      _pendingShellInput = message;
+      if (_channel != null && _state == ChatConnectionState.connected) {
+        _channel!.sink.add(jsonEncode(message));
+      }
+      _cancelRequested = true;
+      isStreaming = false;
+      return;
+    }
     if (_channel != null && _state == ChatConnectionState.connected) {
       try {
         _channel!.sink.add(jsonEncode({'type': 'cancel'}));
@@ -571,6 +642,14 @@ class ChatService {
     }
     isStreaming = false;
   }
+
+  Map<String, dynamic> _cancelMessage() => {
+    'type': 'cancel',
+    'taskShell': true,
+    'turnId': _controlTurnId,
+    'clientMsgId':
+        'app-cancel-${DateTime.now().microsecondsSinceEpoch}-${_messageSequence++}',
+  };
 
   /// Request native CLI context rotation (compact/restart native session).
   /// This triggers a handoff where the native CLI session is rotated
@@ -588,7 +667,9 @@ class ChatService {
     try {
       _channel!.sink.add(jsonEncode({'type': 'clear_history', 'keep': keep}));
       return true;
-    } catch (_) { return false; }
+    } catch (_) {
+      return false;
+    }
   }
 
   void _scheduleReconnect() {
@@ -658,7 +739,7 @@ class ChatService {
         .post(
           Uri.parse(
             _url(
-              '/api/sessions/${Uri.encodeComponent(sessionName)}/queue/action',
+              '/api/sessions/${Uri.encodeComponent(executionSessionName)}/queue/action',
             ),
           ),
           headers: _headers,
@@ -700,7 +781,7 @@ class ChatService {
         .get(
           Uri.parse(
             _url(
-              '/api/sessions/${Uri.encodeComponent(sessionName)}/history?$query',
+              '/api/sessions/${Uri.encodeComponent(executionSessionName)}/history?$query',
             ),
           ),
           headers: _headers,

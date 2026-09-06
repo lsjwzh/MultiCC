@@ -1,7 +1,7 @@
 'use strict';
 
-const fs = require('node:fs');
 const { execFile } = require('node:child_process');
+const { randomUUID } = require('node:crypto');
 const { promisify } = require('node:util');
 const execFileAsync = promisify(execFile);
 const { createTaskShellStore } = require('./store');
@@ -10,7 +10,6 @@ const { snapshotHistory, renderSnapshots, verifySnapshot } = require('./context'
 const { mountTaskShellRoutes } = require('./routes');
 
 function createTaskShellHost(deps) {
-  const enabled = () => process.env.MULTICC_TASK_SHELLS === '1';
   let runtime, store;
   function candidate(id) {
     const record = deps.records.get(id);
@@ -23,10 +22,9 @@ function createTaskShellHost(deps) {
   }
   function getRuntime() {
     if (runtime) return runtime;
-    if (!enabled() && !fs.existsSync(deps.file)) return null;
     store = createTaskShellStore(deps.file);
     runtime = createTaskShellRuntime({
-      store, enabled,
+      store,
       getRecord: id => deps.records.get(id),
       getHistory: deps.loadHistory,
       getExecution: async id => {
@@ -63,9 +61,10 @@ function createTaskShellHost(deps) {
     return runtime;
   }
   function contextSeed(sessionId, fallback, isFirstTurn) {
-    if (!candidate(sessionId)) return fallback;
-    const task = getRuntime()?.owns(sessionId);
-    if (!task) throw failure('task_shell_state_unavailable');
+    const task = owns(sessionId);
+    if (!task) return fallback;
+    if (task.adopted) return fallback;
+    if (task.unavailable) throw failure('task_shell_state_unavailable');
     if (!isFirstTurn) return '';
     const snapshots = task.snapshotIds.map(id => {
       const value = store.get('snapshot', id);
@@ -76,14 +75,47 @@ function createTaskShellHost(deps) {
     if (own.messages.length) snapshots.push(own);
     return renderSnapshots(snapshots);
   }
+  function owns(id) { return getRuntime().owns(id) || (candidate(id) ? { unavailable: true } : null); }
+  function accepts(id) {
+    const record = deps.records.get(id);
+    return !!record && record.kind === 'chat' && !record.taskExecutionSlot && !record.experimentalMode
+      && !['aux', 'gateway', 'commander'].includes(record.type);
+  }
+  function open(id) {
+    const owner = owns(id);
+    if (owner?.unavailable) throw failure('task_shell_state_unavailable');
+    const rt = getRuntime(), shell = rt.open(id);
+    if (owner || deps.records.get(id)?.taskBoundTaskId || deps.loadHistory(id).length) rt.adopt(shell.id, id);
+    return rt.view(shell.id);
+  }
+  async function sendFromSession(id, text, options = {}) {
+    const shell = open(id), rt = getRuntime(), task = rt.adopt(shell.id, id);
+    const payload = { taskId: task.id, text, clientMsgId: options.clientMsgId || randomUUID(), intent: 'work' };
+    if (options.userInputRequestId) {
+      const { execution } = await rt.detail(shell.id, task.id);
+      Object.assign(payload, { intent: 'answer', requestId: options.userInputRequestId, turnId: execution.turnId });
+    }
+    const result = await rt.send(shell.id, payload);
+    return { ...result, chatId: result.sessionId, targetSessionId: result.sessionId,
+      shellId: shell.id, url: `/task-shell.html?shell=${encodeURIComponent(shell.id)}&task=${encodeURIComponent(result.taskId)}` };
+  }
+  async function sendClientInput(id, message) {
+    const shell = open(id), rt = getRuntime(), task = rt.adopt(shell.id, id);
+    const intent = message.type === 'cancel' ? 'cancel' : message.userInputRequestId ? 'answer' : 'work';
+    const result = await rt.send(shell.id, { text: intent === 'cancel' ? '' : message.text,
+      clientMsgId: message.clientMsgId, taskId: task.id, intent,
+      ...(message.goal === true ? { goal: true, goalLimits: message.goalLimits } : {}),
+      ...(intent !== 'work' ? { turnId: message.turnId, requestId: message.userInputRequestId } : {}) });
+    return { ...result, shellId: shell.id, clientMsgId: message.clientMsgId };
+  }
   return {
-    mountRoutes: app => mountTaskShellRoutes(app, { getRuntime, enabled }),
+    mountRoutes: app => mountTaskShellRoutes(app, { getRuntime, open }),
     guardAdmission: (id, ...args) => {
-      if (!candidate(id)) return null;
+      if (!owns(id)) return null;
       const owner = getRuntime();
       return owner?.owns(id) ? owner.guardAdmission(id, ...args) : { ok: false, code: 'task_shell_state_unavailable' };
     },
-    owns: id => candidate(id) ? getRuntime()?.owns(id) || { unavailable: true } : null,
+    accepts, open, owns, sendFromSession, sendClientInput,
     contextSeed,
     close: () => store?.close(),
   };

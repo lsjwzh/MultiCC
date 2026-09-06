@@ -83,7 +83,7 @@
     $('receipts').replaceChildren(...view.receipts.filter(receipt => receipt.status !== 'accepted').map(receipt => {
       const row = document.createElement('div'), retry = document.createElement('button');
       row.textContent = `${receipt.taskId} · ${receipt.error?.message || receipt.status} `;
-      retry.textContent = t('taskShellRetry'); retry.disabled = receipt.status === 'rejected' || !!client?.pending() || busy || !view.enabled;
+      retry.textContent = t('taskShellRetry'); retry.disabled = receipt.status === 'rejected' || !!client?.pending() || busy;
       retry.onclick = () => action(() => api(`/api/task-shells/${shellId}/receipts/${receipt.id}/retry`, {})); row.append(retry); return row;
     }));
     const target = focused;
@@ -110,7 +110,6 @@
       }));
     }
     refreshButtons();
-    if (!view.enabled) { $('send').disabled = true; notice(t('taskShellDisabled')); }
   }
   $('tasks').onchange = () => { focused = $('tasks').value; control = null; detail = null; inputMode('work'); refresh().catch(e => notice(e.message)); };
   $('attach').onclick = () => action(async () => {
@@ -147,8 +146,15 @@
     try {
       const shell = params.get('shell') ? await api(`/api/task-shells/${encodeURIComponent(params.get('shell'))}`)
         : await api('/api/task-shells', { sessionId: params.get('session') });
-      shellId = shell.id; history.replaceState(null, '', `?shell=${encodeURIComponent(shellId)}`);
-      focused = sessionStorage.getItem(`task-shell-focus:${shellId}`) || '';
+      shellId = shell.id;
+      const canonical = new URLSearchParams({ shell: shellId });
+      if (params.get('external')) canonical.set('external', params.get('external'));
+      history.replaceState(null, '', '?' + canonical);
+      focused = params.get('task') || sessionStorage.getItem(`task-shell-focus:${shellId}`) || shell.defaultTaskId || '';
+      const archive = $('source-history');
+      const archiveParams = new URLSearchParams({ session: shell.sourceSessionId, historyScope: 'archive', readOnly: '1' });
+      if (params.get('external')) archiveParams.set('external', params.get('external'));
+      archive.href = '/chat.html?' + archiveParams;
       client = window.MultiCCTaskShellClient.createClient({ request: api, storage: sessionStorage, key: `task-shell-pending:${shellId}`, randomId: () => crypto.randomUUID() });
       await refresh(); poll();
     } catch (e) { notice(e.message); $('send').disabled = true; }

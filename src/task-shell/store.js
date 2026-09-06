@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-// A separate, additive experiment namespace. Chat history and the task board
+// Durable task-shell routing state. Chat history and the task board
 // keep their existing ownership. Sync transactions cover decisions before any
 // asynchronous workspace creation or delivery can yield.
 function createTaskShellStore(file) {

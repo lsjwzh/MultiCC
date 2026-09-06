@@ -296,10 +296,22 @@ async function waitUntil(check, message, attempts = 100) {
       || text.includes('[MultiCC 任务运行上下文')), false,
     'a bound turn carries no transport wrapper and no compiled ledger context');
 
-    // A follow-up re-enters the SAME room instead of admitting a second run.
-    await api('POST', '/api/task-board/tasks/' + panelCard.id + '/send', {
-      text: '补充同一任务的验收细节', clientMsgId: 'panel-isolated-2',
+    // The old task-send ingress cannot bypass shell ownership. The canonical
+    // shell continues the same idle execution and native identity.
+    const retired = await fetch(base + '/api/task-board/tasks/' + panelCard.id + '/send', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ text: 'blocked old ingress', clientMsgId: 'retired' }),
     });
+    assert.equal(retired.status, 409);
+    assert.equal((await retired.json()).error, 'task_shell_route_required');
+    const shell = await api('POST', '/api/task-shells', { sessionId: boundId });
+    await waitUntil(async () => !(await api('GET', `/api/task-shells/${shell.id}/tasks/${panelCard.id}`)).execution.busy,
+      'bound task did not become idle');
+    const continued = await api('POST', `/api/task-shells/${shell.id}/messages`, {
+      taskId: panelCard.id, text: '补充同一任务的验收细节', clientMsgId: 'panel-isolated-2', intent: 'work',
+    });
+    assert.equal(continued.decision, 'continue');
+    assert.equal(continued.sessionId, boundId);
     const followupExecs = await waitUntil(() => {
       const rows = fs.readFileSync(invocationFile, 'utf8').trim().split(/\n/).filter(Boolean).map(JSON.parse);
       const execs = rows.filter(row => row.args[0] === 'exec');
