@@ -635,6 +635,19 @@ test('desktop packaging config: pinned versions, stable names, user-scope instal
   assert.equal(b.nsis.oneClick, true);
   assert.equal(b.nsis.perMachine, false, 'per-user install needs no admin rights');
   assert.ok(b.publish === null || b.publish === undefined, 'no auto-update publisher');
+  // electron-builder validates the whole config on every runner, so one bad
+  // TargetConfiguration — `target` names a single format, never a list — aborts
+  // all three builds before anything is packaged.
+  for (const platform of ['mac', 'win', 'linux']) {
+    for (const t of b[platform].target) {
+      assert.equal(typeof t.target, 'string', `${platform}: one format per target entry`);
+      assert.ok(Array.isArray(t.arch) && t.arch.every(a => typeof a === 'string'),
+        `${platform}: arch must be a list of strings`);
+    }
+  }
+  assert.deepEqual(b.linux.target.map(t => t.target).sort(), ['AppImage', 'deb']);
+  assert.deepEqual(b.mac.target.flatMap(t => t.arch).sort(), ['arm64', 'x64']);
+  assert.deepEqual(b.win.target.flatMap(t => t.arch), ['x64']);
 });
 
 test('desktop-release workflow: three native runners, attaches (never creates) the release, secrets only as env', () => {
@@ -645,6 +658,10 @@ test('desktop-release workflow: three native runners, attaches (never creates) t
   assert.match(wf, /tags:\s*\['v\*\.\*\.\*'\]/);
   assert.match(wf, /workflow_dispatch:/);
   assert.match(wf, /--publish never/);
+  // Node 20 has no better-sqlite3 prebuild (ABI 115) and @electron/rebuild 4.x
+  // declares engines node>=22.12; on windows-latest that meant a source build
+  // npm's bundled node-gyp could not configure against the runner's VS.
+  assert.match(wf, /node-version: 22/);
   assert.match(wf, /electron-rebuild/);
   // @electron/rebuild v4 parses flags with node:util parseArgs: the Electron
   // version flag is --version, and an unknown option aborts before any rebuild.
