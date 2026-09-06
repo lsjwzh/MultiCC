@@ -14,6 +14,7 @@ const { createTaskBoardRuntime, assertTaskBoardDeps } = require('../src/routes/t
 const { createTaskRunStore } = require('../src/task-run-store');
 const taskBoardUi = require('../public/task-board-ui');
 const { mkRuntime } = require('./helpers/task-board-runtime');
+const { createSandboxConsole } = require('./helpers/sandbox-console');
 require('./test-task-planning');
 
 const EMPTY_BOARD = core.createEmptyBoard();
@@ -80,7 +81,7 @@ test('task detail session links use the encoded chat navigation contract', () =>
 
 test('M4 task rows carry the modal-only operations after the detail modal retirement', async () => {
   const context = vm.createContext({
-    console,
+    console: createSandboxConsole(),
     window: { MultiCCTaskBoardUi: taskBoardUi },
     document: {
       getElementById: () => null,

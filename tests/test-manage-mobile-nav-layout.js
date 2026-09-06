@@ -27,6 +27,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { createSandboxConsole } = require('./helpers/sandbox-console');
 
 const ROOT = path.join(__dirname, '..');
 const html = fs.readFileSync(path.join(ROOT, 'public/manage.html'), 'utf8');
@@ -143,7 +144,7 @@ function fakePage({ open = false, present = {}, innerWidth = 390 } = {}) {
   for (const [id, extra] of Object.entries(present)) makeElement(id, extra);
 
   const context = {
-    console,
+    console: createSandboxConsole(),
     Object,
     String,
     innerWidth,
