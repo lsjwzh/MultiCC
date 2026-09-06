@@ -242,6 +242,20 @@ test('trusted task delivery auto-locates by task id or creates that exact task i
   }).sessionId, result.sessionId);
 });
 
+test('task deep links resolve the exact task and make it the shell focus', async t => {
+  const boardTasks = {
+    'tsk-linked': { id: 'tsk-linked', title: '链接指定任务' },
+  };
+  const f = fixture(t, { getTask: id => boardTasks[id] || null });
+  const adopted = f.runtime.adopt(f.a.id, 'a');
+  assert.notEqual(adopted.id, 'tsk-linked');
+  const resolved = f.runtime.resolveTask(f.a.id, { taskId: 'tsk-linked' });
+  assert.equal(resolved.id, 'tsk-linked');
+  assert.equal(resolved.title, '链接指定任务');
+  assert.equal(f.runtime.view(f.a.id).currentTaskId, 'tsk-linked');
+  assert.equal((await f.runtime.detail(f.a.id, 'tsk-linked')).task.id, 'tsk-linked');
+});
+
 test('current task advances only through explicit new work or settled attribution', async t => {
   const f = fixture(t);
   const first = await f.runtime.send(f.a.id, input('first'));
