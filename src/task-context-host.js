@@ -292,6 +292,8 @@ function createTaskContextHost(options = {}) {
     requiresTaskShell: id => getTaskShells()?.accepts(id),
     sendTaskShellInput: (id, message) => getTaskShells().sendClientInput(id, message),
     taskShellContextSeed: (id, fallback, first) => getTaskShells()?.contextSeed(id, fallback, first) ?? fallback,
+    taskShellRecentTasks: (id, receiptId) => getTaskShells()?.recentTasks(id, receiptId) || [],
+    settleTaskShellAttribution: (id, receiptId, result) => getTaskShells()?.settleAttribution(id, receiptId, result) || null,
     appendMessage,
     beginTurn,
     broadcast,

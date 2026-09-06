@@ -4,23 +4,15 @@
 <body><main>
   <header><h1 data-i18n="taskShellTitle"></h1><a href="/manage" data-i18n="taskShellBack"></a></header>
   <a id="source-history" data-i18n="taskShellHistory"></a><p data-i18n="taskShellIntro"></p><p id="notice" role="status" aria-live="polite"></p>
-  <section class="toolbar">
-    <label><span data-i18n="taskShellTarget"></span><select id="tasks"></select></label>
-    <label><span data-i18n="taskShellAttach"></span><select id="available"></select></label>
-    <button id="attach" data-i18n="taskShellAttachButton"></button>
-  </section>
-  <p id="state" aria-live="polite"></p><div id="origin"></div><details id="snapshot-details" hidden><summary data-i18n="taskShellSnapshotDetails"></summary><div id="snapshot-info"></div></details>
+  <p id="state" aria-live="polite"></p><p id="token-savings" hidden aria-live="polite"></p><div id="origin"></div><details id="snapshot-details" hidden><summary data-i18n="taskShellSnapshotDetails"></summary><div id="snapshot-info"></div></details>
   <section id="history" aria-label="Messages"></section>
   <section id="question" hidden><strong data-i18n="taskShellPendingQuestion"></strong><p id="question-text"></p><div id="choices"></div><button id="answer" data-i18n="taskShellAnswer"></button></section>
-  <details><summary data-i18n="taskShellReferences"></summary><p data-i18n="taskShellReferencesHelp"></p>
-    <select id="references" multiple size="4" aria-label="Context references"></select>
-    <label><input type="checkbox" id="dependency"><span data-i18n="taskShellDependency"></span></label>
-  </details>
   <form id="composer"><label for="message" id="input-label" data-i18n="taskShellWork"></label>
     <textarea id="message" required maxlength="32000" rows="4" data-i18n-placeholder="taskShellPlaceholder"></textarea>
     <div class="toolbar"><button id="send" type="submit" data-i18n="taskShellSend"></button>
       <button id="steer" type="button" data-i18n="taskShellSteer"></button>
       <button id="work" type="button" data-i18n="taskShellWork"></button>
+      <button id="new-task" type="button" data-i18n="taskShellNew"></button>
       <button id="cancel" type="button" data-i18n="taskShellCancel"></button>
       <button id="retry" type="button" hidden data-i18n="taskShellRetry"></button>
     </div>

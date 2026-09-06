@@ -8,7 +8,7 @@ const path = require('node:path');
 const { fixture } = require('./helpers/task-shell');
 const { findChromeBinary, withCdpHarness } = require('./helpers/cdp-harness');
 
-test('task shell browser: busy fork, immutable answer target, response loss replay and mobile layout', async t => {
+test('task shell browser: current-task queue, explicit new task, token saving, replay and mobile layout', async t => {
   if (!findChromeBinary()) return t.skip('Chrome is required');
   const f = fixture(t), routes = {};
   const json = (value, status = 200) => ({ status, headers: { 'content-type': 'application/json' }, body: JSON.stringify(value) });
@@ -34,13 +34,12 @@ test('task shell browser: busy fork, immutable answer target, response loss repl
       assert.ok(await page.waitFor('location.search.includes("shell=") && !document.getElementById("send").disabled'));
       const submit = text => page.evaluate(`document.getElementById('message').value=${JSON.stringify(text)}; document.getElementById('composer').requestSubmit()`);
       await submit('Implement A');
-      assert.ok(await page.waitFor('document.getElementById("tasks").options.length === 2 && !document.getElementById("send").disabled'));
+      assert.ok(await page.waitFor('document.getElementById("state").textContent.includes("Implement A") && !document.getElementById("send").disabled'));
       const original = f.store.list('task')[0];
-      await submit('Independent B');
-      assert.ok(await page.waitFor('document.getElementById("tasks").options.length === 3 && !document.getElementById("send").disabled'));
-      assert.equal(f.store.list('task').length, 2); assert.equal(f.sends.length, 2);
+      await submit('Additional A');
+      assert.ok(await page.waitFor('!document.getElementById("send").disabled'));
+      assert.equal(f.store.list('task').length, 1); assert.equal(f.sends.length, 2);
       f.statuses.set(original.sessionId, { busy: true, turnId: 't1', pending: { taskId: original.id, requestId: 'q1', turnId: 't1', question: 'Choose original', options: ['yes', 'no'] } });
-      await page.evaluate(`document.getElementById('tasks').value=${JSON.stringify(original.id)}; document.getElementById('tasks').dispatchEvent(new Event('change'))`);
       assert.ok(await page.waitFor('document.getElementById("question-text").textContent === "Choose original"'));
       await page.evaluate('document.getElementById("answer").click()');
       f.statuses.set(original.sessionId, { busy: true, turnId: 't2', pending: { taskId: original.id, requestId: 'q2', turnId: 't2', question: 'New question' } });
@@ -55,7 +54,16 @@ test('task shell browser: busy fork, immutable answer target, response loss repl
       await page.evaluate('document.getElementById("retry").click()');
       assert.ok(await page.waitFor('document.getElementById("retry").hidden && !document.getElementById("send").disabled'));
       assert.equal(f.sends.length, before, 'response loss retry must not send again');
-      f.histories.set(original.sessionId, [{ id: 'safe', role: 'assistant', content: '<img src=x onerror="window.pwned=true">', tools: [{ result: '<script>window.pwned=true</script>' }] }]);
+      f.histories.set(original.sessionId, [
+        { id: 'u-old', role: 'user', content: 'old requirement', taskId: original.id, turnId: 'old' },
+        { id: 'a-old', role: 'assistant', content: 'old result', taskId: original.id, turnId: 'old' },
+      ]);
+      await page.evaluate('document.getElementById("new-task").click()');
+      await submit('Independent B');
+      assert.ok(await page.waitFor('document.getElementById("token-savings").textContent.includes("token") && !document.getElementById("send").disabled'));
+      assert.equal(f.store.list('task').length, 2);
+      const latest = f.store.list('task').find(task => task.id !== original.id);
+      f.histories.set(latest.sessionId, [{ id: 'safe', role: 'assistant', content: '<img src=x onerror="window.pwned=true">', tools: [{ result: '<script>window.pwned=true</script>' }] }]);
       assert.ok(await page.waitFor('document.getElementById("history").textContent.includes("onerror") || document.querySelector("#history article img")'));
       assert.equal(await page.evaluate('window.pwned === true'), false);
       await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
