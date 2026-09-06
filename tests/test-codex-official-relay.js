@@ -218,6 +218,46 @@ test('Official relay attributes a controlled Codex agent role as a sub route', a
   assert.equal(invalidResponse.statusCode, 400);
 });
 
+test('resuming a cross-provider history removes foreign item IDs without breaking tool pairing', async () => {
+  const history = [
+    { type: 'message', id: 'msg_user', role: 'user', content: [{ type: 'input_text', text: 'Continue.' }] },
+    { type: 'function_call', id: 'tool_foreign_a', call_id: 'tool_foreign_a', name: 'exec_command', arguments: '{"cmd":"pwd"}' },
+    { type: 'function_call', id: 'tool_foreign_b', call_id: 'tool_foreign_b', name: 'exec_command', arguments: '{"cmd":"date"}' },
+    { type: 'function_call_output', id: 'fco_a', call_id: 'tool_foreign_a', output: '/workspace' },
+    { type: 'function_call_output', id: 'fco_b', call_id: 'tool_foreign_b', output: 'today' },
+    { type: 'function_call', id: 'fc_official', call_id: 'call_official', name: 'exec_command', arguments: '{}' },
+    { type: 'function_call', call_id: 'call_without_item_id', name: 'exec_command', arguments: '{}' },
+    { type: 'custom_tool_call', id: 'ctc_official', call_id: 'custom_call', name: 'exec', input: '1 + 1' },
+    { type: 'reasoning', id: 'rs_official', encrypted_content: 'opaque-reasoning', summary: [] },
+  ];
+  const original = structuredClone(history);
+  let sent;
+  const handler = createCodexOfficialRelayHandler({
+    getProvider: () => officialProvider(),
+    readCredential: () => ({ ok: true, accessToken: 'host-token', accountId: 'host-account' }),
+    fetch: async (_url, init) => {
+      sent = JSON.parse(init.body);
+      // Reproduce the Official schema check that rejected the live transcript.
+      const invalid = sent.input.find(item => item.type === 'function_call' && item.id && !item.id.startsWith('fc'));
+      if (invalid) return new Response('Invalid input item id: expected fc prefix', { status: 400 });
+      return new Response('data: {"type":"response.completed","response":{}}\n\n', {
+        status: 200, headers: { 'content-type': 'text/event-stream' },
+      });
+    },
+  });
+  const res = response();
+  await handler(request({ model: 'gpt-6-astra', input: history, stream: true }), res, () => assert.fail('fallthrough'));
+  assert.equal(res.statusCode, 200);
+  assert.match(Buffer.concat(res.chunks).toString(), /response.completed/);
+  for (const index of [1, 2]) {
+    const { id, ...expected } = original[index];
+    assert.deepEqual(sent.input[index], expected);
+    assert.equal(sent.input[index].call_id, sent.input[index + 2].call_id);
+  }
+  for (const index of [0, 3, 4, 5, 6, 7, 8]) assert.deepEqual(sent.input[index], original[index]);
+  assert.deepEqual(history, original, 'request normalization must not rewrite persisted native history');
+});
+
 test('missing credentials and upstream rejection expose no credential material', async () => {
   const unavailable = createCodexOfficialRelayHandler({
     getProvider: () => officialProvider(),
