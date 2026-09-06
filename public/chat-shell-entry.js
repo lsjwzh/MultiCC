@@ -1,5 +1,12 @@
 (function (root) {
   'use strict';
+  function chatUrl(sessionId, options = {}) {
+    if (!sessionId) throw new Error('session_required');
+    const params = new URLSearchParams({ session: sessionId });
+    if (options.external) params.set('external', options.external);
+    return `/chat.html?${params.toString()}`;
+  }
+
   async function resolve({ sessionId, taskId, fetch }) {
     async function post(url, body) {
       const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -11,36 +18,96 @@
       });
       return data;
     }
-    if (taskId) {
-      const bound = await post(`/api/task-board/tasks/${encodeURIComponent(taskId)}/chat-session`);
-      if (!bound.sessionId) throw new Error('chat_session_missing');
-      sessionId = bound.sessionId;
-    }
-    if (!sessionId) throw new Error('session_required');
+    // Ordinary session links already are the canonical full chat UI. Only a
+    // task-board link needs resolving before the page can connect.
+    if (!taskId) return null;
+    const bound = await post(`/api/task-board/tasks/${encodeURIComponent(taskId)}/chat-session`);
+    if (!bound.sessionId) throw new Error('chat_session_missing');
+    sessionId = bound.sessionId;
     let shell;
-    try { shell = await post('/api/task-shells', { sessionId }); }
-    catch (error) {
-      if (!taskId && error.code === 'unsupported_source') return null;
-      throw error;
-    }
+    shell = await post('/api/task-shells', { sessionId });
     if (!shell.id) throw new Error('shell_missing');
-    let resolvedTaskId = '';
-    if (taskId) {
-      try {
-        const task = await post(`/api/task-shells/${encodeURIComponent(shell.id)}/tasks/resolve`, { taskId });
-        resolvedTaskId = task.id || taskId;
-      } catch (error) {
-        // During the brief merge-before-restart window the new static client
-        // can meet the previous server route table. Preserve the old page
-        // instead of turning every task link into an HTML-404 parse failure.
-        if (!(error.status === 404 && error.code === 'HTTP 404')) throw error;
-      }
+    try {
+      const task = await post(`/api/task-shells/${encodeURIComponent(shell.id)}/tasks/resolve`, { taskId });
+      sessionId = task.sessionId || sessionId;
+    } catch (error) {
+      // During the brief merge-before-restart window the new static client can
+      // meet the previous route table. The bound chat remains usable.
+      if (!(error.status === 404 && error.code === 'HTTP 404')) throw error;
     }
-    const params = new URLSearchParams({ shell: shell.id });
-    if (resolvedTaskId) params.set('task', resolvedTaskId);
-    return `/task-shell.html?${params.toString()}`;
+    return chatUrl(sessionId);
   }
-  const api = { resolve };
+
+  function createTransportAdapter(options = {}) {
+    const rawSend = options.send || (() => false);
+    const makeClientMsgId = options.makeClientMsgId || (() => `shell-${Date.now()}`);
+    let enabled = false;
+    let controlTurnId = null;
+    let pending = null;
+    let buffered = [];
+    const receiptClients = new Map();
+
+    function remap(message) {
+      const id = message?.clientMsgId == null ? '' : String(message.clientMsgId);
+      return id && receiptClients.has(id) ? { ...message, clientMsgId: receiptClients.get(id) } : message;
+    }
+
+    function ingest(message) {
+      if (typeof message?.turnId === 'string' && message.turnId) controlTurnId = message.turnId;
+      if (message?.type === 'system' && message.subtype === 'init' && 'is_streaming' in message) {
+        enabled = message.taskShell === true;
+      }
+      const receipt = message?.clientMsgId == null ? '' : String(message.clientMsgId);
+      if (pending && receipt.startsWith('sr_') && !receiptClients.has(receipt)) {
+        buffered.push(message);
+        return { events: [] };
+      }
+      if (message?.type === 'task_shell_routed') {
+        const receiptId = message.receiptId == null ? '' : String(message.receiptId);
+        const clientMsgId = message.clientMsgId == null ? '' : String(message.clientMsgId);
+        if (receiptId && clientMsgId) receiptClients.set(receiptId, clientMsgId);
+        pending = null;
+        const events = buffered.map(remap);
+        buffered = [];
+        return { events, routeSessionId: message.sessionId ? String(message.sessionId) : '' };
+      }
+      if (message?.type === 'error' && message.notDelivered === true
+          && pending?.clientMsgId === message.clientMsgId) {
+        pending = null;
+        buffered = [];
+      }
+      return { events: [remap(message)] };
+    }
+
+    function send(payload) {
+      if (!enabled || !['user_message', 'cancel'].includes(payload?.type)) return rawSend(payload);
+      if (pending) return false;
+      const message = { ...payload, taskShell: true };
+      if (message.type === 'cancel') {
+        if (!controlTurnId) return false;
+        message.turnId = controlTurnId;
+        message.clientMsgId = message.clientMsgId || makeClientMsgId();
+      } else if (message.userInputRequestId) {
+        if (!controlTurnId) return false;
+        message.turnId = controlTurnId;
+      }
+      pending = message;
+      try {
+        if (rawSend(message)) return true;
+      } catch (error) {
+        pending = null;
+        throw error;
+      }
+      pending = null;
+      return false;
+    }
+
+    function replayPending() { return pending ? rawSend(pending) : false; }
+    function state() { return { enabled, controlTurnId, pending: pending && { ...pending } }; }
+    return Object.freeze({ ingest, replayPending, send, state });
+  }
+
+  const api = { chatUrl, createTransportAdapter, resolve };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.MultiCCChatShellEntry = api;
 })(typeof window !== 'undefined' ? window : globalThis);
