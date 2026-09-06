@@ -3,6 +3,7 @@
   const $ = id => document.getElementById(id), t = key => window.t(key);
   let shellId, focused = '', detail = null, control = null, client, busy = false, timer, stopped = false, newTask = false;
   const params = new URLSearchParams(location.search);
+  let requestedTask = params.get('task') || '';
   async function api(route, body, method = body === undefined ? 'GET' : 'POST') {
     const response = await fetch(route, { method, headers: { 'Content-Type': 'application/json' },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
@@ -72,7 +73,8 @@
     if (!shellId || stopped) return;
     sessionStorage.setItem(`task-shell-focus:${shellId}`, focused);
     const view = await api(`/api/task-shells/${shellId}`);
-    focused = view.currentTaskId || focused;
+    focused = requestedTask || view.currentTaskId || focused;
+    requestedTask = '';
     $('receipts').replaceChildren(...view.receipts.filter(receipt => receipt.status !== 'accepted').map(receipt => {
       const row = document.createElement('div'), retry = document.createElement('button');
       row.textContent = `${receipt.taskId} · ${receipt.error?.message || receipt.status} `;
@@ -145,9 +147,10 @@
         : await api('/api/task-shells', { sessionId: params.get('session') });
       shellId = shell.id;
       const canonical = new URLSearchParams({ shell: shellId });
+      if (params.get('task')) canonical.set('task', params.get('task'));
       if (params.get('external')) canonical.set('external', params.get('external'));
       history.replaceState(null, '', '?' + canonical);
-      focused = shell.currentTaskId || shell.defaultTaskId || '';
+      focused = requestedTask || shell.currentTaskId || shell.defaultTaskId || '';
       const archive = $('source-history');
       const archiveParams = new URLSearchParams({ session: shell.sourceSessionId, historyScope: 'archive', readOnly: '1' });
       if (params.get('external')) archiveParams.set('external', params.get('external'));
