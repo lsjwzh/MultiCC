@@ -4,8 +4,11 @@
     async function post(url, body) {
       const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
         ...(body ? { body: JSON.stringify(body) } : {}) });
-      const data = await response.json();
-      if (!response.ok || data.ok === false) throw Object.assign(new Error(data.message || data.error || data.code || `HTTP ${response.status}`), { code: data.code });
+      let data;
+      try { data = await response.json(); } catch (_) { data = { code: `HTTP ${response.status}` }; }
+      if (!response.ok || data.ok === false) throw Object.assign(new Error(data.message || data.error || data.code || `HTTP ${response.status}`), {
+        code: data.code, status: response.status,
+      });
       return data;
     }
     if (taskId) {
@@ -23,8 +26,15 @@
     if (!shell.id) throw new Error('shell_missing');
     let resolvedTaskId = '';
     if (taskId) {
-      const task = await post(`/api/task-shells/${encodeURIComponent(shell.id)}/tasks/resolve`, { taskId });
-      resolvedTaskId = task.id || taskId;
+      try {
+        const task = await post(`/api/task-shells/${encodeURIComponent(shell.id)}/tasks/resolve`, { taskId });
+        resolvedTaskId = task.id || taskId;
+      } catch (error) {
+        // During the brief merge-before-restart window the new static client
+        // can meet the previous server route table. Preserve the old page
+        // instead of turning every task link into an HTML-404 parse failure.
+        if (!(error.status === 404 && error.code === 'HTTP 404')) throw error;
+      }
     }
     const params = new URLSearchParams({ shell: shell.id });
     if (resolvedTaskId) params.set('task', resolvedTaskId);
