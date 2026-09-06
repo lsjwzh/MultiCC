@@ -6,6 +6,7 @@
 
 const SUPPORTED_CHAT_CLIS = Object.freeze(['claude', 'codex', 'opencode', 'zcode', 'qoder', 'kimi', 'codebuddy', 'dsh']);
 const PROVIDERLESS_CLIS = new Set(['qoder', 'codebuddy', 'dsh']);
+const { repairZcodeSessionState } = require('./cli-adapters/zcode-session');
 
 function supportedCli(cli) {
   return SUPPORTED_CHAT_CLIS.includes(String(cli || ''));
@@ -34,6 +35,7 @@ function activeState(session, now = Date.now()) {
 
 function ensureCliStates(session, now = Date.now()) {
   if (!session || session.kind !== 'chat' || !supportedCli(session.cli || 'claude')) return false;
+  const repaired = repairZcodeSessionState(session);
   const before = JSON.stringify(session.cliStates || null);
   if (!session.cliStates || typeof session.cliStates !== 'object' || Array.isArray(session.cliStates)) {
     session.cliStates = {};
@@ -44,7 +46,7 @@ function ensureCliStates(session, now = Date.now()) {
     : {};
   // Active legacy fields remain authoritative for the currently selected CLI.
   session.cliStates[cli] = { ...previous, ...activeState(session, previous.updatedAt || now) };
-  return before !== JSON.stringify(session.cliStates);
+  return repaired || before !== JSON.stringify(session.cliStates);
 }
 
 function rememberActiveCliState(session, now = Date.now()) {

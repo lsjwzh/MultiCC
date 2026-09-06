@@ -6,6 +6,9 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const { createZcodeAdapter } = require('../src/cli-adapters/zcode');
+const { ensureCliStates } = require('../src/cli-switch');
+const { captureNativeSessionId } = require('../src/chat/native-session-state');
 
 const BRIDGE = path.join(__dirname, '..', 'src', 'cli-adapters', 'zcode-bridge.cjs');
 const TERMINAL_BRIDGE = path.join(__dirname, '..', 'src', 'cli-adapters', 'zcode-terminal.cjs');
@@ -79,6 +82,7 @@ test('bridge fails loudly on a model mismatch instead of silently using the vend
   const events = result.stdout.trim().split('\n').map(line => JSON.parse(line));
   assert.equal(events.length, 1);
   assert.equal(events[0].type, 'error');
+  assert.equal(events[0].sessionID, undefined, 'configuration errors must not allocate native history');
   assert.match(events[0].error.message, /不支持 model 覆盖/);
   assert.match(events[0].error.message, /glm-5-turbo/);
   assert.equal(fs.existsSync(capture), false, 'engine must not be spawned on a model mismatch');
@@ -164,4 +168,73 @@ test('bridge scripts keep their executable bit (multicc spawns them directly)', 
     const mode = fs.statSync(file).mode;
     assert.notEqual(mode & 0o111, 0, `${path.basename(file)} lost its executable bit`);
   }
+});
+
+test('ZCode errors never become native session identities or mask the original failure', () => {
+  const adapter = createZcodeAdapter();
+  for (const id of ['zcode-settings', 'zcode-err', 'zcode-no-engine', 'zcode-parse', 'sess_existing']) {
+    const record = { cli: 'zcode', cliSessionId: 'sess_existing' };
+    const events = adapter.decodeEvent({ type: 'error', sessionID: id, error: { code: 'model_mismatch', message: 'model mismatch' } });
+    for (const event of events) if (event.type === 'session_started') captureNativeSessionId(record, event.sessionId, { fresh: true });
+    assert.equal(record.cliSessionId, 'sess_existing');
+    assert.deepEqual(events.map(e => e.type), ['error']);
+    assert.equal(events[0].error.code, 'model_mismatch');
+  }
+});
+
+test('legacy ZCode error markers are repaired on state hydration; genuine IDs stay protected', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-zcode-repair-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const { engine, capture } = writeFakeEngine(root);
+  const record = { kind: 'chat', cli: 'zcode', cliSessionId: 'zcode-settings',
+    cliStates: { zcode: { cliSessionId: 'zcode-settings', streamSessionId: null }, codex: { cliSessionId: 'thread-preserved' } } };
+  assert.equal(ensureCliStates(record), true);
+  assert.equal(record.cliSessionId, null);
+  assert.equal(record.cliStates.zcode.cliSessionId, null);
+  assert.equal(record.cliStates.codex.cliSessionId, 'thread-preserved');
+  assert.equal(ensureCliStates(record), false, 'migration is idempotent');
+  const adapter = createZcodeAdapter();
+  const invocation = adapter.buildInvocation({ historyHandle: { isFirstTurn: !record.cliSessionId, cliSessionId: record.cliSessionId },
+    spawnOpts: {}, contextLayers: [], userText: 'hello', suffix: '', rolePrompt: 'role evidence' });
+  assert.match(invocation.payload, /role evidence/);
+  const result = spawnSync(process.execPath, [invocation.cmd, ...invocation.args, invocation.payload], {
+    encoding: 'utf8', env: { ...process.env, ZCODE_ENGINE: engine, ZCODE_TEST_CAPTURE: capture },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  for (const raw of result.stdout.trim().split('\n').map(JSON.parse)) {
+    for (const event of adapter.decodeEvent(raw)) if (event.type === 'session_started') {
+      assert.notEqual(captureNativeSessionId(record, event.sessionId, { fresh: false }).mismatch, true);
+    }
+  }
+  assert.equal(record.cliSessionId, 'sess_fake');
+  assert.equal(JSON.parse(fs.readFileSync(capture)).args.includes('--resume'), false);
+  assert.equal(captureNativeSessionId(record, 'sess_other', { fresh: false }).mismatch, true);
+  assert.equal(record.cliSessionId, 'sess_fake', 'real resume mismatch guard remains intact');
+});
+
+test('ZCode migration repairs inactive snapshots and only known bridge markers', () => {
+  for (const marker of ['zcode-err', 'zcode-no-engine', 'zcode-parse', 'zcode-1788653210000']) {
+    const record = { kind: 'chat', cli: 'codex', cliSessionId: 'thread-original', cliStates: { zcode: { cliSessionId: marker } } };
+    ensureCliStates(record);
+    assert.equal(record.cliSessionId, 'thread-original');
+    assert.equal(record.cliStates.zcode.cliSessionId, null);
+  }
+  for (const native of ['sess_original', 'future-native-format']) {
+    const record = { kind: 'chat', cli: 'zcode', cliSessionId: native };
+    ensureCliStates(record);
+    assert.equal(record.cliSessionId, native, 'do not discard unknown identities based on a broad prefix heuristic');
+  }
+});
+
+test('successful engine output without a real session ID fails instead of inventing one', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-zcode-identity-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const engine = path.join(root, 'engine.cjs');
+  fs.writeFileSync(engine, 'console.log(JSON.stringify({response:"unattributed reply"}))');
+  const result = spawnSync(process.execPath, [BRIDGE, 'hello'], { encoding: 'utf8', env: { ...process.env, ZCODE_ENGINE: engine } });
+  assert.equal(result.status, 0);
+  const events = result.stdout.trim().split('\n').map(JSON.parse);
+  assert.deepEqual(events.map(e => e.type), ['error']);
+  assert.equal(events[0].sessionID, undefined);
+  assert.equal(events[0].error.code, 'zcode_invalid_session_id');
 });
