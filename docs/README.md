@@ -100,3 +100,5 @@ predates later refactors.
 ---
 
 [← Back to the README](../README.md)
+
+- [任务会话壳发布测试方案与验证记录](task-shell-release-tests.md)

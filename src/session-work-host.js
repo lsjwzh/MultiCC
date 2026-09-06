@@ -96,7 +96,7 @@ function createSessionWorkHost(deps = {}) {
     // requestId enriches an input with correlation; it never grants permission
     // to send. A mismatched stale picker answer is still ordinary user text;
     // an exact replay remains an idempotent answer even after it was resolved.
-    const requestId = pending && pending.requestId === requestedRequestId
+    const requestId = (pending && pending.requestId === requestedRequestId) || options.taskShellControl?.intent === 'answer'
       ? requestedRequestId
       : '';
     const status = await runtime.sessionScheduler.status(sessionId);
@@ -135,7 +135,7 @@ function createSessionWorkHost(deps = {}) {
           ? '这条回答不属于当前待确认问题，未执行。'
           : `消息入队失败：${admitted.code || 'scheduler_rejected'}`,
       });
-    } else if (requestId) {
+    } else if (requestId && !(admitted.duplicate && options.taskShellReceiptId)) {
       // Admission is the durable consumption boundary for a structured answer.
       // Resolving here (rather than when the next provider process happens to
       // start) prevents reconnect/replay from showing the picker again while
@@ -383,8 +383,10 @@ function createSessionWorkHost(deps = {}) {
           requestId: pendingInput.requestId,
           taskId: pendingInput.taskId || null,
           resolved: false,
+          ...(pendingInput.turnId ? { turnId: pendingInput.turnId } : {}),
         }
         : null,
+      ...(state.userInputSignalTurnId ? { turnId: state.userInputSignalTurnId } : {}),
     };
   }
 

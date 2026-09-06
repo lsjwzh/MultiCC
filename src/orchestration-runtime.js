@@ -165,6 +165,7 @@ function createOrchestrationRuntime({
     onEvent: onSchedulerEvent,
     getClassifyState: sessionId => getSessionRecoveryState(sessionId)?.classifyState || null,
     getPendingUserInput: sessionId => getSessionRecoveryState(sessionId)?.pendingUserInput || null,
+    getTurnId: sessionId => getSessionRecoveryState(sessionId)?.turnId || null,
     log,
   });
   const pendingBySession = new Map();

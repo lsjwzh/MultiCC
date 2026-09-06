@@ -62,6 +62,7 @@ function fixture(t, options = {}) {
     onEvent: event => events.push(event),
     getClassifyState: options.getClassifyState,
     getPendingUserInput: options.getPendingUserInput,
+    getTurnId: options.getTurnId,
   });
   return {
     store,
@@ -114,6 +115,22 @@ test('task-run fencing survives admission, active ownership and completion event
   const event = h.events.find(candidate => candidate.type === 'completed');
   assert.equal(event.taskRunId, 'run-1');
   assert.equal(event.leaseEpoch, 9);
+});
+
+test('task-shell controls reject stale turns atomically; an admitted answer replays after the next turn', async t => {
+  let turn = 'turn1', pending = { requestId: 'q1', taskId: 'task1' };
+  const f = fixture(t, { getTurnId: () => turn, getPendingUserInput: () => pending });
+  const input = { sessionId: 's1', text: 'yes', requestId: 'q1', workKind: 'answer', idempotencyKey: 'r1',
+    options: { taskId: 'task1', taskShellReceiptId: 'r1', taskShellControl: { intent: 'answer', turnId: 'turn1' } } };
+  const first = await f.scheduler.admit(input);
+  assert.equal(first.ok, true);
+  turn = 'turn2'; pending = { requestId: 'q2', taskId: 'task1' };
+  const replay = await f.scheduler.admit({ ...input, requestId: null });
+  assert.equal(replay.ok, true); assert.equal(replay.duplicate, true);
+  assert.equal(replay.entry.id, first.entry.id);
+  const stale = await f.scheduler.admit({ ...input, idempotencyKey: 'r2', options: { ...input.options, taskShellReceiptId: 'r2' } });
+  assert.equal(stale.ok, false); assert.equal(stale.code, 'stale_control');
+  assert.equal((await f.outbox.list()).length, 1);
 });
 
 test('a correlated control turn resumes the TaskRun retained at a W/B boundary', async t => {
