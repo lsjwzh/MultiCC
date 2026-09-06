@@ -376,6 +376,17 @@ function createCodexOfficialRelayHandler(options = {}) {
 
     const body = { ...input, store: false };
     body.stream = streaming;
+    if (Array.isArray(body.input)) {
+      body.input = body.input.map(item => {
+        // A resumed thread may contain another provider's tool_* item IDs.
+        // Official requires function-call item IDs to start with fc. The ID
+        // is optional; call_id links the call to its output and must be kept.
+        if (item?.type !== 'function_call' || typeof item.id !== 'string'
+            || item.id.startsWith('fc')) return item;
+        const { id, ...call } = item;
+        return call;
+      });
+    }
 
     let upstream;
     try {
