@@ -1345,8 +1345,10 @@ function createChatTurnEngine(deps) {
       source: 'provisional',
       text,
     } : requestedTask;
-    const identityLocked = !!requestedTask.id && (requestedTask.start !== true
+    const taskShellAutoClassify = !!opts.taskShellReceiptId && opts.taskShellAutoClassify === true;
+    const identityLocked = !!requestedTask.id && !taskShellAutoClassify && (requestedTask.start !== true
       || ['task-board', 'commander', 'code-reference', 'task-shell'].includes(requestedTask.source));
+    cs._taskShellReceiptId = opts.taskShellReceiptId || null;
     bindTurnTask(turn, {
       ...messageTask,
       id: nextTaskId,
@@ -1423,7 +1425,7 @@ function createChatTurnEngine(deps) {
     // Identity attribution starts as soon as the canonical user event is
     // durable. It is intentionally independent of provider completion and only
     // refines task identity/name; D/W/B/E remains owned by turn finalization.
-    if (taskBoundaryChanged && persisted.type !== 'gateway') {
+    if (taskBoundaryChanged && persisted.type !== 'gateway' && !taskShellAutoClassify) {
       runClassifyNow(cs, sessionName, {
         turnId,
         source: 'admission',

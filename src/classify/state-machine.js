@@ -43,6 +43,11 @@ function completionVoiceMessage(shortCode, goal) {
   return identity ? `${identity}，本轮执行成功` : '本轮执行成功';
 }
 
+function taskShellTurnCanMove(cs) {
+  const readOnly = /(^|__)(thinking|read|glob|grep|ls|view_image|websearch|webfetch|get_task_context)$/i;
+  return (cs?.currentToolCalls || []).every(tool => readOnly.test(String(tool?.name || '')));
+}
+
 function createClassifyStateMachine(rawDeps) {
   const deps = rawDeps || {};
   const {
@@ -501,7 +506,8 @@ function createClassifyStateMachine(rawDeps) {
         annotated,
       };
     }
-    const boundTaskId = persistedSessions.get(sessionName)?.taskBoundTaskId || null;
+    const boundTaskId = context.shellReceiptId
+      ? null : persistedSessions.get(sessionName)?.taskBoundTaskId || null;
     const sameTaskId = result.relation === 'same' ? (result.taskId || previousTaskId) : null;
     const taskId = boundTaskId || context.resolvedTaskId || sameTaskId
       || `tsk_${crypto.randomUUID().replace(/-/g, '')}`;
@@ -876,9 +882,14 @@ function createClassifyStateMachine(rawDeps) {
     }
     const history = viewChatHistory(sessionName);
     const currentTaskId = cs._currentTaskId || null;
+    const shellReceiptId = cs?._taskShellReceiptId || null;
+    const shellOwned = !!shellReceiptId && !!getTaskContextHost().ownsTaskShell(sessionName);
     const recentTasks = recentTaskContext(history);
+    for (const task of shellOwned ? getTaskContextHost().taskShellRecentTasks(sessionName, shellReceiptId) : []) {
+      if (!recentTasks.some(value => value.taskId === task.taskId)) recentTasks.push(task);
+    }
     const identityState = getTaskState(persistedSessions.get(sessionName));
-    const provisionalTaskId = identityState.taskIdentityPending === true
+    const provisionalTaskId = !shellOwned && identityState.taskIdentityPending === true
       ? currentTaskId : null;
     const admissionTaskId = admittedTaskId || null;
     const requestId = crypto.randomUUID();
@@ -946,13 +957,17 @@ function createClassifyStateMachine(rawDeps) {
       // Explicit task-card/#CODE continuations are stronger than a probabilistic
       // model answer. A malformed `new` verdict must not split or group that
       // locked task even if the raw model JSON asks for it.
-      const res = identityLocked ? {
+      let res = identityLocked ? {
         ...parsedAttribution,
         relation: 'same',
         taskId: currentTaskId,
         relatedTaskId: null,
       } : parsedAttribution;
-      const boundTaskId = persistedSessions.get(sessionName)?.taskBoundTaskId || null;
+      if (shellOwned && !taskShellTurnCanMove(cs)
+          && (res.relation === 'new' || (res.taskId && res.taskId !== currentTaskId))) {
+        res = { ...res, relation: 'same', taskId: currentTaskId, relatedTaskId: null };
+      }
+      const boundTaskId = shellOwned ? null : persistedSessions.get(sessionName)?.taskBoundTaskId || null;
       // `new` promotes the admission's provisional id; it must never mint a
       // second id after that candidate has already been persisted and rendered.
       // Explicit task-card/#CODE continuations are identity-locked evidence.
@@ -960,7 +975,7 @@ function createClassifyStateMachine(rawDeps) {
         ? currentTaskId
         : res.relation === 'same'
           ? (res.taskId || currentTaskId)
-          : admissionTaskId)
+          : shellOwned ? null : admissionTaskId)
         || `tsk_${crypto.randomUUID().replace(/-/g, '')}`;
       const anchorStatus = taskAttributionAnchorStatus(sessionName, anchorMessageId);
       const supersededReason = anchorStatus.changed
@@ -981,8 +996,22 @@ function createClassifyStateMachine(rawDeps) {
         source: 'multicc/aux', runId, turnId,
         taskId: currentTaskId, admittedTaskId: admissionTaskId,
         resolvedTaskId, anchorMessageId,
-        anchorStatus, supersededReason,
+        anchorStatus, supersededReason, shellReceiptId,
       });
+      if (!supersededReason && shellOwned) {
+        try {
+          getTaskContextHost().settleTaskShellAttribution(sessionName, shellReceiptId, {
+            taskId: resolvedTaskId,
+            taskName: res.taskName,
+            relation: res.relation,
+            relatedTaskId: res.relatedTaskId,
+          });
+        } catch (error) {
+          logger.warn?.('task_shell_attribution_failed', {
+            sessionId: sessionName, receiptId: shellReceiptId, error: error.message,
+          });
+        }
+      }
     }).catch((e) => {
       if (cs._classifyTaskId === requestId) cs._classifyTaskId = null;
       // A cancelled task (new turn started / user typing) rejects with {cancelled:true}
