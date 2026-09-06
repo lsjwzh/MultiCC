@@ -119,6 +119,7 @@ function createPaths({ dataDir } = {}) {
     docsRegistryFile: path.join(root, 'docs_registry.json'),
     taskBoardFile: path.join(root, 'task_board.json'),
     taskRunDbFile: path.join(root, 'task-runs.sqlite'),
+    taskShellDbFile: path.join(root, 'task-shells.sqlite'),
     // Outward task short-code registry (taskId→#CODE), guaranteeing the 4-char
     // display handle is unique fleet-wide. See src/classify/task-short-code.js.
     taskShortCodesFile: path.join(root, 'task-short-codes.json'),

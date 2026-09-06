@@ -91,6 +91,7 @@ function createTaskMergeHandler({
   persist,
   notify,
   logger,
+  isIdentityProtected = () => false,
 }) {
   function taskMergeBusy(task) {
     if (!task) return false;
@@ -128,6 +129,9 @@ function createTaskMergeHandler({
       return res.status(400).json({ error: 'invalid_merge_request' });
     }
     const sourceTaskIds = [...new Set(rawSources.map(id => id.trim()))];
+    if ([targetTaskId, ...sourceTaskIds].some(id => isIdentityProtected(resolvedTask(id)))) {
+      return res.status(409).json({ error: 'task_shell_identity_immutable' });
+    }
     const previousBoard = JSON.parse(JSON.stringify(board));
     const nextBoard = core.normalizeBoard(JSON.parse(JSON.stringify(board)));
     const mergedAt = Date.now();

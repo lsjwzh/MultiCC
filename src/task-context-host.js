@@ -14,6 +14,7 @@ function createTaskContextHost(options = {}) {
     getRecord,
     runTurn,
     recordTaskRunMessage = null,
+    getTaskShells = () => null,
   } = options;
   for (const [name, value] of Object.entries({
     getState, append, emitClients, getTaskBoard,
@@ -282,6 +283,9 @@ function createTaskContextHost(options = {}) {
   }
 
   return Object.freeze({
+    guardAdmission: (...args) => getTaskShells()?.guardAdmission(...args),
+    ownsTaskShell: id => getTaskShells()?.owns(id),
+    taskShellContextSeed: (id, fallback, first) => getTaskShells()?.contextSeed(id, fallback, first) ?? fallback,
     appendMessage,
     beginTurn,
     broadcast,

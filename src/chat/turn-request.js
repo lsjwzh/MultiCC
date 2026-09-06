@@ -8,7 +8,7 @@ const FORBIDDEN_FIELDS = new Set([
   'cliSessionId', 'nativeSessionId', 'sessionSecret', 'secret',
   'token', 'apiKey', 'accessToken', 'providerToken',
 ]);
-const TASK_SOURCES = new Set(['task-board', 'commander', 'router-tool']);
+const TASK_SOURCES = new Set(['task-board', 'commander', 'router-tool', 'task-shell']);
 const LEGACY_TASK_SOURCE_ALIASES = new Map([
   ['commander-route', 'commander'],
 ]);
