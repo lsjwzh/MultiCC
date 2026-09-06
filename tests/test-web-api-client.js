@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const errorEnvelope = require('../public/error-envelope');
+const { createSandboxConsole } = require('./helpers/sandbox-console');
 
 const ROOT = path.join(__dirname, '..');
 const SOURCE = fs.readFileSync(path.join(ROOT, 'public', 'api-client.js'), 'utf8');
@@ -52,7 +53,7 @@ function createHarness(fetchImpl, authReady = Promise.resolve()) {
     AbortController,
     setTimeout,
     clearTimeout,
-    console,
+    console: createSandboxConsole(),
   }, { filename: 'api-client.js' });
   return { api: window.MultiCCApi, calls };
 }

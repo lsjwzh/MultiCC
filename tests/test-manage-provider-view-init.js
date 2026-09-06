@@ -9,6 +9,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { createSandboxConsole } = require('./helpers/sandbox-console');
 
 const ROOT = path.join(__dirname, '..');
 
@@ -39,7 +40,7 @@ test('setView("provider") auto-calls setProvTab with the active tab', () => {
   const timers = [];
 
   const context = {
-    console,
+    console: createSandboxConsole(),
     URLSearchParams,
     JSON,
     setTimeout(fn) { const t = setTimeout(fn); timers.push(t); return t; },
@@ -90,7 +91,7 @@ test('setView("overview") does not call setProvTab', () => {
 
   let setProvTabCalled = false;
   const context = {
-    console,
+    console: createSandboxConsole(),
     URLSearchParams,
     JSON,
     setTimeout() { return 1; },

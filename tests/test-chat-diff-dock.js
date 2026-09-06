@@ -10,6 +10,7 @@ const test = require('node:test');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { createSandboxConsole } = require('./helpers/sandbox-console');
 
 const ROOT = path.join(__dirname, '..');
 const SCRIPT = fs.readFileSync(path.join(ROOT, 'public', 'chat-diff.js'), 'utf8');
@@ -84,7 +85,7 @@ function browserContext(opts = {}) {
   const store = new Map(Object.entries(opts.session || {}));
   const elements = new Map(IDS.map(id => [id, fakeElement(id)]));
   const ctx = {
-    console,
+    console: createSandboxConsole(),
     JSON, Promise, Math, Number, Date, String, Array, Object, URLSearchParams,
     setTimeout, clearTimeout,
     fetch: opts.fetch || (async () => ({ ok: true, json: async () => FILES })),

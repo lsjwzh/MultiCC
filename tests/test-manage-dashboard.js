@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { createSandboxConsole } = require('./helpers/sandbox-console');
 
 const ROOT = path.join(__dirname, '..');
 const DASHBOARD_PATH = path.join(ROOT, 'public', 'manage-dashboard.js');
@@ -16,7 +17,7 @@ function read(relativePath) {
 function createHarness(overrides = {}) {
   const storage = new Map();
   const context = {
-    console,
+    console: createSandboxConsole(),
     Map,
     Set,
     URLSearchParams,

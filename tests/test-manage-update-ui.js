@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { createSandboxConsole } = require('./helpers/sandbox-console');
 
 const ROOT = path.join(__dirname, '..');
 const SOURCE = fs.readFileSync(path.join(ROOT, 'public/manage-update.js'), 'utf8');
@@ -89,7 +90,7 @@ function buildContext({ fetchImpl, elements = {} }) {
     fetch: fetchImpl,
     location: { reload: () => reloads.push(Date.now()) },
     showToast: (msg, isError) => toasts.push({ msg, isError }),
-    console,
+    console: createSandboxConsole(),
   };
   context.window = context;
   vm.createContext(context);
