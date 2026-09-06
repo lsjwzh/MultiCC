@@ -1445,7 +1445,7 @@ function createChatTurnEngine(deps) {
     // symmetric broadcast at finalize; give every turn a matching start frame.
     // Deliberately NOT routed through forward()/streamReplay — reconnecting
     // clients learn streaming state from the init is_streaming flag instead.
-    chatBroadcast(sessionName, { type: 'stream_start' });
+    chatBroadcast(sessionName, { type: 'stream_start', turnId });
     if (persisted.cli === 'claude') pruneTranscript(sessionName, persisted);
     cs._adapterError = null;
     cs._sawApiError = false;
@@ -2633,6 +2633,8 @@ function createChatTurnEngine(deps) {
       cwd: cs.cwd, session: sessionName, session_id: sessionName,
       cli: cs.cli,
       is_streaming: cs.isStreaming,
+      taskShell: taskContextHost?.requiresTaskShell?.(sessionName) === true,
+      turnId: persisted.taskState?.userInputSignalTurnId || null,
       model: persisted.model || null,
       effectiveModel: effectiveSessionModel(persisted),
       effort: persisted.effort || null,
@@ -2760,8 +2762,20 @@ function createChatTurnEngine(deps) {
         //   admin/destructive ops (clear_history, etc.) — shares never get those.
         if (ws._sharePerm === 'view') return;
         if (ws._sharePerm === 'operate' && !['user_message', 'cancel', 'typing'].includes(msg.type)) return;
-        if (taskContextHost?.ownsTaskShell?.(sessionName) && msg.type !== 'typing') {
-          sendWs(ws, { type: 'error', code: 'task_shell_route_required', error: '请从任务会话入口操作此实验任务。' });
+        if ((taskContextHost?.requiresTaskShell?.(sessionName) || taskContextHost?.ownsTaskShell?.(sessionName)) && msg.type !== 'typing') {
+          if (!ws._sharePerm && msg.taskShell === true && ['user_message', 'cancel'].includes(msg.type)) {
+            try {
+              const result = await taskContextHost.sendTaskShellInput(sessionName, msg);
+              sendWs(ws, { type: 'task_shell_routed', ...result });
+            } catch (error) {
+              sendWs(ws, { type: 'error', code: error.code || 'task_shell_failed', error: error.message,
+                clientMsgId: msg.clientMsgId, receiptId: error.receiptId,
+                notDelivered: error.notDelivered === true || (!error.receiptId && error.status < 500) });
+            }
+            return;
+          }
+          sendWs(ws, { type: 'error', code: 'task_shell_route_required', error: '请从任务会话入口发送消息或操作任务。',
+            url: `/task-shell.html?session=${encodeURIComponent(sessionName)}` });
           return;
         }
 

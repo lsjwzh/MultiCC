@@ -433,6 +433,7 @@ function createSessionWorkHost(deps = {}) {
       deps.broadcast(signal.sessionId, {
         type: 'user_input_required',
         requestId: signal.requestId,
+        turnId: signal.turnId || deps.pendingUserInput(signal.sessionId)?.turnId || null,
         taskId: deps.getChatSession(signal.sessionId)?._currentTaskId || null,
         question: signal.question,
         reason: signal.reason || '',
@@ -449,6 +450,7 @@ function createSessionWorkHost(deps = {}) {
       send({
         type: 'user_input_required',
         requestId: pending.requestId,
+        turnId: pending.turnId || null,
         taskId: pending.taskId || null,
         question: pending.question,
         reason: pending.reason || '',

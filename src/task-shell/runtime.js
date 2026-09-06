@@ -2,6 +2,7 @@
 
 const { randomUUID } = require('node:crypto');
 const { snapshotHistory, renderSnapshots, verifySnapshot, hash } = require('./context');
+const { resolveGoalLimits } = require('../routes/aux-goal');
 
 function failure(code, message = code, status = 409) {
   return Object.assign(new Error(message), { code, status });
@@ -19,7 +20,7 @@ function cleanError(error) {
 }
 
 function createTaskShellRuntime(ports) {
-  const { store, enabled, getRecord, getHistory, getExecution, createExecution, indexTask, send, cancel } = ports;
+  const { store, getRecord, getHistory, getExecution, createExecution, indexTask, send, cancel } = ports;
   const flights = new Map();
   const launching = new Set();
   const maxConcurrent = Number.isInteger(ports.maxConcurrent) && ports.maxConcurrent > 0 ? ports.maxConcurrent : 4;
@@ -28,9 +29,8 @@ function createTaskShellRuntime(ports) {
     const states = await Promise.all(others.map(async t => ({ id: t.id, busy: (await getExecution(t.sessionId)).busy })));
     const occupied = new Set(states.filter(s => s.busy !== false).map(s => s.id));
     for (const id of launching) if (id !== task.id && store.get('task', id)?.dirId === task.dirId) occupied.add(id);
-    if (occupied.size >= maxConcurrent) throw failure('task_shell_capacity', `At most ${maxConcurrent} occupied experiment tasks per project; retry this delivery when capacity is available`, 429);
+    if (occupied.size >= maxConcurrent) throw failure('task_shell_capacity', `At most ${maxConcurrent} occupied tasks per project; retry this delivery when capacity is available`, 429);
   }
-  function writable() { if (!enabled()) throw failure('experiment_disabled', 'Task shells are disabled', 403); }
   function shell(id) {
     const value = store.get('shell', identifier(id, 'shellId'));
     if (!value) throw failure('shell_not_found', 'shell_not_found', 404);
@@ -44,10 +44,10 @@ function createTaskShellRuntime(ports) {
     return task;
   }
   function open(sessionId) {
-    writable(); identifier(sessionId, 'sessionId');
+    identifier(sessionId, 'sessionId');
     const source = getRecord(sessionId);
-    if (!source || source.kind !== 'chat' || source.taskBoundTaskId || ['aux', 'gateway', 'commander'].includes(source.type)
-      || !['codex', 'claude'].includes(source.cli)) throw failure('unsupported_source', 'Use an ordinary Claude or Codex chat', 400);
+    if (!source || source.kind !== 'chat' || source.taskExecutionSlot || source.experimentalMode
+      || ['aux', 'gateway', 'commander'].includes(source.type)) throw failure('unsupported_source', 'Use an ordinary chat', 400);
     const id = `sh_${hash(sessionId).slice(0, 24)}`;
     const existing = store.get('shell', id);
     if (existing) return existing;
@@ -55,12 +55,39 @@ function createTaskShellRuntime(ports) {
     store.set('shell', id, value); return value;
   }
   function link(shellId, taskId) {
-    writable(); const s = shell(shellId); const task = taskFor(s, taskId, false);
+    const s = shell(shellId); const task = taskFor(s, taskId, false);
     store.set('link', `${s.id}:${task.id}`, { shellId: s.id, taskId: task.id });
     return task;
   }
+  // Attach an existing execution without changing its native ID, worktree or
+  // transcript. New work still goes through the same receipt protocol.
+  function adopt(shellId, sessionId) {
+    const s = shell(shellId), record = getRecord(sessionId);
+    if (!record || record.dirId !== s.dirId || record.kind !== 'chat'
+      || record.taskExecutionSlot || ['aux', 'gateway', 'commander'].includes(record.type)) throw failure('unsupported_source');
+    return store.transaction(() => {
+      let task = owns(sessionId);
+      if (!task) {
+        const history = getHistory(sessionId);
+        const last = [...history].reverse().find(m => m.taskId);
+        const pending = record.taskState?.pendingUserInput;
+        const id = record.taskBoundTaskId || (pending && !pending.resolved ? pending.taskId : null)
+          || record.taskState?.userInputSignalTaskId || last?.taskId
+          || `tsk_${hash(['adopt', sessionId]).slice(0, 32)}`;
+        if (store.get('task', id)) throw failure('task_identity_mismatch');
+        task = { id, dirId: s.dirId, sessionId, title: record.label || last?.content?.slice?.(0, 120) || sessionId,
+          parentTaskId: null, snapshotIds: [], ready: true, adopted: true, createdAt: Date.now(),
+          runtime: Object.fromEntries(['cli', 'model', 'provider', 'providerSelection', 'effort', 'agent']
+            .filter(k => record[k] !== undefined).map(k => [k, record[k]])) };
+        store.set('task', id, task);
+      }
+      link(s.id, task.id);
+      if (!s.defaultTaskId) { s.defaultTaskId = task.id; store.set('shell', s.id, s); }
+      return task;
+    });
+  }
   function remove(shellId) {
-    writable(); const s = shell(shellId);
+    const s = shell(shellId);
     store.transaction(() => {
       store.remove('shell', s.id);
       for (const link of store.list('link').filter(l => l.shellId === s.id)) store.remove('link', `${s.id}:${link.taskId}`);
@@ -70,7 +97,7 @@ function createTaskShellRuntime(ports) {
   function view(shellId) {
     const s = shell(shellId);
     const ids = new Set(store.list('link').filter(l => l.shellId === s.id).map(l => l.taskId));
-    return { ...s, enabled: enabled(), tasks: store.list('task').filter(t => ids.has(t.id)),
+    return { ...s, enabled: true, tasks: store.list('task').filter(t => ids.has(t.id)),
       availableTasks: store.list('task').filter(t => t.dirId === s.dirId).map(t => ({ id: t.id, title: t.title })),
       receipts: store.list('receipt').filter(r => r.shellId === s.id).slice(-100).map(r => ({
         id: r.id, clientMsgId: r.payload.clientMsgId, taskId: r.taskId, intent: r.payload.intent,
@@ -97,6 +124,7 @@ function createTaskShellRuntime(ports) {
       contextTaskIds: list('contextTaskIds'), dependsOn: list('dependsOn'),
       turnId: raw.turnId == null ? null : identifier(raw.turnId, 'turnId'),
       requestId: raw.requestId == null ? null : identifier(raw.requestId, 'requestId') };
+    if (raw.goal === true || raw.goalLimits != null) result.goalLimits = resolveGoalLimits(raw.goalLimits);
     if (intent !== 'work' && (!result.taskId || !result.turnId || result.contextTaskIds.length || result.dependsOn.length)) throw failure('invalid_control', 'Controls require the original task and turn', 400);
     if (intent === 'answer' && !result.requestId) throw failure('invalid_control', 'Answer requires requestId', 400);
     return result;
@@ -137,7 +165,7 @@ function createTaskShellRuntime(ports) {
       if (target && !fork && payload.intent === 'work' && references.length) throw failure('context_requires_new_task', 'Select a new task to import versioned context');
       let task = target;
       if (!task || fork) {
-        if (store.list('task').filter(t => t.dirId === s.dirId).length >= 200) throw failure('experiment_task_limit', 'Experiment limit reached (200 tasks/project)', 429);
+        if (store.list('task').filter(t => t.dirId === s.dirId).length >= 200) throw failure('task_shell_task_limit', 'Task limit reached (200 tasks/project)', 429);
         if (fork) contexts.set(target.id, snapshotHistory(target.id, getHistory(target.sessionId), { activeTurnId: state?.busy ? state.turnId : null }));
         const snapshotIds = [];
         for (const value of contexts.values()) { store.set('snapshot', value.hash, value); snapshotIds.push(value.hash); }
@@ -193,9 +221,10 @@ function createTaskShellRuntime(ports) {
         // Stable key is the handoff protocol across the SQLite/outbox boundary.
         receipt.status = 'delivering'; store.set('receipt', receipt.id, receipt);
         result = await send(task.sessionId, p.text, {
-          taskId: task.id, taskStart: true, taskText: task.title, taskSource: 'task-shell',
+          taskId: task.id, taskStart: true, taskText: p.intent === 'work' ? p.text : task.title, taskSource: 'task-shell',
           clientMsgId: receipt.id, idempotencyKey: receipt.id, taskShellReceiptId: receipt.id,
           receivedAt: receipt.createdAt,
+          ...(p.goalLimits ? { goalLimits: p.goalLimits } : {}),
           ...(p.intent !== 'work' ? { taskShellControl: { intent: p.intent, turnId: p.turnId } } : {}),
           taskContextSeed: renderSnapshots(snapshots),
           ...(p.intent === 'answer' ? { userInputRequestId: p.requestId } : {}),
@@ -215,7 +244,7 @@ function createTaskShellRuntime(ports) {
     } finally { if (needsCapacity) launching.delete(task.id); }
   }
   async function sendInput(shellId, raw) {
-    writable(); const s = shell(shellId), payload = normalize(raw);
+    const s = shell(shellId), payload = normalize(raw);
     const id = `sr_${hash([s.id, payload.clientMsgId]).slice(0, 40)}`, fingerprint = hash(payload);
     let receipt = store.get('receipt', id);
     if (receipt && receipt.fingerprint !== fingerprint) throw failure('idempotency_conflict');
@@ -229,7 +258,7 @@ function createTaskShellRuntime(ports) {
   }
   function owns(sessionId) { return store.list('task').find(t => t.sessionId === sessionId) || null; }
   async function retry(shellId, receiptId) {
-    writable(); const s = shell(shellId);
+    const s = shell(shellId);
     const receipt = store.get('receipt', identifier(receiptId, 'receiptId'));
     if (!receipt || receipt.shellId !== s.id) throw failure('receipt_not_found', 'receipt_not_found', 404);
     return sendInput(s.id, receipt.payload);
@@ -237,6 +266,9 @@ function createTaskShellRuntime(ports) {
   function guardAdmission(sessionId, text, options = {}) {
     const task = owns(sessionId);
     if (!task) return null;
+    // Admission timestamps are assigned by the host, never accepted from Web
+    // messages. Work already durably queued before adoption keeps its identity.
+    if (task.adopted && Number.isFinite(options.receivedAt) && options.receivedAt < task.createdAt) return null;
     if (options.taskId && options.taskId !== task.id) return { ok: false, code: 'task_identity_mismatch' };
     const receipt = options.taskShellReceiptId && store.get('receipt', options.taskShellReceiptId);
     if (receipt && receipt.taskId === task.id && receipt.payload.text === text
@@ -246,7 +278,7 @@ function createTaskShellRuntime(ports) {
     if (options.originContinue === true) { options.taskId = task.id; return null; }
     return { ok: false, code: 'task_shell_route_required' };
   }
-  return { open, link, remove, view, detail, send: sendInput, retry, owns, guardAdmission };
+  return { open, adopt, link, remove, view, detail, send: sendInput, retry, owns, guardAdmission };
 }
 
 module.exports = { createTaskShellRuntime, failure, cleanError };

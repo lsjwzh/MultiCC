@@ -261,6 +261,10 @@ function createTaskContextHost(options = {}) {
   async function deliverSessionMessage(sessionName, text, options = {}) {
     const persisted = getRecord(sessionName);
     if (!persisted) return { ok: false, code: 'session_not_found' };
+    const shells = getTaskShells();
+    if (shells?.accepts?.(sessionName) && !options.taskShellReceiptId && !options.originContinue) {
+      return shells.sendFromSession(sessionName, text, options);
+    }
     // Turn-timing t0: every chat-send route (WS user_message, task-board HTTP
     // sends) funnels through here. The stamp survives the durable outbox
     // (payload.options) so runChatTurn can measure from true receipt, FIFO
@@ -285,6 +289,8 @@ function createTaskContextHost(options = {}) {
   return Object.freeze({
     guardAdmission: (...args) => getTaskShells()?.guardAdmission(...args),
     ownsTaskShell: id => getTaskShells()?.owns(id),
+    requiresTaskShell: id => getTaskShells()?.accepts(id),
+    sendTaskShellInput: (id, message) => getTaskShells().sendClientInput(id, message),
     taskShellContextSeed: (id, fallback, first) => getTaskShells()?.contextSeed(id, fallback, first) ?? fallback,
     appendMessage,
     beginTurn,
