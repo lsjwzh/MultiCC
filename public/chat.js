@@ -123,9 +123,8 @@ const _sessionName = _params.get('session') || '';  // dashboard session name
 const _taskId = _params.get('task') || '';          // task virtual session (M2)
 const TASK_MODE = !!_taskId;
 const HISTORY_ARCHIVE = _params.get('historyScope') === 'archive';
-// Task mode: the same host renders a task from the ledger + the dir
-// workspace stream (chat-task-mode.js). One body class gates session-only
-// chrome; behaviour is gated at the install points below.
+// Task URLs resolve into their canonical shell; hide session controls
+// while the entry request is pending.
 if (TASK_MODE) document.body.classList.add('task-mode');
 const _targetMessageId = window.MultiCCChatMessageFocus.readTargetMessageId(location.search);
 const _hasNativeBridge = typeof window.MultiCCBridge !== 'undefined' && !!window.MultiCCBridge;
@@ -544,7 +543,6 @@ const chatLiveUi = window.MultiCCChatLiveUi.createLiveUi({
 });
 let chatEventController = null;
 let _eventGeneration = 0;
-let taskMode = null; // M2 · task-mode adapter instance (chat.html?task=<id>)
 const chatTransport = window.MultiCCChatTransport.createTransport({
   window,
   document,
@@ -650,10 +648,10 @@ const chatTransport = window.MultiCCChatTransport.createTransport({
 
 function connect() { return chatTransport.connect(); }
 
-// One send entry for both host modes (M2): session mode goes through the
-// chat WS transport; task mode POSTs through the task adapter.
+// Archives cannot write. Ordinary conversations enter the task shell;
+// only system-session controls use this transport.
 function hostTransportSend(payload) {
-  if (TASK_MODE) return taskMode ? taskMode.transportSend(payload) : true;
+  if (TASK_MODE || _params.get('readOnly') === '1') return false;
   return chatTransport.send(payload);
 }
 
@@ -1051,9 +1049,7 @@ async function loadOlderHistory() {
     messagesEl.insertBefore(_loadingOlderSentinel, messagesEl.firstElementChild);
   }
   try {
-    const url = withToken(TASK_MODE && taskMode
-      ? taskMode.historyPageUrl({ before: request.before, limit: request.limit })
-      : `/api/sessions/${encodeURIComponent(_sessionName)}/history?historyScope=${HISTORY_ARCHIVE ? 'archive' : 'display'}&before=${encodeURIComponent(request.before)}&limit=${request.limit}`);
+    const url = withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/history?historyScope=${HISTORY_ARCHIVE ? 'archive' : 'display'}&before=${encodeURIComponent(request.before)}&limit=${request.limit}`);
     const d = await chatApi.json(url);
     // Validate generation/request identity before touching DOM. A response
     // that raced a reconnect, clear or cursor deletion is discarded.
@@ -2506,7 +2502,6 @@ if (!TASK_MODE) {
 if (HISTORY_ARCHIVE) document.getElementById('clear-ctx-wrap').style.display = 'none';
 window.MultiCCChatContextControls.create({
   document, window, translate: tt,
-  allowTaskShell: !TASK_MODE && !HISTORY_ARCHIVE,
   getIsStreaming: () => isStreaming,
   addSystemMsg,
   isConnected: () => ws?.readyState === WebSocket.OPEN,
@@ -2860,11 +2855,9 @@ const _chatRecovery = window.MultiCCChatRecoveryService.create({
 })();
 
 /* ── Start ── */
-// Task-mode host adapters (bootTaskMode/renderRunSeparator/updateTaskIdentity)
-// live in chat-task-boot.js to keep this host inside the line budget.
+// Entry resolution lives outside the archive/system renderer.
 dbg('state', TASK_MODE ? 'page loaded — task 模式启动' : 'page loaded — 开始连接');
-if (TASK_MODE) bootTaskMode();
-else connect();
+bootChatEntry();
 
 /* ════════════════════════════════════════════════════════════════════════════
  * 实时语音通话 — 全局 Qwen 语音网关

@@ -18,7 +18,6 @@ services:
       PORT: "3000"
       MULTICC_ALLOW_REMOTE: "1"
       ACCESS_TOKEN: multicc-docker-lab
-      MULTICC_TASK_SHELLS: "1"
       MULTICC_LAB_PORT: "${MULTICC_LAB_PORT:-3300}"
     volumes:
       - lab-data:/var/lib/multicc

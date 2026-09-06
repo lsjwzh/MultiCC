@@ -1072,6 +1072,16 @@ class ChatProvider extends ChangeNotifier {
         applyProviderRoutingEvent(evt.type, evt.payload as Map);
         break;
 
+      case 'task_shell_routed':
+        _finishStreaming();
+        _stagedTracker.clear();
+        _historyGeneration++;
+        _replaceHistory([]);
+        _historyApplied = false;
+        _pendingUserInput = null;
+        notifyListeners();
+        break;
+
       case 'chat_history_reset':
         if (historyArchive) break;
         _historyGeneration++;
