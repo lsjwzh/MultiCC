@@ -1,6 +1,6 @@
 # Chat View 统一化改造：任务详情 chat 化 + UI/写侧隔离
 
-> 状态：**已拍板（2026-08-19），待实施**
+> 历史设计。2026-09-06：用户聊天入口已统一到任务会话壳，旧投影视图发送和失败回退已删除；当前契约见 [任务会话壳](task-session-shell-experiment.md)。
 > 作者：架构师会话（multicc-codex-chat-04）
 > 前置：docs/task-virtual-session-design.md（任务虚拟会话 B 方案，阶段 1/2 已部分合入）
 > 依据：两份只读代码侦查（前端 chat 模块矩阵 / 后端 spawn·拼接·resume 三轴），文中 file:line 均已核对。

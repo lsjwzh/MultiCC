@@ -125,16 +125,6 @@
     menu.querySelector('[data-action="rotate-native"]').addEventListener('click', rotateNativeContext);
     const levelBtn = menu.querySelector('[data-action="context-level"]');
     if (levelBtn) levelBtn.addEventListener('click', () => { showContextLevel(); });
-    // Discoverable opt-in entry. Reduced DOM test hosts do not create nodes.
-    if (options.allowTaskShell !== false && typeof document.createElement === 'function' && typeof window.fetch === 'function') {
-      window.fetch('/api/task-shells/config').then(r => r.json()).then(config => {
-        if (!config.enabled) return;
-        const link = document.createElement('a');
-        link.textContent = translate('taskShellTitle');
-        link.href = `/task-shell.html?session=${encodeURIComponent(options.getSessionId?.() || '')}`;
-        link.style.display = 'block'; link.style.padding = '8px'; menu.appendChild(link);
-      }).catch(() => {});
-    }
 
     return Object.freeze({ closeMenu, openMenu, rotateNativeContext, showContextLevel });
   }

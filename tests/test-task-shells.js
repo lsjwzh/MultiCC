@@ -107,7 +107,7 @@ test('F01 F03: creation failure and restart retain target and error; same-key re
   reopened.close();
 });
 
-test('S01 S02 S03: project boundary, detach preserves tasks, disabled experiment rejects writes', async t => {
+test('S01 S02 S03: project boundary and detach preserve tasks', async t => {
   const f = fixture(t);
   const first = await f.runtime.send(f.a.id, input('one'));
   const other = f.runtime.open('other');
@@ -116,9 +116,6 @@ test('S01 S02 S03: project boundary, detach preserves tasks, disabled experiment
   f.runtime.remove(f.a.id);
   assert.ok(f.store.get('task', first.taskId));
   assert.equal(f.runtime.view(f.b.id).tasks.length, 1);
-  const disabled = createTaskShellRuntime({ ...f.ports, enabled: () => false });
-  await assert.rejects(disabled.send(f.b.id, input('disabled')), { code: 'experiment_disabled' });
-  assert.equal(disabled.view(f.b.id).tasks.length, 1);
 });
 
 test('I03: unmanaged delivery is rejected; original-task host continuations and validated receipts pass', async t => {
@@ -188,4 +185,72 @@ test('missing experiment state blocks native writes only for experiment-owned ex
   assert.equal(host.guardAdmission('a', 'ordinary', {}), null);
   assert.throws(() => host.contextSeed(sid, '', true), { code: 'task_shell_state_unavailable' });
   host.close();
+});
+
+test('adoption preserves native identity/history and continues through a receipt without a new execution', async t => {
+  const f = fixture(t);
+  f.records.get('a').cli = 'zcode';
+  f.records.get('a').cliSessionId = 'sess_real_native';
+  f.histories.set('a', [
+    { id: 'u1', role: 'user', content: 'old question', taskId: 'tsk_old' },
+    { id: 'a1', role: 'assistant', content: 'old result', taskId: 'tsk_old' },
+  ]);
+  const before = structuredClone({ record: f.records.get('a'), history: f.histories.get('a') });
+  const task = f.runtime.adopt(f.a.id, 'a');
+  assert.equal(task.id, 'tsk_old');
+  assert.equal(task.sessionId, 'a');
+  assert.equal(f.runtime.adopt(f.a.id, 'a').id, task.id);
+  assert.equal(f.runtime.view(f.a.id).defaultTaskId, task.id);
+  const sent = await f.runtime.send(f.a.id, input('continue-old', task.id));
+  assert.equal(sent.sessionId, 'a');
+  assert.equal(sent.decision, 'continue');
+  assert.equal(f.creations.length, 0);
+  assert.equal(f.sends[0].opts.taskShellReceiptId, sent.receiptId);
+  assert.deepEqual({ record: f.records.get('a'), history: f.histories.get('a') }, before);
+  const fork = await f.runtime.send(f.a.id, input('independent-work', task.id));
+  assert.equal(fork.decision, 'fork');
+  assert.notEqual(fork.sessionId, 'a');
+  assert.ok(f.sends.at(-1).opts.taskContextSeed.includes('old result'));
+});
+
+test('adoption preserves a pending question identity and rejects stale controls', async t => {
+  const f = fixture(t);
+  const pending = { taskId: 'tsk_pending', requestId: 'question1', turnId: 'turn1' };
+  f.records.get('a').taskState = { pendingUserInput: pending };
+  f.statuses.set('a', { busy: true, turnId: pending.turnId, pending });
+  const task = f.runtime.adopt(f.a.id, 'a');
+  assert.equal(task.id, pending.taskId);
+  await assert.rejects(f.runtime.send(f.a.id, input('old-answer', task.id, { intent: 'answer', requestId: 'old', turnId: 'turn1' })), { code: 'stale_control' });
+  const answer = await f.runtime.send(f.a.id, input('answer', task.id, { intent: 'answer', requestId: pending.requestId, turnId: pending.turnId }));
+  assert.equal(answer.sessionId, 'a');
+  assert.equal(f.creations.length, 0);
+  assert.equal(f.runtime.guardAdmission('a', 'old durable message', { receivedAt: task.createdAt - 1 }), null);
+  assert.equal(f.runtime.guardAdmission('a', 'new bypass', { receivedAt: task.createdAt + 1 }).code, 'task_shell_route_required');
+});
+
+test('missing or zero legacy switch cannot disable the host', t => {
+  const f = fixture(t), previous = process.env.MULTICC_TASK_SHELLS;
+  t.after(() => { if (previous === undefined) delete process.env.MULTICC_TASK_SHELLS; else process.env.MULTICC_TASK_SHELLS = previous; });
+  for (const value of [undefined, '0']) {
+    if (value === undefined) delete process.env.MULTICC_TASK_SHELLS; else process.env.MULTICC_TASK_SHELLS = value;
+    const host = createTaskShellHost({ file: f.file, records: f.records, loadHistory: id => f.histories.get(id) || [] });
+    try { assert.equal(host.open('a').enabled, true); } finally { host.close(); }
+  }
+});
+
+test('goal limits survive normalized receipt retry without changing the message key', async t => {
+  let fail = true;
+  const seen = [];
+  const f = fixture(t, { send: async (_id, _text, options) => {
+    seen.push(options);
+    if (fail) throw new Error('response lost');
+    return { ok: true };
+  } });
+  await assert.rejects(f.runtime.send(f.a.id, input('goal', null, { goal: true, goalLimits: { maxRounds: 4, maxBudget: 1000 } })));
+  const receipt = f.store.list('receipt')[0];
+  fail = false;
+  await f.runtime.retry(f.a.id, receipt.id);
+  assert.deepEqual(seen[0].goalLimits, { maxRounds: 4, maxBudget: 1000 });
+  assert.deepEqual(seen[1].goalLimits, seen[0].goalLimits);
+  assert.equal(seen[1].idempotencyKey, seen[0].idempotencyKey);
 });

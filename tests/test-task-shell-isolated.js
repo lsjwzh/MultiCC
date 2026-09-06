@@ -142,12 +142,32 @@ const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'ut
     assert.equal(resumed.taskId, cancelTask.taskId);
     await wait(() => rows().filter(r => r.sessionId === cancelTask.sessionId).length === 2, 'cancelled idle task did not resume');
     await wait(async () => (await api(`/api/task-shells/${sa.id}/tasks/${cancelTask.taskId}`)).messages.some(m => m.role === 'assistant' && String(m.content).includes('SHELL_COMPLETED_EVIDENCE')), 'resumed task did not complete');
+    // Existing App transport enters the same shell runtime and keeps a stable
+    // execution/native identity when the adopted source is idle.
+    const source = await api(`/api/directories/${directory.id}/sessions`, { cli: 'codex', kind: 'chat', label: 'Existing conversation' });
+    const appEvents = [];
+    socket = new WebSocket(base.replace('http', 'ws') + `/ws/chat?session=${source.id}&token=${token}`);
+    socket.on('message', data => appEvents.push(JSON.parse(String(data))));
+    await new Promise((resolve, reject) => { socket.once('open', resolve); socket.once('error', reject); });
+    const appInput = { type: 'user_message', taskShell: true, text: 'ADOPT_SOURCE', clientMsgId: 'app-source' };
+    socket.send(JSON.stringify(appInput));
+    const routed = await wait(() => appEvents.find(e => e.type === 'task_shell_routed'), 'App input did not enter shell');
+    assert.equal(routed.sessionId, source.id);
+    await wait(async () => (await api(`/api/task-shells/${routed.shellId}/tasks/${routed.taskId}`)).messages.some(m => m.role === 'assistant'), 'adopted source did not finish');
+    socket.send(JSON.stringify(appInput));
+    await wait(() => appEvents.filter(e => e.type === 'task_shell_routed').length === 2, 'App retry did not acknowledge');
+    assert.equal(rows().filter(r => r.sessionId === source.id).length, 1, 'same App message must not execute twice');
+    const adopted = await api('/api/task-shells', { sessionId: source.id });
+    assert.equal(adopted.defaultTaskId, routed.taskId);
+    assert.equal(adopted.tasks[0].adopted, true);
+    socket.close(); socket = null;
     await stop();
     await start('0');
-    const after = await api(`/api/task-shells/${sa.id}`); assert.equal(after.enabled, false); assert.equal(after.tasks.length, 4);
+    const after = await api(`/api/task-shells/${sa.id}`); assert.equal((await api('/api/task-shells/config')).enabled, true); assert.equal(after.tasks.length, 4);
     assert.ok((await api(`/api/task-shells/${sa.id}/tasks/${third.taskId}`)).messages.length >= 2);
-    await api(`/api/task-shells/${sa.id}/messages`, { text: 'disabled', clientMsgId: 'disabled' }, 403);
-    console.log('PASS task-shell isolated: concurrent fork, stable replay, independent worktree/native identity, formal history, WS guard, multi-source seed, restart/disabled read');
+    const alwaysOn = await api(`/api/task-shells/${sa.id}/messages`, { text: 'ALWAYS_ON', clientMsgId: 'always-on' });
+    await wait(async () => (await api(`/api/task-shells/${sa.id}/tasks/${alwaysOn.taskId}`)).messages.some(m => m.role === 'assistant'), 'permanent task route did not execute');
+    console.log('PASS task-shell isolated: concurrent fork, stable replay, independent worktree/native identity, formal history, WS guard, multi-source seed, restart/permanent routing');
   } catch (error) { console.error(logs); throw error; }
   finally { socket?.terminate(); if (!fs.existsSync(release)) fs.writeFileSync(release, 'done'); await stop(); fs.rmSync(root, { recursive: true, force: true }); }
 })().catch(error => { console.error(error.stack); process.exitCode = 1; });

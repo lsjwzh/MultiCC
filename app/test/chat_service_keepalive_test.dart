@@ -351,4 +351,65 @@ void main() {
       });
     },
   );
+  test(
+    'shell sends retain their key across reconnect and follow the routed execution',
+    () async {
+      await setupSettings();
+      fakeAsync((async) {
+        final (service, channels) = makeService();
+        final events = <ChatEvent>[];
+        service.events.listen(events.add);
+        service.connect();
+        async.flushMicrotasks();
+        channels.last.incoming.add(
+          jsonEncode({
+            'type': 'system',
+            'subtype': 'init',
+            'is_streaming': false,
+            'session': 'chat one',
+            'taskShell': true,
+            'turnId': 'turn-original',
+          }),
+        );
+        final id = service.send('independent work');
+        final original = jsonDecode(channels.last.sent.last) as Map;
+        expect(original['taskShell'], isTrue);
+        expect(original['clientMsgId'], id);
+        expect(service.send('must not duplicate'), isNull);
+        service.connect();
+        async.flushMicrotasks();
+        expect(jsonDecode(channels.last.sent.last), original);
+        channels.last.incoming.add(
+          jsonEncode({
+            'type': 'task_shell_routed',
+            'sessionId': 'task-fork',
+            'receiptId': 'sr_one',
+            'clientMsgId': id,
+            'taskId': 'tsk_fork',
+          }),
+        );
+        async.flushMicrotasks();
+        expect(service.executionSessionName, 'task-fork');
+        expect(events.any((e) => e.type == 'task_shell_routed'), isTrue);
+        channels.last.incoming.add(
+          jsonEncode({
+            'type': 'system',
+            'subtype': 'init',
+            'is_streaming': true,
+            'session': 'task-fork',
+            'taskShell': true,
+            'turnId': 'fork-turn',
+          }),
+        );
+        service.cancel();
+        final cancel = jsonDecode(channels.last.sent.last) as Map;
+        expect(cancel['taskShell'], isTrue);
+        expect(cancel['turnId'], 'fork-turn');
+        service.connect();
+        async.flushMicrotasks();
+        expect(jsonDecode(channels.last.sent.last), cancel);
+        service.dispose();
+      });
+    },
+  );
 }
