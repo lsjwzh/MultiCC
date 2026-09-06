@@ -4,6 +4,7 @@
   "private": true,
   "version": "1.6.10",
   "description": "MultiCC desktop shell — supervises the local MultiCC server and hosts its web UI",
+  "homepage": "https://github.com/lsjwzh/MultiCC#readme",
   "main": "main.js",
   "author": "MultiCC Team",
   "license": "SEE LICENSE IN ../LICENSE",
@@ -73,7 +74,7 @@
         { "target": "AppImage", "arch": ["x64"] },
         { "target": "deb", "arch": ["x64"] }
       ],
-      "artifactName": "multicc-desktop-${version}-linux-${arch}.${ext}"
+      "artifactName": "multicc-desktop-${version}-linux-x64.${ext}"
     },
     "publish": null
   }
