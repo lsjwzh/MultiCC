@@ -944,6 +944,8 @@ function createChatTurnEngine(deps) {
   }
 
   async function admitChatWork(sessionName, text, opts = {}) {
+    const shellGuard = taskContextHost?.guardAdmission?.(sessionName, text, opts);
+    if (shellGuard?.ok === false) { chatBroadcast(sessionName, { type: 'error', ...shellGuard, error: shellGuard.code }); return shellGuard; }
     const performAdmission = async () => {
       const experimentalRuntime = getExperimentalTuiChatRuntime?.();
       if (experimentalRuntime?.owns(persistedSessions.get(sessionName))) {
@@ -1002,6 +1004,8 @@ function createChatTurnEngine(deps) {
   }
 
   function runChatTurn(sessionName, text, opts = {}) {
+    const shellGuard = taskContextHost?.guardAdmission?.(sessionName, text, opts);
+    if (shellGuard?.ok === false) return false;
     const persisted = persistedSessions.get(sessionName);
     if (!persisted) {
       console.warn(`[multicc/chat] runChatTurn: no persisted record for ${sessionName}`);
@@ -1342,7 +1346,7 @@ function createChatTurnEngine(deps) {
       text,
     } : requestedTask;
     const identityLocked = !!requestedTask.id && (requestedTask.start !== true
-      || ['task-board', 'commander', 'code-reference'].includes(requestedTask.source));
+      || ['task-board', 'commander', 'code-reference', 'task-shell'].includes(requestedTask.source));
     bindTurnTask(turn, {
       ...messageTask,
       id: nextTaskId,
@@ -1492,7 +1496,7 @@ function createChatTurnEngine(deps) {
         // record) so it is one-shot by construction — nothing to consume, and a
         // turn that never reached the provider simply gets it again.
         opts: {
-          isFirstTurn, goalLimits, taskContextSeed: opts.taskContextSeed,
+          isFirstTurn, goalLimits, taskContextSeed: taskContextHost?.taskShellContextSeed?.(sessionName, opts.taskContextSeed, isFirstTurn) ?? opts.taskContextSeed,
           mode: cs.cli === 'claude' ? 'streaming' : 'per-turn',
         },
         deps: {
@@ -2756,6 +2760,10 @@ function createChatTurnEngine(deps) {
         //   admin/destructive ops (clear_history, etc.) — shares never get those.
         if (ws._sharePerm === 'view') return;
         if (ws._sharePerm === 'operate' && !['user_message', 'cancel', 'typing'].includes(msg.type)) return;
+        if (taskContextHost?.ownsTaskShell?.(sessionName) && msg.type !== 'typing') {
+          sendWs(ws, { type: 'error', code: 'task_shell_route_required', error: '请从任务会话入口操作此实验任务。' });
+          return;
+        }
 
         // Typing signal: user is composing → cancel pending intent classify
         if (msg.type === 'typing') {

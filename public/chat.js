@@ -2506,6 +2506,7 @@ if (!TASK_MODE) {
 if (HISTORY_ARCHIVE) document.getElementById('clear-ctx-wrap').style.display = 'none';
 window.MultiCCChatContextControls.create({
   document, window, translate: tt,
+  allowTaskShell: !TASK_MODE && !HISTORY_ARCHIVE,
   getIsStreaming: () => isStreaming,
   addSystemMsg,
   isConnected: () => ws?.readyState === WebSocket.OPEN,
