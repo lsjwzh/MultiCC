@@ -70,7 +70,7 @@ function httpGet(url) {
 function makeSupervisor(overrides) {
   const phases = [];
   const sup = createBackendSupervisor({
-    spawn,
+    spawn: overrides.spawn || spawn,
     execPath: process.execPath,
     serverEntry: FIXTURE,
     buildEnv: ({ port }) => ({ ...process.env, ...overrides.env, PORT: String(port) }),
@@ -280,6 +280,46 @@ test('supervisor: never-ready child is killed, failure reported with tail', asyn
   // No zombie: the stuck child was torn down with the whole tree.
   await waitFor(() => !pidAlive(st.childPid), { what: 'stuck child killed' });
   await sup.stop();
+});
+
+test('supervisor: stop() after an already-exited never-ready child returns promptly', async () => {
+  const dir = tmpdir('desktop-notready-stop-');
+  const port = await reservePort();
+  let captured = null;
+  let exitedResolve;
+  const exited = new Promise(resolve => { exitedResolve = resolve; });
+  const { sup, phases } = makeSupervisor({
+    env: { READY_DELAY_MS: String(10 * 60_000) }, // stays 503 essentially forever
+    logsDir: dir,
+    runtimeInfoFile: path.join(dir, 'desktop-runtime.json'),
+    spawn: (cmd, args, opts) => {
+      const child = spawn(cmd, args, opts);
+      captured = child;
+      child.once('exit', () => exitedResolve());
+      return child;
+    },
+    opts: { healthTimeoutMs: 1_200, drainGraceMs: 20_000, restartBackoffMs: 60_000 },
+  });
+  await sup.start({ port });
+  await waitFor(() => phases.some(p => p.phase === 'failed'), { timeoutMs: 15_000, what: 'not-ready failure' });
+  assert.equal(sup.getState().failure.reason, 'not-ready');
+
+  // Order matters: let the child's exit event land BEFORE stop() runs, which is
+  // what ubuntu-latest does naturally and macOS usually does not. A signal
+  // death leaves exitCode null forever and killed false (the tree is killed
+  // with process.kill(-pid), not child.kill()), so a liveness check built on
+  // those two fields mistakes the corpse for a live child and parks on the
+  // drain grace timer — unref'd, so the loop drained with stop() still pending
+  // and node:test cancelled the rest of this file.
+  await Promise.race([exited, waitFor(() => captured && captured.signalCode !== null, { timeoutMs: 10_000, what: 'child exit' })]);
+  assert.equal(captured.signalCode, 'SIGKILL', 'tree kill is a signal death');
+  assert.equal(captured.exitCode, null, 'signal death leaves exitCode null');
+
+  const startedAt = Date.now();
+  await sup.stop();
+  const elapsed = Date.now() - startedAt;
+  assert.ok(elapsed < 5_000, `stop() must not park on the drain grace timer (took ${elapsed}ms)`);
+  assert.equal(sup.getState().state, 'stopped');
 });
 
 // ── integration: orphan reclaim ─────────────────────────────────────────────
