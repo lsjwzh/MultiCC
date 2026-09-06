@@ -630,7 +630,14 @@ test('desktop packaging config: pinned versions, stable names, user-scope instal
   assert.equal(b.extraResources[0].to, 'app-server');
   assert.match(b.mac.artifactName, /multicc-desktop-\$\{version\}-macos-\$\{arch\}/);
   assert.match(b.win.artifactName, /multicc-desktop-\$\{version\}-windows-\$\{arch\}/);
-  assert.match(b.linux.artifactName, /multicc-desktop-\$\{version\}-linux-\$\{arch\}/);
+  // Linux expands ${arch} to the distro spelling (deb -> amd64, AppImage ->
+  // x86_64), which fails release-artifacts.js ARTIFACT_NAME_RE and contradicts
+  // docs/desktop.md, so the pattern spells x64 — and must stay x64-only.
+  assert.match(b.linux.artifactName, /multicc-desktop-\$\{version\}-linux-x64\.\$\{ext\}/);
+  for (const t of b.linux.target) {
+    assert.deepEqual(t.arch, ['x64'], 'linux artifactName hardcodes x64');
+  }
+  assert.ok(pkg.homepage, 'electron-builder aborts the deb target without a project homepage');
   assert.equal(b.mac.identity, null, 'unsigned by default; CI overrides with secrets');
   assert.equal(b.nsis.oneClick, true);
   assert.equal(b.nsis.perMachine, false, 'per-user install needs no admin rights');
