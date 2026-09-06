@@ -84,13 +84,43 @@ jobs:
       # rebuilt against Electron's ABI or require() fails at first Database().
       - name: Rebuild native modules for Electron ABI
         shell: bash
+        working-directory: desktop
         run: |
           set -euo pipefail
-          desktop/node_modules/.bin/electron-rebuild \
-            --module-dir desktop/.staging/app-server \
+          # @electron/rebuild v4 names the Electron version flag --version;
+          # parseArgs rejects unknown options before any rebuild starts. Run from
+          # desktop/ so the CLI finds its project root (and the pinned electron
+          # copy) next to the toolchain instead of at the repo root.
+          node_modules/.bin/electron-rebuild \
+            --module-dir .staging/app-server \
             --force --which-module better-sqlite3 \
-            --electron-version "$ELECTRON_VERSION" \
+            --version "$ELECTRON_VERSION" \
             --dist-url https://electronjs.org/headers
+          # electron-rebuild exits 0 after printing "No native modules found", so
+          # a rebuild that did nothing would ship a Node-ABI better-sqlite3 and
+          # crash the packaged server at the first Database() call.
+          node -e '
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const mod = path.join(".staging", "app-server", "node_modules", "better-sqlite3");
+          if (!fs.existsSync(mod)) {
+            console.error("::error::staged tree has no better-sqlite3 to rebuild");
+            process.exit(1);
+          }
+          const found = [];
+          (function walk(dir) {
+            for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+              const p = path.join(dir, entry.name);
+              if (entry.isDirectory()) { if (entry.name !== "src" && entry.name !== "deps") walk(p); }
+              else if (entry.name.endsWith(".node")) found.push(p);
+            }
+          })(mod);
+          if (!found.length) {
+            console.error("::error::better-sqlite3 has no native binding — the Electron ABI rebuild produced nothing");
+            process.exit(1);
+          }
+          console.log(`electron ABI binding(s): ${found.join(", ")}`);
+          '
 
       - name: Build desktop installers (macOS signing if secrets present)
         shell: bash

@@ -415,6 +415,53 @@ test('desktop-bundle-server stages a runnable server tree without the APK', { ti
     require('../src/memory/builtin-rules').DOCS_REGISTRY_RULE);
 });
 
+// A stub repo root is enough for the staging script: it copies these entries and
+// only reaches the runtime sanity gate after a successful install.
+function stubRepoRoot(dir) {
+  fs.writeFileSync(path.join(dir, 'package.json'),
+    `${JSON.stringify({ name: 'stub', version: '1.0.0', dependencies: {} }, null, 2)}\n`);
+  for (const rel of ['server.js', 'src/paths.js', 'public/chat.html', 'scripts/multicc-router-mcp.js',
+    'plugins/bridges/wechat-ilink.js', 'skills/multicc-artifact/references/registration-rule.md']) {
+    const file = path.join(dir, rel);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '');
+  }
+  return dir;
+}
+
+function stageWithStubNpm(body) {
+  const root = stubRepoRoot(tmpdir('desktop-stage-root-'));
+  const bin = tmpdir('desktop-stage-bin-');
+  const npm = path.join(bin, process.platform === 'win32' ? 'npm.cmd' : 'npm');
+  fs.writeFileSync(npm, `#!/bin/sh\n${body}\n`);
+  fs.chmodSync(npm, 0o755);
+  return spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'desktop-bundle-server.js'),
+    '--out', path.join(root, 'staged'), '--repo-root', root, '--install'], {
+    encoding: 'utf8',
+    env: { ...process.env, PATH: [bin, ...process.env.PATH.split(path.delimiter)].join(path.delimiter) },
+  });
+}
+
+test('desktop-bundle-server names why npm did not complete', { timeout: 60_000 }, () => {
+  if (process.platform === 'win32') return; // the stub npm is a POSIX shell script
+  const killed = stageWithStubNpm('kill -TERM $$');
+  assert.equal(killed.status, 1);
+  // Signal death leaves status null; "failed with status null" named no cause and
+  // sent three desktop release runs chasing an OOM that never happened.
+  assert.match(killed.stderr, /npm install never completed \(killed by signal SIGTERM\)/);
+  const exited = stageWithStubNpm('exit 3');
+  assert.equal(exited.status, 1);
+  assert.match(exited.stderr, /npm install failed with status 3/);
+});
+
+test('desktop-bundle-server spawns npm through a shell on Windows', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'scripts', 'desktop-bundle-server.js'), 'utf8');
+  // Node >= 20.12 rejects .cmd/.bat without shell: true, so windows-latest never
+  // even started the install. Only that runner can exercise it; pin the source.
+  assert.match(src, /const win = process\.platform === 'win32';/);
+  assert.match(src, /shell: win,/);
+});
+
 // ── gates: MULTICC_DESKTOP server-side behavior ─────────────────────────────
 
 function fakeApp() {
@@ -599,6 +646,10 @@ test('desktop-release workflow: three native runners, attaches (never creates) t
   assert.match(wf, /workflow_dispatch:/);
   assert.match(wf, /--publish never/);
   assert.match(wf, /electron-rebuild/);
+  // @electron/rebuild v4 parses flags with node:util parseArgs: the Electron
+  // version flag is --version, and an unknown option aborts before any rebuild.
+  assert.match(wf, /--version "\$ELECTRON_VERSION"/);
+  assert.doesNotMatch(wf, /--electron-version/);
   assert.match(wf, /gh release upload/);
   // Comments explain the rule; the steps themselves must follow it.
   const wfCode = wf.replace(/^\s*#.*$/gm, '');
