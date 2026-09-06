@@ -12,6 +12,7 @@ const TERMINAL_OPERATION_STATES = new Set([
 ]);
 const TOOL_NAMES = new Set([
   'wait_for_user_answer', 'request_user_input',
+  'get_task_context',
   'wait_for_external_result', 'get_external_wait', 'cancel_external_wait',
   'route_task', 'dispatch_master', 'dispatch_slave', 'dispatch_cancel',
   'dispatch_status',
@@ -175,6 +176,7 @@ function createRouterToolRuntime({
   pollIntervalMs = 250,
   capabilityTtlMs = DEFAULT_CAPABILITY_TTL_MS,
   resolveContext = () => null,
+  getTaskContext = async () => null,
   onAdmitted = async () => {},
   recordUserInput,
   registerExternalWait,
@@ -1198,6 +1200,12 @@ function createRouterToolRuntime({
       throw new RouterToolError('invalid_arguments', 'tool arguments must be an object');
     }
     const context = contextFor(token);
+    if (tool === 'get_task_context') {
+      rejectUnknownArguments(args, new Set());
+      const result = await getTaskContext(context);
+      if (!result) throw new RouterToolError('task_context_unavailable', 'task context is unavailable', 404);
+      return result;
+    }
     if (tool === 'wait_for_user_answer' || tool === 'request_user_input') {
       return requestUserInput(context, args);
     }

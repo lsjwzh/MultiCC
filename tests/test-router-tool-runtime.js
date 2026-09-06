@@ -169,6 +169,21 @@ test('request_user_input validates bounded choices without dispatching work', as
   assert.equal(admissions.length, 0);
 });
 
+test('get_task_context is read-only, argument-free and scoped to the caller capability', async t => {
+  const calls = [];
+  const { runtime } = fixture(t, { getTaskContext: async context => {
+    calls.push(context);
+    return { ok: true, current_task_id: context.taskId, task_ids: ['task-old'], context: 'bounded' };
+  } });
+  const capability = runtime.issueContext({ sessionId: 'caller', turnId: 'turn-context', taskId: 'task-current' });
+  const result = await runtime.execute(capability, 'get_task_context', {});
+  assert.equal(result.current_task_id, 'task-current');
+  assert.equal(calls[0].sessionId, 'caller');
+  await assert.rejects(runtime.execute(capability, 'get_task_context', { task_id: 'task-old' }), {
+    code: 'invalid_arguments',
+  });
+});
+
 test('external callback wait is session-bound, at-most-once, and never exposes raw injection controls', async t => {
   const { externalWaitRegistrations, runtime } = fixture(t);
   const capability = runtime.issueContext({

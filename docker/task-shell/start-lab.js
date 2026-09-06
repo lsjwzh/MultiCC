@@ -53,6 +53,6 @@ async function seed() {
   fs.renameSync(seedFile + '.tmp', seedFile);
   console.log('\n[Docker lab] Ready. Password: multicc-docker-lab');
   for (const shell of shells) console.log(`${shell.label}: http://127.0.0.1:${process.env.MULTICC_LAB_PORT || 3300}/task-shell.html?shell=${shell.shellId}`);
-  console.log('Send LAB_WAIT 30 on its own line to exercise busy forks or cancellation.');
+  console.log('Send LAB_WAIT 30 on its own line to exercise current-task queueing or cancellation.');
 }
 seed().catch(error => { failed = true; console.error('[Docker lab]', error); stop(); });

@@ -4,25 +4,24 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createTaskShellStore } = require('../src/task-shell/store');
 const { createTaskShellRuntime } = require('../src/task-shell/runtime');
-const { snapshotHistory, verifySnapshot } = require('../src/task-shell/context');
+const { renderLazyContextPrompt, snapshotHistory, verifySnapshot } = require('../src/task-shell/context');
 const { createTaskShellHost } = require('../src/task-shell/host');
 
 const { fixture } = require('./helpers/task-shell');
 const input = (key, taskId = null, extra = {}) => ({ clientMsgId: key, taskId, intent: 'work', text: key, ...extra });
 
-test('R01 R02: idle continues; occupied forks with new execution identity and no merge', async t => {
+test('R01 R02: idle and occupied work both continue the server-authoritative current task', async t => {
   const f = fixture(t);
   const first = await f.runtime.send(f.a.id, input('first'));
-  const fork = await f.runtime.send(f.a.id, input('parallel', first.taskId));
-  assert.notEqual(fork.taskId, first.taskId);
-  const forkTask = f.store.get('task', fork.taskId);
-  assert.equal(forkTask.parentTaskId, first.taskId);
-  assert.notEqual(forkTask.sessionId, f.store.get('task', first.taskId).sessionId);
-  f.statuses.set(forkTask.sessionId, { busy: false });
-  const continued = await f.runtime.send(f.a.id, input('continue', fork.taskId));
-  assert.equal(continued.taskId, fork.taskId);
+  const queued = await f.runtime.send(f.a.id, input('parallel', first.taskId));
+  assert.equal(queued.taskId, first.taskId);
+  assert.equal(queued.decision, 'queued');
+  assert.equal(f.sends.at(-1).opts.originContinue, true);
+  f.statuses.set(first.sessionId, { busy: false });
+  const continued = await f.runtime.send(f.a.id, input('continue'));
+  assert.equal(continued.taskId, first.taskId);
   assert.equal(f.sends.at(-1).opts.originContinue, true, 'at-rest continuation must resume an E/W scheduler rather than park behind it');
-  assert.equal(f.creations.length, 2);
+  assert.equal(f.creations.length, 1);
 });
 
 test('R03 R04 R05: atomic reservations across shells and request-key isolation', async t => {
@@ -31,7 +30,7 @@ test('R03 R04 R05: atomic reservations across shells and request-key isolation',
   f.runtime.link(f.b.id, first.taskId);
   f.statuses.clear();
   const [a, b] = await Promise.all([f.runtime.send(f.a.id, input('same-key', first.taskId)), f.runtime.send(f.b.id, input('same-key', first.taskId))]);
-  assert.notEqual(a.taskId, b.taskId);
+  assert.equal(a.taskId, b.taskId);
   assert.equal(a.taskId, first.taskId);
   const repeats = await Promise.all([f.runtime.send(f.b.id, input('same-key', first.taskId)), f.runtime.send(f.b.id, input('same-key', first.taskId))]);
   assert.equal(repeats[0].taskId, b.taskId);
@@ -57,17 +56,25 @@ test('C01 C02: immutable completed exchanges, provenance and tools; no active or
   assert.equal(verifySnapshot({ ...snapshot, messages: [] }, snapshot.hash), false);
 });
 
+test('lazy context prompt requires evidence on demand and preserves side-effect ownership', () => {
+  const prompt = renderLazyContextPrompt('tsk_current');
+  assert.match(prompt, /get_task_context/);
+  assert.match(prompt, /不要猜测缺失上下文/);
+  assert.match(prompt, /副作用操作/);
+  assert.match(prompt, /tsk_current/);
+});
+
 test('C03 C04: explicitly selected contexts are frozen; unfinished dependencies cannot run', async t => {
   const f = fixture(t);
   const a = await f.runtime.send(f.a.id, input('one'));
-  const b = await f.runtime.send(f.a.id, input('two', a.taskId));
+  const b = await f.runtime.send(f.a.id, input('two', null, { newTask: true }));
   for (const r of [a, b]) {
     const task = f.store.get('task', r.taskId);
     f.histories.set(task.sessionId, [{ id: 'u-' + r.taskId, role: 'user', content: 'question' }, { id: 'a-' + r.taskId, role: 'assistant', content: r.taskId }]);
   }
   await assert.rejects(f.runtime.send(f.a.id, input('dependent', null, { dependsOn: [a.taskId] })), { code: 'dependency_not_ready' });
   f.statuses.clear();
-  const c = await f.runtime.send(f.a.id, input('three', null, { contextTaskIds: [a.taskId, b.taskId] }));
+  const c = await f.runtime.send(f.a.id, input('three', null, { newTask: true, contextTaskIds: [a.taskId, b.taskId] }));
   const task = f.store.get('task', c.taskId);
   assert.equal(task.snapshotIds.length, 2);
   assert.ok(f.sends.at(-1).opts.taskContextSeed.includes(a.taskId));
@@ -162,8 +169,8 @@ test('reserved answer blocks a simultaneous different answer before asynchronous
 test('bounded concurrent work retains a capacity-rejected receipt for same-target retry', async t => {
   const f = fixture(t, { maxConcurrent: 2 });
   await f.runtime.send(f.a.id, input('one'));
-  await f.runtime.send(f.a.id, input('two'));
-  await assert.rejects(f.runtime.send(f.a.id, input('three')), { code: 'task_shell_capacity' });
+  await f.runtime.send(f.a.id, input('two', null, { newTask: true }));
+  await assert.rejects(f.runtime.send(f.a.id, input('three', null, { newTask: true })), { code: 'task_shell_capacity' });
   const receipt = f.store.list('receipt').find(r => r.payload.text === 'three');
   assert.equal(f.creations.length, 2);
   f.statuses.clear();
@@ -207,10 +214,54 @@ test('adoption preserves native identity/history and continues through a receipt
   assert.equal(f.creations.length, 0);
   assert.equal(f.sends[0].opts.taskShellReceiptId, sent.receiptId);
   assert.deepEqual({ record: f.records.get('a'), history: f.histories.get('a') }, before);
-  const fork = await f.runtime.send(f.a.id, input('independent-work', task.id));
-  assert.equal(fork.decision, 'fork');
-  assert.notEqual(fork.sessionId, 'a');
-  assert.ok(f.sends.at(-1).opts.taskContextSeed.includes('old result'));
+  const queued = await f.runtime.send(f.a.id, input('additional-work', task.id));
+  assert.equal(queued.decision, 'queued');
+  assert.equal(queued.sessionId, 'a');
+  assert.equal(f.creations.length, 0);
+});
+
+test('current task advances only through explicit new work or settled attribution', async t => {
+  const f = fixture(t);
+  const first = await f.runtime.send(f.a.id, input('first'));
+  f.statuses.set(first.sessionId, { busy: false });
+  const second = await f.runtime.send(f.a.id, input('second', null, { newTask: true }));
+  assert.notEqual(second.taskId, first.taskId);
+  assert.equal(f.runtime.view(f.a.id).currentTaskId, second.taskId);
+  f.histories.set(second.sessionId, [
+    { id: 'u-next', role: 'user', content: 'different topic', taskId: 'tsk_classified', turnId: 'turn-next' },
+    { id: 'a-next', role: 'assistant', content: 'result', taskId: 'tsk_classified', turnId: 'turn-next' },
+  ]);
+  const settled = f.runtime.settleAttribution(second.sessionId, second.receiptId, {
+    taskId: 'tsk_classified', taskName: 'Classified task', relation: 'new',
+  });
+  assert.equal(settled.changed, true);
+  assert.equal(f.runtime.view(f.a.id).currentTaskId, 'tsk_classified');
+  assert.equal(f.store.get('task', 'tsk_classified').snapshotIds.length, 1);
+});
+
+test('lazy shell context refill returns provenance and clears the displayed token saving', async t => {
+  const f = fixture(t);
+  const first = await f.runtime.send(f.a.id, input('first'));
+  f.histories.set(first.sessionId, [
+    { id: 'u1', role: 'user', content: 'old requirement', taskId: first.taskId, turnId: 't1' },
+    { id: 'a1', role: 'assistant', content: 'old result', taskId: first.taskId, turnId: 't1' },
+  ]);
+  f.statuses.set(first.sessionId, { busy: false });
+  const second = await f.runtime.send(f.a.id, input('second', null, { newTask: true }));
+  assert.doesNotMatch(f.sends.at(-1).opts.taskContextSeed, /old result/,
+    'the lazy arm must not preload another task history');
+  const before = f.runtime.view(f.a.id).tokenSavings;
+  assert.ok(before.estimatedTokens > 0);
+  assert.equal(before.contextRefilled, false);
+  const refill = f.runtime.refillContext(second.sessionId, { receiptId: second.receiptId });
+  assert.deepEqual(refill.task_ids, [first.taskId]);
+  assert.match(refill.context, /old result/);
+  assert.deepEqual(f.runtime.refillContext(second.sessionId, { receiptId: second.receiptId }), refill,
+    'repeated read-only refill must be idempotent');
+  const after = f.runtime.view(f.a.id).tokenSavings;
+  assert.equal(after.contextRefilled, true);
+  assert.equal(after.estimatedTokens, 0);
+  assert.equal(after.originalEstimatedTokens, before.estimatedTokens);
 });
 
 test('adoption preserves a pending question identity and rejects stale controls', async t => {

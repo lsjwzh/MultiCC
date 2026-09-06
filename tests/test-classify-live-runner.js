@@ -7,7 +7,7 @@ const { createClassifyStateMachine } = require('../src/classify/state-machine');
 
 function fixture({
   cli = 'opencode', goal = '已识别任务', isStreaming = true, type = 'worker',
-  history = null, auxText = null,
+  history = null, auxText = null, taskShell = false, toolCalls = [],
 } = {}) {
   const record = {
     id: 's1', kind: 'chat', cli, type,
@@ -30,13 +30,15 @@ function fixture({
     claudeProc: cli === 'claude' ? null : liveChild,
     currentTask: { goal, phase: 'implementing' },
     _currentTaskId: 'task-1',
+    _taskShellReceiptId: taskShell ? 'sr-shell-turn' : null,
+    currentToolCalls: toolCalls,
   };
   const persistedSessions = new Map([['s1', record]]);
   const chatSessions = new Map([['s1', chatState]]);
   const observed = {
     enqueued: 0, enqueuedTasks: [], transitions: 0,
     transitionResults: [], transitionOptions: [], broadcasts: [], summaries: [],
-    boardReassignments: [], boardGroupLinks: [],
+    boardReassignments: [], boardGroupLinks: [], shellSettlements: [],
   };
   const auxQueue = {
     queue: [],
@@ -77,6 +79,12 @@ function fixture({
     getTaskContextHost: () => ({
       recordGoal() {},
       continues: (_state, previous, forceNew) => !!previous && !forceNew,
+      ownsTaskShell: () => taskShell,
+      taskShellRecentTasks: () => taskShell ? [
+        { taskId: 'task-1', taskName: '已识别任务' },
+        { taskId: 'task-older', taskName: '历史任务' },
+      ] : [],
+      settleTaskShellAttribution: (...args) => observed.shellSettlements.push(args),
     }),
     getTaskBoardRuntime: () => ({
       onTurnEnd() {},
@@ -343,6 +351,40 @@ test('identity-locked continuation ignores a malformed new-related model verdict
   assert.equal(h.record.taskState.taskId, 'task-1');
   assert.equal(h.observed.boardGroupLinks.length, 0);
   assert.equal(h.observed.boardReassignments.length, 0);
+});
+
+test('task-shell turn settles a new business task after a read-only response', async () => {
+  const h = fixture({
+    taskShell: true,
+    auxText: JSON.stringify({
+      taskName: '全新主题', phase: 'planning', relation: 'new', taskId: null,
+    }),
+  });
+  h.record.taskBoundTaskId = 'task-1';
+  h.chatState.currentUserText = '现在讨论一个全新主题';
+  h.machine.runClassifyNow(h.chatState, 's1', { turnId: 'turn-shell', admittedTaskId: 'task-1' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.notEqual(h.record.taskState.taskId, 'task-1');
+  assert.equal(h.observed.shellSettlements.length, 1);
+  assert.equal(h.observed.shellSettlements[0][1], 'sr-shell-turn');
+  assert.equal(h.observed.shellSettlements[0][2].taskName, '全新主题');
+});
+
+test('task-shell turn with a mutating tool cannot be moved after execution', async () => {
+  const h = fixture({
+    taskShell: true,
+    toolCalls: [{ name: 'apply_patch' }],
+    auxText: JSON.stringify({
+      taskName: '错误迁移目标', phase: 'implementing', relation: 'new', taskId: null,
+    }),
+  });
+  h.record.taskBoundTaskId = 'task-1';
+  h.chatState.currentUserText = '修改代码';
+  h.machine.runClassifyNow(h.chatState, 's1', { turnId: 'turn-write', admittedTaskId: 'task-1' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.record.taskState.taskId, 'task-1');
+  assert.equal(h.observed.shellSettlements[0][2].taskId, 'task-1');
+  assert.equal(h.observed.shellSettlements[0][2].relation, 'same');
 });
 
 test('delayed attribution with a superseded anchor cannot overwrite the newer task', () => {

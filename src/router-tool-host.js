@@ -31,6 +31,7 @@ function createRouterToolHost({
     recordRouterAdmission,
     cancelActiveTurn,
     onDispatchCancelled,
+    getTaskContext,
   } = {}) {
     runtime = createRouterToolRuntime({
       records,
@@ -78,6 +79,7 @@ function createRouterToolHost({
         });
       },
       recordUserInput,
+      getTaskContext: typeof getTaskContext === 'function' ? getTaskContext : async () => null,
       subscribeDispatchProgress,
       resolveContext: resolveContext || (sessionId => {
         const turn = activeTurnForSession(sessionId);

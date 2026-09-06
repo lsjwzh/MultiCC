@@ -1,7 +1,7 @@
 (function () {
   'use strict';
   const $ = id => document.getElementById(id), t = key => window.t(key);
-  let shellId, focused = '', detail = null, control = null, client, busy = false, timer, stopped = false;
+  let shellId, focused = '', detail = null, control = null, client, busy = false, timer, stopped = false, newTask = false;
   const params = new URLSearchParams(location.search);
   async function api(route, body, method = body === undefined ? 'GET' : 'POST') {
     const response = await fetch(route, { method, headers: { 'Content-Type': 'application/json' },
@@ -14,15 +14,9 @@
     return data;
   }
   function notice(text) { $('notice').textContent = text; }
-  function option(value, label) { const el = document.createElement('option'); el.value = value; el.textContent = label; return el; }
-  function fill(select, tasks, blank) {
-    const values = new Set([...select.selectedOptions].map(o => o.value));
-    select.replaceChildren(...(blank ? [option('', t(blank))] : []), ...tasks.map(task => option(task.id, task.title || task.id)));
-    for (const opt of select.options) opt.selected = values.has(opt.value);
-  }
   function inputMode(intent) {
     if (client?.pending()) return notice(t('taskShellRetryFirst'));
-    if (intent === 'work') control = null;
+    if (intent === 'work') { control = null; newTask = false; }
     else {
       if (!detail?.execution.turnId || !focused) return;
       control = { intent, taskId: focused, turnId: detail.execution.turnId,
@@ -38,6 +32,7 @@
     $('retry').disabled = busy;
     $('cancel').disabled = busy || pending || !detail?.execution.busy || !detail?.execution.turnId;
     $('steer').disabled = busy || pending || !detail?.execution.turnId || !!detail?.execution.pending;
+    $('new-task').disabled = busy || pending;
   }
   async function action(callback) {
     if (busy) return;
@@ -45,9 +40,9 @@
     try {
       const result = await callback();
       if (result?.taskId) {
-        focused = result.taskId; control = null; $('message').value = '';
+        focused = result.taskId; control = null; newTask = false; $('message').value = '';
         $('input-label').textContent = t('taskShellWork');
-        notice(t(result.decision === 'fork' ? 'taskShellForked' : 'taskShellAccepted'));
+        notice(t(result.decision === 'new' ? 'taskShellNewAccepted' : 'taskShellAccepted'));
       }
       await refresh();
     } catch (error) { notice(error.message); }
@@ -77,9 +72,7 @@
     if (!shellId || stopped) return;
     sessionStorage.setItem(`task-shell-focus:${shellId}`, focused);
     const view = await api(`/api/task-shells/${shellId}`);
-    fill($('tasks'), view.tasks, 'taskShellNew'); $('tasks').value = focused;
-    fill($('available'), view.availableTasks.filter(task => !view.tasks.some(linked => linked.id === task.id)), 'taskShellSelect');
-    fill($('references'), view.tasks, null);
+    focused = view.currentTaskId || focused;
     $('receipts').replaceChildren(...view.receipts.filter(receipt => receipt.status !== 'accepted').map(receipt => {
       const row = document.createElement('div'), retry = document.createElement('button');
       row.textContent = `${receipt.taskId} · ${receipt.error?.message || receipt.status} `;
@@ -93,6 +86,11 @@
     renderMessages(detail?.messages || []);
     $('state').textContent = detail ? `${detail.task.title} · ${detail.execution.status || (detail.execution.busy ? t('running') : t('idle'))}` : t('taskShellNew');
     $('origin').textContent = detail ? `${detail.task.parentTaskId ? t('taskShellFrom') + ' ' + detail.task.parentTaskId + ' · ' : ''}${t('taskShellReferences')}: ${detail.task.snapshotIds.length}` : '';
+    const savings = view.tokenSavings;
+    $('token-savings').hidden = !savings;
+    if (savings) $('token-savings').textContent = savings.contextRefilled
+      ? t('taskShellTokensRefilled', { tokens: Number(savings.originalEstimatedTokens || 0).toLocaleString() })
+      : t('taskShellTokensSaved', { tokens: Number(savings.estimatedTokens || 0).toLocaleString() });
     $('snapshot-details').hidden = !detail?.snapshots.length;
     $('snapshot-info').replaceChildren(...(detail?.snapshots || []).map(snapshot => {
       const row = document.createElement('p');
@@ -111,19 +109,18 @@
     }
     refreshButtons();
   }
-  $('tasks').onchange = () => { focused = $('tasks').value; control = null; detail = null; inputMode('work'); refresh().catch(e => notice(e.message)); };
-  $('attach').onclick = () => action(async () => {
-    const taskId = $('available').value; if (!taskId) return;
-    await api(`/api/task-shells/${shellId}/links`, { taskId }); focused = taskId;
-  });
   $('work').onclick = () => inputMode('work'); $('steer').onclick = () => inputMode('steer'); $('answer').onclick = () => inputMode('answer');
+  $('new-task').onclick = () => {
+    if (client?.pending() || busy) return;
+    control = null; newTask = true;
+    $('input-label').textContent = t('taskShellNewPrompt');
+    notice(t('taskShellNewReady'));
+    $('message').focus();
+  };
   $('composer').onsubmit = event => {
     event.preventDefault();
-    const refs = [...$('references').selectedOptions].map(o => o.value);
-    if (refs.length > 3) return notice(t('taskShellReferenceLimit'));
-    if (refs.length && (control || focused)) return notice(t('taskShellReferencesHelp'));
     const payload = { text: $('message').value, taskId: focused || null, intent: 'work',
-      ...control, ...($('dependency').checked ? { dependsOn: refs } : { contextTaskIds: refs }) };
+      ...(newTask ? { newTask: true, taskId: null } : {}), ...control };
     action(() => client.send(shellId, payload));
   };
   $('cancel').onclick = () => {
@@ -150,7 +147,7 @@
       const canonical = new URLSearchParams({ shell: shellId });
       if (params.get('external')) canonical.set('external', params.get('external'));
       history.replaceState(null, '', '?' + canonical);
-      focused = params.get('task') || sessionStorage.getItem(`task-shell-focus:${shellId}`) || shell.defaultTaskId || '';
+      focused = shell.currentTaskId || shell.defaultTaskId || '';
       const archive = $('source-history');
       const archiveParams = new URLSearchParams({ session: shell.sourceSessionId, historyScope: 'archive', readOnly: '1' });
       if (params.get('external')) archiveParams.set('external', params.get('external'));

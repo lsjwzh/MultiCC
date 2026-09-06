@@ -2765,7 +2765,7 @@ const logHousekeeping = createLogHousekeeping({ logsDir: path.join(__dirname, 'l
   retainDays: envNumber(process.env.MULTICC_LOG_RETAIN_DAYS), keepTailBytes: envNumber(process.env.MULTICC_LOG_KEEP_TAIL_BYTES) });
 routerToolHost.configure({ records: persistedSessions, dispatchToSession, orchestrationRuntime, taskBoard: taskBoardRuntime,
   recordUserInput: signal => sessionWorkHost.recordInput(signal), cancelActiveTurn: (id, opts) => sessionWorkHost.cancelActiveTurn(id, opts),
-  onDispatchCancelled: id => cancelDispatchRun(id), subscribeDispatchProgress, recordRouterAdmission });
+  onDispatchCancelled: id => cancelDispatchRun(id), subscribeDispatchProgress, recordRouterAdmission, getTaskContext: context => taskShellHost.refillContext(context.sessionId, { receiptId: context.requestId }) });
 
 waitInjector.init({
   inject: (session, text, opts) => sessionDelivery.deliverContinuation(session, text, opts),

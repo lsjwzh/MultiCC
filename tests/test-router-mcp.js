@@ -102,12 +102,16 @@ test('stdio MCP advertises scoped tools and bridges calls with the capability', 
   assert.equal(initialized.result.serverInfo.name, 'multicc-router');
   const listed = await plain.call('tools/list');
   assert.deepEqual(listed.result.tools.map(tool => tool.name), [
+    'get_task_context',
     'wait_for_user_answer', 'request_user_input',
     'wait_for_external_result', 'get_external_wait', 'cancel_external_wait',
     'route_task', 'dispatch_cancel', 'dispatch_status', 'dispatch_master',
     'dispatch_slave',
   ]);
-  const questionTool = listed.result.tools[0];
+  const contextTool = listed.result.tools.find(tool => tool.name === 'get_task_context');
+  assert.deepEqual(contextTool.inputSchema.properties, {});
+  assert.equal(contextTool.annotations.readOnlyHint, true);
+  const questionTool = listed.result.tools.find(tool => tool.name === 'wait_for_user_answer');
   assert.deepEqual(questionTool.inputSchema.required, ['question']);
   assert.equal(questionTool.inputSchema.properties.options.maxItems, 12);
   assert.match(questionTool.description, /blocking question/);
@@ -195,6 +199,7 @@ test('stdio MCP advertises scoped tools and bridges calls with the capability', 
   t.after(() => dispatched.stop());
   const dispatchedList = await dispatched.call('tools/list');
   assert.deepEqual(dispatchedList.result.tools.map(tool => tool.name), [
+    'get_task_context',
     'wait_for_user_answer', 'request_user_input',
     'wait_for_external_result', 'get_external_wait', 'cancel_external_wait',
     'route_task', 'dispatch_cancel', 'dispatch_status', 'dispatch_master',
