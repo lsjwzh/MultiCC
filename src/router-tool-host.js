@@ -250,7 +250,7 @@ function createRouterToolHost({
       taskId, taskStart, taskSource, baseUrl,
     });
     if (processCapability) Object.assign(env, processCapability.env);
-    applyRouterMcpEnv(env, cli, routerMcpNode, routerMcpScript);
+    applyRouterMcpEnv(env, cli, routerMcpNode, routerMcpScript, { cwd });
     let proc;
     try {
       proc = spawn(command, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });

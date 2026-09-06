@@ -3,11 +3,59 @@
 const path = require('path');
 const fs = require('fs');
 
+const ROUTER_ENV_KEYS = [
+  'MULTICC_SESSION_ID',
+  'MULTICC_BASE_URL',
+  'MULTICC_TURN_ID',
+  'MULTICC_ORIGIN_DISPATCH_ID',
+  'MULTICC_ROUTER_CAPABILITY',
+];
+
 function stdioServer(node, script) {
   return {
     command: String(node),
     args: [String(script)],
   };
+}
+
+// The official ZCode engine neither reads ZCODE_CONFIG_CONTENT nor inherits
+// arbitrary MULTICC_* variables into stdio MCP children (it rebuilds the child
+// environment from a HOME/PATH/USER/... whitelist plus the entry's own env),
+// so the router credentials must be embedded in a config file the engine
+// actually loads. Workspace scope keeps the per-spawn capability token out of
+// the shared user config; each session directory therefore gets its own entry.
+function writeZcodeWorkspaceMcp(cwd, node, script, env) {
+  if (!cwd || !env.MULTICC_BASE_URL || !env.MULTICC_ROUTER_CAPABILITY) return;
+  try {
+    const dir = path.join(String(cwd), '.zcode');
+    const configPath = path.join(dir, 'config.json');
+    let existing = {};
+    if (fs.existsSync(configPath)) {
+      try {
+        existing = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      } catch (_) {
+        // An existing project config we cannot parse must not be clobbered;
+        // this turn simply runs without the router tools.
+        return;
+      }
+      if (!existing || typeof existing !== 'object' || Array.isArray(existing)) existing = {};
+    }
+    const routerEnv = {};
+    for (const key of ROUTER_ENV_KEYS) {
+      if (env[key]) routerEnv[key] = String(env[key]);
+    }
+    existing.mcp = { ...(existing.mcp || {}) };
+    existing.mcp.servers = {
+      ...(existing.mcp.servers || {}),
+      multicc_router: {
+        type: 'stdio',
+        ...stdioServer(node, script),
+        env: routerEnv,
+      },
+    };
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify(existing, null, 2), 'utf8');
+  } catch (_) { /* best effort — MCP injection failure should not crash the turn */ }
 }
 
 function claudeLikeMcpArgs(node, script) {
@@ -29,7 +77,7 @@ function mergeJson(raw, patch) {
   return patch(value);
 }
 
-function applyRouterMcpEnv(env, cli, node, script) {
+function applyRouterMcpEnv(env, cli, node, script, options = {}) {
   if (!env || !node || !script) return env;
   const command = [String(node), String(script)];
   if (cli === 'opencode' || cli === 'zcode') {
@@ -67,6 +115,7 @@ function applyRouterMcpEnv(env, cli, node, script) {
         },
       }),
     ));
+    writeZcodeWorkspaceMcp(options.cwd, node, script, env);
   }
   if (cli === 'kimi' && env.KIMI_CODE_HOME) {
     // Kimi Code reads MCP servers from its settings.json or mcp.json under
