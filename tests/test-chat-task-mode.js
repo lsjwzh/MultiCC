@@ -31,3 +31,12 @@ test('only an explicitly unsupported system session stays in the system chat', a
   assert.equal(await resolve({ sessionId: 'gateway', fetch }), null);
   await assert.rejects(resolve({ taskId: 'task', fetch }));
 });
+
+test('a pre-restart server route table keeps the old shell page instead of breaking task links', async () => {
+  const fetch = async url => {
+    if (url.endsWith('/chat-session')) return response({ ok: true, sessionId: 'bound' });
+    if (url.endsWith('/tasks/resolve')) return { ok: false, status: 404, json: async () => { throw new SyntaxError('HTML'); } };
+    return response({ id: 'sh_main' });
+  };
+  assert.equal(await resolve({ taskId: 'task-one', fetch }), '/task-shell.html?shell=sh_main');
+});
