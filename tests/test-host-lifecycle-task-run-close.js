@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
+const { createSandboxConsole } = require('./helpers/sandbox-console');
 
 const HOST_LIFECYCLE_FILE = path.join(__dirname, '..', 'src', 'host-lifecycle.js');
 
@@ -46,7 +47,7 @@ function loadHostLifecycle() {
   const fakeProcess = { on() {}, exit() {} };
   const commonJsModule = { exports: {} };
   const wrapper = vm.runInNewContext(`(function(require, module, exports) {\n${source}\n})`, {
-    console,
+    console: createSandboxConsole(),
     global: {},
     process: fakeProcess,
     setTimeout,

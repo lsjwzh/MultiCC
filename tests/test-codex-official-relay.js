@@ -218,6 +218,260 @@ test('Official relay attributes a controlled Codex agent role as a sub route', a
   assert.equal(invalidResponse.statusCode, 400);
 });
 
+test('resuming a cross-provider history converts foreign item IDs without breaking tool pairing', async () => {
+  const history = [
+    { type: 'message', id: 'msg_user', role: 'user', content: [{ type: 'input_text', text: 'Continue.' }] },
+    { type: 'function_call', id: 'tool_foreign_a', call_id: 'tool_foreign_a', name: 'exec_command', arguments: '{"cmd":"pwd"}' },
+    { type: 'function_call', id: 'tool_foreign_b', call_id: 'tool_foreign_b', name: 'exec_command', arguments: '{"cmd":"date"}' },
+    { type: 'function_call_output', id: 'fco_a', call_id: 'tool_foreign_a', output: '/workspace' },
+    { type: 'function_call_output', id: 'fco_b', call_id: 'tool_foreign_b', output: 'today' },
+    { type: 'function_call', id: 'fc_official', call_id: 'call_official', name: 'exec_command', arguments: '{}' },
+    { type: 'function_call', call_id: 'call_without_item_id', name: 'exec_command', arguments: '{}' },
+    { type: 'custom_tool_call', id: 'ctc_official', call_id: 'custom_call', name: 'exec', input: '1 + 1' },
+    { type: 'reasoning', id: 'rs_official', encrypted_content: 'opaque-reasoning', summary: [] },
+  ];
+  const original = structuredClone(history);
+  let sent;
+  const handler = createCodexOfficialRelayHandler({
+    getProvider: () => officialProvider(),
+    readCredential: () => ({ ok: true, accessToken: 'host-token', accountId: 'host-account' }),
+    fetch: async (_url, init) => {
+      sent = JSON.parse(init.body);
+      // Reproduce the Official schema check that rejected the live transcript.
+      const invalid = sent.input.find(item => item.type === 'function_call' && item.id && !item.id.startsWith('fc'));
+      if (invalid) return new Response('Invalid input item id: expected fc prefix', { status: 400 });
+      return new Response('data: {"type":"response.completed","response":{}}\n\n', {
+        status: 200, headers: { 'content-type': 'text/event-stream' },
+      });
+    },
+  });
+  const res = response();
+  await handler(request({ model: 'gpt-6-astra', input: history, stream: true }), res, () => assert.fail('fallthrough'));
+  assert.equal(res.statusCode, 200);
+  assert.match(Buffer.concat(res.chunks).toString(), /response.completed/);
+  for (const index of [1, 2]) {
+    const { id, ...expected } = original[index];
+    const { id: convertedId, ...actual } = sent.input[index];
+    assert.match(convertedId, /^fc_/);
+    assert.deepEqual(actual, expected);
+    assert.equal(sent.input[index].call_id, sent.input[index + 2].call_id);
+  }
+  for (const index of [0, 3, 4, 5, 6, 7, 8]) assert.deepEqual(sent.input[index], original[index]);
+  assert.deepEqual(history, original, 'request normalization must not rewrite persisted native history');
+});
+
+test('the actual rejection cause survives relay, Codex decoding, policy and user notice', async () => {
+  const { createCodexAdapter } = require('../src/cli-adapters/codex');
+  const { normalizeApiError, retryNotice } = require('../src/chat/api-error-policy');
+  const cause = {
+    message: "Invalid 'input[6].id': 'tool_9YShioVyW54hGPy24ul8O3Cg'. Expected an ID that begins with 'fc'.",
+    type: 'invalid_request_error', code: 'invalid_value', param: 'input[6].id',
+  };
+  const handler = createCodexOfficialRelayHandler({
+    getProvider: () => officialProvider(),
+    readCredential: () => ({ ok: true, accessToken: 'private-token', accountId: 'private-account' }),
+    fetch: async () => new Response(JSON.stringify({ error: cause, debug: 'never expose this field' }), {
+      status: 400, headers: { 'x-request-id': 'upstream-123', 'content-type': 'application/json' },
+    }),
+  });
+  const res = response();
+  await handler(request(), res, () => assert.fail('fallthrough'));
+  assert.equal(res.statusCode, 400);
+  assert.deepEqual(res.jsonBody.error, { ...cause, requestId: 'upstream-123' });
+  assert.equal(res.headers['x-request-id'], 'upstream-123');
+  assert.doesNotMatch(JSON.stringify(res.jsonBody), /never expose this field/);
+  const adapter = createCodexAdapter({ isResponseCompletedDisconnect: () => false, isTransportDisconnect: () => false });
+  // Match the CLI's string-wrapped HTTP body, including an appended route URL.
+  const wireMessage = `unexpected status 400 Bad Request: ${JSON.stringify(res.jsonBody)}, url: http://127.0.0.1/codex-proxy/provider/responses`;
+  const [decoded] = adapter.decodeEvent({ type: 'turn.failed', error: { message: wireMessage } });
+  assert.equal(decoded.message, cause.message);
+  assert.equal(decoded.error.httpStatus, 400);
+  assert.equal(decoded.error.code, 'invalid_value');
+  assert.equal(decoded.error.param, 'input[6].id');
+  assert.equal(decoded.error.requestId, 'upstream-123');
+  const error = normalizeApiError(decoded.error);
+  const notice = retryNotice({ error, action: 'stop' });
+  assert.match(notice, /input\[6\]\.id/);
+  assert.match(notice, /Expected an ID that begins with 'fc'/);
+  assert.doesNotMatch(notice, /upstream rejected the request/);
+});
+
+test('one schema rejection repairs only the optional field and then completes normally', async () => {
+  const sent = [];
+  const logs = [];
+  const usage = [];
+  const body = { model: 'model', input: [
+    { type: 'function_call', id: 'tool_a', call_id: 'tool_a', name: 'exec', arguments: '{}', status: 'completed' },
+    { type: 'function_call_output', call_id: 'tool_a', output: 'done' },
+  ], stream: true };
+  const original = structuredClone(body);
+  const handler = createCodexOfficialRelayHandler({
+    getProvider: () => officialProvider(),
+    readCredential: () => ({ ok: true, accessToken: 'secret', accountId: 'account' }),
+    onUsageEvent: event => usage.push(event),
+    logger: { warn: (event, fields) => logs.push({ event, fields }) },
+    fetch: async (_url, init) => {
+      sent.push(JSON.parse(init.body));
+      if (sent.length === 1) return new Response(JSON.stringify({ error: {
+        message: "Unknown parameter: 'input[0].status'.", type: 'invalid_request_error', param: 'input[0].status',
+      } }), { status: 400 });
+      return new Response('data: {"type":"response.completed","response":{}}\n\n', { headers: { 'content-type': 'text/event-stream' } });
+    },
+  });
+  const res = response();
+  await handler(request(body), res, () => {});
+  assert.equal(sent.length, 2);
+  assert.match(sent[0].input[0].id, /^fc_/);
+  assert.equal(Object.hasOwn(sent[1].input[0], 'status'), false);
+  assert.equal(sent[1].input[0].id, sent[0].input[0].id);
+  assert.equal(sent[1].input[0].call_id, sent[1].input[1].call_id);
+  assert.deepEqual(body, original);
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(usage.map(event => event.status), ['success']);
+  assert.deepEqual(logs.map(item => item.event), ['model_history_preprocessed', 'model_history_repaired_after_rejection']);
+});
+
+test('rejection repair is bounded to one attempt and final errors retain both causes', async () => {
+  let calls = 0;
+  const usage = [];
+  const handler = createCodexOfficialRelayHandler({
+    getProvider: () => officialProvider(),
+    readCredential: () => ({ ok: true, accessToken: 'secret', accountId: 'account' }),
+    onUsageEvent: event => usage.push(event),
+    fetch: async () => {
+      const field = ++calls === 1 ? 'status' : 'id';
+      return new Response(JSON.stringify({ error: { message: `Unknown parameter: 'input[0].${field}'.`, param: `input[0].${field}` } }), { status: 400 });
+    },
+  });
+  const res = response();
+  await handler(request({ input: [{ type: 'function_call', id: 'fc_a', status: 'completed', call_id: 'call_a', name: 'exec', arguments: '{}' }] }), res, () => {});
+  assert.equal(calls, 2);
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.jsonBody.error.param, 'input[0].id');
+  assert.equal(res.jsonBody.previousError.param, 'input[0].status');
+  assert.equal(res.jsonBody.historyRepairs.length, 1);
+  assert.deepEqual(usage.map(event => event.status), ['error']);
+});
+
+test('unrelated errors and semantic tool fields are never retried by the converter', async () => {
+  for (const [status, param] of [[401, 'input[0].id'], [429, 'input[0].status'], [500, 'input[0].status'], [400, 'input[0].arguments']]) {
+    let calls = 0;
+    const handler = createCodexOfficialRelayHandler({
+      getProvider: () => officialProvider(),
+      readCredential: () => ({ ok: true, accessToken: 'secret', accountId: 'account' }),
+      fetch: async () => { calls++; return new Response(JSON.stringify({ error: { message: `Unknown parameter: '${param}'.`, param } }), { status, headers: { 'retry-after': '60' } }); },
+    });
+    const res = response();
+    await handler(request({ input: [{ type: 'function_call', id: 'fc_a', status: 'completed', arguments: '{}' }] }), res, () => {});
+    assert.equal(calls, 1);
+    assert.equal(res.statusCode, status);
+    assert.equal(res.jsonBody.error.param, param);
+    assert.equal(res.headers['retry-after'], '60');
+  }
+});
+
+test('HTTP 200 carrying response.failed remains a failure and is never replayed', async () => {
+  const usage = [];
+  let calls = 0;
+  const handler = createCodexOfficialRelayHandler({
+    getProvider: () => officialProvider(),
+    readCredential: () => ({ ok: true, accessToken: 'secret', accountId: 'account' }),
+    onUsageEvent: event => usage.push(event),
+    fetch: async () => {
+      calls++;
+      return new Response('data: {"type":"response.failed","response":{"error":{"code":"invalid_value","message":"invalid tool schema"}}}\n\n', { headers: { 'content-type': 'text/event-stream' } });
+    },
+  });
+  const res = response();
+  await handler(request(), res, () => {});
+  assert.equal(calls, 1);
+  assert.deepEqual(usage.map(event => [event.status, event.errorCode]), [['error', 'invalid_value']]);
+  assert.match(Buffer.concat(res.chunks).toString(), /invalid tool schema/);
+});
+
+test('transport errors preserve nested causes without leaking host credentials', async () => {
+  const handler = createCodexOfficialRelayHandler({
+    getProvider: () => officialProvider(),
+    readCredential: () => ({ ok: true, accessToken: 'secret-token', accountId: 'private-account' }),
+    fetch: async () => { throw new Error('fetch failed', { cause: Object.assign(new Error('connect ECONNREFUSED secret-token private-account'), { code: 'ECONNREFUSED' }) }); },
+  });
+  const res = response();
+  await handler(request(), res, () => {});
+  assert.equal(res.statusCode, 502);
+  assert.equal(res.jsonBody.error.code, 'ECONNREFUSED');
+  assert.match(res.jsonBody.error.message, /ECONNREFUSED/);
+  assert.doesNotMatch(JSON.stringify(res.jsonBody), /secret-token|private-account/);
+});
+
+test('non-Official Codex routes share preprocessing before the CPR bridge', async () => {
+  const body = { input: [{ type: 'function_call', id: 'tool_a', call_id: 'tool_a', name: 'exec', arguments: '{}' }] };
+  const req = request(body);
+  let forwarded;
+  const handler = createCodexOfficialRelayHandler({ getProvider: () => null, fetch: async () => assert.fail('must fall through') });
+  await handler(req, response(), () => { forwarded = req.body; });
+  assert.match(forwarded.input[0].id, /^fc_/);
+  assert.equal(forwarded.input[0].call_id, 'tool_a');
+  assert.equal(body.input[0].id, 'tool_a');
+});
+
+test('a stream read failure exposes its socket cause without replaying partial output', async () => {
+  let calls = 0;
+  let reads = 0;
+  const handler = createCodexOfficialRelayHandler({
+    getProvider: () => officialProvider(),
+    readCredential: () => ({ ok: true, accessToken: 'secret-token', accountId: 'private-account' }),
+    fetch: async () => {
+      calls++;
+      return new Response(new ReadableStream({ pull(controller) {
+        if (reads++ === 0) controller.enqueue(Buffer.from('data: {"type":"response.output_text.delta","delta":"partial"}\n\n'));
+        else controller.error(new Error('socket closed', { cause: Object.assign(new Error('ECONNRESET secret-token'), { code: 'ECONNRESET' }) }));
+      } }), { headers: { 'content-type': 'text/event-stream' } });
+    },
+  });
+  const res = response();
+  await handler(request(), res, () => {});
+  const output = Buffer.concat(res.chunks).toString();
+  assert.equal(calls, 1);
+  assert.match(output, /partial/);
+  assert.match(output, /response.failed/);
+  assert.match(output, /ECONNRESET/);
+  assert.doesNotMatch(output, /secret-token/);
+});
+
+test('client abort while reading a rejection cancels diagnosis without a second request', async () => {
+  let calls = 0;
+  let cancelled = false;
+  const usage = [];
+  const handler = createCodexOfficialRelayHandler({
+    getProvider: () => officialProvider(),
+    readCredential: () => ({ ok: true, accessToken: 'secret', accountId: 'account' }),
+    onUsageEvent: event => usage.push(event),
+    fetch: async () => { calls++; return new Response(new ReadableStream({ cancel() { cancelled = true; } }), { status: 400 }); },
+  });
+  const req = request();
+  const res = response();
+  const pending = handler(req, res, () => {});
+  await new Promise(resolve => setImmediate(resolve));
+  req.emit('aborted');
+  await pending;
+  assert.equal(calls, 1);
+  assert.equal(cancelled, true);
+  assert.equal(res.jsonBody, undefined);
+  assert.deepEqual(usage.map(event => event.errorCode), ['CLIENT_ABORTED']);
+});
+
+test('an empty successful upstream response becomes a diagnostic 502', async () => {
+  const handler = createCodexOfficialRelayHandler({
+    getProvider: () => officialProvider(),
+    readCredential: () => ({ ok: true, accessToken: 'secret', accountId: 'account' }),
+    fetch: async () => new Response(null, { status: 204 }),
+  });
+  const res = response();
+  await handler(request(), res, () => {});
+  assert.equal(res.statusCode, 502);
+  assert.match(res.jsonBody.error.message, /204 without a response body/);
+});
+
 test('missing credentials and upstream rejection expose no credential material', async () => {
   const unavailable = createCodexOfficialRelayHandler({
     getProvider: () => officialProvider(),

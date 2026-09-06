@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { createSandboxConsole } = require('./helpers/sandbox-console');
 
 const ROOT = path.join(__dirname, '..');
 
@@ -71,7 +72,7 @@ function browserContext() {
   const timers = [];
   const createdTags = [];
   const context = {
-    console,
+    console: createSandboxConsole(),
     URLSearchParams,
     JSON,
     Date,

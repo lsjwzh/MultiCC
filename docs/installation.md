@@ -5,7 +5,7 @@
 ## Stable Release (recommended)
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v1.6.8/install.sh | bash -s -- --branch v1.6.8
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v1.6.10/install.sh | bash -s -- --branch v1.6.10
 ```
 
 This installs the latest **stable release**. The script auto-detects your OS,

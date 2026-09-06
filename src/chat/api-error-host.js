@@ -323,6 +323,7 @@ function createApiErrorHost(options = {}) {
       retryAt: decision.retryAt || null,
       userAction: decision.error.userAction,
       rootCause: decision.error.rootCause || decision.error.sanitizedMessage || null,
+      param: decision.error.param || null,
       turnElapsedMs,
       recoveryElapsedMs: decision.recoveryElapsedMs ?? recoveryElapsedMs,
       budgetExhaustedBy: decision.budgetExhaustedBy || null,

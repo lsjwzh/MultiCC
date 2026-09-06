@@ -9,9 +9,40 @@ const { execFileSync, spawn } = require('node:child_process');
 const { assertTestDir, createPaths } = require('../src/paths');
 const { readJson, writeJsonAtomic } = require('../src/state-store');
 const { COMMANDER_ROUTER_PROMPT } = require('../src/routes/agent-resources');
+const { SUPPORTED_CHAT_CLIS } = require('../src/cli-switch');
 
 const ROOT = path.join(__dirname, '..');
 const LIVE_SERVERS = new Set();
+
+// Every env var a supported CLI's resolver honours, aliases included (see
+// src/cli-adapters/commands.js). The "no CLI available" scenario below needs
+// *none* of them to resolve, so each is pinned to a non-existent path. Listing
+// them by hand is what let kimi/codebuddy/dsh leak in from the developer's PATH
+// once they joined SUPPORTED_CHAT_CLIS — codebuddy and dsh are even probed at
+// hardcoded /opt/homebrew/bin paths — so the migration found a runtime and
+// /readyz answered 200 where the test asserts 503.
+const CLI_CMD_ENV = Object.freeze({
+  claude: ['CLAUDE_CMD'],
+  codex: ['CODEX_CMD'],
+  opencode: ['OPENCODE_CMD'],
+  zcode: ['ZCODE_ENGINE', 'ZCODE_CMD'],
+  qoder: ['QODER_CMD', 'QODERCN_CMD'],
+  kimi: ['KIMI_CMD'],
+  codebuddy: ['CODEBUDDY_CMD', 'WORKBUDDY_CMD'],
+  dsh: ['DSH_CMD'],
+});
+
+// Derived from SUPPORTED_CHAT_CLIS so a newly added CLI is neutralized too; the
+// `<CLI>_CMD` fallback covers any that follow the convention without an alias.
+function cliCommandEnv(missing, codexCmd) {
+  const env = {};
+  for (const cli of SUPPORTED_CHAT_CLIS) {
+    for (const name of CLI_CMD_ENV[cli] || [`${String(cli).toUpperCase()}_CMD`]) env[name] = missing;
+  }
+  if (codexCmd) env.CODEX_CMD = codexCmd;
+  return env;
+}
+
 const LEGACY_PROMPT = [
   '# 🫡 Agent Commander',
   'You are the **Agent Commander** — old bundled wording.',
@@ -62,11 +93,7 @@ async function startServer({ dataRoot, cliAvailable = true, extraEnv = {} }) {
       NODE_ENV: 'test',
       PORT: String(port),
       MULTICC_DATA_DIR: dataRoot,
-      CODEX_CMD: cliAvailable ? fakeCodex : missing,
-      CLAUDE_CMD: missing,
-      OPENCODE_CMD: missing,
-      ZCODE_CMD: missing,
-      QODER_CMD: missing,
+      ...cliCommandEnv(missing, cliAvailable ? fakeCodex : null),
       ...extraEnv,
     },
     stdio: ['ignore', 'pipe', 'pipe'],

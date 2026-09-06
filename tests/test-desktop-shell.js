@@ -70,7 +70,7 @@ function httpGet(url) {
 function makeSupervisor(overrides) {
   const phases = [];
   const sup = createBackendSupervisor({
-    spawn,
+    spawn: overrides.spawn || spawn,
     execPath: process.execPath,
     serverEntry: FIXTURE,
     buildEnv: ({ port }) => ({ ...process.env, ...overrides.env, PORT: String(port) }),
@@ -282,6 +282,46 @@ test('supervisor: never-ready child is killed, failure reported with tail', asyn
   await sup.stop();
 });
 
+test('supervisor: stop() after an already-exited never-ready child returns promptly', async () => {
+  const dir = tmpdir('desktop-notready-stop-');
+  const port = await reservePort();
+  let captured = null;
+  let exitedResolve;
+  const exited = new Promise(resolve => { exitedResolve = resolve; });
+  const { sup, phases } = makeSupervisor({
+    env: { READY_DELAY_MS: String(10 * 60_000) }, // stays 503 essentially forever
+    logsDir: dir,
+    runtimeInfoFile: path.join(dir, 'desktop-runtime.json'),
+    spawn: (cmd, args, opts) => {
+      const child = spawn(cmd, args, opts);
+      captured = child;
+      child.once('exit', () => exitedResolve());
+      return child;
+    },
+    opts: { healthTimeoutMs: 1_200, drainGraceMs: 20_000, restartBackoffMs: 60_000 },
+  });
+  await sup.start({ port });
+  await waitFor(() => phases.some(p => p.phase === 'failed'), { timeoutMs: 15_000, what: 'not-ready failure' });
+  assert.equal(sup.getState().failure.reason, 'not-ready');
+
+  // Order matters: let the child's exit event land BEFORE stop() runs, which is
+  // what ubuntu-latest does naturally and macOS usually does not. A signal
+  // death leaves exitCode null forever and killed false (the tree is killed
+  // with process.kill(-pid), not child.kill()), so a liveness check built on
+  // those two fields mistakes the corpse for a live child and parks on the
+  // drain grace timer — unref'd, so the loop drained with stop() still pending
+  // and node:test cancelled the rest of this file.
+  await Promise.race([exited, waitFor(() => captured && captured.signalCode !== null, { timeoutMs: 10_000, what: 'child exit' })]);
+  assert.equal(captured.signalCode, 'SIGKILL', 'tree kill is a signal death');
+  assert.equal(captured.exitCode, null, 'signal death leaves exitCode null');
+
+  const startedAt = Date.now();
+  await sup.stop();
+  const elapsed = Date.now() - startedAt;
+  assert.ok(elapsed < 5_000, `stop() must not park on the drain grace timer (took ${elapsed}ms)`);
+  assert.equal(sup.getState().state, 'stopped');
+});
+
 // ── integration: orphan reclaim ─────────────────────────────────────────────
 
 test('orphan-reclaim: drains a live orphan and removes stale files', async () => {
@@ -373,6 +413,53 @@ test('desktop-bundle-server stages a runnable server tree without the APK', { ti
   assert.equal(pkg.version, require(path.join(ROOT, 'package.json')).version);
   assert.equal(require(path.join(staged, 'src/memory/builtin-rules')).DOCS_REGISTRY_RULE,
     require('../src/memory/builtin-rules').DOCS_REGISTRY_RULE);
+});
+
+// A stub repo root is enough for the staging script: it copies these entries and
+// only reaches the runtime sanity gate after a successful install.
+function stubRepoRoot(dir) {
+  fs.writeFileSync(path.join(dir, 'package.json'),
+    `${JSON.stringify({ name: 'stub', version: '1.0.0', dependencies: {} }, null, 2)}\n`);
+  for (const rel of ['server.js', 'src/paths.js', 'public/chat.html', 'scripts/multicc-router-mcp.js',
+    'plugins/bridges/wechat-ilink.js', 'skills/multicc-artifact/references/registration-rule.md']) {
+    const file = path.join(dir, rel);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '');
+  }
+  return dir;
+}
+
+function stageWithStubNpm(body) {
+  const root = stubRepoRoot(tmpdir('desktop-stage-root-'));
+  const bin = tmpdir('desktop-stage-bin-');
+  const npm = path.join(bin, process.platform === 'win32' ? 'npm.cmd' : 'npm');
+  fs.writeFileSync(npm, `#!/bin/sh\n${body}\n`);
+  fs.chmodSync(npm, 0o755);
+  return spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'desktop-bundle-server.js'),
+    '--out', path.join(root, 'staged'), '--repo-root', root, '--install'], {
+    encoding: 'utf8',
+    env: { ...process.env, PATH: [bin, ...process.env.PATH.split(path.delimiter)].join(path.delimiter) },
+  });
+}
+
+test('desktop-bundle-server names why npm did not complete', { timeout: 60_000 }, () => {
+  if (process.platform === 'win32') return; // the stub npm is a POSIX shell script
+  const killed = stageWithStubNpm('kill -TERM $$');
+  assert.equal(killed.status, 1);
+  // Signal death leaves status null; "failed with status null" named no cause and
+  // sent three desktop release runs chasing an OOM that never happened.
+  assert.match(killed.stderr, /npm install never completed \(killed by signal SIGTERM\)/);
+  const exited = stageWithStubNpm('exit 3');
+  assert.equal(exited.status, 1);
+  assert.match(exited.stderr, /npm install failed with status 3/);
+});
+
+test('desktop-bundle-server spawns npm through a shell on Windows', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'scripts', 'desktop-bundle-server.js'), 'utf8');
+  // Node >= 20.12 rejects .cmd/.bat without shell: true, so windows-latest never
+  // even started the install. Only that runner can exercise it; pin the source.
+  assert.match(src, /const win = process\.platform === 'win32';/);
+  assert.match(src, /shell: win,/);
 });
 
 // ── gates: MULTICC_DESKTOP server-side behavior ─────────────────────────────
@@ -543,11 +630,31 @@ test('desktop packaging config: pinned versions, stable names, user-scope instal
   assert.equal(b.extraResources[0].to, 'app-server');
   assert.match(b.mac.artifactName, /multicc-desktop-\$\{version\}-macos-\$\{arch\}/);
   assert.match(b.win.artifactName, /multicc-desktop-\$\{version\}-windows-\$\{arch\}/);
-  assert.match(b.linux.artifactName, /multicc-desktop-\$\{version\}-linux-\$\{arch\}/);
+  // Linux expands ${arch} to the distro spelling (deb -> amd64, AppImage ->
+  // x86_64), which fails release-artifacts.js ARTIFACT_NAME_RE and contradicts
+  // docs/desktop.md, so the pattern spells x64 — and must stay x64-only.
+  assert.match(b.linux.artifactName, /multicc-desktop-\$\{version\}-linux-x64\.\$\{ext\}/);
+  for (const t of b.linux.target) {
+    assert.deepEqual(t.arch, ['x64'], 'linux artifactName hardcodes x64');
+  }
+  assert.ok(pkg.homepage, 'electron-builder aborts the deb target without a project homepage');
   assert.equal(b.mac.identity, null, 'unsigned by default; CI overrides with secrets');
   assert.equal(b.nsis.oneClick, true);
   assert.equal(b.nsis.perMachine, false, 'per-user install needs no admin rights');
   assert.ok(b.publish === null || b.publish === undefined, 'no auto-update publisher');
+  // electron-builder validates the whole config on every runner, so one bad
+  // TargetConfiguration — `target` names a single format, never a list — aborts
+  // all three builds before anything is packaged.
+  for (const platform of ['mac', 'win', 'linux']) {
+    for (const t of b[platform].target) {
+      assert.equal(typeof t.target, 'string', `${platform}: one format per target entry`);
+      assert.ok(Array.isArray(t.arch) && t.arch.every(a => typeof a === 'string'),
+        `${platform}: arch must be a list of strings`);
+    }
+  }
+  assert.deepEqual(b.linux.target.map(t => t.target).sort(), ['AppImage', 'deb']);
+  assert.deepEqual(b.mac.target.flatMap(t => t.arch).sort(), ['arm64', 'x64']);
+  assert.deepEqual(b.win.target.flatMap(t => t.arch), ['x64']);
 });
 
 test('desktop-release workflow: three native runners, attaches (never creates) the release, secrets only as env', () => {
@@ -558,7 +665,15 @@ test('desktop-release workflow: three native runners, attaches (never creates) t
   assert.match(wf, /tags:\s*\['v\*\.\*\.\*'\]/);
   assert.match(wf, /workflow_dispatch:/);
   assert.match(wf, /--publish never/);
+  // Node 20 has no better-sqlite3 prebuild (ABI 115) and @electron/rebuild 4.x
+  // declares engines node>=22.12; on windows-latest that meant a source build
+  // npm's bundled node-gyp could not configure against the runner's VS.
+  assert.match(wf, /node-version: 22/);
   assert.match(wf, /electron-rebuild/);
+  // @electron/rebuild v4 parses flags with node:util parseArgs: the Electron
+  // version flag is --version, and an unknown option aborts before any rebuild.
+  assert.match(wf, /--version "\$ELECTRON_VERSION"/);
+  assert.doesNotMatch(wf, /--electron-version/);
   assert.match(wf, /gh release upload/);
   // Comments explain the rule; the steps themselves must follow it.
   const wfCode = wf.replace(/^\s*#.*$/gm, '');
