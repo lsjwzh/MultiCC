@@ -151,15 +151,25 @@ test('an untracked dispatch detaches from the prior task and survives history re
     'restart must not revive the task that preceded an untracked dispatch');
 });
 
-test('production detaches every new untracked scheduler task from the prior taskId', () => {
+test('production gives every new untracked user/dispatch turn a provisional taskId', () => {
   const turnEngine = fs.readFileSync(
     path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'),
     'utf8',
   );
   assert.match(turnEngine,
-    /const detachTaskContext = \(!requestedTask\.id && opts\.schedulerWorkKind === 'task'\)\s*\|\| \(!!originDispatchId && !requestedTask\.id\)/);
-  assert.match(turnEngine, /beginTurn\(cs,\s*requestedTask,\s*\{\s*detach:\s*detachTaskContext\s*\}\)/);
+    /const provisionalAdmission = !requestedTask\.id && !reexecutePersistedDelivery\s*&& \(!originContinue \|\| directUserInput\)/);
+  assert.match(turnEngine, /beginTurn\(cs,\s*requestedTask,\s*\{\s*provisional:\s*provisionalAdmission\s*\}\)/);
   assert.match(turnEngine, /messageMetadata\(messageTask,\s*nextTaskId,\s*\{\s*detached:\s*taskDetached\s*\}\)/);
+});
+
+test('a provisional admission replaces an unfinished prior task immediately', () => {
+  const { host, states } = fixture();
+  const state = states.get('worker');
+  state._currentTaskId = 'tsk-prior';
+  assert.deepEqual(host.beginTurn(state, {}, { provisional: true }), {
+    taskId: 'tsk_uuid', boundaryChanged: true, detached: false,
+  });
+  assert.equal(state._currentTaskId, 'tsk_uuid');
 });
 
 test('ordinary chat gets a canonical task id on its first turn', () => {

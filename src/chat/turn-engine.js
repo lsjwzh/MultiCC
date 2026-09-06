@@ -16,6 +16,7 @@ const {
   createProviderRouteProof,
   evaluateSpawnGuard,
   createTurnLifecycle,
+  bindTurnTask,
   bindTurnUsageAttribution,
   createRunnerOwnership,
   assignKillReason,
@@ -44,7 +45,7 @@ const {
 const { createAutoProviderRuntime } = require('./auto-provider-runtime');
 const { redactProviderRouteCapability } = require('../observability');
 const { createWsEnvelope } = require('../api-contract');
-const { taskShortCode } = require('../classify/task-short-code');
+const { taskShortCode, taskIdForShortCode } = require('../classify/task-short-code');
 const { composeMessage, renderPrompt } = require('../message-composer');
 const {
   rememberActiveCliState, renderHandoffPrompt, stateSummary: cliStateSummary,
@@ -176,6 +177,21 @@ function markReplaySafeAssistantEnvelope(event, providerName) {
     blocks.map(block => String(block.text || '')).join(''),
   );
   return envelope && envelope.body == null ? markHostErrorEnvelope(event) : event;
+}
+
+function reconcileBoundaryErrorEnvelope(attemptRuntime, providerAttempt, providerName, text) {
+  const envelope = detectErrorEnvelope(providerName, text);
+  if (!envelope || envelope.body != null) return envelope;
+  // Some CLI failure paths end without a result event, so the complete text is
+  // first available only at close/finalize. Feed the same unforgeable proof to
+  // the attempt runtime here that the normal assistant-snapshot path uses.
+  if (attemptRuntime && typeof attemptRuntime.observeEvent === 'function' && providerAttempt) {
+    attemptRuntime.observeEvent(providerAttempt, markHostErrorEnvelope({
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: String(text || '') }] },
+    }));
+  }
+  return envelope;
 }
 
 function recoverDispatchFromHistory(history, operation) {
@@ -319,6 +335,7 @@ function createChatTurnEngine(deps) {
     pendingNotesFor,
     appendEvent,
     classifyTurnEnd,
+    runClassifyNow,
     cancelClassify,
     emitRunningNotify,
     emitTurnOutcome,
@@ -774,7 +791,7 @@ function createChatTurnEngine(deps) {
         cs.currentAssistantText = redactProviderRouteCapability(
           appendAdapterAssistantText(cs.currentAssistantText, evt.text),
         );
-        forward({
+        forward(markReplaySafeAssistantEnvelope({
           type: 'assistant',
           // A cumulative authoritative snapshot heals a dropped/replayed WS
           // fragment and reconciles any proxy part_delta preview. OpenCode and
@@ -784,7 +801,7 @@ function createChatTurnEngine(deps) {
             textSnapshot: true,
             content: [{ type: 'text', text: cs.currentAssistantText }],
           },
-        });
+        }, provider.name));
         setSessionStatus(sessionName, { status: 'thinking', currentFile: null });
         scheduleIncrementalSave(sessionName, cs);
         if (evt.log) console.warn(`[multicc/chat] [${sessionName}] ${provider.name} ${evt.log}`);
@@ -1140,7 +1157,32 @@ function createChatTurnEngine(deps) {
     const goalLimits = turnRequest.goalLimits;
     const bgTaskIds = turnRequest.background.taskIds;
     const bgToolUseIds = turnRequest.background.toolUseIds;
-    const requestedTask = turnRequest.task;
+    let requestedTask = turnRequest.task;
+    // A minted #CODE is an explicit user reference, not a fuzzy text hint. It
+    // can therefore bind directly to the known canonical task; unknown codes
+    // remain ordinary message text and go through provisional classification.
+    if (!requestedTask.id) {
+      const codeMatch = text.match(/(?:^|\s)#([0-9A-Z]{4})(?=$|\s|[，。,:：;；!?！？])/iu);
+      const codeOwner = codeMatch ? taskIdForShortCode(codeMatch[1]) : null;
+      const state = getTaskState(persisted);
+      const knownTaskIds = new Set([
+        persisted.taskBoundTaskId,
+        state.taskId,
+        ...(Array.isArray(state.classifyHistory)
+          ? state.classifyHistory.map(entry => entry?.taskId) : []),
+      ].filter(Boolean));
+      try {
+        for (const message of viewChatHistory(sessionName)) {
+          if (message?.taskId) knownTaskIds.add(message.taskId);
+        }
+      } catch (_) {}
+      const referencedTaskId = codeOwner && knownTaskIds.has(codeOwner) ? codeOwner : null;
+      if (referencedTaskId) {
+        requestedTask = Object.freeze({
+          id: referencedTaskId, start: false, source: 'code-reference', text: '',
+        });
+      }
+    }
 
     // Durable orchestration may replay an outbox claim after a crash in the
     // narrow window between history persistence and outbox acknowledgement.
@@ -1285,20 +1327,26 @@ function createChatTurnEngine(deps) {
       cs._lastApiErrorDecision = null;
       setTaskState(sessionName, { apiError: null }, { save: false });
     }
-    const detachTaskContext = (!requestedTask.id && opts.schedulerWorkKind === 'task')
-      || (!!originDispatchId && !requestedTask.id);
+    const provisionalAdmission = !requestedTask.id && !reexecutePersistedDelivery
+      && (!originContinue || directUserInput);
     const {
       taskId: nextTaskId, boundaryChanged: taskBoundaryChanged,
       detached: taskDetached,
-    } = taskContextHost.beginTurn(cs, requestedTask, { detach: detachTaskContext });
+    } = taskContextHost.beginTurn(cs, requestedTask, { provisional: provisionalAdmission });
     const inferredTaskStart = !requestedTask.id && taskBoundaryChanged
       && !taskDetached && !!nextTaskId;
     const messageTask = inferredTaskStart ? {
       id: nextTaskId,
       start: true,
-      source: 'aux',
+      source: 'provisional',
       text,
     } : requestedTask;
+    const identityLocked = !!requestedTask.id && (requestedTask.start !== true
+      || ['task-board', 'commander', 'code-reference'].includes(requestedTask.source));
+    bindTurnTask(turn, {
+      ...messageTask,
+      id: nextTaskId,
+    });
 
     // Persist the canonical user event before any provider execution.
     // A re-executed delivery already has its user message in history from the
@@ -1361,8 +1409,24 @@ function createChatTurnEngine(deps) {
     cs.currentUserText = text;          // store user message for summary context
     // Synchronous task goal fallback (zero-latency first frame); the in-progress
     // classify loop will refine it to a stable noun-phrase goal within 60s.
-    ensureCurrentTask(cs, sessionName, text, taskBoundaryChanged);
+    ensureCurrentTask(cs, sessionName, text, taskBoundaryChanged, {
+      taskId: nextTaskId,
+      taskText: messageTask.text || text,
+      taskSource: messageTask.source,
+      explicitContinuation: identityLocked,
+    });
     cs.currentTaskName = cs.currentTask ? cs.currentTask.goal : '新任务'; // compat for legacy callers
+    // Identity attribution starts as soon as the canonical user event is
+    // durable. It is intentionally independent of provider completion and only
+    // refines task identity/name; D/W/B/E remains owned by turn finalization.
+    if (taskBoundaryChanged && persisted.type !== 'gateway') {
+      runClassifyNow(cs, sessionName, {
+        turnId,
+        source: 'admission',
+        identityLocked,
+        admittedTaskId: nextTaskId,
+      });
+    }
     cs.currentToolCalls = [];
     cs.currentCost = null;
     cs.isStreaming = true;
@@ -1399,7 +1463,9 @@ function createChatTurnEngine(deps) {
     // decides P/D/W/B/E at turn end; best-effort Aux attribution names/groups the
     // task afterward and the periodic scan only retries unresolved names.
     cancelClassify(cs);
-    emitRunningNotify(sessionName, `处理中：${(cs.currentTask && cs.currentTask.goal) || '新任务'}`);
+    const taskIdentityPending = getTaskState(persisted).taskIdentityPending === true;
+    emitRunningNotify(sessionName,
+      `${taskIdentityPending ? '归类中' : '处理中'}：${(cs.currentTask && cs.currentTask.goal) || '新任务'}`);
     // Trigger/dispatch lineage is owned by `turn`; no session-global origin flag
     // is written here, so a stale finalize cannot leak ancestry into a new turn.
     setSessionStatus(sessionName, { status: 'thinking', currentFile: null });
@@ -1736,10 +1802,16 @@ function createChatTurnEngine(deps) {
         else if (code !== 0 && !recoveredCodexDisconnect) kind = 'nonzero_exit';
         else if (!turn.resultDurable && !cs.currentAssistantText && !cs.currentToolCalls.length) kind = 'empty_exit';
         console.log(`[multicc/chat] [${sessionName}] close kind=${kind} ${JSON.stringify(diag)}`);
+        const boundaryErrorEnvelope = reconcileBoundaryErrorEnvelope(
+          attemptRuntime, runner.providerAttempt, provider?.name || cs.cli, cs.currentAssistantText,
+        );
         const attemptFacts = attemptRuntime.snapshot(sessionName);
-        const partialOutput = meaningfulTurnOutput(cs) || !!attemptFacts?.visibleOutputObserved;
         const sideEffects = turnHasSideEffects(cs)
           || !!attemptFacts?.toolIntentObserved || !!attemptFacts?.sideEffectObserved;
+        const errorOnlyBoundary = !!(boundaryErrorEnvelope && boundaryErrorEnvelope.body == null
+          && attemptFacts?.replayFence === 'none' && !sideEffects);
+        const partialOutput = errorOnlyBoundary
+          ? false : meaningfulTurnOutput(cs) || !!attemptFacts?.visibleOutputObserved;
         // A durable result + clean close proves the turn succeeded; any error
         // flagged mid-stream (codex emits internal housekeeping failures as
         // stream error items, then finishes fine) was recovered from and must
@@ -1758,8 +1830,9 @@ function createChatTurnEngine(deps) {
           killReason,
           retryBlockedByAdapterError: !!cs._adapterError || !!runner.adapterError,
         }, normalizeHandoff({ handoff: persisted.pendingCliHandoff }));
-        const shouldClassifyApiError = !guardedHandoffResumeFailure && !!(
-          runner.apiErrorRaw
+        const shouldClassifyApiError = (!guardedHandoffResumeFailure || errorOnlyBoundary) && !!(
+          boundaryErrorEnvelope
+          || runner.apiErrorRaw
           || runner.sawApiError
           || runner.adapterError
           || pendingTransportError
@@ -1772,7 +1845,7 @@ function createChatTurnEngine(deps) {
           provider: cs.cli,
           code: killReason,
           message: 'turn cancelled',
-        } : runner.apiErrorRaw || {
+        } : boundaryErrorEnvelope || runner.apiErrorRaw || {
           source: 'process_stderr',
           provider: cs.cli,
           code: killReason || (code !== 0 ? `process_exit_${code}` : 'empty_exit'),
@@ -1817,6 +1890,7 @@ function createChatTurnEngine(deps) {
           killReason,
           apiError: !!effectiveApiErrorDecision || !!runner.sawApiError,
           apiErrorDecision: effectiveApiErrorDecision,
+          replaySafeProviderError: errorOnlyBoundary,
           adapterError: !!runner.adapterError,
           retryBlockedByAdapterError: !!cs._adapterError,
           retryPlanned: !!runner.retryPlanned,
@@ -2333,10 +2407,17 @@ function createChatTurnEngine(deps) {
   ) {
     if (seq !== undefined && cs._streamTurnSeq !== seq) return; // superseded by a newer turn
     if (!isCurrentTurnRunner(cs, turn, runner)) return;
+    const boundaryErrorEnvelope = reconcileBoundaryErrorEnvelope(
+      attemptRuntime, runner.providerAttempt,
+      provider?.name || persisted.cli || 'claude', cs.currentAssistantText,
+    );
     const attemptFacts = attemptRuntime.snapshot(sessionName);
-    const partialOutput = meaningfulTurnOutput(cs) || !!attemptFacts?.visibleOutputObserved;
     const sideEffects = turnHasSideEffects(cs)
       || !!attemptFacts?.toolIntentObserved || !!attemptFacts?.sideEffectObserved;
+    const errorOnlyBoundary = !!(boundaryErrorEnvelope && boundaryErrorEnvelope.body == null
+      && attemptFacts?.replayFence === 'none' && !sideEffects);
+    const partialOutput = errorOnlyBoundary
+      ? false : meaningfulTurnOutput(cs) || !!attemptFacts?.visibleOutputObserved;
     // Same success veto as the process close path: a durable result proves a
     // mid-stream error was recovered from (see the close handler above).
     clearErrorFlagsForSucceededTurn(turn, runner, cs, { killReason: runner.killReason });
@@ -2350,8 +2431,9 @@ function createChatTurnEngine(deps) {
       resultDurable: turn.resultDurable === true,
       killReason: runner.killReason || '',
     }, normalizeHandoff({ handoff: persisted.pendingCliHandoff }));
-    const shouldClassifyApiError = !guardedHandoffResumeFailure && !!(
-      runner.apiErrorRaw
+    const shouldClassifyApiError = (!guardedHandoffResumeFailure || errorOnlyBoundary) && !!(
+      boundaryErrorEnvelope
+      || runner.apiErrorRaw
       || runner.sawApiError
       || runner.adapterError
       || runner.killReason
@@ -2364,7 +2446,7 @@ function createChatTurnEngine(deps) {
         code: runner.killReason,
         message: 'turn cancelled',
       }
-      : runner.apiErrorRaw || {
+      : boundaryErrorEnvelope || runner.apiErrorRaw || {
         source: 'host_interruption',
         provider: persisted.cli || 'claude',
         code: 'stream_ended_without_result',
@@ -2402,6 +2484,7 @@ function createChatTurnEngine(deps) {
       killReason: runner.killReason || null,
       apiError: !!effectiveApiErrorDecision || !!runner.sawApiError,
       apiErrorDecision: effectiveApiErrorDecision,
+      replaySafeProviderError: errorOnlyBoundary,
       adapterError: !!runner.adapterError,
       retryPlanned: !!runner.retryPlanned,
       resultEvent: !!runner.resultEvent,
@@ -2569,7 +2652,7 @@ function createChatTurnEngine(deps) {
     // The replay helper also recognizes the crash-safety `_interim` record. It
     // promotes that stable-id entry to the one live streaming tail, rather than
     // sending both the persisted first batch and a cumulative id-less copy.
-    const canonicalPage = getChatHistoryRuntime().paginate(sessionName, { limit: CHAT_HISTORY_PAGE });
+    const canonicalPage = getChatHistoryRuntime().paginate(sessionName, { limit: CHAT_HISTORY_PAGE, includeHidden: urlObj.searchParams.get('historyScope') === 'archive' });
     const page = { messages: canonicalPage.messages, hasMore: canonicalPage.hasMore };
     const replayMessages = buildReplayMessages(page.messages, cs);
     // Include authoritative cumulative token usage from the persistent
@@ -2693,28 +2776,6 @@ function createChatTurnEngine(deps) {
         }
 
         if (msg.type === 'clear_history') {
-          if (msg.preserveHistory !== true) {
-            let backgroundActive = true;
-            try {
-              backgroundActive = getBackgroundTaskRuntime().hasLiveBackgroundTasks(sessionName) === true;
-            } catch (_) {}
-            if (backgroundActive) {
-              chatBroadcast(sessionName, {
-                type: 'error',
-                code: 'background_tasks_running',
-                error: '后台任务仍在运行；请等待完成或先取消后台任务，再清空历史。',
-              });
-              return;
-            }
-          }
-          let streamBusy = false;
-          try { streamBusy = chatStream.status(sessionName)?.busy === true; } catch (_) {}
-          if (msg.preserveHistory !== true
-              && !!(cs._activeRunner || cs.claudeProc || cs.isStreaming || streamBusy)) {
-            await getSessionWorkHost().cancelActiveTurn(sessionName, {
-              resolveQueue: true, source: 'clear_history', reason: 'clear_history', killReason: 'clear_history',
-            });
-          }
           await getChatHistoryRuntime().clearHistory(sessionName, msg, cs);
           return;
         }
@@ -2797,6 +2858,7 @@ module.exports = {
   createDeliveryProbeRegistry,
   deliverAfterPendingMemory,
   markReplaySafeAssistantEnvelope,
+  reconcileBoundaryErrorEnvelope,
   normalizeClaudeAssistantSnapshot,
   normalizeClaudeToolResultContent,
   recoverDispatchFromHistory,

@@ -26,23 +26,8 @@ const {
   aggregateTaskUsages,
   createTaskMergeHandler,
 } = require('../task-board-merge-runtime');
+const { assertTaskBoardDeps, createRelatedTaskLinker } = require('../task-board-runtime-helpers');
 const { createTaskPlanningRuntime } = require('./task-planning');
-
-const REQUIRED_DEPS = [
-  'file', 'auxQueue', 'records', 'loadHistory', 'dispatchToSession',
-  'sendSessionMessage',
-  'workspaceBroadcast', 'atomicWriteJson', 'isSystemInjected',
-  'getSessionRunState',
-];
-
-function assertTaskBoardDeps(deps) {
-  if (!deps || typeof deps !== 'object') throw new Error('[taskboard] deps object required');
-  for (const name of REQUIRED_DEPS) {
-    if (deps[name] === undefined || deps[name] === null) {
-      throw new Error(`[taskboard] missing dep: ${name}`);
-    }
-  }
-}
 
 function createTaskBoardRuntime(deps) {
   assertTaskBoardDeps(deps);
@@ -69,11 +54,6 @@ function createTaskBoardRuntime(deps) {
   // chat-session endpoint answers an explicit 501 instead of crashing.
   const createSessionRecord = typeof deps.createSessionRecord === 'function'
     ? deps.createSessionRecord : null;
-  // Archive-time release port (归档即释放): the session-lifecycle runtime's
-  // releaseTaskBoundSession. Optional in reduced hosts/tests — without it
-  // archiving simply keeps the binding (the pre-P5 behavior).
-  const releaseTaskBoundSession = typeof deps.releaseTaskBoundSession === 'function'
-    ? deps.releaseTaskBoundSession : null;
   // Composer runtime picks · where the suggested-runtime endpoint reads recent
   // activity from. Optional in reduced hosts/tests; production derives the same
   // chat_history dir the history service writes to.
@@ -171,6 +151,7 @@ function createTaskBoardRuntime(deps) {
     };
     reconcileMap(board.modules, candidate.modules);
     reconcileMap(board.tasks, candidate.tasks);
+    reconcileMap(board.taskGroups, candidate.taskGroups || {});
     board.schemaVersion = candidate.schemaVersion;
     board.revision = candidate.revision;
     return { ...result, taskId: result.task?.id || null };
@@ -1129,6 +1110,10 @@ function createTaskBoardRuntime(deps) {
     return result;
   }
 
+  const linkRelatedTasks = createRelatedTaskLinker({
+    board, groupRelatedTasks: core.groupRelatedTasks, save, notify,
+  });
+
   // Turn-end hook — called from classifyTurnEnd alongside the classify pass.
   // Only task-aware canonical messages participate. Ordinary chats are not
   // inferred into tasks; legacy marker records remain attachable for migration.
@@ -1492,9 +1477,9 @@ function createTaskBoardRuntime(deps) {
 
   function commanderFailure(res, code) {
     const notes = {
-      directory_required: '自动路由必须指定任务所属 Fleet',
-      commander_not_found: '该 Fleet 没有带稳定角色元数据的 Agent Commander，请先创建或修复 Commander 会话',
-      commander_ambiguous: '该 Fleet 存在多个 Agent Commander，无法安全确定唯一入口，请先修复角色配置',
+      directory_required: '自动路由必须指定任务所属工作区',
+      commander_not_found: '该工作区没有带稳定角色元数据的 Agent Commander，请先创建或修复 Commander 会话',
+      commander_ambiguous: '该工作区存在多个 Agent Commander，无法安全确定唯一入口，请先修复角色配置',
     };
     return res.status(code === 'directory_required' ? 400 : 409).json({
       error: code || 'commander_unavailable',
@@ -1512,13 +1497,17 @@ function createTaskBoardRuntime(deps) {
       directoryId: dirId,
       note: code === 'commander_migration_pending'
         ? 'Agent Commander 升级迁移尚未完成，自动路由暂不可用'
-        : '该 Fleet 的 Agent Commander 迁移未安全完成，请查看 readiness 并修复后重试',
+        : '该工作区的 Agent Commander 迁移未安全完成，请查看 readiness 并修复后重试',
     });
     return true;
   }
 
   function taskDto(task) {
-    const dto = core.buildBoardDto({ modules: board.modules, tasks: { [task.id]: task } }, getSessionRunState).tasks[0];
+    const dto = core.buildBoardDto({
+      modules: board.modules,
+      tasks: { [task.id]: task },
+      taskGroups: board.taskGroups,
+    }, getSessionRunState).tasks[0];
     dto.mergedTaskCount = Math.max(0, taskIdentityIds(task).length - 1);
     const body = canonicalTaskBody(task);
     if (dto.title === core.PENDING_TASK_TITLE && body.text) {
@@ -2650,25 +2639,6 @@ function createTaskBoardRuntime(deps) {
     }
   }
 
-  // Archive releases bound sessions best-effort and retains failed pointers.
-  async function releaseArchivedBoundSession(task) {
-    if (!releaseTaskBoundSession) return 0;
-    let released = 0;
-    for (const identityId of taskIdentityIds(task)) {
-      const member = board.tasks[identityId];
-      const boundId = typeof member?.chatSessionId === 'string' ? member.chatSessionId : '';
-      if (!boundId || records.get(boundId)?.taskBoundTaskId !== member.id) continue;
-      const result = await releaseTaskBoundSession(boundId).catch(() => null);
-      if (!result?.ok) {
-        logger.log(`[multicc/taskboard] bound session release kept (task ${member.id}): ${JSON.stringify(result || { error: 'threw' })}`);
-        continue;
-      }
-      member.chatSessionId = null;
-      released += 1;
-    }
-    return released;
-  }
-
   // Return the task-bound ordinary chat used by the unified task view.
   async function handleChatSession(req, res) {
     if (!createSessionRecord) {
@@ -2750,10 +2720,8 @@ function createTaskBoardRuntime(deps) {
     if (planningRevisionAtStart != null && !stageChanged) {
       task.planningRevision = planningRevisionAtStart + 1;
     }
-    // Archived is the only lifecycle end that releases the bound session —
-    // done tasks still expect follow-ups, their resume file must survive.
-    const releasedSessions = status === 'archived'
-      ? await releaseArchivedBoundSession(task) : 0;
+    // Archiving only changes lifecycle visibility; the task still owns its history.
+    const releasedSessions = 0;
     if (!save()) {
       for (const key of Object.keys(task)) delete task[key];
       Object.assign(task, beforeMutation);
@@ -2797,12 +2765,7 @@ function createTaskBoardRuntime(deps) {
       task.updatedAt = now;
       taskIds.push(task.id);
     }
-    // Archive-time release happens before the board save so cleared pointers
-    // persist in the same write (release itself never throws — see helper).
-    let releasedSessions = 0;
-    for (const id of taskIds) {
-      releasedSessions += await releaseArchivedBoundSession(board.tasks[id]);
-    }
+    const releasedSessions = 0;
     if (taskIds.length) {
       save();
       notify(dirId, taskIds);
@@ -2961,6 +2924,7 @@ function createTaskBoardRuntime(deps) {
     onTurnEnd,
     onClassifyGoal,
     onTaskAttributionSettled,
+    linkRelatedTasks,
     reassignTurnTask,
     scanPendingClassifications,
     routeCommanderInput: async (commanderId, text, options = {}) => {

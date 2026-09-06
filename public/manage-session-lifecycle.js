@@ -131,10 +131,14 @@
   }
 
   function showApiError(error) {
+    if (typeof api.errorText === 'function') {
+      showToast(`Error: ${api.errorText(error)}`, true);
+      return;
+    }
     const detail = api.errorDisplay(error);
     const status = detail.status ? ` · HTTP ${detail.status}` : '';
     const request = detail.requestId ? ` · request ${detail.requestId}` : '';
-    showToast(`Error: ${detail.message}${status}${request}`, true);
+    showToast(`Error: ${detail.displayMessage || detail.message}${status}${request}`, true);
   }
 
   function buildSessionCreatePayload(cli, kind, result) {
@@ -197,7 +201,33 @@
 
   // WebView-safe model picker (same pattern as _dialog). Resolves to '' (default),
   // a model string, or null (cancelled).
-  function showModelPicker({ title = tt('modelTitle'), okText = tt('create'), current = '', providerId = '', cli = 'claude' } = {}) {
+  function codexPickerOptions() {
+    const live = typeof root.codexModelOptions === 'function' ? root.codexModelOptions() : [];
+    return [
+      { value: '', label: '默认（跟随 Codex 设置）' },
+      ...live.map(item => ({ value: item.model, label: item.label || item.model })),
+    ];
+  }
+
+  function codexCatalogHint() {
+    const value = typeof root.readCodexModelCatalogSync === 'function'
+      ? root.readCodexModelCatalogSync() : null;
+    if (!value || !value.diagnostic) return '';
+    const suffix = value.cliVersion ? ` · CLI ${value.cliVersion}` : '';
+    return `${value.diagnostic.message || ''}${suffix}`.trim();
+  }
+
+  async function refreshCodexCatalog() {
+    if (typeof root.loadCodexModels !== 'function') return null;
+    const result = await root.loadCodexModels({ forceRefresh: true });
+    // The live CLI call also refreshes ~/.codex/models_cache.json. Reload the
+    // provider DTO so old official-provider modelCatalog rows cannot win.
+    if (typeof root.loadProviders === 'function') await root.loadProviders();
+    return result;
+  }
+
+  async function showModelPicker({ title = tt('modelTitle'), okText = tt('create'), current = '', providerId = '', cli = 'claude' } = {}) {
+    if (cli === 'codex') await refreshCodexCatalog();
     return new Promise((resolve) => {
       let closed = false;
       const overlay = document.createElement('div');
@@ -211,11 +241,17 @@
 
       // Alias-mapped relays: list the tiers directly, each reading
       // "opus · GLM5.2 · glm-5.2" (别名 - 展示名 - 真实id); map a stored wire id back to its tier.
-      const tiers = cli === 'zcode' ? [] : providerAliasTiers(providerId);
+      const effectiveProviderId = providerId
+        || (_providerData.defaults && _providerData.defaults[cli]) || '';
+      const tiers = cli === 'zcode' ? [] : providerAliasTiers(effectiveProviderId);
       const vendorOptions = vendorModelOptions(cli);
-      const provider = catalog.findProvider(_providerData, '', providerId);
+      const provider = catalog.findProvider(_providerData, '', effectiveProviderId);
       const providerModels = provider ? catalog.modelsFor(provider) : [];
-      const optionList = providerModels.length
+      const liveCodex = cli === 'codex' && (!provider || provider.isOfficial)
+        ? codexPickerOptions() : [];
+      const optionList = liveCodex.length
+        ? [...liveCodex, { value: '__custom__', labelKey: 'custom' }]
+        : providerModels.length
         ? [...providerModels.map(value => ({ value, label: value })), { value: '__custom__', labelKey: 'custom' }]
         : vendorOptions
         ? [...vendorOptions, { value: '__custom__', labelKey: 'custom' }]
@@ -242,10 +278,17 @@
 
       const custom = document.createElement('input');
       custom.type = 'text';
-      custom.placeholder = '模型 ID，如 claude-opus-4-8';
+      custom.placeholder = cli === 'codex'
+        ? 'wire model ID，如 gpt-5.6-sol' : '模型 ID，如 claude-opus-4-8';
       custom.value = isKnown ? '' : cur;
       custom.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;display:none;';
       box.appendChild(custom);
+      if (cli === 'codex') {
+        const hint = document.createElement('div');
+        hint.style.cssText = 'font-size:11px;color:#8b949e;line-height:1.45;margin:-5px 0 12px;';
+        hint.textContent = codexCatalogHint();
+        box.appendChild(hint);
+      }
       const syncCustom = () => {
         custom.style.display = select.value === '__custom__' ? '' : 'none';
       };
@@ -290,6 +333,9 @@
     let defaultProviderId = '';
     if (supportsManagedProvider(cli)) {
       try {
+        if (cli === 'codex' && typeof root.loadCodexModels === 'function') {
+          await root.loadCodexModels({ forceRefresh: true });
+        }
         const appType = cli === 'codex' ? 'codex' : 'claude';
         const providerUrl = window.MultiCCFleetSharing?.apiUrlForDirectory(
           `/api/providers?cli=${encodeURIComponent(cli)}`,
@@ -422,12 +468,16 @@
     let opts;
     let asyncFill = null;
     const vendorOptions = vendorModelOptions(cli);
+    const liveCodex = cli === 'codex' && (!prov || prov.isOfficial)
+      ? codexPickerOptions() : [];
     if (vendorOptions) {
       opts = vendorOptions;
     } else if (tiers.length) {
       opts = tiers.map(([t, m]) => ({ value: t, label: formatAliasTierLabel(t, m) }));
-  } else if (prov && catalog.modelsFor(prov).length) {
-    opts = catalog.modelsFor(prov).map(m => ({ value: m, label: m }));
+    } else if (liveCodex.length) {
+      opts = liveCodex;
+    } else if (prov && catalog.modelsFor(prov).length) {
+      opts = catalog.modelsFor(prov).map(m => ({ value: m, label: m }));
     } else if (isClaude) {
       opts = CLAUDE_MODEL_OPTIONS;
     } else if (cli === 'zcode') {
@@ -587,7 +637,7 @@
       });
 
       const roleInput = document.createElement('textarea');
-      roleInput.placeholder = '留空则继承Fleet默认角色';
+      roleInput.placeholder = '留空则继承工作区默认角色';
       roleInput.rows = 3;
       roleInput.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;resize:vertical;font-family:inherit;box-sizing:border-box;';
       box.appendChild(roleInput);
@@ -639,6 +689,13 @@
       modelCustom.placeholder = isClaude ? '模型 ID，如 claude-opus-4-8' : '模型 ID，如 gpt-5.5 / xopglm52';
       modelCustom.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:6px;display:none;box-sizing:border-box;';
       box.appendChild(modelCustom);
+
+      if (cli === 'codex') {
+        const catalogHint = document.createElement('div');
+        catalogHint.style.cssText = 'font-size:11px;color:#8b949e;line-height:1.45;margin-bottom:8px;';
+        catalogHint.textContent = codexCatalogHint();
+        box.appendChild(catalogHint);
+      }
 
       // Empty provider follows the configured default provider for this CLI, so
       // Codex still shows GPT / XF model choices instead of Claude-only fallback.
@@ -762,7 +819,7 @@
 
       const hint = document.createElement('div');
       hint.style.cssText = 'font-size:12px;color:#8b949e;margin-bottom:12px;';
-      hint.textContent = '留空＝清除（会话将继承Fleet默认角色）。Ctrl/⌘+Enter 保存。';
+      hint.textContent = '留空＝清除（会话将继承工作区默认角色）。Ctrl/⌘+Enter 保存。';
       box.appendChild(hint);
 
       const row = document.createElement('div');
@@ -816,7 +873,7 @@
     if (!result.owned) return;
     if (result.error) { showApiError(result.error); return; }
     const hint = (sess.cli || 'claude') === 'codex' ? '（Codex 仅新会话首轮生效）' : '（下一轮对话生效）';
-    showToast(`${next.trim() ? '角色已更新' : '已清除会话角色（继承Fleet默认）'} ${hint}`);
+    showToast(`${next.trim() ? '角色已更新' : '已清除会话角色（继承工作区默认）'} ${hint}`);
     loadDashboard();
   }
 
@@ -824,9 +881,9 @@
     const dir = (_cachedDirectories || []).find(d => d.id === id);
     if (!dir) return;
     const next = await showRoleEditor({
-      title: `Fleet默认角色 — ${dir.name}`,
+      title: `工作区默认角色 — ${dir.name}`,
       current: dir.rolePrompt || '',
-      placeholder: '该Fleet下所有会话的默认角色。单个会话可在「角色提示词」里单独覆盖。',
+      placeholder: '该工作区下所有会话的默认角色。单个会话可在「角色提示词」里单独覆盖。',
     });
     if (next === null) return;
     const result = await ownedJson(`directory:${id}:role`, `/api/directories/${encodeURIComponent(id)}`, {
@@ -835,7 +892,7 @@
     });
     if (!result.owned) return;
     if (result.error) { showApiError(result.error); return; }
-    showToast(`${next.trim() ? 'Fleet默认角色已更新' : '已清除Fleet默认角色'}（对未单独设角色的会话下一轮生效）`);
+    showToast(`${next.trim() ? '工作区默认角色已更新' : '已清除工作区默认角色'}（对未单独设角色的会话下一轮生效）`);
     loadDashboard();
   }
 
@@ -865,6 +922,9 @@
     effortLabelForCli,
     effortOptionsForCli,
     defaultEffortForCli,
+    codexPickerOptions,
+    codexCatalogHint,
+    refreshCodexCatalog,
   });
 
   // Warm the Qoder catalog so the create/edit dialogs render the live list on
@@ -902,5 +962,8 @@
     effortLabelForCli,
     effortOptionsForCli,
     defaultEffortForCli,
+    codexPickerOptions,
+    codexCatalogHint,
+    refreshCodexCatalog,
   });
 })(typeof window !== 'undefined' ? window : null);

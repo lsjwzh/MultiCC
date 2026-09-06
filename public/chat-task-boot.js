@@ -56,7 +56,7 @@ function bootTaskMode() {
     withToken,
   }).then(boundId => {
     if (boundId) {
-      location.replace('chat.html?session=' + encodeURIComponent(boundId));
+      location.replace('chat.html?session=' + encodeURIComponent(boundId) + '&historyScope=archive');
       return;
     }
     bootTaskProjection();

@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>MultiCC — iOS OTA 安装</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;background:#0d1117;color:#e6edf3;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+  .card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:28px 24px;max-width:420px;width:100%;text-align:center}
+  .logo{font-size:40px;line-height:1;margin-bottom:8px}
+  h1{font-size:18px;font-weight:600;margin-bottom:4px}
+  .sub{font-size:12px;color:#8b949e;margin-bottom:20px}
+  .banner{display:none;font-size:12px;line-height:1.6;border-radius:8px;padding:10px 12px;margin-bottom:16px;text-align:left}
+  .banner.warn{display:block;background:rgba(210,153,34,.12);border:1px solid rgba(210,153,34,.45);color:#d29922}
+  .banner.err{display:block;background:rgba(248,81,73,.1);border:1px solid rgba(248,81,73,.4);color:#f85149}
+  .meta{font-size:13px;color:#8b949e;line-height:1.8;margin-bottom:20px;overflow-wrap:anywhere}
+  .meta b{color:#e6edf3;font-weight:600}
+  #install-btn{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:13px 16px;border-radius:8px;background:#238636;color:#fff;font-size:15px;font-weight:600;text-decoration:none;border:1px solid rgba(240,246,252,.1)}
+  #install-btn.disabled{opacity:.4;pointer-events:none}
+  #qr-wrap{display:none;margin:20px auto 4px;background:#fff;border-radius:10px;padding:10px;width:max-content;max-width:100%}
+  #qr-wrap canvas{display:block;max-width:100%;height:auto}
+  .qr-hint{display:none;font-size:11px;color:#8b949e;margin-top:6px}
+  .links{margin-top:18px;font-size:12px;line-height:2}
+  .links a{color:#58a6ff;text-decoration:none;word-break:break-all}
+  .notes{margin-top:20px;padding-top:16px;border-top:1px solid #21262d;font-size:11px;color:#6e7681;line-height:1.8;text-align:left}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">📱</div>
+  <h1>MultiCC iOS 版</h1>
+  <div class="sub">无线 (OTA) 安装 · 无需 USB</div>
+
+  <div class="banner" id="https-banner">⚠️ iOS 只接受 <b>HTTPS</b> 的 OTA 安装。当前页面是 HTTP，请改用 Tailscale Funnel 等 HTTPS 地址访问本页后再安装。</div>
+  <div class="banner" id="error-banner"></div>
+
+  <div class="meta" id="meta">读取版本信息…</div>
+
+  <a id="install-btn" class="disabled" href="#">⬇️ 安装 / 更新到本机</a>
+
+  <div id="qr-wrap"></div>
+  <div class="qr-hint" id="qr-hint">用 iPhone 相机扫码，在本机打开本页</div>
+
+  <div class="links" id="links" style="display:none">
+    <div><a id="direct-link" href="/multicc-ios.ipa">直接下载 IPA 文件</a></div>
+    <div><a id="manifest-link" href="#" onclick="return false"></a></div>
+  </div>
+
+  <div class="notes">
+    <b>前提：</b>IPA 的签名描述文件必须包含这台设备的 UDID（Xcode 连过一次即自动登记）；同 bundle id + 更高 build 号 = 原地升级，数据保留。免费开发者账号签名 7 天过期。<br>
+    <b>发布：</b>在服务器 Mac 上运行 <code>./scripts/publish-ipa.sh 路径/到.ipa</code>，本页立即出现新版本（无需重启服务）。
+  </div>
+</div>
+
+<script src="qrcode.min.js"></script>
+<script>
+(function () {
+  'use strict';
+  var metaEl = document.getElementById('meta');
+  var installBtn = document.getElementById('install-btn');
+  var httpsBanner = document.getElementById('https-banner');
+  var errorBanner = document.getElementById('error-banner');
+  var isHttps = location.protocol === 'https:';
+  var manifestUrl = location.origin + '/ios-ota/manifest.plist';
+  var itmsUrl = 'itms-services://?action=download-manifest&url=' + encodeURIComponent(manifestUrl);
+
+  if (!isHttps) httpsBanner.classList.add('warn');
+
+  function showError(text) {
+    errorBanner.textContent = text;
+    errorBanner.classList.add('err');
+  }
+
+  function fmtSize(bytes) {
+    if (!bytes) return '';
+    return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+  }
+
+  function fmtTime(iso) {
+    if (!iso) return '';
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    return d.toLocaleString();
+  }
+
+  function renderQr() {
+    if (typeof qrcode !== 'function') return;
+    try {
+      var qr = qrcode(0, 'M');
+      qr.addData(location.href);
+      qr.make();
+      var cellSize = 4, margin = 4;
+      var count = qr.getModuleCount();
+      var size = count * cellSize + margin * 2;
+      var canvas = document.createElement('canvas');
+      canvas.width = size; canvas.height = size;
+      var ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, size, size);
+      ctx.fillStyle = '#000000';
+      for (var r = 0; r < count; r++) {
+        for (var c = 0; c < count; c++) {
+          if (qr.isDark(r, c)) ctx.fillRect(margin + c * cellSize, margin + r * cellSize, cellSize, cellSize);
+        }
+      }
+      document.getElementById('qr-wrap').appendChild(canvas);
+      document.getElementById('qr-wrap').style.display = 'block';
+      document.getElementById('qr-hint').style.display = 'block';
+    } catch (_) { /* QR is a convenience, never a blocker */ }
+  }
+
+  fetch('/api/ios-ota-info', { headers: { 'Accept': 'application/json' } })
+    .then(function (res) {
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return res.json();
+    })
+    .then(function (info) {
+      if (!info.exists) {
+        metaEl.innerHTML = '还没有发布 IPA。<br>在服务器 Mac 上运行 <b>./scripts/publish-ipa.sh 路径/到.ipa</b> 后刷新本页。';
+        return;
+      }
+      var version = info.versionName ? ('v' + info.versionName + (info.versionCode ? ' (' + info.versionCode + ')' : '')) : '未知版本';
+      metaEl.innerHTML =
+        '<b>' + version + '</b>' + (fmtSize(info.size) ? ' · ' + fmtSize(info.size) : '') + '<br>' +
+        (info.bundleId ? info.bundleId + '<br>' : '') +
+        (info.mtime ? '发布于 ' + fmtTime(info.mtime) : '');
+      if (!info.installable) {
+        showError('IPA 已发布，但缺少版本元数据（sidecar 不完整），无法生成安装清单。请用 publish-ipa.sh 重新发布。');
+        return;
+      }
+      installBtn.href = itmsUrl;
+      if (isHttps) installBtn.classList.remove('disabled');
+      document.getElementById('links').style.display = 'block';
+      document.getElementById('manifest-link').textContent = manifestUrl;
+      renderQr();
+    })
+    .catch(function (err) {
+      metaEl.textContent = '版本信息读取失败：' + err.message;
+    });
+})();
+</script>
+</body>
+</html>

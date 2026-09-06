@@ -187,3 +187,105 @@ test('external import rejects redirects and incompatible remote payloads without
   await assert.rejects(h.sharing.importExternal(input), error => error.code === 'INVALID_REMOTE_RESPONSE');
   assert.deepEqual(h.sharing.listExternal(), []);
 });
+
+test('external WebSocket ticket preserves the remote code/message and propagates correlation', async t => {
+  const requests = [];
+  let requestNo = 0;
+  const fetchImpl = async (url, init) => {
+    requests.push({ url: String(url), init });
+    requestNo += 1;
+    if (requestNo === 1) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        async text() {
+          return JSON.stringify({
+            schemaVersion: 1,
+            instanceId: 'instance-remote',
+            capability: {
+              token: `fleet_share_${'w'.repeat(32)}`,
+              grant: 'r'.repeat(43),
+            },
+            fleet: {
+              id: 'remote-fleet', name: 'Remote Fleet', sessions: [{ id: 'remote-chat', label: 'Chat' }],
+            },
+          });
+        },
+      };
+    }
+    const body = Buffer.from(JSON.stringify({
+      code: 'FLEET_SCOPE_FORBIDDEN',
+      error: 'remote grant expired',
+      requestId: 'remote-request-11',
+      correlationId: 'correlation-11',
+    }));
+    return {
+      ok: false,
+      status: 403,
+      headers: {
+        get(name) {
+          if (name === 'x-multicc-request-id') return 'remote-request-11';
+          if (name === 'x-correlation-id') return 'correlation-11';
+          if (name === 'content-type') return 'application/json';
+          return null;
+        },
+      },
+      async arrayBuffer() { return body; },
+    };
+  };
+  const h = fixture(t, { fetchImpl });
+  const external = await h.sharing.importExternal({
+    shareUrl: `https://remote.test/fleet-share/fleet_share_${'w'.repeat(32)}`,
+    password: 'password',
+  });
+
+  await assert.rejects(
+    h.sharing.issueExternalWsTicket(external.id, {
+      pathname: '/ws/chat', sessionId: 'remote-chat',
+    }, { correlationId: 'correlation-11' }),
+    error => error.code === 'FLEET_SCOPE_FORBIDDEN'
+      && error.message === 'remote grant expired'
+      && error.category === 'remote'
+      && error.upstreamRequestId === 'remote-request-11'
+      && error.correlationId === 'correlation-11',
+  );
+  assert.equal(requests[1].init.headers['x-correlation-id'], 'correlation-11');
+});
+
+test('external import preserves a structured remote error code and original message', async t => {
+  const fetchImpl = async () => ({
+    ok: false,
+    status: 503,
+    headers: {
+      get(name) {
+        if (name === 'x-multicc-request-id') return 'remote-import-7';
+        if (name === 'x-correlation-id') return 'correlation-import-7';
+        return null;
+      },
+    },
+    async text() {
+      return JSON.stringify({
+        code: 'REMOTE_PROVIDER_OVERLOADED',
+        error: 'worker queue saturated at source',
+        category: 'provider',
+        retryable: true,
+        action: 'retry_later',
+      });
+    },
+  });
+  const h = fixture(t, { fetchImpl });
+  await assert.rejects(
+    h.sharing.importExternal({
+      shareUrl: `https://remote.test/fleet-share/fleet_share_${'w'.repeat(32)}`,
+      password: 'password',
+    }, { correlationId: 'correlation-import-7' }),
+    error => error.code === 'REMOTE_PROVIDER_OVERLOADED'
+      && error.message === 'worker queue saturated at source'
+      && error.category === 'provider'
+      && error.retryable === true
+      && error.action === 'retry_later'
+      && error.upstreamRequestId === 'remote-import-7'
+      && error.correlationId === 'correlation-import-7',
+  );
+});

@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 
+import '../models/docs_registry_entry.dart';
 import '../models/message.dart';
 import '../models/task_board.dart';
 import 'settings_service.dart';
@@ -1167,5 +1168,141 @@ class ManageService {
     if (res.statusCode >= 400) _throwWrite(res);
     return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
         .cast<String, dynamic>();
+  }
+
+  // ── Docs & web-services registry (服务与文档) ───────────────────────────────
+  // Mirrors /api/docs-registry (src/docs-registry.js) — the /manage panel's
+  // registry of agent-published pages/files and user-registered local web
+  // services. Unlike the older sections above, these methods route through
+  // the injectable [httpClient] so tests can stub the wire.
+
+  /// One request through the injected client (tests) or a package-default
+  /// one-shot client that is closed after the call (matching the top-level
+  /// http.* calls used by the rest of this file).
+  Future<http.Response> _req(String verb, Uri uri, {String? body}) async {
+    final injected = httpClient;
+    final client = injected ?? http.Client();
+    try {
+      final res = await switch (verb) {
+        'GET' => client.get(uri, headers: _headers),
+        'POST' => client.post(uri, headers: _headers, body: body ?? '{}'),
+        'PATCH' => client.patch(uri, headers: _headers, body: body ?? '{}'),
+        'DELETE' => client.delete(uri, headers: _headers),
+        _ => throw StateError('unsupported verb $verb'),
+      }.timeout(const Duration(seconds: 15));
+      return res;
+    } finally {
+      if (injected == null) client.close();
+    }
+  }
+
+  /// List entries, newest first (server-side sort).
+  Future<List<DocsRegistryEntry>> fetchDocsRegistry() async {
+    final res = await _req('GET', Uri.parse(_url('/api/docs-registry')));
+    if (res.statusCode >= 400) _throw(res);
+    final list = jsonDecode(utf8.decode(res.bodyBytes));
+    if (list is! List) return const [];
+    return list
+        .whereType<Map>()
+        .map((m) => DocsRegistryEntry.fromJson(m.cast<String, dynamic>()))
+        .toList();
+  }
+
+  /// Register (or upsert by URL) a manually-added service row.
+  Future<DocsRegistryEntry> registerDocsService({
+    required String title,
+    required String url,
+    String startCmd = '',
+    String cwd = '',
+  }) async {
+    final res = await _req(
+      'POST',
+      Uri.parse(_url('/api/docs-registry')),
+      body: jsonEncode({
+        'kind': 'service',
+        'title': title,
+        'url': url,
+        'source': 'user',
+        if (startCmd.trim().isNotEmpty) 'startCmd': startCmd.trim(),
+        if (cwd.trim().isNotEmpty) 'cwd': cwd.trim(),
+      }),
+    );
+    if (res.statusCode >= 400) _throw(res);
+    return DocsRegistryEntry.fromJson(
+      (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>(),
+    );
+  }
+
+  /// PATCH a row (pin toggle and other editable fields).
+  Future<DocsRegistryEntry> updateDocsEntry(
+    String id, {
+    bool? pinned,
+    String? title,
+    String? note,
+    int? port,
+    String? startCmd,
+    String? cwd,
+  }) async {
+    final body = <String, dynamic>{};
+    if (pinned != null) body['pinned'] = pinned;
+    if (title != null) body['title'] = title;
+    if (note != null) body['note'] = note;
+    if (port != null) body['port'] = port;
+    if (startCmd != null) body['startCmd'] = startCmd;
+    if (cwd != null) body['cwd'] = cwd;
+    final res = await _req(
+      'PATCH',
+      Uri.parse(_url('/api/docs-registry/${Uri.encodeComponent(id)}')),
+      body: jsonEncode(body),
+    );
+    if (res.statusCode >= 400) _throw(res);
+    return DocsRegistryEntry.fromJson(
+      (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>(),
+    );
+  }
+
+  /// Remove a registration (published content itself is untouched).
+  Future<void> deleteDocsEntry(String id) async {
+    final res = await _req(
+      'DELETE',
+      Uri.parse(_url('/api/docs-registry/${Uri.encodeComponent(id)}')),
+    );
+    if (res.statusCode >= 400) _throw(res);
+  }
+
+  /// POST .../start — spawn startCmd detached. Server refuses with 409 when
+  /// already running and 400 when no startCmd is registered; both surface via
+  /// [_throw] with the server's own message.
+  Future<DocsRegistryEntry> startDocsService(String id) async {
+    final res = await _req(
+      'POST',
+      Uri.parse(_url('/api/docs-registry/${Uri.encodeComponent(id)}/start')),
+    );
+    if (res.statusCode >= 400) _throw(res);
+    return DocsRegistryEntry.fromJson(
+      (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>(),
+    );
+  }
+
+  /// POST .../stop — SIGTERM the supervised pid. 409 when no pid is known.
+  Future<DocsRegistryEntry> stopDocsService(String id) async {
+    final res = await _req(
+      'POST',
+      Uri.parse(_url('/api/docs-registry/${Uri.encodeComponent(id)}/stop')),
+    );
+    if (res.statusCode >= 400) _throw(res);
+    return DocsRegistryEntry.fromJson(
+      (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>(),
+    );
+  }
+
+  /// GET .../log — the service's startup log tail as text/plain.
+  Future<String> fetchDocsServiceLog(String id) async {
+    final res = await _req(
+      'GET',
+      Uri.parse(_url('/api/docs-registry/${Uri.encodeComponent(id)}/log')),
+    );
+    if (res.statusCode >= 400) _throw(res);
+    return utf8.decode(res.bodyBytes);
   }
 }

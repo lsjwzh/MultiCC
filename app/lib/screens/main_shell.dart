@@ -36,6 +36,7 @@ import 'push_settings_screen.dart';
 import 'memo_screen.dart';
 import 'settings_screen.dart';
 import 'cron_screen.dart';
+import 'docs_registry_screen.dart';
 import 'terminal_screen.dart';
 import 'tunnel_settings_screen.dart';
 import 'voice_settings_screen.dart';
@@ -457,53 +458,47 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
     );
   }
 
+  // Shared route builders: keep each switch case a two-liner (3k line budget).
+  MaterialPageRoute<void> _routeTo(WidgetBuilder builder) =>
+      MaterialPageRoute<void>(builder: builder);
+
+  MaterialPageRoute<void> _agentResourcesRoute(
+    AgentResourcesInitialSection section,
+  ) => _routeTo((_) => AgentResourcesScreen(
+        settings: widget.settings,
+        initialSection: section,
+      ));
+
   void _openNavigationDestination(WorkspaceDestination destination) {
     final route = switch (destination) {
-      WorkspaceDestination.cron => MaterialPageRoute<void>(
-          builder: (_) => CronScreen(settings: widget.settings),
-        ),
-      WorkspaceDestination.voice => MaterialPageRoute<void>(
-          builder: (_) => VoiceSettingsScreen(settings: widget.settings),
-        ),
-      WorkspaceDestination.goal => MaterialPageRoute<void>(
-          builder: (_) => SettingsScreen(
+      WorkspaceDestination.cron =>
+        _routeTo((_) => CronScreen(settings: widget.settings)),
+      WorkspaceDestination.docs =>
+        _routeTo((_) => DocsRegistryScreen(settings: widget.settings)),
+      WorkspaceDestination.voice =>
+        _routeTo((_) => VoiceSettingsScreen(settings: widget.settings)),
+      WorkspaceDestination.goal => _routeTo(
+          (_) => SettingsScreen(
             settings: widget.settings,
             initialSection: SettingsInitialSection.goal,
           ),
         ),
-      WorkspaceDestination.provider => MaterialPageRoute<void>(
-          builder: (_) => ProviderScreen(settings: widget.settings),
-        ),
-      WorkspaceDestination.global => MaterialPageRoute<void>(
-          builder: (_) => SettingsScreen(settings: widget.settings),
-        ),
-      WorkspaceDestination.push => MaterialPageRoute<void>(
-          builder: (_) => PushSettingsScreen(settings: widget.settings),
-        ),
-      WorkspaceDestination.tunnel => MaterialPageRoute<void>(
-          builder: (_) => TunnelSettingsScreen(settings: widget.settings),
-        ),
-      WorkspaceDestination.bridges => MaterialPageRoute<void>(
-          builder: (_) => BridgeSettingsScreen(settings: widget.settings),
-        ),
-      WorkspaceDestination.resources => MaterialPageRoute<void>(
-          builder: (_) => AgentResourcesScreen(
-            settings: widget.settings,
-            initialSection: AgentResourcesInitialSection.resources,
-          ),
-        ),
-      WorkspaceDestination.skillSync => MaterialPageRoute<void>(
-          builder: (_) => AgentResourcesScreen(
-            settings: widget.settings,
-            initialSection: AgentResourcesInitialSection.skillSync,
-          ),
-        ),
-      WorkspaceDestination.storage => MaterialPageRoute<void>(
-          builder: (_) => AgentResourcesScreen(
-            settings: widget.settings,
-            initialSection: AgentResourcesInitialSection.storage,
-          ),
-        ),
+      WorkspaceDestination.provider =>
+        _routeTo((_) => ProviderScreen(settings: widget.settings)),
+      WorkspaceDestination.global =>
+        _routeTo((_) => SettingsScreen(settings: widget.settings)),
+      WorkspaceDestination.push =>
+        _routeTo((_) => PushSettingsScreen(settings: widget.settings)),
+      WorkspaceDestination.tunnel =>
+        _routeTo((_) => TunnelSettingsScreen(settings: widget.settings)),
+      WorkspaceDestination.bridges =>
+        _routeTo((_) => BridgeSettingsScreen(settings: widget.settings)),
+      WorkspaceDestination.resources =>
+        _agentResourcesRoute(AgentResourcesInitialSection.resources),
+      WorkspaceDestination.skillSync =>
+        _agentResourcesRoute(AgentResourcesInitialSection.skillSync),
+      WorkspaceDestination.storage =>
+        _agentResourcesRoute(AgentResourcesInitialSection.storage),
       WorkspaceDestination.overview || WorkspaceDestination.memory => null,
     };
 
@@ -1732,10 +1727,8 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet>
 
   /// Open a session by id (called from the task-board detail sheet when a
   /// session chip is tapped, or when a message is tapped to deep-link into the
-  /// chat). Looks the session up in the loaded list; a chat opens inline over
-  /// the fleet panel, a terminal pushes its screen. A [focusMessageId]
-  /// deep-links a chat session to that message (scroll + highlight); it is
-  /// ignored for terminals and when null. A session referenced by a task but no
+  /// chat). Task entries read full history, including messages hidden in the
+  /// ordinary session view. A session referenced by a task but no
   /// longer loaded surfaces a SnackBar. The detail sheet pops itself before
   /// calling this, so the fleet panel is the top layer and its context/mgr are
   /// still live.
@@ -1757,7 +1750,10 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet>
     if (focusMessageId != null &&
         focusMessageId.isNotEmpty &&
         match.isChat) {
-      widget.mgr.openSessionWithFocus(match, focusMessageId: focusMessageId);
+      widget.mgr.openSessionWithFocus(match, focusMessageId: focusMessageId, historyArchive: true);
+    } else if (match.isChat) {
+      widget.mgr.openSession(match, historyArchive: true);
+      widget.mgr.switchToSession(match.id);
     } else {
       _openSession(match);
     }
@@ -1774,7 +1770,8 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet>
       );
       return;
     }
-    _openSession(session);
+    widget.mgr.openSession(session, historyArchive: true);
+    widget.mgr.switchToSession(session.id);
   }
 
   Future<void> _createSession(SessionKind kind, {SessionCli? defaultCli}) async {

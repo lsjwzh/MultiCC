@@ -9,6 +9,8 @@
   const externalDirectories = new Map();
   const externalSessions = new Map();
   const baseFetch = global.fetch.bind(global);
+  const api = global.MultiCCApi;
+  const errorModel = global.MultiCCErrorEnvelope;
 
   function syntheticSessionId(fleetId, remoteSessionId) {
     return `${fleetId}::${remoteSessionId}`;
@@ -61,11 +63,35 @@
   };
 
   function el(id) { return document.getElementById(id); }
-  function setError(id, message) {
+  function displayError(error) {
+    if (api && typeof api.errorDisplay === 'function') return api.errorDisplay(error);
+    const envelope = errorModel && errorModel.normalize(error || {}, {
+      defaultCode: 'FLEET_REQUEST_FAILED', source: 'fleet_ui',
+    });
+    return {
+      message: error && error.message || String(error || 'Workspace request failed'),
+      displayMessage: envelope ? errorModel.visibleMessage(envelope) : null,
+      envelope,
+    };
+  }
+
+  function setError(id, value) {
     const target = el(id);
     if (!target) return;
-    target.textContent = message || '';
-    target.style.display = message ? 'block' : 'none';
+    target.replaceChildren();
+    if (!value) { target.style.display = 'none'; return; }
+    const detail = typeof value === 'string'
+      ? { message: value, displayMessage: value, envelope: null }
+      : displayError(value);
+    const label = document.createElement('span');
+    label.className = 'mc-error-summary';
+    label.textContent = detail.displayMessage || detail.message;
+    target.appendChild(label);
+    if (detail.envelope && errorModel) {
+      const diagnostics = errorModel.createDetails(document, detail.envelope);
+      if (diagnostics) target.appendChild(diagnostics);
+    }
+    target.style.display = 'block';
   }
   function closeModal(id) { const modal = el(id); if (modal) modal.classList.remove('visible'); }
   function displayDate(value) {
@@ -79,7 +105,7 @@
     host.innerHTML = `
       <div id="fleet-share-modal" class="modal-backdrop fleet-share-modal" role="dialog" aria-modal="true" aria-labelledby="fleet-share-title" onclick="if(event.target===this)closeFleetShareModal()">
         <div class="modal-card">
-          <div class="fs-modal-head"><h3 id="fleet-share-title">分享 Fleet</h3><button class="fs-modal-close" type="button" onclick="closeFleetShareModal()" aria-label="关闭分享 Fleet 弹窗" title="关闭">×</button></div>
+          <div class="fs-modal-head"><h3 id="fleet-share-title">分享工作区</h3><button class="fs-modal-close" type="button" onclick="closeFleetShareModal()" aria-label="关闭分享工作区弹窗" title="关闭">×</button></div>
           <div class="fs-modal-body">
           <div id="fleet-share-sub" class="fs-sub"></div>
           <div class="fs-field"><label for="fleet-share-password">访问密码（至少 6 位）</label><input id="fleet-share-password" type="password" autocomplete="new-password" /></div>
@@ -88,7 +114,7 @@
             <div class="fs-field"><label for="fleet-share-accesses">最多导入次数</label><input id="fleet-share-accesses" type="number" min="1" max="10000" value="10" /></div>
           </div>
           <div class="fs-field"><label for="fleet-share-description">给接收方的说明（可选）</label><textarea id="fleet-share-description" maxlength="500"></textarea></div>
-          <div class="fs-note">接收方可查看并操作此 Fleet 的会话和代码变更；不会获得 Provider 凭据或其他 Fleet 的管理权限。</div>
+          <div class="fs-note">接收方可查看并操作此工作区的会话和代码变更；不会获得 Provider 凭据或其他工作区的管理权限。</div>
           <div id="fleet-share-error" class="fs-error"></div>
           <div class="fs-actions"><button class="btn" type="button" onclick="closeFleetShareModal()">取消</button><button id="fleet-share-create" class="btn btn-green" type="button" onclick="createFleetShare()">生成分享链接</button></div>
           <div id="fleet-share-result" class="fs-result"><strong>分享链接已生成</strong><div class="fs-copy-row"><input id="fleet-share-url" readonly /><button class="btn" type="button" onclick="copyFleetShareUrl()">复制</button></div><div class="fs-note" style="margin-top:7px">请把密码通过单独渠道发给接收方。</div></div>
@@ -98,13 +124,13 @@
       </div>
       <div id="fleet-import-modal" class="modal-backdrop fleet-share-modal" role="dialog" aria-modal="true" aria-labelledby="fleet-import-title" onclick="if(event.target===this)closeImportFleetModal()">
         <div class="modal-card">
-          <div class="fs-modal-head"><h3 id="fleet-import-title">导入外部 Fleet</h3><button class="fs-modal-close" type="button" onclick="closeImportFleetModal()" aria-label="关闭导入 Fleet 弹窗" title="关闭">×</button></div>
+          <div class="fs-modal-head"><h3 id="fleet-import-title">导入共享工作区</h3><button class="fs-modal-close" type="button" onclick="closeImportFleetModal()" aria-label="关闭导入工作区弹窗" title="关闭">×</button></div>
           <div class="fs-modal-body">
-          <div class="fs-sub">粘贴另一台 MultiCC 生成的 Fleet 分享链接。导入后会出现在 Fleet 列表中，操作仍在来源实例执行。</div>
+          <div class="fs-sub">粘贴另一台 MultiCC 生成的工作区分享链接。导入后会出现在工作区列表中，操作仍在来源实例执行。</div>
           <div class="fs-field"><label for="fleet-import-url">分享链接</label><input id="fleet-import-url" type="url" autocomplete="off" placeholder="https://host/fleet-share/fleet_share_…" /></div>
           <div class="fs-field"><label for="fleet-import-password">分享密码</label><input id="fleet-import-password" type="password" autocomplete="off" /></div>
           <div class="fs-field"><label for="fleet-import-alias">本地别名（可选）</label><input id="fleet-import-alias" type="text" maxlength="120" placeholder="例如：远程开发机" /></div>
-          <div class="fs-note">密码只用于本次导入，不会保存到本机；本机仅保存随机的 Fleet 范围授权。</div>
+          <div class="fs-note">密码只用于本次导入，不会保存到本机；本机仅保存随机的工作区范围授权。</div>
           <div id="fleet-import-error" class="fs-error"></div>
           <div class="fs-actions"><button class="btn" type="button" onclick="closeImportFleetModal()">取消</button><button id="fleet-import-submit" class="btn btn-green" type="button" onclick="submitImportFleet()">导入</button></div>
           </div>
@@ -130,13 +156,18 @@
   async function loadFleetShares() {
     if (!activeFleetId) return;
     try {
-      const response = await fetch(`/api/fleets/${encodeURIComponent(activeFleetId)}/shares`);
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      const data = await api.json(`/api/fleets/${encodeURIComponent(activeFleetId)}/shares`);
       renderShareList(data.shares || []);
     } catch (error) {
       const list = el('fleet-share-list');
-      if (list) list.innerHTML = `<span class="fs-error" style="display:block">${escapeHtml(error.message)}</span>`;
+      if (list) {
+        list.textContent = '';
+        const failure = document.createElement('span');
+        failure.className = 'fs-error';
+        failure.style.display = 'block';
+        failure.textContent = displayError(error).displayMessage || displayError(error).message;
+        list.appendChild(failure);
+      }
     }
   }
 
@@ -145,7 +176,7 @@
     const fleet = (_cachedDirectories || []).find(item => item.id === fleetId);
     if (!fleet) return;
     activeFleetId = fleetId;
-    el('fleet-share-sub').textContent = `为「${fleet.name}」创建跨实例、Fleet 范围的操作授权。`;
+    el('fleet-share-sub').textContent = `为「${fleet.name}」创建跨实例、工作区范围的操作授权。`;
     el('fleet-share-password').value = '';
     el('fleet-share-days').value = '7';
     el('fleet-share-accesses').value = '10';
@@ -163,24 +194,21 @@
     setError('fleet-share-error', '');
     button.disabled = true;
     try {
-      const response = await fetch(`/api/fleets/${encodeURIComponent(activeFleetId)}/share`, {
+      const data = await api.json(`/api/fleets/${encodeURIComponent(activeFleetId)}/share`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
+        json: {
           password: el('fleet-share-password').value,
           expiresInDays: Number(el('fleet-share-days').value),
           maxAccesses: Number(el('fleet-share-accesses').value),
           description: el('fleet-share-description').value,
-        }),
+        },
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
       el('fleet-share-url').value = data.url;
       el('fleet-share-result').style.display = 'block';
       await loadFleetShares();
-      showToast('Fleet 分享链接已生成');
+      showToast('工作区分享链接已生成');
     } catch (error) {
-      setError('fleet-share-error', error.message);
+      setError('fleet-share-error', error);
     } finally {
       button.disabled = false;
     }
@@ -188,14 +216,15 @@
 
   async function revokeFleetShare(token) {
     if (!activeFleetId) return;
-    if (!(await showConfirm('撤销这个 Fleet 分享？已发出的链接会立即失效。', { danger: true, okText: '撤销' }))) return;
+    if (!(await showConfirm('撤销这个工作区分享？已发出的链接会立即失效。', { danger: true, okText: '撤销' }))) return;
     try {
-      const response = await fetch(`/api/fleets/${encodeURIComponent(activeFleetId)}/share/${encodeURIComponent(token)}`, { method: 'DELETE' });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      await api.json(`/api/fleets/${encodeURIComponent(activeFleetId)}/share/${encodeURIComponent(token)}`, { method: 'DELETE' });
       await loadFleetShares();
-      showToast('Fleet 分享已撤销');
-    } catch (error) { showToast(`撤销失败：${error.message}`, true); }
+      showToast('工作区分享已撤销');
+    } catch (error) {
+      const detail = displayError(error);
+      showToast(`撤销失败：${detail.displayMessage || detail.message}`, true);
+    }
   }
 
   async function copyFleetShareUrl() {
@@ -228,7 +257,7 @@
   function openImportFleetModal(externalId) {
     ensureModals();
     const existing = externalId ? externalFleets.find(item => item.id === externalId) : null;
-    el('fleet-import-title').textContent = existing ? '刷新外部 Fleet' : '导入外部 Fleet';
+    el('fleet-import-title').textContent = existing ? '刷新共享工作区' : '导入共享工作区';
     el('fleet-import-url').value = existing ? existing.shareUrl : '';
     el('fleet-import-password').value = '';
     el('fleet-import-alias').value = existing ? existing.alias : '';
@@ -242,22 +271,19 @@
     setError('fleet-import-error', '');
     button.disabled = true;
     try {
-      const response = await fetch('/api/external-fleets/import', {
+      const data = await api.json('/api/external-fleets/import', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
+        json: {
           shareUrl: el('fleet-import-url').value.trim(),
           password: el('fleet-import-password').value,
           alias: el('fleet-import-alias').value.trim(),
-        }),
+        },
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
       closeModal('fleet-import-modal');
       await loadExternalFleets();
-      showToast(`已导入外部 Fleet「${data.fleet.name}」`);
+      showToast(`已导入共享工作区「${data.fleet.name}」`);
     } catch (error) {
-      setError('fleet-import-error', error.message);
+      setError('fleet-import-error', error);
     } finally {
       button.disabled = false;
     }
@@ -304,13 +330,11 @@
 
   async function loadExternalFleetData() {
     try {
-      const response = await baseFetch('/api/external-fleets');
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      const data = await api.json('/api/external-fleets');
       externalFleets = Array.isArray(data.fleets) ? data.fleets : [];
       return dashboardData();
     } catch (error) {
-      console.error('Failed to load external Fleets:', error);
+      console.error('Failed to load shared workspaces:', error);
       externalFleets = [];
       return dashboardData();
     }
@@ -349,7 +373,7 @@
 
   function sessionSubtitle(session) {
     return session.external
-      ? `#${session.remoteSessionId} · ${session.sourceOrigin || '外部 Fleet'}`
+      ? `#${session.remoteSessionId} · ${session.sourceOrigin || '共享工作区'}`
       : `#${session.id} · ${session.cwd || ''}`;
   }
 
@@ -371,7 +395,18 @@
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ pathname: remoteUrl.pathname, directoryId: fleet.sourceFleetId }),
     });
-    if (!response.ok) throw new Error(`External Fleet WebSocket ticket failed: HTTP ${response.status}`);
+    if (!response.ok) {
+      if (errorModel && typeof errorModel.fromHttpResponse === 'function') {
+        throw await errorModel.fromHttpResponse(response, {
+          source: 'external_fleet_workspace_ws_ticket',
+          scope: 'session',
+          category: 'remote',
+          defaultCode: 'EXTERNAL_FLEET_WS_TICKET_FAILED',
+          fallbackMessage: `Shared workspace WebSocket ticket failed: HTTP ${response.status}`,
+        });
+      }
+      throw new Error(`Shared workspace WebSocket ticket failed: HTTP ${response.status}`);
+    }
     const data = await response.json();
     const source = new URL(data.wsOrigin);
     remoteUrl.protocol = source.protocol;
@@ -411,24 +446,26 @@
 
   async function refreshExternalFleet(id) {
     try {
-      const response = await baseFetch(`/api/external-fleets/${encodeURIComponent(id)}/refresh`, { method: 'POST' });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      const data = await api.json(`/api/external-fleets/${encodeURIComponent(id)}/refresh`, { method: 'POST' });
       await loadExternalFleets();
-      showToast(`外部 Fleet「${data.fleet.name}」已刷新`);
-    } catch (error) { showToast(`刷新失败：${error.message}`, true); }
+      showToast(`共享工作区「${data.fleet.name}」已刷新`);
+    } catch (error) {
+      const detail = displayError(error);
+      showToast(`刷新失败：${detail.displayMessage || detail.message}`, true);
+    }
   }
 
   async function removeExternalFleet(id) {
     const fleet = externalFleets.find(item => item.id === id);
-    if (!fleet || !(await showConfirm(`移除外部 Fleet「${fleet.name}」？来源实例不会受影响。`, { danger: true, okText: '移除' }))) return;
+    if (!fleet || !(await showConfirm(`移除共享工作区「${fleet.name}」？来源实例不会受影响。`, { danger: true, okText: '移除' }))) return;
     try {
-      const response = await baseFetch(`/api/external-fleets/${encodeURIComponent(id)}`, { method: 'DELETE' });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      await api.json(`/api/external-fleets/${encodeURIComponent(id)}`, { method: 'DELETE' });
       await loadExternalFleets();
-      showToast('外部 Fleet 已移除');
-    } catch (error) { showToast(`移除失败：${error.message}`, true); }
+      showToast('共享工作区已移除');
+    } catch (error) {
+      const detail = displayError(error);
+      showToast(`移除失败：${detail.displayMessage || detail.message}`, true);
+    }
   }
 
   ensureModals();

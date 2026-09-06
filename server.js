@@ -50,7 +50,7 @@ const crypto = require('crypto');
 const bus = require('./src/bus');
 const services = require('./src/services');
 const state = require('./src/state');
-const artifacts = require('./src/artifacts');
+const artifacts = require('./src/artifacts'), docsRegistry = require('./src/docs-registry');
 const providers = require('./src/providers');
 const { executeAuxHttp } = require('./src/aux-http');
 const tokenGlobal = require('./src/token-global');
@@ -154,6 +154,7 @@ const {
   getMemoryEntries,
   normalizeManualMemory,
 } = require('./src/memory/runtime');
+const { createTaskHistoryRetention } = require('./src/session/task-history-retention');
 const { createChatHistoryRuntime, buildReplayMessages } = require('./src/routes/chat-history');
 const { createTokenUsageRoutes } = require('./src/routes/token-usage');
 const { mountShareRoutes } = require('./src/routes/share');
@@ -846,10 +847,10 @@ async function seedCommanderSession(dir) {
   return { ok: false, error: result.code, ...result };
 }
 
-// Tear down one session record + all its runtime state (tmux, chat proc, wait
-// registrations, shares, worktree, triggers, notes, status board entry).
-// Directory deletion cascades through here for every owned session.
+// Session and directory disposal share this history-protected teardown.
 async function destroySessionCascade(s, d, opts = {}) {
+  try { chatHistoryService?.assertCanDeleteSession(s.id); }
+  catch (error) { return { ok: false, code: error.code || 'history_check_failed', blocked: true, reasons: ['task_history_referenced'] }; }
   const active = sessions.get(s.id), chat = chatSessions.get(s.id);
   let removal = null;
   // Remove the worktree before tearing down runtime/persistence. A default
@@ -954,7 +955,7 @@ const directoryModule = createDirectoryModule({
   },
   sessions: {
     listByDir: (dirId) => [...persistedSessions.values()].filter(s => s.dirId === dirId),
-    seedCommander: seedCommanderSession,
+    seedCommander: dir => { folderMemory.ensureShared(dir.id); return seedCommanderSession(dir); },
     destroyCascade: destroySessionCascade,
     persistRecords: () => sessionPersistence.mutate('http.directory-delete-fallback', () => {}),
     // Cross-file transaction needs the sessions payload at the moment of
@@ -966,13 +967,13 @@ const directoryModule = createDirectoryModule({
     homedir: () => os.homedir(),
     exists: (p) => fs.existsSync(p),
     isDirectory: (p) => { try { return fs.statSync(p).isDirectory(); } catch (_) { return false; } },
-    mkdirp: (p) => { fs.mkdirSync(p, { recursive: true }); },
+    mkdirp: (p) => { fs.mkdirSync(p, { recursive: true }); }, sampleRoot: () => MULTICC_PATHS.sampleWorkspacesDir,
     readDirents: (p) => fs.readdirSync(p, { withFileTypes: true })
       .map(e => ({ name: e.name, isDirectory: e.isDirectory(), isSymbolicLink: e.isSymbolicLink() })),
+    writeFileExclusive: (p, content) => { try { fs.writeFileSync(p, content, { flag: 'wx' }); return true; } catch (e) { if (e.code === 'EEXIST') return false; throw e; } },
   },
   helpers: { resolveCwd, isHomeOrAbove, realPathOf, friendlyDirReason },
-  // Cross-file transaction wiring: directory deletion writes directories.json
-  // AND sessions.json under a single journal entry, so a crash between the
+  // Cross-file transaction wiring updates both state files under one journal entry, so a crash between the
   // two writes is finished by replayJournals() on next boot rather than
   // leaving the two files inconsistent (dir deleted + its sessions still
   // pointing at nothing, or vice versa).
@@ -1006,14 +1007,14 @@ function cwdForSession(session) {
   return cwd;
 }
 
-// Dispatch targeting (src/dispatch/targeting.js): sibling-session listing and
-// the cross-session dispatch context prompt. Bound here so the pure module
-// reads the live session registry / chat map / effort normalizer as deps.
+// Dispatch targeting: sibling list and Commander prompt over live registry,
+// chat state, effort and the canonical busy predicate.
+//
 const {
   dispatchableSessionsFor,
   dispatchTargetHintFor,
   buildDispatchContextPrompt,
-} = createDispatchTargeting({ records: persistedSessions, chatSessions, normalizeEffort });
+} = createDispatchTargeting({ records: persistedSessions, chatSessions, normalizeEffort, isTargetBusy: dispatchTargetBusy, boundTaskTitleFor: id => taskBoardRuntime?.getBoard()?.tasks?.[id]?.title || '' });
 
 // Gateway/dispatch orchestration (src/dispatch/gateway-host.js): the gateway
 // system prompt, confirm/cancel control, dispatch admission and the turn-end
@@ -1832,7 +1833,7 @@ createServerRestartRoute({
   chatSessions,
   spawn,
   rootDir: __dirname,
-  getShuttingDown: () => _shuttingDown,
+  getShuttingDown: () => _shuttingDown, desktopExit: reason => gracefulShutdown(reason),
 }).mountRoutes(app);
 
 // ── One-click update (runs `./multicc update`, which restarts us at the end) ──
@@ -1943,7 +1944,7 @@ const {
 const bgCoalesce = require('./src/bg-completion-coalescer');
 const { createDetached } = require('./src/detached');
 const detached = createDetached({ baseDir: MULTICC_PATHS.detachedDir });
-const apkDistribution = createApkDistribution({ fs, path, https, rootDir: __dirname });
+const apkDistribution = createApkDistribution({ fs, path, https, rootDir: __dirname }); const iosOta = require('./src/ios-ota').createIosOta({ fs, path, rootDir: __dirname });
 const share = require('./src/share');
 mountShareRoutes(app, {
   share,
@@ -1968,7 +1969,7 @@ mountSystemRoutes(app, {
   getPort: () => PORT, getBindHost: () => BIND_HOST,
   authRequired: () => ACCESS_TOKEN,
   gitRun,
-  apkDistribution,
+  apkDistribution, iosOta,
 });
 
 // Read-only host control-plane endpoints share one narrow boundary. Mutable
@@ -2182,7 +2183,7 @@ providerRoutes.mountCatalogRoutes(app);
 // GET /api/opencode/models — list models the local opencode CLI exposes
 // (provider/model strings, cached for 1 day). Used by the chat picker when an
 // opencode session has no multicc-managed provider's model list to render.
-mountOpenCodeModelRoutes(app);
+mountOpenCodeModelRoutes(app); require('./src/routes/codex-models').mountCodexModelRoutes(app); // account-entitled Codex app-server model/list, 60s cache + explicit refresh
 
 // GET /api/qoder/models — the Qoder CN catalog entitled to the logged-in
 // account (`qoderclicn --list-models`, cached for 1 day). Lets each qoder
@@ -2234,19 +2235,18 @@ createStaticAssetsRoutes({
   publicDir: path.join(__dirname, 'public'),
 }).mountRoutes(app);
 
-// ── Chat mode: message history ──
-// Display history is paginated and independent from native CLI transcripts.
+// Display state is independent from canonical messages and native CLI transcripts.
 const CHAT_HISTORY_SOFT_CAP = 10000;
 const CHAT_HISTORY_PAGE = 5;
 
-// Chat history runtime owns persistence composition, pagination routes,
-// incremental checkpoints, history clear and committed-message side effects.
+// Chat history owns persistence, display visibility, pagination and checkpoints.
 let _chatMsgIdSeq = 0;
 function newChatMsgId() {
   return 'm' + Date.now().toString(36) + '-' + (_chatMsgIdSeq++).toString(36);
 }
 chatHistoryRuntime = createChatHistoryRuntime({
   history: chatHistoryRepository,
+  ...createTaskHistoryRetention({ getBoard: () => taskBoardRuntime.getBoard(), getRecord: id => persistedSessions.get(id), loadHistory: id => chatHistoryRepository.readStrict(id, { allowEmpty: true }) }),
   persistedSessions,
   chatSessions,
   idFactory: newChatMsgId,
@@ -2654,7 +2654,7 @@ const chatTurnEngine = createChatTurnEngine({
   saveNotes,
   pendingNotesFor,
   appendEvent,
-  classifyTurnEnd,
+  classifyTurnEnd, runClassifyNow,
   cancelClassify,
   emitRunningNotify,
   emitTurnOutcome,
@@ -2877,7 +2877,7 @@ const startupRepoReady = Promise.resolve().then(providers.migrateLegacyProviderP
 // Scheduled tasks (定时任务): inject the session-creation + turn-running machinery.
 // Complements the per-session triggers above — this one fires by creating a
 // fresh chat session in a target directory (directory-level recurring tasks).
-cronTasks.mount(app);
+cronTasks.mount(app); docsRegistry.mount(app); // docs-registry = /manage「服务与文档」管理表（同行以守 3000 行预算）
 cronTasks.init({ directories, createSessionRecord, admitChatWork: chatTurnEngine.admitChatWork, sessionExists: (id) => persistedSessions.has(id) });
 // In-process external-tunnel monitor (replaces phtunnel-monitor.sh watchdog).
 tunnel.init();
@@ -2979,7 +2979,7 @@ app.use(safeErrorHandler(logger));
       .catch(error => logger.warn('provider_log_watchdog_sweep_failed', { error: error.message })), providerLogWatchdog.PROVIDER_LOG_WATCHDOG_INTERVAL_MS));
     logHousekeeping.runOnce().catch(err => logger.warn('log_housekeeping_failed', { error: err.message }));
     trackServiceTimer(setInterval(() => logHousekeeping.runOnce().catch(err => logger.warn('log_housekeeping_failed', { error: err.message })), LOG_HOUSEKEEPING_INTERVAL_MS));
-const cleanupArtifacts = () => { try { return artifacts.cleanup(undefined, taskRunStore.listPinnedArtifactIds()); } catch (error) { logger.warn('artifact_cleanup_pin_read_failed'); return 0; } }; cleanupArtifacts();
+const cleanupArtifacts = () => { try { return artifacts.cleanup(undefined, [...taskRunStore.listPinnedArtifactIds(), ...docsRegistry.listPinnedArtifactIds()]); } catch (error) { logger.warn('artifact_cleanup_pin_read_failed'); return 0; } }; cleanupArtifacts();
     trackServiceTimer(setInterval(() => cleanupArtifacts(), 6 * 3600 * 1000));
     // ④: probe aux recovery every 5 min while unhealthy (no-op when healthy).
     trackServiceTimer(setInterval(() => auxHealthProbe(), AUX_HEALTH_PROBE_INTERVAL_MS));

@@ -113,6 +113,7 @@ function planTurnFinalization(input = {}, deps = {}) {
     recoveredTransport,
     pendingStreamError,
     nativeSession: input.nativeSession === true,
+    replaySafeProviderError: input.replaySafeProviderError === true,
     auxUnhealthy: input.auxUnhealthy === true,
     signal: input.signal == null ? '' : String(input.signal),
     code: input.code == null ? 0 : Number(input.code),
@@ -137,7 +138,12 @@ function planTurnFinalization(input = {}, deps = {}) {
     recoveredTransport,
   }) : 'stream_end';
   const handoff = normalizeHandoff(input);
-  const guardedHandoffResumeFailure = isGuardedHandoffFailure(facts, handoff);
+  // A host-proved provider error envelope is evidence that the reused native
+  // session was reached successfully and the selected upstream route failed.
+  // Let Auto retry that same durable turn on another provider; the generic
+  // handoff guard still owns empty/ambiguous endings.
+  const guardedHandoffResumeFailure = isGuardedHandoffFailure(facts, handoff)
+    && !facts.replaySafeProviderError;
   facts.guardedHandoffResumeFailure = guardedHandoffResumeFailure;
 
   if (runnerKind === 'process' && cli === 'codex' && pendingStreamError) {

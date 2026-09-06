@@ -109,8 +109,34 @@ function createChatHistoryFileRepository({
     return path.join(root, `${safeSessionName(sessionId)}.json`);
   }
 
-  function readStrict(sessionId) {
-    return parseTranscript(fsImpl.readFileSync(fileFor(sessionId), 'utf8')).messages;
+  function visibilityFileFor(sessionId) {
+    return path.join(root, '.views', `${safeSessionName(sessionId)}.json`);
+  }
+
+  function readVisibility(sessionId) {
+    let state;
+    try { state = JSON.parse(fsImpl.readFileSync(visibilityFileFor(sessionId), 'utf8')); }
+    catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+    if (state?.version !== 1 || !Array.isArray(state.hiddenIds)
+        || state.hiddenIds.some(id => typeof id !== 'string')) {
+      throw corrupt('invalid chat visibility state');
+    }
+    return state;
+  }
+
+  function writeVisibility(sessionId, state) {
+    const dir = path.dirname(visibilityFileFor(sessionId));
+    if (fsImpl === fs) ensurePrivateDir(dir);
+    else fsImpl.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    writeText(visibilityFileFor(sessionId), JSON.stringify(state));
+  }
+
+  function readStrict(sessionId, { allowEmpty = false } = {}) {
+    const text = fsImpl.readFileSync(fileFor(sessionId), 'utf8');
+    // Legacy clear wrote an empty file. Retention checks may treat that as
+    // no evidence; delivery durability checks must still reject an empty file.
+    if (allowEmpty && !text.trim()) return [];
+    return parseTranscript(text).messages;
   }
 
   function read(sessionId) {
@@ -233,6 +259,8 @@ function createChatHistoryFileRepository({
     written.delete(file);
     try {
       fsImpl.unlinkSync(file);
+      try { fsImpl.unlinkSync(visibilityFileFor(sessionId)); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
       return true;
     } catch (error) {
       if (error && error.code === 'ENOENT') return false;
@@ -247,7 +275,10 @@ function createChatHistoryFileRepository({
     ensureRoot();
     written.delete(source);
     written.delete(target);
+    const visibility = readVisibility(fromSessionId);
+    if (visibility) writeVisibility(toSessionId, visibility);
     fsImpl.renameSync(source, target);
+    if (visibility) fsImpl.unlinkSync(visibilityFileFor(fromSessionId));
     if (typeof fsImpl.chmodSync === 'function') fsImpl.chmodSync(target, 0o600);
     return true;
   }
@@ -286,9 +317,12 @@ function createChatHistoryFileRepository({
     listSessionIds,
     read,
     readStrict,
+    readVisibility,
     renameSession,
     root,
     write,
+    writeVisibility,
+    visibilityFileFor,
   });
 }
 

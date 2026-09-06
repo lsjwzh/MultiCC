@@ -54,10 +54,15 @@ test('artifact cleanup refuses a symlinked root instead of deleting through it',
   assert.equal(fs.existsSync(victim), true);
 });
 
-test('server resolves pins from TaskRun storage for every artifact cleanup tick', () => {
+test('server resolves pins from TaskRun storage and docs registry for every artifact cleanup tick', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  // Contract: every cleanup tick merges pins from both stores, and a pin-read
+  // failure only warns + skips (never crashes the server). Match the pin
+  // sources and the failure sentinel rather than the full statement shape so
+  // formatting/line-budget merges don't break this test again.
   assert.match(source,
-    /const cleanupArtifacts = \(\) => \{ try \{ return artifacts\.cleanup\(undefined, taskRunStore\.listPinnedArtifactIds\(\)\); \} catch \(error\) \{ logger\.warn\('artifact_cleanup_pin_read_failed'\); return 0; \} \}/);
+    /artifacts\.cleanup\(undefined, \[\.\.\.taskRunStore\.listPinnedArtifactIds\(\), \.\.\.docsRegistry\.listPinnedArtifactIds\(\)\]\)/);
+  assert.match(source, /artifact_cleanup_pin_read_failed/);
   assert.match(source, /cleanupArtifacts\(\);/);
   assert.match(source, /setInterval\(\(\) => cleanupArtifacts\(\), 6 \* 3600 \* 1000\)/);
 });

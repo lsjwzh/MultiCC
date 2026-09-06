@@ -663,6 +663,10 @@ test('the voice router prompt routes by Fleet and asks instead of guessing', () 
   assert.match(voice, /实时语音 Router/);
   assert.match(voice, /调用 dispatch_master，mode 必须是 async/);
   assert.match(voice, /就只用一句话反问，不要自己挑一个 id 投出去/);
+  assert.match(voice, /关联会话.*忙.*其他.*空闲/);
+  assert.match(voice, /用户明确点名.*不得改派/);
+  assert.match(voice, /waiting_user.*background.*error/);
+  assert.match(voice, /目标.*已知事实.*约束.*验收标准/);
   assert.doesNotMatch(voice, /<<dispatch target=/);
   assert.doesNotMatch(voice, /"type":"commander"/, 'Commander sessions are not worker targets');
   assert.match(voice, /"dirId":"dir-1"/, 'the router needs the Fleet id to resolve 这个项目');
@@ -672,6 +676,12 @@ test('the voice router prompt routes by Fleet and asks instead of guessing', () 
   assert.equal(wechat.includes('实时语音 Router'), false, 'the WeChat prompt is untouched');
   assert.match(wechat, /等待用户明确回复「确认」/);
   assert.match(wechat, /dispatch_master，mode 必须是 async/);
+  assert.match(wechat, /关联会话.*忙.*其他.*空闲/);
+  assert.match(wechat, /用户明确点名.*不得改派/);
+  assert.match(wechat, /waiting_user.*background.*error/);
+  assert.match(wechat, /目标.*已知事实.*约束.*验收标准/);
+  assert.match(wechat, /"routingState":"processing"/);
+  assert.match(wechat, /修复登录页样式/);
 });
 
 test('an explicitly named worker is visible even beyond the bounded snapshot window', () => {
@@ -723,7 +733,9 @@ test('the voice router snapshot carries live status so spoken status questions a
   assert.equal(voice.includes('这个方案敏感吗'), false, 'pending question stays server-side');
 
   const wechat = fixture.host.buildGatewayPrompt('各个会话执行情况如何');
-  assert.equal(wechat.includes('routingState'), false, 'the WeChat prompt stays free of the digest');
+  assert.match(wechat, /"routingState":"processing"/, 'WeChat routing gets the same readiness signal');
+  assert.match(wechat, /修复登录页样式/, 'WeChat can choose a capable fallback from recent task evidence');
+  assert.equal(wechat.includes('这个方案敏感吗'), false, 'WeChat also keeps pending details private');
 });
 
 test('dispatch finalization keeps sync inline and requires dispatch_slave for async', async () => {

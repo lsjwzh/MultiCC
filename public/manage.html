@@ -10,9 +10,12 @@
   <link rel="manifest" href="/manifest.json" />
   <link rel="icon" href="/icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="/icon.svg" />
+  <link rel="stylesheet" href="/error-envelope.css" />
   <link rel="stylesheet" href="/manage-fleet-sharing.css" />
   <link rel="stylesheet" href="/manage-task-planner.css" />
+  <link rel="stylesheet" href="/manage-workspace-setup.css" />
   <title>MultiCC — Dashboard</title>
+  <script src="error-envelope.js"></script>
   <script src="auth-client.js"></script>
   <script src="api-client.js"></script>
   <script src="memory-model.js"></script>
@@ -218,7 +221,7 @@
 
     /* Realtime voice is a global action, not a metric and not a setting. Keep it
        directly below the home KPIs so it is discoverable without competing with
-       the primary "New Fleet" action in the topbar. */
+       the primary "New Workspace" action in the topbar. */
     .voice-beta-entry{
       width:100%;min-height:54px;margin:-8px 0 22px;padding:9px 13px;
       display:flex;align-items:center;gap:11px;text-align:left;
@@ -650,7 +653,7 @@
       #topbar{padding-inline:8px;gap:6px}
       #topbar .crumb small{display:none}
       #topbar .btn.primary{font-size:0;min-width:78px}
-      #topbar .btn.primary::after{content:'+ Fleet';font-size:13px}
+      #topbar .btn.primary::after{content:'+ 工作区';font-size:13px}
       #topbar-help,#topbar-refresh{display:none}
       #kpi-row{gap:8px;margin-bottom:18px}
       .kpi{padding:12px}
@@ -747,6 +750,10 @@
     .tb-legacy-group{border-top:1px dashed var(--line);background:color-mix(in srgb,var(--panel) 55%,transparent)}
     .tb-legacy-group>summary{padding:7px 14px 7px 24px;cursor:pointer;color:var(--faint);font-size:11px;user-select:none}
     .tb-legacy-group>.tb-task{padding-left:34px}
+    .tb-related-group{border:1px solid color-mix(in srgb,var(--accent) 28%,var(--line));border-radius:9px;margin:7px 10px;background:color-mix(in srgb,var(--accent-dim) 35%,transparent);overflow:hidden}
+    .tb-related-group>summary{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 12px;cursor:pointer;color:var(--text);font-size:12px;user-select:none}
+    .tb-related-group>.tb-task{padding-left:18px;background:color-mix(in srgb,var(--panel) 35%,transparent)}
+    .tb-related-module{display:inline-flex;margin-right:6px;padding:1px 5px;border:1px solid var(--line);border-radius:999px;color:var(--muted);font-size:10px;text-decoration:none}
     /* No status animation here: whether a status may animate is decided once, in
        status-presentation.js (.st-spin, running only), so an errored row cannot
        keep spinning. */
@@ -769,7 +776,7 @@
     .tb-compose-row .btn.tb-goal-btn.on{color:var(--accent);border-color:var(--accent-line);background:var(--accent-dim)}
     .tb-chiprow{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px}
     .tb-fchip{font-size:11px;padding:2px 8px;border-radius:9px;background:var(--panel-2);color:var(--text);border:1px solid var(--line)}
-    .tb-fchip-x{cursor:pointer;color:var(--muted)}
+    .tb-fchip-x{padding:0;border:0;background:none;color:var(--muted);font:inherit;cursor:pointer}
     .tb-fchip-x:hover{color:var(--danger)}
     .tb-goalrow{display:flex;gap:14px;align-items:center;margin:6px 0 2px;flex-wrap:wrap}
     .tb-goalrow input{width:90px;background:var(--well);color:var(--text);border:1px solid var(--line-strong);border-radius:6px;padding:3px 6px;font-size:11.5px}
@@ -800,6 +807,7 @@
          rather than with the config panes. -->
     <button class="nav-item" data-view="cron" onclick="setView('cron')"><span class="ic">⏱</span> <span data-i18n="cronTasks">定时任务</span> <span class="badge" id="nav-cron-count">0</span></button>
     <button class="nav-item" data-view="memory" onclick="setView('memory')"><span class="ic">🧠</span> <span data-i18n="memoryGraph">记忆图谱</span> <span class="badge" id="nav-memory-count">0</span></button>
+    <button class="nav-item" data-view="docs" onclick="setView('docs')"><span class="ic">🗂</span> <span data-i18n="docsServices">服务与文档</span></button>
 
     <div class="nav-label" data-i18n="settingsTitle">Settings</div>
     <button class="nav-item" data-view="voice" onclick="setView('voice')"><span class="ic">🎙</span> <span data-i18n="voiceSettings">语音设置</span></button>
@@ -860,12 +868,12 @@
       <button class="icon-btn" id="nav-toggle" onclick="document.body.classList.toggle('nav-open')" aria-controls="nav" aria-expanded="false" data-i18n-title="menu" title="菜单">☰</button>
       <div class="crumb" id="crumb"><span data-i18n="overview">概览</span> <small id="crumb-sub"></small></div>
       <div class="topspace"></div>
-      <div class="search planner-hide-on-tasks"><span>⌕</span><input id="dir-search" data-i18n-placeholder="search" placeholder="搜索Fleet / 会话…" oninput="filterDirs(this.value)" /></div>
+      <div class="search planner-hide-on-tasks"><span>⌕</span><input id="dir-search" data-i18n-placeholder="search" placeholder="搜索工作区 / 会话…" oninput="filterDirs(this.value)" /></div>
       <button class="icon-btn lang-toggle" onclick="toggleLang()" data-i18n-title="language" title="Language">中/EN</button>
       <button class="icon-btn" id="topbar-help" onclick="startOnboarding()" data-i18n-title="onboarding" title="引导">❓</button>
       <button class="icon-btn" id="topbar-refresh" onclick="loadDashboard()" data-i18n-title="refresh" title="刷新">⟳</button>
-      <button class="btn planner-hide-on-tasks" type="button" onclick="openImportFleetModal()" title="从另一台 MultiCC 导入只读 Fleet"><span aria-hidden="true">⇩</span> <span class="fleet-import-label">导入 Fleet</span></button>
-      <button class="btn primary planner-hide-on-tasks" onclick="openNewDirectoryModal()" data-i18n="newDirectory">＋ 新建Fleet</button>
+      <button class="btn planner-hide-on-tasks" type="button" onclick="openImportFleetModal()" title="从另一台 MultiCC 导入共享工作区"><span aria-hidden="true">⇩</span> <span class="fleet-import-label">导入工作区</span></button>
+      <button class="btn primary planner-hide-on-tasks" onclick="openNewDirectoryModal()" data-i18n="newDirectory">＋ 新建工作区</button>
     </header>
 
     <div id="content">
@@ -893,7 +901,7 @@
             </span>
             <span class="voice-beta-arrow" aria-hidden="true">›</span>
           </button>
-          <div class="sec-head"><h2 data-i18n="directories">Fleet</h2><span class="count" id="dir-count-pill">0</span><div class="line"></div></div>
+          <div class="sec-head"><h2 data-i18n="directories">工作区</h2><span class="count" id="dir-count-pill">0</span><div class="line"></div></div>
           <div id="directory-list"></div>
         </section>
 
@@ -1351,6 +1359,7 @@
             </div>
             <div class="sc-footer apk-actions">
               <a class="btn btn-green" id="apk-download-btn" href="/multicc.apk" download="multicc.apk" rel="noopener noreferrer" data-i18n="apkDownload">下载 APK</a>
+              <a class="btn" id="ios-ota-open-btn" href="/ios-ota" target="_blank" rel="noopener noreferrer" data-i18n="iosOtaOpen">iOS OTA 安装页</a>
             </div>
           </div>
 
@@ -1911,6 +1920,19 @@
           </div>
         </section>
 
+        <section class="view" data-view="docs">
+          <div class="sec-head"><h2><span data-i18n="docsServices">服务与文档</span> <span id="docsreg-count" style="color:var(--faint);font-weight:400;"></span></h2><div class="line"></div>
+            <button class="btn btn-sm" onclick="loadDocsRegistry()" data-i18n="refresh">刷新</button>
+            <button class="btn btn-green btn-sm" onclick="docsRegistryAddService()">＋ <span data-i18n="docsregAddService">登记服务</span></button>
+          </div>
+          <p class="sec-desc" data-i18n="docsregDesc">所有 agent 发布的网页/文件和你登记的本地 web 服务。临时产物 7 天后自动清理（📌 置顶可豁免），过期条目会标注。</p>
+          <div class="settings-card" style="max-width:none">
+            <div class="sc-body" id="docsreg-list" style="gap:8px;">
+              <div style="color:var(--faint);font-size:13px;">加载中…</div>
+            </div>
+          </div>
+        </section>
+
       </div>
 
       <!-- Focus panel: embedded terminal -->
@@ -1928,22 +1950,29 @@
 
   <div id="toast"></div>
 
-  <!-- New Directory modal -->
-  <div id="newdir-modal" class="modal-backdrop">
-    <div class="modal-card" style="padding:20px;width:460px;max-width:94vw;">
-      <h3 style="font-size:15px;color:var(--text);margin-bottom:12px;">New directory</h3>
-      <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px;">Name</label>
-      <input id="newdir-name" type="text" placeholder="My project" autocomplete="off" style="width:100%;background:var(--bg-soft);border:1px solid var(--line);border-radius:9px;color:var(--text);font-size:13px;padding:9px 12px;outline:none;margin-bottom:10px;" />
-      <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px;">Path</label>
-      <input id="newdir-path" type="text" placeholder="/Users/you/code/my-project" autocomplete="off" oninput="onNewDirPathInput()" style="width:100%;background:var(--bg-soft);border:1px solid var(--line);border-radius:9px;color:var(--text);font-size:13px;font-family:var(--mono);padding:9px 12px;outline:none;margin-bottom:6px;" />
-      <div id="newdir-suggest" style="display:none;max-height:200px;overflow-y:auto;background:var(--bg-soft);border:1px solid var(--line);border-radius:9px;margin-bottom:10px;"></div>
-      <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);margin-bottom:10px;cursor:pointer;user-select:none;">
-        <input id="newdir-create" type="checkbox" style="margin:0;" /> Fleet不存在时自动创建
-      </label>
-      <div id="newdir-error" style="font-size:12px;color:var(--danger);margin-bottom:8px;display:none;"></div>
-      <div style="display:flex;gap:8px;justify-content:flex-end;">
-        <button class="btn" onclick="closeNewDirectoryModal()">Cancel</button>
-        <button class="btn btn-green" onclick="submitNewDirectory()">Create</button>
+  <!-- Workspace + Agent-team setup -->
+  <div id="newdir-modal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="newdir-title">
+    <div class="modal-card workspace-setup-card">
+      <header class="workspace-setup-head">
+        <h3 id="newdir-title">创建工作区</h3>
+        <p>工作区是希望 MultiCC 帮你处理的本地文件夹。每个 Agent 都会使用隔离的 Git worktree。</p>
+      </header>
+      <div class="workspace-setup-fields">
+        <label class="workspace-field"><span>工作区名称（可选）</span><input id="newdir-name" type="text" placeholder="留空时使用文件夹名称" autocomplete="off" /></label>
+        <label class="workspace-field path"><span>本地路径</span><input id="newdir-path" type="text" placeholder="/Users/you/code/my-project" autocomplete="off" oninput="onNewDirPathInput()" /></label>
+        <div id="newdir-suggest"></div>
+        <label class="workspace-path-create"><input id="newdir-create" type="checkbox" /> 路径不存在时，创建这个文件夹</label>
+      </div>
+      <fieldset class="workspace-team-fieldset">
+        <legend class="workspace-team-legend">选择 Agent 团队</legend>
+        <p class="workspace-team-intro">模板会同时准备指挥官和专业角色；之后仍可随时添加、删除或调整成员。</p>
+        <div id="workspace-team-grid" class="workspace-team-grid" aria-live="polite"><span class="workspace-team-desc">正在加载团队模板…</span></div>
+      </fieldset>
+      <div class="workspace-setup-note">角色创建后不会自动执行任务；只有收到任务时才会使用模型。创建多个角色会占用对应 Git worktree 的磁盘空间。</div>
+      <div id="newdir-status" class="workspace-setup-status" role="status" aria-live="polite"></div>
+      <div class="workspace-setup-actions">
+        <button id="newdir-cancel" class="btn" type="button" onclick="closeNewDirectoryModal()">取消</button>
+        <button id="newdir-submit" class="btn btn-green" type="button" onclick="submitNewDirectory()">创建工作区与团队</button>
       </div>
     </div>
   </div>
@@ -2004,7 +2033,7 @@
       <div style="padding:16px 18px;">
         <input type="hidden" id="cron-edit-id" />
         <div class="setting-row"><label>任务名</label><input id="cron-f-name" type="text" placeholder="例如：每天早报" /></div>
-        <div class="setting-row"><label>目标Fleet</label><select id="cron-f-dir" style="flex:1;"></select></div>
+        <div class="setting-row"><label>目标工作区</label><select id="cron-f-dir" style="flex:1;"></select></div>
         <div class="setting-row"><label>CLI</label><select id="cron-f-cli"><option value="claude">claude</option><option value="codex">codex</option></select></div>
         <div class="setting-row"><label>cron</label><input id="cron-f-cron" type="text" placeholder="分 时 日 月 周，如 0 9 * * *" style="font-family:var(--mono);" /></div>
         <div style="padding:0 0 8px 134px;display:flex;flex-wrap:wrap;gap:6px;">
@@ -2175,7 +2204,7 @@
           <div id="memo-title" style="color:var(--text);font-size:14px;font-weight:600;">📝 备忘</div>
           <div id="memo-subtitle" style="color:var(--muted);font-size:11px;font-family:var(--mono);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>
         </div>
-        <button class="btn" onclick="memoSendCurrentLine()" title="把光标所在行发到该Fleet的某个 chat 会话">→ 发送当前行</button>
+        <button class="btn" onclick="memoSendCurrentLine()" title="把光标所在行发到该工作区的某个 chat 会话">→ 发送当前行</button>
         <button class="btn btn-green" onclick="memoSave()" title="保存（Ctrl/Cmd+S）">保存</button>
         <button class="btn" onclick="closeMemoModal()">关闭</button>
       </div>
@@ -2207,6 +2236,7 @@
   <script src="auto-provider-editor.js"></script>
   <script src="manage-taskboard.js"></script>
   <script src="manage-dashboard.js"></script>
+  <script src="manage-workspace-setup.js"></script>
   <script src="manage-fleet-sharing.js"></script>
   <script src="voice-launch-client.js"></script>
   <script src="manage-qwen-audio.js"></script>
@@ -2215,6 +2245,7 @@
   <script src="quota-bar-view.js"></script>
   <script src="manage-official-accounts.js"></script>
   <script src="manage.js"></script>
+<script src="docs-registry.js"></script>
 <script src="manage-update.js"></script>
   <script>
     /* ── Redesign shell: nav view switching, KPI row, search ── */
@@ -2232,6 +2263,7 @@
         resources: ['Agent 资源', 'Skills 与历史会话'],
         skillsync: ['技能同步', 'Skills 跨 Provider 同步状态'],
         storage: ['临时上传', '上传文件缓存'],
+        docs: ['服务与文档', '生成的文档与本地 web 服务'],
         memory: ['🧠 记忆图谱', '项目记忆系统网络'],
       };
       window.setView = function (v) {
@@ -2250,6 +2282,7 @@
           loadMemoryGraph();
         }
         if (v === 'voice') window.MultiCCManageQwenAudio?.loadPanel?.();
+        if (v === 'docs') window.loadDocsRegistry?.();
         // Sync the active provider tab when the provider view is shown.
         if (v === 'provider') {
           const activeTab = document.querySelector('#prov-tabs .prov-tab.active');
@@ -2257,7 +2290,7 @@
         }
       };
       const requestedView = new URLSearchParams(location.search).get('view');
-      const allowedViews = ['overview', 'tasks', 'memory', 'cron', 'voice', 'goal', 'provider', 'global', 'push', 'tunnel', 'bridges', 'resources', 'skillsync', 'storage'];
+      const allowedViews = ['overview', 'tasks', 'memory', 'cron', 'voice', 'goal', 'provider', 'global', 'push', 'tunnel', 'bridges', 'resources', 'skillsync', 'storage', 'docs'];
       if (allowedViews.includes(requestedView)) {
         window.setView(requestedView);
       }

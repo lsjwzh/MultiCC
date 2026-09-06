@@ -63,8 +63,8 @@ test('explicit board-task merge preserves target identity and folds bounded chro
   assert.equal(target.branch, 'multicc/target');
   assert.equal(target.status, 'active', 'any active member keeps the merged task active');
   assert.deepEqual(target.areas, ['shared', 'target-area', 'source-area']);
-  assert.equal(target.refs.length, core.MAX_REFS_PER_TASK);
-  assert.equal(target.refs[0].ts, 3, 'the cap keeps the newest 500 refs');
+  assert.equal(target.refs.length, 502);
+  assert.equal(target.refs[0].ts, 1, 'merging retains even the oldest evidence');
   assert.equal(target.refs.at(-1).ts, 502);
   assert.equal(new Set(target.refs.map(item => item.assistantMsgId)).size, target.refs.length,
     'the overlapping source/target turn is present only once');
@@ -75,6 +75,32 @@ test('explicit board-task merge preserves target identity and folds bounded chro
   assert.equal(source.mergedAt, 1_000);
   assert.equal(source.chatSessionId, 'bound-source',
     'the tombstone retains its bound-session lineage instead of deleting history');
+});
+
+test('explicit identity merge only cleans obsolete ids from a related-task presentation group', () => {
+  const board = core.createEmptyBoard();
+  for (const [taskId, title, now] of [
+    ['target', '目标任务', 10],
+    ['source', '误建的重复任务', 20],
+    ['related', '独立关联任务', 30],
+  ]) {
+    core.createPendingTask(board, {
+      taskId, dirId: 'd1', sessionId: `session-${taskId}`, taskText: title, now,
+    });
+  }
+  core.groupRelatedTasks(board, 'source', 'target', 40);
+  core.groupRelatedTasks(board, 'related', 'target', 50);
+
+  const result = core.mergeTasks(board, {
+    targetTaskId: 'target', sourceTaskIds: ['source'], now: 60,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(board.tasks.source.mergedInto, 'target');
+  assert.equal(board.tasks.related.mergedInto, undefined,
+    'the related task remains an independent task');
+  assert.equal(Object.keys(board.taskGroups).length, 1);
+  assert.deepEqual(Object.values(board.taskGroups)[0].taskIds, ['target', 'related']);
 });
 
 test('explicit session-task merge keeps done lifecycle and rejects cross-origin or cross-Fleet identity', () => {

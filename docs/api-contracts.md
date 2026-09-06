@@ -51,14 +51,27 @@ Every request receives `X-Multicc-Request-Id`, `X-Correlation-Id`, and
   "requestId": "request-1",
   "correlationId": "correlation-1",
   "ok": false,
-  "error": "request_error",
-  "code": "invalid_request"
+  "error": "provider route exhausted",
+  "code": "PROVIDER_ROUTE_EXHAUSTED",
+  "category": "route",
+  "detail": "provider route exhausted after attempt 3",
+  "retryable": true,
+  "action": "retry_turn",
+  "scope": "turn",
+  "httpStatus": 409
 }
 ```
 
-Error bodies are bounded and redact credential-like values and absolute paths.
-Tokens, paths, command stderr, and stacks belong only in appropriately redacted
-server-side diagnostics, never in public DTOs.
+The fields after `code` are additive. Browser clients normalize REST, WebSocket,
+Provider and external-Fleet failures into the same ErrorEnvelope v1 vocabulary.
+When an upstream/domain error supplies a code, the UI keeps that original code
+and its original message visible instead of replacing them with generic copy.
+`detail`, request ids and timestamps remain available in expandable diagnostics.
+
+Error bodies are bounded and redact credential-like values and private absolute
+paths. Raw error text is therefore maximally informative after field-level
+redaction; tokens, command stderr and stacks are never copied verbatim into a
+public DTO.
 
 WebSocket messages retain their existing top-level `type` and event fields and
 add `apiVersion: "v1"`. This additive envelope allows existing clients to keep
