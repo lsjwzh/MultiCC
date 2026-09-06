@@ -8,11 +8,14 @@ test('ordinary chat enters the canonical shell and task links resolve their boun
   const calls = [];
   const fetch = async (url, init) => {
     calls.push({ url, init });
-    return response(url.endsWith('/chat-session') ? { ok: true, sessionId: 'bound' } : { id: 'sh_main' });
+    if (url.endsWith('/chat-session')) return response({ ok: true, sessionId: 'bound' });
+    if (url.endsWith('/tasks/resolve')) return response({ id: 'task-one', title: 'Task one' });
+    return response({ id: 'sh_main' });
   };
   assert.equal(await resolve({ sessionId: 'ordinary', fetch }), '/task-shell.html?shell=sh_main');
-  assert.equal(await resolve({ taskId: 'task-one', fetch }), '/task-shell.html?shell=sh_main');
-  assert.deepEqual(JSON.parse(calls.at(-1).init.body), { sessionId: 'bound' });
+  assert.equal(await resolve({ taskId: 'task-one', fetch }), '/task-shell.html?shell=sh_main&task=task-one');
+  assert.equal(calls.at(-1).url, '/api/task-shells/sh_main/tasks/resolve');
+  assert.deepEqual(JSON.parse(calls.at(-1).init.body), { taskId: 'task-one' });
 });
 
 test('HTTP failures never enter the deleted task projection or legacy send path', async () => {
