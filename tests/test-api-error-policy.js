@@ -258,6 +258,23 @@ test('retry notices retain the redacted provider root cause', () => {
   assert.match(retryNotice(result), /根因：.*ENOTFOUND open\.bigmodel\.cn/);
 });
 
+test('wrapped upstream details are decoded before truncation and retained in the durable diagnostic', () => {
+  const cause = `${'Explanation with useful details. '.repeat(12)}Expected an ID beginning with fc. token=private-secret`;
+  const raw = { source: 'codex_event', message: `unexpected status 400: ${JSON.stringify({
+    code: 'RELAY_WRAPPER', upstreamStatus: 400,
+    error: { message: cause, param: 'input[6].id', code: 'invalid_value' },
+  })}, url: http://localhost/proxy` };
+  const error = normalizeApiError(raw);
+  assert.equal(error.code, 'invalid_value');
+  assert.equal(error.httpStatus, 400);
+  assert.equal(error.param, 'input[6].id');
+  assert.ok(error.sanitizedMessage.length <= 240);
+  assert.match(error.rootCause, /Expected an ID beginning with fc/);
+  assert.doesNotMatch(error.rootCause, /private-secret|RELAY_WRAPPER/);
+  const notice = retryNotice({ error, action: 'stop' });
+  assert.match(notice, /参数：input\[6\]\.id/);
+});
+
 test('normalized errors preserve legacy CLI provider and add immutable route identity', () => {
   const error = normalizeApiError({
     httpStatus: 503,
