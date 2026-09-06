@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { createSandboxConsole } = require('./helpers/sandbox-console');
 
 const ROOT = path.join(__dirname, '..');
 const SOURCE_PATH = path.join(ROOT, 'public', 'manage-session-lifecycle.js');
@@ -26,7 +27,7 @@ function createHarness() {
   const prompts = [];
   let dashboardLoads = 0;
   const context = {
-    console,
+    console: createSandboxConsole(),
     Promise,
     Map,
     Object,

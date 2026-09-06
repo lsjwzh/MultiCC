@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { createSandboxConsole } = require('./helpers/sandbox-console');
 
 const ROOT = path.join(__dirname, '..');
 const MODEL_SOURCE = fs.readFileSync(path.join(ROOT, 'public', 'memory-model.js'), 'utf8');
@@ -122,7 +123,7 @@ function createHarness(jsonImpl, elements = {}) {
     setTimeout,
     clearTimeout,
     confirm: () => { window.__confirmCalls++; return true; },
-    console,
+    console: createSandboxConsole(),
   };
   vm.runInNewContext(MODEL_SOURCE, context, { filename: 'memory-model.js' });
   return {

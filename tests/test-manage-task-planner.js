@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { createSandboxConsole } = require('./helpers/sandbox-console');
 
 const root = path.join(__dirname, '..');
 const html = fs.readFileSync(path.join(root, 'public/manage.html'), 'utf8');
@@ -123,7 +124,7 @@ function createPlannerHarness(options = {}) {
   const document = typeof options.createDocument === 'function'
     ? options.createDocument(globalRoot) : defaultDocument;
   const context = {
-    console,
+    console: createSandboxConsole(),
     document,
     location: { search: '' },
     localStorage: {
@@ -790,7 +791,7 @@ test('the 60-second task-board poll feeds its snapshot into the planner', async 
   const reconciled = [];
   const snapshot = { ok: true, revision: 7, modules: [], tasks: [] };
   const context = {
-    console,
+    console: createSandboxConsole(),
     document: { visibilityState: 'visible' },
     fetch: async () => ({ json: async () => snapshot }),
     setInterval(callback, delay) {
