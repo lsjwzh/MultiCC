@@ -1,0 +1,56 @@
+name: multicc-task-shell-lab
+services:
+  regression:
+    image: multicc-task-shell-test:local
+    profiles: [test]
+    network_mode: none
+    init: false
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 512
+    mem_limit: 3g
+    shm_size: 256m
+  lab:
+    image: multicc-task-shell-test:local
+    command: [node, docker/task-shell/start-lab.js]
+    environment:
+      HOST: 0.0.0.0
+      PORT: "3000"
+      MULTICC_ALLOW_REMOTE: "1"
+      ACCESS_TOKEN: multicc-docker-lab
+      MULTICC_TASK_SHELLS: "1"
+      MULTICC_LAB_PORT: "${MULTICC_LAB_PORT:-3300}"
+    volumes:
+      - lab-data:/var/lib/multicc
+    networks: [isolated]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 512
+    mem_limit: 3g
+    shm_size: 256m
+    stop_grace_period: 20s
+    healthcheck:
+      test: [CMD, node, docker/task-shell/healthcheck.js]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 30s
+  gateway:
+    image: multicc-task-shell-test:local
+    command: [node, docker/task-shell/tcp-gateway.js]
+    depends_on:
+      lab:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${MULTICC_LAB_BACKEND_PORT:-3301}:3000"
+    networks: [isolated, ingress]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 32
+    mem_limit: 128m
+volumes:
+  lab-data:
+networks:
+  isolated:
+    internal: true
+  ingress:
