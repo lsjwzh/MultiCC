@@ -30,27 +30,27 @@ async function wait(check) {
     original = await api(`${a}/messages`, { text: 'LAB_WAIT 30', clientMsgId: prefix + '-first' });
     const active = await wait(async () => { const d = await api(`${a}/tasks/${original.taskId}`); return d.execution.busy && d.execution.turnId && d; });
     await api(`${b}/links`, { taskId: original.taskId });
-    const input = { text: 'Independent Docker fork', clientMsgId: prefix + '-fork', taskId: original.taskId };
-    const fork = await api(`${b}/messages`, input);
-    assert.equal(fork.decision, 'fork'); assert.notEqual(fork.sessionId, original.sessionId);
-    assert.deepEqual(await api(`${b}/messages`, input), fork);
+    const input = { text: 'Independent Docker task', clientMsgId: prefix + '-new', newTask: true };
+    const created = await api(`${b}/messages`, input);
+    assert.equal(created.decision, 'new'); assert.notEqual(created.sessionId, original.sessionId);
+    assert.deepEqual(await api(`${b}/messages`, input), created);
     const completed = await wait(async () => {
-      const d = await api(`${b}/tasks/${fork.taskId}`);
+      const d = await api(`${b}/tasks/${created.taskId}`);
       return !d.execution.busy && d.messages.some(m => m.role === 'assistant') && d;
     });
-    assert.equal(completed.task.parentTaskId, original.taskId);
+    assert.equal(completed.task.parentTaskId, null);
     assert.equal(completed.snapshots.flatMap(s => s.messages).length, 0);
     await api(`${a}/messages`, { text: '', intent: 'cancel', taskId: original.taskId, turnId: active.execution.turnId, clientMsgId: prefix + '-cancel' });
     await wait(async () => !(await api(`${a}/tasks/${original.taskId}`)).execution.busy);
-    const context = await api(`${b}/messages`, { text: 'Use completed context', contextTaskIds: [fork.taskId], clientMsgId: prefix + '-context' });
+    const context = await api(`${b}/messages`, { text: 'Use completed context', newTask: true, contextTaskIds: [created.taskId], clientMsgId: prefix + '-context' });
     const detail = await wait(async () => {
       const d = await api(`${b}/tasks/${context.taskId}`);
       return !d.execution.busy && d.messages.some(m => m.role === 'assistant') && d;
     });
     assert.equal(detail.task.parentTaskId, null);
-    assert.equal(detail.snapshots[0].taskId, fork.taskId);
+    assert.equal(detail.snapshots[0].taskId, created.taskId);
     assert.ok(detail.snapshots[0].messages.some(m => m.role === 'assistant'));
-    console.log('PASS seeded Docker lab: two shells, busy fork, receipt replay, cancel, completed context');
+    console.log('PASS seeded Docker lab: two shells, explicit new task, receipt replay, cancel, completed context');
   } finally {
     if (original) {
       const d = await api(`${a}/tasks/${original.taskId}`);

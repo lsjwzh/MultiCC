@@ -20,6 +20,9 @@ orchestration.sqlite-shm
 task-runs.sqlite
 task-runs.sqlite-wal
 task-runs.sqlite-shm
+task-shells.sqlite
+task-shells.sqlite-wal
+task-shells.sqlite-shm
 task-run-transcripts/
 task_board.json
 task_board.planning-v2.json

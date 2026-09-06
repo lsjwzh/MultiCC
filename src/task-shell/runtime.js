@@ -1,7 +1,9 @@
 'use strict';
 
 const { randomUUID } = require('node:crypto');
-const { snapshotHistory, renderSnapshots, verifySnapshot, hash } = require('./context');
+const {
+  estimateTokens, snapshotHistory, renderSnapshots, verifySnapshot, hash,
+} = require('./context');
 const { resolveGoalLimits } = require('../routes/aux-goal');
 
 function failure(code, message = code, status = 409) {
@@ -43,6 +45,26 @@ function createTaskShellRuntime(ports) {
     if (linked && !store.get('link', `${s.id}:${id}`)) throw failure('task_not_linked');
     return task;
   }
+  function linkedTasks(s) {
+    const ids = new Set(store.list('link').filter(value => value.shellId === s.id).map(value => value.taskId));
+    return store.list('task').filter(task => ids.has(task.id));
+  }
+  function contextSnapshots(s, excludedTaskId = null) {
+    const snapshots = [];
+    let bytes = 0;
+    for (const task of linkedTasks(s).filter(value => value.id !== excludedTaskId).reverse()) {
+      const snapshot = snapshotHistory(task.id, getHistory(task.sessionId));
+      if (!snapshot.messages.length) continue;
+      const size = Buffer.byteLength(JSON.stringify(snapshot));
+      if (bytes + size > 60000) continue;
+      snapshots.unshift(snapshot);
+      bytes += size;
+    }
+    return snapshots;
+  }
+  function savingsFor(s, taskId) {
+    return estimateTokens(renderSnapshots(contextSnapshots(s, taskId)));
+  }
   function open(sessionId) {
     identifier(sessionId, 'sessionId');
     const source = getRecord(sessionId);
@@ -51,7 +73,7 @@ function createTaskShellRuntime(ports) {
     const id = `sh_${hash(sessionId).slice(0, 24)}`;
     const existing = store.get('shell', id);
     if (existing) return existing;
-    const value = { id, sourceSessionId: sessionId, dirId: source.dirId, createdAt: Date.now() };
+    const value = { id, sourceSessionId: sessionId, dirId: source.dirId, currentTaskId: null, createdAt: Date.now() };
     store.set('shell', id, value); return value;
   }
   function link(shellId, taskId) {
@@ -82,7 +104,11 @@ function createTaskShellRuntime(ports) {
         store.set('task', id, task);
       }
       link(s.id, task.id);
-      if (!s.defaultTaskId) { s.defaultTaskId = task.id; store.set('shell', s.id, s); }
+      if (!s.currentTaskId) {
+        s.currentTaskId = task.id;
+        s.defaultTaskId = task.id;
+        store.set('shell', s.id, s);
+      }
       return task;
     });
   }
@@ -96,12 +122,18 @@ function createTaskShellRuntime(ports) {
   }
   function view(shellId) {
     const s = shell(shellId);
-    const ids = new Set(store.list('link').filter(l => l.shellId === s.id).map(l => l.taskId));
-    return { ...s, enabled: true, tasks: store.list('task').filter(t => ids.has(t.id)),
+    if (!s.currentTaskId && s.defaultTaskId) {
+      s.currentTaskId = s.defaultTaskId;
+      store.set('shell', s.id, s);
+    }
+    const receipts = store.list('receipt').filter(r => r.shellId === s.id).slice(-100);
+    const latestWork = [...receipts].reverse().find(receipt => receipt.payload.intent === 'work' && receipt.status === 'accepted');
+    return { ...s, enabled: true, tasks: linkedTasks(s),
       availableTasks: store.list('task').filter(t => t.dirId === s.dirId).map(t => ({ id: t.id, title: t.title })),
-      receipts: store.list('receipt').filter(r => r.shellId === s.id).slice(-100).map(r => ({
+      tokenSavings: latestWork?.contextSavings || null,
+      receipts: receipts.map(r => ({
         id: r.id, clientMsgId: r.payload.clientMsgId, taskId: r.taskId, intent: r.payload.intent,
-        status: r.status, error: r.error || null,
+        status: r.status, error: r.error || null, contextSavings: r.contextSavings || null,
       })) };
   }
   async function detail(shellId, taskId) {
@@ -121,11 +153,12 @@ function createTaskShellRuntime(ports) {
       return [...new Set(raw[field].map(v => identifier(v, field)))].sort();
     };
     const result = { clientMsgId, intent, text: raw.text.trim(), taskId: raw.taskId == null ? null : identifier(raw.taskId, 'taskId'),
+      newTask: raw.newTask === true,
       contextTaskIds: list('contextTaskIds'), dependsOn: list('dependsOn'),
       turnId: raw.turnId == null ? null : identifier(raw.turnId, 'turnId'),
       requestId: raw.requestId == null ? null : identifier(raw.requestId, 'requestId') };
     if (raw.goal === true || raw.goalLimits != null) result.goalLimits = resolveGoalLimits(raw.goalLimits);
-    if (intent !== 'work' && (!result.taskId || !result.turnId || result.contextTaskIds.length || result.dependsOn.length)) throw failure('invalid_control', 'Controls require the original task and turn', 400);
+    if (intent !== 'work' && (result.newTask || !result.taskId || !result.turnId || result.contextTaskIds.length || result.dependsOn.length)) throw failure('invalid_control', 'Controls require the original task and turn', 400);
     if (intent === 'answer' && !result.requestId) throw failure('invalid_control', 'Answer requires requestId', 400);
     return result;
   }
@@ -136,7 +169,8 @@ function createTaskShellRuntime(ports) {
     if (payload.intent === 'steer' && state.pending && !state.pending.resolved) throw failure('answer_required');
   }
   async function reserve(s, payload, receiptId, fingerprint) {
-    const target = payload.taskId ? taskFor(s, payload.taskId) : null;
+    const selectedTaskId = payload.newTask ? null : payload.taskId || s.currentTaskId || s.defaultTaskId || null;
+    const target = selectedTaskId ? taskFor(s, selectedTaskId) : null;
     const observedClaim = target ? store.get('claim', target.id)?.receiptId : null;
     const state = target ? await getExecution(target.sessionId) : null;
     if (payload.intent !== 'work') {
@@ -161,18 +195,16 @@ function createTaskShellRuntime(ports) {
       const last = claim && store.get('receipt', claim.receiptId);
       const busy = target && (state?.busy !== false || claim?.receiptId !== observedClaim
         || (last && last.status !== 'accepted'));
-      const fork = payload.intent === 'work' && !!busy;
-      if (target && !fork && payload.intent === 'work' && references.length) throw failure('context_requires_new_task', 'Select a new task to import versioned context');
+      if (target && payload.intent === 'work' && references.length) throw failure('context_requires_new_task', 'Start a new task to import versioned context');
       let task = target;
-      if (!task || fork) {
+      if (!task) {
         if (store.list('task').filter(t => t.dirId === s.dirId).length >= 200) throw failure('task_shell_task_limit', 'Task limit reached (200 tasks/project)', 429);
-        if (fork) contexts.set(target.id, snapshotHistory(target.id, getHistory(target.sessionId), { activeTurnId: state?.busy ? state.turnId : null }));
         const snapshotIds = [];
         for (const value of contexts.values()) { store.set('snapshot', value.hash, value); snapshotIds.push(value.hash); }
         const id = `tsk_${randomUUID().replace(/-/g, '')}`;
         const source = getRecord(s.sourceSessionId);
         if (!source) throw failure('source_session_missing');
-        task = { id, dirId: s.dirId, sessionId: `task-${id.slice(4)}`, parentTaskId: fork ? target.id : null,
+        task = { id, dirId: s.dirId, sessionId: `task-${id.slice(4)}`, parentTaskId: null,
           title: payload.text.slice(0, 120), snapshotIds, ready: false, createdAt: Date.now(),
           runtime: Object.fromEntries(['cli', 'model', 'provider', 'providerSelection', 'effort', 'agent'].filter(k => source[k] !== undefined).map(k => [k, source[k]])) };
         store.set('task', id, task);
@@ -183,7 +215,11 @@ function createTaskShellRuntime(ports) {
         store.set('answer', key, { receiptId });
       }
       const receipt = { id: receiptId, shellId: s.id, taskId: task.id, fingerprint, payload,
-        status: 'reserved', decision: fork ? 'fork' : target ? payload.intent === 'work' ? 'continue' : payload.intent : 'new', createdAt: Date.now() };
+        status: 'reserved', decision: target ? payload.intent === 'work' ? (busy ? 'queued' : 'continue') : payload.intent : 'new',
+        contextSavings: payload.intent === 'work' ? {
+          estimatedTokens: savingsFor(s, task.id), contextRefilled: false,
+        } : null,
+        createdAt: Date.now() };
       store.set('receipt', receiptId, receipt);
       if (payload.intent === 'work') store.set('claim', task.id, { receiptId });
       store.set('link', `${s.id}:${task.id}`, { shellId: s.id, taskId: task.id });
@@ -213,7 +249,8 @@ function createTaskShellRuntime(ports) {
         checkControl(p, state);
         result = await cancel(task.sessionId, p.turnId);
       } else {
-        const snapshots = task.snapshotIds.map(id => {
+        const snapshotIds = [...new Set([...(task.snapshotIds || []), ...(task.handoffSnapshotIds || [])])];
+        const snapshots = snapshotIds.map(id => {
           const snapshot = store.get('snapshot', id);
           if (!verifySnapshot(snapshot, id)) throw failure('snapshot_unverified');
           return snapshot;
@@ -227,14 +264,25 @@ function createTaskShellRuntime(ports) {
           ...(p.goalLimits ? { goalLimits: p.goalLimits } : {}),
           ...(p.intent !== 'work' ? { taskShellControl: { intent: p.intent, turnId: p.turnId } } : {}),
           taskContextSeed: renderSnapshots(snapshots),
+          taskShellAutoClassify: p.intent === 'work' && p.newTask !== true,
           ...(p.intent === 'answer' ? { userInputRequestId: p.requestId } : {}),
-          ...(p.intent === 'steer' || receipt.decision === 'continue' ? { originContinue: true } : {}),
+          ...(p.intent === 'steer' || ['continue', 'queued'].includes(receipt.decision) ? { originContinue: true } : {}),
         });
       }
       if (!result?.ok) throw failure(result?.code || 'delivery_failed', result?.error || result?.code || 'delivery_failed');
       receipt.status = 'accepted'; receipt.error = null;
       receipt.result = { ok: true, taskId: task.id, sessionId: task.sessionId, receiptId: receipt.id, decision: receipt.decision };
       store.set('receipt', receipt.id, receipt);
+      if (receipt.payload.intent === 'work') store.transaction(() => {
+        const owner = shell(receipt.shellId);
+        owner.currentTaskId = task.id;
+        owner.defaultTaskId = task.id;
+        store.set('shell', owner.id, owner);
+        if (task.handoffSnapshotIds?.length) {
+          task.handoffSnapshotIds = [];
+          store.set('task', task.id, task);
+        }
+      });
       return receipt.result;
     } catch (error) {
       const notDelivered = error.code === 'stale_control';
@@ -257,6 +305,76 @@ function createTaskShellRuntime(ports) {
     try { return await operation; } finally { flights.delete(id); }
   }
   function owns(sessionId) { return store.list('task').find(t => t.sessionId === sessionId) || null; }
+  function recentTasks(sessionId, receiptId = null) {
+    const task = owns(sessionId);
+    if (!task) return [];
+    const receipt = receiptId ? store.get('receipt', receiptId) : store.get('claim', task.id) && store.get('receipt', store.get('claim', task.id).receiptId);
+    if (!receipt) return [];
+    return linkedTasks(shell(receipt.shellId)).map(value => ({ taskId: value.id, taskName: value.title || '' }));
+  }
+  function refillContext(sessionId, { receiptId = null } = {}) {
+    const task = owns(sessionId);
+    if (!task) throw failure('task_shell_context_unavailable', 'This turn is not owned by a task shell', 404);
+    let receipt = receiptId ? store.get('receipt', receiptId) : null;
+    if (!receipt || receipt.taskId !== task.id) {
+      const claim = store.get('claim', task.id);
+      receipt = claim ? store.get('receipt', claim.receiptId) : null;
+    }
+    if (!receipt || receipt.taskId !== task.id) throw failure('task_shell_context_unavailable', 'No active task-shell delivery was found', 409);
+    const s = shell(receipt.shellId);
+    const snapshots = contextSnapshots(s, task.id);
+    const rendered = renderSnapshots(snapshots);
+    receipt.contextSavings = {
+      estimatedTokens: 0,
+      originalEstimatedTokens: receipt.contextSavings?.originalEstimatedTokens
+        ?? receipt.contextSavings?.estimatedTokens ?? estimateTokens(rendered),
+      contextRefilled: true,
+    };
+    receipt.contextRefillTaskIds = snapshots.map(value => value.taskId);
+    store.set('receipt', receipt.id, receipt);
+    return {
+      ok: true,
+      current_task_id: task.id,
+      task_ids: receipt.contextRefillTaskIds,
+      estimated_tokens: estimateTokens(rendered),
+      context: rendered || 'No completed context from other linked tasks is available.',
+    };
+  }
+  function settleAttribution(sessionId, receiptId, attribution = {}) {
+    const owner = owns(sessionId);
+    const receipt = receiptId && store.get('receipt', receiptId);
+    if (!owner || !receipt || receipt.taskId !== owner.id) return { ok: false, code: 'task_shell_receipt_not_found' };
+    const s = shell(receipt.shellId);
+    const nextId = attribution.taskId || owner.id;
+    return store.transaction(() => {
+      let next = store.get('task', nextId);
+      const history = getHistory(sessionId);
+      const snapshot = snapshotHistory(nextId, history);
+      if (!next) {
+        const snapshotIds = [];
+        if (snapshot.messages.length) { store.set('snapshot', snapshot.hash, snapshot); snapshotIds.push(snapshot.hash); }
+        next = { id: nextId, dirId: owner.dirId, sessionId: `task-${nextId.replace(/^tsk_/, '')}`,
+          parentTaskId: attribution.relatedTaskId || null, title: attribution.taskName || receipt.payload.text.slice(0, 120),
+          snapshotIds, ready: false, createdAt: Date.now(), runtime: { ...owner.runtime } };
+        store.set('task', next.id, next);
+      } else if (next.id !== owner.id && snapshot.messages.length) {
+        store.set('snapshot', snapshot.hash, snapshot);
+        next.handoffSnapshotIds = [...new Set([...(next.handoffSnapshotIds || []), snapshot.hash])];
+        store.set('task', next.id, next);
+      }
+      if (attribution.taskName && next.title !== attribution.taskName) {
+        next.title = attribution.taskName;
+        store.set('task', next.id, next);
+      }
+      store.set('link', `${s.id}:${next.id}`, { shellId: s.id, taskId: next.id });
+      s.currentTaskId = next.id;
+      s.defaultTaskId = next.id;
+      store.set('shell', s.id, s);
+      receipt.attributedTaskId = next.id;
+      store.set('receipt', receipt.id, receipt);
+      return { ok: true, taskId: next.id, changed: next.id !== owner.id };
+    });
+  }
   async function retry(shellId, receiptId) {
     const s = shell(shellId);
     const receipt = store.get('receipt', identifier(receiptId, 'receiptId'));
@@ -278,7 +396,10 @@ function createTaskShellRuntime(ports) {
     if (options.originContinue === true) { options.taskId = task.id; return null; }
     return { ok: false, code: 'task_shell_route_required' };
   }
-  return { open, adopt, link, remove, view, detail, send: sendInput, retry, owns, guardAdmission };
+  return {
+    open, adopt, link, remove, view, detail, send: sendInput, retry, owns,
+    guardAdmission, recentTasks, refillContext, settleAttribution,
+  };
 }
 
 module.exports = { createTaskShellRuntime, failure, cleanError };

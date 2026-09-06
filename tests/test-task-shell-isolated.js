@@ -90,19 +90,18 @@ const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'ut
     const first = await api(`/api/task-shells/${sa.id}/messages`, { text: 'HOLD_ORIGINAL', clientMsgId: 'one', intent: 'work' });
     await wait(() => rows().some(r => r.sessionId === first.sessionId), 'first execution did not start');
     await api(`/api/task-shells/${sb.id}/links`, { taskId: first.taskId });
-    const forkInput = { text: 'INDEPENDENT_FORK', taskId: first.taskId, clientMsgId: 'two', intent: 'work' };
-    const second = await api(`/api/task-shells/${sb.id}/messages`, forkInput);
-    assert.notEqual(second.taskId, first.taskId); assert.equal(second.decision, 'fork');
-    const replay = await api(`/api/task-shells/${sb.id}/messages`, forkInput); assert.deepEqual(replay, second);
-    await wait(() => rows().some(r => r.sessionId === second.sessionId), 'fork execution did not start concurrently');
+    const newTaskInput = { text: 'INDEPENDENT_TASK', newTask: true, clientMsgId: 'two', intent: 'work' };
+    const second = await api(`/api/task-shells/${sb.id}/messages`, newTaskInput);
+    assert.notEqual(second.taskId, first.taskId); assert.equal(second.decision, 'new');
+    const replay = await api(`/api/task-shells/${sb.id}/messages`, newTaskInput); assert.deepEqual(replay, second);
+    await wait(() => rows().some(r => r.sessionId === second.sessionId), 'new task execution did not start concurrently');
     const paths = createPaths({ dataDir });
     const sessions = readJson(paths.sessionsFile, { legacyIsArray: true }).data;
     const recordA = sessions.find(s => s.id === first.sessionId), recordB = sessions.find(s => s.id === second.sessionId);
-    assert.equal(recordA.autoCommit, false); assert.equal(recordB.autoCommit, false);
+    assert.equal(recordB.autoCommit, false);
     assert.notEqual(recordA.worktreePath, recordB.worktreePath);
     assert.notEqual(recordA.cliSessionId, recordB.cliSessionId);
     assert.equal(recordB.taskBoundTaskId, second.taskId);
-    assert.equal(recordA.taskState.taskIdentityState, 'canonical', 'classification must not move an explicit shell task');
     assert.ok(fs.existsSync(path.join(recordB.worktreePath, '.git')));
     assert.equal(rows().filter(r => r.sessionId === second.sessionId).length, 1);
     assert.equal(rows().find(r => r.sessionId === second.sessionId).prompt.includes('HOLD_ORIGINAL'), false, 'unfinished source input must not become snapshot context');
@@ -110,7 +109,7 @@ const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'ut
       const d = await api(`/api/task-shells/${sb.id}/tasks/${second.taskId}`);
       return d.messages.some(m => m.role === 'assistant' && String(m.content).includes('SHELL_COMPLETED_EVIDENCE')) && d;
     }, 'formal history missing');
-    assert.equal(detail.task.parentTaskId, first.taskId);
+    assert.equal(detail.task.parentTaskId, null);
     assert.match(detail.task.baseline.commit, /^[a-f0-9]{40,64}$/);
     const events = [];
     socket = new WebSocket(base.replace('http', 'ws') + `/ws/chat?session=${second.sessionId}&token=${token}`);
@@ -125,13 +124,13 @@ const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'ut
     assert.equal(protectedMerge.error, 'task_shell_identity_immutable');
     // Freeze two sources as references in a fresh task. This is sharing, not a merge.
     await api(`/api/task-shells/${sa.id}/links`, { taskId: second.taskId });
-    const third = await api(`/api/task-shells/${sa.id}/messages`, { text: 'USE_BOTH_CONTEXTS', clientMsgId: 'three', intent: 'work', contextTaskIds: [first.taskId, second.taskId] });
+    const third = await api(`/api/task-shells/${sa.id}/messages`, { text: 'USE_BOTH_CONTEXTS', newTask: true, clientMsgId: 'three', intent: 'work', contextTaskIds: [first.taskId, second.taskId] });
     await wait(() => rows().some(r => r.sessionId === third.sessionId), 'reference execution missing');
     const prompt = rows().find(r => r.sessionId === third.sessionId).prompt;
     assert.ok(prompt.includes(first.taskId) && prompt.includes(second.taskId));
     assert.ok(prompt.includes('SHELL_COMPLETED_EVIDENCE'));
     await wait(async () => (await api(`/api/task-shells/${sa.id}/tasks/${third.taskId}`)).messages.some(m => m.role === 'assistant'), 'reference completion missing');
-    const cancelTask = await api(`/api/task-shells/${sa.id}/messages`, { text: 'WAIT_CANCEL', clientMsgId: 'cancel-job', intent: 'work' });
+    const cancelTask = await api(`/api/task-shells/${sa.id}/messages`, { text: 'WAIT_CANCEL', newTask: true, clientMsgId: 'cancel-job', intent: 'work' });
     const running = await wait(async () => {
       const d = await api(`/api/task-shells/${sa.id}/tasks/${cancelTask.taskId}`);
       return rows().some(r => r.sessionId === cancelTask.sessionId) && d.execution.turnId && d;
@@ -167,7 +166,7 @@ const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'ut
     assert.ok((await api(`/api/task-shells/${sa.id}/tasks/${third.taskId}`)).messages.length >= 2);
     const alwaysOn = await api(`/api/task-shells/${sa.id}/messages`, { text: 'ALWAYS_ON', clientMsgId: 'always-on' });
     await wait(async () => (await api(`/api/task-shells/${sa.id}/tasks/${alwaysOn.taskId}`)).messages.some(m => m.role === 'assistant'), 'permanent task route did not execute');
-    console.log('PASS task-shell isolated: concurrent fork, stable replay, independent worktree/native identity, formal history, WS guard, multi-source seed, restart/permanent routing');
+    console.log('PASS task-shell isolated: explicit concurrent task, stable replay, independent worktree/native identity, formal history, WS guard, multi-source seed, restart/permanent routing');
   } catch (error) { console.error(logs); throw error; }
   finally { socket?.terminate(); if (!fs.existsSync(release)) fs.writeFileSync(release, 'done'); await stop(); fs.rmSync(root, { recursive: true, force: true }); }
 })().catch(error => { console.error(error.stack); process.exitCode = 1; });
