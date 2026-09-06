@@ -35,7 +35,8 @@ contributors and integrators.
 | [Codex subagent provider routing](codex-subagent-provider-routing.md) | Routing Codex parent vs. child threads through separate provider/model endpoints. |
 | [Fleet Commander migration](commander-migration.md) | Startup invariant that every registered directory is valid, and the upgrade migration that enforces it. |
 | [Session FIFO scheduler](session-fifo-scheduler.md) | The single durable per-session queue that admits every unit of chat work. |
-| [Task context isolation proposal](task-context-isolation-design.md) | Proposed task boundaries, stable context snapshots, native-history archival, affected modules, cache tradeoffs, and acceptance checks. Not yet implemented. |
+| [Task shells and context branches experiment](task-session-shell-experiment.md) | Current proposal: many-to-many shell/task links, shared task queues, canonical messages, context freeze/resume, side effects, and experimental acceptance gates. Not yet implemented. |
+| [Earlier task context isolation proposal](task-context-isolation-design.md) | Earlier context/archive analysis, superseded where noted by the task-shell experiment. Not implemented. |
 | [Router MCP tools](router-tools.md) | Cross-session routing exposed as a local stdio MCP server. |
 | [Status presentation](status-presentation.md) | Every user-visible status badge — web session list, Fleet cards, task cards — and its state machine. |
 
