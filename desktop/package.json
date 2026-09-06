@@ -70,7 +70,8 @@
       "category": "Development",
       "maintainer": "MultiCC Team <lsjwzh@users.noreply.github.com>",
       "target": [
-        { "target": ["AppImage", "deb"], "arch": ["x64"] }
+        { "target": "AppImage", "arch": ["x64"] },
+        { "target": "deb", "arch": ["x64"] }
       ],
       "artifactName": "multicc-desktop-${version}-linux-${arch}.${ext}"
     },
