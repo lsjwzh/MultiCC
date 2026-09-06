@@ -2,6 +2,7 @@
 
 const crypto = require('crypto');
 const { redact } = require('../observability');
+const { extractUpstreamError } = require('../upstream-error');
 
 const CATEGORIES = Object.freeze([
   'authentication_permission',
@@ -102,7 +103,7 @@ function sourceMessage(raw) {
   return raw.message || nested.message || raw.detail || raw.reason || '';
 }
 
-function sanitizeMessage(value, fallback = 'Upstream API request failed') {
+function sanitizeMessage(value, fallback = 'Upstream API request failed', maxLength = MAX_SANITIZED_MESSAGE) {
   let message = String(value || '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
   message = String(redact(message));
   message = message
@@ -112,7 +113,7 @@ function sanitizeMessage(value, fallback = 'Upstream API request failed') {
     .replace(/[A-Z]:\\[^\s]+|\/(?:Users|home|var|tmp)\/[^\s]+/g, '[PATH]')
     .replace(/\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b/g, '[ACCOUNT]');
   if (!message) message = fallback;
-  return message.slice(0, MAX_SANITIZED_MESSAGE);
+  return message.slice(0, maxLength);
 }
 
 // Provider-owned fallback only: distinguishes a short error envelope rendered
@@ -421,9 +422,10 @@ function normalizeApiError(raw = {}, context = {}, deps = {}) {
   const providerRouteScope = context.providerRouteScope === 'attempt'
     && runtimeEpoch && turnId && decisionId && routeAttemptId
     && routeGeneration && attemptNo && providerRevision ? 'attempt' : null;
-  const code = normalizeCode(context.code || raw.code || nested.code || raw.type || nested.type);
-  const httpStatus = httpStatusOf(raw);
-  const message = sourceMessage(raw);
+  const upstream = TRUSTED_TEXT_SOURCES.has(source) ? extractUpstreamError(raw) : {};
+  const code = normalizeCode(context.code || upstream.code || raw.code || nested.code || upstream.type || raw.type || nested.type);
+  const httpStatus = httpStatusOf(raw) ?? upstream.httpStatus ?? null;
+  const message = upstream.message || sourceMessage(raw);
   const rawCategory = normalizeCode(context.category || raw.category || nested.category);
   const explicit = structuredCategory(httpStatus, code, rawCategory);
   const trustedTextCategory = TRUSTED_TEXT_SOURCES.has(source)
@@ -470,7 +472,7 @@ function normalizeApiError(raw = {}, context = {}, deps = {}) {
   const retryable = RETRYABLE.has(category);
   const replaySafePhase = phase === 'connect' || phase === 'before_first_token' || phase === 'request';
   const safeToRetry = retryable && replaySafePhase && !partialOutput && !sideEffects;
-  const requestIdRaw = raw.requestId || nested.requestId || headerValue(raw.headers, 'x-request-id');
+  const requestIdRaw = raw.requestId || nested.requestId || upstream.requestId || headerValue(raw.headers, 'x-request-id');
   const requestId = requestIdRaw
     ? `req_${crypto.createHash('sha256').update(String(requestIdRaw)).digest('hex').slice(0, 10)}`
     : null;
@@ -500,11 +502,11 @@ function normalizeApiError(raw = {}, context = {}, deps = {}) {
     maxAttempts: null,
     userAction: userAction(category, retryAfterMs),
     sanitizedMessage,
-    // Public/durable diagnostic detail. This is deliberately derived from the
-    // same redacted, bounded message as observability — never from raw provider
-    // text — so a synthetic relay status (for example HTTP 502) cannot hide the
-    // actionable socket/DNS cause underneath it.
-    rootCause: sanitizedMessage,
+    // Keep a longer redacted root cause than the compact summary. Extracting
+    // an embedded upstream envelope first prevents its wrapper/URL from
+    // consuming the display budget and hiding the actionable detail.
+    rootCause: sanitizeMessage(message, 'Upstream API request failed', 2048),
+    param: sanitizeMessage(upstream.param || raw.param || nested.param, '', 200) || null,
     cause: code || (httpStatus ? `http_${httpStatus}` : category),
     source,
     requestId,
@@ -798,8 +800,9 @@ function retryNotice(decision) {
   if (!decision || !decision.error) return '上游 API 请求失败，未自动重试。';
   const { error } = decision;
   const cause = String(error.rootCause || error.sanitizedMessage || '').trim();
+  const parameter = error.param && !cause.includes(error.param) ? `（参数：${error.param}）` : '';
   const causeNotice = cause
-    ? `根因：${cause}${/[。.!?！？]$/.test(cause) ? '' : '。'}`
+    ? `根因：${cause}${parameter}${/[。.!?！？]$/.test(cause) && !parameter ? '' : '。'}`
     : '';
   if (decision.action === 'retry') {
     const seconds = Math.max(1, Math.ceil((decision.delayMs || 0) / 1000));

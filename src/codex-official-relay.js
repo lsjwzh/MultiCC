@@ -19,6 +19,8 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { officialAccountIdFromProvider } = require('./official-accounts');
+const { preprocessResponsesHistory, repairRejectedResponsesHistory } = require('./model-history-converter');
+const { publicTransportError, publicUpstreamError, readUpstreamError } = require('./upstream-error');
 
 const DEFAULT_AUTH_FILE = path.join(os.homedir(), '.codex', 'auth.json');
 const DEFAULT_UPSTREAM_URL = 'https://chatgpt.com/backend-api/codex/responses';
@@ -87,6 +89,10 @@ function responseJson(res, status, body) {
   if (typeof res.setHeader === 'function') res.setHeader('content-type', 'application/json; charset=utf-8');
   if (typeof res.end === 'function') res.end(JSON.stringify(body));
   return undefined;
+}
+
+function diagnostic(logger, event, fields) {
+  try { if (typeof logger?.warn === 'function') logger.warn(event, fields); } catch (_) {}
 }
 
 function normalizeCodexRole(value) {
@@ -239,6 +245,9 @@ function responseObserver(contentType) {
 
 function observeResponseObject(observer, value, context) {
   if (!value || typeof value !== 'object') return;
+  if (value.type === 'response.failed' || value.type === 'error') {
+    observer.error = publicUpstreamError(value, { secrets: context.secrets });
+  }
   const usage = normalizeResponsesUsage((value.response && value.response.usage) || value.usage);
   if (usage) observer.usage = usage;
   const type = String(value.type || '');
@@ -325,12 +334,21 @@ function createCodexOfficialRelayHandler(options = {}) {
   return async function codexOfficialRelay(req, res, next) {
     const providerId = String(req.params && req.params.providerId || '');
     const provider = getProvider('codex', providerId);
-    if (!isOfficialCodexOAuthProvider(provider)) return next();
+    const prepared = preprocessResponsesHistory(req.body);
+    if (prepared.changes.length) diagnostic(options.logger, 'model_history_preprocessed', {
+      providerId, changes: prepared.changes,
+    });
+    if (!isOfficialCodexOAuthProvider(provider)) {
+      // All Codex routes speak Responses at this boundary, including the CPR
+      // Chat Completions bridge. Do not edit the saved native transcript.
+      req.body = prepared.body;
+      return next();
+    }
     const role = normalizeCodexRole(req.params && req.params.role);
     if (!role.valid) return responseJson(res, 400, { error: 'invalid Codex agent route' });
 
-    const input = req.body && typeof req.body === 'object' && !Array.isArray(req.body)
-      ? req.body : {};
+    const input = prepared.body && typeof prepared.body === 'object' && !Array.isArray(prepared.body)
+      ? prepared.body : {};
     const streaming = input.stream !== false;
     const context = {
       providerId,
@@ -362,6 +380,8 @@ function createCodexOfficialRelayHandler(options = {}) {
         reason: credential && credential.reason || 'credential_unavailable',
       });
     }
+    const errorOptions = { secrets: [credential.accessToken, credential.accountId] };
+    context.secrets = errorOptions.secrets;
 
     const controller = new AbortController();
     let clientClosed = false;
@@ -374,47 +394,68 @@ function createCodexOfficialRelayHandler(options = {}) {
     if (typeof req.once === 'function') req.once('aborted', close);
     if (typeof res.once === 'function') res.once('close', close);
 
-    const body = { ...input, store: false };
+    let body = { ...input, store: false };
     body.stream = streaming;
-    if (Array.isArray(body.input)) {
-      body.input = body.input.map(item => {
-        // A resumed thread may contain another provider's tool_* item IDs.
-        // Official requires function-call item IDs to start with fc. The ID
-        // is optional; call_id links the call to its output and must be kept.
-        if (item?.type !== 'function_call' || typeof item.id !== 'string'
-            || item.id.startsWith('fc')) return item;
-        const { id, ...call } = item;
-        return call;
-      });
-    }
 
     let upstream;
+    let upstreamError;
+    let firstRejection;
+    let repairs = [];
     try {
-      upstream = await fetchImpl(upstreamUrl, {
-        method: 'POST',
-        headers: upstreamHeaders(credential),
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-    } catch (_) {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (clientClosed) return undefined;
+        upstream = await fetchImpl(upstreamUrl, {
+          method: 'POST',
+          headers: upstreamHeaders(credential),
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+        if (upstream.ok && upstream.body) break;
+        const rejected = await readUpstreamError(upstream, { signal: controller.signal });
+        if (clientClosed) return undefined;
+        upstreamError = publicUpstreamError({
+          ...rejected,
+          ...(upstream.headers?.get('x-request-id') ? { requestId: upstream.headers.get('x-request-id') } : {}),
+        }, errorOptions);
+        const repair = attempt === 0 && upstream.status === 400
+          ? repairRejectedResponsesHistory(body, rejected) : null;
+        if (!repair) break;
+        firstRejection = upstreamError;
+        repairs = repair.changes;
+        body = repair.body;
+        diagnostic(options.logger, 'model_history_repaired_after_rejection', {
+          providerId, status: upstream.status, error: upstreamError, changes: repairs,
+        });
+      }
+    } catch (error) {
       if (clientClosed) return undefined;
+      const detail = publicTransportError(error, { ...errorOptions, fallback: 'Codex Official OAuth upstream is unreachable' });
       reportTerminal(context, null, { status: 'error', errorCode: 'UPSTREAM_CONNECT_FAILED' });
       return responseJson(res, 502, {
-        error: 'Codex Official OAuth upstream is unreachable',
+        error: detail,
         code: 'CODEX_OFFICIAL_OAUTH_UPSTREAM_UNREACHABLE',
+        ...(firstRejection ? { previousError: firstRejection, historyRepairs: repairs } : {}),
       });
     }
 
     if (!upstream.ok || !upstream.body) {
-      try { if (upstream.body) await upstream.body.cancel(); } catch (_) {}
-      context.statusCode = upstream.status || 502;
+      context.statusCode = upstream.ok ? 502 : upstream.status || 502;
+      if (upstream.ok) upstreamError = { message: `Upstream returned HTTP ${upstream.status} without a response body` };
+      diagnostic(options.logger, 'codex_official_upstream_rejected', {
+        providerId, status: context.statusCode, error: upstreamError,
+      });
       reportTerminal(context, null, {
         status: 'error', statusCode: context.statusCode, errorCode: 'UPSTREAM_HTTP_ERROR',
       });
-      return responseJson(res, upstream.status || 502, {
-        error: 'Codex Official OAuth upstream rejected the request',
+      for (const name of ['x-request-id', 'retry-after']) {
+        const value = upstream.headers?.get(name);
+        if (value) res.setHeader(name, publicUpstreamError({ message: value }, errorOptions).message);
+      }
+      return responseJson(res, context.statusCode, {
+        error: upstreamError,
         code: 'CODEX_OFFICIAL_OAUTH_UPSTREAM_REJECTED',
         upstreamStatus: upstream.status || null,
+        ...(firstRejection ? { previousError: firstRejection, historyRepairs: repairs } : {}),
       });
     }
 
@@ -432,13 +473,20 @@ function createCodexOfficialRelayHandler(options = {}) {
         observeResponseChunk(observer, value, context);
         res.write(value);
       }
-      if (!clientClosed) reportTerminal(context, finishResponseObservation(observer, context), { status: 'success' });
-    } catch (_) {
+      if (!clientClosed) {
+        const usage = finishResponseObservation(observer, context);
+        reportTerminal(context, usage, observer.error
+          ? { status: 'error', errorCode: observer.error.code || 'UPSTREAM_RESPONSE_FAILED' }
+          : { status: 'success' });
+      }
+    } catch (error) {
       if (!clientClosed && streaming && !res.writableEnded) {
         try {
           res.write(`event: response.failed\ndata: ${JSON.stringify({
             type: 'response.failed',
-            response: { status: 'failed', error: { message: 'Codex Official OAuth stream failed' } },
+            response: { status: 'failed', error: publicTransportError(error, {
+              ...errorOptions, fallback: 'Codex Official OAuth stream failed',
+            }) },
           })}\n\n`);
         } catch (_) {}
       }
