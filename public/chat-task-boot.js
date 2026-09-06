@@ -1,7 +1,8 @@
 'use strict';
 
-// The full chat renderer is retained for archives and system sessions. User
-// conversations enter the task shell; an entry error must never send elsewhere.
+// Task-board links resolve their bound execution once, then use the exact same
+// full chat renderer as every ordinary conversation. Task-shell routing is a
+// transport concern and must never replace the UI.
 async function bootChatEntry() {
   if (_params.get('readOnly') === '1') {
     for (const id of ['input-bar', 'pre-input-bar', 'pending-user-input-card']) {
@@ -11,15 +12,19 @@ async function bootChatEntry() {
     connect();
     return;
   }
+  if (!_taskId) {
+    connect();
+    return;
+  }
   try {
     const target = await window.MultiCCChatShellEntry.resolve({
       sessionId: _sessionName, taskId: _taskId, fetch: window.fetch.bind(window),
     });
-    if (target) {
-      const url = new URL(target, location.href);
-      if (_params.get('external')) url.searchParams.set('external', _params.get('external'));
-      location.replace(url.pathname + url.search);
-    } else connect(); // Only system/auxiliary sessions have no task shell.
+    if (target) location.replace(window.MultiCCChatShellEntry.chatUrl(
+      new URL(target, location.href).searchParams.get('session'),
+      { external: _params.get('external') },
+    ));
+    else connect();
   } catch (error) {
     addSystemMsg(error.message);
     statusEl.textContent = error.message;

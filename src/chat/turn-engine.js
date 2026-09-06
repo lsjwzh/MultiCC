@@ -2777,7 +2777,7 @@ function createChatTurnEngine(deps) {
             return;
           }
           sendWs(ws, { type: 'error', code: 'task_shell_route_required', error: '请从任务会话入口发送消息或操作任务。',
-            url: `/task-shell.html?session=${encodeURIComponent(sessionName)}` });
+            url: `/chat.html?session=${encodeURIComponent(sessionName)}` });
           return;
         }
 
