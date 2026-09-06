@@ -23,6 +23,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { DEFAULT_ZCODE_ENGINE } = require('./zcode-engine');
+const { isZcodeSessionId } = require('./zcode-session');
 
 // 引擎路径：优先 ZCODE_ENGINE env（可移植、可追溯），回退到本机 .app 内的默认位置。
 const ZCODE_ENGINE = process.env.ZCODE_ENGINE || DEFAULT_ZCODE_ENGINE;
@@ -51,14 +52,14 @@ if (!prompt) {
     process.stderr.write(`zcode-bridge: 引擎不存在 (${ZCODE_ENGINE})；请用 ZCODE_ENGINE 指向 zcode.cjs\n`);
     process.exit(1);
   }
-  const r = spawnSync('node', [ZCODE_ENGINE, '--version'], { encoding: 'utf8' });
+  const r = spawnSync(process.execPath, [ZCODE_ENGINE, '--version'], { encoding: 'utf8' });
   process.stdout.write((r.stdout || '') + (r.stderr || ''));
   process.exit(r.status || 0);
 }
 
 if (!fs.existsSync(ZCODE_ENGINE)) {
   process.stdout.write(JSON.stringify({
-    sessionID: 'zcode-no-engine', type: 'error',
+    type: 'error',
     error: { message: `zcode-bridge: 引擎不存在 (${ZCODE_ENGINE})；请用 ZCODE_ENGINE 指向 zcode.cjs` },
   }) + '\n');
   process.exit(0);
@@ -82,7 +83,7 @@ if (model) {
     if (config && typeof config === 'object' && !Array.isArray(config)
         && config.model && config.model !== model) {
       process.stdout.write(JSON.stringify({
-        sessionID: 'zcode-settings', type: 'error',
+        type: 'error',
         error: { message: `ZCode 0.15.2 不支持 model 覆盖（--settings 未实现）：会话模型是 ${model}，但 ${source} 里是 ${config.model}。请把该文件的 model 改成 ${model}，或在 multicc 把会话模型切回 ${config.model}。` },
       }) + '\n');
       process.exit(0);
@@ -94,13 +95,13 @@ if (model) {
 
 // ── 4. 调用 zcode.cjs 引擎（整体 JSON 输出）────────────────────────────────
 const zargs = [ZCODE_ENGINE, '--json', '--prompt', prompt];
-if (cliSessionId && /^sess_/.test(cliSessionId)) zargs.push('--resume', cliSessionId);
-const res = spawnSync('node', zargs, { encoding: 'utf8', env: process.env, maxBuffer: 1e8 });
+if (isZcodeSessionId(cliSessionId)) zargs.push('--resume', cliSessionId);
+const res = spawnSync(process.execPath, zargs, { encoding: 'utf8', env: process.env, maxBuffer: 1e8 });
 
 if (res.status !== 0) {
   const msg = ((res.stdout || '') + (res.stderr || '')).split('\n').slice(0, 3).join(' ').slice(0, 300);
   process.stdout.write(JSON.stringify({
-    sessionID: 'zcode-err', type: 'error', error: { message: msg || ('zcode.cjs 退出码 ' + res.status) },
+    type: 'error', error: { message: msg || ('zcode.cjs 退出码 ' + res.status) },
   }) + '\n');
   process.exit(0);
 }
@@ -111,12 +112,18 @@ try {
   parsed = JSON.parse(res.stdout);
 } catch (e) {
   process.stdout.write(JSON.stringify({
-    sessionID: 'zcode-parse', type: 'error', error: { message: '无法解析 zcode.cjs 输出' },
+    type: 'error', error: { message: '无法解析 zcode.cjs 输出' },
   }) + '\n');
   process.exit(0);
 }
 
-const sid = parsed.sessionId || ('zcode-' + Date.now());
+if (!parsed || !isZcodeSessionId(parsed.sessionId)) {
+  process.stdout.write(JSON.stringify({ type: 'error', error: {
+    code: 'zcode_invalid_session_id', message: 'ZCode 未返回有效的原生会话 ID；未接受无法归属的输出。',
+  } }) + '\n');
+  process.exit(0);
+}
+const sid = parsed.sessionId;
 const emit = (obj) => process.stdout.write(JSON.stringify(obj) + '\n');
 
 emit({ sessionID: sid, type: 'step_start' });
