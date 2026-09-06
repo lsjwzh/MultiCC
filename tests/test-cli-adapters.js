@@ -218,7 +218,8 @@ assert.deepStrictEqual(
 );
 
 for (const adapter of [opencode, zcode]) {
-  const decoded = adapter.decodeEvent({ type: 'text', sessionID: 'ses_1', part: { text: 'hello' } });
+  const nativeId = adapter.name === 'zcode' ? 'sess_1' : 'ses_1';
+  const decoded = adapter.decodeEvent({ type: 'text', sessionID: nativeId, part: { text: 'hello' } });
   assert.deepStrictEqual(decoded.map(event => event.type), ['session_started', 'assistant_text']);
   const tool = adapter.decodeEvent({
     type: 'tool_call',

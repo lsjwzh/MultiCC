@@ -45,7 +45,7 @@ const MAX_ROUTING_ATTEMPTS = 50;
 // distinction for source filtering and for independent-task-only activity
 // aggregation; it must not be inferred from recordType or chatSessionId.
 const TASK_ORIGINS = new Set(['board', 'session']);
-const BOARD_TASK_SOURCES = new Set(['task-board', 'commander']);
+const BOARD_TASK_SOURCES = new Set(['task-board', 'commander', 'task-shell']);
 
 function taskOriginForSource(source) {
   return BOARD_TASK_SOURCES.has(String(source || '')) ? 'board' : 'session';

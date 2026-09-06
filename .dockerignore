@@ -1,0 +1,3 @@
+# Fail closed for direct builds from a live checkout. Use npm run lab:build;
+# it creates a separate, tracked-source-only context with its own ignore file.
+**

@@ -1563,7 +1563,7 @@ memoModule.migrateLegacy().done.catch(error => console.log(`[memo] migration fai
 
 // Create + persist an isolated session record (its own git worktree + branch).
 // Shared creation boundary; an explicit id creates or reuses a named session.
-async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, providerSelection = null, effort = null, agent = null, rolePrompt = null, rolePresetId = null, type = null, taskExecutionSlot = false, experimentalMode = null, loginFlow = null, loginEnv = null, persistence = 'bestEffort', persistenceSource = 'runtime.create-session', taskBoundTaskId = null }) {
+async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, providerSelection = null, effort = null, agent = null, rolePrompt = null, rolePresetId = null, type = null, taskExecutionSlot = false, experimentalMode = null, loginFlow = null, loginEnv = null, persistence = 'bestEffort', persistenceSource = 'runtime.create-session', taskBoundTaskId = null, autoCommit = true }) {
   if (!dir) return { ok: false, error: 'directory not found' };
   if (!SUPPORTED_CHAT_CLIS.includes(cli)) return { ok: false, error: `cli must be ${SUPPORTED_CHAT_CLIS.join(', ')}` };
   if (!['terminal', 'chat'].includes(kind)) return { ok: false, error: 'kind must be terminal or chat' };
@@ -1624,7 +1624,7 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
     effort: sessionEffort || null, // null = follow Claude Code/provider default
     agent: sessionAgent || null, // Claude/OpenCode/Qoder native --agent; unsupported CLIs keep null
     provider: providerId, providerSelection: autoSelection.value, // concrete manual fallback + optional virtual Auto policy
-    autoCommit: true,      // default: auto-commit & merge after task completion
+    autoCommit: autoCommit !== false, // experiment branches explicitly disable automatic merge
     // streaming (流式常驻) is now claude's default mode: keep the claude process
     // alive across turns for faster, context-preserving continuation. Non-claude
     // CLIs ignore this field. Only claude chat sessions default on.
@@ -2092,18 +2092,12 @@ const {
   maybeSchedulePeriodicMemoryReview,
   trackPendingDistill: _trackPendingMemoryDistill,
 } = memoryRuntime;
-// Admission uses classify state plus the repo/TaskRun leases; socket liveness is
-// neither a work nor repository-ownership proof.
 function dispatchTargetBusy(sid, item = null) {
   return !!sessionWorkHost?.isRunActive(sid) || !!taskRunHost?.isSlotUnavailable(sid, item || {}) || !!defaultRepoActor.isLeased(sid);
 }
-// #38 · the Commander routing host (pooled slot dispatch + elastic workers) is
-// retired: task work enters only through the task-bound chat session. Legacy
-// open runs keep draining through the queue/lease machinery.
 const taskBoardRuntime = createTaskBoardRuntime({
   file: MULTICC_PATHS.taskBoardFile,
   taskRuns: taskRunStore, auxQueue, records: persistedSessions, createSessionRecord, releaseTaskBoundSession: sessionLifecycleRuntime.releaseTaskBoundSession,
-  // Board projections inspect history without cloning every referenced transcript.
   loadHistory: sessionId => viewChatHistory(sessionId),
   dispatchToSession,
   sendSessionMessage: (...args) => taskContextHost.deliverSessionMessage(...args),
@@ -2115,7 +2109,7 @@ const taskBoardRuntime = createTaskBoardRuntime({
   isSystemInjected: msg => isSystemInjectedMsg(msg),
   resolveSessionQueue: (...args) => sessionWorkHost.resolveTask(...args),
   getCommanderMigrationStatus: dirId => commanderMigrationState.statusFor(dirId),
-  getSessionRunState: sid => sessionWorkHost?.getRunState(sid) || 'idle',
+  getSessionRunState: sid => sessionWorkHost?.getRunState(sid) || 'idle', isTaskShellSession: id => taskShellHost.owns(id),
   resolveGoalLimits, buildGoalLimitNote,
   // M3 per-task worktree service ports (taskWorktree on the runtime).
   directories, gitWorktreeAdd, gitWorktreeRemove, gitMergeBack, existsSync: fs.existsSync,
@@ -2125,14 +2119,19 @@ taskBoardRuntime.mountRoutes(app); createTaskRunRoutes({ store: taskRunStore, lo
 const taskContextHost = createTaskContextHost({
   getState: sessionId => chatSessions.get(sessionId), emitClients: createTaskRunStreamEmitter(broadcastTo, chatSessions, persistedSessions, workspaceBroadcast),
   append: (sessionId, message) => chatHistoryRuntime.appendMessage(sessionId, message),
-  getTaskBoard: () => taskBoardRuntime, classifyDisplay,
+  getTaskBoard: () => taskBoardRuntime, getTaskShells: () => taskShellHost, classifyDisplay,
   containsDelivery: (sessionId, id) => chatHistoryService.containsDelivery(sessionId, id),
   recordTaskRunMessage: (sessionId, message) => taskRunHost?.recordMessage(sessionId, message),
   randomUUID: () => crypto.randomUUID(), getRecord: sessionId => persistedSessions.get(sessionId),
   runTurn: (sessionId, text, options) => chatTurnEngine.admitChatWork(sessionId, text, options),
 });
-// Skill-sync owns converter/link state, its watcher and its periodic timer.
-// The host supplies only the process/session ports needed by detached AI conversion.
+const taskShellHost = require('./src/task-shell/host').createTaskShellHost({
+  file: MULTICC_PATHS.taskShellDbFile, records: persistedSessions, directories, createSessionRecord,
+  loadHistory: id => viewChatHistory(id), getTaskBoard: () => taskBoardRuntime,
+  getWorkHost: () => sessionWorkHost, getScheduler: () => orchestrationRuntime?.sessionScheduler,
+  deliver: (...args) => taskContextHost.deliverSessionMessage(...args),
+});
+taskShellHost.mountRoutes(app);
 const skillSyncRuntime = createSkillSyncRuntime({
   fs,
   path,
@@ -2926,6 +2925,7 @@ const { shutdownCoordinator, trackServiceTimer, gracefulShutdown } = createHostL
   qwenAudioSupervisor,
   sessionHibernationRuntime,
 });
+shutdownCoordinator.onClose(() => taskShellHost.close());
 // Terminal error handler: catches errors that reach next(err) or throw out of
 // async handlers wrapped with asyncHandler(). Redacts stacks/stderr, returns a
 // generic {error, requestId} so clients can't fingerprint the filesystem.

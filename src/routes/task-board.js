@@ -1802,6 +1802,7 @@ function createTaskBoardRuntime(deps) {
   }
 
   async function handleAnswer(req, res) {
+    if (rejectShellOperation(req, res)) return;
     const task = resolvedTask(req.params?.taskId);
     if (!task) return res.status(404).json({ error: 'task_not_found' });
     const taskId = task.id;
@@ -2046,6 +2047,7 @@ function createTaskBoardRuntime(deps) {
   }
 
   async function handleSend(req, res) {
+    if (rejectShellOperation(req, res)) return;
     const task = resolvedTask(req.params.taskId);
     if (!task) return res.status(404).json({ error: 'task_not_found' });
     const userAnswerRequestId = String(req.body?.userInputRequestId || '').trim().slice(0, 160);
@@ -2673,6 +2675,7 @@ function createTaskBoardRuntime(deps) {
   }
 
   async function handleCancelRun(req, res) {
+    if (rejectShellOperation(req, res)) return;
     const release = holdTaskOperation(req.params?.taskId);
     try { return await handleCancelRunUnlocked(req, res); }
     finally { release(); }
@@ -2739,9 +2742,15 @@ function createTaskBoardRuntime(deps) {
   }
 
   async function handleStatus(req, res) {
+    if (rejectShellOperation(req, res)) return;
     const release = holdTaskOperation(req.params?.taskId);
     try { return await handleStatusUnlocked(req, res); }
     finally { release(); }
+  }
+
+  function rejectShellOperation(req, res) {
+    if (!deps.isTaskShellSession?.(resolvedTask(req.params?.taskId)?.chatSessionId)) return false;
+    res.status(409).json({ error: 'task_shell_route_required' }); return true;
   }
 
   const handleMergeTasks = createTaskMergeHandler({
@@ -2749,6 +2758,7 @@ function createTaskBoardRuntime(deps) {
     activeTaskOperations, taskIdentityIds, resolvedTask, taskDto,
     persist: () => { if (!save()) throw new Error('persistence_failed'); },
     notify, logger,
+    isIdentityProtected: task => !!deps.isTaskShellSession?.(task?.chatSessionId),
   });
 
   async function handleArchiveCompleted(req, res) {
@@ -2916,6 +2926,18 @@ function createTaskBoardRuntime(deps) {
   if (typeof startupTimer.unref === 'function') startupTimer.unref();
 
   return Object.freeze({
+    registerShellTask: input => commitPlanningMutation(draft => {
+      let task = draft.tasks[input.id];
+      if (task && (task.mergedIntoTaskId || (task.chatSessionId && task.chatSessionId !== input.sessionId))) {
+        return { ok: false, error: 'task_identity_conflict' };
+      }
+      task ||= core.createPendingTask(draft, { taskId: input.id, dirId: input.dirId,
+        sessionId: input.sessionId, taskText: input.title, origin: 'manual', now: input.createdAt });
+      if (!task) return { ok: false, error: 'task_index_failed' };
+      task.chatSessionId = input.sessionId;
+      core.setTaskRouting(task, { mode: 'task-bound', workerSessionId: input.sessionId, oneWay: true });
+      return { ok: true };
+    }),
     mountRoutes,
     onMessagePersisted,
     onQueueEvent,

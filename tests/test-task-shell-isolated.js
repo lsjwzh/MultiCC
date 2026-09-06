@@ -1,0 +1,153 @@
+'use strict';
+
+// Full host / SQLite / scheduler / worktree / fake Codex proof. No live model,
+// user history or production service is used or restarted.
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const net = require('node:net');
+const { spawn } = require('node:child_process');
+const WebSocket = require('ws');
+const { createPaths, assertTestDir } = require('../src/paths');
+const { readJson } = require('../src/state-store');
+
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-shell-isolated-'));
+const dataDir = assertTestDir(path.join(root, 'data'));
+const project = path.join(root, 'project'), fake = path.join(root, 'fake-codex.js');
+const invocations = path.join(root, 'invocations.jsonl'), release = path.join(root, 'release');
+fs.mkdirSync(project); fs.mkdirSync(dataDir);
+fs.writeFileSync(fake, `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+if (args[0] !== 'exec') process.exit(0);
+const prompt = args.at(-1) || '';
+fs.appendFileSync(${JSON.stringify(invocations)}, JSON.stringify({ sessionId: process.env.MULTICC_SESSION_ID, cwd: process.cwd(), prompt }) + '\\n');
+console.log(JSON.stringify({ type: 'thread.started', thread_id: 'fake-' + process.env.MULTICC_SESSION_ID }));
+async function main() {
+  if (prompt.includes('WAIT_CANCEL') && fs.readFileSync(${JSON.stringify(invocations)}, 'utf8').trim().split('\\n').map(JSON.parse).filter(r => r.sessionId === process.env.MULTICC_SESSION_ID).length === 1) {
+    while (true) await new Promise(r => setTimeout(r, 100));
+  }
+  if (prompt.includes('HOLD_ORIGINAL')) {
+    while (!fs.existsSync(${JSON.stringify(release)})) await new Promise(r => setTimeout(r, 100));
+  }
+  console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'SHELL_COMPLETED_EVIDENCE' } }));
+  console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 5, output_tokens: 3 } }));
+}
+main().catch(e => { console.error(e); process.exitCode = 1; });
+`); fs.chmodSync(fake, 0o755);
+
+async function wait(check, label, count = 250) {
+  for (let i = 0; i < count; i++) {
+    const value = await check(); if (value) return value;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  throw new Error(label);
+}
+async function freePort() {
+  const server = net.createServer(); server.listen(0, '127.0.0.1');
+  await new Promise(r => server.once('listening', r)); const port = server.address().port;
+  await new Promise(r => server.close(r)); return port;
+}
+const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse) : [];
+
+(async () => {
+  let server, socket, logs = '', base;
+  const token = 'task-shell-isolated';
+  async function api(route, body, expected = 200) {
+    const response = await fetch(base + route, { method: body === undefined ? 'GET' : 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    const text = await response.text();
+    assert.equal(response.status, expected, `${route}: ${text}`);
+    return JSON.parse(text);
+  }
+  async function stop() {
+    if (!server || server.exitCode !== null || server.signalCode !== null) return;
+    const exited = new Promise(r => server.once('exit', r)); server.kill('SIGTERM');
+    const timer = setTimeout(() => server.kill('SIGKILL'), 10000);
+    await exited; clearTimeout(timer);
+  }
+  async function start(enabled = '1') {
+    const port = await freePort(); base = `http://127.0.0.1:${port}`;
+    server = spawn(process.execPath, ['server.js'], {
+      cwd: path.join(__dirname, '..'), env: { ...process.env, NODE_ENV: 'test', PORT: String(port), HOST: '127.0.0.1', ACCESS_TOKEN: token,
+        MULTICC_DATA_DIR: dataDir, MULTICC_MEMORY_ROOT: path.join(dataDir, 'memories'), MULTICC_TASK_SHELLS: enabled,
+        MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS: '100', CODEX_CMD: fake,
+        CLAUDE_CMD: path.join(root, 'missing-claude'), OPENCODE_CMD: path.join(root, 'missing-opencode'), QODER_CMD: path.join(root, 'missing-qoder') },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    server.stdout.on('data', c => { logs = (logs + c).slice(-30000); });
+    server.stderr.on('data', c => { logs = (logs + c).slice(-30000); });
+    await wait(async () => { try { return (await fetch(base + '/readyz')).ok; } catch (_) { return false; } }, 'server readiness', 400);
+  }
+  try {
+    await start();
+    const directory = await api('/api/directories', { name: 'Task shell experiment', path: project, create: true });
+    const a = await api(`/api/directories/${directory.id}/sessions`, { cli: 'codex', kind: 'chat', label: 'Shell A' });
+    const b = await api(`/api/directories/${directory.id}/sessions`, { cli: 'codex', kind: 'chat', label: 'Shell B' });
+    const sa = await api('/api/task-shells', { sessionId: a.id }), sb = await api('/api/task-shells', { sessionId: b.id });
+    const first = await api(`/api/task-shells/${sa.id}/messages`, { text: 'HOLD_ORIGINAL', clientMsgId: 'one', intent: 'work' });
+    await wait(() => rows().some(r => r.sessionId === first.sessionId), 'first execution did not start');
+    await api(`/api/task-shells/${sb.id}/links`, { taskId: first.taskId });
+    const forkInput = { text: 'INDEPENDENT_FORK', taskId: first.taskId, clientMsgId: 'two', intent: 'work' };
+    const second = await api(`/api/task-shells/${sb.id}/messages`, forkInput);
+    assert.notEqual(second.taskId, first.taskId); assert.equal(second.decision, 'fork');
+    const replay = await api(`/api/task-shells/${sb.id}/messages`, forkInput); assert.deepEqual(replay, second);
+    await wait(() => rows().some(r => r.sessionId === second.sessionId), 'fork execution did not start concurrently');
+    const paths = createPaths({ dataDir });
+    const sessions = readJson(paths.sessionsFile, { legacyIsArray: true }).data;
+    const recordA = sessions.find(s => s.id === first.sessionId), recordB = sessions.find(s => s.id === second.sessionId);
+    assert.equal(recordA.autoCommit, false); assert.equal(recordB.autoCommit, false);
+    assert.notEqual(recordA.worktreePath, recordB.worktreePath);
+    assert.notEqual(recordA.cliSessionId, recordB.cliSessionId);
+    assert.equal(recordB.taskBoundTaskId, second.taskId);
+    assert.equal(recordA.taskState.taskIdentityState, 'canonical', 'classification must not move an explicit shell task');
+    assert.ok(fs.existsSync(path.join(recordB.worktreePath, '.git')));
+    assert.equal(rows().filter(r => r.sessionId === second.sessionId).length, 1);
+    assert.equal(rows().find(r => r.sessionId === second.sessionId).prompt.includes('HOLD_ORIGINAL'), false, 'unfinished source input must not become snapshot context');
+    const detail = await wait(async () => {
+      const d = await api(`/api/task-shells/${sb.id}/tasks/${second.taskId}`);
+      return d.messages.some(m => m.role === 'assistant' && String(m.content).includes('SHELL_COMPLETED_EVIDENCE')) && d;
+    }, 'formal history missing');
+    assert.equal(detail.task.parentTaskId, first.taskId);
+    assert.match(detail.task.baseline.commit, /^[a-f0-9]{40,64}$/);
+    const events = [];
+    socket = new WebSocket(base.replace('http', 'ws') + `/ws/chat?session=${second.sessionId}&token=${token}`);
+    socket.on('message', data => { events.push(JSON.parse(String(data))); });
+    await new Promise((resolve, reject) => { socket.once('open', resolve); socket.once('error', reject); });
+    for (const type of ['user_message', 'cancel', 'clear_history']) socket.send(JSON.stringify({ type, text: 'BYPASS', clientMsgId: 'bypass' }));
+    await wait(() => events.filter(e => e.code === 'task_shell_route_required').length >= 3, 'native WS bypass must reject');
+    socket.close(); socket = null;
+    fs.writeFileSync(release, 'done');
+    await wait(async () => (await api(`/api/task-shells/${sa.id}/tasks/${first.taskId}`)).messages.some(m => m.role === 'assistant'), 'original never completed');
+    const protectedMerge = await api(`/api/task-board/tasks/${first.taskId}/merge-tasks`, { sourceTaskIds: [second.taskId] }, 409);
+    assert.equal(protectedMerge.error, 'task_shell_identity_immutable');
+    // Freeze two sources as references in a fresh task. This is sharing, not a merge.
+    await api(`/api/task-shells/${sa.id}/links`, { taskId: second.taskId });
+    const third = await api(`/api/task-shells/${sa.id}/messages`, { text: 'USE_BOTH_CONTEXTS', clientMsgId: 'three', intent: 'work', contextTaskIds: [first.taskId, second.taskId] });
+    await wait(() => rows().some(r => r.sessionId === third.sessionId), 'reference execution missing');
+    const prompt = rows().find(r => r.sessionId === third.sessionId).prompt;
+    assert.ok(prompt.includes(first.taskId) && prompt.includes(second.taskId));
+    assert.ok(prompt.includes('SHELL_COMPLETED_EVIDENCE'));
+    await wait(async () => (await api(`/api/task-shells/${sa.id}/tasks/${third.taskId}`)).messages.some(m => m.role === 'assistant'), 'reference completion missing');
+    const cancelTask = await api(`/api/task-shells/${sa.id}/messages`, { text: 'WAIT_CANCEL', clientMsgId: 'cancel-job', intent: 'work' });
+    const running = await wait(async () => {
+      const d = await api(`/api/task-shells/${sa.id}/tasks/${cancelTask.taskId}`);
+      return rows().some(r => r.sessionId === cancelTask.sessionId) && d.execution.turnId && d;
+    }, 'cancel target did not start');
+    await api(`/api/task-shells/${sa.id}/messages`, { text: '', clientMsgId: 'stop', intent: 'cancel', taskId: cancelTask.taskId, turnId: running.execution.turnId });
+    await wait(async () => !(await api(`/api/task-shells/${sa.id}/tasks/${cancelTask.taskId}`)).execution.busy, 'cancel did not release occupancy');
+    const resumed = await api(`/api/task-shells/${sa.id}/messages`, { text: 'RESUME_AFTER_CANCEL', clientMsgId: 'resume', intent: 'work', taskId: cancelTask.taskId });
+    assert.equal(resumed.taskId, cancelTask.taskId);
+    await wait(() => rows().filter(r => r.sessionId === cancelTask.sessionId).length === 2, 'cancelled idle task did not resume');
+    await wait(async () => (await api(`/api/task-shells/${sa.id}/tasks/${cancelTask.taskId}`)).messages.some(m => m.role === 'assistant' && String(m.content).includes('SHELL_COMPLETED_EVIDENCE')), 'resumed task did not complete');
+    await stop();
+    await start('0');
+    const after = await api(`/api/task-shells/${sa.id}`); assert.equal(after.enabled, false); assert.equal(after.tasks.length, 4);
+    assert.ok((await api(`/api/task-shells/${sa.id}/tasks/${third.taskId}`)).messages.length >= 2);
+    await api(`/api/task-shells/${sa.id}/messages`, { text: 'disabled', clientMsgId: 'disabled' }, 403);
+    console.log('PASS task-shell isolated: concurrent fork, stable replay, independent worktree/native identity, formal history, WS guard, multi-source seed, restart/disabled read');
+  } catch (error) { console.error(logs); throw error; }
+  finally { socket?.terminate(); if (!fs.existsSync(release)) fs.writeFileSync(release, 'done'); await stop(); fs.rmSync(root, { recursive: true, force: true }); }
+})().catch(error => { console.error(error.stack); process.exitCode = 1; });
