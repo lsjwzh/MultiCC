@@ -123,8 +123,7 @@ const _sessionName = _params.get('session') || '';  // dashboard session name
 const _taskId = _params.get('task') || '';          // task virtual session (M2)
 const TASK_MODE = !!_taskId;
 const HISTORY_ARCHIVE = _params.get('historyScope') === 'archive';
-// Task URLs resolve into their canonical shell; hide session controls
-// while the entry request is pending.
+// Task URLs resolve once into their bound session; the full chat UI remains.
 if (TASK_MODE) document.body.classList.add('task-mode');
 const _targetMessageId = window.MultiCCChatMessageFocus.readTargetMessageId(location.search);
 const _hasNativeBridge = typeof window.MultiCCBridge !== 'undefined' && !!window.MultiCCBridge;
@@ -585,6 +584,7 @@ const chatTransport = window.MultiCCChatTransport.createTransport({
     _isDisconnected = false;
     if (_isRestarting) { _isRestarting = false; addSystemMsg('✓ 服务已重启，连接已恢复'); }
     _wasConnected = true;
+    taskShellTransport.replayPending();
     // Show thinking while we wait for server's init message (which tells us real streaming state)
     if (isStreaming) showThinking();
     updateUI();
@@ -593,8 +593,17 @@ const chatTransport = window.MultiCCChatTransport.createTransport({
   onMessage({ data }) {
     try {
       const message = JSON.parse(data);
-      if (HISTORY_ARCHIVE && message.displayOnly && ['chat_history_reset', 'chat_msg_deleted'].includes(message.type)) return;
-      handleEvent(message, _eventGeneration);
+      const routed = taskShellTransport.ingest(message);
+      if (routed.routeSessionId && routed.routeSessionId !== _sessionName) {
+        location.replace(window.MultiCCChatShellEntry.chatUrl(routed.routeSessionId, {
+          external: _params.get('external'),
+        }));
+        return;
+      }
+      for (const event of routed.events) {
+        if (HISTORY_ARCHIVE && event.displayOnly && ['chat_history_reset', 'chat_msg_deleted'].includes(event.type)) continue;
+        handleEvent(event, _eventGeneration);
+      }
     } catch (e) {
       console.warn('Bad message:', data, e);
     }
@@ -645,14 +654,18 @@ const chatTransport = window.MultiCCChatTransport.createTransport({
   },
   onEnsureAlive() { updateUI(); },
 });
+const taskShellTransport = window.MultiCCChatShellEntry.createTransportAdapter({
+  send: payload => chatTransport.send(payload),
+  makeClientMsgId: () => newClientMsgId(),
+});
 
 function connect() { return chatTransport.connect(); }
 
-// Archives cannot write. Ordinary conversations enter the task shell;
-// only system-session controls use this transport.
+// The renderer stays unchanged; task-shell conversations are wrapped and
+// routed transparently by the transport adapter after the server init frame.
 function hostTransportSend(payload) {
-  if (TASK_MODE || _params.get('readOnly') === '1') return false;
-  return chatTransport.send(payload);
+  if (_params.get('readOnly') === '1') return false;
+  return taskShellTransport.send(payload);
 }
 
 function isRecoverableCodexReconnectErrorText(text) {
