@@ -53,7 +53,11 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Node 22, not 20: @electron/rebuild 4.x declares engines node>=22.12,
+          # and better-sqlite3 ships no ABI 115 (Node 20) prebuild — the staged
+          # install would fall back to a source build that npm's bundled
+          # node-gyp cannot run on windows-latest (it does not know VS 18).
+          node-version: 22
 
       - name: Preflight — desktop version matches root package.json
         shell: bash
