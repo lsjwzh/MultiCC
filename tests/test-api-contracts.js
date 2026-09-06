@@ -169,11 +169,13 @@ test('errors carry both ids and redact credentials and absolute paths', () => {
     code: 'dispatch_failed',
     requestId: 'req-error',
     correlationId: 'corr-error',
+    upstreamRequestId: 'upstream-error',
   });
   assertValid('error.schema.json', body);
   assert.equal(body.apiVersion, API_VERSION);
   assert.equal(body.requestId, 'req-error');
   assert.equal(body.correlationId, 'corr-error');
+  assert.equal(body.upstreamRequestId, 'upstream-error');
   assert.equal(body.error.includes('abcdefghijklmnop'), false);
   assert.equal(body.error.includes('/Users/'), false);
 });

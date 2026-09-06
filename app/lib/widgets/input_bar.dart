@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:file_picker/file_picker.dart';
 import 'package:record/record.dart';
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
@@ -12,6 +11,7 @@ import '../i18n.dart';
 import '../providers/chat_provider.dart';
 import '../providers/session_manager.dart';
 import '../models/message.dart';
+import '../services/attachment_picker.dart';
 import '../services/chat_service.dart';
 import '../services/voice_dictation_service.dart';
 import '../services/voice_launch_service.dart';
@@ -89,10 +89,9 @@ class _InputBarState extends State<InputBar> {
     final provider = context.read<ChatProvider>();
     final settings = provider.settings;
 
-    final result = await FilePicker.platform.pickFiles(withData: true);
-    if (result == null || result.files.isEmpty) return;
-    final file = result.files.first;
-    if (file.bytes == null) return;
+    // iOS 弹「文件 / 相册」二选一（文档选择器够不到相册）；其它平台直接选文件。
+    final picked = await pickChatAttachment(context);
+    if (picked == null) return;
 
     setState(() => _uploading = true);
     try {
@@ -104,9 +103,11 @@ class _InputBarState extends State<InputBar> {
       req.files.add(
         http.MultipartFile.fromBytes(
           'file',
-          file.bytes!,
-          filename: file.name,
-          contentType: MediaType('application', 'octet-stream'),
+          picked.bytes,
+          filename: picked.filename,
+          contentType: picked.mimeType != null
+              ? MediaType.parse(picked.mimeType!)
+              : MediaType('application', 'octet-stream'),
         ),
       );
       final res = await req.send().timeout(const Duration(seconds: 30));
@@ -116,7 +117,7 @@ class _InputBarState extends State<InputBar> {
         setState(() {
           _attachments.add({
             'path': json['path'] as String,
-            'name': json['name'] as String? ?? file.name,
+            'name': json['name'] as String? ?? picked.filename,
           });
         });
       } else {
@@ -565,7 +566,19 @@ class _InputBarState extends State<InputBar> {
     _focusNode.unfocus();
   }
 
+  bool _guardConnectedSend(ChatProvider provider) {
+    if (provider.connectionState == ChatConnectionState.connected) return true;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(t('connectionLostRetry')),
+        backgroundColor: const Color(0xFF454b54),
+      ),
+    );
+    return false;
+  }
+
   void _send(ChatProvider provider, {required bool commander}) {
+    if (!_guardConnectedSend(provider)) return;
     var text = _ctrl.text.trim();
     // Append attachment paths
     if (_attachments.isNotEmpty) {
@@ -850,7 +863,7 @@ class _InputBarState extends State<InputBar> {
 
     void sendGoal(String task) {
       final t = task.trim();
-      if (t.isEmpty) return;
+      if (t.isEmpty || !_guardConnectedSend(provider)) return;
       final limits = collectLimits();
       Navigator.pop(context);
       provider.sendMessage(_goalWrap(t), goal: true, goalLimits: limits);
@@ -1420,7 +1433,9 @@ class _InputBarState extends State<InputBar> {
                       focusNode: _focusNode,
                       maxLines: null,
                       textInputAction: TextInputAction.newline,
-                      enabled: isConnected,
+                      // Keep the draft editable through disconnects/reconnects.
+                      // Connection state gates Send (and the adjacent actions),
+                      // not the composer focus or the software keyboard.
                       style: const TextStyle(
                         color: Color(0xFFe7eaee),
                         fontSize: 14,

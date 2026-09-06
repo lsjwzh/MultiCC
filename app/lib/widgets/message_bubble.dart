@@ -61,7 +61,8 @@ Future<void> _showMessageActions(
 }) async {
   // Delete/fork are session-history operations bound to ChatProvider + the
   // session REST surface; transcript-only hosts (task detail) get copy only.
-  final canDelete = serverActions && (message.id ?? '').isNotEmpty;
+  final canDelete = serverActions && (context.read<ChatProvider?>()?.historyArchive != true)
+      && (message.id ?? '').isNotEmpty;
   final action = await showModalBottomSheet<String>(
     context: context,
     backgroundColor: const Color(0xFF161b22),

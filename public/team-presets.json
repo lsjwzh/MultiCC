@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "defaultTemplateId": "quick-product",
+  "templates": [
+    {
+      "id": "quick-product",
+      "recommended": true,
+      "name": { "zh": "快速产品研发", "en": "Product delivery" },
+      "description": { "zh": "从需求梳理到实现和验收，适合大多数功能开发与修复。", "en": "From problem framing through implementation and QA; a strong default for product work." },
+      "example": { "zh": "示例：改进一个首次使用流程，并完成实现与回归检查。", "en": "Example: improve a first-run flow, implement it, and run regression checks." },
+      "roles": [
+        { "presetId": "product__product-manager", "label": { "zh": "产品经理", "en": "Product Manager" }, "summary": { "zh": "明确目标、范围和验收标准", "en": "Defines goals, scope, and acceptance criteria" } },
+        { "presetId": "engineering__engineering-senior-developer", "label": { "zh": "高级开发工程师", "en": "Senior Developer" }, "summary": { "zh": "负责方案设计和代码实现", "en": "Owns technical design and implementation" } },
+        { "presetId": "testing__testing-engineer", "label": { "zh": "测试工程师", "en": "Test Engineer" }, "summary": { "zh": "验证结果并检查回归风险", "en": "Verifies outcomes and regression risk" } }
+      ]
+    },
+    {
+      "id": "engineering-squad",
+      "name": { "zh": "工程攻坚", "en": "Engineering squad" },
+      "description": { "zh": "前后端职责分离并带独立审查，适合较大的代码库和复杂改造。", "en": "Separate frontend and backend ownership with independent review for complex codebases." },
+      "example": { "zh": "示例：重构一条跨前后端链路，并补齐自动化测试。", "en": "Example: refactor an end-to-end flow and add automated coverage." },
+      "roles": [
+        { "presetId": "engineering__engineering-frontend-developer", "label": { "zh": "前端工程师", "en": "Frontend Developer" }, "summary": { "zh": "负责界面、交互和前端状态", "en": "Owns interface, interaction, and client state" } },
+        { "presetId": "engineering__engineering-backend-architect", "label": { "zh": "后端架构师", "en": "Backend Architect" }, "summary": { "zh": "负责服务端契约和数据边界", "en": "Owns server contracts and data boundaries" } },
+        { "presetId": "testing__testing-engineer", "label": { "zh": "测试工程师", "en": "Test Engineer" }, "summary": { "zh": "设计验证路径和回归用例", "en": "Designs verification and regression coverage" } },
+        { "presetId": "engineering__engineering-code-reviewer", "label": { "zh": "代码审查员", "en": "Code Reviewer" }, "summary": { "zh": "独立检查质量、安全和可维护性", "en": "Independently checks quality, safety, and maintainability" } }
+      ]
+    },
+    {
+      "id": "research-content",
+      "name": { "zh": "调研与内容", "en": "Research and content" },
+      "description": { "zh": "完成资料研究、内容生产和事实审查，适合报告与传播任务。", "en": "Research, writing, and evidence review for reports and publishing workflows." },
+      "example": { "zh": "示例：调研一个主题，形成可发布文章并做事实核查。", "en": "Example: research a topic, draft a publishable article, and fact-check it." },
+      "roles": [
+        { "presetId": "product__product-trend-researcher", "label": { "zh": "趋势研究员", "en": "Trend Researcher" }, "summary": { "zh": "收集资料并归纳关键信号", "en": "Collects evidence and synthesizes signals" } },
+        { "presetId": "marketing__marketing-content-creator", "label": { "zh": "内容创作者", "en": "Content Creator" }, "summary": { "zh": "把研究转化为目标受众可读内容", "en": "Turns research into audience-ready content" } },
+        { "presetId": "engineering__engineering-technical-writer", "label": { "zh": "技术编辑", "en": "Technical Writer" }, "summary": { "zh": "统一结构、术语和表达", "en": "Improves structure, terminology, and clarity" } },
+        { "presetId": "testing__testing-reality-checker", "label": { "zh": "事实审查员", "en": "Reality Checker" }, "summary": { "zh": "检查证据、假设和遗漏", "en": "Challenges evidence, assumptions, and omissions" } }
+      ]
+    },
+    {
+      "id": "commander-only",
+      "name": { "zh": "仅指挥官 / 自定义", "en": "Commander only / custom" },
+      "description": { "zh": "先创建最小工作区，之后从完整角色库按需添加成员。", "en": "Start with the minimum workspace and add roles from the full library later." },
+      "example": { "zh": "适合已经熟悉 MultiCC、希望精确控制团队的用户。", "en": "For experienced users who want precise control over their team." },
+      "roles": []
+    }
+  ]
+}

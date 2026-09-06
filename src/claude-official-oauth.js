@@ -185,7 +185,7 @@ async function refreshTokens(fetchImpl, { refreshToken, now }) {
 }
 
 async function fetchProfile(fetchImpl, accessToken) {
-  const res = await fetchImpl(PROFILE_URL, {
+  const res = await timedFetch(fetchImpl, PROFILE_URL, {
     headers: axiosHeaders({
       Authorization: `Bearer ${accessToken}`,
       'Cache-Control': 'no-cache',
@@ -201,10 +201,24 @@ async function fetchProfile(fetchImpl, accessToken) {
   };
 }
 
+// Control-plane GETs got no abort at all, so a stalled api.anthropic.com
+// connection hung the quota route (and the refresh supervisor's profile read)
+// until the socket's own keep-alive gave up — minutes. Same 30s budget as the
+// token endpoint.
+async function timedFetch(fetchImpl, url, options = {}) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), TOKEN_TIMEOUT_MS);
+  try {
+    return await fetchImpl(url, { ...options, signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Per-account subscription usage (5h / weekly windows) — the endpoint the CLI's
 // /usage reads. Returns the raw parsed body; shaping is the caller's job.
 async function fetchUsage(fetchImpl, accessToken) {
-  const res = await fetchImpl(USAGE_URL, {
+  const res = await timedFetch(fetchImpl, USAGE_URL, {
     headers: axiosHeaders({
       Authorization: `Bearer ${accessToken}`,
       'anthropic-beta': 'oauth-2025-04-20',

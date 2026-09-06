@@ -192,6 +192,7 @@ test('created role is injected into the system prompt and visible to Commander r
     records: harness.records,
     chatSessions: new Map(),
     normalizeEffort: value => value || null,
+    isTargetBusy: () => false,
   });
   const candidate = targeting.dispatchableSessionsFor('commander')
     .find(item => item.id === worker.id);
@@ -201,4 +202,3 @@ test('created role is injected into the system prompt and visible to Commander r
   assert.match(candidate.role, /质量验证与发布把关/);
   assert.match(targeting.buildDispatchContextPrompt('commander'), /测试工程师/);
 });
-

@@ -145,6 +145,8 @@ function createTurnFinalizationExecutor(rawPorts) {
           // authoritative here: a delayed Aux attribution from an older turn
           // may have changed it while this runner was active.
           taskId: context.turn?.task?.id || null,
+          identityLocked: !!context.turn?.task?.id && (context.turn.task.start !== true
+            || ['task-board', 'commander', 'code-reference'].includes(context.turn.task.source)),
         });
         break;
       case 'complete-session-turn':

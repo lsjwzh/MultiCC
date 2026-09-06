@@ -206,10 +206,9 @@ test('durable history reset broadcasts an authoritative page and invalidates eve
   assert.match(server, /await (?:chatHistoryRuntime|getChatHistoryRuntime\(\))\.clearHistory\(sessionName, msg, cs\)/,
     'the WebSocket host must delegate clear ownership to the history runtime');
   assert.match(historyRuntime,
-    /afterCommit:\s*\(\)\s*=>\s*\{[\s\S]*service\.paginate\(key,[\s\S]*type:\s*'chat_history_reset'/,
-    'reset must be broadcast only from the post-persist commit boundary');
-  assert.match(historyRuntime, /removedCount:\s*removed\.length/);
-  assert.match(historyRuntime, /retainedCount:\s*retained\.length/);
+    /visibility\.clear\(key, keep\)[\s\S]*type: 'chat_history_reset'/,
+    'reset must be broadcast only after durable display state');
+  assert.match(historyRuntime, /displayOnly: true/);
 
   const resetHandler = events.match(/function handleHistoryReset\(message\)\s*\{([\s\S]*?)\n\s*function handleEvent/);
   assert.ok(resetHandler, 'event controller must handle authoritative reset broadcasts');

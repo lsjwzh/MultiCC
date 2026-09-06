@@ -21,6 +21,9 @@ const UPDATE_FLAG_TTL_MS = 20000;
 //   rootDir           host package root (server.js __dirname), NOT this module's dir
 //   getShuttingDown   () => boolean — lazy read of the host's _shuttingDown let-binding
 //   log               console-like sink (defaults to console)
+//   isDesktopMode     () => boolean — desktop installs ship an immutable copy of
+//                     the server; `./multicc update` (git-based) can only
+//                     corrupt it, so refuse with an actionable error instead.
 function createUpdateRoute(deps) {
   const {
     chatSessions,
@@ -29,6 +32,7 @@ function createUpdateRoute(deps) {
     getShuttingDown = () => false,
     log = console,
     now = Date.now,
+    isDesktopMode = () => /^(1|true|yes|on)$/i.test(String(process.env.MULTICC_DESKTOP || '').trim()),
   } = deps || {};
   if (typeof spawn !== 'function') throw new TypeError('update route requires spawn');
   if (!rootDir) throw new TypeError('update route requires rootDir');
@@ -75,6 +79,13 @@ function createUpdateRoute(deps) {
     app.post('/api/update', (req, res) => {
       expireScheduledFlag();
       if (getShuttingDown()) return res.status(409).json({ error: 'server is shutting down' });
+      if (isDesktopMode()) {
+        return res.status(409).json({
+          error: 'this MultiCC runs inside the desktop app; install a new desktop release to update',
+          code: 'DESKTOP_UPDATE_UNSUPPORTED',
+          requestId: req.id,
+        });
+      }
       const current = statusNow();
       if (_updateScheduled || current.running) {
         return res.status(409).json({ error: 'update already in progress', status: current });

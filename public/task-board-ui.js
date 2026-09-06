@@ -57,6 +57,37 @@
       ...source,
       modules: byId(source.modules),
       tasks: byId(source.tasks),
+      taskGroups: byId(source.taskGroups),
+    };
+  }
+
+  // Resolve presentation-only task families against the currently visible
+  // task set. A filtered/archived family with fewer than two visible members is
+  // left as ordinary rows; grouping never changes task identity or ordering.
+  function partitionTaskGroups(tasks, groups) {
+    const source = Array.isArray(tasks) ? tasks : [];
+    const taskById = new Map(source.map(task => [String(task?.id || ''), task]));
+    const claimed = new Set();
+    const related = [];
+    const orderedGroups = [...(Array.isArray(groups) ? groups : [])].sort((a, b) =>
+      (Number(b?.lastTs || b?.updatedAt) || 0) - (Number(a?.lastTs || a?.updatedAt) || 0)
+        || compareText(a?.id, b?.id));
+    for (const group of orderedGroups) {
+      const members = [];
+      for (const taskId of Array.isArray(group?.taskIds) ? group.taskIds : []) {
+        const id = String(taskId || '');
+        const task = taskById.get(id);
+        if (!task || claimed.has(id) || members.includes(task)) continue;
+        members.push(task);
+      }
+      if (members.length < 2) continue;
+      const sorted = sortTasks(members);
+      for (const task of sorted) claimed.add(String(task.id));
+      related.push({ ...group, tasks: sorted });
+    }
+    return {
+      groups: related,
+      ungrouped: source.filter(task => !claimed.has(String(task?.id || ''))),
     };
   }
 
@@ -233,7 +264,7 @@
       source_already_merged: '有待并入任务已合并到其他任务，请刷新后重新选择',
       source_not_mergeable: '有待并入任务已归档或不可合并',
       task_origin_mismatch: '独立任务与会话任务不能互相合并',
-      task_directory_mismatch: '暂不支持跨 Fleet 合并任务',
+      task_directory_mismatch: '暂不支持跨工作区合并任务',
       task_busy: '有任务正在执行、排队或等待，请稍后重试',
       task_worktree_conflict: '待并入任务仍有 worktree/分支；请先清理，或把它作为首个保留任务',
       task_merge_persist_failed: '合并结果保存失败，原任务未变更，请重试',
@@ -292,6 +323,7 @@
     sortModules,
     sortTasks,
     reconcileSnapshot,
+    partitionTaskGroups,
     partitionTaskIdentity,
     taskDisplayState,
     runningTaskCount,

@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { createApiErrorHost } = require('../src/chat/api-error-host');
 const { createChatTurnEngine } = require('../src/chat/turn-engine');
+const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
 
 function decision(overrides = {}) {
   return {
@@ -137,6 +138,10 @@ test('stream host rejects a reused Claude handoff failure before policy and Auto
   let retriesScheduled = 0;
   const finalizerBroadcasts = [];
   const noop = () => {};
+  let attemptId = 0;
+  const attemptRuntime = createProviderAttemptRuntime({
+    runtimeEpoch: 'handoff-error-runtime', nextId: prefix => `${prefix}-${++attemptId}`,
+  });
   const engine = createChatTurnEngine({
     getExperimentalTuiChatRuntime: () => null,
     persistedSessions: new Map(),
@@ -163,6 +168,7 @@ test('stream host rejects a reused Claude handoff failure before policy and Auto
     runDurablePostTurn: noop,
     persistFinalAssistantResult: () => false,
     recordDurableTurnUsage: () => false,
+    providerAttemptRuntime: attemptRuntime,
     autoProviderRuntime: {},
     codexRolloutGuard: { sweepExpiredArchives: noop },
     opencodeContextGuard: {},
@@ -233,6 +239,74 @@ test('stream host rejects a reused Claude handoff failure before policy and Auto
   assert.equal(retriesScheduled, 1);
   assert.equal(h.taskWrites.length, 1);
   assert.equal(h.broadcasts[0].payload.state, 'retry_wait');
+
+  const providerAttempt = attemptRuntime.beginAttempt({
+    sessionId: 'session-1', turnId: 'turn-handoff-403', cli: 'claude',
+    providerId: 'provider-empty', providerName: 'Empty', protocol: 'anthropic',
+    model: 'model-empty', providerRevision: 'revision-empty', attemptNo: 1,
+  });
+  attemptRuntime.observeEvent(providerAttempt, {
+    type: 'stream_event', event: {
+      type: 'content_block_delta', delta: { type: 'text_delta', text: 'API Error: 403' },
+    },
+  });
+  const errorTurn = { turnId: 'turn-handoff-403', resultDurable: false };
+  const errorRunner = {
+    kind: 'stream', turnId: errorTurn.turnId, killReason: null,
+    resultEvent: false, sawApiError: false, providerAttempt,
+  };
+  const errorState = {
+    _streamTurnSeq: 3,
+    _activeTurn: errorTurn,
+    _activeRunner: errorRunner,
+    currentAssistantText: 'Failed to authenticate. API Error: 403 用户额度不足, 剩余额度: ＄-2.528834',
+    currentToolCalls: [],
+    streamReplay: [],
+    isStreaming: true,
+  };
+  h.decideWith((raw, context) => {
+    const base = decision();
+    return {
+      ...base,
+      action: 'fail_fast',
+      reason: 'billing_quota_not_retryable',
+      error: {
+        ...base.error,
+        category: 'billing_quota',
+        httpStatus: raw.httpStatus,
+        phase: context.phase,
+        partialOutput: context.partialOutput,
+        safeToRetry: false,
+      },
+    };
+  });
+  const errorAutoTurn = {
+    enabled: true,
+    failover(providerDecision, facts) {
+      failovers += 1;
+      assert.equal(providerDecision.error.httpStatus, 403);
+      assert.equal(providerDecision.error.partialOutput, false);
+      assert.equal(facts.replayFence, 'none');
+      return {
+        invocationOptions: { providerId: 'provider-backup' },
+        decision: { ...providerDecision, action: 'retry', attempt: 1 },
+        fromProviderName: 'Empty',
+        toProviderName: 'Backup',
+      };
+    },
+    recordSuccess: noop,
+  };
+  engine.finalizeStreamingTurn(
+    'session-1', errorState,
+    { cli: 'claude', pendingCliHandoff: {
+      status: 'pending', reusedTarget: true, toCli: 'claude',
+    } },
+    3, errorTurn, errorRunner, null, { name: 'claude' }, noop, errorAutoTurn,
+  );
+  assert.equal(evaluateCalls, 2, 'the provider envelope outranks generic handoff failure');
+  assert.equal(failovers, 2, 'Auto receives the replay-safe 403 decision');
+  assert.equal(retriesScheduled, 2, 'the same durable user turn is scheduled on the next provider');
+  assert.equal(attemptRuntime.snapshot('session-1').replayFence, 'none');
 });
 
 test('turn duration is diagnostic only and recovery budget starts at first host decision', () => {

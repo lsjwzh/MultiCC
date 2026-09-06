@@ -112,10 +112,14 @@ function createChatHistoryService({
   retentionPolicy = null,
   postPersist = null,
   onPostPersistError = () => {},
+  canDeleteSession = null,
+  isMessageProtected = (_sessionId, message) => !!message.taskId,
 } = {}) {
   assertChatHistoryPort(history);
   if (typeof idFactory !== 'function') throw new TypeError('[session] idFactory must be a function');
   if (typeof clock !== 'function') throw new TypeError('[session] clock must be a function');
+  if (canDeleteSession !== null && typeof canDeleteSession !== 'function') throw new TypeError('[session] canDeleteSession must be a function');
+  if (typeof isMessageProtected !== 'function') throw new TypeError('[session] isMessageProtected must be a function');
   if (!Number.isSafeInteger(maxMessages) || maxMessages < 1) {
     throw new TypeError('[session] maxMessages must be a positive integer');
   }
@@ -129,6 +133,7 @@ function createChatHistoryService({
     throw new TypeError('[session] onPostPersistError must be a function');
   }
   const cache = new Map();
+  const missingIds = new Set();
 
   function retentionLimit(sessionId) {
     if (!retentionPolicy) return maxMessages;
@@ -140,14 +145,7 @@ function createChatHistoryService({
     return limit;
   }
 
-  function trim(sessionId, messages) {
-    const limit = retentionLimit(sessionId);
-    return messages.length > limit
-      ? messages.splice(0, messages.length - limit)
-      : [];
-  }
-
-  function normalize(source) {
+  function normalize(source, sessionId) {
     if (!Array.isArray(source)) return [];
     const normalized = [];
     for (const item of source.filter(item => item && typeof item === 'object')) {
@@ -158,7 +156,8 @@ function createChatHistoryService({
           normalized.pop();
         }
         const prevInNormalized = findPrevAssistant(normalized, normalized.length - 1);
-        if (prevInNormalized && assistantContains(prevInNormalized, message)) {
+        if (prevInNormalized && assistantContains(prevInNormalized, message)
+            && !isMessageProtected(String(sessionId), prevInNormalized)) {
           normalized.splice(normalized.indexOf(prevInNormalized), 1);
         }
       } else if (message.role === 'assistant' && message._interim) {
@@ -183,7 +182,11 @@ function createChatHistoryService({
 
   function current(sessionId) {
     const key = String(sessionId);
-    if (!cache.has(key)) cache.set(key, normalize(history.read(key)));
+    if (!cache.has(key)) {
+      const source = history.read(key);
+      if (Array.isArray(source) && source.some(message => message?.role && !message.id)) missingIds.add(key);
+      cache.set(key, normalize(source, key));
+    }
     return cache.get(key);
   }
 
@@ -236,16 +239,37 @@ function createChatHistoryService({
     // the one history.write() already performs.
     const snapshot = messages.slice();
     history.write(key, snapshot);
+    missingIds.delete(key);
     cache.set(key, snapshot);
     emitPostPersist({ sessionId: key, ...event }, afterCommit);
   }
 
   function invalidate(sessionId) {
     cache.delete(String(sessionId));
+    missingIds.delete(String(sessionId));
+  }
+
+  function ensurePersistedIds(sessionId) {
+    const key = String(sessionId);
+    const messages = current(key);
+    if (missingIds.has(key)) {
+      history.write(key, messages);
+      missingIds.delete(key);
+    }
+  }
+
+  function assertCanDeleteSession(sessionId) {
+    const key = String(sessionId);
+    if (canDeleteSession ? !canDeleteSession(key) : current(key).some(message => isMessageProtected(key, message))) {
+      const error = new Error('task-linked history must be retained with its task archive');
+      error.code = 'TASK_HISTORY_REFERENCED';
+      throw error;
+    }
   }
 
   function deleteSession(sessionId, { afterCommit } = {}) {
     const key = String(sessionId);
+    assertCanDeleteSession(key);
     const deleted = history.deleteSession(key);
     cache.delete(key);
     emitPostPersist({ type: 'delete', sessionId: key, deleted }, afterCommit);
@@ -284,12 +308,11 @@ function createChatHistoryService({
 
     if (message.role === 'assistant' && !message._interim && messages.length) {
       const prev = findPrevAssistant(messages, messages.length - 1);
-      if (prev && assistantContains(prev, message)) {
+      if (prev && assistantContains(prev, message) && !isMessageProtected(String(sessionId), prev)) {
         const prevIndex = messages.indexOf(prev);
         messages.splice(prevIndex, 1);
         messages.push(message);
-        const trimmedDropped = trim(sessionId, messages);
-        const allDropped = Object.freeze([jsonClone(prev), ...jsonClone(trimmedDropped)]);
+        const allDropped = Object.freeze([jsonClone(prev)]);
         const result = withLazyMessages({
           deduplicated: true,
           dropped: allDropped,
@@ -306,7 +329,7 @@ function createChatHistoryService({
     }
 
     messages.push(message);
-    const dropped = trim(sessionId, messages);
+    const dropped = [];
     const result = withLazyMessages({
       deduplicated: false,
       dropped: jsonClone(dropped),
@@ -361,7 +384,7 @@ function createChatHistoryService({
     if (replaced) messages.splice(firstInterim, messages.length - firstInterim, message);
     else messages.push(message);
 
-    const dropped = trim(sessionId, messages);
+    const dropped = [];
     const result = withLazyMessages({
       replaced,
       dropped: jsonClone(dropped),
@@ -377,8 +400,15 @@ function createChatHistoryService({
   }
 
   function replace(sessionId, values, { afterCommit, reason = null } = {}) {
-    const messages = normalize(values);
-    const dropped = trim(sessionId, messages);
+    const messages = normalize(values, sessionId);
+    const ids = new Set(messages.map(message => message.id));
+    if (current(sessionId).some(message => !ids.has(message.id) && !message._interim
+        && isMessageProtected(String(sessionId), message))) {
+      const error = new Error('cannot remove task-linked messages');
+      error.code = 'TASK_HISTORY_REFERENCED';
+      throw error;
+    }
+    const dropped = [];
     const result = withLazyMessages({ dropped: jsonClone(dropped) }, messages);
     persist(sessionId, messages, {
       type: 'replace',
@@ -392,6 +422,11 @@ function createChatHistoryService({
     const messages = workingCopy(sessionId);
     const index = messages.findIndex(message => message.id === messageId);
     if (index < 0) return withLazyMessages({ removed: false }, messages);
+    if (isMessageProtected(String(sessionId), messages[index])) {
+      const error = new Error('cannot remove task-linked messages');
+      error.code = 'TASK_HISTORY_REFERENCED';
+      throw error;
+    }
     const [removed] = messages.splice(index, 1);
     const result = withLazyMessages({ removed: true, message: jsonClone(removed) }, messages);
     persist(sessionId, messages, {
@@ -402,7 +437,7 @@ function createChatHistoryService({
   }
 
   function paginate(sessionId, { before, limit = 5 } = {}) {
-    const messages = current(sessionId);
+    const messages = current(sessionId).slice(-retentionLimit(sessionId));
     const pageSize = Math.max(1, Math.min(100, parseInt(limit, 10) || 5));
     let end = messages.length;
     if (before) {
@@ -432,9 +467,11 @@ function createChatHistoryService({
 
   return Object.freeze({
     append,
+    assertCanDeleteSession,
     containsDelivery,
     deleteSession,
     hasPersistedDelivery,
+    ensurePersistedIds,
     invalidate,
     latestAssistantAt,
     paginate,

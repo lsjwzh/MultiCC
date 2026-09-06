@@ -79,6 +79,12 @@ function createPaths({ dataDir } = {}) {
     voiceRuntimesDir: root === PKG_ROOT
       ? path.join(os.homedir(), '.multicc', 'runtimes', 'voice')
       : path.join(root, 'runtimes', 'voice'),
+    // A disposable, user-editable starter repo. Keep it out of the package
+    // checkout so trying the onboarding sample can never modify live MultiCC
+    // source. Isolated test deployments keep it under their data root.
+    sampleWorkspacesDir: root === PKG_ROOT
+      ? path.join(os.homedir(), '.multicc', 'samples')
+      : path.join(root, 'samples'),
     // Meta files still owned by server.js modules — export the paths so future
     // consolidation can move them onto the store without another rename.
     notesFile: path.join(root, 'notes.json'),
@@ -107,6 +113,10 @@ function createPaths({ dataDir } = {}) {
     providerLimitCacheFile: path.join(root, 'provider-limit-cache.json'),
     quotaBarCacheFile: path.join(root, 'quota-bar-cache.json'),
     scheduledTasksFile: path.join(root, 'scheduled_tasks.json'),
+    // Published docs & web services management table (src/docs-registry.js):
+    // every agent-generated document/page/file and every reachable local web
+    // service registers here so the /manage panel can list, open and prune them.
+    docsRegistryFile: path.join(root, 'docs_registry.json'),
     taskBoardFile: path.join(root, 'task_board.json'),
     taskRunDbFile: path.join(root, 'task-runs.sqlite'),
     // Outward task short-code registry (taskId→#CODE), guaranteeing the 4-char

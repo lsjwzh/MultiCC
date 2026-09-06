@@ -87,9 +87,7 @@ function waitForClose(socket) {
   ]);
 }
 
-(async () => {
-  const port = await freePort();
-  base = `http://127.0.0.1:${port}`;
+async function startServer(port) {
   server = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
     env: {
@@ -104,6 +102,25 @@ function waitForClose(socket) {
   });
   server.stderr.on('data', chunk => { stderr += chunk.toString(); });
   await waitForServer();
+
+}
+
+function waitForFrame(socket, type) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { socket.off('message', onMessage); reject(new Error(`missing ${type}`)); }, 5000);
+    function onMessage(data) {
+      const frame = JSON.parse(data);
+      if (frame.type !== type) return;
+      clearTimeout(timer); socket.off('message', onMessage); resolve(frame);
+    }
+    socket.on('message', onMessage);
+  });
+}
+
+(async () => {
+  const port = await freePort();
+  base = `http://127.0.0.1:${port}`;
+  await startServer(port);
 
   let response = await api('POST', '/api/directories', {
     name: 'connected delete fixture', path: projectDir,
@@ -150,11 +167,57 @@ function waitForClose(socket) {
   response = await api('GET', `/api/sessions/${dirtySessionId}`);
   assert.equal(response.status, 200, 'dirty worktree protection remains independent from runtime activity');
 
+  // Seed durable task evidence while this isolated server is stopped. Never
+  // send a prompt: the fixture needs no native CLI or external AI provider.
+  await stopServer();
+  const { createChatHistoryFileRepository } = require('../src/session/adapters/chat-history-file-repository');
+  const history = createChatHistoryFileRepository({ dataDir });
+  const original = [
+    { id: 'task-user', role: 'user', taskId: 'retained-task', content: 'full requirement', ts: 1 },
+    { id: 'task-answer', role: 'assistant', taskId: 'retained-task', content: 'full evidence', ts: 2 },
+  ];
+  history.write(dirtySessionId, original);
+  const originalBytes = fs.readFileSync(history.fileFor(dirtySessionId), 'utf8');
+  fs.writeFileSync(path.join(dataDir, 'task_board.json'), JSON.stringify({
+    modules: {}, tasks: { 'retained-task': {
+      id: 'retained-task', title: 'retain task evidence', status: 'done', chatSessionId: dirtySessionId,
+      refs: [{ sessionId: dirtySessionId, dirId: directoryId, userMsgId: 'task-user', assistantMsgId: 'task-answer', ts: 1 }],
+    } },
+  }));
+  await startServer(port);
+  const historySocket = new WebSocket(`ws://127.0.0.1:${port}/ws/chat?session=${encodeURIComponent(dirtySessionId)}`);
+  const initialPage = waitForFrame(historySocket, 'chat_history');
+  await waitForOpen(historySocket);
+  assert.equal((await initialPage).messages.length, 2);
+  const reset = waitForFrame(historySocket, 'chat_history_reset');
+  historySocket.send(JSON.stringify({ type: 'clear_history', keep: 0 }));
+  assert.deepEqual((await reset).messages, []);
+  historySocket.terminate();
+  response = await api('GET', `/api/sessions/${dirtySessionId}/history`);
+  assert.deepEqual(response.data.messages, []);
+  response = await api('GET', `/api/task-board/tasks/retained-task/messages`);
+  assert.equal(response.data.messages.length, 2, 'task projection still reads every original message');
+  response = await api('POST', '/api/task-board/tasks/retained-task/status', { status: 'archived' });
+  assert.equal(response.status, 200);
+  assert.equal(response.data.releasedSession, false);
+  response = await api('DELETE', `/api/sessions/${dirtySessionId}?force=1`);
+  assert.equal(response.status, 409);
+  assert.equal(response.data.code, 'TASK_HISTORY_REFERENCED', 'force cannot bypass task evidence protection');
+  assert.equal(fs.readFileSync(history.fileFor(dirtySessionId), 'utf8'), originalBytes);
+  await stopServer();
+  await startServer(port);
+  response = await api('GET', `/api/sessions/${dirtySessionId}/history`);
+  assert.deepEqual(response.data.messages, [], 'hidden state survives a real server restart');
+  const archiveSocket = new WebSocket(`ws://127.0.0.1:${port}/ws/chat?session=${encodeURIComponent(dirtySessionId)}&historyScope=archive`);
+  const archivePage = waitForFrame(archiveSocket, 'chat_history');
+  await waitForOpen(archiveSocket);
+  assert.equal((await archivePage).messages.length, 2, 'task chat replays the full evidence');
+  archiveSocket.terminate();
   await api('DELETE', `/api/directories/${directoryId}?force=1`);
   await stopServer();
   assertTestDir(root);
   fs.rmSync(root, { recursive: true, force: true });
-  console.log('connected session deletion HTTP/WebSocket integration: passed');
+  console.log('session display retention and deletion HTTP/WebSocket integration: passed');
 })().catch(async error => {
   console.error(error);
   if (stderr) console.error(stderr.slice(-8000));

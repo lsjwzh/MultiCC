@@ -13,12 +13,22 @@ const fs = require('fs');
 const path = require('path');
 const { atomicWriteText } = require('./runtime-security');
 
-const ENV_PATH = path.join(__dirname, '..', '.env');
+// The desktop shell points MULTICC_ENV_FILE at a writable per-user copy: the
+// packaged app's resources tree is read-only (AppImage, Program Files), so the
+// historical package-root .env anchor would silently fail on write. Resolved
+// per call (not at module load) so tests can exercise both anchors.
+function envPath() {
+  return process.env.MULTICC_ENV_FILE
+    ? path.resolve(process.env.MULTICC_ENV_FILE)
+    : path.join(__dirname, '..', '.env');
+}
+
+const ENV_PATH = envPath();
 
 function readEnvFile() {
   const vars = {};
   try {
-    fs.readFileSync(ENV_PATH, 'utf8').split('\n').forEach(line => {
+    fs.readFileSync(envPath(), 'utf8').split('\n').forEach(line => {
       const m = line.match(/^\s*([^#=]+?)\s*=\s*(.*?)\s*$/);
       if (m) vars[m[1]] = m[2];
     });
@@ -27,8 +37,9 @@ function readEnvFile() {
 }
 
 function writeEnvFile(updates) {
+  const target = envPath();
   let lines = [];
-  try { lines = fs.readFileSync(ENV_PATH, 'utf8').split('\n'); } catch (_) {}
+  try { lines = fs.readFileSync(target, 'utf8').split('\n'); } catch (_) {}
   const written = new Set();
   lines = lines.map(line => {
     const m = line.match(/^\s*([^#=]+?)\s*=/);
@@ -43,8 +54,8 @@ function writeEnvFile(updates) {
     if (!written.has(k) && v != null) lines.push(`${k}=${v}`);
   }
   let parentMode = 0o755;
-  try { parentMode = fs.statSync(path.dirname(ENV_PATH)).mode & 0o777; } catch (_) {}
-  atomicWriteText(ENV_PATH, lines.join('\n') + '\n', { dirMode: parentMode });
+  try { parentMode = fs.statSync(path.dirname(target)).mode & 0o777; } catch (_) {}
+  atomicWriteText(target, lines.join('\n') + '\n', { dirMode: parentMode });
 }
 
 function createHostEnv(rawDeps) {
@@ -77,4 +88,4 @@ function createHostEnv(rawDeps) {
   return { readEnvFile, writeEnvFile, ensureVapidKeys, ENV_PATH };
 }
 
-module.exports = { createHostEnv, readEnvFile, writeEnvFile, ENV_PATH };
+module.exports = { createHostEnv, readEnvFile, writeEnvFile, envPath, ENV_PATH };

@@ -9,8 +9,17 @@
     "apiVersion": { "const": "v1" },
     "requestId": { "type": "string", "pattern": "^[A-Za-z0-9._:-]{1,128}$" },
     "correlationId": { "type": "string", "pattern": "^[A-Za-z0-9._:-]{1,128}$" },
+    "upstreamRequestId": { "type": "string", "pattern": "^[A-Za-z0-9._:-]{1,128}$" },
     "ok": { "const": false },
     "error": { "type": "string", "minLength": 1, "maxLength": 240 },
-    "code": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,40}$" }
+    "code": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,96}$" },
+    "category": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,64}$" },
+    "detail": { "type": "string", "minLength": 1, "maxLength": 240 },
+    "retryable": { "type": "boolean" },
+    "action": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,64}$" },
+    "scope": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,64}$" },
+    "cause": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,64}$" },
+    "httpStatus": { "type": "integer", "minimum": 400, "maximum": 599 },
+    "occurredAt": { "type": "string", "format": "date-time" }
   }
 }

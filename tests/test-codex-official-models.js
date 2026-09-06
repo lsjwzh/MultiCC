@@ -45,7 +45,7 @@ test('readCodexOfficialModels surfaces visibility=list slugs in priority order, 
   assert.deepEqual(readCodexOfficialModels(file), VISIBLE);
 });
 
-test('readCodexOfficialModels falls back to the curated constant when the cache is missing or malformed', async t => {
+test('readCodexOfficialModels falls back to no concrete id when entitlement cache is unavailable', async t => {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'codex-models-'));
   t.after(() => fsp.rm(dir, { recursive: true, force: true }));
   assert.deepEqual(readCodexOfficialModels(path.join(dir, 'does-not-exist.json')), [...CODEX_OFFICIAL_MODELS_FALLBACK]);
@@ -56,6 +56,8 @@ test('readCodexOfficialModels falls back to the curated constant when the cache 
   const empty = path.join(dir, 'empty.json');
   fs.writeFileSync(empty, JSON.stringify({ fetched_at: 'x', models: [] }));
   assert.deepEqual(readCodexOfficialModels(empty), [...CODEX_OFFICIAL_MODELS_FALLBACK]);
+  assert.deepEqual(CODEX_OFFICIAL_MODELS_FALLBACK, [],
+    'the safe fallback leaves model unset so Codex picks an entitled default');
 });
 
 test('summarize fills the Official codex provider modelOptions from the cache and never overrides a custom provider', async t => {
@@ -73,7 +75,20 @@ test('summarize fills the Official codex provider modelOptions from the cache an
   assert.equal(official.baseUrl, '');
   assert.equal(official.model, '');
 
-  // A provider that declares its OWN model is never overridden by the catalog.
+  // An old static official-provider catalog is overridden, while its saved
+  // current/unknown model string remains intact for the Custom field.
+  const oldOfficial = summarize({
+    id: 'old-official', appType: 'codex', source: 'local', name: 'OpenAI Official',
+    settingsConfig: {
+      auth: { auth_mode: 'chatgpt' },
+      config: 'model = "gpt-user-saved"\n',
+      modelCatalog: { models: [{ model: 'gpt-stale-hardcoded' }] },
+    },
+  }, { codexCachePath: cache });
+  assert.equal(oldOfficial.model, 'gpt-user-saved');
+  assert.deepEqual(oldOfficial.modelOptions, VISIBLE);
+
+  // A custom relay that declares its own model is never overridden.
   const custom = summarize({
     id: 'my-codex', appType: 'codex', source: 'local', name: 'My Codex',
     settingsConfig: {

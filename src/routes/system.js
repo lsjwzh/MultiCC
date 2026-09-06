@@ -224,6 +224,16 @@ function createApkInfoHandler(deps) {
   };
 }
 
+function createIosOtaInfoHandler(deps) {
+  return function iosOtaInfoHandler(req, res, next) {
+    try {
+      res.json(deps.iosOta.info());
+    } catch (error) {
+      next(error);
+    }
+  };
+}
+
 function assertSystemRouteDeps(deps) {
   const requiredFunctions = ['networkInterfaces', 'getPort', 'authRequired', 'gitRun'];
   if (!deps || typeof deps !== 'object') throw new TypeError('system route dependencies are required');
@@ -237,6 +247,11 @@ function assertSystemRouteDeps(deps) {
       || typeof deps.apkDistribution.info !== 'function'
       || typeof deps.apkDistribution.downloadHandler !== 'function') {
     throw new TypeError('system route APK distribution runtime is required');
+  }
+  if (!deps.iosOta
+      || typeof deps.iosOta.info !== 'function'
+      || typeof deps.iosOta.manifestHandler !== 'function') {
+    throw new TypeError('system route iOS OTA runtime is required');
   }
   return deps;
 }
@@ -252,6 +267,11 @@ function mountSystemRoutes(app, rawDeps) {
   // Mounted before express.static: local files fall through to static serving;
   // verified releases redirect, and every other state terminates explicitly.
   app.get('/multicc.apk', deps.apkDistribution.downloadHandler);
+  app.get('/api/ios-ota-info', createIosOtaInfoHandler(deps));
+  // itms-services fetches the manifest without the login cookie (bypassed in
+  // src/routes/auth.js); the asset URL inside is rendered per request so the
+  // same IPA installs over loopback, LAN or Tailscale Funnel HTTPS.
+  app.get('/ios-ota/manifest.plist', deps.iosOta.manifestHandler);
 }
 
 module.exports = {
@@ -269,5 +289,6 @@ module.exports = {
   createServerInfoHandler,
   createVersionCheckHandler,
   createApkInfoHandler,
+  createIosOtaInfoHandler,
   mountSystemRoutes,
 };

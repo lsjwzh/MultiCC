@@ -118,7 +118,7 @@ class _EventsScreenState extends State<EventsScreen> {
     if (_dirs.isEmpty) {
       return const Padding(
         padding: EdgeInsets.all(12),
-        child: Text('还没有Fleet。先在主界面添加一个项目Fleet。',
+        child: Text('还没有工作区。先在主界面添加一个项目文件夹。',
             style: TextStyle(color: AppColors.muted, fontSize: 13)),
       );
     }
@@ -236,7 +236,7 @@ class _EmptyView extends StatelessWidget {
   Widget build(BuildContext context) => const Center(
         child: Padding(
           padding: EdgeInsets.all(24),
-          child: Text('该Fleet暂无活动记录',
+          child: Text('该工作区暂无活动记录',
               style: TextStyle(color: AppColors.muted, fontSize: 13)),
         ),
       );

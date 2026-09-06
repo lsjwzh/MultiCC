@@ -73,6 +73,9 @@ body[data-view="tasks"] #topbar .planner-hide-on-tasks {
   min-width: 0;
 }
 
+.planner-toolbar-group.actions { flex-wrap: wrap; }
+.planner-toolbar-group.actions .btn { white-space: nowrap; }
+
 .planner-origin-filter {
   display: inline-flex;
   align-items: center;
@@ -657,6 +660,94 @@ body[data-view="tasks"] #topbar .planner-hide-on-tasks {
   box-shadow: var(--elev-hi), 0 26px 80px rgba(0, 0, 0, .55);
 }
 
+.planner-quick-dialog { width: min(520px, 96vw); }
+.planner-start-dialog { width: min(760px, 96vw); }
+
+.planner-quick-body,
+.planner-start-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.planner-quick-input {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 550;
+}
+
+.planner-quick-input textarea {
+  width: 100%;
+  min-height: 104px;
+  padding: 11px 12px;
+  resize: vertical;
+  color: var(--text);
+  background: var(--well);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  outline: 0;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.planner-quick-input textarea:focus {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 3px rgba(58, 214, 197, .09);
+}
+
+.planner-quick-input small {
+  color: var(--faint);
+  font-size: 10.5px;
+  font-weight: 400;
+}
+
+.planner-dialog-fleet {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 9px;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 550;
+}
+
+.planner-dialog-fleet select {
+  width: min(260px, 68%);
+  height: 36px;
+  padding: 0 10px;
+  color: var(--text);
+  background: var(--well);
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  outline: 0;
+  font: inherit;
+}
+
+.planner-dialog-fleet select:focus {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 3px rgba(58, 214, 197, .09);
+}
+
+.planner-dialog-fleet-locked strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.planner-start-composer .tb-compose {
+  padding: 0;
+  border-top: 0;
+}
+
+.planner-start-composer .tb-input { min-height: 96px; }
+.planner-start-composer .tb-compose-row { margin-top: 9px; }
+
 .planner-panel-head {
   display: flex;
   align-items: flex-start;
@@ -754,6 +845,12 @@ body[data-view="tasks"] #topbar .planner-hide-on-tasks {
   .planner-history-actions { justify-content: flex-end; }
   .planner-form-grid { grid-template-columns: 1fr; }
   .planner-field.full { grid-column: auto; }
+  .planner-dialog-fleet { align-items: stretch; flex-direction: column; }
+  .planner-dialog-fleet select { width: 100%; max-width: none; }
+  .planner-quick-input textarea,
+  .planner-dialog-fleet select,
+  .planner-start-composer .tb-input,
+  .planner-start-composer .tb-compose-row select { font-size: 16px; }
   .planner-panel-actions .spacer { flex-basis: 100%; height: 0; }
 }
 

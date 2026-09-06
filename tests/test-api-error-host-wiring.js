@@ -39,8 +39,8 @@ test('process and stream retries reuse the owned turn without appending a second
   assert.ok(processGuard >= 0 && processPolicy > processGuard,
     'process reused-target guard must run before generic API policy');
   assert.match(processBody,
-    /const shouldClassifyApiError = !guardedHandoffResumeFailure && !!\(/,
-    'process guard must suppress both retry_wait policy and downstream Auto failover');
+    /const shouldClassifyApiError = \(!guardedHandoffResumeFailure \|\| errorOnlyBoundary\) && !!\(/,
+    'process guard yields only to a host-proved, replay-safe provider error envelope');
   assert.match(processBody,
     /retryBlockedByAdapterError: !!cs\._adapterError \|\| !!runner\.adapterError/,
     'process guard must preserve both close-time and runner-owned adapter vetoes');

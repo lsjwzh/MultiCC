@@ -41,7 +41,7 @@ const SESSION_PORT = ['listByDir', 'seedCommander', 'destroyCascade', 'persistRe
 const EVENT_PORT = ['append'];
 
 // Filesystem access used by path validation and the fs/list browser.
-const FS_PORT = ['homedir', 'exists', 'isDirectory', 'mkdirp', 'readDirents'];
+const FS_PORT = ['homedir', 'sampleRoot', 'exists', 'isDirectory', 'mkdirp', 'readDirents', 'writeFileExclusive'];
 
 // Pure(ish) path helpers shared with the wider codebase (src/directories.js).
 const HELPER_PORT = ['resolveCwd', 'isHomeOrAbove', 'realPathOf', 'friendlyDirReason'];

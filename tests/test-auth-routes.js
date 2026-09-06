@@ -126,7 +126,11 @@ test('with ACCESS_TOKEN: external request without credentials is 403; html gets 
   try {
     let res = await raw(h.base, '/api/thing', { headers: { accept: 'application/json' } });
     assert.equal(res.status, 403);
-    assert.equal((await res.json()).error, 'Forbidden: not authenticated');
+    const body = (await res.json()).error;
+    assert.equal(body.code, 'AUTH_REQUIRED');
+    assert.equal(body.message, 'Forbidden: not authenticated');
+    assert.equal(body.category, 'authentication_permission');
+    assert.equal(body.action, 'login');
 
     res = await raw(h.base, '/dashboard', { headers: { accept: 'text/html' } });
     assert.equal(res.status, 302);
@@ -250,10 +254,19 @@ test('bypass paths: static assets, wait-resolve, share, artifacts skip auth', as
       ['POST', `/api/fleet-shares/fleet_share_${'b'.repeat(32)}/import`],
       ['POST', `/api/fleet-shares/fleet_share_${'c'.repeat(32)}/ws-ticket`],
       ['GET', '/artifacts/xY_9-artifactid/index.html'],
+      // iOS OTA: the itms-services fetcher cannot complete the cookie login
+      // flow, so the manifest and the IPA download bypass by name/extension —
+      // same model as /multicc.apk.
+      ['GET', '/ios-ota/manifest.plist'],
+      ['GET', '/multicc-ios.ipa'],
     ]) {
       const res = await raw(h.base, p, { method, headers: { accept: 'application/json' } });
       assert.equal(res.status, 200, `${method} ${p} should bypass auth`);
     }
+    // The install page itself must NOT bypass: it renders server metadata and
+    // stays behind the normal gate (non-api GET → login redirect).
+    const gatedIosPage = await raw(h.base, '/ios-ota', { headers: { accept: 'text/html' } });
+    assert.equal(gatedIosPage.status, 302);
     // A gated admin share route must NOT bypass.
     const gated = await raw(h.base, '/api/sessions/s1/share', { headers: { accept: 'application/json' } });
     assert.equal(gated.status, 403);
@@ -368,7 +381,10 @@ test('ws-ticket: issues a no-store ticket, or 400 on invalid path', async () => 
       body: JSON.stringify({ path: '/bad' }),
     });
     assert.equal(res.status, 400);
-    assert.equal((await res.json()).error, 'invalid WebSocket path');
+    const body = (await res.json()).error;
+    assert.equal(body.code, 'WS_PATH_INVALID');
+    assert.equal(body.message, 'invalid WebSocket path');
+    assert.equal(body.category, 'route');
   } finally { await h.close(); }
 });
 

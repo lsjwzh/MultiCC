@@ -148,6 +148,81 @@ test('web dispatch activity navigates to execution chat, owner, or nowhere for s
   assert.equal(navigationSessionId({ relation: 'self', ownerSessionId: 'same' }), '');
 });
 
+test('web dispatch activity keeps the projection label and task-bound marker', () => {
+  const rows = normalizeDispatches([
+    {
+      operationId: 'op-bound', status: 'running', terminal: false, relation: 'owner',
+      targetSessionId: 'worker-9', targetLabel: '任务 · App UI 适配',
+      targetTaskBoundTaskId: '#A1N3', queueState: 'running',
+    },
+    { operationId: 'op-plain', status: 'running', relation: 'owner', targetSessionId: 'p' },
+  ]);
+  assert.equal(rows[0].targetLabel, '任务 · App UI 适配');
+  assert.equal(rows[0].targetTaskBoundTaskId, '#A1N3');
+  assert.equal(rows[1].targetLabel, '', 'absent server fields degrade to empty strings');
+  assert.equal(rows[1].targetTaskBoundTaskId, '');
+});
+
+test('web dispatch rows show the task-bound label and jump to its chat', async () => {
+  const opened = [];
+  const ids = new Map();
+  for (const id of [
+    'dispatch-activity-fab', 'dispatch-activity-count', 'dispatch-activity-panel',
+    'dispatch-activity-title', 'dispatch-activity-list', 'dispatch-activity-refresh',
+    'dispatch-activity-collapse',
+  ]) ids.set(id, fakeTarget());
+  ids.get('dispatch-activity-panel').offsetHeight = 220;
+  const doc = fakeTarget({
+    getElementById(id) { return ids.get(id) || null; },
+    createElement() { return fakeTarget(); },
+  });
+  const win = fakeTarget({
+    innerWidth: 1280,
+    innerHeight: 800,
+    location: { href: 'https://example.test/chat.html?session=owner' },
+    localStorage: { getItem: () => null, setItem: () => {} },
+    matchMedia() { return { matches: false }; },
+    setInterval() { return 1; },
+    clearInterval() {},
+    setTimeout() { return 1; },
+    clearTimeout() {},
+    open(url, target) { opened.push([url, target]); },
+  });
+  // The session list hides task-bound workers, so the projection-carried
+  // label is the only friendly name available for the row.
+  const fetch = async url => ({
+    ok: true,
+    async json() {
+      if (url === '/api/sessions') return [];
+      return {
+        dispatches: [{
+          operationId: 'op-bound', status: 'running', terminal: false,
+          relation: 'owner', targetSessionId: 'worker-9', executionSessionId: 'worker-9',
+          targetLabel: '任务 · App UI 适配', targetTaskBoundTaskId: '#A1N3',
+          queueState: 'running', mode: 'async',
+        }],
+      };
+    },
+  });
+  const api = createDispatchActivity({
+    window: win, document: doc, sessionId: 'owner', fetch,
+    storage: { getItem: () => null, setItem: () => {} },
+    intervalMs: 60000,
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setImmediate(resolve));
+  const row = ids.get('dispatch-activity-list').children[0];
+  assert.ok(row, 'a row rendered for the live dispatch');
+  const body = row.children.find(child => child.className === 'dispatch-activity-row-body');
+  assert.equal(body.textContent, 'To 任务 · App UI 适配 · async');
+  assert.equal(row.title, '任务绑定会话 · #A1N3');
+  row.dispatch('click');
+  assert.equal(opened.length, 1);
+  assert.equal(opened[0][0], 'https://example.test/chat.html?session=worker-9');
+  assert.equal(opened[0][1], '_blank');
+  api.destroy();
+});
+
 test('web dispatch jump starts from a clean same-directory chat URL', () => {
   const url = new URL(buildSessionUrl(
     'https://example.test/ui/chat.html?session=old&token=secret&message=m1#debug',

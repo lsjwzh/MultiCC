@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>MultiCC — 启动失败</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: #101218; color: #e8eaf0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .card {
+    max-width: 620px; margin: 24px; padding: 28px 30px;
+    background: #171a23; border: 1px solid #262b38; border-radius: 14px;
+  }
+  h1 { margin: 0 0 6px; font-size: 20px; }
+  h1 .dot { color: #ff6b6b; }
+  .sub { margin: 0 0 18px; font-size: 13px; color: #8b91a3; }
+  .detail {
+    font-size: 13px; line-height: 1.7; color: #c6cbd9; margin: 0 0 18px;
+    padding: 12px 14px; background: #101218; border: 1px solid #262b38;
+    border-radius: 10px; white-space: pre-wrap; word-break: break-all;
+    max-height: 220px; overflow: auto;
+  }
+  .actions { display: flex; gap: 12px; flex-wrap: wrap; }
+  button {
+    font: inherit; font-size: 14px; padding: 9px 18px; border-radius: 9px; cursor: pointer;
+    border: 1px solid #2d3344; background: #1d2230; color: #e8eaf0;
+  }
+  button.primary { background: #3b5bdb; border-color: #3b5bdb; color: #fff; }
+  button:hover { filter: brightness(1.12); }
+  .paths { margin-top: 18px; font-size: 12px; color: #6d7386; line-height: 1.8; user-select: text; }
+  .paths code { color: #9aa1b5; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1><span class="dot">●</span> <span id="title">MultiCC 启动失败</span></h1>
+  <p class="sub">The local MultiCC backend could not start.</p>
+  <div class="detail" id="detail"></div>
+  <div class="actions">
+    <button class="primary" id="retry">重试启动</button>
+    <button id="logs">打开日志</button>
+    <button id="data">打开数据目录</button>
+    <button id="quit">退出</button>
+  </div>
+  <div class="paths" id="paths"></div>
+</div>
+<script>
+(function () {
+  var params = new URLSearchParams(location.search);
+  var reason = params.get('reason') || 'unknown';
+  var message = params.get('message') || '';
+  var logDir = params.get('logDir') || '';
+  var dataDir = params.get('dataDir') || '';
+
+  var copy = {
+    'port-in-use': '本地端口被占用（EADDRINUSE）。可能是另一个 MultiCC 服务或其他程序占用了端口。关闭占用程序后点「重试启动」，桌面版会自动换一个空闲端口。',
+    'crash-loop': '本地服务在短时间内多次异常退出，已停止自动重启。请查看日志定位原因；常见原因是数据目录损坏或依赖缺失。',
+    'not-ready': '本地服务启动后长时间未就绪（等待 /readyz 超时）。请查看日志了解卡在哪一步。',
+    'spawn-error': '无法启动本地服务进程。可能是安装不完整（缺少 server 文件），请重新安装桌面版。'
+  };
+  document.getElementById('title').textContent = 'MultiCC 启动失败';
+  document.getElementById('detail').textContent =
+    (copy[reason] || '发生未知错误。') + (message ? '\n\n' + message : '');
+
+  var paths = [];
+  if (logDir) paths.push('日志 Logs：<code>' + escapeHtml(logDir) + '</code>');
+  if (dataDir) paths.push('数据 Data：<code>' + escapeHtml(dataDir) + '</code>');
+  document.getElementById('paths').innerHTML = paths.join('<br>');
+
+  function escapeHtml(s) {
+    return s.replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  var bridge = window.multiccDesktop;
+  function bind(id, fn) {
+    document.getElementById(id).addEventListener('click', function () {
+      if (bridge) fn(bridge); else console.log('multiccDesktop bridge unavailable');
+    });
+  }
+  bind('retry', function (b) { b.retry(); });
+  bind('logs', function (b) { b.openLogs(); });
+  bind('data', function (b) { b.openDataFolder(); });
+  bind('quit', function (b) { b.quit(); });
+})();
+</script>
+</body>
+</html>

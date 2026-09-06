@@ -1,0 +1,45 @@
+.workspace-setup-card{width:min(94vw,720px);max-height:92vh;overflow:auto;padding:0}
+.workspace-setup-head{padding:20px 22px 15px;border-bottom:1px solid var(--line)}
+.workspace-setup-head h3{font-size:17px;margin:0;color:var(--text)}
+.workspace-setup-head p{font-size:12px;color:var(--muted);line-height:1.55;margin:6px 0 0}
+.workspace-setup-fields{padding:17px 22px 4px}
+.workspace-field{display:block;margin-bottom:12px}
+.workspace-field>span,.workspace-team-legend{display:block;font-size:11px;color:var(--muted);margin-bottom:5px}
+.workspace-field input{width:100%;background:var(--bg-soft);border:1px solid var(--line);border-radius:9px;color:var(--text);font-size:13px;padding:10px 12px;outline:none}
+.workspace-field input:focus{border-color:var(--accent-line);box-shadow:0 0 0 3px var(--accent-dim)}
+.workspace-field.path input{font-family:var(--mono)}
+.workspace-path-create{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted);cursor:pointer;user-select:none;margin:8px 0 16px}
+.workspace-path-create input{margin:0}
+#newdir-suggest{display:none;max-height:180px;overflow:auto;background:var(--bg-soft);border:1px solid var(--line);border-radius:9px;margin-top:6px}
+.workspace-path-option{display:block;width:100%;padding:7px 10px;border:0;border-bottom:1px solid var(--line);background:transparent;color:var(--text);font:12px var(--mono);text-align:left;cursor:pointer}
+.workspace-path-option:hover,.workspace-path-option:focus-visible{background:var(--panel-2);outline:none}
+.workspace-team-fieldset{border:0;margin:0;padding:0 22px 4px}
+.workspace-team-intro{font-size:12px;color:var(--muted);line-height:1.5;margin:-1px 0 10px}
+.workspace-team-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.workspace-team-card{position:relative;display:block;border:1px solid var(--line);border-radius:11px;padding:12px;background:var(--bg-soft);cursor:pointer;transition:border-color .14s,background .14s,transform .14s}
+.workspace-team-card:hover{border-color:var(--line-strong);transform:translateY(-1px)}
+.workspace-team-card.selected{border-color:var(--accent);background:var(--accent-dim);box-shadow:0 0 0 1px rgba(58,214,197,.16) inset}
+.workspace-team-card:focus-within{outline:2px solid var(--accent);outline-offset:2px}
+.workspace-team-card input{position:absolute;opacity:0;pointer-events:none}
+.workspace-team-title{display:flex;align-items:center;gap:7px;color:var(--text);font-size:13px;font-weight:700}
+.workspace-team-title .recommended{font:700 9px var(--mono);letter-spacing:.04em;color:#062b25;background:var(--accent);border-radius:999px;padding:2px 6px}
+.workspace-team-count{margin-left:auto;font:10px var(--mono);color:var(--faint)}
+.workspace-team-card.selected .workspace-team-count{color:var(--accent)}
+.workspace-team-desc,.workspace-team-example{font-size:11px;line-height:1.5;color:var(--muted);margin-top:7px}
+.workspace-team-example{color:var(--faint)}
+.workspace-role-list{display:flex;gap:5px;flex-wrap:wrap;margin-top:9px}
+.workspace-role-chip{font-size:10px;color:var(--text);background:rgba(255,255,255,.05);border:1px solid var(--line);border-radius:999px;padding:3px 7px}
+.workspace-role-details{display:grid;gap:5px;margin-top:9px;padding-top:9px;border-top:1px solid var(--line);font-size:10.5px;line-height:1.45;color:var(--muted)}
+.workspace-role-details span{display:grid;grid-template-columns:minmax(88px,auto) 1fr;gap:8px}.workspace-role-details b{color:var(--text);font-weight:650}
+.workspace-setup-note{margin:12px 22px 0;padding:9px 11px;border-radius:9px;background:rgba(106,163,255,.08);border:1px solid rgba(106,163,255,.22);color:var(--muted);font-size:11px;line-height:1.5}
+.workspace-setup-status{display:none;margin:12px 22px 0;font-size:12px;line-height:1.5;color:var(--muted)}
+.workspace-setup-status.visible{display:block}.workspace-setup-status.error{color:var(--danger)}
+.workspace-setup-actions{display:flex;gap:8px;justify-content:flex-end;padding:16px 22px 20px}
+.workspace-setup-actions .btn:disabled{opacity:.55;cursor:wait}
+.workspace-empty{grid-column:1/-1;padding:42px 24px;text-align:center;border:1px dashed var(--line);border-radius:var(--radius);background:linear-gradient(145deg,rgba(58,214,197,.06),rgba(106,163,255,.035))}
+.workspace-empty .empty-icon{font-size:30px}.workspace-empty h3{font-size:17px;margin-top:10px}.workspace-empty p{max-width:510px;margin:7px auto 17px;color:var(--muted);font-size:12px;line-height:1.6}
+.workspace-empty-actions{display:flex;justify-content:center;gap:9px;flex-wrap:wrap}
+.workspace-sample-note{margin-top:10px;color:var(--faint);font-size:10px;font-family:var(--mono)}
+.sample-badge{display:inline-flex;margin-left:7px;padding:2px 6px;border-radius:999px;background:rgba(106,163,255,.12);border:1px solid rgba(106,163,255,.3);color:var(--blue);font:9px var(--mono);vertical-align:2px}
+.sample-flow .workspace-path-create{display:none}
+@media(max-width:700px){.workspace-team-grid{grid-template-columns:1fr}.workspace-setup-head{padding:17px 17px 13px}.workspace-setup-fields,.workspace-team-fieldset{padding-left:17px;padding-right:17px}.workspace-setup-note,.workspace-setup-status{margin-left:17px;margin-right:17px}.workspace-setup-actions{padding:14px 17px 18px;position:sticky;bottom:0;background:var(--panel);border-top:1px solid var(--line)}}

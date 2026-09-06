@@ -10,6 +10,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
+const http = require('http');
 
 const ARTIFACTS_DIR = process.env.MULTICC_ARTIFACTS_DIR || (
   process.env.MULTICC_DATA_DIR
@@ -100,8 +101,37 @@ ${body}
 
 function newId() { return crypto.randomBytes(8).toString('hex'); }
 
-function emit(kind, id, name, dir, dest, quiet) {
+// Best-effort registration in the docs/web-services management table so the
+// /manage「服务与文档」panel can find everything we publish. Fire-and-forget:
+// a registry hiccup must never break publishing.
+function registerInDocsRegistry(kind, rel, title) {
+  try {
+    const body = JSON.stringify({
+      kind,
+      title: String(title || '').slice(0, 200) || rel,
+      url: rel,
+      sessionId: process.env.MULTICC_SESSION_ID || '',
+      source: 'agent',
+    });
+    const url = new URL('/api/docs-registry', BASE);
+    const req = http.request({
+      method: 'POST',
+      hostname: url.hostname,
+      port: url.port,
+      path: url.pathname,
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      timeout: 3000,
+    });
+    req.on('error', () => {});
+    req.on('timeout', () => req.destroy());
+    req.on('response', res => res.resume());
+    req.end(body);
+  } catch (_) {}
+}
+
+function emit(kind, id, name, dir, dest, quiet, title) {
   const rel = `/artifacts/${id}/${name}`;
+  registerInDocsRegistry(kind, rel, title || name);
   if (quiet) { process.stdout.write(rel + '\n'); return; }
   const isImg = IMG_RE.test(name);
   const md = kind === 'page'
@@ -172,7 +202,7 @@ function main() {
 
   const dest = path.join(dir, name);
   fs.writeFileSync(dest, buf, { mode: 0o600 });
-  emit(cmd, id, name, dir, dest, f.quiet);
+  emit(cmd, id, name, dir, dest, f.quiet, f.title);
 }
 
 main();

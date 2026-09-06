@@ -62,8 +62,13 @@ function createTaskContextHost(options = {}) {
   function beginTurn(state, requested = {}, options = {}) {
     const previous = state?._currentTaskId || null;
     const detached = options.detach === true;
-    const generated = !detached && !requested.id && !previous;
-    const taskId = detached ? null : requested.id || previous
+    // Every new user/dispatch admission gets its own candidate identity even
+    // when the previous task is unfinished. Classification may later re-point
+    // it to an older canonical task, but persistence and the first UI frame must
+    // never borrow that older task's title/id merely because it is still live.
+    const generated = !detached && !requested.id
+      && (options.provisional === true || !previous);
+    const taskId = detached ? null : requested.id || (generated ? null : previous)
       || `tsk_${String(randomUUID()).replace(/-/g, '')}`;
     const boundaryChanged = detached || generated || (!!requested.id
       && (requested.start === true || requested.id !== previous));

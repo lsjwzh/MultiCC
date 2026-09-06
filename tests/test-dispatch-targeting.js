@@ -9,11 +9,13 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createDispatchTargeting } = require('../src/dispatch/targeting');
 
-function makeFactory(records, chatSessions, effort = () => 'normal') {
+function makeFactory(records, chatSessions, effort = () => 'normal', isTargetBusy = () => false, boundTaskTitleFor = null) {
   return createDispatchTargeting({
     records: new Map(records.map(r => [r.id, r])),
     chatSessions: new Map(Object.entries(chatSessions || {})),
     normalizeEffort: effort,
+    isTargetBusy,
+    ...(boundTaskTitleFor ? { boundTaskTitleFor } : {}),
   });
 }
 
@@ -140,18 +142,65 @@ test('commander sees bounded roles and deduplicated recent task evidence', () =>
     },
   ];
   const t = makeFactory(records, {
-    backend: { clients: { size: 1 }, isStreaming: true },
-  });
+    backend: { clients: { size: 1 }, isStreaming: false },
+  }, () => 'normal', sessionId => sessionId === 'backend');
   const [target] = t.dispatchableSessionsFor('cmd');
   assert.equal(target.load, 'running');
   assert.equal(target.routingState, 'unknown');
   assert.match(target.role, /后端与安全/);
   assert.doesNotMatch(target.role, /top-secret|private\/repo/);
   assert.deepEqual(target.recentTasks, [
-    { task: '当前 API 修复', phase: 'planning', state: 'waiting' },
+    { task: '当前 API 修复', phase: 'implementing', state: 'running' },
     { task: '修复OAuth回调', phase: 'verifying', state: 'completed' },
     { task: '旧 UI 任务', phase: 'done', state: 'completed' },
   ]);
+});
+
+test('commander keeps current task first and deduplicates by canonical taskId', () => {
+  const records = [
+    { id: 'cmd', dirId: 'd1', type: 'commander' },
+    {
+      id: 'worker', dirId: 'd1', type: 'worker', kind: 'chat',
+      taskState: {
+        taskId: 'tsk-current', goal: '当前任务新名称', phase: 'implementing', classifyState: 'P',
+        taskIdentityPending: true,
+        classifyHistory: [
+          { taskId: 'tsk-old-1', goal: '更早任务', state: 'D' },
+          { taskId: 'tsk-same-a', goal: '同名任务', state: 'D' },
+          { taskId: 'tsk-same-b', goal: '同名任务', state: 'W' },
+          { taskId: 'tsk-current', goal: '当前任务旧名称', state: 'W' },
+        ],
+      },
+    },
+  ];
+  const [target] = makeFactory(records, {}).dispatchableSessionsFor('cmd');
+  assert.equal(target.recentTasks.length, 4, 'current survives a full history cap');
+  assert.match(target.recentTasks[0].task, /当前任务新名称$/);
+  assert.equal(target.recentTasks[0].attribution, 'classifying');
+  assert.equal(target.recentTasks.some(item => item.task.endsWith('当前任务旧名称')), false,
+    'same taskId rename has one row');
+  assert.equal(target.recentTasks.filter(item => item.task.endsWith('同名任务')).length, 2,
+    'same-name tasks with distinct ids remain distinct');
+  assert.notEqual(target.recentTasks[1].task.slice(0, 5), target.recentTasks[2].task.slice(0, 5));
+});
+
+test('commander load uses the canonical host busy predicate, not browser or streaming activity', () => {
+  const records = [
+    { id: 'cmd', dirId: 'd1', type: 'commander' },
+    { id: 'leased', dirId: 'd1', type: 'worker', kind: 'chat' },
+    { id: 'stream-flag-only', dirId: 'd1', type: 'worker', kind: 'chat' },
+  ];
+  const t = makeFactory(records, {
+    leased: { clients: { size: 0 }, isStreaming: false },
+    'stream-flag-only': { clients: { size: 1 }, isStreaming: true },
+  }, () => 'normal', sessionId => sessionId === 'leased');
+  const targets = t.dispatchableSessionsFor('cmd');
+  const leased = targets.find(target => target.id === 'leased');
+  const streamFlagOnly = targets.find(target => target.id === 'stream-flag-only');
+  assert.equal(leased.load, 'running');
+  assert.equal(leased.active, true);
+  assert.equal(streamFlagOnly.load, 'available');
+  assert.equal(streamFlagOnly.active, false);
 });
 
 test('a normal session never sees a commander peer as a dispatch target', () => {
@@ -184,7 +233,14 @@ test('commander gets the dispatch prompt', () => {
   assert.match(p, /上下文连续性/);
   assert.match(p, /load="running"/);
   assert.match(p, /routingState="waiting_user"/);
-  assert.match(p, /相关性明显更高/);
+  assert.match(p, /关联会话.*available.*优先/);
+  assert.match(p, /关联会话.*running.*其他.*available/);
+  assert.match(p, /全部.*忙.*FIFO/);
+  assert.match(p, /用户明确点名.*不得改派/);
+  assert.match(p, /waiting_user.*background.*error/);
+  assert.match(p, /目标.*已知事实.*约束.*验收标准/);
+  assert.match(p, /不要.*完整对话.*秘密/);
+  assert.doesNotMatch(p, /不要仅因最相关会话正在运行就改投/);
   assert.match(p, /候选列表顺序不表示优先级/);
   assert.match(p, /不要根据 id、CLI 名称或最近活跃时间猜职责/);
   assert.match(p, /用户原话点名/);
@@ -278,4 +334,71 @@ test('createDispatchTargeting validates its deps', () => {
   assert.throws(() => createDispatchTargeting({}), /records must be/);
   assert.throws(() => createDispatchTargeting({ records: new Map() }), /chatSessions must be/);
   assert.throws(() => createDispatchTargeting({ records: new Map(), chatSessions: new Map() }), /normalizeEffort/);
+  assert.throws(() => createDispatchTargeting({
+    records: new Map(), chatSessions: new Map(), normalizeEffort: () => 'normal',
+  }), /isTargetBusy/);
+  assert.throws(() => createDispatchTargeting({
+    records: new Map(), chatSessions: new Map(), normalizeEffort: () => 'normal',
+    isTargetBusy: () => false, boundTaskTitleFor: 'not-a-function',
+  }), /boundTaskTitleFor/);
+});
+
+// ── Task-bound sessions (hidden task-board workers) ──────────────────────────
+
+const TASK_BOUND_BASE = () => ([
+  { id: 'me', dirId: 'd1', type: 'chat' },
+  { id: 'plain', dirId: 'd1', type: 'chat', label: 'Plain worker', kind: 'chat' },
+  {
+    id: 'bound-worker', dirId: 'd1', type: 'worker', kind: 'chat',
+    label: '任务 · App UI 适配', taskBoundTaskId: '#A1N3',
+  },
+  {
+    id: 'empty-marker', dirId: 'd1', type: 'worker', kind: 'chat',
+    label: '任务 · ', taskBoundTaskId: '',
+  },
+]);
+
+test('task-bound candidates carry taskBoundTaskId; unbound candidates carry nothing', () => {
+  const t = makeFactory(TASK_BOUND_BASE(), {});
+  const list = t.dispatchableSessionsFor('me');
+  const bound = list.find(s => s.id === 'bound-worker');
+  const plain = list.find(s => s.id === 'plain');
+  const emptyMarker = list.find(s => s.id === 'empty-marker');
+  assert.equal(bound.taskBoundTaskId, '#A1N3');
+  assert.equal('boundTaskTitle' in bound, false, 'no title dep → id only');
+  assert.equal('taskBoundTaskId' in plain, false);
+  assert.equal('taskBoundTaskId' in emptyMarker, false, 'empty-string marker is treated as unbound');
+  // The hint payload (ordinary sessions' gateway prompt) sees the same field.
+  assert.match(t.dispatchTargetHintFor('me'), /"taskBoundTaskId":"#A1N3"/);
+});
+
+test('boundTaskTitleFor enriches bound candidates with a sanitized title', () => {
+  const t = makeFactory(TASK_BOUND_BASE(), {}, () => 'normal', () => false,
+    id => (id === '#A1N3' ? '  App UI 适配 /private/repo/server.js ' : ''));
+  const bound = t.dispatchableSessionsFor('me').find(s => s.id === 'bound-worker');
+  assert.equal(bound.taskBoundTaskId, '#A1N3');
+  assert.match(bound.boundTaskTitle, /^App UI 适配/);
+  assert.doesNotMatch(bound.boundTaskTitle, /private\/repo/);
+});
+
+test('commander routing prompt states the task-bound rule', () => {
+  const records = [
+    { id: 'cmd', dirId: 'd1', type: 'commander' },
+    {
+      id: 'bound-worker', dirId: 'd1', type: 'worker', kind: 'chat',
+      label: '任务 · App UI 适配', taskBoundTaskId: '#A1N3',
+    },
+    { id: 'plain', dirId: 'd1', type: 'chat', label: 'Plain', kind: 'chat' },
+  ];
+  const t = makeFactory(records, {}, () => 'normal', () => false,
+    () => 'App UI 适配');
+  const p = t.buildDispatchContextPrompt('cmd');
+  assert.match(p, /带 taskBoundTaskId 的候选是任务绑定会话/);
+  assert.match(p, /仅当新任务是其绑定任务的后续时才可选/);
+  assert.match(p, /无关任务一律派给不带该字段的会话/);
+  assert.match(p, /用户显式点名任务绑定会话时照选/);
+  assert.match(p, /注明它是任务绑定会话/);
+  // The candidate JSON in the same prompt carries the marker + title.
+  assert.match(p, /"taskBoundTaskId":"#A1N3"/);
+  assert.match(p, /"boundTaskTitle":"App UI 适配"/);
 });

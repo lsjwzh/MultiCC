@@ -1,0 +1,79 @@
+{
+  "name": "multicc-desktop",
+  "productName": "MultiCC",
+  "private": true,
+  "version": "1.6.8",
+  "description": "MultiCC desktop shell — supervises the local MultiCC server and hosts its web UI",
+  "main": "main.js",
+  "author": "MultiCC Team",
+  "license": "SEE LICENSE IN ../LICENSE",
+  "scripts": {
+    "start": "electron .",
+    "stage:server": "node ../scripts/desktop-bundle-server.js --out .staging/app-server --install",
+    "dist": "npm run stage:server && electron-builder --publish never",
+    "dist:mac": "npm run stage:server && electron-builder --publish never --mac",
+    "dist:win": "npm run stage:server && electron-builder --publish never --win",
+    "dist:linux": "npm run stage:server && electron-builder --publish never --linux"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.2.0",
+    "electron": "44.1.1",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "io.github.lsjwzh.multicc",
+    "productName": "MultiCC",
+    "asar": true,
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "lib/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": ".staging/app-server",
+        "to": "app-server",
+        "filter": ["**/*"]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "build/icon.png",
+      "target": [
+        { "target": "dmg", "arch": ["arm64", "x64"] }
+      ],
+      "artifactName": "multicc-desktop-${version}-macos-${arch}.${ext}",
+      "identity": null,
+      "hardenedRuntime": true
+    },
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        { "target": "nsis", "arch": ["x64"] }
+      ],
+      "artifactName": "multicc-desktop-${version}-windows-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false,
+      "deleteAppDataOnUninstall": false
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "category": "Development",
+      "maintainer": "MultiCC Team <lsjwzh@users.noreply.github.com>",
+      "target": [
+        { "target": ["AppImage", "deb"], "arch": ["x64"] }
+      ],
+      "artifactName": "multicc-desktop-${version}-linux-${arch}.${ext}"
+    },
+    "publish": null
+  }
+}

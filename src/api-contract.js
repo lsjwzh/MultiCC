@@ -33,17 +33,53 @@ function sanitizeErrorMessage(value, fallback = 'request_error') {
   message = message
     .replace(/\bBearer\s+[A-Za-z0-9._~+\/-]+=*/gi, 'Bearer [redacted]')
     .replace(/\b(?:sk|gh[pousr])[-_][A-Za-z0-9_-]{12,}\b/g, '[redacted]')
+    .replace(/\bfleet_share_[A-Za-z0-9_-]{24,96}\b/g, 'fleet_share_[redacted]')
+    .replace(/\b(token|secret|password|passwd|authorization|api[_ -]?key|credential)\s*[:=]\s*([^\s,;]+)/gi, '$1=[redacted]')
+    .replace(/([?&](?:token|access_token|auth_token|api_key|apikey|authorization)=)[^&#\s]*/gi, '$1[redacted]')
     .replace(/[A-Za-z]:\\(?:[^\\\s]+\\){1,}[^\s]*/g, '[path]')
     .replace(/(?:\/[A-Za-z0-9._-]+){2,}/g, '[path]');
   return message.slice(0, 240);
 }
 
-function createErrorDto({ message, code, requestId, correlationId } = {}) {
+function createErrorDto({
+  message,
+  code,
+  requestId,
+  correlationId,
+  upstreamRequestId,
+  category,
+  detail,
+  retryable,
+  action,
+  scope,
+  cause,
+  httpStatus,
+  occurredAt,
+} = {}) {
   const body = {
     ok: false,
     error: sanitizeErrorMessage(message),
-    code: typeof code === 'string' && /^[a-z0-9_.-]{1,40}$/i.test(code) ? code : 'request_error',
+    code: typeof code === 'string' && /^[a-z0-9_.-]{1,96}$/i.test(code) ? code : 'request_error',
   };
+  const optionalCode = (value) => typeof value === 'string' && /^[a-z0-9_.-]{1,64}$/i.test(value)
+    ? value : null;
+  const safeCategory = optionalCode(category);
+  const safeAction = optionalCode(action);
+  const safeScope = optionalCode(scope);
+  const safeCause = optionalCode(cause);
+  if (safeCategory) body.category = safeCategory;
+  if (typeof detail === 'string' && detail.trim()) body.detail = sanitizeErrorMessage(detail, body.error);
+  if (typeof retryable === 'boolean') body.retryable = retryable;
+  if (safeAction) body.action = safeAction;
+  if (safeScope) body.scope = safeScope;
+  if (safeCause) body.cause = safeCause;
+  if (typeof upstreamRequestId === 'string' && ID_PATTERN.test(upstreamRequestId)) {
+    body.upstreamRequestId = upstreamRequestId;
+  }
+  if (Number.isInteger(httpStatus) && httpStatus >= 400 && httpStatus <= 599) body.httpStatus = httpStatus;
+  if (typeof occurredAt === 'string' && Number.isFinite(Date.parse(occurredAt))) {
+    body.occurredAt = new Date(occurredAt).toISOString();
+  }
   return withApiMeta(body, { requestId, correlationId });
 }
 

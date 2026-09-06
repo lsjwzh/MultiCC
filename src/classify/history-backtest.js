@@ -54,6 +54,7 @@ function expectedFromRun(run = {}) {
     phase: parsed.phase || null,
     relation,
     taskId: relation === 'new' ? null : parsed.taskId || run.taskId || null,
+    relatedTaskId: relation === 'new' ? parsed.relatedTaskId || null : null,
   };
   return expected;
 }

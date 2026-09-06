@@ -12,6 +12,7 @@ const _destinations = <WorkspaceDestination>[
   WorkspaceDestination.overview,
   WorkspaceDestination.cron,
   WorkspaceDestination.memory,
+  WorkspaceDestination.docs,
   WorkspaceDestination.voice,
   WorkspaceDestination.goal,
   WorkspaceDestination.provider,
@@ -93,11 +94,11 @@ void main() {
 
     expect(
       WorkspaceNavigationDrawer.workspaceDestinations,
-      _destinations.take(3),
+      _destinations.take(4),
     );
     expect(
       WorkspaceNavigationDrawer.settingsDestinations,
-      _destinations.skip(3),
+      _destinations.skip(4),
     );
     final expectedKeys = _destinations
         .map((destination) => 'workspace-nav-${destination.name}')

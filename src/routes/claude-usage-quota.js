@@ -1,27 +1,33 @@
 'use strict';
 
 // GET /api/claude/quota — fetch the Claude subscription's usage windows
-// (5h session / weekly / monthly) from claude.ai/settings/usage.
+// (5h session / weekly / monthly).
 //
-// Claude's plan limits are NOT exposed through any REST API the CLI can reach:
-// the structured rate_limit_event only carries the 5h rolling window, and there
-// is no usage endpoint a cookie-only request could query. The authoritative
-// source is the /settings/usage SPA, which is behind Cloudflare — plain HTTP
-// scraping gets blocked (verified in the task brief: don't bother with a cookie
-// fallback). So we drive a browser that holds the user's session — see
-// ../quota-managed-browser.js (multicc-owned profile) and ../chrome-cdp.js
-// (any local Chrome) — render the page headlessly, wait for it to hydrate, and
-// parse `document.body.innerText` for the window percentages + reset times,
-// the same text-heuristic approach as the kimi membership page.
+// Two sources, tried in order:
+//
+//   1. OAuth control plane — if a multicc official Claude account exists, its
+//      refresh-on-read token queries https://api.anthropic.com/api/oauth/usage
+//      directly (the same endpoint the CLI's /usage reads): one HTTPS GET,
+//      ~200ms, no browser. This is the preferred path.
+//   2. CDP scrape of claude.ai/settings/usage — the fallback for the shared
+//      browser login when no official account is usable. Claude's plan limits
+//      are NOT exposed through any REST API a cookie-only request could query,
+//      and the SPA is behind Cloudflare, so this drives a browser that holds
+//      the user's session — see ../quota-managed-browser.js (multicc-owned
+//      profile) and ../chrome-cdp.js (any local Chrome) — renders the page
+//      headlessly, waits for hydration, and parses `document.body.innerText`
+//      for the window percentages + reset times.
 //
 // Response (ok):
-//   { status:'ok', fetchedAt, source, url,
-//     summary:[ { window:'5h'|'1wk'|'1m'|null, label, usedPercent, resetMs, line } ] }
-// The 5h row on the page duplicates the passive rate_limit_event, so the
-// frontend keeps the event's 5h and appends the weekly/monthly rows from here.
+//   { status:'ok', fetchedAt, source:'oauth'|'managed'|'user-chrome', url,
+//     summary:[ { window:'5h'|'1wk'|'1m'|null, label, usedPercent, resetMs, line } ],
+//     account?:{id,label,email}, usage?:{...raw OAuth body...} }
+// The 5h row duplicates the passive rate_limit_event, so the frontend keeps the
+// event's 5h and appends the weekly/monthly rows from here.
 //
 // Failure modes surfaced to the frontend so the rate-limit bar can prompt the
-// user instead of silently degrading:
+// user instead of silently degrading (the OAuth path never produces them — it
+// silently falls through to the scrape, which owns these statuses):
 //   chrome_unavailable — no browser we can reach over CDP
 //   needs_login       — page redirected to the login screen (no session)
 //   unavailable       — any other error / parse timeout (incl. Cloudflare)
@@ -29,6 +35,7 @@
 const { createChromeCdp, portsFromEnv, profileDirsFromEnv } = require('../chrome-cdp');
 const { getManagedQuotaBrowser } = require('../quota-managed-browser');
 const { rememberClaudeScrape, renderClaudeBar } = require('../quota/claude-bar-state');
+const { fetchUsage, USAGE_URL } = require('../claude-official-oauth');
 
 const CDP_TIMEOUT_MS = Number(process.env.CLAUDE_QUOTA_TIMEOUT_MS || 15000);
 function panelTextTimeoutMs() {
@@ -217,7 +224,119 @@ async function readClaudeUsageFromPage(page) {
   };
 }
 
+// ── source 1: official-account OAuth control plane ─────────────────────────
+// The usage endpoint's windows → the unified tokens every quota surface
+// renders. Labels mirror the scraped page's own wording so a bar reading
+// that switches source mid-day reads the same. utilization is a 0..1
+// fraction (the per-account manage UI already assumes this shape).
+const OAUTH_WINDOWS = Object.freeze([
+  { key: 'five_hour', window: '5h', label: 'Current session' },
+  { key: 'seven_day', window: '1wk', label: 'All models' },
+  { key: 'seven_day_opus', window: '1wk', label: 'Opus' },
+  { key: 'seven_day_sonnet', window: '1wk', label: 'Sonnet' },
+]);
+
+function summarizeOAuthUsage(usage) {
+  if (!usage || typeof usage !== 'object') return null;
+  const hits = [];
+  for (const { key, window, label } of OAUTH_WINDOWS) {
+    const w = usage[key];
+    if (!w || typeof w !== 'object') continue;
+    // A window that doesn't apply to this plan reports utilization:null. Check
+    // it BEFORE Number() — Number(null) is 0 (finite), which would otherwise
+    // emit a bogus 0% row for a window the account doesn't even have.
+    if (w.utilization == null) continue;
+    const utilization = Number(w.utilization);
+    if (!Number.isFinite(utilization)) continue;
+    const usedPercent = Math.round(Math.max(0, Math.min(1, utilization)) * 1000) / 10;
+    const resetMs = w.resets_at ? Date.parse(String(w.resets_at)) : NaN;
+    hits.push({
+      window,
+      label,
+      usedPercent,
+      percent: usedPercent,
+      resetMs: Number.isFinite(resetMs) ? resetMs : null,
+      line: `${key}: ${utilization}`,
+    });
+  }
+  return hits.length ? hits : null;
+}
+
+// Account/credential access is resolved lazily and is replaceable (tests). The
+// store is a stateless reader over ~/.multicc/official-accounts, so this module
+// can own its instance; the credential service gives the bar the same
+// refresh-on-read + singleflight + Retry-After policy as the cpr proxy.
+let oauthSource = null;
+
+function configureClaudeOAuthSource(source) {
+  oauthSource = source;
+}
+
+function defaultOAuthSource() {
+  const { createOfficialAccountStore } = require('../official-accounts');
+  const { createClaudeAccountCredentialService } = require('../claude-account-credentials');
+  const accounts = createOfficialAccountStore();
+  return {
+    accounts,
+    credentials: createClaudeAccountCredentialService({ accounts }),
+    fetch: globalThis.fetch,
+  };
+}
+
+// Returns a scrape-shaped ok result from the first account whose token yields
+// a readable usage body, or null when no account can (none exist, tokens dead,
+// endpoint down) — null means "let the CDP fallback own the status".
+async function fetchClaudeUsageViaOAuth() {
+  let source = oauthSource;
+  if (!source) {
+    try {
+      source = defaultOAuthSource();
+      oauthSource = source;
+    } catch (_) {
+      return null;
+    }
+  }
+  let accounts = [];
+  try {
+    accounts = source.accounts.listClaudeAccounts();
+  } catch (_) {
+    return null;
+  }
+  const fetchImpl = source.fetch || globalThis.fetch;
+  for (const account of accounts) {
+    let cred;
+    try {
+      cred = await source.credentials.readAccountToken(account.id);
+    } catch (_) {
+      continue;
+    }
+    if (!cred || !cred.token) continue;
+    try {
+      const usage = await fetchUsage(fetchImpl, cred.token);
+      const summary = summarizeOAuthUsage(usage);
+      if (!summary) continue; // authenticated but shape unrecognized — fall back
+      return {
+        status: 'ok',
+        fetchedAt: Date.now(),
+        source: 'oauth',
+        url: USAGE_URL,
+        account: { id: account.id, label: account.label || '', email: account.email || '' },
+        summary,
+        usage,
+      };
+    } catch (_) {
+      continue; // expired/revoked/429/5xx — try the next account, then CDP
+    }
+  }
+  return null;
+}
+
+// ── source 2: CDP scrape of claude.ai/settings/usage ───────────────────────
+
 async function fetchClaudeUsage() {
+  const viaOAuth = await fetchClaudeUsageViaOAuth();
+  if (viaOAuth) return viaOAuth;
+
   const managed = getManagedQuotaBrowser();
   const sources = [
     {
@@ -306,6 +425,9 @@ function mountClaudeUsageQuotaRoutes(app, recordClaude) {
 module.exports = {
   mountClaudeUsageQuotaRoutes,
   fetchClaudeUsage,
+  fetchClaudeUsageViaOAuth,
+  summarizeOAuthUsage,
+  configureClaudeOAuthSource,
   summarizeUsageText,
   usagePanelReady,
   windowTokenForLabel,

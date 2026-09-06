@@ -691,6 +691,8 @@ class ChatProvider extends ChangeNotifier {
   /// is a refresh that should REPLACE the on-screen transcript atomically
   /// (rather than the insert used on the very first load).
   bool _replaceHistoryOnReconnect = false;
+  int _historyGeneration = 0;
+  bool historyArchive;
 
   /// Whether this session is the one currently viewed by the user.
   bool isActive = true;
@@ -750,6 +752,7 @@ class ChatProvider extends ChangeNotifier {
     required this.sessionCwd,
     SessionCli initialCli = SessionCli.claude,
     this.onSessionConfigChanged,
+    this.historyArchive = false,
     QuotaService? quotaService,
   }) : displayName = displayName ?? sessionName,
        dirName = dirName ?? '' {
@@ -925,6 +928,7 @@ class ChatProvider extends ChangeNotifier {
       sessionName: sessionName,
       sessionCwd: sessionCwd,
       initialSessionId: _sessionId,
+      historyArchive: historyArchive,
     );
     _eventSub?.cancel();
     _eventSub = _service.events.listen(_onEvent);
@@ -1066,6 +1070,27 @@ class ChatProvider extends ChangeNotifier {
       case 'provider_route_event':
       case 'provider_auto_route':
         applyProviderRoutingEvent(evt.type, evt.payload as Map);
+        break;
+
+      case 'chat_history_reset':
+        if (historyArchive) break;
+        _historyGeneration++;
+        final reset = evt.payload as Map;
+        final live = isStreaming ? _folder.currentMsg : null;
+        final activeTools = Map.of(_folder.activeTools);
+        _replaceHistory(reset['messages'] as List? ?? []);
+        if (live != null) {
+          final replayTail = streamingAssistantTail(_messages);
+          if (replayTail != null) _messages.remove(replayTail);
+          _messages.add(live);
+          _folder.currentMsg = live;
+          _folder.activeTools..clear()..addAll(activeTools);
+        }
+        _historyApplied = true;
+        _historyHasMore = reset['hasMore'] == true;
+        _historyExhausted = !_historyHasMore;
+        _oldestLoadedMsgId = _firstLoadedMsgId();
+        notifyListeners();
         break;
 
       case 'chat_history':
@@ -1254,6 +1279,8 @@ class ChatProvider extends ChangeNotifier {
         }
 
       case 'chat_msg_deleted':
+        if (historyArchive && (evt.payload as Map)['displayOnly'] == true) break;
+        _historyGeneration++;
         {
           // Broadcast after a successful delete from any client. Idempotent:
           // the initiator already removed it locally; this just syncs other
@@ -2090,6 +2117,7 @@ class ChatProvider extends ChangeNotifier {
   /// Idempotent — used both by the initiating UI (immediate feedback) and the
   /// chat_msg_deleted WS broadcast (cross-client sync).
   void removeMessageById(String id) {
+    _historyGeneration++;
     final before = _messages.length;
     _messages.removeWhere((m) => m.id == id);
     if (_messages.length != before) notifyListeners();
@@ -2471,12 +2499,14 @@ class ChatProvider extends ChangeNotifier {
     final cursor = _oldestLoadedMsgId;
     if (cursor == null) return 0;
     _historyLoading = true;
+    final generation = _historyGeneration;
     notifyListeners();
     try {
       final page = await _service.fetchHistoryPage(
         beforeId: cursor,
         limit: limit,
       );
+      if (generation != _historyGeneration) return 0;
       if (page.messages.isEmpty) {
         _historyExhausted = true;
         _historyHasMore = false;
@@ -2504,11 +2534,12 @@ class ChatProvider extends ChangeNotifier {
   /// the existing transcript is left untouched. Resets the lazy-pagination
   /// cursor so scroll-up can still fetch older pages adjacent to the window.
   Future<bool> loadHistoryAround(String messageId) async {
+    final generation = _historyGeneration;
     try {
       final page = await SessionService(
         settings: settings,
-      ).fetchHistoryAround(sessionName, messageId);
-      if (!page.found) return false;
+      ).fetchHistoryAround(sessionName, messageId, historyArchive: historyArchive);
+      if (generation != _historyGeneration || !page.found) return false;
       final parsed = page.messages
           .map((m) {
             try {
@@ -2639,35 +2670,30 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Clear chat history. Matches the web client's behaviour:
-  ///   1. If a response is streaming, cancel the running CLI process FIRST
-  ///      (server's `clear_history` only wipes the history array + resets the
-  ///      CLI session id — it does NOT kill the in-flight `claudeProc`, so
-  ///      without cancelling the ongoing stream would keep arriving and
-  ///      repopulate the chat, making the clear look like a no-op).
-  ///   2. When [keep] > 0, only the messages before the last [keep] are
-  ///      discarded locally and on the server (keep-last-N mode).
-  /// Request native CLI context rotation via service.
+  void setHistoryArchive(bool value) {
+    if (historyArchive == value) return;
+    historyArchive = value;
+    _historyGeneration++;
+    _service.historyArchive = value;
+    _historyApplied = false;
+    _replaceHistoryOnReconnect = true;
+    _service.dispose();
+    _initService();
+    notifyListeners();
+  }
+
+  /// Native context rotation is separate from clearing the visible messages.
   void rotateNativeContext() {
     _service.rotateNativeContext();
   }
 
+  /// Keep the current view and running work until the server acknowledges.
   void clearHistory({int keep = 0}) {
-    if (isStreaming) {
-      cancel();
-      _finishStreaming();
+    if (historyArchive) return;
+    if (!_service.clearHistory(keep: keep)) {
+      _addSystemMsg(t('clearChatHistoryOffline'));
+      notifyListeners();
     }
-    if (keep > 0 && _messages.length > keep) {
-      _messages.removeRange(0, _messages.length - keep);
-    } else {
-      _messages.clear();
-    }
-    _folder.resetTail();
-    _seedUsageFromHistory();
-    _historyApplied = false;
-    _stagedTracker.clear();
-    _service.clearHistory(keep: keep);
-    notifyListeners();
   }
 
   // Reconnect (app resume / half-open socket recovery). We still reload the

@@ -31,16 +31,16 @@ const HEALTH_INTERVAL_MS = 15000;
 const START_TIMEOUT_MS = 45000;
 
 const PUBLIC_ERRORS = Object.freeze({
-  directory_not_found: 'Fleet 不存在',
-  voice_gateway_not_found: '该 Fleet 尚未配置 Qwen Audio Gateway',
-  voice_gateway_disabled: '该 Fleet 的 Qwen Audio Gateway 已停用',
-  commander_not_found: '该 Fleet 没有唯一 Commander',
-  commander_ambiguous: '该 Fleet 存在多个 Commander',
+  directory_not_found: '工作区不存在',
+  voice_gateway_not_found: '该工作区尚未配置 Qwen Audio Gateway',
+  voice_gateway_disabled: '该工作区的 Qwen Audio Gateway 已停用',
+  commander_not_found: '该工作区没有唯一 Commander',
+  commander_ambiguous: '该工作区存在多个 Commander',
   commander_binding_stale: 'Qwen Audio Gateway 的 Commander 绑定已过期',
-  voice_gateway_ambiguous: '该 Fleet 存在重复的 Qwen Audio Gateway',
+  voice_gateway_ambiguous: '该工作区存在重复的 Qwen Audio Gateway',
   qwen_runtime_not_installed: 'Qwen Audio Runtime 尚未安装',
   qwen_api_key_missing: '尚未配置 Qwen Audio 的 DashScope API Key',
-  directory_path_missing: 'Fleet 工作目录不可用',
+  directory_path_missing: '工作区路径不可用',
   port_unavailable: '没有可用的 Qwen Audio 本地端口',
   spawn_failed: 'Qwen Audio 进程启动失败',
   startup_failed: 'Qwen Audio Gateway 未能通过启动自检',

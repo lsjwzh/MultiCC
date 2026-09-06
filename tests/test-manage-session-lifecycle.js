@@ -121,6 +121,9 @@ test('session lifecycle classic script loads before manage facade and stays with
   assert.match(source, /cli === 'zcode'\s*\?\s*'ZCode 原生 \/ Coding Plan（不覆盖）'/);
   assert.match(source, /cli === 'opencode' \|\| cli === 'zcode'/);
   assert.match(source, /supportsManagedProvider\(cli\)/);
+  assert.match(source, /root\.loadCodexModels\(\{ forceRefresh: true \}\)/);
+  assert.match(source, /custom\.value = isKnown \? '' : cur/,
+    'an unknown saved wire id must remain in the Custom input');
 });
 
 test('classic script exports every compatibility global used by inline handlers', () => {
@@ -166,6 +169,29 @@ test('new-session dialog uses OpenCode variant defaults instead of Codex reasoni
   assert.equal(lifecycle.defaultEffortForCli('opencode', false), '');
   assert.equal(opencodeOptions.includes('xhigh'), false);
   assert.equal(opencodeOptions.includes('ultra'), false);
+});
+
+test('Codex picker uses one dynamic display-name/wire-id catalog and refreshes providers', async () => {
+  const { context } = createHarness();
+  const calls = [];
+  context.codexModelOptions = () => [
+    { model: 'gpt-future', label: 'GPT Future' },
+  ];
+  context.readCodexModelCatalogSync = () => ({
+    cliVersion: '0.153.4', diagnostic: { message: 'verified' },
+  });
+  context.loadCodexModels = async options => { calls.push(['models', options]); return {}; };
+  context.loadProviders = async () => { calls.push(['providers']); };
+  const lifecycle = context.MultiCCManageSessionLifecycle;
+  assert.equal(JSON.stringify(lifecycle.codexPickerOptions()), JSON.stringify([
+    { value: '', label: '默认（跟随 Codex 设置）' },
+    { value: 'gpt-future', label: 'GPT Future' },
+  ]));
+  assert.equal(lifecycle.codexCatalogHint(), 'verified · CLI 0.153.4');
+  await lifecycle.refreshCodexCatalog();
+  assert.equal(JSON.stringify(calls), JSON.stringify([
+    ['models', { forceRefresh: true }], ['providers'],
+  ]));
 });
 
 test('latest session mutation owns UI effects when responses arrive out of order', async () => {

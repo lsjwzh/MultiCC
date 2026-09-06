@@ -206,9 +206,9 @@ test('chat history normalizes, removes interim messages and deduplicates final a
   assert.deepEqual(deduped.message.usage, { output: 3 });
   service.append('s1', { role: 'user', content: [{ type: 'thinking', thinking: '   ' }, { type: 'text', text: 'ok' }] });
   service.append('s1', { role: 'assistant', content: 'next' });
-  assert.equal(service.read('s1').length, 3);
+  assert.equal(service.read('s1').length, 4);
   assert.equal(service.read('s1')[0].id, service.read('s1')[0].id);
-  assert.equal(service.read('s1')[1].content.length, 1);
+  assert.equal(service.read('s1')[2].content.length, 1);
   assert.equal(service.paginate('s1', { limit: 2 }).messages.length, 2);
   assert.equal(service.remove('s1', service.read('s1')[0].id).removed, true);
   assert.equal(service.latestAssistantAt('s1').getTime() > 0, true);
@@ -373,7 +373,7 @@ test('chat history pagination fails closed for an unknown before cursor', () => 
   });
 });
 
-test('chat history retention policy applies per session and reports dropped messages', () => {
+test('chat history retention policy bounds display pages while preserving the complete source', () => {
   const store = new Map();
   let sequence = 0;
   const service = createChatHistoryService({
@@ -389,14 +389,16 @@ test('chat history retention policy applies per session and reports dropped mess
   service.append('__aux__', { role: 'user', content: 'one' });
   service.append('__aux__', { role: 'assistant', content: 'two' });
   const aux = service.append('__aux__', { role: 'user', content: 'three' });
-  assert.deepEqual(aux.dropped.map(message => message.content), ['one']);
-  assert.deepEqual(aux.messages.map(message => message.content), ['two', 'three']);
+  assert.deepEqual(aux.dropped, []);
+  assert.deepEqual(aux.messages.map(message => message.content), ['one', 'two', 'three']);
+  assert.deepEqual(service.paginate('__aux__', { limit: 100 }).messages.map(m => m.content), ['two', 'three']);
 
   const normal = service.replace('s1', [1, 2, 3, 4, 5].map(number => ({
     role: number % 2 ? 'user' : 'assistant', content: String(number), id: `n${number}`,
   })));
-  assert.deepEqual(normal.dropped.map(message => message.content), ['1']);
-  assert.deepEqual(normal.messages.map(message => message.content), ['2', '3', '4', '5']);
+  assert.deepEqual(normal.dropped, []);
+  assert.deepEqual(normal.messages.map(message => message.content), ['1', '2', '3', '4', '5']);
+  assert.deepEqual(service.paginate('s1', { limit: 100 }).messages.map(m => m.content), ['2', '3', '4', '5']);
 });
 
 test('chat history write failure leaves the committed cache unchanged', () => {

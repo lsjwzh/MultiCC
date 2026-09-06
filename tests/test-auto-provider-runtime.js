@@ -220,6 +220,43 @@ test('observable output and non-provider failures close the cross-provider repla
   }, openAttempt()), null);
 });
 
+test('every upstream HTTP 4xx can switch providers before output or side effects', () => {
+  for (const httpStatus of [400, 401, 402, 403, 404, 405, 408, 409, 410, 422, 429, 451, 499]) {
+    const { runtime, session } = fixture({ emptyFetchedAt: 900_000 });
+    const turn = runtime.beginTurn({ session, turnId: `turn-${httpStatus}` });
+    turn.initial();
+    const next = turn.failover({
+      action: 'fail_fast',
+      error: {
+        category: 'invalid_request_model', httpStatus,
+        phase: 'before_first_token', partialOutput: false, sideEffects: false,
+      },
+    }, openAttempt());
+    assert.equal(next.invocationOptions.providerId, 'backup', `HTTP ${httpStatus}`);
+  }
+});
+
+test('HTTP 4xx still cannot cross visible-output, side-effect, or local-cancel fences', () => {
+  const decision = {
+    action: 'fail_fast',
+    error: {
+      category: 'invalid_request_model', httpStatus: 418,
+      phase: 'before_first_token', partialOutput: false, sideEffects: false,
+    },
+  };
+  const visible = fixture({ emptyFetchedAt: 900_000 });
+  const visibleTurn = visible.runtime.beginTurn({ session: visible.session, turnId: 'visible' });
+  visibleTurn.initial();
+  assert.equal(visibleTurn.failover(decision, { ...openAttempt(), replayFence: 'visible_output' }), null);
+
+  const cancelled = fixture({ emptyFetchedAt: 900_000 });
+  const cancelledTurn = cancelled.runtime.beginTurn({ session: cancelled.session, turnId: 'cancelled' });
+  cancelledTurn.initial();
+  assert.equal(cancelledTurn.failover({
+    ...decision, error: { ...decision.error, category: 'cancel_shutdown', httpStatus: 499 },
+  }, openAttempt()), null);
+});
+
 test('attempt budget exhaustion is terminal and never falls back to same-provider retry', () => {
   const { runtime, session, events } = fixture({ emptyFetchedAt: 900_000, maxAttempts: 2 });
   const turn = runtime.beginTurn({ session, turnId: 'turn-budget' });

@@ -69,6 +69,23 @@ function bindTurnUsageAttribution(turn, input) {
   return next;
 }
 
+// Admission may mint a provisional task only after the normalized request has
+// passed idempotency and scheduler guards. Bind that identity exactly once to
+// the turn lifecycle so provider tools, usage, finalization and retries all see
+// the same immutable snapshot instead of consulting the mutable session state.
+function bindTurnTask(turn, input) {
+  if (!turn || !turn.turnId) throw new TypeError('turn lifecycle is required');
+  const next = freezeTask(input);
+  if (turn.task?.id) {
+    if (next.id && turn.task.id !== next.id) {
+      throw new TypeError('turn task identity is already frozen');
+    }
+    return turn.task;
+  }
+  turn.task = next;
+  return next;
+}
+
 function bindRunnerUsageAttribution(runner, input) {
   if (!runner || !runner.runnerId) throw new TypeError('runner ownership is required');
   const next = freezeUsageAttribution(input);
@@ -285,6 +302,7 @@ module.exports = {
   freezeLineage,
   freezeTask,
   freezeUsageAttribution,
+  bindTurnTask,
   bindTurnUsageAttribution,
   bindRunnerUsageAttribution,
   createTurnLifecycle,

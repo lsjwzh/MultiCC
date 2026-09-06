@@ -713,6 +713,29 @@ function createProviderAttemptRuntime(options = {}) {
       });
       return Object.freeze({ accepted: false, code: 'stale_attempt' });
     }
+    // Anthropic-compatible CLIs can stream the text of an upstream HTTP error
+    // through ordinary text_delta events, then finish with one authoritative
+    // assistant snapshot containing only that error envelope. The deltas have
+    // already advanced the replay fence, but the host-only marker proves that
+    // none of that text was model output. Re-open only this narrow case; tool
+    // intent and side effects remain irreversible.
+    if (event[HOST_ERROR_ENVELOPE] === true
+        && contentBlocks(event).length > 0
+        && contentBlocks(event).every(block => block && block.type === 'text')
+        && !record.toolIntentObserved && !record.sideEffectObserved) {
+      const previousFence = record.replayFence;
+      record.replayFence = 'none';
+      record.visibleOutputObserved = false;
+      if (previousFence !== 'none') {
+        auditOnly(sessionId, {
+          type: 'provider_fence_reconciled', runtimeEpoch: record.runtimeEpoch,
+          turnId: record.turnId, routeAttemptId: record.routeAttemptId,
+          routeGeneration: record.routeGeneration, providerId: record.providerId,
+          fromFence: previousFence, replayFence: 'none', reasonCode: 'host_error_envelope',
+        });
+      }
+      return Object.freeze({ accepted: true, code: null, ...snapshot(record) });
+    }
     const fence = fenceForEvent(event);
     const previousFence = record.replayFence;
     if (FENCE_ORDER[fence] > FENCE_ORDER[previousFence]) {

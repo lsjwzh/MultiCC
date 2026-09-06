@@ -1,5 +1,7 @@
 'use strict';
 
+const { createChatHistoryVisibility } = require('../session/chat-history-visibility');
+
 const crypto = require('node:crypto');
 const { createChatHistoryService } = require('../session/chat-history-service');
 const { sanitizePublicText } = require('../http/public-safety');
@@ -185,6 +187,7 @@ function createChatHistoryRuntime(rawDeps) {
 
   function handleCommittedHistoryEvent(event) {
     if (!event || !event.sessionId) return;
+    if (event.type === 'delete') visibility.invalidate(event.sessionId);
     if (event.type === 'append') {
       for (const dropped of event.dropped || []) {
         if (event.sessionId === deps.auxSessionId || !dropped) continue;
@@ -239,9 +242,19 @@ function createChatHistoryRuntime(rawDeps) {
     clock: now,
     maxMessages: positiveInteger(deps.maxMessages, DEFAULT_HISTORY_LIMIT),
     retentionPolicy: typeof deps.retentionPolicy === 'function' ? deps.retentionPolicy : null,
+    canDeleteSession: deps.canDeleteSession,
+    isMessageProtected: deps.isMessageProtected,
     postPersist: handleCommittedHistoryEvent,
     onPostPersistError: (error, event) => {
       logFailure('chat_history_post_persist_failed', error, event && event.sessionId);
+    },
+  });
+
+  const visibility = createChatHistoryVisibility({
+    history: deps.history, service,
+    limitFor: sessionId => {
+      const policy = deps.retentionPolicy?.(String(sessionId));
+      return positiveInteger(policy?.maxMessages ?? policy ?? deps.maxMessages, DEFAULT_HISTORY_LIMIT);
     },
   });
 
@@ -269,20 +282,21 @@ function createChatHistoryRuntime(rawDeps) {
   // paginate() clones only the page it returns — deep-cloning the whole
   // transcript here to then slice five messages out of it was the single
   // hottest thing the WS replay did.
-  function projectedMessages(sessionId) {
+  function projectedMessages(sessionId, includeHidden = false) {
     const messages = service.view(sessionId);
-    if (!deps.projectMessages) return messages;
+    const visible = values => includeHidden ? values : visibility.filter(sessionId, values);
+    if (!deps.projectMessages) return visible(messages);
     try {
       const projected = deps.projectMessages(String(sessionId), messages);
-      return Array.isArray(projected) ? projected : messages;
+      return visible(Array.isArray(projected) ? projected : messages);
     } catch (error) {
       logFailure('chat_history_projection_failed', error, sessionId);
-      return messages;
+      return visible(messages);
     }
   }
 
-  function paginate(sessionId, { before, around, limit = historyPageSize } = {}) {
-    const messages = projectedMessages(sessionId);
+  function paginate(sessionId, { before, around, limit = historyPageSize, includeHidden = false } = {}) {
+    const messages = projectedMessages(sessionId, includeHidden);
     const pageSize = Math.max(1, Math.min(100, parseInt(limit, 10) || historyPageSize));
     if (around) {
       const targetId = String(around).slice(0, 160);
@@ -468,91 +482,17 @@ function createChatHistoryRuntime(rawDeps) {
 
   async function clearHistoryUnsafe(sessionId, message, chatState) {
     const key = String(sessionId);
-    const history = load(key);
-    const keep = Math.max(0, parseInt(message && message.keep || '0', 10) || 0);
-    const persisted = deps.persistedSessions.get(key);
-    const gitSnapshot = persisted && keep > 0
-      ? await deps.cliSwitchGitSnapshot(persisted)
-      : null;
-    // This is the durable boundary, after the optional async git snapshot.
-    // Re-check here so background work that starts while the snapshot is in
-    // flight cannot lose its owning warm process to the native-context reset.
-    let backgroundActive = true;
-    try {
-      backgroundActive = typeof deps.getActiveBackgroundTasks === 'function'
-        && deps.getActiveBackgroundTasks(key).length > 0;
-    } catch (_) {}
-    if (backgroundActive) {
-      deps.chatBroadcast(key, {
-        type: 'error',
-        code: 'background_tasks_running',
-        error: '后台任务仍在运行；请等待完成或先取消后台任务，再清空历史。',
-      });
-      return Object.freeze({ ok: false, code: 'background_tasks_running' });
-    }
-    const split = keep > 0 ? Math.max(0, history.length - keep) : history.length;
-    const removed = history.slice(0, split);
-    const retained = history.slice(split);
-    let memoryDistill = null;
-
-    // replace() writes the full new array before afterCommit runs. Therefore no
-    // client reset or native-context mutation can happen without durable proof.
-    service.replace(key, retained, {
-      reason: 'clear-history',
-      afterCommit: () => {
-        if (removed.length) memoryDistill = startMemoryDistill(key, removed);
-        const canonicalPage = service.paginate(key, { limit: historyPageSize });
-        const page = deps.projectMessages
-          ? paginate(key, { limit: historyPageSize })
-          : canonicalPage;
-        deps.chatBroadcast(key, {
-          type: 'chat_history_reset',
-          messages: page.messages,
-          hasMore: page.hasMore,
-          keep,
-          removedCount: removed.length,
-          retainedCount: retained.length,
-        });
-      },
+    const keep = Math.max(0, parseInt(message?.keep || '0', 10) || 0);
+    const result = visibility.clear(key, keep);
+    const page = paginate(key, { limit: historyPageSize });
+    deps.chatBroadcast(key, {
+      type: 'chat_history_reset',
+      messages: buildReplayMessages(page.messages, chatState),
+      hasMore: page.hasMore,
+      ...result,
+      displayOnly: true,
     });
-
-    let clearedNativeSessions = 0;
-    if (persisted) {
-      deps.chatStream.close(key);
-      delete persisted.pendingCliHandoff;
-      clearedNativeSessions = deps.clearAllNativeCliStates(persisted);
-      if (keep > 0 && retained.length) {
-        const cli = chatState && chatState.cli;
-        const checkpoint = deps.buildHandoffCheckpoint({
-          session: persisted,
-          fromCli: cli,
-          toCli: cli,
-          history: retained,
-          git: gitSnapshot,
-        });
-        checkpoint.reason = 'history_clear_keep';
-        persisted.pendingCliHandoff = {
-          id: `checkpoint_${randomBytes(8).toString('hex')}`,
-          fromCli: cli,
-          toCli: cli,
-          createdAt: checkpoint.createdAt,
-          status: 'pending',
-          reason: 'history_clear_keep',
-          reusedTarget: false,
-          checkpoint,
-        };
-      }
-      deps.rememberActiveCliState(persisted);
-      deps.saveBestEffort('websocket.clear-native-session-state');
-    }
-    if (chatState) chatState.chatTurnCount = 0;
-    if (memoryDistill) deps.trackPendingMemoryDistill(key, memoryDistill);
-    return Object.freeze({
-      keep,
-      removedCount: removed.length,
-      retainedCount: retained.length,
-      clearedNativeSessions,
-    });
+    return Object.freeze({ ...result, clearedNativeSessions: 0 });
   }
 
   async function clearHistory(sessionId, message, chatState) {
@@ -696,8 +636,9 @@ function createChatHistoryRuntime(rawDeps) {
         return res.status(404).json({ error: 'session not found' });
       }
       try {
-        const result = service.remove(sessionId, req.params.msgId);
-        if (!result.removed) return res.status(404).json({ error: 'message not found' });
+        const removed = visibility.remove(sessionId, req.params.msgId);
+        if (!removed) return res.status(404).json({ error: 'message not found' });
+        deps.chatBroadcast(sessionId, { type: 'chat_msg_deleted', id: req.params.msgId, displayOnly: true });
         return res.json({ ok: true });
       } catch (error) {
         logFailure('chat_history_delete_failed', error, sessionId);
@@ -713,6 +654,7 @@ function createChatHistoryRuntime(rawDeps) {
       }
       try {
         const page = paginate(sessionId, {
+          includeHidden: req.query.historyScope === 'archive',
           before: req.query.before && String(req.query.before),
           around: req.query.around && String(req.query.around),
           limit: req.query.limit && String(req.query.limit),

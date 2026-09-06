@@ -158,6 +158,76 @@
     return qoderModelsPromise;
   }
 
+  // ── Codex account model list ───────────────────────────────────────────
+  // GET /api/codex/models calls the supported Codex app-server `model/list`
+  // method. Unlike a static table, it carries this account's rollout and
+  // display-name decisions. Keep only a short in-memory mirror: localStorage
+  // would preserve a revoked/rolled-back entitlement across browser restarts.
+  const CODEX_MODELS_TTL_MS = 60 * 1000;
+  let codexCatalog = null; // { at, models, source, stale, diagnostic, cliVersion }
+  let codexModelsPromise = null;
+
+  function normalizeCodexCatalog(data) {
+    const models = [];
+    const seen = new Set();
+    for (const entry of (data && Array.isArray(data.models) ? data.models : [])) {
+      if (!entry || typeof entry !== 'object') continue;
+      const model = String(entry.model || '').trim();
+      if (!model || model.length > 160 || seen.has(model)) continue;
+      seen.add(model);
+      const label = String(entry.label || model).trim().slice(0, 160) || model;
+      models.push({ model, label, isDefault: entry.isDefault === true });
+    }
+    return {
+      at: Date.now(),
+      models,
+      source: String(data && data.source || 'fallback'),
+      stale: data && data.stale === true,
+      available: data && data.available === true && models.length > 0,
+      cliVersion: String(data && data.cliVersion || '').slice(0, 40),
+      diagnostic: data && data.diagnostic && typeof data.diagnostic === 'object'
+        ? {
+            code: String(data.diagnostic.code || '').slice(0, 60),
+            message: String(data.diagnostic.message || '').slice(0, 300),
+          }
+        : { code: 'unavailable', message: '' },
+    };
+  }
+
+  function readCodexModelCatalogSync() {
+    return codexCatalog;
+  }
+
+  async function loadCodexModels(options = {}) {
+    const forceRefresh = options === true || options.forceRefresh === true;
+    if (!forceRefresh && codexCatalog && Date.now() - codexCatalog.at < CODEX_MODELS_TTL_MS) {
+      return codexCatalog;
+    }
+    if (codexModelsPromise) return codexModelsPromise;
+    codexModelsPromise = (async () => {
+      try {
+        const suffix = forceRefresh ? '?refresh=1' : '';
+        const data = await window.fetch(`/api/codex/models${suffix}`, { credentials: 'same-origin' })
+          .then(r => (r && r.ok ? r.json() : null));
+        if (!data) return codexCatalog || normalizeCodexCatalog(null);
+        codexCatalog = normalizeCodexCatalog(data);
+        return codexCatalog;
+      } catch (_) {
+        return codexCatalog || normalizeCodexCatalog(null);
+      } finally { codexModelsPromise = null; }
+    })();
+    return codexModelsPromise;
+  }
+
+  function codexModelOptions() {
+    return codexCatalog ? codexCatalog.models.slice() : [];
+  }
+
+  function codexModelLabel(model) {
+    const entry = codexCatalog && codexCatalog.models.find(item => item.model === model);
+    return entry ? entry.label : model;
+  }
+
   // ── Claude live model list ──────────────────────────────────────────────
   // GET /api/claude/models extracts the servable model ids from the installed
   // claude CLI's bundle (server-side cache 1 day) — the only local source that
@@ -223,6 +293,10 @@
   window.loadOpenCodeModels = loadOpenCodeModels;
   window.loadQoderModels = loadQoderModels;
   window.readQoderModelsSync = readQoderModelsSync;
+  window.loadCodexModels = loadCodexModels;
+  window.readCodexModelCatalogSync = readCodexModelCatalogSync;
+  window.codexModelOptions = codexModelOptions;
+  window.codexModelLabel = codexModelLabel;
   window.loadClaudeModels = loadClaudeModels;
   window.readClaudeModelsSync = readClaudeModelsSync;
 })();

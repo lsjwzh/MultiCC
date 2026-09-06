@@ -69,6 +69,7 @@ function taskBoardFakeSelect() {
 
 function createTaskBoardComposerHarness({
   providers, autoEditor, suggestedRuntime, pickAutoProvider, fetchProviders, contextKey,
+  translate, onSendingChange, submit,
 } = {}) {
   const selectors = new Map();
   for (const selector of [
@@ -144,9 +145,11 @@ function createTaskBoardComposerHarness({
     placeholder: 'test',
     ...(contextKey == null ? {} : { contextKey }),
     ...(pickAutoProvider ? { pickAutoProvider } : {}),
+    ...(translate ? { translate } : {}),
+    ...(onSendingChange ? { onSendingChange } : {}),
     async submit(payload) {
       submitCalls.push(JSON.parse(JSON.stringify(payload)));
-      return 'ok';
+      return submit ? submit(payload) : 'ok';
     },
   };
   const composer = vm.runInContext(
@@ -324,7 +327,7 @@ test('classic task board source filter renders all, independent, and session tas
   assert.deepEqual(harness.renderCalls, ['fleet-a', 'fleet-a', 'fleet-a', 'fleet-b']);
 });
 
-test('source filter exits merge mode while one-click cleanup remains Fleet-wide', async () => {
+test('source filter exits merge mode while one-click cleanup remains workspace-wide', async () => {
   const harness = createTaskBoardOriginFilterHarness();
   const event = { stopPropagation() {} };
 
@@ -347,14 +350,14 @@ test('source filter exits merge mode while one-click cleanup remains Fleet-wide'
 
   const html = harness.call('renderTaskBoardSection', 'fleet-a', { tabbed: true });
   assert.doesNotMatch(html, /class="tb-merge-bar"/);
-  assert.match(html, /title="归档 Fleet 内全部已完成任务（不受来源筛选影响）"/);
+  assert.match(html, /title="归档工作区内全部已完成任务（不受来源筛选影响）"/);
   assert.match(html, /🧹 一键清理 \(2\)/,
-    'the filtered session view has one completed row, but cleanup counts both Fleet sources');
+    'the filtered session view has one completed row, but cleanup counts both workspace sources');
 
   const button = { disabled: false };
   await harness.call('archiveCompletedTaskBoard', event, 'fleet-a', button);
   const request = harness.fetchCalls.find(call => call.url === '/api/task-board/archive-completed');
-  assert.ok(request, 'cleanup must call the Fleet-wide archive endpoint');
+  assert.ok(request, 'cleanup must call the workspace-wide archive endpoint');
   assert.equal(request.options.method, 'POST');
   assert.deepEqual(JSON.parse(request.options.body), { dirId: 'fleet-a' });
   assert.equal(Object.prototype.hasOwnProperty.call(JSON.parse(request.options.body), 'origin'), false,
@@ -632,4 +635,96 @@ test('changing Fleet clears the composer draft and requires a fresh Auto confirm
   assert.equal(harness.submitCalls.length, 0);
   assert.equal(harness.selectors.get('.tb-result').textContent, '请先配置并确认 Auto Provider 候选');
   assert.equal(pickerCalls.length, 1, 'Fleet B has not opened or confirmed its own picker yet');
+});
+
+test('the start-now context switch preserves the visible draft but isolates Auto authorization', async () => {
+  const editor = require('../public/auto-provider-editor');
+  const providers = [
+    { id: 'managed-a', name: 'Managed A', protocol: 'anthropic', model: 'model-a' },
+    { id: 'managed-b', name: 'Managed B', protocol: 'anthropic', model: 'model-b' },
+  ];
+  let pickerCalls = 0;
+  const harness = createTaskBoardComposerHarness({
+    providers,
+    autoEditor: editor,
+    contextKey: 'fleet-a',
+    async pickAutoProvider() {
+      pickerCalls += 1;
+      return editor.defaultSelection(providers, 'anthropic');
+    },
+  });
+  await settleTaskBoardComposer();
+
+  const providerSelect = harness.selectors.get('.tb-provider');
+  providerSelect.value = editor.optionValue('anthropic');
+  await providerSelect.onchange();
+  assert.equal(pickerCalls, 1);
+
+  harness.selectors.get('.tb-input').value = 'Keep this task while choosing its Fleet';
+  harness.selectors.get('.tb-chiprow').innerHTML = '<span>uploaded attachment</span>';
+  harness.selectors.get('.tb-chiprow').style.display = '';
+  harness.selectors.get('.tb-goal-btn').classList.add('on');
+  harness.selectors.get('.tb-goalrow').style.display = '';
+  harness.selectors.get('.tb-file-input').value = 'selected-file';
+
+  harness.composer.setContext('fleet-b', { preserveDraft: true });
+  assert.equal(harness.selectors.get('.tb-input').value, 'Keep this task while choosing its Fleet');
+  assert.equal(harness.selectors.get('.tb-chiprow').innerHTML, '<span>uploaded attachment</span>');
+  assert.equal(harness.selectors.get('.tb-chiprow').style.display, '');
+  assert.equal(harness.selectors.get('.tb-goal-btn').classList.contains('on'), true);
+  assert.equal(harness.selectors.get('.tb-goalrow').style.display, '');
+  assert.equal(harness.selectors.get('.tb-file-input').value, 'selected-file');
+  await settleTaskBoardComposer();
+
+  assert.equal(providerSelect.value, editor.optionValue('anthropic'));
+  await harness.selectors.get('.tb-send-btn').onclick();
+  assert.equal(harness.submitCalls.length, 0,
+    'the new Fleet must confirm its own Auto allowlist before the preserved draft can send');
+  assert.equal(pickerCalls, 1);
+});
+
+test('the shared composer renders translated accessible controls without fallback Chinese', async () => {
+  const en = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'app', 'assets', 'i18n', 'en.json'), 'utf8'));
+  const translate = (key, params) => {
+    const value = en[key] || key;
+    return params ? value.replace(/\{(\w+)\}/g, (_, name) => String(params[name] ?? `{${name}}`)) : value;
+  };
+  const harness = createTaskBoardComposerHarness({
+    suggestedRuntime: { ok: true, cli: '', provider: '' },
+    translate,
+  });
+  await settleTaskBoardComposer();
+
+  assert.match(harness.host.innerHTML, /class="tb-input" aria-label="Task message"/);
+  assert.match(harness.host.innerHTML, /class="tb-result" role="status" aria-live="polite" aria-atomic="true"/);
+  assert.match(harness.host.innerHTML, /Goal mode/);
+  assert.match(harness.host.innerHTML, /🚀 Send/);
+  assert.match(harness.selectors.get('.tb-cli').innerHTML, /CLI · Default/);
+  assert.match(harness.selectors.get('.tb-provider').innerHTML, /Provider · Default/);
+  assert.doesNotMatch(
+    `${harness.host.innerHTML}${harness.selectors.get('.tb-cli').innerHTML}${harness.selectors.get('.tb-provider').innerHTML}`,
+    /默认|发送|模式|上传|语音/,
+  );
+});
+
+test('sending locks composer controls and reports busy state until submit settles', async () => {
+  const pending = taskBoardDeferred();
+  const sendingStates = [];
+  const harness = createTaskBoardComposerHarness({
+    onSendingChange(value) { sendingStates.push(value); },
+    submit: () => pending.promise,
+  });
+  await settleTaskBoardComposer();
+  harness.selectors.get('.tb-input').value = 'Dispatch safely';
+
+  const sending = harness.selectors.get('.tb-send-btn').onclick();
+  assert.equal(sendingStates.at(-1), true);
+  for (const selector of ['.tb-input', '.tb-attach-btn', '.tb-mic-btn', '.tb-goal-btn', '.tb-send-btn']) {
+    assert.equal(harness.selectors.get(selector).disabled, true, `${selector} should lock while sending`);
+  }
+
+  pending.resolve('sent');
+  await sending;
+  assert.equal(sendingStates.at(-1), false);
+  assert.equal(harness.selectors.get('.tb-input').disabled, false);
 });
