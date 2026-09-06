@@ -371,14 +371,14 @@ async function ensureDir(label) {
 
   // B2: Per-session CLI (create a codex session)
   if (testDirId) {
-    const res = await post(`/api/directories/${testDirId}/sessions`, { cli: 'codex', type: 'chat' });
+    const res = await post(`/api/directories/${testDirId}/sessions`, { cli: 'codex', kind: 'chat' });
     if (res.status === 200 || res.status === 201) {
       const sid = res.body.id || res.body.sessionId;
       ok('B2 Per-session Provider', `codex session: ${sid}`);
       // cleanup
       await del(`/api/sessions/${sid}`);
     } else {
-      skip('B2 Per-session Provider', `status ${res.status} (codex may not be installed)`);
+      skip('B2 Per-session Provider', `status ${res.status} ${JSON.stringify(res.body).slice(0, 120)}`);
     }
   }
 
@@ -386,7 +386,7 @@ async function ensureDir(label) {
   // exercised through the agent-scoped MCP runtime tests instead.
   if (testDirId) {
     // Create a target session
-    const ts = await post(`/api/directories/${testDirId}/sessions`, { cli: 'claude', type: 'chat' });
+    const ts = await post(`/api/directories/${testDirId}/sessions`, { cli: 'claude', kind: 'chat' });
     const targetId = ts.body.id || ts.body.sessionId;
     if (targetId) {
       const res = await post(`/api/sessions/${targetId}/dispatch`, { target: targetId, message: 'ping' });
@@ -397,7 +397,7 @@ async function ensureDir(label) {
       }
       await del(`/api/sessions/${targetId}`);
     } else {
-      skip('B3 Legacy dispatch 已退役', 'no target session');
+      skip('B3 Legacy dispatch 已退役', `建会话失败 status ${ts.status} ${JSON.stringify(ts.body).slice(0, 120)}`);
     }
   }
 
@@ -437,7 +437,7 @@ async function ensureDir(label) {
 
   // D3: Wait/poll
   if (testDirId) {
-    const ts = await post(`/api/directories/${testDirId}/sessions`, { cli: 'claude', type: 'chat' });
+    const ts = await post(`/api/directories/${testDirId}/sessions`, { cli: 'claude', kind: 'chat' });
     const wsid = ts.body.id || ts.body.sessionId;
     if (wsid) {
       const res = await post(`/api/sessions/${wsid}/wait`, {
@@ -448,20 +448,24 @@ async function ensureDir(label) {
         maxChecks: 1
       });
       if (res.status === 200) ok('D3 Wait/poll', `waitId=${res.body.id || res.body.waitId || 'ok'}`);
-      else skip('D3 Wait/poll', `status ${res.status}`);
+      else skip('D3 Wait/poll', `status ${res.status} ${JSON.stringify(res.body).slice(0, 120)}`);
       await del(`/api/sessions/${wsid}`);
+    } else {
+      fail('D3 Wait/poll', `建会话失败 status ${ts.status} ${JSON.stringify(ts.body).slice(0, 120)}`);
     }
   }
 
   // D4: Run-detached
   if (testDirId) {
-    const ts = await post(`/api/directories/${testDirId}/sessions`, { cli: 'claude', type: 'chat' });
+    const ts = await post(`/api/directories/${testDirId}/sessions`, { cli: 'claude', kind: 'chat' });
     const dsid = ts.body.id || ts.body.sessionId;
     if (dsid) {
       const res = await post(`/api/sessions/${dsid}/run-detached`, { command: 'echo detached-ok' });
       if (res.status === 200) ok('D4 Run-detached', `taskId=${res.body.taskId || res.body.id || 'ok'}`);
-      else skip('D4 Run-detached', `status ${res.status}`);
+      else skip('D4 Run-detached', `status ${res.status} ${JSON.stringify(res.body).slice(0, 120)}`);
       await del(`/api/sessions/${dsid}`);
+    } else {
+      fail('D4 Run-detached', `建会话失败 status ${ts.status} ${JSON.stringify(ts.body).slice(0, 120)}`);
     }
   }
 
