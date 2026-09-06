@@ -29,6 +29,14 @@ function isPosix() { return process.platform !== 'win32'; }
 
 function unrefTimer(timer) { if (timer && typeof timer.unref === 'function') timer.unref(); return timer; }
 
+// A child killed by a signal reports exitCode === null forever — Node records
+// the death in signalCode instead. And because the tree is killed with
+// process.kill(-pid) rather than child.kill(), child.killed stays false too.
+// Testing only exitCode/killed therefore mistakes a corpse for a live child.
+function isChildLive(child) {
+  return !!child && child.exitCode === null && child.signalCode === null && !child.killed;
+}
+
 // Kill a whole process tree. POSIX: the child is spawned detached (own process
 // group), so -pid signals every server-spawned CLI too. Windows: taskkill /T.
 function killProcessTree(pid, { spawn, platform = process.platform, signal = 'SIGKILL' } = {}) {
@@ -138,12 +146,16 @@ function createBackendSupervisor(rawDeps) {
   }
 
   function waitForExit(timeoutMs) {
-    if (child && child.exitCode === null && !child.killed) {
+    if (isChildLive(child)) {
       return new Promise(resolve => {
-        const timer = unrefTimer(setTimeout(() => {
+        // Deliberately ref'd: an awaited grace period is work the process must
+        // stay alive for. Unref'ing let the loop drain with this promise still
+        // pending whenever the exit event never came (child already reaped, or
+        // killed by a signal), so stop() returned by killing the host instead.
+        const timer = setTimeout(() => {
           const i = exitWaiters.indexOf(done); if (i >= 0) exitWaiters.splice(i, 1);
           resolve();
-        }, timeoutMs));
+        }, timeoutMs);
         function done() { clearTimeout(timer); resolve(); }
         exitWaiters.push(done);
       });
@@ -265,7 +277,7 @@ function createBackendSupervisor(rawDeps) {
     if (healthAbort) { healthAbort.abort(); healthAbort = null; }
     const previousState = state;
     state = 'stopping';
-    const liveChild = child && child.exitCode === null && !child.killed ? child : null;
+    const liveChild = isChildLive(child) ? child : null;
     if (!liveChild) {
       state = 'stopped';
       clearRuntimeInfo();
@@ -288,7 +300,7 @@ function createBackendSupervisor(rawDeps) {
     // 2) SIGINT → SIGTERM → SIGKILL the tree.
     const pid = liveChild.pid;
     for (const [signal, grace] of [['SIGINT', opts.signalGraceMs], ['SIGTERM', Math.ceil(opts.signalGraceMs / 2)], ['SIGKILL', 3_000]]) {
-      if (!child || child.exitCode !== null) break;
+      if (!isChildLive(child)) break;
       if (isPosix()) {
         try { process.kill(-pid, signal); } catch (_) {}
         try { process.kill(pid, signal); } catch (_) {}
