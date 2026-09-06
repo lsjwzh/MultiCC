@@ -41,6 +41,7 @@ function createTaskShellHost(deps) {
         return { busy, status: host.getRunState(id), completed: !busy && state.classifyState === 'D',
           turnId: currentTurn(id), pending: pending && !pending.resolved ? pending : null };
       },
+      getTask: id => deps.getTaskBoard?.()?.getBoard?.().tasks?.[id] || null,
       createExecution: async (task, source) => {
         const dir = deps.directories.get(task.dirId);
         if (!dir) throw failure('directory_missing');
@@ -97,7 +98,14 @@ function createTaskShellHost(deps) {
       const { execution } = await rt.detail(shell.id, shell.currentTaskId);
       Object.assign(payload, { taskId: shell.currentTaskId, intent: 'answer', requestId: options.userInputRequestId, turnId: execution.turnId });
     }
-    const result = await rt.send(shell.id, payload);
+    const result = options.taskId && !options.userInputRequestId
+      ? await rt.sendExplicit(shell.id, payload, {
+        taskId: options.taskId,
+        taskStart: options.taskStart === true,
+        taskSource: options.taskSource,
+        taskText: options.taskText || text,
+      })
+      : await rt.send(shell.id, payload);
     return { ...result, chatId: result.sessionId, targetSessionId: result.sessionId,
       shellId: shell.id, url: `/task-shell.html?shell=${encodeURIComponent(shell.id)}&task=${encodeURIComponent(result.taskId)}` };
   }

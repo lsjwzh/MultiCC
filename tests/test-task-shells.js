@@ -199,12 +199,13 @@ test('adoption preserves native identity/history and continues through a receipt
   f.records.get('a').cli = 'zcode';
   f.records.get('a').cliSessionId = 'sess_real_native';
   f.histories.set('a', [
-    { id: 'u1', role: 'user', content: 'old question', taskId: 'tsk_old' },
-    { id: 'a1', role: 'assistant', content: 'old result', taskId: 'tsk_old' },
+    { id: 'u1', role: 'user', content: 'old question', taskId: 'tsk_old', taskName: '真实历史任务' },
+    { id: 'a1', role: 'assistant', content: 'old result', taskId: 'tsk_old', taskName: '真实历史任务' },
   ]);
   const before = structuredClone({ record: f.records.get('a'), history: f.histories.get('a') });
   const task = f.runtime.adopt(f.a.id, 'a');
   assert.equal(task.id, 'tsk_old');
+  assert.equal(task.title, '真实历史任务');
   assert.equal(task.sessionId, 'a');
   assert.equal(f.runtime.adopt(f.a.id, 'a').id, task.id);
   assert.equal(f.runtime.view(f.a.id).defaultTaskId, task.id);
@@ -218,6 +219,27 @@ test('adoption preserves native identity/history and continues through a receipt
   assert.equal(queued.decision, 'queued');
   assert.equal(queued.sessionId, 'a');
   assert.equal(f.creations.length, 0);
+});
+
+test('trusted task delivery auto-locates by task id or creates that exact task identity', async t => {
+  const boardTasks = {
+    'tsk-routed': { id: 'tsk-routed', title: '路由任务标题' },
+  };
+  const f = fixture(t, { getTask: id => boardTasks[id] || null });
+  f.runtime.adopt(f.a.id, 'a');
+  const result = await f.runtime.sendExplicit(f.a.id, input('routed-message'), {
+    taskId: 'tsk-routed', taskStart: true, taskSource: 'router-tool', taskText: '完整任务信息',
+  });
+  assert.equal(result.taskId, 'tsk-routed');
+  assert.equal(f.runtime.view(f.a.id).currentTaskId, 'tsk-routed');
+  assert.equal(f.store.get('task', 'tsk-routed').title, '路由任务标题');
+  assert.equal(f.creations.at(-1).task.id, 'tsk-routed');
+  assert.equal(f.sends.at(-1).opts.taskShellAutoClassify, false);
+  assert.equal(f.sends.at(-1).opts.taskSource, 'task-shell');
+  assert.equal(f.sends.at(-1).opts.taskText, '完整任务信息');
+  assert.equal(f.runtime.locateOrCreate(f.b.id, {
+    taskId: 'tsk-routed', taskText: '不会覆盖任务板标题',
+  }).sessionId, result.sessionId);
 });
 
 test('current task advances only through explicit new work or settled attribution', async t => {
