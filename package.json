@@ -48,7 +48,12 @@
     "test:power": "node tests/test-macos-power.js",
     "test:task-shells": "node --test tests/test-task-shells.js tests/test-task-shell-http.js",
     "test:task-shells:isolated": "node tests/test-task-shell-isolated.js",
-    "test:task-shells:cdp": "node --test tests/test-task-shell-cdp.js"
+    "test:task-shells:cdp": "node --test tests/test-task-shell-cdp.js",
+    "lab:build": "node scripts/build-task-shell-image.js",
+    "lab:test": "docker compose -f docker/task-shell/compose.yaml run --rm regression",
+    "lab:up": "node scripts/task-shell-lab-service.js",
+    "lab:down": "docker compose -f docker/task-shell/compose.yaml down",
+    "lab:logs": "docker compose -f docker/task-shell/compose.yaml logs --tail=100 lab"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.3.0",
