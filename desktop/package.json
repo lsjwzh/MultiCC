@@ -2,7 +2,7 @@
   "name": "multicc-desktop",
   "productName": "MultiCC",
   "private": true,
-  "version": "1.6.9",
+  "version": "1.6.10",
   "description": "MultiCC desktop shell — supervises the local MultiCC server and hosts its web UI",
   "main": "main.js",
   "author": "MultiCC Team",
