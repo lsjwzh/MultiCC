@@ -182,7 +182,7 @@ test('Fleet sharing works from a LAN-bound source to a loopback-bound target', a
 
   const landing = await fetch(created.body.url);
   assert.equal(landing.status, 200);
-  assert.match(await landing.text(), /收到一个 Fleet 分享/);
+  assert.match(await landing.text(), /收到一个工作区分享/);
 
   const rejected = await postJson(`${targetOrigin}/api/external-fleets/import`, {
     shareUrl: created.body.url,
