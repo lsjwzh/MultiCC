@@ -157,6 +157,16 @@ function createTaskShellRuntime(ports) {
       return task;
     });
   }
+  function resolveTask(shellId, identity = {}) {
+    const task = locateOrCreate(shellId, identity);
+    const s = shell(shellId);
+    return store.transaction(() => {
+      s.currentTaskId = task.id;
+      s.defaultTaskId = task.id;
+      store.set('shell', s.id, s);
+      return task;
+    });
+  }
   function remove(shellId) {
     const s = shell(shellId);
     store.transaction(() => {
@@ -459,7 +469,7 @@ function createTaskShellRuntime(ports) {
   }
   return {
     open, adopt, link, remove, view, detail, send: sendInput, retry, owns,
-    guardAdmission, recentTasks, refillContext, settleAttribution, locateOrCreate, sendExplicit,
+    guardAdmission, recentTasks, refillContext, settleAttribution, locateOrCreate, resolveTask, sendExplicit,
   };
 }
 

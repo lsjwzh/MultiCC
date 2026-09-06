@@ -21,7 +21,14 @@
       throw error;
     }
     if (!shell.id) throw new Error('shell_missing');
-    return `/task-shell.html?shell=${encodeURIComponent(shell.id)}`;
+    let resolvedTaskId = '';
+    if (taskId) {
+      const task = await post(`/api/task-shells/${encodeURIComponent(shell.id)}/tasks/resolve`, { taskId });
+      resolvedTaskId = task.id || taskId;
+    }
+    const params = new URLSearchParams({ shell: shell.id });
+    if (resolvedTaskId) params.set('task', resolvedTaskId);
+    return `/task-shell.html?${params.toString()}`;
   }
   const api = { resolve };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
