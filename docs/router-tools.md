@@ -46,12 +46,17 @@ explicit user request for that terminal.
 | Claude Code | Inline `--mcp-config`; its persistent process uses a session capability and resolves the current turn dynamically |
 | Codex | Per-invocation `mcp_servers.multicc_router` config overrides |
 | OpenCode | Runtime-only `OPENCODE_CONFIG_CONTENT` merge |
-| ZCode | Runtime-only native `mcp.servers` plus OpenCode-compatible merge |
+| ZCode | Session-directory workspace `.zcode/config.json` entry carrying the per-spawn capability env (the engine ignores `ZCODE_CONFIG_CONTENT` and rebuilds stdio child environments from a `HOME`/`PATH`/... whitelist, so neither the runtime env-var merge nor plain env inheritance can reach the MCP child) plus the OpenCode-compatible merge for future engine support |
 | Qoder | Inline `--mcp-config` |
 
-No adapter edits user or project MCP configuration files. CLI executables that
-are absent cannot be native-smoke-tested on that machine; their deterministic
-argument/config contracts remain covered by the core test suite.
+Adapters do not touch shared user or project MCP configuration. The one
+session-scoped exception is ZCode: because its engine offers no runtime config
+channel, the adapter maintains `multicc_router` inside the session directory's
+`.zcode/config.json` — a non-destructive merge rewritten on every spawn with
+the current capability, gitignored, and never propagated outside that
+directory. CLI executables that are absent cannot be native-smoke-tested on
+that machine; their deterministic argument/config contracts remain covered by
+the core test suite.
 
 ## Security and recovery
 
