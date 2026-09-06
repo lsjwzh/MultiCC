@@ -22,7 +22,10 @@ function cleanError(error) {
 }
 
 function createTaskShellRuntime(ports) {
-  const { store, getRecord, getHistory, getExecution, createExecution, indexTask, send, cancel } = ports;
+  const {
+    store, getRecord, getHistory, getExecution, createExecution, indexTask, send, cancel,
+    getTask = () => null,
+  } = ports;
   const flights = new Map();
   const launching = new Set();
   const maxConcurrent = Number.isInteger(ports.maxConcurrent) && ports.maxConcurrent > 0 ? ports.maxConcurrent : 4;
@@ -65,6 +68,14 @@ function createTaskShellRuntime(ports) {
   function savingsFor(s, taskId) {
     return estimateTokens(renderSnapshots(contextSnapshots(s, taskId)));
   }
+  function runtimeFrom(record) {
+    return Object.fromEntries(['cli', 'model', 'provider', 'providerSelection', 'effort', 'agent']
+      .filter(key => record?.[key] !== undefined).map(key => [key, record[key]]));
+  }
+  function indexedTask(taskId) {
+    const value = getTask(taskId);
+    return value && typeof value === 'object' ? value : null;
+  }
   function open(sessionId) {
     identifier(sessionId, 'sessionId');
     const source = getRecord(sessionId);
@@ -89,19 +100,23 @@ function createTaskShellRuntime(ports) {
       || record.taskExecutionSlot || ['aux', 'gateway', 'commander'].includes(record.type)) throw failure('unsupported_source');
     return store.transaction(() => {
       let task = owns(sessionId);
+      const history = getHistory(sessionId);
+      const last = [...history].reverse().find(message => message.taskId);
+      const id = task?.id || record.taskBoundTaskId || (record.taskState?.pendingUserInput
+        && !record.taskState.pendingUserInput.resolved ? record.taskState.pendingUserInput.taskId : null)
+        || record.taskState?.userInputSignalTaskId || last?.taskId
+        || `tsk_${hash(['adopt', sessionId]).slice(0, 32)}`;
+      const indexed = indexedTask(id);
+      const title = indexed?.title || last?.taskName || record.label || last?.content?.slice?.(0, 120) || sessionId;
       if (!task) {
-        const history = getHistory(sessionId);
-        const last = [...history].reverse().find(m => m.taskId);
-        const pending = record.taskState?.pendingUserInput;
-        const id = record.taskBoundTaskId || (pending && !pending.resolved ? pending.taskId : null)
-          || record.taskState?.userInputSignalTaskId || last?.taskId
-          || `tsk_${hash(['adopt', sessionId]).slice(0, 32)}`;
         if (store.get('task', id)) throw failure('task_identity_mismatch');
-        task = { id, dirId: s.dirId, sessionId, title: record.label || last?.content?.slice?.(0, 120) || sessionId,
+        task = { id, dirId: s.dirId, sessionId, title,
           parentTaskId: null, snapshotIds: [], ready: true, adopted: true, createdAt: Date.now(),
-          runtime: Object.fromEntries(['cli', 'model', 'provider', 'providerSelection', 'effort', 'agent']
-            .filter(k => record[k] !== undefined).map(k => [k, record[k]])) };
+          runtime: runtimeFrom(record) };
         store.set('task', id, task);
+      } else if (title && task.title !== title) {
+        task.title = title;
+        store.set('task', task.id, task);
       }
       link(s.id, task.id);
       if (!s.currentTaskId) {
@@ -109,6 +124,36 @@ function createTaskShellRuntime(ports) {
         s.defaultTaskId = task.id;
         store.set('shell', s.id, s);
       }
+      return task;
+    });
+  }
+  function locateOrCreate(shellId, identity = {}) {
+    const s = shell(shellId);
+    const id = identifier(identity.taskId, 'taskId');
+    const indexed = indexedTask(id);
+    const source = getRecord(s.sourceSessionId);
+    if (!source) throw failure('source_session_missing');
+    return store.transaction(() => {
+      let task = store.get('task', id);
+      if (task && task.dirId !== s.dirId) throw failure('project_mismatch', 'Tasks must belong to the same project', 403);
+      const indexedSession = indexed?.chatSessionId && getRecord(indexed.chatSessionId);
+      if (indexedSession && indexedSession.dirId !== s.dirId) throw failure('project_mismatch', 'Tasks must belong to the same project', 403);
+      const title = String(indexed?.title || identity.taskText || identity.title || id).trim().slice(0, 120) || id;
+      if (!task) {
+        if (store.list('task').filter(value => value.dirId === s.dirId).length >= 200) {
+          throw failure('task_shell_task_limit', 'Task limit reached (200 tasks/project)', 429);
+        }
+        const sessionId = indexedSession?.kind === 'chat' ? indexedSession.id : `task-${id.replace(/^tsk_/, '')}`;
+        const owned = owns(sessionId);
+        if (owned && owned.id !== id) throw failure('task_identity_mismatch');
+        task = { id, dirId: s.dirId, sessionId, title, parentTaskId: null, snapshotIds: [],
+          ready: !!indexedSession, adopted: !!indexedSession, createdAt: Date.now(), runtime: runtimeFrom(source) };
+        store.set('task', id, task);
+      } else if (indexed?.title && task.title !== indexed.title) {
+        task.title = String(indexed.title).slice(0, 120);
+        store.set('task', id, task);
+      }
+      store.set('link', `${s.id}:${id}`, { shellId: s.id, taskId: id });
       return task;
     });
   }
@@ -168,7 +213,7 @@ function createTaskShellRuntime(ports) {
       || state.pending.taskId !== payload.taskId)) throw failure('stale_control', 'The question is no longer pending');
     if (payload.intent === 'steer' && state.pending && !state.pending.resolved) throw failure('answer_required');
   }
-  async function reserve(s, payload, receiptId, fingerprint) {
+  async function reserve(s, payload, receiptId, fingerprint, delivery = {}) {
     const selectedTaskId = payload.newTask ? null : payload.taskId || s.currentTaskId || s.defaultTaskId || null;
     const target = selectedTaskId ? taskFor(s, selectedTaskId) : null;
     const observedClaim = target ? store.get('claim', target.id)?.receiptId : null;
@@ -215,6 +260,8 @@ function createTaskShellRuntime(ports) {
         store.set('answer', key, { receiptId });
       }
       const receipt = { id: receiptId, shellId: s.id, taskId: task.id, fingerprint, payload,
+        taskIdentityLocked: delivery.taskIdentityLocked === true,
+        taskMetadata: delivery.taskMetadata || null,
         status: 'reserved', decision: target ? payload.intent === 'work' ? (busy ? 'queued' : 'continue') : payload.intent : 'new',
         contextSavings: payload.intent === 'work' ? {
           estimatedTokens: savingsFor(s, task.id), contextRefilled: false,
@@ -257,14 +304,17 @@ function createTaskShellRuntime(ports) {
         });
         // Stable key is the handoff protocol across the SQLite/outbox boundary.
         receipt.status = 'delivering'; store.set('receipt', receipt.id, receipt);
+        const metadata = receipt.taskMetadata || {};
         result = await send(task.sessionId, p.text, {
-          taskId: task.id, taskStart: true, taskText: p.intent === 'work' ? p.text : task.title, taskSource: 'task-shell',
+          taskId: task.id, taskStart: receipt.taskIdentityLocked ? metadata.taskStart !== false : true,
+          taskText: receipt.taskIdentityLocked ? metadata.taskText || p.text : p.intent === 'work' ? p.text : task.title,
+          taskSource: 'task-shell',
           clientMsgId: receipt.id, idempotencyKey: receipt.id, taskShellReceiptId: receipt.id,
           receivedAt: receipt.createdAt,
           ...(p.goalLimits ? { goalLimits: p.goalLimits } : {}),
           ...(p.intent !== 'work' ? { taskShellControl: { intent: p.intent, turnId: p.turnId } } : {}),
           taskContextSeed: renderSnapshots(snapshots),
-          taskShellAutoClassify: p.intent === 'work' && p.newTask !== true,
+          taskShellAutoClassify: p.intent === 'work' && p.newTask !== true && !receipt.taskIdentityLocked,
           ...(p.intent === 'answer' ? { userInputRequestId: p.requestId } : {}),
           ...(p.intent === 'steer' || ['continue', 'queued'].includes(receipt.decision) ? { originContinue: true } : {}),
         });
@@ -291,18 +341,29 @@ function createTaskShellRuntime(ports) {
       throw Object.assign(failure(receipt.error.code, receipt.error.message, error.status || 500), { receiptId: receipt.id, taskId: task.id, notDelivered });
     } finally { if (needsCapacity) launching.delete(task.id); }
   }
-  async function sendInput(shellId, raw) {
+  async function sendInput(shellId, raw, delivery = {}) {
     const s = shell(shellId), payload = normalize(raw);
     const id = `sr_${hash([s.id, payload.clientMsgId]).slice(0, 40)}`, fingerprint = hash(payload);
     let receipt = store.get('receipt', id);
     if (receipt && receipt.fingerprint !== fingerprint) throw failure('idempotency_conflict');
     if (flights.has(id)) return flights.get(id);
     const operation = (async () => {
-      receipt = receipt || await reserve(s, payload, id, fingerprint);
+      receipt = receipt || await reserve(s, payload, id, fingerprint, delivery);
       return deliver(receipt);
     })();
     flights.set(id, operation);
     try { return await operation; } finally { flights.delete(id); }
+  }
+  function sendExplicit(shellId, raw, identity = {}) {
+    const task = locateOrCreate(shellId, identity);
+    return sendInput(shellId, { ...raw, taskId: task.id }, {
+      taskIdentityLocked: true,
+      taskMetadata: {
+        taskStart: identity.taskStart === true,
+        taskSource: identity.taskSource || null,
+        taskText: String(identity.taskText || raw.text || ''),
+      },
+    });
   }
   function owns(sessionId) { return store.list('task').find(t => t.sessionId === sessionId) || null; }
   function recentTasks(sessionId, receiptId = null) {
@@ -398,7 +459,7 @@ function createTaskShellRuntime(ports) {
   }
   return {
     open, adopt, link, remove, view, detail, send: sendInput, retry, owns,
-    guardAdmission, recentTasks, refillContext, settleAttribution,
+    guardAdmission, recentTasks, refillContext, settleAttribution, locateOrCreate, sendExplicit,
   };
 }
 
