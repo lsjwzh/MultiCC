@@ -104,6 +104,11 @@ function createHarness(overrides = {}) {
   context.addEventListener = () => {};
   context.speechSynthesis = { speak() {}, cancel() {} };
   vm.createContext(context);
+  // manage.html loads the shared DOM helpers (escapeHtml) before the first
+  // manage script; the harness mirrors that page order.
+  vm.runInContext(read('public/shared/dom-helpers.js'), context, {
+    filename: 'shared/dom-helpers.js',
+  });
   // manage.html loads the status registry before the dashboard script; the
   // harness mirrors that so session cards resolve their badges the same way.
   vm.runInContext(read('public/status-presentation.js'), context, {
