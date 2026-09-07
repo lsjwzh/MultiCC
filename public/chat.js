@@ -135,11 +135,8 @@ function tt(key, params) { return (window.t || ((k) => k))(key, params); }
 function withToken(url) { return url; }
 
 /* ── Dynamic favicon + title from session name ── */
-const _TAB_COLORS = ['#58a6ff','#f78166','#3fb950','#d29922','#bc8cff','#f97583','#79c0ff','#56d364'];
-function _hashColor(s) {
-  let h = 0; for (let i = 0; i < s.length; i++) h = (h + s.charCodeAt(i) * 31) | 0;
-  return _TAB_COLORS[Math.abs(h) % _TAB_COLORS.length];
-}
+/* _hashColor (session-name → tab colour) lives in shared/dom-helpers.js, so
+   the chat page and the standalone client page agree on the same palette. */
 let _baseTitle = _sessionName ? `${_sessionName} — MultiCC Chat` : 'MultiCC Chat';
 // `text` is what shows in the tab title (e.g. "dir / alias"); `letterSrc` seeds
 // the favicon letter/colour (defaults to text). Passing only an id keeps the
@@ -247,11 +244,8 @@ function closeHeaderMoreModal() { return headerMoreController.close(); }
 let ws = null;
 let sessionId = null;
 
-// Simple HTML escape helper (memo + s2s pickers rely on this at top level)
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, c =>
-    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-}
+// Simple HTML escape helper (memo + s2s pickers rely on this at top level) —
+// canonical copy in shared/dom-helpers.js.
 
 // Shared Memo protocol/controller; this file keeps only the Chat-specific UI adapter.
 const chatMemoClient = window.MultiCCMemo.createClient({ api: window.MultiCCApi });

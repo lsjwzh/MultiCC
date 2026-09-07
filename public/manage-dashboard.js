@@ -40,9 +40,8 @@ function reorderDirectories(newOrder) {
 }
 
 /* ── Helpers ── */
-function escapeHtml(str) {
-  return String(str == null ? '' : str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
+/* escapeHtml (plus every other manage-side classic script's call to it) lives
+   in shared/dom-helpers.js, loaded before the first manage script. */
 
 // Provider limit suffix for native <option> rows — the cached limit summary plus
 // freshness / failure / stale markers, joined with ' · ' and WITHOUT a leading
