@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Local ASR (src/asr-local.js) smoke + benchmark.
+// Local ASR (src/voice/asr-local.js) smoke + benchmark.
 //
 //   node tests/test-local-asr.js                  # module smoke: wav/webm/streaming
 //   node tests/test-local-asr.js --typeless 8     # + local-vs-cloud on real Typeless recordings
@@ -11,7 +11,7 @@ const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
-const asrLocal = require('../src/asr-local');
+const asrLocal = require('../src/voice/asr-local');
 
 const MODEL_DIR = process.env.ASR_LOCAL_MODEL_DIR || path.join(os.homedir(), '.multicc', 'asr-models');
 const TEST_WAVS = path.join(MODEL_DIR, 'sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17', 'test_wavs');

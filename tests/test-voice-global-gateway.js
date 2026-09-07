@@ -20,10 +20,10 @@ const test = require('node:test');
 const {
   GLOBAL_VOICE_GATEWAY_ID,
   createVoiceGatewayService,
-} = require('../src/voice-gateway');
-const { createQwenAudioSupervisor } = require('../src/qwen-audio-supervisor');
-const { createVoiceLaunchRegistry } = require('../src/voice-launch');
-const { VOICE_ROUTER_ID, createVoiceRouterProvisioner } = require('../src/voice-router');
+} = require('../src/voice/gateway');
+const { createQwenAudioSupervisor } = require('../src/voice/qwen-audio-supervisor');
+const { createVoiceLaunchRegistry } = require('../src/voice/launch');
+const { VOICE_ROUTER_ID, createVoiceRouterProvisioner } = require('../src/voice/router');
 const { createGlobalVoiceGatewayRoutes } = require('../src/routes/voice-gateway-global');
 const { createQwenAudioRuntimeRoutes } = require('../src/routes/qwen-audio-runtime');
 const { createGatewayHost } = require('../src/dispatch/gateway-host');

@@ -2,7 +2,7 @@
 
 const path = require('path');
 const { createErrorDto, requestContext, withApiMeta } = require('../api-contract');
-const { createVoiceGatewayService, GATEWAY_PROVIDER } = require('../voice-gateway');
+const { createVoiceGatewayService, GATEWAY_PROVIDER } = require('../voice/gateway');
 
 function resultStatus(code) {
   if (code === 'directory_not_found' || code === 'voice_gateway_not_found') return 404;

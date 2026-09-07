@@ -12,7 +12,7 @@
 // setSessionStatus are likewise resolved per call through getters. The
 
 const bus = require('../bus');
-const { sanitizeVoiceSpeech } = require('../voice-speech');
+const { sanitizeVoiceSpeech } = require('../voice/speech');
 const { recentTasksFor, routingStateFor } = require('./targeting');
 
 function assertFunction(value, name) {

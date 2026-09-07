@@ -11,8 +11,8 @@ const {
   isGlobalVoiceGatewayRecord,
   isVoiceGatewayRecord,
   resolveVoiceGateway,
-} = require('./voice-gateway');
-const { ensurePrivateDir } = require('./runtime-security');
+} = require('./gateway');
+const { ensurePrivateDir } = require('../runtime-security');
 
 // Realtime voice is a single machine-wide child. GLOBAL_KEY is its slot in the
 // same state map the per-Fleet runtimes use, so restart budgets, health polling
@@ -85,7 +85,7 @@ function createQwenAudioSupervisor({
   getConfig,
   getBaseUrl,
   acpAgentPath,
-  frontendPromptDir = path.join(__dirname, 'voice', 'frontend-prompt'),
+  frontendPromptDir = path.join(__dirname, 'frontend-prompt'),
   spawnImpl = spawn,
   fetchImpl = globalThis.fetch,
   now = () => Date.now(),

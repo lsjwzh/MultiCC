@@ -7,8 +7,8 @@
 // would snapshot the value and miss later applyEnvUpdates() changes (the exact
 // stale-binding bug that splitting server.js could have introduced).
 const fs = require('fs');
-const { createPaths } = require('./paths');
-const { atomicWriteJson } = require('./runtime-security');
+const { createPaths } = require('../paths');
+const { atomicWriteJson } = require('../runtime-security');
 
 const RUNTIME_PATHS = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
 const VOICE_EXAMPLES_FILE = RUNTIME_PATHS.voiceExamplesFile;

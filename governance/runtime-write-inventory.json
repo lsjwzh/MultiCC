@@ -177,7 +177,7 @@
       "migrationStrategy": "Keep the explicit ASR_LOCAL_MODEL_DIR override; document backup/download behavior and never copy hundreds of MB during normal startup.",
       "sources": [
         {
-          "file": "src/asr-local.js",
+          "file": "src/voice/asr-local.js",
           "anchor": "ASR_LOCAL_MODEL_DIR: process.env.ASR_LOCAL_MODEL_DIR || path.join(os.homedir(), '.multicc', 'asr-models'),"
         },
         {
