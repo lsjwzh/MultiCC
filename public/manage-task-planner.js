@@ -4,7 +4,7 @@
   const STAGES = Object.freeze(['inbox', 'ready', 'doing', 'review', 'done']);
   const MODES = Object.freeze(['todo', 'board', 'activity']);
   const ORIGINS = Object.freeze(['all', 'board', 'session']);
-  const WORK_BUCKETS = Object.freeze(['todo', 'attention', 'running', 'next', 'review']);
+  const WORK_BUCKETS = Object.freeze(['todo', 'attention', 'running', 'next', 'review', 'done']);
   const ORIGIN_STORAGE_KEY = 'multicc_task_center_origin';
   const PRIORITIES = Object.freeze(['urgent', 'high', 'medium', 'low']);
   const api = window.MultiCCApi;
@@ -17,7 +17,7 @@
       plannerSubtitle: 'TODO、执行与验收',
       plannerTodoList: 'TODO',
       plannerBoard: '看板',
-      plannerHistory: '活动记录',
+      plannerHistory: '全部记录',
       plannerSource: '来源',
       plannerSourceAll: '全部',
       plannerSourceBoard: '独立任务',
@@ -28,14 +28,16 @@
       plannerBucketRunning: '正在执行',
       plannerBucketNext: '接下来',
       plannerBucketReview: '待验收',
+      plannerBucketDone: '已完成',
       plannerBucketTodoHint: '已记录，尚未安排',
       plannerBucketAttentionHint: '等待回答或需要处理异常',
       plannerBucketRunningHint: 'Agent 正在处理',
       plannerBucketNextHint: '已安排，可随时启动',
       plannerBucketReviewHint: '查看结果并确认完成',
+      plannerBucketDoneHint: '已确认完成，可重开或归档',
       plannerTodoEmptyTitle: '当前没有待处理任务',
       plannerTodoEmptyBody: '可以新建 TODO，或切换来源查看会话任务。',
-      plannerActivitySummary: '{modules} 个模块 · {tasks} 条活动记录',
+      plannerActivitySummary: '{modules} 个模块 · {tasks} 条记录',
       plannerStartQuick: '开始',
       plannerCompleteQuick: '完成',
       plannerViewTask: '查看任务',
@@ -151,7 +153,7 @@
       plannerSubtitle: 'TODOs, execution, and review',
       plannerTodoList: 'TODO',
       plannerBoard: 'Board',
-      plannerHistory: 'Activity',
+      plannerHistory: 'All records',
       plannerSource: 'Source',
       plannerSourceAll: 'All',
       plannerSourceBoard: 'Independent',
@@ -162,14 +164,16 @@
       plannerBucketRunning: 'Running',
       plannerBucketNext: 'Up next',
       plannerBucketReview: 'Review',
+      plannerBucketDone: 'Done',
       plannerBucketTodoHint: 'Captured but not scheduled',
       plannerBucketAttentionHint: 'Waiting for a reply or error handling',
       plannerBucketRunningHint: 'An agent is working on it',
       plannerBucketNextHint: 'Scheduled and ready to start',
       plannerBucketReviewHint: 'Inspect the result and confirm completion',
+      plannerBucketDoneHint: 'Confirmed complete; reopen or archive when ready',
       plannerTodoEmptyTitle: 'No tasks need action here',
       plannerTodoEmptyBody: 'Create a TODO or switch sources to inspect chat tasks.',
-      plannerActivitySummary: '{modules} modules · {tasks} activity records',
+      plannerActivitySummary: '{modules} modules · {tasks} records',
       plannerStartQuick: 'Start',
       plannerCompleteQuick: 'Complete',
       plannerViewTask: 'View task',
@@ -534,7 +538,11 @@
 
   function workBucket(task) {
     const stage = taskStage(task);
-    if (!task || task.status === 'archived' || task.status === 'done' || stage === 'done') return '';
+    if (!task || task.status === 'archived') return '';
+    // Completion is a durable, user-controlled workflow stage. Keep it visible
+    // in the operational surface until the user explicitly archives it; the
+    // record view is an audit projection, not the destination of a task.
+    if (task.status === 'done' || stage === 'done') return 'done';
     const status = taskStatus(task);
     if (status === 'waiting' || status === 'error' || status === 'blocked') return 'attention';
     if (status === 'running' || status === 'queued') return 'running';
@@ -910,7 +918,12 @@
     const savedRenderState = pendingRenderState || captureRenderState();
     pendingRenderState = null;
     const embedded = surface === 'fleet';
-    const globalWork = state.board.tasks.filter(task => !!workBucket(task));
+    // The navigation badge is an actionable-work count. Completed cards stay
+    // visible on the board but do not inflate the outstanding-work indicator.
+    const globalWork = state.board.tasks.filter(task => {
+      const bucket = workBucket(task);
+      return !!bucket && bucket !== 'done';
+    });
     const workCount = globalWork.length;
     const workAttention = globalWork.filter(task => workBucket(task) === 'attention').length;
     const navBadge = document.getElementById('nav-planner-count');

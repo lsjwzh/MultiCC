@@ -286,11 +286,11 @@ body[data-view="tasks"] #topbar .planner-hide-on-tasks {
 
 .planner-board {
   display: grid;
-  grid-template-columns: repeat(5, minmax(220px, 1fr));
+  grid-template-columns: repeat(6, minmax(220px, 1fr));
   align-items: stretch;
   gap: 12px;
   height: 100%;
-  min-width: 1150px;
+  min-width: 1382px;
   min-height: 0;
 }
 .planner-board.is-filtered { grid-template-columns: minmax(320px, 1fr); min-width: 0; }
@@ -319,6 +319,8 @@ body[data-view="tasks"] #topbar .planner-hide-on-tasks {
 .planner-todo-group[data-bucket="next"] { --stage-color: var(--blue); }
 .planner-column[data-bucket="review"],
 .planner-todo-group[data-bucket="review"] { --stage-color: #b39df3; }
+.planner-column[data-bucket="done"],
+.planner-todo-group[data-bucket="done"] { --stage-color: var(--green); }
 
 .planner-column-head {
   flex: 0 0 auto;
