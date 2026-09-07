@@ -128,6 +128,7 @@ function createTaskShellHost(deps) {
     accepts, open, owns, sendFromSession, sendClientInput,
     recentTasks: (id, receiptId) => getRuntime().recentTasks(id, receiptId),
     refillContext: (id, options) => getRuntime().refillContext(id, options),
+    contextTrace: (id, receiptId, options) => getRuntime().contextTrace(id, receiptId, options),
     settleAttribution: (id, receiptId, result) => getRuntime().settleAttribution(id, receiptId, result),
     contextSeed,
     close: () => store?.close(),

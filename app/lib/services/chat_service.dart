@@ -807,6 +807,30 @@ class ChatService {
     return (messages: parsed, hasMore: data['hasMore'] == true);
   }
 
+  /// Load the exact, bounded messages behind one server-authored context
+  /// manifest. The trace id is still scoped to [executionSessionName] by the
+  /// server, so knowing an id cannot read another task or work directory.
+  Future<Map<String, dynamic>> fetchContextTrace(String traceId) async {
+    final query =
+        'traceId=${Uri.encodeQueryComponent(traceId)}&include=messages';
+    final res = await _httpClient
+        .get(
+          Uri.parse(
+            _url(
+              '/api/sessions/${Uri.encodeComponent(executionSessionName)}/context?$query',
+            ),
+          ),
+          headers: _headers,
+        )
+        .timeout(const Duration(seconds: 15));
+    if (res.statusCode != 200) {
+      throw Exception('context trace fetch failed: ${res.statusCode}');
+    }
+    final decoded = jsonDecode(utf8.decode(res.bodyBytes));
+    if (decoded is! Map) throw Exception('context trace response invalid');
+    return Map<String, dynamic>.from(decoded);
+  }
+
   void dispose() {
     _disposed = true;
     _wsAuth.invalidate();

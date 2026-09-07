@@ -57,6 +57,7 @@ function ledgerRowToChatMessage(message, taskRunId) {
   if (metadata.usage && typeof metadata.usage === 'object') projected.usage = metadata.usage;
   if (metadata.cost != null) projected.cost = metadata.cost;
   if (Number.isFinite(Number(metadata.durationMs))) projected.durationMs = Number(metadata.durationMs);
+  if (metadata.contextTrace && typeof metadata.contextTrace === 'object') projected.contextTrace = metadata.contextTrace;
   if (metadata.partial === true) projected.partial = true;
   return projected;
 }

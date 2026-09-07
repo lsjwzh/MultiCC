@@ -658,6 +658,7 @@ class ChatProvider extends ChangeNotifier {
   int _sessionOutputTokens = 0;
   String _turnDurationText = '';
   int _turnCount = 0;
+  Map<String, dynamic>? _contextTrace;
 
   ContextReadout get contextReadout => ContextReadout.of(
     request: _requestUsage,
@@ -669,6 +670,15 @@ class ChatProvider extends ChangeNotifier {
   int get turnCount => _turnCount;
   int get sessionInputTokens => _sessionInputTokens;
   int get sessionOutputTokens => _sessionOutputTokens;
+  Map<String, dynamic>? get contextTrace => _contextTrace;
+
+  Future<Map<String, dynamic>> loadContextTrace() {
+    final traceId = _contextTrace?['traceId']?.toString() ?? '';
+    if (traceId.isEmpty) {
+      return Future.error(StateError('context trace unavailable'));
+    }
+    return _service.fetchContextTrace(traceId);
+  }
 
   int _reconnectAttempt = 0;
 
@@ -2191,6 +2201,9 @@ class ChatProvider extends ChangeNotifier {
       _sessionInputTokens += _turnUsage!.inputTokens;
       _sessionOutputTokens += _turnUsage!.outputTokens;
     }
+    _contextTrace = msg['contextTrace'] is Map
+        ? Map<String, dynamic>.from(msg['contextTrace'] as Map)
+        : null;
     final models = msg['modelUsage'];
     if (models is Map) {
       for (final entry in models.values) {
@@ -2430,12 +2443,14 @@ class ChatProvider extends ChangeNotifier {
     _sessionInputTokens = input;
     _sessionOutputTokens = output;
     _turnUsage = null;
+    _contextTrace = null;
     _turnDurationText = '';
     _turnCount = 0;
     for (var i = _messages.length - 1; i >= 0; i -= 1) {
       final m = _messages[i];
       if (m.role != MessageRole.assistant) continue;
       _turnUsage = m.usage;
+      _contextTrace = m.contextTrace;
       // Round count is a result-frame fact and is not persisted; the timing is.
       if (m.durationMs != null) _turnDurationText = _fmtDuration(m.durationMs!);
       break;

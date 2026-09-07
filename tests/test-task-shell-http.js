@@ -23,6 +23,10 @@ test('HTTP routes execute and preserve structured errors, links and receipt owne
   assert.equal(bad.status, 400); assert.equal(f.creations.length, 0);
   const first = await api(`/api/task-shells/${f.a.id}/messages`, { text: 'work', clientMsgId: 'first', intent: 'work' });
   assert.equal(first.status, 200); assert.equal(first.data.ok, true);
+  const trace = await api(`/api/sessions/${first.data.sessionId}/context?traceId=${first.data.receiptId}`);
+  assert.equal(trace.status, 200);
+  assert.equal(trace.data.traceId, first.data.receiptId);
+  assert.equal(trace.data.currentTask.taskId, first.data.taskId);
   const denied = await api(`/api/task-shells/${f.b.id}/receipts/${first.data.receiptId}/retry`, {});
   assert.equal(denied.status, 404);
   assert.equal((await api(`/api/task-shells/${f.b.id}/links`, { taskId: first.data.taskId })).status, 200);

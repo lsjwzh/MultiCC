@@ -73,6 +73,7 @@ const CANONICAL_ASSISTANT = {
   id: 'a1', role: 'assistant', content: '已继续', ts: 1724000004000,
   tools: [{ id: 'tool-1', name: 'Read', status: 'done' }],
   durationMs: 2500,
+  contextTrace: { traceId: 'sr-1', currentTask: { taskId: 'tsk-1' }, sources: [] },
   usage: { inputTokens: 120, outputTokens: 30 },
   cost: 0.012,
   clientMsgId: 'cm-2',
@@ -110,6 +111,7 @@ test('the task projection whitelists — ledger internals never reach a client',
       usage: { inputTokens: 1 },
       cost: 0.5,
       durationMs: 42,
+      contextTrace: { traceId: 'sr-9', currentTask: { taskId: 'tsk-9' }, sources: [] },
       partial: true,
       // Internal write-path fields — must not cross the boundary.
       leaseEpoch: 3,
@@ -131,6 +133,7 @@ test('the task projection whitelists — ledger internals never reach a client',
     usage: { inputTokens: 1 },
     cost: 0.5,
     durationMs: 42,
+    contextTrace: { traceId: 'sr-9', currentTask: { taskId: 'tsk-9' }, sources: [] },
     partial: true,
   });
   assert.equal(projected.leaseEpoch, undefined);
