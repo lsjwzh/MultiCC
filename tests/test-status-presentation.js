@@ -25,11 +25,11 @@ const { FREEZE_REASON_RUN_STATE } = require('../src/session-work/scheduler.js');
 
 function read(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
 
-/** TASK_RUN_STATES is module-private in src/task-board/core.js; read the literal. */
+/** TASK_RUN_STATES is module-private in src/task-board/normalize.js; read the literal. */
 function serverTaskRunStates() {
-  const src = read('src/task-board/core.js');
+  const src = read('src/task-board/normalize.js');
   const m = /const TASK_RUN_STATES = new Set\(\[([^\]]*)\]\)/.exec(src);
-  assert.ok(m, 'TASK_RUN_STATES literal not found in src/task-board/core.js');
+  assert.ok(m, 'TASK_RUN_STATES literal not found in src/task-board/normalize.js');
   return m[1].split(',').map(s => s.trim().replace(/^'|'$/g, '')).filter(Boolean);
 }
 
