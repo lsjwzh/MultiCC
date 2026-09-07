@@ -220,7 +220,7 @@ function createCodexUsageHost(deps = {}) {
   const logger = deps.logger || console;
   const now = typeof deps.now === 'function' ? deps.now : Date.now;
 
-  function complete({ evt, cs, persisted, sessionName, turn, runner, forward }) {
+  function complete({ evt, cs, persisted, sessionName, turn, runner, forward, contextTrace = null }) {
     if (typeof forward !== 'function') throw new TypeError('Codex usage host missing: forward');
     // Claude's result path already cancels this crash-safety timer. Codex must
     // do the same before persisting its final message, otherwise the stale
@@ -247,6 +247,7 @@ function createCodexUsageHost(deps = {}) {
         usage,
         ...(normalized.cumulativeUsage ? { usageCumulative: normalized.cumulativeUsage } : {}),
         ...(normalized.usageEpoch ? { usageEpoch: normalized.usageEpoch } : {}),
+        ...(contextTrace ? { contextTrace } : {}),
         ts: now(),
       }, { resultEvent: true });
       if (durable) {
@@ -262,6 +263,7 @@ function createCodexUsageHost(deps = {}) {
       usage,
       durationMs: cs.turnStartedAt ? now() - cs.turnStartedAt : undefined,
       num_turns: cs.chatTurnCount,
+      ...(contextTrace ? { contextTrace } : {}),
     });
     deps.setSessionStatus(sessionName, {
       status: cs._resultSaved ? 'succeeded' : 'idle',

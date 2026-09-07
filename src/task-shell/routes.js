@@ -14,6 +14,11 @@ function mountTaskShellRoutes(app, { getRuntime, open = id => getRuntime().open(
   };
   // Discovery remains stable for cached clients; there is no switch or fallback.
   app.get('/api/task-shells/config', (_req, res) => res.json({ enabled: true }));
+  app.get('/api/sessions/:sessionId/context', route((runtime, req) => runtime.contextTrace(
+    req.params.sessionId,
+    req.query.traceId,
+    { includeMessages: req.query.include === 'messages' },
+  )));
   app.post('/api/task-shells', route((_runtime, req) => open(req.body?.sessionId)));
   app.get('/api/task-shells/:shellId', route((runtime, req) => runtime.view(req.params.shellId)));
   app.delete('/api/task-shells/:shellId', route((runtime, req) => runtime.remove(req.params.shellId)));
