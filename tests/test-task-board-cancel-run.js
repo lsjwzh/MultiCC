@@ -14,7 +14,7 @@ const path = require('node:path');
 const Database = require('better-sqlite3');
 const core = require('../src/task-board');
 const { createTaskBoardRuntime } = require('../src/routes/task-board');
-const { createTaskRunStore } = require('../src/task-run-store');
+const { createTaskRunStore } = require('../src/task-run/store');
 
 function mkRuntime(overrides = {}) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-cancelrun-'));

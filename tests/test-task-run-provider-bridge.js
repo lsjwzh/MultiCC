@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { createTaskRunProviderBridge } = require('../src/task-run-provider-bridge');
+const { createTaskRunProviderBridge } = require('../src/task-run/provider-bridge');
 
 function fixture() {
   const calls = [];

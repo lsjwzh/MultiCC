@@ -4,8 +4,8 @@ const childProcess = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { createTaskRunCleanup } = require('./task-run-cleanup');
-const { createTaskRunHost } = require('./task-run-host');
+const { createTaskRunCleanup } = require('./cleanup');
+const { createTaskRunHost } = require('./host');
 
 const MAX_SCAN_ENTRIES = 100_000;
 

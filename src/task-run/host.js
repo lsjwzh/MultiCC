@@ -1,11 +1,11 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const { createUsageObserved, validateUsageObserved } = require('./usage-observed');
-const { assertProviderBinding } = require('./provider-binding');
-const { isTaskRunWrapperText } = require('./task-run-context');
-const { describeRunFailure, recordRunError } = require('./task-run-errors');
-const { TERMINAL_EXECUTION_STATUSES } = require('./task-run-store');
+const { createUsageObserved, validateUsageObserved } = require('../usage-observed');
+const { assertProviderBinding } = require('../provider-binding');
+const { isTaskRunWrapperText } = require('./context');
+const { describeRunFailure, recordRunError } = require('./errors');
+const { TERMINAL_EXECUTION_STATUSES } = require('./store');
 
 const TASK_RUN_CLIS = new Set(['claude', 'codex']);
 

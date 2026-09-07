@@ -314,5 +314,5 @@ module.exports = {
   createTaskContextHost,
   // Re-exported so server.js can wire the M1 forwarder without a second
   // require (the line budget is exactly at its ceiling).
-  createTaskRunStreamEmitter: require('./task-run-stream-forwarder').createTaskRunStreamEmitter,
+  createTaskRunStreamEmitter: require('./task-run/stream-forwarder').createTaskRunStreamEmitter,
 };

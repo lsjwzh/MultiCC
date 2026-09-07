@@ -3,7 +3,7 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const { extractArtifactReferences } = require('./artifact-reference');
+const { extractArtifactReferences } = require('../artifact-reference');
 
 const SCHEMA_VERSION = 5;
 const TERMINAL_EXECUTION_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);

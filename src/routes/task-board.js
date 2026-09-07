@@ -15,13 +15,13 @@ const { publicRunDto } = require('./task-runs');
 const {
   buildTaskRunContext: defaultBuildTaskRunContext,
   isTaskRunWrapperText,
-} = require('../task-run-context');
-const { recordRunError, runErrorOf } = require('../task-run-errors');
+} = require('../task-run/context');
+const { recordRunError, runErrorOf } = require('../task-run/errors');
 const { createTaskWorktreeService } = require('../task-worktree');
 const {
   taskTranscriptMessages,
   paginateTranscript,
-} = require('../task-transcript-repository');
+} = require('../task-run/transcript-repository');
 const {
   aggregateTaskUsages,
   createTaskMergeHandler,
