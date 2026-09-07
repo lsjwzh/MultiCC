@@ -1,3 +1,4 @@
+import '../services/chat_shell_view.dart';
 import 'dart:async';
 import 'dart:convert';
 
@@ -266,7 +267,7 @@ class _ChatViewState extends State<ChatView> {
   Future<void> _resolveFocus(ChatProvider provider) async {
     final focusId = widget.focusMessageId;
     if (focusId == null || focusId.isEmpty) return;
-    final alreadyPresent = provider.messages.any((m) => m.id == focusId);
+    final alreadyPresent = provider.messages.any((m) => m.id == focusId || shellMessageOwner(provider.sessionId, m.id ?? '').messageId == focusId);
     if (!alreadyPresent) {
       bool found = false;
       try {
@@ -283,7 +284,8 @@ class _ChatViewState extends State<ChatView> {
       }
     }
     if (!mounted) return;
-    setState(() => _highlightId = focusId);
+    setState(() => _highlightId = provider.messages.firstWhere((m) =>
+      m.id == focusId || shellMessageOwner(provider.sessionId, m.id ?? '').messageId == focusId).id);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       final ctx = _focusKey.currentContext;

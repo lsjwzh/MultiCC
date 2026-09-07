@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 
 import '../models/message.dart';
 import 'provider_route_gate.dart';
+import 'chat_shell_view.dart';
 import 'settings_service.dart';
 import 'ws_ticket_service.dart';
 
@@ -67,6 +68,9 @@ class ChatService {
   final List<Map<String, dynamic>> _shellAdmissionEvents = [];
   String get executionSessionName => _executionSessionName ?? sessionName;
   int _messageSequence = 0;
+  int _connectGeneration = 0;
+  late final ChatShellView _shellView = ChatShellView(sessionName);
+  bool get hasShellHistory => _shellView.shellId != null;
 
   // ── Heartbeat: detect "half-open" sockets ──
   // When the phone sleeps / network switches, the OS can freeze the socket
@@ -106,8 +110,10 @@ class ChatService {
   Uri _buildChatUri({String? resumeId}) {
     final params = <String, String>{};
     if (sessionCwd.isNotEmpty) params['cwd'] = sessionCwd;
-    if (executionSessionName.isNotEmpty)
+    if (executionSessionName.isNotEmpty) {
       params['session'] = executionSessionName;
+    }
+    if (_shellView.shellId != null) params['shell'] = _shellView.shellId!;
     if (historyArchive) params['historyScope'] = 'archive';
     if (resumeId != null && resumeId.isNotEmpty) params['resume'] = resumeId;
     return buildMulticcWebSocketUri(
@@ -129,18 +135,35 @@ class ChatService {
     _state = ChatConnectionState.connecting;
     _emit('state_change', _state);
 
+    _wsAuth.invalidate();
+    unawaited(_prepareConnection(++_connectGeneration));
+  }
+
+  Future<void> _prepareConnection(int generation) async {
     late WsTicketAttempt attempt;
     try {
+      final active = await _shellView.prepare((path, body) {
+        final uri = Uri.parse(_url(path));
+        return (body == null ? _httpClient.get(uri, headers: _headers)
+            : _httpClient.post(uri, headers: _headers, body: body))
+            .timeout(const Duration(seconds: 15));
+      });
+      if (_disposed || generation != _connectGeneration) return;
+      if (hasShellHistory && active != executionSessionName) {
+        _executionSessionName = active;
+        _sessionId = null;
+        initialSessionId = null;
+      }
       attempt = _wsAuth.begin(
         socketUri: _buildChatUri(resumeId: _sessionId ?? initialSessionId),
         ticketEndpoint: Uri.parse(settings.buildHttpUrl('/api/auth/ws-ticket')),
         accessToken: settings.token,
       );
     } catch (_) {
-      _scheduleReconnect();
+      if (!_disposed && generation == _connectGeneration) _scheduleReconnect();
       return;
     }
-    unawaited(_connectAuthorized(attempt));
+    await _connectAuthorized(attempt);
   }
 
   Future<void> _connectAuthorized(WsTicketAttempt attempt) async {
@@ -157,7 +180,9 @@ class ChatService {
       _sub?.cancel();
       _providerRouteGate.resetConnection();
       _sub = channel.stream.listen(
-        _onMessage,
+        (raw) {
+          if (attempt.isCurrent && _channel == channel) _onMessage(raw);
+        },
         onError: (_) {
           if (attempt.isCurrent && _channel == channel) _scheduleReconnect();
         },
@@ -205,7 +230,7 @@ class ChatService {
       final msg = jsonDecode(raw as String) as Map<String, dynamic>;
       if (msg['type'] == 'pong') return;
       if (!_providerRouteGate.accept(msg)) return;
-      _handleMessage(msg);
+      _handleMessage(_shellView.event(msg, executionSessionName));
     } catch (_) {}
   }
 
@@ -292,8 +317,9 @@ class ChatService {
       case 'task_shell_routed':
         final clientId = msg['clientMsgId']?.toString();
         final receiptId = msg['receiptId']?.toString();
-        if (clientId != null && receiptId != null)
+        if (clientId != null && receiptId != null) {
           _shellClientIds[receiptId] = clientId;
+        }
         _pendingShellInput = null;
         final next = msg['sessionId']?.toString();
         final buffered = List<Map<String, dynamic>>.from(_shellAdmissionEvents);
@@ -436,8 +462,13 @@ class ChatService {
         _emit('chat_msg_meta', msg);
         break;
 
+      case 'shell_history_update':
+        _emit('shell_history_update', msg);
+        break;
+
       case 'chat_history_reset':
-        _emit('chat_history_reset', msg);
+        _emit('chat_history_reset', {...msg, 'shellHistory': hasShellHistory});
+        if (hasShellHistory) _scheduleReconnect();
         break;
 
       case 'chat_msg_deleted':
@@ -675,6 +706,7 @@ class ChatService {
   void _scheduleReconnect() {
     if (_disposed) return;
     _wsAuth.invalidate();
+    _connectGeneration++;
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
     _probeTimer?.cancel();
@@ -766,10 +798,12 @@ class ChatService {
   /// scroll-back pagination.
   Future<({List<ChatMessage> messages, bool hasMore})> fetchHistoryPage({
     required String? beforeId,
+    String? aroundId,
     int limit = 30,
   }) async {
     final qs = <String, String>{'limit': limit.toString()};
     if (beforeId != null && beforeId.isNotEmpty) qs['before'] = beforeId;
+    if (aroundId != null) qs['around'] = aroundId;
     if (historyArchive) qs['historyScope'] = 'archive';
     final query = qs.entries
         .map(
@@ -781,7 +815,7 @@ class ChatService {
         .get(
           Uri.parse(
             _url(
-              '/api/sessions/${Uri.encodeComponent(executionSessionName)}/history?$query',
+              '${_shellView.historyPath(executionSessionName)}?$query',
             ),
           ),
           headers: _headers,
@@ -834,6 +868,7 @@ class ChatService {
   void dispose() {
     _disposed = true;
     _wsAuth.invalidate();
+    _connectGeneration++;
     _reconnectTimer?.cancel();
     _heartbeatTimer?.cancel();
     _probeTimer?.cancel();

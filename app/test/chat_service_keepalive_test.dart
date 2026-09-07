@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:stream_channel/stream_channel.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
@@ -60,18 +61,21 @@ void main() {
   /// Builds a ChatService whose sockets are [_FakeChannel]s — one per connect,
   /// so a reconnect lands on a fresh live transport (mirroring the real app).
   /// Returns the service plus the list of channels in creation order.
-  (ChatService, List<_FakeChannel>) makeService({bool historyArchive = false}) {
+  (ChatService, List<_FakeChannel>) makeService({bool historyArchive = false, http.Client? httpClient, List<Uri>? urls}) {
     final channels = <_FakeChannel>[];
     final service = ChatService(
       settings: settings,
       sessionName: 'chat one',
       sessionCwd: '/tmp/work',
       historyArchive: historyArchive,
+      httpClient: httpClient ?? MockClient((_) async => http.Response(
+        '{"code":"unsupported_source"}', 400)),
       wsTicketClient: WsTicketClient(
         post: (_, {required headers, required body}) async =>
             http.Response('{"ticket":"t","path":"/ws/chat"}', 200),
       ),
-      channelFactory: (_) {
+      channelFactory: (uri) {
+        urls?.add(uri);
         final ch = _FakeChannel(
           StreamController<dynamic>.broadcast(sync: true),
           <String>[],
@@ -82,6 +86,54 @@ void main() {
     );
     return (service, channels);
   }
+
+  test('shell reconnect and pagination retain source while execution changes', () async {
+    await setupSettings();
+    fakeAsync((async) {
+      final requests = <http.Request>[];
+      final urls = <Uri>[];
+      var active = 'task-one';
+      final client = MockClient((request) async {
+        requests.add(request);
+        if (request.method == 'POST') return http.Response('{"id":"shell-one"}', 200);
+        if (request.url.path.endsWith('/chat')) {
+          return http.Response(jsonEncode({'activeSessionId': active}), 200);
+        }
+        return http.Response(jsonEncode({'messages': [
+          {'id': 'chat one:old', 'sourceSessionId': 'chat one', 'sourceMessageId': 'old',
+           'role': 'user', 'content': 'original request', 'ts': 1},
+        ], 'hasMore': false}), 200);
+      });
+      final (service, channels) = makeService(httpClient: client, urls: urls);
+      final events = <ChatEvent>[];
+      service.events.listen(events.add);
+      service.connect();
+      async.flushMicrotasks();
+      expect(urls.single.queryParameters['session'], 'task-one');
+      expect(urls.single.queryParameters['shell'], 'shell-one');
+      channels.last.incoming.add(jsonEncode({'type': 'chat_msg_meta', 'id': 'new', 'role': 'assistant'}));
+      async.flushMicrotasks();
+      expect((events.last.payload as Map)['id'], 'task-one:new');
+      active = 'task-two';
+      channels.last.incoming.add(jsonEncode({'type': 'task_shell_routed', 'sessionId': active}));
+      async.flushMicrotasks();
+      expect(urls.last.queryParameters['session'], 'task-two');
+      expect(urls.last.queryParameters['shell'], 'shell-one');
+      expect(requests.where((r) => r.method == 'POST'), hasLength(1));
+      service.fetchHistoryPage(beforeId: 'task-one:new').then((page) {
+        expect(page.messages.single.id, 'chat one:old');
+      });
+      async.flushMicrotasks();
+      expect(requests.last.url.path, '/api/task-shells/shell-one/history');
+      expect(requests.last.url.queryParameters['before'], 'task-one:new');
+      channels.last.incoming.add(jsonEncode({'type': 'shell_history_update',
+        'sourceSessionId': 'task-one', 'messages': [{'id': 'task-one:new', 'sourceSessionId': 'task-one'}]}));
+      async.flushMicrotasks();
+      expect(events.last.type, 'shell_history_update');
+      expect((events.last.payload as Map)['messages'][0]['id'], 'task-one:new');
+      service.dispose();
+    });
+  });
 
   test('display clear keeps streaming and relays the authoritative reset', () async {
     await setupSettings();
