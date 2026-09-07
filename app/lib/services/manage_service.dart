@@ -881,6 +881,34 @@ class ManageService {
     }
   }
 
+  /// An explicit task tap selects that task in its shell, even if a cached
+  /// binding already exists. Merely opening the detail preview must not move it.
+  Future<String?> resolveTaskChatSession(String taskId, {String? boundSessionId}) async {
+    final sid = boundSessionId ?? await ensureTaskChatSession(taskId);
+    if (sid == null || sid.isEmpty) return null;
+    Future<Map<String, dynamic>> post(String path, Map<String, dynamic> body) async {
+      final uri = Uri.parse(_url(path));
+      final client = httpClient;
+      final response = await (client == null
+          ? http.post(uri, headers: _headers, body: jsonEncode(body))
+          : client.post(uri, headers: _headers, body: jsonEncode(body)))
+          .timeout(const Duration(seconds: 12));
+      if (response.statusCode != 200) throw StateError('task shell unavailable');
+      return (jsonDecode(utf8.decode(response.bodyBytes)) as Map).cast<String, dynamic>();
+    }
+    try {
+      final shell = await post('/api/task-shells', {'sessionId': sid});
+      final id = shell['id'];
+      if (id is! String || id.isEmpty) return null;
+      final task = await post('/api/task-shells/${Uri.encodeComponent(id)}/tasks/resolve', {'taskId': taskId});
+      // Return the stable entry; ChatService resolves its current execution.
+      return task['id'] == taskId ? sid : null;
+    } catch (_) {
+      // Failed selection must not silently open a different current task.
+      return null;
+    }
+  }
+
   /// Answers the currently waiting question for a hidden TaskRun owned by
   /// [taskId]. The client-generated id is stable across a retry of the same
   /// text, allowing the server to deduplicate an uncertain HTTP outcome.

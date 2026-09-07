@@ -360,6 +360,9 @@ class ChatProvider extends ChangeNotifier {
   String? _sessionId;
   String get sessionId => _sessionId ?? '';
 
+  /// Stable server record for operations; sessionId above is the native CLI resume ID.
+  String get executionSessionName => _service.executionSessionName;
+
   String _cwd = '';
   String get cwd => _cwd;
 
@@ -679,7 +682,14 @@ class ChatProvider extends ChangeNotifier {
     if (traceId.isEmpty) {
       return Future.error(StateError('context trace unavailable'));
     }
-    return _service.fetchContextTrace(traceId);
+    String? source;
+    for (final message in _messages.reversed) {
+      if (message.contextTrace?['traceId'] == traceId && message.id != null) {
+        source = shellMessageOwner(executionSessionName, message.id!).sessionId;
+        break;
+      }
+    }
+    return _service.fetchContextTrace(traceId, sourceSessionId: source);
   }
 
   int _reconnectAttempt = 0;
@@ -934,12 +944,13 @@ class ChatProvider extends ChangeNotifier {
 
   // ── Service init ───────────────────────────────────────────────────────────
 
-  void _initService() {
+  void _initService({String? executionSessionName}) {
     _service = ChatService(
       settings: settings,
       sessionName: sessionName,
       sessionCwd: sessionCwd,
       initialSessionId: _sessionId,
+      initialExecutionSessionName: executionSessionName,
       historyArchive: historyArchive,
     );
     _eventSub?.cancel();
@@ -981,6 +992,7 @@ class ChatProvider extends ChangeNotifier {
         break;
 
       case 'system_init':
+        unawaited(refreshDispatchQueue());
         final msg = evt.payload as Map<String, dynamic>;
         final sid = (msg['session_id'] ?? msg['session'])?.toString();
         if (sid != null && sid.isNotEmpty) _sessionId = sid;
@@ -1753,13 +1765,15 @@ class ChatProvider extends ChangeNotifier {
   /// Learn the active provider baseUrl on connect (system_init carries no
   /// provider info), so the right vendor bar shows before any CLI switch.
   Future<void> _loadProviderBaseUrl() async {
-    final sid = sessionId;
+    final sid = executionSessionName;
     if (sid.isEmpty) return;
     try {
       final baseUrl = await _quota.fetchProviderBaseUrl(sid);
       // A manual-route lookup may race with enabling Auto. Never let its
       // configured-primary URL overwrite the physical route's quota gate.
-      if (_providerSelection == null) _setProviderBaseUrl(baseUrl ?? '');
+      if (sid == executionSessionName && _providerSelection == null) {
+        _setProviderBaseUrl(baseUrl ?? '');
+      }
     } catch (_) {
       // Non-fatal: the bar simply stays hidden until a switch provides a baseUrl.
     }
@@ -2313,10 +2327,12 @@ class ChatProvider extends ChangeNotifier {
   Future<void> refreshDispatchQueue() async {
     if (_dispatchQueueInFlight) return;
     _dispatchQueueInFlight = true;
+    final target = executionSessionName;
     try {
       final rows = await SessionService(
         settings: settings,
-      ).fetchDispatchQueue(sessionName);
+      ).fetchDispatchQueue(target);
+      if (target != executionSessionName) return;
       final next = mergeDispatchQueue(rows);
       _dispatchQueueFailureCount = 0;
       _dispatchQueueRetryTimer?.cancel();
@@ -2335,6 +2351,7 @@ class ChatProvider extends ChangeNotifier {
       _armDispatchQueueRetry();
     } finally {
       _dispatchQueueInFlight = false;
+      if (target != executionSessionName) unawaited(refreshDispatchQueue());
     }
   }
 
@@ -2733,8 +2750,9 @@ class ChatProvider extends ChangeNotifier {
     _service.historyArchive = value;
     _historyApplied = false;
     _replaceHistoryOnReconnect = true;
+    final execution = executionSessionName;
     _service.dispose();
-    _initService();
+    _initService(executionSessionName: execution);
     notifyListeners();
   }
 
@@ -2791,8 +2809,9 @@ class ChatProvider extends ChangeNotifier {
     // The pending card belongs to the torn-down socket's state; the fresh
     // connection's connect-time replay re-delivers it if still open.
     _setPendingUserInput(null);
+    final execution = executionSessionName;
     _service.dispose();
-    _initService();
+    _initService(executionSessionName: execution);
   }
 
   void changeCwd(String newCwd) {
