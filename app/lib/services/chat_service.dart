@@ -98,11 +98,13 @@ class ChatService {
     required this.sessionName,
     required this.sessionCwd,
     this.initialSessionId,
+    String? initialExecutionSessionName,
     this.historyArchive = false,
     WsTicketClient? wsTicketClient,
     WebSocketChannel Function(Uri)? channelFactory,
     http.Client? httpClient,
-  }) : _wsAuth = WsTicketConnectionGate(wsTicketClient ?? WsTicketClient()),
+  }) : _executionSessionName = initialExecutionSessionName,
+       _wsAuth = WsTicketConnectionGate(wsTicketClient ?? WsTicketClient()),
        _connectChannel = channelFactory ?? WebSocketChannel.connect,
        _httpClient = httpClient ?? http.Client(),
        _ownsHttpClient = httpClient == null;
@@ -844,14 +846,14 @@ class ChatService {
   /// Load the exact, bounded messages behind one server-authored context
   /// manifest. The trace id is still scoped to [executionSessionName] by the
   /// server, so knowing an id cannot read another task or work directory.
-  Future<Map<String, dynamic>> fetchContextTrace(String traceId) async {
+  Future<Map<String, dynamic>> fetchContextTrace(String traceId, {String? sourceSessionId}) async {
     final query =
         'traceId=${Uri.encodeQueryComponent(traceId)}&include=messages';
     final res = await _httpClient
         .get(
           Uri.parse(
             _url(
-              '/api/sessions/${Uri.encodeComponent(executionSessionName)}/context?$query',
+              '/api/sessions/${Uri.encodeComponent(sourceSessionId ?? executionSessionName)}/context?$query',
             ),
           ),
           headers: _headers,

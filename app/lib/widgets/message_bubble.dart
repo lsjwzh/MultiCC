@@ -140,8 +140,8 @@ Future<void> _confirmDeleteMessage(BuildContext context, ChatMessage message) as
   if (settings == null) return;
   try {
     await SessionService(settings: settings)
-        .deleteMessage(shellMessageOwner(provider.sessionId, msgId).sessionId,
-            shellMessageOwner(provider.sessionId, msgId).messageId);
+        .deleteMessage(shellMessageOwner(provider.executionSessionName, msgId).sessionId,
+            shellMessageOwner(provider.executionSessionName, msgId).messageId);
     provider.removeMessageById(msgId);
     messenger.showSnackBar(SnackBar(
       content: Text(I18n.of('msgDeleted')),
@@ -204,8 +204,8 @@ Future<void> _forkFromMessage(BuildContext context, ChatMessage message) async {
   if (settings == null) return;
   try {
     final newId = await SessionService(settings: settings)
-        .forkSession(shellMessageOwner(provider.sessionId, msgId).sessionId,
-            atMessageId: shellMessageOwner(provider.sessionId, msgId).messageId);
+        .forkSession(shellMessageOwner(provider.executionSessionName, msgId).sessionId,
+            atMessageId: shellMessageOwner(provider.executionSessionName, msgId).messageId);
     messenger.showSnackBar(SnackBar(
       content: Text(I18n.of('msgForked', {'id': newId})),
       duration: const Duration(milliseconds: 2400),
