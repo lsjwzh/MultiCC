@@ -23,7 +23,7 @@ const {
 } = require('../src/quota/provider-limit-cache');
 const { createLimitRecorder } = require('../src/quota/limit-cache-recorder');
 const { compactBarText } = require('../src/quota/quota-bar-view');
-const { writeJsonAtomic } = require('../src/state-store');
+const { writeJsonAtomic } = require('../src/state/store');
 
 let pass = 0, fail = 0;
 function ok(cond, name) {

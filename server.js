@@ -49,7 +49,7 @@ const { runGit: gitRunQueued, queueDepth: gitQueueDepth } = require('./src/git/q
 const crypto = require('crypto');
 const bus = require('./src/bus');
 const services = require('./src/services');
-const state = require('./src/state');
+const state = require('./src/state/container');
 const artifacts = require('./src/artifacts'), docsRegistry = require('./src/docs-registry');
 const providers = require('./src/providers');
 const { executeAuxHttp } = require('./src/aux-http');
@@ -85,8 +85,8 @@ const {
 } = require('./src/cli-switch');
 // MULTICC_DATA_DIR centralizes state; stores provide atomic recovery-safe writes.
 const { createPaths } = require('./src/paths');
-const stateStore = require('./src/state-store');
-const stateTx = require('./src/state-tx');
+const stateStore = require('./src/state/store');
+const stateTx = require('./src/state/tx');
 const { bootstrapState } = require('./src/bootstrap/state');
 const { createSessionPersistence } = require('./src/session-persistence'); const { mountPublicSessionAccessGuard } = require('./src/session/public-session-access');
 const { createSessionHibernationRuntime, initializeSessionWorktrees, resolveSessionCwd } = require('./src/session-hibernation');
@@ -982,7 +982,7 @@ const {
 const sessions = new Map();
 
 // Publish the three core Maps to the shared state registry (same references).
-// Extracted modules read these via require('./src/state') — no bespoke injection.
+// Extracted modules read these via require('./src/state/container') — no bespoke injection.
 Object.assign(state, { sessions, directories, persistedSessions });
 
 function generateId() {

@@ -147,7 +147,7 @@ function testWaitInjector() {
   console.log('wait-injector lifecycle');
   const clock = fakeTimers();
   try {
-    const wait = freshRequire('../src/wait-injector');
+    const wait = freshRequire('../src/wait/injector');
     wait.init({
       inject: async () => {},
       exec: async () => ({ stdout: '', stderr: '', code: 0 }),
