@@ -79,6 +79,9 @@ test('C03 C04: explicitly selected contexts are frozen; unfinished dependencies 
   assert.equal(task.snapshotIds.length, 2);
   assert.ok(f.sends.at(-1).opts.taskContextSeed.includes(a.taskId));
   assert.ok(f.sends.at(-1).opts.taskContextSeed.includes(b.taskId));
+  const trace = f.runtime.contextTrace(c.sessionId, c.receiptId);
+  assert.deepEqual(trace.sources.map(source => source.mode), ['imported', 'imported']);
+  assert.deepEqual(new Set(trace.sources.map(source => source.taskId)), new Set([a.taskId, b.taskId]));
   assert.equal(task.parentTaskId, null);
 });
 
@@ -298,6 +301,14 @@ test('lazy shell context refill returns provenance and clears the displayed toke
   assert.equal(after.contextRefilled, true);
   assert.equal(after.estimatedTokens, 0);
   assert.equal(after.originalEstimatedTokens, before.estimatedTokens);
+  const summary = f.runtime.contextTrace(second.sessionId, second.receiptId);
+  assert.equal(summary.currentTask.taskId, second.taskId);
+  assert.deepEqual(summary.sources.map(source => [source.taskId, source.mode]), [[first.taskId, 'refilled']]);
+  assert.equal(summary.sources[0].messages, undefined, 'the broadcast/history manifest stays metadata-only');
+  const detail = f.runtime.contextTrace(second.sessionId, second.receiptId, { includeMessages: true });
+  assert.equal(detail.sources[0].messages[1].content, 'old result');
+  assert.throws(() => f.runtime.contextTrace(first.sessionId, second.receiptId), { code: 'receipt_not_found' },
+    'a trace id remains scoped to its owning execution session');
 });
 
 test('adoption preserves a pending question identity and rejects stale controls', async t => {

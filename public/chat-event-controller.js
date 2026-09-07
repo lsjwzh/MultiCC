@@ -317,6 +317,9 @@
 
     function handleResult(message) {
       state.isStreaming = false;
+      state.contextTrace = message.contextTrace && typeof message.contextTrace === 'object'
+        ? message.contextTrace
+        : null;
       const resultBubble = state.currentMsgEl;
       // finishStreaming() clears the tool-card registry, so snapshot the
       // measured spans first — the trajectory strip is the turn's tool timing

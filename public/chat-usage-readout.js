@@ -152,6 +152,24 @@
     };
   }
 
+  function contextTraceOf(value) {
+    if (!value || typeof value !== 'object' || !value.traceId || !value.currentTask) return null;
+    const current = value.currentTask;
+    const sources = Array.isArray(value.sources) ? value.sources.filter(source => (
+      source && typeof source === 'object' && source.taskId
+    )) : [];
+    return {
+      traceId: String(value.traceId),
+      currentTask: {
+        taskId: String(current.taskId || ''),
+        taskName: String(current.taskName || current.taskId || '当前任务'),
+      },
+      sources,
+      managedOnly: value.managedOnly === true,
+      count: 1 + sources.length,
+    };
+  }
+
   /**
    * @returns {{summary:{text:string,title:string,pct:number,color:string,
    *            hasBar:boolean,exact:boolean},
@@ -191,7 +209,7 @@
     const provider = providerRow(sources, formatWindow);
     if (provider) details.push(provider);
 
-    return { summary: summaryOf(sources), details };
+    return { summary: summaryOf(sources), details, contextTrace: contextTraceOf(sources.contextTrace) };
   }
 
   function summaryHtml(view) {
@@ -201,19 +219,66 @@
     if (summary.hasBar) {
       parts.push(`<span class="usage-ctx-meter"><span style="width:${summary.pct}%;background:${summary.color}"></span></span>`);
     }
+    if (view.contextTrace) {
+      parts.push(`<span class="usage-context-link" aria-hidden="true">⌁ 引用 ${view.contextTrace.count}</span>`);
+    }
     if (view.details.length) parts.push('<span class="usage-ctx-more" aria-hidden="true">详情</span>');
     return parts.join('');
   }
 
-  function detailHtml(view) {
-    if (!view.details.length) return '';
+  function modeLabel(mode) {
+    return mode === 'refilled' ? '按需补取' : '初始化导入';
+  }
+
+  function sourceMessagesHtml(source) {
+    if (!Array.isArray(source.messages) || !source.messages.length) return '';
+    const messages = source.messages.map(message => {
+      const role = message?.role === 'user' ? '用户' : '助手';
+      const raw = typeof message?.content === 'string'
+        ? message.content
+        : JSON.stringify(message?.content ?? '');
+      return `<div class="usage-context-message"><span>${role}</span>${escapeHtml(raw)}</div>`;
+    }).join('');
+    return `<details class="usage-context-details"><summary>查看 ${source.messages.length} 条引用消息</summary>${messages}</details>`;
+  }
+
+  function contextTraceHtml(trace, detail, state) {
+    if (!trace) return '';
+    const sourceDetails = detail && Array.isArray(detail.sources) ? detail.sources : [];
+    const byKey = new Map(sourceDetails.map(source => [`${source.mode}:${source.taskId}`, source]));
+    const rows = [
+      `<div class="usage-context-source"><span class="usage-context-kind">当前任务 · 原生上下文</span>` +
+      `<strong>${escapeHtml(trace.currentTask.taskName)}</strong><code>${escapeHtml(trace.currentTask.taskId)}</code></div>`,
+      ...trace.sources.map(source => {
+        const full = byKey.get(`${source.mode}:${source.taskId}`) || source;
+        const meta = `${modeLabel(source.mode)} · ${Number(source.messageCount) || 0} 条消息` +
+          `${Number(source.estimatedTokens) > 0 ? ` · 约 ${compactTokens(source.estimatedTokens)} tokens` : ''}` +
+          `${Number(source.omittedExchanges) > 0 ? ` · 更早 ${Number(source.omittedExchanges)} 轮未带入` : ''}`;
+        return `<div class="usage-context-source"><span class="usage-context-kind">${escapeHtml(meta)}</span>` +
+          `<strong>${escapeHtml(source.taskName || source.taskId)}</strong><code>${escapeHtml(source.taskId)}</code>` +
+          `${sourceMessagesHtml(full)}</div>`;
+      }),
+    ];
+    let action = '';
+    if (trace.sources.length && !detail) {
+      action = `<button type="button" class="usage-context-load"${state.loading ? ' disabled' : ''}>` +
+        `${state.loading ? '正在读取…' : '查看引用内容'}</button>`;
+    }
+    if (state.error) action += `<span class="usage-context-error">${escapeHtml(state.error)}</span>`;
+    return `<div class="usage-context-section"><div class="usage-context-title">⌁ 本轮引用来源</div>` +
+      `${rows.join('')}${action}<div class="usage-context-scope">只列出 MultiCC 可验证的引用；模型原生历史、系统提示和临时工具读取不属于逐 token 拆分。</div></div>`;
+  }
+
+  function detailHtml(view, traceDetail = null, traceState = {}) {
+    if (!view.details.length && !view.contextTrace) return '';
     const rows = view.details.map(row => (
       `<div class="usage-detail-row"${row.title ? ` title="${escapeHtml(row.title)}"` : ''}>` +
       `<span class="usage-detail-label">${escapeHtml(row.label)}</span>` +
       `<span class="usage-detail-value">${escapeHtml(row.value).replace(/\n/g, '<br>')}</span>` +
       '</div>'
     ));
-    return `<div class="usage-detail-title">本轮与会话用量</div>${rows.join('')}`;
+    const usage = rows.length ? `<div class="usage-detail-title">本轮与会话用量</div>${rows.join('')}` : '';
+    return `${usage}${contextTraceHtml(view.contextTrace, traceDetail, traceState)}`;
   }
 
   /**
@@ -229,16 +294,19 @@
     let view = { summary: { text: '' }, details: [] };
     let open = false;
     let pinned = false;
+    let traceDetail = null;
+    let traceLoading = false;
+    let traceError = '';
 
     function paint() {
       if (!panel) return;
-      panel.innerHTML = open ? detailHtml(view) : '';
+      panel.innerHTML = open ? detailHtml(view, traceDetail, { loading: traceLoading, error: traceError }) : '';
       panel.style.display = open ? 'block' : 'none';
       panel.setAttribute('aria-hidden', open ? 'false' : 'true');
       bar.setAttribute('aria-expanded', open ? 'true' : 'false');
     }
     function setOpen(next, pin) {
-      const wanted = next && view.details.length > 0;
+      const wanted = next && (view.details.length > 0 || !!view.contextTrace);
       if (pin !== undefined) pinned = wanted ? pin : false;
       if (wanted === open) { paint(); return; }
       open = wanted;
@@ -255,6 +323,18 @@
     if (panel) {
       panel.addEventListener('mouseenter', () => { if (open) setOpen(true); });
       panel.addEventListener('mouseleave', () => { if (!pinned) setOpen(false); });
+      panel.addEventListener('click', async (event) => {
+        if (!event.target?.closest?.('.usage-context-load') || traceLoading || !view.contextTrace) return;
+        const load = deps && deps.loadContextTrace;
+        if (typeof load !== 'function') return;
+        traceLoading = true;
+        traceError = '';
+        paint();
+        try { traceDetail = await load(view.contextTrace); }
+        catch (error) { traceError = error?.message || '引用内容读取失败'; }
+        traceLoading = false;
+        paint();
+      });
     }
     if (doc) {
       doc.addEventListener('click', (event) => {
@@ -267,10 +347,19 @@
 
     return {
       render(sources) {
+        const previousTraceId = view.contextTrace?.traceId || null;
         view = buildUsageView(sources);
+        if ((view.contextTrace?.traceId || null) !== previousTraceId) {
+          traceDetail = null;
+          traceLoading = false;
+          traceError = '';
+        }
         bar.innerHTML = summaryHtml(view);
         bar.title = view.summary.title || '';
-        if (!view.details.length) { pinned = false; setOpen(false); } else paint();
+        bar.setAttribute('aria-label', view.contextTrace
+          ? `上下文占用详情，${view.contextTrace.count} 个可追溯来源`
+          : '上下文占用详情');
+        if (!view.details.length && !view.contextTrace) { pinned = false; setOpen(false); } else paint();
       },
       isOpen: () => open,
       close: () => setOpen(false, false),

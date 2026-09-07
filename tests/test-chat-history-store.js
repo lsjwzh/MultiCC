@@ -44,6 +44,21 @@ test('a streaming tail without usage resets current context usage to zero', () =
   assert.deepEqual(plan.streamingTail, { id: 'a2', content: 'still running' });
 });
 
+test('the latest assistant context trace survives history replay without borrowing an older turn', () => {
+  const trace = { traceId: 'sr-latest', currentTask: { taskId: 'tsk-latest' }, sources: [] };
+  const plan = initialPlan({ messages: [
+    { id: 'a1', role: 'assistant', contextTrace: { traceId: 'sr-old' } },
+    { id: 'u2', role: 'user' },
+    { id: 'a2', role: 'assistant', usage: { input_tokens: 5 }, contextTrace: trace },
+  ] });
+  assert.deepEqual(plan.lastContextTrace, trace);
+  const missing = initialPlan({ messages: [
+    { id: 'a1', role: 'assistant', contextTrace: trace },
+    { id: 'a2', role: 'assistant', usage: { input_tokens: 5 } },
+  ] });
+  assert.equal(missing.lastContextTrace, null);
+});
+
 test('initial plan falls back to safe assistant usage sums without mutating input', () => {
   const messages = [
     null,
