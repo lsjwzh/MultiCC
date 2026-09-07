@@ -21,7 +21,7 @@ const {
   phaseLabel,
 } = require('./vocab');
 const { taskShortCode } = require('./task-short-code');
-const { deriveTaskTitle, PENDING_TASK_TITLE } = require('../task-board');
+const { deriveTaskTitle, PENDING_TASK_TITLE } = require('../task-board/core');
 const {
   buildTaskAttributionConversation,
   buildTaskAttributionSystemPrompt,

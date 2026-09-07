@@ -27,7 +27,7 @@ const { VOICE_ROUTER_ID, createVoiceRouterProvisioner } = require('../src/voice-
 const { createGlobalVoiceGatewayRoutes } = require('../src/routes/voice-gateway-global');
 const { createQwenAudioRuntimeRoutes } = require('../src/routes/qwen-audio-runtime');
 const { createGatewayHost } = require('../src/dispatch/gateway-host');
-const { resolveDirectoryCommander } = require('../src/task-board');
+const { resolveDirectoryCommander } = require('../src/task-board/core');
 
 const REPO_ROOT = path.join(__dirname, '..');
 

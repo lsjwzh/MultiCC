@@ -10,7 +10,7 @@ const {
   routingRelevanceScore,
   routingTerms,
   resolveDirectoryCommander,
-} = require('../src/task-board');
+} = require('../src/task-board/core');
 
 function rec(overrides = {}) {
   return {

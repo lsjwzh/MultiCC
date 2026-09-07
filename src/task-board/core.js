@@ -1,7 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
-const planning = require('./task-planning');
+const planning = require('./planning');
 
 // Task board core — pure logic for the AI-tagged module→task board shown in
 // the fleet panel (meta.html). No I/O and no host state: given a board object

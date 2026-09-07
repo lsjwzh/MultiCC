@@ -1,6 +1,6 @@
 'use strict';
 
-const planning = require('../task-planning');
+const planning = require('../task-board/planning');
 
 function responseStatus(error) {
   if (error === 'task_not_found') return 404;

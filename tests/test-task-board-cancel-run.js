@@ -12,7 +12,7 @@ const os = require('node:os');
 const fs = require('node:fs');
 const path = require('node:path');
 const Database = require('better-sqlite3');
-const core = require('../src/task-board');
+const core = require('../src/task-board/core');
 const { createTaskBoardRuntime } = require('../src/routes/task-board');
 const { createTaskRunStore } = require('../src/task-run/store');
 
