@@ -535,7 +535,7 @@
   }
 
   // ── Restart the whole multicc service (moved here from the chat page header) ──
-  // POSTs /api/restart; the server schedules a detached graceful `./multicc restart`
+  // POSTs /api/restart; the server persists an independent delayed restart script
   // (drains in-flight messages, then relaunches). All sessions briefly disconnect
   // and auto-reconnect once the fresh instance is up.
   async function restartMulticcService() {
@@ -547,7 +547,7 @@
       const data = await res.json().catch(() => ({}));
       if (!res.ok) { showToast('重启失败：' + (data.error || 'HTTP ' + res.status), true); return; }
       if (data.activeStreaming > 0) {
-        showToast('⚠️ 有 ' + data.activeStreaming + ' 个会话正在输出，其在途内容已保存、将被中断', true);
+        showToast('⚠️ 有 ' + data.activeStreaming + ' 个会话正在输出，将先尝试保存其在途内容，再重启', true);
       } else {
         showToast('重启请求已发送，服务即将重启…');
       }
