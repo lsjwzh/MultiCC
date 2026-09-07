@@ -185,7 +185,7 @@ const { createProcessingWatchdog, PROCESS_WATCHDOG_INTERVAL_MS } = require('./sr
 const { createStalledTurnRecovery, STALLED_RECOVERY_INTERVAL_MS } = require('./src/chat/stalled-turn-recovery');
 const { createProviderLogWatchdog } = require('./src/chat/provider-log-watchdog');
 const { createLogHousekeeping, LOG_HOUSEKEEPING_INTERVAL_MS } = require('./src/log-housekeeping');
-const { createPushRuntime } = require('./src/push-runtime');
+const { createPushRuntime } = require('./src/push/runtime');
 const { createWorkspaceRuntime } = require('./src/workspace/runtime');
 const { createChatHistoryFileRepository } = require('./src/session');
 const { TurnProgressHeartbeat } = require('./src/chat/progress-heartbeat');
@@ -1833,9 +1833,9 @@ const vapidKeys = ensureVapidKeys();
 webpush.setVapidDetails('mailto:multicc@localhost', vapidKeys.pubKey, vapidKeys.privKey);
 
 // Notification delivery layer (subscriptions, senders, channel config) extracted
-// to src/push.js. VAPID init above stays here; web-push is a shared singleton so
+// to src/push/service.js. VAPID init above stays here; web-push is a shared singleton so
 // push.js sends through the instance configured by setVapidDetails() above.
-const push = require('./src/push');
+const push = require('./src/push/service');
 const tunnel = require('./src/tunnel');
 function reportHostControlFailure(component, stage, category) {
   metrics.inc('multicc_host_control_failures_total');
