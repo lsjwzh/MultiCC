@@ -4,6 +4,7 @@ const { randomUUID } = require('node:crypto');
 const {
   estimateTokens, snapshotHistory, renderSnapshots, verifySnapshot, hash,
 } = require('./context');
+const { shellRecords, historySnapshot, handoffSnapshot, contextPage, pageSnapshots } = require('./history-context');
 const { resolveGoalLimits } = require('../routes/aux-goal');
 
 function failure(code, message = code, status = 409) {
@@ -52,11 +53,21 @@ function createTaskShellRuntime(ports) {
     const ids = new Set(store.list('link').filter(value => value.shellId === s.id).map(value => value.taskId));
     return store.list('task').filter(task => ids.has(task.id));
   }
+  function chatScope(shellId, sessionId = null) {
+    const s = shell(shellId);
+    const sessionIds = [...new Set([s.sourceSessionId, ...linkedTasks(s).map(t => t.sessionId)])]
+      .filter(id => getRecord(id)?.dirId === s.dirId);
+    if (sessionId && !sessionIds.includes(sessionId)) throw failure('task_not_linked', 'Execution is outside this shell', 403);
+    const current = s.currentTaskId && taskFor(s, s.currentTaskId);
+    return { shellId: s.id, sourceSessionId: s.sourceSessionId, sessionIds,
+      activeSessionId: current?.ready ? current.sessionId : s.sourceSessionId };
+  }
   function contextSnapshots(s, excludedTaskId = null) {
     const snapshots = [];
     let bytes = 0;
+    const records = shellRecords(chatScope(s.id), getHistory, ports.getLiveState).filter(m => !m.inProgress);
     for (const task of linkedTasks(s).filter(value => value.id !== excludedTaskId).reverse()) {
-      const snapshot = snapshotHistory(task.id, getHistory(task.sessionId));
+      const snapshot = historySnapshot(task.id, records.filter(m => m.taskId === task.id));
       if (!snapshot.messages.length) continue;
       const size = Buffer.byteLength(JSON.stringify(snapshot));
       if (bytes + size > 60000) continue;
@@ -121,6 +132,14 @@ function createTaskShellRuntime(ports) {
     const source = getRecord(sessionId);
     if (!source || source.kind !== 'chat' || source.taskExecutionSlot || source.experimentalMode
       || ['aux', 'gateway', 'commander'].includes(source.type)) throw failure('unsupported_source', 'Use an ordinary chat', 400);
+    // Generated execution URLs are aliases of the shell that created the task.
+    // Opening one must not silently manufacture an empty display conversation.
+    const owner = owns(sessionId);
+    if (owner && !owner.adopted) {
+      const origin = store.list('link').find(l => l.taskId === owner.id);
+      const parent = origin && store.get('shell', origin.shellId);
+      if (parent?.dirId === source.dirId) return parent;
+    }
     const id = `sh_${hash(sessionId).slice(0, 24)}`;
     const existing = store.get('shell', id);
     if (existing) return existing;
@@ -234,7 +253,8 @@ function createTaskShellRuntime(ports) {
   async function detail(shellId, taskId) {
     const task = taskFor(shell(shellId), taskId);
     const execution = task.ready ? await getExecution(task.sessionId) : { busy: true, status: 'preparing' };
-    return { task, execution, messages: getHistory(task.sessionId).slice(-200),
+    return { task, execution, messages: shellRecords(chatScope(shellId), getHistory)
+      .filter(m => m.taskId === taskId || (!m.taskId && m.sourceSessionId === task.sessionId)).slice(-200),
       snapshots: task.snapshotIds.map(id => store.get('snapshot', id)) };
   }
   function normalize(raw = {}) {
@@ -378,6 +398,7 @@ function createTaskShellRuntime(ports) {
         const owner = shell(receipt.shellId);
         owner.currentTaskId = task.id;
         owner.defaultTaskId = task.id;
+        owner.cursorReceiptId = receipt.id;
         store.set('shell', owner.id, owner);
         if (task.handoffSnapshotIds?.length) {
           task.handoffSnapshotIds = [];
@@ -424,7 +445,7 @@ function createTaskShellRuntime(ports) {
     if (!receipt) return [];
     return linkedTasks(shell(receipt.shellId)).map(value => ({ taskId: value.id, taskName: value.title || '' }));
   }
-  function refillContext(sessionId, { receiptId = null } = {}) {
+  function refillContext(sessionId, { receiptId = null, ...query } = {}) {
     const task = owns(sessionId);
     if (!task) throw failure('task_shell_context_unavailable', 'This turn is not owned by a task shell', 404);
     let receipt = receiptId ? store.get('receipt', receiptId) : null;
@@ -434,7 +455,9 @@ function createTaskShellRuntime(ports) {
     }
     if (!receipt || receipt.taskId !== task.id) throw failure('task_shell_context_unavailable', 'No active task-shell delivery was found', 409);
     const s = shell(receipt.shellId);
-    const snapshots = contextSnapshots(s, task.id);
+    if (query.task_id) taskFor(s, query.task_id);
+    const page = Object.keys(query).length ? contextPage(shellRecords(chatScope(s.id), getHistory, ports.getLiveState), query) : null;
+    const snapshots = page ? pageSnapshots(page) : contextSnapshots(s, task.id);
     const rendered = renderSnapshots(snapshots);
     receipt.contextSavings = {
       estimatedTokens: 0,
@@ -442,16 +465,19 @@ function createTaskShellRuntime(ports) {
         ?? receipt.contextSavings?.estimatedTokens ?? estimateTokens(rendered),
       contextRefilled: true,
     };
-    receipt.contextRefillTaskIds = snapshots.map(value => value.taskId);
-    receipt.contextRefillSnapshotIds = snapshots.map(value => value.hash);
+    receipt.contextRefillTaskIds = [...new Set([...(receipt.contextRefillTaskIds || []), ...snapshots.map(value => value.taskId).filter(Boolean)])];
+    receipt.contextRefillSnapshotIds = [...new Set([...(receipt.contextRefillSnapshotIds || []), ...snapshots.map(value => value.hash)])];
     for (const snapshot of snapshots) store.set('snapshot', snapshot.hash, snapshot);
     store.set('receipt', receipt.id, receipt);
     return {
       ok: true,
       current_task_id: task.id,
       task_ids: receipt.contextRefillTaskIds,
+      tasks: linkedTasks(s).map(t => ({ taskId: t.id, taskName: t.title })),
+      ...(page ? { page } : {}),
       estimated_tokens: estimateTokens(rendered),
-      context: rendered || 'No completed context from other linked tasks is available.',
+      context: page ? 'Historical data; preserve execution status and source. Use page.before or message_id/offset to read further.'
+        : rendered || 'No attributed history from other linked tasks is available. Use limit to browse shell history, including untagged records.',
     };
   }
   function settleAttribution(sessionId, receiptId, attribution = {}) {
@@ -460,10 +486,15 @@ function createTaskShellRuntime(ports) {
     if (!owner || !receipt || receipt.taskId !== owner.id) return { ok: false, code: 'task_shell_receipt_not_found' };
     const s = shell(receipt.shellId);
     const nextId = attribution.taskId || owner.id;
+    if (s.currentTaskId !== owner.id || (s.cursorReceiptId && s.cursorReceiptId !== receipt.id)) {
+      return { ok: false, code: 'task_shell_attribution_superseded' };
+    }
+    const snapshot = nextId === owner.id ? null : handoffSnapshot(nextId, getHistory(sessionId), {
+      ...attribution, sessionId, receipt, sourceWorkspace: getRecord(sessionId)?.worktreePath || getRecord(sessionId)?.cwd,
+    });
     return store.transaction(() => {
       let next = store.get('task', nextId);
-      const history = getHistory(sessionId);
-      const snapshot = snapshotHistory(nextId, history);
+      if (next && next.dirId !== s.dirId) throw failure('project_mismatch');
       if (!next) {
         const snapshotIds = [];
         if (snapshot.messages.length) { store.set('snapshot', snapshot.hash, snapshot); snapshotIds.push(snapshot.hash); }
@@ -471,7 +502,7 @@ function createTaskShellRuntime(ports) {
           parentTaskId: attribution.relatedTaskId || null, title: attribution.taskName || receipt.payload.text.slice(0, 120),
           snapshotIds, ready: false, createdAt: Date.now(), runtime: { ...owner.runtime } };
         store.set('task', next.id, next);
-      } else if (next.id !== owner.id && snapshot.messages.length) {
+      } else if (next.id !== owner.id && snapshot?.messages.length) {
         store.set('snapshot', snapshot.hash, snapshot);
         next.handoffSnapshotIds = [...new Set([...(next.handoffSnapshotIds || []), snapshot.hash])];
         store.set('task', next.id, next);
@@ -511,7 +542,7 @@ function createTaskShellRuntime(ports) {
     return { ok: false, code: 'task_shell_route_required' };
   }
   return {
-    open, adopt, link, remove, view, detail, send: sendInput, retry, owns,
+    open, adopt, link, remove, view, detail, chatScope, send: sendInput, retry, owns,
     guardAdmission, recentTasks, refillContext, contextTrace, settleAttribution, locateOrCreate, resolveTask, sendExplicit,
   };
 }

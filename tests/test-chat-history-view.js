@@ -15,6 +15,25 @@ const EVENT_SOURCE = fs.readFileSync(path.join(ROOT, 'public/chat-event-controll
 const HTML = fs.readFileSync(path.join(ROOT, 'public/chat.html'), 'utf8');
 const LIVE_UI_SOURCE = fs.readFileSync(path.join(ROOT, 'public/chat-live-ui.js'), 'utf8');
 
+test('shell passive updates retain equal replies from different executions and replace live placeholders', () => {
+  const { view, messagesEl } = fixture();
+  const msg = (session, id, content) => ({ id: `${session}:${id}`, sourceSessionId: session,
+    sourceMessageId: id, taskId: session, role: 'assistant', content });
+  view.commitMessage(msg('a', 'one', 'identical reply across tasks'));
+  view.commitMessage(msg('b', 'two', 'identical reply across tasks'));
+  assert.ok(view.findById('a:one'));
+  assert.ok(view.findById('b:two'));
+  view.commitSourcePage('a', [msg('a', 'live-a', 'partial output')]);
+  view.commitSourcePage('a', [msg('a', 'final', 'completed output with different text')]);
+  assert.equal(view.findById('a:live-a'), null);
+  assert.ok(view.findById('a:final'));
+  assert.ok(view.findById('b:two'));
+  assert.equal(messagesEl.querySelectorAll('.msg.assistant').length, 3);
+  view.clearSource('a');
+  assert.ok(view.findById('b:two'));
+  assert.equal(messagesEl.querySelectorAll('.msg.assistant').length, 1);
+});
+
 class FakeClassList {
   constructor(element) { this.element = element; this.values = new Set(); }
   set(value) { this.values = new Set(String(value || '').split(/\s+/).filter(Boolean)); }

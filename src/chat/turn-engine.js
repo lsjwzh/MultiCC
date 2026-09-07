@@ -2631,6 +2631,16 @@ function createChatTurnEngine(deps) {
   // ── Chat mode: stream-json WebSocket ──
   function handleChatWs(ws, req, urlObj) {
     const sessionName = urlObj.searchParams.get('session') || '_default';
+    const shellId = urlObj.searchParams.get('shell');
+    if (shellId) {
+      try {
+        if (ws._sharePerm) throw new Error('Shell history is unavailable through a session share');
+        taskContextHost.taskShellChatScope(shellId, sessionName);
+      } catch (error) {
+        sendWs(ws, { type: 'error', code: 'shell_scope_denied', error: error.message });
+        ws.close(); return;
+      }
+    }
     const persisted = persistedSessions.get(sessionName);
     if (!persisted || isInternalExecutionSlot(persisted)) {
       sendWs(ws, { type: 'error', error:
@@ -2688,6 +2698,7 @@ function createChatTurnEngine(deps) {
     }
 
     cs.clients.add(ws);
+    const stopShellWatch = shellId && taskContextHost.watchTaskShellChat(shellId, sessionName, event => sendWs(ws, event));
 
     // Resolve Provider identity and the shared cumulative/daily window view from
     // the token runtime so initial WS state and post-turn broadcasts cannot drift.
@@ -2732,9 +2743,12 @@ function createChatTurnEngine(deps) {
     // The replay helper also recognizes the crash-safety `_interim` record. It
     // promotes that stable-id entry to the one live streaming tail, rather than
     // sending both the persisted first batch and a cumulative id-less copy.
-    const canonicalPage = getChatHistoryRuntime().paginate(sessionName, { limit: CHAT_HISTORY_PAGE, includeHidden: urlObj.searchParams.get('historyScope') === 'archive' });
+    const historyOptions = { limit: CHAT_HISTORY_PAGE, includeHidden: urlObj.searchParams.get('historyScope') === 'archive' };
+    const canonicalPage = shellId
+      ? taskContextHost.taskShellChatHistory(shellId, { ...historyOptions, activeSessionId: sessionName })
+      : getChatHistoryRuntime().paginate(sessionName, historyOptions);
     const page = { messages: canonicalPage.messages, hasMore: canonicalPage.hasMore };
-    const replayMessages = buildReplayMessages(page.messages, cs);
+    const replayMessages = shellId ? page.messages : buildReplayMessages(page.messages, cs);
     // Include authoritative cumulative token usage from the persistent
     // accumulator so the frontend doesn't need to reconstruct it from the
     // rolling chat_history window (which trims old messages).
@@ -2839,7 +2853,7 @@ function createChatTurnEngine(deps) {
         if ((taskContextHost?.requiresTaskShell?.(sessionName) || taskContextHost?.ownsTaskShell?.(sessionName)) && msg.type !== 'typing') {
           if (!ws._sharePerm && msg.taskShell === true && ['user_message', 'cancel'].includes(msg.type)) {
             try {
-              const result = await taskContextHost.sendTaskShellInput(sessionName, msg);
+              const result = await taskContextHost.sendTaskShellInput(sessionName, msg, shellId);
               sendWs(ws, { type: 'task_shell_routed', ...result });
             } catch (error) {
               sendWs(ws, { type: 'error', code: error.code || 'task_shell_failed', error: error.message,
@@ -2921,6 +2935,7 @@ function createChatTurnEngine(deps) {
     });
 
     ws.on('close', () => {
+      if (stopShellWatch) stopShellWatch();
       cs.clients.delete(ws);
       // Do NOT kill claudeProc on disconnect — it may still be streaming to other clients
       // or the user may reconnect (lock screen, tab switch, etc.)
