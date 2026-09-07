@@ -52,18 +52,18 @@ const {
   buildHandoffCheckpoint, clearAllNativeCliStates,
 } = require('../cli-switch');
 const { cliHandoffSummary } = require('../cli/switch-runtime');
-const { summarizeHistoryUsage } = require('../codex-usage');
+const { summarizeHistoryUsage } = require('../codex/usage');
 const { buildReplayMessages } = require('../routes/chat-history');
-const chatStream = require('../chat-stream');
-const waitInjector = require('../wait-injector');
-const providers = require('../providers');
+const chatStream = require('./chat-stream');
+const waitInjector = require('../wait/injector');
+const providers = require('../providers/core');
 const { createTurnTimingRecorder } = require('./turn-timing');
 const { deriveOpenTasks } = require('./turn-event-replay');
 const { createCodexRolloutGuard } = require('./codex-rollout-guard');
 const { captureNativeSessionId } = require('./native-session-state');
 const { createOpencodeContextGuard } = require('./opencode-context-guard');
 const { isInternalExecutionSlot } = require('../session/public-session-access');
-const { providerSelectionDto } = require('../auto-provider-config');
+const { providerSelectionDto } = require('../providers/auto-provider-config');
 
 function admissionRootCause(value) {
   const raw = value instanceof Error
@@ -2809,7 +2809,6 @@ function createChatTurnEngine(deps) {
           // reconnect-retry join the same cancel operation instead of starting a
           // second one; without it the in-flight map still dedupes by session.
           await getSessionWorkHost().cancelActiveTurn(sessionName, {
-            resolveQueue: true,
             source: 'manual_cancel',
             operationId: typeof msg.operationId === 'string' ? msg.operationId : null,
           });
@@ -2830,7 +2829,6 @@ function createChatTurnEngine(deps) {
           // the model or joining FIFO.
           if (/^cancel$/i.test(String(msg.text).trim())) {
             await getSessionWorkHost().cancelActiveTurn(sessionName, {
-              resolveQueue: true,
               source: 'manual_cancel',
             });
             return;

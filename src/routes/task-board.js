@@ -5,28 +5,28 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const core = require('../task-board');
-const planning = require('../task-planning');
+const core = require('../task-board/core');
+const planning = require('../task-board/planning');
 const { createPaths } = require('../paths');
-const { isVoiceRouterRecord } = require('../voice-router');
-const { runStateForFreezeReason } = require('../session-work-scheduler');
+const { isVoiceRouterRecord } = require('../voice/router');
+const { runStateForFreezeReason } = require('../session-work/scheduler');
 const { classifyDisplay } = require('../classify/vocab');
 const { publicRunDto } = require('./task-runs');
 const {
   buildTaskRunContext: defaultBuildTaskRunContext,
   isTaskRunWrapperText,
-} = require('../task-run-context');
-const { recordRunError, runErrorOf } = require('../task-run-errors');
+} = require('../task-run/context');
+const { recordRunError, runErrorOf } = require('../task-run/errors');
 const { createTaskWorktreeService } = require('../task-worktree');
 const {
   taskTranscriptMessages,
   paginateTranscript,
-} = require('../task-transcript-repository');
+} = require('../task-run/transcript-repository');
 const {
   aggregateTaskUsages,
   createTaskMergeHandler,
-} = require('../task-board-merge-runtime');
-const { assertTaskBoardDeps, createRelatedTaskLinker } = require('../task-board-runtime-helpers');
+} = require('../task-board/merge-runtime');
+const { assertTaskBoardDeps, createRelatedTaskLinker } = require('../task-board/runtime-helpers');
 const { createTaskPlanningRuntime } = require('./task-planning');
 
 function createTaskBoardRuntime(deps) {

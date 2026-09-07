@@ -12,7 +12,7 @@ const {
   discoverTranscriptRoots,
   findNativeRefs,
   inspectWorktree,
-} = require('../src/task-run-production');
+} = require('../src/task-run/production');
 
 test('production recovery resumes cleanup only from the SQLite-owned exact manifest', async t => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-task-run-resume-'));

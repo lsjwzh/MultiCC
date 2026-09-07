@@ -8,8 +8,8 @@
 // by destructuring, so existing call sites are unchanged.
 const fs = require('fs');
 const path = require('path');
-const state = require('./state');
-const { gitIsRepo, gitRun, WORKTREE_SUBDIR } = require('./git');
+const state = require('./state/container');
+const { gitIsRepo, gitRun, WORKTREE_SUBDIR } = require('./git/service');
 // Shared with src/paths.js — the robust, symlink-ancestor-aware implementations.
 // (Previously duplicated here with a bare fs.realpathSync that threw for
 // not-yet-existing paths and did not collapse ancestor symlinks.)

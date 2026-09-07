@@ -7,12 +7,12 @@ const path = require('node:path');
 const test = require('node:test');
 
 const Database = require('better-sqlite3');
-const { createTaskRunStore } = require('../src/task-run-store');
+const { createTaskRunStore } = require('../src/task-run/store');
 const {
   describeRunFailure,
   recordRunError,
   runErrorOf,
-} = require('../src/task-run-errors');
+} = require('../src/task-run/errors');
 
 function withStore(t, fn) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-task-run-errors-'));

@@ -19,8 +19,10 @@ test('session bounded-context core has no host or cross-context dependencies', (
     for (const dependency of requires(file)) {
       assert.notEqual(dependency.includes('server'), true, `${file} reverse requires the host`);
       assert.doesNotMatch(dependency, /(?:directory|providers?|git|tmux|orchestration|outbox|wait-service)/);
+      // node:-prefixed builtins carry no cross-context coupling, so IO modules
+      // (persistence/hibernation) may use them; everything else must stay local.
       assert.equal(
-        dependency.startsWith('./') || dependency === '../session-dto',
+        dependency.startsWith('node:') || dependency.startsWith('./') || dependency === '../session-dto',
         true,
         `${file} has unapproved dependency ${dependency}`,
       );
@@ -112,7 +114,7 @@ test('dispatch admission derives busy from classify plus the repo lease, never f
 });
 
 test('the classify-derived busy predicate exempts assessing so an unhealthy Aux cannot wedge dispatch', () => {
-  const source = fs.readFileSync('src/session-work-host.js', 'utf8');
+  const source = fs.readFileSync('src/session-work/host.js', 'utf8');
   const start = source.indexOf('function isRunActive(sessionId) {');
   assert.ok(start >= 0);
   const body = source.slice(start, source.indexOf('\n  }', start));
@@ -135,13 +137,18 @@ test('only the shutdown drain reads raw liveness for a work decision', () => {
   const gateway = fs.readFileSync('src/dispatch/gateway-host.js', 'utf8');
   assert.match(gateway, /active: !!isTargetBusy\(s\.id\)/);
   assert.doesNotMatch(gateway, /activeChat\.isStreaming|clients\.size > 0/);
-  for (const file of ['src/task-board.js', 'src/routes/task-board.js']) {
+  for (const file of [
+    'src/task-board/core.js', 'src/task-board/normalize.js',
+    'src/task-board/classification.js', 'src/task-board/routing.js',
+    'src/task-board/view.js', 'src/task-board/planning.js',
+    'src/task-board/merge-runtime.js', 'src/routes/task-board.js',
+  ]) {
     assert.doesNotMatch(fs.readFileSync(file, 'utf8'), /isStreaming|claudeProc/, file);
   }
 });
 
 test('liveness never becomes a display state and never completes work', () => {
-  const workHost = fs.readFileSync('src/session-work-host.js', 'utf8');
+  const workHost = fs.readFileSync('src/session-work/host.js', 'utf8');
   const start = workHost.indexOf('function getRunState(sessionId) {');
   const runState = workHost.slice(start, workHost.indexOf('\n  }', start));
   assert.doesNotMatch(runState, /isStreaming|claudeProc|liveness/);

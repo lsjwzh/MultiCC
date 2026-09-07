@@ -7,10 +7,10 @@ const path = require('node:path');
 const test = require('node:test');
 
 const { createChatHistoryService } = require('../src/session/chat-history-service');
-const { projectHistoryUsage } = require('../src/codex-usage');
+const { projectHistoryUsage } = require('../src/codex/usage');
 const { createLivenessRuntime } = require('../src/liveness/runtime');
-const { createOrchestrationRuntime } = require('../src/orchestration-runtime');
-const { createOrchestrationStore } = require('../src/orchestration-store');
+const { createOrchestrationRuntime } = require('../src/orchestration/runtime');
+const { createOrchestrationStore } = require('../src/orchestration/store');
 const { createOutbox } = require('../src/outbox');
 const { createProcessProbe } = require('../src/liveness/process-probe');
 const { createRolloutPathResolver } = require('../src/liveness/rollout-path');

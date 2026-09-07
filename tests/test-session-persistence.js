@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const {
   PersistenceError,
   createSessionPersistence,
-} = require('../src/session-persistence');
+} = require('../src/session/persistence');
 
 test('required mutation saves a detached snapshot before retaining memory changes', () => {
   const records = new Map([['s1', { id: 's1', label: 'before' }]]);

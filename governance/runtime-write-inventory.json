@@ -36,7 +36,7 @@
       "migrationStrategy": "Create a gateway workspace port and relocate only after active-session detection plus worktree/CLI resume tests exist.",
       "sources": [
         {
-          "file": "src/session-hibernation.js",
+          "file": "src/session/hibernation.js",
           "anchor": "if (session.type === 'gateway') return session.cwd || path.join(homeDir(), '.multicc', 'gateway');"
         }
       ]
@@ -78,11 +78,11 @@
       "migrationStrategy": "Version the materialized-home layout and add a per-provider copy-forward/rollback operation before changing its root.",
       "sources": [
         {
-          "file": "src/providers.js",
+          "file": "src/providers/core.js",
           "anchor": "const CODEX_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-homes');"
         },
         {
-          "file": "src/codex-session-home.js",
+          "file": "src/codex/session-home.js",
           "anchor": "|| path.join(os.homedir(), '.multicc', 'codex-homes'));"
         }
       ]
@@ -95,7 +95,7 @@
       "migrationStrategy": "Keep the root disposable, permission-restricted and capability-free in its pathname; prune abandoned overlays at startup without copying them forward.",
       "sources": [
         {
-          "file": "src/providers.js",
+          "file": "src/providers/core.js",
           "anchor": "const CODEX_ATTEMPT_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-attempt-homes');"
         }
       ]
@@ -108,11 +108,11 @@
       "migrationStrategy": "Version the canonical layout; copy forward only a uniquely identified native rollout with durable atomic no-overwrite semantics, retain legacy sources for rollback, and fail closed on ambiguity.",
       "sources": [
         {
-          "file": "src/providers.js",
+          "file": "src/providers/core.js",
           "anchor": "const CODEX_SESSION_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-session-homes');"
         },
         {
-          "file": "src/codex-session-home.js",
+          "file": "src/codex/session-home.js",
           "anchor": "|| path.join(os.homedir(), '.multicc', 'codex-session-homes'));"
         }
       ]
@@ -125,7 +125,7 @@
       "migrationStrategy": "Version the generated-home layout, preserve restrictive permissions, and add a per-session copy-forward/rollback operation before changing its root.",
       "sources": [
         {
-          "file": "src/providers.js",
+          "file": "src/providers/core.js",
           "anchor": "const ZCODE_HOMES_DIR = path.join(os.homedir(), '.multicc', 'zcode-homes');"
         }
       ]
@@ -138,7 +138,7 @@
       "migrationStrategy": "Version the generated-home layout, preserve restrictive permissions, and add a per-session copy-forward/rollback operation before changing its root.",
       "sources": [
         {
-          "file": "src/providers.js",
+          "file": "src/providers/core.js",
           "anchor": "const KIMI_HOMES_DIR = path.join(os.homedir(), '.multicc', 'kimi-homes');"
         }
       ]
@@ -177,7 +177,7 @@
       "migrationStrategy": "Keep the explicit ASR_LOCAL_MODEL_DIR override; document backup/download behavior and never copy hundreds of MB during normal startup.",
       "sources": [
         {
-          "file": "src/asr-local.js",
+          "file": "src/voice/asr-local.js",
           "anchor": "ASR_LOCAL_MODEL_DIR: process.env.ASR_LOCAL_MODEL_DIR || path.join(os.homedir(), '.multicc', 'asr-models'),"
         },
         {
@@ -246,7 +246,7 @@
       "migrationStrategy": "Retain repository-local ownership; add retention and explicit user cleanup without moving backups into process-global state.",
       "sources": [
         {
-          "file": "src/git.js",
+          "file": "src/git/service.js",
           "anchor": "const backupDir = path.join(commonDir, 'multicc-backups', operationId);"
         }
       ]

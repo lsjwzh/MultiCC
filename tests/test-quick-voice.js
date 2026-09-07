@@ -7,7 +7,7 @@ console.log('=== Realtime Voice Implementation Validation ===\n');
 // Test 1: TTS Service loads
 console.log('[Test 1] TTS Service Loading');
 try {
-  const tts = require('../src/tts-service.js');
+  const tts = require('../src/voice/tts-service.js');
   assert(typeof tts.handleTtsWs === 'function', 'handleTtsWs should be a function');
   assert(typeof tts.providerStatus === 'function', 'providerStatus should be a function');
   assert(typeof tts.applyConfig === 'function', 'applyConfig should be a function');
@@ -78,7 +78,7 @@ if (serverContent.includes("ttsService.handleTtsWs")) {
   console.log('  ❌ TTS WebSocket route not found');
   process.exit(1);
 }
-if (serverContent.includes("require('../src/tts-service')")) {
+if (serverContent.includes("require('../src/voice/tts-service')")) {
   console.log('  ✅ TTS service imported');
 } else {
   console.log('  ❌ TTS service import not found');

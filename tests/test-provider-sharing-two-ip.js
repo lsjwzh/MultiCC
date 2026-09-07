@@ -16,10 +16,10 @@ const { isLocalRequest, isPrivateRequestPeer } = require('../src/request-localit
 const {
   createProviderProxyAdmission,
   createProviderProxyGuard,
-} = require('../src/provider-proxy-guard');
+} = require('../src/providers/proxy-guard');
 const { createAuthRuntime } = require('../src/routes/auth');
 const { createProviderRoutes } = require('../src/routes/providers');
-const { createProviderRelayShareStore } = require('../src/provider-relay-share-store');
+const { createProviderRelayShareStore } = require('../src/providers/relay-share-store');
 
 const RELAY_UI_FILE = path.join(__dirname, '..', 'public', 'manage-provider-relay.js');
 const ACCESS_TOKEN = 'two-ip-admin-secret';

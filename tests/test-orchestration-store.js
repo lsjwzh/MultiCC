@@ -8,7 +8,7 @@ const test = require('node:test');
 const {
   OrchestrationStoreCorruptError,
   createOrchestrationStore,
-} = require('../src/orchestration-store');
+} = require('../src/orchestration/store');
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 

@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const stateStore = require('./state-store');
+const stateStore = require('./state/store');
 
 function ensurePrivateDir(dir) {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });

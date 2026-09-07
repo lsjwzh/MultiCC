@@ -2,7 +2,7 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { createSessionWorkHost } = require('../src/session-work-host');
+const { createSessionWorkHost } = require('../src/session-work/host');
 
 function fixture(options = {}) {
   const calls = [];

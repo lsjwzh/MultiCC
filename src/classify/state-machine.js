@@ -1,6 +1,6 @@
 'use strict';
 
-const { SYSTEM_PREFIX } = require('../session-delivery');
+const { SYSTEM_PREFIX } = require('../session/delivery');
 
 // Classify state machine: the unified classify loop that decides goal/phase and
 // the D/C/W/B/E/P letter for every chat session. Owns the turn-end hook, the
@@ -21,7 +21,7 @@ const {
   phaseLabel,
 } = require('./vocab');
 const { taskShortCode } = require('./task-short-code');
-const { deriveTaskTitle, PENDING_TASK_TITLE } = require('../task-board');
+const { deriveTaskTitle, PENDING_TASK_TITLE } = require('../task-board/core');
 const {
   buildTaskAttributionConversation,
   buildTaskAttributionSystemPrompt,

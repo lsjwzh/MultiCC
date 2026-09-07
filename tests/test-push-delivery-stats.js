@@ -14,7 +14,7 @@ process.env.MULTICC_DATA_DIR = dataDir;
 
 const webpush = require('web-push');
 const originalSendNotification = webpush.sendNotification;
-const push = require('../src/push');
+const push = require('../src/push/service');
 
 function subscription(endpoint) {
   return { endpoint, keys: { auth: 'test', p256dh: 'test' } };

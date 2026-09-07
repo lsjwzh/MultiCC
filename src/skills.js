@@ -9,7 +9,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const state = require('./state');
+const state = require('./state/container');
 
 const CLAUDE_HOME = path.join(os.homedir(), '.claude');
 const CLAUDE_PROJECTS_DIR = path.join(CLAUDE_HOME, 'projects');

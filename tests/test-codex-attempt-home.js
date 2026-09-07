@@ -8,13 +8,13 @@ const test = require('node:test');
 const {
   cleanupCodexAttemptHomes,
   createCodexAttemptHome,
-} = require('../src/codex-attempt-home');
+} = require('../src/codex/attempt-home');
 const {
   assertCodexProxyConfigApplied,
   codexProxyConfigRequired,
-} = require('../src/codex-proxy-policy');
-const { createProviderRouterRuntime } = require('../src/provider-router-runtime');
-const { createCodexSessionHomeRuntime } = require('../src/codex-session-home');
+} = require('../src/codex/proxy-policy');
+const { createProviderRouterRuntime } = require('../src/providers/router-runtime');
+const { createCodexSessionHomeRuntime } = require('../src/codex/session-home');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-codex-attempt-home-'));
 const original = {
@@ -28,7 +28,7 @@ process.env.MULTICC_DATA_DIR = path.join(root, 'data');
 fs.mkdirSync(process.env.HOME, { recursive: true });
 fs.mkdirSync(process.env.MULTICC_DATA_DIR, { recursive: true });
 
-const providers = require('../src/providers');
+const providers = require('../src/providers/core');
 
 function restoreEnvironment() {
   for (const [key, value] of Object.entries(original)) {

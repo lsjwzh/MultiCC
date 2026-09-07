@@ -7,7 +7,7 @@ const path = require('node:path');
 const net = require('node:net');
 const { execFileSync, spawn } = require('node:child_process');
 const { assertTestDir, createPaths } = require('../src/paths');
-const { readJson, writeJsonAtomic } = require('../src/state-store');
+const { readJson, writeJsonAtomic } = require('../src/state/store');
 const { COMMANDER_ROUTER_PROMPT } = require('../src/routes/agent-resources');
 const { SUPPORTED_CHAT_CLIS } = require('../src/cli-switch');
 

@@ -141,7 +141,7 @@ require.cache[cpPath] = {
   id: cpPath, filename: cpPath, loaded: true,
   exports: { spawn: (cmd, args, opts) => { const p = fakeProc(); spawned.push({ cmd, args, opts, proc: p }); return p; } },
 };
-const chatStream = require('../src/chat-stream');
+const chatStream = require('../src/chat/chat-stream');
 
 test('streaming path: spawned → sent → firstByte phases fire in order, first byte once', async () => {
   const phases = [];

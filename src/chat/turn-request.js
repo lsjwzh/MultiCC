@@ -1,6 +1,6 @@
 'use strict';
 
-const { assertProviderBinding } = require('../provider-binding');
+const { assertProviderBinding } = require('../providers/binding');
 
 const REQUEST_KIND = 'chat-turn-request.v1';
 const MAX_ID_LENGTH = 128;

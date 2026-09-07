@@ -3,7 +3,7 @@
 // Verifies: one warm process across turns, in-context memory, turn boundary on
 // `result`, and the inject() continuation path (the "data returned" case).
 const crypto = require('crypto');
-const stream = require('../src/chat-stream');
+const stream = require('../src/chat/chat-stream');
 
 const NAME = 'test-stream-' + Date.now();
 const CLAUDE = process.env.CLAUDE_CMD || 'claude';

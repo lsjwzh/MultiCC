@@ -14,7 +14,7 @@
 // Uses the same deterministic fake-CLI substrate as test-chat-stream-idle-guard.
 
 const assert = require('assert');
-const stream = require('../src/chat-stream');
+const stream = require('../src/chat/chat-stream');
 
 // Fake CLI that acknowledges each user line with a `result` event.
 const echoCli = [

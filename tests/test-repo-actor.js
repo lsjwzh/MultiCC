@@ -130,10 +130,10 @@ test('active check fails closed with operation metadata', async t => {
 });
 
 test('core git/tmux modules contain no synchronous child-process calls', () => {
-  for (const file of ['src/git.js', 'src/git-queue.js', 'src/tmux.js']) {
+  for (const file of ['src/git/service.js', 'src/git/queue.js', 'src/tmux.js']) {
     const source = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
     assert.equal(/\bexec(?:File)?Sync\b/.test(source), false, `${file} still has a sync child process`);
-    if (file === 'src/git.js') {
+    if (file === 'src/git/service.js') {
       assert.equal(/['"]reset['"][\s\S]{0,40}['"]--hard['"]/.test(source), false,
         'merge safety must never reset --hard a user worktree');
     }

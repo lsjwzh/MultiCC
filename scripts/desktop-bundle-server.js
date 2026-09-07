@@ -10,7 +10,7 @@
 //        scripts/multicc-router-mcp.js
 //        package.json transformed — sherpa-onnx-node moves from dependencies
 //        to optionalDependencies so a platform without its prebuilt binary
-//        still installs (the server degrades to cloud ASR; see src/asr-local.js)
+//        still installs (the server degrades to cloud ASR; see src/voice/asr-local.js)
 //   out: <out>/node_modules via `npm install --omit=dev` (not npm ci — the
 //        dependency transform intentionally desyncs the lock)
 //

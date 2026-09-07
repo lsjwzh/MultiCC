@@ -8,10 +8,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const Database = require('better-sqlite3');
-const core = require('../src/task-board');
-const planning = require('../src/task-planning');
+const core = require('../src/task-board/core');
+const planning = require('../src/task-board/planning');
 const { createTaskBoardRuntime, assertTaskBoardDeps } = require('../src/routes/task-board');
-const { createTaskRunStore } = require('../src/task-run-store');
+const { createTaskRunStore } = require('../src/task-run/store');
 const taskBoardUi = require('../public/task-board-ui');
 const { mkRuntime } = require('./helpers/task-board-runtime');
 const { createSandboxConsole } = require('./helpers/sandbox-console');
@@ -198,7 +198,7 @@ test('task board display state follows classify runState for icon and status tex
   }
 
   const runStateAdapter = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'session-work-host.js'), 'utf8');
+    path.join(__dirname, '..', 'src', 'session-work', 'host.js'), 'utf8');
   assert.match(runStateAdapter, /classifyDisplay\(classifyState\)\.cardStatus/);
   // The phantom `classifyState === 'A'` branch is removed — no code ever wrote
   // 'A' (the D/C/W/B/E/P vocabulary never included it), so it was dead.
@@ -686,7 +686,7 @@ function admitFailedRun(taskRuns, taskId, runId, { retryable, code = 'rate_limit
 }
 
 function admitFailureState(taskRuns, runId, { retryable, code = 'rate_limited' } = {}) {
-  const { recordRunError } = require('../src/task-run-errors');
+  const { recordRunError } = require('../src/task-run/errors');
   recordRunError(taskRuns, {
     runId, code, category: retryable ? 'rate_limit' : 'authentication_permission',
     retryable,

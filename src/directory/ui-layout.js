@@ -21,7 +21,7 @@
 // pruning is what keeps a deleted fleet from lingering in the response without
 // forcing a disk write on every GET.
 
-const stateStore = require('../state-store');
+const stateStore = require('../state/store');
 const core = require('../ui-layout');
 
 function createUiLayoutRuntime(rawDeps) {

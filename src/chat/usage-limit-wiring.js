@@ -9,7 +9,7 @@
 //
 // deps:
 //   persistedSessions — Map<sessionName, record{ provider, cli }>
-//   providers         — src/providers (appTypeForCli, getProviderLimitTarget)
+//   providers         — src/providers/core (appTypeForCli, getProviderLimitTarget)
 //   chatBroadcast     — (sessionName, payload) => void
 //   createPoller      — factory from src/usage-limit-poller (injectable for tests)
 //   recordLimit       — optional (sessionName, dto) => void — persists the DTO

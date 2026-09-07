@@ -11,7 +11,7 @@
 //     an effective API key into the CLI config. MultiCC invokes that official
 //     flow but never decrypts, copies, or refreshes ZCode OAuth credentials.
 //   • A session with a selected MultiCC Provider uses an isolated ZCode config
-//     built by src/providers.js and does not depend on this global/native state.
+//     built by src/providers/core.js and does not depend on this global/native state.
 //
 // Desktop API-key sync remains an explicit user action. It is deliberately not
 // attempted during turn admission because that would overwrite the user's

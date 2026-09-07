@@ -8,7 +8,7 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { createTaskRunStreamEmitter } = require('../src/task-run-stream-forwarder');
+const { createTaskRunStreamEmitter } = require('../src/task-run/stream-forwarder');
 const { createTaskContextHost } = require('../src/task-context-host');
 
 function fakeClock() {

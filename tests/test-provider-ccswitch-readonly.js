@@ -69,7 +69,7 @@ test('CC-Switch import and MultiCC local mutations leave the source database unc
 
   const rowsBefore = readRows(ccDb);
   const fileBefore = snapshot(ccDb);
-  const providersPath = path.join(ROOT, 'src', 'providers.js');
+  const providersPath = path.join(ROOT, 'src', 'providers', 'core.js');
   const childScript = `
     const assert = require('node:assert/strict');
     const fs = require('node:fs');
