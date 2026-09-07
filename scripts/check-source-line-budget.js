@@ -21,17 +21,10 @@ const SOURCE_EXTENSIONS = new Set([
 // migration. Keep this map for explicit, reviewed debt only; ordinary feature
 // work must satisfy the default budget.
 const MIGRATION_DEBT = Object.freeze({
-  // Crossed 3000 in b4427cf (AI Assistant into the KPI row) before the budget
-  // gate caught it; the overview classify-grid renderer adds a bit more. Pay it
-  // down by splitting the aux-history UI (modal/panel/ws) into its own script.
-  'public/manage.js': Object.freeze({
-    // Re-baselined to the exact main size after a sibling merge grew the file
-    // without ratcheting (the gate was red on main). Keep exact-equality.
-    ceiling: 3030,
-    byteCeiling: 143066,
-    target: DEFAULT_MAX_LINES,
-    reason: 'aux-history UI pending split into a dedicated script',
-  }),
+  // public/manage.js crossed 3000 in b4427cf before the budget gate caught it;
+  // paid back down to 2632 by splitting the aux-history UI (modal/panel/ws,
+  // plus handleAuxHealth and the synchronous auxConnect init) into
+  // public/manage-aux-history.js — no manage.js debt entry remains.
   // Crossed 3000 in the chat-view unification M2 (three new task-mode script
   // tags + the task-mode stylesheet link) after sitting at 2999 for ages. Paid
   // back down to 3000 in M4 when the detail-modal retirement freed enough
