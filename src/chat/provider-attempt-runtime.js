@@ -628,6 +628,7 @@ function createProviderAttemptRuntime(options = {}) {
       visibleOutputObserved: !!(continuation && previous && previous.visibleOutputObserved),
       toolIntentObserved: !!(continuation && previous && previous.toolIntentObserved),
       sideEffectObserved: !!(continuation && previous && previous.sideEffectObserved),
+      proxyFailure: null,
       outcome: 'running',
       errorCategory: null,
       selectedAt: Number(now()),
@@ -1055,6 +1056,57 @@ function createProviderAttemptRuntime(options = {}) {
     });
   }
 
+  // Usage observations are the one proxy callback that retains the upstream
+  // HTTP status after the CLI has consumed the response body. Bind that status
+  // to the exact main attempt so turn finalization does not have to guess from
+  // a missing result event or provider-rendered assistant text.
+  function observeProxyOutcome(event = {}) {
+    const sessionId = clean(event.sessionId);
+    const record = currentBySession.get(sessionId);
+    const role = clean(event.roleKind || event.role || 'main').toLowerCase();
+    if (role !== 'main' || event.routeAttribution !== 'exact'
+        || !sameAttempt(record, event)
+        || record.decisionId !== clean(event.decisionId)
+        || record.attemptNo !== Number(event.attemptNo)
+        || record.providerId !== clean(event.providerId)
+        || record.providerRevision !== clean(event.providerRevision)
+        || record.outcome !== 'running') {
+      auditOnly(sessionId, {
+        type: 'provider_attempt_late_ignored', operation: 'proxy_outcome',
+        runtimeEpoch: clean(event.runtimeEpoch) || null,
+        turnId: clean(event.turnId) || null,
+        routeAttemptId: clean(event.routeAttemptId) || null,
+        routeGeneration: Number(event.routeGeneration) || null,
+        currentRouteAttemptId: record ? record.routeAttemptId : null,
+        currentRouteGeneration: record ? record.routeGeneration : null,
+      });
+      return Object.freeze({ accepted: false, code: 'proxy_attempt_unbound' });
+    }
+    if (clean(event.status).toLowerCase() !== 'error') {
+      return Object.freeze({ accepted: true, code: null, failure: null });
+    }
+    const status = Number(event.statusCode);
+    const httpStatus = Number.isInteger(status) && status >= 400 && status <= 599
+      ? status : null;
+    record.proxyFailure = Object.freeze({
+      source: 'proxy_response',
+      provider: record.cli,
+      providerId: record.providerId,
+      providerName: record.providerName,
+      httpStatus,
+      code: clean(event.errorCode) || 'UPSTREAM_HTTP_ERROR',
+      message: httpStatus ? `upstream HTTP ${httpStatus}` : 'upstream request failed',
+      observedAt: Number(now()),
+    });
+    return Object.freeze({ accepted: true, code: null, failure: record.proxyFailure });
+  }
+
+  function proxyFailure(reference) {
+    const record = currentBySession.get(clean(reference && reference.sessionId));
+    if (!sameAttempt(record, reference) || !record.proxyFailure) return null;
+    return Object.freeze({ ...record.proxyFailure });
+  }
+
   function snapshotSession(sessionId) {
     return snapshot(currentBySession.get(clean(sessionId)));
   }
@@ -1071,6 +1123,8 @@ function createProviderAttemptRuntime(options = {}) {
     authorizeProxyRequest,
     onProxyActivity,
     attributeProxyUsage,
+    observeProxyOutcome,
+    proxyFailure,
     proxySessionId,
     resolveProxySessionId,
     snapshot: snapshotSession,

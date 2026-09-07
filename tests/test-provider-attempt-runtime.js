@@ -112,6 +112,53 @@ test('visible proxy deltas close the replay fence before authoritative CLI outpu
   ).accepted, false, 'a delta after the producer end cannot re-enter the chat stream');
 });
 
+test('an exact main proxy 429 is retained as immutable attempt failure evidence', () => {
+  const { runtime } = harness();
+  const attempt = runtime.beginAttempt(route());
+  const outcome = runtime.observeProxyOutcome({
+    ...attempt,
+    roleKind: 'main',
+    routeAttribution: 'exact',
+    status: 'error',
+    statusCode: 429,
+    errorCode: 'UPSTREAM_HTTP_ERROR',
+  });
+  assert.equal(outcome.accepted, true);
+  assert.deepEqual(runtime.proxyFailure(attempt), {
+    source: 'proxy_response',
+    provider: 'codex',
+    providerId: 'provider-a',
+    providerName: 'Provider A',
+    httpStatus: 429,
+    code: 'UPSTREAM_HTTP_ERROR',
+    message: 'upstream HTTP 429',
+    observedAt: 1_003,
+  });
+  assert.equal(Object.isFrozen(runtime.proxyFailure(attempt)), true);
+});
+
+test('ambiguous, non-main, and stale proxy outcomes cannot contaminate the current attempt', () => {
+  const { runtime } = harness();
+  const first = runtime.beginAttempt(route());
+  for (const event of [
+    { ...first, roleKind: 'main', routeAttribution: 'ambiguous' },
+    { ...first, roleKind: 'sub', routeAttribution: 'exact' },
+  ]) {
+    assert.equal(runtime.observeProxyOutcome({
+      ...event, status: 'error', statusCode: 429,
+    }).accepted, false);
+  }
+  assert.equal(runtime.proxyFailure(first), null);
+  runtime.finishAttempt(first, { outcome: 'failed' });
+  const second = runtime.beginAttempt(route({
+    providerId: 'provider-b', providerName: 'Provider B', model: 'model-b', attemptNo: 2,
+  }));
+  assert.equal(runtime.observeProxyOutcome({
+    ...first, roleKind: 'main', routeAttribution: 'exact', status: 'error', statusCode: 429,
+  }).accepted, false);
+  assert.equal(runtime.proxyFailure(second), null);
+});
+
 test('attempt delta scrubbing never releases a capability split at any byte boundary', () => {
   const { runtime } = harness();
   const attempt = runtime.beginAttempt(route({ cli: 'claude', protocol: 'anthropic' }));
