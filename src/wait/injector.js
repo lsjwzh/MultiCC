@@ -54,7 +54,7 @@
 // which autoContinue (D) and bgCheck (E) skip - the result inject subsumes both.
 
 const crypto = require('crypto');
-const { SYSTEM_PREFIX } = require('../session-delivery');
+const { SYSTEM_PREFIX } = require('../session/delivery');
 
 // Injected dependencies (set by init) so the module is testable in isolation.
 let _inject = async () => {};   // (session, text, opts?) => Promise   — runChatTurn wrapper

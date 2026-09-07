@@ -10,7 +10,7 @@ const { createOrchestrationStore } = require('./store');
 const { createOrchestrationSqliteStore } = require('./sqlite-store');
 const { createOutbox } = require('../outbox');
 const { createWaitService } = require('../wait/service');
-const { createSessionWorkScheduler } = require('../session-work-scheduler');
+const { createSessionWorkScheduler } = require('../session-work/scheduler');
 const {
   TERMINAL_OPERATION_STATES,
   TERMINAL_TASK_STATES,

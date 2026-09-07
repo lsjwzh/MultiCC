@@ -54,7 +54,7 @@ const {
 const { cliHandoffSummary } = require('../cli/switch-runtime');
 const { summarizeHistoryUsage } = require('../codex/usage');
 const { buildReplayMessages } = require('../routes/chat-history');
-const chatStream = require('../chat-stream');
+const chatStream = require('./chat-stream');
 const waitInjector = require('../wait/injector');
 const providers = require('../providers/core');
 const { createTurnTimingRecorder } = require('./turn-timing');

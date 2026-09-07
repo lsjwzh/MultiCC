@@ -88,8 +88,8 @@ const { createPaths } = require('./src/paths');
 const stateStore = require('./src/state/store');
 const stateTx = require('./src/state/tx');
 const { bootstrapState } = require('./src/bootstrap/state');
-const { createSessionPersistence } = require('./src/session-persistence'); const { mountPublicSessionAccessGuard } = require('./src/session/public-session-access');
-const { createSessionHibernationRuntime, initializeSessionWorktrees, resolveSessionCwd } = require('./src/session-hibernation');
+const { createSessionPersistence } = require('./src/session/persistence'); const { mountPublicSessionAccessGuard } = require('./src/session/public-session-access');
+const { createSessionHibernationRuntime, initializeSessionWorktrees, resolveSessionCwd } = require('./src/session/hibernation');
 const { createOrchestrationRuntime } = require('./src/orchestration/runtime');
 const { createRouterToolHost } = require('./src/router-tool-host');
 const { createHostLifecycle } = require('./src/host-lifecycle');
@@ -192,7 +192,7 @@ const { TurnProgressHeartbeat } = require('./src/chat/progress-heartbeat');
 const { createBackgroundTaskRuntime } = require('./src/chat/background-task-runtime');
 const { sharedTurnEventJournal } = require('./src/chat/turn-event-journal');
 const { createTaskContextHost, createTaskRunStreamEmitter } = require('./src/task-context-host');
-const { createSessionWorkHost } = require('./src/session-work-host');
+const { createSessionWorkHost } = require('./src/session-work/host');
 const {
   TurnRequestError,
   normalizeTurnRequest,
@@ -1849,9 +1849,9 @@ function reportHostControlFailure(component, stage, category) {
 tunnel.setFailureReporter((stage, category) => {
   reportHostControlFailure('tunnel', stage, category);
 });
-const chatStream = require('./src/chat-stream');
+const chatStream = require('./src/chat/chat-stream');
 const waitInjector = require('./src/wait/injector');
-const sessionDelivery = require('./src/session-delivery').createSessionDelivery({
+const sessionDelivery = require('./src/session/delivery').createSessionDelivery({
   admit: (session, text, opts) => chatTurnEngine.admitChatWork(session, text, opts),
   log: message => console.log('[multicc/delivery]', message),
 });

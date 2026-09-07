@@ -10,7 +10,7 @@ const { createOutbox } = require('../src/outbox');
 const {
   createSessionWorkScheduler,
   runStateForFreezeReason,
-} = require('../src/session-work-scheduler');
+} = require('../src/session-work/scheduler');
 
 test('runStateForFreezeReason maps each freeze reason to a truthful runState', () => {
   // User / external hand-off → waiting (the only reasons that mean "act now").

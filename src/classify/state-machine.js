@@ -1,6 +1,6 @@
 'use strict';
 
-const { SYSTEM_PREFIX } = require('../session-delivery');
+const { SYSTEM_PREFIX } = require('../session/delivery');
 
 // Classify state machine: the unified classify loop that decides goal/phase and
 // the D/C/W/B/E/P letter for every chat session. Owns the turn-end hook, the

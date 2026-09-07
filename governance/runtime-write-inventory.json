@@ -36,7 +36,7 @@
       "migrationStrategy": "Create a gateway workspace port and relocate only after active-session detection plus worktree/CLI resume tests exist.",
       "sources": [
         {
-          "file": "src/session-hibernation.js",
+          "file": "src/session/hibernation.js",
           "anchor": "if (session.type === 'gateway') return session.cwd || path.join(homeDir(), '.multicc', 'gateway');"
         }
       ]

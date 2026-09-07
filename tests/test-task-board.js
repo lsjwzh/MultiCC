@@ -198,7 +198,7 @@ test('task board display state follows classify runState for icon and status tex
   }
 
   const runStateAdapter = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'session-work-host.js'), 'utf8');
+    path.join(__dirname, '..', 'src', 'session-work', 'host.js'), 'utf8');
   assert.match(runStateAdapter, /classifyDisplay\(classifyState\)\.cardStatus/);
   // The phantom `classifyState === 'A'` branch is removed — no code ever wrote
   // 'A' (the D/C/W/B/E/P vocabulary never included it), so it was dead.
