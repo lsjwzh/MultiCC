@@ -3,7 +3,7 @@
 // Surface for the official Claude OAuth health: a read-only status endpoint
 // and a one-click path into an interactive `claude auth login` terminal.
 //
-// The background refresher (src/claude-oauth-refresh.js) is always tried
+// The background refresher (src/claude-auth/oauth-refresh.js) is always tried
 // first — it runs the CLI itself so the CLI rewrites its own Keychain entry.
 // This surface exists for the states that runtime cannot fix: the refresh
 // token itself is dead (`needs-login`) or the CLI ran and still could not

@@ -35,7 +35,7 @@
 const { createChromeCdp, portsFromEnv, profileDirsFromEnv } = require('../chrome-cdp');
 const { getManagedQuotaBrowser } = require('../quota-managed-browser');
 const { rememberClaudeScrape, renderClaudeBar } = require('../quota/claude-bar-state');
-const { fetchUsage, USAGE_URL } = require('../claude-official-oauth');
+const { fetchUsage, USAGE_URL } = require('../claude-auth/official-oauth');
 
 const CDP_TIMEOUT_MS = Number(process.env.CLAUDE_QUOTA_TIMEOUT_MS || 15000);
 function panelTextTimeoutMs() {
@@ -274,7 +274,7 @@ function configureClaudeOAuthSource(source) {
 
 function defaultOAuthSource() {
   const { createOfficialAccountStore } = require('../official-accounts');
-  const { createClaudeAccountCredentialService } = require('../claude-account-credentials');
+  const { createClaudeAccountCredentialService } = require('../claude-auth/account-credentials');
   const accounts = createOfficialAccountStore();
   return {
     accounts,

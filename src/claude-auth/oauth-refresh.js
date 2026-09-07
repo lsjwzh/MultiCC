@@ -29,7 +29,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { buildChildEnv } = require('./providers');
+const { buildChildEnv } = require('../providers');
 
 const KEYCHAIN_SERVICE = 'Claude Code-credentials';
 // Start trying well before the token dies, because the CLI keeps its own idea

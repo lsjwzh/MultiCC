@@ -15,7 +15,7 @@ const {
   createClaudeOAuthRefresher,
   looksLikeExpiredOAuth,
   parseCredentials,
-} = require('../src/claude-oauth-refresh');
+} = require('../src/claude-auth/oauth-refresh');
 
 const T0 = 1_700_000_000_000;
 const HOUR = 3600_000;

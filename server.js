@@ -116,7 +116,7 @@ const { mountOpenCodeModelRoutes } = require('./src/routes/opencode-models');
 const { mountOpenCodeQuotaRoutes } = require('./src/routes/opencode-quota');
 const { mountQoderModelRoutes } = require('./src/routes/qoder-models');
 const { mountQoderQuotaRoutes } = require('./src/routes/qoder-quota');
-const { mountCodexQuotaRoutes } = require('./src/routes/codex-quota'); const { createOfficialAccountStore, sanitizeLoginEnv } = require('./src/official-accounts'); const { mountCodexAccountRoutes } = require('./src/routes/codex-accounts'); const { createCodexAccountRefreshSupervisor } = require('./src/codex-accounts-refresh'); const { mountClaudeAccountRoutes } = require('./src/routes/claude-accounts'); const { createClaudeAccountCredentialService } = require('./src/claude-account-credentials'); // multi-account official credentials (see src/official-accounts.js)
+const { mountCodexQuotaRoutes } = require('./src/routes/codex-quota'); const { createOfficialAccountStore, sanitizeLoginEnv } = require('./src/official-accounts'); const { mountCodexAccountRoutes } = require('./src/routes/codex-accounts'); const { createCodexAccountRefreshSupervisor } = require('./src/codex-accounts-refresh'); const { mountClaudeAccountRoutes } = require('./src/routes/claude-accounts'); const { createClaudeAccountCredentialService } = require('./src/claude-auth/account-credentials'); // multi-account official credentials (see src/official-accounts.js)
 const { mountArkQuotaRoutes } = require('./src/routes/ark-quota');
 const { mountZhipuQuotaRoutes } = require('./src/routes/zhipu-quota');
 const { mountKimiQuotaRoutes } = require('./src/routes/kimi-quota');
@@ -164,7 +164,7 @@ const { createSessionTriggers } = require('./src/triggers');
 const {
   createClaudeOAuthRefresher,
   DEFAULT_CHECK_INTERVAL_MS: CLAUDE_OAUTH_CHECK_INTERVAL_MS,
-} = require('./src/claude-oauth-refresh');
+} = require('./src/claude-auth/oauth-refresh');
 const {
   createCodexOAuthRefresher,
   DEFAULT_CHECK_INTERVAL_MS: CODEX_OAUTH_CHECK_INTERVAL_MS,
