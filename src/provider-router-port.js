@@ -7,7 +7,7 @@ const {
   createProviderBinding,
   toLegacyProviderView,
 } = require('./provider-binding');
-const { mountCodexOfficialRelay } = require('./codex-official-relay');
+const { mountCodexOfficialRelay } = require('./codex/official-relay');
 const {
   createProviderProxyAdmission,
   createProviderProxyGuard,

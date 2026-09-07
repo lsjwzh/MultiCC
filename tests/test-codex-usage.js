@@ -9,7 +9,7 @@ const {
   projectHistoryUsage,
   summarizeHistoryUsage,
   usageEpochForSessionId,
-} = require('../src/codex-usage');
+} = require('../src/codex/usage');
 
 function cumulative(input, cached, output, reasoning = 0) {
   return {

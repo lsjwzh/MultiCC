@@ -14,8 +14,8 @@ const {
   sanitizeLoginEnv,
   codexAccountAuthFilePath,
 } = require('../src/official-accounts');
-const { createCodexOfficialRelayHandler } = require('../src/codex-official-relay');
-const { createCodexAccountRefreshSupervisor } = require('../src/codex-accounts-refresh');
+const { createCodexOfficialRelayHandler } = require('../src/codex/official-relay');
+const { createCodexAccountRefreshSupervisor } = require('../src/codex/accounts-refresh');
 const poller = require('../src/usage-limit-poller');
 const { mountCodexQuotaRoutes } = require('../src/routes/codex-quota');
 

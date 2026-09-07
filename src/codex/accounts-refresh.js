@@ -10,7 +10,7 @@
 // parameterized by authFile + buildEnv; we just point CODEX_HOME at the
 // account dir so the CLI rotates THAT auth.json).
 
-const { createCodexOAuthRefresher, stripOpenAiEnv } = require('./codex-oauth-refresh');
+const { createCodexOAuthRefresher, stripOpenAiEnv } = require('./oauth-refresh');
 
 function createCodexAccountRefreshSupervisor(options = {}) {
   const accounts = options.accounts;
