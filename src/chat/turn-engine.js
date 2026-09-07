@@ -1020,25 +1020,31 @@ function createChatTurnEngine(deps) {
     return admitted || { ok: false, code: 'scheduler_not_ready' };
   }
 
-  function runChatTurn(sessionName, text, opts = {}) {
+  // ── Turn admission gates: runChatTurn's pre-flight chain ──
+  // Pure extraction of the guards that used to open runChatTurn: shell guard,
+  // persisted-record + hibernation wake, experimental-runtime handoff, codex
+  // rollout guard, opencode context rotate, and request normalization. Gates
+  // that own their user feedback (hibernation, rollout, rotate) still broadcast
+  // here; a blocked result only tells the caller to abort silently.
+  function admitRunChatTurn(sessionName, text, opts) {
     const shellGuard = taskContextHost?.guardAdmission?.(sessionName, text, opts);
-    if (shellGuard?.ok === false) return false;
+    if (shellGuard?.ok === false) return { blocked: true };
     const persisted = persistedSessions.get(sessionName);
     if (!persisted) {
       console.warn(`[multicc/chat] runChatTurn: no persisted record for ${sessionName}`);
-      return false;
+      return { blocked: true };
     }
     if (persisted.taskBoundTaskId && getSessionHibernation?.()) {
       try { getSessionHibernation().assertAwake(sessionName); }
       catch (error) {
         logger.warn?.('chat_run_hibernated_workspace_blocked', { sessionId: sessionName, code: error.code });
         try { chatBroadcast(sessionName, { type: 'error', code: 'workspace_hibernated', error: '会话工作区尚未恢复，消息未执行；系统会保留并重试投递。' }); } catch (_) {}
-        return false;
+        return { blocked: true };
       }
     }
     const experimentalRuntime = getExperimentalTuiChatRuntime?.();
     if (experimentalRuntime?.owns(persisted)) {
-      return experimentalRuntime.admit(sessionName, text, opts);
+      return { delegated: experimentalRuntime.admit(sessionName, text, opts) };
     }
     // Typed Commander user input is intercepted by the host router. Any fallback
     // Commander turn is deliberately barred from the legacy marker dispatcher.
@@ -1066,7 +1072,7 @@ function createChatTurnEngine(deps) {
           type: 'error', code: guardResult.code,
           error: 'Codex 原生会话历史无法唯一定位；为避免恢复到错误上下文，本轮已阻止。请检查重复的 rollout 文件。',
         });
-        return false;
+        return { blocked: true };
       }
       if (guardResult.action === 'archived') {
         persisted.cliSessionId = null;
@@ -1166,8 +1172,16 @@ function createChatTurnEngine(deps) {
     } catch (error) {
       const code = error instanceof TurnRequestError ? error.code : 'invalid_request';
       logger.warn('chat_turn_rejected_invalid_request', { sessionId: sessionName, code });
-      return false;
+      return { blocked: true };
     }
+    return { persisted, existingCs, initialHistory, turnRequest };
+  }
+
+  function runChatTurn(sessionName, text, opts = {}) {
+    const admissionGate = admitRunChatTurn(sessionName, text, opts);
+    if (admissionGate.blocked) return false;
+    if ('delegated' in admissionGate) return admissionGate.delegated;
+    const { persisted, existingCs, initialHistory, turnRequest } = admissionGate;
 
     text = turnRequest.text;
     const clientMsgId = turnRequest.identity.clientMsgId || '';

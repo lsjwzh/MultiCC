@@ -604,8 +604,11 @@ test('preparation lease settles after runner handoff and releases every failure 
 test('production cutover keeps duplicate, proof and runner ordering explicit', () => {
   // runChatTurn now lives in src/chat/turn-engine.js; the ordering assertions scan
   // the extracted engine body up to the next engine function's banner comment.
+  // The boundary starts at admitRunChatTurn (the pre-flight gate chain extracted
+  // from runChatTurn's head), so both the admission gates and the turn body stay
+  // inside the scanned region.
   const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
-  const start = source.indexOf('function runChatTurn(sessionName, text, opts = {})');
+  const start = source.indexOf('function admitRunChatTurn(sessionName, text, opts)');
   const end = source.indexOf('// ── Wait injector: continue a session', start);
   assert.ok(start >= 0 && end > start, 'runChatTurn engine boundary must exist');
   const body = source.slice(start, end);
