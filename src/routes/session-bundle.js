@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { gitExportSessionBundle, gitImportSessionBundle } = require('../git');
+const { gitExportSessionBundle, gitImportSessionBundle } = require('../git/service');
 
 // Cross-machine handoff routes (Happier-parity: move a live session to another
 // machine): GET /api/sessions/:id/bundle exports an encrypted bundle carrying

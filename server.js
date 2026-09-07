@@ -44,7 +44,7 @@ const cronTasks = require('./plugins/cron/cron-tasks');
 const webpush = require('web-push');
 const macosPower = require('./plugins/utils/macos-power');
 const gitPush = require('./plugins/utils/git-push');
-const { runGit: gitRunQueued, queueDepth: gitQueueDepth } = require('./src/git-queue');
+const { runGit: gitRunQueued, queueDepth: gitQueueDepth } = require('./src/git/queue');
 
 const crypto = require('crypto');
 const bus = require('./src/bus');
@@ -609,7 +609,7 @@ const {
   gitWorktreeAdd, gitWorktreeDetach, gitWorktreeValidate, gitWorktreeRollbackCreate, gitWorktreeRemove, gitRelocateWorktree, gitWorktreeMergeState, gitMergeBack,
   gitSyncFromBase, gitRebaseResolve, gitWorktreeSnapshot, gitExportSessionBundle,
   gitImportSessionBundle, defaultRepoActor,
-} = require('./src/git');
+} = require('./src/git/service');
 const { slotOwnsWorktree } = require('./src/task-worktree');
 
 // RepoActor operations are retained in a bounded in-memory history. Destructive
