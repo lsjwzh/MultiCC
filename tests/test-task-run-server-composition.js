@@ -32,7 +32,12 @@ test('server creates hidden reusable slots and freezes proxy usage lineage at re
   assert.match(source, /session\.taskExecutionSlot = true/);
   assert.match(source, /createTaskRunProviderBridge\(\{ records: persistedSessions/);
   assert.match(source, /providerAttemptRuntime\.attributeProxyUsage\(event\)/);
-  assert.match(source, /tagged\.routeAttribution === 'exact' \|\| tagged\.producerBound === true\) taskRunProviderBridge\.onUsageObserved\(tagged\)/);
+  assert.match(source, /if \(tagged\.routeAttribution === 'exact' \|\| tagged\.producerBound === true\) \{\s*taskRunProviderBridge\.onUsageObserved\(tagged\)/);
+  assert.match(source, /providerAttemptRuntime\.observeProxyOutcome\(tagged\)/);
+  assert.match(source, /outcome\.failure\?\.httpStatus === 429/);
+  assert.match(source, /limitRecorder\.recordProviderFailure\(/);
+  assert.equal((source.match(/onUsageObserved: handleProxyUsage/g) || []).length, 2,
+    'Claude and Codex protocol mounts must share the same usage outcome handler');
   assert.match(source, /const bound = providerAttemptRuntime\.onProxyActivity\(event\); if \(bound\) taskRunProviderBridge\.onActivity\(\{ \.\.\.event, sessionId: bound\.sessionId \}\)/);
   assert.match(source, /authorizeProxyRequest: providerAttemptRuntime\.authorizeProxyRequest/);
   assert.match(source, /taskRunHost\?\.isSlotUnavailable\(sid, item \|\| \{\}\)/);

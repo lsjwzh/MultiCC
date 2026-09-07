@@ -54,7 +54,7 @@ function fixture({
       ],
     },
   };
-  return { runtime, session, events };
+  return { runtime, session, events, limits };
 }
 
 function quotaDecision() {
@@ -152,6 +152,38 @@ test('a fresh rejected window summary is exhausted even below 100 percent', () =
   });
 });
 
+test('an active provider cooldown is skipped and expiry permits a fresh probe', () => {
+  const { limitState } = require('../src/chat/auto-provider-policy');
+  const entry = {
+    status: 'ok', fetchedAt: 990_000,
+    summary: {
+      kind: 'availability', status: 'rejected', category: 'rate_limit',
+      httpStatus: 429, blockedUntilMs: 1_010_000, observedAtMs: 990_000,
+    },
+  };
+  assert.deepEqual(limitState(entry, { now: 1_000_000, staleAfterMs: 60_000 }), {
+    state: 'exhausted', reason: 'provider_cooldown_active',
+  });
+  assert.deepEqual(limitState(entry, { now: 1_020_000, staleAfterMs: 60_000 }), {
+    state: 'stale', reason: 'provider_cooldown_expired',
+  });
+});
+
+test('an active cooldown overrides a sticky provider selection', () => {
+  const { runtime, session, limits } = fixture({ emptyFetchedAt: 900_000 });
+  const first = runtime.beginTurn({ session, turnId: 'sticky-source' });
+  assert.equal(first.initial().providerId, 'empty');
+  first.recordSuccess({ providerId: 'empty' });
+  limits.set('empty', {
+    status: 'ok', kind: 'availability', fetchedAt: 999_000,
+    summary: {
+      kind: 'availability', status: 'rejected', category: 'rate_limit',
+      httpStatus: 429, blockedUntilMs: 1_100_000, observedAtMs: 999_000,
+    },
+  });
+  assert.equal(runtime.beginTurn({ session, turnId: 'sticky-cooled' }).initial().providerId, 'backup');
+});
+
 test('OpenCode runtime discovers Codex-pool candidates and reads their own quota namespace', () => {
   const now = 1_000_000;
   const getCalls = [];
@@ -218,6 +250,41 @@ test('observable output and non-provider failures close the cross-provider repla
   assert.equal(second.failover({
     error: { category: 'invalid_request_model', phase: 'before_first_token', partialOutput: false, sideEffects: false },
   }, openAttempt()), null);
+});
+
+test('unsafe replay reserves a different provider for exactly one fresh handoff turn', () => {
+  const { runtime, session, events } = fixture({ emptyFetchedAt: 900_000 });
+  const first = runtime.beginTurn({ session, turnId: 'turn-side-effect' });
+  assert.equal(first.initial().providerId, 'empty');
+  const attempt = { ...openAttempt(), replayFence: 'side_effect', sideEffectObserved: true };
+  assert.equal(first.failover(quotaDecision(), attempt), null,
+    'the original logical turn must never be replayed');
+  const reservation = first.prepareHandoff(quotaDecision(), attempt);
+  assert.equal(reservation.providerId, 'backup');
+  assert.equal(events.at(-1).phase, 'handoff_pending');
+
+  const handoff = runtime.beginTurn({ session, turnId: 'turn-handoff' });
+  assert.equal(handoff.initial().providerId, 'backup');
+  const later = runtime.beginTurn({ session, turnId: 'turn-later' });
+  assert.equal(later.initial().providerId, 'empty', 'the reservation is one-shot');
+});
+
+test('unsafe replay does not prepare a handoff while background work is live', () => {
+  const { runtime, session } = fixture({ emptyFetchedAt: 900_000, backgroundActive: true });
+  const turn = runtime.beginTurn({ session, turnId: 'turn-background-handoff' });
+  turn.initial();
+  const attempt = { ...openAttempt(), replayFence: 'side_effect', sideEffectObserved: true };
+  assert.equal(turn.prepareHandoff(quotaDecision(), attempt), null);
+});
+
+test('handoff stops when every alternate provider is attempted or unavailable', () => {
+  const { runtime, session } = fixture({ emptyFetchedAt: 900_000, thirdFetchedAt: 990_000 });
+  const turn = runtime.beginTurn({ session, turnId: 'turn-no-alternate' });
+  turn.initial();
+  assert.equal(turn.failover(quotaDecision(), openAttempt()).invocationOptions.providerId, 'backup');
+  const fenced = { ...openAttempt('backup'), replayFence: 'visible_output', visibleOutputObserved: true };
+  assert.equal(turn.failover(quotaDecision(), fenced), null);
+  assert.equal(turn.prepareHandoff(quotaDecision(), fenced), null);
 });
 
 test('every upstream HTTP 4xx can switch providers before output or side effects', () => {

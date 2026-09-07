@@ -36,6 +36,7 @@ function createAutoProviderRuntime(options = {}) {
   const stickyBySession = new Map();
   const currentBySession = new Map();
   const selectionRefBySession = new Map();
+  const pendingBySession = new Map();
 
   function catalogCandidates(session, selection) {
     const cli = session.cli || 'claude';
@@ -78,6 +79,7 @@ function createAutoProviderRuntime(options = {}) {
         enabled: false,
         initial: () => Object.freeze({}),
         failover: () => null,
+        prepareHandoff: () => null,
         recordSuccess: () => {},
       });
     }
@@ -93,11 +95,14 @@ function createAutoProviderRuntime(options = {}) {
     if (selectionRefBySession.get(session.id) !== rawSelection) {
       stickyBySession.delete(session.id);
       currentBySession.delete(session.id);
+      pendingBySession.delete(session.id);
       selectionRefBySession.set(session.id, rawSelection);
     }
     const selection = validated.value;
     const candidates = catalogCandidates(session, selection);
     const attempted = new Set();
+    const pending = pendingBySession.get(session.id) || null;
+    if (pending?.fromProviderId) attempted.add(pending.fromProviderId);
     let current = null;
     let physicalAttempt = 0;
     let selectionFailureReason = null;
@@ -143,7 +148,8 @@ function createAutoProviderRuntime(options = {}) {
       const picked = chooseCandidate({
         candidates,
         attempted,
-        stickyProviderId: selection.sticky ? stickyBySession.get(session.id) : null,
+        stickyProviderId: pending?.providerId
+          || (selection.sticky ? stickyBySession.get(session.id) : null),
       });
       if (!picked.candidate) {
         selectionFailureReason = 'candidate_pool_exhausted';
@@ -155,6 +161,7 @@ function createAutoProviderRuntime(options = {}) {
       }
       const previous = current;
       current = picked.candidate;
+      if (pending) pendingBySession.delete(session.id);
       attempted.add(current.providerId);
       physicalAttempt += 1;
       publish(previous ? 'switched' : 'selected', current, {
@@ -242,6 +249,49 @@ function createAutoProviderRuntime(options = {}) {
       });
     }
 
+    // Unsafe replay boundaries cannot switch the physical route inside the
+    // current logical turn. Reserve an eligible route for one fresh continuation
+    // turn instead; the handoff coordinator owns durable injection and de-dup.
+    function prepareHandoff(decision, attempt) {
+      const safety = failoverSafety(decision, attempt);
+      if (safety.ok || ![
+        'unsafe_failure_phase',
+        'unsafe_replay_boundary',
+        'provider_replay_fence_closed',
+      ].includes(safety.reason)) return null;
+      let backgroundActive = false;
+      if (liveBackgroundGate) {
+        try { backgroundActive = liveBackgroundGate(session.id) === true; }
+        catch (_) { backgroundActive = true; }
+      }
+      if (backgroundActive) return null;
+      const excluded = new Set(attempted);
+      if (attempt?.providerId) excluded.add(attempt.providerId);
+      const picked = chooseCandidate({ candidates, attempted: excluded });
+      if (!picked.candidate) return null;
+      const reservation = Object.freeze({
+        sessionId: session.id,
+        originTurnId: turnId,
+        fromProviderId: attempt?.providerId || current?.providerId || null,
+        fromProviderName: candidates.find(item => item.providerId === attempt?.providerId)?.providerName
+          || attempt?.providerId || current?.providerName || null,
+        providerId: picked.candidate.providerId,
+        providerName: picked.candidate.providerName,
+        model: picked.candidate.model,
+        reasonCode: safety.reason,
+      });
+      pendingBySession.set(session.id, reservation);
+      publish('handoff_pending', picked.candidate, {
+        fromProviderId: reservation.fromProviderId,
+        fromProviderName: reservation.fromProviderName,
+        fromTrustDomain: candidates.find(item => item.providerId === reservation.fromProviderId)?.trustDomain || null,
+        toTrustDomain: picked.candidate.trustDomain,
+        reasonCode: safety.reason,
+        skipped: picked.skipped,
+      });
+      return reservation;
+    }
+
     function recordSuccess(attempt) {
       const providerId = attempt && attempt.providerId || current && current.providerId;
       if (!providerId) return;
@@ -249,7 +299,9 @@ function createAutoProviderRuntime(options = {}) {
       publish('succeeded', current, { reasonCode: 'turn_succeeded' });
     }
 
-    return Object.freeze({ enabled: true, selection, initial, failover, recordSuccess });
+    return Object.freeze({
+      enabled: true, selection, initial, failover, prepareHandoff, recordSuccess,
+    });
   }
 
   function snapshot(sessionId) {
@@ -261,6 +313,7 @@ function createAutoProviderRuntime(options = {}) {
     stickyBySession.delete(sessionId);
     currentBySession.delete(sessionId);
     selectionRefBySession.delete(sessionId);
+    pendingBySession.delete(sessionId);
   }
 
   return Object.freeze({ beginTurn, clearSession, snapshot });
