@@ -3,7 +3,7 @@
 // Claude official-account management routes (multi-account OAuth).
 //
 // Unlike codex (whose CLI performs the login), Claude accounts log in through
-// MULTICC's own PKCE flow (src/claude-official-oauth.js, a Node port of
+// MULTICC's own PKCE flow (src/claude-auth/official-oauth.js, a Node port of
 // CLIProxyAPI's claude auth): POST returns an authorize URL, the user opens it
 // in a browser, Anthropic redirects to the loopback listener on :54545, and the
 // server exchanges the code and writes the account credential file. The cpr
@@ -25,7 +25,7 @@ const {
   exchangeCode,
   fetchUsage,
   waitForCallback,
-} = require('../claude-official-oauth');
+} = require('../claude-auth/official-oauth');
 const { officialAccountIdFromProvider } = require('../official-accounts');
 
 function sanitizeLabel(value) {

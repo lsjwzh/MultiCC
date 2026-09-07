@@ -5,8 +5,8 @@ const http = require('node:http');
 const test = require('node:test');
 
 const { createOfficialAccountStore } = require('../src/official-accounts');
-const oauth = require('../src/claude-official-oauth');
-const { createClaudeAccountCredentialService } = require('../src/claude-account-credentials');
+const oauth = require('../src/claude-auth/official-oauth');
+const { createClaudeAccountCredentialService } = require('../src/claude-auth/account-credentials');
 const { mountClaudeAccountRoutes } = require('../src/routes/claude-accounts');
 
 const fs = require('node:fs');

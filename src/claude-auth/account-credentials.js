@@ -8,7 +8,7 @@
 // per account + Retry-After honouring backoff, exactly CPA's policy
 // (claudeRefreshGroup / claudeRefreshBlock, 5s–5min clamps).
 
-const { refreshTokens, fetchProfile, ClaudeOAuthError, REFRESH_MIN_BACKOFF_MS } = require('./claude-official-oauth');
+const { refreshTokens, fetchProfile, ClaudeOAuthError, REFRESH_MIN_BACKOFF_MS } = require('./official-oauth');
 
 const EXPIRY_MARGIN_MS = 60 * 1000; // treat tokens expiring within a minute as expired
 
