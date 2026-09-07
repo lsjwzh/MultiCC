@@ -25,6 +25,8 @@ const {
   compactBarText,
 } = require('./quota-bar-view');
 
+const PROVIDER_FAILURE_COOLDOWN_MS = 5 * 60_000;
+
 function createLimitRecorder({ cache, persistedSessions, providers, now = Date.now } = {}) {
   if (!cache || !persistedSessions || !providers) {
     throw new TypeError('[limit-cache-recorder] requires { cache, persistedSessions, providers }');
@@ -124,6 +126,36 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
       });
     }
     return null;
+  }
+
+  // Store only a bounded availability cooldown. Response bodies and
+  // credentials are intentionally excluded from this durable record.
+  function recordProviderFailure({
+    sessionId, providerId, category, httpStatus, blockedUntilMs,
+  } = {}) {
+    const identity = providerId
+      ? explicitProviderIdentity(providerId)
+      : appTypeForSession(sessionId);
+    if (!identity) return null;
+    const observedAtMs = Number(now());
+    const requestedUntil = Number(blockedUntilMs);
+    const safeBlockedUntilMs = Number.isFinite(requestedUntil) && requestedUntil > observedAtMs
+      ? Math.trunc(requestedUntil) : observedAtMs + PROVIDER_FAILURE_COOLDOWN_MS;
+    const status = Number(httpStatus);
+    return cache.record(identity.appType, identity.providerId, {
+      kind: 'availability',
+      summary: {
+        kind: 'availability',
+        status: 'rejected',
+        category: String(category || 'provider_transient').slice(0, 80),
+        httpStatus: Number.isInteger(status) ? status : null,
+        blockedUntilMs: safeBlockedUntilMs,
+        observedAtMs,
+      },
+      summaryText: '',
+      barText: null,
+      fetchedAt: observedAtMs,
+    });
   }
 
   // Host → every provider whose limit target resolves to that upstream host.
@@ -259,6 +291,7 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
     recordSession,
     recordDto,
     recordProvider,
+    recordProviderFailure,
     recordVendor,
     recordClaude,
     resolveByHost,
@@ -267,4 +300,4 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
   });
 }
 
-module.exports = { createLimitRecorder };
+module.exports = { createLimitRecorder, PROVIDER_FAILURE_COOLDOWN_MS };

@@ -43,6 +43,7 @@ const {
   providerRetryRouteOptions,
 } = require('./provider-invocation');
 const { createAutoProviderRuntime } = require('./auto-provider-runtime');
+const { createAutoProviderHandoff } = require('./auto-provider-handoff');
 const { redactProviderRouteCapability } = require('../observability');
 const { createWsEnvelope } = require('../api-contract');
 const { taskShortCode, taskIdForShortCode } = require('../classify/task-short-code');
@@ -416,6 +417,31 @@ function createChatTurnEngine(deps) {
       catch (_) { return true; }
     },
   });
+  const autoProviderHandoff = deps.autoProviderHandoff || createAutoProviderHandoff({
+    inject: (sessionId, text, delayMs, metadata) => (
+      waitInjector.injectSystemMsg(sessionId, text, delayMs, metadata)
+    ),
+    hasLiveBackgroundTasks: sessionId => {
+      try { return getBackgroundTaskRuntime()?.hasLiveBackgroundTasks?.(sessionId) === true; }
+      catch (_) { return true; }
+    },
+    logger,
+  });
+
+  function scheduleAutoProviderHandoff(sessionName, turn, preparation) {
+    if (!preparation) return null;
+    const result = autoProviderHandoff.schedule({
+      sessionId: sessionName,
+      turnId: turn.turnId,
+      preparation,
+      lineage: turn.lineage,
+    });
+    if (result.scheduled) chatBroadcast(sessionName, {
+      type: 'system', subtype: 'warning',
+      message: `Auto Provider：${preparation.fromProviderName} 已中断，将由 ${preparation.providerName} 在新回合中安全接续。`,
+    });
+    return result;
+  }
 
   function forwardProviderEvent(sessionName, cs, turn, runner, event) {
     const observed = attemptRuntime.observeEvent(runner && runner.providerAttempt, event);
@@ -1842,6 +1868,7 @@ function createChatTurnEngine(deps) {
         const boundaryErrorEnvelope = reconcileBoundaryErrorEnvelope(
           attemptRuntime, runner.providerAttempt, provider?.name || cs.cli, cs.currentAssistantText,
         );
+        const proxyFailure = attemptRuntime.proxyFailure?.(runner.providerAttempt) || null;
         const attemptFacts = attemptRuntime.snapshot(sessionName);
         const sideEffects = turnHasSideEffects(cs)
           || !!attemptFacts?.toolIntentObserved || !!attemptFacts?.sideEffectObserved;
@@ -1869,6 +1896,7 @@ function createChatTurnEngine(deps) {
         }, normalizeHandoff({ handoff: persisted.pendingCliHandoff }));
         const shouldClassifyApiError = (!guardedHandoffResumeFailure || errorOnlyBoundary) && !!(
           boundaryErrorEnvelope
+          || proxyFailure
           || runner.apiErrorRaw
           || runner.sawApiError
           || runner.adapterError
@@ -1882,7 +1910,7 @@ function createChatTurnEngine(deps) {
           provider: cs.cli,
           code: killReason,
           message: 'turn cancelled',
-        } : boundaryErrorEnvelope || runner.apiErrorRaw || {
+        } : proxyFailure || boundaryErrorEnvelope || runner.apiErrorRaw || {
           source: 'process_stderr',
           provider: cs.cli,
           code: killReason || (code !== 0 ? `process_exit_${code}` : 'empty_exit'),
@@ -1909,6 +1937,9 @@ function createChatTurnEngine(deps) {
         const deferAutoToCodexContinuation = cs.cli === 'codex' && !!pendingStreamError;
         const autoFailover = apiErrorDecision && !deferAutoToCodexContinuation
           ? autoTurn.failover(apiErrorDecision, attemptFacts) : null;
+        const autoHandoffPreparation = apiErrorDecision && !deferAutoToCodexContinuation
+          && !autoFailover?.invocationOptions
+          ? autoTurn.prepareHandoff?.(apiErrorDecision, attemptFacts) || null : null;
         const effectiveApiErrorDecision = autoFailover?.decision || apiErrorDecision;
         if (autoFailover?.invocationOptions) chatBroadcast(sessionName, {
           type: 'system', subtype: 'warning',
@@ -2078,13 +2109,16 @@ function createChatTurnEngine(deps) {
           reasonCode: finalizePlan.action,
         });
         turnProgressHeartbeat.stop(sessionName, turn.turnId);
-        turnFinalizationExecutor.execute(finalizePlan, {
+        const finalization = turnFinalizationExecutor.execute(finalizePlan, {
           runnerKind: 'process', sessionName, cs, persisted, turn, runner,
           code,
           signal,
           stderrTail: sanitizedStderrTail,
           pendingTransportError,
         });
+        if (!finalization.terminalBlocked) {
+          scheduleAutoProviderHandoff(sessionName, turn, autoHandoffPreparation);
+        }
       });
 
       return proc;
@@ -2448,6 +2482,7 @@ function createChatTurnEngine(deps) {
       attemptRuntime, runner.providerAttempt,
       provider?.name || persisted.cli || 'claude', cs.currentAssistantText,
     );
+    const proxyFailure = attemptRuntime.proxyFailure?.(runner.providerAttempt) || null;
     const attemptFacts = attemptRuntime.snapshot(sessionName);
     const sideEffects = turnHasSideEffects(cs)
       || !!attemptFacts?.toolIntentObserved || !!attemptFacts?.sideEffectObserved;
@@ -2470,6 +2505,7 @@ function createChatTurnEngine(deps) {
     }, normalizeHandoff({ handoff: persisted.pendingCliHandoff }));
     const shouldClassifyApiError = (!guardedHandoffResumeFailure || errorOnlyBoundary) && !!(
       boundaryErrorEnvelope
+      || proxyFailure
       || runner.apiErrorRaw
       || runner.sawApiError
       || runner.adapterError
@@ -2483,7 +2519,7 @@ function createChatTurnEngine(deps) {
         code: runner.killReason,
         message: 'turn cancelled',
       }
-      : boundaryErrorEnvelope || runner.apiErrorRaw || {
+      : proxyFailure || boundaryErrorEnvelope || runner.apiErrorRaw || {
         source: 'host_interruption',
         provider: persisted.cli || 'claude',
         code: 'stream_ended_without_result',
@@ -2505,6 +2541,8 @@ function createChatTurnEngine(deps) {
       })
       : null;
     const autoFailover = apiErrorDecision ? autoTurn.failover(apiErrorDecision, attemptFacts) : null;
+    const autoHandoffPreparation = apiErrorDecision && !autoFailover?.invocationOptions
+      ? autoTurn.prepareHandoff?.(apiErrorDecision, attemptFacts) || null : null;
     const effectiveApiErrorDecision = autoFailover?.decision || apiErrorDecision;
     if (autoFailover?.invocationOptions) chatBroadcast(sessionName, {
       type: 'system', subtype: 'warning',
@@ -2582,9 +2620,12 @@ function createChatTurnEngine(deps) {
       errorCategory: apiErrorDecision?.error?.category || null,
       reasonCode: plan.action,
     });
-    turnFinalizationExecutor.execute(plan, {
+    const finalization = turnFinalizationExecutor.execute(plan, {
       runnerKind: 'stream', sessionName, cs, persisted, turn, runner,
     });
+    if (!finalization.terminalBlocked) {
+      scheduleAutoProviderHandoff(sessionName, turn, autoHandoffPreparation);
+    }
   }
 
   // ── Chat mode: stream-json WebSocket ──

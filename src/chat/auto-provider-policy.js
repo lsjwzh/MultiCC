@@ -12,6 +12,15 @@ const SAFE_PHASES = new Set(['connect', 'request', 'before_first_token']);
 
 function limitState(entry, { now = Date.now(), staleAfterMs = 5 * 60_000 } = {}) {
   if (!entry || typeof entry !== 'object') return Object.freeze({ state: 'unknown', reason: 'limit_unknown' });
+  const summary = entry.summary && typeof entry.summary === 'object' ? entry.summary : {};
+  if (summary.kind === 'availability') {
+    const blockedUntilMs = Number(summary.blockedUntilMs);
+    if (String(summary.status || '').toLowerCase() === 'rejected'
+        && Number.isFinite(blockedUntilMs) && blockedUntilMs > now) {
+      return Object.freeze({ state: 'exhausted', reason: 'provider_cooldown_active' });
+    }
+    return Object.freeze({ state: 'stale', reason: 'provider_cooldown_expired' });
+  }
   const fetchedAt = Number(entry.fetchedAt);
   if (!Number.isFinite(fetchedAt) || now - fetchedAt > staleAfterMs) {
     return Object.freeze({ state: 'stale', reason: 'limit_stale' });
@@ -21,7 +30,6 @@ function limitState(entry, { now = Date.now(), staleAfterMs = 5 * 60_000 } = {})
     return Object.freeze({ state: 'exhausted', reason: 'fresh_limit_exhausted' });
   }
   if (entry.status && status !== 'ok') return Object.freeze({ state: 'unknown', reason: 'limit_error' });
-  const summary = entry.summary && typeof entry.summary === 'object' ? entry.summary : {};
   const text = String(entry.summaryText || '').toLowerCase();
   const numericBalance = typeof summary.available === 'number' ? summary.available
     : typeof summary.total === 'number' ? summary.total : null;
@@ -40,7 +48,10 @@ function chooseCandidate({ candidates, attempted = new Set(), stickyProviderId =
     .filter(candidate => candidate && candidate.enabled !== false && !attempted.has(candidate.providerId));
   const skipped = eligible
     .filter(candidate => candidate.limitState === 'exhausted')
-    .map(candidate => ({ providerId: candidate.providerId, reason: 'fresh_limit_exhausted' }));
+    .map(candidate => ({
+      providerId: candidate.providerId,
+      reason: candidate.limitReason || 'fresh_limit_exhausted',
+    }));
   const usable = eligible.filter(candidate => candidate.limitState !== 'exhausted');
   usable.sort((left, right) => {
     if (left.providerId === stickyProviderId && right.providerId !== stickyProviderId) return -1;

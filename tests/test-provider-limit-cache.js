@@ -248,7 +248,20 @@ function testRecorder() {
   ok(recorder.resolveByBaseUrl('https://open.bigmodel.cn/api/paas/v4/chat/completions').some(m => m.providerId === 'p-glm'), 'resolveByBaseUrl matches by host + path prefix');
   ok(recorder.resolveByHost('unrelated.example.com').length === 0, 'unknown host matches nothing');
 
+  const cooldown = recorder.recordProviderFailure({
+    sessionId: 's2', providerId: 'p-glm', category: 'rate_limit', httpStatus: 429,
+  });
+  ok(cooldown && cooldown.kind === 'availability'
+    && cooldown.summary.blockedUntilMs === clock.now() + 5 * 60_000,
+  'provider failure records a bounded availability cooldown');
+
   cache.close();
+  const reopened = createProviderLimitCache({ file, now: clock.now });
+  const persistedCooldown = reopened.get('claude', 'p-glm');
+  ok(persistedCooldown?.summary?.kind === 'availability'
+    && persistedCooldown.summary.httpStatus === 429,
+  'provider availability cooldown survives a cache restart');
+  reopened.close();
 }
 
 // ── stale/freshness projection ──────────────────────────────────────────────
