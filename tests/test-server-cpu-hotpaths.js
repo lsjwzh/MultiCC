@@ -7,7 +7,7 @@ const path = require('node:path');
 const test = require('node:test');
 
 const { createChatHistoryService } = require('../src/session/chat-history-service');
-const { projectHistoryUsage } = require('../src/codex-usage');
+const { projectHistoryUsage } = require('../src/codex/usage');
 const { createLivenessRuntime } = require('../src/liveness/runtime');
 const { createOrchestrationRuntime } = require('../src/orchestration-runtime');
 const { createOrchestrationStore } = require('../src/orchestration-store');

@@ -52,7 +52,7 @@ const {
   buildHandoffCheckpoint, clearAllNativeCliStates,
 } = require('../cli-switch');
 const { cliHandoffSummary } = require('../cli/switch-runtime');
-const { summarizeHistoryUsage } = require('../codex-usage');
+const { summarizeHistoryUsage } = require('../codex/usage');
 const { buildReplayMessages } = require('../routes/chat-history');
 const chatStream = require('../chat-stream');
 const waitInjector = require('../wait/injector');

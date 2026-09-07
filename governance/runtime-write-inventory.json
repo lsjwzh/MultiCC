@@ -82,7 +82,7 @@
           "anchor": "const CODEX_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-homes');"
         },
         {
-          "file": "src/codex-session-home.js",
+          "file": "src/codex/session-home.js",
           "anchor": "|| path.join(os.homedir(), '.multicc', 'codex-homes'));"
         }
       ]
@@ -112,7 +112,7 @@
           "anchor": "const CODEX_SESSION_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-session-homes');"
         },
         {
-          "file": "src/codex-session-home.js",
+          "file": "src/codex/session-home.js",
           "anchor": "|| path.join(os.homedir(), '.multicc', 'codex-session-homes'));"
         }
       ]

@@ -18,7 +18,7 @@ const {
   looksLikeCodexLoginRequired,
   parseCodexAuth,
   stripOpenAiEnv,
-} = require('../src/codex-oauth-refresh');
+} = require('../src/codex/oauth-refresh');
 const { sanitizeMessage } = require('../src/chat/api-error-policy');
 
 const T0 = 1_700_000_000_000;

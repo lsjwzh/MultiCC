@@ -1,6 +1,6 @@
 'use strict';
 
-const { projectHistoryUsage } = require('../codex-usage');
+const { projectHistoryUsage } = require('../codex/usage');
 
 const EMPTY_ROLE_SNAPSHOT = Object.freeze({
   main: null,

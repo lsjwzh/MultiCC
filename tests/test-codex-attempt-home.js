@@ -8,13 +8,13 @@ const test = require('node:test');
 const {
   cleanupCodexAttemptHomes,
   createCodexAttemptHome,
-} = require('../src/codex-attempt-home');
+} = require('../src/codex/attempt-home');
 const {
   assertCodexProxyConfigApplied,
   codexProxyConfigRequired,
-} = require('../src/codex-proxy-policy');
+} = require('../src/codex/proxy-policy');
 const { createProviderRouterRuntime } = require('../src/provider-router-runtime');
-const { createCodexSessionHomeRuntime } = require('../src/codex-session-home');
+const { createCodexSessionHomeRuntime } = require('../src/codex/session-home');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-codex-attempt-home-'));
 const original = {

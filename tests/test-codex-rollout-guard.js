@@ -11,7 +11,7 @@ const {
   DEFAULT_ARCHIVE_TTL_DAYS,
   ARCHIVE_DIRNAME,
 } = require('../src/chat/codex-rollout-guard');
-const { createCodexSessionHomeRuntime } = require('../src/codex-session-home');
+const { createCodexSessionHomeRuntime } = require('../src/codex/session-home');
 
 // The guard protects `codex exec resume` from oversized rollouts (observed:
 // 440MB file → deterministic internal hang before the first upstream request).

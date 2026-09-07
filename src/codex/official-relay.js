@@ -18,9 +18,9 @@ const crypto = require('node:crypto');
 const os = require('node:os');
 const path = require('node:path');
 
-const { officialAccountIdFromProvider } = require('./official-accounts');
-const { preprocessResponsesHistory, repairRejectedResponsesHistory } = require('./model-history-converter');
-const { publicTransportError, publicUpstreamError, readUpstreamError } = require('./upstream-error');
+const { officialAccountIdFromProvider } = require('../official-accounts');
+const { preprocessResponsesHistory, repairRejectedResponsesHistory } = require('../model-history-converter');
+const { publicTransportError, publicUpstreamError, readUpstreamError } = require('../upstream-error');
 
 const DEFAULT_AUTH_FILE = path.join(os.homedir(), '.codex', 'auth.json');
 const DEFAULT_UPSTREAM_URL = 'https://chatgpt.com/backend-api/codex/responses';
