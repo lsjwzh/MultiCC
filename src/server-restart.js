@@ -3,13 +3,25 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-// Invoke the manager through bash instead of executing ./multicc directly.
-// Source/archive installs do not reliably preserve the executable bit; direct
-// execution then exits 126 after the API has already reported success.
+// Use the same ./multicc restart entry as a manual restart, with a bash fallback
+// for source/archive installs that did not preserve the executable bit.
 const BASH_PATH = '/bin/bash';
 const MANAGER_NAME = 'multicc';
-const RESTART_EXEC_COMMAND = `exec ${BASH_PATH} ./${MANAGER_NAME} restart`;
+const RESTART_EXEC_COMMAND = `if [ -x ./${MANAGER_NAME} ]; then exec ./${MANAGER_NAME} restart; else exec ${BASH_PATH} ./${MANAGER_NAME} restart; fi`;
 const RESTART_SHELL_COMMAND = `sleep 2 && ${RESTART_EXEC_COMMAND}`;
+const shellQuote = value => `'${String(value).replace(/'/g, "'\\''")}'`;
+
+function writeRestartScript(rootDir, fsImpl = fs) {
+  const logs = path.join(rootDir, 'logs');
+  fsImpl.mkdirSync(logs, { recursive: true });
+  const directory = fsImpl.mkdtempSync(path.join(logs, 'restart-'));
+  fsImpl.chmodSync(directory, 0o700);
+  const scriptPath = path.join(directory, 'restart.sh');
+  // Materialize a real detached script, preserving the manual manager entry.
+  // Absolute cwd + shell quoting work with spaces, quotes and shell metacharacters.
+  fsImpl.writeFileSync(scriptPath, `#!/bin/sh\ntrap '' HUP\n/bin/sleep 2\ncd ${shellQuote(rootDir)} || exit 1\n${RESTART_EXEC_COMMAND}\n`, { mode: 0o700 });
+  return { scriptPath, logPath: path.join(directory, 'restart.log') };
+}
 
 class RestartPreflightError extends Error {
   constructor(code, message, cause) {
@@ -81,12 +93,16 @@ function scheduleDetachedRestart(options = {}) {
   // the manager cannot even be read or the shell cannot be executed.
   preflightRestart({ rootDir, fsImpl, pathImpl });
 
-  const child = spawn('/bin/sh', ['-c', RESTART_SHELL_COMMAND], {
-    cwd: rootDir,
-    detached: true,
-    stdio: 'ignore',
-    env,
-  });
+  const files = fsImpl || fs;
+  const { scriptPath, logPath } = writeRestartScript(rootDir, files);
+  const output = files.openSync(logPath, 'a', 0o600);
+  let child;
+  try {
+    child = spawn('/bin/sh', [scriptPath], {
+      cwd: rootDir, detached: true, stdio: ['ignore', output, output],
+      env: { ...env, MULTICC_NODE: process.execPath },
+    });
+  } finally { files.closeSync(output); }
   if (!child || typeof child.once !== 'function' || typeof child.unref !== 'function') {
     throw new TypeError('restart scheduler received an invalid child process');
   }
@@ -125,5 +141,6 @@ module.exports = {
   RESTART_SHELL_COMMAND,
   RestartPreflightError,
   preflightRestart,
+  writeRestartScript,
   scheduleDetachedRestart,
 };
