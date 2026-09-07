@@ -370,7 +370,6 @@ function modelValidForProvider(appType, providerId, model, summaryOverride) {
     // pre-catalog accept-all behaviour for the official login.
     return true;
   }
-  if (!p) return true; // unknown codex/default target — don't second-guess
   if (isTier) {
     // 'default' follows ANTHROPIC_MODEL; other tiers only work when the
     // provider maps them (ANTHROPIC_DEFAULT_*_MODEL) — unmapped, the CLI

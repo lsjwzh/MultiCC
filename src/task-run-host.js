@@ -5,9 +5,9 @@ const { createUsageObserved, validateUsageObserved } = require('./usage-observed
 const { assertProviderBinding } = require('./provider-binding');
 const { isTaskRunWrapperText } = require('./task-run-context');
 const { describeRunFailure, recordRunError } = require('./task-run-errors');
+const { TERMINAL_EXECUTION_STATUSES } = require('./task-run-store');
 
 const TASK_RUN_CLIS = new Set(['claude', 'codex']);
-const TERMINAL_EXECUTION_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
 
 function clean(value) { return value == null ? '' : String(value).trim(); }
 

@@ -1758,6 +1758,7 @@ const open = createTaskRunStore;
 
 module.exports = {
   SCHEMA_VERSION,
+  TERMINAL_EXECUTION_STATUSES,
   TaskRunStoreError,
   createTaskRunStore,
   extractArtifactReferences,
