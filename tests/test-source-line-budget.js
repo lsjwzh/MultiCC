@@ -77,6 +77,7 @@ test('the current tracked tree satisfies the ratcheted budget', () => {
   // Debt is allowed only where MIGRATION_DEBT declares it. Anything else over
   // budget is a violation above, so this pins the declared set — a new god file
   // cannot be quietly parked here, and retiring an entry (by splitting the file
-  // back under 3000) means shrinking this list in the same commit.
-  assert.deepEqual(result.debts.map(entry => entry.file), ['public/manage.js']);
+  // back under 3000) means shrinking this list in the same commit. The
+  // manage.js entry was retired by the manage-aux-history.js split.
+  assert.deepEqual(result.debts.map(entry => entry.file), []);
 });
