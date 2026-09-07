@@ -3,8 +3,8 @@
 // ── Restart the whole multicc server (graceful) ──
 // A detached child re-launches us after we exit. The route is auth-gated
 // (deliberately NOT in the bypass allowlist at the top of server.js), so shared
-// view/operate viewers cannot reach it. The child runs `/bin/bash ./multicc
-// restart`, whose do_stop sends SIGINT → gracefulShutdown (drains in-flight
+// view/operate viewers cannot reach it. The generated script runs ./multicc restart
+// (bash fallback without +x), whose do_stop sends SIGINT → gracefulShutdown (drains in-flight
 // turns + flushes partial chats) before do_start brings up a fresh instance.
 // Calling bash explicitly keeps source/archive installs working when the
 // manager script lacks +x.
@@ -15,7 +15,7 @@
 // scheduled we never reset it on success — the process is about to be replaced.
 const { scheduleDetachedRestart } = require('../server-restart');
 
-const RESTART_FLAG_TTL_MS = 30000;
+const RESTART_FLAG_TTL_MS = 90000;
 
 // deps:
 //   chatSessions      Map — live chat sessions (read-only here; counts streaming turns)
@@ -47,11 +47,9 @@ function createServerRestartRoute(deps) {
 
   function mountRoutes(app) {
     app.post('/api/restart', (req, res) => {
-      // Safety net: detached `/bin/bash ./multicc restart` should replace us
-      // within ~2s. If we're still alive after RESTART_FLAG_TTL_MS the
-      // replacement failed (stale pidfile / multiple node server.js survivors —
-      // do_stop missed the live PID), so reset the flag instead of 409-ing
-      // "already in progress" forever.
+      // Leave enough time for the script's 2s delay and 65s graceful drain.
+      // If this process is still alive after that window, permit a retry;
+      // the manager also serializes restart attempts across duplicate servers.
       if (_restartScheduled && Date.now() - _restartScheduledAt > RESTART_FLAG_TTL_MS) {
         log.log('[multicc] /api/restart: previous restart did not replace this process after ' +
           Math.round((Date.now() - _restartScheduledAt) / 1000) + 's — resetting flag to allow retry');

@@ -11,6 +11,7 @@ const {
   RESTART_EXEC_COMMAND,
   RESTART_SHELL_COMMAND,
   preflightRestart,
+  writeRestartScript,
   scheduleDetachedRestart,
 } = require('../src/server-restart');
 
@@ -29,8 +30,9 @@ function createChild() {
 }
 
 test('restart command explicitly invokes bash and does not require an executable manager bit', () => {
-  assert.equal(RESTART_EXEC_COMMAND, 'exec /bin/bash ./multicc restart');
-  assert.equal(RESTART_SHELL_COMMAND, 'sleep 2 && exec /bin/bash ./multicc restart');
+  assert.match(RESTART_EXEC_COMMAND, /exec \.\/multicc restart/);
+  assert.match(RESTART_EXEC_COMMAND, /exec \/bin\/bash \.\/multicc restart/);
+  assert.equal(RESTART_SHELL_COMMAND, 'sleep 2 && ' + RESTART_EXEC_COMMAND);
 
   const { root, manager } = createReadableManager();
   assert.equal((fs.statSync(manager).mode & 0o111), 0, 'fixture intentionally has no executable bit');
@@ -131,13 +133,18 @@ test('detached scheduler preflights, preserves lifecycle options and unreference
     log: { log: (...args) => logs.push(args), error() {} },
   });
   assert.equal(result, child);
-  assert.deepEqual(calls, [{
-    command: '/bin/sh',
-    args: ['-c', RESTART_SHELL_COMMAND],
-    options: {
-      cwd: root, detached: true, stdio: 'ignore', env: { MARKER: 'yes' },
-    },
-  }]);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].command, '/bin/sh');
+  assert.equal(calls[0].args.length, 1);
+  const script = calls[0].args[0];
+  assert.match(fs.readFileSync(script, 'utf8'), /sleep 2/);
+  assert.match(fs.readFileSync(script, 'utf8'), /exec \.\/multicc restart/);
+  assert.equal(calls[0].options.detached, true);
+  assert.equal(calls[0].options.cwd, root);
+  assert.equal(calls[0].options.env.MARKER, 'yes');
+  assert.equal(calls[0].options.env.MULTICC_NODE, process.execPath);
+  assert.equal(calls[0].options.stdio[0], 'ignore');
+  assert.equal(calls[0].options.stdio[1], calls[0].options.stdio[2]);
   assert.equal(child.unrefCount, 1);
   assert.match(logs[0][0], /scheduled/);
 });
@@ -170,4 +177,17 @@ test('detached scheduler propagates synchronous spawn failure to the HTTP bounda
     rootDir: root,
     log: { log() {}, error() {} },
   }), /spawn unavailable/);
+});
+
+test('generated delayed script invokes the manual entry safely in a quoted directory', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "multicc-restart ' $() "));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(root, 'multicc'), '#!/bin/sh\nprintf "%s" "$1" > restart-result\n', { mode: 0o700 });
+  const { scriptPath } = writeRestartScript(root);
+  assert.equal(fs.statSync(scriptPath).mode & 0o777, 0o700);
+  const started = Date.now();
+  const result = spawnSync('/bin/sh', [scriptPath], { cwd: os.tmpdir(), encoding: 'utf8', timeout: 5000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(Date.now() - started >= 1800);
+  assert.equal(fs.readFileSync(path.join(root, 'restart-result'), 'utf8'), 'restart');
 });
