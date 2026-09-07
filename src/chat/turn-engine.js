@@ -2792,7 +2792,6 @@ function createChatTurnEngine(deps) {
           // reconnect-retry join the same cancel operation instead of starting a
           // second one; without it the in-flight map still dedupes by session.
           await getSessionWorkHost().cancelActiveTurn(sessionName, {
-            resolveQueue: true,
             source: 'manual_cancel',
             operationId: typeof msg.operationId === 'string' ? msg.operationId : null,
           });
@@ -2813,7 +2812,6 @@ function createChatTurnEngine(deps) {
           // the model or joining FIFO.
           if (/^cancel$/i.test(String(msg.text).trim())) {
             await getSessionWorkHost().cancelActiveTurn(sessionName, {
-              resolveQueue: true,
               source: 'manual_cancel',
             });
             return;

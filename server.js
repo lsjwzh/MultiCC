@@ -2278,7 +2278,6 @@ taskRunHost = createProductionTaskRunHost({ taskRunStore, dataRoot: MULTICC_PATH
   deleteChatHistory: id => chatHistoryService.deleteSession(id), resetChatState: id => { const state = chatSessions.get(id); if (state) { state.chatTurnCount = 0; delete state._currentTaskId; delete state._currentTaskRunId; delete state._currentTaskLeaseEpoch; } },
   resetRoleUsage: resetRoleTokenUsage, persistRecords: savePersistedSessionsBestEffort,
   drainProviderProducers: (id, lease) => taskRunProviderBridge.waitForDrain(id, lease), onRunUpdated: ({ taskId }) => taskBoardRuntime.notifyTaskRun(taskId), getTaskState: id => getTaskState(persistedSessions.get(id)), onRunFailed: ({ taskId, runId }) => taskBoardRuntime.autoRetryTaskRun({ taskId, runId }),
-  prepareTaskWorktree: i => taskBoardRuntime.taskWorktree?.prepareForRun(i) || { ok: false, code: 'worktree_service_unavailable' }, releaseTaskWorktree: i => taskBoardRuntime.taskWorktree?.releaseSlot(i),
   prepareTaskWorktree: i => taskBoardRuntime.taskWorktree?.prepareForRun(i) || { ok: false, code: 'worktree_service_unavailable' },
   releaseTaskWorktree: i => taskBoardRuntime.taskWorktree?.releaseSlot(i),
   providerSnapshot: id => { const record = persistedSessions.get(id) || {}; return { providerId: record.provider || '_default_', providerName: record.provider || '_default_', cli: record.cli || '', model: effectiveSessionModel(record) || '' }; }, logger });

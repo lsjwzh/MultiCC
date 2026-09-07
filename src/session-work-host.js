@@ -790,10 +790,9 @@ function createSessionWorkHost(deps = {}) {
   }
 
   async function cancelActiveTurn(sessionId, {
-    // Kept for call-site compatibility. Queue policy is unchanged by a cancel:
-    // the E verdict releases the active slot and, per the state machine, only D
-    // drains the FIFO. A cancel never advances the next queued item.
-    resolveQueue = false,          // eslint-disable-line no-unused-vars
+    // Queue policy is unchanged by a cancel: the E verdict releases the active
+    // slot and, per the state machine, only D drains the FIFO. A cancel never
+    // advances the next queued item.
     reason = 'user_cancelled',
     killReason = 'user_cancel',
     source = 'manual_cancel',
