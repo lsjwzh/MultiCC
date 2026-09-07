@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:multicc_app/services/chat_service.dart';
@@ -306,6 +307,7 @@ void main() {
           settings: settings,
           sessionName: 'chat one',
           sessionCwd: '/tmp/work',
+          httpClient: MockClient((_) async => http.Response('{"code":"unsupported_source"}', 400)),
           wsTicketClient: WsTicketClient(
             post: (_, {required headers, required body}) {
               final response = Completer<http.Response>();
@@ -320,7 +322,9 @@ void main() {
         );
 
         service.connect();
+        await Future<void>.delayed(Duration.zero);
         service.connect();
+        await Future<void>.delayed(Duration.zero);
         expect(responses, hasLength(2));
 
         responses[0].complete(

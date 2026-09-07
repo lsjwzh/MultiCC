@@ -1,3 +1,4 @@
+import '../services/chat_shell_view.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
@@ -139,7 +140,8 @@ Future<void> _confirmDeleteMessage(BuildContext context, ChatMessage message) as
   if (settings == null) return;
   try {
     await SessionService(settings: settings)
-        .deleteMessage(provider.sessionId, msgId);
+        .deleteMessage(shellMessageOwner(provider.sessionId, msgId).sessionId,
+            shellMessageOwner(provider.sessionId, msgId).messageId);
     provider.removeMessageById(msgId);
     messenger.showSnackBar(SnackBar(
       content: Text(I18n.of('msgDeleted')),
@@ -202,7 +204,8 @@ Future<void> _forkFromMessage(BuildContext context, ChatMessage message) async {
   if (settings == null) return;
   try {
     final newId = await SessionService(settings: settings)
-        .forkSession(provider.sessionId, atMessageId: msgId);
+        .forkSession(shellMessageOwner(provider.sessionId, msgId).sessionId,
+            atMessageId: shellMessageOwner(provider.sessionId, msgId).messageId);
     messenger.showSnackBar(SnackBar(
       content: Text(I18n.of('msgForked', {'id': newId})),
       duration: const Duration(milliseconds: 2400),

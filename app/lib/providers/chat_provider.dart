@@ -10,6 +10,8 @@ import '../models/role_tokens.dart';
 import '../models/usage_readout.dart';
 import '../models/vendor_quota.dart';
 import '../services/chat_service.dart';
+import '../services/chat_shell_view.dart';
+import '../services/shell_history_merge.dart';
 import '../services/notification_service.dart';
 import '../services/quota_service.dart';
 import '../services/session_service.dart';
@@ -1086,8 +1088,8 @@ class ChatProvider extends ChangeNotifier {
         _finishStreaming();
         _stagedTracker.clear();
         _historyGeneration++;
-        _replaceHistory([]);
-        _historyApplied = false;
+        // Keep the visible shell transcript until the new execution replays.
+        _replaceHistoryOnReconnect = true;
         _pendingUserInput = null;
         notifyListeners();
         break;
@@ -1096,6 +1098,14 @@ class ChatProvider extends ChangeNotifier {
         if (historyArchive) break;
         _historyGeneration++;
         final reset = evt.payload as Map;
+        if (reset['shellHistory'] == true) {
+          final prefix = '${reset['sourceSessionId']}:';
+          _messages.removeWhere((m) => (m.id ?? '').startsWith(prefix));
+          _replaceHistoryOnReconnect = true;
+          _oldestLoadedMsgId = null;
+          notifyListeners();
+          break;
+        }
         final live = isStreaming ? _folder.currentMsg : null;
         final activeTools = Map.of(_folder.activeTools);
         _replaceHistory(reset['messages'] as List? ?? []);
@@ -1113,6 +1123,13 @@ class ChatProvider extends ChangeNotifier {
         notifyListeners();
         break;
 
+      case 'shell_history_update':
+        final update = evt.payload as Map;
+        _mergeShellPage(update['messages'] as List? ?? [],
+            sourceSessionId: update['sourceSessionId']?.toString());
+        notifyListeners();
+        break;
+
       case 'chat_history':
         final p = evt.payload as Map;
         final history = p['messages'] as List;
@@ -1120,17 +1137,23 @@ class ChatProvider extends ChangeNotifier {
         // Every socket receives one authoritative page. Process it even when
         // it races ahead of the async `connected` callback: first connect
         // appends into an empty view, every later page atomically reconciles.
+        final hadCursor = _oldestLoadedMsgId != null;
         final replace = _historyApplied || _replaceHistoryOnReconnect;
         _historyApplied = true;
         _replaceHistoryOnReconnect = false;
-        if (replace) {
+        if (replace && _service.hasShellHistory) {
+          _historyGeneration++;
+          _mergeShellPage(history);
+        } else if (replace) {
           _replaceHistory(history);
         } else {
           _replayHistory(history);
         }
         // Seed lazy-pagination cursor + hasMore from this initial page.
-        _historyHasMore = hasMore;
-        _historyExhausted = !hasMore;
+        if (!replace || !_service.hasShellHistory || !hadCursor) {
+          _historyHasMore = hasMore;
+          _historyExhausted = !hasMore;
+        }
         _oldestLoadedMsgId = _firstLoadedMsgId();
         notifyListeners();
         break;
@@ -2398,6 +2421,19 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  void _mergeShellPage(List history, {String? sourceSessionId}) {
+    final parsed = history.map((m) => ChatMessage.fromHistory(
+        Map<String, dynamic>.from(m as Map))).toList();
+    final merged = mergeShellHistory(_messages, parsed, sourceSessionId: sourceSessionId);
+    _messages..clear()..addAll(merged);
+    final current = _folder.currentMsg;
+    final tail = sourceSessionId != null && _messages.contains(current)
+        ? current : streamingAssistantTail(_messages);
+    if (!identical(_folder.currentMsg, tail)) _folder.activeTools.clear();
+    _folder.currentMsg = tail;
+    _seedUsageFromHistory();
+  }
+
   /// Resume / half-open reconnect refresh: swap the visible transcript for the
   /// server's authoritative history in a SINGLE rebuild. The old messages stay
   /// on screen until the new list is built, so there's no blank "clear then
@@ -2538,11 +2574,13 @@ class ChatProvider extends ChangeNotifier {
         return 0;
       }
       // Prepend in chronological order (server returns oldest-first within page).
-      _messages.insertAll(0, page.messages);
+      final loaded = _messages.map((m) => m.id).whereType<String>().toSet();
+      final fresh = page.messages.where((m) => m.id == null || !loaded.contains(m.id)).toList();
+      _messages.insertAll(0, fresh);
       _oldestLoadedMsgId = page.messages.first.id ?? cursor;
       _historyHasMore = page.hasMore;
       _historyExhausted = !page.hasMore;
-      return page.messages.length;
+      return fresh.length;
     } catch (e) {
       // Transient error: leave exhausted=false so the user can retry by scrolling.
       return 0;
@@ -2561,20 +2599,13 @@ class ChatProvider extends ChangeNotifier {
   Future<bool> loadHistoryAround(String messageId) async {
     final generation = _historyGeneration;
     try {
-      final page = await SessionService(
-        settings: settings,
-      ).fetchHistoryAround(sessionName, messageId, historyArchive: historyArchive);
-      if (generation != _historyGeneration || !page.found) return false;
-      final parsed = page.messages
-          .map((m) {
-            try {
-              return ChatMessage.fromHistory(m);
-            } catch (_) {
-              return null;
-            }
-          })
-          .whereType<ChatMessage>()
-          .toList();
+      final page = await _service.fetchHistoryPage(beforeId: null, aroundId: messageId, limit: 31);
+      if (generation != _historyGeneration) return false;
+      final parsed = page.messages;
+      if (!parsed.any((m) => m.id == messageId ||
+          shellMessageOwner(sessionName, m.id ?? '').messageId == messageId)) {
+        return false;
+      }
       _messages
         ..clear()
         ..addAll(parsed);
@@ -2584,7 +2615,7 @@ class ChatProvider extends ChangeNotifier {
       _historyExhausted = !page.hasMore;
       _historyApplied = true;
       notifyListeners();
-      return parsed.any((m) => m.id == messageId);
+      return true;
     } catch (_) {
       return false;
     }
