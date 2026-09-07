@@ -168,3 +168,5 @@ Claude and Codex each have one built-in official provider. Open **Providers → 
 The **local CLI login** account uses the existing login on this machine. Additional accounts keep separate credentials. Switch away from an active account before deleting it. Account changes do not require changing a session’s provider.
 
 Legacy default-login and account-specific provider references are normalized when the server starts. Existing account credentials and historical provider records are retained. The account associated with the prior default provider becomes the initial active account; otherwise the local CLI login is selected.
+
+Codex official upstream requests honor `HTTPS_PROXY` / `HTTP_PROXY` and `NO_PROXY` (including their lowercase forms). On macOS, when proxy environment variables are absent, MultiCC reads the enabled system HTTP/HTTPS proxy and refreshes that setting every 30 seconds. This is scoped to the official relay, so the CLI's local connection to MultiCC is unaffected. HTTP(S) proxy endpoints are supported; SOCKS-only environment settings must use the proxy application's HTTP/mixed port instead.
