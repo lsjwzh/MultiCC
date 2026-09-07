@@ -38,7 +38,7 @@ insert.run(
 );
 db.close();
 
-const providers = require('../src/providers');
+const providers = require('../src/providers/core');
 
 test.after(() => fs.rmSync(root, { recursive: true, force: true }));
 

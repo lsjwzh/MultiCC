@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const editor = require('../public/auto-provider-editor');
-const serverContract = require('../src/auto-provider-config');
+const serverContract = require('../src/providers/auto-provider-config');
 
 function providers() {
   return [

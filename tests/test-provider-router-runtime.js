@@ -7,12 +7,12 @@ const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const express = require('express');
-const { REQUIRED_CAPABILITIES } = require('../src/provider-router-port');
+const { REQUIRED_CAPABILITIES } = require('../src/providers/router-port');
 const {
   createHostEmbeddingPaths,
   createProviderRouterRuntime,
   resolveMode,
-} = require('../src/provider-router-runtime');
+} = require('../src/providers/router-runtime');
 
 function capabilitySet(overrides = {}) {
   return {

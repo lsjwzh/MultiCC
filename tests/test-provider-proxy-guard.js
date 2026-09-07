@@ -6,7 +6,7 @@ const {
   classifyProviderProxyRoute,
   createProviderProxyAdmission,
   createProviderProxyGuard,
-} = require('../src/provider-proxy-guard');
+} = require('../src/providers/proxy-guard');
 
 function responseHarness() {
   const state = { status: null, headers: null, body: '' };

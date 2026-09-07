@@ -6,13 +6,13 @@ const {
   ProviderRouterPortError,
   createProviderRouterPort,
   validateRouterContract,
-} = require('./provider-router-port');
+} = require('./router-port');
 const {
   createLegacyProviderRouterAdapter,
   createProviderStoreAdapter,
   createReadOnlyShadowRouter,
-} = require('./provider-router-adapter');
-const { toLegacyProviderView } = require('./provider-binding');
+} = require('./router-adapter');
+const { toLegacyProviderView } = require('./binding');
 
 const DEFAULT_MODE = 'legacy';
 

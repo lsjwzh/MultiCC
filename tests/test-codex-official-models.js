@@ -12,7 +12,7 @@ const {
   readCodexOfficialModels,
   CODEX_OFFICIAL_MODELS_FALLBACK,
   modelValidForProvider,
-} = require('../src/providers');
+} = require('../src/providers/core');
 
 // A cache shaped exactly like ~/.codex/models_cache.json (codex client 0.144.x).
 function writeCache(dir, models) {

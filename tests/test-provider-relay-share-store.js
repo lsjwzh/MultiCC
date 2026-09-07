@@ -11,7 +11,7 @@ const {
   createProviderRelayShareStore,
   parseCredential,
   routeTarget,
-} = require('../src/provider-relay-share-store');
+} = require('../src/providers/relay-share-store');
 
 test('provider relay shares are scoped, hashed, durable, revocable and usage-accounted', () => {
   const root = assertTestDir(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-relay-shares-')));

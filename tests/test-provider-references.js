@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { findProviderReferences } = require('../src/provider-references');
+const { findProviderReferences } = require('../src/providers/references');
 
 test('provider deletion references include main, subagent, default and Aux with app isolation', () => {
   const sessions = new Map([

@@ -5,7 +5,7 @@
 // a salted scrypt hash plus a short fingerprint for administrative inventory.
 
 const crypto = require('node:crypto');
-const { createStore } = require('./state/store');
+const { createStore } = require('../state/store');
 
 const APP_TYPES = new Set(['claude', 'codex']);
 const TOKEN_PREFIX = 'mcr1';

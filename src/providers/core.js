@@ -23,18 +23,18 @@ const crypto = require('crypto');
 const { spawn } = require('child_process');
 const TOML = require('@iarna/toml');
 const cliProviderRouter = require('cli-provider-router');
-const { createSqliteRuntime } = require('./sqlite-runtime');
-const { createPaths } = require('./paths');
-const { atomicWriteJson, atomicWriteText, ensurePrivateDir, secureFile } = require('./runtime-security');
-const { createOpencodeModelLimitResolver } = require('./providers/opencode-model-limits');
-const { createCodexAttemptHome } = require('./codex/attempt-home');
-const { createCodexSessionHomeRuntime } = require('./codex/session-home');
-const { isOfficialCodexOAuthProvider } = require('./codex/official-relay');
-const { codexAccountAuthFilePath } = require('./official-accounts');
+const { createSqliteRuntime } = require('../sqlite-runtime');
+const { createPaths } = require('../paths');
+const { atomicWriteJson, atomicWriteText, ensurePrivateDir, secureFile } = require('../runtime-security');
+const { createOpencodeModelLimitResolver } = require('./opencode-model-limits');
+const { createCodexAttemptHome } = require('../codex/attempt-home');
+const { createCodexSessionHomeRuntime } = require('../codex/session-home');
+const { isOfficialCodexOAuthProvider } = require('../codex/official-relay');
+const { codexAccountAuthFilePath } = require('../official-accounts');
 const {
   assertCodexProxyConfigApplied,
   codexProxyConfigRequired: evaluateCodexProxyConfigRequired,
-} = require('./codex/proxy-policy');
+} = require('../codex/proxy-policy');
 
 const sqliteRuntime = createSqliteRuntime();
 

@@ -32,7 +32,7 @@ const {
   CHAT_TURN_PORTS,
   assertChatTurnPorts,
 } = require('../src/chat');
-const { createProviderBinding } = require('../src/provider-binding');
+const { createProviderBinding } = require('../src/providers/binding');
 const { redactProviderRouteCapability } = require('../src/observability');
 const {
   adapterReasoningProgressEvent,

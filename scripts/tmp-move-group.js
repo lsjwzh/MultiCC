@@ -43,6 +43,9 @@ for (const [oldNoExt, newNoExt] of Object.entries(Object.fromEntries(
     let m = rewrites.get(f);
     if (!m) { m = new Map(); rewrites.set(f, m); }
     m.set(oldSpec, newSpec);
+    // Also cover the explicit .js-suffixed require form (require('../src/x.js')).
+    if (oldNoExt.endsWith('/index')) continue;
+    m.set(oldSpec + '.js', newSpec + '.js');
   }
 }
 
