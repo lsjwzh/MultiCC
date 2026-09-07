@@ -2007,7 +2007,7 @@ function renderProviderDefaults() {
     if (!sel) continue;
     const list = groups[cli];
     const cur = _providerData.defaults[cli] || '';
-    sel.innerHTML = '<option value="">默认登录 / 订阅（不覆盖）</option>' +
+    sel.innerHTML = (list.some(p => p.builtinOfficial) ? '' : '<option value="">默认登录 / 订阅（不覆盖）</option>') +
       list.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(providerLabel(p))}</option>`).join('');
     sel.value = cur;
   }
@@ -2076,13 +2076,14 @@ function renderProviderList() {
         <div data-quota-id="${escapeHtml(p.id)}" style="font-size:11px;font-weight:600;margin-top:3px;color:var(--faint)">余量 —</div>
         <div data-balance-id="${escapeHtml(p.id)}" style="display:none;font-size:11px;font-weight:600;margin-top:2px;color:var(--faint)"></div>
         ${statHtml ? `<div style="font-size:11px;color:var(--amber);margin-top:3px">${statHtml}</div>` : ''}
-        <div style="font-size:11px;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.isOfficial ? '默认登录 / 订阅' : (p.baseUrl || ''))}${(p.modelOptions || []).length > 1 ? ' · ' + (p.modelOptions || []).length + ' models' : (p.model ? ' · ' + escapeHtml(p.model) : '')}${p.useChatResponsesProxy ? ' · proxy' : ''}${p.tokenMask ? ' · ' + escapeHtml(p.tokenMask) : ''}</div>
+        <div style="font-size:11px;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.isOfficial ? '官方账号统一管理 · 账号切换对新请求生效' : (p.baseUrl || ''))}${(p.modelOptions || []).length > 1 ? ' · ' + (p.modelOptions || []).length + ' models' : (p.model ? ' · ' + escapeHtml(p.model) : '')}${p.useChatResponsesProxy ? ' · proxy' : ''}${p.tokenMask ? ' · ' + escapeHtml(p.tokenMask) : ''}</div>
       </div>
       <div style="display:flex;gap:8px;margin-left:auto;">
       <button class="btn" style="padding:4px 10px;font-size:12px" onclick="balanceProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}',this)">余量</button>
       <button class="btn" style="padding:4px 10px;font-size:12px" onclick="speedTestProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}',this)">测速</button> <button class="btn" style="padding:4px 10px;font-size:12px" onclick="shareRelayProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}')" title="生成借道分享码，让另一台 multicc 通过本机代理使用这个 provider">借道分享</button>
-      <button class="btn" style="padding:4px 10px;font-size:12px" onclick="editProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}')">编辑</button>
-      <button class="btn" style="padding:4px 10px;font-size:12px" onclick="deleteProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}','${escapeHtml(p.name)}')">删除</button>
+      ${p.builtinOfficial ? '<button class="btn" style="padding:4px 10px;font-size:12px" onclick="document.getElementById(&quot;official-accounts-card&quot;).scrollIntoView({behavior:&quot;smooth&quot;})">管理账号</button>' : `      <button class="btn" style="padding:4px 10px;font-size:12px" onclick="editProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}')">编辑</button>
+      <button class="btn" style="padding:4px 10px;font-size:12px" onclick="deleteProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}','${escapeHtml(p.name)}')">删除</button>`}
+
       </div>
     </div>`;
   };

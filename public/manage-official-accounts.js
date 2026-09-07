@@ -2,10 +2,7 @@
 
 /* 官方账号（多账号登录）管理 —— Provider 配置页的独立区块。
  *
- * 每个官方账号 = 一条带 settingsConfig.officialAccount.id 标记的 provider 记录
- * + 一份 multicc 持有的独立凭证（~/.multicc/official-accounts/…），CLI 子进程
- * 永远不接触 OAuth 凭证，请求时由 cpr 代理按标记现场注入（见
- * src/routes/codex-accounts.js 与 src/routes/claude-accounts.js）。
+ * 每种 CLI 只有一个官方 Provider，账号在这里全局切换，新请求使用当前账号。
  *
  * Codex 账号登录走白名单 loginFlow 终端（CODEX_HOME 指向账号目录），添加后
  * 打开该终端页让用户完成浏览器授权；Claude 账号登录走 multicc 自己的 PKCE
@@ -118,6 +115,7 @@
   }
 
   function codexRow(a) {
+    if (a.global) return accountRow('codex', a, chip('使用本机 Codex 登录', '#58a6ff'));
     const chips = a.loggedIn
       ? chip('已登录', '#58a6ff') + (a.email ? ' <span style="font-size:12px;color:var(--muted)">' + esc(a.email) + '</span>' : '')
       : chip('未登录', '#f85149') + ' <span style="font-size:11px;color:var(--faint)">' + esc(a.reason || '') + '</span>';
@@ -127,6 +125,7 @@
   }
 
   function claudeRow(a) {
+    if (a.global) return accountRow('claude', a, chip('使用本机 Claude 登录', '#58a6ff'));
     let chips;
     const login = a.login || { state: 'idle' };
     if (login.state === 'pending') {
@@ -150,13 +149,14 @@
       ? '<span style="font-size:11px;color:var(--faint)">⇄ ' + esc(a.providerName) + '</span>' : '';
     return '<div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:6px">'
       + '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
-      + '<b style="font-size:13px">' + esc(name) + '</b>' + chipsHtml + provider
+      + '<b style="font-size:13px">' + esc(name) + '</b>' + chipsHtml + provider + (a.active ? chip('当前使用', '#3fb950') : '')
       + '<span style="margin-left:auto;display:flex;gap:6px">'
-      + '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="quota" data-vendor="' + vendor + '" data-id="' + a.id + '">刷新余量</button>'
+      + (a.active ? '' : '<button class="btn btn-green" data-act="activate" data-vendor="' + vendor + '" data-id="' + a.id + '">切换使用</button>')
+      + (a.global ? '' : '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="quota" data-vendor="' + vendor + '" data-id="' + a.id + '">刷新余量</button>')
       + '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="relogin" data-vendor="' + vendor + '" data-id="' + a.id + '">重新登录</button>'
-      + '<button class="btn" style="padding:2px 10px;font-size:11px;color:var(--danger)" data-act="delete" data-vendor="' + vendor + '" data-id="' + a.id + '">删除</button>'
+      + (a.global || a.active ? '' : '<button class="btn" style="padding:2px 10px;font-size:11px;color:var(--danger)" data-act="delete" data-vendor="' + vendor + '" data-id="' + a.id + '">删除</button>')
       + '</span></div>'
-      + '<div style="font-size:12px">' + quotaHtml(vendor, a.id) + '</div>'
+      + (a.global ? '' : '<div style="font-size:12px">' + quotaHtml(vendor, a.id) + '</div>')
       + '</div>';
   }
 
@@ -174,9 +174,9 @@
     const el = bodyEl();
     if (!el) return;
     if (state.loading) { el.innerHTML = '<span style="color:var(--faint);font-size:13px">加载中…</span>'; return; }
-    el.innerHTML = vendorSection('codex', 'Codex 官方账号', '（ChatGPT 订阅，登录走独立终端，凭证由代理按账号注入）', state.codex, codexRow)
+    el.innerHTML = vendorSection('codex', 'Codex 官方账号', '（全局切换，所有 Codex 官方会话的新请求生效）', state.codex, codexRow)
       + '<div style="border-top:1px solid var(--border);margin:10px 0"></div>'
-      + vendorSection('claude', 'Claude 官方账号', '（Claude 订阅，登录走浏览器 OAuth，token 到期自动刷新）', state.claude, claudeRow);
+      + vendorSection('claude', 'Claude 官方账号', '（全局切换，所有 Claude 官方会话的新请求生效）', state.claude, claudeRow);
   }
 
   async function loadOfficialAccounts() {
@@ -215,8 +215,8 @@
       + '<div style="font-size:14px;color:#c9d1d9;font-weight:600;margin-bottom:10px">添加 ' + (isCodex ? 'Codex' : 'Claude') + ' 官方账号</div>'
       + '<div style="font-size:12px;color:var(--faint);margin-bottom:10px;line-height:1.6">'
       + (isCodex
-        ? '会创建一条带账号标记的 provider 并打开一个登录终端（独立 CODEX_HOME），在终端里完成浏览器授权即可；不影响共享的 ~/.codex 登录。'
-        : '会创建一条带账号标记的 provider 并打开 Claude 授权页，授权后自动回到本页完成登录；token 到期由 multicc 自动刷新。')
+        ? '打开登录终端完成浏览器授权，登录完成后点击「切换使用」即可让所有 Codex 官方会话使用该账号。'
+        : '打开 Claude 授权页完成登录，随后点击「切换使用」即可让所有 Claude 官方会话使用该账号。')
       + '</div>'
       + '<input data-k="label" type="text" placeholder="备注（可选），如：工作号" maxlength="64" style="width:100%;box-sizing:border-box;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 10px;outline:none">'
       + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">'
@@ -258,8 +258,11 @@
   async function relogin(vendor, id) {
     setStatus('正在重新打开登录…');
     try {
-      const data = await api().json('/api/' + vendor + '/accounts/' + encodeURIComponent(id) + '/relogin', { method: 'POST', json: {} });
-      if (vendor === 'codex') {
+      const data = await api().json(id === 'global' ? '/api/' + vendor + '/oauth/login' : '/api/' + vendor + '/accounts/' + encodeURIComponent(id) + '/relogin', { method: 'POST', json: {} });
+      if (id === 'global') {
+        if (data.sessionId) window.open('index.html?id=' + encodeURIComponent(data.sessionId), '_blank');
+        toast('登录终端已打开');
+      } else if (vendor === 'codex') {
         if (data.loginSessionId) window.open('index.html?id=' + encodeURIComponent(data.loginSessionId), '_blank');
         toast(data.loginSessionId ? '登录终端已打开' : ('登录终端打开失败：' + (data.error || '')), !data.loginSessionId);
       } else {
@@ -271,8 +274,18 @@
     } catch (err) { setStatus('重新登录失败：' + err.message, true); }
   }
 
+  async function activate(vendor, id) {
+    setStatus('正在切换账号…');
+    try {
+      await api().json('/api/' + vendor + '/accounts/' + encodeURIComponent(id) + '/activate', { method: 'POST', json: {} });
+      setStatus('已全局切换，新请求使用此账号');
+      await loadOfficialAccounts();
+      refreshProviders();
+    } catch (err) { setStatus('切换失败：' + err.message, true); }
+  }
+
   async function removeAccount(vendor, id) {
-    if (!window.confirm('删除该官方账号？其凭证文件与绑定的 provider 记录会一并移除。')) return;
+    if (!window.confirm('删除该官方账号及其保存的登录凭证？')) return;
     setStatus('删除中…');
     try {
       await api().json('/api/' + vendor + '/accounts/' + encodeURIComponent(id), { method: 'DELETE' });
@@ -319,6 +332,7 @@
     if (btn.dataset.act === 'add') addOfficialAccount(vendor);
     else if (btn.dataset.act === 'quota') fetchQuota(vendor, btn.dataset.id);
     else if (btn.dataset.act === 'relogin') relogin(vendor, btn.dataset.id);
+    else if (btn.dataset.act === 'activate') activate(vendor, btn.dataset.id);
     else if (btn.dataset.act === 'delete') removeAccount(vendor, btn.dataset.id);
   });
 

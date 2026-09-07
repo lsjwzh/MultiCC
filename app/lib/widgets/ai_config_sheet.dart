@@ -120,6 +120,15 @@ class AIConfigSheetState extends State<AIConfigSheet> {
   void initState() {
     super.initState();
     _provider = widget.cli.supportsProvider ? widget.provider : '';
+    if (_provider.isEmpty) {
+      for (final p in widget.providers) {
+        if (p['builtinOfficial'] == true &&
+            p['id'] == '${widget.cli.name}-official') {
+          _provider = p['id'].toString();
+          break;
+        }
+      }
+    }
     _model = _normalizeModel(_provider, widget.model);
     _effort = _validEfforts.contains(widget.effort)
         ? widget.effort
@@ -768,7 +777,10 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                 decoration: _sheetInputDecoration(),
                 style: const TextStyle(color: AppColors.text, fontSize: 13),
                 items: [
-                  const DropdownMenuItem(value: '', child: Text('默认登录 / 订阅')),
+                  if (!widget.providers.any((p) =>
+                      p['builtinOfficial'] == true &&
+                      p['id'] == '${widget.cli.name}-official'))
+                    const DropdownMenuItem(value: '', child: Text('默认登录 / 订阅')),
                   ...autoGroups.map(
                     (group) => DropdownMenuItem(
                       value: '__auto__:${group.key}',

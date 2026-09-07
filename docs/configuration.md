@@ -53,6 +53,7 @@ Provider config is stored locally and managed from `/manage`:
 |------|---------|
 | `providers.json` | MultiCC-owned provider store (API keys inside). Import from `~/.cc-switch/cc-switch.db`, but edits don't write back. |
 | `provider-defaults.json` | Default provider id per CLI for new sessions. |
+| `official-provider-selection.json` | Active official account per CLI, shared by all sessions using that official provider. |
 | `~/.multicc/codex-homes/<providerId>/` | Materialized `CODEX_HOME` per Codex provider — isolated auth/config. |
 | `~/.multicc/kimi-homes/<sessionId>/` | Isolated `KIMI_CODE_HOME` per Kimi session bound to a MultiCC provider — injected credentials never touch the native `~/.kimi-code` login. |
 
@@ -159,3 +160,11 @@ remote relay request.
 ---
 
 [← Back to the README](../README.md)
+
+### Official providers and accounts
+
+Claude and Codex each have one built-in official provider. Open **Providers → Official accounts** to add a login or switch the active account. Switching applies globally to new upstream requests from sessions using that vendor’s official provider; already sent requests keep their credentials. Adding an account does not activate it automatically.
+
+The **local CLI login** account uses the existing login on this machine. Additional accounts keep separate credentials. Switch away from an active account before deleting it. Account changes do not require changing a session’s provider.
+
+Legacy default-login and account-specific provider references are normalized when the server starts. Existing account credentials and historical provider records are retained. The account associated with the prior default provider becomes the initial active account; otherwise the local CLI login is selected.

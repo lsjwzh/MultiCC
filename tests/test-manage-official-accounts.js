@@ -140,3 +140,36 @@ test('renderCodexQuota never trusts a missing bar', () => {
   const { renderCodexQuota } = ctx.window.MultiCCOfficialAccounts;
   assert.match(renderCodexQuota({ status: 'ok' }), /余量不可用/);
 });
+
+test('global account controls switch via account API and retain the singleton provider', async () => {
+  let click;
+  const body = { innerHTML: '' }, status = {};
+  const calls = [];
+  let active = 'global';
+  const id = 'aaaaaaaaaaaaaaaa';
+  const context = vm.createContext({
+    window: { MultiCCApi: { json: async (url, options) => {
+      calls.push({ url, method: options?.method || 'GET' });
+      if (url.endsWith('/activate')) { active = id; return { ok: true }; }
+      if (url.endsWith('/accounts')) return { accounts: [
+        { id: 'global', global: true, active: active === 'global' },
+        { id, label: '工作账号', active: active === id, providerName: '官方' },
+      ] };
+      return { status: 'ok' };
+    } } },
+    document: { body: { dataset: {} }, getElementById: key => key === 'official-accounts-body' ? body : status,
+      addEventListener: (_, handler) => { click = handler; } },
+    MutationObserver: class { observe() {} }, setInterval, clearInterval, Date,
+    escapeHtml: text => text, loadProviders() {},
+  });
+  vm.runInContext(fs.readFileSync(SOURCE_PATH, 'utf8'), context);
+  await context.window.MultiCCOfficialAccounts.load();
+  assert.match(body.innerHTML, /当前使用/);
+  assert.match(body.innerHTML, /切换使用/);
+  assert.doesNotMatch(body.innerHTML, /data-act="delete"[^>]*data-id="global"/);
+  click({ target: { closest: () => ({ dataset: { act: 'activate', vendor: 'codex', id } }) } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(calls.some(c => c.url === `/api/codex/accounts/${id}/activate` && c.method === 'POST'));
+  assert.doesNotMatch(body.innerHTML, new RegExp(`data-act="delete"[^>]*data-id="${id}"`));
+  assert.match(status.textContent, /已全局切换/);
+});

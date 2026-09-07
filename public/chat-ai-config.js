@@ -541,14 +541,15 @@
       const defaultOption = document.createElement('option');
       defaultOption.value = '';
       defaultOption.textContent = t('providerDefault');
-      select.appendChild(defaultOption);
+      const officialProvider = (list || []).find(p => p.builtinOfficial);
+      if (!officialProvider) select.appendChild(defaultOption);
       for (const provider of list || []) {
         const option = document.createElement('option');
         option.value = provider.id;
         option.textContent = providerLabel(provider, true) + providerLimitLabel(provider, t, Date.now());
         select.appendChild(option);
       }
-      select.value = current || '';
+      select.value = current || officialProvider?.id || '';
       body.appendChild(select);
       if (!list || !list.length) {
         const empty = document.createElement('div');
@@ -638,7 +639,8 @@
         : cli === 'opencode'
           ? 'OpenCode 原生配置（OpenCode Go 等）'
           : translate(state, 'providerDefault');
-      providerSelect.appendChild(defaultProvider);
+      const officialProvider = providersOf(state).find(p => p.builtinOfficial && p.appType === cli);
+      if (!officialProvider) providerSelect.appendChild(defaultProvider);
       for (const protocol of ['anthropic', 'openai_responses', 'openai_chat']) {
         if (autoProvidersForProtocol(protocol, providersOf(state)).length < 2) continue;
         const option = document.createElement('option');
@@ -653,7 +655,7 @@
         providerSelect.appendChild(option);
       }
       const configuredAuto = config.providerSelection?.mode === 'auto' ? config.providerSelection : null;
-      providerSelect.value = configuredAuto ? autoOptionValue(configuredAuto.protocol) : (config.provider || '');
+      providerSelect.value = configuredAuto ? autoOptionValue(configuredAuto.protocol) : (config.provider || officialProvider?.id || '');
       providerSection.style.display = supportsProvider ? '' : 'none';
       if (!supportsProvider) providerSelect.value = '';
 
