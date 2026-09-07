@@ -356,11 +356,17 @@ test('identity-locked continuation ignores a malformed new-related model verdict
 test('task-shell turn settles a new business task after a read-only response', async () => {
   const h = fixture({
     taskShell: true,
+    isStreaming: false,
+    history: [
+      { id: 'u-shell', role: 'user', content: 'new topic', taskId: 'task-1', turnId: 'turn-shell' },
+      { id: 'a-shell', role: 'assistant', content: 'completed answer', taskId: 'task-1', turnId: 'turn-shell' },
+    ],
     auxText: JSON.stringify({
       taskName: '全新主题', phase: 'planning', relation: 'new', taskId: null,
     }),
   });
   h.record.taskBoundTaskId = 'task-1';
+  h.record.taskState.classifyState = 'D';
   h.chatState.currentUserText = '现在讨论一个全新主题';
   h.machine.runClassifyNow(h.chatState, 's1', { turnId: 'turn-shell', admittedTaskId: 'task-1' });
   await new Promise(resolve => setImmediate(resolve));
@@ -370,7 +376,7 @@ test('task-shell turn settles a new business task after a read-only response', a
   assert.equal(h.observed.shellSettlements[0][2].taskName, '全新主题');
 });
 
-test('task-shell turn with a mutating tool cannot be moved after execution', async () => {
+test('task-shell attribution is independent of execution side effects', async () => {
   const h = fixture({
     taskShell: true,
     toolCalls: [{ name: 'apply_patch' }],
@@ -382,9 +388,27 @@ test('task-shell turn with a mutating tool cannot be moved after execution', asy
   h.chatState.currentUserText = '修改代码';
   h.machine.runClassifyNow(h.chatState, 's1', { turnId: 'turn-write', admittedTaskId: 'task-1' });
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(h.record.taskState.taskId, 'task-1');
-  assert.equal(h.observed.shellSettlements[0][2].taskId, 'task-1');
-  assert.equal(h.observed.shellSettlements[0][2].relation, 'same');
+  assert.notEqual(h.record.taskState.taskId, 'task-1');
+  assert.notEqual(h.observed.shellSettlements[0][2].taskId, 'task-1');
+  assert.equal(h.observed.shellSettlements[0][2].relation, 'new');
+});
+
+test('task-shell attribution advances independently of success, waiting or partial output', async () => {
+  for (const [state, partial] of [['E', true], ['W', false], ['B', false], ['P', false], ['D', true]]) {
+    const h = fixture({ taskShell: true, isStreaming: false,
+      history: [
+        { id: 'u', role: 'user', content: 'list products', taskId: 'task-1', turnId: 'turn-failed' },
+        { id: 'a', role: 'assistant', content: 'progress', partial, taskId: 'task-1', turnId: 'turn-failed' },
+      ], auxText: JSON.stringify({ taskName: 'listing', relation: 'new', taskId: null }) });
+    h.record.taskState.classifyState = state;
+    h.chatState.currentUserText = 'continue';
+    h.machine.runClassifyNow(h.chatState, 's1', { turnId: 'turn-failed' });
+    // Mimic cleared buffers/a later healthy state before asynchronous Aux resolves.
+    h.chatState.currentToolCalls = []; h.record.taskState.classifyState = 'D';
+    await new Promise(resolve => setImmediate(resolve));
+    assert.notEqual(h.observed.shellSettlements[0][2].taskId, 'task-1', state);
+    assert.equal(h.observed.shellSettlements[0][2].turnId, 'turn-failed', state);
+  }
 });
 
 test('delayed attribution with a superseded anchor cannot overwrite the newer task', () => {

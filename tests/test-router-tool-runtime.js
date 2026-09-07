@@ -169,17 +169,22 @@ test('request_user_input validates bounded choices without dispatching work', as
   assert.equal(admissions.length, 0);
 });
 
-test('get_task_context is read-only, argument-free and scoped to the caller capability', async t => {
+test('get_task_context is read-only, paginated and scoped to the caller capability', async t => {
   const calls = [];
-  const { runtime } = fixture(t, { getTaskContext: async context => {
-    calls.push(context);
+  const { runtime } = fixture(t, { getTaskContext: async (context, query) => {
+    calls.push({ ...context, query });
     return { ok: true, current_task_id: context.taskId, task_ids: ['task-old'], context: 'bounded' };
   } });
   const capability = runtime.issueContext({ sessionId: 'caller', turnId: 'turn-context', taskId: 'task-current' });
   const result = await runtime.execute(capability, 'get_task_context', {});
   assert.equal(result.current_task_id, 'task-current');
   assert.equal(calls[0].sessionId, 'caller');
-  await assert.rejects(runtime.execute(capability, 'get_task_context', { task_id: 'task-old' }), {
+  const query = { task_id: 'task-old', message_id: 'source:msg', offset: 12000 };
+  await runtime.execute(capability, 'get_task_context', query);
+  assert.deepEqual(calls[1].query, query);
+  await assert.rejects(runtime.execute(capability, 'get_task_context', { limit: 0 }), { code: 'invalid_arguments' });
+  await assert.rejects(runtime.execute(capability, 'get_task_context', { offset: -1 }), { code: 'invalid_arguments' });
+  await assert.rejects(runtime.execute(capability, 'get_task_context', { session_id: 'unrelated' }), {
     code: 'invalid_arguments',
   });
 });

@@ -17,11 +17,18 @@ const dataDir = assertTestDir(path.join(root, 'data'));
 const project = path.join(root, 'project'), fake = path.join(root, 'fake-codex.js');
 const invocations = path.join(root, 'invocations.jsonl'), release = path.join(root, 'release');
 fs.mkdirSync(project); fs.mkdirSync(dataDir);
+const testHome = path.join(root, 'home'), preload = path.join(root, 'home.cjs');
+fs.mkdirSync(testHome);
+fs.writeFileSync(preload, 'require("node:os").homedir = () => ' + JSON.stringify(testHome) + ';');
 fs.writeFileSync(fake, `#!/usr/bin/env node
 const fs = require('node:fs');
 const args = process.argv.slice(2);
 if (args[0] !== 'exec') process.exit(0);
 const prompt = args.at(-1) || '';
+const nativeId = 'fake-' + process.env.MULTICC_SESSION_ID;
+const sessionsDir = require('node:path').join(process.env.CODEX_HOME || require('node:path').join(require('node:os').homedir(), '.codex'), 'sessions');
+fs.mkdirSync(sessionsDir, { recursive: true });
+fs.writeFileSync(require('node:path').join(sessionsDir, 'rollout-' + nativeId + '.jsonl'), JSON.stringify({ type: 'session_meta', payload: { id: nativeId, cwd: process.cwd() } }) + '\\n');
 fs.appendFileSync(${JSON.stringify(invocations)}, JSON.stringify({ sessionId: process.env.MULTICC_SESSION_ID, cwd: process.cwd(), prompt }) + '\\n');
 console.log(JSON.stringify({ type: 'thread.started', thread_id: 'fake-' + process.env.MULTICC_SESSION_ID }));
 async function main() {
@@ -72,7 +79,7 @@ const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'ut
     const port = await freePort(); base = `http://127.0.0.1:${port}`;
     server = spawn(process.execPath, ['server.js'], {
       cwd: path.join(__dirname, '..'), env: { ...process.env, NODE_ENV: 'test', PORT: String(port), HOST: '127.0.0.1', ACCESS_TOKEN: token,
-        MULTICC_DATA_DIR: dataDir, MULTICC_MEMORY_ROOT: path.join(dataDir, 'memories'), MULTICC_TASK_SHELLS: enabled,
+        NODE_OPTIONS: '--require ' + preload, MULTICC_CODEX_ROLLOUT_ARCHIVE_TTL_DAYS: '0', MULTICC_DATA_DIR: dataDir, MULTICC_MEMORY_ROOT: path.join(dataDir, 'memories'), MULTICC_TASK_SHELLS: enabled,
         MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS: '100', CODEX_CMD: fake,
         CLAUDE_CMD: path.join(root, 'missing-claude'), OPENCODE_CMD: path.join(root, 'missing-opencode'), QODER_CMD: path.join(root, 'missing-qoder') },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -112,9 +119,14 @@ const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'ut
     assert.equal(detail.task.parentTaskId, null);
     assert.match(detail.task.baseline.commit, /^[a-f0-9]{40,64}$/);
     const events = [];
-    socket = new WebSocket(base.replace('http', 'ws') + `/ws/chat?session=${second.sessionId}&token=${token}`);
+    socket = new WebSocket(base.replace('http', 'ws') + `/ws/chat?session=${second.sessionId}&shell=${sb.id}&token=${token}`);
     socket.on('message', data => { events.push(JSON.parse(String(data))); });
     await new Promise((resolve, reject) => { socket.once('open', resolve); socket.once('error', reject); });
+    await wait(() => events.some(e => e.type === 'chat_history' && e.messages.some(m => m.content === 'HOLD_ORIGINAL')), 'shell reconnect lost original history');
+    const shellPage = await api(`/api/task-shells/${sb.id}/history?limit=100`);
+    assert.ok(shellPage.messages.some(m => m.sourceSessionId === first.sessionId));
+    assert.ok(shellPage.messages.some(m => m.sourceSessionId === second.sessionId));
+    assert.equal((await api(`/api/task-shells/${sb.id}/chat`)).activeSessionId, second.sessionId);
     for (const type of ['user_message', 'cancel', 'clear_history']) socket.send(JSON.stringify({ type, text: 'BYPASS', clientMsgId: 'bypass' }));
     await wait(() => events.filter(e => e.code === 'task_shell_route_required').length >= 3, 'native WS bypass must reject');
     socket.close(); socket = null;
@@ -160,6 +172,35 @@ const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'ut
     assert.equal(adopted.defaultTaskId, routed.taskId);
     assert.equal(adopted.tasks[0].adopted, true);
     socket.close(); socket = null;
+    if (process.env.MULTICC_SHELL_BROWSER_TEST === '1') {
+      const { withCdpHarness } = require('./helpers/cdp-harness');
+      const next = await api(`/api/task-shells/${adopted.id}/messages`, { text: 'BROWSER_SECOND_TASK', newTask: true, clientMsgId: 'browser-second' });
+      await wait(async () => (await api(`/api/task-shells/${adopted.id}/tasks/${next.taskId}`)).messages.some(m => m.role === 'assistant'), 'browser second task incomplete');
+      await withCdpHarness({ timeoutMs: 20000 }, async page => {
+        await page.send('Network.setExtraHTTPHeaders', { headers: { Authorization: `Bearer ${token}` } });
+        await page.navigate(base + `/chat.html?session=${source.id}`);
+        assert.ok(await page.waitFor('typeof shellChatView !== "undefined" && ws?.readyState === 1'), 'full chat did not connect');
+        assert.equal(await page.evaluate('_sessionName'), next.sessionId);
+        assert.ok(await page.waitFor('document.getElementById("messages").textContent.includes("ADOPT_SOURCE") && document.getElementById("messages").textContent.includes("BROWSER_SECOND_TASK")'), 'old/new history not visible together');
+        const thirdBrowser = await api(`/api/task-shells/${adopted.id}/messages`, { text: 'BROWSER_THIRD_TASK', newTask: true, clientMsgId: 'browser-third' });
+        await wait(async () => (await api(`/api/task-shells/${adopted.id}/tasks/${thirdBrowser.taskId}`)).messages.some(m => m.role === 'assistant'), 'browser third task incomplete');
+        await page.evaluate('inputEl.value = "继续"; send()');
+        assert.ok(await page.waitFor(`_sessionName === ${JSON.stringify(thirdBrowser.sessionId)} && ws?.readyState === 1`), 'routed execution did not reconnect');
+        assert.equal(await page.evaluate('new URL(location.href).searchParams.get("session")'), source.id);
+        assert.ok(await page.waitFor('document.getElementById("messages").textContent.includes("ADOPT_SOURCE") && document.getElementById("messages").textContent.includes("BROWSER_THIRD_TASK")'), 'switch discarded shell history');
+        await page.send('Page.reload');
+        assert.ok(await page.waitFor(`typeof _sessionName !== "undefined" && _sessionName === ${JSON.stringify(thirdBrowser.sessionId)} && ws?.readyState === 1 && document.getElementById("messages").textContent.includes("BROWSER_THIRD_TASK")`), 'reload did not restore latest history and execution');
+        await page.evaluate('loadOlderHistory()');
+        assert.ok(await page.waitFor('document.getElementById("messages").textContent.includes("ADOPT_SOURCE")'), 'older source history is missing after reload pagination');
+        const originalOwner = await page.evaluate('shellMessageOwner(Array.from(document.querySelectorAll(".msg.user")).find(n => n.textContent.includes("ADOPT_SOURCE")))');
+        assert.equal(originalOwner.sessionId, source.id, 'message actions must target the original execution');
+        await page.navigate(base + `/chat.html?session=${thirdBrowser.sessionId}`);
+        assert.ok(await page.waitFor(`typeof shellChatView !== "undefined" && shellChatView.shellId === ${JSON.stringify(adopted.id)} && ws?.readyState === 1`), 'generated execution URL lost its originating shell');
+        await page.evaluate('loadOlderHistory()');
+        assert.ok(await page.waitFor('document.getElementById("messages").textContent.includes("ADOPT_SOURCE")'), 'generated execution URL lost original history');
+        console.log('PASS full chat browser: stable source URL, internal execution switch, old/new history and reload');
+      });
+    }
     await stop();
     await start('0');
     const after = await api(`/api/task-shells/${sa.id}`); assert.equal((await api('/api/task-shells/config')).enabled, true); assert.equal(after.tasks.length, 4);

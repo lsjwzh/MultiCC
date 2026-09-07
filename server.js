@@ -2085,6 +2085,8 @@ const taskContextHost = createTaskContextHost({
 const taskShellHost = require('./src/task-shell/host').createTaskShellHost({
   file: MULTICC_PATHS.taskShellDbFile, records: persistedSessions, directories, createSessionRecord,
   loadHistory: id => viewChatHistory(id), getTaskBoard: () => taskBoardRuntime,
+  displayHistory: (id, hidden) => chatHistoryRuntime.projectedMessages(id, hidden), getChatState: id => chatSessions.get(id),
+  subscribeChat: listener => { bus.on('chat:stream-progress', listener); return () => bus.off('chat:stream-progress', listener); },
   getWorkHost: () => sessionWorkHost, getScheduler: () => orchestrationRuntime?.sessionScheduler,
   deliver: (...args) => taskContextHost.deliverSessionMessage(...args),
 });
@@ -2721,7 +2723,7 @@ const logHousekeeping = createLogHousekeeping({ logsDir: path.join(__dirname, 'l
   retainDays: envNumber(process.env.MULTICC_LOG_RETAIN_DAYS), keepTailBytes: envNumber(process.env.MULTICC_LOG_KEEP_TAIL_BYTES) });
 routerToolHost.configure({ records: persistedSessions, dispatchToSession, orchestrationRuntime, taskBoard: taskBoardRuntime,
   recordUserInput: signal => sessionWorkHost.recordInput(signal), cancelActiveTurn: (id, opts) => sessionWorkHost.cancelActiveTurn(id, opts),
-  onDispatchCancelled: id => cancelDispatchRun(id), subscribeDispatchProgress, recordRouterAdmission, getTaskContext: context => taskShellHost.refillContext(context.sessionId, { receiptId: context.requestId }) });
+  onDispatchCancelled: id => cancelDispatchRun(id), subscribeDispatchProgress, recordRouterAdmission, getTaskContext: (context, query) => taskShellHost.refillContext(context.sessionId, { ...query, receiptId: context.requestId }) });
 
 waitInjector.init({
   inject: (session, text, opts) => sessionDelivery.deliverContinuation(session, text, opts),

@@ -56,11 +56,11 @@ test('C01 C02: immutable completed exchanges, provenance and tools; no active or
   assert.equal(verifySnapshot({ ...snapshot, messages: [] }, snapshot.hash), false);
 });
 
-test('lazy context prompt requires evidence on demand and preserves side-effect ownership', () => {
+test('lazy context prompt distinguishes task attribution from execution ownership', () => {
   const prompt = renderLazyContextPrompt('tsk_current');
   assert.match(prompt, /get_task_context/);
   assert.match(prompt, /不要猜测缺失上下文/);
-  assert.match(prompt, /副作用操作/);
+  assert.match(prompt, /任务归属与执行会话相互独立/);
   assert.match(prompt, /tsk_current/);
 });
 
@@ -272,6 +272,7 @@ test('current task advances only through explicit new work or settled attributio
   ]);
   const settled = f.runtime.settleAttribution(second.sessionId, second.receiptId, {
     taskId: 'tsk_classified', taskName: 'Classified task', relation: 'new',
+    turnId: 'turn-next', anchorMessageId: 'a-next',
   });
   assert.equal(settled.changed, true);
   assert.equal(f.runtime.view(f.a.id).currentTaskId, 'tsk_classified');

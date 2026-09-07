@@ -27,6 +27,10 @@ const nativeDir = path.join(root, 'native');
 const release2 = path.join(root, 'release2');
 fs.mkdirSync(project); fs.mkdirSync(project2); fs.mkdirSync(dataDir); fs.mkdirSync(nativeDir);
 
+const testHome = path.join(root, 'home'), preload = path.join(root, 'home.cjs');
+fs.mkdirSync(testHome);
+fs.writeFileSync(preload, 'require("node:os").homedir = () => ' + JSON.stringify(testHome) + ';');
+
 // Fixed nonces keep the run deterministic: task A always answers 4271, task B 8899.
 // The fake CLI is a stand-in for the model: it calls get_task_context ONLY when the
 // answer depends on another task (mirroring renderLazyContextPrompt's contract), and
@@ -45,6 +49,10 @@ const args = process.argv.slice(2);
 if (args[0] !== 'exec') process.exit(0);
 const prompt = args.at(-1) || '';
 const sessionId = process.env.MULTICC_SESSION_ID || 'unknown';
+const nativeId = 'fake-' + sessionId;
+const sessionsDir = path.join(process.env.CODEX_HOME || path.join(require('node:os').homedir(), '.codex'), 'sessions');
+fs.mkdirSync(sessionsDir, { recursive: true });
+fs.writeFileSync(path.join(sessionsDir, 'rollout-' + nativeId + '.jsonl'), JSON.stringify({ type: 'session_meta', payload: { id: nativeId, cwd: process.cwd() } }) + '\\n');
 const nativeFile = path.join(NATIVE_DIR, 'native-' + String(sessionId).replace(/[^\\w.-]/g, '_') + '.jsonl');
 function loadMemory() {
   try { return fs.readFileSync(nativeFile, 'utf8').trim().split('\\n').filter(Boolean).map(JSON.parse).map(r => r.text); }
@@ -157,7 +165,7 @@ const calls = () => fs.existsSync(mcpCalls) ? fs.readFileSync(mcpCalls, 'utf8').
       cwd: path.join(__dirname, '..'),
       env: {
         ...process.env, NODE_ENV: 'test', PORT: String(port), HOST: '127.0.0.1', ACCESS_TOKEN: token,
-        MULTICC_DATA_DIR: dataDir, MULTICC_MEMORY_ROOT: path.join(dataDir, 'memories'), MULTICC_TASK_SHELLS: enabled,
+        NODE_OPTIONS: '--require ' + preload, MULTICC_CODEX_ROLLOUT_ARCHIVE_TTL_DAYS: '0', MULTICC_DATA_DIR: dataDir, MULTICC_MEMORY_ROOT: path.join(dataDir, 'memories'), MULTICC_TASK_SHELLS: enabled,
         MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS: '100', CODEX_CMD: fake,
         CLAUDE_CMD: path.join(root, 'missing-claude'), OPENCODE_CMD: path.join(root, 'missing-opencode'), QODER_CMD: path.join(root, 'missing-qoder'),
       },

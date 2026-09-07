@@ -2,7 +2,7 @@
 
 const { cleanError } = require('./runtime');
 
-function mountTaskShellRoutes(app, { getRuntime, open = id => getRuntime().open(id) }) {
+function mountTaskShellRoutes(app, { getRuntime, open = id => getRuntime().open(id), history }) {
   const route = handler => async (req, res) => {
     try {
       const runtime = getRuntime();
@@ -21,6 +21,11 @@ function mountTaskShellRoutes(app, { getRuntime, open = id => getRuntime().open(
   )));
   app.post('/api/task-shells', route((_runtime, req) => open(req.body?.sessionId)));
   app.get('/api/task-shells/:shellId', route((runtime, req) => runtime.view(req.params.shellId)));
+  app.get('/api/task-shells/:shellId/chat', route((runtime, req) => runtime.chatScope(req.params.shellId)));
+  if (history) app.get('/api/task-shells/:shellId/history', route((_runtime, req) => history(req.params.shellId, {
+    before: req.query.before, around: req.query.around, limit: req.query.limit,
+    includeHidden: req.query.historyScope === 'archive',
+  })));
   app.delete('/api/task-shells/:shellId', route((runtime, req) => runtime.remove(req.params.shellId)));
   app.post('/api/task-shells/:shellId/links', route((runtime, req) => runtime.link(req.params.shellId, req.body?.taskId)));
   app.post('/api/task-shells/:shellId/tasks/resolve', route((runtime, req) => runtime.resolveTask(req.params.shellId, {
