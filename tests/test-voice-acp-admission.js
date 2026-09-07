@@ -20,8 +20,8 @@ const { EventEmitter } = require('node:events');
 const test = require('node:test');
 
 const { createGatewayHost } = require('../src/dispatch/gateway-host');
-const { VOICE_ROUTER_ID } = require('../src/voice-router');
-const { createVoiceLaunchRegistry } = require('../src/voice-launch');
+const { VOICE_ROUTER_ID } = require('../src/voice/router');
+const { createVoiceLaunchRegistry } = require('../src/voice/launch');
 const { resolveDirectoryCommander } = require('../src/task-board/core');
 const {
   ADMISSION_TIMEOUT_MAX_MS,
@@ -31,7 +31,7 @@ const {
   createVoiceAcpBridge,
   speakableFromBuffer,
   textFromPrompt,
-} = require('../src/voice-acp-bridge');
+} = require('../src/voice/acp-bridge');
 
 const DISPATCH_MESSAGE = '检查登录接口 500 的原因并修复，然后跑一遍回归测试';
 const MARKER_TURN = `好的，我让一号项目的 Commander 去查。\n<<dispatch target="commander-1">${DISPATCH_MESSAGE}</dispatch>>`;

@@ -22,7 +22,7 @@ const {
   validateSchemaDocument,
 } = require('../src/contract-validator');
 const { toSessionDto } = require('../src/session-dto');
-const { gatewayDto } = require('../src/voice-gateway');
+const { gatewayDto } = require('../src/voice/gateway');
 
 const ROOT = path.join(__dirname, '..');
 const CONTRACT_DIR = path.join(ROOT, 'contracts', API_VERSION);
@@ -306,7 +306,7 @@ test('server composition uses canonical adapters and retires legacy dispatch end
   const orchestrationRoutes = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'orchestration.js'), 'utf8');
   const workspaceRuntime = fs.readFileSync(path.join(ROOT, 'src', 'workspace', 'runtime.js'), 'utf8');
   const authRoutes = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'auth.js'), 'utf8');
-  const voiceHost = fs.readFileSync(path.join(ROOT, 'src', 'voice-host.js'), 'utf8');
+  const voiceHost = fs.readFileSync(path.join(ROOT, 'src', 'voice', 'host.js'), 'utf8');
   assert.ok(source.includes("} = require('./src/session')"));
   assert.ok(source.includes("createWorkspaceRuntime } = require('./src/workspace/runtime')"));
   assert.ok(source.includes('const workspaceRuntime = createWorkspaceRuntime({'));
@@ -329,11 +329,11 @@ test('server composition uses canonical adapters and retires legacy dispatch end
   assert.ok(authRoutes.includes("/^\\/api\\/wait\\/[^/]+\\/resolve$/"));
   assert.doesNotMatch(source, /app\.post\(['"]\/api\/(?:v1\/)?sessions\/:id\/dispatch/);
   assert.equal(fs.existsSync(path.join(ROOT, 'src', 'routes', 'dispatch-contract.js')), false);
-  assert.ok(source.includes("createVoiceHost } = require('./src/voice-host')"));
+  assert.ok(source.includes("createVoiceHost } = require('./src/voice/host')"));
   assert.ok(source.includes('getBaseUrl: () => `http://127.0.0.1:${PORT}`'));
   assert.doesNotMatch(source, /getBaseUrl:\s*\(\)\s*=>[^\n]*\bgetPort\(\)/);
-  assert.ok(voiceHost.includes("createVoiceGatewayRoutes } = require('./routes/voice-gateway')"));
-  assert.ok(voiceHost.includes("createQwenAudioRuntimeRoutes } = require('./routes/qwen-audio-runtime')"));
+  assert.ok(voiceHost.includes("createVoiceGatewayRoutes } = require('../routes/voice-gateway')"));
+  assert.ok(voiceHost.includes("createQwenAudioRuntimeRoutes } = require('../routes/qwen-audio-runtime')"));
   assert.ok(source.includes('JSON.stringify(createWsEnvelope(payload))'));
   // The outward task short-code registry must be the persisted one — without
   // this wiring the singleton silently degrades to in-memory and every code

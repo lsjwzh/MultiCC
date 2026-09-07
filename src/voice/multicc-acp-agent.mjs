@@ -2,7 +2,7 @@
 
 import { Readable, Writable } from 'node:stream'
 import * as acp from '@agentclientprotocol/sdk'
-import bridgeModule from '../voice-acp-bridge.js'
+import bridgeModule from './acp-bridge.js'
 
 const { createVoiceAcpBridge } = bridgeModule
 

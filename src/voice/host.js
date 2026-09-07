@@ -1,17 +1,17 @@
 'use strict';
 
 const path = require('path');
-const { mountVoiceRoutes } = require('./routes/voice');
-const { createVoiceGatewayRoutes } = require('./routes/voice-gateway');
-const { createGlobalVoiceGatewayRoutes } = require('./routes/voice-gateway-global');
-const { createVoiceGatewayWebProxy, wireUpgrade } = require('./routes/voice-gateway-proxy');
-const { GLOBAL_VOICE_GATEWAY_ID, legacyGatewayProjection } = require('./voice-gateway');
-const { createQwenAudioRuntimeRoutes } = require('./routes/qwen-audio-runtime');
+const { mountVoiceRoutes } = require('../routes/voice');
+const { createVoiceGatewayRoutes } = require('../routes/voice-gateway');
+const { createGlobalVoiceGatewayRoutes } = require('../routes/voice-gateway-global');
+const { createVoiceGatewayWebProxy, wireUpgrade } = require('../routes/voice-gateway-proxy');
+const { GLOBAL_VOICE_GATEWAY_ID, legacyGatewayProjection } = require('./gateway');
+const { createQwenAudioRuntimeRoutes } = require('../routes/qwen-audio-runtime');
 const { createQwenAudioInstaller } = require('./qwen-audio-installer');
 const { createQwenAudioSupervisor } = require('./qwen-audio-supervisor');
-const { createVoiceLaunchRegistry } = require('./voice-launch');
-const { createVoiceRouterProvisioner } = require('./voice-router');
-const { resolveDirectoryCommander } = require('./task-board/core');
+const { createVoiceLaunchRegistry } = require('./launch');
+const { createVoiceRouterProvisioner } = require('./router');
+const { resolveDirectoryCommander } = require('../task-board/core');
 
 const DEFAULT_MODEL = 'qwen-audio-3.0-realtime-plus';
 const DEFAULT_VOICE = 'longanqian';
@@ -29,9 +29,9 @@ function createVoiceHost({
   sessionPersistence,
   runtimeRoot,
   getBaseUrl,
-  acpAgentPath = path.join(__dirname, 'voice', 'multicc-acp-agent.mjs'),
+  acpAgentPath = path.join(__dirname, 'multicc-acp-agent.mjs'),
   uploadVoice,
-  voice = require('./voice'),
+  voice = require('./config'),
   asrLocal = require('./asr-local'),
   voiceAsr,
   ttsService,

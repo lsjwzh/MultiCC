@@ -22,7 +22,7 @@
 const WebSocket = require('ws');
 const zlib = require('zlib');
 // In-process local ASR (SenseVoice via sherpa-onnx) — no upstream socket at all.
-const asrLocal = require('../../src/asr-local');
+const asrLocal = require('../../src/voice/asr-local');
 
 // ── Provider config (mutated by server.js when settings change) ──
 const cfg = {
@@ -314,7 +314,7 @@ function volcanoSession(opts, cb) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Provider: local in-process ASR (SenseVoice + silero-VAD via sherpa-onnx).
-// No network at all — src/asr-local.js segments speech with VAD and emits a
+// No network at all — src/voice/asr-local.js segments speech with VAD and emits a
 // final per segment. Same session interface as the socket-based providers.
 // ─────────────────────────────────────────────────────────────────────────────
 function localSession(opts, cb) {

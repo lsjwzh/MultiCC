@@ -2,7 +2,7 @@
 
 const crypto = require('crypto');
 const WebSocket = require('ws');
-const { sanitizeVoiceSpeech } = require('./voice-speech');
+const { sanitizeVoiceSpeech } = require('./speech');
 
 const QWEN_INSTRUCTION_BLOCK = /<qwen_audio_agent_backend_instructions>[\s\S]*?<\/qwen_audio_agent_backend_instructions>\s*/gi;
 const QWEN_REQUEST_ENVELOPE = /<qwen_audio_agent_request>([\s\S]*?)<\/qwen_audio_agent_request>/gi;

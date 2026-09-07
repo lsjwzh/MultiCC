@@ -14,7 +14,7 @@
 // — a voice request must not land somewhere the user did not mean.
 
 const crypto = require('crypto');
-const { VOICE_ROUTER_ID, isVoiceRouterRecord } = require('./voice-router');
+const { VOICE_ROUTER_ID, isVoiceRouterRecord } = require('./router');
 
 const DEFAULT_TTL_MS = 30 * 60 * 1000;
 const MAX_TICKETS = 64;

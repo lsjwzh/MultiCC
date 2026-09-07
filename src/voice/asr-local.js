@@ -9,9 +9,9 @@
 // isAvailable() returns false and callers fall back to the cloud path — this
 // module must never take the voice feature down with it.
 //
-// Config mirrors src/voice.js: a mutable `cfg` keyed by env var name so the
+// Config mirrors src/voice/config.js: a mutable `cfg` keyed by env var name so the
 // settings route can hot-apply updates via applyEnvUpdates(). Never destructure
-// `cfg` (stale-binding trap, see src/voice.js header).
+// `cfg` (stale-binding trap, see src/voice/config.js header).
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -136,7 +136,7 @@ function vocabRegexes() {
   if (now - _vocabCache.at < 30000) return _vocabCache.regexes;
   const regexes = [];
   try {
-    const { loadWhisperVocab } = require('./voice');
+    const { loadWhisperVocab } = require('./config');
     const terms = loadWhisperVocab().slice(0, 40).map(v => v.term)
       .filter(t => /^[A-Za-z][A-Za-z0-9_./-]{2,}$/.test(t));
     for (const term of terms) {

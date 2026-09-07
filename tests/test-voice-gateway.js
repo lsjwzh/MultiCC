@@ -15,14 +15,14 @@ const {
   isVoiceGatewayRecord,
   resolveVoiceGateway,
   voiceGatewayId,
-} = require('../src/voice-gateway');
+} = require('../src/voice/gateway');
 const { createVoiceGatewayRoutes } = require('../src/routes/voice-gateway');
 const {
   createVoiceAcpBridge,
   stableQueueEntryId,
   textFromPrompt,
   validateTransportSecurity,
-} = require('../src/voice-acp-bridge');
+} = require('../src/voice/acp-bridge');
 
 function commander(id = 'commander-1', dirId = 'dir-1') {
   return {
