@@ -10,7 +10,7 @@ const {
   inferLastWorkAt,
   initializeSessionWorktrees,
   resolveSessionCwd,
-} = require('../src/session-hibernation');
+} = require('../src/session/hibernation');
 
 const DAY = 24 * 60 * 60 * 1000;
 const iso = value => new Date(value).toISOString();

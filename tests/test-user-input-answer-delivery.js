@@ -7,7 +7,7 @@ const path = require('node:path');
 const test = require('node:test');
 const { createOrchestrationStore } = require('../src/orchestration/store');
 const { createOutbox } = require('../src/outbox');
-const { createSessionWorkScheduler } = require('../src/session-work-scheduler');
+const { createSessionWorkScheduler } = require('../src/session-work/scheduler');
 
 function fixture(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-user-input-answer-'));

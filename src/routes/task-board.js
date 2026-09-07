@@ -9,7 +9,7 @@ const core = require('../task-board/core');
 const planning = require('../task-board/planning');
 const { createPaths } = require('../paths');
 const { isVoiceRouterRecord } = require('../voice/router');
-const { runStateForFreezeReason } = require('../session-work-scheduler');
+const { runStateForFreezeReason } = require('../session-work/scheduler');
 const { classifyDisplay } = require('../classify/vocab');
 const { publicRunDto } = require('./task-runs');
 const {

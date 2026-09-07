@@ -4,8 +4,8 @@ const crypto = require('crypto');
 const {
   admitOutboxItem,
   normalizeJson,
-} = require('./outbox');
-const { turnOutcomeForClassify } = require('./classify/vocab');
+} = require('../outbox');
+const { turnOutcomeForClassify } = require('../classify/vocab');
 
 const ACTIVE_STATES = new Set(['starting', 'running', 'assessing', 'frozen']);
 const CONTROL_KINDS = new Set(['answer', 'approval', 'callback', 'continuation', 'retry', 'resume']);

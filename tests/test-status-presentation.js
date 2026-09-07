@@ -21,7 +21,7 @@ const path = require('node:path');
 const ROOT = path.join(__dirname, '..');
 const SP = require('../public/status-presentation.js');
 const { CLASSIFY_DISPLAY } = require('../src/classify/vocab.js');
-const { FREEZE_REASON_RUN_STATE } = require('../src/session-work-scheduler.js');
+const { FREEZE_REASON_RUN_STATE } = require('../src/session-work/scheduler.js');
 
 function read(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
 

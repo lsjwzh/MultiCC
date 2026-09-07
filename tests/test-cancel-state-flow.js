@@ -23,11 +23,11 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { createSessionWorkHost } = require('../src/session-work-host');
+const { createSessionWorkHost } = require('../src/session-work/host');
 const { createClassifyStateMachine } = require('../src/classify/state-machine');
 const { createTaskStateStore } = require('../src/routes/task-state-store');
 const { createTaskBoardRuntime } = require('../src/routes/task-board');
-const { createSessionWorkScheduler } = require('../src/session-work-scheduler');
+const { createSessionWorkScheduler } = require('../src/session-work/scheduler');
 const { createOrchestrationStore } = require('../src/orchestration/store');
 const { createOutbox } = require('../src/outbox');
 const { createOrchestrationRoutes } = require('../src/routes/orchestration');
@@ -700,7 +700,7 @@ test('cancel still requires explicit confirmation', async () => {
 // ── 9. No legacy direct-write path is left behind ──────────────────────────
 
 test('no module outside classify writes a cancel terminal state', () => {
-  const hostSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'session-work-host.js'), 'utf8');
+  const hostSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'session-work', 'host.js'), 'utf8');
   // The host may stop the runner and submit a result; it may not persist one.
   assert.doesNotMatch(hostSource, /setTaskState\([^)]*cancelledAt/,
     'session-work-host must not write the cancel envelope itself');

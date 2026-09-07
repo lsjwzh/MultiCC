@@ -7,7 +7,7 @@ const test = require('node:test');
 
 const { createDispatchTargeting } = require('../src/dispatch/targeting');
 const { composeMessage } = require('../src/message-composer');
-const { createSessionPersistence } = require('../src/session-persistence');
+const { createSessionPersistence } = require('../src/session/persistence');
 const {
   createRoleWorkerService,
   roleWorkerSpec,

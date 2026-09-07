@@ -5,7 +5,7 @@ const test = require('node:test');
 const {
   SYSTEM_PREFIX,
   createSessionDelivery,
-} = require('../src/session-delivery');
+} = require('../src/session/delivery');
 
 function harness() {
   const admissions = [];

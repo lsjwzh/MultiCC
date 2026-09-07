@@ -1,9 +1,9 @@
 'use strict';
 
-const { runStateForFreezeReason } = require('./session-work-scheduler');
-const zcodeAuth = require('./cli-adapters/zcode-auth');
-const kimiAuth = require('./cli-adapters/kimi-auth');
-const { redactProviderRouteCapability } = require('./observability');
+const { runStateForFreezeReason } = require('./scheduler');
+const zcodeAuth = require('../cli-adapters/zcode-auth');
+const kimiAuth = require('../cli-adapters/kimi-auth');
+const { redactProviderRouteCapability } = require('../observability');
 
 function requireFunction(deps, name) {
   if (typeof deps?.[name] !== 'function') {
