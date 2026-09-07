@@ -10,8 +10,8 @@ const fs = require('fs');
 const path = require('path');
 const Database = require('better-sqlite3');
 const paths = require('../src/paths');
-const { _writeAtomic } = require('../src/orchestration-store');
-const { _loadDatabaseState, _stateDigest } = require('../src/orchestration-sqlite-store');
+const { _writeAtomic } = require('../src/orchestration/store');
+const { _loadDatabaseState, _stateDigest } = require('../src/orchestration/sqlite-store');
 
 function exportSnapshot({
   databaseFile,

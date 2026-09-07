@@ -6,7 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const test = require('node:test');
-const { createOrchestrationStore } = require('../src/orchestration-store');
+const { createOrchestrationStore } = require('../src/orchestration/store');
 const { createWaitService } = require('../src/wait/service');
 
 function tempFile(t, name = 'orchestration.json') {

@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const test = require('node:test');
-const { createOrchestrationRuntime } = require('../src/orchestration-runtime');
+const { createOrchestrationRuntime } = require('../src/orchestration/runtime');
 
 function dataFixture(t) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-durable-runtime-data-'));
