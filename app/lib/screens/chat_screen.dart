@@ -96,7 +96,7 @@ class _ChatViewState extends State<ChatView> {
     try {
       await ManageService(
         settings: widget.settings,
-      ).markTurnSucceeded(provider.sessionName);
+      ).markTurnSucceeded(provider.executionSessionName);
       if (!mounted) return;
       // The server will push a task_state update via WS; no manual refresh needed.
     } catch (e) {
@@ -187,10 +187,11 @@ class _ChatViewState extends State<ChatView> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     final provider = context.watch<ChatProvider>();
-    final session = provider.sessionName;
+    final session = provider.executionSessionName;
     if (session == _polledSession) return;
     _polledSession = session;
     _lastWarnedBehind = 0; // reset warning state when switching sessions
+    _mergeStatus = null;
     _mergeTimer?.cancel();
     _refreshMergeStatus(session);
     _mergeTimer = Timer.periodic(
@@ -267,7 +268,7 @@ class _ChatViewState extends State<ChatView> {
   Future<void> _resolveFocus(ChatProvider provider) async {
     final focusId = widget.focusMessageId;
     if (focusId == null || focusId.isEmpty) return;
-    final alreadyPresent = provider.messages.any((m) => m.id == focusId || shellMessageOwner(provider.sessionId, m.id ?? '').messageId == focusId);
+    final alreadyPresent = provider.messages.any((m) => m.id == focusId || shellMessageOwner(provider.executionSessionName, m.id ?? '').messageId == focusId);
     if (!alreadyPresent) {
       bool found = false;
       try {
@@ -285,7 +286,7 @@ class _ChatViewState extends State<ChatView> {
     }
     if (!mounted) return;
     setState(() => _highlightId = provider.messages.firstWhere((m) =>
-      m.id == focusId || shellMessageOwner(provider.sessionId, m.id ?? '').messageId == focusId).id);
+      m.id == focusId || shellMessageOwner(provider.executionSessionName, m.id ?? '').messageId == focusId).id);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       final ctx = _focusKey.currentContext;
@@ -380,7 +381,7 @@ class _ChatViewState extends State<ChatView> {
                   branch: _mergeStatus?['branch']?.toString(),
                   behind: (_mergeStatus?['behind'] as num?)?.toInt() ?? 0,
                   onCwd: () => _showCwdDialog(context, provider),
-                  onMerge: () => _mergeCurrent(context, provider.sessionName),
+                  onMerge: () => _mergeCurrent(context, provider.executionSessionName),
                   onRole: () =>
                       _editRoleFromSession(context, provider.sessionName),
                   onMemory: () =>
@@ -469,7 +470,7 @@ class _ChatViewState extends State<ChatView> {
                     behind: _behindCount(),
                     baseBranch: _baseBranchName(),
                     syncing: _syncing,
-                    onSync: () => _syncWorktree(provider.sessionName),
+                    onSync: () => _syncWorktree(provider.executionSessionName),
                   ),
                 Expanded(
                   child: _MessageList(
@@ -484,11 +485,11 @@ class _ChatViewState extends State<ChatView> {
                 if (mergeReady)
                   _MergeReadyBanner(
                     text: _mergeStatusText(_mergeStatus),
-                    onMerge: () => _mergeCurrent(context, provider.sessionName),
+                    onMerge: () => _mergeCurrent(context, provider.executionSessionName),
                     onDiff: () => showSessionDiffDialog(
                       context,
                       settings: widget.settings,
-                      sessionId: provider.sessionName,
+                      sessionId: provider.executionSessionName,
                     ),
                   ),
                 _CenteredChatLane(
@@ -496,7 +497,7 @@ class _ChatViewState extends State<ChatView> {
                     onPickSubagent: () => openAIConfigSheet(
                       context,
                       settings: widget.settings,
-                      sessionId: provider.sessionName,
+                      sessionId: provider.executionSessionName,
                     ),
                   ),
                 ),

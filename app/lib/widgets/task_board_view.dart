@@ -444,16 +444,11 @@ class _TaskBoardViewState extends State<TaskBoardView> {
       _openDetailSheet(task);
       return;
     }
-    final bound = task.chatSessionId;
-    if (bound != null && bound.isNotEmpty) {
-      opener(bound);
-      return;
-    }
     if (_openingTaskId != null) return;
     setState(() => _openingTaskId = task.id);
     final sid = await ManageService(
       settings: widget.settings,
-    ).ensureTaskChatSession(task.id);
+    ).resolveTaskChatSession(task.id, boundSessionId: task.chatSessionId);
     if (!mounted) return;
     setState(() => _openingTaskId = null);
     if (sid != null && sid.isNotEmpty) {
@@ -1887,9 +1882,17 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
     );
   }
 
-  void _openBoundChat() {
-    final sid = _boundSessionId;
-    if (sid == null) return;
+  Future<void> _openBoundChat() async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    final sid = await ManageService(settings: widget.settings).resolveTaskChatSession(
+      widget.task.id, boundSessionId: _boundSessionId);
+    if (!mounted) return;
+    setState(() => _busy = false);
+    if (sid == null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(t('errorOccurred'))));
+      return;
+    }
     // Close this detail sheet first, then hand off to the fleet sheet's
     // opener (same contract as _jumpToSession).
     final open = widget.onOpenSession;

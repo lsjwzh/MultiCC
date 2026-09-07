@@ -605,7 +605,9 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
       cli,
       fresh: fresh,
     );
-    _providers[id]?.applyCliConfig(config);
+    for (final provider in _providers.values) {
+      if (provider.executionSessionName == id) provider.applyCliConfig(config);
+    }
     await loadDashboard();
     return config;
   }
@@ -726,12 +728,12 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
   /// providerBaseUrl to the chat provider - the app mirror of the web's
   /// updateProviderBtn() -> setProviderBaseUrl() right after saveSession.
   Future<void> _syncChatProviderAfterProviderChange(String id) async {
-    final provider = _providers[id];
-    if (provider == null) return;
+    if (!_providers.values.any((p) => p.executionSessionName == id)) return;
     try {
-      provider.applyProviderSwitch(
-        await _sessionService.fetchSessionCliConfig(id),
-      );
+      final config = await _sessionService.fetchSessionCliConfig(id);
+      for (final provider in _providers.values) {
+        if (provider.executionSessionName == id) provider.applyProviderSwitch(config);
+      }
     } catch (_) {
       // Non-fatal: bars keep the previous provider until the next CLI switch
       // broadcast or reconnect re-learns it.

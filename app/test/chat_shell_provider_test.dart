@@ -59,6 +59,7 @@ void main() {
               'type': 'system',
               'subtype': 'init',
               'is_streaming': false,
+            'session_id': 'native-resume-id',
               'taskShell': true,
               'cli': 'codex',
             }),
@@ -128,6 +129,14 @@ void main() {
           'task-next:next',
         ]);
         expect(provider.historyExhausted, isTrue);
+        expect(provider.sessionName, 'source');
+        expect(provider.sessionId, 'native-resume-id');
+        expect(provider.executionSessionName, 'task-next');
+        await provider.refreshDispatchQueue();
+        await until(() => requests.any((u) => u.path == '/api/sessions/task-next/dispatches'));
+        provider.reconnect();
+        expect(provider.executionSessionName, 'task-next', reason: 'reconnect must retain operation target while scope reloads');
+        await until(() => sockets.length == 3 && provider.historyApplied);
         provider.dispose();
         disposed = true;
         reopened = makeProvider();
