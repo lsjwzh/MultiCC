@@ -47,9 +47,28 @@
     let buffered = [];
     const receiptClients = new Map();
 
-    function remap(message) {
+    function remapClient(message) {
       const id = message?.clientMsgId == null ? '' : String(message.clientMsgId);
       return id && receiptClients.has(id) ? { ...message, clientMsgId: receiptClients.get(id) } : message;
+    }
+
+    function historyRecords(message) {
+      if (message?.type === 'chat_msg_meta') return message.message ? [message.message] : [];
+      if (message?.type === 'chat_history' && Array.isArray(message.messages)) return message.messages;
+      return [];
+    }
+
+    function remap(message) {
+      const mapped = remapClient(message);
+      // The renderer matches the admission bubble against the committed record,
+      // not its envelope. Reconnect history must use that same browser identity.
+      if (message?.type === 'chat_msg_meta' && message.message) {
+        return { ...mapped, message: remapClient(message.message) };
+      }
+      if (message?.type === 'chat_history' && Array.isArray(message.messages)) {
+        return { ...mapped, messages: message.messages.map(remapClient) };
+      }
+      return mapped;
     }
 
     function ingest(message) {
@@ -57,8 +76,11 @@
       if (message?.type === 'system' && message.subtype === 'init' && 'is_streaming' in message) {
         enabled = message.taskShell === true;
       }
-      const receipt = message?.clientMsgId == null ? '' : String(message.clientMsgId);
-      if (pending && receipt.startsWith('sr_') && !receiptClients.has(receipt)) {
+      const awaitingReceipt = pending && [message, ...historyRecords(message)].some(record => {
+        const id = record?.clientMsgId == null ? '' : String(record.clientMsgId);
+        return id.startsWith('sr_') && !receiptClients.has(id);
+      });
+      if (awaitingReceipt) {
         buffered.push(message);
         return { events: [] };
       }
@@ -74,7 +96,11 @@
       if (message?.type === 'error' && message.notDelivered === true
           && pending?.clientMsgId === message.clientMsgId) {
         pending = null;
+        // A reconnect page may contain older, unmapped receipts. A failed new
+        // send must not discard those already committed messages.
+        const events = buffered.filter(event => ['chat_msg_meta', 'chat_history'].includes(event.type)).map(remap);
         buffered = [];
+        return { events: [...events, remap(message)] };
       }
       return { events: [remap(message)] };
     }
