@@ -5,11 +5,7 @@
 window.__multiccClientBuild = 'voice-task-label-2026-08-20';
 console.log('[multicc] client.js build', window.__multiccClientBuild);
 
-// Simple HTML escape helper
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, c =>
-    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-}
+// Simple HTML escape helper — canonical copy in shared/dom-helpers.js.
 
 // Open the project memo (stored in multicc, not in the project) as a popup.
 async function openMemo() {
@@ -282,11 +278,8 @@ const _urlToken = new URLSearchParams(location.search).get('token') || '';
 function withToken(url) { return url; }
 
 /* ── Dynamic favicon + title from session ID ── */
-const _TAB_COLORS = ['#58a6ff','#f78166','#3fb950','#d29922','#bc8cff','#f97583','#79c0ff','#56d364'];
-function _hashColor(s) {
-  let h = 0; for (let i = 0; i < s.length; i++) h = (h + s.charCodeAt(i) * 31) | 0;
-  return _TAB_COLORS[Math.abs(h) % _TAB_COLORS.length];
-}
+/* _hashColor (session-name → tab colour) lives in shared/dom-helpers.js, so
+   the standalone client page and the chat page agree on the same palette. */
 function updateTabIdentity(id) {
   if (!id) return;
   document.title = `${id} — MultiCC`;
