@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -2040,9 +2041,163 @@ class _ContextUsageBar extends StatelessWidget {
     return rows;
   }
 
+  static List<Map<String, dynamic>> _traceSources(Map<String, dynamic>? trace) {
+    final raw = trace?['sources'];
+    if (raw is! List) return const [];
+    return raw
+        .whereType<Map>()
+        .map((value) => Map<String, dynamic>.from(value))
+        .toList();
+  }
+
+  static int _traceCount(Map<String, dynamic>? trace) =>
+      trace == null ? 0 : 1 + _traceSources(trace).length;
+
+  static String _sourceMode(dynamic value) => value == 'refilled'
+      ? t('usageContextRefilled')
+      : t('usageContextImported');
+
+  static String _messageText(dynamic value) {
+    if (value is String) return value;
+    try {
+      return jsonEncode(value);
+    } catch (_) {
+      return value?.toString() ?? '';
+    }
+  }
+
+  static Widget _traceSection(
+    Map<String, dynamic> trace, {
+    bool loading = false,
+    String error = '',
+  }) {
+    final current = trace['currentTask'] is Map
+        ? Map<String, dynamic>.from(trace['currentTask'] as Map)
+        : const <String, dynamic>{};
+    final sources = _traceSources(trace);
+    final children = <Widget>[
+      const Divider(color: Color(0xFF30363d), height: 20),
+      Row(
+        children: [
+          const Icon(Icons.link, size: 14, color: Color(0xFF79c0ff)),
+          const SizedBox(width: 5),
+          Text(
+            t('usageContextSources', {'n': '${1 + sources.length}'}),
+            style: const TextStyle(color: Color(0xFFc6ccd4), fontSize: 12),
+          ),
+        ],
+      ),
+      const SizedBox(height: 7),
+      Text(
+        '${t('usageContextCurrent')} · ${t('usageContextNative')}',
+        style: const TextStyle(color: Color(0xFF7a828e), fontSize: 10),
+      ),
+      SelectableText(
+        (current['taskName'] ?? current['taskId'] ?? '').toString(),
+        style: const TextStyle(color: Color(0xFFc6ccd4), fontSize: 12),
+      ),
+      SelectableText(
+        (current['taskId'] ?? '').toString(),
+        style: const TextStyle(color: Color(0xFF5b616c), fontSize: 10),
+      ),
+    ];
+    for (final source in sources) {
+      final messages = source['messages'] is List
+          ? (source['messages'] as List).whereType<Map>().toList()
+          : const <Map>[];
+      final count =
+          (source['messageCount'] as num?)?.toInt() ?? messages.length;
+      final tokens = (source['estimatedTokens'] as num?)?.toInt() ?? 0;
+      final omitted = (source['omittedExchanges'] as num?)?.toInt() ?? 0;
+      final subtitle =
+          '${_sourceMode(source['mode'])} · '
+          '${t('usageContextMessages', {'n': '$count'})}'
+          '${tokens > 0 ? ' · ${t('usageContextApproxTokens', {'n': _amount(tokens)})}' : ''}'
+          '${omitted > 0 ? ' · ${t('usageContextOmitted', {'n': '$omitted'})}' : ''}';
+      children.add(
+        ExpansionTile(
+          tilePadding: EdgeInsets.zero,
+          childrenPadding: const EdgeInsets.only(left: 8, bottom: 4),
+          dense: true,
+          title: Text(
+            (source['taskName'] ?? source['taskId'] ?? '').toString(),
+            style: const TextStyle(color: Color(0xFFc6ccd4), fontSize: 12),
+          ),
+          subtitle: Text(
+            subtitle,
+            style: const TextStyle(color: Color(0xFF7a828e), fontSize: 10),
+          ),
+          children: messages.map((message) {
+            final role = message['role'] == 'user'
+                ? t('tbRoleUser')
+                : t('tbRoleAssistant');
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 7),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(
+                    width: 34,
+                    child: Text(
+                      role,
+                      style: const TextStyle(
+                        color: Color(0xFF5b616c),
+                        fontSize: 10,
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    child: SelectableText(
+                      _messageText(message['content']),
+                      style: const TextStyle(
+                        color: Color(0xFFadb6c2),
+                        fontSize: 11,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }).toList(),
+        ),
+      );
+    }
+    if (loading) {
+      children.add(
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: 6),
+          child: LinearProgressIndicator(minHeight: 2),
+        ),
+      );
+    }
+    if (error.isNotEmpty) {
+      children.add(
+        Text(
+          error,
+          style: const TextStyle(color: Color(0xFFf85149), fontSize: 11),
+        ),
+      );
+    }
+    children.add(
+      Padding(
+        padding: const EdgeInsets.only(top: 7),
+        child: Text(
+          t('usageContextManagedScope'),
+          style: const TextStyle(color: Color(0xFF5b616c), fontSize: 10),
+        ),
+      ),
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: children,
+    );
+  }
+
   void _showDetail(BuildContext context, ChatProvider p) {
     final rows = _detailRows(p);
-    if (rows.isEmpty) return;
+    final summaryTrace = p.contextTrace;
+    if (rows.isEmpty && summaryTrace == null) return;
+    final hasRemoteSources = _traceSources(summaryTrace).isNotEmpty;
     showDialog<void>(
       context: context,
       builder: (_) => AlertDialog(
@@ -2050,39 +2205,60 @@ class _ContextUsageBar extends StatelessWidget {
           t('usageDetailTitle'),
           style: const TextStyle(fontSize: 15),
         ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            for (final row in rows)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 10),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      row[0],
-                      style: const TextStyle(
-                        color: Color(0xFF7a828e),
-                        fontSize: 11,
+        content: SizedBox(
+          width: 520,
+          child: SingleChildScrollView(
+            child: FutureBuilder<Map<String, dynamic>>(
+              initialData: summaryTrace,
+              future: hasRemoteSources ? p.loadContextTrace() : null,
+              builder: (context, snapshot) => Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  for (final row in rows)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            row[0],
+                            style: const TextStyle(
+                              color: Color(0xFF7a828e),
+                              fontSize: 11,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            row[1],
+                            style: const TextStyle(
+                              color: Color(0xFFc6ccd4),
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                    const SizedBox(height: 2),
-                    Text(
-                      row[1],
-                      style: const TextStyle(
-                        color: Color(0xFFc6ccd4),
-                        fontSize: 12,
-                      ),
+                  Text(
+                    t('usageSessionHint'),
+                    style: const TextStyle(
+                      color: Color(0xFF5b616c),
+                      fontSize: 11,
                     ),
-                  ],
-                ),
+                  ),
+                  if (snapshot.data != null)
+                    _traceSection(
+                      snapshot.data!,
+                      loading:
+                          snapshot.connectionState == ConnectionState.waiting,
+                      error: snapshot.hasError
+                          ? t('usageContextLoadFailed')
+                          : '',
+                    ),
+                ],
               ),
-            Text(
-              t('usageSessionHint'),
-              style: const TextStyle(color: Color(0xFF5b616c), fontSize: 11),
             ),
-          ],
+          ),
         ),
         actions: [
           TextButton(
@@ -2098,7 +2274,8 @@ class _ContextUsageBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final provider = context.watch<ChatProvider>();
     final ctx = provider.contextReadout;
-    final hasDetail = _detailRows(provider).isNotEmpty;
+    final trace = provider.contextTrace;
+    final hasDetail = _detailRows(provider).isNotEmpty || trace != null;
     // Nothing measured yet: show no strip at all rather than an empty one.
     if (ctx.isEmpty && !hasDetail) return const SizedBox.shrink();
 
@@ -2144,10 +2321,24 @@ class _ContextUsageBar extends StatelessWidget {
             ),
             if (hasDetail) ...[
               const SizedBox(width: 6),
-              Text(
-                t('usageDetail'),
-                style: const TextStyle(color: Color(0xFF454b54), fontSize: 11),
-              ),
+              if (trace != null) ...[
+                const Icon(Icons.link, size: 12, color: Color(0xFF59616c)),
+                const SizedBox(width: 2),
+                Text(
+                  t('usageContextSources', {'n': '${_traceCount(trace)}'}),
+                  style: const TextStyle(
+                    color: Color(0xFF59616c),
+                    fontSize: 11,
+                  ),
+                ),
+              ] else
+                Text(
+                  t('usageDetail'),
+                  style: const TextStyle(
+                    color: Color(0xFF454b54),
+                    fontSize: 11,
+                  ),
+                ),
             ],
           ],
         ),

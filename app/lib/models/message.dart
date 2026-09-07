@@ -117,6 +117,11 @@ class ChatMessage {
   double? cost;
   MessageUsage? usage;
 
+  /// Server-authored manifest of MultiCC-managed context references for this
+  /// turn. It intentionally contains source metadata only; message bodies are
+  /// fetched from the authenticated context endpoint when the user opens them.
+  Map<String, dynamic>? contextTrace;
+
   /// Stable history id assigned by the server (e.g. "mxxxxxx-n"). null while
   /// the message is still streaming / not yet persisted. Used for per-message
   /// delete and for tagging live bubbles via the chat_msg_meta WS event.
@@ -148,6 +153,7 @@ class ChatMessage {
     this.isPartial = false,
     this.cost,
     this.usage,
+    this.contextTrace,
     this.id,
     this.durationMs,
     this.clientMsgId,
@@ -166,6 +172,9 @@ class ChatMessage {
       cost = (json['cost'] as num?)?.toDouble(),
       usage = json['usage'] is Map
           ? MessageUsage.fromJson(json['usage'] as Map<String, dynamic>)
+          : null,
+      contextTrace = json['contextTrace'] is Map
+          ? Map<String, dynamic>.from(json['contextTrace'] as Map)
           : null,
       id = (json['id']?.toString().isNotEmpty ?? false)
           ? json['id'].toString()

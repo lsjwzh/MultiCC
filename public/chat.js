@@ -337,6 +337,7 @@ let _turnUsage = null;
 // Usage of the newest single API request (stream_event message_start). Unlike a
 // turn total it cannot double-count a cached prefix, so it is the exact context.
 let _requestUsage = null;
+let _contextTrace = null;
 let _turnMeta = null;  // { durationText, turns } — shown in the detail panel, never priced
 let _sessionTokens = { input: 0, output: 0 };  // per-session cumulative token usage
 let _turnStartMs = 0;  // wall-clock when the current turn was sent (live reply timing)
@@ -921,6 +922,7 @@ function applyHistoryPlan(plan) {
     _sessionTokens = { ...plan.sessionTokens };
   }
   _turnUsage = plan.lastTurnUsage;
+  _contextTrace = plan.lastContextTrace;
   // History carries no per-request block; keeping a stale one would present
   // another turn's measurement as this one's.
   _requestUsage = null;
@@ -999,6 +1001,9 @@ function updateUI() {
 // readout opens. See chat-usage-readout.js for why money is not among them.
 const usageReadout = window.MultiCCChatUsageReadout?.createUsageReadout({
   bar: costBar, panel: document.getElementById('usage-detail-pop'), document,
+  loadContextTrace: trace => chatApi.json(withToken(
+    `/api/sessions/${encodeURIComponent(_sessionName)}/context?traceId=${encodeURIComponent(trace.traceId)}&include=messages`,
+  )),
 });
 function noteRequestUsage(usage) {
   // One request's own report: the only context figure that needs no heuristic.
@@ -1022,6 +1027,7 @@ function updateContextBar(usage, modelUsage) {
     providerWindows: _providerTokenWindows,
     providerLabel: _providerName || _providerId || 'Provider',
     turnMeta: _turnMeta,
+    contextTrace: _contextTrace,
     formatTokens: _providerCatalog.formatCompactTokens,
     formatWindow: _providerCatalog.formatUsageWindow,
   });
@@ -2446,6 +2452,7 @@ const eventStateBindings = {
   liveStreamUsage: [() => _liveStreamUsage, value => { _liveStreamUsage = value; }],
   turnStartMs: [() => _turnStartMs, value => { _turnStartMs = value; }],
   turnMeta: [() => _turnMeta, value => { _turnMeta = value; }],
+  contextTrace: [() => _contextTrace, value => { _contextTrace = value; }],
   sessionTokens: [() => _sessionTokens, value => { _sessionTokens = value; }],
   lastUserBubble: [() => _lastUserBubble, value => { _lastUserBubble = value; }],
   lastInitInfoLine: [() => _lastInitInfoLine, value => { _lastInitInfoLine = value; }],

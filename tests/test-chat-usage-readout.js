@@ -83,6 +83,49 @@ test('an unknown context window reports occupancy without a fake denominator', (
   assert.equal(view.summary.hasBar, false);
 });
 
+test('a verified trace adds a compact source link and an honest managed-only scope', () => {
+  const trace = {
+    traceId: 'sr-1',
+    currentTask: { taskId: 'tsk-current', taskName: '当前任务' },
+    sources: [{ taskId: 'tsk-source', taskName: '<source>', mode: 'refilled', messageCount: 2, estimatedTokens: 300 }],
+    managedOnly: true,
+  };
+  const bar = fakeElement();
+  const panel = fakeElement();
+  const readout = createUsageReadout({ bar, panel, document: fakeElement() });
+  readout.render({ requestUsage: REQUEST, contextWindow: WINDOW, contextTrace: trace });
+  assert.match(bar.innerHTML, /⌁ 引用 2/);
+  bar.fire('click');
+  assert.match(panel.innerHTML, /本轮引用来源/);
+  assert.match(panel.innerHTML, /按需补取/);
+  assert.match(panel.innerHTML, /&lt;source&gt;/);
+  assert.match(panel.innerHTML, /不属于逐 token 拆分/);
+});
+
+test('referenced message bodies load only on demand and remain escaped', async () => {
+  const trace = {
+    traceId: 'sr-1', currentTask: { taskId: 'tsk-current', taskName: 'current' },
+    sources: [{ taskId: 'tsk-source', taskName: 'source', mode: 'imported', messageCount: 1 }],
+  };
+  let loads = 0;
+  const bar = fakeElement();
+  const panel = fakeElement();
+  const readout = createUsageReadout({
+    bar, panel, document: fakeElement(),
+    loadContextTrace: async () => {
+      loads += 1;
+      return { ...trace, sources: [{ ...trace.sources[0], messages: [{ role: 'user', content: '<img src=x>' }] }] };
+    },
+  });
+  readout.render({ requestUsage: REQUEST, contextWindow: WINDOW, contextTrace: trace });
+  bar.fire('click');
+  assert.doesNotMatch(panel.innerHTML, /&lt;img/, 'message bodies are absent from the live manifest');
+  await panel.listeners.get('click')({ target: { closest: () => true } });
+  assert.equal(loads, 1);
+  assert.match(panel.innerHTML, /&lt;img src=x&gt;/);
+  assert.doesNotMatch(panel.innerHTML, /<img/);
+});
+
 function fakeElement() {
   const listeners = new Map();
   return {
@@ -159,7 +202,8 @@ test('the app bar answers the same question the same way, and prices nothing', (
       path.join(__dirname, '..', 'app', 'assets', 'i18n', `${locale}.json`), 'utf8',
     ));
     for (const key of ['contextUsage', 'usageDetailTitle', 'usageTurnBilled',
-      'usageTurnDuration', 'usageSessionTotal', 'usageSessionHint']) {
+      'usageTurnDuration', 'usageSessionTotal', 'usageSessionHint',
+      'usageContextSources', 'usageContextManagedScope']) {
       assert.ok(strings[key], `${locale}.json is missing ${key}`);
     }
     assert.doesNotMatch(strings.usageSessionHint, /\$|USD|美元/);

@@ -56,6 +56,17 @@
     return null;
   }
 
+  function lastContextTrace(messages) {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message.role !== 'assistant') continue;
+      return message.contextTrace && typeof message.contextTrace === 'object'
+        ? message.contextTrace
+        : null;
+    }
+    return null;
+  }
+
   // Raw sum of the block. The host renders through chat-token-readout.js, which
   // knows that a total above the context window means the CLI summed several
   // requests; this stays as the unfiltered figure the plan has always carried.
@@ -118,6 +129,7 @@
       hasAuthoritativeUsage: !!source.tokenUsage,
       usedTokens: lastTurnTokens(messages),
       lastTurnUsage: lastTurnUsage(messages),
+      lastContextTrace: lastContextTrace(messages),
       oldestMessageId: oldest ? messageId(oldest) : null,
       hasMore: !!source.hasMore,
       streamingTail,

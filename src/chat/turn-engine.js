@@ -469,6 +469,19 @@ function createChatTurnEngine(deps) {
       totalMs: record.t3 - record.t0,
     };
   }
+  function contextTraceFor(sessionName, cs) {
+    if (!cs?._taskShellReceiptId) return null;
+    try {
+      return taskContextHost?.taskShellContextTrace?.(sessionName, cs._taskShellReceiptId) || null;
+    } catch (error) {
+      logger.warn('task_shell_context_trace_failed', {
+        sessionId: sessionName,
+        receiptId: cs._taskShellReceiptId,
+        error: error?.message || String(error),
+      });
+      return null;
+    }
+  }
 
   // Keep the claude transcript inside the context window before `--resume` replays
   // it. Claude Code auto-compacts on its own, so this is the second line of
@@ -638,12 +651,14 @@ function createChatTurnEngine(deps) {
       // Hoisted out of the if-block: forward() below also needs usage. Block
       // scoping it made live clients miss the result event entirely.
       const usage = evt.usage || {};
+      const contextTrace = contextTraceFor(sessionName, cs);
       runner.pendingUsage = usage;
       if (!apiFailure && !envelopeError && (cs.currentAssistantText || cs.currentToolCalls.length)) {
         const resultDurable = persistFinalAssistantResult(sessionName, cs, turn, runner, {
           role: 'assistant', content: cs.currentAssistantText,
           tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
           cost: cs.currentCost, usage: Object.keys(usage).length ? usage : undefined, ts: Date.now(),
+          ...(contextTrace ? { contextTrace } : {}),
           turnTimings: turnTimingsField(sessionName, turn.turnId),
         }, { resultEvent: true });
         if (resultDurable) {
@@ -671,7 +686,8 @@ function createChatTurnEngine(deps) {
       // clock guesswork. durationMs is the wall-clock time from turnStartedAt
       // (user submit) to this result — "模型接到消息到输出完成的耗时".
       const _resultDurationMs = cs.turnStartedAt ? Date.now() - cs.turnStartedAt : undefined;
-      forward({ type: 'result', total_cost_usd: evt.total_cost_usd, usage, durationMs: _resultDurationMs, num_turns: cs.chatTurnCount });
+      forward({ type: 'result', total_cost_usd: evt.total_cost_usd, usage, durationMs: _resultDurationMs,
+        num_turns: cs.chatTurnCount, ...(contextTrace ? { contextTrace } : {}) });
       // Final classification and all post-turn effects run from the owned
       // close/finalize boundary. The result event alone is not enough: history
       // persistence may have failed or a retry may still be planned.
@@ -892,7 +908,8 @@ function createChatTurnEngine(deps) {
         turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'finalizing');
         recordApiSuccess(provider.name, { retryAttempt: runner.apiRetryAttempt || 0, runner });
         clearSessionApiErrorState(sessionName, cs);
-        codexUsageHost.complete({ evt, cs, persisted, sessionName, turn, runner, forward });
+        codexUsageHost.complete({ evt, cs, persisted, sessionName, turn, runner, forward,
+          contextTrace: contextTraceFor(sessionName, cs) });
         continue;
       }
       if (evt.type === 'error') {

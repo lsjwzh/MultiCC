@@ -65,6 +65,46 @@ function createTaskShellRuntime(ports) {
     }
     return snapshots;
   }
+  function traceSnapshot(snapshot, mode, includeMessages) {
+    if (!verifySnapshot(snapshot, snapshot?.hash)) throw failure('snapshot_unverified');
+    const source = store.get('task', snapshot.taskId);
+    return {
+      taskId: snapshot.taskId,
+      taskName: source?.title || snapshot.taskId,
+      mode,
+      messageCount: snapshot.messages.length,
+      omittedExchanges: snapshot.omittedExchanges || 0,
+      estimatedTokens: estimateTokens(renderSnapshots([snapshot])),
+      ...(includeMessages ? { messages: snapshot.messages } : {}),
+    };
+  }
+  function contextTrace(sessionId, receiptId, { includeMessages = false } = {}) {
+    const owner = owns(identifier(sessionId, 'sessionId'));
+    if (!owner) throw failure('task_shell_context_unavailable', 'This session is not owned by a task shell', 404);
+    const receipt = store.get('receipt', identifier(receiptId, 'receiptId'));
+    if (!receipt || receipt.taskId !== owner.id) throw failure('receipt_not_found', 'receipt_not_found', 404);
+    const current = store.get('task', receipt.attributedTaskId || receipt.taskId) || owner;
+    const sources = [];
+    const seen = new Set();
+    for (const [mode, ids] of [
+      ['imported', receipt.contextSeedSnapshotIds],
+      ['refilled', receipt.contextRefillSnapshotIds],
+    ]) {
+      for (const id of (Array.isArray(ids) ? ids : [])) {
+        const snapshot = store.get('snapshot', id);
+        if (!snapshot || seen.has(`${mode}:${id}`)) continue;
+        seen.add(`${mode}:${id}`);
+        sources.push(traceSnapshot(snapshot, mode, includeMessages));
+      }
+    }
+    return {
+      version: 1,
+      traceId: receipt.id,
+      currentTask: { taskId: current.id, taskName: current.title || current.id, mode: 'native' },
+      sources,
+      managedOnly: true,
+    };
+  }
   function savingsFor(s, taskId) {
     return estimateTokens(renderSnapshots(contextSnapshots(s, taskId)));
   }
@@ -313,6 +353,7 @@ function createTaskShellRuntime(ports) {
           return snapshot;
         });
         // Stable key is the handoff protocol across the SQLite/outbox boundary.
+        receipt.contextSeedSnapshotIds = snapshotIds;
         receipt.status = 'delivering'; store.set('receipt', receipt.id, receipt);
         const metadata = receipt.taskMetadata || {};
         result = await send(task.sessionId, p.text, {
@@ -402,6 +443,8 @@ function createTaskShellRuntime(ports) {
       contextRefilled: true,
     };
     receipt.contextRefillTaskIds = snapshots.map(value => value.taskId);
+    receipt.contextRefillSnapshotIds = snapshots.map(value => value.hash);
+    for (const snapshot of snapshots) store.set('snapshot', snapshot.hash, snapshot);
     store.set('receipt', receipt.id, receipt);
     return {
       ok: true,
@@ -469,7 +512,7 @@ function createTaskShellRuntime(ports) {
   }
   return {
     open, adopt, link, remove, view, detail, send: sendInput, retry, owns,
-    guardAdmission, recentTasks, refillContext, settleAttribution, locateOrCreate, resolveTask, sendExplicit,
+    guardAdmission, recentTasks, refillContext, contextTrace, settleAttribution, locateOrCreate, resolveTask, sendExplicit,
   };
 }
 
