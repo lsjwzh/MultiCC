@@ -20,7 +20,7 @@ const {
   _loadState: loadLegacyState,
   _validateState: validateState,
   _writeAtomic: writeLegacyAtomic,
-} = require('./orchestration-store');
+} = require('./store');
 
 const DATABASE_SCHEMA_VERSION = 1;
 const COLLECTIONS = Object.freeze([

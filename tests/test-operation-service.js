@@ -6,7 +6,7 @@ const os = require('os');
 const path = require('path');
 const test = require('node:test');
 const { createOperationService, OperationConflictError } = require('../src/operation-service');
-const { createOrchestrationStore } = require('../src/orchestration-store');
+const { createOrchestrationStore } = require('../src/orchestration/store');
 
 function fixture(t, { hooks = {}, clock = { value: 1_000 } } = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-operation-data-'));

@@ -84,7 +84,7 @@ function timingSafeHashEqual(expectedHex, rawValue, cryptoImpl = crypto) {
 
 function assertDraft(draft) {
   if (!draft || typeof draft !== 'object' || !draft.outbox || typeof draft.outbox !== 'object') {
-    throw new TypeError('outbox mutation requires an orchestration-store draft');
+    throw new TypeError('outbox mutation requires an orchestration/store draft');
   }
   if (!Number.isSafeInteger(draft.nextOutboxSequence) || draft.nextOutboxSequence < 1) {
     throw new TypeError('outbox draft has an invalid sequence');

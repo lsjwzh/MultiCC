@@ -7,13 +7,13 @@ const path = require('path');
 const test = require('node:test');
 const Database = require('better-sqlite3');
 const { createOperationService } = require('../src/operation-service');
-const { createOrchestrationRuntime } = require('../src/orchestration-runtime');
-const { createOrchestrationStore } = require('../src/orchestration-store');
+const { createOrchestrationRuntime } = require('../src/orchestration/runtime');
+const { createOrchestrationStore } = require('../src/orchestration/store');
 const {
   OrchestrationSqliteConflictError,
   OrchestrationSqliteError,
   createOrchestrationSqliteStore,
-} = require('../src/orchestration-sqlite-store');
+} = require('../src/orchestration/sqlite-store');
 const { createWaitService } = require('../src/wait/service');
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));

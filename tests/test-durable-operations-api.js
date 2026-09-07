@@ -13,7 +13,7 @@ const os = require('os');
 const path = require('path');
 const Database = require('better-sqlite3');
 const { assertTestDir } = require('../src/paths');
-const { _loadDatabaseState } = require('../src/orchestration-sqlite-store');
+const { _loadDatabaseState } = require('../src/orchestration/sqlite-store');
 
 const ROOT = path.join(__dirname, '..');
 const ACCESS_TOKEN = 'durable-operations-api-test';

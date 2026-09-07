@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const test = require('node:test');
-const { createOrchestrationRuntime } = require('../src/orchestration-runtime');
+const { createOrchestrationRuntime } = require('../src/orchestration/runtime');
 const { reconcileTaskRunSlotLeases } = require('../src/task-run-recovery');
 
 function withTimeout(promise, ms, message) {

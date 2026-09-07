@@ -6,16 +6,16 @@
 // to runChatTurn().
 
 const crypto = require('crypto');
-const { createOrchestrationStore } = require('./orchestration-store');
-const { createOrchestrationSqliteStore } = require('./orchestration-sqlite-store');
-const { createOutbox } = require('./outbox');
-const { createWaitService } = require('./wait/service');
-const { createSessionWorkScheduler } = require('./session-work-scheduler');
+const { createOrchestrationStore } = require('./store');
+const { createOrchestrationSqliteStore } = require('./sqlite-store');
+const { createOutbox } = require('../outbox');
+const { createWaitService } = require('../wait/service');
+const { createSessionWorkScheduler } = require('../session-work-scheduler');
 const {
   TERMINAL_OPERATION_STATES,
   TERMINAL_TASK_STATES,
   createOperationService,
-} = require('./operation-service');
+} = require('../operation-service');
 
 const DEFAULTS = Object.freeze({
   intervalSec: 15,

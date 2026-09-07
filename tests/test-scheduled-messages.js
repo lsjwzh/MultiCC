@@ -6,7 +6,7 @@ const os = require('os');
 const path = require('path');
 const test = require('node:test');
 
-const { createOrchestrationRuntime } = require('../src/orchestration-runtime');
+const { createOrchestrationRuntime } = require('../src/orchestration/runtime');
 
 function createFixture(t, overrides = {}) {
   const dir = overrides.dir || fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-scheduled-message-'));

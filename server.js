@@ -90,7 +90,7 @@ const stateTx = require('./src/state/tx');
 const { bootstrapState } = require('./src/bootstrap/state');
 const { createSessionPersistence } = require('./src/session-persistence'); const { mountPublicSessionAccessGuard } = require('./src/session/public-session-access');
 const { createSessionHibernationRuntime, initializeSessionWorktrees, resolveSessionCwd } = require('./src/session-hibernation');
-const { createOrchestrationRuntime } = require('./src/orchestration-runtime');
+const { createOrchestrationRuntime } = require('./src/orchestration/runtime');
 const { createRouterToolHost } = require('./src/router-tool-host');
 const { createHostLifecycle } = require('./src/host-lifecycle');
 const { createLanDiscoveryRuntime } = require('./src/lan-discovery');
