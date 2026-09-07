@@ -5,7 +5,7 @@
  *
  * 复现并锁定「当前页面出现重复消息、刷新后消失」这类 bug 的修复：
  * 用最小假 DOM 驱动真实的 chat-event-controller / chat-history-store /
- * chat-history-view，回放 WS 事件序列，断言 DOM 中不出现重复 assistant 气泡。
+ * chat-history-view，回放 WS 事件序列，断言 DOM 中不出现重复消息气泡。
  *
  * 覆盖的重复路径（修复见 chat-history-view.js / chat-event-controller.js）：
  *  S2  result 后迟到/回放的全量快照新建第二个气泡
@@ -23,6 +23,112 @@ const path = require('node:path');
 const { createRig, scanDuplicates, SCENARIOS } = require(
   path.join(__dirname, '..', 'scripts', 'chat-dup-harness.js'),
 );
+const { createTransportAdapter } = require('../public/chat-shell-entry');
+
+function shellRig() {
+  const rig = createRig();
+  const adapter = createTransportAdapter({ send: () => true });
+  adapter.ingest({ type: 'system', subtype: 'init', is_streaming: false, taskShell: true });
+  return { ...rig, adapter, receive: event => rig.feed(adapter.ingest(event).events) };
+}
+
+function shellEvents(clientMsgId, receiptId, id) {
+  const message = { id, role: 'user', content: 'same message', clientMsgId: receiptId };
+  return {
+    ack: { type: 'task_shell_routed', clientMsgId, receiptId, sessionId: 'diag-session' },
+    admission: { type: 'message_admission_progress', state: 'waiting', message: message.content, clientMsgId: receiptId },
+    committed: { type: 'chat_msg_meta', id, role: 'user', clientMsgId: receiptId, message },
+    history: { type: 'chat_history', messages: [message], hasMore: false },
+  };
+}
+
+// Run the actual shell adapter and chat renderer together: receipt identity
+// must reconcile the admission bubble with both live commits and reconnects.
+for (const source of ['committed', 'nested-only', 'history']) {
+  for (const ackPosition of [0, 1, 2]) {
+    test(`shell user bubble stays single: ${source}, ACK position ${ackPosition}`, () => {
+      const rig = shellRig();
+      const events = shellEvents('client-1', 'sr_1', 'stored-1');
+      rig.adapter.send({ type: 'user_message', text: 'same message', clientMsgId: 'client-1' });
+      const committed = source === 'nested-only'
+        ? { type: 'chat_msg_meta', message: events.committed.message }
+        : events[source];
+      const sequence = [events.admission, committed];
+      sequence.splice(ackPosition, 0, events.ack);
+      sequence.forEach(rig.receive);
+      const bubbles = rig.messagesEl.querySelectorAll('.msg.user');
+      assert.equal(bubbles.length, 1);
+      assert.equal(bubbles[0].dataset.msgId, 'stored-1');
+      assert.equal(bubbles[0].dataset.clientMsgId, 'client-1');
+      rig.receive(events.committed);
+      rig.receive(events.history);
+      rig.receive(events.admission);
+      assert.equal(rig.messagesEl.querySelectorAll('.msg.user').length, 1, 'replay must stay idempotent');
+    });
+  }
+}
+
+test('shell commit preserves the auto-commit checkbox and distinct sends with identical text', () => {
+  const rig = shellRig();
+  for (const index of [1, 2]) {
+    const clientMsgId = `client-${index}`;
+    const events = shellEvents(clientMsgId, `sr_${index}`, `stored-${index}`);
+    rig.adapter.send({ type: 'user_message', text: 'same message', clientMsgId });
+    rig.receive(index === 1 ? events.admission : {
+      type: 'session_queue', event: 'queued', queued: false, items: [],
+      message: 'same message', clientMsgId: `sr_${index}`,
+    });
+    rig.receive(events.ack);
+    const checkbox = global.document.createElement('label');
+    checkbox.className = 'msg-auto-commit';
+    rig.state.lastUserBubble.appendChild(checkbox);
+    rig.receive(events.committed);
+    assert.equal(rig.state.lastUserBubble.querySelector('.msg-auto-commit'), checkbox);
+    rig.receive(events.committed);
+    assert.equal(rig.messagesEl.querySelectorAll('.msg.user').length, index);
+  }
+});
+
+test('shell identity translation leaves persisted event records untouched', () => {
+  const rig = shellRig();
+  const events = shellEvents('client-1', 'sr_1', 'stored-1');
+  Object.freeze(events.committed.message);
+  Object.freeze(events.committed);
+  Object.freeze(events.history.messages);
+  Object.freeze(events.history);
+  rig.receive(events.ack);
+  const committed = rig.adapter.ingest(events.committed).events[0];
+  const history = rig.adapter.ingest(events.history).events[0];
+  assert.equal(committed.clientMsgId, 'client-1');
+  assert.equal(committed.message.clientMsgId, 'client-1');
+  assert.equal(history.messages[0].clientMsgId, 'client-1');
+  assert.equal(events.committed.clientMsgId, 'sr_1');
+  assert.equal(events.committed.message.clientMsgId, 'sr_1');
+  assert.equal(events.history.messages[0].clientMsgId, 'sr_1');
+});
+
+test('a second window renders shell messages without the sender client mapping', () => {
+  const rig = shellRig();
+  const events = shellEvents('other-client', 'sr_other', 'stored-other');
+  rig.receive(events.admission);
+  rig.receive(events.committed);
+  rig.receive(events.history);
+  assert.equal(rig.messagesEl.querySelectorAll('.msg.user').length, 1);
+  assert.equal(rig.state.lastUserBubble.dataset.clientMsgId, 'sr_other');
+});
+
+test('a rejected pending send still releases authoritative reconnect history', () => {
+  const rig = shellRig();
+  rig.adapter.send({ type: 'user_message', text: 'rejected', clientMsgId: 'client-new' });
+  const events = shellEvents('client-old', 'sr_old', 'stored-old');
+  rig.receive(events.history);
+  rig.receive(events.committed);
+  rig.receive({ type: 'error', notDelivered: true, clientMsgId: 'client-new', error: 'rejected' });
+  assert.equal(rig.adapter.state().pending, null);
+  const bubbles = rig.messagesEl.querySelectorAll('.msg.user');
+  assert.equal(bubbles.length, 1);
+  assert.equal(bubbles[0].dataset.msgId, 'stored-old');
+});
 
 for (const scenario of SCENARIOS) {
   const isKnownDup = scenario.name.startsWith('S6');
