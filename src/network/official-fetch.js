@@ -2,7 +2,7 @@
 
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
-const { EnvHttpProxyAgent } = require('undici');
+const { EnvHttpProxyAgent, fetch: undiciFetch } = require('undici');
 const runFile = promisify(execFile);
 
 function parseMacProxy(text) {
@@ -28,7 +28,11 @@ async function readMacProxy() {
 function createOfficialFetch(options = {}) {
   const env = options.env || process.env;
   const platform = options.platform || process.platform;
-  const fetchImpl = options.fetch || globalThis.fetch;
+  // The dispatcher below is built from the npm undici package, while Node's
+  // built-in fetch uses its internal undici (different major version) and
+  // rejects foreign dispatchers with "invalid onError method". Route official
+  // upstream requests through the same package's fetch so both sides match.
+  const fetchImpl = options.fetch || undiciFetch;
   const readSystemProxy = options.readSystemProxy || readMacProxy;
   const makeDispatcher = options.createDispatcher || (config => new EnvHttpProxyAgent(config));
   const now = options.now || Date.now;
