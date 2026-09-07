@@ -49,7 +49,7 @@ function mountCodexOAuthRoutes(app, deps) {
 
   app.get('/api/codex/oauth/status', (req, res) => {
     const status = deps.getStatus() || {};
-    const needsLogin = !!status.needsLogin;
+    const needsLogin = !!status.needsLogin || status.lastOutcome?.outcome === 'no-credentials';
     res.json({
       ok: true,
       enabled: !!status.enabled,

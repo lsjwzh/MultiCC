@@ -526,6 +526,7 @@ do_update() {
 }
 
 do_install() {
+  /bin/bash "$SCRIPT_DIR/scripts/install-terminal-deps.sh" || return 1
   # `./multicc install` is also a supported entry point. Do not register a
   # launchd service that will start without a required runtime package (notably
   # the @homebridge/ciao responder used by app LAN discovery).
@@ -618,6 +619,7 @@ case "${1:-}" in
   log|logs)  do_log ;;
   update)    shift; do_update "$@" ;;
   install)   do_install ;;
+  install-terminal) /bin/bash "$SCRIPT_DIR/scripts/install-terminal-deps.sh" ;;
   uninstall) do_uninstall ;;
   *)
     echo "MultiCC service manager"
@@ -625,6 +627,7 @@ case "${1:-}" in
     echo "Usage: ./multicc <command>"
     echo ""
     echo "Commands:"
+    echo "  install-terminal  Install missing terminal / CLI login dependencies"
     echo "  start      Start MultiCC server"
     echo "  stop       Stop MultiCC server"
     echo "  restart    Restart MultiCC server"

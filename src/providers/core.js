@@ -480,7 +480,9 @@ function buildSettingsConfig(appType, { baseUrl, authToken, model, models, provi
     'wire_api = "responses"',
   ].filter(Boolean);
   const cfg = {
-    auth: { OPENAI_API_KEY: authToken || null },
+    auth: !baseUrl && !authToken
+      ? { auth_mode: 'chatgpt' }
+      : { OPENAI_API_KEY: authToken || null },
     config: lines.join('\n') + '\n',
     modelCatalog: { models: modelOptions.map(m => ({ model: m })) },
   };
@@ -619,7 +621,7 @@ function summarize(p, opts = {}) {
     useChatResponsesProxy: apiFormat === API_FORMATS.OPENAI_CHAT,
     tokenMask: maskToken(token),
     hasToken: !!token,
-    isOfficial: !baseUrl, // no custom base url -> default login / subscription
+    isOfficial: p.appType === 'codex' ? isOfficialCodexOAuthProvider(p) : !baseUrl,
     // Official-account marker (multi-account OAuth): which entry in the
     // official-accounts store this provider borrows, if any.
     officialAccountId: (cfg.officialAccount && typeof cfg.officialAccount.id === 'string')
@@ -1827,6 +1829,7 @@ function applyCodexProxyConfig(env, options) {
   const sourceHome = restoreHome;
   const restore = () => { env.CODEX_HOME = restoreHome; };
   let lease;
+  let preparationStage = 'session-home';
   try {
     const canonical = options.logicalSessionId ? prepareCodexSessionHome({
       logicalSessionId: options.logicalSessionId,
@@ -1849,6 +1852,7 @@ function applyCodexProxyConfig(env, options) {
         if (/^OPENAI_[A-Z0-9_]*$/.test(key)) delete env[key];
       }
     }
+    preparationStage = 'official-relay-home';
     if (mainOfficial) {
       materializeCodexOfficialRelayHome(
         sourceHome,
@@ -1856,6 +1860,7 @@ function applyCodexProxyConfig(env, options) {
         effectiveCodexSettings(mainProvider),
       );
     }
+    preparationStage = 'attempt-home';
     lease = createCodexAttemptHome(sourceHome, {
       providerId,
       sessionId: options.sessionId,
@@ -1867,6 +1872,7 @@ function applyCodexProxyConfig(env, options) {
       || cliProviderRouter.codexProviderProxyable(mainProvider, { ...options, getProvider });
     const subProxyable = subOfficial
       || cliProviderRouter.codexProviderProxyable(subProvider, { ...options, getProvider });
+    preparationStage = 'routing-config';
     const applied = !!(mainProxyable && subProxyable) && materializeCodexRoutingHome(lease.home, {
       ...options,
       mainProviderId: providerId,
@@ -1874,6 +1880,7 @@ function applyCodexProxyConfig(env, options) {
       subProviderId,
       subModel: explicitSubProviderId ? String(options.subagent.model || '').trim() : '',
     });
+    preparationStage = 'sanitize-official-config';
     if (applied && containsOfficial) sanitizeCodexOfficialAttemptHome(lease.home, options);
     if (!applied) {
       restore();
@@ -1892,7 +1899,13 @@ function applyCodexProxyConfig(env, options) {
         );
       }
     }
-    (options.logger || console).warn('[multicc/provider] failed to create private Codex attempt config');
+    // Config parser messages can contain credentials; retain stage and codes
+    // without logging raw config, errors, or the proxy session capability.
+    (options.logger || console).warn('[multicc/provider] failed to create private Codex attempt config', {
+      providerId, logicalSessionId: options.logicalSessionId || null,
+      stage: preparationStage, code: error && error.code || null,
+      causeCode: error && error.cause && error.cause.code || null,
+    });
     return false;
   }
 }

@@ -125,6 +125,25 @@ test('provider metadata classifies custom, stale, and OAuth Codex routes conserv
   }), true);
 });
 
+test('legacy cc-switch official and newly created default official both materialize a managed route', () => {
+  const storeFile = path.join(process.env.MULTICC_DATA_DIR, 'providers.json');
+  const list = JSON.parse(fs.readFileSync(storeFile, 'utf8'));
+  list.push({ id: 'codex-official', appType: 'codex', source: 'ccswitch',
+    name: 'OpenAI Official', settingsConfig: { auth: {}, config: '' } });
+  fs.writeFileSync(storeFile, JSON.stringify(list));
+  const created = providers.createProvider({ appType: 'codex', name: 'Default official' });
+  for (const id of ['codex-official', created.id]) {
+    assert.equal(providers.getProviderSummary('codex', id).isOfficial, true);
+    const { env } = providers.buildChildEnv({}, { cli: 'codex', provider: id });
+    assert.equal(providers.applyCodexProxyConfig(env, {
+      providerId: id, sessionId: 'pr1.legacy.official', port: 3000,
+    }), true);
+    assert.match(fs.readFileSync(path.join(env.CODEX_HOME, 'config.toml'), 'utf8'), /multicc_official_relay/);
+    assert.equal(fs.existsSync(path.join(env.CODEX_HOME, 'auth.json')), false);
+    assert.equal(providers.releaseCodexProxyConfig(env), true);
+  }
+});
+
 test('Official OAuth is host-only and each local Codex attempt receives a private CPR route', () => {
   const official = providers.createProvider({
     appType: 'codex',

@@ -77,6 +77,19 @@ test('status stays quiet and credential-free when healthy', () => {
   assert.equal(/token|refresh|secret/i.test(text), false, 'no credential material may leak into the status payload');
 });
 
+test('missing credentials offer login even before a token refresh has failed', () => {
+  const app = fakeApp();
+  mountCodexOAuthRoutes(app, {
+    getStatus: () => ({ enabled: true, needsLogin: null,
+      lastOutcome: { outcome: 'no-credentials', detail: 'no_refresh_token' } }),
+    openLoginSession: async () => ({ ok: true, sessionId: 'codex-login' }),
+  });
+  const res = fakeRes();
+  findRoute(app.routes, 'get', '/api/codex/oauth/status')({}, res);
+  assert.equal(res.body.needsLogin, true);
+  assert.equal(res.body.loginCommand, 'codex login');
+});
+
 test('login opener reuses an existing login session without creating a new one', async () => {
   const app = fakeApp();
   let created = 0;

@@ -83,6 +83,9 @@ test('Official detection is narrow and excludes API-key/custom providers', () =>
 });
 
 test('credential reader returns only the current access token/account and fails closed', () => {
+  assert.deepEqual(readCodexOfficialCredential({ readFileSync: () => '{}' }), {
+    ok: false, reason: 'access_token_missing',
+  });
   const accessToken = jwt(2_000_000_000);
   const value = JSON.stringify({
     auth_mode: 'chatgpt',
@@ -103,6 +106,48 @@ test('credential reader returns only the current access token/account and fails 
   assert.deepEqual(readCodexOfficialCredential({
     readFileSync: () => JSON.stringify({ tokens: { access_token: accessToken } }),
   }), { ok: false, reason: 'account_id_missing' });
+});
+
+test('only the explicit cc-switch built-in empty official record is compatible', () => {
+  const legacy = { id: 'codex-official', appType: 'codex', source: 'ccswitch',
+    settingsConfig: { auth: {}, config: '' } };
+  assert.equal(isOfficialCodexOAuthProvider(legacy), true);
+  assert.equal(isOfficialCodexOAuthProvider({ ...legacy, id: 'empty-custom' }), false);
+  assert.equal(isOfficialCodexOAuthProvider({ ...legacy, source: 'local' }), false);
+  assert.equal(isOfficialCodexOAuthProvider({ ...legacy,
+    settingsConfig: { auth: { auth_mode: 'apikey' }, config: '' } }), false);
+  assert.equal(isOfficialCodexOAuthProvider({ ...legacy,
+    settingsConfig: { auth: { OPENAI_API_KEY: 'secret' }, config: '' } }), false);
+});
+
+test('legacy official reads the current global login and isolated accounts never fall back to it', async () => {
+  const reads = [];
+  const legacy = { id: 'official', appType: 'codex', source: 'ccswitch',
+    settingsConfig: { auth: { auth_mode: 'chatgpt' }, config: '' } };
+  let provider = legacy;
+  let sent = false;
+  const handler = createCodexOfficialRelayHandler({
+    getProvider: () => provider,
+    authFile: '/global/auth.json',
+    resolveAccountAuthFile: () => '/isolated/auth.json',
+    readFileSync: file => {
+      reads.push(file);
+      if (file !== '/global/auth.json') throw new Error('missing');
+      return JSON.stringify({ tokens: { access_token: 'global-token', account_id: 'account' } });
+    },
+    fetch: async () => { sent = true; return new Response('{}'); },
+  });
+  await handler(request({ stream: false }), response(), () => {});
+  assert.equal(sent, true);
+  sent = false;
+  provider = { ...legacy, settingsConfig: { ...legacy.settingsConfig,
+    officialAccount: { id: '0123456789abcdef' } } };
+  const res = response();
+  await handler(request(), res, () => {});
+  assert.equal(sent, false);
+  assert.equal(res.statusCode, 503);
+  assert.match(res.jsonBody.error, /独立登录/);
+  assert.deepEqual(reads, ['/global/auth.json', '/isolated/auth.json']);
 });
 
 test('non-Official providers fall through to the existing CPR proxy', async () => {
@@ -473,15 +518,20 @@ test('an empty successful upstream response becomes a diagnostic 502', async () 
 });
 
 test('missing credentials and upstream rejection expose no credential material', async () => {
+  const logs = [];
   const unavailable = createCodexOfficialRelayHandler({
     getProvider: () => officialProvider(),
     readCredential: () => ({ ok: false, reason: 'access_token_missing' }),
     fetch: async () => assert.fail('must not fetch'),
+    logger: { warn: (event, fields) => logs.push({ event, fields }) },
   });
   let res = response();
   await unavailable(request(), res, () => {});
   assert.equal(res.statusCode, 503);
   assert.equal(res.jsonBody.code, 'CODEX_OFFICIAL_OAUTH_UNAVAILABLE');
+  assert.deepEqual(logs, [{ event: 'codex_official_credential_unavailable', fields: {
+    providerId: 'official', credentialSource: 'global', reason: 'access_token_missing',
+  } }]);
 
   const rejected = createCodexOfficialRelayHandler({
     getProvider: () => officialProvider(),

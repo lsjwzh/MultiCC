@@ -54,7 +54,13 @@ function isOfficialCodexOAuthProvider(provider) {
   const auth = parseObject(config.auth);
   if (auth.OPENAI_API_KEY || config.proxyTarget
       || /(?:^|\n)\s*base_url\s*=/i.test(String(config.config || ''))) return false;
-  return String(auth.auth_mode || '').toLowerCase() === OFFICIAL_AUTH_MODE;
+  const mode = String(auth.auth_mode || '').toLowerCase();
+  if (mode) return mode === OFFICIAL_AUTH_MODE;
+  // cc-switch's original built-in official entry contains auth:{} and config:"".
+  // Preserve that explicit legacy identity without treating arbitrary empty
+  // custom providers as permission to use the user's ChatGPT account.
+  return provider.source === 'ccswitch' && provider.id === 'codex-official'
+    && !String(config.config || '').trim() && !config.officialAccount;
 }
 
 function readCodexOfficialCredential(options = {}) {
@@ -373,9 +379,16 @@ function createCodexOfficialRelayHandler(options = {}) {
 
     const credential = await readCredential({ provider, providerId });
     if (!credential || !credential.ok) {
+      diagnostic(options.logger, 'codex_official_credential_unavailable', {
+        providerId,
+        credentialSource: officialAccountIdFromProvider(provider) ? 'official-account' : 'global',
+        reason: credential && credential.reason || 'credential_unavailable',
+      });
       reportTerminal(context, null, { status: 'error', errorCode: 'OAUTH_CREDENTIAL_UNAVAILABLE' });
       return responseJson(res, 503, {
-        error: 'Codex Official OAuth credential is unavailable on the relay host',
+        error: officialAccountIdFromProvider(provider)
+          ? 'Codex 官方账号凭证不可用，请在供应商的“重新登录”终端完成授权；该账号使用独立登录，不读取本机默认登录。'
+          : 'Codex 本机官方登录凭证不可用，请完成默认 Codex 登录。仅 login status 显示已登录不足以确认 auth.json 含有有效凭证。',
         code: 'CODEX_OFFICIAL_OAUTH_UNAVAILABLE',
         reason: credential && credential.reason || 'credential_unavailable',
       });
@@ -430,6 +443,7 @@ function createCodexOfficialRelayHandler(options = {}) {
     } catch (error) {
       if (clientClosed) return undefined;
       const detail = publicTransportError(error, { ...errorOptions, fallback: 'Codex Official OAuth upstream is unreachable' });
+      diagnostic(options.logger, 'codex_official_upstream_connect_failed', { providerId, error: detail });
       reportTerminal(context, null, { status: 'error', errorCode: 'UPSTREAM_CONNECT_FAILED' });
       return responseJson(res, 502, {
         error: detail,
