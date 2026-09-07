@@ -347,7 +347,7 @@ test('server composition uses canonical adapters and retires legacy dispatch end
 });
 
 test('chat worktree guidance treats sync API as manual and permits safe Agent self-sync', () => {
-  const source = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+  const source = fs.readFileSync(path.join(ROOT, 'src', 'chat', 'host-prompts.js'), 'utf8');
   assert.ok(source.includes('`/sync` 主要供用户/UI 手动同步'));
   assert.ok(source.includes('Agent 自同步：在自己的 worktree 内直接用 Git'));
   assert.ok(source.includes('不调用“当前会话自己的 sync”接口'));
