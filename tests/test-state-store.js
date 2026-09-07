@@ -8,8 +8,8 @@ const os = require('os');
 const path = require('path');
 const {
   writeJsonAtomic, readJson, recoverFromBackup, createStore, CorruptedStateError,
-} = require('../src/state-store');
-const { commitCrossFileWrite, replayJournals } = require('../src/state-tx');
+} = require('../src/state/store');
+const { commitCrossFileWrite, replayJournals } = require('../src/state/tx');
 const paths = require('../src/paths');
 
 let pass = 0, fail = 0;

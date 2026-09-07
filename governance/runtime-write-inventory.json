@@ -246,7 +246,7 @@
       "migrationStrategy": "Retain repository-local ownership; add retention and explicit user cleanup without moving backups into process-global state.",
       "sources": [
         {
-          "file": "src/git.js",
+          "file": "src/git/service.js",
           "anchor": "const backupDir = path.join(commonDir, 'multicc-backups', operationId);"
         }
       ]

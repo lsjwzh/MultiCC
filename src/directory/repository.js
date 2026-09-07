@@ -14,7 +14,7 @@
 // sites that catch generically are unaffected; the previous "log and swallow"
 // behaviour just moved into repo._legacyLog when they explicitly opt in.
 const fs = require('fs');
-const stateStore = require('../state-store');
+const stateStore = require('../state/store');
 
 function createFsDirectoryRepository({ file, map, realPathOf, store }) {
   if (!file) throw new TypeError('[directory] repository needs a file path');

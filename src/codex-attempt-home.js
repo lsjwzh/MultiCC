@@ -4,7 +4,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { ensurePrivateDir, secureFile } = require('./runtime-security');
-const { writeTextAtomic } = require('./state-store');
+const { writeTextAtomic } = require('./state/store');
 
 const ATTEMPT_OWNER_FILE = '.multicc-attempt-owner.json';
 const PROCESS_INSTANCE_ID = crypto.randomBytes(8).toString('hex');

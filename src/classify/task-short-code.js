@@ -1,7 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
-const { createStore } = require('../state-store');
+const { createStore } = require('../state/store');
 
 // A short, human-referable display handle for an outward task. The user asked
 // for a 4-position code where each position is one of 10 digits + 26 letters =

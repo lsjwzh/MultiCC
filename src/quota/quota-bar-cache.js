@@ -9,7 +9,7 @@
 // only display-safe bar projections by quota-bar identity, so the web client no
 // longer needs localStorage as its last-good source.
 
-const { createStore } = require('../state-store');
+const { createStore } = require('../state/store');
 
 const SCHEMA_VERSION = 1;
 const MAX_ENTRIES = 80;

@@ -14,7 +14,7 @@ const os = require('node:os');
 const path = require('node:path');
 const WebSocket = require('ws');
 const { assertTestDir, createPaths } = require('../src/paths');
-const { readJson } = require('../src/state-store');
+const { readJson } = require('../src/state/store');
 
 const ROOT = path.join(__dirname, '..');
 const TOKEN = 'commander-routing-isolated';
