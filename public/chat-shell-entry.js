@@ -133,7 +133,47 @@
     return Object.freeze({ ingest, replayPending, send, state });
   }
 
-  const api = { chatUrl, createTransportAdapter, resolve };
+  function createShellView({ sourceSessionId, disabled = false, request, onSession = () => {} }) {
+    let shellId = null, activeSessionId = sourceSessionId, unsupported = disabled || !sourceSessionId;
+    let opening = null;
+    async function prepare() {
+      if (unsupported) return activeSessionId;
+      if (!shellId) {
+        opening ||= request('/api/task-shells', { method: 'POST', json: { sessionId: sourceSessionId } });
+        try { shellId = (await opening).id; }
+        catch (error) {
+          opening = null;
+          if (error.code === 'unsupported_source' || error.payload?.code === 'unsupported_source') {
+            unsupported = true; return activeSessionId;
+          }
+          throw error;
+        }
+      }
+      const scope = await request(`/api/task-shells/${encodeURIComponent(shellId)}/chat`);
+      activeSessionId = scope.activeSessionId;
+      onSession(activeSessionId);
+      return activeSessionId;
+    }
+    function record(message, origin = activeSessionId) {
+      if (!message || message.sourceSessionId || !message.id) return message;
+      return { ...message, id: `${origin}:${message.id}`, sourceSessionId: origin, sourceMessageId: message.id };
+    }
+    function event(message) {
+      if (!shellId) return message;
+      const origin = message.sourceSessionId || activeSessionId;
+      if (message.type === 'chat_msg_meta') return { ...record(message, origin), message: record(message.message, origin) };
+      if (['chat_history', 'chat_history_reset', 'chat_history_annotation'].includes(message.type)) {
+        return { ...message, messages: (message.messages || []).map(m => record(m, origin)) };
+      }
+      if (message.type === 'chat_msg_deleted') return { ...message, id: `${origin}:${message.id}` };
+      return message;
+    }
+    return { prepare, event, get shellId() { return shellId; }, get activeSessionId() { return activeSessionId; },
+      historyUrl: () => shellId ? `/api/task-shells/${encodeURIComponent(shellId)}/history`
+        : `/api/sessions/${encodeURIComponent(activeSessionId)}/history` };
+  }
+
+  const api = { chatUrl, createTransportAdapter, createShellView, resolve };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.MultiCCChatShellEntry = api;
 })(typeof window !== 'undefined' ? window : globalThis);

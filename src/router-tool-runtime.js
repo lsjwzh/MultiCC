@@ -1201,8 +1201,17 @@ function createRouterToolRuntime({
     }
     const context = contextFor(token);
     if (tool === 'get_task_context') {
-      rejectUnknownArguments(args, new Set());
-      const result = await getTaskContext(context);
+      rejectUnknownArguments(args, new Set(['task_id', 'before', 'message_id', 'offset', 'limit']));
+      for (const key of ['task_id', 'before', 'message_id']) {
+        if (args[key] !== undefined && (typeof args[key] !== 'string' || !/^[\w.:-]{1,400}$/.test(args[key]))) {
+          throw new RouterToolError('invalid_arguments', `invalid ${key}`);
+        }
+      }
+      if ((args.limit !== undefined && (!Number.isInteger(args.limit) || args.limit < 1 || args.limit > 50))
+          || (args.offset !== undefined && (!Number.isSafeInteger(args.offset) || args.offset < 0 || !args.message_id))) {
+        throw new RouterToolError('invalid_arguments', 'invalid pagination');
+      }
+      const result = await getTaskContext(context, args);
       if (!result) throw new RouterToolError('task_context_unavailable', 'task context is unavailable', 404);
       return result;
     }

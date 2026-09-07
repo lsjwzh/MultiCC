@@ -119,7 +119,8 @@ if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
 const _params = new URLSearchParams(location.search);
 const _providerCatalog = window.MultiCCProviderCatalog;
 let _cwd = _params.get('cwd') || '';
-const _sessionName = _params.get('session') || '';  // dashboard session name
+let _sessionName = _params.get('session') || '';  // current execution; URL keeps the shell source
+const _shellSourceSession = _sessionName;
 const _taskId = _params.get('task') || '';          // task virtual session (M2)
 const TASK_MODE = !!_taskId;
 const HISTORY_ARCHIVE = _params.get('historyScope') === 'archive';
@@ -500,7 +501,7 @@ const chatMessageFocus = window.MultiCCChatMessageFocus.createMessageFocusContro
   targetId: _targetMessageId,
   findById: id => chatHistoryView.findById(id),
   async fetchAround(messageId) {
-    const url = withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/history?around=${encodeURIComponent(messageId)}&limit=31&historyScope=${HISTORY_ARCHIVE ? 'archive' : 'display'}`);
+    const url = withToken(`${shellChatView.historyUrl()}?around=${encodeURIComponent(messageId)}&limit=31&historyScope=${HISTORY_ARCHIVE ? 'archive' : 'display'}`);
     return chatApi.json(url);
   },
   mergeMessages(messages, page) {
@@ -537,14 +538,21 @@ const chatLiveUi = window.MultiCCChatLiveUi.createLiveUi({
 });
 let chatEventController = null;
 let _eventGeneration = 0;
+const shellChatView = window.MultiCCChatShellEntry.createShellView({
+  sourceSessionId: _shellSourceSession, disabled: _params.get('readOnly') === '1',
+  request: (url, options) => chatApi.json(url, options),
+  onSession: id => { if (_sessionName !== id) { _sessionName = id; sessionId = null; } },
+});
 const chatTransport = window.MultiCCChatTransport.createTransport({
   window,
   document,
-  buildUrl() {
+  async buildUrl() {
+    await shellChatView.prepare();
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const url = new URL(`${proto}//${location.host}/ws/chat`);
     if (_cwd) url.searchParams.set('cwd', _cwd);
     if (_sessionName) url.searchParams.set('session', _sessionName);
+    if (shellChatView.shellId) url.searchParams.set('shell', shellChatView.shellId);
     if (HISTORY_ARCHIVE) url.searchParams.set('historyScope', 'archive');
     if (sessionId) url.searchParams.set('resume', sessionId);
     return url.toString();
@@ -588,16 +596,27 @@ const chatTransport = window.MultiCCChatTransport.createTransport({
   onMessage({ data }) {
     try {
       const message = JSON.parse(data);
+      if (message.type === 'shell_history_update') {
+        chatHistoryView.commitSourcePage(message.sourceSessionId, message.messages || []);
+        maybeScrollToBottom(); return;
+      }
       const routed = taskShellTransport.ingest(message);
       if (routed.routeSessionId && routed.routeSessionId !== _sessionName) {
-        location.replace(window.MultiCCChatShellEntry.chatUrl(routed.routeSessionId, {
-          external: _params.get('external'),
-        }));
+        // Keep this shell URL and its rendered history. Reconnect only the
+        // execution transport; prepare() resolves the durable current task.
+        finishStreaming();
+        chatTransport.forceReconnect('task execution changed');
         return;
       }
       for (const event of routed.events) {
         if (HISTORY_ARCHIVE && event.displayOnly && ['chat_history_reset', 'chat_msg_deleted'].includes(event.type)) continue;
-        handleEvent(event, _eventGeneration);
+        if (shellChatView.shellId && event.type === 'chat_history_reset') {
+          chatHistoryView.clearSource(_sessionName);
+          resetHistoryPagination();
+          chatTransport.forceReconnect('shell history changed');
+          continue;
+        }
+        handleEvent(shellChatView.event(event), _eventGeneration);
       }
     } catch (e) {
       console.warn('Bad message:', data, e);
@@ -710,7 +729,8 @@ function attachDeleteButton(msgEl) {
     const go = await _chatConfirm(tt('msgDeleteConfirm'), { okText: tt('msgDeleteAction') });
     if (!go) return;
     try {
-      await chatApi.json(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/messages/${encodeURIComponent(msgEl.dataset.msgId)}`), { method: 'DELETE' });
+      const owner = shellMessageOwner(msgEl);
+      await chatApi.json(withToken(`/api/sessions/${encodeURIComponent(owner.sessionId)}/messages/${encodeURIComponent(owner.messageId)}`), { method: 'DELETE' });
       removeHistoryMessageById(msgEl.dataset.msgId); // broadcast removal is idempotent
     } catch (err) {
       _chatAlert(tt('msgDeleteFailed', { error: chatApi.errorText(err) }), { danger: true });
@@ -742,8 +762,9 @@ function attachForkButton(msgEl) {
     const orig = btn.innerHTML;
     btn.innerHTML = '…';
     try {
-      const d = await chatApi.json(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/fork`), {
-        method: 'POST', json: { atMessageId: msgEl.dataset.msgId },
+      const owner = shellMessageOwner(msgEl);
+      const d = await chatApi.json(withToken(`/api/sessions/${encodeURIComponent(owner.sessionId)}/fork`), {
+        method: 'POST', json: { atMessageId: owner.messageId },
       });
       const newId = d.sessionId;
       const n = d.replayedMessages || 0;
@@ -1062,7 +1083,7 @@ async function loadOlderHistory() {
     messagesEl.insertBefore(_loadingOlderSentinel, messagesEl.firstElementChild);
   }
   try {
-    const url = withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/history?historyScope=${HISTORY_ARCHIVE ? 'archive' : 'display'}&before=${encodeURIComponent(request.before)}&limit=${request.limit}`);
+    const url = withToken(`${shellChatView.historyUrl()}?historyScope=${HISTORY_ARCHIVE ? 'archive' : 'display'}&before=${encodeURIComponent(request.before)}&limit=${request.limit}`);
     const d = await chatApi.json(url);
     // Validate generation/request identity before touching DOM. A response
     // that raced a reconnect, clear or cursor deletion is discarded.

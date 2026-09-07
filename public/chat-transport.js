@@ -125,7 +125,9 @@
       const generation = ++connectGeneration;
       let rawUrl;
       try {
-        rawUrl = credentialFreeUrl(options.buildUrl(), baseUrl);
+        const builtUrl = options.buildUrl();
+        rawUrl = credentialFreeUrl(builtUrl?.then ? await builtUrl : builtUrl, baseUrl);
+        if (destroyed || generation !== connectGeneration) return null;
         const resolved = await ticketUrl(rawUrl);
         if (destroyed || generation !== connectGeneration) return null;
         const url = verifiedTicketUrl(resolved, baseUrl);

@@ -43,11 +43,6 @@ function completionVoiceMessage(shortCode, goal) {
   return identity ? `${identity}，本轮执行成功` : '本轮执行成功';
 }
 
-function taskShellTurnCanMove(cs) {
-  const readOnly = /(^|__)(thinking|read|glob|grep|ls|view_image|websearch|webfetch|get_task_context)$/i;
-  return (cs?.currentToolCalls || []).every(tool => readOnly.test(String(tool?.name || '')));
-}
-
 function createClassifyStateMachine(rawDeps) {
   const deps = rawDeps || {};
   const {
@@ -876,7 +871,7 @@ function createClassifyStateMachine(rawDeps) {
     // applyClassifyResult was only going to throw away. ensureCurrentTask clears
     // cancelledAt when the next real user turn starts, so this never sticks.
     const cancelledState = getTaskState(persistedSessions.get(sessionName));
-    if (cancelledState.classifyState === 'E' && cancelledState.cancelledAt) {
+    if (cancelledState.classifyState === 'E' && cancelledState.cancelledAt && !cs._taskShellReceiptId) {
       logger.info('classify_skipped_after_cancel', { sessionId: sessionName });
       return;
     }
@@ -963,10 +958,6 @@ function createClassifyStateMachine(rawDeps) {
         taskId: currentTaskId,
         relatedTaskId: null,
       } : parsedAttribution;
-      if (shellOwned && !taskShellTurnCanMove(cs)
-          && (res.relation === 'new' || (res.taskId && res.taskId !== currentTaskId))) {
-        res = { ...res, relation: 'same', taskId: currentTaskId, relatedTaskId: null };
-      }
       const boundTaskId = shellOwned ? null : persistedSessions.get(sessionName)?.taskBoundTaskId || null;
       // `new` promotes the admission's provisional id; it must never mint a
       // second id after that candidate has already been persisted and rendered.
@@ -1005,6 +996,7 @@ function createClassifyStateMachine(rawDeps) {
             taskName: res.taskName,
             relation: res.relation,
             relatedTaskId: res.relatedTaskId,
+            turnId, anchorMessageId,
           });
         } catch (error) {
           logger.warn?.('task_shell_attribution_failed', {

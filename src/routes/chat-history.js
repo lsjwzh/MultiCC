@@ -761,6 +761,7 @@ function createChatHistoryRuntime(rawDeps) {
     latestAssistantAt,
     load,
     viewHistory,
+    projectedMessages,
     mountRoutes,
     paginate,
     rotateNativeContext,

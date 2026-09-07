@@ -400,7 +400,7 @@
         return;
       }
       if (event.id && event.role) {
-        historyView.tagLatestMessage(event.role, event.id, event.clientMsgId);
+        historyView.tagLatestMessage(event.role, event.id, event.clientMsgId, event);
       }
     }
 
