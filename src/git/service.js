@@ -6,7 +6,7 @@ const os = require('os');
 const path = require('path');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
-const { defaultRepoActor, DEFAULT_TIMEOUT_MS } = require('./repo-actor');
+const { defaultRepoActor, DEFAULT_TIMEOUT_MS } = require('../repo-actor');
 
 const execFileAsync = promisify(execFile);
 const WORKTREE_SUBDIR = '.multicc-worktrees';

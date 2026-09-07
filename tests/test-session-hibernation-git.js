@@ -10,7 +10,7 @@ const {
   gitWorktreeAdd,
   gitWorktreeDetach,
   gitWorktreeValidate,
-} = require('../src/git');
+} = require('../src/git/service');
 
 function git(cwd, args) {
   return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();

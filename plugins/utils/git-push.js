@@ -1,6 +1,6 @@
 'use strict';
 
-const { runGit } = require('../../src/git-queue');
+const { runGit } = require('../../src/git/queue');
 
 async function gitTry(cwd, args) {
   try { return (await runGit(cwd, args)).trim(); }

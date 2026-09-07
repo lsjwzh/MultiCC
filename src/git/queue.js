@@ -4,7 +4,7 @@
 // belonging to the same repository are serialized; unrelated repositories run
 // concurrently. High-level transactions in src/git.js use the actor directly
 // so their multi-command critical sections cannot interleave.
-const { defaultRepoActor } = require('./repo-actor');
+const { defaultRepoActor } = require('../repo-actor');
 
 function runGit(cwd, args, opts = {}) {
   return defaultRepoActor.runGit(cwd, args, opts);

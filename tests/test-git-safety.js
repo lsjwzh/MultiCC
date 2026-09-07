@@ -14,7 +14,7 @@ const {
   gitRelocateWorktree,
   gitMergeBack,
   gitSyncFromBase,
-} = require('../src/git');
+} = require('../src/git/service');
 
 const execFileAsync = promisify(execFile);
 
