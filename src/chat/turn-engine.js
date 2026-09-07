@@ -1868,7 +1868,10 @@ function createChatTurnEngine(deps) {
         const boundaryErrorEnvelope = reconcileBoundaryErrorEnvelope(
           attemptRuntime, runner.providerAttempt, provider?.name || cs.cli, cs.currentAssistantText,
         );
-        const proxyFailure = attemptRuntime.proxyFailure?.(runner.providerAttempt) || null;
+        const proxyFailure = attemptRuntime.proxyFailure?.(runner.providerAttempt, {
+          resultDurable: turn.resultDurable === true && turn.resultRunnerId === runner.runnerId,
+          cleanClose: code === 0 && !killReason,
+        }) || null;
         const attemptFacts = attemptRuntime.snapshot(sessionName);
         const sideEffects = turnHasSideEffects(cs)
           || !!attemptFacts?.toolIntentObserved || !!attemptFacts?.sideEffectObserved;
@@ -2482,7 +2485,10 @@ function createChatTurnEngine(deps) {
       attemptRuntime, runner.providerAttempt,
       provider?.name || persisted.cli || 'claude', cs.currentAssistantText,
     );
-    const proxyFailure = attemptRuntime.proxyFailure?.(runner.providerAttempt) || null;
+    const proxyFailure = attemptRuntime.proxyFailure?.(runner.providerAttempt, {
+      resultDurable: turn.resultDurable === true && turn.resultRunnerId === runner.runnerId,
+      cleanClose: !runner.killReason,
+    }) || null;
     const attemptFacts = attemptRuntime.snapshot(sessionName);
     const sideEffects = turnHasSideEffects(cs)
       || !!attemptFacts?.toolIntentObserved || !!attemptFacts?.sideEffectObserved;

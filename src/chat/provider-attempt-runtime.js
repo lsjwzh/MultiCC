@@ -1088,6 +1088,11 @@ function createProviderAttemptRuntime(options = {}) {
     const status = Number(event.statusCode);
     const httpStatus = Number.isInteger(status) && status >= 400 && status <= 599
       ? status : null;
+    // Socket teardown must not replace stronger upstream failure evidence.
+    if (httpStatus == null && clean(event.errorCode).toLowerCase() === 'client_disconnected'
+        && record.proxyFailure) {
+      return Object.freeze({ accepted: true, code: null, failure: record.proxyFailure });
+    }
     record.proxyFailure = Object.freeze({
       source: 'proxy_response',
       provider: record.cli,
@@ -1101,9 +1106,16 @@ function createProviderAttemptRuntime(options = {}) {
     return Object.freeze({ accepted: true, code: null, failure: record.proxyFailure });
   }
 
-  function proxyFailure(reference) {
+  function proxyFailure(reference, facts = {}) {
     const record = currentBySession.get(clean(reference && reference.sessionId));
     if (!sameAttempt(record, reference) || !record.proxyFailure) return null;
+    // Codex can close its response socket after consuming response.completed,
+    // before the relay sees HTTP EOF. Only a durable result from this runner
+    // and a clean close can prove that downstream disconnect was harmless.
+    // Keep the raw observation for diagnostics and retain real upstream errors.
+    if (record.cli === 'codex' && facts.resultDurable === true && facts.cleanClose === true
+        && record.proxyFailure.httpStatus == null
+        && clean(record.proxyFailure.code).toLowerCase() === 'client_disconnected') return null;
     return Object.freeze({ ...record.proxyFailure });
   }
 
