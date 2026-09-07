@@ -241,7 +241,7 @@ test('planner keeps persisted workflow identity separate from the derived TODO p
   assert.match(js, /Object\.freeze\(\['inbox', 'ready', 'doing', 'review', 'done'\]\)/);
   assert.match(js, /Object\.freeze\(\['todo', 'board', 'activity'\]\)/);
   assert.match(js, /Object\.freeze\(\['all', 'board', 'session'\]\)/);
-  assert.match(js, /Object\.freeze\(\['todo', 'attention', 'running', 'next', 'review'\]\)/);
+  assert.match(js, /Object\.freeze\(\['todo', 'attention', 'running', 'next', 'review', 'done'\]\)/);
   assert.match(js, /task\.recordType === 'planned'/);
   assert.match(js, /task\.recordType !== 'planned'/);
   assert.match(js, /statusUi\.taskStatus/);
@@ -674,7 +674,7 @@ test('Fleet planner keeps body-only observed tasks in every referenced Fleet', a
   assert.doesNotMatch(fleetRoot.innerHTML, />Fleet A</);
 });
 
-test('TODO and Board share one five-bucket projection with explicit source filtering', async () => {
+test('TODO and Board share one six-bucket projection with explicit source filtering', async () => {
   const { context, globalRoot, storage } = createPlannerHarness();
   context.setView('tasks');
   await settlePlannerLoad();
@@ -725,7 +725,7 @@ test('TODO and Board share one five-bucket projection with explicit source filte
       status: 'active', runState: 'idle', workflowStage: 'inbox', dirId: 'fleet-a', rank: 11,
     },
     {
-      id: 'done-board', title: 'Done outside workspace', origin: 'board', recordType: 'planned',
+      id: 'done-board', title: 'Done remains visible', origin: 'board', recordType: 'planned',
       status: 'done', runState: 'running', workflowStage: 'doing', dirId: 'fleet-a', rank: 12,
     },
     {
@@ -750,6 +750,7 @@ test('TODO and Board share one five-bucket projection with explicit source filte
   const expectedIds = [
     'attention-board', 'attention-session', 'next-board', 'reopened-board',
     'review-board', 'running-board', 'running-session', 'succeeded-board', 'todo-board',
+    'done-board',
   ].sort();
   assert.deepEqual(articleTaskIds(globalRoot.innerHTML, 'planner-todo-row'), expectedIds);
 
@@ -765,6 +766,7 @@ test('TODO and Board share one five-bucket projection with explicit source filte
     running: ['Running board', 'Running session'],
     next: ['Next board', 'Reopened board'],
     review: ['Review board', 'Succeeded board'],
+    done: ['Done remains visible'],
   };
   for (const [bucket, titles] of Object.entries(expectedByBucket)) {
     const bucketMarkup = groupHtml(bucket);
@@ -780,6 +782,8 @@ test('TODO and Board share one five-bucket projection with explicit source filte
   // completed/idle observed rows into the work queue.
   dispatchPlannerAction(globalRoot, 'mode', { mode: 'board' });
   assert.deepEqual(articleTaskIds(globalRoot.innerHTML, 'planner-card'), expectedIds);
+  assert.match(globalRoot.innerHTML, /data-bucket="done"[\s\S]*Done remains visible/);
+  assert.doesNotMatch(globalRoot.innerHTML, /Archived outside workspace/);
   assert.doesNotMatch(globalRoot.innerHTML, /Observed succeeded archive only|Observed idle archive only/);
   dispatchPlannerAction(globalRoot, 'mode', { mode: 'activity' });
   assert.match(globalRoot.innerHTML, /Observed succeeded archive only/);
@@ -859,7 +863,7 @@ test('planner copy is present in both generated source catalogs', () => {
     'plannerTaskCenter', 'plannerTodoList', 'plannerBoard', 'plannerHistory',
     'plannerSource', 'plannerSourceAll', 'plannerSourceBoard', 'plannerSourceSession',
     'plannerWorkOverview', 'plannerBucketTodo', 'plannerBucketAttention',
-    'plannerBucketRunning', 'plannerBucketNext', 'plannerBucketReview',
+    'plannerBucketRunning', 'plannerBucketNext', 'plannerBucketReview', 'plannerBucketDone',
     'plannerNewTodo', 'plannerStartNewNow', 'plannerNewTodoTitle',
     'plannerNewTodoSubtitle', 'plannerTodoInput', 'plannerTodoPlaceholder', 'plannerTodoHint',
     'plannerAddTodo', 'plannerStartNowTitle', 'plannerStartNowSubtitle',
