@@ -8,7 +8,7 @@ const {
   buildTaskRunContext,
   isTaskRunWrapperText,
   stableTaskRunId,
-} = require('../src/task-run-context');
+} = require('../src/task-run/context');
 
 test('stableTaskRunId is replay-stable and separates follow-up admissions', () => {
   const first = stableTaskRunId('task-42', 'create:client-key');

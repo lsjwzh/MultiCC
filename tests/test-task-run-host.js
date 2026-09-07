@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { createTaskRunHost } = require('../src/task-run-host');
+const { createTaskRunHost } = require('../src/task-run/host');
 
 function fixture(overrides = {}) {
   const calls = [];

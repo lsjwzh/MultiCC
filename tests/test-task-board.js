@@ -11,7 +11,7 @@ const Database = require('better-sqlite3');
 const core = require('../src/task-board');
 const planning = require('../src/task-planning');
 const { createTaskBoardRuntime, assertTaskBoardDeps } = require('../src/routes/task-board');
-const { createTaskRunStore } = require('../src/task-run-store');
+const { createTaskRunStore } = require('../src/task-run/store');
 const taskBoardUi = require('../public/task-board-ui');
 const { mkRuntime } = require('./helpers/task-board-runtime');
 const { createSandboxConsole } = require('./helpers/sandbox-console');
@@ -686,7 +686,7 @@ function admitFailedRun(taskRuns, taskId, runId, { retryable, code = 'rate_limit
 }
 
 function admitFailureState(taskRuns, runId, { retryable, code = 'rate_limited' } = {}) {
-  const { recordRunError } = require('../src/task-run-errors');
+  const { recordRunError } = require('../src/task-run/errors');
   recordRunError(taskRuns, {
     runId, code, category: retryable ? 'rate_limit' : 'authentication_permission',
     retryable,

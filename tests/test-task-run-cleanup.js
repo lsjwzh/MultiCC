@@ -9,7 +9,7 @@ const test = require('node:test');
 const {
   TaskRunCleanupError,
   createTaskRunCleanup,
-} = require('../src/task-run-cleanup');
+} = require('../src/task-run/cleanup');
 
 function tempLayout(t) {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-task-run-cleanup-'));

@@ -10,7 +10,7 @@ const {
   scopeHostProviderEvent,
   tagProviderAttemptEvent,
 } = require('../src/chat/provider-attempt-runtime');
-const { createTaskRunProviderBridge } = require('../src/task-run-provider-bridge');
+const { createTaskRunProviderBridge } = require('../src/task-run/provider-bridge');
 const { createUsageObserved } = require('../src/usage-observed');
 
 function harness() {

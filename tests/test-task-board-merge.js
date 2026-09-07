@@ -8,7 +8,7 @@ const path = require('node:path');
 const Database = require('better-sqlite3');
 const core = require('../src/task-board');
 const { createTaskBoardRuntime } = require('../src/routes/task-board');
-const { createTaskRunStore } = require('../src/task-run-store');
+const { createTaskRunStore } = require('../src/task-run/store');
 const { mkRuntime } = require('./helpers/task-board-runtime');
 
 function mkRef(overrides = {}) {

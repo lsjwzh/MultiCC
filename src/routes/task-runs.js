@@ -1,6 +1,6 @@
 'use strict';
 
-const { runErrorOf } = require('../task-run-errors');
+const { runErrorOf } = require('../task-run/errors');
 
 const PUBLIC_TASK_RUN_ERROR = 'Task run data is temporarily unavailable';
 const ROUTE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
