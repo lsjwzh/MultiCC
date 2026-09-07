@@ -47,6 +47,41 @@ test('manage.html wires the official-accounts card and loads the module before m
   assert.ok(manage > mod, 'module must be loaded before manage.js');
 });
 
+test('Codex add and relogin open the terminal client with its id parameter', async () => {
+  for (const act of ['add', 'relogin']) {
+    let click;
+    const opened = [];
+    const nodes = new Map();
+    const overlay = {
+      style: {}, remove() {},
+      querySelector(selector) {
+        if (!nodes.has(selector)) nodes.set(selector, { value: 'test account' });
+        return nodes.get(selector);
+      },
+    };
+    const sessionId = 'codex-acct-login-test';
+    const context = vm.createContext({
+      window: {
+        MultiCCApi: { json: async () => ({ loginSessionId: sessionId }) },
+        open: (url, target) => opened.push({ url, target }),
+      },
+      document: {
+        body: { dataset: {}, appendChild() {} },
+        getElementById: () => null,
+        addEventListener: (name, handler) => { if (name === 'click') click = handler; },
+        createElement: () => overlay,
+      },
+      MutationObserver: class { observe() {} },
+      setInterval, clearInterval, Date,
+    });
+    vm.runInContext(fs.readFileSync(SOURCE_PATH, 'utf8'), context);
+    click({ target: { closest: () => ({ dataset: { act, vendor: 'codex', id: 'test' } }) } });
+    if (act === 'add') await nodes.get('[data-act="ok"]').onclick();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(opened, [{ url: 'index.html?id=' + sessionId, target: '_blank' }], act);
+  }
+});
+
 test('the module evaluates cleanly and exposes its surface', () => {
   const ctx = loadModule();
   assert.equal(typeof ctx.window.MultiCCOfficialAccounts.load, 'function');

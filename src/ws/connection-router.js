@@ -218,9 +218,20 @@ function mountWsConnectionRouter(wss, deps) {
         const cliLabel = persisted.cli || 'claude';
         const BINARY_NAMES = { qoder: 'qoderclicn', codebuddy: 'codebuddy', dsh: 'dsh' };
         const binaryName = BINARY_NAMES[cliLabel] || cliLabel;
-        const message = `Failed to launch ${cliLabel}: ${error.message}\r\n`
-          + `Make sure "${binaryName}" is installed and available in PATH.\r\n`
-          + `You can also set the ${binaryName.toUpperCase()}_CMD environment variable.\r\n`;
+        const missingTmux = error.code === 'ENOENT' && error.path === 'tmux';
+        const missingCli = error.code === 'ENOENT'
+          && String(error.path || '').split(/[\\/]/).pop() === binaryName;
+        const hint = missingTmux
+          ? '登录终端依赖 tmux，但后台服务找不到它。请在 MultiCC 目录运行 ./multicc install-terminal，完成后刷新本页。\r\n'
+          : missingCli
+            ? `Make sure "${binaryName}" is installed and available in PATH.\r\n`
+              + `You can also set the ${binaryName.toUpperCase()}_CMD environment variable.\r\n`
+            : 'Terminal setup failed. Check the error above for the failing dependency or working directory.\r\n';
+        const message = `Failed to launch ${cliLabel}: ${error.message}\r\n` + hint;
+        logger.warn('terminal_launch_failed', {
+          sessionId, cli: cliLabel, code: error.code || null,
+          dependency: missingTmux ? 'tmux' : missingCli ? binaryName : null,
+        });
         sendWs(ws, { type: 'error', data: message });
         ws.close();
         return;

@@ -240,7 +240,7 @@
         if (vendor === 'codex') {
           if (data.loginSessionId) {
             toast('已创建，正在打开登录终端…');
-            window.open('chat.html?session=' + encodeURIComponent(data.loginSessionId), '_blank');
+            window.open('index.html?id=' + encodeURIComponent(data.loginSessionId), '_blank');
           } else { toast('账号已创建，但登录终端打开失败：' + (data.error || ''), true); }
         } else {
           toast('已创建，请在打开的授权页完成登录');
@@ -260,7 +260,7 @@
     try {
       const data = await api().json('/api/' + vendor + '/accounts/' + encodeURIComponent(id) + '/relogin', { method: 'POST', json: {} });
       if (vendor === 'codex') {
-        if (data.loginSessionId) window.open('chat.html?session=' + encodeURIComponent(data.loginSessionId), '_blank');
+        if (data.loginSessionId) window.open('index.html?id=' + encodeURIComponent(data.loginSessionId), '_blank');
         toast(data.loginSessionId ? '登录终端已打开' : ('登录终端打开失败：' + (data.error || '')), !data.loginSessionId);
       } else {
         if (data.oauthUrl) { window.open(data.oauthUrl, '_blank'); watchClaudeLogin(id); }

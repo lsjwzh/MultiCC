@@ -13,6 +13,12 @@ checks prerequisites, clones the repo, installs dependencies, configures an
 access token, and optionally installs as a background service (macOS `launchd`).
 It does not build the Android APK.
 
+The installer and `./multicc install` install missing `tmux` dependencies for
+terminal sessions and CLI login, using Homebrew on macOS or the system package
+manager on Linux. Linux may request sudo privileges. To repair an existing
+installation on demand, run `./multicc install-terminal`, then refresh the
+terminal page. Already installed tmux is left unchanged.
+
 Running `./multicc update` later checks for new releases and upgrades you
 when one becomes available.
 

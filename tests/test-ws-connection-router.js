@@ -77,6 +77,22 @@ const routes = [
   '/ws/chat?session=chat', '/ws/voice', '/ws/tts',
   '/ws/workspace?dirId=directory', '/ws/meta', '/ws/aux', '/ws?id=terminal',
 ];
+
+test('terminal launch reports missing tmux without claiming Codex is missing', async t => {
+  const messages = [];
+  const h = harness(t, { overrides: {
+    persistedSessions: new Map([['login', { id: 'login', cli: 'codex', kind: 'terminal' }]]),
+    createSession: async () => { throw Object.assign(new Error('spawn tmux ENOENT'), {
+      code: 'ENOENT', path: 'tmux',
+    }); },
+    sendWs: (_ws, message) => messages.push(message),
+  } });
+  await h.connect('/?id=login');
+  const message = messages.find(m => m.type === 'error');
+  assert.match(message.data, /tmux/);
+  assert.doesNotMatch(message.data, /Make sure "codex"|CODEX_CMD/);
+  assert.ok(h.logs.some(row => row.event === 'terminal_launch_failed' && row.dependency === 'tmux'));
+});
 for (const route of routes) {
   test(`${route}: tolerate three full unanswered ping windows before termination`, async t => {
     const h = harness(t);

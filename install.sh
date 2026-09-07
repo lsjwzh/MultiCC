@@ -291,16 +291,11 @@ else
   exit 1
 fi
 
-# ── Detect tmux (recommended, not required) ───────────────────────────────
+# ── Detect tmux (installed below after the checkout is available) ────────
 if command -v tmux >/dev/null 2>&1; then
   ok "tmux $(tmux -V 2>/dev/null | awk '{print $2}')"
 else
-  warn "tmux not found — terminal mode won't work (chat mode is unaffected)"
-  if [ "$IS_MACOS" = true ]; then
-    echo "       Install: brew install tmux"
-  else
-    echo "       Install: sudo apt-get install -y tmux"
-  fi
+  info "tmux is missing — the installer will install it for terminal sessions and CLI login"
 fi
 
 # ── Detect OpenSSL (recommended, not required at install time) ─────────────
@@ -386,6 +381,12 @@ CHANNEL_EOF
 fi
 
 cd "$INSTALL_DIR"
+
+step "Installing terminal dependencies"
+if ! bash scripts/install-terminal-deps.sh; then
+  err "Terminal dependency installation failed. Resolve the error above and retry."
+  exit 1
+fi
 
 # ── Install dependencies ──────────────────────────────────────────────────
 step "Installing npm dependencies"
