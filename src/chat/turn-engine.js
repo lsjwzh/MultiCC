@@ -56,14 +56,14 @@ const { summarizeHistoryUsage } = require('../codex/usage');
 const { buildReplayMessages } = require('../routes/chat-history');
 const chatStream = require('../chat-stream');
 const waitInjector = require('../wait/injector');
-const providers = require('../providers');
+const providers = require('../providers/core');
 const { createTurnTimingRecorder } = require('./turn-timing');
 const { deriveOpenTasks } = require('./turn-event-replay');
 const { createCodexRolloutGuard } = require('./codex-rollout-guard');
 const { captureNativeSessionId } = require('./native-session-state');
 const { createOpencodeContextGuard } = require('./opencode-context-guard');
 const { isInternalExecutionSlot } = require('../session/public-session-access');
-const { providerSelectionDto } = require('../auto-provider-config');
+const { providerSelectionDto } = require('../providers/auto-provider-config');
 
 function admissionRootCause(value) {
   const raw = value instanceof Error

@@ -5,7 +5,7 @@ const fs = require('fs');
 
 const { normalizeManualMemory } = require('../memory/runtime');
 const { taskShortCode } = require('../classify/task-short-code');
-const { primaryProviderCandidate, providerSelectionDto, validateProviderSelection } = require('../auto-provider-config');
+const { primaryProviderCandidate, providerSelectionDto, validateProviderSelection } = require('../providers/auto-provider-config');
 
 // Session profile routes: PATCH /api/sessions/:id (label/model/effort/agent/
 // rolePrompt/memory/auto-flags/provider/subagent edits) and POST

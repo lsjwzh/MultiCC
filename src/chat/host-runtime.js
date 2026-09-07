@@ -2,7 +2,7 @@
 
 const crypto = require('node:crypto');
 const { createChatHostCoordinator } = require('./host-coordinator');
-const { createProviderBinding } = require('../provider-binding');
+const { createProviderBinding } = require('../providers/binding');
 const { redactProviderRouteCapability } = require('../observability');
 
 const REQUIRED_PORTS = Object.freeze([

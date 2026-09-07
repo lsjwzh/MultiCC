@@ -4,7 +4,7 @@ const {
   protocolOf,
   trustDomainOf,
   validateProviderSelection,
-} = require('../auto-provider-config');
+} = require('../providers/auto-provider-config');
 const {
   chooseCandidate,
   failoverSafety,

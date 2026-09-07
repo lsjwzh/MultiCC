@@ -3,7 +3,7 @@
 const { createSessionQueryService, createWorkspaceService } = require('../session');
 const { isTerminalLetter, isSettledLetter } = require('../classify/vocab');
 const { taskShortCode } = require('../classify/task-short-code');
-const { providerSelectionDto } = require('../auto-provider-config');
+const { providerSelectionDto } = require('../providers/auto-provider-config');
 
 function assertFunction(value, name) {
   if (typeof value !== 'function') throw new TypeError(`[session-admin] ${name} must be a function`);

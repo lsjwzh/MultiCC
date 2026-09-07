@@ -2,7 +2,7 @@
 
 const crypto = require('node:crypto');
 const { createUsageObserved, validateUsageObserved } = require('../usage-observed');
-const { assertProviderBinding } = require('../provider-binding');
+const { assertProviderBinding } = require('../providers/binding');
 const { isTaskRunWrapperText } = require('./context');
 const { describeRunFailure, recordRunError } = require('./errors');
 const { TERMINAL_EXECUTION_STATUSES } = require('./store');

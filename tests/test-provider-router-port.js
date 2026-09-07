@@ -6,8 +6,8 @@ const path = require('node:path');
 const {
   REQUIRED_CAPABILITIES,
   createProviderRouterPort,
-} = require('../src/provider-router-port');
-const { createProviderBinding } = require('../src/provider-binding');
+} = require('../src/providers/router-port');
+const { createProviderBinding } = require('../src/providers/binding');
 
 const HOST_PATHS = Object.freeze({
   cprPaths: Object.freeze({

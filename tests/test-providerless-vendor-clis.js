@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const providers = require('../src/providers');
+const providers = require('../src/providers/core');
 
 test('vendor-auth CLIs stay providerless while ZCode resolves both MultiCC provider pools', () => {
   assert.equal(providers.appTypeForCli('claude'), 'claude');

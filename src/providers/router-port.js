@@ -6,13 +6,13 @@ const {
   assertProviderBinding,
   createProviderBinding,
   toLegacyProviderView,
-} = require('./provider-binding');
-const { mountCodexOfficialRelay } = require('./codex/official-relay');
+} = require('./binding');
+const { mountCodexOfficialRelay } = require('../codex/official-relay');
 const {
   createProviderProxyAdmission,
   createProviderProxyGuard,
-} = require('./provider-proxy-guard');
-const { createUsageObserved } = require('./usage-observed');
+} = require('./proxy-guard');
+const { createUsageObserved } = require('../usage-observed');
 
 const PORT_API_VERSION = '1.0.0';
 const PORT_MODES = Object.freeze(['legacy', 'shadow', 'cpr']);

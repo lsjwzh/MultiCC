@@ -9,7 +9,7 @@ try {
   });
 } catch (_) { /* .env not found, skip */ }
 // Start every child from clean routing env; per-session providers re-apply theirs.
-const { ANTHROPIC_ROUTING_KEYS } = require('./src/providers');
+const { ANTHROPIC_ROUTING_KEYS } = require('./src/providers/core');
 for (const k of ANTHROPIC_ROUTING_KEYS) {
   if (process.env[k]) { console.log(`[multicc] stripping inherited ${k} so claude uses the OAuth subscription`); delete process.env[k]; }
 }
@@ -51,7 +51,7 @@ const bus = require('./src/bus');
 const services = require('./src/services');
 const state = require('./src/state/container');
 const artifacts = require('./src/artifacts'), docsRegistry = require('./src/docs-registry');
-const providers = require('./src/providers');
+const providers = require('./src/providers/core');
 const { executeAuxHttp } = require('./src/aux-http');
 const tokenGlobal = require('./src/token-global');
 const { createRoleTokenTracker } = require('./src/role-token-tracker');
@@ -60,8 +60,8 @@ const {
   projectHistoryUsage,
   summarizeHistoryUsage,
 } = require('./src/codex/usage');
-const { createProviderRouterRuntime } = require('./src/provider-router-runtime');
-const { findProviderReferences } = require('./src/provider-references');
+const { createProviderRouterRuntime } = require('./src/providers/router-runtime');
+const { findProviderReferences } = require('./src/providers/references');
 const { createCliAdapters } = require('./src/cli-adapters');
 const { createCodexSessionFinder } = require('./src/cli-adapters/codex-session-file');
 const { createSessionPolicy, createReportedModelRuntime } = require('./src/cli/session-policy');
@@ -111,7 +111,7 @@ const { mountFileTransferRoutes } = require('./src/routes/file-transfer');
 const { mountSkillSyncRoutes } = require('./src/routes/skill-sync');
 const { createSkillSyncRuntime } = require('./src/skill-sync');
 const skillConverter = require('./src/skill-converter');
-const { createProviderRoutes } = require('./src/routes/providers'); const { createProviderRelayShareStore } = require('./src/provider-relay-share-store');
+const { createProviderRoutes } = require('./src/routes/providers'); const { createProviderRelayShareStore } = require('./src/providers/relay-share-store');
 const { mountOpenCodeModelRoutes } = require('./src/routes/opencode-models');
 const { mountOpenCodeQuotaRoutes } = require('./src/routes/opencode-quota');
 const { mountQoderModelRoutes } = require('./src/routes/qoder-models');
@@ -131,7 +131,7 @@ const { mountSessionCreateRoutes } = require('./src/routes/session-create');
 const { mountCodexOAuthRoutes } = require('./src/routes/codex-oauth'); const { createClaudeOAuthSurface } = require('./src/routes/claude-oauth');
 const { mountZcodeAuthRoutes } = require('./src/routes/zcode-auth'); const { mountKimiAuthRoutes } = require('./src/routes/kimi-auth');
 const { createOrchestrationRoutes } = require('./src/routes/orchestration');
-const { createChatTurnEngine } = require('./src/chat/turn-engine'); const { primaryProviderCandidate, validateProviderSelection } = require('./src/auto-provider-config');
+const { createChatTurnEngine } = require('./src/chat/turn-engine'); const { primaryProviderCandidate, validateProviderSelection } = require('./src/providers/auto-provider-config');
 const { createTuiChatMirrorRuntime, isEnabled: tuiChatMirrorEnabled, validateExperimentalSession } = require('./src/experiments/tui-chat-mirror-runtime');
 const { createSessionGitRuntime } = require('./src/routes/session-git');
 const { createSessionProfileRoutes } = require('./src/routes/session-profile');
