@@ -46,7 +46,7 @@
     "test:git-push": "node tests/test-git-push.js",
     "test:repo-actor": "node --test tests/test-repo-actor.js tests/test-git-safety.js",
     "test:power": "node tests/test-macos-power.js",
-    "test:task-shells": "node --test tests/test-task-shells.js tests/test-task-shell-http.js",
+    "test:task-shells": "node --test tests/test-task-shells.js tests/test-task-shell-http.js tests/test-shell-chat-continuity.js",
     "test:task-shells:isolated": "node tests/test-task-shell-isolated.js && node tests/test-task-shell-context-isolation.js",
     "test:task-shells:cdp": "node --test tests/test-task-shell-cdp.js",
     "lab:build": "node scripts/build-task-shell-image.js",

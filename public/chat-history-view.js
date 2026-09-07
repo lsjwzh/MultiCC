@@ -339,6 +339,9 @@
       if (message.clientMsgId) node.dataset.clientMsgId = message.clientMsgId;
       if (!message.id) return;
       node.dataset.msgId = message.id;
+      if (message.sourceSessionId) node.dataset.sourceSessionId = message.sourceSessionId;
+      if (message.sourceMessageId) node.dataset.sourceMessageId = message.sourceMessageId;
+      if (message._interim || message.sourceMessageId?.startsWith('live-')) node.dataset.shellInterim = '1';
       // Stash the raw content text so a later duplicate-detection pass can
       // compare "is the previous assistant contained by the latest one" using
       // the original text, not the rendered (markdown/HTML-noisy) textContent.
@@ -519,18 +522,24 @@
         });
       }
 
+      const sameSource = node => !source.sourceSessionId || !node?.dataset.sourceSessionId
+        || source.sourceSessionId === node.dataset.sourceSessionId;
       let existing = findById(source.id) || findByClientMsgId(source.clientMsgId);
-      if (!existing && source.role === 'assistant') {
+      if (existing && !sameSource(existing)) existing = null;
+      if (!existing && !hostState.passive && source.sourceSessionId) {
+        existing = findById(`${source.sourceSessionId}:live-${source.taskId || 'turn'}`);
+      }
+      if (!existing && !hostState.passive && source.role === 'assistant') {
         // A reconnect can promote the live bubble to a persisted interim id.
         // The final commit then has a different durable id, but it still owns
         // that same current-turn DOM node. Prefer the explicit current element
         // before falling back to an unkeyed bubble so the final cannot append a
         // second copy beside its interim representation.
-        existing = hostState.currentElement?.classList.contains('assistant')
+        existing = sameSource(hostState.currentElement) && hostState.currentElement?.classList.contains('assistant')
           ? hostState.currentElement
-          : Array.from(messagesEl.querySelectorAll('.msg.assistant:not([data-msg-id])')).pop() || null;
+          : Array.from(messagesEl.querySelectorAll('.msg.assistant:not([data-msg-id])')).filter(sameSource).pop() || null;
       }
-      if (!existing && source.role === 'assistant') {
+      if (!existing && !hostState.passive && source.role === 'assistant') {
         // The reconnect retagged the live bubble with the interim id, so the
         // unkeyed-bubble fallback above misses it. The final commit of that same
         // turn carries the full text, which starts with the interim snapshot —
@@ -540,7 +549,7 @@
         if (incomingText) {
           const keyed = Array.from(messagesEl.querySelectorAll('.msg.assistant[data-msg-id]'));
           const last = keyed[keyed.length - 1] || null;
-          if (last && last.dataset.msgId !== source.id
+          if (last && sameSource(last) && last.dataset.msgId !== source.id
               && (last.dataset.rawText || '').length >= 8
               && incomingText.startsWith(last.dataset.rawText)
               && stableToolsString(source.tools) === (last.dataset.rawTools || stableToolsString(null))) {
@@ -555,9 +564,9 @@
         // longer, containing) assistant reply as the previous turn. Drop the
         // older copy so the user sees only the latest. Never crosses a real
         // user message (findPrevAssistantNode stops there).
-        if (source.role === 'assistant') {
+        if (!hostState.passive && source.role === 'assistant') {
           const prev = findPrevAssistantNode(messagesEl.lastElementChild);
-          if (prev && assistantNodeContained(prev, source)
+          if (prev && sameSource(prev) && assistantNodeContained(prev, source)
               && stableToolsString(source.tools) === (prev.dataset.rawTools || stableToolsString(null))) {
             prev.remove();
           }
@@ -572,6 +581,21 @@
 
       const next = replaceMessageNode(existing, node, hostState);
       return Object.freeze({ node, ...next });
+    }
+
+    function commitSourcePage(sourceSessionId, messages) {
+      const ids = new Set(messages.map(m => m.id));
+      for (const node of Array.from(messagesEl.querySelectorAll('.msg[data-msg-id]'))) {
+        if (node.dataset.sourceSessionId === sourceSessionId && node.dataset.shellInterim === '1'
+            && !ids.has(node.dataset.msgId)) node.remove();
+      }
+      for (const message of messages) commitMessage(message, { passive: true });
+    }
+
+    function clearSource(sourceSessionId) {
+      for (const node of Array.from(messagesEl.querySelectorAll('.msg[data-msg-id]'))) {
+        if (node.dataset.sourceSessionId === sourceSessionId) node.remove();
+      }
     }
 
     function reorderAuthoritativeNodes(plan, currentElement) {
@@ -739,12 +763,14 @@
       messagesEl.replaceChildren();
     }
 
-    function tagLatestMessage(role, id, clientMsgId) {
+    function tagLatestMessage(role, id, clientMsgId, source = {}) {
       if (!id) return null;
       const clientNode = findByClientMsgId(clientMsgId);
       if (clientNode) {
         if (!clientNode.dataset.msgId) {
           clientNode.dataset.msgId = id;
+          if (source.sourceSessionId) clientNode.dataset.sourceSessionId = source.sourceSessionId;
+          if (source.sourceMessageId) clientNode.dataset.sourceMessageId = source.sourceMessageId;
           attachDeleteButton(clientNode);
           attachForkButton(clientNode);
         }
@@ -755,6 +781,8 @@
       const node = nodes[nodes.length - 1];
       if (!node || node.dataset.msgId) return node || null;
       node.dataset.msgId = id;
+      if (source.sourceSessionId) node.dataset.sourceSessionId = source.sourceSessionId;
+      if (source.sourceMessageId) node.dataset.sourceMessageId = source.sourceMessageId;
       attachDeleteButton(node);
       attachForkButton(node);
       return node;
@@ -766,6 +794,8 @@
       applyPlan,
       clearMessages,
       commitMessage,
+      commitSourcePage,
+      clearSource,
       createAssistantBubble,
       createToolCard,
       findByClientMsgId,

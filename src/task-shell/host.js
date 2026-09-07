@@ -10,6 +10,7 @@ const {
   renderLazyContextPrompt, snapshotHistory, renderSnapshots, verifySnapshot,
 } = require('./context');
 const { mountTaskShellRoutes } = require('./routes');
+const { shellHistoryPage, watchShellHistory } = require('./chat-history');
 
 function createTaskShellHost(deps) {
   let runtime, store;
@@ -29,6 +30,7 @@ function createTaskShellHost(deps) {
       store,
       getRecord: id => deps.records.get(id),
       getHistory: deps.loadHistory,
+      getLiveState: deps.getChatState,
       getExecution: async id => {
         const host = deps.getWorkHost();
         const scheduler = deps.getScheduler();
@@ -109,17 +111,26 @@ function createTaskShellHost(deps) {
     return { ...result, chatId: result.sessionId, targetSessionId: result.sessionId,
       shellId: shell.id, url: `/task-shell.html?shell=${encodeURIComponent(shell.id)}&task=${encodeURIComponent(result.taskId)}` };
   }
-  async function sendClientInput(id, message) {
-    const shell = open(id), rt = getRuntime();
+  async function sendClientInput(id, message, shellId = null) {
+    const rt = getRuntime();
+    if (shellId) rt.chatScope(shellId, id);
+    const shell = shellId ? rt.view(shellId) : open(id);
     const intent = message.type === 'cancel' ? 'cancel' : message.userInputRequestId ? 'answer' : 'work';
     const result = await rt.send(shell.id, { text: intent === 'cancel' ? '' : message.text,
-      clientMsgId: message.clientMsgId, taskId: intent === 'work' ? null : shell.currentTaskId, intent,
+      clientMsgId: message.clientMsgId, taskId: intent === 'work' ? null : rt.owns(id)?.id || shell.currentTaskId, intent,
       ...(message.goal === true ? { goal: true, goalLimits: message.goalLimits } : {}),
       ...(intent !== 'work' ? { turnId: message.turnId, requestId: message.userInputRequestId } : {}) });
     return { ...result, shellId: shell.id, clientMsgId: message.clientMsgId };
   }
   return {
-    mountRoutes: app => mountTaskShellRoutes(app, { getRuntime, open }),
+    mountRoutes: app => mountTaskShellRoutes(app, { getRuntime, open,
+      history: (id, options) => shellHistoryPage(getRuntime().chatScope(id),
+        deps.displayHistory || deps.loadHistory, deps.getChatState, options) }),
+    chatScope: (id, sessionId) => getRuntime().chatScope(id, sessionId),
+    chatHistory: (id, options) => shellHistoryPage(getRuntime().chatScope(id, options.activeSessionId),
+      deps.displayHistory || deps.loadHistory, deps.getChatState, options),
+    watchChatHistory: (id, activeSessionId, emit) => watchShellHistory(getRuntime().chatScope(id, activeSessionId), activeSessionId,
+      { subscribe: deps.subscribeChat, readMessages: deps.displayHistory || deps.loadHistory, getState: deps.getChatState, emit }),
     guardAdmission: (id, ...args) => {
       if (!owns(id)) return null;
       const owner = getRuntime();

@@ -1,5 +1,15 @@
 'use strict';
 
+function shellMessageOwner(element) {
+  if (element.dataset.sourceSessionId && element.dataset.sourceMessageId) {
+    return { sessionId: element.dataset.sourceSessionId, messageId: element.dataset.sourceMessageId };
+  }
+  const id = element.dataset.msgId || '';
+  const split = shellChatView.shellId ? id.indexOf(':') : -1;
+  return split < 0 ? { sessionId: _sessionName, messageId: id }
+    : { sessionId: id.slice(0, split), messageId: id.slice(split + 1) };
+}
+
 // Task-board links resolve their bound execution once, then use the exact same
 // full chat renderer as every ordinary conversation. Task-shell routing is a
 // transport concern and must never replace the UI.
