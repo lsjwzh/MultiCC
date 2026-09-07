@@ -1,7 +1,7 @@
 'use strict';
 
 const { isErrorOnlyText, retryNotice } = require('./api-error-policy');
-const { SYSTEM_PREFIX } = require('../session-delivery');
+const { SYSTEM_PREFIX } = require('../session/delivery');
 
 function cleanIdentity(value) {
   return value == null ? '' : String(value).trim();

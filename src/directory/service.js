@@ -10,7 +10,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { assertPort, REPOSITORY_PORT, GIT_PORT, SESSION_PORT, EVENT_PORT, FS_PORT, HELPER_PORT } = require('./ports');
 const { ensureSampleWorkspace } = require('./sample-workspace');
-const stateTx = require('../state-tx');
+const stateTx = require('../state/tx');
 
 const ok = (data) => ({ ok: true, data });
 const err = (code, message, extra) => ({ ok: false, code, message, ...(extra ? { extra } : {}) });

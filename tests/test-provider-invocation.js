@@ -2,7 +2,7 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { createProviderBinding } = require('../src/provider-binding');
+const { createProviderBinding } = require('../src/providers/binding');
 const {
   createProviderAttemptRuntime,
   createProviderRevision,

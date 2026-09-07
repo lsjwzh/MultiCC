@@ -13,7 +13,7 @@ const path = require('node:path');
 const net = require('node:net');
 const { spawn } = require('node:child_process');
 const { createPaths, assertTestDir } = require('../src/paths');
-const { readJson } = require('../src/state-store');
+const { readJson } = require('../src/state/store');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-shell-ctx-'));
 const dataDir = assertTestDir(path.join(root, 'data'));

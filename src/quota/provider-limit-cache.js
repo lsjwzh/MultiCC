@@ -31,7 +31,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { readJson, recoverFromBackup } = require('../state-store');
+const { readJson, recoverFromBackup } = require('../state/store');
 
 const STALE_MS_DEFAULT = 10 * 60 * 1000; // bar freshness threshold for "过期" UI
 const DATABASE_SCHEMA_VERSION = 1;

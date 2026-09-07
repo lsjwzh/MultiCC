@@ -9,7 +9,7 @@
 // Uses the same deterministic fake-CLI substrate as test-chat-stream-close.
 
 const assert = require('assert');
-const stream = require('../src/chat-stream');
+const stream = require('../src/chat/chat-stream');
 
 // Fake CLI that NEVER answers and refuses to die on SIGTERM. setInterval keeps
 // the event loop alive so it cannot exit on its own - only SIGKILL ends it.

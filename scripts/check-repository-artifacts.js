@@ -44,7 +44,7 @@ function scanTrackedEntry(relativePath, buffer) {
   if (RUNTIME_BASENAMES.has(basename) || /^(?:chat_history|events|logs|memories|\.journal)\//.test(normalized)) {
     categories.add('runtime-state');
   }
-  if (normalized === '.arch-review-findings.json' || normalized === 'classify-test-cases.json' ||
+  if (normalized === 'classify-test-cases.json' ||
       /(?:^|\/)(?:npm-)?audit(?:[-_.].*)?\.(?:json|txt|log)$/i.test(normalized)) {
     categories.add('raw-audit-dump');
   }

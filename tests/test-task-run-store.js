@@ -10,7 +10,7 @@ const {
   createTaskRunStore,
   extractArtifactReferences,
   open,
-} = require('../src/task-run-store');
+} = require('../src/task-run/store');
 
 function tempDatabase(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-task-run-store-'));

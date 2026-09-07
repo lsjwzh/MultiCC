@@ -9,7 +9,7 @@ const { after, test } = require('node:test');
 const { assertTestDir } = require('../src/paths');
 const testRoot = assertTestDir(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-push-localization-')));
 process.env.MULTICC_DATA_DIR = assertTestDir(path.join(testRoot, 'data'));
-const { resolvePushPayload } = require('../src/push');
+const { resolvePushPayload } = require('../src/push/service');
 
 after(() => {
   assertTestDir(testRoot);

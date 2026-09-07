@@ -21,7 +21,7 @@ const { assertTestDir } = require('../src/paths');
 const testRoot = assertTestDir(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-detached-')));
 process.env.MULTICC_DATA_DIR = testRoot;
 const detached = require('../src/detached');
-const waitInjector = require('../src/wait-injector');
+const waitInjector = require('../src/wait/injector');
 
 function sh(cmd) { return cp.execSync(cmd, { shell: '/bin/sh' }).toString(); }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }

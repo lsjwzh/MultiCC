@@ -1,7 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
-const { assertProviderBinding } = require('./provider-binding');
+const { assertProviderBinding } = require('./providers/binding');
 
 const USAGE_OBSERVED_VERSION = 1;
 const ROLE_KINDS = new Set(['main', 'sub', 'aux']);

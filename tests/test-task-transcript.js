@@ -11,14 +11,14 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const Database = require('better-sqlite3');
-const core = require('../src/task-board');
-const { isTaskRunWrapperText } = require('../src/task-run-context');
-const { createTaskRunStore } = require('../src/task-run-store');
+const core = require('../src/task-board/core');
+const { isTaskRunWrapperText } = require('../src/task-run/context');
+const { createTaskRunStore } = require('../src/task-run/store');
 const { createTaskBoardRuntime } = require('../src/routes/task-board');
 const {
   taskTranscriptMessages,
   paginateTranscript,
-} = require('../src/task-transcript-repository');
+} = require('../src/task-run/transcript-repository');
 
 function projectDeps(taskRuns) {
   return {

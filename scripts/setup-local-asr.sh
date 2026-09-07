@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Download the local ASR models (SenseVoiceSmall int8 + silero VAD) used by
-# src/asr-local.js. Safe to re-run; skips files that already exist.
+# src/voice/asr-local.js. Safe to re-run; skips files that already exist.
 # Models live outside the repo (~240MB) in ~/.multicc/asr-models by default.
 set -euo pipefail
 

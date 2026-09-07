@@ -19,12 +19,12 @@ const {
   downloadWithRetry,
   platformKey,
   safeChildEnv,
-} = require('../src/qwen-audio-installer');
+} = require('../src/voice/qwen-audio-installer');
 const {
   createQwenAudioSupervisor,
   fleetRuntimeKey,
   redactLogLine,
-} = require('../src/qwen-audio-supervisor');
+} = require('../src/voice/qwen-audio-supervisor');
 const { createQwenAudioRuntimeRoutes } = require('../src/routes/qwen-audio-runtime');
 
 function tempDir(prefix) {

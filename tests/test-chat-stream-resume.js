@@ -4,7 +4,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const stream = require('../src/chat-stream');
+const stream = require('../src/chat/chat-stream');
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-stream-resume-'));
 const argLog = path.join(tmp, 'args.jsonl');

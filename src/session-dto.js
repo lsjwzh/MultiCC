@@ -1,6 +1,6 @@
 'use strict';
 
-const { providerSelectionDto } = require('./auto-provider-config');
+const { providerSelectionDto } = require('./providers/auto-provider-config');
 
 // Public session contract. This boundary deliberately excludes filesystem and
 // native-CLI implementation details (cwd/worktreePath/cliSessionId), large

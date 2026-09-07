@@ -13,8 +13,8 @@ const {
   createRunnerOwnership,
   createChatHostRuntime,
 } = require('../src/chat');
-const { createTaskRunStore } = require('../src/task-run-store');
-const { createTaskRunHost } = require('../src/task-run-host');
+const { createTaskRunStore } = require('../src/task-run/store');
+const { createTaskRunHost } = require('../src/task-run/host');
 
 function tempStore(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-task-run-main-'));

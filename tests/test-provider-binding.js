@@ -7,7 +7,7 @@ const {
   createProviderBinding,
   isProviderBinding,
   toLegacyProviderView,
-} = require('../src/provider-binding');
+} = require('../src/providers/binding');
 
 test('ProviderBinding is narrow, immutable, and maps to a narrow legacy view', () => {
   const binding = createProviderBinding({

@@ -19,7 +19,7 @@
 //   { status:'not_configured' }      — no Zhipu provider configured (HTTP 404)
 //   { status:'unavailable', sites }  — configured but every fetch failed (HTTP 502)
 
-const providers = require('../providers');
+const providers = require('../providers/core');
 const { pollGlmMonitor, keyHash } = require('../usage-limit-poller');
 const { renderQuotaBar } = require('../quota/quota-bar-view');
 

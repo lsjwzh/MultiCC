@@ -6,7 +6,7 @@ const {
   primaryProviderCandidate,
   providerSelectionDto,
   validateProviderSelection,
-} = require('../src/auto-provider-config');
+} = require('../src/providers/auto-provider-config');
 
 function catalog() {
   const list = [

@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { reconcileTaskRunSlotLeases } = require('../src/task-run-recovery');
+const { reconcileTaskRunSlotLeases } = require('../src/task-run/recovery');
 
 function lease(overrides = {}) {
   return {

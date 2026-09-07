@@ -18,10 +18,10 @@ const test = require('node:test');
 const {
   GLOBAL_VOICE_GATEWAY_ID,
   createVoiceGatewayService,
-} = require('../src/voice-gateway');
-const { createQwenAudioSupervisor } = require('../src/qwen-audio-supervisor');
-const { VOICE_ROUTER_ID } = require('../src/voice-router');
-const { createVoiceHost } = require('../src/voice-host');
+} = require('../src/voice/gateway');
+const { createQwenAudioSupervisor } = require('../src/voice/qwen-audio-supervisor');
+const { VOICE_ROUTER_ID } = require('../src/voice/router');
+const { createVoiceHost } = require('../src/voice/host');
 
 function tempDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));

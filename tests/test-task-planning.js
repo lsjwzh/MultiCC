@@ -5,8 +5,8 @@ const test = require('node:test');
 const os = require('node:os');
 const fs = require('node:fs');
 const path = require('node:path');
-const core = require('../src/task-board');
-const planning = require('../src/task-planning');
+const core = require('../src/task-board/core');
+const planning = require('../src/task-board/planning');
 const { createTaskBoardRuntime } = require('../src/routes/task-board');
 const { mkRuntime } = require('./helpers/task-board-runtime');
 

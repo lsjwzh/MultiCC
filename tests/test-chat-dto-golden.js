@@ -2,7 +2,7 @@
 
 // M4-T4 · Shared DTO golden (docs/chat-view-unification-design.md §3-M4,
 // invariant I7's enforcement): the session transcript (src/routes/chat-history.js)
-// and the task ledger projection (src/task-transcript-repository.js) feed the
+// and the task ledger projection (src/task-run/transcript-repository.js) feed the
 // SAME front-end history pipeline (chat.js applyHistoryPlan). One renderer
 // means one contract — this suite pins both producers to a single golden so
 // renaming a field, reshaping a page, or changing cursor semantics on one side
@@ -19,7 +19,7 @@ const {
   DEFAULT_PAGE_SIZE,
   ledgerRowToChatMessage,
   paginateTranscript,
-} = require('../src/task-transcript-repository');
+} = require('../src/task-run/transcript-repository');
 
 // The default page sizes must agree: one controller requests "a page" without
 // knowing which producer sits behind the endpoint.

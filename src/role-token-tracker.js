@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const stateStore = require('./state-store');
+const stateStore = require('./state/store');
 const { validateUsageObserved } = require('./usage-observed');
 
 function emptyBucket() {
