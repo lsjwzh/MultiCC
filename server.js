@@ -1850,7 +1850,7 @@ tunnel.setFailureReporter((stage, category) => {
   reportHostControlFailure('tunnel', stage, category);
 });
 const chatStream = require('./src/chat-stream');
-const waitInjector = require('./src/wait-injector');
+const waitInjector = require('./src/wait/injector');
 const sessionDelivery = require('./src/session-delivery').createSessionDelivery({
   admit: (session, text, opts) => chatTurnEngine.admitChatWork(session, text, opts),
   log: message => console.log('[multicc/delivery]', message),

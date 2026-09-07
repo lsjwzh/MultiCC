@@ -14,7 +14,7 @@ const {
   OrchestrationSqliteError,
   createOrchestrationSqliteStore,
 } = require('../src/orchestration-sqlite-store');
-const { createWaitService } = require('../src/wait-service');
+const { createWaitService } = require('../src/wait/service');
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 

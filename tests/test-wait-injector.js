@@ -1,6 +1,6 @@
 'use strict';
 // Deterministic unit test for src/wait-injector.js — fake inject/exec, no claude.
-const wait = require('../src/wait-injector');
+const wait = require('../src/wait/injector');
 
 const injected = [];               // [{session, text}]
 let pollOutput = 'status: pending';  // exec returns this

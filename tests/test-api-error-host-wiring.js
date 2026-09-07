@@ -17,7 +17,7 @@ const classifyStateMachine = fs.readFileSync(
   path.join(root, 'src', 'classify', 'state-machine.js'), 'utf8');
 const apiErrorHost = fs.readFileSync(
   path.join(root, 'src', 'chat', 'api-error-host.js'), 'utf8');
-const waitInjector = fs.readFileSync(path.join(root, 'src', 'wait-injector.js'), 'utf8');
+const waitInjector = fs.readFileSync(path.join(root, 'src', 'wait', 'injector.js'), 'utf8');
 const sessionDelivery = fs.readFileSync(path.join(root, 'src', 'session-delivery.js'), 'utf8');
 
 test('Classify no longer owns an uncapped API retry or error-text pruning channel', () => {

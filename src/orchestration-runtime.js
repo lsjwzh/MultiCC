@@ -9,7 +9,7 @@ const crypto = require('crypto');
 const { createOrchestrationStore } = require('./orchestration-store');
 const { createOrchestrationSqliteStore } = require('./orchestration-sqlite-store');
 const { createOutbox } = require('./outbox');
-const { createWaitService } = require('./wait-service');
+const { createWaitService } = require('./wait/service');
 const { createSessionWorkScheduler } = require('./session-work-scheduler');
 const {
   TERMINAL_OPERATION_STATES,

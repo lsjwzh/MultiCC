@@ -7,7 +7,7 @@ const {
   hashSecret,
   normalizeJson,
   timingSafeHashEqual,
-} = require('./outbox');
+} = require('../outbox');
 
 function publicWait(wait) {
   const copy = JSON.parse(JSON.stringify(wait));
