@@ -129,7 +129,7 @@ class ChatHeader extends StatelessWidget {
                 cli: provider.cli,
                 onTap: () => openCliSwitchSheet(
                   context,
-                  sessionId: provider.sessionName,
+                  sessionId: provider.executionSessionName,
                 ),
               ),
             ],
@@ -180,7 +180,7 @@ class ChatHeader extends StatelessWidget {
               // Provider / Model / Effort unified chip.
               const SizedBox(width: 4),
               ModelChip(
-                sessionId: provider.sessionName,
+                sessionId: provider.executionSessionName,
                 cli: provider.cli,
                 settings: settings,
                 compact: narrow,
@@ -205,7 +205,7 @@ class ChatHeader extends StatelessWidget {
                 context,
                 MaterialPageRoute<void>(
                   builder: (_) => ShareMessagesScreen(
-                    sessionId: provider.sessionName,
+                    sessionId: provider.executionSessionName,
                     settings: settings,
                   ),
                 ),
@@ -214,7 +214,7 @@ class ChatHeader extends StatelessWidget {
                 context,
                 MaterialPageRoute<void>(
                   builder: (_) => FileBrowserScreen(
-                    sessionId: provider.sessionName,
+                    sessionId: provider.executionSessionName,
                     settings: settings,
                   ),
                 ),
@@ -223,12 +223,12 @@ class ChatHeader extends StatelessWidget {
                 context,
                 fetchLog: (all) => SessionService(settings: settings)
                     .fetchGitLog(
-                      sessionId: provider.sessionName,
+                      sessionId: provider.executionSessionName,
                       allBranches: all,
                     ),
                 fetchDiff: (hash) => SessionService(settings: settings)
                     .fetchGitCommitDiff(
-                      sessionId: provider.sessionName,
+                      sessionId: provider.executionSessionName,
                       hash: hash,
                     ),
               ),
@@ -298,7 +298,7 @@ class ChatHeader extends StatelessWidget {
     BuildContext context,
     ChatProvider provider,
   ) async {
-    final sid = provider.sessionName;
+    final sid = provider.executionSessionName;
     if (sid.isEmpty) return;
     final messenger = ScaffoldMessenger.of(context);
     final confirmed = await showDialog<bool>(

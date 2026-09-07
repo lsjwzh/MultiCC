@@ -1733,6 +1733,8 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet>
   /// calling this, so the fleet panel is the top layer and its context/mgr are
   /// still live.
   void _openSessionById(String sessionId, {String? focusMessageId}) {
+    // A task selection may have moved this shell while its cached chat stayed open.
+    widget.mgr.allProviders[sessionId]?.reconnect();
     Session? match;
     for (final s in widget.mgr.sessions) {
       if (s.id == sessionId) {

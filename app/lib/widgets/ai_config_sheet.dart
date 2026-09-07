@@ -1071,34 +1071,17 @@ Future<void> openAIConfigSheet(
   required String sessionId,
 }) async {
   final mgr = context.read<SessionManager>();
-  Session? found;
-  for (final x in mgr.sessions) {
-    if (x.id == sessionId) {
-      found = x;
-      break;
+  late SessionCliConfig runtime;
+  try {
+    // Shell executions are intentionally absent from the Fleet list.
+    runtime = await mgr.fetchSessionCliConfig(sessionId);
+  } catch (_) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(t('sessionNotLoaded'))));
     }
-  }
-  if (found == null) {
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(t('sessionNotLoaded'))));
     return;
   }
-  final sess = found;
-  var runtime = SessionCliConfig(
-    cli: sess.cli,
-    provider: sess.provider,
-    providerSelection: sess.providerSelection,
-    model: sess.model,
-    effectiveModel: sess.effectiveModel,
-    effort: sess.effort,
-    effectiveEffort: sess.effectiveEffort,
-    agent: sess.agent,
-    subagent: sess.subagent,
-  );
-  try {
-    runtime = await mgr.fetchSessionCliConfig(sess.id);
-  } catch (_) {}
   // Qoder owns no provider pool; its model list comes from the host CLI's
   // catalog instead. Warm it before the sheet builds so the dropdown opens on
   // the real models rather than the routing-tier fallback. Claude's list comes
@@ -1153,7 +1136,7 @@ Future<void> openAIConfigSheet(
   if (picked == null) return;
   try {
     await mgr.updateSessionAIConfig(
-      sess.id,
+      sessionId,
       provider: picked.provider,
       providerSelection: picked.providerSelection,
       model: picked.model,

@@ -7,6 +7,7 @@ import '../models/message.dart';
 import '../providers/session_manager.dart';
 import '../providers/chat_provider.dart';
 import '../services/manage_service.dart';
+import '../services/session_service.dart';
 import '../services/codex_models_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
@@ -36,6 +37,7 @@ class ModelChip extends StatefulWidget {
 class ModelChipState extends State<ModelChip> {
   List<Map<String, dynamic>> _providers = [];
   int _loadEpoch = 0;
+  SessionCliConfig? _runtime;
 
   @override
   void initState() {
@@ -46,7 +48,8 @@ class ModelChipState extends State<ModelChip> {
   @override
   void didUpdateWidget(covariant ModelChip oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.cli != widget.cli) {
+    if (oldWidget.cli != widget.cli || oldWidget.sessionId != widget.sessionId) {
+      _runtime = null;
       _providers = [];
       _load();
     }
@@ -56,6 +59,11 @@ class ModelChipState extends State<ModelChip> {
     final epoch = ++_loadEpoch;
     final selectedCli = cli ?? widget.cli;
     final appType = selectedCli.appType;
+    try {
+      final runtime = await SessionService(settings: widget.settings).fetchSessionCliConfig(widget.sessionId);
+      if (!mounted || epoch != _loadEpoch) return;
+      setState(() => _runtime = runtime);
+    } catch (_) {}
     try {
       if (selectedCli == SessionCli.codex) {
         await CodexModelsService(
@@ -99,7 +107,7 @@ class ModelChipState extends State<ModelChip> {
   /// Effective model label: prefer the server-resolved effectiveModel, and for
   /// alias-mapped relays show the provider's real model name (e.g. GLM5.2)
   /// instead of the claude-* alias.
-  String _modelLabel(Session? s) {
+  String _modelLabel(SessionCliConfig? s) {
     if (s == null) return '默认';
     String? model;
     if (s.effectiveModel != null && s.effectiveModel!.isNotEmpty) {
@@ -123,7 +131,7 @@ class ModelChipState extends State<ModelChip> {
     return modelDisplayName(s.cli, model, aliasMap: _aliasMapFor(s.provider));
   }
 
-  String _effortLabel(Session? s) {
+  String _effortLabel(SessionCliConfig? s) {
     if (s == null) return 'medium';
     return effortShortNameForCli(s.cli, s.effectiveEffort ?? s.effort);
   }
@@ -139,7 +147,11 @@ class ModelChipState extends State<ModelChip> {
         break;
       }
     }
-    final selection = live.providerSelection ?? s?.providerSelection;
+    final runtime = _runtime ?? (s == null ? null : SessionCliConfig(
+      cli: s.cli, provider: s.provider, providerSelection: s.providerSelection,
+      model: s.model, effectiveModel: s.effectiveModel,
+      effort: s.effort, effectiveEffort: s.effectiveEffort));
+    final selection = live.providerSelection ?? runtime?.providerSelection;
     final parts = <String>[];
     if (selection != null) {
       parts.add(
@@ -147,18 +159,18 @@ class ModelChipState extends State<ModelChip> {
       );
       final actualModel = live.activeProviderModel;
       if (actualModel != null && actualModel.isNotEmpty) {
-        parts.add(modelDisplayName(s?.cli ?? widget.cli, actualModel));
+        parts.add(modelDisplayName(runtime?.cli ?? widget.cli, actualModel));
       }
     } else {
-      parts.addAll([_providerLabel(s?.provider), _modelLabel(s)]);
+      parts.addAll([_providerLabel(runtime?.provider), _modelLabel(runtime)]);
     }
-    if (widget.cli.supportsEffort) parts.add(_effortLabel(s));
+    if (widget.cli.supportsEffort) parts.add(_effortLabel(runtime));
     final label = parts.join(' | ');
     return Tooltip(
       message:
           'Provider / Model${widget.cli.supportsEffort ? ' / ${widget.cli.effortFieldLabel}' : ''}',
       child: GestureDetector(
-        onTap: () => _switchAIConfig(context, mgr, s),
+        onTap: () => _switchAIConfig(context, mgr),
         child: Container(
           padding: EdgeInsets.symmetric(
             horizontal: widget.compact ? 6 : 8,
@@ -204,28 +216,18 @@ class ModelChipState extends State<ModelChip> {
   Future<void> _switchAIConfig(
     BuildContext context,
     SessionManager mgr,
-    Session? s,
   ) async {
-    if (s == null) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(t('sessionNotLoaded'))));
+    final target = widget.sessionId;
+    late SessionCliConfig runtime;
+    try {
+      runtime = await mgr.fetchSessionCliConfig(target);
+    } catch (_) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(t('sessionNotLoaded'))));
+      }
       return;
     }
-    var runtime = SessionCliConfig(
-      cli: s.cli,
-      provider: s.provider,
-      providerSelection: s.providerSelection,
-      model: s.model,
-      effectiveModel: s.effectiveModel,
-      effort: s.effort,
-      effectiveEffort: s.effectiveEffort,
-      agent: s.agent,
-      subagent: s.subagent,
-    );
-    try {
-      runtime = await mgr.fetchSessionCliConfig(s.id);
-    } catch (_) {}
     await _load(cli: runtime.cli, refreshCodex: true);
     if (!context.mounted) return;
     final messenger = ScaffoldMessenger.of(context);
@@ -251,7 +253,7 @@ class ModelChipState extends State<ModelChip> {
     if (picked == null) return;
     try {
       await mgr.updateSessionAIConfig(
-        s.id,
+        target,
         provider: picked.provider,
         providerSelection: picked.providerSelection,
         model: picked.model,
@@ -260,6 +262,7 @@ class ModelChipState extends State<ModelChip> {
         agent: picked.agent,
         clearSubagent: picked.subagent == null,
       );
+      if (mounted && widget.sessionId == target) await _load();
       final summary = [picked.providerLabel, picked.modelLabel];
       if (picked.effortLabel.isNotEmpty) summary.add(picked.effortLabel);
       messenger.showSnackBar(
