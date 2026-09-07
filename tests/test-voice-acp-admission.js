@@ -22,7 +22,7 @@ const test = require('node:test');
 const { createGatewayHost } = require('../src/dispatch/gateway-host');
 const { VOICE_ROUTER_ID } = require('../src/voice-router');
 const { createVoiceLaunchRegistry } = require('../src/voice-launch');
-const { resolveDirectoryCommander } = require('../src/task-board');
+const { resolveDirectoryCommander } = require('../src/task-board/core');
 const {
   ADMISSION_TIMEOUT_MAX_MS,
   ADMISSION_TIMEOUT_MIN_MS,
