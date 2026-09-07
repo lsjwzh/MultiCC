@@ -69,7 +69,7 @@ function cleanup() {
     env: {
       ...process.env,
       PORT: String(PORT), ACCESS_TOKEN: TOKEN, MULTICC_DATA_DIR: dataRoot,
-      QODER_CMD: '/usr/bin/true',
+      QODER_CMD: '/usr/bin/true', OPENCODE_CMD: '/usr/bin/true',
     },
     stdio: ['ignore', 'ignore', 'pipe'],
   });

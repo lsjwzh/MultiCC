@@ -52,6 +52,7 @@ const services = require('./src/services');
 const state = require('./src/state/container');
 const artifacts = require('./src/artifacts'), docsRegistry = require('./src/docs-registry');
 const providers = require('./src/providers/core');
+providers.enableUnifiedOfficialProviders();
 const { executeAuxHttp } = require('./src/aux-http');
 const tokenGlobal = require('./src/token-global');
 const { createRoleTokenTracker } = require('./src/role-token-tracker');
@@ -755,6 +756,7 @@ const backfillReportedModels = reportedModelRuntime.backfill;
 // records keep their active top-level fields for backward compatibility; the
 // map is hydrated from those fields once and then maintained on every switch.
 for (const session of persistedSessions.values()) {
+  if (require('./src/providers/official-catalog').normalizeOfficialSessionReferences(session, providers.normalizeOfficialProviderId)) _state.needsSave = true;
   if (ensureCliStates(session)) _state.needsSave = true;
 }
 
@@ -1549,6 +1551,8 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
     if (!v.ok) return { ok: false, error: 'invalid provider' }; if (autoSelection.value && !autoSelection.value.candidates.some(candidate => candidate.enabled && candidate.providerId === v.value)) return { ok: false, error: 'Auto Provider fallback must be an enabled candidate' };
     providerId = v.value;
   }
+  if (loginFlow) providerId = null;
+  else providerId = providers.normalizeOfficialProviderId(cli, providerId);
   const sid = id || allocateSessionId(dir, cli, kind);
   if (persistedSessions.has(sid)) return { ok: true, id: sid, session: persistedSessions.get(sid), reused: true };
 

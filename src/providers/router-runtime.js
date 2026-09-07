@@ -125,10 +125,13 @@ function createProviderRouterRuntime(options = {}) {
 
   function createBinding(session, overrides = {}) {
     const value = session && typeof session === 'object' ? session : {};
+    const cli = overrides.cli || value.cli || 'claude';
+    const requestedProvider = overrides.providerId !== undefined ? overrides.providerId : value.provider;
+    const providerId = !value.loginFlow && typeof providers.normalizeOfficialProviderId === 'function'
+      ? providers.normalizeOfficialProviderId(cli, requestedProvider) : requestedProvider;
     return port.createBinding({
       sessionId: overrides.sessionId || value.id || value.sessionId,
-      cli: overrides.cli || value.cli || 'claude',
-      providerId: overrides.providerId !== undefined ? overrides.providerId : value.provider,
+      cli, providerId,
       model: overrides.model !== undefined ? overrides.model : value.model,
       roleKind: overrides.roleKind || 'main',
       ...(overrides.agentRole ? { agentRole: overrides.agentRole } : {}),

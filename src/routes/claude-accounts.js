@@ -12,10 +12,10 @@
 // claude-account-credentials.js).
 //
 //   GET    /api/claude/accounts                    list accounts (+ providerId)
-//   POST   /api/claude/accounts                    {label} → account + provider + {oauthUrl}
+//   POST   /api/claude/accounts                    {label} → account + {oauthUrl}
 //   GET    /api/claude/accounts/:id/login-status   pending | complete | error | idle
 //   POST   /api/claude/accounts/:id/relogin        restart the browser flow
-//   DELETE /api/claude/accounts/:id                remove credential file + provider
+//   DELETE /api/claude/accounts/:id                remove an inactive credential file
 //   GET    /api/claude/accounts/:id/quota          per-account subscription usage
 
 const {
@@ -54,10 +54,28 @@ function mountClaudeAccountRoutes(app, deps) {
     return null;
   }
 
+  const unified = typeof providers.getOfficialAccountSelection === 'function' && providers.getOfficialAccountSelection('claude') !== null;
+  const activeId = () => unified ? providers.getOfficialAccountSelection('claude') : null;
+
+  app.post('/api/claude/accounts/:id/activate', (req, res) => {
+    if (!unified) return res.status(409).json({ ok: false, error: '统一官方账号未启用' });
+    const id = String(req.params.id || '');
+    if (id !== 'global') {
+      const account = accounts.listClaudeAccounts().find(a => a.id === id);
+      if (!account) return res.status(404).json({ ok: false, error: '账号不存在' });
+      if (!account.loggedIn) return res.status(409).json({ ok: false, error: '请先完成该账号的登录' });
+    }
+    try {
+      const provider = providers.selectOfficialAccount('claude', id);
+      res.json({ ok: true, activeAccountId: id, provider });
+    } catch (_) { res.status(500).json({ ok: false, error: '账号切换保存失败' }); }
+  });
+
   function accountDto(account) {
-    const provider = providerForAccount(account.id);
+    const provider = unified ? providers.getProvider('claude', 'claude-official') : providerForAccount(account.id);
     return {
       ...account,
+      active: activeId() === account.id,
       providerId: provider ? provider.id : null,
       providerName: provider ? provider.name : null,
       credential: credentials.status(account.id),
@@ -115,7 +133,7 @@ function mountClaudeAccountRoutes(app, deps) {
   }
 
   app.get('/api/claude/accounts', (req, res) => {
-    res.json({ ok: true, accounts: accounts.listClaudeAccounts().map(accountDto) });
+    res.json({ ok: true, activeAccountId: activeId(), accounts: [...(unified ? [{ id: 'global', label: '本机 CLI 登录账号', global: true, active: activeId() === 'global' }] : []), ...accounts.listClaudeAccounts().map(accountDto)] });
   });
 
   app.post('/api/claude/accounts', async (req, res) => {
@@ -123,7 +141,7 @@ function mountClaudeAccountRoutes(app, deps) {
     const account = accounts.createClaudeAccount({ label });
     let providerId = null;
     try {
-      const created = providers.createProvider({
+      const created = unified ? providers.getProvider('claude', 'claude-official') : providers.createProvider({
         appType: 'claude',
         name: `Claude 官方 · ${label || account.id.slice(0, 6)}`,
         // No baseUrl/token: the cpr official branch resolves the credential
@@ -157,12 +175,13 @@ function mountClaudeAccountRoutes(app, deps) {
 
   app.delete('/api/claude/accounts/:id', (req, res) => {
     const accountId = String(req.params.id || '');
+    if (unified && (accountId === 'global' || activeId() === accountId)) return res.status(409).json({ ok: false, error: '请先切换到其他账号再删除；本机登录入口不可删除' });
     if (pending && pending.accountId === accountId) {
       pending.listener.cancel();
       pending = null;
     }
     loginStates.delete(accountId);
-    const provider = providerForAccount(accountId);
+    const provider = unified ? null : providerForAccount(accountId);
     accounts.deleteClaudeAccount(accountId);
     if (provider) providers.deleteProvider('claude', provider.id);
     res.json({ ok: true, deletedProviderId: provider ? provider.id : null });

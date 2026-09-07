@@ -218,6 +218,10 @@ function createProviderRoutes(rawDeps) {
     // Missing or invalid legacy defaults keep the established null defaults.
   }
 
+  if (typeof deps.providers.normalizeOfficialProviderId === 'function') {
+    for (const cli of ['claude', 'codex']) providerDefaults[cli] = deps.providers.normalizeOfficialProviderId(cli, providerDefaults[cli]);
+  }
+
   function saveProviderDefaults() {
     try {
       deps.atomicWriteJson(deps.providerDefaultsFile, providerDefaults);
@@ -227,6 +231,7 @@ function createProviderRoutes(rawDeps) {
   }
 
   function validProviderId(cli, id) {
+    if (typeof deps.providers.normalizeOfficialProviderId === 'function') id = deps.providers.normalizeOfficialProviderId(cli, id);
     if (id == null || id === '') return { ok: true, value: null };
     // Qoder CN remains vendor-managed. OpenCode and ZCode both support the two
     // MultiCC pools, so their provider ids are looked up globally and then

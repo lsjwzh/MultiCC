@@ -59,6 +59,37 @@ function resolveCcDb() {
 // multicc's own store, in the project root (one level up from src/).
 const RUNTIME_PATHS = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
 const STORE_FILE = RUNTIME_PATHS.providersFile;
+let officialCatalog = null;
+function enableUnifiedOfficialProviders() {
+  if (officialCatalog) return;
+  const selectionFile = path.join(RUNTIME_PATHS.root, 'official-provider-selection.json');
+  if (!fs.existsSync(selectionFile)) {
+    let defaults = {};
+    try { defaults = JSON.parse(fs.readFileSync(RUNTIME_PATHS.providerDefaultsFile, 'utf8')); }
+    catch (error) { if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error; }
+    const records = loadStore();
+    const selection = {};
+    for (const type of ['claude', 'codex']) {
+      const previous = records.find(p => p.appType === type && p.id === defaults[type]);
+      selection[type] = require('../official-accounts').officialAccountIdFromProvider(previous) || 'global';
+    }
+    atomicWriteJson(selectionFile, selection);
+  }
+  officialCatalog = require('./official-catalog').createOfficialCatalog({
+    readRecords: loadStore,
+    readSelection() {
+      try { return JSON.parse(fs.readFileSync(selectionFile, 'utf8')); }
+      catch (error) { if (error.code === 'ENOENT') return {}; throw error; }
+    },
+    writeSelection: selection => atomicWriteJson(selectionFile, selection),
+  });
+}
+function normalizeOfficialProviderId(type, id) { return officialCatalog ? officialCatalog.normalize(type, id) : id; }
+function getOfficialAccountSelection(type) { return officialCatalog ? officialCatalog.active(type) : null; }
+function selectOfficialAccount(type, id) {
+  if (!officialCatalog) throw new Error('unified official providers not enabled');
+  return summarize(officialCatalog.select(type, id));
+}
 // Per-provider CODEX_HOME dirs materialized on demand so codex sessions can
 // point at different auth/config without clobbering the global ~/.codex.
 const CODEX_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-homes');
@@ -611,6 +642,8 @@ function summarize(p, opts = {}) {
     // Optional explicit quota classification override (frontend quotaKindForProvider
     // honors it; 'none' disables the badge) for proxy-hosted providers whose
     // hostname reveals nothing about the vendor.
+    builtinOfficial: p.builtinOfficial === true,
+    activeAccountId: p.activeAccountId || null,
     quotaKind: p.quotaKind || null,
     source: p.source || 'local', // 'local' | 'ccswitch'
     baseUrl,
@@ -699,11 +732,12 @@ function resolveAuxHttpTarget(protocol, providerId, { port, claudeOfficialViaPro
 }
 
 function listProviders(appType) {
-  const list = loadStore().filter(p => !appType || p.appType === appType);
+  const list = officialCatalog ? officialCatalog.list(appType) : loadStore().filter(p => !appType || p.appType === appType);
   return list.map(summarize);
 }
 
 function getProvider(appType, id) {
+  if (officialCatalog) return officialCatalog.get(appType, id);
   // id is globally unique, so when appType is omitted match by id alone.
   // (Passing appType === undefined previously matched nothing, since every
   // stored provider has a concrete appType.)
@@ -805,12 +839,14 @@ function createProvider({ appType, name, baseUrl, authToken, model, models, apiF
     createdAt: Date.now(),
   };
   const list = loadStore();
+  if (officialCatalog && require('./official-catalog').isOfficial(p)) return summarize(officialCatalog.provider(appType));
   list.push(p);
   saveStore(list);
   return { id: p.id, appType, name: p.name };
 }
 
 function updateProvider(appType, id, { name, baseUrl, authToken, model, models, apiFormat, useChatResponsesProxy, settingsConfig, aliasMap }) {
+  if (officialCatalog && officialCatalog.normalize(appType, id) === `${appType}-official`) throw new Error('请在官方账号中管理登录和切换账号');
   const list = loadStore();
   const p = list.find(x => x.appType === appType && x.id === id);
   if (!p) throw new Error('provider not found');
@@ -865,6 +901,7 @@ function updateProvider(appType, id, { name, baseUrl, authToken, model, models, 
 }
 
 function deleteProvider(appType, id) {
+  if (officialCatalog && officialCatalog.normalize(appType, id) === `${appType}-official`) throw new Error('官方 Provider 为内置入口，请在官方账号中管理账号');
   const list = loadStore();
   const next = list.filter(p => !(p.appType === appType && p.id === id));
   if (next.length === list.length) return false;
@@ -1785,6 +1822,10 @@ async function probeRelayModels(baseEnv, candidates, cliCmd) {
 // Keychain OAuth token to api.anthropic.com, which is what lets an official
 // session route its subagents to cheaper providers. See cli-provider-router.
 function applyClaudeProxyEnv(env, options) {
+  if (officialCatalog && options?.providerId && getProvider('claude', options.providerId)?.builtinOfficial) {
+    if (env) env.CLAUDE_CODE_OAUTH_TOKEN = '';
+    options = { ...options, enabled: true, officialOAuth: true, officialProviderId: options.providerId };
+  }
   return cliProviderRouter.applyClaudeProxyEnv(env, { ...options, getProvider });
 }
 
@@ -1911,6 +1952,7 @@ function applyCodexProxyConfig(env, options) {
 }
 
 module.exports = {
+  enableUnifiedOfficialProviders, normalizeOfficialProviderId, getOfficialAccountSelection, selectOfficialAccount,
   ccSwitchAvailable,
   getCcSwitchStatus,
   appTypeForCli,
