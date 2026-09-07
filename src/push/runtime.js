@@ -1,9 +1,9 @@
 'use strict';
 
-const { sanitizePublicText } = require('./http/public-safety');
-const { isSettledLetter } = require('./classify/vocab');
-const { apiErrorSignaturesQuoted } = require('./chat/api-error-policy');
-const { BusinessPushRequestError } = require('./business-push');
+const { sanitizePublicText } = require('../http/public-safety');
+const { isSettledLetter } = require('../classify/vocab');
+const { apiErrorSignaturesQuoted } = require('../chat/api-error-policy');
+const { BusinessPushRequestError } = require('./business');
 
 const PUSH_ANSI_RE = /\x1b(?:\[[0-9;?]*[a-zA-Z~]|\][^\x07]*(?:\x07|\x1b\\)|[()][AB012]|.)/g;
 const DEFAULT_IDLE_MS = 6000;

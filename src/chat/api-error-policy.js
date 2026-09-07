@@ -129,7 +129,7 @@ function isErrorOnlyText(value) {
 
 // Canonical "what an API fault looks like in text" signature list. Every
 // surface that needs to DESCRIBE the vocabulary (classify prompt E-state
-// definition in src/classify/vocab.js, push prompt in src/push-runtime.js)
+// definition in src/classify/vocab.js, push prompt in src/push/runtime.js)
 // renders from this single list instead of hand-maintaining a copy that drifts
 // away from ERROR_ONLY_PREFIX_RE / textFallbackCategory above.
 const API_ERROR_SIGNATURES = Object.freeze([

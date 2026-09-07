@@ -3,8 +3,8 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { BusinessPushRequestError, browserPayloadOf } = require('../src/business-push');
-const { createPushRuntime, redactClassifierTail, stripAnsi } = require('../src/push-runtime');
+const { BusinessPushRequestError, browserPayloadOf } = require('../src/push/business');
+const { createPushRuntime, redactClassifierTail, stripAnsi } = require('../src/push/runtime');
 
 function createApp() {
   const routes = new Map();

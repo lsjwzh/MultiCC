@@ -11,7 +11,7 @@ const {
   BusinessPushRequestError,
   createBusinessPushService,
   validateBusinessPushRequest,
-} = require('../src/business-push');
+} = require('../src/push/business');
 
 function validRequest(overrides = {}) {
   return {

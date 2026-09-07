@@ -2,8 +2,8 @@
 
 const crypto = require('crypto');
 const fs = require('fs');
-const { sanitizePublicText } = require('./http/public-safety');
-const { atomicWriteJson } = require('./runtime-security');
+const { sanitizePublicText } = require('../http/public-safety');
+const { atomicWriteJson } = require('../runtime-security');
 
 const RECEIPT_VERSION = 1;
 const DEFAULT_RECEIPT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
