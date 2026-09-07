@@ -315,7 +315,7 @@ function finishResponseObservation(observer, context) {
 
 function createCodexOfficialRelayHandler(options = {}) {
   const getProvider = options.getProvider;
-  const fetchImpl = options.fetch || globalThis.fetch;
+  const fetchImpl = options.fetch || require('../network/official-fetch').officialFetch;
   // Credential resolution is per-PROVIDER: a provider record marked with
   // settingsConfig.officialAccount.id borrows that account's auth.json (the
   // multicc-owned credential store) instead of the shared ~/.codex/auth.json.
@@ -443,7 +443,7 @@ function createCodexOfficialRelayHandler(options = {}) {
     } catch (error) {
       if (clientClosed) return undefined;
       const detail = publicTransportError(error, { ...errorOptions, fallback: 'Codex Official OAuth upstream is unreachable' });
-      diagnostic(options.logger, 'codex_official_upstream_connect_failed', { providerId, error: detail });
+      diagnostic(options.logger, 'codex_official_upstream_connect_failed', { providerId, error: detail, networkMode: error.multiccProxyMode || null });
       reportTerminal(context, null, { status: 'error', errorCode: 'UPSTREAM_CONNECT_FAILED' });
       return responseJson(res, 502, {
         error: detail,
