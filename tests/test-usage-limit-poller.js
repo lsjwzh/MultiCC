@@ -273,3 +273,105 @@ test('poller dedups codex OAuth by keyHashSeed across sessions → one fetch', a
     },
   );
 });
+
+// ── 借道余量透传（relay-quota 适配器）────────────────────────────────────────
+
+const RELAY_TARGET = {
+  providerId: 'glm-relay', appType: 'claude',
+  relayUrl: 'https://relay.example:3000/claude-proxy/glm/remote',
+  apiKey: 'mcr1.abcdefghijklmnop.secret-token-1',
+  strategy: 'relay-quota',
+};
+
+test('relay adapter POSTs the lender quota endpoint with the relay bearer', async () => {
+  await withFetch(
+    (url, opts) => {
+      assert.strictEqual(url, 'https://relay.example:3000/claude-proxy/glm/remote/quota');
+      assert.strictEqual(opts.method, 'POST');
+      assert.strictEqual(opts.headers.Authorization, 'Bearer mcr1.abcdefghijklmnop.secret-token-1');
+      return okJson({ ok: true, dto: { kind: 'window', provider: 'glm', rateLimitType: 'five_hour', status: 'allowed', utilization: 0.42, resetsAt: null } });
+    },
+    async () => {
+      const dto = await poller.pollRelayQuota(RELAY_TARGET, 0);
+      assert.strictEqual(dto.kind, 'window');
+      assert.strictEqual(dto.provider, 'glm');
+      assert.ok(Math.abs(dto.utilization - 0.42) < 1e-9);
+    },
+  );
+});
+
+test('relay adapter passes a balance DTO through unchanged', async () => {
+  await withFetch(
+    () => okJson({ ok: true, dto: { kind: 'balance', available: true, currency: 'CNY', total: 12.5, granted: 0, toppedUp: 12.5 } }),
+    async () => {
+      const dto = await poller.pollRelayQuota(RELAY_TARGET, 0);
+      assert.strictEqual(dto.kind, 'balance');
+      assert.strictEqual(dto.total, 12.5);
+    },
+  );
+});
+
+test('relay adapter: lender failure / bad shape / bad kind / degenerate target → null', async () => {
+  const nullCases = [
+    [() => ({ ok: false, status: 200, json: async () => ({ ok: false, reason: 'fetch_failed' }) }), 'lender reported failure'],
+    [() => ({ ok: true, status: 200, json: async () => ({ ok: true }) }), 'missing dto'],
+    [() => ({ ok: true, status: 200, json: async () => ({ ok: true, dto: { kind: 'surprise' } }) }), 'unknown dto kind'],
+    [() => ({ ok: true, status: 200, json: async () => ({ ok: true, dto: { kind: 'window', utilization: 'high' } }) }), 'non-numeric utilization'],
+    [() => ({ ok: false, status: 503, json: async () => ({}) }), 'HTTP 503 from lender'],
+  ];
+  for (const [respond, label] of nullCases) {
+    await withFetch(
+      () => respond(),
+      async () => {
+        assert.strictEqual(await poller.pollRelayQuota(RELAY_TARGET, 0), null, label);
+      },
+    );
+  }
+  // Degenerate targets never fetch.
+  await withFetch(
+    () => { throw new Error('should not fetch'); },
+    async (calls) => {
+      assert.strictEqual(await poller.pollRelayQuota({ ...RELAY_TARGET, relayUrl: '' }, 0), null);
+      assert.strictEqual(await poller.pollRelayQuota({ ...RELAY_TARGET, relayUrl: 'ftp://relay.example/claude-proxy/glm/remote' }, 0), null);
+      assert.strictEqual(await poller.pollRelayQuota({ ...RELAY_TARGET, apiKey: '' }, 0), null);
+      assert.strictEqual(calls.length, 0);
+    },
+  );
+});
+
+test('relay adapter tolerates a trailing slash on the relay URL', async () => {
+  await withFetch(
+    (url) => {
+      assert.strictEqual(url, 'http://192.168.1.9:3000/codex-proxy/cx/quota');
+      return okJson({ ok: true, dto: { kind: 'window', provider: 'codex', rateLimitType: 'weekly', status: 'allowed', utilization: 0.1, resetsAt: 5 } });
+    },
+    async () => {
+      const dto = await poller.pollRelayQuota({
+        ...RELAY_TARGET, relayUrl: 'http://192.168.1.9:3000/codex-proxy/cx/', strategy: 'relay-quota',
+      }, 0);
+      assert.strictEqual(dto.rateLimitType, 'weekly');
+    },
+  );
+});
+
+test('poller runs the relay strategy through the normal TTL/dedup machinery', async () => {
+  await withFetch(
+    () => okJson({ ok: true, dto: { kind: 'window', provider: 'glm', rateLimitType: 'five_hour', status: 'allowed', utilization: 0.5, resetsAt: null } }),
+    async (calls) => {
+      const seen = [];
+      const p = poller.createUsageLimitPoller({
+        resolveTarget: () => RELAY_TARGET,
+        broadcast: (sid, dto) => seen.push({ sid, dto }),
+        now: () => 0,
+      });
+      await Promise.all([p.onTurnComplete('s-a'), p.onTurnComplete('s-b')]);
+      assert.strictEqual(calls.length, 1, 'two sessions share one relay poll');
+      assert.strictEqual(seen.length, 2);
+      assert.strictEqual(seen[0].dto.provider, 'glm');
+      // Inside the TTL a later turn replays the cache without refetching.
+      await p.onTurnComplete('s-c');
+      assert.strictEqual(calls.length, 1);
+      assert.strictEqual(seen.length, 3);
+    },
+  );
+});

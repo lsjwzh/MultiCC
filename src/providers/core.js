@@ -31,6 +31,7 @@ const { createCodexAttemptHome } = require('../codex/attempt-home');
 const { createCodexSessionHomeRuntime } = require('../codex/session-home');
 const { isOfficialCodexOAuthProvider } = require('../codex/official-relay');
 const { codexAccountAuthFilePath } = require('../official-accounts');
+const { relayRouteFromBaseUrl } = require('./relay-share-store');
 const {
   assertCodexProxyConfigApplied,
   codexProxyConfigRequired: evaluateCodexProxyConfigRequired,
@@ -758,6 +759,7 @@ function getProviderSummary(appType, id) {
 //   strategy 'glm-monitor'      → open.bigmodel.cn / z.ai window-utilization endpoint
 //   strategy 'deepseek-balance' → api.deepseek.com prepaid money balance endpoint
 //   strategy 'kimi-balance'     → api.moonshot.cn prepaid money balance endpoint
+//   strategy 'relay-quota'      → 借道 provider：转发给出借方的 relay quota 端点
 //
 // host is the ORIGINAL upstream host (not our local proxy), so a session routed
 // through the chat-to-responses proxy still resolves to its real vendor.
@@ -801,6 +803,18 @@ function getProviderLimitTarget(appType, id) {
   if (!baseUrl || !apiKey) return null;
   let host = '';
   try { host = new URL(baseUrl).host.toLowerCase(); } catch (_) { return null; }
+  // 借道 provider（baseUrl 指向另一台 multicc 的中转端点，识别见
+  // relay-share-store relayRouteFromBaseUrl）：本机没有上游厂商凭据，余量改为
+  // 询问出借方——strategy 'relay-quota'，适配器 POST 到出借方的 relay quota
+  // 端点，真实查询发生在出借方本机。loopback 的 /claude-proxy、/codex-proxy
+  // 是本机 CPR 自己的管线，relayRouteFromBaseUrl 已将其排除，不会走到这里。
+  const relayRoute = relayRouteFromBaseUrl(baseUrl);
+  if (relayRoute) {
+    return {
+      providerId: id, appType: provider.appType,
+      relayUrl: relayRoute.url, apiKey, strategy: 'relay-quota',
+    };
+  }
   let strategy = null;
   if (host === 'api.deepseek.com') strategy = 'deepseek-balance';
   else if (host === 'open.bigmodel.cn' || host === 'api.z.ai' || host.endsWith('.bigmodel.cn')) {

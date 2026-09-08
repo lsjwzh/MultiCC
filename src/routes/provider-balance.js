@@ -15,6 +15,7 @@ const {
   pollGlmMonitor,
   pollDeepseekBalance,
   pollCodexUsage,
+  pollRelayQuota,
 } = require('../usage-limit-poller');
 const { fetchKimiBalance } = require('./kimi-quota');
 
@@ -38,6 +39,8 @@ const DEFAULT_ADAPTERS = Object.freeze({
   'deepseek-balance': pollDeepseekBalance,
   'codex-oauth-usage': pollCodexUsage,
   'kimi-balance': pollKimiBalance,
+  // 借道 provider：本机没有厂商凭据，转发给出借方的 relay quota 端点。
+  'relay-quota': pollRelayQuota,
 });
 
 function createProviderBalanceRuntime(options = {}) {
@@ -116,9 +119,66 @@ function mountProviderBalanceRoutes(app, deps = {}) {
   return runtime;
 }
 
+// ── 借道余量查询端点（出借方）──────────────────────────────────────────────
+//
+//   GET/POST /claude-proxy/:id/remote/quota
+//   GET/POST /codex-proxy/:id/quota
+//
+// 供导入借道 provider 的另一台 multicc 透传调用（对端适配器见 usage-limit-poller
+// 的 pollRelayQuota）。鉴权不在这一层：请求先经过 auth 中间件的借道凭据校验
+// （x-api-key / Bearer mcr1.*，src/routes/auth.js isProxyRelayRequest），到达
+// 这里即代表这条 share 对该 provider 有效且未撤销，访问计数也已 +1。
+//
+// 语义：每次收到请求都触发一次对厂商的真实余量查询（queryOne 直达适配器，
+// 不经过任何 TTL 缓存），异步等待查询完成后返回最新 DTO；查询失败返回
+// ok:false，绝不伪造。并发去重：同一 provider 的并发查询共享一次真实请求，
+// 避免多台借用方同时刷新时重复打厂商端点。
+//
+// 挂载顺序（见 server.js）：必须在 mountProtocolProxies 之前注册——协议代理
+// 同样挂在这些路径前缀下，后注册的精确路由可能被遮蔽。
+const RELAY_QUOTA_ROUTES = Object.freeze([
+  { appType: 'claude', path: '/claude-proxy/:id/remote/quota' },
+  { appType: 'codex', path: '/codex-proxy/:id/quota' },
+]);
+
+function mountProviderRelayQuotaRoutes(app, options = {}) {
+  if (!app || typeof app.get !== 'function') return null;
+  const runtime = options.runtime || createProviderBalanceRuntime(options);
+  const inflight = new Map();
+  const relayQuotaResult = (appType, id) => {
+    const key = `${appType}:${id}`;
+    if (inflight.has(key)) return inflight.get(key);
+    const promise = (async () => {
+      try {
+        return await runtime.queryOne(appType, id);
+      } finally {
+        inflight.delete(key);
+      }
+    })();
+    inflight.set(key, promise);
+    return promise;
+  };
+  for (const { appType, path } of RELAY_QUOTA_ROUTES) {
+    const handler = async (req, res) => {
+      res.set('Cache-Control', 'no-store');
+      try {
+        const result = await relayQuotaResult(appType, req.params.id);
+        if (result && result.reason === 'not_found') return res.status(404).json(result);
+        return res.json(result);
+      } catch (_) {
+        return res.status(500).json({ ok: false, reason: 'fetch_failed' });
+      }
+    };
+    app.get(path, handler);
+    if (typeof app.post === 'function') app.post(path, handler);
+  }
+  return runtime;
+}
+
 module.exports = {
   createProviderBalanceRuntime,
   mountProviderBalanceRoutes,
+  mountProviderRelayQuotaRoutes,
   pollKimiBalance,
   DEFAULT_ADAPTERS,
 };
