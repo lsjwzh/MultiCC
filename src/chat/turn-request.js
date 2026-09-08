@@ -9,6 +9,14 @@ const FORBIDDEN_FIELDS = new Set([
   'token', 'apiKey', 'accessToken', 'providerToken',
 ]);
 const TASK_SOURCES = new Set(['task-board', 'commander', 'router-tool', 'task-shell']);
+// Continuation-only labels for system-injected turns. They may carry task
+// attribution but never start a task — the taskStart gate in normalizeTaskContext
+// still requires a TASK_SOURCES member, so these labels grant no task-start
+// authority. The
+// auto provider handoff (unsafe replay boundary) and the api-recovery resume
+// deliveries are admitted here; rejecting them as unsupported sources burned
+// their outbox retries into dead-letter, so the provider switch never ran.
+const CONTINUATION_SOURCES = new Set(['auto_provider_handoff', 'api_recovery']);
 const LEGACY_TASK_SOURCE_ALIASES = new Map([
   ['commander-route', 'commander'],
 ]);
@@ -72,7 +80,7 @@ function normalizeTaskContext(input) {
   if (start && !TASK_SOURCES.has(source)) {
     throw new TurnRequestError('invalid_task', 'taskStart requires a trusted task source');
   }
-  if (source && !TASK_SOURCES.has(source)) {
+  if (source && !TASK_SOURCES.has(source) && !CONTINUATION_SOURCES.has(source)) {
     throw new TurnRequestError('invalid_task', `unsupported task source: ${source}`);
   }
   const rawText = input.taskText == null ? '' : String(input.taskText).trim();
