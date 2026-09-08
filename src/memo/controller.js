@@ -10,7 +10,7 @@ const {
 // The memo used to be written into the project itself, as
 // `<project>/multicc.memo.md`. That put a multicc-owned scratch file inside
 // user repositories: it showed up as an untracked entry in `git status`, which
-// `src/git.js`'s merge guard reads as `base-dirty` and refuses to merge on — a
+// `src/git/service.js`'s merge guard reads as `base-dirty` and refuses to merge on — a
 // note could silently block a session's merge. Memos now live under multicc's
 // own memory store (`<memoRoot>/<directoryId>/memo.md`), next to that
 // directory's folder memory, and never touch the project tree.
