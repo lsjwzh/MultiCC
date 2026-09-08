@@ -23,6 +23,7 @@
       $('state').textContent = `${entry.task.title} · ${entry.execution.status || ''}`;
       $('composer').hidden = entry.readOnly;
       $('board-actions').hidden = !entry.readOnly;
+      $('fork-task').hidden = entry.status === 'archived';
       $('question').hidden = entry.readOnly || !entry.execution.pending;
       $('source-history').hidden = true;
       const back = $('return-conversation'); back.hidden = !entry.returnUrl; back.href = entry.returnUrl || '#';

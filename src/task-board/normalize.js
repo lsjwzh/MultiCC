@@ -70,6 +70,7 @@ function createEmptyBoard() {
     modules: {},
     tasks: {},
     taskGroups: {},
+    deletedTaskIds: [],
   };
 }
 
@@ -89,6 +90,7 @@ function normalizeModuleName(module) {
 function normalizeBoard(raw) {
   const board = createEmptyBoard();
   if (!raw || typeof raw !== 'object') return board;
+  board.deletedTaskIds = [...new Set((Array.isArray(raw.deletedTaskIds) ? raw.deletedTaskIds : []).filter(id => typeof id === 'string'))];
   board.revision = Number.isSafeInteger(Number(raw.revision)) && Number(raw.revision) >= 0
     ? Number(raw.revision) : 0;
   const modules = raw.modules && typeof raw.modules === 'object' ? raw.modules : {};
@@ -113,6 +115,8 @@ function normalizeBoard(raw) {
       moduleId: typeof t.moduleId === 'string' ? t.moduleId : null,
       title: t.title.trim().slice(0, MAX_TITLE_LEN),
       status: ['active', 'done', 'archived'].includes(t.status) ? t.status : 'active',
+      deleting: t.deleting === true,
+      archivedFromStatus: t.archivedFromStatus === 'done' ? 'done' : 'active',
       areas: Array.isArray(t.areas)
         ? t.areas.filter(a => typeof a === 'string' && a.trim()).map(a => a.trim().slice(0, 80)).slice(0, MAX_AREAS_PER_TASK)
         : [],

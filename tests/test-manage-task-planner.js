@@ -229,6 +229,31 @@ async function settlePlannerLoad() {
   await new Promise(resolve => setImmediate(resolve));
 }
 
+test('archive filter is explicit and all task origins expose lifecycle actions', async () => {
+  const { context, globalRoot } = createPlannerHarness();
+  context.setView('tasks');
+  await settlePlannerLoad();
+  context.MultiCCTaskPlanner.reconcileSnapshot({ ok: true, revision: 200, modules: [], tasks: [
+    { id: 'observed', title: 'Visible historical task', origin: 'session', recordType: 'observed', status: 'done', dirId: 'fleet-a' },
+    { id: 'normal', title: 'Visible normal task', origin: 'board', recordType: 'planned', status: 'active', workflowStage: 'inbox', dirId: 'fleet-a' },
+    { id: 'archived', title: 'Hidden archived task', origin: 'session', recordType: 'observed', status: 'archived', dirId: 'fleet-a' },
+  ] });
+  dispatchPlannerAction(globalRoot, 'origin', { origin: 'all' });
+  dispatchPlannerAction(globalRoot, 'mode', { mode: 'activity' });
+  assert.doesNotMatch(globalRoot.innerHTML, /Hidden archived task/);
+  for (const id of ['observed', 'normal']) {
+    assert.match(globalRoot.innerHTML, new RegExp(`data-action="task-archive" data-task-id="${id}"`));
+    assert.match(globalRoot.innerHTML, new RegExp(`data-action="task-delete" data-task-id="${id}"`));
+  }
+  dispatchPlannerAction(globalRoot, 'archive-filter', { archived: '1' });
+  assert.match(globalRoot.innerHTML, /Hidden archived task/);
+  assert.doesNotMatch(globalRoot.innerHTML, /Visible historical task|Visible normal task/);
+  assert.match(globalRoot.innerHTML, /data-action="task-restore" data-task-id="archived"/);
+  assert.doesNotMatch(globalRoot.innerHTML, /data-action="promote" data-task-id="archived"/);
+  dispatchPlannerAction(globalRoot, 'archive-filter', { archived: '0' });
+  assert.doesNotMatch(globalRoot.innerHTML, /Hidden archived task/);
+});
+
 test('manage shell exposes the first-class Task Center view', () => {
   assert.match(html, /manage-task-planner\.css/);
   assert.match(html, /class="nav-item" data-view="tasks"/);

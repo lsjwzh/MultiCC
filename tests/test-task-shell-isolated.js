@@ -61,8 +61,8 @@ const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'ut
 (async () => {
   let server, socket, logs = '', base;
   const token = 'task-shell-isolated';
-  async function api(route, body, expected = 200) {
-    const response = await fetch(base + route, { method: body === undefined ? 'GET' : 'POST',
+  async function api(route, body, expected = 200, method = null) {
+    const response = await fetch(base + route, { method: method || (body === undefined ? 'GET' : 'POST'),
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     const text = await response.text();
@@ -243,8 +243,24 @@ const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'ut
         console.log('PASS full chat browser: stable source URL, internal execution switch, old/new history and reload');
       });
     }
+    await wait(async () => !(await api(`/api/task-shell-tasks/${fork.taskId}`)).execution.busy, 'fork remains busy before lifecycle checks');
+    await api(`/api/task-board/tasks/${fork.taskId}/status`, { status: 'archived' });
+    const archivedEntry = await api(`/api/task-shell-tasks/${fork.taskId}`);
+    assert.equal(archivedEntry.status, 'archived'); assert.equal(archivedEntry.readOnly, true);
+    await api(`/api/task-shell-tasks/${fork.taskId}/messages`, { text: 'must reject', clientMsgId: 'archived-send' }, 409);
+    await api(`/api/task-board/tasks/${fork.taskId}/status`, { status: 'active' });
+    const refusedDelete = await api(`/api/task-board/tasks/${fork.taskId}`, undefined, 409, 'DELETE');
+    assert.equal(refusedDelete.error, 'task_workspace_unmerged');
+    assert.equal((await api(`/api/task-shell-tasks/${fork.taskId}`)).readOnly, false, 'preflight refusal leaves task usable');
+    assert.ok((await api(`/api/task-shell-tasks/${fork.taskId}`)).messages.length > 0, 'preflight preserves history');
+    gitAt(project, 'merge', '--ff-only', sourceCommit);
+    await api(`/api/task-board/tasks/${fork.taskId}`, undefined, 200, 'DELETE');
+    await api(`/api/task-shell-tasks/${fork.taskId}`, undefined, 404);
+    await api(`/api/sessions/${fork.sessionId}`, undefined, 404);
+    assert.equal(fs.existsSync(forkRecord.worktreePath), false, 'dedicated task worktree is disposed');
     await stop();
     await start('0');
+    await api(`/api/task-shell-tasks/${fork.taskId}`, undefined, 404);
     const after = await api(`/api/task-shells/${sa.id}`); assert.equal((await api('/api/task-shells/config')).enabled, true); assert.equal(after.tasks.length, 4);
     assert.ok((await api(`/api/task-shells/${sa.id}/tasks/${third.taskId}`)).messages.length >= 2);
     const alwaysOn = await api(`/api/task-shells/${sa.id}/messages`, { text: 'ALWAYS_ON', clientMsgId: 'always-on' });
