@@ -51,7 +51,9 @@ async function main() {
   const context = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-docker-source-'));
   try {
     console.log('Exported source:', exportSources(path.resolve(__dirname, '..'), context));
-    const child = spawn('docker', ['build', '--progress=plain', '-t', 'multicc-task-shell-test:local',
+    const cleanInstall = process.argv.includes('--clean-install');
+    const child = spawn('docker', ['build', '--progress=plain', '--target', cleanInstall ? 'clean-install' : 'regression',
+      '-t', cleanInstall ? 'multicc-clean-install-test:local' : 'multicc-task-shell-test:local',
       '-f', path.join(context, 'docker/task-shell/Dockerfile'), context], { stdio: 'inherit' });
     const stop = () => child.kill('SIGTERM');
     process.once('SIGINT', stop); process.once('SIGTERM', stop);

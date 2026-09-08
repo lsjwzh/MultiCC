@@ -32,7 +32,13 @@ env:
   ELECTRON_VERSION: 44.1.1
 
 jobs:
+  clean-install:
+    uses: ./.github/workflows/clean-install.yml
+    permissions:
+      contents: read
+
   build:
+    needs: clean-install
     name: build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:

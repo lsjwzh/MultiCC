@@ -509,7 +509,7 @@ fi
 # Use the running server's policy and ranked adapter selection. Picking the
 # first non-loopback address is unreliable on hosts with Tailscale, Docker or
 # a VPN: those virtual adapters often precede Wi-Fi/Ethernet.
-LAN_INFO="$("$NODE" -e 'const fs=require("node:fs"),os=require("node:os"),p=require("node:path"),root=process.argv[1];try{fs.readFileSync(p.join(root,".env"),"utf8").split("\n").forEach(line=>{const m=line.match(/^\s*([^#=]+?)\s*=\s*(.*?)\s*$/);if(m&&!process.env[m[1]])process.env[m[1]]=m[2]})}catch{}const policy=require(p.join(root,"src/network-policy")).resolveNetworkPolicy(process.env),system=require(p.join(root,"src/routes/system")),addresses=system.reachableLanAddresses(os.networkInterfaces(),policy.host);process.stdout.write(policy.host+"\t"+(addresses[0]||""))' "$INSTALL_DIR" 2>/dev/null || true)"
+LAN_INFO="$(node -e 'const fs=require("node:fs"),os=require("node:os"),p=require("node:path"),root=process.argv[1];try{fs.readFileSync(p.join(root,".env"),"utf8").split("\n").forEach(line=>{const m=line.match(/^\s*([^#=]+?)\s*=\s*(.*?)\s*$/);if(m&&!process.env[m[1]])process.env[m[1]]=m[2]})}catch{}const policy=require(p.join(root,"src/network-policy")).resolveNetworkPolicy(process.env),system=require(p.join(root,"src/routes/system")),addresses=system.reachableLanAddresses(os.networkInterfaces(),policy.host);process.stdout.write(policy.host+"\t"+(addresses[0]||""))' "$INSTALL_DIR" 2>/dev/null || true)"
 IFS=$'\t' read -r LAN_BIND_HOST LAN_IP <<< "$LAN_INFO"
 
 echo ""

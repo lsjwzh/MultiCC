@@ -29,6 +29,14 @@ docker compose -f docker/task-shell/compose.yaml exec -T lab node docker/task-sh
 
 浏览器请始终使用 3300 入口。入口使用独立的 `multicc_docker_lab_auth` Cookie，并在 HTTP / WebSocket 转发时只传递沙盒 Cookie，避免与同一主机上正式 MultiCC 的登录 Cookie 相互覆盖；3301 是内部转发端口，不作为浏览器入口。
 
+## 全新安装发布门槛
+
+发布前运行 `npm run test:release:clean-install`。它在一次性容器内从空目录调用真实安装脚本，再验证首次启动、配置、任务切换、手动 Fork、工作区隔离、Chromium 与重启恢复。安装期间需要联网获取 npm 依赖；不挂载宿主源码、凭据或数据卷。候选源码经本地 Git 镜像克隆，不从 GitHub 下载旧版本。
+
+详细步骤与 SW/FK 用例见 [发布测试矩阵](task-shell-release-tests.md#发布前必须执行全新-docker-安装)。Android 与桌面发布工作流均强制依赖该门槛。
+
+下面的 `lab:test` 是较快的开发回归，复用镜像内已装依赖，不能替代全新安装测试。
+
 ## 自动回归范围
 
 `lab:test` 创建无网络、无宿主挂载的一次性容器，失败返回非零状态，成功后删除容器。它运行：
