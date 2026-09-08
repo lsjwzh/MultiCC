@@ -93,6 +93,22 @@ test('UsageObserved validates coverage, source, roleKind, agentRole, and routeNa
   assert.equal(relay.tokens, null);
 });
 
+test('request outcome survives usage normalization and validation without retaining raw data', () => {
+  const proxyOutcome = { version: 1, requestId: 'request-1', requestKind: 'inference',
+    termination: 'completed', httpStatus: null };
+  const event = createUsageObserved(exactUsage({ proxyOutcome: { ...proxyOutcome, url: 'secret-url' } }));
+  assert.deepEqual(event.proxyOutcome, proxyOutcome);
+  assert.equal(Object.isFrozen(event.proxyOutcome), true);
+  assert.deepEqual(validateUsageObserved(event), event);
+  const withoutSource = createUsageObserved(exactUsage({ eventId: undefined, proxyOutcome }));
+  assert.deepEqual(validateUsageObserved(withoutSource), withoutSource);
+  for (const bad of [
+    { ...proxyOutcome, version: 2 }, { ...proxyOutcome, requestKind: 'anything' },
+    { ...proxyOutcome, termination: 'downstream_disconnect', httpStatus: 429 },
+    { ...proxyOutcome, requestId: 'secret/route' },
+  ]) assert.throws(() => createUsageObserved(exactUsage({ proxyOutcome: bad })), /proxy outcome/);
+});
+
 test('UsageObserved binds attribution and rejects conflicts', () => {
   const binding = createProviderBinding({
     sessionId: 'session-sub', cli: 'codex', providerId: 'provider-sub',

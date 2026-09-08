@@ -33,11 +33,13 @@ test('server creates hidden reusable slots and freezes proxy usage lineage at re
   assert.match(source, /createTaskRunProviderBridge\(\{ records: persistedSessions/);
   assert.match(source, /providerAttemptRuntime\.attributeProxyUsage\(event\)/);
   assert.match(source, /if \(tagged\.routeAttribution === 'exact' \|\| tagged\.producerBound === true\) \{\s*taskRunProviderBridge\.onUsageObserved\(tagged\)/);
-  assert.match(source, /providerAttemptRuntime\.observeProxyOutcome\(tagged\)/);
+  assert.match(source, /function handleProxyOutcome\(event\) \{\s*const outcome = providerAttemptRuntime\.observeProxyOutcome\(event\)/);
   assert.match(source, /outcome\.failure\?\.httpStatus === 429/);
   assert.match(source, /limitRecorder\.recordProviderFailure\(/);
   assert.equal((source.match(/onUsageObserved: handleProxyUsage/g) || []).length, 2,
-    'Claude and Codex protocol mounts must share the same usage outcome handler');
+    'Claude and Codex protocol mounts must share the same usage handler');
+  assert.equal((source.match(/onProxyOutcome: handleProxyOutcome/g) || []).length, 2,
+    'both protocol mounts must report request outcomes independently of token usage');
   assert.match(source, /const bound = providerAttemptRuntime\.onProxyActivity\(event\); if \(bound\) taskRunProviderBridge\.onActivity\(\{ \.\.\.event, sessionId: bound\.sessionId \}\)/);
   assert.match(source, /authorizeProxyRequest: providerAttemptRuntime\.authorizeProxyRequest/);
   assert.match(source, /taskRunHost\?\.isSlotUnavailable\(sid, item \|\| \{\}\)/);

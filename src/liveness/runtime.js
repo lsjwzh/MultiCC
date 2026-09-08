@@ -16,7 +16,8 @@
 //      turn progress heartbeat's silentMs — a turn that is running but quiet.
 //   3. An optional process-level probe (probeSession) for sessions that bypass
 //      the proxy (default-login / claude-official direct): an ESTABLISHED
-//      outbound HTTPS connection or a growing codex rollout file proves work.
+//      outbound HTTPS connection or a growing codex rollout file corroborates
+//      work, unless the persistent stream explicitly reports it is idle.
 //
 // Verdict precedence, most authoritative first: an in-flight turn or fresh proxy
 // activity or a live outbound connection ⇒ `working`; a turn that claims to be
@@ -197,9 +198,11 @@ function createLivenessRuntime(deps = {}) {
       const reason = s.phase ? `turn_${s.phase}` : (outbound ? 'outbound_connection' : 'in_flight');
       return { state: 'working', reason, ...s, probe };
     }
-    if (outbound || rolloutGrowing) {
+    if ((outbound || rolloutGrowing) && ownership(sessionId).reason !== 'persistent_stream_idle') {
       // No host-visible turn, but the process is demonstrably talking to an
       // upstream / writing its rollout — a direct (non-proxy) session working.
+      // An explicitly idle persistent stream can retain sockets and flush its
+      // transcript after completion; those cannot restart the finished turn.
       return { state: 'working', reason: outbound ? 'outbound_connection' : 'rollout_growing', ...s, probe };
     }
 
@@ -222,7 +225,7 @@ function createLivenessRuntime(deps = {}) {
   // touched, which is the common case. This predicate mirrors verdict()'s own
   // branching exactly, including the branch where the probe only supplies the
   // `reason` string, so skipping a probe it rejects cannot change the output.
-  function probeWouldMatter(s) {
+  function probeWouldMatter(sessionId, s) {
     const proxyActive = s.proxyAgeMs != null && s.proxyPhase !== 'end' && s.proxyAgeMs <= cfg.proxyActiveMs;
     // Fresh proxy traffic already proves work; verdict() returns on it first.
     if (proxyActive) return false;
@@ -236,7 +239,7 @@ function createLivenessRuntime(deps = {}) {
     }
     // No turn and no proxy traffic: only the probe can tell a direct-login
     // session that is working from one that is idle.
-    return true;
+    return ownership(sessionId).reason !== 'persistent_stream_idle';
   }
 
   // Convenience: assess with an async process probe when available.
@@ -244,7 +247,7 @@ function createLivenessRuntime(deps = {}) {
     let probeResult = null;
     if (probe && probeSession && records.get(sessionId)) {
       const s = signals(sessionId);
-      if (probeWouldMatter(s)) {
+      if (probeWouldMatter(sessionId, s)) {
         try { probeResult = await probeSession(sessionId, s); } catch (_) { probeResult = null; }
       }
     }
