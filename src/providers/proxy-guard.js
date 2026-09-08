@@ -1,6 +1,7 @@
 'use strict';
 
 const { AsyncLocalStorage } = require('node:async_hooks');
+const { observeProxyRequest } = require('./proxy-outcome');
 
 function clean(value) {
   return value == null ? '' : String(value).trim();
@@ -61,7 +62,8 @@ function createProviderProxyGuard(options = {}) {
     throw new TypeError('provider proxy guard authorizer is required');
   }
   return function providerProxyGuard(req, res, next) {
-    const route = classifyProviderProxyRoute(protocol, routeSegments(req));
+    const segments = routeSegments(req);
+    const route = classifyProviderProxyRoute(protocol, segments);
     if (route.scope !== 'attempt') {
       return typeof next === 'function' ? next() : undefined;
     }
@@ -75,6 +77,15 @@ function createProviderProxyGuard(options = {}) {
       decision = null;
     }
     if (!decision || decision.ok !== true) return reject(res);
+    // Claude probes connectivity with HEAD /api/hello (older versions use /).
+    // This checks the local proxy, not model inference. Keep it behind attempt
+    // authorization and out of CPR's upstream usage/error/activity callbacks.
+    const apiPath = segments.slice(2).join('/');
+    if (protocol === 'claude' && clean(req && req.method).toUpperCase() === 'HEAD'
+        && (apiPath === '' || apiPath === 'api/hello')) {
+      res.statusCode = 200;
+      return res.end();
+    }
     return typeof next === 'function' ? next() : undefined;
   };
 }
@@ -101,11 +112,25 @@ function createProviderProxyAdmission(options = {}) {
     const context = requestContext.getStore();
     if (context && event && event.phase === 'request') {
       context.openActivity = { ...event };
+      context.role = event.roleKind || event.role || context.role;
+      context.providerId = event.providerId || context.mainProviderId;
     } else if (context && event && event.phase === 'end') {
       context.openActivity = null;
     }
     if (typeof options.onActivity === 'function') return options.onActivity(event);
     return undefined;
+  }
+
+  function onUsageEvent(event) {
+    const context = requestContext.getStore();
+    const proxyOutcome = context ? context.observation.settle(event) : null;
+    if (typeof options.onUsageEvent !== 'function') return;
+    return options.onUsageEvent({
+      ...event,
+      // Request context is captured by AsyncLocalStorage, never taken from a
+      // provider response or inferred from the last request on this session.
+      ...(proxyOutcome ? { proxyOutcome } : {}),
+    });
   }
 
   function closeOpenActivity(context, error) {
@@ -150,11 +175,23 @@ function createProviderProxyAdmission(options = {}) {
   }
 
   function invoke(handler, req, res, next) {
-    const context = contextFor(req);
+    const route = contextFor(req);
+    const context = { ...route, attemptScoped: !!route };
+    context.observation = observeProxyRequest(protocol, req, res, (proxyOutcome, event) => {
+      if (!context.attempt || typeof options.onOutcome !== 'function') return;
+      // Transport events may fire outside AsyncLocalStorage. The closure owns
+      // the admission snapshot; no lookup of the session's latest turn occurs.
+      options.onOutcome({
+        ...context.attempt, roleKind: context.role, routeAttribution: 'exact',
+        providerId: context.providerId || context.mainProviderId,
+        status: event.status, statusCode: event.statusCode, errorCode: event.errorCode,
+        proxyOutcome,
+      });
+    });
     let result;
     try {
       const call = () => handler(req, res, next);
-      result = context ? requestContext.run(context, call) : call();
+      result = requestContext.run(context, call);
     } catch (error) {
       return handleFailure(error, res, next, context);
     }
@@ -178,7 +215,7 @@ function createProviderProxyAdmission(options = {}) {
 
   function guardedGetProvider(appType, providerId) {
     const context = requestContext.getStore();
-    if (context) {
+    if (context?.attemptScoped) {
       const role = protocol === 'claude' && clean(providerId) !== context.mainProviderId
         ? 'sub' : context.role;
       let decision;
@@ -190,11 +227,14 @@ function createProviderProxyAdmission(options = {}) {
         decision = null;
       }
       if (!decision || decision.ok !== true) throw new ProviderProxyAdmissionError();
+      context.attempt = decision.attempt;
+      context.providerId = clean(providerId);
+      context.role = role;
     }
     return getProvider(appType, providerId);
   }
 
-  return Object.freeze({ app, getProvider: guardedGetProvider, onActivity });
+  return Object.freeze({ app, getProvider: guardedGetProvider, onActivity, onUsageEvent });
 }
 
 module.exports = {

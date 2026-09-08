@@ -1056,10 +1056,9 @@ function createProviderAttemptRuntime(options = {}) {
     });
   }
 
-  // Usage observations are the one proxy callback that retains the upstream
-  // HTTP status after the CLI has consumed the response body. Bind that status
-  // to the exact main attempt so turn finalization does not have to guess from
-  // a missing result event or provider-rendered assistant text.
+  // The host reports each physical request independently of token accounting.
+  // Bind its purpose and terminal evidence to the admitted attempt so probes,
+  // late responses, and provider-rendered text cannot decide another turn.
   function observeProxyOutcome(event = {}) {
     const sessionId = clean(event.sessionId);
     const record = currentBySession.get(sessionId);
@@ -1082,6 +1081,10 @@ function createProviderAttemptRuntime(options = {}) {
       });
       return Object.freeze({ accepted: false, code: 'proxy_attempt_unbound' });
     }
+    const proxyOutcome = event.proxyOutcome || null;
+    if (proxyOutcome && proxyOutcome.requestKind !== 'inference') {
+      return Object.freeze({ accepted: true, code: 'non_inference_request', failure: null });
+    }
     if (clean(event.status).toLowerCase() !== 'error') {
       return Object.freeze({ accepted: true, code: null, failure: null });
     }
@@ -1089,7 +1092,7 @@ function createProviderAttemptRuntime(options = {}) {
     const httpStatus = Number.isInteger(status) && status >= 400 && status <= 599
       ? status : null;
     // Socket teardown must not replace stronger upstream failure evidence.
-    if (httpStatus == null && clean(event.errorCode).toLowerCase() === 'client_disconnected'
+    if (httpStatus == null && proxyOutcome?.termination === 'downstream_disconnect'
         && record.proxyFailure) {
       return Object.freeze({ accepted: true, code: null, failure: record.proxyFailure });
     }
@@ -1100,8 +1103,11 @@ function createProviderAttemptRuntime(options = {}) {
       providerName: record.providerName,
       httpStatus,
       code: clean(event.errorCode) || 'UPSTREAM_HTTP_ERROR',
-      message: httpStatus ? `upstream HTTP ${httpStatus}` : 'upstream request failed',
+      message: httpStatus ? `upstream HTTP ${httpStatus}`
+        : proxyOutcome?.termination === 'downstream_disconnect'
+          ? 'downstream response connection closed' : 'upstream request failed',
       observedAt: Number(now()),
+      ...(proxyOutcome ? { proxyOutcome, requestId: proxyOutcome.requestId } : {}),
     });
     return Object.freeze({ accepted: true, code: null, failure: record.proxyFailure });
   }
@@ -1109,13 +1115,13 @@ function createProviderAttemptRuntime(options = {}) {
   function proxyFailure(reference, facts = {}) {
     const record = currentBySession.get(clean(reference && reference.sessionId));
     if (!sameAttempt(record, reference) || !record.proxyFailure) return null;
-    // Codex can close its response socket after consuming response.completed,
-    // before the relay sees HTTP EOF. Only a durable result from this runner
-    // and a clean close can prove that downstream disconnect was harmless.
-    // Keep the raw observation for diagnostics and retain real upstream errors.
-    if (record.cli === 'codex' && facts.resultDurable === true && facts.cleanClose === true
+    // A client may close after consuming a protocol completion, before HTTP
+    // EOF. Reconcile only host-observed downstream teardown, with a durable
+    // successful result from this runner and a clean end. This rule is shared
+    // by all CLIs/providers; raw error strings never prove harmless teardown.
+    if (facts.resultDurable === true && facts.cleanClose === true
         && record.proxyFailure.httpStatus == null
-        && clean(record.proxyFailure.code).toLowerCase() === 'client_disconnected') return null;
+        && record.proxyFailure.proxyOutcome?.termination === 'downstream_disconnect') return null;
     return Object.freeze({ ...record.proxyFailure });
   }
 
