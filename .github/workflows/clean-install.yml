@@ -1,0 +1,28 @@
+name: Clean installation release gate
+on:
+  workflow_call:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  clean-install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+      - name: Install candidate in a fresh Docker container and verify shell lifecycle
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run test:release:clean-install 2>&1 | tee clean-install.log
+      - name: Keep installation and regression evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clean-install-evidence
+          path: clean-install.log
+          if-no-files-found: error
+          retention-days: 14

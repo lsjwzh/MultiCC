@@ -340,7 +340,9 @@ async function createCdpHarness(options = {}) {
         chrome = null;
         if (fixture) await fixture.close();
         fixture = null;
-        fs.rmSync(rootDir, { recursive: true, force: true });
+        // Chromium's children may finish profile writes just after the browser
+        // exits on Linux. Retry the transient ENOTEMPTY without hiding failure.
+        await fs.promises.rm(rootDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
       },
     };
     return harness;
@@ -348,7 +350,7 @@ async function createCdpHarness(options = {}) {
     if (connection) connection.close();
     await stopProcess(chrome);
     if (fixture) await fixture.close();
-    fs.rmSync(rootDir, { recursive: true, force: true });
+    await fs.promises.rm(rootDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     throw error;
   }
 }

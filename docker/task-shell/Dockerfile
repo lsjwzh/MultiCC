@@ -1,8 +1,20 @@
-FROM node:22-bookworm-slim
+FROM node:22-bookworm-slim AS tools
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates git python3 make g++ chromium tini \
+    ca-certificates git python3 make g++ chromium tini tmux openssl \
     && rm -rf /var/lib/apt/lists/*
+
+# No node_modules or npm cache: the real installer runs in a fresh container.
+FROM tools AS clean-install
+WORKDIR /candidate
+COPY . .
+RUN chown -R node:node /candidate
+USER node
+ENV NODE_ENV=test ASR_LOCAL=off MULTICC_CHROME_BIN=/usr/bin/chromium
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["node", "docker/task-shell/install-and-test.js"]
+
+FROM tools AS regression
 WORKDIR /opt/multicc
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
