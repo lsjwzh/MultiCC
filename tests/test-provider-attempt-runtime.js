@@ -139,50 +139,62 @@ test('an exact main proxy 429 is retained as immutable attempt failure evidence'
   assert.equal(Object.isFrozen(runtime.proxyFailure(attempt)), true);
 });
 
-test('a clean durable Codex result reconciles a downstream disconnect without erasing diagnostics', () => {
-  const { runtime } = harness();
-  const attempt = runtime.beginAttempt(route());
-  runtime.observeProxyOutcome({
-    ...attempt, roleKind: 'main', routeAttribution: 'exact',
-    status: 'error', errorCode: 'CLIENT_DISCONNECTED',
+function downstreamOutcome() {
+  return Object.freeze({ version: 1, requestId: 'request-1', requestKind: 'inference',
+    termination: 'downstream_disconnect', httpStatus: null });
+}
+
+for (const cli of ['codex', 'claude', 'opencode']) {
+  test(`a clean durable ${cli} result reconciles structural downstream teardown`, () => {
+    const { runtime } = harness();
+    const attempt = runtime.beginAttempt(route({ cli }));
+    runtime.observeProxyOutcome({
+      ...attempt, roleKind: 'main', routeAttribution: 'exact',
+      status: 'error', statusCode: 200, errorCode: 'ARBITRARY_ADAPTER_CODE', proxyOutcome: downstreamOutcome(),
+    });
+    const failure = runtime.proxyFailure(attempt);
+    assert.equal(failure.code, 'ARBITRARY_ADAPTER_CODE');
+    assert.equal(runtime.proxyFailure(attempt, { resultDurable: true, cleanClose: true }), null);
+    assert.deepEqual(runtime.proxyFailure(attempt), failure, 'raw proxy evidence remains available');
+    const finalization = resolveTurnFinalization(planTurnFinalization({
+      current: true, runnerKind: 'process', cli, code: 0,
+      hasOutput: true, resultEvent: true, resultDurable: true,
+      apiError: !!runtime.proxyFailure(attempt, { resultDurable: true, cleanClose: true }),
+    }));
+    const boundary = finalization.effects.find(effect => effect.type === 'classify-turn-end').classification;
+    assert.equal(boundary, 'succeeded');
+    assert.equal(resolveTurnState({ liveness: { state: 'inactive' }, boundary }).state, 'D');
+    assert.ok(finalization.effects.some(effect => effect.type === 'run-post-turn' && !effect.apiError));
+    for (const facts of [
+      {}, { resultDurable: true }, { cleanClose: true },
+      { resultDurable: false, cleanClose: true },
+      { resultDurable: true, cleanClose: false },
+    ]) assert.deepEqual(runtime.proxyFailure(attempt, facts), failure,
+      'partial output, failed persistence, and interrupted exits still fail');
   });
-  const failure = runtime.proxyFailure(attempt);
-  assert.equal(failure.code, 'CLIENT_DISCONNECTED');
-  assert.equal(runtime.proxyFailure(attempt, { resultDurable: true, cleanClose: true }), null);
-  assert.deepEqual(runtime.proxyFailure(attempt), failure, 'raw proxy evidence remains available');
-  const finalization = resolveTurnFinalization(planTurnFinalization({
-    current: true, runnerKind: 'process', cli: 'codex', code: 0,
-    hasOutput: true, resultEvent: true, resultDurable: true,
-    apiError: !!runtime.proxyFailure(attempt, { resultDurable: true, cleanClose: true }),
-  }));
-  const boundary = finalization.effects.find(effect => effect.type === 'classify-turn-end').classification;
-  assert.equal(boundary, 'succeeded');
-  assert.equal(resolveTurnState({ liveness: { state: 'inactive' }, boundary }).state, 'D');
-  assert.ok(finalization.effects.some(effect => effect.type === 'run-post-turn' && !effect.apiError));
-  for (const facts of [
-    {}, { resultDurable: true }, { cleanClose: true },
-    { resultDurable: false, cleanClose: true },
-    { resultDurable: true, cleanClose: false },
-  ]) assert.deepEqual(runtime.proxyFailure(attempt, facts), failure,
-    'partial output, failed persistence, and interrupted exits still fail');
-});
+}
 
-test('a later disconnect cannot replace an earlier upstream failure in the same attempt', () => {
-  const { runtime } = harness();
-  const attempt = runtime.beginAttempt(route());
-  const identity = { ...attempt, roleKind: 'main', routeAttribution: 'exact', status: 'error' };
-  runtime.observeProxyOutcome({ ...identity, statusCode: 429, errorCode: 'UPSTREAM_HTTP_ERROR' });
-  runtime.observeProxyOutcome({ ...identity, errorCode: 'client_disconnected' });
-  assert.equal(runtime.proxyFailure(attempt, { resultDurable: true, cleanClose: true }).httpStatus, 429);
-});
+for (const errorCode of ['client_disconnected', 'CLIENT_ABORTED']) {
+  test(`a later ${errorCode} cannot replace an earlier upstream failure in the same attempt`, () => {
+    const { runtime } = harness();
+    const attempt = runtime.beginAttempt(route());
+    const identity = { ...attempt, roleKind: 'main', routeAttribution: 'exact', status: 'error' };
+    runtime.observeProxyOutcome({ ...identity, statusCode: 429, errorCode: 'UPSTREAM_HTTP_ERROR' });
+    runtime.observeProxyOutcome({ ...identity, statusCode: 200, errorCode, proxyOutcome: downstreamOutcome() });
+    assert.equal(runtime.proxyFailure(attempt, { resultDurable: true, cleanClose: true }).httpStatus, 429);
+  });
+}
 
-test('successful Codex finalization never hides HTTP, upstream-stream, or other CLI failures', () => {
+test('successful finalization never hides HTTP, upstream-stream, or unstructured failures', () => {
   for (const failure of [
     { errorCode: 'UPSTREAM_HTTP_ERROR', statusCode: 429 },
+    { errorCode: 'UPSTREAM_HTTP_ERROR', statusCode: 404 },
     { errorCode: 'CLIENT_DISCONNECTED', statusCode: 502 },
+    { errorCode: 'CLIENT_ABORTED', statusCode: 502 },
     { errorCode: 'UPSTREAM_CONNECT_FAILED' },
     { errorCode: 'UPSTREAM_STREAM_FAILED' },
     { errorCode: 'CLIENT_DISCONNECTED', cli: 'claude' },
+    { errorCode: 'CLIENT_ABORTED', cli: 'claude' },
   ]) {
     const { runtime } = harness();
     const attempt = runtime.beginAttempt(route({ cli: failure.cli || 'codex' }));
@@ -192,6 +204,24 @@ test('successful Codex finalization never hides HTTP, upstream-stream, or other 
     });
     assert.ok(runtime.proxyFailure(attempt, { resultDurable: true, cleanClose: true }));
   }
+});
+
+test('non-inference failures cannot poison or erase the model attempt outcome', () => {
+  const { runtime } = harness();
+  const attempt = runtime.beginAttempt(route({ cli: 'claude' }));
+  const identity = { ...attempt, roleKind: 'main', routeAttribution: 'exact', status: 'error', statusCode: 404 };
+  for (const requestKind of ['probe', 'auxiliary']) {
+    const probe = { ...identity, proxyOutcome: {
+      version: 1, requestId: 'probe-1', requestKind, termination: 'upstream_http_error', httpStatus: 404,
+    } };
+    runtime.observeProxyOutcome(probe);
+    assert.equal(runtime.proxyFailure(attempt), null);
+  }
+  runtime.observeProxyOutcome({ ...identity, statusCode: 429 });
+  runtime.observeProxyOutcome({ ...identity, proxyOutcome: {
+    version: 1, requestId: 'probe-2', requestKind: 'probe', termination: 'upstream_http_error', httpStatus: 404,
+  } });
+  assert.equal(runtime.proxyFailure(attempt).httpStatus, 429);
 });
 
 test('ambiguous, non-main, and stale proxy outcomes cannot contaminate the current attempt', () => {
