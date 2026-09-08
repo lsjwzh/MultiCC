@@ -13,6 +13,40 @@ const { createShellWorkspaceHost, sharedWorkspace } = require('../src/task-shell
 const { verifySnapshot } = require('../src/task-shell/context');
 
 const input = (id, more = {}) => ({ text: id, clientMsgId: id, ...more });
+test('legacy transcript fork gets an independent task while source ownership and copied history stay intact', async t => {
+  const f = fixture(t);
+  const original = f.runtime.adopt(f.a.id, 'a');
+  const history = [{ id: 'fork', role: 'system', forkedFrom: { sessionId: 'a', atMessageId: 'answer' } },
+    { id: 'answer', role: 'assistant', content: 'copied context', taskId: original.id }];
+  f.histories.set('b', history);
+  const before = structuredClone(history);
+  const branch = f.runtime.adopt(f.b.id, 'b');
+  assert.notEqual(branch.id, original.id);
+  assert.equal(f.runtime.chatScope(f.b.id).activeSessionId, 'b');
+  assert.equal(f.runtime.stateTarget('b').taskId, branch.id);
+  assert.equal(f.runtime.view(f.a.id).currentTaskId, original.id);
+  assert.equal(f.store.get('task', original.id).sessionId, 'a');
+  assert.deepEqual(f.histories.get('b'), before);
+  const restarted = createTaskShellRuntime(f.ports);
+  assert.equal(restarted.adopt(f.b.id, 'b').id, branch.id);
+  const delivery = await restarted.send(f.b.id, input('continue-fork'));
+  assert.equal(delivery.taskId, branch.id);
+  assert.equal(delivery.sessionId, 'b');
+  assert.equal(f.creations.length, 0);
+});
+
+test('adoption separates inherited and foreign indexed hints from authoritative live bindings', t => {
+  const f = fixture(t, { getTask: id => id === 'board-source' ? { id, chatSessionId: 'a' } : null });
+  f.histories.set('b', [{ taskId: 'board-source', role: 'assistant', content: 'copied' }]);
+  assert.notEqual(f.runtime.adopt(f.b.id, 'b').id, 'board-source');
+  f.histories.set('a', [{ taskId: 'unregistered-source', inherited: true, role: 'assistant', content: 'copied' }]);
+  const original = f.runtime.adopt(f.a.id, 'a');
+  assert.notEqual(original.id, 'unregistered-source');
+  f.records.set('bound', { id: 'bound', kind: 'chat', dirId: 'd1', taskBoundTaskId: original.id });
+  const boundShell = f.runtime.open('bound');
+  assert.throws(() => f.runtime.adopt(boundShell.id, 'bound'), { code: 'task_identity_mismatch' }, 'an explicit conflicting binding must not silently acquire a new identity');
+});
+
 test('late delivery cannot undo an explicit newer task or redirect its followup', async t => {
   let release, started;
   const entered = new Promise(resolve => { started = resolve; });

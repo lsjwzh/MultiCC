@@ -118,6 +118,22 @@ const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'ut
     }, 'formal history missing');
     assert.equal(detail.task.parentTaskId, null);
     assert.match(detail.task.baseline.commit, /^[a-f0-9]{40,64}$/);
+    // Fork at a message in the middle, through the same API used by chat.html.
+    // The copied task annotations must not be adopted as the fork's identity.
+    const rawHistory = (await api(`/api/sessions/${second.sessionId}/history?limit=100`)).messages;
+    const cut = rawHistory.find(m => m.role === 'user' && m.taskId === second.taskId);
+    assert.ok(cut);
+    const transcriptFork = await api(`/api/sessions/${second.sessionId}/fork`, { atMessageId: cut.id, includeMemory: false });
+    const forkShell = await api('/api/task-shells', { sessionId: transcriptFork.sessionId });
+    assert.notEqual(forkShell.currentTaskId, second.taskId);
+    assert.equal((await api(`/api/task-shells/${forkShell.id}/chat`)).activeSessionId, transcriptFork.sessionId);
+    const copied = (await api(`/api/task-shells/${forkShell.id}/history?limit=100`)).messages;
+    const inheritedCut = copied.find(m => m.sourceMessageId === cut.id);
+    assert.equal(inheritedCut.inherited, true);
+    assert.equal(inheritedCut.taskId, undefined);
+    assert.equal(inheritedCut.inheritedFrom.taskId, second.taskId);
+    assert.equal(copied.some(m => m.role === 'assistant'), false, 'messages after the fork point are excluded');
+    assert.equal((await api(`/api/task-shells/${sb.id}/chat`)).activeSessionId, second.sessionId);
     const events = [];
     socket = new WebSocket(base.replace('http', 'ws') + `/ws/chat?session=${second.sessionId}&shell=${sb.id}&token=${token}`);
     socket.on('message', data => { events.push(JSON.parse(String(data))); });
