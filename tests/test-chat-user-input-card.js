@@ -33,7 +33,7 @@ function fakeDoc() {
   return { createElement: fakeEl, getElementById: () => null };
 }
 
-function fixture({ withCollapse = true } = {}) {
+function fixture({ withCollapse = true, dismissRequest, showError } = {}) {
   const doc = fakeDoc();
   const elements = {
     root: Object.assign(fakeEl('section'), { hidden: true }),
@@ -42,6 +42,7 @@ function fixture({ withCollapse = true } = {}) {
     options: fakeEl('div'),
     textInput: fakeEl('textarea'),
     submitButton: fakeEl('button'),
+    dismissButton: fakeEl('button'),
   };
   if (withCollapse) {
     elements.collapseBtn = fakeEl('button');
@@ -50,7 +51,7 @@ function fixture({ withCollapse = true } = {}) {
   }
   const submitted = [];
   const controller = createController({
-    document: doc,
+    document: doc, dismissRequest, showError,
     elements,
     isConnected: () => true,
     submitAnswer: (value, requestId) => { submitted.push({ value, requestId }); return true; },
@@ -122,4 +123,43 @@ test('collapse/expand are robust when the host omits the bubble affordances', ()
   assert.equal(fx.elements.root.hidden, true);
   assert.equal(fx.controller.expand(), true);
   assert.equal(fx.elements.root.hidden, false);
+});
+
+
+test('dismiss waits for acknowledgement, prevents double clicks and never sends an answer', async () => {
+  let finish;
+  const ids = [];
+  const fx = fixture({ dismissRequest: id => { ids.push(id); return new Promise(resolve => { finish = resolve; }); } });
+  fx.controller.render({ requestId: 'old', question: '历史问题' });
+  const operation = fx.controller.dismiss();
+  assert.equal(fx.elements.root.hidden, false);
+  assert.equal(fx.elements.dismissButton.disabled, true);
+  assert.equal(await fx.controller.dismiss(), false);
+  finish({ ok: true });
+  assert.equal(await operation, true);
+  assert.deepEqual(ids, ['old']);
+  assert.deepEqual(fx.submitted, []);
+  assert.equal(fx.elements.root.hidden, true);
+});
+
+test('failed dismissal leaves the question visible and retryable', async () => {
+  const errors = [];
+  const fx = fixture({ dismissRequest: async () => ({ ok: false, code: 'turn_still_active' }), showError: e => errors.push(e.message) });
+  fx.controller.render({ requestId: 'old', question: '历史问题' });
+  assert.equal(await fx.controller.dismiss(), false);
+  assert.equal(fx.elements.root.hidden, false);
+  assert.equal(fx.elements.dismissButton.disabled, false);
+  assert.deepEqual(errors, ['turn_still_active']);
+});
+
+test('a late dismissal response cannot clear a newer question', async () => {
+  let finish;
+  const fx = fixture({ dismissRequest: () => new Promise(resolve => { finish = resolve; }) });
+  fx.controller.render({ requestId: 'old', question: '旧问题' });
+  const operation = fx.controller.dismiss();
+  fx.controller.render({ requestId: 'new', question: '新问题' });
+  finish({ ok: true });
+  await operation;
+  assert.equal(fx.elements.root.hidden, false);
+  assert.equal(fx.elements.root.dataset.requestId, 'new');
 });

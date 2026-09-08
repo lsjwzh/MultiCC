@@ -331,3 +331,18 @@ test('a fresh resolve overwrites the superseded marker', () => {
   assert.equal(last.requestId, 'usrq-b');
   assert.equal(last.superseded, undefined);
 });
+
+
+test('manual dismissal persists audit and replay evidence without reviving degraded waiting', () => {
+  const events = [];
+  const { host, states } = fixture({ onResolved: (...args) => events.push(args) });
+  host.record({ requestId: 'old', sessionId: 'chat-1', turnId: 'turn-1', question: '历史误报' });
+  assert.equal(host.resolve('chat-1', 'old', { dismissed: true }).ok, true);
+  assert.equal(states.get('chat-1').pendingUserInput.resolution, 'dismissed');
+  assert.equal(host.lastResolved('chat-1').resolvedBy, 'user');
+  assert.equal(host.lastResolved('chat-1').resolution, 'dismissed');
+  assert.equal(events[0][3].resolution, 'dismissed');
+  assert.equal(host.degradedResult('chat-1'), null);
+  host.resolve('chat-1', 'old', { dismissed: true });
+  assert.equal(events.length, 1);
+});

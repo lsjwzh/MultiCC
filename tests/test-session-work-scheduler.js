@@ -1365,3 +1365,20 @@ test('a W-at-rest queue does not leak task-kind run deliveries past a pending qu
   assert.equal(await claimOne(h, 'slot-1'), null,
     'W must keep waiting for the structured answer; task-run lineage only unlocks E');
 });
+
+
+test('dismissed W question clears durable queue correlation without admitting new work', async t => {
+  const h = fixture(t);
+  await h.scheduler.admit({ sessionId: 's1', text: 'task', options: { taskId: 'task-1' } });
+  const item = await claimOne(h);
+  await startClaim(h, item);
+  await h.scheduler.complete('s1', { classifyState: 'W', awaitingRequestId: 'old' });
+  assert.equal((await h.scheduler.settleUserInput('s1', 'wrong')).ok, false);
+  assert.equal((await h.scheduler.settleUserInput('s1', 'old')).ok, true);
+  const queue = await h.scheduler.status('s1');
+  assert.equal(queue.classifyState, 'D');
+  assert.equal(queue.awaitingRequestId, null);
+  assert.equal(queue.active, null);
+  assert.equal(queue.queued.length, 0);
+  assert.equal(queue.lastDecision.action, 'dismiss_user_input');
+});
