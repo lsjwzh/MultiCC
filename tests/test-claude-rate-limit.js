@@ -273,3 +273,83 @@ test('Ark quota fetch carries the active provider baseUrl and caches per plan', 
     assert.equal(f.values.has('multicc.ark.quota.v1'), true, 'legacy global cache may exist but is no longer read for Ark');
   } finally { f.cleanup(); }
 });
+
+// ── 借道（relay）provider 的余量条门禁 ────────────────────────────────────────
+
+test('a borrowed GLM window bar shows under the claude CLI when the provider is a relay', () => {
+  const f = freshClient();
+  try {
+    // The relay baseUrl points at the LENDER's host, not at Zhipu — the vendor
+    // host gate must not block the pass-through event; the relay's protocol is
+    // the gate instead.
+    f.C.setProviderBaseUrl('https://relay.example:3000/claude-proxy/glm/remote');
+    const info = { status: 'allowed', rateLimitType: 'five_hour', utilization: 0.44, resetsAt: (NOW + 3_600_000) / 1000, provider: 'glm' };
+    const bar = Renderer.windowEventBar(Renderer.normalizeWindowEvent(info, NOW));
+    f.C.consumeRateLimitEvent(info, 'relay-sess', bar);
+    assert.equal(f.element('claude-rate-limit-bar').style.display, 'block');
+    assert.match(f.element('claude-rate-limit-bar').textContent, /^5h 56%/);
+    // The claude-protocol relay does not speak the codex CLI.
+    f.C.setCli('codex');
+    assert.equal(f.element('claude-rate-limit-bar').style.display, 'none');
+    f.C.setCli('claude');
+    assert.equal(f.element('claude-rate-limit-bar').style.display, 'block');
+  } finally { f.cleanup(); }
+});
+
+test('a codex-protocol relay gates its window to the codex/opencode CLIs', () => {
+  const f = freshClient();
+  try {
+    f.C.setProviderBaseUrl('http://192.168.1.9:3000/codex-proxy/official');
+    const info = { status: 'allowed', rateLimitType: 'weekly', utilization: 0.64, resetsAt: (NOW + 86_400_000) / 1000, provider: 'codex' };
+    const bar = Renderer.windowEventBar(Renderer.normalizeWindowEvent(info, NOW));
+    f.C.consumeRateLimitEvent(info, 'relay-cx', bar);
+    f.C.setCli('codex');
+    assert.equal(f.element('claude-rate-limit-bar').style.display, 'block');
+    f.C.setCli('claude');
+    assert.equal(f.element('claude-rate-limit-bar').style.display, 'none');
+  } finally { f.cleanup(); }
+});
+
+test('loopback relay plumbing is not a borrowed provider and a balance chip shows for a relay', () => {
+  const f = freshClient();
+  try {
+    // 127.0.0.1 relay paths are this host's own CPR plumbing — the vendor gates
+    // apply unchanged, so a GLM window under the claude CLI stays hidden.
+    assert.equal(f.C.relayProtocolFromBaseUrl('http://127.0.0.1:3000/claude-proxy/abc/remote'), null);
+    assert.equal(f.C.isRelayBaseUrl('http://localhost:3000/codex-proxy/abc'), false);
+    f.C.setProviderBaseUrl('http://127.0.0.1:3000/claude-proxy/abc/remote');
+    const info = { status: 'allowed', rateLimitType: 'five_hour', utilization: 0.3, resetsAt: (NOW + 3_600_000) / 1000, provider: 'glm' };
+    const bar = Renderer.windowEventBar(Renderer.normalizeWindowEvent(info, NOW));
+    f.C.consumeRateLimitEvent(info, 'local-sess', bar);
+    assert.equal(f.element('claude-rate-limit-bar').style.display, 'none');
+
+    // A borrowed DeepSeek is a prepaid balance arriving via the relay — the
+    // balance chip is visible under the claude CLI for relay providers.
+    f.C.setProviderBaseUrl('https://relay.example:3000/claude-proxy/ds/remote');
+    const balanceBar = Renderer.balanceBar(Renderer.normalizeBalance({ kind: 'balance', available: true, currency: 'CNY', total: 12.5 }));
+    f.C.consumeBalanceEvent({ kind: 'balance', available: true, currency: 'CNY', total: 12.5 }, 'relay-ds', balanceBar);
+    assert.equal(f.element('usage-balance-bar').style.display, 'block');
+    assert.equal(f.element('usage-balance-bar').textContent, '¥12.50');
+  } finally { f.cleanup(); }
+});
+
+test('switching provider clears the previous provider\'s stale window bar', () => {
+  const f = freshClient();
+  try {
+    // Own GLM provider paints a window bar and persists it per session.
+    f.C.setProviderBaseUrl('https://open.bigmodel.cn/api/paas/v4');
+    const info = { status: 'allowed', rateLimitType: 'five_hour', utilization: 0.8, resetsAt: (NOW + 3_600_000) / 1000, provider: 'glm' };
+    const bar = Renderer.windowEventBar(Renderer.normalizeWindowEvent(info, NOW));
+    f.C.consumeRateLimitEvent(info, 'mixed-sess', bar);
+    assert.equal(f.element('claude-rate-limit-bar').style.display, 'block');
+    const key = 'multicc:claude-rate-limit:v1:mixed-sess';
+    assert.ok(f.values.has(key), 'persisted for the session');
+
+    // Switch the session to the borrowed provider: the old provider's bar must
+    // not keep speaking for the relay (whose gate would let it linger) — it is
+    // cleared until the relay's first pass-through event repaints it.
+    f.C.setProviderBaseUrl('https://relay.example:3000/claude-proxy/glm/remote');
+    assert.equal(f.element('claude-rate-limit-bar').style.display, 'none');
+    assert.equal(f.values.has(key), false, 'the stale persisted bar is dropped');
+  } finally { f.cleanup(); }
+});
