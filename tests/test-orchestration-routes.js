@@ -166,6 +166,7 @@ function fixture(options = {}) {
   };
   const routes = createOrchestrationRoutes({
     records,
+    dismissUserInput: options.dismissUserInput,
     runtime,
     waitInjector,
     detached,
@@ -857,4 +858,17 @@ test('dispatch recent view keeps every live operation ahead of bounded terminal 
   assert.equal(bounded.response.body.activeTruncated, true);
   assert.equal(bounded.response.body.returnedTerminalCount, 2);
   assert.equal(bounded.response.body.dispatches.slice(-2).every(item => item.terminal), true);
+});
+
+
+test('manual question dismissal validates identity and never calls queue retry or tick', async () => {
+  const received = [];
+  const h = fixture({ dismissUserInput: async (...args) => { received.push(args); return { ok: true }; } });
+  const route = '/api/sessions/:id/user-input/dismiss';
+  assert.equal((await invoke(h.app, 'POST', route, { params: { id: 'missing' }, body: { requestId: 'old' } })).response.statusCode, 404);
+  assert.equal((await invoke(h.app, 'POST', route, { params: { id: 's1' }, body: {} })).response.statusCode, 400);
+  assert.equal(received.length, 0);
+  assert.equal((await invoke(h.app, 'POST', route, { params: { id: 's1' }, body: { requestId: 'old' } })).response.statusCode, 200);
+  assert.deepEqual(received, [['s1', 'old']]);
+  assert.equal(h.calls.length, 0);
 });

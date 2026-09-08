@@ -2478,8 +2478,9 @@ sessionWorkHost = createSessionWorkHost({
   getChatSession: id => chatSessions.get(id),
   getTaskState,
   pendingUserInput: id => userInputSignalHost.pending(id),
+  getTurnLiveness: id => livenessRuntime.ownership(id),
   recordUserInput: signal => userInputSignalHost.record(signal),
-  resolveUserInput: (id, requestId) => userInputSignalHost.resolve(id, requestId),
+  resolveUserInput: (id, requestId, options) => userInputSignalHost.resolve(id, requestId, options),
   broadcast: chatBroadcast,
   setTaskState,
   onTaskBoardQueueEvent: event => taskBoardRuntime.onQueueEvent(event),
@@ -2768,6 +2769,7 @@ createOrchestrationRoutes({
   // Options carry the cancel intent's source/operationId through to classify;
   // dropping them here is what made repeat clicks look like distinct cancels.
   cancelActiveTurn: (sessionId, options) => sessionWorkHost.cancelActiveTurn(sessionId, options),
+  dismissUserInput: (id, requestId) => sessionWorkHost.dismissUserInput(id, requestId),
 }).mountRoutes(app);
 
 // WebSocket authentication, endpoint routing, terminal attachment and keep-alive

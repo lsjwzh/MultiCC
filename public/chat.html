@@ -351,7 +351,6 @@
     }
     .pending-input-collapse:hover { background: #3a2b0b; border-color: #d29922; }
     .pending-input-collapse:disabled { opacity: .55; cursor: wait; }
-
     /* Fixed overlay positioned by chat-scroll-controller against #messages. */
     /* Collapsed-state floating bubble for the prompt card (also a fixed
        overlay): frees the flex row so the user can scroll the conversation for
@@ -2574,6 +2573,7 @@
     <div class="pending-input-answer-row">
       <textarea id="pending-user-input-text" rows="1" placeholder="也可以输入自定义回答"></textarea>
       <button id="pending-user-input-submit" type="button">提交</button>
+      <button id="pending-user-input-dismiss" type="button" class="pending-input-collapse" title="将历史或已处理的问题解除等待，不发送回答、不继续原任务">已解决 / 忽略</button>
     </div>
   </section>
   <!-- Collapsed-state floating bubble (shown when the card above is collapsed

@@ -23,6 +23,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+const { createUserInputSignalHost } = require('../src/classify/user-input-host');
 const { createSessionWorkHost } = require('../src/session-work/host');
 const { createClassifyStateMachine } = require('../src/classify/state-machine');
 const { createTaskStateStore } = require('../src/routes/task-state-store');
@@ -220,6 +221,12 @@ function harness(t, options = {}) {
     appendChatMessage: () => {},
   });
 
+  const inputHost = createUserInputSignalHost({
+    getSession: id => chatSessions.get(id),
+    getState: id => taskStateStore.getTaskState(persistedSessions.get(id)),
+    setState: taskStateStore.setTaskState,
+    onResolved: (id, requestId) => record({ kind: 'input_resolved', id, requestId }),
+  });
   sessionWorkHost = createSessionWorkHost({
     runtime: () => ({
       sessionScheduler: scheduler,
@@ -230,9 +237,10 @@ function harness(t, options = {}) {
     getRecord: id => persistedSessions.get(id),
     getChatSession: id => chatSessions.get(id),
     getTaskState: taskStateStore.getTaskState,
-    pendingUserInput: () => null,
+    pendingUserInput: id => inputHost.pending(id),
+    getTurnLiveness: () => ({ state: chatState.isStreaming ? 'active' : 'inactive' }),
     recordUserInput: () => ({ ok: true }),
-    resolveUserInput: () => ({ ok: true }),
+    resolveUserInput: (...args) => inputHost.resolve(...args),
     broadcast: (sessionId, payload) => record({ kind: 'chat_broadcast', sessionId, payload }),
     setTaskState: (sessionId, patch, opts) => {
       record({ kind: 'task_state_write', sessionId, patch });
@@ -280,7 +288,7 @@ function harness(t, options = {}) {
   }
 
   return {
-    dir, events, record, kinds, firstIndex,
+    dir, events, record, kinds, firstIndex, inputHost,
     persistedSessions, chatSessions, chatState, child, classify, auxJobs,
     taskStateStore, taskBoard, scheduler, outbox,
     get host() { return sessionWorkHost; },
@@ -719,4 +727,33 @@ test('no module outside classify writes a cancel terminal state', () => {
   const chatSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'chat.js'), 'utf8');
   assert.match(chatSource, /finishCancelledTurn[\s\S]{0,400}正在取消/);
   assert.doesNotMatch(chatSource, /addSystemMsg\('Cancelled'\)/);
+});
+
+
+test('manual question dismissal settles persisted waiting, task projection and replay without a provider invocation', async t => {
+  const h = harness(t);
+  await h.startTurn();
+  h.taskStateStore.setTaskState('s1', { pendingUserInput: {
+    requestId: 'old', turnId: 'turn-1', taskId: 'tsk-1', question: '历史误报', resolved: false,
+  }, classifyState: 'W' });
+  h.chatState.isStreaming = false;
+  await h.scheduler.complete('s1', { classifyState: 'W', awaitingRequestId: 'old' });
+  assert.equal(h.boardTask().runState, 'waiting');
+  const result = await h.host.dismissUserInput('s1', 'old');
+  assert.equal(result.ok, true);
+  assert.equal(h.taskState().classifyState, 'D');
+  assert.equal(h.taskState().pendingUserInput.resolved, true);
+  assert.equal(h.inputHost.lastResolved('s1').resolution, 'dismissed');
+  assert.equal(h.boardTask().runState, 'succeeded');
+  assert.equal(h.boardTask().status, 'active', 'question settlement is not task lifecycle completion');
+  const queue = await h.scheduler.status('s1');
+  assert.equal(queue.active, null);
+  assert.equal(queue.awaitingRequestId, null);
+  assert.equal(queue.queued.length, 0);
+  assert.equal(h.events.some(e => e.kind === 'admit'), false);
+  assert.equal(h.events.some(e => e.kind === 'push'), false);
+  const replay = [];
+  h.host.replayState('s1', message => replay.push(message));
+  assert.equal(replay.some(e => e.type === 'user_input_required'), false);
+  assert.equal(replay.some(e => e.type === 'user_input_resolved' && e.requestId === 'old'), true);
 });
