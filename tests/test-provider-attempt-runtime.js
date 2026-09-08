@@ -154,21 +154,22 @@ for (const cli of ['codex', 'claude', 'opencode']) {
     });
     const failure = runtime.proxyFailure(attempt);
     assert.equal(failure.code, 'ARBITRARY_ADAPTER_CODE');
-    assert.equal(runtime.proxyFailure(attempt, { resultDurable: true, cleanClose: true }), null);
+    assert.equal(runtime.proxyFailure(attempt, { resultDurable: true, completion: { version: 1, state: 'completed', settled: true } }), null);
     assert.deepEqual(runtime.proxyFailure(attempt), failure, 'raw proxy evidence remains available');
     const finalization = resolveTurnFinalization(planTurnFinalization({
+      completion: { version: 1, state: 'completed', settled: true },
       current: true, runnerKind: 'process', cli, code: 0,
       hasOutput: true, resultEvent: true, resultDurable: true,
-      apiError: !!runtime.proxyFailure(attempt, { resultDurable: true, cleanClose: true }),
+      apiError: !!runtime.proxyFailure(attempt, { resultDurable: true, completion: { version: 1, state: 'completed', settled: true } }),
     }));
     const boundary = finalization.effects.find(effect => effect.type === 'classify-turn-end').classification;
     assert.equal(boundary, 'succeeded');
     assert.equal(resolveTurnState({ liveness: { state: 'inactive' }, boundary }).state, 'D');
     assert.ok(finalization.effects.some(effect => effect.type === 'run-post-turn' && !effect.apiError));
     for (const facts of [
-      {}, { resultDurable: true }, { cleanClose: true },
-      { resultDurable: false, cleanClose: true },
-      { resultDurable: true, cleanClose: false },
+      {}, { resultDurable: true, cleanClose: true }, { resultDurable: true }, { completion: { version: 1, state: 'completed', settled: true } },
+      { resultDurable: false, completion: { version: 1, state: 'completed', settled: true } },
+      { resultDurable: true, completion: { version: 1, state: 'failed', settled: true } },
     ]) assert.deepEqual(runtime.proxyFailure(attempt, facts), failure,
       'partial output, failed persistence, and interrupted exits still fail');
   });
@@ -181,7 +182,7 @@ for (const errorCode of ['client_disconnected', 'CLIENT_ABORTED']) {
     const identity = { ...attempt, roleKind: 'main', routeAttribution: 'exact', status: 'error' };
     runtime.observeProxyOutcome({ ...identity, statusCode: 429, errorCode: 'UPSTREAM_HTTP_ERROR' });
     runtime.observeProxyOutcome({ ...identity, statusCode: 200, errorCode, proxyOutcome: downstreamOutcome() });
-    assert.equal(runtime.proxyFailure(attempt, { resultDurable: true, cleanClose: true }).httpStatus, 429);
+    assert.equal(runtime.proxyFailure(attempt, { resultDurable: true, completion: { version: 1, state: 'completed', settled: true } }).httpStatus, 429);
   });
 }
 
@@ -202,7 +203,7 @@ test('successful finalization never hides HTTP, upstream-stream, or unstructured
       ...attempt, roleKind: 'main', routeAttribution: 'exact', status: 'error',
       errorCode: failure.errorCode, statusCode: failure.statusCode,
     });
-    assert.ok(runtime.proxyFailure(attempt, { resultDurable: true, cleanClose: true }));
+    assert.ok(runtime.proxyFailure(attempt, { resultDurable: true, completion: { version: 1, state: 'completed', settled: true } }));
   }
 });
 

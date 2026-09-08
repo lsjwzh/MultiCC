@@ -213,7 +213,7 @@ function summarizeHistoryUsage(messages) {
 function createCodexUsageHost(deps = {}) {
   for (const name of [
     'loadHistory', 'reconcileRole', 'clearIncrementalSave', 'persistFinalAssistantResult',
-    'recordDurableTurnUsage', 'recordResultEvent', 'setSessionStatus',
+    'recordDurableTurnUsage', 'recordResultEvent',
   ]) {
     if (typeof deps[name] !== 'function') throw new TypeError(`Codex usage host missing: ${name}`);
   }
@@ -265,10 +265,7 @@ function createCodexUsageHost(deps = {}) {
       num_turns: cs.chatTurnCount,
       ...(contextTrace ? { contextTrace } : {}),
     });
-    deps.setSessionStatus(sessionName, {
-      status: cs._resultSaved ? 'succeeded' : 'idle',
-      currentFile: null,
-    });
+    // Completion/status belongs to the adapter + runner settlement boundary.
     return normalized;
   }
 

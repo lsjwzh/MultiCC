@@ -1,5 +1,7 @@
 'use strict';
 
+const { isMainResult } = require('../cli-adapters/result-completion');
+
 // ── Persistent streaming Claude process per chat session ──
 //
 // Why this exists: the default chat path spawns `claude -p ... <prompt>` once
@@ -254,7 +256,7 @@ function onStdout(name, chunk) {
 
     // A `result` event marks the END of the current turn. The process stays
     // alive and ready for the next message.
-    if (evt.type === 'result') {
+    if (isMainResult(evt)) {
       finishTurn(name, evt);
     }
   }

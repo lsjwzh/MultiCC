@@ -1,5 +1,7 @@
 'use strict';
 
+const { completion, isCompleted } = require('../cli-adapters/completion');
+
 const { decideRetry } = require('./retry-policy');
 const { decideRunnerFinality } = require('./host-coordinator');
 
@@ -98,6 +100,7 @@ function planTurnFinalization(input = {}, deps = {}) {
   const hasOutput = input.hasOutput === true;
   const recoveredTransport = input.recoveredTransport === true || (pendingStreamError && hasOutput);
   const facts = {
+    completion: input.completion || completion('unknown', 'completion_missing', 'host'),
     runnerKind,
     cli,
     current: input.current === true,
@@ -200,10 +203,7 @@ function planTurnFinalization(input = {}, deps = {}) {
     killReason: facts.killReason || null,
     retryPlanned: facts.retryPlanned,
     apiError: facts.apiError,
-    // The persistent Claude finalizer historically treats adapter failures as
-    // stream interruption evidence, not as a separate finality veto. Process
-    // runners do veto finality on adapter errors.
-    adapterError: runnerKind === 'process' ? facts.adapterError : false,
+    adapterError: facts.adapterError || !isCompleted(facts.completion),
     normalExit: facts.exitKind === 'normal',
     isRetry: facts.isRetry,
   });
@@ -230,6 +230,12 @@ function planTurnFinalization(input = {}, deps = {}) {
 
 function statusEffects(plan, durableAfterAppend) {
   const facts = plan.facts;
+  if (!facts.apiError && !facts.killReason && !facts.guardedHandoffResumeFailure && !isCompleted(facts.completion)) return [
+    effect('set-status', { status: 'waiting', reason: 'runner-not-completed' }),
+    effect('freeze-interrupted', { reason: facts.completion.state === 'failed' ? 'error'
+      : facts.completion.state === 'cancelled' ? 'cancelled' : 'unknown_interruption' }),
+    effect('classify-turn-end', { classification: facts.completion.state === 'unknown' ? 'unknown-interruption' : 'interrupted' }),
+  ];
   if (facts.runnerKind === 'process') {
     if (facts.killReason) return [
       effect('set-status', { status: 'waiting', reason: 'explicit-kill' }),
@@ -376,7 +382,7 @@ function resolveTurnFinalization(plan, outcome = {}) {
       || (!facts.resultEvent && facts.exitKind !== 'normal');
   effects.push(effect('run-post-turn', {
     guard: 'current-runner-and-durable-final-result',
-    interrupted,
+    interrupted: interrupted || !isCompleted(facts.completion),
     apiError: facts.apiError,
     retryPlanned: facts.retryPlanned,
     handoffResumeFailure: facts.guardedHandoffResumeFailure,

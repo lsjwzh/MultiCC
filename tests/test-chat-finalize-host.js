@@ -68,6 +68,7 @@ function context(overrides = {}) {
 
 function processPlan(overrides = {}) {
   return planTurnFinalization({
+    completion: { version: 1, state: 'completed', settled: true },
     current: true,
     runnerKind: 'process',
     cli: 'codex',
@@ -180,6 +181,7 @@ test('unknown stream interruption freezes and never invokes automatic resume', (
     runner: { resultEvent: false },
   });
   const plan = planTurnFinalization({
+    completion: { version: 1, state: 'completed', settled: true },
     current: true,
     runnerKind: 'stream',
     cli: 'claude',
@@ -203,6 +205,7 @@ test('the boundary verdict reaches the classify port instead of being dropped', 
     runner: { resultEvent: false },
   });
   harness.executor.execute(planTurnFinalization({
+    completion: { version: 1, state: 'completed', settled: true },
     current: true, runnerKind: 'stream', cli: 'claude',
     hasOutput: false, resultEvent: false, resultDurable: false, apiError: true,
   }), ctx);
@@ -214,6 +217,7 @@ test('the boundary verdict reaches the classify port instead of being dropped', 
   // and leaves it to the classify centre to decide which labels are conclusive.
   const plain = createHarness();
   plain.executor.execute(planTurnFinalization({
+    completion: { version: 1, state: 'completed', settled: true },
     current: true, runnerKind: 'stream', cli: 'claude',
     hasOutput: true, resultEvent: true, resultDurable: true,
   }), context({

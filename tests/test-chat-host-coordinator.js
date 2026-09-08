@@ -40,6 +40,7 @@ function makeOwned(overrides = {}) {
     ...(overrides.routeProof ? { routeProof: overrides.routeProof } : {}),
     ...(overrides.usageAttribution ? { usageAttribution: overrides.usageAttribution } : {}),
   });
+  runner.completionOutcome = { version: 1, state: 'completed', settled: true };
   return { request, turn, runner, currentTurn: turn, currentRunner: runner };
 }
 
