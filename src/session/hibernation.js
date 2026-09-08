@@ -56,6 +56,7 @@ function evaluateSessionEligibility(record, {
   const reasons = [];
   if (!record || record.kind !== 'chat') reasons.push('not_task_chat');
   if (!record?.taskBoundTaskId) reasons.push('not_task_bound');
+  if (record?.workspaceOwnerSessionId) reasons.push('shared_shell_workspace');
   if (record?.taskExecutionSlot) reasons.push('task_execution_slot');
   if (record?.ephemeral) reasons.push('ephemeral');
   if (record?.experimental || record?.experimentalMode) reasons.push('experimental');
@@ -333,7 +334,7 @@ function createSessionHibernationRuntime(options = {}) {
       for (const [id, lastWorkAt] of missing) if (map.get(id) && !map.get(id).lastWorkAt) map.get(id).lastWorkAt = lastWorkAt;
     });
     for (const record of records.values()) {
-      if (!record?.taskBoundTaskId || record.kind !== 'chat') continue;
+      if (!record?.taskBoundTaskId || record.kind !== 'chat' || record.workspaceOwnerSessionId) continue;
       const state = stateOf(record);
       if (state === 'awake') continue;
       const observed = await inspect(record);
@@ -356,8 +357,9 @@ function createSessionHibernationRuntime(options = {}) {
   }
 
   async function admit(sessionId, admission) {
-    return serialized(sessionId, async () => {
-      const awake = await ensureAwakeUnlocked(sessionId);
+    const ownerId = records.get(sessionId)?.workspaceOwnerSessionId || sessionId;
+    return serialized(ownerId, async () => {
+      const awake = await ensureAwakeUnlocked(ownerId);
       if (!awake.ok) return awake;
       const result = await admission();
       if (result && result.ok !== false) touchUnlocked(sessionId, 'runtime.hibernate.admission');
@@ -488,6 +490,7 @@ async function initializeSessionWorktrees(options = {}) {
   let built = 0;
   for (const session of records.values()) {
     if (session.type === 'aux' || session.id === auxSessionId || session.type === 'gateway') continue;
+    if (session.workspaceOwnerSessionId) continue;
     if (['hibernated', 'hibernating'].includes(stateOf(session))) continue;
     const directory = directories.get(session.dirId);
     if (!directory) { invalidSessions.set(session.id, 'no directory'); continue; }

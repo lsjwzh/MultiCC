@@ -1197,7 +1197,7 @@
   "taskShellRetry": "重试原投递",
   "taskShellReceipts": "未确认的投递",
   "taskShellDetach": "移除此壳",
-  "taskShellScope": "独立执行会话与工作区；不复制未提交代码、不自动合并分支。消息统一经任务会话投递。",
+  "taskShellScope": "会话内任务共用该会话工作区；独立任务拥有独立工作区。会话来源任务在任务板只读，手动 Fork 后可独立执行。",
   "taskShellRetryFirst": "上次投递尚未确认，请先重试原投递。",
   "taskShellAccepted": "消息已接收",
   "taskShellNewAccepted": "新任务已创建并接收消息。",
@@ -1208,5 +1208,11 @@
   "taskShellCancelConfirm": "停止当前显示的任务回合？",
   "taskShellDetachConfirm": "移除此会话壳？任务、历史和其他会话壳仍然保留。",
   "taskShellSnapshotDetails": "查看引用版本",
-  "taskShellSnapshotSummary": "{task} · 版本 {hash} · {included} 个完成回合，省略 {omitted} 个回合"
+  "taskShellSnapshotSummary": "{task} · 版本 {hash} · {included} 个完成回合，省略 {omitted} 个回合",
+  "taskBoardReadOnlyHint": "此任务来自普通会话，仅可查看。返回原会话继续，或 Fork 为独立任务。",
+  "taskBoardReturnConversation": "返回原会话",
+  "taskBoardForkIndependent": "Fork 为独立任务",
+  "taskBoardForkSourceBusy": "源工作区正在执行，请结束后再 Fork。",
+  "taskBoardForkSourceDirty": "源工作区有未提交修改，请先在原会话提交后再 Fork。",
+  "taskBoardForking": "正在创建独立任务…"
 }

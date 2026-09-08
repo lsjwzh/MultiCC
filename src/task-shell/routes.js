@@ -12,6 +12,13 @@ function mountTaskShellRoutes(app, { getRuntime, open = id => getRuntime().open(
         ...(error.receiptId ? { receiptId: error.receiptId, taskId: error.taskId, notDelivered: error.notDelivered === true } : {}) });
     }
   };
+  app.get('/api/task-shell-tasks/:taskId', route((runtime, req) => runtime.taskEntry(req.params.taskId)));
+  app.post('/api/task-shell-tasks/:taskId/fork', route((runtime, req) => runtime.forkTask(req.params.taskId, req.body)));
+  app.post('/api/task-shell-tasks/:taskId/messages', route(async (runtime, req) => {
+    runtime.assertBoardWritable(req.params.taskId);
+    const entry = await runtime.taskEntry(req.params.taskId);
+    return runtime.sendExplicit(entry.ownerShellId, req.body, { taskId: req.params.taskId, taskStart: true });
+  }));
   // Discovery remains stable for cached clients; there is no switch or fallback.
   app.get('/api/task-shells/config', (_req, res) => res.json({ enabled: true }));
   app.get('/api/sessions/:sessionId/context', route((runtime, req) => runtime.contextTrace(

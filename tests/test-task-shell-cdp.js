@@ -12,7 +12,7 @@ test('task shell browser: current-task queue, explicit new task, token saving, r
   if (!findChromeBinary()) return t.skip('Chrome is required');
   const f = fixture(t), routes = {};
   const json = (value, status = 200) => ({ status, headers: { 'content-type': 'application/json' }, body: JSON.stringify(value) });
-  for (const file of ['task-shell.html', 'task-shell.js', 'task-shell-client.js', 'task-shell.css', 'safe-markdown.js', 'i18n.js', 'i18n-catalog.js', 'vendor/dompurify/purify.min.js']) {
+  for (const file of ['task-shell.html', 'task-shell.js', 'task-shell-client.js', 'task-board-entry.js', 'task-shell.css', 'safe-markdown.js', 'i18n.js', 'i18n-catalog.js', 'vendor/dompurify/purify.min.js']) {
     routes['/' + file] = { body: fs.readFileSync(path.join(__dirname, '..', 'public', file)), headers: { 'content-type': file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html' } };
   }
   routes['/auth-client.js'] = { body: '', headers: { 'content-type': 'text/javascript' } };
@@ -70,5 +70,46 @@ test('task shell browser: current-task queue, explicit new task, token saving, r
       assert.equal(await page.evaluate('document.documentElement.scrollWidth <= 390'), true);
       console.log('Task shell mobile screenshot:', await page.screenshot('task-shell-mobile'));
     });
+  });
+});
+
+
+test('board browser fails closed, previews conversation history and forks only on explicit action', async t => {
+  if (!findChromeBinary()) return t.skip('Chrome is required');
+  const f = fixture(t, { captureForkBaseline: async () => ({ commit: 'a'.repeat(40) }) });
+  const source = f.runtime.adopt(f.a.id, 'a');
+  f.histories.set('a', [{ id: 'u', role: 'user', taskId: source.id, content: 'Source requirement' }]);
+  const routes = {}, json = (value, status = 200) => ({ status, headers: { 'content-type': 'application/json' }, body: JSON.stringify(value) });
+  for (const file of ['task-shell.html', 'task-shell.js', 'task-board-entry.js', 'task-shell-client.js', 'task-shell.css', 'safe-markdown.js', 'i18n.js', 'i18n-catalog.js', 'vendor/dompurify/purify.min.js']) {
+    routes['/' + file] = { body: fs.readFileSync(path.join(__dirname, '..', 'public', file)), headers: { 'content-type': file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html' } };
+  }
+  routes['/auth-client.js'] = { body: '', headers: { 'content-type': 'text/javascript' } };
+  let failRead = true, fork;
+  routes[`/api/task-shell-tasks/${source.id}`] = async () => failRead ? json({ code: 'unavailable' }, 503) : json(await f.runtime.taskEntry(source.id));
+  routes[`POST /api/task-shell-tasks/${source.id}/fork`] = async ({ body }) => {
+    fork = await f.runtime.forkTask(source.id, JSON.parse(body));
+    routes[`/api/task-shell-tasks/${fork.taskId}`] = async () => json(await f.runtime.taskEntry(fork.taskId));
+    routes[`POST /api/task-shell-tasks/${fork.taskId}/messages`] = async ({ body: message }) => json(await f.runtime.sendExplicit(fork.shellId, JSON.parse(message), { taskId: fork.taskId, taskStart: true }));
+    return json(fork);
+  };
+  await withCdpHarness({ routes }, async page => {
+    await page.navigate(`/task-shell.html?task=${source.id}&board=1`);
+    await page.send('Page.bringToFront');
+    assert.ok(await page.waitFor('document.getElementById("notice").textContent.includes("unavailable")'));
+    assert.equal(await page.evaluate('document.getElementById("composer").hidden'), true);
+    failRead = false;
+    assert.ok(await page.waitFor('document.getElementById("history").textContent.includes("Source requirement")'));
+    assert.equal(await page.evaluate('document.getElementById("composer").hidden && document.getElementById("question").hidden && !document.getElementById("board-actions").hidden'), true);
+    assert.equal(f.creations.length, 0); assert.equal(f.sends.length, 0);
+    await page.evaluate('document.getElementById("fork-task").click()');
+    assert.ok(await page.waitFor('!document.getElementById("composer").hidden && document.getElementById("history").textContent.includes("Source requirement")'));
+    assert.equal(f.creations.length, 1); assert.equal(f.sends.length, 0);
+    assert.equal(f.runtime.view(f.a.id).currentTaskId, source.id);
+    assert.equal(await page.evaluate('document.getElementById("board-actions").hidden'), true);
+    await page.evaluate('document.getElementById("message").value="Continue fork";document.getElementById("composer").requestSubmit()');
+    assert.ok(await page.waitFor('!document.getElementById("send").disabled && document.getElementById("message").value === ""'));
+    assert.equal(f.sends.length, 1); assert.equal(f.sends[0].id, fork.sessionId);
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+    assert.equal(await page.evaluate('document.documentElement.scrollWidth <= 390'), true);
   });
 });
