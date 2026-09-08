@@ -43,6 +43,15 @@ classify verdict may decide what happens next:
 - `B` permits only a correlated callback or continuation.
 - `E` permits only a correlated retry or resume.
 
+An unresolved structured user question also holds work already staged behind
+the asking turn, including task-shell messages typed as `continuation` and
+other queued controls. Only the answer with the matching request ID bypasses
+that hold. The hold survives reload and covers the W-publication/completion
+gap. A new user message after the turn releases, or an explicit "insert now"
+action, can supersede the question; task-shell user input retains this user
+intent when delivered and broadcasts the question settlement to all clients.
+Automatic continuations do not settle a question merely by starting a turn.
+
 If classify is unavailable, the entry remains in assessment and the classify
 loop retries. Transport failures release their delivery claim for retry; they
 do not create a second FIFO completion/freeze authority.

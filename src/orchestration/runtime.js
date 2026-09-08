@@ -789,7 +789,8 @@ function createOrchestrationRuntime({
         clientMsgId: payload.options?.clientMsgId || item.id,
         schedulerEntryId: lineage.activeEntryId || payload.activeEntryId || item.id,
         schedulerWorkKind: effectiveWorkKind,
-        directUserInput: payload.source === 'direct',
+        directUserInput: payload.source === 'direct'
+          || (payload.source === 'task-shell' && !!payload.options?.taskShellReceiptId),
         userInputRequestId: payload.requestId || undefined,
       };
     }
