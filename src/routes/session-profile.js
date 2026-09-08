@@ -469,7 +469,11 @@ function createSessionProfileRoutes(rawDeps) {
         ts: Date.now(),
         forkedFrom: { sessionId: src.id, atMessageId: atMessageId || null, atTs: sliced.length ? sliced[sliced.length - 1].ts : null },
       };
-      const newHistory = [forkMeta, ...sliced];
+      // Replay context without importing the source task's identity. Provenance
+      // stays available for inspection; adoption allocates the fork's own task.
+      const inherited = sliced.map(({ taskId, taskName, ...message }) => ({ ...message, inherited: true,
+        inheritedFrom: { sessionId: src.id, messageId: message.id, taskId: taskId || null, taskName: taskName || null } }));
+      const newHistory = [forkMeta, ...inherited];
       getChatHistoryService().replace(newSid, newHistory, { reason: 'fork' });
 
       // A fork has a fresh vendor-native session, so copying display history alone
