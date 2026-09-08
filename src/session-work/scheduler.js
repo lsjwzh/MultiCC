@@ -1037,6 +1037,27 @@ function createSessionWorkScheduler({
     return result;
   }
 
+  // Bookkeeping for an explicitly dismissed question after W released the slot.
+  // The classify host owns the D verdict; this never admits or runs new work.
+  async function settleUserInput(sessionId, requestId) {
+    return store.mutate(draft => {
+      const schedule = draft.sessionSchedules[sessionId];
+      if (!schedule) return { ok: true };
+      if (schedule.active) return { ok: false, code: 'stale_classification' };
+      if (schedule.awaitingRequestId && schedule.awaitingRequestId !== requestId) {
+        return { ok: false, code: 'request_id_mismatch' };
+      }
+      schedule.awaitingRequestId = null;
+      schedule.classifyState = 'D';
+      schedule.state = 'idle';
+      schedule.freezeReason = null;
+      schedule.lastDecision = { ...schedule.lastDecision, action: 'dismiss_user_input',
+        requestId, actor: 'user', at: Number(now()) };
+      schedule.updatedAt = Number(now());
+      return { ok: true };
+    });
+  }
+
   async function status(sessionId) {
     return store.read(draft => {
       const schedule = draft.sessionSchedules[sessionId];
@@ -1447,6 +1468,7 @@ function createSessionWorkScheduler({
     freeze,
     complete,
     resolve,
+    settleUserInput,
     cancelQueued,
     insertQueued,
     status,

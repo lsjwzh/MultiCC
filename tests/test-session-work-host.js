@@ -70,6 +70,7 @@ function fixture(options = {}) {
     getChatSession: () => chatState,
     getTaskState: value => value?.taskState || {},
     pendingUserInput: () => pending,
+    getTurnLiveness: () => options.liveness || { state: 'inactive' },
     recordUserInput: () => ({ ok: true }),
     resolveUserInput: (sessionId, requestId) => {
       calls.push(['resolve-user-input', sessionId, requestId]);
@@ -905,4 +906,32 @@ test('replayState sends no user-input events when no card ever existed', () => {
   const sent = collectReplay(h);
   assert.ok(!sent.some(msg => msg.type === 'user_input_required'));
   assert.ok(!sent.some(msg => msg.type === 'user_input_resolved'));
+});
+
+
+test('manual dismissal consumes only the matching wait and submits a structured verdict without an AI turn', async () => {
+  const h = fixture({ record: { id: 's1', kind: 'chat', taskState: { classifyState: 'W' } } });
+  h.forceState('idle');
+  h.setPending({ requestId: 'old', taskId: 'task-1' });
+  assert.equal((await h.host.dismissUserInput('s1', 'wrong')).code, 'request_id_mismatch');
+  assert.equal(h.calls.length, 0);
+  assert.equal((await h.host.dismissUserInput('s1', 'old')).ok, true);
+  const verdict = h.calls.find(c => c[0] === 'dispatch');
+  assert.equal(verdict[1].state, 'D');
+  assert.equal(verdict[1].evidence, 'user_dismissed_question');
+  assert.equal(verdict[2].taskId, 'task-1');
+  assert.equal(h.calls.some(c => ['admit', 'tick', 'cancel-preparation'].includes(c[0])), false);
+  assert.equal((await h.host.dismissUserInput('s1', 'old')).duplicate, true);
+  assert.equal(h.calls.filter(c => c[0] === 'dispatch').length, 1);
+});
+
+test('manual dismissal rejects running turns, uncertain owners, and external waits', async () => {
+  for (const options of [{ chatState: { isStreaming: true } }, { liveness: { state: 'unknown' } }, { external: true }]) {
+    const h = fixture(options);
+    h.forceState('idle');
+    h.setPending({ requestId: 'old' });
+    if (options.external) h.setPendingWait(true);
+    assert.equal((await h.host.dismissUserInput('s1', 'old')).ok, false);
+    assert.equal(h.calls.some(c => c[0] === 'resolve-user-input'), false);
+  }
 });

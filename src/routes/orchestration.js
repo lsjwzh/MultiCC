@@ -430,6 +430,20 @@ function createOrchestrationRoutes(rawDeps) {
       }
     });
 
+    if (deps.dismissUserInput) app.post('/api/sessions/:id/user-input/dismiss', async (req, res) => {
+      if (!deps.records.get(req.params.id)) return res.status(404).json({ error: 'session_not_found' });
+      const requestId = req.body?.requestId;
+      if (typeof requestId !== 'string' || !requestId.trim() || requestId.length > 160) {
+        return res.status(400).json({ error: 'request_id_required' });
+      }
+      try {
+        const result = await deps.dismissUserInput(req.params.id, requestId.trim());
+        return res.status(result.ok ? 200 : 409).json(result);
+      } catch (error) {
+        return res.status(500).json({ error: error.message });
+      }
+    });
+
     if (deps.runtime.sessionScheduler) app.get('/api/sessions/:id/queue', async (req, res) => {
       const session = deps.records.get(req.params.id);
       if (!session) return res.status(404).json({ error: 'session not found' });

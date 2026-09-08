@@ -983,7 +983,22 @@ function hideThinking() { return chatLiveUi.hideThinking(); }
  * owned by chat-composer.js. These wrappers preserve the classic globals used
  * by Goal mode, the native WebView bridge and older diagnostic snippets. */
 let chatComposer = null;
-const pendingUserInputController = window.MultiCCChatUserInputCard.createController({ document, isConnected: () => !!ws && ws.readyState === WebSocket.OPEN, submitAnswer: answer => { inputEl.value = answer; return chatComposer?.send() === true; } });
+const pendingUserInputController = window.MultiCCChatUserInputCard.createController({
+  document, isConnected: () => !!ws && ws.readyState === WebSocket.OPEN,
+  submitAnswer: answer => { inputEl.value = answer; return chatComposer?.send() === true; },
+  dismissRequest: async requestId => {
+    const result = await chatApi.json(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/user-input/dismiss`), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ requestId }),
+    });
+    if (result.ok && chatEventState.pendingUserInputRequestId === requestId) chatEventState.pendingUserInputRequestId = null;
+    return result;
+  },
+  showError: error => addSystemMsg('解除等待失败：' + ({
+    turn_still_active: '会话仍在执行，请结束后再处理。',
+    request_id_mismatch: '待回答问题已变化，请刷新后处理。',
+    external_wait_pending: '会话还有外部任务在等待，请先处理外部任务。',
+  }[error.code || error.message] || chatApi.errorText(error))),
+});
 function newClientMsgId() { return window.MultiCCChatComposer.defaultClientMessageId(); }
 function send(opts = {}) { return chatComposer?.send(opts); }
 function cancelStreaming() { return chatComposer?.cancelStreaming(); }

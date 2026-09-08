@@ -160,6 +160,55 @@ function createSessionWorkHost(deps = {}) {
     return admitted;
   }
 
+  // A manual settlement consumes the question, without admitting an answer or
+  // starting a provider turn. Recheck after the asynchronous scheduler read.
+  async function dismissUserInput(sessionId, requestId) {
+    const record = deps.getRecord(sessionId);
+    if (!record) return { ok: false, code: 'session_not_found' };
+    if (!requestId) return { ok: false, code: 'request_id_required' };
+    const queue = await scheduler()?.status(sessionId);
+    if (!queue) return { ok: false, code: 'scheduler_not_ready' };
+    const pending = deps.pendingUserInput(sessionId);
+    if (!pending || pending.requestId !== requestId) {
+      return { ok: false, code: pending ? 'request_id_mismatch' : 'no_pending_request' };
+    }
+    if (pending.resolved === true) return { ok: true, duplicate: true };
+    const cs = deps.getChatSession(sessionId);
+    const state = deps.getTaskState(record) || {};
+    if (cs?.isStreaming || state.classifyState === 'P'
+        || (queue.active && queue.state !== 'frozen')) {
+      return { ok: false, code: 'turn_still_active' };
+    }
+    if (schedulerRuntime()?.hasPending(sessionId)) return { ok: false, code: 'external_wait_pending' };
+    if (queue.active?.taskId && pending.taskId && queue.active.taskId !== pending.taskId) {
+      return { ok: false, code: 'active_task_mismatch' };
+    }
+    let liveness = deps.getTurnLiveness?.(sessionId);
+    if (liveness?.reason === 'no_chat_runtime' && !queue.active) {
+      liveness = { state: 'inactive', reason: 'unloaded_idle_session' };
+    }
+    if (liveness?.state !== 'inactive') return { ok: false, code: 'turn_still_active' };
+    const resolved = deps.resolveUserInput(sessionId, requestId, { dismissed: true });
+    if (!resolved?.ok) return resolved;
+    deps.dispatchStateAction({
+      state: 'D', goal: state.goal || '', phase: state.phase || '',
+      evidence: 'user_dismissed_question', requestId,
+    }, {
+      sessionName: sessionId, sessionId: record.id || sessionId,
+      cs: cs || null, isTerminal: record.kind !== 'chat', taskId: pending.taskId || null,
+      source: 'user_input_dismiss', liveness,
+    });
+    const transition = pendingTransitions.get(sessionId);
+    if (transition) {
+      const result = await transition;
+      if (result?.ok === false && result.code !== 'stale_classification') return result;
+    }
+    if (pending.taskId) deps.reconcileTaskProjection?.(pending.taskId, {
+      classifyState: 'D', reason: 'user_dismissed_question',
+    });
+    return { ok: true, requestId, resolution: 'dismissed' };
+  }
+
   async function resolveTask(sessionId, taskId) {
     const runtime = schedulerRuntime();
     if (!runtime?.sessionScheduler) return { ok: false, code: 'scheduler_not_ready' };
@@ -305,6 +354,9 @@ function createSessionWorkHost(deps = {}) {
           sessionId,
           reason: options.livenessReason || 'confirmed_inactive',
         });
+      }
+      if (!current?.active && result.evidence === 'user_dismissed_question') {
+        return target.settleUserInput(sessionId, result.requestId);
       }
       if (!current?.active || !['assessing', 'frozen'].includes(current.state)) {
         return { ok: false, code: 'stale_classification' };
@@ -841,6 +893,7 @@ function createSessionWorkHost(deps = {}) {
     recoveryState,
     replayState,
     resolveTask,
+    dismissUserInput,
     turnFailed,
     turnSucceeded,
   });
