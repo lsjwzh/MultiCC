@@ -9,6 +9,7 @@ const fail = (code, message = code, status = 409) => Object.assign(new Error(mes
 function createTaskActions({ store, getRecord, getTask, getHistory, getExecution, createExecution, indexTask, ports, shell, open, chatScope }) {
   const forks = new Map();
   function findTask(id) {
+    if (ports.isDeletedTask?.(id)) throw fail('task_not_found', 'Task not found', 404);
     const task = store.get('task', id) || getTask(id);
     if (!task) throw fail('task_not_found', 'Task not found', 404);
     return task;
@@ -29,7 +30,8 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
   function access(taskOrId) {
     const task = typeof taskOrId === 'string' ? findTask(taskOrId) : store.get('task', taskOrId.id) || taskOrId;
     const owner = ownerOf(task);
-    return { readOnly: owner ? !owner.standalone : task.origin !== 'board', ownerShellId: owner?.id || null,
+    const lifecycle = getTask(task.id) || task;
+    return { status: lifecycle.status || 'active', readOnly: lifecycle.status === 'archived' || lifecycle.deleting === true || (owner ? !owner.standalone : task.origin !== 'board'), ownerShellId: owner?.id || null,
       sourceSessionId: owner?.sourceSessionId || null, forkedFromTaskId: task.forkedFromTaskId || null };
   }
   async function taskEntry(id) {
@@ -49,6 +51,8 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
     if (access(id).readOnly) throw fail('task_board_read_only', 'Return to the original conversation or fork an independent task');
   }
   async function forkTask(id, input = {}) {
+    if (ports.isTaskLifecycleBusy?.(id)) throw fail('task_busy');
+    if (getTask(id)?.status === 'archived' || getTask(id)?.deleting) throw fail('task_archived');
     if (typeof input.clientMsgId !== 'string' || !/^[\w.:-]{1,160}$/.test(input.clientMsgId)) throw fail('invalid_input', 'clientMsgId required', 400);
     const key = `fork_${hash([id, input.clientMsgId]).slice(0, 40)}`;
     if (forks.has(key)) return forks.get(key);

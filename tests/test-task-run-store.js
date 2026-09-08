@@ -64,6 +64,29 @@ function seal(store, runId, executionStatus = 'succeeded') {
   });
 }
 
+test('permanent task purge removes run messages and usage while preserving other tasks', t => {
+  const files = tempDatabase(t), store = createTaskRunStore({ file: files.file });
+  t.after(() => store.close());
+  store.beginRun(runInput());
+  store.beginRun(runInput({ runId: 'keep-run', taskId: 'keep-task', attemptId: 'keep-attempt', slotId: 'keep-slot' }));
+  store.appendMessage({ runId: 'run-1', messageId: 'm1', role: 'user', content: 'delete this' });
+  store.observeUsage({ runId: 'run-1', event: usageEvent() });
+  assert.throws(() => store.purgeTask('task-1'), { code: 'task_busy' });
+  assert.equal(store.getRunMessages('run-1').length, 1);
+  seal(store, 'run-1');
+  assert.equal(store.purgeTask('task-1'), 1);
+  assert.throws(() => store.getRun('run-1'), { code: 'TASK_RUN_NOT_FOUND' });
+  assert.equal(store.listTaskRuns('task-1').length, 0);
+  assert.equal(store.listTaskRuns('keep-task').length, 1);
+  assert.equal(store.purgeTask('task-1'), 0);
+  const db = new Database(files.file, { readonly: true });
+  for (const table of ['task_run_messages', 'task_run_usage_events', 'task_run_usage_dimensions']) {
+    assert.equal(db.prepare(`SELECT count(*) AS n FROM ${table} WHERE run_id = ?`).get('run-1').n, 0);
+  }
+  assert.deepEqual(db.pragma('foreign_key_check'), []);
+  db.close();
+});
+
 test('opens a private WAL/FULL SQLite store and persists runs and ordered messages', t => {
   const files = tempDatabase(t);
   let clock = 100;
@@ -820,4 +843,3 @@ test('annotateRun merges observability fields into run metadata without touching
   assert.equal(store.annotateRun('run-missing', { mergedAt: 5 }), false);
   store.close();
 });
-
