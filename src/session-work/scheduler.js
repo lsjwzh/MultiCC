@@ -317,6 +317,7 @@ function createSessionWorkScheduler({
       return {
         requestId: String(pending.requestId),
         taskId: pending.taskId ? String(pending.taskId) : null,
+        createdAt: Number(pending.createdAt) || null,
       };
     } catch (error) {
       log(`[session-work] pending user input read failed for ${sessionId}: ${error.message}`);
@@ -386,7 +387,18 @@ function createSessionWorkScheduler({
     if (!items.length) return null;
     const schedule = draft.sessionSchedules[items[0].sessionId];
     const priorityEntryId = schedule?.priorityEntryId || null;
-    const ordered = [...items].sort((a, b) => {
+    const pending = canonicalPendingUserInput(items[0].sessionId);
+    const ordered = items.filter(item => {
+      if (!pending || isActiveReplay(schedule, item)) return true;
+      if (isUserInputAnswer(item) && item.payload.requestId === pending.requestId) return true;
+      // Explicitly promoting an entry is a new user decision about this wait.
+      if (item.userInputOverrideId === pending.requestId) return true;
+      if (item.blockedByUserInput === pending.requestId) return false;
+      if (schedule?.active && ['starting', 'running', 'assessing'].includes(schedule.state)) return false;
+      // Also cover recovery and the gap between publishing W and complete().
+      // A continuation queued before the question is not an answer to it.
+      return !pending.createdAt || Number(item.createdAt) > pending.createdAt;
+    }).sort((a, b) => {
       if (a.id === priorityEntryId && b.id !== priorityEntryId) return -1;
       if (b.id === priorityEntryId && a.id !== priorityEntryId) return 1;
       return a.sequence - b.sequence;
@@ -863,11 +875,17 @@ function createSessionWorkScheduler({
       // it ran fire ahead of the user's answer. directRun exists for messages
       // admitted while the session is ALREADY at rest; items that merely headed
       // the FIFO when the question landed hold at rest until the user acts.
-      // Control kinds (the answer itself) keep their own selection path.
-      if (schedule.classifyState === 'W' && canonicalPendingUserInput(sessionId)) {
+      // Shell user messages are typed as continuations too; that transport
+      // kind does not authorize them to bypass an unanswered question.
+      const pending = canonicalPendingUserInput(sessionId);
+      if (schedule.classifyState === 'W' && pending) {
         for (const item of Object.values(draft.outbox || {})) {
           if (item && item.sessionId === sessionId && item.state === 'pending'
-              && !isControlItem(item)) item.directRun = false;
+              && !(isUserInputAnswer(item) && item.payload.requestId === pending.requestId)
+              && item.userInputOverrideId !== pending.requestId) {
+            item.directRun = false;
+            item.blockedByUserInput = pending.requestId;
+          }
         }
       }
       schedule.lastDecision = {
@@ -1153,6 +1171,7 @@ function createSessionWorkScheduler({
       // the route cancels/releases the active slot, directRun makes this exact
       // pending entry immediately selectable even when the prior verdict is E.
       item.directRun = true;
+      item.userInputOverrideId = canonicalPendingUserInput(sessionId)?.requestId || null;
       schedule.priorityEntryId = cleanEntryId;
       schedule.updatedAt = at;
       return {

@@ -655,6 +655,34 @@ test('busy and rejected delivery defer transport without changing the classify g
   assert.equal((await runtime.outbox.get(`wait:${registered.id}`)).state, 'delivered');
 });
 
+test('a user shell continuation supersedes the old question; automatic continuations preserve it', async t => {
+  const { createUserInputSignalHost } = require('../src/classify/user-input-host');
+  for (const source of ['task-shell', 'continuation']) {
+    let state = { pendingUserInput: { requestId: 'q1', turnId: 'old-turn', taskId: 'task-1', resolved: false } };
+    const settlements = [];
+    const userInput = createUserInputSignalHost({ getSession: () => ({}), getState: () => state,
+      setState: (_, patch) => { state = { ...state, ...patch }; },
+      onResolved: (...args) => settlements.push(args) });
+    const { runtime, injections } = fixture(t, {
+      runChatTurn: async (sid, text, opts) => {
+        injections.push({ opts });
+        userInput.beginTurn(sid, { originContinue: opts.originContinue && !opts.directUserInput, turnId: 'new-turn' });
+        return true;
+      },
+    });
+    await runtime.admitSessionWork({ sessionId: 'worker', text: 'new instruction', source,
+      options: { originContinue: true, ...(source === 'task-shell' ? { taskShellReceiptId: 'receipt-1' } : {}) },
+      idempotencyKey: 'new-message' });
+    assert.equal(injections.length, 1);
+    assert.equal(injections[0].opts.originContinue, true, 'native continuation keeps its task lineage');
+    assert.equal(injections[0].opts.directUserInput, source === 'task-shell');
+    assert.equal(settlements.length, source === 'task-shell' ? 1 : 0);
+    assert.equal(userInput.pending('worker') === null, source === 'task-shell');
+    if (source === 'task-shell') assert.equal(userInput.lastResolved('worker').superseded, true);
+    await runtime.stop();
+  }
+});
+
 test('direct messages and dispatch requests share one success-gated FIFO', async t => {
   const { runtime, injections } = fixture(t);
   const first = await runtime.admitSessionWork({
