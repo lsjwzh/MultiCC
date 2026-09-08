@@ -28,6 +28,9 @@ const os = require('os');
 const path = require('path');
 
 const POLL_TIMEOUT_MS = 6000;
+// 借道余量透传：出借方收到查询后自己触发对厂商的真实余量查询（可能比本机
+// 直查慢），给一个比 POLL_TIMEOUT_MS 更长的下限，等它把最新结果传回来。
+const RELAY_TIMEOUT_MS = 20 * 1000;
 // Window quota moves with usage → refresh often. Money balance moves slowly →
 // poll lazily. Both are ceilings on staleness, not fixed timers: a poll only
 // fires at a turn boundary when the cached snapshot for that account is older.
@@ -37,6 +40,8 @@ const TTL_BY_STRATEGY = Object.freeze({
   // Codex's weekly window moves slowly, but the read is free (a plain GET, no
   // quota consumed) so refresh once a minute to keep the bar current per turn.
   'codex-oauth-usage': 60 * 1000,
+  // 借道：出借方端点的读取代价与其本机直查相同，同窗口节奏即可。
+  'relay-quota': 60 * 1000,
 });
 
 // A weekly window is any rolling window at least ~a day long. The ChatGPT usage
@@ -62,6 +67,20 @@ async function fetchJson(url, headers, timeoutMs) {
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(url, { method: 'GET', headers, signal: controller.signal });
+    if (!res || !res.ok) return null;
+    return await res.json();
+  } catch (_) {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function postJson(url, headers, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { method: 'POST', headers, signal: controller.signal });
     if (!res || !res.ok) return null;
     return await res.json();
   } catch (_) {
@@ -204,10 +223,40 @@ async function pollCodexUsage(target, nowMs, timeoutMs = POLL_TIMEOUT_MS, readAu
   };
 }
 
+// 借道余量透传（导入方适配器）：POST 到出借方的 relay quota 端点
+// （…/claude-proxy/<id>/remote/quota 或 …/codex-proxy/<id>/quota，见
+// src/routes/provider-balance.js mountProviderRelayQuotaRoutes）。出借方收到
+// 请求后自己触发对厂商的真实余量查询并把最新 DTO 传回，本机原样透传——本机
+// 只持有借道凭据（mcr1.*，作 Bearer），没有任何厂商凭据。失败 / 超时 / 形状
+// 漂移一律 null：绝不伪造，绝不把错误抛进聊天流。
+async function pollRelayQuota(target, nowMs, timeoutMs = POLL_TIMEOUT_MS) {
+  const url = String((target && target.relayUrl) || '').trim();
+  const apiKey = String((target && target.apiKey) || '').trim();
+  if (!/^https?:\/\//i.test(url) || !apiKey) return null;
+  const body = await postJson(
+    `${url.replace(/\/+$/, '')}/quota`,
+    { Authorization: `Bearer ${apiKey}` },
+    Math.max(timeoutMs, RELAY_TIMEOUT_MS),
+  );
+  if (!body || body.ok !== true) return null;
+  const dto = body.dto;
+  if (!dto || typeof dto !== 'object') return null;
+  // 只透传两种已知 DTO；出借方响应里出现其它形状（或伪造 kind）时按无数据处理。
+  if (dto.kind === 'window') {
+    if (typeof dto.utilization !== 'number' || !Number.isFinite(dto.utilization)) return null;
+  } else if (dto.kind === 'balance') {
+    if (typeof dto.available !== 'boolean' && typeof dto.available !== 'number') return null;
+  } else {
+    return null;
+  }
+  return dto;
+}
+
 const ADAPTERS = Object.freeze({
   'glm-monitor': pollGlmMonitor,
   'deepseek-balance': pollDeepseekBalance,
   'codex-oauth-usage': pollCodexUsage,
+  'relay-quota': pollRelayQuota,
 });
 
 // ── Poller: dedup by account, TTL cache, best-effort broadcast. ──
@@ -265,6 +314,7 @@ module.exports = {
   pollGlmMonitor,
   pollDeepseekBalance,
   pollCodexUsage,
+  pollRelayQuota,
   keyHash,
   TTL_BY_STRATEGY,
 };
