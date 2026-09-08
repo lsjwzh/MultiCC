@@ -52,6 +52,11 @@ test('no source module reverse requires server.js', () => {
 });
 
 test('production request paths do not run synchronous child processes', () => {
+  // src/server-processes.js is the restart manager's CLI: the multicc script
+  // and the delayed restart manager spawn it as its own process (`node
+  // src/server-processes.js list|stop|lock-alive|owner`), so it never runs
+  // inside a request path and may deliberately block.
+  const exempt = new Set(['src/server-processes.js']);
   const files = ['server.js'];
   const visit = (directory) => {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
@@ -63,6 +68,7 @@ test('production request paths do not run synchronous child processes', () => {
   visit('src');
   visit('plugins');
   for (const file of files) {
+    if (exempt.has(file)) continue;
     const source = fs.readFileSync(file, 'utf8');
     assert.doesNotMatch(source, /\b(?:execSync|execFileSync|spawnSync)\b/, file);
   }
