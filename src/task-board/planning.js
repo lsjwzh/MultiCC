@@ -236,7 +236,7 @@ function updatePlannedTask(board, taskIdValue, patch = {}, { now = Date.now(), e
   const task = board.tasks?.[taskIdValue];
   if (!task) return invalid('task_not_found');
   if (task.recordType !== 'planned') return invalid('task_not_planned');
-  if (task.status === 'archived') return invalid('task_archived');
+  if (task.status === 'archived' || task.deleting) return invalid('task_archived');
   const revision = validateExpectedRevision(task, expectedRevision);
   if (!revision.ok) return revision;
   if (patch.recordType != null && patch.recordType !== 'planned') return invalid('record_type_immutable');
@@ -283,7 +283,7 @@ function movePlannedTask(board, taskIdValue, input = {}, { now = Date.now(), exp
   const task = board.tasks?.[taskIdValue];
   if (!task) return invalid('task_not_found');
   if (task.recordType !== 'planned') return invalid('task_not_planned');
-  if (task.status === 'archived') return invalid('task_archived');
+  if (task.status === 'archived' || task.deleting) return invalid('task_archived');
   const revision = validateExpectedRevision(task, expectedRevision);
   if (!revision.ok) return revision;
   const stage = input.workflowStage == null ? task.workflowStage : String(input.workflowStage);

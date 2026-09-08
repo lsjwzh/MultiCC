@@ -28,6 +28,7 @@ function createTaskShellStore(file) {
   return {
     get,
     list: kind => all.all(kind).map(row => JSON.parse(row.body)),
+    entries: kind => db.prepare('SELECT id, body FROM shell_records WHERE kind = ?').all(kind).map(row => [row.id, JSON.parse(row.body)]),
     set(kind, id, value) {
       const body = JSON.stringify(value);
       if (kind === 'snapshot') {

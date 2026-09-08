@@ -3,9 +3,9 @@
 // Task lifecycle state is deliberately irrelevant: an archived card still
 // owns its evidence, including merged aliases and messages shared by tasks.
 function createTaskHistoryRetention({ getBoard, getRecord, loadHistory }) {
-  function tasks() { return Object.values(getBoard().tasks || {}); }
+  function tasks() { return Object.values(getBoard().tasks || {}).filter(task => !task.deleting); }
   function isMessageProtected(sessionId, message) {
-    if (message.taskId) return true; // includes a provisional task awaiting classification
+    if (message.taskId && !getBoard().tasks?.[message.taskId]?.deleting) return true; // includes a provisional task awaiting classification
     return tasks().some(task => (task.refs || []).some(ref =>
       ref.sessionId === sessionId && (!ref.userMsgId && !ref.assistantMsgId
         || ref.userMsgId === message.id || ref.assistantMsgId === message.id)));

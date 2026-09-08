@@ -46,6 +46,8 @@ function createTaskShellHost(deps) {
           turnId: currentTurn(id), pending: pending && !pending.resolved ? pending : null };
       },
       getTask: id => deps.getTaskBoard?.()?.getBoard?.().tasks?.[id] || null,
+      isDeletedTask: id => deps.getTaskBoard?.()?.getBoard?.().deletedTaskIds?.includes(id),
+      isTaskLifecycleBusy: id => deps.getTaskBoard?.()?.isTaskLifecycleBusy?.(id),
       prepareExecution: workspace.prepareExecution, captureForkBaseline: workspace.captureForkBaseline,
       createExecution: async (task, source) => {
         const dir = deps.directories.get(task.dirId);
@@ -136,13 +138,21 @@ function createTaskShellHost(deps) {
       deps.displayHistory || deps.loadHistory, deps.getChatState, options),
     watchChatHistory: (id, activeSessionId, emit) => watchShellHistory(getRuntime().chatScope(id, activeSessionId), activeSessionId,
       { subscribe: deps.subscribeChat, readMessages: deps.displayHistory || deps.loadHistory, getState: deps.getChatState, emit }),
-    guardAdmission: (id, ...args) => {
+    guardAdmission: (id, text, options = {}) => {
+      const board = deps.getTaskBoard?.()?.getBoard?.();
+      for (const taskId of [options.taskId, deps.records.get(id)?.taskBoundTaskId].filter(Boolean)) {
+        const task = board && require('../task-board/core').resolveTask(board, taskId);
+        const code = board?.deletedTaskIds?.includes(taskId) ? 'task_deleted' : task?.deleting ? 'task_deleting'
+          : task?.status === 'archived' ? 'task_archived' : deps.getTaskBoard?.()?.isTaskLifecycleBusy?.(taskId) ? 'task_busy' : null;
+        if (code) return { ok: false, code };
+      }
       if (!owns(id)) return null;
       const owner = getRuntime();
-      return owner?.owns(id) ? owner.guardAdmission(id, ...args) : { ok: false, code: 'task_shell_state_unavailable' };
+      return owner?.owns(id) ? owner.guardAdmission(id, text, options) : { ok: false, code: 'task_shell_state_unavailable' };
     },
     accepts, open, owns, sendFromSession, sendClientInput,
     stateTarget: id => getRuntime().stateTarget(id), stateSources: id => getRuntime().stateSources(id),
+    purgeTasks: ids => getRuntime().purgeTasks(ids),
     recentTasks: (id, receiptId) => getRuntime().recentTasks(id, receiptId),
     refillContext: (id, options) => getRuntime().refillContext(id, options),
     contextTrace: (id, receiptId, options) => getRuntime().contextTrace(id, receiptId, options),

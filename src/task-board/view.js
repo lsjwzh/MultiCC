@@ -53,6 +53,7 @@ function buildBoardDto(board, getSessionRunState) {
       moduleId: t.moduleId,
       title: t.title,
       status: t.status,
+      deleting: t.deleting === true,
       areas: t.areas,
       refCount: t.refs.length,
       sessionIds,

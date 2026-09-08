@@ -1735,6 +1735,8 @@ function createTaskRunStore({ file, now = Date.now, Database = null, fsImpl = fs
       markCleanup,
       getRun,
       listTaskRuns,
+      purgeTask: taskId => require('./purge').purgeTask(db, requiredString(taskId, 'taskId')),
+      assertTaskPurgeable: taskId => require('./purge').assertTaskPurgeable(db, requiredString(taskId, 'taskId')),
       getRunMessages,
       reserveAnswerReceipt,
       markAnswerAccepted,

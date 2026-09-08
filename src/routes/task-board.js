@@ -154,6 +154,7 @@ function createTaskBoardRuntime(deps) {
     reconcileMap(board.taskGroups, candidate.taskGroups || {});
     board.schemaVersion = candidate.schemaVersion;
     board.revision = candidate.revision;
+    board.deletedTaskIds = candidate.deletedTaskIds || [];
     return { ...result, taskId: result.task?.id || null };
   }
 
@@ -872,7 +873,7 @@ function createTaskBoardRuntime(deps) {
 
   function archiveMissingContextTask(task) {
     if (!task?.moduleAssignment) return { ok: false, error: 'not_pending' };
-    if (task.status === 'archived') return { ok: false, error: 'task_archived' };
+    if (task.status === 'archived' || task.deleting) return { ok: false, error: 'task_archived' };
     const pendingJobId = pendingModuleAssignmentByTask.get(task.id);
     if (pendingJobId) {
       pendingModuleAssignmentByTask.delete(task.id);
@@ -984,6 +985,7 @@ function createTaskBoardRuntime(deps) {
       pendingModuleAssignmentByTask.delete(taskId);
       const current = board.tasks[taskId];
       if (!current || !current.moduleAssignment) return;
+      if (current.deleting) return;
       if (current.status === 'archived') {
         saveModuleAssignment(current, {
           running: false,
@@ -1027,7 +1029,7 @@ function createTaskBoardRuntime(deps) {
     const changed = [];
     for (const task of Object.values(board.tasks)) {
       const assignment = task.moduleAssignment;
-      if (!assignment || task.status === 'archived') continue;
+      if (!assignment || task.status === 'archived' || task.deleting) continue;
       if (assignment.lastError === 'missing_context') {
         // History may have been temporarily unreadable when the error was
         // recorded. Re-prove the absence before hiding the card.
@@ -2027,6 +2029,7 @@ function createTaskBoardRuntime(deps) {
     }
     if (!task) return { ok: false, code: 'task_not_found' };
     const messageText = String(text || '').trim();
+    if (task.status === 'archived' || task.deleting || taskLifecycle.isBusy(task.id)) return { ok: false, code: 'task_archived' };
     if (!messageText) return { ok: false, code: 'empty_text' };
     const clientKey = String(options.clientMsgId || '').trim() || crypto.randomUUID();
     const source = options.source === 'commander' ? 'commander' : 'task-board';
@@ -2744,14 +2747,18 @@ function createTaskBoardRuntime(deps) {
   }
 
   async function handleStatus(req, res) {
+    if (!['active', 'done', 'archived'].includes(req.body?.status)) return res.status(400).json({ error: 'invalid_status' });
+    if (req.body?.status === 'archived') return taskLifecycle.archive(req, res);
+    if (resolvedTask(req.params?.taskId)?.status === 'archived' && req.body?.status === 'active') return taskLifecycle.restore(req, res);
     if (rejectShellOperation(req, res)) return;
-    const release = holdTaskOperation(req.params?.taskId);
-    try { return await handleStatusUnlocked(req, res); }
+    const release = holdTaskOperation(req.params?.taskId); try { return await handleStatusUnlocked(req, res); }
     finally { release(); }
   }
 
   function rejectShellOperation(req, res) {
     const task = resolvedTask(req.params?.taskId);
+    if (taskLifecycle.isBusy(task?.id)) { res.status(409).json({ error: 'task_busy' }); return true; }
+    if (task?.status === 'archived' || task?.deleting) { res.status(409).json({ error: task.deleting ? 'task_deleting' : 'task_archived' }); return true; }
     if (task && deps.taskShellTaskAccess?.(task)?.readOnly) { res.status(409).json({ error: 'task_board_read_only' }); return true; }
     if (!deps.isTaskShellSession?.(resolvedTask(req.params?.taskId)?.chatSessionId)) return false;
     res.status(409).json({ error: 'task_shell_route_required' }); return true;
@@ -2765,26 +2772,21 @@ function createTaskBoardRuntime(deps) {
     isIdentityProtected: task => !!deps.isTaskShellSession?.(task?.chatSessionId),
   });
 
+  const taskLifecycle = require('../task-board/lifecycle').createBoardTaskLifecycle({ deps, taskRuns, isOpenTaskRun, getBoard: () => board,
+    resolveTask: resolvedTask, taskIdentityIds, commit: commitPlanningMutation, taskDto, notify,
+    taskDirId: task => core.taskDirId(board, task), activeOperations: activeTaskOperations });
+
   async function handleArchiveCompleted(req, res) {
     const dirId = String(req.body?.dirId || '').trim() || null;
-    const taskIds = [];
-    const now = Date.now();
+    const taskIds = [], skipped = [];
     for (const task of Object.values(board.tasks)) {
-      if (task.status === 'archived') continue;
-      if (dirId && core.taskDirId(board, task) !== dirId) continue;
-      // Archive is a lifecycle operation. A succeeded turn is not a completed
-      // task, so only an explicit user-set `done` status is eligible.
-      if (task.status !== 'done') continue;
-      task.status = 'archived';
-      task.updatedAt = now;
-      taskIds.push(task.id);
+      if (task.status !== 'done' || (dirId && core.taskDirId(board, task) !== dirId)) continue;
+      const result = { code: 200, status(code) { this.code = code; return this; }, json(body) { this.body = body; return this; } };
+      await taskLifecycle.archive({ params: { taskId: task.id }, body: {} }, result);
+      if (result.body?.ok) taskIds.push(task.id);
+      else skipped.push({ taskId: task.id, error: result.body?.error });
     }
-    const releasedSessions = 0;
-    if (taskIds.length) {
-      save();
-      notify(dirId, taskIds);
-    }
-    res.json({ ok: true, archivedCount: taskIds.length, releasedSessions, taskIds });
+    res.json({ ok: true, archivedCount: taskIds.length, releasedSessions: 0, taskIds, skipped });
   }
 
   function handleReclassify(req, res) {
@@ -2891,6 +2893,7 @@ function createTaskBoardRuntime(deps) {
         if (!res.headersSent) res.status(500).json({ error: 'internal_error' });
       });
     });
+    app.delete?.('/api/task-board/tasks/:taskId', taskLifecycle.delete);
     app.post('/api/task-board/tasks/:taskId/cancel-run', (req, res) => {
       handleCancelRun(req, res).catch(error => {
         logger.log(`[multicc/taskboard] cancel-run failed: ${error?.message || error}`);
@@ -2931,6 +2934,7 @@ function createTaskBoardRuntime(deps) {
 
   return Object.freeze({
     registerShellTask: input => commitPlanningMutation(draft => {
+      if (draft.deletedTaskIds?.includes(input.id)) return { ok: false, error: 'task_deleted' };
       let task = draft.tasks[input.id];
       if (task && (task.mergedIntoTaskId || (task.chatSessionId && task.chatSessionId !== input.sessionId))) {
         return { ok: false, error: 'task_identity_conflict' };
@@ -2944,8 +2948,7 @@ function createTaskBoardRuntime(deps) {
       core.setTaskRouting(task, { mode: 'task-bound', workerSessionId: input.sessionId, oneWay: true });
       return { ok: true };
     }),
-    mountRoutes,
-    onMessagePersisted,
+    mountRoutes, isTaskLifecycleBusy: id => taskLifecycle.isBusy(id), onMessagePersisted,
     onQueueEvent,
     reconcileRunState,
     recordRouterAdmission,
