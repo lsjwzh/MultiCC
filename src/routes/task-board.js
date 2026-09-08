@@ -1540,6 +1540,7 @@ function createTaskBoardRuntime(deps) {
   }
 
   function attachBoundWorkspace(dto) {
+    if (deps.taskShellTaskAccess) Object.assign(dto, deps.taskShellTaskAccess(board.tasks[dto.id] || dto));
     const bound = dto?.chatSessionId && records.get(dto.chatSessionId);
     dto.workspaceState = !bound ? null
       : ['hibernated', 'hibernating', 'thawing'].includes(bound.workspaceState) ? 'hibernated' : 'awake';
@@ -2648,6 +2649,7 @@ function createTaskBoardRuntime(deps) {
     }
     const task = resolvedTask(req.params.taskId);
     if (!task) return res.status(404).json({ error: 'task_not_found' });
+    if (deps.taskShellTaskEntry) { const entry = await deps.taskShellTaskEntry(task.id); if (entry.readOnly) return res.json({ ...entry, sessionId: null }); }
     const bound = await ensureBoundChatSession(task, { adoptOrigin: true });
     if (!bound.ok) {
       const status = bound.code === 'chat_session_unavailable' ? 501
@@ -2749,6 +2751,8 @@ function createTaskBoardRuntime(deps) {
   }
 
   function rejectShellOperation(req, res) {
+    const task = resolvedTask(req.params?.taskId);
+    if (task && deps.taskShellTaskAccess?.(task)?.readOnly) { res.status(409).json({ error: 'task_board_read_only' }); return true; }
     if (!deps.isTaskShellSession?.(resolvedTask(req.params?.taskId)?.chatSessionId)) return false;
     res.status(409).json({ error: 'task_shell_route_required' }); return true;
   }
@@ -2935,6 +2939,8 @@ function createTaskBoardRuntime(deps) {
         sessionId: input.sessionId, taskText: input.title, origin: 'manual', now: input.createdAt });
       if (!task) return { ok: false, error: 'task_index_failed' };
       task.chatSessionId = input.sessionId;
+      task.ownerShellId = input.ownerShellId; task.forkedFromTaskId = input.forkedFromTaskId || null;
+      if (input.ownerShellId && !input.forkedFromTaskId && !task.routing) task.origin = 'session';
       core.setTaskRouting(task, { mode: 'task-bound', workerSessionId: input.sessionId, oneWay: true });
       return { ok: true };
     }),

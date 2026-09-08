@@ -1197,7 +1197,7 @@
   "taskShellRetry": "Retry original delivery",
   "taskShellReceipts": "Unconfirmed deliveries",
   "taskShellDetach": "Remove this shell",
-  "taskShellScope": "Separate execution sessions and workspaces; uncommitted code is not copied and branches do not merge automatically. Messages are delivered through task conversations.",
+  "taskShellScope": "Conversation tasks share their shell workspace. Independent tasks own a separate workspace. Conversation tasks are read-only on the board; fork explicitly to execute independently.",
   "taskShellRetryFirst": "Retry the previous unconfirmed delivery first.",
   "taskShellAccepted": "Message accepted",
   "taskShellNewAccepted": "The new task was created and accepted the message.",
@@ -1208,5 +1208,11 @@
   "taskShellCancelConfirm": "Stop the currently displayed task turn?",
   "taskShellDetachConfirm": "Remove this conversation shell? Tasks, history and other shells will remain.",
   "taskShellSnapshotDetails": "Inspect context versions",
-  "taskShellSnapshotSummary": "{task} · version {hash} · {included} completed turns, {omitted} omitted"
+  "taskShellSnapshotSummary": "{task} · version {hash} · {included} completed turns, {omitted} omitted",
+  "taskBoardReadOnlyHint": "This conversation task is read-only here. Return to its conversation or fork an independent task.",
+  "taskBoardReturnConversation": "Return to conversation",
+  "taskBoardForkIndependent": "Fork independent task",
+  "taskBoardForkSourceBusy": "The source workspace is busy. Wait for it to finish before forking.",
+  "taskBoardForkSourceDirty": "Commit changes in the source conversation before forking.",
+  "taskBoardForking": "Creating independent task…"
 }

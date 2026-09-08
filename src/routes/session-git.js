@@ -248,6 +248,12 @@ function createSessionGitRuntime(rawDeps) {
 
   function isWorktreeActive(sessionId) {
     if (deps.terminalSessions.has(sessionId)) return true;
+    const owner = deps.records.get(sessionId)?.workspaceOwnerSessionId || sessionId;
+    for (const member of deps.records.values()) {
+      if (member.id === sessionId || (member.workspaceOwnerSessionId || member.id) !== owner) continue;
+      const state = deps.chatSessions.get(member.id);
+      if (deps.terminalSessions.has(member.id) || state?.claudeProc || state?.isStreaming || state?._activeRunner) return true;
+    }
     const chat = deps.chatSessions.get(sessionId);
     return !!(chat && (chat.claudeProc || chat.isStreaming));
   }
@@ -277,7 +283,7 @@ function createSessionGitRuntime(rawDeps) {
     const out = [];
     for (const session of deps.records.values()) {
       if (session.id === exceptId || session.dirId !== dir.id
-          || !session.worktreePath || !session.branch) continue;
+          || session.workspaceOwnerSessionId || !session.worktreePath || !session.branch) continue;
       try {
         if (isWorktreeActive(session.id)) {
           out.push({ id: session.id, skipped: true, reason: 'active' });
@@ -333,7 +339,8 @@ function createSessionGitRuntime(rawDeps) {
   }
 
   function findSession(req, res) {
-    const persisted = deps.records.get(req.params.id);
+    const requested = deps.records.get(req.params.id);
+    const persisted = requested?.workspaceOwnerSessionId ? deps.records.get(requested.workspaceOwnerSessionId) : requested;
     if (!persisted) {
       res.status(404).json({ error: 'session not found' });
       return null;

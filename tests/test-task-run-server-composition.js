@@ -18,7 +18,7 @@ test('server composes the durable TaskRun boundary into every execution lifecycl
   assert.match(source, /recordTaskRunMessage: \(sessionId, message\) => taskRunHost\?\.recordMessage/);
   assert.match(source, /persistTaskRunUsage: payload => taskRunHost\.recordMainUsage\(payload\)/);
   assert.match(source, /beforeDeliver: async descriptor =>/);
-  assert.match(source, /sessionHibernationRuntime\.acquireDelivery\(descriptor\.sessionId\)/);
+  assert.match(source, /sessionHibernationRuntime\.acquireDelivery\(taskShellHost\.workspaceGroup\(descriptor\.sessionId\)\)/);
   assert.match(source, /await taskRunHost\.beforeDeliver\(descriptor\)/);
   assert.match(source, /guard\?\.complete\(\{ accepted: false, durable: false \}\)/);
   assert.match(source, /beforeFirstTick: \(\{ sessionScheduler \}\) => reconcileTaskRunSlotLeases\(\{ store: taskRunStore, records: persistedSessions,[\s\S]*?resumeCleanup: item => taskRunHost\.resumeCleanup\(item\), resetSlot: item => taskRunHost\.resetSlotForRecovery\(item\),[\s\S]*?getSchedulerStatus: slotId => sessionScheduler\.status\(slotId\), recoverTerminal: event => taskRunHost\.recoverTerminal\(event\)/);

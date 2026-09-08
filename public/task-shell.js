@@ -3,6 +3,8 @@
   const $ = id => document.getElementById(id), t = key => window.t(key);
   let shellId, focused = '', detail = null, control = null, client, busy = false, timer, stopped = false, newTask = false;
   const params = new URLSearchParams(location.search);
+  if (params.get('board') === '1') { window.MultiCCTaskBoardEntry.start(params.get('task')); return; }
+  let cursorVersion = 0;
   let requestedTask = params.get('task') || '';
   async function api(route, body, method = body === undefined ? 'GET' : 'POST') {
     const response = await fetch(route, { method, headers: { 'Content-Type': 'application/json' },
@@ -10,7 +12,7 @@
     const data = await response.json();
     if (!response.ok || data.ok === false) throw Object.assign(new Error(data.message || data.code || `HTTP ${response.status}`), {
       notReserved: data.notDelivered === true || (!data.receiptId && ['invalid_input', 'invalid_text', 'invalid_intent',
-        'invalid_control', 'context_requires_new_task', 'dependency_not_ready', 'stale_control'].includes(data.code)),
+        'invalid_control', 'stale_shell_cursor', 'context_requires_new_task', 'dependency_not_ready', 'stale_control'].includes(data.code)),
     });
     return data;
   }
@@ -73,6 +75,7 @@
     if (!shellId || stopped) return;
     sessionStorage.setItem(`task-shell-focus:${shellId}`, focused);
     const view = await api(`/api/task-shells/${shellId}`);
+    cursorVersion = view.cursorVersion || 0;
     focused = requestedTask || view.currentTaskId || focused;
     requestedTask = '';
     $('receipts').replaceChildren(...view.receipts.filter(receipt => receipt.status !== 'accepted').map(receipt => {
@@ -121,7 +124,7 @@
   };
   $('composer').onsubmit = event => {
     event.preventDefault();
-    const payload = { text: $('message').value, taskId: focused || null, intent: 'work',
+    const payload = { text: $('message').value, expectedCursorVersion: cursorVersion, intent: 'work',
       ...(newTask ? { newTask: true, taskId: null } : {}), ...control };
     action(() => client.send(shellId, payload));
   };
