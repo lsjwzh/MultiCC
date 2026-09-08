@@ -7,7 +7,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const net = require('node:net');
-const { spawn } = require('node:child_process');
+const { spawn, execFileSync } = require('node:child_process');
 const WebSocket = require('ws');
 const { createPaths, assertTestDir } = require('../src/paths');
 const { readJson } = require('../src/state/store');
@@ -132,12 +132,38 @@ const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'ut
     socket.close(); socket = null;
     fs.writeFileSync(release, 'done');
     await wait(async () => (await api(`/api/task-shells/${sa.id}/tasks/${first.taskId}`)).messages.some(m => m.role === 'assistant'), 'original never completed');
+    // Board preview preserves ownership. A manual fork owns a new real worktree
+    // at the source commit and retains history without executing on creation.
+    const preview = await api(`/api/task-shell-tasks/${first.taskId}`);
+    assert.equal(preview.readOnly, true);
+    const gitAt = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    fs.writeFileSync(path.join(recordA.worktreePath, 'fork-evidence'), 'source-only');
+    gitAt(recordA.worktreePath, 'add', 'fork-evidence');
+    gitAt(recordA.worktreePath, '-c', 'user.name=test', '-c', 'user.email=test@local', 'commit', '-m', 'fork source evidence');
+    const sourceCommit = gitAt(recordA.worktreePath, 'rev-parse', 'HEAD');
+    const forkInput = { clientMsgId: 'isolated-fork' };
+    const fork = await api(`/api/task-shell-tasks/${first.taskId}/fork`, forkInput);
+    assert.deepEqual(await api(`/api/task-shell-tasks/${first.taskId}/fork`, forkInput), fork);
+    const forkRecord = readJson(paths.sessionsFile, { legacyIsArray: true }).data.find(r => r.id === fork.sessionId);
+    assert.notEqual(forkRecord.worktreePath, recordA.worktreePath);
+    assert.ok(!forkRecord.workspaceOwnerSessionId);
+    assert.equal(gitAt(forkRecord.worktreePath, 'rev-parse', 'HEAD'), sourceCommit);
+    assert.equal(fs.readFileSync(path.join(forkRecord.worktreePath, 'fork-evidence'), 'utf8'), 'source-only');
+    assert.equal(rows().some(r => r.sessionId === fork.sessionId), false);
+    const forkEntry = await api(`/api/task-shell-tasks/${fork.taskId}`);
+    assert.equal(forkEntry.readOnly, false);
+    assert.ok(forkEntry.messages.some(m => m.inherited && m.role === 'assistant'));
+    assert.equal((await api(`/api/task-shells/${sa.id}`)).currentTaskId, first.taskId);
+    await api(`/api/task-shell-tasks/${fork.taskId}/messages`, { text: 'FORK_CONTINUE', clientMsgId: 'fork-continue', intent: 'work' });
+    await wait(() => rows().some(r => r.sessionId === fork.sessionId), 'fork execution missing');
+    assert.equal(fs.realpathSync(rows().find(r => r.sessionId === fork.sessionId).cwd), fs.realpathSync(forkRecord.worktreePath));
     const protectedMerge = await api(`/api/task-board/tasks/${first.taskId}/merge-tasks`, { sourceTaskIds: [second.taskId] }, 409);
     assert.equal(protectedMerge.error, 'task_shell_identity_immutable');
     // Freeze two sources as references in a fresh task. This is sharing, not a merge.
     await api(`/api/task-shells/${sa.id}/links`, { taskId: second.taskId });
     const third = await api(`/api/task-shells/${sa.id}/messages`, { text: 'USE_BOTH_CONTEXTS', newTask: true, clientMsgId: 'three', intent: 'work', contextTaskIds: [first.taskId, second.taskId] });
     await wait(() => rows().some(r => r.sessionId === third.sessionId), 'reference execution missing');
+    assert.equal(fs.realpathSync(rows().find(r => r.sessionId === third.sessionId).cwd), fs.realpathSync(recordA.worktreePath));
     const prompt = rows().find(r => r.sessionId === third.sessionId).prompt;
     assert.ok(prompt.includes(first.taskId) && prompt.includes(second.taskId));
     assert.ok(prompt.includes('SHELL_COMPLETED_EVIDENCE'));

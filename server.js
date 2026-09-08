@@ -794,6 +794,7 @@ async function seedCommanderSession(dir) {
 
 // Session and directory disposal share this history-protected teardown.
 async function destroySessionCascade(s, d, opts = {}) {
+  if ([...persistedSessions.values()].some(r => r.workspaceOwnerSessionId === s.id) || s.retiredWorktrees?.length) return { ok: false, blocked: true, code: 'shell_workspace_referenced', reasons: ['shell_workspace_referenced'] };
   try { chatHistoryService?.assertCanDeleteSession(s.id); }
   catch (error) { return { ok: false, code: error.code || 'history_check_failed', blocked: true, reasons: ['task_history_referenced'] }; }
   const active = sessions.get(s.id), chat = chatSessions.get(s.id);
@@ -1529,7 +1530,7 @@ memoModule.migrateLegacy().done.catch(error => console.log(`[memo] migration fai
 
 // Create + persist an isolated session record (its own git worktree + branch).
 // Shared creation boundary; an explicit id creates or reuses a named session.
-async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, providerSelection = null, effort = null, agent = null, rolePrompt = null, rolePresetId = null, type = null, taskExecutionSlot = false, experimentalMode = null, loginFlow = null, loginEnv = null, persistence = 'bestEffort', persistenceSource = 'runtime.create-session', taskBoundTaskId = null, autoCommit = true }) {
+async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, providerSelection = null, effort = null, agent = null, rolePrompt = null, rolePresetId = null, type = null, taskExecutionSlot = false, experimentalMode = null, loginFlow = null, loginEnv = null, persistence = 'bestEffort', persistenceSource = 'runtime.create-session', taskBoundTaskId = null, autoCommit = true, workspaceOwnerSessionId = null, workspaceBaseCommit = null }) {
   if (!dir) return { ok: false, error: 'directory not found' };
   if (!SUPPORTED_CHAT_CLIS.includes(cli)) return { ok: false, error: `cli must be ${SUPPORTED_CHAT_CLIS.join(', ')}` };
   if (!['terminal', 'chat'].includes(kind)) return { ok: false, error: 'kind must be terminal or chat' };
@@ -1575,9 +1576,11 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
   let branch = `multicc/${sid}`;
   const rollbackOptions = { sessionId: sid, baseBranch: dir.baseBranch };
   try {
-    ({ worktreePath, branch } = await gitWorktreeAdd(dir.path, sid, dir.baseBranch));
+    ({ worktreePath, branch } = workspaceOwnerSessionId
+      ? require('./src/task-shell/workspace').sharedWorkspace(persistedSessions, workspaceOwnerSessionId, dir.id)
+      : await gitWorktreeAdd(dir.path, sid, workspaceBaseCommit || dir.baseBranch));
   } catch (e) {
-    await gitWorktreeRollbackCreate(dir.path, worktreePath, branch, rollbackOptions);
+    if (!workspaceOwnerSessionId) await gitWorktreeRollbackCreate(dir.path, worktreePath, branch, rollbackOptions);
     return { ok: false, error: 'worktree 创建失败: ' + e.message };
   }
 
@@ -1602,7 +1605,7 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
     // auto-drive mechanisms are retired.
     autoContinue: true,
     createdAt, workspaceState: 'awake', lastWorkAt: createdAt,
-    worktreePath,
+    worktreePath, workspaceOwnerSessionId,
     branch,
   };
   if (rp) session.rolePrompt = rp;
@@ -1622,7 +1625,7 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
   } catch (error) {
     // The record never committed. Remove the just-created worktree so a failed
     // HTTP create cannot leave either a session ghost or an unowned worktree.
-    await gitWorktreeRollbackCreate(dir.path, worktreePath, branch, rollbackOptions);
+    if (!workspaceOwnerSessionId) await gitWorktreeRollbackCreate(dir.path, worktreePath, branch, rollbackOptions);
     throw error;
   }
   appendEvent(dir.id, 'session_created', `${cli} ${kind}${ephemeral ? ' (gw)' : ''}`, sid);
@@ -2061,7 +2064,7 @@ const {
   trackPendingDistill: _trackPendingMemoryDistill,
 } = memoryRuntime;
 function dispatchTargetBusy(sid, item = null) {
-  return !!sessionWorkHost?.isRunActive(sid) || !!taskRunHost?.isSlotUnavailable(sid, item || {}) || !!defaultRepoActor.isLeased(sid);
+  return !!sessionWorkHost?.isRunActive(sid) || !!taskRunHost?.isSlotUnavailable(sid, item || {}) || !!defaultRepoActor.isLeased(sid) || taskShellHost.isWorkspaceBusy(sid);
 }
 const taskBoardRuntime = createTaskBoardRuntime({
   file: MULTICC_PATHS.taskBoardFile,
@@ -2077,7 +2080,7 @@ const taskBoardRuntime = createTaskBoardRuntime({
   isSystemInjected: msg => isSystemInjectedMsg(msg),
   resolveSessionQueue: (...args) => sessionWorkHost.resolveTask(...args),
   getCommanderMigrationStatus: dirId => commanderMigrationState.statusFor(dirId),
-  getSessionRunState: sid => sessionWorkHost?.getRunState(sid) || 'idle', isTaskShellSession: id => taskShellHost.owns(id),
+  getSessionRunState: sid => sessionWorkHost?.getRunState(sid) || 'idle', isTaskShellSession: id => taskShellHost.owns(id), taskShellTaskAccess: task => taskShellHost.taskAccess(task), taskShellTaskEntry: id => taskShellHost.taskEntry(id),
   resolveGoalLimits, buildGoalLimitNote,
   // M3 per-task worktree service ports (taskWorktree on the runtime).
   directories, gitWorktreeAdd, gitWorktreeRemove, gitMergeBack, existsSync: fs.existsSync,
@@ -2100,6 +2103,8 @@ const taskShellHost = require('./src/task-shell/host').createTaskShellHost({
   subscribeChat: listener => { bus.on('chat:stream-progress', listener); return () => bus.off('chat:stream-progress', listener); },
   getWorkHost: () => sessionWorkHost, getScheduler: () => orchestrationRuntime?.sessionScheduler,
   deliver: (...args) => taskContextHost.deliverSessionMessage(...args),
+  persistRecords: (source, fn) => sessionPersistence.mutate(source, fn), closeExecution: id => chatStream.closeAndWait(id), resetChatState: id => chatSessions.delete(id),
+  hasBackground: id => backgroundTaskRuntime.hasLiveBackgroundTasks(id), ensureWorkspaceAwake: id => sessionHibernationRuntime.ensureAwake(id),
 });
 taskShellHost.mountRoutes(app);
 const skillSyncRuntime = createSkillSyncRuntime({
@@ -2682,7 +2687,7 @@ services.provide('chat.runTurn', chatTurnEngine.admitChatWork);
 orchestrationRuntime = createOrchestrationRuntime({
   file: MULTICC_PATHS.orchestrationFile, databaseFile: MULTICC_PATHS.orchestrationDbFile,
   runChatTurn: chatTurnEngine.runChatTurn,
-  isBusy: dispatchTargetBusy, isSlotUnavailable: (sid, item) => !!taskRunHost?.isSlotUnavailable(sid, item || {}),
+  isBusy: dispatchTargetBusy, deliveryGroup: id => taskShellHost.workspaceGroup(id), isSlotUnavailable: (sid, item) => !!taskRunHost?.isSlotUnavailable(sid, item || {}),
   hasPersistedDelivery: chatTurnEngine.persistedOrchestrationDelivery,
   runnerDeliveryProbe: (sessionId, identity) => chatTurnEngine.runnerDeliveryHandoff(sessionId, identity),
   deliverOutbox: chatTurnEngine.deliverOrchestrationOutbox,
@@ -2695,8 +2700,8 @@ orchestrationRuntime = createOrchestrationRuntime({
   // tick. Answering before the claim keeps that collision a one-tick skip
   // instead of a worker-wide deadlock (see orchestration-runtime processOutbox).
   isDeliveryLocked: sid => !!persistedSessions.get(sid)?.taskBoundTaskId
-    && !!sessionHibernationRuntime?.isLocked?.(sid),
-  beforeDeliver: async descriptor => { const record = persistedSessions.get(descriptor.sessionId); const guard = record?.taskBoundTaskId ? await sessionHibernationRuntime.acquireDelivery(descriptor.sessionId) : null; try { await taskRunHost.beforeDeliver(descriptor); return guard; } catch (error) { await guard?.complete({ accepted: false, durable: false }); throw error; } }, beforeFirstTick: ({ sessionScheduler }) => reconcileTaskRunSlotLeases({ store: taskRunStore, records: persistedSessions, persistRecords: savePersistedSessionsBestEffort, resumeCleanup: item => taskRunHost.resumeCleanup(item), resetSlot: item => taskRunHost.resetSlotForRecovery(item), getSchedulerStatus: slotId => sessionScheduler.status(slotId), recoverTerminal: event => taskRunHost.recoverTerminal(event), log: message => logger.warn(message) }),
+    && !!sessionHibernationRuntime?.isLocked?.(taskShellHost.workspaceGroup(sid)),
+  beforeDeliver: async descriptor => { const record = persistedSessions.get(descriptor.sessionId); const guard = record?.taskBoundTaskId ? await sessionHibernationRuntime.acquireDelivery(taskShellHost.workspaceGroup(descriptor.sessionId)) : null; try { await taskRunHost.beforeDeliver(descriptor); return guard; } catch (error) { await guard?.complete({ accepted: false, durable: false }); throw error; } }, beforeFirstTick: ({ sessionScheduler }) => reconcileTaskRunSlotLeases({ store: taskRunStore, records: persistedSessions, persistRecords: savePersistedSessionsBestEffort, resumeCleanup: item => taskRunHost.resumeCleanup(item), resetSlot: item => taskRunHost.resetSlotForRecovery(item), getSchedulerStatus: slotId => sessionScheduler.status(slotId), recoverTerminal: event => taskRunHost.recoverTerminal(event), log: message => logger.warn(message) }),
   getSessionRecoveryState: id => sessionWorkHost.recoveryState(id),
   onSchedulerEvent: event => { sessionWorkHost.onSchedulerEvent(event); void taskRunHost.onSchedulerEvent(event).catch(error => logger.warn('task_run_finalize_failed', { error: error.message })); },
   workerIntervalMs: Math.max(100, Number(process.env.MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS) || 1000),

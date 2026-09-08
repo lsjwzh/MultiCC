@@ -83,6 +83,7 @@ function createOrchestrationRuntime({
   runChatTurn,
   isBusy = () => false,
   isDeliveryLocked = () => false,
+  deliveryGroup = id => id,
   isSlotUnavailable = () => false,
   hasPersistedDelivery = async () => false,
   // Optional: (sessionId, identity) → null | { known, handedOff, turnId, at }.
@@ -1058,6 +1059,7 @@ function createOrchestrationRuntime({
       workerId,
       limit: claimLimit,
       selectSessionItem: selectRunnableSessionItem,
+      sessionGroup: deliveryGroup,
     });
     await Promise.all(claimed.map(deliverWithinTick));
     return claimed.length;

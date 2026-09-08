@@ -28,6 +28,7 @@ function createTaskShellRuntime(ports) {
     getTask = () => null,
   } = ports;
   const flights = new Map();
+  const taskActions = require('./task-actions').createTaskActions({ store, getRecord, getTask, getHistory, getExecution, createExecution, indexTask, ports, shell, open, chatScope });
   const launching = new Set();
   const maxConcurrent = Number.isInteger(ports.maxConcurrent) && ports.maxConcurrent > 0 ? ports.maxConcurrent : 4;
   async function checkCapacity(task) {
@@ -40,6 +41,7 @@ function createTaskShellRuntime(ports) {
   function shell(id) {
     const value = store.get('shell', identifier(id, 'shellId'));
     if (!value) throw failure('shell_not_found', 'shell_not_found', 404);
+    if (value.standalone === undefined) { const source = getRecord(value.sourceSessionId); value.standalone = !!source?.taskBoundTaskId && !source.workspaceOwnerSessionId; store.set('shell', value.id, value); }
     return value;
   }
   function taskFor(s, id, linked = true) {
@@ -136,14 +138,14 @@ function createTaskShellRuntime(ports) {
     // Opening one must not silently manufacture an empty display conversation.
     const owner = owns(sessionId);
     if (owner && !owner.adopted) {
-      const origin = store.list('link').find(l => l.taskId === owner.id);
+      const origin = owner.ownerShellId ? { shellId: owner.ownerShellId } : store.list('link').find(l => l.taskId === owner.id);
       const parent = origin && store.get('shell', origin.shellId);
       if (parent?.dirId === source.dirId) return parent;
     }
     const id = `sh_${hash(sessionId).slice(0, 24)}`;
     const existing = store.get('shell', id);
     if (existing) return existing;
-    const value = { id, sourceSessionId: sessionId, dirId: source.dirId, currentTaskId: null, createdAt: Date.now() };
+    const value = { id, sourceSessionId: sessionId, dirId: source.dirId, currentTaskId: null, cursorVersion: 0, standalone: !!source.taskBoundTaskId && !source.workspaceOwnerSessionId, createdAt: Date.now() };
     store.set('shell', id, value); return value;
   }
   function link(shellId, taskId) {
@@ -169,7 +171,7 @@ function createTaskShellRuntime(ports) {
       const title = indexed?.title || last?.taskName || record.label || last?.content?.slice?.(0, 120) || sessionId;
       if (!task) {
         if (store.get('task', id)) throw failure('task_identity_mismatch');
-        task = { id, dirId: s.dirId, sessionId, title,
+        task = { id, dirId: s.dirId, sessionId, title, ownerShellId: s.id,
           parentTaskId: null, snapshotIds: [], ready: true, adopted: true, createdAt: Date.now(),
           runtime: runtimeFrom(record) };
         store.set('task', id, task);
@@ -189,6 +191,7 @@ function createTaskShellRuntime(ports) {
   function locateOrCreate(shellId, identity = {}) {
     const s = shell(shellId);
     const id = identifier(identity.taskId, 'taskId');
+    if (s.standalone && s.currentTaskId && id !== s.currentTaskId) throw failure('standalone_task_identity_locked');
     const indexed = indexedTask(id);
     const source = getRecord(s.sourceSessionId);
     if (!source) throw failure('source_session_missing');
@@ -205,7 +208,7 @@ function createTaskShellRuntime(ports) {
         const sessionId = indexedSession?.kind === 'chat' ? indexedSession.id : `task-${id.replace(/^tsk_/, '')}`;
         const owned = owns(sessionId);
         if (owned && owned.id !== id) throw failure('task_identity_mismatch');
-        task = { id, dirId: s.dirId, sessionId, title, parentTaskId: null, snapshotIds: [],
+        task = { id, dirId: s.dirId, sessionId, title, ownerShellId: s.id, parentTaskId: null, snapshotIds: [],
           ready: !!indexedSession, adopted: !!indexedSession, createdAt: Date.now(), runtime: runtimeFrom(source) };
         store.set('task', id, task);
       } else if (indexed?.title && task.title !== indexed.title) {
@@ -219,7 +222,10 @@ function createTaskShellRuntime(ports) {
   function resolveTask(shellId, identity = {}) {
     const task = locateOrCreate(shellId, identity);
     const s = shell(shellId);
+    if (taskActions.ownerOf(task)?.id !== shellId) throw failure('task_owner_mismatch');
     return store.transaction(() => {
+      s.cursorVersion = (s.cursorVersion || 0) + 1;
+      s.cursorReceiptId = null;
       s.currentTaskId = task.id;
       s.defaultTaskId = task.id;
       store.set('shell', s.id, s);
@@ -228,6 +234,9 @@ function createTaskShellRuntime(ports) {
   }
   function remove(shellId) {
     const s = shell(shellId);
+    if (store.list('task').some(task => taskActions.ownerOf(task)?.id === s.id)) {
+      store.set('shell', s.id, { ...s, archivedAt: Date.now() }); return { ok: true, archived: true };
+    }
     store.transaction(() => {
       store.remove('shell', s.id);
       for (const link of store.list('link').filter(l => l.shellId === s.id)) store.remove('link', `${s.id}:${link.taskId}`);
@@ -269,6 +278,7 @@ function createTaskShellRuntime(ports) {
     };
     const result = { clientMsgId, intent, text: raw.text.trim(), taskId: raw.taskId == null ? null : identifier(raw.taskId, 'taskId'),
       newTask: raw.newTask === true,
+      ...(raw.expectedCursorVersion == null ? {} : { expectedCursorVersion: Number(raw.expectedCursorVersion) }),
       contextTaskIds: list('contextTaskIds'), dependsOn: list('dependsOn'),
       turnId: raw.turnId == null ? null : identifier(raw.turnId, 'turnId'),
       requestId: raw.requestId == null ? null : identifier(raw.requestId, 'requestId') };
@@ -284,6 +294,7 @@ function createTaskShellRuntime(ports) {
     if (payload.intent === 'steer' && state.pending && !state.pending.resolved) throw failure('answer_required');
   }
   async function reserve(s, payload, receiptId, fingerprint, delivery = {}) {
+    if (s.standalone && payload.newTask) throw failure('standalone_task_identity_locked');
     const selectedTaskId = payload.newTask ? null : payload.taskId || s.currentTaskId || s.defaultTaskId || null;
     const target = selectedTaskId ? taskFor(s, selectedTaskId) : null;
     const observedClaim = target ? store.get('claim', target.id)?.receiptId : null;
@@ -306,6 +317,13 @@ function createTaskShellRuntime(ports) {
         if (existing.fingerprint !== fingerprint) throw failure('idempotency_conflict');
         return existing;
       }
+      const currentShell = shell(s.id);
+      if (payload.intent === 'work' && !delivery.taskIdentityLocked && (
+        (payload.expectedCursorVersion != null && payload.expectedCursorVersion !== (currentShell.cursorVersion || 0))
+        || (!payload.newTask && payload.taskId && payload.taskId !== currentShell.currentTaskId)
+        || (!payload.newTask && !payload.taskId && selectedTaskId !== (currentShell.currentTaskId || currentShell.defaultTaskId || null))
+      )) throw failure('stale_shell_cursor', 'The current task changed; refresh before sending');
+      if (target && taskActions.ownerOf(target)?.id !== s.id) throw failure('task_owner_mismatch', 'Open the owning conversation or fork this task');
       const claim = target && store.get('claim', target.id);
       const last = claim && store.get('receipt', claim.receiptId);
       const busy = target && (state?.busy !== false || claim?.receiptId !== observedClaim
@@ -319,7 +337,7 @@ function createTaskShellRuntime(ports) {
         const id = `tsk_${randomUUID().replace(/-/g, '')}`;
         const source = getRecord(s.sourceSessionId);
         if (!source) throw failure('source_session_missing');
-        task = { id, dirId: s.dirId, sessionId: `task-${id.slice(4)}`, parentTaskId: null,
+        task = { id, dirId: s.dirId, sessionId: `task-${id.slice(4)}`, ownerShellId: s.id, parentTaskId: null,
           title: payload.text.slice(0, 120), snapshotIds, ready: false, createdAt: Date.now(),
           runtime: Object.fromEntries(['cli', 'model', 'provider', 'providerSelection', 'effort', 'agent'].filter(k => source[k] !== undefined).map(k => [k, source[k]])) };
         store.set('task', id, task);
@@ -332,12 +350,18 @@ function createTaskShellRuntime(ports) {
       const receipt = { id: receiptId, shellId: s.id, taskId: task.id, fingerprint, payload,
         taskIdentityLocked: delivery.taskIdentityLocked === true,
         taskMetadata: delivery.taskMetadata || null,
+        cursorVersion: payload.intent === 'work' ? (currentShell.cursorVersion || 0) + 1 : currentShell.cursorVersion || 0,
         status: 'reserved', decision: target ? payload.intent === 'work' ? (busy ? 'queued' : 'continue') : payload.intent : 'new',
         contextSavings: payload.intent === 'work' ? {
           estimatedTokens: savingsFor(s, task.id), contextRefilled: false,
         } : null,
         createdAt: Date.now() };
       store.set('receipt', receiptId, receipt);
+      if (payload.intent === 'work') {
+        currentShell.cursorVersion = receipt.cursorVersion;
+        currentShell.cursorReceiptId = receipt.id;
+        store.set('shell', s.id, currentShell);
+      }
       if (payload.intent === 'work') store.set('claim', task.id, { receiptId });
       store.set('link', `${s.id}:${task.id}`, { shellId: s.id, taskId: task.id });
       return receipt;
@@ -346,6 +370,7 @@ function createTaskShellRuntime(ports) {
   async function deliver(receipt) {
     if (receipt.status === 'accepted') return receipt.result;
     const task = store.get('task', receipt.taskId);
+    if (!task.ownerShellId) { task.ownerShellId = taskActions.ownerOf(task)?.id || receipt.shellId; store.set('task', task.id, task); }
     const needsCapacity = receipt.payload.intent === 'work';
     if (needsCapacity) launching.add(task.id);
     try {
@@ -356,6 +381,7 @@ function createTaskShellRuntime(ports) {
         task.ready = true; task.baseline = created.baseline;
         store.set('task', task.id, task);
       }
+      if (ports.prepareExecution) await ports.prepareExecution(task, taskActions.ownerOf(task));
       const indexed = await indexTask(task);
       if (!indexed?.ok) throw failure('task_index_failed', indexed?.error || 'task_index_failed', 500);
       let result;
@@ -378,14 +404,14 @@ function createTaskShellRuntime(ports) {
         const metadata = receipt.taskMetadata || {};
         result = await send(task.sessionId, p.text, {
           taskId: task.id, taskStart: receipt.taskIdentityLocked ? metadata.taskStart !== false : true,
-          taskText: receipt.taskIdentityLocked ? metadata.taskText || p.text : p.intent === 'work' ? p.text : task.title,
+          taskText: receipt.taskIdentityLocked ? (metadata.taskStart === false ? null : metadata.taskText || p.text) : p.intent === 'work' ? p.text : task.title,
           taskSource: 'task-shell',
           clientMsgId: receipt.id, idempotencyKey: receipt.id, taskShellReceiptId: receipt.id,
           receivedAt: receipt.createdAt,
           ...(p.goalLimits ? { goalLimits: p.goalLimits } : {}),
           ...(p.intent !== 'work' ? { taskShellControl: { intent: p.intent, turnId: p.turnId } } : {}),
           taskContextSeed: renderSnapshots(snapshots),
-          taskShellAutoClassify: p.intent === 'work' && p.newTask !== true && !receipt.taskIdentityLocked,
+          taskShellAutoClassify: p.intent === 'work' && p.newTask !== true && !receipt.taskIdentityLocked && !taskActions.ownerOf(task)?.standalone,
           ...(p.intent === 'answer' ? { userInputRequestId: p.requestId } : {}),
           ...(p.intent === 'steer' || ['continue', 'queued'].includes(receipt.decision) ? { originContinue: true } : {}),
         });
@@ -395,15 +421,18 @@ function createTaskShellRuntime(ports) {
       receipt.result = { ok: true, taskId: task.id, sessionId: task.sessionId, receiptId: receipt.id, decision: receipt.decision };
       store.set('receipt', receipt.id, receipt);
       if (receipt.payload.intent === 'work') store.transaction(() => {
+        const delivered = store.get('task', task.id);
+        if (delivered.handoffSnapshotIds?.length) {
+          const consumed = new Set(receipt.contextSeedSnapshotIds || []);
+          delivered.handoffSnapshotIds = delivered.handoffSnapshotIds.filter(id => !consumed.has(id));
+          store.set('task', task.id, delivered);
+        }
         const owner = shell(receipt.shellId);
+        if (owner.cursorReceiptId !== receipt.id || (owner.cursorVersion || 0) !== receipt.cursorVersion) return;
         owner.currentTaskId = task.id;
         owner.defaultTaskId = task.id;
         owner.cursorReceiptId = receipt.id;
         store.set('shell', owner.id, owner);
-        if (task.handoffSnapshotIds?.length) {
-          task.handoffSnapshotIds = [];
-          store.set('task', task.id, task);
-        }
       });
       return receipt.result;
     } catch (error) {
@@ -486,7 +515,9 @@ function createTaskShellRuntime(ports) {
     if (!owner || !receipt || receipt.taskId !== owner.id) return { ok: false, code: 'task_shell_receipt_not_found' };
     const s = shell(receipt.shellId);
     const nextId = attribution.taskId || owner.id;
-    if (s.currentTaskId !== owner.id || (s.cursorReceiptId && s.cursorReceiptId !== receipt.id)) {
+    if (taskActions.ownerOf(owner)?.standalone && nextId !== owner.id) return { ok: false, code: 'standalone_task_identity_locked' };
+    if (s.currentTaskId !== owner.id || (s.cursorReceiptId && s.cursorReceiptId !== receipt.id)
+        || (receipt.cursorVersion !== undefined && receipt.cursorVersion !== (s.cursorVersion || 0))) {
       return { ok: false, code: 'task_shell_attribution_superseded' };
     }
     const snapshot = nextId === owner.id ? null : handoffSnapshot(nextId, getHistory(sessionId), {
@@ -498,10 +529,12 @@ function createTaskShellRuntime(ports) {
       if (!next) {
         const snapshotIds = [];
         if (snapshot.messages.length) { store.set('snapshot', snapshot.hash, snapshot); snapshotIds.push(snapshot.hash); }
-        next = { id: nextId, dirId: owner.dirId, sessionId: `task-${nextId.replace(/^tsk_/, '')}`,
+        next = { id: nextId, dirId: owner.dirId, ownerShellId: owner.ownerShellId || s.id, sessionId: `task-${nextId.replace(/^tsk_/, '')}`,
           parentTaskId: attribution.relatedTaskId || null, title: attribution.taskName || receipt.payload.text.slice(0, 120),
           snapshotIds, ready: false, createdAt: Date.now(), runtime: { ...owner.runtime } };
         store.set('task', next.id, next);
+      } else if (next.ownerShellId && next.ownerShellId !== (owner.ownerShellId || s.id)) {
+        return { ok: false, code: 'task_owner_mismatch' };
       } else if (next.id !== owner.id && snapshot?.messages.length) {
         store.set('snapshot', snapshot.hash, snapshot);
         next.handoffSnapshotIds = [...new Set([...(next.handoffSnapshotIds || []), snapshot.hash])];
@@ -512,6 +545,7 @@ function createTaskShellRuntime(ports) {
         store.set('task', next.id, next);
       }
       store.set('link', `${s.id}:${next.id}`, { shellId: s.id, taskId: next.id });
+      s.cursorVersion = (s.cursorVersion || 0) + 1;
       s.currentTaskId = next.id;
       s.defaultTaskId = next.id;
       store.set('shell', s.id, s);
@@ -542,7 +576,7 @@ function createTaskShellRuntime(ports) {
     return { ok: false, code: 'task_shell_route_required' };
   }
   return {
-    open, adopt, link, remove, view, detail, chatScope, send: sendInput, retry, owns,
+    ...taskActions, open, adopt, link, remove, view, detail, chatScope, send: sendInput, retry, owns,
     guardAdmission, recentTasks, refillContext, contextTrace, settleAttribution, locateOrCreate, resolveTask, sendExplicit,
   };
 }

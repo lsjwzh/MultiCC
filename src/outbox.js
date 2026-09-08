@@ -222,7 +222,7 @@ function createOutbox({
     ));
   }
 
-  function claimCandidates(draft, at, limit, selectSessionItem) {
+  function claimCandidates(draft, at, limit, selectSessionItem, sessionGroup) {
     // Only the oldest non-terminal item for a session may be admitted. A
     // leased item or a retry in backoff blocks later items in that session,
     // while another session remains independently claimable.
@@ -239,9 +239,15 @@ function createOutbox({
         ? selectSessionItem(items, draft, at)
         : items[0])
       .filter(Boolean);
+    const groups = new Set();
     return selected
       .filter(item => item.state === 'pending' && item.availableAt <= at)
       .sort((a, b) => a.sequence - b.sequence)
+      .filter(item => {
+        const group = sessionGroup(item.sessionId);
+        if (groups.has(group)) return false;
+        groups.add(group); return true;
+      })
       .slice(0, limit);
   }
 
@@ -265,6 +271,7 @@ function createOutbox({
     limit = 1,
     leaseForMs = leaseMs,
     selectSessionItem = null,
+    sessionGroup = id => id,
   } = {}) {
     if (!workerId || typeof workerId !== 'string') {
       throw new TypeError('[outbox] claim requires workerId');
@@ -279,7 +286,7 @@ function createOutbox({
     const mutateClaim = draft => {
       const at = Number(now());
       recoverExpiredDraft(draft, at);
-      const candidates = claimCandidates(draft, at, limit, selectSessionItem);
+      const candidates = claimCandidates(draft, at, limit, selectSessionItem, sessionGroup);
       return candidates.map(item => {
         const leaseToken = String(leaseTokenFactory());
         if (!leaseToken) throw new Error('[outbox] leaseTokenFactory returned an empty token');
@@ -299,7 +306,7 @@ function createOutbox({
         draft => {
           const at = Number(now());
           return hasExpiredLease(draft, at)
-            || claimCandidates(draft, at, limit, selectSessionItem).length > 0;
+            || claimCandidates(draft, at, limit, selectSessionItem, sessionGroup).length > 0;
         },
         mutateClaim,
         () => [],

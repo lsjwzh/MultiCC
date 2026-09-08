@@ -14,6 +14,7 @@ const { shellHistoryPage, watchShellHistory } = require('./chat-history');
 
 function createTaskShellHost(deps) {
   let runtime, store;
+  const workspace = require('./workspace').createShellWorkspaceHost(deps);
   function candidate(id) {
     const record = deps.records.get(id);
     return record?.taskBoundTaskId && id === `task-${record.taskBoundTaskId.replace(/^tsk_/, '')}`;
@@ -44,11 +45,14 @@ function createTaskShellHost(deps) {
           turnId: currentTurn(id), pending: pending && !pending.resolved ? pending : null };
       },
       getTask: id => deps.getTaskBoard?.()?.getBoard?.().tasks?.[id] || null,
+      prepareExecution: workspace.prepareExecution, captureForkBaseline: workspace.captureForkBaseline,
       createExecution: async (task, source) => {
         const dir = deps.directories.get(task.dirId);
         if (!dir) throw failure('directory_missing');
+        const owner = runtime.ownerOf(task);
         const result = await deps.createSessionRecord({ ...source, dir, id: task.sessionId,
           kind: 'chat', label: task.title, taskBoundTaskId: task.id, autoCommit: false,
+          workspaceOwnerSessionId: owner && !owner.standalone ? owner.sourceSessionId : null, workspaceBaseCommit: task.forkBaseline?.commit || null,
           persistence: 'required', persistenceSource: 'task-shell.create' });
         if (!result.ok) return result;
         const record = deps.records.get(task.sessionId);
@@ -141,7 +145,8 @@ function createTaskShellHost(deps) {
     refillContext: (id, options) => getRuntime().refillContext(id, options),
     contextTrace: (id, receiptId, options) => getRuntime().contextTrace(id, receiptId, options),
     settleAttribution: (id, receiptId, result) => getRuntime().settleAttribution(id, receiptId, result),
-    contextSeed,
+    taskAccess: task => getRuntime().taskAccess(task), taskEntry: id => getRuntime().taskEntry(id),
+    workspaceGroup: workspace.group, isWorkspaceBusy: workspace.busy, contextSeed,
     close: () => store?.close(),
   };
 }

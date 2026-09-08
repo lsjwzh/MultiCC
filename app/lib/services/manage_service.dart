@@ -840,7 +840,9 @@ class ManageService {
     final base = _url(
       '/api/task-board/tasks/${Uri.encodeComponent(taskId)}/messages',
     );
-    final uri = Uri.parse(query.isEmpty ? base : '$base?${Uri(queryParameters: query).query}');
+    final uri = Uri.parse(
+      query.isEmpty ? base : '$base?${Uri(queryParameters: query).query}',
+    );
     final res = await http
         .get(uri, headers: _headers)
         .timeout(const Duration(seconds: 12));
@@ -867,10 +869,11 @@ class ManageService {
     );
     try {
       final client = httpClient;
-      final res = await (client != null
-              ? client.post(uri, headers: _headers)
-              : http.post(uri, headers: _headers))
-          .timeout(const Duration(seconds: 12));
+      final res =
+          await (client != null
+                  ? client.post(uri, headers: _headers)
+                  : http.post(uri, headers: _headers))
+              .timeout(const Duration(seconds: 12));
       if (res.statusCode != 200) return null;
       final j = jsonDecode(utf8.decode(res.bodyBytes));
       if (j is! Map || j['ok'] != true) return null;
@@ -881,26 +884,76 @@ class ManageService {
     }
   }
 
+  Future<Map<String, dynamic>> taskShellEntry(
+    String taskId, {
+    String? forkKey,
+  }) async {
+    final path =
+        '/api/task-shell-tasks/${Uri.encodeComponent(taskId)}${forkKey == null ? '' : '/fork'}';
+    final uri = Uri.parse(_url(path));
+    final client = httpClient;
+    final response =
+        await (forkKey == null
+                ? (client == null
+                      ? http.get(uri, headers: _headers)
+                      : client.get(uri, headers: _headers))
+                : (client == null
+                      ? http.post(
+                          uri,
+                          headers: _headers,
+                          body: jsonEncode({'clientMsgId': forkKey}),
+                        )
+                      : client.post(
+                          uri,
+                          headers: _headers,
+                          body: jsonEncode({'clientMsgId': forkKey}),
+                        )))
+            .timeout(const Duration(seconds: 30));
+    final data = (jsonDecode(utf8.decode(response.bodyBytes)) as Map)
+        .cast<String, dynamic>();
+    if (response.statusCode != 200 || data['ok'] != true) {
+      throw BoardRouteException(
+        data['code']?.toString() ?? 'task_entry_failed',
+        data['message']?.toString() ?? '',
+      );
+    }
+    return data;
+  }
+
   /// An explicit task tap selects that task in its shell, even if a cached
   /// binding already exists. Merely opening the detail preview must not move it.
-  Future<String?> resolveTaskChatSession(String taskId, {String? boundSessionId}) async {
-    final sid = boundSessionId ?? await ensureTaskChatSession(taskId);
+  Future<String?> resolveTaskChatSession(
+    String taskId, {
+    String? boundSessionId,
+  }) async {
+    final sid = await ensureTaskChatSession(taskId);
     if (sid == null || sid.isEmpty) return null;
-    Future<Map<String, dynamic>> post(String path, Map<String, dynamic> body) async {
+    Future<Map<String, dynamic>> post(
+      String path,
+      Map<String, dynamic> body,
+    ) async {
       final uri = Uri.parse(_url(path));
       final client = httpClient;
-      final response = await (client == null
-          ? http.post(uri, headers: _headers, body: jsonEncode(body))
-          : client.post(uri, headers: _headers, body: jsonEncode(body)))
-          .timeout(const Duration(seconds: 12));
-      if (response.statusCode != 200) throw StateError('task shell unavailable');
-      return (jsonDecode(utf8.decode(response.bodyBytes)) as Map).cast<String, dynamic>();
+      final response =
+          await (client == null
+                  ? http.post(uri, headers: _headers, body: jsonEncode(body))
+                  : client.post(uri, headers: _headers, body: jsonEncode(body)))
+              .timeout(const Duration(seconds: 12));
+      if (response.statusCode != 200) {
+        throw StateError('task shell unavailable');
+      }
+      return (jsonDecode(utf8.decode(response.bodyBytes)) as Map)
+          .cast<String, dynamic>();
     }
+
     try {
       final shell = await post('/api/task-shells', {'sessionId': sid});
       final id = shell['id'];
       if (id is! String || id.isEmpty) return null;
-      final task = await post('/api/task-shells/${Uri.encodeComponent(id)}/tasks/resolve', {'taskId': taskId});
+      final task = await post(
+        '/api/task-shells/${Uri.encodeComponent(id)}/tasks/resolve',
+        {'taskId': taskId},
+      );
       // Return the stable entry; ChatService resolves its current execution.
       return task['id'] == taskId ? sid : null;
     } catch (_) {
@@ -1103,7 +1156,9 @@ class ManageService {
     final res = await http
         .post(
           Uri.parse(
-            _url('/api/task-board/tasks/${Uri.encodeComponent(taskId)}/cancel-run'),
+            _url(
+              '/api/task-board/tasks/${Uri.encodeComponent(taskId)}/cancel-run',
+            ),
           ),
           headers: _headers,
           body: '{}',
