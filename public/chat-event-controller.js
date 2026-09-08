@@ -287,8 +287,7 @@
           || message.providerId !== undefined || message.providerSelection !== undefined
           || message.autoProvider || message.agent !== undefined) {
         host.updateEffortBtn?.();
-        if (autoMode) host.updateProviderBtn?.();
-        else host.updateModelBtn?.();
+        host.updateProviderBtn?.();
       }
       if (message.is_streaming && state.pendingCancel) {
         state.pendingCancel = false;

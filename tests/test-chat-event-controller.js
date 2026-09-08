@@ -183,6 +183,7 @@ function controllerFixture() {
     },
     addAgentNotes(value) { calls.push(['notes', value.length]); },
     updateEffortBtn() {},
+    updateProviderBtn() { calls.push(['provider', state.sessionProvider, state.activeProviderId]); },
     updateModelBtn() {},
     transportSend(value) { calls.push(['send', value]); return true; },
     startTitleAnimation() { calls.push('title-start'); },
@@ -549,6 +550,18 @@ test('route protocol v1 reconnect init restores the active attempt and terminal 
     type: 'provider_route_event', version: 1, phase: 'selected', ...identity,
   }, generation), false, 'a terminal generation cannot be re-opened');
   assert.equal(fixture.state.currentTextContent, 'after-reconnect');
+});
+
+test('fixed-provider system init updates the quota selection as well as the model label', () => {
+  const fixture = controllerFixture();
+  const generation = fixture.controller.beginGeneration();
+  for (const providerId of ['account-a', 'account-b']) {
+    fixture.controller.handleEvent({
+      type: 'system', subtype: 'init', is_streaming: false, providerId,
+    }, generation);
+  }
+  assert.deepEqual(fixture.calls.filter(call => Array.isArray(call) && call[0] === 'provider')
+    .map(call => call[1]), ['account-a', 'account-b']);
 });
 
 test('Auto Provider init and route events update actual route without replacing the configured pool', () => {
