@@ -665,8 +665,8 @@ function summarize(p, opts = {}) {
 
 // Resolve an Aux provider into a callable HTTP endpoint. Aux is protocol-based,
 // not CLI-based: Anthropic providers use /messages; OpenAI providers declare
-// either /responses or /chat/completions. OAuth-only OpenAI providers are not
-// callable because there is no API key to authenticate a plain HTTP request.
+// either /responses or /chat/completions. Official OAuth providers are
+// routed through the host relay, which owns OAuth credentials.
 function resolveAuxHttpTarget(protocol, providerId, { port, claudeOfficialViaProxy = false } = {}) {
   const normalized = protocol === 'openai' ? 'openai' : 'anthropic';
   const appType = normalized === 'openai' ? 'codex' : 'claude';
@@ -696,6 +696,17 @@ function resolveAuxHttpTarget(protocol, providerId, { port, claudeOfficialViaPro
         : ['haiku', 'sonnet', 'opus', 'fable'],
       providerName: summary.name,
       localProxy: true,
+    };
+  }
+
+  if (isOfficialCodexOAuthProvider(provider)) {
+    if (!port) return { available: false, protocol: normalized, reason: 'proxy port unavailable' };
+    return {
+      available: true, protocol: normalized, wireApi: 'responses',
+      url: `http://127.0.0.1:${port}/codex-proxy/${encodeURIComponent(providerId)}/responses`,
+      apiKey: 'multicc-aux', localProxy: true,
+      model: summary.model || '', modelOptions: summary.modelOptions || [],
+      providerName: summary.name,
     };
   }
 
