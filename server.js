@@ -2070,6 +2070,7 @@ function dispatchTargetBusy(sid, item = null) {
   return !!sessionWorkHost?.isRunActive(sid) || !!taskRunHost?.isSlotUnavailable(sid, item || {}) || !!defaultRepoActor.isLeased(sid) || taskShellHost.isWorkspaceBusy(sid);
 }
 const taskBoardRuntime = createTaskBoardRuntime({
+  ...require('./src/task-board/lifecycle-host').createTaskLifecycleHost({ records: persistedSessions, getBoard: () => taskBoardRuntime.getBoard(), getShell: () => taskShellHost, getHistory: id => loadChatHistory(id), getState: id => chatSessions.get(id), getRunState: id => sessionWorkHost.getRunState(id), getHistoryService: () => chatHistoryService, destroySession: destroySessionCascade, directories, persist: () => savePersistedSessionsBestEffort('task-delete') }),
   file: MULTICC_PATHS.taskBoardFile,
   taskRuns: taskRunStore, auxQueue, records: persistedSessions, createSessionRecord, releaseTaskBoundSession: sessionLifecycleRuntime.releaseTaskBoundSession,
   loadHistory: sessionId => viewChatHistory(sessionId),

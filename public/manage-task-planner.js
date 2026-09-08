@@ -127,7 +127,16 @@
       plannerComplete: '完成',
       plannerReopen: '重开',
       plannerArchive: '归档',
-      plannerArchiveConfirm: '归档这个任务？它会从看板中移除，但历史数据仍会保留。',
+      plannerArchiveConfirm: '归档这个任务？归档后只读，只有选择归档过滤器才会显示。',
+      plannerCurrentTasks: '当前任务',
+      plannerArchiveFilter: '归档',
+      plannerDelete: '永久删除',
+      plannerDeleteConfirm: '永久删除这个任务、执行记录及专属会话？无法恢复。原壳中其他任务的内容会保留。',
+      plannerDeleted: '任务已永久删除',
+      plannerRestore: '取消归档',
+      plannerTaskBusy: '任务仍在执行、排队或等待回复，请先结束当前工作。',
+      plannerTaskWorkspace: '任务工作区还有未提交或未合并的代码，请先提交并合并，再重试删除。',
+      plannerTaskShared: '任务会话仍被其他任务共享，请先处理关联任务。',
       plannerSaved: '任务计划已保存',
       plannerStarted: '任务已开始执行',
       plannerCompleted: '任务已标记完成',
@@ -263,7 +272,16 @@
       plannerComplete: 'Complete',
       plannerReopen: 'Reopen',
       plannerArchive: 'Archive',
-      plannerArchiveConfirm: 'Archive this task? It will leave the board, but its history will be preserved.',
+      plannerArchiveConfirm: 'Archive this task? It becomes read-only and appears only in the archive filter.',
+      plannerCurrentTasks: 'Current tasks',
+      plannerArchiveFilter: 'Archived',
+      plannerDelete: 'Delete permanently',
+      plannerDeleteConfirm: 'Permanently delete this task, its execution records and dedicated conversation? This cannot be undone. Other tasks in the source conversation are preserved.',
+      plannerDeleted: 'Task permanently deleted',
+      plannerRestore: 'Unarchive',
+      plannerTaskBusy: 'The task is running, queued or waiting for a reply. Finish its current work first.',
+      plannerTaskWorkspace: 'The task workspace has uncommitted or unmerged code. Commit and merge it before retrying deletion.',
+      plannerTaskShared: 'Other tasks still share this conversation. Resolve those references first.',
       plannerSaved: 'Task plan saved',
       plannerStarted: 'Task execution started',
       plannerCompleted: 'Task marked complete',
@@ -300,6 +318,7 @@
     mode: 'todo',
     dirId: '',
     query: '',
+    archived: false,
     origin: 'board',
     bucket: '',
     loadEpoch: 0,
@@ -356,6 +375,10 @@
   }
 
   function errorText(error) {
+    const code = error?.details?.error || error?.payload?.error || error?.code || error?.message;
+    if (code === 'task_busy') return tr('plannerTaskBusy');
+    if (['task_workspace_dirty', 'task_workspace_unmerged', 'dirty', 'unmerged'].includes(code)) return tr('plannerTaskWorkspace');
+    if (code === 'task_session_shared' || code === 'shell_workspace_referenced') return tr('plannerTaskShared');
     if (api && typeof api.errorDisplay === 'function') {
       const display = api.errorDisplay(error);
       if (display && display.message) return display.message;
@@ -557,6 +580,7 @@
 
   function taskMatchesScope(task, options) {
     const opts = options || {};
+    if ((task.status === 'archived') !== state.archived) return false;
     const moduleMap = opts.moduleMap || modulesById();
     const query = state.query.trim().toLocaleLowerCase();
     if (!taskBelongsToDir(task, state.dirId, moduleMap)) return false;
@@ -653,6 +677,36 @@
     return `<span class="planner-badge">${esc(status)}</span>`;
   }
 
+  function lifecycleActionsHtml(task) {
+    const archived = task.status === 'archived';
+    return `${task.deleting ? '' : `<button class="btn btn-sm" type="button" data-action="task-${archived ? 'restore' : 'archive'}" data-task-id="${esc(task.id)}">${esc(tr(archived ? 'plannerRestore' : 'plannerArchive'))}</button>`}
+      <button class="btn btn-sm planner-action-danger" type="button" data-action="task-delete" data-task-id="${esc(task.id)}">${esc(tr('plannerDelete'))}</button>`;
+  }
+
+  async function manageTaskLifecycle(taskId, action, button) {
+    const task = findTask(taskId);
+    if (!task) return;
+    const confirmKey = action === 'delete' ? 'plannerDeleteConfirm' : action === 'archive' ? 'plannerArchiveConfirm' : null;
+    if (confirmKey && !window.confirm(tr(confirmKey))) return;
+    button.disabled = true;
+    try {
+      const deletion = action === 'delete';
+      await requestJson(`/api/task-board/tasks/${encodeURIComponent(taskId)}${deletion ? '' : '/status'}`, {
+        method: deletion ? 'DELETE' : 'POST', json: {
+          ...(deletion ? {} : { status: action === 'archive' ? 'archived' : 'active' }),
+          ...(task.recordType === 'planned' ? { expectedRevision: task.planningRevision } : {}),
+        },
+      });
+      closePlannerOverlay();
+      await loadPlanner({ quiet: true });
+      notify(tr(deletion ? 'plannerDeleted' : action === 'archive' ? 'plannerArchived' : 'plannerReopened'));
+    } catch (error) {
+      await loadPlanner({ quiet: true });
+      notify(tr('plannerActionFailed', { error: errorText(error) }), true);
+      button.disabled = false;
+    }
+  }
+
   function cardHtml(task, context) {
     const moduleMap = context.moduleMap;
     const dirMap = context.dirMap;
@@ -671,7 +725,7 @@
       ? tr('plannerAnswerQuestion')
       : attention === 'error' ? tr('plannerInspectError') : '';
     const updated = task.updatedAt || task.lastTs || task.createdAt;
-    const quickAction = attentionAction
+    const quickAction = task.deleting ? '' : attentionAction
       ? `<button class="planner-card-attention-action" type="button" data-action="open-chat" data-task-id="${esc(task.id)}">${esc(attentionAction)} <span aria-hidden="true">↗</span></button>`
       : planned && (bucket === 'todo' || bucket === 'next')
         ? `<button class="planner-card-quick-action" type="button" data-action="start-task" data-task-id="${esc(task.id)}">▶ ${esc(tr('plannerStartQuick'))}</button>`
@@ -689,7 +743,7 @@
         <span class="planner-badge origin origin-${esc(origin.key)}" title="${esc(origin.title)}">${esc(origin.icon)} ${esc(origin.label)}</span>
         <span class="planner-badge module" title="${esc(module && module.name || tr('plannerNoModule'))}"># ${esc(module && module.name || tr('plannerNoModule'))}</span>
         ${statusHtml(task, true)}
-        ${quickAction}
+        ${quickAction}${lifecycleActionsHtml(task)}
       </div>
       <div class="planner-card-footer">
         <span title="${esc(tr('plannerFleet'))}">${esc(directory && directory.name || tr('plannerUnknownFleet'))}</span>
@@ -713,14 +767,14 @@
     const actions = [];
     if (attention) {
       actions.push(`<button class="btn btn-sm planner-todo-primary" type="button" data-action="open-chat" data-task-id="${esc(task.id)}">${esc(attention === 'waiting' ? tr('plannerAnswerQuestion') : tr('plannerInspectError'))} ↗</button>`);
-    } else if (planned && (bucket === 'todo' || bucket === 'next')) {
+    } else if (!task.deleting && planned && (bucket === 'todo' || bucket === 'next')) {
       actions.push(`<button class="btn btn-sm planner-todo-primary" type="button" data-action="start-task" data-task-id="${esc(task.id)}">▶ ${esc(tr('plannerStartQuick'))}</button>`);
-    } else if (planned && bucket === 'review') {
+    } else if (!task.deleting && planned && bucket === 'review') {
       actions.push(`<button class="btn btn-sm planner-todo-primary complete" type="button" data-action="complete-task" data-task-id="${esc(task.id)}">✓ ${esc(tr('plannerCompleteQuick'))}</button>`);
     } else {
       actions.push(`<button class="btn btn-sm" type="button" data-action="open-chat" data-task-id="${esc(task.id)}">${esc(tr('plannerOpenChat'))}</button>`);
     }
-    if (!planned) {
+    if (!planned && !task.deleting) {
       actions.push(`<button class="btn btn-sm" type="button" data-action="promote" data-task-id="${esc(task.id)}">${esc(tr('plannerPromote'))}</button>`);
     }
     return `<article class="planner-todo-row${attention ? ` attention-${attention}` : ''}" data-task-id="${esc(task.id)}" data-action="${primaryAction}" tabindex="0" aria-label="${esc(tr('plannerOpenTaskLabel', { title }))}">
@@ -736,7 +790,7 @@
           <span>·</span><span>${esc(updated ? tr('plannerUpdated', { date: localDate(updated, true) }) : '')}</span>
         </div>
       </div>
-      <div class="planner-todo-actions">${actions.join('')}</div>
+      <div class="planner-todo-actions">${actions.join('')}${lifecycleActionsHtml(task)}</div>
     </article>`;
   }
 
@@ -810,7 +864,7 @@
             const directory = dirMap.get(taskContextDirId(task, moduleMap));
             const origin = taskOrigin(task);
             const planned = task.recordType === 'planned';
-            const editable = planned && task.status !== 'archived';
+            const editable = planned && task.status !== 'archived' && !task.deleting;
             const lifecycleKey = task.status === 'archived' ? 'plannerLifecycleArchived'
               : task.status === 'done' ? 'plannerLifecycleDone' : 'plannerLifecycleActive';
             return `<div class="planner-history-row">
@@ -826,7 +880,8 @@
               <div class="planner-history-actions">
                 ${editable ? `<button class="btn btn-sm" type="button" data-action="open-task" data-task-id="${esc(task.id)}">${esc(tr('plannerViewTask'))}</button>` : ''}
                 <button class="btn btn-sm" type="button" data-action="open-chat" data-task-id="${esc(task.id)}">${esc(tr('plannerOpenChat'))}</button>
-                ${planned ? '' : `<button class="btn btn-sm" type="button" data-action="promote" data-task-id="${esc(task.id)}">${esc(tr('plannerPromote'))}</button>`}
+                ${planned || task.status === 'archived' || task.deleting ? '' : `<button class="btn btn-sm" type="button" data-action="promote" data-task-id="${esc(task.id)}">${esc(tr('plannerPromote'))}</button>`}
+                ${lifecycleActionsHtml(task)}
               </div>
             </div>`;
           }).join('')}
@@ -962,6 +1017,10 @@
           <label class="planner-search"><span class="planner-sr-only">${esc(tr('plannerSearchPlaceholder'))}</span><input class="planner-control" type="search" value="${esc(state.query)}" placeholder="${esc(tr('plannerSearchPlaceholder'))}" data-control="search"></label>
         </div>
         ${originFilterHtml(state.mode)}
+        <div class="planner-segment" role="group" aria-label="${esc(tr('plannerArchiveFilter'))}">
+          <button type="button" data-action="archive-filter" data-archived="0" aria-pressed="${!state.archived}" class="${state.archived ? '' : 'active'}">${esc(tr('plannerCurrentTasks'))}</button>
+          <button type="button" data-action="archive-filter" data-archived="1" aria-pressed="${state.archived}" class="${state.archived ? 'active' : ''}">${esc(tr('plannerArchiveFilter'))}</button>
+        </div>
         <div class="planner-grow"></div>
         ${modeControl}
         <div class="planner-toolbar-group actions">
@@ -1394,6 +1453,7 @@
         <span class="spacer"></span>
         <button class="btn" type="button" data-drawer-action="lifecycle" data-status="${done ? 'active' : 'done'}">${done ? '♻ ' + esc(tr('plannerReopen')) : '✓ ' + esc(tr('plannerComplete'))}</button>
         <button class="btn planner-action-danger" type="button" data-drawer-action="archive">${esc(tr('plannerArchive'))}</button>
+        <button class="btn planner-action-danger" type="button" data-drawer-action="delete">${esc(tr('plannerDelete'))}</button>
       </div>
     </aside>`;
     document.body.appendChild(overlay);
@@ -1524,6 +1584,7 @@
   }
 
   async function handleDrawerAction(taskId, action, button, context) {
+    if (action === 'delete') return manageTaskLifecycle(taskId, 'delete', button);
     if (action === 'save') return saveDrawer(taskId, button, context);
     if (action === 'start') return startTask(taskId, button, context);
     if (action === 'chat') {
@@ -1572,10 +1633,17 @@
     const action = event.target.closest('[data-action]');
     if (!action) return;
     const kind = action.dataset.action;
-    if (kind === 'new-todo') openNewTodoDialog();
+    if (kind === 'task-archive' || kind === 'task-delete' || kind === 'task-restore') {
+      manageTaskLifecycle(action.dataset.taskId, kind.slice(5), action);
+    } else if (kind === 'archive-filter') {
+      state.archived = action.dataset.archived === '1';
+      if (state.archived) { state.mode = 'activity'; state.bucket = ''; }
+      render();
+    } else if (kind === 'new-todo') openNewTodoDialog();
     else if (kind === 'start-new-now') openStartNowDialog();
     else if (kind === 'refresh') loadPlanner({ refreshDirectories: true });
     else if (kind === 'mode') {
+      state.archived = false;
       state.mode = MODES.includes(action.dataset.mode) ? action.dataset.mode : 'todo';
       if (state.mode === 'activity') state.bucket = '';
       render();
@@ -1590,7 +1658,7 @@
     } else if (kind === 'open-task') {
       const taskId = action.dataset.taskId || action.closest('[data-task-id]')?.dataset.taskId;
       const task = findTask(taskId);
-      if (task && task.recordType === 'planned' && task.status !== 'archived') openTaskDrawer(taskId);
+      if (task && task.recordType === 'planned' && task.status !== 'archived' && !task.deleting) openTaskDrawer(taskId);
       else window.open(`/chat.html?task=${encodeURIComponent(taskId)}`, '_blank');
     } else if (kind === 'open-chat') {
       window.open(`/chat.html?task=${encodeURIComponent(action.dataset.taskId)}`, '_blank');
@@ -1631,6 +1699,7 @@
 
   function uiStateSnapshot() {
     return {
+      archived: state.archived,
       mode: state.mode,
       dirId: state.dirId,
       query: state.query,
@@ -1647,6 +1716,7 @@
     state.mode = MODES.includes(next.mode) ? next.mode : 'todo';
     state.dirId = String(next.dirId || '');
     state.query = String(next.query || '');
+    state.archived = next.archived === true;
     selectOrigin(ORIGINS.includes(next.origin) ? next.origin : state.origin);
     state.bucket = WORK_BUCKETS.includes(next.bucket) ? next.bucket : '';
     pendingRenderState = next.renderState || null;

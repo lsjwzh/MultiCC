@@ -62,6 +62,7 @@ function createTaskPlanningRuntime({
     if (!sourceId) return { ok: true, input };
     const source = resolveTask(sourceId);
     if (!source) return { ok: false, error: 'task_not_found' };
+    if (source.status === 'archived' || source.deleting) return { ok: false, error: 'task_archived' };
     const sourceDirId = taskDirId(source);
     return {
       ok: true,

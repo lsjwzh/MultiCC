@@ -234,7 +234,7 @@ function findTaskByTitle(board, moduleId, title, { dirId = null, similar = false
   let best = null;
   let bestScore = 0;
   for (const t of Object.values(board.tasks)) {
-    if (t.status === 'archived') continue;
+    if (t.status === 'archived' || t.deleting) continue;
     const sameModule = !!moduleId && t.moduleId === moduleId;
     const sameDir = !!dirId && taskDirId(board, t) === dirId;
     if (!sameModule && !sameDir) continue;
@@ -263,7 +263,7 @@ function mergeTasks(board, {
   const target = ownTask(board, targetTaskId);
   if (!target) return { ok: false, error: 'task_not_found', taskId: targetTaskId || null };
   if (target.mergedInto) return { ok: false, error: 'target_already_merged' };
-  if (target.status === 'archived') return { ok: false, error: 'target_not_mergeable' };
+  if (target.status === 'archived' || target.deleting) return { ok: false, error: 'target_not_mergeable' };
 
   const requested = [...new Set((Array.isArray(sourceTaskIds) ? sourceTaskIds : [])
     .filter(id => typeof id === 'string' && id.trim())
@@ -285,7 +285,7 @@ function mergeTasks(board, {
       }
       return { ok: false, error: 'source_already_merged', taskId: id };
     }
-    if (source.status === 'archived') {
+    if (source.status === 'archived' || source.deleting) {
       return { ok: false, error: 'source_not_mergeable', taskId: id };
     }
     const targetOrigin = TASK_ORIGINS.has(target.origin) ? target.origin : legacyTaskOrigin(target.id);
@@ -376,6 +376,7 @@ function createPendingTask(board, {
   const id = typeof taskId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(taskId)
     ? taskId : newId('tsk');
   if (board.tasks[id]) return board.tasks[id];
+  if (board.deletedTaskIds?.includes(id)) return null;
   let mod = Object.values(board.modules).find(m =>
     m.source === 'classify' && m.name === CLASSIFY_PENDING_MODULE_NAME
       && (m.dirId || null) === (dirId || null));

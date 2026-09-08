@@ -172,6 +172,40 @@ function createTaskShellRuntime(ports) {
     const value = getTask(taskId);
     return value && typeof value === 'object' ? value : null;
   }
+  function assertWritable(id) {
+    if (ports.isTaskLifecycleBusy?.(id)) throw failure('task_busy');
+    if (ports.isDeletedTask?.(id)) throw failure('task_deleted');
+    const task = indexedTask(id);
+    if (task?.deleting) throw failure('task_deleting');
+    if (task?.status === 'archived') throw failure('task_archived');
+  }
+  function purgeTasks(ids) {
+    const removed = new Set(ids);
+    store.transaction(() => {
+      const snapshots = new Set(store.list('task').filter(t => removed.has(t.id)).flatMap(t => t.snapshotIds || []));
+      const receipts = new Set(store.list('receipt').filter(r => removed.has(r.taskId)).map(r => r.id));
+      for (const kind of ['task', 'link', 'claim', 'receipt', 'answer', 'fork']) {
+        for (const [id, value] of store.entries(kind)) {
+          if (removed.has(id) || removed.has(value.taskId) || receipts.has(value.receiptId)) store.remove(kind, id);
+        }
+      }
+      for (const s of store.list('shell')) {
+        if (s.standalone && removed.has(s.defaultTaskId)
+          && !store.list('task').some(t => t.ownerShellId === s.id)) {
+          store.remove('shell', s.id);
+          continue;
+        }
+        if (removed.has(s.currentTaskId) || removed.has(s.defaultTaskId)) {
+          if (removed.has(s.currentTaskId)) s.currentTaskId = null;
+          if (removed.has(s.defaultTaskId)) s.defaultTaskId = null;
+          s.cursorVersion = (s.cursorVersion || 0) + 1;
+          saveShell(s.id, s);
+        }
+      }
+      const used = new Set(store.list('task').flatMap(t => t.snapshotIds || []));
+      for (const id of snapshots) if (!used.has(id)) store.remove('snapshot', id);
+    });
+  }
   function open(sessionId) {
     identifier(sessionId, 'sessionId');
     const source = getRecord(sessionId);
@@ -197,7 +231,7 @@ function createTaskShellRuntime(ports) {
     return store.transaction(() => {
       let task = owns(sessionId);
       const history = getHistory(sessionId);
-      const last = [...history].reverse().find(message => message.taskId && !message.inherited);
+      const last = [...history].reverse().find(message => message.taskId && !message.inherited && !ports.isDeletedTask?.(message.taskId));
       // Transcript annotations are evidence, not an ownership transfer. Older
       // transcript forks copied taskId verbatim; consult the task's owner before
       // using that hint to adopt a session with no explicit live task binding.
@@ -261,6 +295,7 @@ function createTaskShellRuntime(ports) {
     });
   }
   function resolveTask(shellId, identity = {}) {
+    assertWritable(identity.taskId);
     const task = locateOrCreate(shellId, identity);
     const s = shell(shellId);
     if (taskActions.ownerOf(task)?.id !== shellId) throw failure('task_owner_mismatch');
@@ -338,6 +373,7 @@ function createTaskShellRuntime(ports) {
     if (s.standalone && payload.newTask) throw failure('standalone_task_identity_locked');
     const selectedTaskId = payload.newTask ? null : payload.taskId || s.currentTaskId || s.defaultTaskId || null;
     const target = selectedTaskId ? taskFor(s, selectedTaskId) : null;
+    if (target) assertWritable(target.id);
     const observedClaim = target ? store.get('claim', target.id)?.receiptId : null;
     const state = target ? await getExecution(target.sessionId) : null;
     if (payload.intent !== 'work') {
@@ -354,6 +390,7 @@ function createTaskShellRuntime(ports) {
     }
     return store.transaction(() => {
       const existing = store.get('receipt', receiptId);
+      if (target) assertWritable(target.id);
       if (existing) {
         if (existing.fingerprint !== fingerprint) throw failure('idempotency_conflict');
         return existing;
@@ -604,6 +641,7 @@ function createTaskShellRuntime(ports) {
   function guardAdmission(sessionId, text, options = {}) {
     const task = owns(sessionId);
     if (!task) return null;
+    try { assertWritable(options.taskId || task.id); } catch (error) { return { ok: false, code: error.code }; }
     // Admission timestamps are assigned by the host, never accepted from Web
     // messages. Work already durably queued before adoption keeps its identity.
     if (task.adopted && Number.isFinite(options.receivedAt) && options.receivedAt < task.createdAt) return null;
@@ -617,7 +655,7 @@ function createTaskShellRuntime(ports) {
     return { ok: false, code: 'task_shell_route_required' };
   }
   return {
-    ...taskActions, stateTarget, stateSources, open, adopt, link, remove, view, detail, chatScope, send: sendInput, retry, owns,
+    ...taskActions, purgeTasks, stateTarget, stateSources, open, adopt, link, remove, view, detail, chatScope, send: sendInput, retry, owns,
     guardAdmission, recentTasks, refillContext, contextTrace, settleAttribution, locateOrCreate, resolveTask, sendExplicit,
   };
 }
