@@ -155,6 +155,7 @@ async function run(ctx, parsed, exit) {
     line({ type: 'session_started', sessionId: sid, resumed: false });
   }
   await agent.whenIdle();
+  const firstSeq = agent.session.seq;
   agent.followup(createUserMessage({
     content: [{ type: 'text', text: parsed.task }],
     source: { kind: 'user' },
@@ -162,7 +163,7 @@ async function run(ctx, parsed, exit) {
   await agent.whenIdle();
   await sessions.flush(agent.session);
 
-  const last = [...agent.session.events].reverse().find(e => e.type === 'turn/end');
+  const last = [...agent.session.events].reverse().find(e => e.seq >= firstSeq && e.type === 'turn/end');
   const reason = last?.data?.reason ?? {};
   line({ type: 'session_finished', sessionId: String(agent.session.id) });
   if (reason.kind === 'completed') {
@@ -172,6 +173,7 @@ async function run(ctx, parsed, exit) {
   const failure = reason.error || reason.failure || {};
   line({
     type: 'error',
+    reason: reason.kind || 'missing_turn_end',
     message: `dsh turn ${reason.kind || 'ended'}${failure.code ? `: ${failure.code}` : ''}${failure.message ? ` — ${failure.message}` : ''}`,
   });
   return exit(1);

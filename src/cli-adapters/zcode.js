@@ -1,5 +1,7 @@
 'use strict';
 
+const { createStepCompletionTracker } = require('./step-completion');
+
 // 专用 ZCode adapter —— 直接驱动官方 ZCode 桌面版内的 headless 引擎 zcode.cjs。
 //
 // zcode.cjs 的协议（`--prompt <text> --json`，输出多行整体 JSON）与 multicc 流式
@@ -22,6 +24,7 @@ const shellArg = value => JSON.stringify(String(value));
 function createZcodeAdapter({ cmd } = {}) {
   return {
     name: 'zcode',
+    createCompletionTracker: createStepCompletionTracker,
     cmd,
     // 终端/交互模式：打开引擎的 TUI（需 ZCODE_ENGINE 指向 zcode.cjs）。
     buildTerminalCmd(session) {

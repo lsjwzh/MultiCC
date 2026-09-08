@@ -876,6 +876,7 @@ test('only one current durable final result can claim dispatch return', () => {
   const normalized = request({ originDispatchId: 'dispatch-once' });
   const turn = createTurnLifecycle(normalized, { turnId: 'turn-once' });
   const runner = createRunnerOwnership(turn, { runnerId: 'runner-once' });
+  runner.completionOutcome = { version: 1, state: 'completed', settled: true };
   const facts = { currentTurn: turn, currentRunner: runner };
   assert.equal(recordCloseResult(turn, runner, { current: true, persisted: true, final: false }).code,
     'not_final_result');

@@ -1,5 +1,7 @@
 'use strict';
 
+const { isCompleted } = require('../cli-adapters/completion');
+
 function clean(value) { return value == null ? '' : String(value).trim(); }
 
 function freezeLineage(lineage) {
@@ -134,6 +136,7 @@ function createRunnerOwnership(turn, input = {}) {
     killReason: null,
     retryPlanned: false,
     resultEvent: false,
+    ...(input.completion ? { completion: input.completion } : {}),
     partialCheckpointKey: null,
     ...(input.usageAttribution
       ? { usageAttribution: freezeUsageAttribution(input.usageAttribution) }
@@ -189,15 +192,13 @@ function assignKillReason(runner, reason) {
   return !!runner.killReason;
 }
 
-// A durable final result is only ever written for a non-error result
-// (persistFinalAssistantResult skips api-failure envelopes), so once a turn
-// has one, a clean close proves any error flagged mid-stream was recovered
-// from. codex surfaces its own housekeeping failures (model-list refresh,
-// skill loading) as stream error items and then finishes the turn normally;
-// without this veto the sticky flags classify a succeeded turn as an API
-// error at close. Returns true when flags were actually cleared.
+// Transient event errors may recover (for example Codex housekeeping failures).
+// Clear them only after the owning adapter confirms completion, the execution
+// boundary settles, and the result is durable. Proxy failures are independently
+// reconciled by the attempt runtime and still veto success.
 function clearErrorFlagsForSucceededTurn(turn, runner, cs, facts = {}) {
   if (!turn || !runner || turn.resultDurable !== true) return false;
+  if (!isCompleted(runner.completionOutcome) || !runner.runnerId || turn.resultRunnerId !== runner.runnerId) return false;
   if (facts.killReason) return false;
   if (facts.code !== undefined && facts.code !== null && facts.code !== 0) return false;
   const hadErrorFlags = !!(runner.sawApiError || runner.apiErrorRaw || runner.adapterError);
@@ -287,6 +288,7 @@ function evaluatePostTurn(turn, runner, facts = {}) {
   if (facts.handoffResumeFailure === true) {
     return Object.freeze({ ok: false, code: 'handoff_resume_failed' });
   }
+  if (!isCompleted(runner.completionOutcome)) return Object.freeze({ ok: false, code: 'runner_not_completed' });
   if (turn.postTurnClaimed) return Object.freeze({ ok: false, code: 'post_turn_already_claimed' });
   return Object.freeze({ ok: true, code: null });
 }

@@ -339,5 +339,5 @@ test('socket events outside async context retain admission identity without cons
   assert.equal(outcomes[0].routeAttemptId, attempt.routeAttemptId);
   assert.equal(outcomes[0].proxyOutcome.termination, 'downstream_disconnect');
   assert.ok(runtime.proxyFailure(attempt));
-  assert.equal(runtime.proxyFailure(attempt, { resultDurable: true, cleanClose: true }), null);
+  assert.equal(runtime.proxyFailure(attempt, { resultDurable: true, completion: { version: 1, state: 'completed', settled: true } }), null);
 });
