@@ -19,7 +19,11 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
     if (link) return shell(link.shellId);
     const sid = task.sessionId || task.chatSessionId || task.refs?.find(r => getRecord(r.sessionId))?.sessionId;
     const record = sid && getRecord(sid);
-    if (!record || record.kind !== 'chat' || ['commander', 'gateway', 'aux'].includes(record.type)) return null;
+    // Historical board tasks may reference reusable execution slots or legacy
+    // experiments. They have no ordinary chat shell; never call open() for them
+    // during a board read, where one unsupported source would abort every row.
+    if (!record || record.kind !== 'chat' || record.taskExecutionSlot || record.experimentalMode
+      || ['commander', 'gateway', 'aux'].includes(record.type)) return null;
     return open(sid);
   }
   function access(taskOrId) {
