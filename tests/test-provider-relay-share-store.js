@@ -10,6 +10,7 @@ const { assertTestDir } = require('../src/paths');
 const {
   createProviderRelayShareStore,
   parseCredential,
+  relayRouteFromBaseUrl,
   routeTarget,
 } = require('../src/providers/relay-share-store');
 
@@ -112,4 +113,50 @@ test('relay credentials cannot cross protocol or host-route boundaries', () => {
     appType: 'claude', providerId: 'p', publicBaseUrl: 'https://x',
     relayBaseUrl: 'https://x/claude-proxy/p/remote', token: 'short',
   }), /relay token/);
+});
+
+// ── relayRouteFromBaseUrl：导入方识别借道链接 ────────────────────────────────
+
+test('relayRouteFromBaseUrl recognizes lender relay endpoints on both protocols', () => {
+  assert.deepEqual(
+    relayRouteFromBaseUrl('https://relay.example:3000/claude-proxy/glm/remote'),
+    { appType: 'claude', providerId: 'glm', url: 'https://relay.example:3000/claude-proxy/glm/remote' },
+  );
+  // Extra subpaths and trailing slashes normalize back to the endpoint itself.
+  assert.deepEqual(
+    relayRouteFromBaseUrl('http://192.168.1.9:3000/claude-proxy/glm/remote/v1/messages/'),
+    { appType: 'claude', providerId: 'glm', url: 'http://192.168.1.9:3000/claude-proxy/glm/remote' },
+  );
+  assert.deepEqual(
+    relayRouteFromBaseUrl('https://macbook.tail94695a.ts.net/codex-proxy/official'),
+    { appType: 'codex', providerId: 'official', url: 'https://macbook.tail94695a.ts.net/codex-proxy/official' },
+  );
+  // URL-encoded provider ids round-trip encoded.
+  assert.deepEqual(
+    relayRouteFromBaseUrl('https://relay.example/codex-proxy/my%20provider'),
+    { appType: 'codex', providerId: 'my provider', url: 'https://relay.example/codex-proxy/my%20provider' },
+  );
+});
+
+test('relayRouteFromBaseUrl rejects loopback, local plumbing and non-relay URLs', () => {
+  // Loopback /claude-proxy、/codex-proxy 是本机 CPR 自己的管线，绝不算借道。
+  for (const url of [
+    'http://127.0.0.1:3000/codex-proxy/abc',
+    'http://localhost:3000/claude-proxy/abc/remote',
+    'http://[::1]:3000/claude-proxy/abc/remote',
+  ]) {
+    assert.equal(relayRouteFromBaseUrl(url), null, url);
+  }
+  // 本机 aux/speedtest 桶、非中转路径、非 http(s)、垃圾输入。
+  for (const url of [
+    'https://relay.example/claude-proxy/abc/aux/v1/messages',
+    'https://relay.example/claude-proxy/abc/speedtest/v1/messages',
+    'https://relay.example/claude-proxy/abc',
+    'https://open.bigmodel.cn/api/paas/v4',
+    'ftp://relay.example/claude-proxy/abc/remote',
+    'not a url',
+    '',
+  ]) {
+    assert.equal(relayRouteFromBaseUrl(url), null, url);
+  }
 });

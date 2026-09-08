@@ -123,6 +123,29 @@ The former server-wide `MULTICC_PROXY_TOKEN` is no longer read; remove any
 leftover value from `.env`. Only recorded link credentials can authorize a
 remote relay request.
 
+#### Usage pass-through (relay quota)
+
+A multicc that imports a relay provider gets usage and balance for it too. The
+imported provider's relay baseUrl is recognized automatically, so its limit
+target resolves to a dedicated `relay-quota` strategy — no extra setup, and the
+existing usage bar / balance surfaces (chat usage bar, manage page, provider
+picker) render the borrowed account's numbers as if it were local.
+
+The polling goes through two quota endpoints on the lending host, authorized by
+the same provider-scoped link credential (same `x-api-key` / `Authorization:
+Bearer` acceptance, same per-link accounting and revocation):
+
+- `POST|GET http(s)://<host>:3000/claude-proxy/<providerId>/remote/quota`
+- `POST|GET http(s)://<host>:3000/codex-proxy/<providerId>/quota`
+
+Each request triggers a real vendor query on the lending host (no TTL cache on
+this path) and returns the fresh DTO when it lands; concurrent queries for the
+same provider share one real fetch. On the borrower the result flows through
+the normal poller dedup/TTL machinery, so several sessions on the same relay
+provider still produce a single upstream request per TTL window. Loopback
+`claude-proxy`/`codex-proxy` URLs (the borrower's own CPR plumbing) are never
+misread as a relay.
+
 ## Voice — Speech-to-Speech (S2S)
 
 | Variable | Default | Description |

@@ -216,6 +216,40 @@ test('a provider-scoped relay credential is independently authorized and account
   } finally { await h.close(); }
 });
 
+test('provider relay credentials also unlock the relay quota endpoints on both protocols', async () => {
+  const allowed = new Set([
+    '/claude-proxy/p1/remote/quota',
+    '/codex-proxy/p1/quota',
+  ]);
+  const h = await buildHarness({
+    accessToken: 'sekret',
+    local: false,
+    relayAuthorizer(input) {
+      return input.credential === 'mcr1.abcdefghijklmnop.manual-secret' && allowed.has(input.pathname)
+        ? { ok: true, shareId: 'abcdefghijklmnop' }
+        : { ok: false };
+    },
+  });
+  try {
+    // GET (manual/manual refresh) and POST (the poller adapter) both ride the
+    // same relay-credential gate — no extra auth surface for quota pass-through.
+    let res = await raw(h.base, '/claude-proxy/p1/remote/quota', {
+      method: 'GET', headers: { 'x-api-key': 'mcr1.abcdefghijklmnop.manual-secret' },
+    });
+    assert.equal(res.status, 200);
+    res = await raw(h.base, '/codex-proxy/p1/quota', {
+      method: 'POST', headers: { authorization: 'Bearer mcr1.abcdefghijklmnop.manual-secret' },
+    });
+    assert.equal(res.status, 200);
+    assert.ok(h.state.metrics.includes('multicc_auth_provider_relay_share_total'));
+    // The quota endpoint inherits provider scoping: a sibling provider is 403.
+    res = await raw(h.base, '/codex-proxy/p2/quota', {
+      method: 'POST', headers: { authorization: 'Bearer mcr1.abcdefghijklmnop.manual-secret' },
+    });
+    assert.equal(res.status, 403);
+  } finally { await h.close(); }
+});
+
 test('legacy token query is gated by allowLegacyTokenQuery', async () => {
   let h = await buildHarness({ accessToken: 'sekret', local: false, allowLegacyTokenQuery: false });
   try {

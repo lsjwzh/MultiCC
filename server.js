@@ -123,7 +123,7 @@ const { mountZhipuQuotaRoutes } = require('./src/routes/zhipu-quota');
 const { mountKimiQuotaRoutes } = require('./src/routes/kimi-quota');
 const { mountClaudeUsageQuotaRoutes } = require('./src/routes/claude-usage-quota');
 const { mountAliyunQuotaRoutes } = require('./src/routes/aliyun-quota');
-const { mountProviderBalanceRoutes } = require('./src/routes/provider-balance');
+const { mountProviderBalanceRoutes, mountProviderRelayQuotaRoutes } = require('./src/routes/provider-balance');
 const { mountMemoryBrowserRoutes } = require('./src/routes/memory-browser');
 const { mountSessionMemoryRoutes } = require('./src/routes/session-memory');
 const { createAgentResourcesRoutes } = require('./src/routes/agent-resources');
@@ -381,6 +381,17 @@ const authRuntime = createAuthRuntime({
   allowLegacyTokenQuery: ALLOW_LEGACY_TOKEN_QUERY,
 });
 authRuntime.mountRoutes(app);
+
+// 借道余量查询端点（出借方）：/claude-proxy/:id/remote/quota 与
+// /codex-proxy/:id/quota。鉴权复用 auth 中间件上面的借道凭据（mcr1.*）。
+// 必须在下方 mountProtocolProxies 之前注册——协议代理同样挂在这两个路径
+// 前缀下，后注册的精确路由会被遮蔽。每次请求触发真实余量查询（异步等待，
+// 不走 TTL 缓存），结果同时喂 provider-limit 缓存（limitRecorder 在后面
+// 定义，这里闭包惰性引用，请求到达时早已初始化）。
+mountProviderRelayQuotaRoutes(app, {
+  ...providers,
+  onResult: (appType, id, result) => limitRecorder.recordProvider(appType, id, result),
+});
 
 let serviceReady = false;
 const commanderMigrationState = createCommanderMigrationState();
