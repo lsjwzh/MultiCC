@@ -11,6 +11,9 @@
     const optionsEl = elements.options || doc?.getElementById('pending-user-input-options');
     const textInput = elements.textInput || doc?.getElementById('pending-user-input-text');
     const submitButton = elements.submitButton || doc?.getElementById('pending-user-input-submit');
+    const dismissButton = elements.dismissButton || doc?.getElementById('pending-user-input-dismiss');
+    const dismissRequest = opts.dismissRequest;
+    const showError = opts.showError || (() => {});
     const submitAnswer = opts.submitAnswer || (() => false);
     const isConnected = opts.isConnected || (() => true);
     // Collapsed-state floating bubble affordances (optional — a host that does
@@ -32,6 +35,7 @@
       const disabled = submitting || !isConnected();
       for (const control of controls) control.disabled = disabled;
       if (collapseBtn) collapseBtn.disabled = disabled;
+      if (dismissButton) dismissButton.disabled = disabled || !dismissRequest;
       root.dataset.submitting = submitting ? '1' : '';
     }
 
@@ -67,6 +71,25 @@
         setAvailability();
       }
       return accepted;
+    }
+
+    async function dismiss() {
+      if (!requestId || submitting || !isConnected() || !dismissRequest) return false;
+      const id = requestId;
+      submitting = true;
+      setAvailability();
+      try {
+        const result = await dismissRequest(id);
+        if (!result?.ok) throw new Error(result?.code || result?.error || 'dismiss_failed');
+        clear(id);
+        return true;
+      } catch (error) {
+        showError(error);
+        return false;
+      } finally {
+        // A different question may have arrived while HTTP was in flight.
+        if (requestId === id) { submitting = false; setAvailability(); }
+      }
     }
 
     // Collapse the card into the floating bubble so the flex row reflows and
@@ -149,6 +172,7 @@
         submitButton.click();
       }
     });
+    if (dismissButton) dismissButton.addEventListener('click', dismiss);
     if (collapseBtn) collapseBtn.addEventListener('click', collapse);
     if (fab) fab.addEventListener('click', expand);
 
@@ -159,6 +183,7 @@
       render,
       setConnected: setAvailability,
       submit,
+      dismiss,
     });
   }
 

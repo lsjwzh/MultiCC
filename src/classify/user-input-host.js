@@ -177,7 +177,7 @@ function createUserInputSignalHost({
     return applyUserInputEvidence(result, pending(sessionId));
   }
 
-  function resolve(sessionId, requestId) {
+  function resolve(sessionId, requestId, { dismissed = false } = {}) {
     const current = pending(sessionId);
     if (!current || current.requestId !== requestId) {
       return { ok: false, code: current ? 'request_id_mismatch' : 'no_pending_request' };
@@ -188,17 +188,19 @@ function createUserInputSignalHost({
         ...current,
         resolved: true,
         resolvedAt: now(),
+        ...(dismissed ? { resolution: 'dismissed', resolvedBy: 'user' } : {}),
       },
-      lastResolvedUserInput: { requestId, at: now(), taskId: current.taskId ?? null },
+      lastResolvedUserInput: { requestId, at: now(), taskId: current.taskId ?? null,
+        ...(dismissed ? { resolution: 'dismissed', resolvedBy: 'user' } : {}) },
       userInputSignalVersion: 1,
     });
     log(`[multicc/classify] ${sessionId} request_user_input resolved request=${requestId}`);
-    onResolved(sessionId, requestId, current.taskId ?? null);
+    onResolved(sessionId, requestId, current.taskId ?? null, dismissed ? { resolution: 'dismissed' } : undefined);
     return { ok: true, duplicate: false };
   }
 
   function degradedResult(sessionId, currentTask) {
-    if (!pending(sessionId)) return null;
+    if (!pending(sessionId) || pending(sessionId).resolved === true) return null;
     const state = getState(sessionId) || {};
     return {
       state: 'W',

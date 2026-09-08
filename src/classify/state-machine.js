@@ -241,20 +241,22 @@ function createClassifyStateMachine(rawDeps) {
     if (state === 'D') {
       // D — this turn executed successfully. TaskBoard completion is a separate
       // user-owned lifecycle action and is never inferred here.
-      const msg = finalGoal ? `执行成功：${finalGoal}` : '执行成功';
+      const dismissedQuestion = result.evidence === 'user_dismissed_question';
+      const msg = dismissedQuestion ? '待回答问题已标记为已处理'
+        : finalGoal ? `执行成功：${finalGoal}` : '执行成功';
       const completionTaskId = transitionTaskId || entryTaskId;
       const completionTaskShortCode = taskShortCode(completionTaskId);
       const completionNotice = {
         type: 'notify', state: 'succeeded', classifyState: 'D', message: msg,
         taskShortCode: completionTaskShortCode,
         taskGoal: finalGoal || '',
-        voiceMessage: completionVoiceMessage(completionTaskShortCode, finalGoal),
+        voiceMessage: dismissedQuestion ? msg : completionVoiceMessage(completionTaskShortCode, finalGoal),
       };
       if (isTerminal) {
-        triggerPush(sessionId, 'succeeded', msg);
+        if (!dismissedQuestion) triggerPush(sessionId, 'succeeded', msg);
         terminalBroadcast(sessionId, completionNotice);
       } else {
-        triggerPush(sessionId, 'succeeded', `[Chat] ${msg}`);
+        if (!dismissedQuestion) triggerPush(sessionId, 'succeeded', `[Chat] ${msg}`);
         chatBroadcast(sessionName, completionNotice);
       }
       const dirId = persistedSessions.get(sessionName)?.dirId;
