@@ -2500,6 +2500,11 @@ window.MultiCCChatSessionQueue.configure({
   onCancel: cancelQueuedSessionEntry,
   onInsert: insertQueuedSessionEntry,
 });
+function consumeUserInputRequestId(requestId) {
+  if (chatEventState.pendingUserInputRequestId !== requestId) return;
+  chatEventState.pendingUserInputRequestId = null;
+  pendingUserInputController.clear(requestId);
+}
 chatEventController = window.MultiCCChatEventController.createEventController({
   state: chatEventState,
   liveUi: chatLiveUi,
@@ -2539,6 +2544,8 @@ chatEventController = window.MultiCCChatEventController.createEventController({
     renderCurrentText,
     renderSessionQueue: window.MultiCCChatSessionQueue.render,
     renderPendingUserInput: message => pendingUserInputController.render(message),
+    getUserInputRequestId: () => chatEventState.pendingUserInputRequestId,
+    consumeUserInputRequestId,
     rearmUnread,
   },
 });
@@ -2633,12 +2640,7 @@ chatComposer = window.MultiCCChatComposer.createComposer({
   updateUi: updateUI,
   getIsStreaming: () => isStreaming,
   getUserInputRequestId: () => chatEventState.pendingUserInputRequestId,
-  consumeUserInputRequestId: requestId => {
-    if (chatEventState.pendingUserInputRequestId === requestId) {
-      chatEventState.pendingUserInputRequestId = null;
-      pendingUserInputController.clear(requestId);
-    }
-  },
+  consumeUserInputRequestId,
   hasOpenTurn: () => isStreaming || !!currentMsgEl,
   finishOpenTurn: () => {
     hideThinking();

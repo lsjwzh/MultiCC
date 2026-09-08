@@ -51,6 +51,9 @@ function createHarness(overrides = {}) {
   const saves = [];
   const runtime = createWorkspaceRuntime({
     records,
+    resolveStateTarget: overrides.resolveStateTarget,
+    stateSources: overrides.stateSources,
+    sessionView: overrides.sessionView,
     directories,
     chatSessions,
     workspaceSnapshot: id => [{ id: `session-${id}` }],
@@ -253,4 +256,62 @@ test('production composition delegates workspace/meta ownership to the runtime',
   assert.doesNotMatch(source, /function\s+handleWorkspaceWs\s*\(/);
   assert.doesNotMatch(source, /function\s+handleMetaWs\s*\(/);
   assert.doesNotMatch(source, /_origWorkspaceBroadcast/);
+});
+
+
+test('workspace snapshots and events project only the current shell execution, including cursor changes', () => {
+  let selected = 'child';
+  const source = id => ({ executionSessionId: id === 'working' ? selected : id });
+  const h = createHarness({ resolveStateTarget: source,
+    stateSources: id => selected === id ? ['working'] : [],
+    sessionView: id => ({ id, stateSource: source(id), classifyState: selected === 'child' ? 'W' : 'D',
+      goal: selected, phase: 'implementing', status: 'waiting' }),
+  });
+  h.records.set('child', { id: 'child', dirId: 'd1', kind: 'chat' });
+  const ws = new FakeSocket();
+  h.runtime.attachWorkspace(ws, new URL('http://local/?dirId=d1'));
+  ws.messages.length = 0;
+  h.runtime.broadcast('d1', { type: 'task_state', sessionId: 'child', classifyState: 'W' });
+  assert.equal(ws.messages.find(m => m.type === 'task_state' && m.sessionId === 'working').classifyState, 'W');
+  ws.messages.length = 0;
+  h.runtime.broadcast('d1', { type: 'task_state', sessionId: 'working', classifyState: 'E' });
+  assert.equal(ws.messages.find(m => m.type === 'task_state' && m.sessionId === 'working').classifyState, 'W', 'late historical source event cannot overwrite the selected execution');
+  selected = 'working';
+  ws.messages.length = 0;
+  h.runtime.publishSessionView('working');
+  assert.equal(ws.messages.find(m => m.type === 'task_state').classifyState, 'D');
+  ws.messages.length = 0;
+  h.runtime.broadcast('d1', { type: 'task_state', sessionId: 'child', classifyState: 'P' });
+  assert.equal(ws.messages.some(m => m.sessionId === 'working'), false, 'events from a deselected task stay on that task');
+  assert.equal(h.taskWrites.length, 0, 'projections never mutate source business state');
+});
+
+test('switching execution clears a previous queue and reconnect supplies the same empty view', () => {
+  let selected = 'child';
+  const target = id => ({ executionSessionId: id === 'working' ? selected : id });
+  const h = createHarness({ resolveStateTarget: target,
+    stateSources: id => id === selected ? ['working'] : [],
+    sessionView: id => ({ id, stateSource: target(id), status: 'idle' }),
+  });
+  h.records.set('child', { id: 'child', dirId: 'd1' });
+  h.runtime.setQueueStatus('child', { depth: 3, state: 'queued', updatedAt: 5000 });
+  const ws = new FakeSocket();
+  h.runtime.attachWorkspace(ws, new URL('http://local/?dirId=d1'));
+  const before = ws.messages[0].queues.find(q => q.sessionId === 'working');
+  assert.equal(before.depth, 3);
+  selected = 'working';
+  ws.messages.length = 0;
+  h.runtime.publishSessionView('working');
+  const cleared = ws.messages.find(m => m.type === 'session_queue_status');
+  assert.equal(cleared.depth, 0);
+  assert.ok(cleared.updatedAt > before.updatedAt);
+  const reconnect = new FakeSocket();
+  h.runtime.attachWorkspace(reconnect, new URL('http://local/?dirId=d1'));
+  const snapshot = reconnect.messages[0].queues.find(q => q.sessionId === 'working');
+  assert.equal(snapshot.depth, 0);
+  assert.ok(snapshot.updatedAt > cleared.updatedAt);
+  h.runtime.setQueueStatus('working', { depth: 1, state: 'queued', updatedAt: 50 });
+  const latest = ws.messages.filter(m => m.type === 'session_queue_status').at(-1);
+  assert.equal(latest.depth, 1);
+  assert.ok(latest.updatedAt > snapshot.updatedAt, 'new physical events remain accepted after projection');
 });

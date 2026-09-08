@@ -1,7 +1,7 @@
 'use strict';
 
 const { createSessionQueryService, createWorkspaceService } = require('../session');
-const { isTerminalLetter, isSettledLetter } = require('../classify/vocab');
+const { isTerminalLetter, isSettledLetter, classifyDisplay } = require('../classify/vocab');
 const { taskShortCode } = require('../classify/task-short-code');
 const { providerSelectionDto } = require('../providers/auto-provider-config');
 
@@ -74,13 +74,33 @@ function latestStringAssistant(history, minLength = 20) {
 function createSessionAdminRuntime(rawDeps) {
   const deps = assertDependencies(rawDeps);
 
+  function stateSource(id) {
+    return deps.resolveStateTarget?.(id) || { executionSessionId: id };
+  }
+  function sessionView(id) {
+    const target = stateSource(id);
+    const record = deps.records.get(target.executionSessionId);
+    const task = deps.getTaskState(record);
+    const status = deps.getWorkspaceStatus(target.executionSessionId) || {
+      status: 'idle', lastActivity: 0, runStartedAt: null, runEndedAt: null,
+    };
+    const summary = deps.getSessionSummary(target.executionSessionId);
+    return { ...status, id, stateSource: target,
+      status: task.classifyState ? classifyDisplay(task.classifyState).cardStatus : status.status,
+      currentFile: status.currentFile || null, pendingNotes: deps.pendingNotesFor(id).length,
+      summary: summary?.summary || null, summaryAt: summary?.ts || null,
+      classifyState: task.classifyState || null, goal: task.goal || '',
+      taskShortCode: taskShortCode(task.taskId), phase: task.phase || 'idle' };
+  }
+
   function readSessionRuntime(id, record, { includeMergeState = true } = {}) {
     const terminal = deps.terminalSessions.get(id);
-    const chat = deps.chatSessions.get(id);
+    const target = stateSource(id);
+    const chat = deps.chatSessions.get(target.executionSessionId);
     const kind = record.kind || 'terminal';
     const isChat = kind === 'chat';
     const chatActive = !!chat && (chat.clients.size > 0 || chat.isStreaming);
-    const chatActivity = isChat ? deps.chatLastActivity(id, chat) : null;
+    const chatActivity = isChat ? deps.chatLastActivity(target.executionSessionId, chat) : null;
     return {
       cwd: isChat ? deps.cwdForSession(record) : (terminal ? terminal.cwd : record.cwd),
       sessionCwd: deps.cwdForSession(record),
@@ -129,24 +149,7 @@ function createSessionAdminRuntime(rawDeps) {
       get: id => deps.directories.get(id),
     },
     workspaceFacts: {
-      read: id => {
-        const status = deps.getWorkspaceStatus(id) || {
-          status: 'idle', lastActivity: 0, runStartedAt: null, runEndedAt: null,
-        };
-        const summary = deps.getSessionSummary(id) || null;
-        const task = deps.getTaskState(deps.records.get(id));
-        return {
-          ...status,
-          currentFile: status.currentFile || null,
-          pendingNotes: deps.pendingNotesFor(id).length,
-          summary: summary?.summary || null,
-          summaryAt: summary?.ts || null,
-          classifyState: task.classifyState || null,
-          goal: task.goal || '',
-          taskShortCode: taskShortCode(task.taskId),
-          phase: task.phase || 'idle',
-        };
-      },
+      read: sessionView,
     },
   });
 
@@ -221,7 +224,7 @@ function createSessionAdminRuntime(rawDeps) {
   }
 
   function dashboardSessionPresenter({ record, runtime }) {
-    const task = deps.getTaskState(record);
+    const task = sessionView(record.id);
     return {
       id: record.id,
       label: record.label || null,
@@ -233,7 +236,8 @@ function createSessionAdminRuntime(rawDeps) {
       lastActivity: runtime.lastActivity,
       classifyState: task.classifyState || null,
       goal: task.goal || '',
-      taskShortCode: taskShortCode(task.taskId),
+      taskShortCode: task.taskShortCode,
+      stateSource: task.stateSource,
       phase: task.phase || 'idle',
     };
   }
@@ -249,6 +253,7 @@ function createSessionAdminRuntime(rawDeps) {
       branch: record.branch || null,
       invalid: deps.getInvalidSession(record.id) || null,
       status: facts.status,
+      stateSource: facts.stateSource,
       currentFile: facts.currentFile || null,
       lastActivity: facts.lastActivity,
       runStartedAt: facts.runStartedAt || null,
@@ -607,6 +612,7 @@ function createSessionAdminRuntime(rawDeps) {
     sessionQuery,
     sessionWorkspace,
     workspaceSnapshot,
+    sessionView,
   });
 }
 

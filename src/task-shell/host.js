@@ -30,6 +30,7 @@ function createTaskShellHost(deps) {
     runtime = createTaskShellRuntime({
       store,
       getRecord: id => deps.records.get(id),
+      onStateTargetChanged: id => deps.onStateTargetChanged?.(id),
       getHistory: deps.loadHistory,
       getLiveState: deps.getChatState,
       getExecution: async id => {
@@ -141,6 +142,7 @@ function createTaskShellHost(deps) {
       return owner?.owns(id) ? owner.guardAdmission(id, ...args) : { ok: false, code: 'task_shell_state_unavailable' };
     },
     accepts, open, owns, sendFromSession, sendClientInput,
+    stateTarget: id => getRuntime().stateTarget(id), stateSources: id => getRuntime().stateSources(id),
     recentTasks: (id, receiptId) => getRuntime().recentTasks(id, receiptId),
     refillContext: (id, options) => getRuntime().refillContext(id, options),
     contextTrace: (id, receiptId, options) => getRuntime().contextTrace(id, receiptId, options),

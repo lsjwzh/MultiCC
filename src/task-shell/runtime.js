@@ -55,14 +55,57 @@ function createTaskShellRuntime(ports) {
     const ids = new Set(store.list('link').filter(value => value.shellId === s.id).map(value => value.taskId));
     return store.list('task').filter(task => ids.has(task.id));
   }
+  // One read-only traversal for chat entry, dashboard state and live fan-out.
+  // A reference/link does not confer ownership or select another shell's task.
+  function shellTarget(s) {
+    const current = s.currentTaskId && taskFor(s, s.currentTaskId);
+    const executionSessionId = current?.ready ? current.sessionId : s.sourceSessionId;
+    if (getRecord(executionSessionId)?.dirId !== s.dirId) throw failure('source_session_missing');
+    return { shellId: s.id, sourceSessionId: s.sourceSessionId,
+      taskId: current?.id || null, executionSessionId };
+  }
+  function existingShell(sessionId) {
+    const source = getRecord(sessionId);
+    const owner = owns(sessionId);
+    if (owner && !owner.adopted) {
+      const origin = owner.ownerShellId ? { shellId: owner.ownerShellId } : store.list('link').find(l => l.taskId === owner.id);
+      const parent = origin && store.get('shell', origin.shellId);
+      if (parent?.dirId === source?.dirId) return parent;
+    }
+    return store.get('shell', `sh_${hash(sessionId).slice(0, 24)}`);
+  }
+  function stateTarget(sessionId) {
+    const s = existingShell(sessionId);
+    return s ? shellTarget(s) : { shellId: null, sourceSessionId: sessionId,
+      taskId: null, executionSessionId: sessionId };
+  }
+  function stateSources(executionSessionId) {
+    return store.list('shell').filter(s => !s.archivedAt
+      && getRecord(s.sourceSessionId)?.dirId === s.dirId)
+      .filter(s => shellTarget(s).executionSessionId === executionSessionId)
+      .map(s => s.sourceSessionId);
+  }
+  const changedSources = new Set();
+  function saveShell(id, value) {
+    const previous = store.get('shell', id);
+    store.set('shell', id, value);
+    if (previous?.currentTaskId === value.currentTaskId || !ports.onStateTargetChanged) return;
+    changedSources.add(value.sourceSessionId);
+    // Read again after the synchronous transaction commits (or rolls back).
+    // Only a committed cursor is ever published, and repeated writes coalesce.
+    queueMicrotask(() => {
+      if (!changedSources.delete(value.sourceSessionId)) return;
+      try { ports.onStateTargetChanged(value.sourceSessionId); }
+      catch (error) { console.warn('[task-shell] state projection failed', cleanError(error)); }
+    });
+  }
   function chatScope(shellId, sessionId = null) {
     const s = shell(shellId);
     const sessionIds = [...new Set([s.sourceSessionId, ...linkedTasks(s).map(t => t.sessionId)])]
       .filter(id => getRecord(id)?.dirId === s.dirId);
     if (sessionId && !sessionIds.includes(sessionId)) throw failure('task_not_linked', 'Execution is outside this shell', 403);
-    const current = s.currentTaskId && taskFor(s, s.currentTaskId);
-    return { shellId: s.id, sourceSessionId: s.sourceSessionId, sessionIds,
-      activeSessionId: current?.ready ? current.sessionId : s.sourceSessionId };
+    const target = shellTarget(s);
+    return { ...target, sessionIds, activeSessionId: target.executionSessionId };
   }
   function contextSnapshots(s, excludedTaskId = null) {
     const snapshots = [];
@@ -134,19 +177,11 @@ function createTaskShellRuntime(ports) {
     const source = getRecord(sessionId);
     if (!source || source.kind !== 'chat' || source.taskExecutionSlot || source.experimentalMode
       || ['aux', 'gateway', 'commander'].includes(source.type)) throw failure('unsupported_source', 'Use an ordinary chat', 400);
-    // Generated execution URLs are aliases of the shell that created the task.
-    // Opening one must not silently manufacture an empty display conversation.
-    const owner = owns(sessionId);
-    if (owner && !owner.adopted) {
-      const origin = owner.ownerShellId ? { shellId: owner.ownerShellId } : store.list('link').find(l => l.taskId === owner.id);
-      const parent = origin && store.get('shell', origin.shellId);
-      if (parent?.dirId === source.dirId) return parent;
-    }
-    const id = `sh_${hash(sessionId).slice(0, 24)}`;
-    const existing = store.get('shell', id);
+    const existing = existingShell(sessionId);
     if (existing) return existing;
+    const id = `sh_${hash(sessionId).slice(0, 24)}`;
     const value = { id, sourceSessionId: sessionId, dirId: source.dirId, currentTaskId: null, cursorVersion: 0, standalone: !!source.taskBoundTaskId && !source.workspaceOwnerSessionId, createdAt: Date.now() };
-    store.set('shell', id, value); return value;
+    saveShell(id, value); return value;
   }
   function link(shellId, taskId) {
     const s = shell(shellId); const task = taskFor(s, taskId, false);
@@ -183,7 +218,7 @@ function createTaskShellRuntime(ports) {
       if (!s.currentTaskId) {
         s.currentTaskId = task.id;
         s.defaultTaskId = task.id;
-        store.set('shell', s.id, s);
+        saveShell(s.id, s);
       }
       return task;
     });
@@ -228,7 +263,7 @@ function createTaskShellRuntime(ports) {
       s.cursorReceiptId = null;
       s.currentTaskId = task.id;
       s.defaultTaskId = task.id;
-      store.set('shell', s.id, s);
+      saveShell(s.id, s);
       return task;
     });
   }
@@ -247,7 +282,7 @@ function createTaskShellRuntime(ports) {
     const s = shell(shellId);
     if (!s.currentTaskId && s.defaultTaskId) {
       s.currentTaskId = s.defaultTaskId;
-      store.set('shell', s.id, s);
+      saveShell(s.id, s);
     }
     const receipts = store.list('receipt').filter(r => r.shellId === s.id).slice(-100);
     const latestWork = [...receipts].reverse().find(receipt => receipt.payload.intent === 'work' && receipt.status === 'accepted');
@@ -360,7 +395,7 @@ function createTaskShellRuntime(ports) {
       if (payload.intent === 'work') {
         currentShell.cursorVersion = receipt.cursorVersion;
         currentShell.cursorReceiptId = receipt.id;
-        store.set('shell', s.id, currentShell);
+        saveShell(s.id, currentShell);
       }
       if (payload.intent === 'work') store.set('claim', task.id, { receiptId });
       store.set('link', `${s.id}:${task.id}`, { shellId: s.id, taskId: task.id });
@@ -432,7 +467,7 @@ function createTaskShellRuntime(ports) {
         owner.currentTaskId = task.id;
         owner.defaultTaskId = task.id;
         owner.cursorReceiptId = receipt.id;
-        store.set('shell', owner.id, owner);
+        saveShell(owner.id, owner);
       });
       return receipt.result;
     } catch (error) {
@@ -548,7 +583,7 @@ function createTaskShellRuntime(ports) {
       s.cursorVersion = (s.cursorVersion || 0) + 1;
       s.currentTaskId = next.id;
       s.defaultTaskId = next.id;
-      store.set('shell', s.id, s);
+      saveShell(s.id, s);
       receipt.attributedTaskId = next.id;
       store.set('receipt', receipt.id, receipt);
       return { ok: true, taskId: next.id, changed: next.id !== owner.id };
@@ -576,7 +611,7 @@ function createTaskShellRuntime(ports) {
     return { ok: false, code: 'task_shell_route_required' };
   }
   return {
-    ...taskActions, open, adopt, link, remove, view, detail, chatScope, send: sendInput, retry, owns,
+    ...taskActions, stateTarget, stateSources, open, adopt, link, remove, view, detail, chatScope, send: sendInput, retry, owns,
     guardAdmission, recentTasks, refillContext, contextTrace, settleAttribution, locateOrCreate, resolveTask, sendExplicit,
   };
 }
