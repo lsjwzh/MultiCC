@@ -7,6 +7,8 @@ const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const express = require('express');
+const { validateUsageObserved } = require('../src/usage-observed');
+const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
 const { REQUIRED_CAPABILITIES } = require('../src/providers/router-port');
 const {
   createHostEmbeddingPaths,
@@ -122,14 +124,14 @@ function closeLocal(server) {
   });
 }
 
-function postJson({ port, pathname, body, headers = {} }) {
+function postJson({ port, pathname, body, headers = {}, method = 'POST' }) {
   return new Promise((resolve, reject) => {
-    const payload = Buffer.from(JSON.stringify(body));
+    const payload = Buffer.from(method === 'HEAD' ? '' : JSON.stringify(body));
     const request = http.request({
       hostname: '127.0.0.1',
       port,
       path: pathname,
-      method: 'POST',
+      method,
       headers: {
         'content-type': 'application/json',
         'content-length': String(payload.length),
@@ -236,7 +238,7 @@ test('installed CPR 0.3+ cpr mode proxies Claude and Codex through explicit host
       request.on('end', () => {
         const body = Buffer.concat(chunks).toString('utf8');
         upstreamRequests.push({ url: request.url, headers: request.headers, body });
-        if (request.url === '/anthropic/v1/messages') {
+        if (request.url === '/anthropic/v1/messages' && JSON.parse(body).model !== 'invalid-wire-model') {
           response.writeHead(200, { 'content-type': 'application/json' });
           response.end(JSON.stringify({
             id: 'msg_local',
@@ -278,6 +280,15 @@ test('installed CPR 0.3+ cpr mode proxies Claude and Codex through explicit host
     const providers = integrationProviders(upstream.url);
     const usageObserved = [];
     const activityObserved = [];
+    const proxyOutcomes = [];
+    const attempts = createProviderAttemptRuntime();
+    const bindings = Object.fromEntries(['claude', 'codex'].map(cli => [cli, attempts.beginAttempt({
+      sessionId: `session-${cli}`, turnId: `turn-${cli}`, cli, providerId: `${cli}-local`,
+      providerName: `Local ${cli}`, protocol: cli, model: `${cli}-wire-model`,
+      providerRevision: 'test-revision', attemptNo: 1,
+    })]));
+    const authorizeProxyRequest = input => ({ ok: true, attempt: bindings[input.protocol] });
+    const onProxyOutcome = event => { proxyOutcomes.push(event); attempts.observeProxyOutcome(event); };
     const runtime = createProviderRouterRuntime({
       mode: 'cpr',
       providers,
@@ -291,16 +302,31 @@ test('installed CPR 0.3+ cpr mode proxies Claude and Codex through explicit host
     const app = express();
     runtime.mountProtocolProxies(app, {
       protocols: ['claude'],
+      authorizeProxyRequest, onProxyOutcome,
       onUsageObserved: event => usageObserved.push(event),
       onActivity: event => activityObserved.push(event),
     });
     app.use(express.json());
     runtime.mountProtocolProxies(app, {
       protocols: ['codex'],
+      authorizeProxyRequest, onProxyOutcome,
       onUsageObserved: event => usageObserved.push(event),
       onActivity: event => activityObserved.push(event),
     });
     proxy = await listenLocal(app);
+
+    // This startup probe previously reached the upstream's 404 fallback and
+    // poisoned the attempt even though all subsequent model requests succeeded.
+    const hello = await postJson({
+      port: proxy.port, method: 'HEAD',
+      pathname: '/claude-proxy/claude-local/session-claude/api/hello',
+    });
+    assert.equal(hello.status, 200);
+    assert.equal(hello.body, '');
+    assert.equal(upstreamRequests.length, 0);
+    assert.deepEqual(usageObserved, []);
+    assert.deepEqual(activityObserved, []);
+    assert.deepEqual(proxyOutcomes, []);
 
     const claudeResponse = await postJson({
       port: proxy.port,
@@ -443,6 +469,31 @@ test('installed CPR 0.3+ cpr mode proxies Claude and Codex through explicit host
         && event.role === expected.role);
       assert.equal(events.some(event => event.phase === 'request'), true);
       assert.equal(events.some(event => event.phase === 'end'), true);
+    }
+
+    assert.equal(proxyOutcomes.length, 4, 'one independently reported outcome per physical request');
+    assert.equal(new Set(usageObserved.map(e => e.proxyOutcome.requestId)).size, 4);
+    for (const event of usageObserved) {
+      assert.equal(event.proxyOutcome.requestKind, 'inference');
+      assert.equal(event.proxyOutcome.termination, 'completed');
+      assert.deepEqual(validateUsageObserved(event).proxyOutcome, event.proxyOutcome);
+    }
+    for (const [pathname, model, requestKind] of [
+      ['/v1/messages/count_tokens', 'claude-wire-model', 'auxiliary'],
+      ['/v1/messages', 'invalid-wire-model', 'inference'],
+    ]) {
+      const failed = await postJson({ port: proxy.port,
+        pathname: `/claude-proxy/claude-local/session-claude${pathname}`,
+        body: { model, messages: [], stream: false },
+      });
+      assert.equal(failed.status, 404);
+      const outcome = usageObserved.at(-1).proxyOutcome;
+      assert.equal(outcome.requestKind, requestKind);
+      assert.equal(outcome.termination, 'upstream_http_error');
+      assert.equal(outcome.httpStatus, 404, 'real upstream HTTP failures remain observable');
+      const failure = attempts.proxyFailure(bindings.claude);
+      if (requestKind === 'auxiliary') assert.equal(failure, null, 'auxiliary 404 cannot fail the model turn');
+      else assert.equal(failure.httpStatus, 404, 'model 404 must still fail the turn');
     }
 
     assert.equal(fs.existsSync(forbiddenDefaultHome), false);

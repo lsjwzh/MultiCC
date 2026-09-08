@@ -1319,29 +1319,28 @@ const taskRunProviderBridge = createTaskRunProviderBridge({ records: persistedSe
 const providerAttemptRuntime = createProviderAttemptRuntime({ emit: chatBroadcast, audit: (id, event) => turnEventJournal.note(id, event), resolveProviderRevision: attempt => createProviderRevision({ cli: attempt.cli, providerId: attempt.providerId, protocol: attempt.protocol, model: attempt.model, summary: attempt.providerId === '_default_' ? null : providerRouterRuntime.getProviderSummary(undefined, attempt.providerId) }) });
 function handleProxyUsage(event) {
   const tagged = providerAttemptRuntime.attributeProxyUsage(event);
-  const isExactMain = tagged.routeAttribution === 'exact'
-    && String(tagged.roleKind || tagged.role || 'main').toLowerCase() === 'main';
-  const outcome = isExactMain
-    ? providerAttemptRuntime.observeProxyOutcome(tagged)
-    : { accepted: false, failure: null };
-  if (outcome.accepted && outcome.failure?.httpStatus === 429) {
-    limitRecorder.recordProviderFailure({
-      sessionId: tagged.sessionId,
-      providerId: outcome.failure.providerId,
-      category: 'rate_limit',
-      httpStatus: 429,
-    });
-  }
   if (tagged.routeAttribution === 'exact' || tagged.producerBound === true) {
     taskRunProviderBridge.onUsageObserved(tagged);
   } else if (String(event.roleKind || event.role || 'main').toLowerCase() !== 'main') {
     recordUsageObserved(tagged);
   }
 }
+function handleProxyOutcome(event) {
+  const outcome = providerAttemptRuntime.observeProxyOutcome(event);
+  if (outcome.accepted && outcome.failure?.httpStatus === 429) {
+    limitRecorder.recordProviderFailure({
+      sessionId: event.sessionId,
+      providerId: outcome.failure.providerId,
+      category: 'rate_limit',
+      httpStatus: 429,
+    });
+  }
+}
 const { createProxyBroadcasters } = require('./src/chat/proxy-broadcast');
 providerRouterRuntime.mountProtocolProxies(app, {
   protocols: ['claude'], authorizeProxyRequest: providerAttemptRuntime.authorizeProxyRequest, claudeProxy: { readOfficialCredential: arg => claudeAccountCredentials.readOfficialCredential(arg) }, // multi-account: marked providers resolve the account credential (refresh-on-read); the shared login keeps the default Keychain read
   onUsageObserved: handleProxyUsage,
+  onProxyOutcome: handleProxyOutcome,
   onActivity: event => { const bound = providerAttemptRuntime.onProxyActivity(event); if (bound) taskRunProviderBridge.onActivity({ ...event, sessionId: bound.sessionId }); },
   // Token-level delta + Claude 5h rate-limit sidecars: see src/chat/proxy-broadcast.js.
   ...createProxyBroadcasters(chatBroadcast, { resolveCli: name => (persistedSessions.get(name) || {}).cli, recordLimit: limitRecorder.recordSession, attemptRuntime: providerAttemptRuntime, audit: (id, event) => turnEventJournal.note(id, event) }),
@@ -1353,6 +1352,7 @@ providerRouterRuntime.mountProtocolProxies(app, {
   protocols: ['codex'],
   getPort: () => PORT, authorizeProxyRequest: providerAttemptRuntime.authorizeProxyRequest, codexOfficialRelay: { resolveAccountAuthFile: id => officialAccounts.codexAuthFile(id) }, // multi-account: providers marked settingsConfig.officialAccount resolve the account's own auth.json
   onUsageObserved: handleProxyUsage,
+  onProxyOutcome: handleProxyOutcome,
   onActivity: event => { const bound = providerAttemptRuntime.onProxyActivity(event); if (bound) taskRunProviderBridge.onActivity({ ...event, sessionId: bound.sessionId }); },
   ...createProxyBroadcasters(chatBroadcast, { resolveCli: name => (persistedSessions.get(name) || {}).cli, recordLimit: limitRecorder.recordSession, attemptRuntime: providerAttemptRuntime, audit: (id, event) => turnEventJournal.note(id, event) }),
 });

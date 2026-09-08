@@ -380,15 +380,19 @@ function createProviderRouterPort(options = {}) {
 
   function normalizeUsage(input, binding = null) {
     const value = binding == null ? null : assertProviderBinding(binding);
+    // CPR's usage schema predates host request outcomes. Preserve this separate
+    // structured observation across both legacy and CPR token normalization.
+    const observed = normalized => createUsageObserved({
+      ...normalized, ...(input.proxyOutcome ? { proxyOutcome: input.proxyOutcome } : {}),
+    }, value);
     const legacyCall = () => {
       const normalized = legacy && typeof legacy.normalizeUsageEvent === 'function'
         ? legacy.normalizeUsageEvent(input, { generateId: false })
         : input;
-      return createUsageObserved(normalized, value);
+      return observed(normalized);
     };
-    const cprCall = () => createUsageObserved(
+    const cprCall = () => observed(
       router.normalizeUsageEvent(input, { generateId: false }),
-      value,
     );
     if (mode === 'legacy') return legacyCall();
     if (mode === 'cpr') return cprCall();
@@ -456,7 +460,7 @@ function createProviderRouterPort(options = {}) {
     if (protocols.includes('claude')) {
       const admission = authorizeProxyRequest ? createProviderProxyAdmission({
         protocol: 'claude', app, getProvider, authorizeProxyRequest,
-        onActivity: mountOptions.onActivity,
+        onActivity: mountOptions.onActivity, onUsageEvent: common.onUsageEvent, onOutcome: mountOptions.onProxyOutcome,
       }) : null;
       if (authorizeProxyRequest) app.use(
         `/${String(mountOptions.claudeProxyPath || '/claude-proxy').replace(/^\/+|\/+$/g, '')}`,
@@ -464,13 +468,13 @@ function createProviderRouterPort(options = {}) {
       );
       mounted.claude = requireMethod(backend, 'mountClaudeProxy', mode === 'cpr' ? 'router' : 'legacy')(
         admission ? admission.app : app,
-        { ...common, ...(admission ? { getProvider: admission.getProvider, onActivity: admission.onActivity } : {}), ...(mountOptions.claudeProxyPath ? { claudeProxyPath: String(mountOptions.claudeProxyPath) } : {}), ...(mountOptions.claudeProxy || {}) },
+        { ...common, ...(admission ? { getProvider: admission.getProvider, onActivity: admission.onActivity, onUsageEvent: admission.onUsageEvent } : {}), ...(mountOptions.claudeProxyPath ? { claudeProxyPath: String(mountOptions.claudeProxyPath) } : {}), ...(mountOptions.claudeProxy || {}) },
       );
     }
     if (protocols.includes('codex')) {
       const admission = authorizeProxyRequest ? createProviderProxyAdmission({
         protocol: 'codex', app, getProvider, authorizeProxyRequest,
-        onActivity: mountOptions.onActivity,
+        onActivity: mountOptions.onActivity, onUsageEvent: common.onUsageEvent, onOutcome: mountOptions.onProxyOutcome,
       }) : null;
       if (authorizeProxyRequest) app.use(
         `/${String(mountOptions.codexProxyPath || '/codex-proxy').replace(/^\/+|\/+$/g, '')}`,
@@ -486,12 +490,12 @@ function createProviderRouterPort(options = {}) {
         logger,
         ...(mountOptions.codexOfficialRelay || {}),
         getProvider: admission ? admission.getProvider : getProvider,
-        ...(admission ? { onActivity: admission.onActivity } : {}),
+        ...(admission ? { onActivity: admission.onActivity, onUsageEvent: admission.onUsageEvent } : {}),
         ...(mountOptions.codexProxyPath ? { codexProxyPath: String(mountOptions.codexProxyPath) } : {}),
       });
       mounted.codex = requireMethod(backend, 'mountCodexProxy', mode === 'cpr' ? 'router' : 'legacy')(
         admission ? admission.app : app,
-        { ...common, ...(admission ? { getProvider: admission.getProvider, onActivity: admission.onActivity } : {}), ...(mountOptions.codexProxyPath ? { codexProxyPath: String(mountOptions.codexProxyPath) } : {}) },
+        { ...common, ...(admission ? { getProvider: admission.getProvider, onActivity: admission.onActivity, onUsageEvent: admission.onUsageEvent } : {}), ...(mountOptions.codexProxyPath ? { codexProxyPath: String(mountOptions.codexProxyPath) } : {}) },
       );
     }
     return Object.freeze(mounted);

@@ -2,6 +2,7 @@
 
 const crypto = require('crypto');
 const { assertProviderBinding } = require('./providers/binding');
+const { normalizeProxyOutcome } = require('./providers/proxy-outcome');
 
 const USAGE_OBSERVED_VERSION = 1;
 const ROLE_KINDS = new Set(['main', 'sub', 'aux']);
@@ -201,6 +202,7 @@ function createUsageObserved(input, binding = null) {
     protocol,
     model: optionalString(input.model, 256),
     tokens,
+    ...(input.proxyOutcome ? { proxyOutcome: normalizeProxyOutcome(input.proxyOutcome) } : {}),
     ...(hasAttemptIdentity ? {
       runtimeEpoch, turnId, decisionId, routeAttemptId, routeGeneration,
       attemptNo, providerRevision,
@@ -240,6 +242,7 @@ function createUsageObserved(input, binding = null) {
     protocol,
     model: eventContent.model,
     tokens,
+    ...(eventContent.proxyOutcome ? { proxyOutcome: eventContent.proxyOutcome } : {}),
     latencyMs: nonNegative(input.latencyMs, 'latencyMs'),
     ...(input.statusCode == null ? {} : { statusCode: nonNegative(input.statusCode, 'statusCode') }),
     ...(input.errorCode ? { errorCode: optionalString(input.errorCode, 128) } : {}),

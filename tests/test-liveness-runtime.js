@@ -164,6 +164,32 @@ test('direct (non-proxy) session with only a live outbound connection => working
   assert.equal(v.reason, 'outbound_connection');
 });
 
+test('an idle persistent Claude stream stays idle despite retained sockets and transcript flushes', async () => {
+  const now = clockFrom(100_000);
+  let probes = 0;
+  const streamStatus = { s1: { busy: false, alive: true, pid: 4242 } };
+  const rt = make({
+    now, sessions: { s1: { cli: 'claude' } },
+    chat: { s1: { isStreaming: false, lastStreamAt: now(), currentTask: { phase: 'done' } } },
+    streamStatus,
+    probeSession: async () => { probes += 1; return { hasOutboundConnection: true }; },
+  });
+  rt.recordProxyActivity({ sessionId: 's1', phase: 'end', at: now() });
+  for (const probe of [
+    { hasOutboundConnection: true }, { rolloutGrowing: true },
+    { hasOutboundConnection: true, rolloutGrowing: true },
+  ]) assert.equal(rt.verdict('s1', probe).state, 'idle');
+  assert.equal((await rt.assess('s1')).state, 'idle');
+  assert.equal(probes, 0, 'known idle streams do not need an expensive process probe');
+  now.advance(700_000);
+  assert.equal(rt.verdict('s1', { hasOutboundConnection: true }).state, 'idle');
+
+  // The next turn must be working even before its first byte, while classify's
+  // goal phase still says done and the previous proxy event is still end.
+  streamStatus.s1.busy = true;
+  assert.equal(rt.verdict('s1', { hasOutboundConnection: true }).state, 'working');
+});
+
 test('rollout growth alone (no turn, no outbound) => working', () => {
   const now = clockFrom(10_000);
   const rt = make({ now, sessions: { s1: {} }, chat: { s1: {} } });
