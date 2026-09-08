@@ -1,5 +1,7 @@
 'use strict';
 
+const { createResultCompletionTracker, isMainResult } = require('./result-completion');
+
 const { renderPrompt } = require('../message-composer');
 const { claudeLikeMcpArgs } = require('./router-mcp');
 
@@ -22,6 +24,7 @@ function createCodebuddyAdapter({ cmd, routerMcpNode, routerMcpScript }) {
   const routerArgs = claudeLikeMcpArgs(routerMcpNode, routerMcpScript);
   return {
     name: 'codebuddy',
+    createCompletionTracker: createResultCompletionTracker,
     cmd,
     buildTerminalCmd(session) {
       let command = cmd;
@@ -49,6 +52,7 @@ function createCodebuddyAdapter({ cmd, routerMcpNode, routerMcpScript }) {
       return { cmd, args, payload: renderPrompt(env) };
     },
     decodeEvent(event) {
+      if (event?.type === 'result' && !isMainResult(event)) return [];
       if (!event || typeof event !== 'object') return [];
       if (event.type === 'system' && event.subtype === 'init') {
         const decoded = [{ type: 'session_init', model: event.model, raw: event }];

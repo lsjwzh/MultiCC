@@ -126,6 +126,20 @@ if (!parsed || !isZcodeSessionId(parsed.sessionId)) {
 const sid = parsed.sessionId;
 const emit = (obj) => process.stdout.write(JSON.stringify(obj) + '\n');
 
+// The installed engine's runPrompt awaits submitPrompt and returns its
+// projection. Preserve failure/unknown outcomes instead of inventing stop
+// merely because JSON parsed. Missing projection supports older producers only
+// as an unknown outcome; it is not proof of success.
+const nativeStatus = parsed.projection?.status;
+if (parsed.error || ['failed', 'error', 'cancelled'].includes(nativeStatus)) {
+  emit({ type: 'error', error: { code: 'zcode_terminal_error', message: `ZCode ended: ${nativeStatus || 'error'}` } });
+  process.exit(1);
+}
+if (typeof parsed.response !== 'string') {
+  emit({ type: 'error', error: { code: 'zcode_invalid_result', message: 'ZCode 未返回有效的结果内容。' } });
+  process.exit(1);
+}
+
 emit({ sessionID: sid, type: 'step_start' });
 if (parsed.response) {
   emit({ sessionID: sid, type: 'text', part: { text: parsed.response } });
@@ -135,7 +149,7 @@ emit({
   sessionID: sid,
   type: 'step_finish',
   part: {
-    reason: 'stop',
+    reason: nativeStatus === 'idle' ? 'stop' : 'unknown',
     tokens: {
       input: u.inputTokens || 0,
       output: u.outputTokens || 0,

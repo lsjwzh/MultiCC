@@ -11,8 +11,8 @@ const { clearErrorFlagsForSucceededTurn } = require('../src/chat/turn-lifecycle'
 
 function stateful(over = {}) {
   return {
-    turn: { resultDurable: true },
-    runner: { sawApiError: true, apiErrorRaw: { code: 'error' }, adapterError: 'boom' },
+    turn: { resultDurable: true, resultRunnerId: 'runner-1' },
+    runner: { runnerId: 'runner-1', completionOutcome: { version: 1, state: 'completed', settled: true }, sawApiError: true, apiErrorRaw: { code: 'error' }, adapterError: 'boom' },
     cs: { _sawApiError: true, _adapterError: 'boom' },
     ...over,
   };
@@ -32,7 +32,7 @@ function stateful(over = {}) {
 }
 
 {
-  // Streaming path passes no exit code; a durable result alone is proof.
+  // Streaming path passes no exit code; adapter completion also proves that send resolved.
   const { turn, runner, cs } = stateful();
   const cleared = clearErrorFlagsForSucceededTurn(turn, runner, cs, { killReason: null });
   assert.strictEqual(cleared, true);

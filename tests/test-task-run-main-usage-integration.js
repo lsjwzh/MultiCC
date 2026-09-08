@@ -44,6 +44,9 @@ function admittedTurn() {
     protocol: 'openai-responses', model: 'model-a', roleKind: 'main', routeName: 'main',
   });
   const runner = createRunnerOwnership(turn, { runnerId: 'runner-1', kind: 'process' });
+  const completion = require('../src/cli-adapters/codex').createCodexAdapter({}).createCompletionTracker();
+  completion.observe({ type: 'turn.completed' });
+  runner.completionOutcome = completion.finish({ kind: 'process', code: 0 });
   return { turn, runner };
 }
 

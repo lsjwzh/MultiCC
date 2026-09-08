@@ -1,5 +1,7 @@
 'use strict';
 
+const { createResultCompletionTracker, isMainResult } = require('./result-completion');
+
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -24,6 +26,7 @@ function createClaudeAdapter(deps) {
 
   return {
     name: 'claude',
+    createCompletionTracker: createResultCompletionTracker,
     cmd,
     buildTerminalCmd(session) {
       let command = `${cmd}${args.length ? ' ' + args.join(' ') : ''}`;
@@ -90,6 +93,7 @@ function createClaudeAdapter(deps) {
       return { cmd, args, payload };
     },
     decodeEvent(event) {
+      if (event?.type === 'result' && !isMainResult(event)) return [];
       if (event && event.type === 'system' && event.subtype === 'init') {
         return [{ type: 'session_init', model: event.model, raw: event }];
       }

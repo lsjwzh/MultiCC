@@ -1,5 +1,7 @@
 'use strict';
 
+const { completion, createCompletionTracker } = require('./completion');
+
 const { renderPrompt } = require('../message-composer');
 const { extractUpstreamError } = require('../upstream-error');
 
@@ -142,6 +144,18 @@ function createCodexAdapter(deps) {
 
   return {
     name: 'codex',
+    // Codex 0.153.4 exec maps app-server TurnStatus to these terminal events.
+    // An intermediate error can be retried; turn.failed cannot be undone by
+    // a later success-looking frame from the same runner.
+    createCompletionTracker() {
+      return createCompletionTracker({ observe(event) {
+        if (event.type === 'turn.completed') return event.error != null
+          ? completion('failed', 'terminal_error') : completion('completed', 'turn.completed');
+        if (event.type === 'turn.failed') return completion('failed', 'turn.failed');
+        if (event.type === 'turn.aborted') return completion('cancelled', 'turn.aborted');
+        return null;
+      } });
+    },
     cmd,
     buildTerminalCmd(session) {
       const baseArgs = args.length ? ' ' + args.join(' ') : '';

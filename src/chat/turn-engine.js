@@ -8,6 +8,8 @@
 // by reference. Pure/stateless helpers are required directly from src/*.
 
 const crypto = require('crypto');
+const { createAdapterCompletion, isCompleted } = require('../cli-adapters/completion');
+const { settleAdapterCompletion, canPersistAdapterCompletion, finalizeCompletionStream } = require('./adapter-completion');
 const {
   TurnRequestError,
   normalizeTurnRequest,
@@ -28,6 +30,7 @@ const {
   planTurnFinalization,
   createTurnFinalizationExecutor,
   detectErrorEnvelope,
+  envelopeSourceFor,
   isKnownHarmlessStderrLine,
   sanitizeMessage: sanitizeApiErrorMessage,
   retryNotice,
@@ -509,21 +512,8 @@ function createChatTurnEngine(deps) {
     }
   }
 
-  // Keep the claude transcript inside the context window before `--resume` replays
-  // it. Claude Code auto-compacts on its own, so this is the second line of
-  // defence: it drops the pre-compaction weight claude no longer replays, and it
-  // elides individual oversized entries — the case compaction cannot fix, since a
-  // single multi-hundred-KB tool result is ~100K tokens on its own and has to fit
-  // in the very request that would summarise it.
-  //
-  // Two things this call site got wrong before, both silent:
-  //   • it required './src/chat/transcript-prune' — a path that cannot resolve from
-  //     inside src/chat/ — so the throw landed in an empty catch and the gate had
-  //     never once run in production;
-  //   • it passed cliSessionId, but a chat session's streaming context lives under
-  //     _streamSessionId. With the correct project directory that id resolves to a
-  //     different (dead) transcript, which the pruner would happily trim and report
-  //     success for while the live one kept growing.
+  // Prune oversized native context before resume. Persistent Claude uses
+  // _streamSessionId; cliSessionId may point to a different transcript.
   function pruneTranscript(sessionName, persisted) {
     let report = null;
     try {
@@ -580,8 +570,7 @@ function createChatTurnEngine(deps) {
   // Apply one claude-shaped stream-json event to chat session state, then forward
   // it to clients. Shared by the per-turn spawn path (handleLine) and the
   // persistent streaming path (runChatTurnStreaming) so the two never drift.
-  // The `result` event is the turn boundary: it saves the assistant message,
-  // returns the session to idle, and fires post-turn hooks.
+  // Native result metadata is consumed after runner settlement.
   function applyClaudeChatEvent(cs, sessionName, evt, forward, turn, runner, providerName = 'claude') {
     if (!isCurrentTurnRunner(cs, turn, runner)) return;
     evt = attemptRuntime.scrubAttemptStructure(runner.providerAttempt, evt);
@@ -643,9 +632,16 @@ function createChatTurnEngine(deps) {
       } };
     }
     if (evt.type === 'result') {
+      if (!runner.completionOutcome) {
+        runner.pendingClaudeResult = evt;
+        recordResultEvent(turn, runner, { current: true, persisted: false });
+        return;
+      }
       turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'finalizing');
       cs.currentCost = evt.total_cost_usd || null;
-      const apiFailure = evt.is_error === true || (evt.subtype && evt.subtype !== 'success' && /error|abort|timeout/i.test(evt.subtype));
+      const resultCompletion = runner.completionOutcome;
+      const resultSucceeded = canPersistAdapterCompletion(resultCompletion, attemptRuntime.proxyFailure?.(runner.providerAttempt));
+      const apiFailure = resultCompletion.state === 'failed' && resultCompletion.source === 'protocol';
       const detectedErrorEnvelope = detectErrorEnvelope(providerName, cs.currentAssistantText);
       const envelopeError = apiFailure ? null : detectedErrorEnvelope;
       if (envelopeError && envelopeError.body != null) {
@@ -670,16 +666,11 @@ function createChatTurnEngine(deps) {
           requestId: detail.request_id || evt.request_id,
           message: detail.message || evt.result || evt.subtype || 'api_error',
         };
-      } else {
-        recordApiSuccess(providerName, { retryAttempt: runner.apiRetryAttempt || 0, runner });
-        clearSessionApiErrorState(sessionName, cs);
       }
-      // Hoisted out of the if-block: forward() below also needs usage. Block
-      // scoping it made live clients miss the result event entirely.
       const usage = evt.usage || {};
       const contextTrace = contextTraceFor(sessionName, cs);
       runner.pendingUsage = usage;
-      if (!apiFailure && !envelopeError && (cs.currentAssistantText || cs.currentToolCalls.length)) {
+      if (resultSucceeded && !envelopeError && (cs.currentAssistantText || cs.currentToolCalls.length)) {
         const resultDurable = persistFinalAssistantResult(sessionName, cs, turn, runner, {
           role: 'assistant', content: cs.currentAssistantText,
           tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
@@ -690,8 +681,7 @@ function createChatTurnEngine(deps) {
         if (resultDurable) {
           recordDurableTurnUsage(sessionName, runner, usage);
           cs.chatTurnCount++;
-          // Durable result marks the turn complete so classify does not resume
-          // it as an unknown interruption (duplicate replies, 1x/2x/3x usage).
+          // Durability is independent of the runner's eventual completion.
           cs._resultSaved = true;
         }
         // Cancel any pending incremental-save timer: the final message is now
@@ -699,8 +689,6 @@ function createChatTurnEngine(deps) {
         // AFTER the final — a duplicate bubble on reconnect. Mirrors the cancel
         // in the child-process close handler.
         getChatHistoryRuntime().clearIncrementalSave(sessionName);
-      } else if (!apiFailure && !envelopeError) {
-        recordResultEvent(turn, runner, { current: true, persisted: false });
       } else {
         // An error result is a turn boundary, not a durable successful answer.
         // Close finalization may checkpoint meaningful partial output, while an
@@ -717,10 +705,7 @@ function createChatTurnEngine(deps) {
       // Final classification and all post-turn effects run from the owned
       // close/finalize boundary. The result event alone is not enough: history
       // persistence may have failed or a retry may still be planned.
-      setSessionStatus(sessionName, { status: cs._resultSaved ? 'succeeded' : 'idle', currentFile: null });
-      // Turn boundary: refresh this session's provider usage limit if it exposes a
-      // poll-only quota surface (GLM window %, DeepSeek balance). Fire-and-forget,
-      // TTL-throttled and account-deduped inside the poller; never blocks the turn.
+      // Refresh poll-only quota surfaces; the poller throttles by account.
       usageLimitPoller.onTurnComplete(sessionName);
     }
     // Drop claude's `system init` — server already sent its own (but keep the
@@ -741,6 +726,7 @@ function createChatTurnEngine(deps) {
     if (!isCurrentTurnRunner(cs, turn, runner)) return;
     turnProgressHeartbeat.touchActivity(sessionName, turn.turnId);
     const decoded = provider.decodeEvent(rawEvent) || [];
+    runner.completion.observe(rawEvent, Array.isArray(decoded) ? decoded : [decoded]);
     for (let evt of (Array.isArray(decoded) ? decoded : [decoded])) {
       if (!evt) continue;
       evt = attemptRuntime.scrubAttemptStructure(runner.providerAttempt, evt);
@@ -931,11 +917,7 @@ function createChatTurnEngine(deps) {
         continue;
       }
       if (evt.type === 'complete') {
-        turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'finalizing');
-        recordApiSuccess(provider.name, { retryAttempt: runner.apiRetryAttempt || 0, runner });
-        clearSessionApiErrorState(sessionName, cs);
-        codexUsageHost.complete({ evt, cs, persisted, sessionName, turn, runner, forward,
-          contextTrace: contextTraceFor(sessionName, cs) });
+        runner.pendingCompletionEvent = evt;
         continue;
       }
       if (evt.type === 'error') {
@@ -1703,6 +1685,7 @@ function createChatTurnEngine(deps) {
         throw error;
       }
       const runner = createRunnerOwnership(turn, {
+        completion: createAdapterCompletion(provider),
         runnerId: `proc_${crypto.randomBytes(8).toString('hex')}`,
         kind: 'process', providerAttempt: attempt,
         routeProof: prepared.routeProof,
@@ -1842,6 +1825,7 @@ function createChatTurnEngine(deps) {
         stderrPending = '';
         const durMs = Date.now() - spawnTs;
         const killReason = runner.killReason || null;
+        const completionOutcome = settleAdapterCompletion(runner, { kind: 'process', code, signal, killReason }, logger);
         const pendingStreamError = cs._codexPendingStreamError || '';
         const pendingTransportError = cs._codexTransportError || '';
         const pendingStreamErrorCount = cs._codexPendingStreamErrorCount || 0;
@@ -1855,6 +1839,7 @@ function createChatTurnEngine(deps) {
         const diag = {
           session: sessionName, cli: cs.cli, pid: proc.pid, code, signal, durMs, killReason,
           resultSaved: !!turn.resultDurable,
+          completion: completionOutcome,
           gotText: (cs.currentAssistantText || '').length,
           toolCalls: cs.currentToolCalls.length,
           liveClients: cs.clients.size,
@@ -1868,13 +1853,15 @@ function createChatTurnEngine(deps) {
         if (signal) kind = killReason ? `killed(${killReason})` : `signaled(${signal})`;
         else if (code !== 0 && !recoveredCodexDisconnect) kind = 'nonzero_exit';
         else if (!turn.resultDurable && !cs.currentAssistantText && !cs.currentToolCalls.length) kind = 'empty_exit';
-        console.log(`[multicc/chat] [${sessionName}] close kind=${kind} ${JSON.stringify(diag)}`);
         const boundaryErrorEnvelope = reconcileBoundaryErrorEnvelope(
           attemptRuntime, runner.providerAttempt, provider?.name || cs.cli, cs.currentAssistantText,
         );
+        commitAdapterResult(provider, sessionName, cs, persisted, turn, runner, forward, boundaryErrorEnvelope);
+        diag.resultSaved = !!turn.resultDurable;
+        console.log(`[multicc/chat] [${sessionName}] close kind=${kind} ${JSON.stringify(diag)}`);
         const proxyFailure = attemptRuntime.proxyFailure?.(runner.providerAttempt, {
           resultDurable: turn.resultDurable === true && turn.resultRunnerId === runner.runnerId,
-          cleanClose: code === 0 && !killReason,
+          completion: completionOutcome,
         }) || null;
         const attemptFacts = attemptRuntime.snapshot(sessionName);
         const sideEffects = turnHasSideEffects(cs)
@@ -1883,10 +1870,7 @@ function createChatTurnEngine(deps) {
           && attemptFacts?.replayFence === 'none' && !sideEffects);
         const partialOutput = errorOnlyBoundary
           ? false : meaningfulTurnOutput(cs) || !!attemptFacts?.visibleOutputObserved;
-        // A durable result + clean close proves the turn succeeded; any error
-        // flagged mid-stream (codex emits internal housekeeping failures as
-        // stream error items, then finishes fine) was recovered from and must
-        // not classify this turn as an API error.
+        // Clear transient errors only after adapter completion and persistence.
         if (clearErrorFlagsForSucceededTurn(turn, runner, cs, { code, killReason })) {
           logger.info?.('chat_error_flags_cleared_after_success', {
             sessionId: sessionName,
@@ -1957,6 +1941,7 @@ function createChatTurnEngine(deps) {
         });
         const closeCheckpointKey = assistantCheckpointKey(cs);
         const finalizePlan = planTurnFinalization({
+          completion: completionOutcome,
           current: true,
           runnerKind: 'process',
           cli: cs.cli,
@@ -2110,8 +2095,9 @@ function createChatTurnEngine(deps) {
           });
           return;
         }
-        if (turn.resultDurable && !apiErrorDecision) autoTurn.recordSuccess(runner.providerAttempt);
-        finishProviderAttempt(runner, turn.resultDurable && !apiErrorDecision ? 'succeeded' : 'failed', {
+        const succeeded = isCompleted(completionOutcome) && turn.resultDurable && !apiErrorDecision;
+        if (succeeded) autoTurn.recordSuccess(runner.providerAttempt);
+        finishProviderAttempt(runner, succeeded ? 'succeeded' : 'failed', {
           errorCategory: apiErrorDecision?.error?.category || null,
           reasonCode: finalizePlan.action,
         });
@@ -2245,11 +2231,8 @@ function createChatTurnEngine(deps) {
   }
 
   // ── Streaming chat turn (persistent process; see runChatTurn's streaming branch) ──
-  // Feeds the prompt into the session's long-lived `claude` process and forwards
-  // events through the SAME applyClaudeChatEvent() the per-turn path uses, so the
-  // UI sees identical events. The turn boundary is the `result` event (handled
-  // inside applyClaudeChatEvent); finalizeStreamingTurn() then does the
-  // process-independent cleanup (stream_end, gateway回流) WITHOUT killing the proc.
+  // The persistent process uses the same adapter/persistence path. A settled
+  // send closes this turn while the native process stays available for reuse.
   function runChatTurnStreaming(
     sessionName, cs, persisted, prepared, provider, turn, prepareInvocation, autoTurn, apiRetryAttempt = 0,
   ) {
@@ -2357,6 +2340,7 @@ function createChatTurnEngine(deps) {
     // superseded turn can't clobber us.
     const mySeq = cs._streamTurnSeq = (cs._streamTurnSeq || 0) + 1;
     const runner = createRunnerOwnership(turn, {
+      completion: createAdapterCompletion(provider),
       runnerId: `stream_${mySeq}_${crypto.randomBytes(6).toString('hex')}`,
       kind: 'stream', sequence: mySeq, providerAttempt: attempt,
       routeProof: prepared.routeProof,
@@ -2375,7 +2359,7 @@ function createChatTurnEngine(deps) {
     // process is ready for this message (fresh spawn or warm reuse), 'sent'
     // after the prompt line is written to stdin. t3 is the first decoded
     // stream event — the earliest reply signal observable on this path.
-    chatStream.send(sessionName, invocation.payload, (evt) => {
+    finalizeCompletionStream(chatStream.send(sessionName, invocation.payload, (evt) => {
       if (!isCurrentTurnRunner(cs, turn, runner)
           || !attemptRuntime.acceptEvent(runner.providerAttempt)) return;
       turnTiming.markFirstByte(sessionName, turn.turnId);
@@ -2386,11 +2370,12 @@ function createChatTurnEngine(deps) {
         else if (phase === 'sent') turnTiming.markSent(sessionName, turn.turnId);
         else if (phase === 'firstByte') turnTiming.markFirstByte(sessionName, turn.turnId);
       },
-    })
-      .then(() => finalizeStreamingTurn(
+    }), {
+      runner, logger,
+      finalize: () => finalizeStreamingTurn(
         sessionName, cs, persisted, mySeq, turn, runner, prepared, provider, prepareInvocation, autoTurn,
-      ))
-      .catch((err) => {
+      ),
+      onRejected(err) {
         turnTiming.abort(sessionName, turn.turnId,
           `stream_ended_before_first_byte:${(err && err.code) || 'exit'}`);
         if (!runner.killReason) {
@@ -2408,12 +2393,38 @@ function createChatTurnEngine(deps) {
           code: err && err.code || null,
           killed: !!runner.killReason,
         });
-        finalizeStreamingTurn(
-          sessionName, cs, persisted, mySeq, turn, runner, prepared, provider, prepareInvocation, autoTurn,
-        );
-      });
+      },
+      onFinalizeError(error) {
+        if (isCurrentTurnRunner(cs, turn, runner)) {
+          cs.isStreaming = false;
+          cs._activeRunner = null;
+          getChatHistoryRuntime().clearIncrementalSave(sessionName);
+          Promise.resolve(getSessionWorkHost().turnFailed(sessionName, 'finalization_failed')).catch(() => {});
+          chatBroadcast(sessionName, { type: 'error', error: '本轮收尾失败，结果尚未确认；请检查日志。' });
+          chatBroadcast(sessionName, { type: 'stream_end' });
+        }
+        logger.error('chat_stream_finalize_failed', { sessionId: sessionName, turnId: turn.turnId,
+          message: error?.message || 'finalization failed' });
+      },
+    });
 
     return true;
+  }
+
+  function commitAdapterResult(provider, sessionName, cs, persisted, turn, runner, forward, envelope) {
+    const nativeResult = runner.pendingClaudeResult;
+    if (nativeResult) {
+      applyClaudeChatEvent(cs, sessionName, nativeResult, forward, turn, runner, provider.name);
+      runner.pendingClaudeResult = null;
+    }
+    if (!canPersistAdapterCompletion(runner.completionOutcome,
+      attemptRuntime.proxyFailure?.(runner.providerAttempt), envelope)) return;
+    recordApiSuccess(provider.name, { retryAttempt: runner.apiRetryAttempt || 0, runner });
+    clearSessionApiErrorState(sessionName, cs);
+    if (!nativeResult && !turn.resultDurable) codexUsageHost.complete({
+      evt: runner.pendingCompletionEvent || { usage: runner.pendingUsage || {} },
+      cs, persisted, sessionName, turn, runner, forward, contextTrace: contextTraceFor(sessionName, cs),
+    });
   }
 
   // The pure planner describes both runner endings; this injected host adapter is
@@ -2489,9 +2500,11 @@ function createChatTurnEngine(deps) {
       attemptRuntime, runner.providerAttempt,
       provider?.name || persisted.cli || 'claude', cs.currentAssistantText,
     );
+    commitAdapterResult(provider, sessionName, cs, persisted, turn, runner,
+      evt => forwardProviderEvent(sessionName, cs, turn, runner, evt), boundaryErrorEnvelope);
     const proxyFailure = attemptRuntime.proxyFailure?.(runner.providerAttempt, {
       resultDurable: turn.resultDurable === true && turn.resultRunnerId === runner.runnerId,
-      cleanClose: !runner.killReason,
+      completion: runner.completionOutcome,
     }) || null;
     const attemptFacts = attemptRuntime.snapshot(sessionName);
     const sideEffects = turnHasSideEffects(cs)
@@ -2500,8 +2513,7 @@ function createChatTurnEngine(deps) {
       && attemptFacts?.replayFence === 'none' && !sideEffects);
     const partialOutput = errorOnlyBoundary
       ? false : meaningfulTurnOutput(cs) || !!attemptFacts?.visibleOutputObserved;
-    // Same success veto as the process close path: a durable result proves a
-    // mid-stream error was recovered from (see the close handler above).
+    // The stream promise must resolve as well as carrying a successful result.
     clearErrorFlagsForSucceededTurn(turn, runner, cs, { killReason: runner.killReason });
     // A reused cross-CLI target is an explicit fail-closed boundary. Detect a
     // failed native Claude resume before generic API policy can persist or
@@ -2563,6 +2575,7 @@ function createChatTurnEngine(deps) {
     });
     const finalizeCheckpointKey = assistantCheckpointKey(cs);
     const plan = planTurnFinalization({
+      completion: runner.completionOutcome,
       current: true,
       runnerKind: 'stream',
       cli: persisted.cli || 'claude',
@@ -2625,8 +2638,9 @@ function createChatTurnEngine(deps) {
       });
       return;
     }
-    if (turn.resultDurable && !apiErrorDecision) autoTurn.recordSuccess(runner.providerAttempt);
-    finishProviderAttempt(runner, turn.resultDurable && !apiErrorDecision ? 'succeeded' : 'failed', {
+    const succeeded = isCompleted(runner.completionOutcome) && turn.resultDurable && !apiErrorDecision;
+    if (succeeded) autoTurn.recordSuccess(runner.providerAttempt);
+    finishProviderAttempt(runner, succeeded ? 'succeeded' : 'failed', {
       errorCategory: apiErrorDecision?.error?.category || null,
       reasonCode: plan.action,
     });
