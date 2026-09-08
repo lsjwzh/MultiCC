@@ -20,7 +20,7 @@ const responses = buildAuxHttpRequest(
   common,
 );
 assert.deepStrictEqual(responses.body, {
-  model: 'model-1', input: 'hello', instructions: 'be concise',
+  model: 'model-1', input: [{ role: 'user', content: [{ type: 'input_text', text: 'hello' }] }], instructions: 'be concise', stream: true,
 });
 assert.strictEqual(responses.parse({ output_text: 'direct' }), 'direct');
 assert.strictEqual(responses.parse({
