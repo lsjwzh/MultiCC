@@ -1446,6 +1446,7 @@ const sessionAdmin = createSessionAdminRuntime({
   cliAvailabilitySummary,
   sessionProviderBaseUrl,
   getInvalidSession: id => invalidSessions.get(id),
+  resolveStateTarget: id => taskShellHost.stateTarget(id),
   getWorkspaceStatus: id => workspaceStatus.get(id),
   getSessionSummary: id => sessionSummaries.get(id),
   getTaskState,
@@ -1473,6 +1474,8 @@ const workspaceRuntime = createWorkspaceRuntime({
   directories,
   chatSessions,
   workspaceSnapshot,
+  resolveStateTarget: id => taskShellHost.stateTarget(id), stateSources: id => taskShellHost.stateSources(id),
+  sessionView: id => sessionAdmin.sessionView(id),
   recentEvents: dirId => recentEvents(dirId),
   mergeState: (directory, session) => mergeStateCached(directory, session),
   send: (client, payload) => sendWs(client, payload),
@@ -2097,6 +2100,7 @@ const taskContextHost = createTaskContextHost({
   runTurn: (sessionId, text, options) => chatTurnEngine.admitChatWork(sessionId, text, options),
 });
 const taskShellHost = require('./src/task-shell/host').createTaskShellHost({
+  onStateTargetChanged: id => workspaceRuntime.publishSessionView(id),
   file: MULTICC_PATHS.taskShellDbFile, records: persistedSessions, directories, createSessionRecord,
   loadHistory: id => viewChatHistory(id), getTaskBoard: () => taskBoardRuntime,
   displayHistory: (id, hidden) => chatHistoryRuntime.projectedMessages(id, hidden), getChatState: id => chatSessions.get(id),
