@@ -30,11 +30,13 @@ async function bootChatEntry() {
     const target = await window.MultiCCChatShellEntry.resolve({
       sessionId: _sessionName, taskId: _taskId, fetch: window.fetch.bind(window),
     });
-    if (target) location.replace(window.MultiCCChatShellEntry.chatUrl(
-      new URL(target, location.href).searchParams.get('session'),
-      { external: _params.get('external') },
-    ));
-    else connect();
+    if (target) {
+      // The resolver may return a read-only task entry without a session.
+      // Preserve that route and its parameters instead of rebuilding a chat URL.
+      const url = new URL(target, location.href);
+      if (_params.get('external')) url.searchParams.set('external', _params.get('external'));
+      location.replace(url.href);
+    } else connect();
   } catch (error) {
     addSystemMsg(error.message);
     statusEl.textContent = error.message;

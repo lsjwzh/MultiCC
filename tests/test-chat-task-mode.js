@@ -6,6 +6,35 @@ const path = require('node:path');
 const { chatUrl, createTransportAdapter, resolve } = require('../public/chat-shell-entry');
 const response = (body, status = 200) => ({ ok: status < 300, status, json: async () => body });
 
+test('real task boot preserves resolved read-only and chat URLs with external mode', async () => {
+  const vm = require('node:vm');
+  const boot = fs.readFileSync(path.join(__dirname, '../public/chat-task-boot.js'), 'utf8');
+  for (const readOnly of [true, false]) {
+    for (const external of ['', '1']) {
+      const replaced = [], errors = [], calls = [];
+      const url = '/task-shell.html?task=task-one&board=1';
+      const fetch = async route => {
+        calls.push(route);
+        if (route.endsWith('/chat-session')) return response(readOnly
+          ? { ok: true, readOnly: true, sessionId: null, url } : { ok: true, sessionId: 'bound' });
+        if (route.endsWith('/tasks/resolve')) return response({ sessionId: 'execution' });
+        return response({ id: 'sh_main' });
+      };
+      const context = { URL, _taskId: 'task-one', _sessionName: '',
+        _params: new URLSearchParams({ task: 'task-one', ...(external ? { external } : {}) }),
+        window: { fetch, MultiCCChatShellEntry: { resolve, chatUrl } },
+        location: { href: 'http://localhost:3000/chat.html?task=task-one', replace: target => replaced.push(target) },
+        connect: () => assert.fail('task must resolve before connecting'),
+        addSystemMsg: message => errors.push(message), statusEl: {},
+      };
+      await vm.runInNewContext(boot + '\nbootChatEntry();', context);
+      assert.deepEqual(errors, []);
+      assert.deepEqual(replaced, ['http://localhost:3000' + (readOnly ? url : '/chat.html?session=execution') + (external ? '&external=1' : '')]);
+      if (readOnly) assert.equal(calls.length, 1, 'read-only history must not create or select an execution');
+    }
+  }
+});
+
 test('ordinary chat remains in the full chat UI and task links resolve to the bound chat UI', async () => {
   const calls = [];
   const fetch = async (url, init) => {
