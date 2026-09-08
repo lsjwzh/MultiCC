@@ -131,7 +131,7 @@ test('chat host loads the controller and gates bottom placement on exact-id focu
   assert.ok(html.indexOf(focusTag) > html.indexOf('<script src="chat-history-view.js"></script>'));
   assert.ok(html.indexOf(focusTag) < html.indexOf('<script src="chat.js"></script>'));
   assert.match(chat, /readTargetMessageId\(location\.search\)/);
-  assert.match(chat, /history\?around=\$\{encodeURIComponent\(messageId\)\}&limit=31/);
+  assert.match(chat, /shellChatView\.historyUrl\(\)\}\?around=\$\{encodeURIComponent\(messageId\)\}&limit=31/);
   assert.match(chat, /chatMessageFocus\.shouldHoldBottom\(\)/);
   assert.match(chat, /chatMessageFocus\.ensureFocused\(\)\.then\(found/);
   assert.match(html, /\.msg\.msg-jump-target/);

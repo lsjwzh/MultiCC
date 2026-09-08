@@ -176,3 +176,16 @@ test('lease expiry at max attempts dead-letters instead of retrying forever', as
   }
   assert.equal((await outbox.get('x')).state, 'dead-letter');
 });
+
+
+test('one claim admits one member per workspace and independent workspaces concurrently', async t => {
+  const { outbox } = fixture(t);
+  await outbox.enqueue({ id: 'a', sessionId: 'shell', payload: 'a' });
+  await outbox.enqueue({ id: 'b', sessionId: 'child', payload: 'b' });
+  await outbox.enqueue({ id: 'c', sessionId: 'independent', payload: 'c' });
+  const options = { workerId: 'w', limit: 10, sessionGroup: id => id === 'child' ? 'shell' : id };
+  const first = await outbox.claim(options);
+  assert.deepEqual(first.map(i => i.id), ['a', 'c']);
+  await outbox.ack('a', first[0].leaseToken);
+  assert.deepEqual((await outbox.claim(options)).map(i => i.id), ['b']);
+});

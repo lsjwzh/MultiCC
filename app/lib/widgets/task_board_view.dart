@@ -22,6 +22,7 @@ import '../utils/session_status_helpers.dart';
 import '../utils/status_presentation.dart';
 import 'message_bubble.dart';
 import 'task_run_summary_list.dart';
+import 'task_board_entry_sheet.dart';
 
 /// Task-board view for one directory: the AI-tagged module->task tree, filtered
 /// to [dirId], with 60s polling + manual refresh, plus the interactions layered
@@ -446,15 +447,35 @@ class _TaskBoardViewState extends State<TaskBoardView> {
     }
     if (_openingTaskId != null) return;
     setState(() => _openingTaskId = task.id);
-    final sid = await ManageService(
-      settings: widget.settings,
-    ).resolveTaskChatSession(task.id, boundSessionId: task.chatSessionId);
-    if (!mounted) return;
-    setState(() => _openingTaskId = null);
-    if (sid != null && sid.isNotEmpty) {
-      opener(sid);
-    } else {
-      _openDetailSheet(task);
+    try {
+      final entry = await ManageService(
+        settings: widget.settings,
+      ).taskShellEntry(task.id);
+      if (!mounted) return;
+      if (entry['readOnly'] == true) {
+        showModalBottomSheet<void>(
+          context: context,
+          isScrollControlled: true,
+          builder: (_) => TaskBoardEntrySheet(
+            settings: widget.settings,
+            taskId: task.id,
+            initialEntry: entry,
+            onOpenSession: opener,
+          ),
+        );
+      } else {
+        final sid = await ManageService(settings: widget.settings).resolveTaskChatSession(task.id);
+        if (!mounted) return;
+        if (sid != null && sid.isNotEmpty) {
+          opener(sid);
+        } else {
+          _openDetailSheet(task);
+        }
+      }
+    } catch (_) {
+      if (mounted) _openDetailSheet(task);
+    } finally {
+      if (mounted) setState(() => _openingTaskId = null);
     }
   }
 
@@ -463,6 +484,18 @@ class _TaskBoardViewState extends State<TaskBoardView> {
   /// from the row's ⋯ button or a long-press, and the fail-soft landing when
   /// the bound chat session cannot be resolved.
   void _openDetailSheet(TaskBoardTask task) {
+    if (task.boardReadOnly) {
+      showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        builder: (_) => TaskBoardEntrySheet(
+          settings: widget.settings,
+          taskId: task.id,
+          onOpenSession: widget.onOpenSession,
+        ),
+      );
+      return;
+    }
     final labels = _board?.sessionLabels ?? const <String, String>{};
     showModalBottomSheet<void>(
       context: context,

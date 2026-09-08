@@ -24,18 +24,15 @@ test('R01 R02: idle and occupied work both continue the server-authoritative cur
   assert.equal(f.creations.length, 1);
 });
 
-test('R03 R04 R05: atomic reservations across shells and request-key isolation', async t => {
+test('cross-shell links are read-only references; input remains owned by its source shell', async t => {
   const f = fixture(t);
   const first = await f.runtime.send(f.a.id, input('first'));
   f.runtime.link(f.b.id, first.taskId);
   f.statuses.clear();
-  const [a, b] = await Promise.all([f.runtime.send(f.a.id, input('same-key', first.taskId)), f.runtime.send(f.b.id, input('same-key', first.taskId))]);
-  assert.equal(a.taskId, b.taskId);
-  assert.equal(a.taskId, first.taskId);
-  const repeats = await Promise.all([f.runtime.send(f.b.id, input('same-key', first.taskId)), f.runtime.send(f.b.id, input('same-key', first.taskId))]);
-  assert.equal(repeats[0].taskId, b.taskId);
-  assert.equal(f.sends.length, 3);
-  await assert.rejects(f.runtime.send(f.b.id, input('same-key', first.taskId, { text: 'different' })), { code: 'idempotency_conflict' });
+  await assert.rejects(f.runtime.sendExplicit(f.b.id, input('other'), { taskId: first.taskId }), { code: 'task_owner_mismatch' });
+  const [a, repeat] = await Promise.all([f.runtime.send(f.a.id, input('same-key', first.taskId)), f.runtime.send(f.a.id, input('same-key', first.taskId))]);
+  assert.deepEqual(a, repeat); assert.equal(f.sends.length, 2);
+  await assert.rejects(f.runtime.send(f.a.id, input('same-key', first.taskId, { text: 'different' })), { code: 'idempotency_conflict' });
 });
 
 test('C01 C02: immutable completed exchanges, provenance and tools; no active or failed output', () => {

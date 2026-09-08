@@ -58,6 +58,7 @@ class TaskBoardTask {
   /// When non-null the detail sheet hands the chat off to the full session
   /// chat view instead of the legacy ledger projection.
   final String? chatSessionId;
+  final bool boardReadOnly;
 
   /// M3 per-task worktree ledger (server DTO `worktreePath` / `branch`):
   /// where the task's work lives between runs. Non-null [worktreePath] gates
@@ -100,6 +101,7 @@ class TaskBoardTask {
     this.moduleAssignment,
     this.body,
     this.chatSessionId,
+    this.boardReadOnly = false,
     this.worktreePath,
     this.branch,
     this.attemptCount = 0,
@@ -150,6 +152,7 @@ class TaskBoardTask {
           )
         : null,
     body: json['body']?.toString(),
+    boardReadOnly: json['readOnly'] == true,
     chatSessionId: (json['chatSessionId'] as String?)?.isNotEmpty == true
         ? json['chatSessionId'] as String
         : null,

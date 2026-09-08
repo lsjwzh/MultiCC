@@ -22,6 +22,7 @@
     // task-board link needs resolving before the page can connect.
     if (!taskId) return null;
     const bound = await post(`/api/task-board/tasks/${encodeURIComponent(taskId)}/chat-session`);
+    if (bound.readOnly && bound.url) return bound.url;
     if (!bound.sessionId) throw new Error('chat_session_missing');
     sessionId = bound.sessionId;
     let shell;
