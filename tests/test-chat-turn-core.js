@@ -310,6 +310,32 @@ test('task context is explicit, trusted, and preserved only for routed task star
   }), /only valid on a task start/);
   const ordinary = normalizeTurnRequest({ sessionId: 'worker-1', text: '普通聊天' });
   assert.deepEqual(ordinary.task, { id: null, start: false, source: null, text: '' });
+  // System-injected continuations (auto provider handoff after an unsafe
+  // replay boundary, api recovery after a network hold) carry a continuation
+  // label plus task attribution. They must normalize — rejection burned their
+  // outbox retries into dead-letter, so the provider switch never ran — but
+  // they still cannot START a task.
+  const handoff = normalizeTurnRequest({
+    sessionId: 'worker-1',
+    text: '🔇Zhipu GLM 因上游限额或接口错误中断。请由 火山Codingplan 继续剩余任务。',
+    taskId: 'tsk-stable',
+    taskSource: 'auto_provider_handoff',
+    originContinue: true,
+  });
+  assert.deepEqual(handoff.task, {
+    id: 'tsk-stable', start: false, source: 'auto_provider_handoff', text: '',
+  });
+  const recovered = normalizeTurnRequest({
+    sessionId: 'worker-1', text: '🔇上游 API 已恢复…', taskSource: 'api_recovery',
+  });
+  assert.deepEqual(recovered.task, { id: null, start: false, source: 'api_recovery', text: '' });
+  assert.throws(() => normalizeTurnRequest({
+    sessionId: 'worker-1', text: 'x', taskId: 'tsk-x',
+    taskStart: true, taskSource: 'auto_provider_handoff',
+  }), /trusted task source/);
+  assert.throws(() => normalizeTurnRequest({
+    sessionId: 'worker-1', text: 'x', taskSource: 'mystery-source',
+  }), /unsupported task source/);
 });
 
 test('turn lifecycle carries canonical task identity into router tool capabilities', () => {
