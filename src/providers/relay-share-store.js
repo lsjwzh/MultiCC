@@ -72,6 +72,49 @@ function routeTarget(pathname) {
   return null;
 }
 
+// 借道链接识别（导入方视角）：baseUrl 指向另一台 multicc 的中转端点
+// （…/claude-proxy/<id>/remote 或 …/codex-proxy/<id>）时，本机没有上游厂商
+// 凭据可查余量，余量查询应转发给出借方（见 usage-limit-poller 的
+// pollRelayQuota 与 provider-balance 的 relay quota 路由）。
+//
+// loopback host 一律不算借道：本机自己的 CPR 管线同样挂在
+// 127.0.0.1:<port>/codex-proxy/<id>（见 core.js buildSettingsConfig），那不是
+// 远端中转端点，绝不能被改写成余量转发。返回的 url 是规范化后的中转端点
+// 本身（截掉多余子路径/尾斜杠），余量查询地址 = `${url}/quota`。
+const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+
+function relayRouteFromBaseUrl(rawUrl) {
+  let parsed;
+  try {
+    parsed = new URL(clean(rawUrl));
+  } catch (_) {
+    return null;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+  if (LOOPBACK_HOSTNAMES.has(parsed.hostname.toLowerCase())) return null;
+  let segments;
+  try {
+    segments = parsed.pathname.split('/').filter(Boolean).map(decodeURIComponent);
+  } catch (_) {
+    return null;
+  }
+  if (segments[0] === 'claude-proxy' && segments[1] && segments[2] === 'remote') {
+    return {
+      appType: 'claude',
+      providerId: segments[1],
+      url: `${parsed.origin}/claude-proxy/${encodeURIComponent(segments[1])}/remote`,
+    };
+  }
+  if (segments[0] === 'codex-proxy' && segments[1]) {
+    return {
+      appType: 'codex',
+      providerId: segments[1],
+      url: `${parsed.origin}/codex-proxy/${encodeURIComponent(segments[1])}`,
+    };
+  }
+  return null;
+}
+
 function publicRecord(record) {
   return Object.freeze({
     id: record.id,
@@ -222,5 +265,6 @@ module.exports = {
   TOKEN_PREFIX,
   createProviderRelayShareStore,
   parseCredential,
+  relayRouteFromBaseUrl,
   routeTarget,
 };
