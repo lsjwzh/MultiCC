@@ -95,6 +95,44 @@ bool isKimiBaseUrl(String? baseUrl) {
   return RegExp(r'(^|\.)(moonshot|kimi)\.(cn|com|ai)$').hasMatch(h);
 }
 
+/// Whether the provider baseUrl points at ANOTHER multicc's protocol relay
+/// (借道 provider). The borrowed account's windows/balances arrive as events
+/// the server already rendered (relay quota pass-through), so the display gate
+/// for them is the relay's PROTOCOL, not which vendor hides behind it. Loopback
+/// relay paths are this device's own plumbing, never a borrowed provider —
+/// mirrors the web `relayProtocolFromBaseUrl` / the server's
+/// relayRouteFromBaseUrl recognition.
+String? relayProtocolFromBaseUrl(String? baseUrl) {
+  if (baseUrl == null || baseUrl.isEmpty) return null;
+  Uri parsed;
+  try {
+    parsed = Uri.parse(baseUrl);
+  } catch (_) {
+    return null;
+  }
+  if (!parsed.isScheme('http') && !parsed.isScheme('https')) return null;
+  final host = parsed.host.toLowerCase();
+  if (host == 'localhost' || host == '127.0.0.1' || host == '::1') return null;
+  List<String> segments;
+  try {
+    segments = parsed.pathSegments;
+  } catch (_) {
+    return null;
+  }
+  if (segments.length >= 3 &&
+      segments[0] == 'claude-proxy' &&
+      segments[1].isNotEmpty &&
+      segments[2] == 'remote') {
+    return 'claude';
+  }
+  if (segments.length >= 2 && segments[0] == 'codex-proxy' && segments[1].isNotEmpty) {
+    return 'codex';
+  }
+  return null;
+}
+
+bool isRelayBaseUrl(String? baseUrl) => relayProtocolFromBaseUrl(baseUrl) != null;
+
 bool isDeepseekBaseUrl(String? baseUrl) {
   if (baseUrl == null || baseUrl.isEmpty) return false;
   final h = hostFromBaseUrl(baseUrl);
@@ -110,7 +148,7 @@ bool isDeepseekBaseUrl(String? baseUrl) {
 /// cli/provider switch instead of lingering from the previous context.
 bool balanceBarVisibleFor(String cliName, String? providerBaseUrl) {
   if (cliName == 'codex' || cliName == 'opencode') return true;
-  return isDeepseekBaseUrl(providerBaseUrl);
+  return isDeepseekBaseUrl(providerBaseUrl) || isRelayBaseUrl(providerBaseUrl);
 }
 
 /// Whether the Claude subscription bar's provider context holds: an empty
@@ -130,12 +168,19 @@ bool isClaudeProviderBaseUrl(String? baseUrl) {
 /// screen while the given CLI is active. Mirrors the web `providerMatchesCli`
 /// byte for byte in rule form:
 ///   • opencode's own window → only under the opencode CLI;
+///   • a 借道 (relay) provider → its window passed through from the lender
+///     belongs to whichever CLI speaks the relay's protocol (claude-proxy →
+///     claude, codex-proxy → codex; opencode either way);
 ///   • glm / codex windows → under codex/opencode, and glm additionally under
 ///     any CLI while the provider baseUrl points at Zhipu (the claude CLI can
 ///     route through a Zhipu endpoint);
 ///   • everything else (claude windows) → under claude/opencode.
 bool providerMatchesCli(String provider, String cliName, String? providerBaseUrl) {
   if (provider == 'opencode') return cliName == 'opencode';
+  final relayProtocol = relayProtocolFromBaseUrl(providerBaseUrl);
+  if (relayProtocol != null) {
+    return cliName == relayProtocol || cliName == 'opencode';
+  }
   if (provider == 'glm' || provider == 'codex') {
     if (cliName == 'codex' || cliName == 'opencode') return true;
     return provider == 'glm' && isZhipuBaseUrl(providerBaseUrl);
