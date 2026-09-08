@@ -259,8 +259,9 @@ test('direct input staged during P starts as soon as classify leaves P', async t
 });
 
 test('released W with an unanswered question holds staged work until the user acts', async t => {
+  let pending = { requestId: 'usrq-1', resolved: false };
   const h = fixture(t, {
-    getPendingUserInput: () => ({ requestId: 'usrq-1', resolved: false }),
+    getPendingUserInput: () => pending,
   });
   // A is active (P); B is staged behind it while it runs.
   const a = await h.scheduler.admit({ sessionId: 's1', text: 'A', idempotencyKey: 'A' });
@@ -281,10 +282,69 @@ test('released W with an unanswered question holds staged work until the user ac
   assert.equal(cClaim && cClaim.id, c.entry.id);
 
   // Once that turn finishes done, the staged item drains in order.
+  pending = null; // a genuine new user turn supersedes the old question
   await startClaim(h, cClaim);
   await h.scheduler.complete('s1', { classifyState: 'D' });
   const bClaim = await claimOne(h);
   assert.equal(bClaim && bClaim.id, b.entry.id);
+});
+
+test('an unanswered question parks shell continuations before and after the ask, including the W publication gap', async t => {
+  let pending = null, state = 'D';
+  const h = fixture(t, { getPendingUserInput: () => pending, getClassifyState: () => state });
+  await h.scheduler.admit({ sessionId: 's1', text: 'prepare listing', idempotencyKey: 'ask' });
+  await startClaim(h, await claimOne(h));
+  state = 'P'; h.advance();
+  const before = await h.scheduler.admit({ sessionId: 's1', text: 'change price', source: 'task-shell',
+    options: { originContinue: true, taskShellReceiptId: 'receipt-before' }, idempotencyKey: 'before' });
+  h.advance();
+  pending = { requestId: 'login', createdAt: 1002, resolved: false };
+  h.advance();
+  const after = await h.scheduler.admit({ sessionId: 's1', text: 'update description', source: 'task-shell',
+    options: { originContinue: true, taskShellReceiptId: 'receipt-after' }, idempotencyKey: 'after' });
+  assert.equal(before.entry.payload.workKind, 'continuation');
+  assert.equal(after.queued, true);
+  state = 'W';
+  // Classify publishes W before the asynchronous scheduler completion.
+  // Only the first queued item predates the question; neither may run here.
+  assert.equal(await claimOne(h), null);
+  await h.scheduler.complete('s1', { classifyState: 'W', awaitingRequestId: 'login' });
+  assert.equal(await claimOne(h), null);
+  // The gate is persisted, not a transient in-memory queue flag.
+  const draft = await h.store.read(value => JSON.parse(JSON.stringify(value)));
+  const reloaded = createSessionWorkScheduler({ store: h.store, getClassifyState: () => state,
+    getPendingUserInput: () => pending });
+  assert.equal(reloaded.selectSessionItem([draft.outbox[before.entry.id], draft.outbox[after.entry.id]], draft, 1003), null);
+  const answer = await h.scheduler.admit({ sessionId: 's1', text: 'logged in', workKind: 'answer',
+    requestId: 'login', source: 'task-shell', idempotencyKey: 'answer' });
+  assert.equal(answer.queued, false);
+  const selected = await claimOne(h);
+  assert.equal(selected.id, answer.entry.id);
+  pending = null; state = 'P';
+  await startClaim(h, selected);
+  state = 'D'; await h.scheduler.complete('s1');
+  const resumed = await claimOne(h);
+  assert.equal(resumed.id, before.entry.id);
+  await startClaim(h, resumed); await h.scheduler.complete('s1');
+  assert.equal((await claimOne(h)).id, after.entry.id);
+});
+
+test('explicitly inserting a parked shell message overrides only the current question', async t => {
+  let pending = null;
+  const h = fixture(t, { getPendingUserInput: () => pending });
+  await h.scheduler.admit({ sessionId: 's1', text: 'ask', idempotencyKey: 'ask' });
+  await startClaim(h, await claimOne(h));
+  const queued = await h.scheduler.admit({ sessionId: 's1', text: 'steer', source: 'task-shell',
+    options: { originContinue: true }, idempotencyKey: 'steer' });
+  pending = { requestId: 'q1', createdAt: 1001 };
+  await h.scheduler.complete('s1', { classifyState: 'W', awaitingRequestId: 'q1' });
+  assert.equal(await claimOne(h), null);
+  assert.equal((await h.scheduler.insertQueued('s1', queued.entry.id)).ok, true);
+  const draft = await h.store.read(value => JSON.parse(JSON.stringify(value)));
+  pending = { requestId: 'q2', createdAt: 1002 };
+  assert.equal(h.scheduler.selectSessionItem([draft.outbox[queued.entry.id]], draft, 1002), null);
+  pending = { requestId: 'q1', createdAt: 1001 };
+  assert.equal((await claimOne(h)).id, queued.entry.id);
 });
 
 test('released W keeps ordinary FIFO staged but runs a correlated answer control entry', async t => {
