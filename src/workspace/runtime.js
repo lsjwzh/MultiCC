@@ -80,10 +80,51 @@ function createWorkspaceRuntime(options) {
     }
   }
 
-  function broadcast(dirId, payload) {
+  function broadcastRaw(dirId, payload) {
     const scoped = clients.get(dirId);
     if (scoped) broadcastClients(scoped, payload);
     if (metaClients.size > 0) broadcastClients(metaClients, { ...payload, dirId });
+  }
+
+  const STATE_EVENTS = new Set(['status', 'summary', 'task_state', 'session_queue_status']);
+  let queueViewTime = 0;
+  function queueView(sessionId, queue, stateSource) {
+    // Queue clocks belong to executions; the wire clock belongs to the view.
+    // Selecting an older/empty execution must replace the previous queue too.
+    queueViewTime = Math.max(queueViewTime + 1, clock(), Number(queue?.updatedAt) || 0);
+    return { ...normalizeQueueStatus(sessionId, queue), updatedAt: queueViewTime, stateSource };
+  }
+  function publishSessionView(sessionId) {
+    const view = options.sessionView?.(sessionId);
+    const record = records.get(sessionId);
+    if (!view || !record) return;
+    const envelope = { sessionId, stateSource: view.stateSource };
+    broadcastRaw(record.dirId, { type: 'task_state', ...envelope,
+      classifyState: view.classifyState, goal: view.goal, phase: view.phase, taskShortCode: view.taskShortCode });
+    broadcastRaw(record.dirId, { type: 'status', ...envelope,
+      status: view.status,
+      currentFile: view.currentFile, lastActivity: view.lastActivity,
+      runStartedAt: view.runStartedAt, runEndedAt: view.runEndedAt });
+    broadcastRaw(record.dirId, { type: 'summary', ...envelope,
+      summary: view.goal || view.summary || '', ts: view.summaryAt || null });
+    const executionId = view.stateSource?.executionSessionId || sessionId;
+    const queue = queueStatuses.get(executionId);
+    broadcastRaw(record.dirId, { type: 'session_queue_status',
+      ...queueView(sessionId, queue, view.stateSource), ...envelope });
+  }
+  function broadcast(dirId, payload) {
+    if (!STATE_EVENTS.has(payload.type) || !payload.sessionId || !options.resolveStateTarget) {
+      broadcastRaw(dirId, payload); return;
+    }
+    const target = options.resolveStateTarget(payload.sessionId);
+    // Workspace events are view projections. Never write a child's state into
+    // its source record, and never project an old source event over its cursor.
+    if (target.executionSessionId === payload.sessionId) broadcastRaw(dirId,
+      payload.type === 'session_queue_status'
+        ? { ...payload, ...queueView(payload.sessionId, payload, target) } : payload);
+    const sources = new Set(options.stateSources?.(payload.sessionId) || []);
+    if (target.executionSessionId !== payload.sessionId) sources.add(payload.sessionId);
+    for (const id of sources) if (id !== payload.sessionId || target.executionSessionId !== id) publishSessionView(id);
   }
 
   function setSummary(sessionId, summary) {
@@ -162,8 +203,13 @@ function createWorkspaceRuntime(options) {
   }
 
   function queueSnapshot(dirId) {
-    return [...queueStatuses.values()]
-      .filter(item => records.get(item.sessionId)?.dirId === dirId);
+    return [...records.values()].filter(record => record.dirId === dirId).flatMap(record => {
+      const target = options.resolveStateTarget?.(record.id);
+      const targetId = target?.executionSessionId || record.id;
+      const queue = queueStatuses.get(targetId);
+      if (target) return [queueView(record.id, queue, target)];
+      return queue ? [{ ...queue, sessionId: record.id }] : [];
+    });
   }
 
   function attachWorkspace(socket, url) {
@@ -223,6 +269,7 @@ function createWorkspaceRuntime(options) {
     queueStatuses,
     metaClients,
     broadcast,
+    publishSessionView,
     setSummary,
     setStatus,
     setQueueStatus,

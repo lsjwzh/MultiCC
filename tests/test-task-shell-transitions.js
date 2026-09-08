@@ -77,3 +77,27 @@ test('Task Center can read historical tasks whose source is an internal executio
   }
   assert.equal(f.runtime.taskAccess({ id: 'tsk_ordinary', refs: [{ sessionId: 'a' }] }).ownerShellId, f.a.id);
 });
+
+
+test('state traversal matches chat scope across cursor switches and never follows read-only links', async t => {
+  const changed = [];
+  const f = fixture(t, { onStateTargetChanged: id => changed.push(id) });
+  const a = f.runtime.adopt(f.a.id, 'a');
+  const b = await f.runtime.send(f.a.id, input('new-execution', { newTask: true }));
+  f.runtime.link(f.b.id, b.taskId);
+  const before = JSON.stringify(f.store.list('shell'));
+  const target = f.runtime.stateTarget('a');
+  assert.equal(target.executionSessionId, b.sessionId);
+  assert.equal(target.taskId, b.taskId);
+  assert.equal(target.executionSessionId, f.runtime.chatScope(f.a.id).activeSessionId);
+  assert.equal(f.runtime.stateTarget('b').executionSessionId, 'b');
+  assert.deepEqual(f.runtime.stateSources(b.sessionId), ['a']);
+  assert.equal(JSON.stringify(f.store.list('shell')), before, 'projection reads never create or move shells');
+  changed.length = 0;
+  f.runtime.resolveTask(f.a.id, { taskId: a.id });
+  await Promise.resolve();
+  assert.deepEqual(changed, ['a']);
+  assert.equal(f.runtime.stateTarget('a').executionSessionId, 'a');
+  assert.deepEqual(f.runtime.stateSources(b.sessionId), []);
+  assert.equal(f.runtime.stateTarget('other').executionSessionId, 'other');
+});
