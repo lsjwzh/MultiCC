@@ -24,8 +24,12 @@ function anthropicCodec({ model, prompt, systemPrompt }) {
 }
 
 function responsesCodec({ model, prompt, systemPrompt }) {
-  const body = { model, input: prompt };
-  if (systemPrompt) body.instructions = systemPrompt;
+  const body = {
+    model,
+    input: [{ role: 'user', content: [{ type: 'input_text', text: prompt }] }],
+    instructions: systemPrompt || '',
+    stream: true,
+  };
   return {
     body,
     headers: {},
@@ -105,6 +109,13 @@ function executeAuxHttp({ target, model, prompt, systemPrompt, timeoutMs }) {
   }
   const isHttps = url.protocol === 'https:';
   return new Promise((resolve, reject) => {
+    let settled = false, timer;
+    const finish = (error, result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error); else resolve(result);
+    };
     const req = (isHttps ? https : http).request({
       hostname: url.hostname,
       port: url.port || (isHttps ? 443 : 80),
@@ -112,30 +123,54 @@ function executeAuxHttp({ target, model, prompt, systemPrompt, timeoutMs }) {
       method: 'POST',
       headers: request.headers,
     }, (res) => {
-      let data = '';
-      res.on('data', chunk => { data += chunk; });
+      let data = '', bytes = 0;
+      res.setEncoding('utf8');
+      res.on('data', chunk => {
+        bytes += Buffer.byteLength(chunk);
+        if (bytes > 16 * 1024 * 1024) {
+          const error = new Error('Aux response exceeds size limit');
+          finish(error); req.destroy(error); return;
+        }
+        data += chunk;
+      });
+      res.on('error', error => finish(error));
+      res.on('aborted', () => finish(new Error('Aux response disconnected before completion')));
       res.on('end', () => {
-        if (res.statusCode >= 400) {
-          reject(new Error(httpError(res.statusCode, data)));
-          return;
-        }
+        if (res.statusCode >= 400) return finish(new Error(httpError(res.statusCode, data)));
         try {
-          const parsed = JSON.parse(data);
+          const parsed = target.wireApi === 'responses' && String(res.headers['content-type'] || '').includes('text/event-stream')
+            ? parseResponsesStream(data) : JSON.parse(data);
           if (parsed.error) throw new Error(parsed.error.message || JSON.stringify(parsed.error));
-          resolve(request.parse(parsed));
-        } catch (error) {
-          reject(error);
-        }
+          if (parsed.status === 'failed' || parsed.status === 'incomplete') throw new Error(`Aux response ${parsed.status}`);
+          finish(null, request.parse(parsed));
+        } catch (error) { finish(error); }
       });
     });
-    req.on('error', reject);
-    req.setTimeout(timeoutMs, () => {
-      req.destroy();
-      reject(new Error('timeout'));
-    });
-    req.write(JSON.stringify(request.body));
-    req.end();
+    req.on('error', error => finish(error));
+    timer = setTimeout(() => {
+      const error = new Error('timeout');
+      finish(error);
+      req.destroy(error);
+    }, timeoutMs || 120000);
+    req.end(JSON.stringify(request.body));
   });
 }
 
-module.exports = { buildAuxHttpRequest, executeAuxHttp };
+function parseResponsesStream(data) {
+  let completed;
+  for (const event of data.replace(/\r\n/g, '\n').split('\n\n')) {
+    const payload = event.split('\n').filter(line => line.startsWith('data:'))
+      .map(line => line.slice(5).trimStart()).join('\n');
+    if (!payload || payload === '[DONE]') continue;
+    const value = JSON.parse(payload);
+    if (['error', 'response.failed', 'response.incomplete'].includes(value.type)) {
+      const error = value.response?.error || value.error;
+      throw new Error(error?.message || value.message || `Aux ${value.type}`);
+    }
+    if (value.type === 'response.completed') completed = value.response;
+  }
+  if (!completed) throw new Error('Aux Responses stream disconnected before completion');
+  return completed;
+}
+
+module.exports = { buildAuxHttpRequest, executeAuxHttp, parseResponsesStream };
