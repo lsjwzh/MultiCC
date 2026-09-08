@@ -15,6 +15,7 @@
 
 const { renderPrompt } = require('../message-composer');
 const { claudeLikeMcpArgs } = require('./router-mcp');
+const { completion, createCompletionTracker } = require('./completion');
 
 const LABEL = 'Kimi Code';
 
@@ -33,6 +34,23 @@ function createKimiAdapter({ cmd, routerMcpNode, routerMcpScript } = {}) {
   const routerArgs = claudeLikeMcpArgs(routerMcpNode, routerMcpScript);
   return {
     name: 'kimi',
+    // kimi-code 0.32.0 runV2Print writes resume_hint only after runNativeTurn
+    // accepts result.type=completed. Cleanup/goal failures can still exit 1,
+    // so the marker is confirmed at process close, not at receipt time.
+    createCompletionTracker() {
+      let resumeHint = false;
+      return createCompletionTracker({
+        observe(event) {
+          if (event.role === 'meta' && event.type === 'session.resume_hint'
+            && typeof event.session_id === 'string' && event.session_id.trim()) resumeHint = true;
+          return null;
+        },
+        close(boundary, evidence, facts) {
+          return boundary.kind === 'process' && resumeHint && !facts.sawError && !facts.pendingTools
+            ? completion('completed', 'print_resume_hint', 'protocol_and_exit') : evidence;
+        },
+      });
+    },
     cmd,
     routerMcpNode,
     routerMcpScript,

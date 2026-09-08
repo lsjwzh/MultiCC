@@ -1,6 +1,7 @@
 'use strict';
 
 const { renderPrompt } = require('../message-composer');
+const { createStepCompletionTracker } = require('./step-completion');
 
 function createOpencodeLikeAdapter({
   name, label, cmd, supportsAgentVariant = false, includeThinking = false,
@@ -8,6 +9,7 @@ function createOpencodeLikeAdapter({
 }) {
   return {
     name,
+    createCompletionTracker: createStepCompletionTracker,
     cmd,
     buildTerminalCmd(session) {
       let command = cmd;

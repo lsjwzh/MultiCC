@@ -12,6 +12,7 @@ const {
 
 function base(overrides = {}) {
   return {
+    completion: { version: 1, state: 'completed', settled: true },
     current: true,
     runnerKind: 'process',
     cli: 'codex',
@@ -231,7 +232,7 @@ test('stream finality requires result event and places timer cleanup after appen
   assert.equal(withoutResult.append.final, false);
   assert.equal(planTurnFinalization(base({
     runnerKind: 'stream', cli: 'claude', adapterError: true,
-  })).append.final, true, 'stream adapter errors retain the existing result-event finality rule');
+  })).append.final, false, 'stream adapter errors veto finality just like process errors');
   const resolved = resolveTurnFinalization(plan, { appendPersisted: true, resultDurable: true });
   const order = types(resolved);
   assert.ok(order.indexOf('cancel-classify') < order.indexOf('append-assistant-result'));

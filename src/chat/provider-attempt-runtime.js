@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const { isCompleted } = require('../cli-adapters/completion');
 const {
   createExactSecretStreamRedactor, redactExactSecretFragments, redactProviderRouteCapability,
 } = require('../observability');
@@ -1119,7 +1120,7 @@ function createProviderAttemptRuntime(options = {}) {
     // EOF. Reconcile only host-observed downstream teardown, with a durable
     // successful result from this runner and a clean end. This rule is shared
     // by all CLIs/providers; raw error strings never prove harmless teardown.
-    if (facts.resultDurable === true && facts.cleanClose === true
+    if (facts.resultDurable === true && isCompleted(facts.completion)
         && record.proxyFailure.httpStatus == null
         && record.proxyFailure.proxyOutcome?.termination === 'downstream_disconnect') return null;
     return Object.freeze({ ...record.proxyFailure });

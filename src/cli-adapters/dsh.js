@@ -1,5 +1,7 @@
 'use strict';
 
+const { completion, createCompletionTracker } = require('./completion');
+
 const fs = require('fs');
 const path = require('path');
 const { renderPrompt } = require('../message-composer');
@@ -22,7 +24,7 @@ const { renderPrompt } = require('../message-composer');
  * `dsh web` Models page can also store a key through the credentials service.
  */
 const DSH_PROFILE = 'multicc';
-const DSH_PROFILE_VERSION = 1; // bump to force a profile re-write on upgrade
+const DSH_PROFILE_VERSION = 2; // runner now bounds completion evidence to this turn
 const DSH_MODELS = ['deepseek-v4-flash', 'deepseek-v4-pro'];
 
 function dshProfileDir(homeDir) { return path.join(homeDir, '.dsh', 'profiles', DSH_PROFILE); }
@@ -104,6 +106,14 @@ function createDshAdapter({ cmd, homeDir, runnerSrcDir } = {}) {
   }
   return {
     name: 'dsh',
+    createCompletionTracker() {
+      return createCompletionTracker({ observe(event) {
+        if (event.type === 'complete') return completion('completed', 'turn_end_completed');
+        if (event.type === 'error') return completion(
+          event.reason === 'aborted' ? 'cancelled' : 'failed', event.reason || 'turn_error');
+        return null;
+      } });
+    },
     cmd,
     buildTerminalCmd(session) {
       let command = `${cmd} --profile ${DSH_PROFILE}`;

@@ -21,7 +21,7 @@ function writeFakeEngine(root, captureEnv = 'ZCODE_TEST_CAPTURE') {
     "const fs = require('node:fs');",
     "const args = process.argv.slice(2);",
     `fs.writeFileSync(process.env.${captureEnv}, JSON.stringify({ args, hasBigModelKey: !!process.env.BIGMODEL_API_KEY, hasAnthropicKey: !!process.env.ANTHROPIC_API_KEY }));`,
-    "process.stdout.write(JSON.stringify({ sessionId: 'sess_fake', response: 'ok', usage: { inputTokens: 1, outputTokens: 1 } }));",
+    "process.stdout.write(JSON.stringify({ sessionId: 'sess_fake', response: 'ok', projection: { status: 'idle' }, usage: { inputTokens: 1, outputTokens: 1 } }));",
   ].join('\n'));
   return { engine, capture };
 }
@@ -237,4 +237,25 @@ test('successful engine output without a real session ID fails instead of invent
   assert.deepEqual(events.map(e => e.type), ['error']);
   assert.equal(events[0].sessionID, undefined);
   assert.equal(events[0].error.code, 'zcode_invalid_session_id');
+});
+
+test('bridge preserves unknown and failed native endings instead of inventing stop', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-zcode-completion-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const engine = path.join(root, 'engine.cjs');
+  const adapter = createZcodeAdapter();
+  for (const [native, expected] of [
+    [{ response: 'ok', projection: { status: 'idle' } }, 'completed'],
+    [{ response: 'ok' }, 'unknown'],
+    [{ response: 'partial', projection: { status: 'running' } }, 'unknown'],
+    [{ response: 'partial', projection: { status: 'error' } }, 'failed'],
+    [{ response: 'partial', error: { message: 'failure' } }, 'failed'],
+    [{ projection: { status: 'idle' } }, 'failed'],
+  ]) {
+    fs.writeFileSync(engine, `console.log(${JSON.stringify(JSON.stringify({ sessionId: 'sess_test', ...native }))})`);
+    const result = spawnSync(process.execPath, [BRIDGE, 'hello'], { encoding: 'utf8', env: { ...process.env, ZCODE_ENGINE: engine } });
+    const tracker = adapter.createCompletionTracker();
+    for (const event of result.stdout.trim().split('\n').map(JSON.parse)) tracker.observe(event, adapter.decodeEvent(event));
+    assert.equal(tracker.finish({ kind: 'process', code: result.status }).state, expected, JSON.stringify(native));
+  }
 });

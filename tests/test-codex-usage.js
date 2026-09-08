@@ -172,7 +172,6 @@ test('Codex host sends one delta to history, ledger, role tracker and live resul
     type: 'result', total_cost_usd: null, usage: expected,
     durationMs: 100, num_turns: 5,
   }]);
-  assert.deepEqual(calls.at(-1), [
-    'status', 'session-a', { status: 'succeeded', currentFile: null },
-  ]);
+  assert.equal(calls.some(call => call[0] === 'status'), false,
+    'usage/result persistence cannot announce success before runner settlement');
 });
