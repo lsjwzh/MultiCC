@@ -1451,3 +1451,20 @@ test('Flutter attachments offer the iOS photo library, not just the Files picker
   const plist = fs.readFileSync(path.join(ROOT, 'app', 'ios', 'Runner', 'Info.plist'), 'utf8');
   assert.match(plist, /NSPhotoLibraryUsageDescription/);
 });
+
+
+test('production chat host wires question settlement and reconnect cleanup, not just the composer', () => {
+  const source = fs.readFileSync(path.join(ROOT, 'public/chat.js'), 'utf8');
+  const binding = source.slice(source.indexOf('chatEventController = window.MultiCCChatEventController'), source.indexOf('// Session-identity chrome'));
+  assert.match(binding, /getUserInputRequestId:\s*\(\) => chatEventState.pendingUserInputRequestId/);
+  assert.match(binding, /\n\s+consumeUserInputRequestId,/);
+  const helper = source.slice(source.indexOf('function consumeUserInputRequestId('), source.indexOf('chatEventController = window.MultiCCChatEventController'));
+  const state = { pendingUserInputRequestId: 'new' }, cleared = [];
+  const vm = require('node:vm');
+  const ctx = { chatEventState: state, pendingUserInputController: { clear: id => cleared.push(id) } };
+  vm.runInNewContext(helper + ';consumeUserInputRequestId("old");', ctx);
+  assert.equal(state.pendingUserInputRequestId, 'new');
+  vm.runInNewContext('consumeUserInputRequestId("new");', ctx);
+  assert.equal(state.pendingUserInputRequestId, null);
+  assert.deepEqual(cleared, ['new']);
+});

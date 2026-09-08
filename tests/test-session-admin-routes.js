@@ -88,6 +88,7 @@ function createFixture(overrides = {}) {
   };
   const runtime = createSessionAdminRuntime({
     records,
+    resolveStateTarget: overrides.resolveStateTarget,
     terminalSessions,
     chatSessions,
     directories,
@@ -376,4 +377,30 @@ test('legacy session detail exposes the task-bound marker for direct addressing 
   // Ordinary records carry a null marker, never an accidental truthy.
   const plain = invoke(app.routes.get('GET /api/sessions/:id'), { params: { id: 's1' } });
   assert.equal(plain.body.taskBoundTaskId, null);
+});
+
+
+test('dashboard and workspace read the shell cursor execution without overwriting historical source state', () => {
+  let executionSessionId = 'child';
+  const f = createFixture({ resolveStateTarget: id => ({ sourceSessionId: id,
+    shellId: id === 's1' ? 'shell-1' : null, executionSessionId: id === 's1' ? executionSessionId : id }) });
+  f.records.get('s1').taskState = { classifyState: 'E', goal: 'old failure' };
+  f.records.set('child', { id: 'child', dirId: 'd1', kind: 'chat', taskBoundTaskId: 'task-new',
+    taskState: { classifyState: 'W', goal: 'new question', phase: 'implementing' } });
+  f.chatSessions.set('child', { clients: new Set(), isStreaming: true });
+  for (const letter of ['P', 'W', 'D', 'E']) {
+    f.records.get('child').taskState.classifyState = letter;
+    const snapshot = f.runtime.workspaceSnapshot('d1').find(s => s.id === 's1');
+    assert.equal(snapshot.classifyState, letter);
+    assert.equal(snapshot.status, { P: 'running', W: 'waiting', D: 'succeeded', E: 'error' }[letter]);
+    assert.equal(snapshot.goal, 'new question');
+    assert.equal(snapshot.stateSource.executionSessionId, 'child');
+    const dashboard = invoke(f.app.routes.get('GET /api/dashboard/sessions'));
+    const list = Array.isArray(dashboard.body) ? dashboard.body : dashboard.body.sessions;
+    assert.equal(list.find(s => s.id === 's1').classifyState, letter);
+    assert.equal(list.find(s => s.id === 's1').active, true);
+    assert.equal(f.records.get('s1').taskState.classifyState, 'E');
+  }
+  executionSessionId = 's1';
+  assert.equal(f.runtime.sessionView('s1').goal, 'old failure');
 });
