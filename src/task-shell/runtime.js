@@ -197,13 +197,19 @@ function createTaskShellRuntime(ports) {
     return store.transaction(() => {
       let task = owns(sessionId);
       const history = getHistory(sessionId);
-      const last = [...history].reverse().find(message => message.taskId);
+      const last = [...history].reverse().find(message => message.taskId && !message.inherited);
+      // Transcript annotations are evidence, not an ownership transfer. Older
+      // transcript forks copied taskId verbatim; consult the task's owner before
+      // using that hint to adopt a session with no explicit live task binding.
+      const historicalTask = last && (store.get('task', last.taskId) || indexedTask(last.taskId));
+      const historicalSessionId = historicalTask?.sessionId || historicalTask?.chatSessionId;
+      const historyTaskId = !historicalSessionId || historicalSessionId === sessionId ? last?.taskId : null;
       const id = task?.id || record.taskBoundTaskId || (record.taskState?.pendingUserInput
         && !record.taskState.pendingUserInput.resolved ? record.taskState.pendingUserInput.taskId : null)
-        || record.taskState?.userInputSignalTaskId || last?.taskId
+        || record.taskState?.userInputSignalTaskId || historyTaskId
         || `tsk_${hash(['adopt', sessionId]).slice(0, 32)}`;
       const indexed = indexedTask(id);
-      const title = indexed?.title || last?.taskName || record.label || last?.content?.slice?.(0, 120) || sessionId;
+      const title = indexed?.title || (historyTaskId && last?.taskName) || record.label || last?.content?.slice?.(0, 120) || sessionId;
       if (!task) {
         if (store.get('task', id)) throw failure('task_identity_mismatch');
         task = { id, dirId: s.dirId, sessionId, title, ownerShellId: s.id,
