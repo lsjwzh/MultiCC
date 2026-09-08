@@ -353,3 +353,131 @@ test('switching provider clears the previous provider\'s stale window bar', () =
     assert.equal(f.values.has(key), false, 'the stale persisted bar is dropped');
   } finally { f.cleanup(); }
 });
+
+test('same-URL account switches clear both window and balance, but re-rendering does not', async () => {
+  const f = freshClient();
+  try {
+    const url = 'https://relay.example/claude-proxy/account/remote';
+    f.C.setProviderBaseUrl(url, 'account-a');
+    const info = { provider: 'glm' };
+    f.C.consumeRateLimitEvent(info, 'same-url', { text: 'Account A limit' });
+    f.C.consumeBalanceEvent({}, 'same-url', { text: 'Account A balance' });
+    f.C.setProviderBaseUrl(url, 'account-a');
+    assert.equal(f.element('claude-rate-limit-bar').textContent, 'Account A limit');
+    assert.equal(f.element('usage-balance-bar').textContent, 'Account A balance');
+
+    f.C.setProviderBaseUrl(url, 'account-b');
+    for (const id of ['claude-rate-limit-bar', 'usage-balance-bar']) {
+      assert.equal(f.element(id).style.display, 'none');
+      assert.equal(f.element(id).textContent, '');
+    }
+    assert.equal(f.values.has('multicc:claude-rate-limit:v1:same-url'), false);
+    assert.equal(f.values.has('multicc.usageBalance.same-url'), false);
+    f.C.restoreBalance('same-url');
+    assert.equal(f.element('usage-balance-bar').style.display, 'none');
+    f.C.consumeRateLimitEvent(info, 'same-url', { text: 'Account B limit' });
+    assert.equal(f.element('claude-rate-limit-bar').textContent, 'Account B limit');
+    await flushClient();
+  } finally { f.cleanup(); }
+});
+
+test('switching vendors removes the previous balance before displaying the new limit', async () => {
+  const f = freshClient();
+  try {
+    f.C.setCli('codex');
+    f.C.setProviderBaseUrl('https://api.deepseek.com', 'deepseek');
+    f.C.consumeBalanceEvent({}, 'balance-switch', { text: 'Old balance' });
+    assert.equal(f.element('usage-balance-bar').style.display, 'block');
+    f.C.setProviderBaseUrl('https://relay.example/codex-proxy/official', 'borrowed');
+    f.C.consumeRateLimitEvent({ provider: 'codex' }, 'balance-switch', { text: 'New limit' });
+    assert.equal(f.element('usage-balance-bar').style.display, 'none');
+    assert.equal(f.element('claude-rate-limit-bar').textContent, 'New limit');
+    await flushClient();
+  } finally { f.cleanup(); }
+});
+
+test('late vendor responses cannot repaint, cache into the new plan, or block its refresh', async () => {
+  for (const failOldRequest of [false, true]) {
+    const f = freshClient();
+    try {
+      await flushClient();
+      const pending = [];
+      global.fetch = (url) => {
+        if (!String(url).startsWith('/api/quota/bars/refresh')) {
+          return Promise.resolve({ json: async () => ({ bars: {} }) });
+        }
+        return new Promise((resolve, reject) => pending.push({ resolve, reject }));
+      };
+      f.C.setProviderBaseUrl('https://ark.cn-beijing.volces.com/api/plan', 'agent');
+      f.C.setProviderBaseUrl('https://ark.cn-beijing.volces.com/api/coding', 'coding');
+      assert.equal(pending.length, 2, 'old in-flight request does not suppress the new one');
+      assert.equal(f.element('ark-quota-bar').textContent, '');
+      await flushClient();
+      if (failOldRequest) pending[0].reject(new Error('old request failed'));
+      else pending[0].resolve({ json: async () => ({ status: 'ok', bar: { text: 'Old plan' } }) });
+      await flushClient();
+      assert.equal(f.values.has('multicc.ark.quota.v1:coding-plan'), false);
+      assert.notEqual(f.element('ark-quota-bar').textContent, 'Old plan');
+      await f.C.refreshArkQuota();
+      assert.equal(pending.length, 2, 'old completion must not unlock the new in-flight request');
+      pending[1].resolve({ json: async () => ({ status: 'ok', bar: { text: 'New plan' } }) });
+      await flushClient();
+      assert.equal(f.element('ark-quota-bar').textContent, 'New plan');
+      assert.equal(JSON.parse(f.values.get('multicc.ark.quota.v1:coding-plan')).bar.text, 'New plan');
+    } finally { f.cleanup(); }
+  }
+});
+
+test('late server snapshots and Claude scrapes cannot restore the previous account', async () => {
+  const f = freshClient();
+  try {
+    await flushClient();
+    const pending = [];
+    global.fetch = (url) => new Promise(resolve => pending.push({ url: String(url), resolve }));
+    const oldSnapshot = f.C.restoreServerQuotaBars();
+    const oldScrape = f.C.refreshClaudeUsage(true);
+    f.C.setProviderBaseUrl('', 'new-claude-account');
+    assert.equal(pending.length, 3);
+    pending[2].resolve({ json: async () => ({ bars: { claude: { bar: { text: 'New account' } } } }) });
+    await flushClient();
+    pending[0].resolve({ json: async () => ({ bars: { claude: { bar: { text: 'Old snapshot' } } } }) });
+    pending[1].resolve({ json: async () => ({ status: 'ok', bar: { text: 'Old scrape' } }) });
+    await Promise.all([oldSnapshot, oldScrape]);
+    assert.equal(f.element('claude-rate-limit-bar').textContent, 'New account');
+    assert.equal(f.values.has('multicc.claude.usage.v1'), false);
+  } finally { f.cleanup(); }
+});
+
+test('chat provider selection forwards default, explicit, and active Auto identities to the bars', async () => {
+  const f = freshClient();
+  try {
+    const fs = require('node:fs');
+    const vm = require('node:vm');
+    const chat = fs.readFileSync(require.resolve('../public/chat.js'), 'utf8');
+    const update = chat.slice(chat.indexOf('function updateProviderBtn()'), chat.indexOf('\nfunction showLoadingOverlay'));
+    const url = 'https://relay.example/claude-proxy/shared/remote';
+    const context = vm.createContext({
+      providerBtn: { style: {} },
+      window: { MultiCCChatRateLimit: f.C },
+      _sessionProviderSelection: null,
+      _sessionProvider: '',
+      _activeProviderId: '',
+      _providerList: [{ id: 'a', baseUrl: url }, { id: 'b', baseUrl: url }],
+      effectiveProviderIdForChoices: id => id || 'a',
+      updateModelBtn() {},
+    });
+    vm.runInContext(update, context);
+    vm.runInContext('updateProviderBtn()', context);
+    f.C.consumeBalanceEvent({}, 'wired-switch', { text: 'Default A balance' });
+    assert.equal(f.element('usage-balance-bar').style.display, 'block');
+    context._sessionProvider = 'b';
+    vm.runInContext('updateProviderBtn()', context);
+    assert.equal(f.element('usage-balance-bar').style.display, 'none');
+    f.C.consumeBalanceEvent({}, 'wired-switch', { text: 'Explicit B balance' });
+    context._sessionProviderSelection = { mode: 'auto' };
+    context._activeProviderId = 'a';
+    vm.runInContext('updateProviderBtn()', context);
+    assert.equal(f.element('usage-balance-bar').style.display, 'none');
+    await flushClient();
+  } finally { f.cleanup(); }
+});

@@ -1826,8 +1826,8 @@ function updateProviderBtn() {
   if (!providerBtn) return;
   providerBtn.style.display = 'none';
   const quotaProviderId = _sessionProviderSelection?.mode === 'auto'
-    ? _activeProviderId : _sessionProvider;
-  window.MultiCCChatRateLimit?.setProviderBaseUrl?.((_providerList.find((x) => x && x.id === quotaProviderId) || {}).baseUrl || '');
+    ? _activeProviderId : effectiveProviderIdForChoices(_sessionProvider);
+  window.MultiCCChatRateLimit?.setProviderBaseUrl?.((_providerList.find((x) => x && x.id === quotaProviderId) || {}).baseUrl || '', quotaProviderId);
   updateModelBtn();
 }
 
