@@ -1197,7 +1197,11 @@ function createChatTurnEngine(deps) {
       });
     } catch (error) {
       const code = error instanceof TurnRequestError ? error.code : 'invalid_request';
-      logger.warn('chat_turn_rejected_invalid_request', { sessionId: sessionName, code });
+      logger.warn('chat_turn_rejected_invalid_request', {
+        sessionId: sessionName,
+        code,
+        message: error?.message || null,
+      });
       return { blocked: true };
     }
     return { persisted, existingCs, initialHistory, turnRequest };
