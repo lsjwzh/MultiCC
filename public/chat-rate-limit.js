@@ -226,6 +226,7 @@
     let inFlight = false;
     let lastErrorAt = 0;
     let installInFlight = false;
+    let revision = 0;
     function isVisible() { return opts.isVisible ? opts.isVisible() : true; }
     function activeBar() { return (current && current.bar) || idleBarFor(opts.kind); }
     function activeState() {
@@ -245,18 +246,21 @@
       if (!isVisible() && !force) return current;
       if (inFlight) return current;
       if (!force && lastErrorAt && (Date.now() - lastErrorAt) < BACKOFF) return current;
+      const requestRevision = revision;
       inFlight = true; render();
       try {
         const res = await fetch(opts.getUrl(), { method: 'POST', credentials: 'same-origin' });
         let data = null; try { data = await res.json(); } catch (_) {}
+        if (requestRevision !== revision) return current;
         if (!data) data = { status: 'unavailable', error: 'invalid response' };
         current = data;
         if (data.status === 'ok') { lastErrorAt = 0; store.save(data); }
         else lastErrorAt = Date.now();
       } catch (_) {
+        if (requestRevision !== revision) return current;
         lastErrorAt = Date.now();
         current = { status: 'unavailable', error: 'fetch failed' };
-      } finally { inFlight = false; }
+      } finally { if (requestRevision === revision) inFlight = false; }
       render();
       return current;
     }
@@ -264,6 +268,7 @@
     function setCurrent(v) { current = v || null; lastErrorAt = 0; render(); return current; }
     return {
       kind: opts.kind, render, refresh, restore, setCurrent,
+      reset() { revision += 1; current = null; inFlight = false; lastErrorAt = 0; },
       clearBackoff() { lastErrorAt = 0; },
       get current() { return current; },
       get inFlight() { return inFlight; },
@@ -342,6 +347,8 @@
   // Both arrive already rendered by the server; the slot only gates and paints.
   let currentCli = 'claude';
   let currentProviderBaseUrl = '';
+  let currentProviderId = '';
+  let providerRevision = 0;
   let currentSession = '';
   let cliInitialized = false;
   let currentLimitInfo = null;   // raw rate_limit_info (provider/resetsAt for gating + timer)
@@ -405,18 +412,21 @@
   async function refreshClaudeUsage(force) {
     if (claudeUsageFetchInFlight) return currentClaudeUsage;
     if (!force && claudeLastErrorAt && (Date.now() - claudeLastErrorAt) < CLAUDE_BACKOFF) return currentClaudeUsage;
+    const requestRevision = providerRevision;
     claudeUsageFetchInFlight = true; claudeLoginPending = false; renderCurrent();
     try {
       const res = await fetch(`/api/quota/bars/refresh${quotaBarParams({ kind: 'claude' })}`, { method: 'POST', credentials: 'same-origin' });
       let data = null; try { data = await res.json(); } catch (_) {}
+      if (requestRevision !== providerRevision) return currentClaudeUsage;
       if (!data) data = { status: 'unavailable', error: 'invalid response' };
       currentClaudeUsage = data;
       if (data.status === 'ok') { claudeLastErrorAt = 0; claudeStore.save(data); }
       else claudeLastErrorAt = Date.now();
     } catch (_) {
+      if (requestRevision !== providerRevision) return currentClaudeUsage;
       claudeLastErrorAt = Date.now();
       currentClaudeUsage = { status: 'unavailable', error: 'fetch failed' };
-    } finally { claudeUsageFetchInFlight = false; }
+    } finally { if (requestRevision === providerRevision) claudeUsageFetchInFlight = false; }
     renderCurrent();
     return currentClaudeUsage;
   }
@@ -492,9 +502,11 @@
   }
   async function restoreServerQuotaBars() {
     if (!global.document || !global.location) return null;
+    const requestRevision = providerRevision;
     try {
       const res = await fetch(`/api/quota/bars/state${quotaBarParams({ host: hostFromBaseUrl(currentProviderBaseUrl) })}`, { credentials: 'same-origin' });
       const data = await res.json();
+      if (requestRevision !== providerRevision) return null;
       const bars = data && data.bars && typeof data.bars === 'object' ? data.bars : null;
       if (!bars) return null;
       opencodeSlot.setCurrent(cacheEntryToResponse(bars.opencode));
@@ -504,7 +516,7 @@
       zhipuSlot.setCurrent(cacheEntryToResponse(bars.zhipu));
       kimiSlot.setCurrent(cacheEntryToResponse(bars.kimi));
       const claude = cacheEntryToResponse(bars.claude);
-      if (claude) currentClaudeUsage = claude;
+      currentClaudeUsage = claude;
       renderAll();
       return data;
     } catch (_) {
@@ -528,21 +540,27 @@
     // weekly scrape is fetch-on-click, so an auto-scrape would pop needs_login /
     // unavailable states the user did not ask for.
   }
-  function setProviderBaseUrl(baseUrl) {
+  function setProviderBaseUrl(baseUrl, providerId = '') {
     const next = String(baseUrl || '');
-    const changed = next !== currentProviderBaseUrl;
+    const nextId = String(providerId || '');
+    const changed = next !== currentProviderBaseUrl || nextId !== currentProviderId;
     currentProviderBaseUrl = next;
+    currentProviderId = nextId;
     if (changed) {
-      // The WS window bar belongs to whichever provider produced it. On a
-      // switch it must not keep speaking for the new provider — a relay
-      // provider's gate is protocol-based, so a stale vendor bar from the
-      // previous provider would pass it and linger until the next event.
-      // Clear it (memory + persisted) and let the new provider's first event
-      // repaint.
-      currentLimitInfo = null; currentLimitBar = null;
+      // Different accounts can share a baseUrl. Drop every provider-owned
+      // display and invalidate old requests before fetching the new selection.
+      providerRevision += 1;
+      currentLimitInfo = null; currentLimitBar = null; currentBalanceBar = null;
+      currentClaudeUsage = null; claudeUsageFetchInFlight = false;
+      claudeLoginPending = false; claudeLastErrorAt = 0;
+      arkSlot.reset(); zhipuSlot.reset(); kimiSlot.reset();
       if (currentSession) {
         const s = browserStorage();
-        if (s) { try { s.removeItem(limitStorageKey(currentSession)); } catch (_) {} }
+        if (s) {
+          for (const key of [limitStorageKey(currentSession), balanceStorageKey(currentSession)]) {
+            try { s.removeItem(key); } catch (_) {}
+          }
+        }
       }
       scheduleExpiry();
     }
