@@ -4,10 +4,13 @@ const { spawn } = require('node:child_process');
 
 const suites = [
   ['--test', 'tests/test-docker-task-shell.js', 'tests/test-task-shell-lab-service.js'],
-  ['--test', 'tests/test-task-shells.js', 'tests/test-task-shell-http.js'],
+  ['scripts/check-runtime-deps.js'],
+  ['--test', 'tests/test-task-shells.js', 'tests/test-task-shell-http.js',
+    'tests/test-shell-chat-continuity.js', 'tests/test-task-shell-ownership.js', 'tests/test-task-shell-transitions.js'],
   ['--test', 'tests/test-session-work-scheduler.js', 'tests/test-session-work-host.js',
     'tests/test-user-input-answer-delivery.js', 'tests/test-task-context-host.js', 'tests/test-task-bound-session.js'],
   ['tests/test-task-shell-isolated.js'],
+  ['tests/test-task-shell-context-isolation.js'],
   ['--test', 'tests/test-task-shell-cdp.js'],
 ];
 async function run(args) {

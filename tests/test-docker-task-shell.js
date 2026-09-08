@@ -45,3 +45,15 @@ test('fake Codex emits usable independent native identities without a real model
   assert.equal(output.at(-1).type, 'turn.completed');
   assert.match(output[1].item.text, /未调用真实模型/);
 });
+
+test('both release workflows require the clean-install gate before building or publishing', () => {
+  for (const [file, job] of [['release.yml', 'android-apk'], ['desktop-release.yml', 'build']]) {
+    const source = fs.readFileSync(path.join(__dirname, '../.github/workflows', file), 'utf8');
+    assert.match(source, /clean-install:\s+uses: \.\/\.github\/workflows\/clean-install\.yml/);
+    assert.ok(source.includes(`  ${job}:\n    needs: clean-install\n`));
+  }
+  const workflow = fs.readFileSync(path.join(__dirname, '../.github/workflows/clean-install.yml'), 'utf8');
+  assert.match(workflow, /set -euo pipefail/);
+  assert.match(workflow, /npm run test:release:clean-install/);
+  assert.match(workflow, /if: always\(\)/);
+});
