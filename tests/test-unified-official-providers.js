@@ -117,6 +117,7 @@ test('production core initializes from prior default account, persists switches 
     assert.equal(run("process.stdout.write(p.getOfficialAccountSelection('codex'));"), B);
     run(`const a=require('node:assert/strict');a.equal(p.listProviders().filter(x=>x.builtinOfficial).length,2);a.throws(()=>p.deleteProvider('codex','codex-official'));const e={};a.equal(p.applyClaudeProxyEnv(e,{providerId:'claude-official',sessionId:'test',port:9111,enabled:false,officialOAuth:false}),true);a.match(e.ANTHROPIC_BASE_URL,/claude-proxy/);`);
     run(`const a=require('node:assert/strict');const r=require('./src/providers/router-runtime').createProviderRouterRuntime({providers:p,dataRoot:process.env.MULTICC_DATA_DIR,codexHomesDir:process.env.MULTICC_DATA_DIR+'/codex-homes'});a.equal(r.createBinding({id:'chat',cli:'codex',provider:null}).providerId,'codex-official');a.equal(r.createBinding({id:'login',cli:'codex',provider:null,loginFlow:'codex-login'}).providerId,null);`);
+    run(`const a=require('node:assert/strict');const target=p.resolveAuxHttpTarget('openai','codex-official',{port:9111});a.equal(target.available,true);a.equal(target.wireApi,'responses');a.match(target.url,/codex-proxy\\/codex-official\\/responses$/);a.ok(target.modelOptions.length>0);a.equal(target.apiKey,'multicc-aux');a.equal(p.resolveAuxHttpTarget('openai','codex-official').available,false);`);
     assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'providers.json'))).length, records.length);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
