@@ -113,6 +113,29 @@
     const h = hostFromBaseUrl(baseUrl);
     return h ? /(^|\.)(anthropic|claude)\.(com|ai)$/i.test(h) : false;
   }
+  // A borrowed (借道) provider's baseUrl points at ANOTHER multicc's protocol
+  // relay, not at a vendor host. The borrowed account's windows/balances arrive
+  // as WS events the server already rendered (the relay quota pass-through), so
+  // the gate for them is the relay's PROTOCOL, not which vendor hides behind it.
+  // Loopback relay paths are this host's own CPR plumbing, never a borrowed
+  // provider — mirrors the server's relayRouteFromBaseUrl recognition.
+  function isLoopbackHost(host) {
+    const h = String(host || '').toLowerCase();
+    return h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '[::1]';
+  }
+  function relayProtocolFromBaseUrl(baseUrl) {
+    if (!baseUrl || typeof baseUrl !== 'string') return null;
+    let parsed;
+    try { parsed = new URL(baseUrl); } catch (_) { return null; }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    if (isLoopbackHost(parsed.hostname)) return null;
+    let segments;
+    try { segments = parsed.pathname.split('/').filter(Boolean).map(decodeURIComponent); } catch (_) { return null; }
+    if (segments[0] === 'claude-proxy' && segments[1] && segments[2] === 'remote') return 'claude';
+    if (segments[0] === 'codex-proxy' && segments[1]) return 'codex';
+    return null;
+  }
+  function isRelayBaseUrl(baseUrl) { return relayProtocolFromBaseUrl(baseUrl) !== null; }
   function arkPlanFromBaseUrl(baseUrl) {
     if (!baseUrl || typeof baseUrl !== 'string') return null;
     try { const p = new URL(baseUrl).pathname.toLowerCase(); if (p.includes('/coding')) return 'coding-plan'; if (p.includes('/plan')) return 'agent-plan'; } catch (_) {}
@@ -124,6 +147,9 @@
   // OpenCode Go's own window only under opencode.
   function providerMatchesCli(provider, cli) {
     if (provider === 'opencode') return cli === 'opencode';
+    // 借道 provider：窗口余量经 relay 透传到达，协议对上 CLI 即属于当前会话。
+    const relayProtocol = relayProtocolFromBaseUrl(currentProviderBaseUrl);
+    if (relayProtocol) return cli === relayProtocol || cli === 'opencode';
     if (provider === 'glm' || provider === 'codex') {
       if (cli === 'codex' || cli === 'opencode') return true;
       return provider === 'glm' && isZhipuBaseUrl(currentProviderBaseUrl);
@@ -429,7 +455,10 @@
   let currentBalanceBar = null;
   function balanceStorageKey(session) { return `multicc.usageBalance.${String(session || '').trim()}`; }
   function balanceMatchesCli(cli) {
-    return cli === 'codex' || cli === 'opencode' || isDeepseekBaseUrl(currentProviderBaseUrl);
+    return cli === 'codex' || cli === 'opencode'
+      || isDeepseekBaseUrl(currentProviderBaseUrl)
+      // 借道 provider 借来的可能是预付费余额（DeepSeek 等），事件由 relay 透传。
+      || isRelayBaseUrl(currentProviderBaseUrl);
   }
   function renderBalance() {
     const element = global.document?.getElementById?.('usage-balance-bar');
@@ -503,6 +532,20 @@
     const next = String(baseUrl || '');
     const changed = next !== currentProviderBaseUrl;
     currentProviderBaseUrl = next;
+    if (changed) {
+      // The WS window bar belongs to whichever provider produced it. On a
+      // switch it must not keep speaking for the new provider — a relay
+      // provider's gate is protocol-based, so a stale vendor bar from the
+      // previous provider would pass it and linger until the next event.
+      // Clear it (memory + persisted) and let the new provider's first event
+      // repaint.
+      currentLimitInfo = null; currentLimitBar = null;
+      if (currentSession) {
+        const s = browserStorage();
+        if (s) { try { s.removeItem(limitStorageKey(currentSession)); } catch (_) {} }
+      }
+      scheduleExpiry();
+    }
     renderCurrent(); renderBalance();
     arkSlot.render(); zhipuSlot.render(); kimiSlot.render();
     // A provider switch must immediately reflect the new provider's quota: pull
@@ -536,6 +579,7 @@
     restoreServerQuotaBars,
     // Predicates kept public: the app mirrors them and tests assert them.
     isZhipuBaseUrl, isKimiBaseUrl, isArkBaseUrl, isDeepseekBaseUrl, isClaudeProvider,
+    isRelayBaseUrl, relayProtocolFromBaseUrl,
     arkPlanFromBaseUrl, providerMatchesCli, quotaBarClick,
     // The resolver is exposed so tests can drive the shared golden fixtures
     // through the same expansion path the browser uses.

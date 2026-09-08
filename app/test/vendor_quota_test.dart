@@ -255,4 +255,36 @@ void main() {
       });
     }
   });
+
+  group('relay (借道) baseUrl gating', () {
+    const relayClaude = 'https://relay.example:3000/claude-proxy/glm/remote';
+    const relayCodex = 'http://192.168.1.9:3000/codex-proxy/official';
+
+    test('recognizes both relay protocols, never loopback plumbing', () {
+      expect(relayProtocolFromBaseUrl(relayClaude), 'claude');
+      expect(relayProtocolFromBaseUrl('https://mac.tail94695a.ts.net/codex-proxy/cx'), 'codex');
+      expect(relayProtocolFromBaseUrl('http://127.0.0.1:3000/claude-proxy/abc/remote'), isNull);
+      expect(relayProtocolFromBaseUrl('http://localhost:3000/codex-proxy/abc'), isNull);
+      expect(relayProtocolFromBaseUrl('https://open.bigmodel.cn/api/paas/v4'), isNull);
+      expect(isRelayBaseUrl(relayCodex), isTrue);
+    });
+
+    test('a borrowed window shows under the CLI that speaks the relay protocol', () {
+      // GLM borrowed through a claude-protocol relay shows under the claude CLI
+      // even though the baseUrl host is the lender, not Zhipu.
+      expect(providerMatchesCli('glm', 'claude', relayClaude), isTrue);
+      expect(providerMatchesCli('glm', 'codex', relayClaude), isFalse);
+      expect(providerMatchesCli('claude', 'opencode', relayClaude), isTrue);
+      // Codex-protocol relay: codex/opencode only.
+      expect(providerMatchesCli('codex', 'codex', relayCodex), isTrue);
+      expect(providerMatchesCli('codex', 'claude', relayCodex), isFalse);
+      // opencode's own window stays opencode-only even on a relay provider.
+      expect(providerMatchesCli('opencode', 'claude', relayClaude), isFalse);
+    });
+
+    test('a borrowed prepaid balance chip is visible for relay providers', () {
+      expect(balanceBarVisibleFor('claude', relayClaude), isTrue);
+      expect(balanceBarVisibleFor('claude', 'https://api.anthropic.com'), isFalse);
+    });
+  });
 }

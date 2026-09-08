@@ -1638,6 +1638,14 @@ class ChatProvider extends ChangeNotifier {
     final changed = next != _providerBaseUrl;
     _providerBaseUrl = next;
     if (changed) {
+      // The passive window bar belongs to whichever provider produced it. On a
+      // switch it must not keep speaking for the new provider — a relay
+      // provider's gate is protocol-based, so a stale vendor bar from the
+      // previous provider would pass it and linger until the next event. Clear
+      // it and let the new provider's first event repaint (web
+      // setProviderBaseUrl clears currentLimitInfo/currentLimitBar the same way).
+      _usageWindowLimit = null;
+      _rateLimitBar = null;
       // An explicit switch means the user is looking at a different vendor —
       // drop any error backoff so the new bar fetches immediately (web
       // setProviderBaseUrl clears backoff the same way).
