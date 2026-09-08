@@ -63,3 +63,17 @@ test('FK01: fork old A while B is selected; original A/B remain usable and fork 
   assert.deepEqual(await restarted.forkTask(a.id, { clientMsgId: 'fork-A' }), fork);
   assert.equal(f.store.list('task').length, 3, 'retry after restart must not add another task');
 });
+
+test('Task Center can read historical tasks whose source is an internal execution slot or experimental session', async t => {
+  const f = fixture(t);
+  for (const [id, flags] of [['slot', { taskExecutionSlot: true }], ['experimental', { experimentalMode: 'legacy' }]]) {
+    f.records.set(id, { id, kind: 'chat', dirId: 'd1', ...flags });
+    const task = { id: `tsk_${id}`, refs: [{ sessionId: id }] };
+    const shellsBefore = f.store.list('shell').length;
+    assert.equal(f.runtime.taskAccess(task).ownerShellId, null);
+    assert.equal(f.runtime.taskAccess(task).readOnly, true);
+    assert.equal(f.store.list('shell').length, shellsBefore, 'reading an unsupported source must not create a shell');
+    assert.throws(() => f.runtime.open(id), { code: 'unsupported_source' }, 'execution entry remains restricted');
+  }
+  assert.equal(f.runtime.taskAccess({ id: 'tsk_ordinary', refs: [{ sessionId: 'a' }] }).ownerShellId, f.a.id);
+});
