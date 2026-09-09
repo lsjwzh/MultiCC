@@ -354,6 +354,7 @@
   let currentLimitInfo = null;   // raw rate_limit_info (provider/resetsAt for gating + timer)
   let currentLimitBar = null;    // server-rendered bar from the rate_limit_event
   let currentClaudeUsage = null; // scrape response (its .bar is the full Claude bar)
+  let currentRelayBar = null;
   let claudeUsageFetchInFlight = false;
   let claudeLoginPending = false;
   let claudeLastErrorAt = 0;
@@ -385,11 +386,11 @@
     if (currentCli === 'claude' && claudeProvider) {
       // Claude subscription: the scrape (full, with weekly) is authoritative;
       // before it lands the live 5h event or the idle render stands in.
-      bar = (currentClaudeUsage && currentClaudeUsage.bar) || currentLimitBar || idleBarFor('claude');
+      bar = (currentClaudeUsage && currentClaudeUsage.bar) || currentRelayBar || currentLimitBar || idleBarFor('claude');
       state = claudeUsageFetchInFlight ? 'fetching' : (claudeLoginPending ? 'login_pending' : undefined);
       clickable = true;
     } else if (provider && providerMatchesCli(provider, currentCli)) {
-      bar = currentLimitBar;
+      bar = currentRelayBar || currentLimitBar;
     }
     const view = paintBar(element, bar, state);
     if (view) {
@@ -439,6 +440,21 @@
     if (currentLimitBar && currentSession) saveLimitBar(currentSession, currentLimitBar);
     renderCurrent();
     return currentLimitBar ? { provider: limitProvider(), bar: currentLimitBar } : null;
+  }
+
+  async function refreshRelayBar() {
+    const protocol = relayProtocolFromBaseUrl(currentProviderBaseUrl);
+    if (!protocol || !currentProviderId) return null;
+    const revision = providerRevision;
+    try {
+      const res = await fetch(`/api/providers/${protocol}/${encodeURIComponent(currentProviderId)}/balance`, { credentials: 'same-origin' });
+      const data = await res.json();
+      if (revision !== providerRevision || !data || data.ok !== true) return null;
+      currentRelayBar = data.bar || null;
+      if (data.dto?.kind === 'balance') currentBalanceBar = data.bar || null;
+      renderAll();
+      return currentRelayBar;
+    } catch (_) { return null; }
   }
   function restoreFiveHourRateLimit(sessionName) {
     currentSession = String(sessionName || '').trim();
@@ -550,7 +566,7 @@
       // Different accounts can share a baseUrl. Drop every provider-owned
       // display and invalidate old requests before fetching the new selection.
       providerRevision += 1;
-      currentLimitInfo = null; currentLimitBar = null; currentBalanceBar = null;
+      currentLimitInfo = null; currentLimitBar = null; currentRelayBar = null; currentBalanceBar = null;
       currentClaudeUsage = null; claudeUsageFetchInFlight = false;
       claudeLoginPending = false; claudeLastErrorAt = 0;
       arkSlot.reset(); zhipuSlot.reset(); kimiSlot.reset();
@@ -573,6 +589,7 @@
     if (changed) {
       arkSlot.clearBackoff(); zhipuSlot.clearBackoff(); kimiSlot.clearBackoff();
       restoreServerQuotaBars();
+      refreshRelayBar();
       arkSlot.refresh(); zhipuSlot.refresh(); kimiSlot.refresh();
     }
   }
@@ -582,6 +599,7 @@
     consumeRateLimitEvent, consumeBalanceEvent,
     restoreFiveHourRateLimit, restoreBalance, restoreClaudeUsage,
     refreshClaudeUsage,
+    refreshRelayBar,
     refreshOpenCodeQuota: (...a) => opencodeSlot.refresh(...a),
     restoreOpenCodeQuota: () => opencodeSlot.restore(),
     refreshQoderQuota: (...a) => qoderSlot.refresh(...a),
