@@ -37,15 +37,19 @@
     }
     if (dto.kind === 'window') {
       const pct = (v) => Math.round((v || 0) * 10000) / 100;
+      // Keep provider cards aligned with the canonical quota bars: percentages
+      // are remaining (100 − used), and lower remaining values are more urgent.
+      const remaining = (v) => Math.max(0, Math.min(100, Math.round(100 - pct(v))));
       const used = pct(dto.utilization);
-      const parts = [`${dto.rateLimitType === 'weekly' ? '周' : '5h'} 已用 ${fmt2(used)}%`];
-      let maxPct = used;
+      const rem = remaining(dto.utilization);
+      const parts = [`${dto.rateLimitType === 'weekly' ? '周' : '5h'} ${fmt2(rem)}%`];
+      let minRem = rem;
       if (typeof dto.weeklyUtilization === 'number') {
-        const w = pct(dto.weeklyUtilization);
-        maxPct = Math.max(maxPct, w);
-        parts.push(`周 已用 ${fmt2(w)}%`);
+        const w = remaining(dto.weeklyUtilization);
+        minRem = Math.min(minRem, w);
+        parts.push(`周 ${fmt2(w)}%`);
       }
-      const color = maxPct >= 90 ? '#f85149' : maxPct >= 70 ? '#d29922' : '#58a6ff';
+      const color = minRem <= 10 ? '#f85149' : minRem <= 30 ? '#d29922' : '#58a6ff';
       return { text: '余量 ' + parts.join(' · '), color, title: '窗口用量' + (dto.tier ? ` · ${dto.tier}` : '') };
     }
     return null;
