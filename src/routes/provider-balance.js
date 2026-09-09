@@ -18,6 +18,28 @@ const {
   pollRelayQuota,
 } = require('../usage-limit-poller');
 const { fetchKimiBalance } = require('./kimi-quota');
+const { balanceBar, renderQuotaBar } = require('../quota/quota-bar-view');
+
+function quotaBarFor(appType, strategy, dto, fetchedAt) {
+  if (!dto) return null;
+  if (dto.kind === 'balance') return balanceBar(dto);
+  if (dto.kind !== 'window') return null;
+  const used = Number(dto.utilization) * 100;
+  if (!Number.isFinite(used)) return null;
+  const weekly = Number(dto.weeklyUtilization) * 100;
+  if (strategy === 'codex-oauth-usage' || appType === 'codex') {
+    return renderQuotaBar('codex', {
+      status: 'ok', fetchedAt,
+      weekly: { usedPercent: used, resetsAt: dto.resetsAt ? dto.resetsAt / 1000 : null },
+    });
+  }
+  return renderQuotaBar('zhipu', {
+    status: 'ok', fetchedAt,
+    sites: [{ site: 'relay', host: 'relay', ok: true, usedPercent: used,
+      resetsAt: dto.resetsAt || null,
+      ...(Number.isFinite(weekly) ? { weeklyUsedPercent: weekly, weeklyResetsAt: dto.weeklyResetsAt || null } : {}) }],
+  });
+}
 
 // Kimi's balance fetcher predates the poller DTOs and returns its own shape;
 // normalize it to a balance DTO so the caller handles one kind per strategy.
@@ -76,7 +98,9 @@ function createProviderBalanceRuntime(options = {}) {
       if (onResult) { try { onResult(provider.appType, id, failure); } catch (_) {} }
       return failure;
     }
-    const success = { ok: true, providerId: id, appType: provider.appType, strategy: target.strategy, dto };
+    const fetchedAt = now();
+    const success = { ok: true, providerId: id, appType: provider.appType, strategy: target.strategy, dto,
+      bar: quotaBarFor(provider.appType, target.strategy, dto, fetchedAt), fetchedAt };
     if (onResult) { try { onResult(provider.appType, id, success); } catch (_) {} }
     return success;
   }
