@@ -106,7 +106,7 @@ wait_for_ready() {
 }
 
 do_start() {
-  local running_pids
+  local running_pids port port_owner
   running_pids=$(get_pids) || return 1
   if [ -n "$running_pids" ]; then
     echo "MultiCC is already running (PID $running_pids)"
@@ -117,6 +117,25 @@ do_start() {
     echo "Runtime dependency verification failed — MultiCC was not started."
     echo "Run './multicc update' to repair missing or outdated packages."
     return 1
+  fi
+  port="${PORT:-}"
+  if [ -z "$port" ]; then
+    port="$($NODE -e 'const fs=require("fs");let s="";try{s=fs.readFileSync(process.argv[1],"utf8")}catch{};const m=s.match(/^PORT\s*=\s*([0-9]+)/m);process.stdout.write(m?m[1]:"3000")' "$SCRIPT_DIR/.env")"
+  fi
+  # Resolve port collisions before spawning Node. A process running this
+  # checkout is safe to replace; unrelated processes cause an automatic port
+  # selection and the choice is persisted in .env for the server and clients.
+  port_owner=$(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null | head -1)
+  if [ -n "$port_owner" ]; then
+    if ps -p "$port_owner" -o command= 2>/dev/null | grep -Fq "$SCRIPT_DIR/server.js"; then
+      echo "Stopping existing MultiCC on port $port (PID $port_owner)..."
+      kill "$port_owner" 2>/dev/null || true
+      sleep 1
+    else
+      port="$($NODE -e 'const net=require("net");const start=Number(process.argv[1])||3000;let p=start;function t(){const s=net.createServer();s.once("error",()=>{s.close();p++;t()});s.listen(p,"127.0.0.1",()=>{console.log(p);s.close()})}t()' "$port")"
+      echo "Port occupied by another process; using port $port."
+      printf 'PORT=%s\n' "$port" >> "$SCRIPT_DIR/.env"
+    fi
   fi
   echo "Starting MultiCC..."
   cd "$SCRIPT_DIR"
