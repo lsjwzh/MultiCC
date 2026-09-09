@@ -6,8 +6,9 @@ const { STALE_MS_DEFAULT } = require('../quota/provider-limit-cache');
 const DEFAULT_PROVIDER_IDS = Object.freeze({ claude: null, codex: null });
 const MAX_PROBE_CANDIDATES = 20;
 const MAX_PROBE_CANDIDATE_LENGTH = 200;
-const SPEEDTEST_DEADLINE_MS = 15000;
-const SPEEDTEST_MAX_RESPONSE_BYTES = 64 * 1024;
+const { runSpeedtestRequest } = require('../providers/speedtest-request');
+const { isOfficialCodexOAuthProvider } = require('../codex/official-relay');
+const { officialAccountIdFromProvider } = require('../official-accounts');
 
 function publicError(error, fallback) {
   return sanitizePublicText(error && error.message, fallback);
@@ -69,97 +70,6 @@ function normalizeProbeCandidates(value) {
     if (!candidates.includes(candidate)) candidates.push(candidate);
   }
   return { ok: true, value: candidates };
-}
-
-function runSpeedtestRequest(options) {
-  const {
-    client,
-    requestOptions,
-    body,
-    model,
-    res,
-    elapsed,
-    setTimeoutFn,
-    clearTimeoutFn,
-  } = options;
-  return new Promise((resolve) => {
-    let settled = false;
-    let request = null;
-    let deadlineTimer = null;
-    let responseBytes = 0;
-
-    const finish = (payload) => {
-      if (settled) return false;
-      settled = true;
-      if (deadlineTimer) clearTimeoutFn(deadlineTimer);
-      res.json(payload);
-      resolve();
-      return true;
-    };
-    const destroyAfter = (payload) => {
-      if (!finish(payload)) return;
-      if (request && typeof request.destroy === 'function') request.destroy();
-    };
-    const timeout = () => destroyAfter({ ok: false, ms: elapsed(), error: 'timeout' });
-
-    try {
-      request = client.request(requestOptions, (response) => {
-        let data = '';
-        response.on('data', (chunk) => {
-          if (settled) return;
-          responseBytes += Buffer.byteLength(chunk);
-          if (responseBytes > SPEEDTEST_MAX_RESPONSE_BYTES) {
-            destroyAfter({
-              ok: false,
-              ms: elapsed(),
-              status: response.statusCode,
-              model,
-              error: 'response too large',
-            });
-            return;
-          }
-          data += chunk.toString();
-        });
-        response.on('error', (error) => {
-          destroyAfter({
-            ok: false,
-            ms: elapsed(),
-            error: publicError(error, 'provider speedtest failed'),
-          });
-        });
-        response.on('end', () => {
-          if (settled) return;
-          const ms = elapsed();
-          if (response.statusCode >= 200 && response.statusCode < 300) {
-            finish({ ok: true, ms, status: response.statusCode, model });
-            return;
-          }
-          let message = `HTTP ${response.statusCode}`;
-          try {
-            const parsed = JSON.parse(data);
-            if (parsed.error) message = parsed.error.message || JSON.stringify(parsed.error);
-          } catch (_) {}
-          finish({
-            ok: false,
-            ms,
-            status: response.statusCode,
-            model,
-            error: publicText(message, `HTTP ${response.statusCode}`),
-          });
-        });
-      });
-      request.on('error', (error) => {
-        finish({ ok: false, ms: elapsed(), error: publicError(error, 'provider speedtest failed') });
-      });
-      request.setTimeout(SPEEDTEST_DEADLINE_MS, timeout);
-      deadlineTimer = setTimeoutFn(timeout, SPEEDTEST_DEADLINE_MS);
-      if (deadlineTimer && typeof deadlineTimer.unref === 'function') deadlineTimer.unref();
-      request.write(body);
-      request.end();
-    } catch (error) {
-      finish({ ok: false, ms: elapsed(), error: publicError(error, 'provider speedtest failed') });
-    }
-  });
 }
 
 function assertProviderRouteDeps(deps) {
@@ -427,6 +337,33 @@ function createProviderRoutes(rawDeps) {
           : (provider.settingsConfig || {});
         const env = (config && config.env) || {};
 
+        const officialCodex = isOfficialCodexOAuthProvider(provider);
+        if (officialCodex) {
+          const summary = deps.providerRouterRuntime.getProviderSummary('codex', req.params.id) || {};
+          const model = summary.model || (summary.modelOptions || [])[0];
+          if (!model) return res.json({ ok: false, ms: elapsed(), error: '官方模型目录为空，请先登录 Codex 并刷新模型列表' });
+          // Same host-owned OAuth adapter mounted alongside CPR for normal
+          // Codex turns. It selects the account and injects credentials; no
+          // API key, Chat Completions request, or direct upstream hop here.
+          await runSpeedtestRequest({
+            client: deps.http,
+            requestOptions: {
+              hostname: '127.0.0.1', port: deps.getPort(),
+              path: `/codex-proxy/${encodeURIComponent(req.params.id)}/responses`,
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+            },
+            body: JSON.stringify({
+              model, instructions: 'Reply with only OK.',
+              input: [{ role: 'user', content: [{ type: 'input_text', text: 'hi' }] }],
+              stream: true, store: false,
+            }),
+            model, res, elapsed, setTimeoutFn, clearTimeoutFn,
+            streamProtocol: 'responses',
+          });
+          return;
+        }
+
         if (req.params.appType === 'codex') {
           const target = deps.providers.resolveCodexDirectHttp(req.params.id);
           if (!target.canDirect) {
@@ -473,16 +410,13 @@ function createProviderRoutes(rawDeps) {
         }
 
         const hasKey = Boolean(env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN);
-        const isOfficial = req.params.id === 'claude-official';
-        const canDirect = (env.ANTHROPIC_BASE_URL && hasKey)
-          || (isOfficial && deps.getClaudeOfficialViaProxy());
+        const isOfficial = req.params.id === 'claude-official' || !!officialAccountIdFromProvider(provider);
+        const canDirect = (env.ANTHROPIC_BASE_URL && hasKey) || isOfficial;
         if (!canDirect) {
           return res.json({
             ok: false,
             ms: elapsed(),
-            error: isOfficial
-              ? 'OAuth 订阅型 provider 不支持测速（开启 CLAUDE_OFFICIAL_VIA_PROXY 可测速）'
-              : '缺少 API Key 或 Base URL',
+            error: '缺少 API Key 或 Base URL',
           });
         }
 
@@ -504,7 +438,7 @@ function createProviderRoutes(rawDeps) {
           requestOptions: {
             hostname: '127.0.0.1',
             port: deps.getPort(),
-            path: `/claude-proxy/${req.params.id}/speedtest/v1/messages?beta=true`,
+            path: `/claude-proxy/${encodeURIComponent(req.params.id)}/speedtest/v1/messages?beta=true`,
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
