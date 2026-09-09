@@ -1,5 +1,13 @@
 'use strict';
 
+{
+  const [major, minor] = process.versions.node.split('.').map(Number);
+  if (major < 22 || (major === 22 && minor < 16)) {
+    console.error(`[multicc] Node.js >=22.16.0 is required (found ${process.versions.node}).`);
+    process.exit(1);
+  }
+}
+
 // Load .env file (lightweight, no dependencies)
 const _envPath = require('path').join(__dirname, '.env');
 try {

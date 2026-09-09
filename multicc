@@ -29,6 +29,14 @@ if [ -z "$NODE" ] || [ ! -x "$NODE" ]; then
   exit 1
 fi
 
+# SQLite and the runtime transport require Node's built-in sqlite support.
+_node_supported="$($NODE -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22||(a===22&&b>=16)?0:1)' 2>/dev/null)"
+if [ "$?" -ne 0 ]; then
+  echo "Error: MultiCC requires Node.js >=22.16.0 (found $($NODE -v 2>/dev/null))." >&2
+  echo "       Upgrade Node.js and retry." >&2
+  exit 1
+fi
+
 # Warn (but do not block) when node is older than the floor in package.json.
 # chokidar 5 is pure ESM and needs the require(ESM) backport that landed in
 # Node 20.19 / 22.12 — without it the server dies with a bare ERR_REQUIRE_ESM.
