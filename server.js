@@ -457,6 +457,8 @@ let CLAUDE_PROXY_ENABLED = String(process.env.CLAUDE_PROXY_ENABLED ?? '1') !== '
 // (⚠️ replays subscription OAuth outside the official client — ToS + shared-Keychain
 // considerations; hot-reloadable via POST /api/settings/official-oauth, persisted).
 let CLAUDE_OFFICIAL_VIA_PROXY = String(process.env.CLAUDE_OFFICIAL_VIA_PROXY ?? '1') === '1';
+// Keep CPR's official Claude branch in sync with the host default/toggle.
+process.env.CLAUDE_OFFICIAL_VIA_PROXY = CLAUDE_OFFICIAL_VIA_PROXY ? '1' : '0';
 
 // Model/provider display and effort policy is independent from process runners.
 // It reads user defaults on demand so /model and CLI config changes are visible
