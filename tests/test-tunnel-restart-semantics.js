@@ -2,7 +2,7 @@
 
 // Regression tests for the tunnel restart UX fix:
 //   • a failed restart surfaces its root cause (never a bare tunnel_restart_failed)
-//   • failed restarts never count toward restartTimes / hourly caps
+//   • failures consume retry limits but never inflate successful restartTimes
 //   • monitorOnly providers probe but never restart
 //   • surfaced error text is redacted (authtoken can never leave the server)
 
@@ -11,6 +11,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { findSakuraLauncher, restartSakuraLauncher, processPattern } = require('../src/tunnel-sakurafrp');
 
 const {
   createTunnelRestartHandler,
@@ -140,7 +141,7 @@ test('monitorOnly probes but never calls the restarter', withFreshTunnel(async t
   assert.equal(provider.restartTimes.length, 0);
 }));
 
-test('tick auto-restart failure does not count and records the root cause', withFreshTunnel(async tunnel => {
+test('failed auto-restart preserves the root cause and obeys cooldown', withFreshTunnel(async tunnel => {
   tunnel.applyConfig({
     failThreshold: 1,
     sakurafrp: { enabled: true, url: 'https://tunnel.example.test/' },
@@ -153,12 +154,41 @@ test('tick auto-restart failure does not count and records the root cause', with
   assert.equal(provider.restartTimes.length, 0, 'failed auto-restart must not count');
   assert.match(provider.lastAction, /重启失败: sakurafrp 未安装/);
 
-  // A subsequent successful restart is counted.
+  let calls = 0;
   await tunnel.checkProvider('sakurafrp', {
     probeFn: async () => 0,
-    restarter: async () => '已后台启动',
+    restarter: async () => { calls++; return '已后台启动'; },
   });
+  assert.equal(calls, 0, 'a failed launch must still enter cooldown');
+  assert.equal(tunnel.getStatus().providers.sakurafrp.attemptTimes.length, 1);
+  assert.match(tunnel.getStatus().providers.sakurafrp.lastAction, /等待冷却/);
+  tunnel.applyConfig({ restartCooldownSec: 0 });
+  await tunnel.checkProvider('sakurafrp', { probeFn: async () => 0, restarter: async () => '已后台启动' });
   assert.equal(tunnel.getStatus().providers.sakurafrp.restartTimes.length, 1);
+}));
+
+test('failed launches exhaust the hourly attempt budget without claiming successful restarts', withFreshTunnel(async tunnel => {
+  tunnel.applyConfig({
+    failThreshold: 1, restartCooldownSec: 0, maxRestartsPerHour: 2,
+    sakurafrp: { enabled: true, url: 'https://tunnel.example.test/' },
+  });
+  let calls = 0;
+  const options = { probeFn: async () => 0, restarter: async () => { calls++; throw new Error('unavailable'); } };
+  for (let i = 0; i < 4; i++) await tunnel.checkProvider('sakurafrp', options);
+  const state = tunnel.getStatus().providers.sakurafrp;
+  assert.equal(calls, 2);
+  assert.equal(state.restartTimes.length, 0);
+  assert.equal(state.attemptTimes.length, 2);
+  assert.match(state.lastAction, /每小时重启尝试上限/);
+}));
+
+test('manual failed launch also prevents an immediate automatic retry', withFreshTunnel(async tunnel => {
+  tunnel.applyConfig({ failThreshold: 1, sakurafrp: { enabled: true, url: 'https://tunnel.example.test/' } });
+  await tunnel.restartNow('sakurafrp', { restarter: async () => { throw new Error('unavailable'); } });
+  let calls = 0;
+  await tunnel.checkProvider('sakurafrp', { probeFn: async () => 0, restarter: async () => { calls++; } });
+  assert.equal(calls, 0);
+  assert.equal(tunnel.getStatus().providers.sakurafrp.restartTimes.length, 0);
 }));
 
 test('HTTP 302 probes healthy so no restart is attempted', withFreshTunnel(async tunnel => {
@@ -714,11 +744,11 @@ test('active guardrail note survives a healthy probe', withFreshTunnel(async tun
   });
   await tunnel.checkProvider('sakurafrp', { probeFn: async () => 0, restarter: async () => '已后台启动' });
   await tunnel.checkProvider('sakurafrp', { probeFn: async () => 0, restarter: async () => '已后台启动' });
-  assert.match(tunnel.getStatus().providers.sakurafrp.lastAction, /已达每小时重启上限/);
+  assert.match(tunnel.getStatus().providers.sakurafrp.lastAction, /已达每小时重启尝试上限/);
   await tunnel.checkProvider('sakurafrp', { probeFn: async () => 302 });
   assert.match(
     tunnel.getStatus().providers.sakurafrp.lastAction,
-    /已达每小时重启上限/,
+    /已达每小时重启尝试上限/,
     'still-effective cap note must not be cleared',
   );
 }));
@@ -742,4 +772,71 @@ test('manage UI never renders historical restart text for monitorOnly or uninsta
   assert.match(ui, /近1h修复\/重连/);
   assert.match(ui, /最近动作:/);
   assert.match(ui, /不自动修复 Funnel/);
+});
+
+test('Sakura launcher detection supports system and user apps without changing non-macOS availability', () => {
+  const app = '/Users/Test User/Applications/SakuraLauncher.app';
+  const exists = file => file.startsWith(app + '/');
+  assert.equal(findSakuraLauncher({ platform: 'darwin', home: '/Users/Test User', exists }), app);
+  assert.equal(findSakuraLauncher({ platform: 'linux', exists }), null);
+  assert.equal(findSakuraLauncher({ platform: 'darwin', exists: () => false }), null);
+  assert.equal(findSakuraLauncher({ platform: 'darwin', exists: f => f.endsWith('/SakuraLauncher') }), null,
+    'an incomplete app without its core service cannot be managed');
+});
+
+function launcherFixture({ stuck = false, openFails = false, startFails = false } = {}) {
+  const app = '/Users/Test User/Applications/SakuraLauncher.app';
+  const ui = app + '/Contents/MacOS/SakuraLauncher';
+  const service = app + '/Contents/MacOS/natfrp-service.app/Contents/MacOS/natfrp-service';
+  const frpc = app + '/Contents/MacOS/natfrp-service.app/Contents/MacOS/frpc';
+  const active = new Set([ui, service, frpc]);
+  const commands = [];
+  const run = async (command, args) => {
+    commands.push([command, args]);
+    if (command === '/usr/bin/pgrep') {
+      const found = [...active].some(binary => processPattern(binary) === args[1]);
+      return { ok: found, code: found ? 0 : 1 };
+    }
+    if (command === '/usr/bin/pkill') {
+      for (const binary of active) if (!stuck && processPattern(binary) === args[2]) active.delete(binary);
+      return { ok: true, code: 0 };
+    }
+    assert.equal(command, '/usr/bin/open', 'never execute the sandboxed frpc binary directly');
+    assert.deepEqual(args, ['-g', '-a', app]);
+    assert.equal(active.size, 0, 'old launcher processes must exit before opening the app');
+    if (!openFails && !startFails) active.add(service);
+    return { ok: !openFails, code: openFails ? 1 : 0 };
+  };
+  return { app, commands, run, wait: async () => {} };
+}
+
+test('Sakura restart stops only the selected app and verifies the new core service', async () => {
+  const fixture = launcherFixture();
+  const message = await restartSakuraLauncher(fixture.app, fixture);
+  assert.match(message, /等待公网复检/);
+  assert.equal(fixture.commands.filter(([cmd]) => cmd === '/usr/bin/pkill').length, 3);
+  assert.equal(fixture.commands.filter(([cmd]) => cmd === '/usr/bin/open').length, 1);
+  const pattern = processPattern('/Applications/SakuraLauncher.app/Contents/MacOS/SakuraLauncher');
+  assert.ok(pattern.startsWith('^'));
+  assert.ok(pattern.includes('SakuraLauncher\\.app'));
+});
+
+test('Sakura restart does not report success for stuck processes, failed open, or missing core service', async () => {
+  for (const [settings, expected] of [
+    [{ stuck: true }, /尚未退出/],
+    [{ openFails: true }, /打开失败/],
+    [{ startFails: true }, /核心服务未启动/],
+  ]) {
+    const fixture = launcherFixture(settings);
+    await assert.rejects(restartSakuraLauncher(fixture.app, fixture), expected);
+    if (settings.stuck) assert.equal(fixture.commands.some(([cmd]) => cmd === '/usr/bin/open'), false);
+  }
+});
+
+test('Sakura restart fails closed on a process inspection error', async () => {
+  const commands = [];
+  await assert.rejects(restartSakuraLauncher('/Applications/SakuraLauncher.app', {
+    run: async command => { commands.push(command); return { ok: false, code: 'ENOENT' }; },
+  }), /进程状态检查失败/);
+  assert.deepEqual(commands, ['/usr/bin/pgrep']);
 });
