@@ -136,7 +136,34 @@ async function fireTask(task, reason) {
     sessionId = r.id;
   }
   let started = false;
-  try { const admitted = await deps.admitChatWork(sessionId, task.prompt, {}); started = admitted === true || admitted?.ok === true; } catch (e) { task.lastError = e.message; }
+  try {
+    const admitted = await deps.admitChatWork(sessionId, task.prompt, {});
+    started = admitted === true || admitted?.ok === true;
+    // A previously reused session may have been adopted by a task shell.
+    // Cron deliveries are directory-level jobs and cannot enter that shell
+    // without a receipt, so rotate to a fresh standalone session once.
+    if (!started && admitted?.code === 'task_shell_route_required') {
+      throw Object.assign(new Error('task_shell_route_required'), { code: 'task_shell_route_required' });
+    }
+  } catch (e) {
+    task.lastError = e.message;
+    if (e?.code === 'task_shell_route_required' || e?.message === 'task_shell_route_required') {
+      try {
+        const r = await deps.createSessionRecord({
+          dir, cli: task.cli || 'claude', kind: 'chat', label: `⏰ ${task.name}`,
+          persistence: reason === 'manual' ? 'required' : 'bestEffort',
+          persistenceSource: reason === 'manual' ? 'http.cron-run-session-create' : 'timer.cron-session-create',
+        });
+        if (r?.ok) {
+          sessionId = r.id;
+          const retry = await deps.admitChatWork(sessionId, task.prompt, {});
+          started = retry === true || retry?.ok === true;
+          reused = false;
+          if (started) task.lastError = '';
+        }
+      } catch (retryError) { task.lastError = retryError.message; }
+    }
+  }
   task.lastRunAt = Date.now();
   task.lastSessionId = sessionId;
   task.runCount = (task.runCount || 0) + 1;
