@@ -17,6 +17,7 @@ const { execFile } = require('child_process');
 const { createPaths } = require('./paths');
 const { atomicWriteJson } = require('./runtime-security');
 const { createTailscaleFunnelProbe } = require('./tailscale-funnel-health');
+const { findSakuraLauncher, restartSakuraLauncher } = require('./tunnel-sakurafrp');
 
 const PATHS = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
 const CONFIG_FILE = PATHS.tunnelConfigFile;
@@ -384,7 +385,7 @@ function availability() {
     tailscale: fs.existsSync(TAILSCALE_BIN),
     natapp: !!findBin(NATAPP_BIN_CANDIDATES, 'natapp'),
     cpolar: !!findBin(CPOLAR_BIN_CANDIDATES, 'cpolar'),
-    sakurafrp: !!findBin(SAKURAFRP_BIN_CANDIDATES, 'frpc'),
+    sakurafrp: !!sakuraLauncherForConfig() || !!findBin(SAKURAFRP_BIN_CANDIDATES, 'frpc'),
   };
 }
 
@@ -407,7 +408,7 @@ function probe(url) {
 function execShell(cmd, args) {
   return new Promise((resolve) => {
     execFile(cmd, args, { timeout: 20000 }, (err, stdout, stderr) => {
-      resolve({ ok: !err, stdout: stdout || '', stderr: stderr || (err && err.message) || '' });
+      resolve({ ok: !err, code: err ? err.code : 0, stdout: stdout || '', stderr: stderr || (err && err.message) || '' });
     });
   });
 }
@@ -656,7 +657,15 @@ async function restartCliProvider(name) {
 
 async function restartNatapp() { return restartCliProvider('natapp'); }
 async function restartCpolar() { return restartCliProvider('cpolar'); }
-async function restartSakurafrp() { return restartCliProvider('sakurafrp'); }
+function sakuraLauncherForConfig() {
+  const command = (config.sakurafrp.startCmd || '').trim();
+  return !command || command === SAKURAFRP_DEFAULT_CMD ? findSakuraLauncher() : null;
+}
+
+async function restartSakurafrp() {
+  const app = sakuraLauncherForConfig();
+  return app ? restartSakuraLauncher(app, { run: execShell }) : restartCliProvider('sakurafrp');
+}
 
 // Root-cause messages from a failed restart may embed the failed shell command
 // (execFile echoes it), which contains the rendered authtoken. Mask every
@@ -888,18 +897,19 @@ async function checkProvider(name, options = {}) {
     if (!checkStillCurrent(name, st, generation)) return;
 
     const now = Date.now();
-    // Generic provider guardrails retain their existing semantics.
+    // Failed launches also consume the retry budget. Success history remains
+    // separate so the UI never counts a failed launch as a successful restart.
     const cooldownSec = Number.isInteger(config.restartCooldownSec) && config.restartCooldownSec >= 0
       ? config.restartCooldownSec : DEFAULT_CONFIG.restartCooldownSec;
-    if (st.lastRestartAt && (now - st.lastRestartAt) < cooldownSec * 1000) {
-      st.lastAction = `等待冷却（${Math.ceil((cooldownSec * 1000 - (now - st.lastRestartAt)) / 1000)}s）`;
+    if (st.lastAttemptAt && (now - st.lastAttemptAt) < cooldownSec * 1000) {
+      st.lastAction = `等待冷却（${Math.ceil((cooldownSec * 1000 - (now - st.lastAttemptAt)) / 1000)}s）`;
       return;
     }
     pruneRuntimeTimes(st, now);
     const maxRestarts = Number.isInteger(config.maxRestartsPerHour) && config.maxRestartsPerHour >= 1
       ? Math.min(100, config.maxRestartsPerHour) : DEFAULT_CONFIG.maxRestartsPerHour;
-    if (st.restartTimes.length >= maxRestarts) {
-      st.lastAction = `已达每小时重启上限（${maxRestarts}），暂停重启`;
+    if (st.attemptTimes.filter(at => now - at < 3600 * 1000).length >= maxRestarts) {
+      st.lastAction = `已达每小时重启尝试上限（${maxRestarts}），暂停重启`;
       return;
     }
 
@@ -1051,6 +1061,10 @@ async function restartNow(name, { restarter = RESTARTERS[name] } = {}) {
   const st = runtime[name];
   const perform = async () => {
     resetFailureEvidence(st);
+    const attemptedAt = Date.now();
+    pruneRuntimeTimes(st, attemptedAt);
+    st.lastAttemptAt = attemptedAt;
+    st.attemptTimes = [...st.attemptTimes, attemptedAt].slice(-100);
     try {
       st.lastAction = await restarter();
       const now = Date.now();

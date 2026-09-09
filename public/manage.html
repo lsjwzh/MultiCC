@@ -1531,6 +1531,7 @@
           <div class="settings-card">
             <div class="sc-header">SakuraFrp <span id="tnl-sf-avail" style="font-size:11px;font-weight:400;color:var(--faint);"></span></div>
             <div class="sc-body">
+              <div style="font-size:11px;color:var(--faint);margin-bottom:8px;">macOS 安装了 SakuraFrp 启动器时，默认通过启动器恢复其中已保存的隧道；自定义启动命令仍使用命令行客户端。</div>
               <div class="setting-row"><label>启用监控</label><input id="tnl-sf-enabled" type="checkbox" style="width:auto;" /></div>
               <div class="setting-row"><label>仅监控</label><input id="tnl-sf-monitoronly" type="checkbox" style="width:auto;" /> <span style="font-size:11px;color:var(--faint);margin-left:8px;">只探活，不自动重启客户端（URL 借给别家隧道监控时用）</span></div>
               <div class="setting-row"><label>公网 URL</label><input id="tnl-sf-url" type="text" placeholder="填该隧道的公网地址，用于健康检测" /></div>
@@ -1549,7 +1550,7 @@
               <div class="setting-row"><label>探活间隔(秒)</label><input id="tnl-interval" type="number" min="10" placeholder="30" /></div>
               <div class="setting-row"><label>失败阈值(次)</label><input id="tnl-failthreshold" type="number" min="1" placeholder="2" /></div>
               <div class="setting-row"><label>重启冷却(秒)</label><input id="tnl-cooldown" type="number" min="0" placeholder="120" /></div>
-              <div class="setting-row"><label>每小时上限</label><input id="tnl-maxrestarts" type="number" min="1" placeholder="5" /></div>
+              <div class="setting-row"><label>每小时尝试上限</label><input id="tnl-maxrestarts" type="number" min="1" placeholder="5" /></div>
             </div>
             <div class="sc-footer"><button class="btn btn-green" onclick="saveTunnelSettings()">保存</button><button class="btn" onclick="loadTunnelSettings()">刷新状态</button><span class="status-text" id="tnl-adv-msg"></span></div>
           </div>
