@@ -13,6 +13,7 @@ const js = fs.readFileSync(path.join(root, 'public/manage-task-planner.js'), 'ut
 const taskBoardJs = fs.readFileSync(path.join(root, 'public/manage-taskboard.js'), 'utf8');
 const dashboardJs = fs.readFileSync(path.join(root, 'public/manage-dashboard.js'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'public/manage-task-planner.css'), 'utf8');
+const taskBoardUi = require(path.join(root, 'public/task-board-ui.js'));
 const zh = JSON.parse(fs.readFileSync(path.join(root, 'app/assets/i18n/zh.json'), 'utf8'));
 const en = JSON.parse(fs.readFileSync(path.join(root, 'app/assets/i18n/en.json'), 'utf8'));
 
@@ -242,6 +243,8 @@ test('manage shell exposes the first-class Task Center view', () => {
   assert.match(html, /class="view planner-view" data-view="tasks"/);
   assert.match(html, /allowedViews = \[[^\]]*'tasks'/);
   assert.match(html, /manage-task-planner\.js/);
+  assert.match(html, /tasks: \['任务中心', '按模块查看、筛选与派发任务'\]/);
+  assert.doesNotMatch(html, /TODO、执行与验收|Unified TODO \/ task center/);
 });
 
 test('planner keeps persisted workflow identity separate from derived status projections', () => {
@@ -321,9 +324,13 @@ test('the quick-create composer is a persistent sibling destroyed before every r
       'every root wipe must first destroy the live composer (draft, attachments, pickers)');
   }
   assert.match(css, /\.planner-quick-create-host\s*\{[\s\S]*?flex: 0 0 auto;/);
+  assert.match(js, /const mountedHost = quickComposerHost/);
+  assert.match(js, /if \(mountedHost !== quickComposerHost\) return;[\s\S]*?mountedHost\.dataset\.plannerSending/);
+  assert.match(js, /const mountedFleetDirId = embedded \? lockedDirId : ''/);
+  assert.match(js, /!visible[\s\S]*?quickComposer\.dismissOverlays\(\)/);
 });
 
-test('quick create validates workspace, preserves draft on workspace change, and uses one atomic send', async () => {
+test('quick create waits for directories, refreshes them, preserves drafts, and uses one atomic send', async () => {
   const mounts = [];
   const contextChanges = [];
   const refs = {
@@ -339,12 +346,12 @@ test('quick create validates workspace, preserves draft on workspace change, and
     globals: {
       MultiCCTaskBoardComposer: {
         mount(_host, options) {
-          const record = { options, destroyed: false };
+          const record = { options, destroyed: false, dismissals: 0 };
           mounts.push(record);
           return {
             reset() {},
             focus() {},
-            dismissOverlays() {},
+            dismissOverlays() { record.dismissals += 1; },
             setContext(...args) { contextChanges.push(args); },
             destroy() { record.destroyed = true; },
           };
@@ -355,6 +362,7 @@ test('quick create validates workspace, preserves draft on workspace change, and
   harness.setRequestHandler((url) => (
     url === '/api/task-board/send' ? { ok: true, queued: true, taskId: 'started-now' } : undefined
   ));
+  assert.equal(mounts.length, 0, 'the composer must not mount before its directory catalog loads');
   harness.context.setView('tasks');
   await settlePlannerLoad();
 
@@ -398,11 +406,68 @@ test('quick create validates workspace, preserves draft on workspace change, and
   assert.equal(mounts.length, 1, 'board refreshes must not remount (and wipe) the live composer');
   assert.equal(mounts[0].destroyed, false);
 
+  refs.picker.value = 'fleet-b';
+  harness.setDirectories([
+    { id: 'fleet-a', name: 'Fleet A renamed' },
+    { id: 'fleet-c', name: 'Fleet C' },
+  ]);
+  await harness.context.MultiCCTaskPlanner.refresh();
+  assert.match(refs.picker.innerHTML, /Fleet A renamed/);
+  assert.match(refs.picker.innerHTML, /Fleet C/);
+  assert.doesNotMatch(refs.picker.innerHTML, /Fleet B/);
+  assert.equal(refs.picker.value, '', 'a removed workspace must not keep routing new tasks');
+  assert.equal(mounts.length, 1, 'directory refreshes preserve the mounted composer and its draft');
+
   dispatchPlannerAction(harness.globalRoot, 'mode', { mode: 'activity' });
   assert.equal(composerBar.style.display, 'none', 'quick create only belongs to the task list');
+  assert.equal(mounts[0].dismissals, 1, 'hiding the composer must close any Auto Provider overlay');
   dispatchPlannerAction(harness.globalRoot, 'mode', { mode: 'tasks' });
   assert.equal(composerBar.style.display, '');
   assert.equal(mounts.length, 1);
+});
+
+test('Fleet quick create locks routing to its Fleet and remounts cleanly when the Fleet changes', async () => {
+  const mounts = [];
+  const refs = { picker: { value: 'wrong-fleet', disabled: false }, composerHost: {} };
+  const harness = createPlannerHarness({
+    createDocument: globalRoot => createQuickCreateDocument(globalRoot, refs),
+    globals: {
+      MultiCCTaskBoardComposer: {
+        mount(_host, options) {
+          const record = { options, destroyed: false };
+          mounts.push(record);
+          return {
+            reset() {}, focus() {}, dismissOverlays() {}, setContext() {},
+            destroy() { record.destroyed = true; },
+          };
+        },
+      },
+    },
+  });
+  harness.setRequestHandler(url => (
+    url === '/api/task-board/send' ? { ok: true, queued: true, taskId: 'fleet-task' } : undefined
+  ));
+  const fleetRoot = fakePlannerRoot();
+  harness.context.MultiCCTaskPlanner.mountFleet(fleetRoot, 'fleet-b');
+  await settlePlannerLoad();
+
+  assert.equal(mounts.length, 1);
+  assert.equal(mounts[0].options.contextKey, 'fleet-b');
+  assert.doesNotMatch(fleetRoot.innerHTML, /planner-quick-create-workspace/);
+  assert.match(fleetRoot.innerHTML, /data-mode="tasks"/);
+  assert.match(fleetRoot.innerHTML, /data-mode="activity"/);
+  assert.doesNotMatch(fleetRoot.innerHTML, /data-mode="(?:todo|board)"/);
+
+  await mounts[0].options.submit({ text: 'Fleet-scoped task', clientMsgId: 'fleet-msg' });
+  const write = harness.requests.find(request => request.url === '/api/task-board/send');
+  assert.deepEqual(JSON.parse(JSON.stringify(write.options.json)), {
+    text: 'Fleet-scoped task', clientMsgId: 'fleet-msg', dirId: 'fleet-b',
+  });
+
+  harness.context.MultiCCTaskPlanner.mountFleet(fleetRoot, 'fleet-a');
+  assert.equal(mounts[0].destroyed, true);
+  assert.equal(mounts.length, 2);
+  assert.equal(mounts[1].options.contextKey, 'fleet-a');
 });
 
 test('Fleet planner mount is isolated and unmount or global navigation restores every Fleet', async () => {
@@ -724,6 +789,68 @@ test('task list groups by module and status filters are multi-select', async () 
   assert.doesNotMatch(globalRoot.innerHTML, /Archived outside workspace/);
 });
 
+test('activity coalesces missing and stale module identities into one unassigned group', async () => {
+  const { context, globalRoot } = createPlannerHarness();
+  context.setView('tasks');
+  await settlePlannerLoad();
+  assert.equal(context.MultiCCTaskPlanner.reconcileSnapshot({
+    ok: true,
+    revision: 2,
+    modules: [{ id: 'module-a', name: 'Module A', dirId: 'fleet-a' }],
+    tasks: [
+      { id: 'known', title: 'Known module', moduleId: 'module-a', dirId: 'fleet-a', status: 'active' },
+      { id: 'missing', title: 'Missing module', dirId: 'fleet-a', status: 'active' },
+      { id: 'stale-a', title: 'Stale module A', moduleId: 'removed-a', dirId: 'fleet-a', status: 'active' },
+      { id: 'stale-b', title: 'Stale module B', moduleId: 'removed-b', dirId: 'fleet-a', status: 'active' },
+    ],
+  }), true);
+
+  dispatchPlannerAction(globalRoot, 'mode', { mode: 'activity' });
+  assert.equal((globalRoot.innerHTML.match(/class="planner-history-group"/g) || []).length, 2);
+  assert.equal((globalRoot.innerHTML.match(/<summary><span>未分模块<\/span>/g) || []).length, 1);
+  assert.match(globalRoot.innerHTML, /2 个模块 · 4 条记录/);
+});
+
+test('task list reuses shared module sorting, task sorting, related groups, and identity partitioning', async () => {
+  const { context, globalRoot } = createPlannerHarness({
+    globals: { MultiCCTaskBoardUi: taskBoardUi },
+  });
+  context.setView('tasks');
+  await settlePlannerLoad();
+  assert.equal(context.MultiCCTaskPlanner.reconcileSnapshot({
+    ok: true,
+    revision: 2,
+    modules: [
+      { id: 'zulu', name: 'Zulu', dirId: 'fleet-a' },
+      { id: 'alpha', name: 'Alpha', dirId: 'fleet-a' },
+      { id: 'pending', name: '待归类', source: 'classify', dirId: 'fleet-a' },
+    ],
+    taskGroups: [{ id: 'related', title: 'Related pair', taskIds: ['alpha-old', 'alpha-new'] }],
+    tasks: [
+      { id: 'zulu-old', title: 'Zulu old', moduleId: 'zulu', dirId: 'fleet-a', status: 'active', runState: 'idle', lastTs: 10 },
+      { id: 'zulu-new', title: 'Zulu new', moduleId: 'zulu', dirId: 'fleet-a', status: 'active', runState: 'idle', lastTs: 20 },
+      { id: 'alpha-old', title: 'Alpha old', moduleId: 'alpha', dirId: 'fleet-a', status: 'active', runState: 'idle', lastTs: 30 },
+      { id: 'alpha-new', title: 'Alpha new', moduleId: 'alpha', dirId: 'fleet-a', status: 'active', runState: 'idle', lastTs: 40 },
+      { id: 'legacy', title: 'Legacy identity', moduleId: 'alpha', dirId: 'fleet-a', status: 'active', runState: 'idle', identityState: 'legacy_unresolved', lastTs: 50 },
+      { id: 'pending-task', title: 'Pending classify', moduleId: 'pending', dirId: 'fleet-a', status: 'active', runState: 'idle', lastTs: 60 },
+      { id: 'orphan', title: 'No module', moduleId: 'removed', dirId: 'fleet-a', status: 'active', runState: 'idle', lastTs: 70 },
+    ],
+  }), true);
+
+  const markup = globalRoot.innerHTML;
+  const modulePositions = ['pending', 'alpha', 'zulu', '__unassigned__']
+    .map(id => markup.indexOf(`data-module-id="${id}"`));
+  assert.ok(modulePositions.every(position => position >= 0));
+  assert.deepEqual([...modulePositions].sort((a, b) => a - b), modulePositions);
+  assert.ok(markup.indexOf('data-task-id="zulu-new"') < markup.indexOf('data-task-id="zulu-old"'));
+  assert.match(markup, /Related pair/);
+  assert.match(markup, /历史身份待确认/);
+  for (const id of ['zulu-old', 'zulu-new', 'alpha-old', 'alpha-new', 'legacy', 'pending-task', 'orphan']) {
+    const pattern = new RegExp(`<article class="planner-task-row[^>]*data-task-id="${id}"`, 'g');
+    assert.equal((markup.match(pattern) || []).length, 1, `${id} must render exactly once`);
+  }
+});
+
 test('the 60-second task-board poll feeds its snapshot into the planner', async () => {
   const intervals = [];
   const reconciled = [];
@@ -762,6 +889,7 @@ test('planner preserves navigation context and keeps task actions in scope', () 
   assert.match(js, /renderState: captureRenderState\(\)/);
   assert.match(js, /planner-task-primary[\s\S]*?data-action="open-chat"/);
   assert.match(js, /kind === 'open-chat'[\s\S]*?window\.open\(`\/chat\.html\?task=/);
+  assert.match(js, /handleRootKeydown[\s\S]*?task\.status !== 'archived' && !task\.deleting/);
   assert.match(js, /topbarRefresh\.onclick = \(\) => loadPlanner\(\{ refreshDirectories: true \}\)/);
   assert.match(html, /class="search planner-hide-on-tasks"/);
   assert.match(css, /body\[data-view="tasks"\] #topbar \.planner-hide-on-tasks\s*\{\s*display: none/);
@@ -782,6 +910,7 @@ test('planner refresh and responsive access paths are wired', () => {
   assert.match(js, /const epoch = \+\+state\.loadEpoch/);
   assert.match(js, /incomingRevision < state\.revision/);
   assert.match(js, /window\.onTaskBoardUpdate/);
+  assert.match(js, /async function refreshTaskSurfaces[\s\S]*?window\.refreshTaskBoard\(true\)[\s\S]*?loadPlanner\(\{ quiet: true \}\)/);
   assert.match(taskBoardJs, /typeof window\.MultiCCTaskPlanner\?\.reconcileSnapshot === 'function'[\s\S]*?window\.MultiCCTaskPlanner\.reconcileSnapshot\(d\)/);
   assert.match(taskBoardJs, /_dirDetailTab === 'tasks'[\s\S]*?refreshDirectoryDetailTaskTab\(_detailDirId\)/);
   assert.match(taskBoardJs, /else if \(typeof renderDirectoryDetailBody === 'function'\) \{\s*renderDirectoryDetailBody\(_detailDirId\);/);
@@ -792,6 +921,8 @@ test('planner refresh and responsive access paths are wired', () => {
   assert.match(css, /\.planner-task-row\s*\{\s*grid-template-columns: 8px minmax\(0, 1fr\);/);
   assert.match(css, /\.planner-quick-create\s*\{\s*padding-inline: 10px;/);
   assert.doesNotMatch(css, /\.planner-todo-|\.planner-board|\.planner-column|\.planner-card[\s,{.]|\.planner-work-bucket|\.planner-start-|\.planner-dialog/);
+  assert.doesNotMatch(css, /\.planner-overlay\.centered|\.planner-badge\.(?:priority|due-|module)/);
+  assert.doesNotMatch(js, /function duePresentation\(/);
 });
 
 test('planner copy is present in both generated source catalogs', () => {

@@ -419,14 +419,6 @@ body[data-view="tasks"] #topbar .planner-hide-on-tasks {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.planner-badge.priority-urgent,
-.planner-badge.priority-high { color: #ff9b94; border-color: rgba(255, 107, 99, .3); background: rgba(255, 107, 99, .08); }
-.planner-badge.priority-medium,
-.planner-badge.priority-normal { color: #e9c568; border-color: rgba(227, 179, 65, .3); background: rgba(227, 179, 65, .08); }
-.planner-badge.priority-low { color: #93b9f7; border-color: rgba(106, 163, 255, .27); background: rgba(106, 163, 255, .07); }
-.planner-badge.due-overdue { color: var(--danger); border-color: rgba(255, 107, 99, .38); }
-.planner-badge.due-soon { color: var(--amber); border-color: rgba(227, 179, 65, .38); }
-.planner-badge.module { max-width: 150px; }
 .planner-badge.origin-board { color: var(--accent); border-color: rgba(58, 214, 197, .28); }
 .planner-badge.origin-session { color: #aeb9cb; }
 
@@ -562,8 +554,6 @@ body[data-view="tasks"] #topbar .planner-hide-on-tasks {
   background: rgba(3, 5, 8, .68);
   backdrop-filter: blur(3px);
 }
-
-.planner-overlay.centered { align-items: center; justify-content: center; padding: 18px; }
 
 .planner-drawer {
   display: flex;
