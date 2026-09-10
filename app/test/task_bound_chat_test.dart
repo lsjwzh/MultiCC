@@ -92,12 +92,13 @@ void main() {
       final requests = <http.Request>[];
       final svc = ManageService(settings: await mockSettings(), httpClient: MockClient((r) async {
         requests.add(r);
+        if (r.url.path == '/api/task-board/tasks/tsk-A/chat-session') return http.Response('{"ok":true,"sessionId":"entry"}', 200);
         if (r.url.path == '/api/task-shells') return http.Response('{"id":"shell"}', 200);
         return http.Response('{"id":"tsk-A","sessionId":"execution-A"}', 200);
       }));
       expect(await svc.resolveTaskChatSession('tsk-A', boundSessionId: 'entry'), 'entry');
-      expect(requests.map((r) => r.url.path), ['/api/task-shells', '/api/task-shells/shell/tasks/resolve']);
-      expect(jsonDecode(requests.first.body), {'sessionId': 'entry'});
+      expect(requests.map((r) => r.url.path), ['/api/task-board/tasks/tsk-A/chat-session', '/api/task-shells', '/api/task-shells/shell/tasks/resolve']);
+      expect(jsonDecode(requests[1].body), {'sessionId': 'entry'});
       expect(jsonDecode(requests.last.body), {'taskId': 'tsk-A'});
       expect(requests.every((r) => r.headers['x-access-token'] == 'secret'), isTrue);
     });

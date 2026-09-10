@@ -34,7 +34,8 @@ test('host composition gates every real ingress and keeps view paths passive', (
   assert.match(engine, /getSessionHibernation/);
   assert.match(engine, /sessionHibernation\.admit/);
   assert.match(engine, /assertAwake/);
-  assert.match(server, /acquireDelivery/);
+  assert.match(server, /workspaceAdmission.beforeDeliver/);
+  assert.match(engine, /assertPermit/);
   assert.match(cron, /admitChatWork/);
   assert.doesNotMatch(cron, /deps\.runChatTurn\(/);
   assert.match(board, /workspaceState/);
