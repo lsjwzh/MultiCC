@@ -21,6 +21,7 @@ import '../utils/manual_order.dart';
 import '../utils/session_status_helpers.dart';
 import '../utils/status_presentation.dart';
 import '../widgets/directory_card.dart';
+import '../widgets/air_tasks_view.dart';
 import '../widgets/session_card.dart';
 import '../widgets/session_badges.dart';
 import '../widgets/kpi_tile.dart';
@@ -391,6 +392,7 @@ class _DirectoryListBody extends StatefulWidget {
 }
 
 class _DirectoryListBodyState extends State<_DirectoryListBody> {
+  bool _air = true;
   // Cached provider list (with aliasMap) so session model labels in the KPI
   // sheet can show an alias-mapped relay's real name (e.g. GLM5.2).
   List<Map<String, dynamic>> _providers = [];
@@ -530,7 +532,7 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
     final mgr = context.watch<SessionManager>();
 
     return Scaffold(
-      backgroundColor: const Color(0xFF070809),
+      backgroundColor: _air ? const Color(0xFFF6F8FC) : const Color(0xFF070809),
       drawer: WorkspaceNavigationDrawer(
         selected: WorkspaceDestination.overview,
         serverLabel: widget.settings.host,
@@ -542,8 +544,8 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
       ),
       // AppBar
       appBar: AppBar(
-        backgroundColor: const Color(0xFF0f1115),
-        foregroundColor: const Color(0xFFe7eaee),
+        backgroundColor: _air ? Colors.white : const Color(0xFF0f1115),
+        foregroundColor: _air ? const Color(0xFF25334A) : const Color(0xFFe7eaee),
         elevation: 0,
         centerTitle: false,
         leading: Builder(
@@ -592,6 +594,7 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
           ],
         ),
         actions: [
+          IconButton(tooltip: _air ? '会话与终端' : 'MultiCC Air', icon: Icon(_air ? Icons.dashboard_outlined : Icons.auto_awesome_outlined), onPressed: () => setState(() => _air = !_air)),
           IconButton(
             icon: const Icon(Icons.add_rounded, size: 22),
             tooltip: t('newDirectory'),
@@ -606,7 +609,7 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
             },
           ),
         ],
-        bottom: PreferredSize(
+        bottom: _air ? null : PreferredSize(
           preferredSize: Size.fromHeight(
             widget.settings.advancedMode.value ? 104 : 53,
           ),
@@ -625,7 +628,7 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
           ),
         ),
       ),
-      body: _buildBody(context, mgr),
+      body: _air ? AirTasksView(settings: widget.settings) : _buildBody(context, mgr),
     );
   }
 

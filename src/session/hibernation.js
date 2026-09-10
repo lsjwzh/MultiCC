@@ -9,7 +9,7 @@ const DEFAULT_HIBERNATE_IDLE_MS = 7 * DAY_MS;
 const DEFAULT_HIBERNATE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_HIBERNATE_STARTUP_DELAY_MS = 30 * 1000;
 const DEFAULT_HIBERNATE_BATCH_SIZE = 5;
-const WORKSPACE_STATES = new Set(['awake', 'hibernating', 'hibernated', 'thawing']);
+const WORKSPACE_STATES = new Set(['planned', 'awake', 'hibernating', 'hibernated', 'thawing']);
 const EXCLUDED_TYPES = new Set(['commander', 'gateway', 'worker', 'aux', 'system']);
 
 function millis(value) {
@@ -336,6 +336,7 @@ function createSessionHibernationRuntime(options = {}) {
     for (const record of records.values()) {
       if (!record?.taskBoundTaskId || record.kind !== 'chat' || record.workspaceOwnerSessionId) continue;
       const state = stateOf(record);
+      if (state === 'planned') continue;
       if (state === 'awake') continue;
       const observed = await inspect(record);
       let next = state;
@@ -491,7 +492,7 @@ async function initializeSessionWorktrees(options = {}) {
   for (const session of records.values()) {
     if (session.type === 'aux' || session.id === auxSessionId || session.type === 'gateway') continue;
     if (session.workspaceOwnerSessionId) continue;
-    if (['hibernated', 'hibernating'].includes(stateOf(session))) continue;
+    if (['planned', 'hibernated', 'hibernating'].includes(stateOf(session))) continue;
     const directory = directories.get(session.dirId);
     if (!directory) { invalidSessions.set(session.id, 'no directory'); continue; }
     if (duplicateDirectories.has(directory.id)) { invalidSessions.set(session.id, 'duplicate directory path'); continue; }

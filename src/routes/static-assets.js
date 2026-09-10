@@ -61,7 +61,7 @@ function createStaticAssetsRoutes(rawDeps) {
         return;
       }
       if (req.query.id || req.query.newid || req.query.cwd) return next(); // terminal session
-      res.redirect('/manage');
+      res.redirect('/air');
     });
 
     app.use((req, res, next) => {

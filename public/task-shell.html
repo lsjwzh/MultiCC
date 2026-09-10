@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>MultiCC · Task shell</title><link rel="stylesheet" href="task-shell.css"></head>
-<body><main>
+<title>MultiCC · Task shell</title><link rel="stylesheet" href="task-shell.css"><link rel="stylesheet" href="task-shell-air.css"></head>
+<body><script>if(new URLSearchParams(location.search).get("air")==="1")document.body.classList.add("air");</script><main>
   <header><h1 data-i18n="taskShellTitle"></h1><a href="/manage" data-i18n="taskShellBack"></a></header>
   <a id="source-history" data-i18n="taskShellHistory"></a><p data-i18n="taskShellIntro"></p><p id="notice" role="status" aria-live="polite"></p>
   <p id="state" aria-live="polite"></p><p id="token-savings" hidden aria-live="polite"></p><div id="origin"></div><details id="snapshot-details" hidden><summary data-i18n="taskShellSnapshotDetails"></summary><div id="snapshot-info"></div></details>
