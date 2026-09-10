@@ -223,6 +223,7 @@
   const state = {
     board: { modules: [], tasks: [] },
     directories: [],
+    directoriesLoaded: false,
     revision: 0,
     loaded: false,
     loading: false,
@@ -264,6 +265,7 @@
   let quickComposer = null;
   let quickComposerHost = null;
   let quickComposerContext = '';
+  let quickComposerDirectorySignature = '';
 
   function tr(key, params) {
     if (typeof window.t === 'function') return window.t(key, params);
@@ -357,6 +359,7 @@
       let directoriesApplied = false;
       if (shouldLoadDirectories && directoryEpoch === state.directoryLoadEpoch && Array.isArray(results[1])) {
         state.directories = results[1].filter(item => !item.external);
+        state.directoriesLoaded = true;
         directoriesApplied = true;
       }
       if (epoch !== state.loadEpoch) {
@@ -583,21 +586,6 @@
       : { month: 'short', day: 'numeric' }).format(date);
   }
 
-  function duePresentation(task) {
-    if (!task || !task.dueAt) return null;
-    const timestamp = Date.parse(task.dueAt);
-    if (!Number.isFinite(timestamp)) return null;
-    const date = localDate(timestamp, false);
-    const diff = timestamp - Date.now();
-    if (diff < 0 && taskStage(task) !== 'done') {
-      return { className: 'due-overdue', label: tr('plannerDueOverdue', { date }) };
-    }
-    if (diff < 48 * 60 * 60 * 1000 && taskStage(task) !== 'done') {
-      return { className: 'due-soon', label: tr('plannerDueSoon', { date }) };
-    }
-    return { className: '', label: tr('plannerDueDate', { date }) };
-  }
-
   function statusHtml(task, showLabel) {
     const status = taskStatus(task);
     if (statusUi && typeof statusUi.statusBadgeHtml === 'function') {
@@ -747,24 +735,13 @@
     }
     const moduleMap = modulesById();
     const dirMap = directoriesById();
-    const groups = new Map();
-    for (const task of tasks) {
-      const key = String(task.moduleId || '__none__');
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(task);
-    }
-    const ordered = [...groups.entries()].sort((first, second) => {
-      const firstName = moduleMap.get(first[0]) && moduleMap.get(first[0]).name || tr('plannerNoModule');
-      const secondName = moduleMap.get(second[0]) && moduleMap.get(second[0]).name || tr('plannerNoModule');
-      return firstName.localeCompare(secondName);
-    });
+    const groups = moduleTaskGroups(tasks, moduleMap);
     return `<div class="planner-history">
-      <div class="planner-history-summary">${esc(tr('plannerActivitySummary', { modules: ordered.length, tasks: tasks.length }))}</div>
-      ${ordered.map(([moduleId, list]) => {
-        const module = moduleMap.get(moduleId);
-        const moduleName = module && module.name || tr('plannerNoModule');
+      <div class="planner-history-summary">${esc(tr('plannerActivitySummary', { modules: groups.length, tasks: tasks.length }))}</div>
+      ${groups.map(group => {
+        const list = group.tasks;
         return `<details class="planner-history-group" open>
-          <summary><span>${esc(moduleName)}</span><span class="planner-history-count">${list.length}</span></summary>
+          <summary><span>${esc(group.name)}</span><span class="planner-history-count">${list.length}</span></summary>
           ${list.sort((a, b) => (Number(b.lastTs || b.updatedAt) || 0) - (Number(a.lastTs || a.updatedAt) || 0)).map(task => {
             const directory = dirMap.get(taskContextDirId(task, moduleMap));
             const origin = taskOrigin(task);
@@ -868,6 +845,7 @@
     try { quickComposer.destroy(); } catch (_) {}
     quickComposer = null;
     quickComposerContext = '';
+    quickComposerDirectorySignature = '';
   }
 
   function ensureLayout() {
@@ -892,14 +870,66 @@
     if (surface === 'fleet' && lockedDirId) return lockedDirId;
     const picker = quickComposerHost && quickComposerHost.querySelector('[data-control="composer-fleet"]');
     if (picker) return String(picker.value || '').trim();
-    return state.composerDirId || state.dirId || initialTaskDirId();
+    const preferred = state.composerDirId || state.dirId;
+    if (creationDirectories().some(directory => String(directory.id) === preferred)) return preferred;
+    return initialTaskDirId();
+  }
+
+  function creationDirectories() {
+    // Synthetic entries keep tasks from removed/missing workspaces reachable in
+    // filters and drawers, but they are not valid destinations for new work.
+    return state.directories.filter(directory => !directory.synthetic);
+  }
+
+  function composerDirectorySignature() {
+    return JSON.stringify(creationDirectories().map(directory => [
+      String(directory.id || ''), String(directory.name || directory.id || ''),
+    ]));
+  }
+
+  function composerDirectoryOptions(selected) {
+    return `<option value=""></option>${creationDirectories().map(directory => (
+      `<option value="${esc(directory.id)}"${selected === String(directory.id) ? ' selected' : ''}>${esc(directory.name || directory.id)}</option>`
+    )).join('')}`;
+  }
+
+  function syncQuickComposerDirectoryPicker() {
+    if (!quickComposerHost || surface === 'fleet') return;
+    const picker = quickComposerHost.querySelector('[data-control="composer-fleet"]');
+    if (!picker) return;
+    const signature = composerDirectorySignature();
+    if (signature === quickComposerDirectorySignature) return;
+    const selected = String(picker.value || '');
+    const next = creationDirectories().some(directory => String(directory.id) === selected) ? selected : '';
+    picker.innerHTML = composerDirectoryOptions(next);
+    picker.value = next;
+    state.composerDirId = next;
+    quickComposerDirectorySignature = signature;
+    if (next && quickComposer && next !== quickComposerContext) {
+      quickComposerContext = next;
+      quickComposer.setContext(next, { preserveDraft: true });
+    }
+  }
+
+  async function refreshTaskSurfaces() {
+    if (typeof window.refreshTaskBoard === 'function') {
+      await window.refreshTaskBoard(true);
+      return;
+    }
+    await loadPlanner({ quiet: true });
   }
 
   function syncQuickComposer(busy) {
     if (!quickComposerHost) return;
-    const visible = state.mode === 'tasks' && !busy && !state.error;
+    const visible = state.mode === 'tasks' && state.loaded && state.directoriesLoaded
+      && !busy && !state.error;
     quickComposerHost.style.display = visible ? '' : 'none';
-    if (!visible) return;
+    if (!visible) {
+      if (quickComposer && typeof quickComposer.dismissOverlays === 'function') {
+        quickComposer.dismissOverlays();
+      }
+      return;
+    }
     const composerApi = window.MultiCCTaskBoardComposer;
     if (!composerApi || typeof composerApi.mount !== 'function') {
       destroyQuickComposer();
@@ -909,41 +939,52 @@
     const embedded = surface === 'fleet';
     if (!quickComposer) {
       const dirId = quickCreateDirId();
+      const directoryOptionsHtml = composerDirectoryOptions(dirId);
+      const mountedHost = quickComposerHost;
+      const mountedFleetDirId = embedded ? lockedDirId : '';
       quickComposerHost.innerHTML = `<div class="planner-quick-create">
         <div class="planner-quick-create-head">
           <strong>${esc(tr('plannerQuickCreate'))}</strong>
           <span class="planner-quick-create-hint">${esc(tr('plannerQuickCreateHint'))}</span>
           <span class="planner-grow"></span>
-          ${embedded ? '' : `<label class="planner-quick-create-workspace"><span>${esc(tr('plannerQuickCreateWorkspace'))}</span><select class="planner-control planner-select" data-control="composer-fleet"><option value=""></option>${panelOptions(dirId)}</select></label>`}
+          ${embedded ? '' : `<label class="planner-quick-create-workspace"><span>${esc(tr('plannerQuickCreateWorkspace'))}</span><select class="planner-control planner-select" data-control="composer-fleet">${directoryOptionsHtml}</select></label>`}
         </div>
         <div class="planner-quick-composer"></div>
       </div>`;
       quickComposerContext = dirId;
+      state.composerDirId = dirId;
+      quickComposerDirectorySignature = composerDirectorySignature();
       quickComposer = composerApi.mount(quickComposerHost.querySelector('.planner-quick-composer'), {
         contextKey: dirId,
         placeholder: tr('plannerQuickCreatePlaceholder'),
         onSendingChange: sending => {
-          if (quickComposerHost) quickComposerHost.dataset.plannerSending = sending ? 'true' : 'false';
-          const picker = quickComposerHost && quickComposerHost.querySelector('[data-control="composer-fleet"]');
+          // An in-flight composer may finish after the user switches surfaces.
+          // Never let that retired instance mutate the newly mounted picker.
+          if (mountedHost !== quickComposerHost) return;
+          mountedHost.dataset.plannerSending = sending ? 'true' : 'false';
+          const picker = mountedHost.querySelector('[data-control="composer-fleet"]');
           if (picker) picker.disabled = sending;
         },
         submit: async payload => {
-          const picker = quickComposerHost && quickComposerHost.querySelector('[data-control="composer-fleet"]');
+          const picker = mountedHost.querySelector('[data-control="composer-fleet"]');
           // An explicit empty picker value must fail validation, never silently
           // reroute the task to the default Fleet.
-          const targetDir = embedded ? lockedDirId : String(picker ? picker.value : quickComposerContext).trim();
+          const targetDir = embedded ? mountedFleetDirId : String(picker ? picker.value : quickComposerContext).trim();
           if (!targetDir) throw new Error(tr('plannerCreateRequired'));
           const result = await requestJson('/api/task-board/send', {
             method: 'POST',
             json: { ...payload, dirId: targetDir },
           });
-          await loadPlanner({ quiet: true });
+          // Keep the classic task-board cache, Fleet count/running marker and
+          // both Planner mounts on the same authoritative snapshot.
+          await refreshTaskSurfaces();
           notify(tr('plannerCreatedStarted'));
           return result && result.queued ? tr('plannerCreatedStarted') : tr('plannerStarted');
         },
       });
       return;
     }
+    syncQuickComposerDirectoryPicker();
     // An explicit empty picker pick stays empty and is rejected by submit
     // validation instead of silently rerouting the draft.
     const nextDirId = quickCreateDirId();
@@ -957,8 +998,8 @@
     const savedRenderState = pendingRenderState || captureRenderState();
     pendingRenderState = null;
     const embedded = surface === 'fleet';
-    // The navigation badge is an actionable-work count. Completed cards stay
-    // visible on the board but do not inflate the outstanding-work indicator.
+    // The navigation badge is an actionable-work count. Completed tasks stay
+    // visible in the list but do not inflate the outstanding-work indicator.
     const globalWork = state.board.tasks.filter(task => {
       const bucket = workBucket(task);
       return !!bucket && bucket !== 'done';
@@ -1172,8 +1213,10 @@
   }
 
   function initialTaskDirId() {
-    return lockedDirId || state.dirId
-      || String(state.directories[0] && state.directories[0].id || '');
+    if (lockedDirId) return lockedDirId;
+    const directories = creationDirectories();
+    if (directories.some(directory => String(directory.id) === state.dirId)) return state.dirId;
+    return String(directories[0] && directories[0].id || '');
   }
 
   function drawerFormPayload() {
@@ -1372,7 +1415,7 @@
     if (!saved) { button.disabled = false; return; }
     const task = saved.task;
     // Completion/reopen are planning transitions, so they use the same
-    // per-card optimistic concurrency path as drag-and-drop.
+    // per-task optimistic concurrency path as every other workflow move.
     if (status === 'done' || status === 'active') {
       const targetStage = status === 'done' ? 'done' : 'ready';
       if (taskStage(task) === targetStage) {
@@ -1486,7 +1529,9 @@
     if (card && (event.key === 'Enter' || event.key === ' ')) {
       event.preventDefault();
       const task = findTask(card.dataset.taskId);
-      if (task && task.recordType === 'planned') openTaskDrawer(card.dataset.taskId);
+      if (task && task.recordType === 'planned' && task.status !== 'archived' && !task.deleting) {
+        openTaskDrawer(card.dataset.taskId);
+      }
       else window.open(`/chat.html?task=${encodeURIComponent(card.dataset.taskId)}`, '_blank');
     }
   }
