@@ -340,7 +340,14 @@
     function renderLiveness(verdict) {
       const pill = doc.getElementById('liveness-pill');
       if (!pill) return;
-      if (!verdict || !verdict.state) { pill.style.display = 'none'; return; }
+      // The liveness indicator is an interruption affordance, not a second
+      // always-on status bar. Only surface it when the server has confirmed a
+      // stalled turn; any fresh activity (working/idle) removes the prompt.
+      if (!verdict || verdict.state !== 'stalled') {
+        pill.style.display = 'none';
+        pill.onclick = null;
+        return;
+      }
       const disp = livenessDisplay(verdict.state);
       const dotEl = doc.getElementById('liveness-pill-dot');
       const labelEl = doc.getElementById('liveness-pill-label');
@@ -357,6 +364,13 @@
         dotEl.classList.add(`lv-${disp.dot}`);
       }
       pill.title = verdict.reason ? `liveness: ${verdict.state} (${verdict.reason})` : `liveness: ${verdict.state}`;
+      pill.onclick = () => options.onStalled?.(verdict);
+      pill.onkeydown = event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          options.onStalled?.(verdict);
+        }
+      };
       pill.style.display = '';
     }
 
