@@ -1,10 +1,11 @@
 (function () {
   'use strict';
-  const $ = id => document.getElementById(id), t = key => window.t(key);
+  const $ = id => document.getElementById(id), t = (key, params) => window.t(key, params);
   let shellId, focused = '', detail = null, control = null, client, busy = false, timer, stopped = false, newTask = false;
   const params = new URLSearchParams(location.search);
   if (params.get('board') === '1') { window.MultiCCTaskBoardEntry.start(params.get('task')); return; }
   let cursorVersion = 0;
+  let pollEpoch = 0;
   let requestedTask = params.get('task') || '';
   async function api(route, body, method = body === undefined ? 'GET' : 'POST') {
     const response = await fetch(route, { method, headers: { 'Content-Type': 'application/json' },
@@ -138,12 +139,16 @@
       await api(`/api/task-shells/${shellId}`, undefined, 'DELETE'); stopped = true; clearTimeout(timer); location.href = '/manage';
     });
   };
-  async function poll() {
-    if (stopped) return;
+  async function poll(epoch = pollEpoch) {
+    if (stopped || epoch !== pollEpoch) return;
     if (!document.hidden && !busy) try { await refresh(); } catch (e) { notice(e.message); }
-    timer = setTimeout(poll, 2000);
+    if (!stopped && epoch === pollEpoch) timer = setTimeout(() => poll(epoch), 2000);
   }
-  window.addEventListener('pagehide', () => { stopped = true; clearTimeout(timer); });
+  window.addEventListener('pagehide', () => { stopped = true; pollEpoch++; clearTimeout(timer); });
+  window.addEventListener('pageshow', event => {
+    if (!event.persisted) return;
+    stopped = false; pollEpoch++; clearTimeout(timer); poll();
+  });
   (async () => {
     try {
       const shell = params.get('shell') ? await api(`/api/task-shells/${encodeURIComponent(params.get('shell'))}`)

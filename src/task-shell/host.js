@@ -21,8 +21,12 @@ function createTaskShellHost(deps) {
   }
   function currentTurn(sessionId) {
     const record = deps.records.get(sessionId);
-    return record?.taskState?.pendingUserInput?.resolved !== true && record?.taskState?.pendingUserInput?.turnId
-      || record?.taskState?.userInputSignalTurnId || null;
+    const pending = record?.taskState?.pendingUserInput;
+    if (pending && pending.resolved !== true && pending.turnId) return pending.turnId;
+    const live = deps.getChatState(sessionId);
+    // A queued successor still carries the previous persisted signal ID. It
+    // must not expose that ended turn as a valid cancel/steer target.
+    return live?.isStreaming || live?.claudeProc ? live._activeTurn?.turnId || null : null;
   }
   function getRuntime() {
     if (runtime) return runtime;

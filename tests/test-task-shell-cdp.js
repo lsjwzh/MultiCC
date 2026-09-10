@@ -61,9 +61,15 @@ test('task shell browser: current-task queue, explicit new task, token saving, r
       await page.evaluate('document.getElementById("new-task").click()');
       await submit('Independent B');
       assert.ok(await page.waitFor('document.getElementById("token-savings").textContent.includes("token") && !document.getElementById("send").disabled'));
+      assert.equal(await page.evaluate('document.getElementById("token-savings").textContent.includes("{tokens}")'), false);
+      assert.match(await page.evaluate('document.getElementById("token-savings").textContent'), /\d/);
       assert.equal(f.store.list('task').length, 2);
       const latest = f.store.list('task').find(task => task.id !== original.id);
+      // Cache restoration must restart refresh, including when the page was
+      // hidden while a prior polling generation still had an in-flight read.
+      await page.evaluate('dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }))');
       f.histories.set(latest.sessionId, [{ id: 'safe', role: 'assistant', content: '<img src=x onerror="window.pwned=true">', tools: [{ result: '<script>window.pwned=true</script>' }] }]);
+      await page.evaluate('dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }))');
       assert.ok(await page.waitFor('document.getElementById("history").textContent.includes("onerror") || document.querySelector("#history article img")'));
       assert.equal(await page.evaluate('window.pwned === true'), false);
       await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
@@ -97,7 +103,9 @@ test('board browser fails closed, previews conversation history and forks only o
     await page.send('Page.bringToFront');
     assert.ok(await page.waitFor('document.getElementById("notice").textContent.includes("unavailable")'));
     assert.equal(await page.evaluate('document.getElementById("composer").hidden'), true);
+    await page.evaluate('dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }))');
     failRead = false;
+    await page.evaluate('dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }))');
     assert.ok(await page.waitFor('document.getElementById("history").textContent.includes("Source requirement")'));
     assert.equal(await page.evaluate('document.getElementById("composer").hidden && document.getElementById("question").hidden && !document.getElementById("board-actions").hidden'), true);
     assert.equal(f.creations.length, 0); assert.equal(f.sends.length, 0);

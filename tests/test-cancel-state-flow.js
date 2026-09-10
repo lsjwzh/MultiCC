@@ -308,6 +308,7 @@ test('manual cancel: controller → cancel event → classify → persist → br
   const h = harness(t);
   await h.startTurn();
   assert.equal(h.boardTask().runState, 'running');
+  const providerAttempt = h.chatState._activeRunner.providerAttempt;
 
   const result = await h.host.cancelActiveTurn('s1', {
     source: 'manual_cancel', operationId: 'idem-42',
@@ -319,7 +320,8 @@ test('manual cancel: controller → cancel event → classify → persist → br
   assert.equal(h.child.kills, 1);
   assert.equal(h.chatState.isStreaming, false);
   const attemptFinish = h.events.find(event => event.kind === 'provider_attempt_finish');
-  assert.equal(attemptFinish.attempt, h.chatState._activeRunner.providerAttempt);
+  assert.equal(attemptFinish.attempt, providerAttempt);
+  assert.equal(h.chatState._activeRunner, null);
   assert.deepEqual(attemptFinish.facts, {
     outcome: 'failed', errorCategory: 'cancelled', reasonCode: 'user_cancel',
   });

@@ -11,6 +11,39 @@ const { createTaskShellRuntime } = require('../src/task-shell/runtime');
 const { mountTaskShellRoutes } = require('../src/task-shell/routes');
 const { createShellWorkspaceHost, sharedWorkspace } = require('../src/task-shell/workspace');
 const { verifySnapshot } = require('../src/task-shell/context');
+const { createTaskShellHost } = require('../src/task-shell/host');
+
+test('queued successors cannot cancel an ended turn; live turns and pending questions retain exact controls', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-shell-control-'));
+  const record = { id: 'source', kind: 'chat', cli: 'codex', dirId: 'd1',
+    taskState: { userInputSignalTurnId: 'old-turn' } };
+  const live = { isStreaming: false, _activeTurn: { turnId: 'old-turn' } };
+  const cancellations = [];
+  const host = createTaskShellHost({
+    file: path.join(dir, 'shell.sqlite'), records: new Map([[record.id, record]]),
+    getChatState: () => live, loadHistory: () => [],
+    getWorkHost: () => ({ isRunActive: () => false, getRunState: () => 'queued',
+      cancelActiveTurn: id => { cancellations.push(id); return { ok: true }; } }),
+    getScheduler: () => ({ status: async () => ({ state: 'idle', queued: [{}] }) }),
+    getTaskBoard: () => ({ registerShellTask: () => ({ ok: true }), getBoard: () => ({ tasks: {} }) }),
+  });
+  t.after(() => { host.close(); fs.rmSync(dir, { recursive: true, force: true }); });
+  const shell = host.open(record.id);
+  assert.equal((await host.taskEntry(shell.currentTaskId)).execution.turnId, null);
+  await assert.rejects(host.sendClientInput(record.id, {
+    type: 'cancel', clientMsgId: 'stale', turnId: 'old-turn',
+  }), { code: 'stale_control' });
+  assert.deepEqual(cancellations, []);
+  Object.assign(live, { isStreaming: true, _activeTurn: { turnId: 'new-turn' } });
+  assert.equal((await host.taskEntry(shell.currentTaskId)).execution.turnId, 'new-turn');
+  await host.sendClientInput(record.id, { type: 'cancel', clientMsgId: 'current', turnId: 'new-turn' });
+  assert.deepEqual(cancellations, [record.id]);
+  live.isStreaming = false;
+  record.taskState.pendingUserInput = { turnId: 'question-turn', requestId: 'question', resolved: false };
+  assert.equal((await host.taskEntry(shell.currentTaskId)).execution.turnId, 'question-turn');
+  record.taskState.pendingUserInput.resolved = true;
+  assert.equal((await host.taskEntry(shell.currentTaskId)).execution.turnId, null);
+});
 
 const input = (id, more = {}) => ({ text: id, clientMsgId: id, ...more });
 test('legacy transcript fork gets an independent task while source ownership and copied history stay intact', async t => {
