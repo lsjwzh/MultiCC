@@ -12,6 +12,8 @@ const suites = [
   ['--test', 'tests/test-session-work-scheduler.js', 'tests/test-session-work-host.js',
     'tests/test-cancel-state-flow.js',
     'tests/test-user-input-answer-delivery.js', 'tests/test-task-context-host.js', 'tests/test-task-bound-session.js'],
+  ['tests/test-task-first-isolated.js'],
+  ['--test', 'tests/test-air-task-first-cdp.js'],
   ['tests/test-task-shell-isolated.js'],
   ['tests/test-task-shell-context-isolation.js'],
   ['--test', 'tests/test-task-shell-cdp.js'],

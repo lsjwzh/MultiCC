@@ -27,7 +27,7 @@ function createShellWorkspaceHost(deps) {
     return false;
   }
   async function prepareExecution(task, owner) {
-    if (!owner || owner.standalone) return;
+    if (!owner || owner.standalone || task.taskFirst) return;
     let record = deps.records.get(task.sessionId);
     if (!record || record.id === owner.sourceSessionId) return;
     const target = sharedWorkspace(deps.records, owner.sourceSessionId, task.dirId);

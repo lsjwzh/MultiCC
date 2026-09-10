@@ -68,6 +68,12 @@ function createStaticAssetsRoutes(rawDeps) {
       if (req.method !== 'GET') return next();
       let rel;
       try { rel = decodeURIComponent(req.path).replace(/^\/+/, ''); } catch (_) { return next(); }
+      // Session URLs are bookmarks to tasks, never a second conversation UI.
+      const taskRenderer = req.query.air === '1' && req.query.board === '1'
+        && typeof req.query.task === 'string' && req.query.task.length > 0;
+      if (['chat', 'chat.html'].includes(rel) || (['task-shell', 'task-shell.html'].includes(rel) && !taskRenderer)) {
+        return _serveVersionedHtml(path.join(_publicDir, 'task-entry.html'), res);
+      }
       const cands = !rel || rel === '/' ? ['index.html']
         : rel.endsWith('.html') ? [rel]
         : [rel + '.html'];

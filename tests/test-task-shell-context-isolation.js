@@ -188,7 +188,7 @@ const calls = () => fs.existsSync(mcpCalls) ? fs.readFileSync(mcpCalls, 'utf8').
   try {
     await start();
     const dir1 = await api('/api/directories', { name: 'Ctx isolation', path: project, create: true });
-    const source = await api(`/api/directories/${dir1.id}/sessions`, { cli: 'codex', kind: 'chat', label: 'Source S' });
+    const source = await require('./helpers/legacy-task-session')({ dataDir, dirId: dir1.id, id: 'source-s', stop, start });
     const sa = await api('/api/task-shells', { sessionId: source.id });
 
     // ---- Phase 1: task A setup (continues the adopted source task, runs in session S) ----
@@ -199,14 +199,14 @@ const calls = () => fs.existsSync(mcpCalls) ? fs.readFileSync(mcpCalls, 'utf8').
     assert.equal(TA.sessionId, source.id, 'adopted task A must run in the source session');
     console.log(`[case A] task A id=${TA.id} session=${TA.sessionId} answer=4271`);
 
-    // ---- Phase 2: task B setup (explicit new task -> isolated native execution in the shell worktree) ----
+    // ---- Phase 2: task B setup (explicit new task -> isolated native execution in its own worktree) ----
     const msg2 = await api(`/api/task-shells/${sa.id}/messages`, { text: '你现在是任务B，请回复任务B+一个随机数字', newTask: true, clientMsgId: 'setup-b', intent: 'work' });
     const TB = { id: msg2.taskId, sessionId: msg2.sessionId };
     assert.equal(msg2.decision, 'new');
     assert.notEqual(TB.id, TA.id); assert.notEqual(TB.sessionId, TA.sessionId);
     await wait(() => rows().some(r => r.sessionId === TB.sessionId && r.prompt.includes('回复任务B')), 'task B execution did not start');
     await wait(() => answerOf(sa.id, TB.id, '8899'), 'task B answer missing');
-    // Native isolation: one shell worktree + distinct native CLI session ids.
+    // Native isolation: independent worktrees + distinct native CLI session ids.
     const paths = createPaths({ dataDir });
     // The assistant message can arrive before the debounced native-session
     // persistence. Observe that durable boundary instead of racing its timer.
@@ -218,10 +218,10 @@ const calls = () => fs.existsSync(mcpCalls) ? fs.readFileSync(mcpCalls, 'utf8').
     }, 'native execution identities were not persisted');
     const recA = sessions.find(s => s.id === TA.sessionId), recB = sessions.find(s => s.id === TB.sessionId);
     assert.ok(recA && recB, 'both execution sessions must be persisted');
-    assert.equal(recA.worktreePath, recB.worktreePath, 'tasks in the same shell share its worktree');
-    assert.equal(recB.workspaceOwnerSessionId, source.id);
+    assert.notEqual(recA.worktreePath, recB.worktreePath, 'new tasks have independent workspaces');
+    assert.ok(!recB.workspaceOwnerSessionId);
     assert.notEqual(recA.cliSessionId, recB.cliSessionId, 'A and B must have isolated native CLI sessions');
-    console.log(`[case B] task B id=${TB.id} session=${TB.sessionId} answer=8899; shared worktree, isolated native histories`);
+    console.log(`[case B] task B id=${TB.id} session=${TB.sessionId} answer=8899; independent worktrees and native histories`);
 
     // ---- Phase 3: CORE ask-A from task B -> requirements (1)(2)(3) ----
     const msg3Body = { text: '任务A给你回复的数字是啥', clientMsgId: 'ask-a', intent: 'work' };
@@ -289,7 +289,7 @@ const calls = () => fs.existsSync(mcpCalls) ? fs.readFileSync(mcpCalls, 'utf8').
 
     // ---- Phase 8: wrong taskId / cross-project reference fail closed ----
     const dir2 = await api('/api/directories', { name: 'Other project', path: project2, create: true });
-    const source2 = await api(`/api/directories/${dir2.id}/sessions`, { cli: 'codex', kind: 'chat', label: 'Source S2' });
+    const source2 = await require('./helpers/legacy-task-session')({ dataDir, dirId: dir2.id, id: 'source-s2', stop, start });
     const sb = await api('/api/task-shells', { sessionId: source2.id });
     const other = await api(`/api/task-shells/${sb.id}/messages`, { text: '你现在是任务C，请回复任务C+一个随机数字', newTask: true, clientMsgId: 'setup-c', intent: 'work' });
     const TC2 = { id: other.taskId, sessionId: other.sessionId };
@@ -309,8 +309,7 @@ const calls = () => fs.existsSync(mcpCalls) ? fs.readFileSync(mcpCalls, 'utf8').
     await wait(() => rows().some(r => r.sessionId === TA.sessionId && r.prompt.includes('HOLD_UPDATE')), 'held A turn did not start');
     const conc = await api(`/api/task-shells/${sa.id}/messages`, { text: '任务A给你回复的数字是啥', newTask: true, clientMsgId: 'conc-ask-a', intent: 'work' });
     const TD = { id: conc.taskId, sessionId: conc.sessionId };
-    await new Promise(r => setTimeout(r, 600));
-    assert.equal(rows().some(r => r.sessionId === TD.sessionId), false, 'same-workspace execution must wait for A');
+    await wait(() => rows().some(r => r.sessionId === TD.sessionId), 'independent task must start while A runs');
     fs.writeFileSync(release2, 'done');
     await wait(() => answerOf(sa.id, TA.id, 'HOLD_DONE'), 'held A turn never completed');
     const concCall = await wait(() => calls().find(c => c.sessionId === TD.sessionId && c.marker === 'A'), 'concurrent ask-A did not refill');
@@ -320,7 +319,7 @@ const calls = () => fs.existsSync(mcpCalls) ? fs.readFileSync(mcpCalls, 'utf8').
     assert.ok(concAnswer.includes('4271') && !concAnswer.includes('8899'), 'concurrent answer must be A nonce only');
     fs.writeFileSync(release2, 'done');
     await wait(() => answerOf(sa.id, TA.id, 'HOLD_DONE'), 'held A turn never completed');
-    console.log(`[case g] concurrent task ${TD.id} refilled A completed context (4271) after waiting for the shared workspace`);
+    console.log(`[case g] concurrent task ${TD.id} refilled A completed context (4271) while keeping an independent workspace`);
 
     // Protocol text can precede process exit. A clean restart test joins the
     // managed writer; crash/unknown leases are intentionally retained.
@@ -345,7 +344,8 @@ const calls = () => fs.existsSync(mcpCalls) ? fs.readFileSync(mcpCalls, 'utf8').
     assert.ok(postAnswer.includes('4271'), 'post-restart answer must restore A nonce');
     const sessions2 = readJson(paths.sessionsFile, { legacyIsArray: true }).data;
     const recA2 = sessions2.find(s => s.id === TA.sessionId), recB2 = sessions2.find(s => s.id === TB.sessionId);
-    assert.equal(recA2.worktreePath, recB2.worktreePath, 'shell workspace ownership must survive restart');
+    assert.equal(recA2.worktreePath, recA.worktreePath);
+    assert.equal(recB2.worktreePath, recB.worktreePath);
     console.log('[case f] post-restart: shell identity, A/B isolation and lazy refill all hold');
 
     console.log('PASS task-shell context isolation: real get_task_context MCP refill, no initial leak, correct A nonce, B-own no-refill, A-link identity, replay idempotency, safe-failure, cross-project/unknown fail-closed, concurrency no-borrow, restart persistence');

@@ -35,8 +35,10 @@ function createTaskShellHost(deps) {
     runtime = createTaskShellRuntime({
       store,
       getDirectory: id => deps.directories?.get(id),
+      taskDirectory: task => require('../task-board/core').taskDirId(deps.getTaskBoard().getBoard(), task),
       validateTaskRuntime: (dirId, config) => deps.createSessionRecord({ ...config, dir: deps.directories.get(dirId), kind: 'chat', validateOnly: true }),
       unifiedAdmission: true,
+      taskFirst: true, defaultTaskRuntime: deps.defaultTaskRuntime,
       getRecord: id => deps.records.get(id),
       onStateTargetChanged: id => deps.onStateTargetChanged?.(id),
       getHistory: deps.loadHistory,
@@ -63,7 +65,7 @@ function createTaskShellHost(deps) {
         const owner = runtime.ownerOf(task);
         const result = await deps.createSessionRecord({ ...source, dir, id: task.sessionId,
           kind: 'chat', label: task.title, taskBoundTaskId: task.id, autoCommit: false,
-          workspaceOwnerSessionId: owner && !owner.standalone ? owner.sourceSessionId : null, workspaceBaseCommit: task.forkBaseline?.commit || null,
+          workspaceOwnerSessionId: owner && !owner.standalone && !task.taskFirst ? owner.sourceSessionId : null, workspaceBaseCommit: task.forkBaseline?.commit || null,
           persistence: 'required', persistenceSource: 'task-shell.create' });
         if (!result.ok) return result;
         const record = deps.records.get(task.sessionId);
@@ -100,7 +102,7 @@ function createTaskShellHost(deps) {
   function accepts(id) {
     const record = deps.records.get(id);
     return !!record && record.kind === 'chat' && !record.taskExecutionSlot && !record.experimentalMode
-      && !['aux', 'gateway', 'commander'].includes(record.type);
+      && !['aux', 'gateway'].includes(record.type);
   }
   function open(id) {
     const owner = owns(id);
@@ -140,6 +142,7 @@ function createTaskShellHost(deps) {
   }
   return {
     mountRoutes: app => mountTaskShellRoutes(app, { getRuntime, open,
+      taskEntry: id => getRuntime().bindPlannedTask(id),
       artifacts: async id => {
         const { collectTaskArtifacts, artifactFileExists } = require('./artifacts');
         return collectTaskArtifacts(await getRuntime().taskEntry(id), require('../docs-registry').list(), artifactFileExists);
@@ -164,6 +167,20 @@ function createTaskShellHost(deps) {
       return owner?.owns(id) ? owner.guardAdmission(id, text, options) : { ok: false, code: 'task_shell_state_unavailable' };
     },
     accepts, open, owns, sendFromSession, sendClientInput,
+    migrateTaskSessions: async () => {
+      const rt = getRuntime(), result = await rt.migrateTaskSessions([...deps.records.values()]);
+      const ready = new Set(result.migrated);
+      const bindings = rt.listTasks().filter(task => ready.has(task.id) && deps.records.has(task.sessionId)
+        && !deps.records.get(task.sessionId).taskBoundTaskId);
+      if (bindings.length) deps.persistRecords('task-first.bind-executions', records => {
+        for (const task of bindings) {
+          const record = records.get(task.sessionId);
+          if (record && !record.taskBoundTaskId) record.taskBoundTaskId = task.id;
+        }
+      });
+      return result;
+    },
+    listTasks: () => getRuntime().listTasks(),
     artifactTaskId: id => getRuntime().owns(id)?.id || deps.records.get(id)?.taskBoundTaskId || null,
     stateTarget: id => getRuntime().stateTarget(id), stateSources: id => getRuntime().stateSources(id),
     purgeTasks: ids => getRuntime().purgeTasks(ids),
@@ -175,7 +192,7 @@ function createTaskShellHost(deps) {
     settleAttribution: (id, receiptId, result) => getRuntime().settleAttribution(id, receiptId, result),
     createTask: input => getRuntime().createStandalone(input),
     roleBindings: id => getRuntime().roles.current(id), updateRoleBindings: (id, input) => getRuntime().roles.update(id, input),
-    taskAccess: task => getRuntime().taskAccess(task), taskEntry: id => getRuntime().taskEntry(id),
+    taskAccess: task => getRuntime().taskAccess(task), taskEntry: id => getRuntime().bindPlannedTask(id),
     workspaceGroup: workspace.group, isWorkspaceBusy: workspace.busy, contextSeed,
     close: () => store?.close(),
   };
