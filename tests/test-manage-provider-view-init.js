@@ -85,11 +85,11 @@ test('setView("provider") auto-calls setProvTab with the active tab', () => {
     'setView("provider") must auto-call setProvTab("' + activeTabPtab + '")');
 });
 
-test('setView("overview") does not call setProvTab', () => {
+test('setView("overview") returns to tasks without initializing providers', () => {
   const html = read('public/manage.html');
   const scripts = extractInlineScript(html, 'window.setView');
 
-  let setProvTabCalled = false;
+  let setProvTabCalled = false, destination;
   const context = {
     console: createSandboxConsole(),
     URLSearchParams,
@@ -98,7 +98,7 @@ test('setView("overview") does not call setProvTab', () => {
     clearTimeout() {},
     setInterval() { return 1; },
     clearInterval() {},
-    location: { search: '' },
+    location: { search: '', assign(url) { destination = url; } },
     document: {
       body: { dataset: {}, classList: { remove() {}, add() {}, contains() { return false; }, toggle() {} } },
       querySelector() { return null; },
@@ -122,6 +122,7 @@ test('setView("overview") does not call setProvTab', () => {
   }
 
   context.setView('overview');
+  assert.equal(destination, '/air');
   assert.equal(setProvTabCalled, false,
     'setView("overview") must not call setProvTab');
 });

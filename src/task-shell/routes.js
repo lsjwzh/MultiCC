@@ -2,7 +2,7 @@
 
 const { cleanError } = require('./runtime');
 
-function mountTaskShellRoutes(app, { getRuntime, open = id => getRuntime().open(id), history, artifacts }) {
+function mountTaskShellRoutes(app, { getRuntime, open = id => getRuntime().open(id), history, artifacts, taskEntry }) {
   const route = handler => async (req, res) => {
     try {
       const runtime = getRuntime();
@@ -12,7 +12,7 @@ function mountTaskShellRoutes(app, { getRuntime, open = id => getRuntime().open(
         ...(error.receiptId ? { receiptId: error.receiptId, taskId: error.taskId, notDelivered: error.notDelivered === true } : {}) });
     }
   };
-  app.get('/api/task-shell-tasks/:taskId', route((runtime, req) => runtime.taskEntry(req.params.taskId)));
+  app.get('/api/task-shell-tasks/:taskId', route((runtime, req) => (taskEntry || runtime.taskEntry)(req.params.taskId)));
   if (artifacts) {
     app.get('/api/task-shell-tasks/:taskId/artifacts', route((_runtime, req) => artifacts(req.params.taskId)));
     app.get('/api/task-shells/:shellId/artifacts', route((runtime, req) => {
@@ -22,6 +22,7 @@ function mountTaskShellRoutes(app, { getRuntime, open = id => getRuntime().open(
   }
   app.post('/api/task-shell-tasks/:taskId/fork', route((runtime, req) => runtime.forkTask(req.params.taskId, req.body)));
   app.post('/api/task-shell-tasks/:taskId/messages', route(async (runtime, req) => {
+    if (taskEntry) await taskEntry(req.params.taskId);
     runtime.assertBoardWritable(req.params.taskId);
     const entry = await runtime.taskEntry(req.params.taskId);
     return runtime.sendExplicit(entry.ownerShellId, req.body, { taskId: req.params.taskId, taskStart: true });

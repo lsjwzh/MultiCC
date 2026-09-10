@@ -131,8 +131,8 @@ test('preset cache and commander prompt preserve provider default resolution', a
   assert.equal(xf.body.defaultProviderId, 'xf-model');
   assert.equal(xf.body.defaultProviderName, 'summary:xf-model');
   const server = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'server.js'), 'utf8');
-  assert.match(server, /commanderPrompt: agentCommanderPrompt/);
-  assert.match(server, /createCommanderMigrationHost\([\s\S]*?createSessionRecord/);
+  assert.doesNotMatch(server, /createCommanderMigrationHost\(/);
+  assert.match(server, /taskShellHost\.migrateTaskSessions\(\)/);
   assert.doesNotMatch(server, /r\.session\.rolePrompt = commander\.prompt/);
   const migration = require('node:fs').readFileSync(
     require('node:path').join(__dirname, '..', 'src', 'commander-migration.js'), 'utf8');
