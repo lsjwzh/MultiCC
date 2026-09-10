@@ -152,6 +152,7 @@
       }
       const scope = await request(`/api/task-shells/${encodeURIComponent(shellId)}/chat`);
       activeSessionId = scope.activeSessionId;
+      root.MultiCCTaskArtifacts?.setScope({ shellId });
       onSession(activeSessionId);
       return activeSessionId;
     }

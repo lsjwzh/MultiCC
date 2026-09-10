@@ -2787,7 +2787,7 @@ const startupRepoReady = Promise.resolve().then(providers.migrateLegacyProviderP
 // Scheduled tasks (定时任务): inject the session-creation + turn-running machinery.
 // Complements the per-session triggers above — this one fires by creating a
 // fresh chat session in a target directory (directory-level recurring tasks).
-cronTasks.mount(app); docsRegistry.mount(app); // docs-registry = /manage「服务与文档」管理表（同行以守 3000 行预算）
+cronTasks.mount(app); docsRegistry.mount(app, { resolveTaskId: id => taskShellHost.artifactTaskId(id) }); // docs-registry = /manage「服务与文档」管理表（同行以守 3000 行预算）
 cronTasks.init({ directories, createSessionRecord, admitChatWork: chatTurnEngine.admitChatWork, sessionExists: (id) => persistedSessions.has(id) });
 // In-process external-tunnel monitor (replaces phtunnel-monitor.sh watchdog).
 tunnel.init();
