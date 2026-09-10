@@ -826,7 +826,7 @@ test('a matching commander cli still inherits provider/model/effort', async () =
   assert.equal(created.model, 'gpt-5.6-sol');
 });
 
-/* ── archive-time release (归档即释放) ── */
+/* ── archive retains the bound session and history ── */
 
 function mkReleaseFixture(overrides = {}) {
   const released = [];
@@ -866,7 +866,6 @@ test('archive-completed retains the archived task\'s bound session and history p
 
 test('manual archived and done statuses both retain the bound session', async () => {
   const f1 = mkReleaseFixture();
-  f1.routes.get;
   const t9a = f1.runtime.getBoard().tasks['task-9'];
   t9a.status = 'active';
   const res1 = response();
@@ -875,7 +874,18 @@ test('manual archived and done statuses both retain the bound session', async ()
   assert.equal(res1.code, 200);
   assert.deepEqual(f1.released, [], 'manual archive retains evidence');
   assert.equal(res1.body.releasedSession, false);
+  assert.equal(res1.body.releasedSessions, 0);
   assert.equal(f1.runtime.getBoard().tasks['task-9'].chatSessionId, 'bound-9');
+  const restored = response();
+  await f1.routes.get('POST /api/task-board/tasks/:taskId/status')(
+    { params: { taskId: 'task-9' }, body: { status: 'active' } }, restored);
+  assert.equal(restored.code, 200);
+  assert.equal(restored.body.releasedSession, false);
+  assert.equal(restored.body.releasedSessions, 0);
+  assert.equal(restored.body.task.status, 'active');
+  assert.deepEqual(f1.released, []);
+  assert.ok(f1.records.has('bound-9'));
+  assert.equal(JSON.parse(fs.readFileSync(f1.file, 'utf8')).tasks['task-9'].chatSessionId, 'bound-9');
 
   // done is mid-lifecycle: follow-ups are expected, the session must survive.
   const f2 = mkReleaseFixture();
