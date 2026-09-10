@@ -2,9 +2,9 @@
   'use strict';
 
   const STAGES = Object.freeze(['inbox', 'ready', 'doing', 'review', 'done']);
-  const MODES = Object.freeze(['todo', 'board', 'activity']);
+  const MODES = Object.freeze(['tasks', 'activity']);
   const ORIGINS = Object.freeze(['all', 'board', 'session']);
-  const WORK_BUCKETS = Object.freeze(['todo', 'attention', 'running', 'next', 'review', 'done']);
+  const STATUS_FILTERS = Object.freeze(['attention', 'running', 'review', 'error']);
   const ORIGIN_STORAGE_KEY = 'multicc_task_center_origin';
   const PRIORITIES = Object.freeze(['urgent', 'high', 'medium', 'low']);
   const api = window.MultiCCApi;
@@ -14,61 +14,43 @@
   const COPY = {
     zh: {
       plannerTaskCenter: '任务中心',
-      plannerSubtitle: 'TODO、执行与验收',
-      plannerTodoList: 'TODO',
-      plannerBoard: '看板',
+      plannerSubtitle: '按模块查看、筛选与派发任务',
+      plannerTasks: '任务',
       plannerHistory: '全部记录',
       plannerSource: '来源',
       plannerSourceAll: '全部',
       plannerSourceBoard: '独立任务',
       plannerSourceSession: '会话任务',
-      plannerWorkOverview: 'TODO / 任务',
-      plannerBucketTodo: 'TODO',
-      plannerBucketAttention: '需要我处理',
-      plannerBucketRunning: '正在执行',
-      plannerBucketNext: '接下来',
-      plannerBucketReview: '待验收',
-      plannerBucketDone: '已完成',
-      plannerBucketTodoHint: '已记录，尚未安排',
-      plannerBucketAttentionHint: '等待回答或需要处理异常',
-      plannerBucketRunningHint: 'Agent 正在处理',
-      plannerBucketNextHint: '已安排，可随时启动',
-      plannerBucketReviewHint: '查看结果并确认完成',
-      plannerBucketDoneHint: '已确认完成，可重开或归档',
-      plannerTodoEmptyTitle: '当前没有待处理任务',
-      plannerTodoEmptyBody: '可以新建 TODO，或切换来源查看会话任务。',
+      plannerStatusFilter: '状态',
+      plannerFilterAttention: '需要我',
+      plannerFilterRunning: '运行中',
+      plannerFilterReview: '待验收',
+      plannerFilterError: '错误',
+      plannerTaskEmptyTitle: '没有匹配的任务',
+      plannerTaskEmptyBody: '可以调整来源或状态筛选，也可以直接在下方派发新任务。',
+      plannerTaskSummary: '{modules} 个模块 · {tasks} 个任务',
+      plannerRelatedTasks: '关联任务',
+      plannerLegacyTasks: '历史身份待确认',
       plannerActivitySummary: '{modules} 个模块 · {tasks} 条记录',
       plannerStartQuick: '开始',
       plannerCompleteQuick: '完成',
       plannerViewTask: '查看任务',
-      plannerNeedsMe: '需要我',
-      plannerNewTask: '＋ 新建任务',
-      plannerNewTodo: '＋ 新建 TODO',
-      plannerStartNewNow: '▶ 立即开始新 TODO',
+      plannerQuickCreate: '快速新建任务',
+      plannerQuickCreateHint: '像发消息一样描述任务，Enter 发送，Shift+Enter 换行',
+      plannerQuickCreatePlaceholder: '描述要完成的任务…（支持粘贴图片或文件）',
+      plannerQuickCreateWorkspace: '派发到',
       plannerAllFleets: '全部工作区',
       plannerSearchPlaceholder: '搜索任务、描述或模块…',
       plannerRefresh: '刷新任务中心',
       plannerNeedsAttention: '需要你处理',
-      plannerWaitingCount: '等待回答 {n}',
-      plannerErrorCount: '执行异常 {n}',
-      plannerAttentionEmpty: '当前没有需要你处理的任务',
-      plannerAttentionAll: '全部提醒',
       plannerStageInbox: '收件箱',
       plannerStageReady: '待执行',
       plannerStageDoing: '进行中',
       plannerStageReview: '待验收',
       plannerStageDone: '已完成',
-      plannerStageInboxHint: '先收集，后梳理',
-      plannerStageReadyHint: '计划明确，可启动',
-      plannerStageDoingHint: '限制在制任务',
-      plannerStageReviewHint: '检查结果与 Diff',
-      plannerStageDoneHint: '已明确验收',
-      plannerColumnEmpty: '把任务拖到这里',
       plannerLoading: '正在加载任务计划…',
       plannerLoadFailed: '任务中心加载失败：{error}',
       plannerRetry: '重试',
-      plannerNoPlannedTitle: '还没有主动计划任务',
-      plannerNoPlannedBody: '可以先记一条 TODO，或直接输入任务并立即开始。',
       plannerNoHistoryTitle: '没有匹配的历史记录',
       plannerNoHistoryBody: '会话中自动归类的 observed 任务会保留在这里。',
       plannerUntitled: '未命名任务',
@@ -80,47 +62,24 @@
       plannerPriorityMedium: '中',
       plannerPriorityLow: '低',
       plannerDue: '截止时间',
-      plannerDueNone: '无截止时间',
       plannerDueOverdue: '已逾期 {date}',
       plannerDueSoon: '即将到期 {date}',
       plannerDueDate: '截止 {date}',
-      plannerModule: '模块',
       plannerFleet: '工作区',
-      plannerCreated: '创建于 {date}',
       plannerUpdated: '更新于 {date}',
-      plannerHistorySummary: '{modules} 个模块 · {tasks} 条历史记录',
-      plannerPromote: '提升为待办',
-      plannerPromoted: '已复制到收件箱，原历史记录保持不变',
       plannerOpenChat: '打开任务 Chat',
       plannerAnswerQuestion: '回答问题',
       plannerInspectError: '查看异常',
-      plannerNewTodoTitle: '新建 TODO',
-      plannerNewTodoSubtitle: '快速记下一件事；详细计划可以稍后再补。',
-      plannerTodoInput: '要做什么',
-      plannerTodoPlaceholder: '记下要做的事…',
-      plannerTodoHint: 'Enter 添加 · Shift+Enter 换行',
-      plannerAddTodo: '添加 TODO',
-      plannerStartNowTitle: '立即开始新 TODO',
-      plannerStartNowSubtitle: '像发送消息一样描述任务，发送后 Agent 会立即开始处理。',
-      plannerStartNowPlaceholder: '描述要立即完成的任务…（Enter 发送，Shift+Enter 换行）',
       plannerComposerUnavailable: '任务输入组件未加载',
-      plannerNewTitle: '新建计划任务',
-      plannerNewSubtitle: '先记录 TODO；只有“保存并启动”才会创建执行轮次。',
       plannerTitle: '任务标题',
-      plannerTitlePlaceholder: '一句话描述要完成的结果',
       plannerTitleLimit: '最多 40 个字符',
       plannerDescription: '任务描述',
       plannerDescriptionPlaceholder: '补充背景、范围和重要约束…',
       plannerAcceptance: '验收标准',
       plannerAcceptancePlaceholder: '怎样才算完成？每行可写一条标准。',
-      plannerSaveInbox: '保存到收件箱',
-      plannerSaveStart: '保存并启动',
       plannerCancel: '取消',
-      plannerCreateRequired: '请输入 TODO 并选择工作区',
-      plannerCreatedInbox: 'TODO 已添加',
+      plannerCreateRequired: '请选择任务工作区',
       plannerCreatedStarted: '新任务已开始',
-      plannerCreatedStartFailed: '任务已保存，但启动失败：{error}',
-      plannerTaskDetails: '任务计划',
       plannerStage: '工作流阶段',
       plannerSaveChanges: '保存修改',
       plannerStart: '开始执行',
@@ -143,77 +102,56 @@
       plannerReopened: '任务已重新打开',
       plannerArchived: '任务已归档',
       plannerBusy: '任务当前正在执行或等待，不能重复启动',
-      plannerConflict: '任务计划已被其他页面更新，已刷新为最新版本',
+      plannerConflict: '任务已被其他页面更新，已刷新为最新版本',
       plannerMoveFailed: '移动任务失败：{error}',
       plannerSaveFailed: '保存失败：{error}',
       plannerActionFailed: '操作失败：{error}',
       plannerRunIndependent: '运行状态只表示 Agent 当前情况，不会自动改变看板阶段。',
-      plannerObserved: '会话记录',
       plannerLifecycleDone: '已完成',
       plannerLifecycleArchived: '已归档',
       plannerLifecycleActive: '活跃',
       plannerUnknownFleet: '未知工作区',
-      plannerNoDescription: '暂无补充描述',
-      plannerDragLabel: '拖动任务：{title}',
       plannerOpenTaskLabel: '打开任务：{title}',
     },
     en: {
       plannerTaskCenter: 'Task Center',
-      plannerSubtitle: 'TODOs, execution, and review',
-      plannerTodoList: 'TODO',
-      plannerBoard: 'Board',
+      plannerSubtitle: 'Tasks grouped by module, ready to filter and dispatch',
+      plannerTasks: 'Tasks',
       plannerHistory: 'All records',
       plannerSource: 'Source',
       plannerSourceAll: 'All',
       plannerSourceBoard: 'Independent',
       plannerSourceSession: 'Chat tasks',
-      plannerWorkOverview: 'TODO / Tasks',
-      plannerBucketTodo: 'TODO',
-      plannerBucketAttention: 'Needs me',
-      plannerBucketRunning: 'Running',
-      plannerBucketNext: 'Up next',
-      plannerBucketReview: 'Review',
-      plannerBucketDone: 'Done',
-      plannerBucketTodoHint: 'Captured but not scheduled',
-      plannerBucketAttentionHint: 'Waiting for a reply or error handling',
-      plannerBucketRunningHint: 'An agent is working on it',
-      plannerBucketNextHint: 'Scheduled and ready to start',
-      plannerBucketReviewHint: 'Inspect the result and confirm completion',
-      plannerBucketDoneHint: 'Confirmed complete; reopen or archive when ready',
-      plannerTodoEmptyTitle: 'No tasks need action here',
-      plannerTodoEmptyBody: 'Create a TODO or switch sources to inspect chat tasks.',
+      plannerStatusFilter: 'Status',
+      plannerFilterAttention: 'Needs me',
+      plannerFilterRunning: 'Running',
+      plannerFilterReview: 'Review',
+      plannerFilterError: 'Error',
+      plannerTaskEmptyTitle: 'No matching tasks',
+      plannerTaskEmptyBody: 'Adjust the source or status filters, or dispatch a new task below.',
+      plannerTaskSummary: '{modules} modules · {tasks} tasks',
+      plannerRelatedTasks: 'Related tasks',
+      plannerLegacyTasks: 'Legacy identity review',
       plannerActivitySummary: '{modules} modules · {tasks} records',
       plannerStartQuick: 'Start',
       plannerCompleteQuick: 'Complete',
       plannerViewTask: 'View task',
-      plannerNeedsMe: 'Needs me',
-      plannerNewTask: '+ New task',
-      plannerNewTodo: '+ New TODO',
-      plannerStartNewNow: '▶ Start new TODO now',
+      plannerQuickCreate: 'Quick task',
+      plannerQuickCreateHint: 'Describe it like a message. Enter sends; Shift+Enter adds a line.',
+      plannerQuickCreatePlaceholder: 'Describe the task… (paste images or files here)',
+      plannerQuickCreateWorkspace: 'Dispatch to',
       plannerAllFleets: 'All workspaces',
       plannerSearchPlaceholder: 'Search tasks, descriptions, or modules...',
       plannerRefresh: 'Refresh task center',
       plannerNeedsAttention: 'Needs your attention',
-      plannerWaitingCount: '{n} waiting for reply',
-      plannerErrorCount: '{n} execution errors',
-      plannerAttentionEmpty: 'Nothing needs your attention right now',
-      plannerAttentionAll: 'All alerts',
       plannerStageInbox: 'Inbox',
       plannerStageReady: 'Ready',
       plannerStageDoing: 'Doing',
       plannerStageReview: 'Review',
       plannerStageDone: 'Done',
-      plannerStageInboxHint: 'Capture before planning',
-      plannerStageReadyHint: 'Planned and ready to start',
-      plannerStageDoingHint: 'Keep work in progress focused',
-      plannerStageReviewHint: 'Check results and diffs',
-      plannerStageDoneHint: 'Explicitly accepted',
-      plannerColumnEmpty: 'Drop a task here',
       plannerLoading: 'Loading task plans...',
       plannerLoadFailed: 'Could not load Task Center: {error}',
       plannerRetry: 'Retry',
-      plannerNoPlannedTitle: 'No planned tasks yet',
-      plannerNoPlannedBody: 'Capture a TODO for later, or type a task and start it now.',
       plannerNoHistoryTitle: 'No matching history',
       plannerNoHistoryBody: 'Observed tasks classified from chats stay here.',
       plannerUntitled: 'Untitled task',
@@ -225,47 +163,24 @@
       plannerPriorityMedium: 'Medium',
       plannerPriorityLow: 'Low',
       plannerDue: 'Due date',
-      plannerDueNone: 'No due date',
       plannerDueOverdue: 'Overdue {date}',
       plannerDueSoon: 'Due soon {date}',
       plannerDueDate: 'Due {date}',
-      plannerModule: 'Module',
       plannerFleet: 'Workspace',
-      plannerCreated: 'Created {date}',
       plannerUpdated: 'Updated {date}',
-      plannerHistorySummary: '{modules} modules · {tasks} history items',
-      plannerPromote: 'Promote to todo',
-      plannerPromoted: 'Copied to Inbox; the original history item was preserved',
       plannerOpenChat: 'Open task chat',
       plannerAnswerQuestion: 'Answer question',
       plannerInspectError: 'Inspect error',
-      plannerNewTodoTitle: 'New TODO',
-      plannerNewTodoSubtitle: 'Capture one thing quickly. You can add planning details later.',
-      plannerTodoInput: 'What needs doing?',
-      plannerTodoPlaceholder: 'Write down a TODO...',
-      plannerTodoHint: 'Enter to add · Shift+Enter for a new line',
-      plannerAddTodo: 'Add TODO',
-      plannerStartNowTitle: 'Start new TODO now',
-      plannerStartNowSubtitle: 'Describe the task like a message. The agent starts as soon as you send it.',
-      plannerStartNowPlaceholder: 'Describe the task to start now... (Enter to send, Shift+Enter for a new line)',
       plannerComposerUnavailable: 'Task composer is unavailable',
-      plannerNewTitle: 'New planned task',
-      plannerNewSubtitle: 'Save a TODO first. Only “Save & start” creates an execution turn.',
       plannerTitle: 'Task title',
-      plannerTitlePlaceholder: 'Describe the outcome in one sentence',
       plannerTitleLimit: '40 characters maximum',
       plannerDescription: 'Description',
       plannerDescriptionPlaceholder: 'Add context, scope, and important constraints...',
       plannerAcceptance: 'Acceptance criteria',
       plannerAcceptancePlaceholder: 'What does done mean? You can put one criterion per line.',
-      plannerSaveInbox: 'Save to Inbox',
-      plannerSaveStart: 'Save & start',
       plannerCancel: 'Cancel',
-      plannerCreateRequired: 'Enter a TODO and choose a workspace',
-      plannerCreatedInbox: 'TODO added',
+      plannerCreateRequired: 'Choose a task workspace',
       plannerCreatedStarted: 'New task started',
-      plannerCreatedStartFailed: 'Task was saved, but start failed: {error}',
-      plannerTaskDetails: 'Task plan',
       plannerStage: 'Workflow stage',
       plannerSaveChanges: 'Save changes',
       plannerStart: 'Start execution',
@@ -288,18 +203,15 @@
       plannerReopened: 'Task reopened',
       plannerArchived: 'Task archived',
       plannerBusy: 'This task is already running or waiting and cannot be started again',
-      plannerConflict: 'This plan changed elsewhere. The board has been refreshed.',
+      plannerConflict: 'This task changed elsewhere. The task list has been refreshed.',
       plannerMoveFailed: 'Could not move task: {error}',
       plannerSaveFailed: 'Could not save: {error}',
       plannerActionFailed: 'Action failed: {error}',
       plannerRunIndependent: 'Agent run status is informational and never moves the card automatically.',
-      plannerObserved: 'Chat record',
       plannerLifecycleDone: 'Completed',
       plannerLifecycleArchived: 'Archived',
       plannerLifecycleActive: 'Active',
       plannerUnknownFleet: 'Unknown workspace',
-      plannerNoDescription: 'No additional description',
-      plannerDragLabel: 'Drag task: {title}',
       plannerOpenTaskLabel: 'Open task: {title}',
     },
   };
@@ -315,12 +227,13 @@
     loaded: false,
     loading: false,
     error: '',
-    mode: 'todo',
+    mode: 'tasks',
     dirId: '',
+    composerDirId: '',
     query: '',
     archived: false,
-    origin: 'board',
-    bucket: '',
+    origin: 'all',
+    statusFilters: new Set(),
     loadEpoch: 0,
     directoryLoadEpoch: 0,
     searchTimer: null,
@@ -341,12 +254,16 @@
   let globalUiState = {
     mode: state.mode,
     dirId: state.dirId,
+    composerDirId: state.composerDirId,
     query: state.query,
     origin: state.origin,
-    bucket: state.bucket,
+    statusFilters: [...state.statusFilters],
   };
   let pendingRenderState = null;
   const boundRoots = new WeakSet();
+  let quickComposer = null;
+  let quickComposerHost = null;
+  let quickComposerContext = '';
 
   function tr(key, params) {
     if (typeof window.t === 'function') return window.t(key, params);
@@ -370,7 +287,7 @@
   }
 
   function selectOrigin(origin) {
-    state.origin = ORIGINS.includes(origin) ? origin : 'board';
+    state.origin = ORIGINS.includes(origin) ? origin : 'all';
     try { localStorage.setItem(ORIGIN_STORAGE_KEY, state.origin); } catch (_) {}
   }
 
@@ -575,7 +492,20 @@
     // straight back into Review.
     if (stage === 'review' || (status === 'succeeded' && stage !== 'ready')) return 'review';
     if (stage === 'ready' || stage === 'doing') return 'next';
-    return 'todo';
+    return 'idle';
+  }
+
+  function statusFilterKey(task) {
+    const status = taskStatus(task);
+    const bucket = workBucket(task);
+    // Keep the existing status/work-bucket projection authoritative. Errors
+    // get their own filter; every other attention state (waiting or blocked)
+    // remains actionable under “Needs me”.
+    if (status === 'error') return 'error';
+    if (bucket === 'attention') return 'attention';
+    if (bucket === 'running') return 'running';
+    if (bucket === 'review') return 'review';
+    return '';
   }
 
   function taskMatchesScope(task, options) {
@@ -592,13 +522,13 @@
     return haystack.includes(query);
   }
 
-  function operationalTasks(options) {
+  function taskListTasks(options) {
     const opts = options || {};
     const scope = { ...opts, moduleMap: opts.moduleMap || modulesById() };
     return state.board.tasks.filter(task => {
-      const bucket = workBucket(task);
-      if (!bucket || !taskMatchesScope(task, scope)) return false;
-      return opts.ignoreBucket || !state.bucket || bucket === state.bucket;
+      if (!taskMatchesScope(task, scope)) return false;
+      if (opts.ignoreStatus || !state.statusFilters.size) return true;
+      return state.statusFilters.has(statusFilterKey(task));
     });
   }
 
@@ -609,21 +539,24 @@
   }
 
   function filteredTasks(mode) {
-    return mode === 'activity' ? activityTasks() : operationalTasks();
+    return mode === 'activity' ? activityTasks() : taskListTasks();
   }
 
   function originCounts(mode) {
     const source = mode === 'activity'
       ? activityTasks({ ignoreOrigin: true })
-      : operationalTasks({ ignoreOrigin: true, ignoreBucket: true });
+      : taskListTasks({ ignoreOrigin: true });
     const counts = { all: source.length, board: 0, session: 0 };
     for (const task of source) counts[taskOrigin(task).key] += 1;
     return counts;
   }
 
-  function bucketCounts() {
-    const counts = Object.fromEntries(WORK_BUCKETS.map(bucket => [bucket, 0]));
-    for (const task of operationalTasks({ ignoreBucket: true })) counts[workBucket(task)] += 1;
+  function statusFilterCounts() {
+    const counts = Object.fromEntries(STATUS_FILTERS.map(filter => [filter, 0]));
+    for (const task of taskListTasks({ ignoreStatus: true })) {
+      const key = statusFilterKey(task);
+      if (key) counts[key] += 1;
+    }
     return counts;
   }
 
@@ -631,12 +564,8 @@
     return `plannerStage${stage.charAt(0).toUpperCase()}${stage.slice(1)}`;
   }
 
-  function bucketKey(bucket) {
-    return `plannerBucket${bucket.charAt(0).toUpperCase()}${bucket.slice(1)}`;
-  }
-
-  function bucketHintKey(bucket) {
-    return `${bucketKey(bucket)}Hint`;
+  function statusFilterLabelKey(filter) {
+    return `plannerFilter${filter.charAt(0).toUpperCase()}${filter.slice(1)}`;
   }
 
   function priorityLabel(priority) {
@@ -707,53 +636,7 @@
     }
   }
 
-  function cardHtml(task, context) {
-    const moduleMap = context.moduleMap;
-    const dirMap = context.dirMap;
-    const module = moduleMap.get(String(task.moduleId || ''));
-    const dirId = taskContextDirId(task, moduleMap);
-    const directory = dirMap.get(dirId);
-    const title = taskTitle(task);
-    const description = taskDescription(task);
-    const origin = taskOrigin(task);
-    const planned = task.recordType === 'planned';
-    const bucket = context.bucket || workBucket(task);
-    const due = duePresentation(task);
-    const priority = String(task.priority || '').toLowerCase();
-    const attention = attentionKind(task);
-    const attentionAction = attention === 'waiting'
-      ? tr('plannerAnswerQuestion')
-      : attention === 'error' ? tr('plannerInspectError') : '';
-    const updated = task.updatedAt || task.lastTs || task.createdAt;
-    const quickAction = task.deleting ? '' : attentionAction
-      ? `<button class="planner-card-attention-action" type="button" data-action="open-chat" data-task-id="${esc(task.id)}">${esc(attentionAction)} <span aria-hidden="true">↗</span></button>`
-      : planned && (bucket === 'todo' || bucket === 'next')
-        ? `<button class="planner-card-quick-action" type="button" data-action="start-task" data-task-id="${esc(task.id)}">▶ ${esc(tr('plannerStartQuick'))}</button>`
-        : planned && bucket === 'review'
-          ? `<button class="planner-card-quick-action complete" type="button" data-action="complete-task" data-task-id="${esc(task.id)}">✓ ${esc(tr('plannerCompleteQuick'))}</button>`
-          : '';
-    return `<article class="planner-card${attention ? ` attention-${attention}` : ''} origin-${esc(origin.key)}"
-      data-task-id="${esc(task.id)}" data-action="${planned ? 'open-task' : 'open-chat'}" tabindex="0"
-      aria-label="${esc(tr('plannerOpenTaskLabel', { title }))}" title="${esc(tr('plannerOpenTaskLabel', { title }))}">
-      <div class="planner-card-title">${esc(title)}</div>
-      ${description && description !== title ? `<div class="planner-card-description">${esc(description)}</div>` : ''}
-      <div class="planner-card-badges">
-        ${priority ? `<span class="planner-badge priority-${esc(priority)}">◆ ${esc(priorityLabel(priority))}</span>` : ''}
-        ${due ? `<span class="planner-badge ${esc(due.className)}">◷ ${esc(due.label)}</span>` : ''}
-        <span class="planner-badge origin origin-${esc(origin.key)}" title="${esc(origin.title)}">${esc(origin.icon)} ${esc(origin.label)}</span>
-        <span class="planner-badge module" title="${esc(module && module.name || tr('plannerNoModule'))}"># ${esc(module && module.name || tr('plannerNoModule'))}</span>
-        ${statusHtml(task, true)}
-        ${quickAction}${lifecycleActionsHtml(task)}
-      </div>
-      <div class="planner-card-footer">
-        <span title="${esc(tr('plannerFleet'))}">${esc(directory && directory.name || tr('plannerUnknownFleet'))}</span>
-        <span>${esc(updated ? tr('plannerUpdated', { date: localDate(updated, true) }) : '')}</span>
-      </div>
-    </article>`;
-  }
-
-  function todoRowHtml(task, context) {
-    const module = context.moduleMap.get(String(task.moduleId || ''));
+  function taskRowHtml(task, context) {
     const dirId = taskContextDirId(task, context.moduleMap);
     const directory = context.dirMap.get(dirId);
     const title = taskTitle(task);
@@ -762,77 +645,99 @@
     const planned = task.recordType === 'planned';
     const bucket = workBucket(task);
     const attention = attentionKind(task);
+    const filterKey = statusFilterKey(task);
+    const displayState = filterKey || bucket || 'idle';
     const updated = task.updatedAt || task.lastTs || task.createdAt;
     const primaryAction = planned ? 'open-task' : 'open-chat';
     const actions = [];
     if (attention) {
-      actions.push(`<button class="btn btn-sm planner-todo-primary" type="button" data-action="open-chat" data-task-id="${esc(task.id)}">${esc(attention === 'waiting' ? tr('plannerAnswerQuestion') : tr('plannerInspectError'))} ↗</button>`);
-    } else if (!task.deleting && planned && (bucket === 'todo' || bucket === 'next')) {
-      actions.push(`<button class="btn btn-sm planner-todo-primary" type="button" data-action="start-task" data-task-id="${esc(task.id)}">▶ ${esc(tr('plannerStartQuick'))}</button>`);
+      actions.push(`<button class="btn btn-sm planner-task-primary" type="button" data-action="open-chat" data-task-id="${esc(task.id)}">${esc(attention === 'waiting' ? tr('plannerAnswerQuestion') : tr('plannerInspectError'))} ↗</button>`);
+    } else if (!task.deleting && planned && (bucket === 'idle' || bucket === 'next')) {
+      actions.push(`<button class="btn btn-sm planner-task-primary" type="button" data-action="start-task" data-task-id="${esc(task.id)}">▶ ${esc(tr('plannerStartQuick'))}</button>`);
     } else if (!task.deleting && planned && bucket === 'review') {
-      actions.push(`<button class="btn btn-sm planner-todo-primary complete" type="button" data-action="complete-task" data-task-id="${esc(task.id)}">✓ ${esc(tr('plannerCompleteQuick'))}</button>`);
+      actions.push(`<button class="btn btn-sm planner-task-primary complete" type="button" data-action="complete-task" data-task-id="${esc(task.id)}">✓ ${esc(tr('plannerCompleteQuick'))}</button>`);
     } else {
       actions.push(`<button class="btn btn-sm" type="button" data-action="open-chat" data-task-id="${esc(task.id)}">${esc(tr('plannerOpenChat'))}</button>`);
     }
-    if (!planned && !task.deleting) {
-      actions.push(`<button class="btn btn-sm" type="button" data-action="promote" data-task-id="${esc(task.id)}">${esc(tr('plannerPromote'))}</button>`);
-    }
-    return `<article class="planner-todo-row${attention ? ` attention-${attention}` : ''}" data-task-id="${esc(task.id)}" data-action="${primaryAction}" tabindex="0" aria-label="${esc(tr('plannerOpenTaskLabel', { title }))}">
-      <span class="planner-todo-state" aria-hidden="true"></span>
-      <div class="planner-todo-content">
-        <div class="planner-todo-title">${esc(title)}</div>
-        ${description && description !== title ? `<div class="planner-todo-description">${esc(description)}</div>` : ''}
-        <div class="planner-todo-meta">
+    return `<article class="planner-task-row${attention ? ` attention-${attention}` : ''}" data-task-id="${esc(task.id)}" data-action="${primaryAction}" data-status="${esc(displayState)}" tabindex="0" aria-label="${esc(tr('plannerOpenTaskLabel', { title }))}">
+      <span class="planner-task-state" aria-hidden="true"></span>
+      <div class="planner-task-content">
+        <div class="planner-task-title">${esc(title)}</div>
+        ${description && description !== title ? `<div class="planner-task-description">${esc(description)}</div>` : ''}
+        <div class="planner-task-meta">
           <span class="planner-badge origin origin-${esc(origin.key)}" title="${esc(origin.title)}">${esc(origin.icon)} ${esc(origin.label)}</span>
-          <span class="planner-badge module"># ${esc(module && module.name || tr('plannerNoModule'))}</span>
           ${statusHtml(task, true)}
           <span>${esc(directory && directory.name || tr('plannerUnknownFleet'))}</span>
           <span>·</span><span>${esc(updated ? tr('plannerUpdated', { date: localDate(updated, true) }) : '')}</span>
         </div>
       </div>
-      <div class="planner-todo-actions">${actions.join('')}${lifecycleActionsHtml(task)}</div>
+      <div class="planner-task-actions">${actions.join('')}${lifecycleActionsHtml(task)}</div>
     </article>`;
   }
 
-  function todoListHtml() {
-    const tasks = filteredTasks('todo').sort(rankCompare);
-    if (!tasks.length) {
-      return `<div class="planner-empty"><div><strong>${esc(tr('plannerTodoEmptyTitle'))}</strong>${esc(tr('plannerTodoEmptyBody'))}</div></div>`;
-    }
-    const context = { moduleMap: modulesById(), dirMap: directoriesById() };
-    const buckets = state.bucket ? [state.bucket] : WORK_BUCKETS;
-    return `<div class="planner-todo-list">${buckets.map(bucket => {
-      const list = tasks.filter(task => workBucket(task) === bucket);
-      if (!list.length) return '';
-      return `<section class="planner-todo-group" data-bucket="${bucket}">
-        <header><span class="planner-column-dot" aria-hidden="true"></span><strong>${esc(tr(bucketKey(bucket)))}</strong><span>${esc(tr(bucketHintKey(bucket)))}</span><b>${list.length}</b></header>
-        <div>${list.map(task => todoRowHtml(task, context)).join('')}</div>
-      </section>`;
-    }).join('')}</div>`;
+  function sortedTasks(tasks) {
+    return boardUi && typeof boardUi.sortTasks === 'function'
+      ? boardUi.sortTasks(tasks)
+      : [...tasks].sort(rankCompare);
   }
 
-  function boardHtml() {
-    const tasks = filteredTasks('board').sort(rankCompare);
-    const moduleMap = modulesById();
-    const dirMap = directoriesById();
-    const context = { moduleMap, dirMap };
-    const buckets = state.bucket ? [state.bucket] : WORK_BUCKETS;
-    return `<div class="planner-board-scroll"><div class="planner-board${state.bucket ? ' is-filtered' : ''}">
-      ${buckets.map(bucket => {
-        const list = tasks.filter(task => workBucket(task) === bucket);
-        return `<section class="planner-column" data-bucket="${bucket}">
-          <header class="planner-column-head">
-            <span class="planner-column-dot" aria-hidden="true"></span>
-            <span class="planner-column-title">${esc(tr(bucketKey(bucket)))}</span>
-            <span class="planner-column-hint">${esc(tr(bucketHintKey(bucket)))}</span>
-            <span class="planner-column-count">${list.length}</span>
-          </header>
-          <div class="planner-card-list" data-bucket="${bucket}" data-empty="${esc(tr('plannerColumnEmpty'))}">
-            ${list.map(task => cardHtml(task, { ...context, bucket })).join('')}
-          </div>
-        </section>`;
-      }).join('')}
-    </div></div>`;
+  function moduleTaskGroups(tasks, moduleMap) {
+    const byModule = new Map();
+    for (const task of tasks) {
+      const rawId = String(task.moduleId || '');
+      const moduleId = moduleMap.has(rawId) ? rawId : '__unassigned__';
+      if (!byModule.has(moduleId)) byModule.set(moduleId, []);
+      byModule.get(moduleId).push(task);
+    }
+    const populatedModules = state.board.modules.filter(module => byModule.has(String(module.id)));
+    const orderedModules = boardUi && typeof boardUi.sortModules === 'function'
+      ? boardUi.sortModules(populatedModules)
+      : [...populatedModules].sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+    const groups = orderedModules.map(module => ({
+      id: String(module.id),
+      name: module.name || tr('plannerNoModule'),
+      tasks: byModule.get(String(module.id)) || [],
+    }));
+    if (byModule.has('__unassigned__')) groups.push({
+      id: '__unassigned__', name: tr('plannerNoModule'), tasks: byModule.get('__unassigned__'),
+    });
+    return groups;
+  }
+
+  function moduleTaskRowsHtml(tasks, context) {
+    const sorted = sortedTasks(tasks);
+    const related = boardUi && typeof boardUi.partitionTaskGroups === 'function'
+      ? boardUi.partitionTaskGroups(sorted, state.board.taskGroups)
+      : { groups: [], ungrouped: sorted };
+    const identity = boardUi && typeof boardUi.partitionTaskIdentity === 'function'
+      ? boardUi.partitionTaskIdentity(related.ungrouped)
+      : { canonical: related.ungrouped, unresolved: [] };
+    const relatedHtml = related.groups.map(group => `<details class="planner-related-group" open>
+      <summary><span>🧩 ${esc(group.title || tr('plannerRelatedTasks'))}</span><span class="planner-module-count">${group.tasks.length}</span></summary>
+      <div>${group.tasks.map(task => taskRowHtml(task, context)).join('')}</div>
+    </details>`).join('');
+    const canonicalHtml = identity.canonical.map(task => taskRowHtml(task, context)).join('');
+    const unresolvedHtml = identity.unresolved.length ? `<details class="planner-related-group planner-legacy-group">
+      <summary><span>${esc(tr('plannerLegacyTasks'))}</span><span class="planner-module-count">${identity.unresolved.length}</span></summary>
+      <div>${identity.unresolved.map(task => taskRowHtml(task, context)).join('')}</div>
+    </details>` : '';
+    return relatedHtml + canonicalHtml + unresolvedHtml;
+  }
+
+  function taskListHtml() {
+    const tasks = filteredTasks('tasks');
+    if (!tasks.length) {
+      return `<div class="planner-empty"><div><strong>${esc(tr('plannerTaskEmptyTitle'))}</strong>${esc(tr('plannerTaskEmptyBody'))}</div></div>`;
+    }
+    const context = { moduleMap: modulesById(), dirMap: directoriesById() };
+    const groups = moduleTaskGroups(tasks, context.moduleMap);
+    return `<div class="planner-task-list">
+      <div class="planner-task-summary">${esc(tr('plannerTaskSummary', { modules: groups.length, tasks: tasks.length }))}</div>
+      ${groups.map(group => `<details class="planner-module-group" data-module-id="${esc(group.id)}" open>
+        <summary><span class="planner-module-name">${esc(group.name)}</span><span class="planner-module-count">${group.tasks.length}</span></summary>
+        <div class="planner-module-tasks">${moduleTaskRowsHtml(group.tasks, context)}</div>
+      </details>`).join('')}
+    </div>`;
   }
 
   function activityHtml() {
@@ -880,7 +785,6 @@
               <div class="planner-history-actions">
                 ${editable ? `<button class="btn btn-sm" type="button" data-action="open-task" data-task-id="${esc(task.id)}">${esc(tr('plannerViewTask'))}</button>` : ''}
                 <button class="btn btn-sm" type="button" data-action="open-chat" data-task-id="${esc(task.id)}">${esc(tr('plannerOpenChat'))}</button>
-                ${planned || task.status === 'archived' || task.deleting ? '' : `<button class="btn btn-sm" type="button" data-action="promote" data-task-id="${esc(task.id)}">${esc(tr('plannerPromote'))}</button>`}
                 ${lifecycleActionsHtml(task)}
               </div>
             </div>`;
@@ -890,12 +794,12 @@
     </div>`;
   }
 
-  function workOverviewHtml() {
-    const counts = bucketCounts();
-    return `<div class="planner-work-overview">
-      <strong>${esc(tr('plannerWorkOverview'))}</strong>
-      <div class="planner-work-buckets" role="group" aria-label="${esc(tr('plannerWorkOverview'))}">
-        ${WORK_BUCKETS.map(bucket => `<button type="button" class="planner-work-bucket${state.bucket === bucket ? ' active' : ''}" aria-pressed="${state.bucket === bucket}" data-action="bucket" data-bucket="${bucket}"><span>${esc(tr(bucketKey(bucket)))}</span><strong>${counts[bucket]}</strong></button>`).join('')}
+  function statusFilterHtml() {
+    const counts = statusFilterCounts();
+    return `<div class="planner-status-filter">
+      <strong>${esc(tr('plannerStatusFilter'))}</strong>
+      <div class="planner-status-chips" role="group" aria-label="${esc(tr('plannerStatusFilter'))}">
+        ${STATUS_FILTERS.map(filter => `<button type="button" class="planner-status-chip${state.statusFilters.has(filter) ? ' active' : ''}" aria-pressed="${state.statusFilters.has(filter)}" data-action="status-filter" data-status-filter="${filter}"><span>${esc(tr(statusFilterLabelKey(filter)))}</span><strong>${counts[filter]}</strong></button>`).join('')}
       </div>
     </div>`;
   }
@@ -922,23 +826,15 @@
   }
 
   function captureRenderState() {
-    const boardScroll = root.querySelector('.planner-board-scroll');
     const historyScroll = root.querySelector('.planner-history');
-    const todoScroll = root.querySelector('.planner-todo-list');
-    const columnScroll = {};
-    root.querySelectorAll('.planner-card-list').forEach(list => {
-      if (list.dataset && list.dataset.bucket) columnScroll[list.dataset.bucket] = list.scrollTop;
-    });
+    const taskScroll = root.querySelector('.planner-task-list');
     const active = document.activeElement;
     const searchFocused = !!(active && typeof active.matches === 'function'
       && active.matches('[data-control="search"]')
       && (typeof root.contains !== 'function' || root.contains(active)));
     return {
-      boardLeft: boardScroll ? boardScroll.scrollLeft : 0,
-      boardTop: boardScroll ? boardScroll.scrollTop : 0,
       historyTop: historyScroll ? historyScroll.scrollTop : 0,
-      todoTop: todoScroll ? todoScroll.scrollTop : 0,
-      columnScroll,
+      taskTop: taskScroll ? taskScroll.scrollTop : 0,
       searchFocused,
       selectionStart: searchFocused ? active.selectionStart : null,
       selectionEnd: searchFocused ? active.selectionEnd : null,
@@ -947,25 +843,113 @@
 
   function restoreRenderState(saved) {
     if (!saved) return;
-    const boardScroll = root.querySelector('.planner-board-scroll');
-    if (boardScroll) {
-      boardScroll.scrollLeft = saved.boardLeft;
-      boardScroll.scrollTop = saved.boardTop;
-    }
     const historyScroll = root.querySelector('.planner-history');
     if (historyScroll) historyScroll.scrollTop = saved.historyTop;
-    const todoScroll = root.querySelector('.planner-todo-list');
-    if (todoScroll) todoScroll.scrollTop = saved.todoTop;
-    root.querySelectorAll('.planner-card-list').forEach(list => {
-      const bucket = list.dataset && list.dataset.bucket;
-      if (bucket && Number.isFinite(saved.columnScroll[bucket])) list.scrollTop = saved.columnScroll[bucket];
-    });
+    const taskScroll = root.querySelector('.planner-task-list');
+    if (taskScroll) taskScroll.scrollTop = saved.taskTop;
     if (!saved.searchFocused) return;
     const search = root.querySelector('[data-control="search"]');
     if (!search) return;
     try { search.focus({ preventScroll: true }); } catch (_) { search.focus(); }
     if (Number.isFinite(saved.selectionStart) && typeof search.setSelectionRange === 'function') {
       search.setSelectionRange(saved.selectionStart, Number.isFinite(saved.selectionEnd) ? saved.selectionEnd : saved.selectionStart);
+    }
+  }
+
+  // The quick-create composer owns live DOM state (draft text, attachments,
+  // voice, provider pickers). It must NOT live inside the re-rendered shell —
+  // render() rebuilds the shell from string HTML on every board update, which
+  // would wipe a half-written message. The composer bar is a persistent
+  // sibling; only the shell host is re-rendered.
+  let shellHost = null;
+
+  function destroyQuickComposer() {
+    if (!quickComposer) return;
+    try { quickComposer.destroy(); } catch (_) {}
+    quickComposer = null;
+    quickComposerContext = '';
+  }
+
+  function ensureLayout() {
+    if (shellHost && shellHost.parentNode === root && quickComposerHost
+        && quickComposerHost.parentNode === root) return;
+    destroyQuickComposer();
+    root.innerHTML = '';
+    shellHost = document.createElement('div');
+    shellHost.className = 'planner-shell-host';
+    root.appendChild(shellHost);
+    quickComposerHost = document.createElement('div');
+    quickComposerHost.className = 'planner-quick-create-host';
+    root.appendChild(quickComposerHost);
+  }
+
+  // The composer target: the Fleet picker next to it is authoritative once
+  // mounted (what you see is where the task goes); before mount it defaults to
+  // the toolbar Fleet filter, the same default the old start-now dialog used.
+  // The toolbar filter does not retarget a composer the user may already have
+  // drafted into.
+  function quickCreateDirId() {
+    if (surface === 'fleet' && lockedDirId) return lockedDirId;
+    const picker = quickComposerHost && quickComposerHost.querySelector('[data-control="composer-fleet"]');
+    if (picker) return String(picker.value || '').trim();
+    return state.composerDirId || state.dirId || initialTaskDirId();
+  }
+
+  function syncQuickComposer(busy) {
+    if (!quickComposerHost) return;
+    const visible = state.mode === 'tasks' && !busy && !state.error;
+    quickComposerHost.style.display = visible ? '' : 'none';
+    if (!visible) return;
+    const composerApi = window.MultiCCTaskBoardComposer;
+    if (!composerApi || typeof composerApi.mount !== 'function') {
+      destroyQuickComposer();
+      quickComposerHost.innerHTML = `<div class="planner-quick-create"><div class="planner-quick-create-missing">${esc(tr('plannerComposerUnavailable'))}</div></div>`;
+      return;
+    }
+    const embedded = surface === 'fleet';
+    if (!quickComposer) {
+      const dirId = quickCreateDirId();
+      quickComposerHost.innerHTML = `<div class="planner-quick-create">
+        <div class="planner-quick-create-head">
+          <strong>${esc(tr('plannerQuickCreate'))}</strong>
+          <span class="planner-quick-create-hint">${esc(tr('plannerQuickCreateHint'))}</span>
+          <span class="planner-grow"></span>
+          ${embedded ? '' : `<label class="planner-quick-create-workspace"><span>${esc(tr('plannerQuickCreateWorkspace'))}</span><select class="planner-control planner-select" data-control="composer-fleet"><option value=""></option>${panelOptions(dirId)}</select></label>`}
+        </div>
+        <div class="planner-quick-composer"></div>
+      </div>`;
+      quickComposerContext = dirId;
+      quickComposer = composerApi.mount(quickComposerHost.querySelector('.planner-quick-composer'), {
+        contextKey: dirId,
+        placeholder: tr('plannerQuickCreatePlaceholder'),
+        onSendingChange: sending => {
+          if (quickComposerHost) quickComposerHost.dataset.plannerSending = sending ? 'true' : 'false';
+          const picker = quickComposerHost && quickComposerHost.querySelector('[data-control="composer-fleet"]');
+          if (picker) picker.disabled = sending;
+        },
+        submit: async payload => {
+          const picker = quickComposerHost && quickComposerHost.querySelector('[data-control="composer-fleet"]');
+          // An explicit empty picker value must fail validation, never silently
+          // reroute the task to the default Fleet.
+          const targetDir = embedded ? lockedDirId : String(picker ? picker.value : quickComposerContext).trim();
+          if (!targetDir) throw new Error(tr('plannerCreateRequired'));
+          const result = await requestJson('/api/task-board/send', {
+            method: 'POST',
+            json: { ...payload, dirId: targetDir },
+          });
+          await loadPlanner({ quiet: true });
+          notify(tr('plannerCreatedStarted'));
+          return result && result.queued ? tr('plannerCreatedStarted') : tr('plannerStarted');
+        },
+      });
+      return;
+    }
+    // An explicit empty picker pick stays empty and is rejected by submit
+    // validation instead of silently rerouting the draft.
+    const nextDirId = quickCreateDirId();
+    if (nextDirId && nextDirId !== quickComposerContext) {
+      quickComposerContext = nextDirId;
+      quickComposer.setContext(nextDirId, { preserveDraft: true });
     }
   }
 
@@ -992,8 +976,7 @@
       ? `<div class="planner-loading">${esc(tr('plannerLoading'))}</div>`
       : state.error
         ? `<div class="planner-error"><div>${esc(tr('plannerLoadFailed', { error: state.error }))}<div style="margin-top:12px"><button class="btn" type="button" data-action="refresh">${esc(tr('plannerRetry'))}</button></div></div></div>`
-        : state.mode === 'todo' ? todoListHtml()
-          : state.mode === 'board' ? boardHtml() : activityHtml();
+        : state.mode === 'activity' ? activityHtml() : taskListHtml();
 
     const directory = directoriesById().get(lockedDirId);
     const fleetControl = embedded
@@ -1003,14 +986,14 @@
             <option value="">${esc(tr('plannerAllFleets'))}</option>${directoryOptions()}
           </select>`;
     const modeControl = `<div class="planner-segment" role="tablist">
-          <button id="planner-mode-todo" type="button" role="tab" aria-selected="${state.mode === 'todo'}" aria-controls="planner-content" class="${state.mode === 'todo' ? 'active' : ''}" data-action="mode" data-mode="todo">${esc(tr('plannerTodoList'))}</button>
-          <button id="planner-mode-board" type="button" role="tab" aria-selected="${state.mode === 'board'}" aria-controls="planner-content" class="${state.mode === 'board' ? 'active' : ''}" data-action="mode" data-mode="board">${esc(tr('plannerBoard'))}</button>
+          <button id="planner-mode-tasks" type="button" role="tab" aria-selected="${state.mode === 'tasks'}" aria-controls="planner-content" class="${state.mode === 'tasks' ? 'active' : ''}" data-action="mode" data-mode="tasks">${esc(tr('plannerTasks'))}</button>
           <button id="planner-mode-activity" type="button" role="tab" aria-selected="${state.mode === 'activity'}" aria-controls="planner-content" class="${state.mode === 'activity' ? 'active' : ''}" data-action="mode" data-mode="activity">${esc(tr('plannerHistory'))}</button>
         </div>`;
     const mainA11y = `role="tabpanel" aria-labelledby="planner-mode-${state.mode}"`;
 
     root.classList.toggle('planner-fleet-embedded', embedded);
-    root.innerHTML = `<div class="planner-shell${embedded ? ' embedded' : ''}">
+    ensureLayout();
+    shellHost.innerHTML = `<div class="planner-shell${embedded ? ' embedded' : ''}">
       <div class="planner-toolbar">
         <div class="planner-toolbar-group">
           ${fleetControl}
@@ -1025,15 +1008,14 @@
         ${modeControl}
         <div class="planner-toolbar-group actions">
           <button class="icon-btn" type="button" data-action="refresh" title="${esc(tr('plannerRefresh'))}" aria-label="${esc(tr('plannerRefresh'))}">⟳</button>
-          <button class="btn" type="button" data-action="new-todo">${esc(tr('plannerNewTodo'))}</button>
-          <button class="btn btn-green" type="button" data-action="start-new-now">${esc(tr('plannerStartNewNow'))}</button>
         </div>
       </div>
-      ${workOverviewHtml()}
+      ${state.mode === 'tasks' ? statusFilterHtml() : ''}
       <div class="planner-sr-only" role="status" aria-live="polite" aria-atomic="true">${busy ? esc(tr('plannerLoading')) : state.error ? esc(tr('plannerLoadFailed', { error: state.error })) : ''}</div>
       <div class="planner-main" id="planner-content" ${mainA11y}>${main}</div>
     </div>`;
     restoreRenderState(savedRenderState);
+    syncQuickComposer(busy);
   }
 
   function findTask(taskId) {
@@ -1192,170 +1174,6 @@
   function initialTaskDirId() {
     return lockedDirId || state.dirId
       || String(state.directories[0] && state.directories[0].id || '');
-  }
-
-  function taskTitleFromText(value) {
-    const text = String(value || '').trim();
-    const firstLine = text.split(/\r?\n/).map(line => line.trim()).find(Boolean) || text;
-    return firstLine.slice(0, 40);
-  }
-
-  function dialogDirectoryPicker(id, selectedDir) {
-    const directory = directoriesById().get(String(selectedDir || ''));
-    if (surface === 'fleet' && lockedDirId) {
-      return `<div class="planner-dialog-fleet planner-dialog-fleet-locked"><span>${esc(tr('plannerFleet'))}</span><strong>${esc(directory && directory.name || lockedDirId)}</strong></div>`;
-    }
-    return `<label class="planner-dialog-fleet" for="${esc(id)}"><span>${esc(tr('plannerFleet'))}</span><select id="${esc(id)}" data-planner-dir required><option value=""></option>${panelOptions(selectedDir)}</select></label>`;
-  }
-
-  function dialogDirectoryId(overlay, fallback) {
-    const picker = overlay.querySelector('[data-planner-dir]');
-    // A locked Fleet surface has no picker and legitimately uses its fallback.
-    // If a picker exists, preserve an explicit empty value so validation can
-    // reject it instead of silently routing the task to the initial Fleet.
-    return String(picker ? picker.value : fallback || '').trim();
-  }
-
-  function openNewTodoDialog() {
-    closePlannerOverlay();
-    const selectedDir = initialTaskDirId();
-    const overlay = document.createElement('div');
-    overlay.className = 'planner-overlay centered';
-    overlay.__plannerReturnFocus = document.activeElement;
-    overlay.innerHTML = `<form class="planner-dialog planner-quick-dialog" id="planner-new-form" role="dialog" aria-modal="true" aria-labelledby="planner-new-todo-heading">
-      <div class="planner-panel-head">
-        <div class="planner-panel-title"><h2 id="planner-new-todo-heading">${esc(tr('plannerNewTodoTitle'))}</h2><p>${esc(tr('plannerNewTodoSubtitle'))}</p></div>
-        <button class="icon-btn" type="button" data-overlay-close aria-label="${esc(tr('plannerCancel'))}">×</button>
-      </div>
-      <div class="planner-panel-body planner-quick-body">
-        <label class="planner-quick-input" for="planner-new-todo"><span>${esc(tr('plannerTodoInput'))}</span><textarea id="planner-new-todo" name="text" maxlength="20000" required placeholder="${esc(tr('plannerTodoPlaceholder'))}"></textarea><small>${esc(tr('plannerTodoHint'))}</small></label>
-        ${dialogDirectoryPicker('planner-new-dir', selectedDir)}
-      </div>
-      <div class="planner-panel-actions">
-        <button class="btn" type="button" data-overlay-close>${esc(tr('plannerCancel'))}</button><span class="spacer"></span>
-        <button class="btn btn-green" type="submit">${esc(tr('plannerAddTodo'))}</button>
-      </div>
-    </form>`;
-    document.body.appendChild(overlay);
-    overlay.addEventListener('click', event => {
-      if (event.target === overlay || event.target.closest('[data-overlay-close]')) closePlannerOverlay();
-    });
-    const form = overlay.querySelector('form');
-    form.addEventListener('submit', event => {
-      event.preventDefault();
-      createTodoFromDialog(overlay, selectedDir);
-    });
-    form.querySelector('[name="text"]').addEventListener('keydown', event => {
-      if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
-        event.preventDefault();
-        form.requestSubmit();
-      }
-    });
-    activateOverlay(overlay, '[name="text"]');
-  }
-
-  async function createTodoFromDialog(overlay, fallbackDirId) {
-    const form = overlay.querySelector('form');
-    const values = new FormData(form);
-    const text = String(values.get('text') || '').trim();
-    const dirId = dialogDirectoryId(overlay, fallbackDirId);
-    if (!text || !dirId) {
-      notify(tr('plannerCreateRequired'), true);
-      form.reportValidity();
-      return;
-    }
-    const buttons = [...overlay.querySelectorAll('button')];
-    buttons.forEach(button => { button.disabled = true; });
-    try {
-      const created = await requestJson('/api/task-board/tasks', {
-        method: 'POST',
-        json: {
-          recordType: 'planned',
-          title: taskTitleFromText(text),
-          description: text,
-          dirId,
-          workflowStage: 'inbox',
-          priority: null,
-          dueAt: null,
-          acceptanceCriteria: null,
-        },
-      });
-      updateTaskFromResponse(created);
-      state.mode = 'todo';
-      state.bucket = '';
-      selectOrigin('board');
-      closePlannerOverlay(overlay);
-      await loadPlanner({ quiet: true });
-      notify(tr('plannerCreatedInbox'));
-    } catch (error) {
-      notify(tr('plannerActionFailed', { error: errorText(error) }), true);
-      buttons.forEach(button => { button.disabled = false; });
-    }
-  }
-
-  function openStartNowDialog() {
-    closePlannerOverlay();
-    const composerApi = window.MultiCCTaskBoardComposer;
-    if (!composerApi || typeof composerApi.mount !== 'function') {
-      notify(tr('plannerActionFailed', { error: tr('plannerComposerUnavailable') }), true);
-      return;
-    }
-    const selectedDir = initialTaskDirId();
-    const overlay = document.createElement('div');
-    overlay.className = 'planner-overlay centered';
-    overlay.__plannerReturnFocus = document.activeElement;
-    overlay.innerHTML = `<section class="planner-dialog planner-start-dialog" role="dialog" aria-modal="true" aria-labelledby="planner-start-now-heading">
-      <div class="planner-panel-head">
-        <div class="planner-panel-title"><h2 id="planner-start-now-heading">${esc(tr('plannerStartNowTitle'))}</h2><p>${esc(tr('plannerStartNowSubtitle'))}</p></div>
-        <button class="icon-btn" type="button" data-overlay-close aria-label="${esc(tr('plannerCancel'))}">×</button>
-      </div>
-      <div class="planner-panel-body planner-start-body">
-        ${dialogDirectoryPicker('planner-start-dir', selectedDir)}
-        <div class="planner-start-composer"></div>
-      </div>
-    </section>`;
-    document.body.appendChild(overlay);
-    const composer = composerApi.mount(overlay.querySelector('.planner-start-composer'), {
-      contextKey: selectedDir,
-      placeholder: tr('plannerStartNowPlaceholder'),
-      onSendingChange: sending => {
-        overlay.dataset.plannerSending = sending ? 'true' : 'false';
-        const picker = overlay.querySelector('[data-planner-dir]');
-        if (picker) picker.disabled = sending;
-        overlay.querySelectorAll('[data-overlay-close]').forEach(button => {
-          button.disabled = sending;
-        });
-      },
-      submit: async payload => {
-        const dirId = dialogDirectoryId(overlay, selectedDir);
-        if (!dirId) throw new Error(tr('plannerCreateRequired'));
-        const result = await requestJson('/api/task-board/send', {
-          method: 'POST',
-          json: { ...payload, dirId },
-        });
-        state.mode = 'todo';
-        state.bucket = '';
-        selectOrigin('board');
-        await loadPlanner({ quiet: true });
-        closePlannerOverlay(overlay);
-        notify(tr('plannerCreatedStarted'));
-        return result && result.queued ? tr('plannerCreatedStarted') : tr('plannerStarted');
-      },
-    });
-    overlay.__plannerCleanup = () => composer.destroy();
-    overlay.addEventListener('click', event => {
-      if (overlay.dataset.plannerSending === 'true') return;
-      if (event.target === overlay || event.target.closest('[data-overlay-close]')) closePlannerOverlay();
-    });
-    const fleetSelect = overlay.querySelector('[data-planner-dir]');
-    if (fleetSelect) {
-      fleetSelect.addEventListener('change', () => {
-        // Destination changes must not erase text, attachments, or Goal
-        // settings the user has already entered in this short-lived dialog.
-        composer.setContext(fleetSelect.value, { preserveDraft: true });
-      });
-    }
-    activateOverlay(overlay, '.tb-input');
   }
 
   function drawerFormPayload() {
@@ -1597,38 +1415,6 @@
     }
   }
 
-  async function promoteObserved(taskId, button) {
-    const task = findTask(taskId);
-    if (!task) return;
-    button.disabled = true;
-    const moduleMap = modulesById();
-    try {
-      const data = await requestJson('/api/task-board/tasks', {
-        method: 'POST',
-        json: {
-          recordType: 'planned',
-          sourceTaskId: task.id,
-          title: taskTitle(task),
-          description: taskDescription(task) || taskTitle(task),
-          dirId: taskContextDirId(task, moduleMap),
-          workflowStage: 'inbox',
-          priority: null,
-          dueAt: null,
-          acceptanceCriteria: null,
-        },
-      });
-      updateTaskFromResponse(data);
-      state.mode = 'todo';
-      state.bucket = '';
-      selectOrigin('board');
-      await loadPlanner({ quiet: true });
-      notify(tr('plannerPromoted'));
-    } catch (error) {
-      if (!(await handleConflict(error))) notify(tr('plannerActionFailed', { error: errorText(error) }), true);
-      button.disabled = false;
-    }
-  }
-
   function handleRootClick(event) {
     const action = event.target.closest('[data-action]');
     if (!action) return;
@@ -1637,23 +1423,23 @@
       manageTaskLifecycle(action.dataset.taskId, kind.slice(5), action);
     } else if (kind === 'archive-filter') {
       state.archived = action.dataset.archived === '1';
-      if (state.archived) { state.mode = 'activity'; state.bucket = ''; }
+      if (state.archived) state.mode = 'activity';
       render();
-    } else if (kind === 'new-todo') openNewTodoDialog();
-    else if (kind === 'start-new-now') openStartNowDialog();
-    else if (kind === 'refresh') loadPlanner({ refreshDirectories: true });
+    } else if (kind === 'refresh') loadPlanner({ refreshDirectories: true });
     else if (kind === 'mode') {
       state.archived = false;
-      state.mode = MODES.includes(action.dataset.mode) ? action.dataset.mode : 'todo';
-      if (state.mode === 'activity') state.bucket = '';
+      state.mode = MODES.includes(action.dataset.mode) ? action.dataset.mode : 'tasks';
       render();
     } else if (kind === 'origin') {
       selectOrigin(action.dataset.origin);
       render();
-    } else if (kind === 'bucket') {
-      const bucket = WORK_BUCKETS.includes(action.dataset.bucket) ? action.dataset.bucket : '';
-      state.bucket = state.bucket === bucket ? '' : bucket;
-      if (state.mode === 'activity') state.mode = 'todo';
+    } else if (kind === 'status-filter') {
+      const filter = STATUS_FILTERS.includes(action.dataset.statusFilter) ? action.dataset.statusFilter : '';
+      if (filter) {
+        if (state.statusFilters.has(filter)) state.statusFilters.delete(filter);
+        else state.statusFilters.add(filter);
+      }
+      if (state.mode === 'activity') state.mode = 'tasks';
       render();
     } else if (kind === 'open-task') {
       const taskId = action.dataset.taskId || action.closest('[data-task-id]')?.dataset.taskId;
@@ -1666,12 +1452,20 @@
       startTaskDirect(action.dataset.taskId, action);
     } else if (kind === 'complete-task') {
       completeTaskDirect(action.dataset.taskId, action);
-    } else if (kind === 'promote') {
-      promoteObserved(action.dataset.taskId, action);
     }
   }
 
   function handleRootChange(event) {
+    if (event.target.matches('[data-control="composer-fleet"]')) {
+      state.composerDirId = String(event.target.value || '');
+      // An empty pick keeps the current context (and draft): submit validation
+      // rejects it instead of silently rerouting the task being written.
+      if (quickComposer && state.composerDirId && quickComposerContext !== state.composerDirId) {
+        quickComposerContext = state.composerDirId;
+        quickComposer.setContext(state.composerDirId, { preserveDraft: true });
+      }
+      return;
+    }
     if (event.target.matches('[data-control="fleet"]')) {
       if (surface === 'fleet') return;
       state.dirId = event.target.value;
@@ -1688,7 +1482,7 @@
 
   function handleRootKeydown(event) {
     if (event.target.closest('button,a,input,select,textarea')) return;
-    const card = event.target.closest('.planner-card,.planner-todo-row');
+    const card = event.target.closest('.planner-task-row');
     if (card && (event.key === 'Enter' || event.key === ' ')) {
       event.preventDefault();
       const task = findTask(card.dataset.taskId);
@@ -1704,7 +1498,8 @@
       dirId: state.dirId,
       query: state.query,
       origin: state.origin,
-      bucket: state.bucket,
+      statusFilters: [...state.statusFilters],
+      composerDirId: state.composerDirId,
       renderState: captureRenderState(),
     };
   }
@@ -1713,12 +1508,17 @@
     const next = value || {};
     clearTimeout(state.searchTimer);
     state.searchTimer = null;
-    state.mode = MODES.includes(next.mode) ? next.mode : 'todo';
+    state.mode = MODES.includes(next.mode) ? next.mode : 'tasks';
     state.dirId = String(next.dirId || '');
     state.query = String(next.query || '');
     state.archived = next.archived === true;
     selectOrigin(ORIGINS.includes(next.origin) ? next.origin : state.origin);
-    state.bucket = WORK_BUCKETS.includes(next.bucket) ? next.bucket : '';
+    state.statusFilters = new Set(
+      Array.isArray(next.statusFilters)
+        ? next.statusFilters.filter(filter => STATUS_FILTERS.includes(filter))
+        : [],
+    );
+    state.composerDirId = String(next.composerDirId || '');
     pendingRenderState = next.renderState || null;
   }
 
@@ -1737,7 +1537,12 @@
     if (surface === 'fleet') {
       closePlannerOverlay();
       fleetUiStates.set(lockedDirId, uiStateSnapshot());
-      if (root !== globalRoot) root.innerHTML = '';
+      if (root !== globalRoot) {
+        // Wiping the root would orphan the live quick-create composer (draft,
+        // attachments, pickers). Destroy it before the DOM goes away.
+        destroyQuickComposer();
+        root.innerHTML = '';
+      }
       applyUiState(globalUiState);
     }
     root = globalRoot;
@@ -1764,14 +1569,17 @@
       currentSurfaceState = uiStateSnapshot();
       fleetUiStates.set(lockedDirId, currentSurfaceState);
     }
-    if (root !== element || !sameFleet) root.innerHTML = '';
+    if (root !== element || !sameFleet) {
+      destroyQuickComposer();
+      root.innerHTML = '';
+    }
     root = element;
     surface = 'fleet';
     lockedDirId = nextDirId;
     const saved = sameFleet ? currentSurfaceState : fleetUiStates.get(nextDirId);
     applyUiState({
       ...(saved || {}),
-      mode: saved && MODES.includes(saved.mode) ? saved.mode : 'todo',
+      mode: saved && MODES.includes(saved.mode) ? saved.mode : 'tasks',
       dirId: nextDirId,
     });
     bindPlannerRoot(root);
@@ -1786,7 +1594,10 @@
     if (surface !== 'fleet') return;
     closePlannerOverlay();
     fleetUiStates.set(lockedDirId, uiStateSnapshot());
-    if (root !== globalRoot) root.innerHTML = '';
+    if (root !== globalRoot) {
+      destroyQuickComposer();
+      root.innerHTML = '';
+    }
     root = globalRoot;
     surface = 'global';
     lockedDirId = '';
