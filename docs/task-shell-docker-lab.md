@@ -44,6 +44,7 @@ docker compose -f docker/task-shell/compose.yaml exec -T lab node docker/task-sh
 | 层次 | 覆盖 |
 | --- | --- |
 | 构建隔离 | 只导出 Git 跟踪文件，保留当前修改，拒绝符号链接，排除凭据与运行时文件 |
+| Air R2 基础 | 重归属门槛、SQLite 事实/候选/outbox 的事务与重启恢复、工作区只读盘点；尚未验证在线重归属或新 UI |
 | 单元与 HTTP | 当前任务排队、显式新任务、回执幂等、跨项目限制、按需上下文、容量、控制消息 |
 | 调度回归 | scheduler、session work host、问题回答、task context、task-bound session |
 | 真实服务集成 | 独立 SQLite、Git worktree、模拟 CLI、WebSocket 防绕过、取消、关实验后的读取 |
