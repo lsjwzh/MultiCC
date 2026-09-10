@@ -708,6 +708,7 @@ function createSessionWorkHost(deps = {}) {
       ? (await scheduler().status(sessionId))?.active || null
       : null;
     const chatStateBeforeCancel = deps.getChatSession(sessionId);
+    const runnerBeforeCancel = chatStateBeforeCancel?._activeRunner;
     const turnLineage = chatStateBeforeCancel?._activeTurn?.lineage || null;
     const originDispatchId = activeBeforeCancel?.originDispatchId
       || (turnLineage?.kind === 'dispatch' ? turnLineage.operationId : null)
@@ -736,6 +737,15 @@ function createSessionWorkHost(deps = {}) {
     const stopped = await awaitRunnerStop(sessionId);
     if (!stopped) {
       log.warn?.('session_cancel_runner_stop_timeout', { sessionId, source, operationId });
+    } else if (deps.getChatSession(sessionId) === chatStateBeforeCancel && chatStateBeforeCancel) {
+      // Detaching the process skips normal finalization. Release its workspace
+      // claim only after confirmed stop, without clearing a replacement runner.
+      if (chatStateBeforeCancel._activeRunner === runnerBeforeCancel) {
+        chatStateBeforeCancel._activeRunner = null;
+      }
+      if (!processAlive(chatStateBeforeCancel._cancelledProc)) {
+        chatStateBeforeCancel._cancelledProc = null;
+      }
     }
     // Park the scheduler entry on the same boundary a normal turn end uses, so
     // classifyTransition sees `assessing` and can apply its verdict. Absent an

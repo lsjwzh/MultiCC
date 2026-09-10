@@ -42,6 +42,21 @@ async function wait(check) {
     assert.equal(completed.snapshots.flatMap(s => s.messages).length, 0);
     await api(`${a}/messages`, { text: '', intent: 'cancel', taskId: original.taskId, turnId: active.execution.turnId, clientMsgId: prefix + '-cancel' });
     await wait(async () => !(await api(`${a}/tasks/${original.taskId}`)).execution.busy);
+    const successor = await api(`${a}/messages`, {
+      text: 'New task after cancellation', newTask: true, clientMsgId: prefix + '-after-cancel',
+    });
+    await wait(async () => {
+      const d = await api(`${a}/tasks/${successor.taskId}`);
+      return !d.execution.busy && d.messages.some(m => m.role === 'assistant');
+    });
+    const continued = await api(`${a}/messages`, {
+      text: 'Continue the successor', clientMsgId: prefix + '-followup',
+    });
+    assert.equal(continued.taskId, successor.taskId);
+    await wait(async () => {
+      const d = await api(`${a}/tasks/${successor.taskId}`);
+      return !d.execution.busy && d.messages.filter(m => m.role === 'assistant').length === 2;
+    });
     const context = await api(`${b}/messages`, { text: 'Use completed context', newTask: true, contextTaskIds: [created.taskId], clientMsgId: prefix + '-context' });
     const detail = await wait(async () => {
       const d = await api(`${b}/tasks/${context.taskId}`);
@@ -50,7 +65,7 @@ async function wait(check) {
     assert.equal(detail.task.parentTaskId, null);
     assert.equal(detail.snapshots[0].taskId, created.taskId);
     assert.ok(detail.snapshots[0].messages.some(m => m.role === 'assistant'));
-    console.log('PASS seeded Docker lab: two shells, explicit new task, receipt replay, cancel, completed context');
+    console.log('PASS seeded Docker lab: two shells, explicit new task, receipt replay, cancel → new task → resume, completed context');
   } finally {
     if (original) {
       const d = await api(`${a}/tasks/${original.taskId}`);

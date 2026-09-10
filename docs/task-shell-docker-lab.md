@@ -19,7 +19,7 @@ npm run lab:up
 ```sh
 npm run lab:logs
 npm run lab:down
-# 对已启动的沙盒再跑一次端到端检查（会留下 3 个测试任务）
+# 对已启动的沙盒再跑一次端到端检查（会留下 4 个测试任务）
 docker compose -f docker/task-shell/compose.yaml exec -T lab node docker/task-shell/smoke-lab.js
 ```
 
@@ -59,13 +59,15 @@ Chromium 必须存在，否则测试失败，不能静默跳过。真实服务�
 1. 在壳 A 单独一行发送 `LAB_WAIT 30`，任务保持运行约 30 秒（上限 120 秒）。
 2. 在壳 A 再发送普通工作。应排入同一 taskId，不创建另一个任务或工作区。
 3. 在壳 B 点击“新任务”后发送普通工作。应创建独立任务，A 的执行保持不变。
-4. 切回 A，点击取消。只应取消 A；B 已完成的输出保持可见。
+4. 切回 A，点击取消。只应取消 A；B 已完成的输出保持可见。随后在 A 显式新建任务并继续发送两轮，应能启动且后续消息保持同一任务。
 5. 单独一行发送 `LAB_FAIL`，验证执行失败展示；点击“新任务”创建的后续任务仍可完成。
 6. 用 `lab:down` 停止后重新 `lab:up`，两个壳的 ID、历史、当前任务指针应保留，重复启动不增加预置会话。
 
 按需回补 MCP 和内部快照引用由自动 API 用例验证；模拟 CLI 不具备自主工具调用能力，手动页面验收不能替代真实模型 A/B 测试。
 
 模拟 CLI 只输出固定消息与用量，没有模型推理和工具执行能力。`fake-cli-invocations.jsonl` 只记录模拟执行身份、cwd、时间与 prompt 摘要，不用来动态修改原生会话历史。
+
+模拟 Codex 在自己的 `CODEX_HOME`（默认 `$HOME/.codex`）下写入最小 `session_meta` rollout，供真实续接守卫核验身份和 cwd，不绕过该守卫。沙盒 HOME 位于数据卷内的 `/var/lib/multicc/home`，因此重建容器后仍可续接；宿主单测使用独立临时目录。镜像包含 Noto CJK 字体，便于检查中文页面截图。
 
 ## 隔离与边界
 

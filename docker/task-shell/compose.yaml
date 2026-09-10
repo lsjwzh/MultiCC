@@ -14,6 +14,7 @@ services:
     image: multicc-task-shell-test:local
     command: [node, docker/task-shell/start-lab.js]
     environment:
+      HOME: /var/lib/multicc/home
       HOST: 0.0.0.0
       PORT: "3000"
       MULTICC_ALLOW_REMOTE: "1"
