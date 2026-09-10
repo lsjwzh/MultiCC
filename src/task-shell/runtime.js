@@ -30,6 +30,7 @@ function createTaskShellRuntime(ports) {
   const flights = new Map();
   const roles = require('./role-bindings').createRoleBindings(store, { getRecord, getDirectory: ports.getDirectory, assertWritable });
   const taskActions = require('./task-actions').createTaskActions({ store, getRecord, getTask, getHistory, getExecution, createExecution, indexTask, ports, shell, open, chatScope });
+  const taskFirst = require('./task-first').createTaskFirstMigration({ store, open, adopt, roles, indexTask, ports });
   const launching = new Set();
   const maxConcurrent = Number.isInteger(ports.maxConcurrent) && ports.maxConcurrent > 0 ? ports.maxConcurrent : 4;
   async function checkCapacity(task) {
@@ -211,7 +212,7 @@ function createTaskShellRuntime(ports) {
     identifier(sessionId, 'sessionId');
     const source = getRecord(sessionId);
     if (!source || source.kind !== 'chat' || source.taskExecutionSlot || source.experimentalMode
-      || ['aux', 'gateway', 'commander'].includes(source.type)) throw failure('unsupported_source', 'Use an ordinary chat', 400);
+      || ['aux', 'gateway'].includes(source.type) || (source.type === 'commander' && !ports.taskFirst)) throw failure('unsupported_source', 'Use an ordinary chat', 400);
     const existing = existingShell(sessionId);
     if (existing) return existing;
     const id = `sh_${hash(sessionId).slice(0, 24)}`;
@@ -228,7 +229,7 @@ function createTaskShellRuntime(ports) {
   function adopt(shellId, sessionId) {
     const s = shell(shellId), record = getRecord(sessionId);
     if (!record || record.dirId !== s.dirId || record.kind !== 'chat'
-      || record.taskExecutionSlot || ['aux', 'gateway', 'commander'].includes(record.type)) throw failure('unsupported_source');
+      || record.taskExecutionSlot || ['aux', 'gateway'].includes(record.type) || (record.type === 'commander' && !ports.taskFirst)) throw failure('unsupported_source');
     return store.transaction(() => {
       let task = owns(sessionId);
       const history = getHistory(sessionId);
@@ -247,7 +248,7 @@ function createTaskShellRuntime(ports) {
       const title = indexed?.title || (historyTaskId && last?.taskName) || record.label || last?.content?.slice?.(0, 120) || sessionId;
       if (!task) {
         if (store.get('task', id)) throw failure('task_identity_mismatch');
-        task = { id, dirId: s.dirId, sessionId, title, ownerShellId: s.id,
+        task = { id, dirId: s.dirId, sessionId, title, ownerShellId: s.id, taskFirst: ports.taskFirst === true,
           parentTaskId: null, snapshotIds: [], ready: true, adopted: true, createdAt: Date.now(),
           runtime: runtimeFrom(record) };
         store.set('task', id, task);
@@ -284,7 +285,7 @@ function createTaskShellRuntime(ports) {
         const sessionId = indexedSession?.kind === 'chat' ? indexedSession.id : `task-${id.replace(/^tsk_/, '')}`;
         const owned = owns(sessionId);
         if (owned && owned.id !== id) throw failure('task_identity_mismatch');
-        task = { id, dirId: s.dirId, sessionId, title, ownerShellId: s.id, parentTaskId: null, snapshotIds: [],
+        task = { id, dirId: s.dirId, sessionId, title, ownerShellId: s.id, taskFirst: ports.taskFirst === true, parentTaskId: null, snapshotIds: [],
           ready: !!indexedSession, adopted: !!indexedSession, createdAt: Date.now(), runtime: runtimeFrom(source) };
         store.set('task', id, task);
       } else if (indexed?.title && task.title !== indexed.title) {
@@ -416,7 +417,7 @@ function createTaskShellRuntime(ports) {
         const id = `tsk_${randomUUID().replace(/-/g, '')}`;
         const source = getRecord(s.sourceSessionId);
         if (!source) throw failure('source_session_missing');
-        task = { id, dirId: s.dirId, sessionId: `task-${id.slice(4)}`, ownerShellId: s.id, parentTaskId: null,
+        task = { id, dirId: s.dirId, sessionId: `task-${id.slice(4)}`, ownerShellId: s.id, taskFirst: ports.taskFirst === true, parentTaskId: null,
           title: payload.text.slice(0, 120), snapshotIds, ready: false, createdAt: Date.now(),
           runtime: Object.fromEntries(['cli', 'model', 'provider', 'providerSelection', 'effort', 'agent'].filter(k => source[k] !== undefined).map(k => [k, source[k]])) };
         store.set('task', id, task);
@@ -659,7 +660,7 @@ function createTaskShellRuntime(ports) {
     return { ok: false, code: 'task_shell_route_required' };
   }
   return {
-    roles,
+    roles, migrateTaskSessions: taskFirst.migrate, listTasks: () => store.list('task'),
     ...taskActions, purgeTasks, stateTarget, stateSources, open, adopt, link, remove, view, detail, chatScope, send: sendInput, retry, owns,
     guardAdmission, recentTasks, refillContext, contextTrace, settleAttribution, locateOrCreate, resolveTask, sendExplicit,
   };

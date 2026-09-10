@@ -115,7 +115,6 @@ const { mountAuxGoalRoutes } = require('./src/routes/aux-goal');
 const { createTaskBoardRuntime } = require('./src/routes/task-board'); const { createTaskRunRoutes } = require('./src/routes/task-runs');
 const { createTaskRunStore } = require('./src/task-run/store'); const { createProductionTaskRunHost } = require('./src/task-run/production'); const { reconcileTaskRunSlotLeases } = require('./src/task-run/recovery');
 const { createTaskRunProviderBridge } = require('./src/task-run/provider-bridge'); const { createCommanderMigrationState } = require('./src/commander-migration');
-const { createCommanderMigrationHost } = require('./src/commander-host-runtime');
 const { mountFileTransferRoutes } = require('./src/routes/file-transfer');
 const { mountSkillSyncRoutes } = require('./src/routes/skill-sync');
 const { createSkillSyncRuntime } = require('./src/skill-sync');
@@ -135,7 +134,6 @@ const { mountProviderBalanceRoutes, mountProviderRelayQuotaRoutes } = require('.
 const { mountMemoryBrowserRoutes } = require('./src/routes/memory-browser');
 const { mountSessionMemoryRoutes } = require('./src/routes/session-memory');
 const { createAgentResourcesRoutes } = require('./src/routes/agent-resources');
-const { createRoleWorkerService } = require('./src/session/role-worker');
 const { mountSessionCreateRoutes } = require('./src/routes/session-create');
 const { mountCodexOAuthRoutes } = require('./src/routes/codex-oauth'); const { createClaudeOAuthSurface } = require('./src/routes/claude-oauth');
 const { mountZcodeAuthRoutes } = require('./src/routes/zcode-auth'); const { mountKimiAuthRoutes } = require('./src/routes/kimi-auth');
@@ -788,18 +786,10 @@ for (const session of persistedSessions.values()) {
 // they are migrated over. saveDirectories() remains as a delegate for them.
 const { createDirectoryModule } = require('./src/directory');
 
-let commanderMigrationRunner = null;
-
-// Registration and upgrades share normal session creation.
+// Directories own tasks; registering one never seeds a role execution/worktree.
 async function seedCommanderSession(dir) {
-  if (!commanderMigrationRunner) return { ok: false, error: 'commander migration unavailable' };
-  const result = await commanderMigrationRunner.migrateDirectory(dir);
-  if (result.status === 'ready' && result.sessionId) {
-    appendEvent(dir.id, 'session_role_changed', `Agent Commander（${result.action}）`, result.sessionId);
-    return { ok: true, ...result };
-  }
-  console.warn(`[multicc] seed commander session failed for dir ${dir.id}: ${result.code}`);
-  return { ok: false, error: result.code, ...result };
+  commanderMigrationState.setDirectory(dir.id, { status: 'ready', action: 'task-first' });
+  return { ok: true, skipped: true };
 }
 
 // Session and directory disposal share this history-protected teardown.
@@ -1550,15 +1540,9 @@ function createSessionRecord(input) {
   })(input);
 }
 
-const roleWorkerService = createRoleWorkerService({
-  records: persistedSessions,
-  mutate: (source, mutation) => sessionPersistence.mutate(source, mutation),
-  createSession: createSessionRecord,
-});
 mountSessionCreateRoutes(app, {
   directories, createSessionRecord, asyncHandler,
-  ensureRoleWorker: input => roleWorkerService.ensure(input),
-  getAgentPreset: id => agentResources.agentPreset(id),
+  createTask: input => taskShellHost.createTask(input), getRecord: id => persistedSessions.get(id),
 });
 
 // Cross-CLI switching keeps one native state per CLI and emits a visible,
@@ -2016,6 +2000,7 @@ const taskContextHost = createTaskContextHost({
   runTurn: (sessionId, text, options) => chatTurnEngine.admitChatWork(sessionId, text, options),
 });
 const taskShellHost = require('./src/task-shell/host').createTaskShellHost({
+  defaultTaskRuntime: () => ({ cli: SUPPORTED_CHAT_CLIS.find(cli => cliAvailabilitySummary()[cli]?.available) || 'claude' }),
   onStateTargetChanged: id => workspaceRuntime.publishSessionView(id),
   file: MULTICC_PATHS.taskShellDbFile, records: persistedSessions, directories, createSessionRecord,
   loadHistory: id => viewChatHistory(id), getTaskBoard: () => taskBoardRuntime,
@@ -2065,13 +2050,6 @@ const providerRoutes = createProviderRoutes({
   limitCacheStaleMs: Number(process.env.MULTICC_LIMIT_CACHE_STALE_MS) || undefined,
 });
 const { providerDefaults, validProviderId } = providerRoutes;
-commanderMigrationRunner = createCommanderMigrationHost({
-  state: commanderMigrationState, directories, records: persistedSessions,
-  commanderPrompt: agentCommanderPrompt, commanderPreset: agentCommanderPreset,
-  fs, isHomeOrAbove, realPathOf, invalidSessions,
-  supportedClis: SUPPORTED_CHAT_CLIS, cliAvailabilitySummary, providerDefaults, providers,
-  sessionPersistence, createSessionRecord, logger,
-});
 providerRoutes.mountCatalogRoutes(app);
 
 // GET /api/opencode/models — list models the local opencode CLI exposes
@@ -2771,7 +2749,12 @@ const teardownTriggers = triggerRuntime.teardownSession;
 
 const startupRepoReady = Promise.resolve().then(providers.migrateLegacyProviderProtocols).then(() => sessionHibernationRuntime.reconcileStartup()).then(initWorktrees)
   .catch(error => console.error('[multicc] async repo startup failed:', error.message))
-  .then(() => commanderMigrationRunner.run())
+  .then(async () => {
+    commanderMigrationState.setPhase('complete');
+    for (const dir of directories.values()) await seedCommanderSession(dir);
+    const migration = await taskShellHost.migrateTaskSessions();
+    if (!migration.ok) logger.warn('task_first_migration_pending', { errors: migration.errors });
+  })
   .catch(error => {
     commanderMigrationState.setPhase('complete');
     for (const dir of directories.values()) {

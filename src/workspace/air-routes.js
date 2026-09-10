@@ -16,7 +16,8 @@ function mountAirRoutes(app, deps) {
       lease: lease?.state || 'idle', capacityReason: workspace && !lease ? deps.admission.capacityReason(workspace.id) : null, reason: lease?.reason || null, pins: workspace?.pins || [],
       path: workspace?.path || record?.worktreePath || null, branch: workspace?.branch || record?.branch || null };
   }
-  app.get('/api/air', route(() => {
+  app.get('/api/air', route(async () => {
+    const migration = await deps.shell.migrateTaskSessions?.();
     const board = deps.getBoard();
     const tasks = Object.values(board.tasks || {}).filter(t => !t.mergedIntoTaskId && !board.deletedTaskIds?.includes(t.id)).map(t => {
       const sessionId = t.chatSessionId || t.sessionId || null;
@@ -25,9 +26,19 @@ function mountAirRoutes(app, deps) {
         sessionId, ...access, resource: resource(sessionId) };
     });
     return { ok: true, directories: [...deps.directories.values()].map(d => ({ id: d.id, name: d.name, path: d.path })),
-      tasks, budgets: deps.admission.snapshot().budgets, clis: deps.clis,
-      sessions: [...deps.records.values()].filter(s => !s.taskBoundTaskId && !s.taskExecutionSlot && !['aux', 'gateway'].includes(s.type))
+      tasks, budgets: deps.admission.snapshot().budgets, clis: deps.clis, migration,
+      sessions: [...deps.records.values()].filter(s => s.kind === 'terminal' && !['aux', 'gateway'].includes(s.type))
         .map(s => ({ id: s.id, dirId: s.dirId, label: s.label || s.id, kind: s.kind, cli: s.cli })) };
+  }));
+  app.get('/api/air/resolve', route(async req => {
+    await deps.shell.migrateTaskSessions();
+    let taskId = req.query.task;
+    if (!taskId && req.query.session) taskId = deps.shell.stateTarget(req.query.session).taskId || deps.shell.artifactTaskId(req.query.session);
+    if (!taskId && req.query.shell) taskId = deps.shell.chatScope(req.query.shell).taskId;
+    if (!taskId) return { ok: true, url: '/air' };
+    const entry = await deps.shell.taskEntry(taskId);
+    const dirId = deps.records.get(entry.sessionId)?.dirId;
+    return { ok: true, taskId, url: '/air?' + new URLSearchParams({ task: taskId, ...(dirId ? { dir: dirId } : {}) }) };
   }));
   app.post('/api/air/tasks', route(async req => { const result = await deps.shell.createTask(req.body); deps.admission.identify(result.sessionId); return result; }));
   app.get('/api/air/tasks/:id', route(async req => {
@@ -38,7 +49,7 @@ function mountAirRoutes(app, deps) {
       candidate, admission: deps.admission, cwd: deps.directories.get(record?.dirId)?.path });
     let roleBindings = null;
     try { roleBindings = deps.shell.roleBindings(req.params.id); } catch (_) {}
-    return { ...entry, resource: resource(entry.sessionId), configuration: { cli: record?.cli, model: record?.model, rolePresetId: record?.rolePresetId }, roleBindings,
+    return { ...entry, resource: resource(entry.sessionId), configuration: { cli: record?.cli, model: record?.model, effort: record?.effort, rolePresetId: record?.rolePresetId }, roleBindings,
       // Auto attribution needs real integration and writer-barrier receipts.
       // Do not expose a switch that would turn client assertions into proofs.
       attribution };

@@ -392,7 +392,7 @@ class _DirectoryListBody extends StatefulWidget {
 }
 
 class _DirectoryListBodyState extends State<_DirectoryListBody> {
-  bool _air = true;
+  final bool _air = true;
   // Cached provider list (with aliasMap) so session model labels in the KPI
   // sheet can show an alias-mapped relay's real name (e.g. GLM5.2).
   List<Map<String, dynamic>> _providers = [];
@@ -594,7 +594,6 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
           ],
         ),
         actions: [
-          IconButton(tooltip: _air ? '会话与终端' : 'MultiCC Air', icon: Icon(_air ? Icons.dashboard_outlined : Icons.auto_awesome_outlined), onPressed: () => setState(() => _air = !_air)),
           IconButton(
             icon: const Icon(Icons.add_rounded, size: 22),
             tooltip: t('newDirectory'),

@@ -44,7 +44,7 @@ test('empty state offers a safe opt-in sample instead of registering live source
     setupSource.indexOf('function createSampleWorkspace()'),
     setupSource.indexOf('Object.assign(global'),
   );
-  assert.match(sampleDialog, /loadTemplates\(\)/);
+  assert.doesNotMatch(sampleDialog, /loadTemplates\(\)/);
   assert.doesNotMatch(sampleDialog, /api\.json/);
   assert.match(setupSource, /sampleFlow\s*\?\s*await api\.json\('\/api\/onboarding\/sample-workspace'/);
 });
@@ -61,18 +61,16 @@ test('workspace setup exposes curated team bundles backed by valid role presets'
     assert.ok(team.roles.length <= 4, `${team.id} should stay cognitively bounded`);
     for (const role of team.roles) assert.ok(ids.has(role.presetId), `${role.presetId} must exist`);
   }
-  assert.match(setupSource, /role-workers\/\$\{encodeURIComponent\(role\.presetId\)\}/);
-  assert.match(setupSource, /for \(let index = 0; index < roles\.length; index\+\+\)/);
+  assert.doesNotMatch(setupSource, /role-workers|provisionTeam/);
   assert.match(setupSource, /timeoutMs: 60000/);
-  assert.match(setupSource, /submit\.disabled = busy \|\| !templatesReady/);
-  assert.match(setupSource, /workspace-role-details/);
+  assert.match(setupSource, /submit\.disabled = busy/);
 });
 
-test('primary creation UI explains workspace, path, team, and runtime impact', () => {
+test('directory creation leaves roles and execution to tasks', () => {
   assert.match(manageHtml, /创建工作区/);
   assert.match(manageHtml, /工作区是希望 MultiCC 帮你处理的本地文件夹/);
-  assert.match(manageHtml, /选择 Agent 团队/);
-  assert.match(manageHtml, /角色创建后不会自动执行任务/);
+  assert.doesNotMatch(manageHtml, /选择 Agent 团队/);
+  assert.match(manageHtml, /角色在任务中按需附加/);
   assert.match(manageHtml, /路径不存在时，创建这个文件夹/);
   assert.doesNotMatch(manageHtml, /Fleet不存在时自动创建/);
 });

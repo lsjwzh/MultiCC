@@ -91,8 +91,8 @@ const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'ut
   try {
     await start();
     const directory = await api('/api/directories', { name: 'Task shell experiment', path: project, create: true });
-    const a = await api(`/api/directories/${directory.id}/sessions`, { cli: 'codex', kind: 'chat', label: 'Shell A' });
-    const b = await api(`/api/directories/${directory.id}/sessions`, { cli: 'codex', kind: 'chat', label: 'Shell B' });
+    const a = await require('./helpers/legacy-task-session')({ dataDir, dirId: directory.id, id: 'shell-a', stop, start });
+    const b = await require('./helpers/legacy-task-session')({ dataDir, dirId: directory.id, id: 'shell-b', stop, start });
     const sa = await api('/api/task-shells', { sessionId: a.id }), sb = await api('/api/task-shells', { sessionId: b.id });
     const first = await api(`/api/task-shells/${sa.id}/messages`, { text: 'HOLD_ORIGINAL', clientMsgId: 'one', intent: 'work' });
     await wait(() => rows().some(r => r.sessionId === first.sessionId), 'first execution did not start');
@@ -117,7 +117,7 @@ const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'ut
       return d.messages.some(m => m.role === 'assistant' && String(m.content).includes('SHELL_COMPLETED_EVIDENCE')) && d;
     }, 'formal history missing');
     assert.equal(detail.task.parentTaskId, null);
-    assert.match(detail.task.baseline.commit, /^[a-f0-9]{40,64}$/);
+    assert.equal(detail.task.baseline, null, 'planned task does not preallocate a baseline');
     // Fork at a message in the middle, through the same API used by chat.html.
     // The copied task annotations must not be adopted as the fork's identity.
     const rawHistory = (await api(`/api/sessions/${second.sessionId}/history?limit=100`)).messages;
@@ -151,7 +151,7 @@ const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'ut
     // Board preview preserves ownership. A manual fork owns a new real worktree
     // at the source commit and retains history without executing on creation.
     const preview = await api(`/api/task-shell-tasks/${first.taskId}`);
-    assert.equal(preview.readOnly, true);
+    assert.equal(preview.readOnly, false);
     const gitAt = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
     fs.writeFileSync(path.join(recordA.worktreePath, 'fork-evidence'), 'source-only');
     gitAt(recordA.worktreePath, 'add', 'fork-evidence');
@@ -182,7 +182,7 @@ const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'ut
     await api(`/api/task-shells/${sa.id}/links`, { taskId: second.taskId });
     const third = await api(`/api/task-shells/${sa.id}/messages`, { text: 'USE_BOTH_CONTEXTS', newTask: true, clientMsgId: 'three', intent: 'work', contextTaskIds: [first.taskId, second.taskId] });
     await wait(() => rows().some(r => r.sessionId === third.sessionId), 'reference execution missing');
-    assert.equal(fs.realpathSync(rows().find(r => r.sessionId === third.sessionId).cwd), fs.realpathSync(recordA.worktreePath));
+    assert.notEqual(fs.realpathSync(rows().find(r => r.sessionId === third.sessionId).cwd), fs.realpathSync(recordA.worktreePath));
     const prompt = rows().find(r => r.sessionId === third.sessionId).prompt;
     assert.ok(prompt.includes(first.taskId) && prompt.includes(second.taskId));
     assert.ok(prompt.includes('SHELL_COMPLETED_EVIDENCE'));
@@ -200,7 +200,7 @@ const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'ut
     await wait(async () => (await api(`/api/task-shells/${sa.id}/tasks/${cancelTask.taskId}`)).messages.some(m => m.role === 'assistant' && String(m.content).includes('SHELL_COMPLETED_EVIDENCE')), 'resumed task did not complete');
     // Existing App transport enters the same shell runtime and keeps a stable
     // execution/native identity when the adopted source is idle.
-    const source = await api(`/api/directories/${directory.id}/sessions`, { cli: 'codex', kind: 'chat', label: 'Existing conversation' });
+    const source = await require('./helpers/legacy-task-session')({ dataDir, dirId: directory.id, id: 'existing-conversation', stop, start });
     const appEvents = [];
     socket = new WebSocket(base.replace('http', 'ws') + `/ws/chat?session=${source.id}&token=${token}`);
     socket.on('message', data => appEvents.push(JSON.parse(String(data))));
@@ -224,26 +224,15 @@ const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'ut
       await withCdpHarness({ timeoutMs: 20000 }, async page => {
         await page.send('Network.setExtraHTTPHeaders', { headers: { Authorization: `Bearer ${token}` } });
         await page.navigate(base + `/chat.html?session=${source.id}`);
-        assert.ok(await page.waitFor('typeof shellChatView !== "undefined" && ws?.readyState === 1'), 'full chat did not connect');
-        assert.equal(await page.evaluate('_sessionName'), next.sessionId);
-        assert.ok(await page.waitFor('document.getElementById("messages").textContent.includes("ADOPT_SOURCE") && document.getElementById("messages").textContent.includes("BROWSER_SECOND_TASK")'), 'old/new history not visible together');
-        const thirdBrowser = await api(`/api/task-shells/${adopted.id}/messages`, { text: 'BROWSER_THIRD_TASK', newTask: true, clientMsgId: 'browser-third' });
-        await wait(async () => (await api(`/api/task-shells/${adopted.id}/tasks/${thirdBrowser.taskId}`)).messages.some(m => m.role === 'assistant'), 'browser third task incomplete');
-        await page.evaluate('inputEl.value = "继续"; send()');
-        assert.ok(await page.waitFor(`_sessionName === ${JSON.stringify(thirdBrowser.sessionId)} && ws?.readyState === 1`), 'routed execution did not reconnect');
-        assert.equal(await page.evaluate('new URL(location.href).searchParams.get("session")'), source.id);
-        assert.ok(await page.waitFor('document.getElementById("messages").textContent.includes("ADOPT_SOURCE") && document.getElementById("messages").textContent.includes("BROWSER_THIRD_TASK")'), 'switch discarded shell history');
+        assert.ok(await page.waitFor(`location.pathname === '/air' && new URLSearchParams(location.search).get('task') === ${JSON.stringify(next.taskId)}`));
+        const history = `document.getElementById('conversation')?.contentDocument?.getElementById('history')?.textContent`;
+        assert.ok(await page.waitFor(`${history}?.includes('BROWSER_SECOND_TASK')`));
+        assert.equal(await page.evaluate(`${history}.includes('ADOPT_SOURCE')`), false, 'task entry only displays its own history');
         await page.send('Page.reload');
-        assert.ok(await page.waitFor(`typeof _sessionName !== "undefined" && _sessionName === ${JSON.stringify(thirdBrowser.sessionId)} && ws?.readyState === 1 && document.getElementById("messages").textContent.includes("BROWSER_THIRD_TASK")`), 'reload did not restore latest history and execution');
-        await page.evaluate('loadOlderHistory()');
-        assert.ok(await page.waitFor('document.getElementById("messages").textContent.includes("ADOPT_SOURCE")'), 'older source history is missing after reload pagination');
-        const originalOwner = await page.evaluate('shellMessageOwner(Array.from(document.querySelectorAll(".msg.user")).find(n => n.textContent.includes("ADOPT_SOURCE")))');
-        assert.equal(originalOwner.sessionId, source.id, 'message actions must target the original execution');
-        await page.navigate(base + `/chat.html?session=${thirdBrowser.sessionId}`);
-        assert.ok(await page.waitFor(`typeof shellChatView !== "undefined" && shellChatView.shellId === ${JSON.stringify(adopted.id)} && ws?.readyState === 1`), 'generated execution URL lost its originating shell');
-        await page.evaluate('loadOlderHistory()');
-        assert.ok(await page.waitFor('document.getElementById("messages").textContent.includes("ADOPT_SOURCE")'), 'generated execution URL lost original history');
-        console.log('PASS full chat browser: stable source URL, internal execution switch, old/new history and reload');
+        assert.ok(await page.waitFor(`${history}?.includes('BROWSER_SECOND_TASK')`));
+        await page.navigate(base + `/air?task=${routed.taskId}`);
+        assert.ok(await page.waitFor(`${history}?.includes('ADOPT_SOURCE')`));
+        console.log('PASS task browser: legacy bookmarks resolve to Air, task history is isolated and survives reload');
       });
     }
     await wait(async () => !(await api(`/api/task-shell-tasks/${fork.taskId}`)).execution.busy, 'fork remains busy before lifecycle checks');
