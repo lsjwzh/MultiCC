@@ -24,50 +24,71 @@ function sourceSection(source, start, end) {
   return source.slice(from, to);
 }
 
-function plannerSourceWithTestHooks() {
-  const marker = '  window.MultiCCTaskPlanner = Object.freeze({';
-  assert.ok(js.includes(marker), 'planner API marker must exist');
-  return js.replace(marker, `  window.__plannerTestHooks = Object.freeze({
-    taskTitleFromText,
-    dialogDirectoryId,
-    createTodoFromDialog,
-    openStartNowDialog,
-    closePlannerOverlay,
-  });
-
-${marker}`);
+// The planner root hosts two persistent children: the re-rendered shell host
+// and the quick-create composer host. Setting innerHTML on a real element
+// detaches its children; these fakes reproduce that so layout invariants are
+// exercised the same way they run in the browser.
+function fakePlannerElement(tag) {
+  const element = {
+    tagName: tag || 'div',
+    className: '',
+    style: {},
+    dataset: {},
+    parentNode: null,
+    children: [],
+    _innerHTML: '',
+    get innerHTML() { return element._innerHTML; },
+    set innerHTML(value) {
+      element._innerHTML = String(value);
+      for (const child of element.children) child.parentNode = null;
+      element.children = [];
+    },
+    appendChild(child) {
+      element.children.push(child);
+      child.parentNode = element;
+      return child;
+    },
+    querySelector() { return null; },
+    querySelectorAll() { return []; },
+    addEventListener() {},
+  };
+  return element;
 }
 
 function fakePlannerRoot() {
   const classes = new Set();
   const listeners = new Map();
-  let innerHTML = '';
   const innerHTMLWrites = [];
-  return {
-    get innerHTML() { return innerHTML; },
-    set innerHTML(value) {
-      innerHTML = String(value);
-      innerHTMLWrites.push(innerHTML);
+  const element = fakePlannerElement('div');
+  let ownHtml = '';
+  Object.defineProperty(element, 'innerHTML', {
+    get() {
+      return ownHtml + element.children.map(child => child.innerHTML).join('');
     },
-    innerHTMLWrites,
-    classList: {
-      contains(name) { return classes.has(name); },
-      toggle(name, force) {
-        const enabled = force === undefined ? !classes.has(name) : !!force;
-        if (enabled) classes.add(name);
-        else classes.delete(name);
-        return enabled;
-      },
+    set(value) {
+      ownHtml = String(value);
+      innerHTMLWrites.push(ownHtml);
+      for (const child of element.children) child.parentNode = null;
+      element.children = [];
     },
-    addEventListener(type, listener) { listeners.set(type, listener); },
-    dispatch(type, event) {
-      const listener = listeners.get(type);
-      if (!listener) throw new Error(`missing ${type} listener`);
-      return listener(event);
+  });
+  element.innerHTMLWrites = innerHTMLWrites;
+  element.classList = {
+    contains(name) { return classes.has(name); },
+    toggle(name, force) {
+      const enabled = force === undefined ? !classes.has(name) : !!force;
+      if (enabled) classes.add(name);
+      else classes.delete(name);
+      return enabled;
     },
-    querySelector() { return null; },
-    querySelectorAll() { return []; },
   };
+  element.addEventListener = (type, listener) => { listeners.set(type, listener); };
+  element.dispatch = (type, event) => {
+    const listener = listeners.get(type);
+    if (!listener) throw new Error(`missing ${type} listener`);
+    return listener(event);
+  };
+  return element;
 }
 
 function dispatchPlannerAction(rootElement, action, dataset = {}) {
@@ -119,7 +140,7 @@ function createPlannerHarness(options = {}) {
     getElementById(id) { return id === 'task-planner-root' ? globalRoot : null; },
     querySelector() { return null; },
     addEventListener() {},
-    createElement() { throw new Error('planner overlay was not expected in this test'); },
+    createElement(tag) { return fakePlannerElement(tag); },
   };
   const document = typeof options.createDocument === 'function'
     ? options.createDocument(globalRoot) : defaultDocument;
@@ -163,65 +184,26 @@ function createPlannerHarness(options = {}) {
   };
 }
 
-function createStartNowDocument(globalRoot) {
-  const listeners = new Map();
-  const document = {
+// Quick-create document: the composer bar markup is a string in the host's
+// innerHTML, so the fake host resolves the Fleet picker and mount point from a
+// refs registry instead of real DOM parsing.
+function createQuickCreateDocument(globalRoot, refs) {
+  return {
     activeElement: null,
-    overlay: null,
+    body: { appendChild() {} },
     getElementById(id) { return id === 'task-planner-root' ? globalRoot : null; },
-    addEventListener(type, listener) { listeners.set(type, listener); },
-    querySelector(selector) {
-      if (selector === '.planner-overlay') {
-        return this.overlay && this.overlay.isConnected ? this.overlay : null;
-      }
-      return null;
+    querySelector() { return null; },
+    addEventListener() {},
+    createElement(tag) {
+      const element = fakePlannerElement(tag);
+      element.querySelector = selector => {
+        if (selector === '[data-control="composer-fleet"]') return refs.picker || null;
+        if (selector === '.planner-quick-composer') return refs.composerHost || null;
+        return null;
+      };
+      return element;
     },
   };
-  const focusable = () => ({
-    disabled: false,
-    isConnected: true,
-    offsetParent: {},
-    listeners: new Map(),
-    addEventListener(type, listener) { this.listeners.set(type, listener); },
-    emit(type) { return this.listeners.get(type)?.({ target: this }); },
-    focus() { document.activeElement = this; },
-  });
-  const returnFocus = focusable();
-  const picker = focusable();
-  picker.value = 'fleet-a';
-  const closeButton = focusable();
-  const input = focusable();
-  const composerHost = {};
-  document.activeElement = returnFocus;
-  document.createElement = () => {
-    const overlay = {
-      className: '',
-      dataset: {},
-      innerHTML: '',
-      isConnected: false,
-      listeners: new Map(),
-      addEventListener(type, listener) { this.listeners.set(type, listener); },
-      querySelector(selector) {
-        if (selector === '.planner-start-composer') return composerHost;
-        if (selector === '[data-planner-dir]') return picker;
-        if (selector === '.tb-input') return input;
-        return null;
-      },
-      querySelectorAll(selector) {
-        if (selector === '[data-overlay-close]') return [closeButton];
-        if (selector.includes('button:not([disabled])')) return [closeButton, picker, input];
-        return [];
-      },
-      remove() { this.isConnected = false; },
-    };
-    document.overlay = overlay;
-    return overlay;
-  };
-  document.body = {
-    appendChild(overlay) { overlay.isConnected = true; },
-  };
-  document.refs = { returnFocus, picker, closeButton, input, composerHost, listeners };
-  return document;
 }
 
 async function settlePlannerLoad() {
@@ -262,16 +244,16 @@ test('manage shell exposes the first-class Task Center view', () => {
   assert.match(html, /manage-task-planner\.js/);
 });
 
-test('planner keeps persisted workflow identity separate from the derived TODO projection', () => {
+test('planner keeps persisted workflow identity separate from derived status projections', () => {
   assert.match(js, /Object\.freeze\(\['inbox', 'ready', 'doing', 'review', 'done'\]\)/);
-  assert.match(js, /Object\.freeze\(\['todo', 'board', 'activity'\]\)/);
+  assert.match(js, /Object\.freeze\(\['tasks', 'activity'\]\)/);
   assert.match(js, /Object\.freeze\(\['all', 'board', 'session'\]\)/);
-  assert.match(js, /Object\.freeze\(\['todo', 'attention', 'running', 'next', 'review', 'done'\]\)/);
+  assert.match(js, /Object\.freeze\(\['attention', 'running', 'review', 'error'\]\)/);
   assert.match(js, /task\.recordType === 'planned'/);
   assert.match(js, /task\.recordType !== 'planned'/);
   assert.match(js, /statusUi\.taskStatus/);
   assert.match(js, /function workBucket\(task\)/);
-  assert.match(js, /sourceTaskId: task\.id/);
+  assert.match(js, /function statusFilterKey\(task\)/);
 });
 
 test('planner mutations use task revisions and idempotent sends', () => {
@@ -283,59 +265,31 @@ test('planner mutations use task revisions and idempotent sends', () => {
   assert.match(js, /async function setLifecycle[\s\S]*?persistDrawerChanges\(taskId, context\)[\s\S]*?expectedRevision: context\.revision/);
   assert.match(js, /\/api\/task-board\/tasks\/\$\{encodeURIComponent\(taskId\)\}\/move/);
   assert.match(js, /\/api\/task-board\/tasks\/\$\{encodeURIComponent\(taskId\)\}\/update/);
-  assert.match(js, /async function createTodoFromDialog[\s\S]*?requestJson\('\/api\/task-board\/tasks'/);
   assert.match(js, /function bindPlannerRoot[\s\S]*?addEventListener\('click', handleRootClick\)[\s\S]*?addEventListener\('keydown', handleRootKeydown\)/);
   assert.doesNotMatch(js, /addEventListener\('(?:dragstart|dragover|drop|dragend)'/);
   assert.match(js, /function unmountFleetSurface\(\)[\s\S]*?closePlannerOverlay\(\)/);
-  assert.match(js, /async function promoteObserved[\s\S]*?dirId: taskContextDirId\(task, moduleMap\)/);
   assert.match(js, /sendIdForTask\(taskId\)/);
   assert.match(js, /state\.sendIds\.delete/);
   assert.match(js, /isConflict\(error\)/);
   assert.match(js, /id="planner-edit-title" name="title" maxlength="40"/);
 });
 
-test('planner splits TODO capture from the chat-parity start-now entry', () => {
-  assert.match(js, /data-action="new-todo"[^>]*>\$\{esc\(tr\('plannerNewTodo'\)\)\}/);
-  assert.match(js, /data-action="start-new-now"[^>]*>\$\{esc\(tr\('plannerStartNewNow'\)\)\}/);
-  assert.doesNotMatch(js, /data-action="new-task"/);
-  assert.match(js, /kind === 'new-todo'\) openNewTodoDialog\(\)/);
-  assert.match(js, /kind === 'start-new-now'\) openStartNowDialog\(\)/);
-
-  const capture = sourceSection(js,
-    'async function createTodoFromDialog', 'function openStartNowDialog');
-  assert.match(capture, /requestJson\('\/api\/task-board\/tasks'/);
-  assert.match(capture, /recordType: 'planned'/);
-  assert.match(capture, /workflowStage: 'inbox'/);
-  assert.doesNotMatch(capture, /\/api\/task-board\/send|\/tasks\/\$\{[^}]+\}\/send/,
-    'capturing a TODO must not start an execution turn');
-
-  const startNow = sourceSection(js,
-    'function openStartNowDialog', 'function drawerFormPayload');
-  assert.match(startNow, /window\.MultiCCTaskBoardComposer/);
-  assert.match(startNow, /composerApi\.mount\(/);
-  assert.match(startNow, /requestJson\('\/api\/task-board\/send'/);
-  assert.doesNotMatch(startNow, /requestJson\('\/api\/task-board\/tasks'/,
-    'start now must use the one-request board composer ingress');
+test('planner creates tasks only through the embedded quick-create composer', () => {
+  assert.match(js, /window\.MultiCCTaskBoardComposer/);
+  assert.match(js, /composerApi\.mount\(/);
+  assert.match(js, /requestJson\('\/api\/task-board\/send'/);
+  assert.doesNotMatch(js, /requestJson\('\/api\/task-board\/tasks'/,
+    'no direct record creation: quick create must use the one-request board composer ingress');
+  assert.doesNotMatch(js, /data-action="new-todo"|data-action="start-new-now"|data-action="promote"/);
 });
 
-test('both planner creation dialogs retain modal labels, focus, and cleanup contracts', () => {
-  const captureDialog = sourceSection(js,
-    'function openNewTodoDialog', 'async function createTodoFromDialog');
-  assert.match(captureDialog,
-    /id="planner-new-form" role="dialog" aria-modal="true" aria-labelledby="planner-new-todo-heading"/);
-  assert.match(captureDialog,
-    /<label[^>]*for="planner-new-todo"[\s\S]*?<textarea id="planner-new-todo" name="text"[^>]*required/);
-  assert.match(captureDialog, /activateOverlay\(overlay, '\[name="text"\]'\)/);
-
-  const startDialog = sourceSection(js,
-    'function openStartNowDialog', 'function drawerFormPayload');
-  assert.match(startDialog,
-    /role="dialog" aria-modal="true" aria-labelledby="planner-start-now-heading"/);
-  assert.match(startDialog, /<h2 id="planner-start-now-heading">/);
-  assert.match(startDialog, /activateOverlay\(overlay, '\.tb-input'\)/);
-  assert.match(startDialog, /overlay\.__plannerCleanup = \(\) => composer\.destroy\(\)/);
+test('planner drawer and overlay retain modal labels and cleanup contracts', () => {
   assert.match(js,
-    /function closePlannerOverlay\(expectedOverlay\)[\s\S]*?const cleanup = overlay\.__plannerCleanup[\s\S]*?typeof cleanup === 'function'[\s\S]*?cleanup\(\)[\s\S]*?overlay\.remove\(\)/);
+    /<aside class="planner-drawer" role="dialog" aria-modal="true" aria-labelledby="planner-drawer-title">/);
+  assert.match(js, /<h2 id="planner-drawer-title">/);
+  assert.match(js,
+    /function closePlannerOverlay\(expectedOverlay\)[\s\S]*?const cleanup = overlay\.__plannerCleanup[\s\S]*?typeof cleanup === 'function'[\s\S]*?overlay\.remove\(\)/);
+  assert.match(js, /function activateOverlay\(overlay, initialSelector\)/);
 });
 
 test('the shared task-board composer has an explicit mount and destroy lifecycle', () => {
@@ -356,79 +310,43 @@ test('the shared task-board composer has an explicit mount and destroy lifecycle
     'the shared composer must load before the planner consumes it');
 });
 
-test('New TODO posts one Inbox record with a derived title and never starts a run', async () => {
-  class FakeFormData {
-    constructor(form) { this.values = form.values; }
-    get(name) { return this.values[name]; }
+test('the quick-create composer is a persistent sibling destroyed before every root wipe', () => {
+  assert.match(js, /quickComposerHost\.className = 'planner-quick-create-host'/);
+  assert.match(js, /function destroyQuickComposer\(\)[\s\S]*?quickComposer\.destroy\(\)/);
+  const wipes = [...js.matchAll(/root\.innerHTML = ''/g)];
+  assert.ok(wipes.length >= 3, 'expected the layout and both surface switches to wipe the root');
+  for (const wipe of wipes) {
+    const before = js.slice(Math.max(0, wipe.index - 420), wipe.index);
+    assert.ok(before.includes('destroyQuickComposer'),
+      'every root wipe must first destroy the live composer (draft, attachments, pickers)');
   }
-  const harness = createPlannerHarness({
-    source: plannerSourceWithTestHooks(),
-    globals: { FormData: FakeFormData },
-  });
-  harness.setRequestHandler((url) => {
-    if (url === '/api/task-board/tasks') {
-      return {
-        ok: true,
-        task: {
-          id: 'todo-new', recordType: 'planned', origin: 'board', status: 'active',
-          runState: 'idle', workflowStage: 'inbox', planningRevision: 1, dirId: 'fleet-b',
-          title: 'A'.repeat(40), description: `${'A'.repeat(45)}\nKeep all of this context`,
-        },
-      };
-    }
-    return undefined;
-  });
-  harness.context.setView('tasks');
-  await settlePlannerLoad();
-  harness.requests.length = 0;
-
-  const form = {
-    values: { text: `${'A'.repeat(45)}\nKeep all of this context` },
-    reportValidity() { throw new Error('valid form should not report'); },
-  };
-  const picker = { value: 'fleet-b' };
-  const buttons = [{ disabled: false }];
-  const overlay = {
-    isConnected: false,
-    querySelector(selector) {
-      if (selector === 'form') return form;
-      if (selector === '[data-planner-dir]') return picker;
-      return null;
-    },
-    querySelectorAll(selector) { return selector === 'button' ? buttons : []; },
-  };
-
-  await harness.context.__plannerTestHooks.createTodoFromDialog(overlay, 'fleet-a');
-  const writes = harness.requests.filter(request => request.options?.method === 'POST');
-  assert.equal(writes.length, 1);
-  assert.equal(writes[0].url, '/api/task-board/tasks');
-  assert.deepEqual(JSON.parse(JSON.stringify(writes[0].options.json)), {
-    recordType: 'planned',
-    title: 'A'.repeat(40),
-    description: `${'A'.repeat(45)}\nKeep all of this context`,
-    dirId: 'fleet-b',
-    workflowStage: 'inbox',
-    priority: null,
-    dueAt: null,
-    acceptanceCriteria: null,
-  });
-  assert.equal(harness.requests.some(request => request.url.includes('/send')), false);
+  assert.match(css, /\.planner-quick-create-host\s*\{[\s\S]*?flex: 0 0 auto;/);
 });
 
-test('Start now validates workspace, preserves its draft on workspace change, and uses one atomic send', async () => {
-  let composerOptions = null;
+test('quick create validates workspace, preserves draft on workspace change, and uses one atomic send', async () => {
+  const mounts = [];
   const contextChanges = [];
-  let destroyCount = 0;
+  const refs = {
+    picker: {
+      value: 'fleet-a',
+      disabled: false,
+      matches(selector) { return selector === '[data-control="composer-fleet"]'; },
+    },
+    composerHost: {},
+  };
   const harness = createPlannerHarness({
-    source: plannerSourceWithTestHooks(),
-    createDocument: createStartNowDocument,
+    createDocument: globalRoot => createQuickCreateDocument(globalRoot, refs),
     globals: {
       MultiCCTaskBoardComposer: {
         mount(_host, options) {
-          composerOptions = options;
+          const record = { options, destroyed: false };
+          mounts.push(record);
           return {
-            destroy() { destroyCount += 1; },
+            reset() {},
+            focus() {},
+            dismissOverlays() {},
             setContext(...args) { contextChanges.push(args); },
+            destroy() { record.destroyed = true; },
           };
         },
       },
@@ -439,51 +357,52 @@ test('Start now validates workspace, preserves its draft on workspace change, an
   ));
   harness.context.setView('tasks');
   await settlePlannerLoad();
+
+  assert.equal(mounts.length, 1, 'the composer mounts once the task list is visible');
+  const composerOptions = mounts[0].options;
+  assert.equal(composerOptions.contextKey, 'fleet-a');
   harness.requests.length = 0;
 
-  harness.context.__plannerTestHooks.openStartNowDialog();
-  const firstOverlay = harness.document.overlay;
-  const { picker, closeButton, returnFocus } = harness.document.refs;
-  assert.ok(composerOptions, 'shared composer should mount');
-
-  picker.value = '';
+  refs.picker.value = '';
   await assert.rejects(
     () => composerOptions.submit({ text: 'Do it', clientMsgId: 'msg-1' }),
-    /请输入 TODO 并选择工作区/,
+    /请选择任务工作区/,
   );
   assert.equal(harness.requests.some(request => request.options?.method === 'POST'), false);
 
-  picker.value = 'fleet-b';
-  picker.emit('change');
+  refs.picker.value = 'fleet-b';
+  harness.globalRoot.dispatch('change', { target: refs.picker });
   assert.deepEqual(JSON.parse(JSON.stringify(contextChanges)), [
     ['fleet-b', { preserveDraft: true }],
   ]);
+
+  const composerBar = harness.globalRoot.children[1];
   composerOptions.onSendingChange(true);
-  assert.equal(picker.disabled, true);
-  assert.equal(closeButton.disabled, true);
-  assert.equal(firstOverlay.dataset.plannerSending, 'true');
+  assert.equal(refs.picker.disabled, true);
+  assert.equal(composerBar.dataset.plannerSending, 'true');
   composerOptions.onSendingChange(false);
+  assert.equal(refs.picker.disabled, false);
 
   const payload = {
     text: 'Do it now', clientMsgId: 'msg-atomic', cli: 'codex', provider: 'provider-a',
     goal: true, goalLimits: { maxRounds: 12, maxBudget: 5000 },
   };
-  await composerOptions.submit(payload);
+  const message = await composerOptions.submit(payload);
+  assert.equal(message, '新任务已开始');
   const writes = harness.requests.filter(request => request.options?.method === 'POST');
   assert.equal(writes.length, 1);
   assert.equal(writes[0].url, '/api/task-board/send');
   assert.deepEqual(JSON.parse(JSON.stringify(writes[0].options.json)), { ...payload, dirId: 'fleet-b' });
-  assert.equal(harness.requests.some(request => request.url === '/api/task-board/tasks'), false);
-  assert.equal(firstOverlay.isConnected, false);
-  assert.equal(destroyCount, 1);
-  assert.equal(harness.document.activeElement, returnFocus);
 
-  harness.context.__plannerTestHooks.openStartNowDialog();
-  const newerOverlay = harness.document.overlay;
-  harness.context.__plannerTestHooks.closePlannerOverlay(firstOverlay);
-  assert.equal(newerOverlay.isConnected, true, 'a stale completion must not close a newer dialog');
-  harness.context.__plannerTestHooks.closePlannerOverlay(newerOverlay);
-  assert.equal(destroyCount, 2);
+  await settlePlannerLoad();
+  assert.equal(mounts.length, 1, 'board refreshes must not remount (and wipe) the live composer');
+  assert.equal(mounts[0].destroyed, false);
+
+  dispatchPlannerAction(harness.globalRoot, 'mode', { mode: 'activity' });
+  assert.equal(composerBar.style.display, 'none', 'quick create only belongs to the task list');
+  dispatchPlannerAction(harness.globalRoot, 'mode', { mode: 'tasks' });
+  assert.equal(composerBar.style.display, '');
+  assert.equal(mounts.length, 1);
 });
 
 test('Fleet planner mount is isolated and unmount or global navigation restores every Fleet', async () => {
@@ -699,7 +618,7 @@ test('Fleet planner keeps body-only observed tasks in every referenced Fleet', a
   assert.doesNotMatch(fleetRoot.innerHTML, />Fleet A</);
 });
 
-test('TODO and Board share one six-bucket projection with explicit source filtering', async () => {
+test('task list groups by module and status filters are multi-select', async () => {
   const { context, globalRoot, storage } = createPlannerHarness();
   context.setView('tasks');
   await settlePlannerLoad();
@@ -762,57 +681,47 @@ test('TODO and Board share one six-bucket projection with explicit source filter
     ok: true, revision: 2, modules: [], tasks,
   }), true);
 
-  // Independent tasks are the default view; changing the source is persisted.
-  assert.match(globalRoot.innerHTML, /Todo board/);
-  assert.doesNotMatch(globalRoot.innerHTML, /Attention session/);
+  const visibleIds = ['attention-board', 'attention-session', 'done-board', 'next-board',
+    'observed-idle', 'observed-succeeded', 'reopened-board', 'review-board', 'running-board',
+    'running-session', 'succeeded-board', 'todo-board'].sort();
+
+  // All non-archived tasks land in one module group, regardless of origin or
+  // record type; only the archived row stays out.
+  assert.deepEqual(articleTaskIds(globalRoot.innerHTML, 'planner-task-row'), visibleIds);
+  assert.match(globalRoot.innerHTML, /data-module-id="__unassigned__"/);
+  assert.match(globalRoot.innerHTML, /1 个模块 · 12 个任务/);
+  assert.doesNotMatch(globalRoot.innerHTML, /Archived outside workspace/);
+
+  // Status chips carry live counts over the unfiltered (but scoped) list.
+  assert.match(globalRoot.innerHTML, /data-status-filter="attention"><span>[^<]*<\/span><strong>1<\/strong>/);
+  assert.match(globalRoot.innerHTML, /data-status-filter="running"><span>[^<]*<\/span><strong>2<\/strong>/);
+  assert.match(globalRoot.innerHTML, /data-status-filter="review"><span>[^<]*<\/span><strong>2<\/strong>/);
+  assert.match(globalRoot.innerHTML, /data-status-filter="error"><span>[^<]*<\/span><strong>1<\/strong>/);
+
+  // Origin switching is persisted and re-filters the same list.
   dispatchPlannerAction(globalRoot, 'origin', { origin: 'session' });
   assert.equal(storage.get('multicc_task_center_origin'), 'session');
-  assert.match(globalRoot.innerHTML, /Attention session/);
-  assert.match(globalRoot.innerHTML, /Running session/);
-  assert.doesNotMatch(globalRoot.innerHTML, /Todo board|Observed succeeded archive only|Observed idle archive only/);
-
+  assert.deepEqual(articleTaskIds(globalRoot.innerHTML, 'planner-task-row'),
+    ['attention-session', 'observed-idle', 'observed-succeeded', 'running-session'].sort());
   dispatchPlannerAction(globalRoot, 'origin', { origin: 'all' });
-  const expectedIds = [
-    'attention-board', 'attention-session', 'next-board', 'reopened-board',
-    'review-board', 'running-board', 'running-session', 'succeeded-board', 'todo-board',
-    'done-board',
-  ].sort();
-  assert.deepEqual(articleTaskIds(globalRoot.innerHTML, 'planner-todo-row'), expectedIds);
 
-  const groupHtml = bucket => {
-    const match = globalRoot.innerHTML.match(new RegExp(
-      `<section class="planner-todo-group" data-bucket="${bucket}">([\\s\\S]*?)<\\/section>`,
-    ));
-    return match ? match[1] : '';
-  };
-  const expectedByBucket = {
-    todo: ['Todo board'],
-    attention: ['Attention board', 'Attention session'],
-    running: ['Running board', 'Running session'],
-    next: ['Next board', 'Reopened board'],
-    review: ['Review board', 'Succeeded board'],
-    done: ['Done remains visible'],
-  };
-  for (const [bucket, titles] of Object.entries(expectedByBucket)) {
-    const bucketMarkup = groupHtml(bucket);
-    assert.ok(bucketMarkup, `missing ${bucket} group`);
-    for (const title of titles) assert.match(bucketMarkup, new RegExp(title));
-  }
-  for (const task of tasks.filter(item => expectedIds.includes(item.id))) {
-    assert.equal((globalRoot.innerHTML.match(new RegExp(`>${task.title}<`, 'g')) || []).length, 1,
-      `${task.id} must belong to exactly one TODO bucket`);
-  }
+  // Multi-select: waiting lives under "attention", hard errors under "error".
+  dispatchPlannerAction(globalRoot, 'status-filter', { statusFilter: 'attention' });
+  assert.deepEqual(articleTaskIds(globalRoot.innerHTML, 'planner-task-row'), ['attention-board']);
+  assert.match(globalRoot.innerHTML, /aria-pressed="true" data-action="status-filter" data-status-filter="attention"/);
+  dispatchPlannerAction(globalRoot, 'status-filter', { statusFilter: 'error' });
+  assert.deepEqual(articleTaskIds(globalRoot.innerHTML, 'planner-task-row'),
+    ['attention-board', 'attention-session']);
+  dispatchPlannerAction(globalRoot, 'status-filter', { statusFilter: 'attention' });
+  assert.deepEqual(articleTaskIds(globalRoot.innerHTML, 'planner-task-row'), ['attention-session']);
+  dispatchPlannerAction(globalRoot, 'status-filter', { statusFilter: 'error' });
+  assert.deepEqual(articleTaskIds(globalRoot.innerHTML, 'planner-task-row'), visibleIds);
 
-  // Switching presentation must not change membership or silently resurrect
-  // completed/idle observed rows into the work queue.
-  dispatchPlannerAction(globalRoot, 'mode', { mode: 'board' });
-  assert.deepEqual(articleTaskIds(globalRoot.innerHTML, 'planner-card'), expectedIds);
-  assert.match(globalRoot.innerHTML, /data-bucket="done"[\s\S]*Done remains visible/);
-  assert.doesNotMatch(globalRoot.innerHTML, /Archived outside workspace/);
-  assert.doesNotMatch(globalRoot.innerHTML, /Observed succeeded archive only|Observed idle archive only/);
+  // The record view keeps completed/idle observed rows for audit.
   dispatchPlannerAction(globalRoot, 'mode', { mode: 'activity' });
   assert.match(globalRoot.innerHTML, /Observed succeeded archive only/);
   assert.match(globalRoot.innerHTML, /Observed idle archive only/);
+  assert.doesNotMatch(globalRoot.innerHTML, /Archived outside workspace/);
 });
 
 test('the 60-second task-board poll feeds its snapshot into the planner', async () => {
@@ -848,22 +757,23 @@ test('the 60-second task-board poll feeds its snapshot into the planner', async 
 });
 
 test('planner preserves navigation context and keeps task actions in scope', () => {
-  assert.match(js, /function captureRenderState\(\)[\s\S]*?boardLeft[\s\S]*?todoTop[\s\S]*?columnScroll[\s\S]*?searchFocused/);
-  assert.match(js, /function restoreRenderState\(saved\)[\s\S]*?scrollLeft = saved\.boardLeft[\s\S]*?todoScroll\.scrollTop = saved\.todoTop[\s\S]*?list\.scrollTop = saved\.columnScroll\[bucket\]/);
+  assert.match(js, /function captureRenderState\(\)[\s\S]*?historyTop[\s\S]*?taskTop[\s\S]*?searchFocused/);
+  assert.match(js, /function restoreRenderState\(saved\)[\s\S]*?scrollTop = saved\.historyTop[\s\S]*?scrollTop = saved\.taskTop/);
   assert.match(js, /renderState: captureRenderState\(\)/);
-  assert.match(js, /planner-card-attention-action[\s\S]*?data-action="open-chat"/);
+  assert.match(js, /planner-task-primary[\s\S]*?data-action="open-chat"/);
   assert.match(js, /kind === 'open-chat'[\s\S]*?window\.open\(`\/chat\.html\?task=/);
   assert.match(js, /topbarRefresh\.onclick = \(\) => loadPlanner\(\{ refreshDirectories: true \}\)/);
   assert.match(html, /class="search planner-hide-on-tasks"/);
   assert.match(css, /body\[data-view="tasks"\] #topbar \.planner-hide-on-tasks\s*\{\s*display: none/);
 });
 
-test('planner columns scroll independently and dynamic regions have bounded announcements', () => {
-  assert.match(css, /\.planner-board-scroll\s*\{[\s\S]*?overflow-x: auto;[\s\S]*?overflow-y: hidden;/);
-  assert.match(css, /\.planner-card-list\s*\{[\s\S]*?overflow-y: auto;[\s\S]*?overscroll-behavior: contain;/);
+test('the task list scrolls in its own region and dynamic regions have bounded announcements', () => {
+  assert.match(css, /\.planner-shell-host\s*\{[\s\S]*?min-height: 0;/);
+  assert.match(css, /\.planner-task-list\s*\{[\s\S]*?overflow: auto;/);
+  assert.match(css, /\.planner-status-filter\s*\{[\s\S]*?overflow-x: auto;/);
   assert.doesNotMatch(html, /id="task-planner-root"[^>]*aria-live/);
   assert.doesNotMatch(dashboardJs, /fleet-task-planner-root[^']*aria-live/);
-  assert.match(js, /id="planner-new-form" role="dialog" aria-modal="true" aria-labelledby="planner-new-todo-heading"/);
+  assert.match(js, /<aside class="planner-drawer" role="dialog" aria-modal="true"/);
   assert.match(js, /const mainA11y = `role="tabpanel" aria-labelledby="planner-mode-\$\{state\.mode\}"`/);
   assert.match(js, /role="status" aria-live="polite" aria-atomic="true"/);
 });
@@ -879,20 +789,21 @@ test('planner refresh and responsive access paths are wired', () => {
   assert.match(css, /@media \(max-width: 760px\)/);
   assert.match(css, /\.planner-toolbar-group\.actions\s*\{[^}]*order: 2;[^}]*width: 100%;[^}]*justify-content: flex-end;/);
   assert.match(css, /\.planner-select\s*\{\s*min-width: 0;/);
-  assert.match(css, /\.planner-board\s*\{\s*display: block;[\s\S]*?\.planner-column\s*\{\s*display: flex;/);
-  assert.doesNotMatch(css, /\.planner-column\.is-mobile-active/);
+  assert.match(css, /\.planner-task-row\s*\{\s*grid-template-columns: 8px minmax\(0, 1fr\);/);
+  assert.match(css, /\.planner-quick-create\s*\{\s*padding-inline: 10px;/);
+  assert.doesNotMatch(css, /\.planner-todo-|\.planner-board|\.planner-column|\.planner-card[\s,{.]|\.planner-work-bucket|\.planner-start-|\.planner-dialog/);
 });
 
 test('planner copy is present in both generated source catalogs', () => {
   const required = [
-    'plannerTaskCenter', 'plannerTodoList', 'plannerBoard', 'plannerHistory',
+    'plannerTaskCenter', 'plannerTasks', 'plannerHistory',
     'plannerSource', 'plannerSourceAll', 'plannerSourceBoard', 'plannerSourceSession',
-    'plannerWorkOverview', 'plannerBucketTodo', 'plannerBucketAttention',
-    'plannerBucketRunning', 'plannerBucketNext', 'plannerBucketReview', 'plannerBucketDone',
-    'plannerNewTodo', 'plannerStartNewNow', 'plannerNewTodoTitle',
-    'plannerNewTodoSubtitle', 'plannerTodoInput', 'plannerTodoPlaceholder', 'plannerTodoHint',
-    'plannerAddTodo', 'plannerStartNowTitle', 'plannerStartNowSubtitle',
-    'plannerStartNowPlaceholder', 'plannerAcceptance',
+    'plannerStatusFilter', 'plannerFilterAttention', 'plannerFilterRunning',
+    'plannerFilterReview', 'plannerFilterError',
+    'plannerQuickCreate', 'plannerQuickCreateHint', 'plannerQuickCreatePlaceholder',
+    'plannerQuickCreateWorkspace',
+    'plannerTaskSummary', 'plannerTaskEmptyTitle', 'plannerTaskEmptyBody',
+    'plannerRelatedTasks', 'plannerLegacyTasks', 'plannerAcceptance',
     'plannerAnswerQuestion', 'plannerInspectError', 'plannerStartQuick', 'plannerCompleteQuick',
   ];
   for (const key of required) {
@@ -900,8 +811,20 @@ test('planner copy is present in both generated source catalogs', () => {
     assert.equal(typeof en[key], 'string', `missing en.${key}`);
     assert.ok(zh[key].length > 0 && en[key].length > 0, `empty planner copy: ${key}`);
   }
-  assert.equal(zh.plannerNewTodo, '＋ 新建 TODO');
-  assert.equal(en.plannerNewTodo, '+ New TODO');
-  assert.equal(zh.plannerStartNewNow, '▶ 立即开始新 TODO');
-  assert.equal(en.plannerStartNewNow, '▶ Start new TODO now');
+  // The two source catalogs must carry identical planner key sets.
+  const zhPlanner = Object.keys(zh).filter(key => key.startsWith('planner')).sort();
+  const enPlanner = Object.keys(en).filter(key => key.startsWith('planner')).sort();
+  assert.deepEqual(zhPlanner, enPlanner);
+  // Retired TODO/board copy stays out of the catalogs.
+  for (const dead of ['plannerTodoList', 'plannerBoard', 'plannerNewTodo', 'plannerStartNewNow',
+    'plannerWorkOverview', 'plannerBucketTodo', 'plannerAddTodo', 'plannerPromoted']) {
+    assert.equal(zh[dead], undefined, `retired copy still in zh: ${dead}`);
+    assert.equal(en[dead], undefined, `retired copy still in en: ${dead}`);
+  }
+  assert.equal(zh.plannerTasks, '任务');
+  assert.equal(en.plannerTasks, 'Tasks');
+  assert.equal(zh.plannerFilterAttention, '需要我');
+  assert.equal(en.plannerFilterAttention, 'Needs me');
+  assert.equal(zh.plannerQuickCreate, '快速新建任务');
+  assert.equal(en.plannerQuickCreate, 'Quick task');
 });
