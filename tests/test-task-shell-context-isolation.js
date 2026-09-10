@@ -208,7 +208,14 @@ const calls = () => fs.existsSync(mcpCalls) ? fs.readFileSync(mcpCalls, 'utf8').
     await wait(() => answerOf(sa.id, TB.id, '8899'), 'task B answer missing');
     // Native isolation: one shell worktree + distinct native CLI session ids.
     const paths = createPaths({ dataDir });
-    const sessions = readJson(paths.sessionsFile, { legacyIsArray: true }).data;
+    // The assistant message can arrive before the debounced native-session
+    // persistence. Observe that durable boundary instead of racing its timer.
+    const sessions = await wait(() => {
+      if (!fs.existsSync(paths.sessionsFile)) return null;
+      const saved = readJson(paths.sessionsFile, { legacyIsArray: true }).data;
+      return saved.find(s => s.id === TA.sessionId)?.cliSessionId
+        && saved.find(s => s.id === TB.sessionId)?.cliSessionId && saved;
+    }, 'native execution identities were not persisted');
     const recA = sessions.find(s => s.id === TA.sessionId), recB = sessions.find(s => s.id === TB.sessionId);
     assert.ok(recA && recB, 'both execution sessions must be persisted');
     assert.equal(recA.worktreePath, recB.worktreePath, 'tasks in the same shell share its worktree');

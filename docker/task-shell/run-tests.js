@@ -10,6 +10,7 @@ const suites = [
   ['--test', 'tests/test-task-shells.js', 'tests/test-task-shell-http.js',
     'tests/test-shell-chat-continuity.js', 'tests/test-task-shell-ownership.js', 'tests/test-task-shell-transitions.js'],
   ['--test', 'tests/test-session-work-scheduler.js', 'tests/test-session-work-host.js',
+    'tests/test-cancel-state-flow.js',
     'tests/test-user-input-answer-delivery.js', 'tests/test-task-context-host.js', 'tests/test-task-bound-session.js'],
   ['tests/test-task-shell-isolated.js'],
   ['tests/test-task-shell-context-isolation.js'],

@@ -11,6 +11,13 @@ if (!process.argv.includes('exec')) {
 } else {
   const prompt = process.argv.at(-1) || '';
   const sessionId = process.env.MULTICC_SESSION_ID || 'standalone';
+  const nativeId = 'lab-' + sessionId;
+  // The real resume guard requires a native record, even for this protocol fixture.
+  const sessionsDir = path.join(process.env.CODEX_HOME || path.join(require('node:os').homedir(), '.codex'), 'sessions');
+  fs.mkdirSync(sessionsDir, { recursive: true });
+  const rollout = path.join(sessionsDir, 'rollout-' + nativeId + '.jsonl');
+  if (!fs.existsSync(rollout)) fs.writeFileSync(rollout,
+    JSON.stringify({ type: 'session_meta', payload: { id: nativeId, cwd: process.cwd() } }) + '\n');
   const emit = value => console.log(JSON.stringify(value));
   // Put the marker on the final user line; historical markers must not re-hold.
   const lines = prompt.split('\n').map(s => s.trim());
@@ -24,7 +31,7 @@ if (!process.argv.includes('exec')) {
       promptHash: createHash('sha256').update(prompt).digest('hex'),
     }) + '\n');
   }
-  emit({ type: 'thread.started', thread_id: 'lab-' + sessionId });
+  emit({ type: 'thread.started', thread_id: nativeId });
   setTimeout(() => {
     if (marker === 'LAB_FAIL') {
       emit({ type: 'error', message: 'Intentional Docker lab CLI failure' });
