@@ -206,6 +206,7 @@ function createTurnFinalizationExecutor(rawPorts) {
     if (!plan.append || !plan.append.required) {
       const resolved = resolveTurnFinalization(plan, { resultDurable: context.turn.resultDurable });
       applyAll(resolved.effects);
+      ports.recordRunResult?.(context, resolved);
       return Object.freeze({
         resolved,
         appendPersisted: false,
@@ -228,6 +229,7 @@ function createTurnFinalizationExecutor(rawPorts) {
     const resolvedBoundary = resolved.effects.findIndex(entry => entry.type === 'append-assistant-result');
     if (resolvedBoundary < 0) throw new Error('resolved finalization append boundary missing');
     applyAll(resolved.effects.slice(resolvedBoundary + 1));
+    ports.recordRunResult?.(context, resolved);
     return Object.freeze({
       resolved,
       appendPersisted: context.appendPersisted,

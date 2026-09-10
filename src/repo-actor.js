@@ -144,7 +144,7 @@ class RepoActor {
             killSignal: 'SIGKILL',
             env: { ...NONINTERACTIVE_ENV, ...(execOptions.env || {}) },
           });
-          return String(result.stdout || '').trim();
+          return execOptions.raw === true ? String(result.stdout || '') : String(result.stdout || '').trim();
         } catch (error) {
           if (error && error.stderr != null) error.stderr = String(error.stderr);
           throw error;

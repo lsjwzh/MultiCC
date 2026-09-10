@@ -13,6 +13,7 @@ const processAlive = proc => !!proc && proc.exitCode == null && proc.signalCode 
 function createWorkspaceAdmission(deps) {
   const store = createTaskShellStore(deps.file);
   const registry = createWorkspaceRegistry(store, deps.budgets);
+  const evidence = require('../task-routing/evidence').createDeliveryEvidence(store);
   const permits = new WeakSet(), active = new Map();
   let closed = false;
   const settleTimer = setInterval(() => { for (const [id, permit] of active) if (permit.terminal) void drain(id, permit); }, 1000);
@@ -99,6 +100,7 @@ function createWorkspaceAdmission(deps) {
     permits.add(permit); active.set(descriptor.sessionId, permit);
     try {
       await materialize(descriptor.sessionId, lease);
+      await require('../task-shell/role-bindings').prepareRoleContext(store, descriptor, deps);
       descriptor.opts.workspacePermit = permit;
       return { complete(outcome) {
         if (outcome.accepted && registry.lease(workspace.id)?.state !== 'reserved') {
@@ -127,15 +129,41 @@ function createWorkspaceAdmission(deps) {
     const lease = registry.lease(permit.lease.workspaceId);
     if (!['reserved', 'starting', 'running'].includes(lease.state)) throw failure('workspace_lease_unavailable');
   }
-  function starting(id, opts) {
+  function starting(id, opts, attemptId) {
     assertPermit(id, opts); const permit = active.get(id);
-    if (permit) registry.transition(permit.lease, 'starting');
+    if (permit) {
+      if (attemptId && permit.evidenceBound) evidence.attempt(permit.turnId, attemptId);
+      permit.attemptId = attemptId || null;
+      registry.transition(permit.lease, 'starting');
+    }
   }
   function spawned(id, proc) {
     const permit = active.get(id); if (permit) registry.transition(permit.lease, 'running', { pid: proc?.pid || null });
   }
-  function bindTurn(id, opts, turnId) {
-    assertPermit(id, opts); const permit = active.get(id); if (permit) permit.turnId = turnId;
+  function bindTurn(id, opts, turnId, taskId) {
+    assertPermit(id, opts); const permit = active.get(id);
+    if (permit) {
+      permit.turnId = turnId;
+      if (taskId) {
+        const w = registry.workspace(permit.lease.workspaceId), source = owner(id);
+        evidence.begin({ sessionId: id, turnId, taskId, receiptId: opts.taskShellReceiptId || null, roleSnapshotId: opts.taskRoleSnapshotId || null,
+          workspaceId: w.id, workspacePath: w.path, baseRef: w.baseRef || deps.directories.get(source.dirId).baseBranch || 'main' });
+        permit.evidenceBound = true;
+      }
+    }
+  }
+  function finalized(context, resolved) {
+    const permit = active.get(context.sessionName);
+    if (!permit?.evidenceBound || permit.turnId !== context.turn?.turnId || permit.evidencePending) return;
+    const succeeded = !context.terminalBlocked && resolved.effects.some(e => e.type === 'classify-turn-end' && e.classification === 'succeeded');
+    const pending = deps.pendingInput?.(context.sessionName);
+    const outcome = pending ? 'waiting' : succeeded ? 'succeeded'
+      : ['user_cancel', 'new_user_message'].includes(resolved.facts.killReason) || resolved.facts.completion?.state === 'cancelled' ? 'cancelled'
+        : resolved.facts.completion?.state === 'failed' || resolved.facts.apiError || resolved.facts.adapterError ? 'failed' : 'unknown';
+    permit.evidencePending = evidence.finalize(permit.turnId, { attemptId: context.runner.providerAttempt?.routeAttemptId,
+      outcome, pendingInput: !!pending, resultDurable: context.turn.resultDurable === true, usageDurable: context.usageDurable === true })
+      .catch(error => deps.log('delivery_evidence_failed', { sessionId: context.sessionName, code: error.code || 'evidence_write_failed' }))
+      .finally(() => { permit.evidencePending = null; void drain(context.sessionName, permit); });
   }
   function optionsForTurn(id, turn) {
     const permit = active.get(id);
@@ -143,7 +171,7 @@ function createWorkspaceAdmission(deps) {
     return { workspacePermit: permit, deliveryId: permit?.deliveryId };
   }
   async function drain(id, permit) {
-    if (closed || active.get(id) !== permit || permit.draining || isLive(id)) return;
+    if (closed || active.get(id) !== permit || !permit.terminal || permit.draining || permit.evidencePending || isLive(id)) return;
     permit.draining = true;
     try {
       // A warm native process also owns its directory. Close and confirm it
@@ -158,7 +186,18 @@ function createWorkspaceAdmission(deps) {
   function settled(id, outcome) {
     const permit = active.get(id); if (!permit) return;
     permit.terminal = outcome || { status: 'stopped' };
-    queueMicrotask(() => { void drain(id, permit); });
+    queueMicrotask(() => {
+      // Forced cancellation may never reach the normal runner finalizer. It
+      // can record cancellation, but cannot turn scheduler completion into success.
+      if (permit.evidenceBound && permit.attemptId && !permit.evidencePending
+        && ['cancelled', 'failed'].includes(permit.terminal.status) && !evidence.deliveryFinalized?.(permit.turnId)) {
+        permit.evidencePending = evidence.finalize(permit.turnId, { attemptId: permit.attemptId,
+          outcome: permit.terminal.status, resultDurable: false, usageDurable: false, pendingInput: !!deps.pendingInput?.(id) })
+          .catch(error => deps.log('delivery_evidence_failed', { sessionId: id, code: error.code || 'evidence_write_failed' }))
+          .finally(() => { permit.evidencePending = null; void drain(id, permit); });
+      }
+      void drain(id, permit);
+    });
   }
   function initialize() {
     for (const record of deps.records.values()) {
@@ -167,7 +206,9 @@ function createWorkspaceAdmission(deps) {
     // PID absence does not prove descendant/background writers stopped.
     registry.recover(() => 'unknown');
   }
-  return { identify, occupied, beforeDeliver, assertPermit, starting, spawned, settled, bindTurn, optionsForTurn, initialize,
+  return { identify, occupied, beforeDeliver, assertPermit, starting, spawned, settled, bindTurn, finalized, optionsForTurn, initialize,
+    mergeHooks: id => evidence.hooks(id), recoverEvidence: id => evidence.recover(id),
+    deliveryEvidence: (id, turnId) => evidence.summary(id, turnId), verifyBaseline: (receipt, cwd) => evidence.verifyBaseline(receipt, cwd),
     capacityReason: id => registry.available(id), snapshot: () => registry.snapshot(), close: () => { closed = true; clearInterval(settleTimer); store.close(); } };
 }
 module.exports = { createWorkspaceAdmission };
