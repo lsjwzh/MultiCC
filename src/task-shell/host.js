@@ -140,6 +140,10 @@ function createTaskShellHost(deps) {
   }
   return {
     mountRoutes: app => mountTaskShellRoutes(app, { getRuntime, open,
+      artifacts: async id => {
+        const { collectTaskArtifacts, artifactFileExists } = require('./artifacts');
+        return collectTaskArtifacts(await getRuntime().taskEntry(id), require('../docs-registry').list(), artifactFileExists);
+      },
       history: (id, options) => shellHistoryPage(getRuntime().chatScope(id),
         deps.displayHistory || deps.loadHistory, deps.getChatState, options) }),
     chatScope: (id, sessionId) => getRuntime().chatScope(id, sessionId),
@@ -160,6 +164,7 @@ function createTaskShellHost(deps) {
       return owner?.owns(id) ? owner.guardAdmission(id, text, options) : { ok: false, code: 'task_shell_state_unavailable' };
     },
     accepts, open, owns, sendFromSession, sendClientInput,
+    artifactTaskId: id => getRuntime().owns(id)?.id || deps.records.get(id)?.taskBoundTaskId || null,
     stateTarget: id => getRuntime().stateTarget(id), stateSources: id => getRuntime().stateSources(id),
     purgeTasks: ids => getRuntime().purgeTasks(ids),
     recentTasks: (id, receiptId) => getRuntime().recentTasks(id, receiptId),

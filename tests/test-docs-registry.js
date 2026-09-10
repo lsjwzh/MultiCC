@@ -132,6 +132,23 @@ test('store persists to docs_registry.json under MULTICC_DATA_DIR', () => {
   reset();
 });
 
+test('publication records its generating task and keeps it when an unscoped update arrives', () => {
+  reset();
+  const app = fakeApp();
+  reg.mount(app, { artifactExists: () => true, resolveTaskId: id => id === 'execution-a' ? 'tsk_a' : null });
+  const post = app.handlers.find(h => h.method === 'POST').h;
+  const body = { kind: 'page', title: 'Task output', url: '/artifacts/scoped/index.html', sessionId: 'execution-a' };
+  const created = invoke(post, { body }).body;
+  assert.equal(created.taskId, 'tsk_a');
+  invoke(post, { body: { title: 'Updated title', url: body.url } });
+  const stored = JSON.parse(fs.readFileSync(path.join(tmp, 'docs_registry.json'), 'utf8'))[0];
+  assert.equal(stored.taskId, 'tsk_a');
+  assert.equal(stored.sessionId, 'execution-a');
+  const list = reg.list(); list[0].title = 'not persistent';
+  assert.equal(reg.list()[0].title, 'Updated title');
+  reset();
+});
+
 test('service supervision: probe flips status, lsof adopts the listener pid', async () => {
   reset();
   const net = require('net');
