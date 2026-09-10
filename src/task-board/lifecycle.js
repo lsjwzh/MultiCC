@@ -51,7 +51,9 @@ function createTaskLifecycle({ getBoard, resolveTask, taskIdentityIds, commit, t
       });
       if (!result.ok) return fail(res, result.error, 500);
       notify(dirId, ids);
-      return res.json({ ok: true, task: taskDto(resolveTask(task.id)), revision: getBoard().revision });
+      // Legacy /status callers also reach archive/restore here; neither releases a session.
+      return res.json({ ok: true, releasedSession: false, releasedSessions: 0,
+        task: taskDto(resolveTask(task.id)), revision: getBoard().revision });
     } catch (error) { return fail(res, error.code || error.message || 'task_lifecycle_failed'); }
     finally { pending.delete(task.id); }
   }
