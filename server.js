@@ -257,7 +257,7 @@ let chatHistoryService = null;
 // This runtime deliberately owns preparation only. The established streaming
 // and per-process runners keep their existing lifecycle after spawn is accepted.
 const chatTurnPreparationRuntime = createTurnRuntimeStore();
-let orchestrationRuntime = null; let taskRunHost = null; let sessionWorkHost = null; let sessionHibernationRuntime = null;
+let orchestrationRuntime = null; let taskRunHost = null; let sessionWorkHost = null; let sessionHibernationRuntime = null; let workspaceAdmission = null;
 const observability = createObservability({ service: 'multicc' });
 const { logger, metrics } = observability;
 const apiErrorPolicy = createApiErrorPolicyRuntime({ logger, metrics });
@@ -1543,106 +1543,11 @@ memoModule.migrateLegacy().done.catch(error => console.log(`[memo] migration fai
 
 // Create + persist an isolated session record (its own git worktree + branch).
 // Shared creation boundary; an explicit id creates or reuses a named session.
-async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, providerSelection = null, effort = null, agent = null, rolePrompt = null, rolePresetId = null, type = null, taskExecutionSlot = false, experimentalMode = null, loginFlow = null, loginEnv = null, persistence = 'bestEffort', persistenceSource = 'runtime.create-session', taskBoundTaskId = null, autoCommit = true, workspaceOwnerSessionId = null, workspaceBaseCommit = null }) {
-  if (!dir) return { ok: false, error: 'directory not found' };
-  if (!SUPPORTED_CHAT_CLIS.includes(cli)) return { ok: false, error: `cli must be ${SUPPORTED_CHAT_CLIS.join(', ')}` };
-  if (!['terminal', 'chat'].includes(kind)) return { ok: false, error: 'kind must be terminal or chat' };
-  const loginFlowCli = { 'codex-login': 'codex', 'claude-auth-login': 'claude' }[loginFlow] || null;
-  if (loginFlow && (loginFlowCli !== cli || kind !== 'terminal')) return { ok: false, error: 'loginFlow only supports whitelisted interactive login terminal sessions' };
-  const experiment = validateExperimentalSession({ enabled: tuiChatMirrorEnabled(), cli, kind, experimentalMode });
-  if (!experiment.ok) return experiment;
-  // Model can be set for both Claude and Codex sessions. Claude terminal mode
-  // interpolates it into a shell command, so keep the charset tight; Codex uses
-  // the same id shape in config.toml.
-  if (model && !/^[A-Za-z0-9._:\/\[\]-]{1,100}$/.test(model)) {
-    return { ok: false, error: 'invalid model' };
-  }
-  const effortLevel = normalizeEffort(effort);
-  if (effortLevel === undefined) return { ok: false, error: 'invalid effort' };
-  if (!validEffortForCli(cli, effortLevel)) return { ok: false, error: 'invalid reasoning level' };
-  const sessionEffort = effortLevel || (cli === 'codex' ? codexDefaultReasoningLevel() : null);
-  const sessionAgent = normalizeCliAgent(cli, agent);
-  if (sessionAgent === undefined) return { ok: false, error: 'invalid agent' };
-  const rp = rolePrompt == null ? null : String(rolePrompt).trim();
-  if (rp && rp.length > 40000) return { ok: false, error: 'rolePrompt too long (max 40000)' };
-  // Provider override (cc-switch). An explicit value is validated; when omitted
-  // the session inherits the global default for this CLI. null = use the default
-  // login / OAuth subscription.
-  const autoSelection = validateProviderSelection(providerSelection, { cli, providers }); if (!autoSelection.ok) return { ok: false, error: autoSelection.error }; let providerId;
-  if (provider === undefined) {
-    providerId = primaryProviderCandidate(autoSelection.value)?.providerId || providerDefaults[cli] || null;
-  } else {
-    const v = validProviderId(cli, provider);
-    if (!v.ok) return { ok: false, error: 'invalid provider' }; if (autoSelection.value && !autoSelection.value.candidates.some(candidate => candidate.enabled && candidate.providerId === v.value)) return { ok: false, error: 'Auto Provider fallback must be an enabled candidate' };
-    providerId = v.value;
-  }
-  if (loginFlow) providerId = null;
-  else providerId = providers.normalizeOfficialProviderId(cli, providerId);
-  const sid = id || allocateSessionId(dir, cli, kind);
-  if (persistedSessions.has(sid)) return { ok: true, id: sid, session: persistedSessions.get(sid), reused: true };
-
-  // Every session is isolated — make sure the directory is a git repo, then give the
-  // session its own worktree + branch.
-  const ready = await ensureDirGitReady(dir);
-  if (!ready.ok) return { ok: false, error: friendlyDirReason(ready.reason) };
-  let worktreePath = path.join(dir.path, WORKTREE_SUBDIR, sid);
-  let branch = `multicc/${sid}`;
-  const rollbackOptions = { sessionId: sid, baseBranch: dir.baseBranch };
-  try {
-    ({ worktreePath, branch } = workspaceOwnerSessionId
-      ? require('./src/task-shell/workspace').sharedWorkspace(persistedSessions, workspaceOwnerSessionId, dir.id)
-      : await gitWorktreeAdd(dir.path, sid, workspaceBaseCommit || dir.baseBranch));
-  } catch (e) {
-    if (!workspaceOwnerSessionId) await gitWorktreeRollbackCreate(dir.path, worktreePath, branch, rollbackOptions);
-    return { ok: false, error: 'worktree 创建失败: ' + e.message };
-  }
-
-  const createdAt = new Date().toISOString();
-  const session = {
-    id: sid,
-    dirId: dir.id,
-    cli, kind,
-    cliSessionId: null,   // claude gets one allocated on spawn; codex captures from first event
-    label,
-    model: model || null, // null = follow default/provider model
-    effort: sessionEffort || null, // null = follow Claude Code/provider default
-    agent: sessionAgent || null, // Claude/OpenCode/Qoder native --agent; unsupported CLIs keep null
-    provider: providerId, providerSelection: autoSelection.value, // concrete manual fallback + optional virtual Auto policy
-    autoCommit: autoCommit !== false, // experiment branches explicitly disable automatic merge
-    // streaming (流式常驻) is now claude's default mode: keep the claude process
-    // alive across turns for faster, context-preserving continuation. Non-claude
-    // CLIs ignore this field. Only claude chat sessions default on.
-    streaming: cli === 'claude' && kind === 'chat',
-    // autoContinue is no longer a user-facing toggle (the picker keeps only the
-    // streaming option). The field stays true for back-compat only; the old
-    // auto-drive mechanisms are retired.
-    autoContinue: true,
-    createdAt, workspaceState: 'awake', lastWorkAt: createdAt,
-    worktreePath, workspaceOwnerSessionId,
-    branch,
-  };
-  if (rp) session.rolePrompt = rp;
-  if (rolePresetId) session.rolePresetId = String(rolePresetId).trim();
-  if (type) session.type = type;   // commander (and future roles) — round-trips via bootstrap/state + session-persistence
-  if (loginFlow) session.loginFlow = loginFlow; const loginEnvChecked = sanitizeLoginEnv(loginEnv, loginFlow); if (!loginEnvChecked.ok) return { ok: false, error: loginEnvChecked.error }; if (loginEnvChecked.env) session.loginEnv = loginEnvChecked.env; // whitelisted interactive login terminal (codex-login) + allowlisted env pins
-  if (type === 'worker' && taskExecutionSlot) session.taskExecutionSlot = true;
-  if (ephemeral) session.ephemeral = true; if (experiment.mode) session.experimentalMode = experiment.mode; if (taskBoundTaskId) session.taskBoundTaskId = String(taskBoundTaskId).slice(0, 120);
-  if (kind === 'chat') ensureCliStates(session);
-  try {
-    if (persistence === 'required') {
-      sessionPersistence.mutate(persistenceSource, records => records.set(sid, session));
-    } else {
-      persistedSessions.set(sid, session);
-      savePersistedSessionsBestEffort(persistenceSource);
-    }
-  } catch (error) {
-    // The record never committed. Remove the just-created worktree so a failed
-    // HTTP create cannot leave either a session ghost or an unowned worktree.
-    if (!workspaceOwnerSessionId) await gitWorktreeRollbackCreate(dir.path, worktreePath, branch, rollbackOptions);
-    throw error;
-  }
-  appendEvent(dir.id, 'session_created', `${cli} ${kind}${ephemeral ? ' (gw)' : ''}`, sid);
-  return { ok: true, id: sid, session };
+function createSessionRecord(input) {
+  return require('./src/session/create-record').createSessionRecordFactory({
+    sharedWorkspace: require('./src/task-shell/workspace').sharedWorkspace,
+    SUPPORTED_CHAT_CLIS, validateExperimentalSession, tuiChatMirrorEnabled, normalizeEffort, validEffortForCli, codexDefaultReasoningLevel, normalizeCliAgent, validateProviderSelection, providers, primaryProviderCandidate, providerDefaults, validProviderId, allocateSessionId, persistedSessions, ensureDirGitReady, friendlyDirReason, WORKTREE_SUBDIR, gitWorktreeAdd, gitWorktreeRollbackCreate, sanitizeLoginEnv, ensureCliStates, sessionPersistence, savePersistedSessionsBestEffort, appendEvent
+  })(input);
 }
 
 const roleWorkerService = createRoleWorkerService({
@@ -2077,7 +1982,7 @@ const {
   trackPendingDistill: _trackPendingMemoryDistill,
 } = memoryRuntime;
 function dispatchTargetBusy(sid, item = null) {
-  return !!sessionWorkHost?.isRunActive(sid) || !!taskRunHost?.isSlotUnavailable(sid, item || {}) || !!defaultRepoActor.isLeased(sid) || taskShellHost.isWorkspaceBusy(sid);
+  return !!workspaceAdmission?.occupied(sid) || !!sessionWorkHost?.isRunActive(sid) || !!taskRunHost?.isSlotUnavailable(sid, item || {}) || !!defaultRepoActor.isLeased(sid) || taskShellHost.isWorkspaceBusy(sid);
 }
 const taskBoardRuntime = createTaskBoardRuntime({
   ...require('./src/task-board/lifecycle-host').createTaskLifecycleHost({ records: persistedSessions, getBoard: () => taskBoardRuntime.getBoard(), getShell: () => taskShellHost, getHistory: id => loadChatHistory(id), getState: id => chatSessions.get(id), getRunState: id => sessionWorkHost.getRunState(id), getHistoryService: () => chatHistoryService, destroySession: destroySessionCascade, directories, persist: () => savePersistedSessionsBestEffort('task-delete') }),
@@ -2516,6 +2421,7 @@ sessionWorkHost = createSessionWorkHost({
   releaseProviderProducers: (sessionId, reason) => providerAttemptRuntime.forceReleaseProducers(sessionId, reason),
   appendMessage: appendChatMessage,
   onTerminalWork: (sessionId, completion) => {
+    workspaceAdmission?.settled(sessionId, completion);
     Promise.resolve(sessionHibernationRuntime?.touchTerminal(sessionId, completion)).catch(error => {
       logger.warn('session_hibernation_terminal_touch_failed', {
         sessionId,
@@ -2572,7 +2478,7 @@ sessionHibernationRuntime = createSessionHibernationRuntime({
     thaw: (dir, record) => gitWorktreeAdd(dir.path, record.id, dir.baseBranch, { sessionId: record.id, requireExistingBranch: true }),
   },
   inspectBlockers: async (id, record) => {
-    const blockers = [], chat = chatSessions.get(id), stream = chatStream.status(id);
+    const blockers = ['workspace_residency_retained'], chat = chatSessions.get(id), stream = chatStream.status(id);
     if (invalidSessions.has(id)) blockers.push('invalid_session');
     if (defaultRepoActor.isLeased(id)) blockers.push('repo_lease');
     if (chat?.isStreaming || chat?.claudeProc || chat?._cancelledProc || chat?._activeRunner) blockers.push('active_cli');
@@ -2598,6 +2504,19 @@ sessionHibernationRuntime = createSessionHibernationRuntime({
   metric: name => metrics.inc(name), logger,
 });
 
+workspaceAdmission = require('./src/workspace/admission').createWorkspaceAdmission({
+  file: MULTICC_PATHS.taskShellDbFile, records: persistedSessions, directories, persistence: sessionPersistence,
+  ensureDir: ensureDirGitReady, addWorktree: gitWorktreeAdd, validate: gitWorktreeValidate,
+  getState: id => chatSessions.get(id), hibernation: () => sessionHibernationRuntime,
+  hasBackground: id => backgroundTaskRuntime.hasLiveBackgroundTasks(id), streamBusy: id => !!chatStream.status(id)?.busy,
+  closePersistent: id => chatStream.closeAndWait(id),
+  updateCwd: (id, cwd) => { const state = chatSessions.get(id); if (state) state.cwd = cwd; },
+  budgets: { executionLimit: Number(process.env.MULTICC_WORKSPACE_RUN_LIMIT || 8), residentLimit: Number(process.env.MULTICC_WORKSPACE_RESIDENT_LIMIT || 128), restoreLimit: Number(process.env.MULTICC_WORKSPACE_RESTORE_LIMIT || 2) },
+  log: (event, data) => logger.warn(event, data),
+});
+
+require('./src/workspace/air-routes').mountAirRoutes(app, { admission: workspaceAdmission, records: persistedSessions, directories, shell: taskShellHost, getBoard: () => taskBoardRuntime.getBoard(), clis: SUPPORTED_CHAT_CLIS });
+
 const tuiChatMirrorRuntime = createTuiChatMirrorRuntime({ enabled: tuiChatMirrorEnabled(), records: persistedSessions, cwdForSession, providerFor, send: sendWs, setSessionStatus, saveBestEffort: source => savePersistedSessionsBestEffort(source), logger });
 
 // Chat turn engine: per-turn + persistent-streaming turn execution, the chat
@@ -2610,7 +2529,7 @@ const chatTurnEngine = createChatTurnEngine({
   getChatHistoryRuntime: () => chatHistoryRuntime,
   getChatHistoryService: () => chatHistoryService,
   getExperimentalTuiChatRuntime: () => tuiChatMirrorRuntime,
-  getSessionHibernation: () => sessionHibernationRuntime,
+  getSessionHibernation: () => sessionHibernationRuntime, getWorkspaceAdmission: () => workspaceAdmission,
   isShuttingDown: () => _shuttingDown,
   getPort: () => PORT,
   getClaudeProxyEnabled: () => CLAUDE_PROXY_ENABLED,
@@ -2717,7 +2636,7 @@ orchestrationRuntime = createOrchestrationRuntime({
   // instead of a worker-wide deadlock (see orchestration-runtime processOutbox).
   isDeliveryLocked: sid => !!persistedSessions.get(sid)?.taskBoundTaskId
     && !!sessionHibernationRuntime?.isLocked?.(taskShellHost.workspaceGroup(sid)),
-  beforeDeliver: async descriptor => { const record = persistedSessions.get(descriptor.sessionId); const guard = record?.taskBoundTaskId ? await sessionHibernationRuntime.acquireDelivery(taskShellHost.workspaceGroup(descriptor.sessionId)) : null; try { await taskRunHost.beforeDeliver(descriptor); return guard; } catch (error) { await guard?.complete({ accepted: false, durable: false }); throw error; } }, beforeFirstTick: ({ sessionScheduler }) => reconcileTaskRunSlotLeases({ store: taskRunStore, records: persistedSessions, persistRecords: savePersistedSessionsBestEffort, resumeCleanup: item => taskRunHost.resumeCleanup(item), resetSlot: item => taskRunHost.resetSlotForRecovery(item), getSchedulerStatus: slotId => sessionScheduler.status(slotId), recoverTerminal: event => taskRunHost.recoverTerminal(event), log: message => logger.warn(message) }),
+  beforeDeliver: async descriptor => { const guard = await workspaceAdmission.beforeDeliver(descriptor); try { await taskRunHost.beforeDeliver(descriptor); return guard; } catch (error) { await guard?.complete({ accepted: false, durable: false }); throw error; } }, beforeFirstTick: ({ sessionScheduler }) => reconcileTaskRunSlotLeases({ store: taskRunStore, records: persistedSessions, persistRecords: savePersistedSessionsBestEffort, resumeCleanup: item => taskRunHost.resumeCleanup(item), resetSlot: item => taskRunHost.resetSlotForRecovery(item), getSchedulerStatus: slotId => sessionScheduler.status(slotId), recoverTerminal: event => taskRunHost.recoverTerminal(event), log: message => logger.warn(message) }),
   getSessionRecoveryState: id => sessionWorkHost.recoveryState(id),
   onSchedulerEvent: event => { sessionWorkHost.onSchedulerEvent(event); void taskRunHost.onSchedulerEvent(event).catch(error => logger.warn('task_run_finalize_failed', { error: error.message })); },
   workerIntervalMs: Math.max(100, Number(process.env.MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS) || 1000),
@@ -2916,7 +2835,7 @@ const { shutdownCoordinator, trackServiceTimer, gracefulShutdown } = createHostL
   qwenAudioSupervisor,
   sessionHibernationRuntime,
 });
-shutdownCoordinator.onClose(() => taskShellHost.close());
+shutdownCoordinator.onClose(() => { taskShellHost.close(); workspaceAdmission.close(); });
 // Terminal error handler: catches errors that reach next(err) or throw out of
 // async handlers wrapped with asyncHandler(). Redacts stacks/stderr, returns a
 // generic {error, requestId} so clients can't fingerprint the filesystem.
@@ -2928,6 +2847,7 @@ app.use(safeErrorHandler(logger));
   // recovery has completed. The work itself is asynchronous, so this gates
   // readiness without blocking timers or other event-loop work.
   await startupRepoReady;
+  workspaceAdmission.initialize();
   await orchestrationRuntime.start();
   workspaceRuntime.hydrateQueueStatuses(await orchestrationRuntime.sessionScheduler.queueSummaries([...persistedSessions.keys()]));
   if (networkPolicy.development) {

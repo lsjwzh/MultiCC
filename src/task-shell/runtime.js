@@ -452,7 +452,7 @@ function createTaskShellRuntime(ports) {
     const needsCapacity = receipt.payload.intent === 'work';
     if (needsCapacity) launching.add(task.id);
     try {
-      if (needsCapacity) await checkCapacity(task);
+      if (needsCapacity && !ports.unifiedAdmission) await checkCapacity(task);
       if (!task.ready) {
         const created = await createExecution(task, task.runtime);
         if (!created?.ok) throw failure(created?.code || 'execution_create_failed', created?.error || 'execution_create_failed', 500);

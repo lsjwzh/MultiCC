@@ -322,6 +322,9 @@ const calls = () => fs.existsSync(mcpCalls) ? fs.readFileSync(mcpCalls, 'utf8').
     await wait(() => answerOf(sa.id, TA.id, 'HOLD_DONE'), 'held A turn never completed');
     console.log(`[case g] concurrent task ${TD.id} refilled A completed context (4271) after waiting for the shared workspace`);
 
+    // Protocol text can precede process exit. A clean restart test joins the
+    // managed writer; crash/unknown leases are intentionally retained.
+    await wait(async () => (await api(`/api/air/tasks/${TA.id}`)).resource.lease === 'idle', 'source lease did not settle');
     // ---- Phase 10: restart -> isolation + lazy refill still hold ----
     await stop();
     await start('1');

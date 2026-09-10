@@ -108,6 +108,48 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
     forks.set(key, operation);
     try { return await operation; } finally { forks.delete(key); }
   }
-  return { ownerOf, taskEntry, taskAccess: access, assertBoardWritable, forkTask };
+  async function createStandalone(input = {}) {
+    if (typeof input.clientMsgId !== 'string' || !/^[\w.:-]{1,160}$/.test(input.clientMsgId)
+        || typeof input.dirId !== 'string' || !ports.getDirectory?.(input.dirId)
+        || typeof input.title !== 'string' || !input.title.trim() || input.title.length > 120) throw fail('invalid_input', 'Directory, title and clientMsgId required', 400);
+    const runtime = Object.fromEntries(['cli', 'model', 'provider', 'effort', 'agent', 'rolePrompt', 'rolePresetId']
+      .filter(k => input[k] !== undefined).map(k => [k, input[k]]));
+    if (!runtime.cli) runtime.cli = 'claude';
+    const checked = await ports.validateTaskRuntime?.(input.dirId, runtime);
+    if (checked?.ok === false) throw fail('invalid_configuration', checked.error || 'Invalid AI configuration', 400);
+    const key = `create_${hash([input.dirId, input.clientMsgId]).slice(0, 40)}`;
+    const fingerprint = hash([input.title.trim(), runtime]);
+    if (forks.has(key)) { await forks.get(key); return createStandalone(input); }
+    const operation = (async () => {
+      let receipt = store.get('task-create', key);
+      if (receipt && receipt.fingerprint !== fingerprint) throw fail('idempotency_conflict');
+      if (receipt?.result) return receipt.result;
+      let task = receipt && store.get('task', receipt.taskId);
+      if (!task) store.transaction(() => {
+        if (store.list('task').filter(t => t.dirId === input.dirId).length >= 200) throw fail('task_shell_task_limit');
+        const taskId = `tsk_${hash(key).slice(0, 32)}`, sessionId = `task-${taskId.slice(4)}`, shellId = `sh_${hash(sessionId).slice(0, 24)}`;
+        task = { id: taskId, dirId: input.dirId, title: input.title.trim(), sessionId, ownerShellId: shellId,
+          snapshotIds: [], ready: false, createdAt: Date.now(), runtime };
+        store.set('task', task.id, task);
+        store.set('shell', shellId, { id: shellId, sourceSessionId: sessionId, dirId: task.dirId,
+          standalone: true, currentTaskId: task.id, defaultTaskId: task.id, cursorVersion: 0, createdAt: task.createdAt });
+        store.set('link', `${shellId}:${task.id}`, { shellId, taskId: task.id });
+        receipt = { taskId: task.id, fingerprint }; store.set('task-create', key, receipt);
+      });
+      // This creates execution metadata only; its workspace remains planned.
+      if (!task.ready) {
+        const created = await createExecution(task, runtime);
+        if (!created?.ok) throw fail(created?.code || 'execution_create_failed', created?.error || 'Invalid AI configuration', 400);
+        task.ready = true; task.baseline = created.baseline; store.set('task', task.id, task);
+      }
+      if (!(await indexTask(task))?.ok) throw fail('task_index_failed');
+      receipt.result = { ok: true, taskId: task.id, sessionId: task.sessionId, shellId: task.ownerShellId,
+        url: `/air?task=${encodeURIComponent(task.id)}&dir=${encodeURIComponent(task.dirId)}` };
+      store.set('task-create', key, receipt); return receipt.result;
+    })();
+    forks.set(key, operation);
+    try { return await operation; } finally { forks.delete(key); }
+  }
+  return { ownerOf, taskEntry, taskAccess: access, assertBoardWritable, forkTask, createStandalone };
 }
 module.exports = { createTaskActions };

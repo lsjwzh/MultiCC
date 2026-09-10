@@ -1,0 +1,173 @@
+'use strict';
+const fs = require('node:fs');
+const path = require('node:path');
+const { execFile } = require('node:child_process');
+const { promisify } = require('node:util');
+const exec = promisify(execFile);
+const { createTaskShellStore } = require('../task-shell/store');
+const { createWorkspaceRegistry } = require('./registry');
+const { WORKTREE_SUBDIR } = require('../git/service');
+const failure = code => Object.assign(new Error(code), { code, status: 409, backpressure: true });
+const processAlive = proc => !!proc && proc.exitCode == null && proc.signalCode == null;
+
+function createWorkspaceAdmission(deps) {
+  const store = createTaskShellStore(deps.file);
+  const registry = createWorkspaceRegistry(store, deps.budgets);
+  const permits = new WeakSet(), active = new Map();
+  let closed = false;
+  const settleTimer = setInterval(() => { for (const [id, permit] of active) if (permit.terminal) void drain(id, permit); }, 1000);
+  settleTimer.unref();
+  const applicable = record => record?.kind === 'chat' && !['aux', 'gateway'].includes(record.type) && !record.taskExecutionSlot && !record.experimentalMode;
+  function owner(id) {
+    const seen = new Set(); let record = deps.records.get(id);
+    while (record?.workspaceOwnerSessionId) {
+      if (seen.has(record.id)) throw failure('workspace_owner_cycle');
+      seen.add(record.id); record = deps.records.get(record.workspaceOwnerSessionId);
+    }
+    if (!record) throw failure('workspace_owner_missing');
+    return record;
+  }
+  function identify(id) {
+    const record = deps.records.get(id);
+    if (!applicable(record)) return null;
+    const source = owner(id), dir = deps.directories.get(source.dirId);
+    if (!dir) throw failure('workspace_directory_missing');
+    const canonicalRoot = fs.realpathSync(dir.path);
+    const declared = source.worktreePath || path.join(canonicalRoot, WORKTREE_SUBDIR || '.multicc-worktrees', source.id);
+    let parent = path.resolve(declared); const tail = [];
+    while (!fs.existsSync(parent)) { tail.unshift(path.basename(parent)); const next = path.dirname(parent); if (next === parent) throw failure('workspace_path_unresolved'); parent = next; }
+    const location = path.join(fs.realpathSync(parent), ...tail);
+    const workspace = registry.register({ ownerId: source.id, dirId: dir.id, path: location,
+      branch: source.branch || `multicc/${source.id}`, baseRef: dir.baseBranch,
+      residency: source.workspaceState === 'planned' ? 'planned' : fs.existsSync(location) ? 'resident' : 'hibernated',
+      // Legacy/external writers are not proven quiescent. This pin prohibits
+      // automatic reclamation; it does not discard existing working files.
+      pins: source.workspaceState === 'planned' ? [] : ['legacy_resident_retained'] });
+    registry.bind(id, workspace.id);
+    return workspace;
+  }
+  function isLive(id) {
+    const state = deps.getState(id);
+    return !!(state?.isStreaming || processAlive(state?.claudeProc) || processAlive(state?._cancelledProc)
+      || state?._activeRunner || deps.hasBackground(id) || deps.streamBusy(id));
+  }
+  function occupied(id) {
+    for (const [sid, permit] of active) if (permit.terminal) void drain(sid, permit);
+    let workspace; try { workspace = identify(id); } catch (_) { return true; }
+    if (!workspace) return false;
+    const source = owner(id);
+    for (const record of deps.records.values()) {
+      if (record.id === id || !applicable(record)) continue;
+      if ((record.workspaceOwnerSessionId || record.id) === source.id && isLive(record.id)) return true;
+    }
+    return !!registry.available(workspace.id);
+  }
+  async function materialize(id, lease) {
+    const source = owner(id), dir = deps.directories.get(source.dirId);
+    if (source.workspaceState === 'planned') {
+      registry.transition(lease, 'materializing');
+      const ready = await deps.ensureDir(dir);
+      if (!ready.ok) throw failure('workspace_repository_not_ready');
+      // gitWorktreeAdd resumes the same branch/path after an interrupted create;
+      // it never rotates a fixed slot or overwrites another task's directory.
+      const result = await deps.addWorktree(dir.path, source.id, source.workspaceBaseCommit || dir.baseBranch);
+      deps.persistence.mutate('workspace.materialize', records => {
+        const current = records.get(source.id);
+        Object.assign(current, result, { workspaceState: 'awake', workspaceId: lease.workspaceId });
+      });
+    } else {
+      const awake = await deps.hibernation().ensureAwake(source.id);
+      if (!awake.ok) throw failure(awake.code || 'workspace_restore_failed');
+    }
+    const current = owner(id);
+    const valid = await deps.validate(dir.path, current.worktreePath, current.branch, { sessionId: current.id });
+    if (!valid.ok) throw failure('workspace_materialization_unverified');
+    const git = args => exec('git', args, { cwd: current.worktreePath, timeout: 15000 }).then(r => r.stdout.trim());
+    const [head, common] = await Promise.all([git(['rev-parse', 'HEAD']), git(['rev-parse', '--git-common-dir'])]);
+    registry.resident(lease, { head, commonDir: fs.realpathSync(path.resolve(current.worktreePath, common)) });
+    deps.updateCwd(id, current.worktreePath);
+    return current;
+  }
+  async function beforeDeliver(descriptor) {
+    const workspace = identify(descriptor.sessionId);
+    if (!workspace) return null;
+    const source = owner(descriptor.sessionId);
+    for (const record of deps.records.values()) if (record.id !== descriptor.sessionId
+      && (record.workspaceOwnerSessionId || record.id) === source.id && isLive(record.id)) throw failure('workspace_busy');
+    const lease = registry.acquire(workspace.id, descriptor.sessionId, descriptor.item.id);
+    const permit = { lease, sessionId: descriptor.sessionId, deliveryId: descriptor.item.id };
+    permits.add(permit); active.set(descriptor.sessionId, permit);
+    try {
+      await materialize(descriptor.sessionId, lease);
+      descriptor.opts.workspacePermit = permit;
+      return { complete(outcome) {
+        if (outcome.accepted && registry.lease(workspace.id)?.state !== 'reserved') {
+          if (registry.lease(workspace.id)?.state === 'starting') registry.transition(lease, 'running');
+          return;
+        }
+        // A launched writer is retained on response loss. Only known pre-launch
+        // rejection can release the claim for a transport retry.
+        const current = registry.lease(workspace.id);
+        if (current?.state === 'reserved' || current?.state === 'materializing') {
+          registry.release(lease, { stopped: true, reason: 'prelaunch_rejected' });
+          if (active.get(descriptor.sessionId) === permit) active.delete(descriptor.sessionId);
+        } else if (current && current.state !== 'released') registry.transition(lease, 'uncertain');
+      } };
+    } catch (error) {
+      if (fs.existsSync(workspace.path)) registry.retain(lease, 'materialization_failed');
+      registry.release(lease, { stopped: true, reason: 'materialization_failed' });
+      active.delete(descriptor.sessionId); throw error;
+    }
+  }
+  function assertPermit(id, opts = {}) {
+    if (!applicable(deps.records.get(id))) return;
+    const permit = opts?.workspacePermit;
+    if (!permits.has(permit) || permit.sessionId !== id || permit.deliveryId !== opts.deliveryId
+      || registry.lease(permit.lease.workspaceId)?.id !== permit.lease.id) throw failure('workspace_admission_required');
+    const lease = registry.lease(permit.lease.workspaceId);
+    if (!['reserved', 'starting', 'running'].includes(lease.state)) throw failure('workspace_lease_unavailable');
+  }
+  function starting(id, opts) {
+    assertPermit(id, opts); const permit = active.get(id);
+    if (permit) registry.transition(permit.lease, 'starting');
+  }
+  function spawned(id, proc) {
+    const permit = active.get(id); if (permit) registry.transition(permit.lease, 'running', { pid: proc?.pid || null });
+  }
+  function bindTurn(id, opts, turnId) {
+    assertPermit(id, opts); const permit = active.get(id); if (permit) permit.turnId = turnId;
+  }
+  function optionsForTurn(id, turn) {
+    const permit = active.get(id);
+    if (applicable(deps.records.get(id)) && (!permit || permit.turnId !== turn?.turnId)) throw failure('workspace_turn_mismatch');
+    return { workspacePermit: permit, deliveryId: permit?.deliveryId };
+  }
+  async function drain(id, permit) {
+    if (closed || active.get(id) !== permit || permit.draining || isLive(id)) return;
+    permit.draining = true;
+    try {
+      // A warm native process also owns its directory. Close and confirm it
+      // before releasing this run; background work prevents this path.
+      const stopped = await deps.closePersistent?.(id);
+      if (closed || stopped?.ok === false || active.get(id) !== permit || isLive(id)) return;
+      registry.release(permit.lease, { stopped: true, reason: permit.terminal.status || 'stopped' });
+      active.delete(id);
+    } catch (error) { deps.log('workspace_release_retained', { sessionId: id, code: error.code }); }
+    finally { permit.draining = false; }
+  }
+  function settled(id, outcome) {
+    const permit = active.get(id); if (!permit) return;
+    permit.terminal = outcome || { status: 'stopped' };
+    queueMicrotask(() => { void drain(id, permit); });
+  }
+  function initialize() {
+    for (const record of deps.records.values()) {
+      try { identify(record.id); } catch (error) { deps.log('workspace_identity_unresolved', { sessionId: record.id, code: error.code }); }
+    }
+    // PID absence does not prove descendant/background writers stopped.
+    registry.recover(() => 'unknown');
+  }
+  return { identify, occupied, beforeDeliver, assertPermit, starting, spawned, settled, bindTurn, optionsForTurn, initialize,
+    capacityReason: id => registry.available(id), snapshot: () => registry.snapshot(), close: () => { closed = true; clearInterval(settleTimer); store.close(); } };
+}
+module.exports = { createWorkspaceAdmission };

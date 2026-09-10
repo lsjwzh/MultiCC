@@ -163,8 +163,9 @@ const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'ut
     const forkRecord = readJson(paths.sessionsFile, { legacyIsArray: true }).data.find(r => r.id === fork.sessionId);
     assert.notEqual(forkRecord.worktreePath, recordA.worktreePath);
     assert.ok(!forkRecord.workspaceOwnerSessionId);
-    assert.equal(gitAt(forkRecord.worktreePath, 'rev-parse', 'HEAD'), sourceCommit);
-    assert.equal(fs.readFileSync(path.join(forkRecord.worktreePath, 'fork-evidence'), 'utf8'), 'source-only');
+    assert.equal(forkRecord.workspaceState, 'planned');
+    assert.equal(forkRecord.workspaceBaseCommit, sourceCommit);
+    assert.equal(fs.existsSync(forkRecord.worktreePath), false, 'fork records do not eagerly create a worktree');
     assert.equal(rows().some(r => r.sessionId === fork.sessionId), false);
     const forkEntry = await api(`/api/task-shell-tasks/${fork.taskId}`);
     assert.equal(forkEntry.readOnly, false);
@@ -173,6 +174,8 @@ const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'ut
     await api(`/api/task-shell-tasks/${fork.taskId}/messages`, { text: 'FORK_CONTINUE', clientMsgId: 'fork-continue', intent: 'work' });
     await wait(() => rows().some(r => r.sessionId === fork.sessionId), 'fork execution missing');
     assert.equal(fs.realpathSync(rows().find(r => r.sessionId === fork.sessionId).cwd), fs.realpathSync(forkRecord.worktreePath));
+    assert.equal(gitAt(forkRecord.worktreePath, 'rev-parse', 'HEAD'), sourceCommit);
+    assert.equal(fs.readFileSync(path.join(forkRecord.worktreePath, 'fork-evidence'), 'utf8'), 'source-only');
     const protectedMerge = await api(`/api/task-board/tasks/${first.taskId}/merge-tasks`, { sourceTaskIds: [second.taskId] }, 409);
     assert.equal(protectedMerge.error, 'task_shell_identity_immutable');
     // Freeze two sources as references in a fresh task. This is sharing, not a merge.

@@ -303,6 +303,7 @@ function createChatTurnEngine(deps) {
     getChatHistoryService,      // let
     getExperimentalTuiChatRuntime,
     getSessionHibernation,
+    getWorkspaceAdmission,
     isShuttingDown,             // let bool _shuttingDown
     getPort,                    // let PORT
     getClaudeProxyEnabled,      // let
@@ -984,7 +985,7 @@ function createChatTurnEngine(deps) {
     const taskBound = !!persistedSessions.get(sessionName)?.taskBoundTaskId;
     let admitted;
     try {
-      admitted = taskBound && sessionHibernation
+      admitted = taskBound && sessionHibernation && !getWorkspaceAdmission?.()
         ? await sessionHibernation.admit(sessionName, performAdmission)
         : await performAdmission();
     } catch (error) {
@@ -1190,6 +1191,7 @@ function createChatTurnEngine(deps) {
   }
 
   function runChatTurn(sessionName, text, opts = {}) {
+    getWorkspaceAdmission?.()?.assertPermit(sessionName, opts);
     const admissionGate = admitRunChatTurn(sessionName, text, opts);
     if (admissionGate.blocked) return false;
     if ('delegated' in admissionGate) return admissionGate.delegated;
@@ -1600,22 +1602,17 @@ function createChatTurnEngine(deps) {
       preparationFailure = spawnGuard.code || 'spawn-proof-missing';
       throw new Error(`turn spawn refused: ${(spawnGuard.missing || []).join(', ')}`);
     }
+    getWorkspaceAdmission?.()?.bindTurn(sessionName, opts, turnId);
     const started = chatTurnPreparationRuntime.start(sessionName, turnId);
     if (!started.ok) {
       preparationFailure = started.code || 'runtime-start-rejected';
       throw new Error(`turn runtime start rejected: ${preparationFailure}`);
     }
 
-    // ── Streaming path (claude only — always on) ──
-    // Persistent process kept warm across turns so a turn that ends in a
-    // "waiting for external data" state leaves a live, in-context process ready
-    // to continue (fed by the next message / the waiting-injector) instead of a
-    // dead one needing a cold --resume. Streaming is now claude chat's only mode
-    // (the per-turn toggle was removed); non-claude CLIs use the per-turn spawn
-    // path below, unchanged.
+    // Streaming and process runners both require the minted workspace permit.
     if (cs.cli === 'claude') {
       const accepted = runChatTurnStreaming(
-        sessionName, cs, persisted, initialInvocation, provider, turn, prepareInvocation, autoTurn,
+        sessionName, cs, persisted, initialInvocation, provider, turn, prepareInvocation, autoTurn, 0, opts,
       );
       if (!accepted) {
         preparationFailure = 'stream-runner-rejected';
@@ -1694,6 +1691,7 @@ function createChatTurnEngine(deps) {
       runner.freshNativeSession = prepared.invocationEnvelope.historyHandle.isFirstTurn === true;
       let proc;
       try {
+        getWorkspaceAdmission?.()?.starting(sessionName, opts);
         proc = routerToolHost.spawnProcess({
         cli: persisted.cli, spawn, command: physicalInvocation.cmd,
         args: spawnArgs, cwd: cs.cwd, env: childEnv,
@@ -1717,6 +1715,7 @@ function createChatTurnEngine(deps) {
       cs._activeTurn = turn;
       cs._activeRunner = runner;
       cs.claudeProc = proc;
+      getWorkspaceAdmission?.()?.spawned(sessionName, proc);
 
       const spawnTs = Date.now();
       console.log(`[multicc/chat] [${sessionName}] ${cs.cli} spawned pid=${proc.pid} turn=${cs.chatTurnCount} isRetry=${!!isRetry} clients=${cs.clients.size}`);
@@ -2234,8 +2233,9 @@ function createChatTurnEngine(deps) {
   // The persistent process uses the same adapter/persistence path. A settled
   // send closes this turn while the native process stays available for reuse.
   function runChatTurnStreaming(
-    sessionName, cs, persisted, prepared, provider, turn, prepareInvocation, autoTurn, apiRetryAttempt = 0,
+    sessionName, cs, persisted, prepared, provider, turn, prepareInvocation, autoTurn, apiRetryAttempt = 0, workspaceOpts = null,
   ) {
+    getWorkspaceAdmission?.()?.starting(sessionName, workspaceOpts || getWorkspaceAdmission?.()?.optionsForTurn(sessionName, turn));
     const { invocation, attempt, routeOverrides, binding, proxySessionId } = prepared;
     // Per-session provider env. buildChildEnv strips inherited ANTHROPIC_* routing
     // vars before applying the provider env, so the provider choice is always
@@ -2366,7 +2366,7 @@ function createChatTurnEngine(deps) {
       applyAdapterChatEvent(provider, cs, persisted, sessionName, evt, forward, turn, runner);
     }, {
       onTiming: (phase) => {
-        if (phase === 'spawned') turnTiming.markSpawned(sessionName, turn.turnId);
+        if (phase === 'spawned') { turnTiming.markSpawned(sessionName, turn.turnId); getWorkspaceAdmission?.()?.spawned(sessionName, { pid: chatStream.status(sessionName)?.pid }); }
         else if (phase === 'sent') turnTiming.markSent(sessionName, turn.turnId);
         else if (phase === 'firstByte') turnTiming.markFirstByte(sessionName, turn.turnId);
       },
