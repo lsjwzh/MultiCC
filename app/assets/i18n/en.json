@@ -1185,5 +1185,22 @@
   "taskBoardForkIndependent": "Fork independent task",
   "taskBoardForkSourceBusy": "The source workspace is busy. Wait for it to finish before forking.",
   "taskBoardForkSourceDirty": "Commit changes in the source conversation before forking.",
-  "taskBoardForking": "Creating independent task…"
+  "taskBoardForking": "Creating independent task…",
+  "taskArtifactsTitle": "Artifacts",
+  "taskArtifactsCollapse": "Collapse artifacts sidebar",
+  "taskArtifactsExpand": "Expand artifacts sidebar",
+  "taskArtifactsSearch": "Search names or links",
+  "taskArtifactsRefresh": "Refresh",
+  "taskArtifactsManage": "All services & documents ↗",
+  "taskArtifactsCopied": "Link copied",
+  "taskArtifactsCopyFailed": "Copy failed. Copy the link from its context menu.",
+  "taskArtifactsPage": "Page",
+  "taskArtifactsFile": "File",
+  "taskArtifactsExpired": "Unavailable",
+  "taskArtifactsCopy": "Copy link",
+  "taskArtifactsNoMatch": "No matching artifacts.",
+  "taskArtifactsEmpty": "No artifacts yet. Pages and files generated for this task will appear here.",
+  "taskArtifactsNoTask": "No task selected",
+  "taskArtifactsLoadFailed": "Could not load artifacts. Click Refresh to retry.",
+  "taskArtifactsLoading": "Loading artifacts…"
 }

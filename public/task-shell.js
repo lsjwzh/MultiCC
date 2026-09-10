@@ -89,6 +89,7 @@
     const nextDetail = target ? await api(`/api/task-shells/${shellId}/tasks/${target}`) : null;
     if (target !== focused) return;
     detail = nextDetail;
+    if (target) window.MultiCCTaskArtifacts?.setScope({ taskId: target });
     renderMessages(detail?.messages || []);
     $('state').textContent = detail ? `${detail.task.title} · ${detail.execution.status || (detail.execution.busy ? t('running') : t('idle'))}` : t('taskShellNew');
     $('origin').textContent = detail ? `${detail.task.parentTaskId ? t('taskShellFrom') + ' ' + detail.task.parentTaskId + ' · ' : ''}${t('taskShellReferences')}: ${detail.task.snapshotIds.length}` : '';
