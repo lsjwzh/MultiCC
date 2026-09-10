@@ -985,6 +985,13 @@ function createClassifyStateMachine(rawDeps) {
         supersededReason,
         latencyMs: Date.now() - startedAt,
       });
+      if (!supersededReason && shellOwned && resolvedTaskId !== currentTaskId
+          && getTaskContextHost().proposeTaskShellAttribution) {
+        getTaskContextHost().proposeTaskShellAttribution(sessionName, shellReceiptId, {
+          taskId: resolvedTaskId, taskName: res.taskName, turnId, anchorMessageId,
+        });
+        return; // No task, transcript or cursor mutation before R2 proof exists.
+      }
       applyTaskAttributionResult(cs, sessionName, res, {
         source: 'multicc/aux', runId, turnId,
         taskId: currentTaskId, admittedTaskId: admissionTaskId,

@@ -13,7 +13,7 @@ const { mountTaskShellRoutes } = require('./routes');
 const { shellHistoryPage, watchShellHistory } = require('./chat-history');
 
 function createTaskShellHost(deps) {
-  let runtime, store;
+  let runtime, store, candidates;
   const workspace = require('./workspace').createShellWorkspaceHost(deps);
   function candidate(id) {
     const record = deps.records.get(id);
@@ -31,8 +31,12 @@ function createTaskShellHost(deps) {
   function getRuntime() {
     if (runtime) return runtime;
     store = createTaskShellStore(deps.file);
+    candidates = require('../task-routing/candidates').createCandidateStore(store);
     runtime = createTaskShellRuntime({
       store,
+      getDirectory: id => deps.directories.get(id),
+      validateTaskRuntime: (dirId, config) => deps.createSessionRecord({ ...config, dir: deps.directories.get(dirId), kind: 'chat', validateOnly: true }),
+      unifiedAdmission: true,
       getRecord: id => deps.records.get(id),
       onStateTargetChanged: id => deps.onStateTargetChanged?.(id),
       getHistory: deps.loadHistory,
@@ -64,6 +68,7 @@ function createTaskShellHost(deps) {
         if (!result.ok) return result;
         const record = deps.records.get(task.sessionId);
         if (record.taskBoundTaskId !== task.id || record.dirId !== task.dirId || record.autoCommit !== false) throw failure('execution_identity_conflict');
+        if (record.workspaceState === 'planned') return { ok: true, baseline: null };
         const git = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: record.worktreePath, timeout: 15000 });
         return { ok: true, baseline: { commit: git.stdout.trim(), branch: record.branch, baseBranch: dir.baseBranch, worktreePath: record.worktreePath } };
       },
@@ -160,7 +165,10 @@ function createTaskShellHost(deps) {
     recentTasks: (id, receiptId) => getRuntime().recentTasks(id, receiptId),
     refillContext: (id, options) => getRuntime().refillContext(id, options),
     contextTrace: (id, receiptId, options) => getRuntime().contextTrace(id, receiptId, options),
+    proposeAttribution: (id, receiptId, result) => { getRuntime(); return candidates.propose(id, receiptId, result); },
+    attributionCandidate: id => { getRuntime(); return candidates.latest(id); },
     settleAttribution: (id, receiptId, result) => getRuntime().settleAttribution(id, receiptId, result),
+    createTask: input => getRuntime().createStandalone(input),
     taskAccess: task => getRuntime().taskAccess(task), taskEntry: id => getRuntime().taskEntry(id),
     workspaceGroup: workspace.group, isWorkspaceBusy: workspace.busy, contextSeed,
     close: () => store?.close(),

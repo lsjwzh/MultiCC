@@ -981,7 +981,9 @@ function createOrchestrationRuntime({
       // 'starting' claim nothing can re-drive.
       let settled = null;
       try {
-        settled = await outbox.fail(item.id, item.leaseToken, error, { retryable: true });
+        settled = error.backpressure === true
+          ? await outbox.defer(item.id, item.leaseToken, error.code || error.message, { delayMs: 1000 })
+          : await outbox.fail(item.id, item.leaseToken, error, { retryable: true });
       } catch (settleError) {
         log(`[orchestration] delivery ${item.id} outbox settle failed: ${settleError.message}`);
       }
