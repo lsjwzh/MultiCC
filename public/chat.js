@@ -1690,6 +1690,7 @@ async function loadSessionModel() {
   _sessionCliStates = info.cliStates || {}; _cliAvailability = info.cliAvailability || _cliAvailability;
   _pendingCliHandoff = info.pendingCliHandoff || null;
   _sessionProvider = info.provider || '';
+  _sessionProviderBaseUrl = info.providerBaseUrl || '';
   _sessionProviderSelection = info.providerSelection || null;
   _sessionProviderDisplayName = '';
   _sessionSubagent = info.subagent || null;
@@ -1733,6 +1734,8 @@ modelBtn?.addEventListener('click', async () => {
       ...((_sessionCli === 'claude' || _sessionCli === 'codex') ? { subagent: picked.subagent } : {}),
     });
     _sessionProvider = data.provider || '';
+    _sessionProviderBaseUrl = data.providerBaseUrl || _sessionProviderBaseUrl;
+    _sessionProviderBaseUrl = data.providerBaseUrl || _sessionProviderBaseUrl;
     _sessionProviderSelection = data.providerSelection || null;
     _activeProviderId = ''; _activeProviderName = ''; _activeProviderModel = '';
     _sessionSubagent = data.subagent || null;
@@ -1776,6 +1779,7 @@ effortBtn?.addEventListener('click', async () => {
 /* ── Per-session provider switch (cc-switch) ── */
 const providerBtn = document.getElementById('provider-btn');
 let _sessionProvider = '';       // provider id ('' = default login)
+let _sessionProviderBaseUrl = '';
 let _sessionProviderSelection = null; // additive Auto pool; provider remains the concrete manual fallback
 let _activeProviderId = '';
 let _activeProviderName = '';
@@ -1827,7 +1831,9 @@ function updateProviderBtn() {
   providerBtn.style.display = 'none';
   const quotaProviderId = _sessionProviderSelection?.mode === 'auto'
     ? _activeProviderId : effectiveProviderIdForChoices(_sessionProvider);
-  window.MultiCCChatRateLimit?.setProviderBaseUrl?.((_providerList.find((x) => x && x.id === quotaProviderId) || {}).baseUrl || '', quotaProviderId);
+  const catalogUrl = (_providerList.find((x) => x && x.id === quotaProviderId) || {}).baseUrl || '';
+  const baseUrl = catalogUrl || (!(_sessionProviderSelection?.mode === 'auto') ? _sessionProviderBaseUrl : '');
+  window.MultiCCChatRateLimit?.setProviderBaseUrl?.(baseUrl, quotaProviderId);
   updateModelBtn();
 }
 
