@@ -7,6 +7,8 @@
       error.setAttribute('role', 'alert');
       const heading = node('h2', '角色上下文'), note = node('p', '保存后对下一条新消息生效。正在执行和已经排队的消息保留原角色。');
       const add = node('button', '＋ 添加角色'), save = node('button', '保存角色'), close = node('button', '取消');
+      const preset = node('select'), placeholder = node('option', '从角色库附加…'); placeholder.value = ''; preset.append(placeholder);
+      preset.setAttribute('aria-label', '从角色库附加'); preset.disabled = true;
       add.type = close.type = 'button'; save.type = 'submit'; save.className = 'primary';
       function row(binding = { name: '', prompt: '' }) {
         if (rows.children.length >= 8) return;
@@ -18,6 +20,18 @@
         nameLabel.append(name); promptLabel.append(prompt); section.append(nameLabel, promptLabel, remove); rows.append(section);
       }
       for (const binding of roleBindings.bindings) row(binding);
+      api('/api/agent-presets').then(data => {
+        if (!dialog.isConnected) return;
+        for (const p of data.presets || []) { const option = node('option', p.name || p.id); option.value = p.id; preset.append(option); }
+        preset.disabled = false;
+      }).catch(() => { placeholder.textContent = '角色库暂不可用，可手动添加'; });
+      preset.onchange = async () => {
+        if (!preset.value) return;
+        preset.disabled = true;
+        try { const value = await api(`/api/agent-presets/${encodeURIComponent(preset.value)}`); if (dialog.isConnected) row(value); }
+        catch (e) { error.textContent = e.message; }
+        finally { preset.disabled = false; preset.value = ''; }
+      };
       add.onclick = () => row(); close.onclick = () => dialog.close();
       let request = null;
       form.onsubmit = async event => {
@@ -32,7 +46,7 @@
         finally { save.disabled = false; }
       };
       dialog.addEventListener('close', () => dialog.remove(), { once: true });
-      form.append(heading, note, rows, add, error, close, save); dialog.append(form); document.body.append(dialog); dialog.showModal();
+      form.append(heading, note, preset, rows, add, error, close, save); dialog.append(form); document.body.append(dialog); dialog.showModal();
     },
   };
 })();

@@ -57,41 +57,17 @@ function fixture() {
   return { app, ensured, creates };
 }
 
-test('idempotent role-worker route creates then reuses the same persistent worker', async () => {
+test('retired role-worker route never creates or refreshes a fixed role session', async () => {
   const current = fixture();
   const handler = current.app.routes.get('PUT /api/directories/:id/role-workers/:presetId');
-  const request = {
-    params: { id: 'fleet-1', presetId: 'testing__testing-engineer' },
-    body: {},
-  };
-  const created = await invoke(handler, request);
-  const reused = await invoke(handler, request);
-
-  assert.equal(created.statusCode, 201);
-  assert.equal(created.body.id, 'qa-1');
-  assert.equal(created.body.kind, 'chat');
-  assert.equal(created.body.type, 'worker');
-  assert.equal(created.body.reused, false);
-  assert.equal(reused.statusCode, 200);
-  assert.equal(reused.body.id, 'qa-1');
-  assert.equal(reused.body.reused, true);
-  assert.equal(current.ensured.length, 2);
-});
-
-test('role-worker route fails closed for unknown fleet and preset', async () => {
-  const current = fixture();
-  const handler = current.app.routes.get('PUT /api/directories/:id/role-workers/:presetId');
-  const missingFleet = await invoke(handler, {
-    params: { id: 'missing', presetId: 'testing__testing-engineer' },
-  });
-  assert.equal(missingFleet.statusCode, 404);
-  assert.equal(missingFleet.body.error, 'directory not found');
-
-  const missingPreset = await invoke(handler, {
-    params: { id: 'fleet-1', presetId: 'missing' },
-  });
-  assert.equal(missingPreset.statusCode, 404);
-  assert.equal(missingPreset.body.error, 'agent preset not found');
+  for (const params of [{ id: 'fleet-1', presetId: 'testing__testing-engineer' }, { id: 'missing', presetId: 'missing' }]) {
+    const response = await invoke(handler, { params });
+    assert.equal(response.statusCode, 410);
+    assert.equal(response.body.code, 'role_sessions_retired');
+    assert.equal(response.body.url, '/air');
+  }
+  assert.equal(current.ensured.length, 0);
+  assert.equal(current.creates.length, 0);
 });
 
 test('legacy session create contract remains unchanged', async () => {
@@ -140,4 +116,21 @@ test('session create forwards the isolated experimental mode marker', async () =
   });
   assert.equal(response.statusCode, 200);
   assert.equal(current.creates[0].experimentalMode, 'tui-chat-mirror');
+});
+
+test('legacy chat creation adapts to a task and never creates a role workspace', async () => {
+  const app = fakeApp(), tasks = [], executions = [];
+  mountSessionCreateRoutes(app, {
+    directories: new Map([['d', { id: 'd' }]]), asyncHandler: fn => fn,
+    createSessionRecord: input => { executions.push(input); throw new Error('unexpected materialization'); },
+    createTask: async input => { tasks.push(input); return { taskId: 'task-a', sessionId: 'execution-a', url: '/air?task=task-a' }; },
+    getRecord: id => ({ id, taskBoundTaskId: 'task-a', workspaceState: 'planned' }),
+  });
+  const result = await invoke(app.routes.get('POST /api/directories/:id/sessions'), {
+    params: { id: 'd' }, body: { kind: 'chat', cli: 'codex', label: 'Deliver report', rolePrompt: 'Research role', clientMsgId: 'm1' },
+  });
+  assert.equal(result.statusCode, 200); assert.equal(result.body.taskId, 'task-a');
+  assert.equal(result.body.workspaceState, 'planned'); assert.equal(tasks[0].rolePrompt, 'Research role');
+  assert.equal(tasks[0].title, 'Deliver report'); assert.equal(tasks[0].clientMsgId, 'm1');
+  assert.equal(executions.length, 0);
 });
