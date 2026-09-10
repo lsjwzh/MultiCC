@@ -2,6 +2,7 @@
 
 const crypto = require('node:crypto');
 const { isCompleted } = require('../cli-adapters/completion');
+const { isProxyFailureCompatibleWithCompletion } = require('./adapter-completion');
 const {
   createExactSecretStreamRedactor, redactExactSecretFragments, redactProviderRouteCapability,
 } = require('../observability');
@@ -1087,6 +1088,28 @@ function createProviderAttemptRuntime(options = {}) {
       return Object.freeze({ accepted: true, code: 'non_inference_request', failure: null });
     }
     if (clean(event.status).toLowerCase() !== 'error') {
+      // A cleanly terminated inference request after an earlier transport stain
+      // is host-observed proof that the upstream recovered inside this attempt.
+      // Mark (never delete) the stain: the close/commit adjudicators still
+      // require a protocol-attested completion before forgiving it, and a later
+      // failure simply replaces the record (losing the recovered marker).
+      // HTTP-error stains are never marked — 4xx/5xx stays unforgivable.
+      if (proxyOutcome?.termination === 'completed'
+          && record.proxyFailure && record.proxyFailure.httpStatus == null
+          && record.proxyFailure.recovered !== true) {
+        record.proxyFailure = Object.freeze({
+          ...record.proxyFailure, recovered: true, recoveredAt: Number(now()),
+        });
+        auditOnly(sessionId, {
+          type: 'provider_attempt_proxy_failure_recovered', operation: 'proxy_outcome',
+          runtimeEpoch: clean(event.runtimeEpoch) || null,
+          turnId: clean(event.turnId) || null,
+          routeAttemptId: clean(event.routeAttemptId) || null,
+          routeGeneration: Number(event.routeGeneration) || null,
+          currentRouteAttemptId: record.routeAttemptId,
+          currentRouteGeneration: record.routeGeneration,
+        });
+      }
       return Object.freeze({ accepted: true, code: null, failure: null });
     }
     const status = Number(event.statusCode);
@@ -1117,12 +1140,12 @@ function createProviderAttemptRuntime(options = {}) {
     const record = currentBySession.get(clean(reference && reference.sessionId));
     if (!sameAttempt(record, reference) || !record.proxyFailure) return null;
     // A client may close after consuming a protocol completion, before HTTP
-    // EOF. Reconcile only host-observed downstream teardown, with a durable
-    // successful result from this runner and a clean end. This rule is shared
-    // by all CLIs/providers; raw error strings never prove harmless teardown.
+    // EOF; a mid-turn upstream cut may be followed by a clean retry. Both are
+    // reconciled by the shared predicate — with a durable successful result
+    // from this runner and a clean end. This rule is shared by all
+    // CLIs/providers; raw error strings never prove harmless teardown.
     if (facts.resultDurable === true && isCompleted(facts.completion)
-        && record.proxyFailure.httpStatus == null
-        && record.proxyFailure.proxyOutcome?.termination === 'downstream_disconnect') return null;
+        && isProxyFailureCompatibleWithCompletion(record.proxyFailure, facts.completion)) return null;
     return Object.freeze({ ...record.proxyFailure });
   }
 

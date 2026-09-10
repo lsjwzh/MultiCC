@@ -12,6 +12,7 @@ const {
 } = require('../src/chat/provider-attempt-runtime');
 const { createTaskRunProviderBridge } = require('../src/task-run/provider-bridge');
 const { createUsageObserved } = require('../src/usage-observed');
+const { canPersistAdapterCompletion } = require('../src/chat/adapter-completion');
 const { planTurnFinalization, resolveTurnFinalization } = require('../src/chat/finalize-plan');
 const { resolveTurnState } = require('../src/classify/turn-state');
 
@@ -205,6 +206,121 @@ test('successful finalization never hides HTTP, upstream-stream, or unstructured
     });
     assert.ok(runtime.proxyFailure(attempt, { resultDurable: true, completion: { version: 1, state: 'completed', settled: true } }));
   }
+});
+
+// A mid-turn upstream cut that the CLI retried internally must not flip the
+// turn to E once the protocol says the turn completed — the 2026-09-10 codex
+// false-positive class (4 cases in 18h of production logs, all with
+// task_complete in the rollout). The stain is marked `recovered` by a later
+// clean inference request; reconciliation still requires a protocol-attested
+// completion, an HTTP error is never forgivable, and a failure that is the
+// LAST transport event of the attempt keeps its veto.
+function completedInferenceOutcome(requestId = 'request-ok') {
+  return Object.freeze({ version: 1, requestId, requestKind: 'inference',
+    termination: 'completed', httpStatus: null });
+}
+function upstreamCutOutcome(requestId) {
+  return Object.freeze({ version: 1, requestId, requestKind: 'inference',
+    termination: 'upstream_failure', httpStatus: null });
+}
+
+test('a recovered mid-turn upstream failure reconciles with a protocol completion', () => {
+  const { runtime, audit } = harness();
+  const attempt = runtime.beginAttempt(route());
+  const identity = { ...attempt, roleKind: 'main', routeAttribution: 'exact' };
+  runtime.observeProxyOutcome({ ...identity, status: 'error', statusCode: 200,
+    errorCode: 'UPSTREAM_STREAM_FAILED', proxyOutcome: upstreamCutOutcome('request-cut') });
+  assert.equal(runtime.proxyFailure(attempt).code, 'UPSTREAM_STREAM_FAILED');
+  runtime.observeProxyOutcome({ ...identity, status: 'ok', statusCode: 200,
+    proxyOutcome: completedInferenceOutcome() });
+  const recovered = runtime.proxyFailure(attempt);
+  assert.equal(recovered.recovered, true, 'later clean inference marks the stain recovered');
+  assert.ok(audit.some(item => item.event.type === 'provider_attempt_proxy_failure_recovered'));
+  for (const source of ['protocol', 'protocol_and_exit']) {
+    assert.equal(runtime.proxyFailure(attempt, { resultDurable: true,
+      completion: { version: 1, state: 'completed', settled: true, source } }), null,
+      `recovered stain is reconciled for ${source} completions`);
+  }
+  assert.ok(runtime.proxyFailure(attempt), 'raw proxy evidence remains available');
+});
+
+test('host-guessed completions never forgive a recovered upstream failure', () => {
+  const { runtime } = harness();
+  const attempt = runtime.beginAttempt(route());
+  const identity = { ...attempt, roleKind: 'main', routeAttribution: 'exact' };
+  runtime.observeProxyOutcome({ ...identity, status: 'error', statusCode: 200,
+    errorCode: 'UPSTREAM_STREAM_FAILED', proxyOutcome: upstreamCutOutcome('request-cut') });
+  runtime.observeProxyOutcome({ ...identity, status: 'ok', statusCode: 200,
+    proxyOutcome: completedInferenceOutcome() });
+  for (const source of ['exit_fallback', 'host', undefined]) {
+    assert.ok(runtime.proxyFailure(attempt, { resultDurable: true,
+      completion: { version: 1, state: 'completed', settled: true, source } }),
+      `completion source ${source} keeps the veto`);
+  }
+});
+
+test('an upstream failure without a later clean request still vetoes a protocol completion', () => {
+  const { runtime } = harness();
+  const attempt = runtime.beginAttempt(route());
+  runtime.observeProxyOutcome({ ...attempt, roleKind: 'main', routeAttribution: 'exact',
+    status: 'error', statusCode: 200, errorCode: 'UPSTREAM_STREAM_FAILED',
+    proxyOutcome: upstreamCutOutcome('request-cut') });
+  assert.ok(runtime.proxyFailure(attempt, { resultDurable: true,
+    completion: { version: 1, state: 'completed', settled: true, source: 'protocol' } }),
+    'a cut that is the last transport event of the attempt is not recoverable');
+});
+
+test('a later clean request cannot rehabilitate an HTTP error stain', () => {
+  const { runtime } = harness();
+  const attempt = runtime.beginAttempt(route());
+  const identity = { ...attempt, roleKind: 'main', routeAttribution: 'exact' };
+  runtime.observeProxyOutcome({ ...identity, status: 'error', statusCode: 429, errorCode: 'UPSTREAM_HTTP_ERROR' });
+  runtime.observeProxyOutcome({ ...identity, status: 'ok', statusCode: 200,
+    proxyOutcome: completedInferenceOutcome() });
+  const failure = runtime.proxyFailure(attempt, { resultDurable: true,
+    completion: { version: 1, state: 'completed', settled: true, source: 'protocol' } });
+  assert.equal(failure.httpStatus, 429);
+  assert.equal(failure.recovered, undefined, 'HTTP error stains are never marked recovered');
+});
+
+test('a failure after the recovery replaces the record and drops the marker', () => {
+  const { runtime } = harness();
+  const attempt = runtime.beginAttempt(route());
+  const identity = { ...attempt, roleKind: 'main', routeAttribution: 'exact' };
+  runtime.observeProxyOutcome({ ...identity, status: 'error', statusCode: 200,
+    errorCode: 'UPSTREAM_STREAM_FAILED', proxyOutcome: upstreamCutOutcome('request-cut-1') });
+  runtime.observeProxyOutcome({ ...identity, status: 'ok', statusCode: 200,
+    proxyOutcome: completedInferenceOutcome() });
+  assert.equal(runtime.proxyFailure(attempt).recovered, true);
+  runtime.observeProxyOutcome({ ...identity, status: 'error', statusCode: 200,
+    errorCode: 'UPSTREAM_STREAM_FAILED', proxyOutcome: upstreamCutOutcome('request-cut-2') });
+  const failure = runtime.proxyFailure(attempt);
+  assert.equal(failure.proxyOutcome.requestId, 'request-cut-2');
+  assert.equal(failure.recovered, undefined);
+  assert.ok(runtime.proxyFailure(attempt, { resultDurable: true,
+    completion: { version: 1, state: 'completed', settled: true, source: 'protocol' } }));
+});
+
+test('the persist gate and the close-time reconciliation share one predicate', () => {
+  const done = source => ({ version: 1, state: 'completed', settled: true, source });
+  const cut = { source: 'proxy_response', httpStatus: null,
+    proxyOutcome: { termination: 'upstream_failure' } };
+  assert.equal(canPersistAdapterCompletion(done('protocol'), null, null), true);
+  assert.equal(canPersistAdapterCompletion(done('protocol'), cut, null), false,
+    'unrecovered upstream cut vetoes persistence');
+  assert.equal(canPersistAdapterCompletion(done('protocol'), { ...cut, recovered: true }, null), true,
+    'recovered cut + protocol completion persists');
+  assert.equal(canPersistAdapterCompletion(done('exit_fallback'), { ...cut, recovered: true }, null), false,
+    'recovered cut + host-guessed completion still vetoes');
+  assert.equal(canPersistAdapterCompletion(done('protocol'),
+    { ...cut, httpStatus: 500, recovered: true }, null), false, 'HTTP error never forgives');
+  assert.equal(canPersistAdapterCompletion(done('protocol'),
+    { source: 'proxy_response', httpStatus: null,
+      proxyOutcome: { termination: 'downstream_disconnect' } }, null), true,
+    'downstream teardown after completion stays forgivable');
+  assert.equal(canPersistAdapterCompletion(
+    { version: 1, state: 'failed', settled: true, source: 'protocol' },
+    { ...cut, recovered: true }, null), false, 'a failed completion never persists');
 });
 
 test('non-inference failures cannot poison or erase the model attempt outcome', () => {
