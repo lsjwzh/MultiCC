@@ -535,6 +535,13 @@ const chatLiveUi = window.MultiCCChatLiveUi.createLiveUi({
   debug: dbg,
   onMarkTurnSucceeded: markTurnSucceeded,
   onCancelTask: cancelTaskFromBar,
+  // A stalled verdict is deliberately user-actionable only. The click sends
+  // the same canonical cancel control as the normal Stop button; the next
+  // message can then start a fresh turn.
+  onStalled: () => {
+    chatLiveUi.renderLiveness(null);
+    cancelStreaming();
+  },
 });
 let chatEventController = null;
 let _eventGeneration = 0;
