@@ -36,14 +36,24 @@ test('Docker export rejects tracked symlinks to host files', t => {
   fs.symlinkSync(privateFile, path.join(f.root, 'leak')); f.git('add', 'leak');
   assert.throws(() => exportSources(f.root, f.out), /regular file inside/);
 });
-test('fake Codex emits usable independent native identities without a real model', () => {
+test('fake Codex emits resumable native identities without a real model', t => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-fake-codex-'));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
   const binary = path.join(__dirname, '../docker/task-shell/fake-codex.js');
+  const env = { PATH: process.env.PATH, MULTICC_SESSION_ID: 'isolated-test', CODEX_HOME: path.join(home, '.codex') };
   const output = execFileSync(process.execPath, [binary, 'exec', '--json', 'hello'], {
-    env: { PATH: process.env.PATH, MULTICC_SESSION_ID: 'isolated-test' }, encoding: 'utf8',
+    env, encoding: 'utf8',
   }).trim().split('\n').map(JSON.parse);
   assert.equal(output[0].thread_id, 'lab-isolated-test');
   assert.equal(output.at(-1).type, 'turn.completed');
   assert.match(output[1].item.text, /未调用真实模型/);
+  const file = path.join(env.CODEX_HOME, 'sessions/rollout-lab-isolated-test.jsonl');
+  const first = fs.readFileSync(file, 'utf8');
+  assert.equal(JSON.parse(first).payload.cwd, process.cwd());
+  execFileSync(process.execPath, [binary, 'exec', 'resume', 'lab-isolated-test', 'followup'], { env });
+  assert.equal(fs.readFileSync(file, 'utf8'), first, 'resume preserves native metadata');
+  const guard = require('../src/chat/codex-rollout-guard').createCodexRolloutGuard({ homeDir: home });
+  assert.equal(guard.enforce({ cli: 'codex', cliSessionId: 'lab-isolated-test' }).action, 'ok');
 });
 
 test('both release workflows require the clean-install gate before building or publishing', () => {

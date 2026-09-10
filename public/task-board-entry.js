@@ -2,7 +2,7 @@
   'use strict';
   async function start(taskId) {
     const $ = id => document.getElementById(id), t = key => root.t(key);
-    let entry, stopped = false, busy = false, control = null;
+    let entry, stopped = false, busy = false, control = null, pollEpoch = 0, timer;
     const key = `task-board-fork:${taskId}`;
     const api = async (url, body) => {
       const response = await fetch(url, { method: body === undefined ? 'GET' : 'POST',
@@ -59,8 +59,16 @@
       action(async () => { await client.send(entry.ownerShellId, { text: $('message').value, taskId, intent: 'work', ...control }); $('message').value = ''; control = null; }); };
     $('cancel').onclick = () => { if (!entry.readOnly) action(() => client.send(entry.ownerShellId, { text: '', taskId, turnId: entry.execution.turnId, intent: 'cancel' })); };
     $('retry').onclick = () => action(() => client.retry(entry.ownerShellId));
-    window.addEventListener('pagehide', () => { stopped = true; });
-    async function poll() { if (stopped) return; if (!busy && !document.hidden) try { await refresh(); } catch (e) { $('notice').textContent = errorText(e); } if (!stopped) setTimeout(poll, 2000); }
+    window.addEventListener('pagehide', () => { stopped = true; pollEpoch++; clearTimeout(timer); });
+    window.addEventListener('pageshow', event => {
+      if (!event.persisted) return;
+      stopped = false; pollEpoch++; clearTimeout(timer); poll();
+    });
+    async function poll(epoch = pollEpoch) {
+      if (stopped || epoch !== pollEpoch) return;
+      if (!busy && !document.hidden) try { await refresh(); } catch (e) { $('notice').textContent = errorText(e); }
+      if (!stopped && epoch === pollEpoch) timer = setTimeout(() => poll(epoch), 2000);
+    }
     await poll();
   }
   root.MultiCCTaskBoardEntry = { start };

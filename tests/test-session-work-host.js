@@ -3,6 +3,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { createSessionWorkHost } = require('../src/session-work/host');
+const { createShellWorkspaceHost } = require('../src/task-shell/workspace');
 
 function fixture(options = {}) {
   const calls = [];
@@ -360,6 +361,42 @@ test('a runner that refuses to stop reports an explicit failure instead of prete
   assert.equal(verdict.state, 'E');
   assert.equal(verdict.cancel.runnerStopped, false);
   assert.equal(verdict.cancel.reason, 'cancel_stop_timeout');
+});
+
+function siblingWorkspace(state) {
+  return createShellWorkspaceHost({
+    records: new Map([
+      ['s1', { id: 's1' }],
+      ['s2', { id: 's2', workspaceOwnerSessionId: 's1' }],
+    ]),
+    getChatState: id => id === 's1' ? state : null,
+    getWorkHost: () => null,
+  });
+}
+
+test('confirmed cancellation releases the workspace for the next sibling task', async () => {
+  const { state, h } = cancelFixture();
+  const workspace = siblingWorkspace(state);
+  assert.equal(workspace.busy('s2'), true);
+  assert.equal((await h.host.cancelActiveTurn('s1')).ok, true);
+  assert.equal(workspace.busy('s2'), false);
+});
+
+test('a failed cancellation retains the runner claim and blocks sibling tasks', async () => {
+  const { state, h } = cancelFixture({}, { diesOn: null, runnerStopTimeoutMs: 0 });
+  const runner = state._activeRunner;
+  assert.equal((await h.host.cancelActiveTurn('s1')).ok, false);
+  assert.equal(state._activeRunner, runner);
+  assert.equal(siblingWorkspace(state).busy('s2'), true);
+});
+
+test('cancellation never clears a replacement runner installed while the old process exits', async () => {
+  const { child, state, h } = cancelFixture();
+  const replacement = {};
+  child.once('exit', () => { state._activeRunner = replacement; });
+  assert.equal((await h.host.cancelActiveTurn('s1')).ok, true);
+  assert.equal(state._activeRunner, replacement);
+  assert.equal(siblingWorkspace(state).busy('s2'), true);
 });
 
 test('a runner that ignores SIGTERM is escalated to SIGKILL rather than left running', async () => {
