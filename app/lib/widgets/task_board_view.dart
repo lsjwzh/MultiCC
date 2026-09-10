@@ -88,6 +88,10 @@ class _TaskBoardViewState extends State<TaskBoardView> {
   bool _loading = true;
   String? _error;
   final Set<String> _collapsed = {};
+  // 状态过滤 chips（对齐 web planner 的 statusFilter）：需要我/运行中/待验收/错误
+  // 多选，空集 = 不过滤。app 模型无 workflowStage，映射基于 runState（succeeded
+  // 归「待验收」，done/archived 不入任何桶）。计数基于未过滤的目录任务列表。
+  final Set<String> _statusFilters = {};
   Timer? _poll;
   bool _refreshing = false;
 
@@ -154,14 +158,11 @@ class _TaskBoardViewState extends State<TaskBoardView> {
       return;
     }
     _liveRefreshTimer?.cancel();
-    _liveRefreshTimer = Timer(
-      const Duration(seconds: 4) - sinceLast,
-      () {
-        if (!mounted) return;
-        _lastLiveRefresh = DateTime.now();
-        _refresh(silent: true);
-      },
-    );
+    _liveRefreshTimer = Timer(const Duration(seconds: 4) - sinceLast, () {
+      if (!mounted) return;
+      _lastLiveRefresh = DateTime.now();
+      _refresh(silent: true);
+    });
   }
 
   Future<void> _refresh({bool silent = false}) async {
@@ -284,6 +285,60 @@ class _TaskBoardViewState extends State<TaskBoardView> {
     return _sortTasks(tasks);
   }
 
+  // ── 状态过滤（对齐 web planner statusFilterKey，runState 版）──────────────
+  static const List<String> _statusFilterOrder = [
+    'attention',
+    'running',
+    'review',
+    'error',
+  ];
+
+  static const Map<String, String> _statusFilterLabelKeys = {
+    'attention': 'tbFilterAttention',
+    'running': 'tbFilterRunning',
+    'review': 'tbFilterReview',
+    'error': 'tbFilterError',
+  };
+
+  // 与 web planner-task-row 的 data-status 配色对齐（web 的 review 是紫色，
+  // 此处取 AppColors.blue 近似）。
+  static const Map<String, Color> _statusFilterColors = {
+    'attention': AppColors.amber,
+    'running': AppColors.accent,
+    'review': AppColors.blue,
+    'error': AppColors.danger,
+  };
+
+  /// '' = 不属于任何过滤桶（done/archived/纯 idle），永不被 chip 计数，
+  /// 过滤激活时也不显示。
+  String _statusFilterKey(TaskBoardTask task) {
+    if (task.status == 'done' || task.status == 'archived') return '';
+    switch (task.runState) {
+      case 'error':
+        return 'error';
+      case 'waiting':
+      case 'blocked':
+        return 'attention';
+      case 'running':
+      case 'queued':
+        return 'running';
+      case 'succeeded':
+        return 'review';
+      default:
+        return '';
+    }
+  }
+
+  void _toggleStatusFilter(String key) {
+    setState(() {
+      if (_statusFilters.contains(key)) {
+        _statusFilters.remove(key);
+      } else {
+        _statusFilters.add(key);
+      }
+    });
+  }
+
   List<TaskBoardTask> _sortTasks(List<TaskBoardTask> tasks) {
     // lastTs 降序 -> title (compareTo 近似 zh localeCompare) -> id。
     tasks.sort((a, b) {
@@ -376,9 +431,7 @@ class _TaskBoardViewState extends State<TaskBoardView> {
       // so kick a refresh right away to adopt the in-flight state.
       messenger.showSnackBar(
         SnackBar(
-          content: Text(
-            t('tbBackfillQueued', {'n': '${r['queued'] ?? 0}'}),
-          ),
+          content: Text(t('tbBackfillQueued', {'n': '${r['queued'] ?? 0}'})),
         ),
       );
       await _refresh(silent: true);
@@ -417,12 +470,9 @@ class _TaskBoardViewState extends State<TaskBoardView> {
     bool goal = false,
     Map<String, dynamic>? goalLimits,
   }) async {
-    final r = await ManageService(settings: widget.settings).sendToBoard(
-      widget.dirId,
-      text: text,
-      goal: goal,
-      goalLimits: goalLimits,
-    );
+    final r = await ManageService(
+      settings: widget.settings,
+    ).sendToBoard(widget.dirId, text: text, goal: goal, goalLimits: goalLimits);
     await _refresh(silent: true);
     return r;
   }
@@ -464,7 +514,9 @@ class _TaskBoardViewState extends State<TaskBoardView> {
           ),
         );
       } else {
-        final sid = await ManageService(settings: widget.settings).resolveTaskChatSession(task.id);
+        final sid = await ManageService(
+          settings: widget.settings,
+        ).resolveTaskChatSession(task.id);
         if (!mounted) return;
         if (sid != null && sid.isNotEmpty) {
           opener(sid);
@@ -641,8 +693,8 @@ class _TaskBoardViewState extends State<TaskBoardView> {
       );
     }
 
-    final tasks = _tasksForDir(widget.dirId, board);
-    if (tasks.isEmpty) {
+    final allTasks = _tasksForDir(widget.dirId, board);
+    if (allTasks.isEmpty) {
       return Column(
         children: [
           Expanded(child: _BoardEmpty(text: t('noTasksHint'))),
@@ -650,6 +702,21 @@ class _TaskBoardViewState extends State<TaskBoardView> {
         ],
       );
     }
+
+    // 状态过滤：计数永远基于未过滤列表（chips 上的数字不因勾选而跳动）；
+    // 有选中时只保留命中的桶，无选中 = 全量（含 done）。
+    final filterCounts = <String, int>{};
+    for (final task in allTasks) {
+      final key = _statusFilterKey(task);
+      if (key.isNotEmpty) {
+        filterCounts[key] = (filterCounts[key] ?? 0) + 1;
+      }
+    }
+    final tasks = _statusFilters.isEmpty
+        ? allTasks
+        : allTasks
+              .where((t) => _statusFilters.contains(_statusFilterKey(t)))
+              .toList();
 
     // Group tasks by module, keep only modules that have tasks here, and carry
     // orphan tasks (their module was pruned / filtered out) at the bottom so
@@ -670,6 +737,33 @@ class _TaskBoardViewState extends State<TaskBoardView> {
 
     return Column(
       children: [
+        // 状态过滤 chips（固定在列表上方，不随 ListView 滚动，对齐 web planner
+        // 工具栏）：多选切换，空选 = 不过滤。
+        Padding(
+          padding: const EdgeInsets.fromLTRB(14, 8, 14, 0),
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                Text(
+                  t('tbStatusFilter'),
+                  style: const TextStyle(color: AppColors.faint, fontSize: 11),
+                ),
+                const SizedBox(width: 8),
+                for (final key in _statusFilterOrder) ...[
+                  _StatusFilterChip(
+                    label: t(_statusFilterLabelKeys[key]!),
+                    count: filterCounts[key] ?? 0,
+                    color: _statusFilterColors[key]!,
+                    selected: _statusFilters.contains(key),
+                    onTap: () => _toggleStatusFilter(key),
+                  ),
+                  const SizedBox(width: 6),
+                ],
+              ],
+            ),
+          ),
+        ),
         Expanded(
           child: Stack(
             children: [
@@ -766,6 +860,20 @@ class _TaskBoardViewState extends State<TaskBoardView> {
                       ],
                     ),
                   ),
+                  // 过滤激活但无命中时的占位（allTasks 非空才会走到这里）
+                  if (tasks.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 40),
+                      child: Center(
+                        child: Text(
+                          t('tbNoMatchingTasks'),
+                          style: const TextStyle(
+                            color: AppColors.muted,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                    ),
                   for (final mod in mods) ...[
                     _ModuleRow(
                       module: mod,
@@ -969,7 +1077,9 @@ class _TaskRow extends StatelessWidget {
                             child: Text(
                               task.title,
                               style: TextStyle(
-                                color: isDone ? AppColors.faint : AppColors.text,
+                                color: isDone
+                                    ? AppColors.faint
+                                    : AppColors.text,
                                 fontSize: 13,
                                 decoration: isDone
                                     ? TextDecoration.lineThrough
@@ -1462,8 +1572,9 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
     if (cursor == null) return;
     setState(() => _loadingOlder = true);
     try {
-      final detail = await ManageService(settings: widget.settings)
-          .fetchTaskDetail(widget.task.id, before: cursor, limit: _pageSize);
+      final detail = await ManageService(
+        settings: widget.settings,
+      ).fetchTaskDetail(widget.task.id, before: cursor, limit: _pageSize);
       if (!mounted) return;
       setState(() {
         _absorbPage(detail, trackCursor: true);
@@ -1861,13 +1972,13 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
               child: _boundSessionId != null
                   ? _boundChatTile()
                   : (_boundResolved
-                      ? _messagesBody()
-                      : const Center(
-                          child: Padding(
-                            padding: EdgeInsets.all(20),
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          ),
-                        )),
+                        ? _messagesBody()
+                        : const Center(
+                            child: Padding(
+                              padding: EdgeInsets.all(20),
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            ),
+                          )),
             ),
             if (_boundSessionId == null && _boundResolved) ...[
               const Divider(height: 1, color: AppColors.line),
@@ -1918,12 +2029,15 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
   Future<void> _openBoundChat() async {
     if (_busy) return;
     setState(() => _busy = true);
-    final sid = await ManageService(settings: widget.settings).resolveTaskChatSession(
-      widget.task.id, boundSessionId: _boundSessionId);
+    final sid = await ManageService(
+      settings: widget.settings,
+    ).resolveTaskChatSession(widget.task.id, boundSessionId: _boundSessionId);
     if (!mounted) return;
     setState(() => _busy = false);
     if (sid == null) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(t('errorOccurred'))));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(t('errorOccurred'))));
       return;
     }
     // Close this detail sheet first, then hand off to the fleet sheet's
@@ -1990,8 +2104,7 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
     }
     return ListView.separated(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      itemCount:
-          visibleHistory + _liveMessages.length + (_hasMore ? 1 : 0),
+      itemCount: visibleHistory + _liveMessages.length + (_hasMore ? 1 : 0),
       separatorBuilder: (_, __) => const SizedBox(height: 10),
       itemBuilder: (_, i) {
         if (_hasMore && i == 0) {
@@ -2222,6 +2335,59 @@ class _MiniButton extends StatelessWidget {
 
 /// Small tag chip used for areas (non-tappable) and session ids (tappable ->
 /// jump to session). Monospace label so session ids stay legible.
+/// 任务板状态过滤 chip（对齐 web planner-status-chip）：未选中灰框灰字，
+/// 选中按桶色描边 + 浅底；count 始终显示（0 也显示，便于一眼看到某桶为空）。
+class _StatusFilterChip extends StatelessWidget {
+  final String label;
+  final int count;
+  final Color color;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _StatusFilterChip({
+    required this.label,
+    required this.count,
+    required this.color,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final fg = selected ? color : AppColors.muted;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(999),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+        decoration: BoxDecoration(
+          color: selected ? color.withValues(alpha: 0.14) : AppColors.panel2,
+          border: Border.all(
+            color: selected ? color.withValues(alpha: 0.65) : AppColors.line,
+          ),
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(label, style: TextStyle(color: fg, fontSize: 11)),
+            const SizedBox(width: 5),
+            Text(
+              '$count',
+              style: TextStyle(
+                color: fg,
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                fontFamily: 'monospace',
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _TagChip extends StatelessWidget {
   final String label;
   final VoidCallback? onTap;
@@ -2550,11 +2716,7 @@ class _BoardComposerState extends State<_BoardComposer> {
     setState(() => _sending = true);
     final messenger = ScaffoldMessenger.of(context);
     try {
-      final r = await widget.onSend(
-        text,
-        goal: _goal,
-        goalLimits: goalLimits,
-      );
+      final r = await widget.onSend(text, goal: _goal, goalLimits: goalLimits);
       // Success: clear text + attachments.
       _ctrl.clear();
       setState(() {
