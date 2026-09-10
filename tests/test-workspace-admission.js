@@ -117,3 +117,18 @@ test('terminal callback before runner cleanup releases after the finalizer bound
   await new Promise(setImmediate);
   assert.equal(f.host.snapshot().leases.length, 0, 'release requires neither a new queued message nor a UI read');
 });
+
+test('final runner evidence is captured before releasing the workspace for the next turn', async t => {
+  const f = await hostFixture(t), d = f.descriptor('m');
+  const guard = await f.host.beforeDeliver(d); f.host.bindTurn(f.record.id, d.opts, 'turn-final', 'task-final');
+  f.host.starting(f.record.id, d.opts, 'attempt-final'); await guard.complete({ accepted: true });
+  f.host.settled(f.record.id, { status: 'completed' });
+  f.host.finalized({ sessionName: f.record.id, turn: { turnId: 'turn-final', resultDurable: true }, usageDurable: true,
+    runner: { providerAttempt: { routeAttemptId: 'attempt-final' } } },
+  { effects: [{ type: 'classify-turn-end', classification: 'succeeded' }], facts: { completion: { state: 'completed' } } });
+  assert.equal(f.host.snapshot().leases.length, 1);
+  for (let i = 0; i < 100 && f.host.snapshot().leases.length; i++) await new Promise(r => setTimeout(r, 20));
+  assert.equal(f.host.snapshot().leases.length, 0);
+  const result = f.host.deliveryEvidence(f.record.id).run;
+  assert.equal(result.outcome, 'succeeded'); assert.equal(result.attemptId, 'attempt-final'); assert.ok(result.endCodeRevision);
+});

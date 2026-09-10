@@ -34,7 +34,7 @@ function createTaskShellHost(deps) {
     candidates = require('../task-routing/candidates').createCandidateStore(store);
     runtime = createTaskShellRuntime({
       store,
-      getDirectory: id => deps.directories.get(id),
+      getDirectory: id => deps.directories?.get(id),
       validateTaskRuntime: (dirId, config) => deps.createSessionRecord({ ...config, dir: deps.directories.get(dirId), kind: 'chat', validateOnly: true }),
       unifiedAdmission: true,
       getRecord: id => deps.records.get(id),
@@ -169,6 +169,7 @@ function createTaskShellHost(deps) {
     attributionCandidate: id => { getRuntime(); return candidates.latest(id); },
     settleAttribution: (id, receiptId, result) => getRuntime().settleAttribution(id, receiptId, result),
     createTask: input => getRuntime().createStandalone(input),
+    roleBindings: id => getRuntime().roles.current(id), updateRoleBindings: (id, input) => getRuntime().roles.update(id, input),
     taskAccess: task => getRuntime().taskAccess(task), taskEntry: id => getRuntime().taskEntry(id),
     workspaceGroup: workspace.group, isWorkspaceBusy: workspace.busy, contextSeed,
     close: () => store?.close(),
