@@ -11,6 +11,7 @@
       if (!response.ok || data.ok === false) throw Object.assign(new Error(data.message || data.error || data.code), data, { notReserved: data.notDelivered === true || (!data.receiptId && response.status >= 400 && response.status < 500) });
       return data;
     };
+    root.MultiCCTaskArtifacts?.setScope({ taskId });
     const base = `/api/task-shell-tasks/${encodeURIComponent(taskId)}`;
     const client = root.MultiCCTaskShellClient.createClient({ storage: sessionStorage,
       key: `task-board-input:${taskId}`, randomId: () => crypto.randomUUID(), request: (_url, body) => api(`${base}/messages`, body) });
