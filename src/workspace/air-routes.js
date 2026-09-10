@@ -33,10 +33,20 @@ function mountAirRoutes(app, deps) {
   app.get('/api/air/tasks/:id', route(async req => {
     const entry = await deps.shell.taskEntry(req.params.id);
     const record = deps.records.get(entry.sessionId);
-    return { ...entry, resource: resource(entry.sessionId), configuration: { cli: record?.cli, model: record?.model, rolePresetId: record?.rolePresetId },
+    const candidate = deps.shell.attributionCandidate(req.params.id);
+    const attribution = await require('../task-routing/delivery-view').deliveryView({ sessionId: entry.sessionId,
+      candidate, admission: deps.admission, cwd: deps.directories.get(record?.dirId)?.path });
+    let roleBindings = null;
+    try { roleBindings = deps.shell.roleBindings(req.params.id); } catch (_) {}
+    return { ...entry, resource: resource(entry.sessionId), configuration: { cli: record?.cli, model: record?.model, rolePresetId: record?.rolePresetId }, roleBindings,
       // Auto attribution needs real integration and writer-barrier receipts.
       // Do not expose a switch that would turn client assertions into proofs.
-      attribution: { mode: 'retained', reason: 'integration_and_writer_proof_required', candidate: deps.shell.attributionCandidate(req.params.id) } };
+      attribution };
   }));
+  app.post('/api/air/tasks/:id/delivery/reconcile', route(async req => {
+    const entry = await deps.shell.taskEntry(req.params.id);
+    return { ok: true, publications: await deps.admission.recoverEvidence(entry.sessionId) };
+  }));
+  app.post('/api/air/tasks/:id/roles', route(req => ({ ok: true, roleBindings: deps.shell.updateRoleBindings(req.params.id, req.body) })));
 }
 module.exports = { mountAirRoutes };

@@ -28,6 +28,7 @@ if (!process.argv.includes('exec')) {
     fs.mkdirSync(data, { recursive: true });
     fs.appendFileSync(path.join(data, 'fake-cli-invocations.jsonl'), JSON.stringify({
       sessionId, cwd: process.cwd(), at: new Date().toISOString(), delaySeconds: seconds,
+      resumed: process.argv.includes('resume'),
       promptHash: createHash('sha256').update(prompt).digest('hex'),
     }) + '\n');
   }

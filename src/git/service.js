@@ -745,9 +745,18 @@ async function gitMergeBack(dir, session, opts = {}) {
     const committed = await commitAllWith(execGit, worktreePath,
       `multicc: session ${session.id} @ ${new Date().toISOString()}`);
     const ahead = parseInt(await execGit(dirPath, ['rev-list', '--count', `${baseBranch}..${branch}`]) || '0', 10);
-    if (!ahead) return { ok: true, merged: false, committed, message: '没有新提交需要合并' };
-
     const baseHead = await execGit(dirPath, ['rev-parse', baseBranch]);
+    const sourceHead = await execGit(worktreePath, ['rev-parse', 'HEAD']);
+    if (!ahead) {
+      let deliveryEvidence = null;
+      if (opts.evidence) {
+        await opts.evidence.prepared({ operationId: id, dirPath, worktreePath, branch, baseRef: baseBranch,
+          baseHead, sourceHead, integrationHead: baseHead }, execGit);
+        try { deliveryEvidence = await opts.evidence.published(id, execGit); }
+        catch (_) { deliveryEvidence = { operationId: id, state: 'unverified', reason: 'publication_evidence_pending' }; }
+      }
+      return { ok: true, merged: false, committed, message: '没有新提交需要合并', ...(deliveryEvidence ? { deliveryEvidence } : {}) };
+    }
     const tempRef = `refs/multicc/integration/${id}`;
     const integrationPath = path.join(os.tmpdir(), `multicc-integration-${id}`);
     let integrationAdded = false;
@@ -758,7 +767,7 @@ async function gitMergeBack(dir, session, opts = {}) {
       integrationAdded = true;
       progress('integration-merge');
       await execGit(integrationPath, ['-c', 'user.email=multicc@local', '-c', 'user.name=multicc',
-        'merge', '--no-ff', '-m', `multicc: merge ${branch}`, branch]);
+        'merge', '--no-ff', '-m', `multicc: merge ${branch}`, sourceHead]);
       const integrationHead = await execGit(integrationPath, ['rev-parse', 'HEAD']);
       progress('validate');
       const syntaxErrors = await checkMergedJsSyntax(integrationPath, baseHead, integrationHead, execGit);
@@ -767,13 +776,19 @@ async function gitMergeBack(dir, session, opts = {}) {
           error: `合并被拒绝：${syntaxErrors.length} 个文件语法错误；用户主工作区未改动` };
       }
       progress('publish');
+      await opts.evidence?.prepared({ operationId: id, dirPath, worktreePath, branch, baseRef: baseBranch,
+        baseHead, sourceHead, integrationHead }, execGit);
       await execGit(dirPath, ['merge', '--ff-only', integrationHead]);
+      let deliveryEvidence = null;
+      try { deliveryEvidence = await opts.evidence?.published(id, execGit) || null; }
+      catch (_) { deliveryEvidence = { operationId: id, state: 'unverified', reason: 'publication_evidence_pending' }; }
       let syncedBack = false;
       try {
         await execGit(worktreePath, ['merge', '--ff-only', baseBranch]);
         syncedBack = true;
       } catch (_) {}
-      return { ok: true, merged: true, committed, commits: ahead, syncedBack, integrationRef: tempRef };
+      return { ok: true, merged: true, committed, commits: ahead, syncedBack, integrationRef: tempRef,
+        ...(deliveryEvidence ? { deliveryEvidence } : {}) };
     } catch (error) {
       let conflicts = [];
       let conflictDiff = '';
