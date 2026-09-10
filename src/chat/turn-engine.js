@@ -1602,7 +1602,7 @@ function createChatTurnEngine(deps) {
       preparationFailure = spawnGuard.code || 'spawn-proof-missing';
       throw new Error(`turn spawn refused: ${(spawnGuard.missing || []).join(', ')}`);
     }
-    getWorkspaceAdmission?.()?.bindTurn(sessionName, opts, turnId);
+    getWorkspaceAdmission?.()?.bindTurn(sessionName, opts, turnId, turn.task?.id);
     const started = chatTurnPreparationRuntime.start(sessionName, turnId);
     if (!started.ok) {
       preparationFailure = started.code || 'runtime-start-rejected';
@@ -1691,7 +1691,7 @@ function createChatTurnEngine(deps) {
       runner.freshNativeSession = prepared.invocationEnvelope.historyHandle.isFirstTurn === true;
       let proc;
       try {
-        getWorkspaceAdmission?.()?.starting(sessionName, opts);
+        getWorkspaceAdmission?.()?.starting(sessionName, opts, attempt.routeAttemptId);
         proc = routerToolHost.spawnProcess({
         cli: persisted.cli, spawn, command: physicalInvocation.cmd,
         args: spawnArgs, cwd: cs.cwd, env: childEnv,
@@ -2235,7 +2235,7 @@ function createChatTurnEngine(deps) {
   function runChatTurnStreaming(
     sessionName, cs, persisted, prepared, provider, turn, prepareInvocation, autoTurn, apiRetryAttempt = 0, workspaceOpts = null,
   ) {
-    getWorkspaceAdmission?.()?.starting(sessionName, workspaceOpts || getWorkspaceAdmission?.()?.optionsForTurn(sessionName, turn));
+    getWorkspaceAdmission?.()?.starting(sessionName, workspaceOpts || getWorkspaceAdmission?.()?.optionsForTurn(sessionName, turn), prepared.attempt.routeAttemptId);
     const { invocation, attempt, routeOverrides, binding, proxySessionId } = prepared;
     // Per-session provider env. buildChildEnv strips inherited ANTHROPIC_* routing
     // vars before applying the provider env, so the provider choice is always
@@ -2427,9 +2427,9 @@ function createChatTurnEngine(deps) {
     });
   }
 
-  // The pure planner describes both runner endings; this injected host adapter is
-  // the only place that maps those effects back to MultiCC runtime services.
+  // Map both runner endings from the pure planner to host services.
   const turnFinalizationExecutor = createTurnFinalizationExecutor({
+    recordRunResult: (context, resolved) => getWorkspaceAdmission?.()?.finalized(context, resolved),
     persistAssistant(context, append) {
       return persistFinalAssistantResult(context.sessionName, context.cs, context.turn, context.runner, {
         role: 'assistant',

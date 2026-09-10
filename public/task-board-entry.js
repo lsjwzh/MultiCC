@@ -66,9 +66,10 @@
     });
     async function poll(epoch = pollEpoch) {
       if (stopped || epoch !== pollEpoch) return;
-      if (!busy && !document.hidden) try { await refresh(); } catch (e) { $('notice').textContent = errorText(e); }
+      if (!busy && (!document.hidden || !entry)) try { await refresh(); } catch (e) { $('notice').textContent = errorText(e); }
       if (!stopped && epoch === pollEpoch) timer = setTimeout(() => poll(epoch), 2000);
     }
+    root.MultiCCTaskBoardEntry.refresh = () => !stopped && !busy ? refresh() : Promise.resolve();
     await poll();
   }
   root.MultiCCTaskBoardEntry = { start };

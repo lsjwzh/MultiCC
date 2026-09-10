@@ -28,6 +28,7 @@ function createTaskShellRuntime(ports) {
     getTask = () => null,
   } = ports;
   const flights = new Map();
+  const roles = require('./role-bindings').createRoleBindings(store, { getRecord, getDirectory: ports.getDirectory, assertWritable });
   const taskActions = require('./task-actions').createTaskActions({ store, getRecord, getTask, getHistory, getExecution, createExecution, indexTask, ports, shell, open, chatScope });
   const launching = new Set();
   const maxConcurrent = Number.isInteger(ports.maxConcurrent) && ports.maxConcurrent > 0 ? ports.maxConcurrent : 4;
@@ -425,7 +426,10 @@ function createTaskShellRuntime(ports) {
         if (store.get('answer', key)) throw failure('answer_already_reserved');
         store.set('answer', key, { receiptId });
       }
+      const originReceipt = payload.intent !== 'work' && store.get('delivery:run', payload.turnId)?.binding?.receiptId;
+      const controlRole = originReceipt && store.get('receipt', originReceipt)?.roleSnapshotId;
       const receipt = { id: receiptId, shellId: s.id, taskId: task.id, fingerprint, payload,
+        roleSnapshotId: payload.intent === 'work' ? roles.snapshot(task.id) : controlRole || last?.roleSnapshotId || roles.snapshot(task.id),
         taskIdentityLocked: delivery.taskIdentityLocked === true,
         taskMetadata: delivery.taskMetadata || null,
         cursorVersion: payload.intent === 'work' ? (currentShell.cursorVersion || 0) + 1 : currentShell.cursorVersion || 0,
@@ -655,6 +659,7 @@ function createTaskShellRuntime(ports) {
     return { ok: false, code: 'task_shell_route_required' };
   }
   return {
+    roles,
     ...taskActions, purgeTasks, stateTarget, stateSources, open, adopt, link, remove, view, detail, chatScope, send: sendInput, retry, owns,
     guardAdmission, recentTasks, refillContext, contextTrace, settleAttribution, locateOrCreate, resolveTask, sendExplicit,
   };

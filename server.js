@@ -1373,7 +1373,7 @@ const sessionGitRuntime = createSessionGitRuntime({
   records: persistedSessions, directories,
   terminalSessions: sessions, chatSessions,
   gitWorktreeMergeState, gitBaseBranch,
-  gitRunQueued, gitMergeBack,
+  gitRunQueued, gitMergeBack: (dir, session, opts) => gitMergeBack(dir, session, { ...opts, evidence: workspaceAdmission?.mergeHooks(session.id) }),
   gitSyncFromBase, gitRebaseResolve,
   appendEvent, workspaceBroadcast: (...args) => workspaceBroadcast(...args),
   // M3 task-surface resolvers — lazy arrows: taskBoardRuntime is declared
@@ -2002,7 +2002,7 @@ const taskBoardRuntime = createTaskBoardRuntime({
   getSessionRunState: sid => sessionWorkHost?.getRunState(sid) || 'idle', isTaskShellSession: id => taskShellHost.owns(id), taskShellTaskAccess: task => taskShellHost.taskAccess(task), taskShellTaskEntry: id => taskShellHost.taskEntry(id),
   resolveGoalLimits, buildGoalLimitNote,
   // M3 per-task worktree service ports (taskWorktree on the runtime).
-  directories, gitWorktreeAdd, gitWorktreeRemove, gitMergeBack, existsSync: fs.existsSync,
+  directories, gitWorktreeAdd, gitWorktreeRemove, gitMergeBack: (dir, session, opts) => gitMergeBack(dir, session, { ...opts, evidence: workspaceAdmission?.mergeHooks(session.id) }), existsSync: fs.existsSync,
   logger: console,
 });
 taskBoardRuntime.mountRoutes(app); createTaskRunRoutes({ store: taskRunStore, logger }).mountRoutes(app);
@@ -2511,6 +2511,7 @@ workspaceAdmission = require('./src/workspace/admission').createWorkspaceAdmissi
   hasBackground: id => backgroundTaskRuntime.hasLiveBackgroundTasks(id), streamBusy: id => !!chatStream.status(id)?.busy,
   closePersistent: id => chatStream.closeAndWait(id),
   updateCwd: (id, cwd) => { const state = chatSessions.get(id); if (state) state.cwd = cwd; },
+  pendingInput: id => userInputSignalHost.pending(id), loadHistory: id => viewChatHistory(id),
   budgets: { executionLimit: Number(process.env.MULTICC_WORKSPACE_RUN_LIMIT || 8), residentLimit: Number(process.env.MULTICC_WORKSPACE_RESIDENT_LIMIT || 128), restoreLimit: Number(process.env.MULTICC_WORKSPACE_RESTORE_LIMIT || 2) },
   log: (event, data) => logger.warn(event, data),
 });
