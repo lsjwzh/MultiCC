@@ -209,7 +209,9 @@
       if ([...$('quick-task-cli').options].some(option => option.value === previous)) $('quick-task-cli').value = previous;
       quickCliSignature = cliSignature;
     }
-    for (const element of [$('quick-task-input'), $('quick-task-cli'), $('quick-task-submit'), $('quick-task-attach')]) element.disabled = !dir;
+    for (const element of [$('quick-task-input'), $('quick-task-cli'), $('quick-task-provider'), $('quick-task-submit'),
+      $('quick-task-attach'), $('quick-task-mic')]) element.disabled = !dir;
+    void renderQuickProviders();
   }
 
   function quickTaskId() {
@@ -238,6 +240,108 @@
     $('quick-task-attach').disabled = !directoryId;
   }
 
+  // ── New-task composer, at chat parity ─────────────────────────────────────
+  // The box is the same composer module the task chat uses (composer.css), so it
+  // offers the same capabilities through the same endpoints the chat composer
+  // uses: attach by button, paste or drop; dictation through the local ASR; Goal
+  // mode with its limits; and the runtime pick (CLI + provider) that is pinned
+  // onto the task at creation.
+  function quickStatus(text) { $('quick-task-status').textContent = text || ''; }
+
+  // Provider list per CLI, fetched once and reused. An empty value means "follow
+  // the default routing", which is what the task would have used anyway.
+  const quickProviderCache = new Map();
+  let quickProviderSignature = '';
+  let quickProviderSequence = 0;
+  async function quickProvidersFor(cli) {
+    if (!cli) return [];
+    if (quickProviderCache.has(cli)) return quickProviderCache.get(cli);
+    let list = [];
+    try {
+      const result = await api(`/api/providers?cli=${encodeURIComponent(cli)}`);
+      list = Array.isArray(result.providers) ? result.providers : [];
+    } catch (_) { list = []; }
+    quickProviderCache.set(cli, list);
+    return list;
+  }
+  async function renderQuickProviders() {
+    const select = $('quick-task-provider');
+    if (!select) return;
+    const cli = $('quick-task-cli').value || data?.clis?.[0] || '';
+    const sequence = ++quickProviderSequence;
+    const list = await quickProvidersFor(cli);
+    if (sequence !== quickProviderSequence) return;
+    const previous = select.value;
+    const signature = JSON.stringify([cli, list.map(provider => provider.id)]);
+    if (signature === quickProviderSignature) return;
+    quickProviderSignature = signature;
+    const options = [node('option', '跟随默认')]; options[0].value = '';
+    for (const provider of list) {
+      const option = node('option', provider.name || provider.id);
+      option.value = provider.id;
+      option.title = provider.name || provider.id;
+      options.push(option);
+    }
+    select.replaceChildren(...options);
+    if (list.some(provider => provider.id === previous)) select.value = previous;
+  }
+
+  // Dictation: press to record, press again to stop, one-shot transcription.
+  let quickRecorder = null;
+  let quickRecorderChunks = [];
+  async function toggleQuickDictation() {
+    const button = $('quick-task-mic');
+    if (quickRecorder && quickRecorder.state === 'recording') { quickRecorder.stop(); return; }
+    let stream;
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+    catch (_) { quickStatus('无法访问麦克风，请检查浏览器权限。'); return; }
+    quickRecorderChunks = [];
+    const mime = window.MediaRecorder && MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus' : undefined;
+    try { quickRecorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined); }
+    catch (_) {
+      stream.getTracks().forEach(track => track.stop());
+      quickStatus('浏览器不支持录音。');
+      return;
+    }
+    quickRecorder.ondataavailable = event => { if (event.data?.size) quickRecorderChunks.push(event.data); };
+    quickRecorder.onstop = async () => {
+      stream.getTracks().forEach(track => track.stop());
+      button.classList.remove('rec');
+      const blob = new Blob(quickRecorderChunks, { type: 'audio/webm' });
+      if (!blob.size) { quickStatus(''); return; }
+      quickStatus('转写中…');
+      try {
+        const form = new FormData(); form.append('file', blob, 'recording.webm');
+        const response = await fetch('/api/voice/stt', { method: 'POST', body: form });
+        const result = await response.json();
+        if (!response.ok || !result.text) throw new Error(result.error || '没有识别到内容');
+        const input = $('quick-task-input');
+        input.value = input.value ? `${input.value} ${result.text.trim()}` : result.text.trim();
+        input.focus();
+        quickStatus('');
+      } catch (error) { quickStatus(`转写失败：${error.message}`); }
+    };
+    quickRecorder.start();
+    button.classList.add('rec');
+    quickStatus('录音中，点 🎙 结束。');
+  }
+
+  function renderQuickGoalLimits() {
+    $('quick-task-goal-limits').hidden = !$('quick-task-goal').checked;
+  }
+
+  // Enter creates, unless the text is meant to be multiline; the draft is only
+  // cleared once the message is acknowledged, so a failure keeps the work.
+  function goalLimitsFromForm() {
+    const limits = {};
+    const rounds = $('quick-task-goal-rounds').value.trim();
+    const budget = $('quick-task-goal-budget').value.trim();
+    if (rounds && Number(rounds) > 0) limits.maxRounds = Number(rounds);
+    if (budget && Number(budget) > 0) limits.maxBudget = Number(budget);
+    return limits;
+  }
+
   async function submitQuickTask(event) {
     event.preventDefault();
     if (!data || !directoryId) return;
@@ -246,25 +350,32 @@
     const paths = [...$('quick-task-files').querySelectorAll('[data-path]')].map(chip => chip.dataset.path);
     const text = typed + (paths.length ? `\n\n附件：${paths.join(' ')}` : '');
     const cli = $('quick-task-cli').value || data.clis[0] || 'claude';
+    const provider = $('quick-task-provider').value;
     const goal = $('quick-task-goal').checked;
-    const fingerprint = JSON.stringify([directoryId, text, cli, goal]);
+    const goalLimits = goal ? goalLimitsFromForm() : null;
+    const fingerprint = JSON.stringify([directoryId, text, cli, provider, goalLimits]);
     if (!quickCreateAttempt || quickCreateAttempt.fingerprint !== fingerprint) {
       quickCreateAttempt = { fingerprint, createId: quickTaskId(), sendId: quickTaskId() };
     }
     const attempt = quickCreateAttempt;
     let created = null;
     $('quick-task-submit').disabled = true;
-    $('quick-task-status').textContent = '正在创建固定任务…';
+    quickStatus('正在创建固定任务…');
     try {
       const title = typed.split(/\n/).find(Boolean).trim().slice(0, 120);
-      created = await api('/api/air/tasks', { dirId: directoryId, title, cli, clientMsgId: attempt.createId });
-      $('quick-task-status').textContent = '任务已创建，正在发送第一条消息…';
+      // Provider is pinned at creation; without a pick the task follows the same
+      // default routing it would have had anyway.
+      created = await api('/api/air/tasks', {
+        dirId: directoryId, title, cli, clientMsgId: attempt.createId, ...(provider ? { provider } : {}),
+      });
+      quickStatus('任务已创建，正在发送第一条消息…');
       await api(`/api/task-shell-tasks/${encodeURIComponent(created.taskId)}/messages`, {
-        text, clientMsgId: attempt.sendId, intent: 'work', ...(goal ? { goal: true, goalLimits: {} } : {}),
+        text, clientMsgId: attempt.sendId, intent: 'work', ...(goal ? { goal: true, goalLimits: goalLimits || {} } : {}),
       });
       quickCreateAttempt = null;
       $('quick-task-input').value = '';
       $('quick-task-goal').checked = false;
+      renderQuickGoalLimits();
       $('quick-task-files').replaceChildren();
       await refresh();
       navigate(directoryId, created.taskId);
@@ -275,7 +386,7 @@
         await refresh();
         navigate(directoryId, created.taskId);
         notice(`任务已创建，但第一条消息未确认送达：${error.message}。草稿已保留。`);
-      } else $('quick-task-status').textContent = error.message;
+      } else quickStatus(error.message);
     } finally { $('quick-task-submit').disabled = false; }
   }
 
@@ -973,12 +1084,39 @@
   $('quick-task-form').onsubmit = submitQuickTask;
   $('quick-task-attach').onclick = () => $('quick-task-file-input').click();
   $('quick-task-file-input').onchange = event => void uploadQuickTaskFiles(event.target.files);
+  $('quick-task-mic').onclick = () => void toggleQuickDictation();
+  $('quick-task-goal').onchange = renderQuickGoalLimits;
+  $('quick-task-cli').onchange = () => void renderQuickProviders();
   $('quick-task-input').onkeydown = event => {
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
       $('quick-task-form').requestSubmit();
     }
   };
+  // Attachments arrive the same three ways the chat composer accepts them:
+  // the button, a paste, or a drop anywhere on the card.
+  $('quick-task-input').addEventListener('paste', event => {
+    const files = event.clipboardData?.files;
+    if (files?.length) { event.preventDefault(); void uploadQuickTaskFiles(files); }
+  });
+  {
+    const form = $('quick-task-form');
+    form.addEventListener('dragover', event => {
+      if (!event.dataTransfer?.types?.includes('Files')) return;
+      event.preventDefault();
+      form.classList.add('is-dropping');
+    });
+    form.addEventListener('dragleave', event => {
+      if (!form.contains(event.relatedTarget)) form.classList.remove('is-dropping');
+    });
+    form.addEventListener('drop', event => {
+      const files = event.dataTransfer?.files;
+      if (!files?.length) return;
+      event.preventDefault();
+      form.classList.remove('is-dropping');
+      void uploadQuickTaskFiles(files);
+    });
+  }
   // The task header keeps the two or three actions that get used every round.
   // Each one clicks the chat page's own button, so its handler, its permission
   // check and its dialog stay in the frame; only the state readout (auto-commit
