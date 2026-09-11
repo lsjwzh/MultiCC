@@ -151,7 +151,10 @@ body.air-chat {
   width: min(100%, var(--chat-content-max-width));
   align-self: center;
   gap: 2px;
-  padding: 18px 3px 12px;
+  /* Air whitespace: the conversation never hugs the frame edge. Side padding
+     scales with the viewport so wide windows get generous margins while
+     tablets keep a comfortable minimum. */
+  padding: 18px clamp(20px, 4vw, 48px) 12px;
   color: var(--air-text);
   overscroll-behavior: contain;
 }
@@ -231,8 +234,18 @@ body.air-chat {
 .air-chat #session-queue-dock,
 .air-chat #input-bar,
 .air-chat #dispatch-activity {
-  width: min(calc(100% - 16px), var(--chat-content-max-width));
+  /* Align with the message list's Air side padding so the composer and the
+     conversation share one reading column. */
+  width: min(calc(100% - clamp(40px, 8vw, 96px)), var(--chat-content-max-width));
   align-self: center;
+}
+@media (max-width: 760px) {
+  .air-chat #usage-summary,
+  .air-chat #attach-area,
+  .air-chat #pre-input-bar,
+  .air-chat #session-queue-dock,
+  .air-chat #input-bar,
+  .air-chat #dispatch-activity { width: min(calc(100% - 28px), var(--chat-content-max-width)); }
 }
 .air-chat #usage-summary { border-color: #e4ebf2; background: transparent; }
 .air-chat .usage-summary-row { border-color: #e2eaf2; }
@@ -347,7 +360,7 @@ body.air-chat.task-artifacts-chat .task-artifacts-toggle { color-scheme: light; 
   .air-chat #aux-classify-bar .ac-icon { display: none; }
   .air-chat #chat-context-bar .worktree-conflict-bar { grid-column: 1 / -1; grid-row: 3; }
   .air-chat #header-more-menu { color: var(--air-text); background: #fbfdff; }
-  .air-chat #messages { padding: 12px 10px 8px; }
+  .air-chat #messages { padding: 12px 14px 8px; }
   .air-chat .msg { max-width: 96%; }
   .air-chat .msg.user { max-width: 88%; }
   .air-chat #input-bar { margin-bottom: max(7px, env(safe-area-inset-bottom)); }
