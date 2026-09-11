@@ -26,8 +26,11 @@
       </div>
     </div>
 
-    <button id="overview" class="nav-row" type="button"><span>◫</span><span>控制台</span></button>
-    <button id="activity" class="nav-row" type="button"><span>◷</span><span>跨目录活动</span></button>
+    <!-- 控制台不是「页面」：点它从左侧展开面板，地址不变、当前任务不卸载。
+         徽标接管了原来「跨目录活动」那条常驻信号——不展开也知道有别处的事在等。 -->
+    <button id="overview" class="nav-row" type="button" aria-expanded="false" aria-controls="console-panel">
+      <span>◫</span><span>控制台</span><span id="console-badge" class="console-badge" hidden></span>
+    </button>
     <button id="schedules" class="nav-row" type="button"><span>◴</span><span>定时任务</span></button>
     <div class="caption favorite-caption">收藏目录</div>
     <nav id="favorites" aria-label="收藏目录"></nav>
@@ -38,6 +41,13 @@
         <span id="task-count"></span>
       </div>
       <button id="create" class="sidebar-create" type="button">＋ 新任务</button>
+      <!-- 同一条带子、同一个搜索框，只是作用域可以放宽：目录是执行上下文，
+           不是查找任务的前提。 -->
+      <div id="scope-switch" role="tablist" aria-label="任务范围">
+        <button type="button" role="tab" data-scope="dir" aria-selected="true">本目录<b id="scope-count-dir"></b></button>
+        <button type="button" role="tab" data-scope="recent" aria-selected="false">最近<b id="scope-count-recent"></b></button>
+        <button type="button" role="tab" data-scope="all" aria-selected="false">全部目录<b id="scope-count-all"></b></button>
+      </div>
       <input id="task-search" type="search" placeholder="搜索任务" aria-label="搜索任务">
       <select id="status-filter" aria-label="任务筛选">
         <option value="active">进行中与待处理</option>
@@ -200,6 +210,35 @@
       </div>
     </section>
   </main>
+
+  <!-- 控制台面板：从左侧展开的一层，不是新页面 —— 地址不变、当前任务不卸载，
+       关掉就回到原处。内容是控制台自己的概览（air-admin.js 渲染到这里）。 -->
+  <button id="console-scrim" type="button" aria-label="关闭控制台" hidden></button>
+  <section id="console-panel" aria-label="控制台" aria-hidden="true">
+    <header id="console-head">
+      <div class="console-title">
+        <span class="eyebrow">CONSOLE</span>
+        <h2>控制台 <span id="console-here"></span></h2>
+      </div>
+      <div id="console-actions"></div>
+      <button id="console-close" type="button">返回任务</button>
+    </header>
+    <div id="console-body"><div id="console-content" aria-live="polite"></div></div>
+  </section>
+
+  <!-- ⌘K：目录和任务一起搜。找任务不必先想它在哪个目录。 -->
+  <button id="palette-scrim" type="button" aria-label="关闭搜索" hidden></button>
+  <div id="palette" role="dialog" aria-modal="true" aria-label="切换工作目录或任务" hidden>
+    <input id="palette-input" type="search" autocomplete="off" aria-label="搜索工作目录或任务"
+           placeholder="搜索工作目录或任务，例如 storefront、登录页">
+    <div id="palette-results"></div>
+    <footer>
+      <span><kbd>↑</kbd><kbd>↓</kbd> 选择</span>
+      <span><kbd>Enter</kbd> 进入</span>
+      <span><kbd>Esc</kbd> 关闭</span>
+      <span id="palette-note">目录与任务一起搜</span>
+    </footer>
+  </div>
 
   <dialog id="new-task-dialog">
     <form id="new-task-form">

@@ -575,6 +575,80 @@ dialog .air-config-field input { margin-top: 7px; }
 .air-config-footer > div { display: flex; gap: 8px; }
 .air-config-footer button { min-width: 86px; }
 
+/* ── 控制台：从左侧展开的一层，不是新页面 ─────────────────────────────────
+   点「控制台」时地址不变、当前任务不卸载，面板盖着页面滑出来，关掉就回到原处。
+   里面装的还是概览那套 .admin-* 排版（面板宽度和原来的内容区几乎一样），所以
+   这里只补面板自己的外壳，概览的卡片不用改。 */
+#console-scrim { position: fixed; z-index: 40; inset: 0; width: 100%; height: 100%; border: 0; border-radius: 0; background: rgba(32, 49, 70, .28); backdrop-filter: blur(3px); }
+#console-panel {
+  position: fixed;
+  z-index: 41;
+  inset: 0 auto 0 0;
+  width: min(1180px, 91vw);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-right: 1px solid rgba(202, 218, 235, .9);
+  border-radius: 0 22px 22px 0;
+  background: linear-gradient(145deg, #fff, #f6faff);
+  box-shadow: 18px 0 70px #263f5d2e;
+  /* 关着的时候整块停在屏外，并且不可聚焦：面板里的按钮不该在收起状态下被 Tab 摸到。 */
+  transform: translateX(-100%);
+  visibility: hidden;
+  transition: transform 300ms cubic-bezier(.22, .68, .24, 1), visibility 300ms;
+}
+body.console-open #console-panel { transform: none; visibility: visible; }
+#console-head { flex-shrink: 0; display: flex; align-items: center; gap: 14px; padding: 20px 30px 15px; border-bottom: 1px solid rgba(220, 230, 241, .9); background: rgba(251, 253, 255, .9); backdrop-filter: blur(18px); }
+.console-title { min-width: 0; flex: 1; }
+.console-title h2 { margin-top: 3px; font-size: 21px; }
+#console-here { color: var(--muted); font-size: 13px; font-weight: 400; }
+#console-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+#console-actions:empty { display: none; }
+#console-close { flex: 0 0 auto; }
+#console-body { min-height: 0; flex: 1; overflow: auto; padding: 26px 30px 46px; }
+
+/* 控制台那一行的常驻徽标：接管原先「跨目录活动」承担的「别处有事在等」信号，
+   不展开也知道。数字由 air-admin.js 的 urgentTasks 一份定义喂出来。 */
+.console-badge { margin-left: auto; min-width: 19px; padding: 1px 6px; color: #fff; border-radius: 20px; background: var(--accent); font-size: 10px; font-weight: 700; text-align: center; }
+
+.console-attention { margin-bottom: 15px; }
+.admin-panel-note { color: var(--muted); font-size: 10px; }
+.admin-row-mark.waiting { color: #c07a1e; }
+.admin-row-mark.running { color: var(--green); }
+
+/* ── 任务带的作用域开关 ───────────────────────────────────────────────────
+   同一条带子就地换范围（本目录 / 最近 / 全部目录），不是多一层导航。 */
+#scope-switch { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 3px; margin-bottom: 7px; padding: 3px; border: 1px solid rgba(206, 222, 238, .9); border-radius: 11px; background: rgba(255, 255, 255, .6); }
+#scope-switch button { min-width: 0; min-height: 30px; padding: 4px 6px; overflow: hidden; color: #60738a; border-color: transparent; background: transparent; font-size: 11px; white-space: nowrap; text-overflow: ellipsis; }
+#scope-switch button:hover { background: rgba(255, 255, 255, .8); }
+#scope-switch button[aria-selected="true"] { color: #0d63c4; border-color: #d7e7f8; background: #fff; box-shadow: 0 4px 12px #42688f0f; }
+#scope-switch b { margin-left: 5px; color: var(--muted); font-size: 10px; font-weight: 600; }
+#scope-switch button[aria-selected="true"] b { color: #3d82c9; }
+
+/* 一条带子里混着别的目录的任务时，那几行得自己说清是哪个目录的，并用虚线
+   边框和本目录的行分开 —— 否则「本目录」就不再是一个能读出来的事实。 */
+#tasks button.elsewhere { border-style: dashed; border-color: #cfdced; background: rgba(255, 255, 255, .45); }
+#tasks .task-dir { display: inline-block; width: auto; margin-top: 4px; padding: 1px 6px; color: #4d7ba6; border-radius: 6px; background: #eaf3fc; font-size: 9px; }
+
+/* ── ⌘K 命令面板：目录和任务一起搜 ─────────────────────────────────────── */
+#palette-scrim { position: fixed; z-index: 50; inset: 0; width: 100%; height: 100%; border: 0; border-radius: 0; background: rgba(32, 49, 70, .3); backdrop-filter: blur(6px); }
+#palette { position: fixed; z-index: 51; top: 96px; left: 50%; width: min(620px, calc(100vw - 32px)); max-height: min(560px, calc(100dvh - 160px)); display: flex; flex-direction: column; overflow: hidden; transform: translateX(-50%); border: 1px solid rgba(199, 217, 236, .95); border-radius: 18px; background: rgba(253, 254, 255, .98); box-shadow: 0 26px 70px #223c5a2e; }
+#palette-input { flex: 0 0 auto; height: 52px; padding: 0 18px; border: 0; border-bottom: 1px solid #e4edf6; border-radius: 0; background: transparent; font-size: 15px; }
+#palette-input:focus { border-color: #e4edf6; box-shadow: none; }
+#palette-results { min-height: 0; flex: 1; overflow: auto; padding: 7px; }
+#palette-results button { width: 100%; min-width: 0; display: flex; align-items: center; gap: 11px; padding: 9px 10px; border-color: transparent; background: transparent; text-align: left; }
+#palette-results button.active { border-color: #cfe3f8; background: #eef6ff; }
+.palette-mark { flex: 0 0 auto; width: 28px; height: 28px; display: grid; place-items: center; color: #fff; border-radius: 9px; background: linear-gradient(145deg, #3899f8, #116edb); font-size: 12px; }
+.palette-copy { min-width: 0; flex: 1; }
+.palette-copy strong, .palette-copy small { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.palette-copy strong { color: #2c4a66; font-size: 13px; font-weight: 620; }
+.palette-copy small { margin-top: 2px; color: var(--muted); font-size: 10px; }
+.palette-kind { flex: 0 0 auto; padding: 2px 6px; color: #537ba0; border-radius: 6px; background: #eaf3fb; font-size: 9px; }
+#palette footer { flex: 0 0 auto; display: flex; align-items: center; gap: 14px; padding: 9px 16px; color: var(--muted); border-top: 1px solid #e8eff6; background: #f8fbfe; font-size: 10px; }
+#palette kbd { padding: 1px 5px; border: 1px solid #dbe6f1; border-radius: 5px; background: #fff; font: inherit; }
+#palette-note { margin-left: auto; }
+#palette-results .empty-list { padding: 26px; color: var(--muted); text-align: center; font-size: 12px; }
+
 @media (max-width: 1040px) {
   #sidebar { width: 240px; flex-basis: 240px; padding-inline: 13px; }
   #task-header { padding-inline: 20px; }
@@ -585,6 +659,8 @@ dialog .air-config-field input { margin-top: 7px; }
   .admin-directory-row { border-right: 0; }
   .air-settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   #directory-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #console-head { padding-inline: 22px; }
+  #console-body { padding: 22px 22px 42px; }
 }
 
 @media (max-width: 760px) {
@@ -633,6 +709,14 @@ dialog .air-config-field input { margin-top: 7px; }
   .air-doc-actions { width: 100%; padding-left: 46px; flex-wrap: wrap; }
   .air-provider-cards { grid-template-columns: 1fr; }
   .air-legacy-frame { min-height: 620px; height: calc(100dvh - 260px); }
+  /* 面板几乎占满窄屏，但留一条边让底下的页面还认得出是「盖上来的一层」。 */
+  #console-panel { width: calc(100% - 22px); border-radius: 0 18px 18px 0; box-shadow: 8px 0 40px #263f5d24; }
+  #console-head { align-items: flex-start; flex-wrap: wrap; gap: 10px; padding: 16px 15px 13px; }
+  #console-actions { order: 3; width: 100%; }
+  #console-body { padding: 18px 15px 36px; }
+  .console-title h2 { font-size: 19px; }
+  #palette { top: 68px; max-height: min(520px, calc(100dvh - 110px)); }
+  #palette footer { gap: 10px; }
 }
 
 @media (max-width: 420px) {
@@ -664,6 +748,13 @@ dialog .air-config-field input { margin-top: 7px; }
   .air-cli-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .air-config-footer { align-items: stretch; flex-direction: column; }
   .air-config-footer > div { display: grid; grid-template-columns: 1fr 1fr; }
+  #scope-switch button { padding: 4px 3px; font-size: 10px; }
+  #scope-switch b { margin-left: 3px; font-size: 9px; }
+  #palette-results button { gap: 8px; padding: 8px; }
+  .palette-mark { width: 24px; height: 24px; }
+  .palette-kind { display: none; }
+  #palette footer { flex-wrap: wrap; gap: 6px 12px; }
+  #palette-note { margin-left: 0; flex-basis: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {
