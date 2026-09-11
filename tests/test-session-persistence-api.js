@@ -122,9 +122,10 @@ function assertPersistenceFailure(response, label) {
 }
 
 async function sessionView(directoryId, sessionId) {
-  const response = await api('GET', `/api/directories/${directoryId}/sessions`);
+  void directoryId;
+  const response = await api('GET', `/api/sessions/${sessionId}`);
   assert.equal(response.status, 200);
-  return response.data.sessions.find(session => session.id === sessionId) || null;
+  return response.data;
 }
 
 (async () => {
@@ -160,13 +161,12 @@ async function sessionView(directoryId, sessionId) {
     name: 'fault-cron', dirId: directoryId, cli: 'opencode',
     prompt: 'must never reach a CLI', cron: '0 0 1 1 *', enabled: false,
   });
-  assert.equal(response.status, 200);
-  const cronId = response.data.id;
-  response = await api('POST', `/api/cron/${cronId}/run`);
-  assertPersistenceFailure(response, 'manual cron session create');
+  assertPersistenceFailure(response, 'fixed Air cron task create');
   sessions = (await api('GET', `/api/directories/${directoryId}/sessions`)).data.sessions;
   assert.equal(sessions.some(session => session.label === '⏰ fault-cron'), false);
-  await api('DELETE', `/api/cron/${cronId}`);
+  const cronTasks = JSON.parse(fs.readFileSync(path.join(dataDir, 'scheduled_tasks.json'), 'utf8'));
+  assert.equal(cronTasks.some(task => task.name === 'fault-cron'), false,
+    'the schedule is not published when its fixed Air task cannot persist');
 
   response = await api('PATCH', `/api/sessions/${stableId}`, {
     label: 'failed-update', model: 'model-that-must-rollback', autoCommit: false,
@@ -184,10 +184,10 @@ async function sessionView(directoryId, sessionId) {
   assert.equal(diskSessions().find(session => session.id === stableId).cli, 'opencode');
 
   response = await api('DELETE', `/api/sessions/${stableId}?force=1`);
-  assertPersistenceFailure(response, 'delete');
+  assert.equal(response.status, 409, 'task-first execution records cannot be deleted through the legacy session route');
   current = await sessionView(directoryId, stableId);
-  assert.ok(current, 'failed delete must restore the in-memory record');
-  assert.ok(diskSessions().some(session => session.id === stableId), 'failed delete must retain the disk record');
+  assert.ok(current, 'rejected legacy delete must retain the in-memory record');
+  assert.ok(diskSessions().some(session => session.id === stableId), 'rejected legacy delete must retain the disk record');
 
   injectFailure(false);
   await stopServer();

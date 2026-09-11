@@ -15,7 +15,11 @@
     toggle.id = 'task-artifacts-toggle'; toggle.setAttribute('aria-controls', 'task-artifacts-panel');
     toggle.onclick = () => setOpen(!opened);
     const header = document.getElementById('header');
-    if (header) header.insertBefore(toggle, header.querySelector('.hdr-spacer'));
+    const airChatMenu = document.body.classList.contains('air-chat') ? document.getElementById('header-more-menu') : null;
+    const airToolbar = document.body.classList.contains('air') ? document.querySelector('#composer .toolbar') : null;
+    if (airChatMenu) airChatMenu.append(toggle);
+    else if (airToolbar) airToolbar.insertBefore(toggle, airToolbar.firstChild);
+    else if (header) header.insertBefore(toggle, header.querySelector('.hdr-spacer'));
     else { const bar = node('div', null, 'task-artifacts-tools'); bar.append(toggle); document.querySelector('main').insertBefore(bar, document.getElementById('history')); }
     panel = node('aside'); panel.id = 'task-artifacts-panel'; panel.hidden = true;
     panel.setAttribute('aria-labelledby', 'task-artifacts-heading');

@@ -2,6 +2,7 @@
 <html lang="zh">
 <head>
   <meta charset="UTF-8" />
+  <script>if(new URLSearchParams(location.search).get('embed')==='air')document.documentElement.classList.add('air-embed');</script>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -784,6 +785,7 @@
   </style>
   <!-- Loaded after the inline styles so the shared tone tokens win same-specificity ties. -->
   <link rel="stylesheet" href="status-badge.css" />
+  <link rel="stylesheet" href="manage-air-embed.css" />
 </head>
 <body data-view="docs">
 <a href="/air" style="position:fixed;right:20px;bottom:24px;z-index:40;background:#2272e3;color:white;border-radius:22px;padding:12px 18px;text-decoration:none">MultiCC Air ↗</a>
@@ -1059,7 +1061,8 @@
             <button class="btn btn-sm" onclick="loadCronTasks()" data-i18n="refresh">刷新</button>
             <button class="btn btn-green btn-sm" onclick="openCronModal()">＋ <span data-i18n="create">新建</span></button>
           </div>
-          <p class="sec-desc">所有 agent / 你创建的定时任务，到点自动新建会话执行你写的 prompt。</p>
+          <p class="sec-desc">定时任务已接入 MultiCC Air：每条规则绑定一个固定任务，所有周期运行共享同一任务历史。新的完整界面可从 Air 打开。</p>
+          <div style="margin-bottom:12px;"><a class="btn btn-green btn-sm" href="/air?view=schedules">在 MultiCC Air 中管理 ↗</a></div>
           <div class="settings-card" style="max-width:none">
             <div class="sc-body" id="cron-list" style="gap:10px;">
               <div style="color:var(--faint);font-size:13px;">加载中…</div>
@@ -2033,6 +2036,7 @@
         <div class="setting-row"><label>任务名</label><input id="cron-f-name" type="text" placeholder="例如：每天早报" /></div>
         <div class="setting-row"><label>目标工作区</label><select id="cron-f-dir" style="flex:1;"></select></div>
         <div class="setting-row"><label>CLI</label><select id="cron-f-cli"><option value="claude">claude</option><option value="codex">codex</option></select></div>
+        <p id="cron-fixed-task-note" style="display:none;margin:0 0 12px 134px;color:var(--muted);font-size:11px;line-height:1.5;">目录与 AI 配置已经归属于固定 Air 任务；请打开该任务修改 CLI / Provider。</p>
         <div class="setting-row"><label>cron</label><input id="cron-f-cron" type="text" placeholder="分 时 日 月 周，如 0 9 * * *" style="font-family:var(--mono);" /></div>
         <div style="padding:0 0 8px 134px;display:flex;flex-wrap:wrap;gap:6px;">
           <button class="btn btn-sm" onclick="cronPreset('0 9 * * *')">每天9点</button>

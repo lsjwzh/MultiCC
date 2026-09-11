@@ -52,6 +52,29 @@ function createStaticAssetsRoutes(rawDeps) {
   }
 
   function mountRoutes(app) {
+    // `/manage` is now the stable bookmark for the Air control surface. Keep
+    // `/manage.html` as the explicit compatibility document while its deeper
+    // tools are migrated one by one; this prevents old links from dropping the
+    // user back onto the retired dashboard shell.
+    app.get('/manage', (req, res) => {
+      if (req.query.focus === 'aux') {
+        const legacy = new URLSearchParams({ focus: 'aux' });
+        if (typeof req.query.token === 'string' && req.query.token) legacy.set('token', req.query.token);
+        return res.redirect(`/manage.html?${legacy.toString()}`);
+      }
+      const requested = typeof req.query.view === 'string' ? req.query.view : 'overview';
+      const aliases = { cron: 'schedules', overview: 'overview', tasks: 'planner' };
+      const allowed = new Set([
+        'overview', 'tasks', 'planner', 'schedules', 'docs', 'memory', 'settings', 'voice', 'goal',
+        'provider', 'global', 'push', 'tunnel', 'bridges', 'resources', 'skillsync', 'storage',
+      ]);
+      const view = aliases[requested] || (allowed.has(requested) ? requested : 'overview');
+      const params = new URLSearchParams({ view });
+      if (typeof req.query.token === 'string' && req.query.token) params.set('token', req.query.token);
+      if (typeof req.query.external === 'string' && req.query.external) params.set('external', req.query.external);
+      return res.redirect(`/air?${params.toString()}`);
+    });
+
     // Root → manage page (unless ?id= is specified, which means a terminal session)
     app.get('/', (req, res, next) => {
       if (req.query.id === '__aux__') {
@@ -69,9 +92,17 @@ function createStaticAssetsRoutes(rawDeps) {
       let rel;
       try { rel = decodeURIComponent(req.path).replace(/^\/+/, ''); } catch (_) { return next(); }
       // Session URLs are bookmarks to tasks, never a second conversation UI.
+      // Air is the sole exception: its task workspace embeds the canonical
+      // full chat renderer and only changes its layout/theme. This explicit
+      // flag cannot turn an ordinary public chat bookmark back into a second
+      // top-level conversation surface.
+      const airChatRenderer = req.query.air === '1'
+        && ['chat', 'chat.html'].includes(rel)
+        && ['task', 'session'].some(key => typeof req.query[key] === 'string' && req.query[key].length > 0);
       const taskRenderer = req.query.air === '1' && req.query.board === '1'
         && typeof req.query.task === 'string' && req.query.task.length > 0;
-      if (['chat', 'chat.html'].includes(rel) || (['task-shell', 'task-shell.html'].includes(rel) && !taskRenderer)) {
+      if ((['chat', 'chat.html'].includes(rel) && !airChatRenderer)
+          || (['task-shell', 'task-shell.html'].includes(rel) && !taskRenderer)) {
         return _serveVersionedHtml(path.join(_publicDir, 'task-entry.html'), res);
       }
       const cands = !rel || rel === '/' ? ['index.html']

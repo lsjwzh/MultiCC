@@ -15,6 +15,25 @@ const { shellHistoryPage, watchShellHistory } = require('./chat-history');
 function createTaskShellHost(deps) {
   let runtime, store, candidates;
   const workspace = require('./workspace').createShellWorkspaceHost(deps);
+  const shortText = (value, limit = 500) => {
+    if (value == null) return '';
+    let text;
+    try { text = typeof value === 'string' ? value : JSON.stringify(value); }
+    catch (_) { text = String(value); }
+    return text.slice(0, limit);
+  };
+  const publicQueueItem = item => ({
+    entryId: shortText(item?.entryId, 160), taskId: shortText(item?.taskId, 160) || null,
+    taskRunId: shortText(item?.taskRunId, 160) || null, source: shortText(item?.source, 80) || null,
+    workKind: shortText(item?.workKind, 80) || null, state: shortText(item?.state, 40) || null,
+    position: Number(item?.position) || null, priority: item?.priority === true,
+    admittedAt: Number(item?.admittedAt) || null, text: shortText(item?.text, 32000),
+  });
+  const publicActive = active => active ? Object.fromEntries([
+    'entryId', 'taskId', 'taskRunId', 'source', 'workKind', 'admittedAt', 'claimedAt', 'startedAt', 'attempt',
+  ].filter(key => active[key] != null).map(key => [key,
+    ['admittedAt', 'claimedAt', 'startedAt', 'attempt'].includes(key) ? Number(active[key]) : shortText(active[key], 160),
+  ])) : null;
   function candidate(id) {
     const record = deps.records.get(id);
     return record?.taskBoundTaskId && id === `task-${record.taskBoundTaskId.replace(/^tsk_/, '')}`;
@@ -50,10 +69,32 @@ function createTaskShellHost(deps) {
         if (!host || !scheduler || !record) return { busy: true, status: 'unavailable' };
         const state = await scheduler.status(id);
         const pending = record.taskState?.pendingUserInput;
+        const taskState = record.taskState || {};
+        const classifyHistory = (Array.isArray(taskState.classifyHistory) ? taskState.classifyHistory : [])
+          .slice(-20).map(item => ({ at: Number(item?.at) || null,
+            taskId: shortText(item?.taskId, 160) || null, goal: shortText(item?.goal, 500),
+            phase: shortText(item?.phase, 80), state: shortText(item?.state, 8) || null,
+            error: item?.error === true, evidence: shortText(item?.evidence, 240) || null }));
+        let events = [];
+        try {
+          const recent = deps.recentEvents?.(record.dirId);
+          events = (Array.isArray(recent) ? recent : [])
+            .filter(event => event?.sessionId === id).slice(-30)
+            .map(event => ({ ts: Number(event?.ts) || null, type: shortText(event?.type, 80) || 'event',
+              detail: shortText(event?.detail, 500) }));
+        } catch (_) {}
         const busy = !!state.active || !!state.queued?.length || !!(pending && !pending.resolved)
           || !['idle', 'assessing'].includes(state.state) || host.isRunActive(id);
         return { busy, status: host.getRunState(id), completed: !busy && state.classifyState === 'D',
-          turnId: currentTurn(id), pending: pending && !pending.resolved ? pending : null };
+          turnId: currentTurn(id), pending: pending && !pending.resolved ? pending : null,
+          queue: { state: shortText(state.state, 40) || 'idle', freezeReason: shortText(state.freezeReason, 160) || null,
+            classifyState: shortText(state.classifyState, 8) || null, active: publicActive(state.active),
+            queued: (Array.isArray(state.queued) ? state.queued : []).map(publicQueueItem),
+            updatedAt: Number(state.updatedAt) || null },
+          classify: { state: shortText(taskState.classifyState || state.classifyState, 8) || null,
+            goal: shortText(taskState.goal, 500), phase: shortText(taskState.phase, 80),
+            updatedAt: Number(taskState.classifyUpdatedAt) || null, history: classifyHistory },
+          events };
       },
       getTask: id => deps.getTaskBoard?.()?.getBoard?.().tasks?.[id] || null,
       isDeletedTask: id => deps.getTaskBoard?.()?.getBoard?.().deletedTaskIds?.includes(id),
@@ -140,6 +181,36 @@ function createTaskShellHost(deps) {
       ...(intent !== 'work' ? { turnId: message.turnId, requestId: message.userInputRequestId } : {}) });
     return { ...result, shellId: shell.id, clientMsgId: message.clientMsgId };
   }
+  async function sendTaskMessage(id, text, options = {}) {
+    const rt = getRuntime();
+    const entry = await rt.bindPlannedTask(id);
+    if (entry.readOnly) throw failure('task_read_only', 'The fixed Air task is archived or read-only', 409);
+    if (!entry.ownerShellId) throw failure('task_owner_missing', 'The fixed Air task has no owning task shell', 409);
+    return rt.sendExplicit(entry.ownerShellId, {
+      text: String(text || ''),
+      clientMsgId: options.clientMsgId || randomUUID(),
+      intent: 'work',
+    }, {
+      taskId: id,
+      taskStart: false,
+      taskSource: options.source || 'task-shell',
+      taskText: options.taskText || entry.task.title,
+    });
+  }
+  function taskSummary(id) {
+    const rt = getRuntime();
+    const task = rt.listTasks().find(value => value.id === id);
+    if (!task) return null;
+    const lifecycle = deps.getTaskBoard?.()?.getBoard?.().tasks?.[id] || task;
+    const record = deps.records.get(task.sessionId);
+    const access = rt.taskAccess(task);
+    const source = { ...(task.runtime || {}), ...(record || {}) };
+    const runtime = Object.fromEntries(['cli', 'model', 'provider', 'providerSelection', 'effort', 'agent']
+      .filter(key => source[key] !== undefined)
+      .map(key => [key, source[key]]));
+    return { id, dirId: task.dirId, title: lifecycle.title || task.title, status: lifecycle.status || access.status,
+      readOnly: access.readOnly, sessionId: task.sessionId, runtime };
+  }
   return {
     mountRoutes: app => mountTaskShellRoutes(app, { getRuntime, open,
       taskEntry: id => getRuntime().bindPlannedTask(id),
@@ -166,7 +237,7 @@ function createTaskShellHost(deps) {
       const owner = getRuntime();
       return owner?.owns(id) ? owner.guardAdmission(id, text, options) : { ok: false, code: 'task_shell_state_unavailable' };
     },
-    accepts, open, owns, sendFromSession, sendClientInput,
+    accepts, open, owns, sendFromSession, sendClientInput, sendTaskMessage, taskSummary,
     migrateTaskSessions: async () => {
       const rt = getRuntime(), result = await rt.migrateTaskSessions([...deps.records.values()]);
       const ready = new Set(result.migrated);

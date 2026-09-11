@@ -5,6 +5,11 @@
   <header><h1 data-i18n="taskShellTitle"></h1><a href="/manage" data-i18n="taskShellBack"></a></header>
   <a id="source-history" data-i18n="taskShellHistory"></a><p data-i18n="taskShellIntro"></p><p id="notice" role="status" aria-live="polite"></p>
   <p id="state" aria-live="polite"></p><p id="token-savings" hidden aria-live="polite"></p><div id="origin"></div><details id="snapshot-details" hidden><summary data-i18n="taskShellSnapshotDetails"></summary><div id="snapshot-info"></div></details>
+  <details id="task-plan" hidden><summary><strong id="task-plan-label">任务计划</strong><span id="task-plan-stage"></span></summary>
+    <div class="task-plan-content"><h2>任务说明</h2><div id="task-plan-description"></div>
+      <section id="task-plan-acceptance-wrap"><h3>验收标准</h3><div id="task-plan-acceptance"></div></section>
+    </div>
+  </details>
   <section id="history" aria-label="Messages"></section>
   <section id="question" hidden><strong data-i18n="taskShellPendingQuestion"></strong><p id="question-text"></p><div id="choices"></div><button id="answer" data-i18n="taskShellAnswer"></button></section>
   <div id="board-actions" hidden><p data-i18n="taskBoardReadOnlyHint"></p><a id="return-conversation" data-i18n="taskBoardReturnConversation"></a> <button id="fork-task" data-i18n="taskBoardForkIndependent"></button></div>

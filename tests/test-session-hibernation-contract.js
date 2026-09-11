@@ -36,7 +36,10 @@ test('host composition gates every real ingress and keeps view paths passive', (
   assert.match(engine, /assertAwake/);
   assert.match(server, /workspaceAdmission.beforeDeliver/);
   assert.match(engine, /assertPermit/);
-  assert.match(cron, /admitChatWork/);
+  assert.match(cron, /sendTaskMessage/);
+  assert.match(cron, /taskShellReceiptId|receipt protocol/);
+  assert.doesNotMatch(cron, /createSessionRecord/,
+    'central cron must not rotate through unbound compatibility chat sessions');
   assert.doesNotMatch(cron, /deps\.runChatTurn\(/);
   assert.match(board, /workspaceState/);
   const view = board.slice(board.indexOf('async function handleChatSession'), board.indexOf('async function handleCancelRun'));
@@ -59,4 +62,3 @@ test('hibernation tests are explicitly registered in deterministic scripts', () 
     'tests/test-session-hibernation-contract.js',
   ]) assert.match(all, new RegExp(file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
 });
-

@@ -4,10 +4,11 @@
     if (!sessionId) throw new Error('session_required');
     const params = new URLSearchParams({ session: sessionId });
     if (options.external) params.set('external', options.external);
+    if (options.air) params.set('air', '1');
     return `/chat.html?${params.toString()}`;
   }
 
-  async function resolve({ sessionId, taskId, fetch }) {
+  async function resolve({ sessionId, taskId, fetch, air = false }) {
     async function post(url, body) {
       const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
         ...(body ? { body: JSON.stringify(body) } : {}) });
@@ -22,7 +23,11 @@
     // task-board link needs resolving before the page can connect.
     if (!taskId) return null;
     const bound = await post(`/api/task-board/tasks/${encodeURIComponent(taskId)}/chat-session`);
-    if (bound.readOnly && bound.url) return bound.url;
+    if (bound.readOnly) {
+      const params = new URLSearchParams({ task: taskId, readOnly: '1' });
+      if (air) params.set('air', '1');
+      return `/chat.html?${params.toString()}`;
+    }
     if (!bound.sessionId) throw new Error('chat_session_missing');
     sessionId = bound.sessionId;
     let shell;
@@ -36,7 +41,7 @@
       // meet the previous route table. The bound chat remains usable.
       if (!(error.status === 404 && error.code === 'HTTP 404')) throw error;
     }
-    return chatUrl(sessionId);
+    return chatUrl(sessionId, { air });
   }
 
   function createTransportAdapter(options = {}) {
@@ -134,7 +139,7 @@
     return Object.freeze({ ingest, replayPending, send, state });
   }
 
-  function createShellView({ sourceSessionId, disabled = false, request, onSession = () => {} }) {
+  function createShellView({ sourceSessionId, taskId = null, disabled = false, request, onSession = () => {} }) {
     let shellId = null, activeSessionId = sourceSessionId, unsupported = disabled || !sourceSessionId;
     let opening = null;
     async function prepare() {
@@ -171,7 +176,8 @@
       return message;
     }
     return { prepare, event, get shellId() { return shellId; }, get activeSessionId() { return activeSessionId; },
-      historyUrl: () => shellId ? `/api/task-shells/${encodeURIComponent(shellId)}/history`
+      historyUrl: () => disabled && taskId ? `/api/task-shell-tasks/${encodeURIComponent(taskId)}/history`
+        : shellId ? `/api/task-shells/${encodeURIComponent(shellId)}/history`
         : `/api/sessions/${encodeURIComponent(activeSessionId)}/history` };
   }
 

@@ -2,12 +2,15 @@
   'use strict';
   async function start(taskId) {
     const $ = id => document.getElementById(id), t = key => root.t(key);
-    let entry, stopped = false, busy = false, control = null, pollEpoch = 0, timer;
+    let entry, stopped = false, busy = false, control = null, pollEpoch = 0, timer, historySignature = '', planInitialized = false;
     const key = `task-board-fork:${taskId}`;
     const api = async (url, body) => {
       const response = await fetch(url, { method: body === undefined ? 'GET' : 'POST',
         headers: { 'Content-Type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-      const data = await response.json();
+      const raw = await response.text();
+      let data;
+      try { data = raw ? JSON.parse(raw) : {}; }
+      catch (_) { throw Object.assign(new Error(/<!doctype|<html/i.test(raw) ? 'Air 服务接口尚未加载，请重启 MultiCC 后刷新。' : `HTTP ${response.status}`), { code: 'invalid_response' }); }
       if (!response.ok || data.ok === false) throw Object.assign(new Error(data.message || data.error || data.code), data, { notReserved: data.notDelivered === true || (!data.receiptId && response.status >= 400 && response.status < 500) });
       return data;
     };
@@ -19,21 +22,55 @@
       : error.code === 'fork_source_dirty' ? t('taskBoardForkSourceDirty') : error.message;
     $('composer').hidden = true; $('question').hidden = true; $('board-actions').hidden = true;
     $('new-task').hidden = true; $('detach').hidden = true;
+    function renderMessages(messages) {
+      const history = $('history'), signature = JSON.stringify(messages || []);
+      if (signature === historySignature) return;
+      const nearBottom = history.scrollHeight - history.scrollTop - history.clientHeight < 80;
+      const previousTop = history.scrollTop;
+      historySignature = signature;
+      history.replaceChildren(...(messages || []).map(message => {
+        const article = document.createElement('article');
+        article.className = message.role === 'user' ? 'user' : 'assistant';
+        if (message.role !== 'user') {
+          const role = document.createElement('div'); role.className = 'role'; role.textContent = 'MultiCC · 本轮结果'; article.append(role);
+        }
+        const content = document.createElement('div');
+        content.innerHTML = root.MultiCCSafeMarkdown.render(typeof message.content === 'string' ? message.content : JSON.stringify(message.content || ''));
+        article.append(content);
+        if (message.tools?.length) { const evidence = document.createElement('details'), summary = document.createElement('summary'), pre = document.createElement('pre'); summary.textContent = t('taskShellEvidence'); pre.textContent = JSON.stringify(message.tools, null, 2); evidence.append(summary, pre); article.append(evidence); }
+        return article;
+      }));
+      if (nearBottom) history.scrollTop = history.scrollHeight;
+      else history.scrollTop = Math.min(previousTop, Math.max(0, history.scrollHeight - history.clientHeight));
+    }
+    function renderPlan(task, messages) {
+      const plan = $('task-plan'), planned = task?.recordType === 'planned';
+      plan.hidden = !planned;
+      if (!planned) return;
+      const empty = !(messages || []).length;
+      const stages = { inbox: '待处理', doing: '进行中', done: '已完成' };
+      $('task-plan-label').textContent = empty ? '计划任务 · 尚未执行' : '任务计划';
+      $('task-plan-stage').textContent = stages[task.workflowStage] || task.workflowStage || '';
+      $('task-plan-description').innerHTML = root.MultiCCSafeMarkdown.render(task.description || '尚未填写任务说明。');
+      $('task-plan-acceptance').innerHTML = root.MultiCCSafeMarkdown.render(task.acceptanceCriteria || '');
+      $('task-plan-acceptance-wrap').hidden = !task.acceptanceCriteria;
+      if (!planInitialized) { plan.open = empty; planInitialized = true; }
+      $('input-label').textContent = empty ? '开始执行计划' : t('taskShellWork');
+      $('work').textContent = empty ? '开始执行计划' : t('taskShellWork');
+      $('message').placeholder = empty ? `补充或开始执行「${task.title}」…` : t('taskShellPlaceholder');
+    }
     async function refresh() {
       entry = await api(base);
-      $('state').textContent = `${entry.task.title} · ${entry.execution.status || ''}`;
+      const unstartedPlan = entry.task.recordType === 'planned' && !entry.messages.length;
+      $('state').textContent = `${entry.task.title} · ${unstartedPlan ? '计划任务 · 尚未执行' : entry.execution.status || ''}`;
       $('composer').hidden = entry.readOnly;
       $('board-actions').hidden = !entry.readOnly;
       $('fork-task').hidden = entry.status === 'archived';
       $('question').hidden = entry.readOnly || !entry.execution.pending;
       $('source-history').hidden = true;
       const back = $('return-conversation'); back.hidden = !entry.returnUrl; back.href = entry.returnUrl || '#';
-      $('history').replaceChildren(...entry.messages.map(message => {
-        const article = document.createElement('article'); article.className = message.role === 'user' ? 'user' : 'assistant';
-        article.innerHTML = root.MultiCCSafeMarkdown.render(typeof message.content === 'string' ? message.content : JSON.stringify(message.content || ''));
-        if (message.tools?.length) { const pre = document.createElement('pre'); pre.textContent = JSON.stringify(message.tools, null, 2); article.append(pre); }
-        return article;
-      }));
+      renderPlan(entry.task, entry.messages);
+      renderMessages(entry.messages);
       if (entry.execution.pending) $('question-text').textContent = entry.execution.pending.question;
       $('retry').hidden = !client.pending();
       $('send').disabled = busy || !!client.pending();
@@ -57,7 +94,7 @@
       ...(intent === 'answer' ? { requestId: entry.execution.pending?.requestId } : {}) }; };
     $('answer').onclick = () => mode('answer'); $('steer').onclick = () => mode('steer'); $('work').onclick = () => { control = null; };
     $('composer').onsubmit = event => { event.preventDefault(); if (entry.readOnly) return;
-      action(async () => { await client.send(entry.ownerShellId, { text: $('message').value, taskId, intent: 'work', ...control }); $('message').value = ''; control = null; }); };
+      action(async () => { await client.send(entry.ownerShellId, { text: $('message').value, taskId, intent: 'work', ...control }); $('message').value = ''; $('message').dispatchEvent(new Event('input', { bubbles: true })); control = null; }); };
     $('cancel').onclick = () => { if (!entry.readOnly) action(() => client.send(entry.ownerShellId, { text: '', taskId, turnId: entry.execution.turnId, intent: 'cancel' })); };
     $('retry').onclick = () => action(() => client.retry(entry.ownerShellId));
     window.addEventListener('pagehide', () => { stopped = true; pollEpoch++; clearTimeout(timer); });

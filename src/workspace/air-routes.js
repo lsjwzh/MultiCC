@@ -22,7 +22,8 @@ function mountAirRoutes(app, deps) {
     const tasks = Object.values(board.tasks || {}).filter(t => !t.mergedIntoTaskId && !board.deletedTaskIds?.includes(t.id)).map(t => {
       const sessionId = t.chatSessionId || t.sessionId || null;
       const access = deps.shell.taskAccess(t);
-      return { id: t.id, dirId: require('../task-board/core').taskDirId(board, t) || deps.records.get(sessionId)?.dirId, title: t.title, status: t.status, updatedAt: t.updatedAt || t.createdAt,
+      return { id: t.id, dirId: require('../task-board/core').taskDirId(board, t) || deps.records.get(sessionId)?.dirId, title: t.title, status: t.status,
+        recordType: t.recordType || null, workflowStage: t.workflowStage || null, updatedAt: t.updatedAt || t.createdAt,
         sessionId, ...access, resource: resource(sessionId) };
     });
     return { ok: true, directories: [...deps.directories.values()].map(d => ({ id: d.id, name: d.name, path: d.path })),
@@ -49,7 +50,17 @@ function mountAirRoutes(app, deps) {
       candidate, admission: deps.admission, cwd: deps.directories.get(record?.dirId)?.path });
     let roleBindings = null;
     try { roleBindings = deps.shell.roleBindings(req.params.id); } catch (_) {}
-    return { ...entry, resource: resource(entry.sessionId), configuration: { cli: record?.cli, model: record?.model, effort: record?.effort, rolePresetId: record?.rolePresetId }, roleBindings,
+    return { ...entry, resource: resource(entry.sessionId), configuration: {
+      cli: record?.cli,
+      model: record?.model,
+      effectiveModel: deps.effectiveModel?.(record) || record?.model || null,
+      effort: record?.effort,
+      effectiveEffort: deps.effectiveEffort?.(record) || record?.effort || null,
+      provider: record?.provider || null,
+      providerName: deps.providerName?.(record) || record?.provider || null,
+      providerSelection: record?.providerSelection || null,
+      rolePresetId: record?.rolePresetId,
+    }, roleBindings,
       // Auto attribution needs real integration and writer-barrier receipts.
       // Do not expose a switch that would turn client assertions into proofs.
       attribution };
