@@ -46,10 +46,12 @@ body.air-chat {
   flex: 0 0 auto;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px 16px;
-  padding: 7px max(12px, calc((100% - var(--chat-content-max-width)) / 2));
+  gap: 4px 14px;
+  /* Same side rhythm as the message list, so the status row, conversation
+     and composer read as one column. */
+  padding: 6px clamp(20px, 4vw, 48px);
   border-bottom: 1px solid var(--air-line);
-  background: #f7fbff;
+  background: #fbfdff;
 }
 .air-chat #header {
   order: 3;
@@ -105,24 +107,31 @@ body.air-chat {
 }
 
 .air-chat #cwd-bar { display: none; }
+/* Air status row: one quiet line of metadata. Labels are text-only, statuses
+   are light pills, and the only bordered controls are real actions. */
 .air-chat #worktree-bar,
 .air-chat #aux-classify-bar {
   width: auto;
   min-width: 0;
   max-width: 560px;
   align-self: center;
-  min-height: 30px;
+  gap: 8px;
+  min-height: 26px;
   margin: 0;
   padding: 0;
+  font-family: inherit;
+  font-size: 12px;
   color: var(--air-muted);
   border: 0;
   background: transparent;
 }
-.air-chat #worktree-bar { order: 1; flex: 1 1 250px; }
+.air-chat #worktree-bar { order: 1; flex: 0 1 auto; }
+.air-chat #worktree-bar .worktree-label { flex: 0 1 auto; font-size: 12px; color: #6c8199; }
+.air-chat #worktree-bar.behind { border-bottom: 0; background: transparent; }
 .air-chat #worktree-bar.behind .worktree-label { color: #9a671e; }
 .air-chat #worktree-sync-btn, .air-chat .worktree-force-sync-btn {
-  min-height: 28px; padding: 3px 8px; color: #316c9e;
-  border: 1px solid #d5e3ef; border-radius: 7px; background: #fff; font-weight: 500;
+  min-height: 24px; padding: 2px 10px; font-size: 11px; color: #2b6cb0;
+  border: 1px solid #cfe2f2; border-radius: 999px; background: #fff; font-weight: 500;
 }
 .air-chat #worktree-sync-btn:hover, .air-chat .worktree-force-sync-btn:hover { background: #eaf4ff; }
 .air-chat #aux-classify-bar { order: 2; flex: 1 1 270px; }
@@ -131,15 +140,43 @@ body.air-chat {
 }
 .air-chat #chat-context-bar .worktree-conflict-bar { order: 4; flex-basis: 100%; margin: 0; }
 .air-chat #header-more-menu #session-title { display: block; padding: 7px; }
-.air-chat #aux-classify-bar .ac-goal { color: #3d5871; }
+.air-chat #aux-classify-bar .ac-goal { color: #3d5871; font-weight: 500; }
+/* Unified light pills: one height, one radius, soft state tints instead of
+   the dark theme's saturated chips. */
 .air-chat #aux-classify-bar .ac-phase,
 .air-chat #aux-classify-bar .ac-state {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 1px 10px;
+  font-size: 11px;
+  font-weight: 500;
   color: var(--st-fg, #58718a);
-  border-color: #d9e5f0;
-  background: #fff;
+  border: 1px solid #dde8f1;
+  border-radius: 999px;
+  background: #f2f7fc;
 }
-.air-chat #aux-classify-bar .ac-mark-done { color: #267557; background: #eaf8f1; border-color: #c5e7d9; }
-.air-chat #aux-classify-bar .ac-cancel-task { color: #a64b3b; background: #fff2ee; border-color: #efd1c8; }
+.air-chat #aux-classify-bar.st-running .ac-state { color: #2b6cb0; border-color: #c9e0f3; background: #eaf4fc; }
+.air-chat #aux-classify-bar.st-done .ac-state,
+.air-chat #aux-classify-bar.st-succeeded .ac-state { color: #267557; border-color: #c5e7d9; background: #eaf8f1; }
+.air-chat #aux-classify-bar.st-waiting .ac-state { color: #9a671e; border-color: #eed9ae; background: #fff7e8; }
+.air-chat #aux-classify-bar.st-error .ac-state { color: #b1463c; border-color: #f0cfc9; background: #fdf0ee; }
+.air-chat #aux-classify-bar .ac-mark-done,
+.air-chat #aux-classify-bar .ac-cancel-task {
+  display: none;
+  align-items: center;
+  min-height: 22px;
+  padding: 1px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  border-radius: 999px;
+}
+.air-chat #aux-classify-bar.can-mark-done .ac-mark-done { display: inline-flex; }
+.air-chat #aux-classify-bar.can-cancel-task .ac-cancel-task { display: inline-flex; }
+.air-chat #aux-classify-bar .ac-mark-done { color: #267557; background: #eaf8f1; border: 1px solid #c5e7d9; }
+.air-chat #aux-classify-bar .ac-mark-done:hover { background: #dcf2e6; }
+.air-chat #aux-classify-bar .ac-cancel-task { color: #b1463c; background: #fdf0ee; border: 1px solid #f0cfc9; }
+.air-chat #aux-classify-bar .ac-cancel-task:hover { background: #fbe3df; }
 
 .air-chat #pending-user-input-card {
   color: #5d4a2d;
@@ -348,7 +385,7 @@ body.air-chat.task-artifacts-chat .task-artifacts-toggle { color-scheme: light; 
 .air-chat .hljs-deletion { color: var(--chat-danger); background: var(--chat-danger-soft); }
 
 @media (max-width: 760px) {
-  .air-chat #chat-context-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 10px; padding: 7px 10px; }
+  .air-chat #chat-context-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 10px; padding: 6px 14px; }
   .air-chat #header { grid-column: 2; grid-row: 1; align-self: start; }
   .air-chat #status { max-width: none; font-size: 0; }
   .air-chat #status::before { content: "连接中"; font-size: 10px; }
