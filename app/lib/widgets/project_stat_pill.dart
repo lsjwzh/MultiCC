@@ -14,14 +14,14 @@ class ProjectStatPill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final c = color ?? const Color(0xFF8a909b);
+    final c = color ?? const Color(0xFF6f8096);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: const Color(0xFF070809),
+        color: const Color(0xFFf4f8fd),
         border: Border.all(
           color: color == null
-              ? const Color(0xFF20242b)
+              ? const Color(0xFFdce6f1)
               : c.withValues(alpha: 0.45),
         ),
         borderRadius: BorderRadius.circular(999),
@@ -33,7 +33,7 @@ class ProjectStatPill extends StatelessWidget {
             TextSpan(
               text: value,
               style: const TextStyle(
-                color: Color(0xFFf2f4f7),
+                color: Color(0xFF20364d),
                 fontWeight: FontWeight.w700,
               ),
             ),

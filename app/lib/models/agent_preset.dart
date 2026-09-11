@@ -130,32 +130,32 @@ class AgentPresetIndex {
 Color agentColorFromName(String name) {
   switch (name.trim().toLowerCase()) {
     case 'red':
-      return const Color(0xFFff6b63);
+      return const Color(0xFFb64e43);
     case 'orange':
-      return const Color(0xFFf0936b);
+      return const Color(0xFFc2622f);
     case 'amber':
     case 'yellow':
-      return const Color(0xFFe3b341);
+      return const Color(0xFFa85a25);
     case 'green':
-      return const Color(0xFF7fd49a);
+      return const Color(0xFF1e8a55);
     case 'teal':
-      return const Color(0xFF3ad6c5);
+      return const Color(0xFF1678e8);
     case 'cyan':
-      return const Color(0xFF49d6e0);
+      return const Color(0xFF137780);
     case 'blue':
-      return const Color(0xFF6aa3ff);
+      return const Color(0xFF1267b5);
     case 'indigo':
-      return const Color(0xFF7c8cff);
+      return const Color(0xFF2a5fd8);
     case 'purple':
     case 'violet':
-      return const Color(0xFFb692f6);
+      return const Color(0xFF6d4fd1);
     case 'pink':
     case 'magenta':
-      return const Color(0xFFf07ac0);
+      return const Color(0xFFc2479a);
     case 'grey':
     case 'gray':
-      return const Color(0xFF8a909b);
+      return const Color(0xFF6f8096);
     default:
-      return const Color(0xFF8a909b); // neutral grey fallback
+      return const Color(0xFF6f8096); // neutral grey fallback
   }
 }

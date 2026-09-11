@@ -146,7 +146,7 @@ class _CronScreenState extends State<CronScreen> {
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => _openEditor(),
         backgroundColor: AppColors.accentDark,
-        foregroundColor: const Color(0xFF04110f),
+        foregroundColor: const Color(0xFFffffff),
         icon: const Icon(Icons.add_alarm_rounded),
         label: const Text('新建'),
       ),
@@ -571,7 +571,7 @@ class _CronEditorState extends State<_CronEditor> {
                         height: 20,
                         child: CircularProgressIndicator(
                           strokeWidth: 2,
-                          color: Color(0xFF04110f),
+                          color: Color(0xFFffffff),
                         ),
                       )
                     : Text(widget.task == null ? '创建' : '保存'),

@@ -153,7 +153,7 @@ class _ProviderScreenState extends State<ProviderScreen> {
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => _openEditor(),
         backgroundColor: AppColors.accentDark,
-        foregroundColor: const Color(0xFF04110f),
+        foregroundColor: const Color(0xFFffffff),
         icon: const Icon(Icons.add_rounded),
         label: const Text('新建'),
       ),
@@ -397,10 +397,10 @@ class _ProviderCardState extends State<_ProviderCard> {
     final Color color;
     String label;
     if (ok) {
-      color = ms < 1000 ? const Color(0xFF3fb950) : ms < 3000 ? const Color(0xFFd29922) : const Color(0xFFf85149);
+      color = ms < 1000 ? const Color(0xFF2ba67a) : ms < 3000 ? const Color(0xFFa85a25) : const Color(0xFFb64e43);
       label = '${ms}ms';
     } else {
-      color = const Color(0xFFf85149);
+      color = const Color(0xFFb64e43);
       label = (status != null && status.toString().isNotEmpty) ? status.toString() : 'ERR';
     }
     final title = [
@@ -725,7 +725,7 @@ class _ProviderEditorState extends State<_ProviderEditor> {
               child: ElevatedButton(
                 onPressed: _saving ? null : _save,
                 child: _saving
-                    ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF04110f)))
+                    ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFFffffff)))
                     : Text(_isEdit ? '保存' : '创建'),
               ),
             ),

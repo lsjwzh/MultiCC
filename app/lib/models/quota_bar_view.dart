@@ -19,6 +19,13 @@
 library;
 
 /// The server's palette, as ARGB. The client picks no colors of its own.
+///
+/// These four are a verbatim mirror of `COLOR` in `src/quota/quota-bar-view.js`
+/// — the server renders the bar's colour as a `#rrggbb` string and [parse] hands
+/// it straight back, so re-theming these to the local Air palette would only
+/// desync the constants from the strings that actually arrive. The fallback is
+/// the one place the value is really used; `tests/test-quota-bar-parity.js` and
+/// `tests/fixtures/quota-bar-golden.json` pin the server side.
 class QuotaBarColor {
   static const int gray = 0xFF8B949E;
   static const int red = 0xFFF85149;

@@ -1035,7 +1035,7 @@ class _TaskRow extends StatelessWidget {
         curve: Curves.easeOut,
         decoration: BoxDecoration(
           border: Border.all(
-            color: highlighted ? const Color(0xFFe3b341) : Colors.transparent,
+            color: highlighted ? const Color(0xFFa85a25) : Colors.transparent,
             width: highlighted ? 1.5 : 1,
           ),
           borderRadius: BorderRadius.circular(6),
@@ -1105,7 +1105,7 @@ class _TaskRow extends StatelessWidget {
                             style: TextStyle(
                               color: isDone
                                   ? AppColors.faint
-                                  : const Color(0xFF8a909b),
+                                  : const Color(0xFF6f8096),
                               fontSize: 11,
                               height: 1.3,
                             ),
@@ -1301,11 +1301,11 @@ class _RunningDotState extends State<_RunningDot>
           width: 9,
           height: 9,
           decoration: const BoxDecoration(
-            color: Color(0xFF7fd49a),
+            color: Color(0xFF1e8a55),
             shape: BoxShape.circle,
             boxShadow: [
               BoxShadow(
-                color: Color(0x667fd49a),
+                color: Color(0x661e8a55),
                 blurRadius: 5,
                 spreadRadius: 0.5,
               ),

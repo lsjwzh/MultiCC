@@ -1,57 +1,73 @@
 import 'package:flutter/material.dart';
 
-/// Central palette for the MultiCC app — mirrors the web dashboard redesign:
-/// near-black background, hairline borders, a single teal-cyan accent, with
-/// Claude (orange) / Codex (green) kept as semantic brand colors.
+/// Central palette for the MultiCC app — mirrors the Air web console
+/// (`public/air.css`): a pale blue-white canvas, hairline borders, and a
+/// single ice-blue accent, with Claude (orange) / Codex (green) kept as
+/// semantic brand colors. Keep these values in step with `public/air.css`
+/// `:root` — the two surfaces are meant to read as one product.
 class AppColors {
   // Surfaces
-  static const bg = Color(0xFF070809);
-  static const bgSoft = Color(0xFF0b0d10);
-  static const panel = Color(0xFF0f1115);
-  static const panel2 = Color(0xFF14171c);
-  static const line = Color(0xFF20242b);
-  static const lineStrong = Color(0xFF2b313a);
+  static const bg = Color(0xFFf4f8fd); // page canvas
+  static const bgSoft = Color(0xFFf8fbff); // raised canvas / soft band
+  static const panel = Color(0xFFffffff); // cards, sheets, app bars
+  static const panel2 = Color(0xFFf8fbff); // second panel tier
+  static const well = Color(0xFFfbfdff); // input wells
+  static const line = Color(0xFFdce6f1);
+  static const lineStrong = Color(0xFFccdbea);
 
   // Text
-  static const text = Color(0xFFe7eaee);
-  static const textBright = Color(0xFFf2f4f7);
-  static const muted = Color(0xFF8a909b);
-  static const faint = Color(0xFF5b616c);
+  static const text = Color(0xFF233249);
+  static const textBright = Color(0xFF20364d);
+  static const muted = Color(0xFF6f8096);
+  static const faint = Color(0xFF8a9aab);
+  static const onAccent = Color(0xFFffffff);
 
   // Accents
-  static const accent = Color(0xFF3ad6c5); // teal-cyan — the single tech accent
-  static const accentDark = Color(0xFF22ab9c); // solid-button teal
-  static const blue = Color(0xFF6aa3ff); // links / paths
-  static const claude = Color(0xFFf0936b); // Claude brand
-  static const codex = Color(0xFF7fd49a); // Codex brand
-  static const opencode = Color(0xFFa78bfa); // OpenCode brand (violet)
-  static const zcode = Color(0xFF38bdf8); // ZCode brand (sky blue)
-  static const qoder = Color(0xFFff9a5c); // Qoder CN brand (orange)
-  static const codebuddy = Color(0xFF5c8bff); // WorkBuddy brand (Tencent blue)
-  static const dsh = Color(0xFF4d6bfe); // DeepSeek Harness brand (blue)
-  static const amber = Color(0xFFe3b341);
-  static const danger = Color(0xFFff6b63);
+  static const accent = Color(0xFF1678e8); // ice blue — the single tech accent
+  static const accentDark = Color(0xFF0965cf); // solid-button blue
+  static const blue = Color(0xFF1267b5); // links / paths
+  static const blueSoft = Color(0xFFeaf4ff); // accent tint fill
+  static const claude = Color(0xFFc2622f); // Claude brand
+  static const codex = Color(0xFF1e8a55); // Codex brand
+  static const opencode = Color(0xFF6d4fd1); // OpenCode brand (violet)
+  static const zcode = Color(0xFF0e7fb8); // ZCode brand (sky blue)
+  static const qoder = Color(0xFFc25e1e); // Qoder CN brand (orange)
+  static const codebuddy = Color(0xFF2a5fd8); // WorkBuddy brand (Tencent blue)
+  static const dsh = Color(0xFF2b44d6); // DeepSeek Harness brand (blue)
+  static const amber = Color(0xFFa85a25);
+  static const warning = Color(0xFFa85a25);
+  static const success = Color(0xFF2ba67a);
+  static const danger = Color(0xFFb64e43);
+  static const dangerSoft = Color(0xFFfff1ef);
+
+  // Radii, matching the Air console's scale.
+  static const radiusChip = 10.0;
+  static const radiusButton = 11.0;
+  static const radiusCard = 14.0;
+  static const radiusPanel = 17.0;
+  static const radiusPill = 999.0;
 }
 
-/// App-wide dark ThemeData built on the new palette.
+/// App-wide light ThemeData built on the Air palette.
 ThemeData buildAppTheme() {
   const accent = AppColors.accent;
-  final base = ThemeData.dark(useMaterial3: true);
+  final base = ThemeData.light(useMaterial3: true);
   return base.copyWith(
     scaffoldBackgroundColor: AppColors.bg,
     canvasColor: AppColors.panel,
     colorScheme: base.colorScheme.copyWith(
-      brightness: Brightness.dark,
+      brightness: Brightness.light,
       primary: accent,
       secondary: AppColors.blue,
       surface: AppColors.panel,
       error: AppColors.danger,
-      onPrimary: const Color(0xFF04110f),
+      onPrimary: AppColors.onAccent,
       onSurface: AppColors.text,
     ),
     dividerColor: AppColors.line,
     dialogTheme: const DialogThemeData(
       backgroundColor: AppColors.panel,
+      surfaceTintColor: Colors.transparent,
       titleTextStyle: TextStyle(
         color: AppColors.textBright,
         fontSize: 16,
@@ -63,24 +79,32 @@ ThemeData buildAppTheme() {
       backgroundColor: AppColors.panel,
       foregroundColor: AppColors.text,
       elevation: 0,
+      scrolledUnderElevation: 0,
       surfaceTintColor: Colors.transparent,
+    ),
+    bottomSheetTheme: const BottomSheetThemeData(
+      backgroundColor: AppColors.panel,
+      surfaceTintColor: Colors.transparent,
+      modalBackgroundColor: AppColors.panel,
     ),
     textSelectionTheme: const TextSelectionThemeData(
       cursorColor: accent,
-      selectionColor: Color(0x553ad6c5),
+      selectionColor: Color(0x331678e8),
       selectionHandleColor: accent,
     ),
     elevatedButtonTheme: ElevatedButtonThemeData(
       style: ElevatedButton.styleFrom(
         backgroundColor: AppColors.accentDark,
-        foregroundColor: const Color(0xFF04110f),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        foregroundColor: AppColors.onAccent,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AppColors.radiusButton),
+        ),
       ),
     ),
     switchTheme: SwitchThemeData(
       thumbColor: WidgetStateProperty.resolveWith(
         (s) => s.contains(WidgetState.selected)
-            ? const Color(0xFF04110f)
+            ? AppColors.onAccent
             : AppColors.muted,
       ),
       trackColor: WidgetStateProperty.resolveWith(
@@ -90,25 +114,25 @@ ThemeData buildAppTheme() {
   );
 }
 
-/// Shared compact InputDecoration for bottom-sheet / dialog text fields (dark
-/// theme). 自 main_shell.dart 的 _inputDec 抽出，供 main_shell / create_session_dialog 共用。
+/// Shared compact InputDecoration for bottom-sheet / dialog text fields.
+/// 自 main_shell.dart 的 _inputDec 抽出，供 main_shell / create_session_dialog 共用。
 InputDecoration sheetInputDecoration({String? hint}) => InputDecoration(
   isDense: true,
   filled: true,
-  fillColor: const Color(0xFF070809),
+  fillColor: AppColors.well,
   hintText: hint,
-  hintStyle: const TextStyle(color: Color(0xFF454b54), fontSize: 13),
+  hintStyle: const TextStyle(color: AppColors.faint, fontSize: 13),
   contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
   border: OutlineInputBorder(
-    borderSide: const BorderSide(color: Color(0xFF20242b)),
-    borderRadius: BorderRadius.circular(6),
+    borderSide: const BorderSide(color: AppColors.line),
+    borderRadius: BorderRadius.circular(AppColors.radiusChip),
   ),
   enabledBorder: OutlineInputBorder(
-    borderSide: const BorderSide(color: Color(0xFF20242b)),
-    borderRadius: BorderRadius.circular(6),
+    borderSide: const BorderSide(color: AppColors.line),
+    borderRadius: BorderRadius.circular(AppColors.radiusChip),
   ),
   focusedBorder: OutlineInputBorder(
-    borderSide: const BorderSide(color: Color(0xFF6aa3ff)),
-    borderRadius: BorderRadius.circular(6),
+    borderSide: const BorderSide(color: AppColors.accent),
+    borderRadius: BorderRadius.circular(AppColors.radiusChip),
   ),
 );

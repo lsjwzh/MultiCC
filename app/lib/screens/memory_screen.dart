@@ -480,7 +480,7 @@ class _MemoryScreenState extends State<MemoryScreen> {
         FilledButton.icon(
           onPressed: _busy ? null : _save,
           style: FilledButton.styleFrom(
-            backgroundColor: const Color(0xFF238636),
+            backgroundColor: const Color(0xFF2ba67a),
             foregroundColor: Colors.white,
           ),
           icon: _busy

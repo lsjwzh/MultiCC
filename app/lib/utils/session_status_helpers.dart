@@ -101,25 +101,25 @@ Widget classifyChip(SessionStatus? live, {bool showLabel = true}) {
   switch (state) {
     case 'working':
       return (
-        color: const Color(0xFF56d364),
+        color: const Color(0xFF2ba67a),
         label: t('livenessWorking'),
         emoji: '🟢',
       );
     case 'idle':
       return (
-        color: const Color(0xFFe3b341),
+        color: const Color(0xFFa85a25),
         label: t('livenessIdle'),
         emoji: '🟡',
       );
     case 'stalled':
       return (
-        color: const Color(0xFFf85149),
+        color: const Color(0xFFb64e43),
         label: t('livenessStalled'),
         emoji: '🔴',
       );
     case 'unknown':
       return (
-        color: const Color(0xFF8a909b),
+        color: const Color(0xFF6f8096),
         label: t('livenessUnknown'),
         emoji: '⚪',
       );

@@ -457,7 +457,7 @@ Color statusToneColor(String tone) {
     case 'waiting':
       return AppColors.amber;
     case 'blocked':
-      return const Color(0xFFd29922);
+      return const Color(0xFFa85a25);
     case 'success':
       return AppColors.accent;
     case 'danger':

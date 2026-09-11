@@ -31,10 +31,10 @@ class _UncommittedFilesDialogState extends State<UncommittedFilesDialog> {
   Widget build(BuildContext context) {
     final hasError = widget.loadError != null && widget.files.isEmpty;
     return AlertDialog(
-      backgroundColor: const Color(0xFF0f1115),
+      backgroundColor: const Color(0xFFffffff),
       title: Text(
         '⚠ ${widget.dirName} · 未提交文件',
-        style: const TextStyle(color: Color(0xFFf2f4f7)),
+        style: const TextStyle(color: Color(0xFF20364d)),
       ),
       content: SizedBox(
         width: double.maxFinite,
@@ -45,7 +45,7 @@ class _UncommittedFilesDialogState extends State<UncommittedFilesDialog> {
             Text(
               widget.dirPath,
               style: const TextStyle(
-                color: Color(0xFF8a909b),
+                color: Color(0xFF6f8096),
                 fontSize: 12,
                 fontFamily: 'monospace',
               ),
@@ -54,7 +54,7 @@ class _UncommittedFilesDialogState extends State<UncommittedFilesDialog> {
             if (hasError)
               Text(
                 '加载失败：${widget.loadError}',
-                style: const TextStyle(color: Color(0xFFff6b63), fontSize: 13),
+                style: const TextStyle(color: Color(0xFFb64e43), fontSize: 13),
               )
             else if (widget.files.isEmpty)
               const Padding(
@@ -62,7 +62,7 @@ class _UncommittedFilesDialogState extends State<UncommittedFilesDialog> {
                 child: Center(
                   child: Text(
                     '没有未提交文件 ✓',
-                    style: TextStyle(color: Color(0xFF8a909b)),
+                    style: TextStyle(color: Color(0xFF6f8096)),
                   ),
                 ),
               )
@@ -84,7 +84,7 @@ class _UncommittedFilesDialogState extends State<UncommittedFilesDialog> {
                             child: Text(
                               status.isEmpty ? '??' : status,
                               style: const TextStyle(
-                                color: Color(0xFF8a909b),
+                                color: Color(0xFF6f8096),
                                 fontSize: 12,
                                 fontFamily: 'monospace',
                               ),
@@ -95,7 +95,7 @@ class _UncommittedFilesDialogState extends State<UncommittedFilesDialog> {
                             child: Text(
                               filePath,
                               style: const TextStyle(
-                                color: Color(0xFFe7eaee),
+                                color: Color(0xFF233249),
                                 fontSize: 13,
                                 fontFamily: 'monospace',
                               ),
@@ -114,13 +114,13 @@ class _UncommittedFilesDialogState extends State<UncommittedFilesDialog> {
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(context),
-          child: const Text('关闭', style: TextStyle(color: Color(0xFF8a909b))),
+          child: const Text('关闭', style: TextStyle(color: Color(0xFF6f8096))),
         ),
         if (widget.files.isNotEmpty)
           ElevatedButton(
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFE3B341),
-              foregroundColor: const Color(0xFF0f1115),
+              backgroundColor: const Color(0xFFa85a25),
+              foregroundColor: const Color(0xFFffffff),
             ),
             onPressed: _committing
                 ? null

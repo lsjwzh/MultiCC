@@ -55,9 +55,9 @@ class _BackgroundTaskPanelState extends State<BackgroundTaskPanel> {
             key: const Key('bg-task-pill'),
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
             decoration: BoxDecoration(
-              color: const Color(0xE614171c),
+              color: const Color(0xE6f8fbff),
               borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: const Color(0xFF20242b)),
+              border: Border.all(color: const Color(0xFFdce6f1)),
             ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
@@ -68,19 +68,19 @@ class _BackgroundTaskPanelState extends State<BackgroundTaskPanel> {
                     height: 11,
                     child: CircularProgressIndicator(
                       strokeWidth: 1.5,
-                      color: Color(0xFF6aa3ff),
+                      color: Color(0xFF1267b5),
                     ),
                   )
                 else
                   const Icon(
                     Icons.check_circle_outline_rounded,
                     size: 13,
-                    color: Color(0xFF7fd49a),
+                    color: Color(0xFF1e8a55),
                   ),
                 const SizedBox(width: 6),
                 Text(
                   '${widget.rows.length} ${t('backgroundTasks')}',
-                  style: const TextStyle(color: Color(0xFFc9d1d9), fontSize: 12),
+                  style: const TextStyle(color: Color(0xFF31465b), fontSize: 12),
                 ),
               ],
             ),
@@ -93,9 +93,9 @@ class _BackgroundTaskPanelState extends State<BackgroundTaskPanel> {
       key: const Key('bg-task-panel'),
       constraints: const BoxConstraints(maxWidth: 320, maxHeight: 220),
       decoration: BoxDecoration(
-        color: const Color(0xF20f1115),
+        color: const Color(0xF2ffffff),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFF20242b)),
+        border: Border.all(color: const Color(0xFFdce6f1)),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -109,7 +109,7 @@ class _BackgroundTaskPanelState extends State<BackgroundTaskPanel> {
                   child: Text(
                     '${t('backgroundTasks')} · ${widget.rows.length}',
                     style: const TextStyle(
-                      color: Color(0xFFf2f4f7),
+                      color: Color(0xFF20364d),
                       fontSize: 13,
                       fontWeight: FontWeight.w600,
                     ),
@@ -122,7 +122,7 @@ class _BackgroundTaskPanelState extends State<BackgroundTaskPanel> {
                     child: Icon(
                       Icons.keyboard_arrow_down_rounded,
                       size: 18,
-                      color: Color(0xFF8a909b),
+                      color: Color(0xFF6f8096),
                     ),
                   ),
                 ),
@@ -162,23 +162,23 @@ class _BackgroundTaskRowView extends StatelessWidget {
           height: 12,
           child: CircularProgressIndicator(
             strokeWidth: 1.5,
-            color: Color(0xFF6aa3ff),
+            color: Color(0xFF1267b5),
           ),
         ),
       BackgroundTaskState.done => const Icon(
           Icons.check_rounded,
           size: 14,
-          color: Color(0xFF7fd49a),
+          color: Color(0xFF1e8a55),
         ),
       BackgroundTaskState.fail => const Icon(
           Icons.error_outline_rounded,
           size: 14,
-          color: Color(0xFFff6b63),
+          color: Color(0xFFb64e43),
         ),
       BackgroundTaskState.stale => const Icon(
           Icons.schedule_rounded,
           size: 14,
-          color: Color(0xFFd29922),
+          color: Color(0xFFa85a25),
         ),
     };
     return Padding(
@@ -190,7 +190,7 @@ class _BackgroundTaskRowView extends StatelessWidget {
           Expanded(
             child: Text(
               row.description.isEmpty ? t('backgroundTaskUnnamed') : row.description,
-              style: const TextStyle(color: Color(0xFFc9d1d9), fontSize: 12),
+              style: const TextStyle(color: Color(0xFF31465b), fontSize: 12),
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
             ),
@@ -200,7 +200,7 @@ class _BackgroundTaskRowView extends StatelessWidget {
               onTap: onDismiss,
               child: const Padding(
                 padding: EdgeInsets.all(4),
-                child: Icon(Icons.close, size: 13, color: Color(0xFF5b616c)),
+                child: Icon(Icons.close, size: 13, color: Color(0xFF8a9aab)),
               ),
             ),
         ],

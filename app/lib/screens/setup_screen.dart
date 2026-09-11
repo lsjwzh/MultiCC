@@ -101,7 +101,7 @@ class _SetupScreenState extends State<SetupScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF070809),
+      backgroundColor: const Color(0xFFf4f8fd),
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
@@ -115,7 +115,7 @@ class _SetupScreenState extends State<SetupScreen> {
                   'MultiCC',
                   textAlign: TextAlign.center,
                   style: TextStyle(
-                    color: Color(0xFF3ad6c5),
+                    color: Color(0xFF1678e8),
                     fontSize: 32,
                     fontWeight: FontWeight.bold,
                     letterSpacing: 1,
@@ -126,7 +126,7 @@ class _SetupScreenState extends State<SetupScreen> {
                   t('productTagline'),
                   textAlign: TextAlign.center,
                   style: const TextStyle(
-                    color: Color(0xFF8a909b),
+                    color: Color(0xFF6f8096),
                     fontSize: 14,
                   ),
                 ),
@@ -153,8 +153,8 @@ class _SetupScreenState extends State<SetupScreen> {
                 Container(
                   padding: const EdgeInsets.all(24),
                   decoration: BoxDecoration(
-                    color: const Color(0xFF0f1115),
-                    border: Border.all(color: const Color(0xFF20242b)),
+                    color: const Color(0xFFffffff),
+                    border: Border.all(color: const Color(0xFFdce6f1)),
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: Column(
@@ -163,7 +163,7 @@ class _SetupScreenState extends State<SetupScreen> {
                       Text(
                         t('connectToMulticc'),
                         style: const TextStyle(
-                          color: Color(0xFFf2f4f7),
+                          color: Color(0xFF20364d),
                           fontSize: 16,
                           fontWeight: FontWeight.w600,
                         ),
@@ -172,7 +172,7 @@ class _SetupScreenState extends State<SetupScreen> {
                       Text(
                         t('setupConnectionHint'),
                         style: const TextStyle(
-                          color: Color(0xFF8a909b),
+                          color: Color(0xFF6f8096),
                           fontSize: 12,
                           height: 1.45,
                         ),
@@ -193,7 +193,7 @@ class _SetupScreenState extends State<SetupScreen> {
                                 child: Text(
                                   t('clearAction'),
                                   style: const TextStyle(
-                                    color: Color(0xFFff6b63),
+                                    color: Color(0xFFb64e43),
                                     fontSize: 12,
                                   ),
                                 ),
@@ -252,9 +252,9 @@ class _SetupScreenState extends State<SetupScreen> {
                             key: const ValueKey('connection-error'),
                             padding: const EdgeInsets.all(10),
                             decoration: BoxDecoration(
-                              color: const Color(0x1FFF6B63),
+                              color: const Color(0x1Fb64e43),
                               border: Border.all(
-                                color: const Color(0x55FF6B63),
+                                color: const Color(0x55b64e43),
                               ),
                               borderRadius: BorderRadius.circular(8),
                             ),
@@ -263,7 +263,7 @@ class _SetupScreenState extends State<SetupScreen> {
                               children: [
                                 const Icon(
                                   Icons.error_outline_rounded,
-                                  color: Color(0xFFff6b63),
+                                  color: Color(0xFFb64e43),
                                   size: 18,
                                 ),
                                 const SizedBox(width: 8),
@@ -271,7 +271,7 @@ class _SetupScreenState extends State<SetupScreen> {
                                   child: Text(
                                     _error!,
                                     style: const TextStyle(
-                                      color: Color(0xFFFFA29D),
+                                      color: Color(0xFFb64e43),
                                       fontSize: 12.5,
                                       height: 1.4,
                                     ),
@@ -287,7 +287,7 @@ class _SetupScreenState extends State<SetupScreen> {
                       ElevatedButton(
                         onPressed: _saving ? null : _save,
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF22ab9c),
+                          backgroundColor: const Color(0xFF0965cf),
                           foregroundColor: Colors.white,
                           padding: const EdgeInsets.symmetric(vertical: 14),
                           shape: RoundedRectangleBorder(
@@ -347,21 +347,21 @@ class _HistoryDropdown extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12),
       decoration: BoxDecoration(
-        color: const Color(0xFF070809),
-        border: Border.all(color: const Color(0xFF20242b)),
+        color: const Color(0xFFf4f8fd),
+        border: Border.all(color: const Color(0xFFdce6f1)),
         borderRadius: BorderRadius.circular(6),
       ),
       child: DropdownButtonHideUnderline(
         child: DropdownButton<ServerHistoryEntry>(
           value: selected,
           isExpanded: true,
-          dropdownColor: const Color(0xFF0f1115),
-          icon: const Icon(Icons.history, color: Color(0xFF8a909b), size: 18),
+          dropdownColor: const Color(0xFFffffff),
+          icon: const Icon(Icons.history, color: Color(0xFF6f8096), size: 18),
           hint: Text(
             t('selectFromHistory'),
-            style: const TextStyle(color: Color(0xFF454b54), fontSize: 14),
+            style: const TextStyle(color: Color(0xFF8b9cae), fontSize: 14),
           ),
-          style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 14),
+          style: const TextStyle(color: Color(0xFF233249), fontSize: 14),
           items: entries
               .map(
                 (e) => DropdownMenuItem<ServerHistoryEntry>(
@@ -372,7 +372,7 @@ class _HistoryDropdown extends StatelessWidget {
                         : '${e.host}  ·  ${t('tokenSaved')}',
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
-                      color: Color(0xFFe7eaee),
+                      color: Color(0xFF233249),
                       fontSize: 14,
                     ),
                   ),
@@ -397,7 +397,7 @@ class _FieldLabel extends StatelessWidget {
     return Text(
       text,
       style: const TextStyle(
-        color: Color(0xFF8a909b),
+        color: Color(0xFF6f8096),
         fontSize: 12,
         fontWeight: FontWeight.w500,
       ),
@@ -428,23 +428,23 @@ class _Field extends StatelessWidget {
       keyboardType: keyboardType,
       onChanged: onChanged,
       autocorrect: false,
-      style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 14),
+      style: const TextStyle(color: Color(0xFF233249), fontSize: 14),
       decoration: InputDecoration(
         hintText: hint,
-        hintStyle: const TextStyle(color: Color(0xFF454b54)),
+        hintStyle: const TextStyle(color: Color(0xFF8b9cae)),
         filled: true,
-        fillColor: const Color(0xFF070809),
+        fillColor: const Color(0xFFf4f8fd),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(6),
-          borderSide: const BorderSide(color: Color(0xFF20242b)),
+          borderSide: const BorderSide(color: Color(0xFFdce6f1)),
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(6),
-          borderSide: const BorderSide(color: Color(0xFF20242b)),
+          borderSide: const BorderSide(color: Color(0xFFdce6f1)),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(6),
-          borderSide: const BorderSide(color: Color(0xFF6aa3ff)),
+          borderSide: const BorderSide(color: Color(0xFF1267b5)),
         ),
         contentPadding: const EdgeInsets.symmetric(
           horizontal: 12,
