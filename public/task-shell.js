@@ -1,5 +1,6 @@
 (function () {
   'use strict';
+  void import('./chat-layout.js');
   const $ = id => document.getElementById(id), t = (key, params) => window.t(key, params);
   let shellId, focused = '', detail = null, control = null, client, busy = false, timer, stopped = false, newTask = false;
   const params = new URLSearchParams(location.search);

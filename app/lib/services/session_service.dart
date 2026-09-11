@@ -122,7 +122,6 @@ class SessionService {
           body: jsonEncode({
             'cli': cli.name,
             'fresh': fresh,
-            'force': true,
           }),
         )
         .timeout(const Duration(seconds: 20));

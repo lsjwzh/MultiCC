@@ -1051,13 +1051,13 @@ function createChatTurnEngine(deps) {
         return { blocked: true };
       }
     }
+    const delivery = opts.clientMsgId || opts.deliveryId;
+    const replay = delivery && getChatHistoryService().hasPersistedDelivery(sessionName, delivery);
+    if (!replay && deps.applyPendingConfiguration?.(sessionName, opts) === false) return { blocked: true };
     const experimentalRuntime = getExperimentalTuiChatRuntime?.();
     if (experimentalRuntime?.owns(persisted)) {
       return { delegated: experimentalRuntime.admit(sessionName, text, opts) };
     }
-    // Typed Commander user input is intercepted by the host router. Any fallback
-    // Commander turn is deliberately barred from the legacy marker dispatcher.
-
     // Normalize once at the host boundary. Native CLI session ids and provider
     // credentials stay outside the pure request; only proof of native history is
     // admitted. Reuse the history read when a WS state has not been materialized.
