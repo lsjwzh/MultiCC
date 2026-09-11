@@ -97,7 +97,10 @@ test('path and branch validation rejects a checkout registered to another branch
   const dir = repo();
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const added = await gitWorktreeAdd(dir, 'bound-a', 'main');
+  git(dir, ['branch', 'multicc/bound-b', 'main']);
   const result = await gitWorktreeValidate(dir, added.worktreePath, 'multicc/bound-b');
   assert.equal(result.ok, false);
   assert.equal(result.code, 'WORKTREE_BRANCH_MISMATCH');
+  assert.equal(result.branchExists, true,
+    'a checkout mismatch must not be misreported as an absent session branch');
 });

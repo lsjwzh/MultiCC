@@ -78,8 +78,20 @@ function evaluateSessionEligibility(record, {
 function safeErrorCode(error, fallback) {
   const raw = String(error?.code || fallback || 'hibernate_failed');
   if (raw === 'WORKTREE_BRANCH_MISSING') return 'hibernate_branch_missing';
+  if (raw === 'WORKTREE_BRANCH_MISMATCH') return 'hibernate_branch_mismatch';
+  if (raw === 'WORKTREE_NOT_REGISTERED') return 'hibernate_worktree_unregistered';
   if (raw === 'WORKTREE_PATH_MISSING') return 'hibernate_path_missing';
   return /^[A-Za-z][A-Za-z0-9_.-]{0,79}$/.test(raw) ? raw : String(fallback || 'hibernate_failed');
+}
+
+// A registered worktree can remain useful while Git is detached or resolving a
+// merge/rebase conflict. That is a degraded repository state, not an unavailable
+// chat workspace: the session must be allowed to enter it and finish the repair.
+function degradedResidentCode(observed = {}) {
+  if (!observed.pathExists) return null;
+  if (observed.code === 'WORKTREE_BRANCH_MISMATCH') return 'workspace_branch_mismatch';
+  if (observed.code === 'WORKTREE_NOT_REGISTERED') return 'workspace_worktree_unregistered';
+  return null;
 }
 
 function numericOption(value, fallback) {
@@ -175,7 +187,12 @@ function createSessionHibernationRuntime(options = {}) {
   function touchUnlocked(sessionId, source = 'runtime.hibernate.touch') {
     return persistState(sessionId, source, (record) => {
       record.lastWorkAt = iso(now());
-      record.workspaceStateErrorCode = null;
+      // Keep a visible warning while the resident checkout is detached or on a
+      // different branch. A later successful inspection clears it.
+      if (!['workspace_branch_mismatch', 'workspace_worktree_unregistered']
+        .includes(record.workspaceStateErrorCode)) {
+        record.workspaceStateErrorCode = null;
+      }
     });
   }
 
@@ -190,14 +207,24 @@ function createSessionHibernationRuntime(options = {}) {
     const record = records.get(sessionId);
     if (!record) return { ok: false, code: 'session_not_found' };
     const observed = await inspect(record);
-    if (stateOf(record) === 'awake' && observed.pathExists && observed.valid !== false) return { ok: true, already: true };
-    if (!observed.branchExists) {
-      persistState(sessionId, 'runtime.thaw.branch-missing', current => {
-        current.workspaceState = 'hibernated';
-        current.workspaceStateErrorCode = 'hibernate_branch_missing';
+    if (stateOf(record) === 'awake' && observed.pathExists && observed.valid !== false) {
+      if (['workspace_branch_mismatch', 'workspace_worktree_unregistered']
+        .includes(record.workspaceStateErrorCode)) {
+        persistState(sessionId, 'runtime.workspace.degraded-cleared', current => {
+          current.workspaceStateErrorCode = null;
+        });
+      }
+      return { ok: true, already: true };
+    }
+    const degradedCode = degradedResidentCode(observed);
+    if (degradedCode) {
+      persistState(sessionId, 'runtime.workspace.degraded', current => {
+        current.workspaceState = 'awake';
+        current.workspaceStateErrorCode = degradedCode;
       });
-      publish('thaw', 'failure', sessionId, 'hibernate_branch_missing');
-      return { ok: false, code: 'hibernate_branch_missing', workspaceUnavailable: true };
+      updateChatCwd(sessionId, record.worktreePath);
+      publish('thaw', 'degraded', sessionId, degradedCode);
+      return { ok: true, already: true, degraded: true, code: degradedCode };
     }
     persistState(sessionId, 'runtime.thaw.preparing', current => {
       current.workspaceState = 'thawing';
@@ -341,9 +368,10 @@ function createSessionHibernationRuntime(options = {}) {
       const observed = await inspect(record);
       let next = state;
       let code = null;
-      if (!observed.branchExists) {
-        next = 'hibernated';
-        code = 'hibernate_branch_missing';
+      const degradedCode = degradedResidentCode(observed);
+      if (degradedCode) {
+        next = 'awake';
+        code = degradedCode;
       } else if (state === 'hibernating') next = observed.pathExists ? 'awake' : 'hibernated';
       else if (state === 'thawing') next = observed.pathExists ? 'awake' : 'hibernated';
       else if (state === 'hibernated' && observed.pathExists && observed.valid !== false) next = 'awake';

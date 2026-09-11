@@ -18,8 +18,12 @@ test('two SQLite connections cannot reserve the same physical workspace', t => {
   const other = createTaskShellStore(f.file); t.after(() => other.close());
   const second = createWorkspaceRegistry(other);
   const lease = f.registry.acquire(w.id, 'a', 'message');
-  assert.throws(() => second.acquire(w.id, 'alias', 'another'), { code: 'workspace_busy' });
-  assert.throws(() => f.registry.acquire(w.id, 'a', 'message'), { code: 'workspace_launch_unresolved' });
+  assert.throws(() => second.acquire(w.id, 'alias', 'another'), error => (
+    error.code === 'workspace_busy' && error.backpressure === true
+  ));
+  assert.throws(() => f.registry.acquire(w.id, 'a', 'message'), error => (
+    error.code === 'workspace_launch_unresolved' && error.backpressure === false
+  ));
   f.registry.release(lease, { stopped: true });
   assert.equal(second.acquire(w.id, 'alias', 'another').state, 'reserved');
 });
@@ -100,6 +104,32 @@ test('accepted duplicate without launch and failed materialization both release 
   assert.equal(fs.existsSync(f.record.worktreePath), true);
   assert.equal(f.host.snapshot().workspaces[0].residency, 'retained');
   assert.equal(f.host.snapshot().leases.length, 0);
+});
+test('a resident conflicted checkout is admitted in place instead of blocking its conversation', async t => {
+  const f = await hostFixture(t);
+  const first = f.descriptor('first'), firstGuard = await f.host.beforeDeliver(first);
+  await firstGuard.complete({ accepted: false, durable: false });
+  const warnings = [];
+  f.deps.log = (event, fields) => warnings.push({ event, fields });
+  f.deps.validate = async () => ({
+    ok: false,
+    code: 'WORKTREE_BRANCH_MISMATCH',
+    pathExists: true,
+    branchExists: true,
+  });
+  const next = f.descriptor('during-conflict');
+  const guard = await f.host.beforeDeliver(next);
+  assert.ok(next.opts.workspacePermit, 'the runner receives its normal workspace permit');
+  assert.equal(warnings.at(-1)?.event, 'workspace_git_state_degraded_continuing');
+  await guard.complete({ accepted: false, durable: false });
+});
+test('broken workspace identity uses bounded delivery retries, not infinite backpressure', async t => {
+  const f = await hostFixture(t);
+  f.deps.directories.delete('d');
+  await assert.rejects(
+    f.host.beforeDeliver(f.descriptor('missing-directory')),
+    error => error.code === 'workspace_directory_missing' && error.backpressure === false,
+  );
 });
 test('response loss after launch pins the original operation', async t => {
   const f = await hostFixture(t), d = f.descriptor('m'), guard = await f.host.beforeDeliver(d);

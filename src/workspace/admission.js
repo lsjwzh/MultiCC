@@ -7,7 +7,18 @@ const exec = promisify(execFile);
 const { createTaskShellStore } = require('../task-shell/store');
 const { createWorkspaceRegistry } = require('./registry');
 const { WORKTREE_SUBDIR } = require('../git/service');
-const failure = code => Object.assign(new Error(code), { code, status: 409, backpressure: true });
+const BACKPRESSURE_CODES = new Set([
+  'workspace_busy',
+  'workspace_lease_unavailable',
+]);
+const failure = code => Object.assign(new Error(code), {
+  code,
+  status: 409,
+  // Capacity/contention can heal without changing the request and therefore
+  // must not consume its delivery budget. Identity/materialization failures
+  // use the bounded outbox retry path instead of cycling forever in FIFO.
+  backpressure: BACKPRESSURE_CODES.has(code),
+});
 const processAlive = proc => !!proc && proc.exitCode == null && proc.signalCode == null;
 
 function createWorkspaceAdmission(deps) {
@@ -82,7 +93,21 @@ function createWorkspaceAdmission(deps) {
     }
     const current = owner(id);
     const valid = await deps.validate(dir.path, current.worktreePath, current.branch, { sessionId: current.id });
-    if (!valid.ok) throw failure('workspace_materialization_unverified');
+    // A detached or wrong-branch checkout commonly means the session is in the
+    // middle of resolving a merge/rebase. The configured owner path still
+    // exists, so keep the conversation running in place and let the agent
+    // finish or re-register the Git checkout. A physically missing path still
+    // fails closed.
+    const usableDegradedWorktree = valid.pathExists
+      && ['WORKTREE_BRANCH_MISMATCH', 'WORKTREE_NOT_REGISTERED'].includes(valid.code);
+    if (!valid.ok && !usableDegradedWorktree) throw failure('workspace_materialization_unverified');
+    if (usableDegradedWorktree) {
+      deps.log('workspace_git_state_degraded_continuing', {
+        sessionId: id,
+        ownerId: current.id,
+        code: valid.code,
+      });
+    }
     const git = args => exec('git', args, { cwd: current.worktreePath, timeout: 15000 }).then(r => r.stdout.trim());
     const [head, common] = await Promise.all([git(['rev-parse', 'HEAD']), git(['rev-parse', '--git-common-dir'])]);
     registry.resident(lease, { head, commonDir: fs.realpathSync(path.resolve(current.worktreePath, common)) });

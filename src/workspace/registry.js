@@ -3,7 +3,17 @@
 const { createHash, randomUUID } = require('node:crypto');
 const prefix = 'workspace:';
 const hash = value => createHash('sha256').update(value).digest('hex').slice(0, 32);
-const fail = code => Object.assign(new Error(code), { code, status: 409, backpressure: true });
+const BACKPRESSURE = new Set([
+  'workspace_busy',
+  'workspace_execution_capacity',
+  'workspace_restore_capacity',
+  'workspace_resident_capacity',
+]);
+const fail = code => Object.assign(new Error(code), {
+  code,
+  status: 409,
+  backpressure: BACKPRESSURE.has(code),
+});
 const ACTIVE = new Set(['reserved', 'materializing', 'starting', 'running', 'uncertain']);
 
 // One SQLite transaction owns physical identity, capacity and the writer lease.
