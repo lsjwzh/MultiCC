@@ -225,6 +225,13 @@ const cancelBtn   = document.getElementById('cancel-btn');
 const mergeBtn    = document.getElementById('merge-btn');
 const mergeHint   = document.getElementById('merge-hint');
 const mergeHintBtn = document.getElementById('merge-hint-btn');
+// Air's task header owns AI 配置 / 角色 / CLI switching (ai-capsule +
+// roles-toggle in the host page). The chat page's equivalents stay mounted for
+// code that opens them programmatically, but never join the Air header row or
+// the compact More menu — showing both was duplicated UI.
+const airChatMode = document.body.classList.contains('air-chat');
+const airOwnedById = new Set(['model-btn', 'effort-btn', 'provider-btn', 'role-btn', 'cli-btn']);
+const headerMenuId = id => !airChatMode || !airOwnedById.has(id);
 const headerMoreController = window.MultiCCChatLiveUi.bindHeaderMoreMenu({
   window,
   document,
@@ -235,12 +242,15 @@ const headerMoreController = window.MultiCCChatLiveUi.bindHeaderMoreMenu({
     'lang-btn', 'notify-btn', 's2s-btn', 'dbg-btn', 'model-btn', 'role-btn',
     'memory-btn', 'auto-commit-btn', 'share-btn', 'restart-spawn-btn',
     'memo-btn', 'chat-layout-btn',
-  ],
+  ].filter(headerMenuId),
   compactIds: [
     'reconnect-btn', 'cli-btn', 'effort-btn', 'provider-btn', 'merge-btn',
     'clear-ctx-wrap', 'session-title',
-  ],
+  ].filter(headerMenuId),
 });
+// Air relocates the More trigger into the host page's task header. The host
+// calls this handle to open/close the menu, which stays owned by this frame.
+if (airChatMode) window.__multiccAirHeaderMore = headerMoreController;
 function syncHeaderMoreMenu() { return headerMoreController.sync(); }
 function openHeaderMoreModal() { return headerMoreController.open(); }
 function closeHeaderMoreModal() { return headerMoreController.close(); }
@@ -940,6 +950,12 @@ function applyHistoryPlan(plan) {
   });
   currentMsgEl = viewPlan.currentElement;
   _lastUserBubble = viewPlan.lastUserElement;
+  // History-rendered user bubbles never carried the per-turn auto-commit
+  // checkbox (only the live addUserMsg path attaches it). Rebuild it on the
+  // last user message so a reloaded session keeps the affordance.
+  if (_lastUserBubble && !_lastUserBubble.querySelector('.msg-auto-commit')) {
+    attachAutoCommitCheck(_lastUserBubble, _sessionAutoCommit);
+  }
 
   // A reconnect refreshes authoritative totals even when they are zero. When
   // no aggregate is provided, only the initial page may reconstruct totals;
@@ -1226,6 +1242,10 @@ function applyConflictBanner(st) {
   bar.appendChild(help);
   bar.appendChild(cont);
   bar.appendChild(abort);
+  // The conflict banner is where parked-sync decisions happen (继续/放弃), so
+  // the force-sync prompt affordance lives here too, next to the status row's
+  // persistent copy.
+  worktreeSyncRequest.render(bar);
 }
 
 function showConflictHelp(files) {
@@ -1726,6 +1746,14 @@ async function loadSessionModel() {
   safe('model-btn', updateModelBtn); safe('effort-btn', updateEffortBtn);
   _sessionAutoCommit = !!info.autoCommit;
   safe('auto-commit-btn', updateAutoCommitBtn);
+  // History reload attaches the per-turn checkbox before session info lands.
+  // Catch it up to the authoritative session default unless the user already
+  // toggled that bubble's checkbox by hand.
+  if (_lastUserBubble) {
+    const row = _lastUserBubble.querySelector('.msg-auto-commit');
+    const cb = row && row.querySelector('input[type="checkbox"]');
+    if (cb && !row.dataset.userTouched) cb.checked = _sessionAutoCommit;
+  }
   void window.MultiCCChatAiConfig.maybePromptZcodeSetup({
     cli: _sessionCli, provider: _sessionProvider, sessionId: _sessionName, loadProviders: () => ensureProviderList('zcode'),
     onProvider: () => modelBtn?.click(), onSettings: () => window.open('/manage.html?view=provider', '_blank', 'noopener'),
@@ -2316,7 +2344,9 @@ function attachAutoCommitCheck(bubbleEl, checked) {
   row.addEventListener('click', (e) => {
     if (e.target === cb) return; // native checkbox handles itself
     cb.checked = !cb.checked;
+    row.dataset.userTouched = '1';
   });
+  cb.addEventListener('click', () => { row.dataset.userTouched = '1'; });
   ce.appendChild(row);
   return cb;
 }

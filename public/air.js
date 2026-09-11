@@ -507,7 +507,7 @@
       $('task-title').textContent = dir?.name || '先添加工作目录';
       $('task-state').textContent = dir?.path || '添加目录后即可创建任务。';
     }
-    for (const id of ['ai-capsule', 'roles-toggle', 'details-toggle']) $(id).hidden = !taskId;
+    for (const id of ['ai-capsule', 'roles-toggle', 'details-toggle', 'chat-more']) $(id).hidden = !taskId;
     $('task-state').disabled = !taskId;
     if (!taskId) { $('task-state').classList.remove('attention'); $('task-state').removeAttribute('title'); }
     const layoutButton = document.querySelector('[data-chat-layout]');
@@ -773,19 +773,37 @@
     return value.attribution?.candidate ? value.attribution.candidate.blockers || value.attribution.blockers || [] : [];
   }
 
+  // Draft restore + listener binding happen once per input element. syncFrame
+  // also runs from the 4s poll loop; re-running it there restored a stale
+  // draft into the freshly cleared input right after a send (the composer's
+  // programmatic clear fires no input event, so the stored draft survived).
+  let frameInputSynced = null;
+  let frameInputSyncedTask = null;
+  let frameInputHandler = null;
   function syncFrame() {
     const doc = $('conversation').contentDocument;
     const input = doc?.getElementById('input') || doc?.getElementById('message');
     if (!taskId || !input) return;
-    const draft = sessionStorage.getItem(`air:draft:${taskId}`);
-    if (draft != null && !input.value) input.value = draft;
+    // Rebind on element change (frame reload) AND on task change: right after
+    // a task switch the old document can still be live for a poll tick, and
+    // binding the new task's draft listener to that stale input would write
+    // keystrokes to the wrong task's draft key. The handler reads `taskId`
+    // live, so re-binding first detaches the previous one to avoid stacking.
+    if (frameInputSynced !== input || frameInputSyncedTask !== taskId) {
+      if (frameInputSynced && frameInputHandler) frameInputSynced.removeEventListener('input', frameInputHandler);
+      frameInputSynced = input;
+      frameInputSyncedTask = taskId;
+      const draft = sessionStorage.getItem(`air:draft:${taskId}`);
+      if (draft != null && !input.value) input.value = draft;
+      frameInputHandler = () => sessionStorage.setItem(`air:draft:${taskId}`, input.value);
+      input.addEventListener('input', frameInputHandler, { passive: true });
+    }
     if (entry?.task?.title) {
       const unstartedPlan = entry.task.recordType === 'planned' && !entry.messages?.length;
       input.placeholder = unstartedPlan
         ? `补充或开始执行「${entry.task.title}」…`
         : `继续描述「${entry.task.title}」的下一步…`;
     }
-    input.addEventListener('input', () => sessionStorage.setItem(`air:draft:${taskId}`, input.value), { passive: true });
   }
 
   async function refreshEntry() {
@@ -879,6 +897,28 @@
     if (entry?.roleBindings && !entry.readOnly) window.MultiCCAirRoles.open({ taskId, roleBindings: entry.roleBindings, api, onSaved: refreshEntry });
   };
   $('details-toggle').onclick = () => toggleDetails();
+  // The conversation frame's chat page owns the More menu (items, handlers,
+  // popover layer). The task-header trigger just reaches into that same-origin
+  // frame to open/close it; the menu anchors itself to the frame's top-right,
+  // visually dropping from this header.
+  function frameMoreController() {
+    return $('conversation').contentWindow?.__multiccAirHeaderMore || null;
+  }
+  $('chat-more').onclick = event => {
+    event.stopPropagation();
+    const controller = frameMoreController();
+    if (!controller) return;
+    const wasOpen = controller.isOpen?.() === true;
+    if (wasOpen) controller.close();
+    else controller.open();
+    $('chat-more').setAttribute('aria-expanded', String(!wasOpen));
+  };
+  document.addEventListener('click', event => {
+    if (event.target.closest('#chat-more')) return;
+    const controller = frameMoreController();
+    if (controller?.close) controller.close();
+    $('chat-more').setAttribute('aria-expanded', 'false');
+  });
   $('task-state').onclick = () => toggleDetails();
   $('details-close').onclick = closeDetails;
   $('schedule-create').onclick = () => openScheduleDialog();
@@ -925,7 +965,7 @@
       event.preventDefault();
       setMode('library');
     }
-    if (event.key === 'Escape') { closeNav(); closeDetails(); }
+    if (event.key === 'Escape') { closeNav(); closeDetails(); frameMoreController()?.close(); $('chat-more').setAttribute('aria-expanded', 'false'); }
   });
   window.addEventListener('popstate', () => {
     saveDraft();

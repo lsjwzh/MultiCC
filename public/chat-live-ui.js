@@ -35,6 +35,11 @@
       const topLayer = typeof menu.showPopover === 'function';
       doc.body.appendChild(menu);
       if (topLayer) menu.setAttribute('popover', 'manual');
+      // Air moves the trigger into the host page's task header and hides the
+      // in-frame button. With no visible trigger rect, anchor the dropdown to
+      // the frame's top-right so it still reads as opening from that header.
+      const visibleButton = button && button.getClientRects().length > 0 ? button : null;
+      const rect = visibleButton ? visibleButton.getBoundingClientRect() : null;
       if (win.innerWidth <= 760) {
         menu.style.cssText += ';margin:0;bottom:auto;';
         backdrop = doc.createElement('div');
@@ -43,14 +48,15 @@
         doc.body.appendChild(backdrop);
         backdrop.addEventListener('click', event => { if (event.target === backdrop) close(); });
       } else {
-        const rect = button.getBoundingClientRect();
-        menu.style.cssText += `;position:fixed;margin:0;transform:none;right:12px;left:auto;top:${rect.bottom + 6}px;max-width:calc(100vw - 24px);max-height:calc(100dvh - ${rect.bottom + 18}px);overflow-y:auto;z-index:10000;`;
+        const top = rect ? rect.bottom + 6 : 10;
+        menu.style.cssText += `;position:fixed;margin:0;transform:none;right:12px;left:auto;top:${top}px;max-width:calc(100vw - 24px);max-height:calc(100dvh - ${top + 12}px);overflow-y:auto;z-index:10000;`;
       }
       menu?.classList.add('open');
       if (topLayer) menu.showPopover();
       if (win.innerWidth > 760) {
         const width = menu.getBoundingClientRect().width;
-        menu.style.left = `${Math.max(12, Math.min(button.getBoundingClientRect().right - width, win.innerWidth - width - 12))}px`;
+        const anchorRight = rect ? rect.right : win.innerWidth - 12;
+        menu.style.left = `${Math.max(12, Math.min(anchorRight - width, win.innerWidth - width - 12))}px`;
         menu.style.right = 'auto';
       }
       button?.setAttribute('aria-expanded', 'true');
@@ -90,7 +96,7 @@
     });
     win.addEventListener('resize', sync);
     win.setTimeout(sync, 0);
-    return Object.freeze({ sync, open, close });
+    return Object.freeze({ sync, open, close, isOpen: () => !!menu?.classList.contains('open') });
   }
 
   function accumulateLiveUsage(usage, bucket) {
