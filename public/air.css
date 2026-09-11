@@ -155,12 +155,10 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 .directory-task-row time { color: #8c9aaa; font-size: 8px; }
 .directory-task-mark { color: #3b8edc; font-size: 18px; }
 .directory-task-empty { grid-column: 1 / -1; padding: 26px; text-align: center; font-size: 11px; }
-#quick-task-form { position: sticky; bottom: -20px; margin-top: 15px; padding: 14px; border: 1px solid #d5e3f0; border-radius: 16px; background: rgba(255, 255, 255, .96); box-shadow: 0 14px 42px #31557616; backdrop-filter: blur(16px); }
-.quick-task-head { display: flex; align-items: flex-end; gap: 14px; margin-bottom: 7px; }
-.quick-task-head > div { min-width: 0; flex: 1; }
-.quick-task-head strong { display: block; margin-top: 2px; color: #31516d; font-size: 13px; }
-.quick-task-head small { text-align: right; }
-#quick-task-input { min-height: 70px; max-height: 180px; padding: 8px 2px; border: 0; background: transparent; resize: vertical; }
+/* The new-task composer floats a little above the bottom edge so it reads as
+   part of the conversation column rather than a bar glued to the viewport. */
+#quick-task-form { position: sticky; bottom: 20px; margin-top: 18px; padding: 12px 14px; border: 1px solid #d5e3f0; border-radius: 16px; background: rgba(255, 255, 255, .96); box-shadow: 0 14px 42px #31557616; backdrop-filter: blur(16px); }
+#quick-task-input { min-height: 96px; max-height: 220px; padding: 10px 4px 8px; border: 0; background: transparent; resize: vertical; }
 #quick-task-input:focus { box-shadow: none; }
 #quick-task-files { display: flex; flex-wrap: wrap; gap: 5px; }
 .quick-task-file { display: inline-flex; align-items: center; gap: 5px; padding: 3px 4px 3px 8px; color: #476b8c; border-radius: 14px; background: #edf5fc; font-size: 9px; }
@@ -492,13 +490,11 @@ dialog .air-config-field input { margin-top: 7px; }
   #delivery-destination { width: 100%; }
   #task-details { width: 100%; border-left: 0; }
   #directory-library { padding: 22px 15px; }
-  #empty { padding: 19px 12px 24px; }
-  .quick-task-head { align-items: flex-start; flex-direction: column; }
-  .quick-task-head { gap: 3px; }
-  .quick-task-head small { text-align: left; }
+  #empty { padding: 19px 12px 30px; }
   #directory-task-list { grid-template-columns: 1fr; }
   .directory-task-row { border-right: 0; }
-  #quick-task-form { bottom: -10px; }
+  #quick-task-form { bottom: 12px; }
+  #quick-task-input { min-height: 84px; }
   .quick-task-actions { flex-wrap: wrap; }
   #quick-task-status { order: 4; flex-basis: 100%; }
   #quick-task-submit { margin-left: auto; }

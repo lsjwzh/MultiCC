@@ -367,7 +367,9 @@ body.air-chat {
 /* Focusing the composer lights the whole card, strip included. */
 .air-chat #air-composer-meta:has(+ #input-bar:focus-within) { border-color: #c1d8ed; }
 .air-chat #input-bar {
-  margin: 4px auto 18px;
+  /* Lifted a little further off the bottom edge so the composer reads as part
+     of the conversation column instead of a bar glued to the frame. */
+  margin: 6px auto 24px;
   padding: 9px 10px;
   border: 1px solid #dbe5ef;
   border-radius: 15px;
@@ -380,6 +382,9 @@ body.air-chat {
   box-shadow: 0 10px 32px #31557618, 0 4px 20px #23599a10, 0 0 0 3px #dcecfb;
 }
 .air-chat #input-bar textarea {
+  /* Two comfortable lines instead of a single cramped one; it still grows with
+     the text up to the shared max-height. */
+  min-height: 52px;
   color: #263b50;
   border-color: transparent;
   background: transparent;
