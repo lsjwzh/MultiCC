@@ -6,10 +6,10 @@ class NotificationService {
   static final _plugin = FlutterLocalNotificationsPlugin();
   static bool _initialized = false;
 
-  /// Whether to request iOS notification permission at init. Defaults to true;
-  /// set `--dart-define=SKIP_NOTIF_PROMPT=true` to suppress the launch-time
-  /// permission alert (used for automated simulator runs).
-  static const bool _requestNotifPermission =
+  /// Whether the notification permission alert may be shown. Defaults to true;
+  /// set `--dart-define=SKIP_NOTIF_PROMPT=true` to suppress it (used for
+  /// automated simulator runs).
+  static const bool _promptForPermission =
       !bool.fromEnvironment('SKIP_NOTIF_PROMPT');
 
   /// Last time a notification fired for each id — used to de-dup the same
@@ -44,10 +44,15 @@ class NotificationService {
           .initialize(
             settings: InitializationSettings(
               android: const AndroidInitializationSettings('@mipmap/ic_launcher'),
-              iOS: DarwinInitializationSettings(
-                requestAlertPermission: _requestNotifPermission,
-                requestBadgePermission: _requestNotifPermission,
-                requestSoundPermission: _requestNotifPermission,
+              iOS: const DarwinInitializationSettings(
+                // Deliberately not requested here. The iOS authorization alert
+                // is presented before the Flutter view has drawn its first
+                // frame, so a cold start sits on the launch screen — looking
+                // exactly like a hang — until somebody answers it.
+                // [requestPermissions] asks once the UI is actually on screen.
+                requestAlertPermission: false,
+                requestBadgePermission: false,
+                requestSoundPermission: false,
               ),
             ),
             onDidReceiveNotificationResponse: _onResponse,
@@ -58,16 +63,6 @@ class NotificationService {
       // notifications, so don't crash.  The plugin's _initialized flag stays
       // true so callers don't try to re-init and hit the same hang.
     }
-
-    // Android 13+ requires an explicit runtime permission request; the Darwin
-    // settings above already cover iOS.
-    try {
-      await _plugin
-          .resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin
-          >()
-          ?.requestNotificationsPermission();
-    } catch (_) {}
 
     // Cold start: the app may have been launched by tapping a notification
     // while it was fully terminated. The tap doesn't fire the callback above,
@@ -80,6 +75,33 @@ class NotificationService {
           p.isNotEmpty) {
         _pendingPayload = p;
       }
+    } catch (_) {}
+  }
+
+  /// Ask the user for notification permission, once the app is on screen.
+  ///
+  /// Split out of [init] rather than folded into it: `initialize()` is the only
+  /// call that can raise the iOS authorization alert, and that alert goes up
+  /// before the Flutter view's first frame — so asking there freezes a cold
+  /// start on the launch screen until a human answers. [main] calls this from a
+  /// post-frame callback instead, where the alert lands on a live UI and a
+  /// refusal costs nothing.
+  static Future<void> requestPermissions() async {
+    if (!_promptForPermission) return;
+    try {
+      await _plugin
+          .resolvePlatformSpecificImplementation<
+            IOSFlutterLocalNotificationsPlugin
+          >()
+          ?.requestPermissions(alert: true, badge: true, sound: true);
+    } catch (_) {}
+    // Android 13+ needs its own explicit runtime request.
+    try {
+      await _plugin
+          .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin
+          >()
+          ?.requestNotificationsPermission();
     } catch (_) {}
   }
 
