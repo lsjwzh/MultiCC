@@ -954,7 +954,10 @@
       : entry?.configuration;
     const routeName = shown?.providerSelection?.mode === 'auto'
       ? `Auto ${shown.providerSelection.protocol}`
-      : (pending ? shown.provider : shown.providerName || shown.provider) || '默认线路';
+    // `shown` is undefined for a task that carries no configuration at all — a
+    // missing field must not take the whole render down with it, so every read
+    // goes through `?.`.
+      : (pending ? shown?.provider : shown?.providerName || shown?.provider) || '默认线路';
     ai.hidden = !entry?.sessionId;
     ai.disabled = !entry || entry.readOnly;
     ai.textContent = shown
