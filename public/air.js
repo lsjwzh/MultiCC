@@ -796,9 +796,9 @@
         : entry.configuration;
       const routeName = shown.providerSelection?.mode === 'auto'
         ? `Auto ${shown.providerSelection.protocol}`
-        : shown.providerName || shown.provider || '默认线路';
+        : (pending ? shown.provider : shown.providerName || shown.provider) || '默认线路';
       $('ai-capsule').textContent = [shown.cli, routeName,
-        shown.effectiveModel || shown.model || '默认模型', pending ? '下轮生效' : ''].filter(Boolean).join(' · ');
+        (pending ? shown.model : shown.effectiveModel || shown.model) || '默认模型', pending ? '下轮生效' : ''].filter(Boolean).join(' · ');
       const roleCount = entry.roleBindings?.bindings?.length || 0;
       $('roles-toggle').disabled = entry.readOnly || !entry.roleBindings;
       $('roles-toggle').textContent = roleCount ? `${roleCount} 个角色` : '＋ 角色';

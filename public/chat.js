@@ -1267,6 +1267,11 @@ async function resolveRebase(action) {
 // Show the current worktree branch + a "behind base" warning at the top of the
 // chat. Mirrors the Flutter app: a persistent banner while behind, plus a
 // one-time system notice when it first goes (or falls further) behind.
+const worktreeSyncRequest = window.MultiCCWorktreeSync.create({ document,
+  getSession: () => _sessionName, getShell: () => shellChatView.shellId,
+  readOnly: () => _params.get('readOnly') === '1',
+  request: (url, options) => chatApi.json(withToken(url), options), notice: addSystemMsg,
+});
 function applyBehindStatus(st) {
   const behind = (st && Number(st.behind)) || 0;
   const branch = (st && st.branch) || '';
@@ -1291,6 +1296,7 @@ function applyBehindStatus(st) {
         btn.onclick = syncWorktree;
         bar.appendChild(btn);
       }
+      worktreeSyncRequest.render(bar);
     } else {
       bar.classList.remove('show', 'behind');
       bar.innerHTML = '';

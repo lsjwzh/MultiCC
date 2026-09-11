@@ -71,11 +71,15 @@ async function api(route, body, status = 200, method) {
     assert.equal(info.model, 'old-model'); assert.equal(info.pendingConfiguration.profile.model, 'next-model');
     assert.equal(persisted().find(s => s.id === task.sessionId).pendingConfiguration.profile.model, 'next-model');
     process.kill(pid, 0);
-    await send('SECOND', 'm2');
+    const syncText = require('../public/chat-worktree-sync').syncPrompt();
+    const syncReceipt = await send(syncText, 'm2');
+    assert.equal(syncReceipt.decision, 'queued');
+    assert.equal((await send(syncText, 'm2')).receiptId, syncReceipt.receiptId, 'duplicate sync request reuses receipt');
     assert.equal(rows().length, 1, 'queued message does not interrupt current process');
     fs.writeFileSync(release+'1', 'done');
     await wait(() => rows().length === 2, 'queued second execution');
     assert.match(JSON.stringify(rows()[1].args), /next-model/);
+    assert.ok(JSON.stringify(rows()[1].args).includes('解决同步冲突'), 'queued sync instruction reaches the next turn');
     assert.equal((await api(sessionUrl)).pendingConfiguration, null);
     const switched = await api(sessionUrl+'/switch-cli', { cli: 'opencode', force: true });
     assert.equal(switched.deferred, true); assert.equal(switched.cli, 'codex');

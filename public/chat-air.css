@@ -13,7 +13,7 @@ body.air-chat {
 .air-chat #header {
   min-height: 48px;
   flex-wrap: nowrap;
-  padding: 6px max(12px, calc((100% - 920px) / 2));
+  padding: 6px max(12px, calc((100% - var(--chat-content-max-width)) / 2));
   color: var(--air-text);
   border-color: var(--air-line);
   background: rgba(249, 252, 255, .94);
@@ -58,7 +58,7 @@ body.air-chat {
 .air-chat #cwd-bar { display: none; }
 .air-chat #worktree-bar,
 .air-chat #aux-classify-bar {
-  width: min(100%, 920px);
+  width: min(100%, var(--chat-content-max-width));
   align-self: center;
   color: var(--air-muted);
   border-color: #e2ebf4;
@@ -89,7 +89,7 @@ body.air-chat {
   box-shadow: 0 12px 36px #59482712;
 }
 .air-chat #messages {
-  width: min(100%, 920px);
+  width: min(100%, var(--chat-content-max-width));
   align-self: center;
   gap: 2px;
   padding: 18px 3px 12px;
@@ -119,8 +119,8 @@ body.air-chat {
   background: #edf5fd;
 }
 .air-chat .msg.assistant {
-  width: min(780px, 94%);
-  max-width: 94%;
+  width: 100%;
+  max-width: 100%;
   padding: 4px 1px;
   color: #344b62;
   border: 0;
@@ -166,7 +166,7 @@ body.air-chat {
 .air-chat #session-queue-dock,
 .air-chat #input-bar,
 .air-chat #dispatch-activity {
-  width: min(calc(100% - 16px), 920px);
+  width: min(calc(100% - 16px), var(--chat-content-max-width));
   align-self: center;
 }
 .air-chat #usage-summary { border-color: #e4ebf2; background: transparent; }

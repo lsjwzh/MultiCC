@@ -91,6 +91,7 @@ test('Air task entry exposes provider routing metadata without credentials', asy
     json: value => { response = value; }, status() { return this; },
   });
   assert.deepEqual(response.configuration, {
+    pendingConfiguration: null,
     cli: 'codex', model: 'gpt-alias', effectiveModel: 'gpt-a', effort: 'high', effectiveEffort: 'high',
     provider: 'provider-a', providerName: 'Provider A', providerSelection: record.providerSelection,
     rolePresetId: undefined,
