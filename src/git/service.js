@@ -320,14 +320,18 @@ async function worktreeValidationWith(execGit, dirPath, worktreePath, branch) {
   const pathExists = fs.existsSync(worktreePath);
   const rows = worktreeBlocks(await execGit(dirPath, ['worktree', 'list', '--porcelain']).catch(() => ''));
   const registered = rows.find(row => canonical(row.worktree) === expectedPath) || null;
-  if (registered && registered.branch !== expectedRef) {
-    return { ok: false, code: 'WORKTREE_BRANCH_MISMATCH', pathExists, branchExists: false };
-  }
   let branchExists = false;
   try {
     await execGit(dirPath, ['rev-parse', '--verify', '--quiet', `${expectedRef}^{commit}`]);
     branchExists = true;
   } catch (_) {}
+  // A detached/wrong-branch checkout and a deleted session branch are different
+  // recovery cases. Keep the real ref fact even when the registered checkout
+  // mismatches, otherwise hibernation reports the existing branch as "missing"
+  // and retries a state that cannot heal itself.
+  if (registered && registered.branch !== expectedRef) {
+    return { ok: false, code: 'WORKTREE_BRANCH_MISMATCH', pathExists, branchExists };
+  }
   if (!branchExists) return { ok: false, code: 'WORKTREE_BRANCH_MISSING', pathExists, branchExists };
   if (!registered) return { ok: false, code: 'WORKTREE_NOT_REGISTERED', pathExists, branchExists };
   return { ok: pathExists, code: pathExists ? null : 'WORKTREE_PATH_MISSING', pathExists, branchExists };

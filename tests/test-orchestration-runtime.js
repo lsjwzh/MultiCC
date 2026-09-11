@@ -200,6 +200,30 @@ test('delivery preparation failure runs no chat turn and preserves the outbox re
   await h.runtime.stop();
 });
 
+test('a non-backpressure workspace failure cannot cycle in FIFO forever', async t => {
+  const h = fixture(t, {
+    outboxOptions: { maxAttempts: 2, backoff: () => 0 },
+    beforeDeliver: async () => {
+      throw Object.assign(new Error('workspace directory missing'), {
+        code: 'workspace_directory_missing',
+        backpressure: false,
+      });
+    },
+  });
+  const admitted = await h.runtime.admitSessionWork({
+    sessionId: 'broken-workspace',
+    text: 'must not loop',
+    idempotencyKey: 'bounded-workspace-failure',
+    options: {},
+  });
+  assert.equal((await h.runtime.outbox.get(admitted.entry.id)).state, 'pending');
+  await h.runtime.tick();
+  assert.equal((await h.runtime.outbox.get(admitted.entry.id)).state, 'dead-letter');
+  assert.equal((await h.runtime.stats()).pendingDeliveries, 0);
+  assert.equal((await h.runtime.sessionScheduler.status('broken-workspace')).queued.length, 0);
+  await h.runtime.stop();
+});
+
 test('startup awaits lease reconciliation after scheduler recovery and before first delivery', async t => {
   const order = [];
   const { runtime } = fixture(t, {

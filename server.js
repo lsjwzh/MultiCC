@@ -2454,7 +2454,21 @@ sessionHibernationRuntime = createSessionHibernationRuntime({
   git: {
     inspect: async (dir, record) => { if (!dir || !record.worktreePath || !record.branch) return { pathExists: false, branchExists: false, valid: false }; const result = await gitWorktreeValidate(dir.path, record.worktreePath, record.branch, { sessionId: record.id }); return { pathExists: result.pathExists, branchExists: result.branchExists, valid: result.ok, code: result.code }; },
     detach: (dir, record) => gitWorktreeDetach(dir.path, record.worktreePath, record.branch, { sessionId: record.id }),
-    thaw: (dir, record) => gitWorktreeAdd(dir.path, record.id, dir.baseBranch, { sessionId: record.id, requireExistingBranch: true }),
+    thaw: async (dir, record) => {
+      try {
+        return await gitWorktreeAdd(dir.path, record.id, dir.baseBranch, {
+          sessionId: record.id,
+          requireExistingBranch: true,
+        });
+      } catch (error) {
+        if (error?.code !== 'WORKTREE_BRANCH_MISSING') throw error;
+        // A missing retained ref must not make a conversation permanently
+        // unusable. Recreate only this session's isolated branch/path from the
+        // directory base; an existing detached/conflicted checkout is retained
+        // by gitWorktreeAdd and continues in place.
+        return gitWorktreeAdd(dir.path, record.id, dir.baseBranch, { sessionId: record.id });
+      }
+    },
   },
   inspectBlockers: async (id, record) => {
     const blockers = ['workspace_residency_retained'], chat = chatSessions.get(id), stream = chatStream.status(id);

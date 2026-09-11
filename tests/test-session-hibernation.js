@@ -29,6 +29,7 @@ function harness(overrides = {}) {
       pathExists: record._pathExists !== false,
       branchExists: record._branchExists !== false,
       valid: record._valid !== false,
+      code: record._inspectCode || null,
     }),
     detach: async (_dir, record) => {
       if (record._detachError) throw Object.assign(new Error('detach failed'), { code: record._detachError });
@@ -194,6 +195,7 @@ test('concurrent admission thaws once, admits after path restore, then persists 
 test('thaw failure admits nothing, persists error, and never falls back to another cwd', async () => {
   const record = bound('missing', iso(DAY), {
     workspaceState: 'hibernated', _pathExists: false, _branchExists: false,
+    _thawError: 'WORKTREE_BRANCH_MISSING',
   });
   const h = harness({ records: new Map([[record.id, record]]) });
   let admitted = 0;
@@ -205,6 +207,58 @@ test('thaw failure admits nothing, persists error, and never falls back to anoth
   assert.equal(record.workspaceState, 'hibernated');
   assert.equal(record.workspaceStateErrorCode, 'hibernate_branch_missing');
   assert.throws(() => h.runtime.assertAwake(record.id), error => error.code === 'SESSION_HIBERNATED');
+});
+
+test('a missing retained branch reaches the recovery port instead of blocking admission up front', async () => {
+  const record = bound('recreated', iso(DAY), {
+    workspaceState: 'hibernated', _pathExists: false, _branchExists: false,
+  });
+  let thaws = 0;
+  let admissions = 0;
+  const h = harness({
+    records: new Map([[record.id, record]]),
+    git: {
+      thaw: async (_dir, current) => {
+        thaws += 1;
+        current._pathExists = true;
+        current._branchExists = true;
+        return { ok: true, worktreePath: current.worktreePath, branch: current.branch };
+      },
+    },
+  });
+  const result = await h.runtime.admit(record.id, async () => {
+    admissions += 1;
+    return { ok: true };
+  });
+  assert.equal(result.ok, true);
+  assert.equal(thaws, 1);
+  assert.equal(admissions, 1);
+  assert.equal(record.workspaceState, 'awake');
+});
+
+test('a resident detached or conflicted worktree remains available to its conversation', async () => {
+  const record = bound('conflicted', iso(DAY), {
+    workspaceState: 'hibernated',
+    _pathExists: true,
+    _branchExists: true,
+    _valid: false,
+    _inspectCode: 'WORKTREE_BRANCH_MISMATCH',
+  });
+  let thaws = 0;
+  let admissions = 0;
+  const h = harness({
+    records: new Map([[record.id, record]]),
+    git: { thaw: async () => { thaws += 1; throw new Error('must not replace the resident checkout'); } },
+  });
+  const result = await h.runtime.admit(record.id, async () => {
+    admissions += 1;
+    return { ok: true };
+  });
+  assert.equal(result.ok, true);
+  assert.equal(thaws, 0);
+  assert.equal(admissions, 1);
+  assert.equal(record.workspaceState, 'awake');
+  assert.equal(record.workspaceStateErrorCode, 'workspace_branch_mismatch');
 });
 
 test('required persistence failure stops before detach or admission', async () => {
@@ -295,7 +349,8 @@ test('startup reconcile implements the crash matrix without creating a branch', 
   assert.equal(cases[3].workspaceState, 'hibernated');
   assert.equal(cases[4].workspaceState, 'awake');
   assert.equal(cases[5].workspaceState, 'hibernated');
-  assert.equal(cases[5].workspaceStateErrorCode, 'hibernate_branch_missing');
+  assert.equal(cases[5].workspaceStateErrorCode, null,
+    'admission owns missing-branch recreation; startup does not manufacture a terminal error');
 });
 
 test('delivery lease holds the keyed lock through durable admission and touch', async () => {
