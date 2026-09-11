@@ -109,11 +109,15 @@ nav { display: flex; flex-direction: column; gap: 4px; }
 
 #nav-scrim { position: fixed; z-index: 20; inset: 0; width: 100%; height: 100%; border: 0; border-radius: 0; background: rgba(32, 49, 70, .26); }
 main { min-width: 0; flex: 1; display: flex; flex-direction: column; background: rgba(255, 255, 255, .8); }
-#task-header { min-height: 104px; flex-shrink: 0; display: flex; align-items: center; gap: 12px; padding: 20px 28px; border-bottom: 1px solid var(--line); background: rgba(255, 255, 255, .82); backdrop-filter: blur(20px); }
+#task-header { min-height: 88px; flex-shrink: 0; display: flex; align-items: center; gap: 12px; padding: 13px 24px; border-bottom: 1px solid var(--line); background: rgba(255, 255, 255, .82); backdrop-filter: blur(20px); }
 .breadcrumb { min-width: 0; flex: 1; }
 .breadcrumb .caption { margin: 0 0 4px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 #task-title { overflow-wrap: anywhere; }
-#task-state { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; }
+#task-state { display: block; max-width: 100%; min-height: 22px; margin-top: 4px; padding: 2px 0; overflow: hidden; color: var(--muted); border: 0; border-radius: 5px; background: transparent; font-size: 11px; text-align: left; white-space: nowrap; text-overflow: ellipsis; }
+#task-state:not(:disabled)::after { content: " ›"; }
+#task-state:not(:disabled):hover { color: var(--accent); }
+#task-state.attention { color: #996218; }
+#task-state:disabled { opacity: 1; cursor: default; }
 .task-tools { display: flex; align-items: center; gap: 7px; flex-shrink: 0; }
 #ai-capsule { max-width: 220px; overflow: hidden; padding: 7px 12px; color: #2468b5; border-color: #d2e6fb; border-radius: 18px; background: var(--blue-soft); white-space: nowrap; text-overflow: ellipsis; font-size: 11px; }
 #roles-toggle, #details-toggle, #refresh { font-size: 12px; }
@@ -168,7 +172,7 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 #quick-task-status { min-width: 0; flex: 1; overflow: hidden; color: #718499; font-size: 9px; white-space: nowrap; text-overflow: ellipsis; }
 #conversation { min-height: 220px; flex: 1; width: 100%; border: 0; background: transparent; }
 
-#delivery-card { flex-shrink: 0; margin: 18px 24px 4px; padding: 17px 19px 14px; border: 1px solid #d6e7f8; border-radius: 16px; background: linear-gradient(145deg, #f5faff, #fff); box-shadow: 0 7px 24px #355d8508; }
+#delivery-card { margin: 0 0 14px; padding: 15px; border: 1px solid #d6e7f8; border-radius: 13px; background: #f5faff; }
 .delivery-copy h2 { margin-top: 3px; color: #285270; }
 .delivery-copy p { margin-top: 5px; color: #5c7187; font-size: 12px; }
 #delivery-steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; margin: 15px 0 12px; counter-reset: delivery; }
@@ -181,8 +185,9 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 #delivery-steps span.done::after { background: #72bea1; }
 #delivery-steps span.current { color: #176bb9; font-weight: 650; }
 #delivery-steps span.current::before { color: #fff; border-color: #4c96df; background: #4c96df; box-shadow: 0 0 0 4px #ddebfa; }
-.delivery-footer { display: flex; align-items: center; gap: 12px; }
+.delivery-footer { display: grid; gap: 8px; }
 #delivery-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+#delivery-actions:empty { display: none; }
 #delivery-actions button { min-height: 30px; padding: 5px 9px; color: #42627f; border: 0; background: transparent; font-size: 11px; }
 #delivery-destination { min-width: 0; flex: 1; padding: 8px 10px; color: #56748f; border-radius: 8px; background: #edf5fc; font-size: 11px; }
 
@@ -487,7 +492,7 @@ dialog .air-config-field input { margin-top: 7px; }
   .task-tools [data-chat-layout] { display: none; } /* Available in Chat's More menu. */
   #refresh { position: absolute; top: 12px; right: 10px; }
   #notice { padding-inline: 12px; }
-  #delivery-card { margin: 11px 10px 2px; padding: 14px; }
+  #delivery-card { padding: 14px; }
   #delivery-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .delivery-footer { display: grid; }
   #delivery-destination { width: 100%; }

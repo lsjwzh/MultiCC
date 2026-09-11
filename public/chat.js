@@ -238,7 +238,7 @@ const headerMoreController = window.MultiCCChatLiveUi.bindHeaderMoreMenu({
   ],
   compactIds: [
     'reconnect-btn', 'cli-btn', 'effort-btn', 'provider-btn', 'merge-btn',
-    'clear-ctx-wrap',
+    'clear-ctx-wrap', 'session-title',
   ],
 });
 function syncHeaderMoreMenu() { return headerMoreController.sync(); }
@@ -1288,6 +1288,7 @@ function applyBehindStatus(st) {
       const span = document.createElement('span');
       span.className = 'worktree-label';
       span.textContent = label;
+      span.title = label;
       bar.appendChild(span);
       if (behind > 0) {
         const btn = document.createElement('button');

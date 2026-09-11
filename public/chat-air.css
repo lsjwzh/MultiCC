@@ -10,17 +10,30 @@ body.air-chat {
   background: linear-gradient(145deg, #fff, #f7faff);
 }
 
+.air-chat #chat-context-bar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  padding: 7px max(12px, calc((100% - var(--chat-content-max-width)) / 2));
+  border-bottom: 1px solid var(--air-line);
+  background: #f7fbff;
+}
 .air-chat #header {
-  min-height: 48px;
+  order: 3;
+  flex: 0 0 auto;
+  min-height: 30px;
   flex-wrap: nowrap;
-  padding: 6px max(12px, calc((100% - var(--chat-content-max-width)) / 2));
+  margin-left: auto;
+  padding: 0;
   color: var(--air-text);
-  border-color: var(--air-line);
-  background: rgba(249, 252, 255, .94);
-  backdrop-filter: blur(18px);
+  border: 0;
+  background: transparent;
+  backdrop-filter: none;
 }
 .air-chat #header .logo, .air-chat #header .badge { display: none; }
-.air-chat #status { color: #71849a; font-size: 11px; }
+.air-chat #status { max-width: 140px; overflow: hidden; color: #71849a; font-size: 11px; white-space: nowrap; text-overflow: ellipsis; }
 .air-chat #status.connected { color: #268666; }
 .air-chat #session-title { min-width: 0; overflow: hidden; color: #526a82; text-overflow: ellipsis; white-space: nowrap; }
 .air-chat #header-more-wrap { display: block; }
@@ -58,20 +71,30 @@ body.air-chat {
 .air-chat #cwd-bar { display: none; }
 .air-chat #worktree-bar,
 .air-chat #aux-classify-bar {
-  width: min(100%, var(--chat-content-max-width));
+  width: auto;
+  min-width: 0;
+  max-width: 560px;
   align-self: center;
+  min-height: 30px;
+  margin: 0;
+  padding: 0;
   color: var(--air-muted);
-  border-color: #e2ebf4;
-  background: #f7fbff;
+  border: 0;
+  background: transparent;
 }
+.air-chat #worktree-bar { order: 1; flex: 1 1 250px; }
+.air-chat #worktree-bar.behind .worktree-label { color: #9a671e; }
+.air-chat #worktree-sync-btn, .air-chat #worktree-force-sync-btn {
+  min-height: 28px; padding: 3px 8px; color: #316c9e;
+  border: 1px solid #d5e3ef; border-radius: 7px; background: #fff; font-weight: 500;
+}
+.air-chat #worktree-sync-btn:hover, .air-chat #worktree-force-sync-btn:hover { background: #eaf4ff; }
+.air-chat #aux-classify-bar { order: 2; flex: 1 1 270px; }
 .air-chat #aux-classify-bar.show {
-  min-height: 38px;
   display: flex;
-  margin-top: 5px;
-  padding: 6px 10px;
-  border: 1px solid #dce9f5;
-  border-radius: 11px;
 }
+.air-chat #chat-context-bar .worktree-conflict-bar { order: 4; flex-basis: 100%; margin: 0; }
+.air-chat #header-more-menu #session-title { display: block; padding: 7px; }
 .air-chat #aux-classify-bar .ac-goal { color: #3d5871; }
 .air-chat #aux-classify-bar .ac-phase,
 .air-chat #aux-classify-bar .ac-state {
@@ -212,11 +235,20 @@ body.air-chat {
 .air-chat #merge-hint { color: #3d6e5c; border-color: #cce4da; background: #f0faf6; }
 
 @media (max-width: 760px) {
-  .air-chat #header { padding-inline: 10px; }
+  .air-chat #chat-context-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 10px; padding: 7px 10px; }
+  .air-chat #header { grid-column: 2; grid-row: 1; align-self: start; }
+  .air-chat #status { max-width: none; font-size: 0; }
+  .air-chat #status::before { content: "连接中"; font-size: 10px; }
+  .air-chat #status.connected::before { content: "已连接"; }
+  .air-chat #status.error::before { content: "重连中"; }
+  .air-chat #worktree-bar { grid-column: 1 / -1; grid-row: 2; width: 100%; max-width: none; }
+  .air-chat #aux-classify-bar { grid-column: 1; grid-row: 1; min-height: 30px; max-width: 100%; gap: 4px; flex-wrap: wrap; }
+  .air-chat #aux-classify-bar .ac-goal { flex-basis: 100%; font-size: 10px; }
+  .air-chat #aux-classify-bar .ac-icon { display: none; }
+  .air-chat #chat-context-bar .worktree-conflict-bar { grid-column: 1 / -1; grid-row: 3; }
   .air-chat #header-more-menu { color: var(--air-text); background: #fbfdff; }
   .air-chat #messages { padding: 12px 10px 8px; }
   .air-chat .msg { max-width: 96%; }
   .air-chat .msg.user { max-width: 88%; }
-  .air-chat #aux-classify-bar.show { margin-inline: 8px; width: calc(100% - 16px); flex-wrap: wrap; }
   .air-chat #input-bar { margin-bottom: max(7px, env(safe-area-inset-bottom)); }
 }
