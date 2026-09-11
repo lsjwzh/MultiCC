@@ -15,10 +15,13 @@ import 'services/update_service.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  // The Air palette is light, so the status-bar glyphs must be dark ink or they
+  // disappear into the pale canvas.
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
-      statusBarIconBrightness: Brightness.light,
+      statusBarIconBrightness: Brightness.dark,
+      statusBarBrightness: Brightness.light,
     ),
   );
 
@@ -26,6 +29,14 @@ Future<void> main() async {
   final settings = await SettingsService.getInstance();
   await I18n.init(settings.lang);
   runApp(MultiCCApp(settings: settings));
+
+  // The permission alert can only be answered by a human, so it must never sit
+  // between launch and the first frame — see
+  // NotificationService.requestPermissions for what that looks like from the
+  // user's side.
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    NotificationService.requestPermissions();
+  });
 }
 
 class MultiCCApp extends StatelessWidget {

@@ -192,7 +192,7 @@ class _AuxScreenState extends State<AuxScreen> {
     final fails = (h['consecutiveFails'] as num?)?.toInt() ?? 0;
     final sinceAt = h['sinceAt']?.toString();
     final lastFail = h['lastFailMsg']?.toString() ?? '';
-    final Color dotColor = unhealthy ? AppColors.danger : const Color(0xFF56d364);
+    final Color dotColor = unhealthy ? AppColors.danger : const Color(0xFF2ba67a);
     final statusText = unhealthy ? '不可用' : '正常';
     return Container(
       padding: const EdgeInsets.all(14),
@@ -296,7 +296,7 @@ class _AuxScreenState extends State<AuxScreen> {
             child: ElevatedButton(
               onPressed: _saving ? null : _save,
               child: _saving
-                  ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF04110f)))
+                  ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFFffffff)))
                   : const Text('保存配置'),
             ),
           ),

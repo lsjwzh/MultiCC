@@ -129,7 +129,7 @@ class _MainShellState extends State<MainShell> {
         }
       },
       child: Scaffold(
-        backgroundColor: const Color(0xFF070809),
+        backgroundColor: const Color(0xFFf4f8fd),
         // Keep the Stack full-height; the inner ChatView Scaffold handles the
         // keyboard inset (lifts the InputBar). If the outer Scaffold also
         // resized, the absolutely-positioned sheet would be pushed off-screen.
@@ -306,7 +306,7 @@ class _ChatSheetState extends State<_ChatSheet>
                   top: Radius.circular(radius),
                 ),
                 child: Container(
-                  color: const Color(0xFF0f1115),
+                  color: const Color(0xFFffffff),
                   child: Column(
                     children: [
                       SizedBox(height: topInset),
@@ -359,14 +359,14 @@ class _SheetHandle extends StatelessWidget {
       onVerticalDragEnd: (d) => onDragEnd(d.velocity.pixelsPerSecond.dy),
       child: Container(
         width: double.infinity,
-        color: const Color(0xFF0f1115),
+        color: const Color(0xFFffffff),
         padding: const EdgeInsets.symmetric(vertical: 9),
         alignment: Alignment.center,
         child: Container(
           width: 42,
           height: 4,
           decoration: BoxDecoration(
-            color: const Color(0xFF454b54),
+            color: const Color(0xFF8b9cae),
             borderRadius: BorderRadius.circular(2),
           ),
         ),
@@ -455,7 +455,7 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(result.message ?? VoiceLaunchService.describe(result.errorCode)),
-        backgroundColor: const Color(0xFFff6b63),
+        backgroundColor: const Color(0xFFb64e43),
       ),
     );
   }
@@ -532,7 +532,7 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
     final mgr = context.watch<SessionManager>();
 
     return Scaffold(
-      backgroundColor: _air ? const Color(0xFFF6F8FC) : const Color(0xFF070809),
+      backgroundColor: AppColors.bg,
       drawer: WorkspaceNavigationDrawer(
         selected: WorkspaceDestination.overview,
         serverLabel: widget.settings.host,
@@ -544,8 +544,8 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
       ),
       // AppBar
       appBar: AppBar(
-        backgroundColor: _air ? Colors.white : const Color(0xFF0f1115),
-        foregroundColor: _air ? const Color(0xFF25334A) : const Color(0xFFe7eaee),
+        backgroundColor: AppColors.panel,
+        foregroundColor: AppColors.text,
         elevation: 0,
         centerTitle: false,
         leading: Builder(
@@ -564,11 +564,11 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
                 children: [
                   TextSpan(
                     text: 'Multi',
-                    style: TextStyle(color: Color(0xFF3ad6c5)),
+                    style: TextStyle(color: Color(0xFF1678e8)),
                   ),
                   TextSpan(
                     text: 'CC',
-                    style: TextStyle(color: Color(0xFF6aa3ff)),
+                    style: TextStyle(color: Color(0xFF1267b5)),
                   ),
                 ],
               ),
@@ -584,7 +584,7 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
-                    color: Color(0xFF8a909b),
+                    color: Color(0xFF6f8096),
                     fontSize: 12,
                     fontWeight: FontWeight.normal,
                   ),
@@ -622,7 +622,7 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
               ),
               if (widget.settings.advancedMode.value)
                 _VoiceBetaEntry(onTap: _openGlobalVoice),
-              const Divider(height: 1, color: Color(0xFF20242b)),
+              const Divider(height: 1, color: Color(0xFFdce6f1)),
             ],
           ),
         ),
@@ -636,7 +636,7 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
         mgr.directories.isEmpty &&
         mgr.sessions.isEmpty) {
       return const Center(
-        child: CircularProgressIndicator(color: Color(0xFF6aa3ff)),
+        child: CircularProgressIndicator(color: Color(0xFF1267b5)),
       );
     }
 
@@ -645,18 +645,18 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.error_outline, color: Color(0xFFff6b63), size: 48),
+            const Icon(Icons.error_outline, color: Color(0xFFb64e43), size: 48),
             const SizedBox(height: 12),
             Text(
               mgr.sessionsError!,
-              style: const TextStyle(color: Color(0xFF8a909b)),
+              style: const TextStyle(color: Color(0xFF6f8096)),
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 16),
             ElevatedButton(
               onPressed: mgr.loadDashboard,
               style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF14171c),
+                backgroundColor: const Color(0xFFf8fbff),
               ),
               child: Text(t('retry')),
             ),
@@ -672,13 +672,13 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
           children: [
             const Icon(
               Icons.folder_open_outlined,
-              color: Color(0xFF5b616c),
+              color: Color(0xFF8a9aab),
               size: 48,
             ),
             const SizedBox(height: 12),
             Text(
               t('noWorkspaces'),
-              style: TextStyle(color: Color(0xFF5b616c), fontSize: 15),
+              style: TextStyle(color: Color(0xFF8a9aab), fontSize: 15),
             ),
             const SizedBox(height: 6),
             Padding(
@@ -687,7 +687,7 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
                 t('noWorkspacesHint'),
                 textAlign: TextAlign.center,
                 style: const TextStyle(
-                  color: Color(0xFF8a909b),
+                  color: Color(0xFF6f8096),
                   fontSize: 12,
                   height: 1.4,
                 ),
@@ -699,7 +699,7 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
               icon: const Icon(Icons.add, size: 18),
               label: Text(t('addWorkspace')),
               style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF22ab9c),
+                backgroundColor: const Color(0xFF0965cf),
                 foregroundColor: Colors.white,
               ),
             ),
@@ -729,8 +729,8 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
                   mgr.loadDashboard(),
                   _loadCronCount(),
                 ]),
-                color: const Color(0xFF6aa3ff),
-                backgroundColor: const Color(0xFF0f1115),
+                color: const Color(0xFF1267b5),
+                backgroundColor: const Color(0xFFffffff),
                 child: ListView.builder(
                   padding: const EdgeInsets.fromLTRB(12, 2, 12, 12),
                   itemCount: orderedDirectories.length,
@@ -845,10 +845,10 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
             debounce = Timer(Duration.zero, () => browse('', setState));
           }
           return AlertDialog(
-            backgroundColor: const Color(0xFF0f1115),
+            backgroundColor: const Color(0xFFffffff),
             title: Text(
               t('addWorkspace'),
-              style: const TextStyle(color: Color(0xFFf2f4f7)),
+              style: const TextStyle(color: Color(0xFF20364d)),
             ),
             content: Column(
               mainAxisSize: MainAxisSize.min,
@@ -857,7 +857,7 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
                 Text(
                   t('workspaceSafetyHint'),
                   style: const TextStyle(
-                    color: Color(0xFF8a909b),
+                    color: Color(0xFF6f8096),
                     fontSize: 12,
                     height: 1.4,
                   ),
@@ -867,7 +867,7 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
                   Text(
                     t('workspaceName'),
                     style: const TextStyle(
-                      color: Color(0xFF8a909b),
+                      color: Color(0xFF6f8096),
                       fontSize: 11,
                     ),
                   ),
@@ -876,7 +876,7 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
                     controller: nameCtrl,
                     autofocus: true,
                     style: const TextStyle(
-                      color: Color(0xFFe7eaee),
+                      color: Color(0xFF233249),
                       fontSize: 13,
                     ),
                     decoration: sheetInputDecoration(
@@ -888,7 +888,7 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
                 Text(
                   t('computerFolder'),
                   style: const TextStyle(
-                    color: Color(0xFF8a909b),
+                    color: Color(0xFF6f8096),
                     fontSize: 11,
                   ),
                 ),
@@ -897,7 +897,7 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
                   controller: pathCtrl,
                   autofocus: basicMode,
                   style: const TextStyle(
-                    color: Color(0xFFe7eaee),
+                    color: Color(0xFF233249),
                     fontSize: 13,
                     fontFamily: 'monospace',
                   ),
@@ -917,7 +917,7 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
                     margin: const EdgeInsets.only(top: 6),
                     constraints: const BoxConstraints(maxHeight: 180),
                     decoration: BoxDecoration(
-                      border: Border.all(color: const Color(0xFF20242b)),
+                      border: Border.all(color: const Color(0xFFdce6f1)),
                       borderRadius: BorderRadius.circular(6),
                     ),
                     child: ListView.builder(
@@ -946,7 +946,7 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
                             child: Text(
                               '📁 ${e['name']}',
                               style: const TextStyle(
-                                color: Color(0xFFe7eaee),
+                                color: Color(0xFF233249),
                                 fontSize: 12,
                                 fontFamily: 'monospace',
                               ),
@@ -961,7 +961,7 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
                   Text(
                     error!,
                     style: const TextStyle(
-                      color: Color(0xFFff6b63),
+                      color: Color(0xFFb64e43),
                       fontSize: 12,
                     ),
                   ),
@@ -973,12 +973,12 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
                 onPressed: () => Navigator.pop(dialogCtx),
                 child: Text(
                   t('cancel'),
-                  style: const TextStyle(color: Color(0xFF8a909b)),
+                  style: const TextStyle(color: Color(0xFF6f8096)),
                 ),
               ),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF22ab9c),
+                  backgroundColor: const Color(0xFF0965cf),
                   foregroundColor: Colors.white,
                 ),
                 onPressed: () async {
@@ -1029,7 +1029,7 @@ class _VoiceBetaEntry extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      color: const Color(0xFF0f1115),
+      color: const Color(0xFFffffff),
       padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
       child: Semantics(
         button: true,
@@ -1045,18 +1045,18 @@ class _VoiceBetaEntry extends StatelessWidget {
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(10),
                 border: Border.all(
-                  color: const Color(0xFF6aa3ff).withValues(alpha: 0.38),
+                  color: const Color(0xFF1267b5).withValues(alpha: 0.38),
                 ),
                 gradient: LinearGradient(colors: [
-                  const Color(0xFF3ad6c5).withValues(alpha: 0.11),
-                  const Color(0xFF6aa3ff).withValues(alpha: 0.06),
+                  const Color(0xFF1678e8).withValues(alpha: 0.11),
+                  const Color(0xFF1267b5).withValues(alpha: 0.06),
                 ]),
               ),
               child: Row(children: [
                 const Icon(
                   Icons.graphic_eq_rounded,
                   size: 20,
-                  color: Color(0xFF3ad6c5),
+                  color: Color(0xFF1678e8),
                 ),
                 const SizedBox(width: 9),
                 Expanded(
@@ -1071,7 +1071,7 @@ class _VoiceBetaEntry extends StatelessWidget {
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
-                              color: Color(0xFFe7eaee),
+                              color: Color(0xFF233249),
                               fontSize: 12.5,
                               fontWeight: FontWeight.w700,
                             ),
@@ -1084,18 +1084,18 @@ class _VoiceBetaEntry extends StatelessWidget {
                             vertical: 1,
                           ),
                           decoration: BoxDecoration(
-                            color: const Color(0xFF6aa3ff)
+                            color: const Color(0xFF1267b5)
                                 .withValues(alpha: 0.14),
                             borderRadius: BorderRadius.circular(999),
                             border: Border.all(
-                              color: const Color(0xFF6aa3ff)
+                              color: const Color(0xFF1267b5)
                                   .withValues(alpha: 0.42),
                             ),
                           ),
                           child: const Text(
                             'BETA',
                             style: TextStyle(
-                              color: Color(0xFFcfe1ff),
+                              color: Color(0xFF1b4f8f),
                               fontSize: 8,
                               fontWeight: FontWeight.w800,
                               letterSpacing: 0.5,
@@ -1108,7 +1108,7 @@ class _VoiceBetaEntry extends StatelessWidget {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
-                          color: Color(0xFF8a909b),
+                          color: Color(0xFF6f8096),
                           fontSize: 9.5,
                           height: 1.2,
                         ),
@@ -1119,7 +1119,7 @@ class _VoiceBetaEntry extends StatelessWidget {
                 const Icon(
                   Icons.chevron_right_rounded,
                   size: 19,
-                  color: Color(0xFF6aa3ff),
+                  color: Color(0xFF1267b5),
                 ),
               ]),
             ),
@@ -1154,14 +1154,14 @@ class _KpiRow extends StatelessWidget {
     final active = mgr.activeSessions.length;
     final waiting = mgr.waitingSessions.length;
     return Container(
-      color: const Color(0xFF0f1115),
+      color: const Color(0xFFffffff),
       padding: const EdgeInsets.fromLTRB(10, 2, 10, 8),
       child: Row(
         children: [
           KpiTile(
             label: t('activeSessions'),
             value: '$active',
-            color: const Color(0xFF3ad6c5),
+            color: const Color(0xFF1678e8),
             onTap: () => _showSessionSheet(
               context,
               mgr,
@@ -1176,7 +1176,7 @@ class _KpiRow extends StatelessWidget {
           KpiTile(
             label: t('waitingSessions'),
             value: '$waiting',
-            color: const Color(0xFFe3b341),
+            color: const Color(0xFFa85a25),
             onTap: () => _showSessionSheet(
               context,
               mgr,
@@ -1191,7 +1191,7 @@ class _KpiRow extends StatelessWidget {
           KpiTile(
             label: t('cronTasks'),
             value: cronCount?.toString(),
-            color: const Color(0xFF6aa3ff),
+            color: const Color(0xFF1267b5),
             onTap: () async {
               await Navigator.of(context).push(
                 MaterialPageRoute(
@@ -1242,7 +1242,7 @@ void _showSessionSheet(
 
   showModalBottomSheet<void>(
     context: context,
-    backgroundColor: const Color(0xFF0f1115),
+    backgroundColor: const Color(0xFFffffff),
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
     ),
@@ -1261,7 +1261,7 @@ void _showSessionSheet(
                   Text(
                     '$prefix $title',
                     style: const TextStyle(
-                      color: Color(0xFFe7eaee),
+                      color: Color(0xFF233249),
                       fontSize: 15,
                       fontWeight: FontWeight.w600,
                     ),
@@ -1273,13 +1273,13 @@ void _showSessionSheet(
                       vertical: 3,
                     ),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF21262d),
+                      color: const Color(0xFFeef3f8),
                       borderRadius: BorderRadius.circular(10),
                     ),
                     child: Text(
                       '${sessions.length}',
                       style: const TextStyle(
-                        color: Color(0xFF8a909b),
+                        color: Color(0xFF6f8096),
                         fontSize: 13,
                         fontWeight: FontWeight.w600,
                       ),
@@ -1288,19 +1288,19 @@ void _showSessionSheet(
                   const SizedBox(width: 8),
                   const Text(
                     '↕ 点击打开',
-                    style: TextStyle(color: Color(0xFF5b616c), fontSize: 11),
+                    style: TextStyle(color: Color(0xFF8a9aab), fontSize: 11),
                   ),
                 ],
               ),
             ),
-            const Divider(height: 1, color: Color(0xFF21262d)),
+            const Divider(height: 1, color: Color(0xFFeef3f8)),
             if (sessions.isEmpty)
               Padding(
                 padding: const EdgeInsets.fromLTRB(18, 24, 18, 24),
                 child: Text(
                   emptyText,
                   style: const TextStyle(
-                    color: Color(0xFF5b616c),
+                    color: Color(0xFF8a9aab),
                     fontSize: 13,
                   ),
                 ),
@@ -1360,7 +1360,7 @@ void _showSessionSheet(
                         decoration: const BoxDecoration(
                           border: Border(
                             bottom: BorderSide(
-                              color: Color(0xFF1c2128),
+                              color: Color(0xFFf8fbff),
                               width: 0.5,
                             ),
                           ),
@@ -1383,7 +1383,7 @@ void _showSessionSheet(
                                 const SizedBox(width: 5),
                                 MiniBadge(
                                   label: s.kind.name,
-                                  color: const Color(0xFF8a909b),
+                                  color: const Color(0xFF6f8096),
                                   icon: s.isChat
                                       ? Icons.chat_bubble_outline_rounded
                                       : Icons.terminal_rounded,
@@ -1407,7 +1407,7 @@ void _showSessionSheet(
                                   Text(
                                     runtime,
                                     style: const TextStyle(
-                                      color: Color(0xFF7a818c),
+                                      color: Color(0xFF6f8096),
                                       fontSize: 10,
                                       fontFamily: 'monospace',
                                     ),
@@ -1417,7 +1417,7 @@ void _showSessionSheet(
                                 Text(
                                   ago,
                                   style: const TextStyle(
-                                    color: Color(0xFF5b616c),
+                                    color: Color(0xFF8a9aab),
                                     fontSize: 10,
                                   ),
                                 ),
@@ -1425,7 +1425,7 @@ void _showSessionSheet(
                                 const Icon(
                                   Icons.arrow_forward_ios,
                                   size: 11,
-                                  color: Color(0xFF5b616c),
+                                  color: Color(0xFF8a9aab),
                                 ),
                               ],
                             ),
@@ -1434,7 +1434,7 @@ void _showSessionSheet(
                             Text(
                               dir.isNotEmpty ? '$dir / $alias' : alias,
                               style: const TextStyle(
-                                color: Color(0xFFe7eaee),
+                                color: Color(0xFF233249),
                                 fontSize: 13,
                                 fontFamily: 'monospace',
                                 fontWeight: FontWeight.w600,
@@ -1454,7 +1454,7 @@ void _showSessionSheet(
                                     Text(
                                       s.id,
                                       style: const TextStyle(
-                                        color: Color(0xFF5b616c),
+                                        color: Color(0xFF8a9aab),
                                         fontSize: 10,
                                         fontFamily: 'monospace',
                                       ),
@@ -1469,7 +1469,7 @@ void _showSessionSheet(
                                         '·',
                                         style: TextStyle(
                                           color: const Color(
-                                            0xFF5b616c,
+                                            0xFF8a9aab,
                                           ).withValues(alpha: 0.5),
                                         ),
                                       ),
@@ -1478,7 +1478,7 @@ void _showSessionSheet(
                                     Text(
                                       model,
                                       style: const TextStyle(
-                                        color: Color(0xFF5b616c),
+                                        color: Color(0xFF8a9aab),
                                         fontSize: 10,
                                       ),
                                       maxLines: 1,
@@ -1491,7 +1491,7 @@ void _showSessionSheet(
                                       '·',
                                       style: TextStyle(
                                         color: const Color(
-                                          0xFF5b616c,
+                                          0xFF8a9aab,
                                         ).withValues(alpha: 0.5),
                                       ),
                                     ),
@@ -1500,7 +1500,7 @@ void _showSessionSheet(
                                       child: Text(
                                         provider,
                                         style: const TextStyle(
-                                          color: Color(0xFF5b616c),
+                                          color: Color(0xFF8a9aab),
                                           fontSize: 10,
                                         ),
                                         maxLines: 1,
@@ -1514,7 +1514,7 @@ void _showSessionSheet(
                                       '·',
                                       style: TextStyle(
                                         color: const Color(
-                                          0xFF5b616c,
+                                          0xFF8a9aab,
                                         ).withValues(alpha: 0.5),
                                       ),
                                     ),
@@ -1522,7 +1522,7 @@ void _showSessionSheet(
                                     Text(
                                       effort,
                                       style: const TextStyle(
-                                        color: Color(0xFF5b616c),
+                                        color: Color(0xFF8a9aab),
                                         fontSize: 10,
                                       ),
                                       maxLines: 1,
@@ -1538,7 +1538,7 @@ void _showSessionSheet(
                               Text(
                                 '🗒 $summary',
                                 style: const TextStyle(
-                                  color: Color(0xFF8a909b),
+                                  color: Color(0xFF6f8096),
                                   fontSize: 10,
                                 ),
                                 maxLines: 1,
@@ -1881,7 +1881,7 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet>
       messenger.showSnackBar(
         SnackBar(
           content: Text('Failed: $e'),
-          backgroundColor: const Color(0xFFff6b63),
+          backgroundColor: const Color(0xFFb64e43),
         ),
       );
     }
@@ -2173,7 +2173,7 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet>
                           label: Text(t('startConversation')),
                           style: FilledButton.styleFrom(
                             backgroundColor: AppColors.accent,
-                            foregroundColor: const Color(0xFF04110F),
+                            foregroundColor: const Color(0xFFffffff),
                             minimumSize: const Size.fromHeight(46),
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(9),
@@ -2441,15 +2441,15 @@ class _DirectoryCardHostState extends State<_DirectoryCardHost> {
     final next = await showDialog<String>(
       context: context,
       builder: (_) => AlertDialog(
-        backgroundColor: const Color(0xFF0f1115),
+        backgroundColor: const Color(0xFFffffff),
         title: const Text(
           'Rename directory',
-          style: TextStyle(color: Color(0xFFf2f4f7)),
+          style: TextStyle(color: Color(0xFF20364d)),
         ),
         content: TextField(
           controller: ctrl,
           autofocus: true,
-          style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 14),
+          style: const TextStyle(color: Color(0xFF233249), fontSize: 14),
           decoration: sheetInputDecoration(hint: 'Directory name'),
           onSubmitted: (v) => Navigator.pop(context, v),
         ),
@@ -2458,14 +2458,14 @@ class _DirectoryCardHostState extends State<_DirectoryCardHost> {
             onPressed: () => Navigator.pop(context, null),
             child: const Text(
               'Cancel',
-              style: TextStyle(color: Color(0xFF8a909b)),
+              style: TextStyle(color: Color(0xFF6f8096)),
             ),
           ),
           TextButton(
             onPressed: () => Navigator.pop(context, ctrl.text),
             child: const Text(
               'Rename',
-              style: TextStyle(color: Color(0xFF6aa3ff)),
+              style: TextStyle(color: Color(0xFF1267b5)),
             ),
           ),
         ],
@@ -2485,7 +2485,7 @@ class _DirectoryCardHostState extends State<_DirectoryCardHost> {
       messenger.showSnackBar(
         SnackBar(
           content: Text('Rename failed: $e'),
-          backgroundColor: const Color(0xFFff6b63),
+          backgroundColor: const Color(0xFFb64e43),
         ),
       );
     }
@@ -2530,16 +2530,16 @@ class _DirectoryCardHostState extends State<_DirectoryCardHost> {
             builder: (bctx) {
               final c = TextEditingController();
               return AlertDialog(
-                backgroundColor: const Color(0xFF0f1115),
+                backgroundColor: const Color(0xFFffffff),
                 title: const Text(
                   '提交信息',
-                  style: TextStyle(color: Color(0xFFf2f4f7)),
+                  style: TextStyle(color: Color(0xFF20364d)),
                 ),
                 content: TextField(
                   controller: c,
                   autofocus: true,
                   style: const TextStyle(
-                    color: Color(0xFFe7eaee),
+                    color: Color(0xFF233249),
                     fontSize: 14,
                   ),
                   decoration: sheetInputDecoration(hint: '留空使用自动信息'),
@@ -2550,14 +2550,14 @@ class _DirectoryCardHostState extends State<_DirectoryCardHost> {
                     onPressed: () => Navigator.pop(bctx, null),
                     child: const Text(
                       '取消',
-                      style: TextStyle(color: Color(0xFF8a909b)),
+                      style: TextStyle(color: Color(0xFF6f8096)),
                     ),
                   ),
                   TextButton(
                     onPressed: () => Navigator.pop(bctx, c.text),
                     child: const Text(
                       '提交',
-                      style: TextStyle(color: Color(0xFF6aa3ff)),
+                      style: TextStyle(color: Color(0xFF1267b5)),
                     ),
                   ),
                 ],
@@ -2594,30 +2594,30 @@ class _DirectoryCardHostState extends State<_DirectoryCardHost> {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        backgroundColor: const Color(0xFF0f1115),
+        backgroundColor: const Color(0xFFffffff),
         title: Text(
           'Delete directory',
-          style: const TextStyle(color: Color(0xFFf2f4f7)),
+          style: const TextStyle(color: Color(0xFF20364d)),
         ),
         content: Text(
           hasSessions
               ? 'Delete "${widget.directory.name}" and ALL ${widget.directory.totalSessions} session(s)? This cannot be undone.'
               : 'Delete empty directory "${widget.directory.name}"?',
-          style: const TextStyle(color: Color(0xFFe7eaee)),
+          style: const TextStyle(color: Color(0xFF233249)),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
             child: const Text(
               'Cancel',
-              style: TextStyle(color: Color(0xFF8a909b)),
+              style: TextStyle(color: Color(0xFF6f8096)),
             ),
           ),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
             child: const Text(
               'Delete',
-              style: TextStyle(color: Color(0xFFff6b63)),
+              style: TextStyle(color: Color(0xFFb64e43)),
             ),
           ),
         ],
@@ -2631,7 +2631,7 @@ class _DirectoryCardHostState extends State<_DirectoryCardHost> {
       messenger.showSnackBar(
         SnackBar(
           content: Text('Failed: $e'),
-          backgroundColor: const Color(0xFFff6b63),
+          backgroundColor: const Color(0xFFb64e43),
         ),
       );
     }
@@ -2729,8 +2729,8 @@ class _EventTimelineState extends State<EventTimeline> {
     return Container(
       margin: const EdgeInsets.fromLTRB(14, 10, 14, 0),
       decoration: BoxDecoration(
-        color: const Color(0xFF070809),
-        border: Border.all(color: const Color(0xFF14171c)),
+        color: const Color(0xFFf4f8fd),
+        border: Border.all(color: const Color(0xFFf8fbff)),
         borderRadius: BorderRadius.circular(6),
       ),
       child: Column(
@@ -2746,7 +2746,7 @@ class _EventTimelineState extends State<EventTimeline> {
                   Text(
                     '活动 (${widget.events.length})',
                     style: const TextStyle(
-                      color: Color(0xFF5b616c),
+                      color: Color(0xFF8a9aab),
                       fontSize: 11,
                       fontWeight: FontWeight.w600,
                     ),
@@ -2757,7 +2757,7 @@ class _EventTimelineState extends State<EventTimeline> {
                         ? Icons.expand_less_rounded
                         : Icons.expand_more_rounded,
                     size: 16,
-                    color: const Color(0xFF5b616c),
+                    color: const Color(0xFF8a9aab),
                   ),
                 ],
               ),
@@ -2780,7 +2780,7 @@ class _EventTimelineState extends State<EventTimeline> {
               padding: const EdgeInsets.symmetric(vertical: 1),
               child: Text(
                 directoryEventLabel(e),
-                style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+                style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               ),

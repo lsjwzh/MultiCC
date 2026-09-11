@@ -143,12 +143,12 @@ class _ChatViewState extends State<ChatView> {
       } else if ((res['conflicts'] as List?)?.isNotEmpty == true) {
         messenger.showSnackBar(
           SnackBar(
-            backgroundColor: const Color(0xFF3a1414),
+            backgroundColor: const Color(0xFFfff1ef),
             content: Text(
               t('syncConflict', {
                 'files': (res['conflicts'] as List).join(', '),
               }),
-              style: const TextStyle(color: Color(0xFFff9b9b)),
+              style: const TextStyle(color: Color(0xFFb64e43)),
             ),
             duration: const Duration(seconds: 6),
           ),
@@ -241,10 +241,10 @@ class _ChatViewState extends State<ChatView> {
         ..hideCurrentSnackBar()
         ..showSnackBar(
           SnackBar(
-            backgroundColor: const Color(0xFF2d2108),
+            backgroundColor: const Color(0xFFfff8eb),
             content: Text(
               t('behindWarning', {'base': base, 'n': '$behind'}),
-              style: const TextStyle(color: Color(0xFFf2cc60)),
+              style: const TextStyle(color: Color(0xFFa85a25)),
             ),
             duration: const Duration(seconds: 5),
           ),
@@ -367,7 +367,7 @@ class _ChatViewState extends State<ChatView> {
       });
     }
     return Scaffold(
-      backgroundColor: const Color(0xFF070809),
+      backgroundColor: const Color(0xFFf4f8fd),
       body: SafeArea(
         child: Stack(
           children: [
@@ -593,14 +593,14 @@ class _PendingInputFab extends StatelessWidget {
       button: true,
       label: t('pendingInputExpand'),
       child: Badge(
-        backgroundColor: const Color(0xFFe5534b),
+        backgroundColor: const Color(0xFFb64e43),
         smallSize: 10,
         alignment: const Alignment(0.4, -0.4),
         child: FloatingActionButton.small(
           heroTag: const Object(),
           onPressed: onTap,
-          backgroundColor: const Color(0xFF211a08),
-          foregroundColor: const Color(0xFFf2cc60),
+          backgroundColor: const Color(0xFFfff8eb),
+          foregroundColor: const Color(0xFFa85a25),
           tooltip: t('pendingInputExpand'),
           child: const Icon(Icons.help_outline_rounded),
         ),
@@ -729,14 +729,14 @@ Future<void> _shareFromSession(
           refreshShares(setState);
         }
         return AlertDialog(
-          backgroundColor: const Color(0xFF14171c),
+          backgroundColor: const Color(0xFFf8fbff),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
-            side: const BorderSide(color: Color(0xFF20242b)),
+            side: const BorderSide(color: Color(0xFFdce6f1)),
           ),
           title: Text(
             t('shareSession'),
-            style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 16),
+            style: const TextStyle(color: Color(0xFF233249), fontSize: 16),
           ),
           content: SizedBox(
             width: 380,
@@ -748,7 +748,7 @@ Future<void> _shareFromSession(
                   Text(
                     t('shareDesc'),
                     style: const TextStyle(
-                      color: Color(0xFF8b949e),
+                      color: Color(0xFF6f8096),
                       fontSize: 12,
                     ),
                   ),
@@ -756,7 +756,7 @@ Future<void> _shareFromSession(
                   Text(
                     t('shareOperateWarn'),
                     style: const TextStyle(
-                      color: Color(0xFFe3853f),
+                      color: Color(0xFFb4701f),
                       fontSize: 12,
                     ),
                   ),
@@ -784,24 +784,24 @@ Future<void> _shareFromSession(
                   TextField(
                     controller: pwCtrl,
                     style: const TextStyle(
-                      color: Color(0xFFe7eaee),
+                      color: Color(0xFF233249),
                       fontSize: 14,
                     ),
                     decoration: InputDecoration(
                       hintText: t('sharePassword'),
                       hintStyle: const TextStyle(
-                        color: Color(0xFF6e7681),
+                        color: Color(0xFF6f8096),
                         fontSize: 13,
                       ),
                       filled: true,
-                      fillColor: const Color(0xFF1c2128),
+                      fillColor: const Color(0xFFf8fbff),
                       contentPadding: const EdgeInsets.symmetric(
                         horizontal: 12,
                         vertical: 10,
                       ),
                       border: const OutlineInputBorder(
                         borderRadius: BorderRadius.all(Radius.circular(8)),
-                        borderSide: BorderSide(color: Color(0xFF20242b)),
+                        borderSide: BorderSide(color: Color(0xFFdce6f1)),
                       ),
                     ),
                   ),
@@ -810,7 +810,7 @@ Future<void> _shareFromSession(
                   Text(
                     t('shareExpiry'),
                     style: const TextStyle(
-                      color: Color(0xFF8b949e),
+                      color: Color(0xFF6f8096),
                       fontSize: 11,
                     ),
                   ),
@@ -887,7 +887,7 @@ Future<void> _shareFromSession(
                               }
                             },
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF238636),
+                        backgroundColor: const Color(0xFF2ba67a),
                         foregroundColor: Colors.white,
                       ),
                       child: busy
@@ -911,7 +911,7 @@ Future<void> _shareFromSession(
                     Text(
                       error!,
                       style: const TextStyle(
-                        color: Color(0xFFff6b63),
+                        color: Color(0xFFb64e43),
                         fontSize: 12,
                       ),
                     ),
@@ -921,9 +921,9 @@ Future<void> _shareFromSession(
                     Container(
                       padding: const EdgeInsets.all(10),
                       decoration: BoxDecoration(
-                        color: const Color(0xFF1c2128),
+                        color: const Color(0xFFf8fbff),
                         borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: const Color(0xFF20242b)),
+                        border: Border.all(color: const Color(0xFFdce6f1)),
                       ),
                       child: Row(
                         children: [
@@ -931,7 +931,7 @@ Future<void> _shareFromSession(
                             child: SelectableText(
                               url!,
                               style: const TextStyle(
-                                color: Color(0xFF79c0ff),
+                                color: Color(0xFF005cc5),
                                 fontSize: 12,
                               ),
                             ),
@@ -947,7 +947,7 @@ Future<void> _shareFromSession(
                             child: const Icon(
                               Icons.copy,
                               size: 18,
-                              color: Color(0xFF8b949e),
+                              color: Color(0xFF6f8096),
                             ),
                           ),
                         ],
@@ -959,7 +959,7 @@ Future<void> _shareFromSession(
                   Text(
                     t('existingShares'),
                     style: const TextStyle(
-                      color: Color(0xFF8b949e),
+                      color: Color(0xFF6f8096),
                       fontSize: 12,
                       fontWeight: FontWeight.w600,
                     ),
@@ -974,7 +974,7 @@ Future<void> _shareFromSession(
                           height: 18,
                           child: CircularProgressIndicator(
                             strokeWidth: 2,
-                            color: Color(0xFF8b949e),
+                            color: Color(0xFF6f8096),
                           ),
                         ),
                       ),
@@ -983,7 +983,7 @@ Future<void> _shareFromSession(
                     Text(
                       t('none'),
                       style: const TextStyle(
-                        color: Color(0xFF6e7681),
+                        color: Color(0xFF6f8096),
                         fontSize: 13,
                       ),
                     )
@@ -1019,7 +1019,7 @@ Future<void> _shareFromSession(
               onPressed: () => Navigator.of(ctx).pop(),
               child: Text(
                 t('close'),
-                style: const TextStyle(color: Color(0xFF8b949e)),
+                style: const TextStyle(color: Color(0xFF6f8096)),
               ),
             ),
           ],
@@ -1043,16 +1043,16 @@ Widget _expandedChoice(
         padding: const EdgeInsets.symmetric(vertical: 9),
         alignment: Alignment.center,
         decoration: BoxDecoration(
-          color: sel ? const Color(0xFF1a3a5c) : const Color(0xFF1c2128),
+          color: sel ? const Color(0xFFeaf4ff) : const Color(0xFFf8fbff),
           borderRadius: BorderRadius.circular(8),
           border: Border.all(
-            color: sel ? const Color(0xFF58a6ff) : const Color(0xFF20242b),
+            color: sel ? const Color(0xFF1267b5) : const Color(0xFFdce6f1),
           ),
         ),
         child: Text(
           label,
           style: TextStyle(
-            color: sel ? const Color(0xFF79c0ff) : const Color(0xFF8b949e),
+            color: sel ? const Color(0xFF005cc5) : const Color(0xFF6f8096),
             fontWeight: sel ? FontWeight.w600 : FontWeight.w400,
             fontSize: 13,
           ),
@@ -1076,16 +1076,16 @@ Widget _expiryChip(
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         decoration: BoxDecoration(
-          color: sel ? const Color(0xFF1a3a5c) : const Color(0xFF1c2128),
+          color: sel ? const Color(0xFFeaf4ff) : const Color(0xFFf8fbff),
           borderRadius: BorderRadius.circular(6),
           border: Border.all(
-            color: sel ? const Color(0xFF58a6ff) : const Color(0xFF20242b),
+            color: sel ? const Color(0xFF1267b5) : const Color(0xFFdce6f1),
           ),
         ),
         child: Text(
           label,
           style: TextStyle(
-            color: sel ? const Color(0xFF79c0ff) : const Color(0xFF8b949e),
+            color: sel ? const Color(0xFF005cc5) : const Color(0xFF6f8096),
             fontWeight: sel ? FontWeight.w500 : FontWeight.w400,
             fontSize: 12,
           ),
@@ -1114,9 +1114,9 @@ Widget _shareCard(Map<String, dynamic> s, VoidCallback onRevoke) {
     margin: const EdgeInsets.only(bottom: 8),
     padding: const EdgeInsets.all(10),
     decoration: BoxDecoration(
-      color: const Color(0xFF1c2128),
+      color: const Color(0xFFf8fbff),
       borderRadius: BorderRadius.circular(8),
-      border: Border.all(color: const Color(0xFF20242b)),
+      border: Border.all(color: const Color(0xFFdce6f1)),
     ),
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1126,7 +1126,7 @@ Widget _shareCard(Map<String, dynamic> s, VoidCallback onRevoke) {
             Expanded(
               child: Text(
                 '${_shareTypeLabel(s)}$expStr',
-                style: const TextStyle(color: Color(0xFF79c0ff), fontSize: 12),
+                style: const TextStyle(color: Color(0xFF005cc5), fontSize: 12),
                 overflow: TextOverflow.ellipsis,
               ),
             ),
@@ -1141,7 +1141,7 @@ Widget _shareCard(Map<String, dynamic> s, VoidCallback onRevoke) {
                   } catch (_) {}
                 }
               },
-              child: const Icon(Icons.copy, size: 16, color: Color(0xFF6e7681)),
+              child: const Icon(Icons.copy, size: 16, color: Color(0xFF6f8096)),
             ),
             const SizedBox(width: 6),
             GestureDetector(
@@ -1149,7 +1149,7 @@ Widget _shareCard(Map<String, dynamic> s, VoidCallback onRevoke) {
               child: const Icon(
                 Icons.close_rounded,
                 size: 18,
-                color: Color(0xFFf85149),
+                color: Color(0xFFb64e43),
               ),
             ),
           ],
@@ -1158,7 +1158,7 @@ Widget _shareCard(Map<String, dynamic> s, VoidCallback onRevoke) {
         Text(
           url,
           style: const TextStyle(
-            color: Color(0xFF6e7681),
+            color: Color(0xFF6f8096),
             fontSize: 11,
             fontFamily: 'monospace',
           ),
@@ -1216,21 +1216,21 @@ Future<void> confirmMergeWorktree(
   final ok = await showDialog<bool>(
     context: context,
     builder: (_) => AlertDialog(
-      backgroundColor: const Color(0xFF0f1115),
+      backgroundColor: const Color(0xFFffffff),
       title: Text(
         t('mergeTitle'),
-        style: const TextStyle(fontSize: 15, color: Color(0xFFf2f4f7)),
+        style: const TextStyle(fontSize: 15, color: Color(0xFF20364d)),
       ),
       content: Text(
         t('mergeBody'),
-        style: const TextStyle(color: Color(0xFFe7eaee)),
+        style: const TextStyle(color: Color(0xFF233249)),
       ),
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(context, false),
           child: Text(
             t('cancel'),
-            style: const TextStyle(color: Color(0xFF8a909b)),
+            style: const TextStyle(color: Color(0xFF6f8096)),
           ),
         ),
         TextButton(
@@ -1238,7 +1238,7 @@ Future<void> confirmMergeWorktree(
           child: Text(
             t('merge'),
             style: const TextStyle(
-              color: Color(0xFF6aa3ff),
+              color: Color(0xFF1267b5),
               fontWeight: FontWeight.w600,
             ),
           ),
@@ -1313,8 +1313,8 @@ class _MergeReadyBanner extends StatelessWidget {
       margin: const EdgeInsets.fromLTRB(10, 0, 10, 6),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
-        color: const Color(0xFF2d2108),
-        border: Border.all(color: const Color(0xFFe3b341)),
+        color: const Color(0xFFfff8eb),
+        border: Border.all(color: const Color(0xFFa85a25)),
         borderRadius: BorderRadius.circular(8),
         boxShadow: [
           BoxShadow(
@@ -1329,22 +1329,22 @@ class _MergeReadyBanner extends StatelessWidget {
           const Icon(
             Icons.merge_type_rounded,
             size: 16,
-            color: Color(0xFFf2cc60),
+            color: Color(0xFFa85a25),
           ),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
               text,
-              style: const TextStyle(color: Color(0xFFf2cc60), fontSize: 12),
+              style: const TextStyle(color: Color(0xFFa85a25), fontSize: 12),
             ),
           ),
           TextButton(
             onPressed: onDiff,
             style: TextButton.styleFrom(
-              foregroundColor: const Color(0xFFf2cc60),
+              foregroundColor: const Color(0xFFa85a25),
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
               minimumSize: Size.zero,
-              side: const BorderSide(color: Color(0xFFe3b341)),
+              side: const BorderSide(color: Color(0xFFa85a25)),
             ),
             child: Text(
               t('viewDiff'),
@@ -1355,8 +1355,8 @@ class _MergeReadyBanner extends StatelessWidget {
           TextButton(
             onPressed: onMerge,
             style: TextButton.styleFrom(
-              foregroundColor: const Color(0xFF070809),
-              backgroundColor: const Color(0xFFe3b341),
+              foregroundColor: const Color(0xFFf4f8fd),
+              backgroundColor: const Color(0xFFa85a25),
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
               minimumSize: Size.zero,
             ),
@@ -1391,25 +1391,25 @@ class _BehindMainBanner extends StatelessWidget {
       margin: const EdgeInsets.fromLTRB(10, 6, 10, 0),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
-        color: const Color(0xFF2d2108),
-        border: Border.all(color: const Color(0xFFe3b341)),
+        color: const Color(0xFFfff8eb),
+        border: Border.all(color: const Color(0xFFa85a25)),
         borderRadius: BorderRadius.circular(8),
       ),
       child: Row(
         children: [
-          const Icon(Icons.history_rounded, size: 16, color: Color(0xFFf2cc60)),
+          const Icon(Icons.history_rounded, size: 16, color: Color(0xFFa85a25)),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
               t('behindBanner', {'base': baseBranch, 'n': '$behind'}),
-              style: const TextStyle(color: Color(0xFFf2cc60), fontSize: 12),
+              style: const TextStyle(color: Color(0xFFa85a25), fontSize: 12),
             ),
           ),
           TextButton(
             onPressed: syncing ? null : onSync,
             style: TextButton.styleFrom(
-              foregroundColor: const Color(0xFF070809),
-              backgroundColor: const Color(0xFFe3b341),
+              foregroundColor: const Color(0xFFf4f8fd),
+              backgroundColor: const Color(0xFFa85a25),
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
               minimumSize: Size.zero,
             ),
@@ -1470,15 +1470,15 @@ class _AuxClassifyBar extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: const BoxDecoration(
-        color: Color(0xFF0a0c0f),
-        border: Border(bottom: BorderSide(color: Color(0xFF14171c))),
+        color: Color(0xFFf4f8fd),
+        border: Border(bottom: BorderSide(color: Color(0xFFf8fbff))),
       ),
       child: Row(
         children: [
           const Icon(
             Icons.auto_awesome_outlined,
             size: 14,
-            color: Color(0xFF5b616c),
+            color: Color(0xFF8a9aab),
           ),
           const SizedBox(width: 6),
           Expanded(
@@ -1487,7 +1487,7 @@ class _AuxClassifyBar extends StatelessWidget {
               child: Text(
                 goal,
                 style: const TextStyle(
-                  color: Color(0xFFc9ced6),
+                  color: Color(0xFF4a6076),
                   fontSize: 12,
                   height: 1.3,
                 ),
@@ -1521,14 +1521,14 @@ class _AuxClassifyBar extends StatelessWidget {
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF1c4529),
+                  color: const Color(0xFFedf8f1),
                   borderRadius: BorderRadius.circular(6),
-                  border: Border.all(color: const Color(0x882ea043)),
+                  border: Border.all(color: const Color(0x882ba67a)),
                 ),
                 child: Text(
                   t('markTurnSucceeded'),
                   style: const TextStyle(
-                    color: Color(0xFF56d364),
+                    color: Color(0xFF2ba67a),
                     fontSize: 11,
                     fontWeight: FontWeight.w600,
                   ),
@@ -1555,19 +1555,19 @@ void _showCwdDialog(BuildContext context, ChatProvider provider) {
         controller: ctrl,
         autofocus: true,
         style: const TextStyle(
-          color: Color(0xFFe7eaee),
+          color: Color(0xFF233249),
           fontFamily: 'monospace',
           fontSize: 13,
         ),
         decoration: InputDecoration(
           hintText: '/path/to/project',
-          hintStyle: const TextStyle(color: Color(0xFF454b54)),
+          hintStyle: const TextStyle(color: Color(0xFF8b9cae)),
           filled: true,
-          fillColor: const Color(0xFF070809),
+          fillColor: const Color(0xFFf4f8fd),
           border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
           enabledBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(6),
-            borderSide: const BorderSide(color: Color(0xFF20242b)),
+            borderSide: const BorderSide(color: Color(0xFFdce6f1)),
           ),
         ),
       ),
@@ -1576,7 +1576,7 @@ void _showCwdDialog(BuildContext context, ChatProvider provider) {
           onPressed: () => Navigator.pop(context),
           child: Text(
             t('cancel'),
-            style: const TextStyle(color: Color(0xFF8a909b)),
+            style: const TextStyle(color: Color(0xFF6f8096)),
           ),
         ),
         TextButton(
@@ -1590,7 +1590,7 @@ void _showCwdDialog(BuildContext context, ChatProvider provider) {
           child: Text(
             t('apply'),
             style: const TextStyle(
-              color: Color(0xFF6aa3ff),
+              color: Color(0xFF1267b5),
               fontWeight: FontWeight.w600,
             ),
           ),
@@ -1656,12 +1656,12 @@ class _TimeSeparator extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
           decoration: BoxDecoration(
-            color: const Color(0xFF14171c),
+            color: const Color(0xFFf8fbff),
             borderRadius: BorderRadius.circular(10),
           ),
           child: Text(
             formatChatTime(time),
-            style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+            style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
           ),
         ),
       ),
@@ -1874,14 +1874,14 @@ class _MessageListState extends State<_MessageList> {
                       vertical: 4,
                     ),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF161b22),
-                      border: Border.all(color: const Color(0xFF21262d)),
+                      color: const Color(0xFFffffff),
+                      border: Border.all(color: const Color(0xFFeef3f8)),
                       borderRadius: BorderRadius.circular(999),
                     ),
                     child: Text(
                       t('historyStart'),
                       style: const TextStyle(
-                        color: Color(0xFF8b949e),
+                        color: Color(0xFF6f8096),
                         fontSize: 12,
                       ),
                     ),
@@ -1900,8 +1900,8 @@ class _MessageListState extends State<_MessageList> {
                       vertical: 4,
                     ),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF161b22),
-                      border: Border.all(color: const Color(0xFF21262d)),
+                      color: const Color(0xFFffffff),
+                      border: Border.all(color: const Color(0xFFeef3f8)),
                       borderRadius: BorderRadius.circular(999),
                     ),
                     child: Row(
@@ -1912,14 +1912,14 @@ class _MessageListState extends State<_MessageList> {
                           height: 12,
                           child: CircularProgressIndicator(
                             strokeWidth: 2,
-                            color: Color(0xFF8b949e),
+                            color: Color(0xFF6f8096),
                           ),
                         ),
                         const SizedBox(width: 6),
                         Text(
                           t('loadingEarlierMessages'),
                           style: const TextStyle(
-                            color: Color(0xFF8b949e),
+                            color: Color(0xFF6f8096),
                             fontSize: 12,
                           ),
                         ),
@@ -1946,8 +1946,8 @@ class _MessageListState extends State<_MessageList> {
                         vertical: 7,
                       ),
                       decoration: BoxDecoration(
-                        color: const Color(0xFF1f6feb),
-                        border: Border.all(color: const Color(0xFF388bfd)),
+                        color: const Color(0xFF1267b5),
+                        border: Border.all(color: const Color(0xFF1267b5)),
                         borderRadius: BorderRadius.circular(999),
                         boxShadow: const [
                           BoxShadow(
@@ -2079,29 +2079,29 @@ class _ContextUsageBar extends StatelessWidget {
         : const <String, dynamic>{};
     final sources = _traceSources(trace);
     final children = <Widget>[
-      const Divider(color: Color(0xFF30363d), height: 20),
+      const Divider(color: Color(0xFFdce6f1), height: 20),
       Row(
         children: [
-          const Icon(Icons.link, size: 14, color: Color(0xFF79c0ff)),
+          const Icon(Icons.link, size: 14, color: Color(0xFF005cc5)),
           const SizedBox(width: 5),
           Text(
             t('usageContextSources', {'n': '${1 + sources.length}'}),
-            style: const TextStyle(color: Color(0xFFc6ccd4), fontSize: 12),
+            style: const TextStyle(color: Color(0xFF4a6076), fontSize: 12),
           ),
         ],
       ),
       const SizedBox(height: 7),
       Text(
         '${t('usageContextCurrent')} · ${t('usageContextNative')}',
-        style: const TextStyle(color: Color(0xFF7a828e), fontSize: 10),
+        style: const TextStyle(color: Color(0xFF6f8096), fontSize: 10),
       ),
       SelectableText(
         (current['taskName'] ?? current['taskId'] ?? '').toString(),
-        style: const TextStyle(color: Color(0xFFc6ccd4), fontSize: 12),
+        style: const TextStyle(color: Color(0xFF4a6076), fontSize: 12),
       ),
       SelectableText(
         (current['taskId'] ?? '').toString(),
-        style: const TextStyle(color: Color(0xFF5b616c), fontSize: 10),
+        style: const TextStyle(color: Color(0xFF8a9aab), fontSize: 10),
       ),
     ];
     for (final source in sources) {
@@ -2124,11 +2124,11 @@ class _ContextUsageBar extends StatelessWidget {
           dense: true,
           title: Text(
             (source['taskName'] ?? source['taskId'] ?? '').toString(),
-            style: const TextStyle(color: Color(0xFFc6ccd4), fontSize: 12),
+            style: const TextStyle(color: Color(0xFF4a6076), fontSize: 12),
           ),
           subtitle: Text(
             subtitle,
-            style: const TextStyle(color: Color(0xFF7a828e), fontSize: 10),
+            style: const TextStyle(color: Color(0xFF6f8096), fontSize: 10),
           ),
           children: messages.map((message) {
             final role = message['role'] == 'user'
@@ -2144,7 +2144,7 @@ class _ContextUsageBar extends StatelessWidget {
                     child: Text(
                       role,
                       style: const TextStyle(
-                        color: Color(0xFF5b616c),
+                        color: Color(0xFF8a9aab),
                         fontSize: 10,
                       ),
                     ),
@@ -2153,7 +2153,7 @@ class _ContextUsageBar extends StatelessWidget {
                     child: SelectableText(
                       _messageText(message['content']),
                       style: const TextStyle(
-                        color: Color(0xFFadb6c2),
+                        color: Color(0xFF6f8096),
                         fontSize: 11,
                       ),
                     ),
@@ -2177,7 +2177,7 @@ class _ContextUsageBar extends StatelessWidget {
       children.add(
         Text(
           error,
-          style: const TextStyle(color: Color(0xFFf85149), fontSize: 11),
+          style: const TextStyle(color: Color(0xFFb64e43), fontSize: 11),
         ),
       );
     }
@@ -2186,7 +2186,7 @@ class _ContextUsageBar extends StatelessWidget {
         padding: const EdgeInsets.only(top: 7),
         child: Text(
           t('usageContextManagedScope'),
-          style: const TextStyle(color: Color(0xFF5b616c), fontSize: 10),
+          style: const TextStyle(color: Color(0xFF8a9aab), fontSize: 10),
         ),
       ),
     );
@@ -2227,7 +2227,7 @@ class _ContextUsageBar extends StatelessWidget {
                           Text(
                             row[0],
                             style: const TextStyle(
-                              color: Color(0xFF7a828e),
+                              color: Color(0xFF6f8096),
                               fontSize: 11,
                             ),
                           ),
@@ -2235,7 +2235,7 @@ class _ContextUsageBar extends StatelessWidget {
                           Text(
                             row[1],
                             style: const TextStyle(
-                              color: Color(0xFFc6ccd4),
+                              color: Color(0xFF4a6076),
                               fontSize: 12,
                             ),
                           ),
@@ -2245,7 +2245,7 @@ class _ContextUsageBar extends StatelessWidget {
                   Text(
                     t('usageSessionHint'),
                     style: const TextStyle(
-                      color: Color(0xFF5b616c),
+                      color: Color(0xFF8a9aab),
                       fontSize: 11,
                     ),
                   ),
@@ -2287,7 +2287,7 @@ class _ContextUsageBar extends StatelessWidget {
       onLongPress: hasDetail ? () => _showDetail(context, provider) : null,
       behavior: HitTestBehavior.opaque,
       child: Container(
-        color: const Color(0xFF070809),
+        color: const Color(0xFFf4f8fd),
         padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -2297,7 +2297,7 @@ class _ContextUsageBar extends StatelessWidget {
                 width: 56,
                 height: 4,
                 decoration: BoxDecoration(
-                  color: const Color(0xFF1b1f26),
+                  color: const Color(0xFFf8fbff),
                   borderRadius: BorderRadius.circular(2),
                 ),
                 alignment: Alignment.centerLeft,
@@ -2306,8 +2306,8 @@ class _ContextUsageBar extends StatelessWidget {
                   child: Container(
                     decoration: BoxDecoration(
                       color: ctx.fraction >= 0.9
-                          ? const Color(0xFFd9822b)
-                          : const Color(0xFF3d7a5f),
+                          ? const Color(0xFFb4701f)
+                          : const Color(0xFF2ba67a),
                       borderRadius: BorderRadius.circular(2),
                     ),
                   ),
@@ -2319,18 +2319,18 @@ class _ContextUsageBar extends StatelessWidget {
               child: Text(
                 ctx.isEmpty ? t('contextUsage') : _summary(ctx),
                 textAlign: TextAlign.center,
-                style: const TextStyle(color: Color(0xFF5b616c), fontSize: 11),
+                style: const TextStyle(color: Color(0xFF8a9aab), fontSize: 11),
               ),
             ),
             if (hasDetail) ...[
               const SizedBox(width: 6),
               if (trace != null) ...[
-                const Icon(Icons.link, size: 12, color: Color(0xFF59616c)),
+                const Icon(Icons.link, size: 12, color: Color(0xFF8a9aab)),
                 const SizedBox(width: 2),
                 Text(
                   t('usageContextSources', {'n': '${_traceCount(trace)}'}),
                   style: const TextStyle(
-                    color: Color(0xFF59616c),
+                    color: Color(0xFF8a9aab),
                     fontSize: 11,
                   ),
                 ),
@@ -2338,7 +2338,7 @@ class _ContextUsageBar extends StatelessWidget {
                 Text(
                   t('usageDetail'),
                   style: const TextStyle(
-                    color: Color(0xFF454b54),
+                    color: Color(0xFF8b9cae),
                     fontSize: 11,
                   ),
                 ),
@@ -2398,7 +2398,7 @@ class _FocusHighlightState extends State<_FocusHighlight>
       animation: _opacity,
       builder: (_, child) => DecoratedBox(
         decoration: BoxDecoration(
-          color: const Color(0xFFE3B341).withValues(alpha: _opacity.value),
+          color: const Color(0xFFa85a25).withValues(alpha: _opacity.value),
           borderRadius: BorderRadius.circular(8),
         ),
         child: child,

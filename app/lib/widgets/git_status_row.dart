@@ -50,7 +50,7 @@ class GitStatusRow extends StatelessWidget {
               width: 6,
               height: 6,
               decoration: const BoxDecoration(
-                color: Color(0xFF3fb950),
+                color: Color(0xFF2ba67a),
                 shape: BoxShape.circle,
               ),
             ),

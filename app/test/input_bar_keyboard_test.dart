@@ -187,7 +187,10 @@ void main() {
       expect(inputWidget.controller!.text, 'draft while offline');
 
       expect(tester.widget<GestureDetector>(sendGesture).onTap, isNull);
-      expect(tester.widget<Icon>(sendIcon).color, const Color(0xFF454b54));
+      // Gated also means "reads as gated": the icon keeps the muted disabled
+      // ink, not the enabled on-accent white. Asserted against the enabled
+      // colour rather than a hex, so re-theming does not red this test.
+      expect(tester.widget<Icon>(sendIcon).color, isNot(Colors.white));
       expect(provider.sent, isEmpty);
 
       // A callback captured just before the socket dropped must still fail

@@ -116,10 +116,10 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
         if (!didPop) _popHistory();
       },
       child: Scaffold(
-        backgroundColor: const Color(0xFF070809),
+        backgroundColor: const Color(0xFFf4f8fd),
         appBar: AppBar(
-          backgroundColor: const Color(0xFF0f1115),
-          foregroundColor: const Color(0xFFe7eaee),
+          backgroundColor: const Color(0xFFffffff),
+          foregroundColor: const Color(0xFF233249),
           title: const Text('文件浏览', style: TextStyle(fontSize: 16)),
           actions: [
             IconButton(
@@ -137,19 +137,19 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
           bottom: PreferredSize(
             preferredSize: const Size.fromHeight(36),
             child: Container(
-              color: const Color(0xFF0a0c10),
+              color: const Color(0xFFf4f8fd),
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
               width: double.infinity,
               child: Row(
                 children: [
                   const Icon(Icons.folder_open,
-                      size: 14, color: Color(0xFF6aa3ff)),
+                      size: 14, color: Color(0xFF1267b5)),
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
                       _currentPath ?? widget.sessionId,
                       style: const TextStyle(
-                          color: Color(0xFF8a909b),
+                          color: Color(0xFF6f8096),
                           fontSize: 11,
                           fontFamily: 'monospace'),
                       overflow: TextOverflow.ellipsis,
@@ -168,7 +168,7 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
   Widget _buildBody() {
     if (_loading) {
       return const Center(
-        child: CircularProgressIndicator(color: Color(0xFF6aa3ff)),
+        child: CircularProgressIndicator(color: Color(0xFF1267b5)),
       );
     }
     if (_error != null) {
@@ -177,11 +177,11 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             const Icon(Icons.error_outline,
-                color: Color(0xFFff6b63), size: 40),
+                color: Color(0xFFb64e43), size: 40),
             const SizedBox(height: 12),
             Text(_error!,
                 style:
-                    const TextStyle(color: Color(0xFF8a909b), fontSize: 13),
+                    const TextStyle(color: Color(0xFF6f8096), fontSize: 13),
                 textAlign: TextAlign.center),
             const SizedBox(height: 16),
             ElevatedButton(
@@ -210,14 +210,14 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
           _load(path: _parentPath);
         },
       ));
-      list.add(const Divider(height: 1, color: Color(0xFF14171c)));
+      list.add(const Divider(height: 1, color: Color(0xFFf8fbff)));
     }
     if (_entries.isEmpty && list.isEmpty) {
       list.add(const Padding(
         padding: EdgeInsets.all(32),
         child: Center(
           child: Text('工作区为空',
-              style: TextStyle(color: Color(0xFF5b616c), fontSize: 13)),
+              style: TextStyle(color: Color(0xFF8a9aab), fontSize: 13)),
         ),
       ));
     }
@@ -234,7 +234,7 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
             ? null
             : () => _openRemoteFile(f.path, f.name, inline: true),
       ));
-      list.add(const Divider(height: 1, color: Color(0xFF14171c)));
+      list.add(const Divider(height: 1, color: Color(0xFFf8fbff)));
     }
     return ListView(children: list);
   }

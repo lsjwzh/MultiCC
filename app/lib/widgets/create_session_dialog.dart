@@ -355,28 +355,28 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
         final ok = await showDialog<bool>(
           context: context,
           builder: (c) => AlertDialog(
-            backgroundColor: const Color(0xFF14171c),
+            backgroundColor: const Color(0xFFf8fbff),
             title: Text(
               t('roleReplaceTitle'),
-              style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 15),
+              style: const TextStyle(color: Color(0xFF233249), fontSize: 15),
             ),
             content: Text(
               t('roleReplaceBody'),
-              style: const TextStyle(color: Color(0xFF8a909b), fontSize: 13),
+              style: const TextStyle(color: Color(0xFF6f8096), fontSize: 13),
             ),
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(c, false),
                 child: Text(
                   t('cancel'),
-                  style: const TextStyle(color: Color(0xFF8a909b)),
+                  style: const TextStyle(color: Color(0xFF6f8096)),
                 ),
               ),
               TextButton(
                 onPressed: () => Navigator.pop(c, true),
                 child: Text(
                   t('roleReplaceBtn'),
-                  style: const TextStyle(color: Color(0xFFff6b63)),
+                  style: const TextStyle(color: Color(0xFFb64e43)),
                 ),
               ),
             ],
@@ -520,7 +520,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
   Widget build(BuildContext context) {
     final modelOptions = _currentModelOptions;
     return AlertDialog(
-      backgroundColor: const Color(0xFF0f1115),
+      backgroundColor: const Color(0xFFffffff),
       title: Text(
         widget.basicMode
             ? t('startConversation')
@@ -528,7 +528,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                 'cli': _pickedCli.displayName,
                 'kind': widget.kind == SessionKind.chat ? 'Chat' : 'Terminal',
               }),
-        style: const TextStyle(color: Color(0xFFf2f4f7), fontSize: 16),
+        style: const TextStyle(color: Color(0xFF20364d), fontSize: 16),
       ),
       content: SingleChildScrollView(
         child: Column(
@@ -538,12 +538,12 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
             // ── Name ──
             Text(
               t('sessionName'),
-              style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+              style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
             ),
             const SizedBox(height: 4),
             TextField(
               controller: _nameCtrl,
-              style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
+              style: const TextStyle(color: Color(0xFF233249), fontSize: 13),
               decoration: sheetInputDecoration(hint: t('optionalAutoName')),
             ),
             if (widget.basicMode) ...[
@@ -574,7 +574,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                           Text(
                             '${t('recommended')} · ${_pickedCli.displayName}',
                             style: const TextStyle(
-                              color: Color(0xFFe7eaee),
+                              color: Color(0xFF233249),
                               fontSize: 12.5,
                               fontWeight: FontWeight.w600,
                             ),
@@ -583,7 +583,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                           Text(
                             t('startConversationHint'),
                             style: const TextStyle(
-                              color: Color(0xFF8a909b),
+                              color: Color(0xFF6f8096),
                               fontSize: 11,
                               height: 1.35,
                             ),
@@ -600,14 +600,14 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
             // ── CLI picker (drives provider pool + model/effort/agent) ──
             Text(
               t('cliLabel'),
-              style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+              style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
             ),
             const SizedBox(height: 4),
             DropdownButtonFormField<SessionCli>(
               value: _pickedCli,
               isExpanded: true,
-              dropdownColor: const Color(0xFF0f1115),
-              style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
+              dropdownColor: const Color(0xFFffffff),
+              style: const TextStyle(color: Color(0xFF233249), fontSize: 13),
               decoration: sheetInputDecoration(),
               items: SessionCli.values
                   .map(
@@ -620,8 +620,8 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                             : '${cli.displayName}${t('cliNotInstalledSuffix')}',
                         style: TextStyle(
                           color: _cliAvailable(cli)
-                              ? const Color(0xFFe7eaee)
-                              : const Color(0xFF5b616c),
+                              ? const Color(0xFF233249)
+                              : const Color(0xFF8a9aab),
                         ),
                       ),
                     ),
@@ -638,7 +638,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                 Text(
                   t('rolePrompt'),
                   style: const TextStyle(
-                    color: Color(0xFF8a909b),
+                    color: Color(0xFF6f8096),
                     fontSize: 11,
                   ),
                 ),
@@ -650,7 +650,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                     style: const TextStyle(fontSize: 12),
                   ),
                   style: TextButton.styleFrom(
-                    foregroundColor: const Color(0xFF6aa3ff),
+                    foregroundColor: const Color(0xFF1267b5),
                     padding: const EdgeInsets.symmetric(horizontal: 8),
                     minimumSize: const Size(0, 28),
                     tapTargetSize: MaterialTapTargetSize.shrinkWrap,
@@ -663,7 +663,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
             TextField(
               controller: _roleCtrl,
               maxLines: 3,
-              style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
+              style: const TextStyle(color: Color(0xFF233249), fontSize: 13),
               decoration: sheetInputDecoration(
                 hint: t('optionalInheritFleetRole'),
               ),
@@ -673,14 +673,14 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
               // ── Provider ──
               const Text(
                 'Provider',
-                style: TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+                style: TextStyle(color: Color(0xFF6f8096), fontSize: 11),
               ),
               const SizedBox(height: 4),
               DropdownButtonFormField<String>(
                 value: _pickedProvider ?? '',
                 isExpanded: true,
-                dropdownColor: const Color(0xFF0f1115),
-                style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
+                dropdownColor: const Color(0xFFffffff),
+                style: const TextStyle(color: Color(0xFF233249), fontSize: 13),
                 decoration: sheetInputDecoration(),
                 items: [
                   if (!_hasConcreteDefaultProvider)
@@ -688,7 +688,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                       value: '',
                       child: Text(
                         t('defaultLogin'),
-                        style: const TextStyle(color: Color(0xFFe7eaee)),
+                        style: const TextStyle(color: Color(0xFF233249)),
                       ),
                     ),
                   ..._providers.map(
@@ -701,7 +701,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                             '${(p['model'] as String? ?? '').isNotEmpty ? ' · ${p['model']}' : ''}',
                         detail: providerLimitDetail(p),
                         mainStyle: const TextStyle(
-                          color: Color(0xFFe7eaee),
+                          color: Color(0xFF233249),
                           fontSize: 13,
                         ),
                       ),
@@ -713,21 +713,21 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
             ] else ...[
               const Text(
                 'Qoder CN 使用自身账号 / BYOK 配置',
-                style: TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+                style: TextStyle(color: Color(0xFF6f8096), fontSize: 11),
               ),
             ],
             // ── Model (linked to provider) ──
             const SizedBox(height: 12),
             Text(
               t('model'),
-              style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+              style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
             ),
             const SizedBox(height: 4),
             DropdownButtonFormField<String>(
               value: _customModel ? '__custom__' : _pickedModel,
               isExpanded: true,
-              dropdownColor: const Color(0xFF0f1115),
-              style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
+              dropdownColor: const Color(0xFFffffff),
+              style: const TextStyle(color: Color(0xFF233249), fontSize: 13),
               decoration: sheetInputDecoration(),
               items: [
                 ...modelOptions.map(
@@ -735,7 +735,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                     value: e.key,
                     child: Text(
                       e.value,
-                      style: const TextStyle(color: Color(0xFFe7eaee)),
+                      style: const TextStyle(color: Color(0xFF233249)),
                     ),
                   ),
                 ),
@@ -743,7 +743,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                   value: '__custom__',
                   child: Text(
                     t('customOption'),
-                    style: const TextStyle(color: Color(0xFF8a909b)),
+                    style: const TextStyle(color: Color(0xFF6f8096)),
                   ),
                 ),
               ],
@@ -767,7 +767,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                 '${CodexModelsService.cached.cliVersion.isNotEmpty ? ' · CLI ${CodexModelsService.cached.cliVersion}' : ''}',
                 key: const ValueKey('codex-model-diagnostic'),
                 style: const TextStyle(
-                  color: Color(0xFF8a909b),
+                  color: Color(0xFF6f8096),
                   fontSize: 11,
                   height: 1.35,
                 ),
@@ -777,7 +777,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
               const SizedBox(height: 6),
               TextField(
                 controller: _customModelCtrl,
-                style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
+                style: const TextStyle(color: Color(0xFF233249), fontSize: 13),
                 decoration: sheetInputDecoration(
                   hint: _isClaude
                       ? t('claudeModelIdHint')
@@ -796,14 +796,14 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
               const SizedBox(height: 12),
               Text(
                 _pickedCli.effortFieldLabel,
-                style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+                style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
               ),
               const SizedBox(height: 4),
               DropdownButtonFormField<String>(
                 value: _pickedEffort,
                 isExpanded: true,
-                dropdownColor: const Color(0xFF0f1115),
-                style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
+                dropdownColor: const Color(0xFFffffff),
+                style: const TextStyle(color: Color(0xFF233249), fontSize: 13),
                 decoration: sheetInputDecoration(),
                 items: _pickedCli.effortOptions
                     .map(
@@ -814,7 +814,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                               ? e
                               : effortShortNameForCli(_pickedCli, e),
                           style:
-                              const TextStyle(color: Color(0xFFe7eaee)),
+                              const TextStyle(color: Color(0xFF233249)),
                         ),
                       ),
                     )
@@ -827,13 +827,13 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
               const SizedBox(height: 12),
               Text(
                 '${_pickedCli.displayName} Agent',
-                style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+                style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
               ),
               const SizedBox(height: 4),
               TextField(
                 controller: _agentCtrl,
                 maxLength: 80,
-                style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
+                style: const TextStyle(color: Color(0xFF233249), fontSize: 13),
                 decoration: sheetInputDecoration(
                   hint: _pickedCli == SessionCli.opencode
                       ? t('agentBuildHint')
@@ -850,12 +850,12 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
           onPressed: () => Navigator.of(context).pop(null),
           child: Text(
             t('cancel'),
-            style: const TextStyle(color: Color(0xFF8a909b)),
+            style: const TextStyle(color: Color(0xFF6f8096)),
           ),
         ),
         ElevatedButton(
           style: ElevatedButton.styleFrom(
-            backgroundColor: const Color(0xFF22ab9c),
+            backgroundColor: const Color(0xFF0965cf),
             foregroundColor: Colors.white,
           ),
           onPressed: _submit,

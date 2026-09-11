@@ -186,7 +186,7 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
     return Align(
       alignment: Alignment.bottomCenter,
       child: Material(
-        color: const Color(0xFF070809),
+        color: const Color(0xFFf4f8fd),
         // Wide screens keep a card-like panel; phones get a full-width sheet.
         borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
         clipBehavior: Clip.antiAlias,
@@ -227,7 +227,7 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
           width: 38,
           height: 4,
           decoration: BoxDecoration(
-            color: const Color(0xFF2b3038),
+            color: const Color(0xFFdce6f1),
             borderRadius: BorderRadius.circular(2),
           ),
         ),
@@ -242,13 +242,13 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
     return [
       IconButton(
         onPressed: _minimize,
-        icon: const Icon(Icons.remove, color: Color(0xFF8a909b), size: 20),
+        icon: const Icon(Icons.remove, color: Color(0xFF6f8096), size: 20),
         tooltip: t('diffMinimize'),
         visualDensity: VisualDensity.compact,
       ),
       IconButton(
         onPressed: _close,
-        icon: const Icon(Icons.close, color: Color(0xFF8a909b)),
+        icon: const Icon(Icons.close, color: Color(0xFF6f8096)),
         tooltip: t('diffClose'),
         visualDensity: VisualDensity.compact,
       ),
@@ -267,7 +267,7 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
                 Text(
                   'Diff · ${widget.sessionId}',
                   style: const TextStyle(
-                    color: Color(0xFFf2f4f7),
+                    color: Color(0xFF20364d),
                     fontSize: 15,
                     fontWeight: FontWeight.w600,
                   ),
@@ -276,7 +276,7 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
                 const SizedBox(height: 3),
                 Text(
                   _error != null ? '错误：$_error' : _subtitle(),
-                  style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+                  style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
                 ),
               ],
             ),
@@ -303,7 +303,7 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
           padding: const EdgeInsets.all(24),
           child: Text(
             '加载 Diff 失败：$_error',
-            style: const TextStyle(color: Color(0xFFffb3ae)),
+            style: const TextStyle(color: Color(0xFFb64e43)),
             textAlign: TextAlign.center,
           ),
         ),
@@ -312,7 +312,7 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
     final files = (_data?['files'] as List? ?? []);
     if (files.isEmpty) {
       return const Center(
-        child: Text('（无变更）', style: TextStyle(color: Color(0xFF5b616c))),
+        child: Text('（无变更）', style: TextStyle(color: Color(0xFF8a9aab))),
       );
     }
     return Column(
@@ -335,9 +335,9 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
         decoration: const BoxDecoration(
-          color: Color(0xFF0f1115),
+          color: Color(0xFFffffff),
           border: Border.symmetric(
-            horizontal: BorderSide(color: Color(0xFF20242b)),
+            horizontal: BorderSide(color: Color(0xFFdce6f1)),
           ),
         ),
         child: Row(
@@ -348,7 +348,7 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
                   TextSpan(
                     text: t('diffChangedFiles', {'0': '$totalFiles'}),
                     style: const TextStyle(
-                      color: Color(0xFFf2f4f7),
+                      color: Color(0xFF20364d),
                       fontSize: 13,
                       fontWeight: FontWeight.w600,
                     ),
@@ -357,7 +357,7 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
                   TextSpan(
                     text: '+$add',
                     style: const TextStyle(
-                      color: Color(0xFF7ee787),
+                      color: Color(0xFF22863a),
                       fontSize: 13,
                       fontFamily: 'monospace',
                     ),
@@ -366,7 +366,7 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
                   TextSpan(
                     text: '−$del',
                     style: const TextStyle(
-                      color: Color(0xFFffb3ae),
+                      color: Color(0xFFb64e43),
                       fontSize: 13,
                       fontFamily: 'monospace',
                     ),
@@ -380,7 +380,7 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
               duration: const Duration(milliseconds: 150),
               child: const Icon(
                 Icons.expand_more,
-                color: Color(0xFF8a909b),
+                color: Color(0xFF6f8096),
                 size: 18,
               ),
             ),
@@ -396,7 +396,7 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
     return ListView.separated(
       itemCount: visible.length + (remaining > 0 ? 1 : 0),
       separatorBuilder: (_, __) => const Divider(
-        color: Color(0xFF20242b),
+        color: Color(0xFFdce6f1),
         height: 1,
         indent: 16,
         endIndent: 16,
@@ -410,7 +410,7 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
               child: Center(
                 child: Text(
                   t('diffViewMoreFiles', {'0': '$remaining'}),
-                  style: const TextStyle(color: Color(0xFF6aa3ff), fontSize: 12),
+                  style: const TextStyle(color: Color(0xFF1267b5), fontSize: 12),
                 ),
               ),
             ),
@@ -456,13 +456,13 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
             if (binary)
               const Text(
                 'binary',
-                style: TextStyle(color: Color(0xFF5b616c), fontSize: 11),
+                style: TextStyle(color: Color(0xFF8a9aab), fontSize: 11),
               )
             else ...[
               Text(
                 '+$add',
                 style: const TextStyle(
-                  color: Color(0xFF7ee787),
+                  color: Color(0xFF22863a),
                   fontSize: 11,
                   fontFamily: 'monospace',
                 ),
@@ -471,7 +471,7 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
               Text(
                 '−$del',
                 style: const TextStyle(
-                  color: Color(0xFFffb3ae),
+                  color: Color(0xFFb64e43),
                   fontSize: 11,
                   fontFamily: 'monospace',
                 ),
@@ -480,7 +480,7 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
             const SizedBox(width: 6),
             const Icon(
               Icons.chevron_right,
-              color: Color(0xFF5b616c),
+              color: Color(0xFF8a9aab),
               size: 16,
             ),
           ],
@@ -516,28 +516,28 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
   Color _statusColor(String s) {
     switch (s) {
       case 'A':
-        return const Color(0xFF7ee787);
+        return const Color(0xFF22863a);
       case 'D':
-        return const Color(0xFFffb3ae);
+        return const Color(0xFFb64e43);
       case 'R':
-        return const Color(0xFFd2a8ff);
+        return const Color(0xFF6f42c1);
       case 'M':
       default:
-        return const Color(0xFF6aa3ff);
+        return const Color(0xFF1267b5);
     }
   }
 
   Color _statusBg(String s) {
     switch (s) {
       case 'A':
-        return const Color(0x227ee787);
+        return const Color(0x2222863a);
       case 'D':
-        return const Color(0x22ffb3ae);
+        return const Color(0x22b64e43);
       case 'R':
-        return const Color(0x22d2a8ff);
+        return const Color(0x226f42c1);
       case 'M':
       default:
-        return const Color(0x226aa3ff);
+        return const Color(0x221267b5);
     }
   }
 
@@ -545,14 +545,14 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
     final idx = path.lastIndexOf('/');
     if (idx < 0) {
       return [
-        TextSpan(text: path, style: const TextStyle(color: Color(0xFFf2f4f7))),
+        TextSpan(text: path, style: const TextStyle(color: Color(0xFF20364d))),
       ];
     }
     final dir = path.substring(0, idx + 1);
     final base = path.substring(idx + 1);
     return [
-      TextSpan(text: dir, style: const TextStyle(color: Color(0xFF5b616c))),
-      TextSpan(text: base, style: const TextStyle(color: Color(0xFFf2f4f7))),
+      TextSpan(text: dir, style: const TextStyle(color: Color(0xFF8a9aab))),
+      TextSpan(text: base, style: const TextStyle(color: Color(0xFF20364d))),
     ];
   }
 
@@ -569,7 +569,7 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
         children: [
           IconButton(
             onPressed: () => setState(() => _d.selectedFile = null),
-            icon: const Icon(Icons.arrow_back, color: Color(0xFF8a909b), size: 20),
+            icon: const Icon(Icons.arrow_back, color: Color(0xFF6f8096), size: 20),
             tooltip: t('diffBackToList'),
           ),
           Expanded(
@@ -578,7 +578,7 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
               children: [
                 Text(
                   t('diffBackToList'),
-                  style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+                  style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
                 ),
                 const SizedBox(height: 2),
                 Row(
@@ -588,7 +588,7 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
                         path,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
-                          color: Color(0xFFf2f4f7),
+                          color: Color(0xFF20364d),
                           fontSize: 13,
                           fontWeight: FontWeight.w600,
                           fontFamily: 'monospace',
@@ -598,7 +598,7 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
                     Text(
                       '+$add',
                       style: const TextStyle(
-                        color: Color(0xFF7ee787),
+                        color: Color(0xFF22863a),
                         fontSize: 12,
                         fontFamily: 'monospace',
                       ),
@@ -607,7 +607,7 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
                     Text(
                       '−$del',
                       style: const TextStyle(
-                        color: Color(0xFFffb3ae),
+                        color: Color(0xFFb64e43),
                         fontSize: 12,
                         fontFamily: 'monospace',
                       ),
@@ -832,8 +832,8 @@ class _FileDiffViewState extends State<_FileDiffView> {
       margin: const EdgeInsets.fromLTRB(16, 12, 16, 8),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: const Color(0xFF0f1115),
-        border: Border.all(color: const Color(0xFF20242b)),
+        color: const Color(0xFFffffff),
+        border: Border.all(color: const Color(0xFFdce6f1)),
         borderRadius: BorderRadius.circular(8),
       ),
       child: Column(
@@ -841,12 +841,12 @@ class _FileDiffViewState extends State<_FileDiffView> {
         children: [
           Row(
             children: [
-              const Icon(Icons.auto_awesome, size: 14, color: Color(0xFFd2a8ff)),
+              const Icon(Icons.auto_awesome, size: 14, color: Color(0xFF6f42c1)),
               const SizedBox(width: 6),
               Text(
                 t('diffAiSummary'),
                 style: const TextStyle(
-                  color: Color(0xFFf2f4f7),
+                  color: Color(0xFF20364d),
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
                 ),
@@ -872,7 +872,7 @@ class _FileDiffViewState extends State<_FileDiffView> {
           const SizedBox(width: 10),
           Text(
             t('diffSummarizing'),
-            style: const TextStyle(color: Color(0xFF8a909b), fontSize: 12),
+            style: const TextStyle(color: Color(0xFF6f8096), fontSize: 12),
           ),
         ],
       );
@@ -880,7 +880,7 @@ class _FileDiffViewState extends State<_FileDiffView> {
     if (_summary != null) {
       return SelectableText(
         _summary!,
-        style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 12, height: 1.5),
+        style: const TextStyle(color: Color(0xFF233249), fontSize: 12, height: 1.5),
       );
     }
     if (_summaryError != null) {
@@ -889,7 +889,7 @@ class _FileDiffViewState extends State<_FileDiffView> {
           Expanded(
             child: Text(
               '${t('diffSummaryFailed')}：$_summaryError',
-              style: const TextStyle(color: Color(0xFFffb3ae), fontSize: 12),
+              style: const TextStyle(color: Color(0xFFb64e43), fontSize: 12),
             ),
           ),
           TextButton(
@@ -918,7 +918,7 @@ class _FileDiffViewState extends State<_FileDiffView> {
           padding: const EdgeInsets.all(24),
           child: Text(
             '加载 Diff 失败：$_patchError',
-            style: const TextStyle(color: Color(0xFFffb3ae)),
+            style: const TextStyle(color: Color(0xFFb64e43)),
             textAlign: TextAlign.center,
           ),
         ),
@@ -927,7 +927,7 @@ class _FileDiffViewState extends State<_FileDiffView> {
     final patch = _patch ?? '';
     if (patch.trim().isEmpty) {
       return const Center(
-        child: Text('（无变更）', style: TextStyle(color: Color(0xFF5b616c))),
+        child: Text('（无变更）', style: TextStyle(color: Color(0xFF8a9aab))),
       );
     }
     return SingleChildScrollView(
@@ -937,7 +937,7 @@ class _FileDiffViewState extends State<_FileDiffView> {
         child: SelectableText.rich(
           TextSpan(children: diffSpans(patch)),
           style: const TextStyle(
-            color: Color(0xFFe7eaee),
+            color: Color(0xFF233249),
             fontFamily: 'monospace',
             fontSize: 11,
             height: 1.5,
@@ -1028,9 +1028,9 @@ class _DiffDockIconState extends State<_DiffDockIcon> {
                 width: _dockIconSize,
                 height: _dockIconSize,
                 decoration: BoxDecoration(
-                  color: const Color(0xFF1f6feb),
+                  color: const Color(0xFF1267b5),
                   shape: BoxShape.circle,
-                  border: Border.all(color: const Color(0xFF388bfd)),
+                  border: Border.all(color: const Color(0xFF1267b5)),
                   boxShadow: [
                     BoxShadow(
                       color: const Color(0xAA000000),
@@ -1052,15 +1052,15 @@ class _DiffDockIconState extends State<_DiffDockIcon> {
                     height: 20,
                     padding: const EdgeInsets.symmetric(horizontal: 5),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF0d1117),
+                      color: const Color(0xFFf4f8fd),
                       borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: const Color(0xFF388bfd)),
+                      border: Border.all(color: const Color(0xFF1267b5)),
                     ),
                     alignment: Alignment.center,
                     child: Text(
                       count > 99 ? '99+' : '$count',
                       style: const TextStyle(
-                        color: Color(0xFFcfe3ff),
+                        color: Color(0xFF1b4f8f),
                         fontSize: 11,
                         fontWeight: FontWeight.w600,
                         fontFamily: 'monospace',
@@ -1081,12 +1081,12 @@ class _DiffDockIconState extends State<_DiffDockIcon> {
 List<TextSpan> diffSpans(String diff) {
   final conflictMarker = RegExp(r'^[+\- ]*(<<<<<<<|=======|>>>>>>>)');
   return diff.split('\n').map((line) {
-    Color color = const Color(0xFFe7eaee);
+    Color color = const Color(0xFF233249);
     Color? background;
     FontWeight? weight;
     if (conflictMarker.hasMatch(line)) {
-      color = const Color(0xFFe3b341);
-      background = const Color(0x33d29922);
+      color = const Color(0xFFa85a25);
+      background = const Color(0x33a85a25);
       weight = FontWeight.w600;
     } else if (line.startsWith('diff --') ||
         line.startsWith('index ') ||
@@ -1094,15 +1094,15 @@ List<TextSpan> diffSpans(String diff) {
         line.startsWith('deleted file') ||
         line.startsWith('rename ') ||
         line.startsWith('similarity ')) {
-      color = const Color(0xFFd2a8ff);
+      color = const Color(0xFF6f42c1);
     } else if (line.startsWith('@@')) {
-      color = const Color(0xFF6aa3ff);
+      color = const Color(0xFF1267b5);
     } else if (line.startsWith('+')) {
-      color = const Color(0xFF7ee787);
-      background = const Color(0x332ea043);
+      color = const Color(0xFF22863a);
+      background = const Color(0x332ba67a);
     } else if (line.startsWith('-')) {
-      color = const Color(0xFFffb3ae);
-      background = const Color(0x33f85149);
+      color = const Color(0xFFb64e43);
+      background = const Color(0x33b64e43);
     }
     return TextSpan(
       text: '$line\n',

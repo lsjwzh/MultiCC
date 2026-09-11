@@ -51,26 +51,26 @@ class _TerminalScreenState extends State<TerminalScreen> {
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        backgroundColor: const Color(0xFF0f1115),
+        backgroundColor: const Color(0xFFffffff),
         title: const Text(
           '合并 worktree',
-          style: TextStyle(fontSize: 15, color: Color(0xFFf2f4f7)),
+          style: TextStyle(fontSize: 15, color: Color(0xFF20364d)),
         ),
         content: const Text(
           '把此会话 worktree 的改动合并回基分支？\n未提交的改动会先自动提交。',
-          style: TextStyle(color: Color(0xFFe7eaee)),
+          style: TextStyle(color: Color(0xFF233249)),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('取消', style: TextStyle(color: Color(0xFF8a909b))),
+            child: const Text('取消', style: TextStyle(color: Color(0xFF6f8096))),
           ),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
             child: const Text(
               '合并',
               style: TextStyle(
-                color: Color(0xFF6aa3ff),
+                color: Color(0xFF1267b5),
                 fontWeight: FontWeight.w600,
               ),
             ),
@@ -116,7 +116,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF070809),
+      backgroundColor: const Color(0xFFf4f8fd),
       appBar: PreferredSize(
         preferredSize: const Size.fromHeight(48),
         child: _TerminalAppBar(
@@ -173,23 +173,23 @@ class _TerminalAppBar extends StatelessWidget {
     String stateLabel;
     switch (connState) {
       case TerminalConnectionState.connected:
-        dotColor = const Color(0xFF7fd49a);
+        dotColor = const Color(0xFF1e8a55);
         stateLabel = 'Connected';
         break;
       case TerminalConnectionState.connecting:
-        dotColor = const Color(0xFFe3b341);
+        dotColor = const Color(0xFFa85a25);
         stateLabel = 'Connecting…';
         break;
       case TerminalConnectionState.disconnected:
-        dotColor = const Color(0xFF5b616c);
+        dotColor = const Color(0xFF8a9aab);
         stateLabel = 'Disconnected';
         break;
     }
 
     return Container(
       decoration: const BoxDecoration(
-        color: Color(0xFF0f1115),
-        border: Border(bottom: BorderSide(color: Color(0xFF20242b))),
+        color: Color(0xFFffffff),
+        border: Border(bottom: BorderSide(color: Color(0xFFdce6f1))),
       ),
       padding: EdgeInsets.fromLTRB(
         12,
@@ -203,7 +203,7 @@ class _TerminalAppBar extends StatelessWidget {
             onTap: () => Navigator.of(context).pop(),
             child: const Icon(
               Icons.arrow_back_rounded,
-              color: Color(0xFFe7eaee),
+              color: Color(0xFF233249),
               size: 20,
             ),
           ),
@@ -223,7 +223,7 @@ class _TerminalAppBar extends StatelessWidget {
                             ? session.label!
                             : session.id,
                         style: const TextStyle(
-                          color: Color(0xFFf2f4f7),
+                          color: Color(0xFF20364d),
                           fontWeight: FontWeight.w600,
                           fontSize: 14,
                           fontFamily: 'monospace',
@@ -247,7 +247,7 @@ class _TerminalAppBar extends StatelessWidget {
                     Text(
                       stateLabel,
                       style: const TextStyle(
-                        color: Color(0xFF8a909b),
+                        color: Color(0xFF6f8096),
                         fontSize: 11,
                       ),
                     ),
@@ -255,7 +255,7 @@ class _TerminalAppBar extends StatelessWidget {
                     Text(
                       session.shortCwd,
                       style: const TextStyle(
-                        color: Color(0xFF454b54),
+                        color: Color(0xFF8b9cae),
                         fontSize: 11,
                         fontFamily: 'monospace',
                       ),
@@ -274,7 +274,7 @@ class _TerminalAppBar extends StatelessWidget {
                 padding: EdgeInsets.symmetric(horizontal: 6),
                 child: Icon(
                   Icons.sticky_note_2_outlined,
-                  color: Color(0xFFe7eaee),
+                  color: Color(0xFF233249),
                   size: 20,
                 ),
               ),
@@ -288,7 +288,7 @@ class _TerminalAppBar extends StatelessWidget {
                 padding: EdgeInsets.symmetric(horizontal: 6),
                 child: Icon(
                   Icons.merge_type,
-                  color: Color(0xFFe7eaee),
+                  color: Color(0xFF233249),
                   size: 20,
                 ),
               ),
@@ -299,7 +299,7 @@ class _TerminalAppBar extends StatelessWidget {
               onTap: onReconnect,
               child: const Icon(
                 Icons.refresh_rounded,
-                color: Color(0xFF6aa3ff),
+                color: Color(0xFF1267b5),
                 size: 20,
               ),
             ),
@@ -348,13 +348,13 @@ void _openMemoFromTerminal(BuildContext context, String sessionId) {
 
 Widget _cliBadge(SessionCli cli) {
   final color = switch (cli) {
-    SessionCli.claude => const Color(0xFFf0936b),
-    SessionCli.codex => const Color(0xFF7fd49a),
-    SessionCli.opencode => const Color(0xFFa78bfa),
-    SessionCli.zcode => const Color(0xFF38bdf8),
-    SessionCli.qoder => const Color(0xFFff9a5c),
-    SessionCli.codebuddy => const Color(0xFF5c8bff),
-    SessionCli.dsh => const Color(0xFF4d6bfe),
+    SessionCli.claude => const Color(0xFFc2622f),
+    SessionCli.codex => const Color(0xFF1e8a55),
+    SessionCli.opencode => const Color(0xFF6d4fd1),
+    SessionCli.zcode => const Color(0xFF0e7fb8),
+    SessionCli.qoder => const Color(0xFFc25e1e),
+    SessionCli.codebuddy => const Color(0xFF2a5fd8),
+    SessionCli.dsh => const Color(0xFF2b44d6),
   };
   return Container(
     padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
@@ -379,8 +379,8 @@ class _MobileKeyBar extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       decoration: const BoxDecoration(
-        color: Color(0xFF0f1115),
-        border: Border(top: BorderSide(color: Color(0xFF20242b))),
+        color: Color(0xFFffffff),
+        border: Border(top: BorderSide(color: Color(0xFFdce6f1))),
       ),
       padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
       child: SingleChildScrollView(
@@ -427,14 +427,14 @@ class _Key extends StatelessWidget {
         margin: const EdgeInsets.symmetric(horizontal: 3),
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
         decoration: BoxDecoration(
-          color: const Color(0xFF14171c),
-          border: Border.all(color: const Color(0xFF20242b)),
+          color: const Color(0xFFf8fbff),
+          border: Border.all(color: const Color(0xFFdce6f1)),
           borderRadius: BorderRadius.circular(5),
         ),
         child: Text(
           label,
           style: const TextStyle(
-            color: Color(0xFFe7eaee),
+            color: Color(0xFF233249),
             fontSize: 12,
             fontFamily: 'monospace',
           ),

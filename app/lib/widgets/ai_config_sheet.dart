@@ -571,8 +571,8 @@ class AIConfigSheetState extends State<AIConfigSheet> {
       margin: const EdgeInsets.only(top: 12),
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: const Color(0xFF0b0d10),
-        border: Border.all(color: const Color(0xFF20242b)),
+        color: const Color(0xFFf4f8fd),
+        border: Border.all(color: const Color(0xFFdce6f1)),
         borderRadius: BorderRadius.circular(8),
       ),
       child: Column(
@@ -599,7 +599,7 @@ class AIConfigSheetState extends State<AIConfigSheet> {
               margin: const EdgeInsets.only(bottom: 8),
               padding: const EdgeInsets.all(8),
               decoration: BoxDecoration(
-                color: const Color(0xFF111318),
+                color: const Color(0xFFf4f8fd),
                 borderRadius: BorderRadius.circular(6),
               ),
               child: Column(
@@ -676,7 +676,7 @@ class AIConfigSheetState extends State<AIConfigSheet> {
             const Text(
               '已选择 Official 与自管 Provider：同一对话上下文可能在自动切换时发送给多个上游。',
               key: Key('auto-provider-cross-trust-warning'),
-              style: TextStyle(color: Color(0xFFD29922), fontSize: 11),
+              style: TextStyle(color: Color(0xFFa85a25), fontSize: 11),
             ),
           if (enabledCount < 2)
             const Text(
@@ -1160,13 +1160,13 @@ InputDecoration _sheetInputDecoration({String? hint}) {
     hintText: hint,
     hintStyle: const TextStyle(color: AppColors.faint),
     filled: true,
-    fillColor: const Color(0xFF070809),
+    fillColor: const Color(0xFFf4f8fd),
     isDense: true,
     contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
     border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
     enabledBorder: OutlineInputBorder(
       borderRadius: BorderRadius.circular(6),
-      borderSide: const BorderSide(color: Color(0xFF20242b)),
+      borderSide: const BorderSide(color: Color(0xFFdce6f1)),
     ),
     focusedBorder: OutlineInputBorder(
       borderRadius: BorderRadius.circular(6),
@@ -1462,7 +1462,7 @@ class RolePromptEditorDialogState extends State<RolePromptEditorDialog> {
               decoration: const InputDecoration(
                 hintText:
                     '例如：你是开发保姆，被触发时用 multicc-trigger skill 检查 git 改动并提醒提交和测试，不要擅自改代码。',
-                hintStyle: TextStyle(color: Color(0xFF6b7280), fontSize: 12),
+                hintStyle: TextStyle(color: Color(0xFF6f8096), fontSize: 12),
                 enabledBorder: OutlineInputBorder(
                   borderSide: BorderSide(color: AppColors.line),
                 ),
@@ -1485,7 +1485,7 @@ class RolePromptEditorDialogState extends State<RolePromptEditorDialog> {
         ),
         TextButton(
           onPressed: () => Navigator.pop(context, _controller.text),
-          child: const Text('保存', style: TextStyle(color: Color(0xFF3fb950))),
+          child: const Text('保存', style: TextStyle(color: Color(0xFF2ba67a))),
         ),
       ],
     );

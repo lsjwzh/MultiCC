@@ -21,11 +21,16 @@ import 'quota_bar_view.dart';
 
 /// ARGB color values matching the server palette (the fixed palette is the one
 /// kind of non-string constant the client renderer is allowed to hold).
-class VendorQuotaColor {
-  static const int gray = 0xFF8B949E;
-  static const int red = 0xFFF85149;
-  static const int yellow = 0xFFD29922;
-  static const int blue = 0xFF58A6FF;
+///
+/// An alias for [QuotaBarColor] rather than a second copy of the four numbers:
+/// both mirror `COLOR` in src/quota/quota-bar-view.js, and when they were two
+/// literals they could drift apart silently — the server keeps sending
+/// `#58a6ff` no matter what either says.
+abstract final class VendorQuotaColor {
+  static const int gray = QuotaBarColor.gray;
+  static const int red = QuotaBarColor.red;
+  static const int yellow = QuotaBarColor.yellow;
+  static const int blue = QuotaBarColor.blue;
 }
 
 /// A renderable vendor quota bar (text + color + optional long tooltip).

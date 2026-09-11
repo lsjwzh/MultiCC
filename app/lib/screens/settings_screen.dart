@@ -545,7 +545,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   style: const TextStyle(color: AppColors.muted, fontSize: 12),
                 ),
                 value: advancedMode,
-                activeColor: const Color(0xFF04110f),
+                activeColor: const Color(0xFFffffff),
                 activeTrackColor: AppColors.accent,
                 onChanged: _setAdvancedMode,
               ),
@@ -635,7 +635,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           height: 18,
                           child: CircularProgressIndicator(
                             strokeWidth: 2,
-                            color: Color(0xFF04110f),
+                            color: Color(0xFFffffff),
                           ),
                         )
                       : Text(
@@ -671,7 +671,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   style: const TextStyle(color: AppColors.muted, fontSize: 12),
                 ),
                 value: _notify,
-                activeColor: const Color(0xFF04110f),
+                activeColor: const Color(0xFFffffff),
                 activeTrackColor: AppColors.accent,
                 onChanged: (v) async {
                   setState(() => _notify = v);
@@ -693,7 +693,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ),
                   value: _keepAlive,
-                  activeColor: const Color(0xFF04110f),
+                  activeColor: const Color(0xFFffffff),
                   activeTrackColor: AppColors.accent,
                   onChanged: (v) async {
                     setState(() => _keepAlive = v);
@@ -722,7 +722,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ),
                   value: _goalDims[k] ?? true,
-                  activeColor: const Color(0xFF04110f),
+                  activeColor: const Color(0xFFffffff),
                   activeTrackColor: AppColors.accent,
                   onChanged: (v) => setState(() => _goalDims[k] = v),
                 ),
@@ -752,7 +752,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           height: 18,
                           child: CircularProgressIndicator(
                             strokeWidth: 2,
-                            color: Color(0xFF04110f),
+                            color: Color(0xFFffffff),
                           ),
                         )
                       : Text(
@@ -774,7 +774,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   style: const TextStyle(color: AppColors.text, fontSize: 14),
                 ),
                 value: _proxyEnabled,
-                activeColor: const Color(0xFF04110f),
+                activeColor: const Color(0xFFffffff),
                 activeTrackColor: AppColors.accent,
                 onChanged: _proxyReadOnly ? null : _toggleProxy,
               ),
@@ -956,7 +956,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   style: const TextStyle(color: AppColors.muted, fontSize: 11),
                 ),
                 value: _officialOauthEnabled,
-                activeColor: const Color(0xFF04110f),
+                activeColor: const Color(0xFFffffff),
                 activeTrackColor: AppColors.accent,
                 onChanged: _officialOauthReadOnly ? null : _toggleOfficialOauth,
               ),

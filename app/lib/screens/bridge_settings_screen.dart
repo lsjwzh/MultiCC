@@ -259,7 +259,7 @@ class _BridgeSettingsScreenState extends State<BridgeSettingsScreen> {
             avatar: Icon(
               spec.icon,
               size: 16,
-              color: selected ? const Color(0xFF04110f) : AppColors.muted,
+              color: selected ? const Color(0xFFffffff) : AppColors.muted,
             ),
             label: Text('${spec.name}${configured ? ' · ✓' : ''}'),
             onSelected: (_) => setState(() => _selected = spec.id),

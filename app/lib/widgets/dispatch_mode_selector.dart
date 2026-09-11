@@ -28,8 +28,8 @@ class DispatchModeUi {
   final Color accent;
 }
 
-const Color _kAccentDispatch = Color(0xFF58a6ff);
-const Color _kAccentNone = Color(0xFFd29922);
+const Color _kAccentDispatch = Color(0xFF1267b5);
+const Color _kAccentNone = Color(0xFFa85a25);
 
 DispatchModeUi dispatchModeUi(DispatchMode mode) {
   switch (mode) {
@@ -108,7 +108,7 @@ class DispatchModePill extends StatelessWidget {
               const SizedBox(width: 5),
               Text(
                 t('dispatchModeTitle'),
-                style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+                style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
               ),
               const SizedBox(width: 5),
               Text(
@@ -136,7 +136,7 @@ Future<DispatchMode?> showDispatchModeSheet(
 ) {
   return showModalBottomSheet<DispatchMode>(
     context: context,
-    backgroundColor: const Color(0xFF161b22),
+    backgroundColor: const Color(0xFFffffff),
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(14)),
     ),
@@ -154,7 +154,7 @@ Future<DispatchMode?> showDispatchModeSheet(
                 height: 4,
                 margin: const EdgeInsets.only(bottom: 10),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF30363d),
+                  color: const Color(0xFFdce6f1),
                   borderRadius: BorderRadius.circular(999),
                 ),
               ),
@@ -163,7 +163,7 @@ Future<DispatchMode?> showDispatchModeSheet(
               padding: const EdgeInsets.only(left: 4, bottom: 8),
               child: Text(
                 t('dispatchModeSheetTitle'),
-                style: const TextStyle(color: Color(0xFF8b949e), fontSize: 12),
+                style: const TextStyle(color: Color(0xFF6f8096), fontSize: 12),
               ),
             ),
             for (final mode in DispatchMode.values)
@@ -208,11 +208,11 @@ class _DispatchModeSheetRow extends StatelessWidget {
             decoration: BoxDecoration(
               color: selected
                   ? ui.accent.withValues(alpha: .12)
-                  : const Color(0xFF0d1117),
+                  : const Color(0xFFf4f8fd),
               border: Border.all(
                 color: selected
                     ? ui.accent.withValues(alpha: .6)
-                    : const Color(0xFF30363d),
+                    : const Color(0xFFdce6f1),
               ),
               borderRadius: BorderRadius.circular(10),
             ),
@@ -221,7 +221,7 @@ class _DispatchModeSheetRow extends StatelessWidget {
                 Icon(
                   ui.icon,
                   size: 18,
-                  color: selected ? ui.accent : const Color(0xFF8a909b),
+                  color: selected ? ui.accent : const Color(0xFF6f8096),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
@@ -234,7 +234,7 @@ class _DispatchModeSheetRow extends StatelessWidget {
                         style: TextStyle(
                           color: selected
                               ? ui.accent
-                              : const Color(0xFFc9d1d9),
+                              : const Color(0xFF31465b),
                           fontSize: 13,
                           fontWeight: FontWeight.w600,
                         ),
@@ -243,7 +243,7 @@ class _DispatchModeSheetRow extends StatelessWidget {
                       Text(
                         t(ui.descKey),
                         style: const TextStyle(
-                          color: Color(0xFF8b949e),
+                          color: Color(0xFF6f8096),
                           fontSize: 11,
                         ),
                       ),

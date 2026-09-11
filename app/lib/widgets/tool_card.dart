@@ -68,7 +68,7 @@ class _ToolCardWidgetState extends State<ToolCardWidget> {
     return Container(
       margin: const EdgeInsets.only(top: 8),
       decoration: BoxDecoration(
-        border: Border.all(color: const Color(0xFF20242b)),
+        border: Border.all(color: const Color(0xFFdce6f1)),
         borderRadius: BorderRadius.circular(8),
       ),
       child: Column(
@@ -80,7 +80,7 @@ class _ToolCardWidgetState extends State<ToolCardWidget> {
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               decoration: BoxDecoration(
-                color: const Color(0xFF14171c),
+                color: const Color(0xFFf8fbff),
                 borderRadius: BorderRadius.only(
                   topLeft: const Radius.circular(7),
                   topRight: const Radius.circular(7),
@@ -95,7 +95,7 @@ class _ToolCardWidgetState extends State<ToolCardWidget> {
                   Text(
                     widget.toolCall.name,
                     style: const TextStyle(
-                      color: Color(0xFF6aa3ff),
+                      color: Color(0xFF1267b5),
                       fontWeight: FontWeight.w600,
                       fontSize: 13,
                     ),
@@ -106,8 +106,8 @@ class _ToolCardWidgetState extends State<ToolCardWidget> {
                       _description,
                       style: TextStyle(
                         color: isDone
-                            ? (isError ? const Color(0xFFff6b63) : const Color(0xFF7fd49a))
-                            : const Color(0xFF8a909b),
+                            ? (isError ? const Color(0xFFb64e43) : const Color(0xFF1e8a55))
+                            : const Color(0xFF6f8096),
                         fontSize: 12,
                       ),
                       overflow: TextOverflow.ellipsis,
@@ -120,12 +120,12 @@ class _ToolCardWidgetState extends State<ToolCardWidget> {
                       height: 12,
                       child: CircularProgressIndicator(
                         strokeWidth: 1.5,
-                        color: Color(0xFF6aa3ff),
+                        color: Color(0xFF1267b5),
                       ),
                     ),
                   Icon(
                     _expanded ? Icons.chevron_right_rounded : Icons.chevron_right_rounded,
-                    color: const Color(0xFF5b616c),
+                    color: const Color(0xFF8a9aab),
                     size: 16,
                   ),
                 ],
@@ -138,8 +138,8 @@ class _ToolCardWidgetState extends State<ToolCardWidget> {
             Container(
               padding: const EdgeInsets.all(12),
               decoration: const BoxDecoration(
-                color: Color(0xFF070809),
-                border: Border(top: BorderSide(color: Color(0xFF14171c))),
+                color: Color(0xFFf4f8fd),
+                border: Border(top: BorderSide(color: Color(0xFFf8fbff))),
                 borderRadius: BorderRadius.only(
                   bottomLeft: Radius.circular(7),
                   bottomRight: Radius.circular(7),
@@ -151,7 +151,7 @@ class _ToolCardWidgetState extends State<ToolCardWidget> {
                   if (widget.toolCall.inputJson.isNotEmpty) ...[
                     const Text(
                       'Input:',
-                      style: TextStyle(fontSize: 11, color: Color(0xFF5b616c), fontWeight: FontWeight.w600),
+                      style: TextStyle(fontSize: 11, color: Color(0xFF8a9aab), fontWeight: FontWeight.w600),
                     ),
                     const SizedBox(height: 4),
                     SingleChildScrollView(
@@ -161,7 +161,7 @@ class _ToolCardWidgetState extends State<ToolCardWidget> {
                         style: const TextStyle(
                           fontFamily: 'monospace',
                           fontSize: 12,
-                          color: Color(0xFF8a909b),
+                          color: Color(0xFF6f8096),
                           height: 1.5,
                         ),
                       ),
@@ -173,7 +173,7 @@ class _ToolCardWidgetState extends State<ToolCardWidget> {
                       isError ? 'Error:' : 'Result:',
                       style: TextStyle(
                         fontSize: 11,
-                        color: isError ? const Color(0xFFff6b63) : const Color(0xFF7fd49a),
+                        color: isError ? const Color(0xFFb64e43) : const Color(0xFF1e8a55),
                         fontWeight: FontWeight.w600,
                       ),
                     ),
@@ -186,7 +186,7 @@ class _ToolCardWidgetState extends State<ToolCardWidget> {
                           style: const TextStyle(
                             fontFamily: 'monospace',
                             fontSize: 12,
-                            color: Color(0xFF8a909b),
+                            color: Color(0xFF6f8096),
                             height: 1.5,
                           ),
                         ),
@@ -250,7 +250,7 @@ class ToolTrajectory extends StatelessWidget {
                   height: 8,
                   clipBehavior: Clip.hardEdge,
                   decoration: BoxDecoration(
-                    color: const Color(0xFF21262D),
+                    color: const Color(0xFFeef3f8),
                     borderRadius: BorderRadius.circular(4),
                   ),
                   child: Stack(
@@ -275,7 +275,7 @@ class ToolTrajectory extends StatelessWidget {
             Text(
               '⏱ ${measured.length} tools · $duration wall-clock',
               key: const Key('tool-trajectory-label'),
-              style: const TextStyle(color: Color(0xFF6E7681), fontSize: 11),
+              style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
             ),
           ],
         ),
@@ -318,8 +318,8 @@ class _ToolTrajectorySegment extends StatelessWidget {
         child: DecoratedBox(
           decoration: BoxDecoration(
             color: (toolCall.isError
-                    ? const Color(0xFFF85149)
-                    : const Color(0xFF2F81F7))
+                    ? const Color(0xFFb64e43)
+                    : const Color(0xFF1267b5))
                 .withValues(alpha: 0.85),
             borderRadius: BorderRadius.circular(2),
           ),
@@ -356,7 +356,7 @@ class ToolCallGroup extends StatelessWidget {
     return Container(
       margin: const EdgeInsets.only(top: 8),
       decoration: BoxDecoration(
-        border: Border.all(color: const Color(0xFF20242b)),
+        border: Border.all(color: const Color(0xFFdce6f1)),
         borderRadius: BorderRadius.circular(8),
       ),
       child: InkWell(
@@ -368,7 +368,7 @@ class ToolCallGroup extends StatelessWidget {
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               decoration: const BoxDecoration(
-                color: Color(0xFF14171c),
+                color: Color(0xFFf8fbff),
                 borderRadius: BorderRadius.only(
                   topLeft: Radius.circular(7),
                   topRight: Radius.circular(7),
@@ -381,7 +381,7 @@ class ToolCallGroup extends StatelessWidget {
                   Text(
                     '${toolCalls.length} 个工具调用',
                     style: const TextStyle(
-                      color: Color(0xFF6aa3ff),
+                      color: Color(0xFF1267b5),
                       fontWeight: FontWeight.w600,
                       fontSize: 13,
                     ),
@@ -393,17 +393,17 @@ class ToolCallGroup extends StatelessWidget {
                       height: 12,
                       child: CircularProgressIndicator(
                         strokeWidth: 1.5,
-                        color: Color(0xFF6aa3ff),
+                        color: Color(0xFF1267b5),
                       ),
                     ),
                   const Spacer(),
                   const Text(
                     '查看全部',
-                    style: TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+                    style: TextStyle(color: Color(0xFF6f8096), fontSize: 11),
                   ),
                   const Icon(
                     Icons.unfold_more_rounded,
-                    color: Color(0xFF5b616c),
+                    color: Color(0xFF8a9aab),
                     size: 16,
                   ),
                 ],
@@ -427,7 +427,7 @@ class ToolCallGroup extends StatelessWidget {
   void _openSheet(BuildContext context) {
     showModalBottomSheet<void>(
       context: context,
-      backgroundColor: const Color(0xFF0f1115),
+      backgroundColor: const Color(0xFFffffff),
       isScrollControlled: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(14)),
@@ -447,7 +447,7 @@ class ToolCallGroup extends StatelessWidget {
                     child: Text(
                       '工具调用 · ${toolCalls.length}',
                       style: const TextStyle(
-                        color: Color(0xFFf2f4f7),
+                        color: Color(0xFF20364d),
                         fontSize: 15,
                         fontWeight: FontWeight.w600,
                       ),
@@ -455,12 +455,12 @@ class ToolCallGroup extends StatelessWidget {
                   ),
                   IconButton(
                     onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.close, color: Color(0xFF8a909b)),
+                    icon: const Icon(Icons.close, color: Color(0xFF6f8096)),
                   ),
                 ],
               ),
             ),
-            const Divider(height: 1, color: Color(0xFF20242b)),
+            const Divider(height: 1, color: Color(0xFFdce6f1)),
             Expanded(
               child: ListView(
                 controller: scrollCtrl,
@@ -495,7 +495,7 @@ class _CompactToolRow extends StatelessWidget {
           Text(
             toolCall.name,
             style: const TextStyle(
-              color: Color(0xFF6aa3ff),
+              color: Color(0xFF1267b5),
               fontWeight: FontWeight.w600,
               fontSize: 12,
             ),
@@ -507,9 +507,9 @@ class _CompactToolRow extends StatelessWidget {
               style: TextStyle(
                 color: isDone
                     ? (isError
-                        ? const Color(0xFFff6b63)
-                        : const Color(0xFF7fd49a))
-                    : const Color(0xFF8a909b),
+                        ? const Color(0xFFb64e43)
+                        : const Color(0xFF1e8a55))
+                    : const Color(0xFF6f8096),
                 fontSize: 11,
               ),
               maxLines: 1,
@@ -523,7 +523,7 @@ class _CompactToolRow extends StatelessWidget {
               height: 10,
               child: CircularProgressIndicator(
                 strokeWidth: 1.5,
-                color: Color(0xFF6aa3ff),
+                color: Color(0xFF1267b5),
               ),
             )
           else
@@ -532,7 +532,7 @@ class _CompactToolRow extends StatelessWidget {
                   ? Icons.error_outline_rounded
                   : Icons.check_circle_outline_rounded,
               size: 12,
-              color: isError ? const Color(0xFFff6b63) : const Color(0xFF7fd49a),
+              color: isError ? const Color(0xFFb64e43) : const Color(0xFF1e8a55),
             ),
         ],
       ),

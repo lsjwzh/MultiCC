@@ -59,11 +59,11 @@ extension WorkspaceDestinationPresentation on WorkspaceDestination {
 }
 
 abstract final class _NavColors {
-  static const bg = Color(0xFF0A0C10);
+  static const bg = Color(0xFFf4f8fd);
   static const line = Color(0x24FFFFFF);
-  static const text = Color(0xFFEEF1F6);
-  static const muted = Color(0xFF969DB0);
-  static const faint = Color(0xFF6A7280);
+  static const text = Color(0xFF233249);
+  static const muted = Color(0xFF8a9aab);
+  static const faint = Color(0xFF6f8096);
 }
 
 /// Navigation drawer owned by the App workspace/home screen.
@@ -231,13 +231,13 @@ class _Brand extends StatelessWidget {
                     gradient: const LinearGradient(
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
-                      colors: [AppColors.accent, Color(0xFF1D8A7E)],
+                      colors: [AppColors.accent, Color(0xFF137780)],
                     ),
                     borderRadius: BorderRadius.circular(9),
-                    border: Border.all(color: const Color(0x4D3AD6C5)),
+                    border: Border.all(color: const Color(0x4D1678e8)),
                     boxShadow: const [
                       BoxShadow(
-                        color: Color(0x403AD6C5),
+                        color: Color(0x401678e8),
                         blurRadius: 18,
                         offset: Offset(0, 6),
                       ),
@@ -246,7 +246,7 @@ class _Brand extends StatelessWidget {
                   child: const Text(
                     'M',
                     style: TextStyle(
-                      color: Color(0xFF04110F),
+                      color: Color(0xFFffffff),
                       fontSize: 15,
                       fontWeight: FontWeight.w800,
                     ),
@@ -411,7 +411,7 @@ class _DestinationTile extends StatelessWidget {
         clipBehavior: Clip.none,
         children: [
           Material(
-            color: selected ? const Color(0x243AD6C5) : Colors.transparent,
+            color: selected ? const Color(0x241678e8) : Colors.transparent,
             borderRadius: BorderRadius.circular(10),
             child: InkWell(
               excludeFromSemantics: true,
@@ -453,7 +453,7 @@ class _DestinationTile extends StatelessWidget {
                           ),
                           decoration: BoxDecoration(
                             color: selected
-                                ? const Color(0x383AD6C5)
+                                ? const Color(0x381678e8)
                                 : const Color(0x12FFFFFF),
                             borderRadius: BorderRadius.circular(20),
                           ),

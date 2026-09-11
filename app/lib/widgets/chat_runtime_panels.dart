@@ -76,8 +76,8 @@ class _PendingUserInputPanelState extends State<PendingUserInputPanel> {
       margin: const EdgeInsets.only(bottom: 7),
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: const Color(0xFF211a08),
-        border: Border.all(color: const Color(0xFF7d5d16)),
+        color: const Color(0xFFfff8eb),
+        border: Border.all(color: const Color(0xFFa85a25)),
         borderRadius: BorderRadius.circular(10),
       ),
       child: Column(
@@ -89,14 +89,14 @@ class _PendingUserInputPanelState extends State<PendingUserInputPanel> {
               const Icon(
                 Icons.help_outline_rounded,
                 size: 16,
-                color: Color(0xFFe3b341),
+                color: Color(0xFFa85a25),
               ),
               const SizedBox(width: 6),
               Expanded(
                 child: Text(
                   t('pendingInputTitle'),
                   style: const TextStyle(
-                    color: Color(0xFFf2cc60),
+                    color: Color(0xFFa85a25),
                     fontSize: 12,
                     fontWeight: FontWeight.w700,
                   ),
@@ -114,7 +114,7 @@ class _PendingUserInputPanelState extends State<PendingUserInputPanel> {
                     minWidth: 28,
                     minHeight: 28,
                   ),
-                  color: const Color(0xFFf2cc60),
+                  color: const Color(0xFFa85a25),
                 ),
             ],
           ),
@@ -122,7 +122,7 @@ class _PendingUserInputPanelState extends State<PendingUserInputPanel> {
           Text(
             question,
             style: const TextStyle(
-              color: Color(0xFFf0f3f6),
+              color: Color(0xFF233249),
               fontSize: 13,
               height: 1.4,
             ),
@@ -132,7 +132,7 @@ class _PendingUserInputPanelState extends State<PendingUserInputPanel> {
             Text(
               input.reason,
               style: const TextStyle(
-                color: Color(0xFFaeb6c2),
+                color: Color(0xFF6f8096),
                 fontSize: 11,
                 height: 1.35,
               ),
@@ -152,8 +152,8 @@ class _PendingUserInputPanelState extends State<PendingUserInputPanel> {
                             ? () => widget.onAnswer(option)
                             : null,
                         style: OutlinedButton.styleFrom(
-                          foregroundColor: const Color(0xFFf2cc60),
-                          side: const BorderSide(color: Color(0xFF7d5d16)),
+                          foregroundColor: const Color(0xFFa85a25),
+                          side: const BorderSide(color: Color(0xFFa85a25)),
                           visualDensity: VisualDensity.compact,
                         ),
                         child: Text(option),
@@ -205,29 +205,29 @@ class _PendingUserInputPanelState extends State<PendingUserInputPanel> {
                   textInputAction: TextInputAction.done,
                   onSubmitted: (_) => _submitCustomAnswer(),
                   style: const TextStyle(
-                    color: Color(0xFFf0f3f6),
+                    color: Color(0xFF233249),
                     fontSize: 13,
                   ),
                   decoration: InputDecoration(
                     isDense: true,
                     hintText: t('pendingInputFreeTextHint'),
                     hintStyle: const TextStyle(
-                      color: Color(0xFF8a909b),
+                      color: Color(0xFF6f8096),
                       fontSize: 11,
                     ),
                     filled: true,
-                    fillColor: const Color(0xFF0d1117),
+                    fillColor: const Color(0xFFf4f8fd),
                     contentPadding: const EdgeInsets.symmetric(
                       horizontal: 10,
                       vertical: 9,
                     ),
                     enabledBorder: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(8),
-                      borderSide: const BorderSide(color: Color(0xFF574515)),
+                      borderSide: const BorderSide(color: Color(0xFFdfc990)),
                     ),
                     focusedBorder: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(8),
-                      borderSide: const BorderSide(color: Color(0xFFd29922)),
+                      borderSide: const BorderSide(color: Color(0xFFa85a25)),
                     ),
                   ),
                 ),
@@ -300,11 +300,11 @@ class _SessionQueuePanelState extends State<SessionQueuePanel> {
       width: double.infinity,
       margin: const EdgeInsets.only(bottom: 7),
       decoration: BoxDecoration(
-        color: const Color(0xFF161b22),
+        color: const Color(0xFFffffff),
         border: Border.all(
           color: queue.runState == CanonicalStatus.error
-              ? const Color(0xFF8b2f36)
-              : const Color(0xFF3d444d),
+              ? const Color(0xFFb64e43)
+              : const Color(0xFFccdbea),
         ),
         borderRadius: BorderRadius.circular(10),
         boxShadow: const [
@@ -328,13 +328,13 @@ class _SessionQueuePanelState extends State<SessionQueuePanel> {
                   const Icon(
                     Icons.schedule_send_rounded,
                     size: 15,
-                    color: Color(0xFFd29922),
+                    color: Color(0xFFa85a25),
                   ),
                   const SizedBox(width: 6),
                   Text(
                     t('queuedMessageCount', {'n': '${queue.items.length}'}),
                     style: const TextStyle(
-                      color: Color(0xFFd29922),
+                      color: Color(0xFFa85a25),
                       fontSize: 12,
                     ),
                   ),
@@ -358,7 +358,7 @@ class _SessionQueuePanelState extends State<SessionQueuePanel> {
                             overflow: TextOverflow.ellipsis,
                             textAlign: TextAlign.end,
                             style: const TextStyle(
-                              color: Color(0xFF8a909b),
+                              color: Color(0xFF6f8096),
                               fontSize: 11,
                             ),
                           ),
@@ -369,7 +369,7 @@ class _SessionQueuePanelState extends State<SessionQueuePanel> {
                   Icon(
                     _expanded ? Icons.expand_less : Icons.expand_more,
                     size: 18,
-                    color: const Color(0xFF8a909b),
+                    color: const Color(0xFF6f8096),
                   ),
                 ],
               ),
@@ -434,7 +434,7 @@ class _SessionQueuePanelState extends State<SessionQueuePanel> {
                           ),
                           decoration: const BoxDecoration(
                             border: Border(
-                              top: BorderSide(color: Color(0xFF30363d)),
+                              top: BorderSide(color: Color(0xFFdce6f1)),
                             ),
                           ),
                           child: Row(
@@ -444,7 +444,7 @@ class _SessionQueuePanelState extends State<SessionQueuePanel> {
                                 child: Text(
                                   '${item.position}. ${item.text.isEmpty ? t('queuedMessageFallback') : item.text}',
                                   style: const TextStyle(
-                                    color: Color(0xFFc9d1d9),
+                                    color: Color(0xFF31465b),
                                     fontSize: 12,
                                     height: 1.4,
                                   ),
@@ -459,7 +459,7 @@ class _SessionQueuePanelState extends State<SessionQueuePanel> {
                                   child: Text(
                                     t('queuedMessageRunning'),
                                     style: const TextStyle(
-                                      color: Color(0xFFd29922),
+                                      color: Color(0xFFa85a25),
                                       fontSize: 11,
                                     ),
                                   ),
@@ -471,7 +471,7 @@ class _SessionQueuePanelState extends State<SessionQueuePanel> {
                                   tooltip: t('insertQueuedMessage'),
                                   visualDensity: VisualDensity.compact,
                                   iconSize: 17,
-                                  color: const Color(0xFFd29922),
+                                  color: const Color(0xFFa85a25),
                                   onPressed: _busy || !widget.enabled
                                       ? null
                                       : () => _run(
@@ -487,7 +487,7 @@ class _SessionQueuePanelState extends State<SessionQueuePanel> {
                                   tooltip: t('cancelQueuedMessage'),
                                   visualDensity: VisualDensity.compact,
                                   iconSize: 17,
-                                  color: const Color(0xFFff7b72),
+                                  color: const Color(0xFFc0392b),
                                   onPressed: _busy || !widget.enabled
                                       ? null
                                       : () => _run(
@@ -530,10 +530,10 @@ class _QueueActionButton extends StatelessWidget {
       visualDensity: VisualDensity.compact,
       minimumSize: const Size(0, 32),
       foregroundColor: danger
-          ? const Color(0xFFff7b72)
-          : const Color(0xFFc9d1d9),
+          ? const Color(0xFFc0392b)
+          : const Color(0xFF31465b),
       side: BorderSide(
-        color: danger ? const Color(0xFF8b2f36) : const Color(0xFF3d444d),
+        color: danger ? const Color(0xFFb64e43) : const Color(0xFFccdbea),
       ),
     ),
     child: Text(label),
@@ -605,8 +605,8 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
       decoration: const BoxDecoration(
-        color: Color(0xFF0a0c0f),
-        border: Border(bottom: BorderSide(color: Color(0xFF20242b))),
+        color: Color(0xFFf4f8fd),
+        border: Border(bottom: BorderSide(color: Color(0xFFdce6f1))),
       ),
       // Slot order matches the web chat.html bar row: opencode, qoder, codex,
       // claude-rate-limit (subscription or routed window), balance, ark,
@@ -663,8 +663,8 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
               onPressed: onRetry,
               style: OutlinedButton.styleFrom(
                 visualDensity: VisualDensity.compact,
-                foregroundColor: const Color(0xFFff9b9b),
-                side: const BorderSide(color: Color(0xFF8b2f36)),
+                foregroundColor: const Color(0xFFb64e43),
+                side: const BorderSide(color: Color(0xFFb64e43)),
               ),
               icon: const Icon(Icons.refresh_rounded, size: 16),
               label: Text(t('retryTask')),
@@ -729,8 +729,8 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
         '${retry.isEmpty ? '' : ' · $retry'}',
         style: TextStyle(
           color: value.isRetryScheduled
-              ? const Color(0xFFe3b341)
-              : const Color(0xFFff9b9b),
+              ? const Color(0xFFa85a25)
+              : const Color(0xFFb64e43),
           fontSize: 11,
           height: 1.35,
         ),
@@ -842,8 +842,8 @@ class _DispatchQueuePanelState extends State<DispatchQueuePanel> {
         label: t('dispatchQueueExpand'),
         child: Material(
           key: const Key('dispatch-queue-fab'),
-          color: const Color(0xFF1f6feb),
-          shape: const CircleBorder(side: BorderSide(color: Color(0xFF6aa3ff))),
+          color: const Color(0xFF1267b5),
+          shape: const CircleBorder(side: BorderSide(color: Color(0xFF1267b5))),
           elevation: 8,
           child: InkWell(
             customBorder: const CircleBorder(),
@@ -872,9 +872,9 @@ class _DispatchQueuePanelState extends State<DispatchQueuePanel> {
                         padding: const EdgeInsets.symmetric(horizontal: 4),
                         alignment: Alignment.center,
                         decoration: BoxDecoration(
-                          color: const Color(0xFFd73a49),
+                          color: const Color(0xFFc0392b),
                           borderRadius: BorderRadius.circular(10),
-                          border: Border.all(color: const Color(0xFF0f1115)),
+                          border: Border.all(color: const Color(0xFFffffff)),
                         ),
                         child: Text(
                           activeCount > 99 ? '99+' : '$activeCount',
@@ -905,8 +905,8 @@ class _DispatchQueuePanelState extends State<DispatchQueuePanel> {
       width: panelWidth,
       padding: const EdgeInsets.fromLTRB(10, 8, 8, 8),
       decoration: BoxDecoration(
-        color: const Color(0xFF141a24),
-        border: Border.all(color: const Color(0xFF2d4a6e)),
+        color: const Color(0xFFf8fbff),
+        border: Border.all(color: const Color(0xFFeaf4ff)),
         borderRadius: BorderRadius.circular(10),
       ),
       child: Column(
@@ -918,14 +918,14 @@ class _DispatchQueuePanelState extends State<DispatchQueuePanel> {
               const Icon(
                 Icons.swap_vert_rounded,
                 size: 15,
-                color: Color(0xFF6aa3ff),
+                color: Color(0xFF1267b5),
               ),
               const SizedBox(width: 6),
               Expanded(
                 child: Text(
                   t('dispatchRecentTitle', {'n': '${widget.entries.length}'}),
                   style: const TextStyle(
-                    color: Color(0xFF6aa3ff),
+                    color: Color(0xFF1267b5),
                     fontSize: 12,
                     fontWeight: FontWeight.w700,
                   ),
@@ -942,7 +942,7 @@ class _DispatchQueuePanelState extends State<DispatchQueuePanel> {
                     minWidth: 28,
                     minHeight: 28,
                   ),
-                  color: const Color(0xFF8a909b),
+                  color: const Color(0xFF6f8096),
                 ),
               IconButton(
                 onPressed: () => _setExpanded(false),
@@ -951,7 +951,7 @@ class _DispatchQueuePanelState extends State<DispatchQueuePanel> {
                 visualDensity: VisualDensity.compact,
                 padding: EdgeInsets.zero,
                 constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-                color: const Color(0xFF8a909b),
+                color: const Color(0xFF6f8096),
               ),
             ],
           ),
@@ -969,7 +969,7 @@ class _DispatchQueuePanelState extends State<DispatchQueuePanel> {
               padding: const EdgeInsets.only(top: 4),
               child: Text(
                 t('dispatchQueueMore', {'n': '$rest'}),
-                style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+                style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
               ),
             ),
         ],
@@ -995,17 +995,17 @@ class _DispatchRow extends StatelessWidget {
 
   Color get _stateColor {
     if (entry.terminal) {
-      if (entry.status == 'completed') return const Color(0xFF7fd49a);
+      if (entry.status == 'completed') return const Color(0xFF1e8a55);
       if (entry.status == 'failed' || entry.status == 'interrupted') {
-        return const Color(0xFFf85149);
+        return const Color(0xFFb64e43);
       }
-      return const Color(0xFF8a909b);
+      return const Color(0xFF6f8096);
     }
-    if (entry.isQueued) return const Color(0xFFe3b341);
+    if (entry.isQueued) return const Color(0xFFa85a25);
     if (entry.queueState == 'started' || entry.queueState == 'running') {
-      return const Color(0xFF7fd49a);
+      return const Color(0xFF1e8a55);
     }
-    return const Color(0xFF8a909b);
+    return const Color(0xFF6f8096);
   }
 
   @override
@@ -1033,8 +1033,8 @@ class _DispatchRow extends StatelessWidget {
               incoming ? Icons.south_west_rounded : Icons.north_east_rounded,
               size: 14,
               color: incoming
-                  ? const Color(0xFFa78bfa)
-                  : const Color(0xFF6aa3ff),
+                  ? const Color(0xFF6d4fd1)
+                  : const Color(0xFF1267b5),
             ),
             const SizedBox(width: 5),
             Expanded(
@@ -1042,7 +1042,7 @@ class _DispatchRow extends StatelessWidget {
                 modeLabel.isEmpty ? dirText : '$dirText · $modeLabel',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 12),
+                style: const TextStyle(color: Color(0xFF233249), fontSize: 12),
               ),
             ),
             const SizedBox(width: 6),
@@ -1055,7 +1055,7 @@ class _DispatchRow extends StatelessWidget {
               const Icon(
                 Icons.chevron_right_rounded,
                 size: 15,
-                color: Color(0xFF6e7681),
+                color: Color(0xFF6f8096),
               ),
             ],
           ],

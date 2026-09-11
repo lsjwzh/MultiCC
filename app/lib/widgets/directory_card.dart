@@ -199,7 +199,7 @@ class DirectoryCard extends StatelessWidget {
     String label, {
     bool danger = false,
   }) {
-    final color = danger ? const Color(0xFFff6b63) : const Color(0xFFe7eaee);
+    final color = danger ? const Color(0xFFb64e43) : const Color(0xFF233249);
     return PopupMenuItem<String>(
       value: value,
       height: 40,
@@ -388,9 +388,9 @@ class DirectoryCard extends StatelessWidget {
                                           vertical: 2,
                                         ),
                                         decoration: BoxDecoration(
-                                          color: const Color(0x1AE3B341),
+                                          color: const Color(0x1Aa85a25),
                                           border: Border.all(
-                                            color: const Color(0x73E3B341),
+                                            color: const Color(0x73a85a25),
                                           ),
                                           borderRadius: BorderRadius.circular(
                                             999,
@@ -399,7 +399,7 @@ class DirectoryCard extends StatelessWidget {
                                         child: Text(
                                           '⚠ ${view.pushState!.dirty} 未提交',
                                           style: const TextStyle(
-                                            color: Color(0xFFE3B341),
+                                            color: Color(0xFFa85a25),
                                             fontSize: 10,
                                             fontFamily: 'monospace',
                                           ),
@@ -434,7 +434,7 @@ class DirectoryCard extends StatelessWidget {
                               color: AppColors.muted,
                             ),
                             tooltip: t('moreActions'),
-                            color: const Color(0xFF161b22),
+                            color: const Color(0xFFffffff),
                             padding: EdgeInsets.zero,
                             constraints: const BoxConstraints(
                               minWidth: 44,
@@ -637,7 +637,7 @@ class _DirectoryPreview extends StatelessWidget {
                             Text(
                               '🗒 ${task.who}  ${task.summary}',
                               style: const TextStyle(
-                                color: Color(0xFF7fe6da),
+                                color: Color(0xFF137780),
                                 fontSize: 11,
                                 height: 1.2,
                               ),
@@ -655,10 +655,10 @@ class _DirectoryPreview extends StatelessWidget {
                                         vertical: 1,
                                       ),
                                       decoration: BoxDecoration(
-                                        color: const Color(0xFF7fd49a)
+                                        color: const Color(0xFF1e8a55)
                                             .withValues(alpha: 0.15),
                                         border: Border.all(
-                                          color: const Color(0xFF7fd49a)
+                                          color: const Color(0xFF1e8a55)
                                               .withValues(alpha: 0.4),
                                         ),
                                         borderRadius: BorderRadius.circular(4),
@@ -670,7 +670,7 @@ class _DirectoryPreview extends StatelessWidget {
                                             width: 5,
                                             height: 5,
                                             decoration: const BoxDecoration(
-                                              color: Color(0xFF7fd49a),
+                                              color: Color(0xFF1e8a55),
                                               shape: BoxShape.circle,
                                             ),
                                           ),
@@ -678,7 +678,7 @@ class _DirectoryPreview extends StatelessWidget {
                                           Text(
                                             t('running'),
                                             style: const TextStyle(
-                                              color: Color(0xFF7fd49a),
+                                              color: Color(0xFF1e8a55),
                                               fontSize: 9,
                                               fontWeight: FontWeight.w700,
                                             ),
@@ -693,7 +693,7 @@ class _DirectoryPreview extends StatelessWidget {
                                       child: Text(
                                         task.model,
                                         style: const TextStyle(
-                                          color: Color(0xFF22ab9c),
+                                          color: Color(0xFF0965cf),
                                           fontSize: 10,
                                         ),
                                         maxLines: 1,
