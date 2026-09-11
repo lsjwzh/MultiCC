@@ -1353,6 +1353,38 @@ test('an E-at-rest queue still parks deliveries without task-run lineage', async
     'the E verdict still parks deliveries that are not Task Board re-engagements');
 });
 
+test('an E-at-rest queue parks an admitted continuation even though it carries directRun', async t => {
+  // Production regression (Air task-shell chat): every message typed into a
+  // task session is admitted as workKind "continuation", which tags the
+  // outbox item directRun=true. The directRun fast lane exists to carry typed
+  // input across the P boundary — it must NOT overrule an E verdict, or the
+  // FIFO keeps firing into an errored session.
+  const h = fixture(t);
+  await settleToVerdict(h, 's1', 'E');
+  await h.scheduler.admit({
+    sessionId: 's1',
+    text: 'next instruction typed after the error',
+    workKind: 'continuation',
+    idempotencyKey: 's1-after-error',
+  });
+  assert.equal(await claimOne(h, 's1'), null,
+    'E parks a queued continuation for a human decision; directRun only crosses P');
+});
+
+test('an E-at-rest queue still admits an explicit retry control', async t => {
+  const h = fixture(t);
+  await settleToVerdict(h, 's1', 'E');
+  await h.scheduler.admit({
+    sessionId: 's1',
+    text: 'retry the failed turn',
+    workKind: 'retry',
+    idempotencyKey: 's1-retry',
+  });
+  const item = await claimOne(h, 's1');
+  assert.ok(item, 'an explicit retry IS the human decision that unparks E');
+  assert.equal(item.payload.workKind, 'retry');
+});
+
 test('a W-at-rest queue does not leak task-kind run deliveries past a pending question', async t => {
   const h = fixture(t);
   await settleToVerdict(h, 'slot-1', 'W');

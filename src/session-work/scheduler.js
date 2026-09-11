@@ -9,6 +9,10 @@ const { turnOutcomeForClassify } = require('../classify/vocab');
 
 const ACTIVE_STATES = new Set(['starting', 'running', 'assessing', 'frozen']);
 const CONTROL_KINDS = new Set(['answer', 'approval', 'callback', 'continuation', 'retry', 'resume']);
+// Under an E verdict the queue parks for a human decision. These kinds ARE
+// that decision: a structured repair answer, an approval, or an explicit
+// retry/resume. Ordinary conversation input (task/continuation) stays parked.
+const HUMAN_DECISION_KINDS = new Set(['answer', 'approval', 'retry', 'resume']);
 const RESOLUTION_ACTIONS = new Set(['skip', 'cancel', 'resolve']);
 const RETRY_ACTIONS = new Set(['retry', 'resume']);
 const CLASSIFY_STATES = new Set(['P', 'D', 'W', 'B', 'E']);
@@ -159,6 +163,10 @@ function controlAllowedByClassify(item, classifyState) {
   // Every session.work payload is ultimately one native conversation message.
   // Classify P is the only staging gate; W/B/E/D may start a fresh CLI turn
   // even when the previous -p process and its physical active slot are gone.
+  // (The E parking rule lives in the idle branch of selectSessionItem: it
+  // blocks *queued* FIFO deliveries after an error. This shared predicate also
+  // serves the still-active gap, where a continuation related to the live
+  // entry remains attachable even while canonical classify already shows E.)
   if (item?.payload?.type === 'session.work') return classifyState !== 'P';
   // An async dispatch result is a new conversation message, not a background
   // wait state. It must never interrupt an active P turn, but once that turn
@@ -410,12 +418,23 @@ function createSessionWorkScheduler({
         : 'D';
       // P is the sole input staging state. Once classify leaves P, a typed or
       // control message may start a fresh native turn even if it was admitted
-      // before the previous process exited.
+      // before the previous process exited. The directRun fast lane does NOT
+      // apply to E: directRun exists to carry typed input across the P
+      // boundary, not to overrule an error verdict — an E-at-rest queue falls
+      // through to the E gate below, which parks ordinary deliveries for a
+      // human decision (control items still consult controlAllowedByClassify,
+      // where session.work under E is limited to explicit retry/resume).
       if (cls !== 'P') {
-        const direct = ordered.find(it => it.directRun);
+        const direct = cls !== 'E' ? ordered.find(it => it.directRun) : null;
         if (direct) return direct;
+        // Under E the control lane narrows too: a queued session.work
+        // continuation is an ordinary parked delivery (handled by the E gate
+        // below), not a human decision. Only answer/approval/retry/resume pass.
         const control = ordered.find(item => isControlItem(item)
-          && controlAllowedByClassify(item, cls));
+          && controlAllowedByClassify(item, cls)
+          && (cls !== 'E'
+            || item?.payload?.type !== 'session.work'
+            || HUMAN_DECISION_KINDS.has(workKind(item))));
         if (control) return control;
       }
       // At-rest verdicts (W/B) leave stale FIFO items untouched — the queue
@@ -423,12 +442,19 @@ function createSessionWorkScheduler({
       // other state (D succeeded, never-classified, P exhausted) drains FIFO.
       if (cls === 'W' || cls === 'B') return null;
       if (cls === 'E') {
-        // E parks the queue for a human decision, and a hidden task execution
-        // slot has no human: Task Board owns the failed run's lifecycle (the
-        // error ledger entry and the bounded retry already consumed the E
-        // verdict), so its own re-engagement — any delivery carrying task-run
-        // lineage — IS that decision. Unlock the oldest lineage item; ordinary
-        // deliveries stay parked exactly as before.
+        // E parks the queue for a human decision. A user-selected "insert now"
+        // promotion IS that decision (insertQueued marks priorityEntryId and
+        // directRun precisely so this exact entry survives an E verdict), and a
+        // hidden task execution slot has no human: Task Board owns the failed
+        // run's lifecycle (the error ledger entry and the bounded retry already
+        // consumed the E verdict), so its own re-engagement — any delivery
+        // carrying task-run lineage — IS that decision too. Unlock the promoted
+        // entry first, then the oldest lineage item; ordinary deliveries stay
+        // parked exactly as before.
+        if (priorityEntryId) {
+          const promoted = ordered.find(item => item.id === priorityEntryId);
+          if (promoted) return promoted;
+        }
         const reengagement = ordered.find(item => taskRunIdForItem(item) != null);
         if (reengagement) return reengagement;
         return null;
