@@ -75,6 +75,9 @@ body.air-chat {
 /* Duplicated by the task header's AI 配置 / 角色 controls; hidden in Air. */
 .air-chat #model-btn, .air-chat #effort-btn, .air-chat #provider-btn,
 .air-chat #role-btn, .air-chat #cli-btn { display: none !important; }
+/* One refresh, not two: the task header's ↻ reloads this frame from the host
+   (air.js → reloadConversation), which is what this button used to do alone. */
+.air-chat #reconnect-btn { display: none !important; }
 .air-chat .hdr-btn {
   min-height: 30px;
   padding: 4px 9px;
@@ -127,6 +130,20 @@ body.air-chat {
 }
 .air-chat #worktree-bar { order: 1; flex: 0 1 auto; }
 .air-chat #worktree-bar .worktree-label { flex: 0 1 auto; font-size: 12px; color: #6c8199; }
+.air-chat #aux-classify-bar {
+  justify-content: flex-start;
+  flex: 0 1 auto;
+  max-width: min(560px, 52%);
+}
+/* A hairline separates the two runs — git state, then what the task is doing —
+   so the line reads as two groups instead of one drifting sentence. */
+.air-chat #worktree-bar:not(:empty) + #aux-classify-bar::before {
+  content: '';
+  flex: none;
+  width: 1px;
+  height: 13px;
+  background: var(--air-line);
+}
 .air-chat #worktree-bar.behind { border-bottom: 0; background: transparent; }
 .air-chat #worktree-bar.behind .worktree-label { color: #9a671e; }
 .air-chat #worktree-sync-btn, .air-chat .worktree-force-sync-btn {
@@ -140,7 +157,10 @@ body.air-chat {
 }
 .air-chat #chat-context-bar .worktree-conflict-bar { order: 4; flex-basis: 100%; margin: 0; }
 .air-chat #header-more-menu #session-title { display: block; padding: 7px; }
-.air-chat #aux-classify-bar .ac-goal { color: #3d5871; font-weight: 500; }
+/* The goal is a label, not a filler: it takes the width its text needs and
+   ellipsizes, so the phase/state pills sit right after it instead of being
+   pushed to the far end of a stretched bar. */
+.air-chat #aux-classify-bar .ac-goal { flex: 0 1 auto; max-width: 300px; color: #3d5871; font-weight: 500; }
 /* Unified light pills: one height, one radius, soft state tints instead of
    the dark theme's saturated chips. */
 .air-chat #aux-classify-bar .ac-phase,
@@ -318,28 +338,8 @@ body.air-chat {
 @media (max-width: 760px) {
   .air-chat #air-composer-meta { width: min(880px, var(--chat-content-max-width), calc(100% - 24px)); }
 }
-.air-chat #air-ai-pill,
-.air-chat #air-role-pill {
-  min-width: 0;
-  padding: 5px 11px;
-  font-size: 11.5px;
-  line-height: 1.5;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  border: 1px solid #dbe7f2;
-  border-radius: 999px;
-  background: #fff;
-  color: #4a6b8a;
-  cursor: pointer;
-  transition: background .15s ease, border-color .15s ease;
-}
-.air-chat #air-ai-pill { flex: 0 1 auto; max-width: 68%; color: #2468b5; border-color: #d2e6fb; background: var(--blue-soft, #eaf3ff); }
-.air-chat #air-role-pill { flex: 0 0 auto; }
-.air-chat #air-ai-pill:hover, .air-chat #air-role-pill:hover { border-color: #b9d6f0; background: #eef6ff; }
-.air-chat #air-ai-pill[hidden], .air-chat #air-role-pill[hidden] { display: none; }
-.air-chat #air-ai-pill:disabled, .air-chat #air-role-pill:disabled { opacity: .55; cursor: default; }
-.air-chat #air-ai-pill::before { content: '◆'; margin-right: 6px; font-size: 9px; vertical-align: 1px; }
+/* The pills themselves are the composer module's (composer.css → .mc-composer__pill),
+   shared with the new-task form so the two surfaces stay one control. */
 
 /* The card itself is the composer module (composer.css). What is left here is
    how the conversation column places it: lifted off the bottom edge so it reads

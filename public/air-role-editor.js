@@ -2,11 +2,17 @@
   'use strict';
   const node = (tag, text) => { const n = document.createElement(tag); if (text) n.textContent = text; return n; };
   window.MultiCCAirRoles = {
-    open({ taskId, roleBindings, api, onSaved }) {
+    // `save` is the draft hook: when the caller passes it (a task that does not
+    // exist yet — the directory's new-task composer), the edited bindings are
+    // handed back instead of being written to a task that has no id.
+    open({ taskId, roleBindings, api, onSaved, save: draftSave }) {
+      const draft = typeof draftSave === 'function';
       const dialog = node('dialog'), form = node('form'), rows = node('div'), error = node('p');
       error.setAttribute('role', 'alert');
-      const heading = node('h2', '角色上下文'), note = node('p', '保存后对下一条新消息生效。正在执行和已经排队的消息保留原角色。');
-      const add = node('button', '＋ 添加角色'), save = node('button', '保存角色'), close = node('button', '取消');
+      const heading = node('h2', '角色上下文'), note = node('p', draft
+        ? '创建任务时会写入这些角色，第一条消息即按此执行。'
+        : '保存后对下一条新消息生效。正在执行和已经排队的消息保留原角色。');
+      const add = node('button', '＋ 添加角色'), save = node('button', draft ? '使用这些角色' : '保存角色'), close = node('button', '取消');
       const preset = node('select'), placeholder = node('option', '从角色库附加…'); placeholder.value = ''; preset.append(placeholder);
       preset.setAttribute('aria-label', '从角色库附加'); preset.disabled = true;
       add.type = close.type = 'button'; save.type = 'submit'; save.className = 'primary';
@@ -36,6 +42,13 @@
       let request = null;
       form.onsubmit = async event => {
         event.preventDefault(); const bindings = [...rows.children].map(r => ({ name: r.querySelector('input').value, prompt: r.querySelector('textarea').value }));
+        if (draft) {
+          save.disabled = true; error.textContent = '';
+          try { await draftSave(bindings); dialog.close(); }
+          catch (e) { error.textContent = e.message; }
+          finally { save.disabled = false; }
+          return;
+        }
         const fingerprint = JSON.stringify(bindings);
         if (!request || request.fingerprint !== fingerprint) request = { fingerprint, clientMsgId: crypto.randomUUID() };
         save.disabled = true; error.textContent = '';

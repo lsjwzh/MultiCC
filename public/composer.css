@@ -18,6 +18,7 @@
 
    Slots
      .mc-composer__aux      band pinned above the card's top edge
+     .mc-composer__pill     a runtime pick that rides on a band
      .mc-composer__input    the textarea
      .mc-composer__actions  band flush with the card's bottom edge
    ─────────────────────────────────────────────────────────────────────────── */
@@ -95,6 +96,44 @@
 /* Focusing the input lights the whole card, band included. */
 .mc-composer__aux:has(+ #input-bar:focus-within) { border-color: #c1d8ed; }
 #input-bar.mc-composer.mc-composer--with-aux { border-top: 0; border-radius: 0 0 15px 15px; }
+
+/* Inside the card (the new-task form) the band is already within the border, so
+   it draws no edge of its own — the tint alone separates it, exactly like the
+   conversation's band. */
+.mc-composer--panel > .mc-composer__aux {
+  padding: 8px 12px 10px;
+  border: 0;
+  border-radius: 0;
+}
+
+/* A runtime pick — the CLI · provider · model route, the role set — is one pill
+   wherever it is rendered. Both surfaces hand the same skin to the same dialog,
+   so the two composers cannot drift into two different controls. */
+.mc-composer__pill {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  padding: 5px 11px;
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #4a6b8a;
+  border: 1px solid #dbe7f2;
+  border-radius: 999px;
+  background: #fff;
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease;
+}
+.mc-composer__pill:hover { border-color: #b9d6f0; background: #eef6ff; }
+.mc-composer__pill[hidden] { display: none; }
+.mc-composer__pill:disabled { opacity: .55; cursor: default; }
+/* The route pill leads the band: it names what the next turn will run on. */
+.mc-composer__pill--ai { flex: 0 1 auto; max-width: 68%; color: #2468b5; border-color: #d2e6fb; background: #eaf3ff; }
+.mc-composer__pill--ai::before { content: '◆'; margin-right: 6px; font-size: 9px; vertical-align: 1px; }
+.mc-composer__pill--role { flex: 0 0 auto; }
 
 /* The new-task form's band closes the card: flush with the bottom edge, no
    radius of its own, the card's clipping rounds the corners. */
