@@ -53,8 +53,19 @@ function isServer(record, config, cwd = processCwd) {
   if (mainEntry(config.entry)) return true;
   // Relative server.js is the normal manager launch, so PID files and absolute
   // command matching alone cannot identify duplicates. Resolve its real cwd.
-  return (mainEntry('server.js') || mainEntry('./server.js'))
+  return (mainEntry('server.js') || mainEntry('./server.js') || mainEntry('.') || mainEntry('./'))
     && cwd(record.pid) === config.rootDir;
+}
+// Detached graceful-restart scripts (logs/restart-*/restart.sh, spawned by
+// /api/restart) outlive the server: kill the server while one is pending and
+// it fires `./multicc restart` seconds later, resurrecting what stop just
+// killed. They must be cancelled for a stop to stay stopped.
+function isPendingRestarter(record, config) {
+  if (record.pid === process.pid || record.pid <= 1) return false;
+  const command = record.command.replace(/"/g, '');
+  if (!/^(?:\S*[/\\])?(?:ba|z)?sh\s/.test(command)) return false;
+  return command.includes(path.join(config.rootDir, 'logs', 'restart-'))
+    && /restart\.sh(?:\s|$)/.test(command);
 }
 function descendants(table, roots, excluded = new Set([process.pid])) {
   const selected = new Map(roots.map(p => [p.pid, p]));
@@ -89,6 +100,12 @@ async function stopServers(config, { graceMs = 65000, log = console.log } = {}) 
   let table = processTable();
   const roots = table.filter(p => isServer(p, config));
   const excluded = protectedAncestors(table, roots);
+  // Cancel pending detached restarts first, or the server comes back right
+  // after we stop it. Never touch our own ancestor chain — a restart invokes
+  // stop through exactly such a script, and suicide would abort the start.
+  const restarters = table.filter(p => isPendingRestarter(p, config) && !excluded.has(p.pid));
+  for (const restarter of restarters) signalVerified(restarter, 'SIGKILL', table);
+  if (restarters.length) log('Cancelled pending restart(s): ' + restarters.map(p => p.pid).join(', '));
   const owned = descendants(table, roots, excluded);
   log('Stopping MultiCC PID(s): ' + (roots.map(p => p.pid).join(', ') || 'none'));
   for (const root of roots) signalVerified(root, 'SIGINT', table);
@@ -114,7 +131,7 @@ async function stopServers(config, { graceMs = 65000, log = console.log } = {}) 
   }
   throw new Error('old MultiCC processes did not exit; refusing to start a duplicate');
 }
-module.exports = { processTable, isServer, sameProcess, descendants, stopServers, protectedAncestors };
+module.exports = { processTable, isServer, isPendingRestarter, sameProcess, descendants, stopServers, protectedAncestors };
 if (require.main === module) {
   const rootDir = fs.realpathSync(process.argv[3]);
   const config = { rootDir, entry: path.join(rootDir, 'server.js'), execPath: process.execPath };
