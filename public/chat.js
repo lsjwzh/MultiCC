@@ -231,7 +231,10 @@ const mergeHintBtn = document.getElementById('merge-hint-btn');
 // the compact More menu — showing both was duplicated UI.
 const airChatMode = document.body.classList.contains('air-chat');
 const airOwnedById = new Set(['model-btn', 'effort-btn', 'provider-btn', 'role-btn', 'cli-btn']);
-const headerMenuId = id => !airChatMode || !airOwnedById.has(id);
+// Removed from Air's More menu entirely: the voice-call entry is not part of
+// the Air surface, and reconnect duplicates the host header's refresh button.
+const airHiddenMenuId = new Set(['s2s-btn', 'reconnect-btn']);
+const headerMenuId = id => !airChatMode || (!airOwnedById.has(id) && !airHiddenMenuId.has(id));
 const headerMoreController = window.MultiCCChatLiveUi.bindHeaderMoreMenu({
   window,
   document,
