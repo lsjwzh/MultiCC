@@ -349,7 +349,7 @@ function textFallbackCategory(message) {
   if (/provider (?:config|configuration).*(?:missing|invalid)|missing (?:provider|base url)|cli not installed|spawn failed|\b(?:eacces|enoent|enoexec)\b|\bexit(?:ed)?(?:\s+(?:code|status))?\s*[:=]?\s*-13\b/.test(text)) return 'adapter_configuration';
   if (/etimedout|timed? out|timeout|deadline exceeded|response stalled|stream idle/.test(text)) return 'timeout';
   if (/enotfound|dns|tls|certificate|econnreset|connection reset|connection closed|connection ?refused|unable to connect|socket hang|network error|fetch failed|stream disconnected/.test(text)) return 'network';
-  if (/\b(?:500|502|503|504|529)\b|overloaded|server error|internal server error|service unavailable|bad gateway|system is busy/.test(text)) return 'provider_transient';
+  if (/\b(?:500|502|503|504|529)\b|overloaded|at capacity|server error|internal server error|service unavailable|bad gateway|system is busy/.test(text)) return 'provider_transient';
   if (/\b(?:400|404|409|422)\b|invalid request|validation error|unsupported model|model not found|unprocessable/.test(text)) return 'invalid_request_model';
   return 'unknown';
 }

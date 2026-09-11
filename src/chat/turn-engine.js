@@ -1870,7 +1870,7 @@ function createChatTurnEngine(deps) {
         const partialOutput = errorOnlyBoundary
           ? false : meaningfulTurnOutput(cs) || !!attemptFacts?.visibleOutputObserved;
         // Clear transient errors only after adapter completion and persistence.
-        if (clearErrorFlagsForSucceededTurn(turn, runner, cs, { code, killReason })) {
+        if (clearErrorFlagsForSucceededTurn(turn, runner, cs, { code, killReason, boundaryErrorEnvelope })) {
           logger.info?.('chat_error_flags_cleared_after_success', {
             sessionId: sessionName,
             provider: cs.cli,
@@ -2514,7 +2514,7 @@ function createChatTurnEngine(deps) {
     const partialOutput = errorOnlyBoundary
       ? false : meaningfulTurnOutput(cs) || !!attemptFacts?.visibleOutputObserved;
     // The stream promise must resolve as well as carrying a successful result.
-    clearErrorFlagsForSucceededTurn(turn, runner, cs, { killReason: runner.killReason });
+    clearErrorFlagsForSucceededTurn(turn, runner, cs, { killReason: runner.killReason, boundaryErrorEnvelope });
     // A reused cross-CLI target is an explicit fail-closed boundary. Detect a
     // failed native Claude resume before generic API policy can persist or
     // broadcast retry_wait, and before Auto Provider can consume a candidate.
