@@ -119,8 +119,13 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 #task-state.attention { color: #996218; }
 #task-state:disabled { opacity: 1; cursor: default; }
 .task-tools { display: flex; align-items: center; gap: 7px; flex-shrink: 0; }
-#ai-capsule { max-width: 220px; overflow: hidden; padding: 7px 12px; color: #2468b5; border-color: #d2e6fb; border-radius: 18px; background: var(--blue-soft); white-space: nowrap; text-overflow: ellipsis; font-size: 11px; }
-#roles-toggle, #details-toggle, #refresh { font-size: 12px; }
+/* The AI 配置 capsule and 角色 moved onto the composer card (chat-air.css).
+   What stays here are the round's most-used actions as compact icons; the More
+   menu still carries the full list. */
+#quick-merge, #quick-auto-commit, #quick-share { min-width: 38px; padding: 6px; color: #47647f; font-size: 16px; line-height: 1.2; }
+#quick-merge.is-ready { color: #1d7a55; border-color: #bfe0d1; background: #eaf8f1; }
+#quick-auto-commit.is-on { color: #176bc0; border-color: #cfe3f8; background: var(--blue-soft); }
+#details-toggle, #refresh { font-size: 12px; }
 #refresh { min-width: 38px; padding: 7px; }
 #mobile-nav { display: none; }
 
@@ -468,7 +473,6 @@ dialog .air-config-field input { margin-top: 7px; }
   #sidebar { width: 240px; flex-basis: 240px; padding-inline: 13px; }
   #task-header { padding-inline: 20px; }
   #delivery-card { margin-inline: 18px; }
-  #ai-capsule { max-width: 155px; }
   .admin-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .admin-overview-grid { grid-template-columns: 1fr; }
   .admin-directory-list { grid-template-columns: 1fr; }
@@ -488,7 +492,6 @@ dialog .air-config-field input { margin-top: 7px; }
   .task-tools { width: 100%; min-width: 0; gap: 6px; padding-left: 45px; overflow-x: auto; scrollbar-width: none; }
   .task-tools::-webkit-scrollbar { display: none; }
   .task-tools button { flex: 0 0 auto; min-height: 36px; padding: 6px 9px; }
-  #ai-capsule { max-width: 145px; }
   .task-tools [data-chat-layout] { display: none; } /* Available in Chat's More menu. */
   #refresh { position: absolute; top: 12px; right: 10px; }
   #notice { padding-inline: 12px; }
@@ -562,7 +565,6 @@ dialog .air-config-field input { margin-top: 7px; }
   .schedule-actions span { display: none; }
   .schedule-actions button { flex: 1 1 calc(50% - 4px); }
   .form-row { display: block; }
-  #ai-capsule { max-width: 120px; }
   #delivery-card { max-height: 275px; overflow: auto; }
   .detail-group dl { grid-template-columns: 78px minmax(0, 1fr); }
   .air-cli-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
