@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
+const { readConfiguration, desiredSession, configurationBusy, stageConfiguration } = require('../session/pending-configuration');
 const fs = require('fs');
 
 const { normalizeManualMemory } = require('../memory/runtime');
@@ -120,8 +121,13 @@ function createSessionProfileRoutes(rawDeps) {
 
   function mountRoutes(app) {
     // PATCH a session — supports display-name edits via label.
-    app.patch('/api/sessions/:id', (req, res) => {
-      const s = persistedSessions.get(req.params.id);
+    function patchSession(req, res, preview = null) {
+      const s = preview || persistedSessions.get(req.params.id);
+      const appendEvent = preview ? () => {} : deps.appendEvent;
+      const workspaceBroadcast = preview ? () => {} : deps.workspaceBroadcast;
+      const chatBroadcast = preview ? () => {} : deps.chatBroadcast;
+      const closeStream = () => { if (!preview) chatStream().close(s.id); };
+      const synchronizeRoute = route => { if (!preview) providers.synchronizeCodexSessionRoute(route); };
       if (!s) return res.status(404).json({ error: 'session not found' });
       if (s.type === 'aux' || s.type === 'gateway') {
         return res.status(400).json({ error: 'system session cannot be renamed' });
@@ -133,20 +139,32 @@ function createSessionProfileRoutes(rawDeps) {
       }
       const routeMutation = ['model', 'effort', 'agent', 'rolePrompt', 'provider', 'providerSelection', 'subagent']
         .some(key => Object.prototype.hasOwnProperty.call(req.body || {}, key));
-      if (routeMutation) {
-        let backgroundActive = true;
-        try { backgroundActive = hasLiveBackgroundTasks(s.id) === true; } catch (_) {}
-        if (backgroundActive) {
-          return res.status(409).json({
-            error: 'session has a live background task; wait for it or cancel it before changing the provider route',
-          });
-        }
-        const cs = getChatState(s.id);
-        let streamBusy = false;
-        try { streamBusy = getChatStream()?.status?.(s.id)?.busy === true; } catch (_) {}
-        if (cs?._activeRunner || cs?.claudeProc || cs?.isStreaming || streamBusy) {
-          return res.status(409).json({ error: 'session has an active turn; stop it before changing the provider route' });
-        }
+      if (!preview && routeMutation && (s.pendingConfiguration || configurationBusy(s.id, {
+        getChatState, getChatStream, hasLiveBackgroundTasks, getPreparation: deps.getPreparation,
+      }))) {
+        // Run the exact same validation on a detached desired-state draft. No
+        // process, rollout, audit event or active route is touched by preview.
+        const draft = desiredSession(s);
+        let status = 200, result;
+        patchSession(req, {
+          status(code) { status = code; return this; },
+          json(body) { result = body; return this; },
+        }, draft);
+        if (status !== 200) return res.status(status).json(result);
+        sessionPersistence.mutate('http.stage-session-configuration', () => {
+          for (const key of ['label', 'memory', 'autoContinue', 'autoCommit']) {
+            if (Object.prototype.hasOwnProperty.call(req.body, key)) s[key] = draft[key];
+          }
+          stageConfiguration(s, draft, { fresh: s.pendingConfiguration?.fresh === true });
+        });
+        const event = { type: 'session_configuration_pending', sessionId: s.id,
+          pendingConfiguration: s.pendingConfiguration };
+        chatBroadcast(s.id, event); workspaceBroadcast(s.dirId, event);
+        appendEvent(s.dirId, 'session_configuration_pending', 'AI 配置已保存，下一轮生效', s.id);
+        return res.json({ ...result, ...readConfiguration(s), cli: s.cli,
+          effectiveModel: effectiveSessionModel(s), effectiveEffort: effectiveSessionEffort(s),
+          pendingConfiguration: s.pendingConfiguration,
+          deferred: true, appliesOn: 'next_turn' });
       }
       const hasProviderSelectionPatch = req.body.providerSelection !== undefined;
       const hasProviderPatch = req.body.provider !== undefined;
@@ -176,7 +194,7 @@ function createSessionProfileRoutes(rawDeps) {
             && candidate.providerId === requestedFallback)) {
         return res.status(400).json({ error: 'Auto Provider fallback must be an enabled candidate' });
       }
-      const mutation = sessionPersistence.begin('http.patch-session');
+      const mutation = preview ? { commit() {}, rollback() {} } : sessionPersistence.begin('http.patch-session');
       const rejectMutation = (status, body) => {
         mutation.rollback();
         return res.status(status).json(body);
@@ -207,7 +225,7 @@ function createSessionProfileRoutes(rawDeps) {
         // process, so close it now or the UI would report the new model while the
         // next turn still runs on the old one. Terminal sessions still need a
         // manual restart to relaunch their CLI with it.
-        if ((s.cli || 'claude') === 'claude' && s.kind === 'chat') chatStream().close(s.id);
+        if ((s.cli || 'claude') === 'claude' && s.kind === 'chat') closeStream();
         appendEvent(s.dirId, 'session_model_changed', `${s.label || s.id} → ${s.model || '默认'}`, s.id);
       }
       if (req.body.effort !== undefined) {
@@ -215,14 +233,14 @@ function createSessionProfileRoutes(rawDeps) {
         if (effort === undefined) return rejectMutation(400, { error: 'invalid effort' });
         if (!validEffortForCli(s.cli || 'claude', effort)) return rejectMutation(400, { error: 'invalid reasoning level' });
         s.effort = effort || null;
-        if ((s.cli || 'claude') === 'claude') chatStream().close(s.id);
+        if ((s.cli || 'claude') === 'claude') closeStream();
         appendEvent(s.dirId, 'session_effort_changed', `${s.label || s.id} → ${effectiveSessionEffort(s) || effortLabel(s.effort)}`, s.id);
       }
       if (req.body.agent !== undefined) {
         const agent = normalizeCliAgent(s.cli || 'claude', req.body.agent);
         if (agent === undefined) return rejectMutation(400, { error: 'agent is only supported by Claude/OpenCode and must be a valid agent name' });
         s.agent = agent;
-        if ((s.cli || 'claude') === 'claude' && s.kind === 'chat') chatStream().close(s.id);
+        if ((s.cli || 'claude') === 'claude' && s.kind === 'chat') closeStream();
         appendEvent(s.dirId, 'session_agent_changed', `${s.label || s.id} → ${s.agent || '默认 agent'}`, s.id);
       }
       if (req.body.rolePrompt !== undefined) {
@@ -230,7 +248,7 @@ function createSessionProfileRoutes(rawDeps) {
         if (rp.length > 40000) return rejectMutation(400, { error: 'rolePrompt too long (max 40000)' });
         // null clears the session override → it falls back to the directory default.
         s.rolePrompt = rp.trim() || null;
-        if ((s.cli || 'claude') === 'claude' && s.kind === 'chat') chatStream().close(s.id);
+        if ((s.cli || 'claude') === 'claude' && s.kind === 'chat') closeStream();
         appendEvent(s.dirId, 'session_role_changed', s.rolePrompt ? (s.label || s.id) : `${s.label || s.id}（清除，继承目录）`, s.id);
       }
       if (req.body.memory !== undefined) {
@@ -263,7 +281,7 @@ function createSessionProfileRoutes(rawDeps) {
         if (preparedPrimaryProvider && !hasProviderPatch) {
           if (s.cli === 'codex' && s.cliSessionId
               && s.provider !== preparedPrimaryProvider.providerId) {
-            providers.synchronizeCodexSessionRoute({
+            synchronizeRoute({
               logicalSessionId: s.id,
               nativeSessionId: s.cliSessionId,
               fromProviderId: s.provider,
@@ -273,7 +291,7 @@ function createSessionProfileRoutes(rawDeps) {
           s.provider = preparedPrimaryProvider.providerId;
           s.model = preparedPrimaryProvider.model || providerRouterRuntime.getProviderSummary(undefined, preparedPrimaryProvider.providerId)?.model || null;
         }
-        if ((s.cli || 'claude') === 'claude') chatStream().close(s.id);
+        if ((s.cli || 'claude') === 'claude') closeStream();
         appendEvent(s.dirId, 'session_provider_selection_changed',
           `${s.label || s.id} → ${preparedProviderSelection.value ? `Auto (${preparedProviderSelection.value.protocol}, ${preparedProviderSelection.value.candidates.filter(item => item.enabled).length} candidates)` : '手动 Provider'}`, s.id);
       }
@@ -285,7 +303,7 @@ function createSessionProfileRoutes(rawDeps) {
         // idle route boundary synchronize only the exact native rollout with
         // the canonical managed-session root before changing its authority.
         if (s.cli === 'codex' && s.cliSessionId && prevProvider !== v.value) {
-          providers.synchronizeCodexSessionRoute({
+          synchronizeRoute({
             logicalSessionId: s.id,
             nativeSessionId: s.cliSessionId,
             fromProviderId: prevProvider,
@@ -344,7 +362,7 @@ function createSessionProfileRoutes(rawDeps) {
         }
         // Chat sessions pick it up on the next per-turn spawn; a warm streaming
         // process must be torn down so it relaunches with the new env.
-        if ((s.cli || 'claude') === 'claude') chatStream().close(s.id);
+        if ((s.cli || 'claude') === 'claude') closeStream();
         const pname = v.value
           ? (providerSummary?.name || v.value)
           : (sessionCli === 'zcode' ? 'ZCode 原生 / Coding Plan' : (appType ? '默认登录' : '厂商客户端设置'));
@@ -387,7 +405,7 @@ function createSessionProfileRoutes(rawDeps) {
           return rejectMutation(400, { error: 'invalid subagent' });
         }
         // A warm streaming process must relaunch to pick up CLAUDE_CODE_SUBAGENT_MODEL.
-        if ((s.cli || 'claude') === 'claude') chatStream().close(s.id);
+        if ((s.cli || 'claude') === 'claude') closeStream();
         const subApp2 = (s.cli === 'codex') ? 'codex' : 'claude';
         const saName = s.subagent
           ? `${providerRouterRuntime.getProviderSummary(subApp2, s.subagent.providerId)?.name || s.subagent.providerId} / ${s.subagent.model}`
@@ -412,7 +430,8 @@ function createSessionProfileRoutes(rawDeps) {
         mutation.rollback();
         throw error;
       }
-    });
+    }
+    app.patch('/api/sessions/:id', (req, res) => patchSession(req, res));
 
     // ── Session fork (Happier-parity: branch a session at any message) ──
     // Creates a NEW live session that inherits the source's provider/model/effort/

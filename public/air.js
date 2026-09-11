@@ -506,6 +506,8 @@
       $('task-state').textContent = dir?.path || '添加目录后即可创建任务。';
     }
     for (const id of ['ai-capsule', 'roles-toggle', 'details-toggle']) $(id).hidden = !taskId;
+    const layoutButton = document.querySelector('[data-chat-layout]');
+    if (layoutButton) layoutButton.hidden = !taskId;
     $('ai-capsule').disabled = !selectedEntry || selectedEntry.readOnly;
     $('roles-toggle').disabled = !selectedEntry || selectedEntry.readOnly || !selectedEntry.roleBindings;
   }
@@ -788,11 +790,15 @@
       $('task-title').textContent = entry.task.title;
       $('task-state').textContent = taskStateText(entry);
       $('ai-capsule').disabled = entry.readOnly;
-      const routeName = entry.configuration.providerSelection?.mode === 'auto'
-        ? `Auto ${entry.configuration.providerSelection.protocol}`
-        : entry.configuration.providerName || '默认线路';
-      $('ai-capsule').textContent = [entry.configuration.cli, routeName,
-        entry.configuration.effectiveModel || entry.configuration.model || '默认模型'].filter(Boolean).join(' · ');
+      const pending = entry.configuration.pendingConfiguration;
+      const shown = pending
+        ? { ...entry.configuration, ...(pending.profile || {}), cli: pending.cli || entry.configuration.cli }
+        : entry.configuration;
+      const routeName = shown.providerSelection?.mode === 'auto'
+        ? `Auto ${shown.providerSelection.protocol}`
+        : shown.providerName || shown.provider || '默认线路';
+      $('ai-capsule').textContent = [shown.cli, routeName,
+        shown.effectiveModel || shown.model || '默认模型', pending ? '下轮生效' : ''].filter(Boolean).join(' · ');
       const roleCount = entry.roleBindings?.bindings?.length || 0;
       $('roles-toggle').disabled = entry.readOnly || !entry.roleBindings;
       $('roles-toggle').textContent = roleCount ? `${roleCount} 个角色` : '＋ 角色';

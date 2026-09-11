@@ -447,6 +447,10 @@
             if (!host.getSessionName?.()) host.updateTabIdentity?.(message.id);
           }
           break;
+        case 'session_configuration_pending':
+        case 'session_configuration_applied':
+          host.loadSessionModel?.();
+          break;
         case 'cli_switched':
           host.applyCliSwitchState?.(message);
           host.addSystemMsg?.(`⇄ CLI 已从 ${host.cliMeta?.[message.fromCli]?.label || message.fromCli} 切换到 ${host.cliMeta?.[message.cli]?.label || message.cli}；下一条消息会携带结构化上下文交接${message.reusedTarget ? '并恢复该 CLI 原会话' : ''}`);

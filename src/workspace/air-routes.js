@@ -51,6 +51,7 @@ function mountAirRoutes(app, deps) {
     let roleBindings = null;
     try { roleBindings = deps.shell.roleBindings(req.params.id); } catch (_) {}
     return { ...entry, resource: resource(entry.sessionId), configuration: {
+      pendingConfiguration: record?.pendingConfiguration || null,
       cli: record?.cli,
       model: record?.model,
       effectiveModel: deps.effectiveModel?.(record) || record?.model || null,

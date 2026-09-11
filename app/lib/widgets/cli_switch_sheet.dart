@@ -65,7 +65,7 @@ class _CliSwitchSheetState extends State<CliSwitchSheet> {
   @override
   void initState() {
     super.initState();
-    _target = widget.config.cli;
+    _target = widget.config.pendingCli ?? widget.config.cli;
     _config = widget.config;
   }
 
@@ -355,7 +355,7 @@ class _CliSwitchSheetState extends State<CliSwitchSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final canSubmit = _available(_target) && (_target != _config.cli || _fresh);
+    final canSubmit = _available(_target) && (_target != (_config.pendingCli ?? _config.cli) || _fresh);
     return SafeArea(
       child: SingleChildScrollView(
         padding: EdgeInsets.only(
@@ -398,7 +398,7 @@ class _CliSwitchSheetState extends State<CliSwitchSheet> {
             const Padding(
               padding: EdgeInsets.only(top: 4, bottom: 14),
               child: Text(
-                '如果当前回复仍在运行，确认切换会直接终止该回复并清空排队消息；'
+                '运行中可以提前保存，CLI 切换将在下轮生效；'
                 '已保存的历史与任务上下文会保留。',
                 style: TextStyle(color: Color(0xFFe3b341), fontSize: 12),
               ),
@@ -534,7 +534,9 @@ Future<void> openCliSwitchSheet(BuildContext context, {required String sessionId
       ..showSnackBar(
         SnackBar(
           content: Text(
-            result.reusedTarget
+            result.deferred
+                ? '已保存 ${(result.pendingCli ?? request.cli).displayName}，下轮生效'
+                : result.reusedTarget
                 ? '已切换到 ${result.cli.displayName}，并恢复该 CLI 的原会话'
                 : '已切换到 ${result.cli.displayName}，下一条消息会接收上下文交接',
           ),

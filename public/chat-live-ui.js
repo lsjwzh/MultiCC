@@ -14,25 +14,46 @@
     const ids = opts.ids || [];
     const compactIds = opts.compactIds || [];
     let backdrop = null;
+    let savedStyle = null;
 
     function close() {
+      if (typeof menu?.hidePopover === 'function' && menu.matches(':popover-open')) menu.hidePopover();
       menu?.classList.remove('open');
-      if (!backdrop) return;
-      wrap?.appendChild(menu);
-      backdrop.remove();
+      button?.setAttribute('aria-expanded', 'false');
+      if (savedStyle !== null) { menu.style.cssText = savedStyle; savedStyle = null; }
+      if (menu && wrap && menu.parentElement !== wrap) wrap.appendChild(menu);
+      backdrop?.remove();
       backdrop = null;
     }
 
     function open() {
       close();
+      if (!menu) return;
+      savedStyle = menu.style.cssText;
+      // The header can be inside a backdrop-filter/transform stacking context.
+      // The browser top layer puts the menu above tool cards regardless of it.
+      const topLayer = typeof menu.showPopover === 'function';
+      doc.body.appendChild(menu);
+      if (topLayer) menu.setAttribute('popover', 'manual');
       if (win.innerWidth <= 760) {
+        menu.style.cssText += ';margin:0;bottom:auto;';
         backdrop = doc.createElement('div');
         backdrop.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:16px;';
         backdrop.appendChild(menu);
         doc.body.appendChild(backdrop);
         backdrop.addEventListener('click', event => { if (event.target === backdrop) close(); });
+      } else {
+        const rect = button.getBoundingClientRect();
+        menu.style.cssText += `;position:fixed;margin:0;transform:none;right:12px;left:auto;top:${rect.bottom + 6}px;max-width:calc(100vw - 24px);max-height:calc(100dvh - ${rect.bottom + 18}px);overflow-y:auto;z-index:10000;`;
       }
       menu?.classList.add('open');
+      if (topLayer) menu.showPopover();
+      if (win.innerWidth > 760) {
+        const width = menu.getBoundingClientRect().width;
+        menu.style.left = `${Math.max(12, Math.min(button.getBoundingClientRect().right - width, win.innerWidth - width - 12))}px`;
+        menu.style.right = 'auto';
+      }
+      button?.setAttribute('aria-expanded', 'true');
     }
 
     function sync() {
@@ -57,10 +78,15 @@
     button?.addEventListener('click', event => {
       event.stopPropagation();
       if (!menu?.classList.contains('open')) open();
+      else close();
     });
     menu?.addEventListener('click', event => { if (event.target.closest('.hdr-btn')) close(); });
     doc.addEventListener('click', event => {
-      if (wrap && !wrap.contains(event.target) && (!backdrop || !backdrop.contains(event.target))) close();
+      if (wrap && !wrap.contains(event.target) && !menu?.contains(event.target)
+          && (!backdrop || !backdrop.contains(event.target))) close();
+    });
+    doc.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && menu?.classList.contains('open')) { close(); button?.focus(); }
     });
     win.addEventListener('resize', sync);
     win.setTimeout(sync, 0);
@@ -1150,7 +1176,7 @@
         resetRow.append(reset, resetText);
         const warning = doc.createElement('div');
         warning.style.cssText = 'font-size:12px;color:#d29922;line-height:1.55;margin-bottom:14px;';
-        warning.textContent = '如果当前回复仍在运行，确认切换会直接终止该回复并清空排队消息；已保存的历史与任务上下文会保留。';
+        warning.textContent = '运行中也可以保存：本轮继续使用当前 CLI，下轮开始时切换，保留排队消息与任务上下文。';
         const actions = doc.createElement('div');
         actions.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;'
           + 'position:sticky;bottom:-20px;background:#161b22;padding:12px 0 20px;margin-bottom:-20px;';
