@@ -131,18 +131,29 @@ do_start() {
     port="$($NODE -e 'const fs=require("fs");let s="";try{s=fs.readFileSync(process.argv[1],"utf8")}catch{};const m=s.match(/^PORT\s*=\s*([0-9]+)/m);process.stdout.write(m?m[1]:"3000")' "$SCRIPT_DIR/.env")"
   fi
   # Resolve port collisions before spawning Node. A process running this
-  # checkout is safe to replace; unrelated processes cause an automatic port
-  # selection and the choice is persisted in .env for the server and clients.
+  # checkout is safe to replace (matched by absolute path, or by a relative
+  # server.js whose cwd is this checkout); anything else — or a server that
+  # refuses to die — triggers automatic port selection. The chosen port is
+  # persisted in .env by REPLACING any previous PORT line (readers take the
+  # first match, so appending would silently lose the new port).
   port_owner=$(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null | head -1)
   if [ -n "$port_owner" ]; then
-    if ps -p "$port_owner" -o command= 2>/dev/null | grep -Fq "$SCRIPT_DIR/server.js"; then
+    local owner_cmd owner_cwd
+    owner_cmd=$(ps -p "$port_owner" -o command= 2>/dev/null)
+    owner_cwd=$(lsof -a -p "$port_owner" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
+    if echo "$owner_cmd" | grep -q 'server\.js' \
+       && { [ "$owner_cwd" = "$SCRIPT_DIR" ] || echo "$owner_cmd" | grep -Fq "$SCRIPT_DIR/server.js"; }; then
       echo "Stopping existing MultiCC on port $port (PID $port_owner)..."
       kill "$port_owner" 2>/dev/null || true
+      for _i in $(seq 1 10); do kill -0 "$port_owner" 2>/dev/null || break; sleep 1; done
+      kill -9 "$port_owner" 2>/dev/null || true
       sleep 1
-    else
+      port_owner=$(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null | head -1)
+    fi
+    if [ -n "$port_owner" ]; then
       port="$($NODE -e 'const net=require("net");const start=Number(process.argv[1])||3000;let p=start;function t(){const s=net.createServer();s.once("error",()=>{s.close();p++;t()});s.listen(p,"127.0.0.1",()=>{console.log(p);s.close()})}t()' "$port")"
-      echo "Port occupied by another process; using port $port."
-      printf 'PORT=%s\n' "$port" >> "$SCRIPT_DIR/.env"
+      echo "Port occupied by another process (PID $port_owner); using port $port."
+      "$NODE" -e 'const fs=require("fs");const f=process.argv[1],p=process.argv[2];let s="";try{s=fs.readFileSync(f,"utf8")}catch{};if(/^PORT\s*=/m.test(s)){s=s.replace(/^PORT\s*=.*$/m,"PORT="+p)}else{s+=(s&&!s.endsWith("\n")?"\n":"")+"PORT="+p+"\n"}fs.writeFileSync(f,s)' "$SCRIPT_DIR/.env" "$port"
     fi
   fi
   echo "Starting MultiCC..."
@@ -162,6 +173,16 @@ do_start() {
 }
 
 do_stop() {
+  # Disable every auto-restart source first, otherwise the server resurrects
+  # right after we kill it: the launchd KeepAlive job, a ghost pm2 app, and
+  # detached graceful-restart scripts (cancelled inside server-processes.js).
+  if [ -f "$PLIST" ] && launchctl list 2>/dev/null | grep -q "$LABEL"; then
+    launchctl unload "$PLIST" 2>/dev/null
+    echo "launchd auto-restart disabled (run './multicc install' to re-enable)"
+  fi
+  if command -v pm2 >/dev/null 2>&1 && pm2 describe multicc >/dev/null 2>&1; then
+    pm2 delete multicc >/dev/null 2>&1 && echo "Removed pm2 app 'multicc' (it was auto-restarting the server)"
+  fi
   # Resolve relative server.js against each process cwd, reap verified descendants
   # and force-kill survivors after the graceful drain. PID files are not authority.
   "$NODE" "$SCRIPT_DIR/src/server-processes.js" stop "$SCRIPT_DIR" || return 1
@@ -604,7 +625,7 @@ EOF
   echo "  Plist: $PLIST"
   echo ""
   echo "  ./multicc restart   — restart service"
-  echo "  ./multicc stop      — stop (will auto-restart via KeepAlive)"
+  echo "  ./multicc stop      — stop and disable auto-restart (install re-enables)"
   echo "  ./multicc uninstall — remove auto-start"
 }
 
