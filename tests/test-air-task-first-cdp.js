@@ -384,7 +384,12 @@ test('Air task-first console, management views, roles, configuration, artifacts 
       assert.ok(await page.waitFor(`${frame}.getElementById('worktree-force-sync-btn')`));
       assert.equal(await page.evaluate(`${frame}.getElementById('worktree-force-sync-btn').getBoundingClientRect().right<=${frame}.documentElement.clientWidth`), true);
       await page.evaluate(`${frame}.defaultView.renderAuxClassify('完善任务协作体验，保留所有同步与状态操作','implementing','P')`);
-      assert.ok(await page.evaluate(`${frame}.getElementById('chat-context-bar').getBoundingClientRect().height<=105`), JSON.stringify(await page.evaluate(`({width:innerWidth,groups:['chat-context-bar','header','worktree-bar','aux-classify-bar'].map(id=>({id,rect:${frame}.getElementById(id).getBoundingClientRect().toJSON()}))})`)));
+      // 手机上一行消息只值 23px，消息上方这几条得压成两行：分支/连接一行，
+      // 药丸/目标一行。目标曾经独占一整行（flex-basis:100%），那就是 100px 起。
+      const mobileBars = await page.evaluate(`(()=>{const d=${frame};const r=id=>d.getElementById(id).getBoundingClientRect();return {width:innerWidth,bar:r('chat-context-bar').toJSON(),aux:r('aux-classify-bar').toJSON(),goal:r('ac-goal').toJSON(),state:r('ac-state').toJSON(),groups:['chat-context-bar','header','worktree-bar','aux-classify-bar'].map(id=>({id,rect:r(id).toJSON()}))}})()`);
+      assert.ok(mobileBars.bar.height <= 70, JSON.stringify(mobileBars));
+      assert.ok(mobileBars.aux.height <= 26, JSON.stringify(mobileBars));
+      assert.ok(Math.abs(mobileBars.goal.top - mobileBars.state.top) < 12, JSON.stringify(mobileBars));
       assert.equal(await page.evaluate(`${frame}.getElementById('ac-cancel-task').getBoundingClientRect().right<=${frame}.documentElement.clientWidth`), true);
       const mobileLayout = await page.evaluate(`(()=>{const s=document.getElementById('sidebar'),r=s.getBoundingClientRect();return {sidebarLeft:r.left,sidebarRight:r.right,sidebarWidth:r.width,transform:getComputedStyle(s).transform,position:getComputedStyle(s).position,bodyClass:document.body.className,media:matchMedia('(max-width:760px)').matches}})()`);
       assert.equal(mobileLayout.sidebarRight <= 0, true, JSON.stringify(mobileLayout));
