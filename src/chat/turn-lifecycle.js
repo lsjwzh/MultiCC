@@ -196,11 +196,14 @@ function assignKillReason(runner, reason) {
 // Clear them only after the owning adapter confirms completion, the execution
 // boundary settles, and the result is durable. Proxy failures are independently
 // reconciled by the attempt runtime and still veto success.
+// A boundary error envelope ("Codex 出错：Selected model is at capacity" as
+// the assistant text) is provider-owned fault evidence — never clear it.
 function clearErrorFlagsForSucceededTurn(turn, runner, cs, facts = {}) {
   if (!turn || !runner || turn.resultDurable !== true) return false;
   if (!isCompleted(runner.completionOutcome) || !runner.runnerId || turn.resultRunnerId !== runner.runnerId) return false;
   if (facts.killReason) return false;
   if (facts.code !== undefined && facts.code !== null && facts.code !== 0) return false;
+  if (facts.boundaryErrorEnvelope) return false;
   const hadErrorFlags = !!(runner.sawApiError || runner.apiErrorRaw || runner.adapterError);
   runner.sawApiError = false;
   runner.apiErrorRaw = null;

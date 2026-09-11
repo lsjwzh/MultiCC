@@ -73,4 +73,18 @@ function stateful(over = {}) {
   assert.strictEqual(cleared, false);
 }
 
-console.log('test-turn-error-veto: OK (6 assertions)');
+{
+  // "Codex 出错：Selected model is at capacity" as the assistant text: the
+  // boundary envelope is provider-owned fault evidence. Even with a durable
+  // result and clean exit the flags must survive so the classifier sees the
+  // error and does not advance the FIFO.
+  const { turn, runner, cs } = stateful();
+  const envelope = { source: 'codex_event', provider: 'codex', message: 'Codex 出错：Selected model is at capacity. Please try a different model.', httpStatus: null, body: null };
+  const cleared = clearErrorFlagsForSucceededTurn(turn, runner, cs, { code: 0, killReason: null, boundaryErrorEnvelope: envelope });
+  assert.strictEqual(cleared, false);
+  assert.strictEqual(runner.sawApiError, true);
+  assert.ok(runner.apiErrorRaw);
+  assert.strictEqual(cs._sawApiError, true);
+}
+
+console.log('test-turn-error-veto: OK (7 assertions)');

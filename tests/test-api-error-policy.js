@@ -440,6 +440,9 @@ test('structured watchdog, stale-connection and server_error codes classify with
     [{ code: 'network_down', source: 'claude_result', provider: 'claude', message: '' }, 'network'],
     [{ code: 'server_error', source: 'claude_result', provider: 'claude', message: '' }, 'provider_transient'],
     [{ code: 'overloaded_error', source: 'claude_result', provider: 'claude', message: '' }, 'provider_transient'],
+    // Codex capacity error text: no structured code, classified from message.
+    [{ code: '', source: 'codex_event', provider: 'codex', message: 'Selected model is at capacity. Please try a different model.' }, 'provider_transient'],
+    [{ code: '', source: 'codex_event', provider: 'codex', message: 'Codex 出错：Selected model is at capacity. Please try a different model.' }, 'provider_transient'],
   ];
   for (const [raw, category] of cases) {
     assert.equal(normalizeApiError(raw, {
