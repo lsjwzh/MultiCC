@@ -116,6 +116,95 @@ nav { display: flex; flex-direction: column; gap: 4px; }
 .global-links button:hover, .global-links button.active { color: #0f63c6; background: rgba(255, 255, 255, .78); }
 .side-bottom small { margin-top: 4px; line-height: 1.5; }
 
+/* ── Host ops (air-ops.js): the manage sidebar's pinned bottom region ── */
+.ops-version {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 0;
+  margin-top: 4px;
+  padding: 8px 7px 5px;
+  border: 1px solid transparent;
+  border-top: 1px solid var(--line);
+  border-radius: 0 0 10px 10px;
+  cursor: pointer;
+}
+.ops-version:hover { border-color: #c7ddf5; background: var(--blue-soft); }
+.ops-icon { font-size: 13px; opacity: .8; }
+.ops-version-text { min-width: 0; flex: 1; display: grid; }
+.ops-version-text span {
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  line-height: 1.35;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+#air-ver-current { color: var(--text); font-size: 11px; }
+#air-ver-hint { color: var(--faint); font-size: 10px; }
+#air-ver-hint.busy { color: var(--accent-strong); }
+.ops-badge {
+  flex-shrink: 0;
+  padding: 2px 7px;
+  color: var(--accent);
+  border-radius: 20px;
+  background: var(--blue-soft);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  font-weight: 650;
+}
+/* Indented to the version text rather than the icon, on the same two-line
+   rhythm, so the boot fact reads as the version row's sibling. */
+.ops-boot { padding: 0 7px 2px 28px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.ops-boot-row { display: flex; gap: 6px; font-size: 11px; line-height: 1.35; }
+.ops-boot-label { color: var(--faint); }
+#air-boot-time { overflow: hidden; color: var(--text); white-space: nowrap; text-overflow: ellipsis; }
+.ops-boot-uptime { color: var(--faint); font-size: 10px; line-height: 1.35; }
+.ops-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 6px; padding: 2px 0 0; }
+.ops-actions button, .ops-actions a {
+  min-height: 28px;
+  padding: 3px 7px;
+  color: #526b83;
+  border-color: transparent;
+  background: transparent;
+  font-size: 11px;
+  text-align: left;
+}
+.ops-actions a { display: flex; align-items: center; border: 1px solid transparent; border-radius: 11px; }
+.ops-actions button:hover, .ops-actions a:hover { color: #0f63c6; background: rgba(255, 255, 255, .78); }
+.ops-actions button.on { color: var(--green); font-weight: 600; }
+.ops-status { margin: 2px 0 0; color: var(--muted); font-size: 10.5px; line-height: 1.5; }
+.ops-status.warn { color: var(--warning); }
+.ops-status.err { color: var(--danger); }
+
+.ops-dialog { max-width: 620px; }
+.ops-dialog > p { white-space: pre-line; color: var(--muted); font-size: 12px; line-height: 1.7; }
+.ops-dialog .section-heading { margin-bottom: 14px; }
+.ops-force { display: flex; gap: 8px; align-items: flex-start; margin-top: 14px; color: var(--muted); font-size: 12px; line-height: 1.6; cursor: pointer; }
+.ops-force input { flex: 0 0 auto; width: 15px; height: 15px; margin-top: 3px; }
+.ops-dialog #ops-log {
+  max-height: 240px;
+  margin: 12px 0 0;
+  padding: 11px 13px;
+  overflow: auto;
+  color: #40536b;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--well);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+.ops-downloads { display: grid; gap: 9px; margin-top: 14px; }
+.ops-download { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--well); }
+.ops-download > div { min-width: 0; flex: 1; display: grid; }
+.ops-download strong { font-size: 13px; }
+.ops-download small { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; }
+.ops-download a { flex-shrink: 0; padding: 7px 14px; border-radius: 10px; font-size: 12px; }
+.ops-qr { display: grid; gap: 9px; margin-top: 14px; justify-items: center; }
+.ops-qr canvas { max-width: 100%; height: auto; border: 1px solid var(--line); border-radius: 12px; }
+.ops-qr small { margin: 0; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; text-align: center; }
+
 #nav-scrim { position: fixed; z-index: 20; inset: 0; width: 100%; height: 100%; border: 0; border-radius: 0; background: rgba(32, 49, 70, .26); }
 main { min-width: 0; flex: 1; display: flex; flex-direction: column; background: rgba(255, 255, 255, .8); }
 #task-header { min-height: 88px; flex-shrink: 0; display: flex; align-items: center; gap: 12px; padding: 13px 24px; border-bottom: 1px solid var(--line); background: rgba(255, 255, 255, .82); backdrop-filter: blur(20px); }
