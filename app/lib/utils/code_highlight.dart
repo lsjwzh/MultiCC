@@ -18,12 +18,12 @@ enum CodeTokenKind { keyword, string, comment, number, builtin, attr }
 /// GitHub-dark-derived palette matching the app's code surfaces
 /// (tool cards use #070809/#14171c backgrounds).
 const Map<CodeTokenKind, Color> codeTokenColors = {
-  CodeTokenKind.keyword: Color(0xFFFF7B72), // red
-  CodeTokenKind.string: Color(0xFFA5D6FF), // light blue
-  CodeTokenKind.comment: Color(0xFF8B949E), // gray
-  CodeTokenKind.number: Color(0xFF79C0FF), // blue
-  CodeTokenKind.builtin: Color(0xFFD2A8FF), // purple
-  CodeTokenKind.attr: Color(0xFF7EE787), // green
+  CodeTokenKind.keyword: Color(0xFFc0392b), // red
+  CodeTokenKind.string: Color(0xFF032f62), // light blue
+  CodeTokenKind.comment: Color(0xFF6f8096), // gray
+  CodeTokenKind.number: Color(0xFF005cc5), // blue
+  CodeTokenKind.builtin: Color(0xFF6f42c1), // purple
+  CodeTokenKind.attr: Color(0xFF22863a), // green
 };
 
 class CodeSpan {

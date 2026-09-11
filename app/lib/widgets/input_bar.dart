@@ -125,7 +125,7 @@ class _InputBarState extends State<InputBar> {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text('Upload failed: ${res.statusCode}'),
-              backgroundColor: const Color(0xFFff6b63),
+              backgroundColor: const Color(0xFFb64e43),
             ),
           );
         }
@@ -135,7 +135,7 @@ class _InputBarState extends State<InputBar> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Upload error: $e'),
-            backgroundColor: const Color(0xFFff6b63),
+            backgroundColor: const Color(0xFFb64e43),
           ),
         );
       }
@@ -160,7 +160,7 @@ class _InputBarState extends State<InputBar> {
         content: Text(
           result.message ?? VoiceLaunchService.describe(result.errorCode),
         ),
-        backgroundColor: const Color(0xFFff6b63),
+        backgroundColor: const Color(0xFFb64e43),
       ),
     );
   }
@@ -228,7 +228,7 @@ class _InputBarState extends State<InputBar> {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text('STT failed: ${res.statusCode}'),
-              backgroundColor: const Color(0xFFff6b63),
+              backgroundColor: const Color(0xFFb64e43),
             ),
           );
         }
@@ -238,7 +238,7 @@ class _InputBarState extends State<InputBar> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('STT error: $e'),
-            backgroundColor: const Color(0xFFff6b63),
+            backgroundColor: const Color(0xFFb64e43),
           ),
         );
       }
@@ -257,7 +257,7 @@ class _InputBarState extends State<InputBar> {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      backgroundColor: const Color(0xFF0f1115),
+      backgroundColor: const Color(0xFFffffff),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
@@ -278,7 +278,7 @@ class _InputBarState extends State<InputBar> {
                   Text(
                     '🎤 ${t('voiceRecognition')}',
                     style: const TextStyle(
-                      color: Color(0xFFf2f4f7),
+                      color: Color(0xFF20364d),
                       fontSize: 16,
                       fontWeight: FontWeight.w600,
                     ),
@@ -287,7 +287,7 @@ class _InputBarState extends State<InputBar> {
                   Text(
                     t('voiceRawTranscript'),
                     style: const TextStyle(
-                      color: Color(0xFF8a909b),
+                      color: Color(0xFF6f8096),
                       fontSize: 12,
                     ),
                   ),
@@ -296,23 +296,23 @@ class _InputBarState extends State<InputBar> {
                     controller: rawCtrl,
                     maxLines: 4,
                     style: const TextStyle(
-                      color: Color(0xFFe7eaee),
+                      color: Color(0xFF233249),
                       fontSize: 14,
                     ),
                     decoration: InputDecoration(
                       filled: true,
-                      fillColor: const Color(0xFF070809),
+                      fillColor: const Color(0xFFf4f8fd),
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(8),
-                        borderSide: const BorderSide(color: Color(0xFF20242b)),
+                        borderSide: const BorderSide(color: Color(0xFFdce6f1)),
                       ),
                       enabledBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(8),
-                        borderSide: const BorderSide(color: Color(0xFF20242b)),
+                        borderSide: const BorderSide(color: Color(0xFFdce6f1)),
                       ),
                       focusedBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(8),
-                        borderSide: const BorderSide(color: Color(0xFF6aa3ff)),
+                        borderSide: const BorderSide(color: Color(0xFF1267b5)),
                       ),
                     ),
                   ),
@@ -321,7 +321,7 @@ class _InputBarState extends State<InputBar> {
                     Text(
                       t('aiRefine'),
                       style: const TextStyle(
-                        color: Color(0xFF8a909b),
+                        color: Color(0xFF6f8096),
                         fontSize: 12,
                       ),
                     ),
@@ -329,14 +329,14 @@ class _InputBarState extends State<InputBar> {
                     Container(
                       padding: const EdgeInsets.all(10),
                       decoration: BoxDecoration(
-                        color: const Color(0xFF070809),
-                        border: Border.all(color: const Color(0xFF22ab9c)),
+                        color: const Color(0xFFf4f8fd),
+                        border: Border.all(color: const Color(0xFF0965cf)),
                         borderRadius: BorderRadius.circular(8),
                       ),
                       child: Text(
                         refinedText!,
                         style: const TextStyle(
-                          color: Color(0xFFe7eaee),
+                          color: Color(0xFF233249),
                           fontSize: 14,
                         ),
                       ),
@@ -349,8 +349,8 @@ class _InputBarState extends State<InputBar> {
                         child: OutlinedButton(
                           onPressed: () => Navigator.pop(ctx),
                           style: OutlinedButton.styleFrom(
-                            foregroundColor: const Color(0xFF8a909b),
-                            side: const BorderSide(color: Color(0xFF20242b)),
+                            foregroundColor: const Color(0xFF6f8096),
+                            side: const BorderSide(color: Color(0xFFdce6f1)),
                           ),
                           child: Text(t('cancel')),
                         ),
@@ -375,8 +375,8 @@ class _InputBarState extends State<InputBar> {
                                   }
                                 },
                           style: OutlinedButton.styleFrom(
-                            foregroundColor: const Color(0xFF8a909b),
-                            side: const BorderSide(color: Color(0xFF20242b)),
+                            foregroundColor: const Color(0xFF6f8096),
+                            side: const BorderSide(color: Color(0xFFdce6f1)),
                           ),
                           child: isRefining
                               ? const SizedBox(
@@ -384,7 +384,7 @@ class _InputBarState extends State<InputBar> {
                                   height: 16,
                                   child: CircularProgressIndicator(
                                     strokeWidth: 2,
-                                    color: Color(0xFF8a909b),
+                                    color: Color(0xFF6f8096),
                                   ),
                                 )
                               : Text(t('aiRefine')),
@@ -409,7 +409,7 @@ class _InputBarState extends State<InputBar> {
                             );
                           },
                           style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF22ab9c),
+                            backgroundColor: const Color(0xFF0965cf),
                             foregroundColor: Colors.white,
                           ),
                           child: Text(
@@ -516,7 +516,7 @@ class _InputBarState extends State<InputBar> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(t('voiceEmpty')),
-          backgroundColor: const Color(0xFF454b54),
+          backgroundColor: const Color(0xFF8b9cae),
         ),
       );
       return;
@@ -536,7 +536,7 @@ class _InputBarState extends State<InputBar> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(t('voiceStreamUnavailable')),
-        backgroundColor: const Color(0xFF454b54),
+        backgroundColor: const Color(0xFF8b9cae),
       ),
     );
     await _toggleRecording();
@@ -571,7 +571,7 @@ class _InputBarState extends State<InputBar> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(t('connectionLostRetry')),
-        backgroundColor: const Color(0xFF454b54),
+        backgroundColor: const Color(0xFF8b9cae),
       ),
     );
     return false;
@@ -665,7 +665,7 @@ class _InputBarState extends State<InputBar> {
                 ? t('queueEntryAlreadyClaimed')
                 : t('queueActionFailed', {'error': '$error'}),
           ),
-          backgroundColor: const Color(0xFF3a1414),
+          backgroundColor: const Color(0xFFfff1ef),
         ),
       );
     }
@@ -736,26 +736,26 @@ class _InputBarState extends State<InputBar> {
       controller: ctrl,
       maxLines: maxLines,
       style: const TextStyle(
-        color: Color(0xFFe7eaee),
+        color: Color(0xFF233249),
         fontSize: 14,
         height: 1.4,
       ),
       decoration: InputDecoration(
         hintText: hint,
-        hintStyle: const TextStyle(color: Color(0xFF454b54)),
+        hintStyle: const TextStyle(color: Color(0xFF8b9cae)),
         filled: true,
-        fillColor: const Color(0xFF070809),
+        fillColor: const Color(0xFFf4f8fd),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(8),
-          borderSide: const BorderSide(color: Color(0xFF20242b)),
+          borderSide: const BorderSide(color: Color(0xFFdce6f1)),
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(8),
-          borderSide: const BorderSide(color: Color(0xFF20242b)),
+          borderSide: const BorderSide(color: Color(0xFFdce6f1)),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(8),
-          borderSide: const BorderSide(color: Color(0xFF6aa3ff)),
+          borderSide: const BorderSide(color: Color(0xFF1267b5)),
         ),
       ),
     );
@@ -768,34 +768,34 @@ class _InputBarState extends State<InputBar> {
       children: [
         Text(
           label,
-          style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+          style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
         ),
         const SizedBox(height: 4),
         TextField(
           controller: ctrl,
           keyboardType: TextInputType.number,
-          style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 14),
+          style: const TextStyle(color: Color(0xFF233249), fontSize: 14),
           decoration: InputDecoration(
             hintText: hint,
-            hintStyle: const TextStyle(color: Color(0xFF454b54)),
+            hintStyle: const TextStyle(color: Color(0xFF8b9cae)),
             isDense: true,
             contentPadding: const EdgeInsets.symmetric(
               horizontal: 10,
               vertical: 10,
             ),
             filled: true,
-            fillColor: const Color(0xFF070809),
+            fillColor: const Color(0xFFf4f8fd),
             border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(8),
-              borderSide: const BorderSide(color: Color(0xFF20242b)),
+              borderSide: const BorderSide(color: Color(0xFFdce6f1)),
             ),
             enabledBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(8),
-              borderSide: const BorderSide(color: Color(0xFF20242b)),
+              borderSide: const BorderSide(color: Color(0xFFdce6f1)),
             ),
             focusedBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(8),
-              borderSide: const BorderSide(color: Color(0xFF6aa3ff)),
+              borderSide: const BorderSide(color: Color(0xFF1267b5)),
             ),
           ),
         ),
@@ -812,7 +812,7 @@ class _InputBarState extends State<InputBar> {
           padding: const EdgeInsets.only(top: 8, bottom: 2),
           child: Text(
             title,
-            style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+            style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
           ),
         ),
         ...items.map(
@@ -821,7 +821,7 @@ class _InputBarState extends State<InputBar> {
             child: Text(
               '• $x',
               style: const TextStyle(
-                color: Color(0xFFc9d1d9),
+                color: Color(0xFF31465b),
                 fontSize: 12,
                 height: 1.4,
               ),
@@ -877,7 +877,7 @@ class _InputBarState extends State<InputBar> {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      backgroundColor: const Color(0xFF0f1115),
+      backgroundColor: const Color(0xFFffffff),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
@@ -900,7 +900,7 @@ class _InputBarState extends State<InputBar> {
                     Text(
                       '🎯 ${t('goalSendTitle')}',
                       style: const TextStyle(
-                        color: Color(0xFFf2f4f7),
+                        color: Color(0xFF20364d),
                         fontSize: 16,
                         fontWeight: FontWeight.w600,
                       ),
@@ -909,7 +909,7 @@ class _InputBarState extends State<InputBar> {
                     Text(
                       t('goalSendHint'),
                       style: const TextStyle(
-                        color: Color(0xFF8a909b),
+                        color: Color(0xFF6f8096),
                         fontSize: 12,
                         height: 1.4,
                       ),
@@ -918,7 +918,7 @@ class _InputBarState extends State<InputBar> {
                     Text(
                       t('task'),
                       style: const TextStyle(
-                        color: Color(0xFF8a909b),
+                        color: Color(0xFF6f8096),
                         fontSize: 12,
                       ),
                     ),
@@ -928,7 +928,7 @@ class _InputBarState extends State<InputBar> {
                     Text(
                       t('goalDimensionsOnce'),
                       style: const TextStyle(
-                        color: Color(0xFF8a909b),
+                        color: Color(0xFF6f8096),
                         fontSize: 12,
                       ),
                     ),
@@ -946,14 +946,14 @@ class _InputBarState extends State<InputBar> {
                           selected: on,
                           onSelected: (v) =>
                               setSheetState(() => dims[e.key] = v),
-                          backgroundColor: const Color(0xFF14171c),
-                          selectedColor: const Color(0xFF22ab9c),
+                          backgroundColor: const Color(0xFFf8fbff),
+                          selectedColor: const Color(0xFF0965cf),
                           checkmarkColor: Colors.white,
                           labelStyle: TextStyle(
-                            color: on ? Colors.white : const Color(0xFF8a909b),
+                            color: on ? Colors.white : const Color(0xFF6f8096),
                             fontSize: 12,
                           ),
-                          side: const BorderSide(color: Color(0xFF20242b)),
+                          side: const BorderSide(color: Color(0xFFdce6f1)),
                           materialTapTargetSize:
                               MaterialTapTargetSize.shrinkWrap,
                           visualDensity: VisualDensity.compact,
@@ -964,7 +964,7 @@ class _InputBarState extends State<InputBar> {
                     Text(
                       t('goalLimits'),
                       style: const TextStyle(
-                        color: Color(0xFF8a909b),
+                        color: Color(0xFF6f8096),
                         fontSize: 12,
                       ),
                     ),
@@ -997,12 +997,12 @@ class _InputBarState extends State<InputBar> {
                         ),
                         decoration: BoxDecoration(
                           color: ok
-                              ? const Color(0xFF12261a)
-                              : const Color(0xFF2b2410),
+                              ? const Color(0xFFedf8f1)
+                              : const Color(0xFFfff8eb),
                           border: Border.all(
                             color: ok
-                                ? const Color(0xFF2ea043)
-                                : const Color(0xFFbb8009),
+                                ? const Color(0xFF2ba67a)
+                                : const Color(0xFFa85a25),
                           ),
                           borderRadius: BorderRadius.circular(8),
                         ),
@@ -1010,8 +1010,8 @@ class _InputBarState extends State<InputBar> {
                           '${ok ? '✅ ${t('goalQualified')}' : '⚠️ ${t('goalNeedsWork')}'} (${t('goalScore', {'score': '${verdict!['score'] ?? '-'}'})})',
                           style: TextStyle(
                             color: ok
-                                ? const Color(0xFF3fb950)
-                                : const Color(0xFFd29922),
+                                ? const Color(0xFF2ba67a)
+                                : const Color(0xFFa85a25),
                             fontSize: 13,
                             fontWeight: FontWeight.w600,
                           ),
@@ -1033,7 +1033,7 @@ class _InputBarState extends State<InputBar> {
                       Text(
                         t('goalRevised'),
                         style: const TextStyle(
-                          color: Color(0xFF8a909b),
+                          color: Color(0xFF6f8096),
                           fontSize: 12,
                         ),
                       ),
@@ -1045,7 +1045,7 @@ class _InputBarState extends State<InputBar> {
                       Text(
                         error!,
                         style: const TextStyle(
-                          color: Color(0xFFff6b63),
+                          color: Color(0xFFb64e43),
                           fontSize: 12,
                         ),
                       ),
@@ -1057,8 +1057,8 @@ class _InputBarState extends State<InputBar> {
                           child: OutlinedButton(
                             onPressed: () => Navigator.pop(ctx),
                             style: OutlinedButton.styleFrom(
-                              foregroundColor: const Color(0xFF8a909b),
-                              side: const BorderSide(color: Color(0xFF20242b)),
+                              foregroundColor: const Color(0xFF6f8096),
+                              side: const BorderSide(color: Color(0xFFdce6f1)),
                             ),
                             child: Text(t('cancel')),
                           ),
@@ -1103,8 +1103,8 @@ class _InputBarState extends State<InputBar> {
                                     });
                                   },
                             style: OutlinedButton.styleFrom(
-                              foregroundColor: const Color(0xFF8a909b),
-                              side: const BorderSide(color: Color(0xFF20242b)),
+                              foregroundColor: const Color(0xFF6f8096),
+                              side: const BorderSide(color: Color(0xFFdce6f1)),
                             ),
                             child: checking
                                 ? const SizedBox(
@@ -1112,7 +1112,7 @@ class _InputBarState extends State<InputBar> {
                                     height: 16,
                                     child: CircularProgressIndicator(
                                       strokeWidth: 2,
-                                      color: Color(0xFF8a909b),
+                                      color: Color(0xFF6f8096),
                                     ),
                                   )
                                 : Text(
@@ -1132,7 +1132,7 @@ class _InputBarState extends State<InputBar> {
                             child: TextButton(
                               onPressed: () => sendGoal(taskCtrl.text),
                               style: TextButton.styleFrom(
-                                foregroundColor: const Color(0xFF8a909b),
+                                foregroundColor: const Color(0xFF6f8096),
                               ),
                               child: Text(t('sendOriginal')),
                             ),
@@ -1149,7 +1149,7 @@ class _InputBarState extends State<InputBar> {
                                     : taskCtrl.text,
                               ),
                               style: ElevatedButton.styleFrom(
-                                backgroundColor: const Color(0xFF22ab9c),
+                                backgroundColor: const Color(0xFF0965cf),
                                 foregroundColor: Colors.white,
                               ),
                               child: Text(
@@ -1201,8 +1201,8 @@ class _InputBarState extends State<InputBar> {
       top: false,
       child: Container(
         decoration: const BoxDecoration(
-          color: Color(0xFF0f1115),
-          border: Border(top: BorderSide(color: Color(0xFF20242b))),
+          color: Color(0xFFffffff),
+          border: Border(top: BorderSide(color: Color(0xFFdce6f1))),
         ),
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
         child: Column(
@@ -1235,8 +1235,8 @@ class _InputBarState extends State<InputBar> {
                         vertical: 4,
                       ),
                       decoration: BoxDecoration(
-                        color: const Color(0xFF14171c),
-                        border: Border.all(color: const Color(0xFF20242b)),
+                        color: const Color(0xFFf8fbff),
+                        border: Border.all(color: const Color(0xFFdce6f1)),
                         borderRadius: BorderRadius.circular(6),
                       ),
                       child: Row(
@@ -1245,7 +1245,7 @@ class _InputBarState extends State<InputBar> {
                           const Icon(
                             Icons.attach_file,
                             size: 12,
-                            color: Color(0xFF8a909b),
+                            color: Color(0xFF6f8096),
                           ),
                           const SizedBox(width: 4),
                           ConstrainedBox(
@@ -1253,7 +1253,7 @@ class _InputBarState extends State<InputBar> {
                             child: Text(
                               att['name']!,
                               style: const TextStyle(
-                                color: Color(0xFFe7eaee),
+                                color: Color(0xFF233249),
                                 fontSize: 12,
                               ),
                               overflow: TextOverflow.ellipsis,
@@ -1266,7 +1266,7 @@ class _InputBarState extends State<InputBar> {
                             child: const Icon(
                               Icons.close,
                               size: 12,
-                              color: Color(0xFF8a909b),
+                              color: Color(0xFF6f8096),
                             ),
                           ),
                         ],
@@ -1290,8 +1290,8 @@ class _InputBarState extends State<InputBar> {
                         vertical: 5,
                       ),
                       decoration: BoxDecoration(
-                        color: const Color(0xFF14171c),
-                        border: Border.all(color: const Color(0xFF20242b)),
+                        color: const Color(0xFFf8fbff),
+                        border: Border.all(color: const Color(0xFFdce6f1)),
                         borderRadius: BorderRadius.circular(6),
                       ),
                       child: Row(
@@ -1300,7 +1300,7 @@ class _InputBarState extends State<InputBar> {
                           const Icon(
                             Icons.psychology_outlined,
                             size: 14,
-                            color: Color(0xFFe7eaee),
+                            color: Color(0xFF233249),
                           ),
                           const SizedBox(width: 4),
                           Text(
@@ -1308,7 +1308,7 @@ class _InputBarState extends State<InputBar> {
                               'model': subagentModelLabel ?? t('followMain'),
                             }),
                             style: const TextStyle(
-                              color: Color(0xFFe7eaee),
+                              color: Color(0xFF233249),
                               fontSize: 11,
                               fontWeight: FontWeight.w600,
                             ),
@@ -1362,7 +1362,7 @@ class _InputBarState extends State<InputBar> {
                   icon: _uploading
                       ? Icons.hourglass_top_rounded
                       : Icons.attach_file_rounded,
-                  color: const Color(0xFF8a909b),
+                  color: const Color(0xFF6f8096),
                 ),
                 const SizedBox(width: 4),
 
@@ -1384,8 +1384,8 @@ class _InputBarState extends State<InputBar> {
                       ? Icons.stop_circle_rounded
                       : Icons.mic_rounded,
                   color: (_dictation?.isBusy ?? false) || _isRecording
-                      ? const Color(0xFF22ab9c)
-                      : const Color(0xFF8a909b),
+                      ? const Color(0xFF0965cf)
+                      : const Color(0xFF6f8096),
                 ),
                 const SizedBox(width: 4),
 
@@ -1395,7 +1395,7 @@ class _InputBarState extends State<InputBar> {
                       ? () => _showGoalSheet(provider)
                       : null,
                   icon: Icons.track_changes_rounded,
-                  color: const Color(0xFF8a909b),
+                  color: const Color(0xFF6f8096),
                 ),
                 const SizedBox(width: 4),
 
@@ -1408,7 +1408,7 @@ class _InputBarState extends State<InputBar> {
                         }
                       : null,
                   icon: Icons.phone_in_talk_rounded,
-                  color: const Color(0xFF22ab9c),
+                  color: const Color(0xFF0965cf),
                 ),
                 const SizedBox(width: 4),
 
@@ -1417,13 +1417,13 @@ class _InputBarState extends State<InputBar> {
                   child: Container(
                     constraints: const BoxConstraints(maxHeight: 120),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF070809),
+                      color: const Color(0xFFf4f8fd),
                       border: Border.all(
                         color: _isRecording
-                            ? const Color(0xFFff6b63)
+                            ? const Color(0xFFb64e43)
                             : _focusNode.hasFocus
-                            ? const Color(0xFF6aa3ff)
-                            : const Color(0xFF20242b),
+                            ? const Color(0xFF1267b5)
+                            : const Color(0xFFdce6f1),
                       ),
                       borderRadius: BorderRadius.circular(10),
                     ),
@@ -1437,7 +1437,7 @@ class _InputBarState extends State<InputBar> {
                       // Connection state gates Send (and the adjacent actions),
                       // not the composer focus or the software keyboard.
                       style: const TextStyle(
-                        color: Color(0xFFe7eaee),
+                        color: Color(0xFF233249),
                         fontSize: 14,
                         height: 1.4,
                       ),
@@ -1449,8 +1449,8 @@ class _InputBarState extends State<InputBar> {
                             : t('typeMessage'),
                         hintStyle: TextStyle(
                           color: _isRecording
-                              ? const Color(0xFFff6b63)
-                              : const Color(0xFF454b54),
+                              ? const Color(0xFFb64e43)
+                              : const Color(0xFF8b9cae),
                         ),
                         border: InputBorder.none,
                         contentPadding: const EdgeInsets.symmetric(
@@ -1476,7 +1476,7 @@ class _InputBarState extends State<InputBar> {
                 if (isStreaming)
                   _ActionButton(
                     onTap: provider.cancel,
-                    color: const Color(0xFFff6b63),
+                    color: const Color(0xFFb64e43),
                     icon: Icons.stop_rounded,
                   ),
                 if (isStreaming) const SizedBox(width: 4),
@@ -1485,10 +1485,10 @@ class _InputBarState extends State<InputBar> {
                       ? () => _send(provider, commander: isCommander)
                       : null,
                   color: canSend
-                      ? const Color(0xFF22ab9c)
-                      : const Color(0xFF14171c),
+                      ? const Color(0xFF0965cf)
+                      : const Color(0xFFf8fbff),
                   icon: Icons.send_rounded,
-                  iconColor: canSend ? Colors.white : const Color(0xFF454b54),
+                  iconColor: canSend ? Colors.white : const Color(0xFF8b9cae),
                 ),
               ],
             ),
@@ -1523,12 +1523,12 @@ class _VoiceDictationHud extends StatelessWidget {
         final failed = dictation.state == VoiceDictationState.failed;
         final hasRaw = raw.trim().isNotEmpty || partial.trim().isNotEmpty;
         final accent = failed
-            ? const Color(0xFFff6b63)
-            : const Color(0xFF22ab9c);
+            ? const Color(0xFFb64e43)
+            : const Color(0xFF0965cf);
         return Container(
           padding: const EdgeInsets.all(10),
           decoration: BoxDecoration(
-            color: const Color(0xFF070809),
+            color: const Color(0xFFf4f8fd),
             border: Border.all(color: accent),
             borderRadius: BorderRadius.circular(10),
           ),
@@ -1550,7 +1550,7 @@ class _VoiceDictationHud extends StatelessWidget {
                     child: Text(
                       _stateLabel(),
                       style: const TextStyle(
-                        color: Color(0xFF8a909b),
+                        color: Color(0xFF6f8096),
                         fontSize: 11,
                       ),
                     ),
@@ -1566,7 +1566,7 @@ class _VoiceDictationHud extends StatelessWidget {
                         TextSpan(
                           text: raw,
                           style: const TextStyle(
-                            color: Color(0xFFe7eaee),
+                            color: Color(0xFF233249),
                             fontSize: 14,
                           ),
                         ),
@@ -1574,7 +1574,7 @@ class _VoiceDictationHud extends StatelessWidget {
                           TextSpan(
                             text: partial,
                             style: const TextStyle(
-                              color: Color(0xFF6b7280),
+                              color: Color(0xFF6f8096),
                               fontSize: 14,
                             ),
                           ),
@@ -1586,16 +1586,16 @@ class _VoiceDictationHud extends StatelessWidget {
                   Container(
                     padding: const EdgeInsets.all(8),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF0f1115),
+                      color: const Color(0xFFffffff),
                       border: Border.all(
-                        color: const Color(0xFF22ab9c).withValues(alpha: 0.5),
+                        color: const Color(0xFF0965cf).withValues(alpha: 0.5),
                       ),
                       borderRadius: BorderRadius.circular(6),
                     ),
                     child: Text(
                       refined,
                       style: const TextStyle(
-                        color: Color(0xFFe7eaee),
+                        color: Color(0xFF233249),
                         fontSize: 14,
                       ),
                     ),
@@ -1615,7 +1615,7 @@ class _VoiceDictationHud extends StatelessWidget {
                     icon: const Icon(Icons.send_rounded, size: 16),
                     label: Text(t('voiceSubmit')),
                     style: FilledButton.styleFrom(
-                      backgroundColor: const Color(0xFF22ab9c),
+                      backgroundColor: const Color(0xFF0965cf),
                       foregroundColor: Colors.white,
                       padding: const EdgeInsets.symmetric(
                         horizontal: 12,
@@ -1671,7 +1671,7 @@ class _SmallButton extends StatelessWidget {
         alignment: Alignment.center,
         child: Icon(
           icon,
-          color: onTap != null ? color : const Color(0xFF454b54),
+          color: onTap != null ? color : const Color(0xFF8b9cae),
           size: 20,
         ),
       ),

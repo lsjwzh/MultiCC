@@ -66,7 +66,7 @@ Future<void> _showMessageActions(
       && (message.id ?? '').isNotEmpty;
   final action = await showModalBottomSheet<String>(
     context: context,
-    backgroundColor: const Color(0xFF161b22),
+    backgroundColor: const Color(0xFFffffff),
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(14)),
     ),
@@ -75,23 +75,23 @@ Future<void> _showMessageActions(
         mainAxisSize: MainAxisSize.min,
         children: [
           ListTile(
-            leading: const Icon(Icons.copy_outlined, color: Color(0xFF8b949e)),
+            leading: const Icon(Icons.copy_outlined, color: Color(0xFF6f8096)),
             title: Text(I18n.of('msgCopyAction'),
-                style: const TextStyle(color: Color(0xFFe6edf3))),
+                style: const TextStyle(color: Color(0xFF233249))),
             onTap: () => Navigator.pop(ctx, 'copy'),
           ),
           if (canDelete)
             ListTile(
-              leading: const Icon(Icons.delete_outline, color: Color(0xFFf85149)),
+              leading: const Icon(Icons.delete_outline, color: Color(0xFFb64e43)),
               title: Text(I18n.of('msgDeleteAction'),
-                  style: const TextStyle(color: Color(0xFFf85149))),
+                  style: const TextStyle(color: Color(0xFFb64e43))),
               onTap: () => Navigator.pop(ctx, 'delete'),
             ),
           if (canDelete)
             ListTile(
-              leading: const Icon(Icons.call_split, color: Color(0xFF39c5cf)),
+              leading: const Icon(Icons.call_split, color: Color(0xFF137780)),
               title: Text(I18n.of('msgForkAction'),
-                  style: const TextStyle(color: Color(0xFF39c5cf))),
+                  style: const TextStyle(color: Color(0xFF137780))),
               onTap: () => Navigator.pop(ctx, 'fork'),
             ),
         ],
@@ -128,7 +128,7 @@ Future<void> _confirmDeleteMessage(BuildContext context, ChatMessage message) as
         TextButton(
           onPressed: () => Navigator.pop(ctx, true),
           child: Text(I18n.of('msgDeleteAction'),
-              style: const TextStyle(color: Color(0xFFf85149))),
+              style: const TextStyle(color: Color(0xFFb64e43))),
         ),
       ],
     ),
@@ -192,7 +192,7 @@ Future<void> _forkFromMessage(BuildContext context, ChatMessage message) async {
         TextButton(
           onPressed: () => Navigator.pop(ctx, true),
           child: Text(I18n.of('msgForkAction'),
-              style: const TextStyle(color: Color(0xFF39c5cf))),
+              style: const TextStyle(color: Color(0xFF137780))),
         ),
       ],
     ),
@@ -279,7 +279,7 @@ class _UserBubble extends StatelessWidget {
               margin: const EdgeInsets.symmetric(vertical: 4),
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
               decoration: const BoxDecoration(
-                color: Color(0xFF22ab9c),
+                color: Color(0xFF0965cf),
                 borderRadius: BorderRadius.only(
                   topLeft: Radius.circular(12),
                   topRight: Radius.circular(12),
@@ -331,8 +331,8 @@ class _AssistantBubble extends StatelessWidget {
               margin: const EdgeInsets.symmetric(vertical: 4),
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
               decoration: BoxDecoration(
-                color: const Color(0xFF0f1115),
-                border: Border.all(color: const Color(0xFF20242b)),
+                color: const Color(0xFFffffff),
+                border: Border.all(color: const Color(0xFFdce6f1)),
                 borderRadius: const BorderRadius.only(
                   topLeft: Radius.circular(12),
                   topRight: Radius.circular(12),
@@ -374,7 +374,7 @@ class _AssistantBubble extends StatelessWidget {
                       child: Text(
                         '⚠ ${I18n.of('tbMsgPartial')}',
                         style: const TextStyle(
-                          color: Color(0xFF8b949e),
+                          color: Color(0xFF6f8096),
                           fontSize: 11,
                           fontStyle: FontStyle.italic,
                         ),
@@ -407,10 +407,10 @@ class _BasicToolSummaryState extends State<_BasicToolSummary> {
     final running = widget.toolCalls.any((tool) => !tool.isDone);
     final failed = widget.toolCalls.any((tool) => tool.isError);
     final statusColor = failed
-        ? const Color(0xFFff6b63)
+        ? const Color(0xFFb64e43)
         : running
-        ? const Color(0xFF6aa3ff)
-        : const Color(0xFF7fd49a);
+        ? const Color(0xFF1267b5)
+        : const Color(0xFF1e8a55);
     final status = running
         ? t('workProgressRunning')
         : failed
@@ -421,8 +421,8 @@ class _BasicToolSummaryState extends State<_BasicToolSummary> {
       key: const ValueKey('basic-tool-summary'),
       margin: const EdgeInsets.only(top: 8),
       decoration: BoxDecoration(
-        color: const Color(0xFF0B0D11),
-        border: Border.all(color: const Color(0xFF20242b)),
+        color: const Color(0xFFf4f8fd),
+        border: Border.all(color: const Color(0xFFdce6f1)),
         borderRadius: BorderRadius.circular(8),
       ),
       child: Column(
@@ -442,7 +442,7 @@ class _BasicToolSummaryState extends State<_BasicToolSummary> {
                         height: 13,
                         child: CircularProgressIndicator(
                           strokeWidth: 1.6,
-                          color: Color(0xFF6aa3ff),
+                          color: Color(0xFF1267b5),
                         ),
                       )
                     else
@@ -465,7 +465,7 @@ class _BasicToolSummaryState extends State<_BasicToolSummary> {
                         'n': '${widget.toolCalls.length}',
                       }),
                       style: const TextStyle(
-                        color: Color(0xFF6E7681),
+                        color: Color(0xFF6f8096),
                         fontSize: 10.5,
                       ),
                     ),
@@ -473,7 +473,7 @@ class _BasicToolSummaryState extends State<_BasicToolSummary> {
                       _expanded
                           ? Icons.expand_less_rounded
                           : Icons.expand_more_rounded,
-                      color: const Color(0xFF6E7681),
+                      color: const Color(0xFF6f8096),
                       size: 17,
                     ),
                   ],
@@ -542,17 +542,17 @@ class _TokenUsageLine extends StatelessWidget {
         spacing: 6,
         runSpacing: 4,
         children: [
-          _UsageBadge(label: '↑入', value: _fmt(i), color: const Color(0xFF58a6ff)),
-          _UsageBadge(label: '↓出', value: _fmt(o), color: const Color(0xFF3fb950)),
+          _UsageBadge(label: '↑入', value: _fmt(i), color: const Color(0xFF1267b5)),
+          _UsageBadge(label: '↓出', value: _fmt(o), color: const Color(0xFF2ba67a)),
           if (cr > 0)
-            _UsageBadge(label: '⏱读', value: _fmt(cr), color: const Color(0xFFd29922)),
+            _UsageBadge(label: '⏱读', value: _fmt(cr), color: const Color(0xFFa85a25)),
           if (cw > 0)
-            _UsageBadge(label: '⏱写', value: _fmt(cw), color: const Color(0xFFa371f7)),
+            _UsageBadge(label: '⏱写', value: _fmt(cw), color: const Color(0xFF6d4fd1)),
           if (saved != null && saved > 0)
             _UsageBadge(
               label: '省主≈',
               value: _fmtSaved(saved),
-              color: const Color(0xFF2ea043),
+              color: const Color(0xFF2ba67a),
             ),
           // Per-role detail (main / sub / by-provider) - the mobile counterpart
           // of the web usage-line tooltip. Only present for live turns that
@@ -581,13 +581,13 @@ class _RoleDetailChip extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
           decoration: BoxDecoration(
-            color: const Color(0xFF6aa3ff).withValues(alpha: 0.15),
+            color: const Color(0xFF1267b5).withValues(alpha: 0.15),
             borderRadius: BorderRadius.circular(4),
           ),
           child: const Icon(
             Icons.data_usage_rounded,
             size: 13,
-            color: Color(0xFF6aa3ff),
+            color: Color(0xFF1267b5),
           ),
         ),
       ),
@@ -597,7 +597,7 @@ class _RoleDetailChip extends StatelessWidget {
   void _openSheet(BuildContext context) {
     showModalBottomSheet<void>(
       context: context,
-      backgroundColor: const Color(0xFF0f1115),
+      backgroundColor: const Color(0xFFffffff),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(14)),
       ),
@@ -630,7 +630,7 @@ class _RoleTokenSheetBody extends StatelessWidget {
               child: Text(
                 t('roleTokenDetailTitle'),
                 style: const TextStyle(
-                  color: Color(0xFFf2f4f7),
+                  color: Color(0xFF20364d),
                   fontSize: 15,
                   fontWeight: FontWeight.w600,
                 ),
@@ -638,21 +638,21 @@ class _RoleTokenSheetBody extends StatelessWidget {
             ),
             IconButton(
               onPressed: () => Navigator.pop(context),
-              icon: const Icon(Icons.close, color: Color(0xFF8a909b)),
+              icon: const Icon(Icons.close, color: Color(0xFF6f8096)),
             ),
           ],
         ),
         const SizedBox(height: 4),
         _RoleBucketView(
           title: t('roleTokenMain'),
-          accent: const Color(0xFF58a6ff),
+          accent: const Color(0xFF1267b5),
           bucket: breakdown.main,
         ),
         if (sub != null && !sub.isEmpty) ...[
           const SizedBox(height: 10),
           _RoleBucketView(
             title: t('roleTokenSub'),
-            accent: const Color(0xFF3fb950),
+            accent: const Color(0xFF2ba67a),
             bucket: sub,
           ),
         ],
@@ -661,7 +661,7 @@ class _RoleTokenSheetBody extends StatelessWidget {
           Text(
             t('roleTokenByProvider'),
             style: const TextStyle(
-              color: Color(0xFF8a909b),
+              color: Color(0xFF6f8096),
               fontSize: 12,
               fontWeight: FontWeight.w600,
             ),
@@ -673,7 +673,7 @@ class _RoleTokenSheetBody extends StatelessWidget {
                 padding: const EdgeInsets.only(bottom: 8),
                 child: _RoleBucketView(
                   title: '${p.label}${p.model.isNotEmpty ? ' · ${p.model}' : ''}',
-                  accent: const Color(0xFFa371f7),
+                  accent: const Color(0xFF6d4fd1),
                   bucket: p.bucket,
                   compact: true,
                 ),
@@ -684,7 +684,7 @@ class _RoleTokenSheetBody extends StatelessWidget {
             padding: const EdgeInsets.only(top: 6),
             child: Text(
               t('roleTokenNoSub'),
-              style: const TextStyle(color: Color(0xFF6e7681), fontSize: 12),
+              style: const TextStyle(color: Color(0xFF6f8096), fontSize: 12),
             ),
           ),
       ],
@@ -715,7 +715,7 @@ class _RoleBucketView extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
-        color: const Color(0xFF14171c),
+        color: const Color(0xFFf8fbff),
         borderRadius: BorderRadius.circular(8),
       ),
       child: Column(
@@ -736,7 +736,7 @@ class _RoleBucketView extends StatelessWidget {
             '  ${t('roleTokenCacheRead')} ${group(bucket.cacheRead)}'
             '  ${t('roleTokenCacheWrite')} ${group(bucket.cacheWrite)}',
             style: const TextStyle(
-              color: Color(0xFF8a909b),
+              color: Color(0xFF6f8096),
               fontSize: 12,
               fontFamily: 'monospace',
             ),
@@ -798,14 +798,14 @@ class _TimingLine extends StatelessWidget {
       final ss = timestamp!.second.toString().padLeft(2, '0');
       parts.add(Text(
         '🕐 $hh:$mm:$ss',
-        style: const TextStyle(color: Color(0xFF6e7681), fontSize: 11),
+        style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
       ));
     }
 
     if (durationMs != null && durationMs! >= 0) {
       parts.add(Text(
         '⏱ ${_fmtDuration(durationMs!)}',
-        style: const TextStyle(color: Color(0xFF6e7681), fontSize: 11),
+        style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
       ));
     }
 
@@ -872,32 +872,32 @@ class _MarkdownContent extends StatelessWidget {
             );
           },
           styleSheet: MarkdownStyleSheet(
-            p: const TextStyle(color: Color(0xFFe7eaee), fontSize: 14, height: 1.6),
+            p: const TextStyle(color: Color(0xFF233249), fontSize: 14, height: 1.6),
             code: const TextStyle(
-              color: Color(0xFFe7eaee),
-              backgroundColor: Color(0xFF14171c),
+              color: Color(0xFF233249),
+              backgroundColor: Color(0xFFf8fbff),
               fontFamily: 'monospace',
               fontSize: 13,
             ),
             codeblockDecoration: BoxDecoration(
-              color: const Color(0xFF070809),
+              color: const Color(0xFFf4f8fd),
               borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: const Color(0xFF14171c)),
+              border: Border.all(color: const Color(0xFFf8fbff)),
             ),
             codeblockPadding: const EdgeInsets.all(12),
             blockquoteDecoration: const BoxDecoration(
-              border: Border(left: BorderSide(color: Color(0xFF20242b), width: 3)),
+              border: Border(left: BorderSide(color: Color(0xFFdce6f1), width: 3)),
             ),
             blockquotePadding: const EdgeInsets.only(left: 10),
-            h1: const TextStyle(color: Color(0xFFf2f4f7), fontSize: 18, fontWeight: FontWeight.bold),
-            h2: const TextStyle(color: Color(0xFFf2f4f7), fontSize: 16, fontWeight: FontWeight.bold),
-            h3: const TextStyle(color: Color(0xFFf2f4f7), fontSize: 15, fontWeight: FontWeight.bold),
-            strong: const TextStyle(color: Color(0xFFf2f4f7), fontWeight: FontWeight.bold),
-            em: const TextStyle(color: Color(0xFFd2a8ff), fontStyle: FontStyle.italic),
-            a: const TextStyle(color: Color(0xFF6aa3ff)),
-            tableHead: const TextStyle(color: Color(0xFFf2f4f7), fontWeight: FontWeight.bold),
-            tableBody: const TextStyle(color: Color(0xFFe7eaee)),
-            tableBorder: TableBorder.all(color: const Color(0xFF20242b)),
+            h1: const TextStyle(color: Color(0xFF20364d), fontSize: 18, fontWeight: FontWeight.bold),
+            h2: const TextStyle(color: Color(0xFF20364d), fontSize: 16, fontWeight: FontWeight.bold),
+            h3: const TextStyle(color: Color(0xFF20364d), fontSize: 15, fontWeight: FontWeight.bold),
+            strong: const TextStyle(color: Color(0xFF20364d), fontWeight: FontWeight.bold),
+            em: const TextStyle(color: Color(0xFF6f42c1), fontStyle: FontStyle.italic),
+            a: const TextStyle(color: Color(0xFF1267b5)),
+            tableHead: const TextStyle(color: Color(0xFF20364d), fontWeight: FontWeight.bold),
+            tableBody: const TextStyle(color: Color(0xFF233249)),
+            tableBorder: TableBorder.all(color: const Color(0xFFdce6f1)),
             tableCellsPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
           ),
           selectable: true,
@@ -952,7 +952,7 @@ class _FencedCodeBlock extends StatelessWidget {
         buildHighlightedSpan(
           spans,
           const TextStyle(
-            color: Color(0xFFe7eaee),
+            color: Color(0xFF233249),
             fontFamily: 'monospace',
             fontSize: 13,
             height: 1.5,
@@ -1019,7 +1019,7 @@ class _SystemBubble extends StatelessWidget {
           padding: const EdgeInsets.symmetric(vertical: 4),
           child: Text(
             message.content,
-            style: const TextStyle(color: Color(0xFF5b616c), fontSize: 12),
+            style: const TextStyle(color: Color(0xFF8a9aab), fontSize: 12),
             textAlign: TextAlign.center,
           ),
         ),
@@ -1076,13 +1076,13 @@ class _InlineImage extends StatelessWidget {
                   ? child
                   : Container(
                       height: 80,
-                      color: const Color(0xFF0f1115),
+                      color: const Color(0xFFffffff),
                       alignment: Alignment.center,
                       child: const SizedBox(
                         width: 18,
                         height: 18,
                         child: CircularProgressIndicator(
-                            strokeWidth: 2, color: Color(0xFF6aa3ff)),
+                            strokeWidth: 2, color: Color(0xFF1267b5)),
                       ),
                     ),
               errorBuilder: (ctx, err, _) =>
@@ -1108,20 +1108,20 @@ class _ImageErrorNote extends StatelessWidget {
       padding: EdgeInsets.symmetric(
           horizontal: 8, vertical: compact ? 6 : 8),
       decoration: BoxDecoration(
-        color: const Color(0xFF140a0a),
+        color: const Color(0xFFfff1ef),
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: const Color(0xFF5b2d28)),
+        border: Border.all(color: const Color(0xFFe9bdb7)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           const Icon(Icons.broken_image_outlined,
-              size: 14, color: Color(0xFFff6b63)),
+              size: 14, color: Color(0xFFb64e43)),
           const SizedBox(width: 6),
           Flexible(
             child: Text(
               compact ? '图片无法加载: $name' : '⚠ 无法加载图片: $name',
-              style: const TextStyle(color: Color(0xFFff6b63), fontSize: 12),
+              style: const TextStyle(color: Color(0xFFb64e43), fontSize: 12),
               overflow: TextOverflow.ellipsis,
               maxLines: 2,
             ),
@@ -1198,11 +1198,11 @@ class _ImageZoomScreenState extends State<_ImageZoomScreen> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     const Icon(Icons.broken_image,
-                        size: 48, color: Color(0xFFff6b63)),
+                        size: 48, color: Color(0xFFb64e43)),
                     const SizedBox(height: 12),
                     Text('无法加载: ${widget.name}',
                         style: const TextStyle(
-                            color: Color(0xFFff6b63), fontSize: 13)),
+                            color: Color(0xFFb64e43), fontSize: 13)),
                   ],
                 ),
               ),

@@ -47,7 +47,7 @@ Future<PickedAttachment?> pickChatAttachment(BuildContext context) async {
               t('attachSourceTitle'),
               textAlign: TextAlign.center,
               style: const TextStyle(
-                color: Color(0xFF8a909b),
+                color: Color(0xFF6f8096),
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
               ),
@@ -119,7 +119,7 @@ class _AttachmentSourceTile extends StatelessWidget {
     return ListTile(
       onTap: () => Navigator.of(context).pop(value),
       contentPadding: const EdgeInsets.symmetric(horizontal: 24),
-      leading: Icon(icon, color: const Color(0xFFb6bcc6), size: 22),
+      leading: Icon(icon, color: const Color(0xFF6f8096), size: 22),
       title: Text(
         label,
         style: const TextStyle(

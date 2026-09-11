@@ -77,7 +77,7 @@ class _VoiceCallScreenState extends State<VoiceCallScreen> with WidgetsBindingOb
         if (!didPop) _hangUp();
       },
       child: Scaffold(
-        backgroundColor: const Color(0xFF0b0d11),
+        backgroundColor: const Color(0xFFf4f8fd),
         body: SafeArea(
           child: Column(
             children: [
@@ -121,7 +121,7 @@ class _VoiceCallScreenState extends State<VoiceCallScreen> with WidgetsBindingOb
           ),
           const Spacer(),
           Text(_svc.chatProvider.titleLabel,
-              style: const TextStyle(color: Color(0xFF6b7280), fontSize: 12),
+              style: const TextStyle(color: Color(0xFF6f8096), fontSize: 12),
               overflow: TextOverflow.ellipsis),
         ],
       ),
@@ -136,7 +136,7 @@ class _VoiceCallScreenState extends State<VoiceCallScreen> with WidgetsBindingOb
       return const Center(
         child: Padding(
           padding: EdgeInsets.all(24),
-          child: Text('正在连接通话…', style: TextStyle(color: Color(0xFF8a909b), fontSize: 14)),
+          child: Text('正在连接通话…', style: TextStyle(color: Color(0xFF6f8096), fontSize: 14)),
         ),
       );
     }
@@ -157,8 +157,8 @@ class _VoiceCallScreenState extends State<VoiceCallScreen> with WidgetsBindingOb
         constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.82),
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
         decoration: BoxDecoration(
-          color: isUser ? const Color(0xFF152033) : const Color(0xFF14171c),
-          border: Border.all(color: isUser ? const Color(0xFF2a3a55) : const Color(0xFF20242b)),
+          color: isUser ? const Color(0xFFf8fbff) : const Color(0xFFf8fbff),
+          border: Border.all(color: isUser ? const Color(0xFFeaf4ff) : const Color(0xFFdce6f1)),
           borderRadius: BorderRadius.circular(12),
         ),
         child: Column(
@@ -167,13 +167,13 @@ class _VoiceCallScreenState extends State<VoiceCallScreen> with WidgetsBindingOb
             Text(
               isUser ? '你' : 'AI',
               style: TextStyle(
-                color: isUser ? const Color(0xFF6aa3ff) : const Color(0xFF22ab9c),
+                color: isUser ? const Color(0xFF1267b5) : const Color(0xFF0965cf),
                 fontSize: 10,
                 fontWeight: FontWeight.w700,
               ),
             ),
             const SizedBox(height: 3),
-            Text(b.text, style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 14, height: 1.4)),
+            Text(b.text, style: const TextStyle(color: Color(0xFF233249), fontSize: 14, height: 1.4)),
           ],
         ),
       ),
@@ -188,8 +188,8 @@ class _VoiceCallScreenState extends State<VoiceCallScreen> with WidgetsBindingOb
       margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: const Color(0xFF0f1419),
-        border: Border.all(color: const Color(0xFF22ab9c).withOpacity(0.5)),
+        color: const Color(0xFFf4f8fd),
+        border: Border.all(color: const Color(0xFF0965cf).withOpacity(0.5)),
         borderRadius: BorderRadius.circular(12),
       ),
       child: Column(
@@ -199,17 +199,17 @@ class _VoiceCallScreenState extends State<VoiceCallScreen> with WidgetsBindingOb
             Padding(
               padding: const EdgeInsets.only(bottom: 6),
               child: Text(_svc.breakdownSummary!,
-                  style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13, height: 1.4)),
+                  style: const TextStyle(color: Color(0xFF233249), fontSize: 13, height: 1.4)),
             ),
           for (var i = 0; i < items.length; i++)
             Padding(
               padding: const EdgeInsets.only(top: 3),
               child: Text('${i + 1}. ${items[i]}',
-                  style: const TextStyle(color: Color(0xFFc9d1d9), fontSize: 12.5, height: 1.4)),
+                  style: const TextStyle(color: Color(0xFF31465b), fontSize: 12.5, height: 1.4)),
             ),
           const SizedBox(height: 6),
           const Text('说“对/确认”执行，或说出要改的地方',
-              style: TextStyle(color: Color(0xFF8a909b), fontSize: 11)),
+              style: TextStyle(color: Color(0xFF6f8096), fontSize: 11)),
         ],
       ),
     );
@@ -234,15 +234,15 @@ class _VoiceCallScreenState extends State<VoiceCallScreen> with WidgetsBindingOb
           shape: BoxShape.circle,
           gradient: RadialGradient(
             colors: [
-              (aiSpeaking ? const Color(0xFF22ab9c) : const Color(0xFF6aa3ff))
+              (aiSpeaking ? const Color(0xFF0965cf) : const Color(0xFF1267b5))
                   .withOpacity(0.95),
-              (aiSpeaking ? const Color(0xFF127a68) : const Color(0xFF2a4a72))
+              (aiSpeaking ? const Color(0xFF137780) : const Color(0xFFeaf4ff))
                   .withOpacity(0.75),
             ],
           ),
           boxShadow: [
             BoxShadow(
-              color: (aiSpeaking ? const Color(0xFF22ab9c) : const Color(0xFF6aa3ff))
+              color: (aiSpeaking ? const Color(0xFF0965cf) : const Color(0xFF1267b5))
                   .withOpacity(0.35 + level * 0.4),
               blurRadius: 28 + level * 30,
               spreadRadius: 2,
@@ -263,11 +263,11 @@ class _VoiceCallScreenState extends State<VoiceCallScreen> with WidgetsBindingOb
       padding: const EdgeInsets.fromLTRB(20, 14, 20, 6),
       child: Column(
         children: [
-          Text(_stateLabel, style: const TextStyle(color: Color(0xFFf2f4f7), fontSize: 16, fontWeight: FontWeight.w600)),
+          Text(_stateLabel, style: const TextStyle(color: Color(0xFF20364d), fontSize: 16, fontWeight: FontWeight.w600)),
           const SizedBox(height: 4),
           Text(
             _svc.statusText.isEmpty ? '随时开口说话，AI 说话时你可以打断' : _svc.statusText,
-            style: const TextStyle(color: Color(0xFF8a909b), fontSize: 12),
+            style: const TextStyle(color: Color(0xFF6f8096), fontSize: 12),
             textAlign: TextAlign.center,
           ),
         ],
@@ -287,9 +287,9 @@ class _VoiceCallScreenState extends State<VoiceCallScreen> with WidgetsBindingOb
           height: 66,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            color: const Color(0xFFff6b63),
+            color: const Color(0xFFb64e43),
             boxShadow: [
-              BoxShadow(color: const Color(0xFFff6b63).withOpacity(0.35), blurRadius: 22, spreadRadius: 1),
+              BoxShadow(color: const Color(0xFFb64e43).withOpacity(0.35), blurRadius: 22, spreadRadius: 1),
             ],
           ),
           child: const Icon(Icons.call_end_rounded, color: Colors.white, size: 30),
@@ -339,15 +339,15 @@ class _VoiceCallScreenState extends State<VoiceCallScreen> with WidgetsBindingOb
   Color get _stateColor {
     switch (_svc.state) {
       case VoiceCallState.listening:
-        return const Color(0xFF6aa3ff);
+        return const Color(0xFF1267b5);
       case VoiceCallState.confirming:
-        return const Color(0xFF22ab9c);
+        return const Color(0xFF0965cf);
       case VoiceCallState.executing:
-        return const Color(0xFFd29922);
+        return const Color(0xFFa85a25);
       case VoiceCallState.reporting:
-        return const Color(0xFF22ab9c);
+        return const Color(0xFF0965cf);
       default:
-        return const Color(0xFF8a909b);
+        return const Color(0xFF6f8096);
     }
   }
 }

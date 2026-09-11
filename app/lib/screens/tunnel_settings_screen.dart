@@ -193,7 +193,7 @@ class _TunnelSettingsScreenState extends State<TunnelSettingsScreen> {
           ).toLocal().toString().substring(5, 19);
 
     final healthColor = probeVerdict == 'degraded'
-        ? Colors.orange
+        ? AppColors.amber
         : (healthy == true
               ? AppColors.accent
               : (healthy == false ? AppColors.danger : AppColors.muted));

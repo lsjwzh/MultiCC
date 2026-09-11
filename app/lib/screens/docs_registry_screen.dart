@@ -280,7 +280,7 @@ class _DocsRegistryScreenState extends State<DocsRegistryScreen> {
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _openAddSheet,
         backgroundColor: AppColors.accentDark,
-        foregroundColor: const Color(0xFF04110f),
+        foregroundColor: const Color(0xFFffffff),
         icon: const Icon(Icons.playlist_add_rounded),
         label: Text(t('docsregAddService')),
       ),
@@ -693,7 +693,7 @@ class _AddServiceSheetState extends State<_AddServiceSheet> {
                               height: 20,
                               child: CircularProgressIndicator(
                                 strokeWidth: 2,
-                                color: Color(0xFF04110f),
+                                color: Color(0xFFffffff),
                               ),
                             )
                           : Text(t('add')),

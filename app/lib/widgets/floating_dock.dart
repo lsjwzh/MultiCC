@@ -429,11 +429,11 @@ class _FloatingDockState extends State<FloatingDock> {
                                         ),
                                         alignment: Alignment.center,
                                         decoration: BoxDecoration(
-                                          color: const Color(0xFFd73a49),
+                                          color: const Color(0xFFc0392b),
                                           borderRadius:
                                               BorderRadius.circular(10),
                                           border: Border.all(
-                                            color: const Color(0xFF0f1115),
+                                            color: const Color(0xFFffffff),
                                           ),
                                         ),
                                         child: Text(

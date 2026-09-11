@@ -23,9 +23,9 @@ class KpiTile extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
           decoration: BoxDecoration(
-            color: const Color(0xFF14171c),
+            color: const Color(0xFFf8fbff),
             borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: const Color(0xFF20242b)),
+            border: Border.all(color: const Color(0xFFdce6f1)),
           ),
           child: Row(
             children: [
@@ -39,7 +39,7 @@ class KpiTile extends StatelessWidget {
                 child: Text(
                   label,
                   style: const TextStyle(
-                    color: Color(0xFF8a909b),
+                    color: Color(0xFF6f8096),
                     fontSize: 12,
                   ),
                   overflow: TextOverflow.ellipsis,
@@ -59,7 +59,7 @@ class KpiTile extends StatelessWidget {
                 const Icon(
                   Icons.chevron_right,
                   size: 16,
-                  color: Color(0xFF5b616c),
+                  color: Color(0xFF8a9aab),
                 ),
             ],
           ),

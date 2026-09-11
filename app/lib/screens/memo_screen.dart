@@ -173,7 +173,7 @@ class _MemoScreenState extends State<MemoScreen> {
     }
     final picked = await showModalBottomSheet<Session>(
       context: context,
-      backgroundColor: const Color(0xFF0f1115),
+      backgroundColor: const Color(0xFFffffff),
       builder: (_) => SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(14, 14, 14, 8),
@@ -184,7 +184,7 @@ class _MemoScreenState extends State<MemoScreen> {
               const Text(
                 '发送到 chat 会话',
                 style: TextStyle(
-                  color: Color(0xFFf2f4f7),
+                  color: Color(0xFF20364d),
                   fontWeight: FontWeight.w600,
                   fontSize: 14,
                 ),
@@ -194,14 +194,14 @@ class _MemoScreenState extends State<MemoScreen> {
                 width: double.infinity,
                 padding: const EdgeInsets.all(8),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF070809),
-                  border: Border.all(color: const Color(0xFF14171c)),
+                  color: const Color(0xFFf4f8fd),
+                  border: Border.all(color: const Color(0xFFf8fbff)),
                   borderRadius: BorderRadius.circular(6),
                 ),
                 child: Text(
                   text.length > 200 ? '${text.substring(0, 200)}…' : text,
                   style: const TextStyle(
-                    color: Color(0xFF8a909b),
+                    color: Color(0xFF6f8096),
                     fontFamily: 'monospace',
                     fontSize: 11,
                   ),
@@ -216,13 +216,13 @@ class _MemoScreenState extends State<MemoScreen> {
                             dense: true,
                             title: Text(
                               s.label ?? s.id,
-                              style: const TextStyle(color: Color(0xFFe7eaee)),
+                              style: const TextStyle(color: Color(0xFF233249)),
                             ),
                             subtitle: (s.label != null && s.label != s.id)
                                 ? Text(
                                     s.id,
                                     style: const TextStyle(
-                                      color: Color(0xFF5b616c),
+                                      color: Color(0xFF8a9aab),
                                       fontSize: 11,
                                       fontFamily: 'monospace',
                                     ),
@@ -230,7 +230,7 @@ class _MemoScreenState extends State<MemoScreen> {
                                 : null,
                             trailing: const Icon(
                               Icons.send_rounded,
-                              color: Color(0xFF6aa3ff),
+                              color: Color(0xFF1267b5),
                               size: 18,
                             ),
                             onTap: () => Navigator.pop(context, s),
@@ -259,10 +259,10 @@ class _MemoScreenState extends State<MemoScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF070809),
+      backgroundColor: const Color(0xFFf4f8fd),
       appBar: AppBar(
-        backgroundColor: const Color(0xFF0f1115),
-        foregroundColor: const Color(0xFFf2f4f7),
+        backgroundColor: const Color(0xFFffffff),
+        foregroundColor: const Color(0xFF20364d),
         title: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -275,7 +275,7 @@ class _MemoScreenState extends State<MemoScreen> {
               Text(
                 _path,
                 style: const TextStyle(
-                  color: Color(0xFF5b616c),
+                  color: Color(0xFF8a9aab),
                   fontSize: 10,
                   fontFamily: 'monospace',
                 ),
@@ -307,7 +307,7 @@ class _MemoScreenState extends State<MemoScreen> {
                     expands: true,
                     textAlignVertical: TextAlignVertical.top,
                     style: const TextStyle(
-                      color: Color(0xFFe7eaee),
+                      color: Color(0xFF233249),
                       fontFamily: 'monospace',
                       fontSize: 14,
                       height: 1.5,
@@ -316,7 +316,7 @@ class _MemoScreenState extends State<MemoScreen> {
                       border: InputBorder.none,
                       contentPadding: EdgeInsets.all(12),
                       hintText: '在这里写备忘…\n例：\n# todo\n- [ ] 任务一\n- [ ] 任务二',
-                      hintStyle: TextStyle(color: Color(0xFF5b616c)),
+                      hintStyle: TextStyle(color: Color(0xFF8a9aab)),
                     ),
                   ),
                 ),
@@ -324,13 +324,13 @@ class _MemoScreenState extends State<MemoScreen> {
                   width: double.infinity,
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                   decoration: const BoxDecoration(
-                    color: Color(0xFF0f1115),
-                    border: Border(top: BorderSide(color: Color(0xFF14171c))),
+                    color: Color(0xFFffffff),
+                    border: Border(top: BorderSide(color: Color(0xFFf8fbff))),
                   ),
                   child: Text(
                     _status,
                     style: const TextStyle(
-                      color: Color(0xFF5b616c),
+                      color: Color(0xFF8a9aab),
                       fontSize: 11,
                       fontFamily: 'monospace',
                     ),

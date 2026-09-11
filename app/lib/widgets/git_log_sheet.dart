@@ -20,7 +20,7 @@ Future<void> showGitLogSheet(
   return showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
-    backgroundColor: const Color(0xFF0f1115),
+    backgroundColor: const Color(0xFFffffff),
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
     ),
@@ -97,13 +97,13 @@ class _GitLogSheetState extends State<_GitLogSheet> {
                 const Icon(
                   Icons.history_rounded,
                   size: 16,
-                  color: Color(0xFF6aa3ff),
+                  color: Color(0xFF1267b5),
                 ),
                 const SizedBox(width: 8),
                 Text(
                   t('gitLogTitle'),
                   style: const TextStyle(
-                    color: Color(0xFFf2f4f7),
+                    color: Color(0xFF20364d),
                     fontSize: 14,
                     fontWeight: FontWeight.w600,
                   ),
@@ -119,7 +119,7 @@ class _GitLogSheetState extends State<_GitLogSheet> {
                 ),
                 IconButton(
                   icon: const Icon(Icons.refresh_rounded,
-                      size: 18, color: Color(0xFF8a909b)),
+                      size: 18, color: Color(0xFF6f8096)),
                   tooltip: t('retry'),
                   onPressed: _loading ? null : _load,
                 ),
@@ -148,7 +148,7 @@ class _GitLogSheetState extends State<_GitLogSheet> {
           padding: const EdgeInsets.all(24),
           child: Text(
             '${t('gitLogLoadFailed')}：$_error',
-            style: const TextStyle(color: Color(0xFFffb3ae), fontSize: 13),
+            style: const TextStyle(color: Color(0xFFb64e43), fontSize: 13),
             textAlign: TextAlign.center,
           ),
         ),
@@ -159,7 +159,7 @@ class _GitLogSheetState extends State<_GitLogSheet> {
       return Center(
         child: Text(
           t('gitLogEmpty'),
-          style: const TextStyle(color: Color(0xFF5b616c), fontSize: 13),
+          style: const TextStyle(color: Color(0xFF8a9aab), fontSize: 13),
         ),
       );
     }
@@ -167,7 +167,7 @@ class _GitLogSheetState extends State<_GitLogSheet> {
       itemCount: commits.length,
       separatorBuilder: (_, __) => const Divider(
         height: 1,
-        color: Color(0xFF1c2129),
+        color: Color(0xFFf8fbff),
       ),
       itemBuilder: (_, i) {
         final c = commits[i];
@@ -180,7 +180,7 @@ class _GitLogSheetState extends State<_GitLogSheet> {
               Text(
                 c.short,
                 style: const TextStyle(
-                  color: Color(0xFFd2a8ff),
+                  color: Color(0xFF6f42c1),
                   fontSize: 12,
                   fontFamily: 'monospace',
                 ),
@@ -193,7 +193,7 @@ class _GitLogSheetState extends State<_GitLogSheet> {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
-                      color: Color(0xFFe3b341),
+                      color: Color(0xFFa85a25),
                       fontSize: 11,
                     ),
                   ),
@@ -209,14 +209,14 @@ class _GitLogSheetState extends State<_GitLogSheet> {
                 c.subject,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
+                style: const TextStyle(color: Color(0xFF233249), fontSize: 13),
               ),
               const SizedBox(height: 2),
               Text(
                 '${c.author} · ${c.dateLabel}',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+                style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
               ),
             ],
           ),
@@ -250,13 +250,13 @@ class _AllBranchesToggle extends StatelessWidget {
                   ? Icons.toggle_on_rounded
                   : Icons.toggle_off_rounded,
               size: 20,
-              color: value ? const Color(0xFF3ad6c5) : const Color(0xFF5b616c),
+              color: value ? const Color(0xFF1678e8) : const Color(0xFF8a9aab),
             ),
             const SizedBox(width: 4),
             Text(
               t('gitLogAllBranches'),
               style: TextStyle(
-                color: value ? const Color(0xFF3ad6c5) : const Color(0xFF8a909b),
+                color: value ? const Color(0xFF1678e8) : const Color(0xFF6f8096),
                 fontSize: 11,
               ),
             ),
@@ -320,10 +320,10 @@ class _CommitDiffPageState extends State<_CommitDiffPage> {
   Widget build(BuildContext context) {
     final c = widget.commit;
     return Scaffold(
-      backgroundColor: const Color(0xFF0f1115),
+      backgroundColor: const Color(0xFFffffff),
       appBar: AppBar(
-        backgroundColor: const Color(0xFF14171c),
-        iconTheme: const IconThemeData(color: Color(0xFFe7eaee)),
+        backgroundColor: const Color(0xFFf8fbff),
+        iconTheme: const IconThemeData(color: Color(0xFF233249)),
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -332,7 +332,7 @@ class _CommitDiffPageState extends State<_CommitDiffPage> {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(
-                color: Color(0xFFf2f4f7),
+                color: Color(0xFF20364d),
                 fontSize: 14,
               ),
             ),
@@ -341,7 +341,7 @@ class _CommitDiffPageState extends State<_CommitDiffPage> {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(
-                color: Color(0xFF8a909b),
+                color: Color(0xFF6f8096),
                 fontSize: 11,
               ),
             ),
@@ -368,7 +368,7 @@ class _CommitDiffPageState extends State<_CommitDiffPage> {
           padding: const EdgeInsets.all(24),
           child: Text(
             '${t('gitLogLoadFailed')}：$_error',
-            style: const TextStyle(color: Color(0xFFffb3ae), fontSize: 13),
+            style: const TextStyle(color: Color(0xFFb64e43), fontSize: 13),
             textAlign: TextAlign.center,
           ),
         ),
@@ -382,11 +382,11 @@ class _CommitDiffPageState extends State<_CommitDiffPage> {
           Container(
             width: double.infinity,
             padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
-            color: const Color(0xFF12151b),
+            color: const Color(0xFFf4f8fd),
             child: SelectableText(
               d.stat.trim(),
               style: const TextStyle(
-                color: Color(0xFF8a909b),
+                color: Color(0xFF6f8096),
                 fontSize: 11,
                 fontFamily: 'monospace',
                 height: 1.5,
@@ -397,10 +397,10 @@ class _CommitDiffPageState extends State<_CommitDiffPage> {
           Container(
             width: double.infinity,
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-            color: const Color(0x33d29922),
+            color: const Color(0x33a85a25),
             child: Text(
               t('gitLogDiffTruncated'),
-              style: const TextStyle(color: Color(0xFFe3b341), fontSize: 11),
+              style: const TextStyle(color: Color(0xFFa85a25), fontSize: 11),
             ),
           ),
         Expanded(child: _patchArea(d)),
@@ -414,7 +414,7 @@ class _CommitDiffPageState extends State<_CommitDiffPage> {
       return Center(
         child: Text(
           t('gitLogEmptyDiff'),
-          style: const TextStyle(color: Color(0xFF5b616c), fontSize: 13),
+          style: const TextStyle(color: Color(0xFF8a9aab), fontSize: 13),
         ),
       );
     }
@@ -425,7 +425,7 @@ class _CommitDiffPageState extends State<_CommitDiffPage> {
         child: SelectableText.rich(
           TextSpan(children: diffSpans(patch)),
           style: const TextStyle(
-            color: Color(0xFFe7eaee),
+            color: Color(0xFF233249),
             fontFamily: 'monospace',
             fontSize: 11,
             height: 1.5,

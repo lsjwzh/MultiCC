@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Modify this file to customize your launch splash screen -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:drawable="@android:color/white" />
+    <!-- The Air canvas (#f4f8fd), so the splash matches the first Flutter
+         frame instead of flashing pure white. -->
+    <item android:drawable="#FFF4F8FD" />
 
     <!-- You can insert your own image assets here -->
     <!-- <item>

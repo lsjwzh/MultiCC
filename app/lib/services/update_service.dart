@@ -180,26 +180,26 @@ class UpdateService {
     return showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        backgroundColor: const Color(0xFF0f1115),
+        backgroundColor: const Color(0xFFffffff),
         title: Text(
           label.isNotEmpty ? t('updateFoundTitle', {'version': label}) : t('updateFoundPlainTitle'),
-          style: const TextStyle(color: Color(0xFFf2f4f7)),
+          style: const TextStyle(color: Color(0xFF20364d)),
         ),
         content: Text(
           isStore ? t('updateFoundStoreBody') : t('updateFoundApkBody'),
-          style: const TextStyle(color: Color(0xFF8a909b)),
+          style: const TextStyle(color: Color(0xFF6f8096)),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: Text(t('updateLater'), style: const TextStyle(color: Color(0xFF8a909b))),
+            child: Text(t('updateLater'), style: const TextStyle(color: Color(0xFF6f8096))),
           ),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
             child: Text(
               t('updateAction'),
               style: const TextStyle(
-                color: Color(0xFF6aa3ff),
+                color: Color(0xFF1267b5),
                 fontWeight: FontWeight.w600,
               ),
             ),
@@ -213,16 +213,16 @@ class UpdateService {
     showDialog<void>(
       context: context,
       builder: (_) => AlertDialog(
-        backgroundColor: const Color(0xFF0f1115),
-        title: Text(title, style: const TextStyle(color: Color(0xFFf2f4f7))),
-        content: Text(body, style: const TextStyle(color: Color(0xFF8a909b))),
+        backgroundColor: const Color(0xFFffffff),
+        title: Text(title, style: const TextStyle(color: Color(0xFF20364d))),
+        content: Text(body, style: const TextStyle(color: Color(0xFF6f8096))),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
             child: Text(
               t('done'),
               style: const TextStyle(
-                color: Color(0xFF6aa3ff),
+                color: Color(0xFF1267b5),
                 fontWeight: FontWeight.w600,
               ),
             ),

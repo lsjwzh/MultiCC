@@ -208,7 +208,7 @@ class _ShareMessagesScreenState extends State<ShareMessagesScreen> {
                                 width: 18,
                                 height: 18,
                                 child: CircularProgressIndicator(
-                                    strokeWidth: 2, color: Color(0xFF04110f)))
+                                    strokeWidth: 2, color: Color(0xFFffffff)))
                             : const Icon(Icons.ios_share_rounded, size: 18),
                         label: Text(_selected.isEmpty
                             ? '请选择消息'

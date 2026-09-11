@@ -54,8 +54,8 @@ class _ThinkingIndicatorState extends State<ThinkingIndicator>
         margin: const EdgeInsets.symmetric(vertical: 4),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         decoration: BoxDecoration(
-          color: const Color(0xFF0f1115),
-          border: Border.all(color: const Color(0xFF20242b)),
+          color: const Color(0xFFffffff),
+          border: Border.all(color: const Color(0xFFdce6f1)),
           borderRadius: const BorderRadius.only(
             topLeft: Radius.circular(12),
             topRight: Radius.circular(12),
@@ -71,7 +71,7 @@ class _ThinkingIndicatorState extends State<ThinkingIndicator>
                 widget.label,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Color(0xFF8a909b), fontSize: 13),
+                style: const TextStyle(color: Color(0xFF6f8096), fontSize: 13),
               ),
             ),
             const SizedBox(width: 10),

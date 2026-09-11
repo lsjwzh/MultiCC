@@ -153,7 +153,7 @@ class _AuxTaskCardState extends State<_AuxTaskCard> {
       resultColor = AppColors.amber;
       resultLabel = 'CANCELLED';
     } else {
-      resultColor = const Color(0xFF56d364);
+      resultColor = const Color(0xFF2ba67a);
       resultLabel = (out['content']?.toString() ?? '').trim();
     }
     final durationMs = (out?['durationMs'] as num?)?.toInt();
