@@ -125,10 +125,20 @@
             <div id="quick-task-files"></div>
             <textarea id="quick-task-input" class="mc-composer__input" rows="4" maxlength="32000" required
                       placeholder="描述要完成的任务；创建后会把这段内容作为第一条消息执行。Enter 创建，Shift + Enter 换行"></textarea>
+            <!-- The band carries what the chat composer carries: attach by
+                 button, paste or drop; dictation; Goal mode with its limits;
+                 and the runtime pick that is pinned when the task is created. -->
+            <div id="quick-task-goal-limits" class="quick-task-goal-limits" hidden>
+              <span>🎯 Goal 模式</span>
+              <label>轮次上限 <input id="quick-task-goal-rounds" type="number" value="200" min="0" max="200"></label>
+              <label>token 预算 <input id="quick-task-goal-budget" type="number" min="0" step="1000" placeholder="不限"></label>
+            </div>
             <div class="quick-task-actions mc-composer__actions">
-              <button id="quick-task-attach" type="button" aria-label="添加文件">⌕ 添加文件</button><input id="quick-task-file-input" type="file" multiple hidden>
-              <label><input id="quick-task-goal" type="checkbox"> Goal 模式</label>
+              <button id="quick-task-attach" type="button" aria-label="上传图片或文件" title="上传图片或文件（也可以直接粘贴或拖入）">📎</button><input id="quick-task-file-input" type="file" multiple hidden>
+              <button id="quick-task-mic" type="button" aria-label="语音输入" title="语音输入（点一下开始，再点一下结束）">🎙</button>
+              <label title="以 Goal 模式发送：先预检目标与完成标准">🎯 <input id="quick-task-goal" type="checkbox"> Goal</label>
               <label>CLI <select id="quick-task-cli" aria-label="新任务 CLI"></select></label>
+              <label>Provider <select id="quick-task-provider" aria-label="新任务 Provider"><option value="">跟随默认</option></select></label>
               <span id="quick-task-status" role="status" aria-live="polite"></span>
               <button id="quick-task-submit" class="primary" type="submit">创建并执行 ↑</button>
             </div>
