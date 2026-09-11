@@ -67,7 +67,12 @@ body.air-chat {
 .air-chat #status { max-width: 140px; overflow: hidden; color: var(--chat-muted); font-size: 11px; white-space: nowrap; text-overflow: ellipsis; }
 .air-chat #status.connected { color: var(--chat-success); }
 .air-chat #session-title { min-width: 0; overflow: hidden; color: #526a82; text-overflow: ellipsis; white-space: nowrap; }
-.air-chat #header-more-wrap { display: block; }
+/* Air hosts the More trigger in the page's task header; the in-frame copy
+   stays mounted for its menu DOM but is never shown. */
+.air-chat #header-more-wrap { display: none; }
+/* Duplicated by the task header's AI 配置 / 角色 controls; hidden in Air. */
+.air-chat #model-btn, .air-chat #effort-btn, .air-chat #provider-btn,
+.air-chat #role-btn, .air-chat #cli-btn { display: none !important; }
 .air-chat .hdr-btn {
   min-height: 30px;
   padding: 4px 9px;
@@ -115,11 +120,11 @@ body.air-chat {
 }
 .air-chat #worktree-bar { order: 1; flex: 1 1 250px; }
 .air-chat #worktree-bar.behind .worktree-label { color: #9a671e; }
-.air-chat #worktree-sync-btn, .air-chat #worktree-force-sync-btn {
+.air-chat #worktree-sync-btn, .air-chat .worktree-force-sync-btn {
   min-height: 28px; padding: 3px 8px; color: #316c9e;
   border: 1px solid #d5e3ef; border-radius: 7px; background: #fff; font-weight: 500;
 }
-.air-chat #worktree-sync-btn:hover, .air-chat #worktree-force-sync-btn:hover { background: #eaf4ff; }
+.air-chat #worktree-sync-btn:hover, .air-chat .worktree-force-sync-btn:hover { background: #eaf4ff; }
 .air-chat #aux-classify-bar { order: 2; flex: 1 1 270px; }
 .air-chat #aux-classify-bar.show {
   display: flex;
@@ -172,13 +177,19 @@ body.air-chat {
   border-radius: 15px 15px 4px 15px;
   background: #edf5fd;
 }
+/* Assistant replies render as light cards on the pearl canvas — the Air
+   equivalent of the user bubble, so model output never floats on the page
+   background without padding or edges. */
 .air-chat .msg.assistant {
   width: 100%;
   max-width: 100%;
-  padding: 4px 1px;
+  margin: 6px 0 14px;
+  padding: 10px 14px;
   color: #344b62;
-  border: 0;
-  background: transparent;
+  border: 1px solid #e2ebf4;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 4px 18px #3155760d;
 }
 .air-chat .msg.system-msg { color: var(--chat-muted); }
 .air-chat .msg.assistant strong,

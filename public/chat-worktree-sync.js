@@ -9,25 +9,35 @@
   }
 
   function create({ document, getSession, getShell, readOnly, request, notice }) {
-    let busy = false, retry = null, bar = null;
+    // The affordance renders into every live container: the persistent
+    // worktree status row and the conflict banner (the one that also carries
+    // 放弃/继续). Containers dropped from the DOM are pruned on each render.
+    let busy = false, retry = null;
+    const bars = new Set();
     function render(container) {
-      bar = container;
-      if (readOnly()) return;
-      let button = bar.querySelector('#worktree-force-sync-btn');
-      if (!button) {
-        button = document.createElement('button');
-        button.id = 'worktree-force-sync-btn'; button.type = 'button';
-        button.title = '发送同步指令，由会话保留改动并处理冲突；忙碌时排队';
-        button.onclick = send; bar.appendChild(button);
+      if (container) bars.add(container);
+      for (const bar of bars) {
+        if (!bar.isConnected) { bars.delete(bar); continue; }
+        let button = bar.querySelector('.worktree-force-sync-btn');
+        if (!button && !readOnly()) {
+          button = document.createElement('button');
+          // Class, not id: the same affordance renders into both the status
+          // row and the conflict banner, and ids must stay unique.
+          button.className = 'worktree-force-sync-btn'; button.type = 'button';
+          button.title = '发送同步指令，由会话保留改动并处理冲突；忙碌时排队';
+          button.onclick = send; bar.appendChild(button);
+        }
+        if (button) {
+          button.disabled = busy;
+          button.textContent = busy ? '正在发送…' : retry ? '重试同步指令' : '强制同步';
+        }
       }
-      button.disabled = busy;
-      button.textContent = busy ? '正在发送…' : retry ? '重试同步指令' : '强制同步';
     }
     async function send() {
       if (busy || readOnly()) return;
       const sessionId = getSession(), shellId = getShell();
       if (!sessionId || !shellId) { notice('会话尚未连接，请稍后重试同步指令。'); return; }
-      busy = true; render(bar);
+      busy = true; render();
       try {
         const scope = await request(`/api/task-shells/${encodeURIComponent(shellId)}/chat`);
         if (!scope.taskId || scope.activeSessionId !== sessionId || getSession() !== sessionId) {
@@ -46,7 +56,7 @@
           ? '✓ 同步指令已加入 FIFO，轮到后会保留改动、解决冲突并同步。'
           : '✓ 同步指令已发送，会话将保留改动、解决冲突并同步。');
       } catch (error) { notice(`✗ 同步指令未确认送达：${error.message}；可重试。`); }
-      finally { busy = false; if (bar) render(bar); }
+      finally { busy = false; render(); }
     }
     return { render };
   }

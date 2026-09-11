@@ -693,6 +693,10 @@
             lastUserElement = next.lastUserElement;
           } else {
             messagesEl.appendChild(node);
+            // Mirror commitMessage's append branch: a freshly appended user
+            // bubble is the new last-user element, so the host can re-attach
+            // the per-turn auto-commit checkbox after a history reload.
+            if (operation.message?.role === 'user') lastUserElement = node;
           }
         } catch (error) {
           warn('[multicc] history view skipped message', index, error);
