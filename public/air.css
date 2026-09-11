@@ -89,7 +89,12 @@ nav { display: flex; flex-direction: column; gap: 4px; }
 #favorites button { padding: 7px 10px; min-height: 32px; color: #566d85; }
 #favorites button.selected { color: #0e64c8; background: rgba(255, 255, 255, .92); }
 
-#task-sidebar { min-height: 0; flex: 1; display: flex; flex-direction: column; margin-top: 4px; }
+/* Three bands share the sidebar: fixed chrome, the task list, and the pinned
+   ops footer. When the window is short their minimums add up to more than the
+   viewport, and the list band used to paint over the footer instead of giving
+   way. `overflow-y: auto` is what makes shrinking legitimate — the band scrolls
+   rather than spilling, so the footer keeps the foot of the column. */
+#task-sidebar { min-height: 0; flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; display: flex; flex-direction: column; margin-top: 4px; }
 .task-heading { margin: 0 5px 8px; }
 .task-heading .caption { margin: 0; text-transform: uppercase; letter-spacing: .8px; }
 .task-heading strong { display: block; font-size: 12px; font-weight: 610; }
@@ -140,7 +145,7 @@ nav { display: flex; flex-direction: column; gap: 4px; }
   text-overflow: ellipsis;
 }
 #air-ver-current { color: var(--text); font-size: 11px; }
-#air-ver-hint { color: var(--faint); font-size: 10px; }
+#air-ver-hint { color: var(--muted); font-size: 10px; }
 #air-ver-hint.busy { color: var(--accent-strong); }
 .ops-badge {
   flex-shrink: 0;
@@ -156,9 +161,9 @@ nav { display: flex; flex-direction: column; gap: 4px; }
    rhythm, so the boot fact reads as the version row's sibling. */
 .ops-boot { padding: 0 7px 2px 28px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .ops-boot-row { display: flex; gap: 6px; font-size: 11px; line-height: 1.35; }
-.ops-boot-label { color: var(--faint); }
+.ops-boot-label { color: var(--muted); }
 #air-boot-time { overflow: hidden; color: var(--text); white-space: nowrap; text-overflow: ellipsis; }
-.ops-boot-uptime { color: var(--faint); font-size: 10px; line-height: 1.35; }
+.ops-boot-uptime { color: var(--muted); font-size: 10px; line-height: 1.35; }
 .ops-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 6px; padding: 2px 0 0; }
 .ops-actions button, .ops-actions a {
   min-height: 28px;
