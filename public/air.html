@@ -17,11 +17,11 @@
       <button id="library" class="space-main" type="button">
         <span class="space-icon">▣</span>
         <span class="space-copy"><strong id="directory-name">正在读取…</strong><small id="directory-path"></small></span>
-        <span class="space-chevron">⌄</span>
+        <span class="space-chevron">›</span>
       </button>
       <div class="space-shortcuts">
         <button id="favorite" type="button" aria-label="收藏当前工作目录">☆</button>
-        <span>工作目录</span><kbd>⌘ K</kbd>
+        <span>工作目录</span><kbd>⌘ K 切换</kbd>
       </div>
     </div>
 
@@ -72,6 +72,14 @@
         <button id="task-state" type="button" aria-controls="task-details" aria-expanded="false" disabled></button>
       </div>
       <div class="task-tools">
+        <!-- Each view's own actions sit next to the title they belong to, so the
+             page paints exactly one heading band and the body carries content
+             only. air.js toggles these by mode; the admin module fills
+             #admin-actions. -->
+        <button id="directory-open-planner" type="button" hidden>打开完整任务看板</button>
+        <button id="add-directory" type="button" hidden>＋ 添加工作目录</button>
+        <button id="schedule-create" class="primary" type="button" hidden>＋ 新建定时任务</button>
+        <div id="admin-actions" hidden></div>
         <!-- Two of the frame's most-used More-menu actions stay one click away
              (the menu keeps the full list). Each shortcut clicks the chat
              page's own button, so the handler, the permission check and the
@@ -89,35 +97,15 @@
     <p id="notice" role="status" aria-live="polite"></p>
 
     <section id="directory-library" hidden>
-      <div class="library-hero">
-        <div><span class="eyebrow">DIRECTORY LIBRARY</span><h2>你的工作目录</h2><p>按名称或路径快速切换项目；收藏最多五个。</p></div>
-        <button id="add-directory" type="button">＋ 添加工作目录</button>
-      </div>
       <input id="directory-search" type="search" placeholder="搜索名称或路径" aria-label="搜索工作目录">
       <div id="directory-grid"></div>
     </section>
 
     <section id="admin-center" hidden>
-      <div class="admin-hero">
-        <div>
-          <span id="admin-eyebrow" class="eyebrow">MULTICC AIR</span>
-          <h2 id="admin-title">控制台</h2>
-          <p id="admin-description">任务、目录与服务状态集中在一个入口。</p>
-        </div>
-        <div id="admin-actions"></div>
-      </div>
       <div id="admin-content" aria-live="polite"></div>
     </section>
 
     <section id="schedule-center" hidden>
-      <div class="schedule-hero">
-        <div>
-          <span class="eyebrow">SCHEDULED AIR TASKS</span>
-          <h2>定时任务</h2>
-          <p>每条规则永久绑定一个 Air 任务；每次触发都进入同一任务历史，忙碌时自动排队。</p>
-        </div>
-        <button id="schedule-create" class="primary" type="button">＋ 新建定时任务</button>
-      </div>
       <div id="schedule-summary" aria-live="polite"></div>
       <div id="schedule-list"></div>
     </section>
@@ -125,10 +113,6 @@
     <section id="task-layout">
       <div id="task-content">
         <div id="empty">
-          <div class="directory-overview-head">
-            <div><span class="eyebrow">DIRECTORY TASKS</span><h2 id="directory-overview-title">任务概览</h2><p id="directory-overview-path"></p></div>
-            <button id="directory-open-planner" type="button">打开完整任务看板</button>
-          </div>
           <div id="directory-stats" aria-label="当前目录任务统计"></div>
           <section class="directory-task-panel">
             <div class="section-heading"><div><span class="caption">当前目录</span><strong>最近任务</strong></div><span id="directory-overview-count"></span></div>
