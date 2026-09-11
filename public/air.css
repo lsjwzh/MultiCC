@@ -155,20 +155,20 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 .directory-task-row time { color: #8c9aaa; font-size: 8px; }
 .directory-task-mark { color: #3b8edc; font-size: 18px; }
 .directory-task-empty { grid-column: 1 / -1; padding: 26px; text-align: center; font-size: 11px; }
-/* The new-task composer floats a little above the bottom edge so it reads as
-   part of the conversation column rather than a bar glued to the viewport. */
-#quick-task-form { position: sticky; bottom: 20px; margin-top: 18px; padding: 12px 14px; border: 1px solid #d5e3f0; border-radius: 16px; background: rgba(255, 255, 255, .96); box-shadow: 0 14px 42px #31557616; backdrop-filter: blur(16px); }
-#quick-task-input { min-height: 96px; max-height: 220px; padding: 10px 4px 8px; border: 0; background: transparent; resize: vertical; }
-#quick-task-input:focus { box-shadow: none; }
-#quick-task-files { display: flex; flex-wrap: wrap; gap: 5px; }
+/* The new-task composer is the composer module (composer.css) in its panel
+   placement; only where it sits in the column is decided here — floating a
+   little above the bottom edge so it reads as part of the conversation column
+   rather than a bar glued to the viewport. */
+#quick-task-form { position: sticky; bottom: 20px; margin-top: 18px; }
+#quick-task-files { display: flex; flex-wrap: wrap; gap: 5px; padding: 12px 12px 0; }
+#quick-task-files:empty { display: none; }
 .quick-task-file { display: inline-flex; align-items: center; gap: 5px; padding: 3px 4px 3px 8px; color: #476b8c; border-radius: 14px; background: #edf5fc; font-size: 9px; }
 .quick-task-file.error { color: #a6533c; background: #fff1ec; }
 .quick-task-file button { min-width: 22px; min-height: 22px; padding: 0; border: 0; background: transparent; }
-.quick-task-actions { display: flex; align-items: center; gap: 7px; padding-top: 8px; border-top: 1px solid #e7eef5; }
-.quick-task-actions > label { display: flex; align-items: center; gap: 5px; width: auto; color: #60758a; font-size: 9px; white-space: nowrap; }
+.quick-task-actions > label { display: flex; align-items: center; gap: 5px; width: auto; color: #60758a; font-size: 10.5px; white-space: nowrap; }
 .quick-task-actions input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); }
 .quick-task-actions select { width: 105px; min-height: 32px; padding: 4px 7px; }
-.quick-task-actions button { min-height: 32px; padding: 5px 9px; font-size: 10px; }
+.quick-task-actions button { min-height: 32px; padding: 5px 9px; font-size: 11px; }
 #quick-task-status { min-width: 0; flex: 1; overflow: hidden; color: #718499; font-size: 9px; white-space: nowrap; text-overflow: ellipsis; }
 #conversation { min-height: 220px; flex: 1; width: 100%; border: 0; background: transparent; }
 
@@ -494,7 +494,6 @@ dialog .air-config-field input { margin-top: 7px; }
   #directory-task-list { grid-template-columns: 1fr; }
   .directory-task-row { border-right: 0; }
   #quick-task-form { bottom: 12px; }
-  #quick-task-input { min-height: 84px; }
   .quick-task-actions { flex-wrap: wrap; }
   #quick-task-status { order: 4; flex-basis: 100%; }
   #quick-task-submit { margin-left: auto; }

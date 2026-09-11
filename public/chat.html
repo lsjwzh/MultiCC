@@ -2466,7 +2466,7 @@
   <!-- Loaded after the inline styles so the shared tone tokens win same-specificity ties. -->
   <link rel="stylesheet" href="status-badge.css" />
   <link rel="stylesheet" href="chat-dispatch-activity.css" />
-  <link rel="stylesheet" href="chat-task-mode.css" /><link rel="stylesheet" href="chat-air.css" />
+  <link rel="stylesheet" href="chat-task-mode.css" /><link rel="stylesheet" href="composer.css" /><link rel="stylesheet" href="chat-air.css" />
 </head>
 <body><script>if(new URLSearchParams(location.search).get('air')==='1'){document.body.classList.add('air-chat');document.querySelector('meta[name="theme-color"]')?.setAttribute('content','#f7fbff')}</script>
   <!-- Image preview lightbox -->
@@ -2755,8 +2755,8 @@
     <div id="session-queue-list"></div>
   </details>
 
-  <!-- Input bar -->
-  <div id="input-bar">
+  <!-- Input bar: the composer module in its conversation placement (composer.css); air.js adds --with-aux while the 配置 band shows. -->
+  <div id="input-bar" class="mc-composer mc-composer--chat">
     <button id="mic-btn" class="input-action-btn" title="Voice input">&#127908;</button>
     <button id="attach-btn" class="input-action-btn" title="Attach file">&#128206;</button>
     <button id="goal-btn" class="input-action-btn" title="以 Goal 模式发送任务（先用 AI 预检目标与完成标准）">&#127919;</button>
