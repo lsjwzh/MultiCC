@@ -214,7 +214,10 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.ok(await page.waitFor(`document.getElementById('delivery-title').textContent.includes('任务体验收口')`));
     await page.evaluate(`document.getElementById('schedules').click()`);
     assert.ok(await page.waitFor(`document.getElementById('schedule-center').hidden===false && document.querySelector('.schedule-fixed-task')`));
-    assert.equal(await page.evaluate(`document.getElementById('schedule-center').innerText.includes('每次触发都进入同一任务历史')`), true);
+    // Every view paints one heading band — the shell header — so the page copy
+    // moved out of the body and the view keeps only its actions.
+    assert.equal(await page.evaluate(`document.getElementById('task-title').textContent==='定时任务' && document.getElementById('task-state').textContent.includes('写入同一任务')`), true);
+    assert.equal(await page.evaluate(`document.querySelector('#schedule-center .schedule-hero')===null && document.querySelector('#task-header #schedule-create')!==null`), true);
     assert.equal(await page.evaluate(`document.querySelector('.schedule-fixed-task').innerText.includes('tsk_a')`), true);
     await page.evaluate(`document.getElementById('schedule-create').click()`);
     assert.ok(await page.waitFor(`document.getElementById('schedule-dialog').open===true`));
@@ -225,7 +228,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='完善任务协作体验'`));
     await page.navigate('/air?dir=d1');
     assert.ok(await page.waitFor(`!document.getElementById('empty').hidden && document.querySelectorAll('.directory-stat').length===4`));
-    assert.equal(await page.evaluate(`document.getElementById('directory-overview-title').textContent.includes('MultiCC')`), true);
+    assert.equal(await page.evaluate(`document.getElementById('task-title').textContent.includes('MultiCC') && document.getElementById('task-state').textContent.includes('/projects/multicc')`), true);
     assert.equal(await page.evaluate(`document.querySelectorAll('.directory-task-row').length`), 1);
     await page.evaluate(`document.getElementById('quick-task-input').value='从目录首页创建任务';document.getElementById('quick-task-goal').checked=true;document.getElementById('quick-task-form').requestSubmit()`);
     assert.ok(await page.waitFor(`location.search.includes('task=tsk_new')`));
@@ -234,21 +237,21 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(quickDispatches[0].goal, true);
     await page.navigate('/air?view=overview');
     assert.ok(await page.waitFor(`document.getElementById('admin-center').hidden===false && document.querySelectorAll('.admin-stat').length===4`));
-    assert.equal(await page.evaluate(`document.getElementById('admin-title').textContent`), '控制台');
+    assert.equal(await page.evaluate(`document.getElementById('task-title').textContent`), '控制台');
     assert.equal(await page.evaluate(`document.querySelectorAll('.admin-directory-row').length`), 1);
     assert.equal(await page.evaluate(`document.querySelector('.admin-directory-row').innerText.includes('MultiCC')`), true);
     assert.equal(await page.evaluate(`[...document.querySelectorAll('.air-legacy-frame')].filter(x=>x.offsetParent).length`), 0);
     assert.equal(await page.evaluate(`document.documentElement.scrollWidth<=innerWidth`), true);
     screenshots.push(await page.screenshot('air-console-desktop'));
     await page.evaluate(`document.querySelector('[data-air-view="docs"]').click()`);
-    assert.ok(await page.waitFor(`document.getElementById('admin-title').textContent==='服务与文档' && document.querySelectorAll('.air-doc-card').length===2`));
+    assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='服务与文档' && document.querySelectorAll('.air-doc-card').length===2`));
     assert.equal(await page.evaluate(`document.getElementById('air-doc-summary').textContent.includes('2 条登记')`), true);
     assert.equal(await page.evaluate(`document.querySelectorAll('.air-legacy-frame').length`), 0);
     await page.evaluate(`document.querySelector('[data-air-view="settings"]').click()`);
-    assert.ok(await page.waitFor(`document.getElementById('admin-title').textContent==='设置中心' && document.querySelectorAll('.air-setting-card').length===10`));
+    assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='设置中心' && document.querySelectorAll('.air-setting-card').length===10`));
     assert.equal(await page.evaluate(`document.body.innerText.includes('Provider 配置')`), true);
     await page.evaluate(`[...document.querySelectorAll('.air-setting-card')].find(x=>x.innerText.includes('Provider 配置')).click()`);
-    assert.ok(await page.waitFor(`document.getElementById('admin-title').textContent==='CLI 与 Provider' && document.querySelectorAll('.air-provider-card').length===3`));
+    assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='CLI 与 Provider' && document.querySelectorAll('.air-provider-card').length===3`));
     assert.equal(await page.evaluate(`[...document.querySelectorAll('.air-legacy-frame')].filter(x=>x.offsetParent).length`), 0);
     assert.equal(await page.evaluate(`document.querySelectorAll('#air-provider-defaults select').length`), 2);
     assert.equal(await page.evaluate(`document.getElementById('air-provider-count').textContent.includes('3 条线路')`), true);
@@ -287,11 +290,11 @@ test('Air task-first console, management views, roles, configuration, artifacts 
       await page.navigate('/air?view=overview');
       assert.ok(await page.waitFor(`document.getElementById('admin-center').hidden===false && document.querySelectorAll('.admin-stat').length===4`));
       assert.equal(await page.evaluate(`document.documentElement.scrollWidth<=innerWidth`), true);
-      assert.equal(await page.evaluate(`document.getElementById('admin-title').getBoundingClientRect().right<=innerWidth`), true);
+      assert.equal(await page.evaluate(`document.getElementById('task-title').getBoundingClientRect().right<=innerWidth`), true);
       screenshots.push(await page.screenshot('air-console-mobile-' + width));
     }
     await page.navigate('/air?view=provider');
-    assert.ok(await page.waitFor(`document.getElementById('admin-title').textContent==='CLI 与 Provider' && document.querySelectorAll('.air-provider-card').length===3`));
+    assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='CLI 与 Provider' && document.querySelectorAll('.air-provider-card').length===3`));
     assert.equal(await page.evaluate(`document.documentElement.scrollWidth<=innerWidth`), true);
     assert.equal(await page.evaluate(`getComputedStyle(document.getElementById('air-provider-cards')).gridTemplateColumns.split(' ').length`), 1);
     await page.evaluate(`document.querySelector('#admin-actions .primary').click()`);
