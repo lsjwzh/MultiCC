@@ -2,6 +2,19 @@
 
 const { cleanError } = require('./runtime');
 
+function pageTaskHistory(rawMessages, options = {}) {
+  const messages = Array.isArray(rawMessages) ? rawMessages : [];
+  const limit = Math.max(1, Math.min(100, parseInt(options.limit, 10) || 50));
+  const target = options.around || options.before;
+  const cursor = target ? messages.findIndex(message => message.id === target || message.sourceMessageId === target) : -1;
+  if (target && cursor < 0) return { messages: [], hasMore: false, found: false };
+  const end = options.around ? Math.min(messages.length, cursor + Math.ceil(limit / 2))
+    : options.before ? cursor : messages.length;
+  const start = Math.max(0, end - limit);
+  return { messages: JSON.parse(JSON.stringify(messages.slice(start, end))), hasMore: start > 0,
+    ...(options.around ? { found: true, hasNewer: end < messages.length } : {}) };
+}
+
 function mountTaskShellRoutes(app, { getRuntime, open = id => getRuntime().open(id), history, artifacts, taskEntry }) {
   const route = handler => async (req, res) => {
     try {
@@ -13,6 +26,10 @@ function mountTaskShellRoutes(app, { getRuntime, open = id => getRuntime().open(
     }
   };
   app.get('/api/task-shell-tasks/:taskId', route((runtime, req) => (taskEntry || runtime.taskEntry)(req.params.taskId)));
+  app.get('/api/task-shell-tasks/:taskId/history', route(async (runtime, req) => {
+    const entry = await (taskEntry || runtime.taskEntry)(req.params.taskId);
+    return { ...pageTaskHistory(entry.messages, req.query), task: entry.task, execution: entry.execution, readOnly: entry.readOnly };
+  }));
   if (artifacts) {
     app.get('/api/task-shell-tasks/:taskId/artifacts', route((_runtime, req) => artifacts(req.params.taskId)));
     app.get('/api/task-shells/:shellId/artifacts', route((runtime, req) => {
@@ -53,4 +70,4 @@ function mountTaskShellRoutes(app, { getRuntime, open = id => getRuntime().open(
   app.post('/api/task-shells/:shellId/receipts/:receiptId/retry', route((runtime, req) => runtime.retry(req.params.shellId, req.params.receiptId)));
 }
 
-module.exports = { mountTaskShellRoutes };
+module.exports = { mountTaskShellRoutes, pageTaskHistory };

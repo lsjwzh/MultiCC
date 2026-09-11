@@ -16,7 +16,9 @@ const { createTaskShellHost } = require('../src/task-shell/host');
 test('queued successors cannot cancel an ended turn; live turns and pending questions retain exact controls', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-shell-control-'));
   const record = { id: 'source', kind: 'chat', cli: 'codex', dirId: 'd1',
-    taskState: { userInputSignalTurnId: 'old-turn' } };
+    taskState: { userInputSignalTurnId: 'old-turn', goal: '恢复完整聊天能力', phase: 'verifying',
+      classifyState: 'W', classifyUpdatedAt: 123,
+      classifyHistory: [{ at: 120, taskId: 'task-a', goal: '恢复完整聊天能力', phase: 'implementing', state: 'C', evidence: 'continue' }] } };
   const live = { isStreaming: false, _activeTurn: { turnId: 'old-turn' } };
   const cancellations = [];
   const host = createTaskShellHost({
@@ -24,12 +26,22 @@ test('queued successors cannot cancel an ended turn; live turns and pending ques
     getChatState: () => live, loadHistory: () => [],
     getWorkHost: () => ({ isRunActive: () => false, getRunState: () => 'queued',
       cancelActiveTurn: id => { cancellations.push(id); return { ok: true }; } }),
-    getScheduler: () => ({ status: async () => ({ state: 'idle', queued: [{}] }) }),
+    getScheduler: () => ({ status: async () => ({ state: 'queued', classifyState: 'W', updatedAt: 124,
+      active: { entryId: 'active-private', deliveryId: 'must-not-leak', workKind: 'message', startedAt: 100 },
+      queued: [{ entryId: 'fifo-1', position: 1, state: 'pending', text: '排队消息', priority: false }] }) }),
+    recentEvents: () => [{ ts: 125, type: 'tool_result', sessionId: 'source', detail: { name: 'Read', ok: true } },
+      { ts: 126, type: 'other', sessionId: 'another', detail: 'hidden' }],
     getTaskBoard: () => ({ registerShellTask: () => ({ ok: true }), getBoard: () => ({ tasks: {} }) }),
   });
   t.after(() => { host.close(); fs.rmSync(dir, { recursive: true, force: true }); });
   const shell = host.open(record.id);
-  assert.equal((await host.taskEntry(shell.currentTaskId)).execution.turnId, null);
+  const projected = (await host.taskEntry(shell.currentTaskId)).execution;
+  assert.equal(projected.turnId, null);
+  assert.deepEqual(projected.queue.queued.map(item => [item.entryId, item.position, item.text]), [['fifo-1', 1, '排队消息']]);
+  assert.equal(projected.queue.active.deliveryId, undefined, 'private scheduler delivery identity stays server-side');
+  assert.deepEqual(projected.classify, { state: 'W', goal: '恢复完整聊天能力', phase: 'verifying', updatedAt: 123,
+    history: [{ at: 120, taskId: 'task-a', goal: '恢复完整聊天能力', phase: 'implementing', state: 'C', error: false, evidence: 'continue' }] });
+  assert.deepEqual(projected.events, [{ ts: 125, type: 'tool_result', detail: '{"name":"Read","ok":true}' }]);
   await assert.rejects(host.sendClientInput(record.id, {
     type: 'cancel', clientMsgId: 'stale', turnId: 'old-turn',
   }), { code: 'stale_control' });

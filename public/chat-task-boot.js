@@ -19,7 +19,23 @@ async function bootChatEntry() {
       const element = document.getElementById(id);
       if (element) element.style.display = 'none';
     }
-    connect();
+    document.body.classList.add('chat-read-only');
+    try {
+      const response = await window.fetch(`/api/task-shell-tasks/${encodeURIComponent(_taskId)}/history?limit=50&historyScope=archive`, { cache: 'no-store' });
+      const snapshot = await response.json().catch(() => ({}));
+      if (!response.ok || snapshot.ok === false) throw new Error(snapshot.message || snapshot.error || snapshot.code || `HTTP ${response.status}`);
+      updateTabIdentity(snapshot.task?.title || _taskId, _taskId);
+      resetHistoryPagination(); chatHistoryView.clearMessages();
+      applyHistoryPlan(chatHistoryStore.acceptHistory(snapshot, []));
+      const queue = snapshot.execution?.queue || {};
+      window.MultiCCChatSessionQueue?.render(queue.queued || [], queue, document);
+      const classify = snapshot.execution?.classify;
+      if (classify?.state) renderAuxClassify(classify.goal, classify.phase, classify.state);
+      window.MultiCCTaskArtifacts?.setScope({ taskId: _taskId });
+      statusEl.textContent = '只读历史'; statusEl.className = '';
+    } catch (error) {
+      addSystemMsg(error.message); statusEl.textContent = error.message; statusEl.className = 'error';
+    }
     return;
   }
   if (!_taskId) {
@@ -29,6 +45,7 @@ async function bootChatEntry() {
   try {
     const target = await window.MultiCCChatShellEntry.resolve({
       sessionId: _sessionName, taskId: _taskId, fetch: window.fetch.bind(window),
+      air: _params.get('air') === '1',
     });
     if (target) {
       // The resolver may return a read-only task entry without a session.

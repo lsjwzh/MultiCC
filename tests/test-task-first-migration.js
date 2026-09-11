@@ -60,11 +60,15 @@ test('task-first preparation retains existing workspace references instead of mo
   assert.equal(touched, false);
 });
 
-test('opening a planned board task keeps its identity and creates metadata once without starting work', async t => {
-  const board = { id: 'tsk_plan', dirId: 'd1', title: 'Implement task', origin: 'board', refs: [] };
+test('opening a planned board task keeps its identity, plan content and creates metadata once without starting work', async t => {
+  const board = { id: 'tsk_plan', dirId: 'd1', title: 'Implement task', origin: 'board', refs: [],
+    recordType: 'planned', workflowStage: 'inbox', planningRevision: 3,
+    description: 'Implement the planned change', acceptanceCriteria: 'The plan is visible before execution' };
   const f = fixture(t, { getDirectory: id => ({ id }), getTask: id => id === board.id ? board : null, defaultTaskRuntime: () => ({ cli: 'codex' }) });
   const [a, b] = await Promise.all([f.runtime.bindPlannedTask(board.id), f.runtime.bindPlannedTask(board.id)]);
   assert.equal(a.task.id, board.id); assert.deepEqual(a, b); assert.equal(f.creations.length, 1);
+  assert.equal(a.task.recordType, 'planned'); assert.equal(a.task.description, board.description);
+  assert.equal(a.task.acceptanceCriteria, board.acceptanceCriteria); assert.equal(a.task.planningRevision, 3);
   assert.equal(a.readOnly, false); assert.equal(f.sends.length, 0);
   assert.equal(f.creations[0].source.cli, 'codex');
   assert.equal(f.store.get('task', board.id).taskFirst, true);

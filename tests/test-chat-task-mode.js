@@ -12,16 +12,15 @@ test('real task boot preserves resolved read-only and chat URLs with external mo
   for (const readOnly of [true, false]) {
     for (const external of ['', '1']) {
       const replaced = [], errors = [], calls = [];
-      const url = '/task-shell.html?task=task-one&board=1';
       const fetch = async route => {
         calls.push(route);
         if (route.endsWith('/chat-session')) return response(readOnly
-          ? { ok: true, readOnly: true, sessionId: null, url } : { ok: true, sessionId: 'bound' });
+          ? { ok: true, readOnly: true, sessionId: null, url: '/task-shell.html?task=task-one&board=1' } : { ok: true, sessionId: 'bound' });
         if (route.endsWith('/tasks/resolve')) return response({ sessionId: 'execution' });
         return response({ id: 'sh_main' });
       };
       const context = { URL, _taskId: 'task-one', _sessionName: '',
-        _params: new URLSearchParams({ task: 'task-one', ...(external ? { external } : {}) }),
+        _params: new URLSearchParams({ task: 'task-one', air: '1', ...(external ? { external } : {}) }),
         window: { fetch, MultiCCChatShellEntry: { resolve, chatUrl } },
         location: { href: 'http://localhost:3000/chat.html?task=task-one', replace: target => replaced.push(target) },
         connect: () => assert.fail('task must resolve before connecting'),
@@ -29,7 +28,8 @@ test('real task boot preserves resolved read-only and chat URLs with external mo
       };
       await vm.runInNewContext(boot + '\nbootChatEntry();', context);
       assert.deepEqual(errors, []);
-      assert.deepEqual(replaced, ['http://localhost:3000' + (readOnly ? url : '/chat.html?session=execution') + (external ? '&external=1' : '')]);
+      assert.deepEqual(replaced, ['http://localhost:3000' + (readOnly
+        ? '/chat.html?task=task-one&readOnly=1&air=1' : '/chat.html?session=execution&air=1') + (external ? '&external=1' : '')]);
       if (readOnly) assert.equal(calls.length, 1, 'read-only history must not create or select an execution');
     }
   }
@@ -49,6 +49,36 @@ test('ordinary chat remains in the full chat UI and task links resolve to the bo
   assert.equal(calls.at(-1).url, '/api/task-shells/sh_main/tasks/resolve');
   assert.deepEqual(JSON.parse(calls.at(-1).init.body), { taskId: 'task-one' });
   assert.equal(chatUrl('execution', { external: '1' }), '/chat.html?session=execution&external=1');
+  assert.equal(chatUrl('execution', { air: true }), '/chat.html?session=execution&air=1');
+});
+
+test('read-only task boot hydrates the original chat renderers without opening a socket', async () => {
+  const vm = require('node:vm');
+  const boot = fs.readFileSync(path.join(__dirname, '../public/chat-task-boot.js'), 'utf8');
+  const hidden = new Map(), calls = [], rendered = {};
+  const snapshot = { task: { title: 'Archived task' }, messages: [{ id: 'm1', role: 'assistant', content: 'done', tools: [{ name: 'Read' }] }], hasMore: true,
+    execution: { queue: { state: 'frozen', queued: [{ entryId: 'q1', text: 'later' }] }, classify: { state: 'D', goal: 'ship', phase: 'done' } } };
+  const context = { URL, URLSearchParams, _taskId: 'task-old', _params: new URLSearchParams({ task: 'task-old', readOnly: '1', air: '1' }),
+    window: { fetch: async (url, init) => { calls.push({ url, init }); return response(snapshot); },
+      MultiCCChatSessionQueue: { render: (...args) => { rendered.queue = args; } },
+      MultiCCTaskArtifacts: { setScope: value => { rendered.artifacts = value; } } },
+    document: { body: { classList: { add: value => { rendered.bodyClass = value; } } },
+      getElementById: id => { if (!hidden.has(id)) hidden.set(id, { style: {} }); return hidden.get(id); } },
+    updateTabIdentity: (...args) => { rendered.identity = args; }, resetHistoryPagination: () => { rendered.reset = true; },
+    chatHistoryView: { clearMessages: () => { rendered.cleared = true; } },
+    chatHistoryStore: { acceptHistory: value => ({ value }) }, applyHistoryPlan: value => { rendered.plan = value; },
+    renderAuxClassify: (...args) => { rendered.classify = args; }, connect: () => assert.fail('read-only history must not open a socket'),
+    addSystemMsg: message => assert.fail(message), statusEl: {}, encodeURIComponent,
+  };
+  await vm.runInNewContext(boot + '\nbootChatEntry();', context);
+  assert.equal(calls[0].url, '/api/task-shell-tasks/task-old/history?limit=50&historyScope=archive');
+  assert.equal(rendered.bodyClass, 'chat-read-only');
+  assert.deepEqual(rendered.identity, ['Archived task', 'task-old']);
+  assert.equal(rendered.plan.value.messages[0].tools[0].name, 'Read');
+  assert.equal(rendered.queue[0][0].entryId, 'q1');
+  assert.deepEqual(rendered.classify, ['ship', 'done', 'D']);
+  assert.equal(rendered.artifacts.taskId, 'task-old');
+  assert.equal(context.statusEl.textContent, '只读历史');
 });
 
 test('task-link HTTP failures do not enter a second UI', async () => {

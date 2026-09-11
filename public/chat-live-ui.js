@@ -12,6 +12,7 @@
     const menu = opts.menu;
     const wrap = opts.wrap;
     const ids = opts.ids || [];
+    const compactIds = opts.compactIds || [];
     let backdrop = null;
 
     function close() {
@@ -38,13 +39,14 @@
       if (!menu || !wrap) return;
       const header = doc.getElementById('header');
       if (!header) return;
-      if (win.innerWidth <= 760) {
-        for (const id of ids) {
+      const compact = doc.body?.classList.contains('air-chat');
+      if (win.innerWidth <= 760 || compact) {
+        for (const id of [...new Set([...ids, ...(compact ? compactIds : [])])]) {
           const element = doc.getElementById(id);
           if (element && element.parentElement !== menu) menu.appendChild(element);
         }
       } else {
-        for (const id of ids) {
+        for (const id of [...new Set([...ids, ...compactIds])]) {
           const element = doc.getElementById(id);
           if (element && element.parentElement !== header) header.insertBefore(element, wrap);
         }

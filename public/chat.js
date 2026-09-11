@@ -236,6 +236,10 @@ const headerMoreController = window.MultiCCChatLiveUi.bindHeaderMoreMenu({
     'memory-btn', 'auto-commit-btn', 'share-btn', 'restart-spawn-btn',
     'memo-btn',
   ],
+  compactIds: [
+    'reconnect-btn', 'cli-btn', 'effort-btn', 'provider-btn', 'merge-btn',
+    'clear-ctx-wrap',
+  ],
 });
 function syncHeaderMoreMenu() { return headerMoreController.sync(); }
 function openHeaderMoreModal() { return headerMoreController.open(); }
@@ -546,7 +550,7 @@ const chatLiveUi = window.MultiCCChatLiveUi.createLiveUi({
 let chatEventController = null;
 let _eventGeneration = 0;
 const shellChatView = window.MultiCCChatShellEntry.createShellView({
-  sourceSessionId: _shellSourceSession, disabled: _params.get('readOnly') === '1',
+  sourceSessionId: _shellSourceSession, taskId: _taskId, disabled: _params.get('readOnly') === '1',
   request: (url, options) => chatApi.json(url, options),
   onSession: id => { if (_sessionName !== id) { _sessionName = id; sessionId = null; } },
 });

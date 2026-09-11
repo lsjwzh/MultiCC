@@ -2007,6 +2007,7 @@ const taskShellHost = require('./src/task-shell/host').createTaskShellHost({
   displayHistory: (id, hidden) => chatHistoryRuntime.projectedMessages(id, hidden), getChatState: id => chatSessions.get(id),
   subscribeChat: listener => { bus.on('chat:stream-progress', listener); return () => bus.off('chat:stream-progress', listener); },
   getWorkHost: () => sessionWorkHost, getScheduler: () => orchestrationRuntime?.sessionScheduler,
+  recentEvents: dirId => recentEvents(dirId),
   deliver: (...args) => taskContextHost.deliverSessionMessage(...args),
   persistRecords: (source, fn) => sessionPersistence.mutate(source, fn), closeExecution: id => chatStream.closeAndWait(id), resetChatState: id => chatSessions.delete(id),
   hasBackground: id => backgroundTaskRuntime.hasLiveBackgroundTasks(id), ensureWorkspaceAwake: id => sessionHibernationRuntime.ensureAwake(id),
@@ -2494,7 +2495,17 @@ workspaceAdmission = require('./src/workspace/admission').createWorkspaceAdmissi
   log: (event, data) => logger.warn(event, data),
 });
 
-require('./src/workspace/air-routes').mountAirRoutes(app, { admission: workspaceAdmission, records: persistedSessions, directories, shell: taskShellHost, getBoard: () => taskBoardRuntime.getBoard(), clis: SUPPORTED_CHAT_CLIS });
+require('./src/workspace/air-routes').mountAirRoutes(app, {
+  admission: workspaceAdmission,
+  records: persistedSessions,
+  directories,
+  shell: taskShellHost,
+  getBoard: () => taskBoardRuntime.getBoard(),
+  clis: SUPPORTED_CHAT_CLIS,
+  providerName: sessionProviderName,
+  effectiveModel: effectiveSessionModel,
+  effectiveEffort: effectiveSessionEffort,
+});
 
 const tuiChatMirrorRuntime = createTuiChatMirrorRuntime({ enabled: tuiChatMirrorEnabled(), records: persistedSessions, cwdForSession, providerFor, send: sendWs, setSessionStatus, saveBestEffort: source => savePersistedSessionsBestEffort(source), logger });
 
@@ -2767,11 +2778,20 @@ const startupRepoReady = Promise.resolve().then(providers.migrateLegacyProviderP
   .then(() => recoverTmuxSessions())
   .catch(error => console.error('[multicc] async tmux recovery failed:', error.message));
 
-// Scheduled tasks (定时任务): inject the session-creation + turn-running machinery.
-// Complements the per-session triggers above — this one fires by creating a
-// fresh chat session in a target directory (directory-level recurring tasks).
+// Scheduled tasks (定时任务): every rule owns one fixed Air task and enters it
+// through the task-shell receipt protocol. This complements the lower-level
+// per-session triggers without bringing legacy role/chat shells back.
 cronTasks.mount(app); docsRegistry.mount(app, { resolveTaskId: id => taskShellHost.artifactTaskId(id) }); // docs-registry = /manage「服务与文档」管理表（同行以守 3000 行预算）
-cronTasks.init({ directories, createSessionRecord, admitChatWork: chatTurnEngine.admitChatWork, sessionExists: (id) => persistedSessions.has(id) });
+cronTasks.init({
+  directories,
+  clis: SUPPORTED_CHAT_CLIS,
+  ready: startupRepoReady,
+  createTask: input => taskShellHost.createTask(input),
+  getTask: id => taskShellHost.taskEntry(id),
+  sendTaskMessage: (id, text, options) => taskShellHost.sendTaskMessage(id, text, options),
+  resolveTaskId: sessionId => taskShellHost.artifactTaskId(sessionId),
+  taskSummary: id => taskShellHost.taskSummary(id),
+});
 // In-process external-tunnel monitor (replaces phtunnel-monitor.sh watchdog).
 tunnel.init();
 

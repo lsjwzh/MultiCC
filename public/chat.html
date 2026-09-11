@@ -2466,9 +2466,9 @@
   <!-- Loaded after the inline styles so the shared tone tokens win same-specificity ties. -->
   <link rel="stylesheet" href="status-badge.css" />
   <link rel="stylesheet" href="chat-dispatch-activity.css" />
-  <link rel="stylesheet" href="chat-task-mode.css" />
+  <link rel="stylesheet" href="chat-task-mode.css" /><link rel="stylesheet" href="chat-air.css" />
 </head>
-<body>
+<body><script>if(new URLSearchParams(location.search).get('air')==='1'){document.body.classList.add('air-chat');document.querySelector('meta[name="theme-color"]')?.setAttribute('content','#f7fbff')}</script>
   <!-- Image preview lightbox -->
   <div id="img-lightbox">
     <span class="lb-close">&times;</span>
@@ -2584,7 +2584,7 @@
 
   <!-- Messages -->
   <div id="messages">
-    <div class="msg system-msg">Chat mode — structured output rendering</div>
+    <div class="msg system-msg chat-placeholder">Chat mode — structured output rendering</div>
   </div>
 
   <!-- Two semantic rows, regardless of how many independent quota sources are

@@ -1,0 +1,83 @@
+/* Compatibility skin for management tools that have moved under the Air shell
+   but have not yet been rewritten as native Air components. The explicit
+   /manage.html document keeps its original layout; only ?embed=air opts in. */
+html.air-embed {
+  color-scheme: light;
+  --bg: #f8fbff;
+  --bg-soft: #f4f8fd;
+  --panel: #ffffff;
+  --panel-2: #f5f9fd;
+  --line: #dce6f1;
+  --line-strong: #c7d8e8;
+  --text: #26384d;
+  --muted: #6f8096;
+  --faint: #8a9aab;
+  --well: #fbfdff;
+  --accent: #1678e8;
+  --accent-dim: #eaf4ff;
+  --accent-line: #a9cff6;
+  --blue: #247fd8;
+  --claude: #bd6843;
+  --codex: #24835f;
+  --amber: #a86727;
+  --danger: #b64e43;
+  --elev: 0 8px 26px rgba(46, 75, 104, .07);
+  --elev-hi: 0 14px 38px rgba(46, 75, 104, .12);
+  background: #f8fbff;
+}
+
+html.air-embed, html.air-embed body { height: auto; min-height: 100%; }
+html.air-embed body { display: block; overflow: auto; background: linear-gradient(145deg, #fbfdff, #f2f7fc); }
+html.air-embed body::before { display: none; }
+html.air-embed body > a[href="/air"],
+html.air-embed #nav,
+html.air-embed #topbar,
+html.air-embed #focus-panel { display: none !important; }
+html.air-embed #main { display: block; min-height: 100vh; overflow: visible; }
+html.air-embed #content { display: block; min-height: 100vh; overflow: visible; }
+html.air-embed #sidebar { width: 100%; padding: 18px; overflow: visible; }
+html.air-embed #sidebar > .view.active { display: block; }
+html.air-embed .sec-head { margin-top: 0; }
+html.air-embed .sec-head h2 { color: #294760; font-size: 17px; }
+html.air-embed .sec-desc { color: var(--muted); }
+html.air-embed .settings-card,
+html.air-embed .kpi,
+html.air-embed .dir-block,
+html.air-embed .aux-classify,
+html.air-embed #mem-tree,
+html.air-embed #mem-graph-canvas { border-color: var(--line); background: rgba(255, 255, 255, .94); box-shadow: var(--elev); }
+html.air-embed .sc-head,
+html.air-embed .sc-footer,
+html.air-embed .setting-row,
+html.air-embed .resource-row,
+html.air-embed .resource-toolbar { border-color: var(--line); }
+html.air-embed .setting-row input,
+html.air-embed .setting-row select,
+html.air-embed .setting-row textarea,
+html.air-embed .resource-toolbar input,
+html.air-embed .resource-toolbar select,
+html.air-embed #mem-graph-toolbar select,
+html.air-embed #mem-file-card textarea { color: var(--text); border-color: var(--line); background: #fbfdff; box-shadow: none; }
+html.air-embed .btn,
+html.air-embed .hdr-btn,
+html.air-embed .icon-btn,
+html.air-embed .prov-tab,
+html.air-embed .mtab { color: #526d88; border-color: var(--line); background: #fff; box-shadow: none; }
+html.air-embed .btn:hover,
+html.air-embed .hdr-btn:hover,
+html.air-embed .icon-btn:hover { color: #176bc2; border-color: #c7dcf0; background: #eef6ff; }
+html.air-embed .btn-green,
+html.air-embed .btn.primary { color: #fff; border-color: transparent; background: #1678e8; }
+html.air-embed .btn-danger { color: var(--danger); border-color: #edcbc6; background: #fff; }
+html.air-embed .status-text.ok { color: #24835f; }
+html.air-embed .status-text.err { color: var(--danger); }
+html.air-embed .modal-backdrop { background: rgba(45, 63, 83, .34); }
+html.air-embed .modal-card,
+html.air-embed #mem-node-card,
+html.air-embed #mem-file-card { color: var(--text); border-color: var(--line-strong); background: #fff; box-shadow: 0 24px 80px rgba(35, 56, 79, .24); }
+html.air-embed ::-webkit-scrollbar-thumb { background: rgba(80, 111, 143, .18); }
+
+@media (max-width: 860px) {
+  html.air-embed #sidebar { display: block !important; width: 100% !important; min-width: 0 !important; padding: 12px; }
+  html.air-embed .settings-card { max-width: 100% !important; }
+}

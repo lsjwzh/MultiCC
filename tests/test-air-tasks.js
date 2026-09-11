@@ -61,8 +61,39 @@ test('Air list resolves legacy reference directories and never includes provider
   mountAirRoutes(app, { admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
     records: new Map([['s', { id: 's', dirId: 'd1', kind: 'chat', providerSecret: 'private' }]]),
     directories: new Map([['d1', { id: 'd1', name: 'Repo', path: '/repo' }]]),
-    getBoard: () => ({ modules: {}, tasks: { t: { id: 't', chatSessionId: 's', title: 'Legacy', refs: [{ sessionId: 's', dirId: 'd1' }] } } }),
+    getBoard: () => ({ modules: {}, tasks: { t: { id: 't', chatSessionId: 's', title: 'Legacy', recordType: 'planned', workflowStage: 'inbox', refs: [{ sessionId: 's', dirId: 'd1' }] } } }),
     clis: ['codex'], shell: { taskAccess: () => ({ readOnly: true }) } });
   let response; await handlers.get('/api/air')({}, { json: v => { response = v; }, status() { return this; } });
-  assert.equal(response.tasks[0].dirId, 'd1'); assert.equal(JSON.stringify(response).includes('private'), false);
+  assert.equal(response.tasks[0].dirId, 'd1'); assert.equal(response.tasks[0].recordType, 'planned');
+  assert.equal(response.tasks[0].workflowStage, 'inbox'); assert.equal(JSON.stringify(response).includes('private'), false);
+});
+
+test('Air task entry exposes provider routing metadata without credentials', async () => {
+  const { mountAirRoutes } = require('../src/workspace/air-routes');
+  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
+  const record = { id: 's', dirId: 'd1', kind: 'chat', cli: 'codex', provider: 'provider-a',
+    providerSecret: 'must-not-leak', model: 'gpt-alias', effort: 'high',
+    providerSelection: { version: 1, mode: 'auto', protocol: 'openai_responses', candidates: [
+      { providerId: 'provider-a', model: 'gpt-a', priority: 1, enabled: true },
+      { providerId: 'provider-b', model: 'gpt-b', priority: 2, enabled: true },
+    ], maxAttempts: 2, sticky: true, allowCrossTrust: false } };
+  mountAirRoutes(app, {
+    admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }),
+      deliveryEvidence: () => ({ run: null, integration: null }) },
+    records: new Map([['s', record]]), directories: new Map([['d1', { id: 'd1', path: '/repo' }]]),
+    shell: { taskEntry: async () => ({ ok: true, task: { id: 't', title: 'Task' }, sessionId: 's' }),
+      attributionCandidate: () => null, roleBindings: () => ({ version: 0, bindings: [] }) },
+    getBoard: () => ({ tasks: {} }), clis: ['codex'], providerName: () => 'Provider A',
+    effectiveModel: () => 'gpt-a', effectiveEffort: () => 'high',
+  });
+  let response;
+  await handlers.get('/api/air/tasks/:id')({ params: { id: 't' } }, {
+    json: value => { response = value; }, status() { return this; },
+  });
+  assert.deepEqual(response.configuration, {
+    cli: 'codex', model: 'gpt-alias', effectiveModel: 'gpt-a', effort: 'high', effectiveEffort: 'high',
+    provider: 'provider-a', providerName: 'Provider A', providerSelection: record.providerSelection,
+    rolePresetId: undefined,
+  });
+  assert.equal(JSON.stringify(response).includes('must-not-leak'), false);
 });

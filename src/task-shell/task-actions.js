@@ -34,7 +34,8 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
       sourceSessionId: owner?.sourceSessionId || null, forkedFromTaskId: task.forkedFromTaskId || null };
   }
   async function taskEntry(id) {
-    const task = findTask(id), a = access(task), owner = a.ownerShellId && shell(a.ownerShellId);
+    const task = findTask(id), lifecycle = getTask(id) || task;
+    const a = access(task), owner = a.ownerShellId && shell(a.ownerShellId);
     const sid = [task.sessionId, task.chatSessionId, a.sourceSessionId].find(id => id && getRecord(id)) || null;
     const scope = owner ? chatScope(owner.id) : { sessionIds: [...new Set((task.refs || []).map(r => r.sessionId))] };
     if (sid && !scope.sessionIds.includes(sid)) scope.sessionIds.push(sid);
@@ -43,7 +44,14 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
     const messages = inherited.concat(shellRecords(scope, getHistory, ports.getLiveState)
       .filter(m => m.taskId === id || (!m.taskId && m.sourceSessionId === sid)));
     const execution = sid && getRecord(sid) ? await getExecution(sid) : { busy: false, status: 'idle' };
-    return { ok: true, task: { id, title: task.title, ...a }, messages, execution,
+    return { ok: true, task: { id, title: lifecycle.title || task.title,
+      recordType: lifecycle.recordType || task.recordType || null,
+      description: lifecycle.description || task.description || '',
+      acceptanceCriteria: lifecycle.acceptanceCriteria || task.acceptanceCriteria || '',
+      workflowStage: lifecycle.workflowStage || task.workflowStage || null,
+      planningRevision: lifecycle.planningRevision ?? task.planningRevision ?? null,
+      priority: lifecycle.priority || task.priority || null, dueAt: lifecycle.dueAt || task.dueAt || null,
+      ...a }, messages, execution,
       sessionId: sid, ...a, url: `/task-shell.html?task=${encodeURIComponent(id)}&board=1`,
       returnUrl: a.sourceSessionId ? `/chat.html?session=${encodeURIComponent(a.sourceSessionId)}` : null };
   }

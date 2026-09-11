@@ -1154,7 +1154,8 @@ async function loadCronTasks() {
       row.className = 'cron-task-card';
       row.style.cssText = 'border:1px solid var(--line);border-radius:12px;padding:14px 16px;background:var(--bg-soft);display:flex;flex-direction:column;gap:10px;min-height:160px;';
 
-      // 获取最近 session 信息
+      // The session remains an execution detail; the stable user-facing
+      // identity is the Air task bound to this schedule.
       const sessionInfo = _getCronSessionInfo(t.lastSessionId);
       const sessionSummary = _getCronSessionSummary(t.lastSessionId);
       const sessionActive = sessionInfo && sessionInfo.active;
@@ -1187,25 +1188,25 @@ async function loadCronTasks() {
           `}
         </div>
 
-        <!-- 最近 session 块 -->
-        ${sessionInfo ? `
-          <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(0,0,0,0.15);border-radius:8px;cursor:pointer;" onclick="event.stopPropagation(); openSessionChat('${escapeHtml(t.lastSessionId)}')" title="点击打开会话">
+        <!-- 固定 Air 任务 -->
+        ${t.taskId ? `
+          <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(58,214,197,0.07);border:1px solid rgba(58,214,197,0.18);border-radius:8px;cursor:pointer;" onclick="event.stopPropagation(); openCronAirTask('${escapeHtml(t.id)}')" title="打开固定 Air 任务">
             <span class="dot ${sessionActive ? 'active' : ''}" style="width:8px;height:8px;"></span>
             <div style="flex:1;min-width:0;">
-              <div style="font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(sessionLabel)}</div>
+              <div style="font-size:11px;color:var(--accent);">固定 Air 任务</div>
+              <div style="font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(t.taskTitle || t.name)}</div>
               <div style="font-size:11px;color:var(--faint);display:flex;gap:6px;align-items:center;">
-                <span>${escapeHtml(formatRelative(sessionInfo.lastActivity || sessionInfo.createdAt))}</span>
+                <span>${escapeHtml(t.taskId)}</span>
                 ${sessionModel ? `<span>· ${escapeHtml(sessionModel)}</span>` : ''}
               </div>
-              ${sessionSummary ? `<div style="font-size:11px;color:var(--muted);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">🗒 ${escapeHtml(sessionSummary)}</div>` : ''}
             </div>
-            <button class="btn btn-sm" onclick="event.stopPropagation(); openSessionChat('${escapeHtml(t.lastSessionId)}')" title="打开会话">
+            <button class="btn btn-sm" onclick="event.stopPropagation(); openCronAirTask('${escapeHtml(t.id)}')" title="打开固定 Air 任务">
               打开
             </button>
           </div>
         ` : `
           <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(0,0,0,0.15);border-radius:8px;">
-            <span style="font-size:12px;color:var(--faint);">暂无关联会话</span>
+            <span style="font-size:12px;color:var(--danger);">固定 Air 任务绑定失败：${escapeHtml(t.taskBindingError || '等待迁移')}</span>
           </div>
         `}
 
@@ -1249,6 +1250,10 @@ async function loadCronTasks() {
 }
 
 let _cronTasksCache = [];
+function openCronAirTask(id) {
+  const task = _cronTasksCache.find(value => value.id === id);
+  if (task?.taskUrl) window.open(task.taskUrl, '_blank');
+}
 function _populateCronDirs(selectedId) {
   const sel = document.getElementById('cron-f-dir');
   if (!sel) return;
@@ -1277,6 +1282,9 @@ async function openCronModal(id) {
   document.getElementById('cron-f-name').value = task ? task.name : '';
   _populateCronDirs(task ? task.dirId : ((_cachedDirectories[0] && _cachedDirectories[0].id) || ''));
   document.getElementById('cron-f-cli').value = task ? task.cli : 'claude';
+  document.getElementById('cron-f-dir').disabled = !!task?.taskId;
+  document.getElementById('cron-f-cli').disabled = !!task?.taskId;
+  document.getElementById('cron-fixed-task-note').style.display = task?.taskId ? 'block' : 'none';
   document.getElementById('cron-f-cron').value = task ? task.cron : '0 9 * * *';
   document.getElementById('cron-f-prompt').value = task ? task.prompt : '';
   document.getElementById('cron-f-enabled').checked = task ? task.enabled : true;
@@ -1296,12 +1304,14 @@ async function saveCronTask() {
   const id = document.getElementById('cron-edit-id').value;
   const body = {
     name: document.getElementById('cron-f-name').value.trim(),
-    dirId: document.getElementById('cron-f-dir').value,
-    cli: document.getElementById('cron-f-cli').value,
     cron: document.getElementById('cron-f-cron').value.trim(),
     prompt: document.getElementById('cron-f-prompt').value,
     enabled: document.getElementById('cron-f-enabled').checked,
   };
+  if (!id) {
+    body.dirId = document.getElementById('cron-f-dir').value;
+    body.cli = document.getElementById('cron-f-cli').value;
+  }
   if (!body.name) { status.textContent = '任务名不能为空'; status.style.color = '#f85149'; return; }
   if (!body.prompt.trim()) { status.textContent = 'prompt 不能为空'; status.style.color = '#f85149'; return; }
   try {
@@ -1322,7 +1332,7 @@ async function runCronTask(id) {
   try {
     const data = await providerApi.json(`/api/cron/${encodeURIComponent(id)}/run` + tokenQS('?'), { method: 'POST' });
     if (!data.ok) throw providerApi.errorFromPayload(data);
-    showToast('已触发，正在新建会话执行');
+    showToast(data.decision === 'queued' ? '固定任务忙碌，本次执行已排队' : '已送入固定 Air 任务');
     loadCronTasks();
   } catch (err) { showToast(`运行失败：${providerApi.errorText(err)}`, true); }
 }

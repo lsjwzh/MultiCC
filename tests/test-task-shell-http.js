@@ -4,8 +4,22 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const express = require('express');
 const { fixture } = require('./helpers/task-shell');
-const { mountTaskShellRoutes } = require('../src/task-shell/routes');
+const { mountTaskShellRoutes, pageTaskHistory } = require('../src/task-shell/routes');
 const { createClient } = require('../public/task-shell-client');
+
+test('read-only task history pages keep exact task messages and stable cursors', () => {
+  const messages = Array.from({ length: 7 }, (_, index) => ({ id: `session:m${index}`, sourceMessageId: `m${index}`, role: 'assistant', content: `${index}` }));
+  const latest = pageTaskHistory(messages, { limit: 3 });
+  assert.deepEqual(latest.messages.map(message => message.id), ['session:m4', 'session:m5', 'session:m6']);
+  assert.equal(latest.hasMore, true);
+  const older = pageTaskHistory(messages, { before: 'session:m4', limit: 3 });
+  assert.deepEqual(older.messages.map(message => message.id), ['session:m1', 'session:m2', 'session:m3']);
+  assert.equal(older.hasMore, true);
+  assert.deepEqual(pageTaskHistory(messages, { around: 'm0', limit: 3 }), {
+    messages: messages.slice(0, 2), hasMore: false, found: true, hasNewer: true,
+  });
+  assert.deepEqual(pageTaskHistory(messages, { before: 'missing' }), { messages: [], hasMore: false, found: false });
+});
 
 test('HTTP routes execute and preserve structured errors, links and receipt ownership', async t => {
   const f = fixture(t), app = express(); app.use(express.json());

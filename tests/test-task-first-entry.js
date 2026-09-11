@@ -11,10 +11,23 @@ test('public conversation bookmarks resolve through tasks; Air owns the only cha
   t.after(() => new Promise(resolve => server.close(resolve)));
   const base = `http://127.0.0.1:${server.address().port}`;
   const root = await fetch(base, { redirect: 'manual' }); assert.equal(root.headers.get('location'), '/air');
+  const manage = await fetch(base + '/manage', { redirect: 'manual' });
+  assert.equal(manage.headers.get('location'), '/air?view=overview');
+  const provider = await fetch(base + '/manage?view=provider&token=bootstrap', { redirect: 'manual' });
+  assert.equal(provider.headers.get('location'), '/air?view=provider&token=bootstrap');
+  const cron = await fetch(base + '/manage?view=cron', { redirect: 'manual' });
+  assert.equal(cron.headers.get('location'), '/air?view=schedules');
+  const planner = await fetch(base + '/manage?view=tasks', { redirect: 'manual' });
+  assert.equal(planner.headers.get('location'), '/air?view=planner');
   for (const url of ['/chat?session=a', '/chat.html?session=a', '/task-shell?shell=s', '/task-shell.html?task=t&board=1', '/task-shell.html?air=1', '/task-shell.html?air=1&board=1&shell=s']) {
     const response = await fetch(base + url), html = await response.text();
     assert.equal(response.status, 200, url); assert.match(html, /task-entry.js/);
     assert.doesNotMatch(html, /id="messages"/); assert.match(response.headers.get('cache-control'), /no-store/);
+  }
+  for (const url of ['/chat.html?air=1&task=t', '/chat?air=1&session=a']) {
+    const response = await fetch(base + url), html = await response.text();
+    assert.equal(response.status, 200, url); assert.match(html, /id="messages"/);
+    assert.match(html, /chat-air\.css/); assert.doesNotMatch(html, /task-entry\.js/);
   }
   const embedded = await fetch(base + '/task-shell.html?air=1&board=1&task=t');
   assert.match(await embedded.text(), /task-board-entry.js/);
