@@ -39,10 +39,9 @@
     return button;
   }
 
-  function setHeading(eyebrow, title, description, actions = []) {
-    el('admin-eyebrow').textContent = eyebrow;
-    el('admin-title').textContent = title;
-    el('admin-description').textContent = description;
+  // The Air shell header owns the page title (air.js renderHeader); a view only
+  // contributes its actions, which render into the header toolbar.
+  function setActions(actions = []) {
     el('admin-actions').replaceChildren(...actions);
   }
 
@@ -73,7 +72,7 @@
     });
     const waiting = active.filter(task => task.resource?.capacityReason || task.status === 'waiting');
     const enabledSchedules = (scheduleTasks || []).filter(task => task.enabled);
-    setHeading('MULTICC AIR · CONTROL', '控制台', '目录、任务、自动运行和系统工具汇总在同一个 Air 入口。', [
+    setActions([
       action('浏览工作目录', () => setMode('library')),
       action('＋ 新建任务', () => { setMode('tasks'); setTimeout(() => el('create')?.click(), 0); }, 'primary'),
     ]);
@@ -237,7 +236,7 @@
   }
 
   function renderDocs(context) {
-    setHeading('MULTICC AIR · REGISTRY', '服务与文档', '集中管理 Agent 产物、本地页面和可启动服务。', [
+    setActions([
       action('↻ 刷新', () => loadDocs()),
       action('＋ 登记服务', () => el('service-dialog').showModal(), 'primary'),
     ]);
@@ -253,7 +252,7 @@
   }
 
   function renderSettings(context) {
-    setHeading('MULTICC AIR · SETTINGS', '设置中心', '旧管理页的能力已经收进 Air 导航，接下来按模块逐页替换内部界面。');
+    setActions();
     const content = el('admin-content');
     const groups = make('div', null, 'air-settings-groups');
     for (const [title, modes] of settingGroups) {
@@ -273,10 +272,10 @@
   }
 
   function renderLegacy(mode, context) {
-    const [title, description, eyebrow] = legacyPanels[mode] || [mode, '兼容管理功能', 'TOOLS'];
+    const [title] = legacyPanels[mode] || [mode];
     const legacyView = mode === 'planner' ? 'tasks' : mode;
     const homeMode = ['planner', 'memory'].includes(mode) ? 'overview' : 'settings';
-    setHeading(`MULTICC AIR · ${eyebrow}`, title, description, [
+    setActions([
       action(homeMode === 'overview' ? '返回控制台' : '返回设置中心', () => context.setMode(homeMode)),
       action('在独立页打开', () => window.open(`/manage.html?view=${encodeURIComponent(legacyView)}`, '_blank', 'noopener')),
     ]);
@@ -292,7 +291,7 @@
   function renderProvider(context) {
     const provider = root.MultiCCAirProvider;
     if (!provider) return renderLegacy('provider', context);
-    setHeading('MULTICC AIR · PROVIDERS', 'CLI 与 Provider', '管理全局默认线路、协议、模型目录与 API 连接。', [
+    setActions([
       action('返回设置中心', () => context.setMode('settings')),
       action('高级账号与借道', () => provider.toggleAdvanced()),
       action('↻ 刷新', () => provider.refresh()),
