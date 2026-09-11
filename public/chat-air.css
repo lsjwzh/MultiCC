@@ -35,6 +35,10 @@ body.air-chat {
   --text: var(--chat-text); --muted: var(--chat-muted); --faint: var(--chat-muted);
   --bg: var(--chat-canvas); --bg-soft: var(--chat-soft);
   --border: var(--chat-line); --line: var(--chat-line);
+  /* Shared panels (auto-provider-editor, error details) fall back to their
+     legacy dark well when this token is absent, which paints black inputs on
+     the light canvas. Supply the light one here. */
+  --well: #fbfdff;
   --blue: var(--chat-blue); --codex: var(--chat-success); --accent: var(--chat-success);
   --amber: var(--chat-warning); --danger: var(--chat-danger);
   color: var(--air-text);
