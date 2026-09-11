@@ -408,7 +408,7 @@
       if (message.cancelled) {
         const tag = document.createElement('div');
         tag.className = 'msg system-msg';
-        tag.style.cssText = 'font-size:11px;color:#f85149;padding:2px 0;';
+        tag.style.cssText = 'font-size:11px;color:var(--chat-danger, #f85149);padding:2px 0;';
         tag.textContent = '(cancelled)';
         contentEl.appendChild(tag);
       }
@@ -432,7 +432,7 @@
       if (Array.isArray(message.bgToolUseIds) && message.bgToolUseIds.length) {
         const tag = document.createElement('div');
         tag.textContent = '🔁 后台任务回流' + (message.bgToolUseIds.length > 1 ? ` ×${message.bgToolUseIds.length}` : '');
-        tag.style.cssText = 'font-size:11px;color:#8b949e;margin-top:6px;border-top:1px dashed rgba(139,164,158,.35);padding-top:4px;';
+        tag.style.cssText = 'font-size:11px;color:var(--chat-muted, #8b949e);margin-top:6px;border-top:1px dashed rgba(139,164,158,.35);padding-top:4px;';
         node.appendChild(tag);
       }
       attachMessageActions(node, message);

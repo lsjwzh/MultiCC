@@ -453,15 +453,15 @@
    * scrolls and whose footer stays pinned inside the visible box. */
   function modalShell(document, width, dim) {
     const overlay = document.createElement('div');
-    overlay.style.cssText = `position:fixed;inset:0;background:rgba(0,0,0,${dim || '.7'});z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;`;
+    overlay.style.cssText = `position:fixed;inset:0;background:var(--chat-overlay, rgba(0,0,0,${dim || '.7'}));z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;`;
     const box = document.createElement('div');
-    box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;color:#c9d1d9;'
+    box.style.cssText = 'background:var(--chat-surface, #161b22);border:1px solid var(--chat-line, #30363d);border-radius:12px;color:var(--chat-text, #c9d1d9);'
       + `width:${width}px;max-width:94vw;display:flex;flex-direction:column;`
       + 'max-height:calc(100vh - 32px);max-height:calc(100dvh - 32px);';
     const body = document.createElement('div');
     body.style.cssText = 'padding:18px;overflow-y:auto;min-height:0;-webkit-overflow-scrolling:touch;';
     const footer = document.createElement('div');
-    footer.style.cssText = 'flex:none;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;padding:12px 18px;border-top:1px solid #21262d;';
+    footer.style.cssText = 'flex:none;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;padding:12px 18px;border-top:1px solid var(--chat-soft, #21262d);';
     box.append(body, footer);
     overlay.appendChild(box);
     return { overlay, box, body, footer };
@@ -476,17 +476,17 @@
       + '@media (pointer:coarse){.multicc-modal-btn{min-height:44px;}}';
     (document.head || document.body).appendChild(style);
   }
-  const MODAL_BTN_GHOST = 'background:#21262d;border:1px solid #30363d;color:#c9d1d9;';
+  const MODAL_BTN_GHOST = 'background:var(--chat-soft, #21262d);border:1px solid var(--chat-line, #30363d);color:var(--chat-text, #c9d1d9);';
   const MODAL_BTN_PRIMARY = 'background:#238636;border:1px solid #2ea043;color:#fff;';
 
   function showLoadingOverlay(text, options = {}) {
     const document = documentOf(options);
     const overlay = document.createElement('div');
-    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:10001;display:flex;align-items:center;justify-content:center;';
+    overlay.style.cssText = 'position:fixed;inset:0;background:var(--chat-overlay, rgba(0,0,0,.55));z-index:10001;display:flex;align-items:center;justify-content:center;';
     const box = document.createElement('div');
-    box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:10px;padding:16px 22px;color:#c9d1d9;font-size:13px;display:flex;align-items:center;gap:10px;';
+    box.style.cssText = 'background:var(--chat-surface, #161b22);border:1px solid var(--chat-line, #30363d);border-radius:10px;padding:16px 22px;color:var(--chat-text, #c9d1d9);font-size:13px;display:flex;align-items:center;gap:10px;';
     const spinner = document.createElement('span');
-    spinner.style.cssText = 'width:14px;height:14px;border:2px solid #30363d;border-top-color:#58a6ff;border-radius:50%;display:inline-block;animation:multiccSpin .8s linear infinite;';
+    spinner.style.cssText = 'width:14px;height:14px;border:2px solid var(--chat-line, #30363d);border-top-color:var(--chat-blue, #58a6ff);border-radius:50%;display:inline-block;animation:multiccSpin .8s linear infinite;';
     box.appendChild(spinner);
     box.appendChild(document.createTextNode(text || '加载中…'));
     overlay.appendChild(box);
@@ -509,8 +509,8 @@
       const { overlay, box, body, footer } = modalShell(document, 380);
       body.innerHTML = `
         <div style="font-size:15px;font-weight:600;margin-bottom:8px;">选择努力程度（下一轮生效）</div>
-        <div style="font-size:12px;color:#8b949e;line-height:1.5;margin-bottom:12px;">Claude 支持 low / medium / high / xhigh / max。ultracode 会向 Claude 传 xhigh，并启用 MultiCC 跨会话 workflow 编排。</div>
-        <select id="effort-select" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;">
+        <div style="font-size:12px;color:var(--chat-muted, #8b949e);line-height:1.5;margin-bottom:12px;">Claude 支持 low / medium / high / xhigh / max。ultracode 会向 Claude 传 xhigh，并启用 MultiCC 跨会话 workflow 编排。</div>
+        <select id="effort-select" style="width:100%;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:8px 10px;outline:none;">
           ${choices.map(option => `<option value="${option.value}">${option.label}</option>`).join('')}
         </select>`;
       footer.innerHTML = `
@@ -533,11 +533,11 @@
       ensureModalStyle(document);
       const { overlay, body, footer } = modalShell(document, 400);
       const message = document.createElement('div');
-      message.style.cssText = 'font-size:14px;color:#c9d1d9;line-height:1.6;margin-bottom:12px;';
+      message.style.cssText = 'font-size:14px;color:var(--chat-text, #c9d1d9);line-height:1.6;margin-bottom:12px;';
       message.textContent = t('providerTitle');
       body.appendChild(message);
       const select = document.createElement('select');
-      select.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;';
+      select.style.cssText = 'width:100%;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;';
       const defaultOption = document.createElement('option');
       defaultOption.value = '';
       defaultOption.textContent = t('providerDefault');
@@ -553,7 +553,7 @@
       body.appendChild(select);
       if (!list || !list.length) {
         const empty = document.createElement('div');
-        empty.style.cssText = 'font-size:12px;color:#8b949e;';
+        empty.style.cssText = 'font-size:12px;color:var(--chat-muted, #8b949e);';
         empty.textContent = t('providerEmpty');
         body.appendChild(empty);
       }
@@ -584,37 +584,37 @@
       const { overlay, box, body, footer } = modalShell(document, 620);
       body.innerHTML = `
         <div style="font-size:15px;font-weight:600;margin-bottom:8px;">AI 配置（下一轮生效）</div>
-        <div style="font-size:12px;color:#8b949e;line-height:1.5;margin-bottom:12px;">${supportsProvider ? 'Provider、' : ''}Model${choicesForEffort.length ? `、${effortLabel(cli)}` : ''} 会一起保存。${supportsProvider ? (cli === 'zcode' ? '选择 Provider 时使用 MultiCC 的三协议隔离配置；选择默认时跟随 ZCode 原生设置 / Coding Plan。' : '切换 Provider 后，Model 选项会按该 Provider 的可用模型联动更新。') : (cli === 'codebuddy' ? 'WorkBuddy 使用自身账号与厂商配置。' : cli === 'dsh' ? 'DSH 使用 DeepSeek 自身凭证（DEEPSEEK_API_KEY 或 dsh 内置 credentials）。' : 'Qoder CN 使用自身账号与厂商配置。')}</div>
+        <div style="font-size:12px;color:var(--chat-muted, #8b949e);line-height:1.5;margin-bottom:12px;">${supportsProvider ? 'Provider、' : ''}Model${choicesForEffort.length ? `、${effortLabel(cli)}` : ''} 会一起保存。${supportsProvider ? (cli === 'zcode' ? '选择 Provider 时使用 MultiCC 的三协议隔离配置；选择默认时跟随 ZCode 原生设置 / Coding Plan。' : '切换 Provider 后，Model 选项会按该 Provider 的可用模型联动更新。') : (cli === 'codebuddy' ? 'WorkBuddy 使用自身账号与厂商配置。' : cli === 'dsh' ? 'DSH 使用 DeepSeek 自身凭证（DEEPSEEK_API_KEY 或 dsh 内置 credentials）。' : 'Qoder CN 使用自身账号与厂商配置。')}</div>
         <div id="ai-provider-section">
-          <label style="display:block;font-size:12px;color:#8b949e;margin-bottom:5px;">Provider</label>
-          <select id="ai-provider" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;"></select>
+          <label style="display:block;font-size:12px;color:var(--chat-muted, #8b949e);margin-bottom:5px;">Provider</label>
+          <select id="ai-provider" style="width:100%;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;"></select>
         </div>
         <div id="ai-auto-section" style="display:none;"></div>
         <div id="ai-model-section">
-          <label style="display:block;font-size:12px;color:#8b949e;margin-bottom:5px;">Model</label>
-          <select id="ai-model" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:8px;"></select>
-          <input id="ai-model-custom" type="text" placeholder="模型 ID" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;display:none;">
+          <label style="display:block;font-size:12px;color:var(--chat-muted, #8b949e);margin-bottom:5px;">Model</label>
+          <select id="ai-model" style="width:100%;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:8px 10px;outline:none;margin-bottom:8px;"></select>
+          <input id="ai-model-custom" type="text" placeholder="模型 ID" style="width:100%;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;display:none;">
         </div>
         <div id="ai-effort-section">
-          <label id="ai-effort-label" style="display:block;font-size:12px;color:#8b949e;margin-bottom:5px;">${effortLabel(cli)}</label>
-          <select id="ai-effort" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:14px;"></select>
+          <label id="ai-effort-label" style="display:block;font-size:12px;color:var(--chat-muted, #8b949e);margin-bottom:5px;">${effortLabel(cli)}</label>
+          <select id="ai-effort" style="width:100%;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:8px 10px;outline:none;margin-bottom:14px;"></select>
         </div>
         <div id="ai-agent-section">
-          <div style="height:1px;background:#30363d;margin:4px 0 14px;"></div>
+          <div style="height:1px;background:var(--chat-line, #30363d);margin:4px 0 14px;"></div>
           <div style="font-size:13px;font-weight:600;margin-bottom:2px;">${cli === 'claude' ? 'Claude Code' : cli === 'opencode' ? 'OpenCode' : cli === 'qoder' ? 'Qoder CN' : 'WorkBuddy'} Agent</div>
-          <div style="font-size:11px;color:#8b949e;line-height:1.45;margin-bottom:8px;">对应原生 <code>--agent</code>，用于选择该 CLI 已定义的主 agent；它不同于下面的子任务路由。留空使用 CLI 默认 agent。</div>
-          <input id="ai-agent" type="text" list="ai-agent-list" maxlength="80" placeholder="${cli === 'opencode' ? '例如 build' : '已定义的 agent 名称'}" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:14px;">
+          <div style="font-size:11px;color:var(--chat-muted, #8b949e);line-height:1.45;margin-bottom:8px;">对应原生 <code>--agent</code>，用于选择该 CLI 已定义的主 agent；它不同于下面的子任务路由。留空使用 CLI 默认 agent。</div>
+          <input id="ai-agent" type="text" list="ai-agent-list" maxlength="80" placeholder="${cli === 'opencode' ? '例如 build' : '已定义的 agent 名称'}" style="width:100%;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:8px 10px;outline:none;margin-bottom:14px;">
           <datalist id="ai-agent-list">${cli === 'opencode' ? '<option value="build"></option>' : ''}</datalist>
         </div>
         <div id="ai-sub-section">
-          <div style="height:1px;background:#30363d;margin:4px 0 14px;"></div>
+          <div style="height:1px;background:var(--chat-line, #30363d);margin:4px 0 14px;"></div>
           <div style="font-size:13px;font-weight:600;margin-bottom:2px;">子任务 (subagent)</div>
-          <div style="font-size:11px;color:#8b949e;line-height:1.45;margin-bottom:10px;">子 agent 走的 provider+model（经本地协议代理路由，与主进程隔离）。留空=随主。</div>
-          <label style="display:block;font-size:12px;color:#8b949e;margin-bottom:5px;">子任务 Provider</label>
-          <select id="ai-sub-provider" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:10px;"></select>
-          <label style="display:block;font-size:12px;color:#8b949e;margin-bottom:5px;">子任务 Model</label>
-          <select id="ai-sub-model" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:6px;"></select>
-          <input id="ai-sub-model-custom" type="text" placeholder="模型 ID" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;display:none;">
+          <div style="font-size:11px;color:var(--chat-muted, #8b949e);line-height:1.45;margin-bottom:10px;">子 agent 走的 provider+model（经本地协议代理路由，与主进程隔离）。留空=随主。</div>
+          <label style="display:block;font-size:12px;color:var(--chat-muted, #8b949e);margin-bottom:5px;">子任务 Provider</label>
+          <select id="ai-sub-provider" style="width:100%;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:8px 10px;outline:none;margin-bottom:10px;"></select>
+          <label style="display:block;font-size:12px;color:var(--chat-muted, #8b949e);margin-bottom:5px;">子任务 Model</label>
+          <select id="ai-sub-model" style="width:100%;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:8px 10px;outline:none;margin-bottom:6px;"></select>
+          <input id="ai-sub-model-custom" type="text" placeholder="模型 ID" style="width:100%;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:8px 10px;outline:none;display:none;">
         </div>`;
       footer.innerHTML = `
         <button id="ai-cancel" class="multicc-modal-btn" style="${MODAL_BTN_GHOST}">取消</button>
@@ -829,7 +829,7 @@
       title.style.cssText = 'font-size:16px;font-weight:600;margin-bottom:8px;';
       title.textContent = '配置 ZCode 连接';
       const message = document.createElement('div');
-      message.style.cssText = 'font-size:12px;color:#8b949e;line-height:1.65;';
+      message.style.cssText = 'font-size:12px;color:var(--chat-muted, #8b949e);line-height:1.65;';
       message.textContent = '可选择 MultiCC 中已有的三协议 Provider；或配置 ZCode 原生连接，使用官方 Coding Plan / API Key。原生登录状态由 ZCode 自己维护。';
       const later = document.createElement('button');
       later.className = 'btn multicc-modal-btn';
@@ -896,6 +896,12 @@
     });
   }
 
+  function desiredConfig(info) {
+    const pending = info && info.pendingConfiguration;
+    return pending ? { ...info, ...pending.profile, cli: pending.cli,
+      effectiveModel: pending.profile.model, effectiveEffort: pending.profile.effort } : info;
+  }
+
   async function loadSession(sessionId, options = {}) {
     return requiredApi(options).json(`/api/sessions/${encodeURIComponent(sessionId)}`);
   }
@@ -908,6 +914,7 @@
   }
 
   return {
+    desiredConfig,
     EFFORT_OPTIONS,
     CODEX_REASONING_OPTIONS,
     OPENCODE_VARIANT_OPTIONS,

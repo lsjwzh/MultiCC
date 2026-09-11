@@ -37,7 +37,7 @@ function createHarness(overrides = {}) {
     cli: 'claude', chatTurnCount: 4, isStreaming: false, claudeProc: null,
     lineBuf: 'partial', currentAssistantText: 'partial', currentToolCalls: [{ id: 1 }],
     currentCost: 1, streamReplay: ['event'], _adapterError: 'old',
-    _activeRunner: { id: 'runner' }, _activeTurn: { id: 'turn' },
+    _activeRunner: null, _activeTurn: { id: 'turn' },
     _continuationLineage: { id: 'lineage' }, _resultSaved: true, _sawApiError: true,
   };
   const chatSessions = new Map(chat ? [['s1', chat]] : []);
@@ -56,7 +56,8 @@ function createHarness(overrides = {}) {
     supportedClis: SUPPORTED_CHAT_CLIS,
     getProviderDefaults: () => ({ codex: 'codex-default', claude: 'claude-default' }),
     codexDefaultReasoningLevel: () => 'xhigh',
-    getHistory: id => [{ role: 'user', content: `history:${id}`, ts: 90 }],
+    getHistory: overrides.getHistory || (id => [{ role: 'user', content: `history:${id}`, ts: 90 }]),
+    synchronizeCodexSessionRoute: route => effects.push(`sync:${route.nativeSessionId}`),
     buildHandoffCheckpoint,
     activateCliState,
     rememberActiveCliState,
@@ -222,7 +223,7 @@ test('route validation preserves missing, system, terminal and unsupported respo
   assert.match(res.body.error, /claude, codex, opencode, zcode, qoder/);
 });
 
-test('same CLI is a transactional no-op while unavailable and busy targets are force-terminated', async () => {
+test('same CLI is a no-op; unavailable targets reject and busy targets defer', async () => {
   let harness = createHarness();
   let res = await harness.invoke({ body: { cli: 'claude' } });
   assert.equal(res.statusCode, 200);
@@ -238,38 +239,72 @@ test('same CLI is a transactional no-op while unavailable and busy targets are f
   assert.match(res.body.error, /not installed/);
 
   harness = createHarness({ streamState: { busy: true, queued: 0 } });
-  harness.chat._activeRunner.providerAttempt = { routeAttemptId: 'attempt-1' };
+  harness.chat._activeRunner = { providerAttempt: { routeAttemptId: 'attempt-1' } };
   harness.chat.claudeProc = {
     kill: signal => harness.effects.push(`process-kill:${signal}`),
   };
   res = await harness.invoke({ body: { cli: 'codex' } });
   assert.equal(res.statusCode, 200);
-  assert.equal(res.body.forced, true);
-  assert.equal(harness.session.cli, 'codex');
-  assert.equal(harness.chat.claudeProc, null);
-  assert.equal(harness.effects.includes('kill-reason:cli_switch'), true);
-  assert.equal(harness.effects.includes('attempt-finish:attempt-1:cli_switch'), true);
-  assert.equal(harness.effects.includes('process-kill:SIGTERM'), true);
-  assert.equal(harness.effects.includes('stream-close:s1'), true);
-  assert.equal(harness.effects.includes('chat:stream_end'), true);
-  assert.ok(
-    harness.effects.indexOf('attempt-finish:attempt-1:cli_switch')
-      < harness.effects.indexOf('process-kill:SIGTERM'),
-    'attempt admission closes before a slow child is signalled',
-  );
+  assert.equal(res.body.deferred, true);
+  assert.equal(harness.session.cli, 'claude');
+  assert.equal(harness.session.pendingConfiguration.cli, 'codex');
+  assert.ok(harness.chat.claudeProc);
+  assert.equal(harness.effects.some(e => /kill|close|stream_end|attempt-finish/.test(e)), false);
 });
 
-test('live background work rejects a real CLI switch without snapshot, mutation, or stream close', async () => {
+test('background work saves a switch without closing its owner', async () => {
   const harness = createHarness({ backgroundActive: true });
-
   const res = await harness.invoke({ body: { cli: 'codex', force: true } });
-
-  assert.equal(res.statusCode, 409);
-  assert.match(res.body.error, /background task/i);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.deferred, true);
   assert.equal(harness.session.cli, 'claude');
-  assert.equal(harness.effects.some(effect => effect.startsWith('mutate:')), false);
+  assert.equal(harness.runtime.applyPendingConfiguration('s1'), false);
   assert.equal(harness.effects.includes('stream-close:s1'), false);
   assert.equal(harness.effects.some(effect => effect.startsWith('message:')), false);
+});
+
+test('saved switch survives serialization, preserves retries and uses final history on the next turn', async () => {
+  const history = [{ role: 'user', content: 'start', ts: 90 }];
+  const harness = createHarness({ getHistory: () => history });
+  harness.chat.isStreaming = true;
+  await harness.invoke({ body: { cli: 'codex' } });
+  const restored = JSON.parse(JSON.stringify(harness.session));
+  assert.equal(restored.pendingConfiguration.cli, 'codex');
+  harness.chat.isStreaming = false;
+  assert.equal(harness.runtime.applyPendingConfiguration('s1', { originContinue: true }), true);
+  assert.equal(harness.session.cli, 'claude');
+  history.push({ role: 'assistant', content: 'final old-CLI result', ts: 99 });
+  assert.equal(harness.runtime.applyPendingConfiguration('s1'), true);
+  assert.equal(harness.session.cli, 'codex');
+  assert.equal(harness.session.pendingConfiguration, undefined);
+  assert.match(JSON.stringify(harness.session.pendingCliHandoff), /final old-CLI result/);
+  const count = harness.effects.filter(e => e.startsWith('message:')).length;
+  assert.equal(harness.runtime.applyPendingConfiguration('s1'), true);
+  assert.equal(harness.effects.filter(e => e.startsWith('message:')).length, count);
+});
+
+test('latest CLI choice replaces pending choice, including switching back to the running CLI', async () => {
+  const h = createHarness(); h.chat.isStreaming = true;
+  await h.invoke({ body: { cli: 'codex' } });
+  await h.invoke({ body: { cli: 'opencode' } });
+  assert.equal(h.session.pendingConfiguration.cli, 'opencode');
+  await h.invoke({ body: { cli: 'claude' } });
+  assert.equal(h.session.pendingConfiguration.cli, 'claude');
+  h.chat.isStreaming = false;
+  h.runtime.applyPendingConfiguration('s1');
+  assert.equal(h.session.cliSessionId, 'claude-native');
+  assert.equal(h.effects.some(e => e.startsWith('message:')), false);
+});
+
+test('a turn beginning during the Git snapshot converts an idle switch to a deferred switch', async () => {
+  let release;
+  const h = createHarness({ gitWorktreeSnapshot: () => new Promise(resolve => { release = resolve; }) });
+  const response = h.invoke({ body: { cli: 'codex' } });
+  h.chat.isStreaming = true;
+  release({ branch: 'b', head: 'h', changes: [] });
+  assert.equal((await response).body.deferred, true);
+  assert.equal(h.session.cli, 'claude');
+  assert.equal(h.effects.includes('stream-close:s1'), false);
 });
 
 test('successful switch preserves side-effect order, checkpoint and target state', async () => {
@@ -325,17 +360,18 @@ test('production composition mounts one runtime route and keeps only bounded exp
   assert.doesNotMatch(source, /app\.post\(['"]\/api\/sessions\/:id\/switch-cli/);
 });
 
-test('web and app explain forced termination and send the force intent', () => {
+test('web and app explain next-turn CLI changes without force intent', () => {
   const webHost = fs.readFileSync(path.join(__dirname, '..', 'public', 'chat.js'), 'utf8');
   const webPicker = fs.readFileSync(path.join(__dirname, '..', 'public', 'chat-live-ui.js'), 'utf8');
   const appService = fs.readFileSync(
     path.join(__dirname, '..', 'app', 'lib', 'services', 'session_service.dart'), 'utf8');
   const appPicker = fs.readFileSync(
     path.join(__dirname, '..', 'app', 'lib', 'widgets', 'cli_switch_sheet.dart'), 'utf8');
-  assert.match(webHost, /JSON\.stringify\(\{ \.\.\.picked, force: true \}\)/);
-  assert.match(appService, /'force': true/);
+  assert.match(webHost, /JSON\.stringify\(picked\)/);
+  assert.doesNotMatch(appService.slice(appService.indexOf('Future<SessionCliConfig> switchSessionCli'), appService.indexOf('// ── CLI install')), /'force': true/);
   for (const source of [webPicker, appPicker]) {
-    assert.match(source, /直接终止该回复并清空排队消息/);
+    assert.match(source, /下轮/);
+    assert.doesNotMatch(source, /直接终止该回复并清空排队消息/);
     assert.doesNotMatch(source, /运行中切换会被服务端拒绝|请在当前回复结束后切换/);
   }
 });
@@ -601,4 +637,33 @@ test('cli/versions reports a per-cli error entry without failing the whole call'
   assert.match(res.body.versions.claude.error, /not parseable/);
   assert.equal(res.body.versions.qoder.version, null);
   assert.match(res.body.versions.qoder.error, /ENOENT/);
+});
+
+
+test('applying a pending switch publishes nothing when persistence fails and remains retryable', async () => {
+  const { createSessionPersistence } = require('../src/session/persistence');
+  const session = { id: 's1', dirId: 'd1', cli: 'claude', kind: 'chat', cliSessionId: 'original' };
+  const records = new Map([['s1', session]]); let fail = false;
+  const persistence = createSessionPersistence({ records, store: { save() { if (fail) throw Error('disk-full'); } } });
+  const h = createHarness({ session, records, sessionPersistence: persistence });
+  h.chat.isStreaming = true; await h.invoke({ body: { cli: 'codex' } });
+  h.chat.isStreaming = false; h.effects.length = 0; fail = true;
+  assert.throws(() => h.runtime.applyPendingConfiguration('s1'), /could not be persisted/);
+  assert.equal(records.get('s1').cli, 'claude'); assert.ok(records.get('s1').pendingConfiguration);
+  assert.equal(h.effects.some(e => /close|message:|chat:|workspace:/.test(e)), false);
+  fail = false; assert.equal(h.runtime.applyPendingConfiguration('s1'), true);
+  assert.equal(records.get('s1').cli, 'codex'); persistence.stop();
+});
+
+test('a pending profile applies once at an idle boundary; live steering retains the original route', async () => {
+  const { stageConfiguration } = require('../src/session/pending-configuration');
+  const h = createHarness();
+  stageConfiguration(h.session, { ...h.session, model: 'next-model', provider: 'next-provider' });
+  h.chat.isStreaming = true;
+  assert.equal(h.runtime.applyPendingConfiguration('s1', { originContinue: true, directUserInput: true }), true);
+  assert.equal(h.session.model, 'claude-model'); assert.equal(h.effects.includes('stream-close:s1'), false);
+  h.chat.isStreaming = false; h.runtime.applyPendingConfiguration('s1');
+  assert.equal(h.session.provider, 'next-provider'); assert.equal(h.session.model, 'next-model');
+  assert.equal(h.session.cliSessionId, 'claude-native'); assert.equal(h.session.pendingConfiguration, undefined);
+  assert.equal(h.effects.filter(e => e === 'stream-close:s1').length, 1);
 });

@@ -7,6 +7,8 @@
   <title>MultiCC Air · 工作目录与任务</title>
   <link rel="icon" href="/icon.svg">
   <link rel="stylesheet" href="air.css">
+  <link rel="stylesheet" href="chat-layout.css">
+  <script src="chat-layout.js"></script>
   <script src="auth-client.js"></script>
 </head>
 <body>
@@ -69,10 +71,11 @@
       <div class="breadcrumb">
         <span id="task-breadcrumb" class="caption">MultiCC Air</span>
         <h1 id="task-title">工作目录</h1>
-        <span id="task-state"></span>
+        <button id="task-state" type="button" aria-controls="task-details" aria-expanded="false" disabled></button>
       </div>
       <div class="task-tools">
         <button id="ai-capsule" type="button" aria-label="任务 AI 配置" hidden></button>
+        <button type="button" data-chat-layout hidden>聊天宽度</button>
         <button id="roles-toggle" type="button" hidden>＋ 角色</button>
         <button id="details-toggle" type="button" aria-expanded="false" aria-controls="task-details" hidden>详情</button>
         <button id="refresh" type="button" aria-label="刷新">↻</button>
@@ -141,28 +144,27 @@
           </form>
         </div>
 
-        <section id="delivery-card" aria-live="polite" hidden>
-          <div class="delivery-copy">
-            <span id="delivery-eyebrow" class="eyebrow">MULTICC · 本轮状态</span>
-            <h2 id="delivery-title"></h2>
-            <p id="delivery-text"></p>
-          </div>
-          <div id="delivery-steps" aria-label="本轮交付进度">
-            <span data-step="run">本轮成功</span>
-            <span data-step="delivery">代码交付</span>
-            <span data-step="stable">源现场稳定</span>
-            <span data-step="attribution">归属生效</span>
-          </div>
-          <div class="delivery-footer">
-            <div id="delivery-actions"></div>
-            <p id="delivery-destination"></p>
-          </div>
-        </section>
-
         <iframe id="conversation" title="任务对话" hidden></iframe>
 
         <aside id="task-details" aria-label="任务详情" hidden>
           <div class="details-head"><div><span class="eyebrow">TASK DETAILS</span><h2>任务详情</h2></div><button id="details-close" type="button" aria-label="关闭任务详情">×</button></div>
+          <section id="delivery-card" aria-live="polite" hidden>
+            <div class="delivery-copy">
+              <span id="delivery-eyebrow" class="eyebrow">MULTICC · 本轮状态</span>
+              <h2 id="delivery-title"></h2>
+              <p id="delivery-text"></p>
+            </div>
+            <div id="delivery-steps" aria-label="本轮交付进度">
+              <span data-step="run">本轮成功</span>
+              <span data-step="delivery">代码交付</span>
+              <span data-step="stable">源现场稳定</span>
+              <span data-step="attribution">归属生效</span>
+            </div>
+            <div class="delivery-footer">
+              <div id="delivery-actions"></div>
+              <p id="delivery-destination"></p>
+            </div>
+          </section>
           <div id="task-detail-groups"></div>
         </aside>
       </div>

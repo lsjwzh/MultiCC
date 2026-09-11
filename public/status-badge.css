@@ -52,7 +52,7 @@
 .st-tone-info     { --st-fg: var(--blue, #6aa3ff); color: var(--st-fg); }
 .st-tone-running  { --st-fg: var(--codex, #3fb950); color: var(--st-fg); }
 .st-tone-waiting  { --st-fg: var(--amber, #e3b341); color: var(--st-fg); }
-.st-tone-blocked  { --st-fg: #d29922; color: var(--st-fg); }
+.st-tone-blocked  { --st-fg: var(--amber, #d29922); color: var(--st-fg); }
 .st-tone-success  { --st-fg: var(--accent, #3fb950); color: var(--st-fg); }
 .st-tone-danger   { --st-fg: var(--danger, #f85149); color: var(--st-fg); }
 

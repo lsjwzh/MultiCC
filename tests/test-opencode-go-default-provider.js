@@ -56,7 +56,7 @@ function invoke(handler, { params = {}, body = {} } = {}) {
   return response;
 }
 
-function fixture(session) {
+function fixture(session, activity = {}) {
   const persistedSessions = new Map([['s1', session]]);
   const effects = { events: [], closes: 0, workspaceBroadcasts: 0, chatBroadcasts: 0 };
   const providerRouterRuntime = {
@@ -91,8 +91,8 @@ function fixture(session) {
     },
     providerRouterRuntime,
     getChatStream: () => ({ close() { effects.closes += 1; } }),
-    getChatState: () => null,
-    hasLiveBackgroundTasks: () => false,
+    getChatState: () => activity,
+    hasLiveBackgroundTasks: () => activity.background === true,
     validProviderId: (_cli, id) => (id === '' || id === 'prov-1' || id === 'prov-2'
       ? { ok: true, value: id || null }
       : { ok: false }),
@@ -239,4 +239,36 @@ test('selection-only PATCH derives the concrete fallback from priority, not arra
   assert.equal(res.statusCode, 200);
   assert.equal(session.provider, 'prov-2');
   assert.equal(session.model, 'glm-4');
+});
+
+
+test('active provider edits validate and persist the latest desired settings without touching the runner', () => {
+  const { session, handler, effects } = fixture({ id: 's1', dirId: 'd1', kind: 'chat',
+    cli: 'claude', provider: null, model: 'old-model', cliSessionId: 'old-native' }, { isStreaming: true });
+  const patch = body => invoke(handler, { params: { id: 's1' }, body });
+  let res = patch({ provider: 'prov-1', model: 'glm-5', effort: 'high' });
+  assert.equal(res.statusCode, 200); assert.equal(res.body.deferred, true);
+  assert.equal(session.provider, null); assert.equal(session.model, 'old-model');
+  assert.equal(session.cliSessionId, 'old-native'); assert.equal(effects.closes, 0);
+  assert.equal(session.pendingConfiguration.profile.provider, 'prov-1');
+  res = patch({ effort: 'low' });
+  assert.equal(res.statusCode, 200);
+  assert.equal(session.pendingConfiguration.profile.effort, 'low');
+  assert.equal(session.pendingConfiguration.profile.provider, 'prov-1');
+  const saved = JSON.stringify(session);
+  assert.equal(patch({ provider: 'bad', label: 'must-not-save' }).statusCode, 400);
+  assert.equal(patch({ model: 'invalid model' }).statusCode, 400);
+  assert.equal(patch({ subagent: { providerId: 'prov-1', model: '' } }).statusCode, 400);
+  assert.equal(JSON.stringify(session), saved); assert.equal(effects.closes, 0);
+});
+
+test('provider edits after a queued CLI switch validate against the target CLI and keep fresh intent', () => {
+  const { session, handler, effects } = fixture({ id: 's1', dirId: 'd1', kind: 'chat',
+    cli: 'claude', model: 'old-model', pendingConfiguration: { cli: 'opencode', fresh: true,
+      profile: { provider: null, model: null, effort: null, agent: null, subagent: null } } }, { isStreaming: true });
+  const res = invoke(handler, { params: { id: 's1' }, body: { model: 'opencodego/glm-5.2', provider: '' } });
+  assert.equal(res.statusCode, 200); assert.equal(res.body.cli, 'claude');
+  assert.equal(session.model, 'old-model'); assert.equal(effects.closes, 0);
+  assert.equal(session.pendingConfiguration.cli, 'opencode'); assert.equal(session.pendingConfiguration.fresh, true);
+  assert.equal(session.pendingConfiguration.profile.model, 'opencodego/glm-5.2');
 });

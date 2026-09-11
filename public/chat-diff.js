@@ -37,8 +37,8 @@
   var DOCK_STORE_KEY = 'multicc.diffDock';
   var NARROW_QUERY = '(max-width: 640px)';
   var STATUS_COLOR = {
-    M: '#58a6ff', A: '#3fb950', D: '#f85149', R: '#bc8cff',
-    T: '#d29922', C: '#d29922',
+    M: 'var(--chat-blue, #58a6ff)', A: 'var(--chat-success, #3fb950)', D: 'var(--chat-danger, #f85149)', R: 'var(--chat-purple, #bc8cff)',
+    T: 'var(--chat-warning, #d29922)', C: 'var(--chat-warning, #d29922)',
   };
   var STATUS_LABEL = { M: 'M', A: 'A', D: 'D', R: 'R', T: 'T', C: 'C' };
 
@@ -561,8 +561,8 @@
     badge.className = 'diff-status-badge';
     var st = file.status || 'M';
     badge.textContent = STATUS_LABEL[st] || st.charAt(0);
-    badge.style.color = STATUS_COLOR[st] || '#8b949e';
-    badge.style.borderColor = STATUS_COLOR[st] || '#30363d';
+    badge.style.color = STATUS_COLOR[st] || 'var(--chat-muted, #8b949e)';
+    badge.style.borderColor = STATUS_COLOR[st] || 'var(--chat-line, #30363d)';
     row.appendChild(badge);
 
     var pathWrap = document.createElement('span');
@@ -624,8 +624,8 @@
 
     // Header.
     dom.detailBadge.textContent = STATUS_LABEL[file.status] || (file.status || '?').charAt(0);
-    dom.detailBadge.style.color = STATUS_COLOR[file.status] || '#8b949e';
-    dom.detailBadge.style.borderColor = STATUS_COLOR[file.status] || '#30363d';
+    dom.detailBadge.style.color = STATUS_COLOR[file.status] || 'var(--chat-muted, #8b949e)';
+    dom.detailBadge.style.borderColor = STATUS_COLOR[file.status] || 'var(--chat-line, #30363d)';
     var split = splitPath(path);
     dom.detailBasename.textContent = split.base || path;
     dom.detailDir.textContent = split.dir || '';
@@ -855,7 +855,7 @@
     } else {
       // Fallback: monospace pre-wrap text.
       var pre = document.createElement('pre');
-      pre.style.cssText = 'margin:0;padding:8px 16px;white-space:pre-wrap;word-break:break-word;font-family:monospace;font-size:12px;color:#c9d1d9;';
+      pre.style.cssText = 'margin:0;padding:8px 16px;white-space:pre-wrap;word-break:break-word;font-family:monospace;font-size:12px;color:var(--chat-text, #c9d1d9);';
       pre.textContent = String(patch || '');
       dom.patchContainer.appendChild(pre);
     }

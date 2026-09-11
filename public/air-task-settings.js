@@ -96,7 +96,14 @@
       throw new Error('AI 配置组件未加载，请刷新页面后重试。');
     }
 
-    const config = entry.configuration || {};
+    const storedConfig = entry.configuration || {};
+    const pending = storedConfig.pendingConfiguration;
+    // The editor always opens on the user's desired next-turn route. This keeps
+    // a second edit from accidentally overwriting a configuration that was
+    // already staged while the current runner was busy.
+    const config = pending
+      ? { ...storedConfig, ...(pending.profile || {}), cli: pending.cli || storedConfig.cli }
+      : storedConfig;
     const d = node('dialog', null, 'air-config-dialog');
     const form = node('form', null, 'air-config-form');
     const header = node('header', null, 'air-config-head');

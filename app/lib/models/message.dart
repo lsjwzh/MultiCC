@@ -710,6 +710,8 @@ class SessionCliConfig {
   final String? effectiveEffort;
   final String? agent;
   final SessionSubagent? subagent;
+  final bool deferred;
+  final SessionCli? pendingCli;
   final bool changed;
   final bool reusedTarget;
 
@@ -728,6 +730,8 @@ class SessionCliConfig {
     this.effectiveEffort,
     this.agent,
     this.subagent,
+    this.deferred = false,
+    this.pendingCli,
     this.changed = false,
     this.reusedTarget = false,
   });
@@ -751,6 +755,9 @@ class SessionCliConfig {
       subagent: json['subagent'] == null
           ? null
           : SessionSubagent.fromJson(json['subagent']),
+      deferred: json['deferred'] == true || json['pendingConfiguration'] is Map,
+      pendingCli: json['pendingConfiguration'] is Map
+          ? parseCli(json['pendingConfiguration']['cli']?.toString()) : null,
       changed: json['changed'] == true,
       reusedTarget: json['reusedTarget'] == true,
     );
