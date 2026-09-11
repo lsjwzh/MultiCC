@@ -15,10 +15,16 @@ function processTable() {
     return JSON.parse(raw).map(p => ({ pid: p.ProcessId, ppid: p.ParentProcessId,
       born: String(p.CreationDate), command: p.CommandLine || '' }));
   }
+  // Force the C locale: under e.g. a Chinese LC_TIME, macOS ps prints lstart
+  // as "四  9/11 17:06:02 2026" (4 fields, localized weekday) which silently
+  // parsed as ZERO processes — stop then found no servers and reported
+  // success without killing anything. The regex also tolerates both the
+  // 4-field localized and 5-field C shapes, anchored on "time year".
   const raw = cp.execFileSync('/bin/ps', ['-axo', 'pid=,ppid=,lstart=,args='],
-    { encoding: 'utf8', timeout: 5000, maxBuffer: 16 * 1024 * 1024 });
+    { encoding: 'utf8', timeout: 5000, maxBuffer: 16 * 1024 * 1024,
+      env: { ...process.env, LC_ALL: 'C' } });
   return raw.split('\n').flatMap(line => {
-    const m = line.match(/^\s*(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+[\d:]+\s+\d+)\s+(.+)$/);
+    const m = line.match(/^\s*(\d+)\s+(\d+)\s+(.+?\s+[\d:]+\s+\d{4})\s+(.+)$/);
     return m ? [{ pid: Number(m[1]), ppid: Number(m[2]), born: m[3], command: m[4] }] : [];
   });
 }
