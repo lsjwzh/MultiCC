@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import '../providers/session_manager.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
+import '../theme.dart';
 
 /// Directory-first Air entry backed by the same canonical API as the Web UI.
 /// Opening a task uses the existing native chat transport and answer controls.
@@ -25,7 +26,10 @@ class _AirTasksViewState extends State<AirTasksView>
   String _query = '', _error = '';
   bool _loading = false, _opening = false, _foreground = true, _all = false;
   Timer? _timer;
-  static const _ink = Color(0xFF233249), _blue = Color(0xFF1678e8);
+
+  /// Local shorthands for the two inks this view uses everywhere; both are
+  /// [AppColors] entries so the palette keeps a single source.
+  static const _ink = AppColors.text, _blue = AppColors.accent;
   List<Map<String, dynamic>> _rows(String key) => ((_data?[key] as List?) ?? [])
       .map((v) => Map<String, dynamic>.from(v as Map))
       .toList();
@@ -144,7 +148,7 @@ class _AirTasksViewState extends State<AirTasksView>
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, update) => AlertDialog(
-          backgroundColor: Colors.white,
+          backgroundColor: AppColors.panel,
           title: const Text('新任务', style: TextStyle(color: _ink)),
           content: SingleChildScrollView(
             child: Column(
@@ -159,7 +163,7 @@ class _AirTasksViewState extends State<AirTasksView>
                 ),
                 DropdownButtonFormField<String>(
                   value: cli,
-                  dropdownColor: Colors.white,
+                  dropdownColor: AppColors.panel,
                   style: const TextStyle(color: _ink),
                   items: clis
                       .map((v) => DropdownMenuItem(value: v, child: Text(v)))
@@ -175,7 +179,7 @@ class _AirTasksViewState extends State<AirTasksView>
                   decoration: const InputDecoration(labelText: '角色上下文（可选）'),
                 ),
                 if (error.isNotEmpty)
-                  Text(error, style: const TextStyle(color: Colors.red)),
+                  Text(error, style: const TextStyle(color: AppColors.danger)),
               ],
             ),
           ),
@@ -259,12 +263,12 @@ class _AirTasksViewState extends State<AirTasksView>
       data: theme.copyWith(
         colorScheme: theme.colorScheme.copyWith(
           primary: _blue,
-          onPrimary: Colors.white,
+          onPrimary: AppColors.onAccent,
           secondary: _blue,
         ),
       ),
       child: ColoredBox(
-        color: const Color(0xFFf4f8fd),
+        color: AppColors.bg,
         child: RefreshIndicator(
           onRefresh: _refresh,
           child: ListView(
@@ -272,13 +276,13 @@ class _AirTasksViewState extends State<AirTasksView>
             children: [
               const Text(
                 '工作目录',
-                style: TextStyle(color: Color(0xFF6f8096), fontSize: 12),
+                style: TextStyle(color: AppColors.muted, fontSize: 12),
               ),
               if (dirs.isNotEmpty)
                 DropdownButton<String>(
                   value: _directory,
                   isExpanded: true,
-                  dropdownColor: Colors.white,
+                  dropdownColor: AppColors.panel,
                   style: const TextStyle(
                     color: _ink,
                     fontSize: 18,
@@ -299,7 +303,7 @@ class _AirTasksViewState extends State<AirTasksView>
                 ),
               Text(
                 '${dirs.where((d) => d['id'] == _directory).firstOrNull?['path'] ?? '通过右上角添加工作目录'}',
-                style: const TextStyle(color: Color(0xFF6f8096), fontSize: 12),
+                style: const TextStyle(color: AppColors.muted, fontSize: 12),
               ),
               const SizedBox(height: 22),
               Row(
@@ -329,7 +333,7 @@ class _AirTasksViewState extends State<AirTasksView>
                   hintText: '搜索任务',
                   prefixIcon: Icon(Icons.search),
                   filled: true,
-                  fillColor: Colors.white,
+                  fillColor: AppColors.panel,
                   border: OutlineInputBorder(
                     borderSide: BorderSide.none,
                     borderRadius: BorderRadius.all(Radius.circular(14)),
@@ -350,14 +354,14 @@ class _AirTasksViewState extends State<AirTasksView>
                   padding: const EdgeInsets.only(bottom: 16),
                   child: Text(
                     _error,
-                    style: const TextStyle(color: Colors.red),
+                    style: const TextStyle(color: AppColors.danger),
                   ),
                 ),
               if (_data == null && _error.isEmpty)
                 const Center(child: CircularProgressIndicator()),
               for (final task in tasks)
                 Card(
-                  color: Colors.white,
+                  color: AppColors.panel,
                   elevation: 0,
                   margin: const EdgeInsets.only(bottom: 10),
                   shape: RoundedRectangleBorder(
@@ -382,7 +386,7 @@ class _AirTasksViewState extends State<AirTasksView>
                     subtitle: Text(
                       _resource(task),
                       style: const TextStyle(
-                        color: Color(0xFF6f8096),
+                        color: AppColors.muted,
                         fontSize: 12,
                       ),
                     ),
@@ -396,7 +400,7 @@ class _AirTasksViewState extends State<AirTasksView>
                   child: Text(
                     '从一个目标开始。\n创建任务后，工作目录会在首次执行时准备。',
                     textAlign: TextAlign.center,
-                    style: TextStyle(color: Color(0xFF6f8096), height: 1.8),
+                    style: TextStyle(color: AppColors.muted, height: 1.8),
                   ),
                 ),
             ],
