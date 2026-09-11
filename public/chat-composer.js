@@ -70,6 +70,18 @@
       if (!inputEl) return;
       inputEl.value = '';
       inputEl.style.height = 'auto';
+      // The Air host restores per-task drafts from sessionStorage (one key
+      // per task). Clearing the input programmatically fires no input event,
+      // so drop the stored draft here or a later restore re-fills the sent
+      // text — including right after a frame reload.
+      try {
+        const storage = win.sessionStorage;
+        // Backwards: removeItem re-indexes, so a forward walk would skip keys.
+        for (let i = (storage?.length || 0) - 1; i >= 0; i--) {
+          const key = storage.key(i);
+          if (key && key.indexOf('air:draft:') === 0) storage.removeItem(key);
+        }
+      } catch (err) { /* storage unavailable: drafts simply not persisted */ }
     }
 
     function newClientMsgId() {
