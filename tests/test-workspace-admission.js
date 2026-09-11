@@ -162,3 +162,32 @@ test('final runner evidence is captured before releasing the workspace for the n
   const result = f.host.deliveryEvidence(f.record.id).run;
   assert.equal(result.outcome, 'succeeded'); assert.equal(result.attemptId, 'attempt-final'); assert.ok(result.endCodeRevision);
 });
+
+test('an uncertain lease whose writer pid is provably dead is reclaimed without waiting out the threshold', async t => {
+  const f = await hostFixture(t), d = f.descriptor('m'), guard = await f.host.beforeDeliver(d);
+  f.host.starting(f.record.id, d.opts); f.host.spawned(f.record.id, { pid: 99999999 });
+  await guard.complete({ accepted: false });
+  assert.equal(f.host.snapshot().leases[0].state, 'uncertain');
+  for (let i = 0; i < 50 && f.host.snapshot().leases.length; i++) await new Promise(r => setTimeout(r, 100));
+  assert.equal(f.host.snapshot().leases.length, 0, 'a crashed writer must not wedge its workspace forever');
+});
+
+test('an uncertain lease with a live writer pid survives below the staleness threshold', async t => {
+  const f = await hostFixture(t), d = f.descriptor('m'), guard = await f.host.beforeDeliver(d);
+  f.host.starting(f.record.id, d.opts); f.host.spawned(f.record.id, { pid: process.pid });
+  await guard.complete({ accepted: false });
+  assert.equal(f.host.snapshot().leases[0].state, 'uncertain');
+  await new Promise(r => setTimeout(r, 1300));
+  assert.equal(f.host.snapshot().leases.length, 1, 'a possibly-live writer keeps its lease');
+});
+
+test('an uncertain lease with no writer pid is reclaimed once past the staleness threshold', async t => {
+  const f = await hostFixture(t), d = f.descriptor('m'), guard = await f.host.beforeDeliver(d);
+  f.host.starting(f.record.id, d.opts);
+  await guard.complete({ accepted: false });
+  assert.equal(f.host.snapshot().leases[0].state, 'uncertain');
+  assert.equal(f.host.snapshot().leases[0].pid ?? null, null);
+  f.deps.budgets = { staleUncertainMs: 0 };
+  for (let i = 0; i < 50 && f.host.snapshot().leases.length; i++) await new Promise(r => setTimeout(r, 100));
+  assert.equal(f.host.snapshot().leases.length, 0);
+});

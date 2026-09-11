@@ -82,6 +82,9 @@ function createOrchestrationRuntime({
   databaseFile = null,
   runChatTurn,
   isBusy = () => false,
+  // Optional diagnostic companion to isBusy: (sessionId, item) → string[] of
+  // reason codes. Used only for skip logging; never changes the decision.
+  busyReasons = null,
   isDeliveryLocked = () => false,
   deliveryGroup = id => id,
   isSlotUnavailable = () => false,
@@ -1039,6 +1042,29 @@ function createOrchestrationRuntime({
     ]);
   }
 
+  // Diagnosability for "queued but never delivered": the semantic gate may
+  // select an item that the host then vetoes (busy workspace, delivery lock,
+  // an in-flight redelivery). Those skips used to be silent — a wedged
+  // workspace lease looked exactly like an idle queue, and a user's explicit
+  // "insert now" vanished without a trace. Log them, throttled per session.
+  const deliverySkipLogAt = new Map();
+  function noteDeliverySkip(item, reason, detail) {
+    const at = Number(now());
+    if (at - (deliverySkipLogAt.get(item.sessionId) || 0) < 15_000) return;
+    if (deliverySkipLogAt.size > 1000) deliverySkipLogAt.clear();
+    deliverySkipLogAt.set(item.sessionId, at);
+    let reasons = null;
+    if (reason === 'session_busy' && typeof busyReasons === 'function') {
+      try { reasons = busyReasons(item.sessionId, detail) || null; } catch (_) { reasons = null; }
+    }
+    log(`[orchestration] delivery_skipped ${JSON.stringify({
+      sessionId: item.sessionId,
+      entryId: item.id,
+      reason,
+      ...(reasons && reasons.length ? { reasons } : {}),
+    })}`);
+  }
+
   async function processOutbox() {
     const selectRunnableSessionItem = (items, draft, at) => {
       const item = sessionScheduler.selectSessionItem(items, draft, at);
@@ -1054,9 +1080,17 @@ function createOrchestrationRuntime({
       // holder waits for the tick — and because every tick chains onto
       // tickTail, that deadlock freezes delivery for EVERY session until the
       // process restarts.
-      if (!item || isBusy(item.sessionId, projected)) return null;
+      if (!item) return null;
+      if (isBusy(item.sessionId, projected)) {
+        noteDeliverySkip(item, 'session_busy', projected);
+        return null;
+      }
       if (inFlightDeliveries.has(item.id)) return null;
-      return isDeliveryLocked(item.sessionId, projected) ? null : item;
+      if (isDeliveryLocked(item.sessionId, projected)) {
+        noteDeliverySkip(item, 'delivery_locked');
+        return null;
+      }
+      return item;
     };
     const claimed = await outbox.claim({
       workerId,
