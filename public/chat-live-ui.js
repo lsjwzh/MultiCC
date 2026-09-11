@@ -38,7 +38,7 @@
       if (win.innerWidth <= 760) {
         menu.style.cssText += ';margin:0;bottom:auto;';
         backdrop = doc.createElement('div');
-        backdrop.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:16px;';
+        backdrop.style.cssText = 'position:fixed;inset:0;z-index:9999;background:var(--chat-overlay, rgba(0,0,0,.55));display:flex;align-items:center;justify-content:center;padding:16px;';
         backdrop.appendChild(menu);
         doc.body.appendChild(backdrop);
         backdrop.addEventListener('click', event => { if (event.target === backdrop) close(); });
@@ -278,7 +278,7 @@
       line.className = 'msg-timing';
       // flex-wrap mirrors .msg-usage: the clock and the duration wrap onto a
       // second line on a narrow bubble instead of being pushed past its edge.
-      line.style.cssText = 'font-size:11px;color:#6e7681;display:flex;flex-wrap:wrap;gap:10px;padding:1px 0;';
+      line.style.cssText = 'font-size:11px;color:var(--chat-muted, #6e7681);display:flex;flex-wrap:wrap;gap:10px;padding:1px 0;';
       if (hasTimestamp) {
         const date = new Date(timestamp);
         const clock = [date.getHours(), date.getMinutes(), date.getSeconds()]
@@ -936,7 +936,7 @@
         if (details) bar.appendChild(details);
       }
       bar.title = envelope ? errorModel.diagnosticText(envelope) : String(message.message || '');
-      bar.style.color = retryScheduled ? '#e3b341' : '#ff9b9b';
+      bar.style.color = retryScheduled ? 'var(--chat-warning, #e3b341)' : 'var(--chat-danger, #ff9b9b)';
       bar.style.display = '';
     }
 
@@ -1035,14 +1035,14 @@
       return new Promise(resolve => {
         const overlay = doc.createElement('div');
         overlay.className = 'chat-dialog-backdrop';
-        overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px;';
+        overlay.style.cssText = 'position:fixed;inset:0;background:var(--chat-overlay, rgba(0,0,0,.7));z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px;';
         const box = doc.createElement('div');
         // Long messages must not push the buttons past the viewport edge on phones.
-        box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:20px;width:420px;max-width:94vw;color:#c9d1d9;box-shadow:0 18px 60px rgba(0,0,0,.45);'
+        box.style.cssText = 'background:var(--chat-surface, #161b22);border:1px solid var(--chat-line, #30363d);border-radius:12px;padding:20px;width:420px;max-width:94vw;color:var(--chat-text, #c9d1d9);box-shadow:var(--chat-shadow, 0 18px 60px rgba(0,0,0,.45));'
           + 'max-height:calc(100vh - 32px);max-height:calc(100dvh - 32px);overflow-y:auto;-webkit-overflow-scrolling:touch;';
         if (settings.title) {
           const heading = doc.createElement('div');
-          heading.style.cssText = 'font-size:15px;font-weight:700;margin-bottom:10px;color:#f2f4f7;';
+          heading.style.cssText = 'font-size:15px;font-weight:700;margin-bottom:10px;color:var(--chat-heading, #f2f4f7);';
           heading.textContent = String(settings.title);
           box.appendChild(heading);
         }
@@ -1082,13 +1082,13 @@
       const settings = promptOptions || {};
       return new Promise(resolve => {
         const backdrop = doc.createElement('div');
-        backdrop.style.cssText = 'position:fixed;inset:0;z-index:12000;background:#0009;display:flex;align-items:center;justify-content:center;padding:18px;';
+        backdrop.style.cssText = 'position:fixed;inset:0;z-index:12000;background:var(--chat-overlay, #0009);display:flex;align-items:center;justify-content:center;padding:18px;';
         const card = doc.createElement('div');
-        card.style.cssText = 'width:min(92vw,440px);background:#0f1115;border:1px solid #30363d;border-radius:10px;box-shadow:0 18px 60px #000c;color:#e7eaee;overflow:hidden auto;'
+        card.style.cssText = 'width:min(92vw,440px);background:var(--chat-canvas, #0f1115);border:1px solid var(--chat-line, #30363d);border-radius:10px;box-shadow:var(--chat-shadow, 0 18px 60px #000c);color:var(--chat-text, #e7eaee);overflow:hidden auto;'
           + 'max-height:calc(100vh - 36px);max-height:calc(100dvh - 36px);-webkit-overflow-scrolling:touch;';
         const heading = doc.createElement('div');
         heading.textContent = String(title || '');
-        heading.style.cssText = 'padding:14px 16px;border-bottom:1px solid #20242b;font-size:15px;font-weight:700;color:#f2f4f7;';
+        heading.style.cssText = 'padding:14px 16px;border-bottom:1px solid var(--chat-line, #20242b);font-size:15px;font-weight:700;color:var(--chat-heading, #f2f4f7);';
         const body = doc.createElement('div');
         body.style.cssText = 'padding:16px;';
         const input = doc.createElement('input');
@@ -1096,16 +1096,16 @@
         input.value = defaultValue || '';
         input.maxLength = settings.maxLength || 80;
         input.placeholder = settings.placeholder || '';
-        input.style.cssText = 'width:100%;box-sizing:border-box;background:#0d1117;border:1px solid #30363d;border-radius:7px;padding:9px 11px;font-size:14px;color:#e7eaee;outline:none;';
+        input.style.cssText = 'width:100%;box-sizing:border-box;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:7px;padding:9px 11px;font-size:14px;color:var(--chat-text, #e7eaee);outline:none;';
         body.appendChild(input);
         const actions = doc.createElement('div');
-        actions.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid #20242b;';
+        actions.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--chat-line, #20242b);';
         const cancel = doc.createElement('button');
         cancel.textContent = settings.cancelText || translate('cancel');
-        cancel.style.cssText = 'border:1px solid #30363d;background:#161b22;color:#c9d1d9;border-radius:7px;padding:7px 13px;font-weight:700;cursor:pointer;';
+        cancel.style.cssText = 'border:1px solid var(--chat-line, #30363d);background:var(--chat-surface, #161b22);color:var(--chat-text, #c9d1d9);border-radius:7px;padding:7px 13px;font-weight:700;cursor:pointer;';
         const ok = doc.createElement('button');
         ok.textContent = settings.okText || translate('save');
-        ok.style.cssText = 'border:1px solid #58a6ff;background:#1f6feb;color:#fff;border-radius:7px;padding:7px 13px;font-weight:700;cursor:pointer;';
+        ok.style.cssText = 'border:1px solid var(--chat-blue, #58a6ff);background:#1f6feb;color:#fff;border-radius:7px;padding:7px 13px;font-weight:700;cursor:pointer;';
         actions.append(cancel, ok);
         card.append(heading, body, actions);
         backdrop.appendChild(card);
@@ -1137,21 +1137,21 @@
         let closed = false;          // 弹窗关闭后阻止 in-flight 安装/轮询回调再排定时器
 
         const overlay = doc.createElement('div');
-        overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
+        overlay.style.cssText = 'position:fixed;inset:0;background:var(--chat-overlay, rgba(0,0,0,.72));z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
         const box = doc.createElement('div');
         // Tall on phones (select + reset row + warning + install log), so the box
         // scrolls and the action row sticks to its bottom edge — otherwise 「切换」
         // ends up below the viewport with no way to reach it.
-        box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:20px;width:460px;max-width:94vw;color:#c9d1d9;box-shadow:0 18px 60px rgba(0,0,0,.45);'
+        box.style.cssText = 'background:var(--chat-surface, #161b22);border:1px solid var(--chat-line, #30363d);border-radius:12px;padding:20px;width:460px;max-width:94vw;color:var(--chat-text, #c9d1d9);box-shadow:var(--chat-shadow, 0 18px 60px rgba(0,0,0,.45));'
           + 'max-height:calc(100vh - 32px);max-height:calc(100dvh - 32px);overflow-y:auto;-webkit-overflow-scrolling:touch;';
         const title = doc.createElement('div');
         title.style.cssText = 'font-size:17px;font-weight:700;margin-bottom:8px;';
         title.textContent = '切换 CLI';
         const description = doc.createElement('div');
-        description.style.cssText = 'font-size:12px;color:#8b949e;line-height:1.65;margin-bottom:14px;';
+        description.style.cssText = 'font-size:12px;color:var(--chat-muted, #8b949e);line-height:1.65;margin-bottom:14px;';
         description.textContent = '切换后，目标 CLI 会接着当前任务继续工作。每个 CLI 的原对话都会单独保留。';
         const select = doc.createElement('select');
-        select.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:7px;color:#c9d1d9;font-size:14px;padding:9px 10px;outline:none;margin-bottom:10px;';
+        select.style.cssText = 'width:100%;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:7px;color:var(--chat-text, #c9d1d9);font-size:14px;padding:9px 10px;outline:none;margin-bottom:10px;';
         for (const [value, meta] of Object.entries(cliMeta || {})) {
           const sessionState = states && states[value];
           const installed = availLocal[value]?.available !== false;
@@ -1165,9 +1165,9 @@
         }
         select.value = current;
         const targetInfo = doc.createElement('div');
-        targetInfo.style.cssText = 'min-height:34px;font-size:12px;color:#8b949e;line-height:1.5;margin-bottom:8px;';
+        targetInfo.style.cssText = 'min-height:34px;font-size:12px;color:var(--chat-muted, #8b949e);line-height:1.5;margin-bottom:8px;';
         const resetRow = doc.createElement('label');
-        resetRow.style.cssText = 'display:flex;align-items:flex-start;gap:8px;font-size:12px;color:#c9d1d9;background:#0d1117;border:1px solid #30363d;border-radius:7px;padding:9px;margin-bottom:14px;cursor:pointer;';
+        resetRow.style.cssText = 'display:flex;align-items:flex-start;gap:8px;font-size:12px;color:var(--chat-text, #c9d1d9);background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:7px;padding:9px;margin-bottom:14px;cursor:pointer;';
         const reset = doc.createElement('input');
         reset.type = 'checkbox';
         reset.style.marginTop = '2px';
@@ -1175,14 +1175,14 @@
         resetText.textContent = '重新开始目标 CLI（仅在切换后无法继续时勾选，当前任务信息会保留）';
         resetRow.append(reset, resetText);
         const warning = doc.createElement('div');
-        warning.style.cssText = 'font-size:12px;color:#d29922;line-height:1.55;margin-bottom:14px;';
+        warning.style.cssText = 'font-size:12px;color:var(--chat-warning, #d29922);line-height:1.55;margin-bottom:14px;';
         warning.textContent = '运行中也可以保存：本轮继续使用当前 CLI，下轮开始时切换，保留排队消息与任务上下文。';
         const actions = doc.createElement('div');
         actions.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;'
-          + 'position:sticky;bottom:-20px;background:#161b22;padding:12px 0 20px;margin-bottom:-20px;';
+          + 'position:sticky;bottom:-20px;background:var(--chat-surface, #161b22);padding:12px 0 20px;margin-bottom:-20px;';
         const cancel = doc.createElement('button');
         cancel.textContent = '取消';
-        cancel.style.cssText = 'background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 15px;cursor:pointer;';
+        cancel.style.cssText = 'background:var(--chat-soft, #21262d);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:7px 15px;cursor:pointer;';
         const ok = doc.createElement('button');
         ok.textContent = '确认切换';
         ok.style.cssText = 'background:#238636;border:1px solid #2ea043;border-radius:6px;color:#fff;font-size:13px;padding:7px 15px;cursor:pointer;';
@@ -1213,7 +1213,7 @@
           if (job.status === 'done') {
             setOkEnabled(true);
             const done = doc.createElement('div');
-            done.style.cssText = 'color:#3fb950;';
+            done.style.cssText = 'color:var(--chat-success, #3fb950);';
             done.textContent = `安装完成, 可以切换到 ${label}。`;
             targetInfo.appendChild(done);
             return;
@@ -1221,18 +1221,18 @@
           if (job.status === 'error') {
             setOkEnabled(false);
             const err = doc.createElement('div');
-            err.style.cssText = 'color:#f85149;white-space:pre-wrap;margin-bottom:6px;';
+            err.style.cssText = 'color:var(--chat-danger, #f85149);white-space:pre-wrap;margin-bottom:6px;';
             err.textContent = job.error || '安装失败。';
             targetInfo.appendChild(err);
             if (job.hint) {
               const hint = doc.createElement('div');
-              hint.style.cssText = 'color:#d29922;white-space:pre-wrap;margin-bottom:6px;';
+              hint.style.cssText = 'color:var(--chat-warning, #d29922);white-space:pre-wrap;margin-bottom:6px;';
               hint.textContent = job.hint;
               targetInfo.appendChild(hint);
             }
             if (job.logTail) {
               const log = doc.createElement('div');
-              log.style.cssText = 'font-family:ui-monospace,monospace;font-size:11px;color:#8b949e;white-space:pre-wrap;max-height:140px;overflow:auto;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:6px;margin-bottom:6px;';
+              log.style.cssText = 'font-family:ui-monospace,monospace;font-size:11px;color:var(--chat-muted, #8b949e);white-space:pre-wrap;max-height:140px;overflow:auto;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;padding:6px;margin-bottom:6px;';
               log.textContent = job.logTail;
               targetInfo.appendChild(log);
             }
@@ -1240,13 +1240,13 @@
             const cmdText = spec?.display || spec?.command || job.command || '';
             if (cmdText) {
               const cmd = doc.createElement('div');
-              cmd.style.cssText = 'font-family:ui-monospace,monospace;font-size:11px;color:#8b949e;white-space:pre-wrap;margin-bottom:6px;word-break:break-all;';
+              cmd.style.cssText = 'font-family:ui-monospace,monospace;font-size:11px;color:var(--chat-muted, #8b949e);white-space:pre-wrap;margin-bottom:6px;word-break:break-all;';
               cmd.textContent = cmdText;
               targetInfo.appendChild(cmd);
             }
             const retry = doc.createElement('button');
             retry.textContent = '重试';
-            retry.style.cssText = 'background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:12px;padding:5px 11px;cursor:pointer;';
+            retry.style.cssText = 'background:var(--chat-soft, #21262d);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:12px;padding:5px 11px;cursor:pointer;';
             retry.addEventListener('click', () => startInstall(job.cli));
             targetInfo.appendChild(retry);
             return;
@@ -1258,13 +1258,13 @@
           const spinner = doc.createElement('span');
           spinner.textContent = '⏳';
           const status = doc.createElement('span');
-          status.style.cssText = 'color:#c9d1d9;';
+          status.style.cssText = 'color:var(--chat-text, #c9d1d9);';
           status.textContent = '安装中...';
           row.append(spinner, status);
           targetInfo.appendChild(row);
           if (job.logTail) {
             const log = doc.createElement('div');
-            log.style.cssText = 'font-family:ui-monospace,monospace;font-size:11px;color:#8b949e;white-space:pre-wrap;max-height:120px;overflow:auto;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:6px;';
+            log.style.cssText = 'font-family:ui-monospace,monospace;font-size:11px;color:var(--chat-muted, #8b949e);white-space:pre-wrap;max-height:120px;overflow:auto;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;padding:6px;';
             log.textContent = job.logTail;
             targetInfo.appendChild(log);
             log.scrollTop = log.scrollHeight;
@@ -1306,7 +1306,7 @@
           }
           if (spec.auto === false) {
             const manual = doc.createElement('div');
-            manual.style.cssText = 'white-space:pre-wrap;color:#c9d1d9;';
+            manual.style.cssText = 'white-space:pre-wrap;color:var(--chat-text, #c9d1d9);';
             manual.textContent = spec.manual || '需要手动安装。';
             targetInfo.appendChild(manual);
             return;
@@ -1318,7 +1318,7 @@
           btn.textContent = '一键安装';
           btn.style.cssText = 'background:#1f6feb;border:1px solid #388bfd;border-radius:6px;color:#fff;font-size:12px;padding:6px 12px;cursor:pointer;white-space:nowrap;';
           const cmd = doc.createElement('div');
-          cmd.style.cssText = 'flex:1;min-width:0;font-family:ui-monospace,monospace;color:#8b949e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+          cmd.style.cssText = 'flex:1;min-width:0;font-family:ui-monospace,monospace;color:var(--chat-muted, #8b949e);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
           const cmdText = spec.display || spec.command || '';
           cmd.textContent = cmdText;
           cmd.title = cmdText;
