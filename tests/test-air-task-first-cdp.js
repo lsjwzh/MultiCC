@@ -104,6 +104,13 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(await page.evaluate(`${frame}.getElementById('goal-btn')!==null && ${frame}.getElementById('merge-btn')!==null && ${frame}.getElementById('diff-modal')!==null`), true);
     assert.ok(await page.waitFor(`${frame}.getElementById('worktree-force-sync-btn')`), JSON.stringify({ requests: page.requests.filter(r=>/merge-status/.test(r.path)), state: await page.evaluate(`({url:${frame}.URL,errors:${frame}.defaultView.__errors,bar:${frame}.getElementById('worktree-bar').outerHTML})`) }));
     assert.equal(await page.evaluate(`${frame}.getElementById('worktree-sync-btn')!==null && ${frame}.getElementById('worktree-bar').offsetHeight>0`), true);
+    assert.equal(await page.evaluate(`['header','worktree-bar','aux-classify-bar'].every(id=>${frame}.getElementById(id).parentElement.id==='chat-context-bar')`), true);
+    assert.equal(await page.evaluate(`document.getElementById('delivery-card').closest('#task-details')!==null && document.getElementById('delivery-card').offsetHeight===0`), true, 'delivery details take no space above chat');
+    assert.equal(await page.evaluate(`document.getElementById('conversation').getBoundingClientRect().top===document.getElementById('task-header').getBoundingClientRect().bottom`), true, 'two adjacent bands, no intervening delivery card');
+    await page.evaluate(`document.getElementById('task-state').click()`);
+    assert.equal(await page.evaluate(`document.getElementById('delivery-card').offsetHeight>0 && document.getElementById('task-state').getAttribute('aria-expanded')==='true'`), true);
+    await page.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    assert.ok(await page.waitFor(`document.getElementById('task-details').hidden && document.getElementById('task-state').getAttribute('aria-expanded')==='false'`));
     await page.evaluate(`${frame}.getElementById('input').value='同步期间保留草稿';${frame}.getElementById('worktree-force-sync-btn').click();${frame}.getElementById('worktree-force-sync-btn').click()`);
     assert.ok(await page.waitFor(`${frame}.getElementById('worktree-force-sync-btn').textContent==='重试同步指令'`));
     assert.equal(syncRequests.length, 1, 'double click does not duplicate requests');
@@ -125,13 +132,24 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1366, height: 900, deviceScaleFactor: 1, mobile: false });
     await page.evaluate(`(()=>{const d=${frame},w=d.defaultView,v=w.MultiCCChatHistoryView.createHistoryView({document:d,messagesEl:d.getElementById('messages'),safeMarkdown:w.MultiCCSafeMarkdown});v.clearMessages();d.getElementById('messages').append(...${JSON.stringify(taskMessages)}.map(m=>v.renderMessage(m)));w.MultiCCChatSessionQueue.render([{entryId:'fifo-1',position:1,state:'pending',text:'继续检查移动端布局'}],{state:'running'},d);w.renderAuxClassify('完善 Air 对话体验','verifying','W')})()`);
     assert.equal(await page.evaluate(`${frame}.querySelector('.tool-card .tool-name').textContent`), 'Read');
+    assert.ok(await page.evaluate(`${frame}.getElementById('chat-context-bar').getBoundingClientRect().height<=55`), 'desktop runtime controls fit one row even when disconnected');
     await page.evaluate(`${frame}.getElementById('messages').style.cssText='position:relative;z-index:99999';${frame}.getElementById('header-more-btn').click()`);
     assert.ok(await page.waitFor(`${frame}.getElementById('header-more-menu').matches(':popover-open')`));
     assert.equal(await page.evaluate(`(()=>{const d=${frame},m=d.getElementById('header-more-menu'),r=m.getBoundingClientRect();return m.contains(d.elementFromPoint(r.left+20,r.top+30))})()`), true, 'Air menu receives clicks above tool messages');
     await page.evaluate(`${frame}.getElementById('header-more-btn').click();${frame}.getElementById('messages').style.cssText=''`);
     assert.equal(await page.evaluate(`${frame}.getElementById('session-queue-count').textContent`), '1');
     assert.equal(await page.evaluate(`${frame}.getElementById('aux-classify-bar').classList.contains('show')`), true);
+    await page.evaluate(`${frame}.defaultView.applyMergeStatus({branch:'multicc/task-a',baseBranch:'main',behind:2,conflict:true,conflictFiles:['example.js']})`);
+    assert.equal(await page.evaluate(`${frame}.getElementById('worktree-conflict-bar').parentElement.id`), 'chat-context-bar');
+    assert.equal(await page.evaluate(`${frame}.querySelectorAll('#worktree-conflict-bar button').length`), 3);
+    await page.evaluate(`${frame}.defaultView.refreshMergeStatus()`);
     assert.equal(await page.evaluate(`document.getElementById('task-state').textContent.includes('计划待执行')`), true);
+    entry.messages = taskMessages; entry.execution = { busy: true, status: 'running' };
+    await page.evaluate(`document.getElementById('refresh').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('task-state').textContent.includes('本轮 执行中')`));
+    await page.evaluate(`${frame}.defaultView.renderAuxClassify('完善 Air 对话体验','implementing','P')`);
+    screenshots.push(await page.screenshot('two-bars-desktop'));
+    entry.execution = { busy: false, status: 'idle' };
     entry.messages = taskMessages; entry.attribution = successAttribution;
     await page.evaluate(`document.getElementById('refresh').click()`);
     assert.ok(await page.waitFor(`document.getElementById('delivery-card').innerText.includes('建议归入「任务体验收口」')`));
@@ -232,6 +250,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.ok(await page.waitFor(`document.getElementById('air-provider-dialog').open===true`));
     assert.equal(await page.evaluate(`document.getElementById('air-provider-form').elements.apiFormat.value`), 'anthropic');
     await page.evaluate(`document.getElementById('air-provider-close').click()`);
+    entry.execution = { busy: true, status: 'running' }; entry.attribution = {};
     await page.navigate('/air?task=tsk_a&dir=d1');
     assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='完善任务协作体验'`));
     assert.ok(await page.waitFor(`${frame}?.URL.includes('session=task-a') && ${frame}.readyState==='complete'`));
@@ -242,6 +261,9 @@ test('Air task-first console, management views, roles, configuration, artifacts 
       assert.equal(await page.evaluate(`${frame}.documentElement.scrollWidth<=${frame}.documentElement.clientWidth`), true);
       assert.ok(await page.waitFor(`${frame}.getElementById('worktree-force-sync-btn')`));
       assert.equal(await page.evaluate(`${frame}.getElementById('worktree-force-sync-btn').getBoundingClientRect().right<=${frame}.documentElement.clientWidth`), true);
+      await page.evaluate(`${frame}.defaultView.renderAuxClassify('完善任务协作体验，保留所有同步与状态操作','implementing','P')`);
+      assert.ok(await page.evaluate(`${frame}.getElementById('chat-context-bar').getBoundingClientRect().height<=105`), JSON.stringify(await page.evaluate(`({width:innerWidth,groups:['chat-context-bar','header','worktree-bar','aux-classify-bar'].map(id=>({id,rect:${frame}.getElementById(id).getBoundingClientRect().toJSON()}))})`)));
+      assert.equal(await page.evaluate(`${frame}.getElementById('ac-cancel-task').getBoundingClientRect().right<=${frame}.documentElement.clientWidth`), true);
       const mobileLayout = await page.evaluate(`(()=>{const s=document.getElementById('sidebar'),r=s.getBoundingClientRect();return {sidebarLeft:r.left,sidebarRight:r.right,sidebarWidth:r.width,transform:getComputedStyle(s).transform,position:getComputedStyle(s).position,bodyClass:document.body.className,media:matchMedia('(max-width:760px)').matches}})()`);
       assert.equal(mobileLayout.sidebarRight <= 0, true, JSON.stringify(mobileLayout));
       assert.equal(await page.evaluate(`getComputedStyle(document.getElementById('ai-capsule')).display!=='none'`), true);
@@ -252,7 +274,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
         assert.equal(await page.evaluate(`document.querySelector('.air-config-dialog').scrollWidth<=document.querySelector('.air-config-dialog').clientWidth`), true);
         await page.evaluate(`document.querySelector('.air-config-close').click()`);
       }
-      screenshots.push(await page.screenshot('task-only-mobile-' + width));
+      screenshots.push(await page.screenshot('two-bars-mobile-' + width));
     }
     for (const width of [390, 320]) {
       await page.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: true });
