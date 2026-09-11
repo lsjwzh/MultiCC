@@ -12,6 +12,15 @@
   --blue-soft: #eaf4ff;
   --green: #2ba67a;
   --warning: #a85a25;
+  --danger: #b64e43;
+  /* Components shared with the legacy dark pages (auto-provider-editor, error
+     details) declare `var(--well, #0d1117)` and friends. Their fallbacks are
+     dark, so the Air shell has to supply a light well explicitly — otherwise
+     those panels paint black inputs on the light canvas. Values follow the
+     light embed skin (manage-air-embed.css) so the two light surfaces match. */
+  --well: #fbfdff;
+  --bg-soft: #f4f8fd;
+  --faint: #8a9aab;
   font: 14px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", sans-serif;
   color: var(--text);
   background: var(--bg);
