@@ -6,6 +6,7 @@
   <meta name="theme-color" content="#f4f8fd">
   <title>MultiCC Air · 工作目录与任务</title>
   <link rel="icon" href="/icon.svg">
+  <link rel="stylesheet" href="composer.css">
   <link rel="stylesheet" href="air.css">
   <script src="auth-client.js"></script>
 </head>
@@ -118,13 +119,13 @@
             <div class="section-heading"><div><span class="caption">当前目录</span><strong>最近任务</strong></div><span id="directory-overview-count"></span></div>
             <div id="directory-task-list"></div>
           </section>
-          <form id="quick-task-form">
-            <!-- One composer box, like the task chat: the input carries the
-                 instruction, the action row carries the controls. -->
+          <form id="quick-task-form" class="mc-composer mc-composer--panel">
+            <!-- The same composer module the task chat uses (composer.css): the
+                 input carries the instruction, the band carries the controls. -->
             <div id="quick-task-files"></div>
-            <textarea id="quick-task-input" rows="4" maxlength="32000" required
+            <textarea id="quick-task-input" class="mc-composer__input" rows="4" maxlength="32000" required
                       placeholder="描述要完成的任务；创建后会把这段内容作为第一条消息执行。Enter 创建，Shift + Enter 换行"></textarea>
-            <div class="quick-task-actions">
+            <div class="quick-task-actions mc-composer__actions">
               <button id="quick-task-attach" type="button" aria-label="添加文件">⌕ 添加文件</button><input id="quick-task-file-input" type="file" multiple hidden>
               <label><input id="quick-task-goal" type="checkbox"> Goal 模式</label>
               <label>CLI <select id="quick-task-cli" aria-label="新任务 CLI"></select></label>

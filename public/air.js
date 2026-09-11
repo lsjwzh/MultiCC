@@ -792,6 +792,7 @@
     if (!input) return null;
     const row = doc.createElement('div');
     row.id = 'air-composer-meta';
+    row.className = 'mc-composer__aux';
     row.hidden = true;
     for (const id of ['air-ai-pill', 'air-role-pill']) {
       const pill = doc.createElement('button');
@@ -814,14 +815,22 @@
     return { doc, row, ai, role };
   }
 
+  // The band above the composer card only exists while it has something to say:
+  // an empty one would paint its tint over the card's rounded top. The card is
+  // told through a modifier class, so the two still read as one box.
+  function setComposerBand(doc, row, shown) {
+    row.hidden = !shown;
+    doc.getElementById('input-bar')?.classList.toggle('mc-composer--with-aux', shown);
+  }
+
   function renderComposerControls() {
     const controls = composerControls();
     if (!controls) return;
-    const { row, ai, role } = controls;
-    row.hidden = !taskId;
+    const { doc, row, ai, role } = controls;
     if (!taskId) {
       ai.hidden = true;
       role.hidden = true;
+      setComposerBand(doc, row, false);
       return;
     }
     const pending = entry?.configuration?.pendingConfiguration;
@@ -844,6 +853,7 @@
     role.disabled = !entry || entry.readOnly;
     role.textContent = roleCount ? `${roleCount} 个角色` : '＋ 角色';
     role.title = '任务角色上下文';
+    setComposerBand(doc, row, !ai.hidden || !role.hidden);
   }
 
   function bindComposerControls() {
