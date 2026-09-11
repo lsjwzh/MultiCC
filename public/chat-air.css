@@ -271,9 +271,10 @@ body.air-chat {
 .air-chat #session-queue-dock,
 .air-chat #input-bar,
 .air-chat #dispatch-activity {
-  /* Align with the message list's Air side padding so the composer and the
-     conversation share one reading column. */
-  width: min(calc(100% - clamp(40px, 8vw, 96px)), var(--chat-content-max-width));
+  /* The composer floats centered like the Air mock: capped at 880px (still
+     honoring the chat-width setting) with clear water on both sides, never a
+     full-width bar touching the frame edges. */
+  width: min(880px, var(--chat-content-max-width), calc(100% - clamp(32px, 6vw, 64px)));
   align-self: center;
 }
 @media (max-width: 760px) {
@@ -282,7 +283,7 @@ body.air-chat {
   .air-chat #pre-input-bar,
   .air-chat #session-queue-dock,
   .air-chat #input-bar,
-  .air-chat #dispatch-activity { width: min(calc(100% - 28px), var(--chat-content-max-width)); }
+  .air-chat #dispatch-activity { width: min(880px, var(--chat-content-max-width), calc(100% - 24px)); }
 }
 .air-chat #usage-summary { border-color: #e4ebf2; background: transparent; }
 .air-chat .usage-summary-row { border-color: #e2eaf2; }
@@ -305,13 +306,20 @@ body.air-chat {
 .air-chat .session-queue-text { color: #3c536a; }
 .air-chat .session-queue-insert { color: #176fc7; border-color: #9fc6ec; background: #edf6ff; }
 .air-chat .session-queue-close { color: #aa513f; border-color: #e1bdb4; }
+/* Floating composer card, matching the Air workspace mock: lifted off the
+   bottom edge with layered soft shadow, and a tint ring while focused. */
 .air-chat #input-bar {
-  margin: 0 auto 12px;
+  margin: 4px auto 18px;
   padding: 9px 10px;
-  border: 1px solid #d7e3ef;
-  border-radius: 16px;
-  background: rgba(255, 255, 255, .97);
-  box-shadow: 0 8px 28px #31557615;
+  border: 1px solid #dbe5ef;
+  border-radius: 15px;
+  background: #fff;
+  box-shadow: 0 10px 30px #31557614, 0 4px 16px #23599a08, 0 0 0 3px #f3f7fb90;
+  transition: box-shadow .2s ease, border-color .2s ease;
+}
+.air-chat #input-bar:focus-within {
+  border-color: #c1d8ed;
+  box-shadow: 0 10px 32px #31557618, 0 4px 20px #23599a10, 0 0 0 3px #dcecfb;
 }
 .air-chat #input-bar textarea {
   color: #263b50;
@@ -400,5 +408,5 @@ body.air-chat.task-artifacts-chat .task-artifacts-toggle { color-scheme: light; 
   .air-chat #messages { padding: 12px 14px 8px; }
   .air-chat .msg { max-width: 96%; }
   .air-chat .msg.user { max-width: 88%; }
-  .air-chat #input-bar { margin-bottom: max(7px, env(safe-area-inset-bottom)); }
+  .air-chat #input-bar { margin-bottom: max(10px, env(safe-area-inset-bottom)); }
 }
