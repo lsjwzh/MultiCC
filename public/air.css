@@ -484,6 +484,7 @@ dialog .air-config-field input { margin-top: 7px; }
   .task-tools::-webkit-scrollbar { display: none; }
   .task-tools button { flex: 0 0 auto; min-height: 36px; padding: 6px 9px; }
   #ai-capsule { max-width: 145px; }
+  .task-tools [data-chat-layout] { display: none; } /* Available in Chat's More menu. */
   #refresh { position: absolute; top: 12px; right: 10px; }
   #notice { padding-inline: 12px; }
   #delivery-card { margin: 11px 10px 2px; padding: 14px; }
