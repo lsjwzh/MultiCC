@@ -1,5 +1,7 @@
 'use strict';
 
+const { desiredSession, configurationBusy, stageConfiguration } = require('../session/pending-configuration');
+
 const crypto = require('node:crypto');
 const os = require('node:os');
 const path = require('node:path');
@@ -447,52 +449,55 @@ function createCliSwitchRuntime(options) {
     };
     session.pendingCliHandoff = handoff;
 
-    options.getChatStream().close(session.id);
-    resetChatRuntimeForCli(chatSessions.get(session.id), session);
-    if (switchOptions.forced === true) {
-      options.chatBroadcast(session.id, { type: 'stream_end', reason: 'cli_switch' });
-    }
     options.rememberActiveCliState(session, now);
-    options.appendMessage(session.id, {
-      role: 'system',
-      content: `CLI switched from ${fromCli} to ${targetCli}. A structured handoff checkpoint will be delivered with the next message.`,
-      ts: now,
-      cliSwitch: {
-        handoffId: handoff.id,
-        fromCli,
-        toCli: targetCli,
-        reusedTarget: result.reused,
-      },
-    });
-    options.appendEvent(
-      session.dirId,
-      'session_cli_changed',
-      `${session.label || session.id}: ${fromCli} → ${targetCli}`,
-      session.id,
-    );
-    options.chatBroadcast(session.id, {
-      type: 'cli_switched',
-      cli: targetCli,
-      fromCli,
-      handoffId: handoff.id,
-      reusedTarget: result.reused,
-      fresh: switchOptions.fresh === true,
-      provider: session.provider || null,
-      providerSelection: session.providerSelection || null,
-      providerName: options.sessionProviderName(session),
-      providerBaseUrl: options.sessionProviderBaseUrl(session),
-      model: session.model || null,
-      effectiveModel: options.effectiveSessionModel(session),
-      effort: session.effort || null,
-      effectiveEffort: options.effectiveSessionEffort(session),
-      subagent: options.serializeSubagent(session.subagent),
-    });
-    if (session.dirId) {
-      options.workspaceBroadcast(session.dirId, {
-        type: 'session_cli_changed', sessionId: session.id, cli: targetCli,
+    const publish = () => {
+      options.getChatStream().close(session.id);
+      resetChatRuntimeForCli(chatSessions.get(session.id), session);
+      if (switchOptions.forced === true) {
+        options.chatBroadcast(session.id, { type: 'stream_end', reason: 'cli_switch' });
+      }
+      options.appendMessage(session.id, {
+        role: 'system',
+        content: `CLI switched from ${fromCli} to ${targetCli}. A structured handoff checkpoint will be delivered with the next message.`,
+        ts: now,
+        cliSwitch: {
+          handoffId: handoff.id,
+          fromCli,
+          toCli: targetCli,
+          reusedTarget: result.reused,
+        },
       });
-    }
-    return { result, handoff };
+      options.appendEvent(
+        session.dirId,
+        'session_cli_changed',
+        `${session.label || session.id}: ${fromCli} → ${targetCli}`,
+        session.id,
+      );
+      options.chatBroadcast(session.id, {
+        type: 'cli_switched',
+        cli: targetCli,
+        fromCli,
+        handoffId: handoff.id,
+        reusedTarget: result.reused,
+        fresh: switchOptions.fresh === true,
+        provider: session.provider || null,
+        providerSelection: session.providerSelection || null,
+        providerName: options.sessionProviderName(session),
+        providerBaseUrl: options.sessionProviderBaseUrl(session),
+        model: session.model || null,
+        effectiveModel: options.effectiveSessionModel(session),
+        effort: session.effort || null,
+        effectiveEffort: options.effectiveSessionEffort(session),
+        subagent: options.serializeSubagent(session.subagent),
+      });
+      if (session.dirId) {
+        options.workspaceBroadcast(session.dirId, {
+          type: 'session_cli_changed', sessionId: session.id, cli: targetCli,
+        });
+      }
+    };
+    if (!switchOptions.deferEffects) publish();
+    return { result, handoff, publish };
   }
 
   function consumePendingCliHandoff(sessionName) {
@@ -519,6 +524,75 @@ function createCliSwitchRuntime(options) {
     return true;
   }
 
+  const isConfigurationBusy = id => configurationBusy(id, {
+    getChatState: id => chatSessions.get(id), getChatStream: options.getChatStream,
+    hasLiveBackgroundTasks: options.hasLiveBackgroundTasks, getPreparation: options.getPreparation,
+  });
+
+  function queueCliSwitch(session, targetCli, fresh) {
+    const draft = JSON.parse(JSON.stringify(session));
+    const pending = session.pendingConfiguration;
+    if (pending?.cli === targetCli && pending.fresh === fresh) {
+      Object.assign(draft, desiredSession(session));
+    } else if ((session.cli || 'claude') !== targetCli || fresh) {
+      options.activateCliState(draft, targetCli, { fresh, defaults: cliSwitchDefaults(targetCli) });
+    }
+    sessionPersistence.mutate('http.stage-cli-switch', () => stageConfiguration(session, draft, { fresh }));
+    const event = { type: 'session_configuration_pending', sessionId: session.id,
+      pendingConfiguration: session.pendingConfiguration };
+    options.chatBroadcast(session.id, event);
+    options.workspaceBroadcast(session.dirId, event);
+    return { ok: true, changed: false, deferred: true, appliesOn: 'next_turn',
+      cli: session.cli || 'claude', pendingConfiguration: session.pendingConfiguration,
+      provider: session.provider || null, providerSelection: session.providerSelection || null,
+      providerName: options.sessionProviderName(session), providerBaseUrl: options.sessionProviderBaseUrl(session),
+      model: session.model || null, effectiveModel: options.effectiveSessionModel(session),
+      effort: session.effort || null, effectiveEffort: options.effectiveSessionEffort(session),
+      agent: session.agent || null, subagent: options.serializeSubagent(session.subagent),
+      cliStates: options.cliStateSummary(session), cliAvailability: options.cliAvailabilitySummary() };
+  }
+
+  function applyPendingConfiguration(sessionId, turnOptions = {}) {
+    const session = records.get(sessionId), pending = session?.pendingConfiguration;
+    if (!pending) return true;
+    // A retry/background continuation belongs to the original turn and route.
+    if ((turnOptions.originContinue && !turnOptions.directUserInput)
+        || turnOptions.bgTaskIds?.length || turnOptions.bgToolUseIds?.length) return true;
+    if (isConfigurationBusy(sessionId)) {
+      // A correlated input may still be steering the current warm turn.
+      // Leave the usual admission policy in charge without changing its route.
+      const chat = chatSessions.get(sessionId);
+      return !!(turnOptions.originContinue && turnOptions.directUserInput
+        && (chat?.isStreaming || chat?._activeRunner));
+    }
+    if (!options.cliAvailabilitySummary()[pending.cli]?.available) return false;
+    const target = JSON.parse(JSON.stringify(session));
+    if (pending.cli !== (session.cli || 'claude') || pending.fresh) {
+      options.activateCliState(target, pending.cli, { fresh: pending.fresh, defaults: cliSwitchDefaults(pending.cli) });
+    }
+    if (target.cli === 'codex' && target.cliSessionId && target.provider !== pending.profile.provider) {
+      options.synchronizeCodexSessionRoute({ logicalSessionId: session.id,
+        nativeSessionId: target.cliSessionId, fromProviderId: target.provider,
+        toProviderId: pending.profile.provider });
+    }
+    let switched;
+    sessionPersistence.mutate('runtime.apply-pending-configuration', () => {
+      if (pending.cli !== (session.cli || 'claude') || pending.fresh) {
+        // Build the handoff now, so it contains the final output of the old CLI.
+        switched = performCliSwitch(session, pending.cli, { fresh: pending.fresh, deferEffects: true });
+      }
+      Object.assign(session, pending.profile);
+      delete session.pendingConfiguration;
+      options.rememberActiveCliState(session);
+    });
+    if (switched) switched.publish();
+    else if ((session.cli || 'claude') === 'claude') options.getChatStream().close(session.id);
+    options.chatBroadcast(sessionId, { type: 'session_configuration_applied', sessionId });
+    options.workspaceBroadcast(session.dirId, { type: 'session_configuration_applied', sessionId });
+    options.appendEvent(session.dirId, 'session_configuration_applied', '已应用下一轮 AI 配置', sessionId);
+    return true;
+  }
+
   function mountRoutes(app, asyncHandler) {
     if (!app || typeof app.post !== 'function') throw new TypeError('[cli-switch-runtime] app.post is required');
     if (typeof app.get !== 'function') throw new TypeError('[cli-switch-runtime] app.get is required');
@@ -537,7 +611,7 @@ function createCliSwitchRuntime(options) {
         return res.status(400).json({ error: `cli must be one of: ${supportedClis.join(', ')}` });
       }
       const fresh = !!(req.body && req.body.fresh);
-      if ((session.cli || 'claude') === targetCli && !fresh) {
+      if ((session.cli || 'claude') === targetCli && !fresh && !session.pendingConfiguration) {
         sessionPersistence.mutate('http.switch-cli-noop', () => options.ensureCliStates(session));
         return res.json({
           ok: true,
@@ -552,29 +626,15 @@ function createCliSwitchRuntime(options) {
       if (!availability[targetCli]?.available) {
         return res.status(400).json({ error: `${targetCli} CLI is not installed or not executable` });
       }
-      const rejectForBackgroundWork = () => {
-        let backgroundActive = true;
-        try { backgroundActive = options.hasLiveBackgroundTasks(session.id) === true; } catch (_) {}
-        return backgroundActive
-          ? res.status(409).json({
-            error: 'session has a live background task; wait for it or cancel it before switching CLI',
-          })
-          : null;
-      };
-      const backgroundRejection = rejectForBackgroundWork();
-      if (backgroundRejection) return backgroundRejection;
-      const activity = cliSwitchBusyState(session.id);
-      // Switching is an explicit user action with its own confirmation UI.
-      // performCliSwitch already closes the stream, rejects queued sends,
-      // assigns a terminal kill reason and SIGTERMs a process-backed turn.
-      // Refusing here made that cleanup path unreachable precisely when it was
-      // needed, leaving interrupted/stuck sessions impossible to switch.
+      if (session.pendingConfiguration || isConfigurationBusy(session.id)) {
+        return res.json(queueCliSwitch(session, targetCli, fresh));
+      }
       const gitSnapshot = await cliSwitchGitSnapshot(session);
-      // The snapshot yields to git. Re-check immediately before the durable
-      // mutation so a background task that started while it was running cannot
-      // have its owning warm process closed by the switch.
-      const racedBackgroundRejection = rejectForBackgroundWork();
-      if (racedBackgroundRejection) return racedBackgroundRejection;
+      // Git yields: a new turn may have started while we read the checkpoint.
+      if (session.pendingConfiguration || isConfigurationBusy(session.id)) {
+        return res.json(queueCliSwitch(session, targetCli, fresh));
+      }
+      const activity = { busy: false };
       const switched = sessionPersistence.mutate('http.switch-cli', () =>
         performCliSwitch(session, targetCli, {
           fresh, gitSnapshot, forced: activity.busy,
@@ -670,6 +730,7 @@ function createCliSwitchRuntime(options) {
     cliSwitchBusyState,
     performCliSwitch,
     consumePendingCliHandoff,
+    applyPendingConfiguration,
   });
 }
 

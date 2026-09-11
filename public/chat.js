@@ -234,7 +234,7 @@ const headerMoreController = window.MultiCCChatLiveUi.bindHeaderMoreMenu({
   ids: [
     'lang-btn', 'notify-btn', 's2s-btn', 'dbg-btn', 'model-btn', 'role-btn',
     'memory-btn', 'auto-commit-btn', 'share-btn', 'restart-spawn-btn',
-    'memo-btn',
+    'memo-btn', 'chat-layout-btn',
   ],
   compactIds: [
     'reconnect-btn', 'cli-btn', 'effort-btn', 'provider-btn', 'merge-btn',
@@ -1535,14 +1535,15 @@ function showCliSwitchPicker(current, states, availability) {
 cliBtn?.addEventListener('click', async () => {
   if (!_sessionName) return;
   await loadSessionModel();
-  const picked = await showCliSwitchPicker(_sessionCli, _sessionCliStates, _cliAvailability);
-  if (!picked || (picked.cli === _sessionCli && !picked.fresh)) return;
+  const selectedCli = _pendingConfiguration?.cli || _sessionCli;
+  const picked = await showCliSwitchPicker(selectedCli, _sessionCliStates, _cliAvailability);
+  if (!picked || (picked.cli === selectedCli && !picked.fresh)) return;
   cliBtn.disabled = true;
   try {
     const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/switch-cli`), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...picked, force: true }),
+      body: JSON.stringify(picked),
     });
     const data = await res.json();
     if (!res.ok) {
@@ -1551,7 +1552,8 @@ cliBtn?.addEventListener('click', async () => {
     }
     _sessionCliStates = data.cliStates || _sessionCliStates;
     _cliAvailability = data.cliAvailability || _cliAvailability;
-    applyCliSwitchState(data);
+    if (data.deferred) addSystemMsg(`✓ CLI 配置已保存：${data.pendingConfiguration.cli}，下轮生效`);
+    else applyCliSwitchState(data);
     await loadSessionModel();
   } catch (error) {
     addSystemMsg('CLI 切换失败：' + chatApi.errorText(error));
@@ -1693,6 +1695,9 @@ async function loadSessionModel() {
   const safe = async (label, fn) => {
     try { await fn(); } catch (e) { dbg('model', `loadSessionModel ${label} failed: ${e && e.message ? e.message : e}`); }
   };
+  _pendingConfiguration = info.pendingConfiguration || null;
+  if (modelBtn) modelBtn.dataset.pending = _pendingConfiguration ? '下轮生效' : '';
+  if (cliBtn) cliBtn.dataset.pending = _pendingConfiguration?.cli !== info.cli && _pendingConfiguration ? '下轮生效' : '';
   _sessionRole = info.rolePrompt || '';
   safe('role-btn', updateRoleBtn);
   _sessionMemory = memoryToText(info.memory);
@@ -1723,17 +1728,20 @@ async function loadSessionModel() {
 modelBtn?.addEventListener('click', async () => {
   // 每次打开前重新拉取一次会话配置，避免重连/加载未完成时弹窗显示默认值。
   await loadSessionModel();
-  if (!PROVIDERLESS_CLIS.has(_sessionCli)) {
-    await ensureProviderList(_sessionCli, { loading: true });
+  const desired = window.MultiCCChatAiConfig.desiredConfig({ cli: _sessionCli, pendingConfiguration: _pendingConfiguration });
+  const configCli = desired.cli;
+  if (!PROVIDERLESS_CLIS.has(configCli)) {
+    await ensureProviderList(configCli, { loading: true });
   }
-  const picked = await showAIConfigPicker({
+  const picked = await window.MultiCCChatAiConfig.showAIConfigPicker({
     provider: _sessionProvider,
     providerSelection: _sessionProviderSelection,
     model: _sessionModel,
     effort: _sessionEffectiveEffort || _sessionEffort || defaultEffortForCurrentCli(),
     subagent: _sessionSubagent,
     agent: _sessionAgent,
-  });
+    ...(_pendingConfiguration?.profile || {}),
+  }, { ...chatAiConfigState(), cli: configCli });
   if (picked === null) return;
   try {
     const data = await window.MultiCCChatAiConfig.saveSession(_sessionName, {
@@ -1741,9 +1749,14 @@ modelBtn?.addEventListener('click', async () => {
       providerSelection: picked.providerSelection,
       model: picked.model,
       effort: picked.effort,
-      ...((_sessionCli === 'claude' || _sessionCli === 'opencode' || _sessionCli === 'qoder' || _sessionCli === 'codebuddy') ? { agent: picked.agent } : {}),
-      ...((_sessionCli === 'claude' || _sessionCli === 'codex') ? { subagent: picked.subagent } : {}),
+      ...((configCli === 'claude' || configCli === 'opencode' || configCli === 'qoder' || configCli === 'codebuddy') ? { agent: picked.agent } : {}),
+      ...((configCli === 'claude' || configCli === 'codex') ? { subagent: picked.subagent } : {}),
     });
+    if (data.deferred) {
+      await loadSessionModel();
+      addSystemMsg('✓ AI 配置已保存，下轮生效；本轮继续使用原配置');
+      return;
+    }
     _sessionProvider = data.provider || '';
     _sessionProviderBaseUrl = data.providerBaseUrl || _sessionProviderBaseUrl;
     _sessionProviderBaseUrl = data.providerBaseUrl || _sessionProviderBaseUrl;
@@ -1766,7 +1779,7 @@ modelBtn?.addEventListener('click', async () => {
       ? `Auto · ${window.MultiCCChatAiConfig.autoProtocolLabel(_sessionProviderSelection.protocol)}`
       : providerShortName(_sessionProvider);
     const savedParts = [savedProvider, _savedModel ? modelDisplayName(_savedModel, _sessionProvider) : tt('default'), effortShortName(_sessionEffectiveEffort)];
-    if ((_sessionCli === 'claude' || _sessionCli === 'opencode' || _sessionCli === 'qoder' || _sessionCli === 'codebuddy') && _sessionAgent) savedParts.push(`Agent ${_sessionAgent}`);
+    if ((configCli === 'claude' || configCli === 'opencode' || configCli === 'qoder' || configCli === 'codebuddy') && _sessionAgent) savedParts.push(`Agent ${_sessionAgent}`);
     addSystemMsg(`✓ AI 配置已保存：${savedParts.filter(Boolean).join(' | ')}，下一轮对话生效`);
   } catch (e) {
     addSystemMsg('AI 配置保存失败：' + chatApi.errorText(e));
@@ -1802,6 +1815,7 @@ let _sessionCli = 'claude';
 let _sessionCliStates = {};
 let _cliAvailability = {};
 let _pendingCliHandoff = null;
+let _pendingConfiguration = null;
 let _providerList = [];           // [{id,appType,name,baseUrl,model,isOfficial}] - 最近一次拉取结果
 let _providerDefaults = { claude: null, codex: null };
 

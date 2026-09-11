@@ -606,7 +606,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
       fresh: fresh,
     );
     for (final provider in _providers.values) {
-      if (provider.executionSessionName == id) provider.applyCliConfig(config);
+      if (!config.deferred && provider.executionSessionName == id) provider.applyCliConfig(config);
     }
     await loadDashboard();
     return config;

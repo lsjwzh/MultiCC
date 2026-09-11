@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <meta name="theme-color" content="#0d1117" />
   <title>MultiCC Chat</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github-dark.min.css" /><link rel="stylesheet" href="/error-envelope.css" /><link rel="stylesheet" href="/chat-context-trace.css" />
-  <style>
+  <link rel="stylesheet" href="/chat-layout.css" /><script src="/chat-layout.js"></script><style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     /* iOS Safari height fallback: vh → -webkit-fill-available → dvh. */
     html, body {
@@ -223,7 +223,7 @@
     #messages {
       flex: 1;
       overflow-y: auto;
-      width: min(100%, 980px);
+      width: min(100%, var(--chat-content-max-width));
       align-self: center;
       padding: 12px 16px;
       display: flex;
@@ -240,7 +240,7 @@
        neither long questions nor the mobile keyboard can hide the controls. */
     #pending-user-input-card {
       flex-shrink: 0;
-      width: min(calc(100% - 24px), 956px);
+      width: min(calc(100% - 24px), var(--chat-content-max-width));
       max-height: min(38vh, 360px);
       align-self: center;
       margin: 8px 12px 0;
@@ -752,7 +752,7 @@
     #attach-area {
       display: none; /* shown when has children */
       flex-shrink: 0;
-      width: min(100%, 980px);
+      width: min(100%, var(--chat-content-max-width));
       align-self: center;
       background: #161b22;
       padding: 6px 12px;
@@ -804,7 +804,7 @@
     /* ── Pre-input bar ── */
     #pre-input-bar {
       flex-shrink: 0;
-      width: min(100%, 980px);
+      width: min(100%, var(--chat-content-max-width));
       align-self: center;
       display: flex;
       align-items: center;
@@ -1085,7 +1085,7 @@
     /* ── Input bar ── */
     #input-bar {
       flex-shrink: 0;
-      width: min(100%, 980px);
+      width: min(100%, var(--chat-content-max-width));
       align-self: center;
       background: #161b22;
       border-top: 1px solid #30363d;
@@ -1644,7 +1644,7 @@
     #usage-summary {
       position: relative;
       flex: 0 0 auto;
-      width: min(100%, 980px);
+      width: min(100%, var(--chat-content-max-width));
       align-self: center;
       display: flex;
       flex-direction: column;
@@ -2507,7 +2507,7 @@
     <button class="hdr-btn lang-toggle" id="lang-btn" onclick="toggleLang()" data-i18n-title="language" title="Language">中/EN</button>
     <button id="notify-btn" class="hdr-btn" data-i18n-title="taskNotificationToggle" title="任务通知开关">&#128276;</button>
     <button id="s2s-btn" class="hdr-btn session-only" data-i18n-title="voiceConversationToggle" title="实时语音通话（在本会话上下文里说话）">&#128222;</button>
-    <button id="dbg-btn" class="hdr-btn" data-i18n-title="debugPanel" title="Debug 面板">&#128027;</button>
+    <button class="hdr-btn" id="chat-layout-btn" data-chat-layout title="调整聊天宽度">聊天宽度</button><button id="dbg-btn" class="hdr-btn" data-i18n-title="debugPanel" title="Debug 面板">&#128027;</button>
     <button class="hdr-btn session-only" id="cli-btn" data-i18n-title="switchCli" title="切换此逻辑会话使用的 CLI">CLI</button>
     <button class="hdr-btn session-only" id="model-btn" data-i18n-title="switchAiConfig" title="切换该会话使用的 Provider / 模型 / 努力程度（下一轮对话生效）" style="display:none"></button>
     <button class="hdr-btn session-only" id="effort-btn" data-i18n-title="switchEffort" title="切换该会话的思考努力程度（下一轮对话生效）" style="display:none"></button>

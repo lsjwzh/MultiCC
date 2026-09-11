@@ -1,3 +1,5 @@
+@import url("chat-layout.css");
+
 html:has(body.air), body.air { height: 100%; color-scheme: light; color: #25334a; background: transparent; }
 .air main { width: 100%; max-width: none; height: 100%; display: flex; flex-direction: column; margin: 0; padding: 0 22px; border: 0; background: transparent; box-shadow: none; }
 .air main > header, .air #source-history, .air main > p[data-i18n="taskShellIntro"], .air footer { display: none; }

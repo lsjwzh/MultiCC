@@ -896,6 +896,12 @@
     });
   }
 
+  function desiredConfig(info) {
+    const pending = info && info.pendingConfiguration;
+    return pending ? { ...info, ...pending.profile, cli: pending.cli,
+      effectiveModel: pending.profile.model, effectiveEffort: pending.profile.effort } : info;
+  }
+
   async function loadSession(sessionId, options = {}) {
     return requiredApi(options).json(`/api/sessions/${encodeURIComponent(sessionId)}`);
   }
@@ -908,6 +914,7 @@
   }
 
   return {
+    desiredConfig,
     EFFORT_OPTIONS,
     CODEX_REASONING_OPTIONS,
     OPENCODE_VARIANT_OPTIONS,
