@@ -51,8 +51,8 @@ class BackgroundTasksFloatingDock extends StatelessWidget {
       visible: rows.isNotEmpty,
       badgeCount: running,
       icon: Icons.terminal_rounded,
-      iconColor: const Color(0xFF238636),
-      iconBorder: const Color(0xFF3fb950),
+      iconColor: const Color(0xFF2ba67a),
+      iconBorder: const Color(0xFF2ba67a),
       // Unified compact entry: same 24dp visible circle as the dispatch dock
       // (the user asked every draggable floating icon to shrink). FloatingDock
       // keeps the full 48dp touch/drag/a11y box around it.

@@ -57,21 +57,21 @@ class ChatHeader extends StatelessWidget {
     Color statusColor;
     switch (state) {
       case ChatConnectionState.connected:
-        statusColor = const Color(0xFF7fd49a);
+        statusColor = const Color(0xFF1e8a55);
         break;
       case ChatConnectionState.connecting:
-        statusColor = const Color(0xFFe3b341);
+        statusColor = const Color(0xFFa85a25);
         break;
       case ChatConnectionState.disconnected:
-        statusColor = const Color(0xFF8a909b);
+        statusColor = const Color(0xFF6f8096);
         break;
     }
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
       decoration: const BoxDecoration(
-        color: Color(0xFF0f1115),
-        border: Border(bottom: BorderSide(color: Color(0xFF20242b))),
+        color: Color(0xFFffffff),
+        border: Border(bottom: BorderSide(color: Color(0xFFdce6f1))),
       ),
       child: LayoutBuilder(
         builder: (context, constraints) {
@@ -97,11 +97,11 @@ class ChatHeader extends StatelessWidget {
                     children: [
                       TextSpan(
                         text: 'Multi',
-                        style: TextStyle(color: Color(0xFF3ad6c5)),
+                        style: TextStyle(color: Color(0xFF1678e8)),
                       ),
                       TextSpan(
                         text: 'CC',
-                        style: TextStyle(color: Color(0xFF6aa3ff)),
+                        style: TextStyle(color: Color(0xFF1267b5)),
                       ),
                     ],
                   ),
@@ -114,7 +114,7 @@ class ChatHeader extends StatelessWidget {
                 padding: const EdgeInsets.all(6),
                 child: const Icon(
                   Icons.keyboard_arrow_down_rounded,
-                  color: Color(0xFFe7eaee),
+                  color: Color(0xFF233249),
                   size: 24,
                 ),
               ),
@@ -162,7 +162,7 @@ class ChatHeader extends StatelessWidget {
                     const Icon(
                       Icons.refresh_rounded,
                       size: 15,
-                      color: Color(0xFF8a909b),
+                      color: Color(0xFF6f8096),
                     ),
                   ],
                 ],
@@ -279,7 +279,7 @@ class ChatHeader extends StatelessWidget {
         SnackBar(
           content: Text(t('reconnecting')),
           duration: const Duration(seconds: 2),
-          backgroundColor: const Color(0xFF14171c),
+          backgroundColor: const Color(0xFFf8fbff),
         ),
       );
   }
@@ -304,24 +304,24 @@ class ChatHeader extends StatelessWidget {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (c) => AlertDialog(
-        backgroundColor: const Color(0xFF0f1115),
+        backgroundColor: const Color(0xFFffffff),
         title: Text(t('restartSpawn'), style: const TextStyle(fontSize: 16)),
         content: Text(
           t('restartSpawnConfirm'),
-          style: const TextStyle(color: Color(0xFF8a909b), fontSize: 13),
+          style: const TextStyle(color: Color(0xFF6f8096), fontSize: 13),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(c, false),
             child: Text(
               t('cancel'),
-              style: const TextStyle(color: Color(0xFF8a909b)),
+              style: const TextStyle(color: Color(0xFF6f8096)),
             ),
           ),
           TextButton(
             onPressed: () => Navigator.pop(c, true),
             style: TextButton.styleFrom(
-              foregroundColor: const Color(0xFFe3b341),
+              foregroundColor: const Color(0xFFa85a25),
             ),
             child: Text(t('restartSpawn')),
           ),
@@ -335,7 +335,7 @@ class ChatHeader extends StatelessWidget {
         SnackBar(
           content: Text(t('restarting')),
           duration: const Duration(seconds: 2),
-          backgroundColor: const Color(0xFF14171c),
+          backgroundColor: const Color(0xFFf8fbff),
         ),
       );
     try {
@@ -352,7 +352,7 @@ class ChatHeader extends StatelessWidget {
           SnackBar(
             content: Text(t('restartSpawnDone', {'pid': '${pid ?? '-'}'})),
             duration: const Duration(seconds: 3),
-            backgroundColor: const Color(0xFF14171c),
+            backgroundColor: const Color(0xFFf8fbff),
           ),
         );
     } catch (e) {
@@ -362,7 +362,7 @@ class ChatHeader extends StatelessWidget {
         ..showSnackBar(
           SnackBar(
             content: Text(t('restartSpawnFailed', {'error': '$e'})),
-            backgroundColor: const Color(0xFFff6b63),
+            backgroundColor: const Color(0xFFb64e43),
           ),
         );
     }
@@ -394,11 +394,11 @@ class _HeaderBtn extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.all(6),
           decoration: BoxDecoration(
-            color: const Color(0xFF14171c),
-            border: Border.all(color: const Color(0xFF20242b)),
+            color: const Color(0xFFf8fbff),
+            border: Border.all(color: const Color(0xFFdce6f1)),
             borderRadius: BorderRadius.circular(6),
           ),
-          child: Icon(icon, color: const Color(0xFFe7eaee), size: 18),
+          child: Icon(icon, color: const Color(0xFF233249), size: 18),
         ),
       ),
     );
@@ -481,8 +481,8 @@ class _ClearCtxButtonState extends State<_ClearCtxButton> {
               vertical: 6,
             ),
             decoration: BoxDecoration(
-              color: const Color(0xFF14171c),
-              border: Border.all(color: const Color(0xFF20242b)),
+              color: const Color(0xFFf8fbff),
+              border: Border.all(color: const Color(0xFFdce6f1)),
               borderRadius: BorderRadius.circular(6),
             ),
             child: Row(
@@ -490,7 +490,7 @@ class _ClearCtxButtonState extends State<_ClearCtxButton> {
               children: [
                 Icon(
                   Icons.delete_sweep_outlined,
-                  color: const Color(0xFFff6b63),
+                  color: const Color(0xFFb64e43),
                   size: 16,
                 ),
                 if (!widget.compact) ...[
@@ -498,7 +498,7 @@ class _ClearCtxButtonState extends State<_ClearCtxButton> {
                   Text(
                     t('clearCtx'),
                     style: const TextStyle(
-                      color: Color(0xFFff6b63),
+                      color: Color(0xFFb64e43),
                       fontSize: 12,
                       fontWeight: FontWeight.w600,
                     ),
@@ -548,15 +548,15 @@ class _ClearMenuBody extends StatelessWidget {
               width: 180,
               padding: const EdgeInsets.all(4),
               decoration: BoxDecoration(
-                color: const Color(0xFF14171c),
-                border: Border.all(color: const Color(0xFF20242b)),
+                color: const Color(0xFFf8fbff),
+                border: Border.all(color: const Color(0xFFdce6f1)),
                 borderRadius: BorderRadius.circular(8),
               ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // Clear all\n                  // Rotate native context\n                  InkWell(\n                    onTap: () {\n                      _closeMenu.call();\n                      widget.provider.rotateNativeContext();\n                    },\n                    borderRadius: BorderRadius.circular(6),\n                    child: Padding(\n                      padding: const EdgeInsets.symmetric(\n                        horizontal: 10,\n                        vertical: 9,\n                      ),\n                      child: Row(\n                        children: [\n                          const Icon(\n                            Icons.autorenew_outlined,\n                            size: 16,\n                            color: Color(0xFF3ad6c5),\n                          ),\n                          const SizedBox(width: 8),\n                          Text(\n                            t(\x27rotateNativeContext\x27),\n                            style: const TextStyle(\n                              color: Color(0xFFe7eaee),\n                              fontSize: 13,\n                            ),\n                          ),\n                        ],\n                      ),\n                    ),\n                  ),
+                  // Clear all\n                  // Rotate native context\n                  InkWell(\n                    onTap: () {\n                      _closeMenu.call();\n                      widget.provider.rotateNativeContext();\n                    },\n                    borderRadius: BorderRadius.circular(6),\n                    child: Padding(\n                      padding: const EdgeInsets.symmetric(\n                        horizontal: 10,\n                        vertical: 9,\n                      ),\n                      child: Row(\n                        children: [\n                          const Icon(\n                            Icons.autorenew_outlined,\n                            size: 16,\n                            color: Color(0xFF1678e8),\n                          ),\n                          const SizedBox(width: 8),\n                          Text(\n                            t(\x27rotateNativeContext\x27),\n                            style: const TextStyle(\n                              color: Color(0xFF233249),\n                              fontSize: 13,\n                            ),\n                          ),\n                        ],\n                      ),\n                    ),\n                  ),
                   InkWell(
                     onTap: onClearAll,
                     borderRadius: BorderRadius.circular(6),
@@ -570,13 +570,13 @@ class _ClearMenuBody extends StatelessWidget {
                           const Icon(
                             Icons.delete_sweep_outlined,
                             size: 16,
-                            color: Color(0xFFff6b63),
+                            color: Color(0xFFb64e43),
                           ),
                           const SizedBox(width: 8),
                           Text(
                             t('clearAllChatHistory'),
                             style: const TextStyle(
-                              color: Color(0xFFff6b63),
+                              color: Color(0xFFb64e43),
                               fontSize: 13,
                             ),
                           ),
@@ -597,7 +597,7 @@ class _ClearMenuBody extends StatelessWidget {
                             controller: keepCtrl,
                             keyboardType: TextInputType.number,
                             style: const TextStyle(
-                              color: Color(0xFFe7eaee),
+                              color: Color(0xFF233249),
                               fontSize: 12,
                             ),
                             decoration: InputDecoration(
@@ -608,13 +608,13 @@ class _ClearMenuBody extends StatelessWidget {
                               ),
                               enabledBorder: OutlineInputBorder(
                                 borderSide: const BorderSide(
-                                  color: Color(0xFF20242b),
+                                  color: Color(0xFFdce6f1),
                                 ),
                                 borderRadius: BorderRadius.circular(4),
                               ),
                               focusedBorder: OutlineInputBorder(
                                 borderSide: const BorderSide(
-                                  color: Color(0xFF3ad6c5),
+                                  color: Color(0xFF1678e8),
                                 ),
                                 borderRadius: BorderRadius.circular(4),
                               ),
@@ -626,7 +626,7 @@ class _ClearMenuBody extends StatelessWidget {
                           child: Text(
                             t('clearKeepLast'),
                             style: const TextStyle(
-                              color: Color(0xFF8a909b),
+                              color: Color(0xFF6f8096),
                               fontSize: 12,
                             ),
                           ),
@@ -639,7 +639,7 @@ class _ClearMenuBody extends StatelessWidget {
                     child: TextButton(
                       onPressed: onClearKeep,
                       style: TextButton.styleFrom(
-                        foregroundColor: const Color(0xFF22ab9c),
+                        foregroundColor: const Color(0xFF0965cf),
                         padding: const EdgeInsets.symmetric(vertical: 4),
                       ),
                       child: Text(
@@ -700,10 +700,10 @@ class _HeaderOverflowMenu extends StatelessWidget {
   Widget build(BuildContext context) {
     return PopupMenuButton<String>(
       tooltip: t('moreActions'),
-      color: const Color(0xFF14171c),
+      color: const Color(0xFFf8fbff),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(8),
-        side: const BorderSide(color: Color(0xFF20242b)),
+        side: const BorderSide(color: Color(0xFFdce6f1)),
       ),
       offset: const Offset(0, 40),
       onSelected: (value) {
@@ -753,38 +753,38 @@ class _HeaderOverflowMenu extends StatelessWidget {
           'cwd',
           Icons.drive_file_move_outline,
           t('changeDir'),
-          const Color(0xFFe7eaee),
+          const Color(0xFF233249),
         ),
         const PopupMenuDivider(),
         _item(
           'role',
           Icons.theater_comedy_outlined,
           t('rolePrompt'),
-          const Color(0xFFe7eaee),
+          const Color(0xFF233249),
         ),
         _item(
           'memory',
           Icons.psychology_outlined,
           t('sessionMemory'),
-          const Color(0xFFe7eaee),
+          const Color(0xFF233249),
         ),
         _item(
           'memo',
           Icons.sticky_note_2_outlined,
           t('projectMemo'),
-          const Color(0xFFe7eaee),
+          const Color(0xFF233249),
         ),
         _item(
           'share',
           Icons.share_outlined,
           t('shareSession'),
-          const Color(0xFFe7eaee),
+          const Color(0xFF233249),
         ),
         _item(
           'share-msgs',
           Icons.checklist_rtl_outlined,
           t('shareMessages'),
-          const Color(0xFFe7eaee),
+          const Color(0xFF233249),
         ),
         _item(
           'merge',
@@ -792,48 +792,48 @@ class _HeaderOverflowMenu extends StatelessWidget {
           mergeReady
               ? t('mergeWorktreeReady', {'base': ''})
               : t('mergeWorktree'),
-          mergeReady ? const Color(0xFFe3b341) : const Color(0xFFe7eaee),
+          mergeReady ? const Color(0xFFa85a25) : const Color(0xFF233249),
         ),
         _item(
           'files',
           Icons.folder_open_outlined,
           t('fileBrowser'),
-          const Color(0xFFe7eaee),
+          const Color(0xFF233249),
         ),
         _item(
           'gitlog',
           Icons.history_rounded,
           t('gitLog'),
-          const Color(0xFFe7eaee),
+          const Color(0xFF233249),
         ),
         _item(
           'restart',
           Icons.restart_alt_rounded,
           t('restartSpawn'),
-          const Color(0xFFe3b341),
+          const Color(0xFFa85a25),
         ),
         const PopupMenuDivider(),
         _item(
           'settings',
           Icons.settings_outlined,
           t('settings'),
-          const Color(0xFFe7eaee),
+          const Color(0xFF233249),
         ),
       ],
       child: Container(
         padding: const EdgeInsets.all(6),
         decoration: BoxDecoration(
-          color: mergeReady ? const Color(0xFFe3b341) : const Color(0xFF14171c),
+          color: mergeReady ? const Color(0xFFa85a25) : const Color(0xFFf8fbff),
           border: Border.all(
             color: mergeReady
-                ? const Color(0xFFe3b341)
-                : const Color(0xFF20242b),
+                ? const Color(0xFFa85a25)
+                : const Color(0xFFdce6f1),
           ),
           borderRadius: BorderRadius.circular(6),
         ),
         child: Icon(
           Icons.more_vert,
-          color: mergeReady ? const Color(0xFF070809) : const Color(0xFFe7eaee),
+          color: mergeReady ? const Color(0xFFf4f8fd) : const Color(0xFF233249),
           size: 18,
         ),
       ),
@@ -856,7 +856,7 @@ class _HeaderOverflowMenu extends StatelessWidget {
             const Icon(
               Icons.folder_outlined,
               size: 16,
-              color: Color(0xFF5b616c),
+              color: Color(0xFF8a9aab),
             ),
             const SizedBox(width: 10),
             Expanded(
@@ -866,7 +866,7 @@ class _HeaderOverflowMenu extends StatelessWidget {
                 style: const TextStyle(
                   fontFamily: 'monospace',
                   fontSize: 12.5,
-                  color: Color(0xFF6aa3ff),
+                  color: Color(0xFF1267b5),
                 ),
                 overflow: TextOverflow.ellipsis,
               ),
@@ -891,7 +891,7 @@ class _HeaderOverflowMenu extends StatelessWidget {
           Icon(
             Icons.account_tree_outlined,
             size: 16,
-            color: warn ? const Color(0xFFf2cc60) : const Color(0xFF6aa3ff),
+            color: warn ? const Color(0xFFa85a25) : const Color(0xFF1267b5),
           ),
           const SizedBox(width: 10),
           Expanded(
@@ -901,7 +901,7 @@ class _HeaderOverflowMenu extends StatelessWidget {
               style: TextStyle(
                 fontFamily: 'monospace',
                 fontSize: 12.5,
-                color: warn ? const Color(0xFFf2cc60) : const Color(0xFF8a909b),
+                color: warn ? const Color(0xFFa85a25) : const Color(0xFF6f8096),
               ),
               overflow: TextOverflow.ellipsis,
             ),
@@ -909,7 +909,7 @@ class _HeaderOverflowMenu extends StatelessWidget {
           if (warn)
             Text(
               '↓$behind',
-              style: const TextStyle(fontSize: 11, color: Color(0xFFe3b341)),
+              style: const TextStyle(fontSize: 11, color: Color(0xFFa85a25)),
             ),
         ],
       ),
@@ -957,7 +957,7 @@ class _SessionTitle extends StatelessWidget {
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: const TextStyle(
-            color: Color(0xFFe7eaee),
+            color: Color(0xFF233249),
             fontSize: 14,
             fontWeight: FontWeight.w600,
             fontFamily: 'monospace',
@@ -975,13 +975,13 @@ class _ChatCliBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = switch (cli) {
-      SessionCli.claude => const Color(0xFFf0936b),
-      SessionCli.codex => const Color(0xFF7fd49a),
-      SessionCli.opencode => const Color(0xFFa78bfa),
-      SessionCli.zcode => const Color(0xFF38bdf8),
-      SessionCli.qoder => const Color(0xFFff9a5c),
-      SessionCli.codebuddy => const Color(0xFF5c8bff),
-      SessionCli.dsh => const Color(0xFF4d6bfe),
+      SessionCli.claude => const Color(0xFFc2622f),
+      SessionCli.codex => const Color(0xFF1e8a55),
+      SessionCli.opencode => const Color(0xFF6d4fd1),
+      SessionCli.zcode => const Color(0xFF0e7fb8),
+      SessionCli.qoder => const Color(0xFFc25e1e),
+      SessionCli.codebuddy => const Color(0xFF2a5fd8),
+      SessionCli.dsh => const Color(0xFF2b44d6),
     };
     return Tooltip(
       message: '切换会话 CLI',

@@ -105,8 +105,8 @@ class SessionCard extends StatelessWidget {
       borderRadius: BorderRadius.circular(8),
       child: Container(
         decoration: BoxDecoration(
-          color: const Color(0xFF070809),
-          border: Border.all(color: const Color(0xFF20242b)),
+          color: const Color(0xFFf4f8fd),
+          border: Border.all(color: const Color(0xFFdce6f1)),
           borderRadius: BorderRadius.circular(8),
         ),
         child: InkWell(
@@ -159,7 +159,7 @@ class SessionCard extends StatelessWidget {
                         '📨$pendingNotes',
                         style: const TextStyle(
                           fontSize: 10,
-                          color: Color(0xFFe3b341),
+                          color: Color(0xFFa85a25),
                         ),
                       ),
                     ],
@@ -169,7 +169,7 @@ class SessionCard extends StatelessWidget {
                         child: Text(
                           provName,
                           style: const TextStyle(
-                            color: Color(0xFF7aa2f7),
+                            color: Color(0xFF1267b5),
                             fontSize: 10,
                           ),
                           overflow: TextOverflow.ellipsis,
@@ -182,7 +182,7 @@ class SessionCard extends StatelessWidget {
                         child: Text(
                           model,
                           style: const TextStyle(
-                            color: Color(0xFF22ab9c),
+                            color: Color(0xFF0965cf),
                             fontSize: 10,
                           ),
                           overflow: TextOverflow.ellipsis,
@@ -195,7 +195,7 @@ class SessionCard extends StatelessWidget {
                         child: Text(
                           effort,
                           style: const TextStyle(
-                            color: Color(0xFF8a909b),
+                            color: Color(0xFF6f8096),
                             fontSize: 10,
                           ),
                           overflow: TextOverflow.ellipsis,
@@ -206,7 +206,7 @@ class SessionCard extends StatelessWidget {
                     Text(
                       ago,
                       style: const TextStyle(
-                        color: Color(0xFF5b616c),
+                        color: Color(0xFF8a9aab),
                         fontSize: 10,
                       ),
                     ),
@@ -216,7 +216,7 @@ class SessionCard extends StatelessWidget {
                 Text(
                   title,
                   style: const TextStyle(
-                    color: Color(0xFFe7eaee),
+                    color: Color(0xFF233249),
                     fontSize: 12,
                     fontFamily: 'monospace',
                     fontWeight: FontWeight.w600,
@@ -232,7 +232,7 @@ class SessionCard extends StatelessWidget {
                   Text(
                     session.id,
                     style: const TextStyle(
-                      color: Color(0xFF5b616c),
+                      color: Color(0xFF8a9aab),
                       fontSize: 11,
                       fontFamily: 'monospace',
                     ),
@@ -247,14 +247,14 @@ class SessionCard extends StatelessWidget {
                       const Icon(
                         Icons.edit_outlined,
                         size: 11,
-                        color: Color(0xFFe3b341),
+                        color: Color(0xFFa85a25),
                       ),
                       const SizedBox(width: 4),
                       Expanded(
                         child: Text(
                           live!.currentFile!.split('/').last,
                           style: const TextStyle(
-                            color: Color(0xFFe3b341),
+                            color: Color(0xFFa85a25),
                             fontSize: 10,
                             fontFamily: 'monospace',
                           ),
@@ -274,14 +274,14 @@ class SessionCard extends StatelessWidget {
                       vertical: 5,
                     ),
                     decoration: BoxDecoration(
-                      color: const Color(0x243ad6c5),
-                      border: Border.all(color: const Color(0x663ad6c5)),
+                      color: const Color(0x241678e8),
+                      border: Border.all(color: const Color(0x661678e8)),
                       borderRadius: BorderRadius.circular(6),
                     ),
                     child: Text(
                       '🗒 ${withTaskCode(live!.taskShortCode, live.summary!)}',
                       style: const TextStyle(
-                        color: Color(0xFF7fe6da),
+                        color: Color(0xFF137780),
                         fontSize: 10.5,
                         height: 1.35,
                       ),
@@ -295,7 +295,7 @@ class SessionCard extends StatelessWidget {
                   Text(
                     runTimeText(live),
                     style: const TextStyle(
-                      color: Color(0xFF7a818c),
+                      color: Color(0xFF6f8096),
                       fontSize: 10,
                       fontFamily: 'monospace',
                     ),
@@ -308,7 +308,7 @@ class SessionCard extends StatelessWidget {
                       const Icon(
                         Icons.history_rounded,
                         size: 11,
-                        color: Color(0xFFf2cc60),
+                        color: Color(0xFFa85a25),
                       ),
                       const SizedBox(width: 4),
                       Text(
@@ -317,7 +317,7 @@ class SessionCard extends StatelessWidget {
                           'n': '${live.behind}',
                         }),
                         style: const TextStyle(
-                          color: Color(0xFFf2cc60),
+                          color: Color(0xFFa85a25),
                           fontSize: 10,
                         ),
                       ),
@@ -336,18 +336,18 @@ class SessionCard extends StatelessWidget {
                         icon: const Icon(
                           Icons.merge_type_rounded,
                           size: 15,
-                          color: Color(0xFF070809),
+                          color: Color(0xFFf4f8fd),
                         ),
                         label: Text(
                           _mergeReadyLabel(live!),
                           style: const TextStyle(
-                            color: Color(0xFF070809),
+                            color: Color(0xFFf4f8fd),
                             fontSize: 12,
                             fontWeight: FontWeight.w600,
                           ),
                         ),
                         style: TextButton.styleFrom(
-                          backgroundColor: const Color(0xFFe3b341),
+                          backgroundColor: const Color(0xFFa85a25),
                           padding: const EdgeInsets.symmetric(
                             horizontal: 10,
                             vertical: 4,
@@ -361,10 +361,10 @@ class SessionCard extends StatelessWidget {
                       icon: const Icon(
                         Icons.more_horiz_rounded,
                         size: 18,
-                        color: Color(0xFF8a909b),
+                        color: Color(0xFF6f8096),
                       ),
                       tooltip: t('moreActions'),
-                      color: const Color(0xFF161b22),
+                      color: const Color(0xFFffffff),
                       padding: EdgeInsets.zero,
                       constraints: const BoxConstraints(minWidth: 160),
                       onSelected: (v) {
@@ -492,7 +492,7 @@ class SessionCard extends StatelessWidget {
             const Icon(
               Icons.folder_outlined,
               size: 15,
-              color: Color(0xFF8a909b),
+              color: Color(0xFF6f8096),
             ),
             const SizedBox(width: 10),
             Expanded(
@@ -500,7 +500,7 @@ class SessionCard extends StatelessWidget {
                 session.shortCwd,
                 key: const Key('session-card-cwd'),
                 style: const TextStyle(
-                  color: Color(0xFF8a909b),
+                  color: Color(0xFF6f8096),
                   fontSize: 12,
                   fontFamily: 'monospace',
                 ),
@@ -520,7 +520,7 @@ class SessionCard extends StatelessWidget {
     String label, {
     bool danger = false,
   }) {
-    final color = danger ? const Color(0xFFff6b63) : const Color(0xFFe7eaee);
+    final color = danger ? const Color(0xFFb64e43) : const Color(0xFF233249);
     return PopupMenuItem<String>(
       value: value,
       height: 40,
@@ -540,23 +540,23 @@ class SessionCard extends StatelessWidget {
     final next = await showDialog<String>(
       context: context,
       builder: (_) => AlertDialog(
-        backgroundColor: const Color(0xFF0f1115),
+        backgroundColor: const Color(0xFFffffff),
         title: Text(
           t('renameSessionTitle'),
-          style: const TextStyle(fontSize: 15, color: Color(0xFFf2f4f7)),
+          style: const TextStyle(fontSize: 15, color: Color(0xFF20364d)),
         ),
         content: TextField(
           controller: ctrl,
           autofocus: true,
           maxLength: 80,
-          style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
+          style: const TextStyle(color: Color(0xFF233249), fontSize: 13),
           decoration: InputDecoration(
             hintText: session.id,
-            hintStyle: const TextStyle(color: Color(0xFF454b54)),
+            hintStyle: const TextStyle(color: Color(0xFF8b9cae)),
             filled: true,
-            fillColor: const Color(0xFF070809),
+            fillColor: const Color(0xFFf4f8fd),
             border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
-            counterStyle: const TextStyle(color: Color(0xFF5b616c)),
+            counterStyle: const TextStyle(color: Color(0xFF8a9aab)),
           ),
           onSubmitted: (v) => Navigator.pop(context, v),
         ),
@@ -565,7 +565,7 @@ class SessionCard extends StatelessWidget {
             onPressed: () => Navigator.pop(context),
             child: Text(
               t('cancel'),
-              style: const TextStyle(color: Color(0xFF8a909b)),
+              style: const TextStyle(color: Color(0xFF6f8096)),
             ),
           ),
           TextButton(
@@ -573,7 +573,7 @@ class SessionCard extends StatelessWidget {
             child: Text(
               t('save'),
               style: const TextStyle(
-                color: Color(0xFF6aa3ff),
+                color: Color(0xFF1267b5),
                 fontWeight: FontWeight.w600,
               ),
             ),
@@ -609,10 +609,10 @@ class SessionCard extends StatelessWidget {
       context: context,
       builder: (_) => StatefulBuilder(
         builder: (context, setLocal) => AlertDialog(
-          backgroundColor: const Color(0xFF0f1115),
+          backgroundColor: const Color(0xFFffffff),
           title: Text(
             t('leaveNoteTitle'),
-            style: const TextStyle(fontSize: 15, color: Color(0xFFf2f4f7)),
+            style: const TextStyle(fontSize: 15, color: Color(0xFF20364d)),
           ),
           content: Column(
             mainAxisSize: MainAxisSize.min,
@@ -620,14 +620,14 @@ class SessionCard extends StatelessWidget {
             children: [
               Text(
                 t('leaveNoteHint'),
-                style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+                style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
               ),
               const SizedBox(height: 10),
               DropdownButton<String>(
                 value: targetId,
                 isExpanded: true,
-                dropdownColor: const Color(0xFF0f1115),
-                style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
+                dropdownColor: const Color(0xFFffffff),
+                style: const TextStyle(color: Color(0xFF233249), fontSize: 13),
                 items: [
                   for (final s in siblings)
                     DropdownMenuItem(
@@ -645,12 +645,12 @@ class SessionCard extends StatelessWidget {
                 controller: bodyCtrl,
                 autofocus: true,
                 maxLines: 4,
-                style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
+                style: const TextStyle(color: Color(0xFF233249), fontSize: 13),
                 decoration: InputDecoration(
                   hintText: t('leaveNoteBody'),
-                  hintStyle: const TextStyle(color: Color(0xFF454b54)),
+                  hintStyle: const TextStyle(color: Color(0xFF8b9cae)),
                   filled: true,
-                  fillColor: const Color(0xFF070809),
+                  fillColor: const Color(0xFFf4f8fd),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(6),
                   ),
@@ -663,7 +663,7 @@ class SessionCard extends StatelessWidget {
               onPressed: () => Navigator.pop(context, false),
               child: Text(
                 t('cancel'),
-                style: const TextStyle(color: Color(0xFF8a909b)),
+                style: const TextStyle(color: Color(0xFF6f8096)),
               ),
             ),
             TextButton(
@@ -671,7 +671,7 @@ class SessionCard extends StatelessWidget {
               child: Text(
                 t('leaveNoteSend'),
                 style: const TextStyle(
-                  color: Color(0xFF6aa3ff),
+                  color: Color(0xFF1267b5),
                   fontWeight: FontWeight.w600,
                 ),
               ),
@@ -699,21 +699,21 @@ class SessionCard extends StatelessWidget {
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        backgroundColor: const Color(0xFF0f1115),
+        backgroundColor: const Color(0xFFffffff),
         title: Text(
           t('mergeTitle'),
-          style: const TextStyle(fontSize: 15, color: Color(0xFFf2f4f7)),
+          style: const TextStyle(fontSize: 15, color: Color(0xFF20364d)),
         ),
         content: Text(
           t('mergeBody'),
-          style: const TextStyle(color: Color(0xFFe7eaee)),
+          style: const TextStyle(color: Color(0xFF233249)),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
             child: Text(
               t('cancel'),
-              style: const TextStyle(color: Color(0xFF8a909b)),
+              style: const TextStyle(color: Color(0xFF6f8096)),
             ),
           ),
           TextButton(
@@ -721,7 +721,7 @@ class SessionCard extends StatelessWidget {
             child: Text(
               t('merge'),
               style: const TextStyle(
-                color: Color(0xFF6aa3ff),
+                color: Color(0xFF1267b5),
                 fontWeight: FontWeight.w600,
               ),
             ),
@@ -787,10 +787,10 @@ class SessionCard extends StatelessWidget {
       context: context,
       builder: (_) => StatefulBuilder(
         builder: (context, setLocal) => AlertDialog(
-          backgroundColor: const Color(0xFF0f1115),
+          backgroundColor: const Color(0xFFffffff),
           title: Text(
             t('rebaseResolve'),
-            style: const TextStyle(fontSize: 15, color: Color(0xFFf2f4f7)),
+            style: const TextStyle(fontSize: 15, color: Color(0xFF20364d)),
           ),
           content: Column(
             mainAxisSize: MainAxisSize.min,
@@ -798,7 +798,7 @@ class SessionCard extends StatelessWidget {
             children: [
               Text(
                 t('rebaseResolveHint'),
-                style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+                style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
               ),
               const SizedBox(height: 12),
               Column(
@@ -816,7 +816,7 @@ class SessionCard extends StatelessWidget {
                     title: Text(
                       t('rebaseContinueResolved'),
                       style: const TextStyle(
-                        color: Color(0xFFe7eaee),
+                        color: Color(0xFF233249),
                         fontSize: 13,
                       ),
                     ),
@@ -834,7 +834,7 @@ class SessionCard extends StatelessWidget {
                     title: Text(
                       t('rebaseAbortRollback'),
                       style: const TextStyle(
-                        color: Color(0xFFe7eaee),
+                        color: Color(0xFF233249),
                         fontSize: 13,
                       ),
                     ),
@@ -848,7 +848,7 @@ class SessionCard extends StatelessWidget {
               onPressed: () => Navigator.pop(context, false),
               child: Text(
                 t('cancel'),
-                style: const TextStyle(color: Color(0xFF8a909b)),
+                style: const TextStyle(color: Color(0xFF6f8096)),
               ),
             ),
             TextButton(
@@ -856,7 +856,7 @@ class SessionCard extends StatelessWidget {
               child: Text(
                 action == 'abort' ? t('abortAction') : t('continueAction'),
                 style: const TextStyle(
-                  color: Color(0xFF6aa3ff),
+                  color: Color(0xFF1267b5),
                   fontWeight: FontWeight.w600,
                 ),
               ),
@@ -927,10 +927,10 @@ class SessionCard extends StatelessWidget {
       context: context,
       builder: (_) => StatefulBuilder(
         builder: (context, setLocal) => AlertDialog(
-          backgroundColor: const Color(0xFF0f1115),
+          backgroundColor: const Color(0xFFffffff),
           title: Text(
             t('relocateSession'),
-            style: const TextStyle(fontSize: 15, color: Color(0xFFf2f4f7)),
+            style: const TextStyle(fontSize: 15, color: Color(0xFF20364d)),
           ),
           content: Column(
             mainAxisSize: MainAxisSize.min,
@@ -938,14 +938,14 @@ class SessionCard extends StatelessWidget {
             children: [
               Text(
                 t('relocateSessionHint'),
-                style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+                style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
               ),
               const SizedBox(height: 10),
               DropdownButton<String>(
                 value: targetId,
                 isExpanded: true,
-                dropdownColor: const Color(0xFF0f1115),
-                style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
+                dropdownColor: const Color(0xFFffffff),
+                style: const TextStyle(color: Color(0xFF233249), fontSize: 13),
                 items: [
                   for (final d in candidates)
                     DropdownMenuItem(value: d.id, child: Text(d.name)),
@@ -961,7 +961,7 @@ class SessionCard extends StatelessWidget {
               onPressed: () => Navigator.pop(context, false),
               child: Text(
                 t('cancel'),
-                style: const TextStyle(color: Color(0xFF8a909b)),
+                style: const TextStyle(color: Color(0xFF6f8096)),
               ),
             ),
             TextButton(
@@ -969,7 +969,7 @@ class SessionCard extends StatelessWidget {
               child: Text(
                 t('relocateAction'),
                 style: const TextStyle(
-                  color: Color(0xFF6aa3ff),
+                  color: Color(0xFF1267b5),
                   fontWeight: FontWeight.w600,
                 ),
               ),
@@ -1005,7 +1005,7 @@ class SessionCard extends StatelessWidget {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(t('restartDone')),
-            backgroundColor: const Color(0xFF22ab9c),
+            backgroundColor: const Color(0xFF0965cf),
           ),
         );
       }
@@ -1014,7 +1014,7 @@ class SessionCard extends StatelessWidget {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(t('restartFailed', {'error': '$e'})),
-            backgroundColor: const Color(0xFFff6b63),
+            backgroundColor: const Color(0xFFb64e43),
           ),
         );
       }
@@ -1025,28 +1025,28 @@ class SessionCard extends StatelessWidget {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        backgroundColor: const Color(0xFF0f1115),
+        backgroundColor: const Color(0xFFffffff),
         title: Text(
           t('deleteSessionConfirm'),
-          style: const TextStyle(color: Color(0xFFf2f4f7)),
+          style: const TextStyle(color: Color(0xFF20364d)),
         ),
         content: Text(
           t('deleteSessionBody', {'id': session.id}),
-          style: const TextStyle(color: Color(0xFFe7eaee)),
+          style: const TextStyle(color: Color(0xFF233249)),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
             child: Text(
               t('cancel'),
-              style: const TextStyle(color: Color(0xFF8a909b)),
+              style: const TextStyle(color: Color(0xFF6f8096)),
             ),
           ),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
             child: Text(
               t('delete'),
-              style: const TextStyle(color: Color(0xFFff6b63)),
+              style: const TextStyle(color: Color(0xFFb64e43)),
             ),
           ),
         ],

@@ -177,8 +177,8 @@ class ModelChipState extends State<ModelChip> {
             vertical: 5,
           ),
           decoration: BoxDecoration(
-            color: const Color(0xFF14171c),
-            border: Border.all(color: const Color(0xFF20242b)),
+            color: const Color(0xFFf8fbff),
+            border: Border.all(color: const Color(0xFFdce6f1)),
             borderRadius: BorderRadius.circular(6),
           ),
           child: Row(
@@ -187,7 +187,7 @@ class ModelChipState extends State<ModelChip> {
               const Icon(
                 Icons.psychology_outlined,
                 size: 15,
-                color: Color(0xFFe7eaee),
+                color: Color(0xFF233249),
               ),
               if (!widget.compact) ...[
                 const SizedBox(width: 4),
@@ -198,7 +198,7 @@ class ModelChipState extends State<ModelChip> {
                   child: Text(
                     label,
                     style: const TextStyle(
-                      color: Color(0xFFe7eaee),
+                      color: Color(0xFF233249),
                       fontSize: 11,
                       fontWeight: FontWeight.w600,
                     ),

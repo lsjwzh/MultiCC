@@ -120,7 +120,7 @@ class _CliSwitchSheetState extends State<CliSwitchSheet> {
       out.add(const SizedBox(height: 4));
       out.add(Text(
         hint,
-        style: const TextStyle(color: Color(0xFFe3b341), fontSize: 11, height: 1.4),
+        style: const TextStyle(color: Color(0xFFa85a25), fontSize: 11, height: 1.4),
       ));
     }
     final logTail = install.logTail;
@@ -131,15 +131,15 @@ class _CliSwitchSheetState extends State<CliSwitchSheet> {
         constraints: const BoxConstraints(maxHeight: 120),
         padding: const EdgeInsets.all(6),
         decoration: BoxDecoration(
-          color: const Color(0xFF0d1117),
-          border: Border.all(color: const Color(0xFF30363d)),
+          color: const Color(0xFFf4f8fd),
+          border: Border.all(color: const Color(0xFFdce6f1)),
           borderRadius: BorderRadius.circular(6),
         ),
         child: SingleChildScrollView(
           child: SelectableText(
             logTail,
             style: const TextStyle(
-              color: Color(0xFF8b949e),
+              color: Color(0xFF6f8096),
               fontFamily: 'monospace',
               fontSize: 10,
               height: 1.4,
@@ -400,7 +400,7 @@ class _CliSwitchSheetState extends State<CliSwitchSheet> {
               child: Text(
                 '运行中可以提前保存，CLI 切换将在下轮生效；'
                 '已保存的历史与任务上下文会保留。',
-                style: TextStyle(color: Color(0xFFe3b341), fontSize: 12),
+                style: TextStyle(color: Color(0xFFa85a25), fontSize: 12),
               ),
             ),
             Row(
@@ -438,9 +438,9 @@ class _CliSwitchSheetState extends State<CliSwitchSheet> {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           decoration: BoxDecoration(
-            color: selected ? color.withValues(alpha: 0.10) : const Color(0xFF0b0d10),
+            color: selected ? color.withValues(alpha: 0.10) : const Color(0xFFf4f8fd),
             border: Border.all(
-              color: selected ? color.withValues(alpha: 0.65) : const Color(0xFF20242b),
+              color: selected ? color.withValues(alpha: 0.65) : const Color(0xFFdce6f1),
             ),
             borderRadius: BorderRadius.circular(6),
           ),

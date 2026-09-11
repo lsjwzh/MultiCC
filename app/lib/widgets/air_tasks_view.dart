@@ -25,7 +25,7 @@ class _AirTasksViewState extends State<AirTasksView>
   String _query = '', _error = '';
   bool _loading = false, _opening = false, _foreground = true, _all = false;
   Timer? _timer;
-  static const _ink = Color(0xFF25334A), _blue = Color(0xFF2272E3);
+  static const _ink = Color(0xFF233249), _blue = Color(0xFF1678e8);
   List<Map<String, dynamic>> _rows(String key) => ((_data?[key] as List?) ?? [])
       .map((v) => Map<String, dynamic>.from(v as Map))
       .toList();
@@ -257,7 +257,7 @@ class _AirTasksViewState extends State<AirTasksView>
         ),
       ),
       child: ColoredBox(
-        color: const Color(0xFFF6F8FC),
+        color: const Color(0xFFf4f8fd),
         child: RefreshIndicator(
           onRefresh: _refresh,
           child: ListView(
@@ -265,7 +265,7 @@ class _AirTasksViewState extends State<AirTasksView>
             children: [
               const Text(
                 '工作目录',
-                style: TextStyle(color: Color(0xFF6B7890), fontSize: 12),
+                style: TextStyle(color: Color(0xFF6f8096), fontSize: 12),
               ),
               if (dirs.isNotEmpty)
                 DropdownButton<String>(
@@ -292,7 +292,7 @@ class _AirTasksViewState extends State<AirTasksView>
                 ),
               Text(
                 '${dirs.where((d) => d['id'] == _directory).firstOrNull?['path'] ?? '通过右上角添加工作目录'}',
-                style: const TextStyle(color: Color(0xFF6B7890), fontSize: 12),
+                style: const TextStyle(color: Color(0xFF6f8096), fontSize: 12),
               ),
               const SizedBox(height: 22),
               Row(
@@ -375,7 +375,7 @@ class _AirTasksViewState extends State<AirTasksView>
                     subtitle: Text(
                       _resource(task),
                       style: const TextStyle(
-                        color: Color(0xFF6B7890),
+                        color: Color(0xFF6f8096),
                         fontSize: 12,
                       ),
                     ),
@@ -389,7 +389,7 @@ class _AirTasksViewState extends State<AirTasksView>
                   child: Text(
                     '从一个目标开始。\n创建任务后，工作目录会在首次执行时准备。',
                     textAlign: TextAlign.center,
-                    style: TextStyle(color: Color(0xFF6B7890), height: 1.8),
+                    style: TextStyle(color: Color(0xFF6f8096), height: 1.8),
                   ),
                 ),
             ],
