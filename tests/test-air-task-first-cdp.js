@@ -97,6 +97,10 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.ok(await page.waitFor(`location.pathname==='/air' && document.getElementById('task-title')?.textContent==='完善任务协作体验'`));
     assert.equal(await page.evaluate(`document.getElementById('sidebar').contains(document.getElementById('task-sidebar'))`), true);
     const frame = `document.getElementById('conversation').contentDocument`;
+    // AI 配置 and 角色 live on the composer card inside the conversation frame;
+    // the host page renders them there (air.js → renderComposerControls), so
+    // these assertions read the frame, not the task header.
+    const composerPill = id => `${frame}.getElementById('${id}')`;
     assert.ok(await page.waitFor(`${frame}?.URL.includes('session=task-a') && ${frame}.readyState==='complete'`));
     assert.ok(await page.waitFor(`${frame}?.body.classList.contains('air-chat') && ${frame}?.getElementById('input')`));
     assert.ok(await page.waitFor(`${frame}.getElementById('merge-btn').parentElement.id==='header-more-menu'`));
@@ -161,7 +165,8 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     await page.evaluate(`document.getElementById('details-close').click()`);
     assert.equal(await page.evaluate(`document.body.innerText.includes('FIXED_ROLE_MUST_NOT_SHOW')`), false);
     assert.equal(await page.evaluate(`document.querySelectorAll('a[href*="chat.html"]').length`), 0);
-    await page.evaluate(`document.getElementById('roles-toggle').click()`);
+    assert.ok(await page.waitFor(`${composerPill('air-role-pill')}?.textContent.length>0`), '角色 renders on the composer card');
+    await page.evaluate(`${composerPill('air-role-pill')}.click()`);
     assert.ok(await page.waitFor(`document.querySelector('dialog[open] select option[value=designer]')`));
     await page.evaluate(`const p=document.querySelector('dialog[open] select');p.value='designer';p.dispatchEvent(new Event('change'))`);
     assert.ok(await page.waitFor(`document.querySelector('dialog[open] textarea')?.value==='关注清晰、轻盈的交互'`));
@@ -169,7 +174,8 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.ok(await page.waitFor(`!document.querySelector('dialog[open]')`));
     assert.equal(entry.roleBindings.bindings[0].name, '设计师');
     assert.equal(page.requests.some(r => /role-workers|\/sessions$/.test(r.path) && r.method !== 'GET'), false);
-    await page.evaluate(`document.getElementById('ai-capsule').click()`);
+    assert.ok(await page.waitFor(`${composerPill('air-ai-pill')}?.textContent.includes('Lab Responses')`), 'AI 配置 renders on the composer card');
+    await page.evaluate(`${composerPill('air-ai-pill')}.click()`);
     assert.ok(await page.waitFor(`document.querySelector('.air-provider-option[data-value="codex-lab"].selected')`));
     assert.equal(await page.evaluate(`document.querySelector('.air-cli-option.selected strong').textContent`), 'Codex');
     assert.equal(await page.evaluate(`document.querySelectorAll('.air-provider-option').length`), 5);
@@ -179,12 +185,12 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(configPatches.length, 2);
     assert.deepEqual(configPatches[0], { provider: 'codex-backup', providerSelection: null });
     assert.deepEqual(configPatches[1], { model: 'gpt-5.6-sol', effort: 'high' });
-    assert.ok(await page.waitFor(`document.getElementById('ai-capsule').textContent.includes('Backup Responses') && document.getElementById('ai-capsule').textContent.includes('gpt-5.6-sol')`));
+    assert.ok(await page.waitFor(`${composerPill('air-ai-pill')}.textContent.includes('Backup Responses') && ${composerPill('air-ai-pill')}.textContent.includes('gpt-5.6-sol')`));
     entry.configuration.pendingConfiguration = { cli: 'codex', profile: { provider: 'codex-lab', model: 'gpt-5.5', effort: 'low' } };
     await page.evaluate(`document.getElementById('refresh').click()`);
-    assert.ok(await page.waitFor(`document.getElementById('ai-capsule').textContent.includes('下轮生效')`));
-    assert.equal(await page.evaluate(`document.getElementById('ai-capsule').textContent.includes('gpt-5.5') && !document.getElementById('ai-capsule').textContent.includes('Backup Responses')`), true);
-    await page.evaluate(`document.getElementById('ai-capsule').click()`);
+    assert.ok(await page.waitFor(`${composerPill('air-ai-pill')}.textContent.includes('下轮生效')`));
+    assert.equal(await page.evaluate(`${composerPill('air-ai-pill')}.textContent.includes('gpt-5.5') && !${composerPill('air-ai-pill')}.textContent.includes('Backup Responses')`), true);
+    await page.evaluate(`${composerPill('air-ai-pill')}.click()`);
     assert.ok(await page.waitFor(`document.querySelector('.air-provider-option[data-value="codex-lab"].selected')`));
     assert.equal(await page.evaluate(`document.querySelector('dialog[open] select[aria-label="推理强度"]').value`), 'low');
     await page.evaluate(`document.querySelector('dialog[open] .air-config-close').click()`);
@@ -266,10 +272,10 @@ test('Air task-first console, management views, roles, configuration, artifacts 
       assert.equal(await page.evaluate(`${frame}.getElementById('ac-cancel-task').getBoundingClientRect().right<=${frame}.documentElement.clientWidth`), true);
       const mobileLayout = await page.evaluate(`(()=>{const s=document.getElementById('sidebar'),r=s.getBoundingClientRect();return {sidebarLeft:r.left,sidebarRight:r.right,sidebarWidth:r.width,transform:getComputedStyle(s).transform,position:getComputedStyle(s).position,bodyClass:document.body.className,media:matchMedia('(max-width:760px)').matches}})()`);
       assert.equal(mobileLayout.sidebarRight <= 0, true, JSON.stringify(mobileLayout));
-      assert.equal(await page.evaluate(`getComputedStyle(document.getElementById('ai-capsule')).display!=='none'`), true);
-      assert.equal(await page.evaluate(`document.getElementById('roles-toggle').getBoundingClientRect().right<=innerWidth`), true);
+      assert.equal(await page.evaluate(`getComputedStyle(${composerPill('air-ai-pill')}).display!=='none'`), true);
+      assert.equal(await page.evaluate(`${composerPill('air-role-pill')}.getBoundingClientRect().right<=${frame}.documentElement.clientWidth`), true);
       if (width === 390) {
-        await page.evaluate(`document.getElementById('ai-capsule').click()`);
+        await page.evaluate(`${composerPill('air-ai-pill')}.click()`);
         assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open] .air-provider-list')`));
         assert.equal(await page.evaluate(`document.querySelector('.air-config-dialog').scrollWidth<=document.querySelector('.air-config-dialog').clientWidth`), true);
         await page.evaluate(`document.querySelector('.air-config-close').click()`);

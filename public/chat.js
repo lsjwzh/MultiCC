@@ -225,10 +225,9 @@ const cancelBtn   = document.getElementById('cancel-btn');
 const mergeBtn    = document.getElementById('merge-btn');
 const mergeHint   = document.getElementById('merge-hint');
 const mergeHintBtn = document.getElementById('merge-hint-btn');
-// Air's task header owns AI 配置 / 角色 / CLI switching (ai-capsule +
-// roles-toggle in the host page). The chat page's equivalents stay mounted for
-// code that opens them programmatically, but never join the Air header row or
-// the compact More menu — showing both was duplicated UI.
+// Air's host page owns AI 配置 / 角色 / CLI switching and renders it on the
+// composer card (#air-composer-meta, filled by air.js). This page's equivalents
+// stay mounted for programmatic opens, but never join Air's header or menu.
 const airChatMode = document.body.classList.contains('air-chat');
 const airOwnedById = new Set(['model-btn', 'effort-btn', 'provider-btn', 'role-btn', 'cli-btn']);
 // Removed from Air's More menu entirely: the voice-call entry is not part of
@@ -2292,6 +2291,7 @@ function updateAutoCommitBtn() {
   autoCommitBtn.textContent = _sessionAutoCommit ? tt('autoCommitOn') : tt('autoCommitOff');
   autoCommitBtn.style.opacity = _sessionAutoCommit ? '1' : '0.6';
   autoCommitBtn.title = tt('autoCommitTitle');
+  autoCommitBtn.dataset.state = _sessionAutoCommit ? 'on' : 'off'; // Air mirrors this onto a header toggle (air.js syncQuickActions); the label is localized, so it cannot be parsed.
 }
 
 autoCommitBtn?.addEventListener('click', async () => {
