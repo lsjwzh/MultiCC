@@ -507,11 +507,11 @@
       $('task-title').textContent = dir?.name || '先添加工作目录';
       $('task-state').textContent = dir?.path || '添加目录后即可创建任务。';
     }
-    for (const id of ['ai-capsule', 'roles-toggle', 'details-toggle', 'chat-more']) $(id).hidden = !taskId;
+    for (const id of ['quick-merge', 'quick-auto-commit', 'quick-share',
+      'details-toggle', 'chat-more']) $(id).hidden = !taskId;
     $('task-state').disabled = !taskId;
     if (!taskId) { $('task-state').classList.remove('attention'); $('task-state').removeAttribute('title'); }
-    $('ai-capsule').disabled = !selectedEntry || selectedEntry.readOnly;
-    $('roles-toggle').disabled = !selectedEntry || selectedEntry.readOnly || !selectedEntry.roleBindings;
+    renderComposerControls();
   }
 
   function render() {
@@ -771,6 +771,89 @@
     return value.attribution?.candidate ? value.attribution.candidate.blockers || value.attribution.blockers || [] : [];
   }
 
+  // AI 配置 and 角色 render on the composer card inside the frame (see
+  // chat-air.css). Their state, dialogs and handlers stay here in the host —
+  // the frame only supplies the surface, so nothing about configuring a task
+  // is duplicated in two pages. Frames reload per task, so the handler is
+  // bound once per document and the labels are re-rendered on every sync.
+  let frameComposerBound = null;
+  // The strip is built here rather than in chat.html: it only exists while Air
+  // hosts the page, and chat.html sits exactly on its migration line ceiling.
+  function ensureComposerRow(doc) {
+    const existing = doc.getElementById('air-composer-meta');
+    if (existing) return existing;
+    const input = doc.getElementById('input-bar');
+    if (!input) return null;
+    const row = doc.createElement('div');
+    row.id = 'air-composer-meta';
+    row.hidden = true;
+    for (const id of ['air-ai-pill', 'air-role-pill']) {
+      const pill = doc.createElement('button');
+      pill.id = id;
+      pill.type = 'button';
+      pill.hidden = true;
+      row.append(pill);
+    }
+    input.before(row);
+    return row;
+  }
+
+  function composerControls() {
+    const doc = $('conversation').contentDocument;
+    if (!doc) return null;
+    const row = ensureComposerRow(doc);
+    const ai = doc.getElementById('air-ai-pill');
+    const role = doc.getElementById('air-role-pill');
+    if (!row || !ai || !role) return null;
+    return { doc, row, ai, role };
+  }
+
+  function renderComposerControls() {
+    const controls = composerControls();
+    if (!controls) return;
+    const { row, ai, role } = controls;
+    row.hidden = !taskId;
+    if (!taskId) {
+      ai.hidden = true;
+      role.hidden = true;
+      return;
+    }
+    const pending = entry?.configuration?.pendingConfiguration;
+    const shown = pending
+      ? { ...entry.configuration, ...(pending.profile || {}), cli: pending.cli || entry.configuration.cli }
+      : entry?.configuration;
+    const routeName = shown?.providerSelection?.mode === 'auto'
+      ? `Auto ${shown.providerSelection.protocol}`
+      : (pending ? shown.provider : shown.providerName || shown.provider) || '默认线路';
+    ai.hidden = !entry?.sessionId;
+    ai.disabled = !entry || entry.readOnly;
+    ai.textContent = shown
+      ? [shown.cli, routeName,
+        (pending ? shown.model : shown.effectiveModel || shown.model) || '默认模型',
+        pending ? '下轮生效' : ''].filter(Boolean).join(' · ')
+      : '';
+    ai.title = '任务 AI 配置：CLI、路由与模型（下一轮生效）';
+    const roleCount = entry?.roleBindings?.bindings?.length || 0;
+    role.hidden = !entry?.roleBindings;
+    role.disabled = !entry || entry.readOnly;
+    role.textContent = roleCount ? `${roleCount} 个角色` : '＋ 角色';
+    role.title = '任务角色上下文';
+  }
+
+  function bindComposerControls() {
+    const controls = composerControls();
+    if (!controls || frameComposerBound === controls.doc) return;
+    frameComposerBound = controls.doc;
+    controls.ai.onclick = () => {
+      if (entry?.sessionId && !entry.readOnly) window.MultiCCAirSettings.configuration(entry, data.clis, refreshEntry);
+    };
+    controls.role.onclick = () => {
+      if (entry?.roleBindings && !entry.readOnly) {
+        window.MultiCCAirRoles.open({ taskId, roleBindings: entry.roleBindings, api, onSaved: refreshEntry });
+      }
+    };
+  }
+
   // Draft restore + listener binding happen once per input element. syncFrame
   // also runs from the 4s poll loop; re-running it there restored a stale
   // draft into the freshly cleared input right after a send (the composer's
@@ -780,6 +863,9 @@
   let frameInputHandler = null;
   function syncFrame() {
     const doc = $('conversation').contentDocument;
+    bindComposerControls();
+    renderComposerControls();
+    syncQuickActions();
     const input = doc?.getElementById('input') || doc?.getElementById('message');
     if (!taskId || !input) return;
     // Rebind on element change (frame reload) AND on task change: right after
@@ -813,19 +899,6 @@
       entry = result;
       $('task-title').textContent = entry.task.title;
       $('task-state').textContent = taskStateText(entry);
-      $('ai-capsule').disabled = entry.readOnly;
-      const pending = entry.configuration.pendingConfiguration;
-      const shown = pending
-        ? { ...entry.configuration, ...(pending.profile || {}), cli: pending.cli || entry.configuration.cli }
-        : entry.configuration;
-      const routeName = shown.providerSelection?.mode === 'auto'
-        ? `Auto ${shown.providerSelection.protocol}`
-        : (pending ? shown.provider : shown.providerName || shown.provider) || '默认线路';
-      $('ai-capsule').textContent = [shown.cli, routeName,
-        (pending ? shown.model : shown.effectiveModel || shown.model) || '默认模型', pending ? '下轮生效' : ''].filter(Boolean).join(' · ');
-      const roleCount = entry.roleBindings?.bindings?.length || 0;
-      $('roles-toggle').disabled = entry.readOnly || !entry.roleBindings;
-      $('roles-toggle').textContent = roleCount ? `${roleCount} 个角色` : '＋ 角色';
       renderDelivery(entry);
       renderDetails(entry);
       syncFrame();
@@ -888,12 +961,36 @@
       $('quick-task-form').requestSubmit();
     }
   };
-  $('ai-capsule').onclick = () => {
-    if (entry?.sessionId && !entry.readOnly) window.MultiCCAirSettings.configuration(entry, data.clis, refreshEntry);
-  };
-  $('roles-toggle').onclick = () => {
-    if (entry?.roleBindings && !entry.readOnly) window.MultiCCAirRoles.open({ taskId, roleBindings: entry.roleBindings, api, onSaved: refreshEntry });
-  };
+  // The task header keeps the two or three actions that get used every round.
+  // Each one clicks the chat page's own button, so its handler, its permission
+  // check and its dialog stay in the frame; only the state readout (auto-commit
+  // on/off, merge ready) is mirrored back onto the header icon.
+  let quickSyncTimer = null;
+  function frameButton(id) {
+    return $('conversation').contentDocument?.getElementById(id) || null;
+  }
+  function syncQuickActions() {
+    const source = frameButton('auto-commit-btn');
+    const auto = $('quick-auto-commit');
+    const on = source?.dataset.state === 'on';
+    auto.classList.toggle('is-on', on);
+    auto.setAttribute('aria-pressed', String(on));
+    const merge = frameButton('merge-btn');
+    const ready = merge?.classList.contains('merge-ready') === true;
+    const mergeAction = $('quick-merge');
+    mergeAction.classList.toggle('is-ready', ready);
+    if (merge?.title) mergeAction.title = merge.title;
+  }
+  function clickFrameAction(sourceId) {
+    frameButton(sourceId)?.click();
+    // The toggle PATCHes and the merge check re-reads status asynchronously;
+    // re-mirror shortly after so the icon does not lag the state by a poll.
+    clearTimeout(quickSyncTimer);
+    quickSyncTimer = setTimeout(syncQuickActions, 600);
+  }
+  $('quick-merge').onclick = () => clickFrameAction('merge-btn');
+  $('quick-auto-commit').onclick = () => clickFrameAction('auto-commit-btn');
+  $('quick-share').onclick = () => clickFrameAction('share-btn');
   $('details-toggle').onclick = () => toggleDetails();
   // The conversation frame's chat page owns the More menu (items, handlers,
   // popover layer). The task-header trigger just reaches into that same-origin

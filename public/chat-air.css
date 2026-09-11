@@ -306,8 +306,66 @@ body.air-chat {
 .air-chat .session-queue-text { color: #3c536a; }
 .air-chat .session-queue-insert { color: #176fc7; border-color: #9fc6ec; background: #edf6ff; }
 .air-chat .session-queue-close { color: #aa513f; border-color: #e1bdb4; }
+/* AI 配置 / 角色 ride on the composer card instead of the task header. The
+   strip is the card's top half: same width, same border, no line between them,
+   so the two read as one box. */
+.air-chat #air-composer-meta {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  width: min(880px, var(--chat-content-max-width), calc(100% - clamp(32px, 6vw, 64px)));
+  align-self: center;
+  margin: 4px auto 0;
+  padding: 8px 12px 15px;
+  border: 1px solid #dbe5ef;
+  border-bottom: 0;
+  border-radius: 15px 15px 0 0;
+  background: #f8fbff;
+}
+.air-chat #air-composer-meta[hidden] { display: none; }
+@media (max-width: 760px) {
+  .air-chat #air-composer-meta { width: min(880px, var(--chat-content-max-width), calc(100% - 24px)); }
+}
+/* Both pills hidden (nothing to configure) leaves a bare empty strip; collapse
+   it and let the composer keep its own rounded top. */
+.air-chat #air-composer-meta:not(:has(#air-ai-pill:not([hidden]))):not(:has(#air-role-pill:not([hidden]))) {
+  display: none;
+}
+.air-chat #air-ai-pill,
+.air-chat #air-role-pill {
+  min-width: 0;
+  padding: 5px 11px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border: 1px solid #dbe7f2;
+  border-radius: 999px;
+  background: #fff;
+  color: #4a6b8a;
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease;
+}
+.air-chat #air-ai-pill { flex: 0 1 auto; max-width: 68%; color: #2468b5; border-color: #d2e6fb; background: var(--blue-soft, #eaf3ff); }
+.air-chat #air-role-pill { flex: 0 0 auto; }
+.air-chat #air-ai-pill:hover, .air-chat #air-role-pill:hover { border-color: #b9d6f0; background: #eef6ff; }
+.air-chat #air-ai-pill[hidden], .air-chat #air-role-pill[hidden] { display: none; }
+.air-chat #air-ai-pill:disabled, .air-chat #air-role-pill:disabled { opacity: .55; cursor: default; }
+.air-chat #air-ai-pill::before { content: '◆'; margin-right: 6px; font-size: 9px; vertical-align: 1px; }
+
 /* Floating composer card, matching the Air workspace mock: lifted off the
    bottom edge with layered soft shadow, and a tint ring while focused. */
+.air-chat #air-composer-meta:not([hidden]) + #input-bar {
+  /* The strip above already drew the card's top edge, so drop the duplicate
+     line, close the gap and round only the bottom corners. */
+  margin-top: 0;
+  border-top: 0;
+  border-radius: 0 0 15px 15px;
+}
+/* Focusing the composer lights the whole card, strip included. */
+.air-chat #air-composer-meta:has(+ #input-bar:focus-within) { border-color: #c1d8ed; }
 .air-chat #input-bar {
   margin: 4px auto 18px;
   padding: 9px 10px;
