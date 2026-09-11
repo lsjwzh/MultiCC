@@ -119,9 +119,11 @@
             <div id="directory-task-list"></div>
           </section>
           <form id="quick-task-form">
-            <div class="quick-task-head"><div><span class="eyebrow">NEW AIR TASK</span><strong>从一个目标开始</strong></div><small>创建固定任务，并把这段内容作为第一条消息执行。</small></div>
+            <!-- One composer box, like the task chat: the input carries the
+                 instruction, the action row carries the controls. -->
             <div id="quick-task-files"></div>
-            <textarea id="quick-task-input" rows="3" maxlength="32000" required placeholder="描述要完成的任务；Enter 创建，Shift + Enter 换行"></textarea>
+            <textarea id="quick-task-input" rows="4" maxlength="32000" required
+                      placeholder="描述要完成的任务；创建后会把这段内容作为第一条消息执行。Enter 创建，Shift + Enter 换行"></textarea>
             <div class="quick-task-actions">
               <button id="quick-task-attach" type="button" aria-label="添加文件">⌕ 添加文件</button><input id="quick-task-file-input" type="file" multiple hidden>
               <label><input id="quick-task-goal" type="checkbox"> Goal 模式</label>
