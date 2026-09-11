@@ -7,6 +7,9 @@
   <title>MultiCC Air · 工作目录与任务</title>
   <link rel="icon" href="/icon.svg">
   <link rel="stylesheet" href="composer.css">
+  <!-- 状态徽标的唯一色/形来源：注册表说「这是什么状态」，这张表说「那个状态长什么样」。
+       Air 不自己写一套状态色，只提供浅色调色板（air.css 里的 --st-* 一组）。 -->
+  <link rel="stylesheet" href="status-badge.css">
   <link rel="stylesheet" href="air.css">
   <script src="auth-client.js"></script>
 </head>
@@ -35,43 +38,22 @@
     <div class="caption favorite-caption">收藏目录</div>
     <nav id="favorites" aria-label="收藏目录"></nav>
 
-    <section id="task-sidebar" aria-label="当前目录任务">
+    <!-- 侧栏的任务区只放「手上的任务」：最近打开过的在前，当前目录的跟在后面。
+         找任务的完整入口在控制台（全部目录 + 搜索 + 筛选），所以这里不挂搜索框 ——
+         一列八行的手边清单不需要搜索，需要搜索的那个列表在面板里。 -->
+    <section id="task-sidebar" aria-label="最近任务">
       <div class="section-heading task-heading">
-        <div><span class="caption">任务</span><strong id="task-list-title">进行中与待处理</strong></div>
+        <div><span class="caption">任务</span><strong id="task-list-title">最近任务</strong></div>
         <span id="task-count"></span>
       </div>
       <button id="create" class="sidebar-create" type="button">＋ 新任务</button>
-      <!-- 同一条带子、同一个搜索框，只是作用域可以放宽：目录是执行上下文，
-           不是查找任务的前提。 -->
-      <div id="scope-switch" role="tablist" aria-label="任务范围">
-        <button type="button" role="tab" data-scope="dir" aria-selected="true">本目录<b id="scope-count-dir"></b></button>
-        <button type="button" role="tab" data-scope="recent" aria-selected="false">最近<b id="scope-count-recent"></b></button>
-        <button type="button" role="tab" data-scope="all" aria-selected="false">全部目录<b id="scope-count-all"></b></button>
-      </div>
-      <input id="task-search" type="search" placeholder="搜索任务" aria-label="搜索任务">
-      <select id="status-filter" aria-label="任务筛选">
-        <option value="active">进行中与待处理</option>
-        <option value="all">全部记录</option>
-        <option value="archived">已归档</option>
-      </select>
-      <nav id="tasks" aria-label="任务列表"></nav>
-      <a class="sidebar-link" href="/air?view=planner">查看任务看板 <span>↗</span></a>
-      <details class="terminal-group">
-        <summary>TERMINAL</summary>
-        <nav id="legacy-sessions"></nav>
-      </details>
+      <nav id="tasks" aria-label="最近任务列表"></nav>
     </section>
 
+    <!-- 频次收敛：每天点的（当前目录、控制台、收藏、最近任务、新建）留在外面，
+         偶尔点的（全局工具、任务看板、TERMINAL、主机运维）折进「更多」。
+         版本行留在外面：它是更新提示的落点，藏起来就没人知道有新版本。 -->
     <div class="side-bottom">
-      <span class="caption">全局工具</span>
-      <nav class="global-links">
-        <button type="button" data-air-view="docs">服务与文档</button>
-        <button type="button" data-air-view="memory">记忆图谱</button>
-        <button type="button" data-air-view="settings">设置中心</button>
-      </nav>
-      <!-- The manage sidebar's pinned bottom region, ported: the version row
-           doubles as the update entry point, and the boot line under it is the
-           same fact the restart button ends. Populated by air-ops.js. -->
       <div id="air-ver-row" class="ops-version" role="button" tabindex="0" title="点击检查并安装更新">
         <span id="air-ver-icon" class="ops-icon" aria-hidden="true">📦</span>
         <span class="ops-version-text">
@@ -80,19 +62,35 @@
         </span>
         <span id="air-ver-badge" class="ops-badge" hidden>NEW</span>
       </div>
-      <!-- Deliberately outside the row above: that row is a click target for
-           the update check, and reading a timestamp should not fire a call. -->
-      <div class="ops-boot">
-        <div class="ops-boot-row"><span class="ops-boot-label">最近启动</span><span id="air-boot-time">—</span></div>
-        <div id="air-boot-uptime" class="ops-boot-uptime"></div>
-      </div>
-      <nav class="ops-actions" aria-label="主机操作">
-        <button type="button" id="air-apk-btn" title="下载 Android / iOS 安装包">安装包</button>
-        <button type="button" id="air-qr-btn" title="扫码在手机上打开">二维码</button>
-        <button type="button" id="push-toggle" title="开启浏览器推送通知">推送通知</button>
-        <button type="button" id="air-restart-btn" title="重启 multicc 服务">🔄 重启</button>
-        <a href="/logout" title="退出登录">退出登录</a>
-      </nav>
+      <details id="side-more" class="side-more">
+        <summary>更多与系统</summary>
+        <div class="side-more-body">
+          <nav class="global-links">
+            <button type="button" data-air-view="docs">服务与文档</button>
+            <button type="button" data-air-view="memory">记忆图谱</button>
+            <button type="button" data-air-view="settings">设置中心</button>
+          </nav>
+          <a class="sidebar-link" href="/air?view=planner">查看任务看板 <span>↗</span></a>
+          <details class="terminal-group">
+            <summary>TERMINAL</summary>
+            <nav id="legacy-sessions"></nav>
+          </details>
+          <!-- Deliberately outside the version row above: that row is a click target
+               for the update check, and reading a timestamp should not fire a call. -->
+          <div class="ops-boot">
+            <div class="ops-boot-row"><span class="ops-boot-label">最近启动</span><span id="air-boot-time">—</span></div>
+            <div id="air-boot-uptime" class="ops-boot-uptime"></div>
+          </div>
+          <nav class="ops-actions" aria-label="主机操作">
+            <button type="button" id="air-apk-btn" title="下载 Android / iOS 安装包">安装包</button>
+            <button type="button" id="air-qr-btn" title="扫码在手机上打开">二维码</button>
+            <button type="button" id="push-toggle" title="开启浏览器推送通知">推送通知</button>
+            <button type="button" id="air-restart-btn" title="重启 multicc 服务">🔄 重启</button>
+            <a href="/logout" title="退出登录">退出登录</a>
+          </nav>
+        </div>
+      </details>
+      <!-- 留在折叠区外：运维动作的回执要看得见，折起来会连回执一起藏掉。 -->
       <p id="air-ops-status" class="ops-status" role="status"></p>
       <small>让每一次对话，都有清晰的目标。</small>
     </div>
@@ -321,6 +319,8 @@
   <script src="air-task-settings.js"></script>
   <script src="air-role-editor.js"></script>
   <script src="air-provider.js"></script>
+  <!-- 状态注册表要先于 air-admin.js：任务行的徽标和「在不在跑」的判定都由它出。 -->
+  <script src="status-presentation.js"></script>
   <script src="air-admin.js"></script>
   <script src="qrcode.min.js"></script>
   <!-- pwa.js owns the push subscription (and its own #push-toggle lookup);
