@@ -26,6 +26,7 @@ const cliProviderRouter = require('cli-provider-router');
 const { createSqliteRuntime } = require('../sqlite-runtime');
 const { createPaths } = require('../paths');
 const { atomicWriteJson, atomicWriteText, ensurePrivateDir, secureFile } = require('../runtime-security');
+const { settingsOverrideFor } = require('./claude-settings-override');
 const { createOpencodeModelLimitResolver } = require('./opencode-model-limits');
 const { createCodexAttemptHome } = require('../codex/attempt-home');
 const { createCodexSessionHomeRuntime } = require('../codex/session-home');
@@ -1795,7 +1796,16 @@ function _probeCandidate(cliCmd, baseEnv, model) {
   return new Promise((resolve) => {
     const env = { ...process.env, ...baseEnv };
     for (const k of PROBE_STRIP_KEYS) delete env[k];
-    const child = spawn(cliCmd, ['-p', '--model', model, '--max-turns', '1', '--dangerously-skip-permissions', 'hi'], { env, windowsHide: true });
+    // ~/.claude/settings.json env would otherwise override baseEnv (Claude Code
+    // ≥2.1) and probe the global provider instead of this relay.
+    const settingsEnv = { ...baseEnv };
+    for (const k of PROBE_STRIP_KEYS) delete settingsEnv[k];
+    const settingsFile = settingsOverrideFor(`probe-${model}`, settingsEnv);
+    const child = spawn(cliCmd, [
+      '-p', '--model', model, '--max-turns', '1', '--dangerously-skip-permissions',
+      ...(settingsFile ? ['--settings', settingsFile] : []),
+      'hi',
+    ], { env, windowsHide: true });
     let out = '';
     const sink = (c) => { if (out.length < 2048) out += c.toString(); };
     child.stdout.on('data', sink);
@@ -2029,4 +2039,5 @@ module.exports = {
   buildKimiCodeRoute,
   WIRE_DEFAULT_MODEL,
   probeRelayModels,
+  ...require('./claude-settings-override'),
 };

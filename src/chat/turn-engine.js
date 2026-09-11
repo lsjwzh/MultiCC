@@ -1681,6 +1681,18 @@ function createChatTurnEngine(deps) {
         });
         throw error;
       }
+      // Claude Code ≥2.1 lets the env block of ~/.claude/settings.json override
+      // the spawned process env, which silently hijacks per-session provider
+      // routing. Mirror the final routing env into a per-session --settings
+      // file (higher precedence) so the session provider stays authoritative
+      // (see src/providers/claude-settings-override.js).
+      let finalSpawnArgs = spawnArgs;
+      if (persisted.cli === 'claude') {
+        const settingsFile = providers.settingsOverrideFor(sessionName, childEnv, physicalInvocation.settings);
+        if (settingsFile) {
+          finalSpawnArgs = [...physicalInvocation.args, '--settings', settingsFile, physicalInvocation.payload];
+        }
+      }
       const runner = createRunnerOwnership(turn, {
         completion: createAdapterCompletion(provider),
         runnerId: `proc_${crypto.randomBytes(8).toString('hex')}`,
@@ -1694,7 +1706,7 @@ function createChatTurnEngine(deps) {
         getWorkspaceAdmission?.()?.starting(sessionName, opts, attempt.routeAttemptId);
         proc = routerToolHost.spawnProcess({
         cli: persisted.cli, spawn, command: physicalInvocation.cmd,
-        args: spawnArgs, cwd: cs.cwd, env: childEnv,
+        args: finalSpawnArgs, cwd: cs.cwd, env: childEnv,
         sessionId: sessionName, turnId: turn.turnId, originDispatchId,
         // Correlation key for post-admission receipts addressed to this turn.
         requestId: turn.requestId || '',
@@ -2252,6 +2264,15 @@ function createChatTurnEngine(deps) {
       subagent: persisted.subagent, port: getPort(), enabled: getClaudeProxyEnabled(),
       officialOAuth: getClaudeOfficialViaProxy(),
     });
+    // Same settings-override as the per-turn spawn path: ~/.claude/settings.json
+    // env must not win over the session's provider routing (see
+    // src/providers/claude-settings-override.js). The file is rewritten each
+    // turn, so a provider switch (which recycles the process via the chat-stream
+    // env fingerprint) is picked up by the respawned process.
+    const streamSettingsFile = providers.settingsOverrideFor(sessionName, childEnv, invocation.settings);
+    const streamBaseArgs = streamSettingsFile
+      ? [...invocation.args, '--settings', streamSettingsFile]
+      : invocation.args;
     const resumeExistingStream = !!persisted._streamSessionId;
     if (!persisted._streamSessionId) {
       persisted._streamSessionId = crypto.randomUUID();
@@ -2263,7 +2284,7 @@ function createChatTurnEngine(deps) {
       cwd: cs.cwd,
       sessionId: persisted._streamSessionId,
       resume: resumeExistingStream,
-      baseArgs: invocation.args,
+      baseArgs: streamBaseArgs,
       onNewSessionId: (newId) => {
         persisted._streamSessionId = newId;
         rememberActiveCliState(persisted);
