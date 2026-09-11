@@ -96,6 +96,11 @@
       throw new Error('AI 配置组件未加载，请刷新页面后重试。');
     }
 
+    // Draft mode: no session yet (the directory's new-task composer). The same
+    // dialog then has nothing to persist — it hands the chosen runtime back to
+    // the caller, which pins it onto the task at creation. One dialog, one
+    // implementation, two surfaces.
+    const draft = !entry.sessionId;
     const storedConfig = entry.configuration || {};
     const pending = storedConfig.pendingConfiguration;
     // The editor always opens on the user's desired next-turn route. This keeps
@@ -112,7 +117,9 @@
     const close = node('button', '×', 'air-config-close');
     close.type = 'button'; close.setAttribute('aria-label', '关闭 AI 配置'); close.onclick = () => d.close();
     header.append(heading, close);
-    form.append(header, node('p', `为「${entry.task?.title || '当前任务'}」选择执行工具与请求线路。更改从下一轮开始生效。`, 'air-config-intro'));
+    form.append(header, node('p', draft
+      ? `为新任务选择执行工具与请求线路。创建任务时写入，第一条消息即按此执行。`
+      : `为「${entry.task?.title || '当前任务'}」选择执行工具与请求线路。更改从下一轮开始生效。`, 'air-config-intro'));
 
     const cliSection = section('1 · CLI', '先选择负责执行任务的命令行工具');
     const cliGrid = node('div', null, 'air-cli-grid');
@@ -143,10 +150,10 @@
 
     const error = node('p', '', 'air-config-error'); error.setAttribute('role', 'alert');
     const foot = node('footer', null, 'air-config-footer');
-    const footCopy = node('p', '任务历史、角色与工作区保持不变。');
+    const footCopy = node('p', draft ? '这一选择只在创建这个任务时使用。' : '任务历史、角色与工作区保持不变。');
     const actions = node('div');
     const cancel = node('button', '取消'); cancel.type = 'button'; cancel.onclick = () => d.close();
-    const submit = node('button', '保存配置', 'primary'); submit.type = 'submit';
+    const submit = node('button', draft ? '使用此配置' : '保存配置', 'primary'); submit.type = 'submit';
     actions.append(cancel, submit); foot.append(footCopy, actions);
     form.append(error, foot); d.append(form); document.body.append(d); d.showModal();
 
@@ -322,6 +329,13 @@
           providerSelection = selection.value;
           const primary = providerSelection.candidates[0];
           provider = primary.providerId; model = primary.model || null;
+        }
+        if (draft) {
+          await onSaved({ cli: currentCli, provider, providerSelection, model: model || null,
+            effort: effortField.hidden ? null : effortSelect.value || null,
+            providerName: providers.find(candidate => candidate.id === provider)?.name || null });
+          d.close();
+          return;
         }
         const base = `/api/sessions/${encodeURIComponent(entry.sessionId)}`;
         if (currentCli !== config.cli) await request(base + '/switch-cli', { cli: currentCli });

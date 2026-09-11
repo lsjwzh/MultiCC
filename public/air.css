@@ -167,8 +167,16 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 .quick-task-file button { min-width: 22px; min-height: 22px; padding: 0; border: 0; background: transparent; }
 .quick-task-actions > label { display: flex; align-items: center; gap: 5px; width: auto; color: #60758a; font-size: 10.5px; white-space: nowrap; }
 .quick-task-actions input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); }
-.quick-task-actions select { width: 105px; min-height: 32px; padding: 4px 7px; }
 .quick-task-actions button { min-height: 32px; padding: 5px 9px; font-size: 11px; }
+#quick-task-mic.rec { color: #fff; border-color: #c9553f; background: #d1604a; }
+/* Goal limits only exist while Goal mode is on (air.js → renderQuickGoalLimits):
+   a quiet row of numbers under the input rather than more buttons in the band. */
+.quick-task-goal-limits { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 6px 12px 0; color: #60758a; font-size: 10.5px; }
+.quick-task-goal-limits > span { color: #3d5871; font-weight: 500; }
+.quick-task-goal-limits label { display: flex; align-items: center; gap: 5px; }
+.quick-task-goal-limits input { width: 84px; min-height: 26px; padding: 3px 6px; font-size: 11px; }
+/* Dropping files anywhere on the card reads as the card lighting up. */
+#quick-task-form.is-dropping { border-color: #8fbde8; box-shadow: 0 10px 30px #3155761f, 0 0 0 3px #dcecfb; }
 #quick-task-status { min-width: 0; flex: 1; overflow: hidden; color: #718499; font-size: 9px; white-space: nowrap; text-overflow: ellipsis; }
 #conversation { min-height: 220px; flex: 1; width: 100%; border: 0; background: transparent; }
 

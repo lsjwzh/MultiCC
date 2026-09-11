@@ -25,7 +25,6 @@
   let loading = false;
   let createAttempt = null;
   let quickCreateAttempt = null;
-  let quickCliSignature = '';
 
   const stateNames = {
     active: '进行中', succeeded: '成功', unknown: '结果待核验', failed: '失败', error: '失败', cancelled: '已取消',
@@ -200,18 +199,9 @@
       return button;
     }));
     if (!rows.length) $('directory-task-list').append(node('p', '这里还没有任务。可以直接在下方描述第一个目标。', 'directory-task-empty'));
-    const cliSignature = JSON.stringify(data?.clis || []);
-    if (cliSignature !== quickCliSignature) {
-      const previous = $('quick-task-cli').value;
-      $('quick-task-cli').replaceChildren(...(data?.clis || []).map(cli => {
-        const option = node('option', cli); option.value = cli; return option;
-      }));
-      if ([...$('quick-task-cli').options].some(option => option.value === previous)) $('quick-task-cli').value = previous;
-      quickCliSignature = cliSignature;
-    }
-    for (const element of [$('quick-task-input'), $('quick-task-cli'), $('quick-task-provider'), $('quick-task-submit'),
+    renderQuickPills();
+    for (const element of [$('quick-task-input'), $('quick-task-submit'),
       $('quick-task-attach'), $('quick-task-mic')]) element.disabled = !dir;
-    void renderQuickProviders();
   }
 
   function quickTaskId() {
@@ -244,46 +234,49 @@
   // The box is the same composer module the task chat uses (composer.css), so it
   // offers the same capabilities through the same endpoints the chat composer
   // uses: attach by button, paste or drop; dictation through the local ASR; Goal
-  // mode with its limits; and the runtime pick (CLI + provider) that is pinned
-  // onto the task at creation.
+  // mode with its limits; and — through the two pills the chat also renders on
+  // its composer — the same AI 配置 (CLI · provider · model · effort) and 角色
+  // dialogs. Nothing about configuring a task is written twice: a pill opens the
+  // one dialog and holds the answer until the task is created.
   function quickStatus(text) { $('quick-task-status').textContent = text || ''; }
 
-  // Provider list per CLI, fetched once and reused. An empty value means "follow
-  // the default routing", which is what the task would have used anyway.
-  const quickProviderCache = new Map();
-  let quickProviderSignature = '';
-  let quickProviderSequence = 0;
-  async function quickProvidersFor(cli) {
-    if (!cli) return [];
-    if (quickProviderCache.has(cli)) return quickProviderCache.get(cli);
-    let list = [];
-    try {
-      const result = await api(`/api/providers?cli=${encodeURIComponent(cli)}`);
-      list = Array.isArray(result.providers) ? result.providers : [];
-    } catch (_) { list = []; }
-    quickProviderCache.set(cli, list);
-    return list;
+  // Empty until a pill is used: an unconfigured new task then follows the same
+  // default routing it would have had anyway.
+  let quickRuntime = {};
+  let quickRoles = [];
+
+  // One source of truth for the CLI the panel is about to use: the pill names it
+  // and the AI 配置 dialog opens on it, so the two can never disagree about what
+  // a task created from here will run.
+  function quickCli() { return quickRuntime.cli || data?.clis?.[0] || 'claude'; }
+
+  function renderQuickPills() {
+    const ai = $('quick-ai-pill'), role = $('quick-role-pill');
+    if (!ai || !role) return;
+    const route = quickRuntime.providerSelection?.mode === 'auto'
+      ? `Auto ${quickRuntime.providerSelection.protocol}`
+      : quickRuntime.providerName || quickRuntime.provider || '默认线路';
+    ai.textContent = [quickCli(), route, quickRuntime.model || '默认模型'].join(' · ');
+    ai.title = '新任务的 AI 配置：CLI、线路与模型（创建后即生效）';
+    role.textContent = quickRoles.length ? `${quickRoles.length} 个角色` : '＋ 角色';
+    role.title = '新任务的角色上下文（写入第一条消息）';
+    for (const pill of [ai, role]) pill.disabled = !directoryId;
   }
-  async function renderQuickProviders() {
-    const select = $('quick-task-provider');
-    if (!select) return;
-    const cli = $('quick-task-cli').value || data?.clis?.[0] || '';
-    const sequence = ++quickProviderSequence;
-    const list = await quickProvidersFor(cli);
-    if (sequence !== quickProviderSequence) return;
-    const previous = select.value;
-    const signature = JSON.stringify([cli, list.map(provider => provider.id)]);
-    if (signature === quickProviderSignature) return;
-    quickProviderSignature = signature;
-    const options = [node('option', '跟随默认')]; options[0].value = '';
-    for (const provider of list) {
-      const option = node('option', provider.name || provider.id);
-      option.value = provider.id;
-      option.title = provider.name || provider.id;
-      options.push(option);
-    }
-    select.replaceChildren(...options);
-    if (list.some(provider => provider.id === previous)) select.value = previous;
+
+  function openQuickConfiguration() {
+    if (!directoryId) return;
+    window.MultiCCAirSettings.configuration(
+      { task: { title: '新任务' }, configuration: { ...quickRuntime, cli: quickCli() } }, data?.clis,
+      runtime => { quickRuntime = runtime; renderQuickPills(); },
+    );
+  }
+
+  function openQuickRoles() {
+    if (!directoryId) return;
+    window.MultiCCAirRoles.open({
+      roleBindings: { version: 0, bindings: quickRoles }, api,
+      save: async bindings => { quickRoles = bindings; renderQuickPills(); },
+    });
   }
 
   // Dictation: press to record, press again to stop, one-shot transcription.
@@ -349,11 +342,15 @@
     if (!typed) return;
     const paths = [...$('quick-task-files').querySelectorAll('[data-path]')].map(chip => chip.dataset.path);
     const text = typed + (paths.length ? `\n\n附件：${paths.join(' ')}` : '');
-    const cli = $('quick-task-cli').value || data.clis[0] || 'claude';
-    const provider = $('quick-task-provider').value;
+    // The pill's runtime is pinned onto the task at creation; the route it names
+    // takes effect immediately, exactly as it does on the chat's own composer.
+    const runtime = { cli: quickRuntime.cli || data.clis[0] || 'claude' };
+    for (const key of ['provider', 'providerSelection', 'model', 'effort']) {
+      if (quickRuntime[key]) runtime[key] = quickRuntime[key];
+    }
     const goal = $('quick-task-goal').checked;
     const goalLimits = goal ? goalLimitsFromForm() : null;
-    const fingerprint = JSON.stringify([directoryId, text, cli, provider, goalLimits]);
+    const fingerprint = JSON.stringify([directoryId, text, runtime, quickRoles, goalLimits]);
     if (!quickCreateAttempt || quickCreateAttempt.fingerprint !== fingerprint) {
       quickCreateAttempt = { fingerprint, createId: quickTaskId(), sendId: quickTaskId() };
     }
@@ -363,18 +360,25 @@
     quickStatus('正在创建固定任务…');
     try {
       const title = typed.split(/\n/).find(Boolean).trim().slice(0, 120);
-      // Provider is pinned at creation; without a pick the task follows the same
-      // default routing it would have had anyway.
-      created = await api('/api/air/tasks', {
-        dirId: directoryId, title, cli, clientMsgId: attempt.createId, ...(provider ? { provider } : {}),
-      });
-      quickStatus('任务已创建，正在发送第一条消息…');
+      created = await api('/api/air/tasks', { dirId: directoryId, title, clientMsgId: attempt.createId, ...runtime });
+      quickStatus('任务已创建，正在写入角色与第一条消息…');
+      // Roles are bound before the first message: the binding speaks for the
+      // next message, and the next message is exactly the one below.
+      if (quickRoles.length) {
+        await api(`/api/air/tasks/${encodeURIComponent(created.taskId)}/roles`, {
+          bindings: quickRoles, expectedVersion: 0, clientMsgId: `${attempt.createId}-roles`,
+        });
+      }
       await api(`/api/task-shell-tasks/${encodeURIComponent(created.taskId)}/messages`, {
         text, clientMsgId: attempt.sendId, intent: 'work', ...(goal ? { goal: true, goalLimits: goalLimits || {} } : {}),
       });
       quickCreateAttempt = null;
       $('quick-task-input').value = '';
       $('quick-task-goal').checked = false;
+      // The route stays (it is how this person runs things); the roles do not —
+      // one task's role context must never leak into the next one unseen.
+      quickRoles = [];
+      renderQuickPills();
       renderQuickGoalLimits();
       $('quick-task-files').replaceChildren();
       await refresh();
@@ -1063,11 +1067,22 @@
   $('directory-search').oninput = renderDirectories;
   $('task-search').oninput = render;
   $('status-filter').onchange = render;
+  // Refreshing means reloading what the page is showing. The conversation lives
+  // in a frame of its own, so reloading it is a partial reload of this page: the
+  // frame boots again, re-fetches its messages and re-establishes its socket,
+  // while the host's own state and navigation stay where they are. Reconnecting
+  // the socket alone would only replay deltas onto a DOM that may have drifted —
+  // which is why the frame's own ↻ is hidden here (chat-air.css).
+  function reloadConversation() {
+    const frame = $('conversation');
+    if (!taskId || !frame || frame.hidden) return;
+    try { frame.contentWindow?.location.reload(); }
+    catch (error) { notice(`刷新会话失败：${error.message}`); }
+  }
   $('refresh').onclick = async () => {
     await refresh();
     if (adminModes.has(mode)) await window.MultiCCAirAdmin?.refresh(adminContext());
-    try { await $('conversation').contentWindow?.MultiCCTaskBoardEntry?.refresh?.(); }
-    catch (error) { notice(error.message); }
+    reloadConversation();
   };
   $('favorite').onclick = () => {
     if (!directoryId) return;
@@ -1086,7 +1101,8 @@
   $('quick-task-file-input').onchange = event => void uploadQuickTaskFiles(event.target.files);
   $('quick-task-mic').onclick = () => void toggleQuickDictation();
   $('quick-task-goal').onchange = renderQuickGoalLimits;
-  $('quick-task-cli').onchange = () => void renderQuickProviders();
+  $('quick-ai-pill').onclick = openQuickConfiguration;
+  $('quick-role-pill').onclick = openQuickRoles;
   $('quick-task-input').onkeydown = event => {
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
       event.preventDefault();

@@ -70,6 +70,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
   routes['/api/task-shells/shell-new/chat'] = () => json({ activeSessionId: 'task-new', taskId: 'tsk_new' });
   routes['/api/settings/access-token'] = () => json({ hasToken: true, canEdit: false });
   routes['/api/air/tasks/tsk_a/roles'] = ({ body }) => { const value = JSON.parse(body); entry.roleBindings = { version: entry.roleBindings.version + 1, bindings: value.bindings }; return json({ ok: true, roleBindings: entry.roleBindings }); };
+  routes['/api/air/tasks/tsk_new/roles'] = ({ body }) => { const value = JSON.parse(body); newEntry.roleBindings = { version: 1, bindings: value.bindings }; newEntry.messages = [...(newEntry.messages || []), { id: 'u-new', role: 'user', content: '从目录首页创建任务' }]; return json({ ok: true, roleBindings: newEntry.roleBindings }); };
   routes['/api/agent-presets'] = () => json({ presets: [{ id: 'designer', name: '设计师' }] });
   routes['/api/agent-presets/designer'] = () => json({ name: '设计师', prompt: '关注清晰、轻盈的交互' });
   routes['/api/air/resolve'] = () => json({ ok: true, url: '/air?task=tsk_a&dir=d1' });
@@ -101,6 +102,18 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     // the host page renders them there (air.js → renderComposerControls), so
     // these assertions read the frame, not the task header.
     const composerPill = id => `${frame}.getElementById('${id}')`;
+    // The conversation is a frame of its own, so the header ↻ is a partial
+    // reload of this page: the host keeps its state and the frame boots again
+    // (air.js → reloadConversation). location.reload() is asynchronous, so the
+    // OLD document keeps answering probes until the navigation commits — the
+    // gate below marks that window and waits for a different one to finish
+    // booting, rather than trusting a readiness check that the stale copy passes.
+    const reloadedFrame = `${frame}?.readyState==='complete' && typeof ${frame}?.defaultView?.renderAuxClassify==='function' && ${frame}.defaultView.__reloadProbe===undefined && ${frame}.getElementById('worktree-bar')!==null`;
+    const reloadConversation = async () => {
+      const willReload = await page.evaluate(`(()=>{const f=document.getElementById('conversation');if(!f||f.hidden||!f.getAttribute('src'))return false;f.contentWindow.__reloadProbe='stale';return true})()`);
+      await page.evaluate(`document.getElementById('refresh').click()`);
+      if (willReload) assert.ok(await page.waitFor(reloadedFrame), 'the header ↻ rebuilt the conversation');
+    };
     assert.ok(await page.waitFor(`${frame}?.URL.includes('session=task-a') && ${frame}.readyState==='complete'`));
     assert.ok(await page.waitFor(`${frame}?.body.classList.contains('air-chat') && ${frame}?.getElementById('input')`));
     assert.ok(await page.waitFor(`${frame}.getElementById('merge-btn').parentElement.id==='header-more-menu'`));
@@ -129,10 +142,18 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(page.requests.some(r => r.method === 'POST' && /\/(sync|rebase|queue\/action)$/.test(r.path)), false);
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1920, height: 900, deviceScaleFactor: 1, mobile: false });
     assert.ok(await page.evaluate(`${frame}.getElementById('messages').getBoundingClientRect().width>1200`), 'actual Air chat fills wide viewport');
-    await page.evaluate(`document.querySelector('[data-chat-layout]').click();document.querySelector('[name=limited]').click();const range=document.querySelector('[name=width]');range.value=1000;range.dispatchEvent(new Event('input'));document.querySelector('button[value=save]').click()`);
-    assert.ok(await page.waitFor(`${frame}.getElementById('messages').getBoundingClientRect().width===1000`));
-    assert.equal(await page.evaluate(`${frame}.getElementById('input-bar').getBoundingClientRect().width`), 1000);
-    await page.evaluate(`document.querySelector('[data-chat-layout]').click();document.querySelector('[name=reset]').click();document.querySelector('button[value=save]').click()`);
+    // 聊天宽度 is the conversation's own control: the host no longer owns a
+    // second copy, so the frame's header More menu is the only entry. 840 sits
+    // under the Air reading-column cap, so the composer column follows it.
+    await page.evaluate(`(()=>{const d=${frame};d.getElementById('header-more-btn').click();d.getElementById('chat-layout-btn').click();
+      const q=s=>d.querySelector('.chat-layout-dialog '+s);
+      q('[name=limited]').click();const range=q('[name=width]');range.value=840;range.dispatchEvent(new Event('input'));q('button[value=save]').click();})()`);
+    assert.ok(await page.waitFor(`${frame}.getElementById('messages').getBoundingClientRect().width===840`));
+    assert.equal(await page.evaluate(`${frame}.getElementById('input-bar').getBoundingClientRect().width`), 840);
+    await page.evaluate(`(()=>{const d=${frame};d.getElementById('chat-layout-btn').click();
+      const q=s=>d.querySelector('.chat-layout-dialog '+s);
+      q('[name=reset]').click();q('button[value=save]').click();})()`);
+    assert.ok(await page.waitFor(`${frame}.getElementById('messages').getBoundingClientRect().width>1200`), 'the frame width control is load-bearing, not decorative');
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1366, height: 900, deviceScaleFactor: 1, mobile: false });
     await page.evaluate(`(()=>{const d=${frame},w=d.defaultView,v=w.MultiCCChatHistoryView.createHistoryView({document:d,messagesEl:d.getElementById('messages'),safeMarkdown:w.MultiCCSafeMarkdown});v.clearMessages();d.getElementById('messages').append(...${JSON.stringify(taskMessages)}.map(m=>v.renderMessage(m)));w.MultiCCChatSessionQueue.render([{entryId:'fifo-1',position:1,state:'pending',text:'继续检查移动端布局'}],{state:'running'},d);w.renderAuxClassify('完善 Air 对话体验','verifying','W')})()`);
     assert.equal(await page.evaluate(`${frame}.querySelector('.tool-card .tool-name').textContent`), 'Read');
@@ -145,17 +166,40 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(await page.evaluate(`${frame}.getElementById('aux-classify-bar').classList.contains('show')`), true);
     await page.evaluate(`${frame}.defaultView.applyMergeStatus({branch:'multicc/task-a',baseBranch:'main',behind:2,conflict:true,conflictFiles:['example.js']})`);
     assert.equal(await page.evaluate(`${frame}.getElementById('worktree-conflict-bar').parentElement.id`), 'chat-context-bar');
-    assert.equal(await page.evaluate(`${frame}.querySelectorAll('#worktree-conflict-bar button').length`), 3);
+    // The banner owns the parked-sync decisions and the retry, so a conflicted
+    // worktree is never left without a way to request the sync again.
+    assert.deepEqual(await page.evaluate(`[...${frame}.querySelectorAll('#worktree-conflict-bar button')].map(b=>b.textContent)`), ['如何解决', '继续', '放弃', '强制同步']);
+    assert.equal(await page.evaluate(`${frame}.querySelectorAll('#worktree-force-sync-btn').length`), 1, 'the id stays on the always-present status row only');
     await page.evaluate(`${frame}.defaultView.refreshMergeStatus()`);
     assert.equal(await page.evaluate(`document.getElementById('task-state').textContent.includes('计划待执行')`), true);
     entry.messages = taskMessages; entry.execution = { busy: true, status: 'running' };
-    await page.evaluate(`document.getElementById('refresh').click()`);
+    await reloadConversation();
     assert.ok(await page.waitFor(`document.getElementById('task-state').textContent.includes('本轮 执行中')`));
     await page.evaluate(`${frame}.defaultView.renderAuxClassify('完善 Air 对话体验','implementing','P')`);
     screenshots.push(await page.screenshot('two-bars-desktop'));
+    // 实现中 + API 异常 is the copy that used to float in the middle of the bar:
+    // the goal label stretched to fill it and pushed both badges to the far end.
+    // The cluster is one tight run now, inside its own box, off the left edge.
+    await page.evaluate(`${frame}.defaultView.renderAuxClassify('完善 Air 对话体验','implementing','E','7K2M')`);
+    assert.deepEqual(await page.evaluate(`[${frame}.getElementById('ac-state').textContent,${frame}.getElementById('ac-phase').textContent]`), ['❌API 异常', '实现中'], 'the E turn keeps its ❌ mark and its 实现中 phase');
+    const classifyRow = await page.evaluate(`(()=>{const d=${frame},box=id=>d.getElementById(id).getBoundingClientRect(),icon=d.querySelector('.ac-icon').getBoundingClientRect();
+      const bar=box('aux-classify-bar'),goal=box('ac-goal'),state=box('ac-state'),phase=box('ac-phase');
+      const left=Math.min(...['ac-goal','ac-state','ac-phase'].map(id=>box(id).left));
+      return {bar:[Math.round(bar.left),Math.round(bar.right)],goal:[Math.round(goal.left),Math.round(goal.right),Math.round(goal.width)],
+        goalToState:Math.round(state.left-goal.right),stateToPhase:Math.round(phase.left-state.right),
+        iconToGoal:Math.round(goal.left-icon.right),leftGap:Math.round(icon.left-bar.left),rightGap:Math.round(bar.right-phase.right),
+        overflows:d.documentElement.scrollWidth>d.documentElement.clientWidth,
+        belowHeader:bar.top>=d.getElementById('chat-context-bar').getBoundingClientRect().top};})()`);
+    assert.ok(classifyRow.goalToState >= 0 && classifyRow.goalToState <= 12, `goal → state gap: ${JSON.stringify(classifyRow)}`);
+    assert.ok(classifyRow.stateToPhase >= 0 && classifyRow.stateToPhase <= 12, `state → phase gap: ${JSON.stringify(classifyRow)}`);
+    assert.ok(classifyRow.iconToGoal <= 8, `🎯 leads the run: ${JSON.stringify(classifyRow)}`);
+    assert.ok(classifyRow.leftGap <= 14, `the run starts at the bar's left edge: ${JSON.stringify(classifyRow)}`);
+    assert.ok(classifyRow.rightGap >= 0 && !classifyRow.overflows, JSON.stringify(classifyRow));
+    assert.ok(classifyRow.goal[2] < classifyRow.bar[1] - classifyRow.bar[0], 'the goal label no longer eats the whole bar');
+    screenshots.push(await page.screenshot('two-bars-api-error-desktop'));
     entry.execution = { busy: false, status: 'idle' };
     entry.messages = taskMessages; entry.attribution = successAttribution;
-    await page.evaluate(`document.getElementById('refresh').click()`);
+    await reloadConversation();
     assert.ok(await page.waitFor(`document.getElementById('delivery-card').innerText.includes('建议归入「任务体验收口」')`));
     assert.equal(await page.evaluate(`document.getElementById('delivery-card').innerText.includes('建议归入「任务体验收口」')`), true);
     assert.equal(await page.evaluate(`document.getElementById('delivery-destination').textContent.includes('完善任务协作体验')`), true);
@@ -187,7 +231,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.deepEqual(configPatches[1], { model: 'gpt-5.6-sol', effort: 'high' });
     assert.ok(await page.waitFor(`${composerPill('air-ai-pill')}.textContent.includes('Backup Responses') && ${composerPill('air-ai-pill')}.textContent.includes('gpt-5.6-sol')`));
     entry.configuration.pendingConfiguration = { cli: 'codex', profile: { provider: 'codex-lab', model: 'gpt-5.5', effort: 'low' } };
-    await page.evaluate(`document.getElementById('refresh').click()`);
+    await reloadConversation();
     assert.ok(await page.waitFor(`${composerPill('air-ai-pill')}.textContent.includes('下轮生效')`));
     assert.equal(await page.evaluate(`${composerPill('air-ai-pill')}.textContent.includes('gpt-5.5') && !${composerPill('air-ai-pill')}.textContent.includes('Backup Responses')`), true);
     await page.evaluate(`${composerPill('air-ai-pill')}.click()`);
@@ -205,12 +249,12 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(await page.evaluate(`${frame}.getElementById('input').value`), '未发送的草稿');
     const successfulAttribution = entry.attribution;
     entry.execution.status = 'error'; entry.attribution = {};
-    await page.evaluate(`document.getElementById('refresh').click()`);
+    await reloadConversation();
     assert.ok(await page.waitFor(`document.getElementById('delivery-title').textContent==='任务保持进行中'`));
     assert.equal(await page.evaluate(`document.getElementById('delivery-card').hidden`), false);
     assert.equal(await page.evaluate(`document.getElementById('task-state').textContent.includes('本轮 失败')`), true);
     entry.execution.status = 'idle'; entry.attribution = successfulAttribution;
-    await page.evaluate(`document.getElementById('refresh').click()`);
+    await reloadConversation();
     assert.ok(await page.waitFor(`document.getElementById('delivery-title').textContent.includes('任务体验收口')`));
     await page.evaluate(`document.getElementById('schedules').click()`);
     assert.ok(await page.waitFor(`document.getElementById('schedule-center').hidden===false && document.querySelector('.schedule-fixed-task')`));
@@ -230,11 +274,65 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.ok(await page.waitFor(`!document.getElementById('empty').hidden && document.querySelectorAll('.directory-stat').length===4`));
     assert.equal(await page.evaluate(`document.getElementById('task-title').textContent.includes('MultiCC') && document.getElementById('task-state').textContent.includes('/projects/multicc')`), true);
     assert.equal(await page.evaluate(`document.querySelectorAll('.directory-task-row').length`), 1);
+    // The new-task composer reuses the chat's two composers instead of growing
+    // its own CLI/Provider selects: the AI 配置 pill opens the same dialog (with
+    // 模型, which the old panel dropped) and hands the runtime back as a draft,
+    // and the 角色 pill opens the same role editor.
+    assert.ok(await page.waitFor(`document.getElementById('quick-ai-pill').textContent.includes('codex')`));
+    // Nothing is resolved yet for a task that does not exist, so the pill names
+    // the CLI default honestly instead of inventing a route.
+    assert.equal(await page.evaluate(`document.getElementById('quick-ai-pill').textContent`), 'codex · 默认线路 · 默认模型');
+    assert.equal(await page.evaluate(`document.querySelectorAll('#quick-task-form select').length`), 0, 'no second CLI/Provider copy on the panel');
+    assert.equal(await page.evaluate(`document.getElementById('quick-role-pill').textContent`), '＋ 角色');
+    assert.equal(await page.evaluate(`document.getElementById('quick-ai-pill').closest('.mc-composer')===document.getElementById('quick-task-form')`), true, 'both pills ride the composer card');
+    screenshots.push(await page.screenshot('directory-composer-desktop'));
+    await page.evaluate(`document.getElementById('quick-ai-pill').click()`);
+    assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open] .air-provider-option[data-value="codex-backup"]')`), JSON.stringify({ pill: await page.evaluate(`document.getElementById('quick-ai-pill').textContent`), selected: await page.evaluate(`document.querySelector('.air-cli-option.selected strong')?.textContent`), requests: page.requests.slice(-6).map(r => r.method + ' ' + r.path) }));
+    screenshots.push(await page.screenshot('directory-composer-config-desktop'));
+    assert.equal(await page.evaluate(`!!document.querySelector('.air-config-dialog[open] .air-config-field select[aria-label="模型"]')`), true, 'model selection survives on the panel');
+    await page.evaluate(`(()=>{const r=document.querySelector('.air-provider-option[data-value="codex-backup"] input');r.checked=true;r.dispatchEvent(new Event('change',{bubbles:true}));const m=document.querySelector('.air-config-field select[aria-label="模型"]');m.value='gpt-5.6-sol';document.querySelector('.air-config-form').requestSubmit()})()`);
+    assert.ok(await page.waitFor(`!document.querySelector('.air-config-dialog[open]')`));
+    assert.equal(await page.evaluate(`document.getElementById('quick-ai-pill').textContent`), 'codex · Backup Responses · gpt-5.6-sol');
+    assert.equal(configPatches.length, 2, 'a task that does not exist yet is never PATCHed');
+    await page.evaluate(`document.getElementById('quick-role-pill').click()`);
+    assert.ok(await page.waitFor(`document.querySelector('dialog[open] select option[value=designer]')`));
+    await page.evaluate(`const p=document.querySelector('dialog[open] select');p.value='designer';p.dispatchEvent(new Event('change'))`);
+    assert.ok(await page.waitFor(`document.querySelector('dialog[open] textarea')?.value==='关注清晰、轻盈的交互'`));
+    await page.evaluate(`document.querySelector('dialog[open] form').requestSubmit()`);
+    assert.ok(await page.waitFor(`document.getElementById('quick-role-pill').textContent==='1 个角色'`));
+    // The two pills and the card have to survive the phone widths too: this is
+    // the first thing a directory opens with.
+    for (const width of [390, 320]) {
+      await page.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: true });
+      const panel = await page.evaluate(`(()=>{const f=document.getElementById('quick-task-form').getBoundingClientRect();
+        const ai=document.getElementById('quick-ai-pill').getBoundingClientRect(),role=document.getElementById('quick-role-pill').getBoundingClientRect();
+        return {overflow:document.documentElement.scrollWidth<=innerWidth,form:[Math.round(f.left),Math.round(f.right)],
+          aiRight:Math.round(ai.right),roleRight:Math.round(role.right),roleBottom:Math.round(role.bottom),formTop:Math.round(f.top),
+          rows:Math.round(role.top-ai.top)>0};})()`);
+      assert.equal(panel.overflow, true, JSON.stringify(panel));
+      assert.ok(panel.aiRight <= width && panel.roleRight <= width, JSON.stringify(panel));
+      if (width === 390) screenshots.push(await page.screenshot('directory-composer-mobile'));
+    }
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 1366, height: 900, deviceScaleFactor: 1, mobile: false });
     await page.evaluate(`document.getElementById('quick-task-input').value='从目录首页创建任务';document.getElementById('quick-task-goal').checked=true;document.getElementById('quick-task-form').requestSubmit()`);
     assert.ok(await page.waitFor(`location.search.includes('task=tsk_new')`));
     assert.equal(quickDispatches.length, 1);
     assert.equal(quickDispatches[0].text, '从目录首页创建任务');
     assert.equal(quickDispatches[0].goal, true);
+    // What the pills collected is what the task is created with — the runtime is
+    // pinned at creation and the roles are bound before the first message runs.
+    const createBody = page.requests.filter(r => r.method === 'POST' && r.path === '/api/air/tasks').map(r => JSON.parse(r.body)).pop();
+    const roleBody = page.requests.filter(r => r.path === '/api/air/tasks/tsk_new/roles').map(r => JSON.parse(r.body)).pop();
+    assert.equal(createBody.dirId, 'd1');
+    assert.equal(createBody.title, '从目录首页创建任务');
+    assert.equal(createBody.cli, 'codex');
+    assert.equal(createBody.provider, 'codex-backup');
+    assert.equal(createBody.model, 'gpt-5.6-sol', 'the panel no longer drops the model');
+    assert.ok(createBody.clientMsgId, 'creation carries its receipt key');
+    assert.deepEqual(roleBody.bindings, [{ name: '设计师', prompt: '关注清晰、轻盈的交互' }]);
+    assert.equal(roleBody.expectedVersion, 0, 'a fresh task binds roles at version 0');
+    const order = page.requests.map(r => r.method + ' ' + r.path);
+    assert.ok(order.indexOf('POST /api/air/tasks/tsk_new/roles') < order.indexOf('POST /api/task-shell-tasks/tsk_new/messages'), 'roles are bound before the first message runs');
     await page.navigate('/air?view=overview');
     assert.ok(await page.waitFor(`document.getElementById('admin-center').hidden===false && document.querySelectorAll('.admin-stat').length===4`));
     assert.equal(await page.evaluate(`document.getElementById('task-title').textContent`), '控制台');
