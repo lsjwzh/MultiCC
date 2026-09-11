@@ -7,11 +7,23 @@
   const modeFrom = params => {
     const requested = params.get('view');
     if (requested === 'directories') return 'library';
-    if (requested === 'activity') return 'activity';
     if (requested === 'schedules') return 'schedules';
+    // 控制台是盖在原页面上的一层，不是一种页面模式。/manage 的入口会跳到
+    // ?view=overview，那个地址现在表示「打开控制台」，而不是「切到控制台页」。
+    if (requested === 'overview') return 'tasks';
+    // 「跨目录活动」併进控制台之后，旧链接落在「全部目录」的任务带上，
+    // 而不是变成一个打不开的地址。
+    if (requested === 'activity') return 'tasks';
     if (adminModes.has(requested)) return requested;
     return 'tasks';
   };
+  // 一个目录只是执行上下文，不是查找任务的前提：任务带的作用域可以放宽到
+  // 「最近打开过的」和「所有目录」。
+  let consoleOpen = initialParams.get('view') === 'overview';
+  let taskScope = initialParams.get('view') === 'activity' ? 'all' : 'dir';
+  let paletteOpen = false;
+  let paletteItems = [];
+  let paletteIndex = 0;
   let data = null;
   let directoryId = initialParams.get('dir');
   let taskId = initialParams.get('task');
@@ -59,6 +71,25 @@
   };
   let favorites = stored('air:favorites', []);
   if (!Array.isArray(favorites)) favorites = [];
+  // 「最近」作用域 = 我打开过的任务（跨目录，最新在前）。浏览记录不是权限也
+  // 不是归属，只是把常用的几个任务放在手边。
+  let recentTaskIds = stored('air:recent-tasks', []);
+  if (!Array.isArray(recentTaskIds)) recentTaskIds = [];
+  function rememberTask(id) {
+    if (!id) return;
+    recentTaskIds = [id, ...recentTaskIds.filter(value => value !== id)].slice(0, 12);
+    try { localStorage.setItem('air:recent-tasks', JSON.stringify(recentTaskIds)); } catch (_) {}
+  }
+  function scopePool(scope) {
+    if (!data) return [];
+    if (scope === 'all') return data.tasks;
+    if (scope === 'recent') {
+      const byId = new Map(data.tasks.map(task => [task.id, task]));
+      return recentTaskIds.map(id => byId.get(id)).filter(Boolean);
+    }
+    return data.tasks.filter(task => task.dirId === directoryId);
+  }
+  const urgentTasks = () => window.MultiCCAirAdmin?.urgentTasks?.(data) || [];
 
   async function api(path, body, requestedMethod = null) {
     const method = requestedMethod || (body === undefined ? 'GET' : 'POST');
@@ -105,6 +136,102 @@
     $('details-toggle').setAttribute('aria-expanded', String(value));
     $('task-state').setAttribute('aria-expanded', String(value));
   }
+
+  // ── 控制台：从左侧展开的一层 ────────────────────────────────────────────
+  // 打开它不改地址、不卸载当前任务、不重建任何东西 —— 所以关掉能回到离开
+  // 时的原处。地址里唯一的痕迹是 /manage 的旧入口 ?view=overview，关掉的
+  // 时候顺手抹平，免得刷新又弹出来。
+  function applyConsole(open) {
+    consoleOpen = !!open;
+    document.body.classList.toggle('console-open', consoleOpen);
+    $('overview').setAttribute('aria-expanded', String(consoleOpen));
+    $('console-panel').setAttribute('aria-hidden', String(!consoleOpen));
+    $('console-scrim').hidden = !consoleOpen;
+  }
+  function setConsole(open) {
+    if (consoleOpen === !!open) return;
+    const focusConsole = !!open;
+    applyConsole(open);
+    if (focusConsole) {
+      render();
+      $('console-close').focus();
+      return;
+    }
+    if (new URLSearchParams(location.search).get('view') === 'overview') history.replaceState({}, '', routeUrl());
+    $('overview').focus();
+  }
+
+  // ── ⌘K：目录和任务一起搜 ────────────────────────────────────────────────
+  // 找任务不该先要求你想起来它在哪个目录。两类对象同一次搜索、同一个列表。
+  function paletteCandidates(query) {
+    const needle = query.trim().toLowerCase();
+    const matches = text => !needle || text.toLowerCase().includes(needle);
+    const directories = data.directories
+      .filter(directory => matches(`${directory.name} ${directory.path || ''}`))
+      .slice(0, needle ? 6 : 5)
+      .map(directory => ({
+        kind: 'directory', dirId: directory.id,
+        title: directory.name, detail: directory.path || '工作目录',
+      }));
+    // 顺序即相关度：最近打开过的在前，然后是当前目录，最后是其余任务。
+    const pool = [...scopePool('recent'), ...scopePool('dir'), ...data.tasks];
+    const seen = new Set();
+    const tasks = [];
+    for (const task of pool) {
+      if (seen.has(task.id) || !matches(task.title || '')) continue;
+      seen.add(task.id);
+      tasks.push({
+        kind: 'task', dirId: task.dirId, id: task.id,
+        title: task.title || '未命名任务',
+        detail: `${directoryName(task.dirId)} · ${label(task.status)}`,
+      });
+      if (tasks.length >= (needle ? 8 : 6)) break;
+    }
+    return [...directories, ...tasks];
+  }
+  function renderPalette() {
+    paletteItems = paletteCandidates($('palette-input').value);
+    if (paletteIndex >= paletteItems.length) paletteIndex = 0;
+    $('palette-results').replaceChildren(...paletteItems.map((item, index) => {
+      const button = node('button', null, index === paletteIndex ? 'active' : '');
+      button.type = 'button';
+      const copy = node('span', null, 'palette-copy');
+      copy.append(node('strong', item.title), node('small', item.detail));
+      button.append(node('span', item.kind === 'task' ? '◆' : '▣', 'palette-mark'), copy,
+        node('span', item.kind === 'task' ? '任务' : '目录', 'palette-kind'));
+      button.onclick = () => choosePalette(index);
+      return button;
+    }));
+    if (!paletteItems.length) $('palette-results').append(node('p', '没有匹配的工作目录或任务。', 'empty-list'));
+    const directories = paletteItems.filter(item => item.kind === 'directory').length;
+    $('palette-note').textContent = paletteItems.length
+      ? `${directories} 个目录 · ${paletteItems.length - directories} 个任务`
+      : '目录与任务一起搜';
+  }
+  function choosePalette(index = paletteIndex) {
+    const item = paletteItems[index];
+    if (!item) return;
+    closePalette();
+    navigate(item.dirId, item.kind === 'task' ? item.id : null);
+  }
+  function openPalette() {
+    if (!data || paletteOpen) return;
+    // 用 setConsole 而不是 applyConsole：它顺手把地址里的 view=overview 撤掉，
+    // 否则面板被 ⌘K 顶掉之后，刷新页面又会自己弹回来。
+    if (consoleOpen) setConsole(false);
+    paletteOpen = true;
+    paletteIndex = 0;
+    $('palette-input').value = '';
+    $('palette').hidden = false;
+    $('palette-scrim').hidden = false;
+    renderPalette();
+    $('palette-input').focus();
+  }
+  function closePalette() {
+    paletteOpen = false;
+    $('palette').hidden = true;
+    $('palette-scrim').hidden = true;
+  }
   function saveDraft() {
     const doc = $('conversation').contentDocument;
     const input = doc?.getElementById('input') || doc?.getElementById('message');
@@ -113,7 +240,6 @@
   function routeUrl(nextMode = mode) {
     const params = new URLSearchParams();
     if (nextMode === 'library') params.set('view', 'directories');
-    if (nextMode === 'activity') params.set('view', 'activity');
     if (nextMode === 'schedules') params.set('view', 'schedules');
     if (adminModes.has(nextMode)) params.set('view', nextMode);
     const external = initialParams.get('external');
@@ -122,6 +248,12 @@
     if (taskId && nextMode === 'tasks') params.set('task', taskId);
     return '/air' + (params.size ? '?' + params : '');
   }
+  // 从控制台或命令面板里选走一个目标，就意味着那一层要让开；地址由这次
+  // 导航决定，浮层不往地址栏里写东西。
+  function closeOverlays() {
+    if (paletteOpen) closePalette();
+    if (consoleOpen) applyConsole(false);
+  }
   function navigate(dir, task = null) {
     saveDraft();
     directoryId = dir;
@@ -129,23 +261,28 @@
     mode = 'tasks';
     entry = null;
     closeDetails();
+    if (task) rememberTask(task);
+    closeOverlays();
     history.pushState({}, '', routeUrl());
     closeNav();
     render();
     void refreshEntry();
   }
   function setMode(next) {
+    // 控制台不再是一种页面模式：任何还写着 setMode('overview') 的入口都换成
+    // 展开这层面板，页面留在原处。
+    if (next === 'overview') { setConsole(true); return; }
     saveDraft();
     mode = next;
     taskId = null;
     entry = null;
     closeDetails();
+    closeOverlays();
     history.pushState({}, '', routeUrl(next));
     closeNav();
     render();
     if (next === 'library') requestAnimationFrame(() => $('directory-search').focus());
     if (next === 'schedules') void refreshSchedules();
-    if (next === 'overview') void refreshSchedules().then(render);
   }
   function resourceText(resource) {
     if (resource?.capacityReason) return label(resource.capacityReason);
@@ -562,18 +699,16 @@
   function visibleTasks() {
     const query = $('task-search').value.trim().toLowerCase();
     const filter = $('status-filter').value;
-    return data.tasks.filter(task => {
-      const inScope = mode === 'activity' ? task.resource?.lease !== 'idle' || task.resource?.capacityReason : task.dirId === directoryId;
+    return scopePool(taskScope).filter(task => {
       const matchesQuery = `${task.title || ''}`.toLowerCase().includes(query);
       const matchesStatus = filter === 'all' || (filter === 'archived' ? task.status === 'archived' : !['done', 'archived'].includes(task.status));
-      return inScope && matchesQuery && matchesStatus;
+      return matchesQuery && matchesStatus;
     }).sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
   }
 
   function renderHeader(dir) {
     const selectedEntry = entry?.task?.id === taskId ? entry : null;
     const adminHeadings = {
-      overview: ['MultiCC Air › 控制中心', '控制台', '目录、任务、自动运行和系统工具。'],
       planner: ['MultiCC Air › 工作管理', '任务看板', '按模块查看、筛选与规划全部任务。'],
       docs: ['MultiCC Air › 系统工具', '服务与文档', 'Agent 产物、本地页面和服务登记。'],
       memory: ['MultiCC Air › 系统工具', '记忆图谱', '项目记忆、会话记忆与文件编辑。'],
@@ -593,8 +728,7 @@
     // directory's own page is open; the directory library itself is ⌘K / the
     // 控制台 shortcut.
     $('library').classList.toggle('active', mode === 'tasks' && !taskId);
-    $('overview').classList.toggle('active', mode === 'overview');
-    $('activity').classList.toggle('active', mode === 'activity');
+    $('overview').classList.toggle('active', consoleOpen);
     $('schedules').classList.toggle('active', mode === 'schedules');
     document.querySelectorAll('[data-air-view]').forEach(button => button.classList.toggle('active', button.dataset.airView === mode));
     if (adminModes.has(mode)) {
@@ -606,10 +740,6 @@
       $('task-breadcrumb').textContent = 'MultiCC Air';
       $('task-title').textContent = '工作目录';
       $('task-state').textContent = '按名称或路径切换项目；最多收藏五个。';
-    } else if (mode === 'activity' && !taskId) {
-      $('task-breadcrumb').textContent = 'MultiCC Air';
-      $('task-title').textContent = '跨目录活动';
-      $('task-state').textContent = '只汇总正在执行、排队或等待资源的任务。';
     } else if (mode === 'schedules') {
       $('task-breadcrumb').textContent = 'MultiCC Air › 自动运行';
       $('task-title').textContent = '定时任务';
@@ -663,19 +793,46 @@
     $('admin-actions').hidden = !adminMode;
     if (adminMode) window.MultiCCAirAdmin?.render(mode, adminContext());
 
+    // 面板状态由 render 统一落到 DOM 上：直接打开 /air?view=overview（/manage
+    // 就落在这儿）时，状态是从地址里读出来的，没有谁调过 setConsole。
+    applyConsole(consoleOpen);
+
+    // 原来挂在「跨目录活动」上的那条常驻信号，现在挂在控制台入口上：不展开
+    // 面板也知道别的目录有事在等我。
+    const urgent = urgentTasks();
+    $('console-badge').hidden = !urgent.length;
+    $('console-badge').textContent = urgent.length ? String(urgent.length) : '';
+    for (const button of $('scope-switch').querySelectorAll('button')) {
+      const selected = button.dataset.scope === taskScope;
+      button.setAttribute('aria-selected', String(selected));
+      button.querySelector('b').textContent = String(scopePool(button.dataset.scope).filter(task => task.status !== 'archived').length);
+    }
+
     const tasks = visibleTasks();
-    $('task-list-title').textContent = mode === 'activity' ? '跨目录活动' : $('status-filter').selectedOptions[0]?.textContent || '任务';
+    $('task-list-title').textContent = taskScope === 'dir'
+      ? ($('status-filter').selectedOptions[0]?.textContent || '任务')
+      : taskScope === 'recent' ? '最近打开' : '全部目录';
     $('task-count').textContent = tasks.length;
     $('tasks').replaceChildren(...tasks.map(task => {
-      const button = node('button', null, task.id === taskId ? 'selected' : '');
-      const scope = mode === 'activity' ? `${directoryName(task.dirId)} · ` : '';
+      const elsewhere = task.dirId !== directoryId;
+      const button = node('button', null, [task.id === taskId ? 'selected' : '', elsewhere ? 'elsewhere' : ''].filter(Boolean).join(' '));
       const state = task.recordType === 'planned'
         ? `计划 · ${label(task.workflowStage || task.status)}` : label(task.status);
-      button.append(node('strong', task.title), node('small', `${scope}${state} · ${resourceText(task.resource)}`));
+      // 别的目录的行自报家门；当前目录的行不加标记 —— 在这里就是在这里。
+      if (elsewhere) button.append(node('small', directoryName(task.dirId), 'task-dir'));
+      button.append(node('strong', task.title), node('small', `${state} · ${resourceText(task.resource)}`));
       button.onclick = () => navigate(task.dirId, task.id);
       return button;
     }));
-    if (!tasks.length) $('tasks').append(node('small', mode === 'activity' ? '当前没有跨目录活动。' : '这里还没有符合条件的任务。', 'empty-list'));
+    const emptyText = { dir: '这里还没有符合条件的任务。', recent: '还没有最近打开的任务。', all: '所有目录都没有符合条件的任务。' }[taskScope];
+    if (!tasks.length) $('tasks').append(node('small', emptyText, 'empty-list'));
+
+    // 面板打开时才渲染它的内容：控制台不是页面，所以它不是「当前视图」。
+    if (consoleOpen) {
+      $('console-here').textContent = dir ? `· 当前 ${dir.name}` : '';
+      $('console-close').textContent = taskId ? '返回任务' : '关闭控制台';
+      window.MultiCCAirAdmin?.render('overview', adminContext());
+    }
     $('legacy-sessions').replaceChildren(...data.sessions.filter(session => session.kind === 'terminal' && session.dirId === directoryId).map(session => {
       const link = node('a', `›_ ${session.label}`);
       link.href = `/?id=${encodeURIComponent(session.id)}`;
@@ -952,9 +1109,12 @@
     const shown = pending
       ? { ...entry.configuration, ...(pending.profile || {}), cli: pending.cli || entry.configuration.cli }
       : entry?.configuration;
+    // `shown` is undefined for a task that carries no configuration at all — a
+    // missing field must not take the whole render down with it, so every read
+    // goes through `?.`.
     const routeName = shown?.providerSelection?.mode === 'auto'
       ? `Auto ${shown.providerSelection.protocol}`
-      : (pending ? shown.provider : shown.providerName || shown.provider) || '默认线路';
+      : (pending ? shown?.provider : shown?.providerName || shown?.provider) || '默认线路';
     ai.hidden = !entry?.sessionId;
     ai.disabled = !entry || entry.readOnly;
     ai.textContent = shown
@@ -1028,6 +1188,9 @@
       const result = await api(`/api/air/tasks/${encodeURIComponent(selected)}`);
       if (taskId !== selected) return;
       entry = result;
+      // 直接打开一个任务（书签、通知链接、刷新）和从列表里点进去一样，都是「打开过」。
+      // 不在这儿记一笔，「最近」在刚进页面时就是空的。只有排序真的变了才重画。
+      if (recentTaskIds[0] !== selected) { rememberTask(selected); render(); }
       $('task-title').textContent = entry.task.title;
       $('task-state').textContent = taskStateText(entry);
       renderDelivery(entry);
@@ -1046,22 +1209,37 @@
       notice(data.migration?.errors?.length ? `有 ${data.migration.errors.length} 份历史任务等待核验；原记录与工作区均已保留。` : '');
       render();
       await refreshEntry();
-      if (mode === 'schedules' || mode === 'overview') await refreshSchedules();
-      if (mode === 'overview') window.MultiCCAirAdmin?.render(mode, adminContext());
+      // 控制台概览里有「定时任务」那张卡，面板打开时就把规则取全，不显示陈旧数字。
+      if (mode === 'schedules' || consoleOpen) await refreshSchedules();
+      if (consoleOpen) window.MultiCCAirAdmin?.render('overview', adminContext());
     } catch (error) { notice(error.message); }
     finally { loading = false; }
   }
 
   function adminContext() {
-    return { data, scheduleTasks, api, setMode, navigate, notice, directoryName };
+    return {
+      data, scheduleTasks, api, setMode, navigate, notice, directoryName,
+      openConsole: () => setConsole(true),
+      closeConsole: () => setConsole(false),
+    };
   }
 
   window.MultiCCAirAdmin?.bindServiceDialog(adminContext());
   // The sidebar card is the current directory, so it opens that directory's own
   // task page — the full directory library stays on ⌘K and 控制台 › 浏览工作目录.
   $('library').onclick = () => (directoryId ? navigate(directoryId) : setMode('library'));
-  $('overview').onclick = () => setMode('overview');
-  $('activity').onclick = () => setMode('activity');
+  $('overview').onclick = () => setConsole(!consoleOpen);
+  $('console-close').onclick = () => setConsole(false);
+  $('console-scrim').onclick = () => setConsole(false);
+  $('palette-scrim').onclick = () => closePalette();
+  // 同一条带子、同一个搜索框，只是换了个作用域 —— 不是三个页面。
+  $('scope-switch').onclick = event => {
+    const button = event.target.closest('button[data-scope]');
+    if (!button || button.dataset.scope === taskScope) return;
+    taskScope = button.dataset.scope;
+    render();
+  };
+  $('palette-input').oninput = () => { paletteIndex = 0; renderPalette(); };
   $('schedules').onclick = () => setMode('schedules');
   document.querySelectorAll('[data-air-view]').forEach(button => { button.onclick = () => setMode(button.dataset.airView); });
   $('directory-search').oninput = renderDirectories;
@@ -1228,11 +1406,28 @@
   };
   $('conversation').onload = syncFrame;
   window.addEventListener('keydown', event => {
+    // ⌘K 是「去某个地方」的入口：目录和任务一起搜，不用先想起来在哪个目录。
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
       event.preventDefault();
-      setMode('library');
+      if (paletteOpen) closePalette(); else openPalette();
+      return;
     }
-    if (event.key === 'Escape') { closeNav(); closeDetails(); frameMoreController()?.close(); $('chat-more').setAttribute('aria-expanded', 'false'); }
+    if (paletteOpen) {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        const step = event.key === 'ArrowDown' ? 1 : -1;
+        paletteIndex = Math.min(Math.max(paletteIndex + step, 0), Math.max(paletteItems.length - 1, 0));
+        renderPalette();
+        return;
+      }
+      if (event.key === 'Enter') { event.preventDefault(); choosePalette(); return; }
+    }
+    if (event.key === 'Escape') {
+      // 一层一层地退：先收浮层，再收导航与详情。
+      if (paletteOpen) { closePalette(); return; }
+      if (consoleOpen) { setConsole(false); return; }
+      closeNav(); closeDetails(); frameMoreController()?.close(); $('chat-more').setAttribute('aria-expanded', 'false');
+    }
   });
   window.addEventListener('popstate', () => {
     saveDraft();
@@ -1242,9 +1437,12 @@
     mode = modeFrom(params);
     entry = null;
     closeDetails();
+    closePalette();
+    // 后退/前进要如实反映地址：?view=overview 就是「控制台开着」。
+    applyConsole(params.get('view') === 'overview');
     render();
     void refreshEntry();
-    if (mode === 'schedules' || mode === 'overview') void refreshSchedules().then(render);
+    if (mode === 'schedules' || consoleOpen) void refreshSchedules().then(render);
   });
   window.addEventListener('pagehide', () => { saveDraft(); stopped = true; epoch++; clearTimeout(timer); });
   window.addEventListener('pageshow', event => {
