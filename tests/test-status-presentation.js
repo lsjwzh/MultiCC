@@ -491,7 +491,10 @@ test('Flutter mirrors the web registry exactly', () => {
 // ── 9. Wiring: pages that draw badges must load the registry and its CSS ────
 
 test('badge-rendering pages load status-presentation.js and status-badge.css', () => {
-  for (const page of ['public/manage.html', 'public/chat.html']) {
+  // Air joined the list when its task band and console started drawing status
+  // through the registry: it used to invent its own words per surface, which is
+  // exactly the drift this test exists to stop.
+  for (const page of ['public/manage.html', 'public/chat.html', 'public/air.html']) {
     const html = read(page);
     assert.ok(html.includes('<script src="status-presentation.js"></script>'), `${page}: registry script`);
     assert.ok(html.includes('status-badge.css'), `${page}: tone stylesheet`);

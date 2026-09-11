@@ -31,6 +31,11 @@
   ];
   let activeMode = null;
   let currentContext = null;
+  // 控制台里那份「全部任务」的筛选，存在模块上而不是 DOM 上：面板每次重开都会
+  // 重建 DOM，筛选跟着输入框一起丢掉的话，翻回去看同一条列表要重挑一次。
+  const consoleFilter = { query: '', status: 'open', dir: 'all' };
+  // 面板是给人看的，不是导出用的：超过这个数就只显示最近的一批，并把总数说清楚。
+  const TASK_LIST_LIMIT = 60;
 
   function action(text, handler, className = '') {
     const button = make('button', text, className);
@@ -47,37 +52,102 @@
     el(hostId).replaceChildren(...actions);
   }
 
-  function taskState(task) {
+  // ── 状态：一份判定，侧栏和控制台共用 ────────────────────────────────────
+  // 「这条任务在不在跑、该画哪个徽标」由 public/status-presentation.js 说了算 ——
+  // 它是服务端词表的镜像：runState 来自 src/task-board/normalize.js 的
+  // TASK_RUN_STATES，classify 字母来自 src/classify/vocab.js。这里不写
+  // `runState === 'running'`：注册表只给 running 设了 spinner，于是「出错的任务
+  // 绝不动画」是一条规则，而不是每个用到状态的地方各判一遍。
+  const RUNNING_LEASES = ['reserved', 'materializing', 'starting', 'running', 'uncertain'];
+  // Air 不带 i18n 词典（air.html 里没有 t()），注册表的 labelKey 在这儿查不到文案，
+  // 所以显式给一份中文。词表跟 air.js 的 stateNames 是同源的，只是这里只需要状态名。
+  const STATUS_COPY = Object.freeze({
+    idle: '空闲', queued: '排队中', running: '执行中', waiting: '等待回答', blocked: '等待配置',
+    error: '执行异常', succeeded: '执行成功', done: '已完成', cancelled: '已取消',
+    archived: '已归档', offline: '已离线', unknown: '状态未知',
+  });
+  const registry = () => root.MultiCCStatusPresentation;
+
+  /** 权威状态：生命周期（archived/done）优先，其次是这一轮的 runState。 */
+  function taskStatus(task) {
+    const api = registry();
+    return api ? api.taskStatus({ status: task?.status, runState: task?.runState }) : 'unknown';
+  }
+  function taskSpec(task) {
+    const api = registry();
+    const status = taskStatus(task);
+    return api ? api.presentation('task', status)
+      : { status, icon: '❔', tone: 'neutral', spinner: false, terminal: false };
+  }
+  /** 只有注册表说 spinner 的状态才配拿彩虹圈 —— 「在跑」全局只有这一个定义。 */
+  function isRunning(task) { return taskSpec(task).spinner === true; }
+  function runningDirectories(data) {
+    const dirs = new Set();
+    for (const task of data?.tasks || []) if (isRunning(task)) dirs.add(task.dirId);
+    return dirs;
+  }
+  function applyRing(element, on) { if (element) element.classList.toggle('ring-running', !!on); }
+
+  /** 状态徽标：图标 + 中文标签，可访问名称与可见文案是同一句话。 */
+  function statusBadge(task, opts = {}) {
+    const spec = taskSpec(task);
+    const label = STATUS_COPY[spec.status] || spec.status;
+    const badge = make('span');
+    const api = registry();
+    if (api) {
+      // translate 恒等于可见文案：Air 没有词典，ariaKey/labelKey 都该落到同一个词上。
+      api.applyStatusBadge(badge, 'task', spec.status, { label, translate: () => label, ...opts });
+    } else {
+      badge.className = `mc-status st-tone-${spec.tone}`;
+      badge.textContent = `${spec.icon} ${label}`;
+    }
+    return badge;
+  }
+
+  /** 行的第二层信息：徽标已经说了「在不在跑」，这里补记录类型、阶段和资源去向。 */
+  function taskDetail(task, context) {
+    const bits = [];
+    if (task.recordType === 'planned') bits.push('计划');
+    const stage = context.label(task.workflowStage || task.status);
+    if (stage) bits.push(stage);
     const resource = task.resource || {};
-    if (resource.capacityReason) return '等待资源';
-    if (resource.lease && resource.lease !== 'idle') return resource.lease === 'uncertain' ? '等待核实' : '执行中';
-    if (task.status === 'done') return '已完成';
-    if (task.status === 'archived') return '已归档';
-    return task.recordType === 'planned' ? '尚未执行' : '进行中';
+    const held = resource.capacityReason ? context.label(resource.capacityReason)
+      : resource.lease && resource.lease !== 'idle' ? context.label(resource.lease)
+        : context.label(resource.residency);
+    if (held && held !== stage) bits.push(held);
+    return bits.join(' · ');
+  }
+
+  /** 一条任务行：徽标 + 标题 + 目录/阶段 + 时间。侧栏和控制台共用同一个形状。 */
+  function taskRow(task, context, options = {}) {
+    const row = action('', () => context.navigate(task.dirId, task.id), 'admin-recent-row');
+    applyRing(row, isRunning(task));
+    const copy = make('span');
+    const where = options.dir === false ? '' : `${context.directoryName(task.dirId)} · `;
+    copy.append(make('strong', task.title || '未命名任务'), make('small', where + taskDetail(task, context)));
+    row.append(statusBadge(task, options.badge || {}), copy,
+      make('time', task.updatedAt ? new Date(task.updatedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''));
+    if (options.onOpen) row.onclick = () => { options.onOpen(); context.navigate(task.dirId, task.id); };
+    return row;
   }
 
   // 「谁在等我」：跨所有目录、正在跑或等着我的任务。这条信号原来由侧栏的
   // 「跨目录活动」承担，现在它是控制台面板的第一个分区，也是入口徽标的数字 ——
   // 一处定义，两处显示，不会再各说各话。
-  const RUNNING_LEASES = ['reserved', 'materializing', 'starting', 'running', 'uncertain'];
   function taskUrgency(task) {
-    if (task.status === 'waiting') return 0;
-    if (task.resource?.capacityReason) return 1;
-    if (RUNNING_LEASES.includes(task.resource?.lease)) return 2;
-    if (task.status === 'done' || task.status === 'archived') return 4;
-    return 3;
+    const status = taskStatus(task);
+    // 等我回答 → 出错要我去处理 → 卡在资源 → 正在跑。故障排在任何乐观信号前面。
+    if (status === 'waiting') return 0;
+    if (status === 'error') return 1;
+    if (task.resource?.capacityReason) return 2;
+    if (status === 'running' || RUNNING_LEASES.includes(task.resource?.lease)) return 3;
+    if (status === 'done' || status === 'archived') return 5;
+    return 4;
   }
   function urgentTasks(data) {
     return (data?.tasks || [])
-      .filter(task => taskUrgency(task) < 3)
+      .filter(task => taskUrgency(task) < 4)
       .sort((a, b) => taskUrgency(a) - taskUrgency(b) || Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
-  }
-  function urgentState(task) {
-    if (task.status === 'waiting') return ['等待回答', 'waiting', '?'];
-    if (task.resource?.capacityReason) return ['等待资源', 'waiting', '⧗'];
-    if (task.resource?.lease === 'uncertain') return ['等待核实', 'running', '◌'];
-    if (RUNNING_LEASES.includes(task.resource?.lease)) return ['执行中', 'running', '▶'];
-    return ['待处理', '', '·'];
   }
 
   function statCard(label, value, detail, tone, onClick) {
@@ -92,12 +162,10 @@
     const tasks = data?.tasks || [];
     const directories = data?.directories || [];
     const active = tasks.filter(task => task.status !== 'done' && task.status !== 'archived');
-    const executing = active.filter(task => {
-      const lease = task.resource?.lease;
-      return ['reserved', 'materializing', 'starting', 'running', 'uncertain'].includes(lease);
-    });
-    const waiting = active.filter(task => task.resource?.capacityReason || task.status === 'waiting');
+    const executing = active.filter(isRunning);
+    const waiting = active.filter(task => taskUrgency(task) < 3);
     const enabledSchedules = (scheduleTasks || []).filter(task => task.enabled);
+    const running = runningDirectories(data);
     // The overview lives in the console panel; `#admin-content` is the fallback
     // for any host that renders it as a page.
     const panel = el('console-content');
@@ -109,9 +177,9 @@
     const content = panel || el('admin-content');
     const stats = make('div', null, 'admin-stats');
     stats.append(
-      statCard('工作目录', directories.length, '统一目录库', 'blue', () => setMode('library')),
-      statCard('进行中任务', active.length, `${executing.length} 个正在执行或核实`, 'green', () => setMode('tasks')),
-      statCard('等待处理', waiting.length, waiting.length ? '等待回答或执行资源' : '当前没有资源阻塞', waiting.length ? 'amber' : ''),
+      statCard('工作目录', directories.length, running.size ? `${running.size} 个目录正在跑` : '统一目录库', 'blue', () => setMode('library')),
+      statCard('进行中任务', active.length, `${executing.length} 个正在执行`, 'green', () => setMode('tasks')),
+      statCard('等待处理', waiting.length, waiting.length ? '等待回答、资源或重试' : '当前没有要处理的事', waiting.length ? 'amber' : ''),
       statCard('定时任务', enabledSchedules.length, `共 ${(scheduleTasks || []).length} 条规则`, 'purple', () => setMode('schedules')),
     );
 
@@ -121,35 +189,76 @@
     attentionHead.firstChild.append(make('span', 'ACROSS ALL WORKSPACES', 'eyebrow'), make('h3', '谁在等我'));
     attentionHead.append(make('span', '按紧急度排序，点击直达', 'admin-panel-note'));
     const attentionList = make('div', null, 'admin-recent-list');
-    for (const task of urgentTasks(data)) {
-      const [state, tone, mark] = urgentState(task);
-      const row = action('', () => navigate(task.dirId, task.id), 'admin-recent-row');
-      const copy = make('span');
-      copy.append(make('strong', task.title || '未命名任务'), make('small', `${context.directoryName(task.dirId)} · ${state}`));
-      row.append(make('span', mark, `admin-row-mark ${tone}`), copy,
-        make('time', task.updatedAt ? new Date(task.updatedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''));
-      attentionList.append(row);
-    }
+    // 从面板里点走一条任务时，面板自己让开（onOpen），否则它盖住的正是刚落上去的那一页。
+    for (const task of urgentTasks(data)) attentionList.append(taskRow(task, context, { onOpen: () => context.closeConsole?.() }));
     if (!attentionList.children.length) attentionList.append(make('p', '没有正在等待或正在执行的任务。', 'admin-empty'));
     attention.append(attentionHead, attentionList);
 
     const split = make('div', null, 'admin-overview-grid');
-    const recent = make('section', null, 'admin-panel');
-    const recentHead = make('div', null, 'admin-panel-head');
-    recentHead.append(make('div', null));
-    recentHead.firstChild.append(make('span', 'RECENT TASKS', 'eyebrow'), make('h3', '最近任务'));
-    recentHead.append(action('查看全部', () => setMode('tasks')));
-    const recentList = make('div', null, 'admin-recent-list');
-    const rows = [...tasks].sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0)).slice(0, 7);
-    for (const task of rows) {
-      const row = action('', () => navigate(task.dirId, task.id), 'admin-recent-row');
-      const copy = make('span');
-      copy.append(make('strong', task.title || '未命名任务'), make('small', `${context.directoryName(task.dirId)} · ${taskState(task)}`));
-      row.append(make('span', '›', 'admin-row-mark'), copy, make('time', task.updatedAt ? new Date(task.updatedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''));
-      recentList.append(row);
+    // 全部任务：控制台是跨目录的，这里不按当前目录收窄 —— 目录是执行上下文，
+    // 不是「能不能看见这条任务」的前提。
+    const allPanel = make('section', null, 'admin-panel');
+    const allHead = make('div', null, 'admin-panel-head');
+    allHead.append(make('div', null));
+    allHead.firstChild.append(make('span', 'ALL TASKS · 全部目录', 'eyebrow'), make('h3', '全部任务'));
+    const allNote = make('span', '', 'admin-panel-note');
+    allNote.id = 'console-task-note';
+    allHead.append(allNote);
+    const controls = make('div', null, 'admin-task-controls');
+    const search = make('input');
+    search.type = 'search';
+    search.id = 'console-task-search';
+    search.placeholder = '搜索标题或目录';
+    search.setAttribute('aria-label', '搜索任务');
+    search.value = consoleFilter.query;
+    const statusPick = make('select');
+    statusPick.id = 'console-task-status';
+    statusPick.setAttribute('aria-label', '按状态筛选');
+    for (const [value, text] of [['open', '进行中与待处理'], ['all', '全部记录'], ['archived', '已归档']]) {
+      const option = make('option', text);
+      option.value = value;
+      statusPick.append(option);
     }
-    if (!rows.length) recentList.append(make('p', '还没有任务记录。', 'admin-empty'));
-    recent.append(recentHead, recentList);
+    statusPick.value = consoleFilter.status;
+    const dirPick = make('select');
+    dirPick.id = 'console-task-dir';
+    dirPick.setAttribute('aria-label', '按目录筛选');
+    const allDirs = make('option', '全部目录');
+    allDirs.value = 'all';
+    dirPick.append(allDirs);
+    for (const directory of directories) {
+      const option = make('option', directory.name || directory.id);
+      option.value = directory.id;
+      dirPick.append(option);
+    }
+    dirPick.value = directories.some(d => d.id === consoleFilter.dir) ? consoleFilter.dir : 'all';
+    consoleFilter.dir = dirPick.value;
+    const allList = make('div', null, 'admin-recent-list');
+    allList.id = 'console-task-list';
+    // 只重画列表，不重画面板：每敲一个字就 replaceChildren 的话，输入框会在第一次
+    // 按键后失去焦点。筛选状态存在模块里，所以重开面板还是同一份筛选。
+    function paintTaskList() {
+      const needle = consoleFilter.query.trim().toLowerCase();
+      const rows = tasks
+        .filter(task => consoleFilter.status === 'all' ? true
+          : consoleFilter.status === 'archived' ? task.status === 'archived'
+            : !['done', 'archived'].includes(task.status))
+        .filter(task => consoleFilter.dir === 'all' || task.dirId === consoleFilter.dir)
+        .filter(task => !needle || `${task.title || ''} ${context.directoryName(task.dirId)}`.toLowerCase().includes(needle))
+        .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+      const shown = rows.slice(0, TASK_LIST_LIMIT);
+      allList.replaceChildren(...shown.map(task => taskRow(task, context, { onOpen: () => context.closeConsole?.() })));
+      if (!rows.length) allList.append(make('p', '没有符合条件的任务。换个关键词或放宽筛选。', 'admin-empty'));
+      allNote.textContent = rows.length > shown.length
+        ? `${rows.length} 条 · 显示最近 ${shown.length} 条`
+        : `${rows.length} 条`;
+    }
+    search.oninput = () => { consoleFilter.query = search.value; paintTaskList(); };
+    statusPick.onchange = () => { consoleFilter.status = statusPick.value; paintTaskList(); };
+    dirPick.onchange = () => { consoleFilter.dir = dirPick.value; paintTaskList(); };
+    controls.append(search, statusPick, dirPick);
+    allPanel.append(allHead, controls, allList);
+    paintTaskList();
 
     const workspacePanel = make('section', null, 'admin-panel admin-directory-panel');
     const workspaceHead = make('div', null, 'admin-panel-head');
@@ -160,9 +269,10 @@
     for (const directory of directories) {
       const directoryTasks = tasks.filter(task => task.dirId === directory.id);
       const unfinished = directoryTasks.filter(task => !['done', 'archived'].includes(task.status));
-      const executingCount = unfinished.filter(task => ['reserved', 'materializing', 'starting', 'running', 'uncertain']
-        .includes(task.resource?.lease)).length;
+      const executingCount = unfinished.filter(isRunning).length;
       const row = action('', () => navigate(directory.id), 'admin-directory-row');
+      // 任务对应的目录也要带圈：一个「有活在跑」的目录不该等到点进去才发现。
+      applyRing(row, running.has(directory.id));
       const copy = make('span');
       copy.append(make('strong', directory.name || directory.id), make('small', directory.path || ''));
       const counts = make('span', null, 'admin-directory-counts');
@@ -190,7 +300,7 @@
       toolGrid.append(button);
     }
     tools.append(toolHead, toolGrid);
-    split.append(recent, tools);
+    split.append(allPanel, tools);
     content.replaceChildren(stats, attention, split, workspacePanel);
   }
 
@@ -394,5 +504,12 @@
     urgentTasks,
     refresh: context => render(activeMode || 'overview', context, true),
     bindServiceDialog,
+    // 状态与「在不在跑」的唯一判定，侧栏（air.js）和控制台共用这一份，所以一条
+    // 任务在两个地方不可能显示成两种状态。
+    taskStatus,
+    isRunning,
+    runningDirectories,
+    statusBadge,
+    applyRing,
   });
 })(typeof window !== 'undefined' ? window : null);

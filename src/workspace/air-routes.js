@@ -24,7 +24,13 @@ function mountAirRoutes(app, deps) {
       const access = deps.shell.taskAccess(t);
       return { id: t.id, dirId: require('../task-board/core').taskDirId(board, t) || deps.records.get(sessionId)?.dirId, title: t.title, status: t.status,
         recordType: t.recordType || null, workflowStage: t.workflowStage || null, updatedAt: t.updatedAt || t.createdAt,
-        sessionId, ...access, resource: resource(sessionId) };
+        sessionId, ...access,
+        // 这一轮到底在不在跑，是队列事件折出来的事实（src/task-board/normalize.js
+        // TASK_RUN_STATES），不是客户端能从 status 猜出来的：status 只有
+        // active/done/archived 三个人为的生命周期取值，「执行中」根本不在里面。
+        // 客户端只读它，不推断它。
+        runState: t.runState || null,
+        resource: resource(sessionId) };
     });
     return { ok: true, directories: [...deps.directories.values()].map(d => ({ id: d.id, name: d.name, path: d.path })),
       tasks, budgets: deps.admission.snapshot().budgets, clis: deps.clis, migration,

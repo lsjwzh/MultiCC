@@ -45,16 +45,21 @@
  * Deliberately NOT scoped to .mc-status: plain text status labels that sit
  * next to a badge (task-board run-state text, chat status bars) take the same
  * class and therefore the same colour, so one status can never render in two
- * different hues on the same card. Fallbacks keep the tone legible on pages that
- * do not define the palette variables. */
-.st-tone-neutral  { --st-fg: var(--muted, #8b949e); color: var(--st-fg); }
-.st-tone-muted    { --st-fg: var(--muted, #8b949e); color: var(--st-fg); opacity: .8; }
-.st-tone-info     { --st-fg: var(--blue, #6aa3ff); color: var(--st-fg); }
-.st-tone-running  { --st-fg: var(--codex, #3fb950); color: var(--st-fg); }
-.st-tone-waiting  { --st-fg: var(--amber, #e3b341); color: var(--st-fg); }
-.st-tone-blocked  { --st-fg: var(--amber, #d29922); color: var(--st-fg); }
-.st-tone-success  { --st-fg: var(--accent, #3fb950); color: var(--st-fg); }
-.st-tone-danger   { --st-fg: var(--danger, #f85149); color: var(--st-fg); }
+ * different hues on the same card.
+ *
+ * Each tone resolves through `--st-<tone>` first, so a page with its own palette
+ * supplies PIXELS, not semantics: a light page (Air) overrides seven variables
+ * and inherits the one-status-one-tone rule instead of restating it as
+ * per-page status colours. The remaining fallbacks are the dark palette, which
+ * is what pages that define nothing keep getting. */
+.st-tone-neutral  { --st-fg: var(--st-neutral, var(--muted, #8b949e)); color: var(--st-fg); }
+.st-tone-muted    { --st-fg: var(--st-muted, var(--muted, #8b949e)); color: var(--st-fg); opacity: .8; }
+.st-tone-info     { --st-fg: var(--st-info, var(--blue, #6aa3ff)); color: var(--st-fg); }
+.st-tone-running  { --st-fg: var(--st-running, var(--codex, #3fb950)); color: var(--st-fg); }
+.st-tone-waiting  { --st-fg: var(--st-waiting, var(--amber, #e3b341)); color: var(--st-fg); }
+.st-tone-blocked  { --st-fg: var(--st-blocked, var(--amber, #d29922)); color: var(--st-fg); }
+.st-tone-success  { --st-fg: var(--st-success, var(--accent, #3fb950)); color: var(--st-fg); }
+.st-tone-danger   { --st-fg: var(--st-danger, var(--danger, #f85149)); color: var(--st-fg); }
 
 /* Error is the one status that also gets weight, so it reads as a fault at a
  * glance without relying on hue. */
