@@ -176,8 +176,6 @@
     const running = current.filter(task => ['reserved', 'materializing', 'starting', 'running', 'uncertain']
       .includes(task.resource?.lease));
     const planned = current.filter(task => task.recordType === 'planned' && !running.includes(task));
-    $('directory-overview-title').textContent = dir ? `${dir.name} · 任务概览` : '先添加工作目录';
-    $('directory-overview-path').textContent = dir?.path || '目录创建后，任务与对话会固定归属到这里。';
     $('directory-open-planner').disabled = !dir;
     const stat = (name, value, detail, tone = '') => {
       const card = node('article', null, `directory-stat ${tone}`);
@@ -476,7 +474,10 @@
       skillsync: ['MultiCC Air › 设置中心', '技能同步', '跨 CLI 的 Skills 同步状态。'],
       storage: ['MultiCC Air › 设置中心', '临时上传', '上传缓存、空间占用与清理。'],
     };
-    $('library').classList.toggle('active', mode === 'library');
+    // The card stands for the current directory, so it stays lit while that
+    // directory's own page is open; the directory library itself is ⌘K / the
+    // 控制台 shortcut.
+    $('library').classList.toggle('active', mode === 'tasks' && !taskId);
     $('overview').classList.toggle('active', mode === 'overview');
     $('activity').classList.toggle('active', mode === 'activity');
     $('schedules').classList.toggle('active', mode === 'schedules');
@@ -489,7 +490,7 @@
     } else if (mode === 'library') {
       $('task-breadcrumb').textContent = 'MultiCC Air';
       $('task-title').textContent = '工作目录';
-      $('task-state').textContent = '目录组织项目，任务承接工作。';
+      $('task-state').textContent = '按名称或路径切换项目；最多收藏五个。';
     } else if (mode === 'activity' && !taskId) {
       $('task-breadcrumb').textContent = 'MultiCC Air';
       $('task-title').textContent = '跨目录活动';
@@ -540,6 +541,11 @@
     $('admin-center').hidden = !adminMode;
     $('schedule-center').hidden = mode !== 'schedules';
     $('task-layout').hidden = mode === 'library' || mode === 'schedules' || adminMode;
+    // Page actions ride in the header (see air.html): one heading band per view.
+    $('add-directory').hidden = mode !== 'library';
+    $('schedule-create').hidden = mode !== 'schedules';
+    $('directory-open-planner').hidden = $('task-layout').hidden || !!taskId;
+    $('admin-actions').hidden = !adminMode;
     if (adminMode) window.MultiCCAirAdmin?.render(mode, adminContext());
 
     const tasks = visibleTasks();
@@ -926,7 +932,9 @@
   }
 
   window.MultiCCAirAdmin?.bindServiceDialog(adminContext());
-  $('library').onclick = () => setMode('library');
+  // The sidebar card is the current directory, so it opens that directory's own
+  // task page — the full directory library stays on ⌘K and 控制台 › 浏览工作目录.
+  $('library').onclick = () => (directoryId ? navigate(directoryId) : setMode('library'));
   $('overview').onclick = () => setMode('overview');
   $('activity').onclick = () => setMode('activity');
   $('schedules').onclick = () => setMode('schedules');
