@@ -40,9 +40,11 @@
   }
 
   // The Air shell header owns the page title (air.js renderHeader); a view only
-  // contributes its actions, which render into the header toolbar.
-  function setActions(actions = []) {
-    el('admin-actions').replaceChildren(...actions);
+  // contributes its actions. Page views put them in the header toolbar; the
+  // console panel is an overlay, so its actions stay inside the panel instead of
+  // rewriting the header of the page it is covering.
+  function setActions(actions = [], hostId = 'admin-actions') {
+    el(hostId).replaceChildren(...actions);
   }
 
   function taskState(task) {
@@ -52,6 +54,30 @@
     if (task.status === 'done') return '已完成';
     if (task.status === 'archived') return '已归档';
     return task.recordType === 'planned' ? '尚未执行' : '进行中';
+  }
+
+  // 「谁在等我」：跨所有目录、正在跑或等着我的任务。这条信号原来由侧栏的
+  // 「跨目录活动」承担，现在它是控制台面板的第一个分区，也是入口徽标的数字 ——
+  // 一处定义，两处显示，不会再各说各话。
+  const RUNNING_LEASES = ['reserved', 'materializing', 'starting', 'running', 'uncertain'];
+  function taskUrgency(task) {
+    if (task.status === 'waiting') return 0;
+    if (task.resource?.capacityReason) return 1;
+    if (RUNNING_LEASES.includes(task.resource?.lease)) return 2;
+    if (task.status === 'done' || task.status === 'archived') return 4;
+    return 3;
+  }
+  function urgentTasks(data) {
+    return (data?.tasks || [])
+      .filter(task => taskUrgency(task) < 3)
+      .sort((a, b) => taskUrgency(a) - taskUrgency(b) || Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+  }
+  function urgentState(task) {
+    if (task.status === 'waiting') return ['等待回答', 'waiting', '?'];
+    if (task.resource?.capacityReason) return ['等待资源', 'waiting', '⧗'];
+    if (task.resource?.lease === 'uncertain') return ['等待核实', 'running', '◌'];
+    if (RUNNING_LEASES.includes(task.resource?.lease)) return ['执行中', 'running', '▶'];
+    return ['待处理', '', '·'];
   }
 
   function statCard(label, value, detail, tone, onClick) {
@@ -72,12 +98,15 @@
     });
     const waiting = active.filter(task => task.resource?.capacityReason || task.status === 'waiting');
     const enabledSchedules = (scheduleTasks || []).filter(task => task.enabled);
+    // The overview lives in the console panel; `#admin-content` is the fallback
+    // for any host that renders it as a page.
+    const panel = el('console-content');
     setActions([
       action('浏览工作目录', () => setMode('library')),
       action('＋ 新建任务', () => { setMode('tasks'); setTimeout(() => el('create')?.click(), 0); }, 'primary'),
-    ]);
+    ], panel ? 'console-actions' : 'admin-actions');
 
-    const content = el('admin-content');
+    const content = panel || el('admin-content');
     const stats = make('div', null, 'admin-stats');
     stats.append(
       statCard('工作目录', directories.length, '统一目录库', 'blue', () => setMode('library')),
@@ -85,6 +114,24 @@
       statCard('等待处理', waiting.length, waiting.length ? '等待回答或执行资源' : '当前没有资源阻塞', waiting.length ? 'amber' : ''),
       statCard('定时任务', enabledSchedules.length, `共 ${(scheduleTasks || []).length} 条规则`, 'purple', () => setMode('schedules')),
     );
+
+    const attention = make('section', null, 'admin-panel console-attention');
+    const attentionHead = make('div', null, 'admin-panel-head');
+    attentionHead.append(make('div'));
+    attentionHead.firstChild.append(make('span', 'ACROSS ALL WORKSPACES', 'eyebrow'), make('h3', '谁在等我'));
+    attentionHead.append(make('span', '按紧急度排序，点击直达', 'admin-panel-note'));
+    const attentionList = make('div', null, 'admin-recent-list');
+    for (const task of urgentTasks(data)) {
+      const [state, tone, mark] = urgentState(task);
+      const row = action('', () => navigate(task.dirId, task.id), 'admin-recent-row');
+      const copy = make('span');
+      copy.append(make('strong', task.title || '未命名任务'), make('small', `${context.directoryName(task.dirId)} · ${state}`));
+      row.append(make('span', mark, `admin-row-mark ${tone}`), copy,
+        make('time', task.updatedAt ? new Date(task.updatedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''));
+      attentionList.append(row);
+    }
+    if (!attentionList.children.length) attentionList.append(make('p', '没有正在等待或正在执行的任务。', 'admin-empty'));
+    attention.append(attentionHead, attentionList);
 
     const split = make('div', null, 'admin-overview-grid');
     const recent = make('section', null, 'admin-panel');
@@ -144,7 +191,7 @@
     }
     tools.append(toolHead, toolGrid);
     split.append(recent, tools);
-    content.replaceChildren(stats, workspacePanel, split);
+    content.replaceChildren(stats, attention, split, workspacePanel);
   }
 
   function isLoopback(hostname) {
@@ -343,6 +390,8 @@
   root.MultiCCAirAdmin = Object.freeze({
     modes: new Set(['overview', 'docs', 'memory', 'settings', ...Object.keys(legacyPanels)]),
     render,
+    // The shell's console badge shows the same set the panel's first section does.
+    urgentTasks,
     refresh: context => render(activeMode || 'overview', context, true),
     bindServiceDialog,
   });
