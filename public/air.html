@@ -59,6 +59,31 @@
         <button type="button" data-air-view="memory">记忆图谱</button>
         <button type="button" data-air-view="settings">设置中心</button>
       </nav>
+      <!-- The manage sidebar's pinned bottom region, ported: the version row
+           doubles as the update entry point, and the boot line under it is the
+           same fact the restart button ends. Populated by air-ops.js. -->
+      <div id="air-ver-row" class="ops-version" role="button" tabindex="0" title="点击检查并安装更新">
+        <span id="air-ver-icon" class="ops-icon" aria-hidden="true">📦</span>
+        <span class="ops-version-text">
+          <span id="air-ver-current">v—</span>
+          <span id="air-ver-hint">检查中…</span>
+        </span>
+        <span id="air-ver-badge" class="ops-badge" hidden>NEW</span>
+      </div>
+      <!-- Deliberately outside the row above: that row is a click target for
+           the update check, and reading a timestamp should not fire a call. -->
+      <div class="ops-boot">
+        <div class="ops-boot-row"><span class="ops-boot-label">最近启动</span><span id="air-boot-time">—</span></div>
+        <div id="air-boot-uptime" class="ops-boot-uptime"></div>
+      </div>
+      <nav class="ops-actions" aria-label="主机操作">
+        <button type="button" id="air-apk-btn" title="下载 Android / iOS 安装包">安装包</button>
+        <button type="button" id="air-qr-btn" title="扫码在手机上打开">二维码</button>
+        <button type="button" id="push-toggle" title="开启浏览器推送通知">推送通知</button>
+        <button type="button" id="air-restart-btn" title="重启 multicc 服务">🔄 重启</button>
+        <a href="/logout" title="退出登录">退出登录</a>
+      </nav>
+      <p id="air-ops-status" class="ops-status" role="status"></p>
       <small>让每一次对话，都有清晰的目标。</small>
     </div>
   </aside>
@@ -238,6 +263,19 @@
     </form>
   </dialog>
 
+  <!-- Shared host-ops dialog: the update flow, the QR code and the install
+       packages all render here. Driven by air-ops.js. -->
+  <dialog id="ops-dialog" class="ops-dialog">
+    <div class="section-heading">
+      <div><span class="eyebrow">HOST</span><h2 id="ops-title">更新 MultiCC</h2></div>
+      <button type="button" id="ops-close" aria-label="关闭">×</button>
+    </div>
+    <p id="ops-body"></p>
+    <div id="ops-extra" hidden></div>
+    <pre id="ops-log" hidden></pre>
+    <div class="schedule-form-actions" id="ops-actions"></div>
+  </dialog>
+
   <script src="provider-catalog.js"></script>
   <script src="auto-provider-editor.js"></script>
   <script src="chat-ai-config.js"></script>
@@ -245,6 +283,11 @@
   <script src="air-role-editor.js"></script>
   <script src="air-provider.js"></script>
   <script src="air-admin.js"></script>
+  <script src="qrcode.min.js"></script>
+  <!-- pwa.js owns the push subscription (and its own #push-toggle lookup);
+       air-ops.js re-owns only the label, which pwa.js would print in English. -->
+  <script src="pwa.js"></script>
+  <script src="air-ops.js"></script>
   <script src="air.js"></script>
 </body>
 </html>
