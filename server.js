@@ -1965,8 +1965,26 @@ const {
   maybeSchedulePeriodicMemoryReview,
   trackPendingDistill: _trackPendingMemoryDistill,
 } = memoryRuntime;
+// Same gate as dispatchTargetBusy, decomposed into reason codes so the
+// outbox skip log and the insert-queued response can say WHY a delivery was
+// vetoed. Every check fails closed: a throwing probe counts as busy (a tick
+// error would veto the delivery just the same, only silently).
+function dispatchTargetBusyReasons(sid, item = null) {
+  const reasons = [];
+  try { if (workspaceAdmission?.occupied(sid)) reasons.push('workspace_occupied'); }
+  catch (_) { reasons.push('workspace_occupied_check_failed'); }
+  try { if (sessionWorkHost?.isRunActive(sid)) reasons.push('run_active'); }
+  catch (_) { reasons.push('run_active_check_failed'); }
+  try { if (taskRunHost?.isSlotUnavailable(sid, item || {})) reasons.push('task_slot_unavailable'); }
+  catch (_) { reasons.push('task_slot_check_failed'); }
+  try { if (defaultRepoActor.isLeased(sid)) reasons.push('repo_lease'); }
+  catch (_) { reasons.push('repo_lease_check_failed'); }
+  try { if (taskShellHost.isWorkspaceBusy(sid)) reasons.push('task_shell_workspace_busy'); }
+  catch (_) { reasons.push('task_shell_busy_check_failed'); }
+  return reasons;
+}
 function dispatchTargetBusy(sid, item = null) {
-  return !!workspaceAdmission?.occupied(sid) || !!sessionWorkHost?.isRunActive(sid) || !!taskRunHost?.isSlotUnavailable(sid, item || {}) || !!defaultRepoActor.isLeased(sid) || taskShellHost.isWorkspaceBusy(sid);
+  return dispatchTargetBusyReasons(sid, item).length > 0;
 }
 const taskBoardRuntime = createTaskBoardRuntime({
   ...require('./src/task-board/lifecycle-host').createTaskLifecycleHost({ records: persistedSessions, getBoard: () => taskBoardRuntime.getBoard(), getShell: () => taskShellHost, getHistory: id => loadChatHistory(id), getState: id => chatSessions.get(id), getRunState: id => sessionWorkHost.getRunState(id), getHistoryService: () => chatHistoryService, destroySession: destroySessionCascade, directories, persist: () => savePersistedSessionsBestEffort('task-delete') }),
@@ -2505,7 +2523,7 @@ workspaceAdmission = require('./src/workspace/admission').createWorkspaceAdmissi
   closePersistent: id => chatStream.closeAndWait(id),
   updateCwd: (id, cwd) => { const state = chatSessions.get(id); if (state) state.cwd = cwd; },
   pendingInput: id => userInputSignalHost.pending(id), loadHistory: id => viewChatHistory(id),
-  budgets: { executionLimit: Number(process.env.MULTICC_WORKSPACE_RUN_LIMIT || 8), residentLimit: Number(process.env.MULTICC_WORKSPACE_RESIDENT_LIMIT || 128), restoreLimit: Number(process.env.MULTICC_WORKSPACE_RESTORE_LIMIT || 2) },
+  budgets: { executionLimit: Number(process.env.MULTICC_WORKSPACE_RUN_LIMIT || 8), residentLimit: Number(process.env.MULTICC_WORKSPACE_RESIDENT_LIMIT || 128), restoreLimit: Number(process.env.MULTICC_WORKSPACE_RESTORE_LIMIT || 2), staleUncertainMs: Number(process.env.MULTICC_WORKSPACE_STALE_UNCERTAIN_MS || 300000) },
   log: (event, data) => logger.warn(event, data),
 });
 
@@ -2626,7 +2644,7 @@ services.provide('chat.runTurn', chatTurnEngine.admitChatWork);
 orchestrationRuntime = createOrchestrationRuntime({
   file: MULTICC_PATHS.orchestrationFile, databaseFile: MULTICC_PATHS.orchestrationDbFile,
   runChatTurn: chatTurnEngine.runChatTurn,
-  isBusy: dispatchTargetBusy, deliveryGroup: id => taskShellHost.workspaceGroup(id), isSlotUnavailable: (sid, item) => !!taskRunHost?.isSlotUnavailable(sid, item || {}),
+  isBusy: dispatchTargetBusy, busyReasons: dispatchTargetBusyReasons, deliveryGroup: id => taskShellHost.workspaceGroup(id), isSlotUnavailable: (sid, item) => !!taskRunHost?.isSlotUnavailable(sid, item || {}),
   hasPersistedDelivery: chatTurnEngine.persistedOrchestrationDelivery,
   runnerDeliveryProbe: (sessionId, identity) => chatTurnEngine.runnerDeliveryHandoff(sessionId, identity),
   deliverOutbox: chatTurnEngine.deliverOrchestrationOutbox,
@@ -2708,6 +2726,7 @@ createOrchestrationRoutes({
   // dropping them here is what made repeat clicks look like distinct cancels.
   cancelActiveTurn: (sessionId, options) => sessionWorkHost.cancelActiveTurn(sessionId, options),
   dismissUserInput: (id, requestId) => sessionWorkHost.dismissUserInput(id, requestId),
+  busyReasons: dispatchTargetBusyReasons,
 }).mountRoutes(app);
 
 // WebSocket authentication, endpoint routing, terminal attachment and keep-alive

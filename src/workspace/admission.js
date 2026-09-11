@@ -21,13 +21,18 @@ const failure = code => Object.assign(new Error(code), {
 });
 const processAlive = proc => !!proc && proc.exitCode == null && proc.signalCode == null;
 
+const DEFAULT_STALE_UNCERTAIN_MS = 5 * 60 * 1000;
+
 function createWorkspaceAdmission(deps) {
   const store = createTaskShellStore(deps.file);
   const registry = createWorkspaceRegistry(store, deps.budgets);
   const evidence = require('../task-routing/evidence').createDeliveryEvidence(store);
   const permits = new WeakSet(), active = new Map();
   let closed = false;
-  const settleTimer = setInterval(() => { for (const [id, permit] of active) if (permit.terminal) void drain(id, permit); }, 1000);
+  const settleTimer = setInterval(() => {
+    for (const [id, permit] of active) if (permit.terminal) void drain(id, permit);
+    reapStaleUncertainLeases();
+  }, 1000);
   settleTimer.unref();
   const applicable = record => record?.kind === 'chat' && !['aux', 'gateway'].includes(record.type) && !record.taskExecutionSlot && !record.experimentalMode;
   function owner(id) {
@@ -230,6 +235,45 @@ function createWorkspaceAdmission(deps) {
     }
     // PID absence does not prove descendant/background writers stopped.
     registry.recover(() => 'unknown');
+  }
+
+  // A writer that vanished without a verified stop leaves its lease
+  // 'uncertain' (startup recovery deliberately keeps it: PID absence does not
+  // prove descendant writers stopped). But 'uncertain' blocks every later
+  // delivery for the workspace (occupied() reports busy), and only a
+  // delivery's own permit cycle releases a lease — so without a reclaim path
+  // one crashed turn wedges the workspace and its queued "insert now"
+  // forever. Reclaim when the recorded writer process is provably dead, or
+  // when nothing bound to the workspace has been live for a generous window —
+  // the same isLive evidence the pre-acquire sibling check requires.
+  function writerPidAlive(pid) {
+    if (!Number.isInteger(pid) || pid <= 0) return null;
+    try { process.kill(pid, 0); return true; }
+    catch (error) { return error?.code === 'EPERM' ? true : false; }
+  }
+  function staleUncertainLimit() {
+    const value = Number(deps.budgets?.staleUncertainMs);
+    return Number.isFinite(value) && value >= 0 ? value : DEFAULT_STALE_UNCERTAIN_MS;
+  }
+  function reapStaleUncertainLeases() {
+    if (closed) return;
+    const at = Date.now();
+    for (const lease of registry.snapshot().leases) {
+      if (lease.state !== 'uncertain') continue;
+      const workspace = registry.workspace(lease.workspaceId);
+      if (!workspace) continue;
+      const writers = [...deps.records.values()].filter(record => applicable(record)
+        && (record.workspaceOwnerSessionId || record.id) === workspace.ownerId);
+      if (writers.some(record => isLive(record.id))) continue;
+      const age = at - Number(lease.updatedAt || lease.acquiredAt || 0);
+      if (writerPidAlive(lease.pid) !== false && age < staleUncertainLimit()) continue;
+      try {
+        registry.release(lease, { stopped: true, reason: 'reclaimed_stale_uncertain' });
+        deps.log('workspace_uncertain_lease_reclaimed', { workspaceId: lease.workspaceId, sessionId: lease.sessionId, ageMs: age });
+      } catch (error) {
+        deps.log('workspace_uncertain_lease_reclaim_failed', { workspaceId: lease.workspaceId, code: error.code });
+      }
+    }
   }
   return { identify, occupied, beforeDeliver, assertPermit, starting, spawned, settled, bindTurn, finalized, optionsForTurn, initialize,
     mergeHooks: id => evidence.hooks(id), recoverEvidence: id => evidence.recover(id),

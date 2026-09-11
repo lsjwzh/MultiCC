@@ -504,7 +504,25 @@ function createOrchestrationRoutes(rawDeps) {
             // post-tick schedule so the response matches what tick already
             // broadcast over WS. This read happens after those broadcasts, so
             // it can never be older than them.
-            result.schedule = await deps.runtime.sessionScheduler.status(session.id);
+            let schedule = await deps.runtime.sessionScheduler.status(session.id);
+            // "Insert now" must also be honest. A host veto (busy workspace,
+            // delivery lock) silently skips the promoted entry on this tick;
+            // without verification the API answered 200 while nothing ran.
+            // Re-tick briefly to ride out sub-second handoffs, then report
+            // the hold with reasons instead of pretending the insert worked.
+            const entryHeld = s => s?.active?.entryId !== body.entryId
+              && (s?.queued || []).some(q => q.entryId === body.entryId);
+            for (let attempt = 0; entryHeld(schedule) && attempt < 5; attempt += 1) {
+              await new Promise(resolve => setTimeout(resolve, 500));
+              await deps.runtime.tick();
+              schedule = await deps.runtime.sessionScheduler.status(session.id);
+            }
+            result.schedule = schedule;
+            result.started = !entryHeld(schedule);
+            if (!result.started) {
+              result.holdReasons = typeof deps.busyReasons === 'function'
+                ? deps.busyReasons(session.id) : [];
+            }
           }
           const status = result.ok ? 200
             : result.code === 'queued_entry_not_found' ? 404 : 409;
