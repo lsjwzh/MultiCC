@@ -1244,9 +1244,9 @@ function applyConflictBanner(st) {
   bar.appendChild(help);
   bar.appendChild(cont);
   bar.appendChild(abort);
-  // The conflict banner is the only home of the force-sync affordance: this
-  // is where parked-sync decisions happen (继续/放弃), so requesting another
-  // sync belongs in the same place.
+  // The parked-sync decisions (继续/放弃) live here, so requesting another sync
+  // belongs next to them — the same affordance the status row carries (no id
+  // here; the status row keeps the id, ids must stay unique).
   worktreeSyncRequest.render(bar);
 }
 
@@ -1319,9 +1319,9 @@ function applyBehindStatus(st) {
         btn.onclick = syncWorktree;
         bar.appendChild(btn);
       }
-      // No force-sync button here: the persistent status row stays read-only.
-      // Force sync lives only on the sync/conflict banner, where the parked
-      // 继续/放弃 decisions are made.
+      // 强制同步 rides this row too, not only the conflict banner: it is the
+      // only sync path while the branch is clean.
+      worktreeSyncRequest.render(bar, 'worktree-force-sync-btn');
     } else {
       bar.classList.remove('show', 'behind');
       bar.innerHTML = '';

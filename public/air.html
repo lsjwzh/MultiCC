@@ -120,25 +120,29 @@
             <div id="directory-task-list"></div>
           </section>
           <form id="quick-task-form" class="mc-composer mc-composer--panel">
-            <!-- The same composer module the task chat uses (composer.css): the
-                 input carries the instruction, the band carries the controls. -->
+            <!-- The same composer module the task chat uses (composer.css), with
+                 the same two runtime pills on its top band. Each pill opens the
+                 one dialog the chat's own pill opens (air-task-settings.js /
+                 air-role-editor.js) and holds the answer until the task is
+                 created — the form never grows a second copy of the controls. -->
+            <div class="mc-composer__aux">
+              <button id="quick-ai-pill" class="mc-composer__pill mc-composer__pill--ai" type="button"></button>
+              <button id="quick-role-pill" class="mc-composer__pill mc-composer__pill--role" type="button">＋ 角色</button>
+            </div>
             <div id="quick-task-files"></div>
             <textarea id="quick-task-input" class="mc-composer__input" rows="4" maxlength="32000" required
                       placeholder="描述要完成的任务；创建后会把这段内容作为第一条消息执行。Enter 创建，Shift + Enter 换行"></textarea>
-            <!-- The band carries what the chat composer carries: attach by
-                 button, paste or drop; dictation; Goal mode with its limits;
-                 and the runtime pick that is pinned when the task is created. -->
+            <!-- The bottom band carries what the chat composer carries: attach by
+                 button, paste or drop; dictation; and Goal mode with its limits. -->
             <div id="quick-task-goal-limits" class="quick-task-goal-limits" hidden>
               <span>🎯 Goal 模式</span>
               <label>轮次上限 <input id="quick-task-goal-rounds" type="number" value="200" min="0" max="200"></label>
               <label>token 预算 <input id="quick-task-goal-budget" type="number" min="0" step="1000" placeholder="不限"></label>
             </div>
             <div class="quick-task-actions mc-composer__actions">
-              <button id="quick-task-attach" type="button" aria-label="上传图片或文件" title="上传图片或文件（也可以直接粘贴或拖入）">📎</button><input id="quick-task-file-input" type="file" multiple hidden>
               <button id="quick-task-mic" type="button" aria-label="语音输入" title="语音输入（点一下开始，再点一下结束）">🎙</button>
+              <button id="quick-task-attach" type="button" aria-label="上传图片或文件" title="上传图片或文件（也可以直接粘贴或拖入）">📎</button><input id="quick-task-file-input" type="file" multiple hidden>
               <label title="以 Goal 模式发送：先预检目标与完成标准">🎯 <input id="quick-task-goal" type="checkbox"> Goal</label>
-              <label>CLI <select id="quick-task-cli" aria-label="新任务 CLI"></select></label>
-              <label>Provider <select id="quick-task-provider" aria-label="新任务 Provider"><option value="">跟随默认</option></select></label>
               <span id="quick-task-status" role="status" aria-live="polite"></span>
               <button id="quick-task-submit" class="primary" type="submit">创建并执行 ↑</button>
             </div>

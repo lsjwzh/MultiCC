@@ -12,18 +12,19 @@
     // The affordance renders into every live container: the persistent
     // worktree status row and the conflict banner (the one that also carries
     // 放弃/继续). Containers dropped from the DOM are pruned on each render.
+    // A container may claim the button's id — the status row does, because it
+    // is the always-present copy — since ids must stay unique per document.
     let busy = false, retry = null;
-    const bars = new Set();
-    function render(container) {
-      if (container) bars.add(container);
-      for (const bar of bars) {
+    const bars = new Map();
+    function render(container, buttonId) {
+      if (container) bars.set(container, buttonId || bars.get(container) || '');
+      for (const [bar, id] of bars) {
         if (!bar.isConnected) { bars.delete(bar); continue; }
         let button = bar.querySelector('.worktree-force-sync-btn');
         if (!button && !readOnly()) {
           button = document.createElement('button');
-          // Class, not id: the same affordance renders into both the status
-          // row and the conflict banner, and ids must stay unique.
           button.className = 'worktree-force-sync-btn'; button.type = 'button';
+          if (id) button.id = id;
           button.title = '发送同步指令，由会话保留改动并处理冲突；忙碌时排队';
           button.onclick = send; bar.appendChild(button);
         }
