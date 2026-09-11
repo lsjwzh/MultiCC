@@ -23,13 +23,13 @@ function showFirstRunPasswordGate() {
   if (document.getElementById('firstrun-pw-gate')) return;
   const ov = document.createElement('div');
   ov.id = 'firstrun-pw-gate';
-  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:999999;display:flex;align-items:center;justify-content:center;font-family:system-ui,-apple-system,sans-serif';
-  ov.innerHTML = `<div style="background:#1c1c1e;border-radius:14px;padding:28px;max-width:380px;width:90%;color:#eee;box-shadow:0 8px 40px rgba(0,0,0,.6)">
+  ov.style.cssText = 'position:fixed;inset:0;background:var(--chat-overlay, rgba(0,0,0,.88));z-index:999999;display:flex;align-items:center;justify-content:center;font-family:system-ui,-apple-system,sans-serif';
+  ov.innerHTML = `<div style="background:var(--chat-surface, #1c1c1e);border-radius:14px;padding:28px;max-width:380px;width:90%;color:var(--chat-text, #eee);box-shadow:var(--chat-shadow, 0 8px 40px rgba(0,0,0,.6))">
     <h3 style="margin:0 0 8px;font-size:17px">首次使用 — 请设置访问密码</h3>
-    <p style="font-size:13px;color:#999;margin:0 0 16px;line-height:1.5">本服务已对 Tailscale / 局域网开放,必须先设置访问密码。设置后,手机等外部设备凭此密码登录。</p>
-    <input id="fr-pw1" type="password" placeholder="设置密码(至少 6 位)" style="width:100%;box-sizing:border-box;padding:10px 12px;margin-bottom:8px;border-radius:8px;border:1px solid #333;background:#2a2a2e;color:#eee;font-size:14px" />
-    <input id="fr-pw2" type="password" placeholder="再次输入确认" style="width:100%;box-sizing:border-box;padding:10px 12px;margin-bottom:8px;border-radius:8px;border:1px solid #333;background:#2a2a2e;color:#eee;font-size:14px" />
-    <div id="fr-msg" style="font-size:12px;color:#ff8a80;margin:4px 0 10px;min-height:16px"></div>
+    <p style="font-size:13px;color:var(--chat-muted, #999);margin:0 0 16px;line-height:1.5">本服务已对 Tailscale / 局域网开放,必须先设置访问密码。设置后,手机等外部设备凭此密码登录。</p>
+    <input id="fr-pw1" type="password" placeholder="设置密码(至少 6 位)" style="width:100%;box-sizing:border-box;padding:10px 12px;margin-bottom:8px;border-radius:8px;border:1px solid var(--chat-line, #333);background:var(--chat-soft, #2a2a2e);color:var(--chat-text, #eee);font-size:14px" />
+    <input id="fr-pw2" type="password" placeholder="再次输入确认" style="width:100%;box-sizing:border-box;padding:10px 12px;margin-bottom:8px;border-radius:8px;border:1px solid var(--chat-line, #333);background:var(--chat-soft, #2a2a2e);color:var(--chat-text, #eee);font-size:14px" />
+    <div id="fr-msg" style="font-size:12px;color:var(--chat-danger, #ff8a80);margin:4px 0 10px;min-height:16px"></div>
     <button id="fr-save" style="width:100%;padding:11px;border:none;border-radius:8px;background:#0a84ff;color:#fff;font-size:14px;font-weight:600;cursor:pointer">设置并开始使用</button>
     </div>`;
   document.body.appendChild(ov);
@@ -201,7 +201,7 @@ function fixupLocalImages(root) {
       if (img.dataset.failed) return;
       img.dataset.failed = '1';
       const note = document.createElement('div');
-      note.style.cssText = 'font-size:12px;color:#f85149;font-family:monospace';
+      note.style.cssText = 'font-size:12px;color:var(--chat-danger, #f85149);font-family:monospace';
       note.textContent = '⚠ 无法加载图片: ' + p;
       img.replaceWith(note);
     });
@@ -876,7 +876,7 @@ function addAgentNotes(notes) {
   const div = document.createElement('div');
   div.className = 'msg system-msg';
   div.style.cssText = 'background:rgba(210,153,34,.12);border:1px solid rgba(210,153,34,.4);' +
-    'color:#d29922;border-radius:6px;padding:6px 10px;font-size:12px;text-align:left;align-self:stretch;';
+    'color:var(--chat-warning, #d29922);border-radius:6px;padding:6px 10px;font-size:12px;text-align:left;align-self:stretch;';
   const lines = notes.map(n => `📨 来自「${n.from}」：${n.body}`).join('\n');
   div.textContent = '已注入跨 agent 留言到本轮上下文：\n' + lines;
   div.style.whiteSpace = 'pre-wrap';
@@ -1954,11 +1954,11 @@ async function fetchAgentPresetPrompt(id) {
 function showRolePromptEditor(current) {
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
-    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
+    overlay.style.cssText = 'position:fixed;inset:0;background:var(--chat-overlay, rgba(0,0,0,.7));z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
     const box = document.createElement('div');
-    box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:560px;max-width:94vw;';
+    box.style.cssText = 'background:var(--chat-surface, #161b22);border:1px solid var(--chat-line, #30363d);border-radius:12px;padding:18px;width:560px;max-width:94vw;';
     const msg = document.createElement('div');
-    msg.style.cssText = 'font-size:14px;color:#c9d1d9;line-height:1.6;margin-bottom:10px;';
+    msg.style.cssText = 'font-size:14px;color:var(--chat-text, #c9d1d9);line-height:1.6;margin-bottom:10px;';
     msg.textContent = tt('rolePrompt');
     box.appendChild(msg);
 
@@ -1967,9 +1967,9 @@ function showRolePromptEditor(current) {
     presetRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:10px;';
     const presetLabel = document.createElement('span');
     presetLabel.textContent = tt('rolePresets');
-    presetLabel.style.cssText = 'font-size:12px;color:#8b949e;white-space:nowrap;';
+    presetLabel.style.cssText = 'font-size:12px;color:var(--chat-muted, #8b949e);white-space:nowrap;';
     const presetSel = document.createElement('select');
-    presetSel.style.cssText = 'flex:1;min-width:0;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 10px;outline:none;';
+    presetSel.style.cssText = 'flex:1;min-width:0;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:7px 10px;outline:none;';
     const ph = document.createElement('option');
     ph.value = ''; ph.textContent = tt('rolePresets');
     presetSel.appendChild(ph);
@@ -2019,11 +2019,11 @@ function showRolePromptEditor(current) {
     ta.value = current || '';
     ta.placeholder = tt('rolePlaceholder');
     ta.rows = 8;
-    ta.style.cssText = 'width:100%;box-sizing:border-box;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;line-height:1.5;padding:10px;outline:none;resize:vertical;margin-bottom:6px;font-family:inherit;';
+    ta.style.cssText = 'width:100%;box-sizing:border-box;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;line-height:1.5;padding:10px;outline:none;resize:vertical;margin-bottom:6px;font-family:inherit;';
     box.appendChild(ta);
 
     const hint = document.createElement('div');
-    hint.style.cssText = 'font-size:12px;color:#8b949e;margin-bottom:12px;';
+    hint.style.cssText = 'font-size:12px;color:var(--chat-muted, #8b949e);margin-bottom:12px;';
     hint.textContent = tt('rolePromptDesc');
     box.appendChild(hint);
 
@@ -2031,7 +2031,7 @@ function showRolePromptEditor(current) {
     row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
     const cancel = document.createElement('button');
     cancel.textContent = tt('cancel');
-    cancel.style.cssText = 'background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:6px 14px;cursor:pointer;';
+    cancel.style.cssText = 'background:var(--chat-soft, #21262d);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:6px 14px;cursor:pointer;';
     const ok = document.createElement('button');
     ok.textContent = tt('save');
     ok.style.cssText = 'background:#238636;border:1px solid #2ea043;border-radius:6px;color:#fff;font-size:13px;padding:6px 14px;cursor:pointer;';
@@ -2126,46 +2126,46 @@ async function openMemoryEditor() {
   if (!(curName in model.own.files)) model.own.files[curName] = '';
 
   const overlay = document.createElement('div');
-  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
+  overlay.style.cssText = 'position:fixed;inset:0;background:var(--chat-overlay, rgba(0,0,0,.6));z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
   const box = document.createElement('div');
-  box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:10px;padding:16px;width:min(680px,95vw);max-height:88vh;display:flex;flex-direction:column;gap:10px;';
+  box.style.cssText = 'background:var(--chat-surface, #161b22);border:1px solid var(--chat-line, #30363d);border-radius:10px;padding:16px;width:min(680px,95vw);max-height:88vh;display:flex;flex-direction:column;gap:10px;';
 
   const title = document.createElement('div');
-  title.style.cssText = 'color:#f0f6fc;font-size:14px;font-weight:600;';
+  title.style.cssText = 'color:var(--chat-heading, #f0f6fc);font-size:14px;font-weight:600;';
   title.textContent = tt('memTitle');
   const msg = document.createElement('div');
-  msg.style.cssText = 'color:#8b949e;font-size:12px;line-height:1.5;';
+  msg.style.cssText = 'color:var(--chat-muted, #8b949e);font-size:12px;line-height:1.5;';
   msg.textContent = tt('memIntro');
 
   const tabs = document.createElement('div');
   tabs.style.cssText = 'display:flex;gap:6px;';
   const tabOwn = document.createElement('button');
   const tabShared = document.createElement('button');
-  const tabStyle = (a) => `background:${a?'#1f6feb':'#21262d'};border:1px solid ${a?'#388bfd':'#30363d'};border-radius:6px;color:${a?'#fff':'#c9d1d9'};font-size:12px;padding:5px 12px;cursor:pointer;`;
+  const tabStyle = (a) => `background:${a?'#1f6feb':'var(--chat-soft, #21262d)'};border:1px solid ${a?'#388bfd':'var(--chat-line, #30363d)'};border-radius:6px;color:${a?'#fff':'var(--chat-text, #c9d1d9)'};font-size:12px;padding:5px 12px;cursor:pointer;`;
   tabOwn.textContent = tt('memScopeOwn');
   tabShared.textContent = tt('memScopeShared');
 
   const fileRow = document.createElement('div');
   fileRow.style.cssText = 'display:flex;gap:6px;align-items:center;';
   const sel = document.createElement('select');
-  sel.style.cssText = 'flex:1;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:12px;padding:5px;';
+  sel.style.cssText = 'flex:1;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:12px;padding:5px;';
   const newBtn = document.createElement('button');
   newBtn.textContent = `＋${tt('create')}`;
-  newBtn.style.cssText = 'background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:12px;padding:5px 10px;cursor:pointer;';
+  newBtn.style.cssText = 'background:var(--chat-soft, #21262d);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:12px;padding:5px 10px;cursor:pointer;';
   const delBtn = document.createElement('button');
   delBtn.textContent = `🗑${tt('delete')}`;
-  delBtn.style.cssText = 'background:#21262d;border:1px solid #30363d;border-radius:6px;color:#f85149;font-size:12px;padding:5px 10px;cursor:pointer;';
+  delBtn.style.cssText = 'background:var(--chat-soft, #21262d);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-danger, #f85149);font-size:12px;padding:5px 10px;cursor:pointer;';
 
   const ta = document.createElement('textarea');
-  ta.style.cssText = 'width:100%;flex:1;min-height:240px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;font-family:ui-monospace,monospace;padding:10px;resize:vertical;';
+  ta.style.cssText = 'width:100%;flex:1;min-height:240px;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;font-family:ui-monospace,monospace;padding:10px;resize:vertical;';
   const pathHint = document.createElement('div');
-  pathHint.style.cssText = 'color:#6e7681;font-size:11px;word-break:break-all;';
+  pathHint.style.cssText = 'color:var(--chat-muted, #6e7681);font-size:11px;word-break:break-all;';
 
   const row = document.createElement('div');
   row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
   const closeBtn = document.createElement('button');
   closeBtn.textContent = tt('close');
-  closeBtn.style.cssText = 'background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:6px 14px;cursor:pointer;';
+  closeBtn.style.cssText = 'background:var(--chat-soft, #21262d);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:6px 14px;cursor:pointer;';
   const saveBtn = document.createElement('button');
   saveBtn.textContent = tt('save');
   saveBtn.style.cssText = 'background:#238636;border:1px solid #2ea043;border-radius:6px;color:#fff;font-size:13px;padding:6px 14px;cursor:pointer;';
@@ -2342,36 +2342,36 @@ function shareRow(s) {
     ? `📎 ${tt('shareMessages')} · ${s.messageCount || 0}`
     : (s.access === 'operate' ? tt('shareOperate') : tt('shareViewOnly'));
   const exp = s.expiresAt ? `，到期 ${new Date(s.expiresAt).toLocaleString()}` : '';
-  return `<div class="share-row" data-token="${s.token}" style="border:1px solid #30363d;border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:12px;">
-    <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;"><b style="color:#79c0ff;">${lvl}</b><span style="color:#8b949e;">${exp}</span></div>
-    <div style="display:flex;gap:6px;align-items:center;"><input readonly value="${s.url}" style="flex:1;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:11px;padding:5px 7px;font-family:var(--mono,monospace);"><button data-copy="${s.url}" style="background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:12px;padding:5px 10px;cursor:pointer;">${tt('copy')}</button><button data-del="${s.token}" style="background:#2d1418;border:1px solid #5c2228;border-radius:6px;color:#f85149;font-size:12px;padding:5px 10px;cursor:pointer;">${tt('revoke')}</button></div>
+  return `<div class="share-row" data-token="${s.token}" style="border:1px solid var(--chat-line, #30363d);border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:12px;">
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;"><b style="color:var(--chat-blue, #79c0ff);">${lvl}</b><span style="color:var(--chat-muted, #8b949e);">${exp}</span></div>
+    <div style="display:flex;gap:6px;align-items:center;"><input readonly value="${s.url}" style="flex:1;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:11px;padding:5px 7px;font-family:var(--mono,monospace);"><button data-copy="${s.url}" style="background:var(--chat-soft, #21262d);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:12px;padding:5px 10px;cursor:pointer;">${tt('copy')}</button><button data-del="${s.token}" style="background:var(--chat-danger-soft, #2d1418);border:1px solid var(--chat-danger-line, #5c2228);border-radius:6px;color:var(--chat-danger, #f85149);font-size:12px;padding:5px 10px;cursor:pointer;">${tt('revoke')}</button></div>
   </div>`;
 }
 
 async function openShareDialog() {
   const overlay = document.createElement('div');
-  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
+  overlay.style.cssText = 'position:fixed;inset:0;background:var(--chat-overlay, rgba(0,0,0,.7));z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
   const box = document.createElement('div');
-  box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:560px;max-width:94vw;max-height:90vh;overflow:auto;color:#c9d1d9;';
+  box.style.cssText = 'background:var(--chat-surface, #161b22);border:1px solid var(--chat-line, #30363d);border-radius:12px;padding:18px;width:560px;max-width:94vw;max-height:90vh;overflow:auto;color:var(--chat-text, #c9d1d9);';
   box.innerHTML = `
     <div style="font-size:15px;font-weight:600;margin-bottom:4px;">${tt('shareSession')}</div>
-    <div style="font-size:12px;color:#8b949e;line-height:1.6;margin-bottom:10px;">${tt('shareDesc')} <b style="color:#f0883e;">${tt('shareOperateWarn')}</b></div>
-    <div style="margin-bottom:12px;"><button id="sh-msgmode" style="background:#1b2330;border:1px solid #2d3a4f;border-radius:6px;color:#79c0ff;font-size:12px;padding:6px 10px;cursor:pointer;">✂️ ${tt('shareSelectedMessages')}</button></div>
+    <div style="font-size:12px;color:var(--chat-muted, #8b949e);line-height:1.6;margin-bottom:10px;">${tt('shareDesc')} <b style="color:var(--chat-warning, #f0883e);">${tt('shareOperateWarn')}</b></div>
+    <div style="margin-bottom:12px;"><button id="sh-msgmode" style="background:var(--chat-soft, #1b2330);border:1px solid var(--chat-line, #2d3a4f);border-radius:6px;color:var(--chat-blue, #79c0ff);font-size:12px;padding:6px 10px;cursor:pointer;">✂️ ${tt('shareSelectedMessages')}</button></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
-      <select id="sh-access" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 9px;">
+      <select id="sh-access" style="background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:7px 9px;">
         <option value="view">${tt('shareViewOnly')}</option>
         <option value="operate">${tt('shareOperate')}</option>
       </select>
-      <input id="sh-pw" placeholder="${tt('sharePassword')}" style="flex:1;min-width:160px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 9px;">
-      <select id="sh-exp" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 9px;">
+      <input id="sh-pw" placeholder="${tt('sharePassword')}" style="flex:1;min-width:160px;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:7px 9px;">
+      <select id="sh-exp" style="background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:7px 9px;">
         <option value="0">${tt('neverExpires')}</option><option value="1">${tt('oneHour')}</option><option value="24">${tt('oneDay')}</option><option value="168">${tt('sevenDays')}</option>
       </select>
       <button id="sh-create" style="background:#238636;border:1px solid #2ea043;border-radius:6px;color:#fff;font-size:13px;padding:7px 14px;cursor:pointer;">${tt('shareGenerate')}</button>
     </div>
     <div id="sh-msg" style="font-size:12px;min-height:16px;margin-bottom:8px;"></div>
-    <div style="font-size:12px;color:#8b949e;margin-bottom:6px;">${tt('existingShares')}</div>
-    <div id="sh-list"><div style="color:#8b949e;font-size:12px;">${tt('loading')}</div></div>
-    <div style="display:flex;justify-content:flex-end;margin-top:12px;"><button id="sh-close" style="background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:6px 14px;cursor:pointer;">${tt('close')}</button></div>`;
+    <div style="font-size:12px;color:var(--chat-muted, #8b949e);margin-bottom:6px;">${tt('existingShares')}</div>
+    <div id="sh-list"><div style="color:var(--chat-muted, #8b949e);font-size:12px;">${tt('loading')}</div></div>
+    <div style="display:flex;justify-content:flex-end;margin-top:12px;"><button id="sh-close" style="background:var(--chat-soft, #21262d);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:6px 14px;cursor:pointer;">${tt('close')}</button></div>`;
   overlay.appendChild(box); document.body.appendChild(overlay);
   const close = () => overlay.remove();
   box.querySelector('#sh-close').onclick = close;
@@ -2381,8 +2381,8 @@ async function openShareDialog() {
   const listEl = box.querySelector('#sh-list');
 
   async function refresh() {
-    try { const d = await shareApi('GET', '/shares'); listEl.innerHTML = d.shares.length ? d.shares.map(shareRow).join('') : `<div style="color:#8b949e;font-size:12px;">${tt('none')}</div>`; }
-    catch (e) { listEl.innerHTML = `<div style="color:#f85149;font-size:12px;">${escapeHtml(chatApi.errorText(e))}</div>`; }
+    try { const d = await shareApi('GET', '/shares'); listEl.innerHTML = d.shares.length ? d.shares.map(shareRow).join('') : `<div style="color:var(--chat-muted, #8b949e);font-size:12px;">${tt('none')}</div>`; }
+    catch (e) { listEl.innerHTML = `<div style="color:var(--chat-danger, #f85149);font-size:12px;">${escapeHtml(chatApi.errorText(e))}</div>`; }
   }
   // Use event delegation on listEl so bind() is never needed — handlers survive
   // any innerHTML replacement, and data-* attrs always read the live DOM.
@@ -2410,17 +2410,17 @@ async function openShareDialog() {
     const access = box.querySelector('#sh-access').value;
     const password = box.querySelector('#sh-pw').value.trim();
     const hrs = parseInt(box.querySelector('#sh-exp').value, 10);
-    if (access === 'operate' && !password) { msg.textContent = tt('sharePasswordRequired'); msg.style.color = '#f85149'; return; }
+    if (access === 'operate' && !password) { msg.textContent = tt('sharePasswordRequired'); msg.style.color = 'var(--chat-danger, #f85149)'; return; }
     const body = { access };
     if (password) body.password = password;
     if (hrs > 0) body.expiresAt = Date.now() + hrs * 3600 * 1000;
     try {
       const d = await shareApi('POST', '/share', body);
-      msg.style.color = '#3fb950'; msg.textContent = tt('generatedLink', { url: d.url });
+      msg.style.color = 'var(--chat-success, #3fb950)'; msg.textContent = tt('generatedLink', { url: d.url });
       navigator.clipboard?.writeText(d.url);
       box.querySelector('#sh-pw').value = '';
       refresh();
-    } catch (e) { msg.style.color = '#f85149'; msg.textContent = chatApi.errorText(e); }
+    } catch (e) { msg.style.color = 'var(--chat-danger, #f85149)'; msg.textContent = chatApi.errorText(e); }
   };
   refresh();
 }
@@ -2430,23 +2430,23 @@ shareBtn?.addEventListener('click', openShareDialog);
 // Pick specific messages → share a read-only snapshot link.
 async function openMessagePicker() {
   const overlay = document.createElement('div');
-  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
+  overlay.style.cssText = 'position:fixed;inset:0;background:var(--chat-overlay, rgba(0,0,0,.7));z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
   const box = document.createElement('div');
-  box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:620px;max-width:94vw;max-height:90vh;display:flex;flex-direction:column;color:#c9d1d9;';
+  box.style.cssText = 'background:var(--chat-surface, #161b22);border:1px solid var(--chat-line, #30363d);border-radius:12px;padding:18px;width:620px;max-width:94vw;max-height:90vh;display:flex;flex-direction:column;color:var(--chat-text, #c9d1d9);';
   box.innerHTML = `
     <div style="font-size:15px;font-weight:600;margin-bottom:4px;">${tt('shareSelectedMessages')}</div>
-    <div style="font-size:12px;color:#8b949e;margin-bottom:10px;">${tt('shareSelectedMessagesHint')}</div>
-    <div id="mp-list" style="flex:1;overflow:auto;border:1px solid #30363d;border-radius:8px;padding:6px;margin-bottom:10px;min-height:120px;">${tt('loading')}</div>
+    <div style="font-size:12px;color:var(--chat-muted, #8b949e);margin-bottom:10px;">${tt('shareSelectedMessagesHint')}</div>
+    <div id="mp-list" style="flex:1;overflow:auto;border:1px solid var(--chat-line, #30363d);border-radius:8px;padding:6px;margin-bottom:10px;min-height:120px;">${tt('loading')}</div>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
-      <label style="font-size:12px;color:#8b949e;display:flex;gap:4px;align-items:center;cursor:pointer;"><input type="checkbox" id="mp-all"> ${tt('selectAll')}</label>
-      <span id="mp-count" style="font-size:12px;color:#8b949e;">${tt('selectedCount', { n: 0 })}</span>
-      <input id="mp-pw" placeholder="${tt('publicIfEmpty')}" style="flex:1;min-width:140px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 9px;">
-      <select id="mp-exp" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 9px;">
+      <label style="font-size:12px;color:var(--chat-muted, #8b949e);display:flex;gap:4px;align-items:center;cursor:pointer;"><input type="checkbox" id="mp-all"> ${tt('selectAll')}</label>
+      <span id="mp-count" style="font-size:12px;color:var(--chat-muted, #8b949e);">${tt('selectedCount', { n: 0 })}</span>
+      <input id="mp-pw" placeholder="${tt('publicIfEmpty')}" style="flex:1;min-width:140px;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:7px 9px;">
+      <select id="mp-exp" style="background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:7px 9px;">
         <option value="0">${tt('neverExpires')}</option><option value="24">${tt('oneDay')}</option><option value="168">${tt('sevenDays')}</option></select>
     </div>
     <div id="mp-msg" style="font-size:12px;min-height:16px;margin-bottom:8px;"></div>
     <div style="display:flex;justify-content:flex-end;gap:8px;">
-      <button id="mp-cancel" style="background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:6px 14px;cursor:pointer;">${tt('close')}</button>
+      <button id="mp-cancel" style="background:var(--chat-soft, #21262d);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:6px 14px;cursor:pointer;">${tt('close')}</button>
       <button id="mp-go" style="background:#238636;border:1px solid #2ea043;border-radius:6px;color:#fff;font-size:13px;padding:6px 14px;cursor:pointer;">${tt('shareGenerate')}</button>
     </div>`;
   overlay.appendChild(box); document.body.appendChild(overlay);
@@ -2466,24 +2466,24 @@ async function openMessagePicker() {
   listEl.innerHTML = msgs.map((m, i) => {
     const who = m.role === 'user' ? '我' : 'AI';
     const preview = escH((m.content || '').replace(/\s+/g, ' ').slice(0, 120)) || (m.tools && m.tools.length ? `（${m.tools.length} 个工具调用）` : '（空）');
-    return `<label style="display:flex;gap:8px;align-items:flex-start;padding:6px;border-bottom:1px solid #21262d;cursor:pointer;font-size:12px;">
+    return `<label style="display:flex;gap:8px;align-items:flex-start;padding:6px;border-bottom:1px solid var(--chat-soft, #21262d);cursor:pointer;font-size:12px;">
       <input type="checkbox" data-i="${i}" style="margin-top:2px;">
-      <span><b style="color:${m.role === 'user' ? '#79c0ff' : '#e7eaee'}">${who}</b> <span style="color:#8b949e">${preview}</span></span></label>`;
+      <span><b style="color:${m.role === 'user' ? 'var(--chat-blue, #79c0ff)' : 'var(--chat-text, #e7eaee)'}">${who}</b> <span style="color:var(--chat-muted, #8b949e)">${preview}</span></span></label>`;
   }).join('');
   listEl.querySelectorAll('input[type=checkbox]').forEach(c => c.onchange = updateCount);
   box.querySelector('#mp-all').onchange = (e) => { listEl.querySelectorAll('input[type=checkbox]').forEach(c => c.checked = e.target.checked); updateCount(); };
 
   box.querySelector('#mp-go').onclick = async () => {
     const indices = [...listEl.querySelectorAll('input[type=checkbox]:checked')].map(c => parseInt(c.dataset.i, 10));
-    if (!indices.length) { msgEl.style.color = '#f85149'; msgEl.textContent = tt('selectAtLeastOneMessage'); return; }
+    if (!indices.length) { msgEl.style.color = 'var(--chat-danger, #f85149)'; msgEl.textContent = tt('selectAtLeastOneMessage'); return; }
     const password = box.querySelector('#mp-pw').value.trim();
     const hrs = parseInt(box.querySelector('#mp-exp').value, 10);
     const body = { indices }; if (password) body.password = password; if (hrs > 0) body.expiresAt = Date.now() + hrs * 3600 * 1000;
     try {
       const d = await chatApi.json(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/share-messages`), { method: 'POST', json: body });
       navigator.clipboard?.writeText(d.url);
-      msgEl.style.color = '#3fb950'; msgEl.textContent = tt('generatedAndCopied', { url: d.url });
-    } catch (e) { msgEl.style.color = '#f85149'; msgEl.textContent = chatApi.errorText(e); }
+      msgEl.style.color = 'var(--chat-success, #3fb950)'; msgEl.textContent = tt('generatedAndCopied', { url: d.url });
+    } catch (e) { msgEl.style.color = 'var(--chat-danger, #f85149)'; msgEl.textContent = chatApi.errorText(e); }
   };
 }
 
@@ -2822,7 +2822,7 @@ function renderGoalVerdict(d) {
   html += goalList('需澄清', d.questions);
   html += goalList('建议完成标准', d.criteria);
   if (d.raw) html += '<div class="goal-sec-title">辅助 AI 原始输出</div>' +
-    '<div style="font-size:11px;color:#8b949e;white-space:pre-wrap">' + escHtml(String(d.raw).slice(0, 800)) + '</div>';
+    '<div style="font-size:11px;color:var(--chat-muted, #8b949e);white-space:pre-wrap">' + escHtml(String(d.raw).slice(0, 800)) + '</div>';
   goalDetailEl.innerHTML = html;
   goalRevisedEl.value = d.revised || goalTaskEl.value.trim();
   goalResultEl.style.display = 'block';

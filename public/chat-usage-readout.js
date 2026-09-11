@@ -215,9 +215,11 @@
   function summaryHtml(view) {
     const summary = view.summary;
     if (!summary.text) return '';
-    const parts = [`<span class="usage-ctx-text" style="color:${summary.color}">${escapeHtml(summary.text)}</span>`];
+    const tone = summary.hasBar ? (summary.pct > 80 ? 'danger' : summary.pct > 50 ? 'warning' : 'success') : 'muted';
+    const color = `var(--chat-${tone}, ${summary.color})`;
+    const parts = [`<span class="usage-ctx-text" style="color:${color}">${escapeHtml(summary.text)}</span>`];
     if (summary.hasBar) {
-      parts.push(`<span class="usage-ctx-meter"><span style="width:${summary.pct}%;background:${summary.color}"></span></span>`);
+      parts.push(`<span class="usage-ctx-meter"><span style="width:${summary.pct}%;background:${color}"></span></span>`);
     }
     if (view.contextTrace) {
       parts.push(`<span class="usage-context-link" aria-hidden="true">⌁ 引用 ${view.contextTrace.count}</span>`);
