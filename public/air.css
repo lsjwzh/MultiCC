@@ -21,9 +21,53 @@
   --well: #fbfdff;
   --bg-soft: #f4f8fd;
   --faint: #8a9aab;
+  /* 状态徽标（status-badge.css）按 tone 取色，tone 落到这七个变量上。它自带的
+     回退值是暗色主题的，直接拿到浅底上会发灰发白，所以浅色页面在这里交出自己
+     的调色板 —— 交的是像素，不是「哪个状态该是什么颜色」那套语义。 */
+  --st-neutral: #6f8096;
+  --st-muted: #8a9aab;
+  --st-info: #1678e8;
+  --st-running: #1f8f63;
+  --st-waiting: #b3701c;
+  --st-blocked: #a8621a;
+  --st-success: #1f8f63;
+  --st-danger: #b64e43;
   font: 14px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", sans-serif;
   color: var(--text);
   background: var(--bg);
+}
+
+/* ── 运行中的彩虹圈 ──────────────────────────────────────────────────────
+   老看板（manage.html 的 .card-border-rainbow）那套动画原样搬过来：8 段色相、
+   3s 一轮，圈和光晕同色一起走。两处必要的改动：
+     · 画在 box-shadow 上而不是 border-color 上 —— Air 的行本身带边框，而边框在
+       这套界面里是有话要说的（选中、跨目录的虚线），让彩虹去改它会把话搅乱；
+     · 用 inset —— 任务行住在 #tasks、目录行住在 overflow:hidden 的网格里，向外的
+       光圈会被祖先裁成半圈，inset 的圈和晕都画在元素自己身上，裁不掉。
+   谁拿到这个类不由这里决定：air-admin.js 问 status-presentation.js 要 spinner，
+   注册表只给 running 设了它 —— 「出错的任务绝不动画」因此是一条规则。 */
+@keyframes air-rainbow-ring {
+  0%   { box-shadow: inset 0 0 0 2px #ff0000, inset 0 0 14px #ff000055; }
+  14%  { box-shadow: inset 0 0 0 2px #ff8800, inset 0 0 14px #ff880055; }
+  28%  { box-shadow: inset 0 0 0 2px #ffff00, inset 0 0 14px #ffff0055; }
+  42%  { box-shadow: inset 0 0 0 2px #00ff00, inset 0 0 14px #00ff0055; }
+  57%  { box-shadow: inset 0 0 0 2px #0088ff, inset 0 0 14px #0088ff55; }
+  71%  { box-shadow: inset 0 0 0 2px #0000ff, inset 0 0 14px #0000ff55; }
+  85%  { box-shadow: inset 0 0 0 2px #8800ff, inset 0 0 14px #8800ff55; }
+  100% { box-shadow: inset 0 0 0 2px #ff0000, inset 0 0 14px #ff000055; }
+}
+.ring-running { animation: air-rainbow-ring 3s linear infinite; }
+
+/* 圈要看得出来是个圈。卡片和侧栏行本来就圆角，拿来就能用；列表里的行是方的
+   （它们是网格的单元格，靠自己那条 1px 分隔线画格子），直接套上去就是方形描边。
+   所以只给拿到圈的那一行就地圆角，并让它让出自己那条分隔线 —— 直线穿过圆弧
+   比少一条灰线难看得多。非运行中的行完全不受影响，格子线照旧。 */
+.admin-recent-row.ring-running,
+.admin-directory-row.ring-running,
+.directory-task-row.ring-running {
+  border-radius: 10px;
+  border-right-color: transparent;
+  border-bottom-color: transparent;
 }
 
 * { box-sizing: border-box; }
@@ -101,8 +145,6 @@ nav { display: flex; flex-direction: column; gap: 4px; }
 #task-count { color: var(--muted); font-size: 11px; }
 .sidebar-create { width: 100%; margin-bottom: 8px; color: #0d69d5; border-color: transparent; background: transparent; text-align: left; }
 .sidebar-create:hover { background: #fff; }
-#task-search { margin-bottom: 7px; padding: 9px 10px; background: rgba(255, 255, 255, .72); }
-#status-filter { padding: 7px 9px; color: #60738a; font-size: 11px; background: rgba(255, 255, 255, .45); }
 /* The band is a flex column with a definite height, so a list long enough to
    overflow it gets shrunk rather than scrolled — measured at 29 tasks the list
    box collapsed to its 52px floor (1224px of content behind a one-row window)
@@ -115,17 +157,28 @@ nav { display: flex; flex-direction: column; gap: 4px; }
 #tasks button.selected { color: #0d63c4; border-color: #d7e7f8; background: #fff; box-shadow: 0 5px 14px #42688f0a; }
 #tasks strong { display: block; font-size: 13px; font-weight: 610; line-height: 1.45; }
 #tasks small { display: block; margin-top: 3px; line-height: 1.35; }
+/* 一行三件事实：徽标 / 标题 / 目录与阶段。目录标签跟徽标同一行，因为「它在哪」
+   和「它现在怎么样」是同一个问题的一半。 */
+.task-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; }
+.task-meta .mc-status { font-size: 11px; }
+.task-note { color: #8b9cad; font-size: 10px; }
 .sidebar-link { display: flex; justify-content: space-between; padding: 8px 10px; color: #5d7187; font-size: 11px; }
 .terminal-group { flex-shrink: 0; margin: 1px 4px 0; color: var(--muted); }
 .terminal-group summary { padding: 8px 5px; cursor: pointer; font-size: 9px; letter-spacing: 1px; }
 #legacy-sessions a { padding: 6px; font-size: 11px; overflow-wrap: anywhere; }
 
 .side-bottom { flex-shrink: 0; display: grid; gap: 5px; padding: 10px 8px 0; border-top: 1px solid rgba(198, 215, 233, .75); }
-.side-bottom > .caption { margin: 0; text-transform: uppercase; letter-spacing: .8px; }
 .global-links { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; }
 .global-links button { min-height: 28px; padding: 3px 5px; color: #526b83; border-color: transparent; background: transparent; text-align: left; font-size: 11px; }
 .global-links button:hover, .global-links button.active { color: #0f63c6; background: rgba(255, 255, 255, .78); }
 .side-bottom small { margin-top: 4px; line-height: 1.5; }
+/* 频次收敛：偶尔点的那批折进「更多与系统」，每天点的那批留在外面。 */
+.side-more { min-width: 0; }
+.side-more > summary { padding: 7px 9px; color: #566d85; border: 1px solid transparent; border-radius: 11px; font-size: 11px; cursor: pointer; }
+.side-more > summary:hover { color: #0f63c6; background: rgba(255, 255, 255, .78); }
+.side-more[open] > summary { color: #0f63c6; border-color: #d7e7f8; background: rgba(255, 255, 255, .9); }
+.side-more-body { display: grid; gap: 4px; padding: 6px 0 2px; }
+#air-ops-status:empty { display: none; }
 
 /* ── Host ops (air-ops.js): the manage sidebar's pinned bottom region ── */
 .ops-version {
@@ -227,6 +280,9 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 #task-state:not(:disabled):hover { color: var(--accent); }
 #task-state.attention { color: #996218; }
 #task-state:disabled { opacity: 1; cursor: default; }
+/* 这一处只有 22px 高、11px 的字，圈会直接贴在笔画上。给点横向内边距让它变成
+   一个小胶囊；只在跑的时候多出的那几像素缩进，本身也是「它变了」的一个提示。 */
+#task-state.ring-running { padding-inline: 7px; border-radius: 8px; }
 .task-tools { display: flex; align-items: center; gap: 7px; flex-shrink: 0; }
 /* The AI 配置 capsule and 角色 moved onto the composer card (chat-air.css).
    What stays here are the round's most-used actions as compact icons; the More
@@ -349,7 +405,7 @@ button.admin-stat:hover { transform: translateY(-1px); }
 .admin-stat.green::before { background: #43b88a; }
 .admin-stat.amber::before { background: #df9a54; }
 .admin-stat.purple::before { background: #8f82df; }
-.admin-overview-grid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(310px, .65fr); gap: 15px; }
+.admin-overview-grid { display: grid; grid-template-columns: minmax(0, 1.9fr) minmax(290px, .6fr); gap: 15px; }
 .admin-panel { min-width: 0; padding: 17px; border: 1px solid #d8e5f2; border-radius: 17px; background: rgba(255, 255, 255, .92); box-shadow: 0 10px 32px #35577d0a; }
 .admin-directory-panel { margin-bottom: 15px; }
 .admin-directory-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border: 1px solid #e3ebf3; border-radius: 12px; overflow: hidden; }
@@ -613,22 +669,16 @@ body.console-open #console-panel { transform: none; visibility: visible; }
 
 .console-attention { margin-bottom: 15px; }
 .admin-panel-note { color: var(--muted); font-size: 10px; }
-.admin-row-mark.waiting { color: #c07a1e; }
-.admin-row-mark.running { color: var(--green); }
 
-/* ── 任务带的作用域开关 ───────────────────────────────────────────────────
-   同一条带子就地换范围（本目录 / 最近 / 全部目录），不是多一层导航。 */
-#scope-switch { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 3px; margin-bottom: 7px; padding: 3px; border: 1px solid rgba(206, 222, 238, .9); border-radius: 11px; background: rgba(255, 255, 255, .6); }
-#scope-switch button { min-width: 0; min-height: 30px; padding: 4px 6px; overflow: hidden; color: #60738a; border-color: transparent; background: transparent; font-size: 11px; white-space: nowrap; text-overflow: ellipsis; }
-#scope-switch button:hover { background: rgba(255, 255, 255, .8); }
-#scope-switch button[aria-selected="true"] { color: #0d63c4; border-color: #d7e7f8; background: #fff; box-shadow: 0 4px 12px #42688f0f; }
-#scope-switch b { margin-left: 5px; color: var(--muted); font-size: 10px; font-weight: 600; }
-#scope-switch button[aria-selected="true"] b { color: #3d82c9; }
+/* 控制台里那份「全部任务」的筛选条：搜索 + 状态 + 目录，一行三件。 */
+.admin-task-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 7px; margin-bottom: 9px; }
+.admin-task-controls input { padding: 8px 10px; font-size: 12px; }
+.admin-task-controls select { width: auto; max-width: 150px; padding: 7px 9px; color: #60738a; font-size: 11px; }
 
 /* 一条带子里混着别的目录的任务时，那几行得自己说清是哪个目录的，并用虚线
    边框和本目录的行分开 —— 否则「本目录」就不再是一个能读出来的事实。 */
 #tasks button.elsewhere { border-style: dashed; border-color: #cfdced; background: rgba(255, 255, 255, .45); }
-#tasks .task-dir { display: inline-block; width: auto; margin-top: 4px; padding: 1px 6px; color: #4d7ba6; border-radius: 6px; background: #eaf3fc; font-size: 9px; }
+.task-dir { display: inline-block; width: auto; padding: 1px 6px; color: #4d7ba6; border-radius: 6px; background: #eaf3fc; font-size: 9px; font-style: normal; }
 
 /* ── ⌘K 命令面板：目录和任务一起搜 ─────────────────────────────────────── */
 #palette-scrim { position: fixed; z-index: 50; inset: 0; width: 100%; height: 100%; border: 0; border-radius: 0; background: rgba(32, 49, 70, .3); backdrop-filter: blur(6px); }
@@ -748,8 +798,11 @@ body.console-open #console-panel { transform: none; visibility: visible; }
   .air-cli-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .air-config-footer { align-items: stretch; flex-direction: column; }
   .air-config-footer > div { display: grid; grid-template-columns: 1fr 1fr; }
-  #scope-switch button { padding: 4px 3px; font-size: 10px; }
-  #scope-switch b { margin-left: 3px; font-size: 9px; }
+  /* 三个控件挤一行在手机上每个都只剩 100px，搜索框会是第一个被牺牲的。
+     搜索永远占满一行，两个下拉平分第二行。 */
+  .admin-task-controls { grid-template-columns: 1fr 1fr; }
+  .admin-task-controls input { grid-column: 1 / -1; }
+  .admin-task-controls select { max-width: none; }
   #palette-results button { gap: 8px; padding: 8px; }
   .palette-mark { width: 24px; height: 24px; }
   .palette-kind { display: none; }
@@ -759,4 +812,10 @@ body.console-open #console-panel { transform: none; visibility: visible; }
 
 @media (prefers-reduced-motion: reduce) {
   * { scroll-behavior: auto !important; transition: none !important; }
+  /* 停掉动画不等于把圈摘掉：圈是「这条在跑」的唯一视觉信号，摘了就等于对
+     晕动症用户关掉了这条状态。留一个不闪的静音版，跟老看板的处理一致。 */
+  .ring-running {
+    animation: none;
+    box-shadow: inset 0 0 0 2px var(--accent), inset 0 0 14px #1678e833;
+  }
 }

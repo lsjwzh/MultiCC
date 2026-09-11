@@ -11,16 +11,14 @@
     // 控制台是盖在原页面上的一层，不是一种页面模式。/manage 的入口会跳到
     // ?view=overview，那个地址现在表示「打开控制台」，而不是「切到控制台页」。
     if (requested === 'overview') return 'tasks';
-    // 「跨目录活动」併进控制台之后，旧链接落在「全部目录」的任务带上，
-    // 而不是变成一个打不开的地址。
+    // 「跨目录活动」併进控制台之后，旧链接落在控制台上，而不是变成一个打不开的地址。
     if (requested === 'activity') return 'tasks';
     if (adminModes.has(requested)) return requested;
     return 'tasks';
   };
-  // 一个目录只是执行上下文，不是查找任务的前提：任务带的作用域可以放宽到
-  // 「最近打开过的」和「所有目录」。
-  let consoleOpen = initialParams.get('view') === 'overview';
-  let taskScope = initialParams.get('view') === 'activity' ? 'all' : 'dir';
+  // 两个老入口都是「打开控制台」：控制台是盖在原页面上的一层，不是一种页面模式。
+  // 跨目录看任务这件事现在只有这一个入口，所以 view=activity 和 view=overview 同义。
+  let consoleOpen = ['overview', 'activity'].includes(initialParams.get('view'));
   let paletteOpen = false;
   let paletteItems = [];
   let paletteIndex = 0;
@@ -44,7 +42,11 @@
     workspace_restore_capacity: '等待目录准备名额', planned: '执行时准备目录', resident: '目录已准备',
     retained: '目录已保留', hibernated: '目录已休眠', reserved: '准备执行', materializing: '正在准备目录',
     starting: '正在启动', running: '执行中', uncertain: '等待核实执行状态', idle: '空闲', queued: '排队中',
-    waiting: '等待回答', inbox: '待处理', doing: '进行中', done: '已完成', archived: '已归档', stale: '建议已过期',
+    waiting: '等待回答', archived: '已归档', stale: '建议已过期',
+    // 工作流阶段（src/task-board/planning.js WORKFLOW_STAGES）五个都要有词：任务行
+    // 会把阶段当补充信息写在徽标后面，漏一个就有一行蹦出英文。用词跟老看板
+    // （manage-task-planner.js plannerStage*）对齐 —— 同一件事不在这套界面里叫两个名字。
+    inbox: '待处理', ready: '待执行', doing: '进行中', review: '待验收', done: '已完成',
   };
   const blockerNames = {
     view_changed: '已有新输入或视图变化，旧建议不能迟到改投。',
@@ -71,8 +73,8 @@
   };
   let favorites = stored('air:favorites', []);
   if (!Array.isArray(favorites)) favorites = [];
-  // 「最近」作用域 = 我打开过的任务（跨目录，最新在前）。浏览记录不是权限也
-  // 不是归属，只是把常用的几个任务放在手边。
+  // 「最近」= 我打开过的任务（跨目录，最新在前）。浏览记录不是权限也不是归属，
+  // 只是把常用的几个任务放在手边。
   let recentTaskIds = stored('air:recent-tasks', []);
   if (!Array.isArray(recentTaskIds)) recentTaskIds = [];
   function rememberTask(id) {
@@ -80,16 +82,45 @@
     recentTaskIds = [id, ...recentTaskIds.filter(value => value !== id)].slice(0, 12);
     try { localStorage.setItem('air:recent-tasks', JSON.stringify(recentTaskIds)); } catch (_) {}
   }
-  function scopePool(scope) {
+  // 侧栏的任务区只装「手上的任务」：打开过的排在前面，然后是当前目录里最新的几个。
+  // 后一半是必要的 —— 第一次进来没有浏览记录，只有前一半的话列出来是空的，而一条
+  // 空列表并不比一条能点的任务更有用。完整的那份列表在控制台（全部目录 + 搜索）。
+  const RECENT_LIMIT = 8;
+  function recentPool() {
     if (!data) return [];
-    if (scope === 'all') return data.tasks;
-    if (scope === 'recent') {
-      const byId = new Map(data.tasks.map(task => [task.id, task]));
-      return recentTaskIds.map(id => byId.get(id)).filter(Boolean);
+    const byId = new Map(data.tasks.map(task => [task.id, task]));
+    const pool = [];
+    const seen = new Set();
+    for (const id of recentTaskIds) {
+      const task = byId.get(id);
+      if (!task || seen.has(task.id)) continue;
+      seen.add(task.id);
+      pool.push(task);
     }
-    return data.tasks.filter(task => task.dirId === directoryId);
+    const settled = task => (['done', 'archived'].includes(task.status) ? 1 : 0);
+    for (const task of data.tasks.filter(t => t.dirId === directoryId)
+      .sort((a, b) => settled(a) - settled(b) || Number(b.updatedAt || 0) - Number(a.updatedAt || 0))) {
+      if (seen.has(task.id)) continue;
+      seen.add(task.id);
+      pool.push(task);
+    }
+    return pool.slice(0, RECENT_LIMIT);
   }
   const urgentTasks = () => window.MultiCCAirAdmin?.urgentTasks?.(data) || [];
+
+  // ── 状态与「在跑」 ──────────────────────────────────────────────────────
+  // 判定只有一处：air-admin.js 把 public/status-presentation.js 包了一层给侧栏用。
+  // 所以一条任务在侧栏和控制台不可能显示成两种状态，彩虹圈也不可能只出现在一边
+  // —— 注册表把 spinner 只给了 running，「出错的任务绝不动画」因此不由这里决定。
+  const taskStatus = task => window.MultiCCAirAdmin?.taskStatus?.(task) || 'unknown';
+  const isRunningTask = task => window.MultiCCAirAdmin?.isRunning?.(task) === true;
+  const runningDirectories = () => window.MultiCCAirAdmin?.runningDirectories?.(data) || new Set();
+  const applyRing = (element, on) => window.MultiCCAirAdmin?.applyRing?.(element, on);
+  /** 状态徽标（图标 + 中文标签）。没有注册表时给一句可读的兜底文案。 */
+  function statusBadge(task, options) {
+    return window.MultiCCAirAdmin?.statusBadge?.(task, options)
+      || node('span', label(taskStatus(task)), 'mc-status');
+  }
 
   async function api(path, body, requestedMethod = null) {
     const method = requestedMethod || (body === undefined ? 'GET' : 'POST');
@@ -173,8 +204,8 @@
         kind: 'directory', dirId: directory.id,
         title: directory.name, detail: directory.path || '工作目录',
       }));
-    // 顺序即相关度：最近打开过的在前，然后是当前目录，最后是其余任务。
-    const pool = [...scopePool('recent'), ...scopePool('dir'), ...data.tasks];
+    // 顺序即相关度：手上的任务在前，然后是当前目录，最后是其余任务。
+    const pool = [...recentPool(), ...data.tasks];
     const seen = new Set();
     const tasks = [];
     for (const task of pool) {
@@ -183,7 +214,7 @@
       tasks.push({
         kind: 'task', dirId: task.dirId, id: task.id,
         title: task.title || '未命名任务',
-        detail: `${directoryName(task.dirId)} · ${label(task.status)}`,
+        detail: `${directoryName(task.dirId)} · ${label(taskStatus(task))}`,
       });
       if (tasks.length >= (needle ? 8 : 6)) break;
     }
@@ -289,16 +320,28 @@
     if (resource?.lease && resource.lease !== 'idle') return label(resource.lease);
     return label(resource?.residency);
   }
+  // 列表行里只说「卡在哪」的那部分资源状态：工作目录是计划态还是已经常驻，是任务
+  // 详情面板要回答的问题（那儿就有整整一行「资源状态」），摆在每一行上只会把
+  // 阶段、目录这些真正一眼要看的东西挤掉。
+  function holdText(resource) {
+    if (resource?.capacityReason) return label(resource.capacityReason);
+    if (resource?.lease && resource.lease !== 'idle') return label(resource.lease);
+    return '';
+  }
   function directoryName(id) { return data?.directories.find(directory => directory.id === id)?.name || '未知目录'; }
 
   function renderDirectories() {
     if (!data) return;
     const query = $('directory-search').value.trim().toLowerCase();
     const directories = data.directories.filter(directory => `${directory.name} ${directory.path}`.toLowerCase().includes(query));
+    const busy = runningDirectories();
     $('directory-grid').replaceChildren(...directories.map(directory => {
       const button = node('button');
+      applyRing(button, busy.has(directory.id));
       const taskCount = data.tasks.filter(task => task.dirId === directory.id).length;
-      button.append(node('strong', '▣ ' + directory.name), node('small', directory.path), node('small', `${taskCount} 个任务${favorites.includes(directory.id) ? ' · 已收藏' : ''}`));
+      const activeCount = data.tasks.filter(task => task.dirId === directory.id && isRunningTask(task)).length;
+      button.append(node('strong', '▣ ' + directory.name), node('small', directory.path),
+        node('small', `${taskCount} 个任务${activeCount ? ` · ${activeCount} 个执行中` : ''}${favorites.includes(directory.id) ? ' · 已收藏' : ''}`));
       button.onclick = () => navigate(directory.id);
       return button;
     }));
@@ -309,8 +352,7 @@
     const dir = data?.directories.find(directory => directory.id === directoryId);
     const tasks = (data?.tasks || []).filter(task => task.dirId === directoryId);
     const current = tasks.filter(task => !['done', 'archived'].includes(task.status));
-    const running = current.filter(task => ['reserved', 'materializing', 'starting', 'running', 'uncertain']
-      .includes(task.resource?.lease));
+    const running = current.filter(isRunningTask);
     const planned = current.filter(task => task.recordType === 'planned' && !running.includes(task));
     $('directory-open-planner').disabled = !dir;
     const stat = (name, value, detail, tone = '') => {
@@ -328,8 +370,15 @@
     const rows = [...tasks].sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0)).slice(0, 10);
     $('directory-task-list').replaceChildren(...rows.map(task => {
       const button = node('button', null, 'directory-task-row');
+      applyRing(button, isRunningTask(task));
       const copy = node('span');
-      copy.append(node('strong', task.title || '未命名任务'), node('small', `${label(task.workflowStage || task.status)} · ${resourceText(task.resource)}`));
+      const meta = node('small', null, 'task-meta');
+      meta.append(statusBadge(task));
+      const stage = label(task.workflowStage || task.status);
+      const detail = holdText(task.resource);
+      const extra = [stage, detail].filter(part => part && !label(taskStatus(task)).includes(part)).join(' · ');
+      if (extra) meta.append(node('em', extra, 'task-note'));
+      copy.append(node('strong', task.title || '未命名任务'), meta);
       button.append(node('span', task.recordType === 'planned' ? '◇' : '›', 'directory-task-mark'), copy,
         node('time', task.updatedAt ? new Date(task.updatedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''));
       button.onclick = () => navigate(directoryId, task.id);
@@ -697,13 +746,7 @@
   }
 
   function visibleTasks() {
-    const query = $('task-search').value.trim().toLowerCase();
-    const filter = $('status-filter').value;
-    return scopePool(taskScope).filter(task => {
-      const matchesQuery = `${task.title || ''}`.toLowerCase().includes(query);
-      const matchesStatus = filter === 'all' || (filter === 'archived' ? task.status === 'archived' : !['done', 'archived'].includes(task.status));
-      return matchesQuery && matchesStatus;
-    }).sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+    return recentPool();
   }
 
   function renderHeader(dir) {
@@ -757,6 +800,10 @@
       'details-toggle', 'chat-more']) $(id).hidden = !taskId;
     $('task-state').disabled = !taskId;
     if (!taskId) { $('task-state').classList.remove('attention'); $('task-state').removeAttribute('title'); }
+    // 「正在跑」这件事，页头也是需要说清的地方之一：当前这条任务在跑的时候，
+    // 标题下面那行状态和侧栏、控制台用的是同一个圈。
+    const openTask = taskId ? (data?.tasks || []).find(task => task.id === taskId) : null;
+    applyRing($('task-state'), isRunningTask(openTask));
     renderComposerControls();
   }
 
@@ -770,8 +817,12 @@
     $('create').disabled = !dir;
     $('favorite').disabled = !dir;
     $('favorite').textContent = favorites.includes(directoryId) ? '★' : '☆';
+    // 有活在跑的目录也带圈：不必切过去才知道那个目录正忙。
+    const busy = runningDirectories();
+    applyRing(document.querySelector('.space-card'), busy.has(directoryId));
     $('favorites').replaceChildren(...data.directories.filter(directory => favorites.includes(directory.id)).slice(0, 5).map(directory => {
       const button = node('button', '▣ ' + directory.name, directory.id === directoryId && mode === 'tasks' ? 'selected' : '');
+      applyRing(button, busy.has(directory.id));
       button.onclick = () => navigate(directory.id);
       return button;
     }));
@@ -802,30 +853,32 @@
     const urgent = urgentTasks();
     $('console-badge').hidden = !urgent.length;
     $('console-badge').textContent = urgent.length ? String(urgent.length) : '';
-    for (const button of $('scope-switch').querySelectorAll('button')) {
-      const selected = button.dataset.scope === taskScope;
-      button.setAttribute('aria-selected', String(selected));
-      button.querySelector('b').textContent = String(scopePool(button.dataset.scope).filter(task => task.status !== 'archived').length);
-    }
 
     const tasks = visibleTasks();
-    $('task-list-title').textContent = taskScope === 'dir'
-      ? ($('status-filter').selectedOptions[0]?.textContent || '任务')
-      : taskScope === 'recent' ? '最近打开' : '全部目录';
+    $('task-list-title').textContent = '最近任务';
     $('task-count').textContent = tasks.length;
     $('tasks').replaceChildren(...tasks.map(task => {
       const elsewhere = task.dirId !== directoryId;
       const button = node('button', null, [task.id === taskId ? 'selected' : '', elsewhere ? 'elsewhere' : ''].filter(Boolean).join(' '));
-      const state = task.recordType === 'planned'
-        ? `计划 · ${label(task.workflowStage || task.status)}` : label(task.status);
-      // 别的目录的行自报家门；当前目录的行不加标记 —— 在这里就是在这里。
-      if (elsewhere) button.append(node('small', directoryName(task.dirId), 'task-dir'));
-      button.append(node('strong', task.title), node('small', `${state} · ${resourceText(task.resource)}`));
+      applyRing(button, isRunningTask(task));
+      // 一行三件事实：状态徽标（图标 + 中文，来自注册表）、标题、然后是这条记录
+      // 的类型/阶段/资源去向。目录作为标签跟在同一行里 —— 「最近」这条带子本来就
+      // 是跨目录的（我打开过的任务 + 当前目录的几个），所以每一行都自报家门，
+      // 而不是只给「不在当前目录」的那几行加标记：一份一半带标签一半不带的列表，
+      // 读的人得先知道哪一半是什么规则。
+      const meta = node('small', null, 'task-meta');
+      meta.append(statusBadge(task));
+      meta.append(node('em', directoryName(task.dirId), 'task-dir'));
+      const stage = task.recordType === 'planned' ? `计划 · ${label(task.workflowStage || task.status)}` : '';
+      // 徽标已经说过的词不在这里再说一遍（「执行中 · 执行中」不是更多信息）。
+      const badgeText = label(taskStatus(task));
+      const extra = [stage, holdText(task.resource)].filter(part => part && !badgeText.includes(part)).join(' · ');
+      button.append(node('strong', task.title), meta);
+      if (extra) button.append(node('small', extra, 'task-note'));
       button.onclick = () => navigate(task.dirId, task.id);
       return button;
     }));
-    const emptyText = { dir: '这里还没有符合条件的任务。', recent: '还没有最近打开的任务。', all: '所有目录都没有符合条件的任务。' }[taskScope];
-    if (!tasks.length) $('tasks').append(node('small', emptyText, 'empty-list'));
+    if (!tasks.length) $('tasks').append(node('small', '还没有打开过任务。这个目录里的任务会出现在这里。', 'empty-list'));
 
     // 面板打开时才渲染它的内容：控制台不是页面，所以它不是「当前视图」。
     if (consoleOpen) {
@@ -1219,6 +1272,9 @@
   function adminContext() {
     return {
       data, scheduleTasks, api, setMode, navigate, notice, directoryName,
+      // 中文词表只有一份（stateNames）：面板要说的状态词跟侧栏是同一批，
+      // 传下去比在 air-admin.js 里再抄一份可靠。
+      label,
       openConsole: () => setConsole(true),
       closeConsole: () => setConsole(false),
     };
@@ -1232,19 +1288,10 @@
   $('console-close').onclick = () => setConsole(false);
   $('console-scrim').onclick = () => setConsole(false);
   $('palette-scrim').onclick = () => closePalette();
-  // 同一条带子、同一个搜索框，只是换了个作用域 —— 不是三个页面。
-  $('scope-switch').onclick = event => {
-    const button = event.target.closest('button[data-scope]');
-    if (!button || button.dataset.scope === taskScope) return;
-    taskScope = button.dataset.scope;
-    render();
-  };
   $('palette-input').oninput = () => { paletteIndex = 0; renderPalette(); };
   $('schedules').onclick = () => setMode('schedules');
   document.querySelectorAll('[data-air-view]').forEach(button => { button.onclick = () => setMode(button.dataset.airView); });
   $('directory-search').oninput = renderDirectories;
-  $('task-search').oninput = render;
-  $('status-filter').onchange = render;
   // Refreshing means reloading what the page is showing. The conversation lives
   // in a frame of its own, so reloading it is a partial reload of this page: the
   // frame boots again, re-fetches its messages and re-establishes its socket,
