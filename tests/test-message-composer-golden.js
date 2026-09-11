@@ -303,7 +303,9 @@ function todayBuildChatArgs(adapter, persisted, promptText, o) {
     if (persisted.agent) result.push('--agent', persisted.agent);
     const effort = cliEffortLevel(persisted);
     if (effort) result.push('--effort', effort);
-    if (normalizeEffort(persisted.effort) === 'ultracode') result.push('--settings', '{"ultracode":true}');
+    // ultracode no longer rides an inline --settings flag: the adapter returns it
+    // as a structured `settings` field, merged into the per-session --settings
+    // override file by the spawn path (providers/claude-settings-override).
     if (o.disallowedTools.length) result.push('--disallowedTools', o.disallowedTools.join(','));
     if (o.maxTurns > 0) result.push('--max-turns', String(o.maxTurns));
     result.push(o.isFirstTurn ? '--session-id' : '--resume', persisted.cliSessionId, promptText);
@@ -373,16 +375,20 @@ function shapeEquiv(label, { adapter, persisted, isFirstTurn, disallowedTools, m
     assert(false, `${label}: adapter.buildInvocation not implemented`);
     return;
   }
-  const { args, payload } = adapter.buildInvocation(envelope);
+  const { args, payload, settings } = adapter.buildInvocation(envelope);
   const newArr = [...args, payload];
   const ok = assert(eq(newArr, todayArr), `${label}: invocation args + payload preserve legacy bytes`);
   if (!ok) {
     console.error('    --- new ---'); console.error(JSON.stringify(newArr));
     console.error('    --- today ---'); console.error(JSON.stringify(todayArr));
   }
+  if (adapter.name === 'claude') {
+    const wantSettings = normalizeEffort(persisted.effort) === 'ultracode' ? { ultracode: true } : undefined;
+    assert(eq(settings, wantSettings), `${label}: structured settings field = ${JSON.stringify(wantSettings)}`);
+  }
 }
 
-// 3a: claude per-turn, first turn, ultracode (=> --settings + --effort xhigh)
+// 3a: claude per-turn, first turn, ultracode (=> settings field + --effort xhigh)
 shapeEquiv('3a claude per-turn first ultracode', {
   adapter: claudeAdapterWith(['Bash', 'WebFetch']),
   persisted: basePersisted({ cli: 'claude', type: null, effort: 'ultracode', agent: 'reviewer' }),

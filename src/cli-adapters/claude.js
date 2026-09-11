@@ -80,9 +80,6 @@ function createClaudeAdapter(deps) {
       if (model) args.push('--model', model);
       if (so.rawAgent) args.push('--agent', so.rawAgent);
       if (effort) args.push('--effort', effort);
-      if (normalizeEffort(so.rawEffort) === 'ultracode') {
-        args.push('--settings', '{"ultracode":true}');
-      }
       if (chatDisallowedTools.length) {
         args.push('--disallowedTools', chatDisallowedTools.join(','));
       }
@@ -90,7 +87,12 @@ function createClaudeAdapter(deps) {
       if (env.historyHandle.isFirstTurn) args.push('--session-id', env.historyHandle.cliSessionId);
       else args.push('--resume', env.historyHandle.cliSessionId);
       debugLogClaudeInvoke({ model: so.rawModel, effort: so.rawEffort }, [...args, payload]);
-      return { cmd, args, payload };
+      // Ultracode rides in the structured `settings` field (merged into the
+      // per-session --settings override file by the spawn path) instead of an
+      // inline --settings flag: the provider routing env override uses the same
+      // flag, and the CLI accepts only one.
+      const ultracode = normalizeEffort(so.rawEffort) === 'ultracode';
+      return { cmd, args, payload, ...(ultracode ? { settings: { ultracode: true } } : {}) };
     },
     decodeEvent(event) {
       if (event?.type === 'result' && !isMainResult(event)) return [];
