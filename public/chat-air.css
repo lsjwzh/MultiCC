@@ -417,15 +417,31 @@ body.air-chat.task-artifacts-chat .task-artifacts-toggle { color-scheme: light; 
 .air-chat .hljs-deletion { color: var(--chat-danger); background: var(--chat-danger-soft); }
 
 @media (max-width: 760px) {
-  .air-chat #chat-context-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 10px; padding: 6px 14px; }
-  .air-chat #header { grid-column: 2; grid-row: 1; align-self: start; }
-  .air-chat #status { max-width: none; font-size: 0; }
+  /* 手机上一条消息只值 23px，而这几条原来吃掉了 100 多：目标一句话独占一行、
+     药丸一行、分支一行，连接状态和通话按钮再占一行。压成两行 ——
+     第一行是「这条会话的环境」（git 分支 · 强制同步 · 连接 · 通话），
+     第二行是「任务在做什么、能对它做什么」（状态 · 阶段 · 取消 · 目标）。 */
+  .air-chat #chat-context-bar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 3px 8px;
+    /* 左边界跟消息列表同一条竖线，两行都压到最小的上下留白。 */
+    padding: 4px 14px;
+  }
+  .air-chat #header { grid-column: 2; grid-row: 1; align-self: center; min-height: 0; }
+  .air-chat #status { max-width: 34vw; font-size: 0; }
   .air-chat #status::before { content: "连接中"; font-size: 10px; }
   .air-chat #status.connected::before { content: "已连接"; }
   .air-chat #status.error::before { content: "重连中"; }
-  .air-chat #worktree-bar { grid-column: 1 / -1; grid-row: 2; width: 100%; max-width: none; }
-  .air-chat #aux-classify-bar { grid-column: 1; grid-row: 1; min-height: 30px; max-width: 100%; gap: 4px; flex-wrap: wrap; }
-  .air-chat #aux-classify-bar .ac-goal { flex-basis: 100%; font-size: 10px; }
+  /* 分支名长短不可控：它自己省略（#worktree-bar .worktree-label 本来就有
+     overflow/ellipsis），别把「强制同步」挤到下一行去。 */
+  .air-chat #worktree-bar { grid-column: 1; grid-row: 1; width: 100%; max-width: none; }
+  .air-chat #aux-classify-bar { grid-column: 1 / -1; grid-row: 2; min-height: 0; max-width: none; gap: 4px; flex-wrap: wrap; }
+  /* 目标不再独占整行（flex-basis:100%），改成跟在药丸后面、用剩下的宽度收尾：
+     它是「任务在干什么」的一句话，正好接在状态·阶段后面读。flex-basis 给一个
+     很小的值，是为了让它无论多长都留在这一行内收缩，而不是整句换行又占一行。 */
+  .air-chat #aux-classify-bar .ac-goal { order: 9; flex: 1 1 40px; min-width: 0; font-size: 10px; }
   .air-chat #aux-classify-bar .ac-icon { display: none; }
   .air-chat #chat-context-bar .worktree-conflict-bar { grid-column: 1 / -1; grid-row: 3; }
   .air-chat #header-more-menu { color: var(--air-text); background: #fbfdff; }
