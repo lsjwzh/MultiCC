@@ -1,0 +1,101 @@
+/* ── Composer ────────────────────────────────────────────────────────────────
+   The one input module. Every place the product asks for text renders the same
+   card — one border, one radius, one surface, one shadow, one focus ring, one
+   set of input metrics — so a change here moves every surface at once.
+
+   Two placements ship today:
+
+     .mc-composer--chat    the task conversation, inside the Air frame
+                           (chat.html's #input-bar, re-skinned by chat-air.css)
+     .mc-composer--panel   the directory's new-task form, in the Air host
+                           (air.html's #quick-task-form)
+
+   Only the slots differ. The conversation pins its AI 配置 / 角色 band to the
+   top edge of the card; the new-task form pins its buttons band to the bottom.
+   Both bands get the same tinted treatment, so the two compose as one object
+   seen from either side. .mc-composer--with-aux marks the card whose top edge
+   belongs to a band, so the join has no doubled line and no square corners.
+
+   Slots
+     .mc-composer__aux      band pinned above the card's top edge
+     .mc-composer__input    the textarea
+     .mc-composer__actions  band flush with the card's bottom edge
+   ─────────────────────────────────────────────────────────────────────────── */
+
+/* chat.html's own `#input-bar` rule is an id, which outranks a bare class, so
+   the frame is matched as `#input-bar.mc-composer`. The declarations below are
+   shared verbatim with the host's form — that is what stops the two drifting. */
+.mc-composer,
+#input-bar.mc-composer {
+  display: flex;
+  overflow: hidden;
+  border: 1px solid #dbe5ef;
+  border-radius: 15px;
+  background: #fff;
+  box-shadow: 0 10px 30px #31557614, 0 4px 16px #23599a08, 0 0 0 3px #f3f7fb90;
+  transition: box-shadow .2s ease, border-color .2s ease;
+}
+.mc-composer:focus-within,
+#input-bar.mc-composer:focus-within {
+  border-color: #c1d8ed;
+  box-shadow: 0 10px 32px #31557618, 0 4px 20px #23599a10, 0 0 0 3px #dcecfb;
+}
+
+/* The conversation keeps the input and its buttons on one line, so the card
+   carries the padding and chat.html supplies the row's flex metrics. */
+#input-bar.mc-composer { padding: 10px 12px; }
+/* The new-task form stacks instead: input first, band flush with the bottom
+   edge — which the card's clipping rounds for us. */
+.mc-composer--panel { flex-direction: column; align-items: stretch; padding: 0; }
+
+/* The textarea is the whole point of the card: it sits directly on it, with no
+   second frame of its own. */
+.mc-composer__input,
+#input-bar.mc-composer textarea {
+  border: 0;
+  background: transparent;
+  min-height: 52px;
+  padding: 10px 12px;
+  color: #263b50;
+  font-size: 14px;
+  line-height: 1.4;
+  font-family: inherit;
+  outline: none;
+}
+.mc-composer__input:focus,
+#input-bar.mc-composer textarea:focus { border: 0; box-shadow: none; }
+.mc-composer__input::placeholder,
+#input-bar.mc-composer textarea::placeholder { color: #8b9cae; }
+.mc-composer--panel .mc-composer__input { width: 100%; max-height: 220px; padding: 12px 12px 8px; resize: vertical; }
+
+/* A control band carries whatever the input itself does not need: the model and
+   role pills in the conversation, the attach / Goal / CLI / submit buttons in
+   the new-task form. The tint does the separating — no dividing rule — so a
+   band reads as part of the card, not a toolbar bolted onto it. */
+.mc-composer__aux,
+.mc-composer__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #f8fbff;
+}
+.mc-composer__aux[hidden] { display: none; }
+
+/* The conversation's band is a sibling of #input-bar rather than a child
+   (air.js inserts it before the input), so it draws the card's top edge itself
+   and the card drops its own. The extra bottom padding keeps the pills clear of
+   the text underneath. */
+.mc-composer__aux {
+  padding: 8px 12px 14px;
+  border: 1px solid #dbe5ef;
+  border-bottom: 0;
+  border-radius: 15px 15px 0 0;
+}
+/* Focusing the input lights the whole card, band included. */
+.mc-composer__aux:has(+ #input-bar:focus-within) { border-color: #c1d8ed; }
+#input-bar.mc-composer.mc-composer--with-aux { border-top: 0; border-radius: 0 0 15px 15px; }
+
+/* The new-task form's band closes the card: flush with the bottom edge, no
+   radius of its own, the card's clipping rounds the corners. */
+.mc-composer--panel .mc-composer__actions { padding: 8px 12px 10px; }
