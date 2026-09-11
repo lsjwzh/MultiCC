@@ -510,8 +510,6 @@
     for (const id of ['ai-capsule', 'roles-toggle', 'details-toggle', 'chat-more']) $(id).hidden = !taskId;
     $('task-state').disabled = !taskId;
     if (!taskId) { $('task-state').classList.remove('attention'); $('task-state').removeAttribute('title'); }
-    const layoutButton = document.querySelector('[data-chat-layout]');
-    if (layoutButton) layoutButton.hidden = !taskId;
     $('ai-capsule').disabled = !selectedEntry || selectedEntry.readOnly;
     $('roles-toggle').disabled = !selectedEntry || selectedEntry.readOnly || !selectedEntry.roleBindings;
   }
