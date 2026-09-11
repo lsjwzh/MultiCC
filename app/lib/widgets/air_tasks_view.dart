@@ -249,11 +249,18 @@ class _AirTasksViewState extends State<AirTasksView>
               '${t['title']}'.toLowerCase().contains(_query.toLowerCase()),
         )
         .toList();
+    // Derive from the ambient theme and pin the accent, rather than seeding a
+    // fresh scheme: `ColorScheme.fromSeed` answers with a *tonal* primary
+    // (#415F91 for this seed), which is what every default-styled widget in
+    // this subtree — the 新任务 button, the 全部记录 switch, the spinner — would
+    // then paint instead of the Air accent.
+    final theme = Theme.of(context);
     return Theme(
-      data: ThemeData.light(useMaterial3: true).copyWith(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: _blue,
-          brightness: Brightness.light,
+      data: theme.copyWith(
+        colorScheme: theme.colorScheme.copyWith(
+          primary: _blue,
+          onPrimary: Colors.white,
+          secondary: _blue,
         ),
       ),
       child: ColoredBox(
