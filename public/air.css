@@ -103,7 +103,13 @@ nav { display: flex; flex-direction: column; gap: 4px; }
 .sidebar-create:hover { background: #fff; }
 #task-search { margin-bottom: 7px; padding: 9px 10px; background: rgba(255, 255, 255, .72); }
 #status-filter { padding: 7px 9px; color: #60738a; font-size: 11px; background: rgba(255, 255, 255, .45); }
-#tasks { min-height: 52px; margin: 9px 0 4px; overflow: auto; overscroll-behavior: contain; }
+/* The band is a flex column with a definite height, so a list long enough to
+   overflow it gets shrunk rather than scrolled — measured at 29 tasks the list
+   box collapsed to its 52px floor (1224px of content behind a one-row window)
+   while the band itself never scrolled, hiding 28 of them. `flex: 0 0 auto`
+   takes the list out of the shrinking: the band scrolls as a whole, which is
+   what `overflow-y: auto` on #task-sidebar is there for. */
+#tasks { flex: 0 0 auto; min-height: 52px; margin: 9px 0 4px; overflow: auto; overscroll-behavior: contain; }
 #tasks button { padding: 10px; border-radius: 11px; }
 #tasks button:hover { background: rgba(255, 255, 255, .65); }
 #tasks button.selected { color: #0d63c4; border-color: #d7e7f8; background: #fff; box-shadow: 0 5px 14px #42688f0a; }
