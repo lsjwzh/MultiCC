@@ -1051,8 +1051,12 @@ test('host task-board dispatch rejects busy targets before durable admission', (
     'utf8',
   );
   // Busy is a classify verdict plus the repo lease — see the liveness→classify
-  // invariants in tests/test-architecture-boundaries.js.
-  assert.match(source, /function dispatchTargetBusy\(sid, item = null\)[\s\S]*?isRunActive\(sid\)[\s\S]*?isSlotUnavailable\(sid, item \|\| \{\}\)[\s\S]*?isLeased\(sid\)/);
+  // invariants in tests/test-architecture-boundaries.js. The gate is spelled out
+  // as reason codes now (dispatchTargetBusyReasons) so the outbox skip log and
+  // the insert-queued response can say WHICH veto fired; the boolean has to stay
+  // derived from that one list, or the two presentations could disagree.
+  assert.match(source, /function dispatchTargetBusyReasons\(sid, item = null\)[\s\S]*?isRunActive\(sid\)[\s\S]*?isSlotUnavailable\(sid, item \|\| \{\}\)[\s\S]*?isLeased\(sid\)/);
+  assert.match(source, /function dispatchTargetBusy\(sid, item = null\)[\s\S]*?dispatchTargetBusyReasons\(sid, item\)\.length > 0/);
   // The task board reads the run state directly; it has no busy port of its own.
   assert.doesNotMatch(source, /createTaskBoardRuntime\([\s\S]*?isSessionBusy:/);
   // The dispatch admission path lives in src/dispatch/gateway-host.js now.
