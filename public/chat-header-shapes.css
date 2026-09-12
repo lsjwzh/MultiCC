@@ -1,0 +1,81 @@
+/* 页头那批动作的两种形状，见 chat.html 的 <head> —— 本表在页面内联样式和
+   chat-air.css 之后加载，所以同权重时这里的话最晚说。 */
+
+/* ── 页头动作的两种形状 ──
+   同一批按钮出现在两个地方：桌面展开时排在页头这一行，手机上（以及 Air 那
+   个常驻收窄的页面）收进「更多」浮层。展开时只留图标，名字挂在按钮的 title
+   上做悬浮说明 —— 页头这一行本来就满，图标让每个动作的宽度可预期；浮层里
+   图标和名字各占一列，和 Air 任务页头那个「⋯」浮层是同一套（16px 图标列 +
+   9px 列距 + 名字列）。
+
+   图标写成 data-hdr-icon、由 ::before 画出来，而不是自己一个节点：这些按钮
+   的名字是脚本随时改写的（记忆/角色带 ✓、自动提交带状态、CLI 换成当前
+   CLI），图标要是占了节点，下一次 textContent 就把它抹掉了。
+
+   展开态只在大屏生效。手机上留在页头的那几个（↻、CLI、合并、清理显示）没有
+   悬浮可用，文字得留着 —— 收进浮层的那些才走「图标 + 名字」。 */
+@media (min-width: 761px) {
+  #header .hdr-btn[data-hdr-icon] { font-size: 0; }
+  #header .hdr-btn[data-hdr-icon]::before {
+    content: attr(data-hdr-icon);
+    font-size: 14px;
+    line-height: 1.2;
+  }
+  /* 换成图标之后，名字里的状态记号（记忆✓、角色✓、自动提交✓）就看不见了。
+     状态另外挂在 data-state 上，这里补一个角标把它接回来。off 不画角标：
+     自动提交本来是拿透明度表示关闭的。 */
+  #header .hdr-btn[data-hdr-icon][data-state="set"]::after,
+  #header .hdr-btn[data-hdr-icon][data-state="on"]::after {
+    content: "✓";
+    margin-left: 2px;
+    color: var(--chat-success, #3fb950);
+    font-size: 10px;
+    vertical-align: super;
+  }
+}
+#header-more-menu [data-hdr-icon] {
+  display: grid;
+  grid-template-columns: 16px 1fr;
+  align-items: center;
+  column-gap: 9px;
+  /* 名字默认左对齐：产物那一行平时是居中的小按钮（.task-artifacts-toggle），
+     进了浮层它 centering 的只是自己那一列里的文字，名字就会缩到中间去。 */
+  text-align: left;
+}
+#header-more-menu [data-hdr-icon]::before {
+  content: attr(data-hdr-icon);
+  font-size: 14px;
+  line-height: 1.2;
+  text-align: center;
+}
+/* 会话身份那一行是浮层里唯一不是按钮的行，它的 display 由 chat-air.css 定
+   （.air-chat #header-more-menu #session-title { display: block }），所以要
+   多带一层 body 才压得住它。 */
+body #header-more-menu #session-title[data-hdr-icon] {
+  display: grid;
+  grid-template-columns: 16px 1fr;
+  align-items: center;
+  column-gap: 9px;
+  padding: 4px 9px; /* 跟同层的按钮一个内边距，图标才落在同一条竖线上 */
+  margin-left: 0;   /* 页头里靠 2px 跟前面拉开，浮层里图标自己占一列，不用再错开 */
+}
+/* 身份还没解析出来时这行是空的（Air 的对话框走 ?task=，没有 ?session=），
+   留着就只是一行孤零零的文件夹图标。得跟上面那条一样重才压得住它。 */
+body #header-more-menu #session-title[data-hdr-icon]:empty { display: none; }
+
+/* Session identity (directory / alias) shown in the header */
+#session-title {
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--chat-blue, #6aa3ff);
+  margin-left: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 只在桌面截断标题：手机上要撑满（chat.html 那条 max-width:none 在本表之前，
+   同权重下这里晚的说得算）。 */
+@media (min-width: 761px) {
+  #session-title { max-width: 38vw; }
+}
