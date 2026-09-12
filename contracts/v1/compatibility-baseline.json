@@ -2,126 +2,472 @@
   "apiVersion": "v1",
   "schemas": {
     "session.schema.json": {
-      "required": ["id", "dirId", "type", "cli", "kind", "label", "model", "effectiveModel", "effort", "effectiveEffort", "agent", "provider", "subagent", "autoCommit", "createdAt", "lastActivity", "clients", "active", "mergeState"],
+      "required": [
+        "id",
+        "dirId",
+        "type",
+        "cli",
+        "kind",
+        "label",
+        "model",
+        "effectiveModel",
+        "effort",
+        "effectiveEffort",
+        "agent",
+        "provider",
+        "subagent",
+        "autoCommit",
+        "createdAt",
+        "lastActivity",
+        "clients",
+        "active",
+        "mergeState"
+      ],
       "properties": {
-        "id": { "type": "string" },
-        "dirId": { "type": ["string", "null"] },
-        "type": { "const": "session" },
-        "cli": { "enum": ["claude", "codex", "opencode", "zcode"] },
-        "kind": { "enum": ["chat", "terminal"] },
-        "label": { "type": ["string", "null"] },
-        "model": { "type": ["string", "null"] },
-        "effectiveModel": { "type": ["string", "null"] },
-        "effort": { "type": ["string", "null"] },
-        "effectiveEffort": { "type": ["string", "null"] },
-        "agent": { "type": ["string", "null"] },
-        "provider": { "type": ["string", "null"] },
-        "subagent": { "type": ["object", "null"] },
-        "autoCommit": { "type": "boolean" },
-        "createdAt": { "type": ["string", "null"] },
-        "lastActivity": { "type": ["string", "null"] },
-        "clients": { "type": "integer" },
-        "active": { "type": "boolean" },
-        "mergeState": { "type": ["object", "null"] }
+        "id": {
+          "type": "string"
+        },
+        "dirId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "const": "session"
+        },
+        "cli": {
+          "enum": [
+            "claude",
+            "codex",
+            "opencode",
+            "zcode"
+          ]
+        },
+        "kind": {
+          "enum": [
+            "chat",
+            "terminal"
+          ]
+        },
+        "label": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "effectiveModel": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "effort": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "effectiveEffort": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "agent": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subagent": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "autoCommit": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lastActivity": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "clients": {
+          "type": "integer"
+        },
+        "active": {
+          "type": "boolean"
+        },
+        "mergeState": {
+          "type": [
+            "object",
+            "null"
+          ]
+        }
       }
     },
     "provider.schema.json": {
-      "required": ["id", "appType", "protocol", "wireApi", "name", "source", "model", "modelOptions", "aliasOnly", "useChatResponsesProxy", "hasCredentials", "isOfficial"],
+      "required": [
+        "aliasOnly",
+        "appType",
+        "hasCredentials",
+        "id",
+        "isOfficial",
+        "model",
+        "modelOptions",
+        "name",
+        "protocol",
+        "source",
+        "wireApi"
+      ],
       "properties": {
-        "id": { "type": "string" },
-        "appType": { "enum": ["claude", "codex"] },
-        "protocol": { "enum": ["anthropic", "openai"] },
-        "wireApi": { "type": ["string", "null"], "enum": ["messages", "responses", "chat-completions", null] },
-        "name": { "type": "string" },
-        "source": { "enum": ["local", "ccswitch"] },
-        "model": { "type": ["string", "null"] },
-        "modelOptions": { "type": "array" },
-        "aliasOnly": { "type": "boolean" },
-        "useChatResponsesProxy": { "type": "boolean" },
-        "hasCredentials": { "type": "boolean" },
-        "isOfficial": { "type": "boolean" }
+        "id": {
+          "type": "string"
+        },
+        "appType": {
+          "enum": [
+            "claude",
+            "codex"
+          ]
+        },
+        "protocol": {
+          "enum": [
+            "anthropic",
+            "openai",
+            "openai_responses"
+          ]
+        },
+        "apiFormat": {
+          "enum": [
+            "anthropic",
+            "openai_responses"
+          ]
+        },
+        "wireApi": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "messages",
+            "responses",
+            null
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "source": {
+          "enum": [
+            "local",
+            "ccswitch"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "modelOptions": {
+          "type": "array"
+        },
+        "aliasOnly": {
+          "type": "boolean"
+        },
+        "compatibleClis": {
+          "type": "array"
+        },
+        "hasCredentials": {
+          "type": "boolean"
+        },
+        "isOfficial": {
+          "type": "boolean"
+        }
       }
     },
     "wait.schema.json": {
-      "required": ["id", "sessionId", "mode", "checks", "maxChecks", "intervalSec", "createdAt"],
+      "required": [
+        "id",
+        "sessionId",
+        "mode",
+        "checks",
+        "maxChecks",
+        "intervalSec",
+        "createdAt"
+      ],
       "properties": {
-        "id": { "type": "string" },
-        "sessionId": { "type": "string" },
-        "mode": { "enum": ["poll", "callback"] },
-        "checks": { "type": "integer" },
-        "maxChecks": { "type": ["integer", "null"] },
-        "intervalSec": { "type": ["number", "null"] },
-        "createdAt": { "type": ["string", "null"] }
+        "id": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "mode": {
+          "enum": [
+            "poll",
+            "callback"
+          ]
+        },
+        "checks": {
+          "type": "integer"
+        },
+        "maxChecks": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "intervalSec": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "createdAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
       }
     },
     "workspace-entry.schema.json": {
-      "required": ["session", "status", "statusUpdatedAt", "runStartedAt", "runEndedAt", "pendingNotes", "summary", "summaryAt", "classifyState", "goal", "phase"],
+      "required": [
+        "session",
+        "status",
+        "statusUpdatedAt",
+        "runStartedAt",
+        "runEndedAt",
+        "pendingNotes",
+        "summary",
+        "summaryAt",
+        "classifyState",
+        "goal",
+        "phase"
+      ],
       "properties": {
-        "session": { "$ref": "session.schema.json" },
-        "status": { "enum": ["idle", "thinking", "editing", "running", "waiting", "completed", "error"] },
-        "statusUpdatedAt": { "type": ["string", "null"] },
-        "runStartedAt": { "type": ["string", "null"] },
-        "runEndedAt": { "type": ["string", "null"] },
-        "pendingNotes": { "type": "integer" },
-        "summary": { "type": ["string", "null"] },
-        "summaryAt": { "type": ["string", "null"] },
-        "classifyState": { "type": ["string", "null"] },
-        "goal": { "type": "string" },
-        "phase": { "type": "string" }
+        "session": {
+          "$ref": "session.schema.json"
+        },
+        "status": {
+          "enum": [
+            "idle",
+            "thinking",
+            "editing",
+            "running",
+            "waiting",
+            "completed",
+            "error"
+          ]
+        },
+        "statusUpdatedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runStartedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runEndedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pendingNotes": {
+          "type": "integer"
+        },
+        "summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "summaryAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "classifyState": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "goal": {
+          "type": "string"
+        },
+        "phase": {
+          "type": "string"
+        }
       }
     },
     "workspace.schema.json": {
-      "required": ["directory", "sessions", "count"],
+      "required": [
+        "directory",
+        "sessions",
+        "count"
+      ],
       "properties": {
-        "directory": { "type": "object" },
-        "sessions": { "type": "array", "items": { "$ref": "workspace-entry.schema.json" } },
-        "count": { "type": "integer" }
+        "directory": {
+          "type": "object"
+        },
+        "sessions": {
+          "type": "array",
+          "items": {
+            "$ref": "workspace-entry.schema.json"
+          }
+        },
+        "count": {
+          "type": "integer"
+        }
       }
     },
     "workspace-response.schema.json": {
-      "required": ["apiVersion", "requestId", "correlationId", "workspace"],
+      "required": [
+        "apiVersion",
+        "requestId",
+        "correlationId",
+        "workspace"
+      ],
       "properties": {
-        "apiVersion": { "const": "v1" },
-        "requestId": { "type": "string" },
-        "correlationId": { "type": "string" },
-        "workspace": { "$ref": "workspace.schema.json" }
+        "apiVersion": {
+          "const": "v1"
+        },
+        "requestId": {
+          "type": "string"
+        },
+        "correlationId": {
+          "type": "string"
+        },
+        "workspace": {
+          "$ref": "workspace.schema.json"
+        }
       }
     },
     "dispatch-request.schema.json": {
-      "required": ["target", "message"],
+      "required": [
+        "target",
+        "message"
+      ],
       "properties": {
-        "target": { "type": "string" },
-        "message": { "type": "string" }
+        "target": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
       }
     },
     "dispatch-response.schema.json": {
-      "required": ["apiVersion", "requestId", "correlationId", "ok", "target", "chatId", "note"],
+      "required": [
+        "apiVersion",
+        "requestId",
+        "correlationId",
+        "ok",
+        "target",
+        "chatId",
+        "note"
+      ],
       "properties": {
-        "apiVersion": { "const": "v1" },
-        "requestId": { "type": "string" },
-        "correlationId": { "type": "string" },
-        "ok": { "const": true },
-        "target": { "type": "string" },
-        "chatId": { "type": ["string", "null"] },
-        "note": { "type": ["string", "null"] }
+        "apiVersion": {
+          "const": "v1"
+        },
+        "requestId": {
+          "type": "string"
+        },
+        "correlationId": {
+          "type": "string"
+        },
+        "ok": {
+          "const": true
+        },
+        "target": {
+          "type": "string"
+        },
+        "chatId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
       }
     },
     "error.schema.json": {
-      "required": ["apiVersion", "requestId", "correlationId", "ok", "error", "code"],
+      "required": [
+        "apiVersion",
+        "requestId",
+        "correlationId",
+        "ok",
+        "error",
+        "code"
+      ],
       "properties": {
-        "apiVersion": { "const": "v1" },
-        "requestId": { "type": "string" },
-        "correlationId": { "type": "string" },
-        "ok": { "const": false },
-        "error": { "type": "string" },
-        "code": { "type": "string" }
+        "apiVersion": {
+          "const": "v1"
+        },
+        "requestId": {
+          "type": "string"
+        },
+        "correlationId": {
+          "type": "string"
+        },
+        "ok": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        },
+        "code": {
+          "type": "string"
+        }
       }
     },
     "ws-envelope.schema.json": {
-      "required": ["apiVersion", "type"],
+      "required": [
+        "apiVersion",
+        "type"
+      ],
       "properties": {
-        "apiVersion": { "const": "v1" },
-        "type": { "type": "string" }
+        "apiVersion": {
+          "const": "v1"
+        },
+        "type": {
+          "type": "string"
+        }
       }
     }
   }

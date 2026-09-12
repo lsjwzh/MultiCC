@@ -123,7 +123,6 @@ const TB_AUTO_PREFIX = '__auto__:';
 const TB_PROTOCOL_LABELS = {
   anthropic: 'Anthropic Messages',
   openai_responses: 'OpenAI Responses',
-  openai_chat: 'OpenAI Chat Completions',
 };
 function _tbProtocolOf(provider) {
   const value = provider && (provider.protocol || provider.apiFormat);

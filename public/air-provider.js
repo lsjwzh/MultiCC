@@ -8,7 +8,6 @@
     ['all', '全部线路'],
     ['anthropic', 'Anthropic Messages'],
     ['openai_responses', 'OpenAI Responses'],
-    ['openai_chat', 'OpenAI Chat'],
   ];
   const presets = {
     'claude-subscription': { appType: 'claude', name: 'Claude 官方订阅', baseUrl: '', model: '', apiFormat: 'anthropic' },
@@ -39,7 +38,7 @@
     node.onclick = handler;
     return node;
   };
-  const protocolName = value => ({ anthropic: 'Anthropic Messages', openai_responses: 'OpenAI Responses', openai_chat: 'OpenAI Chat → Responses' }[value] || value);
+  const protocolName = value => ({ anthropic: 'Anthropic Messages', openai_responses: 'OpenAI Responses' }[value] || value);
   const cliName = value => ({ claude: 'Claude', codex: 'Codex', opencode: 'OpenCode', zcode: 'ZCode' }[value] || value);
 
   function ensureDialog() {
@@ -52,7 +51,7 @@
         <p>沿用原设置页的 CLI → 协议 → 模型结构。API Key 只提交给服务端，不会回显到页面。</p>
         <input type="hidden" name="providerId">
         <label>模板<select name="preset"><option value="">自定义（手动填写）</option><optgroup label="Claude"><option value="claude-subscription">Claude 官方订阅</option><option value="claude-api">Claude 官方 API</option><option value="claude-glm">智谱 GLM</option><option value="claude-deepseek">DeepSeek</option><option value="claude-minimax">MiniMax</option><option value="claude-qwen">Qwen 通义千问</option><option value="claude-openrouter">OpenRouter</option></optgroup><optgroup label="Codex"><option value="codex-official">OpenAI（Codex 官方）</option><option value="codex-xf-maas">讯飞 MaaS Coding</option></optgroup></select></label>
-        <div class="form-row"><label>CLI<select name="appType"><option value="claude">Claude</option><option value="codex">Codex</option></select></label><label>上游协议<select name="apiFormat"><option value="anthropic">Anthropic Messages</option><option value="openai_responses">OpenAI Responses</option><option value="openai_chat">OpenAI Chat（自动转换）</option></select></label></div>
+        <div class="form-row"><label>CLI<select name="appType"><option value="claude">Claude</option><option value="codex">Codex</option></select></label><label>上游协议<select name="apiFormat"><option value="anthropic">Anthropic Messages</option><option value="openai_responses">OpenAI Responses</option></select></label></div>
         <label>名称<input name="name" required maxlength="240" placeholder="例如：DeepSeek / OpenRouter"></label>
         <label>Base URL<input name="baseUrl" maxlength="2048" placeholder="留空表示官方登录或订阅线路"></label>
         <label>API Key<input name="authToken" type="password" maxlength="4096" autocomplete="off" placeholder="创建时填写；编辑时留空保留原 Key"></label>

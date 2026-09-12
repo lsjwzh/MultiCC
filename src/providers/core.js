@@ -118,23 +118,24 @@ const APP_TYPES = ['claude', 'codex'];
 const API_FORMATS = Object.freeze({
   ANTHROPIC: 'anthropic',
   OPENAI_RESPONSES: 'openai_responses',
-  OPENAI_CHAT: 'openai_chat',
 });
 
+// Legacy 'openai_chat' values (provider rows, cc-switch meta, stale clients)
+// normalize to OPENAI_RESPONSES: every mainstream provider now serves
+// /responses natively (probed 2026-09-12 — DeepSeek, GLM, Qwen, MiniMax,
+// Moonshot, XFYun, StepFun, Ark all return 401 not 404 on /responses), so the
+// local responses↔chat conversion bridge was retired.
 function normalizeApiFormat(value, appType, cfg = {}) {
   const raw = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
   if (raw === 'anthropic' || raw === 'messages' || raw === 'anthropic_messages') return API_FORMATS.ANTHROPIC;
-  if (raw === 'openai_chat' || raw === 'chat' || raw === 'chat_completions') return API_FORMATS.OPENAI_CHAT;
-  if (raw === 'openai_responses' || raw === 'responses' || raw === 'response') return API_FORMATS.OPENAI_RESPONSES;
-  if (cfg.proxyTarget && cfg.proxyTarget.mode === 'chat-to-responses') return API_FORMATS.OPENAI_CHAT;
   if (appType === 'claude') return API_FORMATS.ANTHROPIC;
   return API_FORMATS.OPENAI_RESPONSES;
 }
 
 function compatibleClisForFormat(apiFormat) {
   if (apiFormat === API_FORMATS.ANTHROPIC) return ['claude', 'opencode', 'zcode'];
-  // Kimi Code's provider endpoint speaks the OpenAI chat-completions wire, so it
-  // only joins the OpenAI-family pool (moonshot's own API is OpenAI-compatible).
+  // Kimi Code joins the OpenAI-family pool (moonshot's own API is
+  // OpenAI-compatible).
   return ['codex', 'opencode', 'zcode', 'kimi'];
 }
 
@@ -234,18 +235,6 @@ function parseModelList(models, primary) {
   return uniqueModels([primary, ...extras]);
 }
 
-// Domestic providers that only expose /chat/completions (no /responses).
-// When a codex provider's baseUrl hits one of these, we rewrite config.toml's
-// base_url to the local codex-proxy endpoint and stash the real chat/completions
-// URL + apiKey in settingsConfig.proxyTarget for the proxy to read at request
-// time. See docs/codex-proxy-contract.md (模块 C).
-const DOMESTIC_PROXY_MAP = [
-  { host: 'api.deepseek.com', target: 'https://api.deepseek.com/chat/completions' },
-  { host: 'open.bigmodel.cn', target: 'https://open.bigmodel.cn/api/paas/v4/chat/completions' },
-  { host: 'dashscope.aliyuncs.com', target: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions' },
-  { hostRe: /^api\.minimax/i, target: 'https://api.minimaxi.com/v1/chat/completions' },
-];
-
 // Providers that expose /responses but need a local compatibility hop for Codex
 // streaming. XFYun MaaS Coding returns a Responses-shaped stream, but long Codex
 // turns can close before Codex observes response.completed; the proxy keeps the
@@ -253,19 +242,6 @@ const DOMESTIC_PROXY_MAP = [
 const RESPONSES_COMPAT_PROXY_MAP = [
   { host: 'maas-coding-api.cn-huabei-1.xf-yun.com', target: 'https://maas-coding-api.cn-huabei-1.xf-yun.com/v1/responses' },
 ];
-
-// If baseUrl points at a domestic chat-only service, return the real
-// /chat/completions URL the proxy should fetch. Otherwise null (直连).
-function detectDomesticTarget(baseUrl) {
-  if (!baseUrl) return null;
-  let host;
-  try { host = new URL(baseUrl).host; } catch (_) { return null; }
-  for (const m of DOMESTIC_PROXY_MAP) {
-    if (m.host && host === m.host) return m.target;
-    if (m.hostRe && m.hostRe.test(host)) return m.target;
-  }
-  return null;
-}
 
 function detectResponsesCompatTarget(baseUrl) {
   if (!baseUrl) return null;
@@ -276,31 +252,6 @@ function detectResponsesCompatTarget(baseUrl) {
     if (m.hostRe && m.hostRe.test(host)) return m.target;
   }
   return null;
-}
-
-function codexProxyTarget(baseUrl) {
-  const responseCompat = detectResponsesCompatTarget(baseUrl);
-  if (responseCompat) return { baseUrl: responseCompat, mode: 'responses-compat' };
-  const chatTarget = chatCompletionsTarget(baseUrl);
-  return chatTarget ? { baseUrl: chatTarget, mode: 'chat-to-responses' } : null;
-}
-
-function chatCompletionsTarget(baseUrl) {
-  if (!baseUrl) return null;
-  const known = detectDomesticTarget(baseUrl);
-  if (known) return known;
-  try {
-    const u = new URL(baseUrl);
-    let path = u.pathname.replace(/\/+$/, '');
-    if (/\/chat\/completions$/i.test(path)) return u.toString();
-    if (!path || path === '/') path = '/v1';
-    u.pathname = path + '/chat/completions';
-    u.search = '';
-    u.hash = '';
-    return u.toString();
-  } catch (_) {
-    return null;
-  }
 }
 
 // Tier → env key for the per-tier model-mapping UI (settings screen). Lets a
@@ -463,7 +414,7 @@ function ensureZhipuFableAlias(env) {
 }
 
 // Build a cc-switch-shaped settingsConfig from simple fields.
-function buildSettingsConfig(appType, { baseUrl, authToken, model, models, providerId, apiFormat, useChatResponsesProxy, aliasMap }) {
+function buildSettingsConfig(appType, { baseUrl, authToken, model, models, providerId, apiFormat, aliasMap }) {
   const modelOptions = parseModelList(models, model);
   if (appType === 'claude') {
     const env = {};
@@ -478,27 +429,15 @@ function buildSettingsConfig(appType, { baseUrl, authToken, model, models, provi
   }
   const provName = 'custom';
   // codex CLI (>= 0.130) only supports wire_api = "responses"; the "chat"
-  // protocol was removed (see openai/codex#7782). That means codex can only
-  // talk to providers that expose an OpenAI /responses endpoint. Most domestic
-  // providers (DeepSeek, GLM, Qwen, MiniMax) only serve /chat/completions, so
-  // codex CANNOT connect to them directly — verified empirically: chat → "no
-  // longer supported", responses → 404 on /responses. The only known way to
-  // bridge codex to those is a local responses↔chat proxy (what cc-switch
-  // does). We therefore always emit wire_api="responses" and surface the
-  // limitation in the UI rather than generating a config that fails to start.
-  //
-  // For domestic services, config.toml's base_url is rewritten to the local
-  // proxy; the real /chat/completions URL + apiKey are stored in
-  // settingsConfig.proxyTarget for cli-provider-router's Codex proxy to read.
-  const format = normalizeApiFormat(
-    apiFormat || (useChatResponsesProxy ? API_FORMATS.OPENAI_CHAT : API_FORMATS.OPENAI_RESPONSES),
-    appType,
-  );
-  const proxySpec = format === API_FORMATS.OPENAI_CHAT
-    ? { baseUrl: chatCompletionsTarget(baseUrl), mode: 'chat-to-responses' }
-    : (detectResponsesCompatTarget(baseUrl)
-      ? { baseUrl: detectResponsesCompatTarget(baseUrl), mode: 'responses-compat' }
-      : null);
+  // protocol was removed (see openai/codex#7782). Codex therefore talks to the
+  // provider's /responses endpoint directly. Mainstream domestic providers
+  // (DeepSeek, GLM, Qwen, MiniMax, Moonshot, XFYun, StepFun, Ark) all serve
+  // /responses natively now (probed 2026-09-12), so the former local
+  // responses↔chat conversion bridge was retired. The one remaining local hop
+  // is responses-compat (stream-stabilizing, same wire protocol) for hosts in
+  // RESPONSES_COMPAT_PROXY_MAP.
+  const compat = detectResponsesCompatTarget(baseUrl);
+  const proxySpec = compat ? { baseUrl: compat, mode: 'responses-compat' } : null;
   const port = process.env.PORT || 3000;
   const proxyBaseUrl = (proxySpec && providerId)
     ? `http://127.0.0.1:${port}/codex-proxy/${providerId}`
@@ -540,15 +479,12 @@ function replaceTomlString(config, key, value) {
 function effectiveCodexSettings(provider) {
   const cfg = parseConfig(provider && provider.settingsConfig);
   const copy = JSON.parse(JSON.stringify(cfg || {}));
-  const format = normalizeApiFormat(provider && provider.apiFormat, 'codex', copy);
+  // Legacy rows (pre-2026-09-12) may still carry a chat-to-responses
+  // proxyTarget: restore the provider's real base_url and drop the bridge.
+  const legacyChatBridge = copy.proxyTarget && copy.proxyTarget.mode === 'chat-to-responses';
   const originalBaseUrl = (copy.proxyTarget && copy.proxyTarget.originalBaseUrl) || tomlValue(copy.config, 'base_url');
-  let proxySpec = null;
-  if (format === API_FORMATS.OPENAI_CHAT && originalBaseUrl) {
-    proxySpec = { baseUrl: chatCompletionsTarget(originalBaseUrl), mode: 'chat-to-responses' };
-  } else {
-    const compat = detectResponsesCompatTarget(originalBaseUrl);
-    if (compat) proxySpec = { baseUrl: compat, mode: 'responses-compat' };
-  }
+  const compat = detectResponsesCompatTarget(originalBaseUrl);
+  const proxySpec = compat ? { baseUrl: compat, mode: 'responses-compat' } : null;
   if (proxySpec && provider && provider.id) {
     const localBase = `http://127.0.0.1:${process.env.PORT || 3000}/codex-proxy/${provider.id}`;
     copy.config = replaceTomlString(copy.config, 'base_url', localBase);
@@ -559,8 +495,9 @@ function effectiveCodexSettings(provider) {
       originalBaseUrl,
       mode: proxySpec.mode,
     };
-  } else if (copy.proxyTarget) {
+  } else if (copy.proxyTarget || legacyChatBridge) {
     if (originalBaseUrl) copy.config = replaceTomlString(copy.config, 'base_url', originalBaseUrl);
+    copy.config = replaceTomlString(copy.config, 'wire_api', 'responses');
     delete copy.proxyTarget;
   }
   return copy;
@@ -634,12 +571,9 @@ function summarize(p, opts = {}) {
     appType: p.appType,
     apiFormat,
     protocol: apiFormat,
-    wireApi: apiFormat === API_FORMATS.ANTHROPIC
-      ? 'messages'
-      : (apiFormat === API_FORMATS.OPENAI_CHAT ? 'chat_completions' : 'responses'),
+    wireApi: apiFormat === API_FORMATS.ANTHROPIC ? 'messages' : 'responses',
     compatibleClis: compatibleClisForFormat(apiFormat)
       .filter(cli => (cli !== 'zcode' && cli !== 'kimi') || (!!baseUrl && !!token)),
-    requiresConversionFor: apiFormat === API_FORMATS.OPENAI_CHAT ? ['codex'] : [],
     name: p.name,
     // Optional explicit quota classification override (frontend quotaKindForProvider
     // honors it; 'none' disables the badge) for proxy-hosted providers whose
@@ -653,7 +587,6 @@ function summarize(p, opts = {}) {
     modelOptions,
     aliasOnly,
     aliasMap,
-    useChatResponsesProxy: apiFormat === API_FORMATS.OPENAI_CHAT,
     tokenMask: maskToken(token),
     hasToken: !!token,
     isOfficial: p.appType === 'codex' ? isOfficialCodexOAuthProvider(p) : !baseUrl,
@@ -717,15 +650,6 @@ function resolveAuxHttpTarget(protocol, providerId, { port, claudeOfficialViaPro
   const modelOptions = (cfg.modelCatalog && Array.isArray(cfg.modelCatalog.models))
     ? cfg.modelCatalog.models.map(item => item && item.model).filter(Boolean)
     : (model ? [model] : []);
-  if (cfg.proxyTarget && cfg.proxyTarget.baseUrl) {
-    const key = cfg.proxyTarget.apiKey || apiKey;
-    if (!key) return { available: false, protocol: normalized, reason: 'proxy target has no API key' };
-    return {
-      available: true, protocol: normalized, wireApi: 'chat_completions',
-      url: cfg.proxyTarget.baseUrl, apiKey: key, model, modelOptions,
-      providerName: summary.name,
-    };
-  }
   if (!apiKey) return { available: false, protocol: normalized, reason: 'OAuth provider has no API key' };
   const base = tomlValue(cfg.config, 'base_url') || '';
   if (!base) return { available: false, protocol: normalized, reason: 'provider has no base_url' };
@@ -774,7 +698,7 @@ function getProviderSummary(appType, id) {
 //   strategy 'relay-quota'      → 借道 provider：转发给出借方的 relay quota 端点
 //
 // host is the ORIGINAL upstream host (not our local proxy), so a session routed
-// through the chat-to-responses proxy still resolves to its real vendor.
+// through the responses-compat proxy still resolves to its real vendor.
 function getProviderLimitTarget(appType, id) {
   const provider = getProvider(appType, id);
   if (!provider) return null;
@@ -846,15 +770,15 @@ function resolveCodexDirectHttp(providerId) {
     : { ...target, canDirect: false };
 }
 
-function createProvider({ appType, name, baseUrl, authToken, model, models, apiFormat, useChatResponsesProxy, settingsConfig, aliasMap }) {
+function createProvider({ appType, name, baseUrl, authToken, model, models, apiFormat, settingsConfig, aliasMap }) {
   if (!APP_TYPES.includes(appType)) throw new Error('appType must be claude or codex');
   if (!name || !String(name).trim()) throw new Error('name required');
   // Generate id first so buildSettingsConfig can embed it in the proxy base_url.
   const id = crypto.randomUUID();
   const cfg = (settingsConfig && typeof settingsConfig === 'object')
     ? settingsConfig
-    : buildSettingsConfig(appType, { baseUrl, authToken, model, models, apiFormat, useChatResponsesProxy, providerId: id, aliasMap });
-  const format = normalizeApiFormat(apiFormat || (useChatResponsesProxy ? API_FORMATS.OPENAI_CHAT : ''), appType, cfg);
+    : buildSettingsConfig(appType, { baseUrl, authToken, model, models, apiFormat, providerId: id, aliasMap });
+  const format = normalizeApiFormat(apiFormat, appType, cfg);
   const p = {
     id,
     appType,
@@ -871,7 +795,7 @@ function createProvider({ appType, name, baseUrl, authToken, model, models, apiF
   return { id: p.id, appType, name: p.name };
 }
 
-function updateProvider(appType, id, { name, baseUrl, authToken, model, models, apiFormat, useChatResponsesProxy, settingsConfig, aliasMap }) {
+function updateProvider(appType, id, { name, baseUrl, authToken, model, models, apiFormat, settingsConfig, aliasMap }) {
   if (officialCatalog && officialCatalog.normalize(appType, id) === `${appType}-official`) throw new Error('请在官方账号中管理登录和切换账号');
   const list = loadStore();
   const p = list.find(x => x.appType === appType && x.id === id);
@@ -894,10 +818,6 @@ function updateProvider(appType, id, { name, baseUrl, authToken, model, models, 
     ensureZhipuFableAlias(cfg.env);
   } else {
     const currentBaseUrl = (cfg.proxyTarget && cfg.proxyTarget.originalBaseUrl) || tomlValue(cfg.config, 'base_url');
-    const requestedFormat = apiFormat || (useChatResponsesProxy === true
-      ? API_FORMATS.OPENAI_CHAT
-      : (useChatResponsesProxy === false ? API_FORMATS.OPENAI_RESPONSES : p.apiFormat));
-    const nextProxy = normalizeApiFormat(requestedFormat, appType, cfg) === API_FORMATS.OPENAI_CHAT;
     const rebuilt = buildSettingsConfig('codex', {
       baseUrl: baseUrl !== undefined ? baseUrl : currentBaseUrl,
       authToken: authToken || (cfg.auth && cfg.auth.OPENAI_API_KEY) || '',
@@ -905,22 +825,15 @@ function updateProvider(appType, id, { name, baseUrl, authToken, model, models, 
       models: models !== undefined
         ? models
         : ((cfg.modelCatalog && Array.isArray(cfg.modelCatalog.models)) ? cfg.modelCatalog.models.map(m => m && m.model).filter(Boolean) : undefined),
-      useChatResponsesProxy: nextProxy,
-      apiFormat: requestedFormat,
+      apiFormat,
       providerId: id,
     });
-    // Drop a stale proxyTarget if the user switched to a non-domestic baseUrl.
+    // Drop a stale proxyTarget if the rebuilt config no longer needs one.
     cfg = { ...cfg, ...rebuilt };
     if (!rebuilt.proxyTarget) delete cfg.proxyTarget;
   }
   if (name) p.name = String(name).trim();
-  p.apiFormat = normalizeApiFormat(
-    apiFormat || (useChatResponsesProxy === true
-      ? API_FORMATS.OPENAI_CHAT
-      : (useChatResponsesProxy === false ? API_FORMATS.OPENAI_RESPONSES : p.apiFormat)),
-    appType,
-    cfg,
-  );
+  p.apiFormat = normalizeApiFormat(apiFormat || p.apiFormat, appType, cfg);
   p.settingsConfig = cfg;
   saveStore(list);
   return { id, appType };
@@ -952,28 +865,21 @@ function readCcSwitchRows() {
 
 function migrateLegacyProviderProtocols() {
   const list = loadStore();
-  let ccFormats = null;
-  try {
-    ccFormats = new Map(readCcSwitchRows().map(row => {
-      const meta = parseConfig(row.meta) || {};
-      return [`${row.app_type}:${row.id}`, meta.apiFormat || null];
-    }));
-  } catch (_) {}
-
   let updated = 0, skipped = 0;
   const next = list.map(provider => {
-    if (!provider || !APP_TYPES.includes(provider.appType)
-      || Object.values(API_FORMATS).includes(provider.apiFormat)) return provider;
+    if (!provider || !APP_TYPES.includes(provider.appType)) return provider;
     const cfg = parseConfig(provider.settingsConfig);
-    const sourceFormat = ccFormats && ccFormats.get(`${provider.appType}:${provider.id}`);
-    const hasLocalSignal = provider.appType === 'claude' || (cfg.proxyTarget && cfg.proxyTarget.mode);
-    if (provider.source === 'ccswitch' && provider.appType === 'codex' && !sourceFormat && !hasLocalSignal) {
-      skipped++;
-      return provider;
-    }
+    // The responses↔chat bridge retired 2026-09-12. Codex rows that predate
+    // it carry an 'openai_chat' label and/or a chat-to-responses proxyTarget;
+    // both migrate to direct responses. (normalizeApiFormat already maps any
+    // legacy value to responses at read time — this persists the repair.)
+    const legacyChatBridge = provider.appType === 'codex'
+      && (provider.apiFormat === 'openai_chat'
+        || (cfg.proxyTarget && cfg.proxyTarget.mode === 'chat-to-responses'));
+    if (Object.values(API_FORMATS).includes(provider.apiFormat) && !legacyChatBridge) return provider;
     const migrated = {
       ...provider,
-      apiFormat: normalizeApiFormat(sourceFormat, provider.appType, cfg),
+      apiFormat: normalizeApiFormat(provider.apiFormat, provider.appType, cfg),
     };
     if (provider.appType === 'codex') migrated.settingsConfig = effectiveCodexSettings(migrated);
     updated++;
@@ -1201,11 +1107,10 @@ function buildOpenCodeRoute(provider, session) {
     if (src.ANTHROPIC_AUTH_TOKEN) options.authToken = src.ANTHROPIC_AUTH_TOKEN;
     else if (src.ANTHROPIC_API_KEY) options.apiKey = src.ANTHROPIC_API_KEY;
   } else {
-    npm = format === API_FORMATS.OPENAI_CHAT ? '@ai-sdk/openai-compatible' : '@ai-sdk/openai';
+    npm = '@ai-sdk/openai';
     options.baseURL = summary.baseUrl;
     const key = cfg.auth && cfg.auth.OPENAI_API_KEY;
     if (key) options.apiKey = key;
-    if (format === API_FORMATS.OPENAI_CHAT) options.includeUsage = true;
   }
   const providerConfig = {
     npm,
@@ -1266,8 +1171,9 @@ function zcodeProviderMaterial(provider) {
   }
   return {
     // These are ZCode's exact provider-kind names. "openai-compatible" uses
-    // /chat/completions; "openai" uses /responses.
-    kind: format === API_FORMATS.OPENAI_CHAT ? 'openai-compatible' : 'openai',
+    // /chat/completions; "openai" uses /responses. All mainstream providers
+    // now serve /responses, so openai is the only openai-family kind used.
+    kind: 'openai',
     baseURL: (cfg.proxyTarget && cfg.proxyTarget.originalBaseUrl)
       || summary.baseUrl || tomlValue(cfg.config, 'base_url') || '',
     apiKey: (cfg.proxyTarget && cfg.proxyTarget.apiKey)

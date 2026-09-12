@@ -1346,7 +1346,8 @@ providerRouterRuntime.mountProtocolProxies(app, {
   ...createProxyBroadcasters(chatBroadcast, { resolveCli: name => (persistedSessions.get(name) || {}).cli, recordLimit: limitRecorder.recordSession, attemptRuntime: providerAttemptRuntime, audit: (id, event) => turnEventJournal.note(id, event) }),
 });
 app.use(express.json({ limit: '50mb' }));
-// Codex Responses↔Chat 协议转换代理（国产服务商 DeepSeek/GLM/Qwen/MiniMax）。
+// Codex 协议代理端点：官方 relay 与 responses-compat（XFYun 流稳定化）。
+// Responses↔Chat 转换桥已退役——主流国产服务商均已原生支持 /responses。
 // 必须在 express.json() 之后挂载，以便 req.body 已解析。详见 docs/codex-proxy-contract.md。
 providerRouterRuntime.mountProtocolProxies(app, {
   protocols: ['codex'],

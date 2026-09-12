@@ -229,9 +229,7 @@ function safeProviderSummary(provider, appType, id) {
     apiFormat: provider.apiFormat == null ? null : String(provider.apiFormat),
     wireApi: provider.wireApi == null ? null : String(provider.wireApi),
     compatibleClis: Object.freeze(Array.isArray(provider.compatibleClis) ? provider.compatibleClis.map(String) : []),
-    requiresConversionFor: Object.freeze(Array.isArray(provider.requiresConversionFor) ? provider.requiresConversionFor.map(String) : []),
     aliasOnly: !!provider.aliasOnly,
-    useChatResponsesProxy: !!provider.useChatResponsesProxy,
     isOfficial: !!provider.isOfficial,
     hasToken: !!(provider.hasToken || provider.tokenMask || provider.authToken || provider.apiKey),
   });

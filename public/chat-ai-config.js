@@ -391,9 +391,7 @@
 
   function providerLabel(provider, includeModel) {
     if (!provider) return '';
-    const protocol = provider.apiFormat === 'openai_chat'
-      ? ' [Chat→Responses]'
-      : (provider.apiFormat === 'openai_responses' ? ' [Responses]' : ' [Anthropic]');
+    const protocol = provider.apiFormat === 'openai_responses' ? ' [Responses]' : ' [Anthropic]';
     const endpoint = provider.isOfficial
       ? ' · 订阅'
       : (provider.baseUrl ? ' · ' + provider.baseUrl.replace(/^https?:\/\//, '') : '');
@@ -641,7 +639,7 @@
           : translate(state, 'providerDefault');
       const officialProvider = providersOf(state).find(p => p.builtinOfficial && p.appType === cli);
       if (!officialProvider) providerSelect.appendChild(defaultProvider);
-      for (const protocol of ['anthropic', 'openai_responses', 'openai_chat']) {
+      for (const protocol of ['anthropic', 'openai_responses']) {
         if (autoProvidersForProtocol(protocol, providersOf(state)).length < 2) continue;
         const option = document.createElement('option');
         option.value = autoOptionValue(protocol);

@@ -4,7 +4,7 @@
 // session.provider: every physical invocation still resolves to one concrete
 // provider id before the spawn proof is issued.
 
-const PROTOCOLS = new Set(['anthropic', 'openai_responses', 'openai_chat']);
+const PROTOCOLS = new Set(['anthropic', 'openai_responses']);
 const PROVIDER_ID = /^[A-Za-z0-9._:-]{1,160}$/;
 const MODEL_ID = /^[A-Za-z0-9._:/\[\]-]{1,100}$/;
 const MAX_CANDIDATES = 12;
@@ -15,7 +15,10 @@ function fail(error, code = 'invalid_provider_selection') {
 }
 
 function protocolOf(provider) {
-  const value = provider && (provider.protocol || provider.apiFormat);
+  // 'openai_chat' is a retired format value; persisted auto-provider configs
+  // that still name it keep matching openai_responses providers.
+  const raw = provider && (provider.protocol || provider.apiFormat);
+  const value = raw === 'openai_chat' ? 'openai_responses' : raw;
   return PROTOCOLS.has(value) ? value : null;
 }
 
