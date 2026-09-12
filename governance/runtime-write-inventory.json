@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "reviewedAt": "2026-08-28",
+  "reviewedAt": "2026-09-12",
   "entries": [
     {
       "id": "server-env",
@@ -362,6 +362,19 @@
       ],
       "rationale": "Opt-in task-shell bindings, immutable context snapshots and durable route receipts.",
       "migrationStrategy": "Additive data-root SQLite namespace; old sessions are unchanged. Back up database with WAL via SQLite backup; disabling experiment keeps history readable."
+    },
+    {
+      "id": "claude-settings-overrides",
+      "classification": "migration-required",
+      "owner": "provider routing",
+      "rationale": "Per-session --settings files mirror the final routing env, including ANTHROPIC_AUTH_TOKEN, and are written 0600 under the historical ~/.multicc root because the CLI reads them by path. Nothing prunes them when a session ends, so credentials outlive the session.",
+      "migrationStrategy": "Derive the override root from MULTICC_DATA_DIR, copy existing per-session files forward atomically with private permissions, keep the historical root as a read-only fallback for one release, and prune overrides whose session no longer exists.",
+      "sources": [
+        {
+          "file": "src/providers/claude-settings-override.js",
+          "anchor": "const OVERRIDE_DIR = path.join(os.homedir(), '.multicc', 'claude-settings-overrides');"
+        }
+      ]
     }
   ]
 }

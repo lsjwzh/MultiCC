@@ -98,7 +98,10 @@ test('session bundle import never resets a worktree with reset --hard', () => {
 
 test('dispatch admission derives busy from classify plus the repo lease, never from liveness', () => {
   const source = fs.readFileSync('server.js', 'utf8');
-  const start = source.indexOf('function dispatchTargetBusy(sid, item = null) {');
+  // The gate is spelled as a reason list — so the outbox skip log and the
+  // insert-queued response can say WHICH veto fired — plus a boolean derived
+  // from that one list. The obligations below live in the list.
+  const start = source.indexOf('function dispatchTargetBusyReasons(sid, item = null) {');
   assert.ok(start >= 0, 'the single dispatch busy predicate must exist');
   const predicate = source.slice(start, source.indexOf('\n}', start));
   // Classify answers "is work in flight"; the repo lease is a resource lock on
@@ -110,6 +113,12 @@ test('dispatch admission derives busy from classify plus the repo lease, never f
   for (const liveness of [/isStreaming/, /orchestrationChatBusy/, /chatTurnPreparationRuntime/, /claudeProc/]) {
     assert.doesNotMatch(predicate, liveness, 'dispatch admission must not read liveness');
   }
+  // The boolean has to stay derived from the list: if the two could disagree,
+  // the skip log would explain a veto the caller never saw.
+  const wrapperStart = source.indexOf('function dispatchTargetBusy(sid, item = null) {');
+  assert.ok(wrapperStart >= 0, 'the derived boolean wrapper must exist');
+  const wrapper = source.slice(wrapperStart, source.indexOf('\n}', wrapperStart));
+  assert.match(wrapper, /dispatchTargetBusyReasons\(sid, item\)\.length > 0/);
   // Every admission consumer is wired to that one predicate — no second opinion.
   // (The Commander routing host was a third consumer until #38 retired pooled
   // dispatch; task work now enters through the task-bound session, which admits
