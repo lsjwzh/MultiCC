@@ -384,12 +384,17 @@ test('Air task-first console, management views, roles, configuration, artifacts 
       assert.equal(await page.evaluate(`document.documentElement.scrollWidth<=innerWidth`), true);
       // 手机上页头是「标题区」不是导航：面包屑、标题、状态、按钮原来叠四行占 142px。
       // 面包屑（在哪个目录）收进侧栏抽屉；状态跟标题同一行读，放不下才落回第二行；
-      // ↻ 从右上角回到工具那一行（它占的那 40px 正是状态挤不下的原因）。
-      const mobileHeader = await page.evaluate(`(()=>{const g=id=>document.getElementById(id);const t=g('task-title'),s=g('task-state'),h=g('task-header');const tr=t.getBoundingClientRect(),sr=s.getBoundingClientRect();return {h:h.getBoundingClientRect().height,crumb:getComputedStyle(g('task-breadcrumb')).display,conv:g('conversation').getBoundingClientRect().top,sameLine:Math.abs(tr.top-sr.top)<12,titleClipped:t.scrollWidth>t.clientWidth+1,full:s.textContent,joined:[...s.children].map(c=>c.textContent).join(''),run:[...s.querySelectorAll('.ts-run')].map(e=>getComputedStyle(e).display),life:[...s.querySelectorAll('.ts-life')].map(e=>getComputedStyle(e).display),detail:getComputedStyle(g('details-toggle')).display,refreshParent:g('refresh').parentElement.className}})()`);
-      assert.ok(mobileHeader.h <= 92, JSON.stringify(mobileHeader));
+      // 工具（含 ↻）收进「⋯」打开的一层浮层，页头就只剩那一行 —— 浮层不占位。
+      const mobileHeader = await page.evaluate(`(()=>{const g=id=>document.getElementById(id);const t=g('task-title'),s=g('task-state'),h=g('task-header');const tr=t.getBoundingClientRect(),sr=s.getBoundingClientRect();return {h:h.getBoundingClientRect().height,crumb:getComputedStyle(g('task-breadcrumb')).display,conv:g('conversation').getBoundingClientRect().top,sameLine:Math.abs(tr.top-sr.top)<12,titleClipped:t.scrollWidth>t.clientWidth+1,full:s.textContent,joined:[...s.children].map(c=>c.textContent).join(''),run:[...s.querySelectorAll('.ts-run')].map(e=>getComputedStyle(e).display),life:[...s.querySelectorAll('.ts-life')].map(e=>getComputedStyle(e).display),detail:getComputedStyle(g('details-toggle')).display,refreshParent:g('refresh').parentElement.className,options:getComputedStyle(g('task-options')).display,tools:getComputedStyle(g('task-tools')).display}})()`);
+      // 390 上一行就够（45px）；320 上「⋯」拿走的那 34px 让状态回到第二行 —— 宁可
+      // 多这一行，也不把状态压成省略号，那正是 titleClipped 这条断言在守的事。
+      // 两个宽度都比收起来之前的 85 / 93px 矮，工具一件也没少。
+      assert.ok(mobileHeader.h <= (width > 340 ? 52 : 64), JSON.stringify(mobileHeader));
+      assert.equal(mobileHeader.options, 'block', JSON.stringify(mobileHeader));
+      assert.equal(mobileHeader.tools, 'none', '工具不能自己占一行：收在浮层里', JSON.stringify(mobileHeader));
       assert.equal(mobileHeader.crumb, 'none', JSON.stringify(mobileHeader));
       assert.equal(mobileHeader.conv, mobileHeader.h, JSON.stringify(mobileHeader));
-      assert.equal(mobileHeader.sameLine, true, JSON.stringify(mobileHeader));
+      assert.equal(mobileHeader.sameLine, width > 340, JSON.stringify(mobileHeader));
       assert.equal(mobileHeader.titleClipped, false, JSON.stringify(mobileHeader));
       assert.equal(mobileHeader.full, '本轮 执行中 · 任务 进行中', JSON.stringify(mobileHeader));
       // 藏的是显示，不是文字：几段拼起来仍然等于整条文案，分隔符跟着段一起走。
@@ -421,6 +426,51 @@ test('Air task-first console, management views, roles, configuration, artifacts 
         await page.evaluate(`document.querySelector('.air-config-close').click()`);
       }
       screenshots.push(await page.screenshot('two-bars-mobile-' + width));
+      if (width === 390) {
+        // 「⋯」打开的那层浮层：工具一件不少，页头一行没高。图标按钮在这里带上
+        // 自己的名字 —— 手机上悬停不出 title，一个 ⎇ 什么也没说。
+        const closedHeight = await page.evaluate(`document.getElementById('task-header').getBoundingClientRect().height`);
+        await page.evaluate(`document.getElementById('task-options').click()`);
+        const panel = await page.evaluate(String.raw`(()=>{const g=id=>document.getElementById(id);
+          const t=g('task-tools'), rows=[...t.querySelectorAll('button')].filter(b=>!b.hidden&&getComputedStyle(b).display!=='none');
+          const r=t.getBoundingClientRect(), strip=s=>String(s).replace(/^"|"$/g,'');
+          return {h:g('task-header').getBoundingClientRect().height, expanded:g('task-options').getAttribute('aria-expanded'),
+            display:getComputedStyle(t).display, left:Math.round(r.left), right:Math.round(r.right), width:Math.round(r.width),
+            names:rows.map(b=>b.textContent.trim()), rowWidths:[...new Set(rows.map(b=>Math.round(b.getBoundingClientRect().width)))],
+            rowHeight:Math.round(rows[0].getBoundingClientRect().height),
+            labels:['quick-merge','quick-auto-commit','quick-share','refresh'].map(id=>strip(getComputedStyle(g(id),'::after').content))}})()`);
+        assert.equal(panel.display, 'flex', JSON.stringify(panel));
+        assert.equal(panel.expanded, 'true', JSON.stringify(panel));
+        assert.equal(panel.h, closedHeight, '浮层不占位：开着的时候页头还是那一行高');
+        // 右边跟「⋯」那件按钮对齐（页头内边距 10px），左边留在屏里。
+        assert.ok(panel.left >= 0 && Math.abs(panel.right - (390 - 10)) <= 1, JSON.stringify(panel));
+        assert.deepEqual(panel.names, ['⎇', '⇡', '↗', '更多', '↻'], JSON.stringify(panel));
+        assert.deepEqual(panel.labels, ['合并回基分支', '自动提交', '分享此任务', '刷新'], JSON.stringify(panel));
+        assert.equal(panel.rowWidths.length, 1, '每一件工具都是一整行：' + JSON.stringify(panel));
+        assert.ok(panel.rowHeight >= 34, JSON.stringify(panel));
+        // 点过一件工具，浮层就收起 —— 那件工具已经做完了，浮层再晾着只会挡住它刚
+        // 改的那一屏。「更多」是这条路径上最麻烦的一个：它自己的处理器会
+        // stopPropagation，所以收起这件事挂在捕获阶段。
+        await page.evaluate(`document.getElementById('chat-more').click()`);
+        assert.equal(await page.evaluate(`getComputedStyle(document.getElementById('task-tools')).display`), 'none', '点过一件工具，浮层就收起');
+        assert.equal(await page.evaluate(`document.getElementById('task-options').getAttribute('aria-expanded')`), 'false');
+        assert.equal(await page.evaluate(`document.getElementById('task-options').closest('#task-header').classList.contains('options-open')`), false);
+        await page.evaluate(`document.getElementById('chat-more').click()`);
+        // 再开一次，点页头的别处 / 点对话 / 按 Esc，都收起。
+        for (const dismiss of [`document.getElementById('task-layout').click()`,
+                               `${frame}.body.click()`,
+                               `window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}))`]) {
+          await page.evaluate(`document.getElementById('task-options').click()`);
+          assert.equal(await page.evaluate(`getComputedStyle(document.getElementById('task-tools')).display`), 'flex');
+          await page.evaluate(dismiss);
+          assert.equal(await page.evaluate(`getComputedStyle(document.getElementById('task-tools')).display`), 'none', dismiss);
+        }
+        // 抽屉打开时浮层要让开：遮罩压在它上面，点不着的浮层等于没开。
+        await page.evaluate(`document.getElementById('task-options').click()`);
+        await page.evaluate(`document.getElementById('mobile-nav').click()`);
+        assert.equal(await page.evaluate(`getComputedStyle(document.getElementById('task-tools')).display`), 'none', '导航抽屉打开时工具浮层要让开');
+        await page.evaluate(`document.getElementById('nav-scrim').click()`);
+      }
     }
     for (const width of [390, 320]) {
       await page.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: true });

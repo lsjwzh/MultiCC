@@ -155,6 +155,20 @@
     const open = !document.body.classList.contains('nav-open');
     document.body.classList.toggle('nav-open', open);
     $('mobile-nav').setAttribute('aria-expanded', String(open));
+    // 两层浮层叠在一起没有意义：抽屉的遮罩压在工具浮层上面，点不着的浮层等于没开。
+    if (open) closeOptions();
+  }
+  // 手机上页头的工具都住在这层浮层里（air.css 的 760px 块）。它挂在页头下面，
+  // 不占位，所以开着的时候页头还是那一行高。
+  function closeOptions() {
+    $('task-header').classList.remove('options-open');
+    $('task-options').setAttribute('aria-expanded', 'false');
+  }
+  function toggleOptions() {
+    const open = !$('task-header').classList.contains('options-open');
+    $('task-header').classList.toggle('options-open', open);
+    $('task-options').setAttribute('aria-expanded', String(open));
+    if (open) closeNav();
   }
   function closeDetails() {
     $('task-details').hidden = true;
@@ -284,6 +298,7 @@
   function closeOverlays() {
     if (paletteOpen) closePalette();
     if (consoleOpen) applyConsole(false);
+    closeOptions();
   }
   function navigate(dir, task = null) {
     saveDraft();
@@ -1336,6 +1351,29 @@
   };
   $('mobile-nav').onclick = toggleNav;
   $('nav-scrim').onclick = closeNav;
+  $('task-options').onclick = toggleOptions;
+  // 点里面的哪一件工具都算用过了：浮层再晾在那儿，只会挡住它刚刚改的那一屏 ——
+  // 「更多」还会在对话帧里开自己的菜单，两层叠着更乱。用捕获阶段收：那件工具自己
+  // 的处理器会 stopPropagation（#chat-more 就是），冒泡到这里就晚了。
+  $('task-tools').addEventListener('click', closeOptions, true);
+  document.addEventListener('click', event => {
+    if (event.target.closest?.('#task-header')) return;
+    closeOptions();
+  });
+  // 对话是一整个 iframe：在它里面点的、划的都不会冒泡到这一份 document。不补这一
+  // 手，浮层会一直挂着，挡住手指真正在动的那一屏。
+  function dismissOnFrame() {
+    const frame = $('conversation');
+    try {
+      frame.contentDocument?.addEventListener('pointerdown', closeOptions, true);
+      frame.contentDocument?.addEventListener('click', closeOptions, true);
+    } catch { /* 跨源时读不到，浮层就只认外面这一份 document */ }
+  }
+  $('conversation').addEventListener('load', dismissOnFrame);
+  dismissOnFrame();
+  // 回到桌面宽度，工具又摆回那一行（浮层的样式只在 760px 以下生效）。留着这个类
+  // 会让下一次变窄时菜单凭空弹出来。
+  matchMedia('(min-width: 761px)').addEventListener('change', event => { if (event.matches) closeOptions(); });
   $('add-directory').onclick = () => window.MultiCCAirSettings.directory(async directory => { await refresh(); navigate(directory.id); });
   $('directory-open-planner').onclick = () => setMode('planner');
   $('quick-task-form').onsubmit = submitQuickTask;
@@ -1490,6 +1528,7 @@
       // 一层一层地退：先收浮层，再收导航与详情。
       if (paletteOpen) { closePalette(); return; }
       if (consoleOpen) { setConsole(false); return; }
+      if ($('task-header').classList.contains('options-open')) { closeOptions(); return; }
       closeNav(); closeDetails(); frameMoreController()?.close(); $('chat-more').setAttribute('aria-expanded', 'false');
     }
   });
