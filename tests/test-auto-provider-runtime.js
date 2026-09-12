@@ -190,8 +190,8 @@ test('OpenCode runtime discovers Codex-pool candidates and reads their own quota
   const catalogByApp = {
     claude: [],
     codex: [
-      { id: 'codex-empty', name: 'Codex Empty', appType: 'codex', apiFormat: 'openai_chat', compatibleClis: ['opencode'], model: 'empty-model', modelOptions: ['empty-model'] },
-      { id: 'codex-backup', name: 'Codex Backup', appType: 'codex', apiFormat: 'openai_chat', compatibleClis: ['opencode'], model: 'backup-model', modelOptions: ['backup-model'] },
+      { id: 'codex-empty', name: 'Codex Empty', appType: 'codex', apiFormat: 'openai_responses', compatibleClis: ['opencode'], model: 'empty-model', modelOptions: ['empty-model'] },
+      { id: 'codex-backup', name: 'Codex Backup', appType: 'codex', apiFormat: 'openai_responses', compatibleClis: ['opencode'], model: 'backup-model', modelOptions: ['backup-model'] },
     ],
   };
   const providers = {
@@ -221,7 +221,7 @@ test('OpenCode runtime discovers Codex-pool candidates and reads their own quota
     session: {
       id: 'opencode-session', cli: 'opencode',
       providerSelection: {
-        version: 1, mode: 'auto', protocol: 'openai_chat', maxAttempts: 2,
+        version: 1, mode: 'auto', protocol: 'openai_responses', maxAttempts: 2,
         candidates: [
           { providerId: 'codex-empty', priority: 1 },
           { providerId: 'codex-backup', priority: 2 },

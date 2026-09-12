@@ -1759,7 +1759,7 @@ function applyProviderPreset() {
   // alias tiers are visible in the form before the first save; the server
   // also applies a bounded fable fill for Zhipu base URLs.
   fillAliasMapFields('prov-new-alias', document, preset.aliasMap || null);
-  if (format) format.value = preset.apiFormat || (preset.useChatResponsesProxy ? 'openai_chat' : (preset.appType === 'claude' ? 'anthropic' : 'openai_responses'));
+  if (format) format.value = preset.apiFormat || (preset.appType === 'claude' ? 'anthropic' : 'openai_responses');
   token.value = '';
   if (status) {
     status.textContent = preset.note || '已套用模板，请填写 API Key';
@@ -2002,7 +2002,7 @@ async function importProviders() {
 }
 
 function providerLabel(p) {
-  const protocol = p.apiFormat === 'openai_chat' ? '[Chat→Responses]' : (p.apiFormat === 'openai_responses' ? '[Responses]' : '[Anthropic]');
+  const protocol = p.apiFormat === 'openai_responses' ? '[Responses]' : '[Anthropic]';
   const bits = [p.name, protocol];
   if (p.isOfficial) bits.push('· 默认登录/订阅');
   else if (p.baseUrl) bits.push('· ' + p.baseUrl.replace(/^https?:\/\//, ''));
@@ -2028,7 +2028,7 @@ function formatTokens(n) {
 }
 
 function setProvTab(name) {
-  const isProto = ['anthropic', 'openai_responses', 'openai_chat'].includes(name);
+  const isProto = ['anthropic', 'openai_responses'].includes(name);
   document.querySelectorAll('#prov-tabs .prov-tab').forEach(b => b.classList.toggle('active', b.dataset.ptab === name));
   document.querySelectorAll('.view[data-view="provider"] .prov-pane').forEach(p => { p.style.display = p.dataset.ptab === name ? '' : 'none'; });
   const newCard = document.getElementById('prov-new-card');
@@ -2086,7 +2086,7 @@ function renderProviderList() {
         <div data-quota-id="${escapeHtml(p.id)}" style="font-size:11px;font-weight:600;margin-top:3px;color:var(--faint)">余量 —</div>
         <div data-balance-id="${escapeHtml(p.id)}" style="display:none;font-size:11px;font-weight:600;margin-top:2px;color:var(--faint)"></div>
         ${statHtml ? `<div style="font-size:11px;color:var(--amber);margin-top:3px">${statHtml}</div>` : ''}
-        <div style="font-size:11px;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.isOfficial ? '官方账号统一管理 · 账号切换对新请求生效' : (p.baseUrl || ''))}${(p.modelOptions || []).length > 1 ? ' · ' + (p.modelOptions || []).length + ' models' : (p.model ? ' · ' + escapeHtml(p.model) : '')}${p.useChatResponsesProxy ? ' · proxy' : ''}${p.tokenMask ? ' · ' + escapeHtml(p.tokenMask) : ''}</div>
+        <div style="font-size:11px;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.isOfficial ? '官方账号统一管理 · 账号切换对新请求生效' : (p.baseUrl || ''))}${(p.modelOptions || []).length > 1 ? ' · ' + (p.modelOptions || []).length + ' models' : (p.model ? ' · ' + escapeHtml(p.model) : '')}${p.tokenMask ? ' · ' + escapeHtml(p.tokenMask) : ''}</div>
       </div>
       <div style="display:flex;gap:8px;margin-left:auto;">
       <button class="btn" style="padding:4px 10px;font-size:12px" onclick="balanceProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}',this)">余量</button>
@@ -2100,7 +2100,7 @@ function renderProviderList() {
   const emptyMsg = !_providerData.providers.length
     ? '还没有 provider。' + (_providerData.available ? '在下方新增。' : 'cc-switch 不可用。')
     : '该协议下暂无 provider。';
-  for (const proto of ['anthropic', 'openai_responses', 'openai_chat']) {
+  for (const proto of ['anthropic', 'openai_responses']) {
     const box = document.getElementById('prov-cards-' + proto);
     if (!box) continue;
     const list = groups[proto] || [];
@@ -2257,7 +2257,7 @@ function editProvider(appType, id) {
       ${textarea('模型列表', (p.modelOptions || []).join('\n'), '每行一个模型；留空则只使用 Model')}
       ${aliasSection}
       ${appType === 'codex' ? `<label style="display:block;margin-bottom:10px"><div style="font-size:12px;color:var(--faint);margin-bottom:4px">上游协议</div>
-        <select id="ep-apiformat" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px"><option value="openai_responses" ${p.apiFormat === 'openai_responses' ? 'selected' : ''}>OpenAI Responses</option><option value="openai_chat" ${p.apiFormat === 'openai_chat' ? 'selected' : ''}>OpenAI Chat（Codex 自动转换）</option></select>
+        <select id="ep-apiformat" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px"><option value="openai_responses" ${p.apiFormat === 'openai_responses' ? 'selected' : ''}>OpenAI Responses</option></select>
       </label>` : ''}
       ${keyField('', p.hasToken ? '留空 = 保留原 key（' + (p.tokenMask || '已设置') + '）' : '未设置')}
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px">

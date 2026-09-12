@@ -80,7 +80,6 @@
     const protocol = {
       anthropic: 'Anthropic Messages',
       openai_responses: 'OpenAI Responses',
-      openai_chat: 'OpenAI Chat',
     }[provider.apiFormat || provider.protocol] || 'Managed Provider';
     const bits = [protocol];
     if (provider.isOfficial) bits.push('Official');
