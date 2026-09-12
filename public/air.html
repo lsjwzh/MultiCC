@@ -114,21 +114,28 @@
              page paints exactly one heading band and the body carries content
              only. air.js toggles these by mode; the admin module fills
              #admin-actions. -->
-        <button id="directory-open-planner" type="button" hidden>打开完整任务看板</button>
-        <button id="add-directory" type="button" hidden>＋ 添加工作目录</button>
-        <button id="schedule-create" class="primary" type="button" hidden>＋ 新建定时任务</button>
+        <!-- 每件工具的第一个 span 是它的图标，名字跟在后面（air.css 的 760px 块把
+             浮层里的每一行摆成「图标 + 名字」两列）。桌面上这几个按钮本来就带符号，
+             图标沿用原来那一个（.air-tool-icon）；原来只有文字的按钮，图标平时不
+             显示（.air-tool-icon-panel），只有浮层里需要它站到第一列。 -->
+        <button id="directory-open-planner" type="button" hidden><span class="air-tool-icon-panel" aria-hidden="true">▦</span>打开完整任务看板</button>
+        <button id="add-directory" type="button" hidden><span class="air-tool-icon" aria-hidden="true">＋</span> 添加工作目录</button>
+        <button id="schedule-create" class="primary" type="button" hidden><span class="air-tool-icon" aria-hidden="true">＋</span> 新建定时任务</button>
         <div id="admin-actions" hidden></div>
         <!-- Two of the frame's most-used More-menu actions stay one click away
              (the menu keeps the full list). Each shortcut clicks the chat
              page's own button, so the handler, the permission check and the
              dialog all stay in one place; air.js mirrors their state back. -->
-        <button id="quick-merge" type="button" hidden title="合并回基分支" aria-label="合并回基分支">⎇</button>
+        <!-- 这四件平时只有图标（桌面上悬停有 title），名字平时收在 .air-tool-name
+             里，浮层里才跟图标并排 —— aria-label 留着，桌面上的图标按钮就靠它。 -->
+        <button id="quick-merge" type="button" hidden title="合并回基分支" aria-label="合并回基分支"><span class="air-tool-icon" aria-hidden="true">⎇</span><span class="air-tool-name">合并回基分支</span></button>
         <button id="quick-auto-commit" type="button" hidden aria-pressed="false"
-                title="自动提交：每轮执行成功后自动提交并合并回基分支" aria-label="自动提交">⇡</button>
-        <button id="quick-share" type="button" hidden title="把此任务分享到外部" aria-label="分享此任务">↗</button>
-        <button id="details-toggle" type="button" aria-expanded="false" aria-controls="task-details" hidden>详情</button>
-        <button id="chat-more" type="button" aria-haspopup="menu" aria-expanded="false" hidden>更多</button>
-        <button id="refresh" type="button" aria-label="刷新">↻</button>
+                title="自动提交：每轮执行成功后自动提交并合并回基分支" aria-label="自动提交"><span class="air-tool-icon" aria-hidden="true">⇡</span><span class="air-tool-name">自动提交</span></button>
+        <button id="quick-share" type="button" hidden title="把此任务分享到外部" aria-label="分享此任务"><span class="air-tool-icon" aria-hidden="true">↗</span><span class="air-tool-name">分享此任务</span></button>
+        <button id="details-toggle" type="button" aria-expanded="false" aria-controls="task-details" hidden><span class="air-tool-icon-panel" aria-hidden="true">ⓘ</span>详情</button>
+        <button id="chat-more" type="button" aria-haspopup="menu" aria-expanded="false" hidden><span class="air-tool-icon-panel" aria-hidden="true">⋯</span>更多</button>
+        <!-- 这个按钮一直挂着（不随视图藏），所以它没有 hidden。 -->
+        <button id="refresh" type="button" aria-label="刷新"><span class="air-tool-icon" aria-hidden="true">↻</span><span class="air-tool-name">刷新</span></button>
       </div>
     </header>
 

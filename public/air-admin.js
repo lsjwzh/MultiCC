@@ -37,9 +37,23 @@
   // 面板是给人看的，不是导出用的：超过这个数就只显示最近的一批，并把总数说清楚。
   const TASK_LIST_LIMIT = 60;
 
-  function action(text, handler, className = '') {
-    const button = make('button', text, className);
+  // 手机上页头的工具都收进「⋯」浮层，浮层里每一行都摆成「图标 + 名字」两列
+  // （air.css 的 760px 块）。图标得是自己一个节点，名字才站得到第二列上 ——
+  // 所以图标不拼进文字里，而是按钮的第一个 span。两种按钮各有一个来源：
+  //
+  // keepsGlyph ── 桌面页头上本来就带这个符号的（「＋ 新建任务」「↻ 刷新」）：符号
+  //   原来拼在文字里，现在拆出来，桌面上看着一模一样，浮层里它就是那一列的图标。
+  // panelIcon ── 桌面只有文字的动作（「详情」「返回设置中心」）：图标是这次给浮层
+  //   补的，桌面不显示 —— 桌面页头本来就满，最窄的那几档已经在换行了。
+  const keepsGlyph = glyph => ({ desktop: glyph });
+  const panelIcon = glyph => ({ panel: glyph });
+
+  function action(text, handler, className = '', mark = null) {
+    const button = make('button', null, className);
     button.type = 'button';
+    if (mark?.desktop) button.append(make('span', mark.desktop, 'air-tool-icon'));
+    else if (mark?.panel) button.append(make('span', mark.panel, 'air-tool-icon-panel'));
+    button.append(document.createTextNode(mark?.desktop ? ` ${text}` : text));
     button.onclick = handler;
     return button;
   }
@@ -170,8 +184,8 @@
     // for any host that renders it as a page.
     const panel = el('console-content');
     setActions([
-      action('浏览工作目录', () => setMode('library')),
-      action('＋ 新建任务', () => { setMode('tasks'); setTimeout(() => el('create')?.click(), 0); }, 'primary'),
+      action('浏览工作目录', () => setMode('library'), '', panelIcon('▦')),
+      action('新建任务', () => { setMode('tasks'); setTimeout(() => el('create')?.click(), 0); }, 'primary', keepsGlyph('＋')),
     ], panel ? 'console-actions' : 'admin-actions');
 
     const content = panel || el('admin-content');
@@ -394,8 +408,8 @@
 
   function renderDocs(context) {
     setActions([
-      action('↻ 刷新', () => loadDocs()),
-      action('＋ 登记服务', () => el('service-dialog').showModal(), 'primary'),
+      action('刷新', () => loadDocs(), '', keepsGlyph('↻')),
+      action('登记服务', () => el('service-dialog').showModal(), 'primary', keepsGlyph('＋')),
     ]);
     const wrap = make('div', null, 'air-docs');
     const top = make('div', null, 'air-docs-meta');
@@ -433,8 +447,8 @@
     const legacyView = mode === 'planner' ? 'tasks' : mode;
     const homeMode = ['planner', 'memory'].includes(mode) ? 'overview' : 'settings';
     setActions([
-      action(homeMode === 'overview' ? '返回控制台' : '返回设置中心', () => context.setMode(homeMode)),
-      action('在独立页打开', () => window.open(`/manage.html?view=${encodeURIComponent(legacyView)}`, '_blank', 'noopener')),
+      action(homeMode === 'overview' ? '返回控制台' : '返回设置中心', () => context.setMode(homeMode), '', panelIcon('←')),
+      action('在独立页打开', () => window.open(`/manage.html?view=${encodeURIComponent(legacyView)}`, '_blank', 'noopener'), '', panelIcon('↗')),
     ]);
     const note = make('div', null, 'air-migration-note');
     note.append(make('strong', 'Air 迁移中'), make('span', '当前功能已经纳入 Air 外壳；内部表单暂用兼容实现，数据与操作能力保持不变。'));
@@ -449,10 +463,10 @@
     const provider = root.MultiCCAirProvider;
     if (!provider) return renderLegacy('provider', context);
     setActions([
-      action('返回设置中心', () => context.setMode('settings')),
-      action('高级账号与借道', () => provider.toggleAdvanced()),
-      action('↻ 刷新', () => provider.refresh()),
-      action('＋ 新增 Provider', () => provider.openEditor(), 'primary'),
+      action('返回设置中心', () => context.setMode('settings'), '', panelIcon('←')),
+      action('高级账号与借道', () => provider.toggleAdvanced(), '', panelIcon('⇄')),
+      action('刷新', () => provider.refresh(), '', keepsGlyph('↻')),
+      action('新增 Provider', () => provider.openEditor(), 'primary', keepsGlyph('＋')),
     ]);
     provider.render(context);
   }
