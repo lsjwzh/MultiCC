@@ -2,6 +2,25 @@
 
 All notable changes to MultiCC are documented in this file.
 
+## v1.7.0 — The Air console, and a light native client
+
+### Highlights
+
+- **The Air console replaces the old control pages** — `/air` is one light surface for directories, tasks, sessions, schedules and host operations, on a pale blue-white canvas with hairline borders and a single ice-blue accent. The console opens as an overlay, the task band switches scope, `⌘K` searches both directories and tasks, and the manage sidebar's host-ops region is available without leaving the page.
+- **The Flutter client is re-skinned onto the same palette** — the native Android/iOS app now reads from one `AppColors` token set that mirrors `public/air.css`, including the light launch screens, the dashboard accents, and a drawer that carries the Air sidebar's blue-white wash instead of the old dark surface.
+- **Tasks, not roles, are the unit of work** — the fixed-role session UI is retired. Tasks are created against a directory, draw a durable workspace admission before any CLI starts, carry task-scoped artifacts in the chat sidebar, and expose provider routing metadata without exposing credentials.
+- **A tighter mobile header** — on phones the page header is a title area rather than a second navigation bar: the breadcrumb moves into the drawer, the state summary reads on the title's line (falling back to its own line rather than truncating the title), and the refresh control returns to the tool row.
+
+### Fixes
+
+- **Provider identity is unified** — official providers and global account switching go through one routing path, relay (borrowed) providers report pass-through usage, and context provenance is visible in the usage details.
+- **AI configuration changes are deferred** until they can be applied, and the conversation width is adjustable, so editing configuration no longer interrupts a running turn.
+- **Task cleanup is complete** — every task type can be archived and permanently deleted, and the manage task panel is now a module-grouped list with status filter chips and a quick-create composer.
+
+### Compatibility
+
+- No API or data-format changes. Existing provider configurations, relay shares and imported Fleets keep working without migration. The Android package advances to `2.29.13+126` so it can upgrade the previous stable APK in place; the iOS package is `2.29.13+126` as well.
+
 ## v1.6.4 — Automatic provider failover and interactive external Fleets
 
 ### Highlights
