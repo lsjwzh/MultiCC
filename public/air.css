@@ -284,6 +284,13 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
    一个小胶囊；只在跑的时候多出的那几像素缩进，本身也是「它变了」的一个提示。 */
 #task-state.ring-running { padding-inline: 7px; border-radius: 8px; }
 .task-tools { display: flex; align-items: center; gap: 7px; flex-shrink: 0; }
+/* 手机上工具收进「⋯」浮层，浮层里每一行都是「图标 + 名字」两列（见 760px 块）。
+   所以图标和名字各占一个 span：.air-tool-icon 是这个按钮桌面也显示的符号（「＋
+   新建任务」那个 ＋ 原来就拼在文字里），.air-tool-icon-panel 是桌面只有文字的
+   按钮在浮层里补上的图标，.air-tool-name 是桌面只有图标的按钮在浮层里补上的名字。
+   后两个平时不显示：桌面页头本来就满（最窄的几档已经在换行），浮层里才长出这
+   一半来 —— 统一的是浮层，桌面照旧。 */
+.air-tool-icon-panel, .air-tool-name { display: none; }
 /* The AI 配置 capsule and 角色 moved onto the composer card (chat-air.css).
    What stays here are the round's most-used actions as compact icons; the More
    menu still carries the full list. */
@@ -750,17 +757,33 @@ body.console-open #console-panel { transform: none; visibility: visible; }
     max-height: min(66vh, 460px); overflow: auto; padding: 7px; border: 1px solid #d5e2ef;
     border-radius: 14px; background: rgba(251, 253, 255, .99); box-shadow: 0 18px 50px #29486622; }
   #task-header.options-open .task-tools { display: flex; }
-  /* 一列全宽的按钮：窄屏上一句话的按钮比一排图标好认，也不用横向滑动去找。 */
+  /* 一列全宽的按钮：窄屏上一句话的按钮比一排图标好认，也不用横向滑动去找。每一行
+     都摆成「图标 + 名字」两列 —— 这一层里有的按钮平时只有图标（⎇），有的平时只有
+     文字（详情），混在一列里读起来像两种东西。图标列定宽，名字于是都从同一条竖线
+     开始；图标比正文大一号才像图标。 */
   #task-header .task-tools > button, #task-header .task-tools #admin-actions > button {
-    flex: 0 0 auto; width: 100%; min-width: 0; min-height: 34px; justify-content: flex-start;
+    display: grid; grid-template-columns: 16px 1fr; align-items: center; column-gap: 9px;
+    flex: 0 0 auto; width: 100%; min-width: 0; min-height: 34px;
     padding: 6px 10px; border-radius: 9px; font-size: 13.5px; text-align: left; }
   #task-header .task-tools #admin-actions { flex-direction: column; gap: 5px; }
-  /* 只画了图标的那几个在浮层里带上自己的名字：手机上悬停不出 title，一个 ⎇ 什么都
-     没说。自动提交顺带把「开/关」写出来 —— 那是它唯一的区别。 */
-  #task-header .task-tools #quick-merge::after, #task-header .task-tools #quick-auto-commit::after,
-  #task-header .task-tools #quick-share::after, #task-header .task-tools #refresh::after {
-    content: attr(aria-label); margin-left: 8px; font-size: 13.5px; }
-  #task-header .task-tools #quick-auto-commit[aria-pressed="true"]::after { content: "自动提交 · 已开"; }
+  /* 详情在手机上就是点状态那一条，浮层里不给它留一行。这条得压在上面那条 grid 之后
+     —— 否则「每一行都是 grid」会把上面 #details-toggle 的 display:none 一起顶掉。 */
+  #task-header .task-tools > #details-toggle { display: none; }
+  /* 两种按钮缺的那一半都在这里补上：桌面只有图标的补名字（手机上悬停不出 title，
+     一个 ⎇ 什么也没说），桌面只有文字的补图标。 */
+  #task-header .task-tools .air-tool-icon, #task-header .task-tools .air-tool-icon-panel,
+  #task-header .task-tools .air-tool-name { display: block; }
+  #task-header .task-tools .air-tool-icon, #task-header .task-tools .air-tool-icon-panel {
+    color: var(--muted); font-size: 15px; line-height: 1.15; text-align: center; }
+  /* 图标默认比名字浅一档（灰），但这几种按钮的图标得跟着按钮自己的颜色走：主按钮
+     是蓝底白字（灰图标在上面看不见），合并就绪是绿、自动提交开着是蓝 —— 那两个
+     颜色就是它唯一的状态读法。 */
+  #task-header .task-tools .primary .air-tool-icon,
+  #task-header .task-tools #quick-merge.is-ready .air-tool-icon,
+  #task-header .task-tools #quick-auto-commit.is-on .air-tool-icon { color: inherit; }
+  /* 「自动提交」开没开是它唯一的区别，写进名字里。 */
+  #task-header .task-tools #quick-auto-commit[aria-pressed="true"] .air-tool-name::after {
+    content: " · 已开"; }
   .task-tools [data-chat-layout] { display: none; } /* Available in Chat's More menu. */
   #notice { padding-inline: 12px; }
   #delivery-card { padding: 14px; }
