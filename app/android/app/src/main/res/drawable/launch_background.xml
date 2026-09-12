@@ -3,7 +3,7 @@
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- The Air canvas (#f4f8fd), so the splash matches the first Flutter
          frame instead of flashing pure white. -->
-    <item android:drawable="#FFF4F8FD" />
+    <item android:drawable="@color/air_canvas" />
 
     <!-- You can insert your own image assets here -->
     <!-- <item>
