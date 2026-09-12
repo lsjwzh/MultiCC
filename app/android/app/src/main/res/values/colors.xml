@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Air canvas, in one place so the splash and the Flutter first frame
+     cannot drift apart. AAPT2 rejects a literal hex inside android:drawable,
+     so the launch screens have to reference a color resource. -->
+<resources>
+    <color name="air_canvas">#FFF4F8FD</color>
+</resources>
