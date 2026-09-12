@@ -416,6 +416,97 @@ body.air-chat.task-artifacts-chat .task-artifacts-toggle { color-scheme: light; 
 .air-chat .hljs-addition { color: var(--chat-success); background: var(--chat-success-soft); }
 .air-chat .hljs-deletion { color: var(--chat-danger); background: var(--chat-danger-soft); }
 
+/* ── The folding composer (phones only) ────────────────────────────────────
+   chat-composer-collapse.js gives the composer back to the transcript as the
+   reader scrolls up, down to a thin oval carrying the unsent draft. The module
+   owns every measurement and every height; what is here is the shell it needs —
+   a wrapper that can clip the 配置 band, and the oval itself.
+
+   Scoped to .air-composer-fold, which the module only adds while the frame is
+   phone-width and the composer is really there, so a desktop frame, a
+   read-only frame and a frame with the script absent are all untouched. */
+/* Outside the fold the oval is not a control at all: a frame the module has
+   released (a rotation back to desktop) has to look exactly as it was found,
+   and an unpaired button left in the composer would not. */
+body.air-chat #air-composer-pill { display: none; }
+body.air-chat.air-composer-fold #air-band-clip {
+  display: flex;
+  flex-direction: column;
+  /* Bottom-anchored, so the band's clipped edge is its top one: the fold takes
+     space off the top of the composer, never off the row of controls. */
+  justify-content: flex-end;
+  overflow: hidden;
+}
+body.air-chat.air-composer-fold #air-band-clip > * { flex: none; }
+/* The band is no longer the card's direct sibling, so the rule that closes the
+   gap between them has to follow it into the wrapper. */
+body.air-chat.air-composer-fold #air-band-clip:has(> #air-composer-meta:not([hidden])) + #input-bar { margin-top: 0; }
+body.air-chat.air-composer-fold #input-bar.mc-composer {
+  position: relative;
+  /* On a phone this card is a *wrapped* flex container, so its rows are packed
+     lines rather than items; without this they pack from the top and a shorter
+     card cuts the controls row off at the bottom. Packed to the end, the card
+     clips from the top like the band does — the row of controls stays exactly
+     where the reader last saw it. */
+  align-content: flex-end;
+}
+/* The oval: the folded composer's whole surface. It takes the card's radius
+   (which the module is animating at the same time) so it covers the clipped
+   controls exactly — a square overlay would leave their corners showing. */
+body.air-chat.air-composer-fold #air-composer-pill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 6px 0 16px;
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  color: #8b9cae;
+  border: 0;
+  border-radius: inherit;
+  background: #fff;
+  /* Invisible until it covers the card — and out of the tab order while it
+     does not, so a keyboard reader never lands on a button they cannot see.
+     The delay keeps the fade on the way out; on the way in it is instant. */
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity .12s linear, visibility 0s linear .12s;
+}
+body.air-chat.air-composer-fold #air-composer-pill.show {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  cursor: text;
+  transition-delay: 0s, 0s;
+}
+body.air-chat.air-composer-fold #air-composer-pill .ccp-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* A draft on the oval is the reader's writing, not a hint — it says so. */
+body.air-chat.air-composer-fold #air-composer-pill.has-draft { color: #35536f; }
+body.air-chat.air-composer-fold #air-composer-pill .ccp-go {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  color: #fff;
+  border-radius: 999px;
+  background: var(--air-blue);
+}
+
 @media (max-width: 760px) {
   /* 手机上一条消息只值 23px，而这几条原来吃掉了 100 多：目标一句话独占一行、
      药丸一行、分支一行，连接状态和通话按钮再占一行。压成两行 ——
