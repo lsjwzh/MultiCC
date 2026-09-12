@@ -724,7 +724,10 @@ body.console-open #console-panel { transform: none; visibility: visible; }
      142px，等于先花掉屏幕的六分之一才看见对话。面包屑收进侧栏抽屉 ——
      那儿的工作目录卡片本来就回答「在哪个目录」，页头只留标题 + 状态 + 按钮。 */
   #task-breadcrumb { display: none; }
-  #task-header { min-height: 0; align-items: center; flex-wrap: wrap; gap: 5px 6px; padding: 6px 10px; position: relative; }
+  /* 页头要压在对话上面：它自己有个 backdrop-filter，那已经是一个层叠上下文 ——
+     浮层在里面的 z-index 再大，也只管这一层内部，整条页头仍然排在 #task-layout
+     前面。进详情的 15 之上、抽屉遮罩的 20 之下。 */
+  #task-header { min-height: 0; align-items: center; flex-wrap: wrap; gap: 5px 6px; padding: 6px 10px; position: relative; z-index: 16; }
   /* 状态是「现在怎么样」，不是页头的第二行内容：让它跟在标题后面读，省掉一整行。
      挤不下时（窄屏，或标题本身比一整行还长）它自己换行回到第二行 —— 宁可多这一行，
      也要把状态整条留全，而不是压成省略号。 */
