@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../i18n.dart';
+import '../theme.dart';
 import '../models/message.dart';
 import '../models/role_tokens.dart';
 import '../providers/chat_provider.dart';
@@ -998,7 +999,7 @@ class _StreamingDotState extends State<_StreamingDot>
         width: 7,
         height: 7,
         decoration: BoxDecoration(
-          color: Color.fromRGBO(88, 166, 255, _anim.value),
+          color: AppColors.accent.withValues(alpha: _anim.value),
           shape: BoxShape.circle,
         ),
       ),

@@ -425,13 +425,9 @@ function applyCliUi(cli) {
     window.MultiCCChatAiConfig.refreshClaudeModels();
   }
 }
-let _mergeReady = false;
-let _syncConflict = false;
-let _syncConflictFiles = [];
-let _mergePollTimer = null;
-// Track last-warned behind count so we surface a notice when the worktree first
-// falls behind its base branch (or falls further), not on every 5s poll.
-let _lastWarnedBehind = 0;
+// The merge/sync state that used to live here (ready, conflict, conflict files,
+// poll timer, last-warned behind count) is owned by chat-worktree-status.js now;
+// ask it through worktreeStatus.mergeReady.
 
 /* ── Debug panel ──
    Records every WS event and every thinking/streaming state transition so the
@@ -1180,201 +1176,22 @@ function truncate(s, n) {
   return s.length > n ? s.slice(0, n) + '...' : s;
 }
 
-function mergeStatusText(st) {
-  if (!st || (!st.mergeReady && !(st.dirty || st.ahead > 0))) return tt('worktreeClean');
-  // Dirty/ahead exist but merge is blocked — show why.
-  if (!st.mergeReady && !st.baseCheckedOut) {
-    return tt('mergeBlockedBranch', { base: st.baseBranch || 'main' });
-  }
-  const bits = [];
-  if (st.dirty) bits.push(tt('dirtyChanges'));
-  if ((st.ahead || 0) > 0) bits.push(tt('aheadCommits', { n: st.ahead }));
-  return tt('worktreeMergeable', { detail: bits.join('，'), base: st.baseBranch || tt('defaultBase') });
-}
-
-function applyMergeStatus(st) {
-  _mergeReady = !!(st && st.mergeReady);
-  _syncConflict = !!(st && st.conflict);
-  _syncConflictFiles = (st && st.conflictFiles) || [];
-  if (mergeBtn) {
-    mergeBtn.classList.toggle('merge-ready', _mergeReady);
-    mergeBtn.title = _mergeReady ? mergeStatusText(st) : tt('mergeWorktreeTitle');
-  }
-  if (mergeHint) {
-    mergeHint.classList.toggle('show', _mergeReady);
-    const text = mergeHint.querySelector('.merge-hint-text');
-    if (text) text.textContent = mergeStatusText(st);
-  }
-  applyBehindStatus(st);
-}
-
-// Persistent conflict banner: rendered while the worktree is parked mid-rebase
-// after a conflicting sync. Stays put across refreshes (driven by merge state,
-// not a one-shot toast) and offers in-place 继续 / 放弃 controls.
-function applyConflictBanner(st) {
-  let bar = document.getElementById('worktree-conflict-bar');
-  const conflict = !!(st && st.conflict);
-  if (!conflict) { if (bar) bar.remove(); return; }
-  const files = (st && st.conflictFiles) || [];
-  if (!bar) {
-    bar = document.createElement('div');
-    bar.id = 'worktree-conflict-bar';
-    bar.className = 'worktree-conflict-bar';
-    const anchor = document.getElementById('worktree-bar');
-    if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(bar, anchor.nextSibling);
-    else document.body.insertBefore(bar, document.body.firstChild);
-  }
-  bar.innerHTML = '';
-  const label = document.createElement('span');
-  label.className = 'conflict-label';
-  label.textContent = `⚠️ 同步冲突：${files.length} 个文件待解决`;
-  label.title = files.join('\n');
-  const help = document.createElement('button');
-  help.textContent = '如何解决';
-  help.onclick = () => showConflictHelp(files);
-  const cont = document.createElement('button');
-  cont.className = 'conflict-continue';
-  cont.textContent = '继续';
-  cont.onclick = () => resolveRebase('continue');
-  const abort = document.createElement('button');
-  abort.className = 'conflict-abort';
-  abort.textContent = '放弃';
-  abort.onclick = () => resolveRebase('abort');
-  bar.appendChild(label);
-  bar.appendChild(help);
-  bar.appendChild(cont);
-  bar.appendChild(abort);
-  // The parked-sync decisions (继续/放弃) live here, so requesting another sync
-  // belongs next to them — the same affordance the status row carries (no id
-  // here; the status row keeps the id, ids must stay unique).
-  worktreeSyncRequest.render(bar);
-}
-
-function showConflictHelp(files) {
-  addSystemMsg(
-    `同步与基分支冲突，rebase 已暂停。请按下面步骤手动解决：\n` +
-    `冲突文件（${files.length}）：\n${files.map(f => '  · ' + f).join('\n') || '  (无)'}\n` +
-    `1. 在本会话的 worktree 里编辑上述文件，消除 <<<<<<< / ======= / >>>>>>> 冲突标记\n` +
-    `2. 解决后点横幅上的「继续」（= git add -A && git rebase --continue）\n` +
-    `3. 想放弃本次同步、回到同步前状态，点「放弃」（= git rebase --abort）`);
-}
-
-// Continue or abort the parked rebase from the chat banner.
-async function resolveRebase(action) {
-  if (!_sessionName) { addSystemMsg('无 session id，无法操作 rebase'); return; }
-  try {
-    const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/rebase`), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action }),
-    });
-    const data = await res.json().catch(() => ({}));
-    const failure = res.ok ? null : chatApi.errorFromPayload(data, { response: res });
-    if (res.ok) {
-      if (data.aborted) addSystemMsg('✓ 已放弃 rebase，worktree 回到同步前状态');
-      else if (data.done) addSystemMsg('✓ 冲突已解决，同步完成');
-      else addSystemMsg('✓ rebase 已继续');
-      refreshMergeStatus();
-    } else if (res.status === 409 && data.conflicts) {
-      addSystemMsg(`✗ 仍有冲突未解决：${chatApi.errorText(failure)}\n${data.conflicts.join(', ')}\n请全部解决后再点「继续」。`);
-      refreshMergeStatus();
-    } else {
-      addSystemMsg(`✗ 操作失败：${chatApi.errorText(failure)}`);
-    }
-  } catch (e) {
-    addSystemMsg(`✗ 请求失败：${chatApi.errorText(e)}`);
-  }
-}
-
-// Show the current worktree branch + a "behind base" warning at the top of the
-// chat. Mirrors the Flutter app: a persistent banner while behind, plus a
-// one-time system notice when it first goes (or falls further) behind.
+/* ── Worktree merge / sync status ──
+   The branch row, the parked-rebase conflict banner and the 5s poller that
+   drives both live in chat-worktree-status.js. These wrappers keep the names
+   the merge-hint observer and the CDP fixtures call by name. */
 const worktreeSyncRequest = window.MultiCCWorktreeSync.create({ document,
   getSession: () => _sessionName, getShell: () => shellChatView.shellId,
   readOnly: () => _params.get('readOnly') === '1',
   request: (url, options) => chatApi.json(withToken(url), options), notice: addSystemMsg,
 });
-function applyBehindStatus(st) {
-  const behind = (st && Number(st.behind)) || 0;
-  const branch = (st && st.branch) || '';
-  const base = (st && st.baseBranch) || 'main';
-  const bar = document.getElementById('worktree-bar');
-  if (bar) {
-    if (branch) {
-      bar.classList.add('show');
-      bar.classList.toggle('behind', behind > 0);
-      const label = behind > 0
-        ? tt('behindLabel', { branch, base, n: behind })
-        : `⎇ ${branch}`;
-      bar.innerHTML = '';
-      const span = document.createElement('span');
-      span.className = 'worktree-label';
-      span.textContent = label;
-      span.title = label;
-      bar.appendChild(span);
-      if (behind > 0) {
-        const btn = document.createElement('button');
-        btn.id = 'worktree-sync-btn';
-        btn.textContent = tt('sync');
-        btn.onclick = syncWorktree;
-        bar.appendChild(btn);
-      }
-      // 强制同步 rides this row too, not only the conflict banner: it is the
-      // only sync path while the branch is clean.
-      worktreeSyncRequest.render(bar, 'worktree-force-sync-btn');
-    } else {
-      bar.classList.remove('show', 'behind');
-      bar.innerHTML = '';
-    }
-  }
-  if (behind > _lastWarnedBehind) {
-    addSystemMsg(tt('behindBanner', { branch, base, n: behind }));
-  }
-  _lastWarnedBehind = behind;
-  applyConflictBanner(st);
-}
-
-// One-click sync: pull the base branch into this session's worktree.
-async function syncWorktree() {
-  if (!_sessionName) { addSystemMsg('无 session id，无法同步'); return; }
-  const btn = document.getElementById('worktree-sync-btn');
-  if (btn) { btn.disabled = true; btn.textContent = tt('syncing'); }
-  try {
-    const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/sync`), { method: 'POST' });
-    const data = await res.json().catch(() => ({}));
-    const failure = res.ok ? null : chatApi.errorFromPayload(data, { response: res });
-    if (res.ok) {
-      addSystemMsg(data.merged
-        ? `✓ 已从 ${data.baseBranch || 'base'} 同步 ${data.commits} 个提交${data.committed ? '（已自动提交未保存改动）' : ''}`
-        : (data.message || '已是最新'));
-      refreshMergeStatus();
-    } else if (res.status === 409 && data.conflicts) {
-      addSystemMsg(`✗ 同步与基分支冲突：${chatApi.errorText(failure)}\n${data.conflicts.join(', ')}\n请用上方横幅的「继续 / 放弃」处理，或在 worktree 手动解决。`);
-      refreshMergeStatus();
-    } else {
-      addSystemMsg(`✗ 同步失败：${chatApi.errorText(failure)}`);
-    }
-  } catch (e) {
-    addSystemMsg(`✗ 同步请求失败：${chatApi.errorText(e)}`);
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = tt('sync'); }
-  }
-}
-
-async function refreshMergeStatus() {
-  if (!_sessionName) return;
-  try {
-    const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/merge-status`));
-    if (!res.ok) return;
-    applyMergeStatus(await res.json());
-  } catch (_) {}
-}
-
-function startMergeStatusPolling() {
-  refreshMergeStatus();
-  if (_mergePollTimer) clearInterval(_mergePollTimer);
-  _mergePollTimer = setInterval(refreshMergeStatus, 5000);
-}
+const worktreeStatus = window.MultiCCWorktreeStatus.create({ document, tt, withToken,
+  sessionId: () => _sessionName, mergeButton: mergeBtn, mergeHint,
+  api: chatApi, notice: addSystemMsg, syncRequest: worktreeSyncRequest,
+});
+function applyMergeStatus(st) { return worktreeStatus.apply(st); }
+function refreshMergeStatus() { return worktreeStatus.refresh(); }
+function startMergeStatusPolling() { return worktreeStatus.startPolling(); }
 
 /* ── Liveness pill: is this session working / idle / stalled right now ── */
 let _livenessTimer = null;
@@ -1436,7 +1253,7 @@ async function renameSessionFromChat() {
 
 async function requestMerge() {
   if (!_sessionName) { addSystemMsg(tt('sessionIdMissing')); return; }
-  const prompt = _mergeReady
+  const prompt = worktreeStatus.mergeReady
     ? tt('mergeWorktreeConfirmReady')
     : tt('mergeWorktreeConfirm');
   if (!await confirmInPage(prompt)) return;
@@ -1477,7 +1294,7 @@ async function autoCommitIfNeeded(bubbleEl) {
   const cb = row.querySelector('input[type="checkbox"]');
   if (!cb || !cb.checked) return;
   // Check if there's actually something to merge
-  if (!_mergeReady) return;
+  if (!worktreeStatus.mergeReady) return;
   _autoCommitPending = true;
   try {
     addSystemMsg('🚀 自动提交合并中（此轮开启了自动提交）...');
