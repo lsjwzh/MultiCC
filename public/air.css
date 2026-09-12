@@ -717,20 +717,34 @@ body.console-open #console-panel { transform: none; visibility: visible; }
   #sidebar { position: fixed; inset: 0 auto 0 0; width: min(286px, calc(100% - 34px)); transform: translateX(-105%); box-shadow: 14px 0 70px #263f5d30; }
   body.nav-open #sidebar { transform: translateX(0); }
   body.nav-open #nav-scrim { display: block !important; }
-  #mobile-nav { display: block; min-width: 38px; padding: 6px; }
+  #mobile-nav { display: block; min-width: 34px; min-height: 32px; padding: 4px 6px; font-size: 17px; line-height: 1; }
   /* 手机上这一条是「标题区」不是导航：原来是面包屑、标题、状态、按钮四行叠着
      142px，等于先花掉屏幕的六分之一才看见对话。面包屑收进侧栏抽屉 ——
      那儿的工作目录卡片本来就回答「在哪个目录」，页头只留标题 + 状态 + 按钮。 */
   #task-breadcrumb { display: none; }
-  #task-header { align-items: center; flex-wrap: wrap; gap: 6px; padding: 8px 10px; position: relative; }
-  .breadcrumb { padding-top: 0; padding-right: 40px; }
-  #task-title { font-size: 19px; }
-  #task-state { min-height: 20px; margin-top: 2px; }
+  #task-header { min-height: 0; align-items: center; flex-wrap: wrap; gap: 5px 6px; padding: 6px 10px; position: relative; }
+  /* 状态是「现在怎么样」，不是页头的第二行内容：让它跟在标题后面读，省掉一整行。
+     挤不下时（窄屏，或标题本身比一整行还长）它自己换行回到第二行 —— 宁可多这一行，
+     也要把状态整条留全，而不是压成省略号。 */
+  .breadcrumb { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; padding-top: 0; padding-right: 0; }
+  #task-title { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 19px; }
+  #task-state { flex: 0 0 auto; min-height: 0; margin-top: 0; }
+  /* 「任务 进行中」这一段在手机上让位：「本轮 执行中」说了在不在跑（圈也在），
+     「归属待核验」说了要不要管；任务生命周期在任务看板和详情面板里都是完整的一行。 */
+  #task-state .ts-life { display: none; }
+  /* ↻ 本来钉在右上角，于是标题那一行整条得让出 40px —— 那正是状态跟标题挤不下的
+     原因。它本来就是个工具，回到工具那一行去。 */
+  #refresh { position: static; }
+  /* 例外是设置类那几页：它们的工具行是自己的动作按钮铺的（CLI 那页四个），↻ 挤
+     进去会把按钮压瘦、中文多折几行，反而比原来更高。那几页照旧让它钉在右上角。 */
+  #task-header:has(#admin-actions:not([hidden]):not(:empty)) #refresh { position: absolute; top: 6px; right: 10px; }
+  #task-header:has(#admin-actions:not([hidden]):not(:empty)) .breadcrumb { padding-right: 40px; }
+  /* 详情就是点状态那一条（两处都调 toggleDetails），手机上留一个入口。 */
+  #details-toggle { display: none; }
   .task-tools { width: 100%; min-width: 0; gap: 6px; padding-left: 45px; overflow-x: auto; scrollbar-width: none; }
   .task-tools::-webkit-scrollbar { display: none; }
-  .task-tools button { flex: 0 0 auto; min-height: 36px; padding: 6px 9px; }
+  .task-tools button { flex: 0 0 auto; min-height: 32px; padding: 4px 9px; }
   .task-tools [data-chat-layout] { display: none; } /* Available in Chat's More menu. */
-  #refresh { position: absolute; top: 8px; right: 10px; }
   #notice { padding-inline: 12px; }
   #delivery-card { padding: 14px; }
   #delivery-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
