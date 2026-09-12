@@ -491,6 +491,16 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='CLI 与 Provider' && document.querySelectorAll('.air-provider-card').length===3`));
     assert.equal(await page.evaluate(`document.documentElement.scrollWidth<=innerWidth`), true);
     assert.equal(await page.evaluate(`getComputedStyle(document.getElementById('air-provider-cards')).gridTemplateColumns.split(' ').length`), 1);
+    // 设置类那几页的动作原来铺成页头第二行（↻ 还得靠两条 :has 例外钉在右上角），
+    // 现在它们跟别的工具一样住在「⋯」里 —— 页头仍然只有那一行。
+    await page.evaluate(`document.getElementById('task-options').click()`);
+    const settingsTools = await page.evaluate(`(()=>{const t=document.getElementById('task-tools');
+      return {h:Math.round(document.getElementById('task-header').getBoundingClientRect().height),
+        rows:[...t.querySelectorAll('#admin-actions button')].map(b=>b.textContent),
+        widths:[...new Set([...t.querySelectorAll('button')].filter(b=>!b.hidden).map(b=>Math.round(b.getBoundingClientRect().width)))]}})()`);
+    assert.deepEqual(settingsTools.rows, ['返回设置中心', '高级账号与借道', '↻ 刷新', '＋ 新增 Provider'], JSON.stringify(settingsTools));
+    assert.equal(settingsTools.widths.length, 1, '设置页的工具也铺成一列：' + JSON.stringify(settingsTools));
+    assert.ok(settingsTools.h <= 64, JSON.stringify(settingsTools));
     await page.evaluate(`document.querySelector('#admin-actions .primary').click()`);
     assert.ok(await page.waitFor(`document.getElementById('air-provider-dialog').open===true`));
     assert.equal(await page.evaluate(`document.getElementById('air-provider-dialog').scrollWidth<=document.getElementById('air-provider-dialog').clientWidth`), true);
