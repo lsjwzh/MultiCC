@@ -164,25 +164,6 @@
       #clear-ctx-menu { max-width: calc(100vw - 32px); }
     }
 
-    /* Session identity (directory / alias) shown in the header */
-    #session-title {
-      font-family: 'Cascadia Code', 'Fira Code', monospace;
-      font-size: 13px;
-      font-weight: 600;
-      color: var(--chat-blue, #6aa3ff);
-      margin-left: 2px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    /* Desktop-only cap. It lives here rather than in the base rule because this
-       block sits *after* the phone breakpoint above — at equal specificity the
-       later rule wins, so a `max-width` written here would silently override the
-       breakpoint's `max-width:none` and truncate the title on phones. */
-    @media (min-width: 761px) {
-      #session-title { max-width: 38vw; }
-    }
-
     /* ── CWD bar ── */
     #cwd-bar {
       flex-shrink: 0;
@@ -2466,7 +2447,7 @@
   <!-- Loaded after the inline styles so the shared tone tokens win same-specificity ties. -->
   <link rel="stylesheet" href="status-badge.css" />
   <link rel="stylesheet" href="chat-dispatch-activity.css" />
-  <link rel="stylesheet" href="chat-task-mode.css" /><link rel="stylesheet" href="composer.css" /><link rel="stylesheet" href="chat-air.css" />
+  <link rel="stylesheet" href="chat-task-mode.css" /><link rel="stylesheet" href="composer.css" /><link rel="stylesheet" href="chat-air.css" /><link rel="stylesheet" href="chat-header-shapes.css" />
 </head>
 <body><script>if(new URLSearchParams(location.search).get('air')==='1'){document.body.classList.add('air-chat');document.querySelector('meta[name="theme-color"]')?.setAttribute('content','#f7fbff')}</script>
   <!-- Image preview lightbox -->
@@ -2496,34 +2477,38 @@
     <div id="danmaku-body"></div>
   </div>
 
-  <!-- Header -->
+  <!-- Header. Every action button carries data-hdr-icon: the header row keeps only
+       the glyph (the name hangs off title), and the More menu draws the glyph in
+       its own column next to the name. See chat-header-shapes.css — the icon has to
+       be an attribute rather than a node because these labels are rewritten by
+       script at runtime. -->
   <div id="header">
     <span class="logo">Multi<span>CC</span></span>
     <span class="badge">Chat</span>
     <span id="status">Connecting...</span>
-    <span id="session-title" data-i18n-title="sessionIdentity" title="会话身份：工作区 / 别名"></span>
-    <button id="reconnect-btn" class="hdr-btn session-only" data-i18n-title="forceReconnect" title="强制重连（连接卡住时点这里；长按可刷新页面）">&#8635;</button>
+    <span id="session-title" data-hdr-icon="📁" data-i18n-title="sessionIdentity" title="会话身份：工作区 / 别名"></span>
+    <button id="reconnect-btn" class="hdr-btn session-only" data-hdr-icon="↻" data-i18n-title="forceReconnect" title="强制重连（连接卡住时点这里；长按可刷新页面）">&#8635;</button>
     <span class="hdr-spacer"></span>
-    <button class="hdr-btn lang-toggle" id="lang-btn" onclick="toggleLang()" data-i18n-title="language" title="Language">中/EN</button>
-    <button id="notify-btn" class="hdr-btn" data-i18n-title="taskNotificationToggle" title="任务通知开关">&#128276;</button>
-    <button id="s2s-btn" class="hdr-btn session-only" data-i18n-title="voiceConversationToggle" title="实时语音通话（在本会话上下文里说话）">&#128222;</button>
-    <button class="hdr-btn" id="chat-layout-btn" data-chat-layout title="调整聊天宽度">聊天宽度</button><button id="dbg-btn" class="hdr-btn" data-i18n-title="debugPanel" title="Debug 面板">&#128027;</button>
-    <button class="hdr-btn session-only" id="cli-btn" data-i18n-title="switchCli" title="切换此逻辑会话使用的 CLI">CLI</button>
-    <button class="hdr-btn session-only" id="model-btn" data-i18n-title="switchAiConfig" title="切换该会话使用的 Provider / 模型 / 努力程度（下一轮对话生效）" style="display:none"></button>
-    <button class="hdr-btn session-only" id="effort-btn" data-i18n-title="switchEffort" title="切换该会话的思考努力程度（下一轮对话生效）" style="display:none"></button>
-    <button class="hdr-btn session-only" id="provider-btn" data-i18n-title="switchProvider" title="切换该会话使用的 Provider（下一轮对话生效）" style="display:none"></button>
-    <button class="hdr-btn session-only" id="role-btn" data-i18n-title="editRolePrompt" title="设置该会话的角色提示词（下一轮对话生效）" data-i18n="role">🎭 角色</button>
-    <button class="hdr-btn session-only" id="memory-btn" data-i18n-title="openMemoryLibrary" title="会话记忆库" data-i18n="memory">🧠 记忆</button>
-    <button class="hdr-btn session-only" id="auto-commit-btn" data-i18n-title="autoCommitTitle" title="每轮执行成功后自动提交代码并合并回基分支" data-i18n="autoCommit">🚀 自动提交</button>
-    <button class="hdr-btn session-only" id="share-btn" data-i18n-title="shareSessionHint" title="把此会话分享到外部" data-i18n="share">🔗 分享</button>
-    <button class="hdr-btn session-only" id="restart-spawn-btn" data-i18n-title="restartSpawnHint" title="进程级重启：杀掉并重建该会话的 CLI 进程，保留对话上下文（↻ 重连无效时用）" data-i18n="restartSpawn">♻️ 重启进程</button>
+    <button class="hdr-btn lang-toggle" id="lang-btn" onclick="toggleLang()" data-hdr-icon="🌐" data-i18n-title="languageToggle" title="切换语言：中文 / English">中/EN</button>
+    <button id="notify-btn" class="hdr-btn" data-hdr-icon="🔔" data-i18n-title="taskNotificationToggle" data-i18n="notifications" title="任务通知开关">通知</button>
+    <button id="s2s-btn" class="hdr-btn session-only" data-hdr-icon="📞" data-i18n-title="voiceConversationToggle" data-i18n="voiceCall" title="实时语音通话（在本会话上下文里说话）">语音</button>
+    <button class="hdr-btn" id="chat-layout-btn" data-hdr-icon="↔" data-chat-layout title="调整聊天宽度">聊天宽度</button><button id="dbg-btn" class="hdr-btn" data-hdr-icon="🐛" data-i18n-title="debugPanel" data-i18n="debugPanel" title="Debug 面板">调试面板</button>
+    <button class="hdr-btn session-only" id="cli-btn" data-hdr-icon="⌨" data-i18n-title="switchCli" title="切换此逻辑会话使用的 CLI">CLI</button>
+    <button class="hdr-btn session-only" id="model-btn" data-hdr-icon="🧩" data-i18n-title="switchAiConfig" title="切换该会话使用的 Provider / 模型 / 努力程度（下一轮对话生效）" style="display:none"></button>
+    <button class="hdr-btn session-only" id="effort-btn" data-hdr-icon="⚡" data-i18n-title="switchEffort" title="切换该会话的思考努力程度（下一轮对话生效）" style="display:none"></button>
+    <button class="hdr-btn session-only" id="provider-btn" data-hdr-icon="🔌" data-i18n-title="switchProvider" title="切换该会话使用的 Provider（下一轮对话生效）" style="display:none"></button>
+    <button class="hdr-btn session-only" id="role-btn" data-hdr-icon="🎭" data-i18n-title="editRolePrompt" title="设置该会话的角色提示词（下一轮对话生效）" data-i18n="role">角色</button>
+    <button class="hdr-btn session-only" id="memory-btn" data-hdr-icon="🧠" data-i18n-title="openMemoryLibrary" title="会话记忆库" data-i18n="memory">记忆</button>
+    <button class="hdr-btn session-only" id="auto-commit-btn" data-hdr-icon="🚀" data-i18n-title="autoCommitTitle" title="每轮执行成功后自动提交代码并合并回基分支" data-i18n="autoCommit">自动提交</button>
+    <button class="hdr-btn session-only" id="share-btn" data-hdr-icon="🔗" data-i18n-title="shareSessionHint" title="把此会话分享到外部" data-i18n="share">分享</button>
+    <button class="hdr-btn session-only" id="restart-spawn-btn" data-hdr-icon="♻️" data-i18n-title="restartSpawnHint" title="进程级重启：杀掉并重建该会话的 CLI 进程，保留对话上下文（↻ 重连无效时用）" data-i18n="restartSpawn">重启进程</button>
     <span id="header-more-wrap">
-      <button class="hdr-btn" id="header-more-btn" data-i18n="more">更多</button>
+      <button class="hdr-btn" id="header-more-btn" data-hdr-icon="⋯" data-i18n-title="moreActions" title="更多操作" data-i18n="more">更多</button>
       <span id="header-more-menu"></span>
     </span>
-    <button class="hdr-btn session-only" id="merge-btn" data-i18n-title="mergeWorktreeTitle" title="把此会话 worktree 合并回基分支" data-i18n="merge">合并</button>
+    <button class="hdr-btn session-only" id="merge-btn" data-hdr-icon="⎇" data-i18n-title="mergeWorktreeTitle" title="把此会话 worktree 合并回基分支" data-i18n="merge">合并</button>
     <span class="hdr-menu-wrap session-only" id="clear-ctx-wrap">
-      <button class="hdr-btn" id="clear-ctx-btn" data-i18n-title="clearChatHistory" title="清理显示" data-i18n="clearChatHistory">清理显示</button>
+      <button class="hdr-btn" id="clear-ctx-btn" data-hdr-icon="🧹" data-i18n-title="clearChatViewHint" title="清理对话显示" data-i18n="clearChatHistory">清理显示</button>
       <span class="hdr-drop-menu" id="clear-ctx-menu" style="display:none">
         <button data-action="clear-all" data-i18n="clearAllChatHistory">清空消息显示</button>
         <label style="display:flex;align-items:center;gap:4px;padding:6px 8px;font-size:12px;color:var(--faint);white-space:nowrap">
@@ -2535,7 +2520,7 @@
         <button data-action="context-level" style="width:100%" data-i18n="contextLevel">查看上下文水位</button>
       </span>
     </span>
-    <button class="hdr-btn session-only" id="memo-btn" data-i18n-title="projectMemo" title="项目备忘" onclick="openMemo()">📝</button>
+    <button class="hdr-btn session-only" id="memo-btn" data-hdr-icon="📝" data-i18n-title="projectMemo" data-i18n="projectMemo" title="项目备忘" onclick="openMemo()">项目备忘</button>
   </div>
 
   <!-- CWD bar -->

@@ -1522,7 +1522,9 @@ function updateModelBtn() {
   const agent = (_sessionCli === 'claude' || _sessionCli === 'opencode' || _sessionCli === 'qoder' || _sessionCli === 'codebuddy') && _sessionAgent
     ? `Agent ${_sessionAgent}`
     : '';
-  modelBtn.textContent = `🧠 ${[provider, model, effort, agent].filter(Boolean).join(' | ')}`;
+  // 前面那个 🧠 现在由 data-hdr-icon 画（chat-header-shapes.css 的「页头动作的两种形状」）：
+  // 浮层里图标和名字各占一列，名字里再带一遍就成了两个图标。
+  modelBtn.textContent = [provider, model, effort, agent].filter(Boolean).join(' | ');
   modelBtn.style.display = '';
 }
 
@@ -1772,6 +1774,9 @@ function updateRoleBtn() {
   if (!roleBtn) return;
   const set = !!(_sessionRole && _sessionRole.trim());
   roleBtn.textContent = set ? tt('roleSet') : tt('role');
+  // 页头展开时这个按钮只剩图标，名字里的 ✓ 就看不见了；状态另挂一份给 CSS 画角标
+  // （chat-header-shapes.css 的「页头动作的两种形状」）。
+  roleBtn.dataset.state = set ? 'set' : 'off';
   roleBtn.title = set
     ? tt('rolePromptSet')
     : tt('editRolePrompt');
@@ -1950,6 +1955,8 @@ function updateMemoryBtn() {
   if (!memoryBtn) return;
   const set = !!(_sessionMemory && _sessionMemory.trim());
   memoryBtn.textContent = set ? tt('memorySet') : tt('memory');
+  // 同 updateRoleBtn：展开成图标后 ✓ 得由 data-state 画出来。
+  memoryBtn.dataset.state = set ? 'set' : 'off';
   memoryBtn.title = '会话记忆库：私有（仅本会话）＋公共（项目共享）。原生 CLI 会话启动时形成快照，写入会立即持久化。点击查看/编辑';
 }
 
