@@ -105,7 +105,11 @@
         <h1 id="task-title">工作目录</h1>
         <button id="task-state" type="button" aria-controls="task-details" aria-expanded="false" disabled></button>
       </div>
-      <div class="task-tools">
+      <!-- 手机上工具收进这一层浮层（air.css 的 760px 块），标题那一行就只剩
+           ☰ / 标题 / 状态 / ⋯，页头整条少一行 —— 手机上一行消息值 23px，这一行
+           是整屏里最贵的几行之一。桌面上它不出现，工具本来就摆得下。 -->
+      <button id="task-options" type="button" aria-label="更多操作" aria-expanded="false" aria-controls="task-tools">⋯</button>
+      <div class="task-tools" id="task-tools" role="group" aria-label="任务操作">
         <!-- Each view's own actions sit next to the title they belong to, so the
              page paints exactly one heading band and the body carries content
              only. air.js toggles these by mode; the admin module fills

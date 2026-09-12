@@ -293,6 +293,8 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 #details-toggle, #refresh { font-size: 12px; }
 #refresh { min-width: 38px; padding: 7px; }
 #mobile-nav { display: none; }
+/* 「⋯」只在手机上出现：桌面一行摆得下全部工具，多一层浮层只是多一次点击。 */
+#task-options { display: none; }
 
 #notice { flex-shrink: 0; min-height: 0; padding: 0 28px; color: var(--warning); background: #fff4e9; font-size: 12px; line-height: 2.2; }
 #notice:empty { display: none; }
@@ -732,18 +734,30 @@ body.console-open #console-panel { transform: none; visibility: visible; }
   /* 「任务 进行中」这一段在手机上让位：「本轮 执行中」说了在不在跑（圈也在），
      「归属待核验」说了要不要管；任务生命周期在任务看板和详情面板里都是完整的一行。 */
   #task-state .ts-life { display: none; }
-  /* ↻ 本来钉在右上角，于是标题那一行整条得让出 40px —— 那正是状态跟标题挤不下的
-     原因。它本来就是个工具，回到工具那一行去。 */
-  #refresh { position: static; }
-  /* 例外是设置类那几页：它们的工具行是自己的动作按钮铺的（CLI 那页四个），↻ 挤
-     进去会把按钮压瘦、中文多折几行，反而比原来更高。那几页照旧让它钉在右上角。 */
-  #task-header:has(#admin-actions:not([hidden]):not(:empty)) #refresh { position: absolute; top: 6px; right: 10px; }
-  #task-header:has(#admin-actions:not([hidden]):not(:empty)) .breadcrumb { padding-right: 40px; }
   /* 详情就是点状态那一条（两处都调 toggleDetails），手机上留一个入口。 */
   #details-toggle { display: none; }
-  .task-tools { width: 100%; min-width: 0; gap: 6px; padding-left: 45px; overflow-x: auto; scrollbar-width: none; }
-  .task-tools::-webkit-scrollbar { display: none; }
-  .task-tools button { flex: 0 0 auto; min-height: 32px; padding: 4px 9px; }
+  /* 工具不再占页头的第二行：它们收进「⋯」打开的一层浮层，按钮一行也没少。那一行
+     原来值 32px 加一行间距，现在整条还给了对话 —— 手机上一行消息值 23px。 */
+  #task-options { display: block; flex: none; min-width: 34px; min-height: 32px; padding: 4px 6px; font-size: 17px; line-height: 1; }
+  #task-options[aria-expanded="true"] { color: #176bc0; border-color: #cfe3f8; background: var(--blue-soft); }
+  /* 浮层挂在页头下面，不占位、不改布局：开着的时候页头还是那一行高。样子跟对话帧
+     里的「更多」菜单是同一套（chat-air.css #header-more-menu）。 */
+  #task-header .task-tools { position: absolute; z-index: 12; top: 100%; right: 10px; display: none;
+    flex-direction: column; align-items: stretch; gap: 5px; width: min(272px, calc(100vw - 20px));
+    max-height: min(66vh, 460px); overflow: auto; padding: 7px; border: 1px solid #d5e2ef;
+    border-radius: 14px; background: rgba(251, 253, 255, .99); box-shadow: 0 18px 50px #29486622; }
+  #task-header.options-open .task-tools { display: flex; }
+  /* 一列全宽的按钮：窄屏上一句话的按钮比一排图标好认，也不用横向滑动去找。 */
+  #task-header .task-tools > button, #task-header .task-tools #admin-actions > button {
+    flex: 0 0 auto; width: 100%; min-width: 0; min-height: 34px; justify-content: flex-start;
+    padding: 6px 10px; border-radius: 9px; font-size: 13.5px; text-align: left; }
+  #task-header .task-tools #admin-actions { flex-direction: column; gap: 5px; }
+  /* 只画了图标的那几个在浮层里带上自己的名字：手机上悬停不出 title，一个 ⎇ 什么都
+     没说。自动提交顺带把「开/关」写出来 —— 那是它唯一的区别。 */
+  #task-header .task-tools #quick-merge::after, #task-header .task-tools #quick-auto-commit::after,
+  #task-header .task-tools #quick-share::after, #task-header .task-tools #refresh::after {
+    content: attr(aria-label); margin-left: 8px; font-size: 13.5px; }
+  #task-header .task-tools #quick-auto-commit[aria-pressed="true"]::after { content: "自动提交 · 已开"; }
   .task-tools [data-chat-layout] { display: none; } /* Available in Chat's More menu. */
   #notice { padding-inline: 12px; }
   #delivery-card { padding: 14px; }
