@@ -58,14 +58,6 @@ extension WorkspaceDestinationPresentation on WorkspaceDestination {
   };
 }
 
-abstract final class _NavColors {
-  static const bg = Color(0xFFf4f8fd);
-  static const line = Color(0x24FFFFFF);
-  static const text = Color(0xFF233249);
-  static const muted = Color(0xFF8a9aab);
-  static const faint = Color(0xFF6f8096);
-}
-
 /// Navigation drawer owned by the App workspace/home screen.
 ///
 /// Like the web sidebar, only the destination list scrolls; the brand and
@@ -141,15 +133,18 @@ class WorkspaceNavigationDrawer extends StatelessWidget {
     return Drawer(
       width: width,
       elevation: 0,
-      backgroundColor: _NavColors.bg,
-      shape: const Border(right: BorderSide(color: _NavColors.line)),
+      backgroundColor: AppColors.bg,
+      shape: const Border(right: BorderSide(color: AppColors.line)),
       child: DecoratedBox(
+        // The Air sidebar (public/air.css `#sidebar`) is a soft blue-white wash
+        // rather than a flat fill: linear-gradient(145deg, #f8fbff, #e8f1fb).
+        // The drawer used to paint a 5% white glow here, which vanished once
+        // the surface went light — same shape, the right end of the ramp.
         decoration: const BoxDecoration(
           gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            stops: [0, 0.3],
-            colors: [Color(0x05FFFFFF), Colors.transparent],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [AppColors.bgSoft, Color(0xFFe8f1fb)],
           ),
         ),
         child: SafeArea(
@@ -271,7 +266,7 @@ class _Brand extends StatelessWidget {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
-                          color: _NavColors.text,
+                          color: AppColors.text,
                           fontSize: 15,
                           fontWeight: FontWeight.w700,
                           letterSpacing: 0.3,
@@ -279,7 +274,7 @@ class _Brand extends StatelessWidget {
                       ),
                       Text(
                         'dashboard',
-                        style: TextStyle(color: _NavColors.faint, fontSize: 10),
+                        style: TextStyle(color: AppColors.faint, fontSize: 10),
                       ),
                     ],
                   ),
@@ -308,7 +303,7 @@ class _GroupLabel extends StatelessWidget {
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
         style: const TextStyle(
-          color: _NavColors.faint,
+          color: AppColors.faint,
           fontSize: 10,
           fontWeight: FontWeight.w600,
           letterSpacing: 1.4,
@@ -342,7 +337,7 @@ class _ExperienceModeToggle extends StatelessWidget {
               width: 17,
               child: Icon(
                 Icons.tune_rounded,
-                color: _NavColors.muted,
+                color: AppColors.muted,
                 size: 18,
               ),
             ),
@@ -355,7 +350,7 @@ class _ExperienceModeToggle extends StatelessWidget {
                   Text(
                     t('developerOptions'),
                     style: const TextStyle(
-                      color: _NavColors.muted,
+                      color: AppColors.muted,
                       fontSize: 13,
                       fontWeight: FontWeight.w500,
                     ),
@@ -365,7 +360,7 @@ class _ExperienceModeToggle extends StatelessWidget {
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
-                      color: _NavColors.faint,
+                      color: AppColors.faint,
                       fontSize: 9.5,
                       height: 1.2,
                     ),
@@ -401,7 +396,7 @@ class _DestinationTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final foreground = selected ? _NavColors.text : _NavColors.muted;
+    final foreground = selected ? AppColors.text : AppColors.muted;
     return Semantics(
       key: ValueKey('workspace-nav-${destination.name}'),
       button: true,
@@ -452,9 +447,12 @@ class _DestinationTile extends StatelessWidget {
                             vertical: 2,
                           ),
                           decoration: BoxDecoration(
+                            // A 7% white pill is invisible on the light drawer;
+                            // unselected counts take the hairline neutral and
+                            // selected ones keep the accent tint.
                             color: selected
                                 ? const Color(0x381678e8)
-                                : const Color(0x12FFFFFF),
+                                : AppColors.line,
                             borderRadius: BorderRadius.circular(20),
                           ),
                           child: Text(
@@ -462,7 +460,7 @@ class _DestinationTile extends StatelessWidget {
                             style: TextStyle(
                               color: selected
                                   ? AppColors.accent
-                                  : _NavColors.muted,
+                                  : AppColors.muted,
                               fontSize: 10,
                               fontFamily: 'monospace',
                             ),
@@ -509,9 +507,10 @@ class _ServerFooter extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return DecoratedBox(
+      // Transparent so the drawer's wash runs behind the footer instead of
+      // stopping at a lighter flat band; the hairline keeps the seam.
       decoration: const BoxDecoration(
-        color: _NavColors.bg,
-        border: Border(top: BorderSide(color: _NavColors.line)),
+        border: Border(top: BorderSide(color: AppColors.line)),
       ),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
@@ -534,7 +533,7 @@ class _ServerFooter extends StatelessWidget {
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
-                  color: _NavColors.text,
+                  color: AppColors.text,
                   fontSize: 11,
                   fontFamily: 'monospace',
                 ),
