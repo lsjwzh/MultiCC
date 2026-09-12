@@ -172,6 +172,30 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     await page.evaluate(`${frame}.getElementById('messages').style.cssText='position:relative;z-index:99999';${frame}.getElementById('header-more-btn').click()`);
     assert.ok(await page.waitFor(`${frame}.getElementById('header-more-menu').matches(':popover-open')`));
     assert.equal(await page.evaluate(`(()=>{const d=${frame},m=d.getElementById('header-more-menu'),r=m.getBoundingClientRect();return m.contains(d.elementFromPoint(r.left+20,r.top+30))})()`), true, 'Air menu receives clicks above tool messages');
+    // 浮层里每一行都是「图标 + 名字」两列，名字落在同一条竖线上（chat.html 的
+    // 「页头动作的两种形状」）。Air 的任务页把这一整套动作挪进了这个浮层，所以
+    // 它是这两列唯一的落点 —— 这里量的是它们真的排齐了，而不是「差不多」。
+    const menuShape = await page.evaluate(`(()=>{const d=${frame},m=d.getElementById('header-more-menu'),w=d.defaultView;
+      const ink=el=>{const r=d.createRange();r.selectNodeContents(el);return Math.round(r.getBoundingClientRect().left)};
+      return [...m.children].filter(el=>el.dataset.hdrIcon).map(el=>({
+        id:el.id,display:w.getComputedStyle(el).display,icon:w.getComputedStyle(el,'::before').content.replace(/"/g,''),
+        inset:ink(el)-Math.round(el.getBoundingClientRect().left),text:el.textContent.trim()}));})()`);
+    const shown = menuShape.filter(row => row.display !== 'none');
+    assert.ok(shown.length >= 8, `Air 的浮层该留着一整套动作：${shown.length}`);
+    for (const row of shown) {
+      assert.equal(row.display, 'grid', `${row.id} 该是「图标 + 名字」两列`);
+      assert.ok(row.icon && row.icon !== 'none', `${row.id} 该画出图标`);
+      assert.ok(row.text, `${row.id} 该留着名字`);
+      assert.ok(!row.text.startsWith(row.icon), `${row.id} 不能把图标印两遍：${row.text}`);
+      assert.ok(row.inset >= 30 && row.inset <= 40, `${row.id} 的名字该落在第二列：${row.inset}`);
+    }
+    const insets = shown.map(row => row.inset);
+    assert.ok(Math.max(...insets) - Math.min(...insets) <= 2, `名字该在同一条竖线上：${JSON.stringify(menuShape)}`);
+    // 身份还没解析出来时那一行是空的（这个对话框走 ?task=，没有 ?session=），
+    // 留着就只是一行孤零零的文件夹图标。
+    const identity = menuShape.find(row => row.id === 'session-title');
+    assert.ok(identity, '身份行在浮层里：Air 把页头那一行也收进来了');
+    assert.equal(identity.display === 'none', !identity.text, `空的身份行该收起来：${JSON.stringify(identity)}`);
     await page.evaluate(`${frame}.getElementById('header-more-btn').click();${frame}.getElementById('messages').style.cssText=''`);
     assert.equal(await page.evaluate(`${frame}.getElementById('session-queue-count').textContent`), '1');
     assert.equal(await page.evaluate(`${frame}.getElementById('aux-classify-bar').classList.contains('show')`), true);

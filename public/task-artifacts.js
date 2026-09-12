@@ -13,6 +13,10 @@
     if (toggle) return;
     toggle = node('button', t('Title'), 'task-artifacts-toggle'); toggle.type = 'button';
     toggle.id = 'task-artifacts-toggle'; toggle.setAttribute('aria-controls', 'task-artifacts-panel');
+    // 「更多」浮层里每一行都是「图标 + 名字」两列，这一行也照办（见
+    // chat-header-shapes.css 的「页头动作的两种形状」）。图标走属性而不是节点：这行文字后面会被刷新成
+    // 「产物 2」这种带计数的样子，节点会被 textContent 冲掉。
+    toggle.dataset.hdrIcon = '📦';
     toggle.onclick = () => setOpen(!opened);
     const header = document.getElementById('header');
     const airChatMenu = document.body.classList.contains('air-chat') ? document.getElementById('header-more-menu') : null;
