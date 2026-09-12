@@ -227,7 +227,6 @@ test('provider route extraction preserves the mounted surface and response DTOs'
       authToken: ' test-token ',
       model: ' gpt-test ',
       models: ['gpt-test'],
-      useChatResponsesProxy: true,
       aliasMap: { fast: 'gpt-test' },
     },
   });
@@ -244,7 +243,6 @@ test('provider route extraction preserves the mounted surface and response DTOs'
     authToken: 'test-token',
     model: 'gpt-test',
     models: ['gpt-test'],
-    useChatResponsesProxy: true,
     settingsConfig: undefined,
     aliasMap: { fast: 'gpt-test' },
   });

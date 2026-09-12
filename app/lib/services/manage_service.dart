@@ -242,7 +242,6 @@ class ManageService {
     String authToken = '',
     String model = '',
     List<String> models = const [],
-    bool useChatResponsesProxy = false,
     Map<String, dynamic>? aliasMap,
   }) async {
     final res = await http
@@ -256,7 +255,6 @@ class ManageService {
             'authToken': authToken,
             'model': model,
             'models': models,
-            'useChatResponsesProxy': useChatResponsesProxy,
             if (aliasMap != null) 'aliasMap': aliasMap,
           }),
         )
@@ -272,7 +270,6 @@ class ManageService {
     String? authToken,
     String? model,
     List<String>? models,
-    bool? useChatResponsesProxy,
     Map<String, dynamic>? aliasMap,
   }) async {
     final body = <String, dynamic>{};
@@ -283,9 +280,6 @@ class ManageService {
     }
     if (model != null) body['model'] = model;
     if (models != null) body['models'] = models;
-    if (useChatResponsesProxy != null) {
-      body['useChatResponsesProxy'] = useChatResponsesProxy;
-    }
     if (aliasMap != null) body['aliasMap'] = aliasMap;
     final res = await http
         .patch(

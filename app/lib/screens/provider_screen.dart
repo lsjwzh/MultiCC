@@ -429,7 +429,6 @@ class _ProviderCardState extends State<_ProviderCard> {
         .toList();
     final tokenMask = p['tokenMask'] as String? ?? '';
     final source = p['source'] as String? ?? 'local';
-    final proxied = p['useChatResponsesProxy'] == true;
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
@@ -458,12 +457,11 @@ class _ProviderCardState extends State<_ProviderCard> {
             style: const TextStyle(color: AppColors.muted, fontSize: 12.5),
             overflow: TextOverflow.ellipsis,
           ),
-          if (model.isNotEmpty || models.length > 1 || tokenMask.isNotEmpty || proxied) ...[
+
             const SizedBox(height: 4),
             Text(
               [
                 if (models.length > 1) '${models.length} models' else if (model.isNotEmpty) model,
-                if (proxied) 'Codex proxy',
                 if (tokenMask.isNotEmpty) tokenMask,
               ].join(' · '),
               style: const TextStyle(color: AppColors.faint, fontSize: 11.5, fontFamily: 'monospace'),
@@ -521,7 +519,6 @@ class _ProviderEditorState extends State<_ProviderEditor> {
   late final TextEditingController _model;
   late final TextEditingController _models;
   late String _appType;
-  late bool _useChatResponsesProxy;
   // 模型映射（分级覆盖，仅 claude）：tier → 模型 id / 显示名 输入框。
   late final Map<String, TextEditingController> _aliasModel;
   late final Map<String, TextEditingController> _aliasName;
@@ -545,7 +542,6 @@ class _ProviderEditorState extends State<_ProviderEditor> {
         .where((e) => e.trim().isNotEmpty)
         .toList();
     _models = TextEditingController(text: modelOptions.join('\n'));
-    _useChatResponsesProxy = p?['useChatResponsesProxy'] == true;
     final aliasMap = (p?['aliasMap'] as Map?)?.cast<String, dynamic>() ?? {};
     _aliasModel = {
       for (final t in _aliasTiers)
@@ -609,7 +605,6 @@ class _ProviderEditorState extends State<_ProviderEditor> {
           authToken: _token.text.trim(),
           model: _model.text.trim(),
           models: _modelList(),
-          useChatResponsesProxy: _useChatResponsesProxy,
           aliasMap: _appType == 'claude' ? _aliasMapPayload() : null,
         );
       } else {
@@ -620,7 +615,6 @@ class _ProviderEditorState extends State<_ProviderEditor> {
           authToken: _token.text.trim(),
           model: _model.text.trim(),
           models: _modelList(),
-          useChatResponsesProxy: _useChatResponsesProxy,
           aliasMap: _appType == 'claude' ? _aliasMapPayload() : null,
         );
       }
@@ -701,20 +695,6 @@ class _ProviderEditorState extends State<_ProviderEditor> {
                 const SizedBox(height: 8),
               ],
             ],
-            if (_appType == 'codex') ...[
-              const SizedBox(height: 10),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                dense: true,
-                value: _useChatResponsesProxy,
-                activeColor: AppColors.accent,
-                title: const Text('Codex 兼容代理',
-                    style: TextStyle(color: AppColors.text, fontSize: 13.5)),
-                subtitle: const Text('勾选后运行时使用本地代理；列表中仍显示你填写的 Base URL。',
-                    style: TextStyle(color: AppColors.faint, fontSize: 12)),
-                onChanged: (v) => setState(() => _useChatResponsesProxy = v),
-              ),
-            ],
             if (_err != null) ...[
               const SizedBox(height: 10),
               Text(_err!, style: const TextStyle(color: AppColors.danger, fontSize: 12.5)),
@@ -761,7 +741,6 @@ class _ProviderEditorState extends State<_ProviderEditor> {
       child: GestureDetector(
         onTap: () => setState(() {
           _appType = value;
-          if (value != 'codex') _useChatResponsesProxy = false;
         }),
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 11),

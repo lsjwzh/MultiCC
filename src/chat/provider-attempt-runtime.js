@@ -67,7 +67,6 @@ function createProviderRevision(input = {}) {
     apiFormat: clean(summary.apiFormat) || null,
     wireApi: clean(summary.wireApi) || null,
     aliasMap,
-    useChatResponsesProxy: summary.useChatResponsesProxy === true,
     isOfficial: summary.isOfficial === true,
   };
   return `prv_${crypto.createHash('sha256').update(JSON.stringify(safeRoute)).digest('hex').slice(0, 24)}`;

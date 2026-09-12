@@ -663,7 +663,7 @@
         const opt = document.createElement('option');
         opt.value = p.id;
         const isDefault = p.id === defaultProviderId;
-        const protocol = p.apiFormat === 'openai_chat' ? ' [Chat→Responses]' : (p.apiFormat === 'openai_responses' ? ' [Responses]' : ' [Anthropic]');
+        const protocol = p.apiFormat === 'openai_responses' ? ' [Responses]' : ' [Anthropic]';
         opt.textContent = (isDefault ? '默认 · ' : '') + p.name + protocol + (p.isOfficial ? ' · 订阅' : '') + (p.model ? ' · ' + p.model : '');
         provSelect.appendChild(opt);
       });

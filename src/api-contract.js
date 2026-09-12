@@ -87,9 +87,9 @@ function toProviderDto(source = {}) {
   const dto = {
     id: String(source.id || ''),
     appType: source.appType === 'codex' ? 'codex' : 'claude',
-    protocol: ['anthropic', 'openai_responses', 'openai_chat'].includes(source.protocol) ? source.protocol : 'anthropic',
-    apiFormat: ['anthropic', 'openai_responses', 'openai_chat'].includes(source.apiFormat) ? source.apiFormat : 'anthropic',
-    wireApi: ['messages', 'responses', 'chat-completions', 'chat_completions'].includes(source.wireApi) ? source.wireApi : null,
+    protocol: ['anthropic', 'openai_responses'].includes(source.protocol) ? source.protocol : 'anthropic',
+    apiFormat: ['anthropic', 'openai_responses'].includes(source.apiFormat) ? source.apiFormat : 'anthropic',
+    wireApi: ['messages', 'responses'].includes(source.wireApi) ? source.wireApi : null,
     name: String(source.name || '').slice(0, 160),
     source: source.source === 'ccswitch' ? 'ccswitch' : 'local',
     model: typeof source.model === 'string' && source.model ? source.model.slice(0, 160) : null,
@@ -97,9 +97,7 @@ function toProviderDto(source = {}) {
       ? [...new Set(source.modelOptions.filter(item => typeof item === 'string').map(item => item.slice(0, 160)))].slice(0, 100)
       : [],
     aliasOnly: !!source.aliasOnly,
-    useChatResponsesProxy: !!source.useChatResponsesProxy,
     compatibleClis: Array.isArray(source.compatibleClis) ? source.compatibleClis.filter(item => ['claude', 'codex', 'opencode'].includes(item)) : [],
-    requiresConversionFor: Array.isArray(source.requiresConversionFor) ? source.requiresConversionFor.filter(item => ['codex'].includes(item)) : [],
     hasCredentials: !!source.hasToken,
     isOfficial: !!source.isOfficial,
   };
