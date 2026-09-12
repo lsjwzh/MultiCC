@@ -790,7 +790,8 @@
     } else if (taskId) {
       $('task-breadcrumb').textContent = `目录库 › ${dir?.name || '工作目录'} › 任务`;
       $('task-title').textContent = selectedEntry?.task.title || '正在读取任务…';
-      $('task-state').textContent = selectedEntry ? taskStateText(selectedEntry) : '正在读取本轮、任务与资源状态…';
+      if (selectedEntry) renderStateSummary($('task-state'), taskStateSegments(selectedEntry));
+      else $('task-state').textContent = '正在读取本轮、任务与资源状态…';
     } else {
       $('task-breadcrumb').textContent = 'MultiCC Air › 工作目录';
       $('task-title').textContent = dir?.name || '先添加工作目录';
@@ -907,13 +908,28 @@
     }
   }
 
-  function taskStateText(value) {
+  // 页头那行状态在手机上是跟标题挤同一行的：「任务 进行中」这一段让位，留下
+  // 「本轮 …」和「归属待核验」。所以分段返回，由 CSS 决定窄屏藏哪一段；
+  // taskStateText 留给需要一整句的地方。
+  function taskStateSegments(value) {
     const unstartedPlan = value.task?.recordType === 'planned' && !value.messages?.length
       && !value.execution?.busy && !value.execution?.pending;
     const execution = unstartedPlan ? '计划待执行'
       : label(value.execution?.pending ? 'waiting' : value.execution?.status || (value.execution?.busy ? 'running' : 'idle'));
     const lifecycle = label(value.task?.status || value.status);
-    return [`本轮 ${execution}`, lifecycle && `任务 ${lifecycle}`].filter(Boolean).join(' · ');
+    return [execution && `本轮 ${execution}`, lifecycle && `任务 ${lifecycle}`].filter(Boolean);
+  }
+
+  function taskStateText(value) {
+    return taskStateSegments(value).join(' · ');
+  }
+
+  // 分隔符跟着段一起走（「 · 任务 进行中」），藏掉一段时不会留下一个孤零零的「·」，
+  // 而且整条的 textContent 仍然和 join(' · ') 一字不差。
+  const STATE_CLASSES = ['ts-run', 'ts-life'];
+  function renderStateSummary(button, segments, classes = STATE_CLASSES) {
+    button.replaceChildren(...segments.filter(Boolean).map((text, index) =>
+      node('span', index ? ` · ${text}` : text, classes[index] || null)));
   }
 
   function detailGroup(title, rows) {
@@ -1034,7 +1050,8 @@
     const summary = $('task-state');
     const attention = !!(capacity || pending || candidate || failed);
     summary.classList.toggle('attention', attention);
-    summary.textContent = [taskStateText(value), capacity ? label(capacity) : candidate ? '归属待核验' : ''].filter(Boolean).join(' · ');
+    renderStateSummary(summary, [...taskStateSegments(value),
+      capacity ? label(capacity) : candidate ? '归属待核验' : ''], [...STATE_CLASSES, 'ts-attn']);
     summary.title = `${title}。${text} 点击查看详情。`;
     $('delivery-destination').textContent = `下一条消息仍发送到「${currentTitle}」`;
     const steps = [...$('delivery-steps').children];
