@@ -3,7 +3,7 @@
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- Literal, not ?android:colorBackground: the app is light-only, so the
          splash must not follow the system's dark mode. -->
-    <item android:drawable="#FFF4F8FD" />
+    <item android:drawable="@color/air_canvas" />
 
     <!-- You can insert your own image assets here -->
     <!-- <item>
