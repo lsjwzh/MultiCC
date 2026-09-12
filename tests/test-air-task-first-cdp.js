@@ -380,6 +380,12 @@ test('Air task-first console, management views, roles, configuration, artifacts 
       await page.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: true });
       assert.equal(await page.evaluate(`innerWidth`), width);
       assert.equal(await page.evaluate(`document.documentElement.scrollWidth<=innerWidth`), true);
+      // 手机上页头是「标题区」不是导航：原来面包屑、标题、状态、按钮四行叠着占
+      // 142px。面包屑（在哪个目录）收进侧栏抽屉，页头只留标题 + 状态 + 一行按钮。
+      const mobileHeader = await page.evaluate(`(()=>{const h=document.getElementById('task-header').getBoundingClientRect();return {h:h.height,crumb:getComputedStyle(document.getElementById('task-breadcrumb')).display,title:document.getElementById('task-title').getBoundingClientRect().top,conv:document.getElementById('conversation').getBoundingClientRect().top}})()`);
+      assert.ok(mobileHeader.h <= 115, JSON.stringify(mobileHeader));
+      assert.equal(mobileHeader.crumb, 'none', JSON.stringify(mobileHeader));
+      assert.equal(mobileHeader.conv, mobileHeader.h, JSON.stringify(mobileHeader));
       assert.equal(await page.evaluate(`${frame}.documentElement.scrollWidth<=${frame}.documentElement.clientWidth`), true);
       assert.ok(await page.waitFor(`${frame}.getElementById('worktree-force-sync-btn')`));
       assert.equal(await page.evaluate(`${frame}.getElementById('worktree-force-sync-btn').getBoundingClientRect().right<=${frame}.documentElement.clientWidth`), true);

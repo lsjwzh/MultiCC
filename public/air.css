@@ -718,14 +718,19 @@ body.console-open #console-panel { transform: none; visibility: visible; }
   body.nav-open #sidebar { transform: translateX(0); }
   body.nav-open #nav-scrim { display: block !important; }
   #mobile-nav { display: block; min-width: 38px; padding: 6px; }
-  #task-header { min-height: 84px; align-items: flex-start; flex-wrap: wrap; gap: 7px; padding: 12px 10px; position: relative; }
-  .breadcrumb { padding-top: 1px; padding-right: 40px; }
+  /* 手机上这一条是「标题区」不是导航：原来是面包屑、标题、状态、按钮四行叠着
+     142px，等于先花掉屏幕的六分之一才看见对话。面包屑收进侧栏抽屉 ——
+     那儿的工作目录卡片本来就回答「在哪个目录」，页头只留标题 + 状态 + 按钮。 */
+  #task-breadcrumb { display: none; }
+  #task-header { align-items: center; flex-wrap: wrap; gap: 6px; padding: 8px 10px; position: relative; }
+  .breadcrumb { padding-top: 0; padding-right: 40px; }
   #task-title { font-size: 19px; }
+  #task-state { min-height: 20px; margin-top: 2px; }
   .task-tools { width: 100%; min-width: 0; gap: 6px; padding-left: 45px; overflow-x: auto; scrollbar-width: none; }
   .task-tools::-webkit-scrollbar { display: none; }
   .task-tools button { flex: 0 0 auto; min-height: 36px; padding: 6px 9px; }
   .task-tools [data-chat-layout] { display: none; } /* Available in Chat's More menu. */
-  #refresh { position: absolute; top: 12px; right: 10px; }
+  #refresh { position: absolute; top: 8px; right: 10px; }
   #notice { padding-inline: 12px; }
   #delivery-card { padding: 14px; }
   #delivery-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
