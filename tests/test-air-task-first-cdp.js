@@ -434,7 +434,9 @@ test('Air task-first console, management views, roles, configuration, artifacts 
         const panel = await page.evaluate(String.raw`(()=>{const g=id=>document.getElementById(id);
           const t=g('task-tools'), rows=[...t.querySelectorAll('button')].filter(b=>!b.hidden&&getComputedStyle(b).display!=='none');
           const r=t.getBoundingClientRect(), strip=s=>String(s).replace(/^"|"$/g,'');
+          const hit=document.elementFromPoint(r.left+20, r.top+30);
           return {h:g('task-header').getBoundingClientRect().height, expanded:g('task-options').getAttribute('aria-expanded'),
+            hitInside:!!hit && t.contains(hit), hit:hit?(hit.id||hit.className||hit.tagName):'none',
             display:getComputedStyle(t).display, left:Math.round(r.left), right:Math.round(r.right), width:Math.round(r.width),
             names:rows.map(b=>b.textContent.trim()), rowWidths:[...new Set(rows.map(b=>Math.round(b.getBoundingClientRect().width)))],
             rowHeight:Math.round(rows[0].getBoundingClientRect().height),
@@ -446,6 +448,10 @@ test('Air task-first console, management views, roles, configuration, artifacts 
         assert.ok(panel.left >= 0 && Math.abs(panel.right - (390 - 10)) <= 1, JSON.stringify(panel));
         assert.deepEqual(panel.names, ['⎇', '⇡', '↗', '更多', '↻'], JSON.stringify(panel));
         assert.deepEqual(panel.labels, ['合并回基分支', '自动提交', '分享此任务', '刷新'], JSON.stringify(panel));
+        // 而且真的盖在对话上面：页头自己有 backdrop-filter，那就是一个层叠上下文，
+        // 浮层在里面的 z-index 再大也只管这一层内部，整条页头仍然排在对话前面 ——
+        // 少了页头自己的 z-index，浮层会看得见、点不着。
+        assert.equal(panel.hitInside, true, '浮层要盖在对话上面：' + JSON.stringify(panel));
         assert.equal(panel.rowWidths.length, 1, '每一件工具都是一整行：' + JSON.stringify(panel));
         assert.ok(panel.rowHeight >= 34, JSON.stringify(panel));
         // 点过一件工具，浮层就收起 —— 那件工具已经做完了，浮层再晾着只会挡住它刚
