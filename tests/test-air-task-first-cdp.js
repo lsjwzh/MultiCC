@@ -372,7 +372,9 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.ok(await page.waitFor(`document.getElementById('air-provider-dialog').open===true`));
     assert.equal(await page.evaluate(`document.getElementById('air-provider-form').elements.apiFormat.value`), 'anthropic');
     await page.evaluate(`document.getElementById('air-provider-close').click()`);
-    entry.execution = { busy: true, status: 'running' }; entry.attribution = {};
+    // 移动端那一段要看到「本轮 … · 任务 …」两段都在：页头在手机上只显示前一段，
+    // 没给任务状态的话那条断言就是空跑。
+    entry.execution = { busy: true, status: 'running' }; entry.attribution = {}; entry.task.status = 'active';
     await page.navigate('/air?task=tsk_a&dir=d1');
     assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='完善任务协作体验'`));
     assert.ok(await page.waitFor(`${frame}?.URL.includes('session=task-a') && ${frame}.readyState==='complete'`));
@@ -380,12 +382,23 @@ test('Air task-first console, management views, roles, configuration, artifacts 
       await page.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: true });
       assert.equal(await page.evaluate(`innerWidth`), width);
       assert.equal(await page.evaluate(`document.documentElement.scrollWidth<=innerWidth`), true);
-      // 手机上页头是「标题区」不是导航：原来面包屑、标题、状态、按钮四行叠着占
-      // 142px。面包屑（在哪个目录）收进侧栏抽屉，页头只留标题 + 状态 + 一行按钮。
-      const mobileHeader = await page.evaluate(`(()=>{const h=document.getElementById('task-header').getBoundingClientRect();return {h:h.height,crumb:getComputedStyle(document.getElementById('task-breadcrumb')).display,title:document.getElementById('task-title').getBoundingClientRect().top,conv:document.getElementById('conversation').getBoundingClientRect().top}})()`);
-      assert.ok(mobileHeader.h <= 115, JSON.stringify(mobileHeader));
+      // 手机上页头是「标题区」不是导航：面包屑、标题、状态、按钮原来叠四行占 142px。
+      // 面包屑（在哪个目录）收进侧栏抽屉；状态跟标题同一行读，放不下才落回第二行；
+      // ↻ 从右上角回到工具那一行（它占的那 40px 正是状态挤不下的原因）。
+      const mobileHeader = await page.evaluate(`(()=>{const g=id=>document.getElementById(id);const t=g('task-title'),s=g('task-state'),h=g('task-header');const tr=t.getBoundingClientRect(),sr=s.getBoundingClientRect();return {h:h.getBoundingClientRect().height,crumb:getComputedStyle(g('task-breadcrumb')).display,conv:g('conversation').getBoundingClientRect().top,sameLine:Math.abs(tr.top-sr.top)<12,titleClipped:t.scrollWidth>t.clientWidth+1,full:s.textContent,joined:[...s.children].map(c=>c.textContent).join(''),run:[...s.querySelectorAll('.ts-run')].map(e=>getComputedStyle(e).display),life:[...s.querySelectorAll('.ts-life')].map(e=>getComputedStyle(e).display),detail:getComputedStyle(g('details-toggle')).display,refreshParent:g('refresh').parentElement.className}})()`);
+      assert.ok(mobileHeader.h <= 92, JSON.stringify(mobileHeader));
       assert.equal(mobileHeader.crumb, 'none', JSON.stringify(mobileHeader));
       assert.equal(mobileHeader.conv, mobileHeader.h, JSON.stringify(mobileHeader));
+      assert.equal(mobileHeader.sameLine, true, JSON.stringify(mobileHeader));
+      assert.equal(mobileHeader.titleClipped, false, JSON.stringify(mobileHeader));
+      assert.equal(mobileHeader.full, '本轮 执行中 · 任务 进行中', JSON.stringify(mobileHeader));
+      // 藏的是显示，不是文字：几段拼起来仍然等于整条文案，分隔符跟着段一起走。
+      assert.equal(mobileHeader.joined, mobileHeader.full, JSON.stringify(mobileHeader));
+      assert.deepEqual(mobileHeader.run.filter(d => d === 'none'), [], JSON.stringify(mobileHeader));
+      assert.deepEqual(mobileHeader.life, ['none'], JSON.stringify(mobileHeader));
+      // 详情按钮收起来：点状态那一条就是同一件事（两处都是 toggleDetails）。
+      assert.equal(mobileHeader.detail, 'none', JSON.stringify(mobileHeader));
+      assert.equal(mobileHeader.refreshParent, 'task-tools', JSON.stringify(mobileHeader));
       assert.equal(await page.evaluate(`${frame}.documentElement.scrollWidth<=${frame}.documentElement.clientWidth`), true);
       assert.ok(await page.waitFor(`${frame}.getElementById('worktree-force-sync-btn')`));
       assert.equal(await page.evaluate(`${frame}.getElementById('worktree-force-sync-btn').getBoundingClientRect().right<=${frame}.documentElement.clientWidth`), true);
