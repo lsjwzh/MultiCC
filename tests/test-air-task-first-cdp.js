@@ -427,27 +427,42 @@ test('Air task-first console, management views, roles, configuration, artifacts 
       }
       screenshots.push(await page.screenshot('two-bars-mobile-' + width));
       if (width === 390) {
-        // 「⋯」打开的那层浮层：工具一件不少，页头一行没高。图标按钮在这里带上
-        // 自己的名字 —— 手机上悬停不出 title，一个 ⎇ 什么也没说。
+        // 「⋯」打开的那层浮层：工具一件不少，页头一行没高。每一行都是「图标 +
+        // 名字」—— 桌面只有图标的（⎇）在这里带上名字，桌面只有文字的（详情、更多）
+        // 在这里补上图标，图标站成同一列，名字都从同一条竖线开始。
         const closedHeight = await page.evaluate(`document.getElementById('task-header').getBoundingClientRect().height`);
         await page.evaluate(`document.getElementById('task-options').click()`);
         const panel = await page.evaluate(String.raw`(()=>{const g=id=>document.getElementById(id);
           const t=g('task-tools'), rows=[...t.querySelectorAll('button')].filter(b=>!b.hidden&&getComputedStyle(b).display!=='none');
-          const r=t.getBoundingClientRect(), strip=s=>String(s).replace(/^"|"$/g,'');
+          const r=t.getBoundingClientRect();
           const hit=document.elementFromPoint(r.left+20, r.top+30);
+          // 一行里的图标是那个 span，名字是它后面那段文字（平时只有图标的按钮，名字
+          // 收在 .air-tool-name 里）。名字从哪条竖线开始，用 Range 量文字自己的左边：
+          // 「统一」这件事只有量得出左边才说得清。
+          const textLeft=n=>{const box=document.createRange();box.selectNodeContents(n);return Math.round(box.getBoundingClientRect().left)};
+          const cells=rows.map(b=>{const icon=b.querySelector('.air-tool-icon,.air-tool-icon-panel');
+            const name=[...b.childNodes].find(n=>n.nodeType===3?!!n.textContent.trim():n.classList&&n.classList.contains('air-tool-name'));
+            return {icon:icon?icon.textContent:'', name:name?name.textContent.trim():'',
+              iconLeft:icon?Math.round(icon.getBoundingClientRect().left):null, nameLeft:name?textLeft(name):null}});
           return {h:g('task-header').getBoundingClientRect().height, expanded:g('task-options').getAttribute('aria-expanded'),
             hitInside:!!hit && t.contains(hit), hit:hit?(hit.id||hit.className||hit.tagName):'none',
             display:getComputedStyle(t).display, left:Math.round(r.left), right:Math.round(r.right), width:Math.round(r.width),
-            names:rows.map(b=>b.textContent.trim()), rowWidths:[...new Set(rows.map(b=>Math.round(b.getBoundingClientRect().width)))],
-            rowHeight:Math.round(rows[0].getBoundingClientRect().height),
-            labels:['quick-merge','quick-auto-commit','quick-share','refresh'].map(id=>strip(getComputedStyle(g(id),'::after').content))}})()`);
+            icons:cells.map(c=>c.icon), names:cells.map(c=>c.name), cells:rows.length,
+            iconLefts:[...new Set(cells.map(c=>c.iconLeft))], nameLefts:[...new Set(cells.map(c=>c.nameLeft))],
+            rowWidths:[...new Set(rows.map(b=>Math.round(b.getBoundingClientRect().width)))],
+            rowHeight:Math.round(rows[0].getBoundingClientRect().height)}})()`);
         assert.equal(panel.display, 'flex', JSON.stringify(panel));
         assert.equal(panel.expanded, 'true', JSON.stringify(panel));
         assert.equal(panel.h, closedHeight, '浮层不占位：开着的时候页头还是那一行高');
         // 右边跟「⋯」那件按钮对齐（页头内边距 10px），左边留在屏里。
         assert.ok(panel.left >= 0 && Math.abs(panel.right - (390 - 10)) <= 1, JSON.stringify(panel));
-        assert.deepEqual(panel.names, ['⎇', '⇡', '↗', '更多', '↻'], JSON.stringify(panel));
-        assert.deepEqual(panel.labels, ['合并回基分支', '自动提交', '分享此任务', '刷新'], JSON.stringify(panel));
+        assert.deepEqual(panel.icons, ['⎇', '⇡', '↗', '⋯', '↻'], JSON.stringify(panel));
+        assert.deepEqual(panel.names, ['合并回基分支', '自动提交', '分享此任务', '更多', '刷新'], JSON.stringify(panel));
+        // 图标一列、名字一列：每一行的名字都从同一条竖线开始，不会有的行有图标、
+        // 有的行没有，也不会 ⎇ 宽 ↻ 窄把名字推得参差不齐。
+        assert.equal(panel.iconLefts.length, 1, '图标都在同一列：' + JSON.stringify(panel));
+        assert.equal(panel.nameLefts.length, 1, '名字都在同一条竖线上：' + JSON.stringify(panel));
+        assert.ok(panel.nameLefts[0] > panel.iconLefts[0], JSON.stringify(panel));
         // 而且真的盖在对话上面：页头自己有 backdrop-filter，那就是一个层叠上下文，
         // 浮层在里面的 z-index 再大也只管这一层内部，整条页头仍然排在对话前面 ——
         // 少了页头自己的 z-index，浮层会看得见、点不着。
@@ -496,9 +511,12 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     await page.evaluate(`document.getElementById('task-options').click()`);
     const settingsTools = await page.evaluate(`(()=>{const t=document.getElementById('task-tools');
       return {h:Math.round(document.getElementById('task-header').getBoundingClientRect().height),
-        rows:[...t.querySelectorAll('#admin-actions button')].map(b=>b.textContent),
+        rows:[...t.querySelectorAll('#admin-actions button')].map(b=>{const i=b.querySelector('.air-tool-icon,.air-tool-icon-panel');
+          return (i?i.textContent:'')+' '+b.textContent.replace(i?i.textContent:'' ,'').trim()}),
         widths:[...new Set([...t.querySelectorAll('button')].filter(b=>!b.hidden).map(b=>Math.round(b.getBoundingClientRect().width)))]}})()`);
-    assert.deepEqual(settingsTools.rows, ['返回设置中心', '高级账号与借道', '↻ 刷新', '＋ 新增 Provider'], JSON.stringify(settingsTools));
+    // 页面自己那几件动作也是「图标 + 名字」：图标说的是这件事是什么性质 ——
+    // ← 回去、⇄ 借道、↻ 重新读、＋ 新增。
+    assert.deepEqual(settingsTools.rows, ['← 返回设置中心', '⇄ 高级账号与借道', '↻ 刷新', '＋ 新增 Provider'], JSON.stringify(settingsTools));
     assert.equal(settingsTools.widths.length, 1, '设置页的工具也铺成一列：' + JSON.stringify(settingsTools));
     assert.ok(settingsTools.h <= 64, JSON.stringify(settingsTools));
     await page.evaluate(`document.querySelector('#admin-actions .primary').click()`);
