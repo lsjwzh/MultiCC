@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../theme.dart';
+
 class ThinkingIndicator extends StatefulWidget {
   final String label;
   const ThinkingIndicator({super.key, this.label = 'Thinking'});
@@ -71,7 +73,7 @@ class _ThinkingIndicatorState extends State<ThinkingIndicator>
                 widget.label,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Color(0xFF6f8096), fontSize: 13),
+                style: const TextStyle(color: AppColors.muted, fontSize: 13),
               ),
             ),
             const SizedBox(width: 10),
@@ -83,7 +85,7 @@ class _ThinkingIndicatorState extends State<ThinkingIndicator>
                   width: 7,
                   height: 7,
                   decoration: BoxDecoration(
-                    color: Color.fromRGBO(88, 166, 255, _anims[i].value),
+                    color: AppColors.accent.withValues(alpha: _anims[i].value),
                     shape: BoxShape.circle,
                   ),
                 ),
