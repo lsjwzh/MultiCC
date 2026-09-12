@@ -131,7 +131,7 @@ test('browser Auto Provider constants stay aligned with the server contract', ()
 });
 
 test('protocol helpers expose only concrete same-protocol pools', () => {
-  assert.equal(editor.protocolOf({ apiFormat: 'openai_chat' }), 'openai_chat');
+  assert.equal(editor.protocolOf({ apiFormat: 'openai_chat' }), 'openai_responses');
   assert.equal(editor.protocolOf({ protocol: 'unknown' }), null);
   assert.equal(editor.optionValue('anthropic'), '__auto__:anthropic');
   assert.equal(editor.optionValue('unknown'), '');

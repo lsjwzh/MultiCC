@@ -251,7 +251,6 @@ function createProviderRoutes(rawDeps) {
           authToken: (req.body.authToken || '').trim(),
           model: (req.body.model || '').trim(),
           models: req.body.models,
-          useChatResponsesProxy: req.body.useChatResponsesProxy,
           ...(req.body.apiFormat !== undefined ? { apiFormat: req.body.apiFormat } : {}),
           settingsConfig: req.body.settingsConfig,
           aliasMap: req.body.aliasMap,
@@ -270,7 +269,6 @@ function createProviderRoutes(rawDeps) {
           authToken: req.body.authToken,
           model: req.body.model,
           models: req.body.models,
-          useChatResponsesProxy: req.body.useChatResponsesProxy,
           ...(req.body.apiFormat !== undefined ? { apiFormat: req.body.apiFormat } : {}),
           settingsConfig: req.body.settingsConfig,
           aliasMap: req.body.aliasMap,
@@ -376,9 +374,7 @@ function createProviderRoutes(rawDeps) {
           const model = (target.modelOptions && target.modelOptions[0])
             || target.model
             || 'gpt-4o-mini';
-          const body = JSON.stringify(target.wireApi === 'responses'
-            ? { model, input: 'hi', max_output_tokens: 1 }
-            : { model, max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] });
+          const body = JSON.stringify({ model, input: 'hi', max_output_tokens: 1 });
           let url;
           try {
             url = new URLCtor(target.url);

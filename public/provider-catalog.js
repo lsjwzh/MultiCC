@@ -6,7 +6,7 @@
   if (root) root.MultiCCProviderCatalog = catalog;
 })(typeof window !== 'undefined' ? window : null, function createProviderCatalog() {
   const APP_TYPES = new Set(['claude', 'codex']);
-  const API_FORMATS = new Set(['anthropic', 'openai_responses', 'openai_chat']);
+  const API_FORMATS = new Set(['anthropic', 'openai_responses']);
   const ALIAS_TIERS = ['opus', 'sonnet', 'haiku', 'fable'];
 
   function text(value, max = 300) {
@@ -106,7 +106,7 @@
     const model = text(value.model, 240);
     const apiFormat = API_FORMATS.has(value.apiFormat)
       ? value.apiFormat
-      : (appType === 'claude' ? 'anthropic' : (value.useChatResponsesProxy ? 'openai_chat' : 'openai_responses'));
+      : (appType === 'claude' ? 'anthropic' : 'openai_responses');
     const zcodeCompatible = !!safeBaseUrl(value.baseUrl) && value.hasToken === true;
     const defaultClis = [
       ...(apiFormat === 'anthropic' ? ['claude', 'opencode'] : ['codex', 'opencode']),
@@ -123,15 +123,12 @@
       compatibleClis: Object.freeze((Array.isArray(value.compatibleClis) ? value.compatibleClis : defaultClis)
         .filter(cli => ['claude', 'codex', 'opencode', 'zcode'].includes(cli)
           && (cli !== 'zcode' || zcodeCompatible))),
-      requiresConversionFor: Object.freeze((Array.isArray(value.requiresConversionFor) ? value.requiresConversionFor : (apiFormat === 'openai_chat' ? ['codex'] : []))
-        .filter(cli => cli === 'codex')),
       baseUrl: safeBaseUrl(value.baseUrl),
       model,
       modelOptions: Object.freeze(normalizeModelOptions(value.modelOptions || value.models, model)),
       aliasOnly: value.aliasOnly === true,
       aliasMap: Object.freeze(normalizeAliasMap(value.aliasMap)),
-      useChatResponsesProxy: value.useChatResponsesProxy === true,
-      tokenMask: safeTokenMask(value.tokenMask),
+        tokenMask: safeTokenMask(value.tokenMask),
       hasToken: value.hasToken === true,
       isOfficial: value.isOfficial === true,
       limit: normalizeProviderLimit(value.limit),
@@ -249,7 +246,7 @@
 
   function groupByProtocol(value) {
     const providers = Array.isArray(value) ? value : ((value && value.providers) || []);
-    const groups = { anthropic: [], openai_responses: [], openai_chat: [] };
+    const groups = { anthropic: [], openai_responses: [] };
     for (const provider of providers) {
       if (provider && groups[provider.apiFormat]) groups[provider.apiFormat].push(provider);
     }

@@ -8,7 +8,7 @@
   if (typeof module === 'object' && module.exports) module.exports = api;
   if (root) root.MultiCCAutoProviderEditor = api;
 })(typeof window !== 'undefined' ? window : null, function createAutoProviderEditorApi() {
-  const PROTOCOLS = Object.freeze(['anthropic', 'openai_responses', 'openai_chat']);
+  const PROTOCOLS = Object.freeze(['anthropic', 'openai_responses']);
   const PROTOCOL_SET = new Set(PROTOCOLS);
   const MAX_CANDIDATES = 12;
   const MAX_ATTEMPTS = 4;
@@ -16,7 +16,10 @@
   const STYLE_ID = 'multicc-auto-provider-editor-style';
 
   function protocolOf(provider) {
-    const value = provider && (provider.protocol || provider.apiFormat);
+    // 'openai_chat' is a retired format value; providers still carrying it
+    // belong to the openai_responses pool.
+    const raw = provider && (provider.protocol || provider.apiFormat);
+    const value = raw === 'openai_chat' ? 'openai_responses' : raw;
     return PROTOCOL_SET.has(value) ? value : null;
   }
 
@@ -24,7 +27,7 @@
     return ({
       anthropic: 'Anthropic Messages',
       openai_responses: 'OpenAI Responses',
-      openai_chat: 'OpenAI Chat Completions',
+      openai_chat: 'OpenAI Responses',
     })[protocol] || String(protocol || '');
   }
 

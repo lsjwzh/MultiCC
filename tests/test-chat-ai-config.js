@@ -147,7 +147,7 @@ test('Auto Provider picker exposes protocol pools, ordered candidates and the pe
   const page = fs.readFileSync(path.join(ROOT, 'public', 'chat.js'), 'utf8');
   assert.equal(ai.autoOptionValue('anthropic'), '__auto__:anthropic');
   assert.equal(ai.autoProtocolFromValue('__auto__:openai_responses'), 'openai_responses');
-  assert.equal(ai.autoProtocolLabel('openai_chat'), 'OpenAI Chat Completions');
+  assert.equal(ai.autoProtocolLabel('openai_chat'), 'OpenAI Responses');
   assert.match(source, /id="ai-auto-section"/);
   assert.match(source, /autoProviderEditorApi\(\)\.mount/);
   assert.match(source, /const result = autoEditor\.read\(\)/);

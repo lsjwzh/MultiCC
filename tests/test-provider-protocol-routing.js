@@ -46,11 +46,14 @@ test('CC-Switch import treats meta.apiFormat as the protocol source of truth', (
   const result = providers.importFromCcSwitch();
   assert.equal(result.imported, 2);
 
+  // Legacy 'openai_chat' meta collapses into the responses pool: every
+  // mainstream provider now speaks /responses natively, so the retired
+  // chat-conversion bridge never reappears on re-import.
   const chat = providers.getProviderSummary('codex', 'cc-chat');
-  assert.equal(chat.apiFormat, 'openai_chat');
-  assert.equal(chat.wireApi, 'chat_completions');
+  assert.equal(chat.apiFormat, 'openai_responses');
+  assert.equal(chat.wireApi, 'responses');
   assert.deepEqual(chat.compatibleClis, ['codex', 'opencode', 'zcode', 'kimi']);
-  assert.deepEqual(chat.requiresConversionFor, ['codex']);
+  assert.equal(chat.requiresConversionFor, undefined);
 
   const anthropic = providers.getProviderSummary('claude', 'cc-anthropic');
   assert.equal(anthropic.apiFormat, 'anthropic');
@@ -72,26 +75,29 @@ test('startup migration upgrades old provider records once and is byte-idempoten
   assert.deepEqual(first, { updated: 2, skipped: 0, total: 2 });
   const migratedBytes = fs.readFileSync(storeFile, 'utf8');
   const migrated = JSON.parse(migratedBytes);
-  assert.equal(migrated.find(provider => provider.id === 'cc-chat').apiFormat, 'openai_chat');
-  assert.equal(migrated.find(provider => provider.id === 'cc-chat').settingsConfig.proxyTarget.mode, 'chat-to-responses');
+  const migratedChat = migrated.find(provider => provider.id === 'cc-chat');
+  assert.equal(migratedChat.apiFormat, 'openai_responses');
+  assert.equal(migratedChat.settingsConfig.proxyTarget, undefined);
+  assert.match(migratedChat.settingsConfig.config, /base_url\s*=\s*"https:\/\/chat\.example\/v1"/);
+  assert.match(migratedChat.settingsConfig.config, /wire_api\s*=\s*"responses"/);
   assert.equal(migrated.find(provider => provider.id === 'cc-anthropic').apiFormat, 'anthropic');
 
   assert.deepEqual(providers.migrateLegacyProviderProtocols(), { updated: 0, skipped: 0, total: 2 });
   assert.equal(fs.readFileSync(storeFile, 'utf8'), migratedBytes);
 });
 
-test('Codex selects the Chat-to-Responses proxy only for Chat providers', () => {
+test('Codex materializes the provider as direct responses with no conversion bridge', () => {
   const spawn = providers.resolveSpawnEnv({ cli: 'codex', provider: 'cc-chat', model: 'chat-model' });
   assert.ok(spawn.codexHome.startsWith(fakeHome));
   const config = fs.readFileSync(path.join(spawn.codexHome, 'config.toml'), 'utf8');
   assert.match(config, /wire_api\s*=\s*"responses"/);
-  assert.match(config, /base_url\s*=\s*"http:\/\/127\.0\.0\.1:3000\/codex-proxy\/cc-chat"/);
+  assert.match(config, /base_url\s*=\s*"https:\/\/chat\.example\/v1"/);
+  assert.doesNotMatch(config, /codex-proxy/);
   const raw = providers.getProvider('codex', 'cc-chat');
-  assert.equal(raw.settingsConfig.proxyTarget.mode, 'chat-to-responses');
-  assert.equal(raw.settingsConfig.proxyTarget.baseUrl, 'https://chat.example/v1/chat/completions');
+  assert.equal(raw.settingsConfig.proxyTarget, undefined);
 });
 
-test('OpenCode maps all three protocols to their native AI SDK packages', () => {
+test('OpenCode maps all protocols to their native AI SDK packages', () => {
   const responsesId = providers.createProvider({
     appType: 'codex', name: 'Responses', baseUrl: 'https://responses.example/v1',
     authToken: 'responses-secret', model: 'gpt-test', apiFormat: 'openai_responses',
@@ -99,7 +105,9 @@ test('OpenCode maps all three protocols to their native AI SDK packages', () => 
 
   const cases = [
     ['cc-anthropic', '@ai-sdk/anthropic', 'claude-test'],
-    ['cc-chat', '@ai-sdk/openai-compatible', 'chat-model'],
+    // Legacy chat providers ride the plain OpenAI package now that the
+    // chat-conversion bridge is retired.
+    ['cc-chat', '@ai-sdk/openai', 'chat-model'],
     [responsesId, '@ai-sdk/openai', 'gpt-test'],
   ];
   for (const [providerId, expectedPackage, model] of cases) {
@@ -137,7 +145,7 @@ test('OpenCode custom-provider models carry real limits (models.dev cache, safe 
   assert.equal(JSON.stringify(models).includes('chat-secret'), false);
 });
 
-test('ZCode maps all three protocols to isolated native provider kinds', () => {
+test('ZCode maps all protocols to isolated native provider kinds', () => {
   const responsesId = providers.createProvider({
     appType: 'codex', name: 'ZCode Responses', baseUrl: 'https://responses-zcode.example/v1',
     authToken: 'zcode-responses-secret', model: 'gpt-zcode', apiFormat: 'openai_responses',
@@ -158,7 +166,7 @@ test('ZCode maps all three protocols to isolated native provider kinds', () => {
   const cases = [
     ['cc-anthropic', 'anthropic', 'https://anthropic.example/v1', 'apiKey', 'anthropic-secret', 'claude-test'],
     [anthropicApiKeyId, 'anthropic', 'https://anthropic-api-key.example/v1', 'apiKey', 'anthropic-api-key-secret', 'claude-api-key-test'],
-    ['cc-chat', 'openai-compatible', 'https://chat.example/v1', 'apiKey', 'chat-secret', 'chat-model'],
+    ['cc-chat', 'openai', 'https://chat.example/v1', 'apiKey', 'chat-secret', 'chat-model'],
     [responsesId, 'openai', 'https://responses-zcode.example/v1', 'apiKey', 'zcode-responses-secret', 'gpt-zcode'],
   ];
 
@@ -197,7 +205,7 @@ test('protocol compatibility gives ZCode both pools while Qoder stays providerle
   assert.deepEqual(providers.appTypesForCli('zcode'), ['claude', 'codex']);
   assert.equal(providers.normalizeApiFormat(null, 'claude', {}), 'anthropic');
   assert.equal(providers.normalizeApiFormat(null, 'codex', {}), 'openai_responses');
-  assert.equal(providers.normalizeApiFormat(null, 'codex', { proxyTarget: { mode: 'chat-to-responses' } }), 'openai_chat');
+  assert.equal(providers.normalizeApiFormat(null, 'codex', { proxyTarget: { mode: 'chat-to-responses' } }), 'openai_responses');
   assert.equal(providers.providerSupportsCli({ appType: 'claude' }, 'codex'), false);
   assert.equal(providers.providerSupportsCli({ appType: 'codex' }, 'claude'), false);
   assert.equal(providers.providerSupportsCli({
