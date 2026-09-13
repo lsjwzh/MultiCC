@@ -12,11 +12,13 @@ import '../services/air_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
+import 'air/air_console.dart';
 import 'air/air_destinations.dart';
 import 'air/air_panels.dart';
 import 'air/air_sidebar.dart';
 import 'air/air_task_config.dart';
 import 'air/air_task_details.dart';
+import 'air/air_task_status.dart';
 import 'task_board_view.dart';
 import 'workspace_navigation_drawer.dart';
 
@@ -409,10 +411,61 @@ class _AirTasksViewState extends State<AirTasksView>
     if (created == true) await _refresh();
   }
 
+  /// 控制台。Web 那边它是盖在当前页面上的一层浮层，手机上并排放不下，所以做成
+  /// 一条独立页面；分区的顺序和每张卡上的数字照搬（见 [AirConsoleScreen]）。
+  ///
+  /// 从控制台里点走一条任务、切一个目录、进一个设置页时，先把这一页收掉 ——
+  /// 否则它盖住的正是刚落到下面的那一处。
+  void _openConsole() {
+    _closeDrawer();
+    final navigator = Navigator.of(context);
+    unawaited(
+      navigator.push(
+        MaterialPageRoute<void>(
+          builder: (routeContext) => AirConsoleScreen(
+            settings: widget.settings,
+            httpClient: widget.httpClient,
+            onOpenTask: (task) {
+              Navigator.of(routeContext).pop();
+              unawaited(_open(task));
+            },
+            onOpenTasks: () {
+              Navigator.of(routeContext).pop();
+              setState(() {
+                _mode = _AirMode.tasks;
+                _showAll = false;
+              });
+            },
+            onOpenLibrary: () {
+              Navigator.of(routeContext).pop();
+              setState(() => _mode = _AirMode.library);
+            },
+            onSelectDirectory: (dirId) {
+              Navigator.of(routeContext).pop();
+              _selectDirectory(dirId);
+            },
+            onOpenDestination: (destination) {
+              Navigator.of(routeContext).pop();
+              _openDestination(destination);
+            },
+            onOpenMemory: () {
+              Navigator.of(routeContext).pop();
+              _openWebMemory();
+            },
+            onOpenWebConsole: _openWebConsole,
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 网页版控制台。原生页已经能干活了，这里留一个明确出口，不是默认入口。
   void _openWebConsole() {
-    final uri = Uri.parse(
-      widget.settings.buildHttpUrl('/manage'),
-    ).replace(queryParameters: {if (widget.settings.token.isNotEmpty) 'token': widget.settings.token});
+    final uri = Uri.parse(widget.settings.buildHttpUrl('/manage')).replace(
+      queryParameters: {
+        if (widget.settings.token.isNotEmpty) 'token': widget.settings.token,
+      },
+    );
     unawaited(launchUrl(uri, mode: LaunchMode.externalApplication));
   }
 
@@ -529,18 +582,13 @@ class _AirTasksViewState extends State<AirTasksView>
     final data = _data;
     final directory = data?.directoryOf(_directoryId);
     final tasks = _visibleTasks();
-    final runningDirectories = <String>{
-      for (final task in data?.tasks ?? const <AirTask>[])
-        if (task.resource['lease'] == 'running' || task.status == 'active')
-          task.dirId,
-    };
-    final runningHere = data
-            ?.tasksOf(_directoryId)
-            .where(
-              (t) => t.resource['lease'] == 'running' || t.status == 'active',
-            )
-            .length ??
-        0;
+    // 「在不在跑」只有一份判定（注册表的 spinner），目录环、页头那颗徽标和任务
+    // 行上的转圈说的都是同一件事。
+    final runningDirectories = airRunningDirectories(
+      data?.tasks ?? const <AirTask>[],
+    );
+    final runningHere =
+        data?.tasksOf(_directoryId).where(airTaskRunning).length ?? 0;
     return Scaffold(
       key: _scaffoldKey,
       backgroundColor: AppColors.bg,
@@ -557,10 +605,7 @@ class _AirTasksViewState extends State<AirTasksView>
           _closeDrawer();
           setState(() => _mode = _AirMode.library);
         },
-        onOpenConsole: () {
-          _closeDrawer();
-          _openWebConsole();
-        },
+        onOpenConsole: _openConsole,
         onOpenSchedules: () => _openDestination(WorkspaceDestination.cron),
         onOpenTaskBoard: () {
           _closeDrawer();
