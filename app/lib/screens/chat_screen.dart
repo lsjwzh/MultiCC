@@ -21,6 +21,7 @@ import '../utils/session_status_helpers.dart';
 import '../widgets/ai_config_sheet.dart';
 import '../widgets/background_tasks_dock.dart';
 import '../widgets/floating_dock.dart';
+import '../widgets/chat_composer_fold.dart';
 import '../widgets/chat_header.dart';
 import '../widgets/chat_runtime_panels.dart';
 import '../widgets/conflict_diff_dialog.dart';
@@ -62,6 +63,11 @@ class ChatView extends StatefulWidget {
 
 class _ChatViewState extends State<ChatView> {
   final _scrollCtrl = ScrollController();
+  // 手机上空闲时输入区会折成一条胶囊（chat_composer_fold.dart）：草稿要显示在
+  // 胶囊上，点开时要把光标放回输入框 —— 两件事都得从折叠那一层够得着输入框
+  // 自己的草稿和焦点，所以这两个对象由这里持有再交给 InputBar。
+  final _composerCtrl = TextEditingController();
+  final _composerFocus = FocusNode();
   Timer? _mergeTimer;
   String? _polledSession;
   Map<String, dynamic>? _mergeStatus;
@@ -178,6 +184,8 @@ class _ChatViewState extends State<ChatView> {
   @override
   void dispose() {
     _scrollCtrl.dispose();
+    _composerCtrl.dispose();
+    _composerFocus.dispose();
     _mergeTimer?.cancel();
     _livenessTimer?.cancel();
     super.dispose();
@@ -492,12 +500,21 @@ class _ChatViewState extends State<ChatView> {
                       sessionId: provider.executionSessionName,
                     ),
                   ),
-                _CenteredChatLane(
-                  child: InputBar(
-                    onPickSubagent: () => openAIConfigSheet(
-                      context,
-                      settings: widget.settings,
-                      sessionId: provider.executionSessionName,
+                // 手机上往回翻消息时输入区会跟着缩小（Web 的
+                // chat-composer-collapse.js）；桌面宽度下它原样不动。
+                ChatComposerFold(
+                  scrollController: _scrollCtrl,
+                  inputController: _composerCtrl,
+                  inputFocusNode: _composerFocus,
+                  child: _CenteredChatLane(
+                    child: InputBar(
+                      controller: _composerCtrl,
+                      focusNode: _composerFocus,
+                      onPickSubagent: () => openAIConfigSheet(
+                        context,
+                        settings: widget.settings,
+                        sessionId: provider.executionSessionName,
+                      ),
                     ),
                   ),
                 ),
