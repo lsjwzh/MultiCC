@@ -178,6 +178,10 @@
 
     function speak(text, type) {
       if (!enabled) return false;
+      // 帧被 Air 收进池子（切到别的任务了）就不出声：这条消息说的是另一个任务，
+      // 而人正在看这一个。铃声和朗读都压在同一个开关底下。见 chat.js 的
+      // __multiccChatSetActive。
+      if (typeof opts.isActive === 'function' && opts.isActive() === false) return false;
 
       const normalizedType = normalizeNotificationType(type);
       const timestamp = now();
