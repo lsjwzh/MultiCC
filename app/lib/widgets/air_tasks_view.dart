@@ -231,20 +231,22 @@ class _AirTasksViewState extends State<AirTasksView>
 
   /// 描述一段话就建一个任务，并把这段话作为第一条消息发出去。三步的顺序不能
   /// 换：角色绑定只对下一条消息生效，而下一条消息正是这一条（同 Web Air）。
-  Future<void> _createFromComposer({
+  /// 返回是否**整条链路都成了**：任务建出来不算，第一条消息也得确认送达 ——
+  /// 只有全成才算这一份草稿已经交出去，输入区那边才可以清空重来。
+  Future<bool> _createFromComposer({
     required String text,
     required String cli,
-    required String rolePrompt,
+    required List<AirRoleBinding> roles,
     required bool goal,
   }) async {
     final dirId = _directoryId;
-    if (dirId == null || _submitting) return;
+    if (dirId == null || _submitting) return false;
     final title = text
         .split(RegExp(r'\n'))
         .firstWhere((line) => line.trim().isNotEmpty, orElse: () => text)
         .trim();
     _attempt = AirCreateAttempt.forFingerprint(
-      '$dirId|$text|$cli|$rolePrompt|$goal',
+      '$dirId|$text|$cli|${roles.map((r) => r.name).join(',')}|$goal',
       _attempt,
     );
     final attempt = _attempt!;
@@ -259,8 +261,17 @@ class _AirTasksViewState extends State<AirTasksView>
         title: title.length > 120 ? title.substring(0, 120) : title,
         clientMsgId: attempt.createId,
         cli: cli,
-        rolePrompt: rolePrompt,
       );
+      // 角色要在第一条消息之前写下去：绑定说的是「下一条消息」，而下一条正是
+      // 紧接着要发的那条（同 Web Air 的顺序）。
+      if (roles.isNotEmpty) {
+        await _service.updateRoles(
+          created,
+          expectedVersion: 0,
+          bindings: roles,
+          clientMsgId: '${attempt.createId}-roles',
+        );
+      }
       await _service.sendFirstMessage(
         taskId: created,
         text: text,
@@ -269,10 +280,11 @@ class _AirTasksViewState extends State<AirTasksView>
       );
       _attempt = null;
       await _refresh();
-      if (!mounted) return;
+      if (!mounted) return false;
       setState(() => _submitting = false);
       final task = _data?.taskOf(created);
       if (task != null) await _open(task);
+      return true;
     } catch (error) {
       // 任务可能已经建出来了，只是第一条消息没送到：那就还是进去，别让人以为
       // 白点了。这次尝试作废，内容没变时下一次点击会换一组新的幂等键。
@@ -280,7 +292,7 @@ class _AirTasksViewState extends State<AirTasksView>
       if (taskId != null) {
         _attempt = null;
         await _refresh();
-        if (!mounted) return;
+        if (!mounted) return false;
         setState(() {
           _submitting = false;
           _error = '任务已创建，但第一条消息未确认送达：$error';
@@ -295,6 +307,8 @@ class _AirTasksViewState extends State<AirTasksView>
           });
         }
       }
+      // 这一份草稿没有整条交出去，输入区留着它，重试就是原样再点一次。
+      return false;
     }
   }
 
@@ -715,20 +729,20 @@ class _AirTasksViewState extends State<AirTasksView>
             const SizedBox(height: 10),
           ],
           AirQuickComposer(
+            settings: widget.settings,
+            service: _service,
             clis: data?.clis ?? const [],
             busy: _submitting,
             onSubmit: ({
               required String text,
               required String cli,
-              required String rolePrompt,
+              required List<AirRoleBinding> roles,
               required bool goal,
-            }) => unawaited(
-              _createFromComposer(
-                text: text,
-                cli: cli,
-                rolePrompt: rolePrompt,
-                goal: goal,
-              ),
+            }) => _createFromComposer(
+              text: text,
+              cli: cli,
+              roles: roles,
+              goal: goal,
             ),
           ),
           const SizedBox(height: 24),

@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 
 import '../../services/air_service.dart';
+import '../../services/settings_service.dart';
 import '../../theme.dart';
+import 'air_role_editor.dart';
 
 /// 目录库（Web `#directory-library`）：一张目录一张卡，卡上写清它现在有多少
 /// 任务、有没有人在跑。手机上一列，宽屏两列。
@@ -431,17 +433,25 @@ class _StatTile extends StatelessWidget {
 class AirQuickComposer extends StatefulWidget {
   const AirQuickComposer({
     super.key,
+    required this.settings,
     required this.clis,
     required this.busy,
     required this.onSubmit,
+    this.service,
   });
 
+  /// 角色库（`/api/agent-presets`）要走服务地址和令牌，角色编辑器需要它。
+  final SettingsService settings;
   final List<String> clis;
   final bool busy;
-  final void Function({
+  final AirService? service;
+
+  /// 返回「这一份草稿确实建出去了吗」。建成了才清空输入框和角色 —— 失败时留着，
+  /// 重试就是原样再点一次（同 Web Air 只在成功后清）。
+  final Future<bool> Function({
     required String text,
     required String cli,
-    required String rolePrompt,
+    required List<AirRoleBinding> roles,
     required bool goal,
   })
   onSubmit;
@@ -453,7 +463,9 @@ class AirQuickComposer extends StatefulWidget {
 class _AirQuickComposerState extends State<AirQuickComposer> {
   final _controller = TextEditingController();
   String _cli = '';
-  String _role = '';
+  // 这里存的是「还没有任务的那一份角色」，创建时随任务一起写下去；建完就清空
+  // —— 一个任务的角色上下文不该悄悄漏进下一个任务（同 Web Air）。
+  List<AirRoleBinding> _roles = const [];
   bool _goal = false;
 
   @override
@@ -507,40 +519,17 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
     if (choice != null && mounted) setState(() => _cli = choice);
   }
 
-  Future<void> _editRole() async {
-    final controller = TextEditingController(text: _role);
-    final result = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('角色上下文（可选）'),
-        content: TextField(
-          controller: controller,
-          maxLines: 5,
-          maxLength: 40000,
-          autofocus: true,
-          style: const TextStyle(color: AppColors.text),
-          decoration: const InputDecoration(
-            hintText: '例如：以移动端体验设计师的视角检查交互',
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, ''),
-            child: const Text('清除'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
-            child: const Text('确定'),
-          ),
-        ],
-      ),
+  /// 任务还不存在，所以走编辑器的草稿模式：编辑结果先留在这一层，等创建流程
+  /// 建出任务、发第一条消息之前再写下去 —— 绑定说的是「下一条消息」，那条消息
+  /// 正是紧接着要发的那条。
+  Future<void> _editRoles() async {
+    final edited = await showAirRoleEditor(
+      context,
+      settings: widget.settings,
+      service: widget.service,
+      initial: _roles,
     );
-    controller.dispose();
-    if (result != null && mounted) setState(() => _role = result);
+    if (edited != null && mounted) setState(() => _roles = edited);
   }
 
   @override
@@ -566,10 +555,10 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
               const SizedBox(width: 8),
               _Pill(
                 key: const ValueKey('air-quick-role'),
-                label: _role.isEmpty ? '＋ 角色' : '角色已设置',
+                label: _roles.isEmpty ? '＋ 角色' : '${_roles.length} 个角色',
                 icon: Icons.badge_outlined,
-                active: _role.isNotEmpty,
-                onTap: widget.busy ? null : _editRole,
+                active: _roles.isNotEmpty,
+                onTap: widget.busy ? null : _editRoles,
               ),
             ],
           ),
@@ -619,15 +608,23 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
                 key: const ValueKey('air-quick-submit'),
                 onPressed: widget.busy
                     ? null
-                    : () {
+                    : () async {
                         final text = _controller.text.trim();
                         if (text.isEmpty) return;
-                        widget.onSubmit(
+                        final sent = await widget.onSubmit(
                           text: text,
                           cli: _cli,
-                          rolePrompt: _role,
+                          roles: _roles,
                           goal: _goal,
                         );
+                        if (!sent || !mounted) return;
+                        // 任务建出去了才清草稿；角色也一起清 —— 一个任务的角色
+                        // 上下文不该悄悄漏进下一个任务。
+                        setState(() {
+                          _controller.clear();
+                          _roles = const [];
+                          _goal = false;
+                        });
                       },
                 style: FilledButton.styleFrom(
                   backgroundColor: AppColors.accentDark,
