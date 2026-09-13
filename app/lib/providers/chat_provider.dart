@@ -9,6 +9,7 @@ import '../models/message.dart';
 import '../models/role_tokens.dart';
 import '../models/usage_readout.dart';
 import '../models/vendor_quota.dart';
+import '../services/chat_debug_log.dart';
 import '../services/chat_service.dart';
 import '../services/chat_shell_view.dart';
 import '../services/shell_history_merge.dart';
@@ -351,6 +352,22 @@ class ChatProvider extends ChangeNotifier {
 
   bool get isStreaming => _service.isStreaming;
 
+  /// Web 的 `!!chatLiveUi.getThinkingElement()`：思考中的指示条此刻是否真的在
+  /// 屏幕上。[ChatMessageList] 拿它决定要不要多渲染一行，调试面板拿它算
+  /// `stuck` 徽章 —— 同一个判断，两处各写一份迟早会对不上。
+  bool get thinkingIndicatorVisible {
+    if (_admissionProgressText != null) return true;
+    if (!isStreaming) return false;
+    final msgs = messages;
+    if (msgs.isEmpty) return true;
+    final last = msgs.last;
+    return last.role != MessageRole.assistant ||
+        (last.content.isEmpty && last.toolCalls.isEmpty);
+  }
+
+  /// Web 的 `!!currentMsgEl`：本轮直播中的那条助手气泡是否已经挂出来了。
+  bool get hasLiveAssistantBubble => _folder.currentMsg != null;
+
   /// Raw chat event stream (broadcast) — exposed so the voice call-mode
   /// service can monitor task progress (content_block_delta / result / notify)
   /// without going through the message-rendering layer. Safe to add listeners:
@@ -362,6 +379,9 @@ class ChatProvider extends ChangeNotifier {
 
   /// Stable server record for operations; sessionId above is the native CLI resume ID.
   String get executionSessionName => _service.executionSessionName;
+
+  /// 本会话所属的任务壳 id（连接握手后才拿得到）。产物边栏的 scope。
+  String? get shellId => _service.shellId;
 
   String _cwd = '';
   String get cwd => _cwd;
@@ -2676,6 +2696,9 @@ class ChatProvider extends ChangeNotifier {
       return fresh.length;
     } catch (e) {
       // Transient error: leave exhausted=false so the user can retry by scrolling.
+      // Web 的 `dbg('history', 'loadOlderHistory failed: …')` —— 这里返回 0 是
+      // 静默的（屏幕上什么都不发生），不记一笔就没法解释「往上翻没反应」。
+      dbg('history', 'loadOlderHistory failed: $e');
       return 0;
     } finally {
       _historyLoading = false;

@@ -4,6 +4,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:http/http.dart' as http;
 
 import '../models/message.dart';
+import 'chat_debug_log.dart';
 import 'provider_route_gate.dart';
 import 'chat_shell_view.dart';
 import 'settings_service.dart';
@@ -71,6 +72,10 @@ class ChatService {
   int _connectGeneration = 0;
   late final ChatShellView _shellView = ChatShellView(sessionName);
   bool get hasShellHistory => _shellView.shellId != null;
+
+  /// 本会话所属的任务壳（Open 之后才有）。产物边栏拿它当 scope
+  /// （`GET /api/task-shells/:shellId/artifacts`）。
+  String? get shellId => _shellView.shellId;
 
   // ── Heartbeat: detect "half-open" sockets ──
   // When the phone sleeps / network switches, the OS can freeze the socket
@@ -156,12 +161,18 @@ class ChatService {
         _sessionId = null;
         initialSessionId = null;
       }
+      final socketUri = _buildChatUri(resumeId: _sessionId ?? initialSessionId);
+      // 调试面板：Web 的 `dbg('ws', 'connect() → ' + debugUrl)`。token/ticket
+      // 都不在 socketUri 里（走票据交换），所以整条打印出来是安全的。
+      dbg('ws', 'connect() → $socketUri');
       attempt = _wsAuth.begin(
-        socketUri: _buildChatUri(resumeId: _sessionId ?? initialSessionId),
+        socketUri: socketUri,
         ticketEndpoint: Uri.parse(settings.buildHttpUrl('/api/auth/ws-ticket')),
         accessToken: settings.token,
       );
     } catch (_) {
+      // Web 的 `ticket exchange failed — retry scheduled`。
+      dbg('ws', 'ticket exchange failed — retry scheduled');
       if (!_disposed && generation == _connectGeneration) _scheduleReconnect();
       return;
     }
@@ -186,10 +197,16 @@ class ChatService {
           if (attempt.isCurrent && _channel == channel) _onMessage(raw);
         },
         onError: (_) {
-          if (attempt.isCurrent && _channel == channel) _scheduleReconnect();
+          if (attempt.isCurrent && _channel == channel) {
+            dbg('ws', 'socket error');
+            _scheduleReconnect();
+          }
         },
         onDone: () {
-          if (attempt.isCurrent && _channel == channel) _scheduleReconnect();
+          if (attempt.isCurrent && _channel == channel) {
+            dbg('ws', 'onclose — (isStreaming=$isStreaming)');
+            _scheduleReconnect();
+          }
         },
       );
       // Don't claim "connected" until the WebSocket handshake actually
@@ -203,6 +220,8 @@ class ChatService {
             _reconnectAttempt = 0;
             _lastActivity = DateTime.now();
             _startHeartbeat();
+            // Web 的 `dbg('ws', 'onopen — 连接已建立')`。
+            dbg('ws', 'onopen — 连接已建立');
             if (_pendingShellInput != null) {
               channel.sink.add(jsonEncode(_pendingShellInput));
             }
@@ -221,6 +240,7 @@ class ChatService {
             _scheduleReconnect();
           });
     } catch (_) {
+      dbg('ws', 'socket error — (握手/建连失败)');
       if (!_disposed && attempt.isCurrent) _scheduleReconnect();
     }
   }
@@ -738,6 +758,10 @@ class ChatService {
     );
     _reconnectAttempt++;
     _emit('reconnecting', _reconnectAttempt);
+    // App 特有的重连来源：心跳发现「半开」socket 时也会走到这里，而那条路上
+    // onclose/onError 一次都不会触发。不记一笔的话，「聊着聊着突然重连」在
+    // 面板里完全看不出来。
+    dbg('ws', 'reconnect scheduled — attempt=$_reconnectAttempt');
 
     _reconnectTimer = Timer(delay, () {
       if (!_disposed) connect();

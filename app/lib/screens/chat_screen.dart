@@ -1,6 +1,7 @@
 import '../services/chat_shell_view.dart';
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -14,6 +15,7 @@ import '../models/usage_readout.dart';
 import '../providers/chat_provider.dart';
 import '../providers/session_manager.dart';
 import '../services/auto_commit.dart';
+import '../services/chat_debug_log.dart';
 import '../services/chat_service.dart';
 import '../services/manage_service.dart';
 import '../services/scheduled_send_service.dart';
@@ -26,6 +28,7 @@ import '../widgets/floating_dock.dart';
 import '../widgets/chat_composer_fold.dart';
 import '../widgets/chat_header.dart';
 import '../widgets/chat_runtime_panels.dart';
+import '../widgets/chat_side_panels.dart';
 import '../widgets/conflict_diff_dialog.dart';
 import '../widgets/dispatch_floating_dock.dart';
 import '../widgets/scheduled_send_dock.dart';
@@ -119,6 +122,14 @@ class _ChatViewState extends State<ChatView> {
     refreshMergeReady: _refreshMergeReady,
   );
   bool _dispatchExpanded = false;
+  // 右侧两个抽屉（调试面板 + 产物边栏）的开关、列表与轮询都在这里。
+  late final ChatSidePanels _panels = ChatSidePanels(
+    settings: widget.settings,
+    isAlive: () => mounted,
+    onChanged: () {
+      if (mounted) setState(() {});
+    },
+  );
   // Current anchor of the dispatch floating dock (side + icon top px),
   // reported via onAnchorChanged so the background-tasks dock can yield to
   // it. Plain field, no setState — reading it next build is enough.
@@ -437,6 +448,10 @@ class _ChatViewState extends State<ChatView> {
     // 聊天宽度弹窗是边拖边预览的（跟 Web 一样先 apply 草稿、取消再回滚），
     // 所以真正的重排要跟着这个 notifier 走，不能等弹窗关闭。
     widget.settings.chatWidth.addListener(_onChatWidthChanged);
+    _panels.start();
+    // 调试面板的第一行（Web `chat.js:2802` 的 `dbg('state', 'page loaded…')`）：
+    // 有了它，面板里第一行永远是这个会话「什么时候开的」，后面的时间戳才有参照。
+    dbg('state', 'page loaded — 开始连接');
   }
 
   void _onChatWidthChanged() {
@@ -453,6 +468,7 @@ class _ChatViewState extends State<ChatView> {
     _livenessTimer?.cancel();
     _scheduledSend?.dispose();
     _scheduleDraftSink.dispose();
+    _panels.dispose();
     super.dispose();
   }
 
@@ -480,6 +496,9 @@ class _ChatViewState extends State<ChatView> {
       provider: provider,
       manager: context.read<SessionManager>(),
     );
+    // 产物边栏的 scope 是任务壳，握手完成后才拿得到 —— 这里每帧问一次，
+    // 拿到就换过去（web 的 `setScope` 也是外部推进来的）。
+    _panels.sync(provider.shellId);
     final session = provider.executionSessionName;
     _syncScheduledSend(session);
     if (session == _polledSession) return;
@@ -663,6 +682,9 @@ class _ChatViewState extends State<ChatView> {
     );
     final dispatchExpanded =
         _dispatchExpanded && provider.dispatchQueue.isNotEmpty;
+    // 页头的产物入口。null = 这个会话没有任务壳（web 在没有 scope 时连按钮
+    // 都不建），拉回来之前只写「产物」，对齐 web 先 `t('Title')` 再补条数。
+    final artifactsLabel = _panels.artifactsLabel;
     // Deep-link focus: resolve once, after the initial history page is applied.
     // Scheduled in a post-frame callback so the (async, setState-bearing)
     // resolution never runs during build. focusMessageId==null -> the guard
@@ -678,178 +700,196 @@ class _ChatViewState extends State<ChatView> {
     return Scaffold(
       backgroundColor: const Color(0xFFf4f8fd),
       body: SafeArea(
-        child: Stack(
-          children: [
-            Column(
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            // 产物边栏的宽度与「让位」规则（web task-artifacts.css）：宽屏
+            // （≥760）开着时正文让出 310px，窄屏直接盖上去、宽度裁到
+            // `min(310px, 100% - 18px)`。
+            final metrics = sidePanelMetrics(
+              constraints: constraints,
+              panelOpen: _panels.artifactsOpen,
+            );
+            final panelWidth = metrics.width;
+            final artifactsPush = metrics.push;
+            return Stack(
               children: [
-                ChatHeader(
-                  settings: widget.settings,
-                  onCollapse: widget.onCollapse,
-                  mergeReady: mergeReady,
-                  cwd: provider.cwd,
-                  branch: _mergeStatus?['branch']?.toString(),
-                  behind: (_mergeStatus?['behind'] as num?)?.toInt() ?? 0,
-                  onCwd: () => _showCwdDialog(context, provider),
-                  onMerge: () => _mergeCurrent(context, provider.executionSessionName),
-                  onRole: () =>
-                      _editRoleFromSession(context, provider.sessionName),
-                  onMemory: () =>
-                      _editMemoryFromSession(context, provider.sessionName),
-                  onMemo: () =>
-                      _openMemoFromSession(context, provider.sessionName),
-                  onShare: () => _shareFromSession(
-                    context,
-                    provider.sessionName,
-                    widget.settings,
+            // 宽屏时给产物边栏让位（web 的 body padding-right），窄屏 push 为 0。
+            Padding(
+              padding: EdgeInsets.only(right: artifactsPush),
+              child: Column(
+                children: [
+                  ChatHeader(
+                    settings: widget.settings,
+                    onCollapse: widget.onCollapse,
+                    mergeReady: mergeReady,
+                    cwd: provider.cwd,
+                    branch: _mergeStatus?['branch']?.toString(),
+                    behind: (_mergeStatus?['behind'] as num?)?.toInt() ?? 0,
+                    onCwd: () => _showCwdDialog(context, provider),
+                    onMerge: () => _mergeCurrent(context, provider.executionSessionName),
+                    onRole: () =>
+                        _editRoleFromSession(context, provider.sessionName),
+                    onMemory: () =>
+                        _editMemoryFromSession(context, provider.sessionName),
+                    onMemo: () =>
+                        _openMemoFromSession(context, provider.sessionName),
+                    onShare: () => _shareFromSession(
+                      context,
+                      provider.sessionName,
+                      widget.settings,
+                    ),
+                    // 强制同步与聊天宽度都挂在 ⋯ 菜单里：手机上页头那一排图标
+                    // 已经排满，这两个不是每轮都要点的动作。
+                    onForceSync: () => _forceSyncWorktree(provider),
+                    forceSyncing: _forceSyncing,
+                    onChatWidth: () =>
+                        showChatWidthDialog(context, widget.settings),
+                    autoCommit: autoCommit,
+                    onAutoCommit: () => _toggleAutoCommit(provider),
+                    onDebug: _panels.toggleDebug,
+                    artifactsLabel: artifactsLabel,
+                    onArtifacts: _panels.toggleArtifacts,
+                    advancedMode: widget.settings.advancedMode.value,
                   ),
-                  // 强制同步与聊天宽度都挂在 ⋯ 菜单里：手机上页头那一排图标
-                  // 已经排满，这两个不是每轮都要点的动作。
-                  onForceSync: () => _forceSyncWorktree(provider),
-                  forceSyncing: _forceSyncing,
-                  onChatWidth: () =>
-                      showChatWidthDialog(context, widget.settings),
-                  autoCommit: autoCommit,
-                  onAutoCommit: () => _toggleAutoCommit(provider),
-                  advancedMode: widget.settings.advancedMode.value,
-                ),
-                if (provider.pendingUserInput != null &&
-                    !provider.pendingUserInputCollapsed)
-                  _CenteredChatLane(
-                    child: ConstrainedBox(
-                      constraints: BoxConstraints(
-                        maxHeight: MediaQuery.sizeOf(context).height * 0.38,
-                      ),
-                      child: SingleChildScrollView(
-                        padding: const EdgeInsets.fromLTRB(10, 7, 10, 0),
-                        child: PendingUserInputPanel(
-                          input: provider.pendingUserInput!,
-                          enabled:
-                              provider.connectionState ==
-                              ChatConnectionState.connected,
-                          onAnswer: provider.sendMessage,
-                          onCollapse: provider.collapsePendingUserInput,
-                          onDismiss: () => _dismissPendingUserInput(provider),
+                  if (provider.pendingUserInput != null &&
+                      !provider.pendingUserInputCollapsed)
+                    _CenteredChatLane(
+                      child: ConstrainedBox(
+                        constraints: BoxConstraints(
+                          maxHeight: MediaQuery.sizeOf(context).height * 0.38,
+                        ),
+                        child: SingleChildScrollView(
+                          padding: const EdgeInsets.fromLTRB(10, 7, 10, 0),
+                          child: PendingUserInputPanel(
+                            input: provider.pendingUserInput!,
+                            enabled:
+                                provider.connectionState ==
+                                ChatConnectionState.connected,
+                            onAnswer: provider.sendMessage,
+                            onCollapse: provider.collapsePendingUserInput,
+                            onDismiss: () => _dismissPendingUserInput(provider),
+                          ),
                         ),
                       ),
                     ),
-                  ),
-                // Liveness pill: only working (🟢) and stalled (🔴) earn a
-                // dedicated line — they say "a turn is running / stuck".
-                // idle (🟡) and unknown (⚪) are the resting states; a
-                // permanent "空闲" row under the header is pure noise.
-                if (chatLivenessDeservesLine(_liveness?['state'] as String?))
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: Padding(
-                      padding: const EdgeInsets.only(
-                        left: 12,
-                        right: 12,
-                        bottom: 2,
+                  // Liveness pill: only working (🟢) and stalled (🔴) earn a
+                  // dedicated line — they say "a turn is running / stuck".
+                  // idle (🟡) and unknown (⚪) are the resting states; a
+                  // permanent "空闲" row under the header is pure noise.
+                  if (chatLivenessDeservesLine(_liveness?['state'] as String?))
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Padding(
+                        padding: const EdgeInsets.only(
+                          left: 12,
+                          right: 12,
+                          bottom: 2,
+                        ),
+                        child: livenessChip(_liveness),
                       ),
-                      child: livenessChip(_liveness),
+                    ),
+                  if (provider.hasClassify)
+                    Builder(
+                      builder: (_) {
+                        // 显隐规则集中在 helper 里（web can-mark-done /
+                        // can-cancel-task 两个 class 的等价物），这里只负责把动作接上。
+                        final actions = classifyBarActions(provider.classifyState);
+                        return AuxClassifyBar(
+                          goal: provider.classifyGoal,
+                          phase: provider.classifyPhase,
+                          classifyState: provider.classifyState,
+                          onMarkTurnSucceeded: actions.canMarkDone
+                              ? () => _markTurnSucceeded(provider)
+                              : null,
+                          onCancelTurn: actions.canCancelTask
+                              ? provider.cancel
+                              : null,
+                        );
+                      },
+                    ),
+                  _CenteredChatLane(
+                    child: ChatRuntimeNoticePanel(
+                      apiError: provider.apiErrorPolicy,
+                      limit: provider.limitView,
+                      balance: provider.balanceView,
+                      arkUsage: provider.arkQuotaView,
+                      zhipuUsage: provider.zhipuQuotaView,
+                      kimiUsage: provider.kimiQuotaView,
+                      claudeUsage: provider.claudeLimitView,
+                      qoderUsage: provider.qoderQuotaView,
+                      opencodeUsage: provider.opencodeQuotaView,
+                      codexUsage: provider.codexQuotaView,
+                      onClaudeQuotaTap: () => provider.handleClaudeQuotaTap(),
+                      onQoderQuotaTap: () => provider.handleQoderQuotaTap(),
+                      onOpenCodeQuotaTap: () => provider.handleOpenCodeQuotaTap(),
+                      onCodexQuotaTap: () => provider.handleCodexQuotaTap(),
+                      onArkQuotaTap: () => provider.handleArkQuotaTap(),
+                      onZhipuQuotaTap: () => provider.handleZhipuQuotaTap(),
+                      onKimiQuotaTap: () => provider.handleKimiQuotaTap(),
+                      onRetry: provider.apiErrorPolicy?.canManualRetry == true
+                          ? () => _retryApiError(provider)
+                          : null,
                     ),
                   ),
-                if (provider.hasClassify)
-                  Builder(
-                    builder: (_) {
-                      // 显隐规则集中在 helper 里（web can-mark-done /
-                      // can-cancel-task 两个 class 的等价物），这里只负责把动作接上。
-                      final actions = classifyBarActions(provider.classifyState);
-                      return AuxClassifyBar(
-                        goal: provider.classifyGoal,
-                        phase: provider.classifyPhase,
-                        classifyState: provider.classifyState,
-                        onMarkTurnSucceeded: actions.canMarkDone
-                            ? () => _markTurnSucceeded(provider)
-                            : null,
-                        onCancelTurn: actions.canCancelTask
-                            ? provider.cancel
-                            : null,
-                      );
-                    },
-                  ),
-                _CenteredChatLane(
-                  child: ChatRuntimeNoticePanel(
-                    apiError: provider.apiErrorPolicy,
-                    limit: provider.limitView,
-                    balance: provider.balanceView,
-                    arkUsage: provider.arkQuotaView,
-                    zhipuUsage: provider.zhipuQuotaView,
-                    kimiUsage: provider.kimiQuotaView,
-                    claudeUsage: provider.claudeLimitView,
-                    qoderUsage: provider.qoderQuotaView,
-                    opencodeUsage: provider.opencodeQuotaView,
-                    codexUsage: provider.codexQuotaView,
-                    onClaudeQuotaTap: () => provider.handleClaudeQuotaTap(),
-                    onQoderQuotaTap: () => provider.handleQoderQuotaTap(),
-                    onOpenCodeQuotaTap: () => provider.handleOpenCodeQuotaTap(),
-                    onCodexQuotaTap: () => provider.handleCodexQuotaTap(),
-                    onArkQuotaTap: () => provider.handleArkQuotaTap(),
-                    onZhipuQuotaTap: () => provider.handleZhipuQuotaTap(),
-                    onKimiQuotaTap: () => provider.handleKimiQuotaTap(),
-                    onRetry: provider.apiErrorPolicy?.canManualRetry == true
-                        ? () => _retryApiError(provider)
-                        : null,
-                  ),
-                ),
-                // 卡在冲突里的 rebase 优先于「落后基分支」：那种状态下 behind 是 0
-                // （rebase 没走完，没得比），两个条不会同时出现，但顺序说明了
-                // 谁更该先处理 —— 冲突没解决，同步就还没结束。
-                if (_conflictFiles().isNotEmpty)
-                  WorktreeConflictBanner(
-                    files: _conflictFiles(),
-                    onHelp: () => _showConflictHelp(_conflictFiles()),
-                    onContinue: () => _resolveRebase('continue'),
-                    onAbort: () => _resolveRebase('abort'),
-                    onForceSync: () => _forceSyncWorktree(provider),
-                    forceSyncing: _forceSyncing,
-                  ),
-                if (_behindCount() > 0)
-                  _BehindMainBanner(
-                    behind: _behindCount(),
-                    baseBranch: _baseBranchName(),
-                    syncing: _syncing,
-                    onSync: () => _syncWorktree(provider.executionSessionName),
-                    onForceSync: () => _forceSyncWorktree(provider),
-                    forceSyncing: _forceSyncing,
-                  ),
-                Expanded(
-                  child: _MessageList(
-                    scrollCtrl: _scrollCtrl,
-                    highlightId: _highlightId,
-                    focusKey: _focusKey,
-                    onHighlightDone: _clearHighlight,
-                  ),
-                ),
-                if (widget.settings.advancedMode.value)
-                  const _CenteredChatLane(child: _ContextUsageBar()),
-                if (mergeReady)
-                  MergeHintBar(
-                    text: _mergeStatusText(_mergeStatus),
-                    onMerge: () =>
-                        _mergeCurrent(context, provider.executionSessionName),
-                    onDiff: () => showSessionDiffDialog(
-                      context,
-                      settings: widget.settings,
-                      sessionId: provider.executionSessionName,
+                  // 卡在冲突里的 rebase 优先于「落后基分支」：那种状态下 behind 是 0
+                  // （rebase 没走完，没得比），两个条不会同时出现，但顺序说明了
+                  // 谁更该先处理 —— 冲突没解决，同步就还没结束。
+                  if (_conflictFiles().isNotEmpty)
+                    WorktreeConflictBanner(
+                      files: _conflictFiles(),
+                      onHelp: () => _showConflictHelp(_conflictFiles()),
+                      onContinue: () => _resolveRebase('continue'),
+                      onAbort: () => _resolveRebase('abort'),
+                      onForceSync: () => _forceSyncWorktree(provider),
+                      forceSyncing: _forceSyncing,
+                    ),
+                  if (_behindCount() > 0)
+                    _BehindMainBanner(
+                      behind: _behindCount(),
+                      baseBranch: _baseBranchName(),
+                      syncing: _syncing,
+                      onSync: () => _syncWorktree(provider.executionSessionName),
+                      onForceSync: () => _forceSyncWorktree(provider),
+                      forceSyncing: _forceSyncing,
+                    ),
+                  Expanded(
+                    child: _MessageList(
+                      scrollCtrl: _scrollCtrl,
+                      highlightId: _highlightId,
+                      focusKey: _focusKey,
+                      onHighlightDone: _clearHighlight,
                     ),
                   ),
-                // 手机上往回翻消息时输入区会跟着缩小（Web 的
-                // chat-composer-collapse.js）；桌面宽度下它原样不动。
-                ChatComposerFold(
-                  scrollController: _scrollCtrl,
-                  inputController: _composerCtrl,
-                  inputFocusNode: _composerFocus,
-                  child: _CenteredChatLane(
-                    child: InputBar(
-                      controller: _composerCtrl,
-                      focusNode: _composerFocus,
-                      scheduledSend: _scheduledSend,
-                      draftSink: _scheduleDraftSink,
+                  if (widget.settings.advancedMode.value)
+                    const _CenteredChatLane(child: _ContextUsageBar()),
+                  if (mergeReady)
+                    MergeHintBar(
+                      text: _mergeStatusText(_mergeStatus),
+                      onMerge: () =>
+                          _mergeCurrent(context, provider.executionSessionName),
+                      onDiff: () => showSessionDiffDialog(
+                        context,
+                        settings: widget.settings,
+                        sessionId: provider.executionSessionName,
+                      ),
+                    ),
+                  // 手机上往回翻消息时输入区会跟着缩小（Web 的
+                  // chat-composer-collapse.js）；桌面宽度下它原样不动。
+                  ChatComposerFold(
+                    scrollController: _scrollCtrl,
+                    inputController: _composerCtrl,
+                    inputFocusNode: _composerFocus,
+                    child: _CenteredChatLane(
+                      child: InputBar(
+                        controller: _composerCtrl,
+                        focusNode: _composerFocus,
+                        scheduledSend: _scheduledSend,
+                        draftSink: _scheduleDraftSink,
+                      ),
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
             if (!dispatchExpanded &&
                 provider.pendingUserInput != null &&
@@ -924,7 +964,16 @@ class _ChatViewState extends State<ChatView> {
                 leftMinBottom: 96,
                 rightMinBottom: _dispatchRightReserve(provider),
               ),
+            Positioned.fill(
+              child: ChatSidePanelStack(
+                panels: _panels,
+                settings: widget.settings,
+                panelWidth: panelWidth,
+              ),
+            ),
           ],
+        );
+          },
         ),
       ),
     );
@@ -2312,13 +2361,10 @@ class _MessageListState extends State<_MessageList> {
     );
     final lastUserTurnId = lastUserMessageId(messages);
     final admissionProgress = provider.admissionProgressText;
-    final showThinking =
-        admissionProgress != null ||
-        provider.isStreaming &&
-            (messages.isEmpty ||
-                messages.last.role != MessageRole.assistant ||
-                messages.last.content.isEmpty &&
-                    messages.last.toolCalls.isEmpty);
+    // 「思考中」那一行的渲染条件收在 provider 上：调试面板也要问同一件事
+    // （`stuck` 徽章 = thinking 还在屏幕上但已经不 streaming），两边各写一份
+    // 迟早会漂移，而漂移正好会让这个面板失去意义。
+    final showThinking = provider.thinkingIndicatorVisible;
 
     _scrollToBottom();
 
