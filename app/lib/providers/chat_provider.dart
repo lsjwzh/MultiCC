@@ -1132,6 +1132,23 @@ class ChatProvider extends ChangeNotifier {
         _historyHasMore = reset['hasMore'] == true;
         _historyExhausted = !_historyHasMore;
         _oldestLoadedMsgId = _firstLoadedMsgId();
+        // 清空/保留的反馈，文案与判定都照 web 的 handleHistoryReset 来。历史
+        // 在这一刻已经换掉了，这条系统行回答的是「刚才那下操作」——所以它必须
+        // 排在 _replaceHistory 之后，否则会被换进来的历史冲掉。
+        final keep = int.tryParse('${reset['keep'] ?? ''}') ?? 0;
+        if (keep > 0) {
+          final removed = int.tryParse('${reset['removedCount'] ?? ''}') ?? 0;
+          _addSystemMsg(
+            removed > 0
+                ? t('contextKept', {
+                    'removed': '$removed',
+                    'kept': '${int.tryParse('${reset['retainedCount'] ?? ''}') ?? 0}',
+                  })
+                : t('contextResetKept'),
+          );
+        } else {
+          _addSystemMsg(t('contextCleared'));
+        }
         notifyListeners();
         break;
 
@@ -2776,6 +2793,17 @@ class ChatProvider extends ChangeNotifier {
       _addSystemMsg(t('clearChatHistoryOffline'));
       notifyListeners();
     }
+  }
+
+  /// 一条只在本机存在的系统行（斜杠命令的回显）。
+  ///
+  /// 它不进 transcript、不发给模型，也就不会被服务端在下一次 chat_history
+  /// 里重放 —— 和 web 组合器里 `addSystemMessage` 的角色一样：命令的反馈
+  /// 属于「这一次操作」，不属于会话内容。
+  void addLocalSystemMessage(String text) {
+    final line = text.trim();
+    if (line.isEmpty) return;
+    _addSystemMsg(line);
   }
 
   // Reconnect (app resume / half-open socket recovery). We still reload the

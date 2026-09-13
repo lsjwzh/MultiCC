@@ -500,6 +500,8 @@
   "clearAllChatHistory": "清空消息显示",
   "clearAllChatHistoryConfirm": "清空当前会话的消息显示？消息原文和任务记录会保留，正在运行的任务会继续。",
   "clearChatHistoryOffline": "连接已断开，未清理消息显示。请重新连接后再试。",
+  "slashHelp": "命令：/clear — 清空聊天记录 | /compact — 让 Claude 压缩上下文 | /cost — 显示费用汇总 | /goal <任务> — 以 Goal 模式执行（受设置里的轮次/预算限制约束）",
+  "slashGoalUsage": "用法：/goal <任务描述> — 以 Goal 模式（目标驱动、自主执行到完成）发送，受设置里的轮次/预算限制约束。也可点输入框右侧 🎯 先做目标预检。",
   "rotateNativeContext": "压缩上下文",
   "rotateNativeContextConfirm": "确定新开原生 CLI 上下文吗？完整页面历史会保留，下一条消息将携带一次性交接摘要。",
   "rotateNativeContextDone": "原生上下文已轮换；完整聊天历史已保留，下一条消息将进入新会话。",
