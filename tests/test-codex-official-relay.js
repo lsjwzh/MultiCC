@@ -585,3 +585,39 @@ test('mount uses the attempt-scoped CPR namespace and mounts once per app', () =
     '/codex-proxy/:providerId/responses',
   ]);
 });
+
+test('Official relay proactively strips third-party reasoning content before upstream', async () => {
+  const calls = [];
+  const handler = createCodexOfficialRelayHandler({
+    getProvider: () => officialProvider(),
+    readCredential: () => ({ ok: true, accessToken: 'tok', accountId: 'acct' }),
+    fetch: async (url, init) => {
+      calls.push(JSON.parse(init.body));
+      return new Response('data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}\n\n', {
+        status: 200, headers: { 'content-type': 'text/event-stream' },
+      });
+    },
+  });
+  const thirdPartyThread = { model: 'gpt-5.6-sol', stream: true, input: [
+    { type: 'reasoning', id: 'rs_1', summary: [], content: [{ type: 'reasoning_text', text: 'recorded on DeepSeek' }] },
+    { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'kept' }] },
+  ] };
+  const req = request(structuredClone(thirdPartyThread));
+  const res = response();
+  await handler(req, res, () => assert.fail('Official must not fall through'));
+  assert.equal(calls.length, 1, 'no 400+repair round-trip — stripped up front');
+  assert.equal(Object.hasOwn(calls[0].input[0], 'content'), false);
+  assert.deepEqual(calls[0].input[1], thirdPartyThread.input[1]);
+  assert.deepEqual(req.body.input[0].content, [{ type: 'reasoning_text', text: 'recorded on DeepSeek' }], 'request body copy only');
+});
+
+test('non-Official providers keep reasoning content untouched on the fall-through path', async () => {
+  let passed = null;
+  const handler = createCodexOfficialRelayHandler({
+    getProvider: () => ({ appType: 'codex', settingsConfig: { auth: { OPENAI_API_KEY: 'sk-x' } } }),
+    fetch: async () => { throw new Error('must not fetch'); },
+  });
+  const body = { input: [{ type: 'reasoning', summary: [], content: [{ type: 'reasoning_text', text: 'kept' }] }] };
+  await handler(request(structuredClone(body)), response(), () => { passed = true; });
+  assert.equal(passed, true);
+});

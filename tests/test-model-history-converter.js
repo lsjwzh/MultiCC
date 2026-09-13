@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { preprocessResponsesHistory, repairRejectedResponsesHistory } = require('../src/model-history-converter');
+const { preprocessResponsesHistory, repairRejectedResponsesHistory, stripReasoningContent } = require('../src/model-history-converter');
 
 test('all observed history types survive preprocessing and valid IDs remain unchanged', () => {
   const body = { input: [
@@ -101,4 +101,43 @@ test('unrelated protocol histories are not implicitly transplanted', () => {
   for (const body of [undefined, { input: 'hello' }, { messages: [{ role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1' }] }] }]) {
     assert.equal(preprocessResponsesHistory(body).body, body);
   }
+});
+
+test('stripReasoningContent empties third-party reasoning content the official backend rejects', () => {
+  const body = { model: 'gpt-5.2', input: [
+    { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'kept' }] },
+    { type: 'reasoning', id: 'rs_1', summary: [], content: [{ type: 'reasoning_text', text: 'third-party chain of thought' }] },
+    { type: 'reasoning', id: 'rs_2', summary: [{ type: 'summary_text', text: 'official shape' }] },
+    { type: 'reasoning', id: 'rs_3', summary: [], content: [] },
+    { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'exec', arguments: '{}' },
+  ] };
+  const original = structuredClone(body);
+  const result = stripReasoningContent(body);
+  assert.deepEqual(body, original, 'input body untouched');
+  assert.equal(Object.hasOwn(result.body.input[1], 'content'), false);
+  assert.deepEqual(result.body.input[2], body.input[2]);
+  assert.deepEqual(result.body.input[3], body.input[3]);
+  assert.deepEqual(result.body.input[0], body.input[0]);
+  assert.equal(result.changes.length, 1);
+  assert.deepEqual(result.changes[0], { path: 'input[1].content', itemType: 'reasoning', action: 'omit', rule: 'reasoning_content_not_accepted' });
+  assert.deepEqual(stripReasoningContent(result.body).changes, [], 'idempotent');
+});
+
+test('an array-too-long content rejection repairs by stripping every reasoning item at once', () => {
+  const body = { input: [
+    { type: 'reasoning', id: 'rs_1', summary: [], content: [{ type: 'reasoning_text', text: 'one' }] },
+    { type: 'reasoning', id: 'rs_2', summary: [], content: [{ type: 'reasoning_text', text: 'two' }] },
+  ] };
+  const rejection = {
+    message: "Invalid 'input[0].content': array too long. Expected an array with maximum length 0, but got an array with length 1 instead.",
+  };
+  const repaired = repairRejectedResponsesHistory(body, rejection);
+  assert.equal(repaired.changes.length, 2, 'one repair round must fix every item, not just input[0]');
+  assert.equal(Object.hasOwn(repaired.body.input[0], 'content'), false);
+  assert.equal(Object.hasOwn(repaired.body.input[1], 'content'), false);
+  assert.equal(repairRejectedResponsesHistory(repaired.body, rejection), null);
+  // The same param with a non-length rejection (unknown parameter) is NOT this rule.
+  assert.equal(repairRejectedResponsesHistory({ input: body.input }, { param: 'input[0].content', message: "Unknown parameter: 'input[0].content'." }), null);
+  // A rejection that names no content field leaves reasoning untouched.
+  assert.equal(repairRejectedResponsesHistory(body, { message: 'Account is suspended' }), null);
 });
