@@ -41,6 +41,18 @@ const Map<String, String> airStateNames = {
 String airLabel(String? value) =>
     (value == null || value.isEmpty) ? '' : (airStateNames[value] ?? value);
 
+/// 这行卡在哪：先说容量/租约这类会自己好转的原因，没有才说目录是计划态还是已经
+/// 备好 —— 同 Web Air 的 `resourceText`。任务行和详情面板都要这一句，所以放在
+/// 这里而不是任一处界面代码里。
+String airResourceText(Map<String, dynamic>? resource) {
+  if (resource == null) return '';
+  final capacity = resource['capacityReason']?.toString();
+  if (capacity != null && capacity.isNotEmpty) return airLabel(capacity);
+  final lease = resource['lease']?.toString();
+  if (lease != null && lease.isNotEmpty && lease != 'idle') return airLabel(lease);
+  return airLabel(resource['residency']?.toString());
+}
+
 /// `/api/air` 的一个工作目录。
 class AirDirectory {
   const AirDirectory({required this.id, required this.name, required this.path});
@@ -102,17 +114,7 @@ class AirTask {
   /// 「完成」在 Air 里有两个词：工作流阶段走 done，归档走 archived。
   bool get closed => status == 'archived' || workflowStage == 'done';
 
-  /// 这行卡在哪：先说容量/租约这类会自己好转的原因，没有才说目录是计划态还是
-  /// 已经备好 —— 同 Web Air 的 `resourceText`。
-  String get resourceText {
-    final capacity = resource['capacityReason']?.toString();
-    if (capacity != null && capacity.isNotEmpty) return airLabel(capacity);
-    final lease = resource['lease']?.toString();
-    if (lease != null && lease.isNotEmpty && lease != 'idle') {
-      return airLabel(lease);
-    }
-    return airLabel(resource['residency']?.toString());
-  }
+  String get resourceText => airResourceText(resource);
 }
 
 /// `/api/air` 的一次快照。
@@ -220,6 +222,17 @@ class AirService {
   /// 会话，不能在这里接管。
   Future<Map<String, dynamic>> openTask(String taskId) =>
       _request('/api/air/tasks/${Uri.encodeComponent(taskId)}');
+
+  /// 同一个端点，但读的是详情而不是会话：`attribution` / `execution` 只在这一份
+  /// 响应里，任务行上那份 `/api/air` 快照没有它们。
+  Future<Map<String, dynamic>> taskDetails(String taskId) => openTask(taskId);
+
+  /// 重新核验本轮代码的合并记录。它只刷新「交付到哪儿了」这条记录，归属本身仍
+  /// 以完整交付条件为准（同 Web `reconcileDelivery`）。
+  Future<void> reconcileDelivery(String taskId) => _request(
+    '/api/air/tasks/${Uri.encodeComponent(taskId)}/delivery/reconcile',
+    method: 'POST',
+  );
 
   /// 建任务。第一条消息由 [sendFirstMessage] 单独发出，中途失败时任务已经存在
   /// —— Web Air 会退回目录并把草稿留在会话存储里，这里用同样的顺序。
