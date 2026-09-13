@@ -7,15 +7,19 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../providers/session_manager.dart';
 import '../screens/docs_registry_screen.dart';
+import '../screens/push_settings_screen.dart';
 import '../screens/settings_screen.dart';
+import '../screens/setup_screen.dart';
 import '../services/air_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
 import 'air/air_console.dart';
 import 'air/air_destinations.dart';
-import 'air/air_panels.dart';
+import 'air/air_ops.dart';
+import 'air/air_ops_store.dart';
 import 'air/air_palette.dart';
+import 'air/air_panels.dart';
 import 'air/air_schedules.dart';
 import 'air/air_sidebar.dart';
 import 'air/air_task_config.dart';
@@ -62,6 +66,10 @@ class _AirTasksViewState extends State<AirTasksView>
     settings: widget.settings,
     httpClient: widget.httpClient,
   );
+  late final AirOpsStore _ops = AirOpsStore(
+    settings: widget.settings,
+    httpClient: widget.httpClient,
+  );
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   AirLocalStore? _store;
   AirSnapshot? _data;
@@ -78,6 +86,7 @@ class _AirTasksViewState extends State<AirTasksView>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     unawaited(_loadStore());
+    _ops.start();
     _refresh();
     _timer = Timer.periodic(const Duration(seconds: 4), (_) {
       if (_foreground) _refresh();
@@ -100,6 +109,7 @@ class _AirTasksViewState extends State<AirTasksView>
     _timer?.cancel();
     widget.settings.advancedMode.removeListener(_onAdvancedModeChanged);
     _service.close();
+    _ops.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -698,6 +708,31 @@ class _AirTasksViewState extends State<AirTasksView>
           _closeDrawer();
           unawaited(_openAllDestinations());
         },
+        ops: _ops,
+        onOpenPush: () => _push((_) => PushSettingsScreen(settings: widget.settings)),
+        onLogout: () => unawaited(
+          confirmAirLogout(
+            context,
+            onLogout: () async {
+              _closeDrawer();
+              // 宿主先拿到手：等令牌清完再去找 Navigator 就太晚了，那中间隔着一个
+              // 异步口。
+              final navigator = Navigator.of(context, rootNavigator: true);
+              await _ops.logout();
+              if (!mounted) return;
+              // 整个壳都换掉：连接设置那一页接上之后，这一棵树上所有的会话、
+              // socket 和轮询都该跟着结束。
+              unawaited(
+                navigator.pushAndRemoveUntil(
+                  MaterialPageRoute<void>(
+                    builder: (_) => SetupScreen(settings: widget.settings),
+                  ),
+                  (route) => false,
+                ),
+              );
+            },
+          ),
+        ),
         onOpenVoiceCall: widget.onOpenVoiceCall,
         onAdvancedModeChanged: widget.settings.setAdvancedMode,
       ),

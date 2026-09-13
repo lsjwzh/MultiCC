@@ -118,6 +118,14 @@ Future<SettingsService> _settings() async {
 }
 
 void main() {
+  // 侧栏整条一起滚（底部那组在 600 高的测试视口里要滚一下才到眼前）。
+  Future<void> tapInSidebar(WidgetTester tester, Finder finder) async {
+    await tester.ensureVisible(finder);
+    await tester.pumpAndSettle();
+    await tester.tap(finder);
+    await tester.pumpAndSettle();
+  }
+
   // 状态徽标上的字来自 i18n 词典（注册表只给 key），不加载就只有 key。
   setUpAll(() => I18n.init('zh'));
 
@@ -155,8 +163,12 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('旧任务'), findsOneWidget);
     expect(tester.takeException(), isNull);
-    // 首页只问一次 /api/air —— 目录库、侧栏、统计都从这一份快照里出。
-    expect(requests, ['/api/air']);
+    // 首页只问一次 /api/air —— 目录库、侧栏、统计都从这一份快照里出。（侧栏底部
+    // 的主机运维是另一条线，它自己问 /api/server-info 和 /api/version-check。）
+    expect(
+      requests.where((path) => path.startsWith('/api/air')),
+      ['/api/air'],
+    );
     await tester.pumpWidget(const SizedBox());
     client.close();
   });
@@ -283,10 +295,8 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('air-menu-button')));
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('air-more-section')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('全部功能'));
-    await tester.pumpAndSettle();
+    await tapInSidebar(tester, find.byKey(const ValueKey('air-more-section')));
+    await tapInSidebar(tester, find.text('全部功能'));
     await tester.tap(find.byKey(const ValueKey('air-dest-cron')));
     await tester.pumpAndSettle();
 
@@ -316,13 +326,11 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('air-menu-button')));
     await tester.pumpAndSettle();
     // 展开「更多与系统」，原生独占的语音通话就摆在这里。
-    await tester.tap(find.byKey(const ValueKey('air-more-section')));
-    await tester.pumpAndSettle();
+    await tapInSidebar(tester, find.byKey(const ValueKey('air-more-section')));
     expect(find.text('全部功能'), findsOneWidget);
     expect(find.text('语音通话 · BETA'), findsOneWidget);
 
-    await tester.tap(find.text('全部功能'));
-    await tester.pumpAndSettle();
+    await tapInSidebar(tester, find.text('全部功能'));
     expect(find.byKey(const ValueKey('air-all-destinations')), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('air-dest-push')));
     await tester.pumpAndSettle();
@@ -343,8 +351,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('air-menu-button')));
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('air-more-section')));
-    await tester.pumpAndSettle();
+    await tapInSidebar(tester, find.byKey(const ValueKey('air-more-section')));
     expect(find.text('全部功能'), findsOneWidget);
     expect(find.text('语音通话 · BETA'), findsNothing);
     expect(tester.takeException(), isNull);
@@ -400,7 +407,10 @@ void main() {
     await tester.pumpAndSettle();
 
     // 面板自己拉一次详情 —— 任务行那份快照里没有 attribution / execution。
-    expect(requests, ['/api/air', '/api/air/tasks/t1']);
+    expect(
+      requests.where((path) => path.startsWith('/api/air')),
+      ['/api/air', '/api/air/tasks/t1'],
+    );
     expect(find.byKey(const ValueKey('air-details-panel')), findsOneWidget);
     // 计划任务还没发第一条消息：交付卡说的是「计划尚未执行」，不是「任务已就绪」。
     expect(find.text('计划尚未执行'), findsOneWidget);
