@@ -554,7 +554,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.ok(await page.waitFor(`document.getElementById('task-state').textContent.includes('归属待核验')`));
     await page.waitFor(`${frame}?.URL.includes('session=task-a') && ${frame}.readyState==='complete'`);
     assert.equal(await page.evaluate(`getComputedStyle(document.querySelector('#task-state .ts-attr')).display!=='none'`), true, '桌面上「归属待核验」留着');
-    for (const width of [390, 320]) {
+    for (const width of [390, 360, 320]) {
       await page.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: true });
       const attributed = await page.evaluate(`(()=>{const g=id=>document.getElementById(id);const s=g('task-state'),t=g('task-title'),h=g('task-header');
         return {h:Math.round(h.getBoundingClientRect().height), stateH:Math.round(s.getBoundingClientRect().height), cls:s.className, attr:[...s.querySelectorAll('.ts-attr')].map(e=>getComputedStyle(e).display),
