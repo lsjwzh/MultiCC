@@ -29,6 +29,8 @@ class AirSidebar extends StatelessWidget {
     required this.onOpenDocs,
     required this.onOpenMemory,
     required this.onOpenSettings,
+    required this.onOpenAllDestinations,
+    this.onOpenVoiceCall,
     this.onAdvancedModeChanged,
   });
 
@@ -52,6 +54,8 @@ class AirSidebar extends StatelessWidget {
   final VoidCallback onOpenDocs;
   final VoidCallback onOpenMemory;
   final VoidCallback onOpenSettings;
+  final VoidCallback onOpenAllDestinations;
+  final VoidCallback? onOpenVoiceCall;
   final ValueChanged<bool>? onAdvancedModeChanged;
 
   AirDirectory? get _directory => data?.directoryOf(directoryId);
@@ -214,6 +218,8 @@ class AirSidebar extends StatelessWidget {
               onOpenMemory: onOpenMemory,
               onOpenSettings: onOpenSettings,
               onOpenTaskBoard: onOpenTaskBoard,
+              onOpenAllDestinations: onOpenAllDestinations,
+              onOpenVoiceCall: onOpenVoiceCall,
             ),
             const Divider(height: 1, color: AppColors.line),
             Padding(
@@ -503,6 +509,8 @@ class _MoreSection extends StatelessWidget {
     required this.onOpenMemory,
     required this.onOpenSettings,
     required this.onOpenTaskBoard,
+    required this.onOpenAllDestinations,
+    required this.onOpenVoiceCall,
   });
 
   final bool advancedMode;
@@ -511,6 +519,10 @@ class _MoreSection extends StatelessWidget {
   final VoidCallback onOpenMemory;
   final VoidCallback onOpenSettings;
   final VoidCallback onOpenTaskBoard;
+  final VoidCallback onOpenAllDestinations;
+
+  /// 机器级语音通话。原生独占 —— Web 侧没有对应页面。
+  final VoidCallback? onOpenVoiceCall;
 
   @override
   Widget build(BuildContext context) {
@@ -555,6 +567,20 @@ class _MoreSection extends StatelessWidget {
             label: '查看任务看板',
             onTap: onOpenTaskBoard,
           ),
+          _NavRow(
+            semanticKey: 'air-more-all',
+            icon: Icons.apps_rounded,
+            label: '全部功能',
+            onTap: onOpenAllDestinations,
+          ),
+          // 语音通话是原生独占的，Web Air 的侧栏里没有这一行。
+          if (onOpenVoiceCall != null)
+            _NavRow(
+              semanticKey: 'air-more-voice-call',
+              icon: Icons.mic_rounded,
+              label: '语音通话 · BETA',
+              onTap: onOpenVoiceCall!,
+            ),
           Semantics(
             key: const ValueKey('air-more-advanced'),
             toggled: advancedMode,
