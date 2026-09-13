@@ -109,6 +109,27 @@ function stripReasoningContent(body) {
   return changes.length ? { body: { ...body, input }, changes } : { body, changes };
 }
 
+// Third-party Responses gateways also mint their OWN encrypted reasoning
+// blobs (GLM-style Fernet `gAAAAA…`, DeepSeek-style `uuid-N`), which the
+// official ChatGPT backend cannot decrypt and rejects with "The encrypted
+// content … could not be verified". Drop the field from every reasoning item
+// in the request copy; the item keeps its id/summary, which is exactly the
+// shape official itself produces when no encrypted content exists.
+function stripUnverifiableEncryptedContent(body) {
+  if (!Array.isArray(body?.input)) return { body, changes: [] };
+  const changes = [];
+  const input = body.input.map((item, index) => {
+    if (item?.type === 'reasoning' && typeof item.encrypted_content === 'string' && item.encrypted_content) {
+      const copy = { ...item };
+      delete copy.encrypted_content;
+      changes.push(change(index, item, 'encrypted_content', 'omit', 'encrypted_content_unverifiable'));
+      return copy;
+    }
+    return item;
+  });
+  return changes.length ? { body: { ...body, input }, changes } : { body, changes };
+}
+
 // One rejection-driven fallback, restricted to optional metadata. Never drop a
 // whole tool, a call/result, arguments, names or a schema; the one deliberate
 // exception is reasoning content, which official rejects outright (see
@@ -152,6 +173,13 @@ function repairRejectedResponsesHistory(body, error) {
     const stripped = stripReasoningContent(body);
     if (stripped.changes.length) return stripped;
   }
+  // Backstop for third-party encrypted reasoning: gateways mint their own
+  // encrypted_content blobs that official cannot decrypt ("could not be
+  // verified"), so drop every reasoning item's encrypted blob in one pass.
+  if (/encrypted content .{0,120}(?:could not be verified|could not be decrypted|could not be parsed)/i.test(message)) {
+    const stripped = stripUnverifiableEncryptedContent(body);
+    if (stripped.changes.length) return stripped;
+  }
   const toolMatch = /^tools\[(\d+)\]\.(strict|defer_loading|cache_control)$/.exec(param);
   if (!unsupported || !toolMatch || !Array.isArray(body?.tools)) return null;
   const index = Number(toolMatch[1]);
@@ -168,4 +196,9 @@ function repairRejectedResponsesHistory(body, error) {
   };
 }
 
-module.exports = { preprocessResponsesHistory, repairRejectedResponsesHistory, stripReasoningContent };
+module.exports = {
+  preprocessResponsesHistory,
+  repairRejectedResponsesHistory,
+  stripReasoningContent,
+  stripUnverifiableEncryptedContent,
+};

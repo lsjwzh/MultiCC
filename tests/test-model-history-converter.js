@@ -123,6 +123,29 @@ test('stripReasoningContent empties third-party reasoning content the official b
   assert.deepEqual(stripReasoningContent(result.body).changes, [], 'idempotent');
 });
 
+test('an encrypted-content verification rejection strips every reasoning blob at once', () => {
+  const body = { input: [
+    { type: 'reasoning', id: 'rs_1', summary: [], encrypted_content: '944aa366-6fab-4f1e-8a03-3dfb22f964ef-0' },
+    { type: 'reasoning', id: 'rs_2', summary: [], encrypted_content: 'gAAAAABqooA_IxjuReie' },
+    { type: 'reasoning', id: 'rs_3', summary: [{ type: 'summary_text', text: 'kept' }], encrypted_content: '' },
+    { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'kept' }], encrypted_content: 'not-reasoning' },
+  ] };
+  const original = structuredClone(body);
+  const rejection = {
+    message: 'The encrypted content 944a...ef-0 could not be verified. Reason: Encrypted content could not be decrypted or parsed.',
+  };
+  const repaired = repairRejectedResponsesHistory(body, rejection);
+  assert.equal(repaired.changes.length, 2, 'both third-party blobs go in one repair round');
+  assert.equal(Object.hasOwn(repaired.body.input[0], 'encrypted_content'), false);
+  assert.equal(Object.hasOwn(repaired.body.input[1], 'encrypted_content'), false);
+  assert.equal(repaired.body.input[2].encrypted_content, '', 'empty string blob is not a payload; untouched');
+  assert.equal(repaired.body.input[3].encrypted_content, 'not-reasoning', 'non-reasoning items are opaque');
+  assert.deepEqual(body, original, 'input body untouched');
+  assert.equal(repairRejectedResponsesHistory(repaired.body, rejection), null, 'idempotent');
+  // A rejection that is not about encrypted verification leaves history alone.
+  assert.equal(repairRejectedResponsesHistory(body, { message: 'Account is suspended' }), null);
+});
+
 test('an array-too-long content rejection repairs by stripping every reasoning item at once', () => {
   const body = { input: [
     { type: 'reasoning', id: 'rs_1', summary: [], content: [{ type: 'reasoning_text', text: 'one' }] },
