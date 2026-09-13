@@ -135,8 +135,10 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    // 两份数据各拉一次，控制台不自己造统计口径。
-    expect(requests, ['/api/air', '/api/cron']);
+    // 两份数据各拉一次，控制台不自己造统计口径。中间的 `/api/external-fleets`
+    // 是快照自带的一趟：导入进来的远端工作区要一起铺进目录列表（Web
+    // `manage-fleet-sharing.js` 的 `dashboardData()` 也是这么合的）。
+    expect(requests, ['/api/air', '/api/external-fleets', '/api/cron']);
 
     Finder statValue(String label, String value) => find.descendant(
       of: find.byKey(ValueKey('air-stat-$label')),

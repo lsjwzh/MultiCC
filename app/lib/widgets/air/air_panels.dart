@@ -14,6 +14,23 @@ import 'air_task_status.dart';
 
 /// 目录库（Web `#directory-library`）：一张目录一张卡，卡上写清它现在有多少
 /// 任务、有没有人在跑。手机上一列，宽屏两列。
+/// 目录卡片 ⋯ 菜单里的一件动作。本机目录与远端工作区各取所需 —— Web 那边同一
+/// 张菜单也是按 `dir.external` 分岔的（`public/manage-dashboard.js:918-965`）。
+enum AirDirectoryAction {
+  /// 「↗ 分享工作区」——本机目录才有。
+  share,
+
+  /// 「重新导入以启用操作」——远端那条记录的授权已经不能用了，拿分享链接重来
+  /// 一次。
+  reimport,
+
+  /// 「↻ 刷新远端状态」。
+  refresh,
+
+  /// 「移除共享工作区」——只从本机列表里摘掉，远端那份不动。
+  remove,
+}
+
 class AirDirectoryLibrary extends StatefulWidget {
   const AirDirectoryLibrary({
     super.key,
@@ -25,6 +42,7 @@ class AirDirectoryLibrary extends StatefulWidget {
     required this.onOpen,
     required this.onAddDirectory,
     required this.onToggleFavorite,
+    this.onAction,
     this.addButtonKey,
   });
 
@@ -38,6 +56,10 @@ class AirDirectoryLibrary extends StatefulWidget {
   final ValueChanged<String> onOpen;
   final VoidCallback onAddDirectory;
   final ValueChanged<String> onToggleFavorite;
+
+  /// 卡片 ⋯ 菜单选中了某一件。不给就不摆那颗 ⋯。
+  final void Function(AirDirectory directory, AirDirectoryAction action)?
+  onAction;
 
   /// 新手引导第 1 步要圈住的「添加」。套在外层而不是顶掉那颗按钮自己的
   /// `ValueKey` —— 那个键是既有测试和别处 finder 在用的。
@@ -138,6 +160,9 @@ class _AirDirectoryLibraryState extends State<AirDirectoryLibrary> {
                   onOpen: () => widget.onOpen(rows[index].id),
                   onToggleFavorite: () =>
                       widget.onToggleFavorite(rows[index].id),
+                  onAction: widget.onAction == null
+                      ? null
+                      : (action) => widget.onAction!(rows[index], action),
                 ),
               );
             },
@@ -157,6 +182,7 @@ class _DirectoryCard extends StatelessWidget {
     required this.current,
     required this.onOpen,
     required this.onToggleFavorite,
+    this.onAction,
   });
 
   final AirDirectory directory;
@@ -166,6 +192,7 @@ class _DirectoryCard extends StatelessWidget {
   final bool current;
   final VoidCallback onOpen;
   final VoidCallback onToggleFavorite;
+  final ValueChanged<AirDirectoryAction>? onAction;
 
   @override
   Widget build(BuildContext context) {
@@ -232,8 +259,15 @@ class _DirectoryCard extends StatelessWidget {
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      '${tasks.length} 个任务 · $active 个未完成'
-                      '${favorite ? ' · 已收藏' : ''}',
+                      // 远端工作区那行换掉「N 个任务 · M 个未完成」：它本机没有
+                      // 任务记录，硬数成 0 会读成「这个工作区是空的」，而真相是
+                      // 「它的任务在对面那台机器上」。授权不能用了也要说清楚 ——
+                      // 那就是菜单里「重新导入以启用操作」出现的原因。
+                      directory.external
+                          ? '共享工作区'
+                                '${directory.interactive ? '' : ' · 授权已失效'}'
+                          : '${tasks.length} 个任务 · $active 个未完成'
+                                '${favorite ? ' · 已收藏' : ''}',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
@@ -244,16 +278,53 @@ class _DirectoryCard extends StatelessWidget {
                   ],
                 ),
               ),
-              IconButton(
-                onPressed: onToggleFavorite,
-                iconSize: 18,
-                visualDensity: VisualDensity.compact,
-                tooltip: favorite ? '取消收藏' : '收藏',
-                icon: Icon(
-                  favorite ? Icons.star_rounded : Icons.star_border_rounded,
-                  color: favorite ? AppColors.accent : AppColors.faint,
+              // 远端工作区不给收藏：收藏是按本机目录 id 存在本机的，为一个远端 id
+              // 存一份只会让「收藏」变成一件看不出区别的事。
+              if (!directory.external)
+                IconButton(
+                  onPressed: onToggleFavorite,
+                  iconSize: 18,
+                  visualDensity: VisualDensity.compact,
+                  tooltip: favorite ? '取消收藏' : '收藏',
+                  icon: Icon(
+                    favorite ? Icons.star_rounded : Icons.star_border_rounded,
+                    color: favorite ? AppColors.accent : AppColors.faint,
+                  ),
                 ),
-              ),
+              if (onAction != null)
+                PopupMenuButton<AirDirectoryAction>(
+                  key: ValueKey('air-directory-menu-${directory.id}'),
+                  icon: const Icon(
+                    Icons.more_vert_rounded,
+                    size: 18,
+                    color: AppColors.faint,
+                  ),
+                  tooltip: '更多操作',
+                  color: AppColors.panel,
+                  onSelected: onAction,
+                  itemBuilder: (context) => directory.external
+                      ? [
+                          if (!directory.interactive)
+                            const PopupMenuItem(
+                              value: AirDirectoryAction.reimport,
+                              child: Text('重新导入以启用操作'),
+                            ),
+                          const PopupMenuItem(
+                            value: AirDirectoryAction.refresh,
+                            child: Text('↻ 刷新远端状态'),
+                          ),
+                          const PopupMenuItem(
+                            value: AirDirectoryAction.remove,
+                            child: Text('移除共享工作区'),
+                          ),
+                        ]
+                      : const [
+                          PopupMenuItem(
+                            value: AirDirectoryAction.share,
+                            child: Text('↗ 分享工作区'),
+                          ),
+                        ],
+                ),
             ],
           ),
         ),
