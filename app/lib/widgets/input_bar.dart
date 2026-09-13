@@ -599,9 +599,58 @@ class _InputBarState extends State<InputBar> {
     return false;
   }
 
+  /// 斜杠命令：与 web `chat-composer.js` 的 send() 同一套语义 —— 命令在本机
+  /// 处理，不进对话流、不送达模型。只认去掉参数后的第一个词，认不出的照旧当
+  /// 普通消息发给 CLI（`/compact`、`/cost` 本来就是 CLI 自己的命令）。
+  ///
+  /// 返回要发送的正文；返回 null 表示这条已经被命令消化掉了。
+  String? _runSlashCommand(
+    ChatProvider provider,
+    String command,
+    String input,
+  ) {
+    switch (command) {
+      case '/clear':
+        // 与聊天头部的「清理显示」同一条服务端路径。清空后的提示交给
+        // chat_history_reset 统一给（见 ChatProvider）：在这里补一条本地行会
+        // 被紧随其后换进来的历史冲掉，等于什么都没说。
+        provider.clearHistory(keep: 0);
+        return null;
+      case '/help':
+        provider.addLocalSystemMessage(t('slashHelp'));
+        return null;
+      case '/goal':
+        final split = input.indexOf(' ');
+        final task = split == -1 ? '' : input.substring(split + 1).trim();
+        if (task.isEmpty) {
+          provider.addLocalSystemMessage(t('slashGoalUsage'));
+          return null;
+        }
+        // 跳过 🎯 预检直接执行 —— web 的 `/goal <任务>` 也是这样。正文换成
+        // goal 包装后仍走下面那条完整流程，附件与派发装饰的拼装方式不变。
+        return _goalWrap(task);
+      default:
+        return input;
+    }
+  }
+
   void _send(ChatProvider provider, {required bool commander}) {
-    if (!_guardConnectedSend(provider)) return;
     var text = _ctrl.text.trim();
+    var goal = false;
+    if (text.startsWith('/')) {
+      // 命令判定只看输入框里的原文：附件路径是发出时才拼上去的（web 同理）。
+      final command = text.split(RegExp(r'\s+')).first.toLowerCase();
+      final resolved = _runSlashCommand(provider, command, text);
+      if (resolved == null) {
+        // 只清正文：附件是用户自己挑的，命令没用到就不替他丢掉。
+        _ctrl.clear();
+        _dismissIosKeyboard();
+        return;
+      }
+      text = resolved;
+      goal = command == '/goal';
+    }
+    if (!_guardConnectedSend(provider)) return;
     // Append attachment paths
     if (_attachments.isNotEmpty) {
       final paths = _attachments.map((a) => a['path']!).join(' ');
@@ -610,7 +659,7 @@ class _InputBarState extends State<InputBar> {
     if (text.isEmpty) return;
     // 装饰必须在交给 provider 之前：气泡与真正发出去的 payload 用同一个字符串。
     text = decorateDispatchHint(text, enabled: commander, mode: _dispatchMode);
-    provider.sendMessage(text);
+    provider.sendMessage(text, goal: goal);
     _ctrl.clear();
     // Unlike Android, iOS has no persistent system affordance for hiding the
     // software keyboard. A completed composer action must therefore release
