@@ -80,7 +80,7 @@ ok(DEFAULTS.maxQueueMessages > 500,
 {
   const ws = makeFakeWs({ bufferedAmount: 2_000_000 }); // congested: never drains
   const sched = makeSched();
-  const api = installWsBackpressure(ws, { limits: { maxQueueBytes: 5000, maxQueueMessages: 100000, highWaterBytes: 1_000_000 }, ...sched });
+  const api = installWsBackpressure(ws, { limits: { maxQueueBytes: 5000, maxFrameBytes: 5000, maxQueueMessages: 100000, highWaterBytes: 1_000_000 }, ...sched });
   for (let i = 0; i < 20; i++) api.sendImmediate(JSON.stringify({ type: 'big', pad: 'y'.repeat(1000) }));
   ok(ws.closes.some(c => c.code === 1013), 'sendImmediate: byte cap still enforced (memory guard not bypassed)');
 }
@@ -114,6 +114,26 @@ ok(DEFAULTS.maxQueueMessages > 500,
   });
   ws.send(JSON.stringify({ type: 'chat_history', pad: 'h'.repeat(60_000) })); // > maxFrameBytes
   ok(ws.closes.some(c => c.code === 1013), 'frame above maxFrameBytes still disconnects (1013)');
+}
+
+// ── an oversize frame in the queue must not doom the next normal frame ──
+// Connect replay order: chat_history (oversize, queued; its completion callback
+// cannot fire during the synchronous burst) → task_state/streamReplay frames.
+// The accumulation check used the un-widened ceiling for small frames, so the
+// queued 2MB+ chat_history made every following frame overflow → 1013 →
+// reconnect → resend → death-loop even after the single-frame fix.
+{
+  const ws = makeFakeWs(); // healthy client, but the synchronous burst means send
+  const sched = makeSched(); // completion callbacks never fire before the burst ends
+  installWsBackpressure(ws, {
+    limits: { maxQueueBytes: 1000, maxFrameBytes: 5000, maxQueueMessages: 100_000, highWaterBytes: 1_000_000 },
+    ...sched,
+  });
+  ws.send(JSON.stringify({ type: 'chat_history', pad: 'h'.repeat(4000) })); // oversize, allowed
+  ws.send(JSON.stringify({ type: 'task_state', goal: 'x' }));              // normal frame right after
+  ws.send(JSON.stringify({ type: 'assistant_delta', text: 'y' }));
+  ok(ws.closes.length === 0, 'normal frames after a queued oversize frame do NOT close the socket');
+  ok(ws.sent.length === 1, 'oversize frame was sent; small frames wait in queue');
 }
 
 // ── queue memory stays bounded at maxQueueBytes + maxFrameBytes ──
