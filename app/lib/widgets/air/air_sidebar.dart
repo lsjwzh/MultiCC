@@ -22,6 +22,7 @@ class AirSidebar extends StatelessWidget {
     required this.onSelectDirectory,
     required this.onToggleFavorite,
     required this.onOpenLibrary,
+    required this.onOpenSearch,
     required this.onOpenConsole,
     required this.onOpenSchedules,
     required this.onOpenTaskBoard,
@@ -47,6 +48,9 @@ class AirSidebar extends StatelessWidget {
   final ValueChanged<String> onSelectDirectory;
   final VoidCallback onToggleFavorite;
   final VoidCallback onOpenLibrary;
+
+  /// ⌘K 那一件事：目录和任务一起搜。手机上没有 ⌘K，所以侧栏上明摆着一行。
+  final VoidCallback onOpenSearch;
   final VoidCallback onOpenConsole;
   final VoidCallback onOpenSchedules;
   final VoidCallback onOpenTaskBoard;
@@ -131,6 +135,12 @@ class AirSidebar extends StatelessWidget {
                     onToggleFavorite: onToggleFavorite,
                   ),
                   const SizedBox(height: 8),
+                  _NavRow(
+                    semanticKey: 'air-nav-search',
+                    icon: Icons.search_rounded,
+                    label: '搜索目录与任务',
+                    onTap: onOpenSearch,
+                  ),
                   _NavRow(
                     semanticKey: 'air-nav-console',
                     icon: Icons.dashboard_customize_outlined,
