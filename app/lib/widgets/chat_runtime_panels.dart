@@ -15,12 +15,18 @@ class PendingUserInputPanel extends StatefulWidget {
   /// 不改变「等待回答」的服务端语义。
   final VoidCallback? onCollapse;
 
+  /// 「已解决 / 忽略」：手动了结这条提问（web 的 `#pending-user-input-dismiss`）。
+  /// 与 onCollapse 不同，它会真的改变服务端的等待态 —— 不发回答、不继续原任务。
+  /// 可选；不传则不显示该按钮。
+  final VoidCallback? onDismiss;
+
   const PendingUserInputPanel({
     super.key,
     required this.input,
     required this.enabled,
     required this.onAnswer,
     this.onCollapse,
+    this.onDismiss,
   });
 
   @override
@@ -241,6 +247,27 @@ class _PendingUserInputPanelState extends State<PendingUserInputPanel> {
                     : null,
                 child: Text(t('submitAnswer')),
               ),
+              // 与提交并排的「已解决 / 忽略」（web 同一行右侧）。用紧凑的
+              // TextButton：它是脱困出口，不该和「提交」抢视觉。
+              if (widget.onDismiss != null)
+                Tooltip(
+                  message: t('pendingInputDismissHint'),
+                  child: TextButton(
+                    key: const Key('pending-dismiss'),
+                    onPressed: widget.enabled ? widget.onDismiss : null,
+                    style: TextButton.styleFrom(
+                      foregroundColor: const Color(0xFF6f8096),
+                      visualDensity: VisualDensity.compact,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      minimumSize: const Size(0, 32),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    child: Text(
+                      t('pendingInputDismiss'),
+                      style: const TextStyle(fontSize: 11),
+                    ),
+                  ),
+                ),
             ],
           ),
         ],

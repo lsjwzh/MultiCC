@@ -135,6 +135,24 @@ Widget classifyChip(SessionStatus? live, {bool showLabel = true}) {
 bool chatLivenessDeservesLine(String? state) =>
     state == 'working' || state == 'stalled';
 
+/// 分类条右侧两个动作药丸的显隐规则，一字对齐 web 的
+/// `can-mark-done = (state|P)==='W'` / `can-cancel-task = (state|P)==='P'`
+/// （public/chat-live-ui.js:366-367）。
+///
+/// W（等待用户）给的是「✓ 执行成功」——一轮跑完了、在等人，用户可以替它收尾；
+/// P（处理中）给的是「✕ 取消」——让人在助手还在跑时能直接叫停。其余状态
+/// （D 完成 / E 出错 / B 后台等待 / C 历史续跑）两个按钮都不给：跑完了没什么可
+/// 取消的，出错了该走重试而不是标记成功。缺省（null/空）按 web 的 `|| 'P'`
+/// 兜底成 P —— 尚无判定时按钮给的是「能叫停」，不是「已完成」。
+({bool canMarkDone, bool canCancelTask}) classifyBarActions(String? state) {
+  final s = (state ?? '').trim().toUpperCase();
+  final normalized = s.isEmpty ? 'P' : s;
+  return (
+    canMarkDone: normalized == 'W',
+    canCancelTask: normalized == 'P',
+  );
+}
+
 /// A small liveness pill for the chat header. `verdict` is the parsed liveness
 /// JSON; a null/empty verdict renders nothing. Shows the silent duration on a
 /// working/stalled turn so "stuck for 3m" reads at a glance.
