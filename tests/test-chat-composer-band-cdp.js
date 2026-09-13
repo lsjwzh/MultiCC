@@ -3,11 +3,12 @@ const test = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const { withCdpHarness, findChromeBinary } = require('./helpers/cdp-harness');
 
-// 手机上输入框上面那一摞：「额度行 → 上下文行 → 子任务药丸 → 输入框」。
-// 上下文行和子任务药丸说的是同一件事（这一轮怎么跑），中间只该是一条缝，不该是
-// 一条沟 —— 之前是 10px（额度区下 3px + 药丸区上 5px + 行高余量 2px），现在收到 5px。
-// 量的是文字墨迹到药丸边框，那才是眼睛看到的那个数；纯靠 padding 断言会把行高
-// 余量漏掉，量出来跟看到的不一样。
+// 手机上输入框上面那一摞：「额度行 → 上下文行 → 输入区」。
+// 上下文行和输入区说的是同一件事（这一轮怎么跑），中间只该是一条缝，不该是
+// 一条沟 —— 量的是上下文行文字墨迹到输入区上沿，那才是眼睛看到的那个数；
+// 纯靠 padding 断言会把行高余量漏掉，量出来跟看到的不一样。
+// （子任务药丸已经撤掉：子任务只在 AI 配置面板里作为 provider 后面的一行尾巴
+//   存在，不再占输入区上方这一摞 —— 所以基准点从药丸顶边换成输入区顶边。）
 const publicDir = path.resolve(__dirname, '../public');
 
 const routes = {};
@@ -43,33 +44,33 @@ const MEASURE = `(() => {
   const box = id => { const el = document.getElementById(id); const r = el.getBoundingClientRect();
     const cs = getComputedStyle(el); return { top: r.top, bottom: r.bottom, display: cs.display,
       pt: cs.paddingTop, pb: cs.paddingBottom }; };
-  const cost = box('cost-bar'), pill = document.getElementById('subagent-pill').getBoundingClientRect();
+  const cost = box('cost-bar'), preInput = box('pre-input-bar');
   const costInk = ink(document.getElementById('cost-bar'));
-  return { gap: Math.round(pill.top - costInk.bottom),
-           costInkBottom: Math.round(costInk.bottom), pillTop: Math.round(pill.top),
-           summary: box('usage-summary'), preInput: box('pre-input-bar') };
+  return { gap: Math.round(preInput.top - costInk.bottom),
+           costInkBottom: Math.round(costInk.bottom), pillTop: Math.round(preInput.top),
+           summary: box('usage-summary'), preInput };
 })()`;
 
 const qaDir = () => process.env.MULTICC_COMPOSER_BAND_QA_DIR || path.join(os.tmpdir(), 'multicc-composer-band-qa');
 
-test('mobile: the context line and the subtask pill read as one band, not two', async t => {
+test('mobile: the context line and the input band read as one band, not two', async t => {
   if (!findChromeBinary()) return t.skip('Chrome required');
   await withCdpHarness({ routes, screenshotDir: qaDir() }, async page => {
     await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
     await page.navigate('/chat.html?session=composer-band');
-    assert.ok(await page.waitFor(`document.getElementById('subagent-pill') && document.getElementById('cost-bar')`));
+    assert.ok(await page.waitFor(`document.getElementById('pre-input-bar') && document.getElementById('cost-bar')`));
     assert.equal(await page.evaluate(FILL), true);
     const band = await page.evaluate(MEASURE);
     // 挤在一起、但没叠上：既不能留出一条沟，也不能连成一坨。
-    assert.ok(band.gap <= 6, `上下文行到子任务药丸之间最多一条缝：实测 ${band.gap}px（${JSON.stringify(band)}）`);
-    assert.ok(band.gap >= 2, `两行不该贴在一起：实测 ${band.gap}px`);
-    assert.ok(band.summary.bottom <= band.preInput.top, `上下文区不该压到药丸区：${JSON.stringify(band)}`);
+    assert.ok(band.gap <= 6, `上下文行到输入区之间最多一条缝：实测 ${band.gap}px（${JSON.stringify(band)}）`);
+    assert.ok(band.gap >= 0, `两行不该叠上：实测 ${band.gap}px`);
+    assert.ok(band.summary.bottom <= band.preInput.top, `上下文区不该压到输入区：${JSON.stringify(band)}`);
     // 这两个值的来源就是那两条 CSS；写死在这里，改动时能一眼看出改的是哪条。
     assert.equal(band.summary.pb, '1px', `手机上额度区下边距该收到 1px：${band.summary.pb}`);
-    assert.equal(band.preInput.pt, '2px', `手机上药丸区上边距该收到 2px：${band.preInput.pt}`);
+    assert.equal(band.preInput.pt, '2px', `手机上输入区上边距该收到 2px：${band.preInput.pt}`);
     await page.screenshot('composer-band-mobile-390');
 
-    // 桌面本来就比手机紧（额度区下 3px、药丸区上 2px），这次只动手机。
+    // 桌面本来就比手机紧（额度区下 3px、输入区上 2px），这次只动手机。
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1366, height: 900, deviceScaleFactor: 1, mobile: false });
     const desktop = await page.evaluate(MEASURE);
     assert.equal(desktop.summary.pb, '3px', `桌面不该被这次收紧波及：${JSON.stringify(desktop)}`);

@@ -312,7 +312,7 @@ body.air-chat {
 .air-chat #usage-summary { border-color: #e4ebf2; background: transparent; }
 .air-chat .usage-summary-row { border-color: #e2eaf2; }
 .air-chat #pre-input-bar { color: var(--air-muted); border: 0; background: transparent; }
-.air-chat #subagent-pill, .air-chat #dispatch-mode-pill {
+.air-chat #dispatch-mode-pill {
   color: #55738f !important;
   border-color: #d8e4ef !important;
   background: #f5f9fd !important;
