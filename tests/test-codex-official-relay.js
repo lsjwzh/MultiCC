@@ -611,6 +611,37 @@ test('Official relay proactively strips third-party reasoning content before ups
   assert.deepEqual(req.body.input[0].content, [{ type: 'reasoning_text', text: 'recorded on DeepSeek' }], 'request body copy only');
 });
 
+test('a third-party encrypted-reasoning rejection repairs by dropping the blobs once', async () => {
+  const sent = [];
+  const handler = createCodexOfficialRelayHandler({
+    getProvider: () => officialProvider(),
+    readCredential: () => ({ ok: true, accessToken: 'tok', accountId: 'acct' }),
+    fetch: async (_url, init) => {
+      sent.push(JSON.parse(init.body));
+      if (sent.length === 1) return new Response(JSON.stringify({ error: {
+        message: 'The encrypted content 944aa366-6fab-4f1e-8a03-3dfb22f964ef-0 could not be verified. Reason: Encrypted content could not be decrypted or parsed.',
+        type: 'invalid_request_error',
+      } }), { status: 400 });
+      return new Response('data: {"type":"response.completed","response":{}}\n\n', {
+        status: 200, headers: { 'content-type': 'text/event-stream' },
+      });
+    },
+  });
+  const thread = { model: 'gpt-5.6-terra', stream: true, input: [
+    { type: 'reasoning', id: 'rs_1', summary: [], encrypted_content: '944aa366-6fab-4f1e-8a03-3dfb22f964ef-0' },
+    { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'kept' }] },
+  ] };
+  const req = request(structuredClone(thread));
+  const res = response();
+  await handler(req, res, () => assert.fail('Official must not fall through'));
+  assert.equal(sent.length, 2, 'one 400 + one repaired retry');
+  assert.equal(Object.hasOwn(sent[1].input[0], 'encrypted_content'), false);
+  assert.equal(sent[1].input[0].id, thread.input[0].id);
+  assert.deepEqual(sent[1].input[1], thread.input[1]);
+  assert.equal(res.statusCode, 200);
+  assert.match(Buffer.concat(res.chunks).toString(), /response.completed/);
+});
+
 test('non-Official providers keep reasoning content untouched on the fall-through path', async () => {
   let passed = null;
   const handler = createCodexOfficialRelayHandler({
