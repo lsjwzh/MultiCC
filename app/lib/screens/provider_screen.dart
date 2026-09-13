@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../models/provider_limit_label.dart';
 import '../services/manage_service.dart';
@@ -26,6 +29,10 @@ class _ProviderScreenState extends State<ProviderScreen> {
   bool _ccSwitchAvailable = false;
   bool _loading = true;
   bool _importing = false;
+
+  /// 「高级账号与借道」那一组展开没展开（Web 的 `toggleAdvanced`，默认收起；
+  /// 里面那截控制台第一次展开才加载 —— 这边是外开浏览器，不存在懒加载）。
+  bool _advancedOpen = false;
   String? _error;
 
   @override
@@ -184,6 +191,10 @@ class _ProviderScreenState extends State<ProviderScreen> {
                         const SizedBox(height: 16),
                         _providerGroup('⚡ Codex', _byType('codex')),
                       ],
+                      // 高级那一组永远在最后（Web 也是 `page.append(…, advanced)`），
+                      // 而且没有 provider 时也要在：它说的正是「这些还归老控制器」。
+                      const SizedBox(height: 16),
+                      _advancedCard(),
                     ],
                   ),
                 ),
@@ -217,6 +228,126 @@ class _ProviderScreenState extends State<ProviderScreen> {
             )),
       ],
     );
+  }
+
+  /// 「高级账号与借道」（Web `air-provider.js` 的 `#air-provider-advanced`）。
+  ///
+  /// Web 那边展开的是一个指向 `/manage.html?view=provider&embed=air` 的 iframe
+  /// —— 官方多账号、借道分享、ZCode / Kimi 原生登录这些还在老控制器里，Air 只
+  /// 在自己页面上留一个入口。Flutter 侧没有内嵌 WebView，所以这里保留那句
+  /// 说明，把「打开」做成外开浏览器：同一个页面，换个容器。
+  Widget _advancedCard() {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.panel,
+        border: Border.all(color: AppColors.line),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          InkWell(
+            key: const ValueKey('provider-advanced-header'),
+            borderRadius: BorderRadius.circular(14),
+            onTap: () => setState(() => _advancedOpen = !_advancedOpen),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(14, 13, 14, 13),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.swap_horiz_rounded,
+                    size: 18,
+                    color: AppColors.muted,
+                  ),
+                  const SizedBox(width: 9),
+                  const Expanded(
+                    child: Text(
+                      '高级账号与借道',
+                      style: TextStyle(
+                        color: AppColors.textBright,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  Icon(
+                    _advancedOpen
+                        ? Icons.expand_less_rounded
+                        : Icons.expand_more_rounded,
+                    size: 20,
+                    color: AppColors.faint,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (_advancedOpen)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text.rich(
+                    TextSpan(
+                      children: [
+                        const TextSpan(
+                          text: '高级连接\n',
+                          style: TextStyle(
+                            color: AppColors.text,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const TextSpan(
+                          text: '官方多账号、借道分享、ZCode / Kimi 原生登录与完整用量统计暂沿用原控制器。',
+                          style: TextStyle(
+                            color: AppColors.faint,
+                            fontSize: 12,
+                            height: 1.5,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    height: 42,
+                    child: OutlinedButton.icon(
+                      key: const ValueKey('provider-advanced-open'),
+                      onPressed: _openLegacyController,
+                      icon: const Icon(
+                        Icons.open_in_new_rounded,
+                        size: 17,
+                        color: AppColors.accent,
+                      ),
+                      label: const Text(
+                        '打开完整 Provider 控制器',
+                        style: TextStyle(color: AppColors.accent),
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        side: const BorderSide(color: AppColors.lineStrong),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// 老控制器那一页（`/manage.html?view=provider&embed=air`）。带 token 是因为
+  /// 浏览器侧要凭它过鉴权 —— 和聊天页外开控制台是同一个约定。
+  void _openLegacyController() {
+    final uri = Uri.parse(widget.settings.buildHttpUrl('/manage')).replace(
+      queryParameters: {
+        'view': 'provider',
+        'embed': 'air',
+        if (widget.settings.token.isNotEmpty) 'token': widget.settings.token,
+      },
+    );
+    unawaited(launchUrl(uri, mode: LaunchMode.externalApplication));
   }
 
   Widget _importCard() {

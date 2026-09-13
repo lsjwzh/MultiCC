@@ -117,40 +117,14 @@ class _InputBarState extends State<InputBar> {
 
     setState(() => _uploading = true);
     try {
-      final uri = Uri.parse(settings.buildHttpUrl('/api/upload'));
-      final req = http.MultipartRequest('POST', uri);
-      if (settings.token.isNotEmpty) {
-        req.headers['X-Access-Token'] = settings.token;
-      }
-      req.files.add(
-        http.MultipartFile.fromBytes(
-          'file',
-          picked.bytes,
-          filename: picked.filename,
-          contentType: picked.mimeType != null
-              ? MediaType.parse(picked.mimeType!)
-              : MediaType('application', 'octet-stream'),
-        ),
+      final uploaded = await uploadChatAttachment(
+        settings: settings,
+        picked: picked,
       );
-      final res = await req.send().timeout(const Duration(seconds: 30));
-      final body = await res.stream.bytesToString();
-      if (res.statusCode == 200) {
-        final json = jsonDecode(body) as Map<String, dynamic>;
+      if (mounted) {
         setState(() {
-          _attachments.add({
-            'path': json['path'] as String,
-            'name': json['name'] as String? ?? picked.filename,
-          });
+          _attachments.add({'path': uploaded.path, 'name': uploaded.name});
         });
-      } else {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Upload failed: ${res.statusCode}'),
-              backgroundColor: const Color(0xFFb64e43),
-            ),
-          );
-        }
       }
     } catch (e) {
       if (mounted) {
