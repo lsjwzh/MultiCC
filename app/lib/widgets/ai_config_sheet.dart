@@ -1,5 +1,6 @@
 // AI 配置底部面板（provider/model/effort/agent/subagent + 角色提示词编辑）。自 chat_screen.dart 抽出。
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
 import '../i18n.dart';
@@ -1061,6 +1062,45 @@ class AIConfigSheetState extends State<AIConfigSheet> {
   }
 }
 
+/// 打开 AI 配置面板之前要备好的两样东西：这个 CLI 的 Provider 池，和它的模型
+/// 清单。面板里的下拉直接读这些，不自己去拉 —— 所以每个开关面板的地方都得先
+/// 过这里一次，Air 那边给新任务选线路时也一样。
+Future<List<Map<String, dynamic>>> prepareAIConfigInputs(
+  SettingsService settings,
+  SessionCli cli, {
+  http.Client? httpClient,
+}) async {
+  // Qoder owns no provider pool; its model list comes from the host CLI's
+  // catalog instead. Warm it before the sheet builds so the dropdown opens on
+  // the real models rather than the routing-tier fallback. Claude's list comes
+  // from the installed CLI bundle — same warm-up, static-table fallback.
+  if (cli == SessionCli.qoder) {
+    try {
+      await QoderModelsService(settings: settings).load();
+    } catch (_) {}
+  } else if (cli == SessionCli.claude) {
+    try {
+      await ClaudeModelsService(settings: settings).load();
+    } catch (_) {}
+  } else if (cli == SessionCli.codex) {
+    try {
+      await CodexModelsService(settings: settings).load(forceRefresh: true);
+    } catch (_) {}
+  }
+  try {
+    if (cli.supportsProvider) {
+      final d = await ManageService(
+        settings: settings,
+        httpClient: httpClient,
+      ).fetchProviders(cli.appType);
+      return (d['providers'] as List? ?? [])
+          .map((e) => (e as Map).cast<String, dynamic>())
+          .toList();
+    }
+  } catch (_) {}
+  return const [];
+}
+
 /// Open the per-session AI-config sheet for [sessionId] (used by both the
 /// header ModelChip and the InputBar subagent pill). Fetches the provider list
 /// fresh, seeds the sheet from the current session (incl. subagent override),
@@ -1082,33 +1122,7 @@ Future<void> openAIConfigSheet(
     }
     return;
   }
-  // Qoder owns no provider pool; its model list comes from the host CLI's
-  // catalog instead. Warm it before the sheet builds so the dropdown opens on
-  // the real models rather than the routing-tier fallback. Claude's list comes
-  // from the installed CLI bundle — same warm-up, static-table fallback.
-  if (runtime.cli == SessionCli.qoder) {
-    try {
-      await QoderModelsService(settings: settings).load();
-    } catch (_) {}
-  } else if (runtime.cli == SessionCli.claude) {
-    try {
-      await ClaudeModelsService(settings: settings).load();
-    } catch (_) {}
-  } else if (runtime.cli == SessionCli.codex) {
-    try {
-      await CodexModelsService(settings: settings).load(forceRefresh: true);
-    } catch (_) {}
-  }
-  List<Map<String, dynamic>> providers = const [];
-  try {
-    if (runtime.cli.supportsProvider) {
-      final appType = runtime.cli.appType;
-      final d = await ManageService(settings: settings).fetchProviders(appType);
-      providers = (d['providers'] as List? ?? [])
-          .map((e) => (e as Map).cast<String, dynamic>())
-          .toList();
-    }
-  } catch (_) {}
+  final providers = await prepareAIConfigInputs(settings, runtime.cli);
   if (!context.mounted) return;
   final messenger = ScaffoldMessenger.of(context);
   final picked = await showModalBottomSheet<AIConfigResult>(

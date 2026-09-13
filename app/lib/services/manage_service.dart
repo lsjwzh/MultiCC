@@ -217,9 +217,13 @@ class ManageService {
     final q = (appType == 'claude' || appType == 'codex')
         ? '?appType=$appType'
         : '';
-    final res = await http
-        .get(Uri.parse(_url('/api/providers$q')), headers: _headers)
-        .timeout(const Duration(seconds: 15));
+    final uri = Uri.parse(_url('/api/providers$q'));
+    final client = httpClient;
+    final res =
+        await (client == null
+                ? http.get(uri, headers: _headers)
+                : client.get(uri, headers: _headers))
+            .timeout(const Duration(seconds: 15));
     if (res.statusCode >= 400) _throw(res);
     return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
         .cast<String, dynamic>();
