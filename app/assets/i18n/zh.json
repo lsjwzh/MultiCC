@@ -1235,5 +1235,18 @@
   "chatWidthSavedLimited": "✓ 已保存：聊天区最宽 {n} px",
   "chatWidthSavedFull": "✓ 已保存：聊天区铺满可用空间",
   "readOnlyHistory": "只读历史",
-  "readOnlyHistoryHint": "正在看归档记录：可以继续对话，但不能删消息或清空历史"
+  "readOnlyHistoryHint": "正在看归档记录：可以继续对话，但不能删消息或清空历史",
+  "autoCommit": "自动提交",
+  "autoCommitOn": "自动提交✓",
+  "autoCommitOff": "自动提交✕",
+  "autoCommitTitle": "每轮执行成功后自动 commit 并合并回基分支",
+  "autoCommitPerMsg": "本轮执行成功后自动提交合并",
+  "autoCommitPerMsgDone": "✓ 已提交",
+  "autoCommitEnabled": "✓ 已开启自动提交：每轮成功后会 commit 并合并回基分支",
+  "autoCommitDisabled": "已关闭自动提交：这一轮结束后不再自动合并",
+  "autoCommitMergeRunning": "🚀 自动提交合并中（本轮勾选了自动提交）…",
+  "autoCommitMerged": "✓ 自动提交完成：{message}",
+  "autoCommitConflict": "⚠️ 自动提交冲突：{files}",
+  "autoCommitFailed": "✗ 自动提交失败：{error}",
+  "autoCommitPatchFailed": "自动提交开关没保存成功：{error}"
 }
