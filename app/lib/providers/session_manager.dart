@@ -752,6 +752,22 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
     await _sessionService.updateSessionMemory(id, memory);
   }
 
+  /// Flip the session-level auto-commit switch (web's `#auto-commit-btn`).
+  ///
+  /// The local list is updated optimistically *after* the server accepts it, so
+  /// a failed PATCH leaves the header showing the truth instead of a state the
+  /// server never stored. Throws on failure — callers surface the message.
+  Future<void> updateSessionAutoCommit(String id, bool value) async {
+    await _sessionService.updateSessionAutoCommit(id, value);
+    for (var i = 0; i < _sessions.length; i++) {
+      final s = _sessions[i];
+      if (s.id != id) continue;
+      _sessions[i] = s.copyWith(autoCommit: value);
+      break;
+    }
+    notifyListeners();
+  }
+
   // ── Cleanup ────────────────────────────────────────────────────────────────
 
   @override

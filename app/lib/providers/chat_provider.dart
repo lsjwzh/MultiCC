@@ -677,6 +677,53 @@ class ChatProvider extends ChangeNotifier {
   int get sessionOutputTokens => _sessionOutputTokens;
   Map<String, dynamic>? get contextTrace => _contextTrace;
 
+  // ── 自动提交（对齐 web 的 `#auto-commit-btn` + 每轮气泡勾选） ─────────────
+  //
+  // Web 把「这一轮要不要自动提交」存在 DOM 上：勾选框挂在用户气泡里，会话级
+  // 开关同步新气泡时跳过 `userTouched` 的那条。这里用两张表把同一套语义搬到
+  // Dart —— 聊天页重建消息列表是常态，DOM 那套没法照搬。
+
+  /// 用户亲手改过的那些轮：这些不再跟随会话级开关。
+  final Map<String, bool> _turnAutoCommit = {};
+  final Set<String> _turnAutoCommitTouched = {};
+
+  /// 已经自动提交过的轮（对应 web 给气泡加的 `.done`）。服务端不记这件事，
+  /// 所以它只活在本次会话的内存里。
+  final Set<String> _autoCommittedTurns = {};
+
+  /// 每收到一个 `result` 帧自增。它是「这一轮结束了」的唯一信号 —— 自动提交
+  /// 要等它，而不是等流式停止（一次多步 agent 运行中间会停好几次）。
+  int _turnEndTick = 0;
+  int get turnEndTick => _turnEndTick;
+
+  /// 这一轮（这条用户消息开启的那一轮）是否勾了自动提交。
+  ///
+  /// 没被手工改过就跟随 [fallback]（会话级开关的当前值）—— web 也是这么
+  /// initialize 的：`addUserMsg(..., checked = _sessionAutoCommit)`。
+  bool turnAutoCommit(String msgId, {required bool fallback}) {
+    if (_turnAutoCommitTouched.contains(msgId)) {
+      return _turnAutoCommit[msgId] ?? fallback;
+    }
+    return fallback;
+  }
+
+  /// 用户手点这条气泡的勾选框。点过就进 touched 集合，之后会话级开关再变也
+  /// 不会覆盖这一轮的选择。
+  void setTurnAutoCommit(String msgId, bool value) {
+    if (msgId.isEmpty) return;
+    _turnAutoCommit[msgId] = value;
+    _turnAutoCommitTouched.add(msgId);
+    notifyListeners();
+  }
+
+  bool isTurnAutoCommitted(String msgId) => _autoCommittedTurns.contains(msgId);
+
+  void markTurnAutoCommitted(String msgId) {
+    if (msgId.isEmpty) return;
+    _autoCommittedTurns.add(msgId);
+    notifyListeners();
+  }
+
   Future<Map<String, dynamic>> loadContextTrace() {
     final traceId = _contextTrace?['traceId']?.toString() ?? '';
     if (traceId.isEmpty) {
@@ -2282,6 +2329,10 @@ class ChatProvider extends ChangeNotifier {
     // stream stopped, which during a multi-step agent run happens between
     // turns too. The server's aux-AI debounces the pause and decides
     // done-vs-waiting, then sends a `notify` event — that is the single judge.
+    //
+    // 自动提交仍然挂在这个帧上（web 的 `handleResult` → `autoCommitIfNeeded`）：
+    // 它要的是「这一轮跑完了」，与上面那条「跑完 ≠ 做完」的判定互不干扰。
+    _turnEndTick++;
     notifyListeners();
   }
 

@@ -49,7 +49,9 @@ Widget _host(
   int behind = 0,
   VoidCallback? onForceSync,
   VoidCallback? onChatWidth,
+  VoidCallback? onAutoCommit,
   bool forceSyncing = false,
+  bool autoCommit = true,
 }) => MultiProvider(
       providers: [
         ChangeNotifierProvider<SessionManager>.value(value: mgr),
@@ -76,6 +78,8 @@ Widget _host(
                 onForceSync: onForceSync ?? () {},
                 forceSyncing: forceSyncing,
                 onChatWidth: onChatWidth ?? () {},
+                autoCommit: autoCommit,
+                onAutoCommit: onAutoCommit ?? () {},
               ),
             ),
           ),
@@ -371,6 +375,53 @@ void main() {
 
       expect(find.text(t('worktreeForceSyncSending')), findsOneWidget);
       expect(find.text(t('worktreeForceSync')), findsNothing);
+
+      provider.dispose();
+      mgr.dispose();
+    });
+  });
+
+  // 「自动提交」入口：web 是页头常驻的 `#auto-commit-btn`，移动端那排图标已经
+  // 排满，所以收进 ⋯ 菜单；开关状态直接写在文案里（✓/✕），没有别的地方能表达。
+  group('ChatHeader auto-commit entry', () {
+    testWidgets('开/关两态文案不同，点了走回调', (tester) async {
+      final settings = await _settings();
+      final mgr = SessionManager(settings: settings);
+      final provider = ChatProvider(
+        settings: settings,
+        sessionName: 's-autocommit',
+        sessionCwd: '/tmp',
+      );
+      var toggled = 0;
+
+      await tester.pumpWidget(_host(
+        mgr,
+        settings,
+        provider,
+        autoCommit: true,
+        onAutoCommit: () => toggled++,
+      ));
+      await tester.tap(find.byIcon(Icons.more_vert));
+      await tester.pumpAndSettle();
+      expect(find.text(t('autoCommitOn')), findsOneWidget);
+      expect(find.text(t('autoCommitOff')), findsNothing);
+
+      await tester.tap(find.text(t('autoCommitOn')));
+      await tester.pumpAndSettle();
+      expect(toggled, 1);
+
+      // 关掉之后同一位置应该显示「自动提交✕」。
+      await tester.pumpWidget(_host(
+        mgr,
+        settings,
+        provider,
+        autoCommit: false,
+        onAutoCommit: () => toggled++,
+      ));
+      await tester.tap(find.byIcon(Icons.more_vert));
+      await tester.pumpAndSettle();
+      expect(find.text(t('autoCommitOff')), findsOneWidget);
+      expect(find.text(t('autoCommitOn')), findsNothing);
 
       provider.dispose();
       mgr.dispose();
