@@ -86,6 +86,12 @@
   // 后一半是必要的 —— 第一次进来没有浏览记录，只有前一半的话列出来是空的，而一条
   // 空列表并不比一条能点的任务更有用。完整的那份列表在控制台（全部目录 + 搜索）。
   const RECENT_LIMIT = 8;
+  // 目录首页的「最近任务」是抬头下面那一块，扫一眼就该看完 —— 它不是清单，全
+  // 部记录在控制台（这条出路现在由 `#directory-task-more` 明写出来）。手机上
+  // 一列，六行正好一屏多一点；桌面两列，十行五排。再往下加只是把输入框顶得更
+  // 远，而多出来的那些本来也排不进「最近」。
+  const RECENT_ROWS = 10;
+  function recentRowLimit() { return matchMedia('(max-width: 760px)').matches ? 6 : RECENT_ROWS; }
   function recentPool() {
     if (!data) return [];
     const byId = new Map(data.tasks.map(task => [task.id, task]));
@@ -382,7 +388,7 @@
       stat('全部记录', tasks.length, `${tasks.filter(task => task.status === 'archived').length} 个已归档`),
     );
     $('directory-overview-count').textContent = `${tasks.length} 个任务`;
-    const rows = [...tasks].sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0)).slice(0, 10);
+    const rows = [...tasks].sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0)).slice(0, recentRowLimit());
     $('directory-task-list').replaceChildren(...rows.map(task => {
       const button = node('button', null, 'directory-task-row');
       applyRing(button, isRunningTask(task));
@@ -400,6 +406,11 @@
       return button;
     }));
     if (!rows.length) $('directory-task-list').append(node('p', '这里还没有任务。可以直接在下方描述第一个目标。', 'directory-task-empty'));
+    // 截掉的那些得有个去处，否则「最近任务」看着就是全部。数字用的是这个目录
+    // 的全部任务数，不是剩下的条数 —— 说的是「还有多少」，不是「还差几行」。
+    const more = $('directory-task-more');
+    more.hidden = tasks.length <= rows.length;
+    more.textContent = `查看全部 ${tasks.length} 个任务 ›`;
     renderQuickPills();
     for (const element of [$('quick-task-input'), $('quick-task-submit'),
       $('quick-task-attach'), $('quick-task-mic')]) element.disabled = !dir;
@@ -582,6 +593,9 @@
       renderQuickPills();
       renderQuickGoalLimits();
       $('quick-task-files').replaceChildren();
+      // 折叠模块（air-quick-fold.js）盯着这个：盒子已经清空了，就没有什么还
+      // 需要替它撑着的了，回到那条细杠。
+      $('quick-task-form').dispatchEvent(new CustomEvent('air:quick-task-created'));
       await refresh();
       navigate(directoryId, created.taskId);
     } catch (error) {
@@ -1433,6 +1447,9 @@
   // task page — the full directory library stays on ⌘K and 控制台 › 浏览工作目录.
   $('library').onclick = () => (directoryId ? navigate(directoryId) : setMode('library'));
   $('overview').onclick = () => setConsole(!consoleOpen);
+  // 「最近任务」下面那条出口直接开控制台：那一层本来就是跨目录看全部任务的地方，
+  // 不必再给这一页造第二个「全部任务」页。
+  $('directory-task-more').onclick = () => setConsole(true);
   $('console-close').onclick = () => setConsole(false);
   $('console-scrim').onclick = () => setConsole(false);
   $('palette-scrim').onclick = () => closePalette();
@@ -1489,7 +1506,14 @@
   dismissOnFrame();
   // 回到桌面宽度，工具又摆回那一行（浮层的样式只在 760px 以下生效）。留着这个类
   // 会让下一次变窄时菜单凭空弹出来。
-  matchMedia('(min-width: 761px)').addEventListener('change', event => { if (event.matches) closeOptions(); });
+  matchMedia('(min-width: 761px)').addEventListener('change', event => {
+    if (event.matches) closeOptions();
+    // 「最近任务」列几条跟着屏宽走（recentRowLimit），跨过这条线得重新渲染一次，
+    // 否则横竖屏一切回来列表长度还是旧的那个。但只有目录首页用得上这个数 ——
+    // 任务开着的时候那一页没渲染，而这一趟 render 会拿列表里的任务重画页头，
+    // 把只在详情里才有的东西（本轮归属那一段）抹掉。
+    if (!taskId) render();
+  });
   $('add-directory').onclick = () => window.MultiCCAirSettings.directory(async directory => { await refresh(); navigate(directory.id); });
   $('directory-open-planner').onclick = () => setMode('planner');
   $('quick-task-form').onsubmit = submitQuickTask;
