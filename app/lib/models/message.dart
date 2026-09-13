@@ -1027,22 +1027,40 @@ class DirectoryPushState {
 
 /// A multicc-native scheduled (cron) task. Mirrors the `toView` shape returned
 /// by the server's /api/cron endpoints (see cron-tasks.js).
+///
+/// Since the Air rework a rule is not a lone timer: every rule owns exactly one
+/// fixed Air task, and the runs are delivered into that task. [taskId] is that
+/// binding; [taskBindingError] says why it is broken when it is. The runtime
+/// fields ([provider] / [model] / [effort]) come from the fixed task, not from
+/// the rule — hence they can be null before the binding exists.
 class CronTask {
   final String id;
   final String name;
   final String dirId;
   final String dirName;
   final String cli; // 'claude' | 'codex'
+  final String? provider;
+  final String? model;
+  final String? effort;
   final String prompt;
   final String
   cron; // 5-field expression: minute hour day-of-month month day-of-week
   final bool enabled;
   final String createdBy;
   final int? lastRunAt; // epoch ms
-  final String? lastStatus; // 'ok' | 'error' | 'spawn-failed' | null
+  final String? lastStatus; // 'ok' | 'queued' | 'error' | null
   final String lastError;
   final int runCount;
   final int? nextRunAt; // epoch ms
+
+  /// 这条规则的固定 Air 任务。null 表示绑定还没建立起来。
+  final String? taskId;
+
+  /// Fixed task's title (falls back to the rule name server-side).
+  final String taskTitle;
+  final String taskStatus;
+  final bool taskReadOnly;
+  final String taskBindingError;
 
   CronTask({
     required this.id,
@@ -1053,12 +1071,20 @@ class CronTask {
     required this.prompt,
     required this.cron,
     required this.enabled,
+    this.provider,
+    this.model,
+    this.effort,
     this.createdBy = 'user',
     this.lastRunAt,
     this.lastStatus,
     this.lastError = '',
     this.runCount = 0,
     this.nextRunAt,
+    this.taskId,
+    this.taskTitle = '',
+    this.taskStatus = '',
+    this.taskReadOnly = false,
+    this.taskBindingError = '',
   });
 
   factory CronTask.fromJson(Map<String, dynamic> json) => CronTask(
@@ -1067,6 +1093,9 @@ class CronTask {
     dirId: (json['dirId'] ?? '').toString(),
     dirName: (json['dirName'] ?? '').toString(),
     cli: (json['cli'] ?? 'claude').toString(),
+    provider: json['provider']?.toString(),
+    model: json['model']?.toString(),
+    effort: json['effort']?.toString(),
     prompt: (json['prompt'] ?? '').toString(),
     cron: (json['cron'] ?? '').toString(),
     enabled: json['enabled'] == true,
@@ -1076,5 +1105,10 @@ class CronTask {
     lastError: (json['lastError'] ?? '').toString(),
     runCount: (json['runCount'] as num?)?.toInt() ?? 0,
     nextRunAt: (json['nextRunAt'] as num?)?.toInt(),
+    taskId: json['taskId']?.toString(),
+    taskTitle: (json['taskTitle'] ?? '').toString(),
+    taskStatus: (json['taskStatus'] ?? '').toString(),
+    taskReadOnly: json['taskReadOnly'] == true,
+    taskBindingError: (json['taskBindingError'] ?? '').toString(),
   );
 }

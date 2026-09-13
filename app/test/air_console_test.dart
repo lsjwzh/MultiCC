@@ -429,6 +429,42 @@ void main() {
     client.close();
   });
 
+  testWidgets('宿主给了原生定时任务中心，两张卡就都不去老抽屉', (tester) async {
+    _tallCanvas(tester);
+    final settings = await _settings();
+    final destinations = <WorkspaceDestination>[];
+    var schedules = 0;
+    final client = _client(<String>[]);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AirConsoleScreen(
+          settings: settings,
+          httpClient: client,
+          onOpenTask: (_) {},
+          onOpenTasks: () {},
+          onOpenLibrary: () {},
+          onSelectDirectory: (_) {},
+          onOpenDestination: destinations.add,
+          onOpenMemory: () {},
+          onOpenWebConsole: () {},
+          onOpenSchedules: () => schedules++,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('air-console-tool-schedules')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('air-stat-定时任务')));
+    await tester.pumpAndSettle();
+    expect(schedules, 2);
+    expect(destinations, isEmpty);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
   testWidgets('320px 上排得下：统计两列、筛选两列、行不横向溢出', (tester) async {
     tester.view.devicePixelRatio = 1;
     tester.view.physicalSize = const Size(320, 1400);

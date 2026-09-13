@@ -29,6 +29,7 @@ class AirConsoleScreen extends StatefulWidget {
     required this.onOpenDestination,
     required this.onOpenMemory,
     required this.onOpenWebConsole,
+    this.onOpenSchedules,
     this.httpClient,
   });
 
@@ -47,8 +48,12 @@ class AirConsoleScreen extends StatefulWidget {
   /// 从「工作目录」那一栏切到某个目录（回到任务主区）。
   final ValueChanged<String> onSelectDirectory;
 
-  /// 服务与设置那四张卡：服务与文档 / 设置中心 / 自动运行走老抽屉里的原生目的地。
+  /// 服务与设置那四张卡：服务与文档 / 设置中心走老抽屉里的原生目的地。
   final ValueChanged<WorkspaceDestination> onOpenDestination;
+
+  /// 「自动运行」卡和「定时任务」统计卡都去定时任务中心。宿主自己会 push 那一
+  /// 页，所以这里给的是一个不带目的地的回调；宿主没接就退回老抽屉。
+  final VoidCallback? onOpenSchedules;
 
   /// 记忆图谱在 App 里仍是网页那一页（原生版还没做），单独给一个回调。
   final VoidCallback onOpenMemory;
@@ -246,9 +251,7 @@ class _AirConsoleScreenState extends State<AirConsoleScreen> {
                 schedulesFailed: _cronFailed,
                 onOpenTasks: widget.onOpenTasks,
                 onOpenLibrary: widget.onOpenLibrary,
-                onOpenSchedules: () => widget.onOpenDestination(
-                  WorkspaceDestination.cron,
-                ),
+                onOpenSchedules: _openSchedules,
               ),
               const SizedBox(height: 15),
               _Panel(
@@ -377,8 +380,7 @@ class _AirConsoleScreenState extends State<AirConsoleScreen> {
                   onOpenMemory: widget.onOpenMemory,
                   onOpenSettings: () =>
                       widget.onOpenDestination(WorkspaceDestination.global),
-                  onOpenSchedules: () =>
-                      widget.onOpenDestination(WorkspaceDestination.cron),
+                  onOpenSchedules: _openSchedules,
                 ),
               ),
             ],
@@ -386,6 +388,17 @@ class _AirConsoleScreenState extends State<AirConsoleScreen> {
         ),
       ),
     );
+  }
+
+  /// 定时任务中心的入口有两处（「自动运行」工具卡和「定时任务」统计卡），
+  /// 但它们去同一个地方 —— 宿主给了原生回调就走原生页，没给才退回老抽屉。
+  void _openSchedules() {
+    final handler = widget.onOpenSchedules;
+    if (handler != null) {
+      handler();
+      return;
+    }
+    widget.onOpenDestination(WorkspaceDestination.cron);
   }
 }
 
