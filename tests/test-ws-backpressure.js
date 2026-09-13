@@ -85,6 +85,51 @@ ok(DEFAULTS.maxQueueMessages > 500,
   ok(ws.closes.some(c => c.code === 1013), 'sendImmediate: byte cap still enforced (memory guard not bypassed)');
 }
 
+// ── regression: a single oversized-but-legitimate frame must NOT 1013 ──
+// chat_history on connect serializes the newest page whole; a session with
+// MB-scale tool footers on its last messages produces a frame larger than
+// maxQueueBytes. Rejecting it closed the socket before the client could do
+// anything, and the reconnect resent the same frame → infinite reconnect loop.
+{
+  const ws = makeFakeWs();
+  const sched = makeSched();
+  const api = installWsBackpressure(ws, {
+    limits: { maxQueueBytes: 5000, maxFrameBytes: 50_000, highWaterBytes: 1_000_000 },
+    ...sched,
+  });
+  ws.send(JSON.stringify({ type: 'chat_history', pad: 'h'.repeat(10_000) })); // > maxQueueBytes, < maxFrameBytes
+  ws.drainSends();
+  ok(ws.closes.length === 0, 'oversized single frame (maxQueueBytes < bytes < maxFrameBytes) does NOT close the socket');
+  ok(ws.sent.length === 1, 'oversized single frame is sent');
+  ok(api.stats().closed === false, 'transport stays open after oversized frame');
+}
+
+// ── the absolute frame ceiling still guards memory ──
+{
+  const ws = makeFakeWs();
+  const sched = makeSched();
+  installWsBackpressure(ws, {
+    limits: { maxQueueBytes: 5000, maxFrameBytes: 50_000, highWaterBytes: 1_000_000 },
+    ...sched,
+  });
+  ws.send(JSON.stringify({ type: 'chat_history', pad: 'h'.repeat(60_000) })); // > maxFrameBytes
+  ok(ws.closes.some(c => c.code === 1013), 'frame above maxFrameBytes still disconnects (1013)');
+}
+
+// ── queue memory stays bounded at maxQueueBytes + maxFrameBytes ──
+{
+  const ws = makeFakeWs({ bufferedAmount: 2_000_000 }); // congested: nothing drains
+  const sched = makeSched();
+  installWsBackpressure(ws, {
+    limits: { maxQueueBytes: 1000, maxFrameBytes: 5000, maxQueueMessages: 100_000, highWaterBytes: 1_000_000 },
+    ...sched,
+  });
+  ws.send(JSON.stringify({ type: 'chat_history', pad: 'h'.repeat(4000) })); // oversize, allowed: 4KB queued
+  ok(ws.closes.length === 0, 'first oversize frame into stalled queue is allowed');
+  ws.send(JSON.stringify({ type: 'live', pad: 'y'.repeat(3000) })); // 4KB + 3KB > 1000 + 5000
+  ok(ws.closes.some(c => c.code === 1013), 'queue total past maxQueueBytes + maxFrameBytes still disconnects (1013)');
+}
+
 // ── congestion timer still fires for a truly slow client on the replay path ──
 // Clock starts at a realistic epoch value (not 0): the production `now` is
 // Date.now(), and the impl uses `if (!congestedAt) congestedAt = now()` — a
