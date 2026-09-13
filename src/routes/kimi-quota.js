@@ -120,7 +120,9 @@ async function fetchKimiBalance(target, timeoutMs = 6000) {
       const reason = status === 401 || status === 403
         ? 'auth_rejected'
         : status === 404 ? 'endpoint_not_found' : 'http_error';
-      return { error: true, httpStatus: status, reason };
+      let snippet = '';
+      try { snippet = String(await res.text()).slice(0, 200).replace(/\s+/g, ' ').trim(); } catch (_) {}
+      return { error: true, httpStatus: status, reason, detail: `HTTP ${status} ${snippet}`.trim() };
     }
     const body = await res.json();
     const data = body && typeof body === 'object' ? body.data : null;
@@ -135,8 +137,11 @@ async function fetchKimiBalance(target, timeoutMs = 6000) {
       cash: finite(data.cash_balance),
       currency: 'CNY',
     };
-  } catch (_) {
-    return { error: true, httpStatus: null, reason: 'network_error' };
+  } catch (error) {
+    // Flatten the undici cause chain (fetch failed ← ENOTFOUND/ECONNREFUSED/…)
+    // so the poller/balance layer can surface the OS-level root cause.
+    const { publicTransportError } = require('../upstream-error');
+    return { error: true, httpStatus: null, reason: 'network_error', detail: publicTransportError(error).message };
   } finally {
     clearTimeout(timer);
   }
