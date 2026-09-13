@@ -579,9 +579,10 @@ class _ChatViewState extends State<ChatView> {
                 if (widget.settings.advancedMode.value)
                   const _CenteredChatLane(child: _ContextUsageBar()),
                 if (mergeReady)
-                  _MergeReadyBanner(
+                  MergeHintBar(
                     text: _mergeStatusText(_mergeStatus),
-                    onMerge: () => _mergeCurrent(context, provider.executionSessionName),
+                    onMerge: () =>
+                        _mergeCurrent(context, provider.executionSessionName),
                     onDiff: () => showSessionDiffDialog(
                       context,
                       settings: widget.settings,
@@ -1428,18 +1429,77 @@ String _mergeStatusText(Map<String, dynamic>? status) {
   });
 }
 
-class _MergeReadyBanner extends StatelessWidget {
+/// 「当前 worktree 有可合并内容」提示条 + 它的收起态（web 的 `#merge-hint`
+/// 与 `chat-merge-hint.js`）。
+///
+/// 琥珀色横幅正好浮在输入区上方那排按钮上，所以给它一个让开的路：收起后只剩
+/// 右边缘一颗贴边药丸，点回来即展开。收起状态由这个 widget 自己持有 —— web 也是
+/// 让 controller 自己管（sessionStorage `multicc.mergeHintCollapsed`），调用点不需要
+/// 知道「收没收起」。这里是页面存活期内的记忆，不落盘：一次临时让位不该跨启动粘住。
+class MergeHintBar extends StatefulWidget {
   final String text;
   final VoidCallback onMerge;
   final VoidCallback onDiff;
-  const _MergeReadyBanner({
+
+  const MergeHintBar({
+    super.key,
     required this.text,
     required this.onMerge,
     required this.onDiff,
   });
 
   @override
+  State<MergeHintBar> createState() => _MergeHintBarState();
+}
+
+class _MergeHintBarState extends State<MergeHintBar> {
+  bool _collapsed = false;
+
+  @override
   Widget build(BuildContext context) {
+    if (_collapsed) {
+      return Align(
+        alignment: Alignment.centerRight,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(10, 0, 10, 6),
+          child: Material(
+            key: const Key('merge-hint-fab'),
+            color: const Color(0xFFa85a25),
+            shape: const StadiumBorder(),
+            elevation: 6,
+            child: InkWell(
+              customBorder: const StadiumBorder(),
+              onTap: () => setState(() => _collapsed = false),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 7,
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      Icons.merge_type_rounded,
+                      size: 15,
+                      color: Color(0xFFf4f8fd),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      t('mergeContentReady'),
+                      style: const TextStyle(
+                        color: Color(0xFFf4f8fd),
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
     return Container(
       margin: const EdgeInsets.fromLTRB(10, 0, 10, 6),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
@@ -1465,12 +1525,12 @@ class _MergeReadyBanner extends StatelessWidget {
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              text,
+              widget.text,
               style: const TextStyle(color: Color(0xFFa85a25), fontSize: 12),
             ),
           ),
           TextButton(
-            onPressed: onDiff,
+            onPressed: widget.onDiff,
             style: TextButton.styleFrom(
               foregroundColor: const Color(0xFFa85a25),
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
@@ -1484,7 +1544,7 @@ class _MergeReadyBanner extends StatelessWidget {
           ),
           const SizedBox(width: 6),
           TextButton(
-            onPressed: onMerge,
+            onPressed: widget.onMerge,
             style: TextButton.styleFrom(
               foregroundColor: const Color(0xFFf4f8fd),
               backgroundColor: const Color(0xFFa85a25),
@@ -1495,6 +1555,16 @@ class _MergeReadyBanner extends StatelessWidget {
               t('merge'),
               style: const TextStyle(fontWeight: FontWeight.w700),
             ),
+          ),
+          IconButton(
+            key: const Key('merge-hint-collapse'),
+            onPressed: () => setState(() => _collapsed = true),
+            icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 20),
+            tooltip: t('mergeHintCollapse'),
+            visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+            color: const Color(0xFFa85a25),
           ),
         ],
       ),
