@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 
 import '../../services/air_service.dart';
 import '../../services/settings_service.dart';
 import '../../theme.dart';
 import 'air_role_editor.dart';
+import 'air_task_config.dart';
 
 /// 目录库（Web `#directory-library`）：一张目录一张卡，卡上写清它现在有多少
 /// 任务、有没有人在跑。手机上一列，宽屏两列。
@@ -438,6 +440,7 @@ class AirQuickComposer extends StatefulWidget {
     required this.busy,
     required this.onSubmit,
     this.service,
+    this.httpClient,
   });
 
   /// 角色库（`/api/agent-presets`）要走服务地址和令牌，角色编辑器需要它。
@@ -446,11 +449,16 @@ class AirQuickComposer extends StatefulWidget {
   final bool busy;
   final AirService? service;
 
+  /// 线路面板要先拉这个 CLI 的 Provider 池。宿主已经有客户端的就传进来，
+  /// 测试拿它桩掉整条线。
+  final http.Client? httpClient;
+
   /// 返回「这一份草稿确实建出去了吗」。建成了才清空输入框和角色 —— 失败时留着，
   /// 重试就是原样再点一次（同 Web Air 只在成功后清）。
   final Future<bool> Function({
     required String text,
     required String cli,
+    required AirTaskRuntime runtime,
     required List<AirRoleBinding> roles,
     required bool goal,
   })
@@ -463,15 +471,18 @@ class AirQuickComposer extends StatefulWidget {
 class _AirQuickComposerState extends State<AirQuickComposer> {
   final _controller = TextEditingController();
   String _cli = '';
-  // 这里存的是「还没有任务的那一份角色」，创建时随任务一起写下去；建完就清空
-  // —— 一个任务的角色上下文不该悄悄漏进下一个任务（同 Web Air）。
+  // 这里存的是「还没有任务的那一份角色」和「还没有任务的那一条线路」，创建时
+  // 随任务一起写下去；建完就清空 —— 一个任务的上下文不该悄悄漏进下一个任务
+  // （同 Web Air 的 quickRoles / quickRuntime）。
   List<AirRoleBinding> _roles = const [];
+  AirTaskRuntime _runtime = const AirTaskRuntime();
   bool _goal = false;
 
   @override
   void initState() {
     super.initState();
     _cli = widget.clis.isEmpty ? 'claude' : widget.clis.first;
+    _runtime = AirTaskRuntime(cli: _cli);
   }
 
   @override
@@ -516,7 +527,25 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
         ),
       ),
     );
-    if (choice != null && mounted) setState(() => _cli = choice);
+    if (choice != null && mounted) {
+      setState(() {
+        _cli = choice;
+        // 换 CLI 等于换了一整池 Provider 和模型，旧的线路不能带过去。
+        _runtime = _runtime.withCli(choice);
+      });
+    }
+  }
+
+  /// 给新任务挑线路、模型和推理强度。结果先留在这一层，等创建任务时随
+  /// `POST /api/air/tasks` 一起写下去 —— 第一条消息就按它执行（同 Web Air）。
+  Future<void> _editRuntime() async {
+    final picked = await showAirTaskRuntimeEditor(
+      context,
+      settings: widget.settings,
+      httpClient: widget.httpClient,
+      initial: _runtime,
+    );
+    if (picked != null && mounted) setState(() => _runtime = picked);
   }
 
   /// 任务还不存在，所以走编辑器的草稿模式：编辑结果先留在这一层，等创建流程
@@ -544,7 +573,11 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Row(
+          // 三颗药丸在 320px 上挤不进一行（线路那颗本身就是一句话），所以让它
+          // 换行而不是横着溢出 —— Web 那边窄屏同样靠换行排。
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
             children: [
               _Pill(
                 key: const ValueKey('air-quick-cli'),
@@ -552,7 +585,13 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
                 icon: Icons.memory_rounded,
                 onTap: widget.busy ? null : _pickCli,
               ),
-              const SizedBox(width: 8),
+              _Pill(
+                key: const ValueKey('air-quick-ai'),
+                label: _runtime.routeLabel,
+                icon: Icons.tune_rounded,
+                active: _runtime.provider.isNotEmpty || _runtime.isAuto,
+                onTap: widget.busy ? null : _editRuntime,
+              ),
               _Pill(
                 key: const ValueKey('air-quick-role'),
                 label: _roles.isEmpty ? '＋ 角色' : '${_roles.length} 个角色',
@@ -614,15 +653,17 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
                         final sent = await widget.onSubmit(
                           text: text,
                           cli: _cli,
+                          runtime: _runtime,
                           roles: _roles,
                           goal: _goal,
                         );
                         if (!sent || !mounted) return;
-                        // 任务建出去了才清草稿；角色也一起清 —— 一个任务的角色
-                        // 上下文不该悄悄漏进下一个任务。
+                        // 任务建出去了才清草稿；角色和线路也一起清 —— 一个任务
+                        // 的上下文不该悄悄漏进下一个任务。
                         setState(() {
                           _controller.clear();
                           _roles = const [];
+                          _runtime = AirTaskRuntime(cli: _cli);
                           _goal = false;
                         });
                       },
