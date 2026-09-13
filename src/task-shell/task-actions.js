@@ -159,7 +159,7 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
     if (typeof input.clientMsgId !== 'string' || !/^[\w.:-]{1,160}$/.test(input.clientMsgId)
         || typeof input.dirId !== 'string' || !ports.getDirectory?.(input.dirId)
         || typeof input.title !== 'string' || !input.title.trim() || input.title.length > 120) throw fail('invalid_input', 'Directory, title and clientMsgId required', 400);
-    const runtime = Object.fromEntries(['cli', 'model', 'provider', 'providerSelection', 'effort', 'agent', 'rolePrompt', 'rolePresetId']
+    const runtime = Object.fromEntries(['cli', 'model', 'provider', 'providerSelection', 'effort', 'agent', 'subagent', 'rolePrompt', 'rolePresetId']
       .filter(k => input[k] !== undefined).map(k => [k, input[k]]));
     if (!runtime.cli) runtime.cli = 'claude';
     const checked = await ports.validateTaskRuntime?.(input.dirId, runtime);

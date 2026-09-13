@@ -546,7 +546,7 @@
     // The pill's runtime is pinned onto the task at creation; the route it names
     // takes effect immediately, exactly as it does on the chat's own composer.
     const runtime = { cli: quickRuntime.cli || data.clis[0] || 'claude' };
-    for (const key of ['provider', 'providerSelection', 'model', 'effort']) {
+    for (const key of ['provider', 'providerSelection', 'model', 'effort', 'subagent']) {
       if (quickRuntime[key]) runtime[key] = quickRuntime[key];
     }
     const goal = $('quick-task-goal').checked;

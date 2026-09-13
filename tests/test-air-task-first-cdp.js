@@ -34,7 +34,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     { id: 'codex-lab', appType: 'codex', name: 'Lab Responses', apiFormat: 'openai_responses', compatibleClis: ['codex'], model: 'gpt-5.5', modelOptions: ['gpt-5.5', 'gpt-5.6-sol'], hasToken: true },
     { id: 'codex-backup', appType: 'codex', name: 'Backup Responses', apiFormat: 'openai_responses', compatibleClis: ['codex'], model: 'gpt-5.6-sol', modelOptions: ['gpt-5.6-sol', 'gpt-5.5'], hasToken: true },
   ] };
-  const configPatches = [], quickDispatches = [], syncRequests = [];
+  const configPatches = [], quickDispatches = [], quickCreates = [], syncRequests = [];
   let syncFailure = true;
   const directory = { id: 'd1', name: 'MultiCC', path: '/projects/multicc' };
   const airTasks = [{ ...entry.task, dirId: 'd1', status: 'doing', updatedAt: Date.now(), resource: entry.resource }];
@@ -61,6 +61,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
   routes['/api/air/tasks/tsk_new'] = routes['/api/task-shell-tasks/tsk_new'] = () => json(newEntry);
   routes['POST /api/air/tasks'] = ({ body }) => {
     const value = JSON.parse(body);
+    quickCreates.push(value);
     airTasks.push({ ...newEntry.task, dirId: 'd1', status: 'active', updatedAt: Date.now(), resource: newEntry.resource });
     return json({ ok: true, taskId: 'tsk_new', sessionId: 'task-new', shellId: 'shell-new' });
   };
@@ -255,23 +256,40 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(page.requests.some(r => /role-workers|\/sessions$/.test(r.path) && r.method !== 'GET'), false);
     assert.ok(await page.waitFor(`${composerPill('air-ai-pill')}?.textContent.includes('Lab Responses')`), 'AI 配置 renders on the composer card');
     await page.evaluate(`${composerPill('air-ai-pill')}.click()`);
-    assert.ok(await page.waitFor(`document.querySelector('.air-provider-option[data-value="codex-lab"].selected')`));
+    assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open] select[aria-label="Provider"]')?.value==='codex-lab'`));
     assert.equal(await page.evaluate(`document.querySelector('.air-cli-option.selected strong').textContent`), 'Codex');
-    assert.equal(await page.evaluate(`document.querySelectorAll('.air-provider-option').length`), 5);
-    assert.equal(await page.evaluate(`document.querySelector('.air-provider-option[data-value^="__auto__"] .air-provider-copy strong').textContent.includes('Auto')`), true);
-    await page.evaluate(`(()=>{const r=document.querySelector('.air-provider-option[data-value="codex-backup"] input');r.checked=true;r.dispatchEvent(new Event('change',{bubbles:true}));const m=document.querySelector('.air-config-field select[aria-label="模型"]');m.value='gpt-5.6-sol';document.querySelector('select[aria-label="推理强度"]').value='high';document.querySelector('.air-config-form').requestSubmit()})()`);
+    // Provider 是下拉（和 chat 的 AI 配置、App 的配置面板同一版），一行装完，
+    // 不再是一墙卡片：默认线路 + Auto 池 + 三条 Provider。
+    assert.equal(await page.evaluate(`document.querySelector('.air-config-dialog[open] select[aria-label="Provider"]').options.length`), 5);
+    assert.equal(await page.evaluate(`(()=>{const s=document.querySelector('.air-config-dialog[open] select[aria-label="Provider"]');const o=s.options[1];return o.value.startsWith('__auto__')&&o.textContent.includes('Auto')})()`), true);
+    assert.equal(await page.evaluate(`document.querySelector('.air-config-dialog[open] select[aria-label="Provider"]').options[0].textContent`), '默认登录 / 官方账号');
+    // 子任务尾巴就挂在 Provider 配置后面：线路 + 模型两个下拉，Codex 排掉官方账号
+    // （它没有可调用的 HTTP 端点，服务端也会拒）。
+    assert.deepEqual(await page.evaluate(`(()=>{const s=document.querySelector('.air-config-dialog[open] select[aria-label="子任务线路"]');return [s.options.length, s.options[0].textContent, [...s.options].some(o=>o.value==='codex-official')]})()`), [3, '随主', false]);
+    assert.equal(await page.evaluate(`document.querySelector('.air-config-dialog[open] select[aria-label="子任务模型"]').options[0].textContent`), '不设置');
+    await page.evaluate(String.raw`(()=>{const q=s=>document.querySelector('.air-config-dialog[open] '+s);
+      const provider=q('select[aria-label="Provider"]'); provider.value='codex-backup'; provider.dispatchEvent(new Event('change',{bubbles:true}));
+      const model=q('select[aria-label="模型"]'); model.value='gpt-5.6-sol';
+      const line=q('select[aria-label="子任务线路"]'); line.value='codex-lab'; line.dispatchEvent(new Event('change',{bubbles:true}));
+      q('select[aria-label="子任务模型"]').value='gpt-5.5';
+      q('select[aria-label="推理强度"]').value='high';
+      q('.air-config-form').requestSubmit()})()`);
     assert.ok(await page.waitFor(`!document.querySelector('.air-config-dialog[open]')`));
     assert.equal(configPatches.length, 2);
     assert.deepEqual(configPatches[0], { provider: 'codex-backup', providerSelection: null });
-    assert.deepEqual(configPatches[1], { model: 'gpt-5.6-sol', effort: 'high' });
+    // 子任务跟着同一笔 PATCH 落库（模型为空就等于没设 → null，随主）。
+    assert.deepEqual(configPatches[1], { model: 'gpt-5.6-sol', effort: 'high', subagent: { providerId: 'codex-lab', model: 'gpt-5.5' } });
     assert.ok(await page.waitFor(`${composerPill('air-ai-pill')}.textContent.includes('Backup Responses') && ${composerPill('air-ai-pill')}.textContent.includes('gpt-5.6-sol')`));
     entry.configuration.pendingConfiguration = { cli: 'codex', profile: { provider: 'codex-lab', model: 'gpt-5.5', effort: 'low' } };
     await reloadConversation();
     assert.ok(await page.waitFor(`${composerPill('air-ai-pill')}.textContent.includes('下轮生效')`));
     assert.equal(await page.evaluate(`${composerPill('air-ai-pill')}.textContent.includes('gpt-5.5') && !${composerPill('air-ai-pill')}.textContent.includes('Backup Responses')`), true);
     await page.evaluate(`${composerPill('air-ai-pill')}.click()`);
-    assert.ok(await page.waitFor(`document.querySelector('.air-provider-option[data-value="codex-lab"].selected')`));
+    assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open] select[aria-label="Provider"]')?.value==='codex-lab'`));
     assert.equal(await page.evaluate(`document.querySelector('dialog[open] select[aria-label="推理强度"]').value`), 'low');
+    // 存过的子任务线路要能读回来，否则再打开面板一次就会把它清掉。
+    assert.equal(await page.evaluate(`document.querySelector('dialog[open] select[aria-label="子任务线路"]').value`), 'codex-lab');
+    assert.equal(await page.evaluate(`document.querySelector('dialog[open] select[aria-label="子任务模型"]').value`), 'gpt-5.5');
     await page.evaluate(`document.querySelector('dialog[open] .air-config-close').click()`);
     entry.configuration.pendingConfiguration = null;
     await page.evaluate(`${frame}.defaultView.MultiCCTaskArtifacts.setScope({shellId:'shell-a'})`);
@@ -322,10 +340,16 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(await page.evaluate(`document.getElementById('quick-ai-pill').closest('.mc-composer')===document.getElementById('quick-task-form')`), true, 'both pills ride the composer card');
     screenshots.push(await page.screenshot('directory-composer-desktop'));
     await page.evaluate(`document.getElementById('quick-ai-pill').click()`);
-    assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open] .air-provider-option[data-value="codex-backup"]')`), JSON.stringify({ pill: await page.evaluate(`document.getElementById('quick-ai-pill').textContent`), selected: await page.evaluate(`document.querySelector('.air-cli-option.selected strong')?.textContent`), requests: page.requests.slice(-6).map(r => r.method + ' ' + r.path) }));
+    assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open] select[aria-label="Provider"]')`), JSON.stringify({ pill: await page.evaluate(`document.getElementById('quick-ai-pill').textContent`), selected: await page.evaluate(`document.querySelector('.air-cli-option.selected strong')?.textContent`), requests: page.requests.slice(-6).map(r => r.method + ' ' + r.path) }));
     screenshots.push(await page.screenshot('directory-composer-config-desktop'));
     assert.equal(await page.evaluate(`!!document.querySelector('.air-config-dialog[open] .air-config-field select[aria-label="模型"]')`), true, 'model selection survives on the panel');
-    await page.evaluate(`(()=>{const r=document.querySelector('.air-provider-option[data-value="codex-backup"] input');r.checked=true;r.dispatchEvent(new Event('change',{bubbles:true}));const m=document.querySelector('.air-config-field select[aria-label="模型"]');m.value='gpt-5.6-sol';document.querySelector('.air-config-form').requestSubmit()})()`);
+    assert.equal(await page.evaluate(`document.querySelector('.air-config-dialog[open] select[aria-label="子任务线路"]').options.length`), 3, 'the tail rides the panel for a task that does not exist yet');
+    await page.evaluate(String.raw`(()=>{const q=s=>document.querySelector('.air-config-dialog[open] '+s);
+      const provider=q('select[aria-label="Provider"]'); provider.value='codex-backup'; provider.dispatchEvent(new Event('change',{bubbles:true}));
+      const model=q('select[aria-label="模型"]'); model.value='gpt-5.6-sol';
+      const line=q('select[aria-label="子任务线路"]'); line.value='codex-lab'; line.dispatchEvent(new Event('change',{bubbles:true}));
+      q('select[aria-label="子任务模型"]').value='gpt-5.5';
+      q('.air-config-form').requestSubmit()})()`);
     assert.ok(await page.waitFor(`!document.querySelector('.air-config-dialog[open]')`));
     assert.equal(await page.evaluate(`document.getElementById('quick-ai-pill').textContent`), 'codex · Backup Responses · gpt-5.6-sol');
     assert.equal(configPatches.length, 2, 'a task that does not exist yet is never PATCHed');
@@ -363,6 +387,9 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(createBody.cli, 'codex');
     assert.equal(createBody.provider, 'codex-backup');
     assert.equal(createBody.model, 'gpt-5.6-sol', 'the panel no longer drops the model');
+    // 草稿模式下尾巴交给调用方：它必须一路走到创建请求里，否则第一条消息执行时
+    // 子任务又回落成随主。
+    assert.deepEqual(createBody.subagent, { providerId: 'codex-lab', model: 'gpt-5.5' });
     assert.ok(createBody.clientMsgId, 'creation carries its receipt key');
     assert.deepEqual(roleBody.bindings, [{ name: '设计师', prompt: '关注清晰、轻盈的交互' }]);
     assert.equal(roleBody.expectedVersion, 0, 'a fresh task binds roles at version 0');
@@ -445,7 +472,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
       assert.equal(await page.evaluate(`${composerPill('air-role-pill')}.getBoundingClientRect().right<=${frame}.documentElement.clientWidth`), true);
       if (width === 390) {
         await page.evaluate(`${composerPill('air-ai-pill')}.click()`);
-        assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open] .air-provider-list')`));
+        assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open] select[aria-label="Provider"]')`));
         assert.equal(await page.evaluate(`document.querySelector('.air-config-dialog').scrollWidth<=document.querySelector('.air-config-dialog').clientWidth`), true);
         await page.evaluate(`document.querySelector('.air-config-close').click()`);
       }
