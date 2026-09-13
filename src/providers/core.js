@@ -449,6 +449,10 @@ function buildSettingsConfig(appType, { baseUrl, authToken, model, models, provi
     `[model_providers.${provName}]`,
     `name = "${provName}"`,
     proxyBaseUrl ? `base_url = "${proxyBaseUrl}"` : '',
+    // codex 0.15x only attaches credentials for custom providers through
+    // env_key + the matching env var; auth.json alone sends no Authorization
+    // header and DeepSeek's gateway answers 401 "Authentication Fails".
+    authToken ? 'env_key = "OPENAI_API_KEY"' : '',
     'wire_api = "responses"',
   ].filter(Boolean);
   const cfg = {
@@ -474,6 +478,21 @@ function replaceTomlString(config, key, value) {
   const pattern = new RegExp(`(^|\\n)\\s*${key}\\s*=\\s*"[^"]*"`);
   if (pattern.test(config || '')) return String(config).replace(pattern, `$1${line}`);
   return `${line}\n${config || ''}`;
+}
+
+// codex 0.15x attaches credentials for custom providers only via
+// env_key + env var. Configs from cc-switch imports or pre-2026-09-12 rows
+// predate that, so patch env_key into the active [model_providers.<id>]
+// section at materialization time (single choke point for every codex spawn).
+function ensureCodexEnvKey(toml) {
+  const text = String(toml || '');
+  if (/(^|\n)\s*env_key\s*=/.test(text)) return text;
+  const active = text.match(/model_provider\s*=\s*"([^"]+)"/);
+  const id = (active ? active[1] : 'custom').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // cc-switch 写裸 key，TOML 序列化器写带引号 key，两种都认。
+  const re = new RegExp(`^\\[model_providers\\.(?:"${id}"|${id})\\]\\s*$`, 'm');
+  if (!re.test(text)) return text;
+  return text.replace(re, match => `${match}\nenv_key = "OPENAI_API_KEY"`);
 }
 
 function effectiveCodexSettings(provider) {
@@ -1390,6 +1409,8 @@ function resolveSpawnEnv(session) {
       let toml = cfg.config;
       toml = toml.replace(/^model_catalog_json\s*=.*$/gm, '').replace(/\n{3,}/g, '\n\n');
       toml = toml.replace(/\[model_providers\]\s*\n\[model_providers\.custom\]/, '[model_providers.custom]');
+      // 带 API key 的直连 provider 需要 env_key 才能让 codex 附带 Authorization。
+      if (cfg.auth && cfg.auth.OPENAI_API_KEY) toml = ensureCodexEnvKey(toml);
       const configFile = path.join(home, 'config.toml');
       atomicWriteText(configFile, toml);
     }
@@ -1418,8 +1439,12 @@ function resolveSpawnEnv(session) {
         if (needLink) fs.symlinkSync(globalSkills, skillsDir);
       }
     } catch (_) { /* best-effort: skills stay invisible but spawn still works */ }
+    // buildChildEnv 会从继承环境里删掉 OPENAI_API_KEY，所以这里必须随
+    // CODEX_HOME 一起重新导出，否则 config.toml 里的 env_key 找不到变量、
+    // codex 依旧不带 Authorization（DeepSeek 网关回 401 governor）。
+    const apiKey = !officialOAuth && cfg.auth && cfg.auth.OPENAI_API_KEY;
     return {
-      env: { CODEX_HOME: home },
+      env: { CODEX_HOME: home, ...(apiKey ? { OPENAI_API_KEY: apiKey } : {}) },
       skipDefaultModel: false,
       aliasOnly: false,
       providerModel: null,
