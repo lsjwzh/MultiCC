@@ -30,6 +30,10 @@ class BackgroundTasksFloatingDock extends StatelessWidget {
   /// yields to it so the two icons never overlap.
   final FloatingDockAnchor? obstacle;
 
+  /// Reports this dock's settled anchor so a lower-priority peer (the
+  /// scheduled-send dock) can yield to it too — three icons on one edge.
+  final void Function(bool sideRight, double top)? onAnchorChanged;
+
   final double leftMinBottom;
   final double rightMinBottom;
 
@@ -39,6 +43,7 @@ class BackgroundTasksFloatingDock extends StatelessWidget {
     required this.onDismiss,
     this.onExpandedChanged,
     this.obstacle,
+    this.onAnchorChanged,
     this.leftMinBottom = 96,
     this.rightMinBottom = 96,
   });
@@ -78,6 +83,7 @@ class BackgroundTasksFloatingDock extends StatelessWidget {
       rightMinBottom: rightMinBottom,
       obstacle: obstacle,
       onExpandedChanged: onExpandedChanged,
+      onAnchorChanged: onAnchorChanged,
       iconKey: const Key('bg-dock-icon'),
       badgeKey: const Key('bg-dock-badge'),
     );
