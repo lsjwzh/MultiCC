@@ -30,8 +30,6 @@ Map<String, String> get _goalDimShort => {
 };
 
 class InputBar extends StatefulWidget {
-  final VoidCallback? onPickSubagent;
-
   /// 草稿和光标可以由外面拿着：手机上空闲时输入区会折成一条胶囊，胶囊要
   /// 显示还没发出去的草稿，点开时也要把光标放回输入框 —— 两件事都得从外面
   /// 够得着这两个对象。不传就还是自己管，行为不变。
@@ -47,7 +45,6 @@ class InputBar extends StatefulWidget {
 
   const InputBar({
     super.key,
-    this.onPickSubagent,
     this.controller,
     this.focusNode,
     this.scheduledSend,
@@ -1246,14 +1243,6 @@ class _InputBarState extends State<InputBar> {
         break;
       }
     }
-    // Prefer the resolved real wire id (effectiveModel) over the stored tier
-    // alias, so the pill shows what actually hits the server (e.g. glm-5.2, not opus).
-    final sub = activeSess?.subagent;
-    final subReal =
-        (sub?.effectiveModel != null && sub!.effectiveModel!.isNotEmpty)
-        ? sub.effectiveModel
-        : ((sub?.model != null && sub!.model!.isNotEmpty) ? sub.model : null);
-    final subagentModelLabel = subReal;
     // 会话角色读不到就当不是 commander：fail closed，绝不悄悄改写提示词。
     final isCommander = isCommanderSessionType(activeSess?.type);
     _syncDispatchMode(provider);
@@ -1341,54 +1330,11 @@ class _InputBarState extends State<InputBar> {
                 ),
               ),
 
-            // Sub-task (subagent) indicator pill — tap opens the AI-config sheet.
-            if (widget.onPickSubagent != null)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 6),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: GestureDetector(
-                    onTap: widget.onPickSubagent,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 5,
-                      ),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFf8fbff),
-                        border: Border.all(color: const Color(0xFFdce6f1)),
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(
-                            Icons.psychology_outlined,
-                            size: 14,
-                            color: Color(0xFF233249),
-                          ),
-                          const SizedBox(width: 4),
-                          Text(
-                            t('subtaskLabel', {
-                              'model': subagentModelLabel ?? t('followMain'),
-                            }),
-                            style: const TextStyle(
-                              color: Color(0xFF233249),
-                              fontSize: 11,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-
             // Commander 专属：这一轮怎么派发。四个选项平铺会把手机上的输入区
             // 挤掉，所以只留一枚显示当前档位的胶囊，改档去 BottomSheet 里选 ——
-            // 与 web 同一形态。位置跟在子任务 pill 之后、输入框之上，和
-            // web 的 #pre-input-bar 顺序一致。
+            // 与 web 同一形态。位置在输入框之上，和 web 的 #pre-input-bar 顺序
+            // 一致。（子任务不再有外显胶囊：它只在 AI 配置面板里作为 provider
+            // 后面的一行尾巴出现，没设就什么都不显示。）
             if (isCommander)
               Padding(
                 padding: const EdgeInsets.only(bottom: 6),

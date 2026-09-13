@@ -546,11 +546,6 @@ class _ChatViewState extends State<ChatView> {
                       focusNode: _composerFocus,
                       scheduledSend: _scheduledSend,
                       draftSink: _scheduleDraftSink,
-                      onPickSubagent: () => openAIConfigSheet(
-                        context,
-                        settings: widget.settings,
-                        sessionId: provider.executionSessionName,
-                      ),
                     ),
                   ),
                 ),

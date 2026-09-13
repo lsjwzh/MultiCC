@@ -1571,7 +1571,6 @@ async function loadSessionModel() {
   _sessionProviderDisplayName = '';
   _sessionSubagent = info.subagent || null;
   _sessionAgent = info.agent || '';
-  safe('subagent-pill', updateSubagentPill);
   await safe('provider-list', async () => { if (_sessionProvider && !PROVIDERLESS_CLIS.has(_sessionCli)) await ensureProviderList(_sessionCli); });
   safe('provider-btn', updateProviderBtn);
   _sessionModel = info.model || ''; _sessionEffectiveModel = info.effectiveModel || info.model || '';
@@ -1632,7 +1631,6 @@ modelBtn?.addEventListener('click', async () => {
     _activeProviderId = ''; _activeProviderName = ''; _activeProviderModel = '';
     _sessionSubagent = data.subagent || null;
     _sessionAgent = data.agent || '';
-    updateSubagentPill();
     _sessionModel = data.model || '';
     _sessionEffectiveModel = data.effectiveModel || data.model || '';
     _sessionEffort = data.effort || '';
@@ -1707,7 +1705,6 @@ function applyCliSwitchState(info) {
   }
   if (info.agent !== undefined) _sessionAgent = info.agent || '';
   if (info.subagent !== undefined) _sessionSubagent = info.subagent || null;
-  updateSubagentPill();
   updateModelBtn();
 }
 
@@ -2145,20 +2142,6 @@ autoCommitBtn?.addEventListener('click', async () => {
     addSystemMsg('保存失败：' + chatApi.errorText(e));
   }
 });
-
-/* ── Subagent pill: shows the current sub-task model; click opens AI config ── */
-const subagentPill = document.getElementById('subagent-pill');
-function updateSubagentPill() {
-  const el = document.getElementById('subagent-pill-label');
-  const supported = _sessionCli === 'claude' || _sessionCli === 'codex';
-  if (subagentPill) subagentPill.style.display = supported ? '' : 'none';
-  if (!el) return;
-  // Show the REAL wire model id that hits the server (effectiveModel), not the
-  // stored tier alias (opus/sonnet/…). Falls back to the raw model, then 随主.
-  const m = _sessionSubagent && (_sessionSubagent.effectiveModel || _sessionSubagent.model);
-  el.textContent = m || '随主';
-}
-subagentPill?.addEventListener('click', () => { modelBtn?.click(); });
 
 /* ── Per-message auto-commit checkbox ── */
 // Add a small checkbox under an assistant message bubble.
