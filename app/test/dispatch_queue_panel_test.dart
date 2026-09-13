@@ -144,6 +144,74 @@ void main() {
     expect(find.text('已完成'), findsOneWidget);
   });
 
+  // 任务板专属 worker 不在 /api/sessions 里，resolveName 只会把 id 原样还回来；
+  // 投影随身带的 targetLabel 是它唯一的好名字（web displayName 的同一条回落）。
+  testWidgets('task-bound target falls back to the projection label, with a hint', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _host(
+        DispatchQueuePanel(
+          entries: const [
+            DispatchQueueEntry(
+              operationId: 'op-bound',
+              relation: 'owner',
+              targetSessionId: 'task-worker-9',
+              targetLabel: '任务 · 修好登录流程',
+              targetTaskBoundTaskId: 'task-abc',
+              mode: 'async',
+              queueState: 'running',
+            ),
+          ],
+          resolveName: resolve,
+          initiallyExpanded: true,
+        ),
+      ),
+    );
+
+    // 显示的是投影带的名字，不是裸 id。
+    expect(find.text('派给 任务 · 修好登录流程 · 异步'), findsOneWidget);
+    expect(find.textContaining('task-worker-9'), findsNothing);
+    // 悬停提示解释它为什么不在会话列表里、属于哪个任务。
+    expect(
+      find.byTooltip(t('dispatchTaskBoundHint', {'task': 'task-abc'})),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('an ordinary target keeps the registry name and no such hint', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _host(
+        DispatchQueuePanel(
+          entries: const [
+            DispatchQueueEntry(
+              operationId: 'op-plain',
+              relation: 'owner',
+              targetSessionId: 's-worker',
+              // 服务端只在目标确实绑定了任务时才带这两个字段；空串同理当没有。
+              targetLabel: '',
+              targetTaskBoundTaskId: '',
+              queueState: 'running',
+            ),
+          ],
+          resolveName: resolve,
+          initiallyExpanded: true,
+        ),
+      ),
+    );
+
+    expect(find.text('派给 全栈工程师 1'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('dispatch-row-op-plain')),
+        matching: find.byType(Tooltip),
+      ),
+      findsNothing,
+    );
+  });
+
   testWidgets('parent collapse state overrides an already-expanded dock', (
     tester,
   ) async {
