@@ -320,13 +320,18 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 #empty { min-height: 0; flex: 1; overflow: auto; padding: 28px 34px 34px; color: var(--muted); }
 #directory-open-planner { flex: 0 0 auto; color: #37698f; background: rgba(255, 255, 255, .72); }
 #directory-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 0 0 14px; }
-.directory-stat { min-width: 0; padding: 14px 15px; border: 1px solid #dbe6f1; border-radius: 14px; background: rgba(255, 255, 255, .86); box-shadow: 0 8px 28px #35577d08; }
-.directory-stat::before { content: ""; display: block; width: 24px; height: 3px; margin-bottom: 9px; border-radius: 4px; background: #aebfd0; }
+/* 四张统计卡是这一页的抬头，不是正文：扫一眼知道这个目录有多少活在跑就够了，
+   再往下就是任务列表。所以它们按「一行字」而不是「一张卡片」来做 —— 填充、
+   色条和数字都收了一档，说明文字也从继承来的 14px 落到 10.5px（原来它比标题
+   还大，是这张卡显胖的主要原因）。 */
+.directory-stat { min-width: 0; padding: 10px 12px; border: 1px solid #dbe6f1; border-radius: 12px; background: rgba(255, 255, 255, .86); box-shadow: 0 6px 20px #35577d08; }
+.directory-stat::before { content: ""; display: block; width: 18px; height: 3px; margin-bottom: 6px; border-radius: 4px; background: #aebfd0; }
 .directory-stat.blue::before { background: #4d9bea; }
 .directory-stat.green::before { background: #43b88a; }
 .directory-stat span, .directory-stat small { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.directory-stat span { color: #6d8094; font-size: 9px; }
-.directory-stat strong { display: block; margin: 4px 0; color: #2d4d68; font-size: 23px; line-height: 1.1; }
+.directory-stat span { color: #6d8094; font-size: 10px; }
+.directory-stat strong { display: block; margin: 2px 0; color: #2d4d68; font-size: 19px; line-height: 1.1; }
+.directory-stat small { color: #8a9aab; font-size: 10.5px; }
 .directory-task-panel { overflow: hidden; border: 1px solid #dbe6f1; border-radius: 15px; background: rgba(255, 255, 255, .9); }
 .directory-task-panel .section-heading { padding: 12px 15px 8px; border-bottom: 1px solid #e5edf4; }
 #directory-task-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -339,11 +344,23 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 .directory-task-row time { color: #8c9aaa; font-size: 8px; }
 .directory-task-mark { color: #3b8edc; font-size: 18px; }
 .directory-task-empty { grid-column: 1 / -1; padding: 26px; text-align: center; font-size: 11px; }
+/* 列表是截过的（air.js 的 recentRowLimit），所以底下必须留一条明路：这一页只
+   放得下最近那几条，完整的那份在控制台。数字跟着行数走，别让人以为只剩这些。 */
+#directory-task-more { display: block; width: 100%; padding: 11px 14px; border: 0; border-top: 1px solid #e8eef5; border-radius: 0 0 15px 15px; background: transparent; color: #3b8edc; font-size: 11px; text-align: center; }
+#directory-task-more:hover { background: #f2f8fe; }
 /* The new-task composer is the composer module (composer.css) in its panel
    placement; only where it sits in the column is decided here — floating a
    little above the bottom edge so it reads as part of the conversation column
    rather than a bar glued to the viewport. */
 #quick-task-form { position: sticky; bottom: 20px; margin-top: 18px; }
+/* 折叠态（air-quick-fold.js）。这一条细杠是卡片的第一个孩子，所以整个状态只要
+   两句话：折起来时只留它，展开时只藏它 —— 不用逐块开关 aux 带、输入框和动作行。
+   杠自己不是内容，是折叠的开关：aria-expanded 说的是里面那张卡片在不在。 */
+#quick-task-expand { display: none; align-items: center; gap: 8px; width: 100%; padding: 13px 14px; border: 0; border-radius: inherit; background: transparent; color: #8a9aab; font-size: 12px; text-align: left; }
+#quick-task-expand::after { content: "⌃"; flex: 0 0 auto; color: #a9bccd; font-size: 12px; }
+#quick-task-expand-hint { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+#quick-task-form.is-folded > :not(#quick-task-expand) { display: none; }
+#quick-task-form.is-folded > #quick-task-expand { display: flex; }
 #quick-task-files { display: flex; flex-wrap: wrap; gap: 5px; padding: 12px 12px 0; }
 #quick-task-files:empty { display: none; }
 .quick-task-file { display: inline-flex; align-items: center; gap: 5px; padding: 3px 4px 3px 8px; color: #476b8c; border-radius: 14px; background: #edf5fc; font-size: 9px; }
@@ -848,8 +865,8 @@ body.console-open #console-panel { transform: none; visibility: visible; }
   #admin-actions button { flex: 1; }
   .admin-stats { grid-template-columns: 1fr 1fr; }
   .admin-stat { min-height: 104px; padding: 13px; }
-  .directory-stat { padding: 12px; }
-  .directory-stat strong { font-size: 20px; }
+  .directory-stat { padding: 9px 10px; }
+  .directory-stat strong { font-size: 17px; }
   .quick-task-actions > label:last-of-type { order: 3; }
   .admin-tool-grid, .air-settings-grid { grid-template-columns: 1fr; }
   .air-docs-meta { align-items: flex-start; flex-direction: column; }

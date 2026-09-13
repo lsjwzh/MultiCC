@@ -360,17 +360,53 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     await page.evaluate(`document.querySelector('dialog[open] form').requestSubmit()`);
     assert.ok(await page.waitFor(`document.getElementById('quick-role-pill').textContent==='1 个角色'`));
     // The two pills and the card have to survive the phone widths too: this is
-    // the first thing a directory opens with.
+    // the first thing a directory opens with. On a phone the card starts folded
+    // (air-quick-fold.js) — it is sticky, so unfolded it owns the bottom third of
+    // the screen for as long as you are reading the task list above it. The whole
+    // composer is one tap away, and the tap has to land in the textarea.
     for (const width of [390, 320]) {
       await page.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: true });
-      const panel = await page.evaluate(`(()=>{const f=document.getElementById('quick-task-form').getBoundingClientRect();
-        const ai=document.getElementById('quick-ai-pill').getBoundingClientRect(),role=document.getElementById('quick-role-pill').getBoundingClientRect();
-        return {overflow:document.documentElement.scrollWidth<=innerWidth,form:[Math.round(f.left),Math.round(f.right)],
-          aiRight:Math.round(ai.right),roleRight:Math.round(role.right),roleBottom:Math.round(role.bottom),formTop:Math.round(f.top),
-          rows:Math.round(role.top-ai.top)>0};})()`);
-      assert.equal(panel.overflow, true, JSON.stringify(panel));
-      assert.ok(panel.aiRight <= width && panel.roleRight <= width, JSON.stringify(panel));
+      // 后台 target 不产帧，resize 和媒体查询的 change 都不会自己跑（见本文件
+      // 开头那段）：先抓一帧把渲染步推过去，折叠模块才有机会知道屏宽变了。
+      // `getBoundingClientRect` 那种是惰性布局，按下就出结果，这里不是一回事。
+      await page.screenshot('directory-composer-mobile-probe');
+      assert.ok(await page.waitFor(`document.getElementById('quick-task-form').classList.contains('is-folded')`));
+      const folded = await page.evaluate(`(()=>{const f=document.getElementById('quick-task-form').getBoundingClientRect();
+        const b=document.getElementById('quick-task-expand').getBoundingClientRect();
+        return {overflow:document.documentElement.scrollWidth<=innerWidth,form:[Math.round(f.left),Math.round(f.right),Math.round(f.height)],
+          bar:[Math.round(b.left),Math.round(b.right)],pill:Math.round(document.getElementById('quick-ai-pill').getBoundingClientRect().height),
+          hint:document.getElementById('quick-task-expand-hint').textContent};})()`);
+      assert.equal(folded.overflow, true, JSON.stringify(folded));
+      assert.ok(folded.form[0] >= 0 && folded.form[1] <= width, JSON.stringify(folded));
+      assert.ok(folded.bar[0] >= 0 && folded.bar[1] <= width, JSON.stringify(folded));
+      assert.ok(folded.form[2] < 70, '折起来是一条细杠，不是半个屏幕：' + JSON.stringify(folded));
+      assert.equal(folded.pill, 0, '整张卡片都收起来了，配置胶囊也不例外');
+      assert.equal(folded.hint, '描述要完成的任务…');
+      if (width === 390) screenshots.push(await page.screenshot('directory-composer-mobile-folded'));
+      // 点一下就回到整张卡片，光标已经落在输入框里 —— 折叠不能变成「多一道手续」。
+      await page.evaluate(`document.getElementById('quick-task-expand').click()`);
+      assert.ok(await page.waitFor(`!document.getElementById('quick-task-form').classList.contains('is-folded')`));
+      assert.equal(await page.evaluate(`document.activeElement===document.getElementById('quick-task-input')`), true, '展开之后直接能打字');
+      const open = await page.evaluate(`(()=>{const ai=document.getElementById('quick-ai-pill').getBoundingClientRect(),role=document.getElementById('quick-role-pill').getBoundingClientRect();
+        return {overflow:document.documentElement.scrollWidth<=innerWidth,aiRight:Math.round(ai.right),roleRight:Math.round(role.right),
+          formHeight:Math.round(document.getElementById('quick-task-form').getBoundingClientRect().height)};})()`);
+      assert.equal(open.overflow, true, JSON.stringify(open));
+      assert.ok(open.aiRight <= width && open.roleRight <= width, JSON.stringify(open));
+      // 展开之后确实比那条细杠高得多 —— 否则「折叠」只是把字换了个位置。
+      assert.ok(open.formHeight > folded.form[2] * 3, JSON.stringify({open, folded}));
       if (width === 390) screenshots.push(await page.screenshot('directory-composer-mobile'));
+      // 空盒子按 Esc 折回去，焦点交还给那条杠 —— 「算了」这个手势要能一步到位。
+      await page.evaluate(`document.getElementById('quick-task-input').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`);
+      assert.ok(await page.waitFor(`document.getElementById('quick-task-form').classList.contains('is-folded')`));
+      assert.equal(await page.evaluate(`document.activeElement===document.getElementById('quick-task-expand')`), true);
+      // 盒子里有东西时不折：那会把半句话藏进一条细杠里。起草中的任务比一屏
+      // 任务列表值钱，这时候该让路的是列表，不是输入框。
+      await page.evaluate(`(()=>{const i=document.getElementById('quick-task-input');i.value='写了一半';
+        i.dispatchEvent(new Event('input',{bubbles:true}));
+        document.getElementById('quick-task-expand').click();
+        i.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))})()`);
+      assert.equal(await page.evaluate(`document.getElementById('quick-task-form').classList.contains('is-folded')`), false, '有草稿就不折');
+      await page.evaluate(`(()=>{const i=document.getElementById('quick-task-input');i.value='';i.dispatchEvent(new Event('input',{bubbles:true}))})()`);
     }
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1366, height: 900, deviceScaleFactor: 1, mobile: false });
     await page.evaluate(`document.getElementById('quick-task-input').value='从目录首页创建任务';document.getElementById('quick-task-goal').checked=true;document.getElementById('quick-task-form').requestSubmit()`);

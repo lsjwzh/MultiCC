@@ -162,6 +162,9 @@
           <section class="directory-task-panel">
             <div class="section-heading"><div><span class="caption">当前目录</span><strong>最近任务</strong></div><span id="directory-overview-count"></span></div>
             <div id="directory-task-list"></div>
+            <!-- 列表是截过的，这条是留给「剩下的那些」的出口：这一页只摆最近几条，
+                 完整的那份永远在控制台（air.js 的 recentRowLimit）。 -->
+            <button id="directory-task-more" type="button" hidden></button>
           </section>
           <form id="quick-task-form" class="mc-composer mc-composer--panel">
             <!-- The same composer module the task chat uses (composer.css), with
@@ -341,5 +344,7 @@
   <!-- 对话帧重载后的对账要用同一套任务→会话解析（air.js reconcileFrameTask）。 -->
   <script src="chat-shell-entry.js"></script>
   <script src="air.js"></script>
+  <!-- 要晚于 air.js：它先给输入框填好内容，折叠才有东西可以念在杠上。 -->
+  <script src="air-quick-fold.js"></script>
 </body>
 </html>
