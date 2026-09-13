@@ -230,10 +230,24 @@ class MessageBubble extends StatelessWidget {
   /// is an audit trail and is never mutated from a bubble.
   final bool enableServerActions;
 
+  /// 这一轮的用户气泡下面要不要挂「本轮执行成功后自动提交合并」勾选框
+  /// （Web 的 `attachAutoCommitCheck`，只挂在最后一条用户消息上）。默认全关，
+  /// 所以别的宿主（任务详情页那种只读转录）渲染出来和以前完全一样。
+  final bool showAutoCommit;
+  final bool autoCommitChecked;
+
+  /// 这一轮已经自动提交过了 —— 勾选框还在，但变成只读的「✓ 已提交」。
+  final bool autoCommitDone;
+  final ValueChanged<bool>? onAutoCommitChanged;
+
   const MessageBubble({
     super.key,
     required this.message,
     this.enableServerActions = true,
+    this.showAutoCommit = false,
+    this.autoCommitChecked = false,
+    this.autoCommitDone = false,
+    this.onAutoCommitChanged,
   });
 
   @override
@@ -243,6 +257,10 @@ class MessageBubble extends StatelessWidget {
         return _UserBubble(
           message: message,
           enableServerActions: enableServerActions,
+          showAutoCommit: showAutoCommit,
+          autoCommitChecked: autoCommitChecked,
+          autoCommitDone: autoCommitDone,
+          onAutoCommitChanged: onAutoCommitChanged,
         );
       case MessageRole.assistant:
         return _AssistantBubble(
@@ -258,7 +276,18 @@ class MessageBubble extends StatelessWidget {
 class _UserBubble extends StatelessWidget {
   final ChatMessage message;
   final bool enableServerActions;
-  const _UserBubble({required this.message, this.enableServerActions = true});
+  final bool showAutoCommit;
+  final bool autoCommitChecked;
+  final bool autoCommitDone;
+  final ValueChanged<bool>? onAutoCommitChanged;
+  const _UserBubble({
+    required this.message,
+    this.enableServerActions = true,
+    this.showAutoCommit = false,
+    this.autoCommitChecked = false,
+    this.autoCommitDone = false,
+    this.onAutoCommitChanged,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -288,14 +317,97 @@ class _UserBubble extends StatelessWidget {
                   bottomRight: Radius.circular(4),
                 ),
               ),
-              child: Text(
-                message.content,
-                style: const TextStyle(color: Colors.white, fontSize: 14, height: 1.5),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    message.content,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      height: 1.5,
+                    ),
+                  ),
+                  if (showAutoCommit)
+                    _AutoCommitRow(
+                      checked: autoCommitChecked,
+                      done: autoCommitDone,
+                      onChanged: onAutoCommitChanged,
+                    ),
+                ],
               ),
             ),
           ),
         );
       },
+    );
+  }
+}
+
+/// 用户气泡里那行「本轮执行成功后自动提交合并」（Web 的 `.msg-auto-commit`）。
+/// 它落在蓝底气泡里，所以分隔线和文字都走白色系 —— Web 那边也为这个场景单独
+/// 覆盖过 `--chat-muted` 的灰字。
+class _AutoCommitRow extends StatelessWidget {
+  final bool checked;
+  final bool done;
+  final ValueChanged<bool>? onChanged;
+  const _AutoCommitRow({required this.checked, required this.done, this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = done ? const Color(0xFF7ee787) : const Color(0xFFdbe9ff);
+    final locked = done || onChanged == null;
+    return Tooltip(
+      message: t('autoCommitTitle'),
+      child: Padding(
+        padding: const EdgeInsets.only(top: 6),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(height: 1, color: const Color(0x40ffffff)),
+            const SizedBox(height: 4),
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: locked ? null : () => onChanged!(!checked),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: Checkbox(
+                      value: checked,
+                      onChanged: locked
+                          ? null
+                          : (v) => onChanged!(v ?? false),
+                      activeColor: const Color(0xFF2ea043),
+                      checkColor: Colors.white,
+                      side: BorderSide(color: color.withValues(alpha: 0.7)),
+                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      visualDensity: VisualDensity.compact,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: Text(
+                      done
+                          ? '${t('autoCommitPerMsg')} ${t('autoCommitPerMsgDone')}'
+                          : t('autoCommitPerMsg'),
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: color,
+                        fontWeight: done ? FontWeight.w600 : FontWeight.normal,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

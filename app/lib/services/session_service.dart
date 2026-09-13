@@ -601,6 +601,25 @@ class SessionService {
     }
   }
 
+  /// 会话级「自动提交」开关（对齐 web 的 `updateAutoCommitBtn` + PATCH）。
+  ///
+  /// body 的键名必须是驼峰 `autoCommit` —— 服务端白名单里是这个名字
+  /// （`src/routes/session-profile.js`），写成下划线会被静默忽略、开关看着
+  /// 点了但根本不生效。
+  Future<void> updateSessionAutoCommit(String id, bool value) async {
+    final res = await http
+        .patch(
+          Uri.parse(_url('/api/sessions/$id')),
+          headers: _headers,
+          body: jsonEncode({'autoCommit': value}),
+        )
+        .timeout(const Duration(seconds: 10));
+    if (res.statusCode >= 400) {
+      final err = _tryParseError(res.body);
+      throw Exception(err ?? '${res.statusCode}');
+    }
+  }
+
   // ── Folder-based memory library (own + shared .md files) ───────────────────
   // Mirrors the web openMemoryEditor(): GET returns {own:{dir,primary,files},
   // shared:{dir,files}, legacy}; each file in `files` is {name, content}.

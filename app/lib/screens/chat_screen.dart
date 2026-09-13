@@ -13,6 +13,7 @@ import '../models/message.dart';
 import '../models/usage_readout.dart';
 import '../providers/chat_provider.dart';
 import '../providers/session_manager.dart';
+import '../services/auto_commit.dart';
 import '../services/chat_service.dart';
 import '../services/manage_service.dart';
 import '../services/scheduled_send_service.dart';
@@ -109,6 +110,14 @@ class _ChatViewState extends State<ChatView> {
   // 幂等键 —— 两个容器（worktree 提示条 / 冲突横幅）共用同一份，跟 Web 一样。
   bool _forceSyncing = false;
   String? _forceSyncClientMsgId;
+  // 每轮自动提交（Web 的 `autoCommitIfNeeded`）：执行状态（在途互斥 + 轮次
+  // 游标）在 controller 上，页面只负责每帧喊一声、并提供「刷新 merge-status」
+  // 这个能力。
+  late final AutoCommitController _autoCommit = AutoCommitController(
+    settings: widget.settings,
+    isAlive: () => mounted,
+    refreshMergeReady: _refreshMergeReady,
+  );
   bool _dispatchExpanded = false;
   // Current anchor of the dispatch floating dock (side + icon top px),
   // reported via onAnchorChanged so the background-tasks dock can yield to
@@ -465,6 +474,12 @@ class _ChatViewState extends State<ChatView> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     final provider = context.watch<ChatProvider>();
+    // 一轮结束（WS `result` 帧让 turnEndTick 自增）是自动提交唯一的触发点，
+    // 所以这一步要排在下面那些「换会话才做」的早退之前。
+    _autoCommit.syncTick(
+      provider: provider,
+      manager: context.read<SessionManager>(),
+    );
     final session = provider.executionSessionName;
     _syncScheduledSend(session);
     if (session == _polledSession) return;
@@ -535,6 +550,18 @@ class _ChatViewState extends State<ChatView> {
   Future<void> _mergeCurrent(BuildContext context, String sessionId) async {
     await confirmMergeWorktree(context, widget.settings, sessionId);
     await _refreshMergeStatus(sessionId);
+  }
+
+  /// 页头 ⋯ 里的「自动提交✓/✕」（Web 的 `#auto-commit-btn` 点击）。
+  Future<void> _toggleAutoCommit(ChatProvider provider) => _autoCommit.toggle(
+    provider: provider,
+    manager: context.read<SessionManager>(),
+  );
+
+  /// 刷一次 merge-status，并把「现在有没有可合并的东西」告诉自动提交执行器。
+  Future<bool> _refreshMergeReady(String session) async {
+    await _refreshMergeStatus(session);
+    return _mergeStatus?['mergeReady'] == true;
   }
 
   // ── Deep-link focus resolution ────────────────────────────────────────────
@@ -631,6 +658,9 @@ class _ChatViewState extends State<ChatView> {
   Widget build(BuildContext context) {
     final provider = context.watch<ChatProvider>();
     final mergeReady = _mergeStatus?['mergeReady'] == true;
+    final autoCommit = context.select<SessionManager, bool>(
+      (m) => sessionAutoCommitOf(m.sessions, provider.sessionName),
+    );
     final dispatchExpanded =
         _dispatchExpanded && provider.dispatchQueue.isNotEmpty;
     // Deep-link focus: resolve once, after the initial history page is applied.
@@ -678,6 +708,8 @@ class _ChatViewState extends State<ChatView> {
                   forceSyncing: _forceSyncing,
                   onChatWidth: () =>
                       showChatWidthDialog(context, widget.settings),
+                  autoCommit: autoCommit,
+                  onAutoCommit: () => _toggleAutoCommit(provider),
                   advancedMode: widget.settings.advancedMode.value,
                 ),
                 if (provider.pendingUserInput != null &&
@@ -2273,6 +2305,12 @@ class _MessageListState extends State<_MessageList> {
   Widget build(BuildContext context) {
     final provider = context.watch<ChatProvider>();
     final messages = provider.messages;
+    // 每轮勾选框挂在最后一条用户消息上（Web 的 `_lastUserBubble`）。没被手动
+    // 勾过的那一轮跟随会话级开关，所以这里要读一次会话记录里的值。
+    final sessionAutoCommit = context.select<SessionManager, bool>(
+      (m) => sessionAutoCommitOf(m.sessions, provider.sessionName),
+    );
+    final lastUserTurnId = lastUserMessageId(messages);
     final admissionProgress = provider.admissionProgressText;
     final showThinking =
         admissionProgress != null ||
@@ -2316,8 +2354,27 @@ class _MessageListState extends State<_MessageList> {
                     prev == null ||
                     msg.timestamp.difference(prev.timestamp).inMinutes.abs() >=
                         _timeSeparatorGapMinutes;
+                // 只有最后一条用户消息挂每轮勾选框；其余气泡四个参数全走默认值，
+                // 渲染结果跟没有这个功能时逐像素一致。
+                final turnId = lastUserTurnId != null &&
+                        msg.id == lastUserTurnId
+                    ? lastUserTurnId
+                    : null;
                 final bubble = _maybeHighlight(
-                  MessageBubble(message: msg),
+                  MessageBubble(
+                    message: msg,
+                    showAutoCommit: turnId != null,
+                    autoCommitChecked: turnId != null &&
+                        provider.turnAutoCommit(
+                          turnId,
+                          fallback: sessionAutoCommit,
+                        ),
+                    autoCommitDone: turnId != null &&
+                        provider.isTurnAutoCommitted(turnId),
+                    onAutoCommitChanged: turnId == null
+                        ? null
+                        : (v) => provider.setTurnAutoCommit(turnId, v),
+                  ),
                   msg.id,
                 );
                 if (!showTime) return bubble;
