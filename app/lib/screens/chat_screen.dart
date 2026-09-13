@@ -33,14 +33,39 @@ import '../widgets/session_diff_dialog.dart';
 import '../widgets/input_bar.dart';
 import '../widgets/message_bubble.dart';
 import '../widgets/thinking_indicator.dart';
+import '../widgets/worktree_status.dart';
+import 'chat_width_dialog.dart';
 import 'memo_screen.dart';
 import 'memory_screen.dart';
 import 'terminal_screen.dart';
 
 const double _chatDesktopBreakpoint = 760;
-const double _chatMaxContentWidth = 980;
 const double _chatMobileSidePadding = 12;
 const double _chatDesktopSidePadding = 16;
+
+/// 强制同步发出去的那段话。逐字照抄 Web 的 `syncPrompt()`
+/// （public/chat-worktree-sync.js）—— 两端发的是同一条指令，措辞不能各写一份，
+/// 否则同一个按钮在两个客户端会让会话做不同的事。
+const String _worktreeSyncPrompt =
+    '请同步本会话的工作区到所属工作目录的最新本地基分支，并解决同步冲突。\n'
+    '只在当前会话自己的 worktree 操作，不修改主工作区。执行时重新确认工作区、基分支、Git 状态及是否已有 merge/rebase；有未完成同步则先检查并解决。\n'
+    '保留所有未提交、未跟踪文件和独有提交，必要时先建立可恢复的备份或提交；不要使用 reset --hard、clean、强制覆盖或丢弃无法证明已合入的改动。\n'
+    '确认没有其他 Git 操作或写入者并发后，用合适的 fast-forward、rebase 或 merge 同步，结合双方意图解决冲突，不盲选 ours/theirs。无法判断归属或冲突含义时保留现场并说明阻碍。\n'
+    '完成后运行与改动相关的检查，核验 git status --short 和 HEAD...基分支 的 ahead/behind，确认 behind 为 0；如仍有 ahead 或保留的改动请说明。报告同步结果后继续原任务。';
+
+/// 聊天区实际占多宽。宽屏上默认收在 [ChatWidthSetting.defaults] 的 980，但用户
+/// 可以在「聊天宽度」里把这条限制关掉（铺满）或改大改小 —— 对齐 Web 的
+/// `chat-layout.js`，那边是 `--chat-content-max-width` 这一个变量。
+///
+/// 手机宽度（< 760）永远铺满：那里本来就没有余量可让。
+double _chatLaneWidth(double viewportWidth) {
+  if (viewportWidth < _chatDesktopBreakpoint) return viewportWidth;
+  final setting =
+      SettingsService.current?.chatWidth.value ?? ChatWidthSetting.defaults;
+  if (!setting.limited) return viewportWidth;
+  final max = setting.max.toDouble();
+  return viewportWidth > max ? max : viewportWidth;
+}
 
 /// Reusable chat view — expects a ChatProvider in the widget tree
 /// (provided by MainShell via ChangeNotifierProvider.value).
@@ -80,6 +105,10 @@ class _ChatViewState extends State<ChatView> {
   // worktree first falls behind main (or falls further), not on every 5s poll.
   int _lastWarnedBehind = 0;
   bool _syncing = false;
+  // 强制同步（把同步指令当消息发出去）的在途状态，以及上一次没送达时要复用的
+  // 幂等键 —— 两个容器（worktree 提示条 / 冲突横幅）共用同一份，跟 Web 一样。
+  bool _forceSyncing = false;
+  String? _forceSyncClientMsgId;
   bool _dispatchExpanded = false;
   // Current anchor of the dispatch floating dock (side + icon top px),
   // reported via onAnchorChanged so the background-tasks dock can yield to
@@ -111,6 +140,16 @@ class _ChatViewState extends State<ChatView> {
 
   int _behindCount() => (_mergeStatus?['behind'] as num?)?.toInt() ?? 0;
   String _baseBranchName() => _mergeStatus?['baseBranch']?.toString() ?? 'main';
+
+  /// 还没解决的冲突文件。服务端在 `merge-status` 里带 `conflict` /
+  /// `conflictFiles`：worktree 卡在一次冲突的 rebase 上时才非空 —— 这是
+  /// 「同步没走完」，不是「有文件改坏了」。
+  List<String> _conflictFiles() {
+    if (_mergeStatus?['conflict'] != true) return const [];
+    final raw = _mergeStatus?['conflictFiles'];
+    if (raw is! List) return const [];
+    return raw.map((e) => '$e').where((e) => e.isNotEmpty).toList();
+  }
 
   /// Mark a waiting turn as execution-succeeded from the classify bar.
   /// This does not complete the TaskBoard task lifecycle.
@@ -242,8 +281,162 @@ class _ChatViewState extends State<ChatView> {
     }
   }
 
+  /// 强制同步（Web 的「强制同步」按钮，public/chat-worktree-sync.js）：不是
+  /// `POST /sync`，而是把一段同步指令当作消息发给会话本身，让 agent 在自己的
+  /// worktree 里保留改动、解决冲突再同步。所以这里只负责把话送出去 —— 真正干
+  /// 活的是对方那一轮。
+  ///
+  /// 重试用同一个 clientMsgId：服务端按它去重（turn-engine 的 containsDelivery），
+  /// 所以「点了没反应，再点一次」不会变成两个同步回合。
+  Future<void> _forceSyncWorktree(ChatProvider provider) async {
+    if (_forceSyncing) return;
+    final session = provider.executionSessionName;
+    if (session.isEmpty ||
+        provider.connectionState != ChatConnectionState.connected) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(t('worktreeForceSyncNoSession'))));
+      return;
+    }
+    setState(() => _forceSyncing = true);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      _forceSyncClientMsgId ??=
+          'app-worktree-sync-${DateTime.now().microsecondsSinceEpoch}';
+      final id = provider.sendMessage(
+        _worktreeSyncPrompt,
+        clientMsgId: _forceSyncClientMsgId,
+      );
+      messenger.hideCurrentSnackBar();
+      if (id == null) {
+        // sendMessage 自己已经把「连接断了」写进对话区；这里只补一句「可重试」。
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(
+              t('worktreeForceSyncFailed', {
+                'error': t('worktreeForceSyncOffline'),
+              }),
+            ),
+          ),
+        );
+        return;
+      }
+      _forceSyncClientMsgId = null; // 送达了，下一次是一条新指令
+      messenger.showSnackBar(
+        SnackBar(content: Text(t('worktreeForceSyncSent'))),
+      );
+    } catch (error) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(t('worktreeForceSyncFailed', {'error': '$error'})),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _forceSyncing = false);
+    }
+  }
+
+  /// 从冲突横幅点「继续 / 放弃」：解掉卡住的那次 rebase（Web 的
+  /// `resolveRebase`）。继续时仍可能有没处理完的文件 —— 那就把新的冲突列表
+  /// 摆出来，别把「还有冲突」说成成功。
+  Future<void> _resolveRebase(String action) async {
+    final session = _polledSession ?? '';
+    if (session.isEmpty) return;
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final res = await SessionService(
+        settings: widget.settings,
+      ).rebaseSession(session, action: action);
+      messenger.hideCurrentSnackBar();
+      if (res['ok'] == true) {
+        final msg = res['aborted'] == true
+            ? t('rebaseAborted')
+            : res['done'] == true
+            ? t('rebaseDone')
+            : t('rebaseContinued');
+        messenger.showSnackBar(SnackBar(content: Text(msg)));
+      } else if (res['conflicts'] is List &&
+          (res['conflicts'] as List).isNotEmpty) {
+        messenger.showSnackBar(
+          SnackBar(
+            backgroundColor: const Color(0xFFfff1ef),
+            content: Text(
+              t('rebaseStillConflicts', {
+                'files': (res['conflicts'] as List).join(', '),
+              }),
+              style: const TextStyle(color: Color(0xFFb64e43)),
+            ),
+            duration: const Duration(seconds: 6),
+          ),
+        );
+      } else {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(
+              t('rebaseFailed', {
+                'error': '${res['error'] ?? t('unknownError')}',
+              }),
+            ),
+          ),
+        );
+      }
+      await _refreshMergeStatus(session);
+    } catch (error) {
+      messenger.showSnackBar(
+        SnackBar(content: Text(t('rebaseFailed', {'error': '$error'}))),
+      );
+    }
+  }
+
+  /// 「如何解决」：把三步做法摆出来（Web 的 `showConflictHelp`）。不做成一键
+  /// 自动解决 —— 冲突该由人（或会话那轮指令）判断，这里只解释怎么点。
+  void _showConflictHelp(List<String> files) {
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: const Color(0xFFffffff),
+        title: Text(
+          t('worktreeConflictHelpTitle'),
+          style: const TextStyle(fontSize: 15, color: Color(0xFF20364d)),
+        ),
+        content: SingleChildScrollView(
+          child: Text(
+            t('worktreeConflictHelpBody', {'files': files.join('\n')}),
+            style: const TextStyle(
+              color: Color(0xFF233249),
+              fontSize: 13,
+              height: 1.6,
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: Text(
+              t('close'),
+              style: const TextStyle(color: Color(0xFF1267b5)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    // 聊天宽度弹窗是边拖边预览的（跟 Web 一样先 apply 草稿、取消再回滚），
+    // 所以真正的重排要跟着这个 notifier 走，不能等弹窗关闭。
+    widget.settings.chatWidth.addListener(_onChatWidthChanged);
+  }
+
+  void _onChatWidthChanged() {
+    if (mounted) setState(() {});
+  }
+
   @override
   void dispose() {
+    widget.settings.chatWidth.removeListener(_onChatWidthChanged);
     _scrollCtrl.dispose();
     _composerCtrl.dispose();
     _composerFocus.dispose();
@@ -479,6 +672,12 @@ class _ChatViewState extends State<ChatView> {
                     provider.sessionName,
                     widget.settings,
                   ),
+                  // 强制同步与聊天宽度都挂在 ⋯ 菜单里：手机上页头那一排图标
+                  // 已经排满，这两个不是每轮都要点的动作。
+                  onForceSync: () => _forceSyncWorktree(provider),
+                  forceSyncing: _forceSyncing,
+                  onChatWidth: () =>
+                      showChatWidthDialog(context, widget.settings),
                   advancedMode: widget.settings.advancedMode.value,
                 ),
                 if (provider.pendingUserInput != null &&
@@ -561,12 +760,26 @@ class _ChatViewState extends State<ChatView> {
                         : null,
                   ),
                 ),
+                // 卡在冲突里的 rebase 优先于「落后基分支」：那种状态下 behind 是 0
+                // （rebase 没走完，没得比），两个条不会同时出现，但顺序说明了
+                // 谁更该先处理 —— 冲突没解决，同步就还没结束。
+                if (_conflictFiles().isNotEmpty)
+                  WorktreeConflictBanner(
+                    files: _conflictFiles(),
+                    onHelp: () => _showConflictHelp(_conflictFiles()),
+                    onContinue: () => _resolveRebase('continue'),
+                    onAbort: () => _resolveRebase('abort'),
+                    onForceSync: () => _forceSyncWorktree(provider),
+                    forceSyncing: _forceSyncing,
+                  ),
                 if (_behindCount() > 0)
                   _BehindMainBanner(
                     behind: _behindCount(),
                     baseBranch: _baseBranchName(),
                     syncing: _syncing,
                     onSync: () => _syncWorktree(provider.executionSessionName),
+                    onForceSync: () => _forceSyncWorktree(provider),
+                    forceSyncing: _forceSyncing,
                   ),
                 Expanded(
                   child: _MessageList(
@@ -752,11 +965,7 @@ class _CenteredChatLane extends StatelessWidget {
         final viewportWidth = constraints.maxWidth.isFinite
             ? constraints.maxWidth
             : MediaQuery.of(context).size.width;
-        final laneWidth =
-            viewportWidth >= _chatDesktopBreakpoint &&
-                viewportWidth > _chatMaxContentWidth
-            ? _chatMaxContentWidth
-            : viewportWidth;
+        final laneWidth = _chatLaneWidth(viewportWidth);
         return Align(
           alignment: Alignment.center,
           child: SizedBox(width: laneWidth, child: child),
@@ -1579,11 +1788,19 @@ class _BehindMainBanner extends StatelessWidget {
   final String baseBranch;
   final VoidCallback onSync;
   final bool syncing;
+
+  /// 强制同步：把同步指令交给会话那轮去做（Web 把这两个按钮并排放在
+  /// worktree 状态行上）。它和「同步」不是一件事 —— 「同步」是服务端直接 rebase，
+  /// 撞上冲突就停在那里；「强制同步」是让会话自己保留改动、解冲突。
+  final VoidCallback onForceSync;
+  final bool forceSyncing;
   const _BehindMainBanner({
     required this.behind,
     required this.baseBranch,
     required this.onSync,
     this.syncing = false,
+    required this.onForceSync,
+    this.forceSyncing = false,
   });
 
   @override
@@ -1606,6 +1823,13 @@ class _BehindMainBanner extends StatelessWidget {
               style: const TextStyle(color: Color(0xFFa85a25), fontSize: 12),
             ),
           ),
+          WorktreeForceSyncButton(
+            busy: forceSyncing,
+            onPressed: onForceSync,
+            color: const Color(0xFFa85a25),
+            buttonKey: const Key('worktree-force-sync-btn'),
+          ),
+          const SizedBox(width: 6),
           TextButton(
             onPressed: syncing ? null : onSync,
             style: TextButton.styleFrom(
@@ -1625,6 +1849,12 @@ class _BehindMainBanner extends StatelessWidget {
   }
 }
 
+/// 同步冲突横幅（Web 的 `#worktree-conflict-bar`）。
+///
+/// worktree 卡在一次冲突的 rebase 上时它会一直挂着，直到有人点「继续」或
+/// 「放弃」—— 状态来自 5 秒一次的 merge-status 轮询，不是一次性的提示，所以
+/// 刷新、切走再回来都还在。跟 Web 一样，三个按钮：解释怎么解决、继续、放弃，
+/// 外加一个强制同步（让会话自己接手去解）。
 /// AI 助手对当前会话的理解条（目标 · 阶段 · 状态），对齐 web 的
 /// `#aux-classify-bar`。公开而非私有：两个动作药丸的显隐规则直接照抄 web 的
 /// `can-mark-done`(W) / `can-cancel-task`(P) 两个 class，是条容易改坏的规则，
@@ -2060,9 +2290,7 @@ class _MessageListState extends State<_MessageList> {
             ? constraints.maxWidth
             : MediaQuery.of(context).size.width;
         final desktop = viewportWidth >= _chatDesktopBreakpoint;
-        final contentWidth = desktop && viewportWidth > _chatMaxContentWidth
-            ? _chatMaxContentWidth
-            : viewportWidth;
+        final contentWidth = _chatLaneWidth(viewportWidth);
         final sidePadding =
             ((viewportWidth - contentWidth) / 2) +
             (desktop ? _chatDesktopSidePadding : _chatMobileSidePadding);

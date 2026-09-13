@@ -29,12 +29,14 @@ class _ConnectedChatProvider extends ChatProvider {
   bool get isStreaming => false;
 
   @override
-  void sendMessage(
+  String? sendMessage(
     String text, {
+    String? clientMsgId,
     bool goal = false,
     Map<String, dynamic>? goalLimits,
   }) {
     sent.add(text);
+    return 'test-msg';
   }
 }
 
