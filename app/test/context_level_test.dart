@@ -154,6 +154,8 @@ void main() {
                 onChatWidth: () {},
                 autoCommit: true,
                 onAutoCommit: () {},
+                onDebug: () {},
+                onArtifacts: () {},
               ),
             ),
           ),
