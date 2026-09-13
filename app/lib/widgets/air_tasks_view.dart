@@ -15,6 +15,7 @@ import '../theme.dart';
 import 'air/air_destinations.dart';
 import 'air/air_panels.dart';
 import 'air/air_sidebar.dart';
+import 'air/air_task_config.dart';
 import 'air/air_task_details.dart';
 import 'task_board_view.dart';
 import 'workspace_navigation_drawer.dart';
@@ -236,6 +237,7 @@ class _AirTasksViewState extends State<AirTasksView>
   Future<bool> _createFromComposer({
     required String text,
     required String cli,
+    required AirTaskRuntime runtime,
     required List<AirRoleBinding> roles,
     required bool goal,
   }) async {
@@ -245,8 +247,11 @@ class _AirTasksViewState extends State<AirTasksView>
         .split(RegExp(r'\n'))
         .firstWhere((line) => line.trim().isNotEmpty, orElse: () => text)
         .trim();
+    // 指纹要把线路也包进来：同一次重试（内容一模一样）沿用旧的幂等键，换了
+    // 线路或角色再点就是另一次创建（同 Web Air 的 fingerprint）。
     _attempt = AirCreateAttempt.forFingerprint(
-      '$dirId|$text|$cli|${roles.map((r) => r.name).join(',')}|$goal',
+      '$dirId|$text|$cli|${runtime.summary}|'
+      '${roles.map((r) => '${r.name}:${r.prompt}').join(',')}|$goal',
       _attempt,
     );
     final attempt = _attempt!;
@@ -261,6 +266,9 @@ class _AirTasksViewState extends State<AirTasksView>
         title: title.length > 120 ? title.substring(0, 120) : title,
         clientMsgId: attempt.createId,
         cli: cli,
+        // 线路跟着创建一起写下去：任务建好之后再补，第一条消息已经按默认
+        // 线路发出去了。
+        runtime: runtime.toCreateBody(),
       );
       // 角色要在第一条消息之前写下去：绑定说的是「下一条消息」，而下一条正是
       // 紧接着要发的那条（同 Web Air 的顺序）。
@@ -731,16 +739,19 @@ class _AirTasksViewState extends State<AirTasksView>
           AirQuickComposer(
             settings: widget.settings,
             service: _service,
+            httpClient: widget.httpClient,
             clis: data?.clis ?? const [],
             busy: _submitting,
             onSubmit: ({
               required String text,
               required String cli,
+              required AirTaskRuntime runtime,
               required List<AirRoleBinding> roles,
               required bool goal,
             }) => _createFromComposer(
               text: text,
               cli: cli,
+              runtime: runtime,
               roles: roles,
               goal: goal,
             ),
