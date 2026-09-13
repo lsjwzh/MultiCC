@@ -218,6 +218,12 @@ void main() {
           },
           'resource': {'residency': 'resident', 'lease': 'running'},
           'configuration': const {},
+          'roleBindings': {
+            'version': 2,
+            'bindings': [
+              {'name': '代码审查', 'prompt': '只改必要的地方。'},
+            ],
+          },
           'sessionId': 'sess-1',
           'readOnly': false,
         }),
@@ -245,6 +251,8 @@ void main() {
     expect(find.text('下一条消息仍发送到「登录页面」'), findsOneWidget);
     // 有 integration 才有核验入口 —— 没有合并记录时点它没有任何意义。
     expect(find.byKey(const ValueKey('air-delivery-reconcile')), findsOneWidget);
+    // 任务有自己的角色才谈得上编辑 —— 观察来的只读任务没有这一项。
+    expect(find.byKey(const ValueKey('air-details-edit-roles')), findsOneWidget);
     expect(find.text('计划与任务生命周期'), findsOneWidget);
     expect(find.text('代码与交付'), findsOneWidget);
     expect(tester.takeException(), isNull);
@@ -264,6 +272,47 @@ void main() {
     expect(find.text('角色与上下文'), findsOneWidget);
     expect(find.text('执行资源'), findsOneWidget);
 
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  testWidgets('观察来的只读任务没有角色可编辑，就不摆这个按钮', (tester) async {
+    SharedPreferences.setMockInitialValues({
+      'multicc_host': 'http://localhost:3000',
+    });
+    final settings = await SettingsService.getInstance();
+    final client = MockClient((request) async {
+      return http.Response(
+        jsonEncode({
+          'ok': true,
+          'task': {'id': 't2', 'title': '别人的任务', 'status': 'active'},
+          'status': 'active',
+          'execution': {'status': 'idle', 'busy': false},
+          'messages': const [],
+          'attribution': const {},
+          'resource': {'residency': 'resident', 'lease': 'idle'},
+          'configuration': const {},
+          'sessionId': 'sess-9',
+          'readOnly': true,
+        }),
+        200,
+        headers: {'content-type': 'application/json; charset=utf-8'},
+      );
+    });
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AirTaskDetailsPanel(
+            taskId: 't2',
+            service: AirService(settings: settings, httpClient: client),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('air-details-edit-roles')), findsNothing);
+    expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     client.close();
   });

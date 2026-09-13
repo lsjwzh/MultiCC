@@ -12,7 +12,13 @@ import 'settings_service.dart';
 class AgentPresetService {
   final SettingsService settings;
 
-  AgentPresetService({required this.settings});
+  /// 注入客户端只是为了测试能接上假服务；不传就自己建一个。
+  AgentPresetService({required this.settings, http.Client? httpClient})
+    : _http = httpClient ?? http.Client(),
+      _ownsClient = httpClient == null;
+
+  final http.Client _http;
+  final bool _ownsClient;
 
   // Process-lifetime cache shared across instances.
   static AgentPresetIndex? _cachedIndex;
@@ -31,7 +37,7 @@ class AgentPresetService {
   /// unless [forceRefresh] is set.
   Future<AgentPresetIndex> fetchIndex({bool forceRefresh = false}) async {
     if (!forceRefresh && _cachedIndex != null) return _cachedIndex!;
-    final res = await http
+    final res = await _http
         .get(Uri.parse(_url('/api/agent-presets')), headers: _headers)
         .timeout(const Duration(seconds: 10));
     if (res.statusCode >= 400) {
@@ -46,7 +52,7 @@ class AgentPresetService {
 
   /// Fetch the full preset record for a single preset id.
   Future<AgentPreset> fetchPreset(String id) async {
-    final res = await http
+    final res = await _http
         .get(Uri.parse(_url('/api/agent-presets/$id')), headers: _headers)
         .timeout(const Duration(seconds: 10));
     if (res.statusCode >= 400) {
@@ -61,6 +67,11 @@ class AgentPresetService {
   Future<String> fetchPrompt(String id) async {
     final preset = await fetchPreset(id);
     return preset.prompt ?? '';
+  }
+
+  /// 关掉自己建的那个客户端（外面传进来的归外面）。
+  void close() {
+    if (_ownsClient) _http.close();
   }
 
   /// Drop the cached index (e.g. on logout / base-url change).

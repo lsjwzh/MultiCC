@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../services/air_service.dart';
 import '../../theme.dart';
+import 'air_role_editor.dart';
 
 /// 归属建议被挡在哪一条上（Web `air.js` 的 `blockerNames`）。这些是枚举值，漏
 /// 一个界面上就会蹦出一行英文。
@@ -426,6 +427,25 @@ class _AirTaskDetailsPanelState extends State<AirTaskDetailsPanel> {
     }
   }
 
+  /// 编辑这个任务的角色上下文。版本号取自面板刚读到的那一份 —— 保存时带上它，
+  /// 才能发现「别的页面已经改过了」，而不是把别人的修改盖掉。
+  Future<void> _editRoles() async {
+    final value = _value;
+    if (value == null) return;
+    final bindings = AirRoleBindings.fromJson(
+      (value['roleBindings'] as Map?)?.cast<String, dynamic>(),
+    );
+    await showAirRoleEditor(
+      context,
+      settings: widget.service.settings,
+      service: widget.service,
+      taskId: widget.taskId,
+      version: bindings.version,
+      initial: bindings.bindings,
+      onSaved: _load,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_loading && _value == null) {
@@ -499,6 +519,20 @@ class _AirTaskDetailsPanelState extends State<AirTaskDetailsPanel> {
           onReconcile: integration ? _reconcile : null,
           busy: _working,
         ),
+        // 观察来的（只读）任务没有自己的角色，也就没什么可编辑的。
+        if (value['roleBindings'] != null && value['readOnly'] != true)
+          Padding(
+            padding: const EdgeInsets.only(top: 10),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: OutlinedButton.icon(
+                key: const ValueKey('air-details-edit-roles'),
+                onPressed: _working ? null : _editRoles,
+                icon: const Icon(Icons.badge_outlined, size: 17),
+                label: const Text('编辑角色上下文'),
+              ),
+            ),
+          ),
         const SizedBox(height: 18),
         for (final group in groups) ...[
           _DetailGroupView(group: group),
