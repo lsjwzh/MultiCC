@@ -15,6 +15,7 @@ import '../theme.dart';
 import 'air/air_console.dart';
 import 'air/air_destinations.dart';
 import 'air/air_panels.dart';
+import 'air/air_schedules.dart';
 import 'air/air_sidebar.dart';
 import 'air/air_task_config.dart';
 import 'air/air_task_details.dart';
@@ -444,6 +445,10 @@ class _AirTasksViewState extends State<AirTasksView>
               Navigator.of(routeContext).pop();
               _selectDirectory(dirId);
             },
+            onOpenSchedules: () {
+              Navigator.of(routeContext).pop();
+              _openSchedules();
+            },
             onOpenDestination: (destination) {
               Navigator.of(routeContext).pop();
               _openDestination(destination);
@@ -457,6 +462,39 @@ class _AirTasksViewState extends State<AirTasksView>
         ),
       ),
     );
+  }
+
+  /// 定时任务中心。规则和它背后那个固定 Air 任务是绑在一起的，所以从卡片上点
+  /// 「固定 Air 任务」要能直接进到那条任务 —— 哪怕它在另一个目录里。
+  void _openSchedules() {
+    _closeDrawer();
+    final navigator = Navigator.of(context);
+    unawaited(
+      navigator.push(
+        MaterialPageRoute<void>(
+          builder: (routeContext) => AirSchedulesScreen(
+            settings: widget.settings,
+            httpClient: widget.httpClient,
+            directories: _data?.directories ?? const <AirDirectory>[],
+            onOpenTask: (dirId, taskId) {
+              Navigator.of(routeContext).pop();
+              _openTaskById(dirId, taskId);
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 按 id 打开一条任务：跨目录也认，先切目录再进对话。
+  void _openTaskById(String dirId, String taskId) {
+    final task = _data?.taskOf(taskId);
+    if (task == null) {
+      _selectDirectory(dirId);
+      return;
+    }
+    if (task.dirId != _directoryId) _selectDirectory(task.dirId);
+    unawaited(_open(task));
   }
 
   /// 网页版控制台。原生页已经能干活了，这里留一个明确出口，不是默认入口。
@@ -532,6 +570,11 @@ class _AirTasksViewState extends State<AirTasksView>
   }
 
   void _openDestination(WorkspaceDestination destination) {
+    // 定时任务在 Air 里已经有原生中心了，别再散到老抽屉那个只认 CLI 的页面上。
+    if (destination == WorkspaceDestination.cron) {
+      _openSchedules();
+      return;
+    }
     final handler = widget.onOpenDestination;
     _closeDrawer();
     if (handler != null) {
@@ -606,7 +649,7 @@ class _AirTasksViewState extends State<AirTasksView>
           setState(() => _mode = _AirMode.library);
         },
         onOpenConsole: _openConsole,
-        onOpenSchedules: () => _openDestination(WorkspaceDestination.cron),
+        onOpenSchedules: _openSchedules,
         onOpenTaskBoard: () {
           _closeDrawer();
           _openTaskBoard();
