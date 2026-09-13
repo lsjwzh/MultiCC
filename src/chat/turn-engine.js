@@ -9,6 +9,7 @@
 
 const crypto = require('crypto');
 const { createAdapterCompletion, isCompleted } = require('../cli-adapters/completion');
+const { DELIVERY_CLASS, deliveryClassForItem } = require('../orchestration/delivery-classes');
 const { settleAdapterCompletion, canPersistAdapterCompletion, finalizeCompletionStream } = require('./adapter-completion');
 const {
   TurnRequestError,
@@ -986,19 +987,29 @@ function createChatTurnEngine(deps) {
   // that own their user feedback (hibernation, rollout, rotate) still broadcast
   // here; a blocked result only tells the caller to abort silently.
   function admitRunChatTurn(sessionName, text, opts) {
+    // Class-based guard scope: the task-shell admission protocol (task id
+    // identity, receipts, lifecycle state) governs TASK-class deliveries
+    // only. Notice/result classes never reach the turn funnel at all (the
+    // delivery router writes them to history directly); the exemption below
+    // is the belt to that router's braces for any future caller that invokes
+    // runChatTurn with a non-task delivery.
+    if (opts?.deliveryClass === DELIVERY_CLASS.NOTICE
+        || opts?.deliveryClass === DELIVERY_CLASS.RESULT) {
+      opts = { ...opts, taskId: undefined, taskShellReceiptId: undefined };
+    }
     const shellGuard = taskContextHost?.guardAdmission?.(sessionName, text, opts);
-    if (shellGuard?.ok === false) return { blocked: true };
+    if (shellGuard?.ok === false) return { blocked: true, code: shellGuard.code || 'task_shell_guard' };
     const persisted = persistedSessions.get(sessionName);
     if (!persisted) {
       console.warn(`[multicc/chat] runChatTurn: no persisted record for ${sessionName}`);
-      return { blocked: true };
+      return { blocked: true, code: 'no_persisted_record' };
     }
     if (persisted.taskBoundTaskId && getSessionHibernation?.()) {
       try { getSessionHibernation().assertAwake(sessionName); }
       catch (error) {
         logger.warn?.('chat_run_hibernated_workspace_blocked', { sessionId: sessionName, code: error.code });
         try { chatBroadcast(sessionName, { type: 'error', code: 'workspace_hibernated', error: '会话工作区尚未恢复，消息未执行；系统会保留并重试投递。' }); } catch (_) {}
-        return { blocked: true };
+        return { blocked: true, code: 'workspace_hibernated' };
       }
     }
     const delivery = opts.clientMsgId || opts.deliveryId;
@@ -1031,7 +1042,7 @@ function createChatTurnEngine(deps) {
           type: 'error', code: guardResult.code,
           error: 'Codex 原生会话历史无法唯一定位；为避免恢复到错误上下文，本轮已阻止。请检查重复的 rollout 文件。',
         });
-        return { blocked: true };
+        return { blocked: true, code: guardResult.code };
       }
       if (guardResult.action === 'archived') {
         persisted.cliSessionId = null;
@@ -1143,7 +1154,17 @@ function createChatTurnEngine(deps) {
   function runChatTurn(sessionName, text, opts = {}) {
     getWorkspaceAdmission?.()?.assertPermit(sessionName, opts);
     const admissionGate = admitRunChatTurn(sessionName, text, opts);
-    if (admissionGate.blocked) return false;
+    if (admissionGate.blocked) {
+      // Silent rejections are undebuggable wedges: the outbox keeps retrying,
+      // the queue keeps parking, and neither side leaves a trace. Log every
+      // guard refusal with the code that produced it.
+      logger.warn('chat_turn_rejected_guard', {
+        sessionId: sessionName,
+        code: admissionGate.code || null,
+        deliveryClass: opts.deliveryClass || null,
+      });
+      return false;
+    }
     if ('delegated' in admissionGate) return admissionGate.delegated;
     const { persisted, existingCs, initialHistory, turnRequest } = admissionGate;
 
@@ -2173,6 +2194,32 @@ function createChatTurnEngine(deps) {
   }
 
   function deliverOrchestrationOutbox({ item, sessionId, text, opts }) {
+    // Route by delivery class (provenance decided at the outbox boundary),
+    // not by re-inferring the message's nature from individual fields.
+    const deliveryClass = opts?.deliveryClass || deliveryClassForItem(item);
+    if (deliveryClass === DELIVERY_CLASS.NOTICE) {
+      // A system notice (e.g. task.interrupted) is written into chat history
+      // for the human to see. It never starts a native turn and never passes
+      // the task admission guards — routing it through runChatTurn got it
+      // rejected as an impostor task message (task_identity_mismatch,
+      // silently) because its orchestration taskId does not match the owning
+      // shell task.
+      const saved = appendChatMessage(sessionId, {
+        role: 'system',
+        content: text,
+        ts: Date.now(),
+        clientMsgId: opts?.clientMsgId,
+        deliveryId: opts?.deliveryId,
+      });
+      if (saved) {
+        chatBroadcast(sessionId, {
+          type: 'system',
+          subtype: 'notice',
+          message: text,
+        });
+      }
+      return saved;
+    }
     if (item.payload?.type === 'dispatch.request' && isNetworkUnhealthy()) return false;
     if (item.payload?.type === 'dispatch.result' && item.payload.gateway) {
       // The result sink is the gateway that owns the dispatch (item.sessionId is

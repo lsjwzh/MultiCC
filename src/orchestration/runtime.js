@@ -10,6 +10,7 @@ const { createOrchestrationStore } = require('./store');
 const { createOrchestrationSqliteStore } = require('./sqlite-store');
 const { createOutbox } = require('../outbox');
 const { createWaitService } = require('../wait/service');
+const { deliveryClassForItem } = require('./delivery-classes');
 const { createSessionWorkScheduler } = require('../session-work/scheduler');
 const {
   TERMINAL_OPERATION_STATES,
@@ -776,11 +777,15 @@ function createOrchestrationRuntime({
 
   function deliveryOptions(item) {
     const payload = item.payload || {};
+    // Provenance rides along on every branch: the turn engine and the guards
+    // decide by class, not by re-inferring identity from stray fields.
+    const deliveryClass = deliveryClassForItem(item);
     if (payload.type === 'session.work') {
       const lineage = itemTurnLineage(item);
       const effectiveWorkKind = lineage.workKind || payload.workKind || 'task';
       return {
         ...(payload.options || {}),
+        deliveryClass,
         taskId: itemTaskId(item) || undefined,
         taskRunId: itemTaskRunId(item) || undefined,
         leaseEpoch: itemLeaseEpoch(item) || undefined,
@@ -799,6 +804,7 @@ function createOrchestrationRuntime({
     }
     if (payload.type === 'dispatch.request') {
       return {
+        deliveryClass,
         originDispatchId: payload.operationId,
         originContinue: false,
         deliveryId: item.id,
@@ -818,6 +824,7 @@ function createOrchestrationRuntime({
       };
     }
     return {
+      deliveryClass,
       originContinue: true,
       deliveryId: item.id,
       clientMsgId: item.id,

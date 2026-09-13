@@ -1353,22 +1353,99 @@ test('an E-at-rest queue still parks deliveries without task-run lineage', async
     'the E verdict still parks deliveries that are not Task Board re-engagements');
 });
 
-test('an E-at-rest queue parks an admitted continuation even though it carries directRun', async t => {
+test('an E-at-rest queue parks a continuation staged before the error verdict', async t => {
   // Production regression (Air task-shell chat): every message typed into a
   // task session is admitted as workKind "continuation", which tags the
   // outbox item directRun=true. The directRun fast lane exists to carry typed
   // input across the P boundary — it must NOT overrule an E verdict, or the
-  // FIFO keeps firing into an errored session.
+  // FIFO keeps firing into an errored session. Typed WHILE the failed turn
+  // was still running, this entry predates the E verdict: it is stale FIFO
+  // work and stays parked for a human decision.
+  const h = fixture(t);
+  await h.scheduler.admit({
+    sessionId: 's1',
+    text: 'first turn',
+    idempotencyKey: 's1-first',
+    options: { taskId: 'task-1', taskRunId: 'run-1', leaseEpoch: 1 },
+  });
+  await startClaim(h, await claimOne(h, 's1'));
+  await h.scheduler.admit({
+    sessionId: 's1',
+    text: 'typed while the failing turn was still running',
+    workKind: 'continuation',
+    idempotencyKey: 's1-during-p',
+  });
+  await h.scheduler.complete('s1', { expectedTaskId: 'task-1', classifyState: 'E' });
+  assert.equal(await claimOne(h, 's1'), null,
+    'work admitted before the E verdict is stale FIFO; the park holds it');
+});
+
+test('direct input typed at E-at-rest IS the human decision and runs immediately', async t => {
+  // The E park waits for a human decision; text freshly typed into the input
+  // box while the queue sits on an error verdict IS that decision, with the
+  // same authority as an explicit "insert now". It must not park behind the
+  // failed turn's stale FIFO.
   const h = fixture(t);
   await settleToVerdict(h, 's1', 'E');
-  await h.scheduler.admit({
+  const admitted = await h.scheduler.admit({
     sessionId: 's1',
     text: 'next instruction typed after the error',
     workKind: 'continuation',
     idempotencyKey: 's1-after-error',
   });
-  assert.equal(await claimOne(h, 's1'), null,
-    'E parks a queued continuation for a human decision; directRun only crosses P');
+  assert.equal(admitted.queued, false,
+    'fresh post-E typed input is promoted at admission, not parked');
+  const item = await claimOne(h, 's1');
+  assert.ok(item, 'E-at-rest direct input is selectable at once');
+  assert.equal(item.payload.message, 'next instruction typed after the error');
+});
+
+test('insert-now cannot resurrect an entry admitted before the E verdict', async t => {
+  const h = fixture(t);
+  await h.scheduler.admit({
+    sessionId: 's1',
+    text: 'first turn',
+    idempotencyKey: 's1-first',
+    options: { taskId: 'task-1', taskRunId: 'run-1', leaseEpoch: 1 },
+  });
+  await startClaim(h, await claimOne(h, 's1'));
+  const stale = await h.scheduler.admit({
+    sessionId: 's1',
+    text: 'stale queued work',
+    workKind: 'continuation',
+    idempotencyKey: 's1-stale',
+  });
+  h.advance(1); // the E verdict lands strictly after the stale admission
+  await h.scheduler.complete('s1', { expectedTaskId: 'task-1', classifyState: 'E' });
+  const refused = await h.scheduler.insertQueued('s1', stale.entry.id, { actor: 'user' });
+  assert.equal(refused.ok, false);
+  assert.equal(refused.code, 'e_park_stale_entry',
+    'a click on pre-E FIFO work must not bypass the E park');
+  assert.equal(await claimOne(h, 's1'), null, 'the stale entry stays parked');
+});
+
+test('a retryable delivery failure does not consume an E-state insert promotion', async t => {
+  const h = fixture(t);
+  await settleToVerdict(h, 's1', 'E');
+  const fresh = await h.scheduler.admit({
+    sessionId: 's1',
+    text: 'inserted after the error',
+    workKind: 'continuation',
+    idempotencyKey: 's1-fresh',
+  });
+  assert.equal(fresh.queued, false, 'post-E typed input promotes at admission');
+  const item = await claimOne(h, 's1');
+  assert.ok(item, 'promoted entry claims');
+  // Delivery rejected (transient turn-engine veto): outbox lease settles
+  // retryable, then the scheduler claim releases — the human's promotion
+  // must survive so the next tick re-attempts instead of wedging.
+  await h.outbox.fail(item.id, item.leaseToken, 'runChatTurn rejected delivery', { retryable: true });
+  h.advance(60_000); // outbox.fail defers availableAt past the retry delay
+  const released = await h.scheduler.releaseClaim(item, 'delivery_deferred');
+  assert.equal(released.ok, true);
+  const retry = await claimOne(h, 's1');
+  assert.ok(retry, 'the promoted entry is re-selectable after a retryable failure');
+  assert.equal(retry.id, item.id);
 });
 
 test('an E-at-rest queue still admits an explicit retry control', async t => {

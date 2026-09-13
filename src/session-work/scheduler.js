@@ -198,6 +198,11 @@ function newSchedule(sessionId, at) {
     freezeReason: null,
     awaitingRequestId: null,
     classifyState: null,
+    // Wall-clock of the LAST classify verdict write. Under an E verdict it is
+    // the cutoff that separates "stale FIFO work parked by the error" (admits
+    // older than this stay parked) from "fresh human input after the error"
+    // (admits newer than this are the human decision and may be promoted).
+    classifyStateAt: null,
     priorityEntryId: null,
     active: null,
     lastDecision: null,
@@ -455,7 +460,14 @@ function createSessionWorkScheduler({
           const promoted = ordered.find(item => item.id === priorityEntryId);
           if (promoted) return promoted;
         }
-        const reengagement = ordered.find(item => taskRunIdForItem(item) != null);
+        // Re-engagement is Task Board run machinery (dispatch.request): a
+        // hidden execution slot has no user, so its own retry of a failed run
+        // IS the decision. Typed chat input (session.work) is never auto-
+        // re-engaged under E — words staged before the error are stale FIFO
+        // and wait for a fresh human decision, exactly like the park holds
+        // them for selection purposes.
+        const reengagement = ordered.find(item => taskRunIdForItem(item) != null
+          && item?.payload?.type !== 'session.work');
         if (reengagement) return reengagement;
         return null;
       }
@@ -626,6 +638,17 @@ function createSessionWorkScheduler({
         // outranks unrelated user work already staged behind that interaction.
         schedule.priorityEntryId = admitted.item.id;
       }
+      // E-at-rest typed input IS the human decision the E park waits for, on
+      // the same authority as an explicit "insert now": fresh text entered
+      // while the queue sits on an error verdict promotes at once instead of
+      // parking behind the failed turn's stale FIFO. Work staged before the E
+      // verdict keeps its older admit timestamp and stays parked — only a new
+      // admission (this item, created just now) can carry the promotion.
+      if (directMessage && !specialAnswer
+          && !schedule.active && schedule.state === 'idle'
+          && classifyStateForSchedule(schedule) === 'E') {
+        schedule.priorityEntryId = admitted.item.id;
+      }
       schedule.updatedAt = at;
       const queue = queueForDraft(draft, cleanSessionId);
       const selected = selectSessionItem(queue, draft, at);
@@ -784,6 +807,17 @@ function createSessionWorkScheduler({
         schedule.awaitingRequestId = null;
         schedule.classifyState = schedule.classifyState || 'D';
         if (schedule.priorityEntryId === item.id) schedule.priorityEntryId = null;
+        // A retryable delivery failure (host veto, transient turn rejection)
+        // must not consume an explicit human promotion: under an E verdict the
+        // promoted entry is otherwise unselectable (the E park ignores
+        // directRun and the priority mark was just cleared by the claim), so
+        // one failed attempt would wedge "insert now" forever. Restore the
+        // promotion for the still-pending entry; the retry path re-attempts
+        // it on the next tick.
+        if (schedule.classifyState === 'E'
+            && draft.outbox[item.id]?.state === 'pending') {
+          schedule.priorityEntryId = item.id;
+        }
       } else {
         schedule.active.deliveryId = schedule.active.entryId;
         schedule.active.workKind = 'task';
@@ -855,7 +889,10 @@ function createSessionWorkScheduler({
       schedule.awaitingRequestId = requestId || null;
       const classified = CLASSIFY_STATES.has(classifyState)
         ? classifyState : classifyStateForReason(reason);
-      if (classified) schedule.classifyState = classified;
+      if (classified) {
+        schedule.classifyState = classified;
+        schedule.classifyStateAt = at;
+      }
       schedule.updatedAt = at;
       return { ok: true, schedule: publicSchedule(schedule, queueForDraft(draft, sessionId)) };
     });
@@ -897,6 +934,7 @@ function createSessionWorkScheduler({
       // classifyState is the LETTER (D/W/B/E). D = turn succeeded (drains FIFO);
       // W/B/E = released but at-rest (FIFO only drains on D, see selectSessionItem).
       schedule.classifyState = CLASSIFY_STATES.has(classifyState) ? classifyState : 'D';
+      schedule.classifyStateAt = at;
       // A turn ending on an unanswered question must not let work staged while
       // it ran fire ahead of the user's answer. directRun exists for messages
       // admitted while the session is ALREADY at rest; items that merely headed
@@ -1173,6 +1211,22 @@ function createSessionWorkScheduler({
       if (item.state !== 'pending') {
         return { ok: false, code: 'queued_entry_not_pending' };
       }
+      // The E park is a human-decision gate: "insert now" counts only when the
+      // promoted entry POST-DATES the error verdict. Work admitted before the
+      // E settled (including direct input typed while the failed turn was
+      // still running) is exactly the stale FIFO the park exists to hold; a
+      // click on it must not resurrect it. Fresh post-E input never lands here
+      // — admit() already promotes it — so this check only guards the stale
+      // path.
+      if (classifyStateForSchedule(schedule) === 'E'
+          && Number.isFinite(Number(schedule.classifyStateAt))
+          && Number(item.createdAt) < Number(schedule.classifyStateAt)) {
+        return {
+          ok: false,
+          code: 'e_park_stale_entry',
+          classifyStateAt: Number(schedule.classifyStateAt),
+        };
+      }
       const at = Number(now());
       const active = schedule.active;
       // "Insert now" replaces the currently running attempt with this exact
@@ -1334,6 +1388,10 @@ function createSessionWorkScheduler({
         if (!schedule) {
           schedule = ensure(draft, sessionId, at);
           schedule.classifyState = recoveredClassify;
+          // Recovery cannot reconstruct the original verdict wall-clock; the
+          // recovery time is the conservative cutoff — every pre-restart
+          // admission is "stale" under a recovered E park.
+          schedule.classifyStateAt = at;
           // A pending outbox item is not evidence of an active task. This is
           // especially important now that the public FIFO includes callbacks:
           // a lone task.interrupted notification must remain deliverable.
@@ -1366,7 +1424,10 @@ function createSessionWorkScheduler({
           }
           continue;
         }
-        if (recoveredClassify) schedule.classifyState = recoveredClassify;
+        if (recoveredClassify) {
+          schedule.classifyState = recoveredClassify;
+          schedule.classifyStateAt = at;
+        }
         const classifyState = classifyStateForSchedule(schedule);
         if (!schedule.active) {
           schedule.state = 'idle';
