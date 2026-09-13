@@ -544,6 +544,45 @@ test('Air task-first console, management views, roles, configuration, artifacts 
         await page.evaluate(`document.getElementById('nav-scrim').click()`);
       }
     }
+    // 页头那条状态还有第三段：「归属待核验」（或卡住资源时的「等待执行名额」，那
+    // 一种是「为什么现在没动」，留着）。手机上前者让位 —— 那一行还要装 ☰、标题、
+    // 跑没跑（圈也在）和 ⋯，多这五个字正好把状态挤到第二行，页头就整条变两行；
+    // 桌面横着放得下，照旧显示。藏的是显示不是文字：几段拼起来仍是整条。
+    entry.attribution = successAttribution;
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 1366, height: 900, deviceScaleFactor: 1, mobile: false });
+    await page.navigate('/air?task=tsk_a&dir=d1');
+    assert.ok(await page.waitFor(`document.getElementById('task-state').textContent.includes('归属待核验')`));
+    await page.waitFor(`${frame}?.URL.includes('session=task-a') && ${frame}.readyState==='complete'`);
+    assert.equal(await page.evaluate(`getComputedStyle(document.querySelector('#task-state .ts-attr')).display!=='none'`), true, '桌面上「归属待核验」留着');
+    for (const width of [390, 320]) {
+      await page.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: true });
+      const attributed = await page.evaluate(`(()=>{const g=id=>document.getElementById(id);const s=g('task-state'),t=g('task-title'),h=g('task-header');
+        return {h:Math.round(h.getBoundingClientRect().height), stateH:Math.round(s.getBoundingClientRect().height), cls:s.className, attr:[...s.querySelectorAll('.ts-attr')].map(e=>getComputedStyle(e).display),
+          run:[...s.querySelectorAll('.ts-run')].map(e=>getComputedStyle(e).display),
+          full:s.textContent, joined:[...s.children].map(c=>c.textContent).join(''),
+          sameLine:Math.abs(t.getBoundingClientRect().top-s.getBoundingClientRect().top)<12}})()`);
+      assert.deepEqual(attributed.attr, ['none'], '手机上「归属待核验」让位：' + JSON.stringify(attributed));
+      assert.deepEqual(attributed.run.filter(d => d === 'none'), [], JSON.stringify(attributed));
+      assert.equal(attributed.full, '本轮 执行中 · 任务 进行中 · 归属待核验', JSON.stringify(attributed));
+      assert.equal(attributed.joined, attributed.full, JSON.stringify(attributed));
+      // 让位之前这一条在 390 上会落到第二行（页头 60 出头），让位之后回到一行。
+      assert.ok(attributed.h <= (width > 340 ? 52 : 64), JSON.stringify(attributed));
+      screenshots.push(await page.screenshot('task-state-attributed-mobile-' + width));
+      if (width === 390) {
+        assert.equal(attributed.sameLine, true, '状态回到标题那一行：' + JSON.stringify(attributed));
+        assert.ok(attributed.stateH <= 26, '状态自己就是一行：' + JSON.stringify(attributed));
+        // 让位这件事要说得出来：把这一段放回去，状态那一行自己断成两行，页头跟着
+        // 从 45px 涨到 68px —— 这条断言就是「为什么要有这条 CSS」的证据，不然它
+        // 只是我量出来的一个数。留下的那一张「放回去」的截图也是同一份证据。
+        const geometry = `(()=>{const g=id=>document.getElementById(id);return {height:Math.round(g('task-header').getBoundingClientRect().height),stateH:Math.round(g('task-state').getBoundingClientRect().height)}})()`;
+        await page.evaluate(`document.querySelector('#task-state .ts-attr').style.display='block'`);
+        const whenShown = await page.evaluate(geometry);
+        screenshots.push(await page.screenshot('task-state-attributed-mobile-390-before'));
+        await page.evaluate(`document.querySelector('#task-state .ts-attr').style.removeProperty('display')`);
+        assert.ok(whenShown.height > attributed.h && whenShown.stateH > attributed.stateH,
+          `放回去页头就从 ${attributed.h}px 涨到 ${whenShown.height}px：` + JSON.stringify(whenShown));
+      }
+    }
     for (const width of [390, 320]) {
       await page.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: true });
       await page.navigate('/air?view=overview');
