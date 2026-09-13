@@ -619,6 +619,36 @@ void main() {
     });
   });
 
+  group('二维码里放什么', () {
+    // 扫的是另一台设备，所以上面这个地址必须是局域网可达的那个。
+    test('主机自己报的地址优先，尾巴上那个斜杠去掉', () {
+      expect(
+        qrAirUrl(serverUrl: 'http://192.168.1.9:3000/', fallbackHost: 'http://x'),
+        'http://192.168.1.9:3000/air',
+      );
+      expect(
+        qrAirUrl(serverUrl: 'http://192.168.1.9:3000', fallbackHost: 'http://x'),
+        'http://192.168.1.9:3000/air',
+      );
+    });
+
+    test('问不到就退回配好的主机地址', () {
+      expect(
+        qrAirUrl(serverUrl: null, fallbackHost: 'http://localhost:3000'),
+        'http://localhost:3000/air',
+      );
+      expect(
+        qrAirUrl(serverUrl: '  ', fallbackHost: 'http://localhost:3000/'),
+        'http://localhost:3000/air',
+      );
+    });
+
+    test('两边都没有就返回空串，由界面说清楚', () {
+      expect(qrAirUrl(serverUrl: null, fallbackHost: ''), '');
+      expect(qrAirUrl(serverUrl: '  ', fallbackHost: '  '), '');
+    });
+  });
+
   // ── 界面 ────────────────────────────────────────────────────────────────
 
   group('侧栏底部', () {
@@ -919,6 +949,62 @@ void main() {
       expect(find.textContaining('还没有可用的安装包'), findsOneWidget);
       expect(find.byKey(const ValueKey('air-package-android')), findsNothing);
       expect(find.byKey(const ValueKey('air-package-ios')), findsNothing);
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, store, client);
+    });
+
+    testWidgets('二维码：内容是主机自己报的局域网地址加 /air', (tester) async {
+      final settings = await _settings();
+      final client = MockClient((request) async {
+        if (request.url.path == '/api/server-info') {
+          return _json(const {'url': 'http://192.168.1.9:3000/', 'uptimeMs': 1000});
+        }
+        return _json(const {});
+      });
+      final store = AirOpsStore(settings: settings, httpClient: client);
+      await tester.pumpWidget(_host(store));
+
+      await tester.tap(find.byKey(const ValueKey('air-qr-btn')));
+      await tester.pumpAndSettle();
+
+      expect(textOf(tester, 'air-ops-title'), '扫码打开 MultiCC Air');
+      expect(find.textContaining('用手机相机扫码'), findsOneWidget);
+      expect(textOf(tester, 'air-qr-url'), 'http://192.168.1.9:3000/air');
+      expect(find.byKey(const ValueKey('air-qr-image')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, store, client);
+    });
+
+    testWidgets('二维码：问不到主机地址就退回配好的那个', (tester) async {
+      final settings = await _settings();
+      final client = MockClient((_) async => _json(const {'error': 'down'}, 500));
+      final store = AirOpsStore(settings: settings, httpClient: client);
+      await tester.pumpWidget(_host(store));
+
+      await tester.tap(find.byKey(const ValueKey('air-qr-btn')));
+      await tester.pumpAndSettle();
+
+      expect(textOf(tester, 'air-qr-url'), 'http://localhost:3000/air');
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, store, client);
+    });
+
+    testWidgets('窄屏上二维码对话框放得下', (tester) async {
+      final settings = await _settings();
+      final client = MockClient(
+        (_) async => _json(const {'url': 'http://192.168.1.9:3000/', 'uptimeMs': 1000}),
+      );
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(320, 640);
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final store = AirOpsStore(settings: settings, httpClient: client);
+      await tester.pumpWidget(_host(store));
+      await tester.tap(find.byKey(const ValueKey('air-qr-btn')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const ValueKey('air-qr-image')), findsOneWidget);
       expect(tester.takeException(), isNull);
       await _teardown(tester, store, client);
     });
