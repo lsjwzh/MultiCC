@@ -366,4 +366,86 @@ void main() {
     });
     client.close();
   });
+
+  test('子任务尾巴：模型为空就是没设，不为空才跟着任务一起发下去', () {
+    // 没设过尾巴 —— 一个字段都不多发。
+    expect(
+      const AirTaskRuntime(cli: 'claude', provider: 'p1', model: 'm1').toCreateBody(),
+      {'cli': 'claude', 'provider': 'p1', 'model': 'm1'},
+    );
+    // 只挑了线路没挑模型 = 没设：空壳也不发，否则服务端会当成「设了」拒掉。
+    expect(
+      const AirTaskRuntime(
+        cli: 'claude',
+        provider: 'p1',
+        model: 'm1',
+        subagent: SessionSubagent(providerId: 'p2'),
+      ).toCreateBody().containsKey('subagent'),
+      isFalse,
+    );
+    expect(
+      const AirTaskRuntime(
+        cli: 'claude',
+        provider: 'p1',
+        model: 'm1',
+        subagent: SessionSubagent(providerId: 'p2', model: 'm2'),
+      ).toCreateBody()['subagent'],
+      {'providerId': 'p2', 'model': 'm2'},
+    );
+  });
+
+  testWidgets('子任务尾巴：面板上读得回来，也交得回去', (tester) async {
+    final settings = await _settings();
+    final requests = <String>[];
+    AirTaskRuntime? picked;
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(800, 1400);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      _editorHost(
+        settings: settings,
+        initial: const AirTaskRuntime(
+          cli: 'claude',
+          provider: 'p1',
+          model: 'm1',
+          subagent: SessionSubagent(providerId: 'p2', model: 'm2'),
+        ),
+        httpClient: _providerClient(requests, const [
+          {'id': 'p1', 'name': 'A 家', 'protocol': 'anthropic'},
+          {
+            'id': 'p2',
+            'name': 'B 家',
+            'protocol': 'anthropic',
+            'model': 'm2',
+            'modelOptions': ['m2'],
+          },
+        ]),
+        onPicked: (value) => picked = value,
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('open')));
+    await tester.pumpAndSettle();
+
+    // 存过的子任务线路要显示回来，否则再打开面板存一次就把它清掉了。
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('subagent-provider')),
+        matching: find.text('B 家 · m2'),
+      ),
+      findsOneWidget,
+    );
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+
+    expect(picked!.subagent?.providerId, 'p2');
+    expect(picked!.subagent?.model, 'm2');
+    expect(picked!.toCreateBody()['subagent'], {
+      'providerId': 'p2',
+      'model': 'm2',
+    });
+    expect(tester.takeException(), isNull);
+  });
 }

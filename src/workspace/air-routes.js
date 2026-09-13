@@ -66,6 +66,9 @@ function mountAirRoutes(app, deps) {
       provider: record?.provider || null,
       providerName: deps.providerName?.(record) || record?.provider || null,
       providerSelection: record?.providerSelection || null,
+      // 子任务线路（provider + model）。和 chat 的 AI 配置同一个字段：任务 AI 配置
+      // 面板要能显示「这个任务现在把子任务派给谁」，并允许改。
+      subagent: deps.serializeSubagent?.(record?.subagent) || null,
       rolePresetId: record?.rolePresetId,
     }, roleBindings,
       // Auto attribution needs real integration and writer-barrier receipts.
