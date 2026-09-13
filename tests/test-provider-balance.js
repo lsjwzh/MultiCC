@@ -79,11 +79,25 @@ test('an adapter returning null reads as fetch_failed', async () => {
   assert.equal(result.strategy, 'deepseek-balance');
 });
 
-test('a throwing adapter never escapes as a 500', async () => {
+test('a throwing adapter never escapes as a 500, and its cause is surfaced', async () => {
   const h = harness({ throwOn: ['ds-1'] });
   const result = await h.runtime.queryOne('claude', 'ds-1');
   assert.equal(result.ok, false);
   assert.equal(result.reason, 'fetch_failed');
+  // The generic Error('boom') has no .detail, but its message must survive.
+  assert.equal(result.detail, 'boom');
+  // A limit_fetch_failed from the poller layer carries the layered root cause.
+  const h2 = harness({ adapters: {
+    'deepseek-balance': async () => {
+      const error = new Error('limit fetch failed: HTTP 401 denied');
+      error.kind = 'limit_fetch_failed';
+      error.detail = 'HTTP 401 denied';
+      throw error;
+    },
+  } });
+  const result2 = await h2.runtime.queryOne('claude', 'ds-1');
+  assert.equal(result2.reason, 'fetch_failed');
+  assert.equal(result2.detail, 'HTTP 401 denied');
 });
 
 test('queryAll reports one row per provider, including unpollable ones', async () => {
@@ -121,8 +135,12 @@ test('pollKimiBalance normalizes the kimi shape into a balance DTO', async () =>
   const dto = await pollKimiBalance({ host: 'api.moonshot.cn', apiKey: 'k' }, Date.now(), 1000, fakeFetch);
   assert.deepEqual(dto, { kind: 'balance', available: 3.21, voucher: 1, cash: 2.21, currency: 'CNY' });
 
-  const failed = await pollKimiBalance({}, Date.now(), 1000, async () => ({ error: true, httpStatus: 401 }));
-  assert.equal(failed, null);
+  // Fetcher failure now throws a limit_fetch_failed carrying the kimi reason,
+  // so the route layer can surface the root cause instead of bare fetch_failed.
+  await assert.rejects(
+    pollKimiBalance({}, Date.now(), 1000, async () => ({ error: true, httpStatus: 401, reason: 'auth_rejected' })),
+    (error) => error.kind === 'limit_fetch_failed' && /auth_rejected/.test(error.detail) && /HTTP 401/.test(error.detail),
+  );
   const noMoney = await pollKimiBalance({}, Date.now(), 1000, async () => ({ voucher: 1 }));
   assert.equal(noMoney, null);
 });

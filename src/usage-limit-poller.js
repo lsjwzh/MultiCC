@@ -23,6 +23,7 @@
 //   balance → { kind:'balance', available, currency, total, granted, toppedUp }
 
 const crypto = require('crypto');
+const { publicTransportError } = require('./upstream-error');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -60,34 +61,61 @@ function finite(value) {
   return Number.isFinite(n) ? n : null;
 }
 
-// ── Adapters: fetch + normalize. Each returns a DTO or null; never throws. ──
+// ── Adapters: fetch + normalize. Each returns a DTO on success, null when the
+// endpoint answered but the shape drifted, and THROWS a limit_fetch_failed
+// error (with .detail carrying the root cause) on transport/HTTP failure.
+// Silently mapping every failure to null is what hid a wedged process-wide
+// fetch behind a bare "fetch_failed" for days — see src/upstream-error.js
+// publicTransportError for the cause-chain flattener reused here. ──
 
-async function fetchJson(url, headers, timeoutMs) {
+const LIMIT_FETCH_FAILED = 'limit_fetch_failed';
+
+function limitFetchError(detail) {
+  const error = new Error(`limit fetch failed: ${detail}`);
+  error.kind = LIMIT_FETCH_FAILED;
+  error.detail = String(detail);
+  return error;
+}
+
+async function responseBodySnippet(res) {
+  try { return String(await res.text()).slice(0, 200).replace(/\s+/g, ' ').trim(); } catch (_) { return ''; }
+}
+
+async function requestJson(method, url, headers, timeoutMs) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
   try {
-    const res = await fetch(url, { method: 'GET', headers, signal: controller.signal });
-    if (!res || !res.ok) return null;
-    return await res.json();
-  } catch (_) {
-    return null;
+    const res = await fetch(url, { method, headers, signal: controller.signal });
+    if (!res || !res.ok) {
+      const snippet = res ? await responseBodySnippet(res) : '';
+      throw limitFetchError(
+        snippet ? `HTTP ${res.status} ${snippet}` : (res ? `HTTP ${res.status}` : 'no response'),
+      );
+    }
+    try {
+      return await res.json();
+    } catch (error) {
+      const snippet = await responseBodySnippet(res).catch(() => '');
+      throw limitFetchError(snippet ? `invalid JSON response: ${snippet}` : `invalid JSON response (${error.message})`);
+    }
+  } catch (error) {
+    if (error && error.kind === LIMIT_FETCH_FAILED) throw error;
+    // Transport failure: flatten the undici cause chain (fetch failed ←
+    // ENOTFOUND/ECONNREFUSED/TLS...) instead of dropping it.
+    const cause = publicTransportError(error).message;
+    throw limitFetchError(timedOut ? `timeout after ${timeoutMs}ms: ${cause}` : cause);
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function postJson(url, headers, timeoutMs) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, { method: 'POST', headers, signal: controller.signal });
-    if (!res || !res.ok) return null;
-    return await res.json();
-  } catch (_) {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
+function fetchJson(url, headers, timeoutMs) {
+  return requestJson('GET', url, headers, timeoutMs);
+}
+
+function postJson(url, headers, timeoutMs) {
+  return requestJson('POST', url, headers, timeoutMs);
 }
 
 // GLM Coding Plan. Auth is the RAW key with NO "Bearer" prefix. The endpoint is
@@ -227,8 +255,9 @@ async function pollCodexUsage(target, nowMs, timeoutMs = POLL_TIMEOUT_MS, readAu
 // （…/claude-proxy/<id>/remote/quota 或 …/codex-proxy/<id>/quota，见
 // src/routes/provider-balance.js mountProviderRelayQuotaRoutes）。出借方收到
 // 请求后自己触发对厂商的真实余量查询并把最新 DTO 传回，本机原样透传——本机
-// 只持有借道凭据（mcr1.*，作 Bearer），没有任何厂商凭据。失败 / 超时 / 形状
-// 漂移一律 null：绝不伪造，绝不把错误抛进聊天流。
+// 只持有借道凭据（mcr1.*，作 Bearer），没有任何厂商凭据。形状漂移一律 null：
+// 绝不伪造，绝不把错误抛进聊天流；但传输失败 / 出借方失败会抛 limit_fetch_failed
+// （.detail 带根因），由调用方记录与展示。
 async function pollRelayQuota(target, nowMs, timeoutMs = POLL_TIMEOUT_MS) {
   const url = String((target && target.relayUrl) || '').trim();
   const apiKey = String((target && target.apiKey) || '').trim();
@@ -238,7 +267,13 @@ async function pollRelayQuota(target, nowMs, timeoutMs = POLL_TIMEOUT_MS) {
     { Authorization: `Bearer ${apiKey}` },
     Math.max(timeoutMs, RELAY_TIMEOUT_MS),
   );
-  if (!body || body.ok !== true) return null;
+  if (!body) return null;
+  if (body.ok !== true) {
+    // 出借方自己查询失败：透传它给出的 detail（HTTP 状态 / errno 链），没有
+    // detail 时保持 null——绝不把错误抛进聊天流，但根因要一路可见。
+    if (body.detail) throw limitFetchError(`lender: ${body.detail}`);
+    return null;
+  }
   const dto = body.dto;
   if (!dto || typeof dto !== 'object') return null;
   // 只透传两种已知 DTO；出借方响应里出现其它形状（或伪造 kind）时按无数据处理。
@@ -281,10 +316,22 @@ function createUsageLimitPoller({ resolveTarget, broadcast, now = () => Date.now
     if (!adapter) return null;
     const promise = (async () => {
       let dto = null;
-      try { dto = await adapter(target, nowMs); } catch (_) { dto = null; }
+      let failureDetail = null;
+      try {
+        dto = await adapter(target, nowMs);
+      } catch (error) {
+        dto = null;
+        failureDetail = error && error.kind === LIMIT_FETCH_FAILED
+          ? error.detail
+          : String((error && error.message) || error);
+        // The root cause MUST reach the server console — a bare "fetch_failed"
+        // once hid a wedged in-process fetch for days (api.deepseek.com failing
+        // while fresh processes succeeded).
+        console.warn(`[usage-limit] ${target.strategy} poll failed (${target.host || target.relayUrl || target.providerId}): ${failureDetail}`);
+      }
       // Cache even a null result briefly, so a broken endpoint does not get
       // hammered every turn. A successful later poll overwrites it on TTL expiry.
-      cache.set(cacheKey, { at: nowMs, dto });
+      cache.set(cacheKey, { at: nowMs, dto, ...(failureDetail ? { error: failureDetail } : {}) });
       inflight.delete(cacheKey);
       return dto;
     })();

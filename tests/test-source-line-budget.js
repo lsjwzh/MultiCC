@@ -81,5 +81,7 @@ test('the current tracked tree satisfies the ratcheted budget', () => {
   // manage.js entry was retired by the manage-aux-history.js split.
   // turn-engine.js re-crossed 3000 in 12eb61db (message provenance delivery
   // class); the next turn-engine split must retire this entry.
-  assert.deepEqual(result.debts.map(entry => entry.file), ['src/chat/turn-engine.js']);
+  // main_shell.dart crossed 3000 in 039c6e43 (跨目录控制台); same rule.
+  assert.deepEqual(result.debts.map(entry => entry.file),
+    ['app/lib/screens/main_shell.dart', 'src/chat/turn-engine.js']);
 });
