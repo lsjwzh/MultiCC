@@ -11,6 +11,7 @@ import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../screens/file_browser_screen.dart';
 import '../screens/settings_screen.dart';
+import '../utils/context_level.dart';
 import '../screens/share_messages_screen.dart';
 import 'cli_switch_sheet.dart';
 import 'git_log_sheet.dart';
@@ -563,10 +564,46 @@ class _ClearCtxButtonState extends State<_ClearCtxButton> {
           _closeMenu();
           widget.provider.clearHistory(keep: n < 1 ? 1 : n);
         },
+        onRotateNative: () {
+          _closeMenu();
+          widget.provider.rotateNativeContext();
+        },
+        onContextLevel: () {
+          _closeMenu();
+          _showContextLevel();
+        },
         onDismiss: _closeMenu,
       ),
     );
     Overlay.of(context).insert(_overlay!);
+  }
+
+  /// 「查看上下文水位」（Web 的 `showContextLevel`）：只读地报一句原生转录现在
+  /// 装了多少 —— `prompt too long` 之所以来得毫无预兆，就是因为在此之前没有任何
+  /// 地方显示过水位。结果写成一条系统消息，跟 Web 一样落在对话里而不是弹窗。
+  Future<void> _showContextLevel() async {
+    final messenger = ScaffoldMessenger.of(context);
+    final session = widget.provider.executionSessionName.isNotEmpty
+        ? widget.provider.executionSessionName
+        : widget.provider.sessionName;
+    if (session.isEmpty) {
+      messenger.showSnackBar(SnackBar(content: Text(t('contextLevelFail'))));
+      return;
+    }
+    Map<String, dynamic> data;
+    try {
+      data = await SessionService(
+        settings: widget.provider.settings,
+      ).fetchContextLevel(session);
+    } catch (_) {
+      messenger.showSnackBar(SnackBar(content: Text(t('contextLevelFail'))));
+      return;
+    }
+    if (!mounted) return;
+    final message = contextLevelMessage(data);
+    widget.provider.addLocalSystemMessage(
+      message ?? t('contextLevelUnavailable'),
+    );
   }
 
   @override
@@ -627,12 +664,16 @@ class _ClearMenuBody extends StatelessWidget {
   final TextEditingController keepCtrl;
   final VoidCallback onClearAll;
   final VoidCallback onClearKeep;
+  final VoidCallback onRotateNative;
+  final VoidCallback onContextLevel;
   final VoidCallback onDismiss;
   const _ClearMenuBody({
     required this.link,
     required this.keepCtrl,
     required this.onClearAll,
     required this.onClearKeep,
+    required this.onRotateNative,
+    required this.onContextLevel,
     required this.onDismiss,
   });
 
@@ -665,7 +706,44 @@ class _ClearMenuBody extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // Clear all\n                  // Rotate native context\n                  InkWell(\n                    onTap: () {\n                      _closeMenu.call();\n                      widget.provider.rotateNativeContext();\n                    },\n                    borderRadius: BorderRadius.circular(6),\n                    child: Padding(\n                      padding: const EdgeInsets.symmetric(\n                        horizontal: 10,\n                        vertical: 9,\n                      ),\n                      child: Row(\n                        children: [\n                          const Icon(\n                            Icons.autorenew_outlined,\n                            size: 16,\n                            color: Color(0xFF1678e8),\n                          ),\n                          const SizedBox(width: 8),\n                          Text(\n                            t(\x27rotateNativeContext\x27),\n                            style: const TextStyle(\n                              color: Color(0xFF233249),\n                              fontSize: 13,\n                            ),\n                          ),\n                        ],\n                      ),\n                    ),\n                  ),
+                  // 轮转原生上下文：换一份空的 CLI 转录，MultiCC 的会话记录不动。
+                  InkWell(
+                    onTap: onRotateNative,
+                    borderRadius: BorderRadius.circular(6),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+                      child: Row(
+                        children: [
+                          const Icon(
+                            Icons.autorenew_outlined,
+                            size: 16,
+                            color: Color(0xFF1678e8),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(t('rotateNativeContext'), style: const TextStyle(color: Color(0xFF233249), fontSize: 13)),
+                        ],
+                      ),
+                    ),
+                  ),
+                  // 上下文水位：只读地看一眼原生转录现在装了多少（web 的 data-action="context-level"）。
+                  InkWell(
+                    onTap: onContextLevel,
+                    borderRadius: BorderRadius.circular(6),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+                      child: Row(
+                        children: [
+                          const Icon(
+                            Icons.water_drop_outlined,
+                            size: 16,
+                            color: Color(0xFF1678e8),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(t('contextLevel'), style: const TextStyle(color: Color(0xFF233249), fontSize: 13)),
+                        ],
+                      ),
+                    ),
+                  ),
                   InkWell(
                     onTap: onClearAll,
                     borderRadius: BorderRadius.circular(6),
