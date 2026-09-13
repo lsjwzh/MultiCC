@@ -755,6 +755,12 @@ body.console-open #console-panel { transform: none; visibility: visible; }
   /* 「任务 进行中」这一段在手机上让位：「本轮 执行中」说了在不在跑（圈也在），
      「归属待核验」说了要不要管；任务生命周期在任务看板和详情面板里都是完整的一行。 */
   #task-state .ts-life { display: none; }
+  /* 「归属待核验」在手机上也让位。它说的是「这条以后归到哪个任务」还没定，而页头
+     那一行手机上还要装 ☰、标题、跑没跑（圈也在）和 ⋯ —— 390px 宽时多这五个字正好
+     把状态挤到第二行，页头就整条变两行。桌面照旧：那里横着放得下。
+     卡住资源的那条（等待执行名额之类）留着 —— 那是「为什么现在没动」，不是附注，
+     而且它只在真卡住时出现。两种附注的类由 air.js 的 renderDelivery 分开给。 */
+  #task-state .ts-attr { display: none; }
   /* 详情就是点状态那一条（两处都调 toggleDetails），手机上留一个入口。 */
   #details-toggle { display: none; }
   /* 工具不再占页头的第二行：它们收进「⋯」打开的一层浮层，按钮一行也没少。那一行

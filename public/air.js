@@ -1024,11 +1024,14 @@
   }
 
   // 分隔符跟着段一起走（「 · 任务 进行中」），藏掉一段时不会留下一个孤零零的「·」，
-  // 而且整条的 textContent 仍然和 join(' · ') 一字不差。
+  // 而且整条的 textContent 仍然和 join(' · ') 一字不差。段和类必须一起过滤：空段
+  // 被丢掉时它的类也得跟着走，否则后面的段会捡到前面那个类 —— 生命周期为空时
+  // 「归属待核验」会拿到 ts-life，在手机上被当成任务生命周期一起藏掉。
   const STATE_CLASSES = ['ts-run', 'ts-life'];
   function renderStateSummary(button, segments, classes = STATE_CLASSES) {
-    button.replaceChildren(...segments.filter(Boolean).map((text, index) =>
-      node('span', index ? ` · ${text}` : text, classes[index] || null)));
+    const parts = segments.map((text, index) => [text, classes[index]]).filter(part => part[0]);
+    button.replaceChildren(...parts.map(([text, cls], index) =>
+      node('span', index ? ` · ${text}` : text, cls || null)));
   }
 
   function detailGroup(title, rows) {
@@ -1149,8 +1152,12 @@
     const summary = $('task-state');
     const attention = !!(capacity || pending || candidate || failed);
     summary.classList.toggle('attention', attention);
+    // 第三段是附注，两种附注在手机上待遇不同（air.css 的 760px 块）：卡在资源上
+    // 的那条（等待执行名额）说的是「为什么现在没动」，留着；「归属待核验」说的是
+    // 「这条以后归到哪个任务」，占地方，手机上让位。所以类得分开，不能共用一个。
+    const thirdClass = capacity ? 'ts-cap' : candidate ? 'ts-attr' : null;
     renderStateSummary(summary, [...taskStateSegments(value),
-      capacity ? label(capacity) : candidate ? '归属待核验' : ''], [...STATE_CLASSES, 'ts-attn']);
+      capacity ? label(capacity) : candidate ? '归属待核验' : ''], [...STATE_CLASSES, thirdClass]);
     summary.title = `${title}。${text} 点击查看详情。`;
     $('delivery-destination').textContent = `下一条消息仍发送到「${currentTitle}」`;
     const steps = [...$('delivery-steps').children];
