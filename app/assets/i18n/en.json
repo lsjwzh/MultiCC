@@ -1265,5 +1265,10 @@
   "onboardStep3Body": "Begin with a read-only request. Insert the example below and send it. The guide advances automatically after a real AI response arrives.",
   "onboardStep4Title": "Your first result is ready",
   "onboardStep4Body": "You can keep asking follow-up questions. If you later allow file edits, MultiCC keeps an isolated copy and shows the impact before applying changes.",
-  "onboardExample": "Do not modify any files yet. Summarize what is in this workspace and tell me the three files I should read first."
+  "onboardExample": "Do not modify any files yet. Summarize what is in this workspace and tell me the three files I should read first.",
+  "voiceMicTitle": "Voice input (tap to start, tap again to stop)",
+  "voiceMicDenied": "Cannot access the microphone — check the permission.",
+  "voiceRecordingHint": "Recording — tap the mic to stop.",
+  "voiceTranscribing": "Transcribing…",
+  "voiceTranscribeFailed": "Transcription failed: {message}"
 }
