@@ -29,15 +29,27 @@ Map<String, String> get _goalDimShort => {
 
 class InputBar extends StatefulWidget {
   final VoidCallback? onPickSubagent;
-  const InputBar({super.key, this.onPickSubagent});
+
+  /// 草稿和光标可以由外面拿着：手机上空闲时输入区会折成一条胶囊，胶囊要
+  /// 显示还没发出去的草稿，点开时也要把光标放回输入框 —— 两件事都得从外面
+  /// 够得着这两个对象。不传就还是自己管，行为不变。
+  final TextEditingController? controller;
+  final FocusNode? focusNode;
+
+  const InputBar({
+    super.key,
+    this.onPickSubagent,
+    this.controller,
+    this.focusNode,
+  });
 
   @override
   State<InputBar> createState() => _InputBarState();
 }
 
 class _InputBarState extends State<InputBar> {
-  final _ctrl = TextEditingController();
-  final _focusNode = FocusNode();
+  late final _ctrl = widget.controller ?? TextEditingController();
+  late final _focusNode = widget.focusNode ?? FocusNode();
   bool _hasText = false;
 
   // Attachments: list of {path, name} from server upload
@@ -76,9 +88,10 @@ class _InputBarState extends State<InputBar> {
   void dispose() {
     _dictation?.removeListener(_onDictationChanged);
     _dictation?.dispose();
-    _ctrl.dispose();
+    // 谁建的谁销毁：外面传进来的还归外面，这里只摘掉自己挂的监听。
     _focusNode.removeListener(_onFocusChanged);
-    _focusNode.dispose();
+    if (widget.focusNode == null) _focusNode.dispose();
+    if (widget.controller == null) _ctrl.dispose();
     _recorder.dispose();
     super.dispose();
   }
