@@ -1248,5 +1248,22 @@
   "autoCommitMerged": "✓ Auto-commit done: {message}",
   "autoCommitConflict": "⚠️ Auto-commit conflict: {files}",
   "autoCommitFailed": "✗ Auto-commit failed: {error}",
-  "autoCommitPatchFailed": "Could not save the auto-commit switch: {error}"
+  "autoCommitPatchFailed": "Could not save the auto-commit switch: {error}",
+  "onboardStep": "Onboarding {n}/4",
+  "onboardClose": "Close",
+  "onboardSkip": "Skip",
+  "onboardPrev": "Back",
+  "onboardNext": "Next",
+  "onboardDone": "Done",
+  "onboardContinue": "Continue after opening a chat",
+  "onboardFill": "Insert read-only example",
+  "onboardStep1Title": "Choose a workspace",
+  "onboardStep1Body": "A workspace is the folder you want AI to help with. Start with a small folder. MultiCC works in an isolated copy and does not overwrite the original files directly.",
+  "onboardStep2Title": "Start a conversation",
+  "onboardStep2Body": "Describe what you need in the box below and tap “Create and run ↑”. MultiCC picks an AI service that is already ready; CLI, model, and terminal controls can wait until later.",
+  "onboardStep3Title": "Get your first safe result",
+  "onboardStep3Body": "Begin with a read-only request. Insert the example below and send it. The guide advances automatically after a real AI response arrives.",
+  "onboardStep4Title": "Your first result is ready",
+  "onboardStep4Body": "You can keep asking follow-up questions. If you later allow file edits, MultiCC keeps an isolated copy and shows the impact before applying changes.",
+  "onboardExample": "Do not modify any files yet. Summarize what is in this workspace and tell me the three files I should read first."
 }

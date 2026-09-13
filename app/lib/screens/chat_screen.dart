@@ -36,6 +36,7 @@ import '../widgets/session_diff_dialog.dart';
 import '../widgets/input_bar.dart';
 import '../widgets/message_bubble.dart';
 import '../widgets/thinking_indicator.dart';
+import '../widgets/tour_overlay.dart';
 import '../widgets/worktree_status.dart';
 import 'chat_width_dialog.dart';
 import 'memo_screen.dart';
@@ -696,6 +697,23 @@ class _ChatViewState extends State<ChatView> {
         if (mounted) _resolveFocus(provider);
       });
     }
+    // 新手引导的后两步套在 Scaffold 外面（第 4 步要圈住整块消息区，光圈还得压过
+    // 页头，body 里那层盖不住），两个锚点则由下面那两处 [TourAnchor] 挂上去。
+    return ChatTourLayer(
+      composerController: _composerCtrl,
+      composerFocus: _composerFocus,
+      child: _buildScaffold(context, provider, mergeReady, autoCommit, dispatchExpanded, artifactsLabel),
+    );
+  }
+
+  Widget _buildScaffold(
+    BuildContext context,
+    ChatProvider provider,
+    bool mergeReady,
+    bool autoCommit,
+    bool dispatchExpanded,
+    String? artifactsLabel,
+  ) {
     return Scaffold(
       backgroundColor: const Color(0xFFf4f8fd),
       body: SafeArea(
@@ -843,7 +861,7 @@ class _ChatViewState extends State<ChatView> {
                       forceSyncing: _forceSyncing,
                     ),
                   if (_behindCount() > 0)
-                    _BehindMainBanner(
+                    WorktreeBehindBanner(
                       behind: _behindCount(),
                       baseBranch: _baseBranchName(),
                       syncing: _syncing,
@@ -852,11 +870,15 @@ class _ChatViewState extends State<ChatView> {
                       forceSyncing: _forceSyncing,
                     ),
                   Expanded(
-                    child: _MessageList(
-                      scrollCtrl: _scrollCtrl,
-                      highlightId: _highlightId,
-                      focusKey: _focusKey,
-                      onHighlightDone: _clearHighlight,
+                    // 第 4 步「第一份结果已经完成」圈的整块消息区。
+                    child: TourAnchor(
+                      step: 4,
+                      child: _MessageList(
+                        scrollCtrl: _scrollCtrl,
+                        highlightId: _highlightId,
+                        focusKey: _focusKey,
+                        onHighlightDone: _clearHighlight,
+                      ),
                     ),
                   ),
                   if (widget.settings.advancedMode.value)
@@ -879,11 +901,15 @@ class _ChatViewState extends State<ChatView> {
                     inputController: _composerCtrl,
                     inputFocusNode: _composerFocus,
                     child: _CenteredChatLane(
-                      child: InputBar(
-                        controller: _composerCtrl,
-                        focusNode: _composerFocus,
-                        scheduledSend: _scheduledSend,
-                        draftSink: _scheduleDraftSink,
+                      // 第 3 步「把要做的事说清楚」圈的输入区。
+                      child: TourAnchor(
+                        step: 3,
+                        child: InputBar(
+                          controller: _composerCtrl,
+                          focusNode: _composerFocus,
+                          scheduledSend: _scheduledSend,
+                          draftSink: _scheduleDraftSink,
+                        ),
                       ),
                     ),
                   ),
@@ -1863,78 +1889,6 @@ class _MergeHintBarState extends State<MergeHintBar> {
 
 // Persistent top banner shown while the session's worktree is behind its base
 // branch — complements the transient SnackBar with an always-visible reminder.
-class _BehindMainBanner extends StatelessWidget {
-  final int behind;
-  final String baseBranch;
-  final VoidCallback onSync;
-  final bool syncing;
-
-  /// 强制同步：把同步指令交给会话那轮去做（Web 把这两个按钮并排放在
-  /// worktree 状态行上）。它和「同步」不是一件事 —— 「同步」是服务端直接 rebase，
-  /// 撞上冲突就停在那里；「强制同步」是让会话自己保留改动、解冲突。
-  final VoidCallback onForceSync;
-  final bool forceSyncing;
-  const _BehindMainBanner({
-    required this.behind,
-    required this.baseBranch,
-    required this.onSync,
-    this.syncing = false,
-    required this.onForceSync,
-    this.forceSyncing = false,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.fromLTRB(10, 6, 10, 0),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      decoration: BoxDecoration(
-        color: const Color(0xFFfff8eb),
-        border: Border.all(color: const Color(0xFFa85a25)),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.history_rounded, size: 16, color: Color(0xFFa85a25)),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              t('behindBanner', {'base': baseBranch, 'n': '$behind'}),
-              style: const TextStyle(color: Color(0xFFa85a25), fontSize: 12),
-            ),
-          ),
-          WorktreeForceSyncButton(
-            busy: forceSyncing,
-            onPressed: onForceSync,
-            color: const Color(0xFFa85a25),
-            buttonKey: const Key('worktree-force-sync-btn'),
-          ),
-          const SizedBox(width: 6),
-          TextButton(
-            onPressed: syncing ? null : onSync,
-            style: TextButton.styleFrom(
-              foregroundColor: const Color(0xFFf4f8fd),
-              backgroundColor: const Color(0xFFa85a25),
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              minimumSize: Size.zero,
-            ),
-            child: Text(
-              syncing ? t('syncing') : t('syncNow'),
-              style: const TextStyle(fontWeight: FontWeight.w700),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-/// 同步冲突横幅（Web 的 `#worktree-conflict-bar`）。
-///
-/// worktree 卡在一次冲突的 rebase 上时它会一直挂着，直到有人点「继续」或
-/// 「放弃」—— 状态来自 5 秒一次的 merge-status 轮询，不是一次性的提示，所以
-/// 刷新、切走再回来都还在。跟 Web 一样，三个按钮：解释怎么解决、继续、放弃，
-/// 外加一个强制同步（让会话自己接手去解）。
 /// AI 助手对当前会话的理解条（目标 · 阶段 · 状态），对齐 web 的
 /// `#aux-classify-bar`。公开而非私有：两个动作药丸的显隐规则直接照抄 web 的
 /// `can-mark-done`(W) / `can-cancel-task`(P) 两个 class，是条容易改坏的规则，
