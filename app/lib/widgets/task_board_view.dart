@@ -5,8 +5,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:record/record.dart';
 
 import '../i18n.dart';
 import '../models/message.dart';
@@ -16,6 +14,7 @@ import '../services/attachment_picker.dart';
 import '../services/manage_service.dart';
 import '../services/settings_service.dart';
 import '../services/task_chat_transport.dart';
+import '../services/voice_clip_recorder.dart';
 import '../services/workspace_service.dart';
 import '../theme.dart';
 import '../utils/session_status_helpers.dart';
@@ -2530,10 +2529,8 @@ class _BoardComposerState extends State<_BoardComposer> {
   final List<Map<String, String>> _attachments = [];
   bool _uploading = false;
 
-  // Voice recording
-  final _recorder = AudioRecorder();
-  bool _isRecording = false;
-  bool _isTranscribing = false;
+  // 整段录音 → `/api/voice/stt`，与聊天页、Air 快速新建共用同一份。
+  final _clip = VoiceClipRecorder();
 
   // Goal mode + per-send limits
   bool _goal = false;
@@ -2557,7 +2554,7 @@ class _BoardComposerState extends State<_BoardComposer> {
     _focusNode.dispose();
     _roundsCtrl.dispose();
     _budgetCtrl.dispose();
-    _recorder.dispose();
+    _clip.dispose();
     super.dispose();
   }
 
@@ -2613,10 +2610,11 @@ class _BoardComposerState extends State<_BoardComposer> {
     }
   }
 
-  // ── Voice recording (mirrors input_bar, simplified: no AI refine panel) ──
+  // ── Voice recording（与聊天页、Air 快速新建共用 [VoiceClipRecorder]；
+  //    这里不做 AI 润色那一版面板，转写结果直接接进草稿） ──
 
   Future<void> _toggleRecording() async {
-    if (_isRecording) {
+    if (_clip.isRecording) {
       await _stopAndTranscribe();
     } else {
       await _startRecording();
@@ -2624,71 +2622,26 @@ class _BoardComposerState extends State<_BoardComposer> {
   }
 
   Future<void> _startRecording() async {
-    if (!await _recorder.hasPermission()) return;
-    final dir = await getTemporaryDirectory();
-    final filePath =
-        '${dir.path}/multicc_board_${DateTime.now().millisecondsSinceEpoch}.m4a';
-    await _recorder.start(
-      const RecordConfig(
-        encoder: AudioEncoder.aacLc,
-        numChannels: 1,
-        sampleRate: 16000,
-      ),
-      path: filePath,
-    );
-    setState(() => _isRecording = true);
+    if (!await _clip.start()) return;
+    if (mounted) setState(() {});
   }
 
   Future<void> _stopAndTranscribe() async {
-    final path = await _recorder.stop();
-    setState(() {
-      _isRecording = false;
-      _isTranscribing = true;
-    });
-
-    if (path == null) {
-      if (mounted) setState(() => _isTranscribing = false);
-      return;
-    }
-
+    setState(() {});
     try {
-      final uri = Uri.parse(widget.settings.buildHttpUrl('/api/voice/stt'));
-      final req = http.MultipartRequest('POST', uri);
-      if (widget.settings.token.isNotEmpty) {
-        req.headers['X-Access-Token'] = widget.settings.token;
-      }
-      req.files.add(
-        await http.MultipartFile.fromPath(
-          'file',
-          path,
-          contentType: MediaType('audio', 'mp4'),
-        ),
-      );
-      final res = await req.send().timeout(const Duration(seconds: 60));
-      final body = await res.stream.bytesToString();
-      if (res.statusCode == 200) {
-        final json = jsonDecode(body) as Map<String, dynamic>;
-        final text = (json['text'] as String? ?? '').trim();
-        if (text.isNotEmpty && mounted) {
-          final current = _ctrl.text;
-          _ctrl.text = current.isEmpty ? text : '$current $text';
-          _ctrl.selection = TextSelection.collapsed(offset: _ctrl.text.length);
-        }
-      } else {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('${t('boardVoice')}: ${res.statusCode}')),
-          );
-        }
-      }
-    } catch (e) {
+      final text = await _clip.stopAndTranscribe(widget.settings);
+      if (text.isEmpty || !mounted) return;
+      final current = _ctrl.text;
+      _ctrl.text = current.isEmpty ? text : '$current $text';
+      _ctrl.selection = TextSelection.collapsed(offset: _ctrl.text.length);
+    } on VoiceClipException catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text('${t('boardVoice')}: $e')));
       }
     } finally {
-      if (mounted) setState(() => _isTranscribing = false);
+      if (mounted) setState(() {});
     }
   }
 
@@ -2761,7 +2714,7 @@ class _BoardComposerState extends State<_BoardComposer> {
         (_hasText || _attachments.isNotEmpty) &&
         !_sending &&
         !_uploading &&
-        !_isTranscribing;
+        !_clip.isTranscribing;
     final viewInsets = MediaQuery.of(context).viewInsets;
 
     return Container(
@@ -2885,15 +2838,15 @@ class _BoardComposerState extends State<_BoardComposer> {
               ),
               const SizedBox(width: 4),
               _ComposerBtn(
-                onTap: (!_isTranscribing && !_sending)
+                onTap: (!_clip.isTranscribing && !_sending)
                     ? _toggleRecording
                     : null,
-                icon: _isTranscribing
+                icon: _clip.isTranscribing
                     ? Icons.hourglass_top_rounded
-                    : _isRecording
+                    : _clip.isRecording
                     ? Icons.stop_circle_rounded
                     : Icons.mic_rounded,
-                color: _isRecording ? AppColors.danger : AppColors.muted,
+                color: _clip.isRecording ? AppColors.danger : AppColors.muted,
               ),
               const SizedBox(width: 4),
               Expanded(
@@ -2902,7 +2855,7 @@ class _BoardComposerState extends State<_BoardComposer> {
                   decoration: BoxDecoration(
                     color: AppColors.bg,
                     border: Border.all(
-                      color: _isRecording
+                      color: _clip.isRecording
                           ? AppColors.danger
                           : _focusNode.hasFocus
                           ? AppColors.blue
@@ -2921,13 +2874,13 @@ class _BoardComposerState extends State<_BoardComposer> {
                       height: 1.4,
                     ),
                     decoration: InputDecoration(
-                      hintText: _isRecording
+                      hintText: _clip.isRecording
                           ? t('recording')
-                          : _isTranscribing
+                          : _clip.isTranscribing
                           ? t('transcribing')
                           : (widget.hint ?? t('typeMessage')),
                       hintStyle: TextStyle(
-                        color: _isRecording
+                        color: _clip.isRecording
                             ? AppColors.danger
                             : AppColors.faint,
                         fontSize: 13,

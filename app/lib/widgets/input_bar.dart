@@ -2,10 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:record/record.dart';
 import 'package:http/http.dart' as http;
-import 'package:http_parser/http_parser.dart';
-import 'package:path_provider/path_provider.dart';
 
 import '../i18n.dart';
 import '../providers/chat_provider.dart';
@@ -13,6 +10,7 @@ import '../providers/session_manager.dart';
 import '../models/message.dart';
 import '../services/attachment_picker.dart';
 import '../services/chat_service.dart';
+import '../services/voice_clip_recorder.dart';
 import '../services/voice_dictation_service.dart';
 import '../services/voice_launch_service.dart';
 import '../utils/dispatch_hint.dart';
@@ -64,10 +62,9 @@ class _InputBarState extends State<InputBar> {
   final List<Map<String, String>> _attachments = [];
   bool _uploading = false;
 
-  // Voice recording
-  final _recorder = AudioRecorder();
-  bool _isRecording = false;
-  bool _isTranscribing = false;
+  // 整段录音 → `/api/voice/stt`：流式听写起不来时的退路。录音那件事本身收在
+  // [VoiceClipRecorder] 里 —— Air 快速新建和任务板用的是同一份。
+  final _clip = VoiceClipRecorder();
 
   // 流式听写（/ws/voice）：边说边出字 + 实时润色，对齐 web 的语音 HUD。服务端 ASR
   // 或麦克风不可用时回退到上面的 m4a → /api/voice/stt 整段上传。
@@ -101,7 +98,7 @@ class _InputBarState extends State<InputBar> {
     _focusNode.removeListener(_onFocusChanged);
     if (widget.focusNode == null) _focusNode.dispose();
     if (widget.controller == null) _ctrl.dispose();
-    _recorder.dispose();
+    _clip.dispose();
     super.dispose();
   }
 
@@ -162,7 +159,7 @@ class _InputBarState extends State<InputBar> {
   }
 
   Future<void> _toggleRecording() async {
-    if (_isRecording) {
+    if (_clip.isRecording) {
       await _stopAndTranscribe();
     } else {
       await _startRecording();
@@ -170,76 +167,31 @@ class _InputBarState extends State<InputBar> {
   }
 
   Future<void> _startRecording() async {
-    if (!await _recorder.hasPermission()) return;
-    final dir = await getTemporaryDirectory();
-    final filePath =
-        '${dir.path}/multicc_voice_${DateTime.now().millisecondsSinceEpoch}.m4a';
-    await _recorder.start(
-      const RecordConfig(
-        encoder: AudioEncoder.aacLc,
-        numChannels: 1,
-        sampleRate: 16000,
-      ),
-      path: filePath,
-    );
-    setState(() => _isRecording = true);
+    if (!await _clip.start()) return;
+    if (mounted) setState(() {});
   }
 
   Future<void> _stopAndTranscribe() async {
     final settings = context.read<ChatProvider>().settings;
-    final path = await _recorder.stop();
-    setState(() {
-      _isRecording = false;
-      _isTranscribing = true;
-    });
-
-    if (path == null) {
-      setState(() => _isTranscribing = false);
-      return;
-    }
-
+    setState(() {});
     try {
-      final uri = Uri.parse(settings.buildHttpUrl('/api/voice/stt'));
-      final req = http.MultipartRequest('POST', uri);
-      if (settings.token.isNotEmpty) {
-        req.headers['X-Access-Token'] = settings.token;
+      final text = await _clip.stopAndTranscribe(settings);
+      if (text.isNotEmpty && mounted) {
+        _showVoicePanel(text);
       }
-      req.files.add(
-        await http.MultipartFile.fromPath(
-          'file',
-          path,
-          contentType: MediaType('audio', 'mp4'),
-        ),
-      );
-      final res = await req.send().timeout(const Duration(seconds: 60));
-      final body = await res.stream.bytesToString();
-      if (res.statusCode == 200) {
-        final json = jsonDecode(body) as Map<String, dynamic>;
-        final text = (json['text'] as String? ?? '').trim();
-        if (text.isNotEmpty && mounted) {
-          _showVoicePanel(text);
-        }
-      } else {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('STT failed: ${res.statusCode}'),
-              backgroundColor: const Color(0xFFb64e43),
-            ),
-          );
-        }
-      }
-    } catch (e) {
+    } on VoiceClipException catch (e) {
+      // 非 200 与路上出错本来就是两种说法（`STT failed: 500` / `STT error: …`），
+      // 由异常自己拼好。
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('STT error: $e'),
+            content: Text('$e'),
             backgroundColor: const Color(0xFFb64e43),
           ),
         );
       }
     } finally {
-      if (mounted) setState(() => _isTranscribing = false);
+      if (mounted) setState(() {});
     }
   }
 
@@ -1405,19 +1357,19 @@ class _InputBarState extends State<InputBar> {
                 _SmallButton(
                   onTap: (_dictation?.isBusy ?? false)
                       ? () => _commitDictation(provider, commander: isCommander)
-                      : (!_isTranscribing && isConnected)
+                      : (!_clip.isTranscribing && isConnected)
                       ? () => _toggleDictation(provider, commander: isCommander)
                       : null,
                   icon: (_dictation?.state == VoiceDictationState.finalizing)
                       ? Icons.hourglass_top_rounded
                       : (_dictation?.isBusy ?? false)
                       ? Icons.check_circle_rounded
-                      : _isTranscribing
+                      : _clip.isTranscribing
                       ? Icons.hourglass_top_rounded
-                      : _isRecording
+                      : _clip.isRecording
                       ? Icons.stop_circle_rounded
                       : Icons.mic_rounded,
-                  color: (_dictation?.isBusy ?? false) || _isRecording
+                  color: (_dictation?.isBusy ?? false) || _clip.isRecording
                       ? const Color(0xFF0965cf)
                       : const Color(0xFF6f8096),
                 ),
@@ -1453,7 +1405,7 @@ class _InputBarState extends State<InputBar> {
                     decoration: BoxDecoration(
                       color: const Color(0xFFf4f8fd),
                       border: Border.all(
-                        color: _isRecording
+                        color: _clip.isRecording
                             ? const Color(0xFFb64e43)
                             : _focusNode.hasFocus
                             ? const Color(0xFF1267b5)
@@ -1476,13 +1428,13 @@ class _InputBarState extends State<InputBar> {
                         height: 1.4,
                       ),
                       decoration: InputDecoration(
-                        hintText: _isRecording
+                        hintText: _clip.isRecording
                             ? t('recording')
-                            : _isTranscribing
+                            : _clip.isTranscribing
                             ? t('transcribing')
                             : t('typeMessage'),
                         hintStyle: TextStyle(
-                          color: _isRecording
+                          color: _clip.isRecording
                               ? const Color(0xFFb64e43)
                               : const Color(0xFF8b9cae),
                         ),

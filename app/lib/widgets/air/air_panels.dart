@@ -7,6 +7,7 @@ import '../../services/attachment_picker.dart';
 import '../../services/settings_service.dart';
 import '../../theme.dart';
 import '../../utils/status_presentation.dart';
+import '../voice_input_button.dart';
 import 'air_role_editor.dart';
 import 'air_task_config.dart';
 import 'air_task_status.dart';
@@ -526,6 +527,10 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
   bool _uploading = false;
   String _attachError = '';
 
+  /// 🎙 的状态文案。Web 把它摆在动作行里那格 `#quick-task-status` 上（窄屏
+  /// 那格整行掉到下面一行），这里跟着摆。
+  String _voiceStatus = '';
+
   @override
   void initState() {
     super.initState();
@@ -557,6 +562,17 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
   String _composedText(String typed) => _attachments.isEmpty
       ? typed
       : '$typed\n\n附件：${_attachments.map((a) => a.path).join(' ')}';
+
+  /// 转写好的话追加进草稿（Web `air.js:513-515`：有内容就空一格接上，然后
+  /// 把焦点放回输入框）。光标停在末尾，接着写或者直接创建都行。
+  void _appendVoiceText(String text) {
+    final current = _controller.text.trim();
+    final merged = current.isEmpty ? text : '$current $text';
+    _controller.value = TextEditingValue(
+      text: merged,
+      selection: TextSelection.collapsed(offset: merged.length),
+    );
+  }
 
   Future<void> _pickAttach() async {
     final picked = await pickChatAttachment(context);
@@ -801,41 +817,65 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
               // 都带 24px 的横向内边距，两份默认值加起来就把这一行撑出去了。
               // 尺寸跟着 Web `air.css:354` 那一行走 —— `.quick-task-actions
               // button { min-height: 32px; padding: 5px 9px; font-size: 11px; }`
-              // —— 三件（Goal / 附件 / 提交）都按这套缩，合起来才 218px。
-              Tooltip(
-                message: '以 Goal 模式发送：先预检目标与完成标准',
-                child: FilterChip(
-                  key: const ValueKey('air-quick-goal'),
-                  label: const Text('🎯 Goal'),
-                  labelStyle: const TextStyle(fontSize: 11),
-                  selected: _goal,
-                  onSelected: widget.busy
-                      ? null
-                      : (v) => setState(() => _goal = v),
-                  showCheckmark: false,
-                  visualDensity: VisualDensity.compact,
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  labelPadding: const EdgeInsets.symmetric(horizontal: 2),
-                  padding: const EdgeInsets.symmetric(horizontal: 6),
+              // —— 四件（🎙 / 附件 / Goal / 提交）都按这套缩。
+              //
+              // 顺序也照 Web `air.html:186-191`：🎙、📎、🎯，然后是提交。左边这
+              // 三位装进一个 Wrap：Web 在窄屏上给这一行开了 `flex-wrap: wrap`
+              // （`air.css:816`），装不下就换行，而不是硬挤。
+              Expanded(
+                child: Wrap(
+                  spacing: 2,
+                  runSpacing: 6,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    VoiceInputButton(
+                      key: const ValueKey('air-quick-mic'),
+                      settings: widget.settings,
+                      enabled: !widget.busy,
+                      onText: _appendVoiceText,
+                      onStatus: (message) {
+                        if (mounted) setState(() => _voiceStatus = message);
+                      },
+                    ),
+                    IconButton(
+                      key: const ValueKey('air-quick-attach'),
+                      onPressed: widget.busy || _uploading ? null : _pickAttach,
+                      iconSize: 19,
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(
+                        minWidth: 32,
+                        minHeight: 32,
+                      ),
+                      visualDensity: VisualDensity.compact,
+                      tooltip: '上传图片或文件（也可以直接粘贴或拖入）',
+                      icon: Icon(
+                        _uploading
+                            ? Icons.hourglass_top_rounded
+                            : Icons.attach_file_rounded,
+                        color: AppColors.faint,
+                      ),
+                    ),
+                    Tooltip(
+                      message: '以 Goal 模式发送：先预检目标与完成标准',
+                      child: FilterChip(
+                        key: const ValueKey('air-quick-goal'),
+                        label: const Text('🎯 Goal'),
+                        labelStyle: const TextStyle(fontSize: 11),
+                        selected: _goal,
+                        onSelected: widget.busy
+                            ? null
+                            : (v) => setState(() => _goal = v),
+                        showCheckmark: false,
+                        visualDensity: VisualDensity.compact,
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        labelPadding: const EdgeInsets.symmetric(horizontal: 2),
+                        padding: const EdgeInsets.symmetric(horizontal: 6),
+                      ),
+                    ),
+                  ],
                 ),
               ),
-              const SizedBox(width: 2),
-              IconButton(
-                key: const ValueKey('air-quick-attach'),
-                onPressed: widget.busy || _uploading ? null : _pickAttach,
-                iconSize: 19,
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-                visualDensity: VisualDensity.compact,
-                tooltip: '上传图片或文件（也可以直接粘贴或拖入）',
-                icon: Icon(
-                  _uploading
-                      ? Icons.hourglass_top_rounded
-                      : Icons.attach_file_rounded,
-                  color: AppColors.faint,
-                ),
-              ),
-              const Spacer(),
+              const SizedBox(width: 4),
               FilledButton(
                 key: const ValueKey('air-quick-submit'),
                 onPressed: widget.busy
@@ -887,6 +927,17 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
               ),
             ],
           ),
+          // 🎙 的状态（Web `#quick-task-status`，窄屏那条 `flex-basis: 100%` 的
+          // 规则让它整行掉到动作行下面）。
+          if (_voiceStatus.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                _voiceStatus,
+                key: const ValueKey('air-quick-voice-status'),
+                style: const TextStyle(color: AppColors.muted, fontSize: 11),
+              ),
+            ),
         ],
       ),
     );
