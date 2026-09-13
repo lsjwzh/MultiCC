@@ -73,6 +73,7 @@ test('Air task entry exposes provider routing metadata without credentials', asy
   const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
   const record = { id: 's', dirId: 'd1', kind: 'chat', cli: 'codex', provider: 'provider-a',
     providerSecret: 'must-not-leak', model: 'gpt-alias', effort: 'high',
+    subagent: { providerId: 'provider-b', model: 'gpt-b' },
     providerSelection: { version: 1, mode: 'auto', protocol: 'openai_responses', candidates: [
       { providerId: 'provider-a', model: 'gpt-a', priority: 1, enabled: true },
       { providerId: 'provider-b', model: 'gpt-b', priority: 2, enabled: true },
@@ -85,6 +86,7 @@ test('Air task entry exposes provider routing metadata without credentials', asy
       attributionCandidate: () => null, roleBindings: () => ({ version: 0, bindings: [] }) },
     getBoard: () => ({ tasks: {} }), clis: ['codex'], providerName: () => 'Provider A',
     effectiveModel: () => 'gpt-a', effectiveEffort: () => 'high',
+    serializeSubagent: sa => (sa ? { providerId: sa.providerId, model: sa.model, effectiveModel: 'gpt-b' } : null),
   });
   let response;
   await handlers.get('/api/air/tasks/:id')({ params: { id: 't' } }, {
@@ -94,7 +96,28 @@ test('Air task entry exposes provider routing metadata without credentials', asy
     pendingConfiguration: null,
     cli: 'codex', model: 'gpt-alias', effectiveModel: 'gpt-a', effort: 'high', effectiveEffort: 'high',
     provider: 'provider-a', providerName: 'Provider A', providerSelection: record.providerSelection,
+    // The task AI config panel reads the live sub-task route back, so a saved
+    // tail survives reopening the dialog.
+    subagent: { providerId: 'provider-b', model: 'gpt-b', effectiveModel: 'gpt-b' },
     rolePresetId: undefined,
   });
   assert.equal(JSON.stringify(response).includes('must-not-leak'), false);
+});
+
+test('a task pinned at creation keeps its sub-agent route in the runtime', async t => {
+  const f = airFixture(t);
+  const created = await f.runtime.createStandalone({ dirId: 'd1', title: 'Routed', clientMsgId: 'route-1',
+    cli: 'claude', subagent: { providerId: 'relay-b', model: 'glm-4.7' } });
+  const task = f.store.get('task', created.taskId);
+  // The tail rides the same runtime object as cli/provider/model, so the task's
+  // first run spawns with it instead of only being editable afterwards.
+  assert.deepEqual(task.runtime.subagent, { providerId: 'relay-b', model: 'glm-4.7' });
+  assert.equal(task.runtime.cli, 'claude');
+  // Same request replayed: one task, one runtime, no duplicate creation.
+  await f.runtime.createStandalone({ dirId: 'd1', title: 'Routed', clientMsgId: 'route-1',
+    cli: 'claude', subagent: { providerId: 'relay-b', model: 'glm-4.7' } });
+  assert.equal(f.creations.length, 1);
+  // A different tail is a different task request, not a silent overwrite.
+  await assert.rejects(f.runtime.createStandalone({ dirId: 'd1', title: 'Routed', clientMsgId: 'route-1',
+    cli: 'claude', subagent: { providerId: 'relay-a', model: 'glm-5.2' } }), { code: 'idempotency_conflict' });
 });

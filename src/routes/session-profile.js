@@ -2,6 +2,7 @@
 
 const crypto = require('crypto');
 const { readConfiguration, desiredSession, configurationBusy, stageConfiguration } = require('../session/pending-configuration');
+const { normalizeSubagentInput } = require('../session/subagent');
 const fs = require('fs');
 
 const { normalizeManualMemory } = require('../memory/runtime');
@@ -380,30 +381,13 @@ function createSessionProfileRoutes(rawDeps) {
         // Per-session subagent provider+model. Claude encodes the route in its model;
         // Codex materializes native default/worker/explorer agent config layers that
         // select a second model_provider. null / '' / {} clears the override.
-        const sa = req.body.subagent;
-        const cli = s.cli || 'claude';
-        const clearing = sa === null || sa === '' || (typeof sa === 'object' && Object.keys(sa).length === 0);
-        if (!clearing && cli !== 'claude' && cli !== 'codex') {
-          return rejectMutation(400, { error: 'subagent routing is only supported by Claude and Codex' });
-        }
-        if (clearing) {
-          s.subagent = null;
-        } else if (typeof sa === 'object') {
-          const subApp = (s.cli === 'codex') ? 'codex' : 'claude';
-          const v = validProviderId(subApp, (sa.providerId || '').toString().trim());
-          if (!v.ok) return rejectMutation(400, { error: 'invalid subagent provider' });
-          const model = (sa.model || '').toString().trim();
-          if (!model) return rejectMutation(400, { error: 'subagent model required' });
-          if (s.cli === 'codex') {
-            if (!s.provider) return rejectMutation(400, { error: 'Codex subagent routing requires a selected main provider' });
-            if (!providers.codexProviderProxyable(v.value)) {
-              return rejectMutation(400, { error: 'Codex subagent provider has no callable HTTP endpoint' });
-            }
-          }
-          s.subagent = { providerId: v.value, model };
-        } else {
-          return rejectMutation(400, { error: 'invalid subagent' });
-        }
+        // The rules live in src/session/subagent.js — the same ones session creation
+        // applies, so a route pinned at creation behaves exactly like one set here.
+        const checked = normalizeSubagentInput({
+          cli: s.cli || 'claude', provider: s.provider, subagent: req.body.subagent, validProviderId, providers,
+        });
+        if (!checked.ok) return rejectMutation(400, { error: checked.error });
+        s.subagent = checked.value;
         // A warm streaming process must relaunch to pick up CLAUDE_CODE_SUBAGENT_MODEL.
         if ((s.cli || 'claude') === 'claude') closeStream();
         const subApp2 = (s.cli === 'codex') ? 'codex' : 'claude';

@@ -2538,6 +2538,7 @@ require('./src/workspace/air-routes').mountAirRoutes(app, {
   providerName: sessionProviderName,
   effectiveModel: effectiveSessionModel,
   effectiveEffort: effectiveSessionEffort,
+  serializeSubagent,
 });
 
 const tuiChatMirrorRuntime = createTuiChatMirrorRuntime({ enabled: tuiChatMirrorEnabled(), records: persistedSessions, cwdForSession, providerFor, send: sendWs, setSessionStatus, saveBestEffort: source => savePersistedSessionsBestEffort(source), logger });
