@@ -27,7 +27,6 @@
   // air.js dispatches this on the form once a task has been created and the box
   // has been cleared. Folding back is the other half of 创建并执行.
   var CREATED = 'air:quick-task-created';
-  var HINT = '描述要完成的任务…';
 
   var bar = document.createElement('button');
   bar.id = 'quick-task-expand';
@@ -35,8 +34,17 @@
   bar.setAttribute('aria-controls', 'quick-task-input');
   var hint = document.createElement('span');
   hint.id = 'quick-task-expand-hint';
-  hint.textContent = HINT;
   bar.append(hint);
+
+  // The bar says what the box says. air.js rewrites the placeholder — the home
+  // page has one prompt and an open task has another — and repeats its first
+  // sentence here, minus the second sentence that only fits in the full box.
+  function refreshHint() {
+    var text = (input.placeholder || '').split(/[；;]/)[0].trim();
+    if (!text) return;
+    if (!/[.…]$/.test(text)) text += '…';
+    hint.textContent = text;
+  }
   // First child of the card: folded, this is the only thing left of it.
   form.insertBefore(bar, form.firstChild);
 
@@ -48,6 +56,7 @@
 
   function fold() {
     if (!PHONE.matches || folded() || written()) return;
+    refreshHint();
     form.classList.add('is-folded');
     bar.setAttribute('aria-expanded', 'false');
   }
@@ -78,9 +87,14 @@
   // A created task clears the box; there is nothing left to keep open.
   form.addEventListener(CREATED, fold);
 
+  // Opening a task rewrites the placeholder while the bar sits folded on the
+  // edge; the bar has to follow it there, not only on the next fold.
+  if (window.MutationObserver) new MutationObserver(refreshHint).observe(input, { attributes: true, attributeFilter: ['placeholder'] });
+
   function adopt() { if (PHONE.matches) fold(); else unfold(false); }
   window.addEventListener('resize', adopt);
   if (PHONE.addEventListener) PHONE.addEventListener('change', adopt);
 
+  refreshHint();
   adopt();
 })();
