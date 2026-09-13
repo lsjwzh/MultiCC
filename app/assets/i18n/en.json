@@ -1235,5 +1235,18 @@
   "chatWidthSavedLimited": "✓ Saved: chat capped at {n} px",
   "chatWidthSavedFull": "✓ Saved: chat fills the available space",
   "readOnlyHistory": "Read-only history",
-  "readOnlyHistoryHint": "Viewing the archived record: you can keep chatting, but messages and history cannot be deleted"
+  "readOnlyHistoryHint": "Viewing the archived record: you can keep chatting, but messages and history cannot be deleted",
+  "autoCommit": "Auto-commit",
+  "autoCommitOn": "Auto-commit✓",
+  "autoCommitOff": "Auto-commit✕",
+  "autoCommitTitle": "Auto commit & merge back to the base branch after each successful turn",
+  "autoCommitPerMsg": "Auto commit & merge when this turn succeeds",
+  "autoCommitPerMsgDone": "✓ Committed",
+  "autoCommitEnabled": "✓ Auto-commit on: each successful turn commits and merges back to the base branch",
+  "autoCommitDisabled": "Auto-commit off: this turn will not merge on completion",
+  "autoCommitMergeRunning": "🚀 Auto-committing (this turn asked for it)…",
+  "autoCommitMerged": "✓ Auto-commit done: {message}",
+  "autoCommitConflict": "⚠️ Auto-commit conflict: {files}",
+  "autoCommitFailed": "✗ Auto-commit failed: {error}",
+  "autoCommitPatchFailed": "Could not save the auto-commit switch: {error}"
 }

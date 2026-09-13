@@ -795,6 +795,13 @@ class Session {
   final String? type; // 'aux' for the special AuxQueue session
   final String? auxLabel;
 
+  /// 会话级「自动提交」（对齐 web 的 `#auto-commit-btn`）：每轮成功后若该轮
+  /// 的勾选仍为真、且工作树确实有事可合，就自动 merge 回基分支。
+  ///
+  /// 服务端缺省是「开」（`create-record.js` 里 `autoCommit !== false`），
+  /// 所以这里也把「字段缺失」当成 true，而不是 false。
+  final bool autoCommit;
+
   Session({
     required this.id,
     this.dirId,
@@ -821,6 +828,7 @@ class Session {
     this.lastActivity,
     this.type,
     this.auxLabel,
+    this.autoCommit = true,
   });
 
   factory Session.fromJson(Map<String, dynamic> json) {
@@ -858,6 +866,7 @@ class Session {
           : null,
       type: json['type']?.toString(),
       auxLabel: json['label']?.toString(),
+      autoCommit: json['autoCommit'] != false,
     );
   }
 
@@ -874,6 +883,7 @@ class Session {
     String? effort,
     String? provider,
     String? agent,
+    bool? autoCommit,
   }) {
     return Session(
       id: id,
@@ -901,6 +911,7 @@ class Session {
       lastActivity: lastActivity,
       type: type,
       auxLabel: label ?? this.label,
+      autoCommit: autoCommit ?? this.autoCommit,
     );
   }
 

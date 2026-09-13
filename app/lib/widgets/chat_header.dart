@@ -33,6 +33,12 @@ class ChatHeader extends StatelessWidget {
 
   /// 「聊天宽度」（Web 的 `#chat-layout-btn`）。
   final VoidCallback onChatWidth;
+
+  /// 会话级「自动提交」（Web 的 `#auto-commit-btn`）。那边是页头上一颗常驻
+  /// 按钮，App 的页头放不下，收进 ⋯ 菜单 —— 文案沿用 web 的 ✓/✕ 后缀。
+  final bool autoCommit;
+  final VoidCallback onAutoCommit;
+
   /// Working directory + worktree branch for the read-only info rows at the
   /// top of the ⋯ menu. The chat page used to burn a full-width cwd bar under
   /// the header for this; now it lives one tap away, next to the actions.
@@ -54,6 +60,8 @@ class ChatHeader extends StatelessWidget {
     required this.onForceSync,
     this.forceSyncing = false,
     required this.onChatWidth,
+    required this.autoCommit,
+    required this.onAutoCommit,
     required this.cwd,
     this.branch,
     this.behind = 0,
@@ -299,6 +307,8 @@ class ChatHeader extends StatelessWidget {
               onForceSync: onForceSync,
               forceSyncing: forceSyncing,
               onChatWidth: onChatWidth,
+              autoCommit: autoCommit,
+              onAutoCommit: onAutoCommit,
               onShare: onShare,
               onShareMessages: () => Navigator.push(
                 context,
@@ -780,6 +790,8 @@ class _HeaderOverflowMenu extends StatelessWidget {
   final VoidCallback onForceSync;
   final bool forceSyncing;
   final VoidCallback onChatWidth;
+  final bool autoCommit;
+  final VoidCallback onAutoCommit;
   const _HeaderOverflowMenu({
     required this.mergeReady,
     required this.cwd,
@@ -799,6 +811,8 @@ class _HeaderOverflowMenu extends StatelessWidget {
     required this.onForceSync,
     this.forceSyncing = false,
     required this.onChatWidth,
+    required this.autoCommit,
+    required this.onAutoCommit,
   });
 
   @override
@@ -833,6 +847,9 @@ class _HeaderOverflowMenu extends StatelessWidget {
             break;
           case 'chat-width':
             onChatWidth();
+            break;
+          case 'auto-commit':
+            onAutoCommit();
             break;
           case 'share':
             onShare();
@@ -884,6 +901,14 @@ class _HeaderOverflowMenu extends StatelessWidget {
           Icons.sticky_note_2_outlined,
           t('projectMemo'),
           const Color(0xFF233249),
+        ),
+        // 开关状态直接写在文案里（✓/✕），跟 web 的 `#auto-commit-btn` 一样 ——
+        // 这颗按钮旁边没有别的地方能表达「现在是开还是关」。
+        _item(
+          'auto-commit',
+          Icons.rocket_launch_outlined,
+          autoCommit ? t('autoCommitOn') : t('autoCommitOff'),
+          autoCommit ? const Color(0xFF2ba67a) : const Color(0xFF6f8096),
         ),
         _item(
           'share',
