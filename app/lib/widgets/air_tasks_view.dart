@@ -18,6 +18,7 @@ import '../services/settings_service.dart';
 import '../theme.dart';
 import 'air/air_console.dart';
 import 'air/air_destinations.dart';
+import 'air/air_fleet_sharing.dart';
 import 'air/air_new_task_dialog.dart';
 import 'air/air_ops.dart';
 import 'air/air_ops_store.dart';
@@ -430,6 +431,120 @@ class _AirTasksViewState extends State<AirTasksView>
     // 快照还没反映出这个新任务（服务端有延迟）也不算白建：留在当前目录，下一次
     // 轮询会把它列出来。
     if (task != null) await _open(task);
+  }
+
+  /// 目录卡片 ⋯ 菜单选了一件。四件事各自成一段 —— 它们从同一张菜单来，但
+  /// 只有「分享」是本机目录的，「刷新/移除/重新导入」是远端工作区的。
+  Future<void> _onDirectoryAction(
+    AirDirectory directory,
+    AirDirectoryAction action,
+  ) async {
+    switch (action) {
+      case AirDirectoryAction.share:
+        await _shareDirectory(directory);
+      case AirDirectoryAction.reimport:
+        await _reimportExternal(directory);
+      case AirDirectoryAction.refresh:
+        await _refreshExternal(directory);
+      case AirDirectoryAction.remove:
+        await _removeExternal(directory);
+    }
+  }
+
+  /// 「↗ 分享工作区」（Web `manage-dashboard.js:949` → `openFleetShareModal`）。
+  /// 对话框自己管签发、复制和撤销，这里只把外面的列表对齐一次。
+  Future<void> _shareDirectory(AirDirectory directory) async {
+    final issued = await showFleetShareDialog(
+      context,
+      directory: directory,
+      settings: widget.settings,
+      service: _service,
+    );
+    if (issued == true && mounted) await _refresh();
+  }
+
+  /// 「导入共享工作区」——把另一台 MultiCC 的工作区拉进来。
+  Future<void> _importExternal() async {
+    final fleet = await showFleetImportDialog(
+      context,
+      settings: widget.settings,
+      service: _service,
+    );
+    if (fleet == null || !mounted) return;
+    await _refresh();
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('已导入共享工作区「${fleet.name}」')));
+  }
+
+  Future<void> _reimportExternal(AirDirectory directory) async {
+    final existing = _data?.externalFleetOf(directory.id);
+    if (existing == null) return;
+    final fleet = await showFleetImportDialog(
+      context,
+      settings: widget.settings,
+      service: _service,
+      existing: existing,
+    );
+    if (fleet == null || !mounted) return;
+    await _refresh();
+    if (!mounted) return;
+    _snack('已刷新共享工作区「${fleet.name}」');
+  }
+
+  Future<void> _refreshExternal(AirDirectory directory) async {
+    try {
+      await _service.refreshExternalFleet(directory.id);
+      if (!mounted) return;
+      await _refresh();
+      if (!mounted) return;
+      _snack('已刷新「${directory.name}」的远端状态');
+    } catch (e) {
+      if (mounted) _snack('刷新失败：$e', danger: true);
+    }
+  }
+
+  Future<void> _removeExternal(AirDirectory directory) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.panel,
+        content: Text('移除共享工作区「${directory.name}」？远端那份工作区不会被删掉，只是从本机列表里摘出去。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            key: const ValueKey('air-external-remove-confirm'),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('移除', style: TextStyle(color: AppColors.danger)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      await _service.removeExternalFleet(directory.id);
+      if (!mounted) return;
+      // 被摘掉的正是当前打开的那个就把选中挪走 —— 留着会指着一条不存在的目录。
+      if (_directoryId == directory.id) _directoryId = null;
+      await _refresh();
+      if (!mounted) return;
+      _snack('已移除「${directory.name}」');
+    } catch (e) {
+      if (mounted) _snack('移除失败：$e', danger: true);
+    }
+  }
+
+  void _snack(String message, {bool danger = false}) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: danger ? AppColors.danger : null,
+      ),
+    );
   }
 
   Future<void> _addDirectory() async {
@@ -975,6 +1090,8 @@ class _AirTasksViewState extends State<AirTasksView>
                   setState(() => _mode = _AirMode.library);
                 case 'add-directory':
                   unawaited(_addDirectory());
+                case 'import-fleet':
+                  unawaited(_importExternal());
                 case 'board':
                   _openTaskBoard();
                 case 'schedules':
@@ -989,6 +1106,10 @@ class _AirTasksViewState extends State<AirTasksView>
               const PopupMenuItem(value: 'search', child: Text('搜索目录与任务')),
               const PopupMenuItem(value: 'library', child: Text('工作目录库')),
               const PopupMenuItem(value: 'add-directory', child: Text('添加工作目录')),
+              const PopupMenuItem(
+                value: 'import-fleet',
+                child: Text('导入共享工作区'),
+              ),
               const PopupMenuItem(value: 'board', child: Text('打开完整任务看板')),
               const PopupMenuItem(value: 'schedules', child: Text('定时任务')),
               const PopupMenuItem(value: 'refresh', child: Text('刷新')),
@@ -1024,6 +1145,8 @@ class _AirTasksViewState extends State<AirTasksView>
                     onToggleFavorite: (dirId) => unawaited(
                       _toggleFavorite(dirId),
                     ),
+                    onAction: (directory, action) =>
+                        unawaited(_onDirectoryAction(directory, action)),
                     // 第 1 步圈的就是这颗「添加」（Web 第 1 步的目标是「新建
                     // 目录」按钮，同一件事）。
                     addButtonKey: _tourLibraryKey,
