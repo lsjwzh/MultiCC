@@ -143,14 +143,15 @@ function installWsBackpressure(ws, {
       }
     }
     // Byte cap always applies (memory guard). Message-count cap applies only to
-    // the bounded live-send path. A frame larger than maxQueueBytes but within
-    // maxFrameBytes is allowed through with a widened queue ceiling — the queue
-    // stays bounded at maxQueueBytes + maxFrameBytes per connection, and the
-    // congestion timer below remains the guard for a client too slow to drain
-    // such a frame.
-    const queueCeiling = bytes > cfg.maxQueueBytes
-      ? cfg.maxQueueBytes + cfg.maxFrameBytes
-      : cfg.maxQueueBytes;
+    // the bounded live-send path. The queue ceiling is widened by maxFrameBytes
+    // so an allowed oversize frame still sitting in the queue (its send
+    // completion callback cannot fire during a synchronous burst like the
+    // connect replay) does not make every subsequent normal frame trip the
+    // accumulation check — that re-created the 1013 reconnect death-loop one
+    // frame later. Queue memory stays bounded at maxQueueBytes + maxFrameBytes
+    // per connection, and the congestion timer below remains the guard for a
+    // client too slow to drain such a frame.
+    const queueCeiling = cfg.maxQueueBytes + cfg.maxFrameBytes;
     const overByteCap = bytes > cfg.maxFrameBytes || queueBytes + bytes > queueCeiling;
     const overMsgCap = bounded && queue.length >= cfg.maxQueueMessages;
     if (overByteCap || overMsgCap) {
