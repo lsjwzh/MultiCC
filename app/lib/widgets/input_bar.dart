@@ -18,6 +18,8 @@ import '../services/voice_launch_service.dart';
 import '../utils/dispatch_hint.dart';
 import 'chat_runtime_panels.dart';
 import 'dispatch_mode_selector.dart';
+import 'scheduled_send_dock.dart';
+import 'scheduled_send_store.dart';
 
 // Goal precheck dimension keys → short chip labels (web/app kept in sync).
 Map<String, String> get _goalDimShort => {
@@ -36,11 +38,20 @@ class InputBar extends StatefulWidget {
   final TextEditingController? controller;
   final FocusNode? focusNode;
 
+  /// 定时发送。传了才画 ⏱（和它的待执行角标）；不传的老调用点一行没变。
+  final ScheduledSendStore? scheduledSend;
+
+  /// 宿主在这里接走「怎么读当前草稿」：定时消息的悬浮球展开时也要能读到输入
+  /// 框里已经写好的那句话，而草稿（正文 + 附件）归这里所有。
+  final ValueNotifier<ScheduledSendDraftReader?>? draftSink;
+
   const InputBar({
     super.key,
     this.onPickSubagent,
     this.controller,
     this.focusNode,
+    this.scheduledSend,
+    this.draftSink,
   });
 
   @override
@@ -73,6 +84,7 @@ class _InputBarState extends State<InputBar> {
   @override
   void initState() {
     super.initState();
+    widget.draftSink?.value = _scheduleDraft;
     _focusNode.addListener(_onFocusChanged);
     _ctrl.addListener(() {
       final has = _ctrl.text.trim().isNotEmpty;
@@ -612,6 +624,46 @@ class _InputBarState extends State<InputBar> {
       _attachments.clear();
     });
   }
+
+  /// 排定时消息时交给面板的那份草稿。
+  ///
+  /// 拼装规则与 [_send] 逐条一致（正文 + 附件路径 + 派发装饰），否则「定时发」
+  /// 和「立刻发」发出去的不是同一句话。清空也照 [_send] 的收尾来 —— 草稿归
+  /// 输入框所有，所以面板成功之后回头调这里把框清干净。
+  ///
+  /// commander 现算而不接 build 的局部变量：这个闭包也交给宿主拿着，会活到
+  /// 下一次会话切换之后，冻住的值就错了。
+  ScheduledSendDraft _scheduleDraft() {
+    final provider = context.read<ChatProvider>();
+    final smgr = context.read<SessionManager>();
+    Session? active;
+    for (final session in smgr.sessions) {
+      if (session.id == provider.sessionName) {
+        active = session;
+        break;
+      }
+    }
+    final commander = isCommanderSessionType(active?.type);
+    return _scheduleDraftFor(commander);
+  }
+
+  ScheduledSendDraft _scheduleDraftFor(bool commander) => ScheduledSendDraft(
+    text: _ctrl.text,
+    attachmentPaths: [
+      for (final attachment in _attachments)
+        if (attachment['path'] != null) attachment['path']!,
+    ],
+    decorate: (text) =>
+        decorateDispatchHint(text, enabled: commander, mode: _dispatchMode),
+    clearAfterSchedule: () {
+      _ctrl.clear();
+      if (!mounted) return;
+      setState(() {
+        _hasText = false;
+        _attachments.clear();
+      });
+    },
+  );
 
   Future<bool> _confirmQueueChange(String action) async {
     if (!const {
@@ -1483,6 +1535,21 @@ class _InputBarState extends State<InputBar> {
                   ),
                 ),
                 const SizedBox(width: 6),
+
+                // 定时发送（Web 的 #schedule-send-btn）：常驻在发送键左侧，
+                // 有待执行的消息时右上角挂一个条数角标。
+                if (widget.scheduledSend != null) ...[
+                  ScheduledSendButton(
+                    store: widget.scheduledSend!,
+                    onDraft: _scheduleDraft,
+                    onTap: () => openScheduledSendSheet(
+                      context,
+                      widget.scheduledSend!,
+                      onDraft: _scheduleDraft,
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                ],
 
                 // Keep both actions available while streaming: Send stages the
                 // message durably; Stop remains an explicit cancellation.

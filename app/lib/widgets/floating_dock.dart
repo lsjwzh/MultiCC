@@ -89,6 +89,12 @@ class FloatingDock extends StatefulWidget {
   /// Higher-priority dock to yield to on the same side (see class docs).
   final FloatingDockAnchor? obstacle;
 
+  /// The rest of the same-side peers to yield to, for the case where more than
+  /// two docks share an edge (派发 / 后台任务 / 定时发送). [obstacle] stays the
+  /// primary one; these are checked with it, and a single pass may land on a
+  /// neighbour — which is why the yield below repeats until it stops moving.
+  final List<FloatingDockAnchor> extraObstacles;
+
   final ValueChanged<bool>? onExpandedChanged;
 
   /// Reports this dock's settled/clamped anchor (side + icon top px) so a
@@ -117,6 +123,7 @@ class FloatingDock extends StatefulWidget {
     this.rightMinBottom = 96,
     this.topMin = 10,
     this.obstacle,
+    this.extraObstacles = const <FloatingDockAnchor>[],
     this.onExpandedChanged,
     this.onAnchorChanged,
     this.iconKey = const Key('floating-dock-icon'),
@@ -206,20 +213,39 @@ class _FloatingDockState extends State<FloatingDock> {
     widget.onExpandedChanged?.call(false);
   }
 
-  /// Deterministic same-side yield: never overlap [FloatingDockAnchor.obstacle].
-  /// Prefers the slot above the obstacle; falls to below when above does not
+  /// Deterministic same-side yield: never overlap a higher-priority dock.
+  /// Prefers the slot above an obstacle; falls to below when above does not
   /// fit. Returns the adjusted icon top.
+  ///
+  /// With more than one obstacle a single pass can push the icon onto the next
+  /// neighbour, so the pass repeats until nothing moves (bounded: each pass
+  /// either settles or runs out of room, and obstacles are few).
   double _yieldToObstacle(double top, double bandBottom) {
-    final obstacle = widget.obstacle;
-    if (obstacle == null || obstacle.sideRight != _sideRight) return top;
-    final oTop = obstacle.top;
-    if (top > oTop - _hitSize - _obstacleGap && top < oTop + _hitSize + _obstacleGap) {
-      final above = oTop - _hitSize - _obstacleGap;
-      if (above >= widget.topMin) return above;
-      final below = oTop + _hitSize + _obstacleGap;
-      if (below <= bandBottom) return below;
+    final obstacles = <FloatingDockAnchor>[
+      if (widget.obstacle != null) widget.obstacle!,
+      ...widget.extraObstacles,
+    ].where((anchor) => anchor.sideRight == _sideRight).toList();
+    if (obstacles.isEmpty) return top;
+    var result = top;
+    for (var pass = 0; pass < obstacles.length + 1; pass++) {
+      var moved = false;
+      for (final anchor in obstacles) {
+        final oTop = anchor.top;
+        if (result > oTop - _hitSize - _obstacleGap &&
+            result < oTop + _hitSize + _obstacleGap) {
+          final above = oTop - _hitSize - _obstacleGap;
+          if (above >= widget.topMin) {
+            result = above;
+          } else {
+            final below = oTop + _hitSize + _obstacleGap;
+            if (below <= bandBottom) result = below;
+          }
+          moved = true;
+        }
+      }
+      if (!moved) break;
     }
-    return top;
+    return result;
   }
 
   @override
