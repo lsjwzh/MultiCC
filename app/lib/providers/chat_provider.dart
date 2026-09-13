@@ -193,6 +193,25 @@ StagedVerdict resolveStagedQueueEvent(
   }
 }
 
+/// 用户气泡的插入位：永远在「正在流式输出的助手气泡」之前，而不是列表末尾。
+///
+/// 暂存的 commit 时机（FIFO 裁决、4s 断连兜底、admission 进度回填）都可能
+/// 晚于 message_start——那时 ensureAssistantMsg 已把正在回答这条消息的助手
+/// 气泡 append 到了列表尾。盲目 add 会把用户消息画到它的回答下面（前端
+/// 「助手消息在用户消息上面」的根因）。无流式尾巴或尾巴不在列表里（防御）
+/// 时照常 append。
+@visibleForTesting
+int userBubbleInsertIndex(
+  List<ChatMessage> messages,
+  ChatMessage? streamingTail,
+) {
+  if (streamingTail != null) {
+    final idx = messages.lastIndexOf(streamingTail);
+    if (idx >= 0) return idx;
+  }
+  return messages.length;
+}
+
 /// 纯裁决器：queue-action 的 HTTP 响应 schedule 能否覆盖当前（WS 驱动的）队列
 /// 状态。规则是本地因果序而非时间戳——服务器先广播 WS 事件、后写 HTTP 响应，
 /// 所以「请求期间有 session_queue 事件到达」⇒ 该事件至少与响应同源同新，响应
@@ -1475,7 +1494,10 @@ class ChatProvider extends ChangeNotifier {
               !_messages.any((message) => message.clientMsgId == clientMsgId)) {
             final committed = _stagedTracker.commitByClientMsgId(clientMsgId);
             if (!committed && text.isNotEmpty) {
-              _messages.add(
+              // 回填可能晚于 message_start：插到流式助手气泡之前，别让用户
+              // 消息落到它自己的回答下面。
+              _messages.insert(
+                userBubbleInsertIndex(_messages, _folder.currentMsg),
                 ChatMessage(
                   role: MessageRole.user,
                   content: text,
@@ -2796,7 +2818,11 @@ class ChatProvider extends ChangeNotifier {
 
   /// StagedSendTracker.onCommit 的落点：把一条暂存消息画成对话区用户气泡。
   void _commitStagedBubble(StagedUserSend staged) {
-    _messages.add(
+    // FIFO 裁决 / 4s 兜底可能晚于 message_start（queued:false 帧丢失、断连
+    // 重连后靠兜底补画），此时流式助手气泡已在列表尾——插到它之前，保证
+    // 用户问题永远画在它的回答上面。
+    _messages.insert(
+      userBubbleInsertIndex(_messages, _folder.currentMsg),
       ChatMessage(
         role: MessageRole.user,
         content: staged.text,
