@@ -1039,14 +1039,21 @@ class _DispatchRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final incoming = entry.relation == 'target';
     final rawName = entry.counterpartId;
+    // 名字三级回落，与 web 的 displayName() 一字对齐：注册表里查到的名字优先；
+    // 查不到（任务板专属 worker 不在 /api/sessions 里，resolveName 只会把 id 原样
+    // 还回来）就用投影随身带的 targetLabel；都没有才显示裸 id。
+    final resolved = rawName.isEmpty ? '' : resolveName(rawName);
+    final projected = rawName.isNotEmpty && rawName == entry.targetSessionId
+        ? (entry.targetLabel ?? '')
+        : '';
     final name = rawName.isEmpty
         ? t('dispatchUnknownSession')
-        : resolveName(rawName);
+        : (resolved == rawName && projected.isNotEmpty ? projected : resolved);
     final dirText = incoming
         ? t('dispatchDirIn', {'name': name})
         : t('dispatchDirOut', {'name': name});
     final navigationId = entry.navigationSessionId;
-    return InkWell(
+    final row = InkWell(
       key: Key('dispatch-row-${entry.operationId}'),
       onTap: navigationId.isEmpty || onOpenSession == null
           ? null
@@ -1088,6 +1095,18 @@ class _DispatchRow extends StatelessWidget {
           ],
         ),
       ),
+    );
+    // 任务绑定对端的悬停提示：解释这个 worker 为什么不在会话列表里、它属于哪个
+    // 任务（web 的 dispatchTaskBoundHint）。只在真的点开的是那个目标会话时才给。
+    final boundTask = entry.targetTaskBoundTaskId ?? '';
+    if (boundTask.isEmpty ||
+        navigationId.isEmpty ||
+        navigationId != entry.targetSessionId) {
+      return row;
+    }
+    return Tooltip(
+      message: t('dispatchTaskBoundHint', {'task': boundTask}),
+      child: row,
     );
   }
 }
