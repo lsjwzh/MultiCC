@@ -14,6 +14,14 @@ const DEFAULTS = Object.freeze({
   maxQueueMessages: 4096,
   maxCongestionMs: 15_000,
   retryMs: 25,
+  // Hard ceiling for a SINGLE frame. A product-legitimate frame can exceed
+  // maxQueueBytes: the connect replay's chat_history carries the newest page
+  // whole, and one assistant message's tool footers alone can be >1MB.
+  // Rejecting such a frame outright closed the socket with 1013 before the
+  // client could do anything — and since the same frame is re-sent on every
+  // reconnect, that was an instant reconnect→overflow→1013 death-loop on
+  // sessions whose newest page serialized past the queue cap.
+  maxFrameBytes: 8 * 1024 * 1024,
 });
 
 const COALESCE_TYPES = new Set([
@@ -135,8 +143,15 @@ function installWsBackpressure(ws, {
       }
     }
     // Byte cap always applies (memory guard). Message-count cap applies only to
-    // the bounded live-send path.
-    const overByteCap = bytes > cfg.maxQueueBytes || queueBytes + bytes > cfg.maxQueueBytes;
+    // the bounded live-send path. A frame larger than maxQueueBytes but within
+    // maxFrameBytes is allowed through with a widened queue ceiling — the queue
+    // stays bounded at maxQueueBytes + maxFrameBytes per connection, and the
+    // congestion timer below remains the guard for a client too slow to drain
+    // such a frame.
+    const queueCeiling = bytes > cfg.maxQueueBytes
+      ? cfg.maxQueueBytes + cfg.maxFrameBytes
+      : cfg.maxQueueBytes;
+    const overByteCap = bytes > cfg.maxFrameBytes || queueBytes + bytes > queueCeiling;
     const overMsgCap = bounded && queue.length >= cfg.maxQueueMessages;
     if (overByteCap || overMsgCap) {
       metric('multicc_ws_queue_overflows_total');
