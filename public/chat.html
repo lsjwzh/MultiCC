@@ -1788,7 +1788,6 @@
       /* 这里是 padding 简写，会盖掉上面 ≤760px 那条的 padding-top；所以顶上那点
          间距在这儿再写一遍，别让窄屏又变回 5px。 */
       #pre-input-bar { flex-wrap: wrap; gap: 6px; padding: 2px 10px 5px; }
-      #subagent-pill { margin-left: 0 !important; }
     .lv-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; vertical-align:middle; }
     .lv-working { background:var(--chat-success, #3fb950); box-shadow:0 0 4px var(--chat-success, #3fb950); animation:lv-pulse 1.4s ease-in-out infinite; }
     .lv-idle { background:var(--chat-muted, #8b949e); }
@@ -2691,7 +2690,6 @@
   </section>
 
   <div id="pre-input-bar">
-    <button id="subagent-pill" type="button" title="子任务 (subagent) 用的 provider+model，点击修改" style="margin-left:10px;font-size:12px;color:var(--chat-muted, #8b949e);background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:999px;padding:3px 10px;cursor:pointer;">子任务: <span id="subagent-pill-label">随主</span></button>
     <!-- Commander only: shown once /api/sessions/:id reports type==='commander'.
          Four-way, mutually exclusive dropdown; each choice appends its own
          English dispatch instruction (see chat-dispatch-hint.js). -->

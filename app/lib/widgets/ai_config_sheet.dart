@@ -139,14 +139,14 @@ class AIConfigSheetState extends State<AIConfigSheet> {
     _customCtrl = TextEditingController(text: _customModel ? _model : '');
     _seedAutoSelection(widget.providerSelection);
     _agentCtrl = TextEditingController(text: widget.agent ?? '');
-    // Sub-task seeding.
+    // Sub-task seeding. 线路留空 = 随主，所以别名折算和候选判定都按生效线路来 ——
+    // 用空串去查会落回默认模型表，存的是 glm-5.2 也会被当成自定义 ID。
     _subProvider = widget.subProviderId ?? '';
-    _subModel = _normalizeModel(_subProvider, widget.subModel ?? '');
+    _subModel = _normalizeModel(_subEffectiveProvider, widget.subModel ?? '');
     final subKnown =
-        _subProvider.isNotEmpty &&
-        _modelChoices(_subProvider).contains(_subModel);
-    _customSubModel =
-        _subProvider.isNotEmpty && _subModel.isNotEmpty && !subKnown;
+        _subModel.isNotEmpty &&
+        _modelChoices(_subEffectiveProvider).contains(_subModel);
+    _customSubModel = _subModel.isNotEmpty && !subKnown;
     _subCustomCtrl = TextEditingController(
       text: _customSubModel ? _subModel : '',
     );
@@ -467,6 +467,8 @@ class AIConfigSheetState extends State<AIConfigSheet> {
         _model = '';
         _customModel = false;
         _customCtrl.clear();
+        // 随主的子任务线路跟着换了线，模型候选也换了一批。
+        _dropStaleSubModel();
       });
       return;
     }
@@ -486,20 +488,28 @@ class AIConfigSheetState extends State<AIConfigSheet> {
         _customModel = false;
         _customCtrl.clear();
       }
+      _dropStaleSubModel();
     });
   }
 
   void _onSubProviderChanged(String? value) {
-    final next = value ?? '';
-    final choices = _modelChoices(next);
     setState(() {
-      _subProvider = next;
-      if (!choices.contains(_subModel)) {
-        _subModel = '';
-        _customSubModel = false;
-        _subCustomCtrl.clear();
-      }
+      _subProvider = value ?? '';
+      _dropStaleSubModel();
     });
+  }
+
+  /// 子任务的生效线路：线路留空 = 随主（用主 Provider，Auto 档下就是排第一的候选）。
+  String get _subEffectiveProvider =>
+      _subProvider.isEmpty ? _provider : _subProvider;
+
+  /// 线路变了就把不再合法的模型选择丢掉。留着的话下拉显示的是「不设置」，
+  /// 提交上去却是上一个线路的模型 —— 两边说的不是一回事。
+  void _dropStaleSubModel() {
+    if (_customSubModel) return;
+    if (_modelChoices(_subEffectiveProvider).contains(_subModel)) return;
+    _subModel = '';
+    _subCustomCtrl.clear();
   }
 
   void _submit() {
@@ -534,12 +544,13 @@ class AIConfigSheetState extends State<AIConfigSheet> {
         allowCrossTrust: _autoAllowsCrossTrust,
       );
     }
-    final subModel = _subProvider.isEmpty
+    // 子任务：模型有值才算数（只选线路不选模型 = 没设）。线路留空时用这一轮
+    // 实际生效的主 Provider —— Auto 档下就是排第一的那个启用候选。
+    final subProvider = _subProvider.isEmpty ? provider : _subProvider;
+    final subModel = _customSubModel ? _subCustomCtrl.text.trim() : _subModel;
+    final subagent = subModel.isEmpty
         ? null
-        : (_customSubModel ? _subCustomCtrl.text.trim() : _subModel);
-    final subagent = (subModel != null && subModel.isNotEmpty)
-        ? SessionSubagent(providerId: _subProvider, model: subModel)
-        : null;
+        : SessionSubagent(providerId: subProvider, model: subModel);
     Navigator.pop(
       context,
       AIConfigResult(
@@ -737,13 +748,14 @@ class AIConfigSheetState extends State<AIConfigSheet> {
     final modelValue = _customModel
         ? '__custom__'
         : (modelChoices.contains(_model) ? _model : '');
-    // Sub-task (subagent) cascade state for the view.
-    final subModelChoices = _modelChoices(_subProvider);
+    // Sub-task (subagent) tail: 线路 + 模型 的候选都跟着生效线路走 —— 线路留空
+    // 就是「随主」，此时模型候选与主 Model 完全同源。
+    final subModelChoices = _modelChoices(_subEffectiveProvider)
+        .where((m) => m.isNotEmpty)
+        .toList();
     final subModelValue = _customSubModel
         ? '__custom__'
-        : (subModelChoices.contains(_subModel)
-              ? _subModel
-              : (subModelChoices.isNotEmpty ? subModelChoices.first : ''));
+        : (subModelChoices.contains(_subModel) ? _subModel : '');
     return SafeArea(
       child: SingleChildScrollView(
         padding: EdgeInsets.only(
@@ -886,6 +898,107 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                 ),
               ],
             ],
+            if (widget.cli.supportsSubagent) ...[
+              const SizedBox(height: 10),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  const Text(
+                    '子任务',
+                    style: TextStyle(
+                      color: AppColors.text,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: DropdownButtonFormField<String>(
+                      key: const Key('subagent-provider'),
+                      value: _subProvider,
+                      isExpanded: true,
+                      dropdownColor: AppColors.panel,
+                      decoration: _sheetInputDecoration(),
+                      style: const TextStyle(
+                        color: AppColors.text,
+                        fontSize: 13,
+                      ),
+                      items: [
+                        const DropdownMenuItem(value: '', child: Text('随主')),
+                        ...widget.providers
+                            .where(
+                              (p) => !(_isCodex && p['isOfficial'] == true),
+                            )
+                            .map(
+                              (p) => DropdownMenuItem(
+                                value: p['id']?.toString() ?? '',
+                                child: ProviderOption(
+                                  main:
+                                      '${p['name'] ?? p['id']}${p['model'] != null && p['model'].toString().isNotEmpty ? ' · ${p['model']}' : ''}',
+                                  detail: providerLimitDetail(p),
+                                ),
+                              ),
+                            ),
+                      ],
+                      onChanged: _onSubProviderChanged,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: DropdownButtonFormField<String>(
+                      key: const Key('subagent-model'),
+                      value: subModelValue,
+                      isExpanded: true,
+                      dropdownColor: AppColors.panel,
+                      decoration: _sheetInputDecoration(),
+                      style: const TextStyle(
+                        color: AppColors.text,
+                        fontSize: 13,
+                      ),
+                      items: [
+                        const DropdownMenuItem(
+                          value: '',
+                          child: Text('不设置'),
+                        ),
+                        ...subModelChoices.map(
+                          (m) => DropdownMenuItem(
+                            value: m,
+                            child: Text(
+                              _modelOptionLabel(_subEffectiveProvider, m),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ),
+                        const DropdownMenuItem(
+                          value: '__custom__',
+                          child: Text('自定义…'),
+                        ),
+                      ],
+                      onChanged: (v) {
+                        setState(() {
+                          _customSubModel = v == '__custom__';
+                          if (!_customSubModel) _subModel = v ?? '';
+                        });
+                      },
+                    ),
+                  ),
+                ],
+              ),
+              if (_customSubModel) ...[
+                const SizedBox(height: 6),
+                TextField(
+                  controller: _subCustomCtrl,
+                  autofocus: true,
+                  style: const TextStyle(
+                    color: AppColors.text,
+                    fontSize: 13,
+                    fontFamily: 'monospace',
+                  ),
+                  decoration: _sheetInputDecoration(hint: '模型 ID'),
+                ),
+              ],
+            ],
             if (widget.cli.supportsEffort) ...[
               const SizedBox(height: 12),
               Text(
@@ -935,103 +1048,6 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                       : '已定义的 agent 名称；留空使用默认 agent',
                 ).copyWith(counterText: ''),
               ),
-            ],
-            if (widget.cli.supportsSubagent) ...[
-              const Divider(height: 32),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: [
-                  const Text(
-                    '子任务 (subagent)',
-                    style: TextStyle(
-                      color: AppColors.text,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      '派生子 agent 使用独立的 provider+model，留空 = 随主（经本地协议代理路由）',
-                      style: TextStyle(color: AppColors.faint, fontSize: 11),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 10),
-              const Text(
-                '子任务 Provider',
-                style: TextStyle(color: AppColors.faint, fontSize: 12),
-              ),
-              const SizedBox(height: 5),
-              DropdownButtonFormField<String>(
-                value: _subProvider,
-                isExpanded: true,
-                dropdownColor: AppColors.panel,
-                decoration: _sheetInputDecoration(),
-                style: const TextStyle(color: AppColors.text, fontSize: 13),
-                items: [
-                  const DropdownMenuItem(value: '', child: Text('默认（随主）')),
-                  ...widget.providers
-                      .where((p) => !(_isCodex && p['isOfficial'] == true))
-                      .map(
-                        (p) => DropdownMenuItem(
-                          value: p['id']?.toString() ?? '',
-                          child: ProviderOption(
-                            main:
-                                '${p['name'] ?? p['id']}${p['model'] != null && p['model'].toString().isNotEmpty ? ' · ${p['model']}' : ''}',
-                            detail: providerLimitDetail(p),
-                          ),
-                        ),
-                      ),
-                ],
-                onChanged: _onSubProviderChanged,
-              ),
-              if (_subProvider.isNotEmpty) ...[
-                const SizedBox(height: 12),
-                const Text(
-                  '子任务 Model',
-                  style: TextStyle(color: AppColors.faint, fontSize: 12),
-                ),
-                const SizedBox(height: 5),
-                DropdownButtonFormField<String>(
-                  value: subModelValue,
-                  dropdownColor: AppColors.panel,
-                  decoration: _sheetInputDecoration(),
-                  style: const TextStyle(color: AppColors.text, fontSize: 13),
-                  items: [
-                    ...subModelChoices.map(
-                      (m) => DropdownMenuItem(
-                        value: m,
-                        child: Text(_modelOptionLabel(_subProvider, m)),
-                      ),
-                    ),
-                    const DropdownMenuItem(
-                      value: '__custom__',
-                      child: Text('自定义…'),
-                    ),
-                  ],
-                  onChanged: (v) {
-                    setState(() {
-                      _customSubModel = v == '__custom__';
-                      if (!_customSubModel) _subModel = v ?? '';
-                    });
-                  },
-                ),
-                if (_customSubModel) ...[
-                  const SizedBox(height: 8),
-                  TextField(
-                    controller: _subCustomCtrl,
-                    autofocus: true,
-                    style: const TextStyle(
-                      color: AppColors.text,
-                      fontSize: 13,
-                      fontFamily: 'monospace',
-                    ),
-                    decoration: _sheetInputDecoration(hint: '模型 ID'),
-                  ),
-                ],
-              ],
             ],
             const SizedBox(height: 16),
             Row(
