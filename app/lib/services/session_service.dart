@@ -245,6 +245,33 @@ class SessionService {
     return map;
   }
 
+  /// 原生上下文的水位（web 的 `showContextLevel` →
+  /// `GET /api/sessions/:id/context-level?plan=1`）。
+  ///
+  /// `?plan=1` 会额外跑一次强制的 dry-run 整理，代价是 O(文件大小)，所以只有
+  /// 用户主动点「查看上下文水位」时才带 —— 这是个只读接口，不会改写转录。
+  /// 服务端返回的字段原样带回，翻译成人话交给调用方（两端的措辞要一致）。
+  Future<Map<String, dynamic>> fetchContextLevel(
+    String id, {
+    bool plan = true,
+  }) async {
+    final res = await http
+        .get(
+          Uri.parse(
+            _url('/api/sessions/$id/context-level${plan ? '?plan=1' : ''}'),
+          ),
+          headers: _headers,
+        )
+        .timeout(const Duration(seconds: 30));
+    final body = jsonDecode(res.body);
+    final map = body is Map<String, dynamic> ? body : <String, dynamic>{};
+    if (res.statusCode >= 400) {
+      map['ok'] = false;
+      map['error'] ??= '${res.statusCode}';
+    }
+    return map;
+  }
+
   /// Sync: pull the base branch INTO this session's worktree (catch a stale
   /// worktree up to main). Inverse of mergeSession. On conflict (409) the
   /// result map contains `ok: false` and a `conflicts` list.
