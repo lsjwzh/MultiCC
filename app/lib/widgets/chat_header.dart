@@ -40,6 +40,15 @@ class ChatHeader extends StatelessWidget {
   final bool autoCommit;
   final VoidCallback onAutoCommit;
 
+  /// 「调试面板」（Web 页头那颗 `#dbg-btn`）。
+  final VoidCallback onDebug;
+
+  /// 「产物」入口（Web 的 `#task-artifacts-toggle`）。null = 这个会话还没有
+  /// 任务壳，压根不显示入口 —— web 没有 scope 时连按钮都不建。拉到列表之后
+  /// 文案带上条数（`产物 2`），跟 web 的 `toggle.textContent` 一致。
+  final String? artifactsLabel;
+  final VoidCallback onArtifacts;
+
   /// Working directory + worktree branch for the read-only info rows at the
   /// top of the ⋯ menu. The chat page used to burn a full-width cwd bar under
   /// the header for this; now it lives one tap away, next to the actions.
@@ -63,6 +72,9 @@ class ChatHeader extends StatelessWidget {
     required this.onChatWidth,
     required this.autoCommit,
     required this.onAutoCommit,
+    required this.onDebug,
+    this.artifactsLabel,
+    required this.onArtifacts,
     required this.cwd,
     this.branch,
     this.behind = 0,
@@ -310,6 +322,9 @@ class ChatHeader extends StatelessWidget {
               onChatWidth: onChatWidth,
               autoCommit: autoCommit,
               onAutoCommit: onAutoCommit,
+              onDebug: onDebug,
+              artifactsLabel: artifactsLabel,
+              onArtifacts: onArtifacts,
               onShare: onShare,
               onShareMessages: () => Navigator.push(
                 context,
@@ -870,6 +885,9 @@ class _HeaderOverflowMenu extends StatelessWidget {
   final VoidCallback onChatWidth;
   final bool autoCommit;
   final VoidCallback onAutoCommit;
+  final VoidCallback onDebug;
+  final String? artifactsLabel;
+  final VoidCallback onArtifacts;
   const _HeaderOverflowMenu({
     required this.mergeReady,
     required this.cwd,
@@ -891,6 +909,9 @@ class _HeaderOverflowMenu extends StatelessWidget {
     required this.onChatWidth,
     required this.autoCommit,
     required this.onAutoCommit,
+    required this.onDebug,
+    this.artifactsLabel,
+    required this.onArtifacts,
   });
 
   @override
@@ -928,6 +949,12 @@ class _HeaderOverflowMenu extends StatelessWidget {
             break;
           case 'auto-commit':
             onAutoCommit();
+            break;
+          case 'debug':
+            onDebug();
+            break;
+          case 'artifacts':
+            onArtifacts();
             break;
           case 'share':
             onShare();
@@ -1049,6 +1076,21 @@ class _HeaderOverflowMenu extends StatelessWidget {
           t('settings'),
           const Color(0xFF233249),
         ),
+        // 诊断工具，排在最后：平时不点，出问题时才翻到这里。
+        _item(
+          'debug',
+          Icons.bug_report_outlined,
+          t('debugPanel'),
+          const Color(0xFF6f8096),
+        ),
+        // 产物只在「有任务壳」时才有位置可指 —— 没有的会话干脆不显示这一行。
+        if (artifactsLabel != null)
+          _item(
+            'artifacts',
+            Icons.inventory_2_outlined,
+            artifactsLabel!,
+            const Color(0xFF233249),
+          ),
       ],
       child: Container(
         padding: const EdgeInsets.all(6),
