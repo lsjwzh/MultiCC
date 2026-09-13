@@ -6,6 +6,7 @@ import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:multicc_app/services/settings_service.dart';
 import 'package:multicc_app/widgets/air_tasks_view.dart';
+import 'package:multicc_app/widgets/workspace_navigation_drawer.dart';
 
 /// 一份两目录两任务的快照：d1 里有一条未完成的、一条归档的，d2 空着。
 /// `/api/air/tasks/:id` 是另一套形状（多了 attribution / execution），单独给。
@@ -122,6 +123,60 @@ void main() {
     // 最近打开过的任务优先：这次会话没打开过任何任务，补位的是当前目录里
     // 最近更新过的那条。
     expect(find.byKey(const ValueKey('air-side-task-t1')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  testWidgets('侧栏的「全部功能」能进到老抽屉里那些页面，语音通话按宿主决定', (tester) async {
+    final settings = await _settings();
+    final client = _client(<String>[]);
+    final opened = <WorkspaceDestination>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AirTasksView(
+          settings: settings,
+          httpClient: client,
+          onOpenDestination: opened.add,
+          onOpenVoiceCall: () {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('air-menu-button')));
+    await tester.pumpAndSettle();
+    // 展开「更多与系统」，原生独占的语音通话就摆在这里。
+    await tester.tap(find.byKey(const ValueKey('air-more-section')));
+    await tester.pumpAndSettle();
+    expect(find.text('全部功能'), findsOneWidget);
+    expect(find.text('语音通话 · BETA'), findsOneWidget);
+
+    await tester.tap(find.text('全部功能'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('air-all-destinations')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('air-dest-push')));
+    await tester.pumpAndSettle();
+    expect(opened, [WorkspaceDestination.push]);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  testWidgets('宿主不给语音入口时，侧栏就不出现这一行', (tester) async {
+    final settings = await _settings();
+    final client = _client(<String>[]);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AirTasksView(settings: settings, httpClient: client),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('air-menu-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('air-more-section')));
+    await tester.pumpAndSettle();
+    expect(find.text('全部功能'), findsOneWidget);
+    expect(find.text('语音通话 · BETA'), findsNothing);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     client.close();

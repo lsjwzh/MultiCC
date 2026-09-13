@@ -535,6 +535,9 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
       return AirTasksView(
         settings: widget.settings,
         onOpenDestination: _openNavigationDestination,
+        // 语音通话是原生独占的（麦克风要 HTTPS），老首页那一版入口随整块首页
+        // 一起下线了，这里把它接回 Air 侧栏。
+        onOpenVoiceCall: _openGlobalVoice,
       );
     }
     final mgr = context.watch<SessionManager>();
