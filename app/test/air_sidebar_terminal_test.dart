@@ -53,12 +53,10 @@ void main() {
           drawer: AirSidebar(
             data: data,
             directoryId: directoryId,
-            favorites: const [],
             recentTasks: const [],
             advancedMode: false,
             serverLabel: 'localhost:3000',
             onSelectDirectory: (_) {},
-            onToggleFavorite: () {},
             onOpenLibrary: () {},
             onOpenSearch: () {},
             onOpenConsole: () {},
@@ -114,6 +112,18 @@ void main() {
     final opened = await pumpAndOpenTerminal(tester, directoryId: 'd3');
     expect(find.text('本目录暂无终端会话'), findsOneWidget);
     expect(opened, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('侧栏不再有「收藏目录」那一组', (tester) async {
+    await pumpAndOpenTerminal(tester);
+
+    // 工作目录本来就不会很多，一组随时可能空的快捷方式（外加「当前目录」卡上那
+    // 颗星）都是白占位置。收藏的读写留着（`AirLocalStore`），界面上不再有它 ——
+    // 这条盯的是界面，防止哪天照着 Web 的 `#favorites` 又加回来。
+    expect(find.text('收藏目录'), findsNothing);
+    expect(find.byKey(const ValueKey('air-favorite-d1')), findsNothing);
+    expect(find.byKey(const ValueKey('air-favorite-toggle')), findsNothing);
     expect(tester.takeException(), isNull);
   });
 }
