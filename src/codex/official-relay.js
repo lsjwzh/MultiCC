@@ -19,7 +19,11 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { officialAccountIdFromProvider } = require('../official-accounts');
-const { preprocessResponsesHistory, repairRejectedResponsesHistory } = require('../model-history-converter');
+const {
+  preprocessResponsesHistory,
+  repairRejectedResponsesHistory,
+  stripReasoningContent,
+} = require('../model-history-converter');
 const { publicTransportError, publicUpstreamError, readUpstreamError } = require('../upstream-error');
 
 const DEFAULT_AUTH_FILE = path.join(os.homedir(), '.codex', 'auth.json');
@@ -350,6 +354,15 @@ function createCodexOfficialRelayHandler(options = {}) {
       req.body = prepared.body;
       return next();
     }
+    // Official-only: reasoning items recorded by third-party providers carry a
+    // raw content array the ChatGPT backend rejects (max length 0). Strip it
+    // up front instead of paying a guaranteed 400+repair round-trip per turn;
+    // repairRejectedResponsesHistory stays as the backstop.
+    const officialPrepared = stripReasoningContent(prepared.body);
+    if (officialPrepared.changes.length) diagnostic(options.logger, 'model_history_preprocessed', {
+      providerId, changes: officialPrepared.changes,
+    });
+    prepared.body = officialPrepared.body;
     const role = normalizeCodexRole(req.params && req.params.role);
     if (!role.valid) return responseJson(res, 400, { error: 'invalid Codex agent route' });
 
