@@ -183,6 +183,8 @@ void main() {
               required AirTaskRuntime runtime,
               required List<AirRoleBinding> roles,
               required bool goal,
+              int? goalRounds,
+              int? goalBudget,
             }) async {
               submittedText = text;
               submitted = runtime;
@@ -241,6 +243,141 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  /// 快速新建里的 Goal 那一块（Web `#quick-task-goal-limits` + `goalLimitsFromForm`）。
+  ///
+  /// 两件事都要锁住：**勾上才问**（不勾时整区不出现，也就不会把「上次填的 200」
+  /// 当成用户的意思发出去），以及**发出去的键名**。Web 和服务端认的是
+  /// `maxRounds` / `maxBudget`（`src/chat/turn-request.js:51-58`）；这里曾经写成
+  /// `rounds` / `tokenBudget`，服务端不报错、直接丢掉 —— 界面上设了，实际没生效。
+  testWidgets('Goal 的两个上限：勾上才问，超 200 按 200 算，0 和空都算不限', (tester) async {
+    final settings = await _settings();
+    // 参数名必须叫 goal（命名参数按名字匹配），所以捕获用的变量另外起名，
+    // 否则 `goal = goal` 只是把参数赋值给自己。
+    var seenRounds = -1;
+    var seenBudget = -1;
+    var seenGoal = false;
+    var submits = 0;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AirQuickComposer(
+            settings: settings,
+            httpClient: _providerClient(<String>[], const []),
+            clis: const ['claude'],
+            busy: false,
+            onSubmit: ({
+              required String text,
+              required String cli,
+              required AirTaskRuntime runtime,
+              required List<AirRoleBinding> roles,
+              required bool goal,
+              int? goalRounds,
+              int? goalBudget,
+            }) async {
+              submits++;
+              seenGoal = goal;
+              seenRounds = goalRounds ?? -1;
+              seenBudget = goalBudget ?? -1;
+              return true;
+            },
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    Finder field(String key) => find.descendant(
+      of: find.byKey(ValueKey(key)),
+      matching: find.byType(TextField),
+    );
+
+    // 没勾 Goal：整区不出现。
+    expect(find.text('🎯 Goal 模式'), findsNothing);
+    expect(field('air-quick-goal-rounds'), findsNothing);
+
+    await tester.tap(find.byKey(const ValueKey('air-quick-goal')));
+    await tester.pumpAndSettle();
+    expect(find.text('🎯 Goal 模式'), findsOneWidget);
+    expect(find.text('轮次上限'), findsOneWidget);
+    expect(find.text('token 预算'), findsOneWidget);
+
+    // 轮次默认 200（Web 的 `value="200"`），预算空着 = 不限。
+    await tester.enterText(
+      find.byKey(const ValueKey('air-quick-input')),
+      '把登录页的错误提示改清楚',
+    );
+    await tester.enterText(field('air-quick-goal-rounds'), '999');
+    await tester.tap(find.byKey(const ValueKey('air-quick-submit')));
+    await tester.pumpAndSettle();
+
+    expect(submits, 1);
+    expect(seenGoal, isTrue);
+    expect(seenRounds, 200, reason: '超过 200 按 200 算（Web 的 max="200"）');
+    expect(seenBudget, -1, reason: '空 = 不限，不是 0');
+
+    // 提交成功后草稿清空、Goal 也复位 —— 上限跟着回到默认。
+    expect(find.text('🎯 Goal 模式'), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('air-quick-goal')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey('air-quick-input')),
+      '再来一次',
+    );
+    await tester.enterText(field('air-quick-goal-rounds'), '0');
+    await tester.enterText(field('air-quick-goal-budget'), '5000');
+    await tester.tap(find.byKey(const ValueKey('air-quick-submit')));
+    await tester.pumpAndSettle();
+
+    expect(submits, 2);
+    expect(seenRounds, -1, reason: '0 = 不限');
+    expect(seenBudget, 5000);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('不勾 Goal 时两个上限不随提交发出去', (tester) async {
+    final settings = await _settings();
+    int? rounds = -1;
+    int? budget = -1;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AirQuickComposer(
+            settings: settings,
+            httpClient: _providerClient(<String>[], const []),
+            clis: const ['claude'],
+            busy: false,
+            onSubmit: ({
+              required String text,
+              required String cli,
+              required AirTaskRuntime runtime,
+              required List<AirRoleBinding> roles,
+              required bool goal,
+              int? goalRounds,
+              int? goalBudget,
+            }) async {
+              rounds = goalRounds;
+              budget = goalBudget;
+              return true;
+            },
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey('air-quick-input')),
+      '普通任务',
+    );
+    await tester.tap(find.byKey(const ValueKey('air-quick-submit')));
+    await tester.pumpAndSettle();
+
+    expect(rounds, isNull);
+    expect(budget, isNull);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('面板上取消，药丸还是原来那句话', (tester) async {
     final settings = await _settings();
 
@@ -258,6 +395,8 @@ void main() {
               required AirTaskRuntime runtime,
               required List<AirRoleBinding> roles,
               required bool goal,
+              int? goalRounds,
+              int? goalBudget,
             }) async => true,
           ),
         ),

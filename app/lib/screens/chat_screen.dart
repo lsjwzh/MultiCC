@@ -1,7 +1,6 @@
 import '../services/chat_shell_view.dart';
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
