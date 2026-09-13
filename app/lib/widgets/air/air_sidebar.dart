@@ -8,21 +8,23 @@ import 'air_task_status.dart';
 
 /// Air 的侧栏（Web `public/air.html` 的 `#sidebar`）。
 ///
-/// 频次收敛和 Web 一样：每天点的（当前工作目录、控制台、定时任务、收藏目录、
-/// 最近任务、新任务）留在外面；偶尔点的（服务与文档、记忆图谱、设置中心、任务
-/// 看板、开发者选项）折进「更多与系统」。手机上没有 ⌘K，找全部目录的入口就是
-/// 顶上那张目录卡片。
+/// 频次收敛和 Web 一样：每天点的（当前工作目录、控制台、定时任务、最近任务、
+/// 新任务）留在外面；偶尔点的（服务与文档、记忆图谱、设置中心、任务看板、开发者
+/// 选项）折进「更多与系统」。手机上没有 ⌘K，找全部目录的入口就是顶上那张目录
+/// 卡片。
+///
+/// Web 侧栏还有一组「收藏目录」，这里没有 —— 工作目录本来就不会很多，一组随时
+/// 可能空的快捷方式和它下面那条分隔线都是白占位置。`AirLocalStore` 里那套收藏
+/// 读写留着（数据还在，只是不再有界面展示它）。
 class AirSidebar extends StatelessWidget {
   const AirSidebar({
     super.key,
     required this.data,
     required this.directoryId,
-    required this.favorites,
     required this.recentTasks,
     required this.advancedMode,
     required this.serverLabel,
     required this.onSelectDirectory,
-    required this.onToggleFavorite,
     required this.onOpenLibrary,
     required this.onOpenSearch,
     required this.onOpenConsole,
@@ -48,12 +50,10 @@ class AirSidebar extends StatelessWidget {
 
   final AirSnapshot? data;
   final String? directoryId;
-  final List<String> favorites;
   final List<AirTask> recentTasks;
   final bool advancedMode;
   final String serverLabel;
   final ValueChanged<String> onSelectDirectory;
-  final VoidCallback onToggleFavorite;
   final VoidCallback onOpenLibrary;
 
   /// ⌘K 那一件事：目录和任务一起搜。手机上没有 ⌘K，所以侧栏上明摆着一行。
@@ -89,11 +89,6 @@ class AirSidebar extends StatelessWidget {
   Widget build(BuildContext context) {
     final directory = _directory;
     final urgentCount = airUrgentTasks(data?.tasks ?? const []).length;
-    final favoriteDirectories =
-        (data?.directories ?? const <AirDirectory>[])
-            .where((d) => favorites.contains(d.id))
-            .take(AirLocalStore.favoriteLimit)
-            .toList();
     return Drawer(
       width: width,
       elevation: 0,
@@ -157,12 +152,7 @@ class AirSidebar extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  _SpaceCard(
-                    directory: directory,
-                    favorite: directory != null && favorites.contains(directory.id),
-                    onOpen: onOpenLibrary,
-                    onToggleFavorite: onToggleFavorite,
-                  ),
+                  _SpaceCard(directory: directory, onOpen: onOpenLibrary),
                   const SizedBox(height: 8),
                   _NavRow(
                     semanticKey: 'air-nav-search',
@@ -185,18 +175,6 @@ class AirSidebar extends StatelessWidget {
                     label: '定时任务',
                     onTap: onOpenSchedules,
                   ),
-                  if (favoriteDirectories.isNotEmpty) ...[
-                    const _Caption('收藏目录'),
-                    for (final item in favoriteDirectories)
-                      _NavRow(
-                        semanticKey: 'air-favorite-${item.id}',
-                        icon: Icons.star_rounded,
-                        iconColor: AppColors.accent,
-                        label: item.name,
-                        selected: item.id == directoryId,
-                        onTap: () => onSelectDirectory(item.id),
-                      ),
-                  ],
                   const _Caption('任务'),
                   Padding(
                     padding: const EdgeInsets.fromLTRB(4, 0, 4, 6),
@@ -307,20 +285,12 @@ class AirSidebar extends StatelessWidget {
   }
 }
 
-/// 顶上那张卡：当前工作目录 + 收藏开关。点卡片本身去目录库（Web 的
-/// `.space-main`），右边的星号只收藏（Web 的 `#favorite`）。
+/// 顶上那张卡：当前工作目录。点它就回目录库（Web 的 `.space-main`）。
 class _SpaceCard extends StatelessWidget {
-  const _SpaceCard({
-    required this.directory,
-    required this.favorite,
-    required this.onOpen,
-    required this.onToggleFavorite,
-  });
+  const _SpaceCard({required this.directory, required this.onOpen});
 
   final AirDirectory? directory;
-  final bool favorite;
   final VoidCallback onOpen;
-  final VoidCallback onToggleFavorite;
 
   @override
   Widget build(BuildContext context) {
@@ -388,17 +358,7 @@ class _SpaceCard extends StatelessWidget {
           const Divider(height: 1, color: AppColors.line),
           Row(
             children: [
-              IconButton(
-                key: const ValueKey('air-favorite-toggle'),
-                onPressed: directory == null ? null : onToggleFavorite,
-                iconSize: 17,
-                visualDensity: VisualDensity.compact,
-                tooltip: favorite ? '取消收藏当前工作目录' : '收藏当前工作目录',
-                icon: Icon(
-                  favorite ? Icons.star_rounded : Icons.star_border_rounded,
-                  color: favorite ? AppColors.accent : AppColors.faint,
-                ),
-              ),
+              const SizedBox(width: 12),
               const Expanded(
                 child: Text(
                   '工作目录',
@@ -420,14 +380,14 @@ class _SpaceCard extends StatelessWidget {
   }
 }
 
+/// 侧栏上的一行。原本还有「选中」和自定义图标色两档，都是给「收藏目录」那组用的
+/// —— 那组撤掉之后就没有调用方了，一起去掉（留着就是一段永远走不到的高亮代码）。
 class _NavRow extends StatelessWidget {
   const _NavRow({
     required this.semanticKey,
     required this.icon,
     required this.label,
     required this.onTap,
-    this.selected = false,
-    this.iconColor,
     this.badge,
   });
 
@@ -435,8 +395,6 @@ class _NavRow extends StatelessWidget {
   final IconData icon;
   final String label;
   final VoidCallback onTap;
-  final bool selected;
-  final Color? iconColor;
 
   /// 行尾的数字（控制台挂的是「谁在等我」的条数）。0 不显示。
   final String? badge;
@@ -446,10 +404,9 @@ class _NavRow extends StatelessWidget {
     return Semantics(
       key: ValueKey(semanticKey),
       button: true,
-      selected: selected,
       label: badge == null ? label : '$label，$badge 项待处理',
       child: Material(
-        color: selected ? const Color(0x241678e8) : Colors.transparent,
+        color: Colors.transparent,
         borderRadius: BorderRadius.circular(AppColors.radiusChip),
         child: InkWell(
           excludeFromSemantics: true,
@@ -460,17 +417,17 @@ class _NavRow extends StatelessWidget {
             child: Row(
               children: [
                 const SizedBox(width: 10),
-                Icon(icon, size: 18, color: iconColor ?? AppColors.muted),
+                Icon(icon, size: 18, color: AppColors.muted),
                 const SizedBox(width: 11),
                 Expanded(
                   child: Text(
                     label,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: selected ? AppColors.text : AppColors.muted,
+                    style: const TextStyle(
+                      color: AppColors.muted,
                       fontSize: 13.5,
-                      fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                      fontWeight: FontWeight.w500,
                     ),
                   ),
                 ),

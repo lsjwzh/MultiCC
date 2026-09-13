@@ -194,14 +194,6 @@ class _AirTasksViewState extends State<AirTasksView>
     });
   }
 
-  Future<void> _toggleFavorite([String? dirId]) async {
-    final target = dirId ?? _directoryId;
-    final store = _store;
-    if (target == null || store == null) return;
-    await store.toggleFavorite(target);
-    if (mounted) setState(() {});
-  }
-
   /// 打开一个任务：先换出可续接的会话，再交给现有的聊天页。只读记录不能在这里
   /// 接管，只能回到它原来的会话。
   Future<void> _open(AirTask task) async {
@@ -916,12 +908,10 @@ class _AirTasksViewState extends State<AirTasksView>
       drawer: AirSidebar(
         data: data,
         directoryId: _directoryId,
-        favorites: _store?.favorites ?? const [],
         recentTasks: _sidebarTasks(),
         advancedMode: widget.settings.advancedMode.value,
         serverLabel: widget.settings.host,
         onSelectDirectory: _selectDirectory,
-        onToggleFavorite: _toggleFavorite,
         onOpenLibrary: () {
           _closeDrawer();
           setState(() => _mode = _AirMode.library);
@@ -1139,12 +1129,8 @@ class _AirTasksViewState extends State<AirTasksView>
                     currentDirectoryId: _directoryId,
                     tasksOf: (dirId) => data?.tasksOf(dirId) ?? const [],
                     runningDirectories: runningDirectories,
-                    favorites: _store?.favorites ?? const [],
                     onOpen: _selectDirectory,
                     onAddDirectory: () => unawaited(_addDirectory()),
-                    onToggleFavorite: (dirId) => unawaited(
-                      _toggleFavorite(dirId),
-                    ),
                     onAction: (directory, action) =>
                         unawaited(_onDirectoryAction(directory, action)),
                     // 第 1 步圈的就是这颗「添加」（Web 第 1 步的目标是「新建

@@ -395,10 +395,8 @@ void main() {
               currentDirectoryId: null,
               tasksOf: (_) => const [],
               runningDirectories: const {},
-              favorites: const [],
               onOpen: (_) {},
               onAddDirectory: () {},
-              onToggleFavorite: (_) {},
               onAction: (dir, action) => picked.add(action),
             ),
           ),
@@ -411,8 +409,8 @@ void main() {
       final picked = <AirDirectoryAction>[];
       await pumpLibrary(tester, _directory, picked);
 
-      // 收藏星星还在 —— 本机目录照旧能收藏。
-      expect(find.byIcon(Icons.star_border_rounded), findsOneWidget);
+      // 卡片上只剩 ⋯ 这一颗按钮（收藏星星已经撤掉了）。
+      expect(find.byIcon(Icons.star_border_rounded), findsNothing);
 
       await tester.tap(find.byKey(const ValueKey('air-directory-menu-d1')));
       await tester.pumpAndSettle();
@@ -426,7 +424,7 @@ void main() {
       expect(picked, [AirDirectoryAction.share]);
     });
 
-    testWidgets('远端工作区：授权失效时先请人重新导入，且不给收藏', (tester) async {
+    testWidgets('远端工作区：授权失效时先请人重新导入', (tester) async {
       final picked = <AirDirectoryAction>[];
       await pumpLibrary(
         tester,
@@ -441,11 +439,6 @@ void main() {
       );
 
       expect(find.text('共享工作区 · 授权已失效'), findsOneWidget);
-      expect(
-        find.byIcon(Icons.star_border_rounded),
-        findsNothing,
-        reason: '收藏是按本机目录 id 存的，为一个远端 id 存一份没有意义',
-      );
 
       await tester.tap(find.byKey(const ValueKey('air-directory-menu-ef1')));
       await tester.pumpAndSettle();
