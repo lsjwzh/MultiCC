@@ -2806,6 +2806,28 @@ class ChatProvider extends ChangeNotifier {
     _addSystemMsg(line);
   }
 
+  /// 待答卡的「已解决 / 忽略」：手动了结这条提问，不发回答也不继续原任务
+  /// （web 的 `#pending-user-input-dismiss`，同一个接口）。
+  ///
+  /// 结果原样交回调用方：能不能了结由服务端说话（`code` 是会话还在跑、提问已
+  /// 变化还是还有外部任务在等），文案归界面管。成功则这里立刻收起卡片 ——
+  /// 服务端随后广播的 user_input_resolved 才是权威，这一步只是让按下的那一下
+  /// 有即时反馈。
+  Future<Map<String, dynamic>> dismissPendingUserInput() async {
+    final pending = _pendingUserInput;
+    if (pending == null) {
+      return const {'ok': false, 'code': 'no_pending_request'};
+    }
+    final result = await SessionService(
+      settings: settings,
+    ).dismissUserInput(executionSessionName, pending.requestId);
+    if (result['ok'] == true) {
+      _setPendingUserInput(null);
+      notifyListeners();
+    }
+    return result;
+  }
+
   // Reconnect (app resume / half-open socket recovery). We still reload the
   // authoritative transcript from the server — that's required so an answer
   // that completed while we were disconnected isn't missed (preserving local

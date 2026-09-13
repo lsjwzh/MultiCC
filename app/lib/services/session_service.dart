@@ -838,6 +838,32 @@ class SessionService {
     }
   }
 
+  /// 手动了结一条「等待用户回答」的提问（web 的 `#pending-user-input-dismiss`
+  /// 「已解决 / 忽略」走的就是这个接口）：不发送回答、不继续原任务，只把这条
+  /// 历史或已处理的问题从等待态里放出来。
+  ///
+  /// 服务端的 409 带 `{ok:false, code}`——会话还在跑、提问已变化、还有外部任务
+  /// 在等——那是给人看的结论而不是传输故障，所以和 200 一样原样返回给调用方，
+  /// 说法由界面决定；只有 5xx 才算传输层出错。
+  Future<Map<String, dynamic>> dismissUserInput(
+    String id,
+    String requestId,
+  ) async {
+    final res = await http
+        .post(
+          Uri.parse(_url('/api/sessions/$id/user-input/dismiss')),
+          headers: _headers,
+          body: jsonEncode({'requestId': requestId}),
+        )
+        .timeout(const Duration(seconds: 15));
+    if (res.statusCode >= 500) {
+      final err = _tryParseError(res.body);
+      throw Exception(err ?? '${res.statusCode}');
+    }
+    final decoded = jsonDecode(res.body);
+    return decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};
+  }
+
   /// Fetch this session's dispatch summary (durable operations joined with the
   /// target session's queue state — the authoritative projection).
   /// relation=both covers both directions: dispatches this session owns (sent

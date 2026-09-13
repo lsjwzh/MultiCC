@@ -67,6 +67,67 @@ void main() {
     expect(answer, '自定义回答');
   });
 
+  // 「已解决 / 忽略」：与「收起」不同，它真的改变服务端的等待态
+  // （web 的 #pending-user-input-dismiss）。
+  testWidgets('pending input offers 已解决 / 忽略 and reports the tap', (
+    tester,
+  ) async {
+    var dismissed = 0;
+    await tester.pumpWidget(
+      _host(
+        PendingUserInputPanel(
+          input: const PendingUserInput(requestId: 'r-dismiss', question: '继续吗'),
+          enabled: true,
+          onAnswer: (_) {},
+          onDismiss: () => dismissed++,
+        ),
+      ),
+    );
+
+    expect(find.text('已解决 / 忽略'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('pending-dismiss')));
+    await tester.pump();
+    expect(dismissed, 1);
+  });
+
+  testWidgets('without a dismiss callback the pending card has no such button', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _host(
+        PendingUserInputPanel(
+          input: const PendingUserInput(requestId: 'r-no-dismiss', question: '继续吗'),
+          enabled: true,
+          onAnswer: (_) {},
+        ),
+      ),
+    );
+
+    expect(find.byKey(const Key('pending-dismiss')), findsNothing);
+    expect(find.text('已解决 / 忽略'), findsNothing);
+  });
+
+  testWidgets('an offline session cannot dismiss the pending question', (
+    tester,
+  ) async {
+    var dismissed = 0;
+    await tester.pumpWidget(
+      _host(
+        PendingUserInputPanel(
+          input: const PendingUserInput(requestId: 'r-offline', question: '继续吗'),
+          enabled: false,
+          onAnswer: (_) {},
+          onDismiss: () => dismissed++,
+        ),
+      ),
+    );
+
+    final button = tester.widget<TextButton>(
+      find.byKey(const Key('pending-dismiss')),
+    );
+    expect(button.onPressed, isNull);
+  });
+
   testWidgets('frozen queue exposes server actions and per-entry cancel', (
     tester,
   ) async {
