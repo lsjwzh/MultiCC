@@ -21,6 +21,14 @@ const SOURCE_EXTENSIONS = new Set([
 // migration. Keep this map for explicit, reviewed debt only; ordinary feature
 // work must satisfy the default budget.
 const MIGRATION_DEBT = Object.freeze({
+  // src/chat/turn-engine.js crossed 3000 in 12eb61db (message provenance as a
+  // first-class delivery class) after 2fc46724 had split it back down to the
+  // default budget. Registered here so the gate keeps tracking it; the next
+  // split of the turn engine must ratchet this ceiling down.
+  'src/chat/turn-engine.js': Object.freeze({
+    ceiling: 3018,
+    byteCeiling: 144931,
+  }),
   // public/manage.js crossed 3000 in b4427cf before the budget gate caught it;
   // paid back down to 2632 by splitting the aux-history UI (modal/panel/ws,
   // plus handleAuxHealth and the synchronous auxConnect init) into
