@@ -21,6 +21,15 @@ class DispatchQueueEntry {
   final String? targetSessionId;
   final String? executionSessionId;
   final String? taskId;
+
+  /// 目标会话的注册表名（服务端投影随身带）。任务板专属 worker 不出现在
+  /// /api/sessions 里，客户端查不到它的名字，这条 label 是它唯一的好名字。
+  /// 普通目标是 null（DTO 保持最小）。
+  final String? targetLabel;
+
+  /// 目标会话绑定了哪个任务（同上，仅任务绑定目标才有）。有它才说明这条派发
+  /// 的对端是个「隐藏的任务板 worker」。
+  final String? targetTaskBoundTaskId;
   final String? mode; // 'sync' | 'async' | 'one_way' | null
   /// Target FIFO projection: queued/started/running/unknown/terminal.
   final String queueState;
@@ -40,6 +49,8 @@ class DispatchQueueEntry {
     this.targetSessionId,
     this.executionSessionId,
     this.taskId,
+    this.targetLabel,
+    this.targetTaskBoundTaskId,
     this.mode,
     this.queueState = 'unknown',
     this.queuePosition,
@@ -79,6 +90,13 @@ class DispatchQueueEntry {
 
   bool get isQueued => queueState == 'queued';
 
+  /// 空串当作「没有」：投影只在有值时带上这两个字段，但一个 flaky 的中间层
+  /// 回个空串也不该让「任务绑定」提示冒出一句没有任务名的空话。
+  static String? _nonEmpty(Object? v) {
+    final s = v?.toString().trim() ?? '';
+    return s.isEmpty ? null : s;
+  }
+
   static DispatchQueueEntry? fromJson(Map<String, dynamic> j) {
     final id = j['operationId']?.toString();
     if (id == null || id.isEmpty) return null;
@@ -96,6 +114,8 @@ class DispatchQueueEntry {
       targetSessionId: j['targetSessionId']?.toString(),
       executionSessionId: j['executionSessionId']?.toString(),
       taskId: j['taskId']?.toString(),
+      targetLabel: _nonEmpty(j['targetLabel']),
+      targetTaskBoundTaskId: _nonEmpty(j['targetTaskBoundTaskId']),
       mode: j['mode']?.toString(),
       queueState: j['queueState']?.toString() ?? 'unknown',
       queuePosition: asInt(j['queuePosition']),
