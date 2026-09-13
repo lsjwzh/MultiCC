@@ -128,6 +128,50 @@ class _ChatViewState extends State<ChatView> {
     }
   }
 
+  /// 待答卡的「已解决 / 忽略」：手动了结这条提问，不发回答、不继续原任务
+  /// （web 的 `#pending-user-input-dismiss`，同一个接口）。成功时 provider 已经
+  /// 把卡片收起，服务端随后广播的 user_input_resolved 才是最终权威；失败要把
+  /// 服务端的 code 翻成人话 —— 「会话还在跑 / 提问已变化 / 还有外部任务在等」
+  /// 都是有意义的结论，不是传输故障，所以不该当成异常一抛了之。
+  Future<void> _dismissPendingUserInput(ChatProvider provider) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final result = await provider.dismissPendingUserInput();
+      if (!mounted || result['ok'] == true) return;
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            t('pendingInputDismissFailed', {
+              'error': _dismissFailureReason(result),
+            }),
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            t('pendingInputDismissFailed', {'error': '$error'}),
+          ),
+        ),
+      );
+    }
+  }
+
+  /// 服务端 `{ok:false, code}` → 一句中文原因。认不出的 code 原样透出
+  /// （与 web 一样回落到通用错误文案），绝不把失败说成成功。
+  String _dismissFailureReason(Map<String, dynamic> result) {
+    final code = '${result['code'] ?? result['error'] ?? ''}'.trim();
+    return switch (code) {
+      'turn_still_active' => t('pendingInputDismissTurnActive'),
+      'request_id_mismatch' => t('pendingInputDismissStale'),
+      'external_wait_pending' => t('pendingInputDismissExternalWait'),
+      '' => t('unknownError'),
+      _ => code,
+    };
+  }
+
   Future<void> _retryApiError(ChatProvider provider) async {
     try {
       await provider.queueAction('retry');
@@ -453,6 +497,7 @@ class _ChatViewState extends State<ChatView> {
                               ChatConnectionState.connected,
                           onAnswer: provider.sendMessage,
                           onCollapse: provider.collapsePendingUserInput,
+                          onDismiss: () => _dismissPendingUserInput(provider),
                         ),
                       ),
                     ),
@@ -474,14 +519,23 @@ class _ChatViewState extends State<ChatView> {
                     ),
                   ),
                 if (provider.hasClassify)
-                  _AuxClassifyBar(
-                    goal: provider.classifyGoal,
-                    phase: provider.classifyPhase,
-                    classifyState: provider.classifyState,
-                    onMarkTurnSucceeded:
-                        provider.classifyState.toUpperCase() == 'W'
-                        ? () => _markTurnSucceeded(provider)
-                        : null,
+                  Builder(
+                    builder: (_) {
+                      // 显隐规则集中在 helper 里（web can-mark-done /
+                      // can-cancel-task 两个 class 的等价物），这里只负责把动作接上。
+                      final actions = classifyBarActions(provider.classifyState);
+                      return AuxClassifyBar(
+                        goal: provider.classifyGoal,
+                        phase: provider.classifyPhase,
+                        classifyState: provider.classifyState,
+                        onMarkTurnSucceeded: actions.canMarkDone
+                            ? () => _markTurnSucceeded(provider)
+                            : null,
+                        onCancelTurn: actions.canCancelTask
+                            ? provider.cancel
+                            : null,
+                      );
+                    },
                   ),
                 _CenteredChatLane(
                   child: ChatRuntimeNoticePanel(
@@ -1501,7 +1555,11 @@ class _BehindMainBanner extends StatelessWidget {
   }
 }
 
-class _AuxClassifyBar extends StatelessWidget {
+/// AI 助手对当前会话的理解条（目标 · 阶段 · 状态），对齐 web 的
+/// `#aux-classify-bar`。公开而非私有：两个动作药丸的显隐规则直接照抄 web 的
+/// `can-mark-done`(W) / `can-cancel-task`(P) 两个 class，是条容易改坏的规则，
+/// 需要能被 widget 测试直接钉住。
+class AuxClassifyBar extends StatelessWidget {
   final String goal;
   final String phase;
 
@@ -1513,11 +1571,16 @@ class _AuxClassifyBar extends StatelessWidget {
   /// The compatibility endpoint changes only turn outcome, never task lifecycle.
   final VoidCallback? onMarkTurnSucceeded;
 
-  const _AuxClassifyBar({
+  /// Non-null when state is P (processing): shows 「✕ 取消」. Web gates the same
+  /// button on `can-cancel-task` and wires it to cancelStreaming().
+  final VoidCallback? onCancelTurn;
+
+  const AuxClassifyBar({
     required this.goal,
     required this.phase,
     required this.classifyState,
     this.onMarkTurnSucceeded,
+    this.onCancelTurn,
   });
 
   String _phaseLabel(String value) => switch (value) {
@@ -1590,6 +1653,38 @@ class _AuxClassifyBar extends StatelessWidget {
               ),
             ),
           ),
+          // Cancel button: visible only when state is P (processing). Same slot
+          // and same red tint as the web's ac-cancel-task pill; the action is
+          // the composer's Stop — cancel the in-flight turn.
+          if (onCancelTurn != null) ...[
+            const SizedBox(width: 6),
+            Tooltip(
+              message: t('cancelTurnFromBarTitle'),
+              child: GestureDetector(
+                key: const Key('classify-cancel-turn'),
+                onTap: onCancelTurn,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 2,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFfdf0ef),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: const Color(0x88b64e43)),
+                  ),
+                  child: Text(
+                    t('cancelTurnFromBar'),
+                    style: const TextStyle(
+                      color: Color(0xFFb64e43),
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
           // Turn-success button: visible only when state is W (waiting-for-user)
           if (onMarkTurnSucceeded != null) ...[
             const SizedBox(width: 6),

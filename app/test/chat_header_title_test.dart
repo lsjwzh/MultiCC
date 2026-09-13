@@ -25,6 +25,21 @@ Future<SettingsService> _settings() async {
   return SettingsService.getInstance();
 }
 
+/// 只记改名调用，不发请求：真 SessionManager 的 renameSession 会 PATCH 到
+/// 上面那个不可达端口，测试关心的是「头部把哪一对 (id, label) 交出去了」。
+class _RecordingManager extends SessionManager {
+  final List<String> renamedIds = [];
+  final List<String?> renamedLabels = [];
+
+  _RecordingManager({required super.settings});
+
+  @override
+  Future<void> renameSession(String id, String? label) async {
+    renamedIds.add(id);
+    renamedLabels.add(label);
+  }
+}
+
 Widget _host(
   SessionManager mgr,
   SettingsService settings,
@@ -214,6 +229,80 @@ void main() {
       expect(find.byKey(const Key('chat-header-cwd')), findsNothing);
       expect(find.byKey(const Key('chat-header-branch')), findsNothing);
       expect(find.text('切换'), findsOneWidget);
+
+      provider.dispose();
+      mgr.dispose();
+    });
+  });
+
+  // 双击标题改名（对齐 web 双击 #session-title → renameSessionFromChat）。
+  // renameSession 走真实 HTTP 会打不通本机不可达端口，所以只记调用。
+  group('双击标题改名', () {
+    testWidgets('双击标题弹出改名框，预填当前别名并提交给 SessionManager', (
+      tester,
+    ) async {
+      final settings = await _settings();
+      final mgr = _RecordingManager(settings: settings);
+      final provider = ChatProvider(
+        settings: settings,
+        sessionName: 's-dblclick',
+        displayName: '全栈工程师3',
+        dirName: 'multicc',
+        sessionCwd: '/tmp',
+      );
+
+      await tester.pumpWidget(_host(mgr, settings, provider));
+
+      final title = find.text('multicc / 全栈工程师3');
+      await tester.tap(title);
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.tap(title);
+      await tester.pump();
+
+      expect(find.text(t('renameSessionTitle')), findsOneWidget);
+      // 预填的是别名本身，不是「目录 / 别名」那串 —— 改名改的就是别名。
+      final field = tester.widget<TextField>(find.byType(TextField));
+      expect(field.controller!.text, '全栈工程师3');
+
+      await tester.enterText(find.byType(TextField), '后端工程师');
+      await tester.pump();
+      await tester.tap(find.text(t('save')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(mgr.renamedIds, ['s-dblclick']);
+      expect(mgr.renamedLabels, ['后端工程师']);
+      expect(find.text(t('renameSessionSaved')), findsOneWidget);
+
+      provider.dispose();
+      mgr.dispose();
+    });
+
+    testWidgets('取消不改名', (tester) async {
+      final settings = await _settings();
+      final mgr = _RecordingManager(settings: settings);
+      final provider = ChatProvider(
+        settings: settings,
+        sessionName: 's-cancel',
+        displayName: '原名',
+        sessionCwd: '/tmp',
+      );
+
+      await tester.pumpWidget(_host(mgr, settings, provider));
+
+      final title = find.text('原名');
+      await tester.tap(title);
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.tap(title);
+      await tester.pump();
+
+      await tester.tap(find.text(t('cancel')));
+      // 关闭动画要走完再收场，否则 route 的动画 timer 会活过 widget tree。
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(mgr.renamedIds, isEmpty);
+      expect(find.text(t('renameSessionSaved')), findsNothing);
 
       provider.dispose();
       mgr.dispose();
