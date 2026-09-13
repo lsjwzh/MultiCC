@@ -458,6 +458,10 @@ class _ProviderCardState extends State<_ProviderCard> {
             overflow: TextOverflow.ellipsis,
           ),
 
+          // 这一段只在真有东西可写时才出现。「Codex 兼容代理」退役（0d633f16）时
+          // 连同条件一起被删掉，留下了一个孤儿 `],`，整个文件因此解析不过 ——
+          // 剩下这三个条件就是它存在的全部理由。
+          if (model.isNotEmpty || models.length > 1 || tokenMask.isNotEmpty) ...[
             const SizedBox(height: 4),
             Text(
               [

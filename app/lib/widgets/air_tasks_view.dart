@@ -1,71 +1,76 @@
 import 'dart:async';
-import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
+
 import '../providers/session_manager.dart';
+import '../screens/docs_registry_screen.dart';
+import '../screens/settings_screen.dart';
+import '../services/air_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
+import 'air/air_panels.dart';
+import 'air/air_sidebar.dart';
+import 'task_board_view.dart';
+import 'workspace_navigation_drawer.dart';
 
-/// Directory-first Air entry backed by the same canonical API as the Web UI.
-/// Opening a task uses the existing native chat transport and answer controls.
+/// Air 的移动端首页：目录优先，任务是行，对话开在自己的聊天页里。
+///
+/// 这一层是 Web `public/air.html` 的壳：左侧边栏（[AirSidebar]）、任务头部
+/// （☰ / 面包屑 / 标题 / 状态 / ⋯）和两块主区 —— 目录库（[AirDirectoryLibrary]）
+/// 与当前目录（统计 + 最近任务 + 快捷创建 `AirQuickComposer`）。数据仍走同一个
+/// `/api/air`，不引入第二套目录/任务模型。
 class AirTasksView extends StatefulWidget {
   final SettingsService settings;
   final http.Client? httpClient;
-  const AirTasksView({super.key, required this.settings, this.httpClient});
+
+  /// 「更多与系统」里那些已经有原生页面的入口（定时任务、服务与文档…）交给宿主
+  /// 决定怎么开——Air 只负责列出来。
+  final ValueChanged<WorkspaceDestination>? onOpenDestination;
+
+  const AirTasksView({
+    super.key,
+    required this.settings,
+    this.httpClient,
+    this.onOpenDestination,
+  });
+
   @override
   State<AirTasksView> createState() => _AirTasksViewState();
 }
 
+enum _AirMode { tasks, library }
+
 class _AirTasksViewState extends State<AirTasksView>
     with WidgetsBindingObserver {
-  late final http.Client _http = widget.httpClient ?? http.Client();
-  Map<String, dynamic>? _data;
-  String? _directory;
-  String _query = '', _error = '';
-  bool _loading = false, _opening = false, _foreground = true, _all = false;
+  late final AirService _service = AirService(
+    settings: widget.settings,
+    httpClient: widget.httpClient,
+  );
+  final _scaffoldKey = GlobalKey<ScaffoldState>();
+  AirLocalStore? _store;
+  AirSnapshot? _data;
+  AirCreateAttempt? _attempt;
+  String? _directoryId;
+  String _error = '';
+  bool _loading = false, _opening = false, _submitting = false, _foreground = true;
+  bool _showAll = false;
+  _AirMode _mode = _AirMode.tasks;
   Timer? _timer;
-
-  /// Local shorthands for the two inks this view uses everywhere; both are
-  /// [AppColors] entries so the palette keeps a single source.
-  static const _ink = AppColors.text, _blue = AppColors.accent;
-  List<Map<String, dynamic>> _rows(String key) => ((_data?[key] as List?) ?? [])
-      .map((v) => Map<String, dynamic>.from(v as Map))
-      .toList();
-  Future<Map<String, dynamic>> _request(
-    String path, [
-    Map<String, dynamic>? body,
-  ]) async {
-    final uri = Uri.parse(widget.settings.buildHttpUrl(path));
-    final headers = {
-      'Content-Type': 'application/json',
-      'X-Access-Token': widget.settings.token,
-    };
-    final response =
-        await (body == null
-                ? _http.get(uri, headers: headers)
-                : _http.post(uri, headers: headers, body: jsonEncode(body)))
-            .timeout(const Duration(seconds: 30));
-    final result = Map<String, dynamic>.from(
-      jsonDecode(utf8.decode(response.bodyBytes)) as Map,
-    );
-    if (response.statusCode != 200 || result['ok'] == false) {
-      throw Exception(
-        result['message'] ?? result['code'] ?? 'HTTP ${response.statusCode}',
-      );
-    }
-    return result;
-  }
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    unawaited(_loadStore());
     _refresh();
     _timer = Timer.periodic(const Duration(seconds: 4), (_) {
       if (_foreground) _refresh();
     });
+    widget.settings.advancedMode.addListener(_onAdvancedModeChanged);
   }
 
   @override
@@ -74,28 +79,47 @@ class _AirTasksViewState extends State<AirTasksView>
     if (_foreground) _refresh();
   }
 
+  void _onAdvancedModeChanged() {
+    if (mounted) setState(() {});
+  }
+
   @override
   void dispose() {
     _timer?.cancel();
-    if (widget.httpClient == null) _http.close();
+    widget.settings.advancedMode.removeListener(_onAdvancedModeChanged);
+    _service.close();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  Future<void> _loadStore() async {
+    final store = await AirLocalStore.load();
+    if (!mounted) return;
+    setState(() => _store = store);
   }
 
   Future<void> _refresh() async {
     if (_loading) return;
     _loading = true;
     try {
-      final result = await _request('/api/air');
+      final result = await _service.load();
       if (!mounted) return;
       setState(() {
         _data = result;
         _error = '';
-        final dirs = _rows('directories');
-        if (!dirs.any((d) => d['id'] == _directory)) {
-          _directory = dirs.isEmpty ? null : dirs.first['id'] as String;
+        if (result.directoryOf(_directoryId) == null) {
+          _directoryId = result.directories.isEmpty
+              ? null
+              : result.directories.first.id;
         }
       });
+      // 收藏和最近记录指向的目录/任务可能已经被删掉，顺手清一遍，免得侧栏留着
+      // 一个点不开的名字。
+      await _store?.prune(
+        directoryIds: result.directories.map((d) => d.id).toSet(),
+        taskIds: result.tasks.map((t) => t.id).toSet(),
+      );
+      if (mounted) setState(() {});
     } catch (error) {
       if (mounted) setState(() => _error = error.toString());
     } finally {
@@ -103,32 +127,50 @@ class _AirTasksViewState extends State<AirTasksView>
     }
   }
 
-  Future<void> _open(Map<String, dynamic> task) async {
+  /// 侧栏里的每一次点击都要先把抽屉收回去。这里不能用 `Navigator.pop`：抽屉不是
+  /// 一条路由，首页又是栈底那一条，`canPop()` 会直接说「没得弹」。
+  void _closeDrawer() => _scaffoldKey.currentState?.closeDrawer();
+
+  void _selectDirectory(String dirId) {
+    _closeDrawer();
+    setState(() {
+      _directoryId = dirId;
+      _mode = _AirMode.tasks;
+    });
+  }
+
+  Future<void> _toggleFavorite([String? dirId]) async {
+    final target = dirId ?? _directoryId;
+    final store = _store;
+    if (target == null || store == null) return;
+    await store.toggleFavorite(target);
+    if (mounted) setState(() {});
+  }
+
+  /// 打开一个任务：先换出可续接的会话，再交给现有的聊天页。只读记录不能在这里
+  /// 接管，只能回到它原来的会话。
+  Future<void> _open(AirTask task) async {
     if (_opening) return;
     _opening = true;
     try {
-      final entry = await _request(
-        '/api/air/tasks/${Uri.encodeComponent(task['id'] as String)}',
-      );
+      final entry = await _service.openTask(task.id);
       if (!mounted) return;
-      // Read-only conversation tasks must be continued in their original shell.
       final id =
-          (entry['readOnly'] == true
-                  ? entry['sourceSessionId']
-                  : entry['sessionId'])
+          (entry['readOnly'] == true ? entry['sourceSessionId'] : entry['sessionId'])
               as String?;
       if (id == null) throw Exception('此任务没有可续接的会话，请从全部记录查看。');
       final mgr = context.read<SessionManager>();
       final loaded = mgr.sessions.where((s) => s.id == id).firstOrNull;
       final session =
           loaded ??
-          await SessionService(
-            settings: widget.settings,
-          ).fetchTaskBoundSession(id);
+          await SessionService(settings: widget.settings)
+              .fetchTaskBoundSession(id);
       if (!mounted) return;
       if (session == null) throw Exception('无法打开任务会话，请刷新后重试。');
+      await _store?.rememberTask(task.id);
       mgr.openSession(session, historyArchive: true);
       mgr.switchToSession(session.id);
+      if (mounted) setState(() {});
     } catch (error) {
       if (mounted) setState(() => _error = error.toString());
     } finally {
@@ -136,64 +178,132 @@ class _AirTasksViewState extends State<AirTasksView>
     }
   }
 
-  Future<void> _create() async {
-    if (_directory == null) return;
-    final dirId = _directory!;
-    final title = TextEditingController(), role = TextEditingController();
-    final clis = ((_data?['clis'] as List?) ?? ['claude']).cast<String>();
-    String cli = clis.first, error = '';
-    bool saving = false;
-    final requestId = 'app-air-${DateTime.now().microsecondsSinceEpoch}';
-    await showDialog<void>(
+  /// 描述一段话就建一个任务，并把这段话作为第一条消息发出去。三步的顺序不能
+  /// 换：角色绑定只对下一条消息生效，而下一条消息正是这一条（同 Web Air）。
+  Future<void> _createFromComposer({
+    required String text,
+    required String cli,
+    required String rolePrompt,
+    required bool goal,
+  }) async {
+    final dirId = _directoryId;
+    if (dirId == null || _submitting) return;
+    final title = text
+        .split(RegExp(r'\n'))
+        .firstWhere((line) => line.trim().isNotEmpty, orElse: () => text)
+        .trim();
+    _attempt = AirCreateAttempt.forFingerprint(
+      '$dirId|$text|$cli|$rolePrompt|$goal',
+      _attempt,
+    );
+    final attempt = _attempt!;
+    setState(() {
+      _submitting = true;
+      _error = '';
+    });
+    String? created;
+    try {
+      created = await _service.createTask(
+        dirId: dirId,
+        title: title.length > 120 ? title.substring(0, 120) : title,
+        clientMsgId: attempt.createId,
+        cli: cli,
+        rolePrompt: rolePrompt,
+      );
+      await _service.sendFirstMessage(
+        taskId: created,
+        text: text,
+        clientMsgId: attempt.sendId,
+        goal: goal,
+      );
+      _attempt = null;
+      await _refresh();
+      if (!mounted) return;
+      setState(() => _submitting = false);
+      final task = _data?.taskOf(created);
+      if (task != null) await _open(task);
+    } catch (error) {
+      // 任务可能已经建出来了，只是第一条消息没送到：那就还是进去，别让人以为
+      // 白点了。这次尝试作废，内容没变时下一次点击会换一组新的幂等键。
+      final taskId = created;
+      if (taskId != null) {
+        _attempt = null;
+        await _refresh();
+        if (!mounted) return;
+        setState(() {
+          _submitting = false;
+          _error = '任务已创建，但第一条消息未确认送达：$error';
+        });
+        final task = _data?.taskOf(taskId);
+        if (task != null) await _open(task);
+      } else {
+        if (mounted) {
+          setState(() {
+            _submitting = false;
+            _error = error.toString();
+          });
+        }
+      }
+    }
+  }
+
+  Future<void> _addDirectory() async {
+    final name = TextEditingController();
+    final path = TextEditingController();
+    String error = '';
+    var saving = false;
+    final created = await showDialog<bool>(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, update) => AlertDialog(
-          backgroundColor: AppColors.panel,
-          title: const Text('新任务', style: TextStyle(color: _ink)),
+          title: const Text('添加工作目录'),
           content: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
                 TextField(
-                  controller: title,
+                  controller: name,
                   autofocus: true,
-                  maxLength: 120,
-                  style: const TextStyle(color: _ink),
-                  decoration: const InputDecoration(labelText: '任务名称'),
-                ),
-                DropdownButtonFormField<String>(
-                  value: cli,
-                  dropdownColor: AppColors.panel,
-                  style: const TextStyle(color: _ink),
-                  items: clis
-                      .map((v) => DropdownMenuItem(value: v, child: Text(v)))
-                      .toList(),
-                  onChanged: saving ? null : (v) => update(() => cli = v!),
-                  decoration: const InputDecoration(labelText: 'AI 工具'),
+                  maxLength: 100,
+                  style: const TextStyle(color: AppColors.text),
+                  decoration: const InputDecoration(labelText: '名称'),
                 ),
                 TextField(
-                  controller: role,
-                  maxLines: 3,
-                  maxLength: 40000,
-                  style: const TextStyle(color: _ink),
-                  decoration: const InputDecoration(labelText: '角色上下文（可选）'),
+                  controller: path,
+                  maxLength: 2000,
+                  style: const TextStyle(color: AppColors.text),
+                  decoration: const InputDecoration(
+                    labelText: '本机绝对路径',
+                    hintText: '/Users/you/projects/example',
+                  ),
+                ),
+                const Text(
+                  '添加目录后，可在其中创建任务并按需附加角色。',
+                  style: TextStyle(color: AppColors.faint, fontSize: 12),
                 ),
                 if (error.isNotEmpty)
-                  Text(error, style: const TextStyle(color: AppColors.danger)),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(
+                      error,
+                      style: const TextStyle(color: AppColors.danger),
+                    ),
+                  ),
               ],
             ),
           ),
           actions: [
             TextButton(
-              onPressed: saving ? null : () => Navigator.pop(ctx),
+              onPressed: saving ? null : () => Navigator.pop(ctx, false),
               child: const Text('取消'),
             ),
             FilledButton(
               onPressed: saving
                   ? null
                   : () async {
-                      if (title.text.trim().isEmpty) {
-                        update(() => error = '请填写任务名称');
+                      if (name.text.trim().isEmpty ||
+                          path.text.trim().isEmpty) {
+                        update(() => error = '名称和路径都要填。');
                         return;
                       }
                       update(() {
@@ -201,17 +311,11 @@ class _AirTasksViewState extends State<AirTasksView>
                         error = '';
                       });
                       try {
-                        final created = await _request('/api/air/tasks', {
-                          'dirId': dirId,
-                          'title': title.text.trim(),
-                          'cli': cli,
-                          'rolePrompt': role.text.trim(),
-                          'clientMsgId': requestId,
-                        });
-                        if (!ctx.mounted) return;
-                        Navigator.pop(ctx);
-                        await _refresh();
-                        if (mounted) await _open({'id': created['taskId']});
+                        await _service.addDirectory(
+                          name: name.text.trim(),
+                          path: path.text.trim(),
+                        );
+                        if (ctx.mounted) Navigator.pop(ctx, true);
                       } catch (e) {
                         if (ctx.mounted) {
                           update(() {
@@ -221,191 +325,389 @@ class _AirTasksViewState extends State<AirTasksView>
                         }
                       }
                     },
-              child: Text(saving ? '正在创建…' : '创建任务'),
+              child: Text(saving ? '正在添加…' : '添加'),
             ),
           ],
         ),
       ),
     );
-    title.dispose();
-    role.dispose();
+    name.dispose();
+    path.dispose();
+    if (created == true) await _refresh();
   }
 
-  String _resource(Map task) {
-    final resource = task['resource'] as Map? ?? {};
-    return switch (resource['lease']) {
-      'running' => '执行中',
-      'starting' => '正在启动',
-      'reserved' || 'materializing' => '正在准备',
-      'uncertain' => '等待核实执行状态',
-      _ => resource['residency'] == 'planned' ? '执行时准备目录' : '目录已保留',
-    };
+  void _openWebConsole() {
+    final uri = Uri.parse(
+      widget.settings.buildHttpUrl('/manage'),
+    ).replace(queryParameters: {if (widget.settings.token.isNotEmpty) 'token': widget.settings.token});
+    unawaited(launchUrl(uri, mode: LaunchMode.externalApplication));
+  }
+
+  void _openWebMemory() {
+    final uri = Uri.parse(
+      widget.settings.buildHttpUrl('/manage'),
+    ).replace(
+      queryParameters: {
+        'view': 'memory',
+        if (widget.settings.token.isNotEmpty) 'token': widget.settings.token,
+      },
+    );
+    unawaited(launchUrl(uri, mode: LaunchMode.externalApplication));
+  }
+
+  Future<void> _push(WidgetBuilder builder) async {
+    _closeDrawer();
+    await Navigator.of(context).push(MaterialPageRoute<void>(builder: builder));
+  }
+
+  void _openTaskBoard() {
+    final dirId = _directoryId;
+    if (dirId == null) return;
+    final mgr = context.read<SessionManager>();
+    unawaited(
+      _push(
+        (_) => TaskBoardView(
+          settings: widget.settings,
+          dirId: dirId,
+          mgr: mgr,
+          onOpenSession: (sessionId, {String? focusMessageId}) {
+            final session = mgr.sessions
+                .where((s) => s.id == sessionId)
+                .firstOrNull;
+            if (session != null) {
+              mgr.openSessionWithFocus(
+                session,
+                focusMessageId: focusMessageId,
+                historyArchive: true,
+              );
+            }
+          },
+        ),
+      ),
+    );
+  }
+
+  void _openDestination(WorkspaceDestination destination) {
+    final handler = widget.onOpenDestination;
+    _closeDrawer();
+    if (handler != null) {
+      handler(destination);
+      return;
+    }
+    unawaited(
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => switch (destination) {
+            WorkspaceDestination.docs => DocsRegistryScreen(
+              settings: widget.settings,
+            ),
+            _ => SettingsScreen(settings: widget.settings),
+          },
+        ),
+      ),
+    );
+  }
+
+  /// 侧栏的「最近任务」：先放这次会话里打开过的（跨目录），不够再用当前目录里
+  /// 最近更新过的补上——和 Web Air 的 `#tasks` 一样的取舍。
+  List<AirTask> _sidebarTasks() {
+    final data = _data;
+    if (data == null) return const [];
+    final rows = <AirTask>[];
+    final seen = <String>{};
+    for (final id in _store?.recentTasks ?? const <String>[]) {
+      final task = data.taskOf(id);
+      if (task != null && seen.add(task.id)) rows.add(task);
+      if (rows.length >= 8) return rows;
+    }
+    for (final task in data.tasksOf(_directoryId)) {
+      if (seen.add(task.id)) rows.add(task);
+      if (rows.length >= 8) break;
+    }
+    return rows;
+  }
+
+  List<AirTask> _visibleTasks() {
+    final rows = _data?.tasksOf(_directoryId) ?? const <AirTask>[];
+    if (_showAll) return rows;
+    return rows.where((task) => !task.closed).toList();
   }
 
   @override
   Widget build(BuildContext context) {
-    final dirs = _rows('directories');
-    final tasks = _rows('tasks')
-        .where(
-          (t) =>
-              t['dirId'] == _directory &&
-              (_all || !['done', 'archived'].contains(t['status'])) &&
-              '${t['title']}'.toLowerCase().contains(_query.toLowerCase()),
-        )
-        .toList();
-    // Derive from the ambient theme and pin the accent, rather than seeding a
-    // fresh scheme: `ColorScheme.fromSeed` answers with a *tonal* primary
-    // (#415F91 for this seed), which is what every default-styled widget in
-    // this subtree — the 新任务 button, the 全部记录 switch, the spinner — would
-    // then paint instead of the Air accent.
-    final theme = Theme.of(context);
-    return Theme(
-      data: theme.copyWith(
-        colorScheme: theme.colorScheme.copyWith(
-          primary: _blue,
-          onPrimary: AppColors.onAccent,
-          secondary: _blue,
-        ),
+    final data = _data;
+    final directory = data?.directoryOf(_directoryId);
+    final tasks = _visibleTasks();
+    final runningDirectories = <String>{
+      for (final task in data?.tasks ?? const <AirTask>[])
+        if (task.resource['lease'] == 'running' || task.status == 'active')
+          task.dirId,
+    };
+    final runningHere = data
+            ?.tasksOf(_directoryId)
+            .where(
+              (t) => t.resource['lease'] == 'running' || t.status == 'active',
+            )
+            .length ??
+        0;
+    return Scaffold(
+      key: _scaffoldKey,
+      backgroundColor: AppColors.bg,
+      drawer: AirSidebar(
+        data: data,
+        directoryId: _directoryId,
+        favorites: _store?.favorites ?? const [],
+        recentTasks: _sidebarTasks(),
+        advancedMode: widget.settings.advancedMode.value,
+        serverLabel: widget.settings.host,
+        onSelectDirectory: _selectDirectory,
+        onToggleFavorite: _toggleFavorite,
+        onOpenLibrary: () {
+          _closeDrawer();
+          setState(() => _mode = _AirMode.library);
+        },
+        onOpenConsole: () {
+          _closeDrawer();
+          _openWebConsole();
+        },
+        onOpenSchedules: () => _openDestination(WorkspaceDestination.cron),
+        onOpenTaskBoard: () {
+          _closeDrawer();
+          _openTaskBoard();
+        },
+        onCreateTask: () {
+          _closeDrawer();
+          setState(() {
+            _mode = _AirMode.tasks;
+            _showAll = false;
+          });
+        },
+        onOpenTask: (task) {
+          _closeDrawer();
+          unawaited(_open(task));
+        },
+        onOpenDocs: () => _openDestination(WorkspaceDestination.docs),
+        onOpenMemory: () {
+          _closeDrawer();
+          _openWebMemory();
+        },
+        onOpenSettings: () => _openDestination(WorkspaceDestination.global),
+        onAdvancedModeChanged: widget.settings.setAdvancedMode,
       ),
-      child: ColoredBox(
-        color: AppColors.bg,
-        child: RefreshIndicator(
-          onRefresh: _refresh,
-          child: ListView(
-            padding: const EdgeInsets.all(20),
-            children: [
-              const Text(
-                '工作目录',
-                style: TextStyle(color: AppColors.muted, fontSize: 12),
-              ),
-              if (dirs.isNotEmpty)
-                DropdownButton<String>(
-                  value: _directory,
-                  isExpanded: true,
-                  dropdownColor: AppColors.panel,
-                  style: const TextStyle(
-                    color: _ink,
-                    fontSize: 18,
-                    fontWeight: FontWeight.w600,
-                  ),
-                  items: dirs
-                      .map(
-                        (d) => DropdownMenuItem(
-                          value: d['id'] as String,
-                          child: Text(
-                            '${d['name']}',
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      )
-                      .toList(),
-                  onChanged: (v) => setState(() => _directory = v),
-                ),
-              Text(
-                '${dirs.where((d) => d['id'] == _directory).firstOrNull?['path'] ?? '通过右上角添加工作目录'}',
-                style: const TextStyle(color: AppColors.muted, fontSize: 12),
-              ),
-              const SizedBox(height: 22),
-              Row(
-                children: [
-                  const Expanded(
-                    child: Text(
-                      '你的任务',
-                      style: TextStyle(
-                        color: _ink,
-                        fontSize: 22,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                  FilledButton.icon(
-                    onPressed: _directory == null ? null : _create,
-                    icon: const Icon(Icons.add),
-                    label: const Text('新任务'),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 14),
-              TextField(
-                onChanged: (v) => setState(() => _query = v),
-                style: const TextStyle(color: _ink),
-                decoration: const InputDecoration(
-                  hintText: '搜索任务',
-                  prefixIcon: Icon(Icons.search),
-                  filled: true,
-                  fillColor: AppColors.panel,
-                  border: OutlineInputBorder(
-                    borderSide: BorderSide.none,
-                    borderRadius: BorderRadius.all(Radius.circular(14)),
-                  ),
-                ),
-              ),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text(
-                  '全部记录',
-                  style: TextStyle(color: _ink, fontSize: 13),
-                ),
-                value: _all,
-                onChanged: (v) => setState(() => _all = v),
-              ),
-              if (_error.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 16),
-                  child: Text(
-                    _error,
-                    style: const TextStyle(color: AppColors.danger),
-                  ),
-                ),
-              if (_data == null && _error.isEmpty)
-                const Center(child: CircularProgressIndicator()),
-              for (final task in tasks)
-                Card(
-                  color: AppColors.panel,
-                  elevation: 0,
-                  margin: const EdgeInsets.only(bottom: 10),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(18),
-                  ),
-                  child: ListTile(
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 18,
-                      vertical: 9,
-                    ),
-                    leading: const Icon(
-                      Icons.chat_bubble_outline_rounded,
-                      color: _blue,
-                    ),
-                    title: Text(
-                      '${task['title']}',
-                      style: const TextStyle(
-                        color: _ink,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                    subtitle: Text(
-                      _resource(task),
-                      style: const TextStyle(
-                        color: AppColors.muted,
-                        fontSize: 12,
-                      ),
-                    ),
-                    trailing: const Icon(Icons.chevron_right, color: _blue),
-                    onTap: () => _open(task),
-                  ),
-                ),
-              if (_data != null && tasks.isEmpty)
-                const Padding(
-                  padding: EdgeInsets.all(28),
-                  child: Text(
-                    '从一个目标开始。\n创建任务后，工作目录会在首次执行时准备。',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: AppColors.muted, height: 1.8),
-                  ),
-                ),
-            ],
+      appBar: AppBar(
+        backgroundColor: AppColors.panel,
+        foregroundColor: AppColors.text,
+        elevation: 0,
+        scrolledUnderElevation: 0,
+        titleSpacing: 0,
+        leading: Builder(
+          builder: (drawerContext) => IconButton(
+            key: const ValueKey('air-menu-button'),
+            icon: const Icon(Icons.menu_rounded),
+            tooltip: '打开导航',
+            onPressed: () => Scaffold.of(drawerContext).openDrawer(),
           ),
         ),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'MultiCC Air',
+              style: TextStyle(
+                color: AppColors.faint,
+                fontSize: 10.5,
+                letterSpacing: 0.6,
+              ),
+            ),
+            Text(
+              _mode == _AirMode.library
+                  ? '工作目录'
+                  : (directory?.name ?? '工作目录'),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: AppColors.text,
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          if (_mode == _AirMode.tasks && directory != null)
+            Padding(
+              padding: const EdgeInsets.only(right: 4),
+              child: Center(
+                child: AirStatusBadge(
+                  text: runningHere > 0 ? '执行中 $runningHere' : '空闲',
+                ),
+              ),
+            ),
+          PopupMenuButton<String>(
+            key: const ValueKey('air-header-menu'),
+            icon: const Icon(Icons.more_horiz_rounded),
+            tooltip: '更多操作',
+            color: AppColors.panel,
+            onSelected: (value) {
+              switch (value) {
+                case 'library':
+                  setState(() => _mode = _AirMode.library);
+                case 'add-directory':
+                  unawaited(_addDirectory());
+                case 'board':
+                  _openTaskBoard();
+                case 'schedules':
+                  _openDestination(WorkspaceDestination.cron);
+                case 'refresh':
+                  unawaited(_refresh());
+              }
+            },
+            itemBuilder: (context) => const [
+              PopupMenuItem(value: 'library', child: Text('工作目录库')),
+              PopupMenuItem(value: 'add-directory', child: Text('添加工作目录')),
+              PopupMenuItem(value: 'board', child: Text('打开完整任务看板')),
+              PopupMenuItem(value: 'schedules', child: Text('定时任务')),
+              PopupMenuItem(value: 'refresh', child: Text('刷新')),
+            ],
+          ),
+        ],
+      ),
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (_error.isNotEmpty)
+            Container(
+              width: double.infinity,
+              color: AppColors.dangerSoft,
+              padding: const EdgeInsets.fromLTRB(18, 10, 18, 10),
+              child: Text(
+                _error,
+                style: const TextStyle(color: AppColors.danger, fontSize: 12.5),
+              ),
+            ),
+          Expanded(
+            child: _mode == _AirMode.library
+                ? AirDirectoryLibrary(
+                    directories: data?.directories ?? const [],
+                    currentDirectoryId: _directoryId,
+                    tasksOf: (dirId) => data?.tasksOf(dirId) ?? const [],
+                    runningDirectories: runningDirectories,
+                    favorites: _store?.favorites ?? const [],
+                    onOpen: _selectDirectory,
+                    onAddDirectory: () => unawaited(_addDirectory()),
+                    onToggleFavorite: (dirId) => unawaited(
+                      _toggleFavorite(dirId),
+                    ),
+                  )
+                : _buildTasks(data, directory, tasks),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTasks(
+    AirSnapshot? data,
+    AirDirectory? directory,
+    List<AirTask> tasks,
+  ) {
+    if (data == null && _error.isEmpty) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    return RefreshIndicator(
+      onRefresh: _refresh,
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 28),
+        children: [
+          AirDirectoryStats(tasks: data?.tasksOf(_directoryId) ?? const []),
+          const SizedBox(height: 22),
+          if (directory != null) ...[
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    directory.path,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: AppColors.faint,
+                      fontSize: 11.5,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+          ],
+          AirQuickComposer(
+            clis: data?.clis ?? const [],
+            busy: _submitting,
+            onSubmit: ({
+              required String text,
+              required String cli,
+              required String rolePrompt,
+              required bool goal,
+            }) => unawaited(
+              _createFromComposer(
+                text: text,
+                cli: cli,
+                rolePrompt: rolePrompt,
+                goal: goal,
+              ),
+            ),
+          ),
+          const SizedBox(height: 24),
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  '当前目录',
+                  style: TextStyle(
+                    color: AppColors.text,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              ChoiceChip(
+                label: const Text('未完成'),
+                selected: !_showAll,
+                onSelected: (_) => setState(() => _showAll = false),
+                showCheckmark: false,
+              ),
+              const SizedBox(width: 6),
+              ChoiceChip(
+                label: const Text('全部'),
+                selected: _showAll,
+                onSelected: (_) => setState(() => _showAll = true),
+                showCheckmark: false,
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          if (data != null && tasks.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 28),
+              child: Text(
+                '还没有任务。\n在上面的输入框里描述目标，就会创建第一个任务。',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: AppColors.faint,
+                  fontSize: 13,
+                  height: 1.8,
+                ),
+              ),
+            ),
+          for (final task in tasks)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: AirTaskTile(
+                task: task,
+                onTap: () => unawaited(_open(task)),
+              ),
+            ),
+        ],
       ),
     );
   }
