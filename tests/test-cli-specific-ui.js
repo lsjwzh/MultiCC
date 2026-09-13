@@ -69,7 +69,6 @@ async function openConfig(page, expectedCli) {
     modelValues: [...document.querySelectorAll('#ai-model option')].map(option => option.value),
     agentVisible: getComputedStyle(document.querySelector('#ai-agent-section')).display !== 'none',
     subagentVisible: getComputedStyle(document.querySelector('#ai-sub-section')).display !== 'none',
-    subagentPillVisible: getComputedStyle(document.querySelector('#subagent-pill')).display !== 'none',
   }));
 }
 
@@ -130,7 +129,7 @@ async function cleanup() {
 
   console.log('  checking OpenCode controls');
   let ui = await openConfig(page, 'OpenCode');
-  if (!ui.agentVisible || ui.subagentVisible || ui.subagentPillVisible
+  if (!ui.agentVisible || ui.subagentVisible
       || ui.effortLabel !== 'Variant' || !ui.effortValues.includes('minimal')) {
     throw new Error(`OpenCode controls mismatch: ${JSON.stringify(ui)}`);
   }
@@ -154,7 +153,7 @@ async function cleanup() {
   await api('POST', `/api/sessions/${session.id}/switch-cli`, { cli: 'claude' });
   await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 });
   ui = await openConfig(page, 'Claude');
-  if (!ui.agentVisible || !ui.subagentVisible || !ui.subagentPillVisible || ui.effortLabel !== 'Effort') {
+  if (!ui.agentVisible || !ui.subagentVisible || ui.effortLabel !== 'Effort') {
     throw new Error(`Claude controls mismatch: ${JSON.stringify(ui)}`);
   }
   await closeConfig(page);
@@ -172,7 +171,7 @@ async function cleanup() {
   await api('POST', `/api/sessions/${session.id}/switch-cli`, { cli: 'qoder' });
   await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 });
   ui = await openConfig(page, 'Qoder CN');
-  if (ui.providerVisible || !ui.agentVisible || ui.subagentVisible || ui.subagentPillVisible
+  if (ui.providerVisible || !ui.agentVisible || ui.subagentVisible
       || ui.effortLabel !== 'Reasoning Effort' || !ui.effortValues.includes('xhigh')
       || !ui.modelValues.includes('auto') || !ui.modelValues.includes('performance')) {
     throw new Error(`Qoder CN controls mismatch: ${JSON.stringify(ui)}`);

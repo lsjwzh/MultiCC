@@ -593,6 +593,15 @@
           <select id="ai-model" style="width:100%;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:8px 10px;outline:none;margin-bottom:8px;"></select>
           <input id="ai-model-custom" type="text" placeholder="模型 ID" style="width:100%;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;display:none;">
         </div>
+        <div id="ai-sub-section">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+            <span style="font-size:13px;font-weight:600;color:var(--chat-text, #c9d1d9);white-space:nowrap;">子任务</span>
+            <select id="ai-sub-provider" style="flex:1 1 0;min-width:0;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:8px 10px;outline:none;"></select>
+            <select id="ai-sub-model" style="flex:1 1 0;min-width:0;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:8px 10px;outline:none;"></select>
+          </div>
+          <input id="ai-sub-model-custom" type="text" placeholder="模型 ID" style="width:100%;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:8px 10px;outline:none;margin-bottom:8px;display:none;">
+          <div style="font-size:11px;color:var(--chat-muted, #8b949e);line-height:1.45;margin-bottom:14px;">子 agent 走的 provider+model（经本地协议代理路由，与主进程隔离）。只挑线路不挑模型 = 没设，随主。</div>
+        </div>
         <div id="ai-effort-section">
           <label id="ai-effort-label" style="display:block;font-size:12px;color:var(--chat-muted, #8b949e);margin-bottom:5px;">${effortLabel(cli)}</label>
           <select id="ai-effort" style="width:100%;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:8px 10px;outline:none;margin-bottom:14px;"></select>
@@ -603,16 +612,6 @@
           <div style="font-size:11px;color:var(--chat-muted, #8b949e);line-height:1.45;margin-bottom:8px;">对应原生 <code>--agent</code>，用于选择该 CLI 已定义的主 agent；它不同于下面的子任务路由。留空使用 CLI 默认 agent。</div>
           <input id="ai-agent" type="text" list="ai-agent-list" maxlength="80" placeholder="${cli === 'opencode' ? '例如 build' : '已定义的 agent 名称'}" style="width:100%;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:8px 10px;outline:none;margin-bottom:14px;">
           <datalist id="ai-agent-list">${cli === 'opencode' ? '<option value="build"></option>' : ''}</datalist>
-        </div>
-        <div id="ai-sub-section">
-          <div style="height:1px;background:var(--chat-line, #30363d);margin:4px 0 14px;"></div>
-          <div style="font-size:13px;font-weight:600;margin-bottom:2px;">子任务 (subagent)</div>
-          <div style="font-size:11px;color:var(--chat-muted, #8b949e);line-height:1.45;margin-bottom:10px;">子 agent 走的 provider+model（经本地协议代理路由，与主进程隔离）。留空=随主。</div>
-          <label style="display:block;font-size:12px;color:var(--chat-muted, #8b949e);margin-bottom:5px;">子任务 Provider</label>
-          <select id="ai-sub-provider" style="width:100%;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:8px 10px;outline:none;margin-bottom:10px;"></select>
-          <label style="display:block;font-size:12px;color:var(--chat-muted, #8b949e);margin-bottom:5px;">子任务 Model</label>
-          <select id="ai-sub-model" style="width:100%;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:8px 10px;outline:none;margin-bottom:6px;"></select>
-          <input id="ai-sub-model-custom" type="text" placeholder="模型 ID" style="width:100%;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:8px 10px;outline:none;display:none;">
         </div>`;
       footer.innerHTML = `
         <button id="ai-cancel" class="multicc-modal-btn" style="${MODAL_BTN_GHOST}">取消</button>
@@ -671,12 +670,15 @@
         ? config.effort
         : defaultEffort(cli);
 
+      // 子任务：provider 配置后面的一行尾巴（线路 + 模型）。模型空 = 没设子任务，
+      // 整条回落成「随主」。线路留空时模型候选跟主线路同源 —— Auto 档下主线路是
+      // 池子里排第一的那条，所以候选要等 autoEditor 挂载完才能算准。
       const subProviderSelect = box.querySelector('#ai-sub-provider');
       const subModelSelect = box.querySelector('#ai-sub-model');
       const subCustomModel = box.querySelector('#ai-sub-model-custom');
       const subDefault = document.createElement('option');
       subDefault.value = '';
-      subDefault.textContent = '默认（随主）';
+      subDefault.textContent = '随主';
       subProviderSelect.appendChild(subDefault);
       for (const provider of providersOf(state)) {
         if (cli === 'codex' && provider.isOfficial) continue;
@@ -685,44 +687,55 @@
         option.textContent = providerLabel(provider, false) + providerLimitLabel(provider, state.translate, Date.now());
         subProviderSelect.appendChild(option);
       }
-      const initialSubagent = config.subagent && config.subagent.providerId ? config.subagent : null;
-      subProviderSelect.value = initialSubagent ? initialSubagent.providerId : '';
+      const initialSubagent = config.subagent && config.subagent.model ? config.subagent : null;
+      subProviderSelect.value = initialSubagent?.providerId || '';
+      let autoEditorRef = null;
+
+      function primaryProviderId() {
+        if (autoProtocolFromValue(providerSelect.value) && autoEditorRef) {
+          const read = autoEditorRef.read();
+          const first = read && read.ok ? read.value.candidates[0] : null;
+          if (first && first.providerId) return first.providerId;
+        }
+        return providerSelect.value;
+      }
 
       function syncSubCustom() {
         subCustomModel.style.display = subModelSelect.value === '__custom__' ? '' : 'none';
       }
       function rebuildSubModels(providerId, preferred) {
-        let selected = normalizeModel(providerId, preferred || '', state);
-        const choices = buildModelChoices(providerId, state);
+        // 首项固定是「不设置」：只挑线路不挑模型 = 没设，交上去就是 null。
+        const choices = buildModelChoices(providerId, state)
+          .filter(value => value && value !== '__custom__');
+        const selected = normalizeModel(providerId, preferred || '', state);
         subModelSelect.innerHTML = '';
+        const none = document.createElement('option');
+        none.value = '';
+        none.textContent = '不设置';
+        subModelSelect.appendChild(none);
         for (const value of choices) {
           const option = document.createElement('option');
           option.value = value;
           option.textContent = modelChoiceLabel(value, providerId, state);
           subModelSelect.appendChild(option);
         }
-        if (!selected) selected = defaultModelChoice(providerId, state);
-        const known = choices.includes(selected);
-        subModelSelect.value = known ? selected : (selected ? '__custom__' : choices[0]);
-        subCustomModel.value = known ? '' : selected;
+        const custom = document.createElement('option');
+        custom.value = '__custom__';
+        custom.textContent = translate(state, 'custom');
+        subModelSelect.appendChild(custom);
+        const known = !!selected && choices.includes(selected);
+        subModelSelect.value = known ? selected : (selected ? '__custom__' : '');
+        subCustomModel.value = known ? '' : (selected && selected !== '__custom__' ? selected : '');
         syncSubCustom();
       }
       function refreshSubUi() {
-        const providerId = subProviderSelect.value;
-        subModelSelect.disabled = !providerId;
-        subCustomModel.disabled = !providerId;
-        if (providerId) {
-          const preferred = initialSubagent && providerId === initialSubagent.providerId
-            ? initialSubagent.model
-            : '';
-          rebuildSubModels(providerId, preferred);
-        } else {
-          subModelSelect.innerHTML = '<option value="">（随主）</option>';
-          subModelSelect.value = '';
-          syncSubCustom();
-        }
+        const line = subProviderSelect.value;
+        const providerId = line || primaryProviderId();
+        const preferred = initialSubagent && initialSubagent.providerId === providerId
+          ? initialSubagent.model
+          : '';
+        rebuildSubModels(providerId, preferred);
       }
-      refreshSubUi();
       subProviderSelect.onchange = refreshSubUi;
       subModelSelect.onchange = () => {
         syncSubCustom();
@@ -735,9 +748,13 @@
         providers: providersOf(state),
         protocol: autoProtocolFromValue(providerSelect.value),
         initialSelection: configuredAuto,
+        // 池子里换人会让「随主」的模型候选跟着换 —— 尾巴得重算。
+        onChange: () => refreshSubUi(),
         formatProvider: provider => providerLabel(provider, false)
           + providerLimitLabel(provider, state.translate, Date.now()),
       });
+      autoEditorRef = autoEditor;
+      refreshSubUi();
 
       function syncAutoEditor() {
         const protocol = autoProtocolFromValue(providerSelect.value);
@@ -794,11 +811,13 @@
         const selectedModel = modelSelect.value === '__custom__'
           ? customModel.value.trim()
           : modelSelect.value;
-        const childProviderId = subProviderSelect.value;
-        const childModel = childProviderId
-          ? (subModelSelect.value === '__custom__' ? subCustomModel.value.trim() : subModelSelect.value)
-          : '';
+        // 尾巴：模型有值才算设了子任务。线路留空时落到这一轮实际生效的主
+        // Provider 上（Auto 档下就是池子里排第一的那条，和上面的 provider 同一个）。
         const primary = providerSelection && providerSelection.candidates[0];
+        const childProviderId = subProviderSelect.value || (primary ? primary.providerId : providerSelect.value);
+        const childModel = subModelSelect.value === '__custom__'
+          ? subCustomModel.value.trim()
+          : subModelSelect.value;
         close({
           provider: primary ? primary.providerId : providerSelect.value,
           providerSelection,
