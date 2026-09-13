@@ -171,6 +171,43 @@ class AirSnapshot {
 
 /// `/api/air` 的客户端。Air 的任务创建是三步事务（建任务 → 绑角色 → 发第一条
 /// 消息），所以三步都收在这里，界面不需要知道中间的 clientMsgId 约定。
+/// 任务的一个角色绑定：名字 + 说明。一个任务最多 8 个，上限由服务端把关
+/// （src/task-shell/role-bindings.js），这里不重复实现一遍。
+class AirRoleBinding {
+  const AirRoleBinding({required this.name, required this.prompt});
+
+  final String name;
+  final String prompt;
+
+  static AirRoleBinding fromJson(Map<String, dynamic> json) => AirRoleBinding(
+    name: '${json['name'] ?? ''}',
+    prompt: '${json['prompt'] ?? ''}',
+  );
+
+  Map<String, dynamic> toJson() => {'name': name, 'prompt': prompt};
+}
+
+/// 任务当前的角色绑定，连同它的版本号。写回时必须带上这个版本 —— 没有它就
+/// 成了盲写，两个页面同时改会互相覆盖。
+class AirRoleBindings {
+  const AirRoleBindings({required this.version, required this.bindings});
+
+  const AirRoleBindings.empty() : version = 0, bindings = const [];
+
+  final int version;
+  final List<AirRoleBinding> bindings;
+
+  static AirRoleBindings fromJson(Map<String, dynamic>? json) {
+    if (json == null) return const AirRoleBindings.empty();
+    return AirRoleBindings(
+      version: (json['version'] as num?)?.toInt() ?? 0,
+      bindings: ((json['bindings'] as List?) ?? const [])
+          .map((e) => AirRoleBinding.fromJson((e as Map).cast<String, dynamic>()))
+          .toList(),
+    );
+  }
+}
+
 class AirService {
   AirService({required this.settings, http.Client? httpClient})
     : _http = httpClient ?? http.Client(),
@@ -236,12 +273,14 @@ class AirService {
 
   /// 建任务。第一条消息由 [sendFirstMessage] 单独发出，中途失败时任务已经存在
   /// —— Web Air 会退回目录并把草稿留在会话存储里，这里用同样的顺序。
+  ///
+  /// 角色不在这里传：它们建完任务后用 [updateRoles] 写下去，因为绑定说的是
+  /// 「下一条消息」而不是「这个任务的身份」（同 Web Air）。
   Future<String> createTask({
     required String dirId,
     required String title,
     required String clientMsgId,
     String? cli,
-    String? rolePrompt,
   }) async {
     final result = await _request(
       '/api/air/tasks',
@@ -250,8 +289,6 @@ class AirService {
         'title': title,
         'clientMsgId': clientMsgId,
         if (cli != null && cli.isNotEmpty) 'cli': cli,
-        if (rolePrompt != null && rolePrompt.trim().isNotEmpty)
-          'rolePrompt': rolePrompt.trim(),
       },
     );
     return '${result['taskId']}';
@@ -278,6 +315,29 @@ class AirService {
         },
     },
   );
+
+  /// 写入任务的角色绑定。`expectedVersion` 是打开编辑器时读到的版本，
+  /// `clientMsgId` 让重试不会变成第二次修改 —— 同一个 id 配同样的内容，服务端
+  /// 直接返回上一次的结果；内容不同才会报 `idempotency_conflict`。
+  Future<AirRoleBindings> updateRoles(
+    String taskId, {
+    required int expectedVersion,
+    required List<AirRoleBinding> bindings,
+    required String clientMsgId,
+  }) async {
+    final result = await _request(
+      '/api/air/tasks/${Uri.encodeComponent(taskId)}/roles',
+      method: 'POST',
+      body: {
+        'bindings': bindings.map((b) => b.toJson()).toList(),
+        'expectedVersion': expectedVersion,
+        'clientMsgId': clientMsgId,
+      },
+    );
+    return AirRoleBindings.fromJson(
+      (result['roleBindings'] as Map?)?.cast<String, dynamic>(),
+    );
+  }
 
   Future<void> addDirectory({
     required String name,
