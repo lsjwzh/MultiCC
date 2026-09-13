@@ -15,6 +15,7 @@ import '../providers/chat_provider.dart';
 import '../providers/session_manager.dart';
 import '../services/chat_service.dart';
 import '../services/manage_service.dart';
+import '../services/scheduled_send_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../utils/session_status_helpers.dart';
@@ -26,6 +27,8 @@ import '../widgets/chat_header.dart';
 import '../widgets/chat_runtime_panels.dart';
 import '../widgets/conflict_diff_dialog.dart';
 import '../widgets/dispatch_floating_dock.dart';
+import '../widgets/scheduled_send_dock.dart';
+import '../widgets/scheduled_send_store.dart';
 import '../widgets/session_diff_dialog.dart';
 import '../widgets/input_bar.dart';
 import '../widgets/message_bubble.dart';
@@ -82,6 +85,20 @@ class _ChatViewState extends State<ChatView> {
   // reported via onAnchorChanged so the background-tasks dock can yield to
   // it. Plain field, no setState — reading it next build is enough.
   FloatingDockAnchor? _dispatchAnchor;
+
+  // Same, for the background-tasks dock: the scheduled-send dock yields to
+  // both, so three floaters can coexist without stacking.
+  FloatingDockAnchor? _backgroundAnchor;
+
+  // 定时发送（Web 的 chat-scheduled-send.js）：一份 store 喂两个入口 ——
+  // 输入栏的 ⏱ 和待执行时出现的悬浮球。
+  ScheduledSendStore? _scheduledSend;
+  String? _scheduledSendSession;
+
+  /// 输入框把自己的「草稿读取器」放在这儿。从悬浮球排队时也要能读到输入框里
+  /// 已经写好的那句话 —— 面板本身不碰输入框，只拿着这个回调问一次。
+  final ValueNotifier<ScheduledSendDraftReader?> _scheduleDraftSink =
+      ValueNotifier<ScheduledSendDraftReader?>(null);
 
   // ── Deep-link focus (task-board "jump to message") ───────────────────────
   // Resolved at most once, after the initial history page is applied. The fade
@@ -188,7 +205,23 @@ class _ChatViewState extends State<ChatView> {
     _composerFocus.dispose();
     _mergeTimer?.cancel();
     _livenessTimer?.cancel();
+    _scheduledSend?.dispose();
+    _scheduleDraftSink.dispose();
     super.dispose();
+  }
+
+  /// 定时发送跟着会话走：换会话就换一份 —— 待执行列表、角标条数、幂等键都是
+  /// 这个会话的，串了会把消息排到别的会话去。
+  void _syncScheduledSend(String session) {
+    if (_scheduledSend != null && _scheduledSendSession == session) return;
+    _scheduledSend?.dispose();
+    _scheduledSendSession = session;
+    _scheduledSend = session.isEmpty
+        ? null
+        : (ScheduledSendStore(
+            service: ScheduledSendService(settings: widget.settings),
+            sessionId: session,
+          )..start());
   }
 
   @override
@@ -196,6 +229,7 @@ class _ChatViewState extends State<ChatView> {
     super.didChangeDependencies();
     final provider = context.watch<ChatProvider>();
     final session = provider.executionSessionName;
+    _syncScheduledSend(session);
     if (session == _polledSession) return;
     _polledSession = session;
     _lastWarnedBehind = 0; // reset warning state when switching sessions
@@ -510,6 +544,8 @@ class _ChatViewState extends State<ChatView> {
                     child: InputBar(
                       controller: _composerCtrl,
                       focusNode: _composerFocus,
+                      scheduledSend: _scheduledSend,
+                      draftSink: _scheduleDraftSink,
                       onPickSubagent: () => openAIConfigSheet(
                         context,
                         settings: widget.settings,
@@ -538,6 +574,16 @@ class _ChatViewState extends State<ChatView> {
                 rows: provider.backgroundTaskRows(),
                 onDismiss: provider.dismissBackgroundTask,
                 obstacle: _dispatchAnchor,
+                onAnchorChanged: (sideRight, top) {
+                  final next = FloatingDockAnchor(sideRight: sideRight, top: top);
+                  if (_backgroundAnchor == next) return;
+                  _backgroundAnchor = next;
+                  // 定时发送那个球排在这两个之后，读的是本帧之前的值 —— 同
+                  // 样的 post-frame 提醒，让它下一帧就跟上。
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (mounted) setState(() {});
+                  });
+                },
                 leftMinBottom: 96,
                 rightMinBottom: _bgRightReserve(provider),
               ),
@@ -569,11 +615,30 @@ class _ChatViewState extends State<ChatView> {
                 leftMinBottom: 96,
                 rightMinBottom: _dispatchRightReserve(provider),
               ),
+            // 定时发送的悬浮球：有待执行的消息才出现。排在最后、优先级最低，
+            // 同侧要让位给派发和后台任务两个入口 —— 两个 anchor 一起递进去。
+            if (_scheduledSend != null)
+              ScheduledSendDock(
+                key: ValueKey('schedule-${provider.sessionName}'),
+                store: _scheduledSend!,
+                onDraft: _readComposerDraft,
+                obstacle: _dispatchAnchor,
+                extraObstacles: [
+                  if (_backgroundAnchor != null) _backgroundAnchor!,
+                ],
+                leftMinBottom: 96,
+                rightMinBottom: _dispatchRightReserve(provider),
+              ),
           ],
         ),
       ),
     );
   }
+
+  /// 悬浮球展开的面板要草稿时回头问输入框要。输入框还没挂载（第一帧）就给
+  /// 空的 —— 面板会照常报「请先在输入框填写要发送的消息」。
+  ScheduledSendDraft _readComposerDraft() =>
+      _scheduleDraftSink.value?.call() ?? const ScheduledSendDraft(text: '');
 
   /// Bottom clearance the dispatch dock must respect when snapped to the
   /// right edge: the input bar always, plus the pending-input FAB when it is
