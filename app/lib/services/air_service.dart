@@ -217,20 +217,36 @@ class AirService {
   final http.Client _http;
   final bool _ownsClient;
 
-  Future<Map<String, dynamic>> _request(
-    String path, {
+  /// 读。写要走 [_post] —— 这里刻意不留一个「可选的方法」参数：它默认 GET 的
+  /// 时候，建任务、发第一条消息、加目录三个调用点全都静悄悄变成了带 body 的
+  /// GET（body 进不了请求，服务端当它不存在），而界面看起来一切正常。
+  Future<Map<String, dynamic>> _get(String path) => _send('GET', path);
+
+  /// 写。第二个参数是请求体，空对象也行 —— 有些路由（核验交付）本来就没有参数。
+  Future<Map<String, dynamic>> _post(
+    String path, [
     Map<String, dynamic>? body,
-    String method = 'GET',
-  }) async {
+  ]) => _send('POST', path, body);
+
+  Future<Map<String, dynamic>> _send(
+    String method,
+    String path, [
+    Map<String, dynamic>? body,
+  ]) async {
     final uri = Uri.parse(settings.buildHttpUrl(path));
     final headers = {
       'Content-Type': 'application/json',
       'X-Access-Token': settings.token,
     };
-    final response = await (method == 'GET'
-            ? _http.get(uri, headers: headers)
-            : _http.post(uri, headers: headers, body: jsonEncode(body ?? {})))
-        .timeout(const Duration(seconds: 30));
+    final response =
+        await (method == 'GET'
+                ? _http.get(uri, headers: headers)
+                : _http.post(
+                    uri,
+                    headers: headers,
+                    body: jsonEncode(body ?? {}),
+                  ))
+            .timeout(const Duration(seconds: 30));
     final raw = utf8.decode(response.bodyBytes);
     Map<String, dynamic> result;
     try {
@@ -253,12 +269,12 @@ class AirService {
   }
 
   Future<AirSnapshot> load() async =>
-      AirSnapshot.fromJson(await _request('/api/air'));
+      AirSnapshot.fromJson(await _get('/api/air'));
 
   /// 任务行点开时用它换出可以续接的会话：只读（观察来的）任务只能回到它原来的
   /// 会话，不能在这里接管。
   Future<Map<String, dynamic>> openTask(String taskId) =>
-      _request('/api/air/tasks/${Uri.encodeComponent(taskId)}');
+      _get('/api/air/tasks/${Uri.encodeComponent(taskId)}');
 
   /// 同一个端点，但读的是详情而不是会话：`attribution` / `execution` 只在这一份
   /// 响应里，任务行上那份 `/api/air` 快照没有它们。
@@ -266,31 +282,32 @@ class AirService {
 
   /// 重新核验本轮代码的合并记录。它只刷新「交付到哪儿了」这条记录，归属本身仍
   /// 以完整交付条件为准（同 Web `reconcileDelivery`）。
-  Future<void> reconcileDelivery(String taskId) => _request(
-    '/api/air/tasks/${Uri.encodeComponent(taskId)}/delivery/reconcile',
-    method: 'POST',
-  );
+  Future<void> reconcileDelivery(String taskId) =>
+      _post('/api/air/tasks/${Uri.encodeComponent(taskId)}/delivery/reconcile');
 
   /// 建任务。第一条消息由 [sendFirstMessage] 单独发出，中途失败时任务已经存在
   /// —— Web Air 会退回目录并把草稿留在会话存储里，这里用同样的顺序。
   ///
   /// 角色不在这里传：它们建完任务后用 [updateRoles] 写下去，因为绑定说的是
   /// 「下一条消息」而不是「这个任务的身份」（同 Web Air）。
+  ///
+  /// [runtime] 是输入区那颗 AI 药丸里攒下的线路（CLI / Provider / 模型 / 推理
+  /// 强度）。它必须跟着创建一起写下去 —— 任务建好之后再补，第一条消息已经按
+  /// 默认线路发出去了。空字段不发，交给服务端用目录默认值填。
   Future<String> createTask({
     required String dirId,
     required String title,
     required String clientMsgId,
     String? cli,
+    Map<String, dynamic> runtime = const {},
   }) async {
-    final result = await _request(
-      '/api/air/tasks',
-      body: {
-        'dirId': dirId,
-        'title': title,
-        'clientMsgId': clientMsgId,
-        if (cli != null && cli.isNotEmpty) 'cli': cli,
-      },
-    );
+    final result = await _post('/api/air/tasks', {
+      'dirId': dirId,
+      'title': title,
+      'clientMsgId': clientMsgId,
+      if (cli != null && cli.isNotEmpty) 'cli': cli,
+      ...runtime,
+    });
     return '${result['taskId']}';
   }
 
@@ -301,20 +318,17 @@ class AirService {
     bool goal = false,
     int? goalRounds,
     int? goalBudget,
-  }) => _request(
-    '/api/task-shell-tasks/${Uri.encodeComponent(taskId)}/messages',
-    body: {
-      'text': text,
-      'clientMsgId': clientMsgId,
-      'intent': 'work',
-      if (goal) 'goal': true,
-      if (goal)
-        'goalLimits': {
-          if (goalRounds != null) 'rounds': goalRounds,
-          if (goalBudget != null) 'tokenBudget': goalBudget,
-        },
-    },
-  );
+  }) => _post('/api/task-shell-tasks/${Uri.encodeComponent(taskId)}/messages', {
+    'text': text,
+    'clientMsgId': clientMsgId,
+    'intent': 'work',
+    if (goal) 'goal': true,
+    if (goal)
+      'goalLimits': {
+        if (goalRounds != null) 'rounds': goalRounds,
+        if (goalBudget != null) 'tokenBudget': goalBudget,
+      },
+  });
 
   /// 写入任务的角色绑定。`expectedVersion` 是打开编辑器时读到的版本，
   /// `clientMsgId` 让重试不会变成第二次修改 —— 同一个 id 配同样的内容，服务端
@@ -325,27 +339,19 @@ class AirService {
     required List<AirRoleBinding> bindings,
     required String clientMsgId,
   }) async {
-    final result = await _request(
-      '/api/air/tasks/${Uri.encodeComponent(taskId)}/roles',
-      method: 'POST',
-      body: {
-        'bindings': bindings.map((b) => b.toJson()).toList(),
-        'expectedVersion': expectedVersion,
-        'clientMsgId': clientMsgId,
-      },
-    );
+    final result =
+        await _post('/api/air/tasks/${Uri.encodeComponent(taskId)}/roles', {
+          'bindings': bindings.map((b) => b.toJson()).toList(),
+          'expectedVersion': expectedVersion,
+          'clientMsgId': clientMsgId,
+        });
     return AirRoleBindings.fromJson(
       (result['roleBindings'] as Map?)?.cast<String, dynamic>(),
     );
   }
 
-  Future<void> addDirectory({
-    required String name,
-    required String path,
-  }) => _request(
-    '/api/directories',
-    body: {'name': name, 'path': path, 'create': false},
-  );
+  Future<void> addDirectory({required String name, required String path}) =>
+      _post('/api/directories', {'name': name, 'path': path, 'create': false});
 
   void close() {
     if (_ownsClient) _http.close();
@@ -390,10 +396,7 @@ class AirLocalStore {
   Future<void> rememberTask(String taskId) async {
     final next = recentTasks.toList()..remove(taskId);
     next.insert(0, taskId);
-    await _prefs.setStringList(
-      _recentKey,
-      next.take(_recentLimit).toList(),
-    );
+    await _prefs.setStringList(_recentKey, next.take(_recentLimit).toList());
   }
 
   /// 收藏/最近里指向已经被删掉的目录或任务时，把它们从两份记录里清出去，免得
@@ -431,7 +434,8 @@ class AirCreateAttempt {
     String fingerprint,
     AirCreateAttempt? previous,
   ) {
-    if (previous != null && previous.fingerprint == fingerprint) return previous;
+    if (previous != null && previous.fingerprint == fingerprint)
+      return previous;
     return AirCreateAttempt(fingerprint, _nextId(), _nextId());
   }
 }
