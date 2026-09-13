@@ -69,8 +69,16 @@ async function fetchZhipuUsage(preferHost, nowMs = Date.now(), deps = {}) {
 
   const sites = await Promise.all(ordered.map(async (t) => {
     let dto = null;
-    try { dto = await poll(t, nowMs); } catch (_) { dto = null; }
-    if (!dto) return { host: t.host, site: siteLabel(t.host), ok: false };
+    let failureDetail = null;
+    try {
+      dto = await poll(t, nowMs);
+    } catch (error) {
+      dto = null;
+      failureDetail = error && error.kind === 'limit_fetch_failed' && error.detail
+        ? error.detail
+        : String((error && error.message) || error).slice(0, 300);
+    }
+    if (!dto) return { host: t.host, site: siteLabel(t.host), ok: false, ...(failureDetail ? { error: failureDetail } : {}) };
     const usedPercent = finite(dto.utilization) !== null
       ? Math.round(dto.utilization * 100 * 1000) / 1000
       : null;

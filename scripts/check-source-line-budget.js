@@ -29,6 +29,13 @@ const MIGRATION_DEBT = Object.freeze({
     ceiling: 3018,
     byteCeiling: 144931,
   }),
+  // app/lib/screens/main_shell.dart crossed 3000 in 039c6e43 (跨目录控制台).
+  // Registered so the gate keeps tracking it; the next main_shell split must
+  // ratchet this ceiling down.
+  'app/lib/screens/main_shell.dart': Object.freeze({
+    ceiling: 3010,
+    byteCeiling: 114227,
+  }),
   // public/manage.js crossed 3000 in b4427cf before the budget gate caught it;
   // paid back down to 2632 by splitting the aux-history UI (modal/panel/ws,
   // plus handleAuxHealth and the synchronous auxConnect init) into

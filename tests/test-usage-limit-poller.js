@@ -54,12 +54,11 @@ test('GLM adapter: warning >=80%, rejected >=100%', async () => {
   assert.strictEqual((await mk(100)).status, 'rejected');
 });
 
-test('GLM adapter tolerates shape drift → null (never throws)', async () => {
+test('GLM adapter tolerates shape drift → null; HTTP failure throws with cause', async () => {
   const nullCases = [
     () => okJson({ nope: true }),
     () => okJson({ data: { limits: [{ type: 'TIME_LIMIT', percentage: 5 }] } }), // no TOKENS_LIMIT
     () => okJson({ data: { limits: 'not-an-array' } }),
-    () => ({ ok: false, status: 401, json: async () => ({}) }),
   ];
   for (const h of nullCases) {
     await withFetch(h, async () => {
@@ -67,6 +66,14 @@ test('GLM adapter tolerates shape drift → null (never throws)', async () => {
       assert.strictEqual(dto, null);
     });
   }
+  // HTTP-level failures surface the status (and body snippet) instead of a
+  // silent null — the layered-root-cause contract.
+  await withFetch(() => ({ ok: false, status: 401, text: async () => '{"error":"denied"}', json: async () => ({}) }), async () => {
+    await assert.rejects(
+      poller.pollGlmMonitor({ host: 'open.bigmodel.cn', apiKey: 'k' }, 0),
+      (error) => error.kind === 'limit_fetch_failed' && /HTTP 401/.test(error.detail),
+    );
+  });
 });
 
 test('DeepSeek adapter maps prepaid balance with Bearer auth', async () => {
@@ -311,13 +318,12 @@ test('relay adapter passes a balance DTO through unchanged', async () => {
   );
 });
 
-test('relay adapter: lender failure / bad shape / bad kind / degenerate target → null', async () => {
+test('relay adapter: lender failure / bad shape / bad kind / degenerate target → null or thrown cause', async () => {
   const nullCases = [
-    [() => ({ ok: false, status: 200, json: async () => ({ ok: false, reason: 'fetch_failed' }) }), 'lender reported failure'],
+    [() => ({ ok: true, status: 200, json: async () => ({ ok: false, reason: 'fetch_failed' }) }), 'lender reported failure without detail'],
     [() => ({ ok: true, status: 200, json: async () => ({ ok: true }) }), 'missing dto'],
     [() => ({ ok: true, status: 200, json: async () => ({ ok: true, dto: { kind: 'surprise' } }) }), 'unknown dto kind'],
     [() => ({ ok: true, status: 200, json: async () => ({ ok: true, dto: { kind: 'window', utilization: 'high' } }) }), 'non-numeric utilization'],
-    [() => ({ ok: false, status: 503, json: async () => ({}) }), 'HTTP 503 from lender'],
   ];
   for (const [respond, label] of nullCases) {
     await withFetch(
@@ -328,6 +334,19 @@ test('relay adapter: lender failure / bad shape / bad kind / degenerate target �
     );
   }
   // Degenerate targets never fetch.
+  // HTTP-level failures and lender-supplied details throw with the cause.
+  await withFetch(() => ({ ok: false, status: 503, text: async () => 'busy', json: async () => ({}) }), async () => {
+    await assert.rejects(
+      poller.pollRelayQuota(RELAY_TARGET, 0),
+      (error) => error.kind === 'limit_fetch_failed' && /HTTP 503/.test(error.detail),
+    );
+  });
+  await withFetch(() => okJson({ ok: false, reason: 'fetch_failed', detail: 'HTTP 401 bad key' }), async () => {
+    await assert.rejects(
+      poller.pollRelayQuota(RELAY_TARGET, 0),
+      (error) => error.kind === 'limit_fetch_failed' && /lender: HTTP 401 bad key/.test(error.detail),
+    );
+  });
   await withFetch(
     () => { throw new Error('should not fetch'); },
     async (calls) => {

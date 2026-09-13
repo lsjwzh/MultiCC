@@ -105,12 +105,17 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
     return recordDto(id.appType, id.providerId, dto);
   }
 
-  // Provider-balance per-provider result: { ok:true, dto } | { ok:false, reason }.
+  // Provider-balance per-provider result: { ok:true, dto } | { ok:false, reason, detail? }.
+  // `detail` (when present) is the layered root cause — HTTP status + body
+  // snippet or the OS errno chain — and outranks the generic reason so the
+  // cache's last_error column records why, not just that, a fetch failed.
   function recordProvider(appType, providerId, result) {
     if (!providerId) return null;
     if (!result || result.ok === false) {
       cache.recordFailure(appType, providerId, {
-        error: result && (result.reason || result.error) ? String(result.reason || result.error) : null,
+        error: result && (result.detail || result.reason || result.error)
+          ? String(result.detail || result.reason || result.error).slice(0, 200)
+          : null,
         code: result && result.code ? String(result.code) : null,
       });
       return null;

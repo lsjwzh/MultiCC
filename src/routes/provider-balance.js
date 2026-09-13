@@ -45,7 +45,18 @@ function quotaBarFor(appType, strategy, dto, fetchedAt) {
 // normalize it to a balance DTO so the caller handles one kind per strategy.
 async function pollKimiBalance(target, nowMs, timeoutMs, fetchImpl = fetchKimiBalance) {
   const result = await fetchImpl(target, timeoutMs);
-  if (!result || result.error) return null;
+  if (!result || result.error) {
+    // Surface the concrete reason (auth_rejected / HTTP status / transport
+    // errno chain) instead of flattening it into a bare fetch_failed.
+    const detail = result && result.detail
+      ? result.detail
+      : `kimi balance fetch failed: ${(result && result.reason) || 'no result'}`
+        + (result && result.httpStatus ? ` (HTTP ${result.httpStatus})` : '');
+    const error = new Error(`limit fetch failed: ${detail}`);
+    error.kind = 'limit_fetch_failed';
+    error.detail = detail;
+    throw error;
+  }
   if (typeof result.available !== 'number') return null;
   return {
     kind: 'balance',
@@ -88,13 +99,22 @@ function createProviderBalanceRuntime(options = {}) {
       return { ok: false, reason: 'unsupported', providerId: id, appType: provider.appType };
     }
     let dto = null;
+    let failureDetail = null;
     try {
       dto = await adapters[target.strategy](target, now());
-    } catch (_) {
+    } catch (error) {
       dto = null;
+      // Preserve the layered root cause (HTTP status + body / OS errno chain)
+      // instead of flattening every failure to an opaque "fetch_failed".
+      failureDetail = error && error.kind === 'limit_fetch_failed' && error.detail
+        ? error.detail
+        : String((error && error.message) || error).slice(0, 300);
     }
     if (!dto) {
-      const failure = { ok: false, reason: 'fetch_failed', providerId: id, appType: provider.appType, strategy: target.strategy };
+      const failure = {
+        ok: false, reason: 'fetch_failed', providerId: id, appType: provider.appType, strategy: target.strategy,
+        ...(failureDetail ? { detail: failureDetail } : {}),
+      };
       if (onResult) { try { onResult(provider.appType, id, failure); } catch (_) {} }
       return failure;
     }
