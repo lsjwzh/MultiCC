@@ -14,6 +14,7 @@ import '../services/settings_service.dart';
 import '../theme.dart';
 import 'air/air_panels.dart';
 import 'air/air_sidebar.dart';
+import 'air/air_task_details.dart';
 import 'task_board_view.dart';
 import 'workspace_navigation_drawer.dart';
 
@@ -176,6 +177,50 @@ class _AirTasksViewState extends State<AirTasksView>
     } finally {
       _opening = false;
     }
+  }
+
+  /// 任务详情：Web Air 是右侧那一栏，手机上没有地方并排放，所以做成从下方升起
+  /// 的一层。它自己拉 `/api/air/tasks/:id`，「进入对话」把这一层换成聊天页。
+  Future<void> _openDetails(AirTask task) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppColors.bg,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(
+          top: Radius.circular(AppColors.radiusPanel),
+        ),
+      ),
+      builder: (sheetContext) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.82,
+        maxChildSize: 0.94,
+        minChildSize: 0.4,
+        builder: (context, controller) => Column(
+          children: [
+            const SizedBox(height: 8),
+            Container(
+              width: 38,
+              height: 4,
+              decoration: BoxDecoration(
+                color: AppColors.line,
+                borderRadius: BorderRadius.circular(AppColors.radiusPill),
+              ),
+            ),
+            Expanded(
+              child: AirTaskDetailsPanel(
+                taskId: task.id,
+                service: _service,
+                onOpenConversation: () {
+                  Navigator.pop(sheetContext);
+                  unawaited(_open(task));
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   /// 描述一段话就建一个任务，并把这段话作为第一条消息发出去。三步的顺序不能
@@ -705,6 +750,17 @@ class _AirTasksViewState extends State<AirTasksView>
               child: AirTaskTile(
                 task: task,
                 onTap: () => unawaited(_open(task)),
+                trailing: IconButton(
+                  key: ValueKey('air-task-details-${task.id}'),
+                  onPressed: () => unawaited(_openDetails(task)),
+                  iconSize: 18,
+                  visualDensity: VisualDensity.compact,
+                  tooltip: '任务详情',
+                  icon: const Icon(
+                    Icons.info_outline_rounded,
+                    color: AppColors.faint,
+                  ),
+                ),
               ),
             ),
         ],
