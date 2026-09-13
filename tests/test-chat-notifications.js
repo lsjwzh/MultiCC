@@ -222,6 +222,32 @@ async function main() {
   assert.strictEqual(raceButton.disabled, false);
   raceController.destroy();
 
+  // Air 把切走的对话帧留在 DOM 里（public/air.js 的帧池），那种帧照旧收消息。
+  // 它不该出声：声音从一个看不见的帧里出来，用户会以为出事的是正在看的那个任务。
+  // 所以 isActive 为假时整条通知都不发 —— 系统通知、提示条、朗读都不发，而且不吃
+  // 掉冷却时间（切回来之后该响的还要响）。这里让 document 报 hidden，走的正是
+  // 「发系统通知」那条分支，被挡下来的就是它。
+  const parkedNotifications = [];
+  let parkedActive = false;
+  const parkedController = api.createNotificationController({
+    window,
+    document: fakeTarget({ visibilityState: 'hidden' }),
+    getSessionId: () => 'parked',
+    getTaskNotifyEnabled: () => true,
+    isActive: () => parkedActive,
+    showLocalTaskNotification: (payload) => parkedNotifications.push(payload),
+    now: () => clock,
+  });
+  clock += api.NOTIFY_COOLDOWN + 1;
+  assert.strictEqual(parkedController.speak('后台任务完成', 'succeeded'), false,
+    'a parked conversation frame must stay silent');
+  assert.strictEqual(parkedNotifications.length, 0, 'a parked frame raises no system notification');
+  parkedActive = true;
+  assert.strictEqual(parkedController.speak('后台任务完成', 'succeeded'), true,
+    'coming back to the frame must not have burned the cooldown');
+  assert.strictEqual(parkedNotifications.length, 1);
+  parkedController.destroy();
+
   const moduleSource = fs.readFileSync(MODULE_FILE, 'utf8');
   const chatSource = fs.readFileSync(path.join(ROOT, 'public', 'chat.js'), 'utf8');
   const html = fs.readFileSync(path.join(ROOT, 'public', 'chat.html'), 'utf8');

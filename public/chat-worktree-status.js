@@ -10,7 +10,8 @@
   // The host injects the session id and the two merge controls, and reads
   // `mergeReady` back to decide how to word a merge confirmation.
 
-  function create({ document, tt, withToken, sessionId, mergeButton, mergeHint, api, notice, syncRequest }) {
+  function create({ document, tt, withToken, sessionId, mergeButton, mergeHint, api, notice, syncRequest,
+    isActive = () => true }) {
     let mergeReady = false;
     let syncConflict = false;
     let syncConflictFiles = [];
@@ -210,7 +211,9 @@
     function startMergeStatusPolling() {
       refreshMergeStatus();
       if (mergePollTimer) clearInterval(mergePollTimer);
-      mergePollTimer = setInterval(refreshMergeStatus, 5000);
+      // 帧被 Air 收进池子（人在看别的任务）就跳过这一拍：这条状态没有人在看，问它
+      // 只是白跑一趟接口。手动点 ↻ 走的是 refreshMergeStatus，不受这个开关影响。
+      mergePollTimer = setInterval(() => { if (isActive() !== false) refreshMergeStatus(); }, 5000);
     }
 
     return {
