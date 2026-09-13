@@ -38,10 +38,8 @@ class AirDirectoryLibrary extends StatefulWidget {
     required this.currentDirectoryId,
     required this.tasksOf,
     required this.runningDirectories,
-    required this.favorites,
     required this.onOpen,
     required this.onAddDirectory,
-    required this.onToggleFavorite,
     this.onAction,
     this.addButtonKey,
   });
@@ -52,10 +50,8 @@ class AirDirectoryLibrary extends StatefulWidget {
 
   /// 有任务正在执行的目录 id —— 卡片上那圈运行环用它。
   final Set<String> runningDirectories;
-  final List<String> favorites;
   final ValueChanged<String> onOpen;
   final VoidCallback onAddDirectory;
-  final ValueChanged<String> onToggleFavorite;
 
   /// 卡片 ⋯ 菜单选中了某一件。不给就不摆那颗 ⋯。
   final void Function(AirDirectory directory, AirDirectoryAction action)?
@@ -155,11 +151,8 @@ class _AirDirectoryLibraryState extends State<AirDirectoryLibrary> {
                   directory: rows[index],
                   tasks: widget.tasksOf(rows[index].id),
                   running: widget.runningDirectories.contains(rows[index].id),
-                  favorite: widget.favorites.contains(rows[index].id),
                   current: rows[index].id == widget.currentDirectoryId,
                   onOpen: () => widget.onOpen(rows[index].id),
-                  onToggleFavorite: () =>
-                      widget.onToggleFavorite(rows[index].id),
                   onAction: widget.onAction == null
                       ? null
                       : (action) => widget.onAction!(rows[index], action),
@@ -178,20 +171,16 @@ class _DirectoryCard extends StatelessWidget {
     required this.directory,
     required this.tasks,
     required this.running,
-    required this.favorite,
     required this.current,
     required this.onOpen,
-    required this.onToggleFavorite,
     this.onAction,
   });
 
   final AirDirectory directory;
   final List<AirTask> tasks;
   final bool running;
-  final bool favorite;
   final bool current;
   final VoidCallback onOpen;
-  final VoidCallback onToggleFavorite;
   final ValueChanged<AirDirectoryAction>? onAction;
 
   @override
@@ -266,8 +255,7 @@ class _DirectoryCard extends StatelessWidget {
                       directory.external
                           ? '共享工作区'
                                 '${directory.interactive ? '' : ' · 授权已失效'}'
-                          : '${tasks.length} 个任务 · $active 个未完成'
-                                '${favorite ? ' · 已收藏' : ''}',
+                          : '${tasks.length} 个任务 · $active 个未完成',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
@@ -278,19 +266,6 @@ class _DirectoryCard extends StatelessWidget {
                   ],
                 ),
               ),
-              // 远端工作区不给收藏：收藏是按本机目录 id 存在本机的，为一个远端 id
-              // 存一份只会让「收藏」变成一件看不出区别的事。
-              if (!directory.external)
-                IconButton(
-                  onPressed: onToggleFavorite,
-                  iconSize: 18,
-                  visualDensity: VisualDensity.compact,
-                  tooltip: favorite ? '取消收藏' : '收藏',
-                  icon: Icon(
-                    favorite ? Icons.star_rounded : Icons.star_border_rounded,
-                    color: favorite ? AppColors.accent : AppColors.faint,
-                  ),
-                ),
               if (onAction != null)
                 PopupMenuButton<AirDirectoryAction>(
                   key: ValueKey('air-directory-menu-${directory.id}'),
