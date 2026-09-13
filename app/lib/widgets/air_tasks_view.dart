@@ -10,12 +10,14 @@ import '../screens/docs_registry_screen.dart';
 import '../screens/push_settings_screen.dart';
 import '../screens/settings_screen.dart';
 import '../screens/setup_screen.dart';
+import '../screens/terminal_screen.dart';
 import '../services/air_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
 import 'air/air_console.dart';
 import 'air/air_destinations.dart';
+import 'air/air_new_task_dialog.dart';
 import 'air/air_ops.dart';
 import 'air/air_ops_store.dart';
 import 'air/air_palette.dart';
@@ -77,6 +79,7 @@ class _AirTasksViewState extends State<AirTasksView>
   String? _directoryId;
   String _error = '';
   bool _loading = false, _opening = false, _submitting = false, _foreground = true;
+  bool _openingTerminal = false;
   bool _showAll = false;
   _AirMode _mode = _AirMode.tasks;
   Timer? _timer;
@@ -200,6 +203,38 @@ class _AirTasksViewState extends State<AirTasksView>
     }
   }
 
+  /// 侧栏 TERMINAL 一组点开一行：先换出会话对象，再开终端页。
+  ///
+  /// 三级兜底，因为终端记录不在 `/api/sessions` 的常规可见列表里：先看已经加载
+  /// 的会话表（最完整，带 cwd），再按 id 拉一次，最后用快照里那四个字段自己拼
+  /// 一个 —— `TerminalScreen` 要的就是 id 和 label，不该因为查不到元数据就打不开。
+  Future<void> _openTerminal(AirSession entry) async {
+    _closeDrawer();
+    if (_openingTerminal) return;
+    _openingTerminal = true;
+    try {
+      final mgr = context.read<SessionManager>();
+      var session = mgr.sessions.where((s) => s.id == entry.id).firstOrNull;
+      if (session == null) {
+        final fetched = await SessionService(settings: widget.settings)
+            .fetchSessions();
+        session = fetched.where((s) => s.id == entry.id).firstOrNull;
+      }
+      final target = session ?? entry.toSession();
+      if (!mounted) return;
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) =>
+              TerminalScreen(settings: widget.settings, session: target),
+        ),
+      );
+    } catch (error) {
+      if (mounted) setState(() => _error = error.toString());
+    } finally {
+      _openingTerminal = false;
+    }
+  }
+
   /// 任务详情：Web Air 是右侧那一栏，手机上没有地方并排放，所以做成从下方升起
   /// 的一层。它自己拉 `/api/air/tasks/:id`，「进入对话」把这一层换成聊天页。
   Future<void> _openDetails(AirTask task) async {
@@ -254,6 +289,8 @@ class _AirTasksViewState extends State<AirTasksView>
     required AirTaskRuntime runtime,
     required List<AirRoleBinding> roles,
     required bool goal,
+    int? goalRounds,
+    int? goalBudget,
   }) async {
     final dirId = _directoryId;
     if (dirId == null || _submitting) return false;
@@ -265,7 +302,8 @@ class _AirTasksViewState extends State<AirTasksView>
     // 线路或角色再点就是另一次创建（同 Web Air 的 fingerprint）。
     _attempt = AirCreateAttempt.forFingerprint(
       '$dirId|$text|$cli|${runtime.summary}|'
-      '${roles.map((r) => '${r.name}:${r.prompt}').join(',')}|$goal',
+      '${roles.map((r) => '${r.name}:${r.prompt}').join(',')}|$goal|'
+      '$goalRounds|$goalBudget',
       _attempt,
     );
     final attempt = _attempt!;
@@ -299,6 +337,8 @@ class _AirTasksViewState extends State<AirTasksView>
         text: text,
         clientMsgId: attempt.sendId,
         goal: goal,
+        goalRounds: goalRounds,
+        goalBudget: goalBudget,
       );
       _attempt = null;
       await _refresh();
@@ -332,6 +372,33 @@ class _AirTasksViewState extends State<AirTasksView>
       // 这一份草稿没有整条交出去，输入区留着它，重试就是原样再点一次。
       return false;
     }
+  }
+
+  /// 侧栏那颗「＋ 新任务」：开 Web 的 `#new-task-dialog`，先给任务一个名字和
+  /// 一条明确的线路，再进去发第一条消息。
+  ///
+  /// 和输入区那条路（[_createFromComposer]）的区别就在这里：输入区拿那段话当
+  /// 标题、建完立刻把同一段话当作第一条消息发出去；对话框只建壳，不替你说话。
+  Future<void> _newTask() async {
+    final directory = _data?.directoryOf(_directoryId);
+    if (directory == null) {
+      setState(() => _error = '请先选一个工作目录。');
+      return;
+    }
+    final created = await showAirNewTaskDialog(
+      context,
+      directory: directory,
+      clis: _data?.clis ?? const [],
+      settings: widget.settings,
+      service: _service,
+    );
+    if (created == null || !mounted) return;
+    await _refresh();
+    if (!mounted) return;
+    final task = _data?.taskOf(created);
+    // 快照还没反映出这个新任务（服务端有延迟）也不算白建：留在当前目录，下一次
+    // 轮询会把它列出来。
+    if (task != null) await _open(task);
   }
 
   Future<void> _addDirectory() async {
@@ -664,6 +731,9 @@ class _AirTasksViewState extends State<AirTasksView>
     );
     final runningHere =
         data?.tasksOf(_directoryId).where(airTaskRunning).length ?? 0;
+    // 页头工具条只在够宽时摆出来 —— 阈值跟着 Web `air.css` 收工具条的那个
+    // 760px 断点走（那边是「低于它就整条收进 ⋯ 浮层」）。
+    final showToolbar = MediaQuery.sizeOf(context).width >= 760;
     return Scaffold(
       key: _scaffoldKey,
       backgroundColor: AppColors.bg,
@@ -689,15 +759,15 @@ class _AirTasksViewState extends State<AirTasksView>
         },
         onCreateTask: () {
           _closeDrawer();
-          setState(() {
-            _mode = _AirMode.tasks;
-            _showAll = false;
-          });
+          unawaited(_newTask());
         },
         onOpenTask: (task) {
           _closeDrawer();
           unawaited(_open(task));
         },
+        terminalSessions:
+            data?.terminalSessionsOf(_directoryId) ?? const <AirSession>[],
+        onOpenTerminal: (session) => unawaited(_openTerminal(session)),
         onOpenDocs: () => _openDestination(WorkspaceDestination.docs),
         onOpenMemory: () {
           _closeDrawer();
@@ -785,6 +855,51 @@ class _AirTasksViewState extends State<AirTasksView>
                   text: runningHere > 0 ? '执行中 $runningHere' : '空闲',
                 ),
               ),
+            ),
+          // 任务头部工具条（Web `air.html:112-139` 的 `#task-tools`）。那边按视图
+          // 切换 `hidden`：`air.js:935-937` 让 add-directory 只在目录库出现、
+          // schedule-create 只在定时任务视图出现、directory-open-planner 只在没有
+          // 打开任务时出现；refresh 一直挂着，所以它没有 hidden。这里照同一套规矩
+          // 取可见的那几个，名字进 tooltip —— 手机上放不下「图标 + 名字」并排，
+          // 桌面那边名字本来也收在 `.air-tool-name` 里。
+          //
+          // 但整条工具条只在够宽的时候才摆出来：Web 自己的 `air.css` 760px 块就是
+          // 把它整条收进 ⋯ 浮层的（那一段的原话是「手机上一行消息值 23px，这一行
+          // 是整屏里最贵的几行之一」）。App 跑在手机上，320px 实测多这三颗就溢出
+          // 23px，所以窄屏跟 Web 一样只留 ⋯ —— 而那几件工具本来就在 ⋯ 的完整列表
+          // 里，一件都没少。
+          //
+          // 「合并回基分支 / 自动提交 / 分享此任务 / 详情 / 更多」这五个也不在这里：
+          // 它们要的是一个**打开着的任务**，而 App 里打开任务是把聊天页升起来盖住
+          // 整个 Air 首页的，工具条会被压在下面点不到。那五个动作因此落在聊天页
+          // 自己的头部菜单里（`chat_header.dart` 的 `_HeaderOverflowMenu`）。
+          if (showToolbar && _mode == _AirMode.tasks)
+            _AirToolButton(
+              keyName: 'air-tool-board',
+              icon: Icons.grid_view_rounded,
+              tooltip: '打开完整任务看板',
+              onTap: _openTaskBoard,
+            ),
+          if (showToolbar && _mode == _AirMode.library) ...[
+            _AirToolButton(
+              keyName: 'air-tool-add-directory',
+              icon: Icons.create_new_folder_outlined,
+              tooltip: '添加工作目录',
+              onTap: () => unawaited(_addDirectory()),
+            ),
+            _AirToolButton(
+              keyName: 'air-tool-schedules',
+              icon: Icons.schedule_rounded,
+              tooltip: '新建定时任务',
+              onTap: () => _openDestination(WorkspaceDestination.cron),
+            ),
+          ],
+          if (showToolbar)
+            _AirToolButton(
+              keyName: 'air-tool-refresh',
+              icon: Icons.refresh_rounded,
+              tooltip: '刷新',
+              onTap: () => unawaited(_refresh()),
             ),
           PopupMenuButton<String>(
             key: const ValueKey('air-header-menu'),
@@ -897,12 +1012,16 @@ class _AirTasksViewState extends State<AirTasksView>
               required AirTaskRuntime runtime,
               required List<AirRoleBinding> roles,
               required bool goal,
+              int? goalRounds,
+              int? goalBudget,
             }) => _createFromComposer(
               text: text,
               cli: cli,
               runtime: runtime,
               roles: roles,
               goal: goal,
+              goalRounds: goalRounds,
+              goalBudget: goalBudget,
             ),
           ),
           const SizedBox(height: 24),
@@ -952,6 +1071,10 @@ class _AirTasksViewState extends State<AirTasksView>
               padding: const EdgeInsets.only(bottom: 10),
               child: AirTaskTile(
                 task: task,
+                // Web Air 的目录任务行尾部就是那个 `<time>`（`air.js` 的
+                // `toLocaleString('zh-CN', {month, day, hour, minute})`），列表
+                // 又正是按 updatedAt 排序的 —— 时间本身就是排序依据，要看得见。
+                showTime: true,
                 onTap: () => unawaited(_open(task)),
                 trailing: IconButton(
                   key: ValueKey('air-task-details-${task.id}'),
@@ -968,6 +1091,39 @@ class _AirTasksViewState extends State<AirTasksView>
             ),
         ],
       ),
+    );
+  }
+}
+
+/// 任务头部工具条上的一枚图标按钮（Web `.task-tools button` 的图标形态）。
+///
+/// 名字只在 tooltip 里 —— 手机上页头是横向最紧的一行，塞不下「图标 + 名字」；
+/// 桌面那一版平时也把名字收在 `.air-tool-name` 里，只有窄屏浮层才把两列铺开。
+/// `keyName` 走 [ValueKey]，测试和无障碍都靠它定位。
+class _AirToolButton extends StatelessWidget {
+  const _AirToolButton({
+    required this.keyName,
+    required this.icon,
+    required this.tooltip,
+    required this.onTap,
+  });
+
+  final String keyName;
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      key: ValueKey(keyName),
+      onPressed: onTap,
+      iconSize: 19,
+      visualDensity: VisualDensity.compact,
+      tooltip: tooltip,
+      // `aria-label` 在 Web 上就是这颗按钮的可读名字（浮层里图标要站第一列，
+      // 名字平时不显示），App 这边由 tooltip 一起承担。
+      icon: Icon(icon, color: AppColors.muted),
     );
   }
 }

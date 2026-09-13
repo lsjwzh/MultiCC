@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 
 import '../../services/air_service.dart';
+import '../../services/attachment_picker.dart';
 import '../../services/settings_service.dart';
 import '../../theme.dart';
 import '../../utils/status_presentation.dart';
@@ -475,12 +477,18 @@ class AirQuickComposer extends StatefulWidget {
 
   /// 返回「这一份草稿确实建出去了吗」。建成了才清空输入框和角色 —— 失败时留着，
   /// 重试就是原样再点一次（同 Web Air 只在成功后清）。
+  ///
+  /// [text] 是**最终正文**：附件路径已经按 Web 的写法拼在末尾（`\n\n附件：…`）。
+  /// [goalRounds] / [goalBudget] 只在 [goal] 为真时才有值（Web 的
+  /// `goalLimitsFromForm`：0 和空都算「不限」）。
   final Future<bool> Function({
     required String text,
     required String cli,
     required AirTaskRuntime runtime,
     required List<AirRoleBinding> roles,
     required bool goal,
+    int? goalRounds,
+    int? goalBudget,
   })
   onSubmit;
 
@@ -490,6 +498,10 @@ class AirQuickComposer extends StatefulWidget {
 
 class _AirQuickComposerState extends State<AirQuickComposer> {
   final _controller = TextEditingController();
+  // Goal 的两个上限。Web 的输入框默认值就是 200 / 空（`air.html:183-184`），
+  // 「0 或空」都算不限 —— 判定见 [_readLimit]。
+  final _roundsCtrl = TextEditingController(text: '200');
+  final _budgetCtrl = TextEditingController();
   String _cli = '';
   // 这里存的是「还没有任务的那一份角色」和「还没有任务的那一条线路」，创建时
   // 随任务一起写下去；建完就清空 —— 一个任务的上下文不该悄悄漏进下一个任务
@@ -497,6 +509,12 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
   List<AirRoleBinding> _roles = const [];
   AirTaskRuntime _runtime = const AirTaskRuntime();
   bool _goal = false;
+
+  /// 已经传上去的附件（服务端路径 + 展示名）。创建时按 Web 的写法拼进正文，
+  /// 不是单独发一份附件列表。
+  final List<UploadedAttachment> _attachments = [];
+  bool _uploading = false;
+  String _attachError = '';
 
   @override
   void initState() {
@@ -508,7 +526,50 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
   @override
   void dispose() {
     _controller.dispose();
+    _roundsCtrl.dispose();
+    _budgetCtrl.dispose();
     super.dispose();
+  }
+
+  /// 上限输入：空 / 非数字 / 0 都是「不限」（Web 的 `Number(rounds) > 0`）。
+  /// 轮次还有个 200 的硬上限，超了按 200 算（Web 的 `max="200"`）。
+  static int? _readLimit(TextEditingController controller, {int? max}) {
+    final raw = controller.text.trim();
+    if (raw.isEmpty) return null;
+    final value = int.tryParse(raw);
+    if (value == null || value <= 0) return null;
+    if (max != null && value > max) return max;
+    return value;
+  }
+
+  /// 最终正文 = 输入框里的字 + 附件路径（Web `air.js:545` 的写法：`\n\n附件：a b`）。
+  /// 后缀以空行开头，所以第一行仍然是用户写的第一行 —— 标题正是从第一行推出来的。
+  String _composedText(String typed) => _attachments.isEmpty
+      ? typed
+      : '$typed\n\n附件：${_attachments.map((a) => a.path).join(' ')}';
+
+  Future<void> _pickAttach() async {
+    final picked = await pickChatAttachment(context);
+    if (picked == null || !mounted) return;
+    setState(() {
+      _uploading = true;
+      _attachError = '';
+    });
+    try {
+      final uploaded = await uploadChatAttachment(
+        settings: widget.settings,
+        picked: picked,
+        httpClient: widget.httpClient,
+      );
+      if (mounted) setState(() => _attachments.add(uploaded));
+    } catch (error) {
+      // 单个文件失败而已：已经传上去的那些留着，把这一条的名字和原因说出来。
+      if (mounted) {
+        setState(() => _attachError = '${picked.filename} · $error');
+      }
+    } finally {
+      if (mounted) setState(() => _uploading = false);
+    }
   }
 
   Future<void> _pickCli() async {
@@ -599,28 +660,58 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
             spacing: 8,
             runSpacing: 8,
             children: [
-              _Pill(
-                key: const ValueKey('air-quick-cli'),
-                label: _cli.isEmpty ? 'AI 工具' : _cli,
-                icon: Icons.memory_rounded,
-                onTap: widget.busy ? null : _pickCli,
+              Tooltip(
+                message: '新任务的 AI 配置：CLI、线路与模型（创建后即生效）',
+                child: _Pill(
+                  key: const ValueKey('air-quick-cli'),
+                  label: _cli.isEmpty ? 'AI 工具' : _cli,
+                  icon: Icons.memory_rounded,
+                  onTap: widget.busy ? null : _pickCli,
+                ),
               ),
-              _Pill(
-                key: const ValueKey('air-quick-ai'),
-                label: _runtime.routeLabel,
-                icon: Icons.tune_rounded,
-                active: _runtime.provider.isNotEmpty || _runtime.isAuto,
-                onTap: widget.busy ? null : _editRuntime,
+              Tooltip(
+                message: '新任务的 AI 配置：CLI、线路与模型（创建后即生效）',
+                child: _Pill(
+                  key: const ValueKey('air-quick-ai'),
+                  label: _runtime.routeLabel,
+                  icon: Icons.tune_rounded,
+                  active: _runtime.provider.isNotEmpty || _runtime.isAuto,
+                  onTap: widget.busy ? null : _editRuntime,
+                ),
               ),
-              _Pill(
-                key: const ValueKey('air-quick-role'),
-                label: _roles.isEmpty ? '＋ 角色' : '${_roles.length} 个角色',
-                icon: Icons.badge_outlined,
-                active: _roles.isNotEmpty,
-                onTap: widget.busy ? null : _editRoles,
+              Tooltip(
+                message: '新任务的角色上下文（写入第一条消息）',
+                child: _Pill(
+                  key: const ValueKey('air-quick-role'),
+                  label: _roles.isEmpty ? '＋ 角色' : '${_roles.length} 个角色',
+                  icon: Icons.badge_outlined,
+                  active: _roles.isNotEmpty,
+                  onTap: widget.busy ? null : _editRoles,
+                ),
               ),
             ],
           ),
+          if (_attachments.isNotEmpty || _uploading || _attachError.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: [
+                  for (final file in _attachments)
+                    _FileChip(
+                      label: file.name,
+                      onRemove: widget.busy
+                          ? null
+                          : () => setState(() => _attachments.remove(file)),
+                    ),
+                  if (_uploading)
+                    const _FileChip(label: '上传中…', busy: true),
+                  if (_attachError.isNotEmpty)
+                    _FileChip(label: _attachError, failed: true),
+                ],
+              ),
+            ),
           const SizedBox(height: 8),
           TextField(
             key: const ValueKey('air-quick-input'),
@@ -645,22 +736,94 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
               ),
             ),
           ),
+          // Goal 的两个上限只在勾上 Goal 之后才出现（Web `renderQuickGoalLimits`
+          // 就是切这个 `hidden`）。不勾时不问 —— 不问就不该显示。
+          if (_goal) ...[
+            Container(
+              margin: const EdgeInsets.only(top: 8),
+              padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
+              decoration: BoxDecoration(
+                color: AppColors.well,
+                borderRadius: BorderRadius.circular(AppColors.radiusCard),
+                border: Border.all(color: AppColors.line),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    '🎯 Goal 模式',
+                    style: TextStyle(
+                      color: AppColors.muted,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  // 320px 上这两个输入框挤不进一行，Wrap 让它按需换行。
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 6,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      _LimitField(
+                        key: const ValueKey('air-quick-goal-rounds'),
+                        label: '轮次上限',
+                        controller: _roundsCtrl,
+                        enabled: !widget.busy,
+                      ),
+                      _LimitField(
+                        key: const ValueKey('air-quick-goal-budget'),
+                        label: 'token 预算',
+                        controller: _budgetCtrl,
+                        hint: '不限',
+                        enabled: !widget.busy,
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
           const SizedBox(height: 8),
           Row(
             children: [
               // 320px 宽的手机上这一行只剩 254px：Material 3 的 chip 和按钮默认
               // 都带 24px 的横向内边距，两份默认值加起来就把这一行撑出去了。
-              FilterChip(
-                key: const ValueKey('air-quick-goal'),
-                label: const Text('🎯 Goal'),
-                selected: _goal,
-                onSelected: widget.busy
-                    ? null
-                    : (v) => setState(() => _goal = v),
-                showCheckmark: false,
+              // 尺寸跟着 Web `air.css:354` 那一行走 —— `.quick-task-actions
+              // button { min-height: 32px; padding: 5px 9px; font-size: 11px; }`
+              // —— 三件（Goal / 附件 / 提交）都按这套缩，合起来才 218px。
+              Tooltip(
+                message: '以 Goal 模式发送：先预检目标与完成标准',
+                child: FilterChip(
+                  key: const ValueKey('air-quick-goal'),
+                  label: const Text('🎯 Goal'),
+                  labelStyle: const TextStyle(fontSize: 11),
+                  selected: _goal,
+                  onSelected: widget.busy
+                      ? null
+                      : (v) => setState(() => _goal = v),
+                  showCheckmark: false,
+                  visualDensity: VisualDensity.compact,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  labelPadding: const EdgeInsets.symmetric(horizontal: 2),
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                ),
+              ),
+              const SizedBox(width: 2),
+              IconButton(
+                key: const ValueKey('air-quick-attach'),
+                onPressed: widget.busy || _uploading ? null : _pickAttach,
+                iconSize: 19,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
                 visualDensity: VisualDensity.compact,
-                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                labelPadding: const EdgeInsets.symmetric(horizontal: 2),
+                tooltip: '上传图片或文件（也可以直接粘贴或拖入）',
+                icon: Icon(
+                  _uploading
+                      ? Icons.hourglass_top_rounded
+                      : Icons.attach_file_rounded,
+                  color: AppColors.faint,
+                ),
               ),
               const Spacer(),
               FilledButton(
@@ -670,27 +833,42 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
                     : () async {
                         final text = _controller.text.trim();
                         if (text.isEmpty) return;
+                        final rounds = _readLimit(_roundsCtrl, max: 200);
+                        final budget = _readLimit(_budgetCtrl);
                         final sent = await widget.onSubmit(
-                          text: text,
+                          text: _composedText(text),
                           cli: _cli,
                           runtime: _runtime,
                           roles: _roles,
                           goal: _goal,
+                          goalRounds: _goal ? rounds : null,
+                          goalBudget: _goal ? budget : null,
                         );
                         if (!sent || !mounted) return;
                         // 任务建出去了才清草稿；角色和线路也一起清 —— 一个任务
-                        // 的上下文不该悄悄漏进下一个任务。
+                        // 的上下文不该悄悄漏进下一个任务。附件同样清掉：它已经
+                        // 随正文交出去了，留着会跟着下一个任务再发一遍。
                         setState(() {
                           _controller.clear();
                           _roles = const [];
                           _runtime = AirTaskRuntime(cli: _cli);
                           _goal = false;
+                          _attachments.clear();
+                          _attachError = '';
+                          _roundsCtrl.text = '200';
+                          _budgetCtrl.clear();
                         });
                       },
                 style: FilledButton.styleFrom(
                   backgroundColor: AppColors.accentDark,
-                  minimumSize: const Size(0, 44),
-                  padding: const EdgeInsets.symmetric(horizontal: 14),
+                  minimumSize: const Size(0, 36),
+                  padding: const EdgeInsets.symmetric(horizontal: 9),
+                  visualDensity: VisualDensity.compact,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  textStyle: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(AppColors.radiusButton),
                   ),
@@ -752,4 +930,127 @@ class _Pill extends StatelessWidget {
       ),
     ),
   );
+}
+
+/// Goal 上限的一个数字输入（Web `#quick-task-goal-rounds` / `-budget`）。
+class _LimitField extends StatelessWidget {
+  const _LimitField({
+    super.key,
+    required this.label,
+    required this.controller,
+    required this.enabled,
+    this.hint,
+  });
+
+  final String label;
+  final TextEditingController controller;
+  final bool enabled;
+  final String? hint;
+
+  @override
+  Widget build(BuildContext context) => Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Text(
+        label,
+        style: const TextStyle(color: AppColors.muted, fontSize: 12),
+      ),
+      const SizedBox(width: 6),
+      SizedBox(
+        width: 72,
+        child: TextField(
+          controller: controller,
+          enabled: enabled,
+          keyboardType: TextInputType.number,
+          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+          style: const TextStyle(color: AppColors.text, fontSize: 12.5),
+          decoration: InputDecoration(
+            hintText: hint,
+            hintStyle: const TextStyle(color: AppColors.faint, fontSize: 12),
+            isDense: true,
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 8,
+              vertical: 7,
+            ),
+            filled: true,
+            fillColor: AppColors.panel,
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide: const BorderSide(color: AppColors.line),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide: const BorderSide(color: AppColors.line),
+            ),
+          ),
+        ),
+      ),
+    ],
+  );
+}
+
+/// 已上传附件的那一小条（Web `#quick-task-files` 里的 chip）。
+class _FileChip extends StatelessWidget {
+  const _FileChip({
+    required this.label,
+    this.onRemove,
+    this.busy = false,
+    this.failed = false,
+  });
+
+  final String label;
+  final VoidCallback? onRemove;
+  final bool busy;
+  final bool failed;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = failed ? AppColors.danger : AppColors.muted;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(9, 4, 4, 4),
+      decoration: BoxDecoration(
+        color: failed ? AppColors.dangerSoft : AppColors.well,
+        borderRadius: BorderRadius.circular(AppColors.radiusPill),
+        border: Border.all(color: failed ? AppColors.danger : AppColors.line),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (busy) ...[
+            const SizedBox(
+              width: 11,
+              height: 11,
+              child: CircularProgressIndicator(strokeWidth: 1.6),
+            ),
+            const SizedBox(width: 6),
+          ],
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 170),
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: color, fontSize: 11.5),
+            ),
+          ),
+          if (onRemove != null)
+            InkWell(
+              onTap: onRemove,
+              borderRadius: BorderRadius.circular(AppColors.radiusPill),
+              child: const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                child: Text(
+                  '×',
+                  style: TextStyle(
+                    color: AppColors.faint,
+                    fontSize: 14,
+                    height: 1.1,
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
 }
