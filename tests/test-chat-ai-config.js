@@ -346,3 +346,28 @@ test("provider catalog preserves the normalized limit projection", () => {
   assert.equal(cat.limitCacheStaleMs, 600_000);
   assert.equal(providerCatalog.normalizeCatalog({ providers: [] }).limitCacheStaleMs, null);
 });
+
+test("subagent routing policy is one shared rule for chat and Air", () => {
+  // Only Claude and Codex can send sub-agents down another line.
+  assert.equal(ai.supportsSubagentCli("claude"), true);
+  assert.equal(ai.supportsSubagentCli("codex"), true);
+  for (const cli of ["opencode", "zcode", "qoder", "codebuddy", "dsh", "kimi", "", null, undefined]) {
+    assert.equal(ai.supportsSubagentCli(cli), false, `${cli} cannot route sub-agents`);
+    assert.equal(ai.resolveSubagent({ cli, providerId: "relay", model: "glm-5.2" }), null);
+  }
+  // 只挑线路不挑模型 = 没设：交 null 让服务端清空，子任务随主。
+  assert.equal(ai.resolveSubagent({ cli: "claude", providerId: "relay", model: "" }), null);
+  assert.equal(ai.resolveSubagent({ cli: "claude", providerId: "relay", model: "   " }), null);
+  // 线路留空时落到这一轮实际生效的主 Provider（Auto 档下是池子里第一条）。
+  assert.deepEqual(
+    ai.resolveSubagent({ cli: "codex", providerId: "", primaryProviderId: "relay-a", model: "glm-4.7" }),
+    { providerId: "relay-a", model: "glm-4.7" },
+  );
+  assert.equal(ai.resolveSubagent({ cli: "codex", providerId: "", primaryProviderId: "", model: "glm-4.7" }), null);
+  // 显式线路优先；两侧都裁掉空白，免得存进一个带空格的 provider id。
+  assert.deepEqual(
+    ai.resolveSubagent({ cli: "claude", providerId: " relay-b ", primaryProviderId: "relay-a", model: " glm-5.2 " }),
+    { providerId: "relay-b", model: "glm-5.2" },
+  );
+  assert.deepEqual(ai.resolveSubagent({ cli: "claude" }), null);
+});

@@ -76,17 +76,6 @@
     return ['默认登录 / 官方账号', '使用该 CLI 当前的本机订阅或 OAuth'];
   }
 
-  function providerMeta(provider) {
-    const protocol = {
-      anthropic: 'Anthropic Messages',
-      openai_responses: 'OpenAI Responses',
-    }[provider.apiFormat || provider.protocol] || 'Managed Provider';
-    const bits = [protocol];
-    if (provider.isOfficial) bits.push('Official');
-    if (provider.model) bits.push(provider.model);
-    return bits.join(' · ');
-  }
-
   function configuration(entry, clis, onSaved) {
     const catalogApi = window.MultiCCProviderCatalog;
     const autoApi = window.MultiCCAutoProviderEditor;
@@ -128,10 +117,12 @@
     const providerSection = section('2 · Provider', '选择这个任务使用的账号或 API 路由');
     const providerStatus = node('p', '', 'air-config-status');
     providerStatus.setAttribute('role', 'status');
-    const providerList = node('div', null, 'air-provider-list');
-    providerList.setAttribute('role', 'radiogroup'); providerList.setAttribute('aria-label', 'Provider');
+    const providerField = node('label', null, 'air-config-field');
+    providerField.append(node('span', 'Provider'));
+    const providerSelect = node('select'); providerSelect.setAttribute('aria-label', 'Provider');
+    providerField.append(providerSelect);
     const autoHost = node('div', null, 'air-auto-host');
-    providerSection.append(providerStatus, providerList, autoHost); form.append(providerSection);
+    providerSection.append(providerStatus, providerField, autoHost); form.append(providerSection);
 
     const runtimeSection = section('3 · 模型与推理', '模型会随 Provider 联动；推理强度按 CLI 能力显示');
     const runtimeGrid = node('div', null, 'air-runtime-grid');
@@ -145,7 +136,25 @@
     const effortLabel = node('span', '推理强度');
     const effortSelect = node('select'); effortSelect.setAttribute('aria-label', '推理强度');
     effortField.append(effortLabel, effortSelect);
-    runtimeGrid.append(modelField, effortField); runtimeSection.append(runtimeGrid); form.append(runtimeSection);
+    runtimeGrid.append(modelField, effortField);
+    // 子任务：Provider 配置后面的一行尾巴（线路 + 模型）。它和 chat 的 AI 配置面板
+    // 是同一个字段、同一套判定，只是不再有独立的外显面板 —— 只挑线路不挑模型等于
+    // 没设，交上去就是 null（随主）。只有 Claude 与 Codex 支持把子 agent 换线。
+    const subRow = node('div', null, 'air-sub');
+    const subGrid = node('div', null, 'air-sub-grid');
+    const subProviderField = node('label', null, 'air-config-field');
+    subProviderField.append(node('span', '子任务线路'));
+    const subProviderSelect = node('select'); subProviderSelect.setAttribute('aria-label', '子任务线路');
+    subProviderField.append(subProviderSelect);
+    const subModelField = node('label', null, 'air-config-field');
+    subModelField.append(node('span', '子任务模型'));
+    const subModelSelect = node('select'); subModelSelect.setAttribute('aria-label', '子任务模型');
+    const subCustomModel = node('input'); subCustomModel.maxLength = 100; subCustomModel.placeholder = '输入模型 ID';
+    subCustomModel.setAttribute('aria-label', '子任务自定义模型 ID'); subCustomModel.hidden = true;
+    subModelField.append(subModelSelect, subCustomModel);
+    subGrid.append(subProviderField, subModelField);
+    subRow.append(subGrid, node('p', '子 agent 走的 provider + model（经本地协议代理路由，与主进程隔离）。只挑线路不挑模型 = 没设，随主。', 'air-sub-hint'));
+    runtimeSection.append(runtimeGrid, subRow); form.append(runtimeSection);
 
     const error = node('p', '', 'air-config-error'); error.setAttribute('role', 'alert');
     const foot = node('footer', null, 'air-config-footer');
@@ -165,10 +174,26 @@
     let autoEditor = null;
     let loading = false;
     let loadEpoch = 0;
+    // 子任务尾巴的模型候选跟着「生效线路」走：显式选了就用它，留空（随主）时用主
+    // 线路 —— Auto 档下主线路是池子里排第一的那条，所以要等 autoEditor 挂载/改选
+    // 之后再算。subLineProvider 记着上一次算过的线路，线路没变就不重建模型列表，
+    // 免得把用户刚挑的（或刚手填的）模型冲掉。
+    let subLineProvider = null;
+    let subReady = false;
+
+    const supportsSubagent = () => aiApi.supportsSubagentCli(currentCli);
+
+    function modelState() {
+      return { cli: currentCli, providers, defaults: currentCatalog?.defaults || {},
+        translate: key => ({ default: '默认模型', custom: '自定义模型…' })[key] || key };
+    }
 
     function setBusy(value) {
       loading = value; submit.disabled = value;
       cliGrid.querySelectorAll('button').forEach(button => { button.disabled = value; });
+      for (const control of [providerSelect, modelSelect, customModel, effortSelect, subProviderSelect, subModelSelect, subCustomModel]) {
+        control.disabled = value;
+      }
     }
 
     function renderCliButtons() {
@@ -201,8 +226,7 @@
       const protocol = autoApi.protocolFromValue(providerValue);
       modelField.hidden = !!protocol;
       if (protocol) return;
-      const state = { cli: currentCli, providers, defaults: currentCatalog?.defaults || {},
-        translate: key => ({ default: '默认模型', custom: '自定义模型…' })[key] || key };
+      const state = modelState();
       let choices = aiApi.buildModelChoices(providerValue, state);
       if (!Array.isArray(choices) || !choices.length) choices = ['', '__custom__'];
       choices = [...new Set(choices)];
@@ -218,6 +242,85 @@
       customModel.hidden = modelSelect.value !== '__custom__';
     }
 
+    // ── 子任务尾巴 ────────────────────────────────────────────────────────────
+    // 线路下拉永远是「随主」在前，后面是本 CLI 可用的 Provider（Codex 排掉官方
+    // 账号：它没有可调用的 HTTP 端点，服务端也会拒）。
+    function renderSubProviders() {
+      const head = node('option', '随主'); head.value = '';
+      const items = [head];
+      if (!PROVIDERLESS_CLIS.has(currentCli)) {
+        for (const provider of providers) {
+          if (currentCli === 'codex' && provider.isOfficial) continue;
+          const option = node('option', aiApi.providerLabel(provider, false) + aiApi.providerLimitLabel(provider));
+          option.value = provider.id; items.push(option);
+        }
+      }
+      subProviderSelect.replaceChildren(...items);
+      return items;
+    }
+
+    function rebuildSubModels(preferred) {
+      const state = modelState();
+      const providerId = subProviderSelect.value || primaryProviderId();
+      // 用户手填过的自定义模型必须留着：切换线路时 DOM 里只有一个 '__custom__'，
+      // 真值在这个输入框里。
+      const current = subModelSelect.value === '__custom__' ? subCustomModel.value.trim() : subModelSelect.value;
+      const choices = [...new Set(aiApi.buildModelChoices(providerId, state))]
+        .filter(value => value && value !== '__custom__');
+      const selected = aiApi.normalizeModel(providerId, (preferred || current || '').toString().trim(), state);
+      const none = node('option', '不设置'); none.value = '';
+      const custom = node('option', '自定义模型…'); custom.value = '__custom__';
+      subModelSelect.replaceChildren(none, ...choices.map(value => {
+        const option = node('option', aiApi.modelChoiceLabel(value, providerId, state));
+        option.value = value; return option;
+      }), custom);
+      const known = !!selected && choices.includes(selected);
+      subModelSelect.value = known ? selected : (selected ? '__custom__' : '');
+      subCustomModel.value = known ? '' : (selected || '');
+      subCustomModel.hidden = subModelSelect.value !== '__custom__';
+    }
+
+    function primaryProviderId() {
+      if (autoApi.protocolFromValue(providerValue) && autoEditor) {
+        const read = autoEditor.read();
+        const first = read && read.ok ? read.value.candidates[0] : null;
+        if (first && first.providerId) return first.providerId;
+      }
+      return providerValue;
+    }
+
+    function refreshSubLine(preferred) {
+      if (!subReady) return;
+      const effective = subProviderSelect.value || primaryProviderId();
+      if (preferred == null && effective === subLineProvider) return;
+      subLineProvider = effective;
+      rebuildSubModels(preferred || '');
+    }
+
+    function renderSub(initial) {
+      subReady = false; subLineProvider = null;
+      subRow.hidden = !supportsSubagent();
+      if (subRow.hidden) {
+        subProviderSelect.replaceChildren(); subModelSelect.replaceChildren();
+        subCustomModel.hidden = true;
+        return;
+      }
+      const items = renderSubProviders();
+      const saved = initial && config.subagent && config.subagent.model ? config.subagent : null;
+      const wanted = saved?.providerId || '';
+      subProviderSelect.value = items.some(option => option.value === wanted) ? wanted : '';
+      subReady = true;
+      refreshSubLine(saved ? saved.model : '');
+    }
+
+    // 提交时把尾巴折成服务端要的形状：模型为空就是没设（清空），判定与 chat 的
+    // AI 配置面板共用 aiApi.resolveSubagent。
+    function collectSubagent(primary) {
+      const model = subModelSelect.value === '__custom__' ? subCustomModel.value.trim() : subModelSelect.value;
+      return aiApi.resolveSubagent({ cli: currentCli, providerId: subProviderSelect.value,
+        primaryProviderId: primary ? primary.providerId : providerValue, model });
+    }
+
     function syncAutoEditor() {
       if (autoEditor) { autoEditor.destroy(); autoEditor = null; }
       const protocol = autoApi.protocolFromValue(providerValue);
@@ -228,49 +331,38 @@
         initialSelection: config.providerSelection?.mode === 'auto' && config.providerSelection.protocol === protocol
           ? config.providerSelection : null,
         formatProvider: provider => `${provider.name || provider.id}${provider.model ? ` · ${provider.model}` : ''}`,
+        // 池子里换人会让「随主」的模型候选跟着换 —— 尾巴得重算。
+        onChange: () => refreshSubLine(),
       });
     }
 
     function chooseProvider(value, preferredModel = '') {
       providerValue = value;
-      providerList.querySelectorAll('.air-provider-option').forEach(card => {
-        const selected = card.dataset.value === value;
-        card.classList.toggle('selected', selected);
-        card.querySelector('input').checked = selected;
-      });
-      syncAutoEditor(); renderModel(preferredModel);
-    }
-
-    function providerCard(value, title, meta, badge) {
-      const card = node('label', null, 'air-provider-option'); card.dataset.value = value;
-      const radio = node('input'); radio.type = 'radio'; radio.name = 'air-provider'; radio.value = value;
-      const copy = node('span', null, 'air-provider-copy'); copy.append(node('strong', title), node('small', meta));
-      card.append(radio, copy);
-      if (badge) card.append(node('span', badge, 'air-provider-badge'));
-      radio.onchange = () => { if (radio.checked) chooseProvider(value, ''); };
-      return card;
+      if (providerSelect.value !== value) providerSelect.value = value;
+      syncAutoEditor(); renderModel(preferredModel); refreshSubLine();
     }
 
     function renderProviders(initial) {
-      const cards = [];
-      const [nativeTitle, nativeMeta] = nativeProviderCopy(currentCli);
-      cards.push(providerCard('', nativeTitle, nativeMeta, 'NATIVE'));
+      const [nativeTitle] = nativeProviderCopy(currentCli);
+      const head = node('option', nativeTitle); head.value = '';
+      const options = [head];
       if (!PROVIDERLESS_CLIS.has(currentCli)) {
         for (const auto of autoApi.availableProtocols(providers)) {
           if (!autoApi.defaultSelection(providers, auto.protocol)
               && config.providerSelection?.protocol !== auto.protocol) continue;
-          cards.push(providerCard(autoApi.optionValue(auto.protocol), `Auto · ${auto.label}`,
-            `${auto.count} 个同协议 Provider，可按优先级自动切换`, 'AUTO'));
+          const option = node('option', `⚡ Auto · ${auto.label}（${auto.count} 个同协议 Provider，可按优先级自动切换）`);
+          option.value = autoApi.optionValue(auto.protocol); options.push(option);
         }
         for (const provider of providers) {
-          cards.push(providerCard(provider.id, provider.name || provider.id, providerMeta(provider), provider.isOfficial ? 'OFFICIAL' : 'MANAGED'));
+          const option = node('option', aiApi.providerLabel(provider, true) + aiApi.providerLimitLabel(provider));
+          option.value = provider.id; options.push(option);
         }
       }
-      providerList.replaceChildren(...cards);
+      providerSelect.replaceChildren(...options);
       const initialAuto = initial && config.providerSelection?.mode === 'auto'
         ? autoApi.optionValue(config.providerSelection.protocol) : '';
       let desired = initialAuto || (initial ? config.provider || '' : currentCatalog?.defaults?.[currentCli] || '');
-      if (!cards.some(card => card.dataset.value === desired)) desired = '';
+      if (!options.some(option => option.value === desired)) desired = '';
       const desiredProvider = providers.find(provider => provider.id === desired);
       chooseProvider(desired, initial ? config.model || '' : desiredProvider?.model || '');
       providerStatus.textContent = PROVIDERLESS_CLIS.has(currentCli)
@@ -288,7 +380,7 @@
 
     async function selectCli(cli, initial) {
       const epoch = ++loadEpoch; currentCli = cli; renderCliButtons(); setBusy(true);
-      providerStatus.textContent = '正在读取 Provider 配置…'; providerList.replaceChildren();
+      providerStatus.textContent = '正在读取 Provider 配置…'; providerSelect.replaceChildren();
       if (autoEditor) { autoEditor.destroy(); autoEditor = null; }
       autoHost.hidden = true; error.textContent = '';
       try {
@@ -296,13 +388,14 @@
         if (epoch !== loadEpoch) return;
         currentCatalog = catalog;
         providers = catalogApi.providersForCli(catalog, cli);
-        renderProviders(initial); renderEffort(initial ? config.effort : null);
+        renderProviders(initial); renderSub(initial); renderEffort(initial ? config.effort : null);
       } catch (cause) {
         if (epoch !== loadEpoch) return;
         currentCatalog = null; providers = [];
-        providerStatus.textContent = `Provider 读取失败：${cause.message}`;
         const retry = node('button', '重新读取'); retry.type = 'button'; retry.onclick = () => selectCli(cli, initial);
-        providerList.replaceChildren(retry); error.textContent = 'Provider 配置未加载，暂不能保存，避免覆盖当前线路。';
+        providerStatus.replaceChildren(`Provider 读取失败：${cause.message} `, retry);
+        providerSelect.replaceChildren();
+        error.textContent = 'Provider 配置未加载，暂不能保存，避免覆盖当前线路。';
       } finally {
         if (epoch === loadEpoch) setBusy(currentCatalog == null);
       }
@@ -311,6 +404,12 @@
     modelSelect.onchange = () => {
       customModel.hidden = modelSelect.value !== '__custom__';
       if (!customModel.hidden) customModel.focus();
+    };
+    providerSelect.onchange = () => { if (!loading) chooseProvider(providerSelect.value, ''); };
+    subProviderSelect.onchange = () => refreshSubLine();
+    subModelSelect.onchange = () => {
+      subCustomModel.hidden = subModelSelect.value !== '__custom__';
+      if (!subCustomModel.hidden) subCustomModel.focus();
     };
 
     form.onsubmit = async event => {
@@ -329,10 +428,11 @@
           const primary = providerSelection.candidates[0];
           provider = primary.providerId; model = primary.model || null;
         }
+        const subagent = collectSubagent(providerSelection?.candidates[0] || null);
         if (draft) {
           await onSaved({ cli: currentCli, provider, providerSelection, model: model || null,
             effort: effortField.hidden ? null : effortSelect.value || null,
-            providerName: providers.find(candidate => candidate.id === provider)?.name || null });
+            providerName: providers.find(candidate => candidate.id === provider)?.name || null, subagent });
           d.close();
           return;
         }
@@ -346,6 +446,9 @@
         await request(base, {
           model: model || null,
           effort: effortField.hidden ? null : effortSelect.value || null,
+          // 子任务跟着同一笔 PATCH 走：它校验的是刚写下去的主 Provider
+          // （Codex 要求主线路有可调用的 HTTP 端点），顺序不能颠倒。
+          subagent,
         }, 'PATCH');
         await onSaved(); d.close();
       } catch (cause) {

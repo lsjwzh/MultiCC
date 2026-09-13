@@ -19,6 +19,7 @@ class AirTaskRuntime {
     this.model = '',
     this.effort = '',
     this.providerSelection,
+    this.subagent,
   });
 
   final String cli;
@@ -32,6 +33,10 @@ class AirTaskRuntime {
   /// Auto 线路（同协议多个 Provider 按优先级轮换）。选了它就由它决定真正的
   /// provider 和 model，和 Web 一样。
   final SessionProviderSelection? providerSelection;
+
+  /// 子任务（子 agent）线路 —— Provider 配置后面那条尾巴。模型为空就是没设，
+  /// 和主线路一起写进任务 runtime，第一条消息执行时就带上。
+  final SessionSubagent? subagent;
 
   bool get isAuto => providerSelection != null;
 
@@ -55,6 +60,7 @@ class AirTaskRuntime {
     providerSelection: clearProviderSelection
         ? null
         : (providerSelection ?? this.providerSelection),
+    subagent: subagent,
   );
 
   /// 走哪条线路：Auto 池子报协议名，手选报 Provider 名字，都没选就是目录默认。
@@ -76,13 +82,22 @@ class AirTaskRuntime {
 
   /// 创建任务时要带上的字段。空值不发 —— 服务端把「没传」当成「用目录默认」，
   /// 传一个空字符串反而会把默认值顶掉。
-  Map<String, dynamic> toCreateBody() => {
-    if (cli.isNotEmpty) 'cli': cli,
-    if (provider.isNotEmpty) 'provider': provider,
-    if (providerSelection != null) 'providerSelection': providerSelection!.toJson(),
-    if (model.isNotEmpty) 'model': model,
-    if (effort.isNotEmpty) 'effort': effort,
-  };
+  Map<String, dynamic> toCreateBody() {
+    final child = subagent;
+    return {
+      if (cli.isNotEmpty) 'cli': cli,
+      if (provider.isNotEmpty) 'provider': provider,
+      if (providerSelection != null) 'providerSelection': providerSelection!.toJson(),
+      if (model.isNotEmpty) 'model': model,
+      if (effort.isNotEmpty) 'effort': effort,
+      // 子任务尾巴跟着主线路一起走：模型为空就是没设（只挑线路不挑模型 = 随主），
+      // 不发 —— 半截配置服务端会当非法拒掉。
+      if (child != null &&
+          (child.providerId ?? '').isNotEmpty &&
+          (child.model ?? '').isNotEmpty)
+        'subagent': {'providerId': child.providerId, 'model': child.model},
+    };
+  }
 }
 
 /// 给新任务挑线路。和 Web 同一条规则：CLI 由输入区那颗药丸决定（换 CLI 就是
@@ -116,6 +131,8 @@ Future<AirTaskRuntime?> showAirTaskRuntimeEditor(
       providerSelection: initial.providerSelection,
       model: initial.model,
       effort: initial.effort.isEmpty ? cli.defaultEffort : initial.effort,
+      subProviderId: initial.subagent?.providerId,
+      subModel: initial.subagent?.model,
     ),
   );
   if (picked == null) return null;
@@ -130,6 +147,9 @@ Future<AirTaskRuntime?> showAirTaskRuntimeEditor(
     providerName: _providerNameOf(providers, picked.provider) ?? '',
     model: picked.model,
     effort: picked.effort,
+    // 子任务尾巴和主线路一起交回来。面板已经在模型为空时折成 null（只挑线路
+    // 不挑模型 = 没设），这里不再二次判断。
+    subagent: picked.subagent,
   );
 }
 

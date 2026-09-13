@@ -438,6 +438,24 @@
     return parts.length ? ` · ${parts.join(' · ')}` : '';
   }
 
+  // 子任务（子 agent）线路的判定只有一份：chat 的 AI 配置弹窗、Air 的任务 AI
+  // 配置弹窗、以及创建任务时把线路钉进 runtime，都调这两个函数。服务端有对应的
+  // src/session/subagent.js；客户端这边只负责「什么算设了」，别的地方别再手写。
+  const SUBAGENT_CLIS = Object.freeze(['claude', 'codex']);
+
+  function supportsSubagentCli(cli) {
+    return SUBAGENT_CLIS.includes(cli || '');
+  }
+
+  // 模型为空 = 没设（交 null 清空，落到主线路）；线路留空时用这一轮实际生效的
+  // 主 Provider —— Auto 档下就是池子里排第一的那条。两者都有值才算设了。
+  function resolveSubagent(input = {}) {
+    if (!supportsSubagentCli(input.cli)) return null;
+    const providerId = (input.providerId || input.primaryProviderId || '').toString().trim();
+    const model = (input.model || '').toString().trim();
+    return providerId && model ? { providerId, model } : null;
+  }
+
   function documentOf(options) {
     const document = options && options.document || (root && root.document);
     if (!document) throw new Error('Chat AI config picker requires a document');
@@ -658,7 +676,7 @@
 
       effortSection.style.display = choicesForEffort.length ? '' : 'none';
       agentSection.style.display = cli === 'claude' || cli === 'opencode' || cli === 'qoder' || cli === 'codebuddy' ? '' : 'none';
-      subSection.style.display = cli === 'claude' || cli === 'codex' ? '' : 'none';
+      subSection.style.display = supportsSubagentCli(cli) ? '' : 'none';
       agentInput.value = cli === 'claude' || cli === 'opencode' || cli === 'qoder' || cli === 'codebuddy' ? (config.agent || '') : '';
       for (const choice of choicesForEffort) {
         const option = document.createElement('option');
@@ -814,7 +832,6 @@
         // 尾巴：模型有值才算设了子任务。线路留空时落到这一轮实际生效的主
         // Provider 上（Auto 档下就是池子里排第一的那条，和上面的 provider 同一个）。
         const primary = providerSelection && providerSelection.candidates[0];
-        const childProviderId = subProviderSelect.value || (primary ? primary.providerId : providerSelect.value);
         const childModel = subModelSelect.value === '__custom__'
           ? subCustomModel.value.trim()
           : subModelSelect.value;
@@ -824,9 +841,8 @@
           model: primary ? primary.model || '' : selectedModel,
           effort: effortSelect.value,
           agent: cli === 'claude' || cli === 'opencode' || cli === 'qoder' || cli === 'codebuddy' ? agentInput.value.trim() : null,
-          subagent: (cli === 'claude' || cli === 'codex') && childProviderId && childModel
-            ? { providerId: childProviderId, model: childModel }
-            : null,
+          subagent: resolveSubagent({ cli, providerId: subProviderSelect.value,
+            primaryProviderId: primary ? primary.providerId : providerSelect.value, model: childModel }),
         });
       };
       box.querySelector('#ai-cancel').onclick = () => close(null);
@@ -961,6 +977,8 @@
     modelDisplayName,
     providerLabel,
     providerLimitLabel,
+    supportsSubagentCli,
+    resolveSubagent,
     showLoadingOverlay,
     showEffortPicker,
     showProviderPicker,
