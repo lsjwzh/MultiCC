@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:multicc_app/i18n.dart';
 import 'package:multicc_app/services/settings_service.dart';
 import 'package:multicc_app/widgets/air_tasks_view.dart';
 import 'package:multicc_app/widgets/workspace_navigation_drawer.dart';
@@ -44,12 +45,17 @@ MockClient _client(List<String> requests) => MockClient((request) async {
         {'id': 'd1', 'name': '工作目录 A', 'path': '/project/a'},
         {'id': 'd2', 'name': '工作目录 B', 'path': '/project/b'},
       ],
+      // status 只有 active / done / archived 三个生命周期取值，「在不在跑」由
+      // runState 说（服务端 air-routes.js）。t1 是刚建出来还没跑过的计划任务。
       'tasks': [
         {
           'id': 't1',
           'dirId': 'd1',
           'title': '登录页面',
-          'status': 'inbox',
+          'status': 'active',
+          'recordType': 'planned',
+          'workflowStage': 'inbox',
+          'runState': null,
           'resource': {'residency': 'planned', 'lease': 'idle'},
         },
         {
@@ -57,6 +63,7 @@ MockClient _client(List<String> requests) => MockClient((request) async {
           'dirId': 'd1',
           'title': '旧任务',
           'status': 'archived',
+          'runState': null,
           'resource': {'residency': 'resident', 'lease': 'idle'},
         },
       ],
@@ -74,6 +81,9 @@ Future<SettingsService> _settings() async {
 }
 
 void main() {
+  // 状态徽标上的字来自 i18n 词典（注册表只给 key），不加载就只有 key。
+  setUpAll(() => I18n.init('zh'));
+
   testWidgets('Air 首页列出当前目录的任务，归档记录默认不出现，320px 不溢出', (
     tester,
   ) async {
@@ -91,7 +101,17 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(find.text('登录页面'), findsOneWidget);
-    expect(find.text('执行时准备目录'), findsOneWidget);
+    // 徽标说的是「这一轮在不在跑」（还没跑过 → 空闲），副行才说它走到哪一步、
+    // 卡在哪 —— 与 Web Air 的任务行同一套分工。页头那颗「空闲」是目录的，这里
+    // 只看行上的那一颗。
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('air-task-t1')),
+        matching: find.text('空闲'),
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('计划 · 待处理 · 执行时准备目录'), findsOneWidget);
     expect(find.text('旧任务'), findsNothing);
     // 「全部」是筛选，不是开关：它在同一个列表上多放出归档的那些行。
     await tester.tap(find.widgetWithText(ChoiceChip, '全部'));
@@ -123,6 +143,67 @@ void main() {
     // 最近打开过的任务优先：这次会话没打开过任何任务，补位的是当前目录里
     // 最近更新过的那条。
     expect(find.byKey(const ValueKey('air-side-task-t1')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  testWidgets('控制台入口带着「谁在等我」的数字，点进去是原生控制台', (tester) async {
+    final settings = await _settings();
+    final client = MockClient((request) async {
+      if (request.url.path == '/api/cron') {
+        return http.Response(
+          jsonEncode(const []),
+          200,
+          headers: {'content-type': 'application/json; charset=utf-8'},
+        );
+      }
+      return http.Response(
+        jsonEncode({
+          'ok': true,
+          'clis': const ['claude'],
+          'directories': const [
+            {'id': 'd1', 'name': '工作目录 A', 'path': '/project/a'},
+          ],
+          'tasks': const [
+            {
+              'id': 't1',
+              'dirId': 'd1',
+              'title': '登录页面',
+              'status': 'active',
+              'runState': 'waiting',
+              'updatedAt': 1700000000000,
+              'resource': {'residency': 'planned', 'lease': 'idle'},
+            },
+          ],
+        }),
+        200,
+        headers: {'content-type': 'application/json; charset=utf-8'},
+      );
+    });
+    await tester.pumpWidget(
+      MaterialApp(home: AirTasksView(settings: settings, httpClient: client)),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('air-menu-button')));
+    await tester.pumpAndSettle();
+
+    // 侧栏上的数字就是控制台第一个分区那一条 —— 一处定义，两处显示。
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('air-nav-console')),
+        matching: find.text('1'),
+      ),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.text('控制台'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('air-console')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('air-console-urgent-t1')),
+      findsOneWidget,
+    );
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     client.close();

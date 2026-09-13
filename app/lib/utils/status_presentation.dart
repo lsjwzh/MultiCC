@@ -351,7 +351,14 @@ void _recordUnknown(StatusDomain domain, String raw) {
 Set<CanonicalStatus> _allowed(StatusDomain domain) =>
     domain == StatusDomain.session ? sessionStatuses : taskStatuses;
 
-String _norm(Object? value) => (value?.toString() ?? '').trim().toLowerCase();
+/// 归一化输入。除了服务端来的原始串，也接受已经 canonical 的枚举本身：
+/// `CanonicalStatus.running.toString()` 是 `'CanonicalStatus.running'`，不拆开
+/// 的话 `coerceStatus(domain, CanonicalStatus.running)` 会一路落到 unknown ——
+/// 手里已经拿着权威状态的调用点反而渲染成「状态未知」。
+String _norm(Object? value) {
+  if (value is CanonicalStatus) return value.name;
+  return (value?.toString() ?? '').trim().toLowerCase();
+}
 
 /// 原始字符串 → canonical 状态。认不出来一律 unknown（并记诊断）。
 CanonicalStatus coerceStatus(StatusDomain domain, Object? raw) {

@@ -4,8 +4,10 @@ import 'package:http/http.dart' as http;
 import '../../services/air_service.dart';
 import '../../services/settings_service.dart';
 import '../../theme.dart';
+import '../../utils/status_presentation.dart';
 import 'air_role_editor.dart';
 import 'air_task_config.dart';
+import 'air_task_status.dart';
 
 /// 目录库（Web `#directory-library`）：一张目录一张卡，卡上写清它现在有多少
 /// 任务、有没有人在跑。手机上一列，宽屏两列。
@@ -247,26 +249,44 @@ class _DirectoryCard extends StatelessWidget {
   }
 }
 
-/// 任务行。徽标说的是「这个任务现在算什么」，副行说的是「它卡在哪」——
-/// 与 Web Air 的 `taskRow` 同一套分工。
+/// 任务行。徽标说的是「这个任务现在算什么」（生命周期 + 这一轮的 runState），
+/// 副行说的是「它在哪个目录、走到哪一步、卡在哪」—— 与 Web Air 的 `taskRow`
+/// 同一套分工、同一个形状：徽标在左，标题与副行在中间，时间在右。
+///
+/// 侧栏、当前目录、控制台都用这一行。Web 那边同样只有一份 `taskRow`：行长得
+/// 不一样的地方，状态就会各说各话。
 class AirTaskTile extends StatelessWidget {
   const AirTaskTile({
     super.key,
     required this.task,
     required this.onTap,
+    this.directoryName = '',
+    this.showTime = false,
     this.trailing,
     this.selected = false,
   });
 
   final AirTask task;
   final VoidCallback onTap;
+
+  /// 跨目录的列表（控制台、侧栏）要把「它在哪个目录」写在行上；当前目录的
+  /// 列表里这句话是废话，留空即可（同 Web 的 `options.dir === false`）。
+  final String directoryName;
+
+  /// 行尾时间。控制台按更新时间排序，时间本身就是排序依据，要看得见。
+  final bool showTime;
   final Widget? trailing;
   final bool selected;
 
   @override
   Widget build(BuildContext context) {
-    final status = airLabel(task.workflowStage ?? task.status);
-    final resource = task.resourceText;
+    final detail = airTaskDetail(task);
+    final subtitle = [
+      if (directoryName.isNotEmpty) directoryName,
+      if (detail.isNotEmpty) detail,
+      if (task.readOnly) '只读记录',
+    ].join(' · ');
+    final time = showTime ? airTaskTime(task.updatedAt) : '';
     return Material(
       color: AppColors.panel,
       borderRadius: BorderRadius.circular(AppColors.radiusCard),
@@ -281,9 +301,15 @@ class AirTaskTile extends StatelessWidget {
               color: selected ? AppColors.accent : AppColors.line,
             ),
           ),
-          padding: const EdgeInsets.fromLTRB(14, 11, 10, 11),
+          padding: const EdgeInsets.fromLTRB(12, 10, 10, 10),
           child: Row(
             children: [
+              StatusBadge(
+                domain: StatusDomain.task,
+                status: airTaskStatus(task),
+                fontSize: 10.5,
+              ),
+              const SizedBox(width: 10),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -299,39 +325,31 @@ class AirTaskTile extends StatelessWidget {
                         fontWeight: FontWeight.w500,
                       ),
                     ),
-                    const SizedBox(height: 4),
-                    Row(
-                      children: [
-                        AirStatusBadge(text: status, closed: task.closed),
-                        if (resource.isNotEmpty) ...[
-                          const SizedBox(width: 8),
-                          Flexible(
-                            child: Text(
-                              resource,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: AppColors.faint,
-                                fontSize: 11.5,
-                              ),
-                            ),
-                          ),
-                        ],
-                        if (task.readOnly) ...[
-                          const SizedBox(width: 8),
-                          const Text(
-                            '只读记录',
-                            style: TextStyle(
-                              color: AppColors.faint,
-                              fontSize: 11.5,
-                            ),
-                          ),
-                        ],
-                      ],
-                    ),
+                    if (subtitle.isNotEmpty) ...[
+                      const SizedBox(height: 3),
+                      Text(
+                        subtitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: AppColors.faint,
+                          fontSize: 11.5,
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
+              if (time.isNotEmpty) ...[
+                const SizedBox(width: 8),
+                Text(
+                  time,
+                  style: const TextStyle(
+                    color: AppColors.faint,
+                    fontSize: 10.5,
+                  ),
+                ),
+              ],
               trailing ?? const SizedBox(width: 4),
             ],
           ),
@@ -370,7 +388,9 @@ class AirStatusBadge extends StatelessWidget {
   }
 }
 
-/// 空态那一块：当前目录的任务统计。
+/// 当前目录那一块统计。三个数字都用同一份判定：「执行中」只认注册表的
+/// spinner，「待回答」只认 canonical 的 waiting —— 从前这里是按 `lease` 和
+/// `status` 各猜一遍，于是同一条任务在这条统计里和在行上的徽标里能显示成两回事。
 class AirDirectoryStats extends StatelessWidget {
   const AirDirectoryStats({super.key, required this.tasks});
 
@@ -379,10 +399,10 @@ class AirDirectoryStats extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final open = tasks.where((t) => !t.closed).length;
-    final running = tasks
-        .where((t) => t.resource['lease'] == 'running' || t.status == 'active')
+    final running = tasks.where(airTaskRunning).length;
+    final waiting = tasks
+        .where((t) => airTaskStatus(t) == CanonicalStatus.waiting)
         .length;
-    final waiting = tasks.where((t) => t.status == 'waiting').length;
     return Row(
       children: [
         Expanded(child: _StatTile(label: '任务', value: '${tasks.length}')),

@@ -82,12 +82,16 @@ class AirTask {
     this.workflowStage,
     this.sessionId,
     this.sourceSessionId,
+    this.runState,
     this.resource = const {},
   });
 
   final String id;
   final String dirId;
   final String title;
+
+  /// 生命周期，只有 `active` / `done` / `archived` 三个取值 —— 「执行中」不在里
+  /// 面（同 `src/workspace/air-routes.js`）。要问「这一轮在不在跑」看 [runState]。
   final String status;
   final String recordType;
   final int updatedAt;
@@ -95,6 +99,10 @@ class AirTask {
   final String? workflowStage;
   final String? sessionId;
   final String? sourceSessionId;
+
+  /// 这一轮的运行状态，由队列事件折出来（服务端 `task-board/normalize.js` 的
+  /// TASK_RUN_STATES）。客户端只读它，不从 [status] 猜。
+  final String? runState;
   final Map<String, dynamic> resource;
 
   static AirTask fromJson(Map<String, dynamic> json) => AirTask(
@@ -108,6 +116,7 @@ class AirTask {
     workflowStage: json['workflowStage'] as String?,
     sessionId: json['sessionId'] as String?,
     sourceSessionId: json['sourceSessionId'] as String?,
+    runState: json['runState'] as String?,
     resource: (json['resource'] as Map?)?.cast<String, dynamic>() ?? const {},
   );
 
