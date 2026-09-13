@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../models/message.dart';
 import 'settings_service.dart';
 
 /// 状态词表，逐条对齐 Web Air（`public/air.js` 的 `stateNames`）。两套界面
@@ -140,7 +141,7 @@ class AirSnapshot {
   final List<String> clis;
 
   /// 终端会话（Air 侧栏的 TERMINAL 一组）。只有移动端要用的字段。
-  final List<Map<String, dynamic>> sessions;
+  final List<AirSession> sessions;
 
   static AirSnapshot fromJson(Map<String, dynamic> json) => AirSnapshot(
     directories: ((json['directories'] as List?) ?? [])
@@ -151,7 +152,7 @@ class AirSnapshot {
         .toList(),
     clis: ((json['clis'] as List?) ?? const []).map((e) => '$e').toList(),
     sessions: ((json['sessions'] as List?) ?? [])
-        .map((e) => (e as Map).cast<String, dynamic>())
+        .map((e) => AirSession.fromJson((e as Map).cast<String, dynamic>()))
         .toList(),
   );
 
@@ -161,6 +162,11 @@ class AirSnapshot {
     }
     return null;
   }
+
+  /// 落在某个目录里的终端会话（Web 侧栏 `#legacy-sessions` 的 `dirId === directoryId`
+  /// 那一步筛选）。服务端已经把 aux / gateway 摘掉了，这里只按目录分。
+  List<AirSession> terminalSessionsOf(String? dirId) =>
+      sessions.where((s) => s.dirId == dirId).toList();
 
   /// 落在某个目录里的任务，最近更新的在前。
   List<AirTask> tasksOf(String? dirId) {
@@ -178,8 +184,51 @@ class AirSnapshot {
   }
 }
 
-/// `/api/air` 的客户端。Air 的任务创建是三步事务（建任务 → 绑角色 → 发第一条
-/// 消息），所以三步都收在这里，界面不需要知道中间的 clientMsgId 约定。
+/// Air 侧栏 TERMINAL 一组里的一个终端会话。
+///
+/// `/api/air` 的 `sessions` 只给移动端要用的四个字段（服务端已经滤掉
+/// aux / gateway），打开时拿 id 去会话表里换一个完整的 [Session]；换不到
+/// （隐藏记录不在 `/api/sessions` 里）就退回这四个字段自己拼一个 ——
+/// `TerminalScreen` 要的就是 id 和 label。
+class AirSession {
+  const AirSession({
+    required this.id,
+    required this.dirId,
+    required this.label,
+    required this.cli,
+  });
+
+  final String id;
+  final String? dirId;
+  final String label;
+  final String cli;
+
+  static AirSession fromJson(Map<String, dynamic> json) {
+    final id = '${json['id'] ?? ''}';
+    final label = '${json['label'] ?? ''}'.trim();
+    return AirSession(
+      id: id,
+      dirId: json['dirId']?.toString(),
+      // 服务端发的是 `s.label || s.id`，空 label 也兜回 id（同 Web 的行文案）。
+      label: label.isEmpty ? id : label,
+      cli: '${json['cli'] ?? ''}',
+    );
+  }
+
+  /// 只够 TerminalScreen 用的最小会话（会话表里查不到时的兜底）。
+  ///
+  /// 快照里没有 createdAt，用「现在」顶上：这个字段在终端页只当元数据看，
+  /// 拿不到真实值也不该让一整行终端打不开。
+  Session toSession() => Session(
+    id: id,
+    dirId: dirId,
+    label: label,
+    cli: parseCli(cli),
+    kind: SessionKind.terminal,
+    createdAt: DateTime.now(),
+  );
+}
+
 /// 任务的一个角色绑定：名字 + 说明。一个任务最多 8 个，上限由服务端把关
 /// （src/task-shell/role-bindings.js），这里不重复实现一遍。
 class AirRoleBinding {
@@ -217,6 +266,8 @@ class AirRoleBindings {
   }
 }
 
+/// `/api/air` 的客户端。Air 的任务创建是三步事务（建任务 → 绑角色 → 发第一条
+/// 消息），所以三步都收在这里，界面不需要知道中间的 clientMsgId 约定。
 class AirService {
   AirService({required this.settings, http.Client? httpClient})
     : _http = httpClient ?? http.Client(),
@@ -303,11 +354,18 @@ class AirService {
   /// [runtime] 是输入区那颗 AI 药丸里攒下的线路（CLI / Provider / 模型 / 推理
   /// 强度）。它必须跟着创建一起写下去 —— 任务建好之后再补，第一条消息已经按
   /// 默认线路发出去了。空字段不发，交给服务端用目录默认值填。
+  ///
+  /// [model] / [rolePrompt] 是「新任务」对话框那两个可选字段（Web
+  /// `air.js:1584-1585` 的 `if (!values.model) delete values.model`）。角色说明
+  /// 走的是任务上的 `rolePrompt`，不是 [AirRoleBinding] 那套具名绑定 —— 那边说的
+  /// 是「下一条消息用哪个角色」，这里说的是「这个任务本身的角色」。
   Future<String> createTask({
     required String dirId,
     required String title,
     required String clientMsgId,
     String? cli,
+    String? model,
+    String? rolePrompt,
     Map<String, dynamic> runtime = const {},
   }) async {
     final result = await _post('/api/air/tasks', {
@@ -315,11 +373,19 @@ class AirService {
       'title': title,
       'clientMsgId': clientMsgId,
       if (cli != null && cli.isNotEmpty) 'cli': cli,
+      // 空的不发：传空串会把目录的默认模型顶成「空模型」，而不是「跟随默认」。
+      if (model != null && model.isNotEmpty) 'model': model,
+      if (rolePrompt != null && rolePrompt.isNotEmpty) 'rolePrompt': rolePrompt,
+      // runtime 放最后：输入区那条路把模型装在 runtime 里，两处都有值时以它为准。
       ...runtime,
     });
     return '${result['taskId']}';
   }
 
+  /// 发第一条消息。Goal 的两个上限挂在**这一条消息**上（不是任务上），键名跟
+  /// 服务端 `normalizeGoalLimits` 认的一样：`maxRounds` / `maxBudget`
+  /// （`src/chat/turn-request.js:51-58`）。写成 `rounds` / `tokenBudget` 不会报错，
+  /// 只会被静默丢掉 —— 界面上看着设了，实际一次都没生效过。
   Future<void> sendFirstMessage({
     required String taskId,
     required String text,
@@ -334,8 +400,8 @@ class AirService {
     if (goal) 'goal': true,
     if (goal)
       'goalLimits': {
-        if (goalRounds != null) 'rounds': goalRounds,
-        if (goalBudget != null) 'tokenBudget': goalBudget,
+        if (goalRounds != null) 'maxRounds': goalRounds,
+        if (goalBudget != null) 'maxBudget': goalBudget,
       },
   });
 

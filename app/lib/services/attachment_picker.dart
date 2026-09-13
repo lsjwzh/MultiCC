@@ -1,12 +1,16 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../i18n.dart';
 import '../theme.dart';
+import 'settings_service.dart';
 
 /// One in-memory attachment ready for the /api/upload multipart flow.
 class PickedAttachment {
@@ -101,6 +105,69 @@ Future<PickedAttachment?> _pickFromPhotos() async {
     filename: filename,
     mimeType: photo.mimeType,
   );
+}
+
+/// One uploaded attachment: the server-side path plus the name to show on its chip.
+class UploadedAttachment {
+  const UploadedAttachment({required this.path, required this.name});
+
+  final String path;
+  final String name;
+}
+
+/// 上传一个附件到 `/api/upload`，换回它的服务端路径。
+///
+/// 聊天输入区和 Air 的快速新建都走这一条 —— Web 那边两个 composer 用的也是
+/// 同一个 `/api/upload`，返回的 `path` 会被拼进正文（`\n\n附件：…`），不是
+/// 单独挂一个附件列表。
+Future<UploadedAttachment> uploadChatAttachment({
+  required SettingsService settings,
+  required PickedAttachment picked,
+  http.Client? httpClient,
+}) async {
+  final uri = Uri.parse(settings.buildHttpUrl('/api/upload'));
+  final request = http.MultipartRequest('POST', uri);
+  if (settings.token.isNotEmpty) {
+    request.headers['X-Access-Token'] = settings.token;
+  }
+  request.files.add(
+    http.MultipartFile.fromBytes(
+      'file',
+      picked.bytes,
+      filename: picked.filename,
+      contentType: picked.mimeType != null
+          ? MediaType.parse(picked.mimeType!)
+          : MediaType('application', 'octet-stream'),
+    ),
+  );
+  final res = await _sendMultipart(request, httpClient);
+  final body = await res.stream.bytesToString();
+  if (res.statusCode != 200) {
+    throw Exception('HTTP ${res.statusCode}');
+  }
+  final json = jsonDecode(body) as Map<String, dynamic>;
+  final path = json['path'] as String?;
+  if (path == null || path.isEmpty) {
+    throw Exception('${json['error'] ?? '上传失败'}');
+  }
+  return UploadedAttachment(
+    path: path,
+    name: json['name'] as String? ?? picked.filename,
+  );
+}
+
+/// 走调用方给的 client（测试拿 MockClient 就能整条桩掉）；没给就自己开一个，
+/// 用完关掉。`MultipartRequest.send()` 自带的那个 client 是从外面塞不进去的。
+Future<http.StreamedResponse> _sendMultipart(
+  http.MultipartRequest request,
+  http.Client? httpClient,
+) async {
+  final client = httpClient ?? http.Client();
+  try {
+    return await client.send(request).timeout(const Duration(seconds: 30));
+  } finally {
+    if (httpClient == null) client.close();
+  }
 }
 
 class _AttachmentSourceTile extends StatelessWidget {

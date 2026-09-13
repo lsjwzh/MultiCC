@@ -422,4 +422,132 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     client.close();
   });
+
+  // Web `#task-tools` 的可见性由 `air.js:935-937` 按视图切换：目录库才给
+  // 「添加工作目录」，定时任务视图才给「新建定时任务」，没打开任务时才给
+  // 「打开完整任务看板」；「刷新」一直挂着。App 这边跟着同一套规矩走，但整条
+  // 工具条只在够宽时摆出来 —— Web 的 `air.css` 760px 块在窄屏上就是整条收进 ⋯。
+  testWidgets('宽屏下任务头部工具条按视图换，刷新一直都在', (tester) async {
+    final settings = await _settings();
+    final client = _client(<String>[]);
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(900, 800);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AirTasksView(settings: settings, httpClient: client),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // 默认落在某个目录上：给的是看板，不是目录管理那两件。
+    expect(find.byKey(const ValueKey('air-tool-board')), findsOneWidget);
+    expect(find.byKey(const ValueKey('air-tool-refresh')), findsOneWidget);
+    expect(find.byKey(const ValueKey('air-tool-add-directory')), findsNothing);
+    expect(find.byKey(const ValueKey('air-tool-schedules')), findsNothing);
+
+    // 换到目录库：看板收走，目录与定时任务那两件摆出来。
+    await tester.tap(find.byKey(const ValueKey('air-header-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('工作目录库'));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('air-tool-board')), findsNothing);
+    expect(
+      find.byKey(const ValueKey('air-tool-add-directory')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const ValueKey('air-tool-schedules')), findsOneWidget);
+    expect(find.byKey(const ValueKey('air-tool-refresh')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  testWidgets('窄屏（手机）工具条整条收进 ⋯，但一件都没少', (tester) async {
+    final settings = await _settings();
+    final client = _client(<String>[]);
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 844);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AirTasksView(settings: settings, httpClient: client),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('air-tool-board')), findsNothing);
+    expect(find.byKey(const ValueKey('air-tool-refresh')), findsNothing);
+
+    await tester.tap(find.byKey(const ValueKey('air-header-menu')));
+    await tester.pumpAndSettle();
+    // Web 那边「菜单保留完整列表」：收起来的那几件在这里一件不少。
+    expect(find.text('打开完整任务看板'), findsOneWidget);
+    expect(find.text('添加工作目录'), findsOneWidget);
+    expect(find.text('定时任务'), findsOneWidget);
+    expect(find.text('刷新'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  testWidgets('宽屏下工具条上的刷新真的再问一次快照', (tester) async {
+    final settings = await _settings();
+    final requests = <String>[];
+    final client = _client(requests);
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(900, 800);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AirTasksView(settings: settings, httpClient: client),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final before = requests.where((p) => p == '/api/air').length;
+
+    await tester.tap(find.byKey(const ValueKey('air-tool-refresh')));
+    await tester.pumpAndSettle();
+
+    expect(requests.where((p) => p == '/api/air').length, before + 1);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  testWidgets('侧栏的「＋ 新任务」开的是新任务对话框，不是把首页切回来', (tester) async {
+    final settings = await _settings();
+    final requests = <String>[];
+    final client = _client(requests);
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 844);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AirTasksView(settings: settings, httpClient: client),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('air-menu-button')));
+    await tester.pumpAndSettle();
+    await tapInSidebar(tester, find.text('新任务'));
+
+    final dialog = find.byKey(const ValueKey('air-new-task-title'));
+    expect(dialog, findsOneWidget);
+    expect(find.text('创建任务'), findsOneWidget);
+    // 对话框里那句目录路径取的是当前目录（首页上也有一句同样的路径，所以只认
+    // 对话框里的那一个）。
+    expect(
+      find.descendant(of: find.byType(Dialog), matching: find.text('/project/a')),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
 }

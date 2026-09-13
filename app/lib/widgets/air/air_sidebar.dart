@@ -30,6 +30,8 @@ class AirSidebar extends StatelessWidget {
     required this.onOpenTaskBoard,
     required this.onCreateTask,
     required this.onOpenTask,
+    required this.terminalSessions,
+    required this.onOpenTerminal,
     required this.onOpenDocs,
     required this.onOpenMemory,
     required this.onOpenSettings,
@@ -61,6 +63,11 @@ class AirSidebar extends StatelessWidget {
   final VoidCallback onOpenTaskBoard;
   final VoidCallback onCreateTask;
   final ValueChanged<AirTask> onOpenTask;
+
+  /// 「更多与系统」里的 TERMINAL 一组：当前目录下的终端会话（Web 侧栏
+  /// `#legacy-sessions`，按 `dirId` 筛出来的那一组）。
+  final List<AirSession> terminalSessions;
+  final ValueChanged<AirSession> onOpenTerminal;
   final VoidCallback onOpenDocs;
   final VoidCallback onOpenMemory;
   final VoidCallback onOpenSettings;
@@ -259,6 +266,8 @@ class AirSidebar extends StatelessWidget {
               onOpenMemory: onOpenMemory,
               onOpenSettings: onOpenSettings,
               onOpenTaskBoard: onOpenTaskBoard,
+              terminalSessions: terminalSessions,
+              onOpenTerminal: onOpenTerminal,
               onOpenAllDestinations: onOpenAllDestinations,
               onOpenVoiceCall: onOpenVoiceCall,
               ops: ops,
@@ -589,6 +598,8 @@ class _MoreSection extends StatelessWidget {
     required this.onOpenMemory,
     required this.onOpenSettings,
     required this.onOpenTaskBoard,
+    required this.terminalSessions,
+    required this.onOpenTerminal,
     required this.onOpenAllDestinations,
     required this.ops,
     required this.onOpenPush,
@@ -602,6 +613,8 @@ class _MoreSection extends StatelessWidget {
   final VoidCallback onOpenMemory;
   final VoidCallback onOpenSettings;
   final VoidCallback onOpenTaskBoard;
+  final List<AirSession> terminalSessions;
+  final ValueChanged<AirSession> onOpenTerminal;
   final VoidCallback onOpenAllDestinations;
   final AirOpsStore ops;
   final VoidCallback onOpenPush;
@@ -653,6 +666,13 @@ class _MoreSection extends StatelessWidget {
             label: '查看任务看板',
             onTap: onOpenTaskBoard,
           ),
+          // Web 的 `#side-more` 里紧跟着「查看任务看板」的就是这一组（`air.html`
+          // 的 `details.terminal-group`）——终端会话是这个目录里另一类存在，
+          // 不属于任务列表，但也在同一个目录下。
+          _TerminalGroup(
+            sessions: terminalSessions,
+            onOpen: onOpenTerminal,
+          ),
           _NavRow(
             semanticKey: 'air-more-all',
             icon: Icons.apps_rounded,
@@ -698,6 +718,62 @@ class _MoreSection extends StatelessWidget {
               ),
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// TERMINAL 一组（Web `air.html` 的 `details.terminal-group` + `#legacy-sessions`）。
+///
+/// 里面是**当前目录**的终端会话 —— Web 那句 `session.dirId === directoryId` 是
+/// 这一组真正的筛选条件（`kind === 'terminal'` 只是二次防御，服务端已经滤过
+/// 一遍了）。点一行就开那个终端。
+class _TerminalGroup extends StatelessWidget {
+  const _TerminalGroup({required this.sessions, required this.onOpen});
+
+  final List<AirSession> sessions;
+  final ValueChanged<AirSession> onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    return Theme(
+      data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+      child: ExpansionTile(
+        key: const ValueKey('air-terminal-group'),
+        tilePadding: const EdgeInsets.symmetric(horizontal: 18),
+        childrenPadding: const EdgeInsets.only(bottom: 4),
+        title: const Text(
+          'TERMINAL',
+          style: TextStyle(
+            color: AppColors.faint,
+            fontSize: 11.5,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 0.8,
+          ),
+        ),
+        iconColor: AppColors.faint,
+        collapsedIconColor: AppColors.faint,
+        children: [
+          // Web 那边空的时候就是一个空的 `<nav>`（点开什么都不显示）。手机上
+          // 那样看起来像坏了，所以给一句说明 —— 空的是「这个目录没有终端」，
+          // 不是「这一组坏了」。
+          if (sessions.isEmpty)
+            const Padding(
+              padding: EdgeInsets.fromLTRB(34, 0, 18, 12),
+              child: Text(
+                '本目录暂无终端会话',
+                style: TextStyle(color: AppColors.faint, fontSize: 12.5),
+              ),
+            )
+          else
+            for (final session in sessions)
+              _NavRow(
+                semanticKey: 'air-terminal-${session.id}',
+                icon: Icons.terminal_rounded,
+                label: session.label,
+                onTap: () => onOpen(session),
+              ),
         ],
       ),
     );
