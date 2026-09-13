@@ -25,6 +25,14 @@ class ChatHeader extends StatelessWidget {
   final VoidCallback onMemory;
   final VoidCallback onMemo;
   final VoidCallback onShare;
+
+  /// 「强制同步」：把同步指令当消息发给会话（Web 的 `#worktree-force-sync-btn`）。
+  /// 手机上页头那一排已经排满，它跟「聊天宽度」一起待在 ⋯ 菜单里。
+  final VoidCallback onForceSync;
+  final bool forceSyncing;
+
+  /// 「聊天宽度」（Web 的 `#chat-layout-btn`）。
+  final VoidCallback onChatWidth;
   /// Working directory + worktree branch for the read-only info rows at the
   /// top of the ⋯ menu. The chat page used to burn a full-width cwd bar under
   /// the header for this; now it lives one tap away, next to the actions.
@@ -43,6 +51,9 @@ class ChatHeader extends StatelessWidget {
     required this.onMemory,
     required this.onMemo,
     required this.onShare,
+    required this.onForceSync,
+    this.forceSyncing = false,
+    required this.onChatWidth,
     required this.cwd,
     this.branch,
     this.behind = 0,
@@ -155,6 +166,19 @@ class ChatHeader extends StatelessWidget {
           final title = _SessionTitle(
             label: provider.titleLabel,
             onDoubleTap: () => _renameSession(context, provider),
+          );
+          // 只读历史（Web 的 `#status` 在 readOnly 模式下写成「只读历史」）：
+          // 归档记录不能删、不能清空，但能继续对话，所以只加一枚标识说明现在
+          // 看的是历史，不把输入区收走。
+          final titleLine = Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Flexible(child: title),
+              if (provider.historyArchive) ...[
+                const SizedBox(width: 6),
+                const _ReadOnlyHistoryChip(),
+              ],
+            ],
           );
           // On narrow screens the fixed chrome above alone was wider than the
           // row (brand + labelled clear-context button ≈ +170px), so the brand
@@ -272,6 +296,9 @@ class ChatHeader extends StatelessWidget {
               onMemo: onMemo,
               onMerge: onMerge,
               onSettings: () => _openSettings(context, settings),
+              onForceSync: onForceSync,
+              forceSyncing: forceSyncing,
+              onChatWidth: onChatWidth,
               onShare: onShare,
               onShareMessages: () => Navigator.push(
                 context,
@@ -323,7 +350,7 @@ class ChatHeader extends StatelessWidget {
                 ),
                 const SizedBox(height: 2),
                 // Full-width title line: never squeezed by the chrome above.
-                title,
+                titleLine,
               ],
             );
           }
@@ -333,7 +360,7 @@ class ChatHeader extends StatelessWidget {
               const SizedBox(width: 6),
               // Expanded (not Flexible) so the title always keeps whatever
               // space the fixed chrome leaves — never collapses to zero.
-              Expanded(child: title),
+              Expanded(child: titleLine),
               connectionDot,
               ...actions,
             ],
@@ -750,6 +777,9 @@ class _HeaderOverflowMenu extends StatelessWidget {
   final VoidCallback onFiles;
   final VoidCallback onRestart;
   final VoidCallback onGitLog;
+  final VoidCallback onForceSync;
+  final bool forceSyncing;
+  final VoidCallback onChatWidth;
   const _HeaderOverflowMenu({
     required this.mergeReady,
     required this.cwd,
@@ -766,6 +796,9 @@ class _HeaderOverflowMenu extends StatelessWidget {
     required this.onFiles,
     required this.onRestart,
     required this.onGitLog,
+    required this.onForceSync,
+    this.forceSyncing = false,
+    required this.onChatWidth,
   });
 
   @override
@@ -794,6 +827,12 @@ class _HeaderOverflowMenu extends StatelessWidget {
             break;
           case 'merge':
             onMerge();
+            break;
+          case 'force-sync':
+            onForceSync();
+            break;
+          case 'chat-width':
+            onChatWidth();
             break;
           case 'share':
             onShare();
@@ -876,6 +915,22 @@ class _HeaderOverflowMenu extends StatelessWidget {
           'gitlog',
           Icons.history_rounded,
           t('gitLog'),
+          const Color(0xFF233249),
+        ),
+        // 强制同步在菜单里也留一份：两个横幅只在「落后」或「卡在冲突」时出现，
+        // 而这颗按钮恰恰最常用于「没落后但我要让会话去处理同步」。
+        _item(
+          'force-sync',
+          Icons.published_with_changes_rounded,
+          forceSyncing
+              ? t('worktreeForceSyncSending')
+              : t('worktreeForceSync'),
+          const Color(0xFF1267b5),
+        ),
+        _item(
+          'chat-width',
+          Icons.width_normal_outlined,
+          t('chatWidthTitle'),
           const Color(0xFF233249),
         ),
         _item(
@@ -1003,6 +1058,50 @@ class _HeaderOverflowMenu extends StatelessWidget {
           const SizedBox(width: 12),
           Text(label, style: TextStyle(color: color, fontSize: 14)),
         ],
+      ),
+    );
+  }
+}
+
+/// 标题旁边的「只读历史」标识。对齐 Web 在归档模式下把 `#status` 写成
+/// 「只读历史」这一处 —— App 里对应的状态是 `provider.historyArchive`。
+///
+/// 措辞刻意不写成「只读」了事：这里能继续对话，只是历史改不动（删消息、清空
+/// 上下文在归档模式下都是被挡住的），提示语把这层差别说清楚。
+class _ReadOnlyHistoryChip extends StatelessWidget {
+  const _ReadOnlyHistoryChip();
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: t('readOnlyHistoryHint'),
+      child: Container(
+        key: const Key('chat-read-only-badge'),
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(
+          color: const Color(0xFFf1f4f9),
+          border: Border.all(color: const Color(0xFFc9d6e4)),
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(
+              Icons.lock_outline_rounded,
+              size: 11,
+              color: Color(0xFF6f8096),
+            ),
+            const SizedBox(width: 4),
+            Text(
+              t('readOnlyHistory'),
+              style: const TextStyle(
+                color: Color(0xFF6f8096),
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
