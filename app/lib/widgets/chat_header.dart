@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../i18n.dart';
 import '../models/message.dart';
 import '../providers/chat_provider.dart';
+import '../providers/session_manager.dart';
 import '../services/chat_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
@@ -49,6 +50,74 @@ class ChatHeader extends StatelessWidget {
     this.advancedMode = true,
   });
 
+  /// 双击标题改名 —— 对齐 web `chat.js` 的 renameSessionFromChat()：预填的是
+  /// 当前别名（不是「目录 / 名字」那串），上限 80 字，留空就清掉别名回落到
+  /// 会话 id。改完由 SessionManager.loadDashboard() 把新名字推回标题，这里不
+  /// 自己改 displayName —— 否则服务端拒绝时本地已经先变了。
+  Future<void> _renameSession(
+    BuildContext context,
+    ChatProvider provider,
+  ) async {
+    final manager = context.read<SessionManager>();
+    final messenger = ScaffoldMessenger.of(context);
+    final ctrl = TextEditingController(text: provider.displayName);
+    final next = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: const Color(0xFFffffff),
+        title: Text(
+          t('renameSessionTitle'),
+          style: const TextStyle(fontSize: 15, color: Color(0xFF20364d)),
+        ),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          maxLength: 80,
+          style: const TextStyle(color: Color(0xFF233249), fontSize: 13),
+          decoration: InputDecoration(
+            hintText: provider.sessionName,
+            hintStyle: const TextStyle(color: Color(0xFF8b9cae)),
+            filled: true,
+            fillColor: const Color(0xFFf4f8fd),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
+            counterStyle: const TextStyle(color: Color(0xFF8a9aab)),
+          ),
+          onSubmitted: (value) => Navigator.pop(dialogContext, value),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: Text(
+              t('cancel'),
+              style: const TextStyle(color: Color(0xFF6f8096)),
+            ),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, ctrl.text),
+            child: Text(
+              t('save'),
+              style: const TextStyle(
+                color: Color(0xFF1267b5),
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (next == null) return;
+    try {
+      await manager.renameSession(provider.sessionName, next.trim());
+      messenger.showSnackBar(
+        SnackBar(content: Text(t('renameSessionSaved'))),
+      );
+    } catch (error) {
+      messenger.showSnackBar(
+        SnackBar(content: Text(t('renameSessionFailed', {'error': '$error'}))),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<ChatProvider>();
@@ -83,7 +152,10 @@ class ChatHeader extends StatelessWidget {
           // to zero width, i.e. no visible title at all. Wide screens keep
           // the single row (title Expanded, action cluster right); narrow
           // screens move the title to its own full-width second line.
-          final title = _SessionTitle(label: provider.titleLabel);
+          final title = _SessionTitle(
+            label: provider.titleLabel,
+            onDoubleTap: () => _renameSession(context, provider),
+          );
           // On narrow screens the fixed chrome above alone was wider than the
           // row (brand + labelled clear-context button ≈ +170px), so the brand
           // wordmark is dropped — the collapse arrow and the CLI badge still
@@ -942,25 +1014,37 @@ class _HeaderOverflowMenu extends StatelessWidget {
 /// whole string regardless of visual truncation.
 class _SessionTitle extends StatelessWidget {
   final String label;
-  const _SessionTitle({required this.label});
+
+  /// 双击改名，对齐 web 双击 `#session-title` 那条路径。宽屏标题是 Expanded
+  /// 的主角、窄屏它独占一行，两处都是这个 widget，所以手势绑在这里。
+  final VoidCallback? onDoubleTap;
+  const _SessionTitle({required this.label, this.onDoubleTap});
 
   @override
   Widget build(BuildContext context) {
-    return Tooltip(
-      message: label,
-      waitDuration: const Duration(milliseconds: 350),
-      child: Semantics(
-        label: label,
-        excludeSemantics: true,
-        child: Text(
-          label,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(
-            color: Color(0xFF233249),
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-            fontFamily: 'monospace',
+    return MouseRegion(
+      cursor: onDoubleTap == null
+          ? MouseCursor.defer
+          : SystemMouseCursors.click,
+      child: GestureDetector(
+        onDoubleTap: onDoubleTap,
+        child: Tooltip(
+          message: label,
+          waitDuration: const Duration(milliseconds: 350),
+          child: Semantics(
+            label: label,
+            excludeSemantics: true,
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: Color(0xFF233249),
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                fontFamily: 'monospace',
+              ),
+            ),
           ),
         ),
       ),
