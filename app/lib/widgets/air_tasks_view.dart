@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../i18n.dart';
 import '../providers/session_manager.dart';
 import '../screens/docs_registry_screen.dart';
 import '../screens/push_settings_screen.dart';
@@ -28,6 +29,7 @@ import 'air/air_task_config.dart';
 import 'air/air_task_details.dart';
 import 'air/air_task_status.dart';
 import 'task_board_view.dart';
+import 'tour_overlay.dart';
 import 'workspace_navigation_drawer.dart';
 
 /// Air 的移动端首页：目录优先，任务是行，对话开在自己的聊天页里。
@@ -73,6 +75,12 @@ class _AirTasksViewState extends State<AirTasksView>
     httpClient: widget.httpClient,
   );
   final _scaffoldKey = GlobalKey<ScaffoldState>();
+  // 新手引导（Web `public/tour.js`）落在首页的那两步：第 1 步圈目录库的
+  // 「添加」，第 2 步圈输入区。见 [TourOverlay]。
+  final _tourKey = GlobalKey<TourOverlayState>();
+  final _tourLibraryKey = GlobalKey();
+  final _tourComposerKey = GlobalKey();
+  bool _tourStarted = false;
   AirLocalStore? _store;
   AirSnapshot? _data;
   AirCreateAttempt? _attempt;
@@ -145,6 +153,8 @@ class _AirTasksViewState extends State<AirTasksView>
         taskIds: result.tasks.map((t) => t.id).toSet(),
       );
       if (mounted) setState(() {});
+      // 引导等数据到位再开始：早一步锚点还不存在，会走成「找不到目标就往下跳」。
+      _maybeStartTour();
     } catch (error) {
       if (mounted) setState(() => _error = error.toString());
     } finally {
@@ -155,6 +165,25 @@ class _AirTasksViewState extends State<AirTasksView>
   /// 侧栏里的每一次点击都要先把抽屉收回去。这里不能用 `Navigator.pop`：抽屉不是
   /// 一条路由，首页又是栈底那一条，`canPop()` 会直接说「没得弹」。
   void _closeDrawer() => _scaffoldKey.currentState?.closeDrawer();
+
+  /// 引导只在首页真正拿到数据之后开一次。没走完就再进 App，autoStart 会接着上次
+  /// 那一步（进度存在 SharedPreferences 里，键名跟 Web 一样）。
+  void _maybeStartTour() {
+    if (_tourStarted || _data == null) return;
+    _tourStarted = true;
+    _tourKey.currentState?.autoStart();
+  }
+
+  /// 引导走到第 1 步就摆出目录库，走到第 2 步摆回当前目录 —— Web 那两步的目标
+  /// 分别在「新建目录」和「新建会话」上，App 里对应的是这两块。第 1 步圈的是
+  /// 目录库那颗「添加」，不切过去的用户根本看不到它。
+  void _onTourStep(int step) {
+    if (step == 1 && _mode != _AirMode.library) {
+      setState(() => _mode = _AirMode.library);
+    } else if (step == 2 && _mode != _AirMode.tasks) {
+      setState(() => _mode = _AirMode.tasks);
+    }
+  }
 
   void _selectDirectory(String dirId) {
     _closeDrawer();
@@ -177,6 +206,8 @@ class _AirTasksViewState extends State<AirTasksView>
   Future<void> _open(AirTask task) async {
     if (_opening) return;
     _opening = true;
+    // 打开对话就是把引导交给聊天页（Web 第 2 步那颗「打开对话后继续」）。
+    _tourKey.currentState?.handOffToChat();
     try {
       final entry = await _service.openTask(task.id);
       if (!mounted) return;
@@ -734,6 +765,36 @@ class _AirTasksViewState extends State<AirTasksView>
     // 页头工具条只在够宽时摆出来 —— 阈值跟着 Web `air.css` 收工具条的那个
     // 760px 断点走（那边是「低于它就整条收进 ⋯ 浮层」）。
     final showToolbar = MediaQuery.sizeOf(context).width >= 760;
+    // 引导那一层套在 Scaffold 外面：第 1 步的目标在页头之外的目录库里，但光圈
+    // 要能盖住整页（含 AppBar），body 里那层盖不住。
+    return Stack(
+      children: [
+        _buildScaffold(
+          data: data,
+          directory: directory,
+          tasks: tasks,
+          runningDirectories: runningDirectories,
+          runningHere: runningHere,
+          showToolbar: showToolbar,
+        ),
+        TourOverlay(
+          key: _tourKey,
+          page: TourPage.home,
+          anchors: {1: _tourLibraryKey, 2: _tourComposerKey},
+          onStepShown: _onTourStep,
+        ),
+      ],
+    );
+  }
+
+  Widget _buildScaffold({
+    required AirSnapshot? data,
+    required AirDirectory? directory,
+    required List<AirTask> tasks,
+    required Set<String> runningDirectories,
+    required int runningHere,
+    required bool showToolbar,
+  }) {
     return Scaffold(
       key: _scaffoldKey,
       backgroundColor: AppColors.bg,
@@ -920,15 +981,19 @@ class _AirTasksViewState extends State<AirTasksView>
                   _openDestination(WorkspaceDestination.cron);
                 case 'refresh':
                   unawaited(_refresh());
+                case 'onboarding':
+                  unawaited(_tourKey.currentState?.restart() ?? Future.value());
               }
             },
-            itemBuilder: (context) => const [
-              PopupMenuItem(value: 'search', child: Text('搜索目录与任务')),
-              PopupMenuItem(value: 'library', child: Text('工作目录库')),
-              PopupMenuItem(value: 'add-directory', child: Text('添加工作目录')),
-              PopupMenuItem(value: 'board', child: Text('打开完整任务看板')),
-              PopupMenuItem(value: 'schedules', child: Text('定时任务')),
-              PopupMenuItem(value: 'refresh', child: Text('刷新')),
+            itemBuilder: (context) => [
+              const PopupMenuItem(value: 'search', child: Text('搜索目录与任务')),
+              const PopupMenuItem(value: 'library', child: Text('工作目录库')),
+              const PopupMenuItem(value: 'add-directory', child: Text('添加工作目录')),
+              const PopupMenuItem(value: 'board', child: Text('打开完整任务看板')),
+              const PopupMenuItem(value: 'schedules', child: Text('定时任务')),
+              const PopupMenuItem(value: 'refresh', child: Text('刷新')),
+              // Web 那边是 manage 页右上角那颗 ❓（`onclick="startOnboarding()"`）。
+              PopupMenuItem(value: 'onboarding', child: Text(t('onboarding'))),
             ],
           ),
         ],
@@ -959,6 +1024,9 @@ class _AirTasksViewState extends State<AirTasksView>
                     onToggleFavorite: (dirId) => unawaited(
                       _toggleFavorite(dirId),
                     ),
+                    // 第 1 步圈的就是这颗「添加」（Web 第 1 步的目标是「新建
+                    // 目录」按钮，同一件事）。
+                    addButtonKey: _tourLibraryKey,
                   )
                 : _buildTasks(data, directory, tasks),
           ),
@@ -1000,28 +1068,31 @@ class _AirTasksViewState extends State<AirTasksView>
             ),
             const SizedBox(height: 10),
           ],
-          AirQuickComposer(
-            settings: widget.settings,
-            service: _service,
-            httpClient: widget.httpClient,
-            clis: data?.clis ?? const [],
-            busy: _submitting,
-            onSubmit: ({
-              required String text,
-              required String cli,
-              required AirTaskRuntime runtime,
-              required List<AirRoleBinding> roles,
-              required bool goal,
-              int? goalRounds,
-              int? goalBudget,
-            }) => _createFromComposer(
-              text: text,
-              cli: cli,
-              runtime: runtime,
-              roles: roles,
-              goal: goal,
-              goalRounds: goalRounds,
-              goalBudget: goalBudget,
+          KeyedSubtree(
+            key: _tourComposerKey,
+            child: AirQuickComposer(
+              settings: widget.settings,
+              service: _service,
+              httpClient: widget.httpClient,
+              clis: data?.clis ?? const [],
+              busy: _submitting,
+              onSubmit: ({
+                required String text,
+                required String cli,
+                required AirTaskRuntime runtime,
+                required List<AirRoleBinding> roles,
+                required bool goal,
+                int? goalRounds,
+                int? goalBudget,
+              }) => _createFromComposer(
+                text: text,
+                cli: cli,
+                runtime: runtime,
+                roles: roles,
+                goal: goal,
+                goalRounds: goalRounds,
+                goalBudget: goalBudget,
+              ),
             ),
           ),
           const SizedBox(height: 24),
