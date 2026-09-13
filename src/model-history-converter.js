@@ -85,9 +85,35 @@ function rejectedParameter(error) {
   return match ? match[1] : '';
 }
 
+// Third-party Responses providers (DeepSeek, other responses-compatible
+// gateways) persist reasoning items with a raw content=[reasoning_text]
+// array. The official ChatGPT backend's private schema requires reasoning
+// items to carry NO content ("Expected an array with maximum length 0"), so
+// a thread recorded on a third-party provider fails replay against official
+// with 400 Invalid 'input[N].content': array too long. Strip the field from
+// every reasoning item in one pass. The local rollout transcript is never
+// touched (request copies only); third-party upstreams that emitted the field
+// never pass through this function's callers on their own routes.
+function stripReasoningContent(body) {
+  if (!Array.isArray(body?.input)) return { body, changes: [] };
+  const changes = [];
+  const input = body.input.map((item, index) => {
+    if (item?.type === 'reasoning' && Array.isArray(item.content) && item.content.length > 0) {
+      const copy = { ...item };
+      delete copy.content;
+      changes.push(change(index, item, 'content', 'omit', 'reasoning_content_not_accepted'));
+      return copy;
+    }
+    return item;
+  });
+  return changes.length ? { body: { ...body, input }, changes } : { body, changes };
+}
+
 // One rejection-driven fallback, restricted to optional metadata. Never drop a
-// whole tool, a call/result, arguments, names, content, reasoning or a schema.
-// The caller may apply this only to an HTTP 400 before streaming any output.
+// whole tool, a call/result, arguments, names or a schema; the one deliberate
+// exception is reasoning content, which official rejects outright (see
+// stripReasoningContent). The caller may apply this only to an HTTP 400 before
+// streaming any output.
 function repairRejectedResponsesHistory(body, error) {
   const param = rejectedParameter(error);
   const message = String(error?.message || '');
@@ -95,11 +121,14 @@ function repairRejectedResponsesHistory(body, error) {
   const invalidId = /expected an? id.*(?:begin|start)|invalid.*\bid\b.*(?:prefix|format)/i.test(message);
   const invalidOptional = ['invalid_type', 'invalid_value'].includes(error?.code) && /invalid\b/i.test(message);
   const match = /^input\[(\d+)\]\.(\w+)$/.exec(param);
-  if (match && Array.isArray(body?.input)) {
+  const optionalFieldRepair = (() => {
+    if (!match || !Array.isArray(body?.input)) return null;
     const index = Number(match[1]);
     const field = match[2];
     const item = body.input[index];
     const rule = itemRule(item?.type);
+    // Fall through to the content backstop below when this param does not map
+    // to an omittable optional field (e.g. reasoning items are opaque here).
     if (!rule || !rule.optional.includes(field) || !Object.hasOwn(item, field)) return null;
     if (!unsupported && !invalidOptional && !(field === 'id' && invalidId)) return null;
     if (field === 'id' && body.input.some(other => other?.type === 'item_reference' && other.id === item.id)) return null;
@@ -111,6 +140,17 @@ function repairRejectedResponsesHistory(body, error) {
       body: { ...body, input },
       changes: [change(index, item, field, 'omit', 'upstream_rejected_optional_field')],
     };
+  })();
+  if (optionalFieldRepair) return optionalFieldRepair;
+  // Backstop for the reasoning-content rejection: the official relay strips
+  // proactively (below), but if a rejection of this shape still arrives —
+  // other item types carrying content where none is allowed, or a shape the
+  // proactive pass missed — strip every reasoning item and retry once.
+  const contentParam = /input\[\d+\]\.content/i.test(`${param} ${message}`)
+    && (/array too long/i.test(message) || /array_above_max_length/i.test(String(error?.code || '')));
+  if (contentParam) {
+    const stripped = stripReasoningContent(body);
+    if (stripped.changes.length) return stripped;
   }
   const toolMatch = /^tools\[(\d+)\]\.(strict|defer_loading|cache_control)$/.exec(param);
   if (!unsupported || !toolMatch || !Array.isArray(body?.tools)) return null;
@@ -128,4 +168,4 @@ function repairRejectedResponsesHistory(body, error) {
   };
 }
 
-module.exports = { preprocessResponsesHistory, repairRejectedResponsesHistory };
+module.exports = { preprocessResponsesHistory, repairRejectedResponsesHistory, stripReasoningContent };
