@@ -55,17 +55,141 @@ String airResourceText(Map<String, dynamic>? resource) {
 }
 
 /// `/api/air` 的一个工作目录。
+///
+/// 也可以是一台**导入进来的远端工作区**（[external]）：Web 那边
+/// `manage-fleet-sharing.js` 的 `dashboardData()` 把外部舰队铺成同一种目录记录，
+/// 于是卡片、详情、会话操作全都走同一条路。这里照做 —— 列表里多出来的只是
+/// 卡片上那行「共享工作区」和菜单里那几项远端动作。
 class AirDirectory {
-  const AirDirectory({required this.id, required this.name, required this.path});
+  const AirDirectory({
+    required this.id,
+    required this.name,
+    required this.path,
+    this.external = false,
+    this.externalFleetId,
+    this.interactive = false,
+  });
 
   final String id;
   final String name;
   final String path;
 
+  /// 远端导入进来的工作区（不是本机的目录）。
+  final bool external;
+
+  /// 远端那条记录的 id，刷新/移除/重新导入都拿它去 `/api/external-fleets`。
+  final String? externalFleetId;
+
+  /// 能不能在远端真的操作。由服务端手里那对授权决定，客户端只读。
+  final bool interactive;
+
   static AirDirectory fromJson(Map<String, dynamic> json) => AirDirectory(
     id: '${json['id']}',
     name: '${json['name'] ?? ''}',
     path: '${json['path'] ?? ''}',
+    external: json['external'] == true,
+    externalFleetId: json['externalFleetId'] as String?,
+    interactive: json['interactive'] == true,
+  );
+
+  /// 把一台外部舰队铺成目录记录。`path` 位放源站 —— 本机没有它的目录，
+  /// 拿真路径填只会让人以为那是本地路径。
+  static AirDirectory fromExternalFleet(ExternalFleet fleet) => AirDirectory(
+    id: fleet.id,
+    name: fleet.name,
+    path: fleet.sourceOrigin,
+    external: true,
+    externalFleetId: fleet.id,
+    interactive: fleet.interactive,
+  );
+}
+
+/// 一条工作区分享（`src/fleet-sharing.js` 的 `publicShare`）。
+///
+/// 「还能导入几次」服务端已经算好了 —— 客户端不去拿 `maxAccesses` 减
+/// `accessCount`：这两个数在列表返回之后还会被远端导入改掉，自己算只会算出
+/// 一个比真相好看的数。
+class FleetShare {
+  const FleetShare({
+    required this.token,
+    required this.url,
+    required this.expiresAt,
+    required this.maxAccesses,
+    required this.accessCount,
+    required this.remainingAccesses,
+    required this.expired,
+    this.description = '',
+  });
+
+  final String token;
+
+  /// 完整的分享链接，服务端按请求的 origin 拼好（`/fleet-share/<token>`）。
+  final String url;
+  final DateTime? expiresAt;
+  final int maxAccesses;
+  final int accessCount;
+
+  /// 剩余可导入次数，服务端给的。
+  final int remainingAccesses;
+  final bool expired;
+  final String description;
+
+  static FleetShare fromJson(Map<String, dynamic> json) => FleetShare(
+    token: '${json['token'] ?? ''}',
+    url: '${json['url'] ?? ''}',
+    expiresAt: DateTime.tryParse('${json['expiresAt'] ?? ''}'),
+    maxAccesses: (json['maxAccesses'] as num?)?.toInt() ?? 0,
+    accessCount: (json['accessCount'] as num?)?.toInt() ?? 0,
+    remainingAccesses: (json['remainingAccesses'] as num?)?.toInt() ?? 0,
+    expired: json['expired'] == true,
+    description: '${json['description'] ?? ''}',
+  );
+}
+
+/// 一台被导入的远端工作区（`src/fleet-sharing.js` 的 `publicExternal`）。
+///
+/// [interactive] 是「能不能在远端真的操作」：它由服务端手里那对 grant/token
+/// 决定，客户端说了不算，所以原样读出来。
+class ExternalFleet {
+  const ExternalFleet({
+    required this.id,
+    required this.name,
+    required this.sourceOrigin,
+    required this.shareUrl,
+    required this.sourceFleetId,
+    required this.sessionCount,
+    required this.interactive,
+    this.alias = '',
+    this.remoteName = '',
+    this.description = '',
+  });
+
+  final String id;
+
+  /// 本地别名优先，没有就用远端自己的名字（同 `publicExternal` 的 `name`）。
+  final String name;
+  final String alias;
+  final String remoteName;
+
+  /// 远端实例的源站，卡片上当路径位显示。
+  final String sourceOrigin;
+  final String shareUrl;
+  final String sourceFleetId;
+  final int sessionCount;
+  final bool interactive;
+  final String description;
+
+  static ExternalFleet fromJson(Map<String, dynamic> json) => ExternalFleet(
+    id: '${json['id'] ?? ''}',
+    name: '${json['name'] ?? ''}',
+    alias: '${json['alias'] ?? ''}',
+    remoteName: '${json['remoteName'] ?? ''}',
+    sourceOrigin: '${json['sourceOrigin'] ?? ''}',
+    shareUrl: '${json['shareUrl'] ?? ''}',
+    sourceFleetId: '${json['sourceFleetId'] ?? ''}',
+    sessionCount: (json['sessionCount'] as num?)?.toInt() ?? 0,
+    interactive: json['interactive'] == true,
+    description: '${json['description'] ?? ''}',
   );
 }
 
@@ -134,6 +258,7 @@ class AirSnapshot {
     required this.tasks,
     required this.clis,
     required this.sessions,
+    this.externalFleets = const [],
   });
 
   final List<AirDirectory> directories;
@@ -143,10 +268,21 @@ class AirSnapshot {
   /// 终端会话（Air 侧栏的 TERMINAL 一组）。只有移动端要用的字段。
   final List<AirSession> sessions;
 
-  static AirSnapshot fromJson(Map<String, dynamic> json) => AirSnapshot(
-    directories: ((json['directories'] as List?) ?? [])
-        .map((e) => AirDirectory.fromJson((e as Map).cast<String, dynamic>()))
-        .toList(),
+  /// 导入进来的远端工作区。它们同时也以 [AirDirectory] 的样子出现在
+  /// [directories] 里 —— 这里额外留一份原始记录，好知道「别名、分享链接、
+  /// 能不能操作」这些目录记录放不下的字段。
+  final List<ExternalFleet> externalFleets;
+
+  static AirSnapshot fromJson(
+    Map<String, dynamic> json, {
+    List<ExternalFleet> externalFleets = const [],
+  }) => AirSnapshot(
+    directories: [
+      ...((json['directories'] as List?) ?? []).map(
+        (e) => AirDirectory.fromJson((e as Map).cast<String, dynamic>()),
+      ),
+      ...externalFleets.map(AirDirectory.fromExternalFleet),
+    ],
     tasks: ((json['tasks'] as List?) ?? [])
         .map((e) => AirTask.fromJson((e as Map).cast<String, dynamic>()))
         .toList(),
@@ -154,11 +290,21 @@ class AirSnapshot {
     sessions: ((json['sessions'] as List?) ?? [])
         .map((e) => AirSession.fromJson((e as Map).cast<String, dynamic>()))
         .toList(),
+    externalFleets: externalFleets,
   );
 
   AirDirectory? directoryOf(String? id) {
     for (final directory in directories) {
       if (directory.id == id) return directory;
+    }
+    return null;
+  }
+
+  /// 这个目录背后的远端记录（本机目录返回 null）。
+  ExternalFleet? externalFleetOf(String? id) {
+    if (id == null) return null;
+    for (final fleet in externalFleets) {
+      if (fleet.id == id) return fleet;
     }
     return null;
   }
@@ -288,6 +434,10 @@ class AirService {
     Map<String, dynamic>? body,
   ]) => _send('POST', path, body);
 
+  /// 删。撤销分享、移除共享工作区都是 DELETE，用 `_post` 发过去服务端只会当
+  /// 路由不存在。
+  Future<Map<String, dynamic>> _delete(String path) => _send('DELETE', path);
+
   Future<Map<String, dynamic>> _send(
     String method,
     String path, [
@@ -298,15 +448,12 @@ class AirService {
       'Content-Type': 'application/json',
       'X-Access-Token': settings.token,
     };
-    final response =
-        await (method == 'GET'
-                ? _http.get(uri, headers: headers)
-                : _http.post(
-                    uri,
-                    headers: headers,
-                    body: jsonEncode(body ?? {}),
-                  ))
-            .timeout(const Duration(seconds: 30));
+    final request = switch (method) {
+      'GET' => _http.get(uri, headers: headers),
+      'DELETE' => _http.delete(uri, headers: headers),
+      _ => _http.post(uri, headers: headers, body: jsonEncode(body ?? {})),
+    };
+    final response = await request.timeout(const Duration(seconds: 30));
     final raw = utf8.decode(response.bodyBytes);
     Map<String, dynamic> result;
     try {
@@ -328,8 +475,18 @@ class AirService {
     return result;
   }
 
-  Future<AirSnapshot> load() async =>
-      AirSnapshot.fromJson(await _get('/api/air'));
+  Future<AirSnapshot> load() async {
+    final data = await _get('/api/air');
+    // 远端工作区是第二个请求。它不该拖垮整个快照：这台服务要是还没有这条路由
+    // （或者网络正抖），本机的工作区照样得列出来，不该一起变成一片空白。
+    List<ExternalFleet> externalFleets = const [];
+    try {
+      externalFleets = await listExternalFleets();
+    } catch (_) {
+      externalFleets = const [];
+    }
+    return AirSnapshot.fromJson(data, externalFleets: externalFleets);
+  }
 
   /// 任务行点开时用它换出可以续接的会话：只读（观察来的）任务只能回到它原来的
   /// 会话，不能在这里接管。
@@ -427,6 +584,84 @@ class AirService {
 
   Future<void> addDirectory({required String name, required String path}) =>
       _post('/api/directories', {'name': name, 'path': path, 'create': false});
+
+  // ── 工作区分享 / 外部舰队（`src/routes/fleet-sharing.js`）─────────────────
+  //
+  // Web 那边是 `public/manage-fleet-sharing.js`：目录菜单里「↗ 分享工作区」开
+  // 一个弹窗，为整个工作区签发一份跨实例的操作授权；对面拿着链接和密码导入，
+  // 就以一个「外部工作区」的样子出现在自己的工作区列表里。
+
+  /// 为一个工作区签发分享。密码至少 6 位（服务端也是这条），天数与导入次数
+  /// 的合法区间在服务端校验，这里只管原样发过去。
+  Future<FleetShare> createFleetShare(
+    String fleetId, {
+    required String password,
+    required int expiresInDays,
+    required int maxAccesses,
+    String description = '',
+  }) async {
+    final result = await _post(
+      '/api/fleets/${Uri.encodeComponent(fleetId)}/share',
+      {
+        'password': password,
+        'expiresInDays': expiresInDays,
+        'maxAccesses': maxAccesses,
+        'description': description,
+      },
+    );
+    return FleetShare.fromJson(result);
+  }
+
+  Future<List<FleetShare>> listFleetShares(String fleetId) async {
+    final result = await _get(
+      '/api/fleets/${Uri.encodeComponent(fleetId)}/shares',
+    );
+    final list = (result['shares'] as List?) ?? const [];
+    return list
+        .whereType<Map>()
+        .map((e) => FleetShare.fromJson(e.cast<String, dynamic>()))
+        .toList();
+  }
+
+  /// 撤销。已发出去的链接立刻失效（`revokeShare`）。
+  Future<void> revokeFleetShare(String fleetId, String token) => _delete(
+    '/api/fleets/${Uri.encodeComponent(fleetId)}/share/'
+    '${Uri.encodeComponent(token)}',
+  );
+
+  /// 导入别台机器的工作区。密码只用于这一次导入，服务端不留（留的是它换回来
+  /// 的那对范围授权）。返回导入后的那条记录，好把名字念给使用者听。
+  Future<ExternalFleet> importExternalFleet({
+    required String shareUrl,
+    required String password,
+    String alias = '',
+  }) async {
+    final result = await _post('/api/external-fleets/import', {
+      'shareUrl': shareUrl,
+      'password': password,
+      'alias': alias,
+    });
+    return ExternalFleet.fromJson(
+      (result['fleet'] as Map?)?.cast<String, dynamic>() ?? const {},
+    );
+  }
+
+  Future<List<ExternalFleet>> listExternalFleets() async {
+    final result = await _get('/api/external-fleets');
+    final list = (result['fleets'] as List?) ?? const [];
+    return list
+        .whereType<Map>()
+        .map((e) => ExternalFleet.fromJson(e.cast<String, dynamic>()))
+        .toList();
+  }
+
+  /// 「↻ 刷新远端状态」——重新问一次远端，把会话列表和授权状态拉回来。
+  Future<void> refreshExternalFleet(String id) =>
+      _post('/api/external-fleets/${Uri.encodeComponent(id)}/refresh');
+
+  /// 「移除共享工作区」——只从本机列表里摘掉，远端那份工作区不动。
+  Future<void> removeExternalFleet(String id) =>
+      _delete('/api/external-fleets/${Uri.encodeComponent(id)}');
 
   void close() {
     if (_ownsClient) _http.close();
