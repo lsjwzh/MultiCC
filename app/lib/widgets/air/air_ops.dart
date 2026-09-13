@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../services/air_ops_service.dart';
+import '../../services/qr_encoder.dart';
 import '../../theme.dart';
 import 'air_ops_store.dart';
 
@@ -282,6 +283,11 @@ class AirOpsPanel extends StatelessWidget {
                     semanticKey: 'air-apk-btn',
                     label: '安装包',
                     onTap: () => unawaited(openAirPackages(context, store)),
+                  ),
+                  _OpsButton(
+                    semanticKey: 'air-qr-btn',
+                    label: '二维码',
+                    onTap: () => unawaited(openAirQr(context, store)),
                   ),
                   _OpsButton(
                     semanticKey: 'air-push-btn',
@@ -619,6 +625,122 @@ class _AirUpdateDialogState extends State<_AirUpdateDialog> {
       actions: _actions,
     );
   }
+}
+
+// ── 二维码 ────────────────────────────────────────────────────────────────
+
+/// 二维码里放什么：主机自己报的局域网地址优先，问不到就退回配好的主机地址
+/// （Web 那边退回的是 `location.origin`）。尾巴上那个斜杠要去掉，不然拼出来
+/// 是 `http://x:3000//air`。两边都空就返回空串，由界面说清楚。
+String qrAirUrl({String? serverUrl, required String fallbackHost}) {
+  final reported = (serverUrl ?? '').trim();
+  final base = reported.isEmpty ? fallbackHost.trim() : reported;
+  if (base.isEmpty) return '';
+  return '${base.replaceAll(RegExp(r'/+$'), '')}/air';
+}
+
+/// 扫的是**另一台设备**：手机相机打开这个地址，就在同一网络下进到这台主机的
+/// Air 控制台。所以内容必须是局域网可达的那个地址，不是 App 自己连的那个。
+Future<void> openAirQr(BuildContext context, AirOpsStore store) async {
+  // 读数还没到就先问一次；问不到也没关系，退回配好的主机地址。
+  if (store.serverInfo == null) await store.loadBootTime();
+  if (!context.mounted) return;
+  await showDialog<void>(
+    context: context,
+    builder: (_) => _AirQrDialog(store: store),
+  );
+}
+
+class _AirQrDialog extends StatelessWidget {
+  const _AirQrDialog({required this.store});
+
+  final AirOpsStore store;
+
+  @override
+  Widget build(BuildContext context) {
+    final url = qrAirUrl(
+      serverUrl: store.serverInfo?.url,
+      fallbackHost: store.settings.host,
+    );
+    QrCode? code;
+    String? failure;
+    if (url.isNotEmpty) {
+      try {
+        code = encodeQr(url);
+      } on ArgumentError {
+        // 只有长到版本 40 都放不下才会走到这儿；说清楚，别画一张错的。
+        failure = '地址太长，画不成二维码。手动访问：$url';
+      }
+    }
+    return AirOpsDialog(
+      title: '扫码打开 MultiCC Air',
+      body: code == null
+          ? (failure ?? '这台主机的地址还没读到，稍后再试。')
+          : '用手机相机扫码，在同一网络下打开这台主机的 Air 控制台。',
+      extra: code == null ? null : _QrCanvas(code: code, url: url),
+      actions: [_closeTextButton(context)],
+    );
+  }
+}
+
+class _QrCanvas extends StatelessWidget {
+  const _QrCanvas({required this.code, required this.url});
+
+  final QrCode code;
+  final String url;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Center(
+          child: Container(
+            // 黑模块白底，和 Web 那边一样：套上 shell 的配色是好看，但扫不动。
+            // 外面这圈留白也不是装饰，是标准要求的静默区。
+            color: Colors.white,
+            padding: const EdgeInsets.all(12),
+            child: CustomPaint(
+              key: const ValueKey('air-qr-image'),
+              size: const Size.square(200),
+              painter: _QrPainter(code),
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          url,
+          key: const ValueKey('air-qr-url'),
+          textAlign: TextAlign.center,
+          style: const TextStyle(color: AppColors.muted, fontSize: 11.5, height: 1.4),
+        ),
+      ],
+    );
+  }
+}
+
+class _QrPainter extends CustomPainter {
+  const _QrPainter(this.code);
+
+  final QrCode code;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final cell = size.width / code.size;
+    // 关掉抗锯齿：相邻的格子得严丝合缝，不然缩放时中间会露出一道白缝。
+    final paint = Paint()
+      ..color = Colors.black
+      ..isAntiAlias = false;
+    for (var row = 0; row < code.size; row++) {
+      for (var column = 0; column < code.size; column++) {
+        if (!code.isDark(row, column)) continue;
+        canvas.drawRect(Rect.fromLTWH(column * cell, row * cell, cell, cell), paint);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(_QrPainter oldDelegate) => oldDelegate.code != code;
 }
 
 // ── 安装包 ────────────────────────────────────────────────────────────────
