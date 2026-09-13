@@ -278,7 +278,7 @@
     $('palette-scrim').hidden = true;
   }
   function saveDraft() {
-    const doc = $('conversation').contentDocument;
+    const doc = $('conversation')?.contentDocument;
     const input = doc?.getElementById('input') || doc?.getElementById('message');
     if (taskId && input) sessionStorage.setItem(`air:draft:${taskId}`, input.value);
   }
@@ -823,6 +823,84 @@
     renderComposerControls();
   }
 
+  /* ── 对话帧池：最近开过的任务留一个热帧 ──
+     管理台那个会话弹窗一直是这么干的（public/manage.js 的 _sessionIframePool）：关掉只
+     藏不卸，再打开就是热的。Air 这边原来只有一个 #conversation，切任务就是换 src，
+     等于把整个聊天页冷启一遍 —— 一百多 KB 的 HTML、五十多个脚本、重连一次 socket、
+     重拉一遍历史再把消息重放出来。来回对照两三个任务时，这份代价每切一次付一次。
+
+     所以这里按同样的办法排队：切走的帧留在 DOM 里（hidden），切回来直接显示。
+     「当前这个」永远是 #conversation —— 切走时把 id 摘下来交给下一个，页面里那一堆
+     $('conversation') 因此不用改。容量给 2（连当前的一共 3 个），每个帧是一整个聊天页
+     加一条 WS，手机再多就不划算了。
+
+     后台帧不是「没在跑」：它照旧收消息、照旧渲染，只是不再做 liveness 轮询、不再响 ——
+     那两件事由 chat.js 的 __multiccChatSetActive 开关，不然看 A 的时候 B 完成一轮会
+     在耳边叫。 */
+  const MAX_POOLED_FRAMES = 2;
+  const _framePool = new Map();   // taskId → { frame, lastUsed }
+  let _frameHoldsTask = null;     // 现在这个 #conversation 里装的是哪个任务
+
+  function setFrameActive(frame, active) {
+    try { frame?.contentWindow?.__multiccChatSetActive?.(active); } catch (_) { /* 还没起来就算了，load 之后会补 */ }
+  }
+
+  // 帧自己的两处接线：加载完同步一次工具条，并在帧内补一手「点一下就收浮层」。
+  // 池子里的每个帧都要接，不只是最初那一个。
+  function wireConversationFrame(frame) {
+    frame.addEventListener('load', () => { dismissOnFrame(frame); setFrameActive(frame, frame.id === 'conversation'); });
+    frame.onload = syncFrame;
+  }
+
+  function parkFrame(frame) {
+    if (!frame) return;
+    frame.removeAttribute('id');
+    frame.hidden = true;
+    setFrameActive(frame, false);
+  }
+
+  function evictFrames() {
+    while (_framePool.size > MAX_POOLED_FRAMES) {
+      let oldestId = null, oldest = Infinity;
+      for (const [id, entry] of _framePool) if (entry.lastUsed < oldest) { oldest = entry.lastUsed; oldestId = id; }
+      if (!oldestId) break;
+      _framePool.get(oldestId).frame.remove();
+      _framePool.delete(oldestId);
+    }
+  }
+
+  // 把当前这个交给池子，并让 task 那一个上台（在池子里就热启，否则新建一个冷启）。
+  function openConversation(task) {
+    if (_frameHoldsTask === task) { $('conversation')?.removeAttribute('hidden'); return; }
+    const current = $('conversation');
+    if (current && _frameHoldsTask) _framePool.set(_frameHoldsTask, { frame: current, lastUsed: Date.now() });
+    const pooled = _framePool.get(task);
+    if (pooled && pooled.frame.isConnected) {
+      _framePool.delete(task);
+      parkFrame(current);
+      pooled.frame.id = 'conversation';
+      pooled.frame.hidden = false;
+      setFrameActive(pooled.frame, true);
+      // 帧没重新加载，load 不会响，所以这里补一次：工具条那几个图标、输入框里
+      // 的草稿都是照着「当前这个帧」读的，上台之后得重新对一遍。
+      syncFrame();
+    } else {
+      if (pooled) _framePool.delete(task);   // 帧已经被 LRU 收走了，只留下这条记录
+      const frame = document.createElement('iframe');
+      frame.id = 'conversation';
+      frame.title = '任务对话';
+      frame.src = `/chat.html?task=${encodeURIComponent(task)}&air=1`;
+      wireConversationFrame(frame);
+      if (current) {
+        // 初始那个空帧（还没有 src）没有保留价值，直接换掉；装过任务的帧则留下来进池子。
+        if (_frameHoldsTask) { parkFrame(current); current.parentNode.insertBefore(frame, current.nextSibling); }
+        else current.replaceWith(frame);
+      } else { document.body.append(frame); }
+    }
+    _frameHoldsTask = task;
+    evictFrames();
+  }
+
   function render() {
     if (!data) return;
     if (!directoryId && taskId) directoryId = data.tasks.find(task => task.id === taskId)?.dirId;
@@ -910,16 +988,22 @@
 
     const hasTask = !!taskId;
     $('empty').hidden = hasTask;
-    $('conversation').hidden = !hasTask;
     if (!hasTask) {
-      $('conversation').removeAttribute('src');
+      // 没任务时把这个帧交回池子：藏起来、让它在后台安静下来，但不卸掉 —— 刚看过又
+      // 点回来的时候它就是热的。此后 #conversation 暂时不在页面上，读它的地方都写了 ?.。
+      const frame = $('conversation');
+      if (frame && _frameHoldsTask) {
+        _framePool.set(_frameHoldsTask, { frame, lastUsed: Date.now() });
+        parkFrame(frame);
+        _frameHoldsTask = null;
+        evictFrames();
+      }
       $('delivery-card').hidden = true;
       closeDetails();
     } else {
       // Task identity is resolved by chat-task-boot, but rendering stays on the
       // original full Chat page. Air only supplies a compact light theme.
-      const target = `/chat.html?task=${encodeURIComponent(taskId)}&air=1`;
-      if ($('conversation').getAttribute('src') !== target) $('conversation').src = target;
+      openConversation(taskId);
     }
   }
 
@@ -1163,7 +1247,7 @@
   }
 
   function composerControls() {
-    const doc = $('conversation').contentDocument;
+    const doc = $('conversation')?.contentDocument;
     if (!doc) return null;
     const row = ensureComposerRow(doc);
     const ai = doc.getElementById('air-ai-pill');
@@ -1362,14 +1446,14 @@
   });
   // 对话是一整个 iframe：在它里面点的、划的都不会冒泡到这一份 document。不补这一
   // 手，浮层会一直挂着，挡住手指真正在动的那一屏。
-  function dismissOnFrame() {
-    const frame = $('conversation');
+  function dismissOnFrame(frame = $('conversation')) {
     try {
-      frame.contentDocument?.addEventListener('pointerdown', closeOptions, true);
-      frame.contentDocument?.addEventListener('click', closeOptions, true);
+      frame?.contentDocument?.addEventListener('pointerdown', closeOptions, true);
+      frame?.contentDocument?.addEventListener('click', closeOptions, true);
     } catch { /* 跨源时读不到，浮层就只认外面这一份 document */ }
   }
-  $('conversation').addEventListener('load', dismissOnFrame);
+  // 帧的 load 接线都在 wireConversationFrame 里：池子里的每个帧都要接，不只是最初这一个。
+  wireConversationFrame($('conversation'));
   dismissOnFrame();
   // 回到桌面宽度，工具又摆回那一行（浮层的样式只在 760px 以下生效）。留着这个类
   // 会让下一次变窄时菜单凭空弹出来。
@@ -1419,7 +1503,7 @@
   // on/off, merge ready) is mirrored back onto the header icon.
   let quickSyncTimer = null;
   function frameButton(id) {
-    return $('conversation').contentDocument?.getElementById(id) || null;
+    return $('conversation')?.contentDocument?.getElementById(id) || null;
   }
   function syncQuickActions() {
     const source = frameButton('auto-commit-btn');
@@ -1449,7 +1533,7 @@
   // frame to open/close it; the menu anchors itself to the frame's top-right,
   // visually dropping from this header.
   function frameMoreController() {
-    return $('conversation').contentWindow?.__multiccAirHeaderMore || null;
+    return $('conversation')?.contentWindow?.__multiccAirHeaderMore || null;
   }
   $('chat-more').onclick = event => {
     event.stopPropagation();
@@ -1506,7 +1590,6 @@
     } catch (error) { $('create-error').textContent = error.message; }
     finally { $('create-submit').disabled = false; }
   };
-  $('conversation').onload = syncFrame;
   window.addEventListener('keydown', event => {
     // ⌘K 是「去某个地方」的入口：目录和任务一起搜，不用先想起来在哪个目录。
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {

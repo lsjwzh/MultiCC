@@ -1185,9 +1185,19 @@ const worktreeSyncRequest = window.MultiCCWorktreeSync.create({ document,
   readOnly: () => _params.get('readOnly') === '1',
   request: (url, options) => chatApi.json(withToken(url), options), notice: addSystemMsg,
 });
+/* ── 这个帧还在台上吗 ──
+   Air 的对话帧池（public/air.js）把切走的任务留在 DOM 里，下次点回去是热的。帧留着就
+   还活着：它自己那条 WS 照常收消息、照常渲染。但有三件事不该跟着做 —— 每 4s 一次的
+   liveness 轮询、每 5s 一次的 merge-status 轮询（看 A 的时候 B 也在打这两个接口），还有
+   收尾时叮一声再念出来（声音从一个看不见的帧里出来，用户会以为出事的是 A）。所以帧进
+   池子时 Air 调这个开关。iframe 里的 document.hidden 跟随顶层页面，指望不上它。 */
+let _chatFrameActive = true;
+window.__multiccChatSetActive = (active) => { _chatFrameActive = active !== false; return _chatFrameActive; };
+
 const worktreeStatus = window.MultiCCWorktreeStatus.create({ document, tt, withToken,
   sessionId: () => _sessionName, mergeButton: mergeBtn, mergeHint,
   api: chatApi, notice: addSystemMsg, syncRequest: worktreeSyncRequest,
+  isActive: () => _chatFrameActive,
 });
 function applyMergeStatus(st) { return worktreeStatus.apply(st); }
 function refreshMergeStatus() { return worktreeStatus.refresh(); }
@@ -1196,7 +1206,7 @@ function startMergeStatusPolling() { return worktreeStatus.startPolling(); }
 /* ── Liveness pill: is this session working / idle / stalled right now ── */
 let _livenessTimer = null;
 async function refreshLiveness() {
-  if (!_sessionName || document.hidden) return;
+  if (!_sessionName || document.hidden || !_chatFrameActive) return;
   try {
     const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/liveness`));
     if (!res.ok) { chatLiveUi.renderLiveness(null); return; }
@@ -2473,6 +2483,7 @@ const _chatNotifications = window.MultiCCChatNotifications.createNotificationCon
   notifyBtn,
   notifyToast,
   getSessionId: () => _sessionName || sessionId || '',
+  isActive: () => _chatFrameActive,
   getTaskNotifyEnabled: (id) => typeof getTaskNotifyEnabled === 'function' ? getTaskNotifyEnabled(id) : true,
   setTaskNotifyEnabled: (id, enabled) => {
     if (typeof setTaskNotifyEnabled === 'function') setTaskNotifyEnabled(id, enabled);
