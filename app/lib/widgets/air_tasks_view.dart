@@ -15,6 +15,7 @@ import '../theme.dart';
 import 'air/air_console.dart';
 import 'air/air_destinations.dart';
 import 'air/air_panels.dart';
+import 'air/air_palette.dart';
 import 'air/air_schedules.dart';
 import 'air/air_sidebar.dart';
 import 'air/air_task_config.dart';
@@ -464,6 +465,27 @@ class _AirTasksViewState extends State<AirTasksView>
     );
   }
 
+  /// 搜索目录与任务。Web 上这是 ⌘K 唤起的一层浮层；手机上没有键盘，就从侧栏
+  /// 和头部菜单各留一个入口。选中什么直接落在宿主身上 —— 目录切过去，任务开
+  /// 起来，跟从列表里点是一样的两条路。
+  void _openSearch() {
+    _closeDrawer();
+    final data = _data;
+    unawaited(
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => AirPaletteScreen(
+            directories: data?.directories ?? const <AirDirectory>[],
+            recentTasks: _sidebarTasks(),
+            allTasks: data?.tasks ?? const <AirTask>[],
+            onSelectDirectory: _selectDirectory,
+            onOpenTask: _openTaskById,
+          ),
+        ),
+      ),
+    );
+  }
+
   /// 定时任务中心。规则和它背后那个固定 Air 任务是绑在一起的，所以从卡片上点
   /// 「固定 Air 任务」要能直接进到那条任务 —— 哪怕它在另一个目录里。
   void _openSchedules() {
@@ -648,6 +670,7 @@ class _AirTasksViewState extends State<AirTasksView>
           _closeDrawer();
           setState(() => _mode = _AirMode.library);
         },
+        onOpenSearch: _openSearch,
         onOpenConsole: _openConsole,
         onOpenSchedules: _openSchedules,
         onOpenTaskBoard: () {
@@ -735,6 +758,8 @@ class _AirTasksViewState extends State<AirTasksView>
             color: AppColors.panel,
             onSelected: (value) {
               switch (value) {
+                case 'search':
+                  _openSearch();
                 case 'library':
                   setState(() => _mode = _AirMode.library);
                 case 'add-directory':
@@ -748,6 +773,7 @@ class _AirTasksViewState extends State<AirTasksView>
               }
             },
             itemBuilder: (context) => const [
+              PopupMenuItem(value: 'search', child: Text('搜索目录与任务')),
               PopupMenuItem(value: 'library', child: Text('工作目录库')),
               PopupMenuItem(value: 'add-directory', child: Text('添加工作目录')),
               PopupMenuItem(value: 'board', child: Text('打开完整任务看板')),
