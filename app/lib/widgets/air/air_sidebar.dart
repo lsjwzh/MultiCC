@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 
 import '../../services/air_service.dart';
 import '../../theme.dart';
+import 'air_ops.dart';
+import 'air_ops_store.dart';
 import 'air_task_status.dart';
 
 /// Air 的侧栏（Web `public/air.html` 的 `#sidebar`）。
@@ -32,6 +34,9 @@ class AirSidebar extends StatelessWidget {
     required this.onOpenMemory,
     required this.onOpenSettings,
     required this.onOpenAllDestinations,
+    required this.ops,
+    required this.onOpenPush,
+    required this.onLogout,
     this.onOpenVoiceCall,
     this.onAdvancedModeChanged,
   });
@@ -60,6 +65,14 @@ class AirSidebar extends StatelessWidget {
   final VoidCallback onOpenMemory;
   final VoidCallback onOpenSettings;
   final VoidCallback onOpenAllDestinations;
+
+  /// 主机运维那几行字的同一份状态：版本行、开机时间、回执各在一处，说的却是
+  /// 同一件事（见 [AirOpsStore]）。
+  final AirOpsStore ops;
+
+  /// 「推送通知」在原生侧落到设置中心的那一页（本机通知通道，不是浏览器订阅）。
+  final VoidCallback onOpenPush;
+  final VoidCallback onLogout;
   final VoidCallback? onOpenVoiceCall;
   final ValueChanged<bool>? onAdvancedModeChanged;
 
@@ -80,9 +93,17 @@ class AirSidebar extends StatelessWidget {
       backgroundColor: AppColors.bgSoft,
       shape: const Border(right: BorderSide(color: AppColors.line)),
       child: SafeArea(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
+        // 整条侧栏一起滚，而不是让中间那段自己滚：短屏上「更多与系统」一展开，
+        // 固定的下半截就会把版面顶破。Web 那边整条 aside 也是 `overflow: auto`。
+        // 内容不够高时 Spacer 把底部那组压到屏幕下沿（同 Web 的 `.side-bottom`）。
+        child: LayoutBuilder(
+          builder: (context, constraints) => SingleChildScrollView(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(minHeight: constraints.maxHeight),
+              child: IntrinsicHeight(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 14, 12, 6),
               child: Row(
@@ -124,9 +145,10 @@ class AirSidebar extends StatelessWidget {
                 ],
               ),
             ),
-            Expanded(
-              child: ListView(
-                padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   _SpaceCard(
                     directory: directory,
@@ -226,6 +248,10 @@ class AirSidebar extends StatelessWidget {
                 ],
               ),
             ),
+            // 剩下的空档都留在下面这组之前，内容不够高时底部这组就贴着下沿。
+            const Spacer(),
+            // 版本行留在折叠区外：它是「有新版本」唯一的落点，折起来就没人知道。
+            AirVersionRow(store: ops),
             _MoreSection(
               advancedMode: advancedMode,
               onAdvancedModeChanged: onAdvancedModeChanged,
@@ -235,8 +261,13 @@ class AirSidebar extends StatelessWidget {
               onOpenTaskBoard: onOpenTaskBoard,
               onOpenAllDestinations: onOpenAllDestinations,
               onOpenVoiceCall: onOpenVoiceCall,
+              ops: ops,
+              onOpenPush: onOpenPush,
+              onLogout: onLogout,
             ),
             const Divider(height: 1, color: AppColors.line),
+            // 回执也留在折叠区外：运维动作的结果要看得见。
+            AirOpsReceipt(store: ops),
             Padding(
               padding: const EdgeInsets.fromLTRB(18, 10, 18, 6),
               child: Text(
@@ -256,7 +287,11 @@ class AirSidebar extends StatelessWidget {
                 style: TextStyle(color: AppColors.faint, fontSize: 10.5),
               ),
             ),
-          ],
+                  ],
+                ),
+              ),
+            ),
+          ),
         ),
       ),
     );
@@ -555,7 +590,10 @@ class _MoreSection extends StatelessWidget {
     required this.onOpenSettings,
     required this.onOpenTaskBoard,
     required this.onOpenAllDestinations,
-    required this.onOpenVoiceCall,
+    required this.ops,
+    required this.onOpenPush,
+    required this.onLogout,
+    this.onOpenVoiceCall,
   });
 
   final bool advancedMode;
@@ -565,6 +603,9 @@ class _MoreSection extends StatelessWidget {
   final VoidCallback onOpenSettings;
   final VoidCallback onOpenTaskBoard;
   final VoidCallback onOpenAllDestinations;
+  final AirOpsStore ops;
+  final VoidCallback onOpenPush;
+  final VoidCallback onLogout;
 
   /// 机器级语音通话。原生独占 —— Web 侧没有对应页面。
   final VoidCallback? onOpenVoiceCall;
@@ -626,6 +667,7 @@ class _MoreSection extends StatelessWidget {
               label: '语音通话 · BETA',
               onTap: onOpenVoiceCall!,
             ),
+          AirOpsPanel(store: ops, onOpenPush: onOpenPush, onLogout: onLogout),
           Semantics(
             key: const ValueKey('air-more-advanced'),
             toggled: advancedMode,
