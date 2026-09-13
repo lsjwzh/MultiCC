@@ -1,6 +1,7 @@
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:multicc_app/models/message.dart';
 import 'package:multicc_app/providers/chat_provider.dart';
 
 StagedUserSend _send(String id, {String? entryId}) {
@@ -328,6 +329,43 @@ void main() {
         });
       },
     );
+  });
+
+  group('userBubbleInsertIndex (assistant never renders above its question)', () {
+    test('a late staged commit inserts BEFORE the streaming assistant bubble', () {
+      // 复现截图场景：queued:false 帧丢失/迟到，message_start 先把流式助手
+      // 气泡 append 到列表尾，4s 兜底或迟到裁决此刻才 commit 用户气泡。
+      final history = [
+        ChatMessage(role: MessageRole.user, content: 'q1'),
+        ChatMessage(role: MessageRole.assistant, content: 'a1'),
+      ];
+      final live = ChatMessage(
+        role: MessageRole.assistant,
+        content: '',
+        isStreaming: true,
+      );
+      final messages = [...history, live];
+      final idx = userBubbleInsertIndex(messages, live);
+      messages.insert(idx, ChatMessage(role: MessageRole.user, content: 'q2'));
+      expect(idx, 2);
+      expect(messages[2].role, MessageRole.user, reason: '问题必须插在回答之前');
+      expect(identical(messages[3], live), isTrue, reason: '流式助手气泡仍在最后');
+      expect(messages.length, 4);
+    });
+
+    test('no streaming tail appends at the chronological end', () {
+      final messages = [
+        ChatMessage(role: MessageRole.user, content: 'q1'),
+        ChatMessage(role: MessageRole.assistant, content: 'a1'),
+      ];
+      expect(userBubbleInsertIndex(messages, null), 2);
+    });
+
+    test('a tail missing from the list (defensive) still appends at the end', () {
+      final messages = [ChatMessage(role: MessageRole.user, content: 'q1')];
+      final orphan = ChatMessage(role: MessageRole.assistant, isStreaming: true);
+      expect(userBubbleInsertIndex(messages, orphan), 1);
+    });
   });
 
   test(
