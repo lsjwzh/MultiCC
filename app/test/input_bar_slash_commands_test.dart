@@ -36,13 +36,15 @@ class _RecordingProvider extends ChatProvider {
   bool get isStreaming => false;
 
   @override
-  void sendMessage(
+  String? sendMessage(
     String text, {
+    String? clientMsgId,
     bool goal = false,
     Map<String, dynamic>? goalLimits,
   }) {
     sent.add(text);
     sentGoal.add(goal);
+    return 'test-msg';
   }
 
   @override

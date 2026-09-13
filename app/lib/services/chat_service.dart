@@ -602,23 +602,31 @@ class ChatService {
   /// server applies the per-send execution limits in [goalLimits] (maxRounds →
   /// claude --max-turns; maxBudget → advisory token budget). There is no global
   /// limit config — blank/0 means unlimited for that dimension.
+  ///
+  /// [clientMsgId] pins the correlation id instead of generating one. The server
+  /// dedupes on it, so a caller that re-sends the same logical message after a
+  /// lost response (the chat page's 强制同步 button) passes the same value twice
+  /// and the second one is dropped instead of starting a second turn.
   String? send(
     String text, {
     bool goal = false,
     Map<String, dynamic>? goalLimits,
+    String? clientMsgId,
   }) {
     if (_channel == null || _state != ChatConnectionState.connected) {
       connect();
       return null;
     }
     try {
-      final clientMsgId =
-          'app-${DateTime.now().microsecondsSinceEpoch}-${_messageSequence++}';
+      final pinned = (clientMsgId ?? '').trim();
+      final id = pinned.isNotEmpty
+          ? pinned
+          : 'app-${DateTime.now().microsecondsSinceEpoch}-${_messageSequence++}';
       final payload = <String, dynamic>{
         'type': 'user_message',
         if (_usesTaskShell) 'taskShell': true,
         'text': text,
-        'clientMsgId': clientMsgId,
+        'clientMsgId': id,
       };
       final pendingRequestId = _pendingUserInputRequestId;
       if (pendingRequestId != null && pendingRequestId.isNotEmpty) {
@@ -634,7 +642,7 @@ class ChatService {
       _channel!.sink.add(jsonEncode(payload));
       if (pendingRequestId != null) _pendingUserInputRequestId = null;
       _cancelRequested = false; // New turn — clear any stale cancel guard
-      return clientMsgId;
+      return id;
     } catch (_) {
       _scheduleReconnect();
       return null;
