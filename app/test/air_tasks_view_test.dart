@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:multicc_app/i18n.dart';
+import 'package:multicc_app/services/onboarding_store.dart';
 import 'package:multicc_app/services/settings_service.dart';
 import 'package:multicc_app/widgets/air_tasks_view.dart';
 import 'package:multicc_app/widgets/workspace_navigation_drawer.dart';
@@ -110,9 +111,13 @@ MockClient _airAndCronClient() => MockClient((request) async {
   );
 });
 
-Future<SettingsService> _settings() async {
+Future<SettingsService> _settings({bool onboarded = true}) async {
   SharedPreferences.setMockInitialValues({
     'multicc_host': 'http://localhost:3000',
+    // 新手引导自己有一份测试（tour_overlay_test.dart）。这里默认把它标成走完：
+    // 头一回打开时第 1 步圈的是目录库里的「添加」，会把首页切到目录库模式，
+    // 于是任务列表和任务头部工具条都不在树上 —— 那份活儿归引导的测试管。
+    if (onboarded) OnboardingStore.doneKey: '1',
   });
   return SettingsService.getInstance();
 }
@@ -169,6 +174,34 @@ void main() {
       requests.where((path) => path.startsWith('/api/air')),
       ['/api/air'],
     );
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  testWidgets('头一回打开：引导从第 1 步开始，圈的是目录库那颗「添加」', (tester) async {
+    final settings = await _settings(onboarded: false);
+    final client = _client(<String>[]);
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 800);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(home: AirTasksView(settings: settings, httpClient: client)),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('选择一个工作区'), findsOneWidget);
+    // 第 1 步圈的是目录库那颗「添加」：首页得先切到目录库模式，任务列表这时
+    // 不在树上（Web 那边第 1 步圈的也是「新建目录」）。
+    expect(find.byKey(const ValueKey('air-add-directory')), findsOneWidget);
+    expect(find.text('登录页面'), findsNothing);
+
+    await tester.tap(find.byKey(const ValueKey('tour-next')));
+    await tester.pumpAndSettle();
+    // 第 2 步回到任务模式，圈的是快速新建那条输入区。
+    expect(find.text('开始一段对话'), findsOneWidget);
+    expect(find.text('登录页面'), findsOneWidget);
+    expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     client.close();
   });

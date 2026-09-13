@@ -1248,5 +1248,22 @@
   "autoCommitMerged": "✓ 自动提交完成：{message}",
   "autoCommitConflict": "⚠️ 自动提交冲突：{files}",
   "autoCommitFailed": "✗ 自动提交失败：{error}",
-  "autoCommitPatchFailed": "自动提交开关没保存成功：{error}"
+  "autoCommitPatchFailed": "自动提交开关没保存成功：{error}",
+  "onboardStep": "新手引导 {n}/4",
+  "onboardClose": "关闭",
+  "onboardSkip": "跳过",
+  "onboardPrev": "上一步",
+  "onboardNext": "下一步",
+  "onboardDone": "完成",
+  "onboardContinue": "打开对话后继续",
+  "onboardFill": "填入只读示例",
+  "onboardStep1Title": "选择一个工作区",
+  "onboardStep1Body": "工作区就是你希望 AI 帮忙处理的文件夹。首次体验可选一个资料较少的文件夹；MultiCC 会在独立副本中工作，不会直接覆盖原文件。",
+  "onboardStep2Title": "开始一段对话",
+  "onboardStep2Body": "在下面的输入框里描述你要做的事，点「创建并执行 ↑」。MultiCC 会自动使用已经就绪的 AI 服务；CLI、模型和终端等开发者选项可以以后再设置。",
+  "onboardStep3Title": "获取第一份安全结果",
+  "onboardStep3Body": "先让 AI 只读了解文件夹，不做任何修改。点下面填入示例，再按发送；收到 AI 的有效回复后，引导会自动进入最后一步。",
+  "onboardStep4Title": "第一份结果已经完成",
+  "onboardStep4Body": "现在你可以继续追问。如果以后允许 AI 修改文件，MultiCC 会保留独立副本，并在应用到主工作区前展示影响范围。",
+  "onboardExample": "先不要修改任何文件。请概括这个工作区里有哪些内容，并告诉我最值得先看的三个文件。"
 }
