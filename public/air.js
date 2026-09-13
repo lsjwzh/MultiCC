@@ -848,8 +848,30 @@
   // 帧自己的两处接线：加载完同步一次工具条，并在帧内补一手「点一下就收浮层」。
   // 池子里的每个帧都要接，不只是最初那一个。
   function wireConversationFrame(frame) {
-    frame.addEventListener('load', () => { dismissOnFrame(frame); setFrameActive(frame, frame.id === 'conversation'); });
+    frame.addEventListener('load', () => { dismissOnFrame(frame); setFrameActive(frame, frame.id === 'conversation'); reconcileFrameTask(frame); });
     frame.onload = syncFrame;
+  }
+
+  // 帧加载完后按任务对一次账。iOS 后台会把 iframe 的 document 收掉，回来时按帧的
+  // 「当前地址」重载 —— 而这个地址在 chat-task-boot 解析任务时已被 location.replace
+  // 钉成 ?session=<当时的绑定>，task 参数在那一步丢掉了。任务后来改路由
+  // （task_shell_routed / 重新派发）时活着的帧靠 WS 跟着走、地址不变，重载回来的
+  // 就是旧会话的对话：页头（顶层按任务渲染）和消息列表（帧按会话渲染）从此对不上。
+  // 这里重新解析任务的当前绑定，不一致才把帧导航过去；一致就不动，所以不会循环。
+  async function reconcileFrameTask(frame) {
+    const task = frame.dataset.task;
+    if (!task || !window.MultiCCChatShellEntry) return;
+    let frameLocation;
+    try { frameLocation = frame.contentWindow?.location; } catch (_) { return; }
+    if (!frameLocation || new URLSearchParams(frameLocation.search).get('task')) return; // 任务入口页：bootChatEntry 自己正在解析
+    try {
+      const target = await window.MultiCCChatShellEntry.resolve({
+        sessionId: '', taskId: task, fetch: window.fetch.bind(window), air: true,
+      });
+      if (!target) return;
+      const next = new URL(target, frameLocation.href);
+      if (next.search !== frameLocation.search) frameLocation.replace(next.href);
+    } catch (_) { /* 解析失败先保持现状，下次加载再对 */ }
   }
 
   function parkFrame(frame) {
@@ -889,6 +911,9 @@
       const frame = document.createElement('iframe');
       frame.id = 'conversation';
       frame.title = '任务对话';
+      // 帧属于哪个任务要跟着元素走：地址会被帧内的 location.replace 换成会话页，
+      // 重载对账（reconcileFrameTask）认的是这份标记。
+      frame.dataset.task = task;
       frame.src = `/chat.html?task=${encodeURIComponent(task)}&air=1`;
       wireConversationFrame(frame);
       if (current) {
