@@ -1265,5 +1265,10 @@
   "onboardStep3Body": "先让 AI 只读了解文件夹，不做任何修改。点下面填入示例，再按发送；收到 AI 的有效回复后，引导会自动进入最后一步。",
   "onboardStep4Title": "第一份结果已经完成",
   "onboardStep4Body": "现在你可以继续追问。如果以后允许 AI 修改文件，MultiCC 会保留独立副本，并在应用到主工作区前展示影响范围。",
-  "onboardExample": "先不要修改任何文件。请概括这个工作区里有哪些内容，并告诉我最值得先看的三个文件。"
+  "onboardExample": "先不要修改任何文件。请概括这个工作区里有哪些内容，并告诉我最值得先看的三个文件。",
+  "voiceMicTitle": "语音输入（点一下开始，再点一下结束）",
+  "voiceMicDenied": "无法访问麦克风，请检查权限。",
+  "voiceRecordingHint": "录音中，点 🎙 结束。",
+  "voiceTranscribing": "转写中…",
+  "voiceTranscribeFailed": "转写失败：{message}"
 }
