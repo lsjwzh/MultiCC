@@ -8,8 +8,33 @@ import 'package:multicc_app/services/settings_service.dart';
 import 'package:multicc_app/widgets/air_tasks_view.dart';
 
 /// 一份两目录两任务的快照：d1 里有一条未完成的、一条归档的，d2 空着。
+/// `/api/air/tasks/:id` 是另一套形状（多了 attribution / execution），单独给。
 MockClient _client(List<String> requests) => MockClient((request) async {
   requests.add(request.url.path);
+  if (request.url.path.startsWith('/api/air/tasks/')) {
+    return http.Response(
+      jsonEncode({
+        'ok': true,
+        'task': {
+          'id': 't1',
+          'title': '登录页面',
+          'status': 'inbox',
+          'recordType': 'planned',
+          'workflowStage': 'inbox',
+        },
+        'status': 'inbox',
+        'execution': {'status': 'idle', 'busy': false, 'pending': false},
+        'messages': const [],
+        'attribution': const {},
+        'resource': {'residency': 'planned', 'lease': 'idle'},
+        'configuration': const {},
+        'sessionId': 'sess-1',
+        'readOnly': false,
+      }),
+      200,
+      headers: {'content-type': 'application/json; charset=utf-8'},
+    );
+  }
   return http.Response(
     jsonEncode({
       'ok': true,
@@ -127,6 +152,37 @@ void main() {
     await tester.pumpAndSettle();
     // 切过去之后回到任务主区，标题就是新目录。
     expect(find.text('工作目录 B'), findsWidgets);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  testWidgets('任务行上的详情按钮升起详情面板，进对话是另一步', (tester) async {
+    final settings = await _settings();
+    final requests = <String>[];
+    final client = _client(requests);
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 844);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AirTasksView(settings: settings, httpClient: client),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('air-task-details-t1')));
+    await tester.pumpAndSettle();
+
+    // 面板自己拉一次详情 —— 任务行那份快照里没有 attribution / execution。
+    expect(requests, ['/api/air', '/api/air/tasks/t1']);
+    expect(find.byKey(const ValueKey('air-details-panel')), findsOneWidget);
+    // 计划任务还没发第一条消息：交付卡说的是「计划尚未执行」，不是「任务已就绪」。
+    expect(find.text('计划尚未执行'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('air-details-open-conversation')),
+      findsOneWidget,
+    );
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     client.close();
