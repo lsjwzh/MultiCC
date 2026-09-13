@@ -2679,28 +2679,33 @@ class ChatProvider extends ChangeNotifier {
 
   // ── Public actions ─────────────────────────────────────────────────────────
 
-  void sendMessage(
+  /// 返回本次发送用的 clientMsgId（送不出去时是 null，调用方不能当成已发送）。
+  /// [clientMsgId] 用来把这条消息钉在一个调用方选定的幂等键上 —— 强制同步的
+  /// 重试要走同一条（服务端按它去重）。
+  String? sendMessage(
     String text, {
     bool goal = false,
     Map<String, dynamic>? goalLimits,
+    String? clientMsgId,
   }) {
     final message = text.trim();
-    if (message.isEmpty) return;
-    final clientMsgId = _service.send(
+    if (message.isEmpty) return null;
+    final sentMsgId = _service.send(
       message,
       goal: goal,
       goalLimits: goalLimits,
+      clientMsgId: clientMsgId,
     );
-    if (clientMsgId == null) {
+    if (sentMsgId == null) {
       // Half-open / dead socket — don't pretend the message was sent.
       _addSystemMsg(t('connectionLostRetry'));
       notifyListeners();
-      return;
+      return null;
     }
     // 不立刻把气泡画进对话区：先暂存，等服务端 session_queue 裁决这条是立即执行
     // 还是进 FIFO。进队列的只在队列面板出现，不在这里占位（对齐 web
     // stagedUserBubbles）。_commitStaged 在收到裁决（或兜底超时）时才真正加气泡。
-    _stagedTracker.stage(clientMsgId, message);
+    _stagedTracker.stage(sentMsgId, message);
     _setPendingUserInput(null);
     _apiErrorPolicy = null;
     // User just sent a message -> resume auto-follow at the bottom, clear any
@@ -2708,6 +2713,7 @@ class ChatProvider extends ChangeNotifier {
     _userPinnedAway = false;
     _unreadCount = 0;
     notifyListeners();
+    return sentMsgId;
   }
 
   // ── Staged user sends: 等服务端 FIFO 裁决的暂存消息 ──────────────────────────

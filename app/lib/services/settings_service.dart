@@ -6,6 +6,38 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../utils/dispatch_hint.dart';
 import 'ws_ticket_service.dart';
 
+/// 聊天区宽度：铺满可用宽度，还是收在一个最大宽度里。对齐 Web 的
+/// `chat-layout.js`（那边是一个 `{limited, maxWidth}` 的 localStorage 对象）。
+@immutable
+class ChatWidthSetting {
+  final bool limited;
+  final int max;
+
+  const ChatWidthSetting({required this.limited, required this.max});
+
+  /// App 的历史观感：宽屏收到 980。Web 的默认是「不限制」，这里不跟 ——
+  /// 把默认改成铺满会让老用户一升级就发现聊天区变宽，那是另一个决定。
+  static const ChatWidthSetting defaults = ChatWidthSetting(
+    limited: true,
+    max: 980,
+  );
+
+  ChatWidthSetting copyWith({bool? limited, int? max}) => ChatWidthSetting(
+    limited: limited ?? this.limited,
+    max: max ?? this.max,
+  );
+
+  @override
+  bool operator ==(Object other) =>
+      other is ChatWidthSetting && other.limited == limited && other.max == max;
+
+  @override
+  int get hashCode => Object.hash(limited, max);
+
+  @override
+  String toString() => 'ChatWidthSetting(limited: $limited, max: $max)';
+}
+
 /// One remembered server connection (URL + its token).
 class ServerHistoryEntry {
   final String host;
@@ -44,8 +76,18 @@ class SettingsService {
   /// 多选项模式之前的布尔开关；只在还没写过新键时读一次做迁移。
   static const _keyNoDispatchPrefix = 'multicc_no_dispatch_';
 
+  // 聊天区宽度（Web 的 chat-layout.js，`multicc:chat-layout`）。那边默认铺满、
+  // 可选限制；App 原先一直是「宽屏限制在 980」，所以这里的默认保持原样 ——
+  // 只把那两个数从常量变成可改的设置，不改默认观感。
+  static const _keyChatWidthLimited = 'multicc_chat_width_limited';
+  static const _keyChatWidthMax = 'multicc_chat_width_max';
+
   /// How many past server connections to remember.
   static const _serverHistoryMax = 10;
+
+  /// 聊天区最大宽度的滑杆范围，与 Web 的 `chat-layout.js` 同值（640–2400）。
+  static const int chatWidthMin = 640;
+  static const int chatWidthMaxLimit = 2400;
 
   static SettingsService? _instance;
 
@@ -64,6 +106,12 @@ class SettingsService {
   /// configured installations migrate to advanced so an upgrade never makes
   /// familiar controls disappear without the user's choice.
   final ValueNotifier<bool> advancedMode = ValueNotifier<bool>(false);
+
+  /// 聊天区宽度。跟 fontScale / advancedMode 同一套路：值在内存里，改它的那个
+  /// 弹窗负责落盘 —— 「聊天宽度」弹窗要能边拖滑杆边看预览，取消时不落盘，所以
+  /// 这个 notifier 必须先能脱离 prefs 单独变化。
+  final ValueNotifier<ChatWidthSetting> chatWidth =
+      ValueNotifier<ChatWidthSetting>(ChatWidthSetting.defaults);
 
   SettingsService._();
 
@@ -85,6 +133,10 @@ class SettingsService {
           storedMode == 'advanced' ||
           (storedMode == null &&
               (_instance!._prefs.getString(_keyHost) ?? '').trim().isNotEmpty);
+      _instance!.chatWidth.value = ChatWidthSetting(
+        limited: _instance!._prefs.getBool(_keyChatWidthLimited) ?? true,
+        max: _instance!._prefs.getInt(_keyChatWidthMax) ?? 980,
+      );
     }
     return _instance!;
   }
@@ -123,6 +175,18 @@ class SettingsService {
   bool get keepAliveEnabled => _prefs.getBool(_keyKeepAlive) ?? false;
 
   bool get isConfigured => host.isNotEmpty;
+
+  /// 聊天区是否限制最大宽度（默认限制 —— App 历来如此，不是 Web 那边「默认铺满」）。
+  bool get chatWidthLimited => chatWidth.value.limited;
+
+  /// 限制生效时的最大宽度。
+  int get chatWidthMax => chatWidth.value.max;
+
+  /// 落盘当前聊天区宽度。弹窗在「保存」时调；预览期间的 notifier 变化不落盘。
+  Future<void> saveChatWidth() async {
+    await _prefs.setBool(_keyChatWidthLimited, chatWidth.value.limited);
+    await _prefs.setInt(_keyChatWidthMax, chatWidth.value.max);
+  }
 
   /// Remembered server connections (most recent first).
   List<ServerHistoryEntry> get serverHistory {

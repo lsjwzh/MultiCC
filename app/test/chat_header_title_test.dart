@@ -47,6 +47,9 @@ Widget _host(
   String cwd = '',
   String? branch,
   int behind = 0,
+  VoidCallback? onForceSync,
+  VoidCallback? onChatWidth,
+  bool forceSyncing = false,
 }) => MultiProvider(
       providers: [
         ChangeNotifierProvider<SessionManager>.value(value: mgr),
@@ -70,6 +73,9 @@ Widget _host(
                 onMemory: () {},
                 onMemo: () {},
                 onShare: () {},
+                onForceSync: onForceSync ?? () {},
+                forceSyncing: forceSyncing,
+                onChatWidth: onChatWidth ?? () {},
               ),
             ),
           ),
@@ -303,6 +309,100 @@ void main() {
 
       expect(mgr.renamedIds, isEmpty);
       expect(find.text(t('renameSessionSaved')), findsNothing);
+
+      provider.dispose();
+      mgr.dispose();
+    });
+  });
+
+  // ⋯ 菜单里的工作树/布局入口（对齐 web 的 #force-sync-btn 与聊天宽度设置）。
+  // 这两项在窄屏菜单里是唯一入口，所以菜单项必须在。
+  group('ChatHeader worktree + width entries', () {
+    testWidgets('⋯ 菜单里有「强制同步」和「聊天宽度」，点了各自回调', (tester) async {
+      final settings = await _settings();
+      final mgr = SessionManager(settings: settings);
+      final provider = ChatProvider(
+        settings: settings,
+        sessionName: 's-menu',
+        sessionCwd: '/tmp',
+      );
+      var forced = 0;
+      var width = 0;
+
+      await tester.pumpWidget(_host(
+        mgr,
+        settings,
+        provider,
+        onForceSync: () => forced++,
+        onChatWidth: () => width++,
+      ));
+      await tester.tap(find.byIcon(Icons.more_vert));
+      await tester.pumpAndSettle();
+
+      expect(find.text(t('worktreeForceSync')), findsOneWidget);
+      expect(find.text(t('chatWidthTitle')), findsOneWidget);
+
+      await tester.tap(find.text(t('worktreeForceSync')));
+      await tester.pumpAndSettle();
+      expect(forced, 1);
+
+      await tester.tap(find.byIcon(Icons.more_vert));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(t('chatWidthTitle')));
+      await tester.pumpAndSettle();
+      expect(width, 1);
+
+      provider.dispose();
+      mgr.dispose();
+    });
+
+    testWidgets('同步中菜单项改成「正在发送…」', (tester) async {
+      final settings = await _settings();
+      final mgr = SessionManager(settings: settings);
+      final provider = ChatProvider(
+        settings: settings,
+        sessionName: 's-menu-busy',
+        sessionCwd: '/tmp',
+      );
+
+      await tester.pumpWidget(_host(mgr, settings, provider, forceSyncing: true));
+      await tester.tap(find.byIcon(Icons.more_vert));
+      await tester.pumpAndSettle();
+
+      expect(find.text(t('worktreeForceSyncSending')), findsOneWidget);
+      expect(find.text(t('worktreeForceSync')), findsNothing);
+
+      provider.dispose();
+      mgr.dispose();
+    });
+  });
+
+  // 「只读历史」标识：对齐 web 归档模式的 #status 文案。只在归档态出现 ——
+  // 平时挂个锁图标会让「能改历史」的普通会话看着像被限制。
+  group('ChatHeader read-only history badge', () {
+    testWidgets('归档模式显示只读历史标识，普通会话不显示', (tester) async {
+      final settings = await _settings();
+      final mgr = SessionManager(settings: settings);
+      final provider = ChatProvider(
+        settings: settings,
+        sessionName: 's-archive',
+        displayName: '归档会话',
+        sessionCwd: '/tmp',
+      );
+
+      await tester.pumpWidget(_host(mgr, settings, provider));
+      expect(find.byKey(const Key('chat-read-only-badge')), findsNothing);
+
+      // 走真实入口（裸赋字段不会通知监听者，头部也就不会重建）。
+      provider.setHistoryArchive(true);
+      await tester.pump();
+      expect(find.byKey(const Key('chat-read-only-badge')), findsOneWidget);
+      expect(find.text(t('readOnlyHistory')), findsOneWidget);
+      // 提示语要讲清「还能聊，只是历史改不动」这层差别。
+      expect(find.byTooltip(t('readOnlyHistoryHint')), findsOneWidget);
+      // 标识不该把标题挤没：标题仍在（不钉具体文案 —— setHistoryArchive 会重建
+      // service，displayName 可能在这条路径上回退成会话 id）。
+      expect(find.text(provider.titleLabel), findsOneWidget);
 
       provider.dispose();
       mgr.dispose();
