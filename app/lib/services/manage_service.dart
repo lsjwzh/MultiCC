@@ -79,13 +79,38 @@ class ManageService {
 
   // ── Cron (定时任务) ─────────────────────────────────────────────────────────
 
-  Future<List<CronTask>> fetchCronTasks() async {
-    final uri = Uri.parse(_url('/api/cron'));
+  /// One place for the "injected client when a test gave us one, package-level
+  /// helpers otherwise" split. Every caller that needs a request to be
+  /// interceptable goes through here instead of duplicating the ternaries.
+  Future<http.Response> _send(
+    String method,
+    String path, {
+    Object? body,
+    Duration timeout = const Duration(seconds: 10),
+  }) {
+    final uri = Uri.parse(_url(path));
+    final headers = _headers;
     final client = httpClient;
-    final res = await (client == null
-            ? http.get(uri, headers: _headers)
-            : client.get(uri, headers: _headers))
-        .timeout(const Duration(seconds: 10));
+    final call = switch (method) {
+      'GET' => client == null
+          ? http.get(uri, headers: headers)
+          : client.get(uri, headers: headers),
+      'POST' => client == null
+          ? http.post(uri, headers: headers, body: body)
+          : client.post(uri, headers: headers, body: body),
+      'PATCH' => client == null
+          ? http.patch(uri, headers: headers, body: body)
+          : client.patch(uri, headers: headers, body: body),
+      'DELETE' => client == null
+          ? http.delete(uri, headers: headers)
+          : client.delete(uri, headers: headers),
+      _ => throw ArgumentError.value(method, 'method', '不支持的方法'),
+    };
+    return call.timeout(timeout);
+  }
+
+  Future<List<CronTask>> fetchCronTasks() async {
+    final res = await _send('GET', '/api/cron');
     if (res.statusCode != 200) _throw(res);
     final list = jsonDecode(utf8.decode(res.bodyBytes)) as List;
     return list
@@ -101,21 +126,19 @@ class ManageService {
     String cli = 'claude',
     bool enabled = true,
   }) async {
-    final res = await http
-        .post(
-          Uri.parse(_url('/api/cron')),
-          headers: _headers,
-          body: jsonEncode({
-            'name': name,
-            'dirId': dirId,
-            'prompt': prompt,
-            'cron': cron,
-            'cli': cli,
-            'enabled': enabled,
-            'createdBy': 'app',
-          }),
-        )
-        .timeout(const Duration(seconds: 10));
+    final res = await _send(
+      'POST',
+      '/api/cron',
+      body: jsonEncode({
+        'name': name,
+        'dirId': dirId,
+        'prompt': prompt,
+        'cron': cron,
+        'cli': cli,
+        'enabled': enabled,
+        'createdBy': 'app',
+      }),
+    );
     if (res.statusCode >= 400) _throw(res);
     return CronTask.fromJson(
       (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>(),
@@ -138,13 +161,11 @@ class ManageService {
     if (cron != null) body['cron'] = cron;
     if (cli != null) body['cli'] = cli;
     if (enabled != null) body['enabled'] = enabled;
-    final res = await http
-        .patch(
-          Uri.parse(_url('/api/cron/$id')),
-          headers: _headers,
-          body: jsonEncode(body),
-        )
-        .timeout(const Duration(seconds: 10));
+    final res = await _send(
+      'PATCH',
+      '/api/cron/${Uri.encodeComponent(id)}',
+      body: jsonEncode(body),
+    );
     if (res.statusCode >= 400) _throw(res);
     return CronTask.fromJson(
       (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>(),
@@ -152,17 +173,17 @@ class ManageService {
   }
 
   Future<void> deleteCronTask(String id) async {
-    final res = await http
-        .delete(Uri.parse(_url('/api/cron/$id')), headers: _headers)
-        .timeout(const Duration(seconds: 10));
+    final res = await _send('DELETE', '/api/cron/${Uri.encodeComponent(id)}');
     if (res.statusCode >= 400) _throw(res);
   }
 
   /// Fire a task immediately. Returns the created/reused session id when known.
   Future<Map<String, dynamic>> runCronTask(String id) async {
-    final res = await http
-        .post(Uri.parse(_url('/api/cron/$id/run')), headers: _headers)
-        .timeout(const Duration(seconds: 15));
+    final res = await _send(
+      'POST',
+      '/api/cron/${Uri.encodeComponent(id)}/run',
+      timeout: const Duration(seconds: 15),
+    );
     if (res.statusCode >= 400) _throw(res);
     return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
         .cast<String, dynamic>();

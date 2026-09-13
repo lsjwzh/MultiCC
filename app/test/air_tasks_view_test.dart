@@ -73,6 +73,43 @@ MockClient _client(List<String> requests) => MockClient((request) async {
   );
 });
 
+/// 任务快照 + 一条定时规则。所有「进定时任务中心」的用例都要这两份数据 ——
+/// 中心那一页自己拉 `/api/cron`。
+MockClient _airAndCronClient() => MockClient((request) async {
+  if (request.url.path == '/api/cron') {
+    return http.Response(
+      jsonEncode(const [
+        {
+          'id': 'c1',
+          'name': '每日巡检',
+          'dirId': 'd1',
+          'dirName': '工作目录 A',
+          'cli': 'claude',
+          'prompt': '看一眼线上',
+          'cron': '0 9 * * *',
+          'enabled': true,
+          'taskId': 't1',
+          'taskTitle': '每日巡检',
+        },
+      ]),
+      200,
+      headers: {'content-type': 'application/json; charset=utf-8'},
+    );
+  }
+  return http.Response(
+    jsonEncode({
+      'ok': true,
+      'clis': const ['claude'],
+      'directories': const [
+        {'id': 'd1', 'name': '工作目录 A', 'path': '/project/a'},
+      ],
+      'tasks': const [],
+    }),
+    200,
+    headers: {'content-type': 'application/json; charset=utf-8'},
+  );
+});
+
 Future<SettingsService> _settings() async {
   SharedPreferences.setMockInitialValues({
     'multicc_host': 'http://localhost:3000',
@@ -204,6 +241,58 @@ void main() {
       find.byKey(const ValueKey('air-console-urgent-t1')),
       findsOneWidget,
     );
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  testWidgets('侧栏的「定时任务」进的是原生定时任务中心', (tester) async {
+    final settings = await _settings();
+    final client = _airAndCronClient();
+    await tester.pumpWidget(
+      MaterialApp(home: AirTasksView(settings: settings, httpClient: client)),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('air-menu-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('定时任务'));
+    await tester.pumpAndSettle();
+
+    // 不再是网页那一页，也不再是老抽屉里的那个只认 CLI 的页面。
+    expect(find.byKey(const ValueKey('air-schedules')), findsOneWidget);
+    expect(find.text('1 条规则'), findsOneWidget);
+    expect(find.text('每日巡检'), findsWidgets);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  testWidgets('「全部功能」里的定时任务也走同一个原生页', (tester) async {
+    final settings = await _settings();
+    final client = _airAndCronClient();
+    final opened = <WorkspaceDestination>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AirTasksView(
+          settings: settings,
+          httpClient: client,
+          onOpenDestination: opened.add,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('air-menu-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('air-more-section')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('全部功能'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('air-dest-cron')));
+    await tester.pumpAndSettle();
+
+    // 宿主那条老路由一次都没被叫到 —— 定时任务在 Air 里只有这一个落点。
+    expect(opened, isEmpty);
+    expect(find.byKey(const ValueKey('air-schedules')), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     client.close();
