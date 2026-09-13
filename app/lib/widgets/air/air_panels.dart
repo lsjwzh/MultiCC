@@ -1,0 +1,697 @@
+import 'package:flutter/material.dart';
+
+import '../../services/air_service.dart';
+import '../../theme.dart';
+
+/// 目录库（Web `#directory-library`）：一张目录一张卡，卡上写清它现在有多少
+/// 任务、有没有人在跑。手机上一列，宽屏两列。
+class AirDirectoryLibrary extends StatefulWidget {
+  const AirDirectoryLibrary({
+    super.key,
+    required this.directories,
+    required this.currentDirectoryId,
+    required this.tasksOf,
+    required this.runningDirectories,
+    required this.favorites,
+    required this.onOpen,
+    required this.onAddDirectory,
+    required this.onToggleFavorite,
+  });
+
+  final List<AirDirectory> directories;
+  final String? currentDirectoryId;
+  final List<AirTask> Function(String dirId) tasksOf;
+
+  /// 有任务正在执行的目录 id —— 卡片上那圈运行环用它。
+  final Set<String> runningDirectories;
+  final List<String> favorites;
+  final ValueChanged<String> onOpen;
+  final VoidCallback onAddDirectory;
+  final ValueChanged<String> onToggleFavorite;
+
+  @override
+  State<AirDirectoryLibrary> createState() => _AirDirectoryLibraryState();
+}
+
+class _AirDirectoryLibraryState extends State<AirDirectoryLibrary> {
+  String _query = '';
+
+  @override
+  Widget build(BuildContext context) {
+    final query = _query.trim().toLowerCase();
+    final rows = widget.directories
+        .where(
+          (d) => query.isEmpty
+              ? true
+              : '${d.name} ${d.path}'.toLowerCase().contains(query),
+        )
+        .toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 10),
+          child: Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  key: const ValueKey('air-directory-search'),
+                  onChanged: (v) => setState(() => _query = v),
+                  style: const TextStyle(color: AppColors.text),
+                  decoration: InputDecoration(
+                    hintText: '搜索名称或路径',
+                    prefixIcon: const Icon(Icons.search, size: 19),
+                    isDense: true,
+                    filled: true,
+                    fillColor: AppColors.panel,
+                    contentPadding: const EdgeInsets.symmetric(vertical: 12),
+                    border: OutlineInputBorder(
+                      borderSide: BorderSide.none,
+                      borderRadius: BorderRadius.circular(AppColors.radiusCard),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              FilledButton.icon(
+                key: const ValueKey('air-add-directory'),
+                onPressed: widget.onAddDirectory,
+                icon: const Icon(Icons.add_rounded, size: 18),
+                label: const Text('添加'),
+                style: FilledButton.styleFrom(
+                  backgroundColor: AppColors.accentDark,
+                  minimumSize: const Size(0, 46),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(AppColors.radiusButton),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final columns = constraints.maxWidth >= 700 ? 2 : 1;
+              if (rows.isEmpty) {
+                return Center(
+                  child: Text(
+                    _query.isEmpty ? '还没有工作目录。' : '没有匹配的工作目录。',
+                    style: const TextStyle(color: AppColors.faint),
+                  ),
+                );
+              }
+              return GridView.builder(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: columns,
+                  mainAxisExtent: 92,
+                  crossAxisSpacing: 12,
+                  mainAxisSpacing: 12,
+                ),
+                itemCount: rows.length,
+                itemBuilder: (context, index) => _DirectoryCard(
+                  directory: rows[index],
+                  tasks: widget.tasksOf(rows[index].id),
+                  running: widget.runningDirectories.contains(rows[index].id),
+                  favorite: widget.favorites.contains(rows[index].id),
+                  current: rows[index].id == widget.currentDirectoryId,
+                  onOpen: () => widget.onOpen(rows[index].id),
+                  onToggleFavorite: () =>
+                      widget.onToggleFavorite(rows[index].id),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _DirectoryCard extends StatelessWidget {
+  const _DirectoryCard({
+    required this.directory,
+    required this.tasks,
+    required this.running,
+    required this.favorite,
+    required this.current,
+    required this.onOpen,
+    required this.onToggleFavorite,
+  });
+
+  final AirDirectory directory;
+  final List<AirTask> tasks;
+  final bool running;
+  final bool favorite;
+  final bool current;
+  final VoidCallback onOpen;
+  final VoidCallback onToggleFavorite;
+
+  @override
+  Widget build(BuildContext context) {
+    final active = tasks.where((t) => !t.closed).length;
+    return Material(
+      color: AppColors.panel,
+      borderRadius: BorderRadius.circular(AppColors.radiusCard),
+      child: InkWell(
+        key: ValueKey('air-directory-${directory.id}'),
+        onTap: onOpen,
+        borderRadius: BorderRadius.circular(AppColors.radiusCard),
+        child: Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(AppColors.radiusCard),
+            border: Border.all(
+              color: current ? AppColors.accent : AppColors.line,
+              width: current ? 1.4 : 1,
+            ),
+          ),
+          padding: const EdgeInsets.fromLTRB(14, 12, 6, 12),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Row(
+                      children: [
+                        if (running) ...[
+                          Container(
+                            width: 7,
+                            height: 7,
+                            margin: const EdgeInsets.only(right: 6),
+                            decoration: const BoxDecoration(
+                              color: AppColors.success,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                        ],
+                        Flexible(
+                          child: Text(
+                            directory.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: AppColors.text,
+                              fontSize: 15,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      directory.path,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: AppColors.faint,
+                        fontSize: 11,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      '${tasks.length} 个任务 · $active 个未完成'
+                      '${favorite ? ' · 已收藏' : ''}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: AppColors.muted,
+                        fontSize: 11.5,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                onPressed: onToggleFavorite,
+                iconSize: 18,
+                visualDensity: VisualDensity.compact,
+                tooltip: favorite ? '取消收藏' : '收藏',
+                icon: Icon(
+                  favorite ? Icons.star_rounded : Icons.star_border_rounded,
+                  color: favorite ? AppColors.accent : AppColors.faint,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 任务行。徽标说的是「这个任务现在算什么」，副行说的是「它卡在哪」——
+/// 与 Web Air 的 `taskRow` 同一套分工。
+class AirTaskTile extends StatelessWidget {
+  const AirTaskTile({
+    super.key,
+    required this.task,
+    required this.onTap,
+    this.trailing,
+    this.selected = false,
+  });
+
+  final AirTask task;
+  final VoidCallback onTap;
+  final Widget? trailing;
+  final bool selected;
+
+  @override
+  Widget build(BuildContext context) {
+    final status = airLabel(task.workflowStage ?? task.status);
+    final resource = task.resourceText;
+    return Material(
+      color: AppColors.panel,
+      borderRadius: BorderRadius.circular(AppColors.radiusCard),
+      child: InkWell(
+        key: ValueKey('air-task-${task.id}'),
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(AppColors.radiusCard),
+        child: Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(AppColors.radiusCard),
+            border: Border.all(
+              color: selected ? AppColors.accent : AppColors.line,
+            ),
+          ),
+          padding: const EdgeInsets.fromLTRB(14, 11, 10, 11),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      task.title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: AppColors.text,
+                        fontSize: 14.5,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        AirStatusBadge(text: status, closed: task.closed),
+                        if (resource.isNotEmpty) ...[
+                          const SizedBox(width: 8),
+                          Flexible(
+                            child: Text(
+                              resource,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: AppColors.faint,
+                                fontSize: 11.5,
+                              ),
+                            ),
+                          ),
+                        ],
+                        if (task.readOnly) ...[
+                          const SizedBox(width: 8),
+                          const Text(
+                            '只读记录',
+                            style: TextStyle(
+                              color: AppColors.faint,
+                              fontSize: 11.5,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              trailing ?? const SizedBox(width: 4),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class AirStatusBadge extends StatelessWidget {
+  const AirStatusBadge({super.key, required this.text, this.closed = false});
+
+  final String text;
+  final bool closed;
+
+  @override
+  Widget build(BuildContext context) {
+    if (text.isEmpty) return const SizedBox.shrink();
+    final color = closed ? AppColors.faint : AppColors.blue;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(AppColors.radiusPill),
+        border: Border.all(color: color.withValues(alpha: 0.24)),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          color: color,
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+}
+
+/// 空态那一块：当前目录的任务统计。
+class AirDirectoryStats extends StatelessWidget {
+  const AirDirectoryStats({super.key, required this.tasks});
+
+  final List<AirTask> tasks;
+
+  @override
+  Widget build(BuildContext context) {
+    final open = tasks.where((t) => !t.closed).length;
+    final running = tasks
+        .where((t) => t.resource['lease'] == 'running' || t.status == 'active')
+        .length;
+    final waiting = tasks.where((t) => t.status == 'waiting').length;
+    return Row(
+      children: [
+        Expanded(child: _StatTile(label: '任务', value: '${tasks.length}')),
+        const SizedBox(width: 10),
+        Expanded(child: _StatTile(label: '未完成', value: '$open')),
+        const SizedBox(width: 10),
+        Expanded(child: _StatTile(label: '执行中', value: '$running')),
+        const SizedBox(width: 10),
+        Expanded(child: _StatTile(label: '待回答', value: '$waiting')),
+      ],
+    );
+  }
+}
+
+class _StatTile extends StatelessWidget {
+  const _StatTile({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+    decoration: BoxDecoration(
+      color: AppColors.panel,
+      borderRadius: BorderRadius.circular(AppColors.radiusCard),
+      border: Border.all(color: AppColors.line),
+    ),
+    child: Column(
+      children: [
+        Text(
+          value,
+          style: const TextStyle(
+            color: AppColors.text,
+            fontSize: 19,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        Text(
+          label,
+          style: const TextStyle(color: AppColors.faint, fontSize: 11),
+        ),
+      ],
+    ),
+  );
+}
+
+/// 目录空态里的「描述任务 → 创建并执行」。跟 Web `#quick-task-form` 一样：这段
+/// 文字既是任务名也是要执行的第一条消息，所以建完就直接进去，不再问一遍。
+class AirQuickComposer extends StatefulWidget {
+  const AirQuickComposer({
+    super.key,
+    required this.clis,
+    required this.busy,
+    required this.onSubmit,
+  });
+
+  final List<String> clis;
+  final bool busy;
+  final void Function({
+    required String text,
+    required String cli,
+    required String rolePrompt,
+    required bool goal,
+  })
+  onSubmit;
+
+  @override
+  State<AirQuickComposer> createState() => _AirQuickComposerState();
+}
+
+class _AirQuickComposerState extends State<AirQuickComposer> {
+  final _controller = TextEditingController();
+  String _cli = '';
+  String _role = '';
+  bool _goal = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _cli = widget.clis.isEmpty ? 'claude' : widget.clis.first;
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickCli() async {
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: AppColors.panel,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(
+          top: Radius.circular(AppColors.radiusPanel),
+        ),
+      ),
+      builder: (ctx) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 18, 20, 6),
+              child: Text(
+                'AI 工具',
+                style: TextStyle(
+                  color: AppColors.text,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            for (final cli in widget.clis)
+              ListTile(
+                title: Text(cli, style: const TextStyle(color: AppColors.text)),
+                trailing: cli == _cli
+                    ? const Icon(Icons.check_rounded, color: AppColors.accent)
+                    : null,
+                onTap: () => Navigator.pop(ctx, cli),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (choice != null && mounted) setState(() => _cli = choice);
+  }
+
+  Future<void> _editRole() async {
+    final controller = TextEditingController(text: _role);
+    final result = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('角色上下文（可选）'),
+        content: TextField(
+          controller: controller,
+          maxLines: 5,
+          maxLength: 40000,
+          autofocus: true,
+          style: const TextStyle(color: AppColors.text),
+          decoration: const InputDecoration(
+            hintText: '例如：以移动端体验设计师的视角检查交互',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, ''),
+            child: const Text('清除'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+            child: const Text('确定'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (result != null && mounted) setState(() => _role = result);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.panel,
+        borderRadius: BorderRadius.circular(AppColors.radiusPanel),
+        border: Border.all(color: AppColors.line),
+      ),
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              _Pill(
+                key: const ValueKey('air-quick-cli'),
+                label: _cli.isEmpty ? 'AI 工具' : _cli,
+                icon: Icons.memory_rounded,
+                onTap: widget.busy ? null : _pickCli,
+              ),
+              const SizedBox(width: 8),
+              _Pill(
+                key: const ValueKey('air-quick-role'),
+                label: _role.isEmpty ? '＋ 角色' : '角色已设置',
+                icon: Icons.badge_outlined,
+                active: _role.isNotEmpty,
+                onTap: widget.busy ? null : _editRole,
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            key: const ValueKey('air-quick-input'),
+            controller: _controller,
+            maxLines: 4,
+            minLines: 3,
+            maxLength: 32000,
+            enabled: !widget.busy,
+            style: const TextStyle(color: AppColors.text, fontSize: 14.5),
+            decoration: InputDecoration(
+              hintText: '描述要完成的任务；创建后会把这段内容作为第一条消息执行。',
+              hintStyle: const TextStyle(
+                color: AppColors.faint,
+                fontSize: 13.5,
+              ),
+              filled: true,
+              fillColor: AppColors.well,
+              counterText: '',
+              border: OutlineInputBorder(
+                borderSide: BorderSide.none,
+                borderRadius: BorderRadius.circular(AppColors.radiusCard),
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              // 320px 宽的手机上这一行只剩 254px：Material 3 的 chip 和按钮默认
+              // 都带 24px 的横向内边距，两份默认值加起来就把这一行撑出去了。
+              FilterChip(
+                key: const ValueKey('air-quick-goal'),
+                label: const Text('🎯 Goal'),
+                selected: _goal,
+                onSelected: widget.busy
+                    ? null
+                    : (v) => setState(() => _goal = v),
+                showCheckmark: false,
+                visualDensity: VisualDensity.compact,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                labelPadding: const EdgeInsets.symmetric(horizontal: 2),
+              ),
+              const Spacer(),
+              FilledButton(
+                key: const ValueKey('air-quick-submit'),
+                onPressed: widget.busy
+                    ? null
+                    : () {
+                        final text = _controller.text.trim();
+                        if (text.isEmpty) return;
+                        widget.onSubmit(
+                          text: text,
+                          cli: _cli,
+                          rolePrompt: _role,
+                          goal: _goal,
+                        );
+                      },
+                style: FilledButton.styleFrom(
+                  backgroundColor: AppColors.accentDark,
+                  minimumSize: const Size(0, 44),
+                  padding: const EdgeInsets.symmetric(horizontal: 14),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(AppColors.radiusButton),
+                  ),
+                ),
+                child: Text(widget.busy ? '正在创建…' : '创建并执行 ↑'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _Pill extends StatelessWidget {
+  const _Pill({
+    super.key,
+    required this.label,
+    required this.icon,
+    required this.onTap,
+    this.active = false,
+  });
+
+  final String label;
+  final IconData icon;
+  final VoidCallback? onTap;
+  final bool active;
+
+  @override
+  Widget build(BuildContext context) => Material(
+    color: active ? AppColors.blueSoft : AppColors.well,
+    borderRadius: BorderRadius.circular(AppColors.radiusPill),
+    child: InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(AppColors.radiusPill),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(AppColors.radiusPill),
+          border: Border.all(
+            color: active ? AppColors.accent : AppColors.line,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 15, color: AppColors.muted),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: const TextStyle(
+                color: AppColors.text,
+                fontSize: 12.5,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
