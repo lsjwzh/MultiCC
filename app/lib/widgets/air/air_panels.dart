@@ -24,6 +24,7 @@ class AirDirectoryLibrary extends StatefulWidget {
     required this.onOpen,
     required this.onAddDirectory,
     required this.onToggleFavorite,
+    this.addButtonKey,
   });
 
   final List<AirDirectory> directories;
@@ -36,6 +37,10 @@ class AirDirectoryLibrary extends StatefulWidget {
   final ValueChanged<String> onOpen;
   final VoidCallback onAddDirectory;
   final ValueChanged<String> onToggleFavorite;
+
+  /// 新手引导第 1 步要圈住的「添加」。套在外层而不是顶掉那颗按钮自己的
+  /// `ValueKey` —— 那个键是既有测试和别处 finder 在用的。
+  final Key? addButtonKey;
 
   @override
   State<AirDirectoryLibrary> createState() => _AirDirectoryLibraryState();
@@ -81,16 +86,21 @@ class _AirDirectoryLibraryState extends State<AirDirectoryLibrary> {
                 ),
               ),
               const SizedBox(width: 10),
-              FilledButton.icon(
-                key: const ValueKey('air-add-directory'),
-                onPressed: widget.onAddDirectory,
-                icon: const Icon(Icons.add_rounded, size: 18),
-                label: const Text('添加'),
-                style: FilledButton.styleFrom(
-                  backgroundColor: AppColors.accentDark,
-                  minimumSize: const Size(0, 46),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(AppColors.radiusButton),
+              KeyedSubtree(
+                key: widget.addButtonKey,
+                child: FilledButton.icon(
+                  key: const ValueKey('air-add-directory'),
+                  onPressed: widget.onAddDirectory,
+                  icon: const Icon(Icons.add_rounded, size: 18),
+                  label: const Text('添加'),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppColors.accentDark,
+                    minimumSize: const Size(0, 46),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(
+                        AppColors.radiusButton,
+                      ),
+                    ),
                   ),
                 ),
               ),

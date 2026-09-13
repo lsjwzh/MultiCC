@@ -2,8 +2,9 @@ import 'package:flutter/material.dart';
 
 import '../i18n.dart';
 
-/// 工作树的两块状态件：冲突横幅 + 「强制同步」按钮。都是从 chat_screen.dart
-/// 拆出来的（聊天页已贴着源码行数上限，而这两块只吃回调、不碰会话状态）。
+/// 工作树的三块状态件：冲突横幅、落后提示条 + 「强制同步」按钮。都是从
+/// chat_screen.dart 拆出来的（聊天页已贴着源码行数上限，而这几块只吃回调、
+/// 不碰会话状态）。
 
 /// 冲突横幅，对齐 Web `chat-worktree-status.js` 的 `#conflict-bar`：冲突文件
 /// 清单由服务端 merge-status 轮询给出，这里只报个数并提供三个出口。
@@ -126,6 +127,75 @@ class _ConflictAction extends StatelessWidget {
         side: outlined ? BorderSide(color: color.withValues(alpha: 0.4)) : null,
       ),
       child: Text(label, style: const TextStyle(fontSize: 12.5)),
+    );
+  }
+}
+
+/// 落后提示条，对齐 Web `chat-worktree-status.js` 的 `#behind-bar`：本地分支比
+/// 基分支落后多少个提交，以及两个出口。
+class WorktreeBehindBanner extends StatelessWidget {
+  final int behind;
+  final String baseBranch;
+  final VoidCallback onSync;
+  final bool syncing;
+
+  /// 强制同步：把同步指令交给会话那轮去做（Web 把这两个按钮并排放在
+  /// worktree 状态行上）。它和「同步」不是一件事 —— 「同步」是服务端直接 rebase，
+  /// 撞上冲突就停在那里；「强制同步」是让会话自己保留改动、解冲突。
+  final VoidCallback onForceSync;
+  final bool forceSyncing;
+  const WorktreeBehindBanner({
+    super.key,
+    required this.behind,
+    required this.baseBranch,
+    required this.onSync,
+    this.syncing = false,
+    required this.onForceSync,
+    this.forceSyncing = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(10, 6, 10, 0),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFFfff8eb),
+        border: Border.all(color: const Color(0xFFa85a25)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.history_rounded, size: 16, color: Color(0xFFa85a25)),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              t('behindBanner', {'base': baseBranch, 'n': '$behind'}),
+              style: const TextStyle(color: Color(0xFFa85a25), fontSize: 12),
+            ),
+          ),
+          WorktreeForceSyncButton(
+            busy: forceSyncing,
+            onPressed: onForceSync,
+            color: const Color(0xFFa85a25),
+            buttonKey: const Key('worktree-force-sync-btn'),
+          ),
+          const SizedBox(width: 6),
+          TextButton(
+            onPressed: syncing ? null : onSync,
+            style: TextButton.styleFrom(
+              foregroundColor: const Color(0xFFf4f8fd),
+              backgroundColor: const Color(0xFFa85a25),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              minimumSize: Size.zero,
+            ),
+            child: Text(
+              syncing ? t('syncing') : t('syncNow'),
+              style: const TextStyle(fontWeight: FontWeight.w700),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
