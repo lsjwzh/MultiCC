@@ -80,8 +80,11 @@ class ManageService {
   // ── Cron (定时任务) ─────────────────────────────────────────────────────────
 
   Future<List<CronTask>> fetchCronTasks() async {
-    final res = await http
-        .get(Uri.parse(_url('/api/cron')), headers: _headers)
+    final uri = Uri.parse(_url('/api/cron'));
+    final client = httpClient;
+    final res = await (client == null
+            ? http.get(uri, headers: _headers)
+            : client.get(uri, headers: _headers))
         .timeout(const Duration(seconds: 10));
     if (res.statusCode != 200) _throw(res);
     final list = jsonDecode(utf8.decode(res.bodyBytes)) as List;

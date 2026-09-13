@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../services/air_service.dart';
 import '../../theme.dart';
+import 'air_task_status.dart';
 
 /// Air 的侧栏（Web `public/air.html` 的 `#sidebar`）。
 ///
@@ -63,6 +64,7 @@ class AirSidebar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final directory = _directory;
+    final urgentCount = airUrgentTasks(data?.tasks ?? const []).length;
     final favoriteDirectories =
         (data?.directories ?? const <AirDirectory>[])
             .where((d) => favorites.contains(d.id))
@@ -133,6 +135,9 @@ class AirSidebar extends StatelessWidget {
                     semanticKey: 'air-nav-console',
                     icon: Icons.dashboard_customize_outlined,
                     label: '控制台',
+                    // 控制台第一个分区就是「谁在等我」，入口上挂同一个数字 ——
+                    // 一处定义，两处显示（同 Web 的 `#console-badge`）。
+                    badge: urgentCount > 0 ? '$urgentCount' : null,
                     onTap: onOpenConsole,
                   ),
                   _NavRow(
@@ -369,6 +374,7 @@ class _NavRow extends StatelessWidget {
     required this.onTap,
     this.selected = false,
     this.iconColor,
+    this.badge,
   });
 
   final String semanticKey;
@@ -378,13 +384,16 @@ class _NavRow extends StatelessWidget {
   final bool selected;
   final Color? iconColor;
 
+  /// 行尾的数字（控制台挂的是「谁在等我」的条数）。0 不显示。
+  final String? badge;
+
   @override
   Widget build(BuildContext context) {
     return Semantics(
       key: ValueKey(semanticKey),
       button: true,
       selected: selected,
-      label: label,
+      label: badge == null ? label : '$label，$badge 项待处理',
       child: Material(
         color: selected ? const Color(0x241678e8) : Colors.transparent,
         borderRadius: BorderRadius.circular(AppColors.radiusChip),
@@ -411,7 +420,33 @@ class _NavRow extends StatelessWidget {
                     ),
                   ),
                 ),
-                const SizedBox(width: 8),
+                if (badge != null)
+                  Container(
+                    margin: const EdgeInsets.only(right: 10),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 1,
+                    ),
+                    decoration: BoxDecoration(
+                      color: AppColors.dangerSoft,
+                      borderRadius: BorderRadius.circular(
+                        AppColors.radiusPill,
+                      ),
+                      border: Border.all(
+                        color: AppColors.danger.withValues(alpha: 0.3),
+                      ),
+                    ),
+                    child: Text(
+                      badge!,
+                      style: const TextStyle(
+                        color: AppColors.danger,
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  )
+                else
+                  const SizedBox(width: 8),
               ],
             ),
           ),
