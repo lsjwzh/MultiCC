@@ -529,6 +529,14 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
 
   @override
   Widget build(BuildContext context) {
+    // Air 自带完整的壳（侧栏、任务头部、主区），这里不再给它套一层 Scaffold：
+    // 两层 AppBar 会并排出现，两个抽屉也会互相盖住。非 Air 的老首页保持原样。
+    if (_air) {
+      return AirTasksView(
+        settings: widget.settings,
+        onOpenDestination: _openNavigationDestination,
+      );
+    }
     final mgr = context.watch<SessionManager>();
 
     return Scaffold(
@@ -608,7 +616,7 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
             },
           ),
         ],
-        bottom: _air ? null : PreferredSize(
+        bottom: PreferredSize(
           preferredSize: Size.fromHeight(
             widget.settings.advancedMode.value ? 104 : 53,
           ),
@@ -627,7 +635,7 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
           ),
         ),
       ),
-      body: _air ? AirTasksView(settings: widget.settings) : _buildBody(context, mgr),
+      body: _buildBody(context, mgr),
     );
   }
 
