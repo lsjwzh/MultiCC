@@ -12,6 +12,7 @@ import '../services/air_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
+import 'air/air_destinations.dart';
 import 'air/air_panels.dart';
 import 'air/air_sidebar.dart';
 import 'air/air_task_details.dart';
@@ -32,11 +33,16 @@ class AirTasksView extends StatefulWidget {
   /// 决定怎么开——Air 只负责列出来。
   final ValueChanged<WorkspaceDestination>? onOpenDestination;
 
+  /// 机器级语音通话。原生独占：麦克风要 HTTPS，Web 侧没有这一页，所以由宿主
+  /// 提供；宿主不提供时侧栏就不显示这一行。
+  final VoidCallback? onOpenVoiceCall;
+
   const AirTasksView({
     super.key,
     required this.settings,
     this.httpClient,
     this.onOpenDestination,
+    this.onOpenVoiceCall,
   });
 
   @override
@@ -432,6 +438,24 @@ class _AirTasksViewState extends State<AirTasksView>
     );
   }
 
+  /// 全部功能：老首页抽屉里那张完整的表。侧栏只摆常用的几个，剩下的从这里进
+  /// —— 侧栏变窄不该让任何一个页面变成打不开。
+  Future<void> _openAllDestinations() async {
+    final picked = await Navigator.of(context).push<WorkspaceDestination>(
+      MaterialPageRoute<WorkspaceDestination>(
+        builder: (routeContext) => AirAllDestinations(
+          onSelected: (destination) =>
+              Navigator.of(routeContext).pop(destination),
+          onOpenVoiceCall: () {
+            Navigator.of(routeContext).pop();
+            widget.onOpenVoiceCall?.call();
+          },
+        ),
+      ),
+    );
+    if (picked != null && mounted) _openDestination(picked);
+  }
+
   void _openDestination(WorkspaceDestination destination) {
     final handler = widget.onOpenDestination;
     _closeDrawer();
@@ -537,6 +561,11 @@ class _AirTasksViewState extends State<AirTasksView>
           _openWebMemory();
         },
         onOpenSettings: () => _openDestination(WorkspaceDestination.global),
+        onOpenAllDestinations: () {
+          _closeDrawer();
+          unawaited(_openAllDestinations());
+        },
+        onOpenVoiceCall: widget.onOpenVoiceCall,
         onAdvancedModeChanged: widget.settings.setAdvancedMode,
       ),
       appBar: AppBar(
