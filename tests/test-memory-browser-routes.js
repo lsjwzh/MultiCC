@@ -434,3 +434,93 @@ test('file editor validation and failures preserve status while redacting paths 
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ── 五层扩展（P1）：全局层/任务/技能进图谱与树 ────────────────────────────
+
+test('five-tier graph includes machine/cli/task/skill nodes and cross-tier edges', async t => {
+  const root = tempStore();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  write(root, '_machine/user-profile.md', '# 用户画像\n用户是跨境卖家。参见 [[claude-pitfalls]]');
+  write(root, '_cli/claude/claude-pitfalls.md', '# claude 坑\nuv env 陷阱。');
+  write(root, 'project-a/_shared/MEMORY.md', '# 项目公共\n全局事实见 [[user-profile]]。');
+  write(root, 'project-a/tasks/tsk_1/decisions.md', '# 决策\n用 SQLite 存任务图。');
+  write(root, 'project-a/skills/lark-doc/usage.md', '# lark-doc 用法\n先 auth。');
+  write(root, 'project-a/sessions/session-a/CLAUDE.md', '# 会话\n私有。');
+  const h = createHarness(root);
+  const response = await invoke(h.app, 'GET', '/api/memory/graph', { query: {} });
+  const nodes = response.body.nodes;
+  const byId = new Map(nodes.map(n => [n.id, n]));
+  const machine = nodes.find(n => n.scope === 'machine' && n.slug === 'user-profile');
+  const cli = nodes.find(n => n.scope === 'cli' && n.slug === 'claude-pitfalls');
+  const task = nodes.find(n => n.scope === 'task' && n.slug === 'decisions');
+  const skill = nodes.find(n => n.scope === 'skill' && n.slug === 'usage');
+  assert.ok(machine && cli && task && skill, 'all new tiers produce nodes');
+  assert.equal(machine.dirId, '_machine');
+  assert.equal(cli.dirId, '_cli/claude');
+  assert.equal(task.sub, 'tsk_1');
+  assert.equal(skill.sub, 'lark-doc');
+  // 跨层边：project-a 的 shared → machine（wikilink 命中全局层而不是悬空）。
+  const sharedNode = nodes.find(n => n.scope === 'shared' && n.slug === 'MEMORY');
+  const machineEdge = response.body.edges.find(e =>
+    e.source === sharedNode.id && e.target === machine.id);
+  assert.ok(machineEdge, 'shared→machine cross-tier edge resolves');
+  // machine → cli 也成为边（而不是 missing 节点）。
+  const cliEdge = response.body.edges.find(e => e.source === machine.id && e.target === cli.id);
+  assert.ok(cliEdge, 'machine→cli cross-tier edge resolves');
+  // 不再为可解析到全局层的引用生成 missing 节点。
+  assert.equal(nodes.some(n => n.missing && n.slug === 'user-profile'), false);
+  // 两个 MEMORY.md（shared 与 task 的 MEMORY 若重名）不撞 id。
+  write(root, 'project-a/tasks/tsk_2/MEMORY.md', '# 另一任务的 MEMORY\n内容。');
+  const again = await invoke(h.app, 'GET', '/api/memory/graph', { query: {} });
+  const ids = again.body.nodes.map(n => n.id);
+  assert.equal(new Set(ids).size, ids.length, 'node ids stay unique across subs');
+});
+
+test('five-tier tree exposes machine/clis/skills/tasks sections', async t => {
+  const root = tempStore();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  write(root, '_machine/MEMORY.md', '# 全局\n用户身份。');
+  write(root, '_cli/codex/MEMORY.md', '# codex\nrollout 全量重放。');
+  write(root, 'project-a/_shared/MEMORY.md', '# 公共\n事实。');
+  write(root, 'project-a/tasks/tsk_1/decisions.md', '# 决策\nSQLite。');
+  write(root, 'project-a/skills/lark-doc/usage.md', '# 用法\nauth。');
+  const h = createHarness(root);
+  const response = await invoke(h.app, 'GET', '/api/memory/tree');
+  const body = response.body;
+  assert.equal(body.machine.files.length, 1);
+  assert.equal(body.machine.rel, '_machine');
+  assert.equal(body.clis.length, 1);
+  assert.equal(body.clis[0].cli, 'codex');
+  const project = body.projects.find(p => p.dirId === 'project-a');
+  assert.equal(project.tasks.length, 1);
+  assert.equal(project.tasks[0].taskId, 'tsk_1');
+  assert.equal(project.skills.length, 1);
+  assert.equal(project.skills[0].skill, 'lark-doc');
+  // 全局层文件计入总量。
+  assert.ok(body.meta.fileCount >= 5);
+  // _machine/_cli 不会被当作项目列出。
+  assert.equal(body.projects.some(p => p.dirId === '_machine' || p.dirId === '_cli'), false);
+});
+
+test('global-tier file writes broadcast to every registered directory', async t => {
+  const root = tempStore();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  write(root, '_machine/MEMORY.md', 'x');
+  write(root, '_cli/claude/MEMORY.md', 'y');
+  write(root, 'project-a/_shared/MEMORY.md', 'z');
+  const h = createHarness(root);
+  await invoke(h.app, 'PUT', '/api/memory/file', {
+    body: { rel: '_machine/MEMORY.md', content: '# 更新的全局记忆\n' },
+  });
+  const targets = h.broadcasts.filter(b => b.event.scope === 'machine').map(b => b.dirId).sort();
+  assert.deepEqual(targets, ['project-a', 'project-b'], 'machine writes fan out to all directories');
+  await invoke(h.app, 'PUT', '/api/memory/file', {
+    body: { rel: '_cli/claude/MEMORY.md', content: '# claude 记忆\n' },
+  });
+  assert.ok(h.broadcasts.some(b => b.event.scope === 'cli' && b.dirId === 'project-b'));
+  await invoke(h.app, 'PUT', '/api/memory/file', {
+    body: { rel: 'project-a/_shared/MEMORY.md', content: '# 项目\n' },
+  });
+  const sharedTargets = h.broadcasts.filter(b => b.event.scope === 'shared').map(b => b.dirId);
+  assert.deepEqual(sharedTargets, ['project-a'], 'project writes stay scoped');
+});

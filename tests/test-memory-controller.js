@@ -165,21 +165,29 @@ test('Memory DTOs are bounded whitelists and discard credentials and unknown int
   }));
   assert.deepEqual(Object.keys(graph.nodes[0]).sort(), [
     'degree', 'dirId', 'file', 'id', 'missing', 'path', 'rel', 'scope', 'sessionId',
-    'size', 'slug', 'summary', 'title', 'tokens', 'type',
+    'size', 'slug', 'sub', 'summary', 'title', 'tokens', 'type',
   ]);
   assert.deepEqual(graph.edges[0], { source: 'n1', target: 'n2', type: '', strength: 2 });
   assert.deepEqual(graph.meta.projects[0], { dirId: 'd1', name: 'Fleet', count: 1 });
 
   const tree = plain(model.normalizeTreePayload({
+    machine: { rel: '_machine', dir: '/safe-display/_machine', files: [] },
+    clis: [{ cli: 'claude', token: 'drop-cli', files: [] }],
     projects: [{
-      dirId: 'd1', name: 'Fleet', dirPath: '/must-drop', token: 'drop',
+      dirId: 'd1', name: 'Fleet', dirPath: '/safe-display/project', token: 'drop',
       shared: { dir: '/must-drop', files: [{ name: 'a.md', rel: 'd1/_shared/a.md', path: '/safe-display', token: 'drop-file' }] },
+      skills: [{ skill: 'lark-doc', files: [] }],
+      tasks: [{ taskId: 'tsk_1', nativeInternal: 'drop', files: [] }],
       sessions: [{ sessionId: 's1', label: 'Chat', cli: 'codex', live: true, nativeSessionId: 'drop', files: [] }],
     }],
     meta: { projectCount: 1, secret: 'drop-meta' },
   }));
-  assert.equal(tree.projects[0].dirPath, undefined);
-  assert.equal(tree.projects[0].shared.dir, undefined);
+  // dirPath/dir 现在是刻意的白名单字段（树需要展示层级目录），但仅限安全路径。
+  assert.equal(tree.projects[0].dirPath, '/safe-display/project');
+  assert.equal(tree.projects[0].shared.dir, '/must-drop');
+  assert.deepEqual(tree.clis[0], { cli: 'claude', dir: '', rel: '', tokens: 0, files: [] });
+  assert.deepEqual(tree.projects[0].skills[0], { skill: 'lark-doc', dir: '', rel: '', tokens: 0, files: [] });
+  assert.deepEqual(tree.projects[0].tasks[0], { taskId: 'tsk_1', dir: '', rel: '', tokens: 0, files: [] });
   assert.equal(tree.projects[0].sessions[0].nativeSessionId, undefined);
 
   const file = plain(model.normalizeFilePayload({
