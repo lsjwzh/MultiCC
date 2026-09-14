@@ -22,6 +22,7 @@
   <script src="shared/dom-helpers.js"></script>
   <script src="memory-model.js"></script>
   <script src="memory-graph.js"></script>
+  <script src="task-graph.js"></script>
   <script src="memory-controller.js"></script>
   <script src="memo-controller.js"></script>
   <script src="provider-catalog.js"></script>
@@ -811,6 +812,7 @@
          rather than with the config panes. -->
     <button class="nav-item" data-view="cron" onclick="setView('cron')"><span class="ic">⏱</span> <span data-i18n="cronTasks">定时任务</span> <span class="badge" id="nav-cron-count">0</span></button>
     <button class="nav-item" data-view="memory" onclick="setView('memory')"><span class="ic">🧠</span> <span data-i18n="memoryGraph">记忆图谱</span> <span class="badge" id="nav-memory-count">0</span></button>
+    <button class="nav-item" data-view="taskgraph" onclick="setView('taskgraph')"><span class="ic">⛓</span> <span>任务图谱</span></button>
     <button class="nav-item" data-view="docs" onclick="setView('docs')"><span class="ic">🗂</span> <span data-i18n="docsServices">服务与文档</span></button>
 
     <div class="nav-label" data-i18n="settingsTitle">Settings</div>
@@ -1052,6 +1054,87 @@
               <button class="btn btn-sm" onclick="loadMemoryTree(true)">刷新</button>
             </div>
             <div id="mem-tree"><div class="mt-empty">加载中…</div></div>
+          </div>
+        </section>
+
+        <!-- ─── Task Graph ─── -->
+        <section class="view" data-view="taskgraph">
+          <style>
+            #tg-graph-wrap{display:flex;flex-direction:column;gap:12px}
+            #tg-graph-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+            #tg-graph-toolbar select{background:var(--bg-soft,#161b22);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:6px 10px;font-size:12px;font-family:var(--mono);max-width:280px}
+            #tg-graph-meta{font-family:var(--mono);font-size:11px;color:var(--faint)}
+            #tg-graph-legend{display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:var(--muted);align-items:center}
+            #tg-graph-legend .lg{display:inline-flex;align-items:center;gap:5px}
+            #tg-graph-legend .sw{width:11px;height:11px;border-radius:50%;display:inline-block}
+            #tg-graph-canvas{position:relative;width:100%;height:min(70vh,640px);min-height:420px;
+              background:radial-gradient(circle at 50% 40%,rgba(240,136,62,.05),transparent 70%),var(--bg,#0d1117);
+              border:1px solid var(--line);border-radius:12px;overflow:hidden;cursor:grab}
+            #tg-graph-canvas.panning{cursor:grabbing}
+            #tg-graph-svg{width:100%;height:100%;display:block;touch-action:none;user-select:none}
+            #tg-graph-svg text{pointer-events:none;font-family:var(--mono);fill:var(--text)}
+            #tg-graph-svg .tg-node{cursor:pointer}
+            #tg-graph-svg .tg-node:hover circle,#tg-graph-svg .tg-node:hover rect{stroke:#fff;stroke-width:2.5px}
+            #tg-graph-svg .tg-node:hover text{opacity:1}
+            #tg-graph-empty{position:absolute;inset:0;display:none;align-items:center;justify-content:center;
+              flex-direction:column;gap:8px;color:var(--faint);font-size:13px;text-align:center;padding:24px}
+            #tg-graph-hint{position:absolute;left:12px;bottom:10px;font-size:10px;color:var(--faint);
+              font-family:var(--mono);pointer-events:none;background:rgba(0,0,0,.25);padding:3px 8px;border-radius:6px}
+            .tg-zoom-btns{position:absolute;right:12px;bottom:12px;display:flex;flex-direction:column;gap:6px}
+            .tg-zoom-btns button{width:30px;height:30px;border-radius:8px;border:1px solid var(--line);
+              background:var(--bg-soft,#161b22);color:var(--text);cursor:pointer;font-size:15px;line-height:1}
+            .tg-zoom-btns button:hover{background:var(--accent-dim,#12312d)}
+            #tg-node-modal{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:16000;display:none;align-items:center;justify-content:center}
+            #tg-node-modal.open{display:flex}
+            #tg-node-card{background:var(--bg-soft,#161b22);border:1px solid var(--line);border-radius:12px;
+              width:min(92vw,560px);max-height:80vh;overflow:auto;padding:18px 20px}
+            #tg-node-card h3{color:var(--text);font-size:15px;margin:0 0 4px;word-break:break-word}
+            #tg-node-card .mn-slug{font-family:var(--mono);font-size:11px;color:var(--faint);margin-bottom:12px;word-break:break-all}
+            #tg-node-card .mn-tags{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+            #tg-node-card .mn-tag{font-family:var(--mono);font-size:10px;padding:2px 8px;border-radius:20px;background:rgba(255,255,255,.06);color:var(--muted)}
+            #tg-node-card .mn-summary{color:var(--text);font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-word;background:var(--bg,#0d1117);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:12px}
+            #tg-node-card .mn-links h4{color:var(--muted);font-size:11px;margin:10px 0 6px;font-weight:600}
+            #tg-node-card .mn-link{display:block;width:100%;text-align:left;font-size:12px;padding:6px 9px;margin-bottom:4px;border-radius:6px;border:1px solid var(--line);background:var(--bg,#0d1117);color:var(--text);cursor:pointer;font-family:var(--mono);word-break:break-word}
+            #tg-node-card .mn-link:hover{border-color:var(--accent)}
+            #tg-node-card .mn-close{float:right;background:transparent;border:0;color:var(--faint);font-size:20px;cursor:pointer;line-height:1}
+            #tg-node-open{background:#238636;border:1px solid #2ea043;border-radius:6px;color:#fff;font-size:12px;padding:6px 12px;cursor:pointer;margin-bottom:12px}
+            #tg-node-open:hover{filter:brightness(1.08)}
+          </style>
+          <div class="sec-head"><h2><span>⛓ 任务图谱</span> <span id="tg-graph-count-pill" style="color:var(--faint);font-weight:400;font-size:12px"></span></h2><div class="line"></div>
+            <button class="btn btn-sm" onclick="loadTaskGraph(undefined, true)" data-i18n="refresh">刷新</button>
+          </div>
+          <p class="sec-desc">任务关联网络：每个 <b>任务节点</b> 按 classify 状态着色（P/D/W/B/E），<b>provisional（身份未锁）半透明</b>、canonical 实色；<b>任务壳</b>画成小菱形。边分四类：<code>parent</code> 父子（classify 归因落位） / <code>group</code> 同组（taskGroups） / <code>merged</code> 合并别名 / <code>shell-link</code> 壳链接。点击节点看详情并可跳转 Air。</p>
+          <div id="tg-graph-wrap">
+            <div id="tg-graph-toolbar">
+              <label style="font-size:12px;color:var(--muted)">项目
+                <select id="tg-graph-project" onchange="loadTaskGraph(this.value)"></select>
+              </label>
+              <button class="btn btn-sm" onclick="tgGraphResetView()">重置视图</button>
+              <span id="tg-graph-meta"></span>
+              <div style="flex:1"></div>
+              <div id="tg-graph-legend"></div>
+            </div>
+            <div id="tg-graph-canvas">
+              <svg id="tg-graph-svg"></svg>
+              <div id="tg-graph-empty"></div>
+              <div id="tg-graph-hint">拖拽平移 · 滚轮缩放 · 点击节点看详情 · 拖动节点可固定</div>
+              <div class="tg-zoom-btns">
+                <button onclick="tgGraphZoom(1.2)" title="放大">＋</button>
+                <button onclick="tgGraphZoom(1/1.2)" title="缩小">－</button>
+                <button onclick="tgGraphResetView()" title="重置" style="font-size:12px">⊙</button>
+              </div>
+            </div>
+          </div>
+          <div id="tg-node-modal" onclick="if(event.target===this)tgNodeModalClose()">
+            <div id="tg-node-card">
+              <button class="mn-close" onclick="tgNodeModalClose()">×</button>
+              <h3 id="tg-node-title"></h3>
+              <div class="mn-slug" id="tg-node-id"></div>
+              <div class="mn-tags" id="tg-node-tags"></div>
+              <button id="tg-node-open" style="display:none">在 Air 中打开 ↗</button>
+              <div class="mn-summary" id="tg-node-detail"></div>
+              <div class="mn-links" id="tg-node-links"></div>
+            </div>
           </div>
         </section>
 
@@ -2261,6 +2344,7 @@
         storage: ['临时上传', '上传文件缓存'],
         docs: ['服务与文档', '生成的文档与本地 web 服务'],
         memory: ['🧠 记忆图谱', '项目记忆系统网络'],
+        taskgraph: ['⛓ 任务图谱', '任务关联网络：父子 / 分组 / 合并 / 壳链接'],
       };
       window.setView = function (v) {
         if (v === 'overview') { location.assign('/air'); return; }
@@ -2278,6 +2362,11 @@
           window.__memGraphLoaded = true;
           loadMemoryGraph();
         }
+        // 任务图谱同样首开懒加载。
+        if (v === 'taskgraph' && typeof loadTaskGraph === 'function' && !window.__taskGraphLoaded) {
+          window.__taskGraphLoaded = true;
+          loadTaskGraph();
+        }
         if (v === 'voice') window.MultiCCManageQwenAudio?.loadPanel?.();
         if (v === 'docs') window.loadDocsRegistry?.();
         // Sync the active provider tab when the provider view is shown.
@@ -2287,7 +2376,7 @@
         }
       };
       const requestedView = new URLSearchParams(location.search).get('view') || 'docs';
-      const allowedViews = ['overview', 'tasks', 'memory', 'cron', 'voice', 'goal', 'provider', 'global', 'push', 'tunnel', 'bridges', 'resources', 'skillsync', 'storage', 'docs'];
+      const allowedViews = ['overview', 'tasks', 'memory', 'taskgraph', 'cron', 'voice', 'goal', 'provider', 'global', 'push', 'tunnel', 'bridges', 'resources', 'skillsync', 'storage', 'docs'];
       if (allowedViews.includes(requestedView)) {
         window.setView(requestedView);
       }

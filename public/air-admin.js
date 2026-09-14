@@ -13,6 +13,7 @@
   const legacyPanels = {
     planner: ['任务看板', '按模块查看、筛选与规划全部任务', 'PLANNER'],
     memory: ['记忆图谱', '项目记忆、会话记忆与文件编辑', 'MEMORY'],
+    taskgraph: ['任务图谱', '任务关联网络：父子 / 分组 / 合并 / 壳链接', 'TASKGRAPH'],
     voice: ['语音设置', '识别、转写与实时语音能力', 'VOICE'],
     goal: ['Goal 预检', '任务目标与自动分类规则', 'GOAL'],
     provider: ['Provider 配置', '全局供应商、账号与线路管理', 'PROVIDERS'],
@@ -305,6 +306,7 @@
     const shortcuts = [
       ['docs', '▤', '服务与文档', '本地服务、网页和文件'],
       ['memory', '◇', '记忆图谱', '项目与会话记忆'],
+      ['taskgraph', '⛓', '任务图谱', '父子 / 分组 / 合并关联'],
       ['settings', '⚙', '设置中心', 'Provider、通知与连接'],
       ['schedules', '◴', '自动运行', '固定任务定时规则'],
     ];
@@ -445,7 +447,7 @@
   function renderLegacy(mode, context) {
     const [title] = legacyPanels[mode] || [mode];
     const legacyView = mode === 'planner' ? 'tasks' : mode;
-    const homeMode = ['planner', 'memory'].includes(mode) ? 'overview' : 'settings';
+    const homeMode = ['planner', 'memory', 'taskgraph'].includes(mode) ? 'overview' : 'settings';
     setActions([
       action(homeMode === 'overview' ? '返回控制台' : '返回设置中心', () => context.setMode(homeMode), '', panelIcon('←')),
       action('在独立页打开', () => window.open(`/manage.html?view=${encodeURIComponent(legacyView)}`, '_blank', 'noopener'), '', panelIcon('↗')),
