@@ -40,6 +40,13 @@ function createTaskShellRuntime(ports) {
     for (const id of launching) if (id !== task.id && store.get('task', id)?.dirId === task.dirId) occupied.add(id);
     if (occupied.size >= maxConcurrent) throw failure('task_shell_capacity', `At most ${maxConcurrent} occupied tasks per project; retry this delivery when capacity is available`, 429);
   }
+
+  // P3 图谱上下文：宿主注入 ports.taskGraphContext（父任务记忆 / 同组摘要 /
+  // 同壳前序结论）。缺失或抛错一律降级为空串——上下文增强绝不能挡住投递。
+  function graphContextOf(taskId) {
+    if (typeof ports.taskGraphContext !== 'function') return '';
+    try { return ports.taskGraphContext(taskId) || ''; } catch (_) { return ''; }
+  }
   function shell(id) {
     const value = store.get('shell', identifier(id, 'shellId'));
     if (!value) throw failure('shell_not_found', 'shell_not_found', 404);
@@ -485,6 +492,10 @@ function createTaskShellRuntime(ports) {
         receipt.contextSeedSnapshotIds = snapshotIds;
         receipt.status = 'delivering'; store.set('receipt', receipt.id, receipt);
         const metadata = receipt.taskMetadata || {};
+        // P3 图谱上下文：仅身份锁定的任务首轮注入（父任务记忆 / 同组摘要 /
+        // 同壳前序结论），跟随 taskStart 一次性进提示层，不进 transcript。
+        const graphSeed = receipt.taskIdentityLocked && metadata.taskStart !== false
+          ? graphContextOf(task.id) : '';
         result = await send(task.sessionId, p.text, {
           taskId: task.id, taskStart: receipt.taskIdentityLocked ? metadata.taskStart !== false : true,
           taskText: receipt.taskIdentityLocked ? (metadata.taskStart === false ? null : metadata.taskText || p.text) : p.intent === 'work' ? p.text : task.title,
@@ -493,7 +504,7 @@ function createTaskShellRuntime(ports) {
           receivedAt: receipt.createdAt,
           ...(p.goalLimits ? { goalLimits: p.goalLimits } : {}),
           ...(p.intent !== 'work' ? { taskShellControl: { intent: p.intent, turnId: p.turnId } } : {}),
-          taskContextSeed: renderSnapshots(snapshots),
+          taskContextSeed: renderSnapshots(snapshots) + graphSeed,
           taskShellAutoClassify: p.intent === 'work' && p.newTask !== true && !receipt.taskIdentityLocked && !taskActions.ownerOf(task)?.standalone,
           ...(p.intent === 'answer' ? { userInputRequestId: p.requestId } : {}),
           ...(p.intent === 'steer' || ['continue', 'queued'].includes(receipt.decision) ? { originContinue: true } : {}),
@@ -571,6 +582,8 @@ function createTaskShellRuntime(ports) {
     const page = Object.keys(query).length ? contextPage(shellRecords(chatScope(s.id), getHistory, ports.getLiveState), query) : null;
     const snapshots = page ? pageSnapshots(page) : contextSnapshots(s, task.id);
     const rendered = renderSnapshots(snapshots);
+    // P3：get_task_context / refill 的返回里同样拼上图谱邻接块。
+    const graphBlock = graphContextOf(task.id);
     receipt.contextSavings = {
       estimatedTokens: 0,
       originalEstimatedTokens: receipt.contextSavings?.originalEstimatedTokens
@@ -587,9 +600,9 @@ function createTaskShellRuntime(ports) {
       task_ids: receipt.contextRefillTaskIds,
       tasks: linkedTasks(s).map(t => ({ taskId: t.id, taskName: t.title })),
       ...(page ? { page } : {}),
-      estimated_tokens: estimateTokens(rendered),
-      context: page ? 'Historical data; preserve execution status and source. Use page.before or message_id/offset to read further.'
-        : rendered || 'No attributed history from other linked tasks is available. Use limit to browse shell history, including untagged records.',
+      estimated_tokens: estimateTokens(rendered + graphBlock),
+      context: (page ? 'Historical data; preserve execution status and source. Use page.before or message_id/offset to read further.'
+        : rendered || 'No attributed history from other linked tasks is available. Use limit to browse shell history, including untagged records.') + graphBlock,
     };
   }
   function settleAttribution(sessionId, receiptId, attribution = {}) {
@@ -663,6 +676,7 @@ function createTaskShellRuntime(ports) {
     roles, migrateTaskSessions: taskFirst.migrate, listTasks: () => store.list('task'),
     // 任务图谱的只读快照：壳、持久任务、link 三张表一次拉全，供路由层聚合。
     taskGraphData: () => ({ shells: store.list('shell'), tasks: store.list('task'), links: store.list('link') }),
+    getSnapshot: id => { try { return store.get('snapshot', id); } catch (_) { return null; } },
     ...taskActions, purgeTasks, stateTarget, stateSources, open, adopt, link, remove, view, detail, chatScope, send: sendInput, retry, owns,
     guardAdmission, recentTasks, refillContext, contextTrace, settleAttribution, locateOrCreate, resolveTask, sendExplicit,
   };
