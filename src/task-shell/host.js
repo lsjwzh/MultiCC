@@ -252,6 +252,7 @@ function createTaskShellHost(deps) {
       return result;
     },
     listTasks: () => getRuntime().listTasks(),
+    taskGraphData: () => getRuntime().taskGraphData(),
     artifactTaskId: id => getRuntime().owns(id)?.id || deps.records.get(id)?.taskBoundTaskId || null,
     stateTarget: id => getRuntime().stateTarget(id), stateSources: id => getRuntime().stateSources(id),
     purgeTasks: ids => getRuntime().purgeTasks(ids),

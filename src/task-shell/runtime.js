@@ -661,6 +661,8 @@ function createTaskShellRuntime(ports) {
   }
   return {
     roles, migrateTaskSessions: taskFirst.migrate, listTasks: () => store.list('task'),
+    // 任务图谱的只读快照：壳、持久任务、link 三张表一次拉全，供路由层聚合。
+    taskGraphData: () => ({ shells: store.list('shell'), tasks: store.list('task'), links: store.list('link') }),
     ...taskActions, purgeTasks, stateTarget, stateSources, open, adopt, link, remove, view, detail, chatScope, send: sendInput, retry, owns,
     guardAdmission, recentTasks, refillContext, contextTrace, settleAttribution, locateOrCreate, resolveTask, sendExplicit,
   };

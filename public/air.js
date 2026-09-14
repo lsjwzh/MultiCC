@@ -819,6 +819,7 @@
       planner: ['MultiCC Air › 工作管理', '任务看板', '按模块查看、筛选与规划全部任务。'],
       docs: ['MultiCC Air › 系统工具', '服务与文档', 'Agent 产物、本地页面和服务登记。'],
       memory: ['MultiCC Air › 系统工具', '记忆图谱', '项目记忆、会话记忆与文件编辑。'],
+      taskgraph: ['MultiCC Air › 系统工具', '任务图谱', '任务关联网络：父子 / 分组 / 合并 / 壳链接。'],
       settings: ['MultiCC Air › 系统设置', '设置中心', 'AI、连接、通知和资源配置。'],
       voice: ['MultiCC Air › 设置中心', '语音设置', '识别、转写与实时语音能力。'],
       goal: ['MultiCC Air › 设置中心', 'Goal 预检', '任务目标与自动分类规则。'],
