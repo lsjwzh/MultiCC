@@ -271,7 +271,7 @@ body.air-chat {
 }
 .air-chat .msg.assistant th, .air-chat .msg.assistant td { border-color: #d9e4ee; }
 .air-chat .msg.assistant th { color: #2d465e; background: #edf3f8; }
-.air-chat .msg-del, .air-chat .msg-fork { color: var(--chat-muted); border-color: #d5e1ed; background: #fff; }
+.air-chat .msg-del, .air-chat .msg-fork, .air-chat .msg-quote { color: var(--chat-muted); border-color: #d5e1ed; background: #fff; }
 
 .air-chat .tool-stack {
   max-height: 300px;
