@@ -1,5 +1,7 @@
 'use strict';
 
+const { cleanMemoryCandidate } = require('../memory/task-distill');
+
 const PHASE_ALIASES = Object.freeze({
   planning: 'planning', '规划中': 'planning',
   implementing: 'implementing', '实现中': 'implementing',
@@ -44,8 +46,12 @@ function parseTaskAttribution(text, { fallbackTaskId = null, allowedTaskIds = nu
     const allowed = allowedTaskIds == null ? null : new Set(allowedTaskIds);
     const existingTaskId = requestedTaskId && (!allowed || allowed.has(requestedTaskId))
       ? requestedTaskId : fallbackTaskId || null;
-    const relatedTaskId = relation === 'new' && requestedRelatedTaskId
-      && requestedRelatedTaskId !== fallbackTaskId
+    // relation=new：relatedTaskId 指向衍生来源（父任务候选）。
+    // relation=same：relatedTaskId 只形成弱分组边（taskGroups），不改变归属，
+    // 且绝不允许指向任务自己。
+    const ownId = relation === 'same' ? existingTaskId : fallbackTaskId;
+    const relatedTaskId = requestedRelatedTaskId
+      && requestedRelatedTaskId !== ownId
       && (!allowed || allowed.has(requestedRelatedTaskId))
       ? requestedRelatedTaskId : null;
     return {
@@ -54,6 +60,7 @@ function parseTaskAttribution(text, { fallbackTaskId = null, allowedTaskIds = nu
       relation,
       taskId: relation === 'same' ? existingTaskId : null,
       relatedTaskId,
+      memoryCandidate: cleanMemoryCandidate(object.memory_candidate || object.memoryCandidate),
     };
   }
 
@@ -67,6 +74,7 @@ function parseTaskAttribution(text, { fallbackTaskId = null, allowedTaskIds = nu
     relation: 'same',
     taskId: fallbackTaskId || null,
     relatedTaskId: null,
+    memoryCandidate: null,
   };
 }
 
@@ -102,7 +110,7 @@ function buildTaskAttributionSystemPrompt({
     : provisionalTaskId
       ? `${provisionalTaskId} 是本轮候选 ID：若目标不同输出 relation=new/taskId=null（候选 ID 会升格）；若新任务由某个旧任务衍生或与其属于同一工作主题，把该旧 ID 填入 relatedTaskId；若完全无关则 relatedTaskId=null。若是同一任务续作，relation=same 必须选择最近任务中另一个既有 canonical taskId，relatedTaskId=null。`
       : '';
-  return `你是任务归集器，只负责给消息归属任务，不负责判断 turn 的运行状态。\n\n最近任务：\n${known}\n当前任务ID：${currentTaskId || '无'}${identityRule ? `\n${identityRule}` : ''}\n\n判断最新一轮是真正的新任务，还是最近某个任务的继续、追问或修订。同一交付目标的继续才复用原任务名和 taskId。产生独立交付物、子任务或衍生任务时 relation=new，保留新任务身份；若它与某个旧任务属于同一工作主题，用 relatedTaskId 指向该旧任务，仅供任务面板归组。\n\n只输出一个 JSON 对象：\n{"taskName":"简短任务名","phase":"planning|implementing|verifying|wrapping|done","relation":"same|new","taskId":"same 时填写上面的既有 ID；new 时为 null","relatedTaskId":"new 且相关时填写既有 ID；否则 null"}\n不要输出状态字母、解释或 Markdown。`;
+  return `你是任务归集器，只负责给消息归属任务，不负责判断 turn 的运行状态。\n\n最近任务：\n${known}\n当前任务ID：${currentTaskId || '无'}${identityRule ? `\n${identityRule}` : ''}\n\n判断最新一轮是真正的新任务，还是最近某个任务的继续、追问或修订。同一交付目标的继续才复用原任务名和 taskId。产生独立交付物、子任务或衍生任务时 relation=new，保留新任务身份；若它与某个旧任务属于同一工作主题，用 relatedTaskId 指向该旧任务，仅供任务面板归组。relation=same 时也可填 relatedTaskId 表示弱关联（同主题分组），但不能指向当前任务自己。\n\n同时提炼 memory_candidate：本轮对话中值得沉淀进任务长期记忆的稳定事实、决策或结论（接口约定、踩坑、方案取舍），一句话、不含过程描述；没有值得记的就填 null。\n\n只输出一个 JSON 对象：\n{"taskName":"简短任务名","phase":"planning|implementing|verifying|wrapping|done","relation":"same|new","taskId":"same 时填写上面的既有 ID；new 时为 null","relatedTaskId":"相关时填写既有 ID；否则 null","memory_candidate":"值得记的一条结论，或 null"}\n不要输出状态字母、解释或 Markdown。`;
 }
 
 function buildTaskAttributionConversation(history, reply = '') {
