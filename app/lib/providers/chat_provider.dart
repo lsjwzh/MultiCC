@@ -763,6 +763,20 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ── 引用消息的落地通道 ─────────────────────────────────────────────────────
+  //
+  // 引用块要插进输入框，而输入框（TextEditingController）归聊天页持有 ——
+  // provider 连它的影子都没有。所以聊天页在自己的 initState 里把「把这段文字
+  // 放进输入框」登记到这儿，气泡那边长按后调它。
+  //
+  // 可空是刻意的，也是这个通道唯一的语义：没有输入框的宿主（任务详情那种只读
+  // 转录）保持为 null，气泡据此**不提供**「引用」—— 摆一个点不动的入口，比
+  // 不摆更糟。
+
+  /// 由持有输入框的那一层登记：把 [block] 插进输入框并聚焦。null = 本宿主没有
+  /// 输入框，不提供引用。
+  void Function(String block)? quoteInserter;
+
   Future<Map<String, dynamic>> loadContextTrace() {
     final traceId = _contextTrace?['traceId']?.toString() ?? '';
     if (traceId.isEmpty) {
@@ -1244,6 +1258,28 @@ class ChatProvider extends ChangeNotifier {
             sourceSessionId: update['sourceSessionId']?.toString());
         notifyListeners();
         break;
+
+      case 'chat_history_annotation':
+        {
+          // 一条消息属于哪个子任务，是服务端在**这一轮结束时**判定的
+          // （annotateTurn 把归属打到该轮所有消息上，再广播本事件）。那时气泡
+          // 早就画在屏幕上了，所以这里是就地打标、不重建列表 —— 重建会打断
+          // 正在进行的流式输出、丢掉滚动位置。
+          final records = (evt.payload as Map)['messages'];
+          if (records is List) {
+            var applied = 0;
+            for (final raw in records) {
+              if (raw is! Map) continue;
+              final record = Map<String, dynamic>.from(raw);
+              final message = _messageByIdentity(record['id']?.toString() ?? '');
+              if (message == null) continue;
+              message.applyAttribution(record);
+              applied += 1;
+            }
+            if (applied > 0) notifyListeners();
+          }
+          break;
+        }
 
       case 'chat_history':
         final p = evt.payload as Map;
@@ -2292,6 +2328,26 @@ class ChatProvider extends ChangeNotifier {
     final before = _messages.length;
     _messages.removeWhere((m) => m.id == id);
     if (_messages.length != before) notifyListeners();
+  }
+
+  /// 按本地 id 找气泡。
+  ///
+  /// 两边本就该相等：`annotateTurn` 按**执行会话自己的**消息 id 指认，而壳在
+  /// `chat_shell_view.dart` 里已经把同一批记录复合成了本地 id
+  /// （`<sourceSessionId>:<messageId>`，与气泡的 id 同一套规则）。
+  ///
+  /// 认不出来就什么都不做 —— 不要退回去按裸 id 猜。裸 id 只在它自己那个执行
+  /// 会话的编号空间里有意义，拿它去跨会话找气泡只会把 A 任务的归属写到 B 任务的
+  /// 消息头上（消息 id 是 `m<base36 时间>-<全局序号>`，见 server.js 的
+  /// newChatMsgId，跨会话撞号在生产里不会发生，所以那条兜底只会误伤）。
+  /// 漏一次也不是永久的：服务端的历史投影里本来就带 taskId/taskName/turnId，
+  /// 下一次读历史页就会补上。
+  ChatMessage? _messageByIdentity(String id) {
+    if (id.isEmpty) return null;
+    for (final message in _messages) {
+      if (message.id == id) return message;
+    }
+    return null;
   }
 
   void _onMessageStart(Map<String, dynamic>? evt) {
