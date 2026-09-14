@@ -2019,8 +2019,21 @@ const taskContextHost = createTaskContextHost({
   randomUUID: () => crypto.randomUUID(), getRecord: sessionId => persistedSessions.get(sessionId),
   runTurn: (sessionId, text, options) => chatTurnEngine.admitChatWork(sessionId, text, options),
 });
+// P3 图谱上下文构建：宿主把 board / shell store / 任务级记忆接成 ports，
+// runtime 在任务首轮投递与 refill 时按图谱邻接注入（失败降级为空串）。
+const taskGraphContextOf = require('./src/task-shell/task-graph-context').createTaskGraphContextService({
+  getBoard: () => taskBoardRuntime.getBoard(),
+  taskGraphData: () => taskShellHost.taskGraphData(),
+  getSnapshot: id => taskShellHost.getSnapshot(id),
+  readTaskMemory: (dirId, taskId) => {
+    const dir = folderMemory.taskDir(dirId, taskId);
+    if (!dir) return '';
+    return (folderMemory.listFiles(dir).find(file => file.name === 'MEMORY.md') || {}).content || '';
+  },
+});
 const taskShellHost = require('./src/task-shell/host').createTaskShellHost({
   defaultTaskRuntime: () => ({ cli: SUPPORTED_CHAT_CLIS.find(cli => cliAvailabilitySummary()[cli]?.available) || 'claude' }),
+  taskGraphContext: taskGraphContextOf,
   onStateTargetChanged: id => workspaceRuntime.publishSessionView(id),
   file: MULTICC_PATHS.taskShellDbFile, records: persistedSessions, directories, createSessionRecord,
   loadHistory: id => viewChatHistory(id), getTaskBoard: () => taskBoardRuntime,

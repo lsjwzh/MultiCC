@@ -155,7 +155,7 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
         holdsReceipt: d.contains(document.getElementById('air-ops-status')) }; })()`);
     assert.equal(more.tag, 'DETAILS');
     assert.equal(more.open, false, '「更多与系统」默认收起');
-    assert.deepEqual(more.links, ['服务与文档', '记忆图谱', '设置中心']);
+    assert.deepEqual(more.links, ['服务与文档', '记忆图谱', '任务图谱', '设置中心']);
     assert.equal(more.holdsReceipt, false, '运维回执留在折叠区外，折起来会连回执一起藏掉');
 
     // ── 控制台：从左侧滑入，地址不变，当前任务不卸载 ─────────────────────
