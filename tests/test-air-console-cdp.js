@@ -117,6 +117,11 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
     await page.navigate('/air?dir=d1&task=tsk_here');
     assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='收口 Air 的控制台'`));
+    // 存储里刻意留一条收藏再重载：界面撤掉之后就不该再有任何东西读它 —— 这样下面
+    // 「侧栏没有收藏目录那一组」才是在断界面，而不是因为存储本来就是空的才恰好没有。
+    await page.evaluate(`localStorage.setItem('air:favorites', JSON.stringify(['d1']))`);
+    await page.navigate('/air?dir=d1&task=tsk_here');
+    assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='收口 Air 的控制台'`));
 
     // ── 侧栏：任务区只装「最近」，其余操作按频次收敛 ─────────────────────
     assert.equal(await page.evaluate(`document.getElementById('activity')===null`), true, '跨目录活动入口已移除');
@@ -129,6 +134,14 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
     for (const gone of ['scope-switch', 'task-search', 'status-filter']) {
       assert.equal(await page.evaluate(`document.getElementById('${gone}')===null`), true, `#${gone} 已从侧栏移除`);
     }
+    // 「收藏目录」那一组（连同目录卡上的 ☆ 和目录库里的「已收藏」）也撤了：工作目录
+    // 本来就不会很多，一组随时可能空的快捷方式净是白占位置；App 侧栏先撤的，Web 对齐。
+    // 这条盯的是界面 —— 存储和 App 的 AirLocalStore 收藏接口都还在，别拿它们当依据又加回来。
+    for (const gone of ['favorite', 'favorites']) {
+      assert.equal(await page.evaluate(`document.getElementById('${gone}')===null`), true, `#${gone} 已从侧栏移除`);
+    }
+    assert.equal(await page.evaluate(`[...document.querySelectorAll('#sidebar *')].some(el=>el.textContent==='收藏目录')`), false, '侧栏不再有「收藏目录」标题');
+    assert.equal(await page.evaluate(`document.querySelector('.space-shortcuts').textContent.replace(/\\s+/g,'')`), '工作目录⌘K切换', '目录卡快捷行只剩标题和 ⌘K 提示');
     assert.equal(await page.evaluate(`document.getElementById('task-list-title').textContent`), '最近任务');
     assert.ok(await page.waitFor(`document.querySelectorAll('#tasks button').length===1`), '最近里只有打开过的这一条');
     // 一行要能自己说清：状态徽标（注册表给的词）、所属目录、阶段与资源去向。
@@ -247,6 +260,9 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
     assert.ok(await page.waitFor(`document.getElementById('directory-library').hidden===false`));
     assert.equal(await page.evaluate(`document.querySelectorAll('#directory-grid button.ring-running').length`), 1, '只有跑着活的目录带圈');
     assert.equal(await page.evaluate(`document.querySelector('#directory-grid button.ring-running strong').textContent`), '▣ Gapasea', '带圈的是那个目录');
+    // 目录库里也不再有「已收藏」那截尾巴（存储里那条 d1 收藏在上面刻意留着）。
+    assert.equal(await page.evaluate(`[...document.querySelectorAll('#directory-grid button small')].some(el=>el.textContent.includes('已收藏'))`), false,
+      '目录库不再给收藏过的目录打「已收藏」');
 
     // ── 「只有半边」的那个圈：目录视图 ───────────────────────────────────
     // 地址里不带 &task= 时 air.js 会给 #library（就是 .space-main）挂 .active，

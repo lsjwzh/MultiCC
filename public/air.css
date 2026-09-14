@@ -134,8 +134,8 @@ small, .caption { color: var(--muted); font-size: 11px; }
   overflow: hidden; margin-bottom: 2px; border: 1px solid rgba(196, 216, 237, .95); border-radius: 14px; background: rgba(255, 255, 255, .78); box-shadow: 0 8px 25px #4568870b;
   /* 侧栏是一列 flex，视口不够高时默认会把子项一起压扁。这张卡里有 fixed 内容的
      两行（目录名 + 快捷行），而且自己是 overflow:hidden —— 一旦被压，第二行直接
-     消失、图标顶出卡片边界。它和收藏列表都没有「可压缩的余地」，所以拒绝收缩：
-     要挤就挤任务区（#task-sidebar 本来就在滚动）。 */
+     消失、图标顶出卡片边界。它没有「可压缩的余地」，所以拒绝收缩：要挤就挤任务区
+     （#task-sidebar 本来就在滚动）。 */
   flex-shrink: 0;
 }
 .space-main { width: 100%; min-width: 0; display: flex; align-items: center; gap: 9px; padding: 12px 11px 8px; border: 0; border-radius: 0; background: transparent; text-align: left; }
@@ -147,20 +147,12 @@ small, .caption { color: var(--muted); font-size: 11px; }
 .space-copy small { margin-top: 2px; font-size: 10px; }
 .space-chevron { color: var(--muted); }
 .space-shortcuts { display: flex; align-items: center; gap: 7px; min-height: 34px; padding: 0 8px 6px; color: var(--muted); font-size: 10px; }
-.space-shortcuts button { min-height: 28px; padding: 2px 7px; border: 0; background: transparent; }
 .space-shortcuts kbd { margin-left: auto; font: inherit; }
 
 .nav-row { width: 100%; display: flex; align-items: center; gap: 9px; border-color: transparent; background: transparent; text-align: left; color: #4f657d; }
 .nav-row.active { color: #0f63c6; border-color: #cfe3f8; background: #fff; }
-.favorite-caption { margin: 7px 9px 1px; text-transform: uppercase; letter-spacing: .8px; }
 nav { display: flex; flex-direction: column; gap: 4px; }
-/* max-height 封顶 + overflow:auto 让它的自动最小尺寸变成 0，于是视口不够高时它会
-   第一个被压到 0 —— 收藏过的目录会整块消失。它本来就只想要「最多 116px」，不是
-   「可以被挤没」，所以拒绝收缩。 */
-#favorites { max-height: 116px; overflow: auto; flex-shrink: 0; }
-#favorites button, #tasks button { width: 100%; min-width: 0; border-color: transparent; background: transparent; text-align: left; overflow-wrap: anywhere; }
-#favorites button { padding: 7px 10px; min-height: 32px; color: #566d85; }
-#favorites button.selected { color: #0e64c8; background: rgba(255, 255, 255, .92); }
+#tasks button { width: 100%; min-width: 0; border-color: transparent; background: transparent; text-align: left; overflow-wrap: anywhere; }
 
 /* Three bands share the sidebar: fixed chrome, the task list, and the pinned
    ops footer. When the window is short their minimums add up to more than the
@@ -803,10 +795,10 @@ body.console-open #console-panel { transform: none; visibility: visible; }
 
 @media (max-width: 760px) {
   /* 抽屉是整屏浮层：装不下就整条滚。桌面那套「任务区自滚 + 版本行钉在底部」在
-     手机上会把中间那些固定内容压扁（目录卡被裁、收藏被挤没），而这些恰恰是抽屉
-     存在的理由；手机上滚动一屏比钉住一行值。 */
+     手机上会把中间那些固定内容压扁（目录卡被裁），而这些恰恰是抽屉存在的理由；
+     手机上滚动一屏比钉住一行值。 */
   #sidebar { position: fixed; inset: 0 auto 0 0; width: min(286px, calc(100% - 34px)); transform: translateX(-105%); box-shadow: 14px 0 70px #263f5d30; overflow-y: auto; overscroll-behavior: contain; }
-  #sidebar > .brand, #sidebar > .space-card, #sidebar > .nav-row, #sidebar > .caption, #sidebar > #favorites, #sidebar > #task-sidebar, #sidebar > .side-bottom { flex: 0 0 auto; }
+  #sidebar > .brand, #sidebar > .space-card, #sidebar > .nav-row, #sidebar > .caption, #sidebar > #task-sidebar, #sidebar > .side-bottom { flex: 0 0 auto; }
   /* 任务区跟着抽屉一起滚，不再自己开第二层滚动条。 */
   #task-sidebar { overflow: visible; }
   #tasks { overflow: visible; }

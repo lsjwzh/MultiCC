@@ -13,9 +13,10 @@ import 'air_task_status.dart';
 /// 选项）折进「更多与系统」。手机上没有 ⌘K，找全部目录的入口就是顶上那张目录
 /// 卡片。
 ///
-/// Web 侧栏还有一组「收藏目录」，这里没有 —— 工作目录本来就不会很多，一组随时
-/// 可能空的快捷方式和它下面那条分隔线都是白占位置。`AirLocalStore` 里那套收藏
-/// 读写留着（数据还在，只是不再有界面展示它）。
+/// 这里没有「收藏目录」那一组（Web 侧栏的 `.favorite-caption` + `#favorites` 也已经
+/// 撤掉了）：工作目录本来就不会很多，一组随时可能空的快捷方式和它下面那条分隔线
+/// 都是白占位置。找目录走目录卡片和全部目录入口。`AirLocalStore` 里那套收藏读写留着
+/// （数据还在，只是不再有界面展示它）。
 class AirSidebar extends StatelessWidget {
   const AirSidebar({
     super.key,

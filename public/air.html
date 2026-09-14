@@ -24,7 +24,6 @@
         <span class="space-chevron">›</span>
       </button>
       <div class="space-shortcuts">
-        <button id="favorite" type="button" aria-label="收藏当前工作目录">☆</button>
         <span>工作目录</span><kbd>⌘ K 切换</kbd>
       </div>
     </div>
@@ -35,8 +34,13 @@
       <span>◫</span><span>控制台</span><span id="console-badge" class="console-badge" hidden></span>
     </button>
     <button id="schedules" class="nav-row" type="button"><span>◴</span><span>定时任务</span></button>
-    <div class="caption favorite-caption">收藏目录</div>
-    <nav id="favorites" aria-label="收藏目录"></nav>
+
+    <!-- 这里原本是一组「收藏目录」（.favorite-caption 标题 + #favorites 列表），连同
+         目录卡上那颗 ☆ 一起撤掉了：工作目录本来就不会很多，一组随时可能空的快捷
+         方式（外加它下面那条分隔线）净是白占位置。App 侧栏早就没有它了
+         （app/lib/widgets/air/air_sidebar.dart），Web 跟着对齐 —— 找目录走目录库和
+         ⌘K。存储里的 `air:favorites` 键没人再读，但不必清理：留着不碍事，
+         而 App 侧的 AirLocalStore 收藏接口仍然保留。别照着旧代码把它加回来。 -->
 
     <!-- 侧栏的任务区只放「手上的任务」：最近打开过的在前，当前目录的跟在后面。
          找任务的完整入口在控制台（全部目录 + 搜索 + 筛选），所以这里不挂搜索框 ——
@@ -50,7 +54,7 @@
       <nav id="tasks" aria-label="最近任务列表"></nav>
     </section>
 
-    <!-- 频次收敛：每天点的（当前目录、控制台、收藏、最近任务、新建）留在外面，
+    <!-- 频次收敛：每天点的（当前目录、控制台、定时任务、最近任务、新建）留在外面，
          偶尔点的（全局工具、任务看板、TERMINAL、主机运维）折进「更多」。
          版本行留在外面：它是更新提示的落点，藏起来就没人知道有新版本。 -->
     <div class="side-bottom">

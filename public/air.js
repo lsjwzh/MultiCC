@@ -71,8 +71,6 @@
       return value == null ? fallback : value;
     } catch (_) { return fallback; }
   };
-  let favorites = stored('air:favorites', []);
-  if (!Array.isArray(favorites)) favorites = [];
   // 「最近」= 我打开过的任务（跨目录，最新在前）。浏览记录不是权限也不是归属，
   // 只是把常用的几个任务放在手边。
   let recentTaskIds = stored('air:recent-tasks', []);
@@ -362,7 +360,7 @@
       const taskCount = data.tasks.filter(task => task.dirId === directory.id).length;
       const activeCount = data.tasks.filter(task => task.dirId === directory.id && isRunningTask(task)).length;
       button.append(node('strong', '▣ ' + directory.name), node('small', directory.path),
-        node('small', `${taskCount} 个任务${activeCount ? ` · ${activeCount} 个执行中` : ''}${favorites.includes(directory.id) ? ' · 已收藏' : ''}`));
+        node('small', `${taskCount} 个任务${activeCount ? ` · ${activeCount} 个执行中` : ''}`));
       button.onclick = () => navigate(directory.id);
       return button;
     }));
@@ -811,7 +809,7 @@
     } else if (mode === 'library') {
       $('task-breadcrumb').textContent = 'MultiCC Air';
       $('task-title').textContent = '工作目录';
-      $('task-state').textContent = '按名称或路径切换项目；最多收藏五个。';
+      $('task-state').textContent = '按名称或路径切换项目。';
     } else if (mode === 'schedules') {
       $('task-breadcrumb').textContent = 'MultiCC Air › 自动运行';
       $('task-title').textContent = '定时任务';
@@ -948,24 +946,14 @@
     $('directory-name').textContent = dir?.name || '先添加工作目录';
     $('directory-path').textContent = dir?.path || '';
     $('create').disabled = !dir;
-    $('favorite').disabled = !dir;
-    $('favorite').textContent = favorites.includes(directoryId) ? '★' : '☆';
     // 有活在跑的目录也带圈：不必切过去才知道那个目录正忙。
     const busy = runningDirectories();
     applyRing(document.querySelector('.space-card'), busy.has(directoryId));
-    $('favorites').replaceChildren(...data.directories.filter(directory => favorites.includes(directory.id)).slice(0, 5).map(directory => {
-      const button = node('button', '▣ ' + directory.name, directory.id === directoryId && mode === 'tasks' ? 'selected' : '');
-      applyRing(button, busy.has(directory.id));
-      button.onclick = () => navigate(directory.id);
-      return button;
-    }));
     renderHeader(dir);
     renderDirectories();
     renderDirectoryOverview();
     const adminMode = adminModes.has(mode);
     $('task-sidebar').hidden = adminMode;
-    document.querySelector('.favorite-caption').hidden = adminMode;
-    $('favorites').hidden = adminMode;
     $('directory-library').hidden = mode !== 'library';
     $('admin-center').hidden = !adminMode;
     $('schedule-center').hidden = mode !== 'schedules';
@@ -1473,14 +1461,6 @@
     await refresh();
     if (adminModes.has(mode)) await window.MultiCCAirAdmin?.refresh(adminContext());
     reloadConversation();
-  };
-  $('favorite').onclick = () => {
-    if (!directoryId) return;
-    if (favorites.includes(directoryId)) favorites = favorites.filter(id => id !== directoryId);
-    else if (favorites.length < 5) favorites.push(directoryId);
-    else return notice('侧栏最多收藏 5 个目录，其余目录仍可从目录库搜索。');
-    localStorage.setItem('air:favorites', JSON.stringify(favorites));
-    render();
   };
   $('mobile-nav').onclick = toggleNav;
   $('nav-scrim').onclick = closeNav;
