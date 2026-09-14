@@ -813,6 +813,10 @@ function attachForkButton(msgEl) {
 // alone cannot carry. The block itself is built by chat-quote.js.
 function attachQuoteButton(msgEl) {
   if (!msgEl || msgEl.querySelector('.msg-quote')) return;
+  // Some hosts render history with no composer at all. Offering a quote action
+  // there would promise something that cannot happen, and the honest reason
+  // ("no box to quote into") is not one of the messages this button has.
+  if (!document.getElementById('input')) return;
   const btn = document.createElement('button');
   btn.className = 'msg-quote';
   btn.type = 'button';
