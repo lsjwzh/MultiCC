@@ -493,6 +493,14 @@ class ChatService {
         if (hasShellHistory) _scheduleReconnect();
         break;
 
+      case 'chat_history_annotation':
+        // Task attribution is decided server-side when the turn *ends*, so it
+        // arrives after the bubbles are already drawn. Forwarded as its own
+        // event: the provider patches the messages in place, it must not
+        // rebuild the list (that would drop a streaming tail mid-flight).
+        _emit('chat_history_annotation', msg);
+        break;
+
       case 'chat_msg_deleted':
         // Broadcast after a successful delete from any client; drop the
         // matching bubble. Idempotent — the initiator already removed it.

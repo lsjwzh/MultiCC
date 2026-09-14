@@ -70,10 +70,56 @@ void main() {
     ));
   });
 
+  test('late task attribution is composited onto the shell id', () async {
+    // 归属是这一轮结束后才判定的，它按**执行会话**的消息 id 指认消息；而壳气泡
+    // 的 id 是复合 id。两者在这里对上，否则引用块会因为认不出这条消息而丢掉归属。
+    final view = ChatShellView('source');
+    await view.prepare(
+      (_, body) async => http.Response(
+        jsonEncode(
+          body == null ? {'activeSessionId': 'execution'} : {'id': 'shell'},
+        ),
+        200,
+      ),
+    );
+    final event = view.event({
+      'type': 'chat_history_annotation',
+      'messages': [
+        {
+          'id': 'm',
+          'turnId': 'turn_1',
+          'taskId': 'tsk_1',
+          'taskName': '完善登录页面',
+          'auxRunId': null,
+        },
+      ],
+    }, 'execution');
+    final record = event['messages'][0] as Map;
+    expect(record['id'], 'execution:m');
+    expect(record['sourceSessionId'], 'execution');
+    expect(record['sourceMessageId'], 'm');
+    // 归属本身原样带过去，没被复合化动过。
+    expect(record['taskId'], 'tsk_1');
+    expect(record['taskName'], '完善登录页面');
+  });
+
+  test('annotation arriving before the shell opens stays on raw ids', () {
+    // 壳还没开（或本源不支持壳）时事件原样放行：这时气泡的 id 也是裸 id，
+    // 两边同样对得上。
+    final view = ChatShellView('source');
+    final event = view.event({
+      'type': 'chat_history_annotation',
+      'messages': [
+        {'id': 'm', 'taskId': 'tsk_1'},
+      ],
+    }, 'execution');
+    expect((event['messages'][0] as Map)['id'], 'm');
+    expect((event['messages'][0] as Map)['sourceMessageId'], isNull);
+  });
+
   test(
     'cursor switch and reconnect preserve earlier pages and replace live checkpoints',
-    () {
-      final old = [
+    () {      final old = [
         message('source:old', 1),
         message('source:partial', 2),
         message('task:live', 3, streaming: true),
