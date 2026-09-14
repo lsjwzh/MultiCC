@@ -904,7 +904,13 @@ function addUserMsg(text, clientMsgId) {
   div.className = 'msg user';
   div.textContent = text;
   if (clientMsgId) div.dataset.clientMsgId = clientMsgId;
-  messagesEl.appendChild(div);
+  // 插入位在流式助手气泡之前：queued:false 广播丢失、admission 进度回填、队列
+  // started 后的补画，都可能晚于 message_start —— 那时流式气泡已经在列表尾，
+  // 盲 append 会把问题画到它自己的回答下面（同 chat-history-view 的
+  // streamingAssistantTail / App 侧 userBubbleInsertIndex）。
+  const streamingTail = Array.from(messagesEl.querySelectorAll('.msg.assistant:not([data-msg-id])')).pop() || null;
+  if (streamingTail) messagesEl.insertBefore(div, streamingTail);
+  else messagesEl.appendChild(div);
   // Per-message auto-commit checkbox lives under the user's own message.
   attachAutoCommitCheck(div, _sessionAutoCommit);
   _lastUserBubble = div;
