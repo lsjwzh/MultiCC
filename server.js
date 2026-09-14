@@ -2033,6 +2033,14 @@ const taskShellHost = require('./src/task-shell/host').createTaskShellHost({
   hasBackground: id => backgroundTaskRuntime.hasLiveBackgroundTasks(id), ensureWorkspaceAwake: id => sessionHibernationRuntime.ensureAwake(id),
 });
 taskShellHost.mountRoutes(app);
+// 任务图谱：taskboard JSON + task-shell SQLite 聚合为 { nodes, edges }（只读）。
+require('./src/routes/task-graph').mountTaskGraphRoutes(app, {
+  getBoard: () => taskBoardRuntime.getBoard(),
+  taskGraphData: () => taskShellHost.taskGraphData(),
+  getRecord: id => persistedSessions.get(id),
+  directories,
+  now: () => Date.now(),
+});
 const skillSyncRuntime = createSkillSyncRuntime({
   fs,
   path,
