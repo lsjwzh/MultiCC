@@ -111,6 +111,42 @@ MockClient _airAndCronClient() => MockClient((request) async {
   );
 });
 
+/// 「从弹层创建」那两条用例要的桩：建任务是成功的，第一条消息听 [firstMessageOk]。
+/// GET 永远是那一份**不含新任务**的快照 —— 服务端还没把它列出来，正是要盯的延迟。
+MockClient _createFromSheetClient(
+  List<String> posts, {
+  required bool firstMessageOk,
+}) => MockClient((request) async {
+  const headers = {'content-type': 'application/json; charset=utf-8'};
+  if (request.method == 'POST') {
+    posts.add(request.url.path);
+    if (request.url.path.endsWith('/messages') && !firstMessageOk) {
+      return http.Response(
+        jsonEncode({'ok': false, 'error': 'temporary failure'}),
+        503,
+        headers: headers,
+      );
+    }
+    return http.Response(
+      jsonEncode({'ok': true, 'taskId': 't9', 'sessionId': 'sess-9'}),
+      200,
+      headers: headers,
+    );
+  }
+  return http.Response(
+    jsonEncode({
+      'ok': true,
+      'clis': const ['claude'],
+      'directories': const [
+        {'id': 'd1', 'name': '工作目录 A', 'path': '/project/a'},
+      ],
+      'tasks': const [],
+    }),
+    200,
+    headers: headers,
+  );
+});
+
 Future<SettingsService> _settings({bool onboarded = true}) async {
   SharedPreferences.setMockInitialValues({
     'multicc_host': 'http://localhost:3000',
@@ -552,7 +588,7 @@ void main() {
     client.close();
   });
 
-  testWidgets('侧栏的「＋ 新任务」开的是新任务对话框，不是把首页切回来', (tester) async {
+  testWidgets('侧栏的「＋ 新任务」开的是统一输入框，不是把首页切回来', (tester) async {
     final settings = await _settings();
     final requests = <String>[];
     final client = _client(requests);
@@ -570,14 +606,142 @@ void main() {
     await tester.pumpAndSettle();
     await tapInSidebar(tester, find.text('新任务'));
 
-    final dialog = find.byKey(const ValueKey('air-new-task-title'));
-    expect(dialog, findsOneWidget);
-    expect(find.text('创建任务'), findsOneWidget);
-    // 对话框里那句目录路径取的是当前目录（首页上也有一句同样的路径，所以只认
-    // 对话框里的那一个）。
+    // 开出来的是目录首页那一个统一输入框模块本身 —— AI 配置和角色都在同一套
+    // 胶囊里，提交就是那颗「创建并执行」。旧的简易表单（任务名称 / 模型 / 角色
+    // 文本框）已经整块删掉，不再有第二份实现。
+    final sheet = find.byType(BottomSheet);
     expect(
-      find.descendant(of: find.byType(Dialog), matching: find.text('/project/a')),
+      find.descendant(
+        of: sheet,
+        matching: find.byKey(const ValueKey('air-quick-input')),
+      ),
       findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: sheet,
+        matching: find.byKey(const ValueKey('air-quick-ai')),
+      ),
+      findsOneWidget,
+      reason: '选模型选线路的那颗胶囊跟着一起来',
+    );
+    expect(
+      find.descendant(
+        of: sheet,
+        matching: find.byKey(const ValueKey('air-quick-role')),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: sheet, matching: find.text('创建并执行 ↑')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const ValueKey('air-new-task-title')), findsNothing);
+    expect(find.text('任务名称'), findsNothing);
+    // 弹层里那句目录路径取的是当前目录。
+    expect(
+      tester
+          .widget<Text>(find.byKey(const ValueKey('air-new-task-directory')))
+          .data,
+      '/project/a',
+    );
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  /// 从弹层创建走的是首页那条同一条流水线（[_createFromComposer]）：这段话既是
+  /// 任务名也是第一条消息。跑完了这一层就该收掉 —— **哪怕快照还没反映出新任务**
+  /// （服务端有延迟），因为「收不收」说的是草稿交出去没有，不是快照更没更新。
+  /// 留着一层空输入框压在页面上才是真的错。
+  testWidgets('从弹层创建：交出去之后这一层就收掉，不等快照', (tester) async {
+    final settings = await _settings();
+    final posts = <String>[];
+    final client = _createFromSheetClient(posts, firstMessageOk: true);
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 844);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(home: AirTasksView(settings: settings, httpClient: client)),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('air-menu-button')));
+    await tester.pumpAndSettle();
+    await tapInSidebar(tester, find.text('新任务'));
+
+    await tester.enterText(
+      find.descendant(
+        of: find.byType(BottomSheet),
+        matching: find.byKey(const ValueKey('air-quick-input')),
+      ),
+      '把登录页的错误提示改清楚',
+    );
+    // 首页那一片还挂在弹层后面（同一个模块的另一个实例），提交要认弹层里那颗。
+    await tester.tap(
+      find.descendant(
+        of: find.byType(BottomSheet),
+        matching: find.byKey(const ValueKey('air-quick-submit')),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(posts, contains('/api/air/tasks'), reason: '任务建出去了');
+    expect(
+      posts,
+      contains('/api/task-shell-tasks/t9/messages'),
+      reason: '第一条消息就是这段话',
+    );
+    expect(find.byType(BottomSheet), findsNothing, reason: '交出去了就收掉');
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  /// 任务建出来了、第一条消息没送到：这一份草稿同样已经有归属了（服务端认得它，
+  /// 人也该进去看），所以这一层照样收掉 —— 留在屏幕上只会让人以为白点了，
+  /// 而同 Web 一样，两条路径都关。
+  testWidgets('第一条消息没送到：任务已经建了，这一层也收掉', (tester) async {
+    final settings = await _settings();
+    final posts = <String>[];
+    final client = _createFromSheetClient(posts, firstMessageOk: false);
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 844);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(home: AirTasksView(settings: settings, httpClient: client)),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('air-menu-button')));
+    await tester.pumpAndSettle();
+    await tapInSidebar(tester, find.text('新任务'));
+
+    await tester.enterText(
+      find.descendant(
+        of: find.byType(BottomSheet),
+        matching: find.byKey(const ValueKey('air-quick-input')),
+      ),
+      '这条会卡在第一条消息上',
+    );
+    await tester.tap(
+      find.descendant(
+        of: find.byType(BottomSheet),
+        matching: find.byKey(const ValueKey('air-quick-submit')),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(posts, contains('/api/air/tasks'), reason: '任务建出去了');
+    expect(
+      posts,
+      contains('/api/task-shell-tasks/t9/messages'),
+      reason: '第一条消息发过一次（没成）',
+    );
+    expect(
+      find.byType(BottomSheet),
+      findsNothing,
+      reason: '任务已经有归属了，这一层留着只会让人以为白点了',
     );
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());

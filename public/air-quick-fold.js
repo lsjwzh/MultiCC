@@ -54,6 +54,16 @@
   }
   function folded() { return form.classList.contains('is-folded'); }
 
+  // air.js 会把这整张卡片搬进侧栏那颗「＋ 新任务」的弹窗（openNewTaskComposer）。
+  // 折成一条细杠在弹窗里没有意义 —— 那个弹窗存在的理由就是让人写字 —— 所以打开
+  // 时管它要一次展开态，关掉再交回来时按平时的规矩收回去。两条都是无条件的
+  // 「请按规矩来」：fold() 自己会看屏宽和有没有草稿，桌面和起草中都不动。
+  // 搬动不改节点身份，这里抓着的一直是同一张卡。
+  window.__airQuickFold = {
+    fold: function () { fold(); },
+    unfold: function () { unfold(false); },
+  };
+
   function fold() {
     if (!PHONE.matches || folded() || written()) return;
     refreshHint();

@@ -667,8 +667,19 @@ dialog fieldset button { margin-top: 9px; color: #a04936; }
 dialog summary { cursor: pointer; padding: 10px 0; color: #526d88; font-size: 12px; }
 .form-row { display: flex; gap: 13px; }
 .form-row label { min-width: 0; flex: 1; }
-#create-error, dialog [role="alert"] { margin: 10px 0; color: #b34128; line-height: 1.6; }
-#create-submit { width: 100%; margin-top: 12px; }
+dialog [role="alert"] { margin: 10px 0; color: #b34128; line-height: 1.6; }
+
+/* 侧栏「＋ 新任务」的弹窗：它自己不带表单，只是把 #empty 里那个统一输入框模块
+   搬进来（air.js 的 openNewTaskComposer）。所以这里只安排两件事 —— 外壳比默认
+   的 dialog 宽一点（输入框模块要横向空间），以及把模块从「目录板块底部的浮动
+   卡片」改回普通块：sticky/bottom 是给目录首页那一列用的，放在弹窗里会平白
+   空出一截。 */
+.quick-task-dialog { max-width: 680px; padding: 0; background: #fbfdff; }
+.quick-task-dialog-body { padding: 24px; }
+.quick-task-dialog .section-heading { margin: -24px -24px 0; padding: 21px 24px 15px; border-bottom: 1px solid #e1eaf3; background: rgba(251, 253, 255, .96); }
+.quick-task-dialog #quick-task-dialog-directory { margin: 14px 0 0; color: #3b8edc; font-size: 11.5px; }
+.quick-task-dialog #quick-task-form { position: static; margin-top: 14px; }
+#quick-task-dialog-close { min-width: 38px; padding: 4px; color: #718398; border-color: transparent; background: transparent; font-size: 23px; }
 
 /* Task-scoped CLI / Provider routing. It keeps the previous settings page's
    three-step information architecture, but uses Air's light, compact cards. */
