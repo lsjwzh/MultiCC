@@ -1445,7 +1445,14 @@ test('Flutter attachments offer the iOS photo library, not just the Files picker
     );
     assert.match(source, /pickChatAttachment\(context\)/, `${rel} routes through the shared picker`);
     assert.doesNotMatch(source, /FilePicker\.platform/, `${rel} must not pick files inline`);
-    assert.match(source, /picked\.filename/, `${rel} uploads under the picked filename`);
+    if (rel === 'input_bar.dart') {
+      // input_bar 把整个 PickedAttachment 交给共享上传助手（multipart 流程归它），
+      // 不再自己摊开 bytes/filename 字段。
+      assert.match(source, /uploadChatAttachment\(\s*settings:\s*settings,\s*picked:\s*picked,/,
+        `${rel} uploads the picked attachment through the shared helper`);
+    } else {
+      assert.match(source, /picked\.filename/, `${rel} uploads under the picked filename`);
+    }
   }
 
   // Sheet labels are localized in both catalogs (zh is authoritative).
