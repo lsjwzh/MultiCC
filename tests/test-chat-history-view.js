@@ -637,6 +637,20 @@ test('an annotation for a message that is not on screen is ignored, not fatal', 
   assert.equal(view.annotateAttribution(undefined), 0);
 });
 
+test('the host wires the quote action and routes late attribution to the view', () => {
+  // The view would silently accept a missing quote wiring — its default is a
+  // noop — so the two ends of the feature are asserted here: the host injects
+  // the button, and the controller hands the annotation to the in-place patch
+  // rather than a re-render.
+  assert.match(CHAT_SOURCE, /attachQuoteButton,/);
+  assert.match(CHAT_SOURCE, /window\.MultiCCChatQuote\.quoteInto\(msgEl, document\)/);
+  assert.match(EVENT_SOURCE, /case 'chat_history_annotation':/);
+  assert.match(EVENT_SOURCE, /annotateAttribution\?\.\(message\.messages\)/);
+  // The view must hand the composer a bubble that has a durable id; an interim
+  // bubble has none, and the host says so instead of quoting a dead handle.
+  assert.match(CHAT_SOURCE, /msgEl\.dataset\.shellInterim === '1' \|\| !msgEl\.dataset\.msgId/);
+});
+
 test('classic host delegates persisted and streaming DOM ownership to the view', () => {
   assert.match(CHAT_SOURCE, /MultiCCChatHistoryView\.createHistoryView/);
   assert.match(CHAT_SOURCE, /chatHistoryView\.applyPlan\(plan/);
@@ -651,12 +665,13 @@ test('classic host delegates persisted and streaming DOM ownership to the view',
   assert.match(VIEW_SOURCE, /const safeHtml = safeMarkdown\.render\(text\)/);
 });
 
-test('script order is local purifier, parser, safety boundary, state, view, host', () => {
+test('script order is local purifier, parser, safety boundary, state, quote, view, host', () => {
   const scripts = [
     'vendor/dompurify/purify.min.js',
     'https://cdn.jsdelivr.net/npm/marked@12.0.1/marked.min.js',
     'safe-markdown.js',
     'chat-history-store.js',
+    'chat-quote.js',
     'chat-history-view.js',
     '<script src="chat.js"></script>',
   ];
