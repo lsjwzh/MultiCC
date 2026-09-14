@@ -316,8 +316,23 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(await page.evaluate(`document.getElementById('task-title').textContent==='定时任务' && document.getElementById('task-state').textContent.includes('写入同一任务')`), true);
     assert.equal(await page.evaluate(`document.querySelector('#schedule-center .schedule-hero')===null && document.querySelector('#task-header #schedule-create')!==null`), true);
     assert.equal(await page.evaluate(`document.querySelector('.schedule-fixed-task').innerText.includes('tsk_a')`), true);
+    // 标题行：左边一组说明，右边一个尾巴（计数、✕）。这条曾经全仓没有基础规则，
+    // 于是尾巴永远换行 —— 侧栏竖成「任务 / 最近任务 / 1」三条，目录页同样，
+    // 每个弹窗的 ✕ 都独占一行。断言按几何量：尾巴要跟头一组有纵向重叠，并且
+    // 落在它右边。只数有 client rect 的（关着的 `<dialog>` 是 display:none），
+    // 并且要求至少两条，免得选择器失配时「零条都合格」蒙混过去。
+    const headingRows = `(()=>[...document.querySelectorAll('.section-heading')]
+      .filter(h=>h.getClientRects().length && h.children.length>=2)
+      .map(h=>{const a=h.firstElementChild.getBoundingClientRect(),b=h.lastElementChild.getBoundingClientRect();
+        return {name:h.className,ok:Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top)>0&&b.left>=a.right-1,
+          gap:Math.round(b.left-a.right),overlapY:Math.round(Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top))}}))()`;
     await page.evaluate(`document.getElementById('schedule-create').click()`);
     assert.ok(await page.waitFor(`document.getElementById('schedule-dialog').open===true`));
+    // 定时任务弹窗共用同一份标记，跟着一起被这条基础规则修好 —— 在它自己开着的
+    // 时候量一次，别只靠「同一个类名」推断。
+    const scheduleHeadings = await page.evaluate(headingRows);
+    assert.ok(scheduleHeadings.length >= 2, '定时任务弹窗开着的时刻至少该量到侧栏和弹窗两条：' + JSON.stringify(scheduleHeadings));
+    assert.equal(scheduleHeadings.every(r => r.ok), true, '标题行的尾巴必须跟标题并排，不能换行：' + JSON.stringify(scheduleHeadings));
     assert.equal(await page.evaluate(`document.getElementById('schedule-form').elements.cli.options.length`), 2);
     await page.evaluate(`document.getElementById('schedule-close').click()`);
     screenshots.push(await page.screenshot('scheduled-air-tasks-desktop'));
@@ -339,6 +354,9 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(await page.evaluate(`document.getElementById('quick-role-pill').textContent`), '＋ 角色');
     assert.equal(await page.evaluate(`document.getElementById('quick-ai-pill').closest('.mc-composer')===document.getElementById('quick-task-form')`), true, 'both pills ride the composer card');
     screenshots.push(await page.screenshot('directory-composer-desktop'));
+    const dirHeadings = await page.evaluate(headingRows);
+    assert.ok(dirHeadings.length >= 2, '目录页该有侧栏和目录两块标题行：' + JSON.stringify(dirHeadings));
+    assert.equal(dirHeadings.every(r => r.ok), true, '标题行的尾巴必须跟标题并排，不能换行：' + JSON.stringify(dirHeadings));
     await page.evaluate(`document.getElementById('quick-ai-pill').click()`);
     assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open] select[aria-label="Provider"]')`), JSON.stringify({ pill: await page.evaluate(`document.getElementById('quick-ai-pill').textContent`), selected: await page.evaluate(`document.querySelector('.air-cli-option.selected strong')?.textContent`), requests: page.requests.slice(-6).map(r => r.method + ' ' + r.path) }));
     screenshots.push(await page.screenshot('directory-composer-config-desktop'));
@@ -427,6 +445,12 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(await page.evaluate(`document.getElementById('quick-role-pill').textContent`), '1 个角色');
     assert.equal(await page.evaluate(`document.activeElement===document.getElementById('quick-task-input')`), true, '弹窗就是让人写字的，光标直接落下');
     screenshots.push(await page.screenshot('new-task-dialog-desktop'));
+    // 弹窗里那颗 ✕ 同理：它得坐在「NEW TASK / 新任务」右边，不是另起一行。
+    const dialogHead = await page.evaluate(`(()=>{const h=document.querySelector('#quick-task-dialog .section-heading');
+      const a=h.firstElementChild.getBoundingClientRect(),b=h.lastElementChild.getBoundingClientRect();
+      return {ok:Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top)>0&&b.left>=a.right-1,
+        gap:Math.round(b.left-a.right),closeRight:Math.round(b.right),dialogRight:Math.round(h.getBoundingClientRect().right)}})()`);
+    assert.equal(dialogHead.ok, true, '弹窗的 ✕ 要跟标题并排：' + JSON.stringify(dialogHead));
     await page.evaluate(`document.getElementById('quick-task-dialog-close').click()`);
     assert.equal(await page.evaluate(`document.getElementById('quick-task-dialog').open`), false);
     // 搬回原位那一步挂在 `close` 事件上，而 close 是**排队**跑的任务 —— 还是那个

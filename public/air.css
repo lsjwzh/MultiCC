@@ -109,6 +109,15 @@ h3 { font-size: 13px; }
 small, .caption { color: var(--muted); font-size: 11px; }
 .caption { display: block; margin: 5px 0; }
 .eyebrow { color: #7894af; font-size: 9px; font-weight: 650; letter-spacing: 1.25px; }
+/* Title rows: a leading block (caption/eyebrow + title) and a trailing thing
+   (a count, a ✕). Six places use this markup and every one of them only ever
+   said what its own margins should be — nobody ever said the two belong on one
+   line, so the tail always wrapped: the ✕ in every dialog took a row of its
+   own, the sidebar read 任务 / 最近任务 / 1 stacked three deep, and the
+   directory page did the same with its count. Side by side is the only thing
+   this row is ever supposed to look like, so it's a base rule; the per-dialog
+   padding/border rules below still layer on top of it. */
+.section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .primary { color: #fff; border-color: transparent; background: var(--accent); }
 .primary:hover { color: #fff; background: var(--accent-strong); }
 
