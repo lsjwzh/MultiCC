@@ -409,6 +409,46 @@ test('Air task-first console, management views, roles, configuration, artifacts 
       await page.evaluate(`(()=>{const i=document.getElementById('quick-task-input');i.value='';i.dispatchEvent(new Event('input',{bubbles:true}))})()`);
     }
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1366, height: 900, deviceScaleFactor: 1, mobile: false });
+    // 侧栏那颗「＋ 新任务」开的不是另一张表单，是把这**同一个**输入框模块搬进
+    // #quick-task-dialog（air.js 的 openNewTaskComposer）。全站只有一份
+    // #quick-task-form —— 下面那次创建仍然由它发出，所以这里顺带锁住了「搬到
+    // 弹窗里也还是它在干活」，而不是先搬一份副本再让副本去建任务。
+    assert.equal(await page.evaluate(`document.getElementById('new-task-dialog')===null && document.getElementById('new-task-form')===null`), true, '旧的自建表单整块删掉了');
+    assert.equal(await page.evaluate(`document.getElementById('empty').contains(document.getElementById('quick-task-form'))`), true, '没开弹窗时它就在目录首页原位');
+    await page.evaluate(`document.getElementById('create').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('quick-task-dialog').open===true`));
+    assert.equal(await page.evaluate(`document.getElementById('quick-task-form').parentElement.id`), 'quick-task-slot');
+    assert.equal(await page.evaluate(`document.querySelectorAll('#quick-task-form').length`), 1, '搬走就是搬走，不在原地留第二份');
+    assert.equal(await page.evaluate(`document.getElementById('empty').contains(document.getElementById('quick-task-form'))`), false);
+    assert.equal(await page.evaluate(`document.getElementById('quick-task-dialog-directory').textContent`), '/projects/multicc', '弹窗只说建在哪个目录上');
+    assert.equal(await page.evaluate(`document.getElementById('quick-ai-pill').closest('.mc-composer')===document.getElementById('quick-task-form')`), true, '三颗胶囊跟着一起搬');
+    // 搬动的是同一个节点，不是重新造一个：上面挑好的线路和角色必须原样还在。
+    assert.equal(await page.evaluate(`document.getElementById('quick-ai-pill').textContent`), 'codex · Backup Responses · gpt-5.6-sol');
+    assert.equal(await page.evaluate(`document.getElementById('quick-role-pill').textContent`), '1 个角色');
+    assert.equal(await page.evaluate(`document.activeElement===document.getElementById('quick-task-input')`), true, '弹窗就是让人写字的，光标直接落下');
+    screenshots.push(await page.screenshot('new-task-dialog-desktop'));
+    await page.evaluate(`document.getElementById('quick-task-dialog-close').click()`);
+    assert.equal(await page.evaluate(`document.getElementById('quick-task-dialog').open`), false);
+    // 搬回原位那一步挂在 `close` 事件上，而 close 是**排队**跑的任务 —— 还是那个
+    // 任务源：这个后台 target 不产帧就不轮到它（见本文件开头）。抓一帧，它才跑，
+    // 所以这里等的是「搬回去了」这件事本身。
+    screenshots.push(await page.screenshot('new-task-dialog-closed'));
+    assert.ok(await page.waitFor(`document.getElementById('empty').contains(document.getElementById('quick-task-form'))`));
+    assert.equal(await page.evaluate(`document.querySelectorAll('#quick-task-form').length`), 1, '回原位也只有一份');
+    // 手机上：平时是一条细杠，弹窗里必须是整张（那个弹窗存在的理由就是让人写字），
+    // 关掉再收回细杠 —— 一次「算了」不该把半屏的卡片留在目录首页上。
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 900, deviceScaleFactor: 1, mobile: true });
+    await page.screenshot('new-task-dialog-mobile-probe');
+    assert.ok(await page.waitFor(`document.getElementById('quick-task-form').classList.contains('is-folded')`));
+    await page.evaluate(`document.getElementById('create').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('quick-task-dialog').open===true`));
+    assert.equal(await page.evaluate(`document.getElementById('quick-task-form').classList.contains('is-folded')`), false, '弹窗里是整张，不是一条细杠');
+    screenshots.push(await page.screenshot('new-task-dialog-mobile'));
+    await page.evaluate(`document.getElementById('quick-task-dialog-close').click()`);
+    // 折回去同样挂在 close 事件上，同样要一帧（上面那条）。
+    screenshots.push(await page.screenshot('new-task-dialog-mobile-closed'));
+    assert.ok(await page.waitFor(`document.getElementById('quick-task-form').classList.contains('is-folded')`), '关掉就收回那条细杠');
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 1366, height: 900, deviceScaleFactor: 1, mobile: false });
     await page.evaluate(`document.getElementById('quick-task-input').value='从目录首页创建任务';document.getElementById('quick-task-goal').checked=true;document.getElementById('quick-task-form').requestSubmit()`);
     assert.ok(await page.waitFor(`location.search.includes('task=tsk_new')`));
     assert.equal(quickDispatches.length, 1);
