@@ -116,6 +116,7 @@ function createTaskShellHost(deps) {
         return { ok: true, baseline: { commit: git.stdout.trim(), branch: record.branch, baseBranch: dir.baseBranch, worktreePath: record.worktreePath } };
       },
       indexTask: task => deps.getTaskBoard().registerShellTask(task),
+      taskGraphContext: deps.taskGraphContext,
       send: (...args) => deps.deliver(...args),
       cancel: (id, turnId) => {
         if (currentTurn(id) !== turnId) throw failure('stale_control');
@@ -253,6 +254,7 @@ function createTaskShellHost(deps) {
     },
     listTasks: () => getRuntime().listTasks(),
     taskGraphData: () => getRuntime().taskGraphData(),
+    getSnapshot: id => getRuntime().getSnapshot(id),
     artifactTaskId: id => getRuntime().owns(id)?.id || deps.records.get(id)?.taskBoundTaskId || null,
     stateTarget: id => getRuntime().stateTarget(id), stateSources: id => getRuntime().stateSources(id),
     purgeTasks: ids => getRuntime().purgeTasks(ids),
