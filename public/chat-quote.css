@@ -1,0 +1,35 @@
+/* 引用按钮的样式（气泡右上角那枚 "❝"）。
+ *
+ * 从 chat.html 的 <style> 里搬出来的：那个内联块已经贴着 3000 行的源码预算，
+ * 而这一组规则本来就是自成一体的（和 chat-quote.js 同域：它插按钮，这里给按钮
+ * 上色）。行为、选择器和值一字未改 —— 只是换了个文件，好在 chat.html 里腾出
+ * 空间继续加功能。
+ *
+ * 依赖 --chat-line / --chat-soft / --chat-muted / --chat-warning 这几个色调
+ * token（chat-air.css 等外链样式表定义），所以由 chat.html 在那些之后加载。
+ */
+
+/* Quote button — sits just inside the delete button on the same corner, so
+   "act on this message" reads as one cluster and the fork stays alone on
+   the opposite side. */
+.msg-quote {
+  position: absolute;
+  top: -7px;
+  right: 17px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1px solid var(--chat-line, #30363d);
+  background: var(--chat-soft, #21262d);
+  color: var(--chat-muted, #8b949e);
+  font-size: 11px;
+  line-height: 1;
+  padding: 0;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .15s;
+  z-index: 2;
+}
+.msg:hover .msg-quote, .msg-quote:focus { opacity: 1; }
+.msg-quote:hover { color: var(--chat-warning, #d29922); border-color: var(--chat-warning, #d29922); }
+@media (hover: none) { .msg-quote { opacity: .4; } }
