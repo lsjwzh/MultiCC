@@ -509,8 +509,27 @@ class _StatTile extends StatelessWidget {
   );
 }
 
+/// 统一输入框模块的提交回调。目录首页那一片和承载它的弹层
+/// （`air_new_task_sheet.dart`）共用这一份签名，两处不必各写一遍参数表。
+///
+/// 返回「这一份草稿确实整条交出去了吗」：输入区靠它决定清不清空、角色要不要跟着
+/// 清。弹层那一层读的是同一个值，含义见那边的说明。
+typedef AirComposerSubmit =
+    Future<bool> Function({
+      required String text,
+      required String cli,
+      required AirTaskRuntime runtime,
+      required List<AirRoleBinding> roles,
+      required bool goal,
+      int? goalRounds,
+      int? goalBudget,
+    });
+
 /// 目录空态里的「描述任务 → 创建并执行」。跟 Web `#quick-task-form` 一样：这段
 /// 文字既是任务名也是要执行的第一条消息，所以建完就直接进去，不再问一遍。
+///
+/// 全站只有这一个模块：侧栏那颗「＋ 新任务」开的弹层装的也是它
+/// （`air_new_task_sheet.dart`），不是第二份简易表单。
 class AirQuickComposer extends StatefulWidget {
   const AirQuickComposer({
     super.key,
@@ -520,6 +539,7 @@ class AirQuickComposer extends StatefulWidget {
     required this.onSubmit,
     this.service,
     this.httpClient,
+    this.autofocus = false,
   });
 
   /// 角色库（`/api/agent-presets`）要走服务地址和令牌，角色编辑器需要它。
@@ -532,22 +552,18 @@ class AirQuickComposer extends StatefulWidget {
   /// 测试拿它桩掉整条线。
   final http.Client? httpClient;
 
+  /// 弹层里那一份打开就要能写字（侧栏「＋ 新任务」是「点开就写」的意思），所以
+  /// 那边传 true；目录首页常驻这一片不抢焦点 —— 页面一进来就弹键盘会顶掉滚动
+  /// 位置，而它本来就在最上面，够不着才需要打字。
+  final bool autofocus;
+
   /// 返回「这一份草稿确实建出去了吗」。建成了才清空输入框和角色 —— 失败时留着，
   /// 重试就是原样再点一次（同 Web Air 只在成功后清）。
   ///
   /// [text] 是**最终正文**：附件路径已经按 Web 的写法拼在末尾（`\n\n附件：…`）。
   /// [goalRounds] / [goalBudget] 只在 [goal] 为真时才有值（Web 的
   /// `goalLimitsFromForm`：0 和空都算「不限」）。
-  final Future<bool> Function({
-    required String text,
-    required String cli,
-    required AirTaskRuntime runtime,
-    required List<AirRoleBinding> roles,
-    required bool goal,
-    int? goalRounds,
-    int? goalBudget,
-  })
-  onSubmit;
+  final AirComposerSubmit onSubmit;
 
   @override
   State<AirQuickComposer> createState() => _AirQuickComposerState();
@@ -788,6 +804,7 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
           TextField(
             key: const ValueKey('air-quick-input'),
             controller: _controller,
+            autofocus: widget.autofocus,
             maxLines: 4,
             minLines: 3,
             maxLength: 32000,

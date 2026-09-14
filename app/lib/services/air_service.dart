@@ -512,10 +512,15 @@ class AirService {
   /// 强度）。它必须跟着创建一起写下去 —— 任务建好之后再补，第一条消息已经按
   /// 默认线路发出去了。空字段不发，交给服务端用目录默认值填。
   ///
-  /// [model] / [rolePrompt] 是「新任务」对话框那两个可选字段（Web
-  /// `air.js:1584-1585` 的 `if (!values.model) delete values.model`）。角色说明
-  /// 走的是任务上的 `rolePrompt`，不是 [AirRoleBinding] 那套具名绑定 —— 那边说的
-  /// 是「下一条消息用哪个角色」，这里说的是「这个任务本身的角色」。
+  /// [model] / [rolePrompt] 是服务端建任务时认的两个可选字段（Web 那句
+  /// `if (!values.model) delete values.model`），空的不发 —— 传空串会把目录的
+  /// 默认模型顶成「空模型」，而不是「跟随默认」。角色说明走的是任务上的
+  /// `rolePrompt`，不是 [AirRoleBinding] 那套具名绑定 —— 那边说的是「下一条消息
+  /// 用哪个角色」，这里说的是「这个任务本身的角色」。
+  ///
+  /// 删除「新任务」那张简易表单之后，界面上已经没有入口直接传这两个了（模型跟
+  /// [runtime] 一起走，角色走 [AirRoleBinding]）；留着是因为服务端这一对字段还在，
+  /// 少一层只能靠拼 JSON 才够得着的接口。
   Future<String> createTask({
     required String dirId,
     required String title,

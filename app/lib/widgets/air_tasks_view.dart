@@ -19,7 +19,7 @@ import '../theme.dart';
 import 'air/air_console.dart';
 import 'air/air_destinations.dart';
 import 'air/air_fleet_sharing.dart';
-import 'air/air_new_task_dialog.dart';
+import 'air/air_new_task_sheet.dart';
 import 'air/air_ops.dart';
 import 'air/air_ops_store.dart';
 import 'air/air_palette.dart';
@@ -85,6 +85,12 @@ class _AirTasksViewState extends State<AirTasksView>
   AirLocalStore? _store;
   AirSnapshot? _data;
   AirCreateAttempt? _attempt;
+  /// 上一次 [_createFromComposer] 交出去的那份草稿有没有归属 —— 整条链路成了，
+  /// 或者任务建出来了只是第一条消息没确认送达，两种都算「交出去了」。承载它的弹层
+  /// （侧栏那颗「＋ 新任务」）靠它决定收不收：这两种情况都不该再把那一层留在屏幕上
+  /// （同 Web 的 closeNewTaskComposer，两条路径都关）。真是一个任务都没建起来时它是
+  /// false，弹层留着、草稿还在输入框里，重试就是原样再点一次。
+  bool _lastCreateHandedOff = false;
   String? _directoryId;
   String _error = '';
   bool _loading = false, _opening = false, _submitting = false, _foreground = true;
@@ -331,6 +337,7 @@ class _AirTasksViewState extends State<AirTasksView>
       _attempt,
     );
     final attempt = _attempt!;
+    _lastCreateHandedOff = false;
     setState(() {
       _submitting = true;
       _error = '';
@@ -368,6 +375,9 @@ class _AirTasksViewState extends State<AirTasksView>
       await _refresh();
       if (!mounted) return false;
       setState(() => _submitting = false);
+      // 整条链路都成了 —— 草稿交出去了。哪怕快照还没反应出这个新任务（服务端有
+      // 延迟），也算交出去了：这一步说的是草稿，不是快照。
+      _lastCreateHandedOff = true;
       final task = _data?.taskOf(created);
       if (task != null) await _open(task);
       return true;
@@ -383,6 +393,8 @@ class _AirTasksViewState extends State<AirTasksView>
           _submitting = false;
           _error = '任务已创建，但第一条消息未确认送达：$error';
         });
+        // 任务建出来了，只是第一条消息没送到 —— 这一份同样已经有归属了。
+        _lastCreateHandedOff = true;
         final task = _data?.taskOf(taskId);
         if (task != null) await _open(task);
       } else {
@@ -398,31 +410,51 @@ class _AirTasksViewState extends State<AirTasksView>
     }
   }
 
-  /// 侧栏那颗「＋ 新任务」：开 Web 的 `#new-task-dialog`，先给任务一个名字和
-  /// 一条明确的线路，再进去发第一条消息。
+  /// 侧栏那颗「＋ 新任务」：开 Web 的 `#quick-task-dialog` —— 里面装的就是目录
+  /// 首页那一个统一输入框模块，AI 配置（CLI / 线路 / 模型）和角色都在同一套
+  /// 胶囊里，写完一段话就创建并执行。
   ///
-  /// 和输入区那条路（[_createFromComposer]）的区别就在这里：输入区拿那段话当
-  /// 标题、建完立刻把同一段话当作第一条消息发出去；对话框只建壳，不替你说话。
+  /// 和输入区那条路是同一条流水线（[_createFromComposer]）：那段话既是任务名也是
+  /// 第一条消息，建完直接进去。唯一的区别在写法 —— 手上开着别的任务时，它不必先
+  /// 把你送回目录首页。
   Future<void> _newTask() async {
     final directory = _data?.directoryOf(_directoryId);
     if (directory == null) {
       setState(() => _error = '请先选一个工作目录。');
       return;
     }
-    final created = await showAirNewTaskDialog(
+    await showAirNewTaskSheet(
       context,
-      directory: directory,
-      clis: _data?.clis ?? const [],
+      directoryPath: directory.path,
       settings: widget.settings,
       service: _service,
+      httpClient: widget.httpClient,
+      clis: _data?.clis ?? const [],
+      onSubmit: ({
+        required String text,
+        required String cli,
+        required AirTaskRuntime runtime,
+        required List<AirRoleBinding> roles,
+        required bool goal,
+        int? goalRounds,
+        int? goalBudget,
+      }) async {
+        await _createFromComposer(
+          text: text,
+          cli: cli,
+          runtime: runtime,
+          roles: roles,
+          goal: goal,
+          goalRounds: goalRounds,
+          goalBudget: goalBudget,
+        );
+        // 这一层收不收，看的是**草稿有没有归属**，不是「人有没有跳进那个任务」：
+        // 整条链路成了、或任务建出来了只是第一条消息没送到，两种都该收掉（同 Web
+        // 的 closeNewTaskComposer，两条路径都关）。建都没建起来时留着它 —— 草稿
+        // 还在输入框里，重试就是原样再点一次。
+        return _lastCreateHandedOff;
+      },
     );
-    if (created == null || !mounted) return;
-    await _refresh();
-    if (!mounted) return;
-    final task = _data?.taskOf(created);
-    // 快照还没反映出这个新任务（服务端有延迟）也不算白建：留在当前目录，下一次
-    // 轮询会把它列出来。
-    if (task != null) await _open(task);
   }
 
   /// 目录卡片 ⋯ 菜单选了一件。四件事各自成一段 —— 它们从同一张菜单来，但
@@ -1185,23 +1217,8 @@ class _AirTasksViewState extends State<AirTasksView>
               httpClient: widget.httpClient,
               clis: data?.clis ?? const [],
               busy: _submitting,
-              onSubmit: ({
-                required String text,
-                required String cli,
-                required AirTaskRuntime runtime,
-                required List<AirRoleBinding> roles,
-                required bool goal,
-                int? goalRounds,
-                int? goalBudget,
-              }) => _createFromComposer(
-                text: text,
-                cli: cli,
-                runtime: runtime,
-                roles: roles,
-                goal: goal,
-                goalRounds: goalRounds,
-                goalBudget: goalBudget,
-              ),
+              // 参数表就是 [AirComposerSubmit] 那一份，不必再抄一遍转发。
+              onSubmit: _createFromComposer,
             ),
           ),
           const SizedBox(height: 24),

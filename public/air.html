@@ -50,6 +50,8 @@
         <div><span class="caption">任务</span><strong id="task-list-title">最近任务</strong></div>
         <span id="task-count"></span>
       </div>
+      <!-- 开的不是另一张表单，是把 #quick-task-form 搬进 #quick-task-dialog：
+           同一套输入框、同样的 AI 配置与角色胶囊，写完就直接创建并执行。 -->
       <button id="create" class="sidebar-create" type="button">＋ 新任务</button>
       <nav id="tasks" aria-label="最近任务列表"></nav>
     </section>
@@ -170,6 +172,10 @@
                  完整的那份永远在控制台（air.js 的 recentRowLimit）。 -->
             <button id="directory-task-more" type="button" hidden></button>
           </section>
+          <!-- 全站唯一的那一个输入框模块。它在目录首页是常驻的，侧栏那颗
+               「＋ 新任务」会把它临时搬进 #quick-task-dialog（air.js 的
+               openNewTaskComposer），关掉再搬回来 —— 两处不是两份实现，是同
+               一个节点在两个位置。 -->
           <form id="quick-task-form" class="mc-composer mc-composer--panel">
             <!-- The same composer module the task chat uses (composer.css), with
                  the same two runtime pills on its top band. Each pill opens the
@@ -256,16 +262,23 @@
     </footer>
   </div>
 
-  <dialog id="new-task-dialog">
-    <form id="new-task-form">
-      <div class="section-heading"><div><span class="eyebrow">NEW TASK</span><h2>新任务</h2></div><button type="button" id="close-dialog" aria-label="关闭">×</button></div>
-      <p id="create-directory"></p>
-      <label>任务名称<input name="title" required maxlength="120" placeholder="例如：完善登录页面"></label>
-      <div class="form-row"><label>AI 工具<select name="cli" id="cli"></select></label><label>模型（可选）<input name="model" maxlength="100" placeholder="跟随默认配置"></label></div>
-      <details><summary>角色上下文（可选）</summary><label>本任务的角色说明<textarea name="rolePrompt" rows="4" maxlength="40000" placeholder="例如：以移动端体验设计师的视角检查交互"></textarea></label></details>
-      <p id="create-error" role="alert"></p>
-      <button id="create-submit" class="primary" type="submit">创建任务</button>
-    </form>
+  <!-- 侧栏那颗「＋ 新任务」的落点。这里本来是一张自己的表单（任务名称 / AI 工具
+       下拉 / 模型自由输入 / 角色说明文本框），也就等于把「怎么配一个任务」写了两遍：
+       真正的配置界面是下面 #empty 里那个统一输入框模块（composer.css + AI 配置胶囊
+       + 角色胶囊），这张表单只能自己再拼一套更弱的（模型要手打、角色只能写死一段）。
+
+       所以这个弹窗不带表单，它是个**空的槽位**：air.js 打开时把 #quick-task-form
+       那个唯一的节点搬进来，关掉再搬回去。同一份 DOM、同一套胶囊和状态，全站只有
+       一个输入框模块，也就没有什么「统一」可言了 —— 它本来就是那一个。 -->
+  <dialog id="quick-task-dialog" class="quick-task-dialog" aria-label="新任务">
+    <div class="quick-task-dialog-body">
+      <div class="section-heading">
+        <div><span class="eyebrow">NEW TASK</span><h2>新任务</h2></div>
+        <button type="button" id="quick-task-dialog-close" aria-label="关闭">×</button>
+      </div>
+      <p id="quick-task-dialog-directory"></p>
+      <div id="quick-task-slot"></div>
+    </div>
   </dialog>
 
   <dialog id="schedule-dialog" class="schedule-dialog">
