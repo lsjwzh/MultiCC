@@ -114,6 +114,20 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     // the host page renders them there (air.js → renderComposerControls), so
     // these assertions read the frame, not the task header.
     const composerPill = id => `${frame}.getElementById('${id}')`;
+    // The conversation's pills and the new-task form's pills are one control in
+    // two places, so the guard compares what the two actually render — radius,
+    // padding, font, fill, edge, and the ◆ prefix — rather than just checking a
+    // class name is present. air.js builds the conversation's pair at runtime
+    // and once built them without `mc-composer__pill`, which dropped them to the
+    // browser's default button: square, unpadded, and missing the ◆, so the band
+    // read as misaligned every time it appeared.
+    const pillSkin = `(()=>{const d=${frame};
+      const skin=(el,w)=>{const s=w.getComputedStyle(el);
+        return {cls:el.className,radius:s.borderTopLeftRadius,pad:s.padding,font:s.fontSize,
+          bg:s.backgroundColor,edge:s.borderTopWidth+' '+s.borderTopColor,
+          mark:w.getComputedStyle(el,'::before').content};};
+      return {chat:skin(d.getElementById('air-ai-pill'),d.defaultView),form:skin(document.getElementById('quick-ai-pill'),window),
+        chatRole:skin(d.getElementById('air-role-pill'),d.defaultView),formRole:skin(document.getElementById('quick-role-pill'),window)};})()`;
     // The conversation is a frame of its own, so the header ↻ is a partial
     // reload of this page: the host keeps its state and the frame boots again
     // (air.js → reloadConversation). location.reload() is asynchronous, so the
@@ -134,6 +148,13 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.ok(await page.waitFor(`${frame}.getElementById('worktree-force-sync-btn')`), JSON.stringify({ requests: page.requests.filter(r=>/merge-status/.test(r.path)), state: await page.evaluate(`({url:${frame}.URL,errors:${frame}.defaultView.__errors,bar:${frame}.getElementById('worktree-bar').outerHTML})`) }));
     assert.equal(await page.evaluate(`${frame}.getElementById('worktree-sync-btn')!==null && ${frame}.getElementById('worktree-bar').offsetHeight>0`), true);
     assert.equal(await page.evaluate(`['header','worktree-bar','aux-classify-bar'].every(id=>${frame}.getElementById(id).parentElement.id==='chat-context-bar')`), true);
+    const skin = await page.evaluate(pillSkin);
+    const skinOf = p => [p.radius, p.pad, p.font, p.bg, p.edge, p.mark];
+    assert.deepEqual(skinOf(skin.chat), skinOf(skin.form), `对话页 AI 胶囊与新任务表单不是同一颗：${JSON.stringify(skin)}`);
+    assert.deepEqual(skinOf(skin.chatRole), skinOf(skin.formRole), `对话页角色胶囊与新任务表单不是同一颗：${JSON.stringify(skin)}`);
+    assert.equal(skin.chat.mark, '"◆"', `AI 胶囊丢了 ◆：${JSON.stringify(skin.chat)}`);
+    assert.equal(skin.chat.cls.trim(), 'mc-composer__pill mc-composer__pill--ai', JSON.stringify(skin.chat));
+    assert.equal(skin.chatRole.cls.trim(), 'mc-composer__pill mc-composer__pill--role', JSON.stringify(skin.chatRole));
     assert.equal(await page.evaluate(`document.getElementById('delivery-card').closest('#task-details')!==null && document.getElementById('delivery-card').offsetHeight===0`), true, 'delivery details take no space above chat');
     assert.equal(await page.evaluate(`document.getElementById('conversation').getBoundingClientRect().top===document.getElementById('task-header').getBoundingClientRect().bottom`), true, 'two adjacent bands, no intervening delivery card');
     await page.evaluate(`document.getElementById('task-state').click()`);
