@@ -1306,9 +1306,14 @@
     row.id = 'air-composer-meta';
     row.className = 'mc-composer__aux';
     row.hidden = true;
-    for (const id of ['air-ai-pill', 'air-role-pill']) {
+    // The pills wear the composer module's skin, same as the new-task form's
+    // (air.html). Without `mc-composer__pill` they fall back to the browser's
+    // default button — square, unspaced, and missing the ◆ that marks the AI
+    // route — which is what made the band look misaligned whenever it appeared.
+    for (const [id, variant] of [['air-ai-pill', 'mc-composer__pill--ai'], ['air-role-pill', 'mc-composer__pill--role']]) {
       const pill = doc.createElement('button');
       pill.id = id;
+      pill.className = `mc-composer__pill ${variant}`;
       pill.type = 'button';
       pill.hidden = true;
       row.append(pill);
