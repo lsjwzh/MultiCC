@@ -34,6 +34,7 @@
       type: stringValue(src.type, 80),
       scope: stringValue(src.scope, 80),
       sessionId: src.sessionId == null ? null : stringValue(src.sessionId, 500),
+      sub: src.sub == null ? null : stringValue(src.sub, 500),
       dirId: stringValue(src.dirId, 500),
       size: numberValue(src.size, 0, Number.MAX_SAFE_INTEGER),
       path: src.path == null ? null : stringValue(src.path, 4000),
@@ -101,6 +102,7 @@
     const src = group && typeof group === 'object' ? group : {};
     return {
       rel: stringValue(src.rel, 2000),
+      dir: stringValue(src.dir, 4000),
       tokens: numberValue(src.tokens, 0, Number.MAX_SAFE_INTEGER),
       files: normalizeFiles(src.files, budget),
     };
@@ -118,14 +120,50 @@
       files: group.files,
     };
   }
+  function normalizeTreeTask(task, budget) {
+    const src = task && typeof task === 'object' ? task : {};
+    const group = normalizeTreeGroup(src, budget);
+    return {
+      taskId: stringValue(src.taskId, 500),
+      dir: stringValue(src.dir, 4000),
+      rel: group.rel,
+      tokens: group.tokens,
+      files: group.files,
+    };
+  }
+  function normalizeTreeSkill(skill, budget) {
+    const src = skill && typeof skill === 'object' ? skill : {};
+    const group = normalizeTreeGroup(src, budget);
+    return {
+      skill: stringValue(src.skill, 500),
+      dir: stringValue(src.dir, 4000),
+      rel: group.rel,
+      tokens: group.tokens,
+      files: group.files,
+    };
+  }
+  function normalizeTreeCli(cli, budget) {
+    const src = cli && typeof cli === 'object' ? cli : {};
+    const group = normalizeTreeGroup(src, budget);
+    return {
+      cli: stringValue(src.cli, 80),
+      dir: stringValue(src.dir, 4000),
+      rel: group.rel,
+      tokens: group.tokens,
+      files: group.files,
+    };
+  }
   function normalizeTreeProject(project, budget) {
     const src = project && typeof project === 'object' ? project : {};
     return {
       dirId: stringValue(src.dirId, 500),
       name: stringValue(src.name, 1000),
+      dirPath: src.dirPath == null ? null : stringValue(src.dirPath, 4000),
       tokens: numberValue(src.tokens, 0, Number.MAX_SAFE_INTEGER),
       fileCount: numberValue(src.fileCount, 0, MAX_TREE_FILES),
       shared: normalizeTreeGroup(src.shared, budget),
+      skills: arrayValue(src.skills, 500).map(skill => normalizeTreeSkill(skill, budget)),
+      tasks: arrayValue(src.tasks, 2000).map(task => normalizeTreeTask(task, budget)),
       sessions: arrayValue(src.sessions, 2000).map(session => normalizeTreeSession(session, budget)),
     };
   }
@@ -134,6 +172,8 @@
     const meta = src.meta && typeof src.meta === 'object' ? src.meta : {};
     const budget = { remaining: MAX_TREE_FILES };
     return {
+      machine: normalizeTreeGroup(src.machine, budget),
+      clis: arrayValue(src.clis, 200).map(cli => normalizeTreeCli(cli, budget)),
       projects: arrayValue(src.projects, 1000).map(project => normalizeTreeProject(project, budget)).filter(project => project.dirId),
       meta: {
         projectCount: numberValue(meta.projectCount, 0, 1000),
