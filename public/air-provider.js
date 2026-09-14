@@ -303,12 +303,15 @@
     toolbar.append(tabs, importButton);
     const cards = make('div', null, 'air-provider-cards'); cards.id = 'air-provider-cards';
     const advanced = make('section', null, 'air-provider-advanced'); advanced.id = 'air-provider-advanced'; advanced.hidden = !advancedOpen;
-    const note = make('div', null, 'air-migration-note'); note.append(make('strong', '高级连接'), make('span', '官方多账号、借道分享、ZCode / Kimi 原生登录与完整用量统计暂沿用原控制器。'));
+    const note = make('div', null, 'air-migration-note'); note.append(make('strong', '高级连接'), make('span', '官方多账号、借道分享、ZCode / Kimi 原生登录暂沿用原控制器。'));
     const frame = make('iframe', null, 'air-legacy-frame'); frame.title = 'Provider 高级设置'; frame.dataset.src = '/manage.html?view=provider&embed=air';
     advanced.append(note, frame);
     page.append(intro, defaults, toolbar, cards, advanced);
     el('admin-content').replaceChildren(page);
     setProtocol(activeProtocol);
+    // 用量统计挂在线路下面：它说的是「这台机器的 CLI 到底烧了多少」，和上面
+    // 那些线路卡是两回事，但同属 Provider 页（旧页里也是 Provider 的一个子页）。
+    void root.MultiCCAirUsage?.render(page, context);
   }
 
   async function load() {
@@ -344,5 +347,11 @@
     if (advancedOpen) advanced.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
-  root.MultiCCAirProvider = Object.freeze({ render, refresh: load, openEditor, toggleAdvanced });
+  // 顶栏的「刷新」两处一起刷：线路和用量都会变，只刷一半会让人以为没生效。
+  function refresh() {
+    void load();
+    return root.MultiCCAirUsage?.reload();
+  }
+
+  root.MultiCCAirProvider = Object.freeze({ render, refresh, openEditor, toggleAdvanced });
 })(typeof window !== 'undefined' ? window : null);
