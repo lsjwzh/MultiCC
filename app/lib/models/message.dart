@@ -144,6 +144,28 @@ class ChatMessage {
   /// persisted and means "stopped, will never continue".
   bool isPartial;
 
+  /// Which task this message came from, plus the turn/execution that produced
+  /// it. A task shell shows one timeline built out of several executions, so a
+  /// message's meaning depends on its origin — the same sentence from 「修登录页」
+  /// and from 「迁移数据库」 is two different pieces of evidence. Quoting carries
+  /// this along (see services/message_quote.dart).
+  ///
+  /// Who the source session and message are is not always known at render time:
+  /// the server decides a turn's task attribution when the turn **ends**, so
+  /// these are filled by the `chat_history_annotation` event after the bubble is
+  /// already on screen (web does the same via chat-history-view's
+  /// stampProvenance / annotateAttribution).
+  String? taskId;
+  String? taskName;
+  String? turnId;
+  String? auxRunId;
+
+  /// Source session + message id for a shell bubble. A shell bubble's [id] is
+  /// the composite `<sourceSessionId>:<sourceMessageId>`; both halves are kept
+  /// so the quote can name the message the way the task-context reader does.
+  String? sourceSessionId;
+  String? sourceMessageId;
+
   ChatMessage({
     required this.role,
     this.content = '',
@@ -157,6 +179,12 @@ class ChatMessage {
     this.id,
     this.durationMs,
     this.clientMsgId,
+    this.taskId,
+    this.taskName,
+    this.turnId,
+    this.auxRunId,
+    this.sourceSessionId,
+    this.sourceMessageId,
   }) : toolCalls = toolCalls ?? [],
        timestamp = timestamp ?? DateTime.now();
 
@@ -182,7 +210,38 @@ class ChatMessage {
       durationMs = (json['durationMs'] as num?)?.toInt(),
       clientMsgId = (json['clientMsgId']?.toString().isNotEmpty ?? false)
           ? json['clientMsgId'].toString()
-          : null;
+          : null,
+      taskId = _nonEmpty(json['taskId']),
+      taskName = _nonEmpty(json['taskName']),
+      turnId = _nonEmpty(json['turnId']),
+      auxRunId = _nonEmpty(json['auxRunId']),
+      sourceSessionId = _nonEmpty(json['sourceSessionId']),
+      sourceMessageId = _nonEmpty(json['sourceMessageId']);
+
+  /// Absent and empty mean the same thing to every reader of these fields:
+  /// unknown. Normalising here keeps "no task" a single representation.
+  static String? _nonEmpty(dynamic value) {
+    final text = value?.toString();
+    return (text == null || text.isEmpty) ? null : text;
+  }
+
+  /// Apply a `chat_history_annotation` record in place — the fields the server
+  /// only knows once the turn has ended. Absent keys leave the current value
+  /// alone: an annotation about a task must not wipe a known source session.
+  void applyAttribution(Map<String, dynamic> record) {
+    taskId = _nonEmpty(record['taskId']) ?? taskId;
+    taskName = _nonEmpty(record['taskName']) ?? taskName;
+    turnId = _nonEmpty(record['turnId']) ?? turnId;
+    auxRunId = _nonEmpty(record['auxRunId']) ?? auxRunId;
+    // The two source halves are **client-derived addressing hints**, not facts
+    // from the server: ChatShellView composites the event with whichever
+    // execution session is currently active, and a message can well belong to an
+    // earlier one (that is precisely why the fallback match exists). So they may
+    // only fill a hole — overwriting a known session would make the quote's
+    // `sessionId:messageId` handle resolve to a different conversation.
+    sourceSessionId ??= _nonEmpty(record['sourceSessionId']);
+    sourceMessageId ??= _nonEmpty(record['sourceMessageId']);
+  }
 
   static List<ToolCall> _parseHistoryTools(dynamic tools) {
     if (tools is! List) return [];

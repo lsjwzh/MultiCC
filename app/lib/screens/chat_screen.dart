@@ -17,6 +17,7 @@ import '../services/auto_commit.dart';
 import '../services/chat_debug_log.dart';
 import '../services/chat_service.dart';
 import '../services/manage_service.dart';
+import '../services/message_quote.dart';
 import '../services/scheduled_send_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
@@ -148,6 +149,12 @@ class _ChatViewState extends State<ChatView> {
   /// 已经写好的那句话 —— 面板本身不碰输入框，只拿着这个回调问一次。
   final ValueNotifier<ScheduledSendDraftReader?> _scheduleDraftSink =
       ValueNotifier<ScheduledSendDraftReader?>(null);
+
+  /// 引用消息用的通道：气泡那层（message_bubble 的长按弹层）需要往输入框里塞
+  /// 东西，输入框却在这个 State 里。`late final` 是为了拿到一个身份稳定的闭包
+  /// —— 登记与摘除靠它比对，见 [_syncQuoteInserter]。
+  late final void Function(String) _quoteInserter = _insertQuote;
+  ChatProvider? _quoteInserterHost;
 
   // ── Deep-link focus (task-board "jump to message") ───────────────────────
   // Resolved at most once, after the initial history page is applied. The fade
@@ -461,6 +468,11 @@ class _ChatViewState extends State<ChatView> {
   @override
   void dispose() {
     widget.settings.chatWidth.removeListener(_onChatWidthChanged);
+    // 摘掉引用通道：provider 比这个页面活得久，留着就是个能打到已销毁 State 的
+    // 回调。只在还挂着我们这一个时才清 —— 换会话后新页面已经登记过自己的了。
+    if (_quoteInserterHost?.quoteInserter == _quoteInserter) {
+      _quoteInserterHost!.quoteInserter = null;
+    }
     _scrollCtrl.dispose();
     _composerCtrl.dispose();
     _composerFocus.dispose();
@@ -470,6 +482,36 @@ class _ChatViewState extends State<ChatView> {
     _scheduleDraftSink.dispose();
     _panels.dispose();
     super.dispose();
+  }
+
+  /// 把「插进输入框」这个能力登记给 provider —— 气泡那层就是这么够到输入框的。
+  /// 每次依赖变化都登记一遍是刻意的：换会话会换 provider 实例，通道得跟着走。
+  void _syncQuoteInserter(ChatProvider provider) {
+    if (identical(_quoteInserterHost, provider) &&
+        provider.quoteInserter == _quoteInserter) {
+      return;
+    }
+    if (_quoteInserterHost != null &&
+        !identical(_quoteInserterHost, provider) &&
+        _quoteInserterHost!.quoteInserter == _quoteInserter) {
+      _quoteInserterHost!.quoteInserter = null;
+    }
+    provider.quoteInserter = _quoteInserter;
+    _quoteInserterHost = provider;
+  }
+
+  /// 把引用块插在草稿**上面**，然后聚焦。
+  ///
+  /// 不覆盖草稿：引用是往你已经想说的话里加材料，不是替换它 —— Web 侧同一条
+  /// 规矩。光标停在末尾，接着往下写就行。`text` 的 setter 自己会通知监听者，
+  /// 折叠态（手机上空闲时输入区收成一条胶囊）因此看得到这次变化；随后的
+  /// requestFocus 会把它钉开，引用就看得见了。
+  void _insertQuote(String block) {
+    if (!mounted || block.isEmpty) return;
+    _composerCtrl.text = composerTextWithQuote(_composerCtrl.text, block);
+    _composerCtrl.selection =
+        TextSelection.collapsed(offset: _composerCtrl.text.length);
+    _composerFocus.requestFocus();
   }
 
   /// 定时发送跟着会话走：换会话就换一份 —— 待执行列表、角标条数、幂等键都是
@@ -490,6 +532,7 @@ class _ChatViewState extends State<ChatView> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     final provider = context.watch<ChatProvider>();
+    _syncQuoteInserter(provider);
     // 一轮结束（WS `result` 帧让 turnEndTick 自增）是自动提交唯一的触发点，
     // 所以这一步要排在下面那些「换会话才做」的早退之前。
     _autoCommit.syncTick(
