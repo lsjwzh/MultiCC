@@ -547,8 +547,47 @@ button.admin-stat:hover { transform: translateY(-1px); }
 .provider-alias-row strong { color: #5b7085; font-size: 10px; }
 .provider-alias-row input { min-width: 0; margin: 0; }
 
-.air-migration-note { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; padding: 10px 12px; color: #617991; border: 1px solid #d6e6f5; border-radius: 11px; background: #f1f7fe; font-size: 10px; }
-.air-migration-note strong { flex: 0 0 auto; color: #2071bf; }
+/* 用量统计：这块是只读参考，跟上面的线路表单在视觉上分开一层 —— 面板底色比
+   线路卡浅一点，读者一眼就知道「这不是在配某条线路」。 */
+.air-usage { display: grid; gap: 12px; }
+.air-usage > .eyebrow { padding-left: 2px; }
+.air-usage-card { display: grid; gap: 10px; background: var(--well); }
+.air-usage-card .admin-panel-head { align-items: center; justify-content: space-between; gap: 12px; }
+.air-usage-desc { max-width: 900px; margin: 0; color: var(--faint); font-size: 10px; line-height: 1.6; }
+.air-usage-desc code { padding: 1px 4px; border-radius: 5px; background: var(--blue-soft); color: #2c70ae; font-size: 9px; }
+.air-usage-action { flex: 0 0 auto; min-height: 30px; padding: 4px 11px; color: #55718b; border-color: #d8e4ef; border-radius: 9px; background: #fff; font-size: 10px; }
+.air-usage-action:hover { border-color: #acd0f3; background: var(--blue-soft); color: #176dc1; }
+.air-usage-muted { margin: 0; color: var(--faint); font-size: 11px; }
+.air-usage-error { margin: 0; color: var(--danger); font-size: 11px; }
+.air-usage-tabs { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.air-usage-tabs-label { margin-right: 2px; color: var(--faint); font-size: 10px; }
+.air-usage-tab { min-height: 28px; padding: 4px 10px; color: #617991; border: 1px solid #d8e4ef; border-radius: 9px; background: #fff; font-size: 10px; }
+.air-usage-tab:hover { border-color: #acd0f3; }
+.air-usage-tab.active { color: #176dc1; border-color: #acd0f3; background: var(--blue-soft); font-weight: 620; }
+.air-usage-table { width: 100%; border-collapse: collapse; font-size: 10px; font-variant-numeric: tabular-nums; }
+.air-usage-table th { padding: 4px 8px; color: var(--faint); font-size: 9px; font-weight: 500; text-align: left; }
+.air-usage-table td { padding: 4px 8px; color: var(--muted); }
+.air-usage-table .num { text-align: right; }
+.air-usage-table td.dim { color: var(--faint); }
+.air-usage-table td.official { color: var(--warning); }
+.air-usage-table tbody tr:hover { background: var(--blue-soft); }
+.air-usage-table tfoot tr { border-top: 1px solid var(--line); font-weight: 620; }
+.air-usage-table tfoot td { padding: 6px 8px; color: var(--text); }
+.air-usage-summary { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.6; }
+.air-usage-summary strong { color: var(--text); font-weight: 620; }
+.air-usage-trend { display: grid; gap: 3px; margin-top: 2px; }
+.air-usage-trend-head { margin-bottom: 3px; color: var(--faint); font-size: 9px; }
+.air-usage-trend-row { display: flex; align-items: center; gap: 8px; }
+.air-usage-trend-day { flex: 0 0 42px; color: var(--faint); font-size: 9px; }
+.air-usage-trend-bar { flex: 1; height: 10px; border-radius: 3px; background: var(--bg-soft); overflow: hidden; }
+.air-usage-trend-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, #bcd9f5, #7fb4e8); }
+.air-usage-trend-value { flex: 0 0 62px; text-align: right; color: var(--muted); font-size: 9px; font-variant-numeric: tabular-nums; }
+.air-usage-role-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.air-usage-role-tile { min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
+.air-usage-role-tile small { display: block; color: var(--faint); font-size: 9px; }
+.air-usage-role-tile strong { display: block; margin-top: 4px; color: var(--accent); font-size: 17px; font-weight: 620; letter-spacing: -.2px; }
+
+.air-migration-note { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; padding: 10px 12px; color: #617991; border: 1px solid #d6e6f5; border-radius: 11px; background: #f1f7fe; font-size: 10px; }.air-migration-note strong { flex: 0 0 auto; color: #2071bf; }
 .air-legacy-frame { width: 100%; min-height: 720px; height: calc(100dvh - 240px); border: 1px solid #d8e5f2; border-radius: 16px; background: #f8fbff; box-shadow: 0 10px 32px #35577d0a; }
 .service-dialog { max-width: 620px; padding: 0; background: #fbfdff; }
 .service-dialog form { padding: 24px; }
@@ -850,6 +889,11 @@ body.console-open #console-panel { transform: none; visibility: visible; }
   .air-doc-card { align-items: flex-start; flex-wrap: wrap; }
   .air-doc-actions { width: 100%; padding-left: 46px; flex-wrap: wrap; }
   .air-provider-cards { grid-template-columns: 1fr; }
+  .air-usage-card .admin-panel-head { align-items: flex-start; flex-direction: column; }
+  .air-usage-action { width: 100%; }
+  /* 按模型明细列多，窄屏让它自己横滑，不要把整页撑宽。 */
+  #air-usage-global { overflow-x: auto; }
+  .air-usage-role-grid { grid-template-columns: 1fr 1fr; }
   .air-legacy-frame { min-height: 620px; height: calc(100dvh - 260px); }
   /* 面板几乎占满窄屏，但留一条边让底下的页面还认得出是「盖上来的一层」。 */
   #console-panel { width: calc(100% - 22px); border-radius: 0 18px 18px 0; box-shadow: 8px 0 40px #263f5d24; }
@@ -876,6 +920,7 @@ body.console-open #console-panel { transform: none; visibility: visible; }
   .air-provider-defaults button, #air-provider-import { width: 100%; }
   .air-provider-tabs { width: 100%; }
   .air-provider-card-head { display: grid; }
+  .air-usage-table th, .air-usage-table td { padding: 4px 5px; }
   .air-provider-tags { justify-content: flex-start; }
   .provider-alias-grid { grid-template-columns: 48px minmax(0, 1fr); }
   .provider-alias-grid > :nth-child(3) { grid-column: 2; }
