@@ -4,10 +4,12 @@
 //   ② 侧栏的任务带只装「最近」，完整列表（跨全部目录 + 搜索 + 筛选）搬进控制台；
 //   ③ 运行中的任务和它所在的目录，在侧栏 / 控制台 / 目录页 / 页头都带同一圈彩虹；
 //   ④ ⌘K 一次搜目录和任务两类对象。
-// 这些行为靠 DOM/地址状态判断，不靠像素，唯一量位置的地方（滑入）会先把动画跑完。
+// 这些行为靠 DOM/地址状态判断，唯一量位置的地方（滑入）会先把动画跑完。
+// 例外是③里的「圈真的画出来了吗」—— 那一处必须读像素，理由见 ringEdges。
 const test = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const { withCdpHarness, findChromeBinary } = require('./helpers/cdp-harness');
+const { captureRegion, saturation } = require('./helpers/png-pixels');
 
 // 面板滑动是 300ms 的 CSS 过渡。这个测试页是后台 target，不渲染也就不产生帧：
 // 光等时间，过渡时钟根本不会起步，量到的永远是起点。读一次几何强制样式重算，
@@ -18,6 +20,41 @@ const settle = async page => {
   await page.screenshot('settle');
 };
 const panelLeft = page => page.evaluate(`Math.round(document.getElementById('console-panel').getBoundingClientRect().left)`);
+
+// 「圈在不在」和「圈画出来了没有」是两件事，前者骗过人一次。
+//
+// 元素自己的 inset box-shadow 按绘制顺序落在「自己的背景之上、自己的后代之下」，
+// 所以一个贴在 padding 边的不透明后代就能把圈整条边盖掉 —— 而 class 还在、几何没
+// 变、getComputedStyle 照样报着动画在跑，DOM 里看不出任何异常。要断这件事只能读
+// 像素：从边框里侧向内扫 7 个像素取最饱和的一点（圈带 2px，落在窗口里必被读到），
+// 四条边中点各扫一条。淡底色（白、#eff6ff）的饱和度只有十几，纯色相的圈是 255。
+const ringEdges = async (page, selector) => {
+  const box = await page.evaluate(`(() => {
+    const el = document.querySelector(${JSON.stringify(selector)});
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { l: r.left, t: r.top, r: r.right, b: r.bottom };
+  })()`);
+  assert.ok(box, `${selector} 不在页面上`);
+  // 盒子位置是小数、圈带只有 2px，取整取错 1px 就采到圈外面去了：整块截图往左上
+  // 各让 4px，取样坐标统一减这个原点，误差就只落在窗口宽度里，被「取最大」吃掉。
+  const clipX = Math.floor(box.l) - 4, clipY = Math.floor(box.t) - 4;
+  const shot = await captureRegion(page, { x: clipX, y: clipY, width: Math.ceil(box.r - box.l) + 8, height: Math.ceil(box.b - box.t) + 8 });
+  const px = (fx, fy) => saturation(shot.at(Math.round(fx - clipX), Math.round(fy - clipY)));
+  const inwards = (fx, fy, dx, dy) => {
+    let best = 0;
+    for (let i = 1; i <= 7; i++) best = Math.max(best, px(fx + dx * i, fy + dy * i));
+    return best;
+  };
+  const cx = (box.l + box.r) / 2, cy = (box.t + box.b) / 2;
+  return { top: inwards(cx, box.t, 0, 1), bottom: inwards(cx, box.b, 0, -1), left: inwards(box.l, cy, 1, 0), right: inwards(box.r, cy, -1, 0) };
+};
+// 圈是「在跑」的唯一视觉信号，缺一条边就等于把状态说轻了 —— 四条边一条都不能少。
+const assertRingDrawn = async (page, selector, why) => {
+  const edges = await ringEdges(page, selector);
+  const missing = Object.entries(edges).filter(([, value]) => value < 60).map(([edge]) => edge);
+  assert.deepEqual(missing, [], `${why}：圈缺了这几条边（各边最饱和像素 ${JSON.stringify(edges)}）`);
+};
 
 test('Air console is a cross-directory overlay, the task band shows recents, and running work wears the ring everywhere', async t => {
   if (!findChromeBinary()) return t.skip('Chrome required');
@@ -194,6 +231,14 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
     assert.equal(await page.evaluate(`document.querySelector('#tasks button.ring-running .task-dir').textContent`), 'Gapasea', '侧栏里在跑的那条也带圈');
     assert.equal(await page.evaluate(`document.querySelector('.space-card').classList.contains('ring-running')`), true, '当前目录卡片带圈');
     assert.equal(await page.evaluate(`document.querySelector('#tasks button.ring-running .mc-status-label').textContent`), '执行中');
+    // 页头那行状态是个 22px 高的小胶囊，圈画在上面本来就容易撞：它自己还有一枚
+    // ::after 的「 ›」（「这里能点」的提示）。圈因此走 ::before —— 箭头得原地不动。
+    assert.ok((await page.evaluate(`getComputedStyle(document.getElementById('task-state'),'::after').content`)).includes('›'),
+      '状态行的「 ›」还在（圈改到 ::before 之后没把它顶掉）');
+    await page.screenshot('06-ring-task-state');
+    await assertRingDrawn(page, '#task-state', '页头状态行');
+    await assertRingDrawn(page, '.space-card', '当前目录卡片（任务视图）');
+    await assertRingDrawn(page, '#tasks button.ring-running', '侧栏里在跑的那条任务行');
     // 目录库那一页（控制台 › 浏览工作目录）也认同一个圈。
     await page.evaluate(`document.getElementById('overview').click()`);
     assert.ok(await page.waitFor(`document.body.classList.contains('console-open')`));
@@ -202,6 +247,34 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
     assert.ok(await page.waitFor(`document.getElementById('directory-library').hidden===false`));
     assert.equal(await page.evaluate(`document.querySelectorAll('#directory-grid button.ring-running').length`), 1, '只有跑着活的目录带圈');
     assert.equal(await page.evaluate(`document.querySelector('#directory-grid button.ring-running strong').textContent`), '▣ Gapasea', '带圈的是那个目录');
+
+    // ── 「只有半边」的那个圈：目录视图 ───────────────────────────────────
+    // 地址里不带 &task= 时 air.js 会给 #library（就是 .space-main）挂 .active，
+    // 底色是不透明的 #eff6ff，正好贴在卡片 padding 边上。圈当年画在 card 自己身上，
+    // 于是上/左/右三条边被它整条盖掉，只剩下面一条 —— 用户看到的「有时候是好的，
+    // 有时候只有半边」：同一个页面，点进任务就正常，回到目录视图（或鼠标停在卡片
+    // 上，.space-main:hover 是同一套底色）就缺三条边。圈现在画在 ::before 覆盖层上，
+    // 是卡片自己的子元素，永远在所有后代之上。这条断言就是那次修复的守卫。
+    await page.navigate('/air?dir=d3');
+    assert.ok(await page.waitFor(`document.querySelector('.space-card.ring-running')!==null`));
+    await page.screenshot('07-ring-directory');
+    const cover = await page.evaluate(`(() => { const lib = document.getElementById('library');
+      return { active: lib.classList.contains('active'), bg: getComputedStyle(lib).backgroundColor }; })()`);
+    // 前提：当年盖住圈的那个不透明后代还在。它哪天不在了，这组断言就复现不出当时的
+    // 场景 —— 那时该另找一个能盖住圈的后代来守着，而不是把这条删掉。
+    assert.equal(cover.active, true, '目录视图里 #library 带 .active（当年盖住圈的就是它）');
+    assert.equal(cover.bg, 'rgb(239, 246, 255)', '它还是不透明的');
+    await assertRingDrawn(page, '.space-card', '当前目录卡片（目录视图）');
+    // 关掉动画不等于摘掉圈：静音版是晕动症用户唯一的「这条在跑」信号，所以它也得
+    // 真的画出来。静音版和会动的那版画在同一处覆盖层上，这里换着偏好再读一次像素。
+    await page.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+    // 先确认读的真是静音版，不然下面那次读像素会由动画蒙混过关。
+    assert.equal(await page.evaluate(`getComputedStyle(document.querySelector('.space-card'),'::before').animationName`), 'none',
+      '偏好生效了：这一版是不动的');
+    await page.screenshot('08-ring-directory-reduced-motion');
+    await assertRingDrawn(page, '.space-card', '当前目录卡片（目录视图 · 关掉动画）');
+    await page.send('Emulation.setEmulatedMedia', { features: [] });
+
     await page.navigate('/air?dir=d1&task=tsk_here');
     assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='收口 Air 的控制台'`));
 
