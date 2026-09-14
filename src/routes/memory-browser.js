@@ -229,15 +229,33 @@ function createMemoryBrowserRoutes(rawDeps) {
     }
   }
 
+  // 全局层的伪目录名：出现在 store 根下但不是「项目」。
+  const GLOBAL_TIER_DIRS = new Set(['_machine', '_cli']);
+
   function listStoreProjects() {
     try {
       if (!safeScanDirectory(root)) return [];
       return fs.readdirSync(root, { withFileTypes: true })
-        .filter((entry) => entry.isDirectory())
+        .filter((entry) => entry.isDirectory() && !GLOBAL_TIER_DIRS.has(entry.name))
         .map((entry) => entry.name);
     } catch (_) {
       return [];
     }
+  }
+
+  function listSubScopeDirs(projectRoot, tier) {
+    // 列出 <projectRoot>/<tier>/ 下的一层子目录（tasks/<taskId>、skills/<skill>）。
+    const dirs = [];
+    try {
+      const tierRoot = path.join(projectRoot, tier);
+      if (!safeScanDirectory(tierRoot)) return dirs;
+      for (const entry of fs.readdirSync(tierRoot, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        if (GLOBAL_TIER_DIRS.has(entry.name) || entry.name.startsWith('.')) continue;
+        dirs.push({ name: entry.name, dir: path.join(tierRoot, entry.name) });
+      }
+    } catch (_) {}
+    return dirs;
   }
 
   function buildMemoryGraph(dirIdFilter) {
@@ -289,7 +307,9 @@ function createMemoryBrowserRoutes(rawDeps) {
         }
         const slug = file.replace(/\.md$/i, '');
         const parsed = parseMemoryMarkdown(raw, slug);
-        const id = `${meta.dirId}::${meta.scope}${meta.sessionId ? `:${meta.sessionId}` : ''}::${slug}`;
+        // sub = 会话 ID / 任务 ID / 技能名：同 scope 下的子命名空间，进 id 防碰撞。
+        const sub = meta.sessionId || meta.sub || null;
+        const id = `${meta.dirId}::${meta.scope}${sub ? `:${sub}` : ''}::${slug}`;
         addNode({
           id,
           slug,
@@ -299,6 +319,7 @@ function createMemoryBrowserRoutes(rawDeps) {
           type: memNodeKind(file, parsed.type),
           scope: meta.scope,
           sessionId: meta.sessionId || null,
+          sub,
           dirId: meta.dirId,
           size: Buffer.byteLength(raw),
           path: absFile,
@@ -315,9 +336,40 @@ function createMemoryBrowserRoutes(rawDeps) {
       return count;
     };
 
+    // ① 机器全局层 + ② CLI 层：不属于任何项目，但参与所有项目的图（跨层 wikilink）。
+    const machineSlugs = new Map();
+    const cliSlugs = new Map();
+    scanFolder(path.join(root, '_machine'), { dirId: '_machine', scope: 'machine' });
+    for (const id of byId.keys()) {
+      const node = byId.get(id);
+      if (node.scope === 'machine' && !machineSlugs.has(node.slug)) machineSlugs.set(node.slug, id);
+    }
+    try {
+      const cliRoot = path.join(root, '_cli');
+      if (safeScanDirectory(cliRoot)) {
+        for (const entry of fs.readdirSync(cliRoot, { withFileTypes: true })) {
+          if (!entry.isDirectory() || GLOBAL_TIER_DIRS.has(entry.name)) continue;
+          const pseudoDirId = `_cli/${entry.name}`;
+          scanFolder(path.join(cliRoot, entry.name), { dirId: pseudoDirId, scope: 'cli', sub: entry.name });
+          for (const id of byId.keys()) {
+            const node = byId.get(id);
+            if (node.dirId === pseudoDirId && !cliSlugs.has(node.slug)) cliSlugs.set(node.slug, id);
+          }
+        }
+      }
+    } catch (_) {}
+
     for (const dirId of projectIds) {
       const projectRoot = path.join(root, dirId);
       scanFolder(path.join(projectRoot, '_shared'), { dirId, scope: 'shared' });
+
+      // ④ 技能层 + ⑤ 任务层：项目内的子命名空间目录。
+      for (const skill of listSubScopeDirs(projectRoot, 'skills')) {
+        scanFolder(skill.dir, { dirId, scope: 'skill', sub: skill.name });
+      }
+      for (const task of listSubScopeDirs(projectRoot, 'tasks')) {
+        scanFolder(task.dir, { dirId, scope: 'task', sub: task.name });
+      }
 
       const sessionsRoot = path.join(projectRoot, 'sessions');
       let sessionIds = [];
@@ -352,14 +404,35 @@ function createMemoryBrowserRoutes(rawDeps) {
     const resolveTarget = (fromId, dirId, slug) => {
       const projectSlugs = slugIndex.get(dirId);
       const candidates = projectSlugs && projectSlugs.get(slug);
-      if (!candidates || !candidates.length) return null;
       const from = byId.get(fromId);
+      if (!candidates || !candidates.length) {
+        // 项目内未命中 → 机器全局层 → CLI 层。这让 [[xxx]] 能引用全局记忆，
+        // 全局节点由此获得跨项目的入边（此前只能悬空）。
+        if (from && from.scope === 'machine') {
+          const local = machineSlugs.get(slug);
+          return local === fromId ? null : (local || cliSlugs.get(slug) || null);
+        }
+        if (from && from.scope === 'cli') {
+          const local = cliSlugs.get(slug);
+          if (local && local !== fromId) return local;
+          return machineSlugs.get(slug) || null;
+        }
+        return machineSlugs.get(slug) || cliSlugs.get(slug) || null;
+      }
       if (from && from.sessionId) {
         const sameSession = candidates.find((candidate) => {
           const node = byId.get(candidate);
           return node && node.sessionId === from.sessionId;
         });
         if (sameSession) return sameSession;
+      }
+      if (from && from.sub && from.scope !== 'session') {
+        // 任务/技能层节点优先解析到同子域（同任务/同技能）的目标。
+        const sameSub = candidates.find((candidate) => {
+          const node = byId.get(candidate);
+          return node && node.scope === from.scope && node.sub === from.sub;
+        });
+        if (sameSub) return sameSub;
       }
       const shared = candidates.find((candidate) => {
         const node = byId.get(candidate);
@@ -475,6 +548,29 @@ function createMemoryBrowserRoutes(rawDeps) {
     const projects = [];
     let sessionCount = 0;
 
+    // ① 机器全局层 + ② CLI 层：独立于项目的顶层段。
+    const machine = {
+      dir: path.join(root, '_machine'),
+      rel: '_machine',
+      ...listMemTreeFiles(path.join(root, '_machine'), '_machine', counter),
+    };
+    const clis = [];
+    try {
+      const cliRoot = path.join(root, '_cli');
+      if (safeScanDirectory(cliRoot)) {
+        for (const entry of fs.readdirSync(cliRoot, { withFileTypes: true })) {
+          if (!entry.isDirectory() || GLOBAL_TIER_DIRS.has(entry.name)) continue;
+          clis.push({
+            cli: entry.name,
+            dir: path.join(cliRoot, entry.name),
+            rel: `_cli/${entry.name}`,
+            ...listMemTreeFiles(path.join(cliRoot, entry.name), `_cli/${entry.name}`, counter),
+          });
+        }
+      }
+    } catch (_) {}
+    const visibleClis = clis.filter((c) => c.files.length);
+
     for (const dirId of listStoreProjects()) {
       const projectRoot = path.join(root, dirId);
       const directory = deps.directories.get(dirId);
@@ -489,6 +585,20 @@ function createMemoryBrowserRoutes(rawDeps) {
         tokens: sharedResult.tokens,
         files: sharedResult.files,
       };
+
+      const skills = listSubScopeDirs(projectRoot, 'skills').map((skill) => ({
+        skill: skill.name,
+        dir: skill.dir,
+        rel: `${dirId}/skills/${skill.name}`,
+        ...listMemTreeFiles(skill.dir, `${dirId}/skills/${skill.name}`, counter),
+      })).filter((s) => s.files.length);
+
+      const tasks = listSubScopeDirs(projectRoot, 'tasks').map((task) => ({
+        taskId: task.name,
+        dir: task.dir,
+        rel: `${dirId}/tasks/${task.name}`,
+        ...listMemTreeFiles(task.dir, `${dirId}/tasks/${task.name}`, counter),
+      })).filter((t) => t.files.length);
 
       const sessions = [];
       const sessionsRoot = path.join(projectRoot, 'sessions');
@@ -521,8 +631,13 @@ function createMemoryBrowserRoutes(rawDeps) {
       }
       sessionCount += sessions.length;
 
-      const projectTokens = shared.tokens + sessions.reduce((sum, session) => sum + session.tokens, 0);
+      const projectTokens = shared.tokens
+        + skills.reduce((sum, s) => sum + s.tokens, 0)
+        + tasks.reduce((sum, t) => sum + t.tokens, 0)
+        + sessions.reduce((sum, session) => sum + session.tokens, 0);
       const fileCount = shared.files.length
+        + skills.reduce((sum, s) => sum + s.files.length, 0)
+        + tasks.reduce((sum, t) => sum + t.files.length, 0)
         + sessions.reduce((sum, session) => sum + session.files.length, 0);
       if (fileCount === 0) continue;
       projects.push({
@@ -532,18 +647,24 @@ function createMemoryBrowserRoutes(rawDeps) {
         tokens: projectTokens,
         fileCount,
         shared,
+        skills,
+        tasks,
         sessions,
       });
     }
 
     projects.sort((a, b) => b.tokens - a.tokens);
+    const globalTokens = machine.tokens + visibleClis.reduce((sum, c) => sum + c.tokens, 0);
+    const globalFiles = machine.files.length + visibleClis.reduce((sum, c) => sum + c.files.length, 0);
     const totals = projects.reduce((accumulator, project) => {
       accumulator.tokens += project.tokens;
       accumulator.files += project.fileCount;
       return accumulator;
-    }, { tokens: 0, files: 0 });
+    }, { tokens: globalTokens, files: globalFiles });
     return {
       root,
+      machine,
+      clis: visibleClis,
       projects,
       meta: {
         projectCount: projects.length,
@@ -603,14 +724,30 @@ function createMemoryBrowserRoutes(rawDeps) {
   }
 
   function broadcastMemoryChange(rel) {
-    const dirId = String(rel).split('/')[0];
-    if (!dirId) return;
+    const top = String(rel).split('/')[0];
+    if (!top) return;
+    const scope = String(rel).startsWith('_machine/')
+      ? 'machine'
+      : String(rel).startsWith('_cli/')
+        ? 'cli'
+        : String(rel).includes('/_shared/')
+          ? 'shared'
+          : String(rel).includes('/tasks/')
+            ? 'task'
+            : String(rel).includes('/skills/')
+              ? 'skill'
+              : 'own';
     try {
-      deps.workspaceBroadcast(dirId, {
-        type: 'memory',
-        rel,
-        scope: String(rel).includes('/_shared/') ? 'shared' : 'own',
-      });
+      if (scope === 'machine' || scope === 'cli') {
+        // 全局层变化属于所有工作区。
+        if (typeof deps.directories.keys === 'function') {
+          for (const dirId of deps.directories.keys()) {
+            deps.workspaceBroadcast(dirId, { type: 'memory', rel, scope });
+          }
+        }
+        return;
+      }
+      deps.workspaceBroadcast(top, { type: 'memory', rel, scope });
     } catch (_) {}
   }
 

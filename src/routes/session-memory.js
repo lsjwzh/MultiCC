@@ -9,7 +9,7 @@ function assertDependencies(deps) {
   const folder = deps.folderMemory;
   for (const name of [
     'ensureDirs', 'sessionDir', 'sharedDir', 'primaryFileName', 'listFiles',
-    'safeFileName', 'scopeDir', 'curatedLimit',
+    'safeFileName', 'scopeDir', 'curatedLimit', 'safeSegment',
   ]) {
     if (!folder || typeof folder[name] !== 'function') {
       throw new TypeError(`[session-memory] folderMemory.${name} is required`);
@@ -18,6 +18,7 @@ function assertDependencies(deps) {
   for (const name of [
     'getMemoryEntries', 'scanMemoryContent', 'atomicWriteMemoryFile',
     'applyCuratedMemoryAction', 'appendEvent', 'workspaceBroadcast',
+    'directoriesKeys',
   ]) {
     if (typeof deps[name] !== 'function') throw new TypeError(`[session-memory] ${name} is required`);
   }
@@ -32,6 +33,35 @@ function mountSessionMemoryRoutes(app, rawDeps) {
   const deps = assertDependencies(rawDeps);
   const folder = deps.folderMemory;
 
+  // scope 白名单：own/shared 是历史值；machine/cli/task/skill 是五层扩展。
+  const CURATED_SCOPES = ['own', 'shared', 'machine', 'cli', 'task', 'skill'];
+  const SCOPE_LABELS = {
+    own: '私有', shared: '公共', machine: '机器全局', cli: 'CLI', task: '任务', skill: '技能',
+  };
+
+  function resolveCuratedScope(persisted, body) {
+    const requested = String(body?.scope || 'own').trim().toLowerCase();
+    if (!CURATED_SCOPES.includes(requested)) {
+      return { error: `invalid scope (must be one of ${CURATED_SCOPES.join('/')})` };
+    }
+    const extra = {};
+    if (requested === 'task') {
+      // 默认挂到 classify 维护的当前任务；也允许显式传 taskId 指定历史任务。
+      const explicit = folder.safeSegment(body?.taskId);
+      const current = persisted.taskState && persisted.taskState.taskId;
+      extra.taskId = explicit || (folder.safeSegment(current) ? current : null);
+      if (!extra.taskId) return { error: 'task scope requires a current bound task or an explicit taskId' };
+    }
+    if (requested === 'skill') {
+      const skill = folder.safeSegment(body?.skill);
+      if (!skill) return { error: 'skill scope requires a skill name (safe word characters only)' };
+      extra.skill = skill;
+    }
+    const dir = folder.scopeDir(persisted, requested, extra);
+    if (!dir) return { error: `scope ${requested} resolves to no directory on this session` };
+    return { scope: requested, dir, extra };
+  }
+
   app.get('/api/sessions/:id/memory', (req, res) => {
     const persisted = deps.records.get(req.params.id);
     if (!persisted) return res.status(404).json({ error: 'session not found' });
@@ -45,6 +75,13 @@ function mountSessionMemoryRoutes(app, rawDeps) {
         files: folder.listFiles(own),
       },
       shared: { dir: shared, files: folder.listFiles(shared) },
+      machine: { dir: folder.machineDir(), files: folder.listFiles(folder.machineDir()) },
+      cli: { dir: folder.cliDir(persisted.cli), files: folder.cliDir(persisted.cli) ? folder.listFiles(folder.cliDir(persisted.cli)) : [] },
+      task: (() => {
+        const taskId = persisted.taskState && persisted.taskState.taskId;
+        const dir = taskId ? folder.taskDir(persisted.dirId, taskId) : null;
+        return { taskId: taskId || null, dir, files: dir ? folder.listFiles(dir) : [] };
+      })(),
       legacy: deps.getMemoryEntries(persisted),
     });
   });
@@ -109,9 +146,11 @@ function mountSessionMemoryRoutes(app, rawDeps) {
       return res.status(400).json({ error: 'system sessions do not have curated memory' });
     }
     folder.ensureDirs(persisted);
-    const scope = req.body?.scope === 'shared' ? 'shared' : 'own';
+    const resolved = resolveCuratedScope(persisted, req.body);
+    if (resolved.error) return res.status(400).json({ error: resolved.error });
+    const scope = resolved.scope;
     const result = deps.applyCuratedMemoryAction({
-      dir: folder.scopeDir(persisted, scope),
+      dir: resolved.dir,
       action: String(req.body?.action || '').trim().toLowerCase(),
       content: req.body?.content,
       oldText: req.body?.oldText,
@@ -121,12 +160,19 @@ function mountSessionMemoryRoutes(app, rawDeps) {
     deps.appendEvent(
       persisted.dirId,
       'memory_updated',
-      `${scope === 'shared' ? '公共' : '私有'}记忆：${result.message}`,
+      `${SCOPE_LABELS[scope] || scope}记忆：${result.message}`,
       persisted.id,
     );
-    deps.workspaceBroadcast(persisted.dirId, {
-      type: 'memory', sessionId: persisted.id, scope,
-    });
+    // 机器全局/CLI 层属于所有目录：向全部注册目录广播，让各工作区都能刷新视图。
+    if (scope === 'machine' || scope === 'cli') {
+      for (const dirId of deps.directoriesKeys()) {
+        deps.workspaceBroadcast(dirId, { type: 'memory', sessionId: persisted.id, scope });
+      }
+    } else {
+      deps.workspaceBroadcast(persisted.dirId, {
+        type: 'memory', sessionId: persisted.id, scope,
+      });
+    }
     return res.json(result);
   });
 }

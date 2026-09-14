@@ -1636,6 +1636,7 @@ mountSessionMemoryRoutes(app, {
   applyCuratedMemoryAction,
   appendEvent,
   workspaceBroadcast,
+  directoriesKeys: () => directories.keys(),
 });
 
 // Memory graph/tree and generic file editing share one filesystem boundary.
