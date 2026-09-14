@@ -65,9 +65,13 @@ function matchesSelector(element, selector) {
   }
   const notData = selector.match(/:not\(\[([^\]]+)\]\)/);
   const notClass = selector.match(/:not\(\.([^)]+)\)/);
-  const requiredData = [...selector.matchAll(/\[([^\]]+)\]/g)].map(match => match[1]);
-  const classes = [...selector.matchAll(/\.([a-zA-Z0-9_-]+)/g)].map(match => match[1]);
-  const tag = selector.match(/^[a-zA-Z][a-zA-Z0-9-]*/);
+  // :not(...) 里的条件由 notData/notClass 单独判定，不能又算进正向必选——
+  // 否则 .msg.assistant:not([data-msg-id]) 对「没有 msgId 的节点」也会被
+  // requiredData 拒掉，选择器永远匹配不到任何东西。
+  const bare = selector.replace(/:not\([^)]*\)/g, ' ');
+  const requiredData = [...bare.matchAll(/\[([^\]]+)\]/g)].map(match => match[1]);
+  const classes = [...bare.matchAll(/\.([a-zA-Z0-9_-]+)/g)].map(match => match[1]);
+  const tag = bare.match(/^[a-zA-Z][a-zA-Z0-9-]*/);
   if (tag && element.tagName !== tag[0].toUpperCase()) return false;
   if (classes.some(name => !element.classList.contains(name))) return false;
   if (requiredData.some(attribute => {
@@ -222,6 +226,47 @@ test('committed user message replaces its optimistic bubble and preserves per-tu
   assert.equal(committed.node.dataset.clientMsgId, 'browser-1');
   assert.equal(committed.node.querySelector('.msg-auto-commit'), autoCommit);
   assert.equal(committed.lastUserElement, committed.node);
+});
+
+test('a late committed user message inserts BEFORE the streaming assistant bubble', () => {
+  // 复现 web 端「助手消息在用户消息上面」：队列消息 started 之后才回填的
+  // chat_msg_meta（或 queued:false 广播丢失后的补画）晚于 message_start ——
+  // 那时流式助手气泡已经在列表尾，盲 append 会把问题画到它自己的回答下面。
+  const { document, messagesEl, view } = fixture();
+  const earlier = view.renderMessage({ id: 'a0', role: 'assistant', content: 'previous answer' });
+  const tail = view.renderMessage({ role: 'assistant', content: '', streaming: true });
+  messagesEl.appendChild(earlier);
+  messagesEl.appendChild(tail);
+
+  const committed = view.commitMessage(
+    { id: 'u1', role: 'user', content: 'late question' },
+    { currentElement: tail },
+  );
+
+  assert.equal(messagesEl.children[0], earlier, '历史在前');
+  assert.equal(messagesEl.children[1].textContent, 'late question', '迟到的问题必须插在流式回答之前');
+  assert.equal(messagesEl.children[2], tail, '流式助手气泡仍是最后一个');
+  assert.equal(committed.lastUserElement.dataset.msgId, 'u1');
+});
+
+test('a passively replayed user message also lands before the live tail', () => {
+  // commitSourcePage 不带 currentElement：插入位要靠 DOM 里那个无持久 id 的
+  // 助手气泡兜底找到。
+  const { messagesEl, view } = fixture();
+  const tail = view.renderMessage({ role: 'assistant', content: 'answering…', streaming: true });
+  messagesEl.appendChild(tail);
+
+  view.commitMessage({ id: 'u2', role: 'user', content: 'queued fill-in' }, { passive: true });
+
+  assert.equal(messagesEl.children[0].textContent, 'queued fill-in');
+  assert.equal(messagesEl.children[1], tail);
+});
+
+test('chat.js addUserMsg inserts before the streaming tail instead of blind-appending', () => {
+  // chat.js 是浏览器脚本、不可 require：与既有 host 委托断言同一风格，锁住
+  // 「先找流式尾巴、找到就 insertBefore」这一结构。
+  assert.match(CHAT_SOURCE, /function addUserMsg[\s\S]{0,900}?const streamingTail = Array\.from\(messagesEl\.querySelectorAll\('\.msg\.assistant:not\(\[data-msg-id\]\)'\)\)\.pop\(\)/);
+  assert.match(CHAT_SOURCE, /if \(streamingTail\) messagesEl\.insertBefore\(div, streamingTail\)/);
 });
 
 test('assistant Markdown uses the one safe boundary and tool cards stay text-only', () => {
