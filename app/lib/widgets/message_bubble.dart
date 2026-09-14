@@ -12,6 +12,7 @@ import '../models/message.dart';
 import '../models/role_tokens.dart';
 import '../providers/chat_provider.dart';
 import '../services/download_ticket_service.dart';
+import '../services/message_quote.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../utils/code_highlight.dart';
@@ -53,8 +54,8 @@ Future<void> _handleLinkTap(BuildContext context, String? href) async {
   }
 }
 
-/// Long-press action sheet: copy always; delete only when the message has a
-/// server-side history id (streaming / not-yet-persisted bubbles aren't
+/// Long-press action sheet: copy and quote always; delete only when the message
+/// has a server-side history id (streaming / not-yet-persisted bubbles aren't
 /// addressable — the id arrives via the chat_msg_meta WS event once saved).
 Future<void> _showMessageActions(
   BuildContext context,
@@ -63,8 +64,16 @@ Future<void> _showMessageActions(
 }) async {
   // Delete/fork are session-history operations bound to ChatProvider + the
   // session REST surface; transcript-only hosts (task detail) get copy only.
-  final canDelete = serverActions && (context.read<ChatProvider?>()?.historyArchive != true)
+  final provider = context.read<ChatProvider?>();
+  final canDelete = serverActions && (provider?.historyArchive != true)
       && (message.id ?? '').isNotEmpty;
+  // 引用要落进输入框，所以能不能引用问的是「本宿主有没有输入框」，不是
+  // 「能不能动服务端历史」—— 引用不改任何东西，只是把已有的话搬进输入框。
+  // 没有输入框就别摆这个入口：摆了也点不出结果。
+  final quote = provider?.quoteInserter == null
+      ? ''
+      : buildMessageQuote(message);
+  final canQuote = quote.isNotEmpty;
   final action = await showModalBottomSheet<String>(
     context: context,
     backgroundColor: const Color(0xFFffffff),
@@ -81,6 +90,13 @@ Future<void> _showMessageActions(
                 style: const TextStyle(color: Color(0xFF233249))),
             onTap: () => Navigator.pop(ctx, 'copy'),
           ),
+          if (canQuote)
+            ListTile(
+              leading: const Icon(Icons.format_quote, color: Color(0xFF0965cf)),
+              title: Text(I18n.of('msgQuoteAction'),
+                  style: const TextStyle(color: Color(0xFF233249))),
+              onTap: () => Navigator.pop(ctx, 'quote'),
+            ),
           if (canDelete)
             ListTile(
               leading: const Icon(Icons.delete_outline, color: Color(0xFFb64e43)),
@@ -102,11 +118,33 @@ Future<void> _showMessageActions(
   if (!context.mounted) return;
   if (action == 'copy') {
     _copyMessage(context, message.content);
+  } else if (action == 'quote') {
+    _quoteMessage(context, message, quote);
   } else if (action == 'delete') {
     await _confirmDeleteMessage(context, message);
   } else if (action == 'fork') {
     await _forkFromMessage(context, message);
   }
+}
+
+/// 把引用块放进输入框。
+///
+/// 还没落库的气泡（流式中的那条）没有可指认的稳定身份，引用它等于写下一个
+/// 打不开的句柄 —— 这时直说引用不了，而不是生成一个假的身份。
+void _quoteMessage(BuildContext context, ChatMessage message, String quote) {
+  final inserter = context.read<ChatProvider?>()?.quoteInserter;
+  if (inserter == null) return;
+  if ((message.id ?? '').isEmpty) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(I18n.of('msgQuoteUnavailable')),
+        duration: const Duration(milliseconds: 2200),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+    return;
+  }
+  inserter(quote);
 }
 
 /// Confirm, then delete the message from the server's chat history.

@@ -79,6 +79,11 @@ class ChatShellView {
       case 'chat_history':
       case 'chat_history_reset':
       case 'shell_history_update':
+      // Late task attribution addresses messages by their *execution-session*
+      // id, but a shell bubble is keyed by the composite id. Running the
+      // records through [record] here is what makes the two meet — without it
+      // the annotation would name ids no bubble has and be dropped silently.
+      case 'chat_history_annotation':
         return {
           ...message,
           'sourceSessionId': origin,
