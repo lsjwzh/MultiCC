@@ -25,6 +25,8 @@ import '../services/transcript_live_folder.dart';
 export '../services/transcript_live_folder.dart'
     show toolCallById, applyReasoningDelta, applyToolArgsDelta;
 
+part 'chat_provider_history.dart';
+
 bool _isRecoverableCodexReconnectErrorText(String text) {
   return RegExp(
         r'^Codex 出错：Reconnecting\.\.\.\s*\d+/\d+\s*\(',
@@ -2330,26 +2332,6 @@ class ChatProvider extends ChangeNotifier {
     if (_messages.length != before) notifyListeners();
   }
 
-  /// 按本地 id 找气泡。
-  ///
-  /// 两边本就该相等：`annotateTurn` 按**执行会话自己的**消息 id 指认，而壳在
-  /// `chat_shell_view.dart` 里已经把同一批记录复合成了本地 id
-  /// （`<sourceSessionId>:<messageId>`，与气泡的 id 同一套规则）。
-  ///
-  /// 认不出来就什么都不做 —— 不要退回去按裸 id 猜。裸 id 只在它自己那个执行
-  /// 会话的编号空间里有意义，拿它去跨会话找气泡只会把 A 任务的归属写到 B 任务的
-  /// 消息头上（消息 id 是 `m<base36 时间>-<全局序号>`，见 server.js 的
-  /// newChatMsgId，跨会话撞号在生产里不会发生，所以那条兜底只会误伤）。
-  /// 漏一次也不是永久的：服务端的历史投影里本来就带 taskId/taskName/turnId，
-  /// 下一次读历史页就会补上。
-  ChatMessage? _messageByIdentity(String id) {
-    if (id.isEmpty) return null;
-    for (final message in _messages) {
-      if (message.id == id) return message;
-    }
-    return null;
-  }
-
   void _onMessageStart(Map<String, dynamic>? evt) {
     // One request's own prompt accounting: the only context figure that needs
     // no heuristic, so it supersedes whatever the last turn total implied.
@@ -2581,239 +2563,18 @@ class ChatProvider extends ChangeNotifier {
     return true;
   }
 
-  void _replayHistory(List history) {
-    final parsed = history
-        .map((m) {
-          try {
-            return ChatMessage.fromHistory(m as Map<String, dynamic>);
-          } catch (_) {
-            return null;
-          }
-        })
-        .whereType<ChatMessage>()
-        .toList();
-    final liveTail = streamingAssistantTail(parsed);
-    // system_init may have created an empty local streaming bubble before the
-    // ordered chat_history frame arrives. Replace that placeholder with the
-    // authoritative cumulative tail instead of keeping both bubbles alive.
-    if (liveTail != null && _folder.currentMsg != null) {
-      _messages.remove(_folder.currentMsg);
-      _folder.currentMsg = null;
-    }
-    final insertIdx = _folder.currentMsg != null
-        ? _messages.length - 1
-        : _messages.length;
-    _messages.insertAll(insertIdx, parsed);
-    if (liveTail != null) {
-      _folder.currentMsg = liveTail;
-      _folder.activeTools.clear();
-    }
-    _seedUsageFromHistory();
-    notifyListeners();
-  }
-
-  void _mergeShellPage(List history, {String? sourceSessionId}) {
-    final parsed = history.map((m) => ChatMessage.fromHistory(
-        Map<String, dynamic>.from(m as Map))).toList();
-    final merged = mergeShellHistory(_messages, parsed, sourceSessionId: sourceSessionId);
-    _messages..clear()..addAll(merged);
-    final current = _folder.currentMsg;
-    final tail = sourceSessionId != null && _messages.contains(current)
-        ? current : streamingAssistantTail(_messages);
-    if (!identical(_folder.currentMsg, tail)) _folder.activeTools.clear();
-    _folder.currentMsg = tail;
-    _seedUsageFromHistory();
-  }
-
-  /// Resume / half-open reconnect refresh: swap the visible transcript for the
-  /// server's authoritative history in a SINGLE rebuild. The old messages stay
-  /// on screen until the new list is built, so there's no blank "clear then
-  /// refill" flash — the chat reconciles in place, the way the web client does.
-  void _replaceHistory(List history) {
-    final parsed = history
-        .map((m) {
-          try {
-            return ChatMessage.fromHistory(m as Map<String, dynamic>);
-          } catch (_) {
-            return null;
-          }
-        })
-        .whereType<ChatMessage>()
-        .toList();
-    _messages
-      ..clear()
-      ..addAll(parsed);
-    _folder.currentMsg = streamingAssistantTail(parsed);
-    _folder.activeTools.clear();
-    _seedUsageFromHistory();
-    // 历史已是权威：未裁决的暂存失去意义（已落盘的在历史里，未落盘的队列消息靠
-    // 队列面板展示），取消它们的兜底定时器。
-    _stagedTracker.clear();
-    notifyListeners();
-  }
-
-  /// Re-derive the usage bar from the transcript we now hold.
-  ///
-  /// History records each turn's totals but no per-request block, so the exact
-  /// context reading cannot survive a reload — it is dropped rather than shown
-  /// against a turn it did not measure. A live streaming tail is the exception:
-  /// its `message_start` describes the turn still on screen.
-  void _seedUsageFromHistory() {
-    if (_folder.currentMsg == null) _requestUsage = null;
-    var input = 0;
-    var output = 0;
-    for (final m in _messages) {
-      if (m.role != MessageRole.assistant || m.usage == null) continue;
-      input += m.usage!.inputTokens;
-      output += m.usage!.outputTokens;
-    }
-    _sessionInputTokens = input;
-    _sessionOutputTokens = output;
-    _turnUsage = null;
-    _contextTrace = null;
-    _turnDurationText = '';
-    _turnCount = 0;
-    for (var i = _messages.length - 1; i >= 0; i -= 1) {
-      final m = _messages[i];
-      if (m.role != MessageRole.assistant) continue;
-      _turnUsage = m.usage;
-      _contextTrace = m.contextTrace;
-      // Round count is a result-frame fact and is not persisted; the timing is.
-      if (m.durationMs != null) _turnDurationText = _fmtDuration(m.durationMs!);
-      break;
-    }
-  }
-
-  /// id of the oldest message currently held in [_messages] (pagination cursor).
-  String? _firstLoadedMsgId() {
-    for (final m in _messages) {
-      if (m.id != null && m.id!.isNotEmpty) return m.id;
-    }
-    return null;
-  }
-
-  // ── Lazy history: public state + scroll-back fetch ────────────────────────
-  bool get historyHasMore => _historyHasMore;
-  bool get historyLoading => _historyLoading;
-  bool get historyExhausted => _historyExhausted;
-
-  /// True once the initial `chat_history` page has been applied (or a focus
-  /// load has replaced the transcript). The chat screen waits on this before
-  /// resolving a deep-link focus so it knows the message list is populated.
-  bool get historyApplied => _historyApplied;
-
+  // 历史层（chat_provider_history.dart 的 ChatHistoryLayer）转发通知用的口子。
+  // 扩展体不算「ChangeNotifier 子类的实例成员」，在那儿直接喊 notifyListeners()
+  // 会被 analyzer 判成 invalid_use_of_protected_member。
+  void _notifyHistoryChanged() => notifyListeners();
+  // 未读 / 钉底状态。读写它的行为在 chat_provider_history.dart 的 ChatHistoryLayer
+  // 里（扩展不能声明实例字段，所以状态必须留在类体）。
   /// Number of NEW messages received while the user was scrolled up reading
   /// history (drives the "↓ N new" pill). Reset when the user jumps to bottom.
   int _unreadCount = 0;
   int get unreadCount => _unreadCount;
   bool _userPinnedAway = false;
   bool get userPinnedAway => _userPinnedAway;
-
-  /// Called by the chat screen's scroll listener. [atBottom] is whether the
-  /// viewport is currently parked at the latest message. Only notifies when the
-  /// pinned/unread state actually changes (scroll fires every frame).
-  void onUserScroll({required bool atBottom}) {
-    if (atBottom) {
-      if (_userPinnedAway || _unreadCount != 0) {
-        _userPinnedAway = false;
-        _unreadCount = 0;
-        notifyListeners();
-      }
-    } else {
-      if (!_userPinnedAway) {
-        _userPinnedAway = true;
-        notifyListeners();
-      }
-    }
-  }
-
-  /// Mark one new message as arrived while the user is pinned away (bumps the
-  /// unread count so the pill shows "↓ N new"). Called from the streaming
-  /// paths when a new assistant/user/system message lands.
-  void bumpUnread() {
-    if (!_userPinnedAway) return;
-    _unreadCount++;
-    notifyListeners();
-  }
-
-  /// Reset pinned/unread state and signal the screen to scroll to bottom.
-  void jumpToBottom() {
-    _userPinnedAway = false;
-    _unreadCount = 0;
-    notifyListeners();
-  }
-
-  /// Fetch the next older page of history and prepend it. Returns the count
-  /// inserted (0 if nothing more to load or fetch failed). The screen is
-  /// responsible for preserving scroll offset across the prepend.
-  Future<int> loadOlderHistory({int limit = 30}) async {
-    if (_historyLoading || _historyExhausted) return 0;
-    final cursor = _oldestLoadedMsgId;
-    if (cursor == null) return 0;
-    _historyLoading = true;
-    final generation = _historyGeneration;
-    notifyListeners();
-    try {
-      final page = await _service.fetchHistoryPage(
-        beforeId: cursor,
-        limit: limit,
-      );
-      if (generation != _historyGeneration) return 0;
-      if (page.messages.isEmpty) {
-        _historyExhausted = true;
-        _historyHasMore = false;
-        return 0;
-      }
-      // Prepend in chronological order (server returns oldest-first within page).
-      final loaded = _messages.map((m) => m.id).whereType<String>().toSet();
-      final fresh = page.messages.where((m) => m.id == null || !loaded.contains(m.id)).toList();
-      _messages.insertAll(0, fresh);
-      _oldestLoadedMsgId = page.messages.first.id ?? cursor;
-      _historyHasMore = page.hasMore;
-      _historyExhausted = !page.hasMore;
-      return fresh.length;
-    } catch (e) {
-      // Transient error: leave exhausted=false so the user can retry by scrolling.
-      // Web 的 `dbg('history', 'loadOlderHistory failed: …')` —— 这里返回 0 是
-      // 静默的（屏幕上什么都不发生），不记一笔就没法解释「往上翻没反应」。
-      dbg('history', 'loadOlderHistory failed: $e');
-      return 0;
-    } finally {
-      _historyLoading = false;
-      notifyListeners();
-    }
-  }
-
-  /// Deep-link focus: fetch the history window centered on [messageId] and
-  /// replace the visible transcript with it. Returns true when the target
-  /// message was found and is now in the transcript; false if the server
-  /// reports it not found (e.g. trimmed) or the fetch failed - in which case
-  /// the existing transcript is left untouched. Resets the lazy-pagination
-  /// cursor so scroll-up can still fetch older pages adjacent to the window.
-  Future<bool> loadHistoryAround(String messageId) async {
-    final generation = _historyGeneration;
-    try {
-      final page = await _service.fetchHistoryPage(beforeId: null, aroundId: messageId, limit: 31);
-      if (generation != _historyGeneration) return false;
-      final parsed = page.messages;
-      if (!parsed.any((m) => m.id == messageId ||
-          shellMessageOwner(sessionName, m.id ?? '').messageId == messageId)) {
-        return false;
-      }
-      _messages
-        ..clear()
-        ..addAll(parsed);
-      _folder.resetTail();
-      _oldestLoadedMsgId = _firstLoadedMsgId();
-      _historyHasMore = page.hasMore;
-      _historyExhausted = !page.hasMore;
-      _historyApplied = true;
-      notifyListeners();
-      return true;
-    } catch (_) {
-      return false;
-    }
-  }
 
   void _addSystemMsg(String text) {
     _messages.add(ChatMessage(role: MessageRole.system, content: text));
