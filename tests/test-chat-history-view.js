@@ -521,6 +521,77 @@ test('missing Markdown boundary fails closed to textContent', () => {
   assert.equal(markdown.innerHTML, '');
 });
 
+test('a bubble carries the subtask it came from, for the quote action to read', () => {
+  const { messagesEl, view, actions } = fixture({
+    attachQuoteButton: node => actions.push(['quote', node.dataset.msgId]),
+  });
+  const node = view.renderMessage({
+    id: 'sess-1:m_abc',
+    role: 'assistant',
+    content: '已改完',
+    sourceSessionId: 'sess-1',
+    sourceMessageId: 'm_abc',
+    taskId: 'tsk_1',
+    taskName: '修登录页',
+    turnId: 'turn_9',
+    auxRunId: 'run_3',
+    ts: 1757000000000,
+  });
+  messagesEl.appendChild(node);
+  assert.equal(node.dataset.taskId, 'tsk_1');
+  assert.equal(node.dataset.taskName, '修登录页');
+  assert.equal(node.dataset.turnId, 'turn_9');
+  assert.equal(node.dataset.auxRunId, 'run_3');
+  assert.equal(node.dataset.sourceSessionId, 'sess-1');
+  assert.equal(node.dataset.sourceMessageId, 'm_abc');
+  assert.equal(node.dataset.ts, '1757000000000');
+  assert.deepEqual(actions, [['delete', 'sess-1:m_abc'], ['fork', 'sess-1:m_abc'], ['quote', 'sess-1:m_abc']]);
+});
+
+test('a message with no provenance is left unstamped rather than stamped with blanks', () => {
+  const { view } = fixture();
+  const node = view.renderMessage({ id: 'm1', role: 'user', content: '你好' });
+  assert.equal(node.dataset.taskId, undefined);
+  assert.equal(node.dataset.taskName, undefined);
+  assert.equal(node.dataset.ts, undefined);
+});
+
+test('late task attribution is patched onto the bubbles already on screen', () => {
+  const { messagesEl, view } = fixture();
+  const assistant = view.renderMessage({ id: 'sess-1:m_abc', role: 'assistant', content: '已改完', sourceMessageId: 'm_abc' });
+  // A shell bubble is addressed by the composite `<sessionId>:<messageId>` while
+  // the annotation can still arrive carrying the source session's raw id — for a
+  // shell whose id is not resolved yet, `event()` passes the record through
+  // unmapped. Hence the sourceMessageId fallback below.
+  const user = view.renderMessage({ id: 'sess-1:m_def', role: 'user', content: '继续', sourceMessageId: 'm_def' });
+  messagesEl.appendChild(user);
+  messagesEl.appendChild(assistant);
+  const textBefore = assistant.textContent;
+
+  // The turn's task is decided when the turn ends — after these bubbles were
+  // rendered — so the annotation arrives as a separate, id-addressed patch.
+  const applied = view.annotateAttribution([
+    { id: 'sess-1:m_abc', turnId: 'turn_9', taskId: 'tsk_1', taskName: '修登录页', auxRunId: 'run_3' },
+    { id: 'm_def', turnId: 'turn_9', taskId: 'tsk_1', taskName: '修登录页' },
+  ]);
+
+  assert.equal(applied, 2);
+  assert.equal(messagesEl.children.length, 2, 'patching must not re-render the list');
+  assert.equal(assistant.dataset.taskId, 'tsk_1');
+  assert.equal(assistant.dataset.auxRunId, 'run_3');
+  assert.equal(assistant.textContent, textBefore, 'the visible bubble is untouched');
+  assert.equal(user.dataset.taskId, 'tsk_1');
+  assert.equal(user.dataset.taskName, '修登录页');
+  assert.equal(user.dataset.turnId, 'turn_9');
+});
+
+test('an annotation for a message that is not on screen is ignored, not fatal', () => {
+  const { view } = fixture();
+  view.renderMessage({ id: 'm1', role: 'user', content: '你好' });
+  assert.equal(view.annotateAttribution([{ id: 'gone', taskId: 'tsk_1' }, { taskId: 'tsk_2' }, null]), 0);
+  assert.equal(view.annotateAttribution(undefined), 0);
+});
+
 test('classic host delegates persisted and streaming DOM ownership to the view', () => {
   assert.match(CHAT_SOURCE, /MultiCCChatHistoryView\.createHistoryView/);
   assert.match(CHAT_SOURCE, /chatHistoryView\.applyPlan\(plan/);

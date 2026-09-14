@@ -507,6 +507,9 @@ const chatHistoryView = window.MultiCCChatHistoryView.createHistoryView({
   // Task mode renders read-only ledger history: no per-message delete/fork.
   attachDeleteButton: (TASK_MODE || HISTORY_ARCHIVE) ? () => {} : attachDeleteButton,
   attachForkButton: TASK_MODE ? () => {} : attachForkButton,
+  // Quoting reads history, it does not write it — so it stays available in the
+  // archive view too, where a message may be the only copy left.
+  attachQuoteButton,
   warn: (...args) => console.warn(...args),
 });
 const chatMessageFocus = window.MultiCCChatMessageFocus.createMessageFocusController({
@@ -797,6 +800,35 @@ function attachForkButton(msgEl) {
     } finally {
       btn.disabled = false;
       btn.innerHTML = orig;
+    }
+  };
+  msgEl.appendChild(btn);
+}
+
+// ── Per-message quote ──
+// Hover "❝" on any bubble, including one that is still streaming. The quote it
+// writes into the composer carries the message's subtask, turn and execution as
+// well as its words — in a task shell the same sentence means different things
+// depending on which task it came from, and that origin is the part the words
+// alone cannot carry. The block itself is built by chat-quote.js.
+function attachQuoteButton(msgEl) {
+  if (!msgEl || msgEl.querySelector('.msg-quote')) return;
+  const btn = document.createElement('button');
+  btn.className = 'msg-quote';
+  btn.type = 'button';
+  btn.title = tt('msgQuoteAction');
+  btn.setAttribute('aria-label', tt('msgQuoteAction'));
+  btn.innerHTML = '&#10077;';   // ❝
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    // An interim bubble is a message in progress and has no durable identity to
+    // point at yet; quoting it would record a handle the reader cannot open.
+    if (msgEl.dataset.shellInterim === '1' || !msgEl.dataset.msgId) {
+      _chatAlert(tt('msgQuoteUnavailable'));
+      return;
+    }
+    if (!window.MultiCCChatQuote.quoteInto(msgEl, document)) {
+      _chatAlert(tt('msgQuoteUnavailable'));
     }
   };
   msgEl.appendChild(btn);
