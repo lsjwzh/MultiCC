@@ -33,7 +33,6 @@
   let epoch = 0;
   let stopped = false;
   let loading = false;
-  let createAttempt = null;
   let quickCreateAttempt = null;
 
   const stateNames = {
@@ -450,6 +449,40 @@
   // one dialog and holds the answer until the task is created.
   function quickStatus(text) { $('quick-task-status').textContent = text || ''; }
 
+  // 侧栏那颗「＋ 新任务」：把上面这**一个**输入框模块搬进弹窗，而不是再长出一张
+  // 自己的表单。搬的是节点，所以两处的胶囊、草稿、附件、Goal 上限和绑定的处理器
+  // 都是同一份 —— 关掉再搬回目录首页原位（#empty 的最后一个孩子就是它）。
+  //
+  // 目录首页开着的时候，弹窗后面那一页会暂时缺了输入框（被搬走了）。那一片被
+  // ::backdrop 压暗着，读起来就是「它弹出来了」，关掉即回原位。
+  function openNewTaskComposer() {
+    const dialog = $('quick-task-dialog');
+    if (!data || !directoryId || dialog.open) return;
+    const directory = data.directories.find(entry => entry.id === directoryId);
+    $('quick-task-dialog-directory').textContent = directory?.path || '';
+    $('quick-task-slot').append($('quick-task-form'));
+    dialog.showModal();
+    // 手机上这个模块平时折成一条细杠（air-quick-fold.js）；弹窗里要的是整张。
+    window.__airQuickFold?.unfold?.();
+    $('quick-task-input').focus();
+  }
+
+  function closeNewTaskComposer() {
+    const dialog = $('quick-task-dialog');
+    if (dialog.open) dialog.close();
+  }
+
+  // 关（点 ×、点关闭、Esc、创建成功后）都从这里回原位：#empty 的最后一个孩子
+  // 本来就是它，append 回去正好是原来那个位置。
+  $('quick-task-dialog').addEventListener('close', () => {
+    $('empty').append($('quick-task-form'));
+    // 手机上它平时折成一条细杠，弹窗里为了写字摊开成整张 —— 回到目录首页就按原来
+    // 的规矩收回去，别让一次「算了」把半屏的卡片留在那儿。盒子里还有草稿时
+    // fold() 自己什么都不做：那半句话不该被藏进一条细杠。
+    window.__airQuickFold?.fold?.();
+  });
+  $('quick-task-dialog-close').onclick = closeNewTaskComposer;
+
   // Empty until a pill is used: an unconfigured new task then follows the same
   // default routing it would have had anyway.
   let quickRuntime = {};
@@ -594,12 +627,16 @@
       // 折叠模块（air-quick-fold.js）盯着这个：盒子已经清空了，就没有什么还
       // 需要替它撑着的了，回到那条细杠。
       $('quick-task-form').dispatchEvent(new CustomEvent('air:quick-task-created'));
+      // 这一份是整条链路都成了：从侧栏弹进来的话，弹窗跟着收掉（它会把输入框
+      // 搬回目录首页）。失败时留着 —— 草稿还在里面，重试就是原样再点一次。
+      closeNewTaskComposer();
       await refresh();
       navigate(directoryId, created.taskId);
     } catch (error) {
       if (created?.taskId) {
         sessionStorage.setItem(`air:draft:${created.taskId}`, text);
         quickCreateAttempt = null;
+        closeNewTaskComposer();
         await refresh();
         navigate(directoryId, created.taskId);
         notice(`任务已创建，但第一条消息未确认送达：${error.message}。草稿已保留。`);
@@ -1596,36 +1633,9 @@
     const preset = event.target.closest('[data-cron]');
     if (preset) $('schedule-form').elements.cron.value = preset.dataset.cron;
   };
-  $('create').onclick = () => {
-    if (!data || !directoryId) return;
-    $('create-directory').textContent = data.directories.find(directory => directory.id === directoryId)?.path || '';
-    $('cli').replaceChildren(...data.clis.map(cli => {
-      const option = node('option', cli);
-      option.value = cli;
-      return option;
-    }));
-    $('new-task-dialog').showModal();
-  };
-  $('close-dialog').onclick = () => $('new-task-dialog').close();
-  $('new-task-form').onsubmit = async event => {
-    event.preventDefault();
-    const values = Object.fromEntries(new FormData(event.target));
-    if (!values.model) delete values.model;
-    if (!values.rolePrompt) delete values.rolePrompt;
-    const fingerprint = JSON.stringify([directoryId, values]);
-    if (!createAttempt || createAttempt.fingerprint !== fingerprint) createAttempt = { fingerprint, clientMsgId: crypto.randomUUID() };
-    $('create-submit').disabled = true;
-    $('create-error').textContent = '';
-    try {
-      const result = await api('/api/air/tasks', { dirId: directoryId, ...values, clientMsgId: createAttempt.clientMsgId });
-      createAttempt = null;
-      $('new-task-dialog').close();
-      event.target.reset();
-      await refresh();
-      navigate(directoryId, result.taskId);
-    } catch (error) { $('create-error').textContent = error.message; }
-    finally { $('create-submit').disabled = false; }
-  };
+  // 侧栏那颗「＋ 新任务」开的不是一张表单，是把目录首页那个统一输入框模块搬进
+  // 弹窗（见 openNewTaskComposer）—— 任务名取正文第一行，创建完直接执行。
+  $('create').onclick = openNewTaskComposer;
   window.addEventListener('keydown', event => {
     // ⌘K 是「去某个地方」的入口：目录和任务一起搜，不用先想起来在哪个目录。
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
