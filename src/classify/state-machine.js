@@ -88,6 +88,9 @@ function createClassifyStateMachine(rawDeps) {
     // Structured background-task ownership. Optional for older hosts/tests;
     // production wires the authoritative background runtime.
     hasBackgroundPending = () => false,
+    // P4 turn 级蒸馏：把归因 aux 一并产出的 memory_candidate 写进任务级记忆。
+    // 可选依赖——缺失或失败只少一段记忆，绝不影响归属判定本身。
+    writeTaskMemoryCandidate = null,
   } = deps;
 
   if (!persistedSessions || typeof persistedSessions.get !== 'function') {
@@ -570,7 +573,9 @@ function createClassifyStateMachine(rawDeps) {
     const currentClassifyState = getTaskState(persistedSessions.get(sessionName)).classifyState || 'P';
     recordTaskBoardGoal(sessionName, taskName, phase, cs, currentClassifyState);
     let taskGroupId = null;
-    if (result.relation === 'new' && result.relatedTaskId
+    // relation=new：relatedTaskId 是衍生来源（父任务候选）。
+    // relation=same：relatedTaskId 只形成弱分组边——归属不变，面板上归到一组。
+    if (result.relatedTaskId && result.relatedTaskId !== taskId
         && typeof board.linkRelatedTasks === 'function') {
       try {
         const grouped = board.linkRelatedTasks(taskId, result.relatedTaskId);
@@ -601,6 +606,17 @@ function createClassifyStateMachine(rawDeps) {
         });
       } catch (error) {
         logger.warn?.('task_module_classification_failed', {
+          sessionId: sessionName, taskId, error: error?.message || String(error || ''),
+        });
+      }
+    }
+    // P4 蒸馏：与归因共用同一次 aux 调用，memory_candidate 由宿主写入任务级
+    // 记忆（带去重/容量守卫）。失败只记日志。
+    if (result.memoryCandidate && typeof writeTaskMemoryCandidate === 'function') {
+      try {
+        writeTaskMemoryCandidate(sessionName, taskId, result.memoryCandidate);
+      } catch (error) {
+        logger.warn?.('task_memory_candidate_write_failed', {
           sessionId: sessionName, taskId, error: error?.message || String(error || ''),
         });
       }

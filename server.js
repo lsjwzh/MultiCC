@@ -1405,6 +1405,11 @@ const classifyStateMachine = createClassifyStateMachine({
   annotateChatTurn: (...args) => chatHistoryRuntime?.annotateTurn(...args) || [],
   getAuxRunLog: () => auxRunLog,
   hasBackgroundPending: sessionName => backgroundTaskRuntime.hasLiveBackgroundTasks(sessionName),
+  // P4 蒸馏：folderMemory 在下方才创建，这里闭包惰性取——写入只发生在 turn
+  // 结束后，届时早已初始化完成。
+  writeTaskMemoryCandidate: (sessionName, taskId, candidate) => taskMemoryDistiller.record({
+    dirId: persistedSessions.get(sessionName)?.dirId, taskId, text: candidate, tag: 'aux',
+  }),
 });
 const {
   recordTaskBoardGoal,
@@ -1624,6 +1629,15 @@ const folderMemory = createFolderMemoryService({
   directories,
   readMemoryFolder: readFolderMemory,
   getMemoryEntries,
+});
+// P4 任务级记忆蒸馏：归因 aux 的 memory_candidate 与交付回执都经它写入
+// tasks/<taskId>/MEMORY.md 的「自动蒸馏」小节（去重→替换、容量上限，只碰小节）。
+const taskMemoryDistiller = require('./src/memory/task-distill').createTaskMemoryDistiller({
+  fs,
+  path,
+  taskDir: (dirId, taskId) => folderMemory.taskDir(dirId, taskId),
+  listFiles: dir => folderMemory.listFiles(dir),
+  logger,
 });
 mountSessionMemoryRoutes(app, {
   fs,
@@ -2548,6 +2562,15 @@ workspaceAdmission = require('./src/workspace/admission').createWorkspaceAdmissi
   pendingInput: id => userInputSignalHost.pending(id), loadHistory: id => viewChatHistory(id),
   budgets: { executionLimit: Number(process.env.MULTICC_WORKSPACE_RUN_LIMIT || 8), residentLimit: Number(process.env.MULTICC_WORKSPACE_RESIDENT_LIMIT || 128), restoreLimit: Number(process.env.MULTICC_WORKSPACE_RESTORE_LIMIT || 2), staleUncertainMs: Number(process.env.MULTICC_WORKSPACE_STALE_UNCERTAIN_MS || 300000) },
   log: (event, data) => logger.warn(event, data),
+  // P4 交付蒸馏：merge 回执 published 后把交付记录写进任务级记忆。
+  onIntegrationPublished: ({ sessionId, taskId, baseRef, operationId }) => {
+    if (!sessionId || !taskId) return;
+    taskMemoryDistiller.record({
+      dirId: persistedSessions.get(sessionId)?.dirId, taskId,
+      text: `交付记录：代码已合入 ${baseRef}（${String(operationId).slice(0, 24)}）`,
+      tag: '交付',
+    });
+  },
 });
 
 require('./src/workspace/air-routes').mountAirRoutes(app, {

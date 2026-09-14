@@ -8,7 +8,9 @@ const fail = code => Object.assign(new Error(code), { code });
 const key = (...parts) => createHash('sha256').update(JSON.stringify(parts)).digest('hex');
 
 // Host-only journal. There is deliberately no HTTP write port for these facts.
-function createDeliveryEvidence(store, { capture = captureCodeRevision, now = Date.now } = {}) {
+function createDeliveryEvidence(store, {
+  capture = captureCodeRevision, now = Date.now, onIntegrationPublished = null,
+} = {}) {
   const facts = createTaskFactsRepository(store);
   const get = (kind, id) => store.get('delivery:' + kind, id);
   const put = (kind, id, value) => store.set('delivery:' + kind, id, value);
@@ -93,6 +95,19 @@ function createDeliveryEvidence(store, { capture = captureCodeRevision, now = Da
           put('merge', operationId, completed);
           const latest = get('latest', sessionId);
           const run = latest && facts.getFact('run-result', latest.runId); if (run) correlate(run);
+          // P4 交付蒸馏：合并回执落库后通知宿主写任务级记忆。在事务提交路径之外
+          // 异步执行，失败不影响回执本身。run-result fact 把 binding 摊平在顶层。
+          if (typeof onIntegrationPublished === 'function') {
+            Promise.resolve().then(() => onIntegrationPublished({
+              sessionId,
+              taskId: run?.taskId || null,
+              runId: run?.id || null,
+              attemptId: run?.attemptId || null,
+              operationId,
+              baseRef: journal.baseRef,
+              integrationHead: journal.integrationHead,
+            })).catch(() => {});
+          }
           return { operationId, state: 'published' };
         });
       },
