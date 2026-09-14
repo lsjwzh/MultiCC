@@ -644,6 +644,9 @@ test('the host wires the quote action and routes late attribution to the view', 
   // rather than a re-render.
   assert.match(CHAT_SOURCE, /attachQuoteButton,/);
   assert.match(CHAT_SOURCE, /window\.MultiCCChatQuote\.quoteInto\(msgEl, document\)/);
+  // No composer, no quote action: the alternative is a button that reports the
+  // wrong reason when clicked.
+  assert.match(CHAT_SOURCE, /if \(!document\.getElementById\('input'\)\) return;/);
   assert.match(EVENT_SOURCE, /case 'chat_history_annotation':/);
   assert.match(EVENT_SOURCE, /annotateAttribution\?\.\(message\.messages\)/);
   // The view must hand the composer a bubble that has a durable id; an interim
