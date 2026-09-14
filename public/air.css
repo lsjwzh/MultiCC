@@ -39,11 +39,18 @@
 
 /* ── 运行中的彩虹圈 ──────────────────────────────────────────────────────
    老看板（manage.html 的 .card-border-rainbow）那套动画原样搬过来：8 段色相、
-   3s 一轮，圈和光晕同色一起走。两处必要的改动：
+   3s 一轮，圈和光晕同色一起走。三处必要的改动：
      · 画在 box-shadow 上而不是 border-color 上 —— Air 的行本身带边框，而边框在
        这套界面里是有话要说的（选中、跨目录的虚线），让彩虹去改它会把话搅乱；
      · 用 inset —— 任务行住在 #tasks、目录行住在 overflow:hidden 的网格里，向外的
-       光圈会被祖先裁成半圈，inset 的圈和晕都画在元素自己身上，裁不掉。
+       光圈会被祖先裁成半圈，inset 的圈和晕都画在元素自己身上，裁不掉；
+     · 画在 ::before 覆盖层上，而不是元素自己身上 —— 元素自身的 inset 圈按绘制顺序
+       落在「自己的背景之上、自己的后代之下」，只要有个不透明后代贴到 padding 边就
+       把那一条边盖掉。这行不是假想：目录视图里 air.js 会给 #library（.space-main）
+       挂 .active、鼠标停在卡片上时也一样，底色是不透明的 #eff6ff，于是卡片的上/左/
+       右三条边整条消失，只剩下面那一条 —— 就是「彩虹圈只有半边，有时候又是好的」。
+       覆盖层是自己生成的子元素，画在所有后代之上，不是兄弟层级谁也盖不住它。
+       用 ::before 而不是 ::after，是因为 #task-state 已经拿 ::after 画「 ›」箭头。
    谁拿到这个类不由这里决定：air-admin.js 问 status-presentation.js 要 spinner，
    注册表只给 running 设了它 —— 「出错的任务绝不动画」因此是一条规则。 */
 @keyframes air-rainbow-ring {
@@ -56,7 +63,19 @@
   85%  { box-shadow: inset 0 0 0 2px #8800ff, inset 0 0 14px #8800ff55; }
   100% { box-shadow: inset 0 0 0 2px #ff0000, inset 0 0 14px #ff000055; }
 }
-.ring-running { animation: air-rainbow-ring 3s linear infinite; }
+.ring-running { position: relative; }
+.ring-running::before {
+  content: "";
+  position: absolute;
+  /* 和元素一样大。inset 圈本来就画在 padding 边上（元素带 1px 边框时就是边框里侧），
+     inset:0 的绝对定位盒对着包含块的 padding 盒，两者是同一个矩形，圈不会挪位。 */
+  inset: 0;
+  /* 卡片 14px、列表里的行 10px、#task-state 8px —— 就地跟着自己的元素圆角走。 */
+  border-radius: inherit;
+  /* 盖在最上面，但点击得穿过去：卡片要能展开、行要能点开、箭头要能按。 */
+  pointer-events: none;
+  animation: air-rainbow-ring 3s linear infinite;
+}
 
 /* 圈要看得出来是个圈。卡片和侧栏行本来就圆角，拿来就能用；列表里的行是方的
    （它们是网格的单元格，靠自己那条 1px 分隔线画格子），直接套上去就是方形描边。
@@ -950,8 +969,9 @@ body.console-open #console-panel { transform: none; visibility: visible; }
 @media (prefers-reduced-motion: reduce) {
   * { scroll-behavior: auto !important; transition: none !important; }
   /* 停掉动画不等于把圈摘掉：圈是「这条在跑」的唯一视觉信号，摘了就等于对
-     晕动症用户关掉了这条状态。留一个不闪的静音版，跟老看板的处理一致。 */
-  .ring-running {
+     晕动症用户关掉了这条状态。留一个不闪的静音版，跟老看板的处理一致。
+     和会动的那版一样画在覆盖层上（覆盖层本身也还在，只是不再动）。 */
+  .ring-running::before {
     animation: none;
     box-shadow: inset 0 0 0 2px var(--accent), inset 0 0 14px #1678e833;
   }
