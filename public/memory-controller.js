@@ -93,8 +93,20 @@
         + (m.durationMs != null ? ` · ${m.durationMs}ms` : '');
     }
     const projects = data.projects || [];
-    if (!projects.length) { box.innerHTML = '<div class="mt-empty">暂无任何记忆文件。当会话把知识写进 memories/ 下的 .md 后，这里会出现层级。</div>'; return; }
-    box.innerHTML = projects.map(renderProject).join('');
+    const globalHtml = renderGlobalTiers(data);
+    if (!projects.length && !globalHtml) { box.innerHTML = '<div class="mt-empty">暂无任何记忆文件。当会话把知识写进 memories/ 下的 .md 后，这里会出现层级。</div>'; return; }
+    box.innerHTML = globalHtml + projects.map(renderProject).join('');
+  }
+
+  // 全局层：机器全局（_machine）+ CLI 特有（_cli/<cli>），不属于任何项目。
+  function renderGlobalTiers(data) {
+    const machine = data.machine;
+    const machineHtml = (machine && machine.files && machine.files.length)
+      ? renderGroup(machine, '🛡 机器全局记忆 (_machine)', 'machine', false) : '';
+    const cliHtml = (data.clis || [])
+      .filter(c => c.files && c.files.length)
+      .map(c => renderGroup(c, `⌨ CLI 记忆 · ${c.cli} (_cli/${c.cli})`, 'cli', false)).join('');
+    return machineHtml + cliHtml;
   }
 
   function tok(n) { return `<span class="mt-tok"><span class="tokn">~${(n || 0).toLocaleString()}</span> tok</span>`; }
@@ -102,6 +114,10 @@
   function renderProject(p) {
     const shared = (p.shared && p.shared.files && p.shared.files.length)
       ? renderGroup(p.shared, '公共记忆 (_shared)', 'shared', false) : '';
+    const skills = (p.skills || [])
+      .map(s => renderGroup(s, `🧩 技能 · ${s.skill}`, 'skill', true)).join('');
+    const tasks = (p.tasks || [])
+      .map(t => renderGroup(t, `🎯 任务 · ${t.taskId}`, 'task', true)).join('');
     const sessions = (p.sessions || [])
       .filter(s => s.files && s.files.length)
       .map(s => renderGroup(s, sessLabel(s), 'session', true)).join('');
@@ -112,7 +128,7 @@
         <span class="mt-count">${p.fileCount || 0} 文件 · ${(p.sessions || []).length} 会话</span>
         ${tok(p.tokens)}
       </div>
-      <div class="mt-body">${shared}${sessions || '<div class="mt-empty" style="padding:10px">该项目暂无会话记忆</div>'}</div>
+      <div class="mt-body">${shared}${skills}${tasks}${sessions || '<div class="mt-empty" style="padding:10px">该项目暂无会话记忆</div>'}</div>
     </div>`;
   }
 

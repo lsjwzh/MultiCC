@@ -246,3 +246,79 @@ test('seed write failure preserves existing contents and can be retried', t => {
   assert.equal(ensureBuiltinSharedMemory(path.dirname(file)), true);
   assert.equal(fs.readFileSync(file, 'utf8'), 'user content' + ENTRY_DELIMITER + DOCS_REGISTRY_RULE + '\n');
 });
+
+// ── 五层记忆（P1）：机器全局 / CLI / 任务 / 技能 ──────────────────────────
+
+test('five-tier helpers build the documented layout and reject unsafe segments', t => {
+  const f = fixture();
+  t.after(f.cleanup);
+  assert.equal(f.service.machineDir(), path.join(f.root, '_machine'));
+  assert.equal(f.service.cliDir('claude'), path.join(f.root, '_cli', 'claude'));
+  assert.equal(f.service.taskDir('d1', 'tsk_abc'), path.join(f.root, 'd1', 'tasks', 'tsk_abc'));
+  assert.equal(f.service.skillDir('d1', 'lark-doc'), path.join(f.root, 'd1', 'skills', 'lark-doc'));
+  // 段名白名单：路径穿越与非法字符一律拒绝。
+  for (const bad of ['', '..', 'a/b', 'a\\b', 'x y', '中文']) {
+    assert.equal(f.service.safeSegment(bad), null, `rejects ${JSON.stringify(bad)}`);
+  }
+  assert.equal(f.service.safeSegment('tsk_abc-1'), 'tsk_abc-1');
+  assert.equal(f.service.cliDir('../evil'), null);
+});
+
+test('buildBlock injects the five-tier waterfall and skips empty tiers', t => {
+  const f = fixture();
+  t.after(f.cleanup);
+  const record = { id: 's1', dirId: 'd1', cli: 'claude', taskState: { taskId: 'tsk_now' } };
+  f.service.ensureDirs(record);
+  // 空层：只有机器全局/CLI/任务的种子 README 会被 ensureDirs 建出来，但瀑布不注入空段。
+  let block = f.service.buildBlock(record);
+  assert.doesNotMatch(block, /【机器全局记忆/);
+  assert.doesNotMatch(block, /【CLI 记忆/);
+  assert.doesNotMatch(block, /【任务记忆/);
+  assert.match(block, /【私有记忆】/);
+  assert.match(block, /【公共记忆】/);
+  assert.ok(block.includes(path.join(f.root, '_machine')), 'lists the machine dir path');
+  assert.ok(block.includes(path.join(f.root, '_cli', 'claude')), 'lists the cli dir path');
+  assert.ok(block.includes(path.join(f.root, 'd1', 'tasks', 'tsk_now')), 'lists the task dir path');
+  assert.ok(block.includes('machine=本机全局'), 'documents the new scopes');
+
+  // 写入内容后各层注入。
+  fs.writeFileSync(path.join(f.service.machineDir(), 'MEMORY.md'), 'user is Zhuanz');
+  fs.writeFileSync(path.join(f.service.cliDir('claude'), 'MEMORY.md'), 'claude hates uv env');
+  fs.writeFileSync(path.join(f.service.taskDir('d1', 'tsk_now'), 'MEMORY.md'), 'goal: five tiers');
+  block = f.service.buildBlock(record);
+  assert.match(block, /【机器全局记忆（本机所有会话共享）】\n#### MEMORY\.md\nuser is Zhuanz/);
+  assert.match(block, /【CLI 记忆（claude）】\n#### MEMORY\.md\nclaude hates uv env/);
+  assert.match(block, /【任务记忆】\n#### MEMORY\.md\ngoal: five tiers/);
+
+  // 无绑定任务的会话不注入任务段，也不因缺任务目录而报错。
+  const noTask = { id: 's2', dirId: 'd1', cli: 'claude' };
+  f.service.ensureDirs(noTask);
+  block = f.service.buildBlock(noTask);
+  assert.doesNotMatch(block, /【任务记忆/);
+});
+
+test('scopeDir and curatedLimit map every scope to its tier with graduated caps', t => {
+  const f = fixture();
+  t.after(f.cleanup);
+  const record = { id: 's1', dirId: 'd1', cli: 'codex', taskState: { taskId: 'tsk_now' } };
+  f.service.ensureDirs(record);
+  assert.equal(f.service.scopeDir(record, 'machine'), path.join(f.root, '_machine'));
+  assert.equal(f.service.scopeDir(record, 'cli'), path.join(f.root, '_cli', 'codex'));
+  assert.equal(f.service.scopeDir(record, 'task'), path.join(f.root, 'd1', 'tasks', 'tsk_now'));
+  assert.equal(
+    f.service.scopeDir({ ...record, taskState: {} }, 'task', { taskId: 'tsk_old' }),
+    path.join(f.root, 'd1', 'tasks', 'tsk_old'),
+  );
+  assert.equal(f.service.scopeDir(record, 'skill', { skill: 'lark-doc' }), path.join(f.root, 'd1', 'skills', 'lark-doc'));
+  assert.equal(f.service.scopeDir(record, 'skill'), null, 'skill scope needs a skill name');
+  // 注入帽阶梯：全局/CLI/任务层显著小于会话层。
+  const limits = {
+    machine: f.service.curatedLimit('machine'),
+    cli: f.service.curatedLimit('cli'),
+    task: f.service.curatedLimit('task'),
+    skill: f.service.curatedLimit('skill'),
+    own: f.service.curatedLimit('own'),
+  };
+  assert.ok(limits.machine < limits.own && limits.cli < limits.own, 'global tiers are stricter than session tier');
+  assert.ok(limits.task > limits.machine, 'task tier is roomier than machine tier');
+});

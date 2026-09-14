@@ -68,6 +68,7 @@ function fixture() {
     applyCuratedMemoryAction,
     appendEvent: (...args) => events.push(args),
     workspaceBroadcast: (...args) => broadcasts.push(args),
+    directoriesKeys: () => ['d1'],
   });
   return {
     root, records, events, broadcasts, folderMemory, app,
@@ -150,4 +151,63 @@ test('curated action rejects system sessions and publishes event before workspac
   } finally {
     f.cleanup();
   }
+});
+
+// ── 五层扩展（P1）：machine/cli/task/skill scope ──────────────────────────
+
+test('curated action routes new scopes to their tier directories', t => {
+  const f = fixture();
+  t.after(f.cleanup);
+  const action = (scope, extra = {}) => invoke(f.app.routes.get('POST /api/sessions/:id/memory/action'), {
+    id: 's1',
+    body: { action: 'add', scope, content: `[fact] ${scope} tier fact`, ...extra },
+  });
+
+  let r = action('machine');
+  assert.equal(r.statusCode, 200, JSON.stringify(r.body));
+  assert.equal(r.body.file, path.join(f.root, '_machine', 'MEMORY.md'));
+  r = action('cli');
+  assert.equal(r.statusCode, 200);
+  assert.equal(r.body.file, path.join(f.root, '_cli', 'claude', 'MEMORY.md'));
+  r = action('task');
+  // fixture 会话无 taskState.taskId，无显式 taskId 时应拒绝。
+  assert.equal(r.statusCode, 400);
+  r = action('task', { taskId: 'tsk_explicit' });
+  assert.equal(r.statusCode, 200, JSON.stringify(r.body));
+  assert.equal(r.body.file, path.join(f.root, 'd1', 'tasks', 'tsk_explicit', 'MEMORY.md'));
+  r = action('skill');
+  assert.equal(r.statusCode, 400, 'skill scope requires a skill name');
+  r = action('skill', { skill: 'lark-doc' });
+  assert.equal(r.statusCode, 200);
+  assert.equal(r.body.file, path.join(f.root, 'd1', 'skills', 'lark-doc', 'MEMORY.md'));
+  r = action('bogus');
+  assert.equal(r.statusCode, 400);
+  r = action('task', { taskId: '../evil' });
+  assert.equal(r.statusCode, 400, 'path traversal in taskId rejected');
+
+  // 绑定了任务的会话：默认写入当前任务目录。
+  f.records.set('s1', { ...f.records.get('s1'), taskState: { taskId: 'tsk_now' } });
+  r = action('task', { taskId: undefined });
+  assert.equal(r.statusCode, 200);
+  assert.equal(r.body.file, path.join(f.root, 'd1', 'tasks', 'tsk_now', 'MEMORY.md'));
+});
+
+test('machine and cli curated writes fan out to every workspace broadcast', t => {
+  const f = fixture();
+  t.after(f.cleanup);
+  const action = scope => invoke(f.app.routes.get('POST /api/sessions/:id/memory/action'), {
+    id: 's1',
+    body: { action: 'add', scope, content: `[fact] ${scope} fact` },
+  });
+  assert.equal(action('machine').statusCode, 200);
+  assert.equal(action('cli').statusCode, 200);
+  assert.equal(action('own').statusCode, 200);
+  const targets = f.broadcasts.map(b => [b[0], b[1].scope]);
+  assert.ok(targets.some(([dirId, scope]) => dirId === 'd1' && scope === 'machine'));
+  assert.ok(targets.some(([dirId, scope]) => dirId === 'd1' && scope === 'cli'));
+  assert.deepEqual(
+    targets.filter(([, scope]) => scope === 'own'),
+    [['d1', 'own']],
+    'session-scoped writes stay single-cast',
+  );
 });

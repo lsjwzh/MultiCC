@@ -20,6 +20,16 @@
     missing:   { c: '#484f58', label: '未创建(悬空引用)' },
   };
   const kindOf = (t) => KIND[t] || KIND.note;
+  // scope 描边色：层级身份一眼可辨（机器全局金边 / CLI 紫边 / 任务橙边 / 技能青边 /
+  // 公共白边 / 会话无边）。此前只有 shared 有描边，其余层级无法区分。
+  const SCOPE_STROKE = {
+    machine: { c: '#e3b341', w: 2 },
+    cli: { c: '#bc8cff', w: 1.8 },
+    task: { c: '#f0883e', w: 1.8 },
+    skill: { c: '#39c5cf', w: 1.6 },
+    shared: { c: '#fff', w: 1.6 },
+  };
+  const scopeStrokeOf = (scope) => SCOPE_STROKE[scope] || null;
 
   let G = null;                 // { nodes, edges, meta, byId }
   let _memRaw = null;           // 全量 payload 缓存（切项目时客户端过滤，秒切）
@@ -121,10 +131,12 @@
     startSim(0.6); // 轻微动画收敛
   };
 
-  // 从全量 payload 过滤出单个项目的子图（记忆不跨项目，故边过滤只需两端都在集合内）
+  // 从全量 payload 过滤出单个项目的子图。全局层（_machine/_cli）不属于任何项目，
+  // 但对每个项目都保留：跨层 wikilink 的另一端不能因为切项目而消失。
   function filterPayload(raw, target) {
     if (!target || target === 'all') return { nodes: raw.nodes, edges: raw.edges, meta: raw.meta };
-    const nodes = raw.nodes.filter(n => n.dirId === target);
+    const isGlobalTier = (n) => n.scope === 'machine' || n.scope === 'cli';
+    const nodes = raw.nodes.filter(n => n.dirId === target || isGlobalTier(n));
     const ids = new Set(nodes.map(n => n.id));
     const edges = raw.edges.filter(e => ids.has(e.source) && ids.has(e.target));
     return { nodes, edges, meta: raw.meta };
@@ -250,9 +262,10 @@
     for (const nd of G.nodes) {
       const g = mk('g', { class: 'mem-node' + (nd.missing ? ' missing' : '') });
       const kc = kindOf(nd.type).c;
+      const ss = scopeStrokeOf(nd.scope);
       const circle = mk('circle', { r: nd.r, fill: kc,
-        stroke: nd.scope === 'shared' ? '#fff' : (nd.missing ? kc : 'rgba(0,0,0,.35)'),
-        'stroke-width': nd.scope === 'shared' ? 1.6 : 1,
+        stroke: ss ? ss.c : (nd.missing ? kc : 'rgba(0,0,0,.35)'),
+        'stroke-width': ss ? ss.w : 1,
         'stroke-dasharray': nd.missing ? '2 2' : '',
         'fill-opacity': nd.missing ? 0.5 : 0.92 });
       // 标签默认只在有关联(度>0)的节点上常显，孤立节点悬停时才显示，避免密集时糊成一片
@@ -380,10 +393,23 @@
   function renderLegend() {
     const box = el('mem-graph-legend'); if (!box) return;
     const kinds = new Set(G ? G.nodes.map(n => n.type) : []);
+    const scopes = new Set(G ? G.nodes.map(n => n.scope) : []);
     const order = ['project', 'feedback', 'user', 'reference', 'index', 'auto', 'note', 'missing'];
+    const SCOPE_LEGEND = {
+      machine: ['机器全局', '#e3b341'],
+      cli: ['CLI 特有', '#bc8cff'],
+      task: ['任务级', '#f0883e'],
+      skill: ['技能级', '#39c5cf'],
+      shared: ['公共记忆', '#fff'],
+    };
+    const scopeHtml = Object.entries(SCOPE_LEGEND)
+      .filter(([k]) => scopes.has(k))
+      .map(([k, [label, c]]) =>
+        `<span class="lg" style="opacity:.85"><span class="sw" style="background:transparent;border:1.6px solid ${c}"></span>${label}</span>`)
+      .join('');
     box.innerHTML = order.filter(k => kinds.has(k)).map(k =>
       `<span class="lg"><span class="sw" style="background:${kindOf(k).c}"></span>${escapeHtml(kindOf(k).label)}</span>`
-    ).join('') + `<span class="lg" style="opacity:.7"><span class="sw" style="background:transparent;border:1.6px solid #fff"></span>公共记忆(shared)</span>`;
+    ).join('') + scopeHtml;
   }
   function showEmpty(msg) {
     const e = el('mem-graph-empty'); if (!e) return;
@@ -401,7 +427,13 @@
     const linksBox = el('mem-node-links'), modal = el('mem-node-modal');
     if (!titleEl || !slugEl || !tags || !summaryEl || !linksBox || !modal) return;
     titleEl.textContent = nd.title || nd.slug;
-    const scopeTxt = nd.scope === 'shared' ? '公共记忆' : nd.scope === 'session' ? ('会话私有 · ' + (nd.sessionId || '')) : nd.scope;
+    const SCOPE_NAMES = {
+      machine: '机器全局', cli: 'CLI 特有 · ' + (nd.sub || ''), task: '任务级 · ' + (nd.sub || ''),
+      skill: '技能级 · ' + (nd.sub || ''), shared: '公共记忆',
+    };
+    const scopeTxt = nd.scope === 'session'
+      ? ('会话私有 · ' + (nd.sessionId || ''))
+      : (SCOPE_NAMES[nd.scope] || nd.scope);
     slugEl.textContent = nd.file + '   ·   ' + scopeTxt;
     tags.innerHTML = '';
     const addTag = (t) => { const s = document.createElement('span'); s.className = 'mn-tag'; s.textContent = t; tags.appendChild(s); };
