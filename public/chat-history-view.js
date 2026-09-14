@@ -512,6 +512,13 @@
       return { currentElement, lastUserElement };
     }
 
+    // 正在流式输出的助手气泡（还没有持久 id 的那个）。迟到的用户消息要插到它
+    // 前面，而不是 append 到它后面 —— 问题永远在自己的回答上方。
+    function streamingAssistantTail(hostState = {}) {
+      if (hostState.currentElement?.classList?.contains?.('assistant')) return hostState.currentElement;
+      return Array.from(messagesEl.querySelectorAll('.msg.assistant:not([data-msg-id])')).pop() || null;
+    }
+
     function commitMessage(message, hostState = {}) {
       const source = message && typeof message === 'object' ? message : {};
       if (!source.id || !source.role) {
@@ -569,6 +576,21 @@
           if (prev && sameSource(prev) && assistantNodeContained(prev, source)
               && stableToolsString(source.tools) === (prev.dataset.rawTools || stableToolsString(null))) {
             prev.remove();
+          }
+        }
+        // 迟到的用户提交不能落在流式回答下面：队列消息 started 之后才回填的
+        // chat_msg_meta、queued:false 广播丢失后的补画，都可能晚于 message_start
+        // ——那时流式助手气泡已经在列表尾了。插入位在它之前（同 App 侧
+        // userBubbleInsertIndex 的 web 版）。
+        if (source.role === 'user') {
+          const streamingTail = streamingAssistantTail(hostState);
+          if (streamingTail) {
+            messagesEl.insertBefore(node, streamingTail);
+            return Object.freeze({
+              node,
+              currentElement: hostState.currentElement || null,
+              lastUserElement: node,
+            });
           }
         }
         messagesEl.appendChild(node);
