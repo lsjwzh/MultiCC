@@ -106,6 +106,8 @@
       ? settings.attachDeleteButton : function noop() {};
     const attachForkButton = typeof settings.attachForkButton === 'function'
       ? settings.attachForkButton : function noop() {};
+    const attachQuoteButton = typeof settings.attachQuoteButton === 'function'
+      ? settings.attachQuoteButton : function noop() {};
     const warn = typeof settings.warn === 'function' ? settings.warn : function noop() {};
 
     function truncate(value, limit) {
@@ -335,12 +337,23 @@
       return state;
     }
 
+    // Which task a message belongs to is decided by the server's task
+    // attribution, sometimes a turn after the bubble was rendered. Stamp it on
+    // the bubble either way and the quote action can read a message's whole
+    // origin — subtask, turn, execution, instant — without a second lookup.
+    function stampProvenance(node, source) {
+      if (!node || !source) return;
+      for (const field of ['taskId', 'taskName', 'turnId', 'auxRunId', 'sourceSessionId', 'sourceMessageId']) {
+        if (typeof source[field] === 'string' && source[field]) node.dataset[field] = source[field];
+      }
+      const ts = Number(source.ts);
+      if (Number.isFinite(ts) && ts > 0) node.dataset.ts = String(ts);
+    }
+
     function attachMessageActions(node, message) {
       if (message.clientMsgId) node.dataset.clientMsgId = message.clientMsgId;
       if (!message.id) return;
       node.dataset.msgId = message.id;
-      if (message.sourceSessionId) node.dataset.sourceSessionId = message.sourceSessionId;
-      if (message.sourceMessageId) node.dataset.sourceMessageId = message.sourceMessageId;
       if (message._interim || message.sourceMessageId?.startsWith('live-')) node.dataset.shellInterim = '1';
       // Stash the raw content text so a later duplicate-detection pass can
       // compare "is the previous assistant contained by the latest one" using
@@ -349,8 +362,10 @@
         try { node.dataset.rawText = asText(message.content); } catch (_) {}
         try { node.dataset.rawTools = stableToolsString(message.tools); } catch (_) {}
       }
+      stampProvenance(node, message);
       attachDeleteButton(node);
       attachForkButton(node);
+      attachQuoteButton(node);
     }
 
     // A 🔇-prefixed user message is a system-injected "please continue" nudge,
@@ -795,10 +810,10 @@
       if (clientNode) {
         if (!clientNode.dataset.msgId) {
           clientNode.dataset.msgId = id;
-          if (source.sourceSessionId) clientNode.dataset.sourceSessionId = source.sourceSessionId;
-          if (source.sourceMessageId) clientNode.dataset.sourceMessageId = source.sourceMessageId;
+          stampProvenance(clientNode, source);
           attachDeleteButton(clientNode);
           attachForkButton(clientNode);
+          attachQuoteButton(clientNode);
         }
         return clientNode;
       }
@@ -807,15 +822,33 @@
       const node = nodes[nodes.length - 1];
       if (!node || node.dataset.msgId) return node || null;
       node.dataset.msgId = id;
-      if (source.sourceSessionId) node.dataset.sourceSessionId = source.sourceSessionId;
-      if (source.sourceMessageId) node.dataset.sourceMessageId = source.sourceMessageId;
+      stampProvenance(node, source);
       attachDeleteButton(node);
       attachForkButton(node);
+      attachQuoteButton(node);
       return node;
+    }
+
+    // Task attribution for a finished turn arrives after its bubbles are already
+    // on screen. Apply it in place — re-rendering the page for a metadata patch
+    // would fight the live tail, scroll position and in-flight edits.
+    function annotateAttribution(records) {
+      if (!Array.isArray(records)) return 0;
+      let applied = 0;
+      for (const record of records) {
+        if (!record || !record.id) continue;
+        const node = findById(record.id)
+          || historyElements().find(candidate => candidate.dataset.sourceMessageId === record.id);
+        if (!node) continue;
+        stampProvenance(node, record);
+        applied += 1;
+      }
+      return applied;
     }
 
     return Object.freeze({
       addToolResult,
+      annotateAttribution,
       appendToolCard,
       applyPlan,
       clearMessages,

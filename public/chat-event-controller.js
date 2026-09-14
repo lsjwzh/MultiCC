@@ -519,6 +519,13 @@
           host.applyHistoryPlan?.(historyStore.acceptHistory(message, historyView.visibleIds()));
           break;
         case 'chat_history_reset': handleHistoryReset(message); break;
+        // A turn's task attribution is decided when the turn ends, which is
+        // after its bubbles are already on screen. Patch those bubbles rather
+        // than reload the page: the quote action reads the attribution off the
+        // DOM, and a re-render would drop the live tail mid-answer.
+        case 'chat_history_annotation':
+          historyView.annotateAttribution?.(message.messages);
+          break;
         case 'native_context_rotated':
           host.addSystemMsg?.(message.reused
             ? host.translate?.('rotateNativeContextReused')
