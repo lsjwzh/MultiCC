@@ -56,13 +56,13 @@ test('parser keeps continuations on the existing task and permits genuinely new 
     taskName: '登录页样式调整', phase: 'implementing', relation: 'same', taskId: 'tsk-login',
   })), {
     taskName: '登录页样式调整', phase: 'implementing', relation: 'same', taskId: 'tsk-login',
-    relatedTaskId: null,
+    relatedTaskId: null, memoryCandidate: null,
   });
   assert.deepEqual(parseTaskAttribution(JSON.stringify({
     taskName: '增加导出功能', phase: 'planning', relation: 'new', taskId: 'tsk-login',
   })), {
     taskName: '增加导出功能', phase: 'planning', relation: 'new', taskId: null,
-    relatedTaskId: null,
+    relatedTaskId: null, memoryCandidate: null,
   });
 });
 
@@ -75,16 +75,17 @@ test('new related tasks keep a distinct identity and accept only a recent relate
     allowedTaskIds: ['tsk-candidate', 'tsk-login'],
   }), {
     taskName: '登录页截图测试', phase: 'planning', relation: 'new', taskId: null,
-    relatedTaskId: 'tsk-login',
+    relatedTaskId: 'tsk-login', memoryCandidate: null,
   });
   assert.equal(parseTaskAttribution(JSON.stringify({
     taskName: '伪造关联', relation: 'new', relatedTaskId: 'tsk-hallucinated',
   }), {
     fallbackTaskId: 'tsk-candidate', allowedTaskIds: ['tsk-candidate', 'tsk-login'],
   }).relatedTaskId, null);
+  // P4：relation=same 时 relatedTaskId 允许保留——只形成弱分组边，不改归属。
   assert.equal(parseTaskAttribution(JSON.stringify({
     taskName: '同一任务续作', relation: 'same', taskId: 'tsk-login', relatedTaskId: 'tsk-other',
-  }), { allowedTaskIds: ['tsk-login', 'tsk-other'] }).relatedTaskId, null);
+  }), { allowedTaskIds: ['tsk-login', 'tsk-other'] }).relatedTaskId, 'tsk-other');
 });
 
 test('same-task attribution cannot select a task id absent from recent history', () => {
@@ -139,7 +140,7 @@ test('legacy raw Aux text remains replayable as same-task naming evidence', () =
     fallbackTaskId: 'tsk-login',
   }), {
     taskName: '登录页样式调整', phase: 'verifying', relation: 'same', taskId: 'tsk-login',
-    relatedTaskId: null,
+    relatedTaskId: null, memoryCandidate: null,
   });
 });
 

@@ -26,7 +26,9 @@ const DEFAULT_STALE_UNCERTAIN_MS = 5 * 60 * 1000;
 function createWorkspaceAdmission(deps) {
   const store = createTaskShellStore(deps.file);
   const registry = createWorkspaceRegistry(store, deps.budgets);
-  const evidence = require('../task-routing/evidence').createDeliveryEvidence(store);
+  const evidence = require('../task-routing/evidence').createDeliveryEvidence(store, {
+    onIntegrationPublished: deps.onIntegrationPublished,
+  });
   const permits = new WeakSet(), active = new Map();
   let closed = false;
   const settleTimer = setInterval(() => {
