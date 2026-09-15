@@ -59,6 +59,7 @@ function createFakeShare() {
       expiresAt: record.expiresAt || null,
       createdAt: record.createdAt,
       label: record.label || null,
+      publicBaseUrl: record.publicBaseUrl || null,
     };
   }
 
@@ -77,6 +78,7 @@ function createFakeShare() {
         label: options.label,
         password: options.password || null,
         expiresAt: options.expiresAt || null,
+        publicBaseUrl: options.publicBaseUrl || null,
         createdAt: 123,
       };
       records.set(record.token, record);
@@ -94,6 +96,7 @@ function createFakeShare() {
         label: options.label,
         password: options.password || null,
         expiresAt: options.expiresAt || null,
+        publicBaseUrl: options.publicBaseUrl || null,
         createdAt: 123,
       };
       records.set(record.token, record);
@@ -204,6 +207,62 @@ test('admin create keeps the legacy DTO, label fallback, URL, and system-session
   });
   assert.equal(res.statusCode, 400);
   assert.deepEqual(res.body, { error: 'operate share requires a password' });
+});
+
+test('create builds the link on the named root instead of the caller Host', () => {
+  const { deps, fakeShare } = createHarness();
+  const routes = createShareRoutes(deps);
+
+  // 管理页多半开在 127.0.0.1 上：不指定根域时，生成的链接对方根本打不开。
+  let res = invoke(routes.createSessionShare, {
+    params: { id: 's1' },
+    protocol: 'http',
+    host: '127.0.0.1:3000',
+    body: { access: 'view', publicBaseUrl: 'https://mac.tail94695a.ts.net/' },
+  });
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.url, `https://mac.tail94695a.ts.net/share/${res.body.token}`);
+  // 存的是剥掉路径和尾斜杠的根域，不是用户粘进来的原串。
+  assert.equal(res.body.publicBaseUrl, 'https://mac.tail94695a.ts.net');
+  assert.equal(fakeShare.calls[0][2].publicBaseUrl, 'https://mac.tail94695a.ts.net');
+
+  // 重新列出来还得是同一条链接。否则管理员关掉再打开对话框，会看到另一个地址，
+  // 分不清哪条才是发出去的。
+  res = invoke(routes.listSessionShares, { params: { id: 's1' }, protocol: 'http', host: '127.0.0.1:3000' });
+  assert.equal(res.body.shares[0].url, `https://mac.tail94695a.ts.net/share/${res.body.shares[0].token}`);
+});
+
+test('message-snapshot shares accept the same link root', () => {
+  const { deps } = createHarness();
+  const routes = createShareRoutes(deps);
+  const res = invoke(routes.createMessageShare, {
+    params: { id: 's1' },
+    protocol: 'http',
+    host: '127.0.0.1:3000',
+    body: { indices: [0, 2], publicBaseUrl: 'https://abc.vicp.fun' },
+  });
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.url, `https://abc.vicp.fun/share/${res.body.token}`);
+});
+
+test('create rejects a link root that is not a bare http(s) origin', () => {
+  const { deps, fakeShare } = createHarness();
+  const routes = createShareRoutes(deps);
+  const rejected = [
+    'javascript:alert(1)',
+    'ftp://files.example.test',
+    'not a url',
+    'https://user:pw@share.example.test',
+    `https://${'a'.repeat(3000)}.example.test`,
+  ];
+  for (const publicBaseUrl of rejected) {
+    const res = invoke(routes.createSessionShare, { params: { id: 's1' }, body: { publicBaseUrl } });
+    assert.equal(res.statusCode, 400, `must reject ${publicBaseUrl.slice(0, 40)}`);
+    assert.deepEqual(res.body, { error: 'publicBaseUrl must be an http(s) URL' });
+  }
+  // 一个坏根域不能被悄悄忽略掉换成 Host：那样用户会拿到一条看着成功、
+  // 实际指向 localhost 的链接。
+  assert.equal(fakeShare.calls.length, 0, 'a rejected root must not create a share');
 });
 
 test('admin list and revoke keep URLs, ownership checks, and idempotent missing-token result', () => {

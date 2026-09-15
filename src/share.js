@@ -27,6 +27,7 @@ const { timingSafeEqualText } = require('./auth-security');
 
 const FILE = createPaths({ dataDir: process.env.MULTICC_DATA_DIR }).sharesFile;
 const MAX_SHARE_PASSWORD_BYTES = 4096;
+const MAX_PUBLIC_BASE_URL_LENGTH = 2048;
 let shares = {}; // token -> record
 
 function load() {
@@ -62,6 +63,23 @@ function normalizePassword(password) {
   return value;
 }
 
+// The root domain a share link is built on. The admin's browser is frequently
+// on 127.0.0.1 (which is useless to whoever receives the link), so create may
+// name the root explicitly — normally a configured tunnel address. Only a bare
+// http(s) origin is kept: the token is appended to the root, so a path or an
+// embedded credential would silently build a link that points somewhere else.
+function normalizePublicBaseUrl(value) {
+  if (value == null || value === '') return null;
+  const text = String(value).trim();
+  if (!text) return null;
+  if (text.length > MAX_PUBLIC_BASE_URL_LENGTH) throw new Error('invalid share base url');
+  let parsed;
+  try { parsed = new URL(text); } catch { throw new Error('invalid share base url'); }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('invalid share base url');
+  if (parsed.username || parsed.password) throw new Error('invalid share base url');
+  return parsed.origin;
+}
+
 function normalizeExpiresAt(expiresAt) {
   if (expiresAt == null || expiresAt === '') return null;
   const value = Number(expiresAt);
@@ -80,13 +98,14 @@ function publicRec(r) {
     messageCount: r.type === 'messages' ? (r.messages ? r.messages.length : 0) : undefined,
     hasPassword: !!r.pwHash, expiresAt: r.expiresAt || null,
     createdAt: r.createdAt, label: r.label || null,
+    publicBaseUrl: r.publicBaseUrl || null,
   };
 }
 
 function isExpired(r) { return !!(r && r.expiresAt && Date.now() > r.expiresAt); }
 
 // Create a share. access: 'view'|'operate'. operate requires a password.
-function create(sessionId, { access, password, expiresAt, label } = {}) {
+function create(sessionId, { access, password, expiresAt, label, publicBaseUrl } = {}) {
   const lvl = access === 'operate' ? 'operate' : 'view';
   const safePassword = normalizePassword(password);
   if (lvl === 'operate' && !safePassword) {
@@ -98,6 +117,7 @@ function create(sessionId, { access, password, expiresAt, label } = {}) {
     createdAt: Date.now(),
     expiresAt: normalizeExpiresAt(expiresAt),
     label: label || null,
+    publicBaseUrl: normalizePublicBaseUrl(publicBaseUrl),
     salt: null, pwHash: null, secret: crypto.randomBytes(16).toString('hex'),
   };
   if (safePassword) {
@@ -111,12 +131,13 @@ function create(sessionId, { access, password, expiresAt, label } = {}) {
 // Create a read-only snapshot share of selected messages. The messages are
 // COPIED at share time, so the link is stable even if the session later changes
 // or is deleted, and it never exposes the live session. access is always 'view'.
-function createMessageShare(sessionId, messages, { password, expiresAt, label } = {}) {
+function createMessageShare(sessionId, messages, { password, expiresAt, label, publicBaseUrl } = {}) {
   if (!Array.isArray(messages) || messages.length === 0) throw new Error('no messages to share');
   const safePassword = normalizePassword(password);
   const token = crypto.randomBytes(18).toString('base64url');
   const rec = {
     token, sessionId, access: 'view', type: 'messages',
+    publicBaseUrl: normalizePublicBaseUrl(publicBaseUrl),
     messages: messages.map(m => ({
       role: m.role === 'user' ? 'user' : 'assistant',
       content: typeof m.content === 'string' ? m.content : '',
@@ -219,9 +240,9 @@ function access(token, { cookies = {}, password } = {}) {
 }
 
 module.exports = {
-  MAX_SHARE_PASSWORD_BYTES,
+  MAX_SHARE_PASSWORD_BYTES, MAX_PUBLIC_BASE_URL_LENGTH,
   create, createMessageShare, get, publicRec, listForSession, remove, removeForSession,
   verifyPassword, authCookieValue, access,
-  normalizeExpiresAt, normalizePassword,
+  normalizeExpiresAt, normalizePassword, normalizePublicBaseUrl,
   cookieName: (token) => `multicc_share_${token}`,
 };

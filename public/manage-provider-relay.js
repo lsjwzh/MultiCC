@@ -54,38 +54,12 @@ function _relayOverlay(innerHtml) {
   return { overlay, close };
 }
 
-// Candidate public base URLs for the relay: the address the page is opened
-// on, the LAN address from /api/server-info, and any configured/verified
-// tunnel addresses from /api/settings/tunnel. Best-effort — a dead endpoint
-// just yields fewer options, never a broken dialog.
+// Candidate public base URLs for the relay. The collection itself lives in
+// base-url-options.js — the session-share dialog asks the same question, and
+// the two must not drift into two different answers. Only the JSON reader
+// differs: this page goes through manage.js's providerApi.
 async function _relayBaseOptions() {
-  const seen = new Set();
-  const opts = [];
-  const push = (url, label) => {
-    const u = String(url || '').replace(/\/+$/, '');
-    if (!/^https?:\/\//.test(u) || seen.has(u)) return;
-    seen.add(u);
-    opts.push({ url: u, label });
-  };
-  push(location.origin, '当前页面地址');
-  try {
-    const info = await providerApi.json('/api/server-info');
-    const lanUrls = info && Array.isArray(info.lanUrls) ? info.lanUrls : [];
-    if (lanUrls.length) lanUrls.forEach((url, index) => push(url, lanUrls.length > 1 ? `局域网 ${index + 1}` : '局域网'));
-    else if (info && info.lanAvailable !== false && info.ip) push(`http://${info.ip}:${info.port || 3000}`, '局域网');
-  } catch (_) {}
-  try {
-    const st = await providerApi.json('/api/settings/tunnel');
-    const cfg = (st && st.config) || {};
-    const pr = (st && st.providers) || {};
-    for (const name of ['tailscale', 'phddns', 'natapp', 'cpolar', 'sakurafrp']) {
-      const publicUrl = pr[name] && pr[name].publicUrl;
-      if (publicUrl) push(publicUrl, `公网(${name})`);
-      const cfgUrl = cfg[name] && cfg[name].url;
-      if (cfgUrl) push(cfgUrl, `穿透(${name})`);
-    }
-  } catch (_) {}
-  return opts;
+  return multiccBaseUrlOptions({ json: (url) => providerApi.json(url) });
 }
 
 function _relayDate(value) {
