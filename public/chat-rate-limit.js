@@ -291,7 +291,11 @@
   });
   const codexSlot = createQuotaSlot({
     kind: 'codex', id: 'codex-quota-bar',
-    isVisible: () => currentCli === 'codex',
+    // /api/codex/quota is THIS machine's Official account. A codex-proxy
+    // provider is a borrowed account, so showing the host subscription beside
+    // it is an account-boundary violation (and was the reason a borrowed chat
+    // displayed the host's 8% instead of the lender's 65%).
+    isVisible: () => currentCli === 'codex' && !isRelayBaseUrl(currentProviderBaseUrl),
     getUrl: () => `/api/quota/bars/refresh${quotaBarParams({ kind: 'codex' })}`,
     storageKey: 'multicc.codex.quota.v1',
   });
@@ -383,7 +387,13 @@
     const claudeProvider = isClaudeProvider(currentProviderBaseUrl);
     const provider = limitProvider();
     let bar = null, state, clickable = false;
-    if (currentCli === 'claude' && claudeProvider) {
+    const relayProtocol = relayProtocolFromBaseUrl(currentProviderBaseUrl);
+    if (currentRelayBar && relayProtocol
+        && (currentCli === relayProtocol || currentCli === 'opencode')) {
+      // Provider balance polling can return before any passive WS limit event.
+      // Its server-rendered bar is already provider-scoped and authoritative.
+      bar = currentRelayBar;
+    } else if (currentCli === 'claude' && claudeProvider) {
       // Claude subscription: the scrape (full, with weekly) is authoritative;
       // before it lands the live 5h event or the idle render stands in.
       bar = (currentClaudeUsage && currentClaudeUsage.bar) || currentRelayBar || currentLimitBar || idleBarFor('claude');
@@ -450,8 +460,9 @@
       const res = await fetch(`/api/providers/${protocol}/${encodeURIComponent(currentProviderId)}/balance`, { credentials: 'same-origin' });
       const data = await res.json();
       if (revision !== providerRevision || !data || data.ok !== true) return null;
-      currentRelayBar = data.bar || null;
-      if (data.dto?.kind === 'balance') currentBalanceBar = data.bar || null;
+      const kind = data.dto?.kind;
+      currentRelayBar = kind === 'window' ? (data.bar || null) : null;
+      currentBalanceBar = kind === 'balance' ? (data.bar || null) : null;
       renderAll();
       return currentRelayBar;
     } catch (_) { return null; }
@@ -580,8 +591,7 @@
       }
       scheduleExpiry();
     }
-    renderCurrent(); renderBalance();
-    arkSlot.render(); zhipuSlot.render(); kimiSlot.render();
+    renderAll();
     // A provider switch must immediately reflect the new provider's quota: pull
     // fresh data for whichever vendor the new baseUrl points at. The error
     // backoff is cleared first — it exists to stop a broken endpoint from being

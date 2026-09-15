@@ -43,7 +43,7 @@ function harness({ adapters, fail = [], throwOn = [] } = {}) {
         return { kind: 'balance', available: true, currency: 'CNY', total: 12.5, granted: 0, toppedUp: 12.5 };
       },
       'glm-monitor': async () => ({ kind: 'window', rateLimitType: 'five_hour', status: 'allowed', utilization: 0.42, resetsAt: null, weeklyUtilization: 0.1 }),
-      'codex-oauth-usage': async () => ({ kind: 'window', rateLimitType: 'weekly', status: 'allowed', utilization: 0.77, resetsAt: null }),
+      'codex-oauth-usage': async () => ({ kind: 'window', rateLimitType: 'weekly', status: 'allowed', utilization: 0.77, resetsAt: 1_700_003_600, tier: 'pro' }),
     },
   });
   return { runtime, seen };
@@ -110,6 +110,10 @@ test('queryAll reports one row per provider, including unpollable ones', async (
   assert.equal(byId['ds-1'].name, 'DeepSeek');
   assert.equal(byId['glm-1'].dto.utilization, 0.42);
   assert.equal(byId['codex-official'].dto.rateLimitType, 'weekly');
+  assert.match(byId['codex-official'].bar.text, /\{cd:1700003600000\}/,
+    'epoch seconds are converted to milliseconds exactly once');
+  assert.match(byId['codex-official'].bar.title, /套餐: pro/);
+  assert.match(byId['codex-official'].bar.title, /剩余 23%/);
   assert.equal(byId['plain-1'].ok, false);
   assert.equal(byId['plain-1'].reason, 'unsupported');
 });

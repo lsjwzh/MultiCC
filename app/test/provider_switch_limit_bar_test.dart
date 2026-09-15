@@ -15,6 +15,7 @@ class _StubQuotaService extends QuotaService {
   _StubQuotaService(SettingsService settings) : super(settings: settings);
 
   final arkBaseUrls = <String?>[];
+  final providerBalanceCalls = <String>[];
 
   @override
   Future<Map<String, dynamic>?> fetchArkQuota(String? baseUrl) async {
@@ -24,6 +25,33 @@ class _StubQuotaService extends QuotaService {
 
   @override
   Future<Map<String, dynamic>?> fetchZhipuQuota(String? host) async => null;
+
+  @override
+  Future<Map<String, dynamic>?> fetchCodexQuota() async => {
+    'status': 'ok',
+    'bar': {
+      'text': 'Host · 1wk 8%',
+      'color': '#58a6ff',
+      'title': 'host account',
+    },
+  };
+
+  @override
+  Future<Map<String, dynamic>?> fetchProviderBalance(
+    String appType,
+    String providerId,
+  ) async {
+    providerBalanceCalls.add('$appType:$providerId');
+    return {
+      'ok': true,
+      'dto': {'kind': 'window', 'provider': 'codex'},
+      'bar': {
+        'text': 'Borrowed · 1wk 65%',
+        'color': '#58a6ff',
+        'title': 'lender account',
+      },
+    };
+  }
 }
 
 /// Regression: switching provider in the app used to leave the limit bar on
@@ -135,6 +163,45 @@ void main() {
   });
 
   test(
+    'borrowed Codex shows the lender limit and hides the host account',
+    () async {
+      final s = await settings();
+      final quota = _StubQuotaService(s);
+      final provider = ChatProvider(
+        settings: s,
+        sessionName: 'test-session',
+        sessionCwd: '/tmp/x',
+        quotaService: quota,
+      );
+      addTearDown(provider.dispose);
+
+      provider.applyCliConfig(
+        const SessionCliConfig(
+          cli: SessionCli.codex,
+          provider: 'official',
+          providerBaseUrl: '',
+          model: 'gpt-test',
+        ),
+      );
+      provider.applyProviderSwitch(
+        const SessionCliConfig(
+          cli: SessionCli.codex,
+          provider: 'borrowed',
+          providerBaseUrl: 'https://relay.example/codex-proxy/official',
+          model: 'gpt-test',
+        ),
+      );
+      for (var i = 0; i < 3; i++) {
+        await Future<void>.delayed(Duration.zero);
+      }
+
+      expect(quota.providerBalanceCalls, ['codex:borrowed']);
+      expect(provider.codexQuotaView, isNull);
+      expect(provider.limitView?.text, 'Borrowed · 1wk 65%');
+    },
+  );
+
+  test(
     'Auto policy choice is not actual until a physical route event',
     () async {
       final s = await settings();
@@ -147,14 +214,8 @@ void main() {
       addTearDown(provider.dispose);
 
       provider.applyProviderCatalog(const <Map<String, dynamic>>[
-        {
-          'id': 'p1',
-          'baseUrl': 'https://api.deepseek.com/anthropic',
-        },
-        {
-          'id': 'p2',
-          'baseUrl': 'https://open.bigmodel.cn/api/anthropic',
-        },
+        {'id': 'p1', 'baseUrl': 'https://api.deepseek.com/anthropic'},
+        {'id': 'p2', 'baseUrl': 'https://open.bigmodel.cn/api/anthropic'},
       ]);
       provider.applyProviderSwitch(
         const SessionCliConfig(
