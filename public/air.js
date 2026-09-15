@@ -1130,6 +1130,114 @@
     return button;
   }
 
+  // ── 任务生命周期操作：归档 / 恢复 / 移动 / 删除 ─────────────────────────
+  // 后端能力都在 task-board 路由上（status / relocate / DELETE），这里只是把
+  // 它们接到任务详情面板。
+  const TASK_ACTION_ERRORS = {
+    task_busy: '任务正在执行或排队中，等它空闲下来再操作。',
+    task_archived: '任务已归档。',
+    task_deleting: '任务正在删除中，请稍等。',
+    task_workspace_dirty: '工作区还有未提交改动：请先在任务里让它提交或清理，再删除。',
+    task_workspace_unmerged: '工作区还有未合并到基分支的提交：请先合并，再删除。',
+    task_session_shared: '会话还被其他任务共享，无法删除。',
+    shell_workspace_referenced: '工作区被其他会话引用，无法删除。',
+    task_shell_shared: '任务的会话壳还挂着别的任务，不能整体移动。',
+    carry_apply_failed: '未提交改动套用到目标仓库失败（两个目录的代码上下文不兼容），任务仍留在原处。',
+    active: '会话仍活跃，请稍后再试。',
+    unmerged: '还有未合并到基分支的提交：请先在任务详情里合并，再移动。',
+  };
+  function taskActionError(error) {
+    return TASK_ACTION_ERRORS[error?.code || ''] || TASK_ACTION_ERRORS[error?.message || '']
+      || TASK_ACTION_ERRORS[(error?.reasons || [])[0] || ''] || error?.message || '操作失败';
+  }
+
+  // 按钮点击即禁用、回来再放开；错误码统一翻成中文。
+  async function taskAction(name, run) {
+    const buttons = [...document.querySelectorAll(`[data-action="${name}"]`)];
+    buttons.forEach(button => { button.disabled = true; });
+    try { await run(); }
+    catch (error) { notice(taskActionError(error)); }
+    finally { buttons.forEach(button => { button.disabled = false; }); }
+  }
+
+  // refresh() 会把 notice 清空（它自己也要报迁移告警），所以成功文案一律在
+  // 刷新之后写，否则用户点完什么也看不到。
+  async function archiveTask(archive) {
+    if (!taskId) return;
+    await taskAction(archive ? 'archive' : 'restore', async () => {
+      await api(`/api/task-board/tasks/${encodeURIComponent(taskId)}/status`, { status: archive ? 'archived' : 'active' });
+      await refresh();
+      notice(archive ? '任务已归档；归档的任务不再执行，随时可以恢复。' : '任务已恢复。');
+    });
+  }
+
+  async function deleteTask() {
+    if (!taskId || !entry) return;
+    const title = entry.task?.title || taskId;
+    if (!window.confirm(`删除任务「${title}」？\n\n它的专属会话与工作区会一并删除；有未提交改动或未合并提交时会被拒绝。此操作不可撤销。`)) return;
+    await taskAction('delete', async () => {
+      await api(`/api/task-board/tasks/${encodeURIComponent(taskId)}`, undefined, 'DELETE');
+      // 先离开这条任务再刷新：留在原处刷新的话，详情面板会去取一条已删除的任务。
+      navigate(directoryId);
+      await refresh();
+      notice('任务已删除。');
+    });
+  }
+
+  // 移动 = 换工作目录。会话工作区在目标仓库重建，未提交改动（含未跟踪的新
+  // 文件）以补丁 + 文件复制的方式带走；套用失败时整体回滚、任务留在原处。
+  function openMoveDialog() {
+    if (!taskId || !data || !entry) return;
+    const targets = data.directories.filter(directory => directory.id !== directoryId);
+    if (!targets.length) { notice('还没有其他工作目录可以移动。'); return; }
+    const dialog = node('dialog', null, 'move-task-dialog');
+    const form = node('form');
+    form.method = 'dialog';
+    form.append(node('span', 'MOVE TASK', 'eyebrow'), node('h2', `移动「${entry.task?.title || taskId}」`));
+    form.append(node('p', '选择目标工作目录。工作区会迁到目标仓库，未提交的改动和新文件一起带走；正在执行的任务不能移动。'));
+    const list = node('div', null, 'move-task-targets');
+    let chosen = null;
+    for (const directory of targets) {
+      const option = node('label', null, 'move-task-target');
+      const radio = node('input');
+      radio.type = 'radio'; radio.name = 'move-task-target'; radio.value = directory.id;
+      radio.onchange = () => { chosen = directory.id; confirm.disabled = false; };
+      const copy = node('span');
+      copy.append(node('strong', directory.name), node('small', directory.path));
+      option.append(radio, copy);
+      list.append(option);
+    }
+    form.append(list);
+    const footer = node('div', null, 'move-task-footer');
+    const cancel = node('button', '取消');
+    cancel.type = 'submit';
+    const confirm = node('button', '移动');
+    confirm.type = 'button'; confirm.disabled = true; confirm.classList.add('primary');
+    confirm.onclick = async () => {
+      if (!chosen) return;
+      confirm.disabled = true;
+      try {
+        const result = await api(`/api/task-board/tasks/${encodeURIComponent(taskId)}/relocate`, { dirId: chosen });
+        dialog.close();
+        const directory = data.directories.find(item => item.id === chosen);
+        const carried = result.carried
+          ? `；已带走未提交改动${result.carried.files ? `和 ${result.carried.files} 个新文件` : ''}` : '';
+        await refresh();
+        navigate(chosen, taskId);
+        notice(`任务已移动到 ${directory?.name || '目标目录'}${carried}。`);
+      } catch (error) {
+        notice(taskActionError(error));
+        confirm.disabled = false;
+      }
+    };
+    footer.append(cancel, confirm);
+    form.append(footer);
+    dialog.onclose = () => dialog.remove();
+    dialog.append(form);
+    document.body.append(dialog);
+    dialog.showModal();
+  }
+
   function renderDelivery(value) {
     const attribution = value.attribution || {};
     const candidate = attribution.candidate;
@@ -1284,6 +1392,14 @@
     if (value.roleBindings && !value.readOnly) {
       actions.append(actionButton('编辑角色上下文', () => window.MultiCCAirRoles.open({ taskId, roleBindings: value.roleBindings, api, onSaved: refreshEntry })));
     }
+    const lifecycleStatus = value.task.status || value.status;
+    actions.append(lifecycleStatus === 'archived'
+      ? actionButton('恢复任务', () => archiveTask(false), 'restore')
+      : actionButton('归档任务', () => archiveTask(true), 'archive'));
+    if (!value.readOnly) actions.append(actionButton('移动到其他目录…', openMoveDialog, 'move'));
+    const removeAction = actionButton('删除任务…', deleteTask, 'delete');
+    removeAction.classList.add('danger');
+    actions.append(removeAction);
     if (actions.childElementCount) groups[groups.length - 1].append(actions);
     $('task-detail-groups').replaceChildren(...groups);
   }

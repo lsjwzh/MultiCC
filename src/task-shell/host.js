@@ -267,6 +267,7 @@ function createTaskShellHost(deps) {
     createTask: input => getRuntime().createStandalone(input),
     roleBindings: id => getRuntime().roles.current(id), updateRoleBindings: (id, input) => getRuntime().roles.update(id, input),
     taskAccess: task => getRuntime().taskAccess(task), taskEntry: id => getRuntime().bindPlannedTask(id),
+    relocateTask: (taskId, dirId, options) => getRuntime().relocateTask(taskId, dirId, options),
     workspaceGroup: workspace.group, isWorkspaceBusy: workspace.busy, contextSeed,
     close: () => store?.close(),
   };
