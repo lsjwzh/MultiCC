@@ -13,10 +13,14 @@ const { sanitizePublicText } = require('../http/public-safety');
 const SHARE_COOKIE_MAX_AGE_SECONDS = 7 * 86400;
 const CREATE_ERRORS = new Set([
   'invalid share expiry',
+  'invalid share base url',
   'operate share requires a password',
   'no messages to share',
   'share password is too long',
 ]);
+// Longest origin we will store. A tunnel hostname plus a port is well under
+// this; anything larger is not an address someone typed on purpose.
+const MAX_PUBLIC_BASE_URL_LENGTH = 2048;
 
 function assertShareRouteDeps(deps) {
   if (!deps || typeof deps !== 'object') {
@@ -74,6 +78,26 @@ function requestBaseUrl(req) {
   return `${req.protocol}://${req.get('host')}`;
 }
 
+// The root the link is built on. Falling back to the request's own Host is
+// wrong for anyone reaching MultiCC over a tunnel: the admin's browser is
+// usually on 127.0.0.1, so the generated link is dead for the recipient. Create
+// may therefore name the root explicitly; only a bare http(s) origin is taken,
+// and anything else is rejected rather than silently ignored (a link that
+// quietly points at localhost looks like it worked).
+//
+// Returns null when the field was absent, false when it was present but unusable.
+function requestPublicBaseUrl(body) {
+  const raw = body && body.publicBaseUrl;
+  if (raw == null || raw === '') return null;
+  const text = String(raw).trim();
+  if (!text || text.length > MAX_PUBLIC_BASE_URL_LENGTH) return false;
+  let parsed;
+  try { parsed = new URL(text); } catch (_) { return false; }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+  if (parsed.username || parsed.password) return false;
+  return parsed.origin;
+}
+
 function withShareUrl(req, record) {
   return {
     token: record.token,
@@ -85,7 +109,8 @@ function withShareUrl(req, record) {
     expiresAt: record.expiresAt || null,
     createdAt: record.createdAt,
     label: record.label || null,
-    url: `${requestBaseUrl(req)}/share/${record.token}`,
+    publicBaseUrl: record.publicBaseUrl || null,
+    url: `${record.publicBaseUrl || requestBaseUrl(req)}/share/${record.token}`,
   };
 }
 
@@ -117,12 +142,15 @@ function createShareRoutes(rawDeps) {
     if (!session) return fail(res, 404, 'session not found');
     if (session.type === 'aux') return fail(res, 400, 'cannot share system session');
     const body = req.body || {};
+    const base = requestPublicBaseUrl(body);
+    if (base === false) return fail(res, 400, 'publicBaseUrl must be an http(s) URL');
     try {
       const record = share.create(session.id, {
         access: body.access,
         password: body.password,
         expiresAt: body.expiresAt,
         label: body.label || session.label || session.id,
+        ...(base ? { publicBaseUrl: base } : {}),
       });
       return res.json({ ok: true, ...withShareUrl(req, record) });
     } catch (error) {
@@ -167,11 +195,14 @@ function createShareRoutes(rawDeps) {
     const indices = Array.isArray(body.indices) ? body.indices : [];
     const picked = indices.map((index) => history[index]).filter(Boolean);
     if (!picked.length) return fail(res, 400, 'no valid messages selected');
+    const base = requestPublicBaseUrl(body);
+    if (base === false) return fail(res, 400, 'publicBaseUrl must be an http(s) URL');
     try {
       const record = share.createMessageShare(session.id, picked, {
         password: body.password,
         expiresAt: body.expiresAt,
         label: body.label || session.label || session.id,
+        ...(base ? { publicBaseUrl: base } : {}),
       });
       return res.json({ ok: true, ...withShareUrl(req, record) });
     } catch (error) {
@@ -274,6 +305,8 @@ module.exports = {
   mountShareRoutes,
   isCreateInputError,
   publicCreateError,
+  MAX_PUBLIC_BASE_URL_LENGTH,
   requestBaseUrl,
+  requestPublicBaseUrl,
   withShareUrl,
 };

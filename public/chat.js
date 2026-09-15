@@ -2243,6 +2243,12 @@ function shareRow(s) {
   </div>`;
 }
 
+// 分享链接是交给外面的人打开的，根域不能默认用管理页自己这个地址 —— 多半是
+// 127.0.0.1，对方根本打不开。候选地址、去重、默认该选哪一个，以及这个下拉怎么
+// 填，全在 base-url-options.js 里：借道链接问的是同一个问题，两边不能各有各的
+// 答案，所以这里不再自己算一遍。
+const SHARE_BASE_SELECT_STYLE = 'flex:1;min-width:180px;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:12px;padding:7px 9px;';
+
 async function openShareDialog() {
   const overlay = document.createElement('div');
   overlay.style.cssText = 'position:fixed;inset:0;background:var(--chat-overlay, rgba(0,0,0,.7));z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
@@ -2252,6 +2258,11 @@ async function openShareDialog() {
     <div style="font-size:15px;font-weight:600;margin-bottom:4px;">${tt('shareSession')}</div>
     <div style="font-size:12px;color:var(--chat-muted, #8b949e);line-height:1.6;margin-bottom:10px;">${tt('shareDesc')} <b style="color:var(--chat-warning, #f0883e);">${tt('shareOperateWarn')}</b></div>
     <div style="margin-bottom:12px;"><button id="sh-msgmode" style="background:var(--chat-soft, #1b2330);border:1px solid var(--chat-line, #2d3a4f);border-radius:6px;color:var(--chat-blue, #79c0ff);font-size:12px;padding:6px 10px;cursor:pointer;">✂️ ${tt('shareSelectedMessages')}</button></div>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:4px;">
+      <span style="font-size:12px;color:var(--chat-muted, #8b949e);flex:none;">链接根域</span>
+      <select id="sh-base" disabled data-hint-id="sh-base-hint" style="${SHARE_BASE_SELECT_STYLE}"><option>读取可用地址…</option></select>
+    </div>
+    <div id="sh-base-hint" style="font-size:12px;color:var(--chat-warning, #f0883e);min-height:16px;margin-bottom:8px;"></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
       <select id="sh-access" style="background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:7px 9px;">
         <option value="view">${tt('shareViewOnly')}</option>
@@ -2274,6 +2285,8 @@ async function openShareDialog() {
   overlay.onclick = (e) => { if (e.target === overlay) close(); };
   const msg = box.querySelector('#sh-msg');
   const listEl = box.querySelector('#sh-list');
+  const baseSel = box.querySelector('#sh-base');
+  multiccMountBaseUrlSelect(baseSel);
 
   async function refresh() {
     try { const d = await shareApi('GET', '/shares'); listEl.innerHTML = d.shares.length ? d.shares.map(shareRow).join('') : `<div style="color:var(--chat-muted, #8b949e);font-size:12px;">${tt('none')}</div>`; }
@@ -2309,6 +2322,7 @@ async function openShareDialog() {
     const body = { access };
     if (password) body.password = password;
     if (hrs > 0) body.expiresAt = Date.now() + hrs * 3600 * 1000;
+    if (baseSel.value) body.publicBaseUrl = baseSel.value;
     try {
       const d = await shareApi('POST', '/share', body);
       msg.style.color = 'var(--chat-success, #3fb950)'; msg.textContent = tt('generatedLink', { url: d.url });
@@ -2338,7 +2352,9 @@ async function openMessagePicker() {
       <input id="mp-pw" placeholder="${tt('publicIfEmpty')}" style="flex:1;min-width:140px;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:7px 9px;">
       <select id="mp-exp" style="background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:7px 9px;">
         <option value="0">${tt('neverExpires')}</option><option value="24">${tt('oneDay')}</option><option value="168">${tt('sevenDays')}</option></select>
+      <select id="mp-base" disabled data-hint-id="mp-base-hint" style="${SHARE_BASE_SELECT_STYLE}"><option>读取可用地址…</option></select>
     </div>
+    <div id="mp-base-hint" style="font-size:12px;color:var(--chat-warning, #f0883e);min-height:16px;margin-bottom:4px;"></div>
     <div id="mp-msg" style="font-size:12px;min-height:16px;margin-bottom:8px;"></div>
     <div style="display:flex;justify-content:flex-end;gap:8px;">
       <button id="mp-cancel" style="background:var(--chat-soft, #21262d);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:6px 14px;cursor:pointer;">${tt('close')}</button>
@@ -2349,6 +2365,8 @@ async function openMessagePicker() {
   box.querySelector('#mp-cancel').onclick = close;
   overlay.onclick = (e) => { if (e.target === overlay) close(); };
   const listEl = box.querySelector('#mp-list'), countEl = box.querySelector('#mp-count'), msgEl = box.querySelector('#mp-msg');
+  const baseSel = box.querySelector('#mp-base');
+  multiccMountBaseUrlSelect(baseSel);
   const updateCount = () => { countEl.textContent = tt('selectedCount', { n: listEl.querySelectorAll('input[type=checkbox]:checked').length }); };
 
   let msgs = [];
@@ -2374,6 +2392,7 @@ async function openMessagePicker() {
     const password = box.querySelector('#mp-pw').value.trim();
     const hrs = parseInt(box.querySelector('#mp-exp').value, 10);
     const body = { indices }; if (password) body.password = password; if (hrs > 0) body.expiresAt = Date.now() + hrs * 3600 * 1000;
+    if (baseSel.value) body.publicBaseUrl = baseSel.value;
     try {
       const d = await chatApi.json(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/share-messages`), { method: 'POST', json: body });
       navigator.clipboard?.writeText(d.url);
