@@ -46,6 +46,10 @@
     const url = new URL(credentialFreeUrl(rawUrl, baseUrl), baseUrl);
     for (const key of Array.from(url.searchParams.keys())) {
       if (key.toLowerCase() === 'ticket') url.searchParams.set(key, '***');
+      // A share token is a capability: anyone holding it can read that chat.
+      // It travels in the query string because the WS needs it, but it must not
+      // end up in a debug dump someone pastes into a bug report.
+      if (key.toLowerCase() === 'share') url.searchParams.set(key, '***');
     }
     return url.toString();
   }
@@ -59,7 +63,12 @@
     if (base.protocol === 'https:' && url.protocol !== 'wss:') {
       throw codedError('WS_ENDPOINT_DOWNGRADE_REJECTED', 'WebSocket endpoint must preserve secure transport');
     }
-    if (!url.searchParams.get('ticket')) throw codedError('WS_TICKET_MISSING', 'WebSocket ticket is required');
+    // A share connection authorizes itself with the share token; the server never
+    // asks it for a ticket (src/ws/connection-router.js). Only this one clause is
+    // relaxed — origin and transport checks above still apply.
+    if (!url.searchParams.get('ticket') && !url.searchParams.get('share')) {
+      throw codedError('WS_TICKET_MISSING', 'WebSocket ticket is required');
+    }
     return url.toString();
   }
 

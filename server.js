@@ -1835,13 +1835,18 @@ const { createDetached } = require('./src/detached');
 const detached = createDetached({ baseDir: MULTICC_PATHS.detachedDir });
 const apkDistribution = createApkDistribution({ fs, path, https, rootDir: __dirname }); const iosOta = require('./src/ios-ota').createIosOta({ fs, path, rootDir: __dirname });
 const share = require('./src/share');
-mountShareRoutes(app, {
-  share,
-  persistedSessions,
-  loadChatHistory,
-  parseCookies,
-  sharePageFile: path.join(__dirname, 'public', 'share.html'),
-  logger,
+// Created here — the factory is a pure closure until mounted — so the share
+// route below can serve a recipient the same chat document through the same
+// cache-busting writer. Mounting still happens at its original point below.
+const staticAssetsRuntime = createStaticAssetsRoutes({ express, fs, path, publicDir: path.join(__dirname, 'public') });
+mountShareRoutes(app, { share, persistedSessions, loadChatHistory, parseCookies, logger,
+  // Read-only paging for a recipient scrolling up; the chat history runtime is
+  // assembled later in this file, so it is read at request time.
+  paginateChatHistory: (...args) => chatHistoryRuntime.paginate(...args),
+  // A share link opens the real chat renderer, narrowed by the share's own
+  // authority (see src/routes/share.js) — not a second, lesser page.
+  chatPageFile: path.join(__dirname, 'public', 'chat.html'),
+  serveHtml: staticAssetsRuntime.serveHtml,
 });
 fleetSharingRuntime = mountFleetSharingRoutes(app, { paths: MULTICC_PATHS, directories, sessions: persistedSessions, logger,
   issueWsTicket: (pathname, metadata) => authSecurity.issueWsTicket(pathname, metadata),
@@ -2160,12 +2165,7 @@ artifacts.mount(app);
 // WebViews) and the express.static mount for public/ (with .apk download
 // headers). Mounted at exactly the point where these handlers used to live so
 // middleware ordering — and therefore behaviour — is unchanged.
-createStaticAssetsRoutes({
-  express,
-  fs,
-  path,
-  publicDir: path.join(__dirname, 'public'),
-}).mountRoutes(app);
+staticAssetsRuntime.mountRoutes(app);
 
 // Display state is independent from canonical messages and native CLI transcripts.
 const CHAT_HISTORY_SOFT_CAP = 10000;

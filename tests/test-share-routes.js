@@ -34,6 +34,7 @@ function invoke(handler, options = {}) {
   const req = {
     params: options.params || {},
     body: options.body,
+    query: options.query || {},
     headers: options.headers || {},
     protocol: options.protocol || 'https',
     get(name) { return String(name).toLowerCase() === 'host' ? (options.host || 'chat.example.test') : undefined; },
@@ -140,23 +141,31 @@ function createHarness(overrides = {}) {
       { role: 'assistant', content: 'three', ts: 3 },
     ]],
   ]);
+  const historyPages = overrides.historyPages || [];
   const deps = {
     share: fakeShare,
     persistedSessions,
     loadChatHistory: overrides.loadChatHistory || ((id) => histories.get(id) || []),
+    paginateChatHistory: overrides.paginateChatHistory || ((id, options) => {
+      historyPages.push([id, options]);
+      const messages = histories.get(id) || [];
+      return { messages, hasMore: false };
+    }),
     parseCookies: overrides.parseCookies || ((header) => Object.fromEntries(
       String(header || '').split(';').map((pair) => pair.trim()).filter(Boolean).map((pair) => {
         const index = pair.indexOf('=');
         return index < 0 ? [pair, ''] : [pair.slice(0, index), pair.slice(index + 1)];
       }),
     )),
-    sharePageFile: '/app/public/share.html',
+    // 分享页就是聊天页本身，所以这里指的就是它，而不是另一份精简界面。
+    chatPageFile: '/app/public/chat.html',
+    serveHtml: overrides.serveHtml || ((file, res) => { res.sentFile = file; return res; }),
     logger: overrides.logger,
   };
-  return { deps, fakeShare, histories, persistedSessions };
+  return { deps, fakeShare, histories, historyPages, persistedSessions };
 }
 
-test('mount registers the seven established share routes and validates dependencies', () => {
+test('mount registers the nine established share routes and validates dependencies', () => {
   const { deps } = createHarness();
   const { app, routes } = createApp();
   mountShareRoutes(app, deps);
@@ -167,6 +176,8 @@ test('mount registers the seven established share routes and validates dependenc
     'POST /api/sessions/:id/share-messages',
     'GET /share/:token',
     'POST /api/share/:token/auth',
+    'GET /api/share/:token/entry',
+    'GET /api/share/:token/history',
     'GET /api/share/:token/session',
   ]);
   assert.throws(() => createShareRoutes({}), /share\.access/);
@@ -390,19 +401,141 @@ test('recipient session read preserves password gate, live history, and independ
   assert.deepEqual(res.body, { error: 'session no longer exists' });
 });
 
-test('page route serves the injected file and unexpected failures never expose paths or credentials', () => {
+test('page route serves the chat renderer itself, so a share is the same page', () => {
+  const { deps } = createHarness();
+  const routes = createShareRoutes(deps);
+  const res = invoke(routes.serveSharePage, { params: { token: 'anything' } });
+  // 分享出去的必须就是管理员用的那一份文档。指到另一份精简页面上，两边就会各自
+  // 演化 —— 这正是这次要修掉的东西。
+  assert.equal(res.sentFile, '/app/public/chat.html');
+});
+
+test('recipient entry answers who the link is and how much it may do', () => {
+  const { deps, fakeShare } = createHarness();
+  const routes = createShareRoutes(deps);
+  const live = invoke(routes.createSessionShare, {
+    params: { id: 's1' }, body: { access: 'operate', password: 'pw' },
+  }).body;
+
+  let res = invoke(routes.readShareEntry, { params: { token: 'missing' } });
+  assert.equal(res.statusCode, 404);
+  res = invoke(routes.readShareEntry, { params: { token: live.token } });
+  assert.equal(res.statusCode, 401);
+  assert.deepEqual(res.body, { needPassword: true });
+
+  res = invoke(routes.readShareEntry, {
+    params: { token: live.token },
+    headers: { cookie: `multicc_share_${live.token}=proof-${live.token}` },
+  });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.body, { access: 'operate', type: 'session', sessionId: 's1', label: 'Primary', cli: 'codex' });
+  // 启动答复里不能带整份历史：长会话会让页面为了知道一个 session id 先下几 MB。
+  assert.equal(Object.hasOwn(res.body, 'messages'), false);
+
+  const snapshot = invoke(routes.createMessageShare, {
+    params: { id: 's1' }, body: { indices: [1], label: '' },
+  }).body;
+  res = invoke(routes.readShareEntry, { params: { token: snapshot.token } });
+  assert.equal(res.statusCode, 200);
+  // 快照没有活会话可取，内容只能随启动答复一起给。
+  assert.deepEqual(res.body, {
+    access: 'view',
+    type: 'messages',
+    label: 'Primary',
+    messages: [{ role: 'assistant', content: 'two', ts: 2 }],
+  });
+
+  // 链接自己的名字优先于会话当前的名字：会话后来改名了，接收方手里的链接还是
+  // 当初那个名字，否则他没有任何办法知道这是哪一段对话。
+  fakeShare.records.get(live.token).label = '链接自己的名字';
+  res = invoke(routes.readShareEntry, {
+    params: { token: live.token },
+    headers: { cookie: `multicc_share_${live.token}=proof-${live.token}` },
+  });
+  assert.equal(res.body.label, '链接自己的名字');
+
+  fakeShare.records.get(live.token).password = null;
+  fakeShare.records.get(live.token).sessionId = 'gone';
+  res = invoke(routes.readShareEntry, { params: { token: live.token } });
+  assert.equal(res.statusCode, 404);
+  assert.deepEqual(res.body, { error: 'session no longer exists' });
+});
+
+test('recipient history pages a shared session and never reveals hidden messages', () => {
+  const { deps, historyPages } = createHarness();
+  const routes = createShareRoutes(deps);
+  const live = invoke(routes.createSessionShare, {
+    params: { id: 's1' }, body: { access: 'view', password: 'pw' },
+  }).body;
+  const authorized = { cookie: `multicc_share_${live.token}=proof-${live.token}` };
+
+  let res = invoke(routes.readSharedHistory, { params: { token: live.token } });
+  assert.equal(res.statusCode, 401);
+  assert.deepEqual(res.body, { needPassword: true });
+  res = invoke(routes.readSharedHistory, { params: { token: 'missing' } });
+  assert.equal(res.statusCode, 404);
+  // 密码不对的请求一次分页都不该发生。
+  assert.equal(historyPages.length, 0);
+
+  res = invoke(routes.readSharedHistory, { params: { token: live.token }, headers: authorized });
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.messages.length, 3);
+  assert.equal(res.body.hasMore, false);
+  assert.deepEqual(historyPages[0], ['s1', {
+    includeHidden: false, before: undefined, around: undefined, limit: undefined,
+  }]);
+
+  // 往下翻页用 before/limit；around 是「跳到某条消息」用的，要带回 found/hasNewer。
+  res = invoke(routes.readSharedHistory, {
+    params: { token: live.token },
+    headers: authorized,
+    query: { before: 'm3', limit: '2' },
+  });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(historyPages[1], ['s1', {
+    includeHidden: false, before: 'm3', around: undefined, limit: '2',
+  }]);
+
+  res = invoke(routes.readSharedHistory, {
+    params: { token: live.token },
+    headers: authorized,
+    query: { around: 'm2' },
+  });
+  assert.equal(res.body.found, false);
+  assert.equal(res.body.hasNewer, false);
+  assert.equal(historyPages[2][1].around, 'm2');
+
+  // 接收方请求里带 historyScope=archive 也不能把管理员删掉的消息透出去：
+  // 分享的是对方看到的那一份。
+  res = invoke(routes.readSharedHistory, {
+    params: { token: live.token },
+    headers: authorized,
+    query: { historyScope: 'archive' },
+  });
+  assert.equal(historyPages[3][1].includeHidden, false);
+
+  // 消息快照已经在启动答复里给全了，没有更老的页可翻 —— 这里回空页而不是报错，
+  // 页面滚到顶端时看到的是「已是最早消息」，不是一个错误。
+  const snapshot = invoke(routes.createMessageShare, {
+    params: { id: 's1' }, body: { indices: [1], label: '' },
+  }).body;
+  res = invoke(routes.readSharedHistory, { params: { token: snapshot.token } });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.body, { messages: [], hasMore: false });
+  assert.equal(historyPages.length, 4);
+});
+
+test('unexpected failures never expose paths or credentials', () => {
   const logs = [];
   const { deps, fakeShare } = createHarness({
     logger: { error: (...args) => logs.push(args) },
   });
   const routes = createShareRoutes(deps);
-  let res = invoke(routes.serveSharePage, { params: { token: 'anything' } });
-  assert.equal(res.sentFile, '/app/public/share.html');
 
   fakeShare.listForSession = () => {
     throw new Error('password=top-secret at /Users/private/shares.json');
   };
-  res = invoke(routes.listSessionShares, { params: { id: 's1' } });
+  let res = invoke(routes.listSessionShares, { params: { id: 's1' } });
   assert.equal(res.statusCode, 500);
   assert.deepEqual(res.body, { error: 'share listing failed' });
   assert.equal(JSON.stringify(res.body).includes('top-secret'), false);
@@ -410,6 +543,15 @@ test('page route serves the injected file and unexpected failures never expose p
   assert.equal(JSON.stringify(logs).includes('top-secret'), false);
   assert.equal(JSON.stringify(logs).includes('/Users/private'), false);
 
+  fakeShare.get = () => {
+    throw new Error('Bearer sk-secret /tmp/store.json');
+  };
+  res = invoke(routes.readShareEntry, { params: { token: 't' } });
+  assert.equal(res.statusCode, 500);
+  assert.deepEqual(res.body, { error: 'shared entry read failed' });
+  assert.equal(JSON.stringify(res.body).includes('sk-secret'), false);
+
+  fakeShare.get = (token) => fakeShare.records.get(token) || null;
   fakeShare.create = () => {
     throw new Error('Bearer sk-secret /tmp/store.json');
   };

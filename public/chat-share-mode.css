@@ -1,0 +1,14 @@
+/* 分享页 = 聊天页本身，只按分享的权限关掉东西。
+ *
+ * 规则写在类名上，不写在具体的按钮 id 上：管理员按钮统一带 session-only
+ * （见 chat.html 顶部那排），新的按钮只要遵守这个约定就自动不出现在分享页，
+ * 不会因为漏加一条规则把控制台露给外面的人。 */
+
+/* 分享出去的是这一轮对话，不是这台机器的控制台。 */
+.share-mode .session-only { display: none !important; }
+
+/* 只读分享：输入区整块收起来，连位置都不占。
+   id 与 chat-task-boot.js 的只读分支保持一致。 */
+.share-mode.share-view-only #input-bar,
+.share-mode.share-view-only #pre-input-bar,
+.share-mode.share-view-only #pending-user-input-card { display: none !important; }
