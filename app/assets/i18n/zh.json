@@ -1290,5 +1290,9 @@
   "voiceMicDenied": "无法访问麦克风，请检查权限。",
   "voiceRecordingHint": "录音中，点 🎙 结束。",
   "voiceTranscribing": "转写中…",
-  "voiceTranscribeFailed": "转写失败：{message}"
+  "voiceTranscribeFailed": "转写失败：{message}",
+  "taskSeparationTitle": "将当前工作单独分离？",
+  "taskSeparationBody": "当前工作与前序任务关联较低。分离后会创建独立任务，带上本轮对话；原任务记录保留。",
+  "taskSeparationKeep": "保留在当前任务",
+  "taskSeparationAccept": "单独分离"
 }

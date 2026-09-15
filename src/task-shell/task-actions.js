@@ -40,7 +40,7 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
     const scope = owner ? chatScope(owner.id) : { sessionIds: [...new Set((task.refs || []).map(r => r.sessionId))] };
     if (sid && !scope.sessionIds.includes(sid)) scope.sessionIds.push(sid);
     for (const source of task.historySessionIds || []) if (!scope.sessionIds.includes(source)) scope.sessionIds.push(source);
-    const inherited = task.forkedFromTaskId ? (task.snapshotIds || []).flatMap(id => store.get('snapshot', id)?.messages || []).map(m => ({ ...m, inherited: true, content: m.content || m.evidenceExcerpt || '' })) : [];
+    const inherited = (task.forkedFromTaskId || task.separatedFromTaskId) ? (task.snapshotIds || []).flatMap(id => store.get('snapshot', id)?.messages || []).map(m => ({ ...m, inherited: true, content: m.content || m.evidenceExcerpt || '' })) : [];
     const messages = inherited.concat(shellRecords(scope, getHistory, ports.getLiveState)
       .filter(m => m.taskId === id || (!m.taskId && m.sourceSessionId === sid)));
     const execution = sid && getRecord(sid) ? await getExecution(sid) : { busy: false, status: 'idle' };

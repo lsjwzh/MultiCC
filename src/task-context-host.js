@@ -299,6 +299,7 @@ function createTaskContextHost(options = {}) {
     taskShellContextTrace: (id, receiptId, options) => receiptId
       ? getTaskShells()?.contextTrace(id, receiptId, options) || null
       : null,
+    proposeTaskSeparation: (id, receiptId, result) => getTaskShells()?.proposeSeparation(id, receiptId, result) || null,
     proposeTaskShellAttribution: (id, receiptId, result) => getTaskShells()?.proposeAttribution(id, receiptId, result) || null,
     settleTaskShellAttribution: (id, receiptId, result) => getTaskShells()?.settleAttribution(id, receiptId, result) || null,
     appendMessage,

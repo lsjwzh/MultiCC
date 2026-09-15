@@ -60,6 +60,7 @@ function createTaskShellHost(deps) {
       taskFirst: true, defaultTaskRuntime: deps.defaultTaskRuntime,
       getRecord: id => deps.records.get(id),
       onStateTargetChanged: id => deps.onStateTargetChanged?.(id),
+      onSeparationChanged: id => deps.onSeparationChanged?.(id),
       getHistory: deps.loadHistory,
       getLiveState: deps.getChatState,
       getExecution: async id => {
@@ -261,6 +262,7 @@ function createTaskShellHost(deps) {
     recentTasks: (id, receiptId) => getRuntime().recentTasks(id, receiptId),
     refillContext: (id, options) => getRuntime().refillContext(id, options),
     contextTrace: (id, receiptId, options) => getRuntime().contextTrace(id, receiptId, options),
+    proposeSeparation: (id, receiptId, result) => getRuntime().separation.propose(id, receiptId, result),
     proposeAttribution: (id, receiptId, result) => { getRuntime(); return candidates.propose(id, receiptId, result); },
     attributionCandidate: id => { getRuntime(); return candidates.latest(id); },
     settleAttribution: (id, receiptId, result) => getRuntime().settleAttribution(id, receiptId, result),
