@@ -641,6 +641,7 @@ const chatTransport = window.MultiCCChatTransport.createTransport({
   onMessage({ data }) {
     try {
       const message = JSON.parse(data);
+      if (['task_state', 'system', 'chat_msg_meta', 'task_separation_updated'].includes(message.type)) taskSeparation?.refresh();
       if (message.type === 'shell_history_update') {
         chatHistoryView.commitSourcePage(message.sourceSessionId, message.messages || []);
         maybeScrollToBottom(); return;
@@ -2945,3 +2946,12 @@ bootChatEntry();
 /* ════════════════════════════════════════════════════════════════════════════
  * 实时语音通话 — 结束
  * ════════════════════════════════════════════════════════════════════════════ */
+
+const taskSeparation = window.MultiCCTaskSeparation.createController({
+  getSession: () => SHARE_MODE || _params.get('readOnly') === '1' ? null : _sessionName,
+  request: (url, options) => chatApi.json(withToken(url), options),
+  show: window.MultiCCTaskSeparation.showDialog,
+  navigate: url => { (window.top || window).location.href = url; },
+  report: error => console.warn('Task separation:', error.message),
+});
+document.addEventListener('visibilitychange', () => { if (!document.hidden) taskSeparation.refresh(); });

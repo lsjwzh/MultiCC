@@ -61,6 +61,10 @@ function parseTaskAttribution(text, { fallbackTaskId = null, allowedTaskIds = nu
       taskId: relation === 'same' ? existingTaskId : null,
       relatedTaskId,
       memoryCandidate: cleanMemoryCandidate(object.memory_candidate || object.memoryCandidate),
+      ...(object.contextRelevance === 'low' && cleanName(object.splitTaskName) ? {
+        separation: { title: cleanName(object.splitTaskName),
+          reason: String(object.relevanceReason || '').trim().slice(0, 240) },
+      } : {}),
     };
   }
 
@@ -110,7 +114,8 @@ function buildTaskAttributionSystemPrompt({
     : provisionalTaskId
       ? `${provisionalTaskId} 是本轮候选 ID：若目标不同输出 relation=new/taskId=null（候选 ID 会升格）；若新任务由某个旧任务衍生或与其属于同一工作主题，把该旧 ID 填入 relatedTaskId；若完全无关则 relatedTaskId=null。若是同一任务续作，relation=same 必须选择最近任务中另一个既有 canonical taskId，relatedTaskId=null。`
       : '';
-  return `你是任务归集器，只负责给消息归属任务，不负责判断 turn 的运行状态。\n\n最近任务：\n${known}\n当前任务ID：${currentTaskId || '无'}${identityRule ? `\n${identityRule}` : ''}\n\n判断最新一轮是真正的新任务，还是最近某个任务的继续、追问或修订。同一交付目标的继续才复用原任务名和 taskId。产生独立交付物、子任务或衍生任务时 relation=new，保留新任务身份；若它与某个旧任务属于同一工作主题，用 relatedTaskId 指向该旧任务，仅供任务面板归组。relation=same 时也可填 relatedTaskId 表示弱关联（同主题分组），但不能指向当前任务自己。\n\n同时提炼 memory_candidate：本轮对话中值得沉淀进任务长期记忆的稳定事实、决策或结论（接口约定、踩坑、方案取舍），一句话、不含过程描述；没有值得记的就填 null。\n\n只输出一个 JSON 对象：\n{"taskName":"简短任务名","phase":"planning|implementing|verifying|wrapping|done","relation":"same|new","taskId":"same 时填写上面的既有 ID；new 时为 null","relatedTaskId":"相关时填写既有 ID；否则 null","memory_candidate":"值得记的一条结论，或 null"}\n不要输出状态字母、解释或 Markdown。`;
+  const relevanceRule = '另外独立判断最新一轮与当前聊天窗口前序工作的关联度 contextRelevance（high|medium|low）。即使任务身份锁定，也必须判断关联度；锁定只约束 taskId/relation。只有明确转向不同交付目标且与前序工作缺少关联才用 low；首轮无前序工作、继续/追问/纠正/状态询问/同主题子任务都不要判 low。low 时 splitTaskName 给出新目标的简短名称，relevanceReason 用一句话说明区别，taskName 保留原任务名称；其余两字段填 null。这只是建议，只有用户确认才会分离。';
+  return `你是任务归集器，只负责给消息归属任务，不负责判断 turn 的运行状态。\n\n最近任务：\n${known}\n当前任务ID：${currentTaskId || '无'}${identityRule ? `\n${identityRule}` : ''}\n\n判断最新一轮是真正的新任务，还是最近某个任务的继续、追问或修订。同一交付目标的继续才复用原任务名和 taskId。产生独立交付物、子任务或衍生任务时 relation=new，保留新任务身份；若它与某个旧任务属于同一工作主题，用 relatedTaskId 指向该旧任务，仅供任务面板归组。relation=same 时也可填 relatedTaskId 表示弱关联（同主题分组），但不能指向当前任务自己。\n\n${relevanceRule}\n\n同时提炼 memory_candidate：本轮对话中值得沉淀进任务长期记忆的稳定事实、决策或结论（接口约定、踩坑、方案取舍），一句话、不含过程描述；没有值得记的就填 null。\n\n只输出一个 JSON 对象：\n{"taskName":"简短任务名","phase":"planning|implementing|verifying|wrapping|done","relation":"same|new","taskId":"same 时填写上面的既有 ID；new 时为 null","relatedTaskId":"相关时填写既有 ID；否则 null","contextRelevance":"high|medium|low","splitTaskName":null,"relevanceReason":null,"memory_candidate":"值得记的一条结论，或 null"}\n不要输出状态字母、解释或 Markdown。`;
 }
 
 function buildTaskAttributionConversation(history, reply = '') {

@@ -7,7 +7,7 @@ const { createClassifyStateMachine } = require('../src/classify/state-machine');
 
 function fixture({
   cli = 'opencode', goal = '已识别任务', isStreaming = true, type = 'worker',
-  history = null, auxText = null, taskShell = false, toolCalls = [],
+  history = null, auxText = null, taskShell = false, toolCalls = [], separationResult = null,
 } = {}) {
   const record = {
     id: 's1', kind: 'chat', cli, type,
@@ -38,7 +38,7 @@ function fixture({
   const observed = {
     enqueued: 0, enqueuedTasks: [], transitions: 0,
     transitionResults: [], transitionOptions: [], broadcasts: [], summaries: [],
-    boardReassignments: [], boardGroupLinks: [], shellSettlements: [],
+    boardReassignments: [], boardGroupLinks: [], shellSettlements: [], separations: [],
   };
   const auxQueue = {
     queue: [],
@@ -84,6 +84,7 @@ function fixture({
         { taskId: 'task-1', taskName: '已识别任务' },
         { taskId: 'task-older', taskName: '历史任务' },
       ] : [],
+      proposeTaskSeparation: (...args) => { observed.separations.push(args); return separationResult; },
       settleTaskShellAttribution: (...args) => observed.shellSettlements.push(args),
     }),
     getTaskBoardRuntime: () => ({
@@ -426,4 +427,25 @@ test('delayed attribution with a superseded anchor cannot overwrite the newer ta
   assert.equal(h.chatState._currentTaskId, 'task-newer');
   assert.equal(h.record.taskState.taskId, 'task-newer');
   assert.equal(h.chatState.currentTask.goal, '更新后的任务');
+});
+
+test('low relevance in a locked shell raises confirmation without changing name, task or run state', async () => {
+  const history = [
+    { id: 'u0', role: 'user', content: 'Original', taskId: 'task-1' },
+    { id: 'u1', role: 'user', content: 'Unrelated work', taskId: 'task-1', turnId: 'turn-low' },
+    { id: 'a1', role: 'assistant', content: 'Finished', taskId: 'task-1', turnId: 'turn-low' },
+  ];
+  const h = fixture({ taskShell: true, isStreaming: false, history, separationResult: { id: 'sep-1', state: 'pending' },
+    auxText: JSON.stringify({ relation: 'new', taskName: 'Wrong rename', contextRelevance: 'low', splitTaskName: 'Unrelated work' }) });
+  h.record.taskState.taskId = 'task-1'; h.record.taskState.classifyState = 'D';
+  h.chatState.currentUserText = 'Unrelated work';
+  h.machine.runClassifyNow(h.chatState, 's1', { turnId: 'turn-low', identityLocked: true });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.observed.separations.length, 1);
+  assert.equal(h.observed.separations[0][2].separation.title, 'Unrelated work');
+  assert.equal(h.record.taskState.taskId, 'task-1');
+  assert.equal(h.record.taskState.goal, '已识别任务');
+  assert.equal(h.record.taskState.classifyState, 'D');
+  assert.equal(h.observed.shellSettlements.length, 0);
+  assert.equal(h.observed.boardReassignments.length, 0);
 });

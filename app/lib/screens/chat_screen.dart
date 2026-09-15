@@ -23,6 +23,7 @@ import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../utils/session_status_helpers.dart';
 import '../widgets/ai_config_sheet.dart';
+import '../widgets/task_separation_prompt.dart';
 import '../widgets/background_tasks_dock.dart';
 import '../widgets/floating_dock.dart';
 import '../widgets/chat_composer_fold.dart';
@@ -745,7 +746,8 @@ class _ChatViewState extends State<ChatView> {
     return ChatTourLayer(
       composerController: _composerCtrl,
       composerFocus: _composerFocus,
-      child: _buildScaffold(context, provider, mergeReady, autoCommit, dispatchExpanded, artifactsLabel),
+      child: TaskSeparationPrompt(events: provider.chatEvents, sessionId: provider.executionSessionName, settings: widget.settings,
+        child: _buildScaffold(context, provider, mergeReady, autoCommit, dispatchExpanded, artifactsLabel)),
     );
   }
 
