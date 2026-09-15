@@ -186,6 +186,11 @@ nav { display: flex; flex-direction: column; gap: 4px; }
    `overflow-y: auto` it has kept as a fallback), so a window too short for even
    a couple of rows still reaches everything. */
 #tasks { flex: 1 1 auto; min-height: 120px; margin: 9px 0 4px; overflow-y: auto; overscroll-behavior: contain; }
+/* 行不许跟着压缩。`nav` 是 flex 列（见上面的 `nav{flex-direction:column}`），`#tasks`
+   现在是有确定高度的滚动容器 —— 列里面的行默认 `flex-shrink:1`，会被挤成一半高，
+   标题和状态行叠在一起（框只有 38px，内容要 64px）。清单给得下的空间是靠滚来用的，
+   不是靠把行压扁。 */
+#tasks > * { flex: 0 0 auto; }
 #tasks button { padding: 10px; border-radius: 11px; }
 #tasks button:hover { background: rgba(255, 255, 255, .65); }
 #tasks button.selected { color: #0d63c4; border-color: #d7e7f8; background: #fff; box-shadow: 0 5px 14px #42688f0a; }
