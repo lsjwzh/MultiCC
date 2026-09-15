@@ -946,6 +946,25 @@
     setFrameActive(frame, false);
   }
 
+  /* 帧永远住在 #task-content 里 —— #empty 后面、#task-details 前面。
+     这里原来在「#conversation 已经被交回池子（id 摘掉了）、池子里又没有这个任务的
+     帧」时落到 document.body.append(frame)。body 是横向 flex，而 iframe 的固有宽度
+     300px 作为 flex 项的 min-width:auto 压不下去 —— 那一行于是被分成 main 93px +
+     帧 300px：页头（flex-wrap + 面包屑也 wrap）竖着摞成一条窄列、标题只剩一个字，
+     对话跑到右边整屏高。手机上「新打开一个任务就错位」就是这条路：
+     先看过某任务 → 点工作目录卡/目录库回到无任务（帧进池子）→ 再开一个没开过的任务。
+     after 传「紧跟哪一个」：当前帧还在 #task-content 里就排在它后面，否则排到最后
+     —— 后面的位置本来就被 #task-details 占着，插在它前面即可。 */
+  function mountFrame(frame, after) {
+    const host = $('task-content');
+    if (!host) { document.body.append(frame); return; }
+    // 已经在家里就别再碰它：在 DOM 里挪一个 iframe（哪怕只是换个相邻位置）浏览器会把它
+    // 整个重载一遍 —— 帧池攒的那点热乎气全没了。只有挂错地方（body 上）才搬。
+    if (frame.parentNode === host) return;
+    const anchor = after && after.parentNode === host ? after.nextSibling : $('task-details');
+    host.insertBefore(frame, anchor || null);
+  }
+
   function evictFrames() {
     while (_framePool.size > MAX_POOLED_FRAMES) {
       let oldestId = null, oldest = Infinity;
@@ -965,6 +984,9 @@
     if (pooled && pooled.frame.isConnected) {
       _framePool.delete(task);
       parkFrame(current);
+      // 池子里的帧理论上一直待在 #task-content 里；但如果它是从之前那次「挂到 body」
+      // 的错位里留下的，这里顺手把它搬回来，不用刷新页面也能自愈。
+      mountFrame(pooled.frame, null);
       pooled.frame.id = 'conversation';
       pooled.frame.hidden = false;
       setFrameActive(pooled.frame, true);
@@ -983,9 +1005,9 @@
       wireConversationFrame(frame);
       if (current) {
         // 初始那个空帧（还没有 src）没有保留价值，直接换掉；装过任务的帧则留下来进池子。
-        if (_frameHoldsTask) { parkFrame(current); current.parentNode.insertBefore(frame, current.nextSibling); }
+        if (_frameHoldsTask) { parkFrame(current); mountFrame(frame, current); }
         else current.replaceWith(frame);
-      } else { document.body.append(frame); }
+      } else mountFrame(frame, null);
     }
     _frameHoldsTask = task;
     evictFrames();
