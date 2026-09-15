@@ -185,13 +185,20 @@ nav { display: flex; flex-direction: column; gap: 4px; }
    `min-height` keeps a floor under it: below that the band scrolls again (the
    `overflow-y: auto` it has kept as a fallback), so a window too short for even
    a couple of rows still reaches everything. */
-#tasks { flex: 1 1 auto; min-height: 120px; margin: 9px 0 4px; overflow-y: auto; overscroll-behavior: contain; }
-/* 行不许跟着压缩。`nav` 是 flex 列（见上面的 `nav{flex-direction:column}`），`#tasks`
-   现在是有确定高度的滚动容器 —— 列里面的行默认 `flex-shrink:1`，而它们都是 `button`，
-   全局那条 `button{min-height:38px}` 又把每个 flex item 的自动最小尺寸钉在 38px：一
-   装不下，每一行就都被压成 38px 高，标题和状态行叠在一起（框 38px、内容 63px 起，
-   标题折的行叠得最厉害）。清单给得下的空间是靠滚来用的，不是靠把行压扁。 */
-#tasks > * { flex: 0 0 auto; }
+#tasks { display: block; flex: 1 1 auto; min-height: 120px; margin: 9px 0 4px; overflow-y: auto; overscroll-behavior: contain; }
+/* 行高只由内容决定，没有任何一条路能压扁它 —— 两层，各自独立。
+   第一层：清单不是 flex 列。全局那条 `nav{display:flex;flex-direction:column;gap:4px}`
+   把 `#tasks` 也变成了 flex 列，而 `#tasks` 现在是有确定高度的滚动容器：列里的行默认
+   `flex-shrink:1`，它们又都是 `button`，全局 `button{min-height:38px}` 把每个 flex item
+   的自动最小尺寸钉在 38px —— 一装不下，每一行都被压成 38px，内容 59–77px 溢出，
+   状态行叠到下一行的标题上（用户报的就是这张图）。块级子项没有 flex-shrink 这回事，
+   所以 `display:block` 把这条链路整个删掉，行距改由 `margin-top` 给。
+   第二层：`flex: 0 0 auto` 留着 —— 万一将来哪次改动把 `#tasks` 又变成 flex 容器
+   （或者给行套了包装元素、让 `>` 选择器失效），这一条仍然是护栏。两层都要在，
+   CDP 用例对两层各断言一次（把第一层按掉，行仍然不许被压扁）。
+   清单给得下的空间是靠滚来用的，不是靠把行压扁。 */
+#tasks > * { display: block; flex: 0 0 auto; }
+#tasks > * + * { margin-top: 4px; }
 #tasks button { padding: 10px; border-radius: 11px; }
 #tasks button:hover { background: rgba(255, 255, 255, .65); }
 #tasks button.selected { color: #0d63c4; border-color: #d7e7f8; background: #fff; box-shadow: 0 5px 14px #42688f0a; }
