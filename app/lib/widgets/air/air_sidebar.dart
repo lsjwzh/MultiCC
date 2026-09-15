@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../../services/air_service.dart';
@@ -49,6 +51,10 @@ class AirSidebar extends StatelessWidget {
   static const double width = 268;
   static const double _rowHeight = 46;
 
+  /// 任务清单最少留这么高（同 Web `#tasks` 的 `min-height: 120px`）。再矮就不值得
+  /// 让清单自己滚了：与其给它留一条十几像素的缝，不如让整条侧栏一起滚。
+  static const double _listFloor = 120;
+
   final AirSnapshot? data;
   final String? directoryId;
   final List<AirTask> recentTasks;
@@ -96,17 +102,16 @@ class AirSidebar extends StatelessWidget {
       backgroundColor: AppColors.bgSoft,
       shape: const Border(right: BorderSide(color: AppColors.line)),
       child: SafeArea(
-        // 整条侧栏一起滚，而不是让中间那段自己滚：短屏上「更多与系统」一展开，
-        // 固定的下半截就会把版面顶破。Web 那边整条 aside 也是 `overflow: auto`。
-        // 内容不够高时 Spacer 把底部那组压到屏幕下沿（同 Web 的 `.side-bottom`）。
-        child: LayoutBuilder(
-          builder: (context, constraints) => SingleChildScrollView(
-            child: ConstrainedBox(
-              constraints: BoxConstraints(minHeight: constraints.maxHeight),
-              child: IntrinsicHeight(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
+        // 三段：顶上（品牌、目录卡、导航、「最近任务」抬头与「＋ 新任务」）、中间
+        // 的任务清单、底下的运维与「更多与系统」。中间那段吃掉另外两段之外的全部
+        // 高度并在内部滚 —— Web 的侧栏就是这三段（`#tasks{flex:1 1 auto}` 配上下
+        // 两组的 `flex-shrink:0`），[_FillingColumn] 在滚动视图里做出同一件事：
+        // 侧栏下半截那片空白本来就是留给任务清单的，不该留在页脚上面。
+        child: _FillingColumn(
+          minMiddle: _listFloor,
+          top: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 14, 12, 6),
               child: Row(
@@ -149,7 +154,9 @@ class AirSidebar extends StatelessWidget {
               ),
             ),
             Padding(
-              padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+              // 下边距是 0：清单和底下那组之间的留白归它们自己（清单下面 8px
+              // 在 bottom 那一组头上），这样清单的框才能一路顶到该到的地方。
+              padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
@@ -221,6 +228,22 @@ class AirSidebar extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 6),
+                ],
+              ),
+            ),
+            ],
+          ),
+          middle: (height) => Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            // 框的高度由剩下的高度决定，跟里面有几条任务无关：三十条在框里滚，
+            // 两条也不缩框 —— 那正是这块地方以前空着的原因（Web 的 `#tasks` 是
+            // 同一个契约，连 120px 的下限都一样）。
+            child: SizedBox(
+              height: height,
+              child: ListView(
+                key: const ValueKey('air-sidebar-tasks'),
+                padding: EdgeInsets.zero,
+                children: [
                   for (final task in recentTasks)
                     _TaskRow(task: task, onTap: () => onOpenTask(task)),
                   if (recentTasks.isEmpty)
@@ -234,8 +257,12 @@ class AirSidebar extends StatelessWidget {
                 ],
               ),
             ),
-            // 剩下的空档都留在下面这组之前，内容不够高时底部这组就贴着下沿。
-            const Spacer(),
+          ),
+          bottom: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+            // 清单和底下这组之间的留白。
+            const SizedBox(height: 8),
             // 版本行留在折叠区外：它是「有新版本」唯一的落点，折起来就没人知道。
             AirVersionRow(store: ops),
             _MoreSection(
@@ -275,13 +302,87 @@ class AirSidebar extends StatelessWidget {
                 style: TextStyle(color: AppColors.faint, fontSize: 10.5),
               ),
             ),
-                  ],
-                ),
-              ),
-            ),
+            ],
           ),
         ),
       ),
+    );
+  }
+}
+
+/// 一条竖排，中间那段吃掉剩下的高度（[AirSidebar] 的三段就是这么来的）。
+///
+/// Web 那句 `#tasks{flex:1 1 auto}` 配上下两组 `flex-shrink:0` 说的是这件事：
+/// 上下的固定内容各占自己的自然高度，中间那段拿走剩下的全部 —— 它的高度不由
+/// 内容多少决定，多的在里面滚，少的也不缩。Flutter 这边没有「剩下的高度」这种
+/// 约束（`Expanded` 要求父级高度确定，而侧栏本身是个滚动视图：矮屏、系统字体
+/// 放大、「更多与系统」展开时，整条侧栏要能一起滚），所以这里把它算出来：量一次
+/// 上下两段的高度，用视口高度减掉。
+///
+/// 量而不是写死常数：字号、有没有运维回执、终端那一组开没开都会改变它们。量到
+/// 之前按估值走 —— 只有第一帧，之后每一帧都是真值。算出来的中间高度已经压到
+/// [minMiddle] 还装不下时，外层这个滚动视图接手，整条侧栏一起滚。
+class _FillingColumn extends StatefulWidget {
+  const _FillingColumn({
+    required this.top,
+    required this.middle,
+    required this.bottom,
+    this.minMiddle = 120,
+  });
+
+  final Widget top;
+
+  /// 中间那段：拿到分给它的高度，自己决定怎么用。
+  final Widget Function(double height) middle;
+  final Widget bottom;
+
+  /// 中间那段的下限。低于它就不给它「自己滚」了，交回外层。
+  final double minMiddle;
+
+  @override
+  State<_FillingColumn> createState() => _FillingColumnState();
+}
+
+class _FillingColumnState extends State<_FillingColumn> {
+  /// 第一帧还没量到上下两段时用的估值 —— 只影响打开抽屉的第一帧，之后一直是
+  /// 真值。估大一点：宁可第一帧清单短一行，也不要把页脚顶出屏幕。
+  static const double _topGuess = 380;
+  static const double _bottomGuess = 210;
+
+  final _topKey = GlobalKey();
+  final _bottomKey = GlobalKey();
+  double? _topHeight;
+  double? _bottomHeight;
+
+  @override
+  Widget build(BuildContext context) {
+    // 布局之后读一次实际高度；变了才 setState —— 不变就什么都不做，不会自己
+    // 触发下一帧（估的值和量到的值会在第二帧对齐，之后一直稳定）。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final top = _topKey.currentContext?.size?.height;
+      final bottom = _bottomKey.currentContext?.size?.height;
+      if (top == null || bottom == null) return;
+      if (top == _topHeight && bottom == _bottomHeight) return;
+      setState(() {
+        _topHeight = top;
+        _bottomHeight = bottom;
+      });
+    });
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final fixed = (_topHeight ?? _topGuess) + (_bottomHeight ?? _bottomGuess);
+        return SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              KeyedSubtree(key: _topKey, child: widget.top),
+              widget.middle(math.max(widget.minMiddle, constraints.maxHeight - fixed)),
+              KeyedSubtree(key: _bottomKey, child: widget.bottom),
+            ],
+          ),
+        );
+      },
     );
   }
 }
