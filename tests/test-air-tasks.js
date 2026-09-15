@@ -68,6 +68,40 @@ test('Air list resolves legacy reference directories and never includes provider
   assert.equal(response.tasks[0].workflowStage, 'inbox'); assert.equal(JSON.stringify(response).includes('private'), false);
 });
 
+test('Air snapshot carries the most recently worked chat runtime as lastRuntime', async () => {
+  const { mountAirRoutes } = require('../src/workspace/air-routes');
+  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
+  mountAirRoutes(app, { admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
+    records: new Map([
+      // 老一些的 chat 会话：更近的那份赢了它才不该出现。
+      ['older', { id: 'older', dirId: 'd1', kind: 'chat', cli: 'claude', provider: 'p-old',
+        model: 'sonnet', lastWorkAt: '2026-09-13T00:00:00.000Z', providerSecret: 'private' }],
+      // terminal 镜像会话 lastWorkAt 最新，但它的 cli 是进程归属不是用户挑的路由。
+      ['term', { id: 'term', dirId: 'd1', kind: 'terminal', type: 'aux', cli: 'qoder', lastWorkAt: '2026-09-15T12:00:00.000Z' }],
+      ['newer', { id: 'newer', dirId: 'd1', kind: 'chat', cli: 'codex', provider: 'p-new',
+        model: 'gpt-5.6', effort: 'high', lastWorkAt: '2026-09-14T00:00:00.000Z', providerSecret: 'private' }],
+    ]),
+    directories: new Map([['d1', { id: 'd1', name: 'Repo', path: '/repo' }]]),
+    getBoard: () => ({ tasks: {} }), clis: ['claude', 'codex'],
+    shell: { taskAccess: () => ({ readOnly: true }) },
+    providerName: record => record.provider === 'p-new' ? 'New Relay' : null });
+  let response; await handlers.get('/api/air')({}, { json: v => { response = v; }, status() { return this; } });
+  assert.deepEqual(response.lastRuntime, { cli: 'codex', provider: 'p-new', providerName: 'New Relay',
+    providerSelection: null, model: 'gpt-5.6', effort: 'high', subagent: null });
+  assert.equal(JSON.stringify(response).includes('private'), false);
+});
+
+test('Air snapshot leaves lastRuntime null when no chat session has a cli', async () => {
+  const { mountAirRoutes } = require('../src/workspace/air-routes');
+  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
+  mountAirRoutes(app, { admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
+    records: new Map([['s', { id: 's', dirId: 'd1', kind: 'chat', providerSecret: 'private' }]]),
+    directories: new Map([['d1', { id: 'd1', name: 'Repo', path: '/repo' }]]),
+    getBoard: () => ({ tasks: {} }), clis: ['codex'], shell: { taskAccess: () => ({ readOnly: true }) } });
+  let response; await handlers.get('/api/air')({}, { json: v => { response = v; }, status() { return this; } });
+  assert.equal(response.lastRuntime, null);
+});
+
 test('Air task entry exposes provider routing metadata without credentials', async () => {
   const { mountAirRoutes } = require('../src/workspace/air-routes');
   const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
