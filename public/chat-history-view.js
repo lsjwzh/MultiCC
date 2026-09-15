@@ -122,6 +122,33 @@
       return null;
     }
 
+    function taskTitlePreview(value, limit = 10) {
+      const characters = Array.from(asText(value).trim());
+      return characters.length > limit
+        ? characters.slice(0, limit).join('') + '…'
+        : characters.join('');
+    }
+
+    // A deliberately quiet tail at the physical bottom of a user/assistant
+    // bubble. Attribution can arrive after the turn, so this function updates
+    // an existing node in place as well as creating it during history replay.
+    function updateTaskTail(node) {
+      if (!node?.classList || (!node.classList.contains('user') && !node.classList.contains('assistant'))) return;
+      const existing = directChildByClass(node, 'msg-task-tail');
+      const code = asText(node.dataset.taskShortCode).trim().toUpperCase();
+      if (!/^[0-9A-Z]{4}$/.test(code)) {
+        existing?.remove();
+        return;
+      }
+      const name = asText(node.dataset.taskName).trim();
+      const label = `#${code}${name ? ` · ${taskTitlePreview(name)}` : ''}`;
+      const tail = existing || document.createElement('div');
+      tail.className = 'msg-task-tail';
+      tail.textContent = label;
+      tail.title = `#${code}${name ? ` · ${name}` : ''}`;
+      if (!existing) node.appendChild(tail);
+    }
+
     // This is the sole Markdown HTML sink in the chat view. MultiCCSafeMarkdown
     // either returns DOMPurify-sanitized markup or escaped plain text. If that
     // boundary is unavailable or throws, this host writes source as textContent.
@@ -343,11 +370,12 @@
     // origin — subtask, turn, execution, instant — without a second lookup.
     function stampProvenance(node, source) {
       if (!node || !source) return;
-      for (const field of ['taskId', 'taskName', 'turnId', 'auxRunId', 'sourceSessionId', 'sourceMessageId']) {
+      for (const field of ['taskId', 'taskName', 'taskShortCode', 'turnId', 'auxRunId', 'sourceSessionId', 'sourceMessageId']) {
         if (typeof source[field] === 'string' && source[field]) node.dataset[field] = source[field];
       }
       const ts = Number(source.ts);
       if (Number.isFinite(ts) && ts > 0) node.dataset.ts = String(ts);
+      updateTaskTail(node);
     }
 
     function attachMessageActions(node, message) {

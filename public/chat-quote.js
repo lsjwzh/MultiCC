@@ -50,6 +50,7 @@
     if (raw) return String(raw);
     const clone = node.cloneNode(true);
     for (const button of Array.from(clone.querySelectorAll('button'))) button.remove();
+    for (const tail of Array.from(clone.querySelectorAll('.msg-task-tail'))) tail.remove();
     const content = clone.querySelector('.msg-content');
     const surface = content ? (content.querySelector('.message-markdown') || content) : clone;
     return (surface.textContent || '').trim();
