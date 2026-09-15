@@ -45,6 +45,16 @@ class QuotaService {
   /// mirrors the web codex bar. The body carries a server-rendered `bar`.
   Future<Map<String, dynamic>?> fetchCodexQuota() => _get('/api/codex/quota');
 
+  /// Query the active Provider's own quota/balance. Relay providers use this
+  /// route because this device has only the borrowed mcr1 credential; the
+  /// lender performs the vendor query and returns its server-rendered bar.
+  Future<Map<String, dynamic>?> fetchProviderBalance(
+    String appType,
+    String providerId,
+  ) => _get(
+    '/api/providers/${Uri.encodeComponent(appType)}/${Uri.encodeComponent(providerId)}/balance',
+  );
+
   /// Open a visible login window for opencode.ai on the server's managed Chrome
   /// profile. Used when the Go subscription scrape reports no session
   /// (needs_login / chrome_unavailable). Returns false on any transport/HTTP
