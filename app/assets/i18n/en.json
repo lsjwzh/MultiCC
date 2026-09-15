@@ -891,6 +891,8 @@
   "queuedMessageRunning": "Running",
   "confirmInsertQueuedBody": "This stops the reply being generated right now and runs the selected queued message instead.",
   "queueInsertAccepted": "Stopped the current reply and ran the selected message",
+  "queueReorderAccepted": "Queue order updated",
+  "reorderQueuedMessage": "Drag to reorder",
   "queueEntryAlreadyClaimed": "This message already started running and can no longer be changed.",
   "retryTask": "Retry",
   "resumeTask": "Resume",

@@ -675,16 +675,19 @@ class _InputBarState extends State<InputBar> {
     ChatProvider provider,
     String action, {
     String? entryId,
+    int? toIndex,
   }) async {
     if (!await _confirmQueueChange(action)) return;
     try {
-      await provider.queueAction(action, entryId: entryId);
+      await provider.queueAction(action, entryId: entryId, toIndex: toIndex);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
             action == 'insert_queued'
                 ? t('queueInsertAccepted')
+                : action == 'reorder_queued'
+                ? t('queueReorderAccepted')
                 : t('queueActionAccepted'),
           ),
         ),
@@ -1246,6 +1249,12 @@ class _InputBarState extends State<InputBar> {
                   _runQueueAction(provider, 'cancel_queued', entryId: entryId),
               onInsertQueued: (entryId) =>
                   _runQueueAction(provider, 'insert_queued', entryId: entryId),
+              onReorderQueued: (entryId, toIndex) => _runQueueAction(
+                provider,
+                'reorder_queued',
+                entryId: entryId,
+                toIndex: toIndex,
+              ),
             ),
 
             // Attachment chips

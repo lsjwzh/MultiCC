@@ -2473,9 +2473,19 @@ const cancelQueuedSessionEntry = window.MultiCCChatSessionQueue.createCancelHand
 const insertQueuedSessionEntry = window.MultiCCChatSessionQueue.createInsertHandler(
   { fetch: window.fetch.bind(window), withToken, getSessionName: () => _sessionName, notify: showNotifyToast },
 );
+// (entryId, toIndex) — the position the row should end up at, counted over the
+// same list the dock shows, which is the list the server renders positions for.
+const reorderQueuedSessionEntry = window.MultiCCChatSessionQueue.createReorderHandler(
+  { fetch: window.fetch.bind(window), withToken, getSessionName: () => _sessionName, notify: showNotifyToast },
+);
+// Queue controls post to the owner-only queue-action endpoint. A share
+// recipient holds no credentials for it, so every one of these buttons would
+// only ever fail — the staged messages themselves stay readable, which is what
+// a collaborator needs to see.
 window.MultiCCChatSessionQueue.configure({
-  onCancel: cancelQueuedSessionEntry,
-  onInsert: insertQueuedSessionEntry,
+  onCancel: SHARE_MODE ? null : cancelQueuedSessionEntry,
+  onInsert: SHARE_MODE ? null : insertQueuedSessionEntry,
+  onReorder: SHARE_MODE ? null : reorderQueuedSessionEntry,
 });
 function consumeUserInputRequestId(requestId) {
   if (chatEventState.pendingUserInputRequestId !== requestId) return;

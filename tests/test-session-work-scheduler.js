@@ -1235,6 +1235,146 @@ test('a pending queued entry can be cancelled individually but a leased entry ca
   assert.equal(tooLate.code, 'queued_entry_already_claimed');
 });
 
+// Reordering is the one queue control that must not touch the admission
+// sequence: that column is UNIQUE across every session, so swapping two values
+// would collide in the store, and renumbering a whole session would push its
+// work behind every other session's. The order is carried by a separate field
+// instead, so these tests check both halves — the displayed order changed, and
+// the sequence each entry was admitted with did not.
+test('a staged message can be moved to any position without rewriting admission sequences', async t => {
+  const h = fixture(t);
+  await h.scheduler.admit({ sessionId: 's1', text: 'active', idempotencyKey: 'active' });
+  await startClaim(h, await claimOne(h));
+  const first = await h.scheduler.admit({
+    sessionId: 's1', text: 'first', idempotencyKey: 'first',
+  });
+  const second = await h.scheduler.admit({
+    sessionId: 's1', text: 'second', idempotencyKey: 'second',
+  });
+  const third = await h.scheduler.admit({
+    sessionId: 's1', text: 'third', idempotencyKey: 'third',
+  });
+  const admitted = new Map();
+  for (const entry of [first, second, third]) {
+    admitted.set(entry.entry.id, (await h.outbox.get(entry.entry.id)).sequence);
+  }
+
+  const moved = await h.scheduler.reorderQueued('s1', third.entry.id, { toIndex: 0 });
+  assert.equal(moved.ok, true);
+  assert.equal(moved.unchanged, false);
+  assert.deepEqual(moved.schedule.queued.map(item => item.text), ['third', 'first', 'second']);
+  assert.deepEqual(moved.schedule.queued.map(item => item.position), [1, 2, 3]);
+  assert.equal(moved.reordered.from, 2);
+  assert.equal(moved.reordered.to, 0);
+  for (const [id, sequence] of admitted) {
+    assert.equal((await h.outbox.get(id)).sequence, sequence,
+      'the admission sequence each entry was stored with is untouched');
+  }
+  const event = h.events.at(-1);
+  assert.equal(event.type, 'queued_reordered');
+  assert.equal(event.from, 2);
+  assert.equal(event.to, 0);
+  assert.equal(event.schedulerState, moved.schedule.state);
+
+  // The order the user set is the order work actually drains in, not a display
+  // detail: the next claim after the active turn ends takes the moved entry.
+  assert.equal((await h.scheduler.complete('s1')).ok, true);
+  assert.equal((await claimOne(h)).id, third.entry.id);
+});
+
+test('moving by one direction clamps at both ends and never leaves the queue', async t => {
+  const h = fixture(t);
+  await h.scheduler.admit({ sessionId: 's1', text: 'active', idempotencyKey: 'active' });
+  await startClaim(h, await claimOne(h));
+  const entries = [];
+  for (const text of ['a', 'b', 'c']) {
+    entries.push((await h.scheduler.admit({
+      sessionId: 's1', text, idempotencyKey: text,
+    })).entry);
+  }
+  const texts = async () => (await h.scheduler.status('s1')).queued.map(item => item.text);
+  const [a, b, c] = entries;
+
+  // Down at the bottom and up at the top are no-ops, not errors and not wraps.
+  assert.equal((await h.scheduler.reorderQueued('s1', c.id, { direction: 'down' })).unchanged, true);
+  assert.equal((await h.scheduler.reorderQueued('s1', a.id, { direction: 'up' })).unchanged, true);
+  assert.deepEqual(await texts(), ['a', 'b', 'c']);
+
+  assert.equal((await h.scheduler.reorderQueued('s1', c.id, { direction: 'up' })).ok, true);
+  assert.deepEqual(await texts(), ['a', 'c', 'b']);
+  assert.equal((await h.scheduler.reorderQueued('s1', c.id, { direction: 'up' })).ok, true);
+  assert.deepEqual(await texts(), ['c', 'a', 'b']);
+  assert.equal((await h.scheduler.reorderQueued('s1', c.id, { direction: 'up' })).unchanged, true);
+
+  // An index outside the queue clamps to its ends rather than dropping the
+  // entry somewhere a later move cannot reach.
+  await h.scheduler.reorderQueued('s1', c.id, { toIndex: 99 });
+  assert.deepEqual(await texts(), ['a', 'b', 'c']);
+  await h.scheduler.reorderQueued('s1', c.id, { toIndex: -5 });
+  assert.deepEqual(await texts(), ['c', 'a', 'b']);
+  // Out-of-range clamping is a real move, so it is announced like any other.
+  assert.equal(h.events.at(-1).to, 0);
+});
+
+test('a message admitted after a rearrangement is appended, and a promoted head stays first', async t => {
+  const h = fixture(t);
+  await h.scheduler.admit({ sessionId: 's1', text: 'active', idempotencyKey: 'active' });
+  await startClaim(h, await claimOne(h));
+  const first = await h.scheduler.admit({
+    sessionId: 's1', text: 'first', idempotencyKey: 'first',
+  });
+  const second = await h.scheduler.admit({
+    sessionId: 's1', text: 'second', idempotencyKey: 'second',
+  });
+  await h.scheduler.reorderQueued('s1', second.entry.id, { toIndex: 0 });
+  assert.deepEqual((await h.scheduler.status('s1')).queued.map(item => item.text),
+    ['second', 'first']);
+
+  // A new message has no arranged position, so it goes behind everything the
+  // user arranged — the queue keeps meaning "these, in this order, then new
+  // arrivals" instead of re-sorting itself behind the user's back.
+  await h.scheduler.admit({ sessionId: 's1', text: 'third', idempotencyKey: 'third' });
+  assert.deepEqual((await h.scheduler.status('s1')).queued.map(item => item.text),
+    ['second', 'first', 'third']);
+
+  // "Insert now" pins an entry to the head. The user cannot drag anything above
+  // it, so the response reports where the entry really landed instead of
+  // echoing back the position that was asked for.
+  await h.scheduler.insertQueued('s1', first.entry.id, { actor: 'test' });
+  const moved = await h.scheduler.reorderQueued('s1', second.entry.id, { toIndex: 0 });
+  assert.equal(moved.ok, true);
+  assert.deepEqual(moved.schedule.queued.map(item => item.text), ['first', 'second', 'third']);
+  assert.equal(moved.reordered.to, 1);
+});
+
+test('reorder refuses an entry that is already executing and one the user never staged', async t => {
+  const h = fixture(t);
+  const active = await h.scheduler.admit({
+    sessionId: 's1', text: 'active', idempotencyKey: 'active',
+  });
+  const item = await claimOne(h);
+  await startClaim(h, item);
+  const staged = await h.scheduler.admit({
+    sessionId: 's1', text: 'staged', idempotencyKey: 'staged',
+  });
+
+  assert.equal((await h.scheduler.reorderQueued('s1', active.entry.id, { toIndex: 0 })).code,
+    'queued_entry_already_claimed');
+  assert.equal((await h.scheduler.reorderQueued('s1', 'no-such-entry')).code,
+    'queued_entry_not_found');
+  // Another session's staged message is not this queue's to move.
+  assert.equal((await h.scheduler.reorderQueued('s2', staged.entry.id, { toIndex: 0 })).code,
+    'queued_entry_not_found');
+  assert.equal((await h.scheduler.status('s1')).active.entryId, active.entry.id,
+    'a rejected reorder leaves the running turn alone');
+
+  // A claimed entry is refused too: the scheduler owns its order from then on.
+  await h.scheduler.complete('s1');
+  await claimOne(h);
+  assert.equal((await h.scheduler.reorderQueued('s1', staged.entry.id, { toIndex: 0 })).code,
+    'queued_entry_already_claimed');
+});
+
 test('classify W gates normal queued work until classify D completes the active entry', async t => {
   const h = fixture(t);
   await h.scheduler.admit({ sessionId: 's1', text: 'active', idempotencyKey: 'active' });

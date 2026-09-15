@@ -106,8 +106,8 @@ queue events.
 `GET /api/sessions/:id/queue` returns the server-owned queue state.
 
 `POST /api/sessions/:id/queue/action` accepts `retry`, `resume`, `skip`,
-`cancel`, `resolve`, `cancel_queued`, or `insert_queued`. Every action requires
-`{ "confirm": true }`.
+`cancel`, `resolve`, `cancel_queued`, `insert_queued`, or `reorder_queued`.
+Every action requires `{ "confirm": true }`.
 
 - Retry/resume continue the current task only when classify `E` permits them.
 - Skip/cancel/resolve record an explicit operator decision before advancing.
@@ -116,3 +116,11 @@ queue events.
 - `insert_queued` promotes one pending entry to the queue head and immediately
   ticks the pump. It never interrupts active work or bypasses classify; it
   starts immediately only when the classify gate already permits a normal item.
+- `reorder_queued` moves one pending entry to a new position
+  (`{ entryId, toIndex }`, or `direction: "up" | "down"`). It is ordering only:
+  no cancel, no tick, and it leaves the admission `sequence` of every entry
+  untouched — the hand-set order lives in a separate `queueOrder` field, so a
+  rearrangement can neither collide with the store's unique sequence index nor
+  push the session behind other sessions in the global claim order. An entry
+  admitted later has no `queueOrder` and therefore sorts after everything the
+  user arranged.

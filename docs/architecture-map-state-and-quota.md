@@ -75,7 +75,7 @@ stateDiagram-v2
 ### 1.3 按模块分层
 
 **入口层（不写状态）**
-- HTTP / WS 入口：`src/routes/orchestration.js:29`（`/api/sessions/:id/queue` `:238`、`queue/action` `:249`，7 个 action，`:257` 强制 `confirm:true`）
+- HTTP / WS 入口：`src/routes/orchestration.js:29`（`/api/sessions/:id/queue` `:238`、`queue/action` `:249`，8 个 action，`:257` 强制 `confirm:true`）
 - 聊天轮入口：`src/chat/turn-engine.js:577 admitChatWork` → `:586 runChatTurn` → `:1355 runChatTurnStreaming` → `:1520 finalizeStreamingTurn`
 
 **调度层**

@@ -448,7 +448,12 @@ function createSessionWorkHost(deps = {}) {
       : ['started', 'claimed', 'resumed'].includes(event.type) ? 'running'
         : event.type === 'frozen' ? 'frozen'
           : event.type === 'assessing' ? 'assessing' : event.type;
-    const queueState = ['queued_cancelled', 'queued_inserted'].includes(event.type)
+    // Queue bookkeeping events report the scheduler's own state: rearranging or
+    // dropping a staged message is not a state of the session, and publishing
+    // the raw event name as `state` would invent one for every client that
+    // switches on it.
+    const queueState = ['queued_cancelled', 'queued_inserted', 'queued_reordered']
+      .includes(event.type)
       ? event.schedulerState || 'idle'
       : state;
     deps.broadcast(event.sessionId, {
