@@ -19,6 +19,16 @@
     return data;
   }
   function notice(text) { $('notice').textContent = text; }
+  function appendTaskTail(article, message, task) {
+    const code = String(message?.taskShortCode || task?.taskShortCode || '').trim().toUpperCase();
+    if (!/^[0-9A-Z]{4}$/.test(code)) return;
+    const name = String(message?.taskName || task?.title || '').trim();
+    const chars = Array.from(name), preview = chars.length > 10 ? `${chars.slice(0, 10).join('')}…` : name;
+    const tail = document.createElement('div'); tail.className = 'msg-task-tail';
+    tail.textContent = `#${code}${preview ? ` · ${preview}` : ''}`;
+    tail.title = `#${code}${name ? ` · ${name}` : ''}`;
+    article.append(tail);
+  }
   function inputMode(intent) {
     if (client?.pending()) return notice(t('taskShellRetryFirst'));
     if (intent === 'work') { control = null; newTask = false; }
@@ -69,6 +79,7 @@
         summary.textContent = t('taskShellEvidence'); pre.textContent = JSON.stringify(message.tools, null, 2);
         details.append(summary, pre); article.append(details);
       }
+      appendTaskTail(article, message, detail?.task);
       return article;
     }));
     if (nearBottom) history.scrollTop = history.scrollHeight;

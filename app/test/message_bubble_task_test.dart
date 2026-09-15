@@ -55,6 +55,82 @@ void main() {
     expect(msg.isStreaming, isFalse);
   });
 
+  test('history and late attribution retain the server-owned task short code', () {
+    final history = ChatMessage.fromHistory({
+      'id': 'm-3',
+      'role': 'assistant',
+      'content': '完成',
+      'taskId': 'tsk_3',
+      'taskName': '同步消息归属',
+      'taskShortCode': 'A1B2',
+    });
+    expect(history.taskShortCode, 'A1B2');
+
+    final live = ChatMessage(role: MessageRole.user, content: '继续');
+    live.applyAttribution({
+      'taskId': 'tsk_4',
+      'taskName': '新的消息任务',
+      'taskShortCode': 'C3D4',
+    });
+    expect(live.taskShortCode, 'C3D4');
+  });
+
+  testWidgets('user and assistant bubbles show the same subtle task tail', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Column(
+            children: [
+              MessageBubble(
+                message: ChatMessage(
+                  role: MessageRole.user,
+                  content: '继续',
+                  taskId: 'tsk_1',
+                  taskName: '很长的任务名称用于验证省略规则',
+                  taskShortCode: 'a1b2',
+                ),
+              ),
+              MessageBubble(
+                message: ChatMessage(
+                  role: MessageRole.assistant,
+                  content: '完成',
+                  taskId: 'tsk_1',
+                  taskName: '很长的任务名称用于验证省略规则',
+                  taskShortCode: 'A1B2',
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(find.byKey(const ValueKey('message-task-tail')), findsNWidgets(2));
+    expect(find.text('#A1B2 · 很长的任务名称用于验…'), findsNWidgets(2));
+  });
+
+  testWidgets('a task id alone never fabricates a display code', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: MessageBubble(
+            message: ChatMessage(
+              role: MessageRole.user,
+              content: '尚未归因',
+              taskId: 'tsk_not_a_display_code',
+              taskName: '待归因任务',
+            ),
+          ),
+        ),
+      ),
+    );
+    expect(find.byKey(const ValueKey('message-task-tail')), findsNothing);
+  });
+
   testWidgets('task rows render markdown and the interrupted marker via the shared bubble', (
     tester,
   ) async {

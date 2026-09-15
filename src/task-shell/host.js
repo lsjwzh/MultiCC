@@ -53,6 +53,7 @@ function createTaskShellHost(deps) {
     candidates = require('../task-routing/candidates').createCandidateStore(store);
     runtime = createTaskShellRuntime({
       store,
+      taskShortCode: deps.taskShortCode,
       getDirectory: id => deps.directories?.get(id),
       taskDirectory: task => require('../task-board/core').taskDirId(deps.getTaskBoard().getBoard(), task),
       validateTaskRuntime: (dirId, config) => deps.createSessionRecord({ ...config, dir: deps.directories.get(dirId), kind: 'chat', validateOnly: true }),

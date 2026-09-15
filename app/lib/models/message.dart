@@ -157,6 +157,7 @@ class ChatMessage {
   /// stampProvenance / annotateAttribution).
   String? taskId;
   String? taskName;
+  String? taskShortCode;
   String? turnId;
   String? auxRunId;
 
@@ -181,6 +182,7 @@ class ChatMessage {
     this.clientMsgId,
     this.taskId,
     this.taskName,
+    this.taskShortCode,
     this.turnId,
     this.auxRunId,
     this.sourceSessionId,
@@ -213,6 +215,7 @@ class ChatMessage {
           : null,
       taskId = _nonEmpty(json['taskId']),
       taskName = _nonEmpty(json['taskName']),
+      taskShortCode = _nonEmpty(json['taskShortCode']),
       turnId = _nonEmpty(json['turnId']),
       auxRunId = _nonEmpty(json['auxRunId']),
       sourceSessionId = _nonEmpty(json['sourceSessionId']),
@@ -231,6 +234,7 @@ class ChatMessage {
   void applyAttribution(Map<String, dynamic> record) {
     taskId = _nonEmpty(record['taskId']) ?? taskId;
     taskName = _nonEmpty(record['taskName']) ?? taskName;
+    taskShortCode = _nonEmpty(record['taskShortCode']) ?? taskShortCode;
     turnId = _nonEmpty(record['turnId']) ?? turnId;
     auxRunId = _nonEmpty(record['auxRunId']) ?? auxRunId;
     // The two source halves are **client-derived addressing hints**, not facts

@@ -2023,7 +2023,7 @@ const taskBoardRuntime = createTaskBoardRuntime({
   resolveSessionQueue: (...args) => sessionWorkHost.resolveTask(...args),
   getCommanderMigrationStatus: dirId => commanderMigrationState.statusFor(dirId),
   getSessionRunState: sid => sessionWorkHost?.getRunState(sid) || 'idle', isTaskShellSession: id => taskShellHost.owns(id), taskShellTaskAccess: task => taskShellHost.taskAccess(task), taskShellTaskEntry: id => taskShellHost.taskEntry(id),
-  resolveGoalLimits, buildGoalLimitNote,
+  resolveGoalLimits, buildGoalLimitNote, taskShortCode,
   // M3 per-task worktree service ports (taskWorktree on the runtime).
   directories, gitWorktreeAdd, gitWorktreeRemove, gitRelocateWorktree, gitMergeBack: (dir, session, opts) => gitMergeBack(dir, session, { ...opts, evidence: workspaceAdmission?.mergeHooks(session.id) }), existsSync: fs.existsSync,
   // Air 任务「移动」：会话工作区搬迁走 session-lifecycle 的同一实现（含 carry）；
@@ -2055,7 +2055,7 @@ const taskGraphContextOf = require('./src/task-shell/task-graph-context').create
   },
 });
 const taskShellHost = require('./src/task-shell/host').createTaskShellHost({
-  defaultTaskRuntime: () => ({ cli: SUPPORTED_CHAT_CLIS.find(cli => cliAvailabilitySummary()[cli]?.available) || 'claude' }),
+  defaultTaskRuntime: () => ({ cli: SUPPORTED_CHAT_CLIS.find(cli => cliAvailabilitySummary()[cli]?.available) || 'claude' }), taskShortCode,
   taskGraphContext: taskGraphContextOf,
   onStateTargetChanged: id => workspaceRuntime.publishSessionView(id), onSeparationChanged: id => chatBroadcast(id, { type: 'task_separation_updated' }),
   file: MULTICC_PATHS.taskShellDbFile, records: persistedSessions, directories, createSessionRecord,
@@ -2201,8 +2201,7 @@ chatHistoryRuntime = createChatHistoryRuntime({
   getActiveBackgroundTasks: id => backgroundTaskRuntime?.listActiveBackgroundTasks(id) || [],
   chatStream, cwdForSession,
   trackPendingMemoryDistill: _trackPendingMemoryDistill,
-  projectMessages: (_sessionId, messages) => projectHistoryUsage(messages),
-  logger,
+  projectMessages: (_sessionId, messages) => projectHistoryUsage(messages), taskShortCode, logger,
 });
 chatHistoryService = chatHistoryRuntime.service;
 chatHistoryRuntime.mountRoutes(app);

@@ -6,6 +6,7 @@ const {
 } = require('./context');
 const { shellRecords, historySnapshot, handoffSnapshot, contextPage, pageSnapshots } = require('./history-context');
 const { resolveGoalLimits } = require('../routes/aux-goal');
+const { displayMessages, displayTask } = require('../task-display-attribution');
 
 function failure(code, message = code, status = 409) {
   return Object.assign(new Error(message), { code, status });
@@ -379,8 +380,10 @@ function createTaskShellRuntime(ports) {
   async function detail(shellId, taskId) {
     const task = taskFor(shell(shellId), taskId);
     const execution = task.ready ? await getExecution(task.sessionId) : { busy: true, status: 'preparing' };
-    return { task, execution, messages: shellRecords(chatScope(shellId), getHistory)
-      .filter(m => m.taskId === taskId || (!m.taskId && m.sourceSessionId === task.sessionId)).slice(-200),
+    const messages = shellRecords(chatScope(shellId), getHistory)
+      .filter(m => m.taskId === taskId || (!m.taskId && m.sourceSessionId === task.sessionId)).slice(-200);
+    return { task: displayTask(task, ports.taskShortCode), execution,
+      messages: displayMessages(messages, task, { getTask: id => store.get('task', id) || getTask(id), codeFor: ports.taskShortCode }),
       snapshots: task.snapshotIds.map(id => store.get('snapshot', id)) };
   }
   function normalize(raw = {}) {

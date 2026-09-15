@@ -43,6 +43,7 @@ class TaskBoardTask {
   final String id;
   final String moduleId;
   final String title;
+  final String? taskShortCode;
   final String status;
   final List<String> areas;
   final int refCount;
@@ -90,6 +91,7 @@ class TaskBoardTask {
     required this.id,
     required this.moduleId,
     required this.title,
+    this.taskShortCode,
     required this.status,
     this.areas = const [],
     this.refCount = 0,
@@ -124,6 +126,9 @@ class TaskBoardTask {
     id: (json['id'] ?? '').toString(),
     moduleId: (json['moduleId'] ?? '').toString(),
     title: (json['title'] ?? '').toString(),
+    taskShortCode: (json['taskShortCode']?.toString().isNotEmpty ?? false)
+        ? json['taskShortCode'].toString()
+        : null,
     status: (json['status'] ?? 'active').toString(),
     areas:
         (json['areas'] as List?)
@@ -217,6 +222,9 @@ class TaskMessage {
   final bool lost;
   final String? taskRunId;
   final bool partial;
+  final String? taskId;
+  final String? taskName;
+  final String? taskShortCode;
 
   const TaskMessage({
     required this.sessionId,
@@ -228,6 +236,9 @@ class TaskMessage {
     this.lost = false,
     this.taskRunId,
     this.partial = false,
+    this.taskId,
+    this.taskName,
+    this.taskShortCode,
   });
 
   /// Headless TaskRun messages deliberately carry no public session id. They
@@ -249,6 +260,9 @@ class TaskMessage {
     lost: json['lost'] == true,
     taskRunId: json['taskRunId']?.toString(),
     partial: json['partial'] == true,
+    taskId: json['taskId']?.toString(),
+    taskName: json['taskName']?.toString(),
+    taskShortCode: json['taskShortCode']?.toString(),
   );
 }
 
@@ -262,6 +276,9 @@ ChatMessage chatMessageFromTask(TaskMessage m) => ChatMessage(
   id: (m.messageId?.isNotEmpty ?? false) ? m.messageId : null,
   timestamp: m.ts > 0 ? DateTime.fromMillisecondsSinceEpoch(m.ts) : null,
   isPartial: m.partial,
+  taskId: m.taskId,
+  taskName: m.taskName,
+  taskShortCode: m.taskShortCode,
 );
 
 /// A2-c: how many trailing rows of [history] the live folded tail supersedes.

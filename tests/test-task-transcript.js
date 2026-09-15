@@ -222,7 +222,7 @@ test('GET task messages returns chat-history-style pagination on top of legacy f
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const taskRuns = createTaskRunStore({ file: path.join(dir, 'task-runs.sqlite'), Database });
   t.after(() => { try { taskRuns.close(); } catch (_) {} });
-  const { runtime } = mkRuntime({ taskRuns });
+  const { runtime } = mkRuntime({ taskRuns, taskShortCode: () => 'T4SK' });
   core.applyTagResult(runtime.getBoard(), [{ id: 'new', title: 'T', module: 'M', areas: [] }],
     { sessionId: 'sess-1', dirId: 'dir-1', userMsgId: 'mu1', assistantMsgId: 'ma1', ts: 20, excerpt: 'x' }, 20);
   const taskId = Object.keys(runtime.getBoard().tasks)[0];
@@ -259,7 +259,9 @@ test('GET task messages returns chat-history-style pagination on top of legacy f
     id: 'asst-http', role: 'assistant', content: '第一轮完成', ts: 3, taskRunId: runId,
     tools: [{ id: 't1', name: 'Bash', input: { command: 'npm test' }, result: 'pass' }],
     usage: { input: 10, output: 5 },
+    taskId, taskName: 'T', taskShortCode: 'T4SK',
   }]);
+  assert.equal(page.body.task.taskShortCode, 'T4SK');
   assert.equal(page.body.hasMore, true);
 
   const older = fakeRes();
