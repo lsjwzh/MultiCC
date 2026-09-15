@@ -156,7 +156,7 @@
     if (!value || typeof value !== 'object' || !value.traceId || !value.currentTask) return null;
     const current = value.currentTask;
     const sources = Array.isArray(value.sources) ? value.sources.filter(source => (
-      source && typeof source === 'object' && source.taskId
+      source && typeof source === 'object' && (source.id || source.taskId)
     )) : [];
     return {
       traceId: String(value.traceId),
@@ -166,6 +166,7 @@
       },
       sources,
       managedOnly: value.managedOnly === true,
+      budget: value.budget, retained: value.retained || [], omitted: value.omitted || [], diagnostics: value.diagnostics || [],
       count: 1 + sources.length,
     };
   }
@@ -239,6 +240,8 @@
 
   function modeLabel(mode) {
     if (mode === 'refilled') return '按需补取';
+    if (/^memory:/.test(mode)) return `记忆·${({ builtin: '预制', machine: '机器全局', cli: 'CLI', shared: '目录', task: '任务', own: '私有', skill: '技能', withdrawn: '已撤回' })[mode.slice(7)] || '检索'}`;
+    if (/^(task|context):/.test(mode)) return mode === 'task:current' ? '当前任务信息' : '上下文规则与检查点';
     const graph = /^graph:(.+)$/.exec(String(mode || ''));
     if (graph) return GRAPH_KIND_LABELS[graph[1]] || '任务图谱';
     return '初始化导入';
@@ -267,19 +270,20 @@
   function contextTraceHtml(trace, detail, state) {
     if (!trace) return '';
     const sourceDetails = detail && Array.isArray(detail.sources) ? detail.sources : [];
-    const byKey = new Map(sourceDetails.map(source => [`${source.mode}:${source.taskId}`, source]));
+    const byKey = new Map(sourceDetails.map(source => [source.id || `${source.mode}:${source.taskId}`, source]));
     const rows = [
       `<div class="usage-context-source"><span class="usage-context-kind">当前任务 · 原生上下文</span>` +
       `<strong>${escapeHtml(trace.currentTask.taskName)}</strong><code>${escapeHtml(trace.currentTask.taskId)}</code></div>`,
       ...trace.sources.map(source => {
-        const full = byKey.get(`${source.mode}:${source.taskId}`) || source;
-        const isGraph = /^graph:/.test(String(source.mode || ''));
+        const full = byKey.get(source.id || `${source.mode}:${source.taskId}`) || source;
+        const isGraph = /^(graph|memory|task|context):/.test(String(source.mode || ''));
         const meta = `${modeLabel(source.mode)}${isGraph ? '' : ` · ${Number(source.messageCount) || 0} 条消息`}` +
           `${Number(source.estimatedTokens) > 0 ? ` · 约 ${compactTokens(source.estimatedTokens)} tokens` : ''}` +
-          `${Number(source.omittedExchanges) > 0 ? ` · 更早 ${Number(source.omittedExchanges)} 轮未带入` : ''}`;
+          `${Number(source.omittedExchanges) > 0 ? ` · 更早 ${Number(source.omittedExchanges)} 轮未带入` : ''}` +
+          `${source.retained ? ' · 沿用（本轮未重发）' : ''}${source.truncated ? ' · 已截断' : ''}${source.version ? ` · v ${String(source.version).slice(0, 12)}` : ''}`;
         return `<div class="usage-context-source"><span class="usage-context-kind">${escapeHtml(meta)}</span>` +
-          `<strong>${escapeHtml(source.taskName || source.taskId)}</strong><code>${escapeHtml(source.taskId)}</code>` +
-          `${sourceMessagesHtml(full)}${sourceExcerptHtml(full)}</div>`;
+          `<strong>${escapeHtml(source.taskName || source.taskId)}</strong><code>${escapeHtml(source.path || source.id || source.taskId)}</code>` +
+          `${source.reason ? `<small>${escapeHtml(source.reason)}</small>` : ''}${sourceMessagesHtml(full)}${sourceExcerptHtml(full)}</div>`;
       }),
     ];
     let action = '';
@@ -288,7 +292,10 @@
         `${state.loading ? '正在读取…' : '查看引用内容'}</button>`;
     }
     if (state.error) action += `<span class="usage-context-error">${escapeHtml(state.error)}</span>`;
-    return `<div class="usage-context-section"><div class="usage-context-title">⌁ 本轮引用来源</div>` +
+    const budget = trace.budget ? `<div class="usage-context-scope">托管上下文：约 ${Number(trace.budget.used)} / ${Number(trace.budget.limit)} tokens · 沿用 ${trace.retained.length} 项 · 省略 ${trace.omitted.length} 项</div>` : '';
+    const omissions = trace.omitted.length ? `<details><summary>查看省略原因</summary>${trace.omitted.map(s => `<div>${escapeHtml(s.id)} · ${escapeHtml(s.reason)}</div>`).join('')}</details>` : '';
+    const diagnostics = trace.diagnostics.map(s => `<div class="usage-context-error">${escapeHtml(s.path || '')} ${escapeHtml(s.reason)}</div>`).join('');
+    return `<div class="usage-context-section"><div class="usage-context-title">⌁ 本轮引用来源</div>${budget}${omissions}${diagnostics}` +
       `${rows.join('')}${action}<div class="usage-context-scope">只列出 MultiCC 可验证的引用；模型原生历史、系统提示和临时工具读取不属于逐 token 拆分。</div></div>`;
   }
 

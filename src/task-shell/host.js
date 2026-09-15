@@ -271,6 +271,9 @@ function createTaskShellHost(deps) {
     taskAccess: task => getRuntime().taskAccess(task), taskEntry: id => getRuntime().bindPlannedTask(id),
     relocateTask: (taskId, dirId, options) => getRuntime().relocateTask(taskId, dirId, options),
     workspaceGroup: workspace.group, isWorkspaceBusy: workspace.busy, contextSeed,
+    prepareContext: (id, options) => owns(id) ? getRuntime().prepareContext(id, options) : null,
+    contextSent: (...args) => getRuntime().contextSent(...args),
+    contextComplete: (...args) => getRuntime().contextComplete(...args),
     close: () => store?.close(),
   };
 }

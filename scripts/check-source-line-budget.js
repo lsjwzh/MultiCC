@@ -26,8 +26,8 @@ const MIGRATION_DEBT = Object.freeze({
   // default budget. Registered here so the gate keeps tracking it; the next
   // split of the turn engine must ratchet this ceiling down.
   'src/chat/turn-engine.js': Object.freeze({
-    ceiling: 3018,
-    byteCeiling: 144931,
+    ceiling: 3008,
+    byteCeiling: 144423,
   }),
   // app/lib/screens/main_shell.dart crossed 3000 in 039c6e43 (跨目录控制台).
   // Registered so the gate keeps tracking it; the next main_shell split must
