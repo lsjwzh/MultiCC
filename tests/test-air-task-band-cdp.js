@@ -47,18 +47,78 @@ function buildRoutes() {
   return routes;
 }
 
-// 行要长得像真的：`#tasks strong` + `#tasks small` 两行（标题 + 状态）。单行按钮
-// 的 min-content 就是它自己的高度，压不出「行被挤扁」这件事 —— 那样下面那条
-// 「行内容不出框」的断言会变成永远为真的摆设。
+// 标题得真会折行。侧栏的行宽 236px 上下，真实任务的名字常常是两三行（用户侧栏里
+// 就有「运行 TikTok 库存同步脚本（xlwms→TikTok 每小时同步）」这种），而一行标题的
+// min-content 差不多就是它自己的高度 —— 压也压不出多少来，下面那几条「行内容不出框」
+// 的断言会退化成永远为真的摆设。第一条按真实长度折成三行并挂上 `.long-title`（行会
+// 被重排，所以量的是这条带标记的，不是「第一条」），压矮一点就看得出来。
+const LONG_TITLE = '运行 TikTok 库存同步脚本（xlwms→TikTok 每小时同步），并把当天的 GMV Max 广告数据落进本地库';
 const fillRows = `(() => {
   const list = document.getElementById('tasks');
+  const long = ${JSON.stringify(LONG_TITLE)};
   for (let i = 1; i <= ${ROWS}; i += 1) {
     const button = document.createElement('button');
     button.type = 'button';
-    button.innerHTML = '<strong>任务 ' + i + '</strong><small>计划 · 进行中 · MultiCC 主仓</small>';
+    button.className = i === 1 ? 'selected long-title' : '';
+    const title = document.createElement('strong');
+    title.textContent = i === 1 ? long : '任务 ' + i;
+    const meta = document.createElement('small');
+    meta.textContent = '计划 · 进行中 · MultiCC 主仓';
+    button.append(title, meta);
     list.append(button);
   }
 })()`;
+
+// 行还是按内容的高度排的。容器的空间是给滚用的，不是给压行用的：`nav` 是
+// flex 列，清单一旦有了确定高度，行默认 `flex-shrink:1`，会被挤成一半高，
+// 标题和状态行叠在一起 —— 这条量的是那件事，光看 scrollHeight 看不出来。
+// 每一屏都量一次（加载后一次、切换任务后再一次），因为「切换任务时特别容易
+// 错乱」是用户的原始说法：切换会重排这份清单，那是第二次布局。
+const rowGeometry = `(() => {
+  const boxes = [...document.querySelectorAll('#tasks button')];
+  const rects = boxes.map(box => box.getBoundingClientRect());
+  const box = row => ({ height: Math.round(row.getBoundingClientRect().height), content: row.scrollHeight });
+  return {
+    clipped: boxes.filter(row => row.scrollHeight > row.clientHeight + 1).length,
+    overlaps: rects.filter((rect, i) => i > 0 && rect.top < rects[i - 1].bottom - 1).length,
+    long: box(document.querySelector('#tasks button.long-title')),
+    selected: box(document.querySelector('#tasks button.selected')),
+  };
+})()`;
+
+// 切换任务时 render() 干的事就是 `$('tasks').replaceChildren(…)`：整份清单重排，
+// 选中标记换到点进去的那条。这里照着做一遍 —— 行是新的、顺序是新的、标中的是新的
+// 一条，再量一次几何。
+// 切换任务时 render() 干的事就是 `$('tasks').replaceChildren(…)`：整份清单重排，
+// 选中标记换到点进去的那条（「最近任务」按打开顺序排，点进去的那条会到最前面）。
+// 这里照着做一遍 —— 行是新的顺序、标中的是另一条，然后重新量几何。
+const switchRows = `(() => {
+  const list = document.getElementById('tasks');
+  const rows = [...list.children];
+  const picked = rows[1];
+  for (const row of rows) row.classList.toggle('selected', row === picked);
+  list.replaceChildren(picked, ...rows.filter(row => row !== picked));
+})()`;
+
+async function assertRowsKeepTheirContent(page, when) {
+  const rows = await page.evaluate(rowGeometry);
+  assert.equal(rows.clipped, 0, `${when}：每一行都要装得下自己的内容`);
+  assert.equal(rows.overlaps, 0, `${when}：行与行不许叠在一起`);
+  // 「行高 ≥ 内容高」在折行的行上才有牙齿：一条标题折成三行，压矮一点就露馅。
+  assert.ok(
+    rows.long.content >= 60,
+    `${when}：长标题那条的内容高只有 ${rows.long.content}，标题没折行 —— fixture 变软了，量不到压行`,
+  );
+  assert.ok(
+    rows.long.height >= rows.long.content,
+    `${when}：折行那条的行高 ${rows.long.height} 不该小于内容高 ${rows.long.content}`,
+  );
+  assert.ok(
+    rows.selected.height >= rows.selected.content,
+    `${when}：标中那条的行高 ${rows.selected.height} 不该小于内容高 ${rows.selected.content}`,
+  );
+  return rows;
+}
 
 test('the Air task list fills the band and scrolls inside it', async t => {
   if (!findChromeBinary()) return t.skip('Chrome required');
@@ -106,22 +166,12 @@ test('the Air task list fills the band and scrolls inside it', async t => {
       `more than one task should be on screen at a time, got about ${band.visibleRows}`,
     );
 
-    // 行还是按内容的高度排的。容器的空间是给滚用的，不是给压行用的：`nav` 是
-    // flex 列，清单一旦有了确定高度，行默认 `flex-shrink:1`，会被挤成一半高，
-    // 标题和状态行叠在一起 —— 这条量的是那件事，光看 scrollHeight 看不出来。
-    const rows = await page.evaluate(`(() => {
-      const boxes = [...document.querySelectorAll('#tasks button')];
-      const rects = boxes.map(box => box.getBoundingClientRect());
-      return {
-        clipped: boxes.filter(box => box.scrollHeight > box.clientHeight + 1).length,
-        overlaps: rects.filter((rect, i) => i > 0 && rect.top < rects[i - 1].bottom - 1).length,
-        height: Math.round(rects[0].height),
-        content: boxes[0].scrollHeight,
-      };
-    })()`);
-    assert.equal(rows.clipped, 0, '每一行都要装得下自己的内容');
-    assert.equal(rows.overlaps, 0, '行与行不许叠在一起');
-    assert.ok(rows.height >= rows.content, `行高 ${rows.height} 不该小于内容高 ${rows.content}`);
+    // 行不许被压矮（断言在 assertRowsKeepTheirContent 里）。量两次：刚打开一次，
+    // 切换任务 —— 清单整份重排之后 —— 再一次。用户报的就是「切换任务的时候特别
+    // 容易错乱」，那是清单的第二次布局。
+    await assertRowsKeepTheirContent(page, '刚打开');
+    await page.evaluate(switchRows);
+    await assertRowsKeepTheirContent(page, '切换任务后');
 
     // 最后一条靠滚清单就能到 —— 整件事的重点。同时抬头不许跟着走。
     const scrolled = await page.evaluate(`(() => {
