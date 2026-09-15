@@ -30,6 +30,7 @@ function createTaskShellRuntime(ports) {
   const flights = new Map();
   const roles = require('./role-bindings').createRoleBindings(store, { getRecord, getDirectory: ports.getDirectory, assertWritable });
   const taskActions = require('./task-actions').createTaskActions({ store, getRecord, getTask, getHistory, getExecution, createExecution, indexTask, ports, shell, open, chatScope });
+  const separation = require('./separation').createTaskSeparation({ store, getRecord, getHistory, getExecution, createExecution, indexTask, ports, ownerOf: taskActions.ownerOf });
   const taskFirst = require('./task-first').createTaskFirstMigration({ store, open, adopt, roles, indexTask, ports });
   const launching = new Set();
   const maxConcurrent = Number.isInteger(ports.maxConcurrent) && ports.maxConcurrent > 0 ? ports.maxConcurrent : 4;
@@ -222,7 +223,7 @@ function createTaskShellRuntime(ports) {
     store.transaction(() => {
       const snapshots = new Set(store.list('task').filter(t => removed.has(t.id)).flatMap(t => t.snapshotIds || []));
       const receipts = new Set(store.list('receipt').filter(r => removed.has(r.taskId)).map(r => r.id));
-      for (const kind of ['task', 'link', 'claim', 'receipt', 'answer', 'fork']) {
+      for (const kind of ['task', 'link', 'claim', 'receipt', 'answer', 'fork', 'task-separation']) {
         for (const [id, value] of store.entries(kind)) {
           if (removed.has(id) || removed.has(value.taskId) || receipts.has(value.receiptId)) store.remove(kind, id);
         }
@@ -734,7 +735,7 @@ function createTaskShellRuntime(ports) {
     return { ok: true };
   }
   return {
-    roles, migrateTaskSessions: taskFirst.migrate, listTasks: () => store.list('task'),
+    separation, roles, migrateTaskSessions: taskFirst.migrate, listTasks: () => store.list('task'),
     // 任务图谱的只读快照：壳、持久任务、link 三张表一次拉全，供路由层聚合。
     taskGraphData: () => ({ shells: store.list('shell'), tasks: store.list('task'), links: store.list('link') }),
     getSnapshot: id => { try { return store.get('snapshot', id); } catch (_) { return null; } },

@@ -51,6 +51,8 @@ function mountTaskShellRoutes(app, { getRuntime, open = id => getRuntime().open(
     req.query.traceId,
     { includeMessages: req.query.include === 'messages' },
   )));
+  app.get('/api/sessions/:sessionId/task-separation', route((runtime, req) => ({ ok: true, suggestion: runtime.separation.latest(req.params.sessionId) })));
+  app.post('/api/sessions/:sessionId/task-separation/:suggestionId', route((runtime, req) => runtime.separation.decide(req.params.sessionId, req.params.suggestionId, req.body?.decision)));
   app.post('/api/task-shells', route((_runtime, req) => open(req.body?.sessionId)));
   app.get('/api/task-shells/:shellId', route((runtime, req) => runtime.view(req.params.shellId)));
   app.get('/api/task-shells/:shellId/chat', route((runtime, req) => runtime.chatScope(req.params.shellId)));

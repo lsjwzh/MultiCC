@@ -1001,6 +1001,18 @@ function createClassifyStateMachine(rawDeps) {
         supersededReason,
         latencyMs: Date.now() - startedAt,
       });
+      if (!supersededReason && shellOwned && res.separation && ['turn-end', 'manual'].includes(runSource)) {
+        const suggestion = getTaskContextHost().proposeTaskSeparation?.(sessionName, shellReceiptId, {
+          separation: res.separation, turnId, anchorMessageId,
+        });
+        if (suggestion) {
+          // Keep the original task identity/name until the user decides. The
+          // auxiliary verdict remains in the audit log; rule-owned state is untouched.
+          annotateChatTurn(sessionName, turnId, { taskId: currentTaskId, auxRunId: runId }, { anchorMessageId });
+          setTaskState(sessionName, { auxRunId: runId });
+          return;
+        }
+      }
       if (!supersededReason && shellOwned && resolvedTaskId !== currentTaskId
           && getTaskContextHost().proposeTaskShellAttribution) {
         getTaskContextHost().proposeTaskShellAttribution(sessionName, shellReceiptId, {
