@@ -194,6 +194,57 @@ test('the Air task list fills the band and scrolls inside it', async t => {
   });
 });
 
+// 行高是两层防线各自独立保证的：清单不是 flex 列（行是块级子项，没有 flex-shrink
+// 这条路），以及万一它又变成 flex 容器时 `#tasks > * { flex: 0 0 auto }` 接管。
+// 用户报过一次「行被压成 38px、状态行叠到下一行标题上」：那是第一层还没上、第二层
+// 又没生效的样式表（`#tasks > *` 是子选择器 —— 一旦行外面套了包装元素就失效）。
+// 所以两条各断言一次，再合起来断言一次「两条都没有时确实会坏」—— 免得上面两条
+// 变成永远为真的摆设。
+const killBlockLayout = `(() => {
+  const s = document.createElement('style');
+  s.id = 'kill-block-layout';
+  s.textContent = '#tasks { display: flex; flex-direction: column; } #tasks > * + * { margin-top: 0; }';
+  document.head.append(s);
+})()`;
+const killFlexGuard = `(() => {
+  const s = document.createElement('style');
+  s.id = 'kill-flex-guard';
+  s.textContent = '#tasks > * { flex: 1 1 auto !important; }';
+  document.head.append(s);
+})()`;
+
+test('the task rows survive either defence being taken away', async t => {
+  if (!findChromeBinary()) return t.skip('Chrome required');
+  await withCdpHarness({ routes: buildRoutes(), screenshotDir: path.join(os.tmpdir(), 'multicc-air-task-band-guards-qa') }, async page => {
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
+    await page.navigate('/');
+    await page.evaluate(fillRows);
+
+    const list = await page.evaluate(`(() => {
+      const el = document.getElementById('tasks');
+      const style = getComputedStyle(el);
+      const second = el.querySelectorAll('button')[1];
+      return { display: style.display, rowMargin: getComputedStyle(second).marginTop };
+    })()`);
+    assert.equal(list.display, 'block', '清单是块级列表：行是块级子项，行高没有「被 flex 压缩」这条路');
+    assert.equal(list.rowMargin, '4px', '行距由 margin-top 给（不再是 nav 的 gap）');
+    await assertRowsKeepTheirContent(page, '块级列表');
+
+    // 第一层按掉：清单被强行变回 flex 列，第二层（flex: 0 0 auto）得自己扛住。
+    await page.evaluate(killBlockLayout);
+    await assertRowsKeepTheirContent(page, '清单被强制回 flex 列之后');
+
+    // 第二层按掉（第一层还按着）：两层都没有的时候，行确实会被压扁 —— 上面两条断言
+    // 因此不是永远为真的摆设。
+    await page.evaluate(killFlexGuard);
+    const broken = await page.evaluate(rowGeometry);
+    assert.ok(
+      broken.clipped > 0,
+      '两层都拿掉之后行应该被压扁（内容溢出框）—— 没坏说明 fixture 量不到这件事了',
+    );
+  });
+});
+
 test('a window too short for three bands scrolls the whole sidebar instead', async t => {
   if (!findChromeBinary()) return t.skip('Chrome required');
   await withCdpHarness({ routes: buildRoutes(), screenshotDir: path.join(os.tmpdir(), 'multicc-air-task-band-short-qa') }, async page => {
