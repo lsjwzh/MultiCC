@@ -8,7 +8,9 @@
 //   · 同壳前序任务（shell-link 邻接）：标题 + handoff 快照里最后一条助手结论。
 // 纯函数、依赖全注入：runtime 侧只负责把 taskId 交进来，图谱数据、记忆
 // 读取、token 估算全部由宿主注入，便于单测与降级（任何一环缺失就少一段，
-// 整体为空时返回 ''，不注入空段）。
+// 整体为空时不注入空段）。
+// detail 版本同时返回 sources（引用了哪些任务/哪份记忆、注入了哪一行），
+// 落进 receipt 后由 contextTrace 呈现在「引用来源」面板。
 
 const { estimateTokens } = require('./context');
 
@@ -47,10 +49,10 @@ function lastAssistantText(snapshot) {
 //   snapshot(id)        -> 快照 | null
 //   readTaskMemory(dirId, taskId) -> string（'' 表示没有任务级记忆）
 // }
-function buildTaskGraphContext(ports, { taskId, tokenBudget = DEFAULT_TOKEN_BUDGET } = {}) {
-  if (!ports || typeof taskId !== 'string' || !taskId) return '';
+function buildTaskGraphContextDetail(ports, { taskId, tokenBudget = DEFAULT_TOKEN_BUDGET } = {}) {
+  if (!ports || typeof taskId !== 'string' || !taskId) return { text: '', sources: [] };
   for (const name of ['task', 'boardTask', 'groupOf', 'linkedTaskIds', 'snapshot', 'readTaskMemory']) {
-    if (typeof ports[name] !== 'function') return '';
+    if (typeof ports[name] !== 'function') return { text: '', sources: [] };
   }
   const self = ports.task(taskId);
   const boardSelf = ports.boardTask(taskId);
@@ -59,6 +61,10 @@ function buildTaskGraphContext(ports, { taskId, tokenBudget = DEFAULT_TOKEN_BUDG
     const record = ports.task(id) || ports.boardTask(id);
     return (record && clipText(record.title, 120)) || id;
   };
+  // 一条引用来源：哪个任务、以什么身份（父任务/记忆/同组/同壳）、注入了哪一行。
+  const sourceOf = (id, kind, excerpt) => ({
+    taskId: id, taskName: titleOf(id), kind, excerpt, estimatedTokens: estimateTokens(excerpt),
+  });
 
   const sections = [];
   let used = 0;
@@ -71,11 +77,21 @@ function buildTaskGraphContext(ports, { taskId, tokenBudget = DEFAULT_TOKEN_BUDG
   const parentId = (self && self.parentTaskId) || null;
   if (parentId) {
     const parent = ports.task(parentId);
-    const lines = [`· 父任务 ${titleOf(parentId)}`];
+    const titleLine = `· 父任务 ${titleOf(parentId)}`;
+    const lines = [titleLine];
+    const sources = [sourceOf(parentId, 'parent', titleLine)];
     const memory = parent ? clipText(ports.readTaskMemory(parent.dirId || dirId, parentId), PARENT_MEMORY_CHARS) : '';
-    if (memory) lines.push(`  父任务记忆（节选）：${memory}`);
-    if (parent && parent.parentTaskId) lines.push(`· 祖父任务 ${titleOf(parent.parentTaskId)}（仅标题）`);
-    sections.push({ kind: 'parent', text: lines.join('\n') });
+    if (memory) {
+      const line = `  父任务记忆（节选）：${memory}`;
+      lines.push(line);
+      sources.push(sourceOf(parentId, 'memory', line));
+    }
+    if (parent && parent.parentTaskId) {
+      const line = `· 祖父任务 ${titleOf(parent.parentTaskId)}（仅标题）`;
+      lines.push(line);
+      sources.push(sourceOf(parent.parentTaskId, 'grandparent', line));
+    }
+    sections.push({ kind: 'parent', text: lines.join('\n'), sources });
   }
 
   // ── 同组任务：标题 + 一句话摘要 ──────────────────────────────────────
@@ -83,6 +99,7 @@ function buildTaskGraphContext(ports, { taskId, tokenBudget = DEFAULT_TOKEN_BUDG
   if (group && Array.isArray(group.taskIds)) {
     const members = group.taskIds.filter(id => id !== taskId).slice(0, MAX_GROUP_MEMBERS);
     const lines = [];
+    const sources = [];
     for (const id of members) {
       const board = ports.boardTask(id);
       const summary = clipText(
@@ -91,9 +108,11 @@ function buildTaskGraphContext(ports, { taskId, tokenBudget = DEFAULT_TOKEN_BUDG
         || '',
         SUMMARY_CHARS,
       );
-      lines.push(`· 同组 ${titleOf(id)}${summary ? `：${summary}` : ''}`);
+      const line = `· 同组 ${titleOf(id)}${summary ? `：${summary}` : ''}`;
+      lines.push(line);
+      sources.push(sourceOf(id, 'group', line));
     }
-    if (lines.length) sections.push({ kind: 'group', text: lines.join('\n') });
+    if (lines.length) sections.push({ kind: 'group', text: lines.join('\n'), sources });
   }
 
   // ── 同壳前序任务：标题 + handoff 最后结论 ────────────────────────────
@@ -102,6 +121,7 @@ function buildTaskGraphContext(ports, { taskId, tokenBudget = DEFAULT_TOKEN_BUDG
     .slice(0, MAX_SIBLINGS);
   {
     const lines = [];
+    const sources = [];
     for (const id of siblingIds) {
       const record = ports.task(id);
       const snapshotIds = [...(record && record.handoffSnapshotIds) || [], ...(record && record.snapshotIds) || []];
@@ -109,31 +129,44 @@ function buildTaskGraphContext(ports, { taskId, tokenBudget = DEFAULT_TOKEN_BUDG
       for (let i = snapshotIds.length - 1; i >= 0 && !conclusion; i--) {
         conclusion = clipText(lastAssistantText(ports.snapshot(snapshotIds[i])), CONCLUSION_CHARS);
       }
-      lines.push(`· 同壳前序 ${titleOf(id)}${conclusion ? `：${conclusion}` : ''}`);
+      const line = `· 同壳前序 ${titleOf(id)}${conclusion ? `：${conclusion}` : ''}`;
+      lines.push(line);
+      sources.push(sourceOf(id, 'shell', line));
     }
-    if (lines.length) sections.push({ kind: 'shell', text: lines.join('\n') });
+    if (lines.length) sections.push({ kind: 'shell', text: lines.join('\n'), sources });
   }
 
-  if (!sections.length) return '';
+  if (!sections.length) return { text: '', sources: [] };
 
   // ── 预算裁剪：按 父任务 → 同组 → 同壳 的优先级收进预算 ────────────────
   const order = { parent: 0, group: 1, shell: 2 };
   sections.sort((a, b) => order[a.kind] - order[b.kind]);
   const kept = [];
+  let keptSources = [];
   let truncated = false;
   for (const section of sections) {
     if (overBudget(section.text)) { truncated = true; break; }
     kept.push(section.text);
+    keptSources.push(...section.sources);
   }
   if (!kept.length) {
     // 连第一段都超预算：至少给出关联任务的标题行（最便宜的图谱信号）。
     const names = sections.map(section => clipText(section.text.split('\n')[0], 160));
     kept.push(names.join('\n'));
+    // 兜底只注入了标题行：来源仍全列（图谱关系是真的），但标记被截断。
+    keptSources = sections.flatMap(section => section.sources.map(source => ({ ...source, truncated: true })));
     truncated = true;
   }
 
   const header = `[任务图谱上下文｜按图谱邻接注入，预算 ~${tokenBudget} tokens] 当前任务 ${titleOf(taskId)}${dirId ? `（${dirId}）` : ''}`;
-  return `${header}\n${kept.join('\n')}${truncated ? '\n（超出 token 预算，已截断）' : ''}\n[任务图谱上下文结束]\n`;
+  return {
+    text: `${header}\n${kept.join('\n')}${truncated ? '\n（超出 token 预算，已截断）' : ''}\n[任务图谱上下文结束]\n`,
+    sources: keptSources,
+  };
+}
+
+function buildTaskGraphContext(ports, options = {}) {
+  return buildTaskGraphContextDetail(ports, options).text;
 }
 
 // 宿主侧工厂：把 board + shell store + 记忆读取接成 ports。
@@ -171,7 +204,7 @@ function createTaskGraphContextService(deps) {
     } catch (_) { return null; }
   };
   return function taskGraphContextOf(taskId, options) {
-    return buildTaskGraphContext({
+    return buildTaskGraphContextDetail({
       task: id => shellTaskIndex().get(id) || null,
       boardTask: id => (board().tasks || {})[id] || null,
       groupOf,
@@ -192,6 +225,7 @@ function createTaskGraphContextService(deps) {
 module.exports = {
   DEFAULT_TOKEN_BUDGET,
   buildTaskGraphContext,
+  buildTaskGraphContextDetail,
   createTaskGraphContextService,
   lastAssistantText,
 };
