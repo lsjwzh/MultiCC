@@ -169,19 +169,23 @@ nav { display: flex; flex-direction: column; gap: 4px; }
    way. `overflow-y: auto` is what makes shrinking legitimate — the band scrolls
    rather than spilling, so the footer keeps the foot of the column. */
 #task-sidebar { min-height: 0; flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; display: flex; flex-direction: column; margin-top: 4px; }
+/* 抬头和「＋ 新任务」留在滚动区外面：滚一份清单不该把自己的标题滚出屏幕。 */
+.task-heading, .sidebar-create { flex-shrink: 0; }
 .task-heading { margin: 0 5px 8px; }
 .task-heading .caption { margin: 0; text-transform: uppercase; letter-spacing: .8px; }
 .task-heading strong { display: block; font-size: 12px; font-weight: 610; }
 #task-count { color: var(--muted); font-size: 11px; }
 .sidebar-create { width: 100%; margin-bottom: 8px; color: #0d69d5; border-color: transparent; background: transparent; text-align: left; }
 .sidebar-create:hover { background: #fff; }
-/* The band is a flex column with a definite height, so a list long enough to
-   overflow it gets shrunk rather than scrolled — measured at 29 tasks the list
-   box collapsed to its 52px floor (1224px of content behind a one-row window)
-   while the band itself never scrolled, hiding 28 of them. `flex: 0 0 auto`
-   takes the list out of the shrinking: the band scrolls as a whole, which is
-   what `overflow-y: auto` on #task-sidebar is there for. */
-#tasks { flex: 0 0 auto; min-height: 52px; margin: 9px 0 4px; overflow: auto; overscroll-behavior: contain; }
+/* The list is the band that gives way: it takes whatever height is left over and
+   scrolls inside itself. That is also where the sidebar's dead space went — the
+   band used to be the scroller and the list sat at its natural height, so eight
+   tasks left a screenful of nothing underneath them. Now the leftover height is
+   the list's, which is what it was always for.
+   `min-height` keeps a floor under it: below that the band scrolls again (the
+   `overflow-y: auto` it has kept as a fallback), so a window too short for even
+   a couple of rows still reaches everything. */
+#tasks { flex: 1 1 auto; min-height: 120px; margin: 9px 0 4px; overflow-y: auto; overscroll-behavior: contain; }
 #tasks button { padding: 10px; border-radius: 11px; }
 #tasks button:hover { background: rgba(255, 255, 255, .65); }
 #tasks button.selected { color: #0d63c4; border-color: #d7e7f8; background: #fff; box-shadow: 0 5px 14px #42688f0a; }
@@ -830,6 +834,7 @@ body.console-open #console-panel { transform: none; visibility: visible; }
   #tasks { overflow: visible; }
   body.nav-open #sidebar { transform: translateX(0); }
   body.nav-open #nav-scrim { display: block !important; }
+
   #mobile-nav { display: block; min-width: 34px; min-height: 32px; padding: 4px 6px; font-size: 17px; line-height: 1; }
   /* 手机上这一条是「标题区」不是导航：原来是面包屑、标题、状态、按钮四行叠着
      142px，等于先花掉屏幕的六分之一才看见对话。面包屑收进侧栏抽屉 ——
@@ -940,6 +945,20 @@ body.console-open #console-panel { transform: none; visibility: visible; }
   .console-title h2 { font-size: 19px; }
   #palette { top: 68px; max-height: min(520px, calc(100dvh - 110px)); }
   #palette footer { gap: 10px; }
+}
+
+/* 矮屏（横屏手机、被压扁的窗口）同样分不出那三段：固定内容（目录卡、导航、
+   抬头与「＋ 新任务」、脚注）加起来就超过屏幕，留给任务带的只剩十几像素 ——
+   于是清单的 min-height 撑破带子，带子虽然重新变成滚动者，却只是一条 12px 的
+   缝，缝里还挂着另一份要自己滚的清单，谁也看不全。整条侧栏一起滚，跟上面
+   手机宽度那条规则同一个理由：滚动一屏比钉住一行值。
+   阈值是实测来的：1280 宽下固定内容约 408px，加上抬头/新建按钮与三行清单约
+   224px，再矮这套三段布局就站不体面了。 */
+@media (max-height: 640px) {
+  #sidebar { overflow-y: auto; overscroll-behavior: contain; }
+  #sidebar > .brand, #sidebar > .space-card, #sidebar > .nav-row, #sidebar > #task-sidebar, #sidebar > .side-bottom { flex: 0 0 auto; }
+  #task-sidebar { overflow: visible; }
+  #tasks { min-height: 0; overflow: visible; }
 }
 
 @media (max-width: 420px) {
