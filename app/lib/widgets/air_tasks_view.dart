@@ -866,6 +866,11 @@ class _AirTasksViewState extends State<AirTasksView>
 
   /// 侧栏的「最近任务」：先放这次会话里打开过的（跨目录），不够再用当前目录里
   /// 最近更新过的补上——和 Web Air 的 `#tasks` 一样的取舍。
+  ///
+  /// 上限（同 Web 的 `RECENT_LIMIT`）不再按「一屏能放下几条」来定：侧栏的任务带
+  /// 现在吃满剩下的高度并在内部滚，列八条会在下面留一大片空白——那片地方本来就
+  /// 是给任务准备的。封顶只为挡住真·长尾（一个目录几百条任务时不去建几百个
+  /// 按钮），所以给得比任何一屏都宽。完整的那份列表在控制台。
   List<AirTask> _sidebarTasks() {
     final data = _data;
     if (data == null) return const [];
@@ -874,11 +879,11 @@ class _AirTasksViewState extends State<AirTasksView>
     for (final id in _store?.recentTasks ?? const <String>[]) {
       final task = data.taskOf(id);
       if (task != null && seen.add(task.id)) rows.add(task);
-      if (rows.length >= 8) return rows;
+      if (rows.length >= 30) return rows;
     }
     for (final task in data.tasksOf(_directoryId)) {
       if (seen.add(task.id)) rows.add(task);
-      if (rows.length >= 8) break;
+      if (rows.length >= 30) break;
     }
     return rows;
   }
