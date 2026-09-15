@@ -100,6 +100,14 @@ void _tallCanvas(WidgetTester tester) {
   addTearDown(tester.view.resetDevicePixelRatio);
 }
 
+/// 现场里有「在跑」的任务时，它那圈彩虹是一直转的动画 —— `pumpAndSettle` 永远等
+/// 不到静止，会一路超时。这几帧足够把两份数据落地、把路由推完。
+Future<void> _pumpFrames(WidgetTester tester, [int frames = 5]) async {
+  for (var i = 0; i < frames; i++) {
+    await tester.pump(const Duration(milliseconds: 100));
+  }
+}
+
 void main() {
   // 状态徽标上的字来自 i18n 词典（注册表只给 key），不加载就只有 key。
   setUpAll(() => I18n.init('zh'));
@@ -540,6 +548,185 @@ void main() {
     expect(find.text('65 条 · 显示最近 60 条'), findsOneWidget);
     // 全部空闲，没有一条要我去处理。
     expect(find.text('没有正在等待或正在执行的任务。'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  testWidgets('「谁在等我」只留最急的 5 条，其余交给它自己的整页', (tester) async {
+    _tallCanvas(tester);
+    final settings = await _settings();
+    final requests = <String>[];
+    final opened = <String>[];
+    // 紧急度分层：等回答(0) → 出错(1) → 在跑(3)，同层里按更新时间倒序。所以
+    // 「最急的 5 条」是确定的：w1 w2 e1 e2 r1，落选的正是 r2 r3 r4。
+    final client = _client(
+      requests,
+      tasks: [
+        for (final (id, runState, updatedAt, lease) in const [
+          ('w1', 'waiting', 800, 'idle'),
+          ('w2', 'waiting', 700, 'idle'),
+          ('e1', 'error', 600, 'idle'),
+          ('e2', 'error', 500, 'idle'),
+          ('r1', 'running', 400, 'running'),
+          ('r2', 'running', 300, 'running'),
+          ('r3', 'running', 200, 'running'),
+          ('r4', 'running', 100, 'running'),
+        ])
+          {
+            'id': id,
+            'dirId': 'd1',
+            'title': '任务 $id',
+            'status': 'active',
+            'runState': runState,
+            'updatedAt': 1700000000000 + updatedAt,
+            'resource': {
+              'residency': lease == 'running' ? 'materialized' : 'planned',
+              'lease': lease,
+            },
+          },
+      ],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AirConsoleScreen(
+          settings: settings,
+          httpClient: client,
+          onOpenTask: (task) => opened.add(task.id),
+          onOpenTasks: () {},
+          onOpenLibrary: () {},
+          onSelectDirectory: (_) {},
+          onOpenDestination: (_) {},
+          onOpenMemory: () {},
+          onOpenWebConsole: () {},
+        ),
+      ),
+    );
+    await _pumpFrames(tester);
+
+    // ① 封顶：留下最急的 5 条，落选的不进这一格。
+    expect(find.text('8 条 · 显示最急的 5 条'), findsOneWidget);
+    for (final id in const ['w1', 'w2', 'e1', 'e2', 'r1']) {
+      expect(
+        find.byKey(ValueKey('air-console-urgent-$id')),
+        findsOneWidget,
+        reason: '$id 是最急的五条之一，该在控制台这一格里',
+      );
+    }
+    for (final id in const ['r2', 'r3', 'r4']) {
+      expect(
+        find.byKey(ValueKey('air-console-urgent-$id')),
+        findsNothing,
+        reason: '$id 被封顶挡在整页上，不该还留在控制台这一格',
+      );
+    }
+    // 封顶不等于假装只有这几条：总数照报，出口带着同一个数。
+    expect(find.text('查看全部 8 条 ›'), findsOneWidget);
+
+    // ② 整页：同一份清单铺开，先答的排在最前。
+    await tester.tap(find.byKey(const ValueKey('air-console-attention-all')));
+    await _pumpFrames(tester);
+    expect(find.byKey(const ValueKey('air-attention')), findsOneWidget);
+    expect(find.text('8 条 · 按紧急度排序，点击直达'), findsOneWidget);
+    expect(find.byKey(const ValueKey('air-attention-task-r4')), findsOneWidget);
+    expect(
+      tester
+          .getTopLeft(find.byKey(const ValueKey('air-attention-task-w1')))
+          .dy,
+      lessThan(
+        tester
+            .getTopLeft(find.byKey(const ValueKey('air-attention-task-e1')))
+            .dy,
+      ),
+      reason: '等回答的排在出错的上面 —— 顺序和控制台那一格是同一份',
+    );
+    expect(opened, isEmpty, reason: '只是打开清单，不该顺手开一条任务');
+
+    // ③ 整页里点一条：先把整页收掉，再由宿主导航（否则控制台会留在屏幕上）。
+    await tester.tap(find.byKey(const ValueKey('air-attention-task-r3')));
+    await _pumpFrames(tester);
+    expect(opened, ['r3']);
+    expect(
+      find.byKey(const ValueKey('air-attention')),
+      findsNothing,
+      reason: '点走一条之后整页要收掉',
+    );
+
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  testWidgets('没超过 5 条时没有第二页可去，出口不出现', (tester) async {
+    _tallCanvas(tester);
+    final settings = await _settings();
+    final client = _client(<String>[]);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AirConsoleScreen(
+          settings: settings,
+          httpClient: client,
+          onOpenTask: (_) {},
+          onOpenTasks: () {},
+          onOpenLibrary: () {},
+          onSelectDirectory: (_) {},
+          onOpenDestination: (_) {},
+          onOpenMemory: () {},
+          onOpenWebConsole: () {},
+        ),
+      ),
+    );
+    await _pumpFrames(tester);
+
+    // 默认现场只有 2 条（t1 等回答、t2 出错），远没到封顶。
+    expect(find.text('按紧急度排序，点击直达'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('air-console-attention-all')),
+      findsNothing,
+      reason: '没超过就不该常驻一个点了没反应的「查看全部」',
+    );
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  testWidgets('统计是一条窄读数带，不跟任务抢高度', (tester) async {
+    _tallCanvas(tester);
+    final settings = await _settings();
+    final client = _client(<String>[]);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AirConsoleScreen(
+          settings: settings,
+          httpClient: client,
+          onOpenTask: (_) {},
+          onOpenTasks: () {},
+          onOpenLibrary: () {},
+          onSelectDirectory: (_) {},
+          onOpenDestination: (_) {},
+          onOpenMemory: () {},
+          onOpenWebConsole: () {},
+        ),
+      ),
+    );
+    await _pumpFrames(tester);
+
+    final card = tester.getSize(
+      find.byKey(const ValueKey('air-stat-工作目录')),
+    );
+    // 原来是 24px 的数字 + 26×3 的色条，卡片明显更高。这里钉住「确实压扁了」，
+    // 不钉死具体数值 —— 那会在下次微调时变成噪声。
+    expect(card.height, lessThan(100), reason: '统计卡实测 ${card.height}');
+    final value = tester.widget<Text>(
+      find.descendant(
+        of: find.byKey(const ValueKey('air-stat-工作目录')),
+        matching: find.text('2'),
+      ),
+    );
+    expect(value.style?.fontSize, lessThanOrEqualTo(20));
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     client.close();

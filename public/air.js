@@ -817,6 +817,8 @@
     const selectedEntry = entry?.task?.id === taskId ? entry : null;
     const adminHeadings = {
       planner: ['MultiCC Air › 工作管理', '任务看板', '按模块查看、筛选与规划全部任务。'],
+      // 「谁在等我」的整页。控制台那一格只放最急的几条，这里是完整清单。
+      attention: ['MultiCC Air › 控制台', '谁在等我', '跨所有工作目录：谁在等我回答、出错或正在跑。'],
       docs: ['MultiCC Air › 系统工具', '服务与文档', 'Agent 产物、本地页面和服务登记。'],
       memory: ['MultiCC Air › 系统工具', '记忆图谱', '项目记忆、会话记忆与文件编辑。'],
       taskgraph: ['MultiCC Air › 系统工具', '任务图谱', '任务关联网络：父子 / 分组 / 合并 / 壳链接。'],
@@ -1470,6 +1472,9 @@
       label,
       openConsole: () => setConsole(true),
       closeConsole: () => setConsole(false),
+      // 「谁在等我」整页读的是外壳这份 /api/air 快照，刷新也只能由外壳去做 ——
+      // 让它自己再打一个接口就等于给控制台造了第二份口径。
+      refresh: () => refresh(),
     };
   }
 
