@@ -127,6 +127,39 @@ function isUserInputAnswer(item) {
     && payload.requestId.length > 0;
 }
 
+// The FIFO order can be rearranged by hand (reorderQueued). A hand-set order is
+// a plain number on the outbox item and it outranks the admission sequence —
+// and it is the ONLY field a reorder writes, so swapping two entries can never
+// collide with another row's UNIQUE sequence in the store, and renumbering one
+// session's queue cannot push it behind another session's work.
+// An item without one (a message admitted after the rearrangement, or an answer
+// to a pending question) keeps the admission sequence it was given, which sorts
+// it after everything the user arranged — exactly where a new message belongs.
+function queueRank(item) {
+  const order = item?.queueOrder;
+  return typeof order === 'number' && Number.isFinite(order)
+    ? order
+    : Number.POSITIVE_INFINITY;
+}
+
+function compareQueued(priorityEntryId) {
+  return (a, b) => {
+    if (a.id === priorityEntryId && b.id !== priorityEntryId) return -1;
+    if (b.id === priorityEntryId && a.id !== priorityEntryId) return 1;
+    const rankA = queueRank(a);
+    const rankB = queueRank(b);
+    if (rankA !== rankB) return rankA - rankB;
+    return a.sequence - b.sequence;
+  };
+}
+
+// What the queue dock shows, in the order it shows it. publicSchedule and the
+// reorder route both derive their notion of "position N" from this, so a
+// client-supplied index means the same entry on both sides of the wire.
+function visibleQueue(queue) {
+  return queue.filter(item => !isUserInputAnswer(item));
+}
+
 function activeTaskId(schedule) {
   return schedule?.active?.taskId || null;
 }
@@ -229,7 +262,7 @@ function publicSchedule(schedule, queue = []) {
   // future user work. It must survive a crash while the asking process releases,
   // but exposing it in the ordinary FIFO makes the picker answer look "staged"
   // and lets reconnect snapshots resurrect that false queue card.
-  const visibleQueue = queue.filter(item => !isUserInputAnswer(item));
+  const shown = visibleQueue(queue);
   const hold = typeof sessionHoldProvider === 'function'
     ? sessionHoldProvider(schedule.sessionId) : null;
   return {
@@ -243,7 +276,7 @@ function publicSchedule(schedule, queue = []) {
     // and the client should render 已暂挂, not 执行中.
     hold: hold ? { reason: hold.reason || 'network_unhealthy', sinceAt: hold.sinceAt || null } : null,
     active: schedule.active ? clone(schedule.active) : null,
-    queued: visibleQueue.map((item, index) => ({
+    queued: shown.map((item, index) => ({
       entryId: item.id,
       taskId: taskIdForItem(item),
       taskRunId: taskRunIdForItem(item),
@@ -319,11 +352,7 @@ function createSessionWorkScheduler({
       .filter(item => item.sessionId === sessionId)
       .filter(item => item.state === 'pending' || item.state === 'leased')
       .filter(item => !activeDeliveryId || item.id !== activeDeliveryId)
-      .sort((a, b) => {
-        if (a.id === priorityEntryId && b.id !== priorityEntryId) return -1;
-        if (b.id === priorityEntryId && a.id !== priorityEntryId) return 1;
-        return a.sequence - b.sequence;
-      });
+      .sort(compareQueued(priorityEntryId));
   }
 
   function canonicalClassifyState(sessionId, schedule) {
@@ -430,11 +459,7 @@ function createSessionWorkScheduler({
       // Also cover recovery and the gap between publishing W and complete().
       // A continuation queued before the question is not an answer to it.
       return !pending.createdAt || Number(item.createdAt) > pending.createdAt;
-    }).sort((a, b) => {
-      if (a.id === priorityEntryId && b.id !== priorityEntryId) return -1;
-      if (b.id === priorityEntryId && a.id !== priorityEntryId) return 1;
-      return a.sequence - b.sequence;
-    });
+    }).sort(compareQueued(priorityEntryId));
     if (!schedule || !schedule.active || schedule.state === 'idle') {
       const cls = schedule
         ? (canonicalClassifyState(schedule.sessionId, schedule)
@@ -1320,6 +1345,104 @@ function createSessionWorkScheduler({
     return result;
   }
 
+  // Moving a staged message is an ordering decision, not a scheduling one: it
+  // never claims a slot, never cancels the active turn and never rewrites the
+  // admission sequence. The whole visible queue is renumbered 0..n-1 in the
+  // requested order, so a second move means the same thing as the first and
+  // there are never gaps to run out of. Positions are counted over exactly what
+  // the queue dock shows (publicSchedule), so an index from a client means the
+  // same entry on both sides of the wire.
+  async function reorderQueued(sessionId, entryId, {
+    toIndex = null,
+    direction = null,
+    actor = 'user',
+  } = {}) {
+    const cleanEntryId = String(entryId || '').trim();
+    if (!cleanEntryId) throw new TypeError('queued reorder requires entryId');
+    const result = await store.mutate(draft => {
+      const item = draft.outbox[cleanEntryId];
+      if (!item || item.sessionId !== sessionId) {
+        return { ok: false, code: 'queued_entry_not_found' };
+      }
+      const schedule = ensure(draft, sessionId, Number(now()));
+      const activeIds = new Set([
+        schedule.active?.entryId,
+        schedule.active?.deliveryId,
+      ].filter(Boolean));
+      // Same guard set as cancel: an entry the scheduler already claimed is
+      // executing, and its order is no longer the user's to set.
+      if (activeIds.has(cleanEntryId) || item.state === 'leased') {
+        return { ok: false, code: 'queued_entry_already_claimed' };
+      }
+      if (item.state !== 'pending') {
+        return { ok: false, code: 'queued_entry_not_pending' };
+      }
+      const queue = visibleQueue(queueForDraft(draft, sessionId));
+      const from = queue.findIndex(candidate => candidate.id === cleanEntryId);
+      if (from < 0) return { ok: false, code: 'queued_entry_not_found' };
+      const requestedIndex = Number(toIndex);
+      const requested = direction === 'up' ? from - 1
+        : direction === 'down' ? from + 1
+          : Number.isFinite(requestedIndex) ? Math.trunc(requestedIndex) : from;
+      const to = Math.max(0, Math.min(queue.length - 1, requested));
+      const at = Number(now());
+      if (to === from) {
+        return {
+          ok: true,
+          unchanged: true,
+          reordered: {
+            entryId: cleanEntryId,
+            from,
+            to,
+            actor: String(actor || 'user').slice(0, 80),
+            at,
+          },
+          schedule: publicSchedule(schedule, queue || []),
+        };
+      }
+      const reordered = queue.slice();
+      reordered.splice(from, 1);
+      reordered.splice(to, 0, item);
+      reordered.forEach((candidate, index) => {
+        candidate.queueOrder = index;
+        candidate.updatedAt = at;
+      });
+      schedule.updatedAt = at;
+      const next = visibleQueue(queueForDraft(draft, sessionId));
+      return {
+        ok: true,
+        unchanged: false,
+        // Report where the entry actually landed, not where it was asked to go.
+        // A promoted ("执行中") head is pinned first by the comparator, so a
+        // request to overtake it cannot be honoured and the client has to be
+        // told the real position rather than have its own request echoed back.
+        reordered: {
+          entryId: cleanEntryId,
+          from,
+          to: next.findIndex(candidate => candidate.id === cleanEntryId),
+          actor: String(actor || 'user').slice(0, 80),
+          at,
+        },
+        schedule: publicSchedule(schedule, next),
+      };
+    });
+    if (result.ok && !result.unchanged) {
+      emit('queued_reordered', {
+        sessionId,
+        entryId: result.reordered.entryId,
+        actor,
+        from: result.reordered.from,
+        to: result.reordered.to,
+        schedulerState: result.schedule.state,
+        queued: result.schedule.queued.length,
+        queuedItems: result.schedule.queued,
+        freezeReason: result.schedule.freezeReason,
+        schedule: result.schedule,
+      });
+    }
+    return result;
+  }
+
   async function noteQueued(entryId) {
     const info = await store.mutate(draft => {
       const item = draft.outbox[entryId];
@@ -1577,6 +1700,7 @@ function createSessionWorkScheduler({
     settleUserInput,
     cancelQueued,
     insertQueued,
+    reorderQueued,
     status,
     queueSummaries,
     noteQueued,

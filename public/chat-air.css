@@ -327,6 +327,9 @@ body.air-chat {
 .air-chat #session-queue-dock summary { color: #9a671e; }
 .air-chat #session-queue-hint, .air-chat .session-queue-position { color: var(--chat-muted); }
 .air-chat .session-queue-item { border-color: #e3ebf3; }
+.air-chat .session-queue-handle { color: #93a7bb; }
+.air-chat .session-queue-handle:hover { color: #3e566d; border-color: #cddff0; }
+.air-chat .session-queue-item.session-queue-dragging { background: #fff; box-shadow: 0 8px 20px #35587b26; }
 .air-chat .session-queue-text { color: #3c536a; }
 .air-chat .session-queue-insert { color: #176fc7; border-color: #9fc6ec; background: #edf6ff; }
 .air-chat .session-queue-close { color: #aa513f; border-color: #e1bdb4; }

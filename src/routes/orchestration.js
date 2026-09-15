@@ -460,7 +460,8 @@ function createOrchestrationRoutes(rawDeps) {
       if (!session) return res.status(404).json({ error: 'session not found' });
       const body = req.body || {};
       const action = String(body.action || '').trim();
-      if (!['retry', 'resume', 'skip', 'cancel', 'cancel_queued', 'insert_queued', 'resolve'].includes(action)) {
+      if (!['retry', 'resume', 'skip', 'cancel', 'cancel_queued', 'insert_queued',
+        'reorder_queued', 'resolve'].includes(action)) {
         return res.status(400).json({ error: 'invalid_action' });
       }
       if (body.confirm !== true) {
@@ -477,6 +478,23 @@ function createOrchestrationRoutes(rawDeps) {
             { actor: 'user', reason: body.reason },
           );
           if (result.ok) await deps.runtime.tick();
+          const status = result.ok ? 200
+            : result.code === 'queued_entry_not_found' ? 404 : 409;
+          return res.status(status).json(result);
+        }
+        if (action === 'reorder_queued') {
+          // Ordering only. No cancel and no tick: the entry that is running
+          // stays running, and nothing is promoted — the queue keeps draining
+          // in whatever order the user settled on.
+          const result = await deps.runtime.sessionScheduler.reorderQueued(
+            session.id,
+            body.entryId,
+            {
+              toIndex: body.toIndex ?? null,
+              direction: body.direction ?? null,
+              actor: 'user',
+            },
+          );
           const status = result.ok ? 200
             : result.code === 'queued_entry_not_found' ? 404 : 409;
           return res.status(status).json(result);

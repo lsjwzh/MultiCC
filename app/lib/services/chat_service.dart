@@ -801,12 +801,16 @@ class ChatService {
     String action, {
     String? entryId,
     String? text,
+    int? toIndex,
   }) async {
     final body = <String, dynamic>{
       'action': action,
       'confirm': true,
       if (entryId != null && entryId.isNotEmpty) 'entryId': entryId,
       if (text != null && text.trim().isNotEmpty) 'text': text.trim(),
+      // 仅 reorder_queued 用：落点在同一个「列表显示的那份队列」里的下标，
+      // 也就是服务端渲染 position 用的那份，所以拖动算出来的下标不必换算。
+      if (toIndex != null) 'toIndex': toIndex,
       'reason': 'requested from Flutter app',
     };
     final res = await _httpClient
