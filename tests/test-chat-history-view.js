@@ -262,11 +262,89 @@ test('a passively replayed user message also lands before the live tail', () => 
   assert.equal(messagesEl.children[1], tail);
 });
 
-test('chat.js addUserMsg inserts before the streaming tail instead of blind-appending', () => {
+test('a reconnect page carrying the user message lands it before the live tail', () => {
+  // 同一类错位的第四个落点：applyPlan 的 append 分支。重连后权威历史页带着
+  // 本轮那条用户消息（队列消息按设计先不画气泡，气泡要等 chat_msg_meta 回填），
+  // 而浏览器手里那个无持久 id 的流式助手气泡已经在列表尾 —— 盲 append 会把
+  // 用户消息画到它自己的回答下面。commitMessage 与 chat.js addUserMsg 都已
+  // 有这一个守卫，只有这里漏了。
+  const { document, messagesEl, view } = fixture();
+  const earlier = view.renderMessage({ id: 'a0', role: 'assistant', content: 'previous answer' });
+  const tail = document.createElement('div');
+  tail.className = 'msg assistant streaming-dot';
+  messagesEl.appendChild(earlier);
+  messagesEl.appendChild(tail);
+
+  view.applyPlan({
+    operations: [{ kind: 'append', id: 'u1', message: { id: 'u1', role: 'user', content: '继续' } }],
+    messages: [], hasMore: false, streamingTail: null,
+  }, { currentElement: tail });
+
+  assert.equal(messagesEl.children[0], earlier, '历史在前');
+  assert.equal(messagesEl.children[1].textContent, '继续', '重连补画的用户消息必须在流式回答之前');
+  assert.equal(messagesEl.children[2], tail, '流式助手气泡仍是最后一个');
+});
+
+test('a late user message lands above the 正在处理 placeholder, not below it', () => {
+  // 截图里那一条「错位」：占位不是 .msg.assistant，而是 chat-live-ui 的
+  // .thinking-bubble（showThinking 画的「正在处理…」）。同一个
+  // message_admission_progress 事件里既 showThinking 又 addUserMessage，
+  // 只按 .msg.assistant 找锚点就漏掉占位，用户气泡被 append 到它后面 ——
+  // 于是问题显示在自己那条回答的下面。
+  const { document, messagesEl, view } = fixture();
+  const earlier = view.renderMessage({ id: 'a0', role: 'assistant', content: '上一轮的回答' });
+  const placeholder = document.createElement('div');
+  placeholder.className = 'thinking-bubble';
+  messagesEl.appendChild(earlier);
+  messagesEl.appendChild(placeholder);
+
+  assert.equal(view.pendingAnswerAnchor({}), placeholder, '待答锚点必须认出占位');
+
+  view.commitMessage({ id: 'u9', role: 'user', content: '继续' }, {});
+
+  assert.equal(messagesEl.children[0], earlier);
+  assert.equal(messagesEl.children[1].textContent, '继续', '用户消息必须在占位之前');
+  assert.equal(messagesEl.children[2], placeholder, '占位仍是最后一个');
+});
+
+test('the placeholder anchor also carries the applyPlan replay path', () => {
+  const { document, messagesEl, view } = fixture();
+  const placeholder = document.createElement('div');
+  placeholder.className = 'thinking-bubble';
+  messagesEl.appendChild(placeholder);
+
+  view.applyPlan({
+    operations: [{ kind: 'append', id: 'u1', message: { id: 'u1', role: 'user', content: '继续' } }],
+    messages: [], hasMore: false, streamingTail: null,
+  }, {});
+
+  assert.equal(messagesEl.children[0].textContent, '继续', '重连补画同样要落在占位之前');
+  assert.equal(messagesEl.children[1], placeholder);
+});
+
+test('the anchor is the later of the live bubble and the placeholder', () => {
+  // 占位与真流式气泡理论上不同时在（占位在 message_start 时被摘掉），但重连
+  // 回填的时序不保证顺序 —— 取靠后的那个才是列表尾上真正的待答代表。
+  const { document, messagesEl, view } = fixture();
+  const live = view.renderMessage({ role: 'assistant', content: '', streaming: true });
+  const placeholder = document.createElement('div');
+  placeholder.className = 'thinking-bubble';
+  messagesEl.appendChild(placeholder);
+  messagesEl.appendChild(live);
+
+  assert.equal(view.pendingAnswerAnchor({}), live, '真气泡在后时锚点是真气泡');
+
+  messagesEl.appendChild(placeholder);   // 占位被重新挂到尾上
+  assert.equal(view.pendingAnswerAnchor({}), placeholder, '占位在后时锚点是占位');
+});
+
+test('chat.js addUserMsg delegates its anchor to the view instead of re-querying', () => {
   // chat.js 是浏览器脚本、不可 require：与既有 host 委托断言同一风格，锁住
-  // 「先找流式尾巴、找到就 insertBefore」这一结构。
-  assert.match(CHAT_SOURCE, /function addUserMsg[\s\S]{0,900}?const streamingTail = Array\.from\(messagesEl\.querySelectorAll\('\.msg\.assistant:not\(\[data-msg-id\]\)'\)\)\.pop\(\)/);
+  // 「锚点只由 view 给出」这一结构 —— 自己再抄一份 .msg.assistant 查询就是
+  // 漏掉思考占位的那个 bug。
+  assert.match(CHAT_SOURCE, /function addUserMsg[\s\S]{0,1200}?chatHistoryView\.pendingAnswerAnchor\?\.\(\{ currentElement: currentMsgEl \}\)/);
   assert.match(CHAT_SOURCE, /if \(streamingTail\) messagesEl\.insertBefore\(div, streamingTail\)/);
+  assert.doesNotMatch(CHAT_SOURCE, /function addUserMsg[\s\S]{0,1200}?querySelectorAll\('\.msg\.assistant:not\(\[data-msg-id\]\)'\)/, '不得再自己查一遍助手气泡');
 });
 
 test('assistant Markdown uses the one safe boundary and tool cards stay text-only', () => {
