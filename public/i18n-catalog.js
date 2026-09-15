@@ -893,6 +893,8 @@ window.MULTICC_I18N_CATALOG = {
     "queuedMessageRunning": "执行中",
     "confirmInsertQueuedBody": "这会立刻停止当前正在生成的回复，并改为执行所选的暂存消息。",
     "queueInsertAccepted": "已停止当前回复并直接执行所选消息",
+    "queueReorderAccepted": "已调整暂存消息顺序",
+    "reorderQueuedMessage": "拖动调整顺序",
     "queueEntryAlreadyClaimed": "这条消息已经开始执行，无法再调整。",
     "retryTask": "重试",
     "resumeTask": "恢复",
@@ -1290,7 +1292,11 @@ window.MULTICC_I18N_CATALOG = {
     "voiceMicDenied": "无法访问麦克风，请检查权限。",
     "voiceRecordingHint": "录音中，点 🎙 结束。",
     "voiceTranscribing": "转写中…",
-    "voiceTranscribeFailed": "转写失败：{message}"
+    "voiceTranscribeFailed": "转写失败：{message}",
+    "taskSeparationTitle": "将当前工作单独分离？",
+    "taskSeparationBody": "当前工作与前序任务关联较低。分离后会创建独立任务，带上本轮对话；原任务记录保留。",
+    "taskSeparationKeep": "保留在当前任务",
+    "taskSeparationAccept": "单独分离"
   },
   "en": {
     "newDirectory": "New Workspace",
@@ -2185,6 +2191,8 @@ window.MULTICC_I18N_CATALOG = {
     "queuedMessageRunning": "Running",
     "confirmInsertQueuedBody": "This stops the reply being generated right now and runs the selected queued message instead.",
     "queueInsertAccepted": "Stopped the current reply and ran the selected message",
+    "queueReorderAccepted": "Queue order updated",
+    "reorderQueuedMessage": "Drag to reorder",
     "queueEntryAlreadyClaimed": "This message already started running and can no longer be changed.",
     "retryTask": "Retry",
     "resumeTask": "Resume",
@@ -2582,6 +2590,10 @@ window.MULTICC_I18N_CATALOG = {
     "voiceMicDenied": "Cannot access the microphone — check the permission.",
     "voiceRecordingHint": "Recording — tap the mic to stop.",
     "voiceTranscribing": "Transcribing…",
-    "voiceTranscribeFailed": "Transcription failed: {message}"
+    "voiceTranscribeFailed": "Transcription failed: {message}",
+    "taskSeparationTitle": "Separate this work into a task?",
+    "taskSeparationBody": "This work appears unrelated to the earlier task. Separation creates an independent task with this exchange and preserves the original records.",
+    "taskSeparationKeep": "Keep in current task",
+    "taskSeparationAccept": "Separate task"
   }
 };

@@ -1290,5 +1290,9 @@
   "voiceMicDenied": "Cannot access the microphone — check the permission.",
   "voiceRecordingHint": "Recording — tap the mic to stop.",
   "voiceTranscribing": "Transcribing…",
-  "voiceTranscribeFailed": "Transcription failed: {message}"
+  "voiceTranscribeFailed": "Transcription failed: {message}",
+  "taskSeparationTitle": "Separate this work into a task?",
+  "taskSeparationBody": "This work appears unrelated to the earlier task. Separation creates an independent task with this exchange and preserves the original records.",
+  "taskSeparationKeep": "Keep in current task",
+  "taskSeparationAccept": "Separate task"
 }

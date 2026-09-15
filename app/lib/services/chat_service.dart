@@ -507,6 +507,10 @@ class ChatService {
         _emit('chat_msg_deleted', msg);
         break;
 
+      case 'task_separation_updated':
+        _emit('task_separation_updated', msg);
+        break;
+
       case 'task_state':
         // aux classify result: what the assistant thinks this session's
         // goal/phase is. Carries {goal, phase, classifyState}. Rendered into the
