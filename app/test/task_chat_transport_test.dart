@@ -84,7 +84,12 @@ void main() {
 
   test('claude default: part_delta is a no-op, content_block_delta streams', () {
     final messages = <ChatMessage>[];
-    final transport = TaskChatTransport(taskId: 'task-1', messages: messages);
+    final transport = TaskChatTransport(
+      taskId: 'task-1',
+      taskName: '任务聊天流式输出',
+      taskShortCode: 'L1VE',
+      messages: messages,
+    );
 
     transport.handleEnvelope(
       envelope(
@@ -111,6 +116,9 @@ void main() {
     );
     expect(messages.single.content, '流式');
     expect(messages.single.isStreaming, isTrue);
+    expect(messages.single.taskId, 'task-1');
+    expect(messages.single.taskName, '任务聊天流式输出');
+    expect(messages.single.taskShortCode, 'L1VE');
   });
 
   test('the envelope cli lands BEFORE its slot events: codex part_delta folds', () {

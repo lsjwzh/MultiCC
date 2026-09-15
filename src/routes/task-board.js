@@ -21,7 +21,7 @@ const { createTaskWorktreeService } = require('../task-worktree');
 const {
   taskTranscriptMessages,
   paginateTranscript,
-} = require('../task-run/transcript-repository');
+} = require('../task-run/transcript-repository'); const { displayMessages, taskFields } = require('../task-display-attribution');
 const {
   aggregateTaskUsages,
   createTaskMergeHandler,
@@ -1510,7 +1510,7 @@ function createTaskBoardRuntime(deps) {
       tasks: { [task.id]: task },
       taskGroups: board.taskGroups,
     }, getSessionRunState).tasks[0];
-    dto.mergedTaskCount = Math.max(0, taskIdentityIds(task).length - 1);
+    dto.mergedTaskCount = Math.max(0, taskIdentityIds(task).length - 1); Object.assign(dto, taskFields(task, deps.taskShortCode));
     const body = canonicalTaskBody(task);
     if (dto.title === core.PENDING_TASK_TITLE && body.text) {
       dto.title = core.deriveTaskTitle(body.text);
@@ -1607,14 +1607,14 @@ function createTaskBoardRuntime(deps) {
   // pages a task exactly like a session (docs/chat-view-unification-design.md
   // §3-M0). The session contract: tail page by default, `before` pages older,
   // `around` centres on one id and adds found/hasNewer.
-  function transcriptPagePayload(messages, req) {
+  function transcriptPagePayload(messages, req, task) {
     const query = req.query || {};
     const page = paginateTranscript(messages, {
       before: query.before && String(query.before),
       around: query.around && String(query.around),
       limit: query.limit && String(query.limit),
     });
-    const payload = { messages: page.messages, hasMore: page.hasMore };
+    const payload = { messages: displayMessages(page.messages, task, { getTask: id => board.tasks[id], codeFor: deps.taskShortCode }), hasMore: page.hasMore };
     if (query.around) {
       payload.found = page.found === true;
       payload.hasNewer = page.hasNewer === true;
@@ -1711,7 +1711,7 @@ function createTaskBoardRuntime(deps) {
         }
         return res.json({
           ok: true, task: taskDto(task), items, ...runProjection,
-          ...transcriptPagePayload([...transcriptById.values()], req),
+          ...transcriptPagePayload([...transcriptById.values()], req, task),
         });
       } catch (error) {
         logger.log(`[multicc/taskboard] task-run messages failed: ${error?.code || 'unknown'}`);
@@ -1787,7 +1787,7 @@ function createTaskBoardRuntime(deps) {
         role: item.role,
         content: item.text,
         ts: item.ts || 0,
-      })), req),
+      })), req, task),
     });
   }
 

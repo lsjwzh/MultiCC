@@ -58,6 +58,9 @@ function assertChatHistoryDeps(deps) {
   if (deps.cwdForSession != null && typeof deps.cwdForSession !== 'function') {
     throw new TypeError('chat history dependency invalid: cwdForSession');
   }
+  if (deps.taskShortCode != null && typeof deps.taskShortCode !== 'function') {
+    throw new TypeError('chat history dependency invalid: taskShortCode');
+  }
   return deps;
 }
 
@@ -100,7 +103,7 @@ function publicCommittedMessage(message) {
       .slice(0, 64)
       .map(value => value.slice(0, 160));
   }
-  for (const field of ['turnId', 'taskId', 'taskName', 'auxRunId']) {
+  for (const field of ['turnId', 'taskId', 'taskName', 'taskShortCode', 'auxRunId']) {
     if (typeof message[field] === 'string' && message[field]) {
       projected[field] = message[field].slice(0, 160);
     }
@@ -147,6 +150,7 @@ function createChatHistoryRuntime(rawDeps) {
   const setTimeoutFn = typeof deps.setTimeout === 'function' ? deps.setTimeout : setTimeout;
   const clearTimeoutFn = typeof deps.clearTimeout === 'function' ? deps.clearTimeout : clearTimeout;
   const randomBytes = typeof deps.randomBytes === 'function' ? deps.randomBytes : crypto.randomBytes;
+  const taskShortCodeFor = typeof deps.taskShortCode === 'function' ? deps.taskShortCode : null;
   const historyPageSize = positiveInteger(deps.historyPageSize, DEFAULT_HISTORY_PAGE_SIZE);
   const memoryDistillBatch = positiveInteger(deps.memoryDistillBatch, DEFAULT_MEMORY_DISTILL_BATCH);
   const incrementalSaveDelayMs = Number.isFinite(deps.incrementalSaveDelayMs)
@@ -169,6 +173,29 @@ function createChatHistoryRuntime(rawDeps) {
       if (typeof logger.warn === 'function') logger.warn(event, payload);
       else if (typeof logger.error === 'function') logger.error(event, payload);
     } catch (_) {}
+  }
+
+  // The four-character task code is a server-owned display handle backed by
+  // the collision-safe task-code registry. Never derive it by slicing taskId
+  // in a client: the same task must keep the same handle on every surface,
+  // including old history loaded after an upgrade.
+  function taskCode(taskId) {
+    if (!taskShortCodeFor || !taskId) return '';
+    const code = String(taskShortCodeFor(taskId) || '').trim().toUpperCase();
+    return /^[0-9A-Z]{4}$/.test(code) ? code : '';
+  }
+
+  function stampTaskCode(message) {
+    if (!message || typeof message !== 'object') return message;
+    const code = taskCode(message.taskId);
+    if (code) message.taskShortCode = code;
+    return message;
+  }
+
+  function projectTaskCode(message) {
+    if (!message || typeof message !== 'object' || message.taskShortCode) return message;
+    const code = taskCode(message.taskId);
+    return code ? { ...message, taskShortCode: code } : message;
   }
 
   function startMemoryDistill(sessionId, messages) {
@@ -285,13 +312,13 @@ function createChatHistoryRuntime(rawDeps) {
   function projectedMessages(sessionId, includeHidden = false) {
     const messages = service.view(sessionId);
     const visible = values => includeHidden ? values : visibility.filter(sessionId, values);
-    if (!deps.projectMessages) return visible(messages);
+    if (!deps.projectMessages) return visible(messages).map(projectTaskCode);
     try {
       const projected = deps.projectMessages(String(sessionId), messages);
-      return visible(Array.isArray(projected) ? projected : messages);
+      return visible(Array.isArray(projected) ? projected : messages).map(projectTaskCode);
     } catch (error) {
       logFailure('chat_history_projection_failed', error, sessionId);
-      return visible(messages);
+      return visible(messages).map(projectTaskCode);
     }
   }
 
@@ -358,6 +385,7 @@ function createChatHistoryRuntime(rawDeps) {
       const owner = deps.chatSessions.get(sessionId);
       if (owner && owner._currentTaskId) message.taskId = owner._currentTaskId;
     }
+    stampTaskCode(message);
     if (message.turnId == null) {
       const owner = deps.chatSessions.get(sessionId);
       if (owner?._activeTurn?.turnId) message.turnId = owner._activeTurn.turnId;
@@ -417,6 +445,7 @@ function createChatHistoryRuntime(rawDeps) {
       for (const field of ['taskId', 'taskName', 'auxRunId']) {
         if (patch[field] !== undefined) updated[field] = patch[field];
       }
+      stampTaskCode(updated);
       if (message.role === 'user') {
         for (const field of ['taskStart', 'taskSource', 'taskText']) {
           if (patch[field] !== undefined) updated[field] = patch[field];
@@ -434,6 +463,7 @@ function createChatHistoryRuntime(rawDeps) {
           turnId: message.turnId || null,
           taskId: message.taskId || null,
           taskName: message.taskName || null,
+          taskShortCode: message.taskShortCode || null,
           auxRunId: message.auxRunId || null,
         })),
       });
@@ -470,6 +500,7 @@ function createChatHistoryRuntime(rawDeps) {
           _interim: true,
         };
         if (state._currentTaskId) interim.taskId = state._currentTaskId;
+        stampTaskCode(interim);
         service.upsertInterim(key, interim);
       } catch (error) {
         logFailure('chat_history_interim_save_failed', error, key);

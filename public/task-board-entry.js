@@ -20,6 +20,16 @@
       key: `task-board-input:${taskId}`, randomId: () => crypto.randomUUID(), request: (_url, body) => api(`${base}/messages`, body) });
     const errorText = error => error.code === 'fork_source_busy' ? t('taskBoardForkSourceBusy')
       : error.code === 'fork_source_dirty' ? t('taskBoardForkSourceDirty') : error.message;
+    function appendTaskTail(article, message) {
+      const code = String(message?.taskShortCode || entry?.task?.taskShortCode || '').trim().toUpperCase();
+      if (!/^[0-9A-Z]{4}$/.test(code)) return;
+      const name = String(message?.taskName || entry?.task?.title || '').trim();
+      const chars = Array.from(name), preview = chars.length > 10 ? `${chars.slice(0, 10).join('')}…` : name;
+      const tail = document.createElement('div'); tail.className = 'msg-task-tail';
+      tail.textContent = `#${code}${preview ? ` · ${preview}` : ''}`;
+      tail.title = `#${code}${name ? ` · ${name}` : ''}`;
+      article.append(tail);
+    }
     $('composer').hidden = true; $('question').hidden = true; $('board-actions').hidden = true;
     $('new-task').hidden = true; $('detach').hidden = true;
     function renderMessages(messages) {
@@ -38,6 +48,7 @@
         content.innerHTML = root.MultiCCSafeMarkdown.render(typeof message.content === 'string' ? message.content : JSON.stringify(message.content || ''));
         article.append(content);
         if (message.tools?.length) { const evidence = document.createElement('details'), summary = document.createElement('summary'), pre = document.createElement('pre'); summary.textContent = t('taskShellEvidence'); pre.textContent = JSON.stringify(message.tools, null, 2); evidence.append(summary, pre); article.append(evidence); }
+        appendTaskTail(article, message);
         return article;
       }));
       if (nearBottom) history.scrollTop = history.scrollHeight;

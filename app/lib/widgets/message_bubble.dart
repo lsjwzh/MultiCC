@@ -373,6 +373,7 @@ class _UserBubble extends StatelessWidget {
                       done: autoCommitDone,
                       onChanged: onAutoCommitChanged,
                     ),
+                  _TaskAttributionTail(message: message, isUser: true),
                 ],
               ),
             ),
@@ -531,12 +532,65 @@ class _AssistantBubble extends StatelessWidget {
                         ),
                       ),
                     ),
+                  _TaskAttributionTail(message: message),
                 ],
               ),
             ),
           ),
         );
       },
+    );
+  }
+}
+
+/// Quiet task ownership marker at the physical bottom of every attributed
+/// user/assistant bubble. The stable four-character code comes from the
+/// server registry; clients never synthesize one from the full task id.
+class _TaskAttributionTail extends StatelessWidget {
+  const _TaskAttributionTail({required this.message, this.isUser = false});
+
+  final ChatMessage message;
+  final bool isUser;
+
+  static String _preview(String value, [int limit = 10]) {
+    final chars = value.runes.toList(growable: false);
+    return chars.length > limit
+        ? '${String.fromCharCodes(chars.take(limit))}…'
+        : value;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final code = (message.taskShortCode ?? '').trim().toUpperCase();
+    if (!RegExp(r'^[0-9A-Z]{4}$').hasMatch(code)) {
+      return const SizedBox.shrink();
+    }
+    final name = (message.taskName ?? '').trim();
+    final label = '#$code${name.isEmpty ? '' : ' · ${_preview(name)}'}';
+    final fullLabel = '#$code${name.isEmpty ? '' : ' · $name'}';
+    return Align(
+      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+      child: Tooltip(
+        message: fullLabel,
+        child: Padding(
+          key: const ValueKey('message-task-tail'),
+          padding: const EdgeInsets.only(top: 5),
+          child: Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: isUser
+                  ? Colors.white.withValues(alpha: 0.52)
+                  : const Color(0xFF6f8096).withValues(alpha: 0.72),
+              fontSize: 9,
+              height: 1.15,
+              fontWeight: FontWeight.w500,
+              letterSpacing: 0.15,
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

@@ -2238,7 +2238,12 @@ function attachAutoCommitCheck(bubbleEl, checked) {
     row.dataset.userTouched = '1';
   });
   cb.addEventListener('click', () => { row.dataset.userTouched = '1'; });
-  ce.appendChild(row);
+  // Attribution is the physical bottom tail. A history-rendered user bubble
+  // may already have it when this per-turn control is restored, so keep the
+  // checkbox immediately above the tail instead of pushing ownership upward.
+  const taskTail = ce === bubbleEl ? bubbleEl.querySelector('.msg-task-tail') : null;
+  if (taskTail) ce.insertBefore(row, taskTail);
+  else ce.appendChild(row);
   return cb;
 }
 

@@ -482,6 +482,26 @@
       border: 1px solid var(--chat-line, #30363d);
       border-bottom-left-radius: 4px;
     }
+    .msg-task-tail {
+      max-width: 24ch;
+      margin-top: 5px;
+      overflow: hidden;
+      color: var(--chat-muted, #8b949e);
+      font-size: 9px;
+      font-weight: 500;
+      line-height: 1.15;
+      letter-spacing: .02em;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      opacity: .58;
+      user-select: none;
+    }
+    .msg.user > .msg-task-tail {
+      margin-left: auto;
+      color: #fff;
+      text-align: right;
+      opacity: .52;
+    }
     .msg.system-msg {
       align-self: center;
       background: transparent;
