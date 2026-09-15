@@ -186,6 +186,27 @@ void main() {
     expect(find.text('等待中'), findsWidgets);
     expect(find.text('异常'), findsWidgets);
 
+    // 分区顺序：控制台要一眼回答两件事 —— 谁在等我、我有哪些目录 —— 所以「工作目录」
+    // 紧跟「谁在等我」，不压到「全部任务」和工具格底下等用户滚到底才看见。
+    // 拿 eyebrow 定位（「工作目录」这四个字统计卡上也有，用标题会撞上）。
+    double sectionY(String eyebrow) =>
+        tester.getTopLeft(find.text(eyebrow)).dy;
+    expect(
+      sectionY('WORK DIRECTORIES'),
+      greaterThan(sectionY('ACROSS ALL WORKSPACES')),
+      reason: '「工作目录」在「谁在等我」后面',
+    );
+    expect(
+      sectionY('WORK DIRECTORIES'),
+      lessThan(sectionY('ALL TASKS · 全部目录')),
+      reason: '「工作目录」在「全部任务」前面',
+    );
+    expect(
+      sectionY('ALL TASKS · 全部目录'),
+      lessThan(sectionY('SYSTEM TOOLS')),
+      reason: '工具格仍在最后',
+    );
+
     await tester.tap(find.byKey(const ValueKey('air-console-urgent-t1')));
     await tester.pumpAndSettle();
     expect(opened, ['t1']);

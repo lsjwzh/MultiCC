@@ -310,6 +310,31 @@ class _AirConsoleScreenState extends State<AirConsoleScreen> {
                 ),
               ),
               const SizedBox(height: 15),
+              // 控制台要回答的是两件「一眼扫完」的事：谁在等我，以及我有哪些目录。所以
+              // 「工作目录」紧跟在「谁在等我」后面 —— 它是这一页的第二眼，不该压在
+              // 「全部任务」和工具格底下等用户滚到底才看见。（同 Web `renderOverview`）
+              _Panel(
+                eyebrow: 'WORK DIRECTORIES',
+                title: '工作目录',
+                note: '目录库与搜索在右上角',
+                child: Column(
+                  children: [
+                    for (final directory
+                        in data?.directories ?? const <AirDirectory>[])
+                      _DirectoryRow(
+                        directory: directory,
+                        tasks: tasks
+                            .where((task) => task.dirId == directory.id)
+                            .toList(),
+                        running: running.contains(directory.id),
+                        onTap: () => widget.onSelectDirectory(directory.id),
+                      ),
+                    if ((data?.directories ?? const []).isEmpty)
+                      const _Empty('还没有工作目录。'),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 15),
               _Panel(
                 eyebrow: 'ALL TASKS · 全部目录',
                 title: '全部任务',
@@ -376,28 +401,6 @@ class _AirConsoleScreenState extends State<AirConsoleScreen> {
                       ),
                     if (rows.isEmpty)
                       const _Empty('没有符合条件的任务。换个关键词或放宽筛选。'),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 15),
-              _Panel(
-                eyebrow: 'WORK DIRECTORIES',
-                title: '工作目录',
-                note: '目录库与搜索在右上角',
-                child: Column(
-                  children: [
-                    for (final directory
-                        in data?.directories ?? const <AirDirectory>[])
-                      _DirectoryRow(
-                        directory: directory,
-                        tasks: tasks
-                            .where((task) => task.dirId == directory.id)
-                            .toList(),
-                        running: running.contains(directory.id),
-                        onTap: () => widget.onSelectDirectory(directory.id),
-                      ),
-                    if ((data?.directories ?? const []).isEmpty)
-                      const _Empty('还没有工作目录。'),
                   ],
                 ),
               ),
