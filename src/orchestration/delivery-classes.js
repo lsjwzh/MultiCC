@@ -15,6 +15,11 @@ const DELIVERY_CLASS = Object.freeze({
   // User-typed chat input. Starts a fresh native conversation turn under the
   // ordinary admission gates.
   TURN: 'turn',
+  // A trusted asynchronous result that must resume the existing native
+  // conversation. Wait and detached-task completions are deliberately in this
+  // class: their public contract is "resume when ready", not "append a passive
+  // system notice".
+  CONTINUATION: 'continuation',
   // Task/dispatch work. Starts a turn under the FULL task-shell guard chain
   // (task identity, receipt protocol, lifecycle state).
   TASK: 'task',
@@ -28,6 +33,10 @@ const DELIVERY_CLASS = Object.freeze({
 // CLI turn just because nobody classified it.
 const CLASS_BY_PAYLOAD_TYPE = Object.freeze({
   'task.interrupted': DELIVERY_CLASS.NOTICE,
+  'wait.result': DELIVERY_CLASS.CONTINUATION,
+  'wait.callback': DELIVERY_CLASS.CONTINUATION,
+  'wait.resolved': DELIVERY_CLASS.CONTINUATION,
+  'detached.result': DELIVERY_CLASS.CONTINUATION,
   'dispatch.result': DELIVERY_CLASS.RESULT,
   'dispatch.request': DELIVERY_CLASS.TASK,
 });
