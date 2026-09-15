@@ -2652,7 +2652,7 @@ class ChatProvider extends ChangeNotifier {
   /// Explicit scheduler control. The APP never mutates or advances the queue
   /// itself; even after a successful POST it only applies the returned server
   /// schedule (and the following WS event will reconcile it again).
-  Future<void> queueAction(String action, {String? entryId}) async {
+  Future<void> queueAction(String action, {String? entryId, int? toIndex}) async {
     // Causality anchor: any `session_queue` WS event that lands while this
     // request is in flight is at least as authoritative as the action's own
     // effects (the server broadcasts them BEFORE writing the HTTP response).
@@ -2664,7 +2664,11 @@ class ChatProvider extends ChangeNotifier {
     // but only when no WS event has superseded it. Skipping is always safe:
     // the skipped state is delivered by the (in-flight or later) WS stream.
     final wsSeqAtRequest = _sessionQueueEventSeq;
-    final result = await _service.queueAction(action, entryId: entryId);
+    final result = await _service.queueAction(
+      action,
+      entryId: entryId,
+      toIndex: toIndex,
+    );
     final schedule = result['schedule'];
     if (schedule is Map) {
       final next = applyActionSchedule(

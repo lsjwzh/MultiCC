@@ -139,6 +139,15 @@ function fixture(options = {}) {
           schedule: { state: 'frozen', queued: [{ entryId, position: 1 }] },
         };
       },
+      async reorderQueued(sessionId, entryId, input) {
+        calls.push({ type: 'queue.reorder-queued', sessionId, entryId, input });
+        return options.queueReorderQueued || {
+          ok: true,
+          unchanged: false,
+          reordered: { entryId, from: 2, to: 0 },
+          schedule: { state: 'frozen', queued: [{ entryId, position: 1 }] },
+        };
+      },
     };
     runtime.tick = async () => {
       calls.push({ type: 'queue.tick' });
@@ -377,6 +386,68 @@ test('session FIFO status and explicit resolution require confirmation and remai
     2,
     'insert now cancels/releases the current turn before ticking the selected entry',
   );
+
+  const reordered = await invoke(current.app, 'POST', '/api/sessions/:id/queue/action', {
+    params: { id: 's1' },
+    body: {
+      action: 'reorder_queued',
+      entryId: 'entry-2',
+      toIndex: 0,
+      confirm: true,
+    },
+  });
+  assert.equal(reordered.response.statusCode, 200);
+  assert.deepEqual(current.calls.find(call => call.type === 'queue.reorder-queued'), {
+    type: 'queue.reorder-queued',
+    sessionId: 's1',
+    entryId: 'entry-2',
+    input: { toIndex: 0, direction: null, actor: 'user' },
+  });
+  assert.equal(
+    current.calls.filter(call => call.type === 'queue.cancel-active').length,
+    2,
+    'moving a staged message is ordering only: it never cancels the running turn',
+  );
+});
+
+test('reorder_queued is ordering only and reports the queue error codes verbatim', async () => {
+  const current = fixture({ scheduler: true });
+  const before = current.calls.filter(call => call.type === 'queue.tick').length;
+  const moved = await invoke(current.app, 'POST', '/api/sessions/:id/queue/action', {
+    params: { id: 's1' },
+    body: {
+      action: 'reorder_queued',
+      entryId: 'entry-2',
+      direction: 'up',
+      confirm: true,
+    },
+  });
+  assert.equal(moved.response.statusCode, 200);
+  assert.equal(moved.response.body.reordered.to, 0);
+  // A reorder must not advance the FIFO: nothing is promoted, so nothing may
+  // claim a slot. Ticking here would start the entry the user just moved down.
+  assert.equal(current.calls.filter(call => call.type === 'queue.tick').length, before);
+
+  for (const [code, status] of [
+    ['queued_entry_not_found', 404],
+    ['queued_entry_already_claimed', 409],
+    ['queued_entry_not_pending', 409],
+  ]) {
+    const failing = fixture({ scheduler: true, queueReorderQueued: { ok: false, code } });
+    const response = await invoke(failing.app, 'POST', '/api/sessions/:id/queue/action', {
+      params: { id: 's1' },
+      body: { action: 'reorder_queued', entryId: 'entry-2', toIndex: 1, confirm: true },
+    });
+    assert.equal(response.response.statusCode, status, `${code} maps to ${status}`);
+    assert.equal(response.response.body.code, code);
+  }
+
+  const unconfirmed = await invoke(current.app, 'POST', '/api/sessions/:id/queue/action', {
+    params: { id: 's1' },
+    body: { action: 'reorder_queued', entryId: 'entry-2', toIndex: 1 },
+  });
+  assert.equal(unconfirmed.response.statusCode, 409);
+  assert.equal(unconfirmed.response.body.error, 'confirmation_required');
 });
 
 test('insert_queued answers with the authoritative post-tick schedule, not the stale mutate snapshot', async () => {
