@@ -7,6 +7,25 @@ const path = require('node:path');
 const test = require('node:test');
 const { createPaths } = require('../src/paths');
 
+test('a share link root is reduced to a bare http(s) origin', () => {
+  const share = require('../src/share');
+
+  assert.equal(share.normalizePublicBaseUrl(undefined), null);
+  assert.equal(share.normalizePublicBaseUrl(''), null);
+  assert.equal(share.normalizePublicBaseUrl('  '), null);
+  assert.equal(share.normalizePublicBaseUrl('  https://mac.tail94695a.ts.net/  '), 'https://mac.tail94695a.ts.net');
+  assert.equal(share.normalizePublicBaseUrl('http://192.168.1.10:3000'), 'http://192.168.1.10:3000');
+  // 带路径的地址要归到根：/share/<token> 是拼在根上的，照收会把链接指到
+  // 「/manage/share/<token>」这种根本不存在的地方。
+  assert.equal(share.normalizePublicBaseUrl('https://abc.vicp.fun/manage'), 'https://abc.vicp.fun');
+
+  for (const bad of ['not a url', 'ftp://files.example.test', 'javascript:alert(1)',
+    'https://user:pw@share.example.test', `https://${'a'.repeat(3000)}.example.test`]) {
+    assert.throws(() => share.normalizePublicBaseUrl(bad), /invalid share base url/,
+      `must reject ${bad.slice(0, 40)}`);
+  }
+});
+
 test('share create and revoke publish memory only after the durable write', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-share-store-'));
   const previousDataDir = process.env.MULTICC_DATA_DIR;
