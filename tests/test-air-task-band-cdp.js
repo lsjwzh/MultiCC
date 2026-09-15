@@ -47,12 +47,15 @@ function buildRoutes() {
   return routes;
 }
 
+// 行要长得像真的：`#tasks strong` + `#tasks small` 两行（标题 + 状态）。单行按钮
+// 的 min-content 就是它自己的高度，压不出「行被挤扁」这件事 —— 那样下面那条
+// 「行内容不出框」的断言会变成永远为真的摆设。
 const fillRows = `(() => {
   const list = document.getElementById('tasks');
   for (let i = 1; i <= ${ROWS}; i += 1) {
     const button = document.createElement('button');
     button.type = 'button';
-    button.textContent = '任务 ' + i;
+    button.innerHTML = '<strong>任务 ' + i + '</strong><small>计划 · 进行中 · MultiCC 主仓</small>';
     list.append(button);
   }
 })()`;
@@ -102,6 +105,23 @@ test('the Air task list fills the band and scrolls inside it', async t => {
       band.visibleRows > 1,
       `more than one task should be on screen at a time, got about ${band.visibleRows}`,
     );
+
+    // 行还是按内容的高度排的。容器的空间是给滚用的，不是给压行用的：`nav` 是
+    // flex 列，清单一旦有了确定高度，行默认 `flex-shrink:1`，会被挤成一半高，
+    // 标题和状态行叠在一起 —— 这条量的是那件事，光看 scrollHeight 看不出来。
+    const rows = await page.evaluate(`(() => {
+      const boxes = [...document.querySelectorAll('#tasks button')];
+      const rects = boxes.map(box => box.getBoundingClientRect());
+      return {
+        clipped: boxes.filter(box => box.scrollHeight > box.clientHeight + 1).length,
+        overlaps: rects.filter((rect, i) => i > 0 && rect.top < rects[i - 1].bottom - 1).length,
+        height: Math.round(rects[0].height),
+        content: boxes[0].scrollHeight,
+      };
+    })()`);
+    assert.equal(rows.clipped, 0, '每一行都要装得下自己的内容');
+    assert.equal(rows.overlaps, 0, '行与行不许叠在一起');
+    assert.ok(rows.height >= rows.content, `行高 ${rows.height} 不该小于内容高 ${rows.content}`);
 
     // 最后一条靠滚清单就能到 —— 整件事的重点。同时抬头不许跟着走。
     const scrolled = await page.evaluate(`(() => {
