@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
@@ -7,6 +9,7 @@ import '../../services/manage_service.dart';
 import '../../services/settings_service.dart';
 import '../../theme.dart';
 import '../workspace_navigation_drawer.dart';
+import 'air_attention_screen.dart';
 import 'air_panels.dart';
 import 'air_task_status.dart';
 
@@ -68,6 +71,12 @@ class AirConsoleScreen extends StatefulWidget {
 /// 控制台是给人看的，不是导出用的：超过这个数就只显示最近的一批，并把总数
 /// 说清楚（同 Web `TASK_LIST_LIMIT`）。
 const int _taskListLimit = 60;
+
+/// 「谁在等我」是控制台的第一格，也是打开这一页第一眼要看的东西，所以它只留
+/// 最急的几条：一屏扫完，剩下的交给它自己的整页（这一格的「查看全部」）。不封顶
+/// 的话，跑起来的任务一多，这一格就把下面的「全部任务」和工具格整片推出视野 ——
+/// 控制台变成一份清单的滚动条（同 Web `ATTENTION_LIMIT`）。
+const int _attentionLimit = 5;
 
 enum _ConsoleStatus { open, all, archived }
 
@@ -257,10 +266,32 @@ class _AirConsoleScreenState extends State<AirConsoleScreen> {
               _Panel(
                 eyebrow: 'ACROSS ALL WORKSPACES',
                 title: '谁在等我',
-                note: '按紧急度排序，点击直达',
+                // 清单本来就按紧急度排过，所以「只显示前几条」砍掉的是最不急着处理的
+                // 那些，留下的仍是眼下最该看的人。总数照报，别让封顶看起来像「就这么几条」。
+                note: urgent.length > _attentionLimit
+                    ? '${urgent.length} 条 · 显示最急的 $_attentionLimit 条'
+                    : '按紧急度排序，点击直达',
+                // 没超过就没有第二页可去，出口不出现 —— 按钮跟着「有地方可去」出现，
+                // 而不是常驻一个点了没反应的「全部」。
+                action: urgent.length > _attentionLimit
+                    ? TextButton(
+                        key: const ValueKey('air-console-attention-all'),
+                        onPressed: () => _openAttention(urgent),
+                        style: TextButton.styleFrom(
+                          foregroundColor: AppColors.accent,
+                          padding: const EdgeInsets.symmetric(horizontal: 6),
+                          minimumSize: const Size(0, 28),
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        child: Text(
+                          '查看全部 ${urgent.length} 条 ›',
+                          style: const TextStyle(fontSize: 11),
+                        ),
+                      )
+                    : null,
                 child: Column(
                   children: [
-                    for (final task in urgent)
+                    for (final task in urgent.take(_attentionLimit))
                       Padding(
                         padding: const EdgeInsets.only(bottom: 8),
                         child: AirTaskTile(
@@ -390,6 +421,28 @@ class _AirConsoleScreenState extends State<AirConsoleScreen> {
     );
   }
 
+  /// 「谁在等我」的整页。清单已经在手上 —— 就是控制台那一格用的同一份，所以这一跳
+  /// 只是把它铺开，不再去拉一次接口：两边因此不可能显示出不同的条数或顺序。
+  ///
+  /// 点走一条任务时先把自己收掉：宿主的 onOpenTask 会再收掉控制台，两层叠着的时候
+  /// 它 pop 的是最上面那层，不先收自己就会把控制台留在屏幕上。
+  void _openAttention(List<AirTask> urgent) {
+    unawaited(
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => AirAttentionScreen(
+            tasks: urgent,
+            directoryName: _directoryName,
+            onOpenTask: (task) {
+              Navigator.of(context).pop();
+              widget.onOpenTask(task);
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
   /// 定时任务中心的入口有两处（「自动运行」工具卡和「定时任务」统计卡），
   /// 但它们去同一个地方 —— 宿主给了原生回调就走原生页，没给才退回老抽屉。
   void _openSchedules() {
@@ -403,6 +456,10 @@ class _AirConsoleScreenState extends State<AirConsoleScreen> {
 }
 
 /// 四张统计卡。Web 是四列一行，手机上一行放不下，改成两列两行。
+///
+/// 统计是一条「读数带」，不是控制台的主体：四个数字用来确认系统活着，真正要看的是
+/// 下面的任务。所以它压扁了（数字 24→19px、色条 26×3→18×2），省下来的高度全给
+/// 「谁在等我」和「全部任务」—— 同 Web `.admin-stat` 的那次收紧。
 class _Stats extends StatelessWidget {
   const _Stats({
     required this.directories,
@@ -527,14 +584,14 @@ class _StatCard extends StatelessWidget {
             borderRadius: BorderRadius.circular(AppColors.radiusCard),
             border: Border.all(color: AppColors.line),
           ),
-          padding: const EdgeInsets.fromLTRB(13, 11, 13, 12),
+          padding: const EdgeInsets.fromLTRB(11, 8, 11, 9),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Container(
-                width: 26,
-                height: 3,
-                margin: const EdgeInsets.only(bottom: 9),
+                width: 18,
+                height: 2,
+                margin: const EdgeInsets.only(bottom: 5),
                 decoration: BoxDecoration(
                   color: tone ?? AppColors.lineStrong,
                   borderRadius: BorderRadius.circular(AppColors.radiusPill),
@@ -542,24 +599,24 @@ class _StatCard extends StatelessWidget {
               ),
               Text(
                 label,
-                style: const TextStyle(color: AppColors.muted, fontSize: 11),
+                style: const TextStyle(color: AppColors.muted, fontSize: 10),
               ),
-              const SizedBox(height: 4),
+              const SizedBox(height: 2),
               Text(
                 value,
                 style: const TextStyle(
                   color: AppColors.text,
-                  fontSize: 24,
+                  fontSize: 19,
                   height: 1,
                   fontWeight: FontWeight.w700,
                 ),
               ),
-              const SizedBox(height: 6),
+              const SizedBox(height: 3),
               Text(
                 detail,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: AppColors.faint, fontSize: 11),
+                style: const TextStyle(color: AppColors.faint, fontSize: 10),
               ),
             ],
           ),
@@ -569,18 +626,25 @@ class _StatCard extends StatelessWidget {
   }
 }
 
-/// 一个分区：eyebrow + 标题 + 右上角一句注。
+/// 一个分区：eyebrow + 标题 + 右上角一句注（可再挂一个出口）。
 class _Panel extends StatelessWidget {
   const _Panel({
     required this.eyebrow,
     required this.title,
     required this.child,
     this.note,
+    this.action,
   });
 
   final String eyebrow;
   final String title;
+
+  /// 右上角那句说明。有 [action] 时它说的是「一共几条、这里显示了几条」。
   final String? note;
+
+  /// 右上角的出口。没有地方可去时不传，按钮就不出现 —— 控制台里每个分区都常驻
+  /// 一个点了没反应的按钮，比没有按钮更糟。
+  final Widget? action;
   final Widget child;
 
   @override
@@ -634,6 +698,11 @@ class _Panel extends StatelessWidget {
                       fontSize: 10.5,
                     ),
                   ),
+                ),
+              if (action != null)
+                Padding(
+                  padding: const EdgeInsets.only(left: 8, top: 4),
+                  child: action!,
                 ),
             ],
           ),

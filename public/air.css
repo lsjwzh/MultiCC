@@ -450,13 +450,16 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 #admin-center { min-height: 0; flex: 1; overflow: auto; padding: 34px 38px 48px; background: linear-gradient(145deg, #fff, #f7faff); }
 #admin-actions { display: flex; flex-wrap: wrap; gap: 7px; }
 #admin-actions:empty { display: none; }
-.admin-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 13px; margin-bottom: 15px; }
-.admin-stat { min-width: 0; min-height: 116px; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; padding: 16px 17px; border: 1px solid #d8e5f2; border-radius: 16px; background: rgba(255, 255, 255, .92); text-align: left; box-shadow: 0 9px 30px #35577d0a; }
+/* 统计是一条「读数带」，不是控制台的主体：四个数字用来确认系统活着，真正要看的
+   是下面的任务。所以它压扁成一条窄带（数字 27→19px、卡片 116→78px 高），省下来的
+   高度全给「谁在等我」和「全部任务」。 */
+.admin-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+.admin-stat { min-width: 0; min-height: 0; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; padding: 9px 12px; border: 1px solid #d8e5f2; border-radius: 14px; background: rgba(255, 255, 255, .92); text-align: left; box-shadow: 0 9px 30px #35577d0a; }
 button.admin-stat:hover { transform: translateY(-1px); }
-.admin-stat span { color: #6a7d91; font-size: 10px; }
-.admin-stat strong { margin: 5px 0 7px; color: #2d4b65; font-size: 27px; line-height: 1; }
-.admin-stat small { min-width: 0; overflow: hidden; color: #7c8da0; white-space: nowrap; text-overflow: ellipsis; }
-.admin-stat::before { content: ""; width: 28px; height: 3px; margin-bottom: 11px; border-radius: 5px; background: #adc4da; }
+.admin-stat span { color: #6a7d91; font-size: 9.5px; line-height: 1.2; }
+.admin-stat strong { margin: 2px 0 3px; color: #2d4b65; font-size: 19px; line-height: 1; }
+.admin-stat small { min-width: 0; overflow: hidden; color: #7c8da0; font-size: 10px; line-height: 1.35; white-space: nowrap; text-overflow: ellipsis; }
+.admin-stat::before { content: ""; width: 18px; height: 2px; margin-bottom: 5px; border-radius: 5px; background: #adc4da; }
 .admin-stat.blue::before { background: #4d9bea; }
 .admin-stat.green::before { background: #43b88a; }
 .admin-stat.amber::before { background: #df9a54; }
@@ -479,6 +482,9 @@ button.admin-stat:hover { transform: translateY(-1px); }
 .admin-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 .admin-panel-head h3 { margin-top: 3px; color: #294760; font-size: 15px; }
 .admin-panel-head button { min-height: 30px; padding: 4px 8px; color: #537493; border-color: transparent; background: transparent; font-size: 10px; }
+/* 面板头上「说明 + 出口」要贴在一起（谁在等我的 N 条往上是一句话、往右是一扇门），
+   所以它们自己是一个 flex 组，不会被 space-between 拆到两头。 */
+.admin-panel-meta { display: flex; align-items: center; gap: 4px; }
 .admin-recent-list { display: grid; }
 .admin-recent-row { width: 100%; min-width: 0; display: flex; align-items: center; gap: 10px; padding: 9px 4px; border: 0; border-bottom: 1px solid #e9eff5; border-radius: 0; background: transparent; text-align: left; }
 .admin-recent-row:last-child { border-bottom: 0; }
@@ -939,7 +945,7 @@ body.console-open #console-panel { transform: none; visibility: visible; }
 @media (max-width: 420px) {
   #admin-actions button { flex: 1; }
   .admin-stats { grid-template-columns: 1fr 1fr; }
-  .admin-stat { min-height: 104px; padding: 13px; }
+  .admin-stat { padding: 8px 10px; }
   .directory-stat { padding: 9px 10px; }
   .directory-stat strong { font-size: 17px; }
   .quick-task-actions > label:last-of-type { order: 3; }
