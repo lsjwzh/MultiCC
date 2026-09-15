@@ -34,6 +34,10 @@ function createStaticAssetsRoutes(rawDeps) {
   // assets and keep a stale copy; they still re-fetch when the asset URL changes,
   // so appending the file's mtime as a query makes every frontend edit show up on
   // the next page load without users having to clear cache manually.
+  //
+  // Exported (as serveHtml) because every HTML route must go through it. The
+  // share route serves this same document for a recipient, and a second writer
+  // would silently lose the cache-busting that keeps their WebView current.
   function _serveVersionedHtml(absPath, res) {
     fs.readFile(absPath, 'utf8', (err, html) => {
       if (err) { res.status(500).end(); return; }
@@ -157,7 +161,7 @@ function createStaticAssetsRoutes(rawDeps) {
     }));
   }
 
-  return { mountRoutes };
+  return { mountRoutes, serveHtml: _serveVersionedHtml };
 }
 
 module.exports = { createStaticAssetsRoutes };

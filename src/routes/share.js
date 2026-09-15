@@ -7,6 +7,12 @@
 // route composition. Admin routes are expected to be mounted behind the normal
 // MultiCC authentication middleware; recipient routes keep using the share
 // token/cookie as their sole authority.
+//
+// The recipient page IS the chat page. /share/<token> serves the same document
+// the admin uses, and the page's own boot code reads this share's authority
+// from /api/share/<token>/entry and narrows itself accordingly. Recipients
+// therefore get one renderer to keep current instead of a second, thinner
+// conversation UI that drifts from the real one.
 
 const { sanitizePublicText } = require('../http/public-safety');
 
@@ -48,11 +54,20 @@ function assertShareRouteDeps(deps) {
   if (typeof deps.loadChatHistory !== 'function') {
     throw new TypeError('share route dependency missing: loadChatHistory');
   }
+  if (typeof deps.paginateChatHistory !== 'function') {
+    throw new TypeError('share route dependency missing: paginateChatHistory');
+  }
   if (typeof deps.parseCookies !== 'function') {
     throw new TypeError('share route dependency missing: parseCookies');
   }
-  if (typeof deps.sharePageFile !== 'string' || !deps.sharePageFile.trim()) {
-    throw new TypeError('share route dependency missing: sharePageFile');
+  // The share page is the chat page, so it is served through the same
+  // versioned-HTML writer the rest of public/ uses (cache-busting ?v=<mtime>);
+  // a recipient's embedded WebView must not keep a stale renderer.
+  if (typeof deps.serveHtml !== 'function') {
+    throw new TypeError('share route dependency missing: serveHtml');
+  }
+  if (typeof deps.chatPageFile !== 'string' || !deps.chatPageFile.trim()) {
+    throw new TypeError('share route dependency missing: chatPageFile');
   }
   return deps;
 }
@@ -214,7 +229,93 @@ function createShareRoutes(rawDeps) {
   }
 
   function serveSharePage(req, res) {
-    return res.sendFile(deps.sharePageFile);
+    return deps.serveHtml(deps.chatPageFile, res);
+  }
+
+  // One recipient's authority over one token: the password cookie is the only
+  // credential, exactly as the WS router and the read endpoint treat it.
+  //
+  // Returns { record, authority } when the caller may read, otherwise sends the
+  // refusal itself and returns null — every recipient route must refuse in the
+  // same two ways (gone vs password-not-given) or the page cannot tell them
+  // apart and will ask for a password on a link that no longer exists.
+  function openShare(req, res) {
+    const record = share.get(req.params.token);
+    if (!record) {
+      fail(res, 404, 'share not found or expired');
+      return null;
+    }
+    const authority = share.access(req.params.token, {
+      cookies: deps.parseCookies(req.headers.cookie),
+    });
+    if (!authority) {
+      res.status(401).json({ needPassword: true });
+      return null;
+    }
+    return { record, authority };
+  }
+
+  // What the page needs to boot: who this link is, and how much it may do.
+  // Deliberately not the transcript — a session's history arrives over the WS
+  // and older pages over /history, so a long session is never downloaded twice.
+  // A message snapshot has no live session to fetch from, so that one carries
+  // its messages inline.
+  function readShareEntry(req, res) {
+    try {
+      const opened = openShare(req, res);
+      if (!opened) return undefined;
+      const { record, authority } = opened;
+      if (record.type === 'messages') {
+        return res.json({
+          access: 'view',
+          type: 'messages',
+          label: record.label || '消息分享',
+          messages: record.messages || [],
+        });
+      }
+      const session = deps.persistedSessions.get(record.sessionId);
+      if (!session) return fail(res, 404, 'session no longer exists');
+      return res.json({
+        access: authority.access,
+        type: 'session',
+        sessionId: record.sessionId,
+        // The name the admin gave this link first (it defaults to the session's
+        // own at creation), so a share keeps identifying itself even after the
+        // session is renamed — the recipient has no other way to tell which
+        // conversation they were handed.
+        label: record.label || session.label || record.sessionId,
+        cli: session.cli || 'claude',
+      });
+    } catch (error) {
+      return unexpected(res, 'shared entry read', error);
+    }
+  }
+
+  // Older pages for a shared session, so scrolling up works for a recipient too.
+  // Hidden (deleted) messages stay hidden: an admin's own history view may show
+  // them behind a flag, but a share is a copy of what the recipient was shown.
+  function readSharedHistory(req, res) {
+    try {
+      const opened = openShare(req, res);
+      if (!opened) return undefined;
+      const { record } = opened;
+      // A snapshot was delivered whole at boot; there is genuinely nothing older.
+      if (record.type === 'messages') return res.json({ messages: [], hasMore: false });
+      const page = deps.paginateChatHistory(record.sessionId, {
+        includeHidden: false,
+        before: req.query.before && String(req.query.before),
+        around: req.query.around && String(req.query.around),
+        limit: req.query.limit && String(req.query.limit),
+      });
+      const response = { messages: page.messages, hasMore: page.hasMore };
+      if (req.query.around) {
+        response.found = page.found === true;
+        response.hasNewer = page.hasNewer === true;
+      }
+      return res.json(response);
+    } catch (error) {
+      return unexpected(res, 'shared history read', error);
+    }
   }
 
   function authenticateShare(req, res) {
@@ -235,15 +336,14 @@ function createShareRoutes(rawDeps) {
     }
   }
 
+  // The content read of a share: the whole transcript for a session, the picked
+  // messages for a snapshot. Kept for clients that want the content in one
+  // request (the App, scripts); the page itself boots from /entry + WS.
   function readSharedSession(req, res) {
-    const token = req.params.token;
     try {
-      const record = share.get(token);
-      if (!record) return fail(res, 404, 'share not found or expired');
-      const authority = share.access(token, {
-        cookies: deps.parseCookies(req.headers.cookie),
-      });
-      if (!authority) return res.status(401).json({ needPassword: true });
+      const opened = openShare(req, res);
+      if (!opened) return undefined;
+      const { record, authority } = opened;
 
       if (record.type === 'messages') {
         return res.json({
@@ -277,6 +377,8 @@ function createShareRoutes(rawDeps) {
     app.post('/api/sessions/:id/share-messages', createMessageShare);
     app.get('/share/:token', serveSharePage);
     app.post('/api/share/:token/auth', authenticateShare);
+    app.get('/api/share/:token/entry', readShareEntry);
+    app.get('/api/share/:token/history', readSharedHistory);
     app.get('/api/share/:token/session', readSharedSession);
   }
 
@@ -286,6 +388,8 @@ function createShareRoutes(rawDeps) {
     createSessionShare,
     listSessionShares,
     mountRoutes,
+    readShareEntry,
+    readSharedHistory,
     readSharedSession,
     revokeSessionShare,
     serveSharePage,

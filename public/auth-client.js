@@ -103,6 +103,10 @@ if (typeof module !== 'undefined' && module.exports) {
     await ready;
     const url = new URL(rawUrl, location.href);
     url.searchParams.delete('token');
+    // 分享连接用 token 本身授权（服务端 src/ws/connection-router.js 认 share 参数就
+    // 不再要 ticket）。这里必须放行：换 ticket 的接口是管理员接口，接收方没有登录，
+    // 401 会让 WS 卡在永久重连上。
+    if (url.searchParams.get('share')) return url.toString();
     if (externalFleetId) {
       const sessionId = url.searchParams.get('session') || url.searchParams.get('id') || '';
       const directoryId = url.searchParams.get('dirId') || '';
