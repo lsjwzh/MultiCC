@@ -286,6 +286,10 @@ class SessionQueuePanel extends StatefulWidget {
   /// 可选，省略时列表项只显示取消按钮（旧行为）。
   final Future<void> Function(String entryId)? onInsertQueued;
 
+  /// 「移动顺序」：把一条暂存消息落到列表里的新下标（web 端拖动手柄同一动作）。
+  /// 可选，省略时列表不给拖动手柄，仍是只能取消的静态列表。
+  final Future<void> Function(String entryId, int toIndex)? onReorderQueued;
+
   const SessionQueuePanel({
     super.key,
     required this.queue,
@@ -293,6 +297,7 @@ class SessionQueuePanel extends StatefulWidget {
     required this.onAction,
     required this.onCancelQueued,
     this.onInsertQueued,
+    this.onReorderQueued,
   });
 
   @override
@@ -448,89 +453,135 @@ class _SessionQueuePanelState extends State<SessionQueuePanel> {
           if (_expanded && queue.items.isNotEmpty)
             ConstrainedBox(
               constraints: const BoxConstraints(maxHeight: 240),
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
-                child: Column(
-                  children: queue.items
-                      .map((item) {
-                        return Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 6,
-                          ),
-                          decoration: const BoxDecoration(
-                            border: Border(
-                              top: BorderSide(color: Color(0xFFdce6f1)),
-                            ),
-                          ),
-                          child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Expanded(
-                                child: Text(
-                                  '${item.position}. ${item.text.isEmpty ? t('queuedMessageFallback') : item.text}',
-                                  style: const TextStyle(
-                                    color: Color(0xFF31465b),
-                                    fontSize: 12,
-                                    height: 1.4,
-                                  ),
-                                ),
-                              ),
-                              // 插队优先的那条已经在等着抢占执行槽，按钮换成
-                              // 不可点的状态标记，避免用户重复触发一次中断。
-                              if (item.priority)
-                                Padding(
-                                  key: Key('queued-running-${item.entryId}'),
-                                  padding: const EdgeInsets.only(left: 6),
-                                  child: Text(
-                                    t('queuedMessageRunning'),
-                                    style: const TextStyle(
-                                      color: Color(0xFFa85a25),
-                                      fontSize: 11,
-                                    ),
-                                  ),
-                                )
-                              else if (item.canInsert &&
-                                  widget.onInsertQueued != null)
-                                IconButton(
-                                  key: Key('insert-queued-${item.entryId}'),
-                                  tooltip: t('insertQueuedMessage'),
-                                  visualDensity: VisualDensity.compact,
-                                  iconSize: 17,
-                                  color: const Color(0xFFa85a25),
-                                  onPressed: _busy || !widget.enabled
-                                      ? null
-                                      : () => _run(
-                                          () => widget.onInsertQueued!(
-                                            item.entryId,
-                                          ),
-                                        ),
-                                  icon: const Icon(Icons.bolt_rounded),
-                                ),
-                              if (item.canCancel)
-                                IconButton(
-                                  key: Key('cancel-queued-${item.entryId}'),
-                                  tooltip: t('cancelQueuedMessage'),
-                                  visualDensity: VisualDensity.compact,
-                                  iconSize: 17,
-                                  color: const Color(0xFFc0392b),
-                                  onPressed: _busy || !widget.enabled
-                                      ? null
-                                      : () => _run(
-                                          () => widget.onCancelQueued(
-                                            item.entryId,
-                                          ),
-                                        ),
-                                  icon: const Icon(Icons.close_rounded),
-                                ),
-                            ],
-                          ),
-                        );
-                      })
-                      .toList(growable: false),
+              child: _list(),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// 展开后的暂存列表。能拖排时用 ReorderableListView（手柄只挂在可移动的行
+  /// 上），否则退回原来的静态列表——判据和 web 端一致：两条以上、每条都有
+  /// entryId（既要当稳定 key，也是移动要提交的标识）且调用方给了回调。
+  Widget _list() {
+    final items = widget.queue.items;
+    if (!_reorderable) {
+      return SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+        child: Column(children: [for (final item in items) _row(item)]),
+      );
+    }
+    return ReorderableListView.builder(
+      // 面板嵌在输入区里，高度由外层 ConstrainedBox 决定：列表自己算高，免得
+      // 抢走外层滚动手势。
+      shrinkWrap: true,
+      buildDefaultDragHandles: false,
+      padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+      itemCount: items.length,
+      onReorder: _handleReorder,
+      proxyDecorator: (child, index, animation) => Material(
+        color: const Color(0xFFffffff),
+        elevation: 3,
+        borderRadius: BorderRadius.circular(6),
+        child: child,
+      ),
+      itemBuilder: (context, index) => _row(items[index], dragIndex: index),
+    );
+  }
+
+  bool get _reorderable =>
+      widget.onReorderQueued != null &&
+      widget.queue.items.length > 1 &&
+      widget.queue.items.every((item) => item.entryId.isNotEmpty);
+
+  /// 只有还没被调度器领取的 pending 条目能移动（服务端 reorderQueued 的守卫
+  /// 也是这条）；已经被领走的行不给手柄，省得摆出能拖的样子再被拒。
+  bool _movable(SessionQueueItem item) => item.canCancel;
+
+  /// ReorderableListView 给的是「插入位」：往下拖时目标下标要减一，才是这条
+  /// 消息最终落到的位置——和服务端按同一份列表算出来的 position 同一语义，
+  /// 所以不用再换算。本地不做乐观重排，落点由服务端回来的 schedule 定。
+  void _handleReorder(int oldIndex, int newIndex) {
+    final to = newIndex > oldIndex ? newIndex - 1 : newIndex;
+    if (to == oldIndex) return;
+    final item = widget.queue.items[oldIndex];
+    if (!_movable(item)) return;
+    _run(() => widget.onReorderQueued!(item.entryId, to));
+  }
+
+  Widget _row(SessionQueueItem item, {int? dragIndex}) {
+    final showHandle = dragIndex != null && _movable(item);
+    return Container(
+      key: ValueKey('queue-row-${item.entryId}'),
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      decoration: const BoxDecoration(
+        border: Border(top: BorderSide(color: Color(0xFFdce6f1))),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (showHandle)
+            ReorderableDragStartListener(
+              key: Key('reorder-queued-${item.entryId}'),
+              index: dragIndex,
+              enabled: !_busy && widget.enabled,
+              child: Tooltip(
+                message: t('reorderQueuedMessage'),
+                child: const Padding(
+                  padding: EdgeInsets.only(right: 5),
+                  child: Icon(
+                    Icons.drag_indicator_rounded,
+                    size: 16,
+                    color: Color(0xFF93a7bb),
+                  ),
                 ),
               ),
+            ),
+          Expanded(
+            child: Text(
+              '${item.position}. ${item.text.isEmpty ? t('queuedMessageFallback') : item.text}',
+              style: const TextStyle(
+                color: Color(0xFF31465b),
+                fontSize: 12,
+                height: 1.4,
+              ),
+            ),
+          ),
+          // 插队优先的那条已经在等着抢占执行槽，按钮换成不可点的状态标记，
+          // 避免用户重复触发一次中断。
+          if (item.priority)
+            Padding(
+              key: Key('queued-running-${item.entryId}'),
+              padding: const EdgeInsets.only(left: 6),
+              child: Text(
+                t('queuedMessageRunning'),
+                style: const TextStyle(color: Color(0xFFa85a25), fontSize: 11),
+              ),
+            )
+          else if (item.canInsert && widget.onInsertQueued != null)
+            IconButton(
+              key: Key('insert-queued-${item.entryId}'),
+              tooltip: t('insertQueuedMessage'),
+              visualDensity: VisualDensity.compact,
+              iconSize: 17,
+              color: const Color(0xFFa85a25),
+              onPressed: _busy || !widget.enabled
+                  ? null
+                  : () => _run(() => widget.onInsertQueued!(item.entryId)),
+              icon: const Icon(Icons.bolt_rounded),
+            ),
+          if (item.canCancel)
+            IconButton(
+              key: Key('cancel-queued-${item.entryId}'),
+              tooltip: t('cancelQueuedMessage'),
+              visualDensity: VisualDensity.compact,
+              iconSize: 17,
+              color: const Color(0xFFc0392b),
+              onPressed: _busy || !widget.enabled
+                  ? null
+                  : () => _run(() => widget.onCancelQueued(item.entryId)),
+              icon: const Icon(Icons.close_rounded),
             ),
         ],
       ),

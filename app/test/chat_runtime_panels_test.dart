@@ -246,6 +246,124 @@ void main() {
     expect(find.byKey(const Key('cancel-queued-queued-1')), findsOneWidget);
   });
 
+  testWidgets('dragging a staged row reports the index it was dropped on', (
+    tester,
+  ) async {
+    final moves = <List<Object>>[];
+    await tester.pumpWidget(
+      _host(
+        SessionQueuePanel(
+          queue: _pendingQueue(3),
+          enabled: true,
+          onAction: (_) async {},
+          onCancelQueued: (_) async {},
+          onReorderQueued: (entryId, toIndex) async =>
+              moves.add([entryId, toIndex]),
+        ),
+      ),
+    );
+    await tester.tap(find.byType(InkWell).first);
+    await tester.pumpAndSettle();
+
+    await _dragRowDown(tester, 'queued-1', rows: 2);
+    // 往下拖两行就是第二格（0 起算的下标 2），和服务端 position 同一语义。
+    expect(moves, [
+      ['queued-1', 2],
+    ]);
+  });
+
+  testWidgets('dragging a staged row up by one lands it one slot earlier', (
+    tester,
+  ) async {
+    final moves = <List<Object>>[];
+    await tester.pumpWidget(
+      _host(
+        SessionQueuePanel(
+          queue: _pendingQueue(3),
+          enabled: true,
+          onAction: (_) async {},
+          onCancelQueued: (_) async {},
+          onReorderQueued: (entryId, toIndex) async =>
+              moves.add([entryId, toIndex]),
+        ),
+      ),
+    );
+    await tester.tap(find.byType(InkWell).first);
+    await tester.pumpAndSettle();
+
+    await _dragRowDown(tester, 'queued-3', rows: -1);
+    expect(moves, [
+      ['queued-3', 1],
+    ]);
+  });
+
+  testWidgets('a claimed entry has no drag handle, and one message has none', (
+    tester,
+  ) async {
+    final queue = SessionQueueState.fromEvent({
+      'state': 'queued',
+      'items': [
+        {
+          'entryId': 'leased',
+          'state': 'leased',
+          'position': 1,
+          'text': '执行中',
+        },
+        {'entryId': 'pending', 'state': 'pending', 'position': 2, 'text': '可移动'},
+      ],
+    });
+    await tester.pumpWidget(
+      _host(
+        SessionQueuePanel(
+          queue: queue,
+          enabled: true,
+          onAction: (_) async {},
+          onCancelQueued: (_) async {},
+          onReorderQueued: (_, _) async {},
+        ),
+      ),
+    );
+    await tester.tap(find.byType(InkWell).first);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('reorder-queued-leased')), findsNothing);
+    expect(find.byKey(const Key('reorder-queued-pending')), findsOneWidget);
+
+    // 只有一条时没有顺序可调，手柄不该出现。
+    await tester.pumpWidget(
+      _host(
+        SessionQueuePanel(
+          queue: _pendingQueue(1),
+          enabled: true,
+          onAction: (_) async {},
+          onCancelQueued: (_) async {},
+          onReorderQueued: (_, _) async {},
+        ),
+      ),
+    );
+    await tester.tap(find.byType(InkWell).first);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('reorder-queued-queued-1')), findsNothing);
+  });
+
+  testWidgets('without a reorder callback the rows stay a static list', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _host(
+        SessionQueuePanel(
+          queue: _pendingQueue(3),
+          enabled: true,
+          onAction: (_) async {},
+          onCancelQueued: (_) async {},
+        ),
+      ),
+    );
+    await tester.tap(find.byType(InkWell).first);
+    await tester.pumpAndSettle();
+    expect(find.byType(ReorderableListView), findsNothing);
+    expect(find.byKey(const Key('reorder-queued-queued-1')), findsNothing);
+  });
+
   testWidgets('GLM/Codex window bar paints the server-resolved view verbatim', (
     tester,
   ) async {
@@ -451,4 +569,43 @@ void main() {
     await tester.pumpWidget(_host(ChatRuntimeNoticePanel(apiError: state)));
     expect(find.textContaining('ENOTFOUND open.bigmodel.cn'), findsOneWidget);
   });
+}
+
+/// n 条 pending 暂存消息，下标 1..n 与 entryId 一一对应。
+SessionQueueState _pendingQueue(int n) => SessionQueueState.fromEvent({
+  'state': 'queued',
+  'items': [
+    for (var i = 1; i <= n; i++)
+      {
+        'entryId': 'queued-$i',
+        'state': 'pending',
+        'position': i,
+        'text': '第 $i 条',
+      },
+  ],
+});
+
+/// 按住 [entryId] 那行的拖动手柄，纵向挪 [rows] 行高后松手。ReorderableDrag-
+/// StartListener 是立刻起拖的识别器，所以按下就能走；位移要分小步发，因为
+/// ReorderableListView 每收到一次位移都按「当前已经让开的位置」重算落点，
+/// 一次跳到位只会算出一格。
+Future<void> _dragRowDown(
+  WidgetTester tester,
+  String entryId, {
+  required double rows,
+}) async {
+  final rowKey = ValueKey('queue-row-$entryId');
+  final handle = find.byKey(Key('reorder-queued-$entryId'));
+  final total = tester.getSize(find.byKey(rowKey)).height * rows;
+  final gesture = await tester.startGesture(tester.getCenter(handle));
+  await tester.pump(const Duration(milliseconds: 20));
+  var moved = 0.0;
+  while (moved.abs() < total.abs()) {
+    final delta = (total - moved).clamp(-8.0, 8.0);
+    await gesture.moveBy(Offset(0, delta));
+    moved += delta;
+    await tester.pump(const Duration(milliseconds: 16));
+  }
+  await gesture.up();
+  await tester.pumpAndSettle();
 }
