@@ -63,6 +63,7 @@ function fixture(t, options = {}) {
     getClassifyState: options.getClassifyState,
     getPendingUserInput: options.getPendingUserInput,
     getTurnId: options.getTurnId,
+    getSessionHold: options.getSessionHold,
   });
   return {
     store,
@@ -1460,6 +1461,32 @@ test('an E-at-rest queue still admits an explicit retry control', async t => {
   const item = await claimOne(h, 's1');
   assert.ok(item, 'an explicit retry IS the human decision that unparks E');
   assert.equal(item.payload.workKind, 'retry');
+});
+
+test('a host-wide hold gate is surfaced on every public queue snapshot', async t => {
+  const held = new Set(['s1']);
+  const h = fixture(t, {
+    getSessionHold: sessionId => (held.has(sessionId)
+      ? { reason: 'network_unhealthy', sinceAt: 42 } : null),
+  });
+  await settleToVerdict(h, 's1', 'E');
+  await h.scheduler.admit({
+    sessionId: 's1',
+    text: 'held message',
+    workKind: 'continuation',
+    idempotencyKey: 's1-held',
+  });
+  const status = await h.scheduler.status('s1');
+  assert.deepEqual(status.hold, { reason: 'network_unhealthy', sinceAt: 42 });
+  assert.equal(status.queued.length, 1);
+  assert.equal(status.queued[0].held, true,
+    'queued items carry held so the card renders 已暂挂, not 执行中');
+  held.clear();
+  const clearStatus = await h.scheduler.status('s1');
+  assert.equal(clearStatus.hold, null);
+  assert.equal(clearStatus.queued[0].held, false,
+    'hold state is consultative only: it never blocks admission or claim');
+  assert.ok(await claimOne(h, 's1'), 'a held session still claims normally');
 });
 
 test('a W-at-rest queue does not leak task-kind run deliveries past a pending question', async t => {

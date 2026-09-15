@@ -466,6 +466,7 @@ function createSessionWorkHost(deps = {}) {
       queued: event.queued == null ? null : event.queued,
       items: Array.isArray(event.queuedItems) ? event.queuedItems : [],
       freezeReason: event.freezeReason || null,
+      hold: (event.schedule && event.schedule.hold) || null,
       at: event.at,
     });
     deps.setTaskState(event.sessionId, {

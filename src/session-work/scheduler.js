@@ -216,6 +216,13 @@ function queuedText(item) {
   return String(value).slice(0, MAX_PUBLIC_MESSAGE_LENGTH);
 }
 
+// Host-wide hold provider, installed by the most recent factory creation
+// that passed getSessionHold. publicSchedule is module-level (shared by every
+// call site, including the WS emit paths), so the provider lives here too;
+// each factory creation resets it, keeping Node tests that never pass the
+// dep on the null (no-hold) path.
+let sessionHoldProvider = null;
+
 function publicSchedule(schedule, queue = []) {
   if (!schedule) return null;
   // A correlated request_user_input answer is a durable control hand-off, not
@@ -223,12 +230,18 @@ function publicSchedule(schedule, queue = []) {
   // but exposing it in the ordinary FIFO makes the picker answer look "staged"
   // and lets reconnect snapshots resurrect that false queue card.
   const visibleQueue = queue.filter(item => !isUserInputAnswer(item));
+  const hold = typeof sessionHoldProvider === 'function'
+    ? sessionHoldProvider(schedule.sessionId) : null;
   return {
     sessionId: schedule.sessionId,
     state: schedule.state,
     freezeReason: schedule.freezeReason || null,
     awaitingRequestId: schedule.awaitingRequestId || null,
     classifyState: classifyStateForSchedule(schedule),
+    // Non-null while a host-wide hold gate (network unhealthy) is deferring
+    // this session's deliveries: every queued item below carries held:true
+    // and the client should render 已暂挂, not 执行中.
+    hold: hold ? { reason: hold.reason || 'network_unhealthy', sinceAt: hold.sinceAt || null } : null,
     active: schedule.active ? clone(schedule.active) : null,
     queued: visibleQueue.map((item, index) => ({
       entryId: item.id,
@@ -240,6 +253,7 @@ function publicSchedule(schedule, queue = []) {
       state: item.state,
       workKind: workKind(item),
       priority: item.id === schedule.priorityEntryId,
+      held: !!hold,
       position: index + 1,
       admittedAt: item.createdAt,
       text: queuedText(item),
@@ -257,11 +271,16 @@ function createSessionWorkScheduler({
   getClassifyState = null,
   getPendingUserInput = null,
   getTurnId = null,
+  getSessionHold = null,
   log = () => {},
 } = {}) {
   if (!store || typeof store.mutate !== 'function' || typeof store.read !== 'function') {
     throw new TypeError('[session-scheduler] orchestration store is required');
   }
+  // Host-wide hold state (today: api-error-host network hold). Consulted on
+  // every publicSchedule snapshot so the queued card can say 已暂挂 instead
+  // of 执行中 while a hold gate is claim→release cycling deliveries.
+  sessionHoldProvider = typeof getSessionHold === 'function' ? getSessionHold : null;
 
   function safeQueueSummary(schedule, classifyState = null) {
     if (!schedule?.sessionId) return null;
