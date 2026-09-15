@@ -51,7 +51,10 @@ function showFirstRunPasswordGate() {
   document.getElementById('fr-pw2').addEventListener('keydown', e => { if (e.key === 'Enter') save(); });
   document.getElementById('fr-pw1').focus();
 }
-document.addEventListener('DOMContentLoaded', enforceFirstRunPassword);
+document.addEventListener('DOMContentLoaded', () => {
+  // 首次设密码是这台机器的事。分享页的访客既不该看到，也无权处理。
+  if (!SHARE_MODE) enforceFirstRunPassword();
+});
 
 async function initVoiceOutput() {
   try {
@@ -124,6 +127,15 @@ const _shellSourceSession = _sessionName;
 const _taskId = _params.get('task') || '';          // task virtual session (M2)
 const TASK_MODE = !!_taskId;
 const HISTORY_ARCHIVE = _params.get('historyScope') === 'archive';
+/* 分享页：/share/<token> 送的是这份文档本身，接收方看到的就是同一套界面，差别只有
+   权限。判断、要权限、关哪些东西全在 chat-share-mode.js 里（那边还负责在拿到答复
+   前一律按最小权限对待）。这里只记住「这一页是分享页」这一件事。 */
+const SHARE_MODE = !!(window.MultiCCShareMode && window.MultiCCShareMode.active());
+// 只读 = 归档视图、任务壳只读入口，以及没有写权限的分享页。读取点分散在发送守卫、
+// worktree 同步和 shell 绑定上，所以留一个函数，别让三处各判各的。
+function isReadOnly() {
+  return _params.get('readOnly') === '1' || (SHARE_MODE && !window.MultiCCShareMode.canOperate());
+}
 // Task URLs resolve once into their bound session; the full chat UI remains.
 if (TASK_MODE) document.body.classList.add('task-mode');
 const _targetMessageId = window.MultiCCChatMessageFocus.readTargetMessageId(location.search);
@@ -158,8 +170,9 @@ function updateTabIdentity(text, letterSrc) {
 if (_sessionName) updateTabIdentity(_sessionName);
 
 // Session identity + header rename live in chat-session-features.js (M2 split,
-// session-only); task mode keeps the task title from its adapter instead.
-if (!TASK_MODE) installSessionIdentityFeatures();
+// session-only); task mode keeps the task title from its adapter instead, and a
+// share keeps the label the share route resolved for it.
+if (!TASK_MODE && !SHARE_MODE) installSessionIdentityFeatures();
 
 /* ── Markdown setup ── */
 if (typeof marked !== 'undefined' && marked.setOptions) {
@@ -505,8 +518,10 @@ const chatHistoryView = window.MultiCCChatHistoryView.createHistoryView({
   buildUsageLine,
   buildTimingLine,
   // Task mode renders read-only ledger history: no per-message delete/fork.
-  attachDeleteButton: (TASK_MODE || HISTORY_ARCHIVE) ? () => {} : attachDeleteButton,
-  attachForkButton: TASK_MODE ? () => {} : attachForkButton,
+  // A share is the same deal, and for a stronger reason: those two buttons write
+  // to the owner's transcript, and a recipient must never be handed one.
+  attachDeleteButton: (TASK_MODE || HISTORY_ARCHIVE || SHARE_MODE) ? () => {} : attachDeleteButton,
+  attachForkButton: (TASK_MODE || SHARE_MODE) ? () => {} : attachForkButton,
   // Quoting reads history, it does not write it — so it stays available in the
   // archive view too, where a message may be the only copy left.
   attachQuoteButton,
@@ -560,11 +575,18 @@ const chatLiveUi = window.MultiCCChatLiveUi.createLiveUi({
 });
 let chatEventController = null;
 let _eventGeneration = 0;
-const shellChatView = window.MultiCCChatShellEntry.createShellView({
-  sourceSessionId: _shellSourceSession, taskId: _taskId, disabled: _params.get('readOnly') === '1',
-  request: (url, options) => chatApi.json(url, options),
-  onSession: id => { if (_sessionName !== id) { _sessionName = id; sessionId = null; } },
-});
+// 分享页没有 shell：它的历史分页走 /api/share/<token>/history，WS 靠 token 授权。
+// 两边对外是同一个接口（prepare / event / historyUrl），所以下面用到 shellChatView
+// 的地方一句都不用改。
+const shellChatView = SHARE_MODE
+  ? window.MultiCCShareMode.createView({
+    onSession: id => { if (_sessionName !== id) { _sessionName = id; sessionId = null; } },
+  })
+  : window.MultiCCChatShellEntry.createShellView({
+    sourceSessionId: _shellSourceSession, taskId: _taskId, disabled: _params.get('readOnly') === '1',
+    request: (url, options) => chatApi.json(url, options),
+    onSession: id => { if (_sessionName !== id) { _sessionName = id; sessionId = null; } },
+  });
 const chatTransport = window.MultiCCChatTransport.createTransport({
   window,
   document,
@@ -577,6 +599,7 @@ const chatTransport = window.MultiCCChatTransport.createTransport({
     if (shellChatView.shellId) url.searchParams.set('shell', shellChatView.shellId);
     if (HISTORY_ARCHIVE) url.searchParams.set('historyScope', 'archive');
     if (sessionId) url.searchParams.set('resume', sessionId);
+    if (SHARE_MODE) window.MultiCCShareMode.decorateWsUrl(url);
     return url.toString();
   },
   onSocket(socket) { ws = socket; },
@@ -700,7 +723,7 @@ function connect() { return chatTransport.connect(); }
 // The renderer stays unchanged; task-shell conversations are wrapped and
 // routed transparently by the transport adapter after the server init frame.
 function hostTransportSend(payload) {
-  if (_params.get('readOnly') === '1') return false;
+  if (isReadOnly()) return false;
   return taskShellTransport.send(payload);
 }
 
@@ -1225,7 +1248,7 @@ function truncate(s, n) {
    the merge-hint observer and the CDP fixtures call by name. */
 const worktreeSyncRequest = window.MultiCCWorktreeSync.create({ document,
   getSession: () => _sessionName, getShell: () => shellChatView.shellId,
-  readOnly: () => _params.get('readOnly') === '1',
+  readOnly: isReadOnly,
   request: (url, options) => chatApi.json(withToken(url), options), notice: addSystemMsg,
 });
 /* ── 这个帧还在台上吗 ──
@@ -1391,7 +1414,9 @@ document.getElementById('merge-hint-diff-btn')?.addEventListener('click', showDi
 
 // Task mode has no session worktree/merge state or slot liveness of its own
 // (M3 reworks the worktree half); skip the session-scoped pollers.
-if (!TASK_MODE) {
+// A share recipient skips them for a different reason: both endpoints are
+// owner-only, so polling them would just be a steady stream of 401s.
+if (!TASK_MODE && !SHARE_MODE) {
   startMergeStatusPolling();
   startLivenessPolling();
 }
@@ -2502,8 +2527,9 @@ chatEventController = window.MultiCCChatEventController.createEventController({
   },
 });
 // Session-identity chrome (role prompt, provider/model) has no task-mode
-// equivalent: the routing recorded on the task is what ran.
-if (!TASK_MODE) {
+// equivalent: the routing recorded on the task is what ran. A share has no
+// equivalent either — those controls are hidden and the endpoints are owner-only.
+if (!TASK_MODE && !SHARE_MODE) {
   updateRoleBtn();
   loadSessionModel();
 }
@@ -2814,7 +2840,10 @@ function forceReconnect(reason) {
 /* ── Reconnect when tab becomes visible again ── */
 // Task mode owns its dir-workspace reconnect loop; the chat transport's
 // lifecycle must not open a session WS behind it.
-if (!TASK_MODE) chatTransport.startLifecycle();
+// A share page starts its lifecycle from bootShareEntry instead, once the share
+// has told it what this link may do — connecting first would mean opening a
+// socket for a link that turns out to need a password (or to be dead).
+if (!TASK_MODE && !SHARE_MODE) chatTransport.startLifecycle();
 
 /* ── Recovery service: ↻ reconnect / long-press reload / ♻️ restart CLI spawn ── */
 const _chatRecovery = window.MultiCCChatRecoveryService.create({
