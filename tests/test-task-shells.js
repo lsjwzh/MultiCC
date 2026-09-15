@@ -61,6 +61,31 @@ test('lazy context prompt distinguishes task attribution from execution ownershi
   assert.match(prompt, /tsk_current/);
 });
 
+test('graph context sources are receipted and surface in the reference trace', async t => {
+  const graphPort = taskId => (taskId === 'tsk_graph'
+    ? {
+      text: '[任务图谱上下文｜按图谱邻接注入，预算 ~1200 tokens] 当前任务 x\n[任务图谱上下文结束]\n',
+      sources: [
+        { taskId: 'tsk_parent', taskName: '父任务', kind: 'parent', excerpt: '· 父任务 父任务', estimatedTokens: 12 },
+        { taskId: 'tsk_parent', taskName: '父任务', kind: 'memory', excerpt: '  父任务记忆（节选）：接口已对齐', estimatedTokens: 30 },
+      ],
+    }
+    : null);
+  const f = fixture(t, { taskGraphContext: graphPort });
+  const delivered = await f.runtime.sendExplicit(f.a.id, input('graph-first'), { taskId: 'tsk_graph', taskStart: true });
+  // 首轮注入：图谱文本进 taskContextSeed，来源落 receipt。
+  assert.ok(f.sends.at(-1).opts.taskContextSeed.includes('任务图谱上下文'));
+  const summary = f.runtime.contextTrace(delivered.sessionId, delivered.receiptId);
+  const modes = summary.sources.map(source => source.mode);
+  assert.deepEqual(modes, ['graph:parent', 'graph:memory']);
+  assert.deepEqual(summary.sources.map(source => source.taskId), ['tsk_parent', 'tsk_parent']);
+  assert.ok(summary.sources.every(source => !('excerpt' in source)), '摘要态不携带节选');
+  // detail 态（点开「查看引用内容」）带回实际注入的节选。
+  const detail = f.runtime.contextTrace(delivered.sessionId, delivered.receiptId, { includeMessages: true });
+  assert.match(detail.sources[1].excerpt, /接口已对齐/);
+  assert.equal(detail.sources[1].taskName, '父任务');
+});
+
 test('C03 C04: explicitly selected contexts are frozen; unfinished dependencies cannot run', async t => {
   const f = fixture(t);
   const a = await f.runtime.send(f.a.id, input('one'));
