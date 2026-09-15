@@ -37,6 +37,11 @@
   const consoleFilter = { query: '', status: 'open', dir: 'all' };
   // 面板是给人看的，不是导出用的：超过这个数就只显示最近的一批，并把总数说清楚。
   const TASK_LIST_LIMIT = 60;
+  // 「谁在等我」是面板的第一格，也是打开控制台第一眼要看的东西，所以它只留最急的
+  // 几条：一屏扫完，剩下的交给它自己的整页（这一格的「查看全部」）。不封顶的话，
+  // 跑起来的任务一多，这一格就把下面的「全部任务」和工具格整片推出视野 ——
+  // 控制台变成一份清单的滚动条。
+  const ATTENTION_LIMIT = 5;
 
   // 手机上页头的工具都收进「⋯」浮层，浮层里每一行都摆成「图标 + 名字」两列
   // （air.css 的 760px 块）。图标得是自己一个节点，名字才站得到第二列上 ——
@@ -202,10 +207,21 @@
     const attentionHead = make('div', null, 'admin-panel-head');
     attentionHead.append(make('div'));
     attentionHead.firstChild.append(make('span', 'ACROSS ALL WORKSPACES', 'eyebrow'), make('h3', '谁在等我'));
-    attentionHead.append(make('span', '按紧急度排序，点击直达', 'admin-panel-note'));
+    // 清单本来就按紧急度排过，所以「只显示前几条」砍掉的是最不急着处理的那些，
+    // 留下的仍是眼下最该看的人。总数照报，别让封顶看起来像「就这么几条」。
+    const urgent = urgentTasks(data);
+    const overflowed = urgent.length > ATTENTION_LIMIT;
+    const attentionMeta = make('div', null, 'admin-panel-meta');
+    attentionMeta.append(make('span', overflowed
+      ? `${urgent.length} 条 · 显示最急的 ${ATTENTION_LIMIT} 条`
+      : '按紧急度排序，点击直达', 'admin-panel-note'));
+    // 没超过就没有第二页可去，出口不出现 —— 按钮跟着「有地方可去」出现，而不是
+    // 常驻一个点了没反应的「全部」。
+    if (overflowed) attentionMeta.append(action(`查看全部 ${urgent.length} 条 ›`, () => setMode('attention')));
+    attentionHead.append(attentionMeta);
     const attentionList = make('div', null, 'admin-recent-list');
     // 从面板里点走一条任务时，面板自己让开（onOpen），否则它盖住的正是刚落上去的那一页。
-    for (const task of urgentTasks(data)) attentionList.append(taskRow(task, context, { onOpen: () => context.closeConsole?.() }));
+    for (const task of urgent.slice(0, ATTENTION_LIMIT)) attentionList.append(taskRow(task, context, { onOpen: () => context.closeConsole?.() }));
     if (!attentionList.children.length) attentionList.append(make('p', '没有正在等待或正在执行的任务。', 'admin-empty'));
     attention.append(attentionHead, attentionList);
 
@@ -318,6 +334,32 @@
     tools.append(toolHead, toolGrid);
     split.append(allPanel, tools);
     content.replaceChildren(stats, attention, split, workspacePanel);
+  }
+
+  // 「谁在等我」的整页：控制台那一格只放最急的几条，完整清单在这里。它和控制台
+  // 那一格用的是同一个 urgentTasks(data) —— 排序规则只有一份，所以两边不会把
+  // 「谁更急」排成两个样子。
+  function renderAttention(context) {
+    setActions([
+      action('返回控制台', () => context.setMode('overview'), '', panelIcon('←')),
+      // 数据在外壳那份 /api/air 快照里，所以这一页没有自己的接口可打，刷新只能
+      // 请外壳去取。取完外壳会自己重画当前模式，但走的是「模式没变就跳过」那条
+      // 早退路径 —— 这里再强制重画一次，否则按钮按下去什么都不动。
+      action('刷新', async () => { await context.refresh?.(); render('attention', context, true); }, '', keepsGlyph('↻')),
+    ]);
+    const urgent = urgentTasks(context.data);
+    const panel = make('section', null, 'admin-panel console-attention-page');
+    const head = make('div', null, 'admin-panel-head');
+    head.append(make('div'));
+    head.firstChild.append(make('span', 'ACROSS ALL WORKSPACES', 'eyebrow'), make('h3', '谁在等我'));
+    head.append(make('span', urgent.length ? `${urgent.length} 条 · 按紧急度排序，点击直达` : '当前没有要处理的事', 'admin-panel-note'));
+    const list = make('div', null, 'admin-recent-list');
+    // 这一页本身就是完整清单，点走一条不用收掉任何浮层 —— 直接把 navigate 交给
+    // taskRow 的默认行为，不套控制台那层 onOpen。
+    for (const task of urgent) list.append(taskRow(task, context));
+    if (!urgent.length) list.append(make('p', '没有正在等待或正在执行的任务。', 'admin-empty'));
+    panel.append(head, list);
+    el('admin-content').replaceChildren(panel);
   }
 
   function isLoopback(hostname) {
@@ -482,6 +524,7 @@
     }
     if (!force && activeMode === mode) return;
     activeMode = mode;
+    if (mode === 'attention') return renderAttention(context);
     if (mode === 'docs') return renderDocs(context);
     if (mode === 'settings') return renderSettings(context);
     if (mode === 'provider') return renderProvider(context);
@@ -514,7 +557,7 @@
   }
 
   root.MultiCCAirAdmin = Object.freeze({
-    modes: new Set(['overview', 'docs', 'memory', 'settings', ...Object.keys(legacyPanels)]),
+    modes: new Set(['overview', 'attention', 'docs', 'memory', 'settings', ...Object.keys(legacyPanels)]),
     render,
     // The shell's console badge shows the same set the panel's first section does.
     urgentTasks,
