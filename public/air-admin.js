@@ -333,7 +333,10 @@
     }
     tools.append(toolHead, toolGrid);
     split.append(allPanel, tools);
-    content.replaceChildren(stats, attention, split, workspacePanel);
+    // 控制台要回答的是两件「一眼扫完」的事：谁在等我，以及我有哪些目录。所以「工作目录」
+    // 紧跟在「谁在等我」后面 —— 它是这一页的第二眼，不该压在「全部任务」和工具格底下
+    // 等用户滚到底才看见。
+    content.replaceChildren(stats, attention, workspacePanel, split);
   }
 
   // 「谁在等我」的整页：控制台那一格只放最急的几条，完整清单在这里。它和控制台
