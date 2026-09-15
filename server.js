@@ -2005,7 +2005,11 @@ const taskBoardRuntime = createTaskBoardRuntime({
   getSessionRunState: sid => sessionWorkHost?.getRunState(sid) || 'idle', isTaskShellSession: id => taskShellHost.owns(id), taskShellTaskAccess: task => taskShellHost.taskAccess(task), taskShellTaskEntry: id => taskShellHost.taskEntry(id),
   resolveGoalLimits, buildGoalLimitNote,
   // M3 per-task worktree service ports (taskWorktree on the runtime).
-  directories, gitWorktreeAdd, gitWorktreeRemove, gitMergeBack: (dir, session, opts) => gitMergeBack(dir, session, { ...opts, evidence: workspaceAdmission?.mergeHooks(session.id) }), existsSync: fs.existsSync,
+  directories, gitWorktreeAdd, gitWorktreeRemove, gitRelocateWorktree, gitMergeBack: (dir, session, opts) => gitMergeBack(dir, session, { ...opts, evidence: workspaceAdmission?.mergeHooks(session.id) }), existsSync: fs.existsSync,
+  // Air 任务「移动」：会话工作区搬迁走 session-lifecycle 的同一实现（含 carry）；
+  // taskShellHost 在本 runtime 之后组合，惰性解析绕过 TDZ。
+  relocateSessionWorkspace: (id, dirId, opts) => sessionLifecycleRuntime.relocateSessionWorkspace(id, dirId, opts),
+  relocateShellTask: (taskId, dirId, opts) => taskShellHost.relocateTask(taskId, dirId, opts),
   logger: console,
 });
 taskBoardRuntime.mountRoutes(app); createTaskRunRoutes({ store: taskRunStore, logger }).mountRoutes(app);
