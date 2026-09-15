@@ -5,6 +5,7 @@ const test = require('node:test');
 
 const {
   buildTaskGraphContext,
+  buildTaskGraphContextDetail,
   createTaskGraphContextService,
   lastAssistantText,
 } = require('../src/task-shell/task-graph-context');
@@ -122,10 +123,45 @@ test('tiny budget falls back to title-only lines with truncation note', () => {
   // 兜底只剩标题行（第一行）。
   assert.match(text, /· 父任务 父任务/);
   assert.doesNotMatch(text, /长记忆/);
+  // 兜底时来源仍全列，但逐条标记截断（图谱关系是真的，节选没进上下文）。
+  const detail = buildTaskGraphContextDetail(ports, { taskId: 'tsk_self', tokenBudget: 10 });
+  assert.ok(detail.sources.length >= 2);
+  assert.ok(detail.sources.every(source => source.truncated === true));
 });
 
 test('no adjacency at all returns empty string', () => {
   assert.equal(buildTaskGraphContext(basePorts(), { taskId: 'tsk_self' }), '');
+  const bare = buildTaskGraphContextDetail(basePorts(), { taskId: 'tsk_self' });
+  assert.equal(bare.text, '');
+  assert.deepEqual(bare.sources, []);
+});
+
+// ── detail sources：引用来源面板的凭据 ─────────────────────────────────────
+
+test('detail records which tasks and which memory were cited', () => {
+  const ports = basePorts({
+    tasks: {
+      tsk_self: { id: 'tsk_self', dirId: 'd1', title: '当前任务', parentTaskId: 'tsk_parent' },
+      tsk_prev: { id: 'tsk_prev', dirId: 'd1', title: '前序任务', handoffSnapshotIds: ['snap1'] },
+    },
+    memory: { tsk_parent: '父任务里沉淀的结论：接口已对齐，分支 multicc/x。' },
+    board: { tsk_a: { id: 'tsk_a', title: '同组A', description: '做了登录改造' } },
+    groups: { tsk_self: { taskIds: ['tsk_self', 'tsk_a'] } },
+    links: { tsk_self: ['tsk_self', 'tsk_prev'] },
+    snapshots: { snap1: { messages: [{ role: 'assistant', content: '前序结论正文' }] } },
+  });
+  const { text, sources } = buildTaskGraphContextDetail(ports, { taskId: 'tsk_self' });
+  assert.match(text, /父任务记忆（节选）/);
+  const byKind = Object.fromEntries(sources.map(source => [source.kind, source]));
+  assert.equal(byKind.parent.taskId, 'tsk_parent');
+  assert.equal(byKind.parent.taskName, '父任务');
+  assert.equal(byKind.memory.taskId, 'tsk_parent', '记忆节选归属到父任务');
+  assert.match(byKind.memory.excerpt, /接口已对齐/);
+  assert.ok(byKind.memory.estimatedTokens > 0);
+  assert.equal(byKind.grandparent.taskId, 'tsk_grand');
+  assert.equal(byKind.group.taskId, 'tsk_a');
+  assert.equal(byKind.shell.taskId, 'tsk_prev');
+  assert.match(byKind.shell.excerpt, /同壳前序 前序任务：前序结论正文/);
 });
 
 // ── service 层：board + shell store + 记忆读取的组装 ────────────────────────
@@ -134,6 +170,8 @@ test('service wires board, shell tables and memory into ports', () => {
   const deps = {
     getBoard: () => ({
       tasks: {
+        // relatedTaskGroup 经 resolveTask 找组，当前任务必须在看板上。
+        tsk_self: { id: 'tsk_self', title: '当前任务', moduleId: 'm1', dirId: 'd1' },
         tsk_member: { id: 'tsk_member', title: '看板同组成员', description: '看板侧摘要', moduleId: 'm1', dirId: 'd1' },
       },
       modules: { m1: { id: 'm1', dirId: 'd1' } },
@@ -158,9 +196,14 @@ test('service wires board, shell tables and memory into ports', () => {
   // service 用的是 ../task-board/core 的 relatedTaskGroup 做组归属，这里拿真实
   // 实现跑一遍：g1 包含 tsk_self，所以同组摘要应来自 board 卡。
   const contextOf = createTaskGraphContextService(deps);
-  const text = contextOf('tsk_self');
-  assert.match(text, /同壳前序 同壳前序：前序任务交付了图谱 API/);
-  assert.match(text, /当前任务/);
+  const detail = contextOf('tsk_self');
+  assert.match(detail.text, /同壳前序 同壳前序：前序任务交付了图谱 API/);
+  assert.match(detail.text, /当前任务/);
+  // 引用来源：同组成员与前序任务都要出现在 sources 里（同组还有不在看板上的 tsk_root）。
+  const kinds = detail.sources.map(source => source.kind);
+  assert.ok(kinds.includes('group'));
+  assert.equal(kinds.filter(kind => kind === 'shell').length, 1);
+  assert.ok(detail.sources.filter(source => source.kind === 'group').some(source => source.taskId === 'tsk_member'));
 });
 
 test('service tolerates missing deps and throwing getters', () => {
@@ -168,7 +211,7 @@ test('service tolerates missing deps and throwing getters', () => {
     getBoard: () => { throw new Error('boom'); },
     taskGraphData: () => { throw new Error('boom'); },
   });
-  assert.equal(contextOf('tsk_any'), '');
+  assert.equal(contextOf('tsk_any').text, '');
 });
 
 // ── runtime 侧降级：taskGraphContext 缺失/抛错不会挡投递 ────────────────────
@@ -177,6 +220,6 @@ test('runtime-style degradation: absent or throwing port yields empty context', 
   // 直接构造 runtime 太重；这里验证 service 工厂产物在抛错 deps 下仍返回 ''，
   // 以及 buildTaskGraphContext 对非字符串 taskId 的防御。
   const contextOf = createTaskGraphContextService({});
-  assert.equal(contextOf('tsk_x'), '');
-  assert.equal(contextOf(null), '');
-});
+  assert.equal(contextOf('tsk_x').text, '');
+  assert.equal(contextOf(null).text, '');
+});;
