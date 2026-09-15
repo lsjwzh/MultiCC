@@ -30,9 +30,10 @@ test('X1 executes in B, classifies to C despite partial failure, then continues 
   assert.notEqual(continued.sessionId, 'a');
   f.records.get(continued.sessionId).kind = 'chat';
   assert.equal(restarted.open(continued.sessionId).id, f.a.id, 'generated execution URL reopens the original shell');
-  assert.match(f.sends.at(-1).opts.taskContextSeed, /uploaded first image/);
-  assert.match(f.sends.at(-1).opts.taskContextSeed, /"partial":true/);
-  assert.doesNotMatch(f.sends.at(-1).opts.taskContextSeed, /old price/);
+  const plan = restarted.prepareContext(continued.sessionId, { receiptId: continued.receiptId, turnId: 'native-c', isFirstTurn: true });
+  assert.match(plan.text, /uploaded first image/);
+  assert.match(plan.text, /"partial":true/);
+  assert.doesNotMatch(plan.text, /old price/);
   assert.equal(history.at(-1).partial, true, 'canonical evidence is retained');
   const refilled = restarted.refillContext(continued.sessionId, { task_id: 'tsk_listing' });
   assert.deepEqual(refilled.page.messages.map(m => m.sourceSessionId), ['a', 'a']);

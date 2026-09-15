@@ -1294,5 +1294,20 @@
   "taskSeparationTitle": "Separate this work into a task?",
   "taskSeparationBody": "This work appears unrelated to the earlier task. Separation creates an independent task with this exchange and preserves the original records.",
   "taskSeparationKeep": "Keep in current task",
-  "taskSeparationAccept": "Separate task"
+  "taskSeparationAccept": "Separate task",
+  "usageContextPolicy": "Context rules and task information",
+  "usageContextMemoryBuiltin": "Memory · built-in",
+  "usageContextMemoryMachine": "Memory · machine",
+  "usageContextMemoryCli": "Memory · CLI",
+  "usageContextMemoryShared": "Memory · project",
+  "usageContextMemoryTask": "Memory · task",
+  "usageContextMemoryOwn": "Memory · private",
+  "usageContextMemorySkill": "Memory · skill",
+  "usageContextMemoryWithdrawn": "Memory · withdrawn",
+  "usageContextTruncated": "Truncated",
+  "usageContextPath": "Path",
+  "usageContextReason": "Reason",
+  "usageContextBudget": "Managed context: ~{used} / {limit} tokens",
+  "usageContextSelection": "{kept} retained · {omitted} omitted",
+  "usageContextRetained": "Previously injected; not resent this turn"
 }

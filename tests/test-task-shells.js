@@ -74,16 +74,19 @@ test('graph context sources are receipted and surface in the reference trace', a
   const f = fixture(t, { taskGraphContext: graphPort });
   const delivered = await f.runtime.sendExplicit(f.a.id, input('graph-first'), { taskId: 'tsk_graph', taskStart: true });
   // 首轮注入：图谱文本进 taskContextSeed，来源落 receipt。
-  assert.ok(f.sends.at(-1).opts.taskContextSeed.includes('任务图谱上下文'));
+  assert.equal(f.sends.at(-1).opts.taskContextSeed, ''); // admission has not sent context
+  const plan = f.runtime.prepareContext(delivered.sessionId, { receiptId: delivered.receiptId, turnId: 'native1', isFirstTurn: true });
+  assert.match(plan.text, /接口已对齐/);
+  f.runtime.contextSent(delivered.sessionId, delivered.receiptId, 'native1');
   const summary = f.runtime.contextTrace(delivered.sessionId, delivered.receiptId);
-  const modes = summary.sources.map(source => source.mode);
-  assert.deepEqual(modes, ['graph:parent', 'graph:memory']);
-  assert.deepEqual(summary.sources.map(source => source.taskId), ['tsk_parent', 'tsk_parent']);
+  const modes = summary.sources.filter(s => s.mode.startsWith('graph:')).map(source => source.mode);
+  assert.deepEqual(modes.sort(), ['graph:memory', 'graph:parent']);
+  assert.deepEqual(summary.sources.filter(s => s.mode.startsWith('graph:')).map(source => source.taskId), ['tsk_parent', 'tsk_parent']);
   assert.ok(summary.sources.every(source => !('excerpt' in source)), '摘要态不携带节选');
   // detail 态（点开「查看引用内容」）带回实际注入的节选。
   const detail = f.runtime.contextTrace(delivered.sessionId, delivered.receiptId, { includeMessages: true });
-  assert.match(detail.sources[1].excerpt, /接口已对齐/);
-  assert.equal(detail.sources[1].taskName, '父任务');
+  assert.match(detail.sources.find(s => s.mode === 'graph:memory').excerpt, /接口已对齐/);
+  assert.equal(detail.sources.find(s => s.mode === 'graph:memory').taskName, '父任务');
 });
 
 test('C03 C04: explicitly selected contexts are frozen; unfinished dependencies cannot run', async t => {
@@ -99,11 +102,13 @@ test('C03 C04: explicitly selected contexts are frozen; unfinished dependencies 
   const c = await f.runtime.send(f.a.id, input('three', null, { newTask: true, contextTaskIds: [a.taskId, b.taskId] }));
   const task = f.store.get('task', c.taskId);
   assert.equal(task.snapshotIds.length, 2);
-  assert.ok(f.sends.at(-1).opts.taskContextSeed.includes(a.taskId));
-  assert.ok(f.sends.at(-1).opts.taskContextSeed.includes(b.taskId));
+  const plan = f.runtime.prepareContext(c.sessionId, { receiptId: c.receiptId, turnId: 'import1', isFirstTurn: true });
+  assert.ok(plan.text.includes(a.taskId));
+  assert.ok(plan.text.includes(b.taskId));
+  f.runtime.contextSent(c.sessionId, c.receiptId, 'import1');
   const trace = f.runtime.contextTrace(c.sessionId, c.receiptId);
-  assert.deepEqual(trace.sources.map(source => source.mode), ['imported', 'imported']);
-  assert.deepEqual(new Set(trace.sources.map(source => source.taskId)), new Set([a.taskId, b.taskId]));
+  assert.deepEqual(trace.sources.filter(s => s.mode === 'imported').map(source => source.mode), ['imported', 'imported']);
+  assert.deepEqual(new Set(trace.sources.filter(s => s.mode === 'imported').map(source => source.taskId)), new Set([a.taskId, b.taskId]));
   assert.equal(task.parentTaskId, null);
 });
 

@@ -295,6 +295,9 @@ function createTaskContextHost(options = {}) {
     taskShellChatHistory: (id, options) => getTaskShells().chatHistory(id, options),
     watchTaskShellChat: (id, sessionId, emit) => getTaskShells().watchChatHistory(id, sessionId, emit),
     taskShellContextSeed: (id, fallback, first) => getTaskShells()?.contextSeed(id, fallback, first) ?? fallback,
+    prepareTaskContext: (id, options) => getTaskShells()?.prepareContext(id, options),
+    taskContextSent: (...args) => getTaskShells()?.contextSent(...args),
+    taskContextComplete: (...args) => getTaskShells()?.contextComplete(...args),
     taskShellRecentTasks: (id, receiptId) => getTaskShells()?.recentTasks(id, receiptId) || [],
     taskShellContextTrace: (id, receiptId, options) => receiptId
       ? getTaskShells()?.contextTrace(id, receiptId, options) || null
