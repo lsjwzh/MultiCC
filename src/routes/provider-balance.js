@@ -29,8 +29,11 @@ function quotaBarFor(appType, strategy, dto, fetchedAt) {
   const weekly = Number(dto.weeklyUtilization) * 100;
   if (strategy === 'codex-oauth-usage' || appType === 'codex') {
     return renderQuotaBar('codex', {
-      status: 'ok', fetchedAt,
-      weekly: { usedPercent: used, resetsAt: dto.resetsAt ? dto.resetsAt / 1000 : null },
+      status: 'ok', fetchedAt, planType: dto.tier || null,
+      // Poller DTO resetsAt is epoch seconds; codexBar owns the seconds→ms
+      // conversion. Dividing here made every borrowed reset look like 1970.
+      weekly: { usedPercent: used, remainingPercent: Math.max(0, 100 - used),
+        resetsAt: dto.resetsAt || null },
     });
   }
   return renderQuotaBar('zhipu', {
