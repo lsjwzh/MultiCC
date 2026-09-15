@@ -181,6 +181,15 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
     assert.ok(await page.evaluate(`document.getElementById('console-content').innerText.includes('谁在等我')`), '面板里有跨目录的待办清单');
     assert.ok(await page.evaluate(`document.querySelector('.console-attention .admin-recent-row').innerText.includes('结算页')`), '等待回答的排在最前');
     assert.ok(await page.evaluate(`document.querySelector('.console-attention .admin-recent-row .mc-status-label').textContent==='等待回答'`), '待办行自报状态');
+    // 控制台要一眼回答两件事：谁在等我、我有哪些目录。所以「工作目录」紧跟在
+    // 「谁在等我」后面 —— 它是这一页的第二眼，不该压在「全部任务」和工具格底下等
+    // 用户滚到底才看见。分区顺序断在这里，免得以后又被顺手挪到末尾。
+    assert.deepEqual(await page.evaluate(`[...document.getElementById('console-content').children].map(node =>
+      node.classList.contains('admin-stats') ? 'stats'
+        : node.classList.contains('console-attention') ? 'attention'
+          : node.classList.contains('admin-directory-panel') ? 'directories'
+            : node.classList.contains('admin-overview-grid') ? 'tasks+tools' : node.className)`),
+      ['stats', 'attention', 'directories', 'tasks+tools'], '控制台分区顺序：统计 → 谁在等我 → 工作目录 → 全部任务与工具');
     await page.screenshot('01-console-open');
 
     // Esc 关掉，回到原处
