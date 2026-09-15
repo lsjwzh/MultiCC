@@ -488,9 +488,14 @@
   });
   $('quick-task-dialog-close').onclick = closeNewTaskComposer;
 
-  // Empty until a pill is used: an unconfigured new task then follows the same
-  // default routing it would have had anyway.
+  // 新任务不再每次从「默认线路 · 默认模型」起步：/api/air 快照带着 lastRuntime
+  // —— 最近一次实际用过的那套 CLI · 线路 · 模型。refresh() 会把它灌进胶囊；
+  // 用户自己在胶囊里改过（quickRuntimeDirty）就不再覆盖，免得一次后台刷新把
+  // 面前这份手挑的配置悄悄冲掉。任务创建成功后脏标记清零：那一刻起「最近
+  // 使用」就是刚刚这套，下一次同步等于原地不动。角色（quickRoles）不参与
+  // 记忆 —— 一个任务的角色上下文不该漏进下一个任务。
   let quickRuntime = {};
+  let quickRuntimeDirty = false;
   let quickRoles = [];
 
   // One source of truth for the CLI the panel is about to use: the pill names it
@@ -515,7 +520,7 @@
     if (!directoryId) return;
     window.MultiCCAirSettings.configuration(
       { task: { title: '新任务' }, configuration: { ...quickRuntime, cli: quickCli() } }, data?.clis,
-      runtime => { quickRuntime = runtime; renderQuickPills(); },
+      runtime => { quickRuntime = runtime; quickRuntimeDirty = true; renderQuickPills(); },
     );
   }
 
@@ -626,6 +631,9 @@
       // The route stays (it is how this person runs things); the roles do not —
       // one task's role context must never leak into the next one unseen.
       quickRoles = [];
+      // 刚刚创建的会话此刻就是「最近使用」，脏标记清零让下一次 refresh 的
+      // lastRuntime 同步接管 —— 它带回来的正是刚刚钉进任务的这套。
+      quickRuntimeDirty = false;
       renderQuickPills();
       renderQuickGoalLimits();
       $('quick-task-files').replaceChildren();
@@ -1575,6 +1583,13 @@
     loading = true;
     try {
       data = await api('/api/air');
+      // 「随时更新成最近使用」的落点：每次快照都把 lastRuntime 灌进新任务胶囊，
+      // 除非用户面前正摆着一份手挑的配置（quickRuntimeDirty）。刷新可能来自任何
+      // 地方的任何动作，不能因为它把人刚选好的线路冲回几小时前那套。
+      if (data.lastRuntime && !quickRuntimeDirty) {
+        quickRuntime = { ...data.lastRuntime };
+        renderQuickPills();
+      }
       notice(data.migration?.errors?.length ? `有 ${data.migration.errors.length} 份历史任务等待核验；原记录与工作区均已保留。` : '');
       render();
       await refreshEntry();

@@ -18,6 +18,26 @@ function mountAirRoutes(app, deps) {
   }
   app.get('/api/air', route(async () => {
     const migration = await deps.shell.migrateTaskSessions?.();
+    // 新任务输入框要「随时更新成最近用过的那套配置」，而不是每次都退回
+    // 「默认线路 · 默认模型」。这里从会话记录里取 lastWorkAt 最新的 chat 会话
+    // 的运行时，随快照一起下发。只读、不另落盘：「最近使用」本身就是会话
+    // 记录已经知道的事，再存一份只会多出一个会悄悄过期的副本。terminal 镜像
+    // 会话不在其列 —— 它们的 cli 说着的是进程归属，不是用户挑过的路由。
+    let lastUsed = null;
+    for (const record of deps.records.values()) {
+      if (record.kind !== 'chat' || !record.cli) continue;
+      const at = record.lastWorkAt || record.createdAt || '';
+      if (!lastUsed || String(at) > String(lastUsed.at)) lastUsed = { at, record };
+    }
+    const lastRuntime = lastUsed && {
+      cli: lastUsed.record.cli,
+      provider: lastUsed.record.provider || null,
+      providerName: deps.providerName?.(lastUsed.record) || lastUsed.record.provider || null,
+      providerSelection: lastUsed.record.providerSelection || null,
+      model: lastUsed.record.model || null,
+      effort: lastUsed.record.effort || null,
+      subagent: deps.serializeSubagent?.(lastUsed.record.subagent) || null,
+    };
     const board = deps.getBoard();
     const tasks = Object.values(board.tasks || {}).filter(t => !t.mergedIntoTaskId && !board.deletedTaskIds?.includes(t.id)).map(t => {
       const sessionId = t.chatSessionId || t.sessionId || null;
@@ -33,7 +53,7 @@ function mountAirRoutes(app, deps) {
         resource: resource(sessionId) };
     });
     return { ok: true, directories: [...deps.directories.values()].map(d => ({ id: d.id, name: d.name, path: d.path })),
-      tasks, budgets: deps.admission.snapshot().budgets, clis: deps.clis, migration,
+      tasks, budgets: deps.admission.snapshot().budgets, clis: deps.clis, migration, lastRuntime,
       sessions: [...deps.records.values()].filter(s => s.kind === 'terminal' && !['aux', 'gateway'].includes(s.type))
         .map(s => ({ id: s.id, dirId: s.dirId, label: s.label || s.id, kind: s.kind, cli: s.cli })) };
   }));
