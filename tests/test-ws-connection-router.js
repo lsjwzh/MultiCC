@@ -192,6 +192,76 @@ test('early admission rejections also emit close diagnostics', async t => {
   assert.equal(h.logs[0].heartbeatTimedOut, false);
 });
 
+// A share link opens the same page over a socket it is not logged in for. The
+// token is the whole authority: no ticket exists for it, and the scope is one
+// session. The renderer sends whatever it would send as the owner, so the next
+// gate is `_sharePerm`, which the turn engine reads before acting on a message.
+test('a share connection authorizes itself, is scoped to one session, and cannot claim more', async t => {
+  const chatConnections = [];
+  const shareCalls = [];
+  const h = harness(t, { overrides: {
+    share: {
+      access: (token, { cookies }) => {
+        shareCalls.push(token);
+        if (token === 'open-token') return { access: 'view', sessionId: 'chat' };
+        if (token === 'live-token' && cookies.multicc_share_live_token === 'proof') {
+          return { access: 'view', sessionId: 'chat' };
+        }
+        if (token === 'operate-token') return { access: 'operate', sessionId: 'chat' };
+        return null;
+      },
+    },
+    // 管理员票据对分享连接必须完全不被需要：它压根没有票据。
+    authSecurity: { consumeWsTicket: () => { throw new Error('a share must never need a ticket'); } },
+    parseCookies: (header) => Object.fromEntries(String(header || '').split(';').map((pair) => {
+      const [key, ...rest] = pair.trim().split('=');
+      return key ? [key.trim(), rest.join('=').trim()] : null;
+    }).filter(Boolean)),
+    handleChatWs: (ws) => chatConnections.push(ws),
+  } });
+
+  // 只读分享：连上了，权限落在 socket 上给下游判。
+  const view = await h.connect('/ws/chat?session=chat&share=open-token', new FakeSocket());
+  assert.equal(view._sharePerm, 'view');
+  assert.equal(chatConnections.at(-1), view);
+
+  // 带密码的分享凭 cookie 授权（cookie 名和值都由分享存储决定）。
+  const cookieClient = new FakeSocket();
+  h.wss.clients.add(cookieClient);
+  await h.wss.listeners('connection')[0](cookieClient, {
+    url: '/ws/chat?session=chat&share=live-token',
+    headers: { cookie: 'multicc_share_live_token=proof' },
+    socket: { remoteAddress: '127.0.0.1' },
+  });
+  assert.equal(cookieClient._sharePerm, 'view');
+
+  // 密码不对就不是查看方，也不该回落到「本机所以放行」。
+  const wrongPassword = await h.connect('/ws/chat?session=chat&share=live-token', new FakeSocket());
+  assert.equal(wrongPassword._sharePerm, undefined);
+  assert.equal(wrongPassword.readyState, WebSocket.CLOSING);
+
+  // 可协作的分享拿到的是 operate，页面据此才放开输入区。
+  const operate = await h.connect('/ws/chat?session=chat&share=operate-token', new FakeSocket());
+  assert.equal(operate._sharePerm, 'operate');
+
+  // token 只能用在它自己那一个会话上：换个 session 就是另一段对话。
+  const otherSession = await h.connect('/ws/chat?session=elsewhere&share=open-token', new FakeSocket());
+  assert.equal(otherSession._sharePerm, undefined, 'a rejected socket never gets a permission');
+  assert.equal(otherSession.readyState, WebSocket.CLOSING, 'a token is scoped, not a skeleton key');
+
+  // 认不出的 token 一样拒绝，而不是回落到「本机所以放行」。
+  const unknown = await h.connect('/ws/chat?session=chat&share=forged', new FakeSocket());
+  assert.equal(unknown.readyState, WebSocket.CLOSING);
+  assert.equal(chatConnections.length, 3, 'only the three authorized connections reach the chat handler');
+
+  // 非 /ws/chat 通道根本不看 share：一个分享 token 换不来终端或语音。
+  // （这条本机请求是按「本机」那条规矩放行的，与分享无关；要断言的是分享根本没被问。）
+  const shareCallsBefore = shareCalls.length;
+  const workspace = await h.connect('/ws/workspace?dirId=directory&share=operate-token', new FakeSocket());
+  assert.equal(workspace._sharePerm, undefined);
+  assert.equal(shareCalls.length, shareCallsBefore, 'share is consulted for /ws/chat and nothing else');
+});
+
 test('real ws close events distinguish completed handshakes from abrupt peer loss', { timeout: 10_000 }, async t => {
   const h = harness(t, { realServer: true });
   await once(h.wss, 'listening');
