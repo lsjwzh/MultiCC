@@ -908,11 +908,12 @@ function addUserMsg(text, clientMsgId) {
   div.className = 'msg user';
   div.textContent = text;
   if (clientMsgId) div.dataset.clientMsgId = clientMsgId;
-  // 插入位在流式助手气泡之前：queued:false 广播丢失、admission 进度回填、队列
-  // started 后的补画，都可能晚于 message_start —— 那时流式气泡已经在列表尾，
-  // 盲 append 会把问题画到它自己的回答下面（同 chat-history-view 的
-  // streamingAssistantTail / App 侧 userBubbleInsertIndex）。
-  const streamingTail = Array.from(messagesEl.querySelectorAll('.msg.assistant:not([data-msg-id])')).pop() || null;
+  // 插入位在待答节点之前：queued:false 广播丢失、admission 进度回填、队列
+  // started 后的补画，都可能晚于 message_start —— 那时列表尾上要么是本轮流式
+  // 气泡，要么是它之前那个「正在处理…」占位（.thinking-bubble）。占位不是
+  // .msg.assistant，只按助手气泡找会漏掉它，用户气泡就落到自己问题的回答下面。
+  // 锚点由 view 统一给出（pendingAnswerAnchor），这里不再自己抄一份查询。
+  const streamingTail = chatHistoryView.pendingAnswerAnchor?.({ currentElement: currentMsgEl }) || null;
   if (streamingTail) messagesEl.insertBefore(div, streamingTail);
   else messagesEl.appendChild(div);
   // Per-message auto-commit checkbox lives under the user's own message.
