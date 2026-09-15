@@ -431,6 +431,11 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 #delivery-steps span.done::after { background: #72bea1; }
 #delivery-steps span.current { color: #176bb9; font-weight: 650; }
 #delivery-steps span.current::before { color: #fff; border-color: #4c96df; background: #4c96df; box-shadow: 0 0 0 4px #ddebfa; }
+#delivery-steps span.blocked { color: #a65443; font-weight: 650; }
+#delivery-steps span.blocked::before { content: "!"; color: #fff; border-color: #c86b59; background: #c86b59; }
+#delivery-steps span.blocked::after { background: linear-gradient(90deg, #db9a8e 0 70%, transparent 70% 100%); background-size: 7px 2px; }
+#delivery-steps span.skipped { color: #8a96a4; }
+#delivery-steps span.skipped::before { content: "–"; color: #fff; border-color: #9ba8b4; background: #9ba8b4; }
 .delivery-footer { display: grid; gap: 8px; }
 #delivery-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 #delivery-actions:empty { display: none; }
