@@ -10,10 +10,46 @@ function shellMessageOwner(element) {
     : { sessionId: id.slice(0, split), messageId: id.slice(split + 1) };
 }
 
+// 分享页启动：同一个渲染器，只按分享的权限收敛。
+//
+// 页面的权限来自 /api/share/<token>/entry，所以启动比普通页多一步等待 —— 等不到
+// 答复就不连接、不发消息（chat-share-mode.js 只认答复，不猜）。三种拿不到权限的
+// 情况（要密码 / 链接失效 / 这次没问到）都是覆盖层，页面本身不做第二套错误界面。
+async function bootShareEntry() {
+  const share = window.MultiCCShareMode;
+  const resolved = await share.prepare();
+  share.applyChrome();
+  share.mountOverlay();
+  if (resolved.state !== 'ok') {
+    statusEl.textContent = resolved.state === 'locked' ? '需要访问密码'
+      : resolved.state === 'gone' ? '链接无效' : '暂时打不开';
+    statusEl.className = resolved.state === 'error' ? 'error' : '';
+    return;
+  }
+  updateTabIdentity(resolved.label || '分享会话', resolved.label || resolved.token);
+  document.title = `${resolved.label || '分享会话'} — MultiCC`;
+  resetHistoryPagination();
+  chatHistoryView.clearMessages();
+  if (resolved.type === 'messages') {
+    // 消息快照是一次性内容：没有活会话，没有 WS，也没有下一页。
+    applyHistoryPlan(chatHistoryStore.acceptHistory({ messages: resolved.messages, hasMore: false }, []));
+    addSystemMsg('这是分享的消息快照（只读）。');
+    statusEl.textContent = '消息快照';
+    statusEl.className = '';
+    return;
+  }
+  addSystemMsg(resolved.access === 'operate'
+    ? '这是分享的会话，你可以继续对话。'
+    : '这是分享的会话（只读）。');
+  // 和普通页同一条启动路径（含可见性/网络恢复后的重连），只是推迟到权限确定之后。
+  chatTransport.startLifecycle();
+}
+
 // Task-board links resolve their bound execution once, then use the exact same
 // full chat renderer as every ordinary conversation. Task-shell routing is a
 // transport concern and must never replace the UI.
 async function bootChatEntry() {
+  if (window.MultiCCShareMode?.active()) return bootShareEntry();
   if (_params.get('readOnly') === '1') {
     for (const id of ['input-bar', 'pre-input-bar', 'pending-user-input-card']) {
       const element = document.getElementById(id);

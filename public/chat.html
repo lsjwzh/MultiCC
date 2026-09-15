@@ -2,6 +2,10 @@
 <html lang="zh">
 <head>
   <meta charset="UTF-8" />
+  <!-- 分享链接送的就是这一份文档（见 src/routes/share.js），此时地址栏在
+       /share/<token>，相对路径会解析到 /share/ 底下。base 让两种入口解析到同一批
+       资源：管理员从 /chat.html 打开，接收方从 /share/<token> 打开，同一套脚本。 -->
+  <base href="/" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <meta name="theme-color" content="#0d1117" />
   <title>MultiCC Chat</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github-dark.min.css" /><link rel="stylesheet" href="/error-envelope.css" /><link rel="stylesheet" href="/chat-context-trace.css" />
@@ -2451,7 +2455,7 @@
   <!-- Loaded after the inline styles so the shared tone tokens win same-specificity ties. -->
   <link rel="stylesheet" href="status-badge.css" />
   <link rel="stylesheet" href="chat-dispatch-activity.css" />
-  <link rel="stylesheet" href="chat-task-mode.css" /><link rel="stylesheet" href="composer.css" /><link rel="stylesheet" href="chat-air.css" /><link rel="stylesheet" href="chat-header-shapes.css" />
+  <link rel="stylesheet" href="chat-task-mode.css" /><link rel="stylesheet" href="chat-share-mode.css" /><link rel="stylesheet" href="composer.css" /><link rel="stylesheet" href="chat-air.css" /><link rel="stylesheet" href="chat-header-shapes.css" />
   <link rel="stylesheet" href="chat-quote.css" />
 </head>
 <body><script>if(new URLSearchParams(location.search).get('air')==='1'){document.body.classList.add('air-chat');document.querySelector('meta[name="theme-color"]')?.setAttribute('content','#f7fbff')}</script>
@@ -2984,6 +2988,8 @@
   <link rel="stylesheet" href="task-artifacts.css"><script src="task-artifacts.js"></script><script src="chat-shell-entry.js"></script>
   <script src="chat-task-boot.js"></script>
   <script src="chat-session-features.js"></script><script src="chat-scheduled-send.js"></script>
+  <!-- 必须排在 chat.js 前面：chat.js 在顶层就按它判断这一页是不是分享页。 -->
+  <script src="chat-share-mode.js"></script>
   <script src="chat.js"></script><script src="chat-air-toolbar.js"></script><script src="chat-composer-collapse.js"></script>
   <script src="tour.js"></script>
 </body>
