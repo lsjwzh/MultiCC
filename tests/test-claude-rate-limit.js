@@ -310,6 +310,33 @@ test('a codex-protocol relay gates its window to the codex/opencode CLIs', () =>
   } finally { f.cleanup(); }
 });
 
+test('a borrowed Codex fetch hides the host subscription and paints the lender bar', async () => {
+  const f = freshClient();
+  try {
+    await flushClient();
+    const calls = [];
+    global.fetch = async (url) => {
+      const value = String(url); calls.push(value);
+      if (value.includes('/api/providers/codex/borrowed/balance')) {
+        return { json: async () => ({
+          ok: true, dto: { kind: 'window', provider: 'codex' },
+          bar: { text: 'Borrowed · 1wk 65%', color: '#58a6ff', title: 'lender' },
+        }) };
+      }
+      return { json: async () => ({ bars: {
+        codex: { status: 'ok', bar: { text: 'Host · 1wk 8%' } },
+      } }) };
+    };
+    f.C.setCli('codex');
+    f.C.setProviderBaseUrl('https://relay.example/codex-proxy/official', 'borrowed');
+    await flushClient();
+    assert.ok(calls.some(url => url.includes('/api/providers/codex/borrowed/balance')));
+    assert.equal(f.element('codex-quota-bar').style.display, 'none');
+    assert.equal(f.element('codex-quota-bar').textContent, '');
+    assert.equal(f.element('claude-rate-limit-bar').textContent, 'Borrowed · 1wk 65%');
+  } finally { f.cleanup(); }
+});
+
 test('loopback relay plumbing is not a borrowed provider and a balance chip shows for a relay', () => {
   const f = freshClient();
   try {

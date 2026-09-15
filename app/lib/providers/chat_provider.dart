@@ -554,6 +554,15 @@ class ChatProvider extends ChangeNotifier {
   /// live stand-in inside [claudeLimitView] — showing it here too would paint
   /// the same window twice.
   VendorQuotaView? get limitView {
+    final relay = _relayProviderLimit;
+    final relayDto = relay?['dto'];
+    if (relayDto is Map && relayDto['kind'] == 'window') {
+      final provider = relayDto['provider']?.toString() ?? '';
+      if (providerMatchesCli(provider, _cli.name, _providerBaseUrl)) {
+        final view = vendorViewFromBar(_barOf(relay!));
+        if (view != null) return view;
+      }
+    }
     final limit = _usageWindowLimit;
     if (limit == null) return null;
     if (!providerMatchesCli(limit.provider, _cli.name, _providerBaseUrl)) {
@@ -573,6 +582,12 @@ class ChatProvider extends ChangeNotifier {
   /// context.
   VendorQuotaView? get balanceView {
     if (!balanceBarVisibleFor(_cli.name, _providerBaseUrl)) return null;
+    final relay = _relayProviderLimit;
+    final relayDto = relay?['dto'];
+    if (relayDto is Map && relayDto['kind'] == 'balance') {
+      final view = vendorViewFromBar(_barOf(relay!));
+      if (view != null) return view;
+    }
     return vendorViewFromBar(_balanceBar);
   }
 
@@ -587,7 +602,11 @@ class ChatProvider extends ChangeNotifier {
   /// /api/codex/quota, with the passive rate_limit_event bar as a live
   /// stand-in before the first fetch lands.
   VendorQuotaView? get codexQuotaView {
-    if (_cli != SessionCli.codex) return null;
+    // /api/codex/quota is this device's Official account. A codex-proxy URL
+    // names a borrowed account whose bar belongs in limitView instead.
+    if (_cli != SessionCli.codex || isRelayBaseUrl(_providerBaseUrl)) {
+      return null;
+    }
     final v = vendorViewFromBar(
       _codexQuota != null ? _barOf(_codexQuota!) : null,
     );
@@ -614,6 +633,9 @@ class ChatProvider extends ChangeNotifier {
   // bar swaps to the new provider's quota right away.
   String _providerBaseUrl = '';
   String get providerBaseUrl => _providerBaseUrl;
+  String _providerLimitId = '';
+  int _providerLimitRevision = 0;
+  Map<String, dynamic>? _relayProviderLimit;
   SessionProviderSelection? _providerSelection;
   SessionProviderSelection? get providerSelection => _providerSelection;
   String? _activeProviderId;
@@ -1228,7 +1250,9 @@ class ChatProvider extends ChangeNotifier {
           if (replayTail != null) _messages.remove(replayTail);
           _messages.add(live);
           _folder.currentMsg = live;
-          _folder.activeTools..clear()..addAll(activeTools);
+          _folder.activeTools
+            ..clear()
+            ..addAll(activeTools);
         }
         _historyApplied = true;
         _historyHasMore = reset['hasMore'] == true;
@@ -1244,7 +1268,8 @@ class ChatProvider extends ChangeNotifier {
             removed > 0
                 ? t('contextKept', {
                     'removed': '$removed',
-                    'kept': '${int.tryParse('${reset['retainedCount'] ?? ''}') ?? 0}',
+                    'kept':
+                        '${int.tryParse('${reset['retainedCount'] ?? ''}') ?? 0}',
                   })
                 : t('contextResetKept'),
           );
@@ -1256,8 +1281,10 @@ class ChatProvider extends ChangeNotifier {
 
       case 'shell_history_update':
         final update = evt.payload as Map;
-        _mergeShellPage(update['messages'] as List? ?? [],
-            sourceSessionId: update['sourceSessionId']?.toString());
+        _mergeShellPage(
+          update['messages'] as List? ?? [],
+          sourceSessionId: update['sourceSessionId']?.toString(),
+        );
         notifyListeners();
         break;
 
@@ -1273,7 +1300,9 @@ class ChatProvider extends ChangeNotifier {
             for (final raw in records) {
               if (raw is! Map) continue;
               final record = Map<String, dynamic>.from(raw);
-              final message = _messageByIdentity(record['id']?.toString() ?? '');
+              final message = _messageByIdentity(
+                record['id']?.toString() ?? '',
+              );
               if (message == null) continue;
               message.applyAttribution(record);
               applied += 1;
@@ -1475,7 +1504,8 @@ class ChatProvider extends ChangeNotifier {
         }
 
       case 'chat_msg_deleted':
-        if (historyArchive && (evt.payload as Map)['displayOnly'] == true) break;
+        if (historyArchive && (evt.payload as Map)['displayOnly'] == true)
+          break;
         _historyGeneration++;
         {
           // Broadcast after a successful delete from any client. Idempotent:
@@ -1779,9 +1809,14 @@ class ChatProvider extends ChangeNotifier {
   /// setProviderBaseUrl refresh-on-change behavior).
   void _setProviderBaseUrl(String baseUrl) {
     final next = baseUrl.trim();
-    final changed = next != _providerBaseUrl;
+    final nextProviderId = (_activeProviderId ?? '').trim();
+    final changed =
+        next != _providerBaseUrl || nextProviderId != _providerLimitId;
     _providerBaseUrl = next;
+    _providerLimitId = nextProviderId;
     if (changed) {
+      _providerLimitRevision += 1;
+      _relayProviderLimit = null;
       // The passive window bar belongs to whichever provider produced it. On a
       // switch it must not keep speaking for the new provider — a relay
       // provider's gate is protocol-based, so a stale vendor bar from the
@@ -1790,6 +1825,8 @@ class ChatProvider extends ChangeNotifier {
       // setProviderBaseUrl clears currentLimitInfo/currentLimitBar the same way).
       _usageWindowLimit = null;
       _rateLimitBar = null;
+      _usageBalance = null;
+      _balanceBar = null;
       // An explicit switch means the user is looking at a different vendor —
       // drop any error backoff so the new bar fetches immediately (web
       // setProviderBaseUrl clears backoff the same way).
@@ -1936,6 +1973,16 @@ class ChatProvider extends ChangeNotifier {
   /// safe to call on any provider change.
   void refreshVendorQuotas() {
     final baseUrl = _providerBaseUrl;
+    final relayProtocol = relayProtocolFromBaseUrl(baseUrl);
+    if (relayProtocol != null && _providerLimitId.isNotEmpty) {
+      unawaited(
+        _fetchRelayProviderLimit(
+          _providerLimitRevision,
+          relayProtocol,
+          _providerLimitId,
+        ),
+      );
+    }
     if (isArkBaseUrl(baseUrl)) _fetchArkQuota();
     if (isZhipuBaseUrl(baseUrl)) _fetchZhipuQuota();
     if (isKimiBaseUrl(baseUrl)) _fetchKimiQuota();
@@ -1980,6 +2027,21 @@ class ChatProvider extends ChangeNotifier {
   }
 
   int _nowMs() => DateTime.now().millisecondsSinceEpoch;
+
+  Future<void> _fetchRelayProviderLimit(
+    int revision,
+    String protocol,
+    String providerId,
+  ) async {
+    final data = await _quota.fetchProviderBalance(protocol, providerId);
+    if (revision != _providerLimitRevision ||
+        protocol != relayProtocolFromBaseUrl(_providerBaseUrl) ||
+        providerId != _providerLimitId) {
+      return;
+    }
+    _relayProviderLimit = data?['ok'] == true ? data : null;
+    notifyListeners();
+  }
 
   Future<void> _fetchArkQuota({bool force = false}) async {
     if (_arkInFlight) return;
@@ -2087,7 +2149,7 @@ class ChatProvider extends ChangeNotifier {
   /// CLI; skips while one is in flight or after a recent error (vendor backoff)
   /// unless [force]. Callers: cli-switch hooks + the bar's tap handler.
   Future<void> refreshCodexQuota({bool force = false}) async {
-    if (_cli != SessionCli.codex) return;
+    if (_cli != SessionCli.codex || isRelayBaseUrl(_providerBaseUrl)) return;
     if (_codexInFlight) return;
     if (!force &&
         _codexErrorAt != 0 &&
@@ -2652,7 +2714,11 @@ class ChatProvider extends ChangeNotifier {
   /// Explicit scheduler control. The APP never mutates or advances the queue
   /// itself; even after a successful POST it only applies the returned server
   /// schedule (and the following WS event will reconcile it again).
-  Future<void> queueAction(String action, {String? entryId, int? toIndex}) async {
+  Future<void> queueAction(
+    String action, {
+    String? entryId,
+    int? toIndex,
+  }) async {
     // Causality anchor: any `session_queue` WS event that lands while this
     // request is in flight is at least as authoritative as the action's own
     // effects (the server broadcasts them BEFORE writing the HTTP response).
