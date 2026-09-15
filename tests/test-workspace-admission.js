@@ -11,7 +11,7 @@ function fixture(t, limits = {}) {
   t.after(() => { store.close(); fs.rmSync(dir, { recursive: true, force: true }); });
   const registry = createWorkspaceRegistry(store, { executionLimit: 2, residentLimit: 3, restoreLimit: 1, ...limits });
   const add = (id, residency = 'planned') => registry.register({ ownerId: id, dirId: 'd', path: path.join(dir, id), branch: id, residency });
-  return { dir, file, registry, add };
+  return { dir, file, store, registry, add };
 }
 test('two SQLite connections cannot reserve the same physical workspace', t => {
   const f = fixture(t), w = f.add('a'); f.registry.bind('alias', w.id);
@@ -161,6 +161,36 @@ test('final runner evidence is captured before releasing the workspace for the n
   assert.equal(f.host.snapshot().leases.length, 0);
   const result = f.host.deliveryEvidence(f.record.id).run;
   assert.equal(result.outcome, 'succeeded'); assert.equal(result.attemptId, 'attempt-final'); assert.ok(result.endCodeRevision);
+  assert.equal(f.host.deliveryEvidence(f.record.id).barrier.writersStopped, true);
+});
+
+test('separation barrier holds the workspace, rechecks the frozen revision and records application', async t => {
+  const f = await hostFixture(t), d = f.descriptor('source-run');
+  const guard = await f.host.beforeDeliver(d);
+  f.host.bindTurn(f.record.id, d.opts, 'turn-separate', 'task-source');
+  f.host.starting(f.record.id, d.opts, 'attempt-separate'); await guard.complete({ accepted: true });
+  f.host.settled(f.record.id, { status: 'completed' });
+  f.host.finalized({ sessionName: f.record.id, turn: { turnId: 'turn-separate', resultDurable: true }, usageDurable: true,
+    runner: { providerAttempt: { routeAttemptId: 'attempt-separate' } } },
+  { effects: [{ type: 'classify-turn-end', classification: 'succeeded' }], facts: { completion: { state: 'completed' } } });
+  for (let i = 0; i < 100 && f.host.snapshot().leases.length; i++) await new Promise(r => setTimeout(r, 20));
+  let captured;
+  await f.host.withSeparationBarrier({ sessionId: f.record.id, turnId: 'turn-separate', separationId: 'sep-test' }, async value => {
+    captured = value;
+    await assert.rejects(f.host.beforeDeliver(f.descriptor('late-input')), { code: 'workspace_busy' });
+  });
+  assert.equal(captured.barrier.separationId, 'sep-test'); assert.equal(captured.code.dirty, false);
+  f.store.set('task', 'task-target', { id: 'task-target', sessionId: 'task-target-session',
+    ownerShellId: 'task-target-shell', separatedFromTaskId: 'task-source', ready: true });
+  f.store.set('shell', 'task-target-shell', { id: 'task-target-shell', sourceSessionId: 'task-target-session',
+    currentTaskId: 'task-target', defaultTaskId: 'task-target', standalone: true });
+  f.store.set('link', 'task-target-shell:task-target', { shellId: 'task-target-shell', taskId: 'task-target' });
+  const application = f.host.recordSeparationApplication({ separationId: 'sep-test', sourceSessionId: f.record.id,
+    sourceTaskId: 'task-source', targetTaskId: 'task-target', targetSessionId: 'task-target-session',
+    targetShellId: 'task-target-shell', turnId: 'turn-separate', barrierId: captured.barrier.id });
+  assert.equal(f.host.deliveryEvidence(f.record.id, 'turn-separate').application.id, application.id);
+  const next = f.descriptor('after-barrier'), nextGuard = await f.host.beforeDeliver(next);
+  await nextGuard.complete({ accepted: false, durable: false });
 });
 
 test('an uncertain lease whose writer pid is provably dead is reclaimed without waiting out the threshold', async t => {

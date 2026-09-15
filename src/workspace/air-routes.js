@@ -72,8 +72,9 @@ function mountAirRoutes(app, deps) {
     const entry = await deps.shell.taskEntry(req.params.id);
     const record = deps.records.get(entry.sessionId);
     const candidate = deps.shell.attributionCandidate(req.params.id);
+    const separation = deps.shell.taskSeparation?.(req.params.id) || null;
     const attribution = await require('../task-routing/delivery-view').deliveryView({ sessionId: entry.sessionId,
-      candidate, admission: deps.admission, cwd: deps.directories.get(record?.dirId)?.path });
+      taskId: req.params.id, candidate, separation, admission: deps.admission, cwd: deps.directories.get(record?.dirId)?.path });
     let roleBindings = null;
     try { roleBindings = deps.shell.roleBindings(req.params.id); } catch (_) {}
     return { ...entry, resource: resource(entry.sessionId), configuration: {

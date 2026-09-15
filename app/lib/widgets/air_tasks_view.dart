@@ -85,6 +85,7 @@ class _AirTasksViewState extends State<AirTasksView>
   AirLocalStore? _store;
   AirSnapshot? _data;
   AirCreateAttempt? _attempt;
+
   /// 上一次 [_createFromComposer] 交出去的那份草稿有没有归属 —— 整条链路成了，
   /// 或者任务建出来了只是第一条消息没确认送达，两种都算「交出去了」。承载它的弹层
   /// （侧栏那颗「＋ 新任务」）靠它决定收不收：这两种情况都不该再把那一层留在屏幕上
@@ -93,7 +94,10 @@ class _AirTasksViewState extends State<AirTasksView>
   bool _lastCreateHandedOff = false;
   String? _directoryId;
   String _error = '';
-  bool _loading = false, _opening = false, _submitting = false, _foreground = true;
+  bool _loading = false,
+      _opening = false,
+      _submitting = false,
+      _foreground = true;
   bool _openingTerminal = false;
   bool _showAll = false;
   _AirMode _mode = _AirMode.tasks;
@@ -211,15 +215,18 @@ class _AirTasksViewState extends State<AirTasksView>
       final entry = await _service.openTask(task.id);
       if (!mounted) return;
       final id =
-          (entry['readOnly'] == true ? entry['sourceSessionId'] : entry['sessionId'])
+          (entry['readOnly'] == true
+                  ? entry['sourceSessionId']
+                  : entry['sessionId'])
               as String?;
       if (id == null) throw Exception('此任务没有可续接的会话，请从全部记录查看。');
       final mgr = context.read<SessionManager>();
       final loaded = mgr.sessions.where((s) => s.id == id).firstOrNull;
       final session =
           loaded ??
-          await SessionService(settings: widget.settings)
-              .fetchTaskBoundSession(id);
+          await SessionService(
+            settings: widget.settings,
+          ).fetchTaskBoundSession(id);
       if (!mounted) return;
       if (session == null) throw Exception('无法打开任务会话，请刷新后重试。');
       await _store?.rememberTask(task.id);
@@ -246,8 +253,9 @@ class _AirTasksViewState extends State<AirTasksView>
       final mgr = context.read<SessionManager>();
       var session = mgr.sessions.where((s) => s.id == entry.id).firstOrNull;
       if (session == null) {
-        final fetched = await SessionService(settings: widget.settings)
-            .fetchSessions();
+        final fetched = await SessionService(
+          settings: widget.settings,
+        ).fetchSessions();
         session = fetched.where((s) => s.id == entry.id).firstOrNull;
       }
       final target = session ?? entry.toSession();
@@ -300,6 +308,13 @@ class _AirTasksViewState extends State<AirTasksView>
                 onOpenConversation: () {
                   Navigator.pop(sheetContext);
                   unawaited(_open(task));
+                },
+                onOpenSeparatedTask: (targetTaskId) {
+                  Navigator.pop(sheetContext);
+                  unawaited(() async {
+                    await _refresh();
+                    if (mounted) _openTaskById(task.dirId, targetTaskId);
+                  }());
                 },
               ),
             ),
@@ -430,30 +445,31 @@ class _AirTasksViewState extends State<AirTasksView>
       service: _service,
       httpClient: widget.httpClient,
       clis: _data?.clis ?? const [],
-      onSubmit: ({
-        required String text,
-        required String cli,
-        required AirTaskRuntime runtime,
-        required List<AirRoleBinding> roles,
-        required bool goal,
-        int? goalRounds,
-        int? goalBudget,
-      }) async {
-        await _createFromComposer(
-          text: text,
-          cli: cli,
-          runtime: runtime,
-          roles: roles,
-          goal: goal,
-          goalRounds: goalRounds,
-          goalBudget: goalBudget,
-        );
-        // 这一层收不收，看的是**草稿有没有归属**，不是「人有没有跳进那个任务」：
-        // 整条链路成了、或任务建出来了只是第一条消息没送到，两种都该收掉（同 Web
-        // 的 closeNewTaskComposer，两条路径都关）。建都没建起来时留着它 —— 草稿
-        // 还在输入框里，重试就是原样再点一次。
-        return _lastCreateHandedOff;
-      },
+      onSubmit:
+          ({
+            required String text,
+            required String cli,
+            required AirTaskRuntime runtime,
+            required List<AirRoleBinding> roles,
+            required bool goal,
+            int? goalRounds,
+            int? goalBudget,
+          }) async {
+            await _createFromComposer(
+              text: text,
+              cli: cli,
+              runtime: runtime,
+              roles: roles,
+              goal: goal,
+              goalRounds: goalRounds,
+              goalBudget: goalBudget,
+            );
+            // 这一层收不收，看的是**草稿有没有归属**，不是「人有没有跳进那个任务」：
+            // 整条链路成了、或任务建出来了只是第一条消息没送到，两种都该收掉（同 Web
+            // 的 closeNewTaskComposer，两条路径都关）。建都没建起来时留着它 —— 草稿
+            // 还在输入框里，重试就是原样再点一次。
+            return _lastCreateHandedOff;
+          },
     );
   }
 
@@ -777,9 +793,7 @@ class _AirTasksViewState extends State<AirTasksView>
   }
 
   void _openWebMemory() {
-    final uri = Uri.parse(
-      widget.settings.buildHttpUrl('/manage'),
-    ).replace(
+    final uri = Uri.parse(widget.settings.buildHttpUrl('/manage')).replace(
       queryParameters: {
         'view': 'memory',
         if (widget.settings.token.isNotEmpty) 'token': widget.settings.token,
@@ -982,7 +996,8 @@ class _AirTasksViewState extends State<AirTasksView>
           unawaited(_openAllDestinations());
         },
         ops: _ops,
-        onOpenPush: () => _push((_) => PushSettingsScreen(settings: widget.settings)),
+        onOpenPush: () =>
+            _push((_) => PushSettingsScreen(settings: widget.settings)),
         onLogout: () => unawaited(
           confirmAirLogout(
             context,
@@ -1036,9 +1051,7 @@ class _AirTasksViewState extends State<AirTasksView>
               ),
             ),
             Text(
-              _mode == _AirMode.library
-                  ? '工作目录'
-                  : (directory?.name ?? '工作目录'),
+              _mode == _AirMode.library ? '工作目录' : (directory?.name ?? '工作目录'),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(
@@ -1132,7 +1145,10 @@ class _AirTasksViewState extends State<AirTasksView>
             itemBuilder: (context) => [
               const PopupMenuItem(value: 'search', child: Text('搜索目录与任务')),
               const PopupMenuItem(value: 'library', child: Text('工作目录库')),
-              const PopupMenuItem(value: 'add-directory', child: Text('添加工作目录')),
+              const PopupMenuItem(
+                value: 'add-directory',
+                child: Text('添加工作目录'),
+              ),
               const PopupMenuItem(
                 value: 'import-fleet',
                 child: Text('导入共享工作区'),

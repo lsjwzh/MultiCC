@@ -14,9 +14,11 @@ function createDeliveryEvidence(store, {
   const facts = createTaskFactsRepository(store);
   const get = (kind, id) => store.get('delivery:' + kind, id);
   const put = (kind, id, value) => store.set('delivery:' + kind, id, value);
-  function begin({ sessionId, turnId, taskId, receiptId = null, roleSnapshotId = null, workspaceId, workspacePath, baseRef }) {
+  function begin({ sessionId, turnId, taskId, receiptId = null, roleSnapshotId = null, workspaceId, workspacePath, baseRef,
+    startCodeRevision = null, startHead = null, startDirty = null, startObservationError = null }) {
     if (![sessionId, turnId, taskId, workspaceId, workspacePath, baseRef].every(x => typeof x === 'string' && x)) throw fail('run_identity_required');
-    const binding = { sessionId, turnId, taskId, receiptId, roleSnapshotId, workspaceId, workspacePath, baseRef };
+    const binding = { sessionId, turnId, taskId, receiptId, roleSnapshotId, workspaceId, workspacePath, baseRef,
+      startCodeRevision, startHead, startDirty, startObservationError };
     return store.transaction(() => {
       const old = get('run', turnId);
       if (old) {
@@ -124,12 +126,52 @@ function createDeliveryEvidence(store, {
     }
     return outcomes;
   }
+  function recordWriterBarrier({ sessionId, turnId, separationId = null, workspaceId, leaseId, generation, code }) {
+    const run = facts.getFact('run-result', turnId);
+    if (!run || run.sessionId !== sessionId || run.workspaceId !== workspaceId) throw fail('barrier_run_mismatch');
+    if (!code?.revision || code.revision !== run.endCodeRevision || code.repoId !== run.repoId) throw fail('barrier_code_changed');
+    const id = 'barrier_' + key(turnId, separationId, leaseId, generation, code.revision).slice(0, 48);
+    const existing = facts.getFact('writer-barrier', id);
+    const identity = { id, sessionId, turnId, separationId, taskId: run.taskId,
+      attemptId: run.attemptId, workspaceId, leaseId, generation, codeRevision: code.revision,
+      head: code.head, repoId: code.repoId, dirty: code.dirty, writersStopped: true };
+    if (existing) {
+      if (Object.entries(identity).some(([name, value]) => existing[name] !== value)) throw fail('immutable_fact_conflict');
+      return existing;
+    }
+    return facts.appendFact('writer-barrier', { ...identity, verifiedAt: now() });
+  }
+  function recordSeparationApplication({ separationId, sourceSessionId, sourceTaskId, targetTaskId,
+    targetSessionId, targetShellId, turnId, barrierId }) {
+    const run = facts.getFact('run-result', turnId);
+    const barrier = facts.getFact('writer-barrier', barrierId);
+    const target = store.get('task', targetTaskId), shell = store.get('shell', targetShellId);
+    const link = store.get('link', `${targetShellId}:${targetTaskId}`);
+    if (!run || run.sessionId !== sourceSessionId || run.taskId !== sourceTaskId
+        || !barrier || barrier.turnId !== turnId || barrier.separationId !== separationId
+        || !target || target.sessionId !== targetSessionId || target.ownerShellId !== targetShellId
+        || target.separatedFromTaskId !== sourceTaskId || target.ready !== true
+        || !shell || shell.sourceSessionId !== targetSessionId || shell.currentTaskId !== targetTaskId
+        || shell.defaultTaskId !== targetTaskId || shell.standalone !== true
+        || !link || link.shellId !== targetShellId || link.taskId !== targetTaskId) throw fail('separation_application_unverified');
+    const id = 'application_' + key(separationId, targetTaskId).slice(0, 48);
+    const identity = { id, separationId, sourceSessionId, sourceTaskId,
+      targetTaskId, targetSessionId, targetShellId, turnId, barrierId };
+    const existing = facts.getFact('separation-application', id);
+    if (existing) {
+      if (Object.entries(identity).some(([name, value]) => existing[name] !== value)) throw fail('immutable_fact_conflict');
+      return existing;
+    }
+    return facts.appendFact('separation-application', { ...identity, appliedAt: now() });
+  }
   function summary(sessionId, turnId = null) {
     const id = turnId || get('latest', sessionId)?.runId;
     const run = id && facts.getFact('run-result', id);
-    if (!run || run.sessionId !== sessionId) return { run: null, integration: null };
+    if (!run || run.sessionId !== sessionId) return { run: null, integration: null, barrier: null, application: null };
     const integration = store.list('task-first:integration').filter(i => i.runId === id && i.attemptId === run.attemptId).at(-1) || null;
-    return { run, integration };
+    const barrier = store.list('task-first:writer-barrier').filter(item => item.turnId === id).at(-1) || null;
+    const application = store.list('task-first:separation-application').filter(item => item.turnId === id).at(-1) || null;
+    return { run, integration, barrier, application };
   }
   async function verifyBaseline(integration, cwd) {
     if (!integration) return null;
@@ -145,6 +187,7 @@ function createDeliveryEvidence(store, {
     });
   }
   return { begin, attempt, finalize, hooks, recover, summary, verifyBaseline,
+    recordWriterBarrier, recordSeparationApplication,
     deliveryFinalized: id => !!facts.getFact('run-result', id) };
 }
 module.exports = { createDeliveryEvidence };

@@ -102,6 +102,13 @@ function createTaskShellHost(deps) {
       isDeletedTask: id => deps.getTaskBoard?.()?.getBoard?.().deletedTaskIds?.includes(id),
       isTaskLifecycleBusy: id => deps.getTaskBoard?.()?.isTaskLifecycleBusy?.(id),
       prepareExecution: workspace.prepareExecution, captureForkBaseline: workspace.captureForkBaseline,
+      deliveryEvidence: (id, turnId) => deps.getWorkspaceAdmission?.()?.deliveryEvidence(id, turnId),
+      verifyDeliveryBaseline: (integration, id) => {
+        const record = deps.records.get(id), cwd = record && deps.directories.get(record.dirId)?.path;
+        return deps.getWorkspaceAdmission?.()?.verifyBaseline(integration, cwd);
+      },
+      withSeparationBarrier: (input, work) => deps.getWorkspaceAdmission?.()?.withSeparationBarrier(input, work),
+      recordSeparationApplication: input => deps.getWorkspaceAdmission?.()?.recordSeparationApplication(input),
       createExecution: async (task, source) => {
         const dir = deps.directories.get(task.dirId);
         if (!dir) throw failure('directory_missing');
@@ -264,6 +271,7 @@ function createTaskShellHost(deps) {
     refillContext: (id, options) => getRuntime().refillContext(id, options),
     contextTrace: (id, receiptId, options) => getRuntime().contextTrace(id, receiptId, options),
     proposeSeparation: (id, receiptId, result) => getRuntime().separation.propose(id, receiptId, result),
+    taskSeparation: id => getRuntime().separation.forTask(id),
     proposeAttribution: (id, receiptId, result) => { getRuntime(); return candidates.propose(id, receiptId, result); },
     attributionCandidate: id => { getRuntime(); return candidates.latest(id); },
     settleAttribution: (id, receiptId, result) => getRuntime().settleAttribution(id, receiptId, result),

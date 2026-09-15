@@ -7,6 +7,7 @@ const exec = promisify(execFile);
 const { createTaskShellStore } = require('../task-shell/store');
 const { createWorkspaceRegistry } = require('./registry');
 const { WORKTREE_SUBDIR } = require('../git/service');
+const { captureCodeRevision } = require('../task-routing/code-revision');
 const BACKPRESSURE_CODES = new Set([
   'workspace_busy',
   'workspace_lease_unavailable',
@@ -132,6 +133,8 @@ function createWorkspaceAdmission(deps) {
     permits.add(permit); active.set(descriptor.sessionId, permit);
     try {
       await materialize(descriptor.sessionId, lease);
+      try { permit.startCode = await captureCodeRevision(workspace.path); }
+      catch (error) { permit.startObservationError = /^code_[a-z_]+$/.test(error.message) ? error.message : 'code_observation_failed'; }
       await require('../task-shell/role-bindings').prepareRoleContext(store, descriptor, deps);
       descriptor.opts.workspacePermit = permit;
       return { complete(outcome) {
@@ -179,7 +182,9 @@ function createWorkspaceAdmission(deps) {
       if (taskId) {
         const w = registry.workspace(permit.lease.workspaceId), source = owner(id);
         evidence.begin({ sessionId: id, turnId, taskId, receiptId: opts.taskShellReceiptId || null, roleSnapshotId: opts.taskRoleSnapshotId || null,
-          workspaceId: w.id, workspacePath: w.path, baseRef: w.baseRef || deps.directories.get(source.dirId).baseBranch || 'main' });
+          workspaceId: w.id, workspacePath: w.path, baseRef: w.baseRef || deps.directories.get(source.dirId).baseBranch || 'main',
+          startCodeRevision: permit.startCode?.revision || null, startHead: permit.startCode?.head || null,
+          startDirty: permit.startCode?.dirty ?? null, startObservationError: permit.startObservationError || null });
         permit.evidenceBound = true;
       }
     }
@@ -209,7 +214,14 @@ function createWorkspaceAdmission(deps) {
       // A warm native process also owns its directory. Close and confirm it
       // before releasing this run; background work prevents this path.
       const stopped = await deps.closePersistent?.(id);
-      if (closed || stopped?.ok === false || active.get(id) !== permit || isLive(id)) return;
+      if (closed || stopped?.closed !== true || active.get(id) !== permit || isLive(id)) return;
+      if (permit.evidenceBound) {
+        try {
+          const code = await captureCodeRevision(permit.lease.workspaceId && registry.workspace(permit.lease.workspaceId)?.path);
+          evidence.recordWriterBarrier({ sessionId: id, turnId: permit.turnId, workspaceId: permit.lease.workspaceId,
+            leaseId: permit.lease.id, generation: permit.lease.generation, code });
+        } catch (error) { deps.log('writer_barrier_not_recorded', { sessionId: id, code: error.code || error.message }); }
+      }
       registry.release(permit.lease, { stopped: true, reason: permit.terminal.status || 'stopped' });
       active.delete(id);
     } catch (error) { deps.log('workspace_release_retained', { sessionId: id, code: error.code }); }
@@ -277,9 +289,35 @@ function createWorkspaceAdmission(deps) {
       }
     }
   }
+  async function withSeparationBarrier({ sessionId, turnId, separationId }, work) {
+    if (!sessionId || !turnId || !separationId || typeof work !== 'function') throw failure('separation_barrier_input_required');
+    const workspace = identify(sessionId);
+    const source = owner(sessionId);
+    const siblingLive = () => [...deps.records.values()].some(record => applicable(record)
+      && (record.workspaceOwnerSessionId || record.id) === source.id && isLive(record.id));
+    if (!workspace || active.has(sessionId) || siblingLive()) throw failure('workspace_busy');
+    const lease = registry.acquire(workspace.id, sessionId, `separation:${separationId}`);
+    let stopped = false;
+    try {
+      await materialize(sessionId, lease);
+      const closedPersistent = await deps.closePersistent?.(sessionId);
+      if (closedPersistent?.closed !== true || siblingLive()) throw failure('workspace_busy');
+      stopped = true;
+      const code = await captureCodeRevision(workspace.path);
+      const barrier = evidence.recordWriterBarrier({ sessionId, turnId, separationId,
+        workspaceId: workspace.id, leaseId: lease.id, generation: lease.generation, code });
+      return await work({ barrier, code, workspace: registry.workspace(workspace.id), lease });
+    } finally {
+      const current = registry.lease(workspace.id);
+      if (current?.id === lease.id && current.state !== 'released') {
+        registry.release(lease, { stopped: stopped || !isLive(sessionId), reason: stopped ? 'separation_barrier_complete' : 'separation_barrier_failed' });
+      }
+    }
+  }
   return { identify, occupied, beforeDeliver, assertPermit, starting, spawned, settled, bindTurn, finalized, optionsForTurn, initialize,
     mergeHooks: id => evidence.hooks(id), recoverEvidence: id => evidence.recover(id),
     deliveryEvidence: (id, turnId) => evidence.summary(id, turnId), verifyBaseline: (receipt, cwd) => evidence.verifyBaseline(receipt, cwd),
+    withSeparationBarrier, recordSeparationApplication: input => evidence.recordSeparationApplication(input),
     capacityReason: id => registry.available(id), snapshot: () => registry.snapshot(), close: () => { closed = true; clearInterval(settleTimer); store.close(); } };
 }
 module.exports = { createWorkspaceAdmission };

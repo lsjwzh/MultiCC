@@ -44,7 +44,16 @@ function createRoleBindings(store, { getRecord, getDirectory, assertWritable = (
     if (!old) store.set('task-role:snapshot', id, snapshot);
     return id;
   }
-  return { current, update, snapshot };
+  function inherit(sourceTaskId, targetTaskId) {
+    const source = current(sourceTaskId);
+    const value = { taskId: targetTaskId, version: source.version,
+      bindings: source.bindings.map(binding => ({ ...binding })) };
+    const previous = store.get('task-role:binding', targetTaskId);
+    if (previous && JSON.stringify(previous) !== JSON.stringify(value)) throw fail('role_binding_conflict');
+    if (!previous) store.set('task-role:binding', targetTaskId, value);
+    return value;
+  }
+  return { current, update, snapshot, inherit };
 }
 
 // Called only under a workspace permit before launching the queued receipt.

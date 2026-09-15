@@ -10,7 +10,7 @@ function fixture(t, extra = {}) {
   const store = createTaskShellStore(file);
   t.after(() => { store.close(); fs.rmSync(dir, { recursive: true, force: true }); });
   const records = new Map(['a', 'b', 'other'].map(id => [id, { id, kind: 'chat', cli: 'codex', dirId: id === 'other' ? 'd2' : 'd1' }]));
-  const statuses = new Map(), histories = new Map(), sends = [], creations = [], cancels = [];
+  const statuses = new Map(), histories = new Map(), sends = [], creations = [], cancels = [], barriers = [], applications = [];
   const ports = {
     store,
     getRecord: id => records.get(id),
@@ -28,11 +28,25 @@ function fixture(t, extra = {}) {
       return { ok: true, entryId: 'entry-' + sends.length };
     },
     cancel: async (id, turnId) => { cancels.push({ id, turnId }); return { ok: true }; },
+    deliveryEvidence: (sessionId, turnId) => ({ run: { id: turnId, sessionId,
+      taskId: store.list('task').find(task => task.sessionId === sessionId)?.id || null,
+      outcome: 'succeeded', pendingInput: false, startCodeRevision: 'revision-1',
+      endCodeRevision: 'revision-1', repoId: 'repo-1' }, integration: null }),
+    verifyDeliveryBaseline: async () => ({ effectValid: true }),
+    withSeparationBarrier: async (input, work) => {
+      const barrier = { id: `barrier-${input.separationId}`, ...input };
+      barriers.push(barrier);
+      return work({ barrier, code: { revision: 'revision-1', head: 'a'.repeat(40), repoId: 'repo-1', dirty: false } });
+    },
+    recordSeparationApplication: input => {
+      const application = { id: `application-${input.separationId}`, ...input };
+      applications.push(application); return application;
+    },
     ...extra,
   };
   const runtime = createTaskShellRuntime(ports);
   const a = runtime.open('a'), b = runtime.open('b');
-  return { runtime, store, records, statuses, histories, sends, creations, cancels, a, b, file, ports };
+  return { runtime, store, records, statuses, histories, sends, creations, cancels, barriers, applications, a, b, file, ports };
 }
 
 module.exports = { fixture };
