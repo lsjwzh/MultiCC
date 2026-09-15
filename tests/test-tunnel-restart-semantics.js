@@ -11,7 +11,12 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { findSakuraLauncher, restartSakuraLauncher, processPattern } = require('../src/tunnel-sakurafrp');
+const { findSakuraLauncher, restartSakuraLauncher, processPattern, diagnoseSakurafrp } = require('../src/tunnel-sakurafrp');
+
+// Without an injected diagnoseFn, checkProvider falls back to reading the real
+// machine's natfrp log — tests must stay hermetic, so silence diagnosis unless
+// a case exercises it explicitly.
+const noDiagnosis = () => null;
 
 const {
   createTunnelRestartHandler,
@@ -131,7 +136,8 @@ test('monitorOnly probes but never calls the restarter', withFreshTunnel(async t
   });
   let restartCalls = 0;
   await tunnel.checkProvider('sakurafrp', {
-    probeFn: async () => 0,
+        diagnoseFn: noDiagnosis,
+                probeFn: async () => 0,
     restarter: async () => { restartCalls++; return 'restarted'; },
   });
   assert.equal(restartCalls, 0, 'monitorOnly must never restart');
@@ -147,7 +153,8 @@ test('failed auto-restart preserves the root cause and obeys cooldown', withFres
     sakurafrp: { enabled: true, url: 'https://tunnel.example.test/' },
   });
   await tunnel.checkProvider('sakurafrp', {
-    probeFn: async () => 0,
+        diagnoseFn: noDiagnosis,
+                probeFn: async () => 0,
     restarter: async () => { throw new Error('sakurafrp 未安装, 请先安装其客户端'); },
   });
   const provider = tunnel.getStatus().providers.sakurafrp;
@@ -156,14 +163,15 @@ test('failed auto-restart preserves the root cause and obeys cooldown', withFres
 
   let calls = 0;
   await tunnel.checkProvider('sakurafrp', {
-    probeFn: async () => 0,
+        diagnoseFn: noDiagnosis,
+                probeFn: async () => 0,
     restarter: async () => { calls++; return '已后台启动'; },
   });
   assert.equal(calls, 0, 'a failed launch must still enter cooldown');
   assert.equal(tunnel.getStatus().providers.sakurafrp.attemptTimes.length, 1);
   assert.match(tunnel.getStatus().providers.sakurafrp.lastAction, /等待冷却/);
   tunnel.applyConfig({ restartCooldownSec: 0 });
-  await tunnel.checkProvider('sakurafrp', { probeFn: async () => 0, restarter: async () => '已后台启动' });
+  await tunnel.checkProvider('sakurafrp', { diagnoseFn: noDiagnosis, probeFn: async () => 0, restarter: async () => '已后台启动' });
   assert.equal(tunnel.getStatus().providers.sakurafrp.restartTimes.length, 1);
 }));
 
@@ -173,7 +181,7 @@ test('failed launches exhaust the hourly attempt budget without claiming success
     sakurafrp: { enabled: true, url: 'https://tunnel.example.test/' },
   });
   let calls = 0;
-  const options = { probeFn: async () => 0, restarter: async () => { calls++; throw new Error('unavailable'); } };
+  const options = { probeFn: async () => 0, restarter: async () => { calls++; throw new Error('unavailable'); }, diagnoseFn: noDiagnosis };
   for (let i = 0; i < 4; i++) await tunnel.checkProvider('sakurafrp', options);
   const state = tunnel.getStatus().providers.sakurafrp;
   assert.equal(calls, 2);
@@ -198,7 +206,8 @@ test('HTTP 302 probes healthy so no restart is attempted', withFreshTunnel(async
   });
   let restartCalls = 0;
   await tunnel.checkProvider('sakurafrp', {
-    probeFn: async () => 302,
+        diagnoseFn: noDiagnosis,
+                probeFn: async () => 302,
     restarter: async () => { restartCalls++; return 'restarted'; },
   });
   assert.equal(restartCalls, 0);
@@ -725,11 +734,12 @@ test('stale restart failure is cleared once the probe turns healthy', withFreshT
     sakurafrp: { enabled: true, url: 'https://tunnel.example.test/' },
   });
   await tunnel.checkProvider('sakurafrp', {
-    probeFn: async () => 0,
+        diagnoseFn: noDiagnosis,
+                probeFn: async () => 0,
     restarter: async () => { throw new Error('sakurafrp 未安装, 请先安装其客户端'); },
   });
   assert.match(tunnel.getStatus().providers.sakurafrp.lastAction, /重启失败/);
-  await tunnel.checkProvider('sakurafrp', { probeFn: async () => 302 });
+  await tunnel.checkProvider('sakurafrp', { diagnoseFn: noDiagnosis, probeFn: async () => 302 });
   const provider = tunnel.getStatus().providers.sakurafrp;
   assert.equal(provider.healthy, true);
   assert.equal(provider.lastAction, '', 'stale failure text must not survive a healthy probe');
@@ -742,10 +752,10 @@ test('active guardrail note survives a healthy probe', withFreshTunnel(async tun
     maxRestartsPerHour: 1,
     sakurafrp: { enabled: true, url: 'https://tunnel.example.test/' },
   });
-  await tunnel.checkProvider('sakurafrp', { probeFn: async () => 0, restarter: async () => '已后台启动' });
-  await tunnel.checkProvider('sakurafrp', { probeFn: async () => 0, restarter: async () => '已后台启动' });
+  await tunnel.checkProvider('sakurafrp', { diagnoseFn: noDiagnosis, probeFn: async () => 0, restarter: async () => '已后台启动' });
+  await tunnel.checkProvider('sakurafrp', { diagnoseFn: noDiagnosis, probeFn: async () => 0, restarter: async () => '已后台启动' });
   assert.match(tunnel.getStatus().providers.sakurafrp.lastAction, /已达每小时重启尝试上限/);
-  await tunnel.checkProvider('sakurafrp', { probeFn: async () => 302 });
+  await tunnel.checkProvider('sakurafrp', { diagnoseFn: noDiagnosis, probeFn: async () => 302 });
   assert.match(
     tunnel.getStatus().providers.sakurafrp.lastAction,
     /已达每小时重启尝试上限/,
@@ -840,3 +850,105 @@ test('Sakura restart fails closed on a process inspection error', async () => {
   }), /进程状态检查失败/);
   assert.deepEqual(commands, ['/usr/bin/pgrep']);
 });
+
+// ── SakuraFrp failure diagnosis ────────────────────────────────────────────
+
+function writeNatfrpLog(dir, name, lines) {
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, name), lines.join('\n') + '\n');
+}
+
+test('diagnoseSakurafrp maps the last informative log line to an actionable reason', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-natfrp-log-'));
+  try {
+    writeNatfrpLog(dir, 'natfrp-service.20260915.log', [
+      '2026-09-15 11:40:55 Info Service 开始初始化守护进程: 3.1.8',
+      '2026-09-15 11:40:56 Info Service 登录成功',
+      '2026-09-15 11:40:56 Info Tunnel/multicc 开始加载隧道配置',
+      'frpc[multicc|Info] 2026/09/15 11:40:56 [I] 正在连接节点 [api.r97634737.nyat.app, tcp]',
+      'frpc[multicc|Info] 您的流量已耗尽，无法开启隧道，请签到获取流量或前往商城购买增值服务 [-4]',
+      '2026-09-15 11:40:56 Error Tunnel/multicc 由于出现严重错误, 已关闭该隧道',
+      '2026-09-15 11:40:57 Info Tunnel/multicc frpc 已退出',
+    ]);
+    const diagnosis = diagnoseSakurafrp({ logDir: dir, now: () => 123 });
+    assert.ok(diagnosis, 'an informative line must be found past the generic close/exit noise');
+    assert.equal(diagnosis.code, 'traffic_exhausted');
+    assert.match(diagnosis.reason, /流量耗尽/);
+    assert.match(diagnosis.detail, /签到获取流量/);
+    assert.doesNotMatch(diagnosis.detail, /^2026-09-15/, 'log timestamp prefix is stripped');
+    assert.equal(diagnosis.at, 123);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('diagnoseSakurafrp prefers the newest episode across patterns and files', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-natfrp-log-'));
+  try {
+    writeNatfrpLog(dir, 'natfrp-service.20260914.log', [
+      '2026-09-14 08:00:00 frpc[multicc|Info] 您的流量已耗尽，无法开启隧道 [-4]',
+    ]);
+    writeNatfrpLog(dir, 'natfrp-service.20260915.log', [
+      '2026-09-15 09:20:15 frpc[multicc|Info] [W] 登录节点失败, 请检查网络连接 错误信息: server said',
+    ]);
+    const diagnosis = diagnoseSakurafrp({ logDir: dir });
+    assert.equal(diagnosis.code, 'node_login_failed',
+      'the newest log file and newest failing line win');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('diagnoseSakurafrp returns null when nothing informative exists', () => {
+  assert.equal(diagnoseSakurafrp({ logDir: '/nonexistent/path' }), null);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-natfrp-log-'));
+  try {
+    writeNatfrpLog(dir, 'natfrp-service.20260915.log', [
+      '2026-09-15 11:40:57 Info Tunnel/multicc frpc 已退出',
+      '2026-09-15 11:40:56 Error Tunnel/multicc 由于出现严重错误, 已关闭该隧道',
+    ]);
+    assert.equal(diagnoseSakurafrp({ logDir: dir }), null,
+      'generic close/exit lines carry no diagnosis');
+    assert.equal(diagnoseSakurafrp({ logDir: path.join(dir, 'empty') }), null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('traffic exhaustion suppresses futile auto-restarts and stays visible', withFreshTunnel(async tunnel => {
+  tunnel.applyConfig({
+    failThreshold: 1,
+    restartCooldownSec: 0,
+    sakurafrp: { enabled: true, url: 'https://tunnel.example.test/' },
+  });
+  let restartCalls = 0;
+  const diagnoseFn = () => ({
+    code: 'traffic_exhausted',
+    reason: 'SakuraFrp 流量耗尽（签到或购买流量后重启隧道）',
+    detail: '您的流量已耗尽，无法开启隧道 [-4]',
+    at: Date.now(),
+  });
+  await tunnel.checkProvider('sakurafrp', {
+        diagnoseFn: noDiagnosis,
+                probeFn: async () => 0,
+    restarter: async () => { restartCalls++; return 'restarted'; },
+    diagnoseFn,
+  });
+  assert.equal(restartCalls, 0, 'restarting cannot fix an exhausted account');
+  const provider = tunnel.getStatus().providers.sakurafrp;
+  assert.equal(provider.healthy, false);
+  assert.equal(provider.diagnosis.code, 'traffic_exhausted');
+  assert.match(provider.lastAction, /流量耗尽/);
+  assert.match(provider.lastAction, /签到\/购买流量/);
+
+  // Recovery clears the diagnosis.
+  await tunnel.checkProvider('sakurafrp', {
+        diagnoseFn: noDiagnosis,
+                probeFn: async () => 200,
+    restarter: async () => 'restarted',
+    diagnoseFn,
+  });
+  const recovered = tunnel.getStatus().providers.sakurafrp;
+  assert.equal(recovered.healthy, true);
+  assert.equal(recovered.diagnosis, null);
+}));
