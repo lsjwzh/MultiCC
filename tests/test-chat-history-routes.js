@@ -282,6 +282,28 @@ test('append broadcasts metadata only after durable write and stamps assistant l
   assert.equal(eventNames(fx.events).at(-1), 'review:s1');
 });
 
+test('the registry-owned four-character task code reaches append, replay and attribution events', () => {
+  const fx = fixture({
+    initial: { s1: [{ id: 'old', role: 'assistant', content: '旧消息', taskId: 'tsk-old', taskName: '旧任务' }] },
+    deps: { taskShortCode: taskId => taskId === 'tsk-new' ? 'N3W1' : '0LD1' },
+  });
+  assert.equal(fx.runtime.paginate('s1').messages[0].taskShortCode, '0LD1',
+    'old stored history is enriched without a migration write');
+
+  const message = { role: 'user', content: '继续', taskId: 'tsk-new', taskName: '新任务' };
+  assert.equal(fx.runtime.appendMessage('s1', message), true);
+  assert.equal(message.taskShortCode, 'N3W1');
+  const meta = fx.events.find(event => event?.payload?.type === 'chat_msg_meta')?.payload;
+  assert.equal(meta.message.taskShortCode, 'N3W1');
+
+  const changed = fx.runtime.annotateTurn('s1', null, {
+    taskId: 'tsk-new', taskName: '新任务', auxRunId: 'run-1',
+  }, { anchorMessageId: message.id });
+  assert.equal(changed[0].taskShortCode, 'N3W1');
+  const annotation = fx.events.filter(event => event?.payload?.type === 'chat_history_annotation').pop().payload;
+  assert.equal(annotation.messages[0].taskShortCode, 'N3W1');
+});
+
 test('append surfaces answeredQuestionId so multi-window clients can settle the prompt from the message', () => {
   const fx = fixture();
   const message = {

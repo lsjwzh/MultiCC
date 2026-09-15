@@ -2,6 +2,7 @@
 
 const { hash } = require('./context');
 const { historySnapshot, shellRecords } = require('./history-context');
+const { displayMessages, displayTask } = require('../task-display-attribution');
 const fail = (code, message = code, status = 409) => Object.assign(new Error(message), { code, status });
 
 // Explicit task entry preserves identity; it never follows a conversation cursor.
@@ -41,17 +42,20 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
     if (sid && !scope.sessionIds.includes(sid)) scope.sessionIds.push(sid);
     for (const source of task.historySessionIds || []) if (!scope.sessionIds.includes(source)) scope.sessionIds.push(source);
     const inherited = (task.forkedFromTaskId || task.separatedFromTaskId) ? (task.snapshotIds || []).flatMap(id => store.get('snapshot', id)?.messages || []).map(m => ({ ...m, inherited: true, content: m.content || m.evidenceExcerpt || '' })) : [];
-    const messages = inherited.concat(shellRecords(scope, getHistory, ports.getLiveState)
-      .filter(m => m.taskId === id || (!m.taskId && m.sourceSessionId === sid)));
+    const messages = displayMessages(inherited.concat(shellRecords(scope, getHistory, ports.getLiveState)
+      .filter(m => m.taskId === id || (!m.taskId && m.sourceSessionId === sid))), task, {
+      getTask: taskId => store.get('task', taskId) || getTask(taskId),
+      codeFor: ports.taskShortCode,
+    });
     const execution = sid && getRecord(sid) ? await getExecution(sid) : { busy: false, status: 'idle' };
-    return { ok: true, task: { id, title: lifecycle.title || task.title,
+    return { ok: true, task: displayTask({ id, title: lifecycle.title || task.title,
       recordType: lifecycle.recordType || task.recordType || null,
       description: lifecycle.description || task.description || '',
       acceptanceCriteria: lifecycle.acceptanceCriteria || task.acceptanceCriteria || '',
       workflowStage: lifecycle.workflowStage || task.workflowStage || null,
       planningRevision: lifecycle.planningRevision ?? task.planningRevision ?? null,
       priority: lifecycle.priority || task.priority || null, dueAt: lifecycle.dueAt || task.dueAt || null,
-      ...a }, messages, execution,
+      ...a }, ports.taskShortCode), messages, execution,
       sessionId: sid, ...a, url: `/task-shell.html?task=${encodeURIComponent(id)}&board=1`,
       returnUrl: a.sourceSessionId ? `/chat.html?session=${encodeURIComponent(a.sourceSessionId)}` : null };
   }

@@ -1387,6 +1387,8 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
   final List<ChatMessage> _liveMessages = [];
   late final TaskChatTransport _transport = TaskChatTransport(
     taskId: widget.task.id,
+    taskName: widget.task.title,
+    taskShortCode: widget.task.taskShortCode,
     messages: _liveMessages,
     onChanged: () {
       if (mounted) setState(() {});

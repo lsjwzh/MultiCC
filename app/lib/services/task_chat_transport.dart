@@ -22,6 +22,8 @@ import 'workspace_service.dart';
 class TaskChatTransport {
   TaskChatTransport({
     required this.taskId,
+    this.taskName,
+    this.taskShortCode,
     required List<ChatMessage> messages,
     void Function()? onChanged,
     this.onRunBoundary,
@@ -37,6 +39,8 @@ class TaskChatTransport {
   }
 
   final String taskId;
+  final String? taskName;
+  final String? taskShortCode;
   late final TranscriptLiveFolder folder;
 
   /// Fired when the live stream crosses into a new run — the sheet inserts
@@ -63,7 +67,17 @@ class TaskChatTransport {
     for (final evt in event.slotEvents) {
       _handleSlotEvent(evt);
     }
+    _stampCurrentAttribution();
     return true;
+  }
+
+  void _stampCurrentAttribution() {
+    for (final message in [folder.currentMsg, folder.lastAssistantMsg]) {
+      if (message == null || message.role != MessageRole.assistant) continue;
+      message.taskId ??= taskId;
+      message.taskName ??= taskName;
+      message.taskShortCode ??= taskShortCode;
+    }
   }
 
   void _maybeRunBoundary(String runId) {

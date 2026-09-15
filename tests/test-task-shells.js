@@ -6,9 +6,26 @@ const { createTaskShellStore } = require('../src/task-shell/store');
 const { createTaskShellRuntime } = require('../src/task-shell/runtime');
 const { renderLazyContextPrompt, snapshotHistory, verifySnapshot } = require('../src/task-shell/context');
 const { createTaskShellHost } = require('../src/task-shell/host');
+const { displayMessages, displayTask } = require('../src/task-display-attribution');
 
 const { fixture } = require('./helpers/task-shell');
 const input = (key, taskId = null, extra = {}) => ({ clientMsgId: key, taskId, intent: 'work', text: key, ...extra });
+
+test('task-shell display attribution uses the registry code and preserves source tasks', () => {
+  const tasks = new Map([
+    ['tsk-current', { id: 'tsk-current', title: '当前任务完整名称' }],
+    ['tsk-source', { id: 'tsk-source', title: '来源任务完整名称' }],
+  ]);
+  const codeFor = id => id === 'tsk-source' ? 'S0UR' : 'CURR';
+  assert.equal(displayTask(tasks.get('tsk-current'), codeFor).taskShortCode, 'CURR');
+  assert.deepEqual(displayMessages([
+    { id: 'u1', role: 'user', content: '当前输入' },
+    { id: 'a1', role: 'assistant', content: '来源结论', taskId: 'tsk-source' },
+  ], tasks.get('tsk-current'), { getTask: id => tasks.get(id), codeFor }), [
+    { id: 'u1', role: 'user', content: '当前输入', taskId: 'tsk-current', taskName: '当前任务完整名称', taskShortCode: 'CURR' },
+    { id: 'a1', role: 'assistant', content: '来源结论', taskId: 'tsk-source', taskName: '来源任务完整名称', taskShortCode: 'S0UR' },
+  ]);
+});
 
 test('R01 R02: idle and occupied work both continue the server-authoritative current task', async t => {
   const f = fixture(t);

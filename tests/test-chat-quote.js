@@ -174,18 +174,20 @@ test('a bubble is read off its own DOM: provenance plus the text without the but
   const content = fakeNode({ classes: ['msg-content'], children: [markdown] });
   const del = fakeNode({ tagName: 'button', classes: ['msg-del'], text: '✕' });
   const fork = fakeNode({ tagName: 'button', classes: ['msg-fork'], text: '⧉' });
+  const tail = fakeNode({ classes: ['msg-task-tail'], text: '#A1B2 · 完善登录页面' });
   const node = fakeNode({
     classes: ['msg', 'assistant'],
     dataset: { msgId: 'codex-claude-chat-06:m_abc123', taskId: 'tsk_36ec81e8', taskName: '完善登录页面',
       sourceSessionId: 'codex-claude-chat-06', sourceMessageId: 'm_abc123', ts: String(TS) },
-    children: [content, del, fork],
+    children: [content, del, fork, tail],
   });
-  assert.equal(node.textContent, '被引用的正文✕⧉', 'the buttons really are inside the bubble');
+  assert.equal(node.textContent, '被引用的正文✕⧉#A1B2 · 完善登录页面', 'controls and tail really are inside the bubble');
   const block = quote.fromNode(node, zhT);
   assert.equal(block.split('\n')[0],
     '> 【引用】任务「完善登录页面」（tsk_36ec81e8） · 助手 · 09-14 01:56 · codex-claude-chat-06:m_abc123');
   assert.equal(block.split('\n')[1], '> 被引用的正文');
-  assert.ok(!block.includes('✕') && !block.includes('⧉'), 'action buttons are not part of the quote');
+  assert.ok(!block.includes('✕') && !block.includes('⧉') && !block.includes('#A1B2'),
+    'action buttons and the visual task tail are not part of the quoted body');
 });
 
 test('an assistant bubble quotes its exact source, not the rendered markdown', () => {

@@ -689,23 +689,34 @@ test('late task attribution is patched onto the bubbles already on screen', () =
   const user = view.renderMessage({ id: 'sess-1:m_def', role: 'user', content: '继续', sourceMessageId: 'm_def' });
   messagesEl.appendChild(user);
   messagesEl.appendChild(assistant);
-  const textBefore = assistant.textContent;
+  const assistantNodeBefore = assistant;
 
   // The turn's task is decided when the turn ends — after these bubbles were
   // rendered — so the annotation arrives as a separate, id-addressed patch.
   const applied = view.annotateAttribution([
-    { id: 'sess-1:m_abc', turnId: 'turn_9', taskId: 'tsk_1', taskName: '修登录页', auxRunId: 'run_3' },
-    { id: 'm_def', turnId: 'turn_9', taskId: 'tsk_1', taskName: '修登录页' },
+    { id: 'sess-1:m_abc', turnId: 'turn_9', taskId: 'tsk_1', taskName: '修登录页面并补回归', taskShortCode: 'A1B2', auxRunId: 'run_3' },
+    { id: 'm_def', turnId: 'turn_9', taskId: 'tsk_1', taskName: '修登录页面并补回归', taskShortCode: 'A1B2' },
   ]);
 
   assert.equal(applied, 2);
   assert.equal(messagesEl.children.length, 2, 'patching must not re-render the list');
   assert.equal(assistant.dataset.taskId, 'tsk_1');
   assert.equal(assistant.dataset.auxRunId, 'run_3');
-  assert.equal(assistant.textContent, textBefore, 'the visible bubble is untouched');
+  assert.equal(messagesEl.children[1], assistantNodeBefore, 'the visible bubble is patched, not replaced');
+  assert.equal(assistant.querySelector('.msg-task-tail').textContent, '#A1B2 · 修登录页面并补回归');
   assert.equal(user.dataset.taskId, 'tsk_1');
-  assert.equal(user.dataset.taskName, '修登录页');
+  assert.equal(user.dataset.taskName, '修登录页面并补回归');
   assert.equal(user.dataset.turnId, 'turn_9');
+  assert.equal(user.querySelector('.msg-task-tail').textContent, '#A1B2 · 修登录页面并补回归');
+});
+
+test('task tails stay absent until the server supplies its registry code', () => {
+  const { view } = fixture();
+  const unresolved = view.renderMessage({ id: 'm1', role: 'user', content: '继续', taskId: 'tsk_1', taskName: '任务一' });
+  const attributed = view.renderMessage({ id: 'm2', role: 'assistant', content: '完成', taskId: 'tsk_2', taskName: '很长的任务名称用于验证省略规则', taskShortCode: 'z9x8' });
+  assert.equal(unresolved.querySelector('.msg-task-tail'), null);
+  assert.equal(attributed.querySelector('.msg-task-tail').textContent, '#Z9X8 · 很长的任务名称用于验…');
+  assert.equal(attributed.querySelector('.msg-task-tail').title, '#Z9X8 · 很长的任务名称用于验证省略规则');
 });
 
 test('an annotation for a message that is not on screen is ignored, not fatal', () => {
