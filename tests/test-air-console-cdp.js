@@ -1,9 +1,11 @@
 'use strict';
-// 这组断言盯的是真实 Air 交互模型的四处改动，都在真浏览器里跑：
+// 这组断言盯的是真实 Air 交互模型的五处改动，都在真浏览器里跑：
 //   ① 控制台是浮层，不是页面 —— 打开它不改地址、不卸载当前任务；
 //   ② 侧栏的任务带只装「最近」，完整列表（跨全部目录 + 搜索 + 筛选）搬进控制台；
 //   ③ 运行中的任务和它所在的目录，在侧栏 / 控制台 / 目录页 / 页头都带同一圈彩虹；
-//   ④ ⌘K 一次搜目录和任务两类对象。
+//   ④ ⌘K 一次搜目录和任务两类对象；
+//   ⑤ 控制台的统计压成一条窄读数带，「谁在等我」只留最急的 5 条，整份清单在它
+//      自己的页上（?view=attention）。
 // 这些行为靠 DOM/地址状态判断，唯一量位置的地方（滑入）会先把动画跑完。
 // 例外是③里的「圈真的画出来了吗」—— 那一处必须读像素，理由见 ringEdges。
 const test = require('node:test'), assert = require('node:assert/strict');
@@ -344,6 +346,175 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
     assert.ok(await page.waitFor(`!document.body.classList.contains('console-open')`));
     assert.equal(await page.evaluate(`document.documentElement.scrollWidth<=innerWidth`), true);
     await page.screenshot('05-mobile-sidebar');
+  });
+
+  console.log('截图目录: ' + shots);
+});
+
+// 控制台的第一格是「谁在等我」，它一长就把下面整片推走。这里用一个 8 条待办的
+// 现场确认三件事：面板里只画最急的 5 条、总数照报、完整清单在它自己的页上（而那一页
+// 是个能直接打开、能返回、地址里留得住的真页面）。顺带把「统计读数带压扁了」钉住 ——
+// 它是这次「留更多空间给任务」的兑现方式，光看截图不算数。
+test('the console shows only the 5 most urgent waits and hands the rest to their own page', async t => {
+  if (!findChromeBinary()) return t.skip('Chrome required');
+  const routes = {}, publicDir = path.resolve(__dirname, '../public');
+  const shots = path.join(os.tmpdir(), 'multicc-air-attention-qa');
+  const json = body => ({ headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  for (const file of fs.readdirSync(publicDir).filter(f => /\.(js|css|html)$/.test(f))) {
+    const type = file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html';
+    routes['/' + file] = { body: fs.readFileSync(path.join(publicDir, file)), headers: { 'content-type': type } };
+  }
+  for (const file of fs.readdirSync(path.join(publicDir, 'shared')).filter(f => f.endsWith('.js'))) {
+    routes['/shared/' + file] = { body: fs.readFileSync(path.join(publicDir, 'shared', file)), headers: { 'content-type': 'text/javascript' } };
+  }
+  routes['/air'] = routes['/air.html'];
+  routes['/vendor/dompurify/purify.min.js'] = { body: fs.readFileSync(path.join(publicDir, 'vendor/dompurify/purify.min.js')), headers: { 'content-type': 'text/javascript' } };
+  routes['/auth-client.js'] = { headers: { 'content-type': 'text/javascript' }, body: `window.multiccWsUrl=async url=>url+(url.includes('?')?'&':'?')+'ticket=fixture'` };
+
+  const directories = [
+    { id: 'd1', name: 'MultiCC 主仓', path: '/projects/multicc' },
+    { id: 'd2', name: 'North · 商城', path: '/projects/storefront' },
+  ];
+  const configuration = { cli: 'codex', provider: 'codex-lab', providerName: 'Lab Responses', providerSelection: null,
+    model: 'gpt-5.5', effectiveModel: 'gpt-5.5', effort: 'medium' };
+  const task = (id, dirId, title, status, runState, updatedAt, resource) => ({ id, dirId, title, recordType: 'planned', workflowStage: 'doing',
+    status, runState, updatedAt, resource: resource || { residency: 'planned', lease: 'idle' }, configuration });
+  const live = { residency: 'materialized', lease: 'running' };
+  // 紧急度分层：等回答(0) → 出错(1) → 在跑(3)。同一层里按更新时间倒序，所以
+  // 「最急的 5 条」是确定的：w1 w2 e1 e2 r1，落选的正是 r2 r3 r4。
+  const airTasks = [
+    task('w1', 'd1', '等回答：发布口径', 'active', 'waiting', 800, null),
+    task('w2', 'd2', '等回答：结算页文案', 'active', 'waiting', 700, null),
+    task('e1', 'd1', '出错：导出失败重试', 'active', 'error', 600, null),
+    task('e2', 'd2', '出错：兼容矩阵', 'active', 'error', 500, null),
+    task('r1', 'd1', '在跑：登录页空状态', 'active', 'running', 400, live),
+    task('r2', 'd2', '在跑：投放日报', 'active', 'running', 300, live),
+    task('r3', 'd1', '在跑：图谱回填', 'active', 'running', 200, live),
+    task('r4', 'd2', '在跑：目录巡检', 'active', 'running', 100, live),
+    task('done1', 'd1', '已完成：收口控制台', 'done', 'succeeded', 50, null),
+  ];
+  routes['/api/air'] = () => json({ ok: true, directories, clis: ['codex'], migration: { errors: [] }, tasks: airTasks, sessions: [] });
+  routes['/api/cron'] = () => json([]);
+  routes['/api/docs-registry'] = () => json([]);
+  for (const entry of airTasks) {
+    routes[`/api/air/tasks/${entry.id}`] = routes[`/api/task-shell-tasks/${entry.id}`] = () => json({ ok: true,
+      task: entry, sessionId: `task-${entry.id}`, ownerShellId: 'shell-a', readOnly: false,
+      execution: { busy: false, status: 'idle' }, resource: entry.resource, attribution: {},
+      roleBindings: { version: 0, bindings: [] }, messages: [] });
+    routes[`POST /api/task-board/tasks/${entry.id}/chat-session`] = () => json({ ok: true, sessionId: `task-${entry.id}` });
+  }
+  routes['POST /api/task-shells'] = () => json({ id: 'shell-a' });
+
+  await withCdpHarness({ routes, screenshotDir: shots }, async page => {
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
+    await page.navigate('/air?dir=d1&task=w1');
+    assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='等回答：发布口径'`));
+
+    // ── ① 统计压成读数带：卡片比原来矮、数字比原来小 ──────────────────────
+    await page.evaluate(`document.getElementById('overview').click()`);
+    assert.ok(await page.waitFor(`document.body.classList.contains('console-open')`));
+    assert.ok(await page.waitFor(`document.querySelectorAll('.admin-stats .admin-stat').length===4`));
+    const stats = await page.evaluate(`(() => {
+      const card = document.querySelector('.admin-stat');
+      return { height: Math.round(card.getBoundingClientRect().height),
+        fontSize: parseFloat(getComputedStyle(card.querySelector('strong')).fontSize),
+        count: document.querySelectorAll('.admin-stats .admin-stat').length };
+    })()`);
+    // 原来是 116px 高、27px 的数字。这里不钉死新数值（那会在下次微调时变成噪声），
+    // 只钉住「确实压扁了」这条意图。
+    assert.ok(stats.height <= 84, `统计卡要压到 84px 以内（实测 ${stats.height}）`);
+    assert.ok(stats.fontSize <= 20, `统计数字要压到 20px 以内（实测 ${stats.fontSize}）`);
+    assert.equal(stats.count, 4, '四个数字一个不少');
+    // 统计带在面板里占的高度，要小于它下面那格「谁在等我」——空间是往任务让的。
+    const bands = await page.evaluate(`(() => {
+      const band = document.querySelector('.admin-stats'), attention = document.querySelector('.console-attention');
+      return { stats: Math.round(band.getBoundingClientRect().height),
+        attention: Math.round(attention.getBoundingClientRect().height) };
+    })()`);
+    assert.ok(bands.stats < bands.attention, `统计带不该高过任务清单（统计 ${bands.stats} vs 清单 ${bands.attention}）`);
+
+    // ── ② 面板里只画最急的 5 条，总数照报 ─────────────────────────────────
+    assert.equal(await page.evaluate(`document.querySelectorAll('.console-attention .admin-recent-row').length`), 5, '面板第一格只留 5 条');
+    const shown = await page.evaluate(`[...document.querySelectorAll('.console-attention .admin-recent-row strong')].map(el=>el.textContent)`);
+    assert.deepEqual(shown, ['等回答：发布口径', '等回答：结算页文案', '出错：导出失败重试', '出错：兼容矩阵', '在跑：登录页空状态'],
+      '留下的仍是按紧急度排在最前的那几条');
+    assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('.console-attention .mc-status-label')].map(el=>el.textContent)`),
+      ['等待回答', '等待回答', '执行异常', '执行异常', '执行中']);
+    assert.equal(await page.evaluate(`document.querySelector('.console-attention .admin-panel-note').textContent`), '8 条 · 显示最急的 5 条',
+      '封顶不等于假装只有这几条，总数要照报');
+    // 侧栏那颗徽标数的是全部 8 条，不是面板里画出来的 5 条 —— 两处说的是同一件事。
+    assert.equal(await page.evaluate(`document.getElementById('console-badge').textContent`), '8', '徽标仍是全部待办数');
+    await page.screenshot('06-console-attention-capped');
+
+    // ── ③ 「查看全部」进独立页：面板让开，地址留住，清单给全 ───────────────
+    const entry = await page.evaluate(`(() => {
+      const button = [...document.querySelectorAll('.console-attention .admin-panel-head button')].find(b => b.textContent.includes('查看全部'));
+      if (!button) return null;
+      const text = button.textContent; button.click(); return text;
+    })()`);
+    assert.equal(entry, '查看全部 8 条 ›');
+    assert.ok(await page.waitFor(`document.body.classList.contains('console-open')===false`), '进整页时控制台让开');
+    assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='谁在等我'`), '页头换成整页自己的标题');
+    assert.equal(await page.evaluate(`document.getElementById('task-breadcrumb').textContent`), 'MultiCC Air › 控制台');
+    assert.equal(await page.evaluate(`new URLSearchParams(location.search).get('view')`), 'attention', '整页有自己的地址');
+    assert.equal(await page.evaluate(`location.search.includes('task=')`), false, '整页不是某个任务的任务页');
+    assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('#admin-content .admin-recent-row strong')].map(el=>el.textContent)`),
+      ['等回答：发布口径', '等回答：结算页文案', '出错：导出失败重试', '出错：兼容矩阵', '在跑：登录页空状态', '在跑：投放日报', '在跑：图谱回填', '在跑：目录巡检'],
+      '整页给全 8 条，顺序与面板那一格一致');
+    assert.equal(await page.evaluate(`document.getElementById('admin-content').innerText.includes('已完成：收口控制台')`), false, '已完成的不进这份清单');
+    assert.equal(await page.evaluate(`document.querySelector('#admin-content .admin-panel-note').textContent`), '8 条 · 按紧急度排序，点击直达');
+    await page.screenshot('07-attention-page');
+
+    // 地址可直达：刷新/分享这条链接都落到同一页，不经过控制台。
+    await page.navigate('/air?view=attention');
+    assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='谁在等我'`));
+    assert.equal(await page.evaluate(`document.body.classList.contains('console-open')`), false, '直接打开整页不会顺手弹出控制台');
+    assert.equal(await page.evaluate(`document.querySelectorAll('#admin-content .admin-recent-row').length`), 8);
+
+    // 整页里点一条任务：落到任务页，不是回到控制台。
+    await page.evaluate(`document.querySelectorAll('#admin-content .admin-recent-row')[5].click()`);
+    assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='在跑：投放日报'`), '整页里点一条直达该任务');
+    assert.equal(await page.evaluate(`location.search.includes('task=r2')`), true);
+    assert.equal(await page.evaluate(`document.body.classList.contains('console-open')`), false);
+
+    // ── ④ 返回控制台：回到的是那层面板，不是任务页 ─────────────────────────
+    await page.navigate('/air?view=attention');
+    assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='谁在等我'`));
+    await page.evaluate(`[...document.getElementById('admin-actions').querySelectorAll('button')].find(b => b.textContent.includes('返回控制台')).click()`);
+    assert.ok(await page.waitFor(`document.body.classList.contains('console-open')`), '「返回控制台」把面板打开');
+    // 面板内容在 render 里就画好了，但这一页是后台 target、不产帧，滑动过渡不往前走，
+    // 面板的 visibility 还停在 hidden —— 那状态下 innerText 读出来是空的（见 settle）。
+    await settle(page);
+    assert.ok(await page.evaluate(`document.getElementById('console-content').innerText.includes('谁在等我')`), '回到的是那层面板，不是任务页');
+    assert.equal(await page.evaluate(`document.querySelectorAll('.console-attention .admin-recent-row').length`), 5);
+
+    // ── ⑤ 没超过 5 条时没有第二页可去，出口不出现 ─────────────────────────
+    routes['/api/air'] = () => json({ ok: true, directories, clis: ['codex'], migration: { errors: [] },
+      tasks: airTasks.filter(entry => ['w1', 'e1', 'r1'].includes(entry.id)), sessions: [] });
+    await page.navigate('/air?view=overview');
+    assert.ok(await page.waitFor(`document.body.classList.contains('console-open')`));
+    assert.ok(await page.waitFor(`document.querySelectorAll('.console-attention .admin-recent-row').length===3`));
+    assert.equal(await page.evaluate(`document.querySelector('.console-attention .admin-panel-note').textContent`), '按紧急度排序，点击直达',
+      '没封顶就不改说明文案');
+    assert.equal(await page.evaluate(`[...document.querySelectorAll('.console-attention .admin-panel-head button')].some(b => b.textContent.includes('查看全部'))`), false,
+      '没超过就不该有一个点了没反应的「查看全部」');
+    assert.equal(await page.evaluate(`document.getElementById('console-badge').textContent`), '3');
+    await page.screenshot('08-console-attention-short');
+
+    // ── 窄屏：压扁后的读数带和整页都不能横向溢出 ───────────────────────────
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+    await page.navigate('/air?view=attention');
+    assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='谁在等我'`));
+    assert.equal(await page.evaluate(`document.documentElement.scrollWidth<=innerWidth`), true, '整页在窄屏不横向溢出');
+    await page.screenshot('09-attention-mobile');
+    await page.evaluate(`document.getElementById('overview').click()`);
+    assert.ok(await page.waitFor(`document.body.classList.contains('console-open')`));
+    const mobile = await page.evaluate(`(() => { const card = document.querySelector('.admin-stat');
+      return { height: Math.round(card.getBoundingClientRect().height),
+        overflow: document.documentElement.scrollWidth <= innerWidth }; })()`);
+    assert.equal(mobile.overflow, true, '窄屏下控制台也不横向溢出');
+    assert.ok(mobile.height <= 80, `窄屏下统计卡同样矮（实测 ${mobile.height}）`);
+    await page.screenshot('10-mobile-console-stats');
   });
 
   console.log('截图目录: ' + shots);
