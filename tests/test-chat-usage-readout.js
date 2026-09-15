@@ -264,3 +264,20 @@ test('rendered text is escaped, so a provider label cannot inject markup', () =>
   assert.doesNotMatch(panel.innerHTML, /<img/);
   assert.match(panel.innerHTML, /&lt;img/);
 });
+
+test('memory manifests with no task id retain distinct excerpts, managed budget and omission reasons', async () => {
+  const trace = { traceId: 'mem', currentTask: { taskId: 'self' }, budget: { used: 450, limit: 8000 },
+    retained: [{ id: 'prior' }], omitted: [{ id: '<omitted>', reason: 'budget' }], sources: [
+      { id: 'memory:a', mode: 'memory:shared', path: 'shared/a.md', version: '111111111111', taskName: 'a', truncated: true },
+      { id: 'memory:b', mode: 'memory:shared', path: 'shared/b.md', version: '222222222222', taskName: 'b' },
+    ] };
+  const bar = fakeElement(), panel = fakeElement();
+  const readout = createUsageReadout({ bar, panel, document: fakeElement(), loadContextTrace: async () => ({ ...trace,
+    sources: trace.sources.map((s, i) => ({ ...s, excerpt: `excerpt ${i} <script>` })) }) });
+  readout.render({ contextTrace: trace }); bar.fire('click');
+  assert.match(panel.innerHTML, /450 \/ 8000/); assert.match(panel.innerHTML, /记忆·目录/);
+  assert.match(panel.innerHTML, /已截断/); assert.match(panel.innerHTML, /&lt;omitted&gt;/);
+  assert.doesNotMatch(panel.innerHTML, /0 条消息/);
+  await panel.listeners.get('click')({ target: { closest: () => true } });
+  assert.match(panel.innerHTML, /excerpt 0 &lt;script&gt;/); assert.match(panel.innerHTML, /excerpt 1 &lt;script&gt;/);
+});

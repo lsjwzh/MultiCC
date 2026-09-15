@@ -52,6 +52,7 @@ const { redactProviderRouteCapability } = require('../observability');
 const { createWsEnvelope } = require('../api-contract');
 const { taskShortCode, taskIdForShortCode } = require('../classify/task-short-code');
 const { composeMessage, renderPrompt } = require('../message-composer');
+const managedContext = require('./managed-context');
 const {
   rememberActiveCliState, renderHandoffPrompt, stateSummary: cliStateSummary,
   buildHandoffCheckpoint, clearAllNativeCliStates,
@@ -1497,29 +1498,18 @@ function createChatTurnEngine(deps) {
     // For codex:  first turn → exec --json, subsequent → exec resume <id> --json.
     const isFirstTurn = turnRequest.execution.isFirstTurn;
 
-    // Unified message assembly (src/message-composer.js — message-builder Phase 2).
-    // composeMessage builds the prompt text (cross-agent notes → gateway/dispatch →
-    // goal-limit → user text → ultracode suffix) AND fires the notes-delivered side
-    // effects, byte-for-byte identical to the former inline assembly that lived here
-    // (regression-gated by tests/test-message-composer-golden.js suite 1). The
-    // notes side effects now live INSIDE composeMessage, so they are intentionally
-    // NOT duplicated here. renderPrompt() also provides stable text for retry and
-    // continuation turns; every process invocation is built by the adapter.
-    let envelope;
+    let envelope, managed;
     try {
+      managed = managedContext.prepareManagedContext({ host: taskContextHost, memory: folderMemory, sessionName, persisted, turn, opts, text, isFirstTurn });
       envelope = composeMessage({
         text, persisted, sessionName,
-        // taskContextSeed: a task-bound session's compiled ledger, injected as
-        // a prompt layer for its first turn. It rides the send options (not the
-        // record) so it is one-shot by construction — nothing to consume, and a
-        // turn that never reached the provider simply gets it again.
         opts: {
-          isFirstTurn, goalLimits, taskContextSeed: taskContextHost?.taskShellContextSeed?.(sessionName, opts.taskContextSeed, isFirstTurn) ?? opts.taskContextSeed,
+          isFirstTurn, goalLimits, taskContextSeed: managed?.seed ?? taskContextHost?.taskShellContextSeed?.(sessionName, opts.taskContextSeed, isFirstTurn) ?? opts.taskContextSeed,
           mode: cs.cli === 'claude' ? 'streaming' : 'per-turn',
         },
         deps: {
-          resolveRolePrompt: folderMemory.resolveRolePrompt, multiccImgHint: MULTICC_IMG_HINT,
-          buildCliHandoffPrompt: (session) => renderHandoffPrompt(session && session.pendingCliHandoff),
+          resolveRolePrompt: managed?.rolePrompt || folderMemory.resolveRolePrompt, multiccImgHint: MULTICC_IMG_HINT,
+          buildCliHandoffPrompt: (session) => managed ? '' : renderHandoffPrompt(session && session.pendingCliHandoff),
           buildGatewayPrompt, buildDispatchContextPrompt, buildGoalLimitNote,
           pendingNotesFor, saveNotes, appendEvent, workspaceBroadcast, chatBroadcast,
           normalizeEffort, cliEffortLevel,
@@ -1548,7 +1538,7 @@ function createChatTurnEngine(deps) {
     const prepareInvocation = (attemptOptions = {}) => invocationFactory.prepare({
       request: turnRequest, turn, session: persisted, provider, envelope,
       attemptNo: ++providerAttemptNo,
-      ...attemptOptions,
+      ...(managed ? managed.attempt(envelope, attemptOptions) : attemptOptions),
     });
     const initialInvocation = prepareInvocation({ reasonCode: 'route_resolved', ...autoTurn.initial() });
     preparationAttempt = initialInvocation.attempt;
@@ -1707,7 +1697,7 @@ function createChatTurnEngine(deps) {
       // stdin), so t2 === t1. The real upstream HTTP request happens INSIDE the
       // CLI process and is not observable from the server; t2 is our boundary.
       turnTiming.markSpawned(sessionName, turn.turnId, spawnTs);
-      turnTiming.markSent(sessionName, turn.turnId, spawnTs);
+      turnTiming.markSent(sessionName, turn.turnId, spawnTs); if (proc.pid) managedContext.contextSent(turn);
       let stderrBuf = '';
       let stderrPending = '';
       const isActiveProc = () => cs.claudeProc === proc && isCurrentTurnRunner(cs, turn, runner);
@@ -2385,7 +2375,7 @@ function createChatTurnEngine(deps) {
     }, {
       onTiming: (phase) => {
         if (phase === 'spawned') { turnTiming.markSpawned(sessionName, turn.turnId); getWorkspaceAdmission?.()?.spawned(sessionName, { pid: chatStream.status(sessionName)?.pid }); }
-        else if (phase === 'sent') turnTiming.markSent(sessionName, turn.turnId);
+        else if (phase === 'sent') { turnTiming.markSent(sessionName, turn.turnId); managedContext.contextSent(turn); }
         else if (phase === 'firstByte') turnTiming.markFirstByte(sessionName, turn.turnId);
       },
     }), {
@@ -2447,7 +2437,7 @@ function createChatTurnEngine(deps) {
 
   // Map both runner endings from the pure planner to host services.
   const turnFinalizationExecutor = createTurnFinalizationExecutor({
-    recordRunResult: (context, resolved) => getWorkspaceAdmission?.()?.finalized(context, resolved),
+    recordRunResult: (context, resolved) => { managedContext.contextCompleted(context, resolved); return getWorkspaceAdmission?.()?.finalized(context, resolved); },
     persistAssistant(context, append) {
       return persistFinalAssistantResult(context.sessionName, context.cs, context.turn, context.runner, {
         role: 'assistant',

@@ -111,7 +111,7 @@ test('surfaces sibling conclusions from the latest handoff snapshot', () => {
 
 // ── 预算裁剪 ───────────────────────────────────────────────────────────────
 
-test('tiny budget falls back to title-only lines with truncation note', () => {
+test('tiny budget omits sources honestly and includes wrappers in the bound', () => {
   const ports = basePorts({
     tasks: { tsk_self: { id: 'tsk_self', dirId: 'd1', title: '当前任务', parentTaskId: 'tsk_parent' } },
     memory: { tsk_parent: '长记忆'.repeat(400) },
@@ -119,14 +119,12 @@ test('tiny budget falls back to title-only lines with truncation note', () => {
     groups: { tsk_self: { taskIds: ['tsk_self', 'tsk_a'] } },
   });
   const text = buildTaskGraphContext(ports, { taskId: 'tsk_self', tokenBudget: 10 });
-  assert.match(text, /超出 token 预算，已截断/);
-  // 兜底只剩标题行（第一行）。
-  assert.match(text, /· 父任务 父任务/);
-  assert.doesNotMatch(text, /长记忆/);
-  // 兜底时来源仍全列，但逐条标记截断（图谱关系是真的，节选没进上下文）。
+  assert.equal(text, '');
   const detail = buildTaskGraphContextDetail(ports, { taskId: 'tsk_self', tokenBudget: 10 });
-  assert.ok(detail.sources.length >= 2);
-  assert.ok(detail.sources.every(source => source.truncated === true));
+  assert.deepEqual(detail.sources, []);
+  assert.ok(detail.omitted.length >= 2);
+  assert.ok(detail.budget.used <= 10);
+
 });
 
 test('no adjacency at all returns empty string', () => {
@@ -223,3 +221,21 @@ test('runtime-style degradation: absent or throwing port yields empty context', 
   assert.equal(contextOf('tsk_x').text, '');
   assert.equal(contextOf(null).text, '');
 });;
+
+test('query ranks matching neighbors, deduplicates relations, and excludes failed conclusions and foreign projects', () => {
+  const ports = basePorts({
+    tasks: {
+      tsk_a: { id: 'tsk_a', dirId: 'd1', title: '园艺' },
+      tsk_b: { id: 'tsk_b', dirId: 'd1', title: '数据库优化', snapshotIds: ['bad'] },
+      tsk_foreign: { id: 'tsk_foreign', dirId: 'd2', title: 'SECRET' },
+    },
+    groups: { tsk_self: { taskIds: ['tsk_self', 'tsk_a', 'tsk_b', 'tsk_foreign'] } },
+    links: { tsk_self: ['tsk_b', 'tsk_foreign'] },
+    snapshots: { bad: { messages: [{ role: 'assistant', content: 'FAILED', error: true }] } },
+  });
+  const detail = buildTaskGraphContextDetail(ports, { taskId: 'tsk_self', query: '数据库' });
+  assert.equal(detail.sources[0].taskId, 'tsk_b');
+  assert.equal(detail.sources.filter(s => s.taskId === 'tsk_b').length, 1);
+  assert.doesNotMatch(detail.text, /SECRET|FAILED/);
+  assert.equal(lastAssistantText({ messages: [{ role: 'assistant', partial: true, content: 'partial' }] }), '');
+});

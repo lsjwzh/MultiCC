@@ -46,20 +46,21 @@ function createTaskShellRuntime(ports) {
   // 同壳前序结论）。缺失或抛错一律降级为 null——上下文增强绝不能挡住投递。
   // 返回 { text, sources }；旧式只返回纯字符串的 port 也兼容（sources 为空）。
   // sources 是「引用来源」的凭据：哪个任务、什么关系、实际注入了哪一行。
-  function graphContextOf(taskId) {
+  function graphContextOf(taskId, options) {
     if (typeof ports.taskGraphContext !== 'function') return null;
     try {
-      const value = ports.taskGraphContext(taskId);
+      const value = ports.taskGraphContext(taskId, options);
       if (typeof value === 'string') return value ? { text: value, sources: [] } : null;
       if (value && typeof value === 'object') {
         const text = String(value.text || '');
         const sources = (Array.isArray(value.sources) ? value.sources : [])
           .filter(source => source && typeof source.taskId === 'string' && source.taskId);
-        return text || sources.length ? { text, sources } : null;
+        return text || sources.length || value.candidates ? { ...value, text, sources } : null;
       }
       return null;
-    } catch (_) { return null; }
+    } catch (error) { return { text: '', sources: [], diagnostics: [{ reason: error.message }] }; }
   }
+  const contextPlanner = require('./context-plan').createContextPlanner({ store, getRecord, getHistory, getTask, graphContextOf });
   function shell(id) {
     const value = store.get('shell', identifier(id, 'shellId'));
     if (!value) throw failure('shell_not_found', 'shell_not_found', 404);
@@ -162,7 +163,7 @@ function createTaskShellRuntime(ports) {
     const receipt = store.get('receipt', identifier(receiptId, 'receiptId'));
     if (!receipt || receipt.taskId !== owner.id) throw failure('receipt_not_found', 'receipt_not_found', 404);
     const current = store.get('task', receipt.attributedTaskId || receipt.taskId) || owner;
-    const sources = [];
+    const sources = require('./context-plan').tracePlan(receipt.contextPlan, includeMessages, store);
     const seen = new Set();
     for (const [mode, ids] of [
       ['imported', receipt.contextSeedSnapshotIds],
@@ -186,7 +187,7 @@ function createTaskShellRuntime(ports) {
       sources.push({
         taskId: source.taskId,
         taskName: String(source.taskName || source.taskId),
-        mode,
+        mode, id: source.id, version: source.version, truncated: source.truncated === true, reason: source.reason,
         messageCount: 0,
         estimatedTokens: Number(source.estimatedTokens) || 0,
         ...(includeMessages && typeof source.excerpt === 'string' ? { excerpt: source.excerpt } : {}),
@@ -198,6 +199,7 @@ function createTaskShellRuntime(ports) {
       currentTask: { taskId: current.id, taskName: current.title || current.id, mode: 'native' },
       sources,
       managedOnly: true,
+      ...(receipt.contextPlan ? { budget: receipt.contextPlan.budget, contextStatus: receipt.contextPlan.status, retained: receipt.contextPlan.retained, omitted: receipt.contextPlan.omitted, diagnostics: receipt.contextPlan.diagnostics } : {}),
     };
   }
   function savingsFor(s, taskId) {
@@ -512,22 +514,7 @@ function createTaskShellRuntime(ports) {
         checkControl(p, state);
         result = await cancel(task.sessionId, p.turnId);
       } else {
-        const snapshotIds = [...new Set([...(task.snapshotIds || []), ...(task.handoffSnapshotIds || [])])];
-        const snapshots = snapshotIds.map(id => {
-          const snapshot = store.get('snapshot', id);
-          if (!verifySnapshot(snapshot, id)) throw failure('snapshot_unverified');
-          return snapshot;
-        });
         const metadata = receipt.taskMetadata || {};
-        // P3 图谱上下文：仅身份锁定的任务首轮注入（父任务记忆 / 同组摘要 /
-        // 同壳前序结论），跟随 taskStart 一次性进提示层，不进 transcript。
-        // 注入了什么就记什么：sources 落 receipt，供「引用来源」面板追溯。
-        const graph = receipt.taskIdentityLocked && metadata.taskStart !== false
-          ? graphContextOf(task.id) : null;
-        const graphSeed = graph ? graph.text : '';
-        // Stable key is the handoff protocol across the SQLite/outbox boundary.
-        receipt.contextSeedSnapshotIds = snapshotIds;
-        if (graph && graph.sources.length) receipt.graphContextSources = graph.sources;
         receipt.status = 'delivering'; store.set('receipt', receipt.id, receipt);
         result = await send(task.sessionId, p.text, {
           taskId: task.id, taskStart: receipt.taskIdentityLocked ? metadata.taskStart !== false : true,
@@ -537,23 +524,18 @@ function createTaskShellRuntime(ports) {
           receivedAt: receipt.createdAt,
           ...(p.goalLimits ? { goalLimits: p.goalLimits } : {}),
           ...(p.intent !== 'work' ? { taskShellControl: { intent: p.intent, turnId: p.turnId } } : {}),
-          taskContextSeed: renderSnapshots(snapshots) + graphSeed,
+          taskContextSeed: '',
           taskShellAutoClassify: p.intent === 'work' && p.newTask !== true && !receipt.taskIdentityLocked && !taskActions.ownerOf(task)?.standalone,
           ...(p.intent === 'answer' ? { userInputRequestId: p.requestId } : {}),
           ...(p.intent === 'steer' || ['continue', 'queued'].includes(receipt.decision) ? { originContinue: true } : {}),
         });
       }
       if (!result?.ok) throw failure(result?.code || 'delivery_failed', result?.error || result?.code || 'delivery_failed');
+      receipt = { ...receipt, ...store.get('receipt', receipt.id) };
       receipt.status = 'accepted'; receipt.error = null;
       receipt.result = { ok: true, taskId: task.id, sessionId: task.sessionId, receiptId: receipt.id, decision: receipt.decision };
       store.set('receipt', receipt.id, receipt);
       if (receipt.payload.intent === 'work') store.transaction(() => {
-        const delivered = store.get('task', task.id);
-        if (delivered.handoffSnapshotIds?.length) {
-          const consumed = new Set(receipt.contextSeedSnapshotIds || []);
-          delivered.handoffSnapshotIds = delivered.handoffSnapshotIds.filter(id => !consumed.has(id));
-          store.set('task', task.id, delivered);
-        }
         const owner = shell(receipt.shellId);
         if (owner.cursorReceiptId !== receipt.id || (owner.cursorVersion || 0) !== receipt.cursorVersion) return;
         owner.currentTaskId = task.id;
@@ -563,6 +545,7 @@ function createTaskShellRuntime(ports) {
       });
       return receipt.result;
     } catch (error) {
+      receipt = { ...receipt, ...store.get('receipt', receipt.id) };
       const notDelivered = error.code === 'stale_control';
       receipt.status = notDelivered ? 'rejected' : 'failed'; receipt.error = cleanError(error);
       store.set('receipt', receipt.id, receipt);
@@ -611,20 +594,16 @@ function createTaskShellRuntime(ports) {
     }
     if (!receipt || receipt.taskId !== task.id) throw failure('task_shell_context_unavailable', 'No active task-shell delivery was found', 409);
     const s = shell(receipt.shellId);
-    if (query.task_id) taskFor(s, query.task_id);
-    const page = Object.keys(query).length ? contextPage(shellRecords(chatScope(s.id), getHistory, ports.getLiveState), query) : null;
+    let records = shellRecords(chatScope(s.id), getHistory, ports.getLiveState);
+    if (query.task_id && !store.get('link', `${s.id}:${query.task_id}`)) {
+      records = require('./context-access').relatedHistory({ store, task, targetId: query.task_id,
+        getTask, getRecord, getHistory, getLiveState: ports.getLiveState, graph: graphContextOf(task.id),
+        taskDirectory: ports.taskDirectory, isDeletedTask: ports.isDeletedTask });
+    } else if (query.task_id) taskFor(s, query.task_id);
+    const page = Object.keys(query).length ? contextPage(records, query) : null;
     const snapshots = page ? pageSnapshots(page) : contextSnapshots(s, task.id);
     const rendered = renderSnapshots(snapshots);
-    // P3：get_task_context / refill 的返回里同样拼上图谱邻接块，来源按
-    // kind+taskId 去重后并入 receipt（补取轮的图谱可能与首轮略有出入）。
-    const graph = graphContextOf(task.id);
-    const graphBlock = graph ? graph.text : '';
-    if (graph && graph.sources.length) {
-      const seenGraph = new Set((receipt.graphContextSources || [])
-        .map(source => `${source.kind}:${source.taskId}`));
-      receipt.graphContextSources = [...(receipt.graphContextSources || []),
-        ...graph.sources.filter(source => !seenGraph.has(`${source.kind}:${source.taskId}`))];
-    }
+    const graphBlock = ''; // Explicit history reads do not repeat automatic graph injection.
     receipt.contextSavings = {
       estimatedTokens: 0,
       originalEstimatedTokens: receipt.contextSavings?.originalEstimatedTokens
@@ -735,6 +714,9 @@ function createTaskShellRuntime(ports) {
     return { ok: true };
   }
   return {
+    prepareContext: (id, options) => contextPlanner.prepare(owns(id), options),
+    contextSent: (id, receipt, turn) => { const task = owns(id); if (task) contextPlanner.sent(task, receipt, turn); },
+    contextComplete: (id, receipt, turn, success) => { const task = owns(id); if (task) contextPlanner.complete(task, receipt, turn, success); },
     separation, roles, migrateTaskSessions: taskFirst.migrate, listTasks: () => store.list('task'),
     // 任务图谱的只读快照：壳、持久任务、link 三张表一次拉全，供路由层聚合。
     taskGraphData: () => ({ shells: store.list('shell'), tasks: store.list('task'), links: store.list('link') }),

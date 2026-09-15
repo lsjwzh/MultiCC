@@ -1,3 +1,4 @@
+import '../widgets/context_source_details.dart';
 import '../services/chat_shell_view.dart';
 import 'dart:async';
 import 'dart:convert';
@@ -2630,6 +2631,7 @@ class _ContextUsageBar extends StatelessWidget {
   static String _sourceMode(dynamic value) {
     final mode = value?.toString() ?? '';
     if (mode == 'refilled') return t('usageContextRefilled');
+    if (RegExp(r'^(memory|context|task):').hasMatch(mode)) return contextSourceLabel(mode);
     // 任务图谱上下文的引用来源：mode 形如 graph:parent / graph:memory。
     final graph = RegExp(r'^graph:(.+)$').firstMatch(mode);
     if (graph != null) {
@@ -2684,6 +2686,7 @@ class _ContextUsageBar extends StatelessWidget {
         style: const TextStyle(color: Color(0xFF8a9aab), fontSize: 10),
       ),
     ];
+    if (trace['budget'] is Map) children.add(ContextBudgetDetails(trace: trace));
     for (final source in sources) {
       final messages = source['messages'] is List
           ? (source['messages'] as List).whereType<Map>().toList()
@@ -2692,12 +2695,12 @@ class _ContextUsageBar extends StatelessWidget {
           (source['messageCount'] as num?)?.toInt() ?? messages.length;
       final tokens = (source['estimatedTokens'] as num?)?.toInt() ?? 0;
       final omitted = (source['omittedExchanges'] as num?)?.toInt() ?? 0;
-      final isGraph = '${source['mode']}'.startsWith('graph:');
+      final isGraph = RegExp(r'^(graph|memory|task|context):').hasMatch('${source['mode']}');
       final subtitle =
           '${_sourceMode(source['mode'])}'
           '${isGraph ? '' : ' · ${t('usageContextMessages', {'n': '$count'})}'}'
           '${tokens > 0 ? ' · ${t('usageContextApproxTokens', {'n': _amount(tokens)})}' : ''}'
-          '${omitted > 0 ? ' · ${t('usageContextOmitted', {'n': '$omitted'})}' : ''}';
+          '${omitted > 0 ? ' · ${t('usageContextOmitted', {'n': '$omitted'})}' : ''}${contextSourceMeta(source)}';
       children.add(
         ExpansionTile(
           tilePadding: EdgeInsets.zero,
@@ -2720,6 +2723,8 @@ class _ContextUsageBar extends StatelessWidget {
             if (source['excerpt'] is String
                 && (source['excerpt'] as String).trim().isNotEmpty)
               [t('usageContextExcerpt'), (source['excerpt'] as String).trim()],
+            if (source['path'] != null) [t('usageContextPath'), '${source['path']}'],
+            if (source['reason'] != null) [t('usageContextReason'), '${source['reason']}'],
           ]
               .map((pair) => Padding(
                     padding: const EdgeInsets.only(bottom: 7),

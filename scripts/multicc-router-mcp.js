@@ -206,7 +206,7 @@ const TOOLS = [
       type: 'object',
       additionalProperties: false,
       properties: {
-        task_id: { type: 'string', description: 'Task in this shell; omit to browse all shell history.' },
+        task_id: { type: 'string', description: 'Task in this shell or an authorized same-project parent, group or imported task; separated tasks grant only the imported messages. Omit to browse shell history.' },
         before: { type: 'string', description: 'Older-page cursor returned as page.before.' },
         message_id: { type: 'string', description: 'contextMessageId of a message to read in full.' },
         offset: { type: 'integer', minimum: 0, description: 'Character offset returned as nextOffset.' },

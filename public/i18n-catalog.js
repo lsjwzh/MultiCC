@@ -1296,7 +1296,22 @@ window.MULTICC_I18N_CATALOG = {
     "taskSeparationTitle": "将当前工作单独分离？",
     "taskSeparationBody": "当前工作与前序任务关联较低。分离后会创建独立任务，带上本轮对话；原任务记录保留。",
     "taskSeparationKeep": "保留在当前任务",
-    "taskSeparationAccept": "单独分离"
+    "taskSeparationAccept": "单独分离",
+    "usageContextPolicy": "上下文规则与任务信息",
+    "usageContextMemoryBuiltin": "记忆·预制",
+    "usageContextMemoryMachine": "记忆·机器全局",
+    "usageContextMemoryCli": "记忆·CLI",
+    "usageContextMemoryShared": "记忆·目录",
+    "usageContextMemoryTask": "记忆·任务",
+    "usageContextMemoryOwn": "记忆·私有",
+    "usageContextMemorySkill": "记忆·技能",
+    "usageContextMemoryWithdrawn": "记忆·已撤回",
+    "usageContextTruncated": "已截断",
+    "usageContextPath": "路径",
+    "usageContextReason": "原因",
+    "usageContextBudget": "托管上下文：约 {used} / {limit} tokens",
+    "usageContextSelection": "沿用 {kept} 项 · 省略 {omitted} 项",
+    "usageContextRetained": "此前已注入，本轮未重复发送"
   },
   "en": {
     "newDirectory": "New Workspace",
@@ -2594,6 +2609,21 @@ window.MULTICC_I18N_CATALOG = {
     "taskSeparationTitle": "Separate this work into a task?",
     "taskSeparationBody": "This work appears unrelated to the earlier task. Separation creates an independent task with this exchange and preserves the original records.",
     "taskSeparationKeep": "Keep in current task",
-    "taskSeparationAccept": "Separate task"
+    "taskSeparationAccept": "Separate task",
+    "usageContextPolicy": "Context rules and task information",
+    "usageContextMemoryBuiltin": "Memory · built-in",
+    "usageContextMemoryMachine": "Memory · machine",
+    "usageContextMemoryCli": "Memory · CLI",
+    "usageContextMemoryShared": "Memory · project",
+    "usageContextMemoryTask": "Memory · task",
+    "usageContextMemoryOwn": "Memory · private",
+    "usageContextMemorySkill": "Memory · skill",
+    "usageContextMemoryWithdrawn": "Memory · withdrawn",
+    "usageContextTruncated": "Truncated",
+    "usageContextPath": "Path",
+    "usageContextReason": "Reason",
+    "usageContextBudget": "Managed context: ~{used} / {limit} tokens",
+    "usageContextSelection": "{kept} retained · {omitted} omitted",
+    "usageContextRetained": "Previously injected; not resent this turn"
   }
 };
