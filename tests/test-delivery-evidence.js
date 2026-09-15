@@ -20,8 +20,8 @@ function fixture(t, extra = {}) {
   const store = open(), evidence = createDeliveryEvidence(store, extra);
   t.after(() => { for (const s of stores) s.close(); fs.rmSync(root, { recursive: true, force: true }); });
   const dir = { id: 'd', path: repo, baseBranch: 'main' }, session = { id: 's', branch: 'multicc/test', worktreePath: wt };
-  const begin = (id = 'turn1') => {
-    evidence.begin({ sessionId: 's', turnId: id, taskId: 'A', receiptId: 'receipt1', workspaceId: 'w', workspacePath: wt, baseRef: 'main' });
+  const begin = (id = 'turn1', binding = {}) => {
+    evidence.begin({ sessionId: 's', turnId: id, taskId: 'A', receiptId: 'receipt1', workspaceId: 'w', workspacePath: wt, baseRef: 'main', ...binding });
     evidence.attempt(id, 'attempt1');
   };
   const finish = (id = 'turn1', result = {}) => evidence.finalize(id, { attemptId: 'attempt1', outcome: 'succeeded', resultDurable: true, usageDurable: true, pendingInput: false, ...result });
@@ -145,11 +145,67 @@ test('a cloned repository with the same commit is not the receipt repository ide
   assert.equal((await f.evidence.verifyBaseline(receipt, clone)).effectValid, false);
 });
 
-test('Air exposes actual result/receipt but still requires a writer barrier and preserves stale candidate', async t => {
+test('Air projects actual result, integration and writer barrier as independent steps', async t => {
   const f = fixture(t); f.begin(); fs.writeFileSync(path.join(f.wt, 'own.txt'), 'own'); await f.finish(); await f.merge();
+  const code = await captureCodeRevision(f.wt);
+  f.evidence.recordWriterBarrier({ sessionId: 's', turnId: 'turn1', workspaceId: 'w',
+    leaseId: 'lease-1', generation: 1, code });
   const candidate = { turnId: 'turn1', state: 'stale', title: 'New task' };
   const view = await deliveryView({ sessionId: 's', candidate, admission: f.admission, cwd: f.repo });
   assert.equal(view.run.outcome, 'succeeded'); assert.equal(view.integration.baselineCurrent, true);
-  assert.deepEqual(view.blockers, ['view_changed', 'source_writer_barrier_required']);
-  assert.equal(view.mode, 'retained'); assert.equal(f.store.list('task').length, 0);
+  assert.deepEqual(view.blockers, ['view_changed']);
+  assert.deepEqual(view.steps.map(step => step.status), ['done', 'done', 'done', 'pending']);
+  assert.equal(view.mode, 'legacy_candidate'); assert.equal(f.store.list('task').length, 0);
+});
+
+test('fixed task attribution and no-code delivery complete all four steps without a merge receipt', async t => {
+  const f = fixture(t), start = await captureCodeRevision(f.wt);
+  f.begin('turn1', { startCodeRevision: start.revision, startHead: start.head, startDirty: start.dirty });
+  await f.finish();
+  const code = await captureCodeRevision(f.wt);
+  f.evidence.recordWriterBarrier({ sessionId: 's', turnId: 'turn1', workspaceId: 'w',
+    leaseId: 'lease-fixed', generation: 1, code });
+  const view = await deliveryView({ sessionId: 's', taskId: 'A', admission: f.admission, cwd: f.repo });
+  assert.equal(view.run.noCodeChange, true);
+  assert.equal(view.integration, null);
+  assert.deepEqual(view.blockers, []);
+  assert.deepEqual(view.steps.map(step => [step.label, step.status]), [
+    ['本轮成功', 'done'], ['代码交付', 'done'], ['源现场稳定', 'done'], ['任务归属', 'done'],
+  ]);
+});
+
+test('a separation application receipt is required before the fourth step can complete', async t => {
+  let clock = 100;
+  const f = fixture(t, { now: () => clock++ }), start = await captureCodeRevision(f.wt);
+  f.begin('turn1', { startCodeRevision: start.revision, startHead: start.head, startDirty: start.dirty });
+  await f.finish();
+  const code = await captureCodeRevision(f.wt);
+  const barrierInput = { sessionId: 's', turnId: 'turn1', separationId: 'sep-1',
+    workspaceId: 'w', leaseId: 'lease-separate', generation: 2, code };
+  const barrier = f.evidence.recordWriterBarrier(barrierInput);
+  assert.deepEqual(f.evidence.recordWriterBarrier(barrierInput), barrier,
+    'a repeated stop confirmation must reuse its immutable writer barrier');
+  assert.equal(f.store.list('task-first:writer-barrier').length, 1);
+  const separation = { id: 'sep-1', sessionId: 's', turnId: 'turn1', sourceTaskId: 'A',
+    sourceTitle: 'Source', taskId: 'B', title: 'Independent', state: 'pending', phase: 'indexing_task' };
+  const pending = await deliveryView({ sessionId: 's', taskId: 'A', separation, admission: f.admission, cwd: f.repo });
+  assert.deepEqual(pending.steps.map(step => step.status), ['done', 'done', 'done', 'pending']);
+  assert.ok(pending.blockers.includes('separation_application_required'));
+  const applicationInput = { separationId: 'sep-1', sourceSessionId: 's', sourceTaskId: 'A',
+    targetTaskId: 'B', targetSessionId: 'task-b', targetShellId: 'shell-b', turnId: 'turn1', barrierId: barrier.id };
+  assert.throws(() => f.evidence.recordSeparationApplication(applicationInput), { code: 'separation_application_unverified' });
+  f.store.set('task', 'B', { id: 'B', sessionId: 'task-b', ownerShellId: 'shell-b',
+    separatedFromTaskId: 'A', ready: true });
+  f.store.set('shell', 'shell-b', { id: 'shell-b', sourceSessionId: 'task-b', currentTaskId: 'B',
+    defaultTaskId: 'B', standalone: true });
+  f.store.set('link', 'shell-b:B', { shellId: 'shell-b', taskId: 'B' });
+  const application = f.evidence.recordSeparationApplication(applicationInput);
+  assert.deepEqual(f.evidence.recordSeparationApplication(applicationInput), application,
+    'a crash after the immutable application write must be safely retryable');
+  assert.equal(f.store.list('task-first:separation-application').length, 1);
+  const applied = await deliveryView({ sessionId: 's', taskId: 'A',
+    separation: { ...separation, state: 'separated', phase: 'applied' }, admission: f.admission, cwd: f.repo });
+  assert.equal(applied.mode, 'separated'); assert.deepEqual(applied.blockers, []);
+  assert.deepEqual(applied.steps.map(step => step.status), ['done', 'done', 'done', 'done']);
+  assert.equal(applied.application.targetTaskId, 'B');
 });

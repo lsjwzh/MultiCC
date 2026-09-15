@@ -264,6 +264,32 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(await page.evaluate(`document.getElementById('task-detail-groups').children.length`), 4);
     assert.equal(await page.evaluate(`document.getElementById('task-details').innerText.includes('把任务、目录与交付状态收口到同一个 Air 页面。') && document.getElementById('task-details').innerText.includes('首次打开即可看到计划内容。')`), true);
     await page.evaluate(`document.getElementById('details-close').click()`);
+    entry.attribution = { steps: [
+      { key: 'run', label: '本轮成功', status: 'done' }, { key: 'delivery', label: '代码交付', status: 'done' },
+      { key: 'barrier', label: '源现场稳定', status: 'done' }, { key: 'attribution', label: '分离生效', status: 'done' },
+    ], run: { outcome: 'succeeded', pendingInput: false, codeObserved: true }, barrier: { id: 'barrier-1' },
+    application: { id: 'application-1', targetTaskId: 'tsk_b' },
+    separation: { id: 'sep-1', state: 'separated', phase: 'applied', sourceTaskId: 'tsk_a', targetTaskId: 'tsk_b', targetTitle: '独立任务' }, blockers: [] };
+    await reloadConversation();
+    assert.ok(await page.waitFor(`document.getElementById('delivery-eyebrow').textContent==='MULTICC · 分离已生效'`));
+    assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('#delivery-steps span')].map(s=>[s.textContent,s.className])`), [
+      ['本轮成功', 'done'], ['代码交付', 'done'], ['源现场稳定', 'done'], ['分离生效', 'done'],
+    ]);
+    assert.equal(await page.evaluate(`document.querySelector('[data-action="open-separated"]')?.textContent`), '打开独立任务');
+    entry.attribution = { steps: [
+      { key: 'run', label: '本轮成功', status: 'done' }, { key: 'delivery', label: '代码交付', status: 'done' },
+      { key: 'barrier', label: '源现场稳定', status: 'blocked' }, { key: 'attribution', label: '分离生效', status: 'pending' },
+    ], run: { outcome: 'succeeded', pendingInput: false, codeObserved: true },
+    separation: { id: 'sep-1', state: 'pending', phase: 'blocked', sourceTaskId: 'tsk_a', targetTitle: '独立任务' },
+    blockers: ['workspace_busy', 'separation_application_required'] };
+    await reloadConversation();
+    assert.ok(await page.waitFor(`document.getElementById('delivery-eyebrow').textContent==='MULTICC · 分离暂未生效'`));
+    assert.equal(await page.evaluate(`document.querySelector('[data-step="barrier"]').classList.contains('blocked')`), true);
+    await page.evaluate(`document.getElementById('details-toggle').click()`);
+    assert.equal(await page.evaluate(`document.getElementById('task-details').innerText.includes('源工作目录仍有写入者')`), true);
+    await page.evaluate(`document.getElementById('details-close').click()`);
+    entry.attribution = successAttribution;
+    await reloadConversation();
     assert.equal(await page.evaluate(`document.body.innerText.includes('FIXED_ROLE_MUST_NOT_SHOW')`), false);
     assert.equal(await page.evaluate(`document.querySelectorAll('a[href*="chat.html"]').length`), 0);
     assert.ok(await page.waitFor(`${composerPill('air-role-pill')}?.textContent.length>0`), '角色 renders on the composer card');

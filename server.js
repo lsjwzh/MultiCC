@@ -2067,6 +2067,7 @@ const taskShellHost = require('./src/task-shell/host').createTaskShellHost({
   deliver: (...args) => taskContextHost.deliverSessionMessage(...args),
   persistRecords: (source, fn) => sessionPersistence.mutate(source, fn), closeExecution: id => chatStream.closeAndWait(id), resetChatState: id => chatSessions.delete(id),
   hasBackground: id => backgroundTaskRuntime.hasLiveBackgroundTasks(id), ensureWorkspaceAwake: id => sessionHibernationRuntime.ensureAwake(id),
+  getWorkspaceAdmission: () => workspaceAdmission,
 });
 taskShellHost.mountRoutes(app);
 // 任务图谱：taskboard JSON + task-shell SQLite 聚合为 { nodes, edges }（只读）。

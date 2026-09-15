@@ -2,10 +2,12 @@
 const { hash } = require('./context');
 const { handoffSnapshot } = require('./history-context');
 const fail = (code, message = code, status = 409) => Object.assign(new Error(message), { code, status });
+const safeErrorCode = error => /^[A-Za-z][A-Za-z0-9_.-]{0,99}$/.test(String(error?.code || ''))
+  ? String(error.code) : 'separation_failed';
 
 // A suggestion never changes attribution, the shell cursor, or execution state.
 // Confirmation creates an independent continuation with only the judged turn.
-function createTaskSeparation({ store, getRecord, getHistory, getExecution, createExecution, indexTask, ports, ownerOf }) {
+function createTaskSeparation({ store, getRecord, getHistory, getExecution, createExecution, indexTask, ports, ownerOf, roles }) {
   const flights = new Map();
   function changed(sessionId) {
     try { ports.onSeparationChanged?.(sessionId); } catch (error) { console.warn('[task-separation] notification failed', error.message); }
@@ -51,9 +53,28 @@ function createTaskSeparation({ store, getRecord, getHistory, getExecution, crea
     if (!suggestion || suggestion.state !== 'pending' || (!suggestion.taskId && !current(suggestion))) return null;
     return suggestion;
   }
+  function forTask(taskId) {
+    return store.list('task-separation').filter(s => s.sourceTaskId === taskId || s.taskId === taskId).at(-1) || null;
+  }
+  async function verifiedDelivery(suggestion) {
+    if (typeof ports.deliveryEvidence !== 'function') throw fail('delivery_evidence_unavailable');
+    const evidence = ports.deliveryEvidence(suggestion.sessionId, suggestion.turnId) || {};
+    const run = evidence.run;
+    if (!run) throw fail('final_run_result_required', 'The final run result has not been recorded');
+    if (run.outcome !== 'succeeded' || run.pendingInput) throw fail('run_not_succeeded', 'The source turn did not finish successfully');
+    if (!run.endCodeRevision) throw fail('code_observation_required', 'The final code version was not observed');
+    const codeChanged = !run.startCodeRevision || run.startCodeRevision !== run.endCodeRevision;
+    let baseline = null;
+    if (codeChanged) {
+      if (!evidence.integration) throw fail('integration_receipt_required', 'Merge this turn before separating it');
+      baseline = await ports.verifyDeliveryBaseline?.(evidence.integration, suggestion.sessionId);
+      if (baseline?.effectValid !== true) throw fail('baseline_revalidation_required', 'The merge receipt is no longer current');
+    }
+    return { ...evidence, baseline, codeChanged };
+  }
   async function decide(sessionId, id, decision) {
     if (!['separate', 'keep'].includes(decision)) throw fail('invalid_input', 'decision must be separate or keep', 400);
-    const suggestion = store.get('task-separation', id);
+    let suggestion = store.get('task-separation', id);
     if (!suggestion || suggestion.sessionId !== sessionId) throw fail('separation_not_found', 'Separation suggestion not found', 404);
     if (flights.has(id)) { await flights.get(id); return decide(sessionId, id, decision); }
     if (suggestion.state === 'separated') {
@@ -77,47 +98,71 @@ function createTaskSeparation({ store, getRecord, getHistory, getExecution, crea
       let task = suggestion.taskId && store.get('task', suggestion.taskId);
       if (!task) {
         if (store.list('task').filter(t => t.dirId === source.dirId).length >= 200) throw fail('task_shell_task_limit');
-        if (!ports.captureForkBaseline) throw fail('fork_unavailable');
+        if (typeof ports.withSeparationBarrier !== 'function') throw fail('separation_barrier_unavailable');
+        if (typeof ports.recordSeparationApplication !== 'function') throw fail('separation_application_unavailable');
+        let delivery = await verifiedDelivery(suggestion);
         const taskId = `tsk_${hash(id).slice(0, 32)}`, nextSessionId = `task-${taskId.slice(4)}`, shellId = `sh_${hash(nextSessionId).slice(0, 24)}`;
-        const captured = await ports.captureForkBaseline(source, ownerOf(source), () => {
+        await ports.withSeparationBarrier({ sessionId, turnId: suggestion.turnId, separationId: suggestion.id }, async ({ barrier, code }) => {
+          // Revalidate after the writer lease is held. A pre-barrier delivery
+          // check can race a new source turn or a changed integration head.
+          delivery = await verifiedDelivery(suggestion);
           if (!current(suggestion)) throw fail('separation_stale');
-          return handoffSnapshot(taskId, getHistory(sessionId), { ...suggestion, receipt,
+          if (code.dirty) throw fail('fork_source_dirty', 'Commit and merge the source changes before separating');
+          const snapshot = handoffSnapshot(taskId, getHistory(sessionId), { ...suggestion, receipt,
             sourceWorkspace: getRecord(sessionId)?.worktreePath });
-        });
-        if (!current(suggestion)) throw fail('separation_stale');
-        const { history: snapshot, ...baseline } = captured;
-        if (!snapshot) throw fail('separation_context_missing');
-        const record = getRecord(sessionId);
-        task = { id: taskId, dirId: source.dirId, sessionId: nextSessionId, ownerShellId: shellId,
-          title: suggestion.title, taskFirst: true, separatedFromTaskId: source.id,
-          ready: false, snapshotIds: [snapshot.hash], forkBaseline: baseline, createdAt: Date.now(),
-          runtime: { ...source.runtime, ...Object.fromEntries(['cli', 'model', 'provider', 'providerSelection', 'effort', 'agent']
-            .filter(k => record?.[k] !== undefined).map(k => [k, record[k]])) } };
-        store.transaction(() => {
-          store.set('snapshot', snapshot.hash, snapshot);
-          store.set('task', task.id, task);
-          store.set('shell', shellId, { id: shellId, sourceSessionId: nextSessionId, dirId: task.dirId,
-            standalone: true, currentTaskId: task.id, defaultTaskId: task.id, cursorVersion: 0, createdAt: task.createdAt });
-          store.set('link', `${shellId}:${task.id}`, { shellId, taskId: task.id });
-          suggestion.taskId = task.id;
-          store.set('task-separation', id, suggestion);
+          if (!snapshot) throw fail('separation_context_missing');
+          const record = getRecord(sessionId);
+          const baseline = { commit: delivery.codeChanged ? delivery.integration.integrationHead : code.head,
+            branch: record?.branch || null, sourceSessionId: sessionId,
+            sourceWorkspace: record?.worktreePath || null };
+          task = { id: taskId, dirId: source.dirId, sessionId: nextSessionId, ownerShellId: shellId,
+            title: suggestion.title, taskFirst: true, separatedFromTaskId: source.id,
+            ready: false, snapshotIds: [snapshot.hash], forkBaseline: baseline, createdAt: Date.now(),
+            runtime: { ...source.runtime, ...Object.fromEntries(['cli', 'model', 'provider', 'providerSelection', 'effort', 'agent', 'subagent']
+              .filter(k => record?.[k] !== undefined).map(k => [k, record[k]])) } };
+          store.transaction(() => {
+            if (!current(suggestion)) throw fail('separation_stale');
+            store.set('snapshot', snapshot.hash, snapshot);
+            store.set('task', task.id, task);
+            store.set('shell', shellId, { id: shellId, sourceSessionId: nextSessionId, dirId: task.dirId,
+              standalone: true, currentTaskId: task.id, defaultTaskId: task.id, cursorVersion: 0, createdAt: task.createdAt });
+            store.set('link', `${shellId}:${task.id}`, { shellId, taskId: task.id });
+            roles?.inherit(source.id, task.id);
+            suggestion = { ...suggestion, taskId: task.id, barrierId: barrier.id,
+              deliveryKind: delivery.codeChanged ? 'integration' : 'no_code_change',
+              integrationId: delivery.integration?.id || null, phase: 'target_recorded', lastError: null };
+            store.set('task-separation', id, suggestion);
+          });
         });
       }
       if (!task.ready) {
+        store.set('task-separation', id, { ...suggestion, phase: 'creating_execution', lastError: null });
         const created = await createExecution(task, task.runtime);
         if (!created?.ok) throw fail(created?.code || 'execution_create_failed', created?.error || 'Execution creation failed');
         task.ready = true; task.baseline = created.baseline; store.set('task', task.id, task);
       }
+      store.set('task-separation', id, { ...suggestion, phase: 'indexing_task', lastError: null });
       if (!(await indexTask(task))?.ok) throw fail('task_index_failed');
+      const application = ports.recordSeparationApplication({ separationId: suggestion.id,
+        sourceSessionId: sessionId, sourceTaskId: source.id, targetTaskId: task.id,
+        targetSessionId: task.sessionId, targetShellId: task.ownerShellId,
+        turnId: suggestion.turnId, barrierId: suggestion.barrierId });
       const result = { ok: true, decision, taskId: task.id, sessionId: task.sessionId,
         url: `/air?dir=${encodeURIComponent(task.dirId)}&task=${encodeURIComponent(task.id)}` };
-      store.set('task-separation', id, { ...suggestion, state: 'separated', resolvedAt: Date.now(), result });
+      store.set('task-separation', id, { ...suggestion, state: 'separated', phase: 'applied',
+        applicationId: application.id, resolvedAt: Date.now(), lastError: null, result });
       changed(sessionId);
       return result;
-    })();
+    })().catch(error => {
+      const saved = store.get('task-separation', id);
+      if (saved?.state === 'pending') store.set('task-separation', id, { ...saved, phase: 'blocked',
+        lastError: { code: safeErrorCode(error) } });
+      changed(sessionId);
+      throw error;
+    });
     flights.set(id, operation);
     try { return await operation; } finally { flights.delete(id); }
   }
-  return { propose, latest, decide };
+  return { propose, latest, forTask, decide };
 }
 module.exports = { createTaskSeparation };
