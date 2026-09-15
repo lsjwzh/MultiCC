@@ -17,7 +17,7 @@ const { execFile } = require('child_process');
 const { createPaths } = require('./paths');
 const { atomicWriteJson } = require('./runtime-security');
 const { createTailscaleFunnelProbe } = require('./tailscale-funnel-health');
-const { findSakuraLauncher, restartSakuraLauncher } = require('./tunnel-sakurafrp');
+const { findSakuraLauncher, restartSakuraLauncher, diagnoseSakurafrp } = require('./tunnel-sakurafrp');
 
 const PATHS = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
 const CONFIG_FILE = PATHS.tunnelConfigFile;
@@ -789,6 +789,16 @@ async function checkProvider(name, options = {}) {
     const result = normalizeProbeResult(rawResult);
     applyProbeResult(st, result);
 
+    // SakuraFrp: the URL probe only says "dead"; the actionable reason lives
+    // in natfrp-service's own log. Attach the latest diagnosis to the public
+    // status so the manage page can show WHY (流量耗尽/密钥失效/…), not just
+    // that restarts keep failing. Cleared as soon as the probe is healthy.
+    if (name === 'sakurafrp') {
+      st.diagnosis = result.healthy
+        ? null
+        : ((options.diagnoseFn || diagnoseSakurafrp)() || st.diagnosis || null);
+    }
+
     if (result.verdict === 'indeterminate' || result.verdict === 'degraded') {
       resetFailureEvidence(st);
       st.lastAction = result.verdict === 'degraded'
@@ -892,6 +902,13 @@ async function checkProvider(name, options = {}) {
     }
     if (config[name].monitorOnly !== false) {
       st.lastAction = '仅监控：探活异常，按设置不自动重启';
+      return;
+    }
+    // A traffic-exhausted SakuraFrp account can never be repaired by
+    // restarting the launcher — auto-restart would just burn the hourly
+    // budget and thrash the client. Surface the real action and stand down.
+    if (name === 'sakurafrp' && st.diagnosis && st.diagnosis.code === 'traffic_exhausted') {
+      st.lastAction = 'SakuraFrp 流量耗尽：重启无效；签到/购买流量后点「立即重启」';
       return;
     }
     if (!checkStillCurrent(name, st, generation)) return;

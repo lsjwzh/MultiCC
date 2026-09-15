@@ -226,6 +226,13 @@
     if (p.restartTimes && p.restartTimes.length) {
       s += funnelProbe ? ` · 近1h修复/重连 ${p.restartTimes.length} 次` : ` · 近1h重启 ${p.restartTimes.length} 次`;
     }
+    // Provider diagnosis (today SakuraFrp): the URL probe only says "dead",
+    // the actionable reason comes from the client's own log. Put it BEFORE
+    // the restart bookkeeping so 流量耗尽 is never buried under 等待冷却.
+    if (p.diagnosis && p.diagnosis.reason) {
+      s += ` · 诊断: ${p.diagnosis.reason}`;
+      if (p.diagnosis.detail) s += `（${p.diagnosis.detail}）`;
+    }
     if (p.lastAction) s += funnelProbe ? ` · 最近动作: ${p.lastAction}` : ` · 客户端: ${p.lastAction}`;
     return s;
   }
