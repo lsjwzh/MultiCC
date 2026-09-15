@@ -574,7 +574,11 @@ async function gitWorktreeRemove(dirPath, worktreePath, branch, opts = {}) {
     const resolvesToCommit = (ref) => execGit(dirPath, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`])
       .then(out => out.length > 0).catch(() => false);
     let backup = null;
-    if (opts.force) {
+    // skipBackup is only used by relocate-carry AFTER the carried patch and
+    // every untracked file verified applied in the new worktree, and only when
+    // the branch has no ahead commits left to preserve. The content already
+    // lives in the new home; a second copy here would be pure cost.
+    if (opts.force && !opts.skipBackup) {
       progress('backup');
       // A wiped/re-inited base repo (user deleted the directory contents on
       // disk) has none of the session's refs left; update-ref/bundle would
@@ -611,32 +615,110 @@ async function gitWorktreeRemove(dirPath, worktreePath, branch, opts = {}) {
   }, { ...opts, sessionId });
 }
 
+// ── Relocate carry: take the worktree's uncommitted state along ─────────────
+// `git diff HEAD` captures staged + unstaged tracked changes relative to the
+// branch tip — unaffected by base-branch drift, so nothing the branch is
+// missing gets reverted on the target. Untracked (non-ignored) files travel
+// as verbatim copies. Ahead commits are deliberately NOT carried: they stay a
+// refusal reason unless force, whose backup ref then preserves them.
+const CARRY_MAX_BUFFER = 256 * 1024 * 1024;
+
+function carryPathSafe(relative) {
+  const value = String(relative || '').replace(/\\/g, '/');
+  return !!value && !value.startsWith('/') && !value.split('/').includes('..');
+}
+
+async function collectCarryChanges(execGit, worktreePath) {
+  // raw: the patch must keep its exact trailing bytes for git apply.
+  const patch = await execGit(worktreePath, ['diff', '--binary', '--full-index', 'HEAD'],
+    { raw: true, maxBuffer: CARRY_MAX_BUFFER });
+  const listing = await execGit(worktreePath, ['ls-files', '--others', '--exclude-standard', '-z'],
+    { raw: true, maxBuffer: CARRY_MAX_BUFFER });
+  const untracked = String(listing || '').split('\0')
+    .filter(name => name && carryPathSafe(name));
+  return { patch, untracked };
+}
+
+async function applyCarryChanges(dirPath, worktreePath, carried) {
+  const files = [];
+  return defaultRepoActor.run(dirPath, 'relocate-carry-apply', async ({ execGit, progress }) => {
+    progress('apply-patch');
+    if (carried.patch && carried.patch.trim()) {
+      const patchFile = path.join(os.tmpdir(), `multicc-carry-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}.patch`);
+      await fsp.writeFile(patchFile, carried.patch, 'utf8');
+      try {
+        // Atomic by default: a repo whose files don't match the patch context
+        // fails cleanly here and the caller rolls the new worktree back.
+        await execGit(worktreePath, ['apply', '--whitespace=nowarn', patchFile],
+          { maxBuffer: CARRY_MAX_BUFFER });
+      } catch (error) {
+        throw Object.assign(new Error(`carry patch does not apply to the target repository: ${errorText(error)}`),
+          { code: 'carry_apply_failed' });
+      } finally {
+        await fsp.rm(patchFile, { force: true }).catch(() => {});
+      }
+    }
+    progress('copy-untracked', { count: carried.untracked.length });
+    for (const relative of carried.untracked) {
+      const sourcePath = path.join(carried.worktreePath, relative);
+      const targetPath = path.join(worktreePath, relative);
+      await fsp.mkdir(path.dirname(targetPath), { recursive: true });
+      await fsp.cp(sourcePath, targetPath, { recursive: true, force: false });
+      files.push(relative);
+    }
+    return { ok: true, appliedFiles: files, patchBytes: carried.patch ? Buffer.byteLength(carried.patch) : 0 };
+  });
+}
+
 // Cross-repository relocate with create-before-delete semantics. The target is
 // created first; any refusal/failure while removing the source rolls the target
 // back and leaves the caller's persisted session fields untouched.
+// opts.carry: uncommitted changes (tracked diff + untracked files) are collected
+// from the source BEFORE anything is created, applied to the fresh target
+// worktree, and only then is the source removed — a failed apply rolls the
+// target back and leaves the source completely untouched.
 async function gitRelocateWorktree(oldDir, targetDir, session, opts = {}) {
   if (!oldDir || !targetDir || !session) return { ok: false, error: 'oldDir, targetDir and session are required' };
+  const carry = opts.carry === true;
   const state = await gitWorktreeMergeState(oldDir, session);
   const reasons = [];
   if (opts.active) reasons.push('active');
-  if (state.dirty) reasons.push('dirty');
+  if (state.dirty && !carry) reasons.push('dirty');
   if (state.ahead > 0) reasons.push('unmerged');
   if (reasons.length && !opts.force) {
     return { ok: false, blocked: true, reasons, mergeState: state, error: `relocate refused: ${reasons.join(', ')}` };
   }
 
+  let carried = null;
+  if (carry && state.dirty && session.worktreePath && fs.existsSync(session.worktreePath)) {
+    carried = await defaultRepoActor.run(oldDir.path, 'relocate-carry-collect', async ({ execGit }) => ({
+      ok: true, carried: { ...(await collectCarryChanges(execGit, session.worktreePath)), worktreePath: session.worktreePath },
+    }), { sessionId: null }).then(result => result.carried);
+    if (carried && !carried.patch?.trim() && !carried.untracked.length) carried = null;
+  }
+
   let created;
   try {
     created = await gitWorktreeAdd(targetDir.path, session.id, targetDir.baseBranch, opts);
+    if (carried) {
+      const applied = await applyCarryChanges(targetDir.path, created.worktreePath, carried);
+      carried.applied = { patchBytes: applied.patchBytes, files: applied.appliedFiles.length };
+    }
     if (typeof opts.beforeRemove === 'function') await opts.beforeRemove(created);
     const removed = await gitWorktreeRemove(oldDir.path, session.worktreePath, session.branch, {
       ...opts, sessionId: session.id, baseBranch: oldDir.baseBranch,
+      // A carry relocates a dirty worktree by definition; the source removal
+      // must force. The force-backup is skipped only when nothing but the
+      // already-carried state would be lost (no ahead commits).
+      ...(carry ? { force: true, skipBackup: state.ahead === 0 } : {}),
     });
     if (!removed.ok) throw Object.assign(new Error(removed.error || 'source removal refused'), { result: removed });
     return {
       ok: true,
       worktreePath: created.worktreePath,
       branch: created.branch,
+      carried: carried ? { patchBytes: carried.applied.patchBytes, files: carried.applied.files,
+        paths: carried.untracked.slice(0, 20) } : null,
       createdOperationId: created.operationId,
       operationId: removed.operationId,
       queueDepth: Math.max(created.queueDepth || 0, removed.queueDepth || 0),
@@ -662,6 +744,7 @@ async function gitRelocateWorktree(oldDir, targetDir, session, opts = {}) {
       ...(error.result || {}),
       ok: false,
       blocked: error.result?.blocked || !!leaseReason,
+      code: error.result?.code || error.code || undefined,
       reasons: error.result?.reasons || (leaseReason ? [leaseReason] : undefined),
       rolledBack: !!created && !!rollback?.ok,
       rollbackError: created && !rollback?.ok ? rollback?.error || 'target rollback failed' : undefined,

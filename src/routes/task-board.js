@@ -2776,6 +2776,10 @@ function createTaskBoardRuntime(deps) {
     resolveTask: resolvedTask, taskIdentityIds, commit: commitPlanningMutation, taskDto, notify,
     taskDirId: task => core.taskDirId(board, task), activeOperations: activeTaskOperations });
 
+  // Air 任务「移动」：编排会话工作区搬迁（带未提交改动）、shell 指针与板块记录。
+  const taskRelocate = require('../task-board/relocate').createTaskRelocate({ deps, taskRuns, isOpenTaskRun, resolveTask: resolvedTask,
+    taskIdentityIds, commit: commitPlanningMutation, taskDto, notify, taskDirId: task => core.taskDirId(board, task), isBusy: id => taskLifecycle.isBusy(id), logger });
+
   async function handleArchiveCompleted(req, res) {
     const dirId = String(req.body?.dirId || '').trim() || null;
     const taskIds = [], skipped = [];
@@ -2894,6 +2898,9 @@ function createTaskBoardRuntime(deps) {
       });
     });
     app.delete?.('/api/task-board/tasks/:taskId', taskLifecycle.delete);
+    app.post('/api/task-board/tasks/:taskId/relocate', (req, res) => taskRelocate.relocate(req, res)
+      .catch(error => { logger.log(`[multicc/taskboard] relocate failed: ${error?.message || error}`);
+        if (!res.headersSent) res.status(500).json({ error: 'internal_error' }); }));
     app.post('/api/task-board/tasks/:taskId/cancel-run', (req, res) => {
       handleCancelRun(req, res).catch(error => {
         logger.log(`[multicc/taskboard] cancel-run failed: ${error?.message || error}`);

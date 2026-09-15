@@ -659,10 +659,32 @@ function createTaskShellRuntime(ports) {
     if (options.originContinue === true) { options.taskId = task.id; return null; }
     return { ok: false, code: 'task_shell_route_required' };
   }
+  // Task-level directory move (Air 任务「移动」): the board relocates the
+  // execution session's worktree; this follows the shell-store pointers so
+  // taskFor's dirId check keeps passing afterwards. A shell shared with other
+  // tasks (non-standalone) can never change directory.
+  function relocateTask(taskId, dirId, options = {}) {
+    const task = store.get('task', taskId);
+    if (!task || task.dirId === dirId) return { ok: true, unchanged: true };
+    const link = store.list('link').find(l => l.taskId === task.id);
+    const ownerShell = (task.ownerShellId && store.get('shell', task.ownerShellId))
+      || (link && store.get('shell', link.shellId)) || null;
+    if (ownerShell && !ownerShell.standalone
+      && store.list('link').some(l => l.shellId === ownerShell.id && l.taskId !== task.id)) {
+      return { ok: false, code: 'task_shell_shared' };
+    }
+    if (options.dryRun === true) return { ok: true };
+    store.transaction(() => {
+      store.set('task', task.id, { ...task, dirId });
+      if (ownerShell) store.set('shell', ownerShell.id, { ...ownerShell, dirId });
+    });
+    return { ok: true };
+  }
   return {
     roles, migrateTaskSessions: taskFirst.migrate, listTasks: () => store.list('task'),
     ...taskActions, purgeTasks, stateTarget, stateSources, open, adopt, link, remove, view, detail, chatScope, send: sendInput, retry, owns,
     guardAdmission, recentTasks, refillContext, contextTrace, settleAttribution, locateOrCreate, resolveTask, sendExplicit,
+    relocateTask,
   };
 }
 

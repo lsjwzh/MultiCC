@@ -147,6 +147,73 @@ test('relocate refuses active or dirty source before creating the target', async
   assert.equal(fs.existsSync(targetPath), false);
 });
 
+test('relocate carry takes uncommitted changes and untracked files along', async t => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'multicc-git-'));
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const oldDir = await initRepo(root, 'old');
+  const targetDir = await initRepo(root, 'target');
+  const session = await sessionIn(oldDir, 'carry-me');
+  await fsp.writeFile(path.join(session.worktreePath, 'app.js'), 'module.exports = 2;\n');
+  await fsp.mkdir(path.join(session.worktreePath, 'notes'), { recursive: true });
+  await fsp.writeFile(path.join(session.worktreePath, 'notes', 'new.txt'), 'carry me\n');
+
+  const moved = await gitRelocateWorktree(oldDir, targetDir, session, { carry: true });
+  assert.equal(moved.ok, true);
+  assert(moved.carried);
+  assert(moved.carried.patchBytes > 0);
+  assert.equal(moved.carried.files, 1);
+  assert.equal(fs.existsSync(session.worktreePath), false);
+  assert.equal(await fsp.readFile(path.join(moved.worktreePath, 'app.js'), 'utf8'), 'module.exports = 2;\n');
+  assert.equal(await fsp.readFile(path.join(moved.worktreePath, 'notes', 'new.txt'), 'utf8'), 'carry me\n');
+  // Carried state stays uncommitted in the new worktree — the user reviews and
+  // commits it there, exactly where the task now lives.
+  const status = await git(moved.worktreePath, ['status', '--porcelain']);
+  assert(status.includes('M app.js'));
+  assert(status.includes('?? notes/'));
+});
+
+test('relocate carry rolls the target back when the patch cannot apply', async t => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'multicc-git-'));
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const oldDir = await initRepo(root, 'old');
+  const targetDir = await initRepo(root, 'target');
+  // Diverge the target's app.js so the carried patch context cannot match.
+  await fsp.writeFile(path.join(targetDir.path, 'app.js'), 'console.log("unrelated");\n');
+  await git(targetDir.path, ['add', '-A']);
+  await git(targetDir.path, ['commit', '-m', 'diverged']);
+  const session = await sessionIn(oldDir, 'incompatible');
+  await fsp.writeFile(path.join(session.worktreePath, 'app.js'), 'module.exports = 99;\n');
+  const targetPath = path.join(targetDir.path, '.multicc-worktrees', session.id);
+
+  const result = await gitRelocateWorktree(oldDir, targetDir, session, { carry: true });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'carry_apply_failed');
+  assert.equal(result.rolledBack, true);
+  // Source untouched: the dirty file and the worktree are exactly where they were.
+  assert.equal(fs.existsSync(session.worktreePath), true);
+  assert.equal(await fsp.readFile(path.join(session.worktreePath, 'app.js'), 'utf8'), 'module.exports = 99;\n');
+  assert.equal(fs.existsSync(targetPath), false);
+});
+
+test('relocate carry still refuses unmerged commits without force', async t => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'multicc-git-'));
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const oldDir = await initRepo(root, 'old');
+  const targetDir = await initRepo(root, 'target');
+  const session = await sessionIn(oldDir, 'ahead');
+  await fsp.writeFile(path.join(session.worktreePath, 'committed.js'), 'module.exports = 1;\n');
+  await git(session.worktreePath, ['add', '-A']);
+  await git(session.worktreePath, ['commit', '-m', 'ahead commit']);
+  await fsp.writeFile(path.join(session.worktreePath, 'app.js'), 'dirty\n');
+  const result = await gitRelocateWorktree(oldDir, targetDir, session, { carry: true });
+  assert.equal(result.ok, false);
+  assert.equal(result.blocked, true);
+  assert(result.reasons.includes('unmerged'));
+  // Dirty alone is not a refusal under carry — only the ahead commits block.
+  assert(!result.reasons.includes('dirty'));
+  assert.equal(fs.existsSync(session.worktreePath), true);
+});
+
 test('merge validates in integration worktree and leaves main unchanged on failure', async t => {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'multicc-git-'));
   t.after(() => fsp.rm(root, { recursive: true, force: true }));

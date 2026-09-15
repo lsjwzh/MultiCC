@@ -110,6 +110,97 @@ function createSessionLifecycleRuntime(rawDeps) {
     catch (_) { return true; }
   }
 
+  // Session-level relocate, shared by the HTTP route below and the task-board's
+  // task-level move. Returns { ok, ... } or { ok: false, status, body } so the
+  // caller decides how to surface it. opts.carry takes the worktree's
+  // uncommitted changes (tracked diff + untracked files) into the new worktree.
+  async function relocateSessionWorkspace(id, targetDirId, opts = {}) {
+    const targetDir = directories.get(targetDirId);
+    if (!targetDir) return { ok: false, status: 404, body: { error: 'target directory not found' } };
+    const persisted = persistedSessions.get(id);
+    if (!persisted) return { ok: false, status: 404, body: { error: 'session not found' } };
+    if (persisted.dirId === targetDirId) return { ok: true, unchanged: true, cwd: targetDir.path };
+    if (!fs.existsSync(targetDir.path)) return { ok: false, status: 400, body: { error: `directory path missing on disk: ${targetDir.path}` } };
+    const force = opts.force === true;
+    const activeTerminal = sessions.get(id);
+    const activeChat = chatSessions.get(id);
+    const activeBackground = backgroundTasksAreLive(id);
+    const active = activeBackground || !!activeTerminal
+      || !!(activeChat && (activeChat.claudeProc || activeChat.isStreaming || activeChat.clients?.size));
+    if (active && !force) {
+      return { ok: false, status: 409, body: { ok: false, blocked: true, reasons: ['active'], error: 'active session cannot be relocated' } };
+    }
+
+    // The session's worktree belongs to the OLD directory's repo — relocate means
+    // a fresh worktree in the target directory.
+    const oldDir = directories.get(persisted.dirId);
+    const readyTarget = await ensureDirGitReady(targetDir);
+    if (!readyTarget.ok) {
+      return { ok: false, status: 400, body: { error: `目标目录 git 未就绪: ${readyTarget.reason}` } };
+    }
+
+    // A never-materialized (planned) workspace owns no worktree yet: moving is
+    // a pure record update — the worktree gets created in the new directory on
+    // first use instead of being created just to be moved. An ACTIVE session
+    // still falls through to the full path so its forced teardown runs.
+    if ((!persisted.worktreePath || !persisted.branch) && !active) {
+      sessionPersistence.mutate('http.relocate-session-planned', () => {
+        persisted.dirId = targetDirId;
+        persisted.cliSessionId = null;
+      });
+      invalidSessions.delete(id);
+      return { ok: true, cwd: targetDir.path, forced: force, planned: true };
+    }
+
+    const oldSession = sessions.get(id);
+    const relocated = await gitRelocateWorktree(oldDir, targetDir, persisted, {
+      force, active,
+      carry: opts.carry === true,
+      activeCheck: force ? null : () => getSessionGitRuntime().isWorktreeActive(id),
+      beforeRemove: async () => {
+        if (oldSession) {
+          broadcastTo(oldSession.clients, { type: 'relocate', cwd: targetDir.path });
+          await stopOutputCapture(oldSession);
+          await tmuxKillSession(oldSession.id);
+          sessions.delete(id);
+        }
+        if (force) {
+          if (activeChat) terminalizeProviderAttempt(activeChat, 'relocate');
+          reapInterruptedBackgroundTasks(id, 'relocate');
+          if (activeChat) {
+            assignKillReason(activeChat._activeRunner, 'relocate');
+            if (activeChat.claudeProc) try { activeChat.claudeProc.kill('SIGTERM'); } catch (_) {}
+            chatStream().close(id);
+            chatSessions.delete(id);
+          }
+        }
+      },
+    });
+    if (!relocated.ok) return { ok: false, status: relocated.blocked ? 409 : 500, body: relocated };
+
+    sessionPersistence.mutate('http.relocate-session', () => {
+      persisted.worktreePath = relocated.worktreePath;
+      persisted.branch = relocated.branch;
+      persisted.dirId = targetDirId;
+      // Clear cliSessionId so the new instance starts fresh in the new directory.
+      persisted.cliSessionId = null;
+    });
+    invalidSessions.delete(id);
+
+    if (persisted.kind === 'terminal') {
+      try {
+        await createSession(id);
+      } catch (err) {
+        return { ok: false, status: 500, body: { error: err.message } };
+      }
+    }
+    return { ok: true, cwd: targetDir.path, forced: force,
+      carried: relocated.carried || null,
+      operationId: relocated.operationId,
+      queueDepth: relocated.queueDepth,
+      backup: relocated.backup || null };
+  }
+
   function reapInterruptedBackgroundTasks(sessionId, reasonCode) {
     try { return reapBackgroundTasks(sessionId, reasonCode); }
     catch (_) { return 0; }
@@ -168,75 +259,11 @@ function createSessionLifecycleRuntime(rawDeps) {
       const id = req.params.id;
       const targetDirId = (req.body.dirId || '').trim();
       if (!targetDirId) return res.status(400).json({ error: 'dirId required (cwd is now owned by the directory)' });
-      const targetDir = directories.get(targetDirId);
-      if (!targetDir) return res.status(404).json({ error: 'target directory not found' });
-      const persisted = persistedSessions.get(id);
-      if (!persisted) return res.status(404).json({ error: 'session not found' });
-      if (persisted.dirId === targetDirId) return res.json({ ok: true, unchanged: true, cwd: targetDir.path });
-      if (!fs.existsSync(targetDir.path)) return res.status(400).json({ error: `directory path missing on disk: ${targetDir.path}` });
-      const force = req.query.force === '1' || req.body.force === true;
-      const activeTerminal = sessions.get(id);
-      const activeChat = chatSessions.get(id);
-      const activeBackground = backgroundTasksAreLive(id);
-      const active = activeBackground || !!activeTerminal
-        || !!(activeChat && (activeChat.claudeProc || activeChat.isStreaming || activeChat.clients?.size));
-      if (active && !force) {
-        return res.status(409).json({ ok: false, blocked: true, reasons: ['active'], error: 'active session cannot be relocated' });
-      }
-
-      // The session's worktree belongs to the OLD directory's repo — relocate means
-      // a fresh worktree in the target directory.
-      const oldDir = directories.get(persisted.dirId);
-      const readyTarget = await ensureDirGitReady(targetDir);
-      if (!readyTarget.ok) {
-        return res.status(400).json({ error: `目标目录 git 未就绪: ${readyTarget.reason}` });
-      }
-
-      const oldSession = sessions.get(id);
-      const relocated = await gitRelocateWorktree(oldDir, targetDir, persisted, {
-        force, active,
-        activeCheck: force ? null : () => getSessionGitRuntime().isWorktreeActive(id),
-        beforeRemove: async () => {
-          if (oldSession) {
-            broadcastTo(oldSession.clients, { type: 'relocate', cwd: targetDir.path });
-            await stopOutputCapture(oldSession);
-            await tmuxKillSession(oldSession.id);
-            sessions.delete(id);
-          }
-          if (force) {
-            if (activeChat) terminalizeProviderAttempt(activeChat, 'relocate');
-            reapInterruptedBackgroundTasks(id, 'relocate');
-            if (activeChat) {
-              assignKillReason(activeChat._activeRunner, 'relocate');
-              if (activeChat.claudeProc) try { activeChat.claudeProc.kill('SIGTERM'); } catch (_) {}
-              chatStream().close(id);
-              chatSessions.delete(id);
-            }
-          }
-        },
-      });
-      if (!relocated.ok) return res.status(relocated.blocked ? 409 : 500).json(relocated);
-
-      sessionPersistence.mutate('http.relocate-session', () => {
-        persisted.worktreePath = relocated.worktreePath;
-        persisted.branch = relocated.branch;
-        persisted.dirId = targetDirId;
-        // Clear cliSessionId so the new instance starts fresh in the new directory.
-        persisted.cliSessionId = null;
-      });
-      invalidSessions.delete(id);
-
-      if (persisted.kind === 'terminal') {
-        try {
-          await createSession(id);
-        } catch (err) {
-          return res.status(500).json({ error: err.message });
-        }
-      }
-      res.json({ ok: true, cwd: targetDir.path, forced: force,
-        operationId: relocated.operationId,
-        queueDepth: relocated.queueDepth,
-        backup: relocated.backup || null });
+      const force = req.query.force === '1' || req.body?.force === true;
+      const carry = req.body?.carry === true;
+      const result = await relocateSessionWorkspace(id, targetDirId, { force, carry });
+      if (!result.ok && result.status) return res.status(result.status).json(result.body);
+      res.json(result);
     }));
 
     // ── Restart session (kill tmux + respawn CLI in same directory, fresh conversation) ──
@@ -417,7 +444,7 @@ function createSessionLifecycleRuntime(rawDeps) {
     return { ok: false, code: 'task_history_retained' };
   }
 
-  const api = { mountRoutes, releaseTaskBoundSession };
+  const api = { mountRoutes, releaseTaskBoundSession, relocateSessionWorkspace };
   return api;
 }
 
