@@ -40,6 +40,7 @@ function harness(options = {}) {
   const broadcasts = [];
   const workspaceEvents = [];
   const injections = [];
+  const chatMessages = [];
   const statuses = [];
   const timers = [];
   const intervals = [];
@@ -75,6 +76,10 @@ function harness(options = {}) {
     },
     chatBroadcast: (sessionId, payload) => broadcasts.push({ sessionId, payload }),
     workspaceBroadcast: (dirId, payload) => workspaceEvents.push({ dirId, payload }),
+    appendChatMessage: (sessionId, message) => {
+      chatMessages.push({ sessionId, message });
+      return true;
+    },
     sessionDelivery: {
       deliverRetry: (sessionId, message, deliveryOptions) =>
         injections.push({ sessionId, message, deliveryOptions }),
@@ -103,7 +108,7 @@ function harness(options = {}) {
   });
   return {
     host, logs, taskWrites, broadcasts, workspaceEvents, injections, statuses,
-    timers, intervals, records, auxQueue,
+    timers, intervals, records, auxQueue, chatMessages,
     decideWith(fn) { nextDecision = fn; },
   };
 }
@@ -511,6 +516,29 @@ test('only network failures open the global hold and recovery resumes held sessi
   assert.match(h.injections[0].message, /真实待处理数据/);
   assert.equal(h.injections[0].deliveryOptions.taskSource, 'api_recovery');
   assert.match(h.injections[0].deliveryOptions.idempotencyKey, /^api-recovery:session-1:/);
+});
+
+test('the first hold of a session injects one visible chat notice, never per retry', async () => {
+  const h = harness();
+  h.decideWith(raw => decision({
+    error: { category: raw.category, provider: raw.provider || 'claude' },
+  }));
+  h.host.recordApiError({ category: 'network' });
+  h.host.recordApiError({ category: 'network' });
+  h.host.recordApiError({ category: 'network' });
+  assert.equal(h.host.isNetworkUnhealthy(), true);
+  h.host.holdSession('session-1', 'classify-inject', '第一条');
+  assert.equal(h.chatMessages.length, 1, 'first hold persists one system notice');
+  assert.equal(h.chatMessages[0].sessionId, 'session-1');
+  assert.equal(h.chatMessages[0].message.role, 'system');
+  assert.match(h.chatMessages[0].message.content, /已暂挂/);
+  assert.equal(h.broadcasts.length, 1, 'the notice is broadcast to the chat');
+  assert.equal(h.broadcasts[0].payload.subtype, 'notice');
+  // The turn engine re-attempts every tick while unhealthy: a second hold of
+  // the same episode must NOT spam another notice.
+  h.host.holdSession('session-1', 'classify-inject', '第二条');
+  assert.equal(h.chatMessages.length, 1, 'one notice per hold episode');
+  assert.equal(h.broadcasts.length, 1);
 });
 
 test('network recovery never resumes a scrubbed TaskRun execution slot', async () => {

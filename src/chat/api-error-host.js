@@ -75,6 +75,7 @@ function createApiErrorHost(options = {}) {
     chatBroadcast,
     workspaceBroadcast,
     sessionDelivery,
+    appendChatMessage,
     getAuxQueue,
     setSessionStatus,
     clearIncrementalSave,
@@ -438,13 +439,28 @@ function createApiErrorHost(options = {}) {
       reason: reason || prior?.reason || 'API 异常',
       pendingText: mergeHeldPendingText(pendingText, prior),
     });
-    if (!prior && persisted.dirId) {
-      workspaceBroadcast(persisted.dirId, {
-        type: 'notify',
-        sessionId,
-        state: 'waiting',
-        message: `上游 API 异常，任务「${taskState.goal || '未命名'}」已暂挂，恢复后自动接续`,
-      });
+    if (!prior) {
+      // Surface the hold INSIDE the chat as well: while the network stays
+      // unhealthy every new message is silently claim→release cycled, which
+      // used to read as "insert does nothing" (the queued card shows 执行中
+      // forever). One system notice per hold episode, right where the user
+      // is looking. The workspace notify above remains the directory-level
+      // signal.
+      const notice = '上游 API 异常，消息已暂挂；网络恢复后会自动执行，无需重复发送。';
+      try {
+        if (typeof appendChatMessage === 'function'
+            && appendChatMessage(sessionId, { role: 'system', content: notice, ts: now() })) {
+          chatBroadcast(sessionId, { type: 'system', subtype: 'notice', message: notice });
+        }
+      } catch (_) {}
+      if (persisted.dirId) {
+        workspaceBroadcast(persisted.dirId, {
+          type: 'notify',
+          sessionId,
+          state: 'waiting',
+          message: `上游 API 异常，任务「${taskState.goal || '未命名'}」已暂挂，恢复后自动接续`,
+        });
+      }
     }
   }
 
