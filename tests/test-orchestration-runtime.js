@@ -6,6 +6,7 @@ const os = require('os');
 const path = require('path');
 const test = require('node:test');
 const { createOrchestrationRuntime } = require('../src/orchestration/runtime');
+const { DELIVERY_CLASS, deliveryClassForItem } = require('../src/orchestration/delivery-classes');
 const { reconcileTaskRunSlotLeases } = require('../src/task-run/recovery');
 
 function withTimeout(promise, ms, message) {
@@ -51,6 +52,7 @@ function fixture(t, overrides = {}) {
     getSessionRecoveryState: overrides.getSessionRecoveryState || (() => null),
     beforeFirstTick: overrides.beforeFirstTick,
     beforeDeliver: overrides.beforeDeliver,
+    deliverOutbox: overrides.deliverOutbox,
     setIntervalFn(fn) {
       scheduled = fn;
       return { unref() {} };
@@ -67,6 +69,48 @@ function fixture(t, overrides = {}) {
   });
   return { dir, file, clock, history, injections, logs, runtime, scheduled: () => scheduled };
 }
+
+test('external results resume a native continuation while passive notices stay passive', () => {
+  for (const type of ['wait.result', 'wait.callback', 'wait.resolved', 'detached.result']) {
+    assert.equal(deliveryClassForItem({ payload: { type } }), DELIVERY_CLASS.CONTINUATION, type);
+  }
+  assert.equal(deliveryClassForItem({ payload: { type: 'task.interrupted' } }), DELIVERY_CLASS.NOTICE);
+  assert.equal(deliveryClassForItem({ payload: { type: 'unknown.system.event' } }), DELIVERY_CLASS.NOTICE);
+});
+
+test('a resolved delay reaches the turn runner as a continuation and settles through turn classify', async t => {
+  const history = new Map();
+  const deliveries = [];
+  const h = fixture(t, {
+    history,
+    deliverOutbox: async descriptor => {
+      deliveries.push(descriptor);
+      const ids = history.get(descriptor.sessionId) || new Set();
+      ids.add(descriptor.opts.deliveryId);
+      history.set(descriptor.sessionId, ids);
+      return true;
+    },
+  });
+  const wait = await h.runtime.register({
+    session: 'worker', mode: 'delay', reason: 'verify deployment', delaySeconds: 1,
+  });
+  h.clock.value += 1_000;
+  await h.runtime.tick();
+
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0].opts.deliveryClass, DELIVERY_CLASS.CONTINUATION);
+  assert.equal(deliveries[0].opts.originContinue, true);
+  assert.match(deliveries[0].text, /verify deployment/);
+  let queue = await h.runtime.sessionScheduler.status('worker');
+  assert.equal(queue.state, 'running', 'the callback owns a real native turn');
+
+  await h.runtime.sessionScheduler.turnEnded('worker');
+  await h.runtime.sessionScheduler.complete('worker', { classifyState: 'D' });
+  queue = await h.runtime.sessionScheduler.status('worker');
+  assert.equal(queue.state, 'idle');
+  assert.equal(queue.active, null);
+  await h.runtime.stop();
+});
 
 test('task-run dispatch crosses a fresh-run barrier before native delivery', async t => {
   const order = [];
