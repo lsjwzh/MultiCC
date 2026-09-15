@@ -2625,9 +2625,18 @@ class _ContextUsageBar extends StatelessWidget {
   static int _traceCount(Map<String, dynamic>? trace) =>
       trace == null ? 0 : 1 + _traceSources(trace).length;
 
-  static String _sourceMode(dynamic value) => value == 'refilled'
-      ? t('usageContextRefilled')
-      : t('usageContextImported');
+  static String _sourceMode(dynamic value) {
+    final mode = value?.toString() ?? '';
+    if (mode == 'refilled') return t('usageContextRefilled');
+    // 任务图谱上下文的引用来源：mode 形如 graph:parent / graph:memory。
+    final graph = RegExp(r'^graph:(.+)$').firstMatch(mode);
+    if (graph != null) {
+      final key = 'usageContextGraph${graph.group(1)![0].toUpperCase()}${graph.group(1)!.substring(1)}';
+      final labeled = t(key);
+      return labeled == key ? t('usageContextGraphTask') : labeled;
+    }
+    return t('usageContextImported');
+  }
 
   static String _messageText(dynamic value) {
     if (value is String) return value;
@@ -2681,9 +2690,10 @@ class _ContextUsageBar extends StatelessWidget {
           (source['messageCount'] as num?)?.toInt() ?? messages.length;
       final tokens = (source['estimatedTokens'] as num?)?.toInt() ?? 0;
       final omitted = (source['omittedExchanges'] as num?)?.toInt() ?? 0;
+      final isGraph = '${source['mode']}'.startsWith('graph:');
       final subtitle =
-          '${_sourceMode(source['mode'])} · '
-          '${t('usageContextMessages', {'n': '$count'})}'
+          '${_sourceMode(source['mode'])}'
+          '${isGraph ? '' : ' · ${t('usageContextMessages', {'n': '$count'})}'}'
           '${tokens > 0 ? ' · ${t('usageContextApproxTokens', {'n': _amount(tokens)})}' : ''}'
           '${omitted > 0 ? ' · ${t('usageContextOmitted', {'n': '$omitted'})}' : ''}';
       children.add(
@@ -2699,38 +2709,40 @@ class _ContextUsageBar extends StatelessWidget {
             subtitle,
             style: const TextStyle(color: Color(0xFF6f8096), fontSize: 10),
           ),
-          children: messages.map((message) {
-            final role = message['role'] == 'user'
-                ? t('tbRoleUser')
-                : t('tbRoleAssistant');
-            return Padding(
-              padding: const EdgeInsets.only(bottom: 7),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  SizedBox(
-                    width: 34,
-                    child: Text(
-                      role,
-                      style: const TextStyle(
-                        color: Color(0xFF8a9aab),
-                        fontSize: 10,
-                      ),
+          children: <List<String>>[
+            ...messages.map((message) => [
+                  message['role'] == 'user' ? t('tbRoleUser') : t('tbRoleAssistant'),
+                  _messageText(message['content']),
+                ]),
+            // 图谱上下文来源没有消息，只有实际注入的那一行节选。
+            if (source['excerpt'] is String
+                && (source['excerpt'] as String).trim().isNotEmpty)
+              [t('usageContextExcerpt'), (source['excerpt'] as String).trim()],
+          ]
+              .map((pair) => Padding(
+                    padding: const EdgeInsets.only(bottom: 7),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        SizedBox(
+                          width: 34,
+                          child: Text(
+                            pair[0],
+                            style: const TextStyle(
+                                color: Color(0xFF8a9aab), fontSize: 10),
+                          ),
+                        ),
+                        Expanded(
+                          child: SelectableText(
+                            pair[1],
+                            style: const TextStyle(
+                                color: Color(0xFF6f8096), fontSize: 11),
+                          ),
+                        ),
+                      ],
                     ),
-                  ),
-                  Expanded(
-                    child: SelectableText(
-                      _messageText(message['content']),
-                      style: const TextStyle(
-                        color: Color(0xFF6f8096),
-                        fontSize: 11,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            );
-          }).toList(),
+                  ))
+              .toList(),
         ),
       );
     }

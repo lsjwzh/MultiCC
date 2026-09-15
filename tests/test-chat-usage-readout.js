@@ -102,6 +102,43 @@ test('a verified trace adds a compact source link and an honest managed-only sco
   assert.match(panel.innerHTML, /不属于逐 token 拆分/);
 });
 
+test('graph context sources carry their own labels and excerpt bodies', async () => {
+  const trace = {
+    traceId: 'sr-2', currentTask: { taskId: 'tsk-current', taskName: '当前任务' },
+    sources: [
+      { taskId: 'tsk-parent', taskName: '父任务', mode: 'graph:parent', estimatedTokens: 12 },
+      { taskId: 'tsk-parent', taskName: '父任务', mode: 'graph:memory', estimatedTokens: 30 },
+    ],
+  };
+  let loads = 0;
+  const bar = fakeElement();
+  const panel = fakeElement();
+  const readout = createUsageReadout({
+    bar, panel, document: fakeElement(),
+    loadContextTrace: async () => {
+      loads += 1;
+      return { ...trace, sources: [
+        trace.sources[0],
+        { ...trace.sources[1], excerpt: '  父任务记忆（节选）：<b>接口已对齐</b>' },
+      ] };
+    },
+  });
+  readout.render({ requestUsage: REQUEST, contextWindow: WINDOW, contextTrace: trace });
+  assert.match(bar.innerHTML, /⌁ 引用 3/);
+  bar.fire('click');
+  // 图谱来源不显示「N 条消息」，只显示各自的关系标签与 token 量。
+  assert.match(panel.innerHTML, /图谱·父任务/);
+  assert.match(panel.innerHTML, /图谱·父任务记忆/);
+  assert.doesNotMatch(panel.innerHTML, /0 条消息/);
+  assert.match(panel.innerHTML, /· 约 12 tokens/);
+  assert.doesNotMatch(panel.innerHTML, /注入节选/, '摘要态没有节选正文');
+  await panel.listeners.get('click')({ target: { closest: () => true } });
+  assert.equal(loads, 1);
+  assert.match(panel.innerHTML, /查看注入节选/);
+  assert.match(panel.innerHTML, /&lt;b&gt;接口已对齐&lt;\/b&gt;/);
+  assert.doesNotMatch(panel.innerHTML, /<b>接口已对齐/);
+});
+
 test('referenced message bodies load only on demand and remain escaped', async () => {
   const trace = {
     traceId: 'sr-1', currentTask: { taskId: 'tsk-current', taskName: 'current' },
@@ -203,7 +240,9 @@ test('the app bar answers the same question the same way, and prices nothing', (
     ));
     for (const key of ['contextUsage', 'usageDetailTitle', 'usageTurnBilled',
       'usageTurnDuration', 'usageSessionTotal', 'usageSessionHint',
-      'usageContextSources', 'usageContextManagedScope']) {
+      'usageContextSources', 'usageContextManagedScope',
+      'usageContextGraphParent', 'usageContextGraphMemory',
+      'usageContextGraphTask', 'usageContextExcerpt']) {
       assert.ok(strings[key], `${locale}.json is missing ${key}`);
     }
     assert.doesNotMatch(strings.usageSessionHint, /\$|USD|美元/);

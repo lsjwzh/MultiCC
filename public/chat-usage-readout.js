@@ -228,8 +228,20 @@
     return parts.join('');
   }
 
+  const GRAPH_KIND_LABELS = {
+    parent: '图谱·父任务',
+    grandparent: '图谱·祖父任务',
+    group: '图谱·同组任务',
+    shell: '图谱·同壳前序',
+    memory: '图谱·父任务记忆',
+    task: '任务图谱',
+  };
+
   function modeLabel(mode) {
-    return mode === 'refilled' ? '按需补取' : '初始化导入';
+    if (mode === 'refilled') return '按需补取';
+    const graph = /^graph:(.+)$/.exec(String(mode || ''));
+    if (graph) return GRAPH_KIND_LABELS[graph[1]] || '任务图谱';
+    return '初始化导入';
   }
 
   function sourceMessagesHtml(source) {
@@ -244,6 +256,14 @@
     return `<details class="usage-context-details"><summary>查看 ${source.messages.length} 条引用消息</summary>${messages}</details>`;
   }
 
+  // 图谱上下文来源没有「消息」，只有实际注入的那一行节选。
+  function sourceExcerptHtml(source) {
+    const text = typeof source?.excerpt === 'string' ? source.excerpt.trim() : '';
+    if (!text) return '';
+    return `<details class="usage-context-details"><summary>查看注入节选</summary>` +
+      `<div class="usage-context-message"><span>注入</span>${escapeHtml(text)}</div></details>`;
+  }
+
   function contextTraceHtml(trace, detail, state) {
     if (!trace) return '';
     const sourceDetails = detail && Array.isArray(detail.sources) ? detail.sources : [];
@@ -253,12 +273,13 @@
       `<strong>${escapeHtml(trace.currentTask.taskName)}</strong><code>${escapeHtml(trace.currentTask.taskId)}</code></div>`,
       ...trace.sources.map(source => {
         const full = byKey.get(`${source.mode}:${source.taskId}`) || source;
-        const meta = `${modeLabel(source.mode)} · ${Number(source.messageCount) || 0} 条消息` +
+        const isGraph = /^graph:/.test(String(source.mode || ''));
+        const meta = `${modeLabel(source.mode)}${isGraph ? '' : ` · ${Number(source.messageCount) || 0} 条消息`}` +
           `${Number(source.estimatedTokens) > 0 ? ` · 约 ${compactTokens(source.estimatedTokens)} tokens` : ''}` +
           `${Number(source.omittedExchanges) > 0 ? ` · 更早 ${Number(source.omittedExchanges)} 轮未带入` : ''}`;
         return `<div class="usage-context-source"><span class="usage-context-kind">${escapeHtml(meta)}</span>` +
           `<strong>${escapeHtml(source.taskName || source.taskId)}</strong><code>${escapeHtml(source.taskId)}</code>` +
-          `${sourceMessagesHtml(full)}</div>`;
+          `${sourceMessagesHtml(full)}${sourceExcerptHtml(full)}</div>`;
       }),
     ];
     let action = '';
