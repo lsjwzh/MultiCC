@@ -288,7 +288,7 @@ ${sections.join('\n\n')}
     }
   }
 
-  function resolveRolePrompt(persisted) {
+  function resolveRolePrompt(persisted, { managed = false } = {}) {
     if (!persisted) return null;
     let base = persisted.rolePrompt;
     if (!base) {
@@ -297,7 +297,7 @@ ${sections.join('\n\n')}
     }
     const parts = [];
     if (base) parts.push(base);
-    const folderBlock = buildBlock(persisted);
+    const folderBlock = managed ? null : buildBlock(persisted);
     if (folderBlock) parts.push(folderBlock);
     return parts.length ? parts.join('\n\n') : null;
   }
@@ -306,6 +306,14 @@ ${sections.join('\n\n')}
   for (const dirId of deps.directories.keys()) ensureShared(dirId);
 
   return Object.freeze({
+    retrieve(persisted, query) {
+      ensureDirs(persisted);
+      return require('./retrieval').retrieveMemory(deps.memoryStoreRoot,
+        { machineDir, cliDir, sharedDir, taskDir, sessionDir, skillDir, safeSegment }, persisted, query);
+    },
+    guidance(persisted) {
+      return `记忆文件位于 ${deps.memoryStoreRoot}，作用域：_machine、_cli/${persisted.cli}、${persisted.dirId}/_shared、${persisted.dirId}/tasks/${persisted.taskBoundTaskId || persisted.taskState?.taskId}、${persisted.dirId}/sessions/${persisted.id}、${persisted.dirId}/skills。只按需读取已授权作用域。保存稳定事实用 POST $MULTICC_BASE_URL/api/sessions/$MULTICC_SESSION_ID/memory/action，JSON {"action":"add","scope":"own|shared|task|skill|machine|cli","content":"事实"}；replace/remove 使用 oldText，skill 使用 skill 参数。`;
+    },
     buildBlock,
     cliDir,
     curatedLimit,

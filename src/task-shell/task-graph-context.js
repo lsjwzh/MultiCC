@@ -12,14 +12,13 @@
 // detail 版本同时返回 sources（引用了哪些任务/哪份记忆、注入了哪一行），
 // 落进 receipt 后由 contextTrace 呈现在「引用来源」面板。
 
-const { estimateTokens } = require('./context');
+const { estimateTokens, hash } = require('./context');
+const { relevance, selectContext } = require('../context/selection');
 
 const DEFAULT_TOKEN_BUDGET = 1200;
 const PARENT_MEMORY_CHARS = 700;
 const SUMMARY_CHARS = 200;
 const CONCLUSION_CHARS = 260;
-const MAX_SIBLINGS = 4;
-const MAX_GROUP_MEMBERS = 5;
 
 function clipText(value, max) {
   const text = String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
@@ -32,7 +31,7 @@ function lastAssistantText(snapshot) {
   const messages = Array.isArray(snapshot && snapshot.messages) ? snapshot.messages : [];
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i];
-    if (!message || message.role !== 'assistant') continue;
+    if (!message || message.role !== 'assistant' || message.partial || message.error || message.cancelled || message._interim || message.inProgress) continue;
     if (typeof message.content === 'string' && message.content.trim()) return message.content;
     if (typeof message.evidenceExcerpt === 'string' && message.evidenceExcerpt.trim()) {
       return message.evidenceExcerpt;
@@ -49,7 +48,7 @@ function lastAssistantText(snapshot) {
 //   snapshot(id)        -> 快照 | null
 //   readTaskMemory(dirId, taskId) -> string（'' 表示没有任务级记忆）
 // }
-function buildTaskGraphContextDetail(ports, { taskId, tokenBudget = DEFAULT_TOKEN_BUDGET } = {}) {
+function buildTaskGraphContextDetail(ports, { taskId, tokenBudget = DEFAULT_TOKEN_BUDGET, query = '' } = {}) {
   if (!ports || typeof taskId !== 'string' || !taskId) return { text: '', sources: [] };
   for (const name of ['task', 'boardTask', 'groupOf', 'linkedTaskIds', 'snapshot', 'readTaskMemory']) {
     if (typeof ports[name] !== 'function') return { text: '', sources: [] };
@@ -63,18 +62,14 @@ function buildTaskGraphContextDetail(ports, { taskId, tokenBudget = DEFAULT_TOKE
   };
   // 一条引用来源：哪个任务、以什么身份（父任务/记忆/同组/同壳）、注入了哪一行。
   const sourceOf = (id, kind, excerpt) => ({
-    taskId: id, taskName: titleOf(id), kind, excerpt, estimatedTokens: estimateTokens(excerpt),
+    id: `graph:${kind}:${id}`, mode: `graph:${kind}`, version: hash(excerpt),
+    taskId: id, taskName: titleOf(id), kind, excerpt, truncated: excerpt.includes('…'), estimatedTokens: estimateTokens(excerpt),
   });
 
   const sections = [];
-  let used = 0;
-  const overBudget = (text) => {
-    used += estimateTokens(text);
-    return used > tokenBudget;
-  };
 
   // ── 父任务（≤2 跳）───────────────────────────────────────────────────
-  const parentId = (self && self.parentTaskId) || null;
+  const parentId = (self && self.parentTaskId) || (boardSelf && boardSelf.parentTaskId) || null;
   if (parentId) {
     const parent = ports.task(parentId);
     const titleLine = `· 父任务 ${titleOf(parentId)}`;
@@ -97,7 +92,7 @@ function buildTaskGraphContextDetail(ports, { taskId, tokenBudget = DEFAULT_TOKE
   // ── 同组任务：标题 + 一句话摘要 ──────────────────────────────────────
   const group = ports.groupOf(taskId);
   if (group && Array.isArray(group.taskIds)) {
-    const members = group.taskIds.filter(id => id !== taskId).slice(0, MAX_GROUP_MEMBERS);
+    const members = group.taskIds.filter(id => id !== taskId);
     const lines = [];
     const sources = [];
     for (const id of members) {
@@ -118,7 +113,7 @@ function buildTaskGraphContextDetail(ports, { taskId, tokenBudget = DEFAULT_TOKE
   // ── 同壳前序任务：标题 + handoff 最后结论 ────────────────────────────
   const siblingIds = (ports.linkedTaskIds(taskId) || [])
     .filter(id => id !== taskId && id !== parentId)
-    .slice(0, MAX_SIBLINGS);
+    ;
   {
     const lines = [];
     const sources = [];
@@ -138,31 +133,26 @@ function buildTaskGraphContextDetail(ports, { taskId, tokenBudget = DEFAULT_TOKE
 
   if (!sections.length) return { text: '', sources: [] };
 
-  // ── 预算裁剪：按 父任务 → 同组 → 同壳 的优先级收进预算 ────────────────
-  const order = { parent: 0, group: 1, shell: 2 };
-  sections.sort((a, b) => order[a.kind] - order[b.kind]);
-  const kept = [];
-  let keptSources = [];
-  let truncated = false;
-  for (const section of sections) {
-    if (overBudget(section.text)) { truncated = true; break; }
-    kept.push(section.text);
-    keptSources.push(...section.sources);
-  }
-  if (!kept.length) {
-    // 连第一段都超预算：至少给出关联任务的标题行（最便宜的图谱信号）。
-    const names = sections.map(section => clipText(section.text.split('\n')[0], 160));
-    kept.push(names.join('\n'));
-    // 兜底只注入了标题行：来源仍全列（图谱关系是真的），但标记被截断。
-    keptSources = sections.flatMap(section => section.sources.map(source => ({ ...source, truncated: true })));
-    truncated = true;
-  }
-
-  const header = `[任务图谱上下文｜按图谱邻接注入，预算 ~${tokenBudget} tokens] 当前任务 ${titleOf(taskId)}${dirId ? `（${dirId}）` : ''}`;
-  return {
-    text: `${header}\n${kept.join('\n')}${truncated ? '\n（超出 token 预算，已截断）' : ''}\n[任务图谱上下文结束]\n`,
-    sources: keptSources,
+  const seen = new Set([taskId]);
+  const allowed = id => {
+    const other = ports.task(id) || ports.boardTask(id);
+    return other && (!other.dirId || !dirId || other.dirId === dirId);
   };
+  const candidates = sections.flatMap(section => section.sources).filter(source => {
+    if (!allowed(source.taskId)) return false;
+    if (source.kind !== 'memory' && seen.has(source.taskId)) return false;
+    if (source.kind !== 'memory') seen.add(source.taskId);
+    return true;
+  }).map(source => ({ ...source, atomic: true,
+    priority: ({ parent: 500, memory: 450, grandparent: 300, group: 200, shell: 100 }[source.kind] || 0)
+      + Math.min(15, relevance(query, source.excerpt)) * 10,
+    reason: relevance(query, source.excerpt) ? 'query_and_relation' : 'relation',
+  }));
+  const selected = selectContext(candidates, { budget: tokenBudget,
+    header: `[任务图谱上下文｜相关历史资料，请核验状态] 当前任务 ${titleOf(taskId)}\n`,
+    footer: '[任务图谱上下文结束]\n' });
+  return { ...selected, candidates };
+
 }
 
 function buildTaskGraphContext(ports, options = {}) {
@@ -172,54 +162,29 @@ function buildTaskGraphContext(ports, options = {}) {
 // 宿主侧工厂：把 board + shell store + 记忆读取接成 ports。
 // deps: { getBoard, taskGraphData, readTaskMemory }，全部可选降级。
 function createTaskGraphContextService(deps) {
-  const board = () => {
-    try { return deps.getBoard() || {}; } catch (_) { return {}; }
-  };
-  const shellState = () => {
-    try { return deps.taskGraphData() || {}; } catch (_) { return {}; }
-  };
-  const shellTaskIndex = () => new Map(
-    (shellState().tasks || []).filter(Boolean).map(task => [task.id, task]),
-  );
-  const linkIndex = () => {
-    // taskId -> 同壳邻接任务集合（含自己）。
-    const byShell = new Map();
-    for (const link of shellState().links || []) {
-      if (!link || typeof link.shellId !== 'string' || typeof link.taskId !== 'string') continue;
-      if (!byShell.has(link.shellId)) byShell.set(link.shellId, []);
-      byShell.get(link.shellId).push(link.taskId);
-    }
-    const byTask = new Map();
-    for (const taskIds of byShell.values()) {
-      for (const id of taskIds) {
-        byTask.set(id, [...new Set([...(byTask.get(id) || []), ...taskIds])]);
-      }
-    }
-    return byTask;
-  };
-  const groupOf = (taskId) => {
-    try {
-      const { relatedTaskGroup } = require('../task-board/core');
-      return relatedTaskGroup(board(), taskId);
-    } catch (_) { return null; }
-  };
   return function taskGraphContextOf(taskId, options) {
-    return buildTaskGraphContextDetail({
-      task: id => shellTaskIndex().get(id) || null,
-      boardTask: id => (board().tasks || {})[id] || null,
-      groupOf,
-      linkedTaskIds: id => linkIndex().get(id) || [],
-      snapshot: id => {
-        try {
-          const value = deps.getSnapshot ? deps.getSnapshot(id) : null;
-          return value && !value.__missing ? value : null;
-        } catch (_) { return null; }
+    const diagnostics = [];
+    const read = (fn, fallback) => {
+      try { return fn?.() || fallback; } catch (error) { diagnostics.push({ reason: error.message }); return fallback; }
+    };
+    const board = read(deps.getBoard, {}), state = read(deps.taskGraphData, {});
+    const tasks = new Map((state.tasks || []).map(task => [task.id, task]));
+    const shells = new Set((state.links || []).filter(l => l.taskId === taskId).map(l => l.shellId));
+    const links = [...new Set((state.links || []).filter(l => shells.has(l.shellId)).map(l => l.taskId))];
+    const detail = buildTaskGraphContextDetail({
+      task: id => tasks.get(id) || null,
+      boardTask: id => {
+        const task = board.tasks?.[id];
+        return task ? { ...task, dirId: task.dirId || board.modules?.[task.moduleId]?.dirId } : null;
       },
-      readTaskMemory: (dirId, id) => {
-        try { return deps.readTaskMemory(dirId, id) || ''; } catch (_) { return ''; }
-      },
+      groupOf: id => require('../task-board/core').relatedTaskGroup(board, id),
+      linkedTaskIds: () => links.sort((a, b) => (tasks.get(b)?.createdAt || 0) - (tasks.get(a)?.createdAt || 0)),
+      snapshot: id => read(() => deps.getSnapshot?.(id), null),
+      readTaskMemory: (dirId, id) => read(() => deps.readTaskMemory?.(dirId, id), ''),
     }, { taskId, ...(options || {}) });
+    return { ...detail, diagnostics };
   };
+
 }
 
 module.exports = {
