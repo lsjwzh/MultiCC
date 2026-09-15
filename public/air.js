@@ -55,6 +55,13 @@
     integration_receipt_required: '等待本轮代码按项目流程合入基分支。',
     baseline_revalidation_required: '基分支已变化，需要重新核验交付记录。',
     source_writer_barrier_required: '尚不能确认源工作目录持续停写。',
+    separation_application_required: '独立任务尚未创建并记录生效凭证。',
+    fork_source_dirty: '源工作目录仍有未交付修改，暂不能分离。',
+    fork_source_busy: '源任务仍在执行，等本轮结束后再分离。',
+    workspace_busy: '源工作目录仍有写入者，暂不能建立停写屏障。',
+    separation_barrier_unavailable: '当前运行时不支持分离停写屏障。',
+    delivery_evidence_unavailable: '当前运行时无法读取交付事实。',
+    separation_application_unavailable: '当前运行时无法写入分离生效凭证。',
   };
 
   const label = value => stateNames[value] || value || '';
@@ -1276,6 +1283,7 @@
   function renderDelivery(value) {
     const attribution = value.attribution || {};
     const candidate = attribution.candidate;
+    const separation = attribution.separation;
     const run = attribution.run;
     const integration = attribution.integration;
     const capacity = value.resource?.capacityReason;
@@ -1285,18 +1293,23 @@
     const failed = ['error', 'failed', 'cancelled'].includes(executionStatus);
     const unstartedPlan = value.task?.recordType === 'planned' && !value.messages?.length && !run;
     const currentTitle = value.task.title;
-    const targetTitle = candidate?.title || candidate?.taskName || '建议任务';
+    const targetTitle = separation?.targetTitle || candidate?.title || candidate?.taskName || '建议任务';
     const card = $('delivery-card');
     card.hidden = false;
 
     let eyebrow = 'MULTICC · 本轮状态';
     let title = '本轮状态已记录';
     let text = '任务保持当前归属，可以继续输入下一步。';
-    let stage = 0;
-    let currentStep = false;
-    if (run?.outcome === 'succeeded' && !run.pendingInput) stage = 1;
-    if (integration) stage = 2;
-    if (integration?.baselineCurrent) stage = 3;
+    const legacyStage = integration?.baselineCurrent ? 3 : integration ? 2
+      : run?.outcome === 'succeeded' && !run.pendingInput ? 1 : 0;
+    const deliverySteps = Array.isArray(attribution.steps) && attribution.steps.length
+      ? attribution.steps.slice(0, 4).map((step, index) => ({
+        key: step.key || String(index), label: step.label || ['本轮成功', '代码交付', '源现场稳定', '任务归属'][index],
+        status: ['done', 'pending', 'blocked', 'skipped'].includes(step.status) ? step.status : 'pending',
+      }))
+      : ['本轮成功', '代码交付', '源现场稳定', '任务归属'].map((label, index) => ({
+        key: String(index), label, status: index < legacyStage ? 'done' : 'pending',
+      }));
 
     if (capacity) {
       eyebrow = 'MULTICC · 执行资源';
@@ -1306,40 +1319,49 @@
       eyebrow = 'MULTICC · 等待回答';
       title = '本轮需要你的回答';
       text = '回答仍提交给原任务与原请求，不会因为归属建议改变目标。';
-    } else if (candidate?.state === 'stale') {
+    } else if (candidate?.state === 'stale' && !separation) {
       eyebrow = 'MULTICC · 归属建议未应用';
       title = '本次归属建议已过期';
       text = '你已继续输入或切换视图，迟到的分类与合并事件不会改投已经接受的消息。';
+    } else if (separation?.state === 'separated') {
+      eyebrow = 'MULTICC · 分离已生效';
+      title = `已创建独立任务「${targetTitle}」`;
+      text = '本轮已按停写屏障锁定的版本应用到新任务；源任务原始对话保持不变。';
+    } else if (separation?.state === 'kept') {
+      eyebrow = 'MULTICC · 分离建议已处理';
+      title = '本轮保留在当前任务';
+      text = '你已选择不创建独立任务；第 4 步以「已跳过」记录，不会伪装成分离生效。';
+    } else if (separation) {
+      eyebrow = separation.phase === 'blocked' ? 'MULTICC · 分离暂未生效' : 'MULTICC · 建议独立任务';
+      title = separation.phase === 'blocked' ? `「${targetTitle}」尚未建立` : `是否将本轮分离为「${targetTitle}」`;
+      const firstBlocker = attribution.blockers?.find(reason => reason !== 'separation_application_required');
+      text = separation.phase === 'blocked'
+        ? (blockerNames[firstBlocker] || separation.lastError?.message || '完整交付与停写核验通过后可安全重试。')
+        : '确认后会创建一个独立任务壳与工作目录，不改写当前任务的原始对话。';
     } else if (candidate && running) {
       eyebrow = 'MULTICC · 本轮执行中';
       title = '归属将在本轮交付后确认';
       text = `可能关联「${targetTitle}」，当前仍在「${currentTitle}」中执行。`;
-      currentStep = true;
     } else if (candidate && (run?.outcome !== 'succeeded' || run?.pendingInput)) {
       eyebrow = 'MULTICC · 尚未满足归属条件';
       title = '本轮未成功或仍需回答';
       text = `建议目标仍是「${targetTitle}」，原问题继续绑定当前任务。`;
-      currentStep = true;
     } else if (candidate && !integration) {
       eyebrow = 'MULTICC · 本轮成功，等待交付';
       title = `建议归入「${targetTitle}」`;
       text = '执行成功不等于任务完成或归属生效；相关代码按项目流程交付后再核验。';
-      currentStep = true;
     } else if (candidate && !integration?.baselineCurrent) {
       eyebrow = 'MULTICC · 交付记录待核验';
       title = `建议归入「${targetTitle}」`;
       text = '已有合并记录，但基分支状态发生变化；重新核验前保持当前任务。';
-      currentStep = true;
     } else if (candidate) {
       eyebrow = 'MULTICC · 交付已核验';
       title = `建议归入「${targetTitle}」· 等待源现场稳定`;
       text = '代码交付已核验；持续停写屏障与原子归属尚未完成，不提前转移工作区或消息。';
-      currentStep = true;
     } else if (running) {
       eyebrow = 'MULTICC · 本轮执行中';
       title = '任务正在当前工作目录执行';
       text = '本轮结果、代码交付与任务完成会分别记录；执行期间下一条消息仍发送到当前任务。';
-      currentStep = true;
     } else if (failed || (run && run.outcome !== 'succeeded')) {
       eyebrow = 'MULTICC · 本轮未成功';
       title = '任务保持进行中';
@@ -1360,23 +1382,35 @@
     $('delivery-title').textContent = title;
     $('delivery-text').textContent = text;
     const summary = $('task-state');
-    const attention = !!(capacity || pending || candidate || failed);
+    const separationPending = separation && !['kept', 'separated'].includes(separation.state);
+    const attention = !!(capacity || pending || candidate || separationPending || failed);
     summary.classList.toggle('attention', attention);
     // 第三段是附注，两种附注在手机上待遇不同（air.css 的 760px 块）：卡在资源上
     // 的那条（等待执行名额）说的是「为什么现在没动」，留着；「归属待核验」说的是
     // 「这条以后归到哪个任务」，占地方，手机上让位。所以类得分开，不能共用一个。
-    const thirdClass = capacity ? 'ts-cap' : candidate ? 'ts-attr' : null;
+    const thirdClass = capacity ? 'ts-cap' : candidate || separationPending ? 'ts-attr' : null;
     renderStateSummary(summary, [...taskStateSegments(value),
-      capacity ? label(capacity) : candidate ? '归属待核验' : ''], [...STATE_CLASSES, thirdClass]);
+      capacity ? label(capacity) : separationPending ? '分离待生效' : candidate ? '归属待核验' : ''], [...STATE_CLASSES, thirdClass]);
     summary.title = `${title}。${text} 点击查看详情。`;
-    $('delivery-destination').textContent = `下一条消息仍发送到「${currentTitle}」`;
+    $('delivery-destination').textContent = separation?.state === 'separated' && separation.targetTaskId === value.task.id
+      ? `当前已是分离后的独立任务「${currentTitle}」`
+      : `下一条消息仍发送到「${currentTitle}」`;
     const steps = [...$('delivery-steps').children];
     steps.forEach((step, index) => {
-      step.classList.toggle('done', index < stage);
-      step.classList.toggle('current', currentStep && index === stage);
+      const item = deliverySteps[index] || { label: step.textContent, status: 'pending' };
+      step.textContent = item.label;
+      step.dataset.step = item.key;
+      for (const name of ['done', 'current', 'blocked', 'skipped']) step.classList.remove(name);
+      if (item.status === 'done') step.classList.add('done');
+      else if (item.status === 'blocked') step.classList.add('blocked');
+      else if (item.status === 'skipped') step.classList.add('skipped');
+      else if (deliverySteps.slice(0, index).every(previous => ['done', 'skipped'].includes(previous.status))) step.classList.add('current');
     });
     const actions = [];
     if (integration) actions.unshift(actionButton('重新核验交付', reconcileDelivery, 'reconcile'));
+    if (separation?.state === 'separated' && separation.targetTaskId && separation.targetTaskId !== value.task.id) {
+      actions.push(actionButton('打开独立任务', () => navigate(value.task.dirId || directoryId, separation.targetTaskId), 'open-separated'));
+    }
     $('delivery-actions').replaceChildren(...actions);
   }
 
@@ -1397,6 +1431,10 @@
         ['本轮结果', attribution.run ? `${label(attribution.run.outcome)}${attribution.run.pendingInput ? ' · 等待回答' : ''}` : '尚无已核验的本轮结果'],
         ['代码版本', attribution.run?.codeObserved ? '已观测最终版本' : '尚未核实'],
         ['交付状态', attribution.integration ? (attribution.integration.baselineCurrent ? '已合入基分支，版本有效' : '有合并记录，等待重新核验') : '尚无覆盖本轮代码的合并凭证'],
+        ['源现场', attribution.barrier ? '写入者已停止，最终版本已锁定' : '尚无可验证的停写屏障'],
+        ['任务归属', attribution.application ? `分离已生效 · ${attribution.separation?.targetTaskId || ''}`
+          : attribution.separation?.state === 'kept' ? '已选择保留在当前任务'
+            : attribution.separation ? '独立任务尚未生效' : attribution.steps?.[3]?.status === 'done' ? '准入时已锁定当前任务' : '尚未核验'],
       ]),
       detailGroup('角色与上下文', [
         ['角色附件', roleText],
@@ -1440,7 +1478,9 @@
   }
 
   function candidateBlockers(value) {
-    return value.attribution?.candidate ? value.attribution.candidate.blockers || value.attribution.blockers || [] : [];
+    const blockers = value.attribution?.blockers;
+    if (Array.isArray(blockers)) return blockers;
+    return value.attribution?.candidate?.blockers || [];
   }
 
   // AI 配置 and 角色 render on the composer card inside the frame (see

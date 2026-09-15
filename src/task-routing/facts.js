@@ -2,7 +2,7 @@
 
 const { isDeepStrictEqual } = require('node:util');
 const PREFIX = 'task-first:';
-const FACT_KINDS = new Set(['run-result', 'integration']);
+const FACT_KINDS = new Set(['run-result', 'integration', 'writer-barrier', 'separation-application']);
 
 function failure(code) { return Object.assign(new Error(code), { code }); }
 function identity(id) {

@@ -7,7 +7,7 @@ const { parseTaskAttribution, buildTaskAttributionSystemPrompt } = require('../s
 const { mountTaskShellRoutes } = require('../src/task-shell/routes');
 const express = require('express');
 async function setup(t, extra = {}) {
-  const f = fixture(t, { captureForkBaseline: async (_task, _owner, capture) => ({ commit: 'a'.repeat(40), history: await capture() }), ...extra });
+  const f = fixture(t, extra);
   const source = f.runtime.adopt(f.a.id, 'a');
   f.histories.set('a', [{ id: 'u0', role: 'user', content: 'Old goal', taskId: source.id }]);
   const sent = await f.runtime.send(f.a.id, { text: 'Unrelated goal', clientMsgId: 'new-goal' });
@@ -52,6 +52,8 @@ test('keep is durable and idempotent; another client cannot later separate the s
 });
 test('confirmed separation creates one independent task and imports only this exchange with provenance', async t => {
   const f = await setup(t), p = f.propose(), before = JSON.stringify(f.histories.get('a'));
+  f.runtime.roles.update(f.source.id, { expectedVersion: 0, clientMsgId: 'roles-1',
+    bindings: [{ name: 'reviewer', prompt: 'Preserve the task boundary.' }] });
   const results = await Promise.all([1,2].map(() => f.runtime.separation.decide('a', p.id, 'separate')));
   assert.deepEqual(results[0], results[1]);
   const task = f.store.get('task', results[0].taskId);
@@ -59,6 +61,8 @@ test('confirmed separation creates one independent task and imports only this ex
   assert.equal(task.forkBaseline.commit, 'a'.repeat(40));
   assert.equal(f.runtime.view(f.a.id).currentTaskId, f.source.id);
   assert.equal(f.store.get('shell', task.ownerShellId).standalone, true);
+  assert.deepEqual(f.runtime.roles.current(task.id).bindings, [{ name: 'reviewer', prompt: 'Preserve the task boundary.' }]);
+  assert.equal(f.barriers.length, 1); assert.equal(f.applications.length, 1);
   assert.equal(f.creations.length, 1); assert.equal(f.sends.length, 1, 'confirmation must not send work to a model');
   assert.equal(JSON.stringify(f.histories.get('a')), before);
   const entry = await f.runtime.taskEntry(task.id);
@@ -74,17 +78,56 @@ test('a newer turn invalidates the old popup even before its receipt has changed
   await assert.rejects(f.runtime.separation.decide('a', p.id, 'separate'), { code: 'separation_stale' });
   assert.equal(f.creations.length, 0);
 });
+test('failed, waiting and unobserved turns cannot create an independent task', async t => {
+  for (const run of [
+    { id: 'turn-1', outcome: 'failed', pendingInput: false, endCodeRevision: 'revision-1' },
+    { id: 'turn-1', outcome: 'succeeded', pendingInput: true, endCodeRevision: 'revision-1' },
+    { id: 'turn-1', outcome: 'succeeded', pendingInput: false, endCodeRevision: null },
+  ]) {
+    const f = await setup(t, { deliveryEvidence: () => ({ run, integration: null }) }), p = f.propose();
+    const code = run.endCodeRevision ? 'run_not_succeeded' : 'code_observation_required';
+    await assert.rejects(f.runtime.separation.decide('a', p.id, 'separate'), { code });
+    assert.equal(f.store.list('task').length, 1);
+  }
+});
+test('changed code requires a current integration receipt before the writer barrier', async t => {
+  const changed = { id: 'turn-1', outcome: 'succeeded', pendingInput: false,
+    startCodeRevision: 'revision-0', endCodeRevision: 'revision-1' };
+  const missing = await setup(t, { deliveryEvidence: () => ({ run: changed, integration: null }) });
+  await assert.rejects(missing.runtime.separation.decide('a', missing.propose().id, 'separate'), { code: 'integration_receipt_required' });
+  assert.equal(missing.barriers.length, 0);
+  const stale = await setup(t, { deliveryEvidence: () => ({ run: changed, integration: { id: 'integration-1', integrationHead: 'abc' } }),
+    verifyDeliveryBaseline: async () => ({ effectValid: false }) });
+  await assert.rejects(stale.runtime.separation.decide('a', stale.propose().id, 'separate'), { code: 'baseline_revalidation_required' });
+  assert.equal(stale.barriers.length, 0);
+});
 test('busy and dirty sources retain the suggestion and expose the original error', async t => {
-  const f = await setup(t, { captureForkBaseline: async () => { throw Object.assign(new Error('Commit first'), { code: 'fork_source_dirty' }); } }), p = f.propose();
+  const f = await setup(t, { withSeparationBarrier: async (input, work) => work({
+    barrier: { id: `barrier-${input.separationId}` },
+    code: { revision: 'revision-1', head: 'a'.repeat(40), repoId: 'repo-1', dirty: true },
+  }) }), p = f.propose();
   f.statuses.set('a', { busy: true });
   await assert.rejects(f.runtime.separation.decide('a', p.id, 'separate'), { code: 'fork_source_busy' });
   f.statuses.set('a', { busy: false });
-  await assert.rejects(f.runtime.separation.decide('a', p.id, 'separate'), { code: 'fork_source_dirty', message: 'Commit first' });
+  await assert.rejects(f.runtime.separation.decide('a', p.id, 'separate'), { code: 'fork_source_dirty' });
   assert.equal(f.runtime.separation.latest('a').id, p.id); assert.equal(f.store.list('task').length, 1);
+});
+test('blocked separation persists only a bounded safe error code', async t => {
+  const f = await setup(t, { withSeparationBarrier: async () => {
+    throw Object.assign(new Error('secret /Users/example/token'), { code: 'bad code /Users/example/token' });
+  } }), p = f.propose();
+  await assert.rejects(f.runtime.separation.decide('a', p.id, 'separate'));
+  const saved = f.store.get('task-separation', p.id);
+  assert.deepEqual(saved.lastError, { code: 'separation_failed' });
+  assert.doesNotMatch(JSON.stringify(saved), /Users|secret|token/);
 });
 test('an anchor changed during code capture prevents task creation', async t => {
   const f = await setup(t);
-  f.ports.captureForkBaseline = async () => { f.histories.get('a').push({ id: 'u2', role: 'user', content: 'Race' }); return { commit: 'abc' }; };
+  f.ports.withSeparationBarrier = async (input, work) => {
+    f.histories.get('a').push({ id: 'u2', role: 'user', content: 'Race' });
+    return work({ barrier: { id: `barrier-${input.separationId}` },
+      code: { revision: 'revision-1', head: 'a'.repeat(40), repoId: 'repo-1', dirty: false } });
+  };
   const p = f.propose();
   await assert.rejects(f.runtime.separation.decide('a', p.id, 'separate'), { code: 'separation_stale' });
   assert.equal(f.store.list('task').length, 1);

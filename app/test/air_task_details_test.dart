@@ -20,7 +20,12 @@ void main() {
     bool readOnly = false,
   }) => {
     'task': {'id': 't1', 'title': '登录页面', 'status': 'active', ...?task},
-    'execution': {'status': 'idle', 'busy': false, 'pending': false, ...?execution},
+    'execution': {
+      'status': 'idle',
+      'busy': false,
+      'pending': false,
+      ...?execution,
+    },
     'attribution': attribution ?? const {},
     'resource': resource ?? const {'residency': 'resident', 'lease': 'idle'},
     'messages': messages ?? const [{}],
@@ -39,7 +44,7 @@ void main() {
       );
       expect(copy.eyebrow, 'MULTICC · 计划任务');
       expect(copy.title, '计划尚未执行');
-      expect(copy.stage, 0);
+      expect(copy.steps.map((step) => step.status), everyElement('pending'));
     });
 
     test('资源没到位时先报资源，不报本轮结果', () {
@@ -60,10 +65,14 @@ void main() {
 
     test('过期的归属建议不改投已接受的消息', () {
       final copy = airDeliveryCopy(
-        value(attribution: {'candidate': {'state': 'stale'}}),
+        value(
+          attribution: {
+            'candidate': {'state': 'stale'},
+          },
+        ),
       );
       expect(copy.eyebrow, 'MULTICC · 归属建议未应用');
-      expect(copy.currentStep, isFalse);
+      expect(copy.steps.first.status, 'pending');
     });
 
     test('执行中带归属建议：仍留在当前任务，交付后才确认', () {
@@ -78,7 +87,7 @@ void main() {
       );
       expect(copy.eyebrow, 'MULTICC · 本轮执行中');
       expect(copy.text, '可能关联「账号体系」，当前仍在「登录页面」中执行。');
-      expect(copy.currentStep, isTrue);
+      expect(copy.steps.first.status, 'pending');
     });
 
     test('本轮成功但还没交付：停在第一步', () {
@@ -91,8 +100,12 @@ void main() {
         ),
       );
       expect(copy.eyebrow, 'MULTICC · 本轮成功，等待交付');
-      expect(copy.stage, 1);
-      expect(copy.currentStep, isTrue);
+      expect(copy.steps.map((step) => step.status), [
+        'done',
+        'pending',
+        'pending',
+        'pending',
+      ]);
     });
 
     test('有合并记录但基分支变了：交付步骤回到「待核验」', () {
@@ -106,7 +119,7 @@ void main() {
         ),
       );
       expect(copy.eyebrow, 'MULTICC · 交付记录待核验');
-      expect(copy.stage, 2);
+      expect(copy.steps.where((step) => step.status == 'done').length, 2);
     });
 
     test('交付已核验：四步走完三步，仍等源现场稳定', () {
@@ -120,15 +133,83 @@ void main() {
         ),
       );
       expect(copy.eyebrow, 'MULTICC · 交付已核验');
-      expect(copy.stage, 3);
+      expect(copy.steps.where((step) => step.status == 'done').length, 3);
       expect(copy.title, contains('等待源现场稳定'));
+    });
+
+    test('服务端四个事实独立渲染，分离阻断不会伪装第 4 步生效', () {
+      final copy = airDeliveryCopy(
+        value(
+          attribution: {
+            'steps': const [
+              {'key': 'run', 'label': '本轮成功', 'status': 'done'},
+              {'key': 'delivery', 'label': '代码交付', 'status': 'done'},
+              {'key': 'barrier', 'label': '源现场稳定', 'status': 'blocked'},
+              {'key': 'attribution', 'label': '分离生效', 'status': 'pending'},
+            ],
+            'blockers': const [
+              'workspace_busy',
+              'separation_application_required',
+            ],
+            'separation': {
+              'state': 'pending',
+              'phase': 'blocked',
+              'targetTitle': '独立目标',
+            },
+          },
+        ),
+      );
+      expect(copy.eyebrow, 'MULTICC · 分离暂未生效');
+      expect(copy.text, airBlockerNames['workspace_busy']);
+      expect(copy.steps.map((step) => step.status), [
+        'done',
+        'done',
+        'blocked',
+        'pending',
+      ]);
+      expect(copy.steps.last.label, '分离生效');
+    });
+
+    test('保留与分离生效是两种不同结果', () {
+      final kept = airDeliveryCopy(
+        value(
+          attribution: {
+            'steps': const [
+              {'label': '本轮成功', 'status': 'done'},
+              {'label': '代码交付', 'status': 'done'},
+              {'label': '源现场稳定', 'status': 'done'},
+              {'label': '分离生效', 'status': 'skipped'},
+            ],
+            'separation': {'state': 'kept', 'targetTitle': '独立目标'},
+          },
+        ),
+      );
+      expect(kept.title, '本轮保留在当前任务');
+      expect(kept.steps.last.status, 'skipped');
+      final applied = airDeliveryCopy(
+        value(
+          attribution: {
+            'steps': const [
+              {'label': '本轮成功', 'status': 'done'},
+              {'label': '代码交付', 'status': 'done'},
+              {'label': '源现场稳定', 'status': 'done'},
+              {'label': '分离生效', 'status': 'done'},
+            ],
+            'separation': {'state': 'separated', 'targetTitle': '独立目标'},
+          },
+        ),
+      );
+      expect(applied.eyebrow, 'MULTICC · 分离已生效');
+      expect(applied.steps.last.status, 'done');
     });
 
     test('本轮失败不会被写成任务完成', () {
       final copy = airDeliveryCopy(
-        value(attribution: {
-          'run': {'outcome': 'failed'},
-        }),
+        value(
+          attribution: {
+            'run': {'outcome': 'failed'},
+          },
+        ),
       );
       expect(copy.eyebrow, 'MULTICC · 本轮未成功');
       expect(copy.title, '任务保持进行中');
@@ -167,9 +248,7 @@ void main() {
       final groups = airDetailGroups({
         'task': {'id': 't1', 'recordType': 'execution', 'status': 'active'},
         'attribution': {
-          'candidate': {
-            'blockers': ['integration_receipt_required', 'something_new'],
-          },
+          'blockers': ['integration_receipt_required', 'something_new'],
         },
         'resource': const {},
         'configuration': const {},
@@ -250,9 +329,15 @@ void main() {
     expect(find.byKey(const ValueKey('air-delivery-title')), findsOneWidget);
     expect(find.text('下一条消息仍发送到「登录页面」'), findsOneWidget);
     // 有 integration 才有核验入口 —— 没有合并记录时点它没有任何意义。
-    expect(find.byKey(const ValueKey('air-delivery-reconcile')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('air-delivery-reconcile')),
+      findsOneWidget,
+    );
     // 任务有自己的角色才谈得上编辑 —— 观察来的只读任务没有这一项。
-    expect(find.byKey(const ValueKey('air-details-edit-roles')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('air-details-edit-roles')),
+      findsOneWidget,
+    );
     expect(find.text('计划与任务生命周期'), findsOneWidget);
     expect(find.text('代码与交付'), findsOneWidget);
     expect(tester.takeException(), isNull);
@@ -272,6 +357,62 @@ void main() {
     expect(find.text('角色与上下文'), findsOneWidget);
     expect(find.text('执行资源'), findsOneWidget);
 
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  testWidgets('分离应用凭证到位后可从详情直接打开独立任务', (tester) async {
+    SharedPreferences.setMockInitialValues({
+      'multicc_host': 'http://localhost:3000',
+    });
+    final settings = await SettingsService.getInstance();
+    final client = MockClient(
+      (request) async => http.Response(
+        jsonEncode({
+          'ok': true,
+          'task': {'id': 'source', 'title': '源任务', 'status': 'active'},
+          'status': 'active',
+          'execution': {'status': 'idle', 'busy': false},
+          'messages': const [{}],
+          'attribution': {
+            'steps': const [
+              {'label': '本轮成功', 'status': 'done'},
+              {'label': '代码交付', 'status': 'done'},
+              {'label': '源现场稳定', 'status': 'done'},
+              {'label': '分离生效', 'status': 'done'},
+            ],
+            'separation': {
+              'state': 'separated',
+              'targetTaskId': 'target',
+              'targetTitle': '独立任务',
+            },
+            'application': {'id': 'application-1', 'targetTaskId': 'target'},
+          },
+          'resource': {'residency': 'resident', 'lease': 'idle'},
+          'configuration': const {},
+          'sessionId': 'source-session',
+          'readOnly': false,
+        }),
+        200,
+        headers: {'content-type': 'application/json; charset=utf-8'},
+      ),
+    );
+    String? opened;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AirTaskDetailsPanel(
+            taskId: 'source',
+            service: AirService(settings: settings, httpClient: client),
+            onOpenSeparatedTask: (taskId) => opened = taskId,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('MULTICC · 分离已生效'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('air-delivery-open-separated')));
+    expect(opened, 'target');
     await tester.pumpWidget(const SizedBox());
     client.close();
   });
