@@ -554,14 +554,16 @@ class ChatProvider extends ChangeNotifier {
   /// live stand-in inside [claudeLimitView] — showing it here too would paint
   /// the same window twice.
   VendorQuotaView? get limitView {
-    final relay = _relayProviderLimit;
-    final relayDto = relay?['dto'];
-    if (relayDto is Map && relayDto['kind'] == 'window') {
-      final provider = relayDto['provider']?.toString() ?? '';
-      if (providerMatchesCli(provider, _cli.name, _providerBaseUrl)) {
-        final view = vendorViewFromBar(_barOf(relay!));
-        if (view != null) return view;
-      }
+    final active = _activeProviderLimit;
+    final activeDto = active?['dto'];
+    if (activeDto is Map &&
+        activeDto['kind'] == 'window' &&
+        _activeProviderMatchesCli) {
+      // This response belongs to the exact active Provider id. It is more
+      // precise than CLI/provider-name heuristics: a Codex session may be backed
+      // by Codex Official, GLM, or a borrowed account.
+      final view = vendorViewFromBar(_barOf(active!));
+      if (view != null) return view;
     }
     final limit = _usageWindowLimit;
     if (limit == null) return null;
@@ -581,13 +583,15 @@ class ChatProvider extends ChangeNotifier {
   /// instantly on a cli/provider switch instead of lingering from the previous
   /// context.
   VendorQuotaView? get balanceView {
-    if (!balanceBarVisibleFor(_cli.name, _providerBaseUrl)) return null;
-    final relay = _relayProviderLimit;
-    final relayDto = relay?['dto'];
-    if (relayDto is Map && relayDto['kind'] == 'balance') {
-      final view = vendorViewFromBar(_barOf(relay!));
+    final active = _activeProviderLimit;
+    final activeDto = active?['dto'];
+    if (activeDto is Map &&
+        activeDto['kind'] == 'balance' &&
+        _activeProviderMatchesCli) {
+      final view = vendorViewFromBar(_barOf(active!));
       if (view != null) return view;
     }
+    if (!balanceBarVisibleFor(_cli.name, _providerBaseUrl)) return null;
     return vendorViewFromBar(_balanceBar);
   }
 
@@ -602,9 +606,12 @@ class ChatProvider extends ChangeNotifier {
   /// /api/codex/quota, with the passive rate_limit_event bar as a live
   /// stand-in before the first fetch lands.
   VendorQuotaView? get codexQuotaView {
-    // /api/codex/quota is this device's Official account. A codex-proxy URL
-    // names a borrowed account whose bar belongs in limitView instead.
-    if (_cli != SessionCli.codex || isRelayBaseUrl(_providerBaseUrl)) {
+    // /api/codex/quota is only a legacy fallback when no concrete Provider is
+    // known. A known Provider decides whether this Codex session has a Codex
+    // window, GLM window, money balance, or no limit surface.
+    if (_cli != SessionCli.codex ||
+        _activeProviderId != null ||
+        _providerSelection != null) {
       return null;
     }
     final v = vendorViewFromBar(
@@ -634,8 +641,9 @@ class ChatProvider extends ChangeNotifier {
   String _providerBaseUrl = '';
   String get providerBaseUrl => _providerBaseUrl;
   String _providerLimitId = '';
+  String _providerLimitAppType = '';
   int _providerLimitRevision = 0;
-  Map<String, dynamic>? _relayProviderLimit;
+  Map<String, dynamic>? _activeProviderLimit;
   SessionProviderSelection? _providerSelection;
   SessionProviderSelection? get providerSelection => _providerSelection;
   String? _activeProviderId;
@@ -645,6 +653,10 @@ class ChatProvider extends ChangeNotifier {
   String? _activeProviderModel;
   String? get activeProviderModel => _activeProviderModel;
   final Map<String, String> _providerCatalogBaseUrls = {};
+  final Map<String, String> _providerCatalogAppTypes = {};
+
+  bool get _activeProviderMatchesCli =>
+      _cli == SessionCli.opencode || _providerLimitAppType == _cli.appType;
 
   QuotaService? _quotaService;
   QuotaService get _quota => _quotaService ??= QuotaService(settings: settings);
@@ -1810,13 +1822,19 @@ class ChatProvider extends ChangeNotifier {
   void _setProviderBaseUrl(String baseUrl) {
     final next = baseUrl.trim();
     final nextProviderId = (_activeProviderId ?? '').trim();
+    final nextAppType = nextProviderId.isEmpty
+        ? ''
+        : (_providerCatalogAppTypes[nextProviderId] ?? _cli.appType);
     final changed =
-        next != _providerBaseUrl || nextProviderId != _providerLimitId;
+        next != _providerBaseUrl ||
+        nextProviderId != _providerLimitId ||
+        nextAppType != _providerLimitAppType;
     _providerBaseUrl = next;
     _providerLimitId = nextProviderId;
+    _providerLimitAppType = nextAppType;
     if (changed) {
       _providerLimitRevision += 1;
-      _relayProviderLimit = null;
+      _activeProviderLimit = null;
       // The passive window bar belongs to whichever provider produced it. On a
       // switch it must not keep speaking for the new provider — a relay
       // provider's gate is protocol-based, so a stale vendor bar from the
@@ -1924,6 +1942,18 @@ class ChatProvider extends ChangeNotifier {
             })
             .where((entry) => entry.key.isNotEmpty),
       );
+    _providerCatalogAppTypes
+      ..clear()
+      ..addEntries(
+        catalog
+            .map(
+              (provider) => MapEntry(
+                provider['id']?.toString() ?? '',
+                provider['appType']?.toString() ?? '',
+              ),
+            )
+            .where((entry) => entry.key.isNotEmpty && entry.value.isNotEmpty),
+      );
     _syncActualProviderBaseUrl();
     notifyListeners();
   }
@@ -1973,12 +2003,11 @@ class ChatProvider extends ChangeNotifier {
   /// safe to call on any provider change.
   void refreshVendorQuotas() {
     final baseUrl = _providerBaseUrl;
-    final relayProtocol = relayProtocolFromBaseUrl(baseUrl);
-    if (relayProtocol != null && _providerLimitId.isNotEmpty) {
+    if (_providerLimitAppType.isNotEmpty && _providerLimitId.isNotEmpty) {
       unawaited(
-        _fetchRelayProviderLimit(
+        _fetchActiveProviderLimit(
           _providerLimitRevision,
-          relayProtocol,
+          _providerLimitAppType,
           _providerLimitId,
         ),
       );
@@ -2028,18 +2057,18 @@ class ChatProvider extends ChangeNotifier {
 
   int _nowMs() => DateTime.now().millisecondsSinceEpoch;
 
-  Future<void> _fetchRelayProviderLimit(
+  Future<void> _fetchActiveProviderLimit(
     int revision,
-    String protocol,
+    String appType,
     String providerId,
   ) async {
-    final data = await _quota.fetchProviderBalance(protocol, providerId);
+    final data = await _quota.fetchProviderBalance(appType, providerId);
     if (revision != _providerLimitRevision ||
-        protocol != relayProtocolFromBaseUrl(_providerBaseUrl) ||
+        appType != _providerLimitAppType ||
         providerId != _providerLimitId) {
       return;
     }
-    _relayProviderLimit = data?['ok'] == true ? data : null;
+    _activeProviderLimit = data?['ok'] == true ? data : null;
     notifyListeners();
   }
 
@@ -2149,7 +2178,11 @@ class ChatProvider extends ChangeNotifier {
   /// CLI; skips while one is in flight or after a recent error (vendor backoff)
   /// unless [force]. Callers: cli-switch hooks + the bar's tap handler.
   Future<void> refreshCodexQuota({bool force = false}) async {
-    if (_cli != SessionCli.codex || isRelayBaseUrl(_providerBaseUrl)) return;
+    if (_cli != SessionCli.codex ||
+        _activeProviderId != null ||
+        _providerSelection != null) {
+      return;
+    }
     if (_codexInFlight) return;
     if (!force &&
         _codexErrorAt != 0 &&

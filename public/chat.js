@@ -1790,9 +1790,13 @@ function updateProviderBtn() {
   providerBtn.style.display = 'none';
   const quotaProviderId = _sessionProviderSelection?.mode === 'auto'
     ? _activeProviderId : effectiveProviderIdForChoices(_sessionProvider);
-  const catalogUrl = (_providerList.find((x) => x && x.id === quotaProviderId) || {}).baseUrl || '';
+  const quotaProvider = _providerList.find((x) => x && x.id === quotaProviderId) || null;
+  const catalogUrl = quotaProvider?.baseUrl || '';
   const baseUrl = catalogUrl || (!(_sessionProviderSelection?.mode === 'auto') ? _sessionProviderBaseUrl : '');
-  window.MultiCCChatRateLimit?.setProviderBaseUrl?.(baseUrl, quotaProviderId);
+  window.MultiCCChatRateLimit?.setProviderBaseUrl?.(baseUrl, quotaProviderId, {
+    appType: quotaProvider?.appType || (_sessionCli === 'codex' ? 'codex' : 'claude'),
+    pending: _sessionProviderSelection?.mode === 'auto' && !quotaProviderId,
+  });
   updateModelBtn();
 }
 

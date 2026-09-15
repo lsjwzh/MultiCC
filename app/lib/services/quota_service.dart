@@ -45,9 +45,9 @@ class QuotaService {
   /// mirrors the web codex bar. The body carries a server-rendered `bar`.
   Future<Map<String, dynamic>?> fetchCodexQuota() => _get('/api/codex/quota');
 
-  /// Query the active Provider's own quota/balance. Relay providers use this
-  /// route because this device has only the borrowed mcr1 credential; the
-  /// lender performs the vendor query and returns its server-rendered bar.
+  /// Query the active Provider's own quota/balance. The provider, rather than
+  /// the chat CLI, decides the returned species (window / prepaid balance /
+  /// unsupported). Relay providers forward this query to their lender.
   Future<Map<String, dynamic>?> fetchProviderBalance(
     String appType,
     String providerId,

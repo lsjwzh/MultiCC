@@ -337,6 +337,53 @@ test('a borrowed Codex fetch hides the host subscription and paints the lender b
   } finally { f.cleanup(); }
 });
 
+test('every concrete Codex Provider selects its own bar species, including non-relay URLs', async () => {
+  const f = freshClient();
+  try {
+    await flushClient();
+    const calls = [];
+    global.fetch = async (url) => {
+      const value = String(url); calls.push(value);
+      if (value.includes('/api/providers/codex/deepseek/balance')) {
+        return { json: async () => ({
+          ok: true, dto: { kind: 'balance', provider: 'deepseek' },
+          bar: { text: 'DeepSeek · ¥12.50', color: '#3fb950', title: 'provider balance' },
+        }) };
+      }
+      if (value.includes('/api/providers/codex/codex-official/balance')) {
+        return { json: async () => ({
+          ok: true, dto: { kind: 'window', provider: 'codex' },
+          bar: { text: 'Selected Official · 1wk 23%', color: '#58a6ff', title: 'selected account' },
+        }) };
+      }
+      return { json: async () => ({ bars: {
+        codex: { status: 'ok', bar: { text: 'Host fallback · 1wk 8%' } },
+      } }) };
+    };
+
+    f.C.setCli('codex');
+    f.C.setProviderBaseUrl('https://api.deepseek.com/v1', 'deepseek', { appType: 'codex' });
+    await flushClient();
+    assert.ok(calls.some(url => url.includes('/api/providers/codex/deepseek/balance')));
+    assert.equal(f.element('codex-quota-bar').style.display, 'none');
+    assert.equal(f.element('usage-balance-bar').textContent, 'DeepSeek · ¥12.50');
+
+    f.C.setProviderBaseUrl('', 'codex-official', { appType: 'codex', isOfficial: true });
+    await flushClient();
+    assert.ok(calls.some(url => url.includes('/api/providers/codex/codex-official/balance')));
+    assert.equal(f.element('codex-quota-bar').style.display, 'none');
+    assert.equal(f.element('usage-balance-bar').style.display, 'none');
+    assert.equal(f.element('claude-rate-limit-bar').textContent, 'Selected Official · 1wk 23%');
+
+    // Auto has no account to display until a physical route is selected. It
+    // must not temporarily fall back to this machine's Official account.
+    f.C.setProviderBaseUrl('', '', { appType: 'codex', pending: true });
+    await flushClient();
+    assert.equal(f.element('codex-quota-bar').style.display, 'none');
+    assert.equal(f.element('claude-rate-limit-bar').style.display, 'none');
+  } finally { f.cleanup(); }
+});
+
 test('loopback relay plumbing is not a borrowed provider and a balance chip shows for a relay', () => {
   const f = freshClient();
   try {
@@ -464,8 +511,9 @@ test('late server snapshots and Claude scrapes cannot restore the previous accou
     const oldSnapshot = f.C.restoreServerQuotaBars();
     const oldScrape = f.C.refreshClaudeUsage(true);
     f.C.setProviderBaseUrl('', 'new-claude-account');
-    assert.equal(pending.length, 3);
+    assert.equal(pending.length, 4, 'new Provider triggers both cache restore and exact Provider query');
     pending[2].resolve({ json: async () => ({ bars: { claude: { bar: { text: 'New account' } } } }) });
+    pending[3].resolve({ json: async () => ({ ok: false, reason: 'unsupported' }) });
     await flushClient();
     pending[0].resolve({ json: async () => ({ bars: { claude: { bar: { text: 'Old snapshot' } } } }) });
     pending[1].resolve({ json: async () => ({ status: 'ok', bar: { text: 'Old scrape' } }) });
@@ -489,7 +537,10 @@ test('chat provider selection forwards default, explicit, and active Auto identi
       _sessionProviderSelection: null,
       _sessionProvider: '',
       _activeProviderId: '',
-      _providerList: [{ id: 'a', baseUrl: url }, { id: 'b', baseUrl: url }],
+      _providerList: [
+        { id: 'a', appType: 'claude', baseUrl: url, isOfficial: false },
+        { id: 'b', appType: 'claude', baseUrl: url, isOfficial: false },
+      ],
       effectiveProviderIdForChoices: id => id || 'a',
       updateModelBtn() {},
     });

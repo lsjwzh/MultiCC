@@ -291,11 +291,11 @@
   });
   const codexSlot = createQuotaSlot({
     kind: 'codex', id: 'codex-quota-bar',
-    // /api/codex/quota is THIS machine's Official account. A codex-proxy
-    // provider is a borrowed account, so showing the host subscription beside
-    // it is an account-boundary violation (and was the reason a borrowed chat
-    // displayed the host's 8% instead of the lender's 65%).
-    isVisible: () => currentCli === 'codex' && !isRelayBaseUrl(currentProviderBaseUrl),
+    // /api/codex/quota is a legacy fallback for sessions that do not expose a
+    // concrete Provider identity. Once a Provider is known, its own balance
+    // endpoint decides the bar species (Codex window / GLM window / money / no
+    // bar). Neither the Codex CLI nor a URL shape may select this host account.
+    isVisible: () => currentCli === 'codex' && !currentProviderId && !currentProviderPending,
     getUrl: () => `/api/quota/bars/refresh${quotaBarParams({ kind: 'codex' })}`,
     storageKey: 'multicc.codex.quota.v1',
   });
@@ -352,13 +352,15 @@
   let currentCli = 'claude';
   let currentProviderBaseUrl = '';
   let currentProviderId = '';
+  let currentProviderAppType = '';
+  let currentProviderPending = false;
   let providerRevision = 0;
   let currentSession = '';
   let cliInitialized = false;
   let currentLimitInfo = null;   // raw rate_limit_info (provider/resetsAt for gating + timer)
   let currentLimitBar = null;    // server-rendered bar from the rate_limit_event
   let currentClaudeUsage = null; // scrape response (its .bar is the full Claude bar)
-  let currentRelayBar = null;
+  let currentProviderWindowBar = null;
   let claudeUsageFetchInFlight = false;
   let claudeLoginPending = false;
   let claudeLastErrorAt = 0;
@@ -381,26 +383,30 @@
     return p === 'glm' ? 'glm' : p === 'codex' ? 'codex' : p === 'opencode' ? 'opencode' : 'claude';
   }
 
+  function activeProviderMatchesCli() {
+    if (currentCli === 'opencode') return true;
+    return currentProviderAppType === (currentCli === 'codex' ? 'codex' : 'claude');
+  }
+
   function renderCurrent() {
     const element = global.document?.getElementById?.('claude-rate-limit-bar');
     if (!element) return;
     const claudeProvider = isClaudeProvider(currentProviderBaseUrl);
     const provider = limitProvider();
     let bar = null, state, clickable = false;
-    const relayProtocol = relayProtocolFromBaseUrl(currentProviderBaseUrl);
-    if (currentRelayBar && relayProtocol
-        && (currentCli === relayProtocol || currentCli === 'opencode')) {
-      // Provider balance polling can return before any passive WS limit event.
-      // Its server-rendered bar is already provider-scoped and authoritative.
-      bar = currentRelayBar;
+    if (currentProviderWindowBar && activeProviderMatchesCli()) {
+      // Exact Provider query wins over CLI heuristics and passive events. This
+      // is what lets a Codex session correctly show GLM/borrowed/official quota
+      // according to its active Provider rather than the local Codex account.
+      bar = currentProviderWindowBar;
     } else if (currentCli === 'claude' && claudeProvider) {
       // Claude subscription: the scrape (full, with weekly) is authoritative;
       // before it lands the live 5h event or the idle render stands in.
-      bar = (currentClaudeUsage && currentClaudeUsage.bar) || currentRelayBar || currentLimitBar || idleBarFor('claude');
+      bar = (currentClaudeUsage && currentClaudeUsage.bar) || currentLimitBar || idleBarFor('claude');
       state = claudeUsageFetchInFlight ? 'fetching' : (claudeLoginPending ? 'login_pending' : undefined);
       clickable = true;
     } else if (provider && providerMatchesCli(provider, currentCli)) {
-      bar = currentRelayBar || currentLimitBar;
+      bar = currentLimitBar;
     }
     const view = paintBar(element, bar, state);
     if (view) {
@@ -452,19 +458,18 @@
     return currentLimitBar ? { provider: limitProvider(), bar: currentLimitBar } : null;
   }
 
-  async function refreshRelayBar() {
-    const protocol = relayProtocolFromBaseUrl(currentProviderBaseUrl);
-    if (!protocol || !currentProviderId) return null;
+  async function refreshProviderLimit() {
+    if (!currentProviderAppType || !currentProviderId) return null;
     const revision = providerRevision;
     try {
-      const res = await fetch(`/api/providers/${protocol}/${encodeURIComponent(currentProviderId)}/balance`, { credentials: 'same-origin' });
+      const res = await fetch(`/api/providers/${encodeURIComponent(currentProviderAppType)}/${encodeURIComponent(currentProviderId)}/balance`, { credentials: 'same-origin' });
       const data = await res.json();
       if (revision !== providerRevision || !data || data.ok !== true) return null;
       const kind = data.dto?.kind;
-      currentRelayBar = kind === 'window' ? (data.bar || null) : null;
+      currentProviderWindowBar = kind === 'window' ? (data.bar || null) : null;
       currentBalanceBar = kind === 'balance' ? (data.bar || null) : null;
       renderAll();
-      return currentRelayBar;
+      return kind === 'balance' ? currentBalanceBar : currentProviderWindowBar;
     } catch (_) { return null; }
   }
   function restoreFiveHourRateLimit(sessionName) {
@@ -567,17 +572,27 @@
     // weekly scrape is fetch-on-click, so an auto-scrape would pop needs_login /
     // unavailable states the user did not ask for.
   }
-  function setProviderBaseUrl(baseUrl, providerId = '') {
+  function setProviderBaseUrl(baseUrl, providerId = '', providerMeta = null) {
     const next = String(baseUrl || '');
     const nextId = String(providerId || '');
-    const changed = next !== currentProviderBaseUrl || nextId !== currentProviderId;
+    const meta = providerMeta && typeof providerMeta === 'object' ? providerMeta : {};
+    // A relay path still reveals its protocol for old callers. Otherwise the
+    // session's concrete provider catalog supplies appType; currentCli is only
+    // a compatibility fallback, never the bar-kind decision.
+    const nextAppType = String(meta.appType || relayProtocolFromBaseUrl(next)
+      || (nextId ? (currentCli === 'codex' ? 'codex' : 'claude') : ''));
+    const nextPending = meta.pending === true;
+    const changed = next !== currentProviderBaseUrl || nextId !== currentProviderId
+      || nextAppType !== currentProviderAppType || nextPending !== currentProviderPending;
     currentProviderBaseUrl = next;
     currentProviderId = nextId;
+    currentProviderAppType = nextAppType;
+    currentProviderPending = nextPending;
     if (changed) {
       // Different accounts can share a baseUrl. Drop every provider-owned
       // display and invalidate old requests before fetching the new selection.
       providerRevision += 1;
-      currentLimitInfo = null; currentLimitBar = null; currentRelayBar = null; currentBalanceBar = null;
+      currentLimitInfo = null; currentLimitBar = null; currentProviderWindowBar = null; currentBalanceBar = null;
       currentClaudeUsage = null; claudeUsageFetchInFlight = false;
       claudeLoginPending = false; claudeLastErrorAt = 0;
       arkSlot.reset(); zhipuSlot.reset(); kimiSlot.reset();
@@ -599,7 +614,7 @@
     if (changed) {
       arkSlot.clearBackoff(); zhipuSlot.clearBackoff(); kimiSlot.clearBackoff();
       restoreServerQuotaBars();
-      refreshRelayBar();
+      refreshProviderLimit();
       arkSlot.refresh(); zhipuSlot.refresh(); kimiSlot.refresh();
     }
   }
@@ -609,7 +624,10 @@
     consumeRateLimitEvent, consumeBalanceEvent,
     restoreFiveHourRateLimit, restoreBalance, restoreClaudeUsage,
     refreshClaudeUsage,
-    refreshRelayBar,
+    refreshProviderLimit,
+    // Compatibility alias for older callers; it now queries every concrete
+    // Provider, not only relay URLs.
+    refreshRelayBar: refreshProviderLimit,
     refreshOpenCodeQuota: (...a) => opencodeSlot.refresh(...a),
     restoreOpenCodeQuota: () => opencodeSlot.restore(),
     refreshQoderQuota: (...a) => qoderSlot.refresh(...a),
