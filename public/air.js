@@ -822,7 +822,7 @@
     const selectedEntry = entry?.task?.id === taskId ? entry : null;
     const adminHeadings = {
       planner: ['MultiCC Air › 工作管理', '任务看板', '按模块查看、筛选与规划全部任务。'],
-      // 「谁在等我」的整页。控制台那一格只放最急的几条，这里是完整清单。
+      // 「谁在等我」的整页。控制台那一格只放最近更新的几条，这里是完整清单。
       attention: ['MultiCC Air › 控制台', '谁在等我', '跨所有工作目录：谁在等我回答、出错或正在跑。'],
       docs: ['MultiCC Air › 系统工具', '服务与文档', 'Agent 产物、本地页面和服务登记。'],
       memory: ['MultiCC Air › 系统工具', '记忆图谱', '项目记忆、会话记忆与文件编辑。'],

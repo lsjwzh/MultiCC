@@ -37,10 +37,13 @@
   const consoleFilter = { query: '', status: 'open', dir: 'all' };
   // 面板是给人看的，不是导出用的：超过这个数就只显示最近的一批，并把总数说清楚。
   const TASK_LIST_LIMIT = 60;
-  // 「谁在等我」是面板的第一格，也是打开控制台第一眼要看的东西，所以它只留最急的
+  // 「谁在等我」是面板的第一格，也是打开控制台第一眼要看的东西，所以它只留最近更新的
   // 几条：一屏扫完，剩下的交给它自己的整页（这一格的「查看全部」）。不封顶的话，
   // 跑起来的任务一多，这一格就把下面的「全部任务」和工具格整片推出视野 ——
   // 控制台变成一份清单的滚动条。
+  //
+  // 「最近更新」是纯时间倒序，不按紧急度分层：刚动过的那几条才是我脑子里还挂着的事，
+  // 而一条三小时前出错、此后没人碰过的任务，即使更「急」也排不到刚跑起来的前面。
   const ATTENTION_LIMIT = 5;
 
   // 手机上页头的工具都收进「⋯」浮层，浮层里每一行都摆成「图标 + 名字」两列
@@ -154,9 +157,11 @@
   // 「谁在等我」：跨所有目录、正在跑或等着我的任务。这条信号原来由侧栏的
   // 「跨目录活动」承担，现在它是控制台面板的第一个分区，也是入口徽标的数字 ——
   // 一处定义，两处显示，不会再各说各话。
+  //
+  // 分级只用来判断「算不算在等我」这件事（见 urgentTasks 的筛选与上面那张
+  // 「等待处理」的统计），不再决定谁排在前面 —— 排序是纯时间。
   function taskUrgency(task) {
     const status = taskStatus(task);
-    // 等我回答 → 出错要我去处理 → 卡在资源 → 正在跑。故障排在任何乐观信号前面。
     if (status === 'waiting') return 0;
     if (status === 'error') return 1;
     if (task.resource?.capacityReason) return 2;
@@ -164,10 +169,12 @@
     if (status === 'done' || status === 'archived') return 5;
     return 4;
   }
+  // 谁是「在等我」由分级筛出来（等我回答 / 出错 / 卡资源 / 正在跑），排在最前面的
+  // 是谁最近动过。最近更新最靠前 —— 刚有动静的任务才是眼下要接手的那条。
   function urgentTasks(data) {
     return (data?.tasks || [])
       .filter(task => taskUrgency(task) < 4)
-      .sort((a, b) => taskUrgency(a) - taskUrgency(b) || Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+      .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
   }
 
   function statCard(label, value, detail, tone, onClick) {
@@ -207,14 +214,14 @@
     const attentionHead = make('div', null, 'admin-panel-head');
     attentionHead.append(make('div'));
     attentionHead.firstChild.append(make('span', 'ACROSS ALL WORKSPACES', 'eyebrow'), make('h3', '谁在等我'));
-    // 清单本来就按紧急度排过，所以「只显示前几条」砍掉的是最不急着处理的那些，
-    // 留下的仍是眼下最该看的人。总数照报，别让封顶看起来像「就这么几条」。
+    // 清单本来就按最近更新排过，所以「只显示前几条」砍掉的是最久没动过的那些，
+    // 留下的仍是眼下最近有动静的人。总数照报，别让封顶看起来像「就这么几条」。
     const urgent = urgentTasks(data);
     const overflowed = urgent.length > ATTENTION_LIMIT;
     const attentionMeta = make('div', null, 'admin-panel-meta');
     attentionMeta.append(make('span', overflowed
-      ? `${urgent.length} 条 · 显示最急的 ${ATTENTION_LIMIT} 条`
-      : '按紧急度排序，点击直达', 'admin-panel-note'));
+      ? `${urgent.length} 条 · 显示最近更新的 ${ATTENTION_LIMIT} 条`
+      : '按最近更新排序，点击直达', 'admin-panel-note'));
     // 没超过就没有第二页可去，出口不出现 —— 按钮跟着「有地方可去」出现，而不是
     // 常驻一个点了没反应的「全部」。
     if (overflowed) attentionMeta.append(action(`查看全部 ${urgent.length} 条 ›`, () => setMode('attention')));
@@ -339,9 +346,9 @@
     content.replaceChildren(stats, attention, workspacePanel, split);
   }
 
-  // 「谁在等我」的整页：控制台那一格只放最急的几条，完整清单在这里。它和控制台
+  // 「谁在等我」的整页：控制台那一格只放最近更新的几条，完整清单在这里。它和控制台
   // 那一格用的是同一个 urgentTasks(data) —— 排序规则只有一份，所以两边不会把
-  // 「谁更急」排成两个样子。
+  // 「谁在前面」排成两个样子。
   function renderAttention(context) {
     setActions([
       action('返回控制台', () => context.setMode('overview'), '', panelIcon('←')),
@@ -355,7 +362,7 @@
     const head = make('div', null, 'admin-panel-head');
     head.append(make('div'));
     head.firstChild.append(make('span', 'ACROSS ALL WORKSPACES', 'eyebrow'), make('h3', '谁在等我'));
-    head.append(make('span', urgent.length ? `${urgent.length} 条 · 按紧急度排序，点击直达` : '当前没有要处理的事', 'admin-panel-note'));
+    head.append(make('span', urgent.length ? `${urgent.length} 条 · 按最近更新排序，点击直达` : '当前没有要处理的事', 'admin-panel-note'));
     const list = make('div', null, 'admin-recent-list');
     // 这一页本身就是完整清单，点走一条不用收掉任何浮层 —— 直接把 navigate 交给
     // taskRow 的默认行为，不套控制台那层 onOpen。
