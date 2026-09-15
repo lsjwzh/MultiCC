@@ -42,6 +42,28 @@ class _StubQuotaService extends QuotaService {
     String providerId,
   ) async {
     providerBalanceCalls.add('$appType:$providerId');
+    if (providerId == 'deepseek') {
+      return {
+        'ok': true,
+        'dto': {'kind': 'balance', 'provider': 'deepseek'},
+        'bar': {
+          'text': 'DeepSeek · ¥12.50',
+          'color': '#3fb950',
+          'title': 'provider balance',
+        },
+      };
+    }
+    if (providerId == 'official') {
+      return {
+        'ok': true,
+        'dto': {'kind': 'window', 'provider': 'codex'},
+        'bar': {
+          'text': 'Selected Official · 1wk 23%',
+          'color': '#58a6ff',
+          'title': 'selected account',
+        },
+      };
+    }
     return {
       'ok': true,
       'dto': {'kind': 'window', 'provider': 'codex'},
@@ -195,9 +217,79 @@ void main() {
         await Future<void>.delayed(Duration.zero);
       }
 
-      expect(quota.providerBalanceCalls, ['codex:borrowed']);
+      expect(quota.providerBalanceCalls, ['codex:official', 'codex:borrowed']);
       expect(provider.codexQuotaView, isNull);
       expect(provider.limitView?.text, 'Borrowed · 1wk 65%');
+    },
+  );
+
+  test(
+    'Codex limit bar follows direct and Official Provider identity',
+    () async {
+      final s = await settings();
+      final quota = _StubQuotaService(s);
+      final provider = ChatProvider(
+        settings: s,
+        sessionName: 'test-session',
+        sessionCwd: '/tmp/x',
+        quotaService: quota,
+      );
+      addTearDown(provider.dispose);
+
+      provider.applyProviderCatalog(const <Map<String, dynamic>>[
+        {
+          'id': 'deepseek',
+          'appType': 'codex',
+          'baseUrl': 'https://api.deepseek.com/v1',
+          'isOfficial': false,
+        },
+        {
+          'id': 'official',
+          'appType': 'codex',
+          'baseUrl': '',
+          'isOfficial': true,
+        },
+      ]);
+      provider.applyCliConfig(
+        const SessionCliConfig(
+          cli: SessionCli.codex,
+          provider: 'deepseek',
+          providerBaseUrl: 'https://api.deepseek.com/v1',
+          model: 'deepseek-test',
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(provider.codexQuotaView, isNull);
+      expect(provider.limitView, isNull);
+      expect(provider.balanceView?.text, 'DeepSeek · ¥12.50');
+
+      provider.applyProviderSwitch(
+        const SessionCliConfig(
+          cli: SessionCli.codex,
+          provider: 'official',
+          providerBaseUrl: '',
+          model: 'gpt-test',
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(quota.providerBalanceCalls, ['codex:deepseek', 'codex:official']);
+      expect(provider.codexQuotaView, isNull);
+      expect(provider.balanceView, isNull);
+      expect(provider.limitView?.text, 'Selected Official · 1wk 23%');
+
+      provider.applyProviderSwitch(
+        const SessionCliConfig(
+          cli: SessionCli.codex,
+          provider: 'official',
+          providerSelection: autoSelection,
+          model: 'gpt-test',
+        ),
+      );
+      expect(provider.activeProviderId, isNull);
+      expect(provider.codexQuotaView, isNull);
+      expect(provider.limitView, isNull);
     },
   );
 

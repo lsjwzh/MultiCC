@@ -20,14 +20,17 @@ const {
 const { fetchKimiBalance } = require('./kimi-quota');
 const { balanceBar, renderQuotaBar } = require('../quota/quota-bar-view');
 
-function quotaBarFor(appType, strategy, dto, fetchedAt) {
+function quotaBarFor(strategy, dto, fetchedAt) {
   if (!dto) return null;
   if (dto.kind === 'balance') return balanceBar(dto);
   if (dto.kind !== 'window') return null;
   const used = Number(dto.utilization) * 100;
   if (!Number.isFinite(used)) return null;
   const weekly = Number(dto.weeklyUtilization) * 100;
-  if (strategy === 'codex-oauth-usage' || appType === 'codex') {
+  // The provider decides the bar species, not the CLI/provider pool that happens
+  // to carry it. A Codex-compatible provider may still be GLM, so appType ===
+  // 'codex' must never turn its 5h + weekly GLM windows into a ChatGPT bar.
+  if (strategy === 'codex-oauth-usage' || dto.provider === 'codex') {
     return renderQuotaBar('codex', {
       status: 'ok', fetchedAt, planType: dto.tier || null,
       // Poller DTO resetsAt is epoch seconds; codexBar owns the seconds→ms
@@ -123,7 +126,7 @@ function createProviderBalanceRuntime(options = {}) {
     }
     const fetchedAt = now();
     const success = { ok: true, providerId: id, appType: provider.appType, strategy: target.strategy, dto,
-      bar: quotaBarFor(provider.appType, target.strategy, dto, fetchedAt), fetchedAt };
+      bar: quotaBarFor(target.strategy, dto, fetchedAt), fetchedAt };
     if (onResult) { try { onResult(provider.appType, id, success); } catch (_) {} }
     return success;
   }

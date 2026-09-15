@@ -19,6 +19,7 @@ const {
 const PROVIDERS = [
   { id: 'ds-1', appType: 'claude', name: 'DeepSeek' },
   { id: 'glm-1', appType: 'claude', name: 'GLM' },
+  { id: 'codex-glm', appType: 'codex', name: 'GLM via Codex' },
   { id: 'plain-1', appType: 'claude', name: 'NoQuota' },
   { id: 'codex-official', appType: 'codex', name: 'OpenAI Official' },
 ];
@@ -26,6 +27,7 @@ const PROVIDERS = [
 const TARGETS = {
   'ds-1': { providerId: 'ds-1', appType: 'claude', host: 'api.deepseek.com', apiKey: 'k', strategy: 'deepseek-balance' },
   'glm-1': { providerId: 'glm-1', appType: 'claude', host: 'open.bigmodel.cn', apiKey: 'k', strategy: 'glm-monitor' },
+  'codex-glm': { providerId: 'codex-glm', appType: 'codex', host: 'open.bigmodel.cn', apiKey: 'k', strategy: 'glm-monitor' },
   'codex-official': { providerId: 'codex-official', appType: 'codex', host: 'chatgpt.com', apiKey: null, keyHashSeed: 'codex-oauth', strategy: 'codex-oauth-usage' },
 };
 
@@ -42,7 +44,7 @@ function harness({ adapters, fail = [], throwOn = [] } = {}) {
         if (fail.includes(target.providerId)) return null;
         return { kind: 'balance', available: true, currency: 'CNY', total: 12.5, granted: 0, toppedUp: 12.5 };
       },
-      'glm-monitor': async () => ({ kind: 'window', rateLimitType: 'five_hour', status: 'allowed', utilization: 0.42, resetsAt: null, weeklyUtilization: 0.1 }),
+      'glm-monitor': async () => ({ kind: 'window', provider: 'glm', rateLimitType: 'five_hour', status: 'allowed', utilization: 0.42, resetsAt: null, weeklyUtilization: 0.1 }),
       'codex-oauth-usage': async () => ({ kind: 'window', rateLimitType: 'weekly', status: 'allowed', utilization: 0.77, resetsAt: 1_700_003_600, tier: 'pro' }),
     },
   });
@@ -56,6 +58,14 @@ test('queryOne resolves a pollable provider to its adapter DTO', async () => {
   assert.equal(result.strategy, 'deepseek-balance');
   assert.equal(result.dto.kind, 'balance');
   assert.equal(result.dto.total, 12.5);
+});
+
+test('Codex-compatible GLM provider renders GLM windows, not the host Codex account', async () => {
+  const result = await harness().runtime.queryOne('codex', 'codex-glm');
+  assert.equal(result.ok, true);
+  assert.equal(result.dto.provider, 'glm');
+  assert.match(result.bar.text, /^5h 58%/);
+  assert.doesNotMatch(result.bar.text, /^1wk /);
 });
 
 test('queryOne on an unknown provider reports not_found', async () => {
