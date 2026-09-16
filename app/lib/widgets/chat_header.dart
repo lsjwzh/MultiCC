@@ -60,6 +60,7 @@ class ChatHeader extends StatelessWidget {
   final int behind;
   final VoidCallback onCwd;
   final bool advancedMode;
+  final VoidCallback? onDeleteTask;
   const ChatHeader({
     super.key,
     required this.settings,
@@ -83,6 +84,7 @@ class ChatHeader extends StatelessWidget {
     this.behind = 0,
     required this.onCwd,
     this.advancedMode = true,
+    this.onDeleteTask,
   });
 
   /// 双击标题改名 —— 对齐 web `chat.js` 的 renameSessionFromChat()：预填的是
@@ -143,9 +145,7 @@ class ChatHeader extends StatelessWidget {
     if (next == null) return;
     try {
       await manager.renameSession(provider.sessionName, next.trim());
-      messenger.showSnackBar(
-        SnackBar(content: Text(t('renameSessionSaved'))),
-      );
+      messenger.showSnackBar(SnackBar(content: Text(t('renameSessionSaved'))));
     } catch (error) {
       messenger.showSnackBar(
         SnackBar(content: Text(t('renameSessionFailed', {'error': '$error'}))),
@@ -306,7 +306,8 @@ class ChatHeader extends StatelessWidget {
                 compact: narrow,
               ),
               const SizedBox(width: 4),
-              if (!provider.historyArchive) _ClearCtxButton(provider: provider, compact: narrow),
+              if (!provider.historyArchive)
+                _ClearCtxButton(provider: provider, compact: narrow),
               const SizedBox(width: 4),
             ],
             _HeaderOverflowMenu(
@@ -336,6 +337,7 @@ class ChatHeader extends StatelessWidget {
                   settings.setLanguage(settings.lang == 'zh' ? 'en' : 'zh'),
               artifactsLabel: artifactsLabel,
               onArtifacts: onArtifacts,
+              onDeleteTask: onDeleteTask,
               onShare: onShare,
               onShareMessages: () => Navigator.push(
                 context,
@@ -357,13 +359,13 @@ class ChatHeader extends StatelessWidget {
               ),
               onGitLog: () => showGitLogSheet(
                 context,
-                fetchLog: (all) => SessionService(settings: settings)
-                    .fetchGitLog(
+                fetchLog: (all) =>
+                    SessionService(settings: settings).fetchGitLog(
                       sessionId: provider.executionSessionName,
                       allBranches: all,
                     ),
-                fetchDiff: (hash) => SessionService(settings: settings)
-                    .fetchGitCommitDiff(
+                fetchDiff: (hash) =>
+                    SessionService(settings: settings).fetchGitCommitDiff(
                       sessionId: provider.executionSessionName,
                       hash: hash,
                     ),
@@ -549,6 +551,7 @@ class _HeaderBtn extends StatelessWidget {
 /// and the native model context remains unchanged.
 class _ClearCtxButton extends StatefulWidget {
   final ChatProvider provider;
+
   /// Icon-only form for the narrow (phone) header, where the text label
   /// alone is ~60px wider than the row can spare. The tooltip still carries
   /// the full meaning for both pointer and semantics users.
@@ -737,7 +740,10 @@ class _ClearMenuBody extends StatelessWidget {
                     onTap: onRotateNative,
                     borderRadius: BorderRadius.circular(6),
                     child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 9,
+                      ),
                       child: Row(
                         children: [
                           const Icon(
@@ -746,7 +752,13 @@ class _ClearMenuBody extends StatelessWidget {
                             color: Color(0xFF1678e8),
                           ),
                           const SizedBox(width: 8),
-                          Text(t('rotateNativeContext'), style: const TextStyle(color: Color(0xFF233249), fontSize: 13)),
+                          Text(
+                            t('rotateNativeContext'),
+                            style: const TextStyle(
+                              color: Color(0xFF233249),
+                              fontSize: 13,
+                            ),
+                          ),
                         ],
                       ),
                     ),
@@ -756,7 +768,10 @@ class _ClearMenuBody extends StatelessWidget {
                     onTap: onContextLevel,
                     borderRadius: BorderRadius.circular(6),
                     child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 9,
+                      ),
                       child: Row(
                         children: [
                           const Icon(
@@ -765,7 +780,13 @@ class _ClearMenuBody extends StatelessWidget {
                             color: Color(0xFF1678e8),
                           ),
                           const SizedBox(width: 8),
-                          Text(t('contextLevel'), style: const TextStyle(color: Color(0xFF233249), fontSize: 13)),
+                          Text(
+                            t('contextLevel'),
+                            style: const TextStyle(
+                              color: Color(0xFF233249),
+                              fontSize: 13,
+                            ),
+                          ),
                         ],
                       ),
                     ),
@@ -944,6 +965,7 @@ class _HeaderOverflowMenu extends StatelessWidget {
   final bool autoCommit;
   final VoidCallback onAutoCommit;
   final VoidCallback onDebug;
+
   /// 会话级「任务提醒」开关（Web 页头那颗 `#notify-btn`，public/chat.html:2423）。
   /// Web 把那颗按钮的状态写在 `title` 里，App 的 ⋯ 菜单没有 tooltip，所以把
   /// 状态直接拼进文案 —— 三态逐字对齐 Web 的 `title`（见任务提醒那一项的注释）。
@@ -954,6 +976,7 @@ class _HeaderOverflowMenu extends StatelessWidget {
   final VoidCallback onLanguage;
   final String? artifactsLabel;
   final VoidCallback onArtifacts;
+  final VoidCallback? onDeleteTask;
   const _HeaderOverflowMenu({
     required this.mergeReady,
     required this.cwd,
@@ -981,6 +1004,7 @@ class _HeaderOverflowMenu extends StatelessWidget {
     required this.onLanguage,
     this.artifactsLabel,
     required this.onArtifacts,
+    this.onDeleteTask,
   });
 
   @override
@@ -1075,6 +1099,9 @@ class _HeaderOverflowMenu extends StatelessWidget {
             break;
           case 'settings':
             onSettings();
+            break;
+          case 'delete-task':
+            onDeleteTask?.call();
             break;
         }
       },
@@ -1185,9 +1212,7 @@ class _HeaderOverflowMenu extends StatelessWidget {
         _item(
           'force-sync',
           Icons.published_with_changes_rounded,
-          forceSyncing
-              ? t('worktreeForceSyncSending')
-              : t('worktreeForceSync'),
+          forceSyncing ? t('worktreeForceSyncSending') : t('worktreeForceSync'),
           const Color(0xFF1267b5),
         ),
         _item(
@@ -1224,6 +1249,16 @@ class _HeaderOverflowMenu extends StatelessWidget {
             artifactsLabel!,
             const Color(0xFF233249),
           ),
+        if (onDeleteTask != null) ...[
+          const PopupMenuDivider(),
+          _item(
+            'delete-task',
+            Icons.delete_outline_rounded,
+            '删除任务…',
+            const Color(0xFFB33D3D),
+            key: const Key('chat-header-delete-task'),
+          ),
+        ],
       ],
       child: Container(
         padding: const EdgeInsets.all(6),

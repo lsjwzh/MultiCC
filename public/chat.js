@@ -242,11 +242,21 @@ const mergeHintBtn = document.getElementById('merge-hint-btn');
 // composer card (#air-composer-meta, filled by air.js). This page's equivalents
 // stay mounted for programmatic opens, but never join Air's header or menu.
 const airChatMode = document.body.classList.contains('air-chat');
+const airHostMode = new URLSearchParams(location.search).get('air') === '1'
+  && !window.MultiCCShareMode?.active?.();
 const airOwnedById = new Set(['model-btn', 'effort-btn', 'provider-btn', 'role-btn', 'cli-btn']);
 // Removed from Air's More menu entirely: the voice-call entry is not part of
 // the Air surface, and reconnect duplicates the host header's refresh button.
 const airHiddenMenuId = new Set(['s2s-btn', 'reconnect-btn']);
 const headerMenuId = id => !airChatMode || (!airOwnedById.has(id) && !airHiddenMenuId.has(id));
+const airDeleteTaskBtn = document.getElementById('air-delete-task-btn');
+if (airHostMode && airDeleteTaskBtn) {
+  airDeleteTaskBtn.hidden = false;
+  airDeleteTaskBtn.onclick = () => {
+    headerMoreController?.close?.();
+    window.parent?.__multiccAirDeleteCurrentTask?.();
+  };
+}
 const headerMoreController = window.MultiCCChatLiveUi.bindHeaderMoreMenu({
   window,
   document,
@@ -256,7 +266,7 @@ const headerMoreController = window.MultiCCChatLiveUi.bindHeaderMoreMenu({
   ids: [
     'lang-btn', 'notify-btn', 's2s-btn', 'dbg-btn', 'model-btn', 'role-btn',
     'memory-btn', 'auto-commit-btn', 'share-btn', 'restart-spawn-btn',
-    'memo-btn', 'chat-layout-btn',
+    'memo-btn', 'chat-layout-btn', ...(airHostMode ? ['air-delete-task-btn'] : []),
   ].filter(headerMenuId),
   compactIds: [
     'reconnect-btn', 'cli-btn', 'effort-btn', 'provider-btn', 'merge-btn',

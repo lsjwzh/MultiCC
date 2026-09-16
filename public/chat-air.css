@@ -105,6 +105,8 @@ body.air-chat {
 .air-chat #header-more-menu > .hdr-btn,
 .air-chat #header-more-menu > .hdr-menu-wrap { width: 100%; }
 .air-chat #header-more-menu > .hdr-btn { justify-content: flex-start; text-align: left; }
+.air-chat #header-more-menu #air-delete-task-btn { color: #b33d3d; }
+.air-chat #header-more-menu #air-delete-task-btn:hover { background: #fff0f0; border-color: #efd0d0; }
 .air-chat #clear-ctx-wrap > .hdr-btn { width: 100%; text-align: left; }
 .air-chat .hdr-drop-menu {
   color: var(--air-text);
