@@ -449,7 +449,14 @@ function createCodexOfficialRelayHandler(options = {}) {
           ...rejected,
           ...(upstream.headers?.get('x-request-id') ? { requestId: upstream.headers.get('x-request-id') } : {}),
         }, errorOptions);
-        const repair = attempt === 0 && upstream.status === 400
+        // The ChatGPT Codex backend answers an unresolvable store:false item
+        // reference with 404, not the 400 this path was originally pinned to —
+        // same "history could not be resolved" family, same one bounded repair.
+        // Every other status stays fail-fast (401/429/500 must never replay a
+        // request); the converter still decides whether the rejection is
+        // repairable at all, so an unrelated 404 breaks out below unchanged.
+        const repairableStatus = upstream.status === 400 || upstream.status === 404;
+        const repair = attempt === 0 && repairableStatus
           ? repairRejectedResponsesHistory(body, rejected) : null;
         if (!repair) break;
         firstRejection = upstreamError;
