@@ -1095,3 +1095,27 @@ body.console-open #console-panel { transform: none; visibility: visible; }
 .rename-task-dialog .rename-task-error { min-height: 18px; margin: 9px 0 0; }
 .rename-task-dialog .rename-task-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 .rename-task-dialog .rename-task-footer button.primary { color: #146dcc; background: #eaf4ff; }
+
+/* 首启配置卡：只在 AI Assistant 未配置时出现在目录首页最上方。视觉跟
+   directory-stat 同一族（浅蓝白卡片），但有一根强调色的左边线——它是
+   页面上唯一一张「不做完就该一直在」的卡，值得比统计卡更响一点。 */
+.setup-card { display: grid; gap: 12px; margin: 0 0 14px; padding: 14px 16px 12px;
+  border: 1px solid #dbe6f1; border-left: 3px solid var(--accent); border-radius: 12px;
+  background: rgba(255, 255, 255, .92); box-shadow: 0 6px 20px #35577d08; }
+.setup-card[hidden] { display: none; }
+.setup-copy h2 { margin: 4px 0 8px; font-size: 15px; line-height: 1.4; }
+.setup-copy ol { margin: 0; padding-left: 20px; display: grid; gap: 6px;
+  color: var(--text); font-size: 13px; line-height: 1.55; }
+.setup-copy li strong { color: var(--text); }
+.setup-copy em { font-style: normal; font-weight: 650; }
+.setup-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.setup-actions button { padding: 7px 12px; border: 1px solid #dbe6f1; border-radius: 9px;
+  background: #fff; color: var(--text); font-size: 13px; cursor: pointer; }
+.setup-actions button:hover { border-color: var(--accent); }
+.setup-actions button.primary { color: #146dcc; background: #eaf4ff; border-color: #b9d9f8; }
+.setup-actions #setup-dismiss { margin-left: auto; color: var(--muted);
+  border-color: transparent; background: transparent; }
+@media (max-width: 760px) {
+  .setup-card { padding: 12px 12px 10px; }
+  .setup-actions #setup-dismiss { margin-left: 0; flex-basis: 100%; text-align: left; }
+}

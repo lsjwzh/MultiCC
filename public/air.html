@@ -165,6 +165,27 @@
     <section id="task-layout">
       <div id="task-content">
         <div id="empty">
+          <!-- 首启配置卡：/api/aux/config 还没有 providerId 时由 air.js 亮出来。
+               新用户落地就是 /air（/ 与 /manage 都重定向过来），旧版引导（tour.js）
+               只挂在已退役的 manage/chat 页上，等于主入口一直没有任何引导。这张卡
+               就是 2.0 的引导：先有模型（导入线路或用 CLI 自带），再配 AI Assistant
+               ——它是任务分类与归属的核心，必须配置，但轻量 flash 模型就够。配置
+               完成后它永远消失；「暂时跳过」只记在本机。 -->
+          <section id="setup-card" class="setup-card" hidden aria-label="首次配置引导">
+            <div class="setup-copy">
+              <span class="eyebrow">GETTING STARTED</span>
+              <h2>开始之前，先完成两项配置</h2>
+              <ol>
+                <li><strong>准备模型</strong>：在「CLI 与 Provider」里导入你已有的 API 线路，或直接使用 CLI 自带的登录。没有可用模型，任务无法执行。</li>
+                <li><strong>配置 AI Assistant</strong>：它是 MultiCC 的核心——消息分类、任务归属、自动推进都依赖它，<em>必须配置</em>。选一个便宜的 flash / 轻量模型即可，不必占用主力模型。</li>
+              </ol>
+            </div>
+            <div class="setup-actions">
+              <button id="setup-provider" type="button">导入模型 / 线路</button>
+              <button id="setup-aux" type="button" class="primary">配置 AI Assistant</button>
+              <button id="setup-dismiss" type="button" aria-label="暂时跳过配置引导">暂时跳过</button>
+            </div>
+          </section>
           <div id="directory-stats" aria-label="当前目录任务统计"></div>
           <section class="directory-task-panel">
             <div class="section-heading"><div><span class="caption">当前目录</span><strong id="directory-task-heading">最近任务</strong></div><span id="directory-overview-count"></span></div>

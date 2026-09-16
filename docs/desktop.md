@@ -14,7 +14,7 @@
 | Windows | `multicc-desktop-<版本>-windows-x64.exe` | NSIS 安装器，按用户安装，无需管理员 |
 | Linux | `multicc-desktop-<版本>-linux-x64.AppImage` / `.deb` | AppImage 加执行权限后直接运行；deb 用系统包管理器安装 |
 
-版本号与 MultiCC 服务端一致（如 `1.6.8`）。安装包**不包含**手机 APK——Android 客户端请从同一 Release 页获取 `multicc.apk`。
+版本号与 MultiCC 服务端一致（如 `2.0.0`）。安装包**不包含**手机 APK——Android 客户端请从同一 Release 页获取 `multicc.apk`。
 
 ### 首次启动会发生什么
 
