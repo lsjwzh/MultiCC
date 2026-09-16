@@ -140,6 +140,19 @@ function createDetached({
     const cmd = String(command == null ? '' : command).trim();
     if (!cmd) throw new Error('command required');
     const workdir = cwd || os.homedir();
+    // A recorded workspace can outlive its directory (session workspaces are
+    // cleaned up independently). spawn('/bin/sh', { cwd: <deleted> }) fails
+    // with ENOENT *and* emits an async 'error' event — left unhandled that
+    // kills the whole server at boot. Fall back to $HOME and log instead.
+    let spawnCwd = workdir;
+    try {
+      if (!fsImpl.statSync(workdir).isDirectory()) spawnCwd = os.homedir();
+    } catch (_) {
+      spawnCwd = os.homedir();
+    }
+    if (spawnCwd !== workdir) {
+      console.warn(`[multicc/detached] workspace ${workdir} missing for ${id}; falling back to ${spawnCwd}`);
+    }
     const paths = jobPaths(id);
     const meta = writeMeta(paths, {
       id,
@@ -173,7 +186,7 @@ function createDetached({
     let child;
     try {
       child = spawnImpl('/bin/sh', ['-c', wrapper], {
-        cwd: workdir,
+        cwd: spawnCwd,
         detached: true,
         stdio: ['ignore', fd, fd],
         env: process.env,
@@ -182,6 +195,14 @@ function createDetached({
       try { fsImpl.closeSync(fd); } catch (_) {}
     }
     if (child && typeof child.unref === 'function') child.unref();
+    // Spawn failures arrive as an async 'error' event; without a listener it
+    // propagates as an unhandled exception and takes the server down (seen in
+    // production: a stale op whose workspace was deleted crashed every boot).
+    if (child && typeof child.on === 'function') {
+      child.on('error', err => {
+        console.error(`[multicc/detached] spawn failed for ${id}: ${err.message}`);
+      });
+    }
     return {
       ...paths,
       label: meta.label,
