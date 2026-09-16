@@ -130,6 +130,92 @@ function stripUnverifiableEncryptedContent(body) {
   return changes.length ? { body: { ...body, input }, changes } : { body, changes };
 }
 
+// Cross-upstream resume, third stop. A rollout recorded on another Responses
+// upstream replays ids THAT upstream minted. The official ChatGPT hop runs with
+// store:false (nothing is persisted server-side), so any id the backend cannot
+// resolve from inline content is a dangling reference and it rejects the whole
+// request: "Item with id 'rs_…' not found. Items are not persisted when `store`
+// is set to false. … remove this item from your input." Remove every shape that
+// can only ever resolve server-side:
+//   • top-level previous_response_id;
+//   • {type:'item_reference'} entries;
+//   • id-only husks ({id,type}[,status]) — e.g. reasoning items whose foreign
+//     content/encrypted_content earlier passes already stripped;
+//   • a reasoning item's foreign id when no encrypted_content backs it — the
+//     backend resolves reasoning ids statelessly ONLY through a verifiable
+//     blob (normal official replay always carries one);
+//   • plus any id the upstream explicitly named as not found (repair path).
+// Self-contained items — messages, tool calls with inline arguments/outputs,
+// reasoning with a verifiable encrypted blob — pass through untouched.
+function stripUnresolvedItemReferences(body, extraIds = []) {
+  if (!object(body)) return { body, changes: [] };
+  const unresolved = new Set(extraIds.filter(id => typeof id === 'string' && id));
+  const changes = [];
+  const selfContained = item => {
+    const copy = { ...item };
+    delete copy.id;
+    return copy;
+  };
+  const isHusk = item => typeof item.id === 'string' && item.id
+    && Object.keys(item).every(key => key === 'id' || key === 'type' || key === 'status');
+  let next = body;
+  if (typeof body.previous_response_id === 'string' && body.previous_response_id) {
+    next = { ...next };
+    delete next.previous_response_id;
+    changes.push({ path: 'previous_response_id', action: 'omit', rule: 'store_false_reference' });
+  }
+  if (Array.isArray(body.input)) {
+    const input = [];
+    let inputChanged = false;
+    body.input.forEach((item, index) => {
+      if (!object(item)) { input.push(item); return; }
+      const dropped = (path) => changes.push({ path, itemType: item.type, action: 'omit', rule: 'store_false_reference' });
+      if (item.type === 'item_reference' || isHusk(item)) {
+        dropped(`input[${index}]`);
+        inputChanged = true;
+        return;
+      }
+      if (typeof item.id !== 'string' || !item.id) { input.push(item); return; }
+      if (unresolved.has(item.id)) {
+        // The backend named this exact id — and if it got as far as an id
+        // lookup, any encrypted_content the item carried failed to resolve it
+        // (a verifiable official blob never needs a lookup). Drop both; keep
+        // whatever inline content survives, or the whole item if nothing does.
+        const copy = { ...item };
+        delete copy.id;
+        if (item.type === 'reasoning' && typeof copy.encrypted_content === 'string') delete copy.encrypted_content;
+        const carriesContent = Object.keys(copy).some(key => key !== 'type' && key !== 'status')
+          && !(item.type === 'reasoning' && !(Array.isArray(copy.summary) && copy.summary.length));
+        if (carriesContent) {
+          dropped(`input[${index}].id`);
+          input.push(copy);
+        } else {
+          dropped(`input[${index}]`);
+        }
+        inputChanged = true;
+        return;
+      }
+      if (item.type === 'reasoning' && !item.encrypted_content) {
+        const hasSummary = Array.isArray(item.summary) && item.summary.length > 0;
+        if (!hasSummary) {
+          // No blob and no summary: the item carries zero context — an empty
+          // {type:'reasoning'} shell is riskier than dropping it.
+          dropped(`input[${index}]`);
+          inputChanged = true;
+          return;
+        }
+        dropped(`input[${index}].id`);
+        input.push(selfContained(item));
+        inputChanged = true;
+        return;
+      }
+      input.push(item);
+    });
+    if (inputChanged) next = { ...next, input };
+  }
+  return changes.length ? { body: next, changes } : { body, changes };
+}
+
 // One rejection-driven fallback, restricted to optional metadata. Never drop a
 // whole tool, a call/result, arguments, names or a schema; the one deliberate
 // exception is reasoning content, which official rejects outright (see
@@ -176,8 +262,21 @@ function repairRejectedResponsesHistory(body, error) {
   // Backstop for third-party encrypted reasoning: gateways mint their own
   // encrypted_content blobs that official cannot decrypt ("could not be
   // verified"), so drop every reasoning item's encrypted blob in one pass.
+  // Dropping a blob leaves its id unresolvable under store:false, which would
+  // draw the item-not-found rejection on the retry — strip the dangling ids in
+  // the SAME pass so the single allowed repair round suffices.
   if (/encrypted content .{0,120}(?:could not be verified|could not be decrypted|could not be parsed)/i.test(message)) {
     const stripped = stripUnverifiableEncryptedContent(body);
+    const refs = stripUnresolvedItemReferences(stripped.body);
+    const changes = [...stripped.changes, ...refs.changes];
+    if (changes.length) return { body: refs.body, changes };
+  }
+  // Backstop for the store:false dangling-reference rejection itself: the
+  // upstream names the exact id it could not resolve. Target that id plus the
+  // whole family of server-side-only reference shapes in one repair pass.
+  const itemNotFound = /item with id ['"]([^'"]+)['"] not found/i.exec(message);
+  if (itemNotFound) {
+    const stripped = stripUnresolvedItemReferences(body, [itemNotFound[1]]);
     if (stripped.changes.length) return stripped;
   }
   const toolMatch = /^tools\[(\d+)\]\.(strict|defer_loading|cache_control)$/.exec(param);
@@ -200,5 +299,6 @@ module.exports = {
   preprocessResponsesHistory,
   repairRejectedResponsesHistory,
   stripReasoningContent,
+  stripUnresolvedItemReferences,
   stripUnverifiableEncryptedContent,
 };
