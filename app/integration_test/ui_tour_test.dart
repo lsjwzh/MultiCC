@@ -255,6 +255,29 @@ void main() {
     } else {
       debugPrint('TOUR:no-task-graph-entry');
     }
+
+    // 原生记忆图谱（Web `#side-more` 里的 `data-air-view="memory"`）。同样是 push
+    // 出来的整页：先取 Navigator，再 pop 回来。
+    await _openDrawer(tester);
+    await _tapInDrawer(tester, '更多与系统');
+    await _settle(tester, 1);
+    final memNavigator = tester.state<NavigatorState>(
+      find.byType(Navigator).first,
+    );
+    if (await _tapInDrawer(tester, '记忆图谱')) {
+      final memUp = await _waitFor(
+        tester,
+        find.byKey(const ValueKey('memory-graph-canvas')),
+        seconds: 20,
+      );
+      debugPrint('TOUR:memory-graph-up:$memUp');
+      await _settle(tester, 3);
+      await _mark(tester, '07-memory-graph');
+      memNavigator.pop();
+      await _settle(tester, 2);
+    } else {
+      debugPrint('TOUR:no-memory-graph-entry');
+    }
     await _closeDrawer(tester);
 
     // Tapping a task tile hands off to its chat, which is the App's session UI.

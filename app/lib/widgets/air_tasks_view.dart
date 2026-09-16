@@ -8,6 +8,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../i18n.dart';
 import '../providers/session_manager.dart';
 import '../screens/docs_registry_screen.dart';
+import '../screens/memory_graph_screen.dart';
 import '../screens/push_settings_screen.dart';
 import '../screens/settings_screen.dart';
 import '../screens/setup_screen.dart';
@@ -811,7 +812,7 @@ class _AirTasksViewState extends State<AirTasksView>
             },
             onOpenMemory: () {
               Navigator.of(routeContext).pop();
-              _openWebMemory();
+              _openMemoryGraph();
             },
             onOpenWebConsole: _openWebConsole,
           ),
@@ -888,17 +889,13 @@ class _AirTasksViewState extends State<AirTasksView>
     unawaited(launchUrl(uri, mode: LaunchMode.externalApplication));
   }
 
-  void _openWebMemory() {
-    // 记忆图谱现在住在 Air 的视图里（`public/air.html` 的
-    // `data-air-view="memory"`）。老地址 `/manage?view=memory` 会 302 到同一个
-    // 终点，这里直接写终点：少一跳兼容跳转，也不依赖别人继续维护那张映射表。
-    final uri = Uri.parse(widget.settings.buildHttpUrl('/air')).replace(
-      queryParameters: {
-        'view': 'memory',
-        if (widget.settings.token.isNotEmpty) 'token': widget.settings.token,
-      },
-    );
-    unawaited(launchUrl(uri, mode: LaunchMode.externalApplication));
+  /// 「记忆图谱」（Web `?view=memory`）—— 原生页 [MemoryGraphScreen]。
+  ///
+  /// 以前这里开的是 `/air?view=memory`（老地址 `/manage?view=memory` 会 302 到
+  /// 同一个终点）。原生页补齐之后这个入口不再依赖那张映射表，也不再需要为看一
+  /// 张图离开 App —— 详情里的「编辑」直接进原生记忆文件编辑器。
+  void _openMemoryGraph() {
+    unawaited(_push((_) => MemoryGraphScreen(settings: widget.settings)));
   }
 
   /// 「任务图谱」（Web `?view=taskgraph`）—— 原生页 [TaskGraphScreen]。
@@ -1130,7 +1127,7 @@ class _AirTasksViewState extends State<AirTasksView>
         onOpenDocs: () => _openDestination(WorkspaceDestination.docs),
         onOpenMemory: () {
           _closeDrawer();
-          _openWebMemory();
+          _openMemoryGraph();
         },
         onOpenTaskGraph: () {
           _closeDrawer();
