@@ -28,9 +28,6 @@ class QuotaService {
   Future<Map<String, dynamic>?> fetchArkQuota(String? baseUrl) =>
       _get('/api/ark/quota${_baseUrlQuery(baseUrl)}');
 
-  Future<Map<String, dynamic>?> fetchZhipuQuota(String? host) =>
-      _get('/api/zhipu/quota${_hostQuery(host)}');
-
   Future<Map<String, dynamic>?> fetchKimiQuota(String? host) =>
       _get('/api/kimi/quota${_hostQuery(host)}');
 

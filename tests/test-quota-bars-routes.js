@@ -63,17 +63,17 @@ test('unified quota refresh fetches, renders and stores a server-side bar', asyn
 test('unified quota refresh records provider-scoped vendor results when identity exists', async () => {
   const recorded = [];
   const runtime = createQuotaBarRuntime({
-    fetchZhipuUsage: async (host) => ({ status: 'ok', fetchedAt: 456, host }),
+    fetchKimiUsage: async (host) => ({ status: 'ok', fetchedAt: 456, host }),
     renderQuotaBar: (kind) => bar(kind),
     recordVendor: (entry) => recorded.push(entry),
   });
 
-  const result = await runtime.refresh({ kind: 'zhipu', host: 'bigmodel.cn' });
+  const result = await runtime.refresh({ kind: 'kimi', host: 'moonshot.cn' });
   assert.equal(result.httpStatus, 200);
-  assert.equal(result.body.bar.text, 'zhipu 50%');
+  assert.equal(result.body.bar.text, 'kimi 50%');
   assert.equal(recorded.length, 1);
-  assert.equal(recorded[0].kind, 'zhipu');
-  assert.equal(recorded[0].host, 'bigmodel.cn');
+  assert.equal(recorded[0].kind, 'kimi');
+  assert.equal(recorded[0].host, 'moonshot.cn');
 });
 
 test('quota bar routes expose idle, state and refresh without vendor URLs in the client contract', async () => {
