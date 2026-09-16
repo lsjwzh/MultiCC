@@ -221,3 +221,44 @@ test('an uncertain lease with no writer pid is reclaimed once past the staleness
   for (let i = 0; i < 50 && f.host.snapshot().leases.length; i++) await new Promise(r => setTimeout(r, 100));
   assert.equal(f.host.snapshot().leases.length, 0);
 });
+
+test('a relocated owner rebinds to its new path instead of failing forever', t => {
+  const f = fixture(t);
+  const before = f.registry.register({ ownerId: 'a', dirId: 'd1', path: path.join(f.dir, 'old'), branch: 'a' });
+  // Same owner, another directory: the id is the path, so the move changes it.
+  const after = f.registry.register({ ownerId: 'a', dirId: 'd2', path: path.join(f.dir, 'new'), branch: 'a' });
+  assert.notEqual(after.id, before.id);
+  assert.equal(f.registry.binding('a').workspaceId, after.id);
+  assert.equal(f.registry.workspace(before.id).residency, 'planned', 'the workspace it left is still recorded');
+});
+
+test('a live writer on the workspace being left refuses the rebind', t => {
+  const f = fixture(t);
+  const before = f.registry.register({ ownerId: 'a', dirId: 'd1', path: path.join(f.dir, 'old'), branch: 'a' });
+  f.registry.acquire(before.id, 'a', 'm');
+  assert.throws(
+    () => f.registry.register({ ownerId: 'a', dirId: 'd2', path: path.join(f.dir, 'new'), branch: 'a' }),
+    { code: 'workspace_binding_conflict' },
+  );
+  assert.equal(f.registry.binding('a').workspaceId, before.id);
+});
+
+test('a relocated worktree never reads as a busy workspace', async t => {
+  const f = await hostFixture(t), d = f.descriptor('m'), guard = await f.host.beforeDeliver(d);
+  await guard.complete({ accepted: true });
+  assert.equal(f.host.occupied(f.record.id), false);
+  const repo = path.join(f.dir, 'repo2'); fs.mkdirSync(repo);
+  const git = args => execFileSync('git', args, { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  git(['init', '-b', 'main']); git(['config', 'user.name', 'Test']); git(['config', 'user.email', 'test@example.invalid']); git(['commit', '--allow-empty', '-m', 'base']);
+  const left = f.registry.binding(f.record.id).workspaceId;
+  f.deps.directories.set('d2', { id: 'd2', path: repo, baseBranch: 'main' });
+  f.record.dirId = 'd2'; f.record.worktreePath = path.join(repo, '.multicc-worktrees/task-test');
+  assert.equal(f.host.occupied(f.record.id), false, 'the workspace it left must not be reported as busy');
+  assert.notEqual(f.registry.binding(f.record.id).workspaceId, left, 'and the binding follows the owner');
+});
+
+test('an unidentifiable workspace names its failure instead of reading as busy', async t => {
+  const f = await hostFixture(t);
+  f.deps.directories.delete('d');
+  assert.throws(() => f.host.occupied(f.record.id), { code: 'workspace_directory_missing' });
+});

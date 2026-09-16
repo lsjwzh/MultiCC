@@ -1983,14 +1983,14 @@ const {
   maybeSchedulePeriodicMemoryReview,
   trackPendingDistill: _trackPendingMemoryDistill,
 } = memoryRuntime;
-// Same gate as dispatchTargetBusy, decomposed into reason codes so the
-// outbox skip log and the insert-queued response can say WHY a delivery was
-// vetoed. Every check fails closed: a throwing probe counts as busy (a tick
-// error would veto the delivery just the same, only silently).
+// Same gate as dispatchTargetBusy, decomposed into reason codes so the outbox
+// skip log and the insert-queued response can say WHY a delivery was vetoed;
+// every check fails closed, but a probe that cannot identify the workspace
+// names its own code — "occupied" would hide a wedge with no release path.
 function dispatchTargetBusyReasons(sid, item = null) {
   const reasons = [];
   try { if (workspaceAdmission?.occupied(sid)) reasons.push('workspace_occupied'); }
-  catch (_) { reasons.push('workspace_occupied_check_failed'); }
+  catch (err) { reasons.push(err?.code || 'workspace_occupied_check_failed'); }
   try { if (sessionWorkHost?.isRunActive(sid)) reasons.push('run_active'); }
   catch (_) { reasons.push('run_active_check_failed'); }
   try { if (taskRunHost?.isSlotUnavailable(sid, item || {})) reasons.push('task_slot_unavailable'); }

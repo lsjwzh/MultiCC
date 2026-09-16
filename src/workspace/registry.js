@@ -29,8 +29,23 @@ function createWorkspaceRegistry(store, { epoch = randomUUID(), executionLimit =
     return store.transaction(() => {
       const previous = get('record', id);
       if (previous && (previous.dirId !== input.dirId || previous.branch !== input.branch)) throw fail('workspace_identity_conflict');
+      // The id IS the worktree path, so an owner that legitimately moved to
+      // another directory (relocate gives it a fresh worktree elsewhere)
+      // computes a different id than the one it is bound to. Re-point the
+      // binding then — otherwise the owner can never register again and every
+      // later delivery is vetoed against a workspace nobody is writing to.
+      // Re-pointing is allowed only when the move is provable (the bound
+      // workspace belongs to a different directory) and nothing can be writing
+      // to the one being left: a bound workspace holding an active lease is
+      // exactly the abandonment this guard exists to refuse.
       const binding = get('binding', input.ownerId);
-      if (binding && binding.workspaceId !== id) throw fail('workspace_binding_conflict');
+      if (binding && binding.workspaceId !== id) {
+        const bound = get('record', binding.workspaceId);
+        const lease = get('lease', binding.workspaceId);
+        const moved = !!bound && bound.dirId !== input.dirId;
+        const quiescent = !lease || !ACTIVE.has(lease.state);
+        if (!moved || !quiescent) throw fail('workspace_binding_conflict');
+      }
       const workspace = previous || { ...input, id, version: 1, pins: input.pins || [], createdAt: now(), residency: input.residency || 'planned' };
       if (!previous) put('record', id, workspace);
       put('binding', input.ownerId, { sessionId: input.ownerId, workspaceId: id });

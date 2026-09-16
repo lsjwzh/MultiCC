@@ -73,7 +73,13 @@ function createWorkspaceAdmission(deps) {
   }
   function occupied(id) {
     for (const [sid, permit] of active) if (permit.terminal) void drain(sid, permit);
-    let workspace; try { workspace = identify(id); } catch (_) { return true; }
+    // Not being able to identify a workspace is not the same answer as a
+    // workspace that is busy. Collapsing every failure into `true` reported an
+    // identity failure under the same word as a running writer, and — because
+    // no lease exists to reap — it wedged the session's delivery permanently
+    // under a reason that read as normal occupancy. The caller still fails
+    // closed (it vetoes on any reason), but it now names the real code.
+    const workspace = identify(id);
     if (!workspace) return false;
     const source = owner(id);
     for (const record of deps.records.values()) {
