@@ -9,6 +9,7 @@ import '../models/message.dart';
 import '../providers/chat_provider.dart';
 import '../providers/session_manager.dart';
 import '../services/chat_service.dart';
+import '../services/notification_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../screens/file_browser_screen.dart';
@@ -870,6 +871,53 @@ class _ClearMenuBody extends StatelessWidget {
   }
 }
 
+/// 点 ⋯ 菜单里「任务提醒」之后的落点。
+enum TaskNotifyToggleResult {
+  /// 开关被关掉 —— Web toggle() 的 `enabled && pushOn` 分支。
+  off,
+
+  /// 开关被打开，且系统通知权限已到手。
+  on,
+
+  /// 先置为开启、申请系统通知权限失败，于是回滚成关闭。
+  denied,
+}
+
+/// 「任务提醒」那一项的点击语义 —— 逐条对齐 Web 页头 `#notify-btn` 的
+/// click → toggle()（public/chat-notifications.js:96-125）：
+///
+/// 1. 已经在开启态、且系统通知已授权 → 关掉。Web 在这条分支上还会
+///    `unsubscribePush()` 退掉服务端 Web Push 订阅；App 用的是本地通知
+///    （flutter_local_notifications），没有服务端订阅要退，所以只有落盘这一半
+///    （SettingsService 的 `multicc_notify:<sessionId>`，跟 Web 同一个键）。
+/// 2. 其余情况 → 先把开关落盘成开启，再去申请系统通知权限（Web 调
+///    `ensurePushSubscribed()` → `Notification.requestPermission()`，
+///    public/pwa.js:195/224）。
+/// 3. 申请被拒 → 把开关回滚成关闭（同文件 112-117 行 `if (!ok) { enabled = false;
+///    persistPreference(false); }`），调用方据此给出可见反馈。
+///
+/// 拆成顶层函数是为了能在测试里用注入的权限 fake 直接驱动这条状态机，不必真的
+/// 去碰平台通道。
+Future<TaskNotifyToggleResult> toggleTaskNotifyWithPermission({
+  required SettingsService settings,
+  required String sessionId,
+}) async {
+  final enabled = settings.taskNotifyEnabled(sessionId);
+  if (enabled && NotificationService.permissionGranted) {
+    await settings.setTaskNotifyEnabled(sessionId, false);
+    return TaskNotifyToggleResult.off;
+  }
+
+  // Web 是「先置为开启 → 再申请」，申请期间按钮已经显示成开启态（乐观更新）；
+  // 这里同样先落盘，被拒再回滚。
+  await settings.setTaskNotifyEnabled(sessionId, true);
+  if (await NotificationService.ensurePermission()) {
+    return TaskNotifyToggleResult.on;
+  }
+  await settings.setTaskNotifyEnabled(sessionId, false);
+  return TaskNotifyToggleResult.denied;
+}
+
 /// Overflow menu for the chat header. Collapses the occasional actions
 /// (memo / merge worktree / settings) behind a single "⋮"
 /// trigger, keeping the header's action cluster a fixed, compact width so its
@@ -897,9 +945,10 @@ class _HeaderOverflowMenu extends StatelessWidget {
   final VoidCallback onAutoCommit;
   final VoidCallback onDebug;
   /// 会话级「任务提醒」开关（Web 页头那颗 `#notify-btn`，public/chat.html:2423）。
-  /// Web 把那颗按钮的开关状态写在 `title` 里，App 的 ⋯ 菜单没有 tooltip，所以
-  /// 沿用自动提交那套「✓/✕ 后缀」，把状态直接写进文案。状态在**开菜单时现读**
-  /// （`itemBuilder` 每次展开都会重跑），因此宿主不需要为这一项 setState。
+  /// Web 把那颗按钮的状态写在 `title` 里，App 的 ⋯ 菜单没有 tooltip，所以把
+  /// 状态直接拼进文案 —— 三态逐字对齐 Web 的 `title`（见任务提醒那一项的注释）。
+  /// 状态在**开菜单时现读**（`itemBuilder` 每次展开都会重跑），因此宿主不需要
+  /// 为这一项 setState。
   final SettingsService settings;
   final String sessionId;
   final VoidCallback onLanguage;
@@ -936,6 +985,12 @@ class _HeaderOverflowMenu extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // 「任务提醒」的三态：开着且系统通知已授权 / 开着但还没授权 / 已关闭。
+    // 逐字对齐 Web `#notify-btn` 的 title（public/chat-notifications.js:78-86
+    // 的 updateButton()）：`pushOn ? '任务提醒 (系统通知已开启)'`，否则是
+    // '任务提醒 (点击开启系统通知)'；关闭态则是 '任务提醒 (已关闭)'。
+    final notifyEnabled = settings.taskNotifyEnabled(sessionId);
+    final pushGranted = NotificationService.permissionGranted;
     return PopupMenuButton<String>(
       tooltip: t('moreActions'),
       color: const Color(0xFFf8fbff),
@@ -944,7 +999,13 @@ class _HeaderOverflowMenu extends StatelessWidget {
         side: const BorderSide(color: Color(0xFFdce6f1)),
       ),
       offset: const Offset(0, 40),
-      onSelected: (value) {
+      // 三态标签读的是 NotificationService 的同步权限缓存，展开时顺手刷一次
+      // （fire-and-forget，不挡这一帧）—— 用户在系统设置里改过通知权限后，
+      // 下一次展开就能显示真实状态。
+      onOpened: () {
+        unawaited(NotificationService.refreshPermissionCache());
+      },
+      onSelected: (value) async {
         switch (value) {
           case 'cwd':
             onCwd();
@@ -977,10 +1038,22 @@ class _HeaderOverflowMenu extends StatelessWidget {
             onLanguage();
             break;
           case 'task-notify':
-            // Web 点 `#notify-btn` 是纯本地动作：只写 localStorage 里这个会话的
-            // 偏好，再重画按钮，没有任何请求（public/chat-notifications.js 的
-            // toggle → persistPreference）。
-            unawaited(settings.toggleTaskNotify(sessionId));
+            // 见 toggleTaskNotifyWithPermission：Web 点 `#notify-btn` 除了落盘
+            // 偏好，打开时还会去申请系统通知权限、被拒就回滚
+            // （public/chat-notifications.js 的 toggle()，96-125 行）。
+            final result = await toggleTaskNotifyWithPermission(
+              settings: settings,
+              sessionId: sessionId,
+            );
+            if (!context.mounted) break;
+            // 回滚是静默发生的（开关又变回关闭），不提示的话用户只会觉得
+            // 「点了没反应」。Web 那边没订上时按钮同样停在关闭态，区别是浏览器
+            // 自己弹过授权框、用户知道发生了什么。
+            if (result == TaskNotifyToggleResult.denied) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text(t('taskNotifyPermissionDenied'))),
+              );
+            }
             break;
           case 'artifacts':
             onArtifacts();
@@ -1029,15 +1102,24 @@ class _HeaderOverflowMenu extends StatelessWidget {
         ),
         _item(
           'task-notify',
-          settings.taskNotifyEnabled(sessionId)
+          // 图标/颜色也跟着三态走：开且已授权=实心通知，开但没授权=空心通知
+          // （这一档还差用户一个动作，用琥珀色提示，跟「落后」的告警同一支色），
+          // 关闭=划掉的通知。
+          !notifyEnabled
+              ? Icons.notifications_off_outlined
+              : pushGranted
               ? Icons.notifications_active_outlined
-              : Icons.notifications_off_outlined,
-          settings.taskNotifyEnabled(sessionId)
-              ? t('taskNotifyOn')
-              : t('taskNotifyOff'),
-          settings.taskNotifyEnabled(sessionId)
+              : Icons.notifications_none_outlined,
+          !notifyEnabled
+              ? t('taskNotifyOff')
+              : pushGranted
+              ? t('taskNotifyOnPush')
+              : t('taskNotifyOnNoPush'),
+          !notifyEnabled
+              ? const Color(0xFF6f8096)
+              : pushGranted
               ? const Color(0xFF2ba67a)
-              : const Color(0xFF6f8096),
+              : const Color(0xFFa85a25),
           key: const Key('chat-header-task-notify'),
         ),
         _item(
