@@ -14,6 +14,9 @@
     planner: ['任务看板', '按模块查看、筛选与规划全部任务', 'PLANNER'],
     memory: ['记忆图谱', '项目记忆、会话记忆与文件编辑', 'MEMORY'],
     taskgraph: ['任务图谱', '任务关联网络：父子 / 分组 / 合并 / 壳链接', 'TASKGRAPH'],
+    // aux 不是 legacy iframe 页(manage 那边配置在弹窗里,没有 view 可嵌)——
+    // 这条只为设置中心的卡片和 modes 集合提供元数据,渲染走下面的 renderAux。
+    aux: ['AI Assistant', '意图分类与摘要服务的模型与运行记录', 'AUX'],
     voice: ['语音设置', '识别、转写与实时语音能力', 'VOICE'],
     goal: ['Goal 预检', '任务目标与自动分类规则', 'GOAL'],
     provider: ['Provider 配置', '全局供应商、账号与线路管理', 'PROVIDERS'],
@@ -26,7 +29,7 @@
     storage: ['临时上传', '上传缓存、空间占用与清理', 'STORAGE'],
   };
   const settingGroups = [
-    ['AI 与执行', ['provider', 'goal', 'voice', 'global']],
+    ['AI 与执行', ['provider', 'aux', 'goal', 'voice', 'global']],
     ['连接与通知', ['push', 'tunnel', 'bridges']],
     ['资源与存储', ['resources', 'skillsync', 'storage']],
   ];
@@ -330,6 +333,7 @@
       ['docs', '▤', '服务与文档', '本地服务、网页和文件'],
       ['memory', '◇', '记忆图谱', '项目与会话记忆'],
       ['taskgraph', '⛓', '任务图谱', '父子 / 分组 / 合并关联'],
+      ['aux', '✦', 'AI Assistant', '分类模型与运行记录'],
       ['settings', '⚙', '设置中心', 'Provider、通知与连接'],
       ['schedules', '◴', '自动运行', '固定任务定时规则'],
     ];
@@ -476,6 +480,241 @@
     void loadDocs();
   }
 
+  // ── AI Assistant(aux):设置与运行记录 ─────────────────────────────────
+  // manage 页那套 aux 界面(config 弹窗 + history 弹窗)不是一个 view,控制台嵌不了,
+  // 所以这里是原生实现:运行状态、模型设置、运行记录三段,数据全走 /api/aux/*。
+  // 面板每次重开都重建 DOM,拉到的数据留在模块上,绘制函数各自对「元素还在不在」负责。
+  const auxView = { config: null, status: null, history: [] };
+
+  function auxField(labelText, control) {
+    const label = make('label', null, 'air-aux-field');
+    label.append(make('span', labelText), control);
+    return label;
+  }
+
+  function renderAux(context) {
+    setActions([
+      action('返回设置中心', () => context.setMode('settings'), '', panelIcon('←')),
+      action('刷新', () => loadAuxView(true), '', keepsGlyph('↻')),
+    ]);
+    const statusPanel = make('section', null, 'admin-panel');
+    const statusHead = make('div', null, 'admin-panel-head');
+    statusHead.append(make('div'));
+    statusHead.firstChild.append(make('span', 'AUX QUEUE', 'eyebrow'), make('h3', '运行状态'));
+    const statusBody = make('div', null, 'air-aux-status');
+    statusBody.id = 'air-aux-status';
+    statusPanel.append(statusHead, statusBody);
+
+    const formPanel = make('section', null, 'admin-panel');
+    const formHead = make('div', null, 'admin-panel-head');
+    formHead.append(make('div'));
+    formHead.firstChild.append(make('span', 'MODEL', 'eyebrow'), make('h3', '模型设置'));
+    formHead.append(make('span', '意图分类、摘要与 Goal 预检共用的辅助模型', 'admin-panel-note'));
+    const form = make('div', null, 'air-aux-form');
+    form.id = 'air-aux-form';
+    formPanel.append(formHead, form);
+
+    const recPanel = make('section', null, 'admin-panel');
+    const recHead = make('div', null, 'admin-panel-head');
+    recHead.append(make('div'));
+    recHead.firstChild.append(make('span', 'HISTORY', 'eyebrow'), make('h3', '运行记录'));
+    const recNote = make('span', '', 'admin-panel-note');
+    recNote.id = 'air-aux-records-note';
+    recHead.append(recNote);
+    const recList = make('div', null, 'air-aux-records');
+    recList.id = 'air-aux-records';
+    recPanel.append(recHead, recList);
+
+    el('admin-content').replaceChildren(statusPanel, formPanel, recPanel);
+    void loadAuxView();
+  }
+
+  async function loadAuxView(announce = false) {
+    try {
+      const [status, config, history] = await Promise.all([
+        currentContext.api('/api/aux/status'),
+        currentContext.api('/api/aux/config'),
+        currentContext.api('/api/aux/history?limit=100'),
+      ]);
+      auxView.status = status;
+      auxView.config = config;
+      auxView.history = Array.isArray(history) ? history : [];
+      paintAuxStatus();
+      paintAuxForm();
+      paintAuxRecords();
+      if (announce) currentContext.notice('AI Assistant 状态已刷新。');
+    } catch (error) {
+      currentContext.notice(`读取 AI Assistant 失败:${error.message}`);
+    }
+  }
+
+  function paintAuxStatus() {
+    const body = el('air-aux-status');
+    if (!body) return;
+    const s = auxView.status || {};
+    const health = s.health || {};
+    const state = s.processing ? '处理中' : (s.queueDepth > 0 ? `${s.queueDepth} 个排队` : '空闲');
+    const rows = [
+      ['状态', state + (s.currentTask ? ` · 正在执行 ${s.currentTask.type || ''}` : '')],
+      ['累计处理', `${s.totalProcessed || 0} 条`],
+      ['最近执行', s.lastTaskTime ? new Date(s.lastTaskTime).toLocaleString('zh-CN') : '—'],
+    ];
+    body.replaceChildren(...rows.map(([name, value]) => {
+      const row = make('div', null, 'air-aux-row');
+      row.append(make('span', name), make('strong', value));
+      return row;
+    }));
+    if (health.unhealthy) {
+      // 服务端给出的 lastFailMsg 已过 safeAuxErrorMessage;这里仍走 textContent,不进 HTML。
+      body.append(make('div',
+        `摘要服务异常(连续失败 ${health.consecutiveFails || 0} 次):${health.lastFailMsg || '未知错误'} — 状态判定暂停,修复后自动恢复`,
+        'air-aux-warn'));
+    }
+  }
+
+  function paintAuxForm() {
+    const form = el('air-aux-form');
+    if (!form) return;
+    const config = auxView.config;
+    if (!config) {
+      form.replaceChildren(make('p', '配置读取失败,点右上角「刷新」重试。', 'admin-empty error'));
+      return;
+    }
+    const pick = (options, value) => {
+      const select = make('select');
+      for (const [text, v] of options) {
+        const option = make('option', text);
+        option.value = v;
+        select.append(option);
+      }
+      select.value = value;
+      return select;
+    };
+    const protocol = pick((config.protocols || []).map(p => [p.name, p.id]),
+      config.protocol === 'openai' ? 'openai' : 'anthropic');
+    const provider = make('select');
+    const model = make('select');
+    function fillProviders() {
+      const list = config.providersByProtocol?.[protocol.value] || [];
+      provider.replaceChildren(...list.map(p => {
+        const option = make('option', `${p.name}${p.wireApi ? ` · ${p.wireApi}` : ''}`);
+        option.value = p.id;
+        return option;
+      }));
+      const saved = config.protocol === protocol.value ? (config.providerId || '') : '';
+      provider.value = list.some(p => p.id === saved) ? saved : (list[0]?.id || '');
+      fillModels();
+    }
+    function fillModels() {
+      const list = config.providersByProtocol?.[protocol.value] || [];
+      const prov = list.find(p => p.id === provider.value);
+      const models = prov && Array.isArray(prov.modelOptions) ? prov.modelOptions : [];
+      model.replaceChildren(...models.map(m => {
+        const option = make('option', m);
+        option.value = m;
+        return option;
+      }));
+      const saved = config.providerId === provider.value ? (config.model || '') : '';
+      model.value = models.includes(saved) ? saved : (models[0] || '');
+    }
+    protocol.onchange = fillProviders;
+    provider.onchange = fillModels;
+    const saveStatus = make('span');
+    const save = action('保存', async () => {
+      save.disabled = true;
+      saveStatus.textContent = '保存中…';
+      try {
+        const result = await currentContext.api('/api/aux/config', {
+          protocol: protocol.value, providerId: provider.value, model: model.value,
+        });
+        if (!result.ok) { saveStatus.textContent = result.error || '保存失败'; return; }
+        currentContext.notice(`AI Assistant 模型已更新:${result.model || model.value}`);
+        await loadAuxView();
+      } catch (error) {
+        saveStatus.textContent = `保存失败:${error.message}`;
+      } finally {
+        save.disabled = false;
+      }
+    }, 'primary');
+    const saveRow = make('div', null, 'air-aux-save');
+    saveRow.append(save, saveStatus);
+    form.replaceChildren(auxField('协议', protocol), auxField('Provider', provider), auxField('模型', model), saveRow);
+    fillProviders();
+  }
+
+  // 历史是一条 user 提问 + 一条 assistant 结果成对出现;落单的用户消息就是还在跑的任务。
+  function auxRecordPairs() {
+    const pairs = [];
+    const history = auxView.history;
+    for (let i = 0; i < history.length; i++) {
+      const msg = history[i];
+      if (msg.role === 'user' && i + 1 < history.length && history[i + 1].role === 'assistant') {
+        pairs.push({ input: msg, output: history[i + 1] });
+        i++;
+      } else if (msg.role === 'user') {
+        pairs.push({ input: msg, output: null });
+      }
+    }
+    return pairs.reverse();
+  }
+
+  function auxRecordBadge(pair) {
+    const status = !pair.output ? 'running'
+      : pair.output.error ? 'error'
+        : pair.output.cancelled ? 'cancelled' : 'done';
+    const badge = make('span');
+    const api = registry();
+    const label = STATUS_COPY[status] || status;
+    if (api) api.applyStatusBadge(badge, 'task', status, { label, translate: () => label });
+    else { badge.className = 'mc-status'; badge.textContent = label; }
+    return badge;
+  }
+
+  function paintAuxRecords() {
+    const list = el('air-aux-records');
+    if (!list) return;
+    const pairs = auxRecordPairs();
+    const note = el('air-aux-records-note');
+    if (note) note.textContent = pairs.length ? `${pairs.length} 条 · 点击展开输入与输出` : '';
+    if (!pairs.length) {
+      list.replaceChildren(make('p', '暂无任务记录。', 'admin-empty'));
+      return;
+    }
+    const clock = ms => {
+      const d = new Date(ms);
+      const p = n => String(n).padStart(2, '0');
+      return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+    };
+    list.replaceChildren(...pairs.map(pair => {
+      const item = make('div', null, 'air-aux-item');
+      const row = make('button', null, 'air-aux-rec');
+      row.type = 'button';
+      row.append(make('time', clock(pair.input.ts)), make('strong', pair.input.taskType || 'classify'));
+      const sessionName = pair.input.meta?.sessionName;
+      if (sessionName) row.append(make('span', sessionName, 'air-aux-sess'));
+      const preview = (pair.input.content || '').split('\n').pop().slice(0, 80);
+      row.append(make('span', preview, 'air-aux-preview'), auxRecordBadge(pair));
+      if (pair.output?.durationMs) row.append(make('span', `${(pair.output.durationMs / 1000).toFixed(1)}s`, 'air-aux-dur'));
+
+      const detail = make('div', null, 'air-aux-rec-detail');
+      detail.hidden = true;
+      const o = pair.output || {};
+      const sec = ms => (ms == null) ? '-' : (ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`);
+      const timeline = make('div', null, 'air-aux-timeline');
+      timeline.append(make('span',
+        `入队 ${o.enqueuedAt || pair.input.ts ? clock(o.enqueuedAt || pair.input.ts) : '-'} · 开始 ${o.startedAt ? clock(o.startedAt) : '-'} · 完毕 ${o.ts ? clock(o.ts) : '-'} · 排队 ${sec(o.queueMs)} · 执行 ${sec(o.durationMs)}`));
+      const inputTitle = make('h4', '输入');
+      const inputBody = make('div', pair.input.content || '', 'air-aux-io');
+      detail.append(timeline, inputTitle, inputBody);
+      if (pair.output) {
+        detail.append(make('h4', '输出'), make('div', pair.output.content || '(无输出)', 'air-aux-io'));
+      }
+      row.onclick = () => { detail.hidden = !detail.hidden; };
+      item.append(row, detail);
+      return item;
+    }));
+  }
+
   function renderSettings(context) {
     setActions();
     const content = el('admin-content');
@@ -538,6 +777,7 @@
     if (mode === 'docs') return renderDocs(context);
     if (mode === 'settings') return renderSettings(context);
     if (mode === 'provider') return renderProvider(context);
+    if (mode === 'aux') return renderAux(context);
     renderLegacy(mode, context);
   }
 

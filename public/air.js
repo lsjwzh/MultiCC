@@ -846,6 +846,7 @@
       voice: ['MultiCC Air › 设置中心', '语音设置', '识别、转写与实时语音能力。'],
       goal: ['MultiCC Air › 设置中心', 'Goal 预检', '任务目标与自动分类规则。'],
       provider: ['MultiCC Air › 设置中心', 'CLI 与 Provider', '全局供应商、账号与线路管理。'],
+      aux: ['MultiCC Air › 设置中心', 'AI Assistant', '意图分类与摘要服务的模型设置与运行记录。'],
       global: ['MultiCC Air › 设置中心', '全局配置', '语言、执行与通用偏好。'],
       push: ['MultiCC Air › 设置中心', '推送通知', 'Web Push 与备用提醒通道。'],
       tunnel: ['MultiCC Air › 设置中心', '外网穿透', 'Tailscale 与隧道服务状态。'],
