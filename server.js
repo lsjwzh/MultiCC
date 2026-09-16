@@ -177,6 +177,7 @@ const {
 } = require('./src/codex/oauth-refresh');
 const { parseClassifyResult, buildClassifySystemPrompt, classifyDisplay, phaseLabel } = require('./src/classify/vocab');
 const { taskShortCode, initTaskShortCodeRegistry } = require('./src/classify/task-short-code');
+const { installAuxHealthProvider, auxVerdictStaleness, fanOutAuxVerdictStaleness } = require('./src/classify/aux-verdict-health');
 const { recordAdapterUserInput, createUserInputSignalHost } = require('./src/classify/user-input-host');
 const { createHostPrompts } = require('./src/chat/host-prompts');
 const { createDispatchTargeting } = require('./src/dispatch/targeting');
@@ -1948,8 +1949,15 @@ const {
   getClaudeOfficialViaProxy: () => CLAUDE_OFFICIAL_VIA_PROXY,
   executeAuxHttp, providerLimitCache,
   broadcast: broadcastTo,
+  // Aux health is fleet-wide: one transition changes the meaning of EVERY
+  // session's judgement at once, and an already-open page has no other way to
+  // hear it. The fan-out rule lives with the fact (aux-verdict-health.js).
+  onHealthChange: () => fanOutAuxVerdictStaleness({
+    sessions: persistedSessions, getTaskState, chatBroadcast, workspaceBroadcast,
+  }),
 });
 apiErrorAuxQueue = auxQueue;
+installAuxHealthProvider(() => auxQueue.getStatus().health);
 // Memory runtime owns normalization, Aux distillation, periodic review and the
 // pending-distill gate. History is resolved lazily because its runtime is
 // composed later in this file.
@@ -2402,6 +2410,9 @@ function setTaskState(sessionId, patch, opts = {}) {
     goal: next.goal || '', taskShortCode: taskShortCode(next.taskId),
     phase: next.phase || 'idle',
     classifyState: next.classifyState || null, apiError: next.apiError || null,
+    // A frozen judgement must not read as a live one: every verdict carries
+    // whether Aux is still answering. See src/classify/aux-verdict-health.js.
+    ...auxVerdictStaleness(),
   };
   try {
     chatBroadcast(sessionId, classifyPayload);

@@ -50,7 +50,8 @@ const { createAutoProviderRuntime } = require('./auto-provider-runtime');
 const { createAutoProviderHandoff } = require('./auto-provider-handoff');
 const { redactProviderRouteCapability } = require('../observability');
 const { createWsEnvelope } = require('../api-contract');
-const { taskShortCode, taskIdForShortCode } = require('../classify/task-short-code');
+const { taskIdForShortCode } = require('../classify/task-short-code');
+const { taskStateSeed } = require('./task-state-seed');
 const { composeMessage, renderPrompt } = require('../message-composer');
 const managedContext = require('./managed-context');
 const {
@@ -2799,10 +2800,8 @@ function createChatTurnEngine(deps) {
       // Seed the aux classify bar with the current task snapshot on connect, so
       // the goal/phase shows immediately (not only after the next classify).
       try {
-        const ts0 = getTaskState(persistedSessions.get(sessionName));
-        if (ts0 && (ts0.goal || (ts0.phase && ts0.phase !== 'idle'))) {
-          sendWs(ws, { type: 'task_state', goal: ts0.goal || '', taskShortCode: taskShortCode(ts0.taskId), phase: ts0.phase || 'idle', classifyState: ts0.classifyState || null });
-        }
+        const seed = taskStateSeed(getTaskState(persistedSessions.get(sessionName)));
+        if (seed) sendWs(ws, seed);
       } catch (_) {}
       // If chat_history already includes the in-progress assistant message
       // (appended just above), skip the streamReplay so the client doesn't

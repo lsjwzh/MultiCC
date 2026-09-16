@@ -33,6 +33,11 @@ function workspaceEntry(session, facts = {}) {
     goal: sanitizePublicText(facts.goal, 1000) || '',
     taskShortCode: boundedString(facts.taskShortCode, 8, ''),
     phase: boundedString(facts.phase, 80, 'idle'),
+    // Whether Aux is still revising this judgement; a frozen verdict must not
+    // read as a current one. See src/classify/aux-verdict-health.js.
+    auxUnhealthy: facts.auxUnhealthy === true,
+    auxUnhealthySince: Number.isFinite(Number(facts.auxUnhealthySince))
+      ? Number(facts.auxUnhealthySince) : null,
   });
 }
 

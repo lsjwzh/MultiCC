@@ -163,6 +163,7 @@ function mountAuxGoalRoutes(app, dependencies) {
     getClaudeOfficialViaProxy,
     executeAuxHttp,
     broadcast,
+    onHealthChange,
     providerLimitCache,
     limitCacheStaleMs,
     now = Date.now,
@@ -286,6 +287,12 @@ function mountAuxGoalRoutes(app, dependencies) {
 
     broadcastHealth() {
       this.broadcast({ type: 'aux_health', health: { ...this.health } });
+      // /ws/aux clients are the operator's view of Aux. The rest of the product
+      // only knows Aux through the judgements it stops producing, so a
+      // transition has to reach those surfaces too (server.js fans it out to
+      // every session showing a judgement). Best-effort: a subscriber that
+      // throws must never break the health bookkeeping itself.
+      try { onHealthChange && onHealthChange({ ...this.health }); } catch (_) {}
     },
 
     attachClient(client) {
