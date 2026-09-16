@@ -102,6 +102,7 @@ ledger retains durable execution and usage records. The unified chat view
 | `GET` | `/api/task-board` | Board DTO: `{ schemaVersion, revision, modules, tasks, sessionLabels, backfill }`. `recordType:"planned"` rows include the planning fields below; historical/session rows are `observed` |
 | `POST` | `/api/task-board/tasks` | Save a planned card without starting an Agent: `{ title?, description?, dirId, workflowStage?, priority?, dueAt?, acceptanceCriteria?, sourceTaskId? }` → `{ ok, task, revision }`. `sourceTaskId` copies an observed card while preserving the historical source |
 | `POST` | `/api/task-board/tasks/:taskId/update` | Edit a planned card with optimistic concurrency: `{ title?, description?, dirId?, priority?, dueAt?, acceptanceCriteria?, workflowStage?, expectedRevision }`; the revision is the card's `planningRevision` |
+| `POST` | `/api/task-board/tasks/:taskId/title` | Manually rename any planned or observed task: `{ title }` (1–40 characters after trimming). Manual titles are preserved from later automatic classification; task-bound chat labels are synchronized for native clients |
 | `POST` | `/api/task-board/tasks/:taskId/planning` | Compatibility alias for `/update` |
 | `POST` | `/api/task-board/tasks/:taskId/move` | Atomically move/reorder a planned card: `{ workflowStage, beforeTaskId?, afterTaskId?, expectedRevision }`. Ranks are scoped to one directory/Fleet and are rebalanced server-side when necessary |
 | `GET` | `/api/task-board/tasks/:taskId` | Single-task bootstrap slice of the board DTO (used by `chat.html?task=`) |

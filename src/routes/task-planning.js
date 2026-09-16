@@ -5,7 +5,7 @@ const planning = require('../task-board/planning');
 function responseStatus(error) {
   if (error === 'task_not_found') return 404;
   if (error === 'persistence_failed') return 500;
-  if (['revision_conflict', 'task_not_planned', 'task_archived', 'task_exists',
+  if (['revision_conflict', 'task_not_planned', 'task_archived', 'task_deleting', 'task_exists',
     'move_anchor_not_found', 'invalid_move_anchor_order', 'invalid_move_anchor',
     'record_type_immutable'].includes(error)) return 409;
   return 400;
@@ -22,6 +22,7 @@ function createTaskPlanningRuntime({
   resolveTask,
   taskDirId,
   notify,
+  afterRename = null,
   beforeStageChange = async () => ({ ok: true }),
   hasDirectory = null,
   logger = console,
@@ -150,6 +151,23 @@ function createTaskPlanningRuntime({
     return success(res, moved);
   }
 
+  async function handleRename(req, res) {
+    const task = resolveTask(req.params.taskId);
+    if (!task) return res.status(404).json({ error: 'task_not_found' });
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const committed = commitMutation(candidate => planning.renameTask(
+      candidate, task.id, body.title,
+    ));
+    if (!committed.ok) return fail(res, committed);
+    const updated = getBoard().tasks[committed.taskId];
+    if (typeof afterRename === 'function') {
+      try { await afterRename(updated); }
+      catch (error) { logger.log(`[multicc/task-planning] title sync failed: ${error?.message || error}`); }
+    }
+    notify(taskDirId(updated), [updated.id], 'renamed');
+    return success(res, updated);
+  }
+
   function wrap(handler, label) {
     return (req, res) => Promise.resolve(handler(req, res)).catch(error => {
       logger.log(`[multicc/task-planning] ${label} failed: ${error?.message || error}`);
@@ -161,6 +179,8 @@ function createTaskPlanningRuntime({
     app.post('/api/task-board/tasks', wrap(handleCreate, 'create'));
     app.post('/api/task-board/tasks/:taskId/update', wrap(
       (req, res) => withTaskLock(req.params.taskId, () => handleUpdate(req, res)), 'update'));
+    app.post('/api/task-board/tasks/:taskId/title', wrap(
+      (req, res) => withTaskLock(req.params.taskId, () => handleRename(req, res)), 'rename'));
     // Compatibility alias for early planning clients.
     app.post('/api/task-board/tasks/:taskId/planning', wrap(
       (req, res) => withTaskLock(req.params.taskId, () => handleUpdate(req, res)), 'update'));
@@ -168,7 +188,7 @@ function createTaskPlanningRuntime({
       (req, res) => withTaskLock(req.params.taskId, () => handleMove(req, res)), 'move'));
   }
 
-  return Object.freeze({ mountRoutes, handleCreate, handleUpdate, handleMove });
+  return Object.freeze({ mountRoutes, handleCreate, handleUpdate, handleRename, handleMove });
 }
 
 module.exports = { createTaskPlanningRuntime };
