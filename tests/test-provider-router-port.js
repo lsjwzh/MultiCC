@@ -343,3 +343,70 @@ test('protocol mounts install attempt preflight ahead of the CPR handler', () =>
     'attempt capabilities must never reach CPR diagnostic capture files');
   assert.equal(typeof mountOptions.getProvider, 'function');
 });
+
+// The correction that used to run before the proxy now runs inside it, at the
+// dial point, so the upstream that rejects the history is the one the repair
+// reacts to. `mountOptions.codexProxy` is how a host replaces it for one mount.
+function relayHandlers(app) {
+  return app.handlers
+    .filter(item => item.route.endsWith('/:providerId/:sessionId/:role/responses'))
+    .map(item => item.handler);
+}
+
+function relayApp() {
+  const handlers = [];
+  return {
+    handlers,
+    use() {},
+    post(route, handler) { handlers.push({ route, handler }); },
+  };
+}
+
+async function relayBody(handler, body) {
+  const req = {
+    params: { providerId: 'provider-1', sessionId: 'session-1', role: 'main' },
+    headers: {},
+    body: structuredClone(body),
+  };
+  let forwarded = null;
+  await handler(req, {}, () => { forwarded = req.body; });
+  return forwarded;
+}
+
+const UNRESOLVED_HISTORY = Object.freeze({
+  previous_response_id: 'resp_foreign',
+  input: [
+    { type: 'message', id: 'msg_keep', role: 'user', content: [{ type: 'input_text', text: 'hi' }] },
+    { type: 'item_reference', id: 'msg_foreign' },
+  ],
+});
+
+test('a router with request hooks owns the Codex history pass at the dial point', async () => {
+  const calls = [];
+  const app = relayApp();
+  const port = createCprPort(fakeRouter({ calls, capabilities: { ...capabilities(), requestHooks: '1.0' } }));
+  port.mountProtocolProxies(app, { protocols: ['claude', 'codex'] });
+  const codexMount = calls.find(call => call.method === 'mountCodexProxy').mountOptions;
+  assert.equal(typeof codexMount.onRequest, 'function');
+  assert.equal(typeof codexMount.onUpstreamRejected, 'function');
+  // Responses history correction is Codex-only; the Claude mount stays plain.
+  assert.equal(calls.find(call => call.method === 'mountClaudeProxy').mountOptions.onRequest, undefined);
+  // The relay stands down instead of normalizing a second time: it is mounted
+  // before the router, so leaving both on would correct the same body twice.
+  assert.deepEqual(await relayBody(relayHandlers(app)[0], UNRESOLVED_HISTORY), UNRESOLVED_HISTORY);
+});
+
+test('a router without request hooks keeps the relay pre-proxy normalization', async () => {
+  const calls = [];
+  const app = relayApp();
+  const port = createCprPort(fakeRouter({ calls }));
+  port.mountProtocolProxies(app, { protocols: ['codex'] });
+  const codexMount = calls.find(call => call.method === 'mountCodexProxy').mountOptions;
+  assert.equal(codexMount.onRequest, undefined);
+  assert.equal(codexMount.onUpstreamRejected, undefined);
+  const forwarded = await relayBody(relayHandlers(app)[0], UNRESOLVED_HISTORY);
+  assert.equal(forwarded.previous_response_id, undefined);
+  assert.deepEqual(forwarded.input, [
+    { type: 'message', id: 'msg_keep', role: 'user', content: [{ type: 'input_text', text: 'hi' }] },
+  ]);
+});

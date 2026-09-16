@@ -345,10 +345,6 @@ function createCodexOfficialRelayHandler(options = {}) {
   return async function codexOfficialRelay(req, res, next) {
     const providerId = String(req.params && req.params.providerId || '');
     const provider = getProvider('codex', providerId);
-    const prepared = preprocessResponsesHistory(req.body);
-    if (prepared.changes.length) diagnostic(options.logger, 'model_history_preprocessed', {
-      providerId, changes: prepared.changes,
-    });
     if (!isOfficialCodexOAuthProvider(provider)) {
       // Every Codex route is store:false at the source: the CLI itself puts
       // `store: false` on each request (verified against codex-cli 0.154 with a
@@ -364,6 +360,17 @@ function createCodexOfficialRelayHandler(options = {}) {
       // it is applied only where the official hop is actually ours.
       // All Codex routes speak Responses at this boundary, including the CPR
       // Chat Completions bridge. Do not edit the saved native transcript.
+      //
+      // Where the router provides request hooks this pass belongs to the hook
+      // (src/providers/codex-history-hooks.js), which runs at the dial point
+      // inside the router and can additionally repair a rejection the router
+      // itself observed. `genericHistoryNormalization: false` is how the port
+      // says so; a router without hooks keeps this pre-proxy pass.
+      if (options.genericHistoryNormalization === false) return next();
+      const prepared = preprocessResponsesHistory(req.body);
+      if (prepared.changes.length) diagnostic(options.logger, 'model_history_preprocessed', {
+        providerId, changes: prepared.changes,
+      });
       const strippedRefs = stripUnresolvedItemReferences(prepared.body);
       if (strippedRefs.changes.length) diagnostic(options.logger, 'model_history_preprocessed', {
         providerId, changes: strippedRefs.changes,
@@ -371,6 +378,10 @@ function createCodexOfficialRelayHandler(options = {}) {
       req.body = strippedRefs.body;
       return next();
     }
+    const prepared = preprocessResponsesHistory(req.body);
+    if (prepared.changes.length) diagnostic(options.logger, 'model_history_preprocessed', {
+      providerId, changes: prepared.changes,
+    });
     // Official-only: reasoning items recorded by third-party providers carry a
     // raw content array the ChatGPT backend rejects (max length 0), and items
     // whose ids another upstream minted cannot be resolved on this hop (it

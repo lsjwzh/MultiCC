@@ -511,6 +511,28 @@ test('non-Official routes keep third-party reasoning content while dropping its 
   assert.equal(forwarded.input[1].id, 'msg_after');
 });
 
+test('the relay hands the generic pass to the router hook when one is installed', async () => {
+  const body = {
+    previous_response_id: 'resp_foreign',
+    input: [
+      { type: 'message', id: 'msg_keep', role: 'user', content: [{ type: 'input_text', text: 'hi' }] },
+      { type: 'function_call', id: 'tool_a', call_id: 'tool_a', name: 'exec', arguments: '{}' },
+    ],
+  };
+  const req = request(body);
+  const original = structuredClone(body);
+  let forwarded;
+  const handler = createCodexOfficialRelayHandler({
+    getProvider: () => ({ appType: 'codex', settingsConfig: { auth: { OPENAI_API_KEY: 'sk-x' } } }),
+    fetch: async () => assert.fail('must fall through'),
+    genericHistoryNormalization: false,
+  });
+  await handler(req, response(), () => { forwarded = req.body; });
+  // src/providers/codex-history-hooks.js owns this pass at the router's dial
+  // point in that mode, so normalizing here too would correct the body twice.
+  assert.deepEqual(forwarded, original);
+});
+
 test('a stream read failure exposes its socket cause without replaying partial output', async () => {
   let calls = 0;
   let reads = 0;
