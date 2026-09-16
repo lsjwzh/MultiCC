@@ -20,7 +20,6 @@ const EXPECTED_PATHS = [
   '/api/tunnel/funnel',
   '/api/tunnel/ipv6',
   '/api/settings/access-token',
-  '/api/settings/proxy',
   '/api/settings/official-oauth',
   '/api/settings/power',
 ];
@@ -50,7 +49,6 @@ function createHarness(overrides = {}) {
     },
     getAccessToken: () => '',
     isLocalRequest: () => false,
-    getProxyEnabled: () => true,
     getOfficialOAuthEnabled: () => false,
     macosPower: {
       isAvailable: () => false,
@@ -256,15 +254,13 @@ test('push health exposes fingerprints and explicit safe health DTOs only', asyn
   }
 });
 
-test('settings read live token and proxy values instead of mount-time snapshots', async () => {
+test('settings read live token and official-oauth values instead of mount-time snapshots', async () => {
   let token = 'secret-123456';
-  let proxyEnabled = true;
   let officialEnabled = false;
   const localRequest = { ip: '127.0.0.1' };
   const { routes } = createHarness({
     getAccessToken: () => token,
     isLocalRequest: (req) => req === localRequest,
-    getProxyEnabled: () => proxyEnabled,
     getOfficialOAuthEnabled: () => officialEnabled,
   });
   assert.deepEqual((await invoke(routes, '/api/settings/access-token', localRequest)).body, {
@@ -272,18 +268,15 @@ test('settings read live token and proxy values instead of mount-time snapshots'
     masked: '****3456',
     canEdit: true,
   });
-  assert.deepEqual((await invoke(routes, '/api/settings/proxy')).body, { enabled: true });
   assert.deepEqual((await invoke(routes, '/api/settings/official-oauth')).body, { enabled: false });
 
   token = 'abc';
-  proxyEnabled = false;
   officialEnabled = true;
   assert.deepEqual((await invoke(routes, '/api/settings/access-token', {})).body, {
     hasToken: true,
     masked: '****',
     canEdit: false,
   });
-  assert.deepEqual((await invoke(routes, '/api/settings/proxy')).body, { enabled: false });
   assert.deepEqual((await invoke(routes, '/api/settings/official-oauth')).body, { enabled: true });
 });
 

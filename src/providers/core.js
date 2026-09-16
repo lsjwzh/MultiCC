@@ -1819,14 +1819,23 @@ async function probeRelayModels(baseEnv, candidates, cliCmd) {
 // This function is the single choke point every Claude spawn goes through (chat
 // turns, the persistent streaming process, the interactive tmux terminal), so
 // it is also where the route guarantee is enforced: when the host has a local
-// endpoint for the bound provider, declining to rewrite ANTHROPIC_BASE_URL must
-// fail the spawn instead of leaving the child to dial the vendor directly with
+// endpoint for the bound provider, failing to rewrite ANTHROPIC_BASE_URL fails
+// the spawn instead of leaving the child to dial the vendor directly with
 // whatever ANTHROPIC_* it still carries. See ./claude-proxy-policy for what
 // counts as required and why a baseUrl-less OAuth entry is exempt.
+//
+// Routing is unconditional. There is deliberately no host-wide "run claude
+// direct" switch any more (CLAUDE_PROXY_ENABLED was removed from the server, the
+// routes, the web UI and the app): a knob whose entire purpose is to connect a
+// spawn straight to the vendor endpoint is an escape hatch around the one
+// guarantee this file exists to enforce, and it was reachable from .env, from
+// the settings UI and from a stale child env. `enabled: true` below satisfies
+// cli-provider-router's own option contract, which still gates on a truthy
+// `enabled` for other embedders.
 function applyClaudeProxyEnv(env, options) {
   if (officialCatalog && options?.providerId && getProvider('claude', options.providerId)?.builtinOfficial) {
     if (env) env.CLAUDE_CODE_OAUTH_TOKEN = '';
-    options = { ...options, enabled: true, officialOAuth: true, officialProviderId: options.providerId };
+    options = { ...options, officialOAuth: true, officialProviderId: options.providerId };
   }
   const providerId = options?.providerId;
   const summary = (() => {
@@ -1835,25 +1844,12 @@ function applyClaudeProxyEnv(env, options) {
     catch (_) { return null; }
   })();
   const required = claudeProxyEnvRequired({ providerId, summary });
-  const applied = cliProviderRouter.applyClaudeProxyEnv(env, { ...options, getProvider });
-  // CLAUDE_PROXY_ENABLED=0 is the documented operator escape hatch that runs
-  // Claude straight to the provider. It is honoured, but never silently: a
-  // stray env var must not be able to move every session off the local hop
-  // without leaving a trace at each spawn.
-  if (required && options?.enabled === false) {
-    (options.logger || console).warn(
-      `[multicc/providers] claude direct route (CLAUDE_PROXY_ENABLED=0): provider ${providerId}`
-      + ` baseUrl ${summary?.baseUrl ? 'set' : 'unset'} is NOT routed through the local proxy`,
-    );
-  }
-  assertClaudeProxyEnvApplied({ required: required && options?.enabled !== false, applied });
+  const applied = cliProviderRouter.applyClaudeProxyEnv(env, { ...options, enabled: true, getProvider });
+  assertClaudeProxyEnvApplied({ required, applied });
   // A rewritten ANTHROPIC_BASE_URL only binds the CLI as long as no alternate
   // transport is switched on, so close that door on exactly the spawns we are
-  // claiming are routed (see CLAUDE_ALT_TRANSPORT_KEYS). The operator escape
-  // hatch (CLAUDE_PROXY_ENABLED=0) is left alone: it means "run what the
-  // provider record says", and second-guessing the record there would be a
-  // different change with a different blast radius.
-  if (env && required && options?.enabled !== false) {
+  // claiming are routed (see CLAUDE_ALT_TRANSPORT_KEYS).
+  if (env && required) {
     for (const key of CLAUDE_ALT_TRANSPORT_KEYS) env[key] = '';
   }
   return applied;

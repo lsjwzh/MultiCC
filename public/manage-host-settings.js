@@ -288,40 +288,6 @@
     }
   }
 
-  // ── Claude Code proxy global toggle ──
-  async function loadProxySetting() {
-    const cb = document.getElementById('cc-proxy-enabled');
-    const hint = document.getElementById('cc-proxy-hint');
-    if (!cb) return;
-    try {
-      const res = await fetch('/api/settings/proxy' + tokenQS('?'));
-      const d = await res.json();
-      cb.checked = !!d.enabled;
-      cb.disabled = false;
-      if (hint) hint.textContent = '· ' + (d.enabled ? '已开启' : '已关闭');
-    } catch (_) {}
-  }
-
-  async function saveProxySetting() {
-    const cb = document.getElementById('cc-proxy-enabled');
-    const msg = document.getElementById('cc-proxy-msg');
-    if (!cb) return;
-    const enabled = cb.checked;
-    try {
-      const headers = { 'Content-Type': 'application/json' };
-      if (_urlToken) headers['X-Access-Token'] = _urlToken;
-      const res = await fetch('/api/settings/proxy', { method: 'POST', headers, body: JSON.stringify({ enabled }) });
-      const d = await res.json();
-      if (!res.ok || d.error) throw new Error(d.error || ('HTTP ' + res.status));
-      cb.checked = !!d.enabled;
-      const hint = document.getElementById('cc-proxy-hint');
-      if (hint) hint.textContent = '· ' + (d.enabled ? '已开启' : '已关闭');
-      if (msg) { msg.textContent = (d.enabled ? '已开启' : '已关闭') + '（下一轮 spawn 生效）'; msg.className = 'status-text ok'; }
-    } catch (e) {
-      if (msg) { msg.textContent = '错误: ' + e.message; msg.className = 'status-text err'; }
-    }
-  }
-
   // ── Route claude-official (OAuth) through the proxy — default OFF ──
   async function loadOfficialOAuthSetting() {
     const cb = document.getElementById('cc-oauth-enabled');
@@ -377,7 +343,6 @@
 
   async function loadTunnelSettings() {
     loadAccessToken();
-    loadProxySetting();
     loadOfficialOAuthSetting();
     try {
       const res = await fetch('/api/settings/tunnel' + tokenQS('?'));
@@ -864,7 +829,6 @@
     testBark,
     testWebhook,
     saveAccessToken,
-    saveProxySetting,
     saveOfficialOAuthSetting,
     loadTunnelSettings,
     saveTunnelSettings,
