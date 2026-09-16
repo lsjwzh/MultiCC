@@ -460,6 +460,8 @@
   "classifyWaitingBackground": "Waiting in background",
   "classifyApiError": "API error",
   "classifyProcessing": "Processing",
+  "auxVerdictPaused": "Verdict paused",
+  "auxVerdictPausedHint": "The AI assistant is unavailable, so this verdict will not be updated until it recovers",
   "livenessWorking": "Working",
   "livenessIdle": "Idle",
   "livenessStalled": "Possibly stalled",

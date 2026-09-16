@@ -557,30 +557,76 @@ test('network recovery never resumes a scrubbed TaskRun execution slot', async (
   assert.equal(h.logs.some(entry => entry.event === 'api_error_task_run_requires_new_run'), true);
 });
 
-test('Aux recovery probe skips permanent authentication/configuration failures', () => {
+test('Aux recovery probe fires for every unhealthy state and honours the reset window', () => {
   const h = harness();
   let enqueued = 0;
   h.auxQueue.enqueue = () => { enqueued += 1; return Promise.resolve({}); };
+  // `retryable` is about the failed request, not about the upstream: a dead
+  // credential makes every request non-retryable and would otherwise latch the
+  // fleet with no probe at all. Each shape below is its own episode (distinct
+  // sinceAt), which is what makes an immediate probe due.
   h.auxQueue.getStatus = () => ({
-    health: { unhealthy: true, retryable: false, category: 'authentication_permission' },
-  });
-  h.host.auxHealthProbe();
-  assert.equal(enqueued, 0);
-  h.auxQueue.getStatus = () => ({
-    health: { unhealthy: true, retryable: false, category: 'adapter_configuration' },
-  });
-  h.host.auxHealthProbe();
-  assert.equal(enqueued, 0);
-  h.auxQueue.getStatus = () => ({
-    health: { unhealthy: true, retryable: true, retryAt: 2_000 },
-  });
-  h.host.auxHealthProbe();
-  assert.equal(enqueued, 0, 'a credible reset time blocks probes before the window');
-  h.auxQueue.getStatus = () => ({
-    health: { unhealthy: true, retryable: true, retryAt: 1_000 },
+    health: { unhealthy: true, retryable: false, category: 'authentication_permission', sinceAt: 1 },
   });
   h.host.auxHealthProbe();
   assert.equal(enqueued, 1);
+  h.auxQueue.getStatus = () => ({
+    health: { unhealthy: true, retryable: false, category: 'billing_quota', sinceAt: 2 },
+  });
+  h.host.auxHealthProbe();
+  assert.equal(enqueued, 2);
+  h.auxQueue.getStatus = () => ({
+    health: { unhealthy: true, retryable: true, category: 'unknown', sinceAt: 3, retryAt: 2_000 },
+  });
+  h.host.auxHealthProbe();
+  assert.equal(enqueued, 2, 'a credible reset time blocks probes before the window');
+  h.auxQueue.getStatus = () => ({
+    health: { unhealthy: true, retryable: true, category: 'unknown', sinceAt: 3, retryAt: 1_000 },
+  });
+  h.host.auxHealthProbe();
+  assert.equal(enqueued, 3);
+});
+
+test('Aux recovery probe backs off to a 30 min ceiling within one unhealthy episode', () => {
+  let clock = 1_000_000;
+  const h = harness({ now: () => clock });
+  const probes = [];
+  h.auxQueue.enqueue = () => { probes.push(clock); return Promise.resolve({}); };
+  // `sinceAt` is stamped once per episode, so a failing probe cannot push the
+  // next one out: the schedule belongs to the episode, not to the last failure.
+  h.auxQueue.getStatus = () => ({
+    health: { unhealthy: true, retryable: true, category: 'unknown', retryAt: null, sinceAt: 500_000 },
+  });
+  for (let minute = 0; minute <= 150; minute += 1) {
+    h.host.auxHealthProbe();
+    clock += 60_000;
+  }
+  assert.deepEqual(probes.map(at => (at - 1_000_000) / 60_000), [0, 5, 15, 35, 65, 95, 125]);
+});
+
+test('Aux recovery probe starts a fresh episode at the short interval', () => {
+  let clock = 1_000_000;
+  const h = harness({ now: () => clock });
+  let enqueued = 0;
+  h.auxQueue.enqueue = () => { enqueued += 1; return Promise.resolve({}); };
+  h.auxQueue.getStatus = () => ({
+    health: { unhealthy: true, retryable: true, sinceAt: 500_000 },
+  });
+  h.host.auxHealthProbe();
+  clock += 5 * 60_000;
+  h.host.auxHealthProbe();
+  clock += 10 * 60_000;
+  h.host.auxHealthProbe();
+  assert.equal(enqueued, 3, 'the episode climbed its backoff ladder');
+  // ...and a later episode (a different sinceAt) is not inheriting that ladder.
+  h.auxQueue.getStatus = () => ({ health: { unhealthy: false } });
+  h.host.auxHealthProbe();
+  h.auxQueue.getStatus = () => ({
+    health: { unhealthy: true, retryable: true, sinceAt: clock + 1 },
+  });
+  clock += 1;
+  h.host.auxHealthProbe();
+  assert.equal(enqueued, 4, 'a fresh episode probes immediately');
 });
 
 test('Aux recovery probe retries external billing quota and clears health on success', async () => {

@@ -3,6 +3,7 @@
 const { createSessionQueryService, createWorkspaceService } = require('../session');
 const { isTerminalLetter, isSettledLetter, classifyDisplay } = require('../classify/vocab');
 const { taskShortCode } = require('../classify/task-short-code');
+const { auxVerdictStaleness } = require('../classify/aux-verdict-health');
 const { providerSelectionDto } = require('../providers/auto-provider-config');
 
 function assertFunction(value, name) {
@@ -74,6 +75,17 @@ function latestStringAssistant(history, minLength = 20) {
 function createSessionAdminRuntime(rawDeps) {
   const deps = assertDependencies(rawDeps);
 
+  // A judgement Aux has stopped revising is still the best description there
+  // is, but it must not be presented as current (see
+  // src/classify/aux-verdict-health.js). Every presenter below whitelists its
+  // fields, so each one has to pass the pair through explicitly.
+  function verdictFreshness(view) {
+    return {
+      auxUnhealthy: view?.auxUnhealthy === true,
+      auxUnhealthySince: view?.auxUnhealthySince || null,
+    };
+  }
+
   function stateSource(id) {
     return deps.resolveStateTarget?.(id) || { executionSessionId: id };
   }
@@ -90,7 +102,11 @@ function createSessionAdminRuntime(rawDeps) {
       currentFile: status.currentFile || null, pendingNotes: deps.pendingNotesFor(id).length,
       summary: summary?.summary || null, summaryAt: summary?.ts || null,
       classifyState: task.classifyState || null, goal: task.goal || '',
-      taskShortCode: taskShortCode(task.taskId), phase: task.phase || 'idle' };
+      taskShortCode: taskShortCode(task.taskId), phase: task.phase || 'idle',
+      // Whether this judgement is still being revised. See
+      // src/classify/aux-verdict-health.js — a frozen verdict is still the best
+      // description available, it just stops claiming to be current.
+      ...auxVerdictStaleness() };
   }
 
   function readSessionRuntime(id, record, { includeMergeState = true } = {}) {
@@ -241,6 +257,7 @@ function createSessionAdminRuntime(rawDeps) {
       taskShortCode: task.taskShortCode,
       stateSource: task.stateSource,
       phase: task.phase || 'idle',
+      ...verdictFreshness(task),
     };
   }
 
@@ -269,6 +286,7 @@ function createSessionAdminRuntime(rawDeps) {
       goal: facts.goal || '',
       taskShortCode: facts.taskShortCode || '',
       phase: facts.phase || 'idle',
+      ...verdictFreshness(facts),
     };
   }
 

@@ -331,11 +331,39 @@
       return { ...entry, status, barTint: status };
     }
 
-    function renderAuxClassify(goal, phase, classifyState, code) {
+    // The verdict currently on the bar, and whether Aux is still revising it.
+    // Aux can go down — or come back — while a page sits open, and the judgement
+    // it stops producing is exactly the thing the user is staring at, so the bar
+    // must be repaintable from a freshness-only event (`aux_verdict_staleness`).
+    // See src/classify/aux-verdict-health.js.
+    let verdictStaleness = { auxUnhealthy: false, auxUnhealthySince: null };
+    let lastVerdict = null;
+
+    function readStaleness(source) {
+      return {
+        auxUnhealthy: !!source.auxUnhealthy,
+        auxUnhealthySince: source.auxUnhealthySince || null,
+      };
+    }
+
+    // Repaint in place when only the freshness changed: the goal/phase/state the
+    // bar was last given are still the ones to show.
+    function applyAuxVerdictStaleness(source) {
+      verdictStaleness = readStaleness(source || {});
+      if (!lastVerdict) return;
+      renderAuxClassify(lastVerdict.goal, lastVerdict.phase, lastVerdict.classifyState, lastVerdict.code);
+    }
+
+    function renderAuxClassify(goal, phase, classifyState, code, freshness) {
+      lastVerdict = { goal, phase, classifyState, code };
+      if (freshness && typeof freshness === 'object') verdictStaleness = readStaleness(freshness);
       const bar = doc.getElementById('aux-classify-bar');
       if (!bar) return;
       const normalizedGoal = String(goal || '').trim();
-      if (!normalizedGoal) { bar.classList.remove('show', 'can-mark-done', 'can-cancel-task'); return; }
+      if (!normalizedGoal) {
+        bar.classList.remove('show', 'can-mark-done', 'can-cancel-task', 'aux-stale');
+        return;
+      }
       const goalEl = doc.getElementById('ac-goal');
       const phaseEl = doc.getElementById('ac-phase');
       const stateEl = doc.getElementById('ac-state');
@@ -359,10 +387,23 @@
         // accessible name here exactly as it does on the cards.
         statusRegistry().applyStatusBadge(stateEl, 'session', display.status, {
           translate: global.t, label: display.label, document: doc,
+          stale: verdictStaleness.auxUnhealthy,
         });
         stateEl.style.display = '';
       }
       bar.classList.add(`st-${display.status}`);
+      // A verdict Aux stopped revising is kept on screen — it is still the best
+      // description we have — but it stops claiming to be current.
+      bar.classList.toggle('aux-stale', verdictStaleness.auxUnhealthy);
+      const staleEl = doc.getElementById('ac-stale');
+      if (staleEl) {
+        const since = verdictStaleness.auxUnhealthySince;
+        staleEl.textContent = verdictStaleness.auxUnhealthy ? translate('auxVerdictPaused') : '';
+        staleEl.title = verdictStaleness.auxUnhealthy
+          ? [translate('auxVerdictPausedHint'), since ? `(${new Date(since).toLocaleString()})` : '']
+            .filter(Boolean).join(' ')
+          : '';
+      }
       bar.classList.toggle('can-mark-done', (classifyState || 'P') === 'W');
       bar.classList.toggle('can-cancel-task', (classifyState || 'P') === 'P');
       if ((classifyState || 'P') !== 'P' && _cancelTaskBtn) _cancelTaskBtn.disabled = false;
@@ -1444,6 +1485,7 @@
       attachUsageLine,
       classifyDisplay,
       renderAuxClassify,
+      applyAuxVerdictStaleness,
       renderLiveness,
       pushDanmaku,
       danmakuOnDisconnect,

@@ -65,6 +65,24 @@
  * glance without relying on hue. */
 .mc-status.st-tone-danger .mc-status-label { font-weight: 600; }
 
+/* ── Stale verdict ───────────────────────────────────────────────────────────
+ * A judgement the assistant is no longer revising (Aux is down — see
+ * src/classify/aux-verdict-health.js). It stays legible because it is still the
+ * best description we have, but it must not read as current. A dashed ring
+ * rather than a colour: the status itself keeps its own tone, and the wording
+ * lives in the badge's title/aria-label, which is what survives colour-blind and
+ * forced-colours rendering. Works with the label hidden (roster cards). */
+.mc-status.st-stale {
+  opacity: .75;
+  border-radius: 4px;
+  outline: 1px dashed currentColor;
+  outline-offset: 2px;
+}
+
+@media (forced-colors: active) {
+  .mc-status.st-stale { opacity: 1; outline-color: GrayText; }
+}
+
 /* Pill variant — for surfaces that show the status as a filled chip next to an
  * icon badge (fleet task rows, queue rows). Put it on a plain <span> alongside a
  * tone class so the chip does not duplicate the badge's accessible name. */
