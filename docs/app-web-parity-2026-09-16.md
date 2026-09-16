@@ -24,9 +24,11 @@ cd app && flutter test integration_test/ui_tour_test.dart -d <UDID> \
 ```
 
 巡游里的 `SHOT:` 时间戳与截图文件名同源（同一台机器的时钟），按最近时间即可把 PNG 命名成
-`01-home / 02-sidebar / 03-task-details / 06-task-graph / 04-chat / 05-chat-actions`。
+`01-home / 02-sidebar / 03-task-details / 06-task-graph / 07-memory-graph / 04-chat /
+05-chat-actions`。
 
-**六个点位现在都是真的**（2026-09-16 第二轮：`04-chat` 那一跳已修好）。四个坑，都踩过：
+**七个点位现在都是真的**（2026-09-16 第二轮：`04-chat` 那一跳已修好；第三轮：`06`/`07` 的
+抽屉点击不再被引导浮层吃掉）。五个坑，都踩过：
 
 1. **任务行要挑「有会话的」。** 首页那份列表带着归档行，而归档/observed 记录没有可续接的
    会话 —— 点它只会弹一句错误，停留首页。巡游现在优先选 `!readOnly && sessionId != null`
@@ -43,6 +45,11 @@ cd app && flutter test integration_test/ui_tour_test.dart -d <UDID> \
    已经挂起的弹窗重启模拟器即可清掉：`xcrun simctl shutdown <UDID> && xcrun simctl boot <UDID>`。
    另外 `flutter test` 走的是一次全新安装，App 的服务器配置会回到「连接到 MultiCC」页，
    所以巡游自己会填 URL/令牌再点「验证并连接」。
+5. **新手引导卡片是「异步挂上来」的，用固定延迟点它就是竞态。** 第二轮那版在开屏后固定等
+   8 秒就去点一遍「跳过」——热容器（没有连接页要填）时卡片还没挂上，那一遍点了个空，
+   卡片随后才出现，**它的 scrim 从此吃掉侧栏的所有点击**：抽屉打开看着正常，
+   `06-task-graph`/`07-memory-graph` 却都报 `up:false`。现在 `_dismissOverlays()` 先
+   轮询等它出现（首页那次给 15s，之后每次进抽屉再复查一遍），再点到它消失为止。
 
 **跑完巡游要记得把正式包装回去**：`flutter test integration_test/...` 装进模拟器的是测试宿主
 包（单独启动会停在启动画面）。`flutter build ios --simulator --debug` 出来的
