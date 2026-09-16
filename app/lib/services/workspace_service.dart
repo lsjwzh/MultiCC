@@ -40,6 +40,18 @@ class SessionStatus {
   /// Coarse phase key (planning/coding/testing/…) — server-normalised.
   final String? phase;
 
+  /// Whether the verdict above is FROZEN. The aux classifier that produces
+  /// [goal]/[classifyState] is itself unhealthy, so what is on screen is the
+  /// last thing it managed to say and will not change until it recovers. The
+  /// verdict is deliberately still shown — it is the best description we have —
+  /// it just stops claiming to be current. False on older servers that predate
+  /// the fact, which is also the honest reading for them.
+  final bool auxUnhealthy;
+
+  /// When the outage started (ms epoch; 0 = unknown, matching [summaryTs] and
+  /// [runStartedAt]). Only meaningful while [auxUnhealthy] is set.
+  final int auxUnhealthySince;
+
   /// Task run-time window (ms epoch, 0 = none). [runStartedAt] is stamped when a
   /// turn begins (user sent a message); [runEndedAt] freezes when it ends. While
   /// the agent is mid-run [runEndedAt] is 0 and the elapsed time keeps growing.
@@ -61,6 +73,8 @@ class SessionStatus {
     this.goal,
     this.taskShortCode,
     this.phase,
+    this.auxUnhealthy = false,
+    this.auxUnhealthySince = 0,
     this.runStartedAt = 0,
     this.runEndedAt = 0,
   });
@@ -80,6 +94,8 @@ class SessionStatus {
     String? goal,
     String? taskShortCode,
     String? phase,
+    bool? auxUnhealthy,
+    int? auxUnhealthySince,
     int? runStartedAt,
     int? runEndedAt,
   }) {
@@ -98,6 +114,10 @@ class SessionStatus {
       goal: goal ?? this.goal,
       taskShortCode: taskShortCode ?? this.taskShortCode,
       phase: phase ?? this.phase,
+      // Clearing works through the same `??`: `false` and `0` are values, not
+      // absences, so a recovery frame takes the marker down.
+      auxUnhealthy: auxUnhealthy ?? this.auxUnhealthy,
+      auxUnhealthySince: auxUnhealthySince ?? this.auxUnhealthySince,
       runStartedAt: runStartedAt ?? this.runStartedAt,
       runEndedAt: runEndedAt ?? this.runEndedAt,
     );
@@ -281,6 +301,19 @@ class WorkspaceService extends ChangeNotifier {
     final merge = m['mergeState'];
     final mergeMap = merge is Map ? merge : const {};
     final rawSummary = m['summary']?.toString();
+    // Verdict freshness rides as a pair, so read it as one. An absent key means
+    // "this frame says nothing about it" (status/merge_status ticks) and carries
+    // forward; a present key is taken verbatim — including `false`, which is how
+    // recovery arrives. No staleness ⇒ no start time: a `since` left over from
+    // the previous outage must not surface against a healthy classifier.
+    final rawUnhealthy = m['auxUnhealthy'];
+    final auxUnhealthy =
+        rawUnhealthy is bool ? rawUnhealthy : (prev?.auxUnhealthy ?? false);
+    final auxUnhealthySince = !auxUnhealthy
+        ? 0
+        : ((m['auxUnhealthySince'] as num?)?.toInt() ??
+              prev?.auxUnhealthySince ??
+              0);
     return SessionStatus(
       status: (m['status'] ?? 'idle') as String,
       currentFile: m['currentFile'] as String?,
@@ -308,6 +341,8 @@ class WorkspaceService extends ChangeNotifier {
           ? m['taskShortCode'] as String
           : prev?.taskShortCode,
       phase: (m['phase'] as String?) ?? prev?.phase,
+      auxUnhealthy: auxUnhealthy,
+      auxUnhealthySince: auxUnhealthySince,
       runStartedAt:
           (m['runStartedAt'] as num?)?.toInt() ?? prev?.runStartedAt ?? 0,
       runEndedAt: (m['runEndedAt'] as num?)?.toInt() ?? prev?.runEndedAt ?? 0,
@@ -408,6 +443,12 @@ class WorkspaceService extends ChangeNotifier {
         final prev = statuses[id] ?? const SessionStatus(status: 'idle');
         final g = msg['goal']?.toString();
         final code = msg['taskShortCode']?.toString();
+        // Freshness travels as a pair with the verdict it describes: take it
+        // verbatim when the frame carries it — including the cleared pair that
+        // arrives on recovery — and carry it forward when it is absent, so a
+        // frame from a server that predates the fact cannot blink the marker off.
+        final rawUnhealthy = msg['auxUnhealthy'];
+        final unhealthy = rawUnhealthy is bool ? rawUnhealthy : prev.auxUnhealthy;
         statuses[id] = prev.copyWith(
           classifyState: msg['classifyState']?.toString(),
           goal: (g != null && g.isNotEmpty) ? g : prev.goal,
@@ -416,9 +457,55 @@ class WorkspaceService extends ChangeNotifier {
           // renewed/cleared task doesn't keep showing a stale code.
           taskShortCode: code ?? prev.taskShortCode,
           phase: msg['phase']?.toString(),
+          auxUnhealthy: unhealthy,
+          auxUnhealthySince: unhealthy
+              ? ((msg['auxUnhealthySince'] as num?)?.toInt() ??
+                    prev.auxUnhealthySince)
+              : 0,
         );
         notifyListeners();
       }
+    } else if (type == 'aux_verdict_staleness') {
+      // The classifier behind every judgement on screen just changed health. A
+      // frozen classifier emits no further `task_state`, so this is the only
+      // frame that can tell an already-open page its verdict stopped moving —
+      // and the same frame with the flag cleared is what takes the marker back
+      // down. It is broadcast per directory (with a sessionId) and per session
+      // (without), so handle both: an addressed frame marks that session, an
+      // unaddressed one marks every session showing a judgement — the server's
+      // own selection rule. Either way the next task_state restates the pair, so
+      // a session missed here self-corrects.
+      final stale = msg['auxUnhealthy'] == true;
+      final since = (msg['auxUnhealthySince'] as num?)?.toInt() ?? 0;
+      final id = msg['sessionId'];
+      final targets = (id is String && statuses.containsKey(id))
+          ? <String>[id]
+          : statuses.entries
+                .where(
+                  (e) =>
+                      (e.value.goal?.isNotEmpty ?? false) ||
+                      (e.value.classifyState?.isNotEmpty ?? false),
+                )
+                .map((e) => e.key)
+                .toList();
+      var changed = false;
+      for (final sid in targets) {
+        final prev = statuses[sid]!;
+        // No staleness ⇒ no start time; an outage's `since` must not survive
+        // into a healthy classifier and reappear on the next one.
+        final nextSince = stale
+            ? (since > 0 ? since : prev.auxUnhealthySince)
+            : 0;
+        if (prev.auxUnhealthy == stale && prev.auxUnhealthySince == nextSince) {
+          continue;
+        }
+        statuses[sid] = prev.copyWith(
+          auxUnhealthy: stale,
+          auxUnhealthySince: nextSince,
+        );
+        changed = true;
+      }
+      if (changed) notifyListeners();
     } else if (type == 'session_cli_changed') {
       // A session's CLI was switched. The grouping (chat/terminal buckets, CLI
       // chips) comes from the REST session list, not this socket - so ask the

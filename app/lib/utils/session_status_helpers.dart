@@ -66,9 +66,40 @@ const Map<String, String> _classifyLabelKey = {
   return (color: spec.color, label: t(labelKey), emoji: spec.icon);
 }
 
+/// 「判定已暂停」 pill: the caveat that goes next to a judgement the classifier
+/// can no longer revise. Shared so the chat bar, the fleet cards and the
+/// dashboard all say it the same way.
+///
+/// Deliberately outline-only and grey: this is not a state of the *session*, it
+/// is a caveat about the label beside it. Tinting it red/amber would read as an
+/// error of its own — the very confusion it exists to prevent.
+Widget verdictStaleChip() {
+  return Container(
+    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+    decoration: BoxDecoration(
+      border: Border.all(color: const Color(0xFFa0aec0)),
+      borderRadius: BorderRadius.circular(4),
+    ),
+    child: Text(
+      '⏸ ${t('auxVerdictPaused')}',
+      style: const TextStyle(
+        color: Color(0xFF6f8096),
+        fontSize: 9.5,
+        fontWeight: FontWeight.w700,
+      ),
+    ),
+  );
+}
+
 /// A small classify-state pill. Shows the state emoji (+ optional label) tinted
 /// by state, with the current task goal as a tooltip. Empty widget when the
 /// session has no classify verdict.
+///
+/// A verdict Aux can no longer revise is marked, not hidden: [SessionStatus]
+/// carries the classifier's health, and when it is down the pill keeps its state
+/// color (the last thing it said is still the best description we have) but
+/// gains [verdictStaleChip] and a tooltip that says why — otherwise a two-day-old
+/// goal reads as a live judgement, which is exactly the question this answers.
 Widget classifyChip(SessionStatus? live, {bool showLabel = true}) {
   final b = classifyBadge(live?.classifyState);
   if (b == null) return const SizedBox.shrink();
@@ -89,9 +120,18 @@ Widget classifyChip(SessionStatus? live, {bool showLabel = true}) {
       ),
     ),
   );
-  return (goal != null && goal.isNotEmpty)
-      ? Tooltip(message: goal, child: chip)
+  final stale = live?.auxUnhealthy == true;
+  final badge = stale
+      ? Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [chip, const SizedBox(width: 4), verdictStaleChip()],
+        )
       : chip;
+  final tip = [
+    if (goal != null && goal.isNotEmpty) goal,
+    if (stale) t('auxVerdictPausedHint'),
+  ].join('\n');
+  return tip.isEmpty ? badge : Tooltip(message: tip, child: badge);
 }
 
 /// Transport-level liveness → tint/label/emoji (mirrors classifyBadge but for

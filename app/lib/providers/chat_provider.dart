@@ -896,6 +896,13 @@ class ChatProvider extends ChangeNotifier {
   /// `lifecycle` field was removed in 98c2674 / unified in 38bb6ce).
   String _classifyState = '';
   String get classifyState => _classifyState;
+
+  /// Whether the verdict above is FROZEN because the aux classifier that
+  /// produces it is itself unhealthy. The bar keeps rendering the last goal —
+  /// it is still the best description available — but marks it as not current.
+  bool _classifyStale = false;
+  bool get classifyStale => _classifyStale;
+
   bool get hasClassify => _classifyGoal.trim().isNotEmpty;
 
   ChatProvider({
@@ -1527,13 +1534,32 @@ class ChatProvider extends ChangeNotifier {
         {
           // aux classify verdict for this session: {goal, phase, classifyState}.
           // Empty goal ⇒ not classified ⇒ hide the bar. Mirrors web
-          // renderAuxClassify.
+          // renderAuxClassify. The verdict's freshness rides on the same tick —
+          // absent (an older server) leaves it alone rather than clearing it, so
+          // the marker can't blink off on a frame that predates the fact.
           final p = evt.payload as Map<String, dynamic>;
           _classifyGoal = (p['goal'] ?? '').toString().trim();
           _classifyPhase = (p['phase'] ?? 'idle').toString().toLowerCase();
           final next = (p['classifyState'] ?? '').toString().toUpperCase();
           _classifyState = next == 'C' ? 'W' : next;
+          if (p['auxUnhealthy'] is bool) {
+            _classifyStale = p['auxUnhealthy'] == true;
+          }
           notifyListeners();
+          break;
+        }
+
+      case 'aux_verdict_staleness':
+        {
+          // The classifier changed health. A frozen classifier sends no further
+          // task_state, so this is the only frame that can mark (or unmark) an
+          // already-open chat. Fleet-wide fact on a per-session socket: the bar
+          // belongs to this session, so it follows verbatim.
+          final p = evt.payload as Map<String, dynamic>;
+          if (p['auxUnhealthy'] is bool) {
+            _classifyStale = p['auxUnhealthy'] == true;
+            notifyListeners();
+          }
           break;
         }
 
