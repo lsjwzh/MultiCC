@@ -194,12 +194,14 @@ async function ensureDir(label) {
 
   // A4: 创建/删除会话
   let testSessionId = null;
+  let testTaskId = null;
   let testDirId = null;
   {
     testDirId = await ensureDir('Smoke Test');
     const res = await post(`/api/directories/${testDirId}/sessions`, { cli: 'claude', kind: 'chat' });
     if (res.status === 200 || res.status === 201) {
       testSessionId = res.body.id || res.body.sessionId;
+      testTaskId = res.body.taskId || res.body.taskBoundTaskId || null;
       ok('A4 创建会话', `id=${testSessionId}`);
     } else {
       fail('A4 创建会话', `status ${res.status} body=${JSON.stringify(res.body).slice(0,100)}`);
@@ -240,11 +242,16 @@ async function ensureDir(label) {
     }
   }
 
-  // A4b: 删除会话
+  // A4b: 删除会话。经此入口创建的会话是任务绑定壳，现行契约默认拒绝单独 DELETE
+  // （防扫库脚本把任务聊天史孤儿化）——先验证这个守卫确实拦住，再走任务板删除
+  // 收尾（任务与会话 1:1，任务板删除会把两者一起清掉）。
   if (testSessionId) {
     const res = await del(`/api/sessions/${testSessionId}`);
     if (res.status === 200 || res.status === 204) ok('A4 删除会话', `deleted ${testSessionId}`);
-    else fail('A4 删除会话', `status ${res.status}`);
+    else if (res.status === 400 && /task-bound/.test(String((res.body && res.body.error) || ''))) {
+      ok('A4 删除会话', 'task-bound 守卫拒绝单独删除（预期行为）');
+    } else fail('A4 删除会话', `status ${res.status}`);
+    if (testTaskId) await del(`/api/task-board/tasks/${testTaskId}`);
   }
 
   // A1: Chat 模式 (browser)
@@ -260,7 +267,13 @@ async function ensureDir(label) {
   // This is deterministic: it exercises the production server replay helper
   // and the production browser history store/view without launching a real AI.
   await browserTest('A7 流式回复重连不重复', async (p) => {
-    await navTo(p, `${BASE}/chat`);
+    // 裸 /chat 现在是任务入口占位页；完整聊天渲染器（含 history store/view）
+    // 只随 Air 的任务帧 /chat?air=1&task=… 加载。临时建一个空任务会话来取
+    // 那份文档，测完经任务板删除收尾。
+    const ts = testDirId ? await post(`/api/directories/${testDirId}/sessions`, { cli: 'claude', kind: 'chat' }) : null;
+    const a7TaskId = ts && (ts.body.taskId || ts.body.taskBoundTaskId);
+    if (!a7TaskId) throw new Error(`cannot create task session for the full chat renderer (status ${ts && ts.status})`);
+    await navTo(p, `${BASE}/chat?air=1&task=${encodeURIComponent(a7TaskId)}`);
     const user = { id: 'release-user', role: 'user', content: 'release replay test' };
     const replay = buildReplayMessages([
       user,
@@ -343,6 +356,7 @@ async function ensureDir(label) {
         || !result.finalText.includes('plus final')) {
       throw new Error(`final commit produced duplicate/stale assistant: ${JSON.stringify(result)}`);
     }
+    await del(`/api/task-board/tasks/${a7TaskId}`);
   });
 
   // A2: Terminal 模式 (browser)
@@ -469,34 +483,36 @@ async function ensureDir(label) {
     }
   }
 
-  // ── Browser: manage page dashboard ─────────────────────────────────
-  hdr('Browser: Manage Dashboard');
+  // ── Browser: Air console ────────────────────────────────────────────
+  // /manage（旧看板）已重定向到 /air——浏览器断言跟着搬到 Air 壳上。
+  hdr('Browser: Air Console');
 
-  await browserTest('Manage 页面加载', async (p) => {
-    await navTo(p, `${BASE}/manage`);
-    const hasNav = await p.evaluate(() => !!document.querySelector('#nav, .nav, [data-view]'));
-    if (!hasNav) throw new Error('no sidebar/nav found');
+  await browserTest('Air 页面加载', async (p) => {
+    await navTo(p, `${BASE}/air`);
+    const hasShell = await p.evaluate(() =>
+      !!document.querySelector('#sidebar') && !!document.querySelector('#task-header'));
+    if (!hasShell) throw new Error('no air shell found');
   });
 
-  await browserTest('概览 KPI 显示', async (p) => {
-    await navTo(p, `${BASE}/manage`);
+  await browserTest('目录统计显示', async (p) => {
+    await navTo(p, `${BASE}/air`);
     const kpi = await p.evaluate(() => {
-      const el = document.querySelector('#kpi-active, .kpi .k-num');
+      const el = document.querySelector('#directory-stats .directory-stat strong');
       return el ? el.textContent : null;
     });
-    if (kpi === null) throw new Error('no KPI element found');
+    if (kpi === null) throw new Error('no directory stat element found');
   });
 
   await browserTest('版本检测可见', async (p) => {
-    await navTo(p, `${BASE}/manage`);
-    // The page defers its first version check by 3s, then the fetch has to
-    // land — on a loaded server that exceeds any fixed wait. Poll instead:
-    // the assertion is that the indicator updates, not how fast it does.
+    await navTo(p, `${BASE}/air`);
+    // The page defers its first version check, then the fetch has to land —
+    // on a loaded server that exceeds any fixed wait. Poll instead: the
+    // assertion is that the indicator updates, not how fast it does.
     let ver = null;
     for (let i = 0; i < 20; i++) {
       await new Promise(r => setTimeout(r, 1000));
       ver = await p.evaluate(() => {
-        const el = document.querySelector('#ver-current');
+        const el = document.querySelector('#air-ver-current');
         return el ? el.textContent : null;
       });
       if (ver && ver !== 'v—') break;

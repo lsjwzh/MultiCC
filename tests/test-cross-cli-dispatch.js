@@ -19,6 +19,20 @@
  *   - T1.8 边缘: 补 cli=null/''/'CODEX'；restore 前 clamp effort，包 try/catch
  *   - T1.2: illegalCLIs 补 null
  *   - marker 文本不再执行，相关防回归由 post-turn/interface-retirement 测试覆盖
+ * v4.1 变更（task-first 会话契约对齐）:
+ *   - 经目录路由创建的 chat 会话是 task-bound 壳：GET /api/sessions 的
+ *     fleet 列表按设计隐藏它们（直接寻址才是它们的入口）。T1.1/T1.16 的
+ *     持久化断言改走 GET /api/sessions/:id（includeTaskBound）。
+ *   - T1.2: cli 缺省/空/null 不再是非法输入——createTask 路径 `cli || 'claude'`
+ *     落到 claude；仅保留未知 CLI 的 400 断言，缺省行为单独验证。
+ *   - T1.17: zcode 绑 provider 要求普通 HTTP 凭据（baseUrl+token），OAuth-only
+ *     provider 会被拒——按 provider 声明的 compatibleClis 选池内候选，无则 skip。
+ *   - T1.18/T2.10 清理：task-bound 会话走任务板删除（1:1 属主），不再依赖
+ *     会被 400 拒绝的裸 DELETE /api/sessions/:id。
+ *   - T2.3: opencode 主机无默认模型时 `opencode run` 永远选不出 provider——
+ *     ping 会话显式钉一个 /api/opencode/models 里的便宜模型。
+ *   - sendChatMessage: task-bound 会话的 WS 入口要求 taskShell:true + clientMsgId
+ *     （走任务壳 FIFO），裸 user_message 会被 task_shell_route_required 拒掉。
  *
  * Tier 结构:
  *   Tier1 — 结构/API：纯 HTTP 验证，不 spawn CLI，恒跑
@@ -37,6 +51,7 @@
 const http = require('http');
 const https = require('https');
 const { execSync } = require('child_process');
+const { randomUUID } = require('crypto');
 
 const BASE = process.env.MULTICC_URL || 'http://localhost:3000';
 const TOKEN = process.env.MULTICC_TOKEN || '';
@@ -144,6 +159,25 @@ async function deleteSession(sid) {
   try { await del(`/api/sessions/${sid}`); } catch (_) {}
 }
 
+// Chat sessions created through the directory route are task-bound shells:
+// a bare DELETE /api/sessions/:id is refused by design (the guard keeps
+// scanners from orphaning task chat history). Resolve the bound task and
+// remove both through the task board, which owns the 1:1 pair.
+async function deleteSessionDeep(sid) {
+  if (!sid) return false;
+  const res = await del(`/api/sessions/${sid}`);
+  if (res.status === 200 || res.status === 204) return true;
+  try {
+    const info = await get(`/api/sessions/${sid}`);
+    const taskId = info.body && (info.body.taskBoundTaskId || info.body.taskId);
+    if (taskId) {
+      const board = await del(`/api/task-board/tasks/${taskId}`);
+      return board.status === 200 || board.status === 204;
+    }
+  } catch (_) {}
+  return false;
+}
+
 // ── Helper: binary detection ──────────────────────────────────────────
 function hasBinary(name) {
   try {
@@ -185,7 +219,10 @@ async function sendChatMessage(sid, message, timeoutMs) {
 
     ws.on('open', () => {
       opened = true;
-      ws.send(JSON.stringify({ type: 'user_message', text: message }));
+      // Task-bound chat sessions refuse bare user_message with
+      // task_shell_route_required — the task shell FIFO is their only inbox.
+      // taskShell:true routes through it; non-task sessions ignore the flag.
+      ws.send(JSON.stringify({ type: 'user_message', text: message, taskShell: true, clientMsgId: randomUUID() }));
     });
 
     ws.on('message', (raw) => {
@@ -424,35 +461,35 @@ function validEffortForCli(cli, effort) {
     }
   }
 
-  // Verify persisted records contain correct cli field
+  // Verify persisted records contain correct cli field. Task-bound chat
+  // sessions are deliberately unlisted in the fleet list (GET /api/sessions);
+  // the per-id endpoint is their direct-addressing surface, so verify there.
   {
-    const listRes = await get('/api/sessions');
-    const sessions = Array.isArray(listRes.body) ? listRes.body : (listRes.body.sessions || []);
     for (const cli of legalCLIs) {
       const rec = createdSessions[cli];
       if (!rec) continue;
-      const found = sessions.find(s => s.id === rec.id);
-      if (found) {
-        if (found.cli === cli) {
-          ok(`T1.1 持久化验证 ${cli}`, `persisted.cli="${found.cli}" 正确`);
-        } else {
-          fail(`T1.1 持久化验证 ${cli}`, `期望 cli="${cli}" 实际 cli="${found.cli}"`);
-        }
+      const res = await get(`/api/sessions/${rec.id}`);
+      if (res.status !== 200) {
+        fail(`T1.1 持久化验证 ${cli}`, `GET /api/sessions/${rec.id} status ${res.status}`);
+        continue;
+      }
+      if (res.body.cli === cli) {
+        ok(`T1.1 持久化验证 ${cli}`, `persisted.cli="${res.body.cli}" 正确`);
       } else {
-        fail(`T1.1 持久化验证 ${cli}`, `未在 GET /api/sessions 中找到 ${rec.id}`);
+        fail(`T1.1 持久化验证 ${cli}`, `期望 cli="${cli}" 实际 cli="${res.body.cli}"`);
       }
     }
   }
 
-  // ── T1.2: 非法 CLI 创建会话（补 null） ──
+  // ── T1.2: 非法 CLI 创建会话 ──
   hdr('T1.2 非法 CLI 拒绝');
-  const illegalCLIs = ['gemini', 'foo', 'cursor', '', 'CLAUDE', null];
+  // ''/null/缺省不再是非法输入：task-first 创建路径 `cli || 'claude'` 把它们
+  // 落到 claude（见 routes/session-create.js），未知 CLI 仍被 createSessionRecord
+  // 的 SUPPORTED_CHAT_CLIS 校验拒绝。
+  const illegalCLIs = ['gemini', 'foo', 'cursor', 'CLAUDE'];
   for (const cli of illegalCLIs) {
-    const label = cli === '' ? '(空字符串)' : cli === null ? '(null)' : String(cli);
-    // null → JSON.stringify produces {"cli":null}, req.body.cli === null
-    const body = { kind: 'chat' };
-    if (cli !== null) body.cli = cli;
-    const res = await post(`/api/directories/${dirId}/sessions`, body);
+    const label = String(cli);
+    const res = await post(`/api/directories/${dirId}/sessions`, { kind: 'chat', cli });
     if (res.status === 400) {
       ok(`T1.2 非法 CLI "${label}"`, `400 — ${(res.body.error || '').slice(0, 80)}`);
     } else if (res.status === 200 || res.status === 201) {
@@ -461,6 +498,28 @@ function validEffortForCli(cli, effort) {
       if (sid) tier1Sessions.push(sid);
     } else {
       fail(`T1.2 非法 CLI "${label}"`, `期望 400，实际 ${res.status}`);
+    }
+  }
+
+  // Missing/empty/null cli falls back to claude instead of 400.
+  for (const cli of [null, '']) {
+    const label = cli === null ? '(null)' : '(空字符串)';
+    // null → JSON.stringify produces {"cli":null}, req.body.cli === null
+    const body = { kind: 'chat' };
+    if (cli !== null) body.cli = cli;
+    const res = await post(`/api/directories/${dirId}/sessions`, body);
+    if (res.status === 200 || res.status === 201) {
+      const sid = res.body.id || res.body.sessionId;
+      if (sid) tier1Sessions.push(sid);
+      const info = sid ? await get(`/api/sessions/${sid}`) : { status: 0 };
+      const persistedCli = info.status === 200 ? info.body.cli : null;
+      if (persistedCli === 'claude') {
+        ok(`T1.2 cli ${label} 缺省回落`, 'missing/empty cli → claude');
+      } else {
+        fail(`T1.2 cli ${label} 缺省回落`, `persisted.cli=${JSON.stringify(persistedCli)}（应 "claude"）`);
+      }
+    } else {
+      fail(`T1.2 cli ${label} 缺省回落`, `期望 200/201，实际 ${res.status}`);
     }
   }
 
@@ -607,16 +666,17 @@ function validEffortForCli(cli, effort) {
   // ── T1.16: 四会话 cli 字段无 clamp ──
   hdr('T1.16 Worker CLI 持久化字段验证');
   {
-    const listRes = await get('/api/sessions');
-    const sessions = Array.isArray(listRes.body) ? listRes.body : (listRes.body.sessions || []);
+    // Same task-bound caveat as T1.1: verify per-id, not through the fleet list.
     for (const cli of legalCLIs) {
       const rec = createdSessions[cli];
       if (!rec) continue;
-      const found = sessions.find(s => s.id === rec.id);
-      if (found) {
-        if (found.cli === cli) ok(`T1.16 ${cli} 无 clamp`, `persisted.cli="${found.cli}"`);
-        else fail(`T1.16 ${cli} 无 clamp`, `persisted.cli="${found.cli}" ≠ 原="${cli}"`);
-      } else skip(`T1.16 ${cli} 无 clamp`, 'session no longer in list');
+      const res = await get(`/api/sessions/${rec.id}`);
+      if (res.status !== 200) {
+        skip(`T1.16 ${cli} 无 clamp`, `session 不可读（status ${res.status}）`);
+        continue;
+      }
+      if (res.body.cli === cli) ok(`T1.16 ${cli} 无 clamp`, `persisted.cli="${res.body.cli}"`);
+      else fail(`T1.16 ${cli} 无 clamp`, `persisted.cli="${res.body.cli}" ≠ 原="${cli}"`);
     }
   }
 
@@ -692,10 +752,25 @@ function validEffortForCli(cli, effort) {
       }
 
       // (d-g) OpenCode and ZCode are multi-protocol clients: both pools are valid.
+      // zcode additionally requires ordinary HTTP credentials (baseUrl+token) —
+      // OAuth-only providers are refused fail-closed — so pick pool candidates by
+      // each provider's declared compatibleClis instead of grabbing pool[0].
+      const poolCandidateFor = (cli, ids) => ids.find(id => {
+        const p = providers.find(x => x.id === id);
+        return p && Array.isArray(p.compatibleClis) && p.compatibleClis.includes(cli);
+      });
       for (const cli of ['opencode', 'zcode']) {
-        for (const [poolName, providerId] of [['claude', claudePoolIds[0]], ['codex', codexPoolGenericIds[0] || codexPoolIds[0]]]) {
-          const res = await createSession(dirId, cli, 'chat', { provider: providerId });
+        for (const [poolName, poolIds] of [
+          ['claude', claudePoolIds],
+          ['codex', codexPoolGenericIds.length ? codexPoolGenericIds : codexPoolIds],
+        ]) {
           const label = `${cli}+${poolName}池→允许`;
+          const providerId = poolCandidateFor(cli, poolIds);
+          if (!providerId) {
+            skip(`T1.17 ${label}`, `${poolName} 池没有声明兼容 ${cli} 的 provider（如仅 OAuth）`);
+            continue;
+          }
+          const res = await createSession(dirId, cli, 'chat', { provider: providerId });
           if (res.status === 200 || res.status === 201) {
             const sid = res.body.id || res.body.sessionId;
             if (sid) tier1Sessions.push(sid);
@@ -736,8 +811,7 @@ function validEffortForCli(cli, effort) {
   {
     let cleaned = 0;
     for (const sid of tier1Sessions) {
-      const res = await del(`/api/sessions/${sid}`);
-      if (res.status === 200 || res.status === 204) cleaned++;
+      if (await deleteSessionDeep(sid)) cleaned++;
     }
     ok('T1.18 清理会话', `${cleaned}/${tier1Sessions.length} sessions deleted`);
   }
@@ -779,11 +853,11 @@ function validEffortForCli(cli, effort) {
   }
 
   // ── WS-based live ping test (replaces sendChatMessage + waitForRunComplete) ──
-  async function livePingTest(cli, marker, testId) {
+  async function livePingTest(cli, marker, testId, model) {
     if (!t2DirId) return null;
     if (!wsAvailable) { skip(testId, 'ws module 不可用'); return null; }
 
-    const res = await createSession(t2DirId, cli, 'chat');
+    const res = await createSession(t2DirId, cli, 'chat', model ? { model } : undefined);
     const sid = res.body && (res.body.id || res.body.sessionId);
     if (!sid) { fail(testId, `无法创建 ${cli} session`); return null; }
     tier2Sessions.push(sid);
@@ -812,8 +886,21 @@ function validEffortForCli(cli, effort) {
     return sid;
   }
 
-  // T2.3: opencode ping
-  if (hasOpencode && t2DirId) await livePingTest('opencode', 'ping-oc-ok', 'T2.3 opencode ping');
+  // T2.3: opencode ping. `opencode run` without --model needs a default model in
+  // the host's own opencode config; without one it never picks a provider and the
+  // turn hangs. Pin an explicit cheap model from the CLI's own catalog so the
+  // ping exercises the multicc adapter rather than the host's default-model setup.
+  let opencodeModel = null;
+  {
+    const res = await get('/api/opencode/models');
+    const models = res.status === 200 ? (res.body.models || res.body || []) : [];
+    if (Array.isArray(models) && models.length) {
+      const pick = models.find(m => /flash|mini|haiku|lite/i.test(`${m.provider}/${m.model}`)) || models[0];
+      opencodeModel = `${pick.provider}/${pick.model}`;
+      diag('T2.3 opencode ping', `pinned model=${opencodeModel}`);
+    }
+  }
+  if (hasOpencode && t2DirId) await livePingTest('opencode', 'ping-oc-ok', 'T2.3 opencode ping', opencodeModel);
   else skip('T2.3 opencode ping', 'opencode 不可用');
 
   // T2.4: zcode ping
@@ -1036,8 +1123,7 @@ function validEffortForCli(cli, effort) {
   {
     let t2cleaned = 0;
     for (const sid of tier2Sessions) {
-      const res = await del(`/api/sessions/${sid}`);
-      if (res.status === 200 || res.status === 204) t2cleaned++;
+      if (await deleteSessionDeep(sid)) t2cleaned++;
     }
     ok('T2.10 清理会话', `${t2cleaned}/${tier2Sessions.length} sessions deleted`);
   }
