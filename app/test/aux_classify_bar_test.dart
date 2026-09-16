@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:multicc_app/i18n.dart';
-import 'package:multicc_app/screens/chat_screen.dart';
 import 'package:multicc_app/utils/session_status_helpers.dart';
+import 'package:multicc_app/widgets/aux_classify_bar.dart';
 
 /// 分类条右侧的两个动作药丸，对齐 web 的 `#aux-classify-bar`：
 /// W → 「✓ 执行成功」，P → 「✕ 取消」，其余状态一个都不给。

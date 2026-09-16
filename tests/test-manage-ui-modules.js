@@ -177,6 +177,30 @@ test('manage facade stays below the migration ceiling and no longer owns extract
   assert.match(qwen, /Object\.freeze\(\{ initialize, loadPanel, openGlobalVoice \}\)/);
 });
 
+// The roster is the surface that started this: a fleet card kept showing a
+// judgement Aux had stopped revising. The plumbing is four pins — the socket
+// branch, the per-session store it feeds, the repaint it triggers, and the
+// `stale` flag reaching the shared badge renderer (whose behaviour is pinned in
+// tests/test-status-presentation.js). Loading the whole page into a sandbox to
+// assert the same four facts would restate this and break on every new script.
+test('the roster records Aux freshness and repaints every judgement it froze', () => {
+  const page = read('public/manage.js');
+  assert.match(page, /msg\.type === 'aux_verdict_staleness'/,
+    'the freshness-only broadcast must be handled: no task_state follows it');
+  assert.match(page, /auxUnhealthy === true/,
+    'freshness must be read as a boolean, never as a truthy string');
+  const branch = page.slice(page.indexOf("msg.type === 'aux_verdict_staleness'"));
+  const body = branch.slice(0, branch.indexOf('\n    } else if'));
+  assert.match(body, /for \(const \[sessionId, entry\] of _workspaceClassify\)/,
+    'every judgement on the page froze with Aux, so every card needs the mark');
+  assert.match(body, /updateSessionClassifyDom\(sessionId\)/,
+    'recording the fact without repainting leaves the stale badge on screen');
+  assert.match(page, /stale: c\.stale === true/,
+    'the recorded freshness must reach the shared badge renderer');
+  assert.match(page, /stale: s\.auxUnhealthy === true|stale: msg\.auxUnhealthy === true/,
+    'snapshot and task_state payloads carry their own freshness');
+});
+
 test('bridge controller keeps relative credential-free URLs and safe DOM log rendering', async () => {
   const source = read('public/manage-bridges.js');
   assert.doesNotMatch(source, /\.innerHTML\s*=/);

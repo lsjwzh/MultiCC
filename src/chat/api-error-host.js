@@ -213,14 +213,51 @@ function createApiErrorHost(options = {}) {
     return decision;
   }
 
+  // Aux is the fleet's only automatic way back. While it is unhealthy every
+  // session's judgement freezes at whatever Aux last said, and this probe is the
+  // one thing that can notice the upstream recovered. Two properties therefore
+  // outrank politeness here:
+  //
+  //   1. it must fire for EVERY unhealthy state. `retryable` describes whether
+  //      the failed request was worth retrying, not whether the upstream can
+  //      come back: a dead credential or a lapsed subscription makes every
+  //      request non-retryable, and gating on that flag left the fleet latched
+  //      with no probe at all — in exactly the state that most needs a second
+  //      look.
+  //   2. it must back off, so an upstream that is genuinely gone costs one tiny
+  //      request per 30 min instead of one per 5 min forever.
+  const AUX_PROBE_BACKOFF_MS = [5 * 60_000, 10 * 60_000, 20 * 60_000, 30 * 60_000];
+  const auxProbe = { episode: null, attempts: 0, nextAt: 0 };
+
   function auxHealthProbe() {
     const auxQueue = getAuxQueue();
     const health = auxQueue?.getStatus().health;
-    if (!health?.unhealthy || (health.retryAt && health.retryAt > now())) return;
-    const externallyRecoverable = health.category === 'billing_quota';
-    if (health.retryable === false && !externallyRecoverable) return;
+    if (!health?.unhealthy) {
+      auxProbe.episode = null;
+      auxProbe.attempts = 0;
+      auxProbe.nextAt = 0;
+      return;
+    }
+    // One unhealthy episode → one backoff schedule. `sinceAt` is stamped once,
+    // when the queue first went unhealthy, so a probe that fails again cannot
+    // push the next one out (the schedule is the episode's, not the last
+    // failure's) — and a recovery that later fails starts over from 5 min
+    // instead of waiting out the previous episode's 30.
+    const episode = health.sinceAt || 0;
+    if (auxProbe.episode !== episode) {
+      auxProbe.episode = episode;
+      auxProbe.attempts = 0;
+      auxProbe.nextAt = 0;
+    }
+    if (auxProbe.nextAt > now()) return;
+    // A credible reset time from the error taxonomy outranks the schedule:
+    // waiting until then is exactly what the upstream asked for.
+    if (health.retryAt && health.retryAt > now()) return;
     if (auxQueue.queue.some(task => task.type === 'health_probe')
         || auxQueue.currentTask?.type === 'health_probe') return;
+    auxProbe.attempts += 1;
+    const delay = AUX_PROBE_BACKOFF_MS[Math.min(auxProbe.attempts - 1, AUX_PROBE_BACKOFF_MS.length - 1)];
+    auxProbe.nextAt = now() + delay;
     auxQueue.enqueue({
       type: 'health_probe',
       prompt: '回复一个字：ok',

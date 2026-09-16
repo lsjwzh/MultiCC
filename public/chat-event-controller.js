@@ -545,7 +545,17 @@
             'waiting',
           );
           break;
-        case 'task_state': liveUi.renderAuxClassify(message.goal, message.phase, message.classifyState, message.taskShortCode); break;
+        case 'task_state':
+          liveUi.renderAuxClassify(message.goal, message.phase, message.classifyState, message.taskShortCode, {
+            auxUnhealthy: message.auxUnhealthy, auxUnhealthySince: message.auxUnhealthySince,
+          });
+          break;
+        // Aux health flipped while this page was open. The judgement on the bar
+        // is the one Aux stopped revising, so the bar has to be repainted — no
+        // further task_state is coming for this session.
+        case 'aux_verdict_staleness':
+          liveUi.applyAuxVerdictStaleness?.(message);
+          break;
         case 'user_input_required':
           state.pendingUserInputRequestId = message.requestId || null;
           if (host.renderPendingUserInput?.(message) !== true) {

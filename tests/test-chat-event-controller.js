@@ -1331,6 +1331,55 @@ test('classify bar reveals turn-success for W and cancel-task for P', () => {
   assert.equal(bar.classList.contains('show'), false);
   assert.equal(bar.classList.contains('can-mark-done'), false);
   assert.equal(bar.classList.contains('can-cancel-task'), false);
+  assert.equal(bar.classList.contains('aux-stale'), false);
+});
+
+test('the classify bar keeps a judgement but stops presenting it as current once Aux is unhealthy', () => {
+  const { document, ids } = fakeDocument();
+  const bar = new FakeElement('div'); ids.set('aux-classify-bar', bar);
+  ids.set('ac-goal', new FakeElement('span'));
+  ids.set('ac-phase', new FakeElement('span'));
+  ids.set('ac-state', new FakeElement('span'));
+  const staleChip = new FakeElement('span'); ids.set('ac-stale', staleChip);
+  const liveUi = liveUiApi.createLiveUi({
+    document,
+    messagesEl: new FakeElement('div'),
+    translate: key => ({ auxVerdictPaused: '判定已暂停', auxVerdictPausedHint: 'AI 助手当前不可用' }[key] ?? key),
+  });
+
+  liveUi.renderAuxClassify('排查电量消耗增加原因', 'implementation', 'C', '6TFD',
+    { auxUnhealthy: true, auxUnhealthySince: Date.UTC(2026, 8, 16, 3, 0, 0) });
+  assert.equal(bar.classList.contains('show'), true, 'the judgement stays on screen');
+  assert.equal(bar.classList.contains('aux-stale'), true);
+  assert.equal(ids.get('ac-goal').textContent, '#6TFD · 排查电量消耗增加原因',
+    'the judgement itself is not blanked');
+  assert.equal(staleChip.textContent, '判定已暂停');
+  assert.ok(staleChip.title.includes('AI 助手当前不可用'));
+  assert.ok(staleChip.title.includes('2026'), 'the chip says since when');
+
+  // A freshness-only transition repaints the bar without a new verdict: this is
+  // the event that arrives when Aux goes down mid-session.
+  liveUi.applyAuxVerdictStaleness({ auxUnhealthy: false });
+  assert.equal(bar.classList.contains('aux-stale'), false);
+  assert.equal(staleChip.textContent, '');
+  assert.equal(staleChip.title, '');
+  assert.equal(ids.get('ac-goal').textContent, '#6TFD · 排查电量消耗增加原因',
+    'recovery does not need a fresh task_state to restore the bar');
+
+  // ...and a stale task_state broadcast carries the same fact on its own.
+  liveUi.renderAuxClassify('排查电量消耗增加原因', 'implementation', 'C', '6TFD');
+  assert.equal(bar.classList.contains('aux-stale'), false, 'default is healthy');
+  liveUi.renderAuxClassify('排查电量消耗增加原因', 'implementation', 'C', '6TFD',
+    { auxUnhealthy: true, auxUnhealthySince: null });
+  assert.equal(bar.classList.contains('aux-stale'), true);
+  assert.equal(staleChip.textContent, '判定已暂停');
+  assert.equal(staleChip.title, 'AI 助手当前不可用', 'no start time, no invented date');
+  // The badge inside the bar carries the same marker; `st-stale` there is the
+  // shared renderer's contract and is pinned in tests/test-status-presentation.js
+  // (this fake element keeps className and classList apart, so it cannot see it).
+  assert.equal(ids.get('ac-stale').textContent, '判定已暂停');
+  assert.equal(bar.classList.contains('can-mark-done'), false,
+    'staleness does not change what the verdict lets you do');
 });
 
 function makeDanmakuUi(extra = {}) {

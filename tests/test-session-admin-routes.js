@@ -7,6 +7,7 @@ const test = require('node:test');
 
 const { createErrorDto, requestContext, withApiMeta } = require('../src/api-contract');
 const { isTerminalLetter } = require('../src/classify/vocab');
+const { installAuxHealthProvider } = require('../src/classify/aux-verdict-health');
 const {
   assistantText,
   latestAssistant,
@@ -228,6 +229,34 @@ test('v1 responses stay bounded while legacy and dashboard fields remain compati
   assert.equal(workspace.body.sessions.length, 2);
   assert.equal(workspace.body.sessions.find(item => item.id === 's1').pendingNotes, 1);
   assert.equal(workspace.body.sessions.find(item => item.id === 't1').invalid, 'test-invalid');
+});
+
+test('every roster carries whether Aux is still revising the judgement', () => {
+  const { app } = createFixture();
+  try {
+    // A frozen judgement must not read as a current one: the roster says so,
+    // and it keeps showing the judgement itself (it is still the best we have).
+    installAuxHealthProvider(() => ({ unhealthy: true, sinceAt: 1_700_000_000_000 }));
+    for (const [name, request] of [
+      ['dashboard roster', ['GET /api/dashboard/sessions', {}]],
+      ['workspace roster', ['GET /api/directories/:id/workspace', { params: { id: 'd1' } }]],
+    ]) {
+      const [route, args] = request;
+      const body = invoke(app.routes.get(route), args).body;
+      const sessions = Array.isArray(body.sessions) ? body.sessions : body;
+      const s1 = sessions.find(item => item.id === 's1');
+      assert.equal(s1.auxUnhealthy, true, `${name} marks the stale judgement`);
+      assert.equal(s1.auxUnhealthySince, 1_700_000_000_000, `${name} says since when`);
+      assert.equal(s1.goal, 'done goal', `${name} still shows the judgement`);
+    }
+
+    installAuxHealthProvider(() => ({ unhealthy: false }));
+    const recovered = invoke(app.routes.get('GET /api/dashboard/sessions')).body.sessions;
+    assert.equal(recovered.find(item => item.id === 's1').auxUnhealthy, false);
+    assert.equal(recovered.find(item => item.id === 's1').auxUnhealthySince, null);
+  } finally {
+    installAuxHealthProvider(null);
+  }
 });
 
 test('manual reclassify keeps D/W guard and fire-and-forget completion semantics', async () => {

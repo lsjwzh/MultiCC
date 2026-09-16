@@ -25,11 +25,13 @@ const MIGRATION_DEBT = Object.freeze({
   // first-class delivery class) after 2fc46724 had split it back down to the
   // default budget. Registered here so the gate keeps tracking it; the next
   // split of the turn engine must ratchet this ceiling down. Ratcheted once for
-  // the CLAUDE_PROXY_ENABLED removal (the dep + its turn-admission gate), which
-  // is the ceiling tracking a shrink rather than a split.
+  // the CLAUDE_PROXY_ENABLED removal (the dep + its turn-admission gate), and
+  // again when the connect-time classify-bar seed moved into
+  // src/chat/task-state-seed.js — both times the ceiling tracking a shrink
+  // rather than a split.
   'src/chat/turn-engine.js': Object.freeze({
-    ceiling: 3007,
-    byteCeiling: 144289,
+    ceiling: 3006,
+    byteCeiling: 144120,
   }),
   // app/lib/screens/main_shell.dart crossed 3000 in 039c6e43 (跨目录控制台).
   // Registered so the gate keeps tracking it; the next main_shell split must
