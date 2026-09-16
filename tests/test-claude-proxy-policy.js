@@ -34,6 +34,12 @@ fs.mkdirSync(process.env.MULTICC_DATA_DIR, { recursive: true });
 
 const providers = require('../src/providers/core');
 
+// Provider records reach the router either as an object or as a JSON string.
+function configOf(provider) {
+  const raw = provider.settingsConfig;
+  return typeof raw === 'string' ? JSON.parse(raw) : (raw || {});
+}
+
 test.after(() => {
   for (const [key, value] of Object.entries(original)) {
     if (value === undefined) delete process.env[key];
@@ -42,13 +48,15 @@ test.after(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-test('a bound provider route is required exactly when the host can serve it locally', () => {
+test('every concrete provider route must go through the local hop', () => {
   assert.equal(claudeProxyEnvRequired({ providerId: 'p', summary: { baseUrl: 'https://relay.example' } }), true);
   assert.equal(claudeProxyEnvRequired({ providerId: 'p', summary: { baseUrl: '', builtinOfficial: true } }), true,
-    'the built-in official entry is forced onto the proxy by core.applyClaudeProxyEnv');
-  // Nothing local to forward to: the CLI's own login reaches Anthropic either
-  // way, and requiring the rewrite here is what 502'd such sessions before.
-  assert.equal(claudeProxyEnvRequired({ providerId: 'p', summary: { baseUrl: '', isOfficial: true } }), false);
+    'the built-in official entry is served by the proxy official branch');
+  // Base-less OAuth passthrough used to be exempt here ("nothing local to
+  // forward to"), which let the CLI dial Anthropic directly. The proxy's
+  // official branch serves that shape, so no summary may authorise a bypass.
+  assert.equal(claudeProxyEnvRequired({ providerId: 'p', summary: { baseUrl: '', isOfficial: true } }), true);
+  assert.equal(claudeProxyEnvRequired({ providerId: 'p', summary: {} }), true);
   // An unresolvable or stale binding fails closed, like resolveSpawnEnv does for
   // zcode/kimi, instead of degrading into a native request on the operator's own
   // account.
@@ -104,19 +112,84 @@ test('a route that cannot be realized refuses to spawn instead of connecting dir
   assert.equal(env.ANTHROPIC_BASE_URL, 'https://stale-route.example', 'no partial rewrite on refusal');
 });
 
-test('a base-less OAuth passthrough entry keeps its documented bypass', () => {
+test('a base-less OAuth passthrough entry is routed too, never dialed directly', () => {
   const provider = providers.createProvider({
     appType: 'claude',
     name: 'OAuth passthrough fixture',
     settingsConfig: { env: {} },
   });
-  const env = {};
-  // Nothing to forward to, on any setting: never a refusal, never a rewrite.
+  // A base-less entry is materialized as the proxy's official route — the same
+  // route the built-in Claude Official entry uses — and its login stays
+  // host-side. The caller's CLAUDE_OFFICIAL_VIA_PROXY copy does not gate that:
+  // the built-in entry has always been forced onto the hop regardless, and the
+  // passthrough shape is now treated identically, so no configuration reaches
+  // api.anthropic.com around the hop.
+  for (const officialOAuth of [true, false]) {
+    const env = { CLAUDE_CODE_OAUTH_TOKEN: 'passthrough-login-fixture' };
+    assert.equal(providers.applyClaudeProxyEnv(env, {
+      providerId: provider.id, sessionId: 'sess-fixture', port: 4321, enabled: true,
+      officialOAuth,
+    }), true, `officialOAuth=${officialOAuth}`);
+    assert.equal(env.ANTHROPIC_BASE_URL, `http://127.0.0.1:4321/claude-proxy/${provider.id}/sess-fixture`);
+    assert.match(env.ANTHROPIC_AUTH_TOKEN, /^cpr-sess-fixture$/);
+    assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, '', 'the login stays host-side');
+  }
+  // A session with no provider keeps the default-login path it always had.
+  const bare = {};
+  assert.equal(providers.applyClaudeProxyEnv(bare, { providerId: '', enabled: true }), false);
+  assert.equal(bare.ANTHROPIC_BASE_URL, undefined);
+});
+
+test('a base-less entry carrying its own token is routed to its implied upstream', () => {
+  // The OAuth-passthrough shape (`claude setup-token`, or a pasted bearer): the
+  // record names no base URL because the upstream is Anthropic's own default. It
+  // used to be dialed directly, on the grounds that a base-less record had
+  // "nothing local to forward to"; the hop can serve it, so it is routed — with
+  // the entry's OWN credential, never the host's subscription login.
+  const provider = providers.createProvider({
+    appType: 'claude',
+    name: 'Token-only fixture',
+    authToken: 'token-only-fixture-key',
+  });
+  const env = { ANTHROPIC_AUTH_TOKEN: 'token-only-fixture-key', CLAUDE_CODE_OAUTH_TOKEN: 'stale-inherited' };
   assert.equal(providers.applyClaudeProxyEnv(env, {
     providerId: provider.id, sessionId: 'sess-fixture', port: 4321, enabled: true,
-  }), false);
-  assert.equal(env.ANTHROPIC_BASE_URL, undefined);
-  assert.equal(providers.applyClaudeProxyEnv(env, { providerId: '', enabled: true }), false);
+  }), true);
+  assert.equal(env.ANTHROPIC_BASE_URL, `http://127.0.0.1:4321/claude-proxy/${provider.id}/sess-fixture`);
+  assert.equal(env.ANTHROPIC_API_KEY, undefined, 'the real credential never reaches the child');
+  assert.match(env.ANTHROPIC_AUTH_TOKEN, /^cpr-sess-fixture$/);
+  assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, '', 'the hop forwards the credential from the store, not the child');
+  // The hop reads the record through this view: base URL implied, credential intact.
+  const viewEnv = configOf(providers.routingProviderView('claude', provider.id)).env;
+  assert.equal(viewEnv.ANTHROPIC_BASE_URL, 'https://api.anthropic.com');
+  assert.equal(viewEnv.ANTHROPIC_AUTH_TOKEN, 'token-only-fixture-key');
+  // The stored record itself is untouched — the upstream is a routing concern.
+  assert.equal(JSON.stringify(configOf(providers.getProvider('claude', provider.id))).includes('api.anthropic.com'), false);
+  // A base-less entry with NO credential is the official shape: the view leaves it
+  // alone (string settingsConfig included) so the proxy's official branch replays
+  // the host login instead of inventing an upstream for it.
+  const loginOnly = providers.createProvider({
+    appType: 'claude', name: 'login-only fixture', settingsConfig: '{"env":{}}',
+  });
+  const official = providers.routingProviderView('claude', loginOnly.id);
+  assert.equal(configOf(official).env.ANTHROPIC_BASE_URL, undefined);
+  assert.equal(JSON.stringify(configOf(official)), JSON.stringify(configOf(providers.getProvider('claude', loginOnly.id))),
+    'returned untouched, as stored');
+});
+
+test('a CLAUDE_CODE_OAUTH_TOKEN-only entry is routed as a bearer', () => {
+  const provider = providers.createProvider({
+    appType: 'claude', name: 'setup-token fixture',
+    settingsConfig: { env: { CLAUDE_CODE_OAUTH_TOKEN: 'setup-token-fixture' } },
+  });
+  const viewEnv = configOf(providers.routingProviderView('claude', provider.id)).env;
+  assert.equal(viewEnv.ANTHROPIC_BASE_URL, 'https://api.anthropic.com',
+    'the record implies Anthropic’s own endpoint');
+  assert.equal(viewEnv.ANTHROPIC_AUTH_TOKEN, 'setup-token-fixture',
+    'the one key the hop forwards gets the token the CLI would have sent as Bearer');
+  const env = {};
+  providers.applyClaudeProxyEnv(env, { providerId: provider.id, sessionId: 'sess-token', port: 4321, enabled: true });
+  assert.equal(env.ANTHROPIC_BASE_URL, `http://127.0.0.1:4321/claude-proxy/${provider.id}/sess-token`);
 });
 
 test('the official login is routed through the local proxy too', () => {
@@ -127,6 +200,9 @@ test('the official login is routed through the local proxy too', () => {
   const env = { CLAUDE_CODE_OAUTH_TOKEN: 'keychain-oauth-fixture' };
   providers.applyClaudeProxyEnv(env, {
     providerId: 'claude-official', sessionId: 'sess-official', port: 4321, enabled: true,
+    // Even with the caller's toggle copy off (see the passthrough test): the
+    // built-in official entry is put on the hop regardless.
+    officialOAuth: false,
   });
   assert.equal(env.ANTHROPIC_BASE_URL, 'http://127.0.0.1:4321/claude-proxy/claude-official/sess-official');
   assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, '', 'the OAuth token stays host-side');
@@ -182,6 +258,24 @@ test('a routed spawn turns the alternate transports off, in the env and in the s
   // mirrored into the session's own --settings file as well.
   const mirrored = JSON.parse(fs.readFileSync(providers.settingsOverrideFor('sess-alt', env), 'utf8')).env;
   for (const key of ALT_TRANSPORT_KEYS) assert.equal(mirrored[key], '', `settings ${key}`);
+});
+
+test('an inherited ANTHROPIC_CUSTOM_HEADERS cannot ride into a claude child', () => {
+  // The CLI parses this value into literal upstream request headers and the
+  // local proxy forwards the client's headers to the provider, so a value this
+  // server inherited from its own shell would reach the vendor on every turn —
+  // the base-URL rewrite does not touch it. Treated like ANTHROPIC_BASE_URL:
+  // stripped from the inherited env, then re-applied only if the provider
+  // declares its own (see the settings-override test for that half).
+  assert.equal(providers.ANTHROPIC_ROUTING_KEYS.includes('ANTHROPIC_CUSTOM_HEADERS'), true);
+  assert.equal(providers.CLAUDE_ROUTING_KEYS.includes('ANTHROPIC_CUSTOM_HEADERS'), true);
+  const { env } = providers.buildChildEnv(
+    { ANTHROPIC_CUSTOM_HEADERS: 'x-tenant: inherited', KEEP: '1' },
+    { cli: 'claude' },
+    {},
+  );
+  assert.equal(env.ANTHROPIC_CUSTOM_HEADERS, undefined, 'inherited value is stripped');
+  assert.equal(env.KEEP, '1', 'unrelated vars are untouched');
 });
 
 test('routing is unconditional: no option, env var or provider-less session can turn it off', () => {
