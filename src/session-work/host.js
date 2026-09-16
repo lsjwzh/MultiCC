@@ -875,6 +875,33 @@ function createSessionWorkHost(deps = {}) {
     if (inFlight) return inFlight.promise.then(result => ({ ...result, deduplicated: true }));
     if (alreadyCancelled(sessionId) && runnerStopped(sessionId)) {
       const taskId = deps.getChatSession(sessionId)?._currentTaskId || null;
+      // The RECORD is terminal from the earlier cancel, but the SCHEDULER may
+      // still hold an active entry — e.g. a restart-recovery notice delivered
+      // while the record already carried E/cancelledAt, later superseded by
+      // insert_queued. This early return used to skip the turn close entirely,
+      // leaving schedule.state 'running' forever: every subsequent delivery
+      // deferred on run_active and the inserted message never claimed the
+      // slot (production FIFO wedge). Close the boundary idempotently —
+      // recoverMissingBoundary covers a running state with no live runner —
+      // and let the transition settle like a full cancel does.
+      if (scheduler()) {
+        try {
+          const current = await scheduler().status(sessionId);
+          if (current?.active) {
+            await classifyTransition(sessionId, taskId, {
+              state: 'E',
+              cancel: {
+                source: 'cancel_repeat',
+                reason: 'cancel_repeat',
+                supersededByEntryId: current.active?.supersededByEntryId || null,
+              },
+            }, { recoverMissingBoundary: true, livenessReason: 'cancel_repeat_boundary' });
+            try { await pendingTransitions.get(sessionId); } catch (_) {}
+          }
+        } catch (error) {
+          log.warn?.('session_cancel_repeat_close_failed', { sessionId, error: error.message });
+        }
+      }
       if (taskId && typeof deps.reconcileTaskProjection === 'function') {
         try { deps.reconcileTaskProjection(taskId, { classifyState: 'E', reason: 'cancel_repeat' }); }
         catch (_) {}
