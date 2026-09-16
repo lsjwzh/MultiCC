@@ -49,14 +49,57 @@ Future<void> _settle(WidgetTester tester, [int seconds = 3]) async {
   await tester.pump();
 }
 
+/// The labels that can dismiss the first-run tour / notification prompts.
+const _overlayLabels = ['跳过', '知道了', '完成', '开始使用', '允许'];
+
+bool get _overlaysUp =>
+    _overlayLabels.any((label) => find.text(label).evaluate().isNotEmpty);
+
 /// The first-run tour and the notification prompt are both dismissable, and
 /// both would otherwise sit on top of every screenshot.
-Future<void> _dismissOverlays(WidgetTester tester) async {
-  for (final label in const ['跳过', '知道了', '完成', '开始使用', '允许']) {
-    await _tapText(tester, label);
-    await tester.pump(const Duration(milliseconds: 300));
+///
+/// They also mount **asynchronously** (the tour waits for `OnboardingStore` to
+/// read SharedPreferences, the prompt waits for the OS), so one fixed-delay pass
+/// races the appearance: it tapped nothing, the card came up a moment later, and
+/// from then on its scrim swallowed the sidebar taps — `06-task-graph` and
+/// `07-memory-graph` both reported `up:false` while the drawer itself looked
+/// fine. So [waitFor] the card, then tap until nothing is left to dismiss.
+Future<void> _dismissOverlays(
+  WidgetTester tester, {
+  Duration waitFor = Duration.zero,
+}) async {
+  final appearBy = DateTime.now().add(waitFor);
+  while (!_overlaysUp && DateTime.now().isBefore(appearBy)) {
+    await _settle(tester, 1);
   }
-  await _settle(tester, 1);
+  final deadline = DateTime.now().add(const Duration(seconds: 20));
+  while (_overlaysUp && DateTime.now().isBefore(deadline)) {
+    var tap = false;
+    for (final label in _overlayLabels) {
+      if (await _tapText(tester, label)) tap = true;
+      await tester.pump(const Duration(milliseconds: 300));
+    }
+    if (!tap) {
+      // Something is up but none of the labels matched — the close button is
+      // the only other way out of the tour card.
+      await _tapIcon(tester, Icons.close);
+    }
+    await _settle(tester, 1);
+  }
+  debugPrint('TOUR:overlays-up:$_overlaysUp');
+}
+
+Future<bool> _tapIcon(WidgetTester tester, IconData icon) async {
+  final finder = find.byIcon(icon);
+  if (finder.evaluate().isEmpty) return false;
+  try {
+    await tester.tap(finder.first, warnIfMissed: false);
+    await tester.pump();
+    return true;
+  } catch (error) {
+    debugPrint('TOUR:tap-failed:$icon:$error');
+    return false;
+  }
 }
 
 /// `flutter test` installs the app into a fresh container, so the simulator
@@ -203,7 +246,9 @@ void main() {
     app.main();
     await _settle(tester, 8);
     await _configureIfNeeded(tester);
-    await _dismissOverlays(tester);
+    // The tour card is the one overlay that shows up late on a warm container
+    // (the connect screen is skipped there, so nothing paces the first frames).
+    await _dismissOverlays(tester, waitFor: const Duration(seconds: 15));
     await _mark(tester, '01-home');
 
     // Air sidebar (the shell's `drawer:` — works the same way as the workspace
@@ -238,6 +283,9 @@ void main() {
     await _openDrawer(tester);
     await _tapInDrawer(tester, '更多与系统');
     await _settle(tester, 1);
+    // The card can also come back on a page change, so re-check before the tap
+    // that matters: a scrim over the drawer eats it silently.
+    await _dismissOverlays(tester);
     final graphNavigator = tester.state<NavigatorState>(
       find.byType(Navigator).first,
     );
@@ -261,6 +309,7 @@ void main() {
     await _openDrawer(tester);
     await _tapInDrawer(tester, '更多与系统');
     await _settle(tester, 1);
+    await _dismissOverlays(tester);
     final memNavigator = tester.state<NavigatorState>(
       find.byType(Navigator).first,
     );
