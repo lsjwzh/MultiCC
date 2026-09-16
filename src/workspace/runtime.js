@@ -100,7 +100,11 @@ function createWorkspaceRuntime(options) {
     if (!view || !record) return;
     const envelope = { sessionId, stateSource: view.stateSource };
     broadcastRaw(record.dirId, { type: 'task_state', ...envelope,
-      classifyState: view.classifyState, goal: view.goal, phase: view.phase, taskShortCode: view.taskShortCode });
+      classifyState: view.classifyState, goal: view.goal, phase: view.phase, taskShortCode: view.taskShortCode,
+      // Fleet cards show judgements Aux may no longer be revising; the card has
+      // to be able to say so. See src/classify/aux-verdict-health.js.
+      auxUnhealthy: view.auxUnhealthy === true,
+      auxUnhealthySince: view.auxUnhealthySince || null });
     broadcastRaw(record.dirId, { type: 'status', ...envelope,
       status: view.status,
       currentFile: view.currentFile, lastActivity: view.lastActivity,

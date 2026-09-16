@@ -1,4 +1,5 @@
 const { taskShortCode } = require('../classify/task-short-code');
+const { auxVerdictStaleness } = require('../classify/aux-verdict-health');
 
 function createTaskStateStore(deps) {
   const { persistedSessions, saveBestEffort, chatBroadcast, workspaceBroadcast } = deps;
@@ -45,6 +46,9 @@ function createTaskStateStore(deps) {
       // second terminal value: the state is still E, only the reason differs.
       cancelledAt: next.cancelledAt || null,
       cancelReason: next.cancelledAt ? (next.cancelReason || null) : null,
+      // Same freshness fact server.js's setTaskState sends, so this extraction
+      // cannot drop it when it takes over the live path.
+      ...auxVerdictStaleness(),
     };
     try { chatBroadcast(sessionId, classifyPayload); } catch (_) {}
     if (persisted.dirId) {
