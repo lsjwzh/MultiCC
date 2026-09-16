@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { preprocessResponsesHistory, repairRejectedResponsesHistory, stripReasoningContent } = require('../src/model-history-converter');
+const { preprocessResponsesHistory, repairRejectedResponsesHistory, stripReasoningContent, stripUnresolvedItemReferences } = require('../src/model-history-converter');
 
 test('all observed history types survive preprocessing and valid IDs remain unchanged', () => {
   const body = { input: [
@@ -135,14 +135,74 @@ test('an encrypted-content verification rejection strips every reasoning blob at
     message: 'The encrypted content 944a...ef-0 could not be verified. Reason: Encrypted content could not be decrypted or parsed.',
   };
   const repaired = repairRejectedResponsesHistory(body, rejection);
-  assert.equal(repaired.changes.length, 2, 'both third-party blobs go in one repair round');
-  assert.equal(Object.hasOwn(repaired.body.input[0], 'encrypted_content'), false);
-  assert.equal(Object.hasOwn(repaired.body.input[1], 'encrypted_content'), false);
-  assert.equal(repaired.body.input[2].encrypted_content, '', 'empty string blob is not a payload; untouched');
-  assert.equal(repaired.body.input[3].encrypted_content, 'not-reasoning', 'non-reasoning items are opaque');
+  // Both third-party blobs go in one repair round, and each blob-less id the
+  // strip leaves behind would draw a store:false item-not-found rejection on
+  // the retry — so the same round drops those references too.
+  assert.equal(repaired.changes.length, 5, 'blobs plus their dangling ids in one repair round');
+  assert.equal(repaired.body.input.length, 2, 'blob-less empty-summary husks are dropped whole');
+  assert.equal(Object.hasOwn(repaired.body.input[0], 'id'), false);
+  assert.equal(repaired.body.input[0].summary.length, 1, 'the summary-only reasoning keeps its content, loses the id');
+  assert.equal(repaired.body.input[0].encrypted_content, '', 'empty string blob is not a payload; untouched');
+  assert.equal(repaired.body.input[1].encrypted_content, 'not-reasoning', 'non-reasoning items are opaque');
   assert.deepEqual(body, original, 'input body untouched');
   assert.equal(repairRejectedResponsesHistory(repaired.body, rejection), null, 'idempotent');
   // A rejection that is not about encrypted verification leaves history alone.
+  assert.equal(repairRejectedResponsesHistory(body, { message: 'Account is suspended' }), null);
+});
+
+test('stripUnresolvedItemReferences removes every store:false-only reference shape', () => {
+  const body = { model: 'gpt-5.3', previous_response_id: 'resp_foreign', input: [
+    { type: 'item_reference', id: 'rs_ref' },
+    { type: 'reasoning', id: 'rs_gone' }, // husk: content already stripped by an earlier pass
+    { type: 'reasoning', id: 'rs_kept', encrypted_content: 'gAAAAA_official_verifiable' },
+    { type: 'reasoning', id: 'rs_summary', summary: [{ type: 'summary_text', text: 'kept' }] },
+    { type: 'message', id: 'msg_1', role: 'assistant', content: [{ type: 'output_text', text: 'kept' }] },
+    { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'exec', arguments: '{}' },
+    'bare string items pass through',
+  ] };
+  const original = structuredClone(body);
+  const result = stripUnresolvedItemReferences(body);
+  assert.deepEqual(body, original, 'input body untouched');
+  assert.equal(result.body.input.length, 5, 'reference, husk dropped; everything self-contained stays');
+  assert.deepEqual(result.changes.map(change => change.path), [
+    'previous_response_id', 'input[0]', 'input[1]', 'input[3].id',
+  ]);
+  assert.equal(result.body.input[0].id, 'rs_kept');
+  assert.equal(result.body.input[1].summary.length, 1);
+  assert.equal(Object.hasOwn(result.body.input[1], 'id'), false);
+  assert.deepEqual(result.body.input[2], body.input[4]);
+  assert.deepEqual(result.body.input[3], body.input[5]);
+  assert.equal(result.body.input[4], 'bare string items pass through');
+  assert.equal(result.body.previous_response_id, undefined);
+  assert.deepEqual(stripUnresolvedItemReferences(result.body).changes, [], 'idempotent');
+  // The id the upstream explicitly named is removed even from a substantive
+  // item — its inline content stays.
+  const named = stripUnresolvedItemReferences({ input: [
+    { type: 'message', id: 'msg_named', role: 'user', content: [{ type: 'input_text', text: 'hi' }] },
+  ] }, ['msg_named']);
+  assert.equal(Object.hasOwn(named.body.input[0], 'id'), false);
+  assert.equal(named.body.input[0].content[0].text, 'hi');
+});
+
+test('an item-not-found rejection repairs by removing the named id and the whole reference family', () => {
+  const body = { previous_response_id: 'resp_old', input: [
+    { type: 'reasoning', id: 'rs_foreign', summary: [{ type: 'summary_text', text: 'chain' }] },
+    { type: 'item_reference', id: 'rs_other' },
+    { type: 'message', id: 'msg_1', role: 'assistant', content: [{ type: 'output_text', text: 'kept' }] },
+  ] };
+  const original = structuredClone(body);
+  const rejection = {
+    message: "Item with id 'rs_foreign' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input.",
+  };
+  const repaired = repairRejectedResponsesHistory(body, rejection);
+  assert.equal(repaired.changes.length, 3, 'named id, the item_reference, and previous_response_id in one round');
+  assert.equal(Object.hasOwn(repaired.body.input[0], 'id'), false);
+  assert.equal(repaired.body.input[0].summary.length, 1, 'targeted: only the id goes, the summary stays');
+  assert.deepEqual(repaired.body.input[1], body.input[2], 'the reference entry is dropped, the message shifts up');
+  assert.equal(repaired.body.previous_response_id, undefined);
+  assert.deepEqual(body, original, 'input body untouched');
+  assert.equal(repairRejectedResponsesHistory(repaired.body, rejection), null, 'idempotent');
+  // A rejection that names no missing item is not this rule.
   assert.equal(repairRejectedResponsesHistory(body, { message: 'Account is suspended' }), null);
 });
 
