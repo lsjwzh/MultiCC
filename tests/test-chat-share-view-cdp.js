@@ -165,6 +165,7 @@ test('a shared link opens the real chat page, narrowed by the share authority', 
         shareMode: window.MultiCCShareMode.active(),
         canOperate: window.MultiCCShareMode.canOperate(),
         html: document.documentElement.className,
+        body: document.body.className,
         renderer: ['input-bar', 'pre-input-bar', 'pending-user-input-card', 'messages', 'header', 'dbg-btn']
           .every(id => !!document.getElementById(id)),
         sessionOnly: document.querySelectorAll('.session-only').length,
@@ -180,6 +181,7 @@ test('a shared link opens the real chat page, narrowed by the share authority', 
       assert.equal(chrome.title, '只读分享 — MultiCC');
       assert.match(chrome.html, /share-mode/);
       assert.match(chrome.html, /share-view-only/);
+      assert.match(chrome.body, /air-chat/, 'every share opens in the new Air chat visual');
 
       // 只读：输入区消失，管理员按钮一件不剩。
       const composer = await visibility(page, '#input-bar, #pre-input-bar, #pending-user-input-card');
@@ -213,9 +215,11 @@ test('a shared link opens the real chat page, narrowed by the share authority', 
       const writable = await page.evaluate(`({
         canOperate: window.MultiCCShareMode.canOperate(),
         html: document.documentElement.className,
+        body: document.body.className,
       })`);
       assert.equal(writable.canOperate, true);
       assert.doesNotMatch(writable.html, /share-view-only/);
+      assert.match(writable.body, /air-chat/);
       // 同一个页面，只有权限在变：输入区回来了，管理员按钮仍然不在。
       assert.equal((await visibility(page, '#input-bar')).visible, 1);
       assert.equal((await visibility(page, '.session-only')).visible, 0);
