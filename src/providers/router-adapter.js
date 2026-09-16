@@ -14,8 +14,17 @@ function requireFunction(target, name, label) {
 }
 
 function createProviderStoreAdapter(providers) {
+  const getProvider = requireFunction(providers, 'getProvider', 'providers');
+  // The router reads the store through this adapter, so it has to see the same
+  // claude records the spawn env was rewritten from: a base-less entry carrying
+  // its own token gets the implied upstream filled in (providers.routingProviderView),
+  // otherwise the hop would 502 the very route the spawn points the CLI at.
+  // Summary reads stay on the raw record — what the host shows is not the route.
+  const routingView = typeof providers.routingProviderView === 'function'
+    ? providers.routingProviderView.bind(providers)
+    : getProvider;
   return Object.freeze({
-    getProvider: requireFunction(providers, 'getProvider', 'providers'),
+    getProvider: (appType, providerId) => routingView(appType, providerId),
     getProviderSummary: requireFunction(providers, 'getProviderSummary', 'providers'),
   });
 }
@@ -52,7 +61,12 @@ function supportsObservedUsage(router) {
 }
 
 function createLegacyProviderRouterAdapter({ providers, router, now = Date.now } = {}) {
-  const getProvider = requireFunction(providers, 'getProvider', 'providers');
+  // Same routing view as createProviderStoreAdapter below: the legacy mount
+  // resolves credentials through this function too, and the spawn env is
+  // rewritten from that view in every mode, so the two must agree.
+  const getProvider = typeof providers.routingProviderView === 'function'
+    ? providers.routingProviderView.bind(providers)
+    : requireFunction(providers, 'getProvider', 'providers');
   const getProviderSummary = requireFunction(providers, 'getProviderSummary', 'providers');
   const observedUsageNative = supportsObservedUsage(router);
 
