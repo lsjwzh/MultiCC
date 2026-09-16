@@ -24,6 +24,11 @@ const processAlive = proc => !!proc && proc.exitCode == null && proc.signalCode 
 
 const DEFAULT_STALE_UNCERTAIN_MS = 5 * 60 * 1000;
 
+// Residency is a filesystem fact and the filesystem is not this layer's to
+// trust blindly, so it is re-observed rather than assumed. Not every tick: the
+// answer barely changes and the record set only grows.
+const DEFAULT_RESIDENCY_RECLAIM_MS = 60 * 1000;
+
 function createWorkspaceAdmission(deps) {
   const store = createTaskShellStore(deps.file);
   const registry = createWorkspaceRegistry(store, deps.budgets);
@@ -31,10 +36,11 @@ function createWorkspaceAdmission(deps) {
     onIntegrationPublished: deps.onIntegrationPublished,
   });
   const permits = new WeakSet(), active = new Map();
-  let closed = false;
+  let closed = false, lastResidencyReclaimAt = 0;
   const settleTimer = setInterval(() => {
     for (const [id, permit] of active) if (permit.terminal) void drain(id, permit);
     reapStaleUncertainLeases();
+    reclaimGoneWorkspaces();
   }, 1000);
   settleTimer.unref();
   const applicable = record => record?.kind === 'chat' && !['aux', 'gateway'].includes(record.type) && !record.taskExecutionSlot && !record.experimentalMode;
@@ -294,6 +300,32 @@ function createWorkspaceAdmission(deps) {
         deps.log('workspace_uncertain_lease_reclaim_failed', { workspaceId: lease.workspaceId, code: error.code });
       }
     }
+  }
+  // A worktree can go away without the registry ever being told: relocate
+  // detaches the old one, hibernation detaches the current one, and a session
+  // deleted by hand takes its directory with it. The record left behind still
+  // said 'resident', and 'resident' is what spends the resident budget — so
+  // the limit drifted upward, one abandoned worktree at a time, until a
+  // workspace that genuinely needed restoring could be refused for capacity
+  // that nothing was using. Demote on observation; the registry never deletes
+  // the record, so the identity history (and the lease that may pin it) stays.
+  function residencyReclaimLimit() {
+    const value = Number(deps.budgets?.residencyReclaimMs);
+    return Number.isFinite(value) && value >= 0 ? value : DEFAULT_RESIDENCY_RECLAIM_MS;
+  }
+  function reclaimGoneWorkspaces() {
+    if (closed) return;
+    const at = Date.now();
+    if (at - lastResidencyReclaimAt < residencyReclaimLimit()) return;
+    lastResidencyReclaimAt = at;
+    let reclaimed = [];
+    try {
+      reclaimed = registry.reclaim(record => (fs.existsSync(record.path) ? 'present' : 'gone'));
+    } catch (error) {
+      deps.log('workspace_residency_reclaim_failed', { code: error.code });
+      return;
+    }
+    for (const workspaceId of reclaimed) deps.log('workspace_residency_reclaimed', { workspaceId });
   }
   async function withSeparationBarrier({ sessionId, turnId, separationId }, work) {
     if (!sessionId || !turnId || !separationId || typeof work !== 'function') throw failure('separation_barrier_input_required');
