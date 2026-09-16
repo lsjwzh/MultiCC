@@ -128,7 +128,32 @@ function createWorkspaceRegistry(store, { epoch = randomUUID(), executionLimit =
       }
     });
   }
-  return { register, bind, acquire, transition, resident, retain, release, recover, available,
+  // 'resident' is a claim that the directory is on disk, and it is the claim
+  // that spends the resident budget — so residency has to be able to go DOWN,
+  // not only up. It could not: nothing demoted a record whose worktree went
+  // away (a relocated session's old directory, a detached hibernation), so
+  // every one of them kept spending budget for a directory that is gone and
+  // the limit silently drifted. The host owns the filesystem, so it observes;
+  // the store owns the change. Demotion discards nothing — the record keeps
+  // the identity history and the directory keeps its files — and a pin does
+  // not block it either: a pin keeps a *directory*, and residency only says
+  // whether that directory is currently there. An active lease still refuses,
+  // because a writer we cannot see may be inside it right now.
+  function reclaim(observe) {
+    return store.transaction(() => {
+      const reclaimed = [];
+      for (const record of list('record')) {
+        if (record.residency !== 'resident') continue;
+        const lease = get('lease', record.id);
+        if (lease && ACTIVE.has(lease.state)) continue;
+        if (observe(record) !== 'gone') continue;
+        put('record', record.id, { ...record, residency: 'hibernated', version: record.version + 1, reclaimedAt: now() });
+        reclaimed.push(record.id);
+      }
+      return reclaimed;
+    });
+  }
+  return { register, bind, acquire, transition, resident, retain, release, recover, reclaim, available,
     workspace: id => get('record', id), binding: id => get('binding', id), lease: id => get('lease', id),
     snapshot: () => ({ workspaces: list('record'), leases: leases(), budgets: { executionLimit, residentLimit, restoreLimit } }), epoch };
 }
