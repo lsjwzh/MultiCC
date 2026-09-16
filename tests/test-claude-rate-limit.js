@@ -411,9 +411,7 @@ test('switching provider clears the previous provider\'s stale window bar', () =
   const f = freshClient();
   try {
     // Own GLM provider under the codex CLI paints a window bar and persists it
-    // per session. (Under the claude CLI the zhipu baseUrl case is owned by the
-    // vendor slot — see the no-duplicate test below — so codex is the plain
-    // pass-through-event path here.)
+    // per session.
     f.C.setCli('codex');
     f.C.setProviderBaseUrl('https://glm.example/api/paas/v4');
     const info = { status: 'allowed', rateLimitType: 'five_hour', utilization: 0.8, resetsAt: (NOW + 3_600_000) / 1000, provider: 'glm' };
@@ -432,17 +430,17 @@ test('switching provider clears the previous provider\'s stale window bar', () =
   } finally { f.cleanup(); }
 });
 
-test('a Zhipu provider shows one window bar, not the vendor slot plus the Provider query', async () => {
+test('a Zhipu provider shows one window bar, from the Provider query alone', async () => {
   const f = freshClient();
   try {
     await flushClient();
-    // Regression: a resolved Provider on a Zhipu baseUrl gets its window DTO
-    // from BOTH the vendor slot (/api/quota/bars/refresh?kind=zhipu) and the
-    // exact Provider query (/api/providers/.../balance, kind=window) — the same
-    // glm-monitor account twice. Both painted `5h … 1wk …` side by side, one
-    // second apart in staleness. The vendor slot owns the row; the generic
-    // provider window bar must stay hidden.
+    // The dedicated zhipu vendor slot is gone: it polled the same glm-monitor
+    // account the exact Provider query (/api/providers/.../balance, kind=window)
+    // resolves to, and both painted `5h … 1wk …` side by side. The Provider
+    // window bar is now the only display — no kind=zhipu fetch is issued at all.
+    const requested = [];
     global.fetch = (url) => {
+      requested.push(String(url));
       if (String(url).includes('/api/providers/')) {
         return Promise.resolve({ json: async () => ({ ok: true, dto: { kind: 'window', provider: 'glm', utilization: 0.05 }, bar: { text: 'Provider GLM window' } }) });
       }
@@ -450,22 +448,21 @@ test('a Zhipu provider shows one window bar, not the vendor slot plus the Provid
     };
     f.C.setProviderBaseUrl('https://open.bigmodel.cn/api/paas/v4', 'glm-1', { appType: 'claude' });
     await flushClient();
-    assert.equal(f.element('zhipu-quota-bar').style.display, 'block');
-    assert.equal(f.element('zhipu-quota-bar').textContent, 'Zhipu slot window');
-    assert.equal(f.element('claude-rate-limit-bar').style.display, 'none');
-    assert.notEqual(f.element('claude-rate-limit-bar').textContent, 'Provider GLM window');
+    assert.equal(f.element('claude-rate-limit-bar').style.display, 'block');
+    assert.equal(f.element('claude-rate-limit-bar').textContent, 'Provider GLM window');
+    assert.ok(requested.some((u) => u.includes('/api/providers/claude/glm-1/balance')), 'the Provider query ran');
+    assert.equal(requested.some((u) => u.includes('kind=zhipu')), false, 'no vendor-slot fetch is issued');
 
-    // The passive pass-through GLM event is the same account's windows too —
-    // it must not repaint the hidden generic slot while the vendor slot shows.
+    // The provider window bar is click-refreshable (its render ends in ⟳).
+    assert.equal(f.element('claude-rate-limit-bar').style.cursor, 'pointer');
+    f.element('claude-rate-limit-bar').onclick();
+    await flushClient();
+    assert.ok(requested.filter((u) => u.includes('/balance')).length >= 2, 'clicking re-queries the provider');
+
+    // The passive pass-through GLM event does not displace the Provider query's
+    // fuller window bar for the same account.
     const info = { status: 'allowed', rateLimitType: 'five_hour', utilization: 0.05, resetsAt: (NOW + 3_600_000) / 1000, provider: 'glm' };
     f.C.consumeRateLimitEvent(info, 'zhipu-dup', Renderer.windowEventBar(Renderer.normalizeWindowEvent(info, NOW)));
-    assert.equal(f.element('claude-rate-limit-bar').style.display, 'none');
-
-    // Off the Zhipu baseUrl, the Provider window bar is the only display and
-    // paints as before (e.g. a GLM endpoint the vendor slot does not cover).
-    f.C.setProviderBaseUrl('https://glm.example/api/paas/v4', 'glm-2', { appType: 'claude' });
-    await flushClient();
-    assert.equal(f.element('claude-rate-limit-bar').style.display, 'block');
     assert.equal(f.element('claude-rate-limit-bar').textContent, 'Provider GLM window');
   } finally { f.cleanup(); }
 });

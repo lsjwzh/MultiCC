@@ -953,7 +953,7 @@ function renderQuotaBar(kind, value, opts = {}) {
  */
 function idleQuotaBars() {
   const bars = {};
-  for (const kind of ['opencode', 'qoder', 'codex', 'ark', 'zhipu', 'kimi', 'claude']) {
+  for (const kind of ['opencode', 'qoder', 'codex', 'ark', 'kimi', 'claude']) {
     bars[kind] = renderQuotaBar(kind, null);
   }
   return bars;

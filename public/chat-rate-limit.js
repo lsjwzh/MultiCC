@@ -214,7 +214,7 @@
   }
 
   // ── HTTP quota slot factory ──
-  // opencode / qoder / codex / zhipu / kimi share one lifecycle: a 24h
+  // opencode / qoder / codex / kimi share one lifecycle: a 24h
   // localStorage cache, fetch-on-demand, in-flight + 60s error backoff, and a
   // render drawn from the server `bar` (or the idle bar) with a 'loading' state
   // while in flight. ark adds an 'installing' state and its own click (install /
@@ -299,12 +299,9 @@
     getUrl: () => `/api/quota/bars/refresh${quotaBarParams({ kind: 'codex' })}`,
     storageKey: 'multicc.codex.quota.v1',
   });
-  const zhipuSlot = createQuotaSlot({
-    kind: 'zhipu', id: 'zhipu-quota-bar',
-    isVisible: () => isZhipuBaseUrl(currentProviderBaseUrl),
-    getUrl: () => `/api/quota/bars/refresh${quotaBarParams({ kind: 'zhipu', host: hostFromBaseUrl(currentProviderBaseUrl) })}`,
-    storageKey: 'multicc.zhipu.quota.v1',
-  });
+  // No zhipu slot: its quota surface is the provider's own API key, which the
+  // generic Provider balance query already polls — a dedicated slot only
+  // duplicated the same glm-monitor windows in a second bar.
   const kimiSlot = createQuotaSlot({
     kind: 'kimi', id: 'kimi-quota-bar', loginKind: 'kimi',
     isVisible: () => isKimiBaseUrl(currentProviderBaseUrl),
@@ -393,30 +390,30 @@
     if (!element) return;
     const claudeProvider = isClaudeProvider(currentProviderBaseUrl);
     const provider = limitProvider();
-    // A vendor whose dedicated slot (#zhipu-quota-bar …) is on screen already
-    // shows this account's windows — it fetches the same vendor surface the
-    // Provider balance query resolves to. Painting the window here too showed
-    // two identical `5h … 1wk …` meters side by side, one second apart.
-    const vendorSlotOwnsWindows = isZhipuBaseUrl(currentProviderBaseUrl);
-    let bar = null, state, clickable = false;
-    if (currentProviderWindowBar && !vendorSlotOwnsWindows && activeProviderMatchesCli()) {
+    let bar = null, state, onBarClick = null;
+    if (currentProviderWindowBar && activeProviderMatchesCli()) {
       // Exact Provider query wins over CLI heuristics and passive events. This
       // is what lets a Codex session correctly show GLM/borrowed/official quota
-      // according to its active Provider rather than the local Codex account.
+      // according to its active Provider rather than the local Codex account —
+      // including Zhipu providers, whose windows come only from this query now
+      // that the dedicated vendor slot is gone.
       bar = currentProviderWindowBar;
+      // The render's trailing '⟳' segment promises a refresh; wire it to the
+      // same query that produced the bar.
+      onBarClick = () => refreshProviderLimit();
     } else if (currentCli === 'claude' && claudeProvider) {
       // Claude subscription: the scrape (full, with weekly) is authoritative;
       // before it lands the live 5h event or the idle render stands in.
       bar = (currentClaudeUsage && currentClaudeUsage.bar) || currentLimitBar || idleBarFor('claude');
       state = claudeUsageFetchInFlight ? 'fetching' : (claudeLoginPending ? 'login_pending' : undefined);
-      clickable = true;
-    } else if (provider && providerMatchesCli(provider, currentCli) && !vendorSlotOwnsWindows) {
+      onBarClick = (view) => claudeBarClick(view);
+    } else if (provider && providerMatchesCli(provider, currentCli)) {
       bar = currentLimitBar;
     }
     const view = paintBar(element, bar, state);
     if (view) {
-      element.style.cursor = clickable ? 'pointer' : '';
-      element.onclick = clickable ? () => claudeBarClick(view) : null;
+      element.style.cursor = onBarClick ? 'pointer' : '';
+      element.onclick = onBarClick ? () => onBarClick(view) : null;
     }
     scheduleExpiry();
   }
@@ -463,9 +460,13 @@
     return currentLimitBar ? { provider: limitProvider(), bar: currentLimitBar } : null;
   }
 
+  let providerLimitInFlight = false;
   async function refreshProviderLimit() {
     if (!currentProviderAppType || !currentProviderId) return null;
+    // Click-reachable (the provider window bar's ⟳): one query at a time.
+    if (providerLimitInFlight) return null;
     const revision = providerRevision;
+    providerLimitInFlight = true;
     try {
       const res = await fetch(`/api/providers/${encodeURIComponent(currentProviderAppType)}/${encodeURIComponent(currentProviderId)}/balance`, { credentials: 'same-origin' });
       const data = await res.json();
@@ -476,6 +477,7 @@
       renderAll();
       return kind === 'balance' ? currentBalanceBar : currentProviderWindowBar;
     } catch (_) { return null; }
+    finally { providerLimitInFlight = false; }
   }
   function restoreFiveHourRateLimit(sessionName) {
     currentSession = String(sessionName || '').trim();
@@ -535,7 +537,7 @@
   function renderAll() {
     renderCurrent(); renderBalance();
     opencodeSlot.render(); qoderSlot.render(); codexSlot.render();
-    arkSlot.render(); zhipuSlot.render(); kimiSlot.render();
+    arkSlot.render(); kimiSlot.render();
   }
   async function restoreServerQuotaBars() {
     if (!global.document || !global.location) return null;
@@ -550,7 +552,6 @@
       qoderSlot.setCurrent(cacheEntryToResponse(bars.qoder));
       codexSlot.setCurrent(cacheEntryToResponse(bars.codex));
       arkSlot.setCurrent(cacheEntryToResponse(bars.ark));
-      zhipuSlot.setCurrent(cacheEntryToResponse(bars.zhipu));
       kimiSlot.setCurrent(cacheEntryToResponse(bars.kimi));
       const claude = cacheEntryToResponse(bars.claude);
       currentClaudeUsage = claude;
@@ -600,7 +601,7 @@
       currentLimitInfo = null; currentLimitBar = null; currentProviderWindowBar = null; currentBalanceBar = null;
       currentClaudeUsage = null; claudeUsageFetchInFlight = false;
       claudeLoginPending = false; claudeLastErrorAt = 0;
-      arkSlot.reset(); zhipuSlot.reset(); kimiSlot.reset();
+      arkSlot.reset(); kimiSlot.reset();
       if (currentSession) {
         const s = browserStorage();
         if (s) {
@@ -617,10 +618,10 @@
     // backoff is cleared first — it exists to stop a broken endpoint from being
     // hammered, not to stall an explicit user action.
     if (changed) {
-      arkSlot.clearBackoff(); zhipuSlot.clearBackoff(); kimiSlot.clearBackoff();
+      arkSlot.clearBackoff(); kimiSlot.clearBackoff();
       restoreServerQuotaBars();
       refreshProviderLimit();
-      arkSlot.refresh(); zhipuSlot.refresh(); kimiSlot.refresh();
+      arkSlot.refresh(); kimiSlot.refresh();
     }
   }
 
@@ -641,8 +642,6 @@
     restoreCodexQuota: () => codexSlot.restore(),
     refreshArkQuota: (...a) => arkSlot.refresh(...a),
     restoreArkQuota: () => arkSlot.restore(),
-    refreshZhipuQuota: (...a) => zhipuSlot.refresh(...a),
-    restoreZhipuQuota: () => zhipuSlot.restore(),
     refreshKimiQuota: (...a) => kimiSlot.refresh(...a),
     restoreKimiQuota: () => kimiSlot.restore(),
     restoreServerQuotaBars,
@@ -661,7 +660,7 @@
     restoreFiveHourRateLimit(sess);
     restoreBalance(sess);
     opencodeSlot.restore(); qoderSlot.restore(); codexSlot.restore();
-    arkSlot.restore(); zhipuSlot.restore(); kimiSlot.restore();
+    arkSlot.restore(); kimiSlot.restore();
     restoreClaudeUsage();
     bootstrapIdleBars();
     restoreServerQuotaBars();
