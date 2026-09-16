@@ -876,7 +876,6 @@ class _ChatViewState extends State<ChatView> {
                       limit: provider.limitView,
                       balance: provider.balanceView,
                       arkUsage: provider.arkQuotaView,
-                      zhipuUsage: provider.zhipuQuotaView,
                       kimiUsage: provider.kimiQuotaView,
                       claudeUsage: provider.claudeLimitView,
                       qoderUsage: provider.qoderQuotaView,
@@ -887,7 +886,6 @@ class _ChatViewState extends State<ChatView> {
                       onOpenCodeQuotaTap: () => provider.handleOpenCodeQuotaTap(),
                       onCodexQuotaTap: () => provider.handleCodexQuotaTap(),
                       onArkQuotaTap: () => provider.handleArkQuotaTap(),
-                      onZhipuQuotaTap: () => provider.handleZhipuQuotaTap(),
                       onKimiQuotaTap: () => provider.handleKimiQuotaTap(),
                       onRetry: provider.apiErrorPolicy?.canManualRetry == true
                           ? () => _retryApiError(provider)

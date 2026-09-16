@@ -624,10 +624,10 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
   // from the server render — the panel paints them verbatim.
   final VendorQuotaView? limit;
   final VendorQuotaView? balance;
-  // Vendor bars gated on the provider baseUrl (ark/zhipu/kimi), each tappable
-  // like its web counterpart (install / auth / login / refetch).
+  // Vendor bars gated on the provider baseUrl (ark/kimi), each tappable
+  // like its web counterpart (install / auth / login / refetch). Zhipu has no
+  // slot: its windows come through `limit` via the Provider balance query.
   final VendorQuotaView? arkUsage;
-  final VendorQuotaView? zhipuUsage;
   final VendorQuotaView? kimiUsage;
   final VendorQuotaView? claudeUsage;
   final VendorQuotaView? qoderUsage;
@@ -638,7 +638,6 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
   final VoidCallback? onOpenCodeQuotaTap;
   final VoidCallback? onCodexQuotaTap;
   final VoidCallback? onArkQuotaTap;
-  final VoidCallback? onZhipuQuotaTap;
   final VoidCallback? onKimiQuotaTap;
   final VoidCallback? onRetry;
 
@@ -648,7 +647,6 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
     this.limit,
     this.balance,
     this.arkUsage,
-    this.zhipuUsage,
     this.kimiUsage,
     this.claudeUsage,
     this.qoderUsage,
@@ -659,7 +657,6 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
     this.onOpenCodeQuotaTap,
     this.onCodexQuotaTap,
     this.onArkQuotaTap,
-    this.onZhipuQuotaTap,
     this.onKimiQuotaTap,
     this.onRetry,
   });
@@ -670,7 +667,6 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
         limit == null &&
         balance == null &&
         arkUsage == null &&
-        zhipuUsage == null &&
         kimiUsage == null &&
         claudeUsage == null &&
         qoderUsage == null &&
@@ -688,7 +684,7 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
       ),
       // Slot order matches the web chat.html bar row: opencode, qoder, codex,
       // claude-rate-limit (subscription or routed window), balance, ark,
-      // zhipu, kimi — then the api-error row the web shows in the same panel.
+      // kimi — then the api-error row the web shows in the same panel.
       child: Wrap(
         spacing: 10,
         runSpacing: 6,
@@ -721,12 +717,6 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
               arkUsage!,
               onTap: onArkQuotaTap,
               key: const Key('ark-quota-bar'),
-            ),
-          if (zhipuUsage != null)
-            _quotaBarView(
-              zhipuUsage!,
-              onTap: onZhipuQuotaTap,
-              key: const Key('zhipu-quota-bar'),
             ),
           if (kimiUsage != null)
             _quotaBarView(

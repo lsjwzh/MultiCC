@@ -24,9 +24,6 @@ class _StubQuotaService extends QuotaService {
   }
 
   @override
-  Future<Map<String, dynamic>?> fetchZhipuQuota(String? host) async => null;
-
-  @override
   Future<Map<String, dynamic>?> fetchCodexQuota() async => {
     'status': 'ok',
     'bar': {
@@ -128,13 +125,13 @@ void main() {
       // Cold start: no baseUrl learned yet -> official login, a Claude provider.
       expect(provider.providerBaseUrl, '');
       expect(provider.claudeLimitView, isNotNull);
-      expect(provider.zhipuQuotaView, isNull);
 
       var notified = 0;
       provider.addListener(() => notified++);
 
-      // Switch to a Zhipu provider: the Claude bar hides and the Zhipu bar
-      // appears without any reconnect or CLI switch.
+      // Switch to a Zhipu provider: the Claude bar hides and the provider's own
+      // window bar (the same glm-monitor surface the removed zhipu slot polled)
+      // appears without any reconnect or CLI switch — one bar, not two.
       provider.applyProviderSwitch(
         configWith('https://open.bigmodel.cn/api/anthropic'),
       );
@@ -144,19 +141,17 @@ void main() {
       );
       // A non-Claude provider must hide the Claude subscription bar.
       expect(provider.claudeLimitView, isNull);
-      // The Zhipu quota bar follows the switch immediately.
-      expect(provider.zhipuQuotaView, isNotNull);
+      // The switch fired a provider-balance fetch whose continuation runs as a
+      // microtask. Drain it while the provider is still alive — otherwise its
+      // terminal notifyListeners() hits the disposed object after the body ends.
+      await Future<void>.delayed(Duration.zero);
+      expect(provider.limitView?.text, 'Borrowed · 1wk 65%');
       // Listeners repaint the bars at once.
       expect(notified, greaterThan(0));
 
-      // And back to a Claude provider: the bars flip the other way.
+      // And back to a Claude provider: the subscription bar flips back.
       provider.applyProviderSwitch(configWith('https://api.anthropic.com'));
       expect(provider.claudeLimitView, isNotNull);
-      expect(provider.zhipuQuotaView, isNull);
-
-      // The Zhipu switch fired a quota fetch whose continuation runs as a
-      // microtask. Drain it while the provider is still alive — otherwise its
-      // terminal notifyListeners() hits the disposed object after the body ends.
       await Future<void>.delayed(Duration.zero);
     },
   );
@@ -347,8 +342,9 @@ void main() {
         provider.providerBaseUrl,
         'https://open.bigmodel.cn/api/anthropic',
       );
-      expect(provider.zhipuQuotaView, isNotNull);
       await Future<void>.delayed(Duration.zero);
+      // The Zhipu account's windows arrive via the Provider balance query now.
+      expect(provider.limitView?.text, 'Borrowed · 1wk 65%');
     },
   );
 }

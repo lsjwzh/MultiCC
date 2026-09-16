@@ -63,7 +63,7 @@ function selectorKey(kind, selector = {}) {
     const plan = arkPlanFromBaseUrl(selector.baseUrl) || hostFromBaseUrl(selector.baseUrl) || text(selector.host, 120) || 'default';
     return `${k}:${plan}`;
   }
-  if (k === 'zhipu' || k === 'kimi') {
+  if (k === 'kimi') {
     const host = text(selector.host, 120).toLowerCase() || hostFromBaseUrl(selector.baseUrl) || 'default';
     return `${k}:${host}`;
   }
@@ -143,7 +143,7 @@ function createQuotaBarCache({ file, now = Date.now, storeFactory = createStore,
 
   function snapshotFor(selector = {}) {
     const bars = {};
-    for (const kind of ['opencode', 'qoder', 'codex', 'claude', 'ark', 'zhipu', 'kimi']) {
+    for (const kind of ['opencode', 'qoder', 'codex', 'claude', 'ark', 'kimi']) {
       bars[kind] = get(kind, selector);
     }
     return { status: 'ok', bars, updatedAt: state.updatedAt || 0 };
