@@ -92,8 +92,10 @@ function rejectedParameter(error) {
 // a thread recorded on a third-party provider fails replay against official
 // with 400 Invalid 'input[N].content': array too long. Strip the field from
 // every reasoning item in one pass. The local rollout transcript is never
-// touched (request copies only); third-party upstreams that emitted the field
-// never pass through this function's callers on their own routes.
+// touched (request copies only). Reached only through
+// normalizeResponsesHistory's `omitReasoningContent`, which only the official
+// relay's dial sets — a third-party route keeps this content, because there it
+// is real context rather than a schema violation.
 function stripReasoningContent(body) {
   if (!Array.isArray(body?.input)) return { body, changes: [] };
   const changes = [];
@@ -224,6 +226,44 @@ function stripUnresolvedItemReferences(body, extraIds = []) {
   return changes.length ? { body: next, changes } : { body, changes };
 }
 
+// The pass every Codex route runs on the forwarded copy, whoever performs the
+// dial: cli-provider-router's request hook (src/providers/codex-history-hooks),
+// the official OAuth relay's own ChatGPT hop, and that relay's fall-through for
+// a router without hooks. It lives here, once, because the sequence — and the
+// order inside it — is what makes a cross-upstream resume replayable, and three
+// copies of a sequence is three chances to drift.
+//
+// The two halves are provider-agnostic on purpose:
+//   · preprocessResponsesHistory renames foreign record ids and hands ambiguous
+//     references to the upstream instead of guessing;
+//   · stripUnresolvedItemReferences drops the shapes that can only ever resolve
+//     server-side, which under store:false is every one of them.
+//
+// `omitReasoningContent` is the one per-upstream judgement call, and it is a
+// parameter rather than another caller because the difference is real:
+// official's private schema requires reasoning items to carry NO content
+// ("Expected an array with maximum length 0"), while a third-party Responses
+// upstream accepts — and produced — exactly that array as inline context. Only
+// the caller that dials official passes it (src/codex/official-relay), so no
+// third-party route loses context it would have kept.
+//
+// The reasoning pass necessarily runs BEFORE the reference pass: emptying a
+// reasoning item's content is what can leave it as an id-only husk, and the
+// husk is removed by the pass that follows. Reversing them would leave a
+// content-less reasoning item behind to draw the very rejection this exists to
+// avoid.
+function normalizeResponsesHistory(body, { omitReasoningContent = false } = {}) {
+  const prepared = preprocessResponsesHistory(body);
+  const content = omitReasoningContent
+    ? stripReasoningContent(prepared.body)
+    : { body: prepared.body, changes: [] };
+  const references = stripUnresolvedItemReferences(content.body);
+  return {
+    body: references.body,
+    changes: [...prepared.changes, ...content.changes, ...references.changes],
+  };
+}
+
 // One rejection-driven fallback, restricted to optional metadata. Never drop a
 // whole tool, a call/result, arguments, names or a schema; the one deliberate
 // exception is reasoning content, which official rejects outright (see
@@ -304,6 +344,7 @@ function repairRejectedResponsesHistory(body, error) {
 }
 
 module.exports = {
+  normalizeResponsesHistory,
   preprocessResponsesHistory,
   repairRejectedResponsesHistory,
   stripReasoningContent,
