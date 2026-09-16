@@ -4,10 +4,23 @@ MultiCC keeps each CLI's native transcript. Cross-CLI handoff transfers a bounde
 visible-text checkpoint, not another CLI's raw tool records. A single native
 Codex thread can nevertheless contain records from multiple model providers.
 
-`src/model-history-converter.js` owns Responses request preprocessing. It runs
-before the official OAuth relay and before falling through to the CPR proxy,
-including its Responses-to-Chat-Completions bridge. It never edits the native
-transcript, renames executable tools, changes call IDs, or replays tools itself.
+`src/model-history-converter.js` owns Responses request preprocessing. It never
+edits the native transcript, renames executable tools, changes call IDs, or
+replays tools itself.
+
+It runs at the last local component before an upstream, in two places:
+
+- **The router's local request hooks** (`src/providers/codex-history-hooks.js`,
+  CPR capability `requestHooks`): `onRequest` normalizes the forwarded copy
+  before the dial, and `onUpstreamRejected` repairs a rejection the router
+  itself observed. This is where every CPR-managed Codex route is corrected,
+  including the responses-compat proxy, and it is the only place the repair can
+  be driven by the actual rejection instead of a guess made before the hop.
+- **The official OAuth relay** (`src/codex/official-relay.js`): its private
+  ChatGPT dial keeps its own proactive pass (which adds the official-only
+  reasoning-content rule) plus the same rejection repair. It also keeps the
+  generic pass for a router without hooks (`genericHistoryNormalization`), so a
+  legacy router keeps behaving exactly as before.
 
 ## Inventory and conversion rules
 
@@ -40,11 +53,18 @@ IDs and local references are accounted for.
 ## Rejection-driven fallback
 
 Only an HTTP 400 received before a successful response stream can trigger one
-additional request. The upstream must identify a specific rejected parameter.
+additional request (the router path also accepts 404: the ChatGPT Codex backend
+answers an unresolvable `store:false` item reference with 404, not 400). The
+upstream must identify a specific rejected parameter.
 The converter can omit an explicitly rejected optional item `id`, `status` or
 `internal_chat_message_metadata_passthrough`, or an unsupported function-tool
 `strict`, `defer_loading` or `cache_control` field. An ID with a live item reference
 is not omitted. The fallback is request-local, not a learned global deletion rule.
+
+On the router path the repair is requested through `onUpstreamRejected` and the
+re-dial is counted by CPR itself (`hookRetryMax`, default 1), not by the caller's
+attempt counter, so a hook that always asks to retry cannot keep a turn alive.
+A body returned without `retry: true` never changes what the client sees.
 
 Calls, results, tool definitions, names, arguments, schemas and reasoning are
 never deleted as a blanket error-recovery tactic. Unknown/semantic errors,
