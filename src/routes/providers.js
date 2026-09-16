@@ -307,17 +307,22 @@ function createProviderRoutes(rawDeps) {
       try {
         const provider = deps.providers.getProvider(req.params.appType, req.params.id);
         if (!provider) return res.status(404).json({ error: 'provider not found' });
-        const config = typeof provider.settingsConfig === 'string'
-          ? JSON.parse(provider.settingsConfig)
-          : (provider.settingsConfig || {});
-        const env = (config && config.env) || {};
         const candidates = normalizeProbeCandidates(req.body && req.body.candidates);
         if (!candidates.ok) return res.status(candidates.status).json({ error: candidates.error });
-        const result = await deps.providers.probeRelayModels(
-          env,
-          candidates.value,
-          deps.claudeCmd,
+        // The probe used to spawn the CLI with the provider's raw env — i.e.
+        // straight at the vendor endpoint, with the vendor credential in a
+        // throwaway child process, measuring a path production traffic never
+        // takes. Materialize the same loopback route a real turn gets; the
+        // probe then measures the hop multicc actually uses (null = nothing to
+        // probe, the entry has no upstream base URL).
+        const routeEnv = deps.providers.claudeProbeRouteEnv(
+          req.params.appType,
+          req.params.id,
+          deps.getPort(),
         );
+        const result = routeEnv
+          ? await deps.providers.probeRelayModels(routeEnv, candidates.value, deps.claudeCmd)
+          : { tested: [], accepted: [], error: 'no base url' };
         res.json(sanitizeProbeResult(result));
       } catch (error) {
         res.status(400).json({ error: publicError(error, 'provider probe failed') });
@@ -336,33 +341,44 @@ function createProviderRoutes(rawDeps) {
         const env = (config && config.env) || {};
 
         const officialCodex = isOfficialCodexOAuthProvider(provider);
+        // Both codex shapes now measure the SAME route a real turn takes: a
+        // loopback POST to the host-owned codex proxy, which resolves the
+        // account credential (official) or the provider's stored key
+        // (third-party) and dials the vendor itself. The endpoint and the
+        // credential therefore never enter this process's request headers. The
+        // old third-party path dialed the vendor directly — a path production
+        // traffic never takes, so the number it reported could disagree with
+        // what turns actually do.
+        const runCodexHostSpeedtest = ({ model }) => runSpeedtestRequest({
+          client: deps.http,
+          requestOptions: {
+            hostname: '127.0.0.1', port: deps.getPort(),
+            path: `/codex-proxy/${encodeURIComponent(req.params.id)}/responses`,
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+          },
+          body: JSON.stringify({
+            model, instructions: 'Reply with only OK.',
+            input: [{ role: 'user', content: [{ type: 'input_text', text: 'hi' }] }],
+            stream: true, store: false,
+          }),
+          model, res, elapsed, setTimeoutFn, clearTimeoutFn,
+          streamProtocol: 'responses',
+        });
+
         if (officialCodex) {
           const summary = deps.providerRouterRuntime.getProviderSummary('codex', req.params.id) || {};
           const model = summary.model || (summary.modelOptions || [])[0];
           if (!model) return res.json({ ok: false, ms: elapsed(), error: '官方模型目录为空，请先登录 Codex 并刷新模型列表' });
-          // Same host-owned OAuth adapter mounted alongside CPR for normal
-          // Codex turns. It selects the account and injects credentials; no
-          // API key, Chat Completions request, or direct upstream hop here.
-          await runSpeedtestRequest({
-            client: deps.http,
-            requestOptions: {
-              hostname: '127.0.0.1', port: deps.getPort(),
-              path: `/codex-proxy/${encodeURIComponent(req.params.id)}/responses`,
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-            },
-            body: JSON.stringify({
-              model, instructions: 'Reply with only OK.',
-              input: [{ role: 'user', content: [{ type: 'input_text', text: 'hi' }] }],
-              stream: true, store: false,
-            }),
-            model, res, elapsed, setTimeoutFn, clearTimeoutFn,
-            streamProtocol: 'responses',
-          });
+          await runCodexHostSpeedtest({ model });
           return;
         }
 
         if (req.params.appType === 'codex') {
+          // Capability pre-check only — the target's own url/apiKey are no
+          // longer used here (the hop owns them). canDirect is false for an
+          // OAuth-subscription codex entry that is not the official provider,
+          // which has no HTTP credential for the hop to forward.
           const target = deps.providers.resolveCodexDirectHttp(req.params.id);
           if (!target.canDirect) {
             return res.json({
@@ -374,34 +390,7 @@ function createProviderRoutes(rawDeps) {
           const model = (target.modelOptions && target.modelOptions[0])
             || target.model
             || 'gpt-4o-mini';
-          const body = JSON.stringify({ model, input: 'hi', max_output_tokens: 1 });
-          let url;
-          try {
-            url = new URLCtor(target.url);
-          } catch (_) {
-            return res.json({ ok: false, ms: elapsed(), error: 'bad url' });
-          }
-          const isHttps = url.protocol === 'https:';
-          const client = isHttps ? deps.https : deps.http;
-          await runSpeedtestRequest({
-            client,
-            requestOptions: {
-              hostname: url.hostname,
-              port: url.port || (isHttps ? 443 : 80),
-              path: url.pathname + url.search,
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${target.apiKey}`,
-              },
-            },
-            body,
-            model,
-            res,
-            elapsed,
-            setTimeoutFn,
-            clearTimeoutFn,
-          });
+          await runCodexHostSpeedtest({ model });
           return;
         }
 

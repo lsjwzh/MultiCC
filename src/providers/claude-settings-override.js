@@ -38,6 +38,10 @@ const BLANK_WHEN_ABSENT_KEYS = [
   'ANTHROPIC_BASE_URL',
   'ANTHROPIC_AUTH_TOKEN',
   'ANTHROPIC_API_KEY',
+  // The CLI expands this one into real upstream headers, so it is a route key
+  // like the rest: a value left in ~/.claude/settings.json would be re-added on
+  // top of the session env and travel to the provider with every request.
+  'ANTHROPIC_CUSTOM_HEADERS',
   'ANTHROPIC_MODEL',
   'ANTHROPIC_SMALL_FAST_MODEL',
   'ANTHROPIC_DEFAULT_OPUS_MODEL',
