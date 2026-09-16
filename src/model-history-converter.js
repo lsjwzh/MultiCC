@@ -184,8 +184,10 @@ function stripUnresolvedItemReferences(body, extraIds = []) {
         const copy = { ...item };
         delete copy.id;
         if (item.type === 'reasoning' && typeof copy.encrypted_content === 'string') delete copy.encrypted_content;
+        const keepsContext = (Array.isArray(copy.summary) && copy.summary.length > 0)
+          || (Array.isArray(copy.content) && copy.content.length > 0);
         const carriesContent = Object.keys(copy).some(key => key !== 'type' && key !== 'status')
-          && !(item.type === 'reasoning' && !(Array.isArray(copy.summary) && copy.summary.length));
+          && !(item.type === 'reasoning' && !keepsContext);
         if (carriesContent) {
           dropped(`input[${index}].id`);
           input.push(copy);
@@ -197,9 +199,15 @@ function stripUnresolvedItemReferences(body, extraIds = []) {
       }
       if (item.type === 'reasoning' && !item.encrypted_content) {
         const hasSummary = Array.isArray(item.summary) && item.summary.length > 0;
-        if (!hasSummary) {
-          // No blob and no summary: the item carries zero context — an empty
-          // {type:'reasoning'} shell is riskier than dropping it.
+        // Third-party gateways record the chain of thought as inline
+        // content:[{type:'reasoning_text'}] instead of a blob + summary. That
+        // content is real context and survives the id strip; only an item
+        // carrying nothing but an id is worthless enough to drop.
+        const hasInlineContent = Array.isArray(item.content) && item.content.length > 0;
+        if (!hasSummary && !hasInlineContent) {
+          // No blob, no summary, no inline content: the item carries zero
+          // context — an empty {type:'reasoning'} shell is riskier than
+          // dropping it.
           dropped(`input[${index}]`);
           inputChanged = true;
           return;

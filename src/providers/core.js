@@ -37,6 +37,10 @@ const {
   assertCodexProxyConfigApplied,
   codexProxyConfigRequired: evaluateCodexProxyConfigRequired,
 } = require('../codex/proxy-policy');
+const {
+  assertClaudeProxyEnvApplied,
+  claudeProxyEnvRequired,
+} = require('./claude-proxy-policy');
 
 const sqliteRuntime = createSqliteRuntime();
 
@@ -1787,12 +1791,39 @@ async function probeRelayModels(baseEnv, candidates, cliCmd) {
 // ALSO routed through the proxy instead of bypassed. The proxy then replays the
 // Keychain OAuth token to api.anthropic.com, which is what lets an official
 // session route its subagents to cheaper providers. See cli-provider-router.
+//
+// This function is the single choke point every Claude spawn goes through (chat
+// turns, the persistent streaming process, the interactive tmux terminal), so
+// it is also where the route guarantee is enforced: when the host has a local
+// endpoint for the bound provider, declining to rewrite ANTHROPIC_BASE_URL must
+// fail the spawn instead of leaving the child to dial the vendor directly with
+// whatever ANTHROPIC_* it still carries. See ./claude-proxy-policy for what
+// counts as required and why a baseUrl-less OAuth entry is exempt.
 function applyClaudeProxyEnv(env, options) {
   if (officialCatalog && options?.providerId && getProvider('claude', options.providerId)?.builtinOfficial) {
     if (env) env.CLAUDE_CODE_OAUTH_TOKEN = '';
     options = { ...options, enabled: true, officialOAuth: true, officialProviderId: options.providerId };
   }
-  return cliProviderRouter.applyClaudeProxyEnv(env, { ...options, getProvider });
+  const providerId = options?.providerId;
+  const summary = (() => {
+    if (!providerId) return null;
+    try { const provider = getProvider('claude', providerId); return provider ? summarize(provider) : null; }
+    catch (_) { return null; }
+  })();
+  const required = claudeProxyEnvRequired({ providerId, summary });
+  const applied = cliProviderRouter.applyClaudeProxyEnv(env, { ...options, getProvider });
+  // CLAUDE_PROXY_ENABLED=0 is the documented operator escape hatch that runs
+  // Claude straight to the provider. It is honoured, but never silently: a
+  // stray env var must not be able to move every session off the local hop
+  // without leaving a trace at each spawn.
+  if (required && options?.enabled === false) {
+    (options.logger || console).warn(
+      `[multicc/providers] claude direct route (CLAUDE_PROXY_ENABLED=0): provider ${providerId}`
+      + ` baseUrl ${summary?.baseUrl ? 'set' : 'unset'} is NOT routed through the local proxy`,
+    );
+  }
+  assertClaudeProxyEnvApplied({ required: required && options?.enabled !== false, applied });
+  return applied;
 }
 
 function codexProviderProxyable(providerOrId) {
@@ -1943,6 +1974,8 @@ module.exports = {
   buildChildEnv,
   materializeCodexAuth,
   applyClaudeProxyEnv,
+  assertClaudeProxyEnvApplied,
+  claudeProxyEnvRequired,
   applyCodexProxyConfig,
   assertCodexProxyConfigApplied,
   codexProxyConfigRequired,

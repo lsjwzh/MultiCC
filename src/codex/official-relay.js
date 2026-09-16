@@ -350,9 +350,25 @@ function createCodexOfficialRelayHandler(options = {}) {
       providerId, changes: prepared.changes,
     });
     if (!isOfficialCodexOAuthProvider(provider)) {
+      // Every Codex route is store:false at the source: the CLI itself puts
+      // `store: false` on each request (verified against codex-cli 0.154 with a
+      // capture probe), so no upstream — third-party gateway, ChatGPT official,
+      // or a borrowed relay share — persists items, and an id-only reference
+      // can never be resolved from server state. Strip that dangling-reference
+      // family on the local hop for EVERY provider, not just the official one:
+      // this host is the last place in the chain the operator controls, and a
+      // borrowed provider's far end (another multicc) must not be the only
+      // thing standing between a cross-provider resume and a hard rejection.
+      // Reasoning CONTENT stays untouched here — that field is the official
+      // backend's private-schema restriction, not a store:false consequence, so
+      // it is applied only where the official hop is actually ours.
       // All Codex routes speak Responses at this boundary, including the CPR
       // Chat Completions bridge. Do not edit the saved native transcript.
-      req.body = prepared.body;
+      const strippedRefs = stripUnresolvedItemReferences(prepared.body);
+      if (strippedRefs.changes.length) diagnostic(options.logger, 'model_history_preprocessed', {
+        providerId, changes: strippedRefs.changes,
+      });
+      req.body = strippedRefs.body;
       return next();
     }
     // Official-only: reasoning items recorded by third-party providers carry a
