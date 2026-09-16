@@ -23,6 +23,7 @@ const {
   preprocessResponsesHistory,
   repairRejectedResponsesHistory,
   stripReasoningContent,
+  stripUnresolvedItemReferences,
 } = require('../model-history-converter');
 const { publicTransportError, publicUpstreamError, readUpstreamError } = require('../upstream-error');
 
@@ -355,14 +356,19 @@ function createCodexOfficialRelayHandler(options = {}) {
       return next();
     }
     // Official-only: reasoning items recorded by third-party providers carry a
-    // raw content array the ChatGPT backend rejects (max length 0). Strip it
-    // up front instead of paying a guaranteed 400+repair round-trip per turn;
+    // raw content array the ChatGPT backend rejects (max length 0), and items
+    // whose ids another upstream minted cannot be resolved on this hop (it
+    // runs with store:false, so nothing is persisted server-side) — the replay
+    // dies with "Item with id … not found". Strip both families up front
+    // instead of paying a guaranteed 400+repair round-trip per turn;
     // repairRejectedResponsesHistory stays as the backstop.
-    const officialPrepared = stripReasoningContent(prepared.body);
-    if (officialPrepared.changes.length) diagnostic(options.logger, 'model_history_preprocessed', {
-      providerId, changes: officialPrepared.changes,
+    const strippedContent = stripReasoningContent(prepared.body);
+    const strippedRefs = stripUnresolvedItemReferences(strippedContent.body);
+    const officialChanges = [...strippedContent.changes, ...strippedRefs.changes];
+    if (officialChanges.length) diagnostic(options.logger, 'model_history_preprocessed', {
+      providerId, changes: officialChanges,
     });
-    prepared.body = officialPrepared.body;
+    prepared.body = strippedRefs.body;
     const role = normalizeCodexRole(req.params && req.params.role);
     if (!role.valid) return responseJson(res, 400, { error: 'invalid Codex agent route' });
 
