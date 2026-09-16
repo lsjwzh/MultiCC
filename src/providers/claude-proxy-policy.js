@@ -10,26 +10,27 @@
 // host is supposed to own leaked straight out of the spawn. Resolve the
 // requirement here and refuse to spawn instead.
 //
-// `required` is true when the host has somewhere local to forward to:
-//   • a provider with a base_url — the normal case, and the reason this exists;
-//   • the built-in official entry (`builtinOfficial`): a login-only provider
-//     with no base_url that core.applyClaudeProxyEnv deliberately forces onto
-//     the proxy (officialOAuth + its own officialProviderId) so the official
-//     endpoint is reached through the local hop as well.
-// A concrete providerId whose summary cannot be resolved fails closed — an
-// unresolvable route is a bug, not a licence to talk to the vendor directly.
-// This is the same stance resolveSpawnEnv already takes for zcode/kimi ("never
-// turn a stale or OAuth-only managed binding into an implicit native request"),
-// which for claude/codex currently degrades to `{env:{}}` — i.e. the native
-// login. A broken claude binding must not become a silent Anthropic request on
-// the operator's own account.
+// `required` is true for EVERY concrete providerId. There used to be one
+// exemption — a non-built-in OAuth-passthrough entry with no base_url — on the
+// grounds that "there is nothing local to forward to". That reasoning was about
+// the *old* proxy: today the local hop serves both base-less shapes, so there IS
+// somewhere local to forward to for every provider the store knows, and the
+// exemption only bought a silent direct dial to Anthropic on whatever credential
+// the child env happened to carry. core.applyClaudeProxyEnv materializes the
+// route for either shape:
+//   • no base URL and no credential → the official route (the proxy's official
+//     branch replays the host login); forced unconditionally, like the built-in
+//     official entry has always been, so an operator who turned the official path
+//     off gets the proxy's refusal on the hop rather than a bypass around it;
+//   • no base URL but its own token → the entry's implied upstream
+//     (api.anthropic.com) with that same token, so an OAuth-passthrough provider
+//     keeps working instead of being dialed directly.
+// Sessions with no provider at all ('' / '_default_') keep their existing
+// default-login path, and a stale binding that resolves to nothing fails closed.
 //
-// Deliberately NOT required: a non-built-in OAuth-passthrough entry with no
-// base_url. There is nothing for the proxy to forward to, so the CLI's own
-// login reaches Anthropic with or without the rewrite, and requiring it would
-// only reproduce the 2026-07-05 incident (such a session 502'd on every turn
-// until the bypass was restored). Sessions with no provider at all
-// ('' / '_default_') keep their existing default-login path.
+// The resolved `summary` is still accepted — it documents the route at the call
+// site — but no longer participates in the decision: a summary the caller got
+// wrong must not be able to authorise a direct dial.
 
 function clean(value) {
   return value == null ? '' : String(value).trim();
@@ -38,10 +39,7 @@ function clean(value) {
 function claudeProxyEnvRequired(options = {}) {
   const providerId = clean(options.providerId);
   if (!providerId || providerId === '_default_') return false;
-  const summary = options.summary;
-  if (!summary) return true;
-  if (summary.builtinOfficial === true) return true;
-  return !!clean(summary.baseUrl);
+  return true;
 }
 
 function assertClaudeProxyEnvApplied({ required, applied } = {}) {

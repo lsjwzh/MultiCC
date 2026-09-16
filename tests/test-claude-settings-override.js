@@ -75,8 +75,10 @@ console.log('── settingsOverrideFor ──');
   ok(doc.env.ANTHROPIC_MODEL === 'k3', 'model mirrored');
   ok(!('MULTICC_SESSION_ID' in doc.env), 'MULTICC_* stays out of the file');
   // User-settings leak guard: routing keys the provider does not define must
-  // be blanked, not inherited from ~/.claude/settings.json.
-  for (const k of ['ANTHROPIC_API_KEY', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'CLAUDE_CODE_SIMPLE']) {
+  // be blanked, not inherited from ~/.claude/settings.json. ANTHROPIC_CUSTOM_HEADERS
+  // belongs here too — the CLI expands it into literal upstream headers, so a
+  // value from the user-level file would ride along to the provider.
+  for (const k of ['ANTHROPIC_API_KEY', 'ANTHROPIC_CUSTOM_HEADERS', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'CLAUDE_CODE_SIMPLE']) {
     ok(doc.env[k] === '', `${k} blanked when absent`);
   }
   ok(doc.env.ANTHROPIC_BASE_URL !== '', 'defined keys are never blanked');
@@ -85,6 +87,18 @@ console.log('── settingsOverrideFor ──');
   const dst = fs.statSync(OVERRIDE_DIR);
   ok((dst.mode & 0o777) === 0o700, 'dir mode 0700');
   cleanup('sess-a');
+}
+{
+  // The fix is "don't INHERIT", not "never send": a provider that declares its
+  // own headers still gets them mirrored, and the local proxy forwards client
+  // headers to that provider — which is what such a provider asks for.
+  const r = settingsOverrideFor('sess-headers', {
+    ANTHROPIC_BASE_URL: 'https://headers.example.com',
+    ANTHROPIC_CUSTOM_HEADERS: 'x-tenant: fixture',
+  });
+  const doc = JSON.parse(fs.readFileSync(r, 'utf8'));
+  ok(doc.env.ANTHROPIC_CUSTOM_HEADERS === 'x-tenant: fixture', 'provider-declared custom headers survive unblanked');
+  cleanup('sess-headers');
 }
 {
   // Rewrite keeps the file in sync with a provider switch.

@@ -48,6 +48,27 @@ function idleHttp() {
   };
 }
 
+// Loopback client for the host-owned speed test routes: records the request and
+// answers 200 with no body (the DTO only reports the status).
+function okHttp(requests = []) {
+  return {
+    request(options, onResponse) {
+      requests.push(options);
+      const request = new EventEmitter();
+      request.write = () => {};
+      request.setTimeout = () => {};
+      request.destroy = () => {};
+      request.end = () => queueMicrotask(() => {
+        const response = new EventEmitter();
+        response.statusCode = 200;
+        onResponse(response);
+        response.emit('end');
+      });
+      return request;
+    },
+  };
+}
+
 function createHarness(overrides = {}) {
   const { providers: providerOverrides = {}, ...dependencyOverrides } = overrides;
   const writes = [];
@@ -97,7 +118,14 @@ function createHarness(overrides = {}) {
       tested: [{ model: candidates[0], ok: true, sample: 'probe ok' }],
       accepted: [candidates[0]],
       command,
+      baseUrl: env.ANTHROPIC_BASE_URL,
       envKeys: Object.keys(env),
+    }),
+    // The probe runs against the loopback route, never the entry's own endpoint
+    // (see core.claudeProbeRouteEnv); null models "nothing to probe".
+    claudeProbeRouteEnv: (appType, id, port) => ({
+      ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}/claude-proxy/${id}/probe`,
+      ANTHROPIC_AUTH_TOKEN: 'cpr-probe',
     }),
     resolveCodexDirectHttp: () => ({ canDirect: false, reason: 'OAuth provider cannot be tested' }),
     ...providerOverrides,
@@ -255,7 +283,8 @@ test('provider route extraction preserves the mounted surface and response DTOs'
     tested: [{ model: 'claude-test', ok: true, sample: 'probe ok' }],
     accepted: ['claude-test'],
     command: '/usr/local/bin/claude',
-    envKeys: [],
+    baseUrl: 'http://127.0.0.1:4321/claude-proxy/claude-one/probe',
+    envKeys: ['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN'],
   });
 
   response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/speedtest', {
@@ -312,8 +341,17 @@ test('provider route public errors redact secrets and absolute paths without cha
         canDirect: true,
         url: 'not a url token=codex-secret /Users/alice/private',
         apiKey: 'codex-secret',
+        model: 'gpt-test',
+      }),
+      claudeProbeRouteEnv: () => ({
+        ANTHROPIC_BASE_URL: 'http://127.0.0.1:4321/claude-proxy/relay/probe',
+        ANTHROPIC_AUTH_TOKEN: 'cpr-probe',
       }),
     },
+    // The codex speed test no longer parses that url or dials it: it posts to
+    // the loopback hop, so the secret-laden vendor url is never read.
+    http: okHttp(),
+    https: okHttp(),
   });
 
   let response = await invoke(harness.app, 'GET', '/api/providers/stats');
@@ -349,7 +387,7 @@ test('provider route public errors redact secrets and absolute paths without cha
   response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/speedtest', {
     params: { appType: 'codex', id: 'relay' },
   });
-  assert.deepEqual(response.body, { ok: false, ms: 0, error: 'bad url' });
+  assert.deepEqual(response.body, { ok: true, ms: 0, status: 200, model: 'gpt-test' });
 
   const serialized = JSON.stringify([
     response.body,
@@ -546,6 +584,74 @@ test('provider probe validates bounded model candidates before spawning the CLI'
   assert.equal(response.statusCode, 200);
   assert.deepEqual(response.body.accepted, ['model-a', 'model-b']);
   assert.equal(probeCalls, 1);
+});
+
+test('the model probe runs on the loopback route, not the provider endpoint', async () => {
+  const asked = [];
+  const harness = createHarness({
+    providers: {
+      claudeProbeRouteEnv(appType, id, port) {
+        asked.push({ appType, id, port });
+        return {
+          ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}/claude-proxy/${id}/probe`,
+          ANTHROPIC_AUTH_TOKEN: 'cpr-probe',
+          ANTHROPIC_MODEL: 'relay-model',
+        };
+      },
+    },
+  });
+  const summary = harness.deps.providerRouterRuntime.getProviderSummary('claude', 'claude-one');
+  const response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/probe', {
+    params: { appType: 'claude', id: 'claude-one' },
+    body: { candidates: ['claude-opus-5'] },
+  });
+  assert.deepEqual(asked, [{ appType: 'claude', id: 'claude-one', port: 4321 }]);
+  assert.equal(response.body.baseUrl, 'http://127.0.0.1:4321/claude-proxy/claude-one/probe');
+  assert.match(response.body.baseUrl, /^http:\/\/127\.0\.0\.1:/, 'the CLI child is pointed at the hop');
+  assert.deepEqual(response.body.accepted, ['claude-opus-5']);
+});
+
+test('a probe with no upstream to forward to reports no base url without spawning', async () => {
+  let probeCalls = 0;
+  const harness = createHarness({
+    providers: {
+      claudeProbeRouteEnv: () => null,
+      probeRelayModels: async () => { probeCalls += 1; return { tested: [], accepted: [] }; },
+    },
+  });
+  const response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/probe', {
+    params: { appType: 'claude', id: 'claude-official' },
+    body: { candidates: ['claude-opus-5'] },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.body, { tested: [], accepted: [], error: 'no base url' });
+  assert.equal(probeCalls, 0);
+});
+
+test('a third-party codex speed test dials the loopback hop, never the vendor', async () => {
+  const requests = [];
+  const harness = createHarness({
+    http: okHttp(requests),
+    https: okHttp(requests),
+    providers: {
+      getProvider: () => ({ settingsConfig: { env: {} } }),
+      resolveCodexDirectHttp: () => ({
+        canDirect: true,
+        url: 'https://vendor.example/v1',
+        apiKey: 'codex-vendor-secret',
+        model: 'gpt-test',
+      }),
+    },
+  });
+  const response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/speedtest', {
+    params: { appType: 'codex', id: 'codex-one' },
+  });
+  assert.equal(requests.length, 1, 'exactly one request, to the local hop');
+  assert.equal(requests[0].hostname, '127.0.0.1');
+  assert.equal(requests[0].port, 4321);
+  assert.equal(requests[0].path, '/codex-proxy/codex-one/responses');
+  assert.equal(requests[0].headers.Authorization, undefined, 'the vendor key stays host-side');
+  assert.deepEqual(response.body, { ok: true, ms: 0, status: 200, model: 'gpt-test' });
 });
 
 test('provider defaults validate the full request before changing live state', async () => {

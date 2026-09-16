@@ -14,7 +14,12 @@ function routeSegments(req) {
   catch (_) { return []; }
 }
 
-const CLAUDE_HOST_ROUTE_BUCKETS = new Set(['aux', 'remote', 'speedtest']);
+// Host-owned claude routes: the segment after the provider id names a host
+// request (aux inference, relay-share remote, speed test, model probe) rather
+// than a session. Each has no turn attempt to prove, so it is authenticated at
+// the outer HTTP boundary — loopback-only in practice, and the route token is
+// the same throwaway virtual one a probe child carries.
+const CLAUDE_HOST_ROUTE_BUCKETS = new Set(['aux', 'remote', 'speedtest', 'probe']);
 
 // CPR exposes two different trust domains under the same protocol prefix:
 //   - attempt routes carry a per-turn capability in the session segment;

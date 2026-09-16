@@ -981,6 +981,13 @@ const ANTHROPIC_ROUTING_KEYS = [
   'ANTHROPIC_BASE_URL',
   'ANTHROPIC_AUTH_TOKEN',
   'ANTHROPIC_API_KEY',
+  // Not a route selector but a route PAYLOAD: the CLI parses this into literal
+  // upstream request headers, and the local proxy forwards the client's headers
+  // to the provider (see cli-provider-router lib/proxy/claude.js). A value
+  // inherited from the shell that started this server therefore rides along on
+  // every routed turn — and it cannot be blamed on "the session is not using
+  // the proxy", because the rewrite happens either way. Strip it like the rest.
+  'ANTHROPIC_CUSTOM_HEADERS',
   'ANTHROPIC_MODEL',
   'ANTHROPIC_SMALL_FAST_MODEL',
   'ANTHROPIC_DEFAULT_OPUS_MODEL',
@@ -1753,7 +1760,12 @@ const PROBE_STRIP_KEYS = ['ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'AN
 // is the ground truth for what multicc itself will send. Resolves {model, ok, sample}.
 function _probeCandidate(cliCmd, baseEnv, model) {
   return new Promise((resolve) => {
-    const env = { ...process.env, ...baseEnv };
+    // Same order as buildChildEnv: inherited routing keys first (a value this
+    // server itself inherited from its own shell must not ride along), then the
+    // provider's route env on top.
+    const env = { ...process.env };
+    for (const k of CLAUDE_ROUTING_KEYS) delete env[k];
+    Object.assign(env, baseEnv);
     for (const k of PROBE_STRIP_KEYS) delete env[k];
     // ~/.claude/settings.json env would otherwise override baseEnv (Claude Code
     // ≥2.1) and probe the global provider instead of this relay.
@@ -1790,6 +1802,36 @@ async function probeRelayModels(baseEnv, candidates, cliCmd) {
   return { tested, accepted: tested.filter(o => o.ok).map(o => o.model) };
 }
 
+// The env a host-side claude probe must run with: the provider's own env as the
+// base (its model aliases, custom headers, …), with ANTHROPIC_BASE_URL and the
+// credential replaced by the loopback route every real turn uses. The probe is
+// supposed to answer "what does this provider accept ON THE PATH multicc
+// sends" — spawning it with the raw vendor env measured a different path than
+// the one production traffic takes, and put the real endpoint + token in a
+// throwaway child process.
+//
+// `sessionId` here is the route BUCKET, not a session: 'probe' is a host route
+// (see proxy-guard's CLAUDE_HOST_ROUTE_BUCKETS), so no running turn attempt is
+// required to authorize it. Returns null when the entry has no upstream base URL
+// to probe — the caller reports that instead of spawning anything.
+function claudeProbeRouteEnv(claudeProviderId, port) {
+  const provider = (() => {
+    if (!claudeProviderId) return null;
+    try { return getProvider('claude', claudeProviderId); } catch (_) { return null; }
+  })();
+  // Probeable = the entry names an upstream: its own base URL, or its own token
+  // (implied upstream, see claudeRoutingProviderView). A credential-less official
+  // entry is not probeable here — its upstream is a login the hop replays, which
+  // is not something to spend a spawned child on.
+  const credential = provider ? claudeProviderTokenEnv(provider) : null;
+  if (!provider || (!summarize(provider).baseUrl && !(credential && credential.token))) return null;
+  const env = { ...((parseConfig(provider.settingsConfig).env) || {}) };
+  // Throws (CLAUDE_PROXY_ENV_REQUIRED) if the route cannot be materialized —
+  // never fall back to the vendor env.
+  applyClaudeProxyEnv(env, { providerId: claudeProviderId, sessionId: 'probe', port });
+  return env;
+}
+
 // Rewrite a child process env so claude routes through the local claude-proxy
 // (cli-provider-router) instead of the provider's real endpoint. Only applies to
 // provider-backed sessions — default-login sessions have no provider creds for
@@ -1804,25 +1846,35 @@ async function probeRelayModels(baseEnv, candidates, cliCmd) {
 // `ccfw:<providerId>:<model>` string the proxy parses. Omit it (or leave empty)
 // and subagents share the main provider.
 //
-// A session can have a non-empty `providerId` that still has no baseUrl (e.g.
-// a "Claude Official"/OAuth-passthrough provider entry someone selected
-// explicitly) — routing that through the proxy just 502s ("no baseUrl") since
-// there is nothing to forward to. Bypass in that case exactly like the
-// no-provider case (found 2026-07-05: a live session had this set and every
-// turn was 502ing silently through the proxy).
-// `officialOAuth` (opt-in, default off): when true, a provider that has no
-// ANTHROPIC_BASE_URL — i.e. a "Claude Official"/OAuth-subscription entry — is
-// ALSO routed through the proxy instead of bypassed. The proxy then replays the
-// Keychain OAuth token to api.anthropic.com, which is what lets an official
-// session route its subagents to cheaper providers. See cli-provider-router.
+// A session can have a non-empty `providerId` whose entry stores no
+// ANTHROPIC_BASE_URL — a "Claude Official"/OAuth-passthrough provider. That
+// shape is routed through the proxy too, by the proxy's OFFICIAL branch: the
+// host replays its own subscription login (Keychain, or the provider's marked
+// official account) to api.anthropic.com. The branch is keyed on the provider
+// id in the route path, so the entry keeps its own id and only has to declare
+// itself official — no separate "officialProviderId" lookup and no direct dial.
+// `officialOAuth` (the caller's copy of the CLAUDE_OFFICIAL_VIA_PROXY toggle) is
+// accepted but not consulted for that decision: like the built-in official entry
+// has always done, a base-less entry is put on the hop either way (see the
+// unconditional forcing below).
+//
+// A base-less entry that carries its OWN token — the OAuth-passthrough shape
+// (`claude setup-token`, or a pasted Anthropic bearer) — is routed as well, but
+// not through the official branch: that branch replays the host's subscription
+// login, so it would silently bill a credential other than the one the record
+// holds. The upstream it needs is the one the record implies by naming no base
+// URL at all — the CLI's own default, api.anthropic.com (CLAUDE_IMPLIED_BASE_URL
+// below). The token then travels CLI → local hop → api.anthropic.com with the
+// host's data-correction hook on the path; before, this shape dialed the vendor
+// directly and skipped the hop entirely.
 //
 // This function is the single choke point every Claude spawn goes through (chat
-// turns, the persistent streaming process, the interactive tmux terminal), so
-// it is also where the route guarantee is enforced: when the host has a local
+// turns, the persistent streaming process, the interactive tmux terminal), so it
+// is also where the route guarantee is enforced: when the host has a local
 // endpoint for the bound provider, failing to rewrite ANTHROPIC_BASE_URL fails
 // the spawn instead of leaving the child to dial the vendor directly with
 // whatever ANTHROPIC_* it still carries. See ./claude-proxy-policy for what
-// counts as required and why a baseUrl-less OAuth entry is exempt.
+// counts as required — now every concrete providerId.
 //
 // Routing is unconditional. There is deliberately no host-wide "run claude
 // direct" switch any more (CLAUDE_PROXY_ENABLED was removed from the server, the
@@ -1832,25 +1884,114 @@ async function probeRelayModels(baseEnv, candidates, cliCmd) {
 // the settings UI and from a stale child env. `enabled: true` below satisfies
 // cli-provider-router's own option contract, which still gates on a truthy
 // `enabled` for other embedders.
+
+// Anthropic's own endpoint: the upstream a claude entry that names no
+// ANTHROPIC_BASE_URL has always been reaching. The CLI defaults to it when the
+// variable is unset, and it is cli-provider-router's own `officialBaseUrl`
+// (lib/proxy/claude.js OFFICIAL_BASE_URL). It is never written back into a
+// record — it is a route's implied upstream, and only the router needs it.
+const CLAUDE_IMPLIED_BASE_URL = 'https://api.anthropic.com';
+
+// What credential does this claude entry carry, and in which key? ANTHROPIC_
+// AUTH_TOKEN / ANTHROPIC_API_KEY are the proxy's own two keys; CLAUDE_CODE_
+// OAUTH_TOKEN is the one Claude Code itself sends as `Authorization: Bearer`
+// (what `claude setup-token` hands out) — the proxy does not read that key, so a
+// record declaring only that one needs it mirrored onto the key the hop forwards.
+function claudeProviderTokenEnv(provider) {
+  let env = {};
+  try { env = parseConfig(provider.settingsConfig).env || {}; } catch (_) { env = {}; }
+  const authToken = String(env.ANTHROPIC_AUTH_TOKEN || '').trim();
+  const apiKey = String(env.ANTHROPIC_API_KEY || '').trim();
+  const oauthToken = String(env.CLAUDE_CODE_OAUTH_TOKEN || '').trim();
+  return {
+    env,
+    token: authToken || apiKey || oauthToken,
+    bearerOnly: !authToken && !apiKey && !!oauthToken,
+  };
+}
+
+// The record as the LOCAL HOP must read it — never what the host stores or shows.
+// Two claude shapes are completed here, both purely on the routing side:
+//   • a base-less entry that carries its own token: given the implied upstream
+//     above, so the hop forwards that token to api.anthropic.com instead of
+//     refusing the route for a missing base URL (and instead of replaying the
+//     host's login, which is what the official branch does with a base-less
+//     record);
+//   • an entry whose only credential is CLAUDE_CODE_OAUTH_TOKEN: that token is
+//     the Bearer it means, mirrored onto the key the hop forwards.
+// A base-less entry with NO credential is returned untouched: that is the
+// official shape, served by the proxy's official branch (shared Keychain login,
+// or the official account the record is marked with). Nothing is persisted —
+// the stored record keeps whatever the operator typed, and the UI keeps showing
+// it.
+function claudeRoutingProviderView(provider) {
+  if (!provider) return provider;
+  const { env, token, bearerOnly } = claudeProviderTokenEnv(provider);
+  if (!token) return provider;
+  const hasBase = !!String(env.ANTHROPIC_BASE_URL || '').trim();
+  if (hasBase && !bearerOnly) return provider;
+  const next = { ...parseConfig(provider.settingsConfig), env: { ...env } };
+  if (!hasBase) next.env.ANTHROPIC_BASE_URL = CLAUDE_IMPLIED_BASE_URL;
+  if (bearerOnly) next.env.ANTHROPIC_AUTH_TOKEN = token;
+  return {
+    ...provider,
+    settingsConfig: typeof provider.settingsConfig === 'string' ? JSON.stringify(next) : next,
+  };
+}
+
+// getProvider as the hop's own lookups see it. Exported because the router's
+// provider store (src/providers/router-adapter) has to read the SAME view: a
+// spawn rewritten from this view while the handler read the raw record would
+// point the CLI at a route the hop then refused for a missing base URL.
+function routingProviderView(appType, providerId) {
+  let provider = null;
+  try { provider = getProvider(appType, providerId); } catch (_) { provider = null; }
+  return appType === 'claude' ? claudeRoutingProviderView(provider) : provider;
+}
+
 function applyClaudeProxyEnv(env, options) {
-  if (officialCatalog && options?.providerId && getProvider('claude', options.providerId)?.builtinOfficial) {
-    if (env) env.CLAUDE_CODE_OAUTH_TOKEN = '';
-    options = { ...options, officialOAuth: true, officialProviderId: options.providerId };
-  }
-  const providerId = options?.providerId;
-  const summary = (() => {
-    if (!providerId) return null;
-    try { const provider = getProvider('claude', providerId); return provider ? summarize(provider) : null; }
-    catch (_) { return null; }
+  const requestedId = options && options.providerId ? String(options.providerId) : '';
+  const provider = (() => {
+    if (!requestedId) return null;
+    try { return getProvider('claude', requestedId); } catch (_) { return null; }
   })();
-  const required = claudeProxyEnvRequired({ providerId, summary });
-  const applied = cliProviderRouter.applyClaudeProxyEnv(env, { ...options, enabled: true, getProvider });
+  // Read the stored base URL exactly the way cli-provider-router's own rewrite
+  // gate does, so "no forcing needed" cannot disagree with "the hop will be
+  // materialized" over a whitespace-only or non-string value.
+  const upstreamBaseUrl = (() => {
+    if (!provider) return '';
+    try { return String((parseConfig(provider.settingsConfig).env || {}).ANTHROPIC_BASE_URL || ''); }
+    catch (_) { return ''; }
+  })();
+  const credential = provider ? claudeProviderTokenEnv(provider) : null;
+  if (provider && !upstreamBaseUrl && !(credential && credential.token)) {
+    // Base-less and credential-less: the official shape (a "Claude Official"
+    // entry, possibly bound to an official account). Forced unconditional,
+    // exactly like the built-in official entry has always been — the caller's
+    // copy of CLAUDE_OFFICIAL_VIA_PROXY is NOT consulted here. The route is
+    // materialized either way, so the session is on the local hop and an operator
+    // who disabled the official path sees the proxy's own refusal instead of a
+    // silent direct dial (both are loud; only one is on the path).
+    if (env) env.CLAUDE_CODE_OAUTH_TOKEN = '';
+    options = { ...options, officialOAuth: true, officialProviderId: requestedId };
+  }
+  const required = claudeProxyEnvRequired({ providerId: requestedId });
+  // getProvider: the hop's view (claudeRoutingProviderView). The rewrite has to
+  // be decided on the same upstream the handler will resolve credentials from,
+  // which is what makes a base-less entry with its own token routable.
+  const applied = cliProviderRouter.applyClaudeProxyEnv(env, {
+    ...options, enabled: true, getProvider: routingProviderView,
+  });
   assertClaudeProxyEnvApplied({ required, applied });
   // A rewritten ANTHROPIC_BASE_URL only binds the CLI as long as no alternate
   // transport is switched on, so close that door on exactly the spawns we are
-  // claiming are routed (see CLAUDE_ALT_TRANSPORT_KEYS).
+  // claiming are routed (see CLAUDE_ALT_TRANSPORT_KEYS). The subscription-token
+  // key is treated the same way: the hop forwards the entry's credential from the
+  // store, so a copy in the child is at best redundant and at worst the real
+  // token sitting in a spawn env that is supposed to carry only the virtual one.
   if (env && required) {
     for (const key of CLAUDE_ALT_TRANSPORT_KEYS) env[key] = '';
+    env.CLAUDE_CODE_OAUTH_TOKEN = '';
   }
   return applied;
 }
@@ -1990,6 +2131,7 @@ module.exports = {
   APP_TYPES,
   listProviders,
   getProvider,
+  routingProviderView,
   getProviderSummary,
   getProviderLimitTarget,
   resolveAuxHttpTarget,
@@ -2032,5 +2174,6 @@ module.exports = {
   buildKimiCodeRoute,
   WIRE_DEFAULT_MODEL,
   probeRelayModels,
+  claudeProbeRouteEnv,
   ...require('./claude-settings-override'),
 };

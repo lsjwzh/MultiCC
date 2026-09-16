@@ -103,11 +103,14 @@ test('host-scoped Codex and Claude routes stay outside attempt ownership', () =>
   const codex = createProviderProxyGuard({ protocol: 'codex', authorizeProxyRequest });
   const claude = createProviderProxyGuard({ protocol: 'claude', authorizeProxyRequest });
   codex({ method: 'POST', url: '/official-provider/responses' }, {}, () => { nextCalls += 1; });
-  for (const bucket of ['aux', 'remote', 'speedtest']) {
+  // aux / remote / speedtest are host requests; 'probe' is the model probe's
+  // route (a CLI child spawned by the provider route, with no turn attempt to
+  // prove) — same trust domain, so it must not be gated on attempt ownership.
+  for (const bucket of ['aux', 'remote', 'speedtest', 'probe']) {
     claude({ method: 'POST', url: `/provider-a/${bucket}/v1/messages` }, {}, () => { nextCalls += 1; });
   }
   assert.equal(authorized, 0);
-  assert.equal(nextCalls, 4);
+  assert.equal(nextCalls, 5);
 });
 
 test('unknown Claude route buckets remain fail-closed as attempt routes', () => {
@@ -136,11 +139,11 @@ test('host-scoped Claude admission never re-authorizes relay or speedtest provid
     getProvider: () => { providerReads += 1; return {}; },
   });
   admission.app.use('/claude-proxy', () => admission.getProvider('claude', 'provider-a'));
-  for (const bucket of ['remote', 'speedtest']) {
+  for (const bucket of ['remote', 'speedtest', 'probe']) {
     await mounted({ method: 'POST', url: `/provider-a/${bucket}/v1/messages` }, {}, error => { throw error; });
   }
   assert.equal(authorized, 0);
-  assert.equal(providerReads, 2);
+  assert.equal(providerReads, 3);
 });
 
 test('attempt-scoped Codex Official routes require the exact active capability', () => {
