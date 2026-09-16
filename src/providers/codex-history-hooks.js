@@ -27,9 +27,8 @@
 // being installed.
 
 const {
-  preprocessResponsesHistory,
+  normalizeResponsesHistory,
   repairRejectedResponsesHistory,
-  stripUnresolvedItemReferences,
 } = require('../model-history-converter');
 
 // The ChatGPT Codex backend answers an unresolvable store:false item reference
@@ -65,27 +64,26 @@ function createCodexHistoryHooks(options = {}) {
     try { if (logger) logger.warn(event, fields); } catch (_) { /* diagnostics never break a turn */ }
   };
   return Object.freeze({
-    // The provider-agnostic half of the converter: rename ids the Responses API
-    // would not accept, then drop the reference shapes that can only resolve
-    // server-side (previous_response_id, item_reference husks, foreign reasoning
-    // ids with no verifiable blob). Provider-specific shapes stay where they
-    // belong: official's reasoning-content rule lives on the official relay,
-    // the only hop that dials that backend.
+    // The provider-agnostic pass, straight from the converter: rename ids the
+    // Responses API would not accept, then drop the reference shapes that can
+    // only resolve server-side (previous_response_id, item_reference husks,
+    // foreign reasoning ids with no verifiable blob). No per-upstream option is
+    // set here — the one that exists (official's reasoning-content rule) belongs
+    // to the relay that dials that backend, and this hook serves every route but
+    // that one.
     onRequest(context) {
       if (!context || context.protocol !== 'openai-responses') return undefined;
       const body = requestBody(context);
       if (!body) return undefined;
-      const prepared = preprocessResponsesHistory(body);
-      const references = stripUnresolvedItemReferences(prepared.body);
-      const changes = [...prepared.changes, ...references.changes];
-      if (!changes.length) return undefined;
+      const normalized = normalizeResponsesHistory(body);
+      if (!normalized.changes.length) return undefined;
       report('model_history_preprocessed', {
         providerId: context.providerId,
         sessionId: context.sessionId,
         role: context.role,
-        changes,
+        changes: normalized.changes,
       });
-      return { body: references.body };
+      return { body: normalized.body };
     },
     // One repair round, restricted to what the converter recognizes (optional
     // metadata, reasoning content, dangling references). `retry: true` is what

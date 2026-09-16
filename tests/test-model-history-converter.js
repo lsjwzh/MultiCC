@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { preprocessResponsesHistory, repairRejectedResponsesHistory, stripReasoningContent, stripUnresolvedItemReferences } = require('../src/model-history-converter');
+const { normalizeResponsesHistory, preprocessResponsesHistory, repairRejectedResponsesHistory, stripReasoningContent, stripUnresolvedItemReferences } = require('../src/model-history-converter');
 
 test('all observed history types survive preprocessing and valid IDs remain unchanged', () => {
   const body = { input: [
@@ -121,6 +121,61 @@ test('stripReasoningContent empties third-party reasoning content the official b
   assert.equal(result.changes.length, 1);
   assert.deepEqual(result.changes[0], { path: 'input[1].content', itemType: 'reasoning', action: 'omit', rule: 'reasoning_content_not_accepted' });
   assert.deepEqual(stripReasoningContent(result.body).changes, [], 'idempotent');
+});
+
+// The single pass every Codex route runs (src/model-history-converter), with
+// its per-upstream flag. The three callers — cli-provider-router's request hook,
+// the official relay's ChatGPT dial and that relay's hook-less fall-through —
+// differ ONLY in this flag, so this is where the difference between "official"
+// and "everyone else" is pinned.
+test('the shared history pass is provider-agnostic except for the one official rule', () => {
+  const thirdPartyHistory = () => ({ model: 'gpt-5.2', previous_response_id: 'resp_foreign', input: [
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] },
+    // A third-party reasoning item: inline content, an encrypted blob the
+    // ChatGPT backend could not verify, and an id its upstream minted.
+    { type: 'reasoning', id: 'rs_foreign', summary: [], encrypted_content: 'gAAAAABqooA_thirdparty', content: [{ type: 'reasoning_text', text: 'chain of thought' }] },
+    { type: 'function_call', id: 'fc_foreign', call_id: 'call_1', name: 'exec', arguments: '{}' },
+  ] });
+  // The generic half is unconditional: the dangling shapes go for every
+  // provider, and the foreign record id is converted rather than dropped.
+  for (const body of [normalizeResponsesHistory(thirdPartyHistory()).body,
+                      normalizeResponsesHistory(thirdPartyHistory(), { omitReasoningContent: true }).body]) {
+    assert.equal(Object.hasOwn(body, 'previous_response_id'), false, 'store:false reference dropped');
+    assert.equal(body.input[2].id.startsWith('fc_'), true, 'foreign call id converted, tool pairing kept');
+  }
+  const kept = normalizeResponsesHistory(thirdPartyHistory()).body;
+  // A third-party upstream accepts this content — it is the context that
+  // provider produced — so no route but the official dial may remove it.
+  assert.deepEqual(kept.input[1].content, [{ type: 'reasoning_text', text: 'chain of thought' }]);
+  assert.equal(Object.hasOwn(kept.input[1], 'encrypted_content'), true,
+    'the blob is left for the upstream that minted it; only a rejection proves it unverifiable');
+  const official = normalizeResponsesHistory(thirdPartyHistory(), { omitReasoningContent: true });
+  assert.equal(Object.hasOwn(official.body.input[1], 'content'), false,
+    'the official dial sets the one flag that empties it');
+});
+
+test('the official rule runs before the reference pass, so an emptied item cannot linger as a husk', () => {
+  // Order is load-bearing, not incidental: stripping the content is what turns a
+  // foreign reasoning item into an id-only husk, and the reference pass is what
+  // removes it. A content-less {id,type} reasoning item left behind would draw
+  // the very rejection this pass exists to avoid.
+  const body = () => ({ input: [
+    { type: 'reasoning', id: 'rs_thirdparty', summary: [], content: [{ type: 'reasoning_text', text: 'chain of thought' }] },
+  ] });
+  const official = normalizeResponsesHistory(body(), { omitReasoningContent: true });
+  assert.equal(official.body.input.length, 0, 'content stripped → husk dropped in the same pass');
+  assert.deepEqual(official.changes.map(c => c.action), ['omit', 'omit']);
+  assert.equal(official.changes[1].rule, 'store_false_reference');
+  // The same item on a third-party route keeps its content, so it is NOT a husk
+  // and survives — the flag decides the outcome, not the item.
+  const kept = normalizeResponsesHistory(body());
+  assert.equal(kept.body.input.length, 1);
+  assert.equal(Object.hasOwn(kept.body.input[0], 'content'), true);
+  // A turn that needs no correction stays byte-identical, so a caller can hand
+  // the base body straight back to the wire.
+  const untouched = { input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] }] };
+  assert.equal(normalizeResponsesHistory(untouched).body, untouched);
+  assert.deepEqual(normalizeResponsesHistory(untouched).changes, []);
 });
 
 test('an encrypted-content verification rejection strips every reasoning blob at once', () => {
