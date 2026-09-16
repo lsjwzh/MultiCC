@@ -350,6 +350,28 @@ test('concurrent and repeated cancels collapse into exactly one effective transi
   ]);
 });
 
+test('a repeat cancel still closes a superseded scheduler entry stuck on running', async () => {
+  // Production wedge: the record already carried E/cancelledAt (restart-
+  // interrupted task) while a recovery notice was the scheduler's active
+  // entry; "insert now" superseded it, but the repeat-cancel early return
+  // skipped the turn close, leaving state 'running' so every delivery
+  // deferred on run_active and the inserted message never ran.
+  const h = fixture({ record: { taskState: { classifyState: 'E', cancelledAt: 1 } } });
+  // Fixture scheduler starts in 'running' with a superseded active entry.
+  const result = await h.host.cancelActiveTurn('s1', { source: 'insert_queued' });
+  assert.equal(result.ok, true);
+  assert.equal(result.alreadyCancelled, true);
+  assert.equal(h.calls.some(call => call[0] === 'dispatch'), false,
+    'no second verdict — the record is already terminal');
+  assert.equal(h.calls.some(call => call[0] === 'assessing'), true,
+    'the stuck running boundary must be closed through turnEnded');
+  const complete = h.calls.find(call => call[0] === 'complete');
+  assert.ok(complete, 'the superseded active entry must be completed');
+  assert.equal(complete[1].classifyState, 'E');
+  assert.equal(h.calls.some(call => call[0] === 'tick'), true,
+    'releasing the slot re-drives the FIFO so the priority insert can claim it');
+});
+
 test('a runner that refuses to stop reports an explicit failure instead of pretending it cancelled', async () => {
   const { h } = cancelFixture({}, { runnerStopTimeoutMs: 0, stuckRunner: true });
   const result = await h.host.cancelActiveTurn('s1');
