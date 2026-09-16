@@ -169,6 +169,35 @@ class SettingsService {
   /// Whether local push notifications are shown for turn outcomes.
   bool get notificationsEnabled => _prefs.getBool(_keyNotify) ?? true;
 
+  /// 会话级「任务提醒」开关 —— 对应 Web 聊天页头那颗 `#notify-btn`。
+  ///
+  /// Web 的实现（public/pwa.js 的 taskNotifyKey / getTaskNotifyEnabled /
+  /// setTaskNotifyEnabled）把每个会话的选择存在
+  /// `localStorage['multicc_notify:<sessionId>']`，取值 'on' / 'off'，没有记录
+  /// 时默认开；会话 id 为空时回落到全局键 `multicc_notify`。App 沿用同一组键名
+  /// 和同一个默认值，语义也就一致：关掉的只是这一个会话的提醒，物理上仍开着的
+  /// [notificationsEnabled]（设置页那个全局开关）不受影响。
+  bool taskNotifyEnabled(String sessionId) {
+    final raw = _prefs.getString(_taskNotifyKey(sessionId));
+    if (raw == 'on') return true;
+    if (raw == 'off') return false;
+    return true;
+  }
+
+  /// 落盘会话级「任务提醒」开关。Web 点 `#notify-btn` 时只写 localStorage、
+  /// 没有任何后端调用（public/chat-notifications.js 的 persistPreference，
+  /// 以及 public/client.js:344 那段同名的内联实现），App 也只落本地偏好。
+  Future<void> setTaskNotifyEnabled(String sessionId, bool enabled) async {
+    await _prefs.setString(_taskNotifyKey(sessionId), enabled ? 'on' : 'off');
+  }
+
+  /// 翻这个会话的提醒开关 —— Web 点 `#notify-btn` 就是取反后落盘。
+  Future<void> toggleTaskNotify(String sessionId) =>
+      setTaskNotifyEnabled(sessionId, !taskNotifyEnabled(sessionId));
+
+  static String _taskNotifyKey(String sessionId) =>
+      sessionId.isEmpty ? 'multicc_notify' : 'multicc_notify:$sessionId';
+
   /// Whether the Android foreground keep-alive service runs while backgrounded,
   /// holding the chat sockets open (Android only; off by default — it costs an
   /// ongoing notification + battery).

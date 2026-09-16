@@ -447,9 +447,14 @@ class AirStatusBadge extends StatelessWidget {
   }
 }
 
-/// 当前目录那一块统计。三个数字都用同一份判定：「执行中」只认注册表的
-/// spinner，「待回答」只认 canonical 的 waiting —— 从前这里是按 `lease` 和
-/// `status` 各猜一遍，于是同一条任务在这条统计里和在行上的徽标里能显示成两回事。
+/// 当前目录那一块统计 —— 四张卡与 Web `air.js` 的 `renderDirectoryOverview()`
+/// 一一对应：进行中 / 计划任务 / 已完成 / 全部记录，连副标题都照抄。
+///
+/// 取值全部用同一份判定：「进行中」排除生命周期已完结的 `done`/`archived`，
+/// 「正在执行」只认注册表的 spinner（`airTaskRunning`），「计划任务」是
+/// `recordType === 'planned'` 且还没跑起来的那批。从前这里算的是另一组数
+/// （任务/未完成/执行中/待回答），同一份快照在 Web 和 App 上会得出四个不同的
+/// 数字，看上去像两套后端。
 class AirDirectoryStats extends StatelessWidget {
   const AirDirectoryStats({super.key, required this.tasks});
 
@@ -457,52 +462,126 @@ class AirDirectoryStats extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final open = tasks.where((t) => !t.closed).length;
-    final running = tasks.where(airTaskRunning).length;
-    final waiting = tasks
-        .where((t) => airTaskStatus(t) == CanonicalStatus.waiting)
-        .length;
-    return Row(
+    final current = tasks
+        .where((task) => task.status != 'done' && task.status != 'archived')
+        .toList();
+    final running = current.where(airTaskRunning);
+    final planned = current.where(
+      (task) => task.recordType == 'planned' && !airTaskRunning(task),
+    );
+    final done = tasks.where((task) => task.status == 'done').length;
+    final archived = tasks.where((task) => task.status == 'archived').length;
+    final tiles = <Widget>[
+      _StatTile(
+        label: '进行中',
+        value: '${current.length}',
+        detail: '${running.length} 个正在执行',
+        tone: _StatTone.blue,
+      ),
+      _StatTile(
+        label: '计划任务',
+        value: '${planned.length}',
+        detail: '待开始或继续规划',
+      ),
+      _StatTile(
+        label: '已完成',
+        value: '$done',
+        detail: '仍保留在本目录',
+        tone: _StatTone.green,
+      ),
+      _StatTile(
+        label: '全部记录',
+        value: '${tasks.length}',
+        detail: '$archived 个已归档',
+      ),
+    ];
+    // Web `air.css` 的 `@media (max-width: 1040px)` 把 `#directory-stats` 从四列
+    // 改成两列 —— 手机上四张卡挤成一排，副标题会被截成「待开始或继…」，那行字
+    // 正是这张卡要说的意思。断点跟着 Web 走，两端的列数就不会分岔。
+    if (MediaQuery.sizeOf(context).width > 1040) return Row(children: _spread(tiles));
+    return Column(
       children: [
-        Expanded(child: _StatTile(label: '任务', value: '${tasks.length}')),
-        const SizedBox(width: 10),
-        Expanded(child: _StatTile(label: '未完成', value: '$open')),
-        const SizedBox(width: 10),
-        Expanded(child: _StatTile(label: '执行中', value: '$running')),
-        const SizedBox(width: 10),
-        Expanded(child: _StatTile(label: '待回答', value: '$waiting')),
+        Row(children: _spread(tiles.sublist(0, 2))),
+        const SizedBox(height: 10),
+        Row(children: _spread(tiles.sublist(2, 4))),
       ],
     );
   }
+
+  static List<Widget> _spread(List<Widget> tiles) => [
+    for (var i = 0; i < tiles.length; i++) ...[
+      if (i > 0) const SizedBox(width: 10),
+      Expanded(child: tiles[i]),
+    ],
+  ];
 }
 
+/// Web `air.css` 的 `.directory-stat`：卡片顶上那截 18×3 的色条只有 blue/green
+/// 两种，其余两张是默认灰。色条是「哪张卡值得先看」的唯一提示，别省。
+enum _StatTone { plain, blue, green }
+
 class _StatTile extends StatelessWidget {
-  const _StatTile({required this.label, required this.value});
+  const _StatTile({
+    required this.label,
+    required this.value,
+    required this.detail,
+    this.tone = _StatTone.plain,
+  });
 
   final String label;
   final String value;
+  final String detail;
+  final _StatTone tone;
 
   @override
   Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+    padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
     decoration: BoxDecoration(
       color: AppColors.panel,
       borderRadius: BorderRadius.circular(AppColors.radiusCard),
       border: Border.all(color: AppColors.line),
     ),
     child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          value,
-          style: const TextStyle(
-            color: AppColors.text,
-            fontSize: 19,
-            fontWeight: FontWeight.w700,
+        Container(
+          width: 18,
+          height: 3,
+          margin: const EdgeInsets.only(bottom: 6),
+          decoration: BoxDecoration(
+            color: switch (tone) {
+              _StatTone.blue => const Color(0xFF4D9BEA),
+              _StatTone.green => const Color(0xFF43B88A),
+              _StatTone.plain => const Color(0xFFAEBFD0),
+            },
+            borderRadius: BorderRadius.circular(4),
           ),
         ),
         Text(
           label,
-          style: const TextStyle(color: AppColors.faint, fontSize: 11),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(color: Color(0xFF6D8094), fontSize: 10),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 2),
+          child: Text(
+            value,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: Color(0xFF2D4D68),
+              fontSize: 19,
+              height: 1.1,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+        Text(
+          detail,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(color: Color(0xFF8A9AAB), fontSize: 10.5),
         ),
       ],
     ),
