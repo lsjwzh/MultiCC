@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../i18n.dart';
 import '../services/manage_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
@@ -262,6 +263,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final dot = active ? AppColors.accent : AppColors.faint;
     final cls = s['classifyState']?.toString().toUpperCase();
     final goal = s['goal']?.toString().trim();
+    // The classifier behind the goal/classify pair is unhealthy ⇒ the text below
+    // is the last thing it managed to say. Still shown (best description we
+    // have), marked so it stops reading as the current judgement.
+    final stale = s['auxUnhealthy'] == true;
     final chip = _dashboardClassifyChip(cls);
     return Container(
       margin: const EdgeInsets.only(bottom: 6),
@@ -309,13 +314,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   const SizedBox(height: 2),
                   Text(
                     withTaskCode(s['taskShortCode']?.toString(), goal),
-                    style: const TextStyle(
+                    style: TextStyle(
                       color: AppColors.faint,
                       fontSize: 11,
+                      fontStyle: stale ? FontStyle.italic : FontStyle.normal,
                     ),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
+                  if (stale) ...[
+                    const SizedBox(height: 4),
+                    Tooltip(
+                      message: t('auxVerdictPausedHint'),
+                      child: verdictStaleChip(),
+                    ),
+                  ],
                 ],
               ],
             ),

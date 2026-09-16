@@ -518,6 +518,14 @@ class ChatService {
         _emit('task_state', msg);
         break;
 
+      case 'aux_verdict_staleness':
+        // The classifier behind the bar just changed health. A frozen
+        // classifier produces no further `task_state`, so this frame is the only
+        // way an open chat learns its verdict stopped moving — and the same
+        // frame with the flag cleared takes the marker back down.
+        _emit('aux_verdict_staleness', msg);
+        break;
+
       case 'user_input_required':
         _pendingUserInputRequestId = msg['requestId']?.toString();
         _emit('user_input_required', msg);
