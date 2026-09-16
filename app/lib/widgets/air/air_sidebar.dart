@@ -79,8 +79,8 @@ class AirSidebar extends StatelessWidget {
   final VoidCallback onOpenDocs;
   final VoidCallback onOpenMemory;
 
-  /// 「任务图谱」在 Web 侧是 `?view=taskgraph` 那页关联网络，App 还没有原生版，
-  /// 所以和「记忆图谱」一样交给宿主开网页。
+  /// 「任务图谱」在 Web 侧是 `?view=taskgraph` 那页关联网络；App 也有原生版
+  /// （`task_graph_screen.dart`），这一项交给宿主 push 那一页。
   final VoidCallback onOpenTaskGraph;
   final VoidCallback onOpenSettings;
   final VoidCallback onOpenAllDestinations;
