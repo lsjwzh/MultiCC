@@ -328,3 +328,38 @@ test('chat.html loads the share strategy before chat.js and keeps one chat rende
   assert.ok(delegated > bootChatEntry && delegated < readOnlyBranch,
     'bootChatEntry must delegate to bootShareEntry before any other entry route');
 });
+
+test('a share path uses the Air chat visual while ordinary chat keeps its chosen theme', () => {
+  const match = CHAT_HTML.match(/<script data-chat-theme-boot>([\s\S]*?)<\/script>/);
+  assert.ok(match, 'chat.html must apply its visual mode before rendering the chat chrome');
+
+  function runThemeBoot(pathname, search = '') {
+    const classes = new Set();
+    let themeColor = '#0d1117';
+    vm.runInNewContext(match[1], {
+      URLSearchParams,
+      location: { pathname, search },
+      document: {
+        body: { classList: { add: (name) => classes.add(name) } },
+        querySelector: (selector) => selector === 'meta[name="theme-color"]'
+          ? { setAttribute: (name, value) => { if (name === 'content') themeColor = value; } }
+          : null,
+      },
+    });
+    return { classes, themeColor };
+  }
+
+  for (const pathname of ['/share/tok-1', '/share/tok-1/']) {
+    const shared = runThemeBoot(pathname);
+    assert.equal(shared.classes.has('air-chat'), true, `${pathname} must use the new chat visual`);
+    assert.equal(shared.themeColor, '#f7fbff');
+  }
+
+  const ordinary = runThemeBoot('/chat.html');
+  assert.equal(ordinary.classes.has('air-chat'), false, 'ordinary chat still chooses its own theme');
+  assert.equal(ordinary.themeColor, '#0d1117');
+
+  const requested = runThemeBoot('/chat.html', '?air=1');
+  assert.equal(requested.classes.has('air-chat'), true, 'the existing explicit Air entry remains supported');
+  assert.equal(requested.themeColor, '#f7fbff');
+});

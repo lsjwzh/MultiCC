@@ -2388,7 +2388,15 @@
   <link rel="stylesheet" href="chat-task-mode.css" /><link rel="stylesheet" href="chat-share-mode.css" /><link rel="stylesheet" href="composer.css" /><link rel="stylesheet" href="chat-air.css" /><link rel="stylesheet" href="chat-header-shapes.css" />
   <link rel="stylesheet" href="chat-quote.css" />
 </head>
-<body><script>if(new URLSearchParams(location.search).get('air')==='1'){document.body.classList.add('air-chat');document.querySelector('meta[name="theme-color"]')?.setAttribute('content','#f7fbff')}</script>
+<body><script data-chat-theme-boot>
+  (() => {
+    const airRequested = new URLSearchParams(location.search).get('air') === '1';
+    const sharedChat = /^\/share\/[^/]+\/?$/.test(location.pathname);
+    if (!airRequested && !sharedChat) return;
+    document.body.classList.add('air-chat');
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', '#f7fbff');
+  })();
+</script>
   <!-- Image preview lightbox -->
   <div id="img-lightbox">
     <span class="lb-close">&times;</span>
