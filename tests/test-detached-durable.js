@@ -80,3 +80,45 @@ test('completion marker and process ownership are reconstructed from disk', t =>
   assert.match(status.logTail, /final output/);
   assert.equal(fs.statSync(paths.donePath).mode & 0o777, 0o600);
 });
+
+test('launch falls back to $HOME when the recorded workspace was deleted', t => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-detached-data-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const spawned = [];
+  const adapter = createDetached({
+    baseDir: path.join(dataDir, 'detached'),
+    spawnImpl(command, args, options) {
+      spawned.push({ command, args, options });
+      return { pid: 43211, unref() {}, on() {} };
+    },
+  });
+  const gone = path.join(dataDir, 'unavailable-workspaces', 'task-gone');
+  const job = adapter.launch({ id: 'd_stale_cwd', command: 'echo hi', cwd: gone });
+  assert.equal(spawned.length, 1);
+  assert.equal(spawned[0].options.cwd, os.homedir(),
+    'spawn must not use a deleted workspace as cwd (ENOENT would follow)');
+  assert.equal(adapter.status(job.id).cwd, gone,
+    'meta keeps the logical workspace for audit; only the spawn cwd falls back');
+});
+
+test('an async spawn error on the detached child never crashes the server', t => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-detached-data-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  let errorHandler = null;
+  const adapter = createDetached({
+    baseDir: path.join(dataDir, 'detached'),
+    spawnImpl() {
+      return {
+        pid: 43212,
+        unref() {},
+        on(event, handler) { if (event === 'error') errorHandler = handler; },
+      };
+    },
+  });
+  const job = adapter.launch({ id: 'd_spawn_fail', command: 'echo hi', cwd: os.tmpdir() });
+  assert.equal(typeof errorHandler, 'function', 'launch must subscribe to child error events');
+  assert.doesNotThrow(() => errorHandler(Object.assign(new Error('spawn /bin/sh ENOENT'), {
+    code: 'ENOENT', errno: -2, syscall: 'spawn /bin/sh', path: '/bin/sh',
+  })), 'the recorded error must be consumed, not thrown as unhandled');
+  assert.equal(job.id, 'd_spawn_fail');
+});
