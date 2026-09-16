@@ -78,11 +78,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _goalSaving = false;
   String? _goalStatus;
 
-  // Claude proxy global toggle (server-side; POST is localhost-only → read-only after 403).
-  bool _proxyEnabled = false;
-  bool _proxyReadOnly = false;
-  String? _proxyStatus;
-
   // Route claude-official (OAuth subscription) through the proxy — localhost-only POST.
   bool _officialOauthEnabled = false;
   bool _officialOauthReadOnly = false;
@@ -129,7 +124,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   void _loadAdvancedSettings() {
     _loadGoalConfig();
-    _loadProxyConfig();
     _loadOfficialOauth();
     _loadAccessToken();
   }
@@ -148,64 +142,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _goalMinCtrl.dispose();
     _accessTokenCtrl.dispose();
     super.dispose();
-  }
-
-  Future<void> _loadProxyConfig() async {
-    try {
-      final s = widget.settings;
-      final headers = <String, String>{};
-      if (s.token.isNotEmpty) headers['X-Access-Token'] = s.token;
-      final res = await http
-          .get(
-            Uri.parse(s.buildHttpUrl('/api/settings/proxy')),
-            headers: headers,
-          )
-          .timeout(const Duration(seconds: 15));
-      if (res.statusCode != 200 || !mounted) return;
-      final d = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
-      setState(() => _proxyEnabled = d['enabled'] == true);
-    } catch (_) {}
-  }
-
-  Future<void> _toggleProxy(bool v) async {
-    final prev = _proxyEnabled;
-    setState(() {
-      _proxyEnabled = v;
-      _proxyStatus = null;
-    });
-    try {
-      final s = widget.settings;
-      final headers = <String, String>{'Content-Type': 'application/json'};
-      if (s.token.isNotEmpty) headers['X-Access-Token'] = s.token;
-      final res = await http
-          .post(
-            Uri.parse(s.buildHttpUrl('/api/settings/proxy')),
-            headers: headers,
-            body: jsonEncode({'enabled': v}),
-          )
-          .timeout(const Duration(seconds: 15));
-      if (!mounted) return;
-      if (res.statusCode == 403) {
-        // POST is localhost-only (isLocalRequest guard). Phone/remote clients
-        // can read but not flip — revert and disable the switch.
-        setState(() {
-          _proxyEnabled = prev;
-          _proxyReadOnly = true;
-          _proxyStatus = t('localOnlyToggle');
-        });
-      } else {
-        setState(
-          () => _proxyStatus = res.statusCode == 200
-              ? t('savedNextSpawn')
-              : t('saveFailedHttp', {'status': '${res.statusCode}'}),
-        );
-      }
-    } catch (e) {
-      if (mounted) setState(() => _proxyEnabled = prev);
-      if (mounted) {
-        setState(() => _proxyStatus = t('saveFailed', {'error': '$e'}));
-      }
-    }
   }
 
   Future<void> _loadOfficialOauth() async {
@@ -761,30 +697,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         ),
                 ),
               ),
-            ],
-          )),
-          _advancedOnly(advancedMode, _Section(
-            title: t('claudeProxyRouting'),
-            children: [
-              _Hint(t('claudeProxyRoutingHint')),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: Text(
-                  t('enableClaudeProxyRouting'),
-                  style: const TextStyle(color: AppColors.text, fontSize: 14),
-                ),
-                value: _proxyEnabled,
-                activeColor: const Color(0xFFffffff),
-                activeTrackColor: AppColors.accent,
-                onChanged: _proxyReadOnly ? null : _toggleProxy,
-              ),
-              if (_proxyStatus != null) ...[
-                const SizedBox(height: 6),
-                Text(
-                  _proxyStatus!,
-                  style: const TextStyle(color: AppColors.accent, fontSize: 13),
-                ),
-              ],
             ],
           )),
           _Section(

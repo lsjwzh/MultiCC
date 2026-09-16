@@ -184,14 +184,30 @@ test('a routed spawn turns the alternate transports off, in the env and in the s
   for (const key of ALT_TRANSPORT_KEYS) assert.equal(mirrored[key], '', `settings ${key}`);
 });
 
-test('spawns that claim no local route keep their env untouched', () => {
-  // Provider-less sessions and the CLAUDE_PROXY_ENABLED=0 escape hatch both mean
-  // "do not route me" — blanking transport keys there would be a different
-  // change with a different blast radius.
+test('routing is unconditional: no option, env var or provider-less session can turn it off', () => {
+  // CLAUDE_PROXY_ENABLED used to be a host-wide "run claude direct" switch
+  // (.env + settings UI + app). It is gone from the server, the routes, the web
+  // UI and the app; this pins the remaining contract — a bound provider is
+  // always rewritten, and only a session with no local endpoint to forward to
+  // (no provider at all) is allowed to keep its own env.
+  const provider = providers.createProvider({
+    appType: 'claude',
+    name: 'Unconditional fixture',
+    baseUrl: 'https://relay.example',
+    authToken: 'relay-fixture-key',
+    model: 'claude-sonnet-4-5',
+  });
+  for (const options of [
+    { providerId: provider.id, sessionId: 'sess-on', port: 4321 },
+    { providerId: provider.id, sessionId: 'sess-on', port: 4321, enabled: false },
+    { providerId: provider.id, sessionId: 'sess-on', port: 4321, enabled: true },
+  ]) {
+    const env = { ANTHROPIC_BASE_URL: 'https://relay.example', CLAUDE_CODE_USE_BEDROCK: '1' };
+    assert.equal(providers.applyClaudeProxyEnv(env, options), true, JSON.stringify(options));
+    assert.equal(env.ANTHROPIC_BASE_URL, `http://127.0.0.1:4321/claude-proxy/${provider.id}/sess-on`);
+    assert.equal(env.CLAUDE_CODE_USE_BEDROCK, '');
+  }
   const bare = { CLAUDE_CODE_USE_BEDROCK: '1' };
-  assert.equal(providers.applyClaudeProxyEnv(bare, { providerId: '', enabled: true }), false);
+  assert.equal(providers.applyClaudeProxyEnv(bare, { providerId: '', enabled: false }), false);
   assert.equal(bare.CLAUDE_CODE_USE_BEDROCK, '1');
-  const hatch = { CLAUDE_CODE_USE_BEDROCK: '1' };
-  assert.equal(providers.applyClaudeProxyEnv(hatch, { providerId: 'deleted-provider-id', enabled: false }), false);
-  assert.equal(hatch.CLAUDE_CODE_USE_BEDROCK, '1');
 });

@@ -258,7 +258,6 @@ function createChatTurnEngine(deps) {
     getWorkspaceAdmission,
     isShuttingDown,             // let bool _shuttingDown
     getPort,                    // let PORT
-    getClaudeProxyEnabled,      // let
     getClaudeOfficialViaProxy,  // let
     // ── Pass-by-reference: stable containers / hoisted fns / early consts ──
     persistedSessions,
@@ -1244,7 +1243,7 @@ function createChatTurnEngine(deps) {
 
     const streamBusy = turnRequest.cli === 'claude' && !!chatStream.status(sessionName)?.busy;
     let claudeManagedProxy = false;
-    if (turnRequest.cli === 'claude' && getClaudeProxyEnabled() && persisted.provider) {
+    if (turnRequest.cli === 'claude' && persisted.provider) {
       try {
         const summary = providerRouterRuntime.getProviderSummary('claude', persisted.provider);
         claudeManagedProxy = !!(summary && (summary.baseUrl
@@ -1619,7 +1618,7 @@ function createChatTurnEngine(deps) {
       try {
         if (persisted.cli === 'claude') providers.applyClaudeProxyEnv(childEnv, {
           providerId: binding.providerId, sessionId: proxySessionId,
-          subagent: persisted.subagent, port: getPort(), enabled: getClaudeProxyEnabled(),
+          subagent: persisted.subagent, port: getPort(),
           officialOAuth: getClaudeOfficialViaProxy(),
         });
         if (persisted.cli === 'codex') {
@@ -2248,7 +2247,7 @@ function createChatTurnEngine(deps) {
     }, routeOverrides);
     providers.applyClaudeProxyEnv(childEnv, {
       providerId: binding.providerId, sessionId: proxySessionId,
-      subagent: persisted.subagent, port: getPort(), enabled: getClaudeProxyEnabled(),
+      subagent: persisted.subagent, port: getPort(),
       officialOAuth: getClaudeOfficialViaProxy(),
     });
     // Same settings-override as the per-turn spawn path: ~/.claude/settings.json
