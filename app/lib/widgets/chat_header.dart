@@ -1,4 +1,6 @@
 // 聊天头部（模型 chip / 清除上下文 / overflow 菜单 / cli badge 等）。自 chat_screen.dart 抽出。
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -323,6 +325,14 @@ class ChatHeader extends StatelessWidget {
               autoCommit: autoCommit,
               onAutoCommit: onAutoCommit,
               onDebug: onDebug,
+              settings: settings,
+              sessionId: provider.sessionName,
+              // Web 的 `#lang-btn` 就是 toggleLang()：翻 localStorage 里的
+              // `multicc_lang` 再重载页面。App 侧的等价物是 SettingsService 的
+              // 语言偏好（同一个 'multicc_lang' 键），main() 监听它重建
+              // MaterialApp —— 等价于 Web 的重载，但不用重启 app。
+              onLanguage: () =>
+                  settings.setLanguage(settings.lang == 'zh' ? 'en' : 'zh'),
               artifactsLabel: artifactsLabel,
               onArtifacts: onArtifacts,
               onShare: onShare,
@@ -886,6 +896,13 @@ class _HeaderOverflowMenu extends StatelessWidget {
   final bool autoCommit;
   final VoidCallback onAutoCommit;
   final VoidCallback onDebug;
+  /// 会话级「任务提醒」开关（Web 页头那颗 `#notify-btn`，public/chat.html:2423）。
+  /// Web 把那颗按钮的开关状态写在 `title` 里，App 的 ⋯ 菜单没有 tooltip，所以
+  /// 沿用自动提交那套「✓/✕ 后缀」，把状态直接写进文案。状态在**开菜单时现读**
+  /// （`itemBuilder` 每次展开都会重跑），因此宿主不需要为这一项 setState。
+  final SettingsService settings;
+  final String sessionId;
+  final VoidCallback onLanguage;
   final String? artifactsLabel;
   final VoidCallback onArtifacts;
   const _HeaderOverflowMenu({
@@ -910,6 +927,9 @@ class _HeaderOverflowMenu extends StatelessWidget {
     required this.autoCommit,
     required this.onAutoCommit,
     required this.onDebug,
+    required this.settings,
+    required this.sessionId,
+    required this.onLanguage,
     this.artifactsLabel,
     required this.onArtifacts,
   });
@@ -953,6 +973,15 @@ class _HeaderOverflowMenu extends StatelessWidget {
           case 'debug':
             onDebug();
             break;
+          case 'language':
+            onLanguage();
+            break;
+          case 'task-notify':
+            // Web 点 `#notify-btn` 是纯本地动作：只写 localStorage 里这个会话的
+            // 偏好，再重画按钮，没有任何请求（public/chat-notifications.js 的
+            // toggle → persistPreference）。
+            unawaited(settings.toggleTaskNotify(sessionId));
+            break;
           case 'artifacts':
             onArtifacts();
             break;
@@ -989,6 +1018,28 @@ class _HeaderOverflowMenu extends StatelessWidget {
           const Color(0xFF233249),
         ),
         const PopupMenuDivider(),
+        // Web 的 ⋯ 菜单头两项就是语言切换和任务提醒（public/chat.js:257 的 ids
+        // 列表：'lang-btn', 'notify-btn', …），App 也把它们排在最前面。
+        _item(
+          'language',
+          Icons.translate_outlined,
+          t('language'),
+          const Color(0xFF233249),
+          key: const Key('chat-header-language'),
+        ),
+        _item(
+          'task-notify',
+          settings.taskNotifyEnabled(sessionId)
+              ? Icons.notifications_active_outlined
+              : Icons.notifications_off_outlined,
+          settings.taskNotifyEnabled(sessionId)
+              ? t('taskNotifyOn')
+              : t('taskNotifyOff'),
+          settings.taskNotifyEnabled(sessionId)
+              ? const Color(0xFF2ba67a)
+              : const Color(0xFF6f8096),
+          key: const Key('chat-header-task-notify'),
+        ),
         _item(
           'role',
           Icons.theater_comedy_outlined,
@@ -1192,9 +1243,11 @@ class _HeaderOverflowMenu extends StatelessWidget {
     String value,
     IconData icon,
     String label,
-    Color color,
-  ) {
+    Color color, {
+    Key? key,
+  }) {
     return PopupMenuItem<String>(
+      key: key,
       value: value,
       height: 44,
       child: Row(

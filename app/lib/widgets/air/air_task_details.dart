@@ -461,6 +461,11 @@ class AirTaskDetailsPanel extends StatefulWidget {
     required this.service,
     this.onOpenConversation,
     this.onOpenSeparatedTask,
+    this.directories = const <AirDirectory>[],
+    this.dirId,
+    this.onTaskChanged,
+    this.onTaskMoved,
+    this.onTaskRemoved,
   });
 
   final String taskId;
@@ -471,6 +476,24 @@ class AirTaskDetailsPanel extends StatefulWidget {
 
   /// 分离 saga 已有 application receipt 时，宿主可直接打开目标任务。
   final ValueChanged<String>? onOpenSeparatedTask;
+
+  /// 「移动到其他目录…」的候选。Web 是 `data.directories` 去掉当前目录
+  /// （`public/air.js` 的 `openMoveDialog`），所以宿主把整份目录表给它即可。
+  final List<AirDirectory> directories;
+
+  /// 这条任务现在挂在哪个目录，用来把自己从移动候选里剔掉。空串代表宿主不知道
+  /// （直接构造面板的测试）—— 那时候选就是全部目录。
+  final String? dirId;
+
+  /// 归档 / 恢复之后：任务还在原地，宿主刷一次快照就够。
+  final VoidCallback? onTaskChanged;
+
+  /// 移动之后：任务已经不在这个目录，宿主得换到 [dirId] 再打开它（Web 的
+  /// `navigate(chosen, taskId)` 也是这个意思）。
+  final ValueChanged<String>? onTaskMoved;
+
+  /// 删除之后：这条任务没了，宿主只应关掉面板并刷新。
+  final VoidCallback? onTaskRemoved;
 
   @override
   State<AirTaskDetailsPanel> createState() => _AirTaskDetailsPanelState();
@@ -540,6 +563,118 @@ class _AirTaskDetailsPanelState extends State<AirTaskDetailsPanel> {
       initial: bindings.bindings,
       onSaved: _load,
     );
+  }
+
+  /// 服务端认定的任务生命周期状态。`done` / `archived` 是终态那两位，
+  /// 「归档 / 恢复」按钮翻的就是它 —— Web 读的是同一处的 `value.task.status
+  /// || value.status`（`public/air.js` 的 `renderDetail`）。
+  String get _lifecycleStatus => '${(_value?['task'] as Map?)?['status'] ?? _value?['status'] ?? ''}';
+
+  void _toast(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  /// 生命周期动作的统一外壳：按住的这段时间禁用整条动作栏，失败时把服务端的
+  /// 错误码翻成中文（[airTaskActionErrors]）而不是丢一句 HTTP 状态。
+  ///
+  /// [failure] 只在动作失败时被叫到，用来把「面板刷新不出来了」这类二次故障
+  /// 也说出来 —— 成功路径各自处理，因为它们要刷新的东西不一样。
+  Future<void> _runTaskAction(Future<void> Function() action) async {
+    if (_working) return;
+    setState(() => _working = true);
+    try {
+      await action();
+    } catch (error) {
+      if (mounted) setState(() => _error = '$error');
+    } finally {
+      if (mounted) setState(() => _working = false);
+    }
+  }
+
+  /// 归档 / 恢复。Web 这两步不做二次确认 —— 状态随时能翻回去，真正不可逆的
+  /// 只有删除。
+  Future<void> _toggleArchive() async {
+    final archive = _lifecycleStatus != 'archived';
+    await _runTaskAction(() async {
+      await widget.service.setTaskLifecycle(
+        widget.taskId,
+        archive ? 'archived' : 'active',
+      );
+      await _load();
+      _toast(archive ? '任务已归档；归档的任务不再执行，随时可以恢复。' : '任务已恢复。');
+      widget.onTaskChanged?.call();
+    });
+  }
+
+  /// 移动到其他目录。Web 的对话框是一组单选（`openMoveDialog`），这里用同一份
+  /// 结构；移动成功之后这条任务已经不属于当前目录，交给宿主跟着挪过去。
+  Future<void> _moveTask() async {
+    final targets = widget.directories
+        .where((directory) => directory.id != widget.dirId)
+        .toList();
+    if (targets.isEmpty) {
+      _toast('还没有其他工作目录可以移动。');
+      return;
+    }
+    final title = '${(_value?['task'] as Map?)?['title'] ?? widget.taskId}';
+    final chosen = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => _MoveTaskDialog(
+        title: title,
+        targets: targets,
+      ),
+    );
+    if (chosen == null || !mounted) return;
+    await _runTaskAction(() async {
+      final result = await widget.service.relocateTask(widget.taskId, chosen);
+      final carried = result['carried'] is Map
+          ? Map<String, dynamic>.from(result['carried'] as Map)
+          : const <String, dynamic>{};
+      final files = carried['files'];
+      AirDirectory? target;
+      for (final directory in targets) {
+        if (directory.id == chosen) target = directory;
+      }
+      _toast(
+        '任务已移动到 ${target?.name ?? '目标目录'}'
+        '${carried.isEmpty ? '' : '；已带走未提交改动${files == null ? '' : '和 $files 个新文件'}'}。',
+      );
+      widget.onTaskMoved?.call(chosen);
+    });
+  }
+
+  /// 删除任务。文案逐字对着 Web 的 `window.confirm` 抄：它把「会连会话和工作区
+  /// 一起删」和「什么时候会被拒绝」都写在同一句话里，比一个「确定吗」有用。
+  Future<void> _deleteTask() async {
+    final title = '${(_value?['task'] as Map?)?['title'] ?? widget.taskId}';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        key: const ValueKey('air-details-delete-confirm'),
+        title: Text('删除任务「$title」？'),
+        content: const Text(
+          '它的专属会话与工作区会一并删除；有未提交改动或未合并提交时会被拒绝。此操作不可撤销。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            key: const ValueKey('air-details-delete-confirm-ok'),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('删除', style: TextStyle(color: AppColors.danger)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await _runTaskAction(() async {
+      await widget.service.deleteTask(widget.taskId);
+      _toast('任务已删除。');
+      widget.onTaskRemoved?.call();
+    });
   }
 
   @override
@@ -638,6 +773,20 @@ class _AirTaskDetailsPanelState extends State<AirTaskDetailsPanel> {
               ),
             ),
           ),
+        // 任务生命周期动作条 —— Web `renderDetail` 最后那一组 `detail-actions`：
+        // 归档/恢复、移动到其他目录…、删除任务…。三者的顺序和「哪些要确认」
+        // 都照 Web：只有删除不可逆，所以只有它拦一道。
+        _LifecycleActions(
+          archived: _lifecycleStatus == 'archived',
+          readOnly: value['readOnly'] == true,
+          canMove: widget.directories.any(
+            (directory) => directory.id != widget.dirId,
+          ),
+          busy: _working,
+          onArchive: _toggleArchive,
+          onMove: _moveTask,
+          onDelete: _deleteTask,
+        ),
         const SizedBox(height: 18),
         for (final group in groups) ...[
           _DetailGroupView(group: group),
@@ -835,5 +984,132 @@ class _DetailGroupView extends StatelessWidget {
         if (group.footer != null) group.footer!,
       ],
     ),
+  );
+}
+
+/// 详情面板底部那组生命周期动作（Web `detail-actions`）。
+///
+/// 「移动」在只读任务上没有（Web 的 `if (!value.readOnly)` 才 append），「删除」
+/// 永远在 —— 观察来的任务也能从自己列表里删掉。「没有别的目录可去」时移动按钮
+/// 直接不出现，而不是点了才说不行：Web 是点了才提示，但手机上没有 hover，一颗
+/// 永远点不动、只能换来一句抱歉的按钮更差。
+class _LifecycleActions extends StatelessWidget {
+  const _LifecycleActions({
+    required this.archived,
+    required this.readOnly,
+    required this.canMove,
+    required this.busy,
+    required this.onArchive,
+    required this.onMove,
+    required this.onDelete,
+  });
+
+  final bool archived;
+  final bool readOnly;
+  final bool canMove;
+  final bool busy;
+  final VoidCallback onArchive;
+  final VoidCallback onMove;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(top: 10),
+    child: Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        OutlinedButton.icon(
+          key: const ValueKey('air-details-archive'),
+          onPressed: busy ? null : onArchive,
+          icon: Icon(
+            archived ? Icons.unarchive_outlined : Icons.archive_outlined,
+            size: 17,
+          ),
+          label: Text(archived ? '恢复任务' : '归档任务'),
+        ),
+        if (!readOnly && canMove)
+          OutlinedButton.icon(
+            key: const ValueKey('air-details-move'),
+            onPressed: busy ? null : onMove,
+            icon: const Icon(Icons.drive_file_move_outline, size: 17),
+            label: const Text('移动到其他目录…'),
+          ),
+        OutlinedButton.icon(
+          key: const ValueKey('air-details-delete'),
+          onPressed: busy ? null : onDelete,
+          icon: const Icon(Icons.delete_outline, size: 17),
+          label: const Text('删除任务…', style: TextStyle(color: AppColors.danger)),
+        ),
+      ],
+    ),
+  );
+}
+
+/// 移动任务的目录选择（Web `openMoveDialog` 的那张单选框列表）。
+///
+/// 用 `showDialog<String>` 返回选中的 dirId：null 代表取消。文案也照抄 —— 它
+/// 说清了「工作区会迁到目标仓库，未提交的改动和新文件一起带走」，以及正在执行
+/// 的任务服务端会拒。
+class _MoveTaskDialog extends StatefulWidget {
+  const _MoveTaskDialog({required this.title, required this.targets});
+
+  final String title;
+  final List<AirDirectory> targets;
+
+  @override
+  State<_MoveTaskDialog> createState() => _MoveTaskDialogState();
+}
+
+class _MoveTaskDialogState extends State<_MoveTaskDialog> {
+  String? _chosen;
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    key: const ValueKey('air-details-move-dialog'),
+    title: Text('移动「${widget.title}」'),
+    content: SingleChildScrollView(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text(
+            '选择目标工作目录。工作区会迁到目标仓库，未提交的改动和新文件一起带走；正在执行的任务不能移动。',
+            style: TextStyle(color: AppColors.muted, fontSize: 12.5, height: 1.6),
+          ),
+          const SizedBox(height: 6),
+          for (final directory in widget.targets)
+            RadioListTile<String>(
+              key: ValueKey('air-details-move-target-${directory.id}'),
+              value: directory.id,
+              groupValue: _chosen,
+              onChanged: (value) => setState(() => _chosen = value),
+              contentPadding: EdgeInsets.zero,
+              dense: true,
+              title: Text(directory.name, style: const TextStyle(fontSize: 13.5)),
+              subtitle: Text(
+                directory.path,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 11.5, color: AppColors.faint),
+              ),
+            ),
+        ],
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.of(context).pop(),
+        child: const Text('取消'),
+      ),
+      TextButton(
+        key: const ValueKey('air-details-move-confirm'),
+        onPressed: _chosen == null
+            ? null
+            : () => Navigator.of(context).pop(_chosen),
+        child: const Text('移动', style: TextStyle(color: AppColors.accentDark)),
+      ),
+    ],
   );
 }

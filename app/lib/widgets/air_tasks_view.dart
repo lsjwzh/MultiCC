@@ -316,6 +316,25 @@ class _AirTasksViewState extends State<AirTasksView>
                     if (mounted) _openTaskById(task.dirId, targetTaskId);
                   }());
                 },
+                directories: _data?.directories ?? const <AirDirectory>[],
+                dirId: task.dirId,
+                // 归档/恢复只改这一条任务的状态：重拉快照，面板自己已经刷新过了。
+                onTaskChanged: () => unawaited(_refresh()),
+                // 移动之后这条任务属于别的目录了，所以先关掉这一层，再刷新并跟着
+                // 挪过去 —— 和 Web 的 `navigate(chosen, taskId)` 一个意思。
+                onTaskMoved: (dirId) {
+                  Navigator.pop(sheetContext);
+                  unawaited(() async {
+                    await _refresh();
+                    if (mounted) _openTaskById(dirId, task.id);
+                  }());
+                },
+                // 删除之后任务已经不存在，只能关掉面板：留在原处刷新的话，详情
+                // 面板会去取一条已删掉的任务（Web 也是先离开再刷新）。
+                onTaskRemoved: () {
+                  Navigator.pop(sheetContext);
+                  unawaited(_refresh());
+                },
               ),
             ),
           ],
@@ -802,6 +821,18 @@ class _AirTasksViewState extends State<AirTasksView>
     unawaited(launchUrl(uri, mode: LaunchMode.externalApplication));
   }
 
+  /// 「任务图谱」（Web `?view=taskgraph`）还没有原生页，先和记忆图谱一样把
+  /// 网页版打开；原生渲染器补上之后，这里换成本地路由即可。
+  void _openWebTaskGraph() {
+    final uri = Uri.parse(widget.settings.buildHttpUrl('/manage')).replace(
+      queryParameters: {
+        'view': 'taskgraph',
+        if (widget.settings.token.isNotEmpty) 'token': widget.settings.token,
+      },
+    );
+    unawaited(launchUrl(uri, mode: LaunchMode.externalApplication));
+  }
+
   Future<void> _push(WidgetBuilder builder) async {
     _closeDrawer();
     await Navigator.of(context).push(MaterialPageRoute<void>(builder: builder));
@@ -902,17 +933,28 @@ class _AirTasksViewState extends State<AirTasksView>
     return rows;
   }
 
-  List<AirTask> _visibleTasks() {
+  /// 首页这块是 Web 的「最近任务」（`air.js` 的 `renderDirectoryOverview`）：
+  /// 抬头下面只摆最近几条，其余交给下面那颗「查看全部 N 个任务 ›」。
+  ///
+  /// 截断而不是按状态过滤，也是照 Web 抄的：那边这份 `tasks` 只按 dirId 过滤，
+  /// `!['done','archived'].includes(status)` 那道判断只用在抬头上面那四张统计卡
+  /// 里。行序同样是 `updatedAt` 倒序（[AirSnapshot.tasksOf] 已经排好了）。
+  List<AirTask> _visibleTasks(BuildContext context) {
     final rows = _data?.tasksOf(_directoryId) ?? const <AirTask>[];
     if (_showAll) return rows;
-    return rows.where((task) => !task.closed).toList();
+    return rows.take(_recentRowLimit(context)).toList();
   }
+
+  /// Web `air.js` 的 `recentRowLimit()`：760px 及以下六行，再宽十行。一行就是一条
+  /// 任务，截掉的本来也排不进「最近」。
+  static int _recentRowLimit(BuildContext context) =>
+      MediaQuery.sizeOf(context).width <= 760 ? 6 : 10;
 
   @override
   Widget build(BuildContext context) {
     final data = _data;
     final directory = data?.directoryOf(_directoryId);
-    final tasks = _visibleTasks();
+    final tasks = _visibleTasks(context);
     // 「在不在跑」只有一份判定（注册表的 spinner），目录环、页头那颗徽标和任务
     // 行上的转圈说的都是同一件事。
     final runningDirectories = airRunningDirectories(
@@ -989,6 +1031,10 @@ class _AirTasksViewState extends State<AirTasksView>
         onOpenMemory: () {
           _closeDrawer();
           _openWebMemory();
+        },
+        onOpenTaskGraph: () {
+          _closeDrawer();
+          _openWebTaskGraph();
         },
         onOpenSettings: () => _openDestination(WorkspaceDestination.global),
         onOpenAllDestinations: () {
@@ -1205,12 +1251,15 @@ class _AirTasksViewState extends State<AirTasksView>
     if (data == null && _error.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
+    // 抬头上的「N 个任务」和统计卡读的是同一份**未截断**的目录任务表：数字说的是
+    // 这个目录一共有多少条，不是这一屏摆得下多少条。
+    final all = data?.tasksOf(_directoryId) ?? const <AirTask>[];
     return RefreshIndicator(
       onRefresh: _refresh,
       child: ListView(
         padding: const EdgeInsets.fromLTRB(20, 16, 20, 28),
         children: [
-          AirDirectoryStats(tasks: data?.tasksOf(_directoryId) ?? const []),
+          AirDirectoryStats(tasks: all),
           const SizedBox(height: 22),
           if (directory != null) ...[
             Row(
@@ -1243,30 +1292,37 @@ class _AirTasksViewState extends State<AirTasksView>
             ),
           ),
           const SizedBox(height: 24),
+          // Web `air.html` 的 `.section-heading`：左边两行（小字 `当前目录` + 粗体
+          // `最近任务`），右边一个 `#directory-overview-count`。两条筛选 chip 换成了
+          // 这一行 —— Web 那份默认就带着归档行，「未完成 / 全部」在这里没有对位。
           Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              const Expanded(
-                child: Text(
-                  '当前目录',
-                  style: TextStyle(
-                    color: AppColors.text,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                  ),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      '当前目录',
+                      style: TextStyle(color: AppColors.faint, fontSize: 11.5),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      _showAll ? '全部任务' : '最近任务',
+                      key: const ValueKey('air-tasks-heading'),
+                      style: const TextStyle(
+                        color: AppColors.text,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
                 ),
               ),
-              ChoiceChip(
-                label: const Text('未完成'),
-                selected: !_showAll,
-                onSelected: (_) => setState(() => _showAll = false),
-                showCheckmark: false,
-              ),
-              const SizedBox(width: 6),
-              ChoiceChip(
-                label: const Text('全部'),
-                selected: _showAll,
-                onSelected: (_) => setState(() => _showAll = true),
-                showCheckmark: false,
+              Text(
+                '${all.length} 个任务',
+                key: const ValueKey('air-tasks-count'),
+                style: const TextStyle(color: AppColors.faint, fontSize: 11.5),
               ),
             ],
           ),
@@ -1304,6 +1360,19 @@ class _AirTasksViewState extends State<AirTasksView>
                     Icons.info_outline_rounded,
                     color: AppColors.faint,
                   ),
+                ),
+              ),
+            ),
+          // Web `#directory-task-more`：列表是截过的，这条是留给剩下那些的出口。
+          // 那边点开的是控制台那份完整清单；App 没有第二个容器，就地展开。
+          if (all.length > tasks.length || _showAll)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton(
+                key: const ValueKey('air-tasks-more'),
+                onPressed: () => setState(() => _showAll = !_showAll),
+                child: Text(
+                  _showAll ? '只看最近 ›' : '查看全部 ${all.length} 个任务 ›',
                 ),
               ),
             ),

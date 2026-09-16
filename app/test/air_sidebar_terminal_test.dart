@@ -68,6 +68,7 @@ void main() {
             onOpenTerminal: opened.add,
             onOpenDocs: () {},
             onOpenMemory: () {},
+            onOpenTaskGraph: () {},
             onOpenSettings: () {},
             onOpenAllDestinations: () {},
             ops: ops,
